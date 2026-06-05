@@ -1,7 +1,19 @@
 # Project State
 
-**Last updated:** 2026-06-05 (v0.3 realignment complete; sprint-03 scaffolded, execution pending go)
-**Current sprint:** sprint-03 (active — jobs 0012–0017 scaffolded, not yet executing)
+**Last updated:** 2026-06-05 (sprint-03 execution HALTED by user during Stage A)
+**Current sprint:** sprint-03 (active, execution paused)
+
+## Halt note (read first on resume)
+
+Execution workflow run `wf_63a211db-7a1` stopped by user request ("don't write any code yet") during Stage A:
+
+| Job | STATE | Reality on disk |
+|---|---|---|
+| job-0012 (repo) | `auditing` | Runner DONE, report ready-for-audit, reviewer was mid-review. v0.2 artifacts deleted, v0.3 layout in place, git initialized (commit `6fd37e6`), MIT LICENSE at root. |
+| job-0013 (contracts) | `in-progress` | All 10 contract modules written in `packages/contracts/src/grace2_contracts/`; tests/schema-export/report likely incomplete. |
+| 0014–0017 | `created` | Untouched. No GCP resources created, no Atlas cluster, nothing cloud-side exists yet. |
+
+Atlas CLI still unauthenticated (user step pending). **Resume:** relaunch with `resumeFromRunId: wf_63a211db-7a1` after editing the two Stage-A runner prompts (cache-bust so they re-run as finish-and-verify, not redo); or review/audit 0012–0013 inline first. No code is written until the user says go.
 
 ## Tentative repo layout (job-0012 confirms; becomes fact when it lands)
 
@@ -20,6 +32,8 @@
 None in code yet. **SRS Appendices A–D are the contract stubs of record** — any agent needing a message shape, envelope, claim type, or collection schema reads the appendix, not the dead `src/grace2_contracts/`. First schema job turns them into code.
 
 ## Environment facts
+
+> **Portability note (2026-06-05):** the facts below describe the original dev Mac. The repo carries everything coordination-related (agents/, reports/, docs/, CLAUDE.md); machine-local state does NOT travel: gcloud/atlas/gh auth sessions, the OpenTofu/node/docker installs, and the `grace2` conda env. A cloud session must re-verify toolchain + auth before resuming job-0014+ (the kickoff's `brew` commands assume macOS — adapt to the cloud environment's package manager and surface the substitution in the report). Nothing cloud-side (GCP/Atlas) exists yet, so there is no remote state to reconcile — auth fresh and proceed.
 
 - Machine: macOS (Darwin 25.4.0), Apple Silicon, Homebrew at `/opt/homebrew`
 - **Node v24.14.0 + npm present** (web client dev ready); **Docker 29.4.0 present** (container builds ready)

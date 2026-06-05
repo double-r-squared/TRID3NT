@@ -34,3 +34,4 @@
 2026-06-05 | job-0015-agent-20260605 | OPENED: ADK skeleton — hello-world Gemini + Appendix-A WS core + MCP verification |
 2026-06-05 | job-0016-web-20260605 | OPENED: Web stub — React+MapLibre CONUS map + chat round-trip |
 2026-06-05 | job-0017-testing-20260605 | OPENED: M1 acceptance — protocol/contract tests + exit-criteria record |
+2026-06-05 | sprint-03 | EXECUTION HALTED by user during Stage A; 0012 done-unaudited, 0013 mid-work; resume via wf_63a211db-7a1 |
