@@ -13,7 +13,7 @@ Execution workflow run `wf_63a211db-7a1` stopped by user request ("don't write a
 | job-0013 (contracts) | `in-progress` | All 10 contract modules written in `packages/contracts/src/grace2_contracts/`; tests/schema-export/report likely incomplete. |
 | 0014–0017 | `created` | Untouched. No GCP resources created, no Atlas cluster, nothing cloud-side exists yet. |
 
-Atlas CLI still unauthenticated (user step pending). **Resume:** relaunch with `resumeFromRunId: wf_63a211db-7a1` after editing the two Stage-A runner prompts (cache-bust so they re-run as finish-and-verify, not redo); or review/audit 0012–0013 inline first. No code is written until the user says go.
+Atlas CLI still unauthenticated (user step pending). **Resume (from any machine):** the workflow journal `wf_63a211db-7a1` was local to the original Mac and does not travel — do NOT look for it. Instead: (1) review + audit job-0012 (work done, on disk) and job-0013 (contracts ~done; finish tests/schema-export/report via a finish-and-verify runner, not a redo); (2) launch a fresh execution workflow for jobs 0014–0017 per the sprint-03 manifest, re-verifying toolchain + auth on the current machine first (gcloud/atlas/tofu — see Portability note). No code is written until the user says go.
 
 ## Tentative repo layout (job-0012 confirms; becomes fact when it lands)
 
