@@ -1,0 +1,94 @@
+# GRACE-2 — version-control ignores (SRS v0.3 stack).
+
+# --- Python (agent service, PyQGIS/solver workers, contracts package) ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+.eggs/
+build/
+dist/
+*.so
+.Python
+develop-eggs/
+.installed.cfg
+pip-wheel-metadata/
+*.whl
+
+# --- virtual / conda environments (the blessed local env is named, not vendored) ---
+.venv*/
+venv/
+env/
+.conda/
+# Never commit the conda env itself; its definition is the blessed source.
+
+# --- Node / web client (React + MapLibre) ---
+node_modules/
+.npm/
+.pnpm-store/
+.yarn/
+dist/
+build/
+.vite/
+.next/
+.turbo/
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# --- OpenTofu / Terraform (infra/) ---
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+*.tfvars
+*.tfvars.json
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+.tofu/
+
+# --- testing / coverage ---
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.cache/
+coverage/
+
+# --- QGIS artifacts (local PyQGIS worker dev) ---
+*.qmlc          # compiled QML cache
+*.qgs~
+*.qgz~
+.qgis2/
+qgis_profile/
+
+# --- OS / editor ---
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# --- secrets / credentials (NFR-S-2/S-3: every credential via Secret Manager +
+#     Workload Identity; never committed, never in-tree, never baked in images) ---
+.env
+.env.*
+*.pem
+*.key
+# GCP service-account keys / application-default credentials (must never land in repo)
+*-key.json
+*_key.json
+*-sa.json
+gcp-*.json
+service-account*.json
+application_default_credentials.json
+.gcloud/
