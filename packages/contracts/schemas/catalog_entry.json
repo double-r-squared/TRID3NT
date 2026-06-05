@@ -1,0 +1,84 @@
+{
+  "additionalProperties": false,
+  "description": "A single curated public hazard catalog entry (FR-PHC-2).",
+  "properties": {
+    "access": {
+      "title": "Access",
+      "type": "string"
+    },
+    "agency": {
+      "title": "Agency",
+      "type": "string"
+    },
+    "coverage": {
+      "title": "Coverage",
+      "type": "string"
+    },
+    "description": {
+      "title": "Description",
+      "type": "string"
+    },
+    "format": {
+      "enum": [
+        "wms",
+        "wmts",
+        "raster_cog",
+        "vector_fgb",
+        "vector_geoparquet",
+        "wfs"
+      ],
+      "title": "Format",
+      "type": "string"
+    },
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "last_verified": {
+      "format": "date",
+      "title": "Last Verified",
+      "type": "string"
+    },
+    "license": {
+      "title": "License",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "v1",
+      "default": "v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "style_preset": {
+      "title": "Style Preset",
+      "type": "string"
+    },
+    "title": {
+      "title": "Title",
+      "type": "string"
+    },
+    "topic": {
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Topic",
+      "type": "array"
+    }
+  },
+  "required": [
+    "id",
+    "title",
+    "agency",
+    "topic",
+    "coverage",
+    "format",
+    "access",
+    "style_preset",
+    "license",
+    "description",
+    "last_verified"
+  ],
+  "title": "CatalogEntry",
+  "type": "object"
+}

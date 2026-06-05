@@ -1,0 +1,120 @@
+{
+  "$defs": {
+    "ReferenceLayer": {
+      "additionalProperties": false,
+      "description": "An optional helper layer shown only during a spatial-input request.",
+      "properties": {
+        "layer_id": {
+          "title": "Layer Id",
+          "type": "string"
+        },
+        "style_preset": {
+          "title": "Style Preset",
+          "type": "string"
+        },
+        "wms_url": {
+          "title": "Wms Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "layer_id",
+        "wms_url",
+        "style_preset"
+      ],
+      "title": "ReferenceLayer",
+      "type": "object"
+    },
+    "SuggestedView": {
+      "additionalProperties": false,
+      "description": "Where the client zooms to make picking easier.",
+      "properties": {
+        "bbox": {
+          "maxItems": 4,
+          "minItems": 4,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Bbox",
+          "type": "array"
+        },
+        "zoom": {
+          "title": "Zoom",
+          "type": "number"
+        }
+      },
+      "required": [
+        "bbox",
+        "zoom"
+      ],
+      "title": "SuggestedView",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "``spatial-input-request`` (A.4): agent needs the user to pick a geometry.",
+  "properties": {
+    "default_timeout_seconds": {
+      "default": 300,
+      "title": "Default Timeout Seconds",
+      "type": "integer"
+    },
+    "description": {
+      "title": "Description",
+      "type": "string"
+    },
+    "mode": {
+      "enum": [
+        "point",
+        "bbox"
+      ],
+      "title": "Mode",
+      "type": "string"
+    },
+    "reference_layers": {
+      "items": {
+        "$ref": "#/$defs/ReferenceLayer"
+      },
+      "title": "Reference Layers",
+      "type": "array"
+    },
+    "request_id": {
+      "title": "Request Id",
+      "type": "string"
+    },
+    "suggested_view": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SuggestedView"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "title": {
+      "title": "Title",
+      "type": "string"
+    }
+  },
+  "required": [
+    "request_id",
+    "mode",
+    "title",
+    "description"
+  ],
+  "title": "SpatialInputRequestPayload",
+  "type": "object"
+}

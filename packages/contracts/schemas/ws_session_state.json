@@ -1,0 +1,58 @@
+{
+  "additionalProperties": false,
+  "description": "``session-state`` (A.4): lets the client reconstruct the session.\n\nThe nested shapes are the JSON serialization of the Appendix D.6 models\n(``ChatMessage``, ``ProjectLayerSummary``, ``PipelineSnapshot``,\n``MapView``). They are carried as plain ``dict``/``list`` here to avoid a\ncircular contract dependency between ws.py and collections.py; the agent\nserializes the real D.6 models into them. See report OQ-S4.",
+  "properties": {
+    "chat_history": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Chat History",
+      "type": "array"
+    },
+    "current_pipeline": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Current Pipeline"
+    },
+    "loaded_layers": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Loaded Layers",
+      "type": "array"
+    },
+    "map_view": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Map View"
+    },
+    "pipeline_history": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Pipeline History",
+      "type": "array"
+    }
+  },
+  "title": "SessionStatePayload",
+  "type": "object"
+}

@@ -22,7 +22,7 @@ Invariants this module is responsible for:
 
 from __future__ import annotations
 
-from typing import Generic, Literal, TypeVar
+from typing import ClassVar, Generic, Literal, TypeVar
 
 from pydantic import Field
 
@@ -148,7 +148,7 @@ ResearchMode = Literal["research", "deep_research"]
 class UserMessagePayload(GraceModel):
     """``user-message`` (A.3): user-submitted text input."""
 
-    MESSAGE_TYPE = "user-message"
+    MESSAGE_TYPE: ClassVar[str] = "user-message"
 
     text: str
     research_mode: ResearchMode = "research"  # Appendix A amendment (FR-WC-15)
@@ -157,7 +157,7 @@ class UserMessagePayload(GraceModel):
 class CancelPayload(GraceModel):
     """``cancel`` (A.3): cancel the in-flight pipeline."""
 
-    MESSAGE_TYPE = "cancel"
+    MESSAGE_TYPE: ClassVar[str] = "cancel"
 
     reason: str | None = None
 
@@ -165,7 +165,7 @@ class CancelPayload(GraceModel):
 class ConfirmResponsePayload(GraceModel):
     """``confirm-response`` (A.3): user response to a confirmation-request."""
 
-    MESSAGE_TYPE = "confirm-response"
+    MESSAGE_TYPE: ClassVar[str] = "confirm-response"
 
     request_id: ULIDStr
     approved: bool
@@ -174,7 +174,7 @@ class ConfirmResponsePayload(GraceModel):
 class SessionResumePayload(GraceModel):
     """``session-resume`` (A.3): resume an existing session (id in envelope)."""
 
-    MESSAGE_TYPE = "session-resume"
+    MESSAGE_TYPE: ClassVar[str] = "session-resume"
 
 
 # =========================================================================== #
@@ -190,7 +190,7 @@ class SpatialInputResponsePayload(GraceModel):
     For a cancellation: ``cancelled=True`` and the geometry fields stay None.
     """
 
-    MESSAGE_TYPE = "spatial-input-response"
+    MESSAGE_TYPE: ClassVar[str] = "spatial-input-response"
 
     request_id: ULIDStr
     geometry_type: Literal["point", "bbox"] | None = None
@@ -201,7 +201,7 @@ class SpatialInputResponsePayload(GraceModel):
 class DisambiguationResponsePayload(GraceModel):
     """``disambiguation-response`` (A.4b): user chose a candidate, or cancelled."""
 
-    MESSAGE_TYPE = "disambiguation-response"
+    MESSAGE_TYPE: ClassVar[str] = "disambiguation-response"
 
     request_id: ULIDStr
     candidate_id: str | None = None
@@ -211,7 +211,7 @@ class DisambiguationResponsePayload(GraceModel):
 class ClarificationResponsePayload(GraceModel):
     """``clarification-response`` (A.4b): user chose an option, or cancelled."""
 
-    MESSAGE_TYPE = "clarification-response"
+    MESSAGE_TYPE: ClassVar[str] = "clarification-response"
 
     request_id: ULIDStr
     option_id: str | None = None
@@ -226,7 +226,7 @@ class ClarificationResponsePayload(GraceModel):
 class AgentMessageChunkPayload(GraceModel):
     """``agent-message-chunk`` (A.4): a streamed token group from the LLM."""
 
-    MESSAGE_TYPE = "agent-message-chunk"
+    MESSAGE_TYPE: ClassVar[str] = "agent-message-chunk"
 
     message_id: ULIDStr
     delta: str  # new content since the last chunk (not accumulated)
@@ -236,7 +236,7 @@ class AgentMessageChunkPayload(GraceModel):
 class ToolCallStartPayload(GraceModel):
     """``tool-call-start`` (A.4): a tool invocation has begun."""
 
-    MESSAGE_TYPE = "tool-call-start"
+    MESSAGE_TYPE: ClassVar[str] = "tool-call-start"
 
     call_id: ULIDStr
     step_id: ULIDStr
@@ -250,7 +250,7 @@ class ToolCallStartPayload(GraceModel):
 class ToolCallProgressPayload(GraceModel):
     """``tool-call-progress`` (A.4): optional progress for an in-flight tool."""
 
-    MESSAGE_TYPE = "tool-call-progress"
+    MESSAGE_TYPE: ClassVar[str] = "tool-call-progress"
 
     call_id: ULIDStr
     percent: int | None = Field(default=None, ge=0, le=100)
@@ -266,7 +266,7 @@ class ToolCallCompletePayload(GraceModel):
     MongoDB and is referenced by ``result_uri``.
     """
 
-    MESSAGE_TYPE = "tool-call-complete"
+    MESSAGE_TYPE: ClassVar[str] = "tool-call-complete"
 
     call_id: ULIDStr
     result_summary: str  # human-readable one-liner for chat display
@@ -277,7 +277,7 @@ class ToolCallCompletePayload(GraceModel):
 class ToolCallFailedPayload(GraceModel):
     """``tool-call-failed`` (A.4): a tool errored out."""
 
-    MESSAGE_TYPE = "tool-call-failed"
+    MESSAGE_TYPE: ClassVar[str] = "tool-call-failed"
 
     call_id: ULIDStr
     error_code: str  # enum-like string (per tool category; open)
@@ -310,7 +310,7 @@ class PipelineStatePayload(GraceModel):
     deltas are not used.
     """
 
-    MESSAGE_TYPE = "pipeline-state"
+    MESSAGE_TYPE: ClassVar[str] = "pipeline-state"
 
     pipeline_id: ULIDStr
     steps: list[PipelineStep] = Field(default_factory=list)
@@ -330,7 +330,7 @@ class MapTemporal(GraceModel):
 class LoadLayerArgs(GraceModel):
     """``load-layer`` args. Field-for-field alignable with ``LayerURI``."""
 
-    COMMAND = "load-layer"
+    COMMAND: ClassVar[str] = "load-layer"
 
     layer_id: str
     wms_url: str
@@ -339,34 +339,34 @@ class LoadLayerArgs(GraceModel):
 
 
 class RemoveLayerArgs(GraceModel):
-    COMMAND = "remove-layer"
+    COMMAND: ClassVar[str] = "remove-layer"
     layer_id: str
 
 
 class SetLayerVisibilityArgs(GraceModel):
-    COMMAND = "set-layer-visibility"
+    COMMAND: ClassVar[str] = "set-layer-visibility"
     layer_id: str
     visible: bool
 
 
 class SetLayerOpacityArgs(GraceModel):
-    COMMAND = "set-layer-opacity"
+    COMMAND: ClassVar[str] = "set-layer-opacity"
     layer_id: str
     opacity: float = Field(ge=0.0, le=1.0)
 
 
 class SetLayerOrderArgs(GraceModel):
-    COMMAND = "set-layer-order"
+    COMMAND: ClassVar[str] = "set-layer-order"
     layer_ids: list[str]  # ordered, top to bottom
 
 
 class ZoomToArgs(GraceModel):
-    COMMAND = "zoom-to"
+    COMMAND: ClassVar[str] = "zoom-to"
     bbox: BBox
 
 
 class SetTemporalConfigArgs(GraceModel):
-    COMMAND = "set-temporal-config"
+    COMMAND: ClassVar[str] = "set-temporal-config"
     layer_id: str
     start: UTCDatetime
     end: UTCDatetime
@@ -375,18 +375,18 @@ class SetTemporalConfigArgs(GraceModel):
 
 
 class StartAnimationArgs(GraceModel):
-    COMMAND = "start-animation"
+    COMMAND: ClassVar[str] = "start-animation"
     layer_id: str
     speed: Literal[0.5, 1, 2, 5, 10] | None = None
 
 
 class StopAnimationArgs(GraceModel):
-    COMMAND = "stop-animation"
+    COMMAND: ClassVar[str] = "stop-animation"
     layer_id: str
 
 
 class InvalidateTilesArgs(GraceModel):
-    COMMAND = "invalidate-tiles"
+    COMMAND: ClassVar[str] = "invalidate-tiles"
     layer_id: str | None = None  # omit to invalidate all
 
 
@@ -415,7 +415,7 @@ class MapCommandPayload(GraceModel):
     (A.7 rationale).
     """
 
-    MESSAGE_TYPE = "map-command"
+    MESSAGE_TYPE: ClassVar[str] = "map-command"
 
     command: MapCommand
     args: dict = Field(default_factory=dict)
@@ -428,7 +428,7 @@ class ConfirmationRequestPayload(GraceModel):
     worse than none.
     """
 
-    MESSAGE_TYPE = "confirmation-request"
+    MESSAGE_TYPE: ClassVar[str] = "confirmation-request"
 
     request_id: ULIDStr
     title: str
@@ -447,7 +447,7 @@ class SessionStatePayload(GraceModel):
     serializes the real D.6 models into them. See report OQ-S4.
     """
 
-    MESSAGE_TYPE = "session-state"
+    MESSAGE_TYPE: ClassVar[str] = "session-state"
 
     chat_history: list[dict] = Field(default_factory=list)
     loaded_layers: list[dict] = Field(default_factory=list)
@@ -459,7 +459,7 @@ class SessionStatePayload(GraceModel):
 class ErrorPayload(GraceModel):
     """``error`` (A.4): global error not tied to a specific tool call."""
 
-    MESSAGE_TYPE = "error"
+    MESSAGE_TYPE: ClassVar[str] = "error"
 
     error_code: ErrorCode
     message: str
@@ -474,7 +474,7 @@ class LocationResolvedPayload(GraceModel):
     auto-snaps the map to ``bbox``.
     """
 
-    MESSAGE_TYPE = "location-resolved"
+    MESSAGE_TYPE: ClassVar[str] = "location-resolved"
 
     resolved_id: ULIDStr
     label: str
@@ -507,7 +507,7 @@ class SuggestedView(GraceModel):
 class SpatialInputRequestPayload(GraceModel):
     """``spatial-input-request`` (A.4): agent needs the user to pick a geometry."""
 
-    MESSAGE_TYPE = "spatial-input-request"
+    MESSAGE_TYPE: ClassVar[str] = "spatial-input-request"
 
     request_id: ULIDStr
     mode: Literal["point", "bbox"]  # polygon deferred
@@ -533,7 +533,7 @@ class DisambiguationCandidate(GraceModel):
 class DisambiguationRequestPayload(GraceModel):
     """``disambiguation-request`` (A.4): pick one of several candidates."""
 
-    MESSAGE_TYPE = "disambiguation-request"
+    MESSAGE_TYPE: ClassVar[str] = "disambiguation-request"
 
     request_id: ULIDStr
     title: str
@@ -557,7 +557,7 @@ class ClarificationOption(GraceModel):
 class ClarificationRequestPayload(GraceModel):
     """``clarification-request`` (A.4): choose between different response paths."""
 
-    MESSAGE_TYPE = "clarification-request"
+    MESSAGE_TYPE: ClassVar[str] = "clarification-request"
 
     request_id: ULIDStr
     question: str

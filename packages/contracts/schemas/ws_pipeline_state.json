@@ -1,0 +1,101 @@
+{
+  "$defs": {
+    "PipelineStep": {
+      "additionalProperties": false,
+      "description": "One step in the pipeline snapshot.",
+      "properties": {
+        "completed_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Completed At"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "progress_percent": {
+          "anyOf": [
+            {
+              "maximum": 100,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Progress Percent"
+        },
+        "started_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Started At"
+        },
+        "state": {
+          "enum": [
+            "pending",
+            "running",
+            "complete",
+            "failed",
+            "cancelled"
+          ],
+          "title": "State",
+          "type": "string"
+        },
+        "step_id": {
+          "title": "Step Id",
+          "type": "string"
+        },
+        "tool_name": {
+          "title": "Tool Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "step_id",
+        "name",
+        "tool_name",
+        "state"
+      ],
+      "title": "PipelineStep",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "``pipeline-state`` (A.4): full snapshot of the current pipeline.\n\nThe full snapshot replaces the client's pipeline view on each message;\ndeltas are not used.",
+  "properties": {
+    "pipeline_id": {
+      "title": "Pipeline Id",
+      "type": "string"
+    },
+    "steps": {
+      "items": {
+        "$ref": "#/$defs/PipelineStep"
+      },
+      "title": "Steps",
+      "type": "array"
+    }
+  },
+  "required": [
+    "pipeline_id"
+  ],
+  "title": "PipelineStatePayload",
+  "type": "object"
+}

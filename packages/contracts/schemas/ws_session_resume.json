@@ -1,0 +1,7 @@
+{
+  "additionalProperties": false,
+  "description": "``session-resume`` (A.3): resume an existing session (id in envelope).",
+  "properties": {},
+  "title": "SessionResumePayload",
+  "type": "object"
+}

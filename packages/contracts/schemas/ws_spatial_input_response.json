@@ -1,0 +1,51 @@
+{
+  "additionalProperties": false,
+  "description": "``spatial-input-response`` (A.4b): user picked a geometry, or cancelled.\n\nFor a geometry response: ``geometry_type`` + ``coordinates`` are set\n(``[lon, lat]`` for point, ``[minLon, minLat, maxLon, maxLat]`` for bbox).\nFor a cancellation: ``cancelled=True`` and the geometry fields stay None.",
+  "properties": {
+    "cancelled": {
+      "default": false,
+      "title": "Cancelled",
+      "type": "boolean"
+    },
+    "coordinates": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "number"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Coordinates"
+    },
+    "geometry_type": {
+      "anyOf": [
+        {
+          "enum": [
+            "point",
+            "bbox"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Geometry Type"
+    },
+    "request_id": {
+      "title": "Request Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "request_id"
+  ],
+  "title": "SpatialInputResponsePayload",
+  "type": "object"
+}
