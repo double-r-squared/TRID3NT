@@ -16,11 +16,15 @@
 1. **Harness** in `tests/`: pytest wiring (`make test`), agent-service subprocess fixture (real WS transport; Gemini may be stubbed at the adapter seam for determinism — the ONLY permitted mock boundary — with one live-Gemini marker test).
 2. **WS protocol conformance tests**: envelope discrimination, `user-message` → chunk stream → `done`, `cancel` mid-stream → cancelled `pipeline-state` , malformed frame → A.6 typed `error` and the server survives (negative control), `session-resume` → `session-state`.
 3. **Contract suite integration**: `packages/contracts/tests` collected in `make test`.
-4. **MCP smoke**: one round-trip against Atlas M0 (or qualified if network-gated in CI context).
+4. **MCP smoke**: one round-trip against Atlas Flex (cluster `grace-2-dev`) (or qualified if network-gated in CI context).
 5. **Sprint exit-criteria verification**: re-run every criterion in `reports/sprints/sprint-03.md`, per-criterion pass/fail with command output. Your report is the sprint's acceptance record.
 
 ### File ownership (exclusive)
 `tests/**`, pytest config, Makefile `test` target adjustments.
+
+### Environment
+
+Linux (Debian 13) is both dev and CI substrate (PROJECT_STATE decision 2026-06-05). Use `python3 -m venv` for the pytest harness (no conda). The MCP smoke runs against the existing Atlas Flex cluster `grace-2-dev`; if Atlas is network-gated in any future CI context, that smoke runs `qualified` with the reason logged.
 
 ### Cross-cutting principles in force
 *Live E2E validation required*, *diagnose before fix* (failures name the layer: web vs agent vs contracts vs Atlas vs GCP env), *surface uncertainty*.

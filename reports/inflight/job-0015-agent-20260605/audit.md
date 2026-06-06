@@ -23,13 +23,17 @@ This is M1 — no workflows, no engine tools, no confirmation UI flow (the hook 
 ### File ownership (exclusive)
 `services/agent/**`, `scripts/ws_client.py`, Makefile `run-agent` target. NOT `packages/contracts/` (pushback instead), `web/`, `infra/`.
 
+### Environment
+
+Linux (Debian 13) is both dev and prod substrate (PROJECT_STATE decision 2026-06-05). Cloud Run runs Linux containers. No macOS branching. Use `python3 -m venv` not conda. Gemini 3 via Vertex AI on the GCP project from job-0014; ADC credentials at `~/.config/gcloud/application_default_credentials.json`.
+
 ### Cross-cutting principles in force
 *Live E2E validation required*, *diagnose before fix*, *surface uncertainty*, *no legacy support pre-MVP* (no LLMProvider abstraction, no Bedrock/Strands shapes — Gemini-only per FR-AS-1).
 
 ### Acceptance criteria (reviewer re-runs)
 - `make run-agent` then `python scripts/ws_client.py "What is SFINCS?"` → verbatim transcript: streamed `agent-message-chunk` frames from real Gemini 3 (model id in logs), terminal `done: true`, frames validating against the contracts package
 - `cancel` mid-stream: generation stops, cancelled `pipeline-state` arrives — transcript
-- MCP round-trip transcript (real call against the Atlas M0)
+- MCP round-trip transcript (real call against the Atlas Flex (cluster `grace-2-dev` at `mongodb+srv://grace-2-dev.tszeckl.mongodb.net`))
 - First-token latency measured vs NFR-P-1 (informational)
 - OQ-1 surfaced with recommendation
 

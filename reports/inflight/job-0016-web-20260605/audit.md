@@ -21,6 +21,10 @@
 ### File ownership (exclusive)
 `web/**`, Makefile `run-web` target. NOT `packages/contracts/`, `services/`.
 
+### Environment
+
+Linux (Debian 13) is the dev substrate; the browser the client runs in is the prod substrate (cross-browser). Node v20.20 + npm 10.8 are already installed system-wide; use them (NOT conda or asdf). The `make run-web` target serves locally via Vite. No macOS-specific dev paths.
+
 ### Cross-cutting principles in force
 *Live E2E validation required*, *surface uncertainty*, *no legacy support pre-MVP* (no Qt anything; no 3D scaffolding per Decision I).
 
@@ -28,7 +32,7 @@
 - `make run-agent` + `make run-web`: browser shows CONUS OSM map; typing a message streams a real Gemini reply token-by-token — **screenshot + WS transcript** in report
 - Kill the agent: status flips to disconnected, no crash; restart: reconnects and a fresh message works — transcript
 - No `gs://` fetch, no computed numbers anywhere in client code (reviewer inspects)
-- Browser check on at least Chrome + Safari (NFR-PO-1 spot check; full matrix is later)
+- Browser check on at least Chromium + Firefox on Linux (NFR-PO-1 spot check on this dev substrate; Safari spot-check deferred until a macOS environment is available — note this in your Open Questions)
 
 ## Assessment
 

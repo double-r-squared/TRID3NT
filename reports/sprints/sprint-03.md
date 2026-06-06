@@ -13,8 +13,8 @@ At the end of this sprint: the repo is a git repository (MIT license, v0.3 layou
 
 | Job ID | Specialist | Task | Depends on | Status |
 |--------|-----------|------|------------|--------|
-| job-0012-infra-20260605 | infra | Repo realignment, git init + MIT license, v0.3 layout | — | created |
-| job-0013-schema-20260605 | schema | Contracts v0 from Appendices A–D (pydantic v2) | — | created |
+| job-0012-infra-20260605 | infra | Repo realignment, git init + MIT license, v0.3 layout | — | approved |
+| job-0013-schema-20260605 | schema | Contracts v0 from Appendices A–D (pydantic v2) | — | approved |
 | job-0014-infra-20260605 | infra | Toolchain + GCP project + Atlas M0 (Terraform) | 0012; user auth checkpoints | created |
 | job-0015-agent-20260605 | agent | ADK hello-world Gemini + Appendix-A WS core + MCP | 0013, 0014 | created |
 | job-0016-web-20260605 | web | Web stub: CONUS MapLibre map + chat round-trip | 0013, 0015 | created |

@@ -36,3 +36,6 @@
 2026-06-05 | job-0017-testing-20260605 | OPENED: M1 acceptance — protocol/contract tests + exit-criteria record |
 2026-06-05 | sprint-03 | EXECUTION HALTED by user during Stage A; 0012 done-unaudited, 0013 mid-work; resume via wf_63a211db-7a1 |
 2026-06-05 | project | MIGRATED to GitHub: https://github.com/double-r-squared/GRACE-2 (main); session continuity via CLAUDE.md + PROJECT_STATE.md |
+2026-06-05 | project | RESUMED on new dev machine (Debian 13, Linux maturin); gcloud/atlas/tofu installed + authed; Atlas Flex cluster grace-2-dev provisioned (us-central1) — supersedes prior M0 plan |
+2026-06-05 | job-0012-infra-20260605 | repo realignment — v0.2 delete, v0.3 layout, git init + MIT license | approved [revisions: 0] |
+2026-06-05 | job-0013-schema-20260605 | contracts v0 from SRS Appendices A-D (pydantic v2) — 91/91 tests, 35 schemas, 5 SRS amendments proposed (A1-A5), OQ-7 recommended 768 | approved [revisions: 0] |
