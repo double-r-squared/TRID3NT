@@ -1,0 +1,12 @@
+{
+  "pipeline_id": "01HXX0000PIPELINEPENDING01",
+  "steps": [
+    {
+      "step_id": "01HXX0000STEP00000000PENDA",
+      "name": "Resolve location",
+      "tool_name": "resolve_location",
+      "state": "pending",
+      "progress_percent": 0
+    }
+  ]
+}

@@ -1,0 +1,193 @@
+{
+  "environment": {
+    "client_arch": "x86_64",
+    "client_os": "Linux-6.12.74+deb13+1-amd64-x86_64-with-glibc2.41",
+    "client_python": "3.13.5",
+    "client_region_geography": "unknown",
+    "deployed_host": "grace-2-qgis-server-425352658356.us-central1.run.app",
+    "deployed_region": "us-central1",
+    "qgis_server_image_pin": "@sha256:57d0f43 (post job-0029 CORS fix)"
+  },
+  "methodology_limit": "single-machine synchronous HTTPS measurement; client-region geography unknown; NFR-P-3 budget assumes US-West-Coast client per testing.md NFR discipline (PROJECT_STATE.md Environment facts).",
+  "nfr": "NFR-P-3 (OQ-23E soft target: QGIS Server tile latency p50)",
+  "per_sample_ms": [
+    {
+      "bbox": "-14000000,2500000,-7000000,6000000",
+      "bytes": 19978,
+      "cold_warm": "cold",
+      "index": 0,
+      "ms": 240.53270276635885,
+      "status": 200
+    },
+    {
+      "bbox": "-13500000,2700000,-7500000,5800000",
+      "bytes": 18359,
+      "cold_warm": "warm",
+      "index": 1,
+      "ms": 324.46389831602573,
+      "status": 200
+    },
+    {
+      "bbox": "-13000000,2900000,-8000000,5600000",
+      "bytes": 38733,
+      "cold_warm": "warm",
+      "index": 2,
+      "ms": 336.29017788916826,
+      "status": 200
+    },
+    {
+      "bbox": "-12500000,3100000,-8500000,5400000",
+      "bytes": 32750,
+      "cold_warm": "warm",
+      "index": 3,
+      "ms": 301.9812679849565,
+      "status": 200
+    },
+    {
+      "bbox": "-12000000,3300000,-9000000,5200000",
+      "bytes": 28460,
+      "cold_warm": "warm",
+      "index": 4,
+      "ms": 257.5875879265368,
+      "status": 200
+    },
+    {
+      "bbox": "-11000000,3500000,-9500000,4700000",
+      "bytes": 72958,
+      "cold_warm": "warm",
+      "index": 5,
+      "ms": 382.3779160156846,
+      "status": 200
+    },
+    {
+      "bbox": "-10800000,3600000,-9400000,4600000",
+      "bytes": 66759,
+      "cold_warm": "warm",
+      "index": 6,
+      "ms": 328.56542710214853,
+      "status": 200
+    },
+    {
+      "bbox": "-10600000,3700000,-9300000,4500000",
+      "bytes": 62366,
+      "cold_warm": "warm",
+      "index": 7,
+      "ms": 252.29555321857333,
+      "status": 200
+    },
+    {
+      "bbox": "-10400000,3800000,-9200000,4400000",
+      "bytes": 97944,
+      "cold_warm": "warm",
+      "index": 8,
+      "ms": 329.66297678649426,
+      "status": 200
+    },
+    {
+      "bbox": "-10200000,3900000,-9100000,4300000",
+      "bytes": 92468,
+      "cold_warm": "warm",
+      "index": 9,
+      "ms": 362.0233521796763,
+      "status": 200
+    },
+    {
+      "bbox": "-10100000,3950000,-9050000,4250000",
+      "bytes": 88014,
+      "cold_warm": "warm",
+      "index": 10,
+      "ms": 318.8872719183564,
+      "status": 200
+    },
+    {
+      "bbox": "-10000000,4000000,-9000000,4200000",
+      "bytes": 79525,
+      "cold_warm": "warm",
+      "index": 11,
+      "ms": 257.0512811653316,
+      "status": 200
+    },
+    {
+      "bbox": "-9900000,4050000,-8950000,4150000",
+      "bytes": 59801,
+      "cold_warm": "warm",
+      "index": 12,
+      "ms": 293.7574703246355,
+      "status": 200
+    },
+    {
+      "bbox": "-9800000,4100000,-8900000,4150000",
+      "bytes": 51110,
+      "cold_warm": "warm",
+      "index": 13,
+      "ms": 374.6632947586477,
+      "status": 200
+    },
+    {
+      "bbox": "-9700000,4150000,-8850000,4200000",
+      "bytes": 55536,
+      "cold_warm": "warm",
+      "index": 14,
+      "ms": 323.407890740782,
+      "status": 200
+    },
+    {
+      "bbox": "-13200000,3000000,-12000000,4000000",
+      "bytes": 53806,
+      "cold_warm": "warm",
+      "index": 15,
+      "ms": 300.31014373525977,
+      "status": 200
+    },
+    {
+      "bbox": "-8800000,3000000,-7800000,4000000",
+      "bytes": 4311,
+      "cold_warm": "warm",
+      "index": 16,
+      "ms": 242.8425271064043,
+      "status": 200
+    },
+    {
+      "bbox": "-13500000,5500000,-12300000,6500000",
+      "bytes": 60971,
+      "cold_warm": "warm",
+      "index": 17,
+      "ms": 334.3734652735293,
+      "status": 200
+    },
+    {
+      "bbox": "-9000000,2500000,-7800000,3500000",
+      "bytes": 30788,
+      "cold_warm": "warm",
+      "index": 18,
+      "ms": 203.72233679518104,
+      "status": 200
+    },
+    {
+      "bbox": "-9590000,4700000,-9560000,4730000",
+      "bytes": 42309,
+      "cold_warm": "warm",
+      "index": 19,
+      "ms": 331.9150321185589,
+      "status": 200
+    }
+  ],
+  "samples": {
+    "errors": [],
+    "first_call_cold": true,
+    "n_errors": 0,
+    "n_successful_png_200": 20,
+    "n_total": 20
+  },
+  "soft_target_ms_p50": 2000.0,
+  "stats_ms": {
+    "max": 382.3779160156846,
+    "mean": 304.8355787061155,
+    "min": 203.72233679518104,
+    "p50": 321.1475813295692,
+    "p95": 375.0490258214995,
+    "p99": 380.9121379768476
+  },
+  "status": "qualified",
+  "test": "tests/m3/test_wms_tile_latency.py::test_wms_tile_latency_nfr_p3"
+}

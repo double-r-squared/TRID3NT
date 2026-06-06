@@ -1,0 +1,21 @@
+{
+  "pipeline_id": "01HXX0000PIPELINEFAILED001",
+  "steps": [
+    {
+      "step_id": "01HXX0000STEP00000000FAILA",
+      "name": "Fetch DEM",
+      "tool_name": "fetch_dem",
+      "state": "complete",
+      "progress_percent": 100
+    },
+    {
+      "step_id": "01HXX0000STEP00000000FAILB",
+      "name": "Run SFINCS",
+      "tool_name": "run_sfincs",
+      "state": "failed",
+      "progress_percent": 27,
+      "error_code": "SOLVER_FAILED",
+      "error_message": "Boundary forcing missing for the bbox time window."
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "pipeline_id": "01HXX0000PIPELINECOMPLETE0",
+  "steps": [
+    {
+      "step_id": "01HXX0000STEP00000000DONEA",
+      "name": "Fetch DEM",
+      "tool_name": "fetch_dem",
+      "state": "complete",
+      "progress_percent": 100,
+      "started_at": "2026-06-06T20:00:00Z",
+      "completed_at": "2026-06-06T20:00:18Z"
+    },
+    {
+      "step_id": "01HXX0000STEP00000000DONEB",
+      "name": "Run SFINCS",
+      "tool_name": "run_sfincs",
+      "state": "complete",
+      "progress_percent": 100,
+      "started_at": "2026-06-06T20:00:18Z",
+      "completed_at": "2026-06-06T20:03:42Z"
+    }
+  ]
+}

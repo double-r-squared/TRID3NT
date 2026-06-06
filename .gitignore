@@ -247,12 +247,16 @@ sfincs_*.dat
 *.sgsg
 # *.tif.aux.xml  (intentionally NOT ignored — sidecars may be useful evidence)
 
-# --- Playwright dynamic captures (job-0027) ---
+# --- Playwright dynamic captures (job-0027 + job-0028) ---
 # `make ui-tour` writes per-run screenshots under tests/m3/artifacts/screenshots-*/
 # (and the default ephemeral target /tmp/grace2-shots/, already covered by `tmp/`).
+# `make test-m3` writes per-test PNGs into tests/m3/artifacts/ (the m3_artifacts_dir
+# fixture in tests/m3/conftest.py); those are EPHEMERAL — the canonical evidence
+# trail is committed under reports/inflight/<job>/evidence/.
 # The canonical reference captures (tests/m3/artifacts/chromium-initial.png,
 # tests/m3/artifacts/firefox-initial.png) are EXPLICITLY kept tracked — they are
 # the M3 visual baseline.
 tests/m3/artifacts/screenshots-*/
+tests/m3/artifacts/*.png
 !tests/m3/artifacts/chromium-initial.png
 !tests/m3/artifacts/firefox-initial.png

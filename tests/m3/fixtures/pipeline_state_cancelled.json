@@ -1,0 +1,19 @@
+{
+  "pipeline_id": "01HXX0000PIPELINECANCELLED",
+  "steps": [
+    {
+      "step_id": "01HXX0000STEP0000000CANCA",
+      "name": "Fetch DEM",
+      "tool_name": "fetch_dem",
+      "state": "complete",
+      "progress_percent": 100
+    },
+    {
+      "step_id": "01HXX0000STEP0000000CANCB",
+      "name": "Run SFINCS",
+      "tool_name": "run_sfincs",
+      "state": "cancelled",
+      "progress_percent": 15
+    }
+  ]
+}

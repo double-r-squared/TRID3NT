@@ -1,0 +1,22 @@
+{
+  "pipeline_id": "01HXX0000PIPELINERUNNING01",
+  "steps": [
+    {
+      "step_id": "01HXX0000STEP00000000RUNA",
+      "name": "Fetch DEM",
+      "tool_name": "fetch_dem",
+      "state": "complete",
+      "progress_percent": 100,
+      "started_at": "2026-06-06T20:00:00Z",
+      "completed_at": "2026-06-06T20:00:18Z"
+    },
+    {
+      "step_id": "01HXX0000STEP00000000RUNB",
+      "name": "Build SFINCS mesh",
+      "tool_name": "build_mesh",
+      "state": "running",
+      "progress_percent": 42,
+      "started_at": "2026-06-06T20:00:18Z"
+    }
+  ]
+}
