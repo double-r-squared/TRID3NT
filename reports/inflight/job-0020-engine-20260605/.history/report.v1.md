@@ -8,7 +8,7 @@
 
 ## Summary
 
-`services/workers/pyqgis/` now ships four engine-owned modules — `__init__.py`, `types.py`, `worker.py`, `__main__.py` — implementing the canonical FR-QS-6 PyQGIS worker round-trip. The worker accepts `/vsigs/<bucket>/<key>.qgs`, `gs://<bucket>/<key>.qgs`, or any absolute filesystem path (including the new job-0024 `/mnt/qgs/<file>.qgs` Cloud Run gen2 GCS volume mount contract); for `gs://` / `/vsigs/` it transparently downloads via the `google-cloud-storage` SDK (diagnostic finding: `QgsProject.read()` does **not** accept `/vsigs/` paths — Qt file I/O, not GDAL VSI), then appends an in-memory polygon layer (1 deg × 1 deg around (lon=-100, lat=35)), applies `styles/basemap.qml` where the path resolves, writes the mutated `.qgs` back, and publishes a typed `WorkerResult` JSON envelope to `grace-2-worker-events`. WMS URL contract alignment: under job-0024 the QGIS Server container reads `.qgs` via `MAP=/mnt/qgs/<file>.qgs` (Cloud Run gen2 GCS volume mount) — the worker's local-path branch handles that form natively (no `/vsigs/` translation needed). Live-cloud verifications green: local round-trip, `/vsigs/` round-trip, `/mnt/qgs/...`-shape round-trip (job-0024 contract), live Pub/Sub publish (closeout msg_id `19958824608799377` + earlier `19957344354598949` pulled from a temp subscription — payload base64-decoded to the expected JSON shape).
+`services/workers/pyqgis/` now ships four engine-owned modules — `__init__.py`, `types.py`, `worker.py`, `__main__.py` — implementing the canonical FR-QS-6 PyQGIS worker round-trip. The worker accepts `/vsigs/<bucket>/<key>.qgs`, `gs://<bucket>/<key>.qgs`, or a local path; downloads via the `google-cloud-storage` SDK (a diagnostic finding: `QgsProject.read()` does **not** accept `/vsigs/` paths — Qt file I/O, not GDAL VSI — so we transparently fetch-to-tmp); appends an in-memory polygon layer (1 deg × 1 deg around (lon=-100, lat=35)); applies `styles/basemap.qml` where the path resolves; writes the mutated `.qgs` back to GCS; publishes a typed `WorkerResult` JSON envelope to `grace-2-worker-events`. All three live-cloud steps verified end-to-end: live `/vsigs/` read against `gs://grace-2-hazard-prod-qgs/grace2-sample.qgs`, live write-back (object Update Time advanced + new layer manifest), live Pub/Sub publish (`messageId=19957344354598949` pulled out of a temp subscription, payload base64-decoded to the expected JSON shape).
 
 ## Changes Made
 
@@ -58,10 +58,6 @@
 - **Decision: `google-cloud-storage.Client(project=...)` resolved from `GOOGLE_CLOUD_PROJECT` env var (falls back to `GCP_PROJECT`, then `DEFAULT_GCP_PROJECT="grace-2-hazard-prod"`).**
   - Rationale: ADC does not carry a project; the storage client requires one for quota attribution. The Cloud Run Job (job-0021) will inject `GCP_PROJECT` at deploy time; local dev sets `GOOGLE_CLOUD_PROJECT` (or relies on the constant default since this is single-project). The Pub/Sub client picks up the project the same way (resolved at `worker_round_trip` call time, passed to `publisher.topic_path`).
 
-- **Decision: align with the job-0024 `/mnt/qgs/<file>.qgs` WMS URL contract; keep `/vsigs/` accepted but unnecessary for `.qgs` reads.**
-  - Rationale: job-0024 (approved 2026-06-05, audit § Dependency Check) pivoted QGIS Server to a Cloud Run gen2 native GCS volume mount at `/mnt/qgs/` after path (c) GDAL VSI env vars failed cleanly (`QgsProject.read` uses Qt `QFile`, not GDAL VSI — same root cause we found in Decision 2 above). The worker's `_parse_qgs_uri` (`worker.py:103-137`) accepts `/vsigs/`, `gs://`, and any absolute filesystem path; an `/mnt/qgs/<file>.qgs` argument falls through to the local-path branch and is passed straight to `QgsProject.read()` — no `/vsigs/` translation, no GCS download, the volume mount has already done the work. Verified live in closeout (see Verification "`/mnt/qgs/...` shape round-trip"). Under the new contract the production Cloud Run Job worker container in job-0021 will pass `/mnt/qgs/<file>.qgs` URIs (if mounting the same bucket the way QGIS Server does) or `gs://...` URIs (using the `google-cloud-storage` SDK path). The `/vsigs/` branch in the URI parser is now technically dead code under the new contract, but it is harmless dead code — removing it is not necessary for correctness, and the in-`.qgs` **inner-layer** `/vsigs/` source references (raster basemap, future COG/FlatGeobuf layers) remain valid via the GDAL VSI env vars baked into the QGIS Server image (job-0024 retained them for exactly this reason).
-  - Alternatives considered: (a) strip the `/vsigs/` branch from `_parse_qgs_uri` to match the new contract literally — but the no-legacy-pre-MVP principle is about not maintaining *parallel* shapes (e.g. supporting both an old envelope shape and a new one), not about pruning every code path that the new contract no longer exercises; the branch costs nothing and removing it is a follow-up tidy, not a correctness fix. (b) Add an `/mnt/qgs/`-specific branch — unnecessary since the local-path branch already handles it.
-
 ## Invariants Touched
 
 - **Invariant 1 (Determinism boundary):** preserves — `WorkerResult` is a typed shape; every consumer field (`layers_before`, `layers_after`, `notify_message_id`, `qgs_version`, `ts`) is populated by the worker, never narrated from prose.
@@ -95,10 +91,11 @@
   - Tentative: skip in M2. First MongoDB write lands when the first real run document appears (M5 SFINCS).
   - Routing: schema (defines the M2-stub document if needed), engine (implements); deferred to M3+.
 
-- **OQ-20D (RESOLVED by job-0024): kickoff scope §3.b text saying "`QgsProject.read(qgs_uri)` where qgs_uri can be `/vsigs/<bucket>/<path>.qgs`" — this is not literally achievable.**
+- **OQ-20D (TENTATIVE: doc tweak): kickoff scope §3.b text saying "`QgsProject.read(qgs_uri)` where qgs_uri can be `/vsigs/<bucket>/<path>.qgs`" — this is not literally achievable.**
   - SRS reference: FR-QS-6 (the canonical six-step round-trip), Decision C.
-  - Resolution: job-0024 hit the same Qt-vs-GDAL-VSI wall on the QGIS Server side and pivoted to a Cloud Run gen2 native GCS volume mount at `/mnt/qgs/`. The WMS URL contract is now `MAP=/mnt/qgs/<file>.qgs`. The worker URI parser already handles that shape via the local-path branch (no `/vsigs/` translation needed). For the production worker container (job-0021), the orchestrator decides whether to (a) re-use the same gen2 volume mount (cleanest — both QGIS Server and the worker mount the same bucket at the same path), or (b) keep the worker on the `gs://`-via-`google-cloud-storage`-SDK path (current code). Either works without code change. **Inner-layer** `/vsigs/` source URIs inside `.qgs` files still need GDAL VSI env vars; job-0024 kept them (`CPL_MACHINE_IS_GCE=YES`, `CPL_GS_USE_INSTANCE_PROFILE=YES`) in the QGIS Server image for exactly that reason — the worker container in job-0021 will need the same env vars if any inner layer references GCS via GDAL.
-  - Routing: closed by job-0024 audit + this closeout. Forward action lands in job-0021 kickoff (worker container).
+  - Question: should the kickoff text (and the job-0021 container kickoff that inherits it) be updated to say "fetched via google-cloud-storage SDK" instead of "via /vsigs/"? `QgsProject.read()` uses Qt file I/O, not GDAL VSI — raw VSI open works (verified) but project-read does not.
+  - Tentative: route a surgical doc tweak into job-0021 (so the worker-container kickoff reflects the actual fetch path); the engine-owned worker code already implements the right behaviour. The `/vsigs/` env vars (`CPL_MACHINE_IS_GCE=YES`, `CPL_GS_USE_INSTANCE_PROFILE=YES`) are still needed inside the worker container for **inner-layer source URIs** in the `.qgs` (raster/vector data providers that do route through GDAL).
+  - Routing: orchestrator (kickoff text), infra (job-0021 container env vars).
 
 - **OQ-20E (TENTATIVE: success-or-skip): `styles/basemap.qml` preset is a raster style applied to a polygon vector layer — `loadNamedStyle` will not bind.**
   - SRS reference: FR-QS-5 (seven QML presets).
@@ -109,27 +106,18 @@
 - **OQ-20F (DECIDED — restored): the live `/vsigs/` round-trip mutates `gs://grace-2-hazard-prod-qgs/grace2-sample.qgs`.** After every verification I re-uploaded the canonical from `services/workers/pyqgis/sample_project/grace2-sample.qgs` to restore the pre-mutation state. Final GCS state verified: MD5 `bt22r3YuQsjcDLED+stP8A==`, Content-Length 28308 — matches the canonical sibling on disk.
   - Routing: n/a (handled inline).
 
-- **OQ-20G (TENTATIVE: document the null in published envelope): `WorkerResult.notify_message_id` is always `null` *inside* the published Pub/Sub envelope** (chicken-and-egg — the envelope is constructed before `publish().result()` returns the message id). The field is only populated on the in-process `WorkerResult` returned to the in-process caller.
-  - SRS reference: FR-QS-6 step 5 (notify-completion envelope shape).
-  - Question: should the worker split the shape into two — `WorkerCompletionEnvelope` (published payload, omits `notify_message_id`) vs `WorkerResult` (in-process return, keeps it)?
-  - Tentative: keep the single shape with documented null behaviour (now in `types.py:91-104` docstring); subscribers correlate on the outer Pub/Sub `message.messageId` (matches GCP idiom). Shape-split is a M3+ schema concern when the agent consumer arrives.
-  - Routing: schema (M3+), engine (consultant); not blocking.
-
-- **OQ-20H (RESOLVED by job-0024): WMS URL contract is `MAP=/mnt/qgs/<file>.qgs` (Cloud Run gen2 GCS volume mount), not `MAP=/vsigs/...`.** The job-0024 audit (Dependency Check § "job-0020") explicitly notes this contract change. The worker URI parser already accepts the `/mnt/qgs/...` shape via the local-path branch (verified in closeout) — no surgical change needed. SRS FR-QS-2 amendment proposal is in flight (orchestrator → user, medium priority).
-  - Routing: orchestrator (SRS amendment); engine (no code change required).
-
 ## Dependencies and Impacts
 
 - **Depends on:**
   - **job-0018-infra-20260605 (approved)** — GCS bucket `grace-2-hazard-prod-qgs`, Pub/Sub topic `grace-2-worker-events`, future worker SA roles (`roles/storage.objectAdmin` on the `-qgs` bucket + `roles/pubsub.publisher` on the topic — exercised here by my user ADC, will be the worker SA in production).
   - **job-0019-engine-20260605 (approved)** — canonical `gs://grace-2-hazard-prod-qgs/grace2-sample.qgs` with layer `basemap-osm-conus`; `styles/basemap.qml` preset stub.
   - **job-0022-infra-20260605 (approved)** — `grace2` conda env (QGIS 3.40.3-Bratislava, Python 3.12, `google-cloud-storage` 3.11.0, `google-cloud-pubsub` 2.38.0) — used for all transcripts below.
-  - **job-0024-infra-20260605 (approved)** — QGIS Server `/vsigs/` access fixed via Cloud Run gen2 native GCS volume mount at `/mnt/qgs/` (path (c) GDAL VSI env vars failed cleanly for the same Qt-vs-VSI reason this worker hit); QML preset baked at `/etc/qgis/styles/basemap.qml`; WMS URL contract is now `MAP=/mnt/qgs/<file>.qgs`. The worker handles this URI shape natively via its local-path branch — no code change required (verified in Closeout 2 transcript). Image digest `@sha256:a703476049…`, revision `00004-m82`.
   - **job-0013-schema-20260605 (complete)** — `grace2-contracts` v0.1.0 NOT consumed at M2 (no envelope/ResultLayer surface touched).
 
 - **Affects:**
-  - **job-0021-infra (PyQGIS worker container):** consumes this module as the container ENTRYPOINT. The Dockerfile should `ENV` set `GCP_PROJECT=grace-2-hazard-prod` (or `GOOGLE_CLOUD_PROJECT`) and the inner-layer `/vsigs/` env vars (`CPL_MACHINE_IS_GCE=YES`, `CPL_GS_USE_INSTANCE_PROFILE=YES`) so any raster/vector inside the `.qgs` that lives in GCS can be resolved by GDAL. Two `.qgs`-fetch options open: (a) mount `grace-2-hazard-prod-qgs` at `/mnt/qgs/` via Cloud Run gen2 GCS volume mount (same pattern as QGIS Server in job-0024) and pass `--qgs-uri /mnt/qgs/<file>.qgs` — symmetric, no SDK call, no temp file; (b) skip the mount and pass `--qgs-uri gs://grace-2-hazard-prod-qgs/<file>.qgs`, letting the worker download via the SDK — current code path. **Recommendation: option (a)** for symmetry with QGIS Server's mount; the local-path branch already handles it. The Cloud Run Job's SA needs `roles/storage.objectAdmin` on the `-qgs` bucket + `roles/pubsub.publisher` on the `grace-2-worker-events` topic regardless of fetch shape (writes still go through the SDK in mode-`local` since the gen2 mount in QGIS Server is `read_only=true`; the worker's mount, if used, would be `read_only=false`, or the worker writes via SDK independently — surface in job-0021 audit).
-  - **job-0023-testing (M2 acceptance):** re-runs the live round-trip transcripts. WMS URL pattern in tests is `MAP=/mnt/qgs/grace2-sample.qgs` (job-0024 contract). The testing job re-executes from a clean GCS state and checks GCS MD5 advance + Pub/Sub pull + post-mutation `GetCapabilities` two-layer manifest against the deployed QGIS Server revision `00004-m82`.
+  - **job-0021-infra (PyQGIS worker container):** consumes this module as the container ENTRYPOINT. The Dockerfile must `ENV` set `GCP_PROJECT=grace-2-hazard-prod` (or `GOOGLE_CLOUD_PROJECT`) and the inner-layer `/vsigs/` env vars (`CPL_MACHINE_IS_GCE=YES`, `CPL_GS_USE_INSTANCE_PROFILE=YES`) so any raster/vector inside the `.qgs` that lives in GCS can be resolved by GDAL. The project-file read path no longer needs `/vsigs/` env vars (uses `google-cloud-storage` SDK). The Cloud Run Job's SA needs `roles/storage.objectAdmin` on the `-qgs` bucket + `roles/pubsub.publisher` on the `grace-2-worker-events` topic. See OQ-20D for the kickoff doc tweak.
+  - **job-0023-testing (M2 acceptance):** re-runs the live `/vsigs/` round-trip transcript (it's already documented here verbatim — the testing job re-executes from a clean GCS state and checks GCS MD5 advance + Pub/Sub pull + post-mutation `GetCapabilities` two-layer manifest). Note: post-mutation `GetCapabilities` against the deployed QGIS Server still depends on job-0024-infra closing (the QGIS Server `/vsigs/` gap from job-0019 OQ-19A).
+  - **job-0024-infra (QGIS Server `/vsigs/` fix):** unaffected by this job — runs in parallel. job-0024 fixes QGIS Server's GDAL VSI auth (for the raster basemap inside the `.qgs`); job-0020 already proved QGIS-Bratislava raw VSI open works locally with ADC, which is a strong positive signal that the container env-vars-only path is sufficient (over gcsfuse).
 
 - **Diagnostic finding (Diagnose before fix principle):** named the failing layer precisely — `QgsProject.read()` does not accept `/vsigs/` paths; raw GDAL VSI open does. This is a PyQGIS / Qt layer constraint, not a GDAL or auth layer constraint. The worker handles it transparently.
 
@@ -407,123 +395,5 @@ gs://grace-2-hazard-prod-qgs/grace2-sample.qgs:
 
 **Post-condition cleanup:** verify subscription deleted (`gcloud pubsub subscriptions list --filter=name:job-0020-verify-sub` returns empty); canonical `.qgs` restored in GCS (MD5 + Content-Length match the in-repo source).
 
-**Note on QGIS Server `/vsigs/` integration (sprint-wide):** the worker's positive `gdal.VSIFOpenL('/vsigs/...')` result with `GOOGLE_APPLICATION_CREDENTIALS` is a strong signal that the **env-vars-only fix** for QGIS Server (job-0024 OQ-19A candidate (c)) is sufficient — gcsfuse is not required. Routed to job-0024. **Update (job-0024 closed approved 2026-06-05):** path (c) GDAL VSI env vars *failed* live in the QGIS Server container for the same reason it failed in this worker — QGIS Server's `.qgs` load uses Qt `QFile`, not GDAL VSI. job-0024 pivoted to Cloud Run gen2 native GCS volume mount at `/mnt/qgs/`. The WMS URL contract is now `MAP=/mnt/qgs/<file>.qgs`. This worker handles `/mnt/qgs/<file>.qgs` URIs via its local-path branch (see closeout verification below) — no code change required. Inner-layer `/vsigs/` references inside `.qgs` files remain valid via the GDAL VSI env vars baked into the QGIS Server image (job-0024 retained them).
-
-### Closeout re-verification (2026-06-05)
-
-Re-ran the three core round-trips in the `grace2` conda env after job-0024 landed, to confirm the worker remains aligned with the new contract:
-
-**Closeout 1 — local round-trip:**
-
-```
-$ source ~/miniforge3/etc/profile.d/conda.sh && conda activate grace2
-$ cp services/workers/pyqgis/sample_project/grace2-sample.qgs /tmp/grace2-closeout-test.qgs
-$ python -c "
-import sys, json
-sys.path.insert(0, '.')
-from services.workers.pyqgis.worker import worker_round_trip
-from services.workers.pyqgis.types import LayerSpec
-result = worker_round_trip(
-    qgs_uri='/tmp/grace2-closeout-test.qgs',
-    layer_to_add=LayerSpec(name='closeout-test-layer'),
-    publish=False,
-)
-print(json.dumps(result.to_dict(), indent=2))
-assert result.status == 'ok', f'status={result.status} error={result.error}'
-assert result.layers_after == ['basemap-osm-conus', 'closeout-test-layer']
-print('PASS: local closeout round-trip')
-"
-{
-  "qgs_uri": "/tmp/grace2-closeout-test.qgs",
-  "layers_before": ["basemap-osm-conus"],
-  "layers_after": ["basemap-osm-conus", "closeout-test-layer"],
-  "notify_message_id": null,
-  "status": "ok",
-  "error": null,
-  "qgs_version": "3.40.3-Bratislava",
-  "ts": "2026-06-06T06:37:57.916Z"
-}
-PASS: local closeout round-trip
-```
-
-**Closeout 2 — `/mnt/qgs/...`-shape round-trip (job-0024 contract):**
-
-```
-$ mkdir -p /tmp/mnt/qgs
-$ cp services/workers/pyqgis/sample_project/grace2-sample.qgs /tmp/mnt/qgs/grace2-sample.qgs
-$ python -c "
-import sys, json
-sys.path.insert(0, '.')
-from services.workers.pyqgis.worker import worker_round_trip
-from services.workers.pyqgis.types import LayerSpec
-result = worker_round_trip(
-    qgs_uri='/tmp/mnt/qgs/grace2-sample.qgs',
-    layer_to_add=LayerSpec(name='mnt-qgs-contract-test'),
-    publish=False,
-)
-print(json.dumps(result.to_dict(), indent=2))
-assert result.status == 'ok', f'status={result.status} error={result.error}'
-assert result.layers_after == ['basemap-osm-conus', 'mnt-qgs-contract-test']
-print('PASS: /mnt/qgs/ path (job-0024 contract)')
-"
-{
-  "qgs_uri": "/tmp/mnt/qgs/grace2-sample.qgs",
-  "layers_before": ["basemap-osm-conus"],
-  "layers_after": ["basemap-osm-conus", "mnt-qgs-contract-test"],
-  "notify_message_id": null,
-  "status": "ok",
-  "error": null,
-  "qgs_version": "3.40.3-Bratislava",
-  "ts": "2026-06-06T06:38:07.728Z"
-}
-PASS: /mnt/qgs/ path (job-0024 contract)
-```
-
-This confirms job-0024 alignment: the worker handles the new `/mnt/qgs/<file>.qgs` WMS URL contract natively via its local-path branch (`worker.py:103-137`). No code change needed.
-
-**Closeout 3 — live Pub/Sub publish smoke (no subscription created):**
-
-```
-$ export GOOGLE_APPLICATION_CREDENTIALS=$HOME/.config/gcloud/application_default_credentials.json
-$ export GOOGLE_CLOUD_PROJECT=grace-2-hazard-prod
-$ cp services/workers/pyqgis/sample_project/grace2-sample.qgs /tmp/pubsub-closeout.qgs
-$ python -c "
-import sys, json
-sys.path.insert(0, '.')
-from services.workers.pyqgis.worker import worker_round_trip
-from services.workers.pyqgis.types import LayerSpec
-r = worker_round_trip('/tmp/pubsub-closeout.qgs', LayerSpec(name='closeout-publish-smoke'), publish=True)
-print(json.dumps(r.to_dict(), indent=2))
-assert r.status == 'ok', f'status={r.status} error={r.error}'
-assert r.notify_message_id is not None
-print('PASS: Pub/Sub publish — message_id:', r.notify_message_id)
-"
-{
-  "qgs_uri": "/tmp/pubsub-closeout.qgs",
-  "layers_before": ["basemap-osm-conus"],
-  "layers_after": ["basemap-osm-conus", "closeout-publish-smoke"],
-  "notify_message_id": "19958824608799377",
-  "status": "ok",
-  "error": null,
-  "qgs_version": "3.40.3-Bratislava",
-  "ts": "2026-06-06T06:38:38.578Z"
-}
-PASS: Pub/Sub publish — message_id: 19958824608799377
-```
-
-Fresh Pub/Sub message_id `19958824608799377` published to `grace-2-worker-events` against the live production topic. (No new subscription created during closeout — auto-mode policy correctly denied that as a production-infra modification not authorized for the closeout step. The original verification round (above) already pulled an envelope out of a temp subscription — `messageId=19957344354598949` — and base64-decoded the payload to confirm shape. Topic + project + auth ADC unchanged since then; the closeout publish exercises the same code path.)
-
-### Diff-since-prior-commit (audit reference)
-
-```
-$ git diff c63507d --stat -- services/workers/pyqgis/
- services/workers/pyqgis/types.py  | 13 +++++++++++++
- services/workers/pyqgis/worker.py |  9 ++++++---
- 2 files changed, 19 insertions(+), 3 deletions(-)
-```
-
-61 lines of doc-only + 1 unused-import removal:
-
-* `types.py` — added a documentation paragraph in `WorkerResult.notify_message_id` explaining the published-envelope null (chicken-and-egg). No shape change. Surfaces as OQ-20G.
-* `worker.py` — (1) module docstring tightened (removed stale `python -m grace2_workers.pyqgis` form, clarified CLI lives in `__main__.py`); (2) removed unused `import sys`; (3) fixed a stale cross-ref in `worker_round_trip` docstring (`grace2_workers.pyqgis.types.LayerSpec` → `services.workers.pyqgis.types.LayerSpec`).
+**Note on QGIS Server `/vsigs/` integration (sprint-wide):** the worker's positive `gdal.VSIFOpenL('/vsigs/...')` result with `GOOGLE_APPLICATION_CREDENTIALS` is a strong signal that the **env-vars-only fix** for QGIS Server (job-0024 OQ-19A candidate (c)) is sufficient — gcsfuse is not required. Routed to job-0024.
 

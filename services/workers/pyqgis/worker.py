@@ -6,9 +6,12 @@ write it back to GCS, publish a typed completion envelope to the
 ``grace-2-worker-events`` Pub/Sub topic.
 
 This module is invoked by the Cloud Run Job built in job-0021 (sprint-04);
-the entrypoint container runs ``python -m grace2_workers.pyqgis`` or
-``python -m services.workers.pyqgis`` with ``--qgs-uri`` + ``--layer-to-add``
-flags (or the env-var fallbacks ``QGS_URI`` / ``LAYER_TO_ADD``).
+the entrypoint container runs ``python -m services.workers.pyqgis`` with
+``--qgs-uri`` + ``--layer-to-add`` flags (or the env-var fallbacks
+``QGS_URI`` / ``LAYER_TO_ADD``). The CLI entrypoint lives in
+``services/workers/pyqgis/__main__.py`` — invoking
+``python -m services.workers.pyqgis.worker`` directly is a no-op (this
+module exposes only the library API; argparse handling is in ``__main__``).
 
 Invariants honored
 ------------------
@@ -33,7 +36,6 @@ from __future__ import annotations
 
 import logging
 import os
-import sys
 import tempfile
 import time
 from contextlib import contextmanager
@@ -428,7 +430,7 @@ def worker_round_trip(
         inner-layer source URIs inside the ``.qgs`` (raster/vector
         providers do route through GDAL).
     layer_to_add:
-        Either a :class:`~grace2_workers.pyqgis.types.LayerSpec` or a plain
+        Either a :class:`~services.workers.pyqgis.types.LayerSpec` or a plain
         string (treated as ``LayerSpec(name=<string>)`` with the default 1° polygon at
         (lon=-100, lat=35) — see :class:`LayerSpec` defaults).
     publish:

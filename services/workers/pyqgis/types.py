@@ -91,6 +91,19 @@ class WorkerResult:
     notify_message_id:
         The Pub/Sub message id returned by ``publisher.publish().result()``.
         ``None`` when running in ``--no-publish`` mode (local unit test).
+
+        **Important — convention for the published envelope:** when this
+        ``WorkerResult`` is serialized into a Pub/Sub message ``data`` field,
+        ``notify_message_id`` is **always** ``null`` because the envelope is
+        constructed *before* ``publisher.publish().result()`` returns its
+        message id (chicken-and-egg). The field is populated only on the
+        in-process ``WorkerResult`` returned by ``worker_round_trip`` to the
+        in-process caller. Subscribers should rely on the outer Pub/Sub
+        ``message.messageId`` for correlation, not on this in-payload field.
+        Tracked as OQ-20G — a follow-up may split into two shapes (a
+        ``WorkerCompletionEnvelope`` for the published payload that omits
+        this field; ``WorkerResult`` for the in-process return that keeps
+        it). For M2 the in-payload null is documented behaviour, not a bug.
     status:
         ``"ok"`` for a successful round-trip. ``"error"`` when a wrapped
         external call exhausted its retry budget and the round-trip aborted
