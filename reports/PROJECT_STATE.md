@@ -1,7 +1,7 @@
 # Project State
 
-**Last updated:** 2026-06-05 (job-0012 audit closed; resumed on new dev machine)
-**Current sprint:** sprint-03 (active, Stage A finishing — 0012 approved, 0013 finish-and-verify pending user go)
+**Last updated:** 2026-06-05 (sprint-03 / M1 closed)
+**Current sprint:** sprint-03 (CLOSED 2026-06-05); next: sprint-04 (M2 Foundation: QGIS Server in cloud + PyQGIS worker prototype) — planning pending user go
 
 ## Resume note (read first)
 
@@ -122,7 +122,9 @@ Repo is a git repository on branch `main`, root-commit `6fd37e6`. Remote: `https
 2. **job-0014 ✅ closed approved 2026-06-05** — `grace-2-hazard-prod` GCP project (425352658356) + 12 APIs + GCS OpenTofu state + Atlas Flex import + Secret Manager SRV + MCP smoke pass + OQ-7 gate qualified-pass (lock 768) + OQ-2 = Cloud Run sidecar. Commit `5c0ab56`.
 3. **job-0015 ✅ closed approved 2026-06-05 [1 revision]** — `services/agent/` `grace2-agent` v0.1.0 runs Gemini 2.5-pro on Vertex AI (Gemini 3 returns 404 — single-constant flip path documented); Appendix-A WebSocket server via `grace2_contracts.ws`; MCP stdio sidecar with SRV from Secret Manager via ADC. Cancel-to-cancelled-pipeline in 502ms (vs 30s budget). OQ-1 = Cloud Run + WebSocket (`--use-http2 --session-affinity --min-instances=1`). NFR-P-1 (2s first-token) escalated — current 3-8s warm. Commits `0742c06`, `cc8b2a7`.
 4. **job-0016 ✅ closed approved 2026-06-05 [1 revision]** — `web/` ships React 18 + Vite 5 + TS strict + MapLibre 4.7 with CONUS OSM basemap (Decision I camera-lock) and chat box streaming `agent-message-chunk` deltas. `make run-web` runs Vite dev; cross-browser headless screenshots verified on Chromium 148 + Firefox-ESR 140 (Safari deferred). Contracts hand-mirror M1 subset (codegen tigger at ~20 payloads). Disconnect→reconnect in ~4s. Commits `778fe6c`, `06d9d1a`.
-5. **job-0017 (M1 acceptance)** — NEXT. Final sprint-03 job: pytest harness + WS protocol conformance + negative controls + MCP smoke + sprint exit-criteria record. Closes sprint-03 / M1.
+5. **job-0017 ✅ closed approved 2026-06-05 [1 revision]** — `tests/` pytest harness + Makefile test target; 91 contracts + 23 acceptance = 114 tests green in ~36s; live_gemini PASSED 4.42s; live MCP 17.66s; sprint-03 exit-criteria 5 pass + 1 qualified (EC4 Gemini-3 substitution). Commits `c24b9b1`, `9815dcb`.
+
+**Sprint-03 CLOSED 2026-06-05** — M1 (Foundation) achieved. See `reports/sprints/sprint-03.md` Retrospective. Next: sprint-04 (M2 — QGIS Server in cloud + PyQGIS worker prototype) planning pending user go on sprint-03 close package.
 3. **job-0015 (agent ADK skeleton) ∥ job-0016 (web stub)** — parallel after 0014.
 4. **job-0017 (acceptance suite)** — gates sprint-03 close.
 
