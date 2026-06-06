@@ -167,3 +167,86 @@ atlas projects apiKeys delete <KEY_ID> --projectId 6a234700a0e1295958d10cf9 --fo
 - MongoDB Atlas provisioning + the three Vector Search indexes + MCP hosting
 - Secret Manager (connection strings; never in code/repo/images)
 - WSS/TLS termination, web hosting / CDN, CI plumbing, budget labels — later
+
+## Local PyQGIS dev environment (`grace2` conda env)
+
+**Owner:** `infra` (env spec); `engine` (worker code that runs inside).
+**Job of origin:** job-0022-infra-20260605.
+**Scope:** LOCAL worker iteration ONLY. Production worker ships as the container
+built in job-0021 (`infra/worker/Dockerfile`). This env is the substrate for
+editing `services/workers/pyqgis/worker.py` and running it against `/vsigs/` +
+Pub/Sub on the Debian 13 dev box before pushing the image.
+
+### One-time install (Miniforge3)
+
+`mamba`/`conda` are not in apt or in this repo's tool set. Install Miniforge3
+(conda-forge-only, MIT/BSD posture — Mambaforge is deprecated; Miniforge3 is
+the maintained replacement):
+
+```bash
+curl -fsSL -o /tmp/Miniforge3-Linux-x86_64.sh \
+  "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh"
+bash /tmp/Miniforge3-Linux-x86_64.sh -b -p "$HOME/miniforge3"
+# Activate the shell hook (one-time; sources from $HOME/miniforge3/etc/profile.d/conda.sh):
+"$HOME/miniforge3/bin/conda" init bash   # or zsh
+# Re-open the shell (or `source ~/.bashrc`).
+```
+
+### Create the env
+
+```bash
+cd /path/to/GRACE-2
+mamba env create -f infra/conda/environment.yml
+# (or: conda env create -f infra/conda/environment.yml — mamba is faster)
+```
+
+To recreate clean-slate:
+
+```bash
+mamba env remove -n grace2 && mamba env create -f infra/conda/environment.yml
+```
+
+### Per-session activation
+
+```bash
+conda activate grace2
+python -c "import qgis.core; print(qgis.core.Qgis.QGIS_VERSION)"
+# → 3.40.3-Bratislava
+python -c "from google.cloud import storage, pubsub_v1; print('ok')"
+# → ok
+```
+
+### What's in the env
+
+- `python=3.12` (FR-AS-1)
+- `qgis=3.40.3` (Bratislava LTR — matches the QGIS Server image pin for M2)
+- `gdal` (transitive via QGIS, pinned explicit for /vsigs/ access in scripts)
+- `google-cloud-storage`, `google-cloud-pubsub` (worker GCS + Pub/Sub paths)
+- `pytest` (so local unit tests run inside the env without `pip install`)
+- `pip` (escape hatch for any pure-python helper not on conda-forge)
+
+### What's NOT in the env (dead-dep strip)
+
+Per AGENTS.md "Remove don't shim" + `agents/infra.md` "Repurpose the grace2
+conda env; strip dead dependencies", the env spec deliberately omits the
+following v0.2-era dependencies:
+
+- `boto3`, `aws-cli`, `s3fs` — SRS v0.3 Decision E is GCP-only; no AWS SDKs.
+- `strands` — former agent-provider abstraction; SRS v0.3 FR-AS-1 pins Google
+  ADK + Gemini 3 directly.
+- `ollama`, `llama-cpp-python` — local-LLM stack from v0.2; not in SRS v0.3.
+- `litellm`, `anthropic-bedrock` — provider-abstraction packages; Gemini via
+  Vertex AI directly.
+
+These are removed — not commented out, not behind a feature flag. A future PR
+that re-adds any of them is a regression.
+
+### Docker-is-authoritative-runtime decision
+
+This conda env is **not** the production worker runtime. The production
+worker ships as `infra/worker/Dockerfile` (job-0021), built `linux/amd64`-only
+and deployed as a Cloud Run Job. The conda env exists so an engine can edit
+`services/workers/pyqgis/worker.py` and iterate against `/vsigs/` + Pub/Sub
+without rebuilding the container every time. When the worker code lands, the
+acceptance gate is the Cloud Run Job execution log (job-0023), not a local
+`python` run. The conda env is convenience, not contract.

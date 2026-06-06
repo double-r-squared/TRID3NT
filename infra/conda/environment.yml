@@ -1,0 +1,36 @@
+# grace2 conda env — LOCAL PyQGIS worker dev only.
+#
+# Production worker ships as the container built in job-0021
+# (infra/worker/Dockerfile). This file is for the local-iteration loop on the
+# Debian 13 dev box: edit services/workers/pyqgis/worker.py, run it locally
+# against /vsigs/ and Pub/Sub before pushing the image.
+#
+# Substrate: Linux Debian 13 trixie, x86_64. Created via conda-forge only.
+# Recreate with: mamba env create -f infra/conda/environment.yml
+# (or `conda env create -f ...` if mamba unavailable).
+#
+# Intentionally absent (dead deps from earlier SRS revisions —
+# per AGENTS.md "Remove don't shim" + agents/infra.md "Repurpose the
+# grace2 conda env; strip dead dependencies"):
+#   - boto3, aws-cli, s3fs        (AWS SDKs; SRS v0.3 is GCP-only — Decision E)
+#   - strands                     (former agent-provider abstraction;
+#                                  SRS v0.3 pins ADK + Gemini 3 — FR-AS-1)
+#   - ollama, llama-cpp-python    (local-LLM stack from v0.2; not in SRS v0.3)
+#   - litellm, anthropic-bedrock  (provider-abstraction packages; SRS v0.3
+#                                  uses Gemini via Vertex AI directly)
+# These are removed — not commented out, not shimmed, not re-added behind a
+# flag. If any of them appear in a future env spec, that's a regression.
+
+name: grace2
+
+channels:
+  - conda-forge
+
+dependencies:
+  - python=3.12
+  - qgis=3.40.3
+  - gdal
+  - google-cloud-storage
+  - google-cloud-pubsub
+  - pytest
+  - pip
