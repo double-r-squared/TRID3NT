@@ -35,7 +35,8 @@ ATLAS_PROJECT_ID ?= 6a234700a0e1295958d10cf9
 .PHONY: help run-agent run-web test \
         tofu-init tofu-plan tofu-apply tofu-bootstrap \
         atlas-allowlist-me secret-srv-show \
-        qgis-server-build qgis-server-push qgis-server-deploy
+        qgis-server-build qgis-server-push qgis-server-deploy \
+        worker-build worker-push worker-deploy worker-run-job
 
 help:
 	@echo "GRACE-2 make targets (SRS v0.3):"
@@ -53,6 +54,11 @@ help:
 	@echo "  qgis-server-build   build the QGIS Server image via Cloud Build (linux/amd64)"
 	@echo "  qgis-server-push    alias of qgis-server-build (Cloud Build pushes to AR)"
 	@echo "  qgis-server-deploy  tofu apply the Cloud Run service + public-invoker binding"
+	@echo ""
+	@echo "  worker-build        build the PyQGIS worker image via Cloud Build (linux/amd64)"
+	@echo "  worker-push         alias of worker-build (Cloud Build pushes to AR)"
+	@echo "  worker-deploy       tofu apply the Cloud Run Job + SA + IAM bindings"
+	@echo "  worker-run-job      execute the PyQGIS worker Cloud Run Job (QGS_URI=... LAYER=...)"
 
 # Agent service (job-0015). Launches the Appendix-A WebSocket server. Uses the
 # repo-local virtualenv at .venv-agent/ (created with `virtualenv -p python3`
@@ -195,3 +201,58 @@ qgis-server-deploy:
 	tofu -chdir=infra apply -auto-approve \
 	  -target=google_cloud_run_v2_service.qgis_server \
 	  -target=google_cloud_run_v2_service_iam_member.qgis_server_public_invoker
+
+# --- PyQGIS worker (job-0021) ----------------------------------------------
+#
+# Builds linux/amd64 only (project-wide Linux substrate decision; see
+# qgis-server section above for rationale). Cloud Build is canonical for the
+# same reason: zero local credential surface, image pushed to AR by GCP.
+# Dockerfile lives at infra/worker/Dockerfile; build context is repo root so
+# `COPY services/workers/pyqgis/ ...` and `COPY styles/ ...` pull current HEAD.
+#
+# After a build, the new digest is logged by Cloud Build and printed by
+# `gcloud artifacts docker images list ... | grep pyqgis-worker`. Update
+# infra/worker.tf's `image = ...` line to that digest, then `make worker-deploy`.
+#
+# `worker-run-job` invokes the Cloud Run Job with QGS_URI and LAYER as
+# task args (--qgs-uri and --layer-to-add). Reads from /mnt/qgs/<file>.qgs
+# (the writable bucket mount provisioned in infra/worker.tf).
+
+WORKER_AR_REPO   ?= grace-2-containers
+WORKER_IMAGE     ?= grace-2-pyqgis-worker
+WORKER_IMAGE_URI ?= $(GCP_REGION)-docker.pkg.dev/$(GCP_PROJECT_ID)/$(WORKER_AR_REPO)/$(WORKER_IMAGE):latest
+WORKER_JOB_NAME  ?= grace-2-pyqgis-worker
+
+worker-build:
+	@echo "Building $(WORKER_IMAGE_URI) via Cloud Build (linux/amd64)..."
+	gcloud builds submit \
+	  --project=$(GCP_PROJECT_ID) \
+	  --config=infra/worker/cloudbuild.yaml \
+	  --substitutions=_REGION=$(GCP_REGION),_AR_REPO=$(WORKER_AR_REPO),_IMAGE=$(WORKER_IMAGE) \
+	  .
+
+# Cloud Build pushes during `submit`; this alias preserves the
+# build/push/deploy three-target shape symmetric with qgis-server-*.
+worker-push: worker-build
+
+worker-deploy:
+	tofu -chdir=infra apply -auto-approve \
+	  -target=google_service_account.pyqgis_worker \
+	  -target=google_storage_bucket_iam_member.pyqgis_worker_qgs_admin \
+	  -target=google_pubsub_topic_iam_member.pyqgis_worker_publisher \
+	  -target=google_cloud_run_v2_job.pyqgis_worker
+
+# Execute the Cloud Run Job. Required overrides: QGS_URI=/mnt/qgs/<file>.qgs LAYER=<name>
+# Example:
+#   make worker-run-job QGS_URI=/mnt/qgs/grace2-sample.qgs LAYER=demo
+# Use --wait so the Make target's exit code reflects the Job execution status.
+worker-run-job:
+	@if [ -z "$(QGS_URI)" ] || [ -z "$(LAYER)" ]; then \
+	  echo "Usage: make worker-run-job QGS_URI=/mnt/qgs/<file>.qgs LAYER=<layer-name>"; \
+	  exit 2; \
+	fi
+	gcloud run jobs execute $(WORKER_JOB_NAME) \
+	  --project=$(GCP_PROJECT_ID) \
+	  --region=$(GCP_REGION) \
+	  --args="--qgs-uri,$(QGS_URI),--layer-to-add,$(LAYER)" \
+	  --wait

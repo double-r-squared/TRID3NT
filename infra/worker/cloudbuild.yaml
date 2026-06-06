@@ -1,0 +1,54 @@
+# cloudbuild.yaml — Cloud Build pipeline for the GRACE-2 PyQGIS worker image.
+#
+# Mirrors infra/qgis-server/cloudbuild.yaml so both containers in the M2
+# substrate use the same build path: Cloud Build, AR repo `grace-2-containers`,
+# region us-central1, linux/amd64-only (Cloud Build default builder).
+#
+# Why Cloud Build (not local `docker build`):
+#   - The Debian 13 dev box requires sudo for docker.sock; Cloud Build runs
+#     inside GCP next to Artifact Registry, so the image arrives in AR with
+#     zero local credential surface.
+#   - linux/amd64 only — matches the project-wide Linux-only substrate
+#     (PROJECT_STATE / sprint-03 decision).
+#
+# Invocation (via Makefile `worker-build`):
+#   gcloud builds submit --project=grace-2-hazard-prod \
+#     --config=infra/worker/cloudbuild.yaml \
+#     --substitutions=_REGION=us-central1,_AR_REPO=grace-2-containers,_IMAGE=grace-2-pyqgis-worker \
+#     .
+#
+# Build context: repo root (`.`) so `COPY services/workers/pyqgis/ ...` and
+# `COPY styles/ ...` in the Dockerfile pull the engine-authored worker code
+# and QML presets from HEAD.
+#
+# Output: the image is tagged `:latest` AND the build's resolved digest is
+# logged to the Cloud Build job (capture via `gcloud builds describe`). The
+# Cloud Run Job in infra/worker/worker.tf pins to the digest (not :latest)
+# for the same drift-visibility reason job-0018 r1 adopted.
+
+substitutions:
+  _REGION: us-central1
+  _AR_REPO: grace-2-containers
+  _IMAGE: grace-2-pyqgis-worker
+
+steps:
+  - id: build-pyqgis-worker
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --tag=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_IMAGE}:latest
+      - --file=infra/worker/Dockerfile
+      - .
+
+images:
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_IMAGE}:latest
+
+# E2_HIGHCPU_8 matches job-0018's QGIS Server build sizing — both images
+# pull the same heavy qgis/qgis-server base; the cache hit on the second
+# build path is fast but the first build downloads ~1.5 GB. 1200s timeout
+# is generous for the cold-cache case.
+options:
+  machineType: E2_HIGHCPU_8
+  logging: CLOUD_LOGGING_ONLY
+
+timeout: 1800s
