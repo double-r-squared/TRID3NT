@@ -1,7 +1,7 @@
 # Project State
 
-**Last updated:** 2026-06-06 (sprint-04 / M2 closed)
-**Current sprint:** sprint-04 (CLOSED 2026-06-06); next: sprint-05 (M3 — Web client skeleton: React + MapLibre rendering QGIS Server tiles, chat panel, layer toggle, pipeline strip) — planning pending user go on sprint-04 close package.
+**Last updated:** 2026-06-06 (sprint-05 / M3 opened)
+**Current sprint:** sprint-05 (active, opened 2026-06-06) — M3 Web client skeleton: QGIS Server WMS basemap + LayerPanel + PipelineStrip + Playwright AFK loop. Stage A (parallel): job-0025 (basemap pivot + LayerPanel) + job-0027 (Playwright tooling). Stage B: job-0026 (PipelineStrip on 0025's App.tsx shell). Stage C: job-0028 (acceptance).
 
 ## Resume note (read first)
 
