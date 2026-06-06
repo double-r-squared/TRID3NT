@@ -250,3 +250,25 @@ and deployed as a Cloud Run Job. The conda env exists so an engine can edit
 without rebuilding the container every time. When the worker code lands, the
 acceptance gate is the Cloud Run Job execution log (job-0023), not a local
 `python` run. The conda env is convenience, not contract.
+
+## M2 substrate idle-cost itemization
+
+Per-resource idle delta added by job-0018 (sprint-04 M2 substrate), itemized
+for the NFR-C-1 budget ceiling:
+
+- **QGIS Server Cloud Run service** (`grace-2-qgis-server`, `min-instances=0`,
+  request-rate autoscaling) — ~$0/mo idle (scale-to-zero; first revision
+  charge is only on request).
+- **Three GCS buckets** (`-qgs`, `-cog`, `-fgb`; uniform BLA + PAP enforced +
+  90d noncurrent lifecycle) — <$1/mo at M2 smoke scale (each holds a handful
+  of MB until job-0019/0020 populate them; us-central1 standard storage at
+  $0.02/GB-mo).
+- **Pub/Sub topic** `grace-2-worker-events` — $0/mo at zero published volume
+  (no subscriber wired until M3/M4; topics themselves carry no idle charge).
+- **Artifact Registry repo** `grace-2-containers` — $0/mo idle until images
+  stored at meaningful scale (one ~1 GB QGIS Server image ≈ $0.10/mo at
+  $0.10/GB-mo; negligible).
+- **Total M2 substrate idle delta:** <$1/mo.
+- **Project total idle** stays <$100/mo NFR-C-1 ceiling — dominated by the
+  Atlas Flex line (carried from job-0014); this M2 delta is negligible
+  against it.

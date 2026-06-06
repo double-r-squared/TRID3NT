@@ -30,10 +30,22 @@
 #     `.qgs` lives in GCS, no per-instance disk writes.
 #
 # Image source-of-truth:
-#   The `image` arg below references the Artifact Registry tag the Makefile
-#   `qgis-server-push` target writes. The post-deploy `tofu plan` step in the
-#   report verifies "No changes" — meaning the deployed image digest matches
-#   what's tagged in the repo (Cloud Run resolves the tag → digest at deploy).
+#   The `image` arg below references the Artifact Registry image BY DIGEST,
+#   not by the `:latest` tag (revision round 1 — reviewer finding: `:latest`
+#   means a silent AR push would deploy without TF visibility because
+#   `tofu plan` cannot detect drift between a resolved digest and a floating
+#   tag). Digest-pin makes the deployed bits an explicit TF input.
+#
+#   Bump-on-build workflow:
+#     1. `make qgis-server-build` (Cloud Build push) emits the new digest
+#        on the last line of stdout, e.g.
+#          us-central1-docker.pkg.dev/.../grace-2-qgis-server@sha256:<NEW>
+#     2. Update the digest on the `image = ...` line below to <NEW>.
+#     3. `tofu apply` rolls Cloud Run to the new revision.
+#     4. `tofu plan` after must return "No changes" — proving the deployed
+#        bits match what's in code.
+#   This is the cleaner half of the OQ-H decision (digest-pin for prod);
+#   the floating-tag alternative is documented in OQ-H of the report.
 
 # --- Artifact Registry Docker repo ---------------------------------------
 # Hosts the QGIS Server image (and forthcoming agent/worker images — repo is
@@ -91,10 +103,16 @@ resource "google_cloud_run_v2_service" "qgis_server" {
     }
 
     containers {
-      # The Makefile `qgis-server-push` target writes :latest. The tag
-      # resolves to a digest at deploy; the post-deploy `tofu plan` step
-      # detects drift if the deployed image changes outside this config.
-      image = "${var.gcp_region}-docker.pkg.dev/${google_project.grace2.project_id}/${google_artifact_registry_repository.containers.repository_id}/grace-2-qgis-server:latest"
+      # Digest-pinned (revision round 1, job-0018). The Makefile
+      # `qgis-server-build` target pushes to the `:latest` tag in AR; the
+      # last line of its output is the resolved digest. Bump the digest
+      # below explicitly per the workflow described above. As of
+      # 2026-06-05 the AR `:latest` tag resolves to this digest AND the
+      # currently-running Cloud Run revision (grace-2-qgis-server-00001-klb)
+      # is serving this digest — verified by
+      # `gcloud run revisions describe ... --format=json` reading
+      # `status.imageDigest`.
+      image = "${var.gcp_region}-docker.pkg.dev/${google_project.grace2.project_id}/${google_artifact_registry_repository.containers.repository_id}/grace-2-qgis-server@sha256:7d8a33858ee5d0e656d3d31d2bc663f2cee4db56f9a2fbba29c3e1b20d79c2af"
 
       ports {
         container_port = 80

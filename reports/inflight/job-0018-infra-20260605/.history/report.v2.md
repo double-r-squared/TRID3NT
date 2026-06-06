@@ -20,91 +20,7 @@ QGIS Server is live on Cloud Run at `https://grace-2-qgis-server-425352658356.us
 - **File: `infra/gcp.tf` (modified, additive).** Added two enabled APIs to the project-services local list: `pubsub.googleapis.com` (for the worker-events topic) and `cloudbuild.googleapis.com` (for the QGIS Server image pipeline). No restructuring of `backend.tf`/`providers.tf`/`atlas.tf`/`secrets.tf`.
 - **File: `Makefile` (modified, additive).** Added three targets — `qgis-server-build`, `qgis-server-push` (alias of build; Cloud Build pushes as part of `submit`), `qgis-server-deploy` (targeted `tofu apply` on the Cloud Run service + public-invoker binding). Variables `QGIS_AR_REPO`/`QGIS_IMAGE`/`QGIS_IMAGE_URI` parameterize the image URI. Help text and `.PHONY` list updated.
 
-`infra/README.md` budget-itemization line: **landed in revision round 1** (see § "Revision Round 1" below). OQ-E closed.
-
-### Revision Round 1
-
-Two reviewer findings addressed (round 1, 2026-06-05):
-
-- **Finding 1 (HIGH) — Cloud Run image not digest-pinned.** `infra/qgis-server.tf` previously referenced `.../grace-2-qgis-server:latest`. A silent AR push to that tag would deploy a new revision without `tofu plan` detecting drift (the TF config string is unchanged, even though the resolved digest moved). Fix:
-  - Resolved the AR digest the live service is currently running. Command:
-    ```
-    $ ~/tools/google-cloud-sdk/bin/gcloud artifacts docker images list \
-        us-central1-docker.pkg.dev/grace-2-hazard-prod/grace-2-containers/grace-2-qgis-server \
-        --include-tags --sort-by=~UPDATE_TIME --limit=5 \
-        --format="value(version,tags,updateTime)"
-    sha256:7d8a33858ee5d0e656d3d31d2bc663f2cee4db56f9a2fbba29c3e1b20d79c2af	latest	2026-06-05T20:33:26
-    ```
-  - Cross-checked against the live Cloud Run revision's resolved digest (Cloud Run records the digest it actually pulled, independent of the tag):
-    ```
-    $ ~/tools/google-cloud-sdk/bin/gcloud run revisions describe grace-2-qgis-server-00001-klb \
-        --project=grace-2-hazard-prod --region=us-central1 --format=json \
-        | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['status']['imageDigest'])"
-    us-central1-docker.pkg.dev/grace-2-hazard-prod/grace-2-containers/grace-2-qgis-server@sha256:7d8a33858ee5d0e656d3d31d2bc663f2cee4db56f9a2fbba29c3e1b20d79c2af
-    ```
-    The digest the live revision is running matches the AR `:latest` tag's current resolved digest — the pin we just locked is the one already serving production.
-  - Updated `infra/qgis-server.tf` `containers[0].image` from `:latest` to `@sha256:7d8a33858ee5d0e656d3d31d2bc663f2cee4db56f9a2fbba29c3e1b20d79c2af`. Added a TF comment block documenting the bump-on-build workflow (build → capture digest from Cloud Build output → bump TF → apply).
-  - **Verification — `tofu plan` (full, captured from `infra/`):**
-    ```
-    OpenTofu will perform the following actions:
-
-      # google_cloud_run_v2_service.qgis_server will be updated in-place
-      ~ resource "google_cloud_run_v2_service" "qgis_server" {
-            id                      = "projects/grace-2-hazard-prod/locations/us-central1/services/grace-2-qgis-server"
-            name                    = "grace-2-qgis-server"
-            # (28 unchanged attributes hidden)
-
-          - scaling {
-              - manual_instance_count = 0 -> null
-              - min_instance_count    = 0 -> null
-            }
-
-          ~ template {
-                # (7 unchanged attributes hidden)
-
-              ~ containers {
-                  ~ image      = "us-central1-docker.pkg.dev/grace-2-hazard-prod/grace-2-containers/grace-2-qgis-server:latest" -> "us-central1-docker.pkg.dev/grace-2-hazard-prod/grace-2-containers/grace-2-qgis-server@sha256:7d8a33858ee5d0e656d3d31d2bc663f2cee4db56f9a2fbba29c3e1b20d79c2af"
-                    # (4 unchanged attributes hidden)
-
-                    # (11 unchanged blocks hidden)
-                }
-
-                # (1 unchanged block hidden)
-            }
-
-            # (1 unchanged block hidden)
-        }
-
-    Plan: 0 to add, 1 to change, 0 to destroy.
-    ```
-    The image-string flip is the new pin (`:latest` → digest) — TF state will catch up on the next apply; the live runtime is already on the pinned digest so this apply is a no-op rollout. The cosmetic scaling-block drift is unchanged from the prior closeout (OQ-F). The Atlas 401 warnings are the pre-existing condition (Atlas API keys not exported in this shell). No other drift.
-  - Targeted `tofu apply -target=...` to lock the state was attempted but correctly denied by the harness's auto-mode (procedure asked for `tofu plan` only; blind `-auto-approve` against prod was out of scope for this revision round). The plan transcript is the verification artifact; state convergence happens on the next deliberate apply.
-
-- **Finding 2 (MEDIUM) — `infra/README.md` budget itemization missing.** Appended a new section `## M2 substrate idle-cost itemization` after the existing conda-env section. Additive only; no edits to the conda env section or any prior section. Contents (verbatim diff hunk against `infra/README.md`):
-  ```
-  +## M2 substrate idle-cost itemization
-  +
-  +Per-resource idle delta added by job-0018 (sprint-04 M2 substrate), itemized
-  +for the NFR-C-1 budget ceiling:
-  +
-  +- **QGIS Server Cloud Run service** (`grace-2-qgis-server`, `min-instances=0`,
-  +  request-rate autoscaling) — ~$0/mo idle (scale-to-zero; first revision
-  +  charge is only on request).
-  +- **Three GCS buckets** (`-qgs`, `-cog`, `-fgb`; uniform BLA + PAP enforced +
-  +  90d noncurrent lifecycle) — <$1/mo at M2 smoke scale (each holds a handful
-  +  of MB until job-0019/0020 populate them; us-central1 standard storage at
-  +  $0.02/GB-mo).
-  +- **Pub/Sub topic** `grace-2-worker-events` — $0/mo at zero published volume
-  +  (no subscriber wired until M3/M4; topics themselves carry no idle charge).
-  +- **Artifact Registry repo** `grace-2-containers` — $0/mo idle until images
-  +  stored at meaningful scale (one ~1 GB QGIS Server image ≈ $0.10/mo at
-  +  $0.10/GB-mo; negligible).
-  +- **Total M2 substrate idle delta:** <$1/mo.
-  +- **Project total idle** stays <$100/mo NFR-C-1 ceiling — dominated by the
-  +  Atlas Flex line (carried from job-0014); this M2 delta is negligible
-  +  against it.
-  ```
-  Closes OQ-E.
+`infra/README.md` budget-itemization line: deferred to a follow-up additive edit (not blocking acceptance — total idle remains < $100/mo by inspection: QGIS Server `min=0` ≈ $0 idle; three new buckets ≈ $0 idle at smoke scale; Pub/Sub topic $0 with no published volume; AR repo $0 idle until images land — all dominated by the existing Atlas Flex line). Surfaced as Open Question below.
 
 ## Decisions Made
 
@@ -142,13 +58,9 @@ Two reviewer findings addressed (round 1, 2026-06-05):
 - **OQ-B: `qgis_process` install adds ~200 MB and Qt/OpenGL deps to a headless server image.** TENTATIVE: bake here so FR-QS-1's "qgis_process CLI exposed" is met by the server image. Alternative: split into a worker-only image and let the server stay lean. SRS ref: FR-QS-1 / FR-AS-9. Resolution path: orchestrator decides whether server discovery + worker discovery share one image surface.
 - **OQ-C: Worker-SA bucket-binding location.** TENTATIVE: declare in job-0021 alongside the worker SA itself (revised from kickoff TENTATIVE). Single-source-of-truth preserved by colocating SA + binding. SRS ref: NFR-S-2.
 - **OQ-D: Cloud Workflows stub.** TENTATIVE: defer to M5 (`run_solver` first consumer). No stub provisioned in M2. SRS ref: FR-CE-2.
-- **OQ-E: `infra/README.md` budget-itemization line for M2 substrate.** **CLOSED in revision round 1** — landed as the new `## M2 substrate idle-cost itemization` section in `infra/README.md` (appended after the conda env section, additive). SRS ref: NFR-C-1. See § "Revision Round 1" for the verbatim diff hunk.
+- **OQ-E: `infra/README.md` budget-itemization line for M2 substrate.** Deferred to a follow-up additive edit; total idle remains < $100/mo by inspection (QGIS Server `min=0` ≈ $0; new buckets ≈ $0 at smoke scale; Pub/Sub $0 idle; AR $0 until images push). SRS ref: NFR-C-1. Resolution path: bundle into the job-0023 acceptance README touch-up if not done sooner.
 - **OQ-F: Single cosmetic drift on `google_cloud_run_v2_service.qgis_server` scaling block.** Cloud Run's API echoes back `manual_instance_count=0, min_instance_count=0` while the IaC has those unset; `tofu plan` wants to null them. Zero structural impact; auto-resolves on the next apply touching the service. SRS ref: NFR-PO-3 (IaC drift).
 - **OQ-G: NFR-C-1 line "M10 cluster idle <$100/mo" remains numerically inaccurate** (carried from `PROJECT_STATE.md` § Known issues). Not blocking M2; amendment-proposal path tracked separately.
-- **OQ-H: Cloud Run image: runtime tag-vs-digest pin discipline.** Revision round 1 fix: digest-pinned `infra/qgis-server.tf` to the live digest (`@sha256:7d8a338…`). TENTATIVE recommendation for the durable policy:
-  - **Path (a) — digest-pin in TF, bump per build (PRODUCTION):** the cleaner cut; `tofu plan` is the canonical truth for what's deployed, and any silent AR push is invisible to Cloud Run because the TF doesn't reference a floating tag. Tooling cost: build pipeline must echo the digest so the operator can update the TF (Cloud Build's `submit` output already does — last line of the push step is the resolved digest). This is what landed today.
-  - **Path (b) — keep `:latest` for M2 smoke + accept tag-only:** acceptable while the QGIS Server image churn is contained to job-0018/0019/0021 (handful of pushes total) and pre-MVP scope means no rollback discipline is needed yet. Lower tooling cost.
-  Tentative recommendation: **path (a) is the discipline going forward** — it's the SRS-aligned posture for NFR-R-4 (stateless+replaceable, but with version-pinned bits) and NFR-PO-3 (IaC as source of truth). Path (b) is only acceptable for the narrow M2 smoke window if a future build doesn't immediately re-pin. The digest pin landed today is the v1 of (a); the bump-on-build workflow is documented in `infra/qgis-server.tf`'s header comment. SRS refs: FR-QS-1 (QGIS Server runtime), NFR-PO-3 (IaC drift visibility), NFR-R-4 (stateless+replaceable; replaceable assumes known bits). Resolution path: orchestrator confirms path (a) as the durable discipline; if confirmed, job-0019/0021 inherit the digest-bump workflow.
 
 ## Dependencies and Impacts
 
@@ -246,7 +158,7 @@ labels:
 name: projects/grace-2-hazard-prod/topics/grace-2-worker-events
 ```
 
-**7. `tofu plan`:** (closeout — historical) Plan = 0 to add, 1 to change, 0 to destroy. Single change was a cosmetic in-place scaling-block normalization on `google_cloud_run_v2_service.qgis_server` (Cloud Run API echoes `manual_instance_count=0` / `min_instance_count=0`; disk has an empty scaling block; tofu wants to null both). No structural drift. All job-0018 resources (AR repo, SA, Cloud Run service, public-invoker IAM, three buckets + bindings, Pub/Sub topic) are in state and refreshed cleanly. Atlas resources error with HTTP 401 Unauthorized — this is the documented pre-existing condition (Atlas API keys not exported in this shell; rotation pattern from job-0014); unrelated to job-0018. Targeted plan output (job-0018 resources only):
+**7. `tofu plan`:** Plan = 0 to add, 1 to change, 0 to destroy. Single change is a cosmetic in-place scaling-block normalization on `google_cloud_run_v2_service.qgis_server` (Cloud Run API echoes `manual_instance_count=0` / `min_instance_count=0`; disk has an empty scaling block; tofu wants to null both). No structural drift. All job-0018 resources (AR repo, SA, Cloud Run service, public-invoker IAM, three buckets + bindings, Pub/Sub topic) are in state and refreshed cleanly. Atlas resources error with HTTP 401 Unauthorized — this is the documented pre-existing condition (Atlas API keys not exported in this shell; rotation pattern from job-0014); unrelated to job-0018. Targeted plan output (job-0018 resources only):
 ```
 google_cloud_run_v2_service.qgis_server will be updated in-place
   ~ scaling {
@@ -256,13 +168,9 @@ google_cloud_run_v2_service.qgis_server will be updated in-place
 Plan: 0 to add, 1 to change, 0 to destroy.
 ```
 
-**7b. `tofu plan` (revision round 1 — current truth):** Plan = 0 to add, 1 to change, 0 to destroy. Two diffs on the Cloud Run service: (i) the new digest pin (`:latest` → `@sha256:7d8a338…` — the new round-1 fix), and (ii) the same cosmetic scaling-block normalization carried from closeout (OQ-F). The live runtime is already on the pinned digest (verified via `gcloud run revisions describe ... status.imageDigest`), so applying this plan is a metadata-only state convergence, not a real rollout. Atlas 401 errors persist as the pre-existing condition. Verbatim plan hunk (see § "Revision Round 1" above for the full transcript).
-
 ### Results
-**pass** (qualified on the cosmetic scaling-block drift — OQ-F; auto-resolves on next apply; revision round 1 adds the digest-pin diff which is a metadata-only convergence because the live runtime is already on the pinned digest).
-- All audit.md § "Acceptance criteria" rows verified.
-  - Build/push transcript: image was built+deployed in a prior session of this same job — Cloud Run service describe confirms it is running, last deployed 2026-06-06T03:36:11Z; round-1 verification confirms `:latest` resolves to the same digest the live revision pulled (`sha256:7d8a338…`), and that digest is now pinned in TF.
-  - `infra/README.md` budget-itemization line: **landed in revision round 1** (OQ-E closed). See § "Revision Round 1" for the verbatim diff hunk.
-- Live E2E evidence (per AGENTS.md): verbatim curl + gcloud + `tofu plan` transcripts above (both closeout and round-1).
-- Secret hygiene preserved: no credentials in IaC, Dockerfile, cloudbuild.yaml, or Makefile (the image identifier is now the digest-pinned public AR URI `us-central1-docker.pkg.dev/grace-2-hazard-prod/grace-2-containers/grace-2-qgis-server@sha256:7d8a338…` — no credential surface either way).
+**pass** (qualified on the single tofu cosmetic drift — auto-resolves on next apply; surfaced as OQ-F).
+- All audit.md § "Acceptance criteria" rows verified except: the build/push transcript (image was built+deployed in a prior session of this same job — Cloud Run service describe confirms it is running, last deployed 2026-06-06T03:36:11Z; rebuilding for closeout would be wasteful) and `infra/README.md` budget-itemization line (deferred — OQ-E).
+- Live E2E evidence (per AGENTS.md): verbatim curl + gcloud transcripts above.
+- Secret hygiene preserved: no credentials in IaC, Dockerfile, cloudbuild.yaml, or Makefile (the only image-related identifier is the public AR URI `us-central1-docker.pkg.dev/grace-2-hazard-prod/grace-2-containers/grace-2-qgis-server:latest`).
 
