@@ -19,7 +19,7 @@ Dev + prod substrate Linux (Debian 13 trixie, `Linux maturin 6.12.74+deb13+1-amd
 
 1. **Create `tests/m2/` harness** — `live_qgis_server` + `live_worker` pytest markers parallel to the `live_gemini` + `live_atlas` markers from job-0017. New marker `live_qgis_server` requires the deployed Cloud Run service URL (from environment variable `GRACE2_QGIS_SERVER_URL`); `live_worker` requires `gcloud` ADC + project access. Document in `tests/m2/README.md`.
 2. **Test (1) — QGIS Server `GetCapabilities` live transcript** — `tests/m2/test_qgis_server_capabilities.py`:
-   - `curl -sf "<qgis-server-url>/ogc/?MAP=/vsigs/grace-2-hazard-prod-qgs/grace2-sample.qgs&SERVICE=WMS&REQUEST=GetCapabilities"` returns HTTP 200; parseable XML; asserts `osm-basemap` layer name present.
+   - `curl -sf "<qgis-server-url>/ogc/?MAP=/vsigs/grace-2-hazard-prod-qgs/grace2-sample.qgs&SERVICE=WMS&REQUEST=GetCapabilities"` returns HTTP 200; parseable XML; asserts `basemap-osm-conus` layer name present.
    - Capture verbatim HTTP transcript as artifact `tests/m2/artifacts/getcapabilities.xml`.
    - Marker: `@pytest.mark.live_qgis_server`. Local-fixture variant: parse a recorded GetCapabilities XML; mark `qualified (recorded, not live)` if the marker is skipped.
 3. **Test (2) — Sample `.qgs` WMS GetMap render PNG** — `tests/m2/test_qgis_server_getmap.py`:
@@ -31,7 +31,7 @@ Dev + prod substrate Linux (Debian 13 trixie, `Linux maturin 6.12.74+deb13+1-amd
    - Stage: upload a fresh copy of `services/workers/pyqgis/sample_project/grace2-sample.qgs` to `gs://grace-2-hazard-prod-qgs/grace2-sample-test.qgs` (a test-scoped object — don't mutate the canonical one).
    - Execute: `gcloud run jobs execute grace-2-pyqgis-worker --region=us-central1 --args="--qgs-uri,gs://grace-2-hazard-prod-qgs/grace2-sample-test.qgs,--layer-name,acceptance-demo" --wait` (or via Python `google-cloud-run` client).
    - Capture: execution succeeded; logs show six FR-QS-6 steps; Pub/Sub message pulled (create temp subscription, pull, ack, delete sub).
-   - Verify: post-execution `gcloud storage stat gs://grace-2-hazard-prod-qgs/grace2-sample-test.qgs` shows updated `md5Hash`; post-execution GetCapabilities on the same object shows 2 layers (`osm-basemap` + `acceptance-demo`).
+   - Verify: post-execution `gcloud storage stat gs://grace-2-hazard-prod-qgs/grace2-sample-test.qgs` shows updated `md5Hash`; post-execution GetCapabilities on the same object shows 2 layers (`basemap-osm-conus` + `acceptance-demo`).
    - **Cleanup:** delete `gs://grace-2-hazard-prod-qgs/grace2-sample-test.qgs` + temp subscription at test teardown.
    - Save verbatim execution log as `tests/m2/artifacts/worker-roundtrip.log` and Pub/Sub envelope as `tests/m2/artifacts/worker-notify.json`.
    - Marker: `@pytest.mark.live_worker`. Local-fixture variant: run `worker_round_trip` from the `grace2` conda env against a local `.qgs` file (read/write local path instead of `/vsigs/`, stub Pub/Sub publisher) — gates the logic before live; mark live-skipped as `qualified (local-fixture variant ran)`.
@@ -91,7 +91,7 @@ Cite by name from AGENTS.md § "Cross-cutting principles":
 - `make test-m2` (from repo root, with `GRACE2_QGIS_SERVER_URL` set + gcloud ADC present) returns exit 0; all five tests pass (or local-fixture variants pass with `qualified` marker recorded).
 - `make test` (M1 regression target from job-0017) returns exit 0; 114 tests pass (91 contracts + 23 acceptance), no regression.
 - `tests/m2/artifacts/sample-getmap.png` exists, file size > 1KB, pixel-variance check passes (non-blank).
-- `tests/m2/artifacts/getcapabilities.xml` parses; the `osm-basemap` layer is named.
+- `tests/m2/artifacts/getcapabilities.xml` parses; the `basemap-osm-conus` layer is named.
 - `tests/m2/artifacts/worker-roundtrip.log` shows the six FR-QS-6 steps verbatim.
 - `tests/m2/artifacts/worker-notify.json` shows the Pub/Sub completion envelope shape from job-0020.
 - `tests/m2/README.md` contains the sprint-04 exit-criteria → test-ID → artifact table.

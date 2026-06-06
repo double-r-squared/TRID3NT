@@ -3,7 +3,7 @@
 **Job ID:** job-0019-engine-20260605
 **Sprint:** sprint-04
 **Auditor:** Development Orchestrator
-**Status:** assigned
+**Status:** approved
 
 ## Task Assignment
 
@@ -80,14 +80,67 @@ Surface contestable choices as Open Questions with TENTATIVE tags.
 
 ## Assessment
 
+Engine authored `services/workers/pyqgis/sample_project/grace2-sample.qgs` (EPSG:4326, CONUS extent, single layer `basemap-osm-conus` via OSM XYZ tile provider) programmatically via PyQGIS in `grace2` conda env (QGIS 3.40.3-Bratislava), with reproducible `build_sample_project.py` + provenance README + matching `styles/basemap.qml`. Uploaded to `gs://grace-2-hazard-prod-qgs/grace2-sample.qgs` with MD5-parity. Local `QgsProject.read()` round-trip succeeds. **Live WMS verification QUALIFIED FAIL** — QGIS Server returns HTTP 500 `<ServerException>Project file error</ServerException>`; log: `Unable to open /vsigs/...`. Engine correctly diagnoses as an infra-side gap in the QGIS Server container (missing GDAL VSI auth env vars) and routes via OQ-19A — not an engine artifact defect. Reviewer verdict: approve; route substrate fix to new infra job. Commit `4878562`.
+
 ## Invariant Check
+
+- **Determinism boundary:** pass — sample .qgs contains no LLM-generated numeric data.
+- **Deterministic workflows:** n/a — no workflow code.
+- **Engine registration, not modification:** pass — added a sample project + preset stub; no agent-core changes.
+- **Rendering through QGIS Server:** pass (structurally) — .qgs in canonical GCS bucket; will be rendered by QGIS Server once OQ-19A fixed. No alternate rendering path created.
+- **Tier separation:** pass — .qgs in private SA-scoped bucket; XYZ tile reference targets OSM (Tier A swappable per FR-DT-1).
+- **Metadata-payload pattern:** preserved — .qgs is payload in GCS.
+- **Claims carry provenance:** n/a.
+- **Cancellation is first-class:** n/a.
+- **Confirmation before consequence — and no cost theater:** pass.
+- **Minimal parameter surface:** pass — build script is parameter-free.
 
 ## Dependency Check
 
+- **Prerequisites satisfied:** yes — job-0018 (bucket + QGIS Server); job-0022 (grace2 conda env).
+- **Downstream impacts:**
+  - **job-0020 (PyQGIS worker code):** mutates this sample .qgs via `/vsigs/`. Layer name `basemap-osm-conus` is canonical (OQ-19B resolved).
+  - **job-0024-infra (NEW):** addresses OQ-19A. Gates M2 acceptance.
+  - **job-0023 (M2 acceptance):** depends on job-0024 closing.
+  - **Future infra rebuild:** bake `styles/basemap.qml` into `/etc/qgis/styles/` when image rebuilds (OQ-19C → folded into job-0024).
+
 ## Decisions Validated
+
+- **Sample .qgs programmatically via PyQGIS (not GUI):** agree — reproducible, scriptable.
+- **EPSG:4326 + CONUS extent:** agree — matches M1 web stub initial view.
+- **OSM XYZ tile reference (over in-repo FlatGeobuf):** agree (TENTATIVE) — XYZ matches Tier A swappable; FlatGeobuf fallback documented; moot once OQ-19A resolved.
+- **Layer name `basemap-osm-conus`:** agree — geo-scope encoded. Update downstream kickoffs (0020, 0023).
+- **`styles/basemap.qml` committed but image bake deferred:** agree (OQ-19C) — bundle into job-0024 follow-up.
+- **build_sample_project.py reproducible:** agree.
 
 ## Open Questions Resolved
 
+- **OQ-19A (BLOCKING live render):** routed to NEW infra job-0024. Three candidates: (a) fetch-to-tmp pre-handler, (b) gcsfuse, (c) GDAL VSI env vars (`CPL_MACHINE_IS_GCE=YES`, `CPL_GS_USE_INSTANCE_PROFILE=YES`). Tentative: try (c) first.
+- **OQ-19B (layer-name discrepancy):** resolved → `basemap-osm-conus` canonical. Update job-0020 + job-0023 kickoff text BEFORE handoff (both still STATE=created).
+- **OQ-19C (QML bake-and-redeploy):** deferred → bundle into job-0024 (image rebuild picks up `styles/basemap.qml`).
+- **OQ-19D (OSM tile-usage policy):** non-blocking; revisit at M3 web-tile-consumption.
+- **OQ-19E (`_attachments.zip` sidecar):** non-blocking minor follow-up.
+
 ## Follow-up Actions
 
+- **Open NEW job-0024-infra** for OQ-19A (QGIS Server `/vsigs/` access fix). Counter 23 → 24. Inserted into Stage A.5; gates job-0023 acceptance.
+  - Routing: infra. Priority: HIGH.
+- **Update kickoffs for job-0020 + job-0023** to use `basemap-osm-conus` (OQ-19B): surgical text-only s/osm-basemap/basemap-osm-conus/g before handoff.
+  - Routing: orchestrator. Priority: high.
+- **PROJECT_STATE update:** grace2-sample.qgs in GCS; layer `basemap-osm-conus`; QGIS Server `/vsigs/` gap tracked by job-0024.
+  - Routing: orchestrator. Priority: high.
+- **OQ-19E absorption into build script:** minor edit.
+  - Routing: engine. Priority: low.
+- **OQ-19D OSM User-Agent:** M3 timing.
+  - Routing: web/infra. Priority: low.
+- **Close job-0019; launch job-0024 + job-0020 in parallel.** job-0024 unblocks M2 acceptance; job-0020 worker code is independent of QGIS Server `/vsigs/` fix (worker container in 0021 needs its own env vars).
+  - Routing: orchestrator. Priority: high.
+
 ## Sign-off
+
+- **Ready to move to complete:** yes
+- All five engine-authored deliverables pass; live WMS render qualified-fail (correctly routed to infra job-0024).
+- Invariants #4 + #5 preserved with citations; #1 + #3 + #6 preserved structurally.
+- Reviewer verdict: approve (zero engine findings; one medium routed-to-infra; one low layer-name OQ resolved here).
+- 5 Open Questions surfaced; OQ-19A → new job-0024; OQ-19B resolved in audit; OQ-19C/D/E low-priority.
+- Revisions: 0.
