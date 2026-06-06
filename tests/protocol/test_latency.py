@@ -73,7 +73,7 @@ async def test_first_token_latency_p50_p95(
     # latency-table evidence; failing the test on threshold is NOT the point
     # (NFR-P-1 is informational here per kickoff).
     msg = (
-        f"\n[NFR-P-1 first-token (stubbed-Gemini transport)] "
+        f"\n[transport-only p50/p95 — informational; NFR-P-1 measured separately via -m live_gemini] "
         f"N={len(samples_ms)} p50={p50:.1f}ms p95={p95:.1f}ms mean={mean:.1f}ms "
         f"samples_ms={[round(s,1) for s in samples_ms]}"
     )
