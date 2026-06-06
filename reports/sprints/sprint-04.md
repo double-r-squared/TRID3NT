@@ -15,11 +15,11 @@ At the end of this sprint a live QGIS Server Cloud Run service answers `GetCapab
 |--------|-----------|------|------------|--------|
 | job-0018-infra-20260605 | infra | QGIS Server Cloud Run service + GCS .qgs/COG/FGB buckets + Pub/Sub notify topic | — | **approved** |
 | job-0019-engine | engine | Sample `.qgs` + `styles/basemap.qml` preset stub authored and uploaded to GCS .qgs bucket | 0018 | **approved** |
-| job-0020-engine | engine | PyQGIS worker code: `worker_round_trip(qgs_uri, layer_to_add)` (read `/vsigs/` → mutate → write back → Pub/Sub publish) | 0018, 0019 | planned |
+| job-0020-engine | engine | PyQGIS worker code: `worker_round_trip(qgs_uri, layer_to_add)` (read `/vsigs/` → mutate → write back → Pub/Sub publish) | 0018, 0019 | **approved** |
 | job-0021-infra | infra | PyQGIS worker container Dockerfile + image build/push + Cloud Run Job deployment | 0018, 0020, 0024 | planned |
 | job-0022-infra | infra | `grace2` conda env recreation on Linux Debian via conda-forge (QGIS 3.40.3 + Python 3.12, dead-dep strip) | — | **approved** |
 | job-0023-testing | testing | M2 acceptance: GetCapabilities + WMS GetMap + worker round-trip transcript + M1 regression (114 tests) green | 0018, 0019, 0020, 0021, 0024 | planned |
-| job-0024-infra-20260605 | infra | QGIS Server `/vsigs/` access fix (GDAL VSI env vars or gcsfuse) + QML preset bake into image — **inserted mid-sprint after job-0019 surfaced OQ-19A** | 0018, 0019 | planned |
+| job-0024-infra-20260605 | infra | QGIS Server `/vsigs/` access fix (GDAL VSI env vars or gcsfuse) + QML preset bake into image — **inserted mid-sprint after job-0019 surfaced OQ-19A** | 0018, 0019 | **approved** |
 
 (Job IDs are surfaced as `job-00NN-<specialist>-20260605` when scaffolded; the dated suffix is omitted in the table above for column width.)
 

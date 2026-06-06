@@ -3,7 +3,7 @@
 **Job ID:** job-0020-engine-20260605
 **Sprint:** sprint-04
 **Auditor:** Development Orchestrator
-**Status:** assigned
+**Status:** approved
 
 ## Task Assignment
 
@@ -90,14 +90,69 @@ Surface contestable choices as Open Questions with TENTATIVE tags.
 
 ## Assessment
 
+`services/workers/pyqgis/{worker,types,__init__,__main__}.py` ships `worker_round_trip(qgs_uri, layer_to_add) -> WorkerResult` that reads `.qgs` from any filesystem-like URI (`/vsigs/`, `gs://`, `/mnt/qgs/`, or absolute path), appends a typed layer, writes back, and publishes a completion envelope to Pub/Sub topic `grace-2-worker-events`. Naturally aligned with the job-0024 WMS URL contract change — `_parse_qgs_uri` (worker.py:103-137) routes `/mnt/qgs/...` through the local-path branch into `QgsProject.read()` with zero code change. Three live closeout transcripts in `grace2` conda env (QGIS 3.40.3-Bratislava): local round-trip PASS, `/mnt/qgs/`-shape round-trip PASS, live Pub/Sub publish PASS (msg_id `19958824608799377`). Two commits: `c63507d` (initial) + `aa9a5da` (closeout — doc tightening + sidecar housekeeping + report population). Reviewer verdict: approve with three low-severity-only findings (kickoff-text mismatch, vacuously-pass sidecar AC, dict-order non-determinism in layer listing).
+
 ## Invariant Check
+
+- **Determinism boundary:** pass — worker code is deterministic Python; no LLM packages imported (`grep -rE 'gemini|google\.genai|anthropic|openai' services/workers/pyqgis/` returns zero).
+- **Deterministic workflows:** pass — `worker_round_trip` is a stable-signature pure-Python function (FR-TA-1). No LLM dispatch.
+- **Engine registration, not modification:** pass — engine extended the tool body via registration; no agent-core changes.
+- **Rendering through QGIS Server:** pass — worker is the *only* code path created that writes `.qgs`. QGIS Server (job-0018/0024) read-only mount enforces the asymmetry at runtime.
+- **Tier separation:** pass — worker reads/writes via `qgs_uri` parameter (filesystem or `gs://`); no public bucket path; no client-side path.
+- **Metadata-payload pattern:** pass — `.qgs` payload in GCS; Pub/Sub envelope (small, structured) is the notification channel, not the payload itself.
+- **Claims carry provenance:** n/a — no hazard event data.
+- **Cancellation is first-class:** n/a — worker runs are short; cancellation is the Cloud Run Jobs-level concern handled by job-0021's container + future Cloud Workflows wrapper.
+- **Confirmation before consequence — and no cost theater:** pass — zero cost fields in WorkerResult or notify envelope.
+- **Minimal parameter surface:** pass — `worker_round_trip(qgs_uri, layer_to_add)` is 2 args; CLI is `--qgs-uri --layer-to-add` with env-var fallbacks.
 
 ## Dependency Check
 
+- **Prerequisites satisfied:** yes — job-0019 (sample `.qgs` + layer name `basemap-osm-conus`); job-0022 (grace2 conda env); job-0024 (WMS URL contract `/mnt/qgs/...` — naturally accommodated by `_parse_qgs_uri`'s local-path branch).
+- **Downstream impacts:**
+  - **job-0021 (worker container):** packages this worker code into a Cloud Run Job container. Specialist should use the same Cloud Run gen2 GCS volume mount pattern as job-0024 (symmetry) — mount `/mnt/qgs` writable for the worker SA (`roles/storage.objectAdmin` on the bucket). The Python code is mount-agnostic; container picks the access method.
+  - **job-0023 (M2 acceptance):** invokes the worker via `gcloud run jobs execute` once 0021 lands; verifies round-trip end-to-end with Pub/Sub envelope consumed by a temp subscription.
+  - **Future agent integration:** `tools/run_pyqgis_worker_round_trip` atomic tool wraps this for the agent at M4; envelope subscriber (likely Cloud Workflows) consumes the Pub/Sub for cancellation/completion at M5.
+
 ## Decisions Validated
+
+- **`_parse_qgs_uri` accepts `/vsigs/`, `gs://`, and any absolute filesystem path:** agree — URI-agnostic worker code is the right abstraction; the *container* (job-0021) decides the access method (mount vs Python client). The `/vsigs/` branch is now harmless dead code under the new job-0024 contract but is not a parallel-implementation legacy (it's unexercised, not duplicate behavior).
+- **Pub/Sub envelope shape: `{worker_run_id, qgs_uri, layers_after, completed_at, status, ...}`:** agree — small, structured, JSON-encoded; subscriber drives downstream routing.
+- **`WorkerResult.notify_message_id` may be null when the publish completes after the envelope was constructed (OQ-20G chicken-and-egg):** agree — keep single shape; document. Alternative considered: 2-stage envelope (construct → publish → re-publish with msg_id) — rejected (added complexity without value).
+- **`LayerSpec` is a string in v0 (just the layer name) with room to evolve to a typed shape:** agree — minimal parameter surface (Invariant 10); extends without breaking.
+- **CLI lives in `__main__.py` (not separate `cli.py`):** agree — idiomatic Python `python -m services.workers.pyqgis`. Note kickoff text said `grace2_workers.pyqgis` (stale path); actual is `services.workers.pyqgis`. Specialist correctly used the actual path.
+- **Worker code remains URI-agnostic; no `/vsigs/` deletion:** agree — keeping the dead branch is cheap and documents historical contract; *removing* would be a parallel-impl deletion if a future job adds it back differently.
+- **Live Pub/Sub publish during closeout reused prior verification round's temp subscription** (auto-mode policy denied a second temp subscription creation): agree — original closeout round already pulled the envelope from a temp subscription with `msg_id 19957344354598949` and decoded payload. The closeout's `msg_id 19958824608799377` reuses the topic but skips the subscription dance to respect the policy.
 
 ## Open Questions Resolved
 
+- **OQ-20A (URI shape — `/vsigs/` vs `gs://` vs local):** resolved → all three supported; `_parse_qgs_uri` (worker.py:103-137) dispatches.
+- **OQ-20B (Pub/Sub envelope shape):** resolved → single-shape with `notify_message_id` allowing null (see OQ-20G).
+- **OQ-20C (LayerSpec typing):** resolved → string for v0; typed shape deferred.
+- **OQ-20D (kickoff-text issue — `osm-basemap` layer name):** resolved by job-0024-era kickoff `sed` to `basemap-osm-conus`.
+- **OQ-20G (notify_message_id chicken-and-egg null in published envelope):** TENTATIVE keep single shape; document. Acceptable trade-off vs 2-stage publish.
+- **OQ-20H (WMS URL contract `/mnt/qgs/...` from job-0024):** resolved → worker handles natively via local-path branch.
+
 ## Follow-up Actions
 
+- **Kickoff template correction** — future engine-on-worker-code kickoffs should reference `python -m services.workers.pyqgis` (the actual module path), not `python -m grace2_workers.pyqgis` (stale name from an earlier draft). Cosmetic.
+  - Routing: orchestrator (next engine kickoff). Priority: low.
+- **Layer ordering determinism in `_layer_names`:** dict-order from `QgsProject.mapLayers().values()` is non-deterministic across runs. If acceptance suite or downstream consumer depends on stable ordering, switch to `mapLayersByName` or sort by `layerOrder`. Low-priority — fix in next engine touch.
+  - Routing: engine. Priority: low.
+- **Layer addition is APPENDED today; consider explicit ordering control:** the new layer ends up first OR last depending on dict order. If the layer-style preset cares about order (background vs foreground), make explicit. Cosmetic for M2; revisit if it bites M3 WMS-tile-render order.
+  - Routing: engine. Priority: low.
+- **job-0021 worker container should mount `/mnt/qgs` writable** (symmetry with QGIS Server's read-only mount) using the same Cloud Run gen2 GCS volume mount pattern, with `roles/storage.objectAdmin` on the bucket for the worker SA. Worker code is mount-agnostic; this is a container-side decision.
+  - Routing: infra (job-0021). Priority: high (next job).
+- **PROJECT_STATE update** (this audit closure): worker code committed; CLI `python -m services.workers.pyqgis --qgs-uri ... --layer-to-add ...`; URI dispatch supports `/vsigs/`, `gs://`, `/mnt/qgs/`, local paths; Pub/Sub publish verified live.
+  - Routing: orchestrator. Priority: high.
+- **Close job-0020; launch job-0021 (worker container).** This unblocks job-0023 (M2 acceptance).
+  - Routing: orchestrator. Priority: high.
+
 ## Sign-off
+
+- **Ready to move to complete:** yes
+- All 10 reviewer adversarial checks pass on closeout: `worker_round_trip` signature correct; local round-trip live PASS; Pub/Sub publish live PASS; no LLM packages imported; no `/vsigs/` forced-branch for `.qgs` reads (URI-agnostic dispatch); sidecar deletion verified absent; file ownership clean; commit hygiene namespaced + co-author trailered; CLI entry point works via actual module path; Invariants 2 + 4 preserved with file:line citations.
+- Invariants #1, #2, #3, #4, #5, #6, #9, #10 pass with citations; #7, #8 n/a (no claims/cancellation surface in this job).
+- One revision round (closeout populated report.md after specialist hit StructuredOutput cap mid-doc-tightening); second-pass reviewer approved with three low-severity-only findings (all accepted with rationale).
+- 8 Open Questions surfaced; OQ-20A/B/C/D/H resolved; OQ-20G TENTATIVE; rest carry-forward as small follow-ups.
+- Live engineering verified: worker round-trips on local path + `/mnt/qgs/` shape + Pub/Sub publish.
+- Revisions: 1.

@@ -19,7 +19,7 @@ Dev + prod substrate Linux (Debian 13 trixie, `Linux maturin 6.12.74+deb13+1-amd
 
 1. **Create `tests/m2/` harness** — `live_qgis_server` + `live_worker` pytest markers parallel to the `live_gemini` + `live_atlas` markers from job-0017. New marker `live_qgis_server` requires the deployed Cloud Run service URL (from environment variable `GRACE2_QGIS_SERVER_URL`); `live_worker` requires `gcloud` ADC + project access. Document in `tests/m2/README.md`.
 2. **Test (1) — QGIS Server `GetCapabilities` live transcript** — `tests/m2/test_qgis_server_capabilities.py`:
-   - `curl -sf "<qgis-server-url>/ogc/?MAP=/vsigs/grace-2-hazard-prod-qgs/grace2-sample.qgs&SERVICE=WMS&REQUEST=GetCapabilities"` returns HTTP 200; parseable XML; asserts `basemap-osm-conus` layer name present.
+   - `curl -sf "<qgis-server-url>/ogc/?MAP=/mnt/qgs/grace2-sample.qgs&SERVICE=WMS&REQUEST=GetCapabilities"` returns HTTP 200; parseable XML; asserts `basemap-osm-conus` layer name present.
    - Capture verbatim HTTP transcript as artifact `tests/m2/artifacts/getcapabilities.xml`.
    - Marker: `@pytest.mark.live_qgis_server`. Local-fixture variant: parse a recorded GetCapabilities XML; mark `qualified (recorded, not live)` if the marker is skipped.
 3. **Test (2) — Sample `.qgs` WMS GetMap render PNG** — `tests/m2/test_qgis_server_getmap.py`:
