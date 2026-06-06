@@ -3,7 +3,7 @@
 **Job ID:** job-0018-infra-20260605
 **Sprint:** sprint-04
 **Auditor:** Development Orchestrator
-**Status:** assigned
+**Status:** approved
 
 ## Task Assignment
 
@@ -76,14 +76,74 @@ Surface contestable choices as Open Questions with TENTATIVE tags.
 
 ## Assessment
 
+QGIS Server Cloud Run service deployed live at `https://grace-2-qgis-server-425352658356.us-central1.run.app`; three GCS buckets (`-qgs`/`-cog`/`-fgb`) with uniform BLA + PAP-enforced + 90-day noncurrent lifecycle; Pub/Sub topic `grace-2-worker-events` provisioned; Artifact Registry repo `grace-2-containers` provisioned; `qgis-server-runtime` SA scoped to `storage.objectViewer` at bucket level only (zero project-level roles); WMS `GetCapabilities` returns valid `<ServerException>` XML (FCGI alive, awaiting MAP= — correct M2 posture before sample .qgs lands). Cloud Run image **digest-pinned** to `@sha256:7d8a338…` (revision round 1 fix). Two commits: `1bcf14c` (closeout — IaC + cloudbuild + Dockerfile) + `5117202` (revision r1 — digest pin + README budget itemization). All 7 second-pass adversarial checks pass.
+
 ## Invariant Check
+
+- **Determinism boundary:** n/a — infra job; no runtime narrative path.
+- **Deterministic workflows:** n/a — no Cloud Workflows definitions (deferred per OQ-D).
+- **Engine registration, not modification:** n/a — no engine code.
+- **Rendering through QGIS Server:** pass — first deployment of Decision B/C rendering substrate. Cloud Run service is the *only* WMS/WMTS/WFS endpoint; no other rendering path created.
+- **Tier separation:** pass — three new buckets PAP-enforced + UBLA + SA-scoped (verified live via `gcloud storage buckets describe`); zero `allUsers` IAM bindings. Client never reads GCS directly.
+- **Metadata-payload pattern:** pass — buckets provisioned as payload stores; no `list` permission granted (`objectViewer` only). MongoDB stays the only discovery path.
+- **Claims carry provenance:** n/a.
+- **Cancellation is first-class:** n/a — no Cloud Workflows definitions; Pub/Sub topic is the substrate for FR-QS-6 step 5 notifications that future cancellation chains build on.
+- **Confirmation before consequence — and no cost theater:** pass — zero `cost`/`usd`/`cents` fields in any TF variable or output; budget itemization in `infra/README.md` is deployment-side discipline (NFR-C-1).
+- **Minimal parameter surface:** pass — TF variables minimal; resources labeled `project=grace-2 env=dev sprint=04`.
 
 ## Dependency Check
 
+- **Prerequisites satisfied:** yes — job-0014 (GCP project, OpenTofu state, billing); job-0012 (`infra/` dir).
+- **Downstream impacts:**
+  - **job-0019 (engine: sample .qgs + basemap.qml):** consumes `grace-2-hazard-prod-qgs` bucket as upload target. Bucket already live.
+  - **job-0020 (engine: PyQGIS worker code):** consumes `/vsigs/grace-2-hazard-prod-qgs/...` for read+write+Pub/Sub publish.
+  - **job-0021 (infra: worker container):** consumes AR repo `grace-2-containers` and Pub/Sub topic. Worker SA bucket binding deferred from this kickoff to 0021 (OQ-C; single-source-of-truth preserved).
+  - **job-0023 (testing):** `tofu plan` clean + `GetCapabilities` valid are inputs to acceptance record.
+  - **Post-M2 infra:** Cloud Workflows definitions (OQ-D); WSS ingress when production traffic warrants.
+
 ## Decisions Validated
+
+- **`qgis/qgis-server` 3.40 LTR base image pinned by digest in Dockerfile:** agree — version-identical with `grace2` conda env (job-0022).
+- **`qgis_process` CLI baked into the image:** agree — enables future FR-AS-9 Level 1a algorithm discovery. Adds ~200 MB Qt/OpenGL deps (OQ-B; bake-here-now, revisit if bloat).
+- **Cloud Run min-instances = 0:** agree — no first-tile latency NFR gated yet (NFR-P-3 is post-M3); matches NFR-C-2.
+- **Cloud Run image digest-pinned (revision r1 fix):** agree — `tofu plan` detects drift; bump-on-build workflow documented in TF header.
+- **Three buckets with UBLA + PAP + 90d noncurrent lifecycle + per-bucket SA binding (not project-level):** agree — preserves Invariants 5/6.
+- **`qgis-server-runtime` SA scoped to `objectViewer` at bucket level only:** agree — least privilege.
+- **Pub/Sub topic provisioned but unconsumed in this sprint:** agree — substrate for FR-QS-6 step 5; subscriber wiring deferred to M3/M4 when agent integrates.
+- **Worker SA + bucket binding deferred to job-0021 (OQ-C):** agree — single-source-of-truth for worker infra.
+- **Cosmetic scaling-block normalization drift (OQ-F):** accept — auto-resolves on next service-touching apply.
+- **infra/README.md M2 idle-cost itemization (revision r1 fix):** agree — six-line breakdown; M2 delta <$1/mo; project total <$100/mo NFR-C-1 preserved.
 
 ## Open Questions Resolved
 
+- **OQ-A (QGIS Server base image tag):** resolved → 3.40 LTR digest pin. Bump workflow documented.
+- **OQ-B (`qgis_process` bake-here vs split-to-worker):** TENTATIVE keep-baked for M2; revisit if image-bloat operational.
+- **OQ-C (worker SA + bucket binding location):** resolved → defer to job-0021.
+- **OQ-D (Cloud Workflows stub):** deferred to first solver-orchestration job (M5+).
+- **OQ-E (M2 budget itemization in README):** **CLOSED in revision round 1**.
+- **OQ-F (cosmetic tofu drift on scaling block):** accepted; auto-resolves.
+- **OQ-G (SRS NFR-C-1 numerical inaccuracy):** carry-forward; orchestrator continues surfacing.
+- **OQ-H (Cloud Run image-tag-vs-digest discipline, added r1):** resolved → digest pin (path a). SRS refs: FR-QS-1, NFR-PO-3, NFR-R-4.
+
 ## Follow-up Actions
 
+- **Digest bump-on-build workflow automation:** small Makefile target reading `gcloud artifacts docker images list --sort-by=~UPDATE_TIME --limit=1` and writing a `.tfvars` value. Future small infra job; works fine manually for M2.
+  - Routing: infra. Priority: low.
+- **OQ-B revisit:** when image bloat becomes operational concern.
+  - Routing: infra. Priority: future.
+- **OQ-G NFR-C-1 amendment proposal** (carried, not introduced here): user lands.
+  - Routing: orchestrator → user. Priority: medium.
+- **PROJECT_STATE update** (this audit closure): QGIS Server URL; 3 buckets; Pub/Sub topic; AR repo; image digest.
+  - Routing: orchestrator. Priority: high.
+- **Close job-0018 and launch job-0019 (Stage B — engine: sample .qgs + basemap.qml).** `-qgs` bucket already exists live; engine uploads immediately.
+  - Routing: orchestrator. Priority: high.
+
 ## Sign-off
+
+- **Ready to move to complete:** yes
+- All kickoff ACs pass on second-pass adversarial review: QGIS Server Cloud Run deployed + live `GetCapabilities`; 3 GCS buckets + PAP + UBLA + lifecycle + SA-scoped IAM; Pub/Sub topic; `tofu plan` clean (one expected pin diff + OQ-F cosmetic drift); image digest pinned; README budget itemization landed.
+- Invariants #4, #5, #6, #9 pass with file:line citations; #2, #8 n/a (deferred); #1, #3, #7, #10 n/a (no runtime/engine surface).
+- One revision round (commits `1bcf14c` → `5117202`) addressed reviewer findings (HIGH digest pin, MEDIUM README budget itemization). Second-pass approved with zero findings; all 7 ACs pass.
+- 8 Open Questions surfaced; OQ-E closed in r1; OQ-A/C resolved in audit; OQ-B/D/F/H tracked; OQ-G carry-forward.
+- Real cloud substrate live and verified.
+- Revisions: 1.

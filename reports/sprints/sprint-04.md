@@ -13,7 +13,7 @@ At the end of this sprint a live QGIS Server Cloud Run service answers `GetCapab
 
 | Job ID | Specialist | Task | Depends on | Status |
 |--------|-----------|------|------------|--------|
-| job-0018-infra-20260605 | infra | QGIS Server Cloud Run service + GCS .qgs/COG/FGB buckets + Pub/Sub notify topic | — | planned |
+| job-0018-infra-20260605 | infra | QGIS Server Cloud Run service + GCS .qgs/COG/FGB buckets + Pub/Sub notify topic | — | **approved** |
 | job-0019-engine | engine | Sample `.qgs` + `styles/basemap.qml` preset stub authored and uploaded to GCS .qgs bucket | 0018 | planned |
 | job-0020-engine | engine | PyQGIS worker code: `worker_round_trip(qgs_uri, layer_to_add)` (read `/vsigs/` → mutate → write back → Pub/Sub publish) | 0018, 0019 | planned |
 | job-0021-infra | infra | PyQGIS worker container Dockerfile + image build/push + Cloud Run Job deployment | 0018, 0020 | planned |

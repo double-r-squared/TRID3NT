@@ -85,7 +85,25 @@ Repo is a git repository on branch `main`, root-commit `6fd37e6`. Remote: `https
 - IP access list: dev `/32` only (no 0.0.0.0/0) — note: 7-day expiry deliberately not set, follow-up tracked
 - Imported into OpenTofu state via `mongodbatlas_flex_cluster.dev`; `tofu plan` clean
 
-**OpenTofu IaC** under `infra/`: backend.tf (GCS), providers.tf (google + mongodbatlas ~> 1.27 + random), gcp.tf, atlas.tf, secrets.tf, variables.tf, terraform.tfvars.example. `terraform.tfvars` gitignored.
+**OpenTofu IaC** under `infra/`: backend.tf (GCS), providers.tf (google + mongodbatlas ~> 1.27 + random), gcp.tf, atlas.tf, secrets.tf, variables.tf, terraform.tfvars.example, plus job-0018 additions buckets.tf, pubsub.tf, qgis-server.tf, qgis-server/{Dockerfile,cloudbuild.yaml}. `terraform.tfvars` gitignored.
+
+**QGIS Server Cloud Run service `grace-2-qgis-server`** (job-0018, sprint-04):
+- URL: `https://grace-2-qgis-server-425352658356.us-central1.run.app`
+- Region: us-central1; min-instances=0 (scale-to-zero per NFR-C-2)
+- Image: digest-pinned `@sha256:7d8a338…` in `infra/qgis-server.tf` (FROM `qgis/qgis-server` 3.40 LTR base, `qgis_process` CLI baked in)
+- Service account `qgis-server-runtime` scoped to `roles/storage.objectViewer` at bucket level only (zero project-level roles)
+- Live: `GetCapabilities` returns valid `<ServerException>` XML (FCGI alive, awaiting MAP=)
+
+**GCS buckets** (job-0018, sprint-04, all UBLA + PAP-enforced + 90-day noncurrent lifecycle):
+- `grace-2-hazard-prod-qgs` — canonical `.qgs` storage (M2 sample lands in job-0019)
+- `grace-2-hazard-prod-cog` — raster outputs (COG)
+- `grace-2-hazard-prod-fgb` — vector outputs (FlatGeobuf)
+
+**Pub/Sub topic `grace-2-worker-events`** (job-0018) — FR-QS-6 step 5 substrate for worker completion notifications; provisioned but unconsumed in sprint-04 (subscriber wiring deferred to M3/M4 when agent integrates).
+
+**Artifact Registry repo `grace-2-containers`** (job-0018, us-central1) — holds the QGIS Server image and will hold the PyQGIS worker image (job-0021).
+
+**Local grace2 conda env** (job-0022) at `~/miniforge3/envs/grace2`: QGIS 3.40.3-Bratislava + Python 3.12.13 + GDAL 3.10.2 + google-cloud-storage 3.11.0 + google-cloud-pubsub 2.38.0 + pytest 9.0.3. Reproducible from `infra/conda/environment.yml`. Local PyQGIS worker dev only; production worker is the job-0021 container.
 
 **Programmatic Atlas API key flow:** GROUP_OWNER scope keys minted for import/apply and revoked after (least-privilege ritual documented in `infra/README.md`).
 
