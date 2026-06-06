@@ -1,0 +1,15 @@
+{
+  "qgs_uri": "/mnt/qgs/acceptance-49c6c439.qgs",
+  "layers_before": [
+    "basemap-osm-conus"
+  ],
+  "layers_after": [
+    "acceptance-test-layer-49c6c439",
+    "basemap-osm-conus"
+  ],
+  "notify_message_id": null,
+  "status": "ok",
+  "error": null,
+  "qgs_version": "3.44.11-Solothurn",
+  "ts": "2026-06-06T07:40:18.171Z"
+}

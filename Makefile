@@ -32,7 +32,7 @@ ATLAS_PROJECT_ID ?= 6a234700a0e1295958d10cf9
 
 .DEFAULT_GOAL := help
 
-.PHONY: help run-agent run-web test \
+.PHONY: help run-agent run-web test test-m2 \
         tofu-init tofu-plan tofu-apply tofu-bootstrap \
         atlas-allowlist-me secret-srv-show \
         qgis-server-build qgis-server-push qgis-server-deploy \
@@ -42,7 +42,8 @@ help:
 	@echo "GRACE-2 make targets (SRS v0.3):"
 	@echo "  run-agent           launch the local ADK agent service (stub until job-0015)"
 	@echo "  run-web             launch the local web client dev server (stub until job-0016)"
-	@echo "  test                run the acceptance + conformance suites (stub until job-0017)"
+	@echo "  test                run the M1 acceptance + conformance suites (job-0017)"
+	@echo "  test-m2             run the M2 acceptance suite (job-0023; live QGIS Server + Cloud Run Job)"
 	@echo ""
 	@echo "  tofu-init           one-shot OpenTofu init in infra/"
 	@echo "  tofu-plan           tofu plan against the GCS-backed state"
@@ -119,6 +120,21 @@ test:
 	cd packages/contracts && $(CURDIR)/$(TEST_VENV)/bin/python -m pytest tests -q
 	@echo "==> tests/ (M1 acceptance suite — protocol conformance + negative controls + integration)"
 	$(TEST_VENV)/bin/python -m pytest tests -v -m "not live_gemini"
+
+# `test-m2` runs the M2 acceptance suite (job-0023). Live QGIS Server +
+# Cloud Run Job + GCS + Pub/Sub. Reuses .venv-agent for pytest. Markers
+# (live_qgis_server, live_worker, live_tofu) auto-skip when their substrate
+# is unreachable; set GRACE2_SKIP_LIVE_WORKER=1 / GRACE2_SKIP_LIVE_TOFU=1
+# to opt out explicitly.
+test-m2:
+	@if [ ! -x $(TEST_VENV)/bin/python ]; then \
+	  echo "test venv missing or stale ($(TEST_VENV)). Bootstrap:"; \
+	  echo "  virtualenv -p python3 $(TEST_VENV)"; \
+	  echo "  $(TEST_VENV)/bin/pip install -e packages/contracts -e services/agent"; \
+	  echo "  $(TEST_VENV)/bin/pip install pytest pytest-asyncio websockets"; \
+	  exit 1; \
+	fi
+	$(TEST_VENV)/bin/python -m pytest tests/m2 -v --tb=short
 
 # --- infra targets (job-0014) ----------------------------------------------
 

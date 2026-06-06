@@ -1,0 +1,15 @@
+# Per-run randomized artifacts (suffixed with the random run id) are
+# regenerated every time the M2 worker round-trip test executes; the
+# committed copies are the canonical job-0023 acceptance evidence.
+#
+# When the suite is re-run, new files appear here with a fresh random
+# suffix — those are local-only by default. Re-record canonical evidence
+# by overwriting the tracked files explicitly.
+execute-stderr-*.log
+execute-stdout-*.json
+mutated-*.qgs
+worker-notify-*.json
+!execute-stderr-49c6c439.log
+!execute-stdout-49c6c439.json
+!mutated-49c6c439.qgs
+!worker-notify-49c6c439.json

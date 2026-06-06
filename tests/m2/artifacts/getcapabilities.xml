@@ -1,0 +1,138 @@
+<?xml version="1.0" encoding="utf-8"?>
+<WMS_Capabilities xmlns="http://www.opengis.net/wms" xsi:schemaLocation="http://www.opengis.net/wms http://schemas.opengis.net/wms/1.3.0/capabilities_1_3_0.xsd http://www.opengis.net/sld http://schemas.opengis.net/sld/1.1.0/sld_capabilities.xsd http://www.qgis.org/wms https://grace-2-qgis-server-pwvcfwv55q-uc.a.run.app/ogc/?MAP=/mnt/qgs/grace2-sample.qgs&amp;SERVICE=WMS&amp;REQUEST=GetSchemaExtension" xmlns:sld="http://www.opengis.net/sld" xmlns:qgs="http://www.qgis.org/wms" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="1.3.0">
+ <Service>
+  <Name>WMS</Name>
+  <Title>GRACE-2 sample WMS</Title>
+  <Abstract><![CDATA[M2 smoke sample — single OSM XYZ basemap covering CONUS.]]></Abstract>
+  <KeywordList>
+   <Keyword vocabulary="ISO">infoMapAccessService</Keyword>
+  </KeywordList>
+  <OnlineResource xmlns:xlink="http://www.w3.org/1999/xlink" xlink:type="simple" xlink:href="https://grace-2-qgis-server-pwvcfwv55q-uc.a.run.app/ogc/?MAP=/mnt/qgs/grace2-sample.qgs"/>
+  <Fees>None</Fees>
+  <AccessConstraints>None</AccessConstraints>
+ </Service>
+ <Capability>
+  <Request>
+   <GetCapabilities>
+    <Format>text/xml</Format>
+    <DCPType>
+     <HTTP>
+      <Get>
+       <OnlineResource xmlns:xlink="http://www.w3.org/1999/xlink" xlink:type="simple" xlink:href="https://grace-2-qgis-server-pwvcfwv55q-uc.a.run.app/ogc/?MAP=/mnt/qgs/grace2-sample.qgs&amp;"/>
+      </Get>
+     </HTTP>
+    </DCPType>
+   </GetCapabilities>
+   <GetMap>
+    <Format>image/jpeg</Format>
+    <Format>image/png</Format>
+    <Format>image/png; mode=16bit</Format>
+    <Format>image/png; mode=8bit</Format>
+    <Format>image/png; mode=1bit</Format>
+    <Format>application/dxf</Format>
+    <Format>application/pdf</Format>
+    <DCPType>
+     <HTTP>
+      <Get>
+       <OnlineResource xmlns:xlink="http://www.w3.org/1999/xlink" xlink:type="simple" xlink:href="https://grace-2-qgis-server-pwvcfwv55q-uc.a.run.app/ogc/?MAP=/mnt/qgs/grace2-sample.qgs&amp;"/>
+      </Get>
+     </HTTP>
+    </DCPType>
+   </GetMap>
+   <GetFeatureInfo>
+    <Format>text/plain</Format>
+    <Format>text/html</Format>
+    <Format>text/xml</Format>
+    <Format>application/vnd.ogc.gml</Format>
+    <Format>application/vnd.ogc.gml/3.1.1</Format>
+    <Format>application/json</Format>
+    <Format>application/geo+json</Format>
+    <DCPType>
+     <HTTP>
+      <Get>
+       <OnlineResource xmlns:xlink="http://www.w3.org/1999/xlink" xlink:type="simple" xlink:href="https://grace-2-qgis-server-pwvcfwv55q-uc.a.run.app/ogc/?MAP=/mnt/qgs/grace2-sample.qgs&amp;"/>
+      </Get>
+     </HTTP>
+    </DCPType>
+   </GetFeatureInfo>
+   <sld:GetLegendGraphic>
+    <Format>image/jpeg</Format>
+    <Format>image/png</Format>
+    <Format>application/json</Format>
+    <DCPType>
+     <HTTP>
+      <Get>
+       <OnlineResource xmlns:xlink="http://www.w3.org/1999/xlink" xlink:type="simple" xlink:href="https://grace-2-qgis-server-pwvcfwv55q-uc.a.run.app/ogc/?MAP=/mnt/qgs/grace2-sample.qgs&amp;"/>
+      </Get>
+     </HTTP>
+    </DCPType>
+   </sld:GetLegendGraphic>
+   <sld:DescribeLayer>
+    <Format>text/xml</Format>
+    <DCPType>
+     <HTTP>
+      <Get>
+       <OnlineResource xmlns:xlink="http://www.w3.org/1999/xlink" xlink:type="simple" xlink:href="https://grace-2-qgis-server-pwvcfwv55q-uc.a.run.app/ogc/?MAP=/mnt/qgs/grace2-sample.qgs&amp;"/>
+      </Get>
+     </HTTP>
+    </DCPType>
+   </sld:DescribeLayer>
+   <qgs:GetStyles>
+    <Format>text/xml</Format>
+    <DCPType>
+     <HTTP>
+      <Get>
+       <OnlineResource xmlns:xlink="http://www.w3.org/1999/xlink" xlink:type="simple" xlink:href="https://grace-2-qgis-server-pwvcfwv55q-uc.a.run.app/ogc/?MAP=/mnt/qgs/grace2-sample.qgs&amp;"/>
+      </Get>
+     </HTTP>
+    </DCPType>
+   </qgs:GetStyles>
+  </Request>
+  <Exception>
+   <Format>XML</Format>
+  </Exception>
+  <sld:UserDefinedSymbolization UserStyle="1" InlineFeature="0" RemoteWCS="0" SupportSLD="1" RemoteWFS="0" UserLayer="0"/>
+  <Layer queryable="1">
+   <Name>GRACE-2 M2 sample (CONUS basemap)</Name>
+   <Title>GRACE-2 sample WMS</Title>
+   <Abstract><![CDATA[M2 smoke sample — single OSM XYZ basemap covering CONUS.]]></Abstract>
+   <KeywordList>
+    <Keyword vocabulary="ISO">infoMapAccessService</Keyword>
+   </KeywordList>
+   <CRS>CRS:84</CRS>
+   <CRS>EPSG:4326</CRS>
+   <CRS>EPSG:3857</CRS>
+   <EX_GeographicBoundingBox>
+    <westBoundLongitude>-125</westBoundLongitude>
+    <eastBoundLongitude>-66</eastBoundLongitude>
+    <southBoundLatitude>24</southBoundLatitude>
+    <northBoundLatitude>50</northBoundLatitude>
+   </EX_GeographicBoundingBox>
+   <BoundingBox maxx="-7347086.392" maxy="6446275.842" miny="2753408.109" CRS="EPSG:3857" minx="-13914936.35"/>
+   <BoundingBox maxx="50" maxy="-66" miny="-125" CRS="EPSG:4326" minx="24"/>
+   <Layer queryable="1">
+    <Name>basemap-osm-conus</Name>
+    <Title>basemap-osm-conus</Title>
+    <CRS>CRS:84</CRS>
+    <CRS>EPSG:4326</CRS>
+    <CRS>EPSG:3857</CRS>
+    <EX_GeographicBoundingBox>
+     <westBoundLongitude>-180</westBoundLongitude>
+     <eastBoundLongitude>180</eastBoundLongitude>
+     <southBoundLatitude>-85.051129</southBoundLatitude>
+     <northBoundLatitude>85.051129</northBoundLatitude>
+    </EX_GeographicBoundingBox>
+    <BoundingBox maxx="20037508.343" maxy="20037508.343" miny="-20037508.343" CRS="EPSG:3857" minx="-20037508.343"/>
+    <BoundingBox maxx="85.051129" maxy="180" miny="-180" CRS="EPSG:4326" minx="-85.051129"/>
+    <Style>
+     <Name>default</Name>
+     <Title>default</Title>
+     <LegendURL>
+      <Format>image/png</Format>
+      <OnlineResource xmlns:xlink="http://www.w3.org/1999/xlink" xlink:type="simple" xlink:href="https://grace-2-qgis-server-pwvcfwv55q-uc.a.run.app/ogc/?MAP=/mnt/qgs/grace2-sample.qgs&amp;SERVICE=WMS&amp;VERSION=1.3.0&amp;REQUEST=GetLegendGraphic&amp;LAYER=basemap-osm-conus&amp;FORMAT=image/png&amp;STYLE=default&amp;SLD_VERSION=1.1.0"/>
+     </LegendURL>
+    </Style>
+   </Layer>
+  </Layer>
+ </Capability>
+</WMS_Capabilities>

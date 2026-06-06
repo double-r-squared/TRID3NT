@@ -1,0 +1,150 @@
+{
+  "apiVersion": "run.googleapis.com/v1",
+  "kind": "Execution",
+  "metadata": {
+    "annotations": {
+      "run.googleapis.com/creator": "natealmanza3@gmail.com",
+      "run.googleapis.com/execution-environment": "gen2",
+      "run.googleapis.com/lastModifier": "natealmanza3@gmail.com",
+      "run.googleapis.com/operation-id": "6f441de0-5c00-4bae-8791-7a6c3a0afc45"
+    },
+    "creationTimestamp": "2026-06-06T07:39:29.778941Z",
+    "generation": 1,
+    "labels": {
+      "cloud.googleapis.com/location": "us-central1",
+      "component": "pyqgis-worker",
+      "env": "dev",
+      "project": "grace-2",
+      "run.googleapis.com/job": "grace-2-pyqgis-worker",
+      "run.googleapis.com/jobGeneration": "2",
+      "run.googleapis.com/jobResourceVersion": "1780729810942180",
+      "run.googleapis.com/jobUid": "e423cb06-7e57-4d1f-b36c-5694b69b57c1",
+      "sprint": "04"
+    },
+    "name": "grace-2-pyqgis-worker-scp4j",
+    "namespace": "425352658356",
+    "ownerReferences": [
+      {
+        "apiVersion": "serving.knative.dev/v1",
+        "blockOwnerDeletion": true,
+        "controller": true,
+        "kind": "Job",
+        "name": "grace-2-pyqgis-worker",
+        "uid": "e423cb06-7e57-4d1f-b36c-5694b69b57c1"
+      }
+    ],
+    "resourceVersion": "AAZTkOQwtBY",
+    "selfLink": "/apis/run.googleapis.com/v1/namespaces/425352658356/executions/grace-2-pyqgis-worker-scp4j",
+    "uid": "8577aee3-b6e0-4439-aeba-ea77f15bd727"
+  },
+  "spec": {
+    "parallelism": 1,
+    "taskCount": 1,
+    "template": {
+      "spec": {
+        "containers": [
+          {
+            "args": [
+              "--qgs-uri",
+              "/mnt/qgs/acceptance-49c6c439.qgs",
+              "--layer-to-add",
+              "acceptance-test-layer-49c6c439"
+            ],
+            "env": [
+              {
+                "name": "GCP_PROJECT",
+                "value": "grace-2-hazard-prod"
+              },
+              {
+                "name": "CPL_MACHINE_IS_GCE",
+                "value": "YES"
+              },
+              {
+                "name": "LAYER_TO_ADD"
+              },
+              {
+                "name": "GDAL_HTTP_USERAGENT",
+                "value": "grace-2-pyqgis-worker/0.1"
+              },
+              {
+                "name": "QGS_URI"
+              },
+              {
+                "name": "PUBSUB_TOPIC",
+                "value": "grace-2-worker-events"
+              },
+              {
+                "name": "CPL_GS_USE_INSTANCE_PROFILE",
+                "value": "YES"
+              },
+              {
+                "name": "GOOGLE_CLOUD_PROJECT",
+                "value": "grace-2-hazard-prod"
+              }
+            ],
+            "image": "us-central1-docker.pkg.dev/grace-2-hazard-prod/grace-2-containers/grace-2-pyqgis-worker@sha256:fffd7e0f41aa255c80ff288e19cf950e5953e05cc79cc67524dbc9c7edbcacd9",
+            "resources": {
+              "limits": {
+                "cpu": "2",
+                "memory": "2Gi"
+              }
+            },
+            "volumeMounts": [
+              {
+                "mountPath": "/mnt/qgs",
+                "name": "qgs-bucket"
+              }
+            ]
+          }
+        ],
+        "maxRetries": 0,
+        "serviceAccountName": "pyqgis-worker-runtime@grace-2-hazard-prod.iam.gserviceaccount.com",
+        "timeoutSeconds": "900",
+        "volumes": [
+          {
+            "csi": {
+              "driver": "gcsfuse.run.googleapis.com",
+              "volumeAttributes": {
+                "bucketName": "grace-2-hazard-prod-qgs"
+              }
+            },
+            "name": "qgs-bucket"
+          }
+        ]
+      }
+    }
+  },
+  "status": {
+    "completionTime": "2026-06-06T07:40:26.730396Z",
+    "conditions": [
+      {
+        "lastTransitionTime": "2026-06-06T07:40:26.730396Z",
+        "message": "Execution completed successfully in 49.38s.",
+        "status": "True",
+        "type": "Completed"
+      },
+      {
+        "lastTransitionTime": "2026-06-06T07:39:30.601652Z",
+        "message": "Provisioned imported containers.",
+        "status": "True",
+        "type": "ResourcesAvailable"
+      },
+      {
+        "lastTransitionTime": "2026-06-06T07:40:08.969487Z",
+        "message": "Started deployed execution in 38.36s.",
+        "status": "True",
+        "type": "Started"
+      },
+      {
+        "lastTransitionTime": "2026-06-06T07:39:30.492268Z",
+        "message": "Imported container image.",
+        "status": "True",
+        "type": "ContainerReady"
+      }
+    ],
+    "logUri": "https://console.cloud.google.com/logs/viewer?project=grace-2-hazard-prod&advancedFilter=resource.type%3D%22cloud_run_job%22%0Aresource.labels.job_name%3D%22grace-2-pyqgis-worker%22%0Aresource.labels.location%3D%22us-central1%22%0Alabels.%22run.googleapis.com/execution_name%22%3D%22grace-2-pyqgis-worker-scp4j%22",
+    "observedGeneration": 1,
+    "startTime": "2026-06-06T07:39:37.342585Z",
+    "succeededCount": 1
+  }
+}
