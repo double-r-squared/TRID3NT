@@ -39,3 +39,5 @@
 2026-06-05 | project | RESUMED on new dev machine (Debian 13, Linux maturin); gcloud/atlas/tofu installed + authed; Atlas Flex cluster grace-2-dev provisioned (us-central1) — supersedes prior M0 plan |
 2026-06-05 | job-0012-infra-20260605 | repo realignment — v0.2 delete, v0.3 layout, git init + MIT license | approved [revisions: 0] |
 2026-06-05 | job-0013-schema-20260605 | contracts v0 from SRS Appendices A-D (pydantic v2) — 91/91 tests, 35 schemas, 5 SRS amendments proposed (A1-A5), OQ-7 recommended 768 | approved [revisions: 0] |
+2026-06-05 | SRS amendment | v0.3.12 → v0.3.13: Pelicun impact post-processing as forward-looking second tool class (Decision N + §2.3 + FR-CE-5/6/7 + FR-TA-1 + FR-AS-7/8 + Appendix B.6c/d + Appendix D.3 + Milestone M5.5 + OQ-8); commit 4f757c3 |
+2026-06-05 | job-0014-infra-20260605 | GCP project grace-2-hazard-prod + 12 APIs + OpenTofu state bucket + Atlas Flex import (grace-2-dev) + DB user + GCS artifact bucket + agent-runtime SA + Secret Manager SRV; MCP smoke + OQ-7 gate qualified-pass (768/384/256 all = 1.000 @ 50 synthetic); OQ-2 sidecar; commit 5c0ab56 | approved [revisions: 0] |

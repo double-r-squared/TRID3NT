@@ -15,7 +15,7 @@ At the end of this sprint: the repo is a git repository (MIT license, v0.3 layou
 |--------|-----------|------|------------|--------|
 | job-0012-infra-20260605 | infra | Repo realignment, git init + MIT license, v0.3 layout | — | approved |
 | job-0013-schema-20260605 | schema | Contracts v0 from Appendices A–D (pydantic v2) | — | approved |
-| job-0014-infra-20260605 | infra | Toolchain + GCP project + Atlas M0 (Terraform) | 0012; user auth checkpoints | created |
+| job-0014-infra-20260605 | infra | GCP project + Atlas Flex import + OpenTofu IaC | 0012 | approved |
 | job-0015-agent-20260605 | agent | ADK hello-world Gemini + Appendix-A WS core + MCP | 0013, 0014 | created |
 | job-0016-web-20260605 | web | Web stub: CONUS MapLibre map + chat round-trip | 0013, 0015 | created |
 | job-0017-testing-20260605 | testing | M1 acceptance: protocol/contract tests + record | 0015, 0016 | created |

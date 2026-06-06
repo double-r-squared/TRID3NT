@@ -68,17 +68,26 @@ Repo is a git repository on branch `main`, root-commit `6fd37e6`. Remote: `https
 - **No `grace2` conda env on this machine** — that env (QGIS 3.40.3-Bratislava) was Mac-local for PyQGIS worker dev. Recreate when worker code lands (not blocking M1).
 - **AWS / Ollama / `llama3.2:3b`** — historically referenced in v0.2; **no longer relevant** under SRS v0.3 (Decision E — GCP only; FR-AS-1 — Gemini 3 only).
 
-## Atlas pre-flight inventory (job-0014 will consume these)
+## Live cloud substrate (job-0014 landed)
 
-- **Org ID:** `6a234700a0e1295958d10c99` (Nate's Org - 2026-06-05)
-- **Project ID:** `6a234700a0e1295958d10cf9` (project name: `grace-2`)
-- **Cluster ID:** `6a234a45e40bf4c4a1177833`
-- **Cluster name:** `grace-2-dev`
-- **Tier:** Flex backed by GCP, region `CENTRAL_US` (us-central1)
-- **MongoDB version:** 8.0.24, disk 5 GB, backups enabled
-- **State:** IDLE (deployed and reachable)
-- **SRV connection string:** `mongodb+srv://grace-2-dev.tszeckl.mongodb.net`
-- **Note for OpenTofu:** Flex clusters are queried via the `flexClusters` API endpoint, not `atlas clusters list`. job-0014 must `tofu import` this resource since it was created out-of-band via the Atlas UI.
+**GCP project `grace-2-hazard-prod`** (number `425352658356`):
+- Billing linked (account `01212A-92BE96-BB3841`)
+- 12 APIs enabled (cloudresourcemanager, serviceusage, iam, iamcredentials, run, workflows, storage, aiplatform, secretmanager, artifactregistry, logging, monitoring)
+- OpenTofu state bucket: `gs://grace-2-tfstate-grace-2-hazard-prod` (uniform BLA + PAP + versioning + 90d noncurrent lifecycle)
+- Artifact bucket: `grace-2-hazard-prod-artifacts`
+- Service account: `agent-runtime` with `roles/secretmanager.secretAccessor`
+- Secret Manager: `projects/425352658356/secrets/mongodb-srv-dev` holds the SRV-with-credentials
+
+**MongoDB Atlas Flex cluster `grace-2-dev`** (project `6a234700a0e1295958d10cf9` in org `6a234700a0e1295958d10c99`, cluster ID `6a234a45e40bf4c4a1177833`):
+- GCP `CENTRAL_US`, MongoDB 8.0.24, disk 5 GB, backups enabled, state IDLE
+- SRV: `mongodb+srv://grace-2-dev.tszeckl.mongodb.net`
+- DB user `grace2-worker` (SCRAM, `readWrite` on `grace2_dev`, CLUSTER-scoped) — credentials in Secret Manager
+- IP access list: dev `/32` only (no 0.0.0.0/0) — note: 7-day expiry deliberately not set, follow-up tracked
+- Imported into OpenTofu state via `mongodbatlas_flex_cluster.dev`; `tofu plan` clean
+
+**OpenTofu IaC** under `infra/`: backend.tf (GCS), providers.tf (google + mongodbatlas ~> 1.27 + random), gcp.tf, atlas.tf, secrets.tf, variables.tf, terraform.tfvars.example. `terraform.tfvars` gitignored.
+
+**Programmatic Atlas API key flow:** GROUP_OWNER scope keys minted for import/apply and revoked after (least-privilege ritual documented in `infra/README.md`).
 
 ## Decisions log
 
@@ -109,7 +118,8 @@ Repo is a git repository on branch `main`, root-commit `6fd37e6`. Remote: `https
 **Stage A finish, then Stage B:**
 
 1. **job-0013 ✅ closed approved 2026-06-05** — contracts package installed and verified.
-2. **job-0014 (infra: GCP project + Atlas import + Terraform)** — NEXT. Kickoff revised 2026-06-05 for Debian/Linux + Atlas Flex import flow + post-toolchain-install reality. User auth checkpoints already cleared (gcloud + atlas authed on this machine); job will: verify toolchain + auth, create the GCP project, enable APIs, write OpenTofu code under `infra/`, choose state backend (recommended: local-then-migrate-to-GCS), `tofu import` the existing `grace-2-dev` Flex cluster (provider `mongodbatlas_flex_cluster ~> 1.27`), provision dev IP allowlist + db user via OpenTofu, store SRV in Secret Manager, run MCP smoke against Flex SRV, perform the OQ-7 recall validation gate (768/384/256 dims, recall@10 ≥ 0.85 threshold on 100–300 articles), surface OQ-2 (MCP hosting) recommendation. Follow-ups: SRS NFR-C-1 amendment, Cloud Run egress allowlist trigger, conda env recreation when worker code lands.
+2. **job-0014 ✅ closed approved 2026-06-05** — `grace-2-hazard-prod` GCP project (425352658356) + 12 APIs + GCS OpenTofu state + Atlas Flex import + Secret Manager SRV + MCP smoke pass + OQ-7 gate qualified-pass (lock 768) + OQ-2 = Cloud Run sidecar. Commit `5c0ab56`.
+3. **job-0015 (agent: ADK + WebSocket + MCP)** — NEXT. Inherits OQ-2 Cloud Run sidecar recommendation; consumes Vertex AI Gemini 3 via ADC; consumes Secret Manager SRV via Workload Identity; surfaces OQ-1 (Cloud Run WS vs Agent Engine) recommendation. Kickoff already revised for Linux + Flex SRV URI.
 3. **job-0015 (agent ADK skeleton) ∥ job-0016 (web stub)** — parallel after 0014.
 4. **job-0017 (acceptance suite)** — gates sprint-03 close.
 
