@@ -119,7 +119,8 @@ Repo is a git repository on branch `main`, root-commit `6fd37e6`. Remote: `https
 
 1. **job-0013 ✅ closed approved 2026-06-05** — contracts package installed and verified.
 2. **job-0014 ✅ closed approved 2026-06-05** — `grace-2-hazard-prod` GCP project (425352658356) + 12 APIs + GCS OpenTofu state + Atlas Flex import + Secret Manager SRV + MCP smoke pass + OQ-7 gate qualified-pass (lock 768) + OQ-2 = Cloud Run sidecar. Commit `5c0ab56`.
-3. **job-0015 (agent: ADK + WebSocket + MCP)** — NEXT. Inherits OQ-2 Cloud Run sidecar recommendation; consumes Vertex AI Gemini 3 via ADC; consumes Secret Manager SRV via Workload Identity; surfaces OQ-1 (Cloud Run WS vs Agent Engine) recommendation. Kickoff already revised for Linux + Flex SRV URI.
+3. **job-0015 ✅ closed approved 2026-06-05 [1 revision]** — `services/agent/` `grace2-agent` v0.1.0 runs Gemini 2.5-pro on Vertex AI (Gemini 3 returns 404 — single-constant flip path documented); Appendix-A WebSocket server via `grace2_contracts.ws`; MCP stdio sidecar with SRV from Secret Manager via ADC. Cancel-to-cancelled-pipeline in 502ms (vs 30s budget). OQ-1 = Cloud Run + WebSocket (`--use-http2 --session-affinity --min-instances=1`). NFR-P-1 (2s first-token) escalated — current 3-8s warm. Commits `0742c06`, `cc8b2a7`.
+4. **job-0016 (web stub)** — NEXT. Consumes the running agent at localhost:8765; React+MapLibre CONUS map; chat box streams `agent-message-chunk` deltas; codegens TS from `packages/contracts/schemas/*.json` or hand-mirrors. Kickoff already revised for Linux + Chromium+Firefox spot check.
 3. **job-0015 (agent ADK skeleton) ∥ job-0016 (web stub)** — parallel after 0014.
 4. **job-0017 (acceptance suite)** — gates sprint-03 close.
 
