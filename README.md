@@ -6,7 +6,7 @@ up and runs physics-based solvers, sources real-world hazard events with
 provenance-tracked claims, and renders the results on an interactive map — no
 GIS expertise or desktop software required.
 
-See [`docs/SRS_v0.3.md`](docs/SRS_v0.3.md) for the full specification (currently
+See [`docs/srs/INDEX.md`](docs/srs/INDEX.md) for the section-addressed canonical SRS (or [`docs/SRS_v0.3.md`](docs/SRS_v0.3.md) for the regenerated monolith) — the full specification (currently
 SRS v0.3.12).
 
 ## Architecture (SRS v0.3)

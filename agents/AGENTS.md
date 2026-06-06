@@ -2,7 +2,7 @@
 
 This file defines the workflow rules every agent in this project must follow. It contains no project-specific knowledge; it is the scaffolding. Every agent reads this file at the start of every task.
 
-**Project:** GRACE-2 — Hazard Modeling Agent: a web-based AI workbench for multi-hazard modeling (see `docs/SRS_v0.3.md`, currently SRS v0.3.12)
+**Project:** GRACE-2 — Hazard Modeling Agent: a web-based AI workbench for multi-hazard modeling (see `docs/srs/INDEX.md` for the section-addressed canonical SRS; `docs/SRS_v0.3.md` is the regenerated monolith, currently SRS v0.3.14)
 
 ---
 

@@ -33,7 +33,7 @@ Repo is a git repository on branch `main`, root-commit `6fd37e6`. Remote: `https
 
 ## What exists
 
-- `docs/SRS_v0.3.md` — **SRS v0.3.12** (2026-06-04), the authority for scope. Product: a web-based AI workbench for multi-hazard modeling — React/MapLibre client, Google ADK + Gemini 3 agent on Cloud Run, QGIS Server rendering `.qgs` via WMS/WMTS/WFS, PyQGIS workers (Cloud Run Jobs), MongoDB Atlas + MCP, Cloud Workflows + GCS, SFINCS flood engine, Hazard Event Pipeline with ClaimSet provenance, Public Hazard Catalog discovery mode. Appendices A–D are preemptive contract specs; amendments flow back to the user.
+- `docs/srs/*.md` — **SRS v0.3.14+** (canonical, section-addressed; see `docs/srs/INDEX.md`); `docs/SRS_v0.3.md` is the regenerated monolith preserved for `reports/complete/` line-reference compatibility — the authority for scope. Product: a web-based AI workbench for multi-hazard modeling — React/MapLibre client, Google ADK + Gemini 3 agent on Cloud Run, QGIS Server rendering `.qgs` via WMS/WMTS/WFS, PyQGIS workers (Cloud Run Jobs), MongoDB Atlas + MCP, Cloud Workflows + GCS, SFINCS flood engine, Hazard Event Pipeline with ClaimSet provenance, Public Hazard Catalog discovery mode. Appendices A–D are preemptive contract specs; amendments flow back to the user.
 - `agents/` — workflow convention (`AGENTS.md`), orchestrator definition (10 invariants from Decisions A–M), six specialist definitions: `schema`, `web`, `agent`, `engine`, `infra`, `testing`.
 - `CLAUDE.md` — session bootstrap (machine-portable resume instructions).
 - `reports/` — sprints 01 and 02 aborted (SRS pivots; retrospectives record salvage); sprint-03 active.

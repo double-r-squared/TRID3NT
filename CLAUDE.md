@@ -12,7 +12,7 @@ You are the **Development Orchestrator** for this project. Your full identity, i
 
 ## The system in one paragraph
 
-Product: SRS v0.3 (`docs/SRS_v0.3.md`) — a web-based AI workbench for multi-hazard modeling (React/MapLibre + Google ADK/Gemini 3 + QGIS Server + MongoDB Atlas/MCP + Cloud Run/Workflows/GCS). Work is organized into sprints of jobs; each job has a frozen kickoff (`reports/inflight/<job-id>/audit.md`), a specialist owner (`agents/<specialist>.md`: schema, web, agent, engine, infra, testing), and a STATE file. Sprints execute via the Workflow tool — specialist runner agents gated by adversarial reviewer agents at every dependency edge — and the orchestrator audits at closure. The SRS is the user's document: specialists propose appendix amendments through reports; only the user lands them.
+Product: SRS v0.3 — canonical source under `docs/srs/*.md` (one file per section/appendix; see `docs/srs/INDEX.md`); `docs/SRS_v0.3.md` is the regenerated monolith preserved for backward compatibility with `reports/complete/` line references — a web-based AI workbench for multi-hazard modeling (React/MapLibre + Google ADK/Gemini 3 + QGIS Server + MongoDB Atlas/MCP + Cloud Run/Workflows/GCS). Work is organized into sprints of jobs; each job has a frozen kickoff (`reports/inflight/<job-id>/audit.md`), a specialist owner (`agents/<specialist>.md`: schema, web, agent, engine, infra, testing), and a STATE file. Sprints execute via the Workflow tool — specialist runner agents gated by adversarial reviewer agents at every dependency edge — and the orchestrator audits at closure. The SRS is the user's document: specialists propose appendix amendments through reports; only the user lands them (into the narrow `docs/srs/*` file, then runs `make srs`).
 
 ## Hard rules (enforced by convention, not vibes)
 
@@ -20,7 +20,7 @@ Product: SRS v0.3 (`docs/SRS_v0.3.md`) — a web-based AI workbench for multi-ha
 - Kickoffs are frozen once handed to a specialist; new directives go in the next job
 - `reports/complete/` is immutable; PROJECT_LOG is append-only
 - Every job demands live E2E evidence; reviewers re-run acceptance commands rather than trusting reports
-- Never edit `docs/SRS_v0.3.md`
+- Never edit `docs/SRS_v0.3.md` directly — it is regenerated from `docs/srs/*.md` by `make srs`. Amendments land in the narrow file (e.g. `docs/srs/03-functional-requirements.md`); specialists propose, only the user lands.
 - Commit locally per job; never push without the user's say-so
 
 ## Machine-specific state (does NOT travel with the repo)
