@@ -1,21 +1,24 @@
-// GRACE-2 web — TS mirror of the M1 subset of the Appendix-A WebSocket
-// contracts. The pydantic-v2 schemas live in
+// GRACE-2 web — TS mirror of the Appendix-A WebSocket contracts.
+// The pydantic-v2 schemas live in
 // `packages/contracts/schemas/*.json` (job-0013, `grace2-contracts` v0.1.0).
 //
-// Decision (M1 stub): hand-mirror, not codegen. Rationale below.
+// Decision (M1 stub / M3 web skeleton): hand-mirror, not codegen. Rationale:
 //
-//   The full set is 35 JSON schemas; M1 only needs 7 payload shapes plus the
-//   envelope. A codegen step (json-schema-to-typescript) would introduce a
-//   build-time dep, a generation script, and a generated artifact to keep in
-//   sync — overhead larger than the surface it covers. When M3 expands the
-//   client to load layers, render pipelines, and handle pick-modes (~20+
-//   shapes), codegen wins; for M1 hand-mirror is the cleaner choice.
+//   The full set is 35 JSON schemas; we mirror only the payload shapes the
+//   client actually consumes. M1 lands 6 envelopes; M3 (this job) adds the
+//   session-state + map-command surface scoped to the FIVE M3-active sub-
+//   discriminants per the job-0025 kickoff §6 (zoom-to / set-temporal-config
+//   / start-animation / stop-animation / invalidate-tiles are explicitly
+//   deferred to M4–M5). Aggregate target ~12–14 payload types after this
+//   job; the codegen-promotion trigger remains ~20 (see OQ-W-1 from
+//   job-0016). If we exceed 18 here, surface a refined OQ-W-1.
 //
 //   This file is the single point of contract truth on the web side. Any
 //   divergence from `packages/contracts/schemas/ws_*.json` is a bug — every
 //   field name and enum literal here matches the pydantic schema verbatim.
 //
-//   Surfaced as Open Question OQ-W-1 in the report.
+//   Pipeline-domain types (PipelineSnapshot beyond M1 step shape, etc.) are
+//   reserved for job-0026; this file deliberately leaves them out.
 
 // --- A.1 Envelope -------------------------------------------------------- //
 
@@ -102,16 +105,117 @@ export interface ErrorPayload {
   retry_after_seconds?: number | null;
 }
 
-// session-state nested types are carried as plain dicts on the wire per the
-// schema (`SessionStatePayload` description) — they reference Appendix D.6
-// models that the agent serializes. M1 stub only reads top-level structure.
+// --- Appendix D.2: ProjectLayerSummary --------------------------------- //
+//
+// A row in `session-state.loaded_layers`. The agent serializes the worker /
+// QGIS Server project's authoritative layer list into this shape and pushes
+// it on connect / reconnect. The client reads it; it never invents one.
+//
+// `layer_type` is open-enum-ish (raster | vector | wms | wmts | geojson);
+// surface as Open Question if a new value appears at runtime. The web side
+// renders all known values; unknown values render the row but disable the
+// type-specific affordances.
+
+export type ProjectLayerType =
+  | "raster"
+  | "vector"
+  | "wms"
+  | "wmts"
+  | "geojson";
+
+export interface ProjectLayerSummary {
+  layer_id: string;        // ULID assigned by the agent / worker
+  name: string;            // human-readable, e.g. "Storm-surge max" or "Basemap"
+  layer_type: ProjectLayerType;
+  source_url?: string | null;   // WMS endpoint or GeoJSON URL — never gs:// (Invariant 5)
+  attribution?: string | null;  // displayed in the LayerPanel row
+  visible: boolean;        // initial visibility from the project state
+  opacity: number;         // 0..1, clamped on render
+  z_index: number;         // integer; lower draws first (bottom of stack)
+  temporal?: TemporalConfig | null; // null for non-temporal layers
+}
+
+// Appendix D.6 temporal block (subset web reads). Driven by WMS TIME param.
+export interface TemporalConfig {
+  start: string;           // ISO-8601 UTC with Z
+  end: string;             // ISO-8601 UTC with Z
+  step_seconds: number;    // animation cadence (FR-QS-4)
+}
+
+// --- Appendix D.6: MapView --------------------------------------------- //
+//
+// The persisted camera position on session-state. The web client applies it
+// on session-resume (instant jump if it matches current; flyTo otherwise).
+
+export interface MapView {
+  center: [number, number]; // [lng, lat] in EPSG:4326
+  zoom: number;
+  bearing?: number;         // always 0 in v0.1 (Decision I: 2D camera lock)
+  pitch?: number;           // always 0 in v0.1 (Decision I)
+}
+
+// --- A.4 session-state -------------------------------------------------- //
+//
+// Replaces the M1 stub's `unknown[]` placeholders with the real list-of-
+// `ProjectLayerSummary` shape this job consumes. `chat_history` and
+// `pipeline_history` stay as `unknown[]` here — chat is M1's domain and
+// pipeline-history reconstruction is job-0026's domain (it will refine).
+// `current_pipeline` likewise typed-loose until job-0026 lands.
+
 export interface SessionStatePayload {
   chat_history?: unknown[];
-  loaded_layers?: unknown[];
+  loaded_layers?: ProjectLayerSummary[];
   pipeline_history?: unknown[];
   current_pipeline?: unknown | null;
-  map_view?: unknown | null;
+  map_view?: MapView | null;
 }
+
+// --- A.4 map-command --------------------------------------------------- //
+//
+// One envelope type (`map-command`) carries an internal `command`
+// discriminator. The kickoff (job-0025 audit.md §6) explicitly scopes M3 to
+// the FIVE active sub-discriminants — load-layer / remove-layer /
+// set-layer-visibility / set-layer-opacity / set-layer-order — and
+// explicitly states that the other five (zoom-to / set-temporal-config /
+// start-animation / stop-animation / invalidate-tiles) are deferred to
+// M4–M5 and NOT mirrored here. Round-1 revision: dropping the 5 deferred
+// shapes (they were mirrored speculatively in the v1 ship and flagged as a
+// scope-drift blocker by the reviewer).
+
+export interface LoadLayerCommand {
+  command: "load-layer";
+  layer: ProjectLayerSummary;
+  position?: "top" | "bottom" | number; // integer z-index slot
+}
+
+export interface RemoveLayerCommand {
+  command: "remove-layer";
+  layer_id: string;
+}
+
+export interface SetLayerVisibilityCommand {
+  command: "set-layer-visibility";
+  layer_id: string;
+  visible: boolean;
+}
+
+export interface SetLayerOpacityCommand {
+  command: "set-layer-opacity";
+  layer_id: string;
+  opacity: number; // 0..1
+}
+
+export interface SetLayerOrderCommand {
+  command: "set-layer-order";
+  layer_ids: string[]; // full ordered list, top-of-stack first
+}
+
+export type MapCommandPayload =
+  | LoadLayerCommand
+  | RemoveLayerCommand
+  | SetLayerVisibilityCommand
+  | SetLayerOpacityCommand
+  | SetLayerOrderCommand;
 
 // --- Outbound message constructors -------------------------------------- //
 
