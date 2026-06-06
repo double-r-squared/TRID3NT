@@ -1,0 +1,25 @@
+# terraform.tfvars.example — copy to `terraform.tfvars` (gitignored).
+#
+# The real values for job-0014 live in `terraform.tfvars` on the dev host
+# only; they are NEVER committed (NFR-S-3). Atlas API key material is in
+# the shell environment (MONGODB_ATLAS_PUBLIC_KEY / MONGODB_ATLAS_PRIVATE_KEY),
+# not in this file.
+
+gcp_project_id      = "grace-2-hazard-prod"
+gcp_billing_account = "01212A-92BE96-BB3841"
+gcp_region          = "us-central1"
+
+env    = "dev"
+sprint = "03"
+
+# Atlas (already-existing project + Flex cluster — imported by job-0014).
+atlas_org_id            = "6a234700a0e1295958d10c99"
+atlas_project_id        = "6a234700a0e1295958d10cf9"
+atlas_flex_cluster_name = "grace-2-dev"
+atlas_region_name       = "CENTRAL_US"
+atlas_db_name           = "grace2_dev"
+atlas_db_username       = "grace2-worker"
+
+# Developer machine's public IPv4 (/32). Refresh with:
+#   curl -4 -s https://ifconfig.me
+dev_ip_cidr = "0.0.0.0/32"
