@@ -2,7 +2,7 @@
 
 ## Hazard Modeling Agent — A Web-Based AI Workbench for Multi-Hazard Modeling
 
-**Version:** 0.3.12
+**Version:** 0.3.13
 **Status:** Draft
 **Authors:** Nathaniel J Almanza
 **Last updated:** 2026-06-04
@@ -113,6 +113,9 @@ Google's `text-embedding-005` is the standard embedding model across the system.
 **Decision M: Authoritative agency feeds are first-class sources alongside news; multi-source claim aggregation with provenance is the default extraction mode**
 For hazard event sourcing, government agency feeds (NWS, USGS, NHC, etc.) are first-class sources alongside news media. Every numerical claim about an event is captured per-source in a `NumericClaim` object and grouped into a `ClaimSet` with a computed consensus value, aggregation method, and confidence level. Two operational modes — research (v0.1 default) and deep research (v0.2+) — share the same schema and architecture, differing only in source breadth and aggregation depth. See §3.4 (FR-HEP), Appendix C (`ClaimSet`, `NumericClaim`), and FR-WC-15 (user-facing toggle).
 
+**Decision N: Impact post-processing is a separate tool class from engines** *(Forward-looking — not in M1 / not in sprint-03; first member targeted post-M5)*
+Engines wrap solvers and emit an `AssessmentEnvelope` (hazard footprint). Impact post-processors are a distinct tool class that consume an `AssessmentEnvelope` and emit an `ImpactEnvelope` (building-level damage, loss, casualty estimates). The first member is Pelicun (NHERI SimCenter, FEMA P-58 / HAZUS fragility-based assessment), introduced as a forward-looking capability targeted after M5. Keeping engines and post-processors as separate classes means impact-modeling tractability is judged independently of engine-integration tractability, and new post-processors can be added without touching engine code. The symmetric guarantee from §2.3 applies: new post-processing tools added in future versions do not require changes to the agent core, only registration of their workflows and atomic tools. See §2.3 (post-processing tool classes), Appendix B (`ImpactEnvelope`), FR-CE-5 through FR-CE-7, and Milestone M5.5.
+
 ### 2.2 Component diagram
 
 ```
@@ -204,7 +207,17 @@ Engines are selected for each version based on **tractability**: a solver makes 
 
 Engines requiring substantial new tooling — full 3D CFD flooding (OpenFOAM-class), coupled fire-atmosphere (WRF-Fire), 3D ocean simulation, multiphase debris flow CFD — are not on the current roadmap. The architecture supports them in principle but the integration cost is currently disproportionate to other wins available. The agent may later evaluate these for inclusion (see FR-AS-9).
 
+**Post-processing tool classes** *(Forward-looking — not in M1 / not in sprint-03; first member targeted post-M5.)* Engines emit `AssessmentEnvelope`; post-processing tool classes consume one and emit a different envelope. They are catalogued separately so the engine list above remains engines-only and post-processing capability is enumerated explicitly rather than smuggled into the engine catalog. Post-processors do not produce georeferenced solver output; they emit an `ImpactEnvelope` with building-level damage, loss, downtime, and casualty summaries (see Appendix B for the schema).
+
+| Tool class | Tool | Integration mode | Target | Notes |
+|---|---|---|---|---|
+| Impact (fragility-based damage/loss) | Pelicun (NHERI SimCenter) | Python shim | post-M5 (see M5.5) | FEMA P-58 / HAZUS fragility libraries via the bundled Damage and Loss Model Library; consumes an `AssessmentEnvelope`, emits an `ImpactEnvelope`; BSD 3-Clause |
+
+Future post-processing classes (regional-resilience indices, business-interruption models, network-cascading impact tools) follow the same contract: consume an envelope, emit an envelope, register a workflow.
+
 **Common contract.** All engines share `(location, forcing) → AssessmentEnvelope` (see Appendix B for the envelope schema). New engines added in future versions do not require changes to the agent core, only registration of their workflows and atomic tools.
+
+**Post-processing tool-class contract.** *(Forward-looking — not in M1 / not in sprint-03; first member targeted post-M5.)* In parallel with engines, the architecture admits a second tool class — **impact post-processors** — that share the contract `AssessmentEnvelope → ImpactEnvelope` (see Appendix B for both envelope schemas). A post-processor consumes a previously produced assessment envelope and emits a sibling envelope carrying building-level damage states, loss, downtime, and casualty estimates. Post-processors do not produce georeferenced solver output; they are composable downstream of any modeled or discovered envelope. Pelicun is the first member (see Decision N). Adding a new post-processor does not require changes to engine code, and engines remain unaware of which post-processors (if any) consume their output. The symmetric guarantee applies: new post-processing tools added in future versions do not require changes to the agent core, only registration of their workflows and atomic tools. The data-dependency invariant (Pelicun is never invoked before a simulation result exists) is enforced at the orchestration layer by FR-CE-6; the agent invokes the impact-post-processing workflow (`run_pelicun_impact`, defined in FR-TA-1) only when a real `AssessmentEnvelope` is available — either freshly produced or fetched from MongoDB.
 
 ---
 
@@ -348,12 +361,13 @@ The agent shall communicate with the web client over a single WebSocket connecti
 A `cancel` message shall interrupt the LLM generation, send termination signals to in-flight Cloud Workflows executions, and return a `pipeline_state` reflecting cancellation. Cancellation shall complete within 30 seconds.
 
 **FR-AS-7: Determinism boundary**
-The agent shall never write numerical model output to its narrative response. Numbers in user-facing summaries (depths, areas, counts, durations) shall be sourced from the structured `AssessmentEnvelope` (see Appendix B) and tool result schemas. Tool result schemas shall include the typed metrics fields necessary for narrative generation.
+The agent shall never write numerical model output to its narrative response. Numbers in user-facing summaries (depths, areas, counts, durations) shall be sourced from the structured `AssessmentEnvelope` (see Appendix B) and tool result schemas. Tool result schemas shall include the typed metrics fields necessary for narrative generation. **(Forward-looking extension — applies once impact post-processing ships, post-M5.)** Damage-state counts, expected loss ratios, repair-cost statistics, downtime estimates, collapse and unsafe-placard probabilities, and casualty estimates shall be sourced from the structured `ImpactEnvelope` (see Appendix B.6c) and never generated by the LLM. The same rule applies: the LLM reads typed metrics; it does not invent them.
 
 **FR-AS-8: Confirmation hooks**
 Destructive, expensive, or otherwise irreversible operations shall pause the agent and require user confirmation. v0.1 confirmation triggers:
 - Any solver execution (resource implication)
 - Any operation that writes to MongoDB beyond the agent's own session records
+- **(Forward-looking — not in M1 / not in sprint-03; applies once impact post-processing ships, post-M5.)** Any impact post-processing execution — Pelicun and any future tool of its class — parallel to solver execution. Pelicun consumes minutes of compute and produces durable artifacts; it is classed as solver-grade paid compute and requires explicit confirmation under this requirement (no cost-incurring run is silently initiated).
 
 Cost-estimation-based triggers are deferred indefinitely until the system can produce cent-level precise estimates; surfacing approximate costs to the user is worse than not surfacing them at all.
 
@@ -423,7 +437,7 @@ This requirement applies to every workflow, including those added in future vers
 The agent's tool inventory has two layers: deterministic **workflows** that implement common end-to-end patterns, and **atomic tools** that perform single-purpose operations. The LLM selects from both layers when responding to a user message — workflows for common requests, atomic tools (possibly composed) for novel or precise requests. Intent classification is not a separate phase; the LLM's choice of which tool to invoke is the classification.
 
 **FR-TA-1: Workflows**
-A workflow is a deterministic Python function exposing a stable signature and returning an `AssessmentEnvelope` (see Appendix B for the full schema). Workflows compose atomic tools in a tested sequence and are independently unit-testable without LLM calls. v0.1 workflows:
+A workflow is a deterministic Python function exposing a stable signature and returning an `AssessmentEnvelope` or `ImpactEnvelope` (see Appendix B for both schemas). Workflows compose atomic tools in a tested sequence and are independently unit-testable without LLM calls. v0.1 workflows:
 
 *Modeling workflows (`envelope_type: "modeled"`):*
 - `run_storm_surge_flood(bbox, storm_track) → AssessmentEnvelope`
@@ -433,6 +447,9 @@ A workflow is a deterministic Python function exposing a stable signature and re
 
 *Discovery workflow (`envelope_type: "discovered"`):*
 - `show_hazard_layer(topic, location) → AssessmentEnvelope` — searches the curated public hazard catalog, fetches matching layers, adds them to the project, computes summary statistics from the displayed area, returns an envelope with no `solver_run_ids` and discovery-specific provenance
+
+*Impact post-processing workflows (`envelope_type: "impact"`):* **(Forward-looking — not in M1 / not in sprint-03; first member targeted post-M5; see Milestone M5.5.)**
+- `run_pelicun_impact(source_run_id | assessment_envelope, fragility_source?) → ImpactEnvelope` — accepts either a `solver_run_id` (the workflow resolves the envelope from MongoDB) or an in-memory `AssessmentEnvelope`; runs Pelicun with the chosen fragility/consequence library (HAZUS-EQ, HAZUS-HU, HAZUS-FL, FEMA-P58, or user-supplied — see OQ-8); returns an `ImpactEnvelope` with building-level damage states, loss, downtime, and casualty metrics. The data-dependency precondition (a referenced solver run exists and is complete) is enforced at the orchestration layer per FR-CE-6. Confirmation-gated per FR-AS-8 (paid compute).
 
 The LLM selects the right workflow based on tool docstrings (FR-TA-3 metadata discipline). When the choice is genuinely ambiguous, the LLM invokes `request_clarification` (FR-AS-11) rather than guessing.
 
@@ -742,6 +759,7 @@ The table below summarizes the five-collection structure. Full collection schema
 |---|---|---|---|
 | **Projects** | `projects` — session, hazard, bbox, layer summary, `qgs_uri` | `.qgs` file (XML) | GCS file |
 | **Model runs and discoveries** | `runs` — status, embedded `AssessmentEnvelope`, metrics, provenance, user spatial inputs | COGs, FlatGeobufs via `assessment.layers[].uri` | Embedded `assessment` document |
+| **Impact runs** *(forward-looking — not in M1 / not in sprint-03; targeted post-M5)* | `runs` (same collection) with `run_type: "impact"`; embeds an `ImpactEnvelope` (Appendix B.6c) in the `assessment` field as a discriminated envelope blob | FlatGeobuf / GeoParquet per-building damage and loss outputs via `assessment.layers[].uri` | Embedded envelope document |
 | **News articles** | `articles` — URL, title, dates, embedding, optional `html_uri` | Full HTML if retained | MongoDB document |
 | **Events** | `events` — `EventMetadata` documents (Appendix C) with embeddings | Forcing data files if derived | MongoDB document |
 | **Sessions** | `sessions` — chat history, project IDs, pipeline history, current map state | (none) | MongoDB |
@@ -762,6 +780,15 @@ The `run_solver` tool shall accept a `compute_class` parameter mapping to Cloud 
 
 **FR-CE-4: Output format**
 All raster outputs shall be COG. All vector outputs shall be FlatGeobuf or GeoParquet. All outputs include CRS, units, and provenance metadata.
+
+**FR-CE-5: Impact post-processing as a registered Cloud Workflow** *(Forward-looking — not in M1 / not in sprint-03; targeted post-M5, see Milestone M5.5.)*
+Impact post-processing tools (Pelicun and any future member of the tool class defined in Decision N) shall be packaged as Docker containers and dispatched as Cloud Run Jobs orchestrated by Cloud Workflows, in the same pattern as the SFINCS solver (per FR-CE-1, FR-CE-2). The Pelicun container reads its inputs from GCS, runs the assessment, writes per-building damage and loss results as FlatGeobuf or GeoParquet to GCS (per FR-CE-4), and emits a completion event. Workers run on Cloud Run Jobs with no minimum instances (per NFR-C-2) so no idle cost is added. The workflow shall be deterministic — driven by `run_pelicun_impact`, not by an atomic-tool reasoning loop — to satisfy NFR-C-3.
+
+**FR-CE-6: AssessmentEnvelope precondition** *(Forward-looking — not in M1 / not in sprint-03; targeted post-M5.)*
+Impact post-processing shall not be dispatched until a referenced `solver_run_id` is in `complete` status with a persisted `AssessmentEnvelope`. The Cloud Workflow resolves the envelope by `run_id` from MongoDB (per FR-MP-2: read pattern always via MongoDB) before invoking the container. This makes the data-dependency invariant load-bearing at the orchestration layer: Pelicun is never invoked before a simulation result exists. If the referenced run is `pending`, `running`, `failed`, or `cancelled`, the workflow shall return a typed error (`IMPACT_PRECONDITION_NOT_MET`) rather than dispatch the job.
+
+**FR-CE-7: Cancellation conformance** *(Forward-looking — not in M1 / not in sprint-03; targeted post-M5.)*
+Impact post-processing jobs shall honor the same 30-second cancellation contract as solvers (per FR-AS-6 and NFR-R-3). A `cancel` message shall signal the in-flight Cloud Workflows execution, propagate to the Pelicun Cloud Run Job, and complete within 30 seconds. Cancellation routes through the same UI cancel button as solver runs (per FR-WC-9); no new UI surface is required. Single-asset and small-portfolio Pelicun runs fit comfortably inside this budget; large regional runs that cannot complete cancellation in 30 seconds shall be decomposed into chunked sub-jobs or staged behind a longer-running cancellation token in a later version (not in v0.1 scope).
 
 ---
 
@@ -847,6 +874,7 @@ Items deferred to future versions are not categorically excluded; they are simpl
 5. **Forcing data caching**: DEMs and landcover for the same bbox shouldn't be re-fetched per run. GCS-backed cache keyed by `(source, bbox, resolution)` is the working assumption; concrete cache-key conventions and eviction policy to be designed during M4 / M5.
 6. **Pre-baked demo scenarios**: should specific high-impact historical events (Hurricane Ian, etc.) have pre-computed results available for instant demo, or always run live? Live is more impressive when it works; pre-baked is safer for demos.
 7. **Vector embedding dimension**: `text-embedding-005` defaults to 768-dim but supports configurable down to 128. Verify recall trade-off on a small corpus before locking the Atlas Vector Search index config. The model itself is decided (see Decision L in §2.1).
+8. **Fragility and consequence-curve sourcing for Pelicun** *(forward-looking — not blocking M1 / sprint-03; decide before M5.5)*: choose between HAZUS Hurricane/Flood damage functions (coarser, building-level, regional-scale appropriate), FEMA P-58 component fragilities (component-level, building-specific, much richer but slower), Pelicun's bundled DLML defaults, or user-supplied YAML/CSV with explicit provenance. Decision affects `ImpactEnvelope.fragility_source` values, output resolution, runtime, and the per-claim citation discipline required under Decision M. Bundled defaults are likely v0.1 with an override mechanism deferred. See Appendix B.6c and §2.3 post-processing tool classes.
 
 ---
 
@@ -860,14 +888,15 @@ Milestones describe deliverable scope, not schedule. They are sequenced by depen
 | **M2: QGIS Server in cloud** | QGIS Server container running on Cloud Run, serving a sample `.qgs` with a basemap layer. PyQGIS worker prototype reads/writes a project from GCS. | M1 |
 | **M3: Web client skeleton** | React app with MapLibre map displaying QGIS Server tiles. Chat panel, layer toggle, pipeline strip components. WebSocket to agent. | M1, M2 |
 | **M4: First tools** | DEM fetch, layer load, MongoDB MCP queries wired into the agent. Gemini successfully calls them and returns results. QGIS algorithm discovery (Level 1a per FR-AS-9) operational. | M1, M2 |
-| **M5: Hardcoded flood demo** | One specific historical event modeled end-to-end with mostly hardcoded inputs. A storm-surge workflow function. SFINCS containerized and runs as a Cloud Run Job. | M4 |
+| **M5: Hardcoded flood demo** | One specific historical event modeled end-to-end with mostly hardcoded inputs. A storm-surge workflow function. SFINCS containerized and runs as a Cloud Run Job. The `AssessmentEnvelope` produced by this milestone is the canonical input to M5.5. | M4 |
+| **M5.5: Impact post-processing (Pelicun) v0** *(Forward-looking — not in M1 / not in sprint-03)* | Pelicun packaged as a Docker container and dispatched as a Cloud Run Job orchestrated by Cloud Workflows (per FR-CE-5). Fragility curves bundled from the Damage and Loss Model Library (HAZUS Flood v6.1 for the M5 demo); per-building damage states and loss summaries written as FlatGeobuf to GCS. `run_pelicun_impact` workflow consumes the M5 `AssessmentEnvelope` and emits an `ImpactEnvelope` (Appendix B.6c). AssessmentEnvelope precondition enforced (FR-CE-6); 30-second cancellation conformance verified (FR-CE-7); confirmation gating wired (FR-AS-8). | M5 |
 | **M6: Generalized flood workflows** | Parameterized location, three workflows (storm surge, pluvial, fluvial) operational with arbitrary locations. User-input solicitation (FR-AS-10) integrated for cases requiring spatial input. | M5 |
 | **M7: Hazard event pipeline (research mode)** | NewsAPI integration, NWS / NHC / USGS NWIS agency feeds wired up, `extract_event_metadata` with claim-set production, `aggregate_claims_across_sources` with research-mode rules. End-to-end demo: real-event prompt → claim aggregation → model run. MongoDB corpus storage and Atlas Vector Search operational. | M6 |
 | **M8: Public hazard layer discovery** | Curated `public_hazard_catalog.yaml` populated with the v0.1 entries from FR-PHC-4. `show_hazard_layer` workflow operational. Discovery envelope rendering in the UI. | M3, M4 |
 | **M9: Time scrubbing and pipeline UX** | WMS-T temporal layer support, time scrubber component, pipeline strip with progress and cancellation. Location auto-snap (FR-WC-12) and pick-modes (FR-WC-13/14) integrated. | M3, M6 |
 | **M10: Polish and v0.1 release** | Documentation, demo videos, deployment instructions, repository hygiene (license, README, etc.). | all above |
 
-Milestones M4, M5, M6, M7, M8 can be parallelized to a meaningful degree given multiple contributors; M3 and M9 share UI surface and may also overlap. The dependency column captures hard prerequisites only.
+Milestones M4, M5, M6, M7, M8 can be parallelized to a meaningful degree given multiple contributors; M3 and M9 share UI surface and may also overlap. The dependency column captures hard prerequisites only. M5.5 (impact post-processing) parallelizes with M6 and M7 once M5 lands — it consumes the M5 envelope and is independent of the generalized flood workflows and the hazard event pipeline.
 
 ---
 
@@ -890,6 +919,7 @@ Milestones M4, M5, M6, M7, M8 can be parallelized to a meaningful degree given m
 | 0.3.10 | 2026-06-04 | Goal/spec alignment pass. **Tier 1 dissolved**: removed FR-TA-1 intent classifier; renamed FR-TA-2 → FR-TA-1 (Workflows), FR-TA-3 → FR-TA-2 (Atomic tools), FR-TA-4 → FR-TA-3 (Metadata discipline); intent classification is now implicit in the LLM's tool selection. **New FR-AS-11 (ambiguity handling)**: agent invokes `request_clarification` when paths are substantively different and ambiguous; new tool added to FR-TA-2; new `clarification-request`/`clarification-response` messages in Appendix A; new `CLARIFICATION_TIMEOUT` error. **New Decision K + FR-AS-12**: user supplies intent and irreducible inputs only; workflows fetch authoritative data rather than requiring user-supplied wind, weather, fuels, etc.; default-by-fetch policy applies to every workflow. **New Decision L**: `text-embedding-005` standardized as the embedding model. **FR-AS-9 renamed** Tier 1a/1b/2a/2b/3 → Level 1a/1b/2a/2b/3 to disambiguate from removed FR-TA tier framework. **Open questions cleanup**: closed OQ #5 (FlatGeobuf chosen); removed OQ #9 (migration trigger noted, not a blocker); renumbered remaining OQs. **Wording fixes**: §1.2 clarified wildfire modeling deferred but wildfire discovery in scope; §1.3 definitions updated for two-layer architecture; Decision G rewritten to drop "Three tiers" framing; inline tier references throughout document rewritten as workflows/atomic tools. |
 | 0.3.11 | 2026-06-04 | Reframed news pipeline as the Hazard Event Pipeline (FR-NP → FR-HEP) covering authoritative agency feeds + news media + generic web fetch. **Two operational modes**: research mode (v0.1 default, focused source set, simple aggregation) and deep research mode (v0.2+, broader sources and convergence). **Multi-source claim aggregation** introduced via new `NumericClaim` and `ClaimSet` types in Appendix C — every numerical intensity field is now a `ClaimSet` with consensus value, method, confidence, and per-source provenance. Source-authority tiering (6 tiers from agency direct-measurement to social) defined in FR-HEP-2; used by aggregation. **New tools** added to FR-TA-2: `fetch_nws_event`, `fetch_storm_events_db`, `web_fetch`, `aggregate_claims_across_sources`. Deferred to v0.2+: `fetch_nifc_incidents`, `fetch_usgs_earthquake`, `web_fetch_browser`. **New FR-WC-15**: research/deep research mode toggle in the UI. **New Decision M**: authoritative agency feeds as first-class sources alongside news; claim aggregation with provenance as default. Updated §1.1 purpose and §1.2 scope to reflect broader event sourcing. Worked examples in Appendix C updated to show claim-set shape. |
 | 0.3.12 | 2026-06-04 | Removed time/effort estimates from milestones (§7). Milestones now describe scope and dependencies, not schedule. Added an explicit M8 for public hazard layer discovery (was implicit in earlier milestones), reflecting it as a parallel track to flood-modeling work rather than blocking. |
+| 0.3.13 | 2026-06-05 | Introduced impact post-processing as a forward-looking second tool class alongside engines (all additions explicitly deferred post-M5 so in-flight sprint-03 work is not disturbed). **New Decision N**: engines emit `AssessmentEnvelope`, post-processors consume one and emit an `ImpactEnvelope`. Pelicun (NHERI SimCenter, FEMA P-58 / HAZUS via the bundled Damage and Loss Model Library) is the first member. **§2.3**: post-processing tool-class contract added next to the engine common contract; new "Post-processing tool classes" table with one Pelicun row. **FR-CE-5/6/7**: Pelicun runs as a Cloud Run Job orchestrated by Cloud Workflows with an `AssessmentEnvelope` precondition enforced via MongoDB lookup and 30-second cancellation conformance (FR-AS-6 / NFR-R-3). **FR-TA-1**: return-type widened to `AssessmentEnvelope` or `ImpactEnvelope`; new impact-post-processing workflow group with `run_pelicun_impact`. **FR-AS-7 / FR-AS-8**: extended to source narrative numbers from `ImpactEnvelope` and to confirmation-gate any impact post-processing execution. **Appendix B.6c / B.6d**: full `ImpactEnvelope` Pydantic shape (sibling type with its own `envelope_type: Literal["impact"]`; `AssessmentEnvelope.envelope_type` is unchanged), supporting types, and a worked Hurricane Ian Pelicun example. B.7 design-rationale bullets extended to acknowledge the impact case. **Appendix D.3**: `RunDocument.run_type` literal extended with `"impact"`; comment clarified that "modeled"/"discovered" mirror `AssessmentEnvelope.envelope_type` and "impact" mirrors `ImpactEnvelope.envelope_type`. **FR-MP-5**: new Impact runs row co-located in the `runs` collection. **Milestones**: new M5.5 ("Impact post-processing (Pelicun) v0") inserted after M5, parallelizes with M6/M7. **OQ-8**: fragility/consequence-curve sourcing (HAZUS vs FEMA P-58 vs bundled vs user-supplied). |
 
 ---
 
@@ -1775,11 +1805,252 @@ A discovery envelope produced by `show_hazard_layer("wildfire", "Washington stat
 
 Note: `wildfire` subtype payload is defined for v0.2 but the discovery envelope's summary fields are simple enough to define earlier as a `DiscoverySummary`-style payload. Exact subtype schema for discovery-derived wildfire data is to be finalized when the wildfire engine lands; for v0.1 the discovery payload is a permissive `dict` validated at the workflow layer.
 
+### B.6c ImpactEnvelope (post-processing)
+
+> **(Forward-looking — not in M1 / not in sprint-03; first member (Pelicun) targeted post-M5, see Milestone M5.5.)**
+
+The `ImpactEnvelope` is a sibling structure to `AssessmentEnvelope`, produced by the impact post-processing tool class (Decision N). It shares the envelope plumbing — `schema_version`, `project_id`, `session_id`, `bbox`, `crs`, `time_range`, `layers`, `provenance`, lifecycle fields — and adds fields that describe the upstream envelope it was derived from, the fragility/consequence library it used, and the building-level metrics it produced. On `ImpactEnvelope`, `envelope_type` takes the literal value `"impact"` as a parallel discriminator on this sibling type — readers that switch on `envelope_type` get a third arm rather than a new top-level type to dispatch on. `AssessmentEnvelope.envelope_type` (`Literal["modeled", "discovered"]`) is **not** modified by this amendment; the two literal sets are unioned only at the call site of any reader that handles both envelope types.
+
+`hazard_type` is inherited from the parent `AssessmentEnvelope` (an impact envelope derived from a flood run carries `hazard_type: "flood"`); no new `"impact"` hazard-type value is introduced.
+
+```python
+class ImpactEnvelope(BaseModel):
+    schema_version: Literal["v1"] = "v1"
+
+    # Identity
+    envelope_id: str                       # ULID
+    project_id: str                        # ULID
+    session_id: str                        # ULID
+    envelope_uri: str                      # canonical URI for citation by narrative
+
+    # Mode discriminator (parallel to AssessmentEnvelope.envelope_type;
+    # readers handling both types union the literals at the call site)
+    envelope_type: Literal["impact"] = "impact"
+
+    # Lineage (binds damage/loss claims to the upstream hazard footprint)
+    parent_envelope_id: str                # ULID of the source AssessmentEnvelope
+    source_envelope_uri: str               # URI of the source AssessmentEnvelope
+    parent_solver_run_ids: list[str]       # ULIDs of solver runs that produced the parent
+
+    # Classification (inherited from parent)
+    hazard_type: Literal["flood", "groundwater", "wildfire", "seismic", "spill"]
+    workflow_name: str                     # e.g., "run_pelicun_impact"
+    tool_name: Literal["pelicun"]          # extensible as new post-processors land
+    tool_version: str                      # e.g., "3.9.0"
+
+    # Spatial and temporal extent (typically copied from the parent envelope)
+    bbox: tuple[float, float, float, float]
+    crs: str = "EPSG:4326"
+    time_range: TimeRange | None
+
+    # Inputs to the impact run
+    asset_inventory_ref: str               # URI or content hash of building/asset inventory
+    hazard_intensity_measure: HazardIntensityMeasure
+    monte_carlo_samples: int               # e.g., 10_000
+
+    # Fragility / consequence provenance (per OQ-8 and Decision M citation discipline)
+    fragility_source: Literal[
+        "hazus_eq", "hazus_hu", "hazus_fl",
+        "fema_p58", "bundled", "user_supplied"
+    ]
+    fragility_provenance: FragilityProvenance
+
+    # Outputs (renderable layers — e.g., per-building damage states as FlatGeobuf)
+    layers: list[ResultLayer]
+
+    # Structured metrics — every number the narrative cites lives here
+    impact: ImpactPayload
+
+    # Provenance
+    provenance: Provenance
+
+    # Lifecycle
+    created_at: datetime
+    completed_at: datetime
+    compute_duration_s: float              # informs cancellation-budget classification
+```
+
+**Supporting types:**
+
+```python
+class HazardIntensityMeasure(BaseModel):
+    kind: Literal[
+        "flood_depth_m",
+        "pga_g",
+        "sa_t1_g",
+        "peak_drift_ratio",
+        "floor_acceleration_g",
+        "wind_3s_gust_mph"
+    ]
+    sampling_method: str                   # how the IM was sampled from the parent envelope
+
+class FragilityProvenance(BaseModel):
+    library: Literal[
+        "HAZUS_EQ", "HAZUS_HU", "HAZUS_FL",
+        "FEMA_P58", "USER"
+    ]
+    library_version: str                   # e.g., "HAZUS_FL_v6.1", "FEMA_P58_2nd"
+    dlml_commit: str | None                # Damage and Loss Model Library commit hash, if bundled
+    notes: str | None
+
+class ImpactPayload(BaseModel):
+    metrics: ImpactMetrics
+
+class ImpactMetrics(BaseMetrics):
+    # Damage state distribution (HAZUS DS0..DS4, or per-component for P-58)
+    damage_state_distribution: dict[str, DamageStateStats]
+
+    # Loss metrics (USD)
+    repair_cost_usd: DistributionStats
+    repair_cost_ratio: DistributionStats           # fraction of replacement cost
+
+    # Downtime (days)
+    repair_time_days: DistributionStats
+
+    # Casualties (counts of people, by HAZUS severity 1-4)
+    injuries_by_severity: dict[Literal["sev1", "sev2", "sev3", "sev4"], DistributionStats]
+    fatalities: DistributionStats
+
+    # Building-level safety indicators (dimensionless probabilities)
+    collapse_probability: float
+    unsafe_placard_probability: float
+
+    # Run configuration
+    pelicun_version: str                   # denormalized from tool_version for narrative use
+
+class DamageStateStats(BaseModel):
+    realization_count: int
+    probability_mass: float                # dimensionless [0, 1]
+
+class DistributionStats(BaseModel):
+    mean: float
+    median: float
+    p10: float
+    p50: float
+    p90: float
+```
+
+`tool_name` is currently a `Literal["pelicun"]`; it widens as new post-processors are added (e.g., regional resilience indices, business-interruption tools).
+
+### B.6d Example: Hurricane Ian Pelicun ImpactEnvelope (forward-looking — not in M1 / not in sprint-03)
+
+Derived from the modeled flood envelope in B.6 (Hurricane Ian storm surge over Fort Myers). Note `envelope_type: "impact"`, `parent_envelope_id` pointing at the source `AssessmentEnvelope`, `hazard_type: "flood"` inherited from the parent, and `fragility_source: "hazus_fl"` for HAZUS Flood v6.1.
+
+```json
+{
+  "schema_version": "v1",
+  "envelope_id": "01HY...",
+  "project_id": "01HX...",
+  "session_id": "01HX...",
+  "envelope_uri": "gs://bucket/impacts/01HY.../envelope.json",
+  "envelope_type": "impact",
+  "parent_envelope_id": "01HX...",
+  "source_envelope_uri": "gs://bucket/runs/01HX.../envelope.json",
+  "parent_solver_run_ids": ["01HX..."],
+  "hazard_type": "flood",
+  "workflow_name": "run_pelicun_impact",
+  "tool_name": "pelicun",
+  "tool_version": "3.9.0",
+  "bbox": [-82.10, 26.40, -81.60, 26.90],
+  "crs": "EPSG:4326",
+  "time_range": {
+    "start": "2022-09-28T00:00:00Z",
+    "end": "2022-09-30T00:00:00Z"
+  },
+  "asset_inventory_ref": "gs://bucket/cache/buildings/ms_<hash>.fgb",
+  "hazard_intensity_measure": {
+    "kind": "flood_depth_m",
+    "sampling_method": "per-building point sample from max_depth raster"
+  },
+  "monte_carlo_samples": 10000,
+  "fragility_source": "hazus_fl",
+  "fragility_provenance": {
+    "library": "HAZUS_FL",
+    "library_version": "HAZUS_FL_v6.1",
+    "dlml_commit": "a1b2c3d",
+    "notes": "bundled DLML defaults; no user override"
+  },
+  "layers": [
+    {
+      "layer_id": "building_damage_states",
+      "name": "Per-building damage state (most likely)",
+      "layer_type": "vector",
+      "uri": "gs://bucket/impacts/01HY.../building_ds.fgb",
+      "style_preset": "damage-state-graduated",
+      "temporal": null,
+      "role": "primary",
+      "units": null
+    }
+  ],
+  "impact": {
+    "metrics": {
+      "damage_state_distribution": {
+        "DS0": {"realization_count": 2410, "probability_mass": 0.241},
+        "DS1": {"realization_count": 3120, "probability_mass": 0.312},
+        "DS2": {"realization_count": 2180, "probability_mass": 0.218},
+        "DS3": {"realization_count": 1490, "probability_mass": 0.149},
+        "DS4": {"realization_count": 800,  "probability_mass": 0.080}
+      },
+      "repair_cost_usd": {
+        "mean": 184500000.0, "median": 172000000.0,
+        "p10": 121000000.0, "p50": 172000000.0, "p90": 268000000.0
+      },
+      "repair_cost_ratio": {
+        "mean": 0.27, "median": 0.24, "p10": 0.14, "p50": 0.24, "p90": 0.42
+      },
+      "repair_time_days": {
+        "mean": 142.0, "median": 118.0, "p10": 60.0, "p50": 118.0, "p90": 260.0
+      },
+      "injuries_by_severity": {
+        "sev1": {"mean": 84.0, "median": 76.0, "p10": 41.0, "p50": 76.0, "p90": 140.0},
+        "sev2": {"mean": 22.0, "median": 19.0, "p10": 9.0,  "p50": 19.0, "p90": 41.0},
+        "sev3": {"mean": 7.0,  "median": 6.0,  "p10": 2.0,  "p50": 6.0,  "p90": 14.0},
+        "sev4": {"mean": 3.0,  "median": 2.0,  "p10": 0.0,  "p50": 2.0,  "p90": 7.0}
+      },
+      "fatalities": {
+        "mean": 3.0, "median": 2.0, "p10": 0.0, "p50": 2.0, "p90": 7.0
+      },
+      "collapse_probability": 0.018,
+      "unsafe_placard_probability": 0.229,
+      "pelicun_version": "3.9.0"
+    }
+  },
+  "provenance": {
+    "data_sources": [
+      {
+        "name": "HAZUS Flood v6.1 (bundled via Pelicun DLML)",
+        "uri": "pelicun://dlml/HAZUS_FL_v6.1",
+        "accessed_at": "2026-06-04T20:23:01Z"
+      },
+      {
+        "name": "Microsoft Building Footprints",
+        "uri": "gs://bucket/cache/buildings/ms_<hash>.fgb",
+        "accessed_at": "2026-06-04T20:23:02Z"
+      }
+    ],
+    "article_ids": ["01HX...", "01HX..."],
+    "event_id": "01HX..."
+  },
+  "created_at": "2026-06-04T20:23:00Z",
+  "completed_at": "2026-06-04T20:24:18Z",
+  "compute_duration_s": 78.0
+}
+```
+
+**Design rationale (forward-looking):**
+- **Sibling, not extension.** `ImpactEnvelope` is a separate top-level type, not a new subtype of `AssessmentEnvelope`. It has its own `envelope_type` field pinned to `Literal["impact"]`; `AssessmentEnvelope.envelope_type` keeps its existing `Literal["modeled", "discovered"]` and is not extended by this amendment. Engines and post-processors emit semantically different artifacts (hazard footprint vs. building-level damage/loss) and a single envelope conflating both would force every reader to handle every field combination. The shared plumbing (`bbox`, `crs`, `layers`, `provenance`, lifecycle) is duplicated by design; the duplication is cheaper than a discriminated mega-envelope.
+- **`envelope_type: "impact"` is a parallel discriminator value on the sibling class.** Readers that switch on `envelope_type` get a third arm rather than dispatching on a different top-level type. `AssessmentEnvelope`'s `Literal["modeled", "discovered"]` is not modified; code paths that handle both envelope shapes union the two literal sets at the call site (`Literal["modeled", "discovered", "impact"]`).
+- **Lineage by `parent_envelope_id` + `parent_solver_run_ids`, not by overloading `solver_run_ids`.** Reusing `AssessmentEnvelope.solver_run_ids` for impact lineage would conflate "runs that produced this envelope" with "runs that produced this envelope's parent". A dedicated lineage field keeps the semantics unambiguous.
+- **`hazard_type` inherited from parent, no `"impact"` hazard value.** Impact is computed against a hazard footprint; the hazard remains what it was (flood, seismic, etc.). The `hazard_type` literal in B.2 does not need extension.
+- **`forcing` and `catalog_entries` are absent on `ImpactEnvelope`.** Impact envelopes do not carry their own forcing summary (the parent does) and do not reference public catalogs (the parent or its provenance does). The corresponding bullets in B.7 are amended to acknowledge the impact case explicitly.
+- **`fragility_provenance` is first-class.** Per Decision M (source-authority tiers and citation discipline), every numerical claim cites its source. Damage and loss numbers must be traceable to the fragility/consequence library that produced them; the field is required, not optional.
+- **Confirmation gating lives in FR-AS-8, not in the schema.** The envelope itself is data; gating is workflow-layer policy — any cost-incurring run requires explicit confirmation.
+
 ### B.7 Design rationale
 
 - **`envelope_type` discriminator**: modeling and discovery produce semantically different artifacts but share the same shape downstream (UI rendering, narrative generation, storage). The discriminator makes the distinction explicit without forking the schema.
-- **`forcing` is None for discovery**: there's no boundary condition to summarize; the catalog entry serves that role instead.
-- **`catalog_entries` is None for modeling**: solver outputs aren't catalog-sourced, even when they read public data as inputs (those go in `provenance.data_sources` instead).
+- **`forcing` is None for discovery, and absent on `ImpactEnvelope`**: there's no boundary condition to summarize on a discovery envelope (the catalog entry serves that role), and impact envelopes do not carry their own forcing summary — the parent `AssessmentEnvelope` does.
+- **`catalog_entries` is None for modeling, and absent on `ImpactEnvelope`**: solver outputs aren't catalog-sourced, even when they read public data as inputs (those go in `provenance.data_sources` instead); impact envelopes inherit catalog provenance from their parent envelope and do not duplicate it.
 - **`solver_run_ids` empty for discovery**: distinguishes computational artifacts from referential ones; supports queries like "which envelopes required actual compute?"
 - **Discriminator + optional subtype payloads**: hazard-specific fields stay typed; the base stays clean; one envelope works for all hazards.
 - **All metrics structured, none free-text**: every number the narrative cites lives in a typed field. The LLM reads them; it cannot invent them.
@@ -2349,8 +2620,12 @@ class RunDocument(BaseModel):
     completed_at: datetime | None
     duration_seconds: float | None
 
-    # Type discriminator (mirrors AssessmentEnvelope.envelope_type)
-    run_type: Literal["modeled", "discovered"]
+    # Type discriminator: "modeled" and "discovered" mirror AssessmentEnvelope.envelope_type;
+    # "impact" mirrors ImpactEnvelope.envelope_type (Appendix B.6c).
+    # Forward-looking (not in M1 / not in sprint-03): "impact" is added post-M5 once Pelicun lands;
+    # when run_type == "impact", the `assessment` field carries an `ImpactEnvelope` (Appendix B.6c)
+    # rather than an `AssessmentEnvelope`. See FR-MP-5 and Decision N.
+    run_type: Literal["modeled", "discovered", "impact"]
     hazard_type: str                  # denormalized from envelope
     workflow_name: str                # denormalized from envelope
 
