@@ -47,3 +47,10 @@
 2026-06-05 | job-0017-testing-20260605 | M1 acceptance — tests/ pytest harness + Makefile test target; 91 contracts + 23 acceptance = 114 tests green in ~36s; live_gemini opt-in PASSED 4.42s on Vertex 2.5-pro; live MCP smoke 17.66s; sprint-03 exit-criteria 5 pass + 1 qualified (EC4 Gemini-3 substitution); commits c24b9b1, 9815dcb | approved [revisions: 1] |
 2026-06-05 | sprint-03 | CLOSED: M1 (Foundation) achieved — 6 jobs approved (0012-0017); 5 exit criteria pass + 1 qualified (EC4 Gemini-3 substitution on Vertex AI); cloud substrate live (grace-2-hazard-prod + Atlas Flex grace-2-dev); end-to-end browser↔agent↔Gemini↔MCP↔Atlas verified |
 2026-06-05 | .gitignore | HARDENED for public-repo posture: SSH keys, cert stores, kubeconfig, mongodump, HAR, GHA OIDC, secrets/, .claude/settings.local.json, future solver outputs (runs/, outputs/, *.nc, sfincs_*.dat, *.sgsg) |
+2026-06-05 | sprint-04 | OPENED: M2 (QGIS Server in cloud + PyQGIS worker prototype) — 6 jobs created (0018-0023); stage A parallel (0018 + 0022), then B/C/D serial (0019 → 0020 → 0021), capstone 0023 |
+2026-06-05 | job-0018-infra-20260605 | OPENED: QGIS Server Cloud Run service + GCS .qgs/COG/FlatGeobuf buckets + Pub/Sub completion-notify topic |
+2026-06-05 | job-0019-engine-20260605 | OPENED: Sample .qgs project + styles/basemap.qml preset stub uploaded to GCS .qgs bucket |
+2026-06-05 | job-0020-engine-20260605 | OPENED: PyQGIS worker code — worker_round_trip(qgs_uri, layer_to_add) read-mutate-writeback-notify |
+2026-06-05 | job-0021-infra-20260605 | OPENED: PyQGIS worker container Dockerfile + image build/push + Cloud Run Job deployment |
+2026-06-05 | job-0022-infra-20260605 | OPENED: grace2 conda env recreation on Linux Debian via conda-forge (QGIS 3.40.3 + Python 3.12, dead-dep strip) |
+2026-06-05 | job-0023-testing-20260605 | OPENED: M2 acceptance — QGIS Server GetCapabilities + WMS GetMap + worker round-trip + M1 regression (114 tests) green |

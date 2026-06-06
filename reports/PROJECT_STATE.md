@@ -1,7 +1,7 @@
 # Project State
 
-**Last updated:** 2026-06-05 (sprint-03 / M1 closed)
-**Current sprint:** sprint-03 (CLOSED 2026-06-05); next: sprint-04 (M2 Foundation: QGIS Server in cloud + PyQGIS worker prototype) — planning pending user go
+**Last updated:** 2026-06-05 (sprint-04 / M2 opened)
+**Current sprint:** sprint-04 (active, opened 2026-06-05) — M2 Foundation: QGIS Server in cloud + PyQGIS worker prototype
 
 ## Resume note (read first)
 
