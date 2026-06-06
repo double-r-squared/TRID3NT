@@ -49,9 +49,26 @@ help:
 	@echo "  atlas-allowlist-me  add the current dev IPv4 /32 to Atlas access list"
 	@echo "  secret-srv-show     fetch the SRV from Secret Manager (printed; treat as secret)"
 
+# Agent service (job-0015). Launches the Appendix-A WebSocket server. Uses the
+# repo-local virtualenv at .venv-agent/ (created with `virtualenv -p python3`
+# because Debian's python3-venv is not installed — see PROJECT_STATE.md). ADC
+# credentials at ~/.config/gcloud/application_default_credentials.json
+# authenticate both Vertex AI and Secret Manager.
+#
+# Override the port with GRACE2_AGENT_PORT; override the Gemini model id with
+# GRACE2_GEMINI_MODEL.
+AGENT_VENV ?= .venv-agent
 run-agent:
-	@echo "run-agent: scaffold stub. The ADK agent service lands in job-0015;"
-	@echo "  this target will then launch it over the Appendix-A WebSocket core."
+	@if [ ! -x $(AGENT_VENV)/bin/grace2-agent ]; then \
+	  echo "agent venv missing or stale. Bootstrap:"; \
+	  echo "  virtualenv -p python3 $(AGENT_VENV)"; \
+	  echo "  $(AGENT_VENV)/bin/pip install -e packages/contracts -e services/agent"; \
+	  exit 1; \
+	fi
+	GOOGLE_GENAI_USE_VERTEXAI=True \
+	GOOGLE_CLOUD_PROJECT=$(GCP_PROJECT_ID) \
+	GOOGLE_CLOUD_LOCATION=$(GCP_REGION) \
+	$(AGENT_VENV)/bin/grace2-agent
 
 run-web:
 	@echo "run-web: scaffold stub. The React/MapLibre client lands in job-0016;"
