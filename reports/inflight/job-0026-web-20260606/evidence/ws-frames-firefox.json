@@ -1,0 +1,32 @@
+[
+  {
+    "direction": "in",
+    "url": "ws://localhost:5173/",
+    "payload": "{\"type\":\"connected\"}"
+  },
+  {
+    "direction": "out",
+    "url": "ws://localhost:8765/",
+    "payload": "{\"type\":\"session-resume\",\"id\":\"01KTF1XCKFRYMVTY862X4DP15N\",\"ts\":\"2026-06-06T18:07:52.432Z\",\"session_id\":\"01KTF1XCBE8S3KP4SF5M6Y80Y9\",\"payload\":{}}"
+  },
+  {
+    "direction": "in",
+    "url": "ws://localhost:8765/",
+    "payload": "{\"type\":\"session-state\",\"id\":\"01KTF1XCKKZA6TTES0MWNC3KQF\",\"ts\":\"2026-06-06T18:07:52.435483Z\",\"session_id\":\"01KTF1XCBE8S3KP4SF5M6Y80Y9\",\"payload\":{\"chat_history\":[],\"loaded_layers\":[],\"pipeline_history\":[],\"current_pipeline\":null,\"map_view\":null}}"
+  },
+  {
+    "direction": "out",
+    "url": "ws://localhost:8765/",
+    "payload": "{\"type\":\"session-resume\",\"id\":\"01KTF1XCKV20E76AYVPWN49QPQ\",\"ts\":\"2026-06-06T18:07:52.443Z\",\"session_id\":\"01KTF1XCBE8S3KP4SF5M6Y80Y9\",\"payload\":{}}"
+  },
+  {
+    "direction": "in",
+    "url": "ws://localhost:8765/",
+    "payload": "{\"type\":\"session-state\",\"id\":\"01KTF1XCKWT1R90ZF6VCDBW4K7\",\"ts\":\"2026-06-06T18:07:52.445035Z\",\"session_id\":\"01KTF1XCBE8S3KP4SF5M6Y80Y9\",\"payload\":{\"chat_history\":[],\"loaded_layers\":[],\"pipeline_history\":[],\"current_pipeline\":null,\"map_view\":null}}"
+  },
+  {
+    "direction": "out",
+    "url": "ws://localhost:8765/",
+    "payload": "{\"type\":\"cancel\",\"id\":\"01KTF1XK2M9B3D4NS4R6HV7T7H\",\"ts\":\"2026-06-06T18:07:59.061Z\",\"session_id\":\"01KTF1XCBE8S3KP4SF5M6Y80Y9\",\"payload\":{\"reason\":\"user-cancel\"}}"
+  }
+]
