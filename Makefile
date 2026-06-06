@@ -34,7 +34,8 @@ ATLAS_PROJECT_ID ?= 6a234700a0e1295958d10cf9
 
 .PHONY: help run-agent run-web test \
         tofu-init tofu-plan tofu-apply tofu-bootstrap \
-        atlas-allowlist-me secret-srv-show
+        atlas-allowlist-me secret-srv-show \
+        qgis-server-build qgis-server-push qgis-server-deploy
 
 help:
 	@echo "GRACE-2 make targets (SRS v0.3):"
@@ -48,6 +49,10 @@ help:
 	@echo "  tofu-bootstrap      one-time: create the GCS state bucket"
 	@echo "  atlas-allowlist-me  add the current dev IPv4 /32 to Atlas access list"
 	@echo "  secret-srv-show     fetch the SRV from Secret Manager (printed; treat as secret)"
+	@echo ""
+	@echo "  qgis-server-build   build the QGIS Server image via Cloud Build (linux/amd64)"
+	@echo "  qgis-server-push    alias of qgis-server-build (Cloud Build pushes to AR)"
+	@echo "  qgis-server-deploy  tofu apply the Cloud Run service + public-invoker binding"
 
 # Agent service (job-0015). Launches the Appendix-A WebSocket server. Uses the
 # repo-local virtualenv at .venv-agent/ (created with `virtualenv -p python3`
@@ -152,3 +157,41 @@ secret-srv-show:
 	@gcloud secrets versions access latest \
 	  --secret=mongodb-srv-dev \
 	  --project=$(GCP_PROJECT_ID)
+
+# --- QGIS Server (job-0018) ------------------------------------------------
+#
+# Builds linux/amd64 only (Linux is both substrate and prod — sprint-03
+# decision; PROJECT_STATE Environment facts). Cloud Build is the canonical
+# path because the dev box's local docker requires sudo and Cloud Build runs
+# inside GCP next to Artifact Registry — zero local credential surface, image
+# arrives in AR ready for Cloud Run. The Dockerfile lives in
+# infra/qgis-server/Dockerfile; the build context is the repo root so the
+# `COPY styles/ /opt/grace2/styles/` step pulls QML presets from the
+# engine-owned styles/ directory.
+#
+# The image tag is :latest (Cloud Run resolves to digest at deploy). Cloud
+# Build also writes the digest to its log — capture it in the report for
+# provenance. AR repo + region match infra/qgis-server.tf.
+
+QGIS_AR_REPO   ?= grace-2-containers
+QGIS_IMAGE     ?= grace-2-qgis-server
+QGIS_IMAGE_URI ?= $(GCP_REGION)-docker.pkg.dev/$(GCP_PROJECT_ID)/$(QGIS_AR_REPO)/$(QGIS_IMAGE):latest
+
+qgis-server-build:
+	@echo "Building $(QGIS_IMAGE_URI) via Cloud Build (linux/amd64)..."
+	gcloud builds submit \
+	  --project=$(GCP_PROJECT_ID) \
+	  --config=infra/qgis-server/cloudbuild.yaml \
+	  --substitutions=_REGION=$(GCP_REGION),_AR_REPO=$(QGIS_AR_REPO),_IMAGE=$(QGIS_IMAGE) \
+	  .
+
+# qgis-server-push is an alias: Cloud Build pushes as part of `submit --tag`.
+# Kept as a separate target so the kickoff's three-target contract holds
+# (build / push / deploy) — running it twice is idempotent (a no-op second
+# build is fine; layer cache hits).
+qgis-server-push: qgis-server-build
+
+qgis-server-deploy:
+	tofu -chdir=infra apply -auto-approve \
+	  -target=google_cloud_run_v2_service.qgis_server \
+	  -target=google_cloud_run_v2_service_iam_member.qgis_server_public_invoker

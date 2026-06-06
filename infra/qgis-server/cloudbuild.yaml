@@ -1,0 +1,47 @@
+# cloudbuild.yaml — Cloud Build pipeline for the GRACE-2 QGIS Server image.
+#
+# Why Cloud Build (not local `docker build`):
+#   - The Debian 13 dev box requires sudo for docker.sock; Cloud Build runs
+#     inside GCP next to Artifact Registry, so the image arrives in AR with
+#     zero local credential surface.
+#   - linux/amd64 only — Cloud Build's default builder is amd64; matches the
+#     project-wide Linux-only substrate (PROJECT_STATE / sprint-03 decision).
+#
+# Invocation (via Makefile `qgis-server-build`):
+#   gcloud builds submit --project=grace-2-hazard-prod \
+#     --config=infra/qgis-server/cloudbuild.yaml \
+#     --substitutions=_REGION=us-central1,_AR_REPO=grace-2-containers,_IMAGE=grace-2-qgis-server \
+#     .
+#
+# Build context: repo root (`.`) so `COPY styles/ ...` in the Dockerfile pulls
+# the engine-authored QML presets.
+#
+# Output: the image is tagged `:latest` AND the build's resolved digest is
+# logged to the Cloud Build job (capture from `gcloud builds describe`).
+
+substitutions:
+  _REGION: us-central1
+  _AR_REPO: grace-2-containers
+  _IMAGE: grace-2-qgis-server
+
+steps:
+  - id: build-qgis-server
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --tag=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_IMAGE}:latest
+      - --file=infra/qgis-server/Dockerfile
+      - .
+
+images:
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_IMAGE}:latest
+
+# Cloud Build defaults to e2-medium; QGIS image layers are large but the
+# upstream base is heavy-cached so e2-highcpu-8 brings build wall-time down
+# meaningfully. Timeout generous because the first build downloads ~1.5 GB
+# of base layers.
+options:
+  machineType: E2_HIGHCPU_8
+  logging: CLOUD_LOGGING_ONLY
+
+timeout: 1200s

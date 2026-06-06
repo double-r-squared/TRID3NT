@@ -33,6 +33,10 @@ locals {
     "artifactregistry.googleapis.com",
     "logging.googleapis.com",
     "monitoring.googleapis.com",
+    # sprint-04 / job-0018 additions:
+    "pubsub.googleapis.com",       # FR-QS-6 step 5 worker-events topic.
+    "cloudbuild.googleapis.com",   # Cloud Build path for QGIS Server image
+                                   # (avoids local docker sudo on dev box).
   ]
 }
 
