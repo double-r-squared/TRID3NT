@@ -112,7 +112,10 @@ resource "google_cloud_run_v2_service" "qgis_server" {
       # is serving this digest — verified by
       # `gcloud run revisions describe ... --format=json` reading
       # `status.imageDigest`.
-      image = "${var.gcp_region}-docker.pkg.dev/${google_project.grace2.project_id}/${google_artifact_registry_repository.containers.repository_id}/grace-2-qgis-server@sha256:7d8a33858ee5d0e656d3d31d2bc663f2cee4db56f9a2fbba29c3e1b20d79c2af"
+      # job-0024 rebuild: new image bakes /etc/qgis/styles/basemap.qml (the
+      # engine-authored preset from job-0019) — verified at build time by the
+      # Dockerfile's `test -f /etc/qgis/styles/basemap.qml` smoke step.
+      image = "${var.gcp_region}-docker.pkg.dev/${google_project.grace2.project_id}/${google_artifact_registry_repository.containers.repository_id}/grace-2-qgis-server@sha256:a7034760492fe28501b91ac66608d5efa41249cee5e8477aaa51aab4fbdcac75"
 
       ports {
         container_port = 80
@@ -144,8 +147,11 @@ resource "google_cloud_run_v2_service" "qgis_server" {
         value = "2"
       }
       env {
+        # Canonical preset path baked at /etc/qgis/styles/ by the Dockerfile
+        # (job-0024 rebuild). /opt/grace2/styles/ kept as a back-compat alias
+        # in the image but the env points to the canonical path.
         name  = "GRACE2_STYLES_DIR"
-        value = "/opt/grace2/styles"
+        value = "/etc/qgis/styles"
       }
       env {
         name  = "GRACE2_QGS_BUCKET"
@@ -158,6 +164,70 @@ resource "google_cloud_run_v2_service" "qgis_server" {
       env {
         name  = "GRACE2_FGB_BUCKET"
         value = google_storage_bucket.fgb.name
+      }
+
+      # --- GDAL /vsigs/ auth (job-0024 / OQ-19A) ---------------------------
+      # Without these, GDAL's /vsigs/ driver does not pick up the Cloud Run
+      # instance's ADC / metadata-server credentials, and `QgsProject.read()`
+      # on `/vsigs/<bucket>/<path>.qgs` fails with "Unable to open …".
+      #   - CPL_MACHINE_IS_GCE=YES        → forces GDAL to treat the runtime
+      #                                     as a GCE-class host so it queries
+      #                                     the metadata server for tokens.
+      #   - CPL_GS_USE_INSTANCE_PROFILE=YES → use the attached runtime SA
+      #                                     (the qgis-server SA with bucket-
+      #                                     scoped objectViewer) for /vsigs/
+      #                                     reads. No service-account-key
+      #                                     file, no Workload Identity dance.
+      #   - GDAL_HTTP_USERAGENT           → diagnosability in upstream GCS
+      #                                     audit logs.
+      # Decision rationale (TENTATIVE → confirmed live): env-on-service vs
+      # baking into the Dockerfile. Picked env-on-service: changeable without
+      # an image rebuild, visible in `gcloud run services describe`, drift
+      # surfaces in `tofu plan`. Dockerfile would re-bake on every tweak.
+      env {
+        name  = "CPL_MACHINE_IS_GCE"
+        value = "YES"
+      }
+      env {
+        name  = "CPL_GS_USE_INSTANCE_PROFILE"
+        value = "YES"
+      }
+      env {
+        name  = "GDAL_HTTP_USERAGENT"
+        value = "grace-2-qgis-server/0.1"
+      }
+
+      # --- .qgs bucket FUSE mount (job-0024 / OQ-19A path b) ---------------
+      # PATH (c) (GDAL VSI env vars above) was tried first and FAILED — QGIS
+      # Server's QgsProject::read() uses Qt file APIs, not GDAL VSI, to load
+      # the .qgs itself. Live evidence in report: server log line
+      # `CRITICAL Server[18]: Error when loading project file '/vsigs/...':
+      # Unable to open /vsigs/...`. Env vars above are kept zero-cost because
+      # they DO help layer references inside the project that DO transit GDAL.
+      #
+      # PATH (b) — Cloud Run gen2 native GCS volume mount. The runtime mounts
+      # the qgs bucket at /mnt/qgs via Cloud Run's gcsfuse plumbing, using the
+      # qgis-server runtime SA (bucket-scoped roles/storage.objectViewer). No
+      # gcsfuse install in the image, no startup-wrapper PID-1 gymnastics, no
+      # service-account-key file. The WMS canonical URL becomes
+      # MAP=/mnt/qgs/<file>.qgs (filesystem path). Per "No legacy support
+      # pre-MVP", the codebase does NOT support both /vsigs/ and /mnt/ for
+      # .qgs — /mnt/qgs/<file>.qgs is the canonical contract.
+      volume_mounts {
+        name       = "qgs-bucket"
+        mount_path = "/mnt/qgs"
+      }
+    }
+
+    # Volume declaration for the qgs-bucket FUSE mount referenced above.
+    # `read_only = true`: QGIS Server is the renderer, not a writer. The
+    # PyQGIS worker (job-0020 / job-0021 Cloud Run Job) writes back via its
+    # own container with roles/storage.objectAdmin — not via this service.
+    volumes {
+      name = "qgs-bucket"
+      gcs {
+        bucket    = google_storage_bucket.qgs.name
+        read_only = true
       }
     }
 
