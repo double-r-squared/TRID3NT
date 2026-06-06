@@ -70,9 +70,17 @@ run-agent:
 	GOOGLE_CLOUD_LOCATION=$(GCP_REGION) \
 	$(AGENT_VENV)/bin/grace2-agent
 
+# Web client (job-0016). React + Vite + MapLibre. Installs dependencies the
+# first time web/node_modules/ is missing, then runs the Vite dev server on
+# 0.0.0.0:5173 so the page is reachable from headless browsers + LAN spot
+# checks. Override the WebSocket endpoint with VITE_GRACE2_WS_URL (default:
+# ws://localhost:8765 — the local job-0015 agent).
 run-web:
-	@echo "run-web: scaffold stub. The React/MapLibre client lands in job-0016;"
-	@echo "  this target will then start its dev server (CONUS map + chat)."
+	@if [ ! -d web/node_modules ]; then \
+	  echo "web/node_modules missing — running npm install"; \
+	  cd web && npm install; \
+	fi
+	cd web && npm run dev
 
 # `test` runs the project test suites. No suites exist yet (job-0017 lands them;
 # job-0013 lands packages/contracts round-trip tests). Until then this is a clean
