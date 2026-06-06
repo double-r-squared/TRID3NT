@@ -1,6 +1,6 @@
 # Audit: M3 acceptance suite (tests/m3/) + regression preservation + NFR-P-3 tile latency
 
-**Job ID:** job-0028-testing-20260606, **Sprint:** sprint-05, **Auditor:** Development Orchestrator, **Status:** assigned
+**Job ID:** job-0028-testing-20260606, **Sprint:** sprint-05, **Auditor:** Development Orchestrator, **Status:** approved
 
 ## Task Assignment
 
@@ -95,14 +95,81 @@ Surface contestable choices as Open Questions with TENTATIVE tags — at minimum
 
 ## Assessment
 
+**Verdict:** approved.
+
+The M3 acceptance suite lands clean: 9 unique test functions / 10 invocations under `tests/m3/`, all green in 89s against the deployed Cloud Run QGIS Server (`@sha256:57d0f43` post job-0029 CORS fix) + local Vite dev server + headless Chromium + Firefox-ESR via Playwright. The kickoff's 5 mandated functions are all present (`test_wms_tiles` cross-browser, `test_layer_panel` cross-browser, `test_pipeline_strip` Chromium-only, `test_screenshot_smoke` Chromium-only, `test_wms_tile_latency` Chromium-only/pure-HTTP); the 4 bonus functions (`test_camera_lock`, `test_no_gs_uri`, plus the framesent variant on pipeline-strip and state-colors variant) extend coverage without scope drift.
+
+Cross-browser parametrization works correctly on the two visual smokes — `test_wms_tiles[chromium]` + `test_wms_tiles[firefox]` and `test_layer_panel[chromium]` + `test_layer_panel[firefox]` both pass. The `test_pipeline_strip_sequence_with_framesent_capture` test exercises the FR-WC-9 cancel chain end-to-end: drives running→complete→running, clicks cancel, captures the outbound `cancel` frame via `page.on("websocket")` + `framesent` (Playwright's in-browser wire inspection), asserts Appendix A.3 envelope shape (`type=cancel`, `payload.reason` non-empty), then transitions to `cancelled` state. Cross-envelope visibility predicate from job-0026 is verified with predicate-(b)-only injection.
+
+NFR-P-3 measurement returns p50≈295–321 ms / p95≈353–375 ms (n=20 distinct CONUS BBOXes) — well under the 2000 ms soft target (~7× margin on p50, ~5× margin on p95). Status correctly classified `qualified` rather than `pass` because the client-region geography is unknown, per testing.md NFR discipline. Methodology limitation surfaced in both the JSON `methodology_limit` field and the assertion message — honest qualification rather than silent skip.
+
+The M3 collection-gate (`pytest_collection_modifyitems` in `tests/m3/conftest.py`) is a clever non-invasive fix for the asyncio event-loop interference between Playwright's sync runtime and the M1 protocol tests' pytest-asyncio loop. The alternative (editing the root `tests/conftest.py` or the Makefile) would have violated FROZEN-list ownership; the in-m3-conftest gate stays within the specialist's window. Documented as OQ-T-28-M3-COLLECTION-GATE for future review when CI lands.
+
+Numerical discrepancy noted (report cites p50=295.7 ms from an earlier capture; JSON shows p50=321.1 ms from a later run). Both values meet acceptance criteria; not material for closure. Recommend the specialist re-pin the report number to whatever the committed JSON shows for future jobs.
+
+The pre-existing M2 worker flake (`tests/m2/test_pyqgis_worker_roundtrip.py::test_worker_job_execute_succeeds`) is correctly diagnosed-not-introduced — passes in isolation; race when run as part of the full `make test` pass. The specialist correctly did not attempt to fix it (M2 paths are FROZEN per kickoff) and routed it as OQ-T-28-M2-WORKER-FLAKE for a follow-up.
+
+The Makefile `test-all` rule + `.PHONY` entry are present and wired (`test-all: test test-m2 test-m3`) — closing OQ-T-28-MAKEFILE-TEST-ALL-PRESENT. The specialist notes the Makefile was modified externally during the run; this matches our earlier verification that `test-all` was already in place. No FROZEN-path violation.
+
 ## Invariant Check
+
+- **Invariant 1 (Determinism boundary):** preserved. M3 tests assert against rendered DOM, network responses, and committed fixtures — never LLM-generated numbers. NFR-P-3 is a wall-clock measurement. No client-side computed numbers in the assertions.
+
+- **Invariant 2 (Deterministic workflows):** preserved. No LLM in the loop in M3. The framesent capture verifies the cancel button emits a deterministic Appendix A.3 envelope via `GraceWs.sendCancel`.
+
+- **Invariant 5 (Tier separation):** verified end-to-end. `test_qgis_wms_tiles_render_in_browser` asserts at least 5 successful PNG tile responses from the deployed QGIS Server origin AND zero `gs://` browser-side requests. The complementary static test `test_no_gs_uri_in_web_build` greps the production web build for any `gs://` literal — zero offenders. Client code cannot reach GCS directly.
+
+- **Invariant 8 (Cancellation is first-class):** verified end-to-end. The framesent capture asserts the live outbound `cancel` envelope shape matches Appendix A.3 and reuses the M1 `GraceWs.sendCancel` path (job-0015 verified at 502 ms agent-side). Cross-envelope visibility predicate verified with all four combinations from job-0026.
+
+- **Invariant 9 (Confirmation before consequence — no cost theater / no cost fields):** preserved. Grep across `tests/m3/**` confirms zero `cost` / `dollar` / `usd` / `eta` / `estimate` tokens.
 
 ## Dependency Check
 
+- **job-0025** (App.tsx shell + LayerPanel + WMS basemap + session/map contracts surface) — exercised. The `session_state_seeded.json` fixture drives the LayerPanel test through the dev-injection seam job-0025 published.
+- **job-0026** (PipelineStrip + cancel button + cross-envelope visibility predicate + pipeline contracts) — exercised. The framesent test verifies the predicate and the cancel envelope shape.
+- **job-0027** (Playwright integration + screenshot tooling + Makefile harness) — used as the harness; no edits to its owned paths (verified by `git status`).
+- **job-0015** (M1 cancel chain end-to-end at 502 ms) — reused, not duplicated. The framesent test confirms the cancel envelope reaches the wire through `GraceWs.sendCancel`.
+- **job-0024** (M2 deployed QGIS Server) — substrate under test. The image pin `@sha256:57d0f43` matches the post-CORS-fix revision from job-0029.
+
+All five dependency edges valid. No re-derivation, no shadow re-implementation.
+
 ## Decisions Validated
+
+All six decisions reviewed and accepted:
+
+1. **M3 collection-gate via `pytest_collection_modifyitems` in `tests/m3/conftest.py`** — correct boundary-preserving fix. Alternatives all violated FROZEN ownership. Accepted.
+2. **Cancel envelope capture via `page.on("websocket")` + `framesent` (no external WS server)** — strictly more reliable than the background-asyncio-thread pattern that broke M1 teardown. Verifies the actual outbound frame from the browser side. Accepted.
+3. **`test_layer_panel.py` parametrized across Chromium + Firefox-ESR** — required by kickoff §Scope item 4 cross-browser clarification. Accepted.
+4. **NFR-P-3 status `qualified` (not `pass`)** — correct per testing.md NFR discipline given unknown client-region geography. The 7× margin on p50 is good news, but the qualified classification is the honest call. Accepted.
+5. **20 distinct CONUS BBOXes hard-coded** — prevents single-tile cache from skewing the latency measurement. Accepted.
+6. **Keep pre-existing `test_camera_lock.py` + `test_no_gs_uri.py`** — Invariant 5 + Decision I bonus coverage; falls within "bundle small fixes" principle. Accepted.
 
 ## Open Questions Resolved
 
+Filed for triage (all non-blocking for M3 closure):
+
+- **OQ-T-28-SIM-WS-BOUNDARY** — dev-seam injection is testing.md "mocks at boundaries" violation; authorized by kickoff for M3 only because agent doesn't yet emit `pipeline-state` / `session-state.loaded_layers`. **Routing: testing (with agent as consultant in M4). Tag for M4 cleanup: rewrite to drive real agent emission once that lands.**
+- **OQ-T-28-NFR-P3-SINGLE-MACHINE** — single-machine measurement methodology. Comfortable margin (~7× on p50) makes this low-risk. **Routing: testing + infra. Re-verify from us-west1 Cloud Run job before final NFR-P-3 sign-off.**
+- **OQ-T-28-SAFARI-DEFERRED** — Safari + Edge deferred to post-MVP browser-coverage sprint. Accepted as known gap.
+- **OQ-T-28-EPHEMERAL-SHOTDIR** — per-test `tmp_path` SHOTDIR override. Hermetic. Accepted.
+- **OQ-T-28-PLAYWRIGHT-CI** — Playwright headless in CI deferred to post-M3 infra sprint. **Routing: infra.**
+- **OQ-T-28-M3-COLLECTION-GATE** — path-based opt-in via m3 conftest. Stays within ownership boundary. Accepted; revisit if `make test-all` is unified into a single pytest session.
+- **OQ-T-28-M2-WORKER-FLAKE** — pre-existing M2 Cloud-Run-Jobs polling-window race. **Routing: infra/testing for a follow-up M2 polling-window stabilization. Non-blocking for M3.**
+- **OQ-T-28-MAKEFILE-TEST-ALL-PRESENT** — closed. `test-all` rule + `.PHONY` are present.
+
 ## Follow-up Actions
 
+1. **OQ-T-28-SIM-WS-BOUNDARY M4 deprecation** — when M4 lands real agent emission of `pipeline-state` + `session-state.loaded_layers`, rewrite `test_layer_panel.py` + `test_pipeline_strip.py` injection paths to drive the real agent. Tag for M4 kickoff prep.
+2. **OQ-T-28-NFR-P3-SINGLE-MACHINE re-verification** — schedule us-west1 Cloud Run job latency measurement before final NFR sign-off. Track in PROJECT_STATE NFR register.
+3. **OQ-T-28-M2-WORKER-FLAKE follow-up** — open a new numbered job in a future sprint to stabilize the M2 polling-window race. Not sprint-06 (M4) blocker.
+4. **OQ-T-28-PLAYWRIGHT-CI follow-up** — post-M3 infra sprint should land Playwright-in-CI (containerized runner or self-hosted with pre-warmed cache).
+5. **Report-vs-JSON numerical-pin discipline** — observation: report cites p50=295.7 ms from an earlier capture; JSON shows p50=321.1 ms from a later run. Both meet acceptance. Recommend specialists re-pin numbers in reports to whatever the committed JSON shows for future jobs.
+6. **Sprint-05 close** — this audit closes sprint-05. Open sprint-06 (M4) with the atomic-tools starter set as the primary scope. The OQ-W-26-PIPELINE-STEP-FIELDS schema consumer-pushback (from job-0026) must resolve before M4 starts emitting real `pipeline-state` envelopes — promote to sprint-06 prerequisite.
+
 ## Sign-off
+
+**Approved 2026-06-06 by Development Orchestrator.**
+
+All twelve acceptance criteria from the kickoff verified with concrete evidence (11 PNGs + 1 JSON committed under evidence dir). Invariants 1/2/5/8/9 preserved or extended end-to-end. FROZEN list respected (verified by `git status` showing only `tests/m3/**` + `reports/inflight/job-0028-testing-20260606/**` touched by the specialist). All dependency edges valid. Eight Open Questions surfaced with explicit routing; none blocks closure. NFR-P-3 measurement honestly qualified despite a comfortable margin. M3 milestone met: cross-browser visual smoke + cancel chain + tile-latency + screenshot tooling all green against the live deployed substrate.
+
+**Sprint-05 capstone complete. Sprint-05 closes pending PROJECT_LOG append + sprint-manifest status flip + counter update.**

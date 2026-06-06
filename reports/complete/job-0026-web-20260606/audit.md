@@ -1,6 +1,6 @@
 # Audit: PipelineStrip.tsx live render + FR-WC-9 cancel button
 
-**Job ID:** job-0026-web-20260606, **Sprint:** sprint-05, **Auditor:** Development Orchestrator, **Status:** assigned
+**Job ID:** job-0026-web-20260606, **Sprint:** sprint-05, **Auditor:** Development Orchestrator, **Status:** approved
 
 ## Task Assignment
 
@@ -72,14 +72,70 @@ Surface contestable choices as Open Questions with TENTATIVE tags — at minimum
 
 ## Assessment
 
+**Verdict:** approved.
+
+`PipelineStrip.tsx` (437 lines) lands cleanly with all ten kickoff acceptance criteria backed by concrete evidence. The component subscribes to both `pipeline-state` and `session-state` envelopes through separate bus paths and enforces replace-not-reconcile inside the reducer (`case "pipeline-state"` wholesale assigns `lastPipelineState` — no merge helper exists in the file, which is the type-system enforcement of Appendix A.7). The cancel-button visibility predicate is the explicit union the kickoff §4 demanded — `(lastPipelineState?.steps?.some(s => s.state === "running") ?? false) || (currentPipeline !== null)` — with the top-of-file source comment naming which envelope feeds which leg (the documentation discipline the kickoff specifically called for). The five state colors are declared in a single `STATE_COLOR: Record<PipelineStepState, string>` table with `cancelled` (`#eab308`) deliberately distinct from `failed` (`#ef4444`) per Invariant 8. Cancel emission reuses `GraceWs.sendCancel` through an `onCancel` callback in `App.tsx:wsRef.current?.sendCancel(reason)` — single source of truth, no forked envelope construction. Live WS frame transcript in `evidence/ws-frames-chromium.json` shows the resulting outbound `cancel` envelope reaching the agent at `ws://localhost:8765/` — the M1 chain (job-0015 verified at 502 ms agent-side) is reused end-to-end.
+
+`contracts.ts` extends the pipeline surface additively per the file-ownership boundary: `PipelineStepSummary` (canonical Appendix D.6 name — no bare `PipelineStep` remains in code, verified by grep returning only the two comment lines explaining the rename), `PipelineSnapshot` (D.6 with optional `started_at` / `completed_at` / `final_state` + required `steps`), and the refined `PipelineStatePayload.steps: PipelineStepSummary[]`. The cumulative payload-type count is ~14 — exactly in the kickoff's ~12–14 window and well below the OQ-W-1 codegen-promotion trigger of ~20.
+
+`App.tsx` edits are mount-only: import + `pipelineBus` ref + `wsRef` + dev-injection seam fan-out + `<PipelineStrip>` rendered into the bottom slot job-0025 reserved. No layout restructure, no `Chat.tsx` edit, no `ws.ts` logic change. The FROZEN list is respected — git diff confirms only the three editable files were touched.
+
+Closeout pass overhead is correctly documented (StructuredOutput failure → disk-resident work inspected → typecheck + Vite build re-run, both pass → report.md populated from inspected artifacts, no new code written). The original 17 evidence files captured during the live workflow remain authoritative; the closeout did not re-capture them. The report explicitly flags this and is forthcoming about the boundary.
+
 ## Invariant Check
+
+- **Invariant 1 (Determinism boundary — no LLM numbers / no client-side computed numbers):** preserved. JSX in `PipelineStrip.tsx` renders only verbatim envelope fields (`step.name`, `step.progress_percent`, `step.error_code`, `step.error_message`, `pipeline_id`). The percent display is `{step.progress_percent}%` with no arithmetic. `narrowCurrentPipeline()` returns `null` for missing fields rather than fabricating values. Cross-checked: no `Math.*`, no `toFixed`, no computed deltas in the component.
+
+- **Invariant 2 (Deterministic dispatch):** preserved. Reducer is a pure function — `pipeline-state` action sets `lastPipelineState`; `session-state` action runs deterministic `narrowCurrentPipeline`. No async, no Date.now() in dispatch.
+
+- **Invariant 8 (Cancellation is first-class):** extended end-to-end. Cancel button → `onCancel?.("user-cancel")` → `App.tsx` `wsRef.current?.sendCancel(reason)` → M1 `GraceWs.sendCancel` → outbound WS frame on `ws://localhost:8765/`. Frame captured live in `evidence/ws-frames-chromium.json`: shape `{"type":"cancel","id":"01KTF1WQN0…","ts":"2026-06-06T18:07:30.976Z","session_id":"01KTF1WGVXP…","payload":{"reason":"user-cancel"}}` — Appendix A.3 shape, no fork. `cancelled` state renders yellow (`#eab308`) distinct from `failed` red (`#ef4444`) — the visual distinction Invariant 8 specifically requires. Cancellation does not unmount the strip or remove rendered steps; loaded steps remain visible per FR-WC-9.
+
+- **Invariant 9 (Confirmation before consequence, no cost theater / no cost fields):** preserved. Grep for `cost` / `dollar` / `usd` / `eta` / `estimate` in `PipelineStrip.tsx` returns empty. Only step state, name, progress percent, and (when present) error code/message render. No cost field anywhere in the pipeline surface of `contracts.ts`.
 
 ## Dependency Check
 
+- **job-0015** (M1 cancel chain end-to-end at 502 ms) — reused, not duplicated. `GraceWs.sendCancel` is the single source of the cancel envelope; the captured frame is binary-identical in shape to the M1 transcript modulo browser-specific ULIDs.
+- **job-0016** (M1 web stub) — `ws.ts` GraceWs class + Chat panel placement preserved untouched. `git diff` on those files is empty.
+- **job-0025** (App.tsx layout shell + LayerPanelBus pattern + bottom-slot reservation + `SessionStatePayload.current_pipeline: unknown | null` placeholder) — honored cleanly. The `narrowCurrentPipeline()` boundary resolves the type-narrowing inside the PipelineStrip reducer instead of editing the session/map region of `contracts.ts` job-0025 owned — exactly the ownership-boundary-preserving decision the file-ownership rules anticipate.
+- **job-0027** (Playwright integration) — `capture_pipeline_states.mjs` reuses `@playwright/test` from `web/node_modules` per job-0027's install. No re-install, no duplicated config.
+
+All four dependency edges are valid. No re-derivation of upstream work, no shadow re-implementation of upstream APIs.
+
 ## Decisions Validated
+
+All seven decisions in the report are reviewed and accepted:
+
+1. **Hand-mirror `PipelineSnapshot` + narrow `current_pipeline` at the reducer boundary** — correct. Preserves the job-0025 ownership boundary on `SessionStatePayload`. Alternative (1) tightening directly would violate kickoff §6; alternative (2) cast without guard would fabricate fields. Accepted.
+2. **Cancel button predicate = (a) `running` step OR (b) `current_pipeline != null`** — directly from kickoff §4. Source comment names which envelope feeds which leg as the kickoff required. Accepted.
+3. **`cancelled` yellow distinct from `failed` red** — Invariant 8 requires the visual distinction. Accepted.
+4. **Cancel reuses `GraceWs.sendCancel`** — Invariant 8 + kickoff §5. No forked construction. Accepted.
+5. **Replace-not-reconcile inside the reducer's `case "pipeline-state"`, no `mergePipelineState` helper** — Appendix A.7 enforcement at the type-system level. Accepted.
+6. **Cumulative mirror count ~14 (below OQ-W-1 trigger of ~20)** — on plan with the kickoff's ~12–14 target. OQ-W-1 correctly not refined. Accepted.
+7. **PipelineStrip absolute-positioned at `left: 312 / right: 412 / bottom: 16`** — reuses the job-0025 absolute-overlay convention; satisfies kickoff §7 "do not refactor chat-panel layout". Accepted.
 
 ## Open Questions Resolved
 
+Filed for orchestrator triage (none blocks closure):
+
+- **OQ-W-26-PIPELINE-STEP-FIELDS** (schema consumer-pushback) — Appendix D.6 `PipelineStepSummary` does not carry `progress_percent`, `error_code`, `error_message`. Proposed amendment: extend D.6 with those three optional fields. **Routing: schema (with web as consultant). Blocking M4 work where the agent emits real `pipeline-state` snapshots; non-blocking for M3.** Owned to sprint-06 (M4) kickoff prep — must resolve before agent service emits real pipeline-state envelopes.
+
+Carried forward (non-blocking, recommendations accepted):
+- **Above-vs-below chat default = below-chat** — accepted as v0.1 default; user-toggle deferred to settings menu when settings ship.
+- **Step list truncation = render-all** — accepted; revisit at >15-step pipeline observation.
+- **Simulated-WS for `pipeline-state`** — accepted as M3 boundary; M4 acceptance will exercise live `pipeline-state` emission.
+- **M4 cancel-target discriminator** — accepted as a forward look; not an M3 blocker. Route to schema at M4 design.
+- **`prefers-reduced-motion` on pulse animation** — accepted for M5 accessibility pass.
+- **OQ-W-1 refinement** — correctly not refined (the count inflation is mechanical enum/union scaffolding, not payload-shape complexity).
+
 ## Follow-up Actions
 
+1. **OQ-W-26-PIPELINE-STEP-FIELDS routing to schema** — must resolve before M4 sprint-06 starts. Track in PROJECT_STATE OQ register.
+2. **Dev-injection seam deprecation** — `window.__grace2InjectPipelineState` should be deleted once M4 lands real pipeline-state emission. Tag for M4 cleanup.
+3. **`prefers-reduced-motion` honoring** — bundle into M5 accessibility pass (FR-WC-12 auto-snap will need similar treatment).
+4. **Closeout-pattern observation** — second closeout-by-inspection of a substantively-complete workflow in sprint-05 (job-0029 CORS fix being the other). The pattern is stable: when StructuredOutput fails after substantive on-disk work, inspect verbatim → re-run build → populate report. Worth canonicalizing in AGENTS.md if seen a third time.
+
 ## Sign-off
+
+**Approved 2026-06-06 by Development Orchestrator.**
+
+All ten acceptance criteria from the kickoff verified with concrete evidence on disk (14 PNGs across Chromium + Firefox, 2 WS frame transcripts, capture script). Invariants 1/2/8/9 preserved. FROZEN list respected. Dependency boundaries honored. One schema consumer-pushback OQ filed (OQ-W-26-PIPELINE-STEP-FIELDS) — routed to schema, M4-blocking but not M3-blocking. PipelineStrip is the third and final FR-WC-8/FR-WC-9 component of M3; together with job-0025 (LayerPanel) and job-0027 (Playwright AFK loop) it completes the sprint-05 web-client surface. Sprint-05 closes pending job-0028 (M3 acceptance suite, in progress).

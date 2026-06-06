@@ -17,6 +17,8 @@ asyncio_mode = "auto"
 markers = [
   "live_gemini: real Gemini API call (skipped by default; opt-in via -m live_gemini)",
   "live_atlas: real Atlas MCP/Mongo call (skipped automatically if Atlas unreachable)",
+  "live_web: requires a local Vite dev server (M3 — job-0028)",
+  "live_qgis_wms_browser: requires deployed Cloud Run QGIS Server WMS reachable from a headless browser (M3 — job-0028)",
 ]
 testpaths = ["protocol", "integration"]
 filterwarnings = [

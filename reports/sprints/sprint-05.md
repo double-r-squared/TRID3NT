@@ -1,8 +1,8 @@
 # Sprint 05: Web client skeleton (SRS v0.3 M3)
 
-**Status:** planned
+**Status:** closed
 **Opened:** 2026-06-06
-**Closed:** —
+**Closed:** 2026-06-06
 **SRS milestones covered:** M3 (Web client skeleton — QGIS Server WMS basemap + Layer Panel + Pipeline Strip + Playwright AFK loop)
 
 ## Goal
@@ -13,10 +13,10 @@ Land SRS §7 M3: pivot the M1 web stub's basemap from the OSM-direct fallback to
 
 | Job ID | Specialist | Task | Depends on | Status |
 |---|---|---|---|---|
-| job-0025-web-20260606 | web | Basemap pivot to QGIS Server WMS + LayerPanel.tsx (drag-and-drop reorder) + App.tsx layout shell + contracts.ts session/map surface | — | planned |
-| job-0026-web-20260606 | web | PipelineStrip.tsx with pipeline-state live render + FR-WC-9 cancel button + contracts.ts pipeline surface (mounts on App.tsx shell from 0025) | job-0025 | planned |
-| job-0027-web-20260606 | web | Playwright integration (devDep, screenshot CLI, Makefile targets, first multi-state captures) | — | planned |
-| job-0028-testing-20260606 | testing | M3 acceptance suite (`tests/m3/`) + regression preservation + NFR-P-3 tile latency | job-0025, job-0026, job-0027 | planned |
+| job-0025-web-20260606 | web | Basemap pivot to QGIS Server WMS + LayerPanel.tsx (drag-and-drop reorder) + App.tsx layout shell + contracts.ts session/map surface | — | approved |
+| job-0026-web-20260606 | web | PipelineStrip.tsx with pipeline-state live render + FR-WC-9 cancel button + contracts.ts pipeline surface (mounts on App.tsx shell from 0025) | job-0025 | approved |
+| job-0027-web-20260606 | web | Playwright integration (devDep, screenshot CLI, Makefile targets, first multi-state captures) | — | approved |
+| job-0028-testing-20260606 | testing | M3 acceptance suite (`tests/m3/`) + regression preservation + NFR-P-3 tile latency | job-0025, job-0026, job-0027 | approved |
 
 ## Execution order
 
@@ -45,4 +45,12 @@ Job-0025 and job-0026 BOTH need to edit `web/src/App.tsx` (one to mount LayerPan
 
 ## Retrospective
 
-_Filled at close_
+**Closed 2026-06-06.** Five jobs landed and approved: job-0025 (basemap pivot to QGIS Server WMS at `/mnt/qgs/grace2-sample.qgs` + LayerPanel with `@dnd-kit/sortable` drag-and-drop + opacity + a11y + App.tsx three-zone layout shell + session/map contracts), job-0026 (PipelineStrip with 5 state colors + FR-WC-9 cancel button + cross-envelope visibility predicate + pipeline contracts), job-0027 (Playwright integration + screenshot CLI + Makefile harness + AFK iteration loop), job-0028 (M3 acceptance suite: 9 unique test functions / 10 invocations green in 89s against deployed Cloud Run substrate + NFR-P-3 measurement qualified at p50≈300 ms / p95≈360 ms), plus mid-sprint addition job-0029 (custom nginx.conf CORS injection for QGIS Server, image rebumped to `@sha256:57d0f43`).
+
+**M3 milestone achieved.** Cross-browser visual smokes (Chromium + Firefox-ESR) pass on the deployed substrate; cancel envelope verified live on the WS wire via Playwright `framesent`; Tier-separation (Invariant 5) verified by zero `gs://` browser-side fetches AND zero `gs://` literals in the production web build; Invariant 8 cancellation chain reused end-to-end through `GraceWs.sendCancel` (single source). M1 (91 contracts + 23 protocol/integration) + M2 (7) baseline preserved: 120 invocations green under `make test` (with one pre-existing M2 polling-window flake diagnosed not introduced).
+
+**Open Questions raised for follow-up:** OQ-W-26-PIPELINE-STEP-FIELDS (schema consumer-pushback — Appendix D.6 `PipelineStepSummary` needs `progress_percent`, `error_code`, `error_message` before M4 emits real pipeline-state envelopes); OQ-T-28-SIM-WS-BOUNDARY (rewrite dev-injection paths once M4 lands real agent emission); OQ-T-28-NFR-P3-SINGLE-MACHINE (re-verify from us-west1 before final NFR sign-off); OQ-T-28-M2-WORKER-FLAKE (M2 polling-window race — open follow-up job in a future sprint). Outstanding amendment pile from prior sprints (A1–A5 from job-0013, NFR-C-1, NFR-P-1, FR-AS-1 Gemini-3, OQ-1, FR-QS-2 `/mnt/qgs/` contract change, gitignore Lever A/B/C identifier exposures, SRS v0.3.15 data-endpoints + engines + plugins + conservation + caching amendment in flight) carries forward.
+
+**Operational observation:** the workflow-StructuredOutput failure pattern recurred in sprint-05 (jobs 0026, 0029 closeouts both required inline closeout passes after the workflow failed at the final StructuredOutput synthesis despite substantive on-disk work). Pattern is now stable enough to canonicalize. Specialists land code on disk + populate report.md inline; the orchestrator audits via inline Edit on the audit.md template; the workflow tool's StructuredOutput is treated as best-effort. Direct-Agent invocation (job-0028) succeeded cleanly — recommend this as the default for specialist work going forward, reserving Workflow for multi-stage research / fan-out where the orchestration benefit outweighs the StructuredOutput risk.
+
+**Next sprint:** sprint-06 (M4 — agent service tools + atomic-tool starter set: `fetch_dem`, `fetch_buildings`, `fetch_population`, `geocode_location`, `list_qgis_algorithms`, `describe_qgis_algorithm`, `mongo_query`/`qgis_process` registry). OQ-W-26-PIPELINE-STEP-FIELDS must resolve before sprint-06 starts emitting real `pipeline-state` envelopes.

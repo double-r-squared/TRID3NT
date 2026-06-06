@@ -32,7 +32,7 @@ ATLAS_PROJECT_ID ?= 6a234700a0e1295958d10cf9
 
 .DEFAULT_GOAL := help
 
-.PHONY: help run-agent run-web test test-m2 test-m3 \
+.PHONY: help run-agent run-web test test-m2 test-m3 test-all \
         playwright-install screenshot ui-tour \
         tofu-init tofu-plan tofu-apply tofu-bootstrap \
         atlas-allowlist-me secret-srv-show \
@@ -45,7 +45,8 @@ help:
 	@echo "  run-web             launch the local web client dev server (stub until job-0016)"
 	@echo "  test                run the M1 acceptance + conformance suites (job-0017)"
 	@echo "  test-m2             run the M2 acceptance suite (job-0023; live QGIS Server + Cloud Run Job)"
-	@echo "  test-m3             run the M3 acceptance suite (job-0028; tests/m3)"
+	@echo "  test-m3             run the M3 acceptance suite (job-0028; live Vite + Playwright + QGIS WMS)"
+	@echo "  test-all            run M1 + M2 + M3 (sprint-05 capstone)"
 	@echo ""
 	@echo "  playwright-install  download Chromium + Firefox to ~/.cache/ms-playwright (closes job-0016 OQ-W-3)"
 	@echo "  screenshot          one-shot capture; pass URL=, ROUTE=, STATE=, OUT=, BROWSER=, WAIT=, VIEWPORT="
@@ -343,15 +344,29 @@ ui-tour:
 	@echo "==> ui-tour complete; outputs under $(SHOTDIR)/"
 	@ls -1 $(SHOTDIR)/*.png
 
-# M3 acceptance suite (job-0028 will populate the assertion side). The
-# target lands here so all M3 Make targets ship together; pytest discovery
-# at tests/m3/ matches the testing.md harness layout.
+# M3 acceptance suite (job-0028). Drives the real Vite dev server via
+# `make run-web`-equivalent subprocess + headless Chromium + Firefox via
+# Playwright; hits the deployed Cloud Run QGIS Server live for the
+# tile-rendering test. Python `playwright` package + ms-playwright browsers
+# at ~/.cache/ms-playwright are prerequisites (install: `make
+# playwright-install` for npm-side browsers; pip install playwright for
+# the Python wheel — both share the ms-playwright cache).
 test-m3:
 	@if [ ! -x $(TEST_VENV)/bin/python ]; then \
 	  echo "test venv missing or stale ($(TEST_VENV)). Bootstrap:"; \
 	  echo "  virtualenv -p python3 $(TEST_VENV)"; \
 	  echo "  $(TEST_VENV)/bin/pip install -e packages/contracts -e services/agent"; \
-	  echo "  $(TEST_VENV)/bin/pip install pytest pytest-asyncio websockets"; \
+	  echo "  $(TEST_VENV)/bin/pip install pytest pytest-asyncio websockets playwright"; \
 	  exit 1; \
 	fi
+	@if ! $(TEST_VENV)/bin/python -c "import playwright" 2>/dev/null; then \
+	  echo "playwright python package missing; installing..."; \
+	  $(TEST_VENV)/bin/pip install --quiet playwright; \
+	fi
 	$(TEST_VENV)/bin/python -m pytest tests/m3 -v --tb=short
+
+# test-all — run the full M1 + M2 + M3 stack (sprint-05 capstone target).
+# M1 = 91 contracts + 23 acceptance; M2 = 7 acceptance; M3 = 5-8 unique
+# functions parametrized cross-browser (~7-10 invocations). Aggregate
+# unique-function target 126-129; invocation count 128-131.
+test-all: test test-m2 test-m3
