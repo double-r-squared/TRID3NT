@@ -3,7 +3,7 @@
 **Job ID:** job-0021-infra-20260605
 **Sprint:** sprint-04
 **Auditor:** Development Orchestrator
-**Status:** assigned
+**Status:** approved
 
 ## Task Assignment
 
@@ -102,14 +102,75 @@ Surface contestable choices as Open Questions with TENTATIVE tags.
 
 ## Assessment
 
+PyQGIS worker Cloud Run Job `grace-2-pyqgis-worker` deployed live end-to-end: `infra/worker/Dockerfile` extends the same `qgis/qgis-server@sha256:cd29c271…` digest as job-0018/0024 (eliminates QGIS-version drift between worker writes and server reads) + `python3-qgis` + `google-cloud-{storage,pubsub}`; image built via Cloud Build (`sha256:fffd7e0f…`); `infra/worker.tf` provisions `pyqgis-worker-runtime` SA with **zero project-level grants** (verified live) — only bucket-scoped `roles/storage.objectAdmin` on `-qgs` + topic-scoped `roles/pubsub.publisher` on `grace-2-worker-events`; Cloud Run Job mounts `/mnt/qgs` writable (mirror of job-0024's read-only mount). Live E2E: `gcloud run jobs execute` succeeded after one diagnose-before-fix cycle (first execution SEGV'd at `QgsApplication` ctor → diagnosed missing `QT_QPA_PLATFORM=offscreen` → baked into Dockerfile → second build clean, execution `2x7mc` succeeded). Published envelope captured from temp subscription: `layers_after=[basemap-osm-conus, container-test-layer]`, `status=ok`, `notify_message_id=19943000011589039`. Downloaded mutated `.qgs` verified 2 layers. `tofu plan` post-apply: `No changes`. Commit `aefbb6f`. Reviewer verdict: approve (16/17 ACs pass; 2 low-severity findings).
+
 ## Invariant Check
+
+- **Determinism boundary:** pass — worker is deterministic Python in container; no LLM packages.
+- **Deterministic workflows:** pass — worker invocation has stable env-var-driven contract (`--qgs-uri`, `--layer-to-add`).
+- **Engine registration, not modification:** n/a — container packaging only.
+- **Rendering through QGIS Server:** pass — QGIS Server (job-0024) still has `read_only=true` mount; worker has `read_only=false`. Asymmetry enforced at runtime, not just convention. Worker is the **only** code path created that writes `.qgs`.
+- **Tier separation:** pass — worker SA bucket-scoped (zero project-level grants verified via `gcloud projects get-iam-policy`); no public path; no client-side access.
+- **Metadata-payload pattern:** pass — `.qgs` is payload in GCS; Pub/Sub envelope is the notification channel.
+- **Claims carry provenance:** n/a.
+- **Cancellation is first-class:** n/a — Cloud Run Jobs scale to zero; cancellation is at the Job execution level (`gcloud run jobs executions cancel`). Cloud Workflows wrapping deferred to M5 per OQ-21F.
+- **Confirmation before consequence — and no cost theater:** pass — no cost fields in IaC variables/outputs. README budget itemization missing per reviewer finding (low; accepted with rationale below).
+- **Minimal parameter surface:** pass — worker takes `--qgs-uri` + `--layer-to-add` via Job args; env vars are infrastructure (GDAL VSI, GCP_PROJECT, PUBSUB_TOPIC, `QT_QPA_PLATFORM`).
 
 ## Dependency Check
 
+- **Prerequisites satisfied:** yes — job-0014 (GCP project, OpenTofu state); job-0018 (AR repo, bucket, Pub/Sub topic, base image); job-0020 (worker code at `services/workers/pyqgis/`); job-0024 (Cloud Run gen2 GCS mount pattern + image base alignment).
+- **Downstream impacts:**
+  - **job-0023 (M2 acceptance):** invokes `gcloud run jobs execute grace-2-pyqgis-worker --args=...` as part of the end-to-end acceptance suite. Worker is live and ready.
+  - **Post-M2 (M4 first-tools):** the agent's `tools/run_pyqgis_worker_round_trip` atomic tool wraps `gcloud run jobs execute` (or a Cloud Workflows-driven invocation per OQ-21F) for LLM-driven dispatch.
+  - **Post-M2 (M5 solver):** Cloud Workflows definitions wrap the worker for retry + cancellation + step orchestration. Pub/Sub topic `grace-2-worker-events` is the substrate.
+  - **Outstanding** (orchestrator carry): FR-QS-2 SRS amendment for the `/vsigs/` → `/mnt/qgs/` contract change from job-0024.
+
 ## Decisions Validated
+
+- **Container base image identical to QGIS Server (`qgis/qgis-server@sha256:cd29c271…`):** agree — eliminates QGIS-version drift between worker writes and server reads. The image is heavier than necessary (~3 GB; OQ-21B) but version parity wins over size for M2.
+- **Worker container = `python3-qgis` + `google-cloud-{storage,pubsub}` on top of base:** agree — minimal layered additions; pinned major versions.
+- **`QT_QPA_PLATFORM=offscreen` baked into Dockerfile (not Cloud Run env):** agree — property of the container, ensures portability across local docker + Cloud Run + future env shifts. Diagnose-before-fix cycle (first execution SEGV → diagnosis → bake) is exemplary discipline.
+- **Worker SA `pyqgis-worker-runtime` with bucket-scoped `objectAdmin` + topic-scoped `publisher`:** agree — verified live ZERO project-level grants. Splitting `objectAdmin` into `objectViewer` + `objectCreator` (OQ-21E) adds zero security benefit since bucket-level scope is the actual security boundary.
+- **Writable mount at `/mnt/qgs`:** agree — mirror of job-0024's read-only mount with `read_only=false`. Per Invariant 4, QGIS Server still cannot write `.qgs` (enforced at runtime); worker is the **only** path that can.
+- **`tofu` apply added 4 resources (SA + 2 IAM bindings + Cloud Run Job); post-apply plan clean:** agree.
+- **Image digest pinned in `worker.tf`:** agree — same discipline as job-0024's QGIS Server image digest pin.
+- **Cloud Workflows definition stub deferred (OQ-21F):** agree — M5 SFINCS solver is the first real consumer; deferring avoids premature scaffolding. Matches job-0018 OQ-D pattern.
+- **`infra/worker.tf` at root (not `infra/worker/main.tf` module — OQ-21D):** agree — module dance over-engineers M2; revisit at M5 if solver scope forces it.
 
 ## Open Questions Resolved
 
+- **OQ-21A (QGIS version drift container 3.44 vs grace2 env 3.40):** TENTATIVE accept — production read+write are same-image 3.44; grace2 conda env is dev-only; QgsProject is forward-compat within 3.x. Upgrade grace2 to 3.44 (or pin container to 3.40) if dev-env loading worker output ever fails.
+- **OQ-21B (image size ~3 GB):** TENTATIVE accept for M2 — cold-start dominated by gcsfuse + Python startup, not image pull; revisit at M5+ if cold-start latency becomes operational concern.
+- **OQ-21C (`QT_QPA_PLATFORM=offscreen` baked vs Cloud Run env):** resolved → baked in Dockerfile (container property).
+- **OQ-21D (TF placement root vs module):** resolved → root `infra/worker.tf`; revisit at M5.
+- **OQ-21E (SA bucket binding role split):** resolved → single `objectAdmin` role; bucket-scope is the security boundary.
+- **OQ-21F (Cloud Workflows stub):** deferred to M5 (SFINCS solver first real consumer).
+- **Reviewer finding (`readOnly` flag representation in report vs live gcloud):** cosmetic representation difference; report says `read_only=false`, live gcloud describes "no readOnly key set (default = writable)". Same semantics; report text is fine. No action.
+
 ## Follow-up Actions
 
+- **infra/README.md budget itemization for the worker** (reviewer low finding): append a 2-line entry to the existing M2 substrate idle-cost section — "Worker Cloud Run Job (scale-to-zero) ≈ $0/mo idle; per-execution ~$0.001 at small scale". Bundle into the next infra job that edits README (could be a follow-up cleanup, or fold into M3/M4 infra work).
+  - Routing: infra (next infra-touching job). Priority: low.
+- **OQ-21A (QGIS version drift):** monitor; if grace2 dev env fails to load worker output (3.44 written, 3.40 reading) before M5, upgrade grace2 to 3.44 via `infra/conda/environment.yml` change.
+  - Routing: infra. Priority: low.
+- **OQ-21B (image size):** revisit at M5+ if cold-start latency becomes operational.
+  - Routing: infra. Priority: future.
+- **OQ-21F Cloud Workflows definitions:** at M5 SFINCS solver job — orchestrate worker invocation with retry + cancellation chain (FR-CE-2).
+  - Routing: infra. Priority: future.
+- **SRS FR-QS-2 amendment proposal** (carried from job-0024 — orchestrator surfacing): user lands.
+  - Routing: orchestrator → user. Priority: medium (carry-forward).
+- **PROJECT_STATE update** (this audit closure): Cloud Run Job `grace-2-pyqgis-worker` exists with writable `/mnt/qgs` mount + worker SA + image digest `sha256:fffd7e0f…`; full end-to-end FR-QS-6 round-trip verified.
+  - Routing: orchestrator. Priority: high.
+- **Close job-0021 and launch job-0023 (M2 acceptance — sprint-04 capstone).** Routing: orchestrator. Priority: high.
+
 ## Sign-off
+
+- **Ready to move to complete:** yes
+- 16 of 17 reviewer adversarial checks pass on live re-run; 1 reviewer finding accepted as cosmetic (the README budget itemization gap is a documented carry-forward, not a code/IaC defect).
+- Invariants #4, #5, #6, #9, #10 pass with citations; #1, #2, #3 preserved structurally; #7, #8 n/a.
+- Reviewer verdict: approve.
+- 6 Open Questions surfaced with TENTATIVE tags + SRS refs; all resolved or deferred with named resolution paths.
+- Live cloud substrate end-to-end verified: container at `sha256:fffd7e0f…`; Cloud Run Job execution succeeded; mutated `.qgs` in GCS has 2 layers; Pub/Sub envelope decoded; SA grants are minimal and verified.
+- Diagnose-before-fix cycle exemplary: SEGV → diagnosis → fix in container layer → clean re-run.
+- Revisions: 0.
