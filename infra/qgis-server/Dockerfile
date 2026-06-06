@@ -41,6 +41,22 @@
 #
 # No "support both /vsigs/ and /mnt/" code path exists anywhere — the WMS
 # canonical URL is filesystem-path now (per "No legacy support pre-MVP").
+#
+# CORS (job-0029 / OQ-W-27-1, this image rebuild):
+#   - PATH (a) (CORS env vars: QGIS_SERVER_CORS_ALLOW_ORIGIN,
+#     QGIS_SERVER_ALLOW_HEADERS) was tried first as 5-min diagnostic on
+#     Cloud Run revision 00005-rrc — confirmed dead. Neither the qgis/
+#     qgis-server 3.40 LTR FCGI mapserver nor the bundled nginx (from
+#     qgis/qgis-docker server/conf/qgis-server-nginx.conf) consult any
+#     env var to emit CORS response headers. (The 3liz/py-qgis-server
+#     fork has a CORS knob, but that is a different third-party server.)
+#   - PATH (b) lands here: this Dockerfile bakes a custom nginx.conf
+#     over /etc/nginx/nginx.conf that injects
+#     `Access-Control-Allow-Origin: *` + companion CORS headers on every
+#     served route (/ogc/, /ows/, /wfs3/, /qgis/) and short-circuits
+#     OPTIONS preflight at the nginx layer (never reaches FCGI). Origin
+#     scoping is `*` for M3 (dev posture) — map tiles are not
+#     credentialed; revisit at M9/M10 production hosting.
 
 FROM qgis/qgis-server@sha256:cd29c271e45f0a0791078e755b9dec48d9e07902db68cd06e1dab95e23b84793
 
@@ -69,6 +85,19 @@ RUN apt-get update \
 RUN mkdir -p /etc/qgis/styles /opt/grace2/styles
 COPY styles/ /etc/qgis/styles/
 COPY styles/ /opt/grace2/styles/
+
+# Custom nginx.conf with CORS headers (job-0029 / OQ-W-27-1 path b).
+# Replaces the upstream /etc/nginx/nginx.conf 1:1 plus a CORS header block
+# on every served location and OPTIONS preflight short-circuiting at nginx.
+# All structural elements (worker config, maps, FCGI passthrough, location
+# rewrites) preserved from upstream — see file header for delta details.
+COPY infra/qgis-server/nginx.conf /etc/nginx/nginx.conf
+
+# Build-time validation: nginx parses the config cleanly. Fails the build
+# if the custom file has a syntax error (caught earlier than a runtime
+# nginx-failed-to-start in the Cloud Run revision).
+RUN nginx -t \
+    && echo "nginx.conf: OK"
 
 # QGIS Server tuning. Map env vars are also declared in infra/qgis-server.tf
 # (Cloud Run env block); deploy-time vars override these defaults.

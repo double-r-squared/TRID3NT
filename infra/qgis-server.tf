@@ -115,7 +115,12 @@ resource "google_cloud_run_v2_service" "qgis_server" {
       # job-0024 rebuild: new image bakes /etc/qgis/styles/basemap.qml (the
       # engine-authored preset from job-0019) — verified at build time by the
       # Dockerfile's `test -f /etc/qgis/styles/basemap.qml` smoke step.
-      image = "${var.gcp_region}-docker.pkg.dev/${google_project.grace2.project_id}/${google_artifact_registry_repository.containers.repository_id}/grace-2-qgis-server@sha256:a7034760492fe28501b91ac66608d5efa41249cee5e8477aaa51aab4fbdcac75"
+      # job-0029 rebuild: image bakes infra/qgis-server/nginx.conf over
+      # /etc/nginx/nginx.conf with CORS headers on every served route +
+      # OPTIONS preflight short-circuit at nginx. Cloud Build ID
+      # ae4433d2-b2df-4d3e-89ff-0273fb31e5c9. Build-time `nginx -t` smoke
+      # gates a malformed conf.
+      image = "${var.gcp_region}-docker.pkg.dev/${google_project.grace2.project_id}/${google_artifact_registry_repository.containers.repository_id}/grace-2-qgis-server@sha256:57d0f43bb3dd235f4c9a81c76d94fad8a28963f36d4c3529ebe2bd57360c634b"
 
       ports {
         container_port = 80
@@ -196,6 +201,28 @@ resource "google_cloud_run_v2_service" "qgis_server" {
         name  = "GDAL_HTTP_USERAGENT"
         value = "grace-2-qgis-server/0.1"
       }
+
+      # --- CORS — landed via path (b) image rebuild (job-0029) -------------
+      # PATH (a) (CORS env vars) was tried first as 5-min diagnostic on
+      # revision 00005-rrc: env vars `QGIS_SERVER_CORS_ALLOW_ORIGIN=*` and
+      # `QGIS_SERVER_ALLOW_HEADERS=Origin,Content-Type,Accept,Authorization`
+      # added, applied, new revision served — `curl -I -H "Origin: ..."`
+      # response STILL had no `access-control-allow-origin` header. Root
+      # cause: the official `qgis/qgis-server` 3.40 LTR image's bundled
+      # nginx (from qgis/qgis-docker server/conf/qgis-server-nginx.conf)
+      # does NOT emit CORS headers and consults NO env var to do so; the
+      # FCGI mapserver behind it also has no CORS knob. (The 3liz/
+      # py-qgis-server fork has a CORS option, but that is a different
+      # third-party server we are not running.) The dead env vars were
+      # then reverted and PATH (b) was pursued: a custom nginx.conf is
+      # baked into the image that injects CORS headers on every response
+      # at every served location.
+      #
+      # The new image digest is pinned on the `image = ...` line below.
+      # Origin scoping is `*` for M3 (dev posture): the QGIS Server response
+      # payload is map tiles, not credentialed user data, no cookies/auth
+      # transit, so origin-wildcard is safe. Revisit at M9/M10 production
+      # hosting when a stable web-origin lands.
 
       # --- .qgs bucket FUSE mount (job-0024 / OQ-19A path b) ---------------
       # PATH (c) (GDAL VSI env vars above) was tried first and FAILED — QGIS

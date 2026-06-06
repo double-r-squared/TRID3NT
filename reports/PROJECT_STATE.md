@@ -1,7 +1,7 @@
 # Project State
 
-**Last updated:** 2026-06-06 (sprint-05 / M3 opened)
-**Current sprint:** sprint-05 (active, opened 2026-06-06) — M3 Web client skeleton: QGIS Server WMS basemap + LayerPanel + PipelineStrip + Playwright AFK loop. Stage A (parallel): job-0025 (basemap pivot + LayerPanel) + job-0027 (Playwright tooling). Stage B: job-0026 (PipelineStrip on 0025's App.tsx shell). Stage C: job-0028 (acceptance).
+**Last updated:** 2026-06-06 (sprint-05 / M3 — jobs 0025, 0027 approved; 0029 CORS fix in flight)
+**Current sprint:** sprint-05 (active) — M3 Web client skeleton. Stage A ✅: job-0025 (QGIS Server WMS basemap + LayerPanel drag-and-drop) + job-0027 (Playwright + AFK loop operational). NEW mid-sprint: job-0029 infra (CORS fix on QGIS Server — blocks tile rendering until landed). Stage B queued: job-0026 (PipelineStrip onto 0025's App.tsx shell). Stage C queued: job-0028 (M3 acceptance). LayerPanel + interaction surface verified live via Playwright; basemap tiles pending CORS fix.
 
 ## Resume note (read first)
 

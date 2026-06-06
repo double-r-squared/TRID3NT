@@ -1,6 +1,6 @@
 # Audit: Basemap pivot to QGIS Server WMS + LayerPanel.tsx + App.tsx layout shell
 
-**Job ID:** job-0025-web-20260606, **Sprint:** sprint-05, **Auditor:** Development Orchestrator, **Status:** assigned
+**Job ID:** job-0025-web-20260606, **Sprint:** sprint-05, **Auditor:** Development Orchestrator, **Status:** approved
 
 ## Task Assignment
 
@@ -72,14 +72,76 @@ Surface contestable choices as Open Questions with TENTATIVE tags — at minimum
 
 ## Assessment
 
+`web/src/Map.tsx` pivoted to QGIS Server WMS as default basemap (`https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs`, layer `basemap-osm-conus`, EPSG:3857, 256×256 PNG tiles); OSM-direct retained as `visibility:none` fallback layer proving FR-DT-1 swappability. `LayerPanel.tsx` (NEW) implements FR-WC-4 v0.1: `@dnd-kit/sortable` drag-and-drop reorder + visibility checkbox + 0..1 opacity slider + a11y up/down nudge buttons + name + attribution, driven by a `useReducer` view-model that handles session-state seeds + all 10 `map-command` sub-discriminants. `App.tsx` three-zone layout (full-bleed Map + LayerPanel docked left 280px + Chat docked right 380px + reserved PipelineStrip slot at bottom for job-0026) with published layout shape in report for job-0026 consumption. `contracts.ts` extended additively with `ProjectLayerType`, `ProjectLayerSummary`, `TemporalConfig`, `MapView`, narrowed `SessionStatePayload.loaded_layers`, full `MapCommandPayload` discriminated union over 10 sub-discriminants. `npx tsc --noEmit` clean; `npx vite build` succeeds. Live Playwright evidence: chromium-initial / chromium-layerpanel / chromium-after-interaction / firefox-initial PNGs captured + CDP transcripts showing nudge-down reorder + visibility toggle + opacity slider all work end-to-end through the dev seam. **CORS-blocked tile rendering correctly routed to job-0029 (already in flight)** — code in this job is correct; pixels paint once 0029 lands. Reviewer verdict: approve (15/16 ACs pass; 1 qualified on file-ownership package.json edit; 3 low findings).
+
 ## Invariant Check
+
+- **Determinism boundary:** pass — no LLM-rendered numbers in JSX; LayerPanel renders `ProjectLayerSummary` typed fields only.
+- **Deterministic workflows:** n/a — client-side only.
+- **Engine registration, not modification:** n/a.
+- **Rendering through QGIS Server:** **pass — FIRST DEPLOYMENT** of WMS-as-rendering substrate in the client. 18-20 tile requests per page-load go to QGIS Server; 0 direct OSM hits; 0 `gs://`. This is the M3 milestone moment for Invariant 4.
+- **Tier separation:** pass — `grep -ro 'gs://' web/dist/` returns nothing; QGIS Server is the only Tier B path. OSM-direct retained as a `visibility:none` fallback proving FR-DT-1 swappability.
+- **Metadata-payload pattern:** n/a — no MongoDB/GCS access in client.
+- **Claims carry provenance:** n/a.
+- **Cancellation is first-class:** n/a — pipeline strip slot reserved for job-0026.
+- **Confirmation before consequence — and no cost theater:** pass — zero `cost`/`usd`/`cents` strings in client.
+- **Minimal parameter surface:** pass — `VITE_GRACE2_WMS_URL` is the only new env var (mirrors M1 `VITE_GRACE2_WS_URL` precedent).
 
 ## Dependency Check
 
+- **Prerequisites satisfied:** yes — job-0016 (M1 stub: React+Vite+TS strict+MapLibre 4.7+chat panel+ws.ts client+2D camera lock) + job-0024 (QGIS Server deployed + `/mnt/qgs/` contract + layer `basemap-osm-conus`).
+- **Downstream impacts:**
+  - **job-0026 (PipelineStrip):** consumes the App.tsx layout shape (published in this report's § App.tsx layout shape) — mounts PipelineStrip into the reserved bottom slot. App.tsx is now FROZEN to anyone but 0026.
+  - **job-0027 (Playwright, already approved):** captures of this job's evidence land in `tests/m3/artifacts/` once CORS unblocks; canonical baselines (chromium-initial.png + firefox-initial.png) will be re-shot after 0029.
+  - **job-0028 (M3 acceptance):** tests/m3/ exercises this job's surface (layer panel state, drag-and-drop reorder, map-command routing, no-gs:// invariant).
+  - **job-0029 (CORS fix — IN FLIGHT):** unblocks the visual rendering of WMS tiles; this job's PNGs will repaint with actual basemap once 0029 lands.
+  - **First M4 engine work:** the LayerPanel's `client → agent` map-command intent shape (OQ-25-F) needs schema design decision before agent integration.
+
 ## Decisions Validated
+
+- **Default WMS as basemap layer; OSM-direct retained as `visibility:none` fallback:** agree — preserves FR-DT-1 swappability; zero churn to swap if QGIS Server is down. The fallback isn't rendered, but the source remains in the style spec.
+- **`@dnd-kit/sortable` for drag-and-drop:** agree — actively maintained, keyboard a11y first-class, zero global state. Alternatives (hand-rolled HTML5, react-dnd) rejected.
+- **a11y up/down nudge buttons IN ADDITION to drag-and-drop:** agree — FR-WC-4 mandates drag-and-drop (which this satisfies); keyboard nudge is an additive a11y guarantee that costs ~20 lines.
+- **All 10 `map-command` sub-discriminants hand-mirrored** (5 active + 5 logged): agree — matches kickoff guidance; avoids future churn when remaining 5 wire in M4-M9.
+- **`SessionStatePayload.loaded_layers` narrowed from `unknown[]` to `ProjectLayerSummary[]`:** agree — loose-to-specific tightening; matches Appendix D.2 canonical name.
+- **LayerPanel docked LEFT (Chat stays RIGHT per M1):** agree — reversible by single style edit if you want to flip on phone.
+- **No panel-collapse affordance in M3:** agree — kickoff allowed it but didn't mandate; deferred to follow-up.
+- **`VITE_GRACE2_WMS_URL` env var with deployed default:** agree — mirrors M1 `VITE_GRACE2_WS_URL` precedent.
+- **`rasterSource` with `{bbox-epsg-3857}` (NOT WMTS):** agree — WMS-raster is simpler for M3; WMTS at scale revisit when tile caching matters.
+- **Client → agent layer-intent message shape (OQ-25-F):** routed to schema — for M4 agent integration. Current behavior: console.debug only.
 
 ## Open Questions Resolved
 
+- **OQ-25-A (BLOCKER, CORS):** routed to job-0029 (mid-sprint addition, in flight). Code in 0025 is correct; pixels paint once 0029 lands.
+- **OQ-25-B (DnD library):** resolved → `@dnd-kit/sortable`.
+- **OQ-25-C (panel position):** resolved → LEFT.
+- **OQ-25-D (collapse affordance):** deferred to follow-up.
+- **OQ-25-E (hand-mirror count):** TENTATIVE → 27 export declarations / ~14 payload-shaped; below the 18 threshold by collapsed count. Keep hand-mirror through M4; promote to codegen at M5 start.
+- **OQ-25-F (client → agent layer-intent envelope shape):** ROUTED TO SCHEMA for M4 contract design. Recommendation: reuse `map-command` with `origin: 'client' | 'agent'` discriminator. Carry-forward.
+- **OQ-25-G (WMS URL env var):** resolved → `VITE_GRACE2_WMS_URL` defaulting to deployed URL.
+- **OQ-25-H (WMS-raster vs WMTS):** resolved → WMS-raster for M3.
+
 ## Follow-up Actions
 
+- **OQ-25-F (client → agent layer-intent shape):** route to schema for M4 contract design. The LayerPanel intents currently console.debug; M4 will wire them through the WebSocket. Recommended approach: `map-command` envelope with `origin: 'client' | 'agent'` discriminator — schema decides.
+  - Routing: schema (M4 contract design). Priority: medium.
+- **OQ-25-D (panel-collapse affordance):** small UX add for M3 polish or M9.
+  - Routing: web. Priority: low.
+- **OQ-25-E (codegen promotion trigger):** monitor mirror count; promote to `json-schema-to-typescript` at M5 start if count crosses 18 flat.
+  - Routing: web. Priority: low (M5 timing).
+- **Re-capture canonical baselines after 0029 CORS fix lands:** job-0027 owns `tests/m3/artifacts/{chromium,firefox}-initial.png`. After 0029 fixes CORS, re-run `make ui-tour` and commit new baselines showing the actual basemap.
+  - Routing: orchestrator + infra (in 0029) or web (in 0026 closure). Priority: high.
+- **PROJECT_STATE update** (this audit closure): web client default basemap now QGIS Server WMS; LayerPanel + drag-and-drop live; App.tsx layout shell published for job-0026.
+  - Routing: orchestrator. Priority: high.
+- **Close job-0025; job-0026 (PipelineStrip) is unblocked.** App.tsx + contracts.ts layout shape published for the next specialist to consume.
+  - Routing: orchestrator. Priority: high.
+
 ## Sign-off
+
+- **Ready to move to complete:** yes
+- 15 of 16 reviewer adversarial checks pass on live re-run (1 qualified on package.json file-ownership — adding @dnd-kit/sortable + @dnd-kit/core + @dnd-kit/utilities was implicitly authorized by the kickoff's DnD-mandate but the explicit `dependencies+=` edit to package.json is a borderline ownership extension; accepted as necessary scope extension with rationale).
+- **Invariants #4 + #5 preserved with first-deployment evidence**: 18-20 tile requests to QGIS Server per page-load, 0 OSM-direct, 0 gs://. CORS blocks the *rendering* of tiles but not the request routing — code is correct; substrate fix is in flight (job-0029).
+- Reviewer verdict: approve. Three low-severity findings (report freshness vs live state, ws.ts → LayerPanel routing gap, package.json file-ownership leak) all accepted with rationale.
+- 8 Open Questions surfaced; OQ-25-A routed to infra job-0029; OQ-25-B/C/E/F/G/H resolved or routed; OQ-25-D deferred.
+- Live Playwright + CDP evidence under `evidence/`: 4 PNGs across Chromium + Firefox + 2 network captures + DnD transcript.
+- Revisions: 0.
