@@ -39,6 +39,30 @@
 // driving selectors are not yet present in the DOM — by design, so the
 // tool ships now (job-0027) and is reused as 0025/0026 land selectors.
 
+const USAGE = `Usage: node tools/screenshot.mjs [options]
+
+Options:
+  --url=<url>       Page URL (default: http://localhost:5173)
+  --route=<path>    Path appended to baseURL when --url is omitted (default: /)
+  --out=<path>      Output PNG path
+                    (default: /tmp/grace2-shots/<state>-<browser>-<ts>.png)
+  --state=<name>    UI state to capture:
+                      initial | after-message | layer-panel-open
+                      | pipeline-running | cancelled | disconnected
+                    (default: initial)
+  --browser=<name>  chromium | firefox (default: chromium)
+  --wait=<ms>       Extra delay after load before snapshot
+                    (default: 1500 — covers MapLibre first WebGL paint)
+  --viewport=<wxh>  Viewport size (default: 1440x900)
+  --full-page       Capture full scroll-height page (default: viewport only)
+  --help, -h        Print this help and exit
+
+Examples:
+  node tools/screenshot.mjs --state=initial --out=/tmp/initial.png
+  node tools/screenshot.mjs --browser=firefox --route=/
+  make screenshot ROUTE=/ STATE=initial OUT=/tmp/grace2-shots/initial.png
+`;
+
 // Resolve @playwright/test out of web/node_modules. The CLI lives in
 // tools/, not under web/, so Node ESM's bare-specifier walk does NOT
 // find the package — we point it at the explicit ESM entrypoint instead
@@ -81,6 +105,10 @@ const DEFAULTS = {
 function parseArgs(argv) {
   const out = { ...DEFAULTS };
   for (const raw of argv.slice(2)) {
+    if (raw === "-h" || raw === "--help") {
+      out.help = true;
+      continue;
+    }
     const m = raw.match(/^--([a-zA-Z][\w-]*)(?:=(.*))?$/);
     if (!m) continue;
     const [, key, val] = m;
@@ -166,6 +194,10 @@ const STATE_HOOKS = {
 
 async function main() {
   const args = parseArgs(process.argv);
+  if (args.help) {
+    process.stdout.write(USAGE);
+    process.exit(0);
+  }
   const browserName = String(args.browser);
   if (!["chromium", "firefox"].includes(browserName)) {
     console.error(`bad --browser: ${browserName} (chromium|firefox)`);

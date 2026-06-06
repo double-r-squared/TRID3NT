@@ -48,7 +48,8 @@ help:
 	@echo "  test-m3             run the M3 acceptance suite (job-0028; tests/m3)"
 	@echo ""
 	@echo "  playwright-install  download Chromium + Firefox to ~/.cache/ms-playwright (closes job-0016 OQ-W-3)"
-	@echo "  screenshot          one-shot capture; pass SCREENSHOT_ARGS='--url=... --state=... --out=... --browser=...'"
+	@echo "  screenshot          one-shot capture; pass URL=, ROUTE=, STATE=, OUT=, BROWSER=, WAIT=, VIEWPORT="
+	@echo "                      (or SCREENSHOT_ARGS='--url=... --state=... --out=... ...' for the long form)"
 	@echo "  ui-tour             walk six UI states with Chromium + Firefox; outputs under /tmp/grace2-shots/"
 	@echo ""
 	@echo "  tofu-init           one-shot OpenTofu init in infra/"
@@ -299,13 +300,28 @@ SCREENSHOT_ARGS ?=
 # via an explicit relative import (script-resident lookup), so no
 # NODE_PATH plumbing is needed here — just have `make playwright-install`
 # run first on a fresh box.
+#
+# `make screenshot` accepts Make-variable passthroughs URL=, ROUTE=, STATE=,
+# OUT=, BROWSER=, WAIT=, VIEWPORT= so the kickoff invocation shape
+# `make screenshot ROUTE=/ STATE=initial OUT=/tmp/grace2-shots/initial.png`
+# Just Works. Anything beyond those is still passable via SCREENSHOT_ARGS,
+# which is appended last (the CLI honors later flags so SCREENSHOT_ARGS can
+# override the Make-variable passthroughs deliberately).
 
 playwright-install:
 	cd web && npx playwright install chromium firefox
 
 screenshot:
 	@mkdir -p $(SHOTDIR)
-	node tools/screenshot.mjs $(SCREENSHOT_ARGS)
+	node tools/screenshot.mjs \
+	  $(if $(URL),--url=$(URL)) \
+	  $(if $(ROUTE),--route=$(ROUTE)) \
+	  $(if $(STATE),--state=$(STATE)) \
+	  $(if $(OUT),--out=$(OUT)) \
+	  $(if $(BROWSER),--browser=$(BROWSER)) \
+	  $(if $(WAIT),--wait=$(WAIT)) \
+	  $(if $(VIEWPORT),--viewport=$(VIEWPORT)) \
+	  $(SCREENSHOT_ARGS)
 
 # UI tour: six states x two browsers = twelve PNGs. Filenames are
 # <state>-<browser>.png so re-runs overwrite rather than accumulate.
