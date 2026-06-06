@@ -19,6 +19,20 @@
 //
 //   Pipeline-domain types (PipelineSnapshot beyond M1 step shape, etc.) are
 //   reserved for job-0026; this file deliberately leaves them out.
+//
+//   job-0026 update: pipeline surface formalized below. The M1-era
+//   `PipelineStep` (a M1-only stub from job-0016) is renamed to the canonical
+//   Appendix D.6 name `PipelineStepSummary`. `PipelineSnapshot` (Appendix D.6)
+//   is added to enable `session-state.current_pipeline` and `pipeline_history`
+//   reconstruction. The pydantic D.6 `PipelineStepSummary` does NOT carry
+//   `progress_percent`, `error_code`, or `error_message`; the FR-WC-8
+//   acceptance criteria require them for the running-progress and failed-
+//   step renders. The fields are added here as `?` optionals with a
+//   consumer-pushback OQ filed against schema (`OQ-W-26-PIPELINE-STEP-FIELDS`,
+//   see report.md). Until schema lands the Appendix D.6 amendment, the agent
+//   service in M4 will need to either (a) carry the fields out-of-band on
+//   `tool-call-failed` (already in A.4) and have us correlate by step_id, or
+//   (b) extend D.6 — see the OQ for the recommendation.
 
 // --- A.1 Envelope -------------------------------------------------------- //
 
@@ -66,7 +80,25 @@ export type PipelineStepState =
   | "failed"
   | "cancelled";
 
-export interface PipelineStep {
+// PipelineStepSummary — canonical name per Appendix D.6 (`collections.py`).
+//
+// The pydantic D.6 model carries:
+//   step_id, name, tool_name, state, started_at?, completed_at?
+//
+// The `pipeline-state` envelope (A.4) `PipelineStep` model carries
+// additionally `progress_percent?`. The FR-WC-8 acceptance also wants
+// `error_code` + `error_message` on failed steps (currently only on the
+// distinct `tool-call-failed` envelope, A.4). Per the kickoff "DO NOT parse
+// out of strings, DO NOT invent fields client-side": these fields are
+// modeled as `?` optionals here and the gap is filed as
+// OQ-W-26-PIPELINE-STEP-FIELDS (schema consumer pushback) — proposed
+// resolution: extend Appendix D.6 PipelineStepSummary with
+// `progress_percent?: int (0..100) | None`, `error_code?: str | None`,
+// `error_message?: str | None` so both the wire envelope and the persisted
+// snapshot align. Until the amendment lands, the client renders whatever
+// the agent populates; absent fields simply hide their UI affordance
+// (no fabrication).
+export interface PipelineStepSummary {
   step_id: string;
   name: string;
   tool_name: string;
@@ -74,11 +106,38 @@ export interface PipelineStep {
   progress_percent?: number | null;
   started_at?: string | null;
   completed_at?: string | null;
+  // Below: consumer-pushback fields (OQ-W-26-PIPELINE-STEP-FIELDS). Optional
+  // here so the M3 client can render a failed step's reason if the agent
+  // populates them either directly on the step or after the proposed D.6
+  // amendment lands. Never fabricated client-side.
+  error_code?: string | null;
+  error_message?: string | null;
 }
 
+// PipelineSnapshot — Appendix D.6 (`collections.py` PipelineSnapshot). Carried
+// inline as `session-state.current_pipeline` and as entries in
+// `session-state.pipeline_history`. The `pipeline-state` (A.4) envelope is the
+// same shape minus `final_state`/`completed_at` (those are set only when the
+// pipeline terminates and the snapshot moves to history).
+export interface PipelineSnapshot {
+  pipeline_id: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+  final_state?: "complete" | "failed" | "cancelled" | null;
+  steps: PipelineStepSummary[];
+  // Future: `run_id?: string | null;` per kickoff D.6 hint. The D.6 model
+  // does not currently carry `run_id`; if the engine wants it, file under
+  // the OQ above. Not added here speculatively.
+}
+
+// PipelineStatePayload — Appendix A.4 `pipeline-state` envelope. Replace-not-
+// reconcile per Appendix A.7: each new envelope wholesale replaces the local
+// view-model; never merge/diff. The payload IS the snapshot; the optional
+// `steps` field in the M1 stub is replaced here by the canonical D.6 shape:
+// `steps` is a list of `PipelineStepSummary`, defaulting to empty.
 export interface PipelineStatePayload {
   pipeline_id: string;
-  steps?: PipelineStep[];
+  steps?: PipelineStepSummary[];
 }
 
 export type ErrorCode =

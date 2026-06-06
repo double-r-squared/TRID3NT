@@ -27,17 +27,24 @@
 // requires we do not modify Chat.tsx or substantive ws.ts logic).
 //
 // Dev-only debug seam: in dev mode the App attaches
-// `window.__grace2InjectSessionState` and `window.__grace2InjectMapCommand`
-// so a local browser console can seed the LayerPanel without an agent —
-// used for local-dev verification per the kickoff (step 8).
+// `window.__grace2InjectSessionState`, `window.__grace2InjectMapCommand`,
+// and (job-0026) `window.__grace2InjectPipelineState` so a local browser
+// console can seed the LayerPanel + PipelineStrip without an agent —
+// used for local-dev verification per the kickoff (step 8 of job-0025 and
+// step 7 of job-0026).
 
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { MapView } from "./Map";
 import { Chat } from "./Chat";
 import { LayerPanel, createLayerPanelBus } from "./LayerPanel";
+import {
+  PipelineStrip,
+  createPipelineStripBus,
+} from "./PipelineStrip";
 import { GraceWs } from "./ws";
 import {
   MapCommandPayload,
+  PipelineStatePayload,
   SessionStatePayload,
 } from "./contracts";
 
@@ -51,15 +58,24 @@ declare global {
   interface Window {
     __grace2InjectSessionState?: (p: SessionStatePayload) => void;
     __grace2InjectMapCommand?: (p: MapCommandPayload) => void;
+    __grace2InjectPipelineState?: (p: PipelineStatePayload) => void;
   }
 }
 
 export function App(): JSX.Element {
   const bus = useMemo(() => createLayerPanelBus(), []);
+  const pipelineBus = useMemo(() => createPipelineStripBus(), []);
+  // Hold the parallel GraceWs ref so PipelineStrip's cancel button can
+  // reach `sendCancel` (the M1 cancel helper). Chat.tsx owns the other
+  // GraceWs; both connections issue the same envelope shape — emitting
+  // from either is the same M1-verified path. We deliberately route the
+  // cancel through the App-level WS so a future M4 consolidation (drop the
+  // duplicate GraceWs from Chat.tsx) is a single-file change.
+  const wsRef = useRef<GraceWs | null>(null);
 
-  // Mount a parallel GraceWs that routes session-state and map-command
-  // envelopes into the LayerPanel bus. The Chat panel keeps its own
-  // GraceWs (M1 contract) untouched.
+  // Mount a parallel GraceWs that routes session-state, map-command, and
+  // pipeline-state envelopes into the panel buses. The Chat panel keeps
+  // its own GraceWs (M1 contract) untouched per kickoff frozen list.
   useEffect(() => {
     const ws = new GraceWs(WS_URL, {
       onStatus: () => {
@@ -68,32 +84,43 @@ export function App(): JSX.Element {
       onAgentChunk: () => {
         // Chat panel handles agent message rendering.
       },
-      onPipelineState: () => {
-        // PipelineStrip (job-0026) will consume this via the same bus.
+      onPipelineState: (p) => {
+        pipelineBus.pushPipelineState(p);
       },
       onSessionState: (p) => {
         bus.pushSessionState(p);
+        pipelineBus.pushSessionState(p);
       },
       onError: () => {
         // Chat panel renders connection errors.
       },
     });
+    wsRef.current = ws;
     ws.connect();
-    return () => ws.close();
-  }, [bus]);
+    return () => {
+      wsRef.current = null;
+      ws.close();
+    };
+  }, [bus, pipelineBus]);
 
-  // Dev-only debug seam — exposes the bus to the browser console so a
-  // local-dev verifier can inject a session-state envelope without an
-  // agent. Wrapped in import.meta.env.DEV so production builds drop it.
+  // Dev-only debug seam — exposes the buses to the browser console so a
+  // local-dev verifier can inject session-state / map-command /
+  // pipeline-state envelopes without an agent. Wrapped in
+  // import.meta.env.DEV so production builds drop it.
   useEffect(() => {
     if (!import.meta.env.DEV) return;
-    window.__grace2InjectSessionState = (p) => bus.pushSessionState(p);
+    window.__grace2InjectSessionState = (p) => {
+      bus.pushSessionState(p);
+      pipelineBus.pushSessionState(p);
+    };
     window.__grace2InjectMapCommand = (p) => bus.pushMapCommand(p);
+    window.__grace2InjectPipelineState = (p) => pipelineBus.pushPipelineState(p);
     return () => {
       delete window.__grace2InjectSessionState;
       delete window.__grace2InjectMapCommand;
+      delete window.__grace2InjectPipelineState;
     };
-  }, [bus]);
+  }, [bus, pipelineBus]);
 
   return (
     <div style={{ position: "fixed", inset: 0 }}>
@@ -109,15 +136,15 @@ export function App(): JSX.Element {
       {/* Chat panel docked right (M1 placement preserved) */}
       <Chat wsUrl={WS_URL} />
 
-      {/* PipelineStrip slot — reserved for job-0026.
-          Layout slot:
-            position: absolute
-            left: 312 (LayerPanel width 280 + 16 gap + 16 inset)
-            right: 412 (Chat panel width 380 + 16 gap + 16 inset)
-            bottom: 16
-            height: ~96 (recommended; job-0026 owns final sizing)
-          Render as null until job-0026 mounts the component here. */}
-      {/* <PipelineStrip ... /> */}
+      {/* PipelineStrip mounted into the reserved bottom slot job-0025
+          published. Subscribes to BOTH pipeline-state (step list) and
+          session-state (current_pipeline). Cancel button emits via the
+          M1-verified GraceWs.sendCancel path — same envelope as Chat. */}
+      <PipelineStrip
+        subscribePipelineState={pipelineBus.subscribePipelineState}
+        subscribeSessionState={pipelineBus.subscribeSessionState}
+        onCancel={(reason) => wsRef.current?.sendCancel(reason)}
+      />
     </div>
   );
 }
