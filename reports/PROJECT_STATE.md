@@ -129,23 +129,38 @@ Repo is a git repository on branch `main`, root-commit `6fd37e6`. Remote: `https
 - **SRS NFR-C-1 cost line ("M10 cluster idle <$100/month") is numerically inaccurate** — real M10 3-node replica set on GCP is ~$170/mo base + backup. Amendment proposal to be drafted by schema or infra and surfaced to user.
 - ~~Pelicun impact postprocessor planned as future engine addition~~ → **LANDED in SRS v0.3.13 (2026-06-05)** as forward-looking architecture. Decision N + §2.3 post-processing tool-class + FR-CE-5/6/7 + FR-TA-1 `run_pelicun_impact` + Appendix B.6c `ImpactEnvelope` + B.6d Hurricane Ian example + Appendix D.3 `run_type` extension + FR-MP-5 row + Milestone M5.5 + OQ-8 (fragility sourcing). All additions explicitly marked **(Forward-looking — not in M1 / not in sprint-03; targeted post-M5)** so current in-flight work is undisturbed.
 - **SRS v0.3.14 (2026-06-05): openTELEMAC-MASCARET added** as forward-looking multi-solver hydrodynamic engine. §2.3 Deferred engines row (Python-shim, target v0.3) + clarification distinguishing TELEMAC from OpenFOAM-class indefinitely-deferred set + FR-TA-1 forward-looking workflow group (`run_coastal_storm_surge_telemac`, `run_coupled_surge_wave`, `run_river_hydraulics_mascaret`, `run_sediment_transport_gaia`) + Milestone M11 + OQ-9 (mesh-generation toolchain). License posture: GPL/LGPL boundary at the Docker image; GRACE-2 stays MIT (out-of-process invocation, no source linkage).
+- **SRS v0.3.15 amendment DRAFTED 2026-06-06 — NOT APPLIED.** Workflow `wodu3a4xm` synthesized 9 edits across Decision O (cache-mediated data fetching, 4 TTL classes, FR-DC-1..N), Decision P (multi-agent specialization migration path), 9–10 new Deferred engines rows (HEC-HMS, SWMM, pysheds, pywatershed, ParFlow, Delft-FEWS, wrfxpy, OpenWFM, QUIC-Fire+FastFuels+pyretechnics, PyTorchFire), conservation/biodiversity post-processing sub-catalog (Maxent, inVEST, Circuitscape, ConservationImpactEnvelope), and new Appendix E (QGIS plugins inventory). Adversarial verify REFUTED with 11 issues — most critical: new §3.9 caching body truncated mid-sentence (FR-DC-3..6 missing); OQ-5 not actually closed despite Decision O claim; OQ-10/OQ-11 referenced but not added to §6; no §8 Document History row for v0.3.15; pysheds/wrfxpy mis-categorized as engines vs atomic tools; bucket-naming inconsistency with Appendix B; Appendix E referenced without creating edit; conservation paragraph pre-commits despite OQ-11 being open; FR-AS-3 misattribution; ~30-tool heuristic unsourced. **Per user direction 2026-06-06, Decision P (multi-agent specialization) is dropped from this amendment** — defer the migration-path question to v0.2+ when single-agent topology actually hinders. Amendment carries forward; relaunch with the 11 verdict fixes + Decision P removal once next research/research pass completes.
 - **Atlas cluster created out-of-band** (via UI, not OpenTofu) — job-0014 must `tofu import` rather than `tofu apply create`.
 - `agents/web.md:89` contains the banned-vocabulary governance line (intentionally names the forbidden terms in order to forbid them) — sweep-grep AC2 will return this single hit; documented and accepted (job-0012 OQ-C).
+- **Outstanding SRS amendment pile** (carry-forward; user lands at convenience): A1–A5 from job-0013 (Appendix amendments), NFR-C-1 cost line, NFR-P-1 first-token budget, FR-AS-1 Gemini-3 substitution, OQ-1 (Cloud Run + WS resolved by job-0015), FR-QS-2 `/mnt/qgs/` contract change, gitignore Lever A/B/C identifier exposures, OQ-W-26-PIPELINE-STEP-FIELDS (Appendix D.6 needs `progress_percent`/`error_code`/`error_message` — BLOCKS sprint-06 M4 real pipeline-state emission).
 
 ## Next up
 
-**Stage A finish, then Stage B:**
+**Sprint-05 CLOSED 2026-06-06** — M3 (Web client skeleton) achieved. 5 jobs approved (job-0025 basemap pivot + LayerPanel + App shell; job-0026 PipelineStrip + cancel button; job-0027 Playwright tooling + AFK loop; job-0028 M3 acceptance suite; mid-sprint job-0029 CORS fix). NFR-P-3 qualified at p50≈300ms / p95≈360ms (~7× margin under 2000ms target). Cross-browser visual smokes + cancel-chain end-to-end + Tier separation all verified live on deployed substrate. See `reports/sprints/sprint-05.md` Retrospective.
 
-1. **job-0013 ✅ closed approved 2026-06-05** — contracts package installed and verified.
-2. **job-0014 ✅ closed approved 2026-06-05** — `grace-2-hazard-prod` GCP project (425352658356) + 12 APIs + GCS OpenTofu state + Atlas Flex import + Secret Manager SRV + MCP smoke pass + OQ-7 gate qualified-pass (lock 768) + OQ-2 = Cloud Run sidecar. Commit `5c0ab56`.
-3. **job-0015 ✅ closed approved 2026-06-05 [1 revision]** — `services/agent/` `grace2-agent` v0.1.0 runs Gemini 2.5-pro on Vertex AI (Gemini 3 returns 404 — single-constant flip path documented); Appendix-A WebSocket server via `grace2_contracts.ws`; MCP stdio sidecar with SRV from Secret Manager via ADC. Cancel-to-cancelled-pipeline in 502ms (vs 30s budget). OQ-1 = Cloud Run + WebSocket (`--use-http2 --session-affinity --min-instances=1`). NFR-P-1 (2s first-token) escalated — current 3-8s warm. Commits `0742c06`, `cc8b2a7`.
-4. **job-0016 ✅ closed approved 2026-06-05 [1 revision]** — `web/` ships React 18 + Vite 5 + TS strict + MapLibre 4.7 with CONUS OSM basemap (Decision I camera-lock) and chat box streaming `agent-message-chunk` deltas. `make run-web` runs Vite dev; cross-browser headless screenshots verified on Chromium 148 + Firefox-ESR 140 (Safari deferred). Contracts hand-mirror M1 subset (codegen tigger at ~20 payloads). Disconnect→reconnect in ~4s. Commits `778fe6c`, `06d9d1a`.
-5. **job-0017 ✅ closed approved 2026-06-05 [1 revision]** — `tests/` pytest harness + Makefile test target; 91 contracts + 23 acceptance = 114 tests green in ~36s; live_gemini PASSED 4.42s; live MCP 17.66s; sprint-03 exit-criteria 5 pass + 1 qualified (EC4 Gemini-3 substitution). Commits `c24b9b1`, `9815dcb`.
+**Sprint-06 (M4 — agent service tools + atomic-tool starter set) — PLANNING.** Proposed scope (per user direction 2026-06-06 "small catalog to start with"):
 
-**Sprint-03 CLOSED 2026-06-05** — M1 (Foundation) achieved. See `reports/sprints/sprint-03.md` Retrospective. Next: sprint-04 (M2 — QGIS Server in cloud + PyQGIS worker prototype) planning pending user go on sprint-03 close package.
-3. **job-0015 (agent ADK skeleton) ∥ job-0016 (web stub)** — parallel after 0014.
-4. **job-0017 (acceptance suite)** — gates sprint-03 close.
+1. **Tool registry skeleton** (`services/agent/tools/__init__.py`) — ADK FunctionTool registration boilerplate that downstream atomic tools plug into.
+2. **`fetch_dem`** — USGS 3DEP / SRTM via py3dep or rasterio+GCS; returns LayerURI to a COG in the cache bucket.
+3. **`fetch_buildings`** — Microsoft Building Footprints (MS Open Maps) via FlatGeobuf bbox query; returns LayerURI.
+4. **`fetch_population`** — WorldPop or US Census via API; returns LayerURI to a tabular layer.
+5. **`geocode_location`** — Mapbox / OpenStreetMap Nominatim REST; returns bbox + canonical name.
+6. **`list_qgis_algorithms`** — wraps `qgis_process list` over the deployed PyQGIS worker; returns the discovered Layer-1 plugin catalog.
+7. **`describe_qgis_algorithm`** — wraps `qgis_process help <alg>`; returns the algorithm's input/output schema.
+8. **`mongo_query` / `qgis_process` registry** — pass-through atomic tools for the schema/plugin discovery surfaces.
+
+**Demo target:** "what's the population of Fort Myers below 3m elevation?" → geocode_location → fetch_dem(bbox) → fetch_population(bbox) → qgis_process(`native:reclassifybytable` <3m mask) → qgis_process(`native:zonalstatistics` mask × population) → ImpactEnvelope returned.
+
+**Prerequisites that BLOCK sprint-06 (M4):**
+- **OQ-W-26-PIPELINE-STEP-FIELDS** — Appendix D.6 `PipelineStepSummary` needs `progress_percent` / `error_code` / `error_message` before M4 emits real `pipeline-state` envelopes. Route to schema; resolve before sprint-06 starts.
+- **SRS v0.3.15 amendment (data endpoints + caching + engines + plugins + conservation)** — Decision O caching architecture is the substrate the atomic-tool fetchers depend on. If the amendment doesn't land before M4, the M4 fetchers will pick TTL classes and bucket layouts ad-hoc and the SRS lags. Relaunch with the 11 verdict fixes + Decision P dropped.
+- **OQ-1 / FR-AS-1 / FR-QS-2 / NFR-C-1 / NFR-P-1 / gitignore Lever A/B/C** outstanding amendment pile — user lands at convenience.
+
+**Held research workflows** (deferred while sprint-05 ran; relaunch after sprint-06 opens):
+- Tool architecture deep-dive (plugins + tool refinement + breadth)
+- Physics solvers + data sources deep-dive (forward-look — SFINCS, TELEMAC daemons, etc.)
 
 **Awaiting user input:**
-- Permission to launch job-0013 finish-and-verify (involves writing code).
-- Confirmation of revised Atlas Flex decision and the SRS NFR-C-1 amendment-proposal path.
+- **Sprint-05 close sign-off.** M3 milestone achieved; ready to open sprint-06 (M4 atomic-tool starter set) per the orchestrator-driven sprint loop.
+- **SRS v0.3.15 amendment posture.** Either (a) authorize relaunch with verdict fixes + Decision P stripped, or (b) hand-author by user, or (c) defer until M4 surfaces hard requirements that force resolution.
+- **OQ-W-26-PIPELINE-STEP-FIELDS routing.** Confirm schema-extension of Appendix D.6 with the three optional fields before sprint-06 emits real pipeline-state.
