@@ -1,0 +1,24 @@
+[project]
+name = "grace2-tests"
+version = "0.1.0"
+description = "GRACE-2 M1 acceptance + protocol conformance + integration tests (job-0017)"
+requires-python = ">=3.11"
+dependencies = [
+  "pytest>=8",
+  "pytest-asyncio>=0.23",
+  "websockets>=13",
+  "pymongo>=4.7",
+  "grace2-contracts",
+  "grace2-agent",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = [
+  "live_gemini: real Gemini API call (skipped by default; opt-in via -m live_gemini)",
+  "live_atlas: real Atlas MCP/Mongo call (skipped automatically if Atlas unreachable)",
+]
+testpaths = ["protocol", "integration"]
+filterwarnings = [
+  "ignore::DeprecationWarning",
+]

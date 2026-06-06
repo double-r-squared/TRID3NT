@@ -82,12 +82,32 @@ run-web:
 	fi
 	cd web && npm run dev
 
-# `test` runs the project test suites. No suites exist yet (job-0017 lands them;
-# job-0013 lands packages/contracts round-trip tests). Until then this is a clean
-# no-op so CI and reviewers get a green `make test` with zero tests collected.
+# `test` runs the M1 acceptance suite (job-0017). The harness lives under
+# tests/, drives the real grace2-agent WebSocket transport with the Gemini
+# adapter stubbed (the only permitted mock boundary per the kickoff), and
+# collects the packages/contracts unit suite end-to-end through pytest.
+#
+# Uses the existing agent venv (.venv-agent) because grace2_agent is installed
+# there; pytest + pytest-asyncio are installed alongside. The acceptance
+# suite imports grace2_agent and grace2_contracts directly — virtualenv
+# fallback for Debian (no python3-venv) per PROJECT_STATE.md.
+TEST_VENV ?= .venv-agent
 test:
-	@echo "test: scaffold stub — no test suites present yet."
-	@echo "  packages/contracts tests land in job-0013; acceptance suite in job-0017."
+	@if [ ! -x $(TEST_VENV)/bin/python ]; then \
+	  echo "test venv missing or stale ($(TEST_VENV)). Bootstrap:"; \
+	  echo "  virtualenv -p python3 $(TEST_VENV)"; \
+	  echo "  $(TEST_VENV)/bin/pip install -e packages/contracts -e services/agent"; \
+	  echo "  $(TEST_VENV)/bin/pip install pytest pytest-asyncio websockets"; \
+	  exit 1; \
+	fi
+	@if ! $(TEST_VENV)/bin/python -c "import pytest" 2>/dev/null; then \
+	  echo "pytest missing in $(TEST_VENV); installing pytest pytest-asyncio..."; \
+	  $(TEST_VENV)/bin/pip install --quiet pytest pytest-asyncio; \
+	fi
+	@echo "==> packages/contracts/tests (unit suite)"
+	cd packages/contracts && $(CURDIR)/$(TEST_VENV)/bin/python -m pytest tests -q
+	@echo "==> tests/ (M1 acceptance suite — protocol conformance + negative controls + integration)"
+	$(TEST_VENV)/bin/python -m pytest tests -v -m "not live_gemini"
 
 # --- infra targets (job-0014) ----------------------------------------------
 
