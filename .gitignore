@@ -1,4 +1,14 @@
 # GRACE-2 — version-control ignores (SRS v0.3 stack).
+#
+# PUBLIC REPOSITORY: this repo is public. Every credential, key, token, or
+# secret-bearing artifact MUST be ignored here FIRST before being created
+# locally. New sensitive-content patterns belong in the "secrets / credentials"
+# section below (or in a more specific section that already exists).
+#
+# Intentional inclusions (do NOT add ignore rules that would shadow these):
+#   - infra/.terraform.lock.hcl       (provider-version reproducibility)
+#   - infra/*.tfvars.example          (template; real *.tfvars stays ignored)
+#   - packages/contracts/schemas/*.json (generated JSON Schemas, not secrets)
 
 # --- Python (agent service, PyQGIS/solver workers, contracts package) ---
 __pycache__/
@@ -21,7 +31,6 @@ pip-wheel-metadata/
 venv/
 env/
 .conda/
-# Never commit the conda env itself; its definition is the blessed source.
 
 # --- Node / web client (React + MapLibre) ---
 node_modules/
@@ -37,16 +46,25 @@ build/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+.pnpm-debug.log*
+lerna-debug.log*
+.node_repl_history
+.nyc_output/
+lib-cov/
+
+# --- Vite transient config (HMR writes these next to vite.config.ts) ---
+vite.config.*.timestamp-*
+vite.config.*.timestamp-*.mjs
 
 # --- OpenTofu / Terraform (infra/) ---
 .terraform/
-# .terraform.lock.hcl is COMMITTED for provider-version reproducibility
-# (OpenTofu best practice). Local .terraform/ stays ignored.
+# .terraform.lock.hcl is COMMITTED for provider-version reproducibility.
 *.tfstate
 *.tfstate.*
 crash.log
 crash.*.log
 *.tfvars
+!*.tfvars.example
 *.tfvars.json
 override.tf
 override.tf.json
@@ -55,6 +73,10 @@ override.tf.json
 .terraformrc
 terraform.rc
 .tofu/
+*.tfplan
+*.tfplan.*
+tfplan
+.terraform.tfstate.lock.info
 
 # --- testing / coverage ---
 .pytest_cache/
@@ -65,31 +87,162 @@ htmlcov/
 .cache/
 coverage/
 
+# --- Python type-checker & notebook caches ---
+.mypy_cache/
+.ruff_cache/
+.pytype/
+.pyre/
+.ipynb_checkpoints/
+.nox/
+*.pyd
+
 # --- QGIS artifacts (local PyQGIS worker dev) ---
-*.qmlc          # compiled QML cache
+*.qmlc
 *.qgs~
 *.qgz~
+*.qgs.gz~
 .qgis2/
 qgis_profile/
+
+# --- QGIS / GeoPackage / SQLite sidecars (PyQGIS workers, M5+) ---
+*.gpkg-journal
+*.gpkg-shm
+*.gpkg-wal
+*.sqlite-journal
+*.sqlite-shm
+*.sqlite-wal
+
+# --- Local databases (never commit, even for dev) ---
+*.sqlite
+*.sqlite3
+*.db
+*.duckdb
 
 # --- OS / editor ---
 .DS_Store
 .idea/
 .vscode/
 *.swp
+*.swo
+*.swn
 *~
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.project
+.pydevproject
+.settings/
+*.sublime-workspace
+*.sublime-project
 
-# --- secrets / credentials (NFR-S-2/S-3: every credential via Secret Manager +
-#     Workload Identity; never committed, never in-tree, never baked in images) ---
+# --- Generic logs / pids / pip leftovers ---
+*.log
+*.log.*
+pip-log.txt
+pip-delete-this-directory.txt
+*.pid
+*.pid.lock
+*.seed
+
+# --- direnv / extra env file variants ---
+.envrc
+.direnv/
+
+# --- temp / scratch (specialists sometimes stage at repo root) ---
+tmp/
+scratch/
+/_tmp_*/
+
+# ============================================================================
+# secrets / credentials (NFR-S-2/S-3)
+# Every credential goes through Secret Manager + Workload Identity. Nothing
+# secret-bearing ever lives in the repo, in-tree, or baked into images.
+# ============================================================================
+
+# --- generic env files ---
 .env
 .env.*
+
+# --- private keys (PEM, OpenSSH, others) ---
 *.pem
 *.key
-# GCP service-account keys / application-default credentials (must never land in repo)
+*.crt
+*.cer
+*.p12
+*.pfx
+*.jks
+*.keystore
+
+# --- SSH private keys ---
+id_rsa*
+id_ed25519*
+id_ecdsa*
+id_dsa*
+known_hosts
+authorized_keys
+
+# --- GCP service-account keys / ADC ---
 *-key.json
 *_key.json
 *-sa.json
 gcp-*.json
 service-account*.json
 application_default_credentials.json
+client_secret*.json
+*-credentials.json
+*-adc.json
+gcloud-config-*
 .gcloud/
+
+# --- GitHub Actions / OIDC credential caches ---
+gha-creds-*.json
+
+# --- Kubernetes (future GKE) ---
+kubeconfig
+*.kubeconfig
+.kube/
+
+# --- Atlas CLI / MongoDB local artifacts ---
+.atlascli/
+atlas-cli.log
+*.atlas-keys
+mongosh_*.log
+.mongorc.js
+
+# --- MongoDB dump / SQL backup output (never commit local backups of real data) ---
+*.bson
+*.bson.gz
+*.dump
+*.sql
+*.sql.gz
+
+# --- generic "secrets" directories ---
+secrets/
+**/secrets/
+
+# --- browser session captures (HAR routinely contains Authorization headers) ---
+*.har
+cookies.txt
+*.session
+
+# --- Docker (M3+ container builds) ---
+docker-compose.override.yml
+.docker/
+
+# --- Claude Code session leakage (settings.json may be tracked; these never) ---
+.claude/projects/
+.claude/cache/
+.claude/sessions/
+.claude/todos/
+.claude/settings.local.json
+
+# --- Solver run output / large simulation artifacts (uncommented per the gitignore audit) ---
+# These are reserved patterns. SFINCS / Pelicun / TELEMAC workers ship outputs
+# to GCS; the repo never holds them. Uncomment the *.tif.aux.xml line if a
+# specialist needs to track sidecar metadata for a specific run.
+runs/
+outputs/
+*.nc
+sfincs_*.dat
+*.sgsg
+# *.tif.aux.xml  (intentionally NOT ignored — sidecars may be useful evidence)
