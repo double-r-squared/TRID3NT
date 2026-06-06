@@ -32,7 +32,8 @@ ATLAS_PROJECT_ID ?= 6a234700a0e1295958d10cf9
 
 .DEFAULT_GOAL := help
 
-.PHONY: help run-agent run-web test test-m2 \
+.PHONY: help run-agent run-web test test-m2 test-m3 \
+        playwright-install screenshot ui-tour \
         tofu-init tofu-plan tofu-apply tofu-bootstrap \
         atlas-allowlist-me secret-srv-show \
         qgis-server-build qgis-server-push qgis-server-deploy \
@@ -44,6 +45,11 @@ help:
 	@echo "  run-web             launch the local web client dev server (stub until job-0016)"
 	@echo "  test                run the M1 acceptance + conformance suites (job-0017)"
 	@echo "  test-m2             run the M2 acceptance suite (job-0023; live QGIS Server + Cloud Run Job)"
+	@echo "  test-m3             run the M3 acceptance suite (job-0028; tests/m3)"
+	@echo ""
+	@echo "  playwright-install  download Chromium + Firefox to ~/.cache/ms-playwright (closes job-0016 OQ-W-3)"
+	@echo "  screenshot          one-shot capture; pass SCREENSHOT_ARGS='--url=... --state=... --out=... --browser=...'"
+	@echo "  ui-tour             walk six UI states with Chromium + Firefox; outputs under /tmp/grace2-shots/"
 	@echo ""
 	@echo "  tofu-init           one-shot OpenTofu init in infra/"
 	@echo "  tofu-plan           tofu plan against the GCS-backed state"
@@ -272,3 +278,64 @@ worker-run-job:
 	  --region=$(GCP_REGION) \
 	  --args="--qgs-uri,$(QGS_URI),--layer-to-add,$(LAYER)" \
 	  --wait
+
+# --- Playwright + screenshots (job-0027) -----------------------------------
+#
+# Closes job-0016 OQ-W-3 (Chromium provisioning gap on fresh dev boxes).
+# Implements the AFK iteration loop from
+# `feedback_playwright_afk_iteration_loop.md`: orchestrator runs
+# `make screenshot` or `make ui-tour`, then ships the PNGs to the user's
+# phone via SendUserFile(status='proactive').
+#
+# Both `screenshot` and `ui-tour` shell out to tools/screenshot.mjs through
+# the web/ directory so `@playwright/test` resolves from web/node_modules/.
+# Capture artifacts default to /tmp/grace2-shots/ (gitignored under tmp/);
+# tests/m3/artifacts/ holds the two canonical reference captures (Chromium
+# + Firefox initial), pinned by job-0027 for visual regression baselining.
+
+SHOTDIR ?= /tmp/grace2-shots
+SCREENSHOT_ARGS ?=
+# tools/screenshot.mjs resolves @playwright/test out of web/node_modules
+# via an explicit relative import (script-resident lookup), so no
+# NODE_PATH plumbing is needed here — just have `make playwright-install`
+# run first on a fresh box.
+
+playwright-install:
+	cd web && npx playwright install chromium firefox
+
+screenshot:
+	@mkdir -p $(SHOTDIR)
+	node tools/screenshot.mjs $(SCREENSHOT_ARGS)
+
+# UI tour: six states x two browsers = twelve PNGs. Filenames are
+# <state>-<browser>.png so re-runs overwrite rather than accumulate.
+# Best-effort states (after-message / layer-panel-open / pipeline-running /
+# cancelled / disconnected) fall back to the initial frame if the driving
+# selectors are not yet present — by design, since job-0025 (LayerPanel)
+# and job-0026 (PipelineStrip) land after this job.
+UI_TOUR_STATES = initial after-message layer-panel-open pipeline-running cancelled disconnected
+UI_TOUR_BROWSERS = chromium firefox
+ui-tour:
+	@mkdir -p $(SHOTDIR)
+	@for browser in $(UI_TOUR_BROWSERS); do \
+	  for state in $(UI_TOUR_STATES); do \
+	    out=$(SHOTDIR)/$$state-$$browser.png; \
+	    echo "==> $$state ($$browser) -> $$out"; \
+	    node tools/screenshot.mjs --browser=$$browser --state=$$state --out=$$out || exit 1; \
+	  done; \
+	done
+	@echo "==> ui-tour complete; outputs under $(SHOTDIR)/"
+	@ls -1 $(SHOTDIR)/*.png
+
+# M3 acceptance suite (job-0028 will populate the assertion side). The
+# target lands here so all M3 Make targets ship together; pytest discovery
+# at tests/m3/ matches the testing.md harness layout.
+test-m3:
+	@if [ ! -x $(TEST_VENV)/bin/python ]; then \
+	  echo "test venv missing or stale ($(TEST_VENV)). Bootstrap:"; \
+	  echo "  virtualenv -p python3 $(TEST_VENV)"; \
+	  echo "  $(TEST_VENV)/bin/pip install -e packages/contracts -e services/agent"; \
+	  echo "  $(TEST_VENV)/bin/pip install pytest pytest-asyncio websockets"; \
+	  exit 1; \
+	fi
+	$(TEST_VENV)/bin/python -m pytest tests/m3 -v --tb=short

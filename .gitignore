@@ -246,3 +246,13 @@ outputs/
 sfincs_*.dat
 *.sgsg
 # *.tif.aux.xml  (intentionally NOT ignored — sidecars may be useful evidence)
+
+# --- Playwright dynamic captures (job-0027) ---
+# `make ui-tour` writes per-run screenshots under tests/m3/artifacts/screenshots-*/
+# (and the default ephemeral target /tmp/grace2-shots/, already covered by `tmp/`).
+# The canonical reference captures (tests/m3/artifacts/chromium-initial.png,
+# tests/m3/artifacts/firefox-initial.png) are EXPLICITLY kept tracked — they are
+# the M3 visual baseline.
+tests/m3/artifacts/screenshots-*/
+!tests/m3/artifacts/chromium-initial.png
+!tests/m3/artifacts/firefox-initial.png
