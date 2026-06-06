@@ -40,10 +40,13 @@ export interface CancelPayload {
   reason?: string | null;
 }
 
-export interface SessionResumePayload {
-  // empty per schema
-  [k: string]: never;
-}
+// `session-resume` carries `payload: {}` literally on the wire (see
+// ws_session_resume.json: `properties: {}`, `additionalProperties: false`).
+// Modeled as `Record<string, never>` so any non-empty assignment is a TS
+// error AND the docstring matches the wire shape (the prior interface form
+// with `[k: string]: never` was index-signature semantics — same compile-
+// time effect but reads as "indexed by string", which is misleading here).
+export type SessionResumePayload = Record<string, never>;
 
 // --- A.4 agent -> client payloads --------------------------------------- //
 

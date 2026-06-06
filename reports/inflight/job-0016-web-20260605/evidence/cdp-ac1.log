@@ -1,0 +1,45 @@
+# tab= BB863915842C416EBC04AAD137945DA4
+# submitted; polling for stream
+# poll 0 {"count":0,"status":"connected"}
+# poll 1 {"count":0,"status":"connected"}
+# poll 2 {"count":0,"status":"connected"}
+# poll 3 {"count":0,"status":"connected"}
+# poll 4 {"count":0,"status":"connected"}
+# poll 5 {"count":0,"status":"connected"}
+# poll 6 {"count":0,"status":"connected"}
+# poll 7 {"count":0,"status":"connected"}
+# poll 8 {"count":0,"status":"connected"}
+# poll 9 {"count":0,"status":"connected"}
+# poll 10 {"count":0,"status":"connected"}
+# poll 11 {"count":0,"status":"connected"}
+# poll 12 {"count":0,"status":"connected"}
+# poll 13 {"count":0,"status":"connected"}
+# poll 14 {"count":0,"status":"connected"}
+# poll 15 {"count":0,"status":"connected"}
+# poll 16 {"count":0,"status":"connected"}
+# poll 17 {"count":0,"status":"connected"}
+# poll 18 {"count":1,"done":"false","chars":17,"preview":"Of course. Here ▌","status":"connected"}
+# poll 19 {"count":1,"done":"false","chars":596,"preview":"Of course. Here is a detailed explanation of SFINCS.\n\n### Executive Summary\n\n**SFINCS** (a pun on *Sphinx*) is a **post-","status":"connected"}
+# mid screenshot saved (chars= 596 )
+# poll 20 {"count":1,"done":"false","chars":1185,"preview":"Of course. Here is a detailed explanation of SFINCS.\n\n### Executive Summary\n\n**SFINCS** (a pun on *Sphinx*) is a **post-","status":"connected"}
+# mid screenshot saved (chars= 1185 )
+# poll 21 {"count":1,"done":"false","chars":1806,"preview":"Of course. Here is a detailed explanation of SFINCS.\n\n### Executive Summary\n\n**SFINCS** (a pun on *Sphinx*) is a **post-","status":"connected"}
+# mid screenshot saved (chars= 1806 )
+# poll 22 {"count":1,"done":"false","chars":2431,"preview":"Of course. Here is a detailed explanation of SFINCS.\n\n### Executive Summary\n\n**SFINCS** (a pun on *Sphinx*) is a **post-","status":"connected"}
+# mid screenshot saved (chars= 2431 )
+# poll 23 {"count":1,"done":"false","chars":3013,"preview":"Of course. Here is a detailed explanation of SFINCS.\n\n### Executive Summary\n\n**SFINCS** (a pun on *Sphinx*) is a **post-","status":"connected"}
+# mid screenshot saved (chars= 3013 )
+# poll 24 {"count":1,"done":"false","chars":3252,"preview":"Of course. Here is a detailed explanation of SFINCS.\n\n### Executive Summary\n\n**SFINCS** (a pun on *Sphinx*) is a **post-","status":"connected"}
+# mid screenshot saved (chars= 3252 )
+# poll 25 {"count":1,"done":"false","chars":3790,"preview":"Of course. Here is a detailed explanation of SFINCS.\n\n### Executive Summary\n\n**SFINCS** (a pun on *Sphinx*) is a **post-","status":"connected"}
+# mid screenshot saved (chars= 3790 )
+# poll 26 {"count":1,"done":"false","chars":4350,"preview":"Of course. Here is a detailed explanation of SFINCS.\n\n### Executive Summary\n\n**SFINCS** (a pun on *Sphinx*) is a **post-","status":"connected"}
+# mid screenshot saved (chars= 4350 )
+# poll 27 {"count":1,"done":"false","chars":4999,"preview":"Of course. Here is a detailed explanation of SFINCS.\n\n### Executive Summary\n\n**SFINCS** (a pun on *Sphinx*) is a **post-","status":"connected"}
+# mid screenshot saved (chars= 4999 )
+# poll 28 {"count":1,"done":"false","chars":5272,"preview":"Of course. Here is a detailed explanation of SFINCS.\n\n### Executive Summary\n\n**SFINCS** (a pun on *Sphinx*) is a **post-","status":"connected"}
+# mid screenshot saved (chars= 5272 )
+# poll 29 {"count":1,"done":"false","chars":6306,"preview":"Of course. Here is a detailed explanation of SFINCS.\n\n### Executive Summary\n\n**SFINCS** (a pun on *Sphinx*) is a **post-","status":"connected"}
+# mid screenshot saved (chars= 6306 )
+# poll 30 {"count":1,"done":"true","chars":6666,"preview":"Of course. Here is a detailed explanation of SFINCS.\n\n### Executive Summary\n\n**SFINCS** (a pun on *Sphinx*) is a **post-","status":"connected"}
+# done= true final chars= 6666

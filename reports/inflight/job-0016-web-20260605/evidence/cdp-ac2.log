@@ -1,0 +1,32 @@
+# tab= 00ABB9AAF69D3C4FBABEE448CAA35E1E
+# pre-kill snap: {"status":"connected","userCount":0,"agentCount":0,"lastDone":null,"chars":0,"hasError":false,"sendDisabled":true}
+# killing agent
+# post-kill snap: {"status":"reconnecting","userCount":0,"agentCount":0,"lastDone":null,"chars":0,"hasError":false,"sendDisabled":true}
+# wait-down poll 0 {"status":"reconnecting","userCount":0,"agentCount":0,"lastDone":null,"chars":0,"hasError":false,"sendDisabled":true}
+# restarting agent (background)
+# wait-up poll 0 {"status":"reconnecting","userCount":0,"agentCount":0,"lastDone":null,"chars":0,"hasError":false,"sendDisabled":true}
+# wait-up poll 1 {"status":"reconnecting","userCount":0,"agentCount":0,"lastDone":null,"chars":0,"hasError":false,"sendDisabled":true}
+# wait-up poll 2 {"status":"reconnecting","userCount":0,"agentCount":0,"lastDone":null,"chars":0,"hasError":false,"sendDisabled":true}
+# wait-up poll 3 {"status":"reconnecting","userCount":0,"agentCount":0,"lastDone":null,"chars":0,"hasError":false,"sendDisabled":true}
+# wait-up poll 4 {"status":"connected","userCount":0,"agentCount":0,"lastDone":null,"chars":0,"hasError":false,"sendDisabled":true}
+# fresh message sent
+# post-recovery poll 0 {"status":"connected","userCount":1,"agentCount":0,"lastDone":null,"chars":0,"hasError":false,"sendDisabled":true}
+# post-recovery poll 5 {"status":"connected","userCount":1,"agentCount":0,"lastDone":null,"chars":0,"hasError":false,"sendDisabled":true}
+# post-recovery poll 10 {"status":"connected","userCount":1,"agentCount":1,"lastDone":"true","chars":37,"hasError":false,"sendDisabled":true}
+# post-recovery poll 15 {"status":"connected","userCount":1,"agentCount":1,"lastDone":"true","chars":37,"hasError":false,"sendDisabled":true}
+# post-recovery poll 20 {"status":"connected","userCount":1,"agentCount":1,"lastDone":"true","chars":37,"hasError":false,"sendDisabled":true}
+# post-recovery poll 25 {"status":"connected","userCount":1,"agentCount":1,"lastDone":"true","chars":37,"hasError":false,"sendDisabled":true}
+# post-recovery poll 30 {"status":"connected","userCount":1,"agentCount":1,"lastDone":"true","chars":37,"hasError":false,"sendDisabled":true}
+# post-recovery poll 35 {"status":"connected","userCount":1,"agentCount":1,"lastDone":"true","chars":37,"hasError":false,"sendDisabled":true}
+# post-recovery poll 40 {"status":"connected","userCount":1,"agentCount":1,"lastDone":"true","chars":37,"hasError":false,"sendDisabled":true}
+# post-recovery poll 45 {"status":"connected","userCount":1,"agentCount":1,"lastDone":"true","chars":37,"hasError":false,"sendDisabled":true}
+# post-recovery poll 50 {"status":"connected","userCount":1,"agentCount":1,"lastDone":"true","chars":37,"hasError":false,"sendDisabled":true}
+# post-recovery poll 55 {"status":"connected","userCount":1,"agentCount":1,"lastDone":"true","chars":37,"hasError":false,"sendDisabled":true}
+# post-recovery poll 60 {"status":"connected","userCount":1,"agentCount":1,"lastDone":"true","chars":37,"hasError":false,"sendDisabled":true}
+# post-recovery poll 65 {"status":"connected","userCount":1,"agentCount":1,"lastDone":"true","chars":37,"hasError":false,"sendDisabled":true}
+# post-recovery poll 70 {"status":"connected","userCount":1,"agentCount":1,"lastDone":"true","chars":37,"hasError":false,"sendDisabled":true}
+# post-recovery poll 75 {"status":"connected","userCount":1,"agentCount":1,"lastDone":"true","chars":37,"hasError":false,"sendDisabled":true}
+# post-recovery poll 80 {"status":"connected","userCount":1,"agentCount":1,"lastDone":"true","chars":37,"hasError":false,"sendDisabled":true}
+# post-recovery poll 85 {"status":"connected","userCount":1,"agentCount":1,"lastDone":"true","chars":37,"hasError":false,"sendDisabled":true}
+# observedDown= true recovered= true ( 4 s) secondDone= false
+# final snap: {"status":"connected","userCount":1,"agentCount":1,"lastDone":"true","chars":37,"hasError":false,"sendDisabled":true}

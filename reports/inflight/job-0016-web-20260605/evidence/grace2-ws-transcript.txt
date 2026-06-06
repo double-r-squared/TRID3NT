@@ -1,0 +1,20 @@
+# created ws://localhost:5173/
+< RECV (3975779.456233)
+{"type":"connected"}
+# created ws://localhost:8765/
+# created ws://localhost:8765/
+# closed
+> SENT (3975780.128746)
+{"type":"session-resume","id":"01KTDA15HVF4DSW6TYQWGD6PQV","ts":"2026-06-06T01:51:16.028Z","session_id":"01KTD9R84MYSBEVBYGFB6NMPWA","payload":{}}
+< RECV (3975780.160231)
+{"type":"session-state","id":"01KTDA15HZENYZHSVEPSVSZ8HK","ts":"2026-06-06T01:51:16.031352Z","session_id":"01KTD9R84MYSBEVBYGFB6NMPWA","payload":{"chat_history":[],"loaded_layers":[],"pipeline_history":[],"current_pipeline":null,"map_view":null}}
+> SENT (3975784.487172)
+{"type":"user-message","id":"01KTDA19T3TGT2S391Y5F0TTX3","ts":"2026-06-06T01:51:20.387Z","session_id":"01KTD9R84MYSBEVBYGFB6NMPWA","payload":{"text":"Reply with exactly the word DONE.","research_mode":"research"}}
+< RECV (3975784.498249)
+{"type":"pipeline-state","id":"01KTDA19T4YX0GHRP3ZEF21MTK","ts":"2026-06-06T01:51:20.388967Z","session_id":"01KTD9R84MYSBEVBYGFB6NMPWA","payload":{"pipeline_id":"01KTDA19T4YX0GHRP3ZEF21MTH","steps":[{"step_id":"01KTDA19T4YX0GHRP3ZEF21MTJ","name":"llm_generation","tool_name":"gemini_generate","state":"running","started_at":null,"completed_at":null,"progress_percent":null}]}}
+< RECV (3975787.14482)
+{"type":"agent-message-chunk","id":"01KTDA1CD4XXF6QPZRB3S20GNP","ts":"2026-06-06T01:51:23.044362Z","session_id":"01KTD9R84MYSBEVBYGFB6NMPWA","payload":{"message_id":"01KTDA19T4YX0GHRP3ZEF21MTG","delta":"DONE","done":false}}
+< RECV (3975787.243704)
+{"type":"agent-message-chunk","id":"01KTDA1CG77BBZMQMG48C3K4JS","ts":"2026-06-06T01:51:23.143324Z","session_id":"01KTD9R84MYSBEVBYGFB6NMPWA","payload":{"message_id":"01KTDA19T4YX0GHRP3ZEF21MTG","delta":"","done":true}}
+< RECV (3975787.24727)
+{"type":"pipeline-state","id":"01KTDA1CG77BBZMQMG48C3K4JT","ts":"2026-06-06T01:51:23.143952Z","session_id":"01KTD9R84MYSBEVBYGFB6NMPWA","payload":{"pipeline_id":"01KTDA19T4YX0GHRP3ZEF21MTH","steps":[{"step_id":"01KTDA19T4YX0GHRP3ZEF21MTJ","name":"llm_generation","tool_name":"gemini_generate","state":"complete","started_at":null,"completed_at":null,"progress_percent":null}]}}

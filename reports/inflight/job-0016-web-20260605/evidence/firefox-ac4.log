@@ -1,0 +1,38 @@
+{
+  "url": "http://localhost:5173/",
+  "out": "/home/nate/Documents/GRACE-2/reports/inflight/job-0016-web-20260605/evidence/firefox-ac4-tiles.png",
+  "tile_responses": 35,
+  "tile_responses_200": 35,
+  "sample_tiles": [
+    {
+      "url": "https://tile.openstreetmap.org/5/6/12.png",
+      "status": 200
+    },
+    {
+      "url": "https://tile.openstreetmap.org/5/8/13.png",
+      "status": 200
+    },
+    {
+      "url": "https://tile.openstreetmap.org/5/5/12.png",
+      "status": 200
+    },
+    {
+      "url": "https://tile.openstreetmap.org/5/7/14.png",
+      "status": 200
+    },
+    {
+      "url": "https://tile.openstreetmap.org/5/6/13.png",
+      "status": 200
+    }
+  ],
+  "console_msg_count": 6,
+  "console_errors": [
+    "[error] [JavaScript Error: \"Firefox can’t establish a connection to the server at ws://localhost:8765/.\" {file: \"http://localhost:5173/src/ws.ts\" line: 81}]",
+    "[error] [JavaScript Error: \"The connection to ws://localhost:8765/ was interrupted while the page was loading.\" {file: \"http://localhost:5173/src/ws.ts\" line: 81}]"
+  ],
+  "canvas_present": {
+    "w": 1440,
+    "h": 900
+  },
+  "ua": "Mozilla/5.0 (X11; Linux x86_64; rv:150.0) Gecko/20100101 Firefox/150.0"
+}
