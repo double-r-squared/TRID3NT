@@ -3,7 +3,7 @@
 **Job ID:** job-0022-infra-20260605
 **Sprint:** sprint-04
 **Auditor:** Development Orchestrator
-**Status:** assigned
+**Status:** approved
 
 ## Task Assignment
 
@@ -89,14 +89,64 @@ Surface contestable choices as Open Questions with TENTATIVE tags.
 
 ## Assessment
 
+`grace2` conda env recreated live on Debian 13 via conda-forge from `infra/conda/environment.yml`: `qgis.core.Qgis.QGIS_VERSION = '3.40.3-Bratislava'`, `python 3.12.13`, `google.cloud.storage 3.11.0`, `google.cloud.pubsub 2.38.0`, `osgeo.gdal 3.10.2`, `pytest 9.0.3`. Dead-dep strip verified — zero hits for `boto3|strands|ollama|litellm|anthropic-bedrock|aws-cli|s3fs|llama-cpp` outside the documented "intentionally absent" comment block. `infra/README.md` additive append (new "Local PyQGIS dev environment" section, no edits to job-0018's QGIS Server prose). Commits `79d4917` + `cb85ba4` (revision round 1 addressed reviewer findings: empty report.md, missing Open Questions, missing `.history/` archive). Adversarial reviewer verdict (second pass): approve with zero findings.
+
 ## Invariant Check
+
+- **Determinism boundary:** n/a — local dev env, no LLM / narrative path.
+- **Deterministic workflows:** pass (preserved) — env contains zero LLM packages (no `anthropic`/`openai`/`ollama`/`strands`/`litellm` per dead-dep grep); worker code dev that this env supports remains a deterministic Python function.
+- **Engine registration, not modification:** n/a.
+- **Rendering through QGIS Server:** pass (preserved) — env supports the *only* legitimate `.qgs` writer path (PyQGIS worker local-dev iteration). No other rendering path created. Production rendering remains QGIS Server in the container (job-0018); this env exists so engine can iterate worker code locally before pushing the container (job-0021). The env never serves rendered tiles.
+- **Tier separation:** n/a — no map data path here.
+- **Metadata-payload pattern:** n/a — no Mongo/GCS access wired in env spec.
+- **Claims carry provenance:** n/a.
+- **Cancellation is first-class:** n/a.
+- **Confirmation before consequence — and no cost theater:** pass — zero `cost`/`usd`/`cents` strings in env spec or README append.
+- **Minimal parameter surface:** pass — env spec is 7 deps + 1 channel; no excess knobs.
 
 ## Dependency Check
 
+- **Prerequisites satisfied:** yes — no upstream job (Stage A parallel; only requires Linux Debian dev box + conda-forge network access).
+- **Downstream impacts:**
+  - **job-0020 (engine: PyQGIS worker code):** consumes the env for local iteration. `mamba env create -f infra/conda/environment.yml && conda activate grace2` is documented in `infra/README.md`.
+  - **First post-M2 PyQGIS dev iteration on Debian:** env is reproducible from `environment.yml`.
+
 ## Decisions Validated
+
+- **Miniforge3 over Mambaforge / system conda / Anaconda:** agree — Mambaforge is officially deprecated; system conda doesn't exist on Debian 13; Anaconda would drag the `anaconda` channel + license terms that conflict with the conda-forge-only posture (NFR-L).
+- **`qgis=3.40.3` pinned to match the M2 QGIS Server image:** agree — local worker dev and production runtime are version-identical, eliminating drift class.
+- **`python=3.12` pinned:** agree — current stable for PyQGIS via conda-forge; matches FR-AS-1 Python compatibility.
+- **`pytest` included in env:** agree — `conda activate grace2 && pytest` works without separate `pip install`; env stays reproducible-from-yaml for both runtime and test paths.
+- **`gdal` pinned explicit alongside `qgis`:** agree — solver still picks the QGIS-compatible build (gdal 3.10.2 co-installed); explicit handle makes local `/vsigs/` scripts ergonomic.
+- **`google-cloud-storage` + `google-cloud-pubsub` left unpinned:** agree — production worker (job-0021 container) owns its own pinning regime; pinning here would create two sources of truth. Revisit at M3 when agent service adopts the same SDKs.
+- **Docker-is-authoritative-runtime decision documented in `infra/README.md`:** agree — mitigates the v0.2 mistake where conda env drifted into a quasi-canonical runtime. Production worker ships as the job-0021 container; this env is local-iteration convenience.
+- **Live E2E evidence recorded in report.md (not just commit body) after revision-round-1:** agree — AGENTS.md "Before halting any task: Ensure `report.md` reflects current truth"; reviewer + orchestrator audit looks in `report.md`.
 
 ## Open Questions Resolved
 
+- **OQ-22A (Miniforge3 vs Mambaforge vs system conda):** resolved → Miniforge3.
+- **OQ-22B (minor-version pin on google-cloud-storage + google-cloud-pubsub):** deferred to M3 when agent service adopts the same SDKs and a single-version-source-of-truth becomes relevant.
+- **OQ-22C (pyproject.toml for the worker alongside conda):** deferred — `PYTHONPATH=.` invocation from repo root suffices for M2; engine revisits at first import friction.
+- **OQ-22D (pytest in the env):** resolved → yes.
+- **OQ-22E (Docker vs conda for worker dev — long-term):** resolved → conda for local iteration only; Docker authoritative everywhere past dev. Documented in `infra/README.md` § "Docker-is-authoritative-runtime decision".
+- **Kickoff-text correction note** (`QgsApplication.QGIS_VERSION` → `qgis.core.Qgis.QGIS_VERSION`): noted for next kickoff template.
+
 ## Follow-up Actions
 
+- **Apply kickoff-text correction in future template:** next infra kickoff that references QGIS version-check should use `qgis.core.Qgis.QGIS_VERSION` (the attribute exists on the `Qgis` class, not `QgsApplication`).
+  - Routing: orchestrator (next kickoff). Priority: low.
+- **OQ-22B revisit at M3** when agent service adopts `google-cloud-storage` + `google-cloud-pubsub`: decide on single-version-source-of-truth across worker + agent.
+  - Routing: orchestrator (M3 planning). Priority: medium when M3 opens.
+- **PROJECT_STATE update** (this audit closure): grace2 conda env exists at `~/miniforge3/envs/grace2` with QGIS 3.40.3-Bratislava + Python 3.12.13.
+  - Routing: orchestrator. Priority: high.
+- **Close job-0022.** Routing: orchestrator. Priority: high.
+
 ## Sign-off
+
+- **Ready to move to complete:** yes
+- All five kickoff acceptance criteria pass on live re-run: AC1 env spec correct + dead-dep strip verified; AC2 env actually built (`mamba env create` succeeded); AC3 QGIS importable in env (3.40.3-Bratislava); AC4 google-cloud SDKs importable; AC5 `infra/README.md` additive section added with Docker-is-authoritative-runtime decision.
+- Invariants #2 + #4 pass (preserved); #9 pass (no cost theater); remaining n/a (no runtime surface in a dev env).
+- One revision round (commits `79d4917` → `cb85ba4`) addressed initial reviewer findings (empty report.md, missing OQs, missing `.history/` archive); second review approved with zero findings.
+- Five Open Questions surfaced with TENTATIVE tags + SRS references; orchestrator carries OQ-22B to M3 planning.
+- Live conda env exists on disk at `~/miniforge3/envs/grace2`; reproducible from `infra/conda/environment.yml`.
+- Revisions: 1.

@@ -1,7 +1,7 @@
 # Project State
 
-**Last updated:** 2026-06-05 (sprint-04 / M2 opened)
-**Current sprint:** sprint-04 (active, opened 2026-06-05) — M2 Foundation: QGIS Server in cloud + PyQGIS worker prototype
+**Last updated:** 2026-06-05 (sprint-04 / M2 in progress — job-0022 closed approved; job-0018 specialist hit StructuredOutput failure mid-run, closeout in progress)
+**Current sprint:** sprint-04 (active, opened 2026-06-05) — M2 Foundation: QGIS Server in cloud + PyQGIS worker prototype. Stage A: job-0022 ✅ approved; job-0018 closeout pending. Local conda env `~/miniforge3/envs/grace2` ready for PyQGIS worker dev.
 
 ## Resume note (read first)
 

@@ -17,7 +17,7 @@ At the end of this sprint a live QGIS Server Cloud Run service answers `GetCapab
 | job-0019-engine | engine | Sample `.qgs` + `styles/basemap.qml` preset stub authored and uploaded to GCS .qgs bucket | 0018 | planned |
 | job-0020-engine | engine | PyQGIS worker code: `worker_round_trip(qgs_uri, layer_to_add)` (read `/vsigs/` → mutate → write back → Pub/Sub publish) | 0018, 0019 | planned |
 | job-0021-infra | infra | PyQGIS worker container Dockerfile + image build/push + Cloud Run Job deployment | 0018, 0020 | planned |
-| job-0022-infra | infra | `grace2` conda env recreation on Linux Debian via conda-forge (QGIS 3.40.3 + Python 3.12, dead-dep strip) | — | planned |
+| job-0022-infra | infra | `grace2` conda env recreation on Linux Debian via conda-forge (QGIS 3.40.3 + Python 3.12, dead-dep strip) | — | **approved** |
 | job-0023-testing | testing | M2 acceptance: GetCapabilities + WMS GetMap + worker round-trip transcript + M1 regression (114 tests) green | 0018, 0019, 0020, 0021 | planned |
 
 (Job IDs are surfaced as `job-00NN-<specialist>-20260605` when scaffolded; the dated suffix is omitted in the table above for column width.)

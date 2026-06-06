@@ -54,3 +54,4 @@
 2026-06-05 | job-0021-infra-20260605 | OPENED: PyQGIS worker container Dockerfile + image build/push + Cloud Run Job deployment |
 2026-06-05 | job-0022-infra-20260605 | OPENED: grace2 conda env recreation on Linux Debian via conda-forge (QGIS 3.40.3 + Python 3.12, dead-dep strip) |
 2026-06-05 | job-0023-testing-20260605 | OPENED: M2 acceptance — QGIS Server GetCapabilities + WMS GetMap + worker round-trip + M1 regression (114 tests) green |
+2026-06-05 | job-0022-infra-20260605 | grace2 conda env on Debian 13 via conda-forge — Miniforge3 + QGIS 3.40.3-Bratislava + Python 3.12.13 + gdal 3.10.2 + google-cloud-storage 3.11.0 + google-cloud-pubsub 2.38.0; dead-dep strip verified zero hits; commits 79d4917, cb85ba4 | approved [revisions: 1] |
