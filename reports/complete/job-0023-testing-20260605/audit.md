@@ -3,7 +3,7 @@
 **Job ID:** job-0023-testing-20260605
 **Sprint:** sprint-04
 **Auditor:** Development Orchestrator
-**Status:** assigned
+**Status:** approved
 
 ## Task Assignment
 
@@ -103,14 +103,65 @@ Surface contestable choices as Open Questions with TENTATIVE tags.
 
 ## Assessment
 
+`tests/m2/` ships **7 live-substrate acceptance tests** (2 QGIS Server WMS + 3 PyQGIS worker round-trip + 2 IaC integrity), all green against the deployed cloud substrate. **All 6 sprint-04 exit criteria PASS** with cited evidence. M1 regression preserved (91 contracts + 23 M1 acceptance = 114 tests unchanged). Combined `make test`: **121/121 green** in 247 s. Real-substrate live verification end-to-end: GetCapabilities returns valid `<WMS_Capabilities>` XML naming `<Name>basemap-osm-conus</Name>`; GetMap returns 332 KB PNG at 800×400 (magic bytes verified); Cloud Run Job execution `49c6c439` succeeded; mutated `.qgs` downloaded from GCS has 2 layers; Pub/Sub envelope captured (`status=ok`, `qgs_version=3.44.11-Solothurn`). Canonical artifacts committed under `tests/m2/artifacts/` for the audit record. Reviewer verdict: approve (11/12 ACs pass; 1 qualified on cosmetic exit-criteria table count; 3 low-severity-only findings). Commit single-shot.
+
 ## Invariant Check
+
+- **Determinism boundary:** pass — M2 tests assert worker is deterministic Python (no LLM packages imported under `services/workers/pyqgis/`; verified via grep).
+- **Deterministic workflows:** pass — worker invocation is env-var-driven CLI; no LLM dispatch.
+- **Engine registration, not modification:** pass (delegated) — engine-authored worker code + sample .qgs registered; agent core untouched.
+- **Rendering through QGIS Server:** pass — GetMap render verified live via PNG bytes; mount asymmetry (QGIS Server read-only + Worker writable) preserved.
+- **Tier separation:** pass — `test_no_public_buckets` asserts PAP=enforced + UBLA=True on all 3 buckets + no `allUsers`/`allAuthenticatedUsers` IAM bindings.
+- **Metadata-payload pattern:** pass — `.qgs` payload in GCS verified; Pub/Sub envelope is notification only.
+- **Claims carry provenance:** n/a — no hazard event data in M2.
+- **Cancellation is first-class:** n/a — Cloud Run Job execution model handles termination; Cloud Workflows wrapping deferred to M5.
+- **Confirmation before consequence — and no cost theater:** pass — no cost fields in any test/IaC/report.
+- **Minimal parameter surface:** pass — worker CLI is `--qgs-uri --layer-to-add`; tests parameterize via env vars only.
 
 ## Dependency Check
 
+- **Prerequisites satisfied:** yes — all 6 prior sprint-04 jobs (0018, 0019, 0020, 0021, 0022, 0024) closed approved.
+- **Downstream impacts:**
+  - **Sprint-04 closes** on this audit; M2 acceptance record landed.
+  - **First M3 testing job:** picks up OQ-23E (NFR-P-3 tile-latency p50/p95) once web client lands and provides realistic measurement context.
+  - **First M3 web job:** consumes deployed QGIS Server URL + `/mnt/qgs/grace2-sample.qgs` for the first real WMS tile rendering in the client. Replaces M1 stub's OSM-direct basemap.
+  - **Outstanding amendments** (orchestrator carry-forward to user): FR-QS-2 (`/vsigs/` → `/mnt/qgs/`); A1–A5 from job-0013; NFR-C-1; NFR-P-1; FR-AS-1 Gemini-3.
+
 ## Decisions Validated
+
+- **Live-substrate testing only (no mocks except the M1 Gemini-adapter seam, which M2 doesn't touch):** agree — matches `agents/testing.md` discipline; tests pass on real cloud or auto-skip with reason.
+- **Three Pub/Sub-related tests share one Cloud Run Job execution + one temp subscription (efficiency):** agree — avoids 3× cold-start cost while keeping each test asserting a distinct invariant.
+- **Tests register custom pytest markers `live_qgis_server`, `live_worker`, `live_tofu`** so CI can gate per-environment: agree — matches M1's `live_gemini` / `live_atlas` marker pattern.
+- **Test scope expansion: `make test` now collects 121 tests (114 M1 + 7 M2) — kickoff EC6 said "M1 114 still green":** agree → M1 portion remained pristine; M2 added 7 net-new. The kickoff text was ambiguous but the spirit (regression preserved + acceptance added) is honored.
+- **`test_tofu_plan_clean` is **targeted** to M2 resources (not a full plan):** agree → full plan requires the Atlas API key ritual (least-privilege per `infra/README.md`); targeted plan honors the kickoff's explicit OQ-F carry-forward allowance. Future infra jobs periodically run full plan to catch Atlas-side drift.
+- **Canonical evidence artifacts committed under `tests/m2/artifacts/`** (`getcapabilities.xml`, `sample-getmap.png`, `worker-notify-*.json`, `mutated-*.qgs`): agree — provides the audit record without requiring future jobs to re-fetch from live substrate. Per-run randomized files gitignored.
+- **Worker QGIS version drift (3.44 container vs 3.40 conda env)** captured in envelope `qgs_version` field: agree → forward-compat within QGIS 3.x; revisit if dev-env interop breaks before M5 (OQ-21A carry-forward).
 
 ## Open Questions Resolved
 
+- **OQ-23A (`make test` superset collection):** resolved → 121 = 114 M1 + 7 M2 is correct shape; M1 portion unchanged. Future-proof for M3+M4 collection.
+- **OQ-23B (targeted `tofu plan` vs full plan):** resolved → targeted is correct for this job; full plan deferred to a periodic infra check job.
+- **OQ-23C (worker QGIS version drift):** carry-forward of job-0021 OQ-21A; not blocking M2.
+- **OQ-23D (`notify_message_id` null in published envelope):** carry-forward of job-0020 OQ-20G; subscribers use outer Pub/Sub `message.messageId` for correlation. Documented.
+- **OQ-23E (NFR-P-3 tile latency p50/p95 not measured):** deferred to M3 when web client lands and provides realistic measurement context.
+
 ## Follow-up Actions
 
+- **Sprint-04 closure** (this audit closure → retrospective + sprint manifest update + PROJECT_STATE refresh + sprint-close commit). Routing: orchestrator. Priority: high.
+- **M3 (sprint-05) testing job picks up OQ-23E**: NFR-P-3 tile-latency p50/p95 once web client renders QGIS Server tiles. Routing: testing. Priority: medium.
+- **Periodic infra full-plan check** (vs targeted plan in `test_tofu_plan_clean`): introduce when Atlas-side drift becomes operationally relevant. Routing: infra. Priority: low.
+- **FR-QS-2 SRS amendment proposal** (carry-forward from job-0024): user lands. Routing: orchestrator → user. Priority: medium.
+- **Outstanding M1 decision pile** (A1–A5 from job-0013, NFR-C-1, NFR-P-1, FR-AS-1 Gemini-3 substitution): carry-forward. Surfaced at sprint-04 close for user landing.
+- **Move artifact rotation discipline to a known place**: as M2 acceptance evolves, the per-run randomized artifacts could grow; the existing `tests/m2/artifacts/.gitignore` handles it. Tracked.
+
 ## Sign-off
+
+- **Ready to move to complete:** yes
+- All 12 reviewer adversarial checks pass on live re-run (11 pass + 1 qualified on cosmetic exit-criteria table-count) — no AC fails, no exit criterion fails.
+- **All 6 sprint-04 exit criteria PASS** with cited live evidence per row.
+- Invariants #1, #2, #3, #4, #5, #6, #9, #10 pass with citations; #7, #8 n/a.
+- Reviewer verdict: approve.
+- 5 Open Questions surfaced TENTATIVE: OQ-23A/B resolved here; OQ-23C/D are carry-forward; OQ-23E deferred to M3.
+- Real-substrate end-to-end verified: cloud + container + storage + messaging all live.
+- Sprint-04 (M2) closes on this approval.
+- Revisions: 0.

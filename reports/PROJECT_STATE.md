@@ -1,7 +1,7 @@
 # Project State
 
-**Last updated:** 2026-06-05 (sprint-04 / M2 in progress — job-0019 closed approved; new job-0024 opened to fix QGIS Server /vsigs/ access)
-**Current sprint:** sprint-04 (active, opened 2026-06-05) — M2 Foundation. Stage A ✅ (0018 + 0022 approved); Stage B ✅ (0019 approved); Stage A.5 OPENED (0024 — fix QGIS Server `/vsigs/` gap surfaced by 0019); Stage C queued (0020 worker code); D (0021 worker container); E (0023 M2 acceptance). Live cloud substrate up: QGIS Server, 3 buckets, sample .qgs uploaded, Pub/Sub topic, AR repo. Known gap: QGIS Server can't read `/vsigs/` until job-0024 lands env vars / gcsfuse fix.
+**Last updated:** 2026-06-06 (sprint-04 / M2 closed)
+**Current sprint:** sprint-04 (CLOSED 2026-06-06); next: sprint-05 (M3 — Web client skeleton: React + MapLibre rendering QGIS Server tiles, chat panel, layer toggle, pipeline strip) — planning pending user go on sprint-04 close package.
 
 ## Resume note (read first)
 
