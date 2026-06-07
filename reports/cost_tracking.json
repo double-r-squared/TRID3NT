@@ -190,12 +190,19 @@
       "description": "**🎉 M5 PIPELINE SUCCESS — FIRST FLOOD-DEPTH OUTPUT IN PROJECT HISTORY**. Two-part root-cause fix in `_default_setup_uri` + `build_sfincs_model`: (1) URI returns `/manifest.json` (file), not trailing-slash directory; (2) emits worker-contract `manifest.json` with `{inputs:[{gs_uri,dest}], sfincs_args:[], outputs:[...]}` enumerating all 11 deck files. fsspec.upload preserves the `deck/` prefix so manifest gs_uri values are correct. **Live E2E**: worker reads manifest with NO 404 → all 11 inputs downloaded → **SFINCS binary ran 287s + exit 0** → `sfincs_map.nc` produced at gs://grace-2-hazard-prod-runs/01KTHS9C5HH9N15SXQ0KEKKBGX/sfincs_map.nc (38 MB, 527×540 grid @ 30 m, EPSG:32617, **hmax 3.52 m**, 27.4% cells with depth ≥50 cm — plausible pluvial response for 100-yr 24-hr Atlas 14 11.9 in design storm over flat Fort Myers terrain). completion.json status=ok exit_code=0. 2 new manifest tests + 164/164 agent suite. Orchestrator-direct hmax → PNG render surfaced via SendUserFile proactive per memory rule. Remaining trivial follow-up: postprocess_flood COG_WRITE_FAILED on singleton timemax dim → job-0058. Commit 15e7832.",
       "model": "sonnet",
       "subagent_tokens": 138172
+    },
+    {
+      "job_id": "job-0058-engine-20260607",
+      "sprint": 8,
+      "description": "**🎉 PRODUCTION M5 END-TO-END SUCCESS** (sprint-08 capstone deliverable). postprocess_flood squeeze fix: handle HydroMT-SFINCS 1.2.2's hmax shape (timemax=1, n, m) → squeeze to 2D before COG write; raises RUN_OUTPUT_UNEXPECTED_SHAPE if ndim still > 2 after squeeze (defense-in-depth for true multi-time runs). 1 new regression test (synthetic xarray dataset with hmax(1,8,8) → COG write succeeds). 165/165 agent suite. **Live E2E SUCCESS**: AssessmentEnvelope.outcome=SUCCESS; layer_uris=[gs://grace-2-hazard-prod-runs/01KTHTFCV5E588A293N0JFQTZH/flood_depth_peak.tif]; solver_version=sfincs-v2.3.3; flood_max_depth_m=3.515. rasterio verification: 1.4 MiB LZW COG, 527×540 float32 single-band, 284,580 flooded cells. Production PNG render of the COG surfaced to user via SendUserFile proactive (reports/screenshots/job-0058-m5-production-cog.png). New OQ-59-FLOOD-COG-CRS-LABEL-VS-COORDS surfaced: postprocess writes UTM-17N coordinates with EPSG:3857 tag (data correct, label wrong; sprint-9 housekeeping). Commit 49494af.",
+      "model": "sonnet",
+      "subagent_tokens": 70144
     }
   ],
   "totals_by_sprint": {
     "6": 1265567,
     "7": 1863284,
-    "8": 1605604
+    "8": 1675748
   },
   "historical_context": {
     "note": "Captured for accountability — NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
