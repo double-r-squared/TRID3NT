@@ -53,7 +53,7 @@ class FakeBlob:
     def __init__(self, store: dict[str, bytes], path: str) -> None:
         self._store = store
         self._path = path
-        self.custom_time: str | None = None
+        self.custom_time: datetime | None = None  # google-cloud-storage SDK requires datetime (OQ-33 hotfix)
         self.cache_control: str | None = None
         self.uploaded: bytes | None = None
         self.upload_content_type: str | None = None
@@ -230,7 +230,7 @@ def test_fetch_dem_happy_path_writes_through_cache(monkeypatch):
     # The blob should have a customTime set per FR-DC-3.
     written_blob = fake_storage._bucket.blobs[-1]
     assert written_blob.custom_time is not None
-    assert "2026-06-06" in written_blob.custom_time
+    assert written_blob.custom_time.year == 2026 and written_blob.custom_time.month == 6  # datetime, not isoformat str (OQ-33 hotfix)
 
 
 def test_fetch_dem_rejects_oversized_bbox():

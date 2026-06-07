@@ -154,7 +154,7 @@ class FakeBlob:
     def __init__(self, store: dict[str, bytes], path: str) -> None:
         self._store = store
         self._path = path
-        self.custom_time: str | None = None
+        self.custom_time: datetime | None = None  # google-cloud-storage SDK requires datetime, NOT str (OQ-33 hotfix)
         self.cache_control: str | None = None
         self.content_type: str | None = None
 
@@ -271,7 +271,7 @@ def test_read_through_miss_writes_with_custom_time_and_cache_control(fake_gcs):
     # FR-DC-3: customTime set on write so the lifecycle policy can evict.
     bucket = fake_gcs.bucket("grace-2-hazard-prod-cache")
     assert bucket.last_blob is not None
-    assert bucket.last_blob.custom_time == pinned.isoformat()
+    assert bucket.last_blob.custom_time == pinned  # datetime, not isoformat string (OQ-33 hotfix)
     # Cache-Control reflects the TTL class.
     assert bucket.last_blob.cache_control == "public, max-age=2592000"
     # Persisted in the store at the expected path.

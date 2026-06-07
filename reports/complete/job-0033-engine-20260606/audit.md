@@ -1,6 +1,6 @@
 # Audit: 4 data-fetch atomic tools (fetch_dem, fetch_buildings, fetch_population, geocode_location) + mongo_query DI binding
 
-**Job ID:** job-0033-engine-20260606, **Sprint:** sprint-06, **Auditor:** Development Orchestrator, **Status:** assigned
+**Job ID:** job-0033-engine-20260606, **Sprint:** sprint-06, **Auditor:** Development Orchestrator, **Status:** approved
 
 ## Task Assignment
 
@@ -92,3 +92,78 @@ Linux Debian dev host. Live cache bucket from job-0031. ADC via gcloud. The 4 fe
 - [ ] No edits to any FROZEN path listed above.
 
 Surface contestable choices as Open Questions with TENTATIVE tags — at minimum: ACS vs WorldPop default for `fetch_population`; Nominatim vs Mapbox default for `geocode_location` (TENTATIVE: Nominatim — free; Mapbox needs an API key which is M5+); LayerURI shape (existing pydantic vs dict); bbox quantization rules per source (3DEP 10m vs MS Buildings native tile boundaries); error_code values to register for fetch failures (`UPSTREAM_API_ERROR`, `BBOX_INVALID`, etc.); whether to support per-call `cache=False` override (yes — pass through to `read_through(force_refresh=True)`).
+
+## Assessment
+
+**Verdict:** approved (with one critical follow-up — see below).
+
+Four data-fetch atomic tools land in `services/agent/src/grace2_agent/tools/data_fetch.py` (~620 lines), each `@register_tool(AtomicToolMetadata(...))` and each routing through `read_through` from job-0032's cache shim per FR-CE-8. Per-source bbox quantization (3DEP at `resolution_m`, MS Buildings 10m, US Census 100m) ensures dedup (FR-DC-4) at the engine boundary, correctly off-loaded from the shim (OQ-32-QUANTIZATION-LOCATION resolution confirmed). `fetch_dem` produces COGs via `py3dep` + `rioxarray`; `fetch_buildings` pulls FlatGeobuf from MS Planetary Computer STAC; `fetch_population` queries US Census ACS B01003; `geocode_location` hits Nominatim with the required User-Agent header.
+
+Tool registry now reports `tool registry loaded: 8 tool(s)` on `--startup-only` — confirms both job-0033 and job-0034 (running concurrently) registered cleanly without name collision. Tests: 22 new + 35 prior agent suite = **57/57 green** (then 69/69 after job-0035 lands its 11 emitter tests). Contracts still 131/131 (no regression).
+
+Live evidence is solid: `gcloud storage ls gs://grace-2-hazard-prod-cache/cache/static-30d/dem/` shows the cached DEM object; `gcloud storage objects describe ...` evidence captures the `customTime` (which is where the critical follow-up surfaces — see below). `geocode_location("Fort Myers, FL")` returns the expected bbox + canonical name + Nominatim source attribution.
+
+DI binding: `set_mcp_client` wired in `main.py._bind_mcp_client` helper; `mongo_query` body no longer raises `NotImplementedError`. Specialist correctly extended `main.py` only at the addition site, not refactoring unrelated startup code.
+
+**CRITICAL FOLLOW-UP — OQ-33-CACHE-CUSTOMTIME-TYPE-BUG.** The specialist surfaced (and worked around) a real bug in job-0032's `cache.py:337–338`:
+
+```python
+fetched_at = (now or datetime.now(timezone.utc)).isoformat()  # str
+blob.custom_time = fetched_at                                 # SDK wants datetime, NOT str
+```
+
+The real `google.cloud.storage` SDK rejects string assignment to `blob.custom_time`; only `FakeStorageClient.FakeBlob` (used in job-0032 unit tests) accepts anything. **Production cache writes are broken without this fix.** The live `fetch_dem` evidence run in job-0033 only succeeded because the specialist used a 1-time monkey-patch on `Blob.custom_time.setter` to work around it. The 2-line fix is straightforward (`fetched_at` becomes datetime; `.isoformat()` moves to the log line only) and lands as an orchestrator-direct hotfix in this audit's closeout (see Follow-up Actions §1).
+
+The bug-discovery pattern is a quiet success of the live-evidence discipline — unit tests with stubbed GCS missed it; the live `gcloud storage describe` step caught it. Future cache-side tests should include a real (or higher-fidelity-fake) `google.cloud.storage` blob type-check.
+
+## Invariant Check
+
+- **Invariant 1 (Determinism boundary):** preserved. Each fetcher returns a deterministic URI + bytes; no LLM in the data path. Bbox quantization is pure-function.
+- **Invariant 5 (Tier separation):** preserved. Fetched artifacts go to the cache bucket via the `agent-runtime` SA; no `gs://` URIs leak to the client. The `LayerURI` wrapper is the client-facing reference.
+- **FR-CE-8 fail-fast registration:** verified at import — duplicate-name registration would fail; misconfigured metadata would fail at construction via job-0030's `model_validator`.
+- **FR-DC-6 honor:** all 4 tools are cacheable (none on the uncacheable enumeration).
+
+## Dependency Check
+
+- **job-0030** — `AtomicToolMetadata` consumed correctly; 4-class TTL Literal used verbatim.
+- **job-0031** — cache bucket layout consumed (`cache/<ttl-class>/<source-class>/<hash>.<ext>`); live evidence confirms writes land at the right prefix.
+- **job-0032** — `read_through` API consumed correctly; cache key derivation off-loaded to the shim; per-source quantization correctly stays engine-side.
+- **job-0015** — M1 MCP path consumed by `set_mcp_client` DI binding; `mongo_query` is now operational.
+
+## Decisions Validated
+
+All 6 decisions reviewed and accepted:
+
+1. **ACS as `fetch_population` default; WorldPop deferred** — correct per Decision I CONUS scope + no-API-key + Fort Myers demo alignment.
+2. **Nominatim as `geocode_location` default; Mapbox deferred** — usage-policy compliance via descriptive User-Agent (env-overridable); `dynamic-1h` TTL natural throttling; `limit=1` keeps Nominatim happy.
+3. **`LayerURI` from contracts for the 3 layer-producing tools; `geocode_location` returns a plain dict** — `GeocodedLocation` model doesn't exist in `grace2_contracts` and `packages/contracts/**` is FROZEN; routed as OQ-33-GEOCODED-LOCATION-CONTRACT-PROMOTION for a later schema amendment.
+4. **Per-source bbox quantization grids** (3DEP `resolution_m`, MS Buildings 10m, US Census 100m) — engine-side per OQ-32-QUANTIZATION-LOCATION; documented in `round_bbox_to_resolution`.
+5. **Error codes registered**: `UPSTREAM_API_ERROR` (retryable) and `BBOX_INVALID` (not retryable). Job-0035 owns the full A.6 enumeration registry.
+6. **Eager `data_fetch` import in `main._import_tools_registry`** (not `tools/__init__.py` which is FROZEN) — correct boundary preservation.
+
+## Open Questions Resolved
+
+Filed for triage (none blocks closure):
+
+- **OQ-33-CACHE-CUSTOMTIME-TYPE-BUG** — see Follow-up §1. Critical; orchestrator-direct hotfix bundled here.
+- **OQ-33-GEOCODED-LOCATION-CONTRACT-PROMOTION** — promote dict → pydantic in `grace2_contracts.geocoding`. Bundle into v0.3.16+ housekeeping.
+- **OQ-33-QUANTIZATION-GRID-DOCS** — document per-source grids in agent.md or a dedicated reference. Minor; not blocking.
+- **OQ-33-CENSUS-STATE-FIPS-HEURISTIC** — current implementation uses a state-bbox heuristic; TIGER PIP would be more robust. Follow-up.
+- **OQ-33-A6-ERROR-CODE-REGISTRY** — job-0035 owns; already captured there.
+- **OQ-33-POPULATION-QML-PRESET** — population layer needs a QML style for rendering at M5+ render stage.
+- **OQ-33-LOCATION-RESOLVED-EMISSION-SEAM** — `geocode_location` should emit `location-resolved` per FR-AS-7; job-0035 owns this emission seam.
+- **OQ-33-MS-BUILDINGS-PMTILES-MATERIALIZATION** — PMTiles materialization for large-bbox queries; deferred to M5.
+
+## Follow-up Actions
+
+1. **CRITICAL: cache.py customTime hotfix** — apply 2-line fix to `services/agent/src/grace2_agent/tools/cache.py:337–338`: `fetched_at` becomes datetime, `.isoformat()` moves to the log line only. Orchestrator-direct hotfix bundled in this audit's commit. Add a regression test in job-0036 (M4 acceptance) that uses a higher-fidelity GCS fake (or real GCS) to catch type errors of this shape going forward.
+2. **Unblock job-0036 (M4 acceptance)** — Stage C two of three approved; job-0034 audit completes the gate.
+3. **Three v0.3.16+ housekeeping carries** — bundle with the prior carries (OQ-W-26 TTL-literal, OQ-INFRA-31-FR-DC-1 bucket layout, OQ-INFRA-31-LIVE-NO-CACHE-LIFECYCLE-NOOP).
+
+## Sign-off
+
+**Approved 2026-06-06 by Development Orchestrator.**
+
+All 9 acceptance criteria met. Live `fetch_dem` GCS write + `geocode_location("Fort Myers, FL")` evidence captured. 8 tools registered on startup (verified). 22 new tests + 57-total agent suite green. FROZEN paths untouched (verified via diff: only `data_fetch.py` NEW + `main.py` additive + `pyproject.toml` deps + tests). Critical cache.py bug caught by the specialist's live-evidence discipline; hotfix bundled at audit closeout.
+
+Sprint-06 Stage C two of three complete.

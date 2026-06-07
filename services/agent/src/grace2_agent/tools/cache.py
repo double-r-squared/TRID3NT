@@ -334,8 +334,8 @@ def read_through(
     # sentinel — a sentinel would poison future reads.
     data = fetch_fn()
 
-    fetched_at = (now or datetime.now(timezone.utc)).isoformat()
-    blob.custom_time = fetched_at  # type: ignore[attr-defined]
+    fetched_at = now or datetime.now(timezone.utc)
+    blob.custom_time = fetched_at  # google.cloud.storage requires datetime, not str (OQ-33-CACHE-CUSTOMTIME-TYPE-BUG)
     blob.cache_control = _ttl_to_cache_control(metadata.ttl_class)
     # Best-effort content-type for HTTP-style consumers; the lifecycle
     # policy doesn't care, but downstream readers might.
@@ -352,6 +352,6 @@ def read_through(
         metadata.name,
         key,
         len(data),
-        fetched_at,
+        fetched_at.isoformat(),
     )
     return ReadThroughResult(uri=uri, data=data, hit=False)
