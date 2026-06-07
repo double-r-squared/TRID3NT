@@ -1,0 +1,35 @@
+google_project.grace2: Refreshing state... [id=projects/grace-2-hazard-prod]
+google_project_service.enabled["workflows.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/workflows.googleapis.com]
+google_project_service.enabled["pubsub.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/pubsub.googleapis.com]
+google_project_service.enabled["iamcredentials.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/iamcredentials.googleapis.com]
+google_project_service.enabled["cloudresourcemanager.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/cloudresourcemanager.googleapis.com]
+google_project_service.enabled["run.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/run.googleapis.com]
+google_project_service.enabled["secretmanager.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/secretmanager.googleapis.com]
+google_project_service.enabled["aiplatform.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/aiplatform.googleapis.com]
+google_project_service.enabled["storage.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/storage.googleapis.com]
+google_project_service.enabled["cloudbuild.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/cloudbuild.googleapis.com]
+google_project_service.enabled["serviceusage.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/serviceusage.googleapis.com]
+google_project_service.enabled["logging.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/logging.googleapis.com]
+google_project_service.enabled["artifactregistry.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/artifactregistry.googleapis.com]
+google_project_service.enabled["iam.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/iam.googleapis.com]
+google_project_service.enabled["monitoring.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/monitoring.googleapis.com]
+google_service_account.agent_runtime: Refreshing state... [id=projects/grace-2-hazard-prod/serviceAccounts/agent-runtime@grace-2-hazard-prod.iam.gserviceaccount.com]
+google_service_account.pyqgis_worker: Refreshing state... [id=projects/grace-2-hazard-prod/serviceAccounts/pyqgis-worker-runtime@grace-2-hazard-prod.iam.gserviceaccount.com]
+google_storage_bucket.cache: Refreshing state... [id=grace-2-hazard-prod-cache]
+google_storage_bucket_iam_member.agent_runtime_cache_admin: Refreshing state... [id=b/grace-2-hazard-prod-cache/roles/storage.objectAdmin/serviceAccount:agent-runtime@grace-2-hazard-prod.iam.gserviceaccount.com]
+google_storage_bucket_iam_member.pyqgis_worker_cache_admin: Refreshing state... [id=b/grace-2-hazard-prod-cache/roles/storage.objectAdmin/serviceAccount:pyqgis-worker-runtime@grace-2-hazard-prod.iam.gserviceaccount.com]
+
+No changes. Your infrastructure matches the configuration.
+
+OpenTofu has compared your real infrastructure against your configuration and
+found no differences, so no changes are needed.
+
+Warning: Resource targeting is in effect
+
+You are creating a plan with either the -target option or the -exclude
+option, which means that the result of this plan may not represent all of the
+changes requested by the current configuration.
+
+The -target and -exclude options are not for routine use, and are provided
+only for exceptional situations such as recovering from errors or mistakes,
+or when OpenTofu specifically suggests to use it as part of an error message.

@@ -1,0 +1,4 @@
+Copying file:///tmp/marker.txt to gs://grace-2-hazard-prod-cache/cache/dynamic-1h/test/marker.txt
+  
+...
+custom_time from object: 2026-06-07T03:05:58+0000

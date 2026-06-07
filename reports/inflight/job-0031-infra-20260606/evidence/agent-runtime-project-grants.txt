@@ -1,0 +1,6 @@
+{
+  "members": [
+    "serviceAccount:agent-runtime@grace-2-hazard-prod.iam.gserviceaccount.com"
+  ],
+  "role": "roles/secretmanager.secretAccessor"
+}

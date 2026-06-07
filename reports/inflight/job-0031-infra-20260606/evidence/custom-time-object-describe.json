@@ -1,0 +1,17 @@
+{
+  "bucket": "grace-2-hazard-prod-cache",
+  "content_type": "text/plain",
+  "crc32c_hash": "XlMy9w==",
+  "creation_time": "2026-06-07T03:06:02+0000",
+  "custom_time": "2026-06-07T03:05:58+0000",
+  "etag": "CMvQxeSS9JQDEAE=",
+  "generation": "1780801562830923",
+  "md5_hash": "kDdh+32KSZO2qLTb0C1YZQ==",
+  "metageneration": 1,
+  "name": "cache/dynamic-1h/test/marker.txt",
+  "size": 40,
+  "storage_class": "STANDARD",
+  "storage_class_update_time": "2026-06-07T03:06:02+0000",
+  "storage_url": "gs://grace-2-hazard-prod-cache/cache/dynamic-1h/test/marker.txt#1780801562830923",
+  "update_time": "2026-06-07T03:06:02+0000"
+}
