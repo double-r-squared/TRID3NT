@@ -5,6 +5,7 @@
     "job_id": "Job ID per AGENTS.md naming convention",
     "sprint": "Sprint number",
     "description": "One-sentence summary of what the job did",
+    "model": "Frontier model the specialist subagent ran on (opus / sonnet / haiku), per the model-routing rule in feedback_cost_discipline_model_routing.md",
     "subagent_tokens": "Token count consumed by the specialist subagent for this job (does NOT include orchestrator-side tokens, audit closeout, or commit operations)"
   },
   "entries": [
@@ -12,36 +13,42 @@
       "job_id": "job-0030-schema-20260606",
       "sprint": 6,
       "description": "Extended Appendix D.6 PipelineStepSummary with progress_percent/error_code/error_message and added AtomicToolMetadata model with 4-class TTL Literal for FunctionTool registration; 91 → 131 contracts tests green; closes OQ-W-26 from sprint-05.",
+      "model": "opus",
       "subagent_tokens": 126553
     },
     {
       "job_id": "job-0031-infra-20260606",
       "sprint": 6,
       "description": "Provisioned gs://grace-2-hazard-prod-cache GCS bucket via OpenTofu with 4 Object Lifecycle Management rules per FR-DC-5 TTL classes and bucket-scoped objectAdmin IAM for agent-runtime and pyqgis-worker-runtime SAs; customTime round-trip verified live.",
+      "model": "opus",
       "subagent_tokens": 134496
     },
     {
       "job_id": "job-0032-agent-20260606",
       "sprint": 6,
       "description": "Landed services/agent/src/grace2_agent/tools/ package — registry decorator + TOOL_REGISTRY, FR-DC-3 cache shim (compute_cache_key sha256[:32], read_through with live-no-cache short-circuit + force_refresh), and mongo_query/qgis_process pass-through stubs awaiting DI binding; 24 unit tests green.",
+      "model": "opus",
       "subagent_tokens": 145526
     },
     {
       "job_id": "job-0033-engine-20260606",
       "sprint": 6,
       "description": "Landed 4 data-fetch atomic tools (fetch_dem via py3dep/rioxarray, fetch_buildings via MS Planetary Computer STAC, fetch_population via US Census ACS B01003, geocode_location via Nominatim) routing through cache shim with per-source bbox quantization; bound set_mcp_client DI seam; surfaced critical OQ-33-CACHE-CUSTOMTIME-TYPE-BUG (google.cloud.storage rejects str on blob.custom_time — orchestrator hotfixed 2 lines post-commit).",
+      "model": "opus",
       "subagent_tokens": 180762
     },
     {
       "job_id": "job-0034-engine-20260606",
       "sprint": 6,
       "description": "Landed 2 QGIS discovery atomic tools (list_qgis_algorithms enumerated 361 algorithms live at 3.03s + describe_qgis_algorithm parsed 5 zonalstatistics parameters at 1.44s); bound set_worker_submitter DI seam via subprocess Option B' for M4 demo enablement; Cloud Run Jobs v2 submitter follow-up routed.",
+      "model": "opus",
       "subagent_tokens": 190739
     },
     {
       "job_id": "job-0035-agent-20260606",
       "sprint": 6,
       "description": "Landed PipelineEmitter with 6 transition methods + replace-not-reconcile (A.7) structurally enforced (no merge helper exists; test-guarded) + ErrorCodeRegistry + emit_tool_call wrapper; integrated into server.py tool-call site; captured 13-frame live WS transcript (4 session-state + 9 pipeline-state) demonstrating real agent emission; closes OQ-T-28-SIM-WS-BOUNDARY.",
+      "model": "opus",
       "subagent_tokens": 225817
     }
   ],
