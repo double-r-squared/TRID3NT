@@ -32,7 +32,7 @@ ATLAS_PROJECT_ID ?= 6a234700a0e1295958d10cf9
 
 .DEFAULT_GOAL := help
 
-.PHONY: help run-agent run-web test test-m2 test-m3 test-m4 test-all \
+.PHONY: help run-agent run-web test test-m2 test-m3 test-m4 test-m5 test-all \
         playwright-install screenshot ui-tour \
         tofu-init tofu-plan tofu-apply tofu-bootstrap \
         atlas-allowlist-me secret-srv-show \
@@ -49,7 +49,8 @@ help:
 	@echo "  test-m2             run the M2 acceptance suite (job-0023; live QGIS Server + Cloud Run Job)"
 	@echo "  test-m3             run the M3 acceptance suite (job-0028; live Vite + Playwright + QGIS WMS)"
 	@echo "  test-m4             run the M4 acceptance suite (job-0036; live agent + GCS cache + Nominatim + qgis_process)"
-	@echo "  test-all            run M1 + M2 + M3 + M4 (sprint-06 capstone)"
+	@echo "  test-m5             run the M5 acceptance suite (job-0043; live agent + Cloud Workflows + SFINCS dispatch)"
+	@echo "  test-all            run M1 + M2 + M3 + M4 + M5 (sprint-07 capstone)"
 	@echo ""
 	@echo "  playwright-install  download Chromium + Firefox to ~/.cache/ms-playwright (closes job-0016 OQ-W-3)"
 	@echo "  screenshot          one-shot capture; pass URL=, ROUTE=, STATE=, OUT=, BROWSER=, WAIT=, VIEWPORT="
@@ -441,12 +442,34 @@ test-m4:
 	fi
 	$(TEST_VENV)/bin/python -m pytest tests/m4 -v -m live_m4 --tb=short
 
-# test-all — run the full M1 + M2 + M3 + M4 stack (sprint-06 capstone target).
-# M1 = 91 contracts + 23 acceptance; M2 = 7 acceptance; M3 = 5-8 unique
-# functions parametrized cross-browser (~7-10 invocations); M4 = Fort Myers
-# end-to-end demo + OQ-T-28-SIM-WS-BOUNDARY closure proof (2 tests). Aggregate
-# unique-function target 128-131+M4; invocation count 130-133+M4.
-test-all: test test-m2 test-m3 test-m4
+# test-m5 (job-0043) — M5 acceptance: Hurricane Ian / Fort Myers flood-modeling
+# demo end-to-end through the deployed substrate (14 tools, real Cloud
+# Workflows orchestrator, real SFINCS dispatch). Opt-in via the `live_m5`
+# marker so the default `make test` collection does NOT pick them up (these
+# touch the live cache + runs buckets and submit real Cloud Workflows
+# executions).
+#
+# Two acceptable outcomes per the kickoff: SUCCESS (AssessmentEnvelope with
+# a populated flood_depth COG layer) OR HONEST FAILURE (chain runs through,
+# typed-error envelope returned). On the Debian dev box `hydromt_sfincs`
+# is intentionally not installed, so the substrate-verification outcome
+# `HYDROMT_UNAVAILABLE` is the expected honest failure mode.
+test-m5:
+	@if [ ! -x $(TEST_VENV)/bin/python ]; then \
+	  echo "test venv missing or stale ($(TEST_VENV)). Bootstrap:"; \
+	  echo "  virtualenv -p python3 $(TEST_VENV)"; \
+	  echo "  $(TEST_VENV)/bin/pip install -e packages/contracts -e services/agent"; \
+	  echo "  $(TEST_VENV)/bin/pip install pytest pytest-asyncio websockets"; \
+	  exit 1; \
+	fi
+	$(TEST_VENV)/bin/python -m pytest tests/m5 -v -m live_m5 --tb=short
+
+# test-all — run the full M1 + M2 + M3 + M4 + M5 stack (sprint-07 capstone target).
+# M1 = 131 contracts + 30 acceptance; M2 = 7 acceptance; M3 = 5-8 unique
+# functions parametrized cross-browser (~10 invocations); M4 = Fort Myers
+# end-to-end demo + OQ-T-28-SIM-WS-BOUNDARY closure proof (2 tests);
+# M5 = Hurricane Ian / Fort Myers demo + full-chain cancel (2 tests).
+test-all: test test-m2 test-m3 test-m4 test-m5
 
 # --- SRS regeneration (docs/srs/* split → docs/SRS_v0.3.md monolith) -------
 #

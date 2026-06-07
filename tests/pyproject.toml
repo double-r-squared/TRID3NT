@@ -20,6 +20,7 @@ markers = [
   "live_web: requires a local Vite dev server (M3 — job-0028)",
   "live_qgis_wms_browser: requires deployed Cloud Run QGIS Server WMS reachable from a headless browser (M3 — job-0028)",
   "live_m4: requires the live M4 substrate — agent service subprocess + GCS cache bucket + Nominatim (M4 — job-0036). Opt-in via `make test-m4` or `-m live_m4`.",
+  "live_m5: requires the live M5 substrate — agent service subprocess + GCS cache + Cloud Workflows orchestrator + SFINCS dispatch + Nominatim/3DEP/NHDPlus HR/Atlas 14/MRLC WCS (M5 — job-0043). Opt-in via `make test-m5` or `-m live_m5`.",
   "live_qgis_process: requires a local `qgis_process` binary (Mac-local grace2 conda env per PROJECT_STATE.md). Auto-qualifies on dev hosts without it.",
 ]
 testpaths = ["protocol", "integration"]

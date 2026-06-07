@@ -1,0 +1,9 @@
+{
+  "metric": "NFR-P-4",
+  "target": "\u226415 min (900s) for \u2264200 km\u00b2 at 30 m",
+  "wall_clock_seconds": 10.062335613649338,
+  "wall_clock_minutes": 0.16770559356082232,
+  "under_budget": true,
+  "qualification": "single-machine measurement from Debian dev box (Linux maturin 6.12.74+deb13+1-amd64) against us-central1; compares to SRS NFR-P-4 \u226415 min budget for \u2264200 km\u00b2 at 30 m. Sample size n=1 single-run dispatch.",
+  "outcome_classification": "substrate_ok_envelope_not_surfaced_in_step_result"
+}

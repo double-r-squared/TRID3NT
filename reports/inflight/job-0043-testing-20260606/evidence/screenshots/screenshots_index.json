@@ -1,0 +1,5 @@
+{
+  "baseline.png": "idle PipelineStrip + LayerPanel; no injected state",
+  "mid_run.png": "mid-run with 5 steps: geocode + fetch_dem complete, fetch_landcover running (\u22653 progress emissions visible), fetch_river_geometry + build_sfincs_model pending",
+  "final_honest_failure.png": "final HONEST FAILURE state: 5 fetcher steps complete + build_sfincs_model failed with HYDROMT_UNAVAILABLE; substrate verification through the chain; kickoff \u00a71 acceptable outcome"
+}

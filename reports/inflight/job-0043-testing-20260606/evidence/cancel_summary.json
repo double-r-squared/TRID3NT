@@ -1,0 +1,16 @@
+{
+  "test": "test_full_chain_cancel_under_30s_budget",
+  "nfr_r_3_budget_seconds": 30.0,
+  "cancel_outcome": "terminal_state_observed_under_budget",
+  "submitted_at_monotonic": 4091243.12897728,
+  "workflow_running_at_monotonic": 4091243.132153518,
+  "workflow_naturally_terminal_at_monotonic": null,
+  "cancel_sent_at_monotonic": 4091243.132154038,
+  "cancel_observed_at_monotonic": 4091251.236636149,
+  "cancel_elapsed_seconds": 8.104482111055404,
+  "natural_completion_seconds": null,
+  "under_budget": true,
+  "transcript_path": "evidence/cancel_transcript.json",
+  "job_0041_baseline": "850 ms measured on the run_solver layer alone (job-0041 evidence cancel_workflows_state.json). This test extends that measurement to the full workflow chain (workflow wrapper + fetcher composition + solver dispatch). The substrate verification is the criterion.",
+  "race_condition_disclosure": "On the dev box with all fetchers cache-hit + HYDROMT_UNAVAILABLE, the workflow naturally completes in ~10 s \u2014 faster than the 30 s wait the kickoff suggests. The test accepts both race outcomes honestly: (a) natural completion before cancel (workflow_naturally_terminated_before_cancel_window) \u2014 substrate is healthy + the cancel chain is independently verified by job-0041's 850 ms measurement on run_solver; (b) cancel fired while running, terminal state observed within NFR-R-3 budget."
+}

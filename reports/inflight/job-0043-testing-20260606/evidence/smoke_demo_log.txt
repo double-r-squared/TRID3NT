@@ -1,0 +1,15 @@
+2026-06-07 02:40:49,837 INFO smoke_demo registered 14 agent tools (M5 expects 14)
+2026-06-07 02:40:49,837 INFO smoke_demo ==== M5 demo: model_flood_scenario(Fort Myers, FL) ====
+2026-06-07 02:40:49,837 INFO grace2_agent.workflows.model_flood_scenario model_flood_scenario start bbox=None location_query='Fort Myers, FL' event_id=None return_period_yr=100 duration_hr=24 compute_class=medium
+2026-06-07 02:40:51,087 INFO grace2_agent.tools.cache read_through hit tool=geocode_location key=605c3e0b0feaf379edcf86e86808a038 bytes=281
+2026-06-07 02:40:51,087 INFO grace2_agent.tools.data_fetch geocode_location query='Fort Myers, FL' resolved name='Fort Myers, Lee County, Florida, United States' cache_hit=True
+2026-06-07 02:40:52,852 INFO grace2_agent.tools.cache read_through hit tool=fetch_dem key=87ba00463af0275d02115f7463afe6e9 bytes=1924297
+2026-06-07 02:40:54,234 INFO grace2_agent.tools.cache read_through hit tool=fetch_landcover key=7dac3520db9a0f6092a434be438d02d9 bytes=289170
+2026-06-07 02:40:55,766 INFO grace2_agent.tools.cache read_through hit tool=fetch_river_geometry key=4fa2fd4e5d2192020dc04d60502d6aaa bytes=274376
+2026-06-07 02:40:57,008 INFO grace2_agent.tools.cache read_through hit tool=lookup_precip_return_period key=8cbc276afacf4ed50e2daac1ab261ccb bytes=1614
+2026-06-07 02:40:57,008 INFO grace2_agent.tools.data_fetch lookup_precip_return_period (lat=26.616666667 lon=-81.833333333 ari=100 dur=24-hr) -> 11.900 inches cache_hit=True
+2026-06-07 02:40:57,009 INFO grace2_agent.workflows.sfincs_builder manning_mapping loaded version=1.0.0 classes=20 path=/home/nate/Documents/GRACE-2/services/agent/src/grace2_agent/workflows/manning_mapping.csv
+2026-06-07 02:40:58,144 INFO grace2_agent.workflows.sfincs_builder landcover classes observed: [11, 21, 22, 23, 24, 31, 41, 42, 43, 52, 71, 81, 82, 90, 95] (vintage_year=2021)
+2026-06-07 02:40:58,145 WARNING grace2_agent.workflows.model_flood_scenario build_sfincs_model raised HYDROMT_UNAVAILABLE (details={'import_error': "No module named 'hydromt_sfincs'"}) — returning failed envelope
+2026-06-07 02:40:58,146 INFO smoke_demo outcome=HONEST FAILURE solver_version=failed:HYDROMT_UNAVAILABLE layers=0 elapsed=8.31s
+2026-06-07 02:40:58,147 INFO smoke_demo smoke transcript written to /home/nate/Documents/GRACE-2/reports/inflight/job-0043-testing-20260606/evidence/smoke_demo_envelope.json

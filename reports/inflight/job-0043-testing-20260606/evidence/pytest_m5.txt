@@ -1,0 +1,13 @@
+============================= test session starts ==============================
+platform linux -- Python 3.13.5, pytest-9.0.3, pluggy-1.6.0 -- /home/nate/Documents/GRACE-2/.venv-agent/bin/python
+cachedir: .pytest_cache
+rootdir: /home/nate/Documents/GRACE-2/tests
+configfile: pyproject.toml
+plugins: anyio-4.13.0, asyncio-1.4.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 2 items
+
+tests/m5/test_fort_myers_hurricane_ian_demo.py::test_fort_myers_pipeline_end_to_end PASSED [ 50%]
+tests/m5/test_fort_myers_hurricane_ian_demo.py::test_full_chain_cancel_under_30s_budget PASSED [100%]
+
+============================== 2 passed in 21.24s ==============================

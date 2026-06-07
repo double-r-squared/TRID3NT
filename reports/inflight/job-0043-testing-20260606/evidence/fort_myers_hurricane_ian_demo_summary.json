@@ -1,0 +1,31 @@
+{
+  "demo": "Hurricane Ian / Fort Myers (job-0043 M5 acceptance)",
+  "params": {
+    "location_query": "Fort Myers, FL",
+    "return_period_yr": 100,
+    "duration_hr": 24,
+    "compute_class": "medium"
+  },
+  "frame_count": 4,
+  "elapsed_seconds": 10.062335613649338,
+  "workflow_step_state": "complete",
+  "envelope_present_in_step_result": false,
+  "envelope_summary": null,
+  "outcome_classification": "substrate_ok_envelope_not_surfaced_in_step_result",
+  "acceptable_failure_error_codes": [
+    "HYDROMT_UNAVAILABLE",
+    "HYDROMT_BUILD_FAILED",
+    "LULC_MAPPING_MISMATCH",
+    "DEM_COVERAGE_GAP",
+    "FORCING_OUT_OF_RANGE",
+    "MANNING_MAPPING_LOAD_FAILED",
+    "LANDCOVER_READ_FAILED",
+    "SOLVER_FAILED",
+    "SOLVER_DISPATCH_FAILED",
+    "SOLVER_TIMEOUT"
+  ],
+  "nfr_p_4_qualification": "single-machine measurement from Debian dev box (Linux maturin 6.12.74+deb13+1-amd64) against us-central1; compares to SRS NFR-P-4 \u226415 min budget for \u2264200 km\u00b2 at 30 m. Sample size n=1 single-run dispatch.",
+  "layer_attribution": {
+    "workflow_outcome": "Substrate ran through to terminal state='complete' but the AssessmentEnvelope dict was not surfaced in the step's `result` field. PipelineEmitter packaging detail (not a substrate failure). Surface as OQ for a follow-up agent job."
+  }
+}

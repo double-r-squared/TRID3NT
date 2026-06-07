@@ -1,0 +1,33 @@
+{
+  "_about": "M5 acceptance fixture (job-0043): Hurricane Ian flood-on-Fort Myers demo parameters. The bbox is a small (~13 km × 16 km, ~210 km²) coastal slice covering downtown Fort Myers + Caloosahatchee mouth — the area inundated by Ian's storm surge on 2022-09-28. ATCF Hurricane Ian forcing integration is deferred per OQ-42-ATCF-HURRICANE-IAN-INTEGRATION; v0.1 demo substitutes the Atlas 14 100-yr / 24-hr design storm (live-verified at 11.9 inches by job-0042 against the real NOAA PFDS endpoint). The substrate verification — that the chain runs end-to-end through the deployed Cloud Workflows orchestrator — is the M5 acceptance criterion regardless of which forcing is wired.",
+  "location_query": "Fort Myers, FL",
+  "expected_bbox": [-81.9126, 26.5476, -81.7511, 26.6892],
+  "bbox_tolerance_deg": 0.05,
+  "demo_bbox": [-81.92, 26.55, -81.80, 26.68],
+  "demo_resolution_m": 30,
+  "return_period_years": 100,
+  "duration_hours": 24,
+  "compute_class": "medium",
+  "atlas14_expected_precip_inches": 11.9,
+  "atlas14_tolerance_inches": 0.5,
+  "expected_envelope_workflow_name": "model_flood_scenario",
+  "expected_envelope_hazard_type": "flood",
+  "acceptable_failure_error_codes": [
+    "HYDROMT_UNAVAILABLE",
+    "HYDROMT_BUILD_FAILED",
+    "LULC_MAPPING_MISMATCH",
+    "DEM_COVERAGE_GAP",
+    "FORCING_OUT_OF_RANGE",
+    "MANNING_MAPPING_LOAD_FAILED",
+    "LANDCOVER_READ_FAILED",
+    "SOLVER_FAILED",
+    "SOLVER_DISPATCH_FAILED",
+    "SOLVER_TIMEOUT"
+  ],
+  "_substrate_notes": {
+    "nlcd_substrate": "Tier 2 MRLC WCS 1.0.0 GetCoverage (post-job-0044 hotfix; canonical NLCD class integers, not palette indices). NLCD vintage 2021 expected; fetched classes for Fort Myers expected to be a clean subset of manning_mapping.csv v1.0.0's 20 mapped classes (gate PASSES).",
+    "hydromt_status": "HydroMT-SFINCS is NOT installed in the dev .venv-agent (heavyweight dep that the production job-0040 SFINCS container has). The expected outcome on the dev box is `HYDROMT_UNAVAILABLE` — the chain runs through fetchers + NLCD gate PASS + forcing + lands on build_sfincs_model's `import hydromt_sfincs` guard. Substrate-verification outcome the kickoff explicitly accepts.",
+    "cloud_workflows_orchestrator": "projects/grace-2-hazard-prod/locations/us-central1/workflows/grace-2-sfincs-orchestrator (job-0040). The agent's `run_solver` would dispatch to this if `build_sfincs_model` succeeded.",
+    "cache_buckets": "gs://grace-2-hazard-prod-cache (fetcher writes — static-30d TTL class); gs://grace-2-hazard-prod-runs (SFINCS run outputs — managed by Cloud Run Job + orchestrator)."
+  }
+}

@@ -1,0 +1,75 @@
+[
+  {
+    "type": "session-state",
+    "id": "01KTGR4TCNRHJ5XVMBD7TY94E3",
+    "ts": "2026-06-07T09:55:39.029033Z",
+    "session_id": "01KTGR4TCJMVMSXHTWBDQQRQCC",
+    "payload": {
+      "chat_history": [],
+      "loaded_layers": [],
+      "pipeline_history": [],
+      "current_pipeline": null,
+      "map_view": null
+    }
+  },
+  {
+    "type": "pipeline-state",
+    "id": "01KTGR4TCNRHJ5XVMBD7TY94E6",
+    "ts": "2026-06-07T09:55:39.029580Z",
+    "session_id": "01KTGR4TCJMVMSXHTWBDQQRQCC",
+    "payload": {
+      "pipeline_id": "01KTGR4TCNRHJ5XVMBD7TY94E4",
+      "steps": [
+        {
+          "step_id": "01KTGR4TCNRHJ5XVMBD7TY94E5",
+          "name": "run_model_flood_scenario",
+          "tool_name": "run_model_flood_scenario",
+          "state": "pending",
+          "started_at": null,
+          "completed_at": null,
+          "progress_percent": null
+        }
+      ]
+    }
+  },
+  {
+    "type": "pipeline-state",
+    "id": "01KTGR4TCNRHJ5XVMBD7TY94E7",
+    "ts": "2026-06-07T09:55:39.029714Z",
+    "session_id": "01KTGR4TCJMVMSXHTWBDQQRQCC",
+    "payload": {
+      "pipeline_id": "01KTGR4TCNRHJ5XVMBD7TY94E4",
+      "steps": [
+        {
+          "step_id": "01KTGR4TCNRHJ5XVMBD7TY94E5",
+          "name": "run_model_flood_scenario",
+          "tool_name": "run_model_flood_scenario",
+          "state": "running",
+          "started_at": "2026-06-07T09:55:39.029671Z",
+          "completed_at": null,
+          "progress_percent": null
+        }
+      ]
+    }
+  },
+  {
+    "type": "pipeline-state",
+    "id": "01KTGR52A0J2YN6NRJAD3NAS80",
+    "ts": "2026-06-07T09:55:47.136131Z",
+    "session_id": "01KTGR4TCJMVMSXHTWBDQQRQCC",
+    "payload": {
+      "pipeline_id": "01KTGR4TCNRHJ5XVMBD7TY94E4",
+      "steps": [
+        {
+          "step_id": "01KTGR4TCNRHJ5XVMBD7TY94E5",
+          "name": "run_model_flood_scenario",
+          "tool_name": "run_model_flood_scenario",
+          "state": "complete",
+          "started_at": "2026-06-07T09:55:39.029671Z",
+          "completed_at": "2026-06-07T09:55:47.135920Z",
+          "progress_percent": null
+        }
+      ]
+    }
+  }
+]
