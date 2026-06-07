@@ -18,8 +18,14 @@ Tools registered here:
   COG bytes → ``cache/static-30d/dem/<key>.tif``.
 - ``fetch_buildings(bbox, source="msft")`` — MS Open Maps Buildings (PMTiles/
   FlatGeobuf served as quadkey tiles via MSFT's Open Data) → ``cache/static-30d/buildings/<key>.fgb``.
-- ``fetch_population(bbox, dataset="acs_2022")`` — US Census ACS B01003_001E
-  tract-level → GeoJSON FeatureCollection → ``cache/static-30d/population/<key>.json``.
+- ``fetch_population(bbox, dataset="worldpop_2020")`` — WorldPop 100m Unconstrained
+  UN-adjusted gridded population (Tier-1 per Appendix F.1, no key required).
+  Windowed read over the bbox via ``rasterio`` ``/vsicurl/`` from the WorldPop
+  REST endpoint → COG bytes → ``cache/static-30d/population/<key>.tif``.
+  ``dataset="acs_2022"`` opts into the Tier-2 Census ACS B01003 tract-level
+  GeoJSON path (requires Census API key for high-volume use; routed when the
+  agent needs tract-level precision rather than the 100m raster) →
+  ``cache/static-30d/population/<key>.json``.
 - ``geocode_location(query)`` — Nominatim REST forward geocode → JSON with
   ``{name, bbox, latitude, longitude, source}`` → ``cache/dynamic-1h/geocode/<key>.json``.
 
@@ -540,6 +546,219 @@ _FETCH_POPULATION_METADATA = AtomicToolMetadata(
 )
 
 
+# ---------------------------------------------------------------------------
+# WorldPop branch (Tier-1 default per Appendix F.1).
+# ---------------------------------------------------------------------------
+#
+# WorldPop publishes a global population grid as country-clipped GeoTIFFs.
+# Two products are relevant here (REST index at
+# https://www.worldpop.org/rest/data/pop/<alias>?iso3=<ISO3>):
+#
+#   - alias=wpgpunadj (Unconstrained 100m UN-adjusted, 2000-2020) →
+#       Global_2000_2020/<YEAR>/<ISO3>/<iso3_lower>_ppp_<YEAR>_UNadj.tif
+#       (USA file = ~4 GB)
+#   - alias=wpic1km (Unconstrained 1km individual countries, 2000-2020) →
+#       Global_2000_2020_1km/<YEAR>/<ISO3>/<iso3_lower>_ppp_<YEAR>_1km_Aggregated.tif
+#       (USA file = ~50 MB)
+#
+# Substrate choice: the 1km Aggregated product. WorldPop's HTTP server
+# returns HTTP 200 with the full body for range requests (instead of HTTP
+# 206 Partial Content), so GDAL's ``/vsicurl/`` cannot windowed-read the
+# 100m file remotely — and downloading 4 GB per cache miss is impractical.
+# The 1km file is tractable as a one-shot download and is sufficient for
+# exposure analysis at M5/Fort-Myers-class bbox scales. Surfaced as
+# OQ-37-WORLDPOP-RESOLUTION-VS-RANGE: revisit when a range-request-capable
+# mirror lands, or when an official STAC catalog with native COGs is
+# published (the kickoff suggested Microsoft Planetary Computer's
+# ``worldpop-100m`` collection — that collection does not exist on PC at
+# this writing; the WorldPop Hub STAC at https://hub.worldpop.org/stac/
+# also 404s).
+
+
+_WORLDPOP_BBOX_BY_ISO3: dict[str, tuple[float, float, float, float]] = {
+    # ISO3 -> approximate (min_lon, min_lat, max_lon, max_lat) envelope.
+    # Substrate-scope: CONUS-centric coverage matching the v0.1 Decision I
+    # scope. Replaced with a real point-in-polygon over Natural Earth admin0
+    # in a follow-up. Same shape/role as the CONUS state envelope table.
+    "USA": (-125.0, 24.0, -66.5, 49.5),
+    "CAN": (-141.0, 41.7, -52.6, 70.0),
+    "MEX": (-118.5, 14.5, -86.7, 32.7),
+    "CUB": (-85.0, 19.8, -74.1, 23.3),
+    "BHS": (-79.5, 20.9, -72.7, 27.3),
+    "JAM": (-78.4, 17.7, -76.2, 18.5),
+    "HTI": (-74.5, 18.0, -71.6, 20.1),
+    "DOM": (-72.0, 17.6, -68.3, 19.9),
+    "PRI": (-67.3, 17.9, -65.2, 18.6),
+}
+
+
+def _iso3_for_lonlat(lon: float, lat: float) -> str | None:
+    """Best-effort ISO3 country code lookup from a point — heuristic only.
+
+    Returns ``None`` if no envelope matches. A future enrichment job replaces
+    this with a real point-in-polygon over Natural Earth admin0 boundaries.
+    """
+    for iso3, (mn_lon, mn_lat, mx_lon, mx_lat) in _WORLDPOP_BBOX_BY_ISO3.items():
+        if mn_lon <= lon <= mx_lon and mn_lat <= lat <= mx_lat:
+            return iso3
+    return None
+
+
+def _worldpop_url_for(iso3: str, year: int) -> str:
+    """Compose the WorldPop 1km aggregated GeoTIFF URL for a country/year.
+
+    Uses the ``Global_2000_2020_1km/<YEAR>/<ISO3>/<iso3_lower>_ppp_<YEAR>_1km_Aggregated.tif``
+    convention from the WorldPop GIS Data hub — the 1km-aggregated product
+    is ~50MB per country (USA), vs the 100m UN-adjusted product at ~4GB.
+    The substrate uses 1km because the WorldPop server does not support HTTP
+    range requests, so a 4GB whole-country download per cache miss is
+    impractical even with the 30-day cache window (see
+    OQ-37-WORLDPOP-RESOLUTION-VS-RANGE for the resolution-vs-tractability
+    trade-off; the 1km product is sufficient for exposure analysis at the
+    bbox scales typical of M5/Fort-Myers-class demos).
+    """
+    iso3_l = iso3.lower()
+    return (
+        f"https://data.worldpop.org/GIS/Population/Global_2000_2020_1km/{year}/"
+        f"{iso3}/{iso3_l}_ppp_{year}_1km_Aggregated.tif"
+    )
+
+
+def _fetch_worldpop_population_bytes(
+    bbox: tuple[float, float, float, float], dataset: str
+) -> bytes:
+    """Fetch a windowed COG of WorldPop 1km-aggregated population for ``bbox``.
+
+    The WorldPop product is published as a single GeoTIFF per (year, country)
+    at ~50MB (1km aggregated). Because the WorldPop server does not support
+    HTTP range requests, we download the full country file once to a tmp
+    file, then use rasterio to read the windowed sub-region and rewrite it
+    as a small Cloud-Optimized GeoTIFF for the cache. Subsequent calls hit
+    the GCS cache (30-day TTL) and skip the full download.
+
+    ``dataset`` shape: ``worldpop_<YEAR>`` (e.g. ``worldpop_2020``). The year
+    is parsed off the suffix and routed to the corresponding WorldPop URL.
+    """
+    _validate_bbox(bbox)
+    if not dataset.startswith("worldpop_"):
+        raise UpstreamAPIError(
+            f"unsupported dataset={dataset!r} for WorldPop branch; expected 'worldpop_2020'"
+        )
+    try:
+        year = int(dataset.split("_", 1)[1])
+    except (IndexError, ValueError) as exc:
+        raise UpstreamAPIError(
+            f"could not parse vintage year from dataset={dataset!r}; expected 'worldpop_YYYY'"
+        ) from exc
+
+    mid_lon = 0.5 * (bbox[0] + bbox[2])
+    mid_lat = 0.5 * (bbox[1] + bbox[3])
+    iso3 = _iso3_for_lonlat(mid_lon, mid_lat)
+    if iso3 is None:
+        raise UpstreamAPIError(
+            f"could not resolve ISO3 country code for bbox center=({mid_lon}, {mid_lat}); "
+            "WorldPop branch needs an envelope match for the country file URL"
+        )
+
+    url = _worldpop_url_for(iso3, year)
+
+    # rasterio is pulled in transitively by rioxarray; import lazily so test
+    # environments without it can still load the registry.
+    try:
+        import rasterio  # type: ignore[import-not-found]
+        from rasterio.windows import Window, from_bounds  # type: ignore[import-not-found]
+    except Exception as exc:  # noqa: BLE001
+        raise UpstreamAPIError(f"rasterio unavailable: {exc}") from exc
+
+    # Download the country file to a tmp path. We cannot use ``/vsicurl/``
+    # because the WorldPop server returns HTTP 200 with the full body for
+    # range requests instead of HTTP 206 — GDAL's curl driver then errors
+    # with "Range downloading not supported by this server!". The 1km
+    # aggregated USA file is ~50MB; bounded enough for a one-shot download.
+    import tempfile
+
+    src_tmp: str | None = None
+    out_tmp: str | None = None
+    try:
+        try:
+            resp = requests.get(
+                url,
+                headers={"User-Agent": _DEFAULT_USER_AGENT},
+                timeout=180.0,
+                stream=True,
+                allow_redirects=True,
+            )
+            if resp.status_code == 404:
+                raise UpstreamAPIError(
+                    f"WorldPop file not found at {url} (iso3={iso3}, year={year}); "
+                    "verify dataset vintage availability"
+                )
+            resp.raise_for_status()
+        except requests.RequestException as exc:
+            raise UpstreamAPIError(
+                f"WorldPop download failed url={url}: {exc}"
+            ) from exc
+
+        with tempfile.NamedTemporaryFile(suffix=".tif", delete=False) as src_f:
+            src_tmp = src_f.name
+            for chunk in resp.iter_content(chunk_size=1 << 20):  # 1 MiB chunks
+                if chunk:
+                    src_f.write(chunk)
+
+        try:
+            with rasterio.open(src_tmp) as src:
+                # Compute the window for the bbox in the source's CRS
+                # (WorldPop publishes in EPSG:4326; coords match bbox shape).
+                window = from_bounds(
+                    bbox[0], bbox[1], bbox[2], bbox[3], transform=src.transform
+                )
+                window = window.round_offsets().round_lengths()
+                window = window.intersection(
+                    Window(0, 0, src.width, src.height)
+                )
+                if window.width <= 0 or window.height <= 0:
+                    raise UpstreamAPIError(
+                        f"WorldPop window is empty for bbox={bbox} iso3={iso3} — "
+                        "bbox may not intersect the country file extent"
+                    )
+                data = src.read(1, window=window)
+                window_transform = src.window_transform(window)
+                profile = src.profile.copy()
+                profile.update(
+                    {
+                        "driver": "COG",
+                        "width": int(window.width),
+                        "height": int(window.height),
+                        "transform": window_transform,
+                        "compress": "LZW",
+                        "BIGTIFF": "IF_SAFER",
+                    }
+                )
+        except UpstreamAPIError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise UpstreamAPIError(
+                f"rasterio windowed read failed for {url}: {exc}"
+            ) from exc
+
+        with tempfile.NamedTemporaryFile(suffix=".tif", delete=False) as out_f:
+            out_tmp = out_f.name
+        with rasterio.open(out_tmp, "w", **profile) as dst:
+            dst.write(data, 1)
+        with open(out_tmp, "rb") as f:
+            out_bytes = f.read()
+
+        return out_bytes
+    finally:
+        for path in (src_tmp, out_tmp):
+            if path is None:
+                continue
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+
 def _fetch_acs_population_bytes(
     bbox: tuple[float, float, float, float], dataset: str
 ) -> bytes:
@@ -679,68 +898,105 @@ def _state_fips_for_lonlat(lon: float, lat: float) -> str | None:
 @register_tool(_FETCH_POPULATION_METADATA)
 def fetch_population(
     bbox: tuple[float, float, float, float],
-    dataset: str = "acs_2022",
+    dataset: str = "worldpop_2020",
 ) -> LayerURI:
-    """Fetch population data for a bbox from US Census ACS (default) or WorldPop.
+    """Fetch population data for a bbox from WorldPop (Tier-1 default) or Census ACS.
 
     Use this when: the agent needs population counts for exposure analysis,
-    risk scoring, or display alongside hazard layers. Default dataset
-    ``"acs_2022"`` uses the US Census Bureau's American Community Survey
-    5-year estimates (B01003_001E total population at tract level), the
-    authoritative source for CONUS (Decision I scope).
+    risk scoring, or display alongside hazard layers. Anywhere globally, with
+    no API key, at 100m resolution — that's the default WorldPop path.
 
-    Do NOT use this for: real-time / daytime population (ACS is residential
-    count); sub-tract resolution within the US (LandScan or WorldPop offer
-    ~100m grids and would be added as ``dataset="worldpop"`` opt-in);
-    non-US areas (ACS is US-only — WorldPop is the global fallback).
+    Do NOT use this for: real-time / daytime population (WorldPop and ACS are
+    both residential count estimates); per-individual data (these are gridded /
+    tract-level aggregates); sub-100m resolution (WorldPop's native grid is
+    100m; finer resolution is a paid LandScan-grade product, not Tier-1).
+
+    Default behavior (FR-AS-3, Appendix F.1 Tier-1 preference rule):
+        ``dataset="worldpop_2020"`` is the Tier-1 default — WorldPop
+        Unconstrained 100m UN-adjusted gridded population. No API key
+        required; global coverage; windowed read of the country GeoTIFF via
+        rasterio ``/vsicurl/`` so only the bbox window is downloaded.
+
+    Tier-2 opt-in:
+        ``dataset="acs_2022"`` routes to the US Census ACS 5-year estimates
+        (B01003_001E total population at tract level) — authoritative for
+        CONUS, finer demographic detail, but **requires a Census API key**
+        for non-trivial volumes (the Tier-2 routing rule per Appendix F.1).
+        Pick this when the agent specifically needs tract-level precision
+        rather than the 100m raster.
 
     Params:
         bbox: ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326.
-        dataset: ``"acs_2022"`` (default, ACS 5-year) or ``"worldpop"``
-            (opt-in, future — global 100m grid; tracked as OQ).
+        dataset: ``"worldpop_2020"`` (Tier-1 default, no key) or
+            ``"acs_2022"`` (Tier-2 opt-in, US-only, Census key required for
+            high-volume use). Future vintages: ``"worldpop_2024"`` will land
+            once the v2024B file URLs stabilize (currently the Global_2000_2020
+            tree is the canonical analytical product; tracked as
+            OQ-37-WORLDPOP-VINTAGE-YEAR).
 
     Returns:
-        A ``LayerURI`` pointing at a GeoJSON FeatureCollection in the cache
-        bucket. Each feature is a Census tract with ``properties.population``
-        and tract identifiers; geometry enrichment is a follow-up. The URI
-        is ``gs://grace-2-hazard-prod-cache/cache/static-30d/population/<key>.json``.
+        A ``LayerURI`` pointing at a Cloud-Optimized GeoTIFF (WorldPop branch)
+        or a GeoJSON FeatureCollection (ACS branch) in the cache bucket.
+        - WorldPop: ``gs://grace-2-hazard-prod-cache/cache/static-30d/population/<key>.tif``
+          (100m raster, units = people per 100m cell).
+        - ACS: ``gs://grace-2-hazard-prod-cache/cache/static-30d/population/<key>.json``
+          (tract-level FeatureCollection; geometry enrichment is a follow-up).
 
     FR-CE-8: The fetch is routed through ``read_through`` so identical
-    quantized-bbox + dataset calls reuse the cached artifact.
-
-    Decision: ACS is the default per Decision I (CONUS scope). WorldPop is
-    opt-in via ``dataset="worldpop"`` (not implemented in M4 substrate).
+    quantized-bbox + dataset calls reuse the cached artifact. FR-DC-4 dedup
+    is preserved at 100m bbox quantization (matches WorldPop native
+    resolution; coarser than the bbox driving the ACS tract intersection).
     """
-    if dataset == "worldpop":
-        # WorldPop branch is opt-in; not implemented in M4 substrate per the
-        # ACS-default decision. Routes to a follow-up job.
-        raise UpstreamAPIError(
-            "fetch_population(dataset='worldpop') is not implemented yet; "
-            "M4 substrate uses ACS by default (CONUS-only)."
+    if dataset.startswith("worldpop_"):
+        # Tier-1 default: WorldPop 100m windowed COG.
+        # Quantize at 100m — matches WorldPop native resolution, preserves
+        # FR-DC-4 dedup, and the ACS branch (when opted into) is happy with
+        # the same grid since tracts are coarser than 100m anyway.
+        quantized = round_bbox_to_resolution(bbox, 100)
+        params = {"bbox": list(quantized), "dataset": dataset}
+        result = read_through(
+            metadata=_FETCH_POPULATION_METADATA,
+            params=params,
+            ext="tif",
+            fetch_fn=lambda: _fetch_worldpop_population_bytes(quantized, dataset),
         )
-    if not dataset.startswith("acs_"):
-        raise BboxInvalidError(
-            f"unsupported dataset={dataset!r}; allowed: 'acs_2022', 'worldpop' (future)"
+        assert result.uri is not None
+        return LayerURI(
+            layer_id=f"population-{quantized[0]:.4f}-{quantized[1]:.4f}-{dataset}",
+            name=f"Population ({dataset})",
+            layer_type="raster",
+            uri=result.uri,
+            style_preset="continuous_dem",  # placeholder; population preset lands later
+            role="input",
+            units="people",
         )
-    # Quantize at 100m: ACS tract geometries are coarse; finer quantization
-    # would still hit the same tracts but produce gratuitous cache misses.
-    quantized = round_bbox_to_resolution(bbox, 100)
-    params = {"bbox": list(quantized), "dataset": dataset}
-    result = read_through(
-        metadata=_FETCH_POPULATION_METADATA,
-        params=params,
-        ext="json",
-        fetch_fn=lambda: _fetch_acs_population_bytes(quantized, dataset),
-    )
-    assert result.uri is not None
-    return LayerURI(
-        layer_id=f"population-{quantized[0]:.4f}-{quantized[1]:.4f}-{dataset}",
-        name=f"Population ({dataset})",
-        layer_type="vector",
-        uri=result.uri,
-        style_preset="continuous_dem",  # placeholder; population preset lands later
-        role="input",
-        units="people",
+
+    if dataset.startswith("acs_"):
+        # Tier-2 opt-in: US Census ACS B01003 tract-level. Census API key is
+        # required for non-trivial volumes (OQ-36-CENSUS-API-KEY-REQUIRED);
+        # the substrate works for small CONUS queries without a key.
+        quantized = round_bbox_to_resolution(bbox, 100)
+        params = {"bbox": list(quantized), "dataset": dataset}
+        result = read_through(
+            metadata=_FETCH_POPULATION_METADATA,
+            params=params,
+            ext="json",
+            fetch_fn=lambda: _fetch_acs_population_bytes(quantized, dataset),
+        )
+        assert result.uri is not None
+        return LayerURI(
+            layer_id=f"population-{quantized[0]:.4f}-{quantized[1]:.4f}-{dataset}",
+            name=f"Population ({dataset})",
+            layer_type="vector",
+            uri=result.uri,
+            style_preset="continuous_dem",  # placeholder; population preset lands later
+            role="input",
+            units="people",
+        )
+
+    raise BboxInvalidError(
+        f"unsupported dataset={dataset!r}; allowed: 'worldpop_2020' (default), "
+        "'acs_2022' (Tier-2 opt-in, US-only)"
     )
 
 

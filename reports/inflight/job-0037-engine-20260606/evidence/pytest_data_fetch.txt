@@ -1,0 +1,35 @@
+============================= test session starts ==============================
+platform linux -- Python 3.13.5, pytest-9.0.3, pluggy-1.6.0 -- /home/nate/Documents/GRACE-2/.venv-agent/bin/python
+cachedir: .pytest_cache
+rootdir: /home/nate/Documents/GRACE-2/services/agent
+configfile: pyproject.toml
+plugins: anyio-4.13.0, asyncio-1.4.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 24 items
+
+services/agent/tests/test_data_fetch.py::test_fetch_dem_is_registered_with_static_30d PASSED [  4%]
+services/agent/tests/test_data_fetch.py::test_fetch_buildings_is_registered_with_static_30d PASSED [  8%]
+services/agent/tests/test_data_fetch.py::test_fetch_population_is_registered_with_static_30d PASSED [ 12%]
+services/agent/tests/test_data_fetch.py::test_geocode_location_is_registered_with_dynamic_1h PASSED [ 16%]
+services/agent/tests/test_data_fetch.py::test_registry_contains_six_tools_after_eager_import PASSED [ 20%]
+services/agent/tests/test_data_fetch.py::test_round_bbox_to_resolution_is_deterministic PASSED [ 25%]
+services/agent/tests/test_data_fetch.py::test_round_bbox_to_resolution_collapses_floating_point_jitter PASSED [ 29%]
+services/agent/tests/test_data_fetch.py::test_round_bbox_to_resolution_envelopes_input PASSED [ 33%]
+services/agent/tests/test_data_fetch.py::test_round_bbox_to_resolution_rejects_degenerate_bbox PASSED [ 37%]
+services/agent/tests/test_data_fetch.py::test_round_bbox_to_resolution_rejects_out_of_range_lat PASSED [ 41%]
+services/agent/tests/test_data_fetch.py::test_fetch_dem_happy_path_writes_through_cache PASSED [ 45%]
+services/agent/tests/test_data_fetch.py::test_fetch_dem_rejects_oversized_bbox PASSED [ 50%]
+services/agent/tests/test_data_fetch.py::test_fetch_dem_upstream_failure_reraises PASSED [ 54%]
+services/agent/tests/test_data_fetch.py::test_fetch_buildings_happy_path PASSED [ 58%]
+services/agent/tests/test_data_fetch.py::test_fetch_buildings_rejects_unknown_source PASSED [ 62%]
+services/agent/tests/test_data_fetch.py::test_fetch_buildings_osm_branch_not_implemented PASSED [ 66%]
+services/agent/tests/test_data_fetch.py::test_fetch_population_acs_opt_in_routes_to_acs_branch PASSED [ 70%]
+services/agent/tests/test_data_fetch.py::test_fetch_population_default_routes_to_worldpop_not_acs PASSED [ 75%]
+services/agent/tests/test_data_fetch.py::test_fetch_population_worldpop_writes_tif_cog_to_cache PASSED [ 79%]
+services/agent/tests/test_data_fetch.py::test_fetch_population_rejects_unknown_dataset PASSED [ 83%]
+services/agent/tests/test_data_fetch.py::test_geocode_location_happy_path PASSED [ 87%]
+services/agent/tests/test_data_fetch.py::test_geocode_location_rejects_empty_query PASSED [ 91%]
+services/agent/tests/test_data_fetch.py::test_set_mcp_client_unblocks_mongo_query_body PASSED [ 95%]
+services/agent/tests/test_data_fetch.py::test_main_bind_mcp_client_helper_wires_through PASSED [100%]
+
+============================== 24 passed in 0.08s ==============================

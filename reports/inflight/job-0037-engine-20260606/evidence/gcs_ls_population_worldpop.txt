@@ -1,0 +1,16 @@
+gs://grace-2-hazard-prod-cache/cache/static-30d/population/b195dff80ae34eb50d24ba0d4dc855f3.tif:
+  Creation Time:               2026-06-07T06:51:16Z
+  Update Time:                 2026-06-07T06:51:16Z
+  Storage Class Update Time:   2026-06-07T06:51:16Z
+  Storage Class:               STANDARD
+  Cache-Control:               public, max-age=2592000
+  Content-Length:              2556
+  Content-Type:                image/tiff
+  Custom-Time:                 2026-06-07T06:51:16Z
+  Hash (CRC32C):               nLFn/w==
+  Hash (MD5):                  AbpA8R0H0o4Q45Q0QiR72w==
+  ETag:                        CJjqmZDF9JQDEAE=
+  Generation:                  1780815076160792
+  Metageneration:              1
+  ACL:                         []
+TOTAL: 1 objects, 2556 bytes (2.50kiB)

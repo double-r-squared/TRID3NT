@@ -1,0 +1,17 @@
+2026-06-06 23:51:15,987 WARNING rasterio._env CPLE_NotSupported in driver COG does not support creation option BLOCKXSIZE
+2026-06-06 23:51:15,987 WARNING rasterio._env CPLE_NotSupported in driver COG does not support creation option BLOCKYSIZE
+2026-06-06 23:51:15,987 WARNING rasterio._env CPLE_NotSupported in driver COG does not support creation option TILED
+2026-06-06 23:51:16,193 INFO grace2_agent.tools.cache read_through miss-write tool=fetch_population key=b195dff80ae34eb50d24ba0d4dc855f3 bytes=2556 customTime=2026-06-07T06:51:16.033982+00:00
+
+=== Live fetch_population((-81.88, 26.62, -81.85, 26.65)) — Tier-1 default (WorldPop) ===
+
+Returned LayerURI after 78.7s:
+  layer_id    = population--81.8809-26.6197-worldpop_2020
+  name        = Population (worldpop_2020)
+  layer_type  = raster
+  uri         = gs://grace-2-hazard-prod-cache/cache/static-30d/population/b195dff80ae34eb50d24ba0d4dc855f3.tif
+  style_preset = continuous_dem
+  role        = input
+  units       = people
+
+Live WorldPop fetch — PASS

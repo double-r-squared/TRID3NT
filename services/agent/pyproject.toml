@@ -26,6 +26,15 @@ dependencies = [
     "py3dep>=0.19,<0.20",
     "rioxarray>=0.18,<1",
     "requests>=2.32,<3",
+    # job-0037 sprint-07 Stage A: WorldPop default flip for fetch_population.
+    # pystac-client is the canonical STAC catalog reader used by future
+    # fetch_landcover (NLCD / WorldCover) too. WorldPop itself is served via
+    # a direct REST API (https://www.worldpop.org/rest/data/pop/...) rather
+    # than a STAC catalog (the kickoff-recommended PC ``worldpop-100m``
+    # collection does not exist on Planetary Computer at this writing — see
+    # OQ-37-WORLDPOP-STAC-ENDPOINT). We still pin pystac-client now so the
+    # dep set is stable for sprint-07's downstream fetcher jobs (job-0039).
+    "pystac-client>=0.8,<1",
     "websockets>=13,<16",
     "pymongo>=4.8,<5",
     "pydantic>=2,<3",

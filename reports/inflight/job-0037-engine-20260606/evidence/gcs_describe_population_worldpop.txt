@@ -1,0 +1,16 @@
+bucket: grace-2-hazard-prod-cache
+cache_control: public, max-age=2592000
+content_type: image/tiff
+crc32c_hash: nLFn/w==
+creation_time: 2026-06-07T06:51:16+0000
+custom_time: 2026-06-07T06:51:16+0000
+etag: CJjqmZDF9JQDEAE=
+generation: '1780815076160792'
+md5_hash: AbpA8R0H0o4Q45Q0QiR72w==
+metageneration: 1
+name: cache/static-30d/population/b195dff80ae34eb50d24ba0d4dc855f3.tif
+size: 2556
+storage_class: STANDARD
+storage_class_update_time: 2026-06-07T06:51:16+0000
+storage_url: gs://grace-2-hazard-prod-cache/cache/static-30d/population/b195dff80ae34eb50d24ba0d4dc855f3.tif#1780815076160792
+update_time: 2026-06-07T06:51:16+0000

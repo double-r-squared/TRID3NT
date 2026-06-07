@@ -307,7 +307,13 @@ def test_fetch_buildings_osm_branch_not_implemented():
 # ---------------------------------------------------------------------------
 
 
-def test_fetch_population_acs_default_happy_path(monkeypatch):
+def test_fetch_population_acs_opt_in_routes_to_acs_branch(monkeypatch):
+    """Tier-2 opt-in: explicit ``dataset="acs_2022"`` still routes to ACS.
+
+    Appendix F.1 makes WorldPop the Tier-1 default (see the no-dataset-arg
+    test below), but the existing ACS path stays callable for tract-level
+    precision queries — that's the Tier-2 routing rule.
+    """
     fake_storage = FakeStorageClient()
     from grace2_agent.tools import cache as cache_mod
 
@@ -315,6 +321,15 @@ def test_fetch_population_acs_default_happy_path(monkeypatch):
         data_fetch,
         "_fetch_acs_population_bytes",
         lambda bbox, dataset: b'{"type":"FeatureCollection","features":[]}',
+    )
+    # Guard: WorldPop branch must not be touched on this code path.
+    def _worldpop_should_not_be_called(_bbox, _dataset):  # pragma: no cover
+        raise AssertionError(
+            "WorldPop branch should not be invoked when dataset='acs_2022' is passed"
+        )
+
+    monkeypatch.setattr(
+        data_fetch, "_fetch_worldpop_population_bytes", _worldpop_should_not_be_called
     )
     monkeypatch.setattr(
         data_fetch,
@@ -333,10 +348,92 @@ def test_fetch_population_acs_default_happy_path(monkeypatch):
     assert layer.uri.endswith(".json")
 
 
-def test_fetch_population_worldpop_branch_not_implemented():
-    """WorldPop is opt-in / future; ACS is the M4 default per Decision I."""
-    with pytest.raises(UpstreamAPIError):
-        fetch_population(FORT_MYERS_BBOX, dataset="worldpop")
+def test_fetch_population_default_routes_to_worldpop_not_acs(monkeypatch):
+    """Appendix F.1 (v0.3.16): ``fetch_population(bbox)`` defaults to WorldPop.
+
+    The default-arg path MUST hit the WorldPop branch and MUST NOT hit the
+    ACS branch (a Tier-2 source that requires a Census API key for non-
+    trivial volume — Tier-1 preference rule says no-key defaults).
+    """
+    fake_storage = FakeStorageClient()
+    from grace2_agent.tools import cache as cache_mod
+
+    worldpop_calls: list[tuple[Any, str]] = []
+
+    def _capturing_worldpop(bbox, dataset):
+        worldpop_calls.append((bbox, dataset))
+        return b"FAKE_WORLDPOP_COG_BYTES"
+
+    monkeypatch.setattr(
+        data_fetch, "_fetch_worldpop_population_bytes", _capturing_worldpop
+    )
+    # Guard: ACS branch must not be touched on the default path.
+    def _acs_should_not_be_called(_bbox, _dataset):  # pragma: no cover
+        raise AssertionError(
+            "ACS branch (Tier-2, key-required) must not be invoked by the default "
+            "fetch_population(bbox) call — Appendix F.1 says Tier-1 (WorldPop) is "
+            "the default."
+        )
+
+    monkeypatch.setattr(
+        data_fetch, "_fetch_acs_population_bytes", _acs_should_not_be_called
+    )
+    monkeypatch.setattr(
+        data_fetch,
+        "read_through",
+        lambda *a, **kw: cache_mod.read_through(
+            *a, storage_client=fake_storage, now=PINNED_NOW, **kw
+        ),
+    )
+
+    layer = fetch_population(FORT_MYERS_BBOX)  # no dataset= arg
+    assert worldpop_calls, "WorldPop fetcher should have been called for default path"
+    assert worldpop_calls[0][1].startswith("worldpop_"), worldpop_calls
+    assert layer.layer_type == "raster"  # WorldPop is a raster COG, not a GeoJSON FC
+    assert layer.units == "people"
+    assert layer.uri.startswith(
+        "gs://grace-2-hazard-prod-cache/cache/static-30d/population/"
+    )
+    assert layer.uri.endswith(".tif")
+
+
+def test_fetch_population_worldpop_writes_tif_cog_to_cache(monkeypatch):
+    """The WorldPop default branch writes a ``.tif`` COG to the population cache prefix."""
+    fake_storage = FakeStorageClient()
+    from grace2_agent.tools import cache as cache_mod
+
+    monkeypatch.setattr(
+        data_fetch,
+        "_fetch_worldpop_population_bytes",
+        lambda bbox, dataset: b"FAKE_WORLDPOP_COG_BYTES",
+    )
+    monkeypatch.setattr(
+        data_fetch,
+        "read_through",
+        lambda *a, **kw: cache_mod.read_through(
+            *a, storage_client=fake_storage, now=PINNED_NOW, **kw
+        ),
+    )
+
+    layer = fetch_population(FORT_MYERS_BBOX, dataset="worldpop_2020")
+    # Cache landed at .tif under the population prefix.
+    paths = list(fake_storage.store.keys())
+    assert len(paths) == 1
+    assert paths[0].startswith("cache/static-30d/population/")
+    assert paths[0].endswith(".tif")
+    assert fake_storage.store[paths[0]] == b"FAKE_WORLDPOP_COG_BYTES"
+    # customTime set per FR-DC-3.
+    blob = fake_storage._bucket.blobs[-1]
+    assert blob.custom_time is not None
+    # LayerURI return shape is raster + meters/people.
+    assert layer.layer_type == "raster"
+    assert layer.uri.endswith(".tif")
+
+
+def test_fetch_population_rejects_unknown_dataset():
+    """A dataset that's neither WorldPop nor ACS is rejected as BboxInvalidError."""
+    with pytest.raises(BboxInvalidError):
+        fetch_population(FORT_MYERS_BBOX, dataset="landscan")
 
 
 # ---------------------------------------------------------------------------
