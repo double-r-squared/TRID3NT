@@ -1,0 +1,12 @@
+{
+  "_about": "Pre-computed expected envelope for the Fort Myers, FL Nominatim resolution. Bbox values are SRS-stable (driven by OpenStreetMap relation 118879). Captured from job-0033 live-evidence (geocode_fort_myers.txt).",
+  "canonical_name_prefix": "Fort Myers",
+  "canonical_name_contains_all": ["Fort Myers", "Florida"],
+  "expected_bbox": [-81.9126, 26.5476, -81.7511, 26.6892],
+  "bbox_tolerance_deg": 0.05,
+  "latitude_approx": 26.6406,
+  "longitude_approx": -81.8723,
+  "demo_query_bbox": [-81.88, 26.62, -81.85, 26.65],
+  "demo_resolution_m": 30,
+  "demo_max_elevation_m": 3.0
+}

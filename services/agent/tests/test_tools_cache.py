@@ -360,3 +360,189 @@ def test_read_through_fetch_failure_reraises_without_sentinel(fake_gcs):
         )
     # Nothing was written.
     assert fake_gcs.store == {}
+
+
+# ---------------------------------------------------------------------------
+# OQ-33-CACHE-CUSTOMTIME-TYPE-BUG regression (job-0036)
+# ---------------------------------------------------------------------------
+#
+# Bug class: "type-fidelity of cache-side blob attributes"
+#
+# Until the orchestrator hotfix (commit ca48256), the cache shim assigned
+# ``blob.custom_time = fetched_at.isoformat()`` — a STRING. The unit-suite
+# FakeStorageClient defined above happily accepted that string (its FakeBlob
+# is just attribute assignment). But the REAL google-cloud-storage SDK's
+# ``Blob.custom_time`` setter calls ``_datetime_to_rfc3339(value)`` which in
+# turn calls ``value.strftime(...)`` — raising
+# ``AttributeError: 'str' object has no attribute 'strftime'`` against the
+# live bucket.
+#
+# job-0033's live-evidence runs surfaced this by monkey-patching the setter
+# to parse strings back to datetimes; the orchestrator's hotfix in
+# ``cache.py:337-338`` dropped the ``.isoformat()`` call so the assignment
+# now passes a ``datetime`` instance directly.
+#
+# The regression test below uses a HIGHER-FIDELITY fake that mirrors the
+# real SDK's setter contract: the assignment immediately runs ``strftime``
+# on the value, raising on anything but a real ``datetime``. This guards
+# against the FakeStorageClient-accepts-anything failure mode of the
+# previous fake — the original tests would have stayed green even if the
+# bug had reappeared.
+# ---------------------------------------------------------------------------
+
+
+class StrictCustomTimeBlob:
+    """FakeBlob that type-checks ``custom_time`` like the real SDK does.
+
+    Mirrors ``google.cloud.storage.Blob.custom_time`` setter behavior:
+    ``_datetime_to_rfc3339(value)`` -> ``value.strftime("%Y-%m-%dT%H:%M:%S.%fZ")``.
+    Anything that doesn't have ``strftime`` raises ``AttributeError`` at
+    assignment time, exactly as the live SDK does against the real bucket.
+    """
+
+    def __init__(self, store: dict[str, bytes], path: str) -> None:
+        self._store = store
+        self._path = path
+        self._custom_time_rfc3339: str | None = None
+        self._custom_time_value: Any = None
+        self.cache_control: str | None = None
+        self.content_type: str | None = None
+
+    @property
+    def custom_time(self) -> Any:
+        return self._custom_time_value
+
+    @custom_time.setter
+    def custom_time(self, value: Any) -> None:
+        if value is None:
+            self._custom_time_value = None
+            self._custom_time_rfc3339 = None
+            return
+        # This mirrors google.cloud._helpers._datetime_to_rfc3339:
+        #   stamp = value.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        # A string lacks ``strftime`` and raises here — exactly like the SDK.
+        self._custom_time_rfc3339 = value.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        self._custom_time_value = value
+
+    def exists(self) -> bool:
+        return self._path in self._store
+
+    def download_as_bytes(self) -> bytes:
+        return self._store[self._path]
+
+    def upload_from_string(
+        self, data: bytes | str, content_type: str | None = None
+    ) -> None:
+        if isinstance(data, str):
+            data = data.encode("utf-8")
+        self._store[self._path] = data
+        self.content_type = content_type
+
+
+class StrictCustomTimeBucket:
+    def __init__(self, name: str, store: dict[str, bytes]) -> None:
+        self.name = name
+        self._store = store
+        self.last_blob: StrictCustomTimeBlob | None = None
+
+    def blob(self, path: str) -> StrictCustomTimeBlob:
+        b = StrictCustomTimeBlob(self._store, path)
+        self.last_blob = b
+        return b
+
+
+class StrictCustomTimeStorageClient:
+    """Higher-fidelity GCS fake for the OQ-33 regression test.
+
+    The standard ``FakeStorageClient`` above lets arbitrary values land on
+    ``blob.custom_time``; this client mirrors the live SDK's strict
+    ``datetime``-only contract so the test fails if anyone reverts the
+    hotfix and passes a string again.
+    """
+
+    def __init__(self) -> None:
+        self.store: dict[str, bytes] = {}
+        self._buckets: dict[str, StrictCustomTimeBucket] = {}
+
+    def bucket(self, name: str) -> StrictCustomTimeBucket:
+        if name not in self._buckets:
+            self._buckets[name] = StrictCustomTimeBucket(name, self.store)
+        return self._buckets[name]
+
+
+def test_oq33_customtime_is_datetime_not_isoformat_string_regression():
+    """Regression test for OQ-33-CACHE-CUSTOMTIME-TYPE-BUG.
+
+    The bug: ``cache.py`` previously assigned
+    ``blob.custom_time = fetched_at.isoformat()`` (a str). The real
+    ``google.cloud.storage`` SDK rejects this with
+    ``AttributeError: 'str' object has no attribute 'strftime'`` because the
+    setter pipes the value through ``strftime`` to format it for the JSON
+    API. The orchestrator hotfix (commit ca48256) drops the ``.isoformat()``
+    call so the assignment receives a ``datetime`` instance directly.
+
+    Layer attribution on failure: cache shim (services/agent/src/grace2_agent/
+    tools/cache.py:337-338). If this test fails after a future cache.py
+    change, the offending line is the ``blob.custom_time = ...`` assignment.
+
+    The higher-fidelity GCS fake (``StrictCustomTimeBlob``) mirrors the real
+    SDK's setter contract — assignment calls ``strftime`` immediately. This
+    catches the regression class the original ``FakeStorageClient`` missed:
+    a fake that accepts anything tests the fake, not the system.
+    """
+    strict_gcs = StrictCustomTimeStorageClient()
+    md = _cacheable_md()
+    pinned = datetime(2026, 6, 7, 3, 0, 0, tzinfo=timezone.utc)
+
+    def fetch_fn() -> bytes:
+        return b"regression-payload"
+
+    # Pre-condition: this SDK fake would reject a string at assignment time.
+    # Verify the fake itself is strict so the test is meaningful.
+    probe = strict_gcs.bucket("probe").blob("p")
+    with pytest.raises(AttributeError, match="strftime"):
+        probe.custom_time = "2026-06-07T03:00:00+00:00"  # the bug's value
+
+    # Now: run through the cache shim against the strict fake. If
+    # ``cache.py`` ever reverts to ``.isoformat()`` (or assigns any non-
+    # datetime to ``blob.custom_time``), this call raises ``AttributeError``.
+    result = read_through(
+        metadata=md,
+        params={"bbox": [0, 0, 1, 1]},
+        ext="tif",
+        fetch_fn=fetch_fn,
+        storage_client=strict_gcs,
+        now=pinned,
+    )
+
+    assert result.hit is False, (
+        "layer=cache shim: write-on-miss path did not execute; "
+        "OQ-33 regression test cannot exercise blob.custom_time setter."
+    )
+    bucket = strict_gcs.bucket("grace-2-hazard-prod-cache")
+    assert bucket.last_blob is not None, (
+        "layer=test fake: no blob recorded; cache shim did not call "
+        "bucket_obj.blob(path)."
+    )
+    # The hotfix preserved the assigned VALUE (a datetime), not its string
+    # form. Assert both the type AND the value here so a partial reversion
+    # (e.g. switching to a `date` instead of a `datetime`) also fails.
+    assigned = bucket.last_blob._custom_time_value
+    assert isinstance(assigned, datetime), (
+        f"layer=cache shim (cache.py:337-338, OQ-33 regression): "
+        f"blob.custom_time must be assigned a datetime instance, not "
+        f"{type(assigned).__name__}. Real google.cloud.storage rejects "
+        f"non-datetime values with AttributeError when piping through "
+        f"strftime. Got: {assigned!r}"
+    )
+    assert assigned == pinned, (
+        f"layer=cache shim: blob.custom_time should equal the now= pin "
+        f"({pinned!r}); got {assigned!r}."
+    )
+    # And the RFC3339 form materialized through strftime — proves the value
+    # is real-SDK-shaped, not just any object with a strftime method.
+    assert bucket.last_blob._custom_time_rfc3339 == "2026-06-07T03:00:00.000000Z", (
+        f"layer=cache shim: rfc3339 materialization of assigned customTime "
+        f"diverged from expected; got "
+        f"{bucket.last_blob._custom_time_rfc3339!r}."
+    )

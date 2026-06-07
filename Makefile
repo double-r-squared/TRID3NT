@@ -32,7 +32,7 @@ ATLAS_PROJECT_ID ?= 6a234700a0e1295958d10cf9
 
 .DEFAULT_GOAL := help
 
-.PHONY: help run-agent run-web test test-m2 test-m3 test-all \
+.PHONY: help run-agent run-web test test-m2 test-m3 test-m4 test-all \
         playwright-install screenshot ui-tour \
         tofu-init tofu-plan tofu-apply tofu-bootstrap \
         atlas-allowlist-me secret-srv-show \
@@ -47,7 +47,8 @@ help:
 	@echo "  test                run the M1 acceptance + conformance suites (job-0017)"
 	@echo "  test-m2             run the M2 acceptance suite (job-0023; live QGIS Server + Cloud Run Job)"
 	@echo "  test-m3             run the M3 acceptance suite (job-0028; live Vite + Playwright + QGIS WMS)"
-	@echo "  test-all            run M1 + M2 + M3 (sprint-05 capstone)"
+	@echo "  test-m4             run the M4 acceptance suite (job-0036; live agent + GCS cache + Nominatim + qgis_process)"
+	@echo "  test-all            run M1 + M2 + M3 + M4 (sprint-06 capstone)"
 	@echo ""
 	@echo "  playwright-install  download Chromium + Firefox to ~/.cache/ms-playwright (closes job-0016 OQ-W-3)"
 	@echo "  screenshot          one-shot capture; pass URL=, ROUTE=, STATE=, OUT=, BROWSER=, WAIT=, VIEWPORT="
@@ -368,11 +369,32 @@ test-m3:
 	fi
 	$(TEST_VENV)/bin/python -m pytest tests/m3 -v --tb=short
 
-# test-all — run the full M1 + M2 + M3 stack (sprint-05 capstone target).
+# test-m4 (job-0036) — M4 acceptance: live agent + GCS cache bucket +
+# Nominatim + qgis_process. Opt-in via the `live_m4` marker so the default
+# `make test` collection does NOT pick them up (these touch the live cache
+# bucket and public APIs). Re-uses the .venv-agent for pytest + the M1
+# agent_subprocess fixture for driving the real grace2-agent WS server.
+#
+# The Fort Myers demo (test_fort_myers_demo.py) qualifies the qgis_process
+# leg automatically when no local binary is on PATH (PROJECT_STATE env
+# facts: the grace2 conda env was Mac-local on the original box). The
+# tool-registry + cache-substrate legs run live regardless.
+test-m4:
+	@if [ ! -x $(TEST_VENV)/bin/python ]; then \
+	  echo "test venv missing or stale ($(TEST_VENV)). Bootstrap:"; \
+	  echo "  virtualenv -p python3 $(TEST_VENV)"; \
+	  echo "  $(TEST_VENV)/bin/pip install -e packages/contracts -e services/agent"; \
+	  echo "  $(TEST_VENV)/bin/pip install pytest pytest-asyncio websockets"; \
+	  exit 1; \
+	fi
+	$(TEST_VENV)/bin/python -m pytest tests/m4 -v -m live_m4 --tb=short
+
+# test-all — run the full M1 + M2 + M3 + M4 stack (sprint-06 capstone target).
 # M1 = 91 contracts + 23 acceptance; M2 = 7 acceptance; M3 = 5-8 unique
-# functions parametrized cross-browser (~7-10 invocations). Aggregate
-# unique-function target 126-129; invocation count 128-131.
-test-all: test test-m2 test-m3
+# functions parametrized cross-browser (~7-10 invocations); M4 = Fort Myers
+# end-to-end demo + OQ-T-28-SIM-WS-BOUNDARY closure proof (2 tests). Aggregate
+# unique-function target 128-131+M4; invocation count 130-133+M4.
+test-all: test test-m2 test-m3 test-m4
 
 # --- SRS regeneration (docs/srs/* split → docs/SRS_v0.3.md monolith) -------
 #

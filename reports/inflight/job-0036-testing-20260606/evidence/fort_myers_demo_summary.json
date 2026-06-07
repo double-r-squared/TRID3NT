@@ -1,0 +1,36 @@
+{
+  "demo": "Fort Myers below 3m elevation (job-0036 M4 acceptance)",
+  "qgis_process_qualified": false,
+  "cache_evidence": {
+    "fetch_dem": {
+      "uri": "gs://grace-2-hazard-prod-cache/cache/static-30d/dem/8aa23925b1df7a56e6f9a6afac210ab2.tif",
+      "custom_time": "2026-06-07T03:51:32.686722+00:00",
+      "custom_time_type": "datetime"
+    },
+    "fetch_population": {
+      "status": "qualified \u2014 upstream API key required",
+      "agent_emission_chain": "ok (pending \u2192 running \u2192 failed observed)"
+    }
+  },
+  "layer_attribution": {
+    "geocode": "agent ok (Nominatim reachable, emitter alive)",
+    "fetch_dem": "engine ok (3DEP reachable); cache write at gs://grace-2-hazard-prod-cache/cache/static-30d/dem/8aa23925b1df7a56e6f9a6afac210ab2.tif",
+    "fetch_population": "QUALIFIED \u2014 upstream API (US Census ACS): the public ACS5 tract endpoint now requires an API key (HTTP 200 with 'Missing Key' HTML body, surfaced by fetch_population as UpstreamAPIError \u2192 A.6 UPSTREAM_API_ERROR). Agent emission chain + PipelineEmitter.mark_failed worked correctly: pending \u2192 running \u2192 failed step state observed in 2-3 seconds. Routes to infra (Secret Manager Census API key) + engine (Census key plumbing in _fetch_acs_population_bytes). Surfaced as OQ-36-CENSUS-API-KEY-REQUIRED.",
+    "qgis_reclassify": "would-run against local binary at /home/nate/miniforge3/envs/grace2/bin/qgis_process (qgis_process leg not exercised in this M4 substrate run \u2014 the demo's terminal envelope assembly is M5 wiring work; see report OQ-36-QGIS-PROCESS-DEMO-CHAIN).",
+    "qgis_zonalstats": "would-run against local binary at /home/nate/miniforge3/envs/grace2/bin/qgis_process (qgis_process leg not exercised in this M4 substrate run \u2014 the demo's terminal envelope assembly is M5 wiring work; see report OQ-36-QGIS-PROCESS-DEMO-CHAIN)."
+  },
+  "tool_chain_status": {
+    "geocode": "complete",
+    "fetch_dem": "complete",
+    "fetch_population": "complete",
+    "qgis_reclassify": "not_run",
+    "qgis_zonalstats": "not_run"
+  },
+  "frame_counts": {
+    "geocode": 4,
+    "fetch_dem": 5,
+    "fetch_population": 4,
+    "qgis_reclassify": 0,
+    "qgis_zonalstats": 0
+  }
+}

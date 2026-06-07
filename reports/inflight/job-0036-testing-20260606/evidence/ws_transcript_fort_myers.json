@@ -1,0 +1,271 @@
+{
+  "geocode": [
+    {
+      "type": "session-state",
+      "id": "01KTG4VAQV32N2Y4R5P5KCD0PN",
+      "ts": "2026-06-07T04:18:25.147780Z",
+      "session_id": "01KTG4VAPKCX9ACYFEDMHE9K7C",
+      "payload": {
+        "chat_history": [],
+        "loaded_layers": [],
+        "pipeline_history": [],
+        "current_pipeline": null,
+        "map_view": null
+      }
+    },
+    {
+      "type": "pipeline-state",
+      "id": "01KTG4VAQYENR3X1K5CZ35C58R",
+      "ts": "2026-06-07T04:18:25.150158Z",
+      "session_id": "01KTG4VAPKCX9ACYFEDMHE9K7C",
+      "payload": {
+        "pipeline_id": "01KTG4VAQXEP2ATH68ZNKWZ5EE",
+        "steps": [
+          {
+            "step_id": "01KTG4VAQXEP2ATH68ZNKWZ5EF",
+            "name": "geocode_location",
+            "tool_name": "geocode_location",
+            "state": "pending",
+            "started_at": null,
+            "completed_at": null,
+            "progress_percent": null
+          }
+        ]
+      }
+    },
+    {
+      "type": "pipeline-state",
+      "id": "01KTG4VAQYENR3X1K5CZ35C58S",
+      "ts": "2026-06-07T04:18:25.150804Z",
+      "session_id": "01KTG4VAPKCX9ACYFEDMHE9K7C",
+      "payload": {
+        "pipeline_id": "01KTG4VAQXEP2ATH68ZNKWZ5EE",
+        "steps": [
+          {
+            "step_id": "01KTG4VAQXEP2ATH68ZNKWZ5EF",
+            "name": "geocode_location",
+            "tool_name": "geocode_location",
+            "state": "running",
+            "started_at": "2026-06-07T04:18:25.150593Z",
+            "completed_at": null,
+            "progress_percent": null
+          }
+        ]
+      }
+    },
+    {
+      "type": "pipeline-state",
+      "id": "01KTG4VC7SBACF668P56GM8C1B",
+      "ts": "2026-06-07T04:18:26.681155Z",
+      "session_id": "01KTG4VAPKCX9ACYFEDMHE9K7C",
+      "payload": {
+        "pipeline_id": "01KTG4VAQXEP2ATH68ZNKWZ5EE",
+        "steps": [
+          {
+            "step_id": "01KTG4VAQXEP2ATH68ZNKWZ5EF",
+            "name": "geocode_location",
+            "tool_name": "geocode_location",
+            "state": "complete",
+            "started_at": "2026-06-07T04:18:25.150593Z",
+            "completed_at": "2026-06-07T04:18:26.680895Z",
+            "progress_percent": null
+          }
+        ]
+      }
+    }
+  ],
+  "fetch_dem": [
+    {
+      "type": "session-state",
+      "id": "01KTG4VC80VFZQ0JJ918QXB02M",
+      "ts": "2026-06-07T04:18:26.688671Z",
+      "session_id": "01KTG4VAPKCX9ACYFEDMHE9K7C",
+      "payload": {
+        "chat_history": [],
+        "loaded_layers": [],
+        "pipeline_history": [],
+        "current_pipeline": null,
+        "map_view": null
+      }
+    },
+    {
+      "type": "pipeline-state",
+      "id": "01KTG4VC827TXQXFDSM212AQVA",
+      "ts": "2026-06-07T04:18:26.690622Z",
+      "session_id": "01KTG4VAPKCX9ACYFEDMHE9K7C",
+      "payload": {
+        "pipeline_id": "01KTG4VC827TXQXFDSM212AQV8",
+        "steps": [
+          {
+            "step_id": "01KTG4VC827TXQXFDSM212AQV9",
+            "name": "fetch_dem",
+            "tool_name": "fetch_dem",
+            "state": "pending",
+            "started_at": null,
+            "completed_at": null,
+            "progress_percent": null
+          }
+        ]
+      }
+    },
+    {
+      "type": "pipeline-state",
+      "id": "01KTG4VC83WZAMPB1M8NCCK3BM",
+      "ts": "2026-06-07T04:18:26.691180Z",
+      "session_id": "01KTG4VAPKCX9ACYFEDMHE9K7C",
+      "payload": {
+        "pipeline_id": "01KTG4VC827TXQXFDSM212AQV8",
+        "steps": [
+          {
+            "step_id": "01KTG4VC827TXQXFDSM212AQV9",
+            "name": "fetch_dem",
+            "tool_name": "fetch_dem",
+            "state": "running",
+            "started_at": "2026-06-07T04:18:26.691003Z",
+            "completed_at": null,
+            "progress_percent": null
+          }
+        ]
+      }
+    },
+    {
+      "type": "session-state",
+      "id": "01KTG4VDE44AS10NTT04PZFDNB",
+      "ts": "2026-06-07T04:18:27.908078Z",
+      "session_id": "01KTG4VAPKCX9ACYFEDMHE9K7C",
+      "payload": {
+        "chat_history": [],
+        "loaded_layers": [
+          {
+            "layer_id": "dem--81.8802-26.6197-30m",
+            "name": "USGS 3DEP DEM (30m)",
+            "layer_type": "raster",
+            "uri": "gs://grace-2-hazard-prod-cache/cache/static-30d/dem/8aa23925b1df7a56e6f9a6afac210ab2.tif",
+            "style_preset": "continuous_dem",
+            "visible": true,
+            "role": "input",
+            "temporal": false
+          }
+        ],
+        "pipeline_history": [],
+        "current_pipeline": {
+          "pipeline_id": "01KTG4VC827TXQXFDSM212AQV8",
+          "started_at": "2026-06-07T04:18:26.690371Z",
+          "completed_at": null,
+          "final_state": null,
+          "steps": [
+            {
+              "step_id": "01KTG4VC827TXQXFDSM212AQV9",
+              "name": "fetch_dem",
+              "tool_name": "fetch_dem",
+              "state": "running",
+              "started_at": "2026-06-07T04:18:26.691003Z",
+              "completed_at": null,
+              "progress_percent": null,
+              "error_code": null,
+              "error_message": null
+            }
+          ]
+        },
+        "map_view": null
+      }
+    },
+    {
+      "type": "pipeline-state",
+      "id": "01KTG4VDE44AS10NTT04PZFDNC",
+      "ts": "2026-06-07T04:18:27.908828Z",
+      "session_id": "01KTG4VAPKCX9ACYFEDMHE9K7C",
+      "payload": {
+        "pipeline_id": "01KTG4VC827TXQXFDSM212AQV8",
+        "steps": [
+          {
+            "step_id": "01KTG4VC827TXQXFDSM212AQV9",
+            "name": "fetch_dem",
+            "tool_name": "fetch_dem",
+            "state": "complete",
+            "started_at": "2026-06-07T04:18:26.691003Z",
+            "completed_at": "2026-06-07T04:18:27.908630Z",
+            "progress_percent": null
+          }
+        ]
+      }
+    }
+  ],
+  "fetch_population": [
+    {
+      "type": "session-state",
+      "id": "01KTG4VDXX49SXQ4XS7GX1M21R",
+      "ts": "2026-06-07T04:18:28.413479Z",
+      "session_id": "01KTG4VAPKCX9ACYFEDMHE9K7C",
+      "payload": {
+        "chat_history": [],
+        "loaded_layers": [],
+        "pipeline_history": [],
+        "current_pipeline": null,
+        "map_view": null
+      }
+    },
+    {
+      "type": "pipeline-state",
+      "id": "01KTG4VDXZ4VDBXF70TD6MHJG3",
+      "ts": "2026-06-07T04:18:28.415654Z",
+      "session_id": "01KTG4VAPKCX9ACYFEDMHE9K7C",
+      "payload": {
+        "pipeline_id": "01KTG4VDXZ4VDBXF70TD6MHJG1",
+        "steps": [
+          {
+            "step_id": "01KTG4VDXZ4VDBXF70TD6MHJG2",
+            "name": "fetch_population",
+            "tool_name": "fetch_population",
+            "state": "pending",
+            "started_at": null,
+            "completed_at": null,
+            "progress_percent": null
+          }
+        ]
+      }
+    },
+    {
+      "type": "pipeline-state",
+      "id": "01KTG4VDY0R7S7GCRMQFDKAKWQ",
+      "ts": "2026-06-07T04:18:28.416246Z",
+      "session_id": "01KTG4VAPKCX9ACYFEDMHE9K7C",
+      "payload": {
+        "pipeline_id": "01KTG4VDXZ4VDBXF70TD6MHJG1",
+        "steps": [
+          {
+            "step_id": "01KTG4VDXZ4VDBXF70TD6MHJG2",
+            "name": "fetch_population",
+            "tool_name": "fetch_population",
+            "state": "running",
+            "started_at": "2026-06-07T04:18:28.416072Z",
+            "completed_at": null,
+            "progress_percent": null
+          }
+        ]
+      }
+    },
+    {
+      "type": "pipeline-state",
+      "id": "01KTG4VFPJDQ5HDQ8TNPCBKVZT",
+      "ts": "2026-06-07T04:18:30.226246Z",
+      "session_id": "01KTG4VAPKCX9ACYFEDMHE9K7C",
+      "payload": {
+        "pipeline_id": "01KTG4VDXZ4VDBXF70TD6MHJG1",
+        "steps": [
+          {
+            "step_id": "01KTG4VDXZ4VDBXF70TD6MHJG2",
+            "name": "fetch_population",
+            "tool_name": "fetch_population",
+            "state": "failed",
+            "started_at": "2026-06-07T04:18:28.416072Z",
+            "completed_at": "2026-06-07T04:18:30.225986Z",
+            "progress_percent": null
+          }
+        ]
+      }
+    }
+  ],
+  "qgis_reclassify": [],
+  "qgis_zonalstats": []
+}
