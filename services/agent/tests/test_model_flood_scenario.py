@@ -963,3 +963,281 @@ def test_build_sfincs_model_emits_v1_2_x_manning_roughness_kwargs(
         f"hydromt-sfincs 1.2.x ``_parse_datasets_rgh`` indexes ``df_map[['N']]``. "
         f"Got header columns: {cols}"
     )
+
+
+# --------------------------------------------------------------------------- #
+# Test 15 — OQ-53 hotfix (job-0054 comprehensive API migration): the
+# setup_river_inflow step must NOT emit the ``hydrography: merit_hydro`` key.
+# Live ``inspect.signature(SfincsModel.setup_river_inflow)`` confirms
+# ``hydrography`` is OPTIONAL when ``rivers`` is provided. The bundled
+# ``artifact_data`` catalog DOES register ``merit_hydro`` (auto-loaded by the
+# DataCatalog's ``_fallback_lib``) — but its rasters only cover Northern Italy
+# (lon 11.6-13, lat 45.2-46.8 — verified live), so a CONUS bbox raises
+# ``NoDataException: No data was read from source: merit_hydro (No data
+# available)``. The NHDPlus HR FlatGeobuf passed via ``rivers`` is sufficient.
+# --------------------------------------------------------------------------- #
+
+
+def _build_with_capture(
+    *,
+    tmp_path: Path,
+    river_geometry_uri: str | None,
+) -> dict[str, Any]:
+    """Run ``build_sfincs_model`` against a fake hydromt-sfincs, return captured opt.
+
+    Helper used by the migration-audit tests. Mocks the dep extraction, the
+    SfincsModel constructor, and the build()/write() calls; returns the parsed
+    ``opt`` dict that ``SfincsModel.build`` would receive.
+    """
+    mapping_path = tmp_path / "manning.csv"
+    mapping_path.write_text(
+        "nlcd_class,manning_n,description\n"
+        "11,0.025,Open Water\n"
+        "41,0.150,Deciduous Forest\n",
+        encoding="utf-8",
+    )
+
+    captured: dict[str, Any] = {}
+
+    class _FakeSfincsModel:
+        def __init__(self, root: str, mode: str) -> None:  # noqa: D401
+            captured["root"] = root
+
+        def build(self, opt: Any) -> None:  # noqa: D401
+            captured["opt"] = opt
+
+        def write(self) -> None:  # noqa: D401
+            captured["write_called"] = True
+
+    fake_module = MagicMock()
+    fake_module.SfincsModel = _FakeSfincsModel
+
+    forcing = ForcingSpec(
+        forcing_type="pluvial_synthetic",
+        precip_inches=11.9,
+        duration_hours=24.0,
+        return_period_years=100,
+        provenance={"source": "noaa-atlas14"},
+    )
+
+    with (
+        patch.dict("sys.modules", {"hydromt_sfincs": fake_module}, clear=False),
+        patch(
+            "grace2_agent.workflows.sfincs_builder._extract_unique_nlcd_classes",
+            return_value={11, 41},
+        ),
+    ):
+        build_sfincs_model(
+            dem_uri="gs://test/dem.tif",
+            landcover_uri="gs://test/landcover.tif",
+            river_geometry_uri=river_geometry_uri,
+            forcing=forcing,
+            bbox=(-81.92, 26.55, -81.80, 26.68),
+            options=BuildOptions(grid_resolution_m=30.0, simulation_hours=24.0),
+            nlcd_vintage_year=2021,
+            manning_mapping_csv=mapping_path,
+        )
+    return captured
+
+
+def test_build_sfincs_model_river_inflow_drops_hydrography_kwarg(
+    tmp_path: Path,
+) -> None:
+    """OQ-53 regression: ``setup_river_inflow`` must NOT carry ``hydrography``.
+
+    Failure mode this guards against:
+      * Re-emitting ``hydrography: 'merit_hydro'`` — the artifact_data
+        catalog's MERIT-Hydro tile only covers Northern Italy and a CONUS
+        bbox raises ``No data was read from source: merit_hydro (No data
+        available)`` inside ``SfincsModel.setup_river_inflow`` at the
+        ``data_catalog.get_rasterdataset(hydrography, bbox=self.bbox,
+        variables=['uparea', 'flwdir'])`` site (sfincs.py:939-946).
+
+    The rivers-only path is sufficient: ``river_source_points`` only uses
+    ``da_uparea`` for optional sorting at workflows/flwdir.py:194 (``if
+    da_uparea is not None``), and the NHDPlus HR FlatGeobuf we pass via
+    ``rivers`` carries the geometries the source-point extraction needs.
+    """
+    captured = _build_with_capture(
+        tmp_path=tmp_path,
+        river_geometry_uri="gs://test/river.fgb",
+    )
+
+    opt = captured.get("opt")
+    assert isinstance(opt, dict)
+    assert "setup_river_inflow" in opt, (
+        f"setup_river_inflow step missing from build opt; got keys {list(opt)}"
+    )
+    riv_kwargs = opt["setup_river_inflow"]
+    assert isinstance(riv_kwargs, dict)
+
+    # The OQ-53 regression: ``hydrography`` MUST NOT appear.
+    assert "hydrography" not in riv_kwargs, (
+        "OQ-53 regression: setup_river_inflow emitted ``hydrography`` kwarg — "
+        "the artifact_data catalog's MERIT-Hydro coverage is Northern Italy "
+        "only, so CONUS bboxes raise NoDataException. The rivers-only path "
+        "is the live 1.2.x-supported route when a vector ``rivers`` source "
+        "is available."
+    )
+
+    # ``rivers`` must still be present — this is the load-bearing input.
+    assert "rivers" in riv_kwargs, (
+        f"setup_river_inflow missing ``rivers`` kwarg; got {riv_kwargs}"
+    )
+
+    # All keys must be a subset of the live 1.2.2 signature.
+    valid_keys = {
+        "rivers",
+        "hydrography",
+        "buffer",
+        "river_upa",
+        "river_len",
+        "river_width",
+        "merge",
+        "first_index",
+        "keep_rivers_geom",
+        "reverse_river_geom",
+        "src_type",
+    }
+    extra = set(riv_kwargs.keys()) - valid_keys
+    assert not extra, (
+        f"setup_river_inflow has kwargs {extra} not in the live 1.2.2 "
+        f"signature; accepted: {valid_keys}."
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Test 16 — OQ-54 hotfix: setup_precip_forcing emits the v1.2.x-accepted
+# kwarg shape. Live signature is ``setup_precip_forcing(timeseries=None,
+# magnitude=None)`` — accepts EITHER a tabulated timeseries CSV path OR a
+# constant rate in mm/hr. The previous YAML emitted ``precip`` +
+# ``duration_hr`` (neither is a valid 1.2.x kwarg).
+# --------------------------------------------------------------------------- #
+
+
+def test_build_sfincs_model_precip_forcing_emits_magnitude_kwarg(
+    tmp_path: Path,
+) -> None:
+    """``setup_precip_forcing`` kwargs must match hydromt-sfincs 1.2.x.
+
+    Failure modes this guards against:
+      * Emitting ``precip`` or ``duration_hr`` (the pre-OQ-54 shape) — 1.2.x
+        raises ``TypeError: setup_precip_forcing() got an unexpected keyword
+        argument 'precip'`` / ``'duration_hr'``.
+      * Forgetting to convert Atlas 14's depth-over-duration to the mm/hr
+        rate ``magnitude`` expects — the source builds a constant series
+        at ``magnitude`` and SFINCS would receive the wrong forcing.
+    """
+    captured = _build_with_capture(
+        tmp_path=tmp_path,
+        river_geometry_uri=None,
+    )
+
+    opt = captured.get("opt")
+    assert isinstance(opt, dict)
+    assert "setup_precip_forcing" in opt, (
+        f"setup_precip_forcing step missing from build opt; got keys {list(opt)}"
+    )
+    p_kwargs = opt["setup_precip_forcing"]
+    assert isinstance(p_kwargs, dict)
+
+    # The OQ-54 regression: ``precip`` + ``duration_hr`` MUST NOT appear.
+    assert "precip" not in p_kwargs, (
+        "OQ-54 regression: setup_precip_forcing emitted 'precip' kwarg — "
+        "hydromt-sfincs 1.2.x raises TypeError. Use 'magnitude' (mm/hr)."
+    )
+    assert "duration_hr" not in p_kwargs, (
+        "OQ-54 regression: setup_precip_forcing emitted 'duration_hr' "
+        "kwarg — hydromt-sfincs 1.2.x raises TypeError."
+    )
+
+    # Only ``timeseries`` and ``magnitude`` are the v1.2.x-accepted kwargs.
+    valid_keys = {"timeseries", "magnitude"}
+    extra = set(p_kwargs.keys()) - valid_keys
+    assert not extra, (
+        f"setup_precip_forcing has unexpected kwargs {extra}; "
+        f"hydromt-sfincs 1.2.x accepts only {valid_keys}."
+    )
+
+    # The conversion math: Atlas 14 (11.9 in over 24 hr) → mm/hr.
+    # Expected: 11.9 * 25.4 / 24 = 12.5916666... mm/hr
+    assert "magnitude" in p_kwargs, (
+        f"setup_precip_forcing missing 'magnitude'; got {p_kwargs}"
+    )
+    expected_mm_per_hr = (11.9 * 25.4) / 24.0
+    assert abs(p_kwargs["magnitude"] - expected_mm_per_hr) < 1e-6, (
+        f"Atlas 14 conversion incorrect: got {p_kwargs['magnitude']}, "
+        f"expected {expected_mm_per_hr} mm/hr"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Test 17 — job-0054 comprehensive migration audit: every setup_* step our
+# YAML emits has kwargs that are a subset of the live 1.2.2 signature
+# parameter set. This is the ALL-STEPS regression guard against drift —
+# if hydromt-sfincs adds/renames a kwarg in a future release, this test
+# fires on the offending step.
+# --------------------------------------------------------------------------- #
+
+
+def test_build_sfincs_model_all_setup_steps_match_live_signatures(
+    tmp_path: Path,
+) -> None:
+    """Every setup_* step's kwargs must match the live 1.2.2 SfincsModel signature.
+
+    Iterates the parsed ``opt`` dict, looks up the matching ``SfincsModel``
+    method, calls ``inspect.signature``, and asserts the emitted kwargs are
+    a subset of the live parameter names. Skips ``setup_config`` (takes
+    ``**cfdict``) and steps not present in the parsed opt.
+
+    This is the comprehensive migration audit's residual guard — the
+    individual ``map_fn``/``hydrography``/``magnitude`` tests cover the
+    known mismatches; this catches anything we'd otherwise miss.
+    """
+    import inspect as _inspect
+
+    try:
+        import hydromt_sfincs as _hms  # type: ignore[import-not-found]
+    except Exception:
+        pytest.skip("hydromt_sfincs not installed; live-signature audit cannot run")
+
+    captured = _build_with_capture(
+        tmp_path=tmp_path,
+        river_geometry_uri="gs://test/river.fgb",
+    )
+
+    opt = captured.get("opt")
+    assert isinstance(opt, dict)
+
+    # Steps whose live signature is ``**kwargs``-only (any key is accepted).
+    permissive_steps = {"setup_config"}
+
+    for step_name, step_kwargs in opt.items():
+        if step_name in permissive_steps:
+            continue
+        method = getattr(_hms.SfincsModel, step_name, None)
+        assert method is not None, (
+            f"job-0054 audit: YAML emits unknown setup step {step_name!r} — "
+            f"hydromt-sfincs 1.2.x SfincsModel has no method by that name."
+        )
+        live_sig = _inspect.signature(method)
+        # Strip ``self`` and any ``**kwargs`` catch-all (which would accept
+        # any extra kwarg, so we don't need to enforce subset there).
+        live_params = {
+            name
+            for name, p in live_sig.parameters.items()
+            if name != "self" and p.kind is not _inspect.Parameter.VAR_KEYWORD
+        }
+        has_var_kw = any(
+            p.kind is _inspect.Parameter.VAR_KEYWORD
+            for p in live_sig.parameters.values()
+        )
+        if has_var_kw:
+            continue  # method accepts arbitrary kwargs; nothing to enforce.
+        emitted = set(step_kwargs.keys()) if isinstance(step_kwargs, dict) else set()
+        extra = emitted - live_params
+        assert not extra, (
+            f"job-0054 audit: YAML step {step_name!r} emits kwargs {extra} "
+            f"not in live 1.2.2 signature {live_params}. Update "
+            f"_generate_hydromt_yaml_config to match the v1.2.x API."
+        )

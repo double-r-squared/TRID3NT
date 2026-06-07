@@ -518,17 +518,55 @@ def _generate_hydromt_yaml_config(
     equivalent Python API call). Generated programmatically from the typed
     inputs — never user-input.
 
-    The component list is the v0.1 pluvial-flood capstone shape:
+    The component list is the v0.1 pluvial-flood capstone shape, with every
+    step matched to a hydromt-sfincs 1.2.2 live ``inspect.signature`` cite
+    (job-0054 comprehensive migration audit):
 
-      * setup_config — model identification + projected CRS + bbox
-      * setup_grid_from_region — define the SFINCS grid
-      * setup_dep — depth/elevation from the fetched DEM
-      * setup_mask_active — active-cell mask
-      * setup_manning_roughness — Manning's grid via NLCD + the mapping CSV
-        (this is the silent-fallback path the NLCD validation gate closes)
-      * setup_river_inflow — river-burning from NHDPlus HR (when available)
-      * setup_precip_forcing — uniform rainfall hyetograph from Atlas 14
-        depth × duration
+      * setup_config — config-file passthrough (``SfincsModel.setup_config``
+        takes ``**cfdict`` per inheritance from ``hydromt.Model``).
+      * setup_grid_from_region — defines the SFINCS grid. Live sig:
+        ``(region: dict, res: float = 100, crs: Union[str, int] = "utm", ...)``.
+        We pass ``region: {bbox: [...]}`` + ``res``; ``crs`` left at the
+        ``"utm"`` default so HydroMT picks the appropriate UTM zone for the
+        bbox (Decision K: minimal parameter surface, derive inside).
+      * setup_dep — DEM/topobathy ingest. Live sig:
+        ``(datasets_dep: List[dict], buffer_cells: int = 0, interp_method:
+        str = "linear")``. We pass ``datasets_dep: [{elevtn: <path>}]``.
+      * setup_mask_active — active-cell mask. Live sig accepts ``zmin`` +
+        ``zmax`` as keyword args; we pass both.
+      * setup_manning_roughness — Manning's grid via NLCD + the reclass CSV.
+        Live sig: ``(datasets_rgh: List[dict] = [], manning_land=0.04,
+        manning_sea=0.02, rgh_lev_land=0)`` — NO top-level ``map_fn``
+        (OQ-52). The reclass table lives INSIDE each ``datasets_rgh`` entry
+        under key ``reclass_table`` (per ``_parse_datasets_rgh``: each dict
+        supports ``manning`` (gridded n) OR ``lulc`` + ``reclass_table``);
+        the CSV must be ``index_col=0`` + column literally ``N`` —
+        ``_write_hydromt_reclass_table_csv`` materializes that view.
+      * setup_river_inflow — discharge-point setup from rivers. Live sig:
+        ``(rivers: Union[str, Path, gpd.GeoDataFrame] = None, hydrography:
+        Union[str, Path, xr.Dataset] = None, buffer: float = 200,
+        river_upa: float = 10.0, river_len: float = 1e3, river_width: float
+        = 500, merge: bool = False, ...)``. When ``rivers`` is provided
+        (we pass the NHDPlus HR FlatGeobuf path), ``hydrography`` is
+        OPTIONAL — the source code at sfincs.py:949-984 takes the rivers
+        branch and ``da_uparea`` stays ``None`` (only used for optional
+        sort/sample of source points in ``river_source_points``).
+        OQ-53 fix: we previously emitted ``hydrography: 'merit_hydro'``;
+        the bundled ``artifact_data`` catalog DOES register ``merit_hydro``
+        but its rasters only cover Northern Italy (lon 11.6-13, lat
+        45.2-46.8 — verified live), so a Florida bbox query returns ``No
+        data was read from source: merit_hydro (No data available)``. We
+        drop the ``hydrography`` key entirely and rely on the
+        ``rivers``-only path.
+      * setup_precip_forcing — uniform precip forcing. Live sig:
+        ``(timeseries=None, magnitude=None)`` — accepts EITHER a tabulated
+        timeseries CSV OR a single ``magnitude`` float in ``mm/hr``
+        (constant rate over the simulation window, then projected onto a
+        10-minute time grid). OQ-54 fix: we previously emitted ``precip``
+        + ``duration_hr`` (neither is a 1.2.x parameter); we now emit
+        ``magnitude: <mm_per_hr>`` derived from Atlas 14 depth ÷ duration.
+        The Atlas 14 depth + duration are still echoed via the inline YAML
+        comment so the provenance trail survives.
 
     Returns the YAML as a string. Test code parses it back; the production
     runtime writes it to a temp file and points HydroMT at it.
@@ -554,33 +592,42 @@ def _generate_hydromt_yaml_config(
     components.append("  zmin: -10.0")
     components.append("  zmax: 10.0")
     components.append("setup_manning_roughness:")
-    # OQ-52 hotfix (job-0053): hydromt-sfincs 1.2.x ``setup_manning_roughness``
-    # signature is ``(datasets_rgh, manning_land, manning_sea, rgh_lev_land)``
-    # — there is NO top-level ``map_fn`` keyword (verified via
-    # ``inspect.signature(SfincsModel.setup_manning_roughness)`` on the
-    # installed v1.2.2 binding). The LULC → Manning's reclass table is
-    # threaded INSIDE the ``datasets_rgh`` entry under the key
-    # ``reclass_table`` (per ``_parse_datasets_rgh``: each dict supports
-    # ``manning`` (gridded n) OR ``lulc`` + ``reclass_table`` (csv index_col=0
-    # with column ``N``)). ``mapping_csv_path`` is written by
-    # ``_write_hydromt_reclass_table_csv`` in the v1.2.x-accepted format.
     components.append(
         f"  datasets_rgh: [{{ lulc: '{landcover_local_path}', "
         f"reclass_table: '{mapping_csv_path}' }}]"
     )
     if river_local_path is not None:
+        # OQ-53 fix (job-0054): rivers-only branch — DO NOT emit
+        # ``hydrography``. The 1.2.x source resolves the ``hydrography`` key
+        # against ``data_catalog.get_rasterdataset(...)`` and our runtime's
+        # default catalog (``artifact_data``) only has Northern Italy
+        # coverage for ``merit_hydro``, so a CONUS bbox raises
+        # ``NoDataException``. The NHDPlus HR FlatGeobuf we pass via
+        # ``rivers`` is sufficient — ``river_source_points`` only needs
+        # ``da_uparea`` for optional sorting/sampling (line ``if da_uparea
+        # is not None`` in workflows/flwdir.py:195).
         components.append("setup_river_inflow:")
         components.append(f"  rivers: '{river_local_path}'")
-        components.append("  hydrography: 'merit_hydro'")
     if forcing.forcing_type == "pluvial_synthetic" and forcing.precip_inches is not None:
+        # OQ-54 fix (job-0054): the live 1.2.x signature is
+        # ``setup_precip_forcing(timeseries=None, magnitude=None)``; ``precip``
+        # / ``duration_hr`` (what we previously emitted) are NOT accepted
+        # kwargs and would raise ``TypeError: got an unexpected keyword
+        # argument``. We convert Atlas 14 (depth in inches over duration
+        # hours) to a constant rate in mm/hr and pass ``magnitude``:
+        #
+        #     magnitude = precip_inches * 25.4 / duration_hours    [mm/hr]
+        #
+        # SFINCS receives this as a uniform precipitation hyetograph (the
+        # source builds a 10-minute time grid from ``get_model_time()`` and
+        # fills with ``magnitude``).
+        duration_hr = forcing.duration_hours or 24.0
+        magnitude_mm_per_hr = (forcing.precip_inches * 25.4) / duration_hr
         components.append("setup_precip_forcing:")
         components.append(
-            f"  precip: {forcing.precip_inches * 25.4}  # mm "
+            f"  magnitude: {magnitude_mm_per_hr}  # mm/hr "
             f"(Atlas 14: {forcing.precip_inches} in over "
-            f"{forcing.duration_hours} hr)"
-        )
-        components.append(
-            f"  duration_hr: {forcing.duration_hours}"
+            f"{duration_hr} hr → {magnitude_mm_per_hr:.4f} mm/hr)"
         )
     return "\n".join(components)
 
