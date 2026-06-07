@@ -1,0 +1,21 @@
+=== full catalog inventory (uncapped) ===
+qgis_process binary: /home/nate/miniforge3/envs/grace2/bin/qgis_process
+qgis_process list latency: 3.031s
+returncode: 0
+total algorithms in catalog: 361
+providers: [('QGIS (native c++)', 248), ('GDAL', 57), ('QGIS', 38), ('QGIS (PDAL)', 17), ('QGIS (3D)', 1)]
+
+=== describe_qgis_algorithm("native:zonalstatistics") ===
+invocation latency: 1.442s
+algorithm_id: native:zonalstatistics
+name: Zonal statistics (in place)
+description: Calculates statistics for a raster layer's values for each feature of an overlapping polygon vector layer.
+This algorithm calculates statistics of a raster layer for each feature of an overlapping pol...
+parameter count: 5
+  - INPUT_RASTER (raster): Raster layer
+  - RASTER_BAND (band), default='1': Raster band
+  - INPUT_VECTOR (vector): Vector layer containing zones
+  - COLUMN_PREFIX (string), default='_': Output column prefix
+  - STATISTICS (enum): Statistics to calculate
+output count: 1
+  - INPUT_VECTOR (outputVector): 

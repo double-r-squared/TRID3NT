@@ -1,0 +1,18 @@
+=== submitter binding ===
+bound: True
+
+=== list_qgis_algorithms (no filter) ===
+total returned (capped at 50): 50
+invocation latency: 5.569s
+
+First 10 summaries:
+  gdal:aspect                                   | GDAL                      | Aspect
+  gdal:assignprojection                         | GDAL                      | Assign projection
+  gdal:buffervectors                            | GDAL                      | Buffer vectors
+  gdal:buildvirtualraster                       | GDAL                      | Build virtual raster
+  gdal:buildvirtualvector                       | GDAL                      | Build virtual vector
+  gdal:cliprasterbyextent                       | GDAL                      | Clip raster by extent
+  gdal:cliprasterbymasklayer                    | GDAL                      | Clip raster by mask layer
+  gdal:clipvectorbyextent                       | GDAL                      | Clip vector by extent
+  gdal:clipvectorbypolygon                      | GDAL                      | Clip vector by mask layer
+  gdal:colorrelief                              | GDAL                      | Color relief
