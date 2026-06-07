@@ -1,0 +1,16 @@
+bucket: grace-2-hazard-prod-cache
+cache_control: public, max-age=2592000
+content_type: image/tiff
+crc32c_hash: TQk4sA==
+creation_time: 2026-06-07T08:04:00+0000
+custom_time: 2026-06-07T08:04:00+0000
+etag: CKPonbHV9JQDEAE=
+generation: '1780819440399395'
+md5_hash: 0NMMPqucsLRYHdv0eEiUhA==
+metageneration: 1
+name: cache/static-30d/landcover/56bad09bfa8a71d502ed61badc785a00.tif
+size: 194837
+storage_class: STANDARD
+storage_class_update_time: 2026-06-07T08:04:00+0000
+storage_url: gs://grace-2-hazard-prod-cache/cache/static-30d/landcover/56bad09bfa8a71d502ed61badc785a00.tif#1780819440399395
+update_time: 2026-06-07T08:04:00+0000

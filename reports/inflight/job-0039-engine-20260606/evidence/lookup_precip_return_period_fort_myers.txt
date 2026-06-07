@@ -1,0 +1,17 @@
+2026-06-07 01:04:21,402 INFO grace2_agent.tools.cache read_through miss-write tool=lookup_precip_return_period key=e17f48060ebcc1a0338a8f16c6bf0ec2 bytes=1597 customTime=2026-06-07T08:04:21.266465+00:00
+2026-06-07 01:04:21,403 INFO grace2_agent.tools.data_fetch lookup_precip_return_period (lat=26.6 lon=-81.9 ari=100 dur=24-hr) -> 12.100 inches cache_hit=False
+2026-06-07 01:04:22,699 INFO grace2_agent.tools.cache read_through hit tool=lookup_precip_return_period key=e17f48060ebcc1a0338a8f16c6bf0ec2 bytes=1597
+2026-06-07 01:04:22,699 INFO grace2_agent.tools.data_fetch lookup_precip_return_period (lat=26.6 lon=-81.9 ari=100 dur=24-hr) -> 12.100 inches cache_hit=True
+>>> Calling lookup_precip_return_period(location=(26.6, -81.9), return_period_years=100, duration_hours=24) ...
+
+>>> Result: {'precip_inches': 12.1, 'units': 'inches', 'location': [26.6, -81.9], 'return_period_years': 100, 'duration_hours': 24.0, 'vintage_volume': 'NOAA Atlas 14 Volume 9 Version 2', 'project_area': 'Southeastern States', 'source': 'noaa-atlas14-pfds'}
+
+>>> precip_inches: 12.1
+>>> units: inches
+>>> vintage_volume: NOAA Atlas 14 Volume 9 Version 2
+>>> project_area: Southeastern States
+>>> source: noaa-atlas14-pfds
+>>> quantized location: [26.6, -81.9]
+
+>>> Calling again with location (26.6005, -81.9005) — same Atlas 14 grid cell, should hit cache ...
+>>> Second call precip_inches: 12.1, location: [26.6, -81.9]

@@ -1,0 +1,14 @@
+2026-06-07 01:04:00,446 INFO grace2_agent.tools.cache read_through miss-write tool=fetch_landcover key=56bad09bfa8a71d502ed61badc785a00 bytes=194837 customTime=2026-06-07T08:04:00.134945+00:00
+>>> Calling fetch_landcover((-81.92, 26.55, -81.80, 26.68), dataset='nlcd_2021') ...
+
+>>> Result keys: ['dataset', 'layer', 'nlcd_vintage_year', 'source']
+>>> nlcd_vintage_year sidecar: 2021
+>>> dataset: nlcd_2021
+>>> source: mrlc-wms
+
+>>> LayerURI: layer_id=landcover--81.9202-26.5499-nlcd_2021
+>>>          name=NLCD Land Cover (2021)
+>>>          layer_type=raster
+>>>          style_preset=categorical_landcover
+>>>          uri=gs://grace-2-hazard-prod-cache/cache/static-30d/landcover/56bad09bfa8a71d502ed61badc785a00.tif
+>>>          units=nlcd_class_code

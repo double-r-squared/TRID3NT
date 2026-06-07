@@ -1,0 +1,16 @@
+bucket: grace-2-hazard-prod-cache
+cache_control: public, max-age=2592000
+content_type: application/octet-stream
+crc32c_hash: Lkk+jw==
+creation_time: 2026-06-07T08:05:19+0000
+custom_time: 2026-06-07T08:05:19+0000
+etag: CJbyg9fV9JQDEAE=
+generation: '1780819519666454'
+md5_hash: ZlmdkYeeDbgwFAW55n/ATw==
+metageneration: 1
+name: cache/static-30d/river_geometry/66f7c0ca862d1eae948f20d5c2d493c0.fgb
+size: 229296
+storage_class: STANDARD
+storage_class_update_time: 2026-06-07T08:05:19+0000
+storage_url: gs://grace-2-hazard-prod-cache/cache/static-30d/river_geometry/66f7c0ca862d1eae948f20d5c2d493c0.fgb#1780819519666454
+update_time: 2026-06-07T08:05:19+0000

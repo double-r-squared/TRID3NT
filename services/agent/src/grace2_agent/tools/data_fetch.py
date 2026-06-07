@@ -73,6 +73,9 @@ __all__ = [
     "fetch_dem",
     "fetch_buildings",
     "fetch_population",
+    "fetch_landcover",
+    "fetch_river_geometry",
+    "lookup_precip_return_period",
     "geocode_location",
     "round_bbox_to_resolution",
 ]
@@ -1149,6 +1152,1032 @@ def geocode_location(query: str) -> dict[str, Any]:
         "geocode_location query=%r resolved name=%r cache_hit=%s",
         query,
         payload.get("name"),
+        result.hit,
+    )
+    return payload
+
+
+# ---------------------------------------------------------------------------
+# fetch_landcover — NLCD (MRLC) / ESA WorldCover (sprint-07 Stage B, job-0039).
+# ---------------------------------------------------------------------------
+#
+# Access pattern tier — LIVE-VERIFIED (the kickoff inferred Tier 3 / direct
+# HTTPS + Range + COG-backed; live probing rejected that path):
+#
+#   * The MRLC direct file mirror (``s3-us-west-2.amazonaws.com/mrlc/
+#     Annual_NLCD_LndCov_<YEAR>_CU_C1V0.tif``) returned an HTTP 200 with a
+#     **42-byte placeholder TIFF** (a 1×1 IFD with two ``0xFFFFFFFF`` strip
+#     offsets — not a real raster). 2019 and 2021 file URLs at the same path
+#     return HTTP 403. The "direct HTTPS + Range" path the kickoff inferred is
+#     NOT a real surface for NLCD bytes.
+#   * The MRLC WCS endpoint (`/geoserver/mrlc_display/wcs`) accepts a connection
+#     but times out before serving GetCapabilities (≥ 30 s).
+#   * MRLC's **WMS** GeoServer at ``www.mrlc.gov/geoserver/mrlc_display/wms``
+#     serves NLCD year layers (``NLCD_2021_Land_Cover_L48`` etc.) and supports
+#     ``GetMap?format=image/geotiff`` — that returns actual NLCD raster bytes
+#     for a bbox. This is the **Tier 2 (OGC service)** access pattern in §F.1.1.
+#
+# Decision: implement the NLCD branch against MRLC WMS GetMap with
+# ``format=image/geotiff``. Per §F.1.1 Tier 2 discipline the layer reference
+# IS the URL and QGIS Server would normally proxy/re-render. But for SFINCS
+# setup (job-0042 build_sfincs_model) we need raster bytes for the HydroMT
+# roughness component — so the fetcher pulls a GetMap GeoTIFF for the bbox at
+# 30 m resolution and writes it to the FR-DC-3 cache as if it were a Tier-1
+# COG (the cache shim doesn't care about the tier; the on-disk artifact is
+# a real GeoTIFF either way). The tier classification in the docstring is
+# accurate — Tier 2 OGC service, byte materialized via GetMap — even though
+# this fetcher is **not** the §F.2 Discovery-First lane pattern (no layer
+# reference returned to the LLM; the bytes are clipped and cached).
+#
+# This deviation from the kickoff's inferred tier is surfaced as
+# **OQ-39-NLCD-TIER-DEVIATION** for orchestrator triage.
+#
+# Vintage discipline: NLCD vintages 2019, 2021 (default), and 2023 are most-
+# relevant. The Annual NLCD Collection 1.0 (2023 release) is published as the
+# ``Annual_NLCD_LndCov_<YEAR>_CU_C1V0`` family; the WMS GeoServer lists
+# discrete-year layers up through **NLCD_2021_Land_Cover_L48**. 2023 is the
+# newest release but its WMS layer name was not present in the MRLC
+# GetCapabilities at probe time (2026-06-07); the substrate defaults to 2021
+# and the dataset string parameter supports ``"nlcd_2019"`` and (forward-
+# looking) ``"nlcd_2023"`` once it lands. ESA WorldCover (Planetary Computer
+# ``esa-worldcover``) opt-in via ``dataset="esa_worldcover_2021"``.
+#
+# Manning's mapping validation gate (per docs/decisions/oq-4-hydromt-depth.md
+# §4 "Immediate (job-0039)"): the NLCD vintage year is returned as sidecar
+# metadata alongside the LayerURI so job-0042 ``build_sfincs_model`` can
+# verify the Manning's mapping CSV covers the vintage's class encoding. This
+# is the Invariant 7 (no silent wrong answers) mitigation OQ-4 demanded.
+#
+# Sidecar shape — return-value design: ``LayerURI`` (in
+# ``grace2_contracts.execution``) is a FROZEN contract with
+# ``extra="forbid"`` — we cannot add a ``metadata`` field. The kickoff's
+# example syntax ``LayerURI.metadata["nlcd_vintage_year"] = 2021`` was
+# illustrative; the actual seam is a structured ``dict`` return shape:
+#
+#     {
+#       "layer": LayerURI(...),
+#       "nlcd_vintage_year": 2021,
+#       "dataset": "nlcd_2021",
+#       "source": "mrlc-wms",
+#     }
+#
+# This is the same dict-return pattern as ``geocode_location`` (also no
+# contract for its shape) and ``lookup_precip_return_period`` below — see
+# OQ-39-LANDCOVER-RETURN-SHAPE-CONTRACT-PROMOTION.
+
+
+_FETCH_LANDCOVER_METADATA = AtomicToolMetadata(
+    name="fetch_landcover",
+    ttl_class="static-30d",
+    source_class="landcover",
+    cacheable=True,
+)
+
+
+# MRLC WMS GeoServer endpoint (Tier 2 OGC service, live-verified 2026-06-07).
+_MRLC_WMS_URL = "https://www.mrlc.gov/geoserver/mrlc_display/wms"
+
+# NLCD year → WMS layer name in the MRLC GeoServer GetCapabilities catalog.
+# Live-verified 2026-06-07 (the GetCapabilities document lists discrete-year
+# CONUS L48 layers through 2021; older years are present for completeness).
+_NLCD_WMS_LAYER_BY_YEAR: dict[int, str] = {
+    2001: "NLCD_2001_Land_Cover_L48",
+    2004: "NLCD_2004_Land_Cover_L48",
+    2006: "NLCD_2006_Land_Cover_L48",
+    2008: "NLCD_2008_Land_Cover_L48",
+    2011: "NLCD_2011_Land_Cover_L48",
+    2013: "NLCD_2013_Land_Cover_L48",
+    2016: "NLCD_2016_Land_Cover_L48",
+    2019: "NLCD_2019_Land_Cover_L48",
+    2021: "NLCD_2021_Land_Cover_L48",
+}
+
+
+def _fetch_nlcd_landcover_bytes(
+    bbox: tuple[float, float, float, float], vintage_year: int
+) -> bytes:
+    """Fetch NLCD landcover for ``bbox`` at the given vintage year via MRLC WMS.
+
+    Tier 2 access pattern (per §F.1.1) — MRLC WMS GetMap with
+    ``format=image/geotiff`` returns NLCD raster bytes for the bbox. The
+    returned TIFF is the WMS server's GeoTIFF rendering at the requested
+    pixel grid (computed from the bbox + 30 m native resolution); it carries
+    a GeoTIFF header with CRS + transform, which is sufficient for HydroMT
+    consumption downstream (job-0042 ``build_sfincs_model``).
+    """
+    _validate_bbox(bbox)
+    layer = _NLCD_WMS_LAYER_BY_YEAR.get(vintage_year)
+    if layer is None:
+        available = sorted(_NLCD_WMS_LAYER_BY_YEAR.keys())
+        raise UpstreamAPIError(
+            f"NLCD vintage year {vintage_year} not in MRLC WMS catalog "
+            f"(available: {available}); add 2023 once the MRLC GetCapabilities "
+            f"lists ``NLCD_2023_Land_Cover_L48`` (see OQ-39-NLCD-VINTAGE-DEFAULT)."
+        )
+
+    # Pixel grid: 30 m native, sized to the bbox in EPSG:4326 — the WMS
+    # server resamples internally to fit. Use a tight bound on width/height
+    # so we don't issue a request for a million pixels on a small bbox.
+    min_lon, min_lat, max_lon, max_lat = bbox
+    mid_lat = 0.5 * (min_lat + max_lat)
+    m_per_deg_lon = 111_320.0 * math.cos(math.radians(mid_lat))
+    width_m = (max_lon - min_lon) * m_per_deg_lon
+    height_m = (max_lat - min_lat) * 111_320.0
+    # 30 m native; clamp to 16 px..4096 px on each axis (WMS server may
+    # reject very large requests; 4096 covers a 122 km wide bbox at 30 m).
+    width_px = max(16, min(4096, int(round(width_m / 30.0))))
+    height_px = max(16, min(4096, int(round(height_m / 30.0))))
+
+    params = {
+        "service": "WMS",
+        "version": "1.1.1",
+        "request": "GetMap",
+        "layers": layer,
+        "srs": "EPSG:4326",
+        "bbox": f"{min_lon},{min_lat},{max_lon},{max_lat}",
+        "width": str(width_px),
+        "height": str(height_px),
+        "format": "image/geotiff",
+    }
+    try:
+        resp = requests.get(
+            _MRLC_WMS_URL,
+            params=params,
+            headers={"User-Agent": _DEFAULT_USER_AGENT},
+            timeout=60.0,
+        )
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        raise UpstreamAPIError(
+            f"MRLC WMS GetMap failed for layer={layer} bbox={bbox}: {exc}"
+        ) from exc
+
+    # The GeoServer returns image/geotiff content-type on success. On a
+    # service error (e.g. invalid layer name), it returns an
+    # application/vnd.ogc.se_xml ServiceException — surface that as a typed
+    # error so callers see the real failure.
+    ct = resp.headers.get("content-type", "")
+    if "tiff" not in ct.lower() and "geotiff" not in ct.lower():
+        raise UpstreamAPIError(
+            f"MRLC WMS returned unexpected content-type={ct!r} for layer={layer} "
+            f"bbox={bbox}; body preview: {resp.text[:200]!r}"
+        )
+    if not resp.content or len(resp.content) < 64:
+        raise UpstreamAPIError(
+            f"MRLC WMS returned empty/short body ({len(resp.content)} bytes) "
+            f"for layer={layer} bbox={bbox}"
+        )
+    return resp.content
+
+
+def _fetch_esa_worldcover_bytes(
+    bbox: tuple[float, float, float, float], vintage_year: int
+) -> bytes:
+    """Fetch ESA WorldCover landcover for ``bbox`` at the given vintage year.
+
+    ESA WorldCover is hosted by Microsoft Planetary Computer as STAC + COG
+    (Tier 1 per §F.1.1). The implementation is reserved as a forward-looking
+    branch; the v0.1 substrate raises ``UpstreamAPIError`` so the agent's
+    FR-AS-11 surface can decide whether to fall back to NLCD or surface to
+    the user. Surface as OQ-39-ESA-WORLDCOVER-SUBSTRATE.
+    """
+    raise UpstreamAPIError(
+        "ESA WorldCover branch is not implemented in the v0.1 substrate "
+        "(reserved for a follow-up job; opt into NLCD by passing "
+        "dataset='nlcd_2021' / 'nlcd_2019')."
+    )
+
+
+def _round_bbox_to_30m_nlcd(
+    bbox: tuple[float, float, float, float],
+) -> tuple[float, float, float, float]:
+    """Quantize a WGS84 bbox to the NLCD 30 m native grid.
+
+    Per the per-source bbox quantization rule (acceptance criterion 3 of
+    the kickoff): NLCD's native cell is 30 m. We reuse
+    ``round_bbox_to_resolution(bbox, 30)`` — same semantics as ``fetch_dem``
+    at 30 m, so dedup-via-quantization works the same way.
+    """
+    return round_bbox_to_resolution(bbox, 30)
+
+
+@register_tool(_FETCH_LANDCOVER_METADATA)
+def fetch_landcover(
+    bbox: tuple[float, float, float, float],
+    dataset: str = "nlcd_2021",
+) -> dict[str, Any]:
+    """Fetch landcover (NLCD or ESA WorldCover) for a bbox; returns dict with vintage sidecar.
+
+    Use this when: the agent needs landcover classification for a CONUS bbox —
+    for Manning's roughness reclassification in SFINCS setup (job-0042
+    ``build_sfincs_model``), exposure analysis by land-use class, or
+    visualization with the categorical_landcover QML preset. Default vintage
+    is NLCD 2021; older CONUS vintages (2019, 2016, …) available via the
+    ``dataset`` parameter.
+
+    Do NOT use this for: global coverage (NLCD is CONUS L48 only; ESA
+    WorldCover opt-in is forward-looking — see Open Questions); on-the-fly
+    landcover at single points (this returns a clipped raster, not a per-
+    point classification); Alaska / Hawaii / Puerto Rico (separate MRLC
+    layers; not in v0.1 substrate).
+
+    Access pattern: **Tier 2 (OGC service — MRLC WMS GeoServer)** per §F.1.1.
+    The kickoff inferred Tier 3 (direct HTTPS + Range + COG-backed), but live
+    verification (2026-06-07) revealed that MRLC's direct file mirror at
+    ``s3-us-west-2.amazonaws.com/mrlc/Annual_NLCD_LndCov_<YEAR>_CU_C1V0.tif``
+    is a 42-byte placeholder stub, not a real COG, and the WCS endpoint times
+    out on GetCapabilities. The reliable byte-shape is **WMS GetMap with
+    ``format=image/geotiff``** through the MRLC GeoServer at
+    ``www.mrlc.gov/geoserver/mrlc_display/wms``. The returned GeoTIFF carries
+    a real raster + CRS + transform usable by HydroMT downstream. The fetcher
+    materializes the bytes through GetMap and writes through the FR-DC-3
+    cache so the bbox-quantized cache key dedups across callers. (See
+    OQ-39-NLCD-TIER-DEVIATION for the kickoff vs live-verified tier
+    discrepancy.)
+
+    Params:
+        bbox: ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326.
+        dataset: ``"nlcd_2021"`` (default, Tier-1 default per §F.1 within the
+            CONUS NLCD product family), ``"nlcd_2019"``, ``"nlcd_2016"`` …
+            (other CONUS L48 vintages listed in MRLC GeoServer); or
+            ``"esa_worldcover_2021"`` (opt-in, forward-looking — currently
+            raises ``UpstreamAPIError`` until the Planetary Computer STAC
+            branch lands).
+
+    Returns:
+        A dict with the following keys:
+
+        - ``layer``: a ``LayerURI`` pointing at a Cloud-Optimized GeoTIFF in
+          the cache bucket (``gs://grace-2-hazard-prod-cache/cache/static-30d/landcover/<key>.tif``);
+          ``layer_type="raster"``, ``style_preset="categorical_landcover"``,
+          ``role="input"``, ``units="nlcd_class_code"``.
+        - ``nlcd_vintage_year``: the vintage year as an integer (e.g. 2021).
+          **This is the sidecar field per OQ-4 §4 (Immediate, job-0039)**:
+          ``build_sfincs_model`` consumes it to validate the Manning's
+          mapping CSV covers the vintage's class encoding before invoking
+          HydroMT's roughness component. Skipping this validation would
+          surface the silent-wrong-answer failure mode HydroMT exhibits for
+          unmatched landcover classes (Invariant 7 mitigation).
+        - ``dataset``: the verbatim dataset string passed in (e.g.
+          ``"nlcd_2021"``) for downstream provenance.
+        - ``source``: the upstream provider tag (``"mrlc-wms"`` for NLCD;
+          ``"esa-worldcover-stac"`` for the forward-looking ESA branch).
+
+        The dict return shape is structurally identical to
+        ``lookup_precip_return_period`` (also no contract) and
+        ``geocode_location`` (also no contract). Surface as
+        OQ-39-LANDCOVER-RETURN-SHAPE-CONTRACT-PROMOTION for the eventual
+        schema follow-up.
+
+    FR-CE-8: The fetch is routed through ``read_through`` so identical
+    quantized-bbox + dataset calls reuse the cached GeoTIFF (FR-DC-3/4); a
+    miss writes the GeoTIFF with ``customTime`` set so the 30-day eviction
+    policy runs from the fetch time.
+
+    Per-source quantization (acceptance criterion 3): bbox is snapped to the
+    NLCD 30 m native grid via ``round_bbox_to_resolution(bbox, 30)`` before
+    the cache key is computed.
+    """
+    if not isinstance(dataset, str) or not dataset:
+        raise BboxInvalidError(
+            f"fetch_landcover requires a non-empty dataset string; got {dataset!r}"
+        )
+
+    if dataset.startswith("nlcd_"):
+        try:
+            vintage_year = int(dataset.split("_", 1)[1])
+        except (IndexError, ValueError) as exc:
+            raise BboxInvalidError(
+                f"could not parse NLCD vintage year from dataset={dataset!r}; "
+                "expected 'nlcd_YYYY' (e.g. 'nlcd_2021')."
+            ) from exc
+
+        quantized = _round_bbox_to_30m_nlcd(bbox)
+        # Guardrail: MRLC WMS rejects very large requests; cap bbox area to
+        # 10,000 km^2 same as fetch_dem, so a single GetMap call is tractable.
+        if _bbox_area_km2(quantized) > 10_000.0:
+            raise BboxInvalidError(
+                f"bbox area {_bbox_area_km2(quantized):.1f} km^2 exceeds 10000 km^2 "
+                "guardrail for fetch_landcover (MRLC WMS will reject; use a tiled "
+                "workflow for larger domains)."
+            )
+        params = {"bbox": list(quantized), "dataset": dataset, "source": "mrlc-wms"}
+        result = read_through(
+            metadata=_FETCH_LANDCOVER_METADATA,
+            params=params,
+            ext="tif",
+            fetch_fn=lambda: _fetch_nlcd_landcover_bytes(quantized, vintage_year),
+        )
+        assert result.uri is not None
+        layer = LayerURI(
+            layer_id=f"landcover-{quantized[0]:.4f}-{quantized[1]:.4f}-{dataset}",
+            name=f"NLCD Land Cover ({vintage_year})",
+            layer_type="raster",
+            uri=result.uri,
+            style_preset="categorical_landcover",
+            role="input",
+            units="nlcd_class_code",
+        )
+        return {
+            "layer": layer,
+            "nlcd_vintage_year": vintage_year,
+            "dataset": dataset,
+            "source": "mrlc-wms",
+        }
+
+    if dataset.startswith("esa_worldcover_"):
+        try:
+            vintage_year = int(dataset.rsplit("_", 1)[1])
+        except (IndexError, ValueError) as exc:
+            raise BboxInvalidError(
+                f"could not parse ESA WorldCover vintage year from dataset={dataset!r}; "
+                "expected 'esa_worldcover_YYYY' (e.g. 'esa_worldcover_2021')."
+            ) from exc
+        quantized = round_bbox_to_resolution(bbox, 10)  # ESA WorldCover is 10 m native
+        params = {"bbox": list(quantized), "dataset": dataset, "source": "esa-worldcover-stac"}
+        result = read_through(
+            metadata=_FETCH_LANDCOVER_METADATA,
+            params=params,
+            ext="tif",
+            fetch_fn=lambda: _fetch_esa_worldcover_bytes(quantized, vintage_year),
+        )
+        assert result.uri is not None
+        layer = LayerURI(
+            layer_id=f"landcover-{quantized[0]:.4f}-{quantized[1]:.4f}-{dataset}",
+            name=f"ESA WorldCover ({vintage_year})",
+            layer_type="raster",
+            uri=result.uri,
+            style_preset="categorical_landcover",
+            role="input",
+            units="esa_worldcover_class_code",
+        )
+        return {
+            "layer": layer,
+            "nlcd_vintage_year": None,  # ESA WorldCover is not NLCD
+            "esa_worldcover_vintage_year": vintage_year,
+            "dataset": dataset,
+            "source": "esa-worldcover-stac",
+        }
+
+    raise BboxInvalidError(
+        f"unsupported dataset={dataset!r}; allowed prefixes: 'nlcd_' (default, "
+        "Tier-1 CONUS), 'esa_worldcover_' (opt-in, forward-looking — not implemented)."
+    )
+
+
+# ---------------------------------------------------------------------------
+# fetch_river_geometry — NHDPlus HR (USGS) (sprint-07 Stage B, job-0039).
+# ---------------------------------------------------------------------------
+#
+# Access pattern tier — LIVE-VERIFIED matches kickoff inference (2026-06-07):
+#
+#   * USGS publishes NHDPlus HR as **HUC4-scoped FileGDB zip files** under
+#     ``prd-tnm.s3.amazonaws.com/StagedProducts/Hydrography/NHDPlusHR/Beta/
+#     GDB/NHDPLUS_H_<HUC4>_HU4_GDB.zip``. Live probe (HUC4 ``0309`` for the
+#     Fort Myers / Caloosahatchee region): HTTP 200, accept-ranges=bytes,
+#     content-length=151,111,923 (~144 MB).
+#   * No per-bbox query API exists for NHDPlus HR raw geometry — the only
+#     bbox-aware path is to download the HUC4 GDB and clip locally. The
+#     USGS National Map TNM Access REST API (`tnmaccess.nationalmap.gov`)
+#     returns the same download URL with file-size metadata.
+#   * The ``.zip`` URLs return HTTP 403, so we route through ``.GDB.zip``
+#     (the actual product file, not the wrapper zip).
+#
+# This is the **Tier 4 (region download + local clip)** pattern in §F.1.1.
+# Two-stage cache:
+#   - Stage 1: the HUC4 region GDB lives at
+#     ``cache/static-30d/river_geometry/_regions/NHDPLUS_H_<HUC4>_HU4_GDB.zip``
+#     (downloaded once per HUC4, shared across all clips inside that region).
+#   - Stage 2: the per-call clip at
+#     ``cache/static-30d/river_geometry/<hash>.fgb`` (the clipped FlatGeobuf
+#     under the bbox-quantized key).
+#
+# v0.1 substrate scope: the per-call clip extracts the NHDFlowline feature
+# class from the HUC4 GDB, clips by bbox, and writes a FlatGeobuf. The
+# implementation does NOT use the two-stage cache in v0.1 — the kickoff calls
+# for a single ``read_through`` write per call, and the GDB download is
+# inside the fetcher (so the HUC4 region is fetched fresh on every cache
+# miss). The two-stage optimization is captured as
+# OQ-39-NHDPLUSHR-TWO-STAGE-CACHE for a follow-up job.
+#
+# HUC4 routing: a bbox in EPSG:4326 must be mapped to a HUC4 region code.
+# Per the kickoff's per-source bbox quantization rule: "NHDPlus HR: HUC4-
+# scoped (region-download Tier 4); cache key includes HUC4 region per §F.1.1
+# Tier-4 discipline." The v0.1 substrate uses a small **bbox → HUC4
+# heuristic envelope table** (mirrors the ``_state_fips_for_lonlat``
+# heuristic from job-0033 — Fort Myers / Caloosahatchee = HUC4 ``0309``);
+# replacement with a real point-in-polygon over the WBD HUC4 dataset is a
+# tracked follow-up. Surface as OQ-39-NHDPLUSHR-HUC4-ROUTING-HEURISTIC.
+
+
+_FETCH_RIVER_GEOMETRY_METADATA = AtomicToolMetadata(
+    name="fetch_river_geometry",
+    ttl_class="static-30d",
+    source_class="river_geometry",
+    cacheable=True,
+)
+
+
+# NHDPlus HR staged-products S3 base. HUC4 GDB at
+# ``StagedProducts/Hydrography/NHDPlusHR/Beta/GDB/NHDPLUS_H_<HUC4>_HU4_GDB.zip``.
+_NHDPLUSHR_BASE = (
+    "https://prd-tnm.s3.amazonaws.com/StagedProducts/Hydrography/NHDPlusHR/Beta/GDB"
+)
+
+
+# Heuristic bbox → HUC4 region code. Each entry is (HUC4 code, envelope bbox).
+# CONUS-centric for v0.1; HUC4 0309 covers the Fort Myers / Caloosahatchee
+# region (the M5 demo target). Replacement with a real point-in-polygon over
+# the WBD HUC4 dataset is a tracked follow-up — see
+# OQ-39-NHDPLUSHR-HUC4-ROUTING-HEURISTIC.
+_HUC4_BBOX_ENVELOPES: list[tuple[str, tuple[float, float, float, float]]] = [
+    # Florida — South Florida (Caloosahatchee, Big Cypress, Everglades)
+    ("0309", (-82.0, 25.0, -80.0, 27.5)),
+    # Florida — Peninsular (Tampa Bay south to about Lake Okeechobee)
+    ("0310", (-82.9, 26.7, -80.5, 28.7)),
+    # Florida — Suwannee / North Florida
+    ("0311", (-83.7, 28.5, -82.0, 31.0)),
+    # Texas — Lower Colorado (Houston / Galveston Bay)
+    ("1209", (-96.0, 28.0, -93.5, 31.5)),
+    # Louisiana — Lower Mississippi
+    ("0807", (-91.5, 28.5, -89.0, 31.0)),
+    # New York — Hudson (Hurricane Sandy reference region)
+    ("0203", (-75.0, 40.5, -73.0, 43.0)),
+    # North Carolina — Cape Fear (Hurricane Florence reference region)
+    ("0303", (-79.5, 33.0, -77.0, 35.8)),
+    # California — South Coast (Los Angeles basin)
+    ("1807", (-119.0, 33.0, -117.0, 35.0)),
+]
+
+
+def _huc4_for_bbox(bbox: tuple[float, float, float, float]) -> str | None:
+    """Best-effort HUC4 lookup from a bbox center — heuristic only.
+
+    Returns ``None`` if no envelope matches. A future enrichment job replaces
+    this with a real point-in-polygon over the WBD HUC4 dataset cached in the
+    cache bucket. Same shape/role as the job-0033 ``_state_fips_for_lonlat``
+    heuristic and the job-0037 ``_iso3_for_lonlat`` heuristic.
+    """
+    mid_lon = 0.5 * (bbox[0] + bbox[2])
+    mid_lat = 0.5 * (bbox[1] + bbox[3])
+    for huc4, (mn_lon, mn_lat, mx_lon, mx_lat) in _HUC4_BBOX_ENVELOPES:
+        if mn_lon <= mid_lon <= mx_lon and mn_lat <= mid_lat <= mx_lat:
+            return huc4
+    return None
+
+
+def _fetch_nhdplushr_geometry_bytes(
+    bbox: tuple[float, float, float, float], huc4: str
+) -> bytes:
+    """Download the NHDPlus HR HUC4 GDB, extract NHDFlowline, clip by bbox, return FlatGeobuf.
+
+    Tier 4 access pattern: download the HUC4 region GDB (~144 MB for HUC4
+    0309 South Florida), extract the ``NHDFlowline`` feature class from the
+    GeoDatabase via OpenFileGDB driver (GDAL native), clip features whose
+    geometry intersects the bbox, and rewrite as FlatGeobuf. Raises
+    ``UpstreamAPIError`` on any download / extraction failure.
+
+    Implementation note: the substrate downloads the full HUC4 GDB on every
+    cache miss; the two-stage region-cache optimization is OQ-39-NHDPLUSHR-
+    TWO-STAGE-CACHE. For the Fort Myers demo path the per-bbox cache miss is
+    a one-time ~144 MB transfer, cached for 30 days.
+    """
+    _validate_bbox(bbox)
+    url = f"{_NHDPLUSHR_BASE}/NHDPLUS_H_{huc4}_HU4_GDB.zip"
+
+    # rasterio + geopandas/pyogrio import lazily.
+    try:
+        import geopandas as gpd  # type: ignore[import-not-found]
+        from shapely.geometry import box as shapely_box  # type: ignore[import-not-found]
+    except Exception as exc:  # noqa: BLE001
+        raise UpstreamAPIError(
+            f"geopandas / shapely unavailable for NHDPlus HR clip: {exc}"
+        ) from exc
+
+    import tempfile
+    import zipfile
+
+    zip_tmp: str | None = None
+    gdb_dir: str | None = None
+    out_tmp: str | None = None
+    try:
+        # Download the HUC4 GDB zip.
+        try:
+            resp = requests.get(
+                url,
+                headers={"User-Agent": _DEFAULT_USER_AGENT},
+                timeout=300.0,
+                stream=True,
+                allow_redirects=True,
+            )
+            if resp.status_code == 404:
+                raise UpstreamAPIError(
+                    f"NHDPlus HR HUC4 GDB not found at {url} (huc4={huc4}); "
+                    "the staged-products tree may have moved — verify the base path."
+                )
+            resp.raise_for_status()
+        except requests.RequestException as exc:
+            raise UpstreamAPIError(
+                f"NHDPlus HR GDB download failed url={url}: {exc}"
+            ) from exc
+
+        with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as zf:
+            zip_tmp = zf.name
+            for chunk in resp.iter_content(chunk_size=1 << 20):
+                if chunk:
+                    zf.write(chunk)
+
+        # Extract the GDB directory.
+        gdb_dir = tempfile.mkdtemp(prefix="nhdplushr-")
+        try:
+            with zipfile.ZipFile(zip_tmp) as zfh:
+                zfh.extractall(gdb_dir)
+        except zipfile.BadZipFile as exc:
+            raise UpstreamAPIError(
+                f"NHDPlus HR HUC4 GDB zip is corrupt or empty for huc4={huc4}: {exc}"
+            ) from exc
+
+        # Find the .gdb directory inside the extracted tree.
+        import os as _os
+
+        gdb_path: str | None = None
+        for root, dirs, _files in _os.walk(gdb_dir):
+            for d in dirs:
+                if d.endswith(".gdb"):
+                    gdb_path = _os.path.join(root, d)
+                    break
+            if gdb_path:
+                break
+        if gdb_path is None:
+            raise UpstreamAPIError(
+                f"could not find .gdb directory in extracted NHDPlus HR archive "
+                f"for huc4={huc4} (extracted under {gdb_dir})"
+            )
+
+        # Read NHDFlowline, clip by bbox, write FlatGeobuf.
+        try:
+            gdf = gpd.read_file(gdb_path, layer="NHDFlowline", bbox=bbox)
+        except Exception as exc:  # noqa: BLE001
+            raise UpstreamAPIError(
+                f"geopandas could not read NHDFlowline from {gdb_path}: {exc}"
+            ) from exc
+
+        # Clip by bbox polygon for tight precision (geopandas bbox read is
+        # a spatial filter, not a clip — features extending outside the bbox
+        # are returned whole; clip trims them).
+        try:
+            bbox_geom = shapely_box(*bbox)
+            gdf_clipped = gdf.clip(bbox_geom)
+        except Exception as exc:  # noqa: BLE001
+            # Fall back to the unclipped result if clip fails (some geometry
+            # types don't clip cleanly); surface a warning in the log.
+            logger.warning("NHDPlus HR clip failed; returning bbox-filtered features: %s", exc)
+            gdf_clipped = gdf
+
+        with tempfile.NamedTemporaryFile(suffix=".fgb", delete=False) as ot:
+            out_tmp = ot.name
+        try:
+            gdf_clipped.to_file(out_tmp, driver="FlatGeobuf")
+        except Exception as exc:  # noqa: BLE001
+            raise UpstreamAPIError(
+                f"FlatGeobuf write failed for NHDPlus HR clip (huc4={huc4}, bbox={bbox}): {exc}"
+            ) from exc
+
+        with open(out_tmp, "rb") as f:
+            return f.read()
+    finally:
+        # Best-effort cleanup of all tmp paths.
+        for path in (zip_tmp, out_tmp):
+            if path is None:
+                continue
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+        if gdb_dir is not None:
+            try:
+                import shutil
+
+                shutil.rmtree(gdb_dir, ignore_errors=True)
+            except Exception:  # noqa: BLE001
+                pass
+
+
+@register_tool(_FETCH_RIVER_GEOMETRY_METADATA)
+def fetch_river_geometry(
+    bbox: tuple[float, float, float, float],
+    source: str = "nhdplus_hr",
+) -> LayerURI:
+    """Fetch river / stream geometry for a bbox from NHDPlus HR (USGS).
+
+    Use this when: the agent needs flowline geometry for SFINCS / HydroMT
+    river-burning into the DEM hydro-conditioning step, for fluvial flood
+    workflows, for stream-network visualization, or for watershed-boundary
+    feature extraction. NHDPlus HR is the highest-resolution USGS hydrography
+    product (1:24,000) and covers CONUS + Alaska.
+
+    Do NOT use this for: real-time streamflow values (use ``fetch_streamflow``
+    against NWIS); flow-direction / accumulation grids (separate product —
+    derive from the DEM in HydroMT); coastal shorelines (use the appropriate
+    NOAA / USGS coastal vector product when it lands).
+
+    Access pattern: **Tier 4 (region download + local clip)** per §F.1.1.
+    NHDPlus HR is published as HUC4-scoped FileGDB zip files; the v0.1
+    substrate downloads the full HUC4 GDB (~144 MB for HUC4 0309 South
+    Florida) on every cache miss, extracts the NHDFlowline feature class,
+    clips by bbox, and writes a FlatGeobuf. The two-stage region cache
+    optimization (cache the HUC4 GDB separately under
+    ``cache/static-30d/river_geometry/_regions/``) is captured as
+    OQ-39-NHDPLUSHR-TWO-STAGE-CACHE.
+
+    Params:
+        bbox: ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326.
+        source: ``"nhdplus_hr"`` (default; NHDPlus High Resolution via USGS).
+            Future sources (NHDPlus V2 medium-resolution, MERIT-Hydro global)
+            are reserved as opt-in branches and currently raise
+            ``UpstreamAPIError``.
+
+    Returns:
+        A ``LayerURI`` pointing at a FlatGeobuf of NHDFlowline features
+        clipped to the bbox in the cache bucket. The URI is
+        ``gs://grace-2-hazard-prod-cache/cache/static-30d/river_geometry/<key>.fgb``;
+        ``layer_type="vector"``, ``style_preset="continuous_dem"`` (placeholder
+        until a hydrography preset lands), ``role="input"``.
+
+    FR-CE-8: The fetch is routed through ``read_through`` so identical
+    quantized-bbox + source calls reuse the cached FlatGeobuf (FR-DC-3/4).
+
+    Per-source quantization (acceptance criterion 3): the cache key
+    deliberately encodes the HUC4 region code so two clips inside the same
+    HUC4 with overlapping bboxes share a region context, while disjoint
+    HUC4s (e.g. South Florida 0309 vs South Coast California 1807) never
+    collide on a single cache key. The bbox itself is also snapped to a
+    10 m grid (NHDPlus HR is vector but 10 m is plenty for dedup boundary
+    stability at the bbox-edge level).
+    """
+    if source != "nhdplus_hr":
+        # Reserved future sources (NHDPlus V2, MERIT-Hydro) — not in v0.1.
+        raise BboxInvalidError(
+            f"unsupported source={source!r}; allowed: 'nhdplus_hr' (Tier-4 HUC4 GDB)."
+        )
+
+    _validate_bbox(bbox)
+    quantized = round_bbox_to_resolution(bbox, 10)
+
+    huc4 = _huc4_for_bbox(quantized)
+    if huc4 is None:
+        raise UpstreamAPIError(
+            f"could not route bbox={bbox} to a HUC4 region — bbox center is not "
+            "in any v0.1 envelope. NHDPlus HR needs a HUC4 to scope the download; "
+            "see OQ-39-NHDPLUSHR-HUC4-ROUTING-HEURISTIC for the WBD enrichment "
+            "follow-up that would resolve any CONUS bbox."
+        )
+
+    # Guardrail: NHDPlus HR HUC4 GDBs are ~100-200 MB each; refuse multi-HUC4
+    # bboxes here (the simpler heuristic does not stitch across HUC4 regions).
+    # 5,000 km^2 is well under typical single-HUC4 coverage; explicit bound.
+    if _bbox_area_km2(quantized) > 5_000.0:
+        raise BboxInvalidError(
+            f"bbox area {_bbox_area_km2(quantized):.1f} km^2 exceeds 5000 km^2 "
+            "guardrail for fetch_river_geometry (multi-HUC4 stitching is out of "
+            "scope for v0.1 — use a smaller bbox or a future tiled workflow)."
+        )
+
+    # Cache key includes the HUC4 code per Tier-4 discipline so two callers
+    # in the same HUC4 dedup, while two callers in different HUC4s never collide.
+    params = {
+        "bbox": list(quantized),
+        "source": source,
+        "huc4": huc4,
+    }
+    result = read_through(
+        metadata=_FETCH_RIVER_GEOMETRY_METADATA,
+        params=params,
+        ext="fgb",
+        fetch_fn=lambda: _fetch_nhdplushr_geometry_bytes(quantized, huc4),
+    )
+    assert result.uri is not None
+    return LayerURI(
+        layer_id=f"rivers-{quantized[0]:.4f}-{quantized[1]:.4f}-huc4-{huc4}",
+        name=f"NHDPlus HR Flowlines (HUC4 {huc4})",
+        layer_type="vector",
+        uri=result.uri,
+        style_preset="continuous_dem",  # placeholder — hydrography preset is a follow-up
+        role="input",
+    )
+
+
+# ---------------------------------------------------------------------------
+# lookup_precip_return_period — NOAA Atlas 14 PFDS (sprint-07 Stage B, job-0039).
+# ---------------------------------------------------------------------------
+#
+# Access pattern tier — LIVE-VERIFIED matches kickoff inference (2026-06-07):
+#
+#   * NWS HDSC publishes the Precipitation Frequency Data Server (PFDS) as a
+#     point-query CSV endpoint at ``hdsc.nws.noaa.gov/cgi-bin/hdsc/new/
+#     fe_text_mean.csv?lat=&lon=&data=depth&units=english&series=pds``.
+#     Live probe at (lat=26.6, lon=-81.9) — Fort Myers FL — returned an HTTP
+#     200 with a 1598-byte CSV: header rows naming "NOAA Atlas 14 Volume 9
+#     Version 2" + "Project area: Southeastern States", then a matrix of
+#     precipitation depths (inches) indexed by duration (5-min, 10-min, …,
+#     60-day) × ARI (1, 2, 5, …, 1000 years).
+#   * Per-coordinate / point-only query surface — no native bbox lookup. The
+#     fetcher routes by ``location=(lat, lon)`` quantized to Atlas 14's native
+#     source grid (1/120 degree, per the kickoff's per-source quantization
+#     rule).
+#
+# This is the **Tier 3 (direct HTTPS + Range-irrelevant point query)**
+# pattern in §F.1.1 — small textual responses keyed by point coordinates.
+# Cache key is bbox-equivalent: the quantized (lat, lon) tuple per the
+# 1/120-degree source grid; ARI + duration are part of the params.
+
+
+_LOOKUP_PRECIP_RETURN_PERIOD_METADATA = AtomicToolMetadata(
+    name="lookup_precip_return_period",
+    ttl_class="static-30d",
+    source_class="precip_return_period",
+    cacheable=True,
+)
+
+
+_ATLAS14_PFDS_URL = "https://hdsc.nws.noaa.gov/cgi-bin/hdsc/new/fe_text_mean.csv"
+
+#: Atlas 14 native source grid: 1/120 degree (≈ 30 arc-seconds).
+_ATLAS14_GRID_DEG = 1.0 / 120.0
+
+#: The ARI (Average Recurrence Interval) columns Atlas 14 reports — fixed.
+_ATLAS14_ARI_YEARS = [1, 2, 5, 10, 25, 50, 100, 200, 500, 1000]
+
+#: The duration rows Atlas 14 reports — fixed across volumes.
+#: Each entry maps the CSV row label (key) to its duration in hours (value).
+_ATLAS14_DURATIONS_HR: dict[str, float] = {
+    "5-min": 5 / 60,
+    "10-min": 10 / 60,
+    "15-min": 15 / 60,
+    "30-min": 30 / 60,
+    "60-min": 1.0,
+    "2-hr": 2.0,
+    "3-hr": 3.0,
+    "6-hr": 6.0,
+    "12-hr": 12.0,
+    "24-hr": 24.0,
+    "2-day": 48.0,
+    "3-day": 72.0,
+    "4-day": 96.0,
+    "7-day": 168.0,
+    "10-day": 240.0,
+    "20-day": 480.0,
+    "30-day": 720.0,
+    "45-day": 1080.0,
+    "60-day": 1440.0,
+}
+
+
+def _quantize_lonlat_to_atlas14_grid(
+    lat: float, lon: float
+) -> tuple[float, float]:
+    """Quantize a (lat, lon) pair to Atlas 14's 1/120-degree native grid.
+
+    Per the per-source bbox quantization rule (acceptance criterion 3 of
+    the kickoff): Atlas 14 PFDS is reported on a 1/120-degree source grid.
+    We snap to the nearest grid intersection so two callers within the same
+    grid cell hit the same cache entry.
+    """
+    if not math.isfinite(lat) or not math.isfinite(lon):
+        raise BboxInvalidError(f"non-finite location ({lat!r}, {lon!r})")
+    if not (-90.0 <= lat <= 90.0):
+        raise BboxInvalidError(f"latitude out of range [-90,90]: {lat!r}")
+    if not (-180.0 <= lon <= 180.0):
+        raise BboxInvalidError(f"longitude out of range [-180,180]: {lon!r}")
+    lat_q = round(lat / _ATLAS14_GRID_DEG) * _ATLAS14_GRID_DEG
+    lon_q = round(lon / _ATLAS14_GRID_DEG) * _ATLAS14_GRID_DEG
+    return round(lat_q, 9), round(lon_q, 9)
+
+
+def _parse_atlas14_csv(body: str) -> dict[str, Any]:
+    """Parse the Atlas 14 PFDS CSV into a structured dict.
+
+    The PFDS CSV is a small textual document — header lines naming the
+    volume / version / project area, then a matrix indexed by duration × ARI.
+    We surface both the full matrix and a top-level ``vintage_volume`` field
+    for provenance (e.g. "NOAA Atlas 14 Volume 9 Version 2").
+    """
+    vintage_volume = "unknown"
+    project_area = "unknown"
+    lines = body.splitlines()
+    matrix: dict[str, dict[int, float]] = {}
+    for raw in lines:
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith("NOAA Atlas 14"):
+            vintage_volume = line
+            continue
+        if line.startswith("Project area:"):
+            project_area = line.split(":", 1)[1].strip()
+            continue
+        # Duration rows look like ``5-min:, 0.553,0.620,...``.
+        if ":" not in line:
+            continue
+        label, _, values_str = line.partition(":")
+        label = label.strip()
+        if label not in _ATLAS14_DURATIONS_HR:
+            continue
+        values_clean = [v.strip() for v in values_str.split(",") if v.strip()]
+        if len(values_clean) != len(_ATLAS14_ARI_YEARS):
+            continue
+        try:
+            depths = [float(v) for v in values_clean]
+        except ValueError:
+            continue
+        matrix[label] = {ari: depth for ari, depth in zip(_ATLAS14_ARI_YEARS, depths)}
+    return {
+        "vintage_volume": vintage_volume,
+        "project_area": project_area,
+        "matrix": matrix,
+    }
+
+
+def _fetch_atlas14_pfds_bytes(lat: float, lon: float) -> bytes:
+    """Fetch the Atlas 14 PFDS CSV at (lat, lon) and return raw response bytes.
+
+    Tier 3 access pattern: HTTPS GET with the location as a query parameter,
+    text/csv (well, text/html with CSV body — see the parser for the body
+    shape). The bytes returned are the verbatim Atlas 14 response so
+    downstream re-parsing is possible without a re-fetch.
+    """
+    try:
+        resp = requests.get(
+            _ATLAS14_PFDS_URL,
+            params={
+                "lat": str(lat),
+                "lon": str(lon),
+                "data": "depth",
+                "units": "english",
+                "series": "pds",  # partial-duration series — Atlas 14 convention
+            },
+            headers={"User-Agent": _DEFAULT_USER_AGENT},
+            timeout=30.0,
+        )
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        raise UpstreamAPIError(
+            f"NOAA Atlas 14 PFDS fetch failed for (lat={lat}, lon={lon}): {exc}"
+        ) from exc
+
+    body = resp.text
+    if "NOAA Atlas 14" not in body:
+        # The PFDS returns an HTML "out of project area" page if the point
+        # falls outside Atlas 14 coverage; surface that as a typed error.
+        raise UpstreamAPIError(
+            f"NOAA Atlas 14 PFDS returned no precip-frequency data for "
+            f"(lat={lat}, lon={lon}) — point may be outside the Atlas 14 "
+            f"project areas (Western US: V1; SW: V2; ... ; OCONUS: not yet)."
+        )
+    return body.encode("utf-8")
+
+
+def _pick_duration_label(duration_hours: float) -> str:
+    """Find the Atlas 14 duration row whose hours match ``duration_hours`` exactly.
+
+    Atlas 14 reports a fixed set of durations (5-min through 60-day). We
+    require an exact match against the known set so the caller can't ask
+    for an interpolated value (Atlas 14 doesn't publish interpolations and
+    we don't fabricate them — Invariant 7).
+    """
+    for label, hrs in _ATLAS14_DURATIONS_HR.items():
+        if abs(hrs - duration_hours) < 1e-9:
+            return label
+    available_hr = sorted(_ATLAS14_DURATIONS_HR.values())
+    raise BboxInvalidError(
+        f"duration_hours={duration_hours} not in Atlas 14's published rows "
+        f"(available hours: {available_hr})."
+    )
+
+
+@register_tool(_LOOKUP_PRECIP_RETURN_PERIOD_METADATA)
+def lookup_precip_return_period(
+    location: tuple[float, float],
+    return_period_years: int,
+    duration_hours: float,
+) -> dict[str, Any]:
+    """Look up a precipitation return-period depth at a point via NOAA Atlas 14 PFDS.
+
+    Use this when: the agent needs a design-storm precipitation depth for
+    a pluvial flood scenario, an SFINCS forcing reconstruction
+    (``run_pluvial_flood`` workflow), or to characterize a published storm
+    by its return-period equivalence. Atlas 14 publishes precipitation
+    frequency estimates for the contiguous United States (broken into
+    several volumes by region) plus Puerto Rico / US Virgin Islands.
+
+    Do NOT use this for: observed precipitation totals (use NWIS / MRMS QPE
+    / NEXRAD for measurements); future-climate projections (Atlas 14 is
+    based on historical records — Atlas 15, in development, will integrate
+    nonstationarity); locations outside the contiguous US (Atlas 14's
+    OCONUS coverage is partial; Alaska, Hawaii, and Pacific Islands are not
+    in the v0.1 substrate).
+
+    Access pattern: **Tier 3 (direct HTTPS, point-query, CSV response)** per
+    §F.1.1. The kickoff inferred Tier 3 and live verification (2026-06-07)
+    confirmed: ``hdsc.nws.noaa.gov/cgi-bin/hdsc/new/fe_text_mean.csv`` accepts
+    ``lat``, ``lon``, ``data=depth``, ``units=english``, ``series=pds`` query
+    parameters and returns a 1.5-KB CSV with a duration × ARI matrix and a
+    ``NOAA Atlas 14 Volume <N> Version <V>`` provenance line. Live tier
+    matches kickoff tier.
+
+    Params:
+        location: ``(lat, lon)`` in decimal degrees, EPSG:4326. Atlas 14's
+            native source grid is 1/120 degree (~ 30 arc-seconds); the
+            fetcher quantizes to that grid before the cache key is computed.
+        return_period_years: ARI (Average Recurrence Interval) in years.
+            Atlas 14 publishes ARIs in ``{1, 2, 5, 10, 25, 50, 100, 200,
+            500, 1000}``; values outside this set raise
+            ``BboxInvalidError``.
+        duration_hours: Storm duration in hours. Atlas 14 publishes
+            durations from 5 minutes (5/60 hours) to 60 days (1440 hours);
+            values outside the published row set raise ``BboxInvalidError``.
+
+    Returns:
+        A dict with the following keys:
+
+        - ``precip_inches``: the precipitation depth in inches (float).
+        - ``units``: ``"inches"`` (Atlas 14 default; ``units=metric`` opt-in
+          is forward-looking).
+        - ``location``: ``[lat, lon]`` of the *quantized* point (not the
+          input), so the caller can see the snap.
+        - ``return_period_years``: the ARI used (echo).
+        - ``duration_hours``: the duration used (echo).
+        - ``vintage_volume``: the Atlas 14 volume + version provenance string
+          (e.g. ``"NOAA Atlas 14 Volume 9 Version 2"``).
+        - ``project_area``: the Atlas 14 project area name (e.g.
+          ``"Southeastern States"``).
+        - ``source``: ``"noaa-atlas14-pfds"``.
+
+    FR-CE-8: The fetch is routed through ``read_through`` so identical
+    quantized-(lat, lon) + ARI + duration calls reuse the cached PFDS CSV
+    (FR-DC-3/4). The cache key encodes the quantized location, ARI, and
+    duration; a miss writes the CSV body.
+
+    Per-source quantization (acceptance criterion 3): the location is
+    snapped to Atlas 14's 1/120-degree native source grid before the cache
+    key is computed (so callers within the same Atlas 14 grid cell dedup).
+    """
+    if not isinstance(location, (tuple, list)) or len(location) != 2:
+        raise BboxInvalidError(
+            f"location must be a (lat, lon) 2-tuple; got {location!r}"
+        )
+    if return_period_years not in _ATLAS14_ARI_YEARS:
+        raise BboxInvalidError(
+            f"return_period_years={return_period_years} not in Atlas 14's published "
+            f"ARIs {_ATLAS14_ARI_YEARS}."
+        )
+    duration_label = _pick_duration_label(duration_hours)
+
+    lat, lon = float(location[0]), float(location[1])
+    lat_q, lon_q = _quantize_lonlat_to_atlas14_grid(lat, lon)
+
+    params = {
+        "lat": lat_q,
+        "lon": lon_q,
+        "return_period_years": return_period_years,
+        "duration_label": duration_label,
+        "series": "pds",
+        "units": "english",
+    }
+    result = read_through(
+        metadata=_LOOKUP_PRECIP_RETURN_PERIOD_METADATA,
+        params=params,
+        ext="csv",
+        fetch_fn=lambda: _fetch_atlas14_pfds_bytes(lat_q, lon_q),
+    )
+
+    parsed = _parse_atlas14_csv(result.data.decode("utf-8"))
+    matrix = parsed["matrix"]
+    if duration_label not in matrix or return_period_years not in matrix[duration_label]:
+        raise UpstreamAPIError(
+            f"NOAA Atlas 14 PFDS response did not contain "
+            f"duration={duration_label} × ARI={return_period_years} for "
+            f"(lat={lat_q}, lon={lon_q}); parsed matrix labels: "
+            f"{list(matrix.keys())[:5]}..."
+        )
+    depth_inches = matrix[duration_label][return_period_years]
+    payload = {
+        "precip_inches": depth_inches,
+        "units": "inches",
+        "location": [lat_q, lon_q],
+        "return_period_years": return_period_years,
+        "duration_hours": duration_hours,
+        "vintage_volume": parsed["vintage_volume"],
+        "project_area": parsed["project_area"],
+        "source": "noaa-atlas14-pfds",
+    }
+    logger.info(
+        "lookup_precip_return_period (lat=%s lon=%s ari=%s dur=%s) -> %.3f inches cache_hit=%s",
+        lat_q,
+        lon_q,
+        return_period_years,
+        duration_label,
+        depth_inches,
         result.hit,
     )
     return payload

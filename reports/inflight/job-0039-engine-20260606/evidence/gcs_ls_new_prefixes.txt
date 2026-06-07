@@ -1,0 +1,48 @@
+gs://grace-2-hazard-prod-cache/cache/static-30d/landcover/56bad09bfa8a71d502ed61badc785a00.tif:
+  Creation Time:               2026-06-07T08:04:00Z
+  Update Time:                 2026-06-07T08:04:00Z
+  Storage Class Update Time:   2026-06-07T08:04:00Z
+  Storage Class:               STANDARD
+  Cache-Control:               public, max-age=2592000
+  Content-Length:              194837
+  Content-Type:                image/tiff
+  Custom-Time:                 2026-06-07T08:04:00Z
+  Hash (CRC32C):               TQk4sA==
+  Hash (MD5):                  0NMMPqucsLRYHdv0eEiUhA==
+  ETag:                        CKPonbHV9JQDEAE=
+  Generation:                  1780819440399395
+  Metageneration:              1
+  ACL:                         []
+TOTAL: 1 objects, 194837 bytes (190.27kiB)
+gs://grace-2-hazard-prod-cache/cache/static-30d/river_geometry/66f7c0ca862d1eae948f20d5c2d493c0.fgb:
+  Creation Time:               2026-06-07T08:05:19Z
+  Update Time:                 2026-06-07T08:05:19Z
+  Storage Class Update Time:   2026-06-07T08:05:19Z
+  Storage Class:               STANDARD
+  Cache-Control:               public, max-age=2592000
+  Content-Length:              229296
+  Content-Type:                application/octet-stream
+  Custom-Time:                 2026-06-07T08:05:19Z
+  Hash (CRC32C):               Lkk+jw==
+  Hash (MD5):                  ZlmdkYeeDbgwFAW55n/ATw==
+  ETag:                        CJbyg9fV9JQDEAE=
+  Generation:                  1780819519666454
+  Metageneration:              1
+  ACL:                         []
+TOTAL: 1 objects, 229296 bytes (223.92kiB)
+gs://grace-2-hazard-prod-cache/cache/static-30d/precip_return_period/e17f48060ebcc1a0338a8f16c6bf0ec2.csv:
+  Creation Time:               2026-06-07T08:04:21Z
+  Update Time:                 2026-06-07T08:04:21Z
+  Storage Class Update Time:   2026-06-07T08:04:21Z
+  Storage Class:               STANDARD
+  Cache-Control:               public, max-age=2592000
+  Content-Length:              1597
+  Content-Type:                application/octet-stream
+  Custom-Time:                 2026-06-07T08:04:21Z
+  Hash (CRC32C):               OzCksQ==
+  Hash (MD5):                  MvcqqfDFM6ljwSi6pitJrw==
+  ETag:                        COjtnLvV9JQDEAE=
+  Generation:                  1780819461355240
+  Metageneration:              1
+  ACL:                         []
+TOTAL: 1 objects, 1597 bytes (1.56kiB)

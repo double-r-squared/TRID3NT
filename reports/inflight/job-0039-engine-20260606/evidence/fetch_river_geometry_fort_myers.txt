@@ -1,0 +1,13 @@
+/home/nate/Documents/GRACE-2/.venv-agent/lib/python3.13/site-packages/pyogrio/raw.py:200: UserWarning: Measured (M) geometry types are not supported. Original type 'Measured 3D MultiLineString' is converted to 'MultiLineString Z'
+  return ogr_read(
+2026-06-07 01:05:19,198 INFO pyogrio._io Created 567 records
+2026-06-07 01:05:19,735 INFO grace2_agent.tools.cache read_through miss-write tool=fetch_river_geometry key=66f7c0ca862d1eae948f20d5c2d493c0 bytes=229296 customTime=2026-06-07T08:05:19.394639+00:00
+>>> Calling fetch_river_geometry((-81.92, 26.55, -81.80, 26.68), source='nhdplus_hr') ...
+>>> (NHDPlus HR HUC4 GDB is ~144 MB; first-call wall-clock dominated by download)
+
+>>> elapsed: 26.6s
+>>> LayerURI: layer_id=rivers--81.9201-26.5499-huc4-0309
+>>>          name=NHDPlus HR Flowlines (HUC4 0309)
+>>>          layer_type=vector
+>>>          style_preset=continuous_dem
+>>>          uri=gs://grace-2-hazard-prod-cache/cache/static-30d/river_geometry/66f7c0ca862d1eae948f20d5c2d493c0.fgb

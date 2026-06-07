@@ -125,12 +125,18 @@ def test_geocode_location_is_registered_with_dynamic_1h():
     assert entry.metadata.cacheable is True
 
 
-def test_registry_contains_six_tools_after_eager_import():
-    """job-0033 acceptance: 2 pass-throughs + 4 fetchers = 6 tools.
+def test_registry_contains_job_0039_subset_after_eager_import():
+    """job-0039 acceptance: this job's 3 new fetchers are registered + M4 fetchers + passthroughs.
 
-    job-0034 lands ``qgis_discovery`` in parallel — if that import has fired
-    before this test runs, expect 8. Either count is acceptable per the
-    Stage C kickoff.
+    Inside the test process, the eager-import surface is whatever the test
+    module triggers — ``tools/__init__.py`` (passthroughs, FROZEN) + the
+    explicit ``import grace2_agent.tools.data_fetch`` at the top of this
+    test file (which fires this job's three new ``@register_tool``
+    decorators alongside the M4 four). Parallel sprint-07 imports
+    (``qgis_discovery`` from job-0034, ``solver`` from job-0041) are
+    triggered by ``main._import_tools_registry()`` — see the
+    ``--startup-only`` evidence below for the live ≥11-tool assertion the
+    kickoff calls out.
     """
     names = set(TOOL_REGISTRY.keys())
     expected_subset = {
@@ -140,9 +146,16 @@ def test_registry_contains_six_tools_after_eager_import():
         "fetch_buildings",
         "fetch_population",
         "geocode_location",
+        # job-0039 (this job):
+        "fetch_landcover",
+        "fetch_river_geometry",
+        "lookup_precip_return_period",
     }
-    assert expected_subset.issubset(names)
-    assert len(names) in (6, 7, 8)
+    assert expected_subset.issubset(names), f"missing: {expected_subset - names}"
+    # 2 passthroughs + 4 M4 fetchers + 3 new fetchers = 9 minimum in test
+    # context; ≥9 tolerates qgis_discovery / solver / pipeline-emitter
+    # imports landing in parallel.
+    assert len(names) >= 9
 
 
 # ---------------------------------------------------------------------------
@@ -525,3 +538,450 @@ def test_main_bind_mcp_client_helper_wires_through(monkeypatch):
         assert passthroughs._MCP_CLIENT is stub
     finally:
         passthroughs.set_mcp_client(None)
+
+
+# ---------------------------------------------------------------------------
+# job-0039 — fetch_landcover (NLCD MRLC WMS).
+# ---------------------------------------------------------------------------
+
+
+from grace2_agent.tools.data_fetch import (  # noqa: E402 — after main test surface
+    fetch_landcover,
+    fetch_river_geometry,
+    lookup_precip_return_period,
+)
+
+
+def test_fetch_landcover_is_registered_with_static_30d():
+    """Registration assertion: ``fetch_landcover`` registered with the right metadata."""
+    entry = TOOL_REGISTRY["fetch_landcover"]
+    assert entry.metadata.ttl_class == "static-30d"
+    assert entry.metadata.source_class == "landcover"
+    assert entry.metadata.cacheable is True
+
+
+def test_fetch_landcover_docstring_records_access_tier():
+    """§F.1.1 docstring discipline: tier name MUST appear in the docstring.
+
+    Live verification (2026-06-07) found NLCD is **Tier 2 (OGC service —
+    MRLC WMS)**, NOT the Tier 3 the kickoff inferred. Either tier label
+    must be present (we want to enforce *some* tier is named, not which one
+    — the deviation is captured as OQ-39-NLCD-TIER-DEVIATION).
+    """
+    doc = fetch_landcover.__doc__ or ""
+    assert "Access pattern:" in doc, "docstring must name the access tier per §F.1.1"
+    assert "Tier" in doc, "docstring must name the access tier per §F.1.1"
+
+
+def test_fetch_landcover_returns_nlcd_vintage_year_sidecar(monkeypatch):
+    """Invariant 7 mitigation per OQ-4 §4: vintage year MUST be sidecar to LayerURI.
+
+    ``build_sfincs_model`` (job-0042) consumes the vintage year to validate
+    the Manning's mapping CSV covers the NLCD class encoding before the
+    HydroMT roughness component is invoked. Skipping this would surface the
+    silent-wrong-answer failure mode HydroMT exhibits for unmatched classes.
+
+    Because ``LayerURI`` is FROZEN with ``extra="forbid"``, the sidecar is
+    a top-level key on the returned dict, NOT a LayerURI field. The kickoff's
+    example syntax ``LayerURI.metadata[...]`` is illustrative — see
+    OQ-39-LANDCOVER-RETURN-SHAPE-CONTRACT-PROMOTION.
+    """
+    fake_storage = FakeStorageClient()
+    from grace2_agent.tools import cache as cache_mod
+
+    monkeypatch.setattr(
+        data_fetch,
+        "_fetch_nlcd_landcover_bytes",
+        lambda bbox, year: b"FAKE_NLCD_GEOTIFF_BYTES",
+    )
+    monkeypatch.setattr(
+        data_fetch,
+        "read_through",
+        lambda *a, **kw: cache_mod.read_through(
+            *a, storage_client=fake_storage, now=PINNED_NOW, **kw
+        ),
+    )
+
+    result = fetch_landcover(FORT_MYERS_BBOX, dataset="nlcd_2021")
+    assert isinstance(result, dict), "fetch_landcover returns a dict (LayerURI + sidecar)"
+    assert "layer" in result, "dict must carry the LayerURI under key 'layer'"
+    assert "nlcd_vintage_year" in result, "Invariant 7 sidecar required"
+    assert result["nlcd_vintage_year"] == 2021
+    assert result["dataset"] == "nlcd_2021"
+    assert result["source"] == "mrlc-wms"
+
+    layer = result["layer"]
+    assert layer.layer_type == "raster"
+    assert layer.style_preset == "categorical_landcover"
+    assert layer.units == "nlcd_class_code"
+    assert layer.uri.startswith(
+        "gs://grace-2-hazard-prod-cache/cache/static-30d/landcover/"
+    )
+    assert layer.uri.endswith(".tif")
+
+
+def test_fetch_landcover_routes_through_read_through_writes_cache(monkeypatch):
+    """FR-CE-8: ``fetch_landcover`` routes through ``read_through`` (cache shim)."""
+    fake_storage = FakeStorageClient()
+    from grace2_agent.tools import cache as cache_mod
+
+    monkeypatch.setattr(
+        data_fetch,
+        "_fetch_nlcd_landcover_bytes",
+        lambda bbox, year: b"FAKE_NLCD_GEOTIFF_BYTES",
+    )
+    monkeypatch.setattr(
+        data_fetch,
+        "read_through",
+        lambda *a, **kw: cache_mod.read_through(
+            *a, storage_client=fake_storage, now=PINNED_NOW, **kw
+        ),
+    )
+
+    fetch_landcover(FORT_MYERS_BBOX, dataset="nlcd_2021")
+    # Cache landed at .tif under the landcover prefix.
+    paths = list(fake_storage.store.keys())
+    assert len(paths) == 1
+    assert paths[0].startswith("cache/static-30d/landcover/")
+    assert paths[0].endswith(".tif")
+    assert fake_storage.store[paths[0]] == b"FAKE_NLCD_GEOTIFF_BYTES"
+    # customTime set per FR-DC-3.
+    blob = fake_storage._bucket.blobs[-1]
+    assert blob.custom_time is not None
+
+
+def test_fetch_landcover_quantizes_bbox_to_30m_nlcd_grid(monkeypatch):
+    """Per-source quantization (acceptance criterion 3): NLCD 30 m native grid.
+
+    Two callers whose bbox edges differ by sub-meter floats at 30 m
+    resolution should hit the same cache key (dedup-via-quantization).
+    """
+    fake_storage = FakeStorageClient()
+    from grace2_agent.tools import cache as cache_mod
+
+    monkeypatch.setattr(
+        data_fetch,
+        "_fetch_nlcd_landcover_bytes",
+        lambda bbox, year: b"FAKE_NLCD_GEOTIFF_BYTES",
+    )
+    monkeypatch.setattr(
+        data_fetch,
+        "read_through",
+        lambda *a, **kw: cache_mod.read_through(
+            *a, storage_client=fake_storage, now=PINNED_NOW, **kw
+        ),
+    )
+
+    base = (-81.9000001, 26.5500001, -81.8000001, 26.6800001)
+    jitter = (-81.9000002, 26.5500002, -81.8000002, 26.6800002)
+    r1 = fetch_landcover(base, dataset="nlcd_2021")
+    r2 = fetch_landcover(jitter, dataset="nlcd_2021")
+    # Both should hit the same cache entry (one stored path).
+    assert len(fake_storage.store) == 1
+    assert r1["layer"].uri == r2["layer"].uri
+
+
+def test_fetch_landcover_rejects_unknown_dataset():
+    with pytest.raises(BboxInvalidError):
+        fetch_landcover(FORT_MYERS_BBOX, dataset="usgs_nlcd_2023_v3")
+
+
+def test_fetch_landcover_esa_worldcover_not_implemented(monkeypatch):
+    """ESA WorldCover opt-in is reserved; v0.1 substrate raises UpstreamAPIError."""
+    fake_storage = FakeStorageClient()
+    from grace2_agent.tools import cache as cache_mod
+
+    monkeypatch.setattr(
+        data_fetch,
+        "read_through",
+        lambda *a, **kw: cache_mod.read_through(
+            *a, storage_client=fake_storage, now=PINNED_NOW, **kw
+        ),
+    )
+    with pytest.raises(UpstreamAPIError):
+        fetch_landcover(FORT_MYERS_BBOX, dataset="esa_worldcover_2021")
+
+
+def test_fetch_landcover_rejects_oversized_bbox():
+    """The 10000 km^2 guardrail rejects unrealistic single-call bboxes."""
+    huge = (-100.0, 25.0, -80.0, 45.0)  # ~2.2M km^2
+    with pytest.raises(BboxInvalidError):
+        fetch_landcover(huge, dataset="nlcd_2021")
+
+
+# ---------------------------------------------------------------------------
+# job-0039 — fetch_river_geometry (NHDPlus HR HUC4 region download).
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_river_geometry_is_registered_with_static_30d():
+    entry = TOOL_REGISTRY["fetch_river_geometry"]
+    assert entry.metadata.ttl_class == "static-30d"
+    assert entry.metadata.source_class == "river_geometry"
+    assert entry.metadata.cacheable is True
+
+
+def test_fetch_river_geometry_docstring_records_tier_4():
+    """§F.1.1 docstring discipline: Tier 4 (region download + local clip)."""
+    doc = fetch_river_geometry.__doc__ or ""
+    assert "Access pattern:" in doc
+    assert "Tier 4" in doc
+
+
+def test_fetch_river_geometry_happy_path_returns_layer_uri(monkeypatch):
+    """Mocked NHDPlus HR fetcher + mocked GCS → LayerURI with HUC4 code in layer_id."""
+    fake_storage = FakeStorageClient()
+    from grace2_agent.tools import cache as cache_mod
+
+    monkeypatch.setattr(
+        data_fetch,
+        "_fetch_nhdplushr_geometry_bytes",
+        lambda bbox, huc4: b"FAKE_FLATGEOBUF_BYTES",
+    )
+    monkeypatch.setattr(
+        data_fetch,
+        "read_through",
+        lambda *a, **kw: cache_mod.read_through(
+            *a, storage_client=fake_storage, now=PINNED_NOW, **kw
+        ),
+    )
+
+    layer = fetch_river_geometry(FORT_MYERS_BBOX)
+    assert layer.layer_type == "vector"
+    assert layer.uri.startswith(
+        "gs://grace-2-hazard-prod-cache/cache/static-30d/river_geometry/"
+    )
+    assert layer.uri.endswith(".fgb")
+    # HUC4 ``0309`` covers Fort Myers — encoded in the layer_id per the
+    # Tier-4 cache-key-includes-HUC4 discipline.
+    assert "huc4-0309" in layer.layer_id
+
+
+def test_fetch_river_geometry_cache_key_includes_huc4(monkeypatch):
+    """Two disjoint HUC4s with same nominal bbox shape must NOT collide on the cache key.
+
+    Per the Tier-4 cache discipline (cache key includes the HUC4 region per
+    §F.1.1), Fort Myers (HUC4 0309) and the South Coast California (HUC4
+    1807) MUST produce different cache paths even if the bboxes are small
+    boxes inside each region.
+    """
+    fake_storage = FakeStorageClient()
+    from grace2_agent.tools import cache as cache_mod
+
+    monkeypatch.setattr(
+        data_fetch,
+        "_fetch_nhdplushr_geometry_bytes",
+        lambda bbox, huc4: b"FAKE_FLATGEOBUF_BYTES",
+    )
+    monkeypatch.setattr(
+        data_fetch,
+        "read_through",
+        lambda *a, **kw: cache_mod.read_through(
+            *a, storage_client=fake_storage, now=PINNED_NOW, **kw
+        ),
+    )
+
+    fl_layer = fetch_river_geometry(FORT_MYERS_BBOX)
+    # CA south coast (HUC4 1807) — small bbox in the LA basin.
+    ca_bbox = (-118.4, 33.8, -118.2, 34.0)
+    ca_layer = fetch_river_geometry(ca_bbox)
+    assert "huc4-0309" in fl_layer.layer_id
+    assert "huc4-1807" in ca_layer.layer_id
+    assert fl_layer.uri != ca_layer.uri, "different HUC4s must dedup on different keys"
+
+
+def test_fetch_river_geometry_rejects_unknown_source():
+    with pytest.raises(BboxInvalidError):
+        fetch_river_geometry(FORT_MYERS_BBOX, source="merit_hydro")
+
+
+def test_fetch_river_geometry_rejects_bbox_outside_huc4_envelope():
+    """A bbox center that doesn't match any v0.1 HUC4 envelope raises UpstreamAPIError."""
+    # Antarctic ocean — not in any HUC4 envelope.
+    with pytest.raises(UpstreamAPIError):
+        fetch_river_geometry((0.0, -70.0, 0.5, -69.5))
+
+
+def test_fetch_river_geometry_rejects_oversized_bbox():
+    """The 5000 km^2 guardrail blocks multi-HUC4 stitching attempts.
+
+    Bbox center sits inside HUC4 0309 (South Florida envelope: lon
+    [-82.0, -80.0], lat [25.0, 27.5]) so the HUC4 routing accepts it; the
+    bbox itself is sized to exceed the 5000 km^2 area guardrail (~25,000
+    km^2 here) so the area guardrail fires.
+    """
+    # Bbox center (-81.0, 26.25) inside HUC4 0309 envelope; ~25k km^2 area.
+    oversized_inside_huc4 = (-81.9, 25.5, -80.1, 27.0)
+    with pytest.raises(BboxInvalidError):
+        fetch_river_geometry(oversized_inside_huc4)
+
+
+# ---------------------------------------------------------------------------
+# job-0039 — lookup_precip_return_period (NOAA Atlas 14 PFDS).
+# ---------------------------------------------------------------------------
+
+
+def test_lookup_precip_return_period_is_registered_with_static_30d():
+    entry = TOOL_REGISTRY["lookup_precip_return_period"]
+    assert entry.metadata.ttl_class == "static-30d"
+    assert entry.metadata.source_class == "precip_return_period"
+    assert entry.metadata.cacheable is True
+
+
+def test_lookup_precip_return_period_docstring_records_tier_3():
+    """§F.1.1 docstring discipline: Tier 3 (direct HTTPS point query)."""
+    doc = lookup_precip_return_period.__doc__ or ""
+    assert "Access pattern:" in doc
+    assert "Tier 3" in doc
+
+
+# Verbatim Atlas 14 PFDS response for the Fort Myers center captured 2026-06-07.
+_ATLAS14_FORT_MYERS_FIXTURE = b"""Point precipitation frequency estimates (inches)
+NOAA Atlas 14 Volume 9 Version 2
+Data type: Precipitation depth
+Time series type: Partial duration
+Project area: Southeastern States
+Location name (ESRI Maps): None
+Station Name: None
+Latitude: 26.6 Degree
+Longitude: -81.9 Degree
+Elevation (USGS): None None
+
+
+PRECIPITATION FREQUENCY ESTIMATES
+by duration for ARI (years):, 1,2,5,10,25,50,100,200,500,1000
+5-min:, 0.553,0.620,0.731,0.822,0.950,1.05,1.15,1.25,1.38,1.48
+10-min:, 0.810,0.908,1.07,1.20,1.39,1.54,1.68,1.83,2.02,2.17
+15-min:, 0.988,1.11,1.30,1.47,1.70,1.87,2.05,2.23,2.47,2.65
+30-min:, 1.60,1.79,2.11,2.37,2.74,3.02,3.31,3.60,3.99,4.28
+60-min:, 2.14,2.38,2.79,3.13,3.62,4.00,4.38,4.78,5.32,5.74
+2-hr:, 2.69,2.98,3.47,3.90,4.49,4.97,5.46,5.97,6.66,7.20
+3-hr:, 2.92,3.25,3.81,4.30,4.99,5.54,6.11,6.71,7.53,8.17
+6-hr:, 3.23,3.70,4.50,5.18,6.16,6.94,7.75,8.60,9.76,10.7
+12-hr:, 3.49,4.18,5.35,6.36,7.79,8.94,10.1,11.3,13.0,14.3
+24-hr:, 4.01,4.76,6.09,7.28,9.05,10.5,12.1,13.7,16.1,18.0
+2-day:, 4.94,5.57,6.77,7.94,9.80,11.4,13.3,15.3,18.2,20.7
+3-day:, 5.43,6.22,7.68,9.02,11.1,12.9,14.8,16.9,19.8,22.3
+4-day:, 5.83,6.78,8.43,9.92,12.1,14.0,15.9,18.0,20.9,23.3
+7-day:, 7.08,8.10,9.87,11.4,13.7,15.5,17.5,19.5,22.4,24.6
+10-day:, 8.28,9.30,11.0,12.6,14.8,16.6,18.5,20.4,23.2,25.4
+20-day:, 11.7,12.9,14.8,16.4,18.7,20.4,22.1,23.8,26.1,27.8
+30-day:, 14.5,15.9,18.2,20.0,22.4,24.2,25.9,27.5,29.5,30.9
+45-day:, 18.0,19.9,22.7,24.9,27.7,29.6,31.4,33.0,34.9,36.2
+60-day:, 21.0,23.3,26.6,29.2,32.4,34.6,36.6,38.3,40.3,41.5
+
+Date/time (GMT):  Sun Jun  7 07:54:20 2026
+"""
+
+
+def test_lookup_precip_return_period_happy_path_returns_structured_dict(monkeypatch):
+    """100-year 24-hour at Fort Myers center: parsed from the fixture."""
+    fake_storage = FakeStorageClient()
+    from grace2_agent.tools import cache as cache_mod
+
+    monkeypatch.setattr(
+        data_fetch,
+        "_fetch_atlas14_pfds_bytes",
+        lambda lat, lon: _ATLAS14_FORT_MYERS_FIXTURE,
+    )
+    monkeypatch.setattr(
+        data_fetch,
+        "read_through",
+        lambda *a, **kw: cache_mod.read_through(
+            *a, storage_client=fake_storage, now=PINNED_NOW, **kw
+        ),
+    )
+
+    result = lookup_precip_return_period(
+        location=(26.6, -81.9), return_period_years=100, duration_hours=24.0
+    )
+    assert result["precip_inches"] == pytest.approx(12.1)
+    assert result["units"] == "inches"
+    assert result["return_period_years"] == 100
+    assert result["duration_hours"] == 24.0
+    assert "Volume 9" in result["vintage_volume"]
+    assert "Southeastern" in result["project_area"]
+    assert result["source"] == "noaa-atlas14-pfds"
+    # Quantized location echoed back.
+    assert len(result["location"]) == 2
+
+
+def test_lookup_precip_return_period_quantizes_location_to_atlas14_grid(monkeypatch):
+    """Per-source quantization (acceptance criterion 3): 1/120 degree native grid.
+
+    Two callers within the same Atlas 14 grid cell hit the same cache entry.
+    """
+    fake_storage = FakeStorageClient()
+    from grace2_agent.tools import cache as cache_mod
+
+    fetch_calls: list[tuple[float, float]] = []
+
+    def _capturing_fetch(lat, lon):
+        fetch_calls.append((lat, lon))
+        return _ATLAS14_FORT_MYERS_FIXTURE
+
+    monkeypatch.setattr(data_fetch, "_fetch_atlas14_pfds_bytes", _capturing_fetch)
+    monkeypatch.setattr(
+        data_fetch,
+        "read_through",
+        lambda *a, **kw: cache_mod.read_through(
+            *a, storage_client=fake_storage, now=PINNED_NOW, **kw
+        ),
+    )
+
+    # Two locations within the same 1/120-degree grid cell (~278 m apart at
+    # 26.6 latitude — 1/120 degree ≈ 309 m).
+    r1 = lookup_precip_return_period(
+        location=(26.6, -81.9), return_period_years=100, duration_hours=24.0
+    )
+    r2 = lookup_precip_return_period(
+        location=(26.6005, -81.9005), return_period_years=100, duration_hours=24.0
+    )
+    assert r1["location"] == r2["location"]
+    # Only one cache miss (second call hits the cache).
+    assert len(fetch_calls) == 1
+    assert len(fake_storage.store) == 1
+
+
+def test_lookup_precip_return_period_rejects_unsupported_return_period():
+    with pytest.raises(BboxInvalidError):
+        lookup_precip_return_period(
+            location=(26.6, -81.9), return_period_years=300, duration_hours=24.0
+        )
+
+
+def test_lookup_precip_return_period_rejects_unsupported_duration():
+    with pytest.raises(BboxInvalidError):
+        lookup_precip_return_period(
+            location=(26.6, -81.9), return_period_years=100, duration_hours=1.5
+        )
+
+
+def test_lookup_precip_return_period_writes_csv_through_cache(monkeypatch):
+    """FR-CE-8: the PFDS CSV is cached under cache/static-30d/precip_return_period/."""
+    fake_storage = FakeStorageClient()
+    from grace2_agent.tools import cache as cache_mod
+
+    monkeypatch.setattr(
+        data_fetch,
+        "_fetch_atlas14_pfds_bytes",
+        lambda lat, lon: _ATLAS14_FORT_MYERS_FIXTURE,
+    )
+    monkeypatch.setattr(
+        data_fetch,
+        "read_through",
+        lambda *a, **kw: cache_mod.read_through(
+            *a, storage_client=fake_storage, now=PINNED_NOW, **kw
+        ),
+    )
+
+    lookup_precip_return_period(
+        location=(26.6, -81.9), return_period_years=100, duration_hours=24.0
+    )
+    paths = list(fake_storage.store.keys())
+    assert len(paths) == 1
+    assert paths[0].startswith("cache/static-30d/precip_return_period/")
+    assert paths[0].endswith(".csv")
+    assert b"NOAA Atlas 14" in fake_storage.store[paths[0]]
+    blob = fake_storage._bucket.blobs[-1]
+    assert blob.custom_time is not None

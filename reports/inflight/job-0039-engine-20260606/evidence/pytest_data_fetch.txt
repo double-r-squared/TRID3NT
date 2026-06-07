@@ -1,0 +1,57 @@
+============================= test session starts ==============================
+platform linux -- Python 3.13.5, pytest-9.0.3, pluggy-1.6.0 -- /home/nate/Documents/GRACE-2/.venv-agent/bin/python
+cachedir: .pytest_cache
+rootdir: /home/nate/Documents/GRACE-2/services/agent
+configfile: pyproject.toml
+plugins: anyio-4.13.0, asyncio-1.4.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 46 items
+
+services/agent/tests/test_data_fetch.py::test_fetch_dem_is_registered_with_static_30d PASSED [  2%]
+services/agent/tests/test_data_fetch.py::test_fetch_buildings_is_registered_with_static_30d PASSED [  4%]
+services/agent/tests/test_data_fetch.py::test_fetch_population_is_registered_with_static_30d PASSED [  6%]
+services/agent/tests/test_data_fetch.py::test_geocode_location_is_registered_with_dynamic_1h PASSED [  8%]
+services/agent/tests/test_data_fetch.py::test_registry_contains_job_0039_subset_after_eager_import PASSED [ 10%]
+services/agent/tests/test_data_fetch.py::test_round_bbox_to_resolution_is_deterministic PASSED [ 13%]
+services/agent/tests/test_data_fetch.py::test_round_bbox_to_resolution_collapses_floating_point_jitter PASSED [ 15%]
+services/agent/tests/test_data_fetch.py::test_round_bbox_to_resolution_envelopes_input PASSED [ 17%]
+services/agent/tests/test_data_fetch.py::test_round_bbox_to_resolution_rejects_degenerate_bbox PASSED [ 19%]
+services/agent/tests/test_data_fetch.py::test_round_bbox_to_resolution_rejects_out_of_range_lat PASSED [ 21%]
+services/agent/tests/test_data_fetch.py::test_fetch_dem_happy_path_writes_through_cache PASSED [ 23%]
+services/agent/tests/test_data_fetch.py::test_fetch_dem_rejects_oversized_bbox PASSED [ 26%]
+services/agent/tests/test_data_fetch.py::test_fetch_dem_upstream_failure_reraises PASSED [ 28%]
+services/agent/tests/test_data_fetch.py::test_fetch_buildings_happy_path PASSED [ 30%]
+services/agent/tests/test_data_fetch.py::test_fetch_buildings_rejects_unknown_source PASSED [ 32%]
+services/agent/tests/test_data_fetch.py::test_fetch_buildings_osm_branch_not_implemented PASSED [ 34%]
+services/agent/tests/test_data_fetch.py::test_fetch_population_acs_opt_in_routes_to_acs_branch PASSED [ 36%]
+services/agent/tests/test_data_fetch.py::test_fetch_population_default_routes_to_worldpop_not_acs PASSED [ 39%]
+services/agent/tests/test_data_fetch.py::test_fetch_population_worldpop_writes_tif_cog_to_cache PASSED [ 41%]
+services/agent/tests/test_data_fetch.py::test_fetch_population_rejects_unknown_dataset PASSED [ 43%]
+services/agent/tests/test_data_fetch.py::test_geocode_location_happy_path PASSED [ 45%]
+services/agent/tests/test_data_fetch.py::test_geocode_location_rejects_empty_query PASSED [ 47%]
+services/agent/tests/test_data_fetch.py::test_set_mcp_client_unblocks_mongo_query_body PASSED [ 50%]
+services/agent/tests/test_data_fetch.py::test_main_bind_mcp_client_helper_wires_through PASSED [ 52%]
+services/agent/tests/test_data_fetch.py::test_fetch_landcover_is_registered_with_static_30d PASSED [ 54%]
+services/agent/tests/test_data_fetch.py::test_fetch_landcover_docstring_records_access_tier PASSED [ 56%]
+services/agent/tests/test_data_fetch.py::test_fetch_landcover_returns_nlcd_vintage_year_sidecar PASSED [ 58%]
+services/agent/tests/test_data_fetch.py::test_fetch_landcover_routes_through_read_through_writes_cache PASSED [ 60%]
+services/agent/tests/test_data_fetch.py::test_fetch_landcover_quantizes_bbox_to_30m_nlcd_grid PASSED [ 63%]
+services/agent/tests/test_data_fetch.py::test_fetch_landcover_rejects_unknown_dataset PASSED [ 65%]
+services/agent/tests/test_data_fetch.py::test_fetch_landcover_esa_worldcover_not_implemented PASSED [ 67%]
+services/agent/tests/test_data_fetch.py::test_fetch_landcover_rejects_oversized_bbox PASSED [ 69%]
+services/agent/tests/test_data_fetch.py::test_fetch_river_geometry_is_registered_with_static_30d PASSED [ 71%]
+services/agent/tests/test_data_fetch.py::test_fetch_river_geometry_docstring_records_tier_4 PASSED [ 73%]
+services/agent/tests/test_data_fetch.py::test_fetch_river_geometry_happy_path_returns_layer_uri PASSED [ 76%]
+services/agent/tests/test_data_fetch.py::test_fetch_river_geometry_cache_key_includes_huc4 PASSED [ 78%]
+services/agent/tests/test_data_fetch.py::test_fetch_river_geometry_rejects_unknown_source PASSED [ 80%]
+services/agent/tests/test_data_fetch.py::test_fetch_river_geometry_rejects_bbox_outside_huc4_envelope PASSED [ 82%]
+services/agent/tests/test_data_fetch.py::test_fetch_river_geometry_rejects_oversized_bbox PASSED [ 84%]
+services/agent/tests/test_data_fetch.py::test_lookup_precip_return_period_is_registered_with_static_30d PASSED [ 86%]
+services/agent/tests/test_data_fetch.py::test_lookup_precip_return_period_docstring_records_tier_3 PASSED [ 89%]
+services/agent/tests/test_data_fetch.py::test_lookup_precip_return_period_happy_path_returns_structured_dict PASSED [ 91%]
+services/agent/tests/test_data_fetch.py::test_lookup_precip_return_period_quantizes_location_to_atlas14_grid PASSED [ 93%]
+services/agent/tests/test_data_fetch.py::test_lookup_precip_return_period_rejects_unsupported_return_period PASSED [ 95%]
+services/agent/tests/test_data_fetch.py::test_lookup_precip_return_period_rejects_unsupported_duration PASSED [ 97%]
+services/agent/tests/test_data_fetch.py::test_lookup_precip_return_period_writes_csv_through_cache PASSED [100%]
+
+============================== 46 passed in 0.09s ==============================

@@ -1,0 +1,16 @@
+bucket: grace-2-hazard-prod-cache
+cache_control: public, max-age=2592000
+content_type: application/octet-stream
+crc32c_hash: OzCksQ==
+creation_time: 2026-06-07T08:04:21+0000
+custom_time: 2026-06-07T08:04:21+0000
+etag: COjtnLvV9JQDEAE=
+generation: '1780819461355240'
+md5_hash: MvcqqfDFM6ljwSi6pitJrw==
+metageneration: 1
+name: cache/static-30d/precip_return_period/e17f48060ebcc1a0338a8f16c6bf0ec2.csv
+size: 1597
+storage_class: STANDARD
+storage_class_update_time: 2026-06-07T08:04:21+0000
+storage_url: gs://grace-2-hazard-prod-cache/cache/static-30d/precip_return_period/e17f48060ebcc1a0338a8f16c6bf0ec2.csv#1780819461355240
+update_time: 2026-06-07T08:04:21+0000
