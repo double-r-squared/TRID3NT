@@ -57,10 +57,18 @@
       "description": "Landed M4 acceptance suite — Fort Myers demo driving real grace2-agent subprocess via /invoke directives, OQ-33 regression test using StrictCustomTimeBlob SDK-fidelity fake, M3 test_pipeline_strip rewritten to drive real agent emission (closes OQ-T-28-SIM-WS-BOUNDARY), make test-m4 opt-in target; demo PASS with 2 honest qualifications (fetch_population qualified at upstream API — Census now requires key; qgis_process legs qualified at M5 workflow composition); 247→250 invocations green; fetch_dem cache write verified live on production GCS with datetime customTime (OQ-33 hotfix end-to-end verified).",
       "model": "opus",
       "subagent_tokens": 261674
+    },
+    {
+      "job_id": "job-0038-engine-20260606",
+      "sprint": 7,
+      "description": "OQ-4 HydroMT integration depth research + decision — picked Option A (Full HydroMT via hydromt-sfincs end-to-end) over Partial / Custom Config Builders; caught critical Invariant 7 risk (HydroMT roughness component silently fills unmatched NLCD class integers with defaults — mandated validation gate in build_sfincs_model raising SFINCSSetupError on LULC_MAPPING_MISMATCH); established docs/decisions/ convention (5-section format, ≤300 lines, one file per SRS OQ); concrete inheritance contracts for jobs 0039/0040/0042.",
+      "model": "sonnet",
+      "subagent_tokens": 79970
     }
   ],
   "totals_by_sprint": {
-    "6": 1265567
+    "6": 1265567,
+    "7": 79970
   },
   "historical_context": {
     "note": "Captured for accountability — NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",

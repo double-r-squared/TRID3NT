@@ -1,0 +1,389 @@
+[0m[1mgoogle_project.grace2: Refreshing state... [id=projects/grace-2-hazard-prod][0m
+[0m[1mgoogle_project_service.enabled["cloudbuild.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/cloudbuild.googleapis.com][0m
+[0m[1mgoogle_project_service.enabled["serviceusage.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/serviceusage.googleapis.com][0m
+[0m[1mgoogle_project_service.enabled["storage.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/storage.googleapis.com][0m
+[0m[1mgoogle_project_service.enabled["pubsub.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/pubsub.googleapis.com][0m
+[0m[1mgoogle_project_service.enabled["cloudresourcemanager.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/cloudresourcemanager.googleapis.com][0m
+[0m[1mgoogle_project_service.enabled["iam.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/iam.googleapis.com][0m
+[0m[1mgoogle_project_service.enabled["monitoring.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/monitoring.googleapis.com][0m
+[0m[1mgoogle_project_service.enabled["workflows.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/workflows.googleapis.com][0m
+[0m[1mgoogle_project_service.enabled["secretmanager.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/secretmanager.googleapis.com][0m
+[0m[1mgoogle_project_service.enabled["run.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/run.googleapis.com][0m
+[0m[1mgoogle_project_service.enabled["artifactregistry.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/artifactregistry.googleapis.com][0m
+[0m[1mgoogle_project_service.enabled["aiplatform.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/aiplatform.googleapis.com][0m
+[0m[1mgoogle_project_service.enabled["logging.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/logging.googleapis.com][0m
+[0m[1mgoogle_project_service.enabled["iamcredentials.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/iamcredentials.googleapis.com][0m
+[0m[1mgoogle_artifact_registry_repository.containers: Refreshing state... [id=projects/grace-2-hazard-prod/locations/us-central1/repositories/grace-2-containers][0m
+[0m[1mgoogle_storage_bucket.qgs: Refreshing state... [id=grace-2-hazard-prod-qgs][0m
+[0m[1mgoogle_storage_bucket.cache: Refreshing state... [id=grace-2-hazard-prod-cache][0m
+
+OpenTofu used the selected providers to generate the following execution
+plan. Resource actions are indicated with the following symbols:
+  [32m+[0m create[0m
+
+OpenTofu will perform the following actions:
+
+[1m  # google_cloud_run_v2_job.sfincs_solver[0m will be created
+[0m  [32m+[0m[0m resource "google_cloud_run_v2_job" "sfincs_solver" {
+      [32m+[0m[0m conditions               = (known after apply)
+      [32m+[0m[0m create_time              = (known after apply)
+      [32m+[0m[0m creator                  = (known after apply)
+      [32m+[0m[0m delete_time              = (known after apply)
+      [32m+[0m[0m deletion_protection      = true
+      [32m+[0m[0m effective_annotations    = (known after apply)
+      [32m+[0m[0m effective_labels         = {
+          [32m+[0m[0m "component"                  = "sfincs-solver"
+          [32m+[0m[0m "env"                        = "dev"
+          [32m+[0m[0m "goog-terraform-provisioned" = "true"
+          [32m+[0m[0m "project"                    = "grace-2"
+          [32m+[0m[0m "sprint"                     = "07"
+        }
+      [32m+[0m[0m etag                     = (known after apply)
+      [32m+[0m[0m execution_count          = (known after apply)
+      [32m+[0m[0m expire_time              = (known after apply)
+      [32m+[0m[0m generation               = (known after apply)
+      [32m+[0m[0m id                       = (known after apply)
+      [32m+[0m[0m labels                   = {
+          [32m+[0m[0m "component" = "sfincs-solver"
+          [32m+[0m[0m "env"       = "dev"
+          [32m+[0m[0m "project"   = "grace-2"
+          [32m+[0m[0m "sprint"    = "07"
+        }
+      [32m+[0m[0m last_modifier            = (known after apply)
+      [32m+[0m[0m latest_created_execution = (known after apply)
+      [32m+[0m[0m launch_stage             = (known after apply)
+      [32m+[0m[0m location                 = "us-central1"
+      [32m+[0m[0m name                     = "grace-2-sfincs-solver"
+      [32m+[0m[0m observed_generation      = (known after apply)
+      [32m+[0m[0m project                  = "grace-2-hazard-prod"
+      [32m+[0m[0m reconciling              = (known after apply)
+      [32m+[0m[0m terminal_condition       = (known after apply)
+      [32m+[0m[0m terraform_labels         = {
+          [32m+[0m[0m "component"                  = "sfincs-solver"
+          [32m+[0m[0m "env"                        = "dev"
+          [32m+[0m[0m "goog-terraform-provisioned" = "true"
+          [32m+[0m[0m "project"                    = "grace-2"
+          [32m+[0m[0m "sprint"                     = "07"
+        }
+      [32m+[0m[0m uid                      = (known after apply)
+      [32m+[0m[0m update_time              = (known after apply)
+
+      [32m+[0m[0m template {
+          [32m+[0m[0m labels      = {
+              [32m+[0m[0m "component" = "sfincs-solver"
+              [32m+[0m[0m "env"       = "dev"
+              [32m+[0m[0m "project"   = "grace-2"
+              [32m+[0m[0m "sprint"    = "07"
+            }
+          [32m+[0m[0m parallelism = 1
+          [32m+[0m[0m task_count  = 1
+
+          [32m+[0m[0m template {
+              [32m+[0m[0m execution_environment = (known after apply)
+              [32m+[0m[0m max_retries           = 1
+              [32m+[0m[0m service_account       = "sfincs-runtime@grace-2-hazard-prod.iam.gserviceaccount.com"
+              [32m+[0m[0m timeout               = "1800s"
+
+              [32m+[0m[0m containers {
+                  [32m+[0m[0m image = "us-central1-docker.pkg.dev/grace-2-hazard-prod/grace-2-containers/grace-2-sfincs-solver@sha256:b8feba7c4a87a3a3df3b35b62e09cfde2bf8eb5fd1ef91ef64566e4a7cd0aceb"
+
+                  [32m+[0m[0m env {
+                      [32m+[0m[0m name  = "GCP_PROJECT"
+                      [32m+[0m[0m value = "grace-2-hazard-prod"
+                    }
+                  [32m+[0m[0m env {
+                      [32m+[0m[0m name  = "GOOGLE_CLOUD_PROJECT"
+                      [32m+[0m[0m value = "grace-2-hazard-prod"
+                    }
+                  [32m+[0m[0m env {
+                      [32m+[0m[0m name  = "GRACE2_CACHE_BUCKET"
+                      [32m+[0m[0m value = "grace-2-hazard-prod-cache"
+                    }
+                  [32m+[0m[0m env {
+                      [32m+[0m[0m name = "GRACE2_MANIFEST_URI"
+                    }
+                  [32m+[0m[0m env {
+                      [32m+[0m[0m name  = "GRACE2_RUNS_BUCKET"
+                      [32m+[0m[0m value = "grace-2-hazard-prod-runs"
+                    }
+                  [32m+[0m[0m env {
+                      [32m+[0m[0m name = "GRACE2_RUN_ID"
+                    }
+
+                  [32m+[0m[0m resources {
+                      [32m+[0m[0m limits = {
+                          [32m+[0m[0m "cpu"    = "4"
+                          [32m+[0m[0m "memory" = "4Gi"
+                        }
+                    }
+
+                  [32m+[0m[0m startup_probe (known after apply)
+                }
+            }
+        }
+    }
+
+[1m  # google_cloud_run_v2_job_iam_member.workflow_invoker_runs_job[0m will be created
+[0m  [32m+[0m[0m resource "google_cloud_run_v2_job_iam_member" "workflow_invoker_runs_job" {
+      [32m+[0m[0m etag     = (known after apply)
+      [32m+[0m[0m id       = (known after apply)
+      [32m+[0m[0m location = "us-central1"
+      [32m+[0m[0m member   = "serviceAccount:workflow-invoker-sfincs@grace-2-hazard-prod.iam.gserviceaccount.com"
+      [32m+[0m[0m name     = "grace-2-sfincs-solver"
+      [32m+[0m[0m project  = "grace-2-hazard-prod"
+      [32m+[0m[0m role     = "roles/run.invoker"
+    }
+
+[1m  # google_project_iam_member.workflow_invoker_log_writer[0m will be created
+[0m  [32m+[0m[0m resource "google_project_iam_member" "workflow_invoker_log_writer" {
+      [32m+[0m[0m etag    = (known after apply)
+      [32m+[0m[0m id      = (known after apply)
+      [32m+[0m[0m member  = "serviceAccount:workflow-invoker-sfincs@grace-2-hazard-prod.iam.gserviceaccount.com"
+      [32m+[0m[0m project = "grace-2-hazard-prod"
+      [32m+[0m[0m role    = "roles/logging.logWriter"
+    }
+
+[1m  # google_service_account.sfincs_runtime[0m will be created
+[0m  [32m+[0m[0m resource "google_service_account" "sfincs_runtime" {
+      [32m+[0m[0m account_id   = "sfincs-runtime"
+      [32m+[0m[0m description  = "Cloud Run Job identity for the SFINCS solver. objectViewer on -cache + -qgs; objectAdmin on -runs. No project-wide roles."
+      [32m+[0m[0m disabled     = false
+      [32m+[0m[0m display_name = "GRACE-2 SFINCS solver Cloud Run Job runtime"
+      [32m+[0m[0m email        = "sfincs-runtime@grace-2-hazard-prod.iam.gserviceaccount.com"
+      [32m+[0m[0m id           = (known after apply)
+      [32m+[0m[0m member       = "serviceAccount:sfincs-runtime@grace-2-hazard-prod.iam.gserviceaccount.com"
+      [32m+[0m[0m name         = (known after apply)
+      [32m+[0m[0m project      = "grace-2-hazard-prod"
+      [32m+[0m[0m unique_id    = (known after apply)
+    }
+
+[1m  # google_service_account.workflow_invoker_sfincs[0m will be created
+[0m  [32m+[0m[0m resource "google_service_account" "workflow_invoker_sfincs" {
+      [32m+[0m[0m account_id   = "workflow-invoker-sfincs"
+      [32m+[0m[0m description  = "Identity the grace-2-sfincs-orchestrator workflow runs under. Can invoke the sfincs-solver Job + read runs bucket. No other roles."
+      [32m+[0m[0m disabled     = false
+      [32m+[0m[0m display_name = "GRACE-2 SFINCS Cloud Workflows execution identity"
+      [32m+[0m[0m email        = "workflow-invoker-sfincs@grace-2-hazard-prod.iam.gserviceaccount.com"
+      [32m+[0m[0m id           = (known after apply)
+      [32m+[0m[0m member       = "serviceAccount:workflow-invoker-sfincs@grace-2-hazard-prod.iam.gserviceaccount.com"
+      [32m+[0m[0m name         = (known after apply)
+      [32m+[0m[0m project      = "grace-2-hazard-prod"
+      [32m+[0m[0m unique_id    = (known after apply)
+    }
+
+[1m  # google_storage_bucket.runs[0m will be created
+[0m  [32m+[0m[0m resource "google_storage_bucket" "runs" {
+      [32m+[0m[0m effective_labels            = {
+          [32m+[0m[0m "component"                  = "sfincs-solver"
+          [32m+[0m[0m "env"                        = "dev"
+          [32m+[0m[0m "goog-terraform-provisioned" = "true"
+          [32m+[0m[0m "project"                    = "grace-2"
+          [32m+[0m[0m "sprint"                     = "07"
+        }
+      [32m+[0m[0m force_destroy               = false
+      [32m+[0m[0m id                          = (known after apply)
+      [32m+[0m[0m labels                      = {
+          [32m+[0m[0m "component" = "sfincs-solver"
+          [32m+[0m[0m "env"       = "dev"
+          [32m+[0m[0m "project"   = "grace-2"
+          [32m+[0m[0m "sprint"    = "07"
+        }
+      [32m+[0m[0m location                    = "US-CENTRAL1"
+      [32m+[0m[0m name                        = "grace-2-hazard-prod-runs"
+      [32m+[0m[0m project                     = "grace-2-hazard-prod"
+      [32m+[0m[0m project_number              = (known after apply)
+      [32m+[0m[0m public_access_prevention    = "enforced"
+      [32m+[0m[0m rpo                         = (known after apply)
+      [32m+[0m[0m self_link                   = (known after apply)
+      [32m+[0m[0m storage_class               = "STANDARD"
+      [32m+[0m[0m terraform_labels            = {
+          [32m+[0m[0m "component"                  = "sfincs-solver"
+          [32m+[0m[0m "env"                        = "dev"
+          [32m+[0m[0m "goog-terraform-provisioned" = "true"
+          [32m+[0m[0m "project"                    = "grace-2"
+          [32m+[0m[0m "sprint"                     = "07"
+        }
+      [32m+[0m[0m time_created                = (known after apply)
+      [32m+[0m[0m uniform_bucket_level_access = true
+      [32m+[0m[0m updated                     = (known after apply)
+      [32m+[0m[0m url                         = (known after apply)
+
+      [32m+[0m[0m soft_delete_policy (known after apply)
+
+      [32m+[0m[0m versioning {
+          [32m+[0m[0m enabled = true
+        }
+
+      [32m+[0m[0m website (known after apply)
+    }
+
+[1m  # google_storage_bucket_iam_member.sfincs_runtime_cache_viewer[0m will be created
+[0m  [32m+[0m[0m resource "google_storage_bucket_iam_member" "sfincs_runtime_cache_viewer" {
+      [32m+[0m[0m bucket = "grace-2-hazard-prod-cache"
+      [32m+[0m[0m etag   = (known after apply)
+      [32m+[0m[0m id     = (known after apply)
+      [32m+[0m[0m member = "serviceAccount:sfincs-runtime@grace-2-hazard-prod.iam.gserviceaccount.com"
+      [32m+[0m[0m role   = "roles/storage.objectViewer"
+    }
+
+[1m  # google_storage_bucket_iam_member.sfincs_runtime_qgs_viewer[0m will be created
+[0m  [32m+[0m[0m resource "google_storage_bucket_iam_member" "sfincs_runtime_qgs_viewer" {
+      [32m+[0m[0m bucket = "grace-2-hazard-prod-qgs"
+      [32m+[0m[0m etag   = (known after apply)
+      [32m+[0m[0m id     = (known after apply)
+      [32m+[0m[0m member = "serviceAccount:sfincs-runtime@grace-2-hazard-prod.iam.gserviceaccount.com"
+      [32m+[0m[0m role   = "roles/storage.objectViewer"
+    }
+
+[1m  # google_storage_bucket_iam_member.sfincs_runtime_runs_admin[0m will be created
+[0m  [32m+[0m[0m resource "google_storage_bucket_iam_member" "sfincs_runtime_runs_admin" {
+      [32m+[0m[0m bucket = "grace-2-hazard-prod-runs"
+      [32m+[0m[0m etag   = (known after apply)
+      [32m+[0m[0m id     = (known after apply)
+      [32m+[0m[0m member = "serviceAccount:sfincs-runtime@grace-2-hazard-prod.iam.gserviceaccount.com"
+      [32m+[0m[0m role   = "roles/storage.objectAdmin"
+    }
+
+[1m  # google_storage_bucket_iam_member.workflow_invoker_runs_viewer[0m will be created
+[0m  [32m+[0m[0m resource "google_storage_bucket_iam_member" "workflow_invoker_runs_viewer" {
+      [32m+[0m[0m bucket = "grace-2-hazard-prod-runs"
+      [32m+[0m[0m etag   = (known after apply)
+      [32m+[0m[0m id     = (known after apply)
+      [32m+[0m[0m member = "serviceAccount:workflow-invoker-sfincs@grace-2-hazard-prod.iam.gserviceaccount.com"
+      [32m+[0m[0m role   = "roles/storage.objectViewer"
+    }
+
+[1m  # google_workflows_workflow.sfincs_orchestrator[0m will be created
+[0m  [32m+[0m[0m resource "google_workflows_workflow" "sfincs_orchestrator" {
+      [32m+[0m[0m create_time         = (known after apply)
+      [32m+[0m[0m deletion_protection = true
+      [32m+[0m[0m description         = "FR-CE-2 orchestration for the SFINCS solver Cloud Run Job. Invoked by agent.run_solver (job-0041); cancellation propagates to the running Job execution (Invariant 8)."
+      [32m+[0m[0m effective_labels    = {
+          [32m+[0m[0m "component"                  = "sfincs-solver"
+          [32m+[0m[0m "env"                        = "dev"
+          [32m+[0m[0m "goog-terraform-provisioned" = "true"
+          [32m+[0m[0m "project"                    = "grace-2"
+          [32m+[0m[0m "sprint"                     = "07"
+        }
+      [32m+[0m[0m id                  = (known after apply)
+      [32m+[0m[0m labels              = {
+          [32m+[0m[0m "component" = "sfincs-solver"
+          [32m+[0m[0m "env"       = "dev"
+          [32m+[0m[0m "project"   = "grace-2"
+          [32m+[0m[0m "sprint"    = "07"
+        }
+      [32m+[0m[0m name                = "grace-2-sfincs-orchestrator"
+      [32m+[0m[0m name_prefix         = (known after apply)
+      [32m+[0m[0m project             = "grace-2-hazard-prod"
+      [32m+[0m[0m region              = "us-central1"
+      [32m+[0m[0m revision_id         = (known after apply)
+      [32m+[0m[0m service_account     = (known after apply)
+      [32m+[0m[0m source_contents     = <<-EOT
+            # GRACE-2 SFINCS orchestrator (sprint-07 / M5 / FR-CE-2 / job-0040).
+            #
+            # Inputs (passed as the executions.create `argument` JSON):
+            #   {
+            #     "run_id":       "<run identifier>",
+            #     "manifest_uri": "gs://<bucket>/<path>/setup.json"
+            #   }
+            #
+            # Output: parsed completion.json the entrypoint wrote to the runs bucket.
+            
+            main:
+              params: [args]
+              steps:
+                - validate:
+                    switch:
+                      - condition: ${not("run_id" in args)}
+                        raise: "INVALID_INPUT: run_id is required"
+                      - condition: ${not("manifest_uri" in args)}
+                        raise: "INVALID_INPUT: manifest_uri is required"
+                - invoke_sfincs_job:
+                    try:
+                      call: googleapis.run.v2.projects.locations.jobs.run
+                      args:
+                        name: "projects/grace-2-hazard-prod/locations/us-central1/jobs/grace-2-sfincs-solver"
+                        connector_params:
+                          timeout: 2400
+                        body:
+                          overrides:
+                            containerOverrides:
+                              - env:
+                                  - name: GRACE2_RUN_ID
+                                    value: ${args.run_id}
+                                  - name: GRACE2_MANIFEST_URI
+                                    value: ${args.manifest_uri}
+                      result: job_execution
+                    except:
+                      as: e
+                      steps:
+                        - log_job_error:
+                            call: sys.log
+                            args:
+                              data: ${e}
+                              severity: "ERROR"
+                        - return_job_error:
+                            return:
+                              run_id: ${args.run_id}
+                              status: "error"
+                              error: ${"sfincs job execution failed: " + json.encode_to_string(e)}
+                - read_completion:
+                    try:
+                      call: googleapis.storage.v1.objects.get
+                      args:
+                        bucket: "grace-2-hazard-prod-runs"
+                        object: ${args.run_id + "/completion.json"}
+                        alt: "media"
+                      result: completion
+                    except:
+                      as: e
+                      steps:
+                        - log_completion_error:
+                            call: sys.log
+                            args:
+                              data: ${e}
+                              severity: "ERROR"
+                        - return_missing_completion:
+                            return:
+                              run_id: ${args.run_id}
+                              status: "error"
+                              error: "completion.json missing; entrypoint did not finalize"
+                - return_completion:
+                    return: ${completion}
+        EOT
+      [32m+[0m[0m state               = (known after apply)
+      [32m+[0m[0m terraform_labels    = {
+          [32m+[0m[0m "component"                  = "sfincs-solver"
+          [32m+[0m[0m "env"                        = "dev"
+          [32m+[0m[0m "goog-terraform-provisioned" = "true"
+          [32m+[0m[0m "project"                    = "grace-2"
+          [32m+[0m[0m "sprint"                     = "07"
+        }
+      [32m+[0m[0m update_time         = (known after apply)
+    }
+
+[1mPlan:[0m 11 to add, 0 to change, 0 to destroy.
+[0m
+Changes to Outputs:
+  [32m+[0m[0m runs_bucket_name     = "grace-2-hazard-prod-runs"
+  [32m+[0m[0m sfincs_job_name      = "grace-2-sfincs-solver"
+  [32m+[0m[0m sfincs_workflow_name = "grace-2-sfincs-orchestrator"
+[33m╷[0m[0m
+[33m│[0m [0m[1m[33mWarning: [0m[0m[1mResource targeting is in effect[0m
+[33m│[0m [0m
+[33m│[0m [0m[0mYou are creating a plan with either the -target option or the -exclude
+[33m│[0m [0moption, which means that the result of this plan may not represent all of
+[33m│[0m [0mthe changes requested by the current configuration.
+[33m│[0m [0m
+[33m│[0m [0mThe -target and -exclude options are not for routine use, and are provided
+[33m│[0m [0monly for exceptional situations such as recovering from errors or mistakes,
+[33m│[0m [0mor when OpenTofu specifically suggests to use it as part of an error
+[33m│[0m [0mmessage.
+[33m╵[0m[0m
+[90m
+─────────────────────────────────────────────────────────────────────────────[0m
+
+Saved the plan to: /tmp/sfincs.tfplan
+
+To perform exactly these actions, run the following command to apply:
+    tofu apply "/tmp/sfincs.tfplan"
