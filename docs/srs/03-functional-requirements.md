@@ -315,6 +315,17 @@ The `list_qgis_algorithms` / `describe_qgis_algorithm` / `qgis_process` triple i
 *Location-resolved emission (side effect, not a tool):*
 - The tools `geocode_location`, `extract_event_metadata`, and any workflow that determines a bbox shall emit a `location-resolved` message as a side effect, so the client auto-snaps the map to relevant locations. This is not a separate agent action; it is built-in behavior of resolution-producing tools.
 
+*Deferred atomic-tool utilities (gating / hydro-conditioning / forcing-prep) — Forward-looking, not in M1 / not in sprint-03; first members register alongside the engines they prepare for.*
+These are not workflow engines (they do not produce a georeferenced solver output of their own per the §2.3 Engine selection principle) and therefore do not belong in the §2.3 Deferred engines table. They are utility libraries that prepare inputs for, or gate execution of, downstream engines, and they register as atomic tools.
+- `pysheds_condition_dem(dem_uri, fill_pits=True, breach_depressions=True) → LayerURI` — pure-Python DEM hydro-conditioning (pit-fill, breach, flow-direction, flow-accumulation, watershed delineation) using the pysheds library (GPLv3+; out-of-process invocation only — see NFR-L posture). Output feeds `pywatershed`, SFINCS pre-processing, and any flow-routing pipeline. Forward-looking; first registration target is the v0.2 hydrology engine work.
+- `wrfxpy_prepare_forcing(domain, time_window, forcing_source) → ForcingBundle` — wrfxpy-mediated WRF/WRF-SFIRE domain setup and forcing preparation (GRIB ingest, namelist generation, HPC job orchestration). Treated as forcing-prep for the OpenWFM engine row (§2.3 deferred engines); not a hazard solver in its own right. Forward-looking; experimental.
+
+*Deferred atomic-tool utilities (conservation / biodiversity) — Forward-looking, not in M1 / not in sprint-03; conservation/biodiversity engine class is forward-looking pending OQ-11 resolution. See OQ-11 in §6.*
+Conservation/biodiversity tools consume biotic, abiotic, and connectivity inputs to produce species-distribution rasters, ecosystem-service rasters, or connectivity surfaces. They sit alongside (not inside) the hazard engine catalog. Whether the SRS models these as a new `hazard_type` literal, a parallel `analysis_type` discriminator, workflow-composition-only (using existing atomic tools), or a peer post-processor tool-class family is OQ-11.
+- `run_maxent_sdm(occurrences, predictor_layers, output_bbox) → LayerURI` — Maxent species distribution modeling (presence-only, maximum entropy). Output is a continuous habitat-suitability raster.
+- `run_invest_ecosystem_service(model_name, inputs) → LayerURI | dict` — InVEST (Integrated Valuation of Ecosystem Services and Tradeoffs) suite of models (water yield, sediment retention, carbon, pollination, coastal vulnerability, habitat quality, etc.). Output varies by sub-model.
+- `run_circuitscape_connectivity(habitat_layer, source_targets) → LayerURI` — Circuitscape current-flow connectivity / corridor mapping. Output is a connectivity raster.
+
 **FR-TA-3: Tool metadata discipline**
 Every tool docstring shall include the structured "Use this when / Do NOT use this for" sections described in FR-AS-3. Sloppy metadata produces sloppy agent behavior.
 
@@ -572,6 +583,55 @@ Impact post-processing shall not be dispatched until a referenced `solver_run_id
 
 **FR-CE-7: Cancellation conformance** *(Forward-looking — not in M1 / not in sprint-03; targeted post-M5.)*
 Impact post-processing jobs shall honor the same 30-second cancellation contract as solvers (per FR-AS-6 and NFR-R-3). A `cancel` message shall signal the in-flight Cloud Workflows execution, propagate to the Pelicun Cloud Run Job, and complete within 30 seconds. Cancellation routes through the same UI cancel button as solver runs (per FR-WC-9); no new UI surface is required. Single-asset and small-portfolio Pelicun runs fit comfortably inside this budget; large regional runs that cannot complete cancellation in 30 seconds shall be decomposed into chunked sub-jobs or staged behind a longer-running cancellation token in a later version (not in v0.1 scope).
+
+**FR-CE-8: Atomic-tool data fetches go through the cache shim** *(Forward-looking — binding from M4 when the first data-fetching atomic tools register; see Decision O.)*
+Every atomic tool that issues a network call to an external public data source shall route through the shared cache shim defined in §3.9. The shim handles read-through, write-on-miss, content-addressed key derivation, and lifecycle eviction. Each atomic tool declares one of four TTL classes (`static-30d`, `semi-static-7d`, `dynamic-1h`, `live-no-cache`) at tool-definition time per FR-DC-2. Cached artifacts persist in a dedicated bucket prefix (`gs://<bucket>/cache/<source-class>/<hash>.<ext>`); the shim is the sole writer of that prefix. Tools that compute purely from already-cached inputs may read through the shim without writing new entries. Interactive tools (`request_spatial_input`, `request_disambiguation`, `request_clarification`), envelope emitters, and MongoDB writes are uncacheable by construction and shall not invoke the shim. See §3.9 for the architecture, Appendix E for plugin-side cache implications.
+
+---
+
+### 3.9 Data Caching (FR-DC) *(Forward-looking — not in M1 / not in sprint-03; binding from M4 when the first data-fetching atomic tools register.)*
+
+**Status note.** Decision O establishes cache-mediated atomic-tool data fetching as the binding architecture from M4 forward. This section formalizes the bucket layout, TTL taxonomy, key derivation, write semantics, eviction policy, and the uncacheable-by-construction enumeration. FR-DC requirements are forward-looking for v0.1 scope but become load-bearing for every atomic tool that touches an external API once M4 starts emitting real data fetches.
+
+**FR-DC-1: Cache bucket layout.**
+Cached artifacts live under `gs://<project-bucket>/cache/<source-class>/<hash>.<ext>` — same convention as the worked examples in Appendix B (`gs://bucket/cache/dem/<hash>.tif`, `gs://bucket/cache/buildings/ms_<hash>.fgb`). `<source-class>` is a stable identifier per atomic tool (`dem`, `landcover`, `buildings`, `nwis_iv`, `atcf`, `mrms_qpe`, `precipitation_atlas14`, etc.); `<hash>` is the content-addressed key per FR-DC-3; `<ext>` is the source-appropriate format (`tif` for COG rasters, `fgb` for FlatGeobuf, `json` for JSON payloads, `nc` for NetCDF, `grib2` for GRIB2, etc.). The bucket is shared across atomic tools and across sessions so the dedup guarantee (FR-DC-4) holds across users.
+
+**FR-DC-2: Four TTL classes registered per tool.**
+Each atomic tool declares one of four TTL classes at tool-definition time (typically as a decorator argument or registration metadata):
+
+- `static-30d` — terrain (3DEP DEM tiles, Copernicus DEM), year-stamped landcover snapshots (NLCD, ESA WorldCover), NHDPlus HR reach geometry, NOAA Atlas 14 return-period curves, building footprint snapshots (Microsoft ML Building Footprints, OSM Overpass extracts), curated public hazard rasters that publish on annual or slower cadences. 30-day default; longer-lived sources can pin to 90 days via the same registration machinery without changing the shim.
+- `semi-static-7d` — post-season ATCF best-track records (storms older than 14 days), USGS earthquake catalog historical queries, NOAA Storm Events DB historical queries, FEMA NFHL periodic releases, USDA WRC layers, wildland fire hazard potential rasters where the source updates on weekly-to-monthly cadence.
+- `dynamic-1h` — active NHC advisories (storm currently in basin), NWIS streamflow recent windows (last 24 h), NOAA CO-OPS tide gauges, MRMS 2-minute QPE accumulations, NWS active bulletins, NIFC active wildfire incidents, news search results, GDELT queries, api.weather.gov queries for current conditions.
+- `live-no-cache` — read-through with immediate expiry; reserved for atomic tools whose contract demands "right now" freshness. Encoded as `ttl_class: "none"` with `expires_at = fetched_at`; the lifecycle policy purges immediately and every read misses. The uncacheable-by-construction enumeration in FR-DC-6 lists the tools that always declare this class.
+
+Per-call TTL overrides are permitted when response metadata changes the classification at fetch time. Concrete example: `fetch_hurricane_track("IAN", source="atcf")` defaults to `static-30d` because Hurricane Ian is closed; a call for an active storm in the current basin returns `dynamic-1h` because the ATCF response carries an `is_active` marker the shim inspects before write. The override is a property of the response, not the caller; the per-tool default is the lower bound on freshness.
+
+**FR-DC-3: Read-through / write-on-miss with content-addressed keys.**
+The shim wraps each atomic tool's network call. On invocation:
+
+1. Compute the cache key as `sha256(source_id || canonicalized_params || ttl_bucket_vintage)` truncated to a stable hex prefix (16–32 hex characters). `canonicalized_params` is a deterministic serialization of all parameters that affect the response (bbox rounded to source-native resolution, date ranges quantized to the TTL bucket, query string keys sorted, optional fields omitted when at default). `ttl_bucket_vintage` is the current TTL-class window boundary (e.g. `2026-06-06T16:00:00Z` for `dynamic-1h`, `2026-W23` for `semi-static-7d`, `2026-06` for `static-30d`), so two calls in the same bucket hit the same cache entry and a bucket boundary forces a refresh.
+2. Look up `gs://<bucket>/cache/<source-class>/<hash>.<ext>`. If present and not past `expires_at`, return the cached artifact (URI plus metadata).
+3. On miss: invoke the external API; on success, atomically write the response to the cache key, attach an object-level `Cache-Control` header reflecting the TTL class, and return.
+4. On API failure: do not write a sentinel; surface the error verbatim so the agent surface (per FR-AS-11) can decide whether to retry, clarify, or fall back.
+
+The shim is the sole writer of the `cache/` prefix; atomic tools never write there directly.
+
+**FR-DC-4: Deduplication guarantee.**
+Two atomic-tool invocations that produce the same cache key shall share the same artifact regardless of session, user, or invocation order. This holds because keys are content-addressed (FR-DC-3) and the bucket is shared (FR-DC-1). The shim does not maintain a write lock — last-writer-wins on simultaneous misses is acceptable since both writers produce byte-identical artifacts (the key derivation already factored in everything that would differ).
+
+**FR-DC-5: Lifecycle eviction at the bucket level.**
+The `cache/` prefix uses GCS Object Lifecycle Management rules tied to the TTL classes: objects under `cache/<source-class>/` inherit a `daysSinceCustomTime > N` deletion rule where N is the TTL-class day count (30, 7, 1, or 0). The shim sets `customTime = fetched_at` on every write so the lifecycle policy can evict without the shim tracking individual TTLs at read time. Eviction is asynchronous; a slightly stale read between the bucket boundary and the lifecycle pass is acceptable (the next write through that key replaces it). Bucket versioning is off for the `cache/` prefix to keep storage cost flat.
+
+**FR-DC-6: Uncacheable-by-construction enumeration.**
+The following atomic-tool classes shall not invoke the cache shim and shall always declare `ttl_class: "none"` (or omit the registration entirely if the tool produces no fetchable artifact):
+
+- Interactive solicitation tools: `request_spatial_input`, `request_disambiguation`, `request_clarification` (user-driven, session-bound, no GCS artifact).
+- Envelope emitters writing to the WebSocket: `agent-message-chunk` streams, `pipeline-state` snapshots, `session-state` updates, `tool-call` and `tool-result` notifications, `cancel` and `clarification-request`.
+- MongoDB MCP writes (sessions, runs, projects, events, layers, sessionrecords inserts/updates) — durable knowledge layer per Decision F lives in Atlas, not in the cache bucket.
+- Solver dispatchers and their result fetches (`run_sfincs_solver`, `run_pelicun_impact`, etc.) — solver outputs persist under `gs://<bucket>/runs/<run_id>/` per FR-CE-4, not under `cache/`.
+- One-shot diagnostic calls the user explicitly opts in to ("fetch the absolute latest from NWIS as of right now") via a per-call `cache=false` override.
+
+Anything not on this list and not explicitly declared as one of `static-30d` / `semi-static-7d` / `dynamic-1h` at registration time shall fail tool-registration validation (per FR-AS-3): the cache class is a required property of every external-API atomic tool.
 
 ---
 
