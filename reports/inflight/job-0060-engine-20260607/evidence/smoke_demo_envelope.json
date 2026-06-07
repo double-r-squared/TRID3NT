@@ -1,0 +1,10 @@
+{
+  "demo": "job-0060 layer-emission contract smoke",
+  "elapsed_seconds": 4.404887440148741,
+  "result_type": "dict",
+  "is_layer_uri": false,
+  "loaded_layers_in_session_state": 0,
+  "outcome": "HONEST FAILURE",
+  "error_code": "LANDCOVER_READ_FAILED",
+  "contract_note": "Wrapper returned dict (failed envelope, layers=[]) \u2014 correct fallback path for LANDCOVER_READ_FAILED. LayerURI path requires populated envelope.layers, which requires the full M5 solver stack."
+}

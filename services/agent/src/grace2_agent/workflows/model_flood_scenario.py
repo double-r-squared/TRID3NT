@@ -597,7 +597,7 @@ async def run_model_flood_scenario(
     return_period_yr: int = 100,
     duration_hr: int = 24,
     compute_class: str = "medium",
-) -> dict[str, Any]:
+) -> LayerURI | dict[str, Any]:
     """Run the full deterministic flood-modeling workflow.
 
     Use this when: the agent has a flood-modeling intent grounded in a
@@ -625,11 +625,18 @@ async def run_model_flood_scenario(
         compute_class: FR-CE-3 compute class. Default ``"medium"``.
 
     Returns:
-        The AssessmentEnvelope serialized as a dict (``model_dump(mode="json")``).
-        Carries the Appendix B.4 Flood subtype shape. On any internal
-        failure the envelope is still typed-and-valid with zero-valued
-        FloodMetrics + the error code threaded into ``flood.metrics.solver_version``
-        as ``"failed:<ERROR_CODE>"``.
+        On success: the primary flood-depth COG as a ``LayerURI`` — the
+        ``PipelineEmitter.emit_tool_call`` gate at
+        ``pipeline_emitter.py:517`` fires ``add_loaded_layer`` when it sees
+        a ``LayerURI`` return, which appends to ``session-state.loaded_layers``
+        and emits a fresh ``session-state`` envelope (A.7 replace-not-reconcile).
+        See ``docs/decisions/layer-emission-contract.md`` (ADOPTED 2026-06-07).
+
+        On failure (partial-failure envelope with empty layers): the
+        AssessmentEnvelope serialized as a dict so the LLM can narrate the
+        error. The dict carries the Appendix B.4 Flood subtype shape with the
+        error code threaded into ``flood.metrics.solver_version`` as
+        ``"failed:<ERROR_CODE>"``.
 
     FR-DC-6: This wrapper declares ``cacheable=False`` +
     ``ttl_class="live-no-cache"`` + ``source_class="workflow_dispatch"`` (a new
@@ -644,4 +651,22 @@ async def run_model_flood_scenario(
         duration_hr=duration_hr,
         compute_class=compute_class,
     )
+    # --- Layer-emission contract pin (docs/decisions/layer-emission-contract.md, 2026-06-07) ---
+    # Return the primary flood-depth COG as a LayerURI so PipelineEmitter's
+    # isinstance(result, LayerURI) gate at pipeline_emitter.py:517 fires
+    # add_loaded_layer → session-state.loaded_layers (declarative, A.7
+    # replace-not-reconcile).  On failure the envelope has no layers; fall
+    # back to the dict so the LLM can narrate the error honestly.
+    if envelope.layers:
+        primary = envelope.layers[0]
+        return LayerURI(
+            layer_id=primary.layer_id,
+            name=primary.name,
+            layer_type=primary.layer_type,
+            uri=primary.uri,
+            style_preset=primary.style_preset,
+            temporal=primary.temporal,
+            role=primary.role,
+            units=primary.units,
+        )
     return envelope.model_dump(mode="json")

@@ -1,0 +1,43 @@
+{
+  "type": "session-state",
+  "id": "01KTJ6GSQ1GM34XX1ZKVRV6V85",
+  "ts": "2026-06-07T23:26:06.049266Z",
+  "session_id": "01KTJ6GS0EFK8STTXYXMPQ1KKF",
+  "payload": {
+    "chat_history": [],
+    "loaded_layers": [
+      {
+        "layer_id": "flood-depth-peak-01KTJ6GS0DEWC97WQF9ZYD752K",
+        "name": "Flood Depth (peak)",
+        "layer_type": "raster",
+        "uri": "gs://grace-2-hazard-prod-runs/01KTJ6GS0DEWC97WQF9ZYD752K/flood_depth_peak.tif",
+        "style_preset": "continuous_flood_depth",
+        "visible": true,
+        "role": "primary",
+        "temporal": false
+      }
+    ],
+    "pipeline_history": [],
+    "current_pipeline": {
+      "pipeline_id": "01KTJ6GS0FFQQANZXE3DFFEG45",
+      "started_at": "2026-06-07T23:26:05.327181Z",
+      "completed_at": null,
+      "final_state": null,
+      "steps": [
+        {
+          "step_id": "01KTJ6GS0FFQQANZXE3DFFEG46",
+          "name": "M5 flood scenario",
+          "tool_name": "run_model_flood_scenario",
+          "state": "running",
+          "started_at": "2026-06-07T23:26:05.327302Z",
+          "completed_at": null,
+          "progress_percent": null,
+          "error_code": null,
+          "error_message": null
+        }
+      ]
+    },
+    "map_view": null,
+    "status": "active"
+  }
+}
