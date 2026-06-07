@@ -635,3 +635,78 @@ Anything not on this list and not explicitly declared as one of `static-30d` / `
 
 ---
 
+### 3.10 Failure Recovery (FR-FR) *(Forward-looking — v0.3.19 amendment. The deny/retry/chat gate envelopes + agent-side max-turns cap are forward-looking; multi-agent pre-verifier and scientific-output verification are explicitly deferred.)*
+
+**Status.** v0.1 currently relies on (a) hard cancel via Invariant 8 (verified at 850 ms in job-0041), (b) hard solver timeouts (Cloud Run Job `--task-timeout=1800`), (c) fail-fast on upstream errors (atomic tools raise typed errors per FR-AS-11; cache shim never writes sentinels per FR-DC-3), and (d) Invariant 7 validation gates that fail closed on silent-wrong-answer modes (job-0042 verified LIVE on real production data — NLCD palette encoding caught before bad Manning's defaults could produce a misleading flood map). These four mechanisms catch the catastrophic failure modes. What v0.1 does NOT have: bounded automatic recovery, explicit agent-side max-turns cap, scientific-output verification, multi-agent pre-verification. §3.10 formalizes the next layer with a deliberately minimal substrate, deferring the larger subsystem buildouts until after the working M5 / M6 demo.
+
+**FR-FR-1: Deny / Retry / Chat recovery gate — minimal envelope substrate** *(Forward-looking — Appendix A amendment lands at the next schema sprint; web-client implementation follows the existing `request_clarification` modal pattern.)*
+
+When an atomic tool fails with a **recoverable** error class (see FR-FR-2 routing table below), the agent shall surface a `recovery-choice` envelope rather than narrating the failure or silently retrying. The user-facing UX is a small modal (mirrors the §F.3 popup discipline — out of band of chat envelope) with three actions:
+
+- **Deny** — record the user's decision; mark the pipeline step `failed` with the upstream error preserved; agent narrates the failure honestly in chat and considers next-steps without retrying.
+- **Retry** — re-attempt the failed atomic-tool call exactly as before. Cache shim discipline still applies (FR-DC-3 read-through, no sentinel). Useful for transient 5xx, network blips, and the kind of upstream flakiness that's likely to resolve in seconds.
+- **Chat** — replace the modal with a focused single-line text input; user types guidance (e.g., "try the WCS endpoint instead of WMS"); the typed text becomes a focused `user-message` payload that the agent uses to decide the next action. This is the "nudge it in the right direction" surface the LLM benefits from when retry alone won't work.
+
+Envelope shape (NEW Appendix A amendment when this lands — sprint slot TBD):
+
+```jsonc
+{
+  "type": "recovery-choice",
+  "id": "01K…", "ts": "…Z", "session_id": "01K…",
+  "payload": {
+    "request_id": "01K…",
+    "failed_step_id": "01K…",
+    "error_code": "UPSTREAM_API_ERROR",      // Appendix A.6 SCREAMING_SNAKE_CASE
+    "error_message": "USGS 3DEP returned HTTP 503 — service unavailable",
+    "context": "fetching DEM at Fort Myers bbox for flood scenario",
+    "options": ["deny", "retry", "chat"],
+    "ttl_seconds": 300
+  }
+}
+```
+
+Response (client → agent):
+
+```jsonc
+{
+  "type": "recovery-choice-response",
+  "id": "01K…", "ts": "…Z", "session_id": "01K…",
+  "payload": {
+    "request_id": "01K…",
+    "choice": "retry",                       // or "deny" or "chat"
+    "chat_text": null                        // populated only when choice == "chat"
+  }
+}
+```
+
+**FR-FR-2: Per-error-code routing table.** Not every failure surfaces the gate. The agent classifies the failed step's `error_code` (Appendix A.6) at the time of `PipelineEmitter.mark_failed` and either gates the user OR fails closed without prompting.
+
+| Error class | Examples | Recovery behavior |
+|---|---|---|
+| **Transient upstream** | `UPSTREAM_API_ERROR` (5xx), `NETWORK_TIMEOUT`, `RATE_LIMITED` | Gate the user with deny/retry/chat. Retry is genuinely likely to succeed. |
+| **Recoverable-with-context** | `GEOCODE_NO_MATCH`, `BBOX_INVALID`, `INSUFFICIENT_INPUT` | Gate the user; chat path is the high-value option (the LLM needs more info). |
+| **Substrate integrity (FAIL CLOSED — DO NOT GATE)** | `LULC_MAPPING_MISMATCH` (Invariant 7), `SCHEMA_VALIDATION_FAILED`, `CACHE_CORRUPTION_DETECTED`, `IAM_PERMISSION_DENIED` | NO gate. Surface as honest failure in chat with explicit operator-action narration. Retrying would be incorrect (Invariant 7) or futile (IAM). |
+| **User-initiated stop** | `USER_CANCELLED` (Invariant 8) | NO gate. User already decided. |
+| **Cost / budget overrun** | `SESSION_TOKEN_BUDGET_EXCEEDED` (future, see FR-FR-4) | NO gate; agent halts the session. User can start a new session. |
+
+The classification table is data, not code — when a new error code lands (e.g., job-0041's `SOLVER_FAILED`, `SOLVER_DISPATCH_FAILED`, `SOLVER_TIMEOUT`), it gets classified at registration time per the same FR-CE-8 fail-fast discipline used for atomic-tool metadata.
+
+**FR-FR-3: Agent-side max-turns cap — cheap insurance.** Until the multi-agent verifier (deferred per below) lands, the agent service shall pin an explicit `MAX_TURNS_PER_SESSION` cap (TENTATIVE default: 25) in its ADK configuration. On the (25+1)th turn the agent service emits a final `session-state` with `status: "max_turns_reached"`, sends a closing `agent-message` summarizing what's been done, and refuses further tool calls in this session. Cheap insurance against runaway LLM tool-call chains. The user can start a new session to continue. **Targeted landing: sprint-08 small task — single config line in `services/agent/src/grace2_agent/main.py` + a new envelope status enum value.**
+
+**FR-FR-4: Per-session token budget — deferred** *(forward-looking; no v0.1 implementation)*. Separate from Invariant 9's no-cost-theater discipline (which forbids surfacing dollar estimates), an internal session-token-budget would fail closed before a runaway LLM eats unbounded Vertex AI tokens. Decision affects the new `SESSION_TOKEN_BUDGET_EXCEEDED` error code, the agent service's token accounting, and the `session-state` envelope's `status` enum. Out of v0.1 scope; revisit when production observability surfaces realistic budgets.
+
+**FR-FR-5: Multi-agent pre-verifier — deferred indefinitely** *(forward-looking)*. The eventual subsystem: a **planner** agent decomposes the user query into a tool-call plan; an **executor** agent runs the plan with the existing atomic-tool surface; a **verifier** agent inspects the executor's intermediate outputs against expected shapes / sanity ranges / cross-source consistency before letting the chain proceed. Catches the "faceplant" class of failures (executor goes off the rails because of bad LLM judgment) without involving the user. Requires: ADK multi-agent orchestration (Decision E may need amendment); new MongoDB collections for planner/verifier conversation state (Decision F); new envelopes for inter-agent dispatch (Appendix A); careful Invariant 1 + 2 discipline because verifier judgment IS LLM-mediated. **Status: DEFERRED — slot at M6+ or whenever post-MVP review surfaces this as the bottleneck. User direction 2026-06-07: "we should slot a minimal version and then later add the multi agent/user guided workflow."**
+
+**FR-FR-6: Scientific output verification — deferred** *(forward-looking; post-M5 work)*. The next layer above FR-FR-5: cross-check OUTPUT (flood depth, building damage, etc.) against external ground truth — historical observations, FEMA NFHL overlays, USGS gauge records during the modeled event, etc. Requires its own milestone given the research-grade nature of the comparison. Out of v0.1; revisit after the multi-agent verifier matures.
+
+**Open Questions from §3.10.**
+
+- **OQ-FR-1 (TENTATIVE, near-term):** `MAX_TURNS_PER_SESSION` default value. 25 is a round number; whatever ADK's internal default is (likely lower) should be compared. Revisit after a few sprints of production-like usage.
+- **OQ-FR-2 (TENTATIVE, sprint-08+):** Should the deny/retry/chat gate honor a max-gates-per-session cap so the user isn't gated to death? Probably yes (e.g., 5 gates per session, then degrade to fail-closed); pin at first web-client integration.
+- **OQ-FR-3 (TENTATIVE, deferred):** Should `retry` on a `RATE_LIMITED` failure automatically wait for the upstream's stated Retry-After header before the next attempt? Probably yes; lands when the bounded-retry-with-backoff infrastructure ships.
+- **OQ-FR-4 (TENTATIVE, deferred):** Session-token-budget default (FR-FR-4 above).
+- **OQ-FR-5 (TENTATIVE, deferred):** Multi-agent pre-verifier architecture (FR-FR-5 above).
+- **OQ-FR-6 (TENTATIVE, post-M5):** Scientific output verification approach (FR-FR-6 above).
+
+---
+
