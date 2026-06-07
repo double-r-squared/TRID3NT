@@ -25,10 +25,28 @@
       "sprint": 6,
       "description": "Landed services/agent/src/grace2_agent/tools/ package — registry decorator + TOOL_REGISTRY, FR-DC-3 cache shim (compute_cache_key sha256[:32], read_through with live-no-cache short-circuit + force_refresh), and mongo_query/qgis_process pass-through stubs awaiting DI binding; 24 unit tests green.",
       "subagent_tokens": 145526
+    },
+    {
+      "job_id": "job-0033-engine-20260606",
+      "sprint": 6,
+      "description": "Landed 4 data-fetch atomic tools (fetch_dem via py3dep/rioxarray, fetch_buildings via MS Planetary Computer STAC, fetch_population via US Census ACS B01003, geocode_location via Nominatim) routing through cache shim with per-source bbox quantization; bound set_mcp_client DI seam; surfaced critical OQ-33-CACHE-CUSTOMTIME-TYPE-BUG (google.cloud.storage rejects str on blob.custom_time — orchestrator hotfixed 2 lines post-commit).",
+      "subagent_tokens": 180762
+    },
+    {
+      "job_id": "job-0034-engine-20260606",
+      "sprint": 6,
+      "description": "Landed 2 QGIS discovery atomic tools (list_qgis_algorithms enumerated 361 algorithms live at 3.03s + describe_qgis_algorithm parsed 5 zonalstatistics parameters at 1.44s); bound set_worker_submitter DI seam via subprocess Option B' for M4 demo enablement; Cloud Run Jobs v2 submitter follow-up routed.",
+      "subagent_tokens": 190739
+    },
+    {
+      "job_id": "job-0035-agent-20260606",
+      "sprint": 6,
+      "description": "Landed PipelineEmitter with 6 transition methods + replace-not-reconcile (A.7) structurally enforced (no merge helper exists; test-guarded) + ErrorCodeRegistry + emit_tool_call wrapper; integrated into server.py tool-call site; captured 13-frame live WS transcript (4 session-state + 9 pipeline-state) demonstrating real agent emission; closes OQ-T-28-SIM-WS-BOUNDARY.",
+      "subagent_tokens": 225817
     }
   ],
   "totals_by_sprint": {
-    "6": 406575
+    "6": 1003893
   },
   "historical_context": {
     "note": "Captured for accountability — NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
