@@ -136,6 +136,8 @@ Repo is a git repository on branch `main`, root-commit `6fd37e6`. Remote: `https
 
 ## Next up
 
+**Sprint-06 OPENED 2026-06-06** — M4 (Agent tools + atomic-tool starter set). 7 jobs reserved 0030-0036. Stage A in flight: job-0030 (schema D.6 + AtomicToolMetadata), job-0031 (infra cache bucket + 4 lifecycle rules). Stage B job-0032 (agent tool registry + cache shim) gated on 0030+0031. Stage C 0033/0034/0035 (parallel: engine data-fetch tools / engine QGIS discovery / agent pipeline-state emission). Stage D job-0036 (M4 acceptance + Fort Myers demo). See `reports/sprints/sprint-06.md`.
+
 **Sprint-05 CLOSED 2026-06-06** — M3 (Web client skeleton) achieved. 5 jobs approved (job-0025 basemap pivot + LayerPanel + App shell; job-0026 PipelineStrip + cancel button; job-0027 Playwright tooling + AFK loop; job-0028 M3 acceptance suite; mid-sprint job-0029 CORS fix). NFR-P-3 qualified at p50≈300ms / p95≈360ms (~7× margin under 2000ms target). Cross-browser visual smokes + cancel-chain end-to-end + Tier separation all verified live on deployed substrate. See `reports/sprints/sprint-05.md` Retrospective.
 
 **Sprint-06 (M4 — agent service tools + atomic-tool starter set) — PLANNING.** Proposed scope (per user direction 2026-06-06 "small catalog to start with"):
