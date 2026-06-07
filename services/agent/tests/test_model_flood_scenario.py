@@ -2139,3 +2139,459 @@ def test_extract_peak_depth_geotiff_falls_back_to_attrs_crs_when_no_var(
         )
     finally:
         cog_path.unlink(missing_ok=True)
+
+
+# =========================================================================== #
+# Tests 25-28 — job-0062: publish_layer integration into model_flood_scenario
+# =========================================================================== #
+
+
+# --------------------------------------------------------------------------- #
+# Test 25 — model_flood_scenario calls publish_layer after postprocess_flood
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_model_flood_scenario_calls_publish_layer_after_postprocess() -> None:
+    """``publish_layer`` is called exactly once after ``postprocess_flood`` succeeds.
+
+    Guards the Step 9 integration point in ``model_flood_scenario``
+    (job-0062): after ``postprocess_flood`` returns the flood-depth COG
+    ``LayerURI``, ``publish_layer`` is invoked to add the COG to the ``.qgs``
+    project so QGIS Server can serve it as WMS.
+    """
+    run_id = new_ulid()
+    handle = _make_handle(run_id=run_id)
+
+    landcover_result = {
+        "layer": _mock_layer_uri("landcover"),
+        "nlcd_vintage_year": 2021,
+        "dataset": "nlcd_2021",
+        "source": "mrlc-wms",
+    }
+    precip_result = {
+        "precip_inches": 12.1,
+        "units": "inches",
+        "location": [26.6, -81.9],
+        "return_period_years": 100,
+        "duration_hours": 24.0,
+        "vintage_volume": "NOAA Atlas 14 Volume 9 Version 2",
+        "project_area": "Southeastern States",
+        "source": "noaa-atlas14-pfds",
+    }
+    model_setup = ModelSetup(
+        setup_id=new_ulid(),
+        solver="sfincs",
+        setup_uri="gs://test-cache/cache/static-30d/sfincs_setup/test/manifest.json",
+        grid_resolution_m=30.0,
+        bbox=(-81.92, 26.55, -81.80, 26.68),
+        parameters={"nlcd_vintage_year": 2021},
+        created_at=datetime.now(timezone.utc),
+    )
+    run_result_ok = RunResult(
+        run_id=run_id,
+        handle_id=handle.handle_id,
+        status="complete",
+        output_uri=f"gs://grace-2-hazard-prod-runs/{run_id}/",
+        started_at=datetime.now(timezone.utc),
+        completed_at=datetime.now(timezone.utc),
+        duration_seconds=120.0,
+    )
+    flood_layer = LayerURI(
+        layer_id=f"flood-depth-peak-{run_id}",
+        name="Flood Depth (peak)",
+        layer_type="raster",
+        uri=f"gs://grace-2-hazard-prod-runs/{run_id}/flood_depth_peak.tif",
+        style_preset="continuous_flood_depth",
+        role="primary",
+        units="meters",
+    )
+    depth_metrics = {
+        "max_depth_m": 2.4, "mean_depth_m": 0.6, "p95_depth_m": 1.9,
+        "flooded_cell_count": 12_345, "crs": "EPSG:32617", "units": "meters",
+    }
+    expected_wms_url = (
+        "https://qgis.test.example.com/ogc/wms"
+        "?MAP=/mnt/qgs/grace2-sample.qgs"
+        f"&LAYERS=flood-depth-peak-{run_id}"
+    )
+
+    async def _wfc(handle):  # noqa: ANN001
+        return run_result_ok
+
+    publish_layer_calls: list[dict] = []
+
+    def _mock_publish_layer(layer_uri, layer_id, style_preset, **kwargs):
+        publish_layer_calls.append({
+            "layer_uri": layer_uri,
+            "layer_id": layer_id,
+            "style_preset": style_preset,
+        })
+        return expected_wms_url
+
+    with (
+        patch("grace2_agent.workflows.model_flood_scenario.fetch_dem", return_value=_mock_layer_uri("dem")),
+        patch("grace2_agent.workflows.model_flood_scenario.fetch_landcover", return_value=landcover_result),
+        patch("grace2_agent.workflows.model_flood_scenario.fetch_river_geometry", return_value=_mock_layer_uri("rivers")),
+        patch("grace2_agent.workflows.model_flood_scenario.lookup_precip_return_period", return_value=precip_result),
+        patch("grace2_agent.workflows.model_flood_scenario.build_sfincs_model", return_value=model_setup),
+        patch("grace2_agent.workflows.model_flood_scenario.run_solver", return_value=handle),
+        patch("grace2_agent.workflows.model_flood_scenario.wait_for_completion", side_effect=_wfc),
+        patch(
+            "grace2_agent.workflows.model_flood_scenario.postprocess_flood",
+            return_value=([flood_layer], depth_metrics),
+        ),
+        patch(
+            "grace2_agent.workflows.model_flood_scenario.publish_layer",
+            side_effect=_mock_publish_layer,
+        ),
+    ):
+        envelope = await model_flood_scenario(
+            bbox=(-81.92, 26.55, -81.80, 26.68),
+            return_period_yr=100,
+            duration_hr=24,
+            compute_class="medium",
+        )
+
+    # publish_layer must have been called once for the primary raster layer.
+    assert len(publish_layer_calls) == 1, (
+        f"job-0062: publish_layer must be called once for the primary raster; "
+        f"called {len(publish_layer_calls)} time(s)"
+    )
+    call = publish_layer_calls[0]
+    assert call["layer_uri"] == f"gs://grace-2-hazard-prod-runs/{run_id}/flood_depth_peak.tif"
+    assert call["layer_id"] == f"flood-depth-peak-{run_id}"
+    assert call["style_preset"] == "continuous_flood_depth"
+
+
+# --------------------------------------------------------------------------- #
+# Test 26 — LayerURI returned by workflow carries WMS URL (not gs://)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_model_flood_scenario_layer_uri_carries_wms_url() -> None:
+    """The ``LayerURI`` returned from ``model_flood_scenario`` carries the WMS URL.
+
+    After job-0062's publish_layer integration, the primary layer's ``uri``
+    is the WMS URL returned by ``publish_layer``, not the gs:// COG URI.
+    This ensures the client gets a renderable URL directly from
+    ``session-state.loaded_layers``.
+
+    Guards OQ-62-LAYERURI-URI-FIELD: ``LayerURI.uri`` is substituted with
+    the WMS URL because the contract has no validator rejecting non-gs:// values.
+    """
+    run_id = new_ulid()
+    handle = _make_handle(run_id=run_id)
+
+    landcover_result = {
+        "layer": _mock_layer_uri("landcover"),
+        "nlcd_vintage_year": 2021,
+        "dataset": "nlcd_2021",
+        "source": "mrlc-wms",
+    }
+    precip_result = {
+        "precip_inches": 12.1,
+        "units": "inches",
+        "location": [26.6, -81.9],
+        "return_period_years": 100,
+        "duration_hours": 24.0,
+        "vintage_volume": "NOAA Atlas 14 Volume 9 Version 2",
+        "project_area": "Southeastern States",
+        "source": "noaa-atlas14-pfds",
+    }
+    model_setup = ModelSetup(
+        setup_id=new_ulid(),
+        solver="sfincs",
+        setup_uri="gs://test-cache/cache/static-30d/sfincs_setup/test/manifest.json",
+        grid_resolution_m=30.0,
+        bbox=(-81.92, 26.55, -81.80, 26.68),
+        parameters={"nlcd_vintage_year": 2021},
+        created_at=datetime.now(timezone.utc),
+    )
+    run_result_ok = RunResult(
+        run_id=run_id,
+        handle_id=handle.handle_id,
+        status="complete",
+        output_uri=f"gs://grace-2-hazard-prod-runs/{run_id}/",
+        started_at=datetime.now(timezone.utc),
+        completed_at=datetime.now(timezone.utc),
+        duration_seconds=120.0,
+    )
+    flood_layer = LayerURI(
+        layer_id=f"flood-depth-peak-{run_id}",
+        name="Flood Depth (peak)",
+        layer_type="raster",
+        uri=f"gs://grace-2-hazard-prod-runs/{run_id}/flood_depth_peak.tif",
+        style_preset="continuous_flood_depth",
+        role="primary",
+        units="meters",
+    )
+    depth_metrics = {
+        "max_depth_m": 2.4, "mean_depth_m": 0.6, "p95_depth_m": 1.9,
+        "flooded_cell_count": 12_345, "crs": "EPSG:32617", "units": "meters",
+    }
+    expected_wms_url = (
+        "https://grace-2-qgis-server.example.com/ogc/wms"
+        "?MAP=/mnt/qgs/grace2-sample.qgs"
+        f"&LAYERS=flood-depth-peak-{run_id}"
+    )
+
+    async def _wfc(handle):  # noqa: ANN001
+        return run_result_ok
+
+    with (
+        patch("grace2_agent.workflows.model_flood_scenario.fetch_dem", return_value=_mock_layer_uri("dem")),
+        patch("grace2_agent.workflows.model_flood_scenario.fetch_landcover", return_value=landcover_result),
+        patch("grace2_agent.workflows.model_flood_scenario.fetch_river_geometry", return_value=_mock_layer_uri("rivers")),
+        patch("grace2_agent.workflows.model_flood_scenario.lookup_precip_return_period", return_value=precip_result),
+        patch("grace2_agent.workflows.model_flood_scenario.build_sfincs_model", return_value=model_setup),
+        patch("grace2_agent.workflows.model_flood_scenario.run_solver", return_value=handle),
+        patch("grace2_agent.workflows.model_flood_scenario.wait_for_completion", side_effect=_wfc),
+        patch(
+            "grace2_agent.workflows.model_flood_scenario.postprocess_flood",
+            return_value=([flood_layer], depth_metrics),
+        ),
+        patch(
+            "grace2_agent.workflows.model_flood_scenario.publish_layer",
+            return_value=expected_wms_url,
+        ),
+    ):
+        envelope = await model_flood_scenario(
+            bbox=(-81.92, 26.55, -81.80, 26.68),
+        )
+
+    assert isinstance(envelope, AssessmentEnvelope)
+    assert len(envelope.layers) == 1, (
+        f"Expected 1 layer; got {len(envelope.layers)}"
+    )
+    primary_layer = envelope.layers[0]
+    assert primary_layer.uri == expected_wms_url, (
+        f"job-0062 OQ-62-LAYERURI-URI-FIELD: LayerURI.uri must be the WMS URL "
+        f"after publish_layer succeeds; got {primary_layer.uri!r}. "
+        f"The client uses this URI to render the layer in MapLibre."
+    )
+    # Other fields should be preserved.
+    assert primary_layer.style_preset == "continuous_flood_depth"
+    assert primary_layer.role == "primary"
+    assert primary_layer.layer_type == "raster"
+
+
+# --------------------------------------------------------------------------- #
+# Test 27 — publish_layer failure falls back to gs:// (non-fatal)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_model_flood_scenario_publish_layer_failure_falls_back_to_gs() -> None:
+    """When ``publish_layer`` raises ``PublishLayerError``, fall back to gs:// uri.
+
+    The publish_layer step is non-fatal: if the worker execution fails
+    (e.g. OQ-62-WORKER-SA-RUNS-BUCKET-GRANT is not yet landed), the workflow
+    logs the error and falls back to the gs:// URI so the envelope is still
+    usable. The client will show the layer in the LayerPanel but WMS rendering
+    will fail at the MapLibre tile-fetch step until the grant lands.
+    """
+    from grace2_agent.tools.publish_layer import PublishLayerError
+
+    run_id = new_ulid()
+    handle = _make_handle(run_id=run_id)
+
+    landcover_result = {
+        "layer": _mock_layer_uri("landcover"),
+        "nlcd_vintage_year": 2021,
+        "dataset": "nlcd_2021",
+        "source": "mrlc-wms",
+    }
+    precip_result = {
+        "precip_inches": 12.1,
+        "units": "inches",
+        "location": [26.6, -81.9],
+        "return_period_years": 100,
+        "duration_hours": 24.0,
+        "vintage_volume": "NOAA Atlas 14 Volume 9 Version 2",
+        "project_area": "Southeastern States",
+        "source": "noaa-atlas14-pfds",
+    }
+    model_setup = ModelSetup(
+        setup_id=new_ulid(),
+        solver="sfincs",
+        setup_uri="gs://test-cache/cache/static-30d/sfincs_setup/test/manifest.json",
+        grid_resolution_m=30.0,
+        bbox=(-81.92, 26.55, -81.80, 26.68),
+        parameters={"nlcd_vintage_year": 2021},
+        created_at=datetime.now(timezone.utc),
+    )
+    run_result_ok = RunResult(
+        run_id=run_id,
+        handle_id=handle.handle_id,
+        status="complete",
+        output_uri=f"gs://grace-2-hazard-prod-runs/{run_id}/",
+        started_at=datetime.now(timezone.utc),
+        completed_at=datetime.now(timezone.utc),
+        duration_seconds=120.0,
+    )
+    cog_uri = f"gs://grace-2-hazard-prod-runs/{run_id}/flood_depth_peak.tif"
+    flood_layer = LayerURI(
+        layer_id=f"flood-depth-peak-{run_id}",
+        name="Flood Depth (peak)",
+        layer_type="raster",
+        uri=cog_uri,
+        style_preset="continuous_flood_depth",
+        role="primary",
+        units="meters",
+    )
+    depth_metrics = {
+        "max_depth_m": 2.4, "mean_depth_m": 0.6, "p95_depth_m": 1.9,
+        "flooded_cell_count": 12_345, "crs": "EPSG:32617", "units": "meters",
+    }
+
+    async def _wfc(handle):  # noqa: ANN001
+        return run_result_ok
+
+    with (
+        patch("grace2_agent.workflows.model_flood_scenario.fetch_dem", return_value=_mock_layer_uri("dem")),
+        patch("grace2_agent.workflows.model_flood_scenario.fetch_landcover", return_value=landcover_result),
+        patch("grace2_agent.workflows.model_flood_scenario.fetch_river_geometry", return_value=_mock_layer_uri("rivers")),
+        patch("grace2_agent.workflows.model_flood_scenario.lookup_precip_return_period", return_value=precip_result),
+        patch("grace2_agent.workflows.model_flood_scenario.build_sfincs_model", return_value=model_setup),
+        patch("grace2_agent.workflows.model_flood_scenario.run_solver", return_value=handle),
+        patch("grace2_agent.workflows.model_flood_scenario.wait_for_completion", side_effect=_wfc),
+        patch(
+            "grace2_agent.workflows.model_flood_scenario.postprocess_flood",
+            return_value=([flood_layer], depth_metrics),
+        ),
+        patch(
+            "grace2_agent.workflows.model_flood_scenario.publish_layer",
+            side_effect=PublishLayerError(
+                "WORKER_JOB_FAILED",
+                "pyqgis worker execution reached FAILED state (no runs bucket grant)",
+            ),
+        ),
+    ):
+        envelope = await model_flood_scenario(
+            bbox=(-81.92, 26.55, -81.80, 26.68),
+        )
+
+    # Envelope is still built (not a failed envelope) — publish_layer failure is non-fatal.
+    assert isinstance(envelope, AssessmentEnvelope)
+    assert len(envelope.layers) == 1
+    primary_layer = envelope.layers[0]
+    # Falls back to the gs:// uri (the original postprocess_flood output).
+    assert primary_layer.uri == cog_uri, (
+        f"publish_layer failure must fall back to gs:// uri; "
+        f"got {primary_layer.uri!r}"
+    )
+    # The envelope is still a success envelope (not failed).
+    assert envelope.flood is not None
+    assert not envelope.flood.metrics.solver_version.startswith("failed:"), (
+        "publish_layer failure must NOT produce a failed envelope; "
+        "it should produce a success envelope with the gs:// fallback uri"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Test 28 — run_model_flood_scenario wrapper returns WMS URL via LayerURI.uri
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_run_model_flood_scenario_wrapper_uri_is_wms_url() -> None:
+    """The thin wrapper's returned ``LayerURI.uri`` is the WMS URL after job-0062.
+
+    The atomic-tool wrapper ``run_model_flood_scenario`` returns
+    ``LayerURI(uri=primary.uri)``; after job-0062's integration,
+    ``primary.uri`` is the WMS URL returned by ``publish_layer``.
+    This guards the client contract: ``session-state.loaded_layers[0].uri``
+    is the WMS URL, not a gs:// URI.
+    """
+    run_id = new_ulid()
+    handle = _make_handle(run_id=run_id)
+
+    landcover_result = {
+        "layer": _mock_layer_uri("landcover"),
+        "nlcd_vintage_year": 2021,
+        "dataset": "nlcd_2021",
+        "source": "mrlc-wms",
+    }
+    precip_result = {
+        "precip_inches": 12.1,
+        "units": "inches",
+        "location": [26.6, -81.9],
+        "return_period_years": 100,
+        "duration_hours": 24.0,
+        "vintage_volume": "NOAA Atlas 14 Volume 9 Version 2",
+        "project_area": "Southeastern States",
+        "source": "noaa-atlas14-pfds",
+    }
+    model_setup = ModelSetup(
+        setup_id=new_ulid(),
+        solver="sfincs",
+        setup_uri="gs://test-cache/cache/static-30d/sfincs_setup/test/manifest.json",
+        grid_resolution_m=30.0,
+        bbox=(-81.92, 26.55, -81.80, 26.68),
+        parameters={"nlcd_vintage_year": 2021},
+        created_at=datetime.now(timezone.utc),
+    )
+    run_result_ok = RunResult(
+        run_id=run_id,
+        handle_id=handle.handle_id,
+        status="complete",
+        output_uri=f"gs://grace-2-hazard-prod-runs/{run_id}/",
+        started_at=datetime.now(timezone.utc),
+        completed_at=datetime.now(timezone.utc),
+        duration_seconds=120.0,
+    )
+    flood_layer = LayerURI(
+        layer_id=f"flood-depth-peak-{run_id}",
+        name="Flood Depth (peak)",
+        layer_type="raster",
+        uri=f"gs://grace-2-hazard-prod-runs/{run_id}/flood_depth_peak.tif",
+        style_preset="continuous_flood_depth",
+        role="primary",
+        units="meters",
+    )
+    depth_metrics = {
+        "max_depth_m": 2.4, "mean_depth_m": 0.6, "p95_depth_m": 1.9,
+        "flooded_cell_count": 12_345, "crs": "EPSG:32617", "units": "meters",
+    }
+    expected_wms_url = (
+        "https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms"
+        "?MAP=/mnt/qgs/grace2-sample.qgs"
+        f"&LAYERS=flood-depth-peak-{run_id}"
+    )
+
+    async def _wfc(handle):  # noqa: ANN001
+        return run_result_ok
+
+    with (
+        patch("grace2_agent.workflows.model_flood_scenario.fetch_dem", return_value=_mock_layer_uri("dem")),
+        patch("grace2_agent.workflows.model_flood_scenario.fetch_landcover", return_value=landcover_result),
+        patch("grace2_agent.workflows.model_flood_scenario.fetch_river_geometry", return_value=_mock_layer_uri("rivers")),
+        patch("grace2_agent.workflows.model_flood_scenario.lookup_precip_return_period", return_value=precip_result),
+        patch("grace2_agent.workflows.model_flood_scenario.build_sfincs_model", return_value=model_setup),
+        patch("grace2_agent.workflows.model_flood_scenario.run_solver", return_value=handle),
+        patch("grace2_agent.workflows.model_flood_scenario.wait_for_completion", side_effect=_wfc),
+        patch(
+            "grace2_agent.workflows.model_flood_scenario.postprocess_flood",
+            return_value=([flood_layer], depth_metrics),
+        ),
+        patch(
+            "grace2_agent.workflows.model_flood_scenario.publish_layer",
+            return_value=expected_wms_url,
+        ),
+    ):
+        result = await run_model_flood_scenario(
+            bbox=(-81.92, 26.55, -81.80, 26.68),
+        )
+
+    assert isinstance(result, LayerURI), (
+        f"run_model_flood_scenario must return LayerURI; got {type(result).__name__!r}"
+    )
+    assert result.uri == expected_wms_url, (
+        f"job-0062: LayerURI.uri must be the WMS URL after publish_layer "
+        f"integration; got {result.uri!r}. "
+        f"The client needs a WMS URL in session-state.loaded_layers[0].uri "
+        f"to render via MapLibre."
+    )
+

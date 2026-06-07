@@ -129,10 +129,15 @@ class WorkerResult:
     error: str | None
     qgs_version: str
     ts: str = dataclasses.field(default_factory=_utc_iso_z)
+    #: WMS URL for the published raster layer.  Populated only when the
+    #: worker was invoked with ``--op publish-raster``; ``None`` for the
+    #: polygon round-trip path.  Carried in the Pub/Sub envelope so the
+    #: agent caller can retrieve the URL without constructing it independently.
+    wms_url: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Plain ``dict`` for JSON serialization in the Pub/Sub envelope."""
-        return {
+        d: dict[str, Any] = {
             "qgs_uri": self.qgs_uri,
             "layers_before": list(self.layers_before),
             "layers_after": list(self.layers_after),
@@ -142,6 +147,9 @@ class WorkerResult:
             "qgs_version": self.qgs_version,
             "ts": self.ts,
         }
+        if self.wms_url is not None:
+            d["wms_url"] = self.wms_url
+        return d
 
     def to_json_bytes(self) -> bytes:
         """UTF-8 JSON bytes for the Pub/Sub ``data`` field."""

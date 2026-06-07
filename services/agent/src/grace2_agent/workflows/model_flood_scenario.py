@@ -87,6 +87,7 @@ from ..tools.data_fetch import (
     geocode_location,
     lookup_precip_return_period,
 )
+from ..tools.publish_layer import PublishLayerError, publish_layer
 from ..tools.solver import run_solver, wait_for_completion
 from .postprocess_flood import PostprocessError, postprocess_flood
 from .sfincs_builder import (
@@ -522,7 +523,62 @@ async def model_flood_scenario(
             grid_resolution_m=grid_resolution_m,
         )
 
-    # --- Step 9: build success envelope ---
+    # --- Step 9: publish_layer (COG → QGIS Server WMS bridge, job-0062) ---
+    # For the primary flood-depth layer, invoke the PyQGIS worker to add the COG
+    # to the canonical .qgs project so QGIS Server can serve it as WMS.
+    # The returned WMS URL replaces the gs:// uri in the LayerURI/ResultLayer so
+    # the client gets a renderable URL directly (layer-emission-contract.md, 2026-06-07).
+    #
+    # Non-fatal: if publish_layer fails (e.g. OQ-62-WORKER-SA-RUNS-BUCKET-GRANT
+    # is not yet landed), we log the error and fall back to the gs:// uri so the
+    # rest of the envelope is still usable. The client will show the layer in the
+    # LayerPanel but WMS rendering will fail at the MapLibre tile-fetch step.
+    published_layers: list[LayerURI] = []
+    for lyr in layers:
+        if lyr.role == "primary" and lyr.layer_type == "raster" and lyr.uri.startswith("gs://"):
+            layer_id_for_wms = f"flood-depth-peak-{run_result.run_id}"
+            try:
+                wms_url = publish_layer(
+                    layer_uri=lyr.uri,
+                    layer_id=layer_id_for_wms,
+                    style_preset=lyr.style_preset or "continuous_flood_depth",
+                )
+                # Substitute the WMS URL into the LayerURI so the client renders
+                # directly (OQ-62-LAYERURI-URI-FIELD: LayerURI.uri is documented
+                # as gs:// but has no validator rejecting WMS URLs; we use it here
+                # as the renderable URL per the kickoff direction. A follow-up
+                # schema job should add a dedicated wms_url field.)
+                published_layers.append(
+                    LayerURI(
+                        layer_id=layer_id_for_wms,
+                        name=lyr.name,
+                        layer_type=lyr.layer_type,
+                        uri=wms_url,
+                        style_preset=lyr.style_preset,
+                        temporal=lyr.temporal,
+                        role=lyr.role,
+                        units=lyr.units,
+                    )
+                )
+                logger.info(
+                    "publish_layer succeeded layer_id=%s wms_url=%s",
+                    layer_id_for_wms,
+                    wms_url,
+                )
+            except PublishLayerError as exc:
+                logger.warning(
+                    "publish_layer failed for layer_id=%s error_code=%s (%s) — "
+                    "falling back to gs:// uri; WMS rendering will fail until "
+                    "OQ-62-WORKER-SA-RUNS-BUCKET-GRANT is resolved",
+                    layer_id_for_wms,
+                    exc.error_code,
+                    exc,
+                )
+                published_layers.append(lyr)
+        else:
+            published_layers.append(lyr)
+
+    # --- Step 10: build success envelope ---
     bbox_area_km2 = _bbox_area_km2(resolved_bbox)
     result_layers: list[ResultLayer] = [
         ResultLayer(
@@ -535,7 +591,7 @@ async def model_flood_scenario(
             role=lyr.role,
             units=lyr.units,
         )
-        for lyr in layers
+        for lyr in published_layers
     ]
     metrics = FloodMetrics(
         flooded_area_km2=min(

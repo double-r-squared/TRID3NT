@@ -52,6 +52,7 @@ from qgis.core import (
     QgsField,
     QgsGeometry,
     QgsProject,
+    QgsRasterLayer,
     QgsVectorFileWriter,
     QgsVectorLayer,
     QgsWkbTypes,
@@ -86,13 +87,28 @@ RETRY_ATTEMPTS = 3
 #: Exponential backoff base (seconds) for retries.
 RETRY_BASE_SECONDS = 0.25
 
-#: Path to the QML preset baked into the QGIS Server / worker container by
-#: ``infra/qgis-server/Dockerfile``. The worker also looks at the in-repo
-#: path when running locally outside the container (dev iteration).
-STYLE_PRESET_CONTAINER_PATH = Path("/opt/styles/basemap.qml")
+#: Directory that holds QML presets baked into the QGIS Server / worker
+#: container by ``infra/qgis-server/Dockerfile``. Individual presets are
+#: resolved by name within this directory.
+STYLE_PRESET_CONTAINER_DIR = Path("/opt/styles")
 
-#: Relative path inside the repo (for local dev only).
-STYLE_PRESET_REPO_PATH = Path(__file__).resolve().parents[3] / "styles" / "basemap.qml"
+#: Directory inside the repo for local dev (styles/ at the repo root).
+STYLE_PRESET_REPO_DIR = Path(__file__).resolve().parents[3] / "styles"
+
+# ---------------------------------------------------------------------------
+# Backward-compat aliases used by _resolve_style_preset_path (polygon path).
+# ---------------------------------------------------------------------------
+STYLE_PRESET_CONTAINER_PATH = STYLE_PRESET_CONTAINER_DIR / "basemap.qml"
+STYLE_PRESET_REPO_PATH = STYLE_PRESET_REPO_DIR / "basemap.qml"
+
+#: Default WMS base URL for the QGIS Server used to construct the WMS URL
+#: returned by the publish-raster operation. Override via
+#: ``QGIS_SERVER_URL`` env var (strips trailing slash; never includes
+#: the MAP= or LAYERS= query parameters — those are appended by
+#: ``_build_wms_url``).
+DEFAULT_QGIS_SERVER_URL = (
+    "https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -326,12 +342,106 @@ def _apply_style_preset(layer, style_path: Path) -> bool:
 
 
 def _resolve_style_preset_path() -> Path | None:
-    """Pick the first existing QML preset path between container + repo."""
+    """Pick the first existing QML preset path between container + repo.
+
+    Used by the polygon (M2) path for the default ``basemap.qml`` preset.
+    For named presets (raster path), use ``_resolve_style_preset_path_by_name``.
+    """
     if STYLE_PRESET_CONTAINER_PATH.exists():
         return STYLE_PRESET_CONTAINER_PATH
     if STYLE_PRESET_REPO_PATH.exists():
         return STYLE_PRESET_REPO_PATH
     return None
+
+
+def _resolve_style_preset_path_by_name(preset_name: str) -> Path | None:
+    """Resolve a named QML preset to its filesystem path.
+
+    Checks the container bake directory (``/opt/styles/``) first, then the
+    in-repo ``styles/`` directory. The ``preset_name`` must be the filename
+    stem without the ``.qml`` extension (e.g. ``"continuous_flood_depth"``).
+
+    Returns ``None`` when the preset is not found in either location so the
+    caller can decide whether a missing preset is fatal.
+
+    Used by the raster publish path (``_append_raster_layer``); the polygon
+    path continues to use ``_resolve_style_preset_path``.
+    """
+    filename = f"{preset_name}.qml"
+    container_path = STYLE_PRESET_CONTAINER_DIR / filename
+    repo_path = STYLE_PRESET_REPO_DIR / filename
+    if container_path.exists():
+        return container_path
+    if repo_path.exists():
+        return repo_path
+    return None
+
+
+def _build_wms_url(qgs_key: str, layer_id: str) -> str:
+    """Compose the WMS URL the agent returns to the client for a published layer.
+
+    The URL format mirrors ``web/src/Map.tsx`` line 40 (the canonical QGIS
+    Server endpoint) and the ``MAP=`` parameter convention agreed in the
+    layer-emission-contract (``docs/decisions/layer-emission-contract.md``):
+
+        <qgis_server_url>?MAP=/mnt/qgs/<qgs_key>&LAYERS=<layer_id>
+
+    The ``QGIS_SERVER_URL`` env var overrides the default endpoint so the
+    smoke harness and integration tests can target a different server
+    without touching the constant.
+    """
+    base = os.environ.get("QGIS_SERVER_URL", DEFAULT_QGIS_SERVER_URL).rstrip("/")
+    # qgs_key is the GCS object key without leading slash; mount path is /mnt/qgs/.
+    map_param = f"/mnt/qgs/{qgs_key}"
+    return f"{base}?MAP={map_param}&LAYERS={layer_id}"
+
+
+def _append_raster_layer(
+    project: QgsProject,
+    raster_uri: str,
+    layer_id: str,
+    style_qml_path: Path | None,
+) -> QgsRasterLayer:
+    """Append a GDAL-backed raster layer to ``project`` and apply its style.
+
+    Mirrors ``_append_memory_polygon_layer`` for the raster case. The
+    ``raster_uri`` should be a ``/vsigs/<bucket>/<key>.tif`` path that GDAL
+    can reach via the Cloud Run instance-metadata credentials
+    (``CPL_MACHINE_IS_GCE=YES`` + ``CPL_GS_USE_INSTANCE_PROFILE=YES``).
+
+    The ``layer_id`` doubles as the QGIS layer name (the value QGIS Server
+    exposes as ``LAYERS=`` in WMS requests) and the identifier used to
+    construct the WMS URL returned to the agent.
+
+    Style application follows the same pattern as the polygon path:
+    ``loadNamedStyle`` is called when ``style_qml_path`` is not None; a
+    missing or failing QML is non-fatal (the layer is still appended and
+    the worker records the skip).
+
+    Returns the created ``QgsRasterLayer`` so the caller can inspect it
+    (e.g. check ``isValid()`` in tests).
+
+    Raises:
+        WorkerError: if the raster layer fails to initialize (``isValid()``
+            returns False) — this is an unrecoverable condition because the
+            layer source is unreachable or corrupt. The raster_uri is
+            included in the message.
+    """
+    layer = QgsRasterLayer(raster_uri, layer_id, "gdal")
+    if not layer.isValid():
+        raise WorkerError(
+            f"QgsRasterLayer failed to initialize for uri={raster_uri!r} "
+            f"layer_id={layer_id!r}. Check GDAL /vsigs/ auth + bucket grant."
+        )
+
+    project.addMapLayer(layer)
+
+    if style_qml_path is not None:
+        _apply_style_preset(layer, style_qml_path)
+    else:
+        logger.info("no style_qml_path supplied for raster layer %r — skipping", layer_id)
+
+    return layer
 
 
 # ---------------------------------------------------------------------------
@@ -617,12 +727,242 @@ def worker_round_trip(
     return result
 
 
+def publish_raster_round_trip(
+    qgs_uri: str,
+    raster_uri: str,
+    layer_id: str,
+    style_preset_name: str = "continuous_flood_depth",
+    *,
+    publish: bool = True,
+    pubsub_project: str | None = None,
+    pubsub_topic: str | None = None,
+) -> WorkerResult:
+    """Read a ``.qgs`` from GCS, append a raster layer, write it back, notify.
+
+    This is the raster sibling of ``worker_round_trip`` (the M2 polygon path).
+    It follows the same FR-QS-6 pattern (GCS download → PyQGIS mutate → GCS
+    upload → Pub/Sub notify) but uses ``_append_raster_layer`` instead of
+    ``_append_memory_polygon_layer``.
+
+    Use this when: ``publish_layer`` (the agent-side atomic tool) invokes the
+    PyQGIS worker to add a COG produced by ``postprocess_flood`` to the
+    canonical ``.qgs`` project so QGIS Server can serve it as WMS.
+
+    Do NOT use this for:
+    - The M2 polygon demonstration path (use ``worker_round_trip``).
+    - Reading or rendering layers (Invariant 4 — web only consumes WMS, never
+      calls into the PyQGIS worker directly).
+    - Any LLM call (Invariant 2 — zero LLM in this path).
+
+    Parameters
+    ----------
+    qgs_uri:
+        Either ``/vsigs/<bucket>/<key>.qgs``, ``gs://<bucket>/<key>.qgs``, or
+        an absolute local filesystem path (local dev). Follows the same
+        ``_parse_qgs_uri`` logic as ``worker_round_trip``.
+    raster_uri:
+        The GDAL-accessible URI for the COG to add as a new layer. In
+        production this is ``/vsigs/<runs-bucket>/<run_id>/flood_depth_peak.tif``.
+        The worker SA must have ``roles/storage.objectViewer`` on the runs
+        bucket for GDAL to read it (OQ-62-WORKER-SA-RUNS-BUCKET-GRANT — see
+        report; this grant is not yet in ``infra/worker.tf``).
+    layer_id:
+        QGIS layer name and the ``LAYERS=`` value in the WMS URL. Must be
+        unique within the ``.qgs`` (e.g. ``flood-depth-peak-<run_id>``).
+    style_preset_name:
+        Filename stem of the QML preset to apply (default:
+        ``"continuous_flood_depth"``). Resolved via
+        ``_resolve_style_preset_path_by_name``.
+    publish:
+        When True (default), publish a completion envelope to the
+        ``grace-2-worker-events`` Pub/Sub topic. Set False for unit tests.
+    pubsub_project / pubsub_topic:
+        GCP project + topic overrides; default to env-driven values.
+
+    Returns
+    -------
+    WorkerResult
+        Same envelope as ``worker_round_trip`` but with ``wms_url`` populated
+        on success (the agent side extracts this from the result). On error
+        ``wms_url`` is ``None`` and ``status == "error"``.
+    """
+    qgs_version = Qgis.QGIS_VERSION
+
+    pubsub_project = (
+        pubsub_project or os.environ.get("GCP_PROJECT") or DEFAULT_GCP_PROJECT
+    )
+    pubsub_topic = (
+        pubsub_topic or os.environ.get("PUBSUB_TOPIC") or DEFAULT_PUBSUB_TOPIC
+    )
+
+    try:
+        mode, bucket, key, read_path = _parse_qgs_uri(qgs_uri)
+    except WorkerError as exc:
+        return WorkerResult(
+            qgs_uri=qgs_uri,
+            layers_before=[],
+            layers_after=[],
+            notify_message_id=None,
+            status="error",
+            error=f"uri_parse: {exc}",
+            qgs_version=qgs_version,
+        )
+
+    # Resolve style preset path (non-fatal if missing).
+    style_path = _resolve_style_preset_path_by_name(style_preset_name)
+    if style_path is None:
+        logger.warning(
+            "style preset %r not found (container=%s, repo=%s) — proceeding without style",
+            style_preset_name,
+            STYLE_PRESET_CONTAINER_DIR / f"{style_preset_name}.qml",
+            STYLE_PRESET_REPO_DIR / f"{style_preset_name}.qml",
+        )
+
+    # Build the WMS URL from the qgs key (used whether or not the round-trip succeeds).
+    # Moved before QGIS lifecycle so it's available in all branches.
+    if key is not None:
+        wms_url = _build_wms_url(key, layer_id)
+    else:
+        # Local mode: build a pseudo-WMS URL from the local path so the
+        # function signature is consistent; callers can detect local mode by
+        # checking for the "file://" prefix.
+        wms_url = _build_wms_url(read_path.lstrip("/"), layer_id)
+
+    with tempfile.TemporaryDirectory(prefix="grace2-worker-raster-") as tmpdir_str:
+        tmpdir = Path(tmpdir_str)
+
+        # --- Step 1: bring the .qgs into a local file.
+        local_path = tmpdir / "project.qgs"
+        if mode == "local":
+            local_path = Path(read_path)
+        else:
+            try:
+                _retry("gcs_download", _gcs_download, bucket, key, local_path)
+            except Exception as exc:  # noqa: BLE001
+                return WorkerResult(
+                    qgs_uri=qgs_uri,
+                    layers_before=[],
+                    layers_after=[],
+                    notify_message_id=None,
+                    status="error",
+                    error=f"gcs_download: {type(exc).__name__}: {exc}",
+                    qgs_version=qgs_version,
+                )
+
+        # --- Step 2: PyQGIS lifecycle: read → mutate → write.
+        layers_before: list[str] = []
+        layers_after: list[str] = []
+        with _qgis_app():
+            project = QgsProject.instance()
+            project.clear()
+            if not project.read(str(local_path)):
+                return WorkerResult(
+                    qgs_uri=qgs_uri,
+                    layers_before=[],
+                    layers_after=[],
+                    notify_message_id=None,
+                    status="error",
+                    error=(
+                        f"QgsProject.read({local_path!r}) returned False — "
+                        f"project.error: {project.error()!r}"
+                    ),
+                    qgs_version=qgs_version,
+                )
+
+            layers_before = _layer_names(project)
+            logger.info(
+                "publish_raster_round_trip: read %s — layers_before=%s raster_uri=%s",
+                read_path,
+                layers_before,
+                raster_uri,
+            )
+
+            try:
+                _append_raster_layer(project, raster_uri, layer_id, style_path)
+            except WorkerError as exc:
+                return WorkerResult(
+                    qgs_uri=qgs_uri,
+                    layers_before=layers_before,
+                    layers_after=layers_before,
+                    notify_message_id=None,
+                    status="error",
+                    error=f"append_raster_layer: {exc}",
+                    qgs_version=qgs_version,
+                )
+
+            layers_after = _layer_names(project)
+            logger.info("post-mutate layers_after=%s wms_url=%s", layers_after, wms_url)
+
+            write_target = local_path
+            if not project.write(str(write_target)):
+                return WorkerResult(
+                    qgs_uri=qgs_uri,
+                    layers_before=layers_before,
+                    layers_after=layers_after,
+                    notify_message_id=None,
+                    status="error",
+                    error=f"QgsProject.write({write_target!r}) returned False",
+                    qgs_version=qgs_version,
+                )
+
+        # --- Step 3: GCS upload.
+        if mode == "gcs":
+            try:
+                _retry("gcs_upload", _gcs_upload, bucket, key, local_path)
+            except Exception as exc:  # noqa: BLE001
+                return WorkerResult(
+                    qgs_uri=qgs_uri,
+                    layers_before=layers_before,
+                    layers_after=layers_after,
+                    notify_message_id=None,
+                    status="error",
+                    error=f"gcs_upload: {type(exc).__name__}: {exc}",
+                    qgs_version=qgs_version,
+                )
+
+        # --- Step 4: build result + publish.
+        result = WorkerResult(
+            qgs_uri=qgs_uri,
+            layers_before=layers_before,
+            layers_after=layers_after,
+            notify_message_id=None,
+            status="ok",
+            error=None,
+            qgs_version=qgs_version,
+            wms_url=wms_url,
+        )
+
+        if publish:
+            try:
+                message_id = _retry(
+                    "pubsub_publish",
+                    _publish_completion,
+                    pubsub_project,
+                    pubsub_topic,
+                    result.to_json_bytes(),
+                )
+                result = replace(result, notify_message_id=message_id)
+            except Exception as exc:  # noqa: BLE001
+                result = replace(
+                    result,
+                    status="error",
+                    error=f"pubsub_publish: {type(exc).__name__}: {exc}",
+                )
+
+    return result
+
+
 __all__ = [
     "DEFAULT_GCP_PROJECT",
     "DEFAULT_PUBSUB_TOPIC",
+    "DEFAULT_QGIS_SERVER_URL",
     "RETRY_ATTEMPTS",
     "WorkerError",
     "WorkerResult",
     "LayerSpec",
     "worker_round_trip",
+    "publish_raster_round_trip",
+    "_append_raster_layer",
+    "_resolve_style_preset_path_by_name",
+    "_build_wms_url",
 ]

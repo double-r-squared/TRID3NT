@@ -1,0 +1,12 @@
+{
+  "mode": "dry-run",
+  "outcome": "SUCCESS",
+  "wms_url": "https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=smoke-flood-depth-peak-seed",
+  "elapsed_seconds": 0.00032223574817180634,
+  "helpers_verified": {
+    "gs_to_vsigs": "/vsigs/bucket/path/to/file.tif",
+    "parse_qgs_key": "grace2-sample.qgs",
+    "build_wms_url": "https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=smoke-flood-depth-peak-seed"
+  },
+  "substrate_verification": "Dry-run: mock Cloud Run Jobs client returned CONDITION_SUCCEEDED; helpers verified; DI seams wire correctly. Live run requires --live flag and gcloud auth."
+}

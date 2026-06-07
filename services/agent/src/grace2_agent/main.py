@@ -81,6 +81,8 @@ def _import_tools_registry() -> int:
     from .workflows import model_flood_scenario  # noqa: F401
     # job-0047: register catalog_search + catalog_fetch (Mode 1 substrate).
     from .tools import catalog  # noqa: F401
+    # job-0062: register publish_layer (COG → QGIS Server WMS bridge; side-effect tool).
+    from .tools import publish_layer  # noqa: F401
 
     return len(tools.TOOL_REGISTRY)
 
