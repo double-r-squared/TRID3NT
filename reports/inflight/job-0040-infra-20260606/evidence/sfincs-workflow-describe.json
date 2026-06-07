@@ -1,0 +1,18 @@
+{
+  "createTime": "2026-06-07T06:57:39.605775321Z",
+  "description": "FR-CE-2 orchestration for the SFINCS solver Cloud Run Job. Invoked by agent.run_solver (job-0041); cancellation propagates to the running Job execution (Invariant 8).",
+  "labels": {
+    "component": "sfincs-solver",
+    "env": "dev",
+    "goog-terraform-provisioned": "true",
+    "project": "grace-2",
+    "sprint": "07"
+  },
+  "name": "projects/grace-2-hazard-prod/locations/us-central1/workflows/grace-2-sfincs-orchestrator",
+  "revisionCreateTime": "2026-06-07T06:57:39.629613947Z",
+  "revisionId": "000001-d2c",
+  "serviceAccount": "projects/grace-2-hazard-prod/serviceAccounts/workflow-invoker-sfincs@grace-2-hazard-prod.iam.gserviceaccount.com",
+  "sourceContents": "# GRACE-2 SFINCS orchestrator (sprint-07 / M5 / FR-CE-2 / job-0040).\n#\n# Inputs (passed as the executions.create `argument` JSON):\n#   {\n#     \"run_id\":       \"<run identifier>\",\n#     \"manifest_uri\": \"gs://<bucket>/<path>/setup.json\"\n#   }\n#\n# Output: parsed completion.json the entrypoint wrote to the runs bucket.\n\nmain:\n  params: [args]\n  steps:\n    - validate:\n        switch:\n          - condition: '${not(\"run_id\" in args)}'\n            raise: \"INVALID_INPUT: run_id is required\"\n          - condition: '${not(\"manifest_uri\" in args)}'\n            raise: \"INVALID_INPUT: manifest_uri is required\"\n    - invoke_sfincs_job:\n        try:\n          call: googleapis.run.v2.projects.locations.jobs.run\n          args:\n            name: \"projects/grace-2-hazard-prod/locations/us-central1/jobs/grace-2-sfincs-solver\"\n            connector_params:\n              timeout: 2400\n            body:\n              overrides:\n                containerOverrides:\n                  - env:\n                      - name: GRACE2_RUN_ID\n                        value: '${args.run_id}'\n                      - name: GRACE2_MANIFEST_URI\n                        value: '${args.manifest_uri}'\n          result: job_execution\n        except:\n          as: e\n          steps:\n            - log_job_error:\n                call: sys.log\n                args:\n                  data: '${e}'\n                  severity: \"ERROR\"\n            - return_job_error:\n                return:\n                  run_id: '${args.run_id}'\n                  status: \"error\"\n                  error: '${\"sfincs job execution failed: \" + json.encode_to_string(e)}'\n    - read_completion:\n        try:\n          call: googleapis.storage.v1.objects.get\n          args:\n            bucket: \"grace-2-hazard-prod-runs\"\n            object: '${args.run_id + \"/completion.json\"}'\n            alt: \"media\"\n          result: completion\n        except:\n          as: e\n          steps:\n            - log_completion_error:\n                call: sys.log\n                args:\n                  data: '${e}'\n                  severity: \"ERROR\"\n            - return_missing_completion:\n                return:\n                  run_id: '${args.run_id}'\n                  status: \"error\"\n                  error: \"completion.json missing; entrypoint did not finalize\"\n    - return_completion:\n        return: '${completion}'\n",
+  "state": "ACTIVE",
+  "updateTime": "2026-06-07T06:57:39.961387974Z"
+}

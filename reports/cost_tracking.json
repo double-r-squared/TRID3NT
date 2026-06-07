@@ -64,11 +64,18 @@
       "description": "OQ-4 HydroMT integration depth research + decision — picked Option A (Full HydroMT via hydromt-sfincs end-to-end) over Partial / Custom Config Builders; caught critical Invariant 7 risk (HydroMT roughness component silently fills unmatched NLCD class integers with defaults — mandated validation gate in build_sfincs_model raising SFINCSSetupError on LULC_MAPPING_MISMATCH); established docs/decisions/ convention (5-section format, ≤300 lines, one file per SRS OQ); concrete inheritance contracts for jobs 0039/0040/0042.",
       "model": "sonnet",
       "subagent_tokens": 79970
+    },
+    {
+      "job_id": "job-0037-engine-20260606",
+      "sprint": 7,
+      "description": "Flipped fetch_population default to WorldPop Tier-1 per Appendix F.1 (ACS opt-in via dataset='acs_2022' preserved); discovered MS Planetary Computer worldpop-100m collection + WorldPop Hub STAC don't exist; pivoted to direct REST + GeoTIFF download; 4 GB 100m product can't be windowed via /vsicurl/ (server returns 200 not 206 for range requests) so substituted 50 MB 1km Aggregated product as practical compromise; live Fort Myers fetch verified end-to-end (78.7s wall-clock, COG at GCS with datetime customTime); 72/72 agent tests green; 8 OQ-37-* surfaced + OQ-36 carry-forward.",
+      "model": "opus",
+      "subagent_tokens": 165405
     }
   ],
   "totals_by_sprint": {
     "6": 1265567,
-    "7": 79970
+    "7": 245375
   },
   "historical_context": {
     "note": "Captured for accountability — NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",

@@ -1,0 +1,4 @@
+Listing items under project grace-2-hazard-prod, location us-central1, repository grace-2-containers.
+
+IMAGE                                                                                    DIGEST                                                                   TAGS    CREATE_TIME          UPDATE_TIME          SIZE
+us-central1-docker.pkg.dev/grace-2-hazard-prod/grace-2-containers/grace-2-sfincs-solver  sha256:89ce6e275317bb44008d6a756f5be084ae4750ede6d0c6742c7ffa1a71ad4c44  latest  2026-06-06T23:54:46  2026-06-06T23:54:46  240771927

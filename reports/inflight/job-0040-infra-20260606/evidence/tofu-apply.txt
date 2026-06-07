@@ -1,0 +1,47 @@
+[0m[1mgoogle_service_account.workflow_invoker_sfincs: Creating...[0m[0m
+[0m[1mgoogle_service_account.sfincs_runtime: Creating...[0m[0m
+[0m[1mgoogle_storage_bucket.runs: Creating...[0m[0m
+[0m[1mgoogle_storage_bucket.runs: Creation complete after 1s [id=grace-2-hazard-prod-runs][0m
+[0m[1mgoogle_service_account.sfincs_runtime: Still creating... [10s elapsed][0m[0m
+[0m[1mgoogle_service_account.workflow_invoker_sfincs: Still creating... [10s elapsed][0m[0m
+[0m[1mgoogle_service_account.sfincs_runtime: Creation complete after 13s [id=projects/grace-2-hazard-prod/serviceAccounts/sfincs-runtime@grace-2-hazard-prod.iam.gserviceaccount.com][0m
+[0m[1mgoogle_storage_bucket_iam_member.sfincs_runtime_runs_admin: Creating...[0m[0m
+[0m[1mgoogle_storage_bucket_iam_member.sfincs_runtime_qgs_viewer: Creating...[0m[0m
+[0m[1mgoogle_storage_bucket_iam_member.sfincs_runtime_cache_viewer: Creating...[0m[0m
+[0m[1mgoogle_service_account.workflow_invoker_sfincs: Creation complete after 13s [id=projects/grace-2-hazard-prod/serviceAccounts/workflow-invoker-sfincs@grace-2-hazard-prod.iam.gserviceaccount.com][0m
+[0m[1mgoogle_project_iam_member.workflow_invoker_log_writer: Creating...[0m[0m
+[0m[1mgoogle_storage_bucket_iam_member.workflow_invoker_runs_viewer: Creating...[0m[0m
+[0m[1mgoogle_storage_bucket_iam_member.sfincs_runtime_cache_viewer: Creation complete after 4s [id=b/grace-2-hazard-prod-cache/roles/storage.objectViewer/serviceAccount:sfincs-runtime@grace-2-hazard-prod.iam.gserviceaccount.com][0m
+[0m[1mgoogle_storage_bucket_iam_member.sfincs_runtime_qgs_viewer: Creation complete after 4s [id=b/grace-2-hazard-prod-qgs/roles/storage.objectViewer/serviceAccount:sfincs-runtime@grace-2-hazard-prod.iam.gserviceaccount.com][0m
+[0m[1mgoogle_storage_bucket_iam_member.workflow_invoker_runs_viewer: Creation complete after 8s [id=b/grace-2-hazard-prod-runs/roles/storage.objectViewer/serviceAccount:workflow-invoker-sfincs@grace-2-hazard-prod.iam.gserviceaccount.com][0m
+[0m[1mgoogle_storage_bucket_iam_member.sfincs_runtime_runs_admin: Creation complete after 8s [id=b/grace-2-hazard-prod-runs/roles/storage.objectAdmin/serviceAccount:sfincs-runtime@grace-2-hazard-prod.iam.gserviceaccount.com][0m
+[0m[1mgoogle_project_iam_member.workflow_invoker_log_writer: Creation complete after 8s [id=grace-2-hazard-prod/roles/logging.logWriter/serviceAccount:workflow-invoker-sfincs@grace-2-hazard-prod.iam.gserviceaccount.com][0m
+[0m[1mgoogle_cloud_run_v2_job.sfincs_solver: Creating...[0m[0m
+[0m[1mgoogle_cloud_run_v2_job.sfincs_solver: Still creating... [10s elapsed][0m[0m
+[0m[1mgoogle_cloud_run_v2_job.sfincs_solver: Creation complete after 11s [id=projects/grace-2-hazard-prod/locations/us-central1/jobs/grace-2-sfincs-solver][0m
+[0m[1mgoogle_cloud_run_v2_job_iam_member.workflow_invoker_runs_job: Creating...[0m[0m
+[0m[1mgoogle_cloud_run_v2_job_iam_member.workflow_invoker_runs_job: Creation complete after 4s [id=projects/grace-2-hazard-prod/locations/us-central1/jobs/grace-2-sfincs-solver/roles/run.invoker/serviceAccount:workflow-invoker-sfincs@grace-2-hazard-prod.iam.gserviceaccount.com][0m
+[0m[1mgoogle_workflows_workflow.sfincs_orchestrator: Creating...[0m[0m
+[33m╷[0m[0m
+[33m│[0m [0m[1m[33mWarning: [0m[0m[1mApplied changes may be incomplete[0m
+[33m│[0m [0m
+[33m│[0m [0m[0mThe plan was created with the -target or the -exclude option in effect, so
+[33m│[0m [0msome changes requested in the configuration may have been ignored and the
+[33m│[0m [0moutput values may not be fully updated. Run the following command to verify
+[33m│[0m [0mthat no other changes are pending:
+[33m│[0m [0m    tofu plan
+[33m│[0m [0m	
+[33m│[0m [0mNote that the -target and -exclude options are not suitable for routine
+[33m│[0m [0muse, and are provided only for exceptional situations such as recovering
+[33m│[0m [0mfrom errors or mistakes, or when OpenTofu specifically suggests to use it
+[33m│[0m [0mas part of an error message.
+[33m╵[0m[0m
+[31m╷[0m[0m
+[31m│[0m [0m[1m[31mError: [0m[0m[1mError waiting to create Workflow: Error waiting for Creating Workflow: Error code 3, message: main.yaml: parse error: Unterminated expression: ${"sfincs job execution failed. Ensure the closing brace is present and wrap with single quotes (e.g. '${...}').
+[31m│[0m [0m[0m
+[31m│[0m [0m
+[31m│[0m [0m[0m  with google_workflows_workflow.sfincs_orchestrator,
+[31m│[0m [0m  on sfincs.tf line 359, in resource "google_workflows_workflow" "sfincs_orchestrator":
+[31m│[0m [0m 359: resource "google_workflows_workflow" "sfincs_orchestrator" [4m{[0m[0m
+[31m│[0m [0m
+[31m╵[0m[0m

@@ -1,15 +1,17 @@
-Creating temporary archive of 487 file(s) totalling 27.5 MiB before compression.
+Creating temporary archive of 492 file(s) totalling 27.5 MiB before compression.
 Some files were not included in the source upload.
 
-Check the gcloud log [/home/nate/.config/gcloud/logs/2026.06.06/23.49.16.633712.log] to see which files and the contents of the
+Check the gcloud log [/home/nate/.config/gcloud/logs/2026.06.06/23.53.01.231900.log] to see which files and the contents of the
 default gcloudignore file used (see `$ gcloud topic gcloudignore` to learn
 more).
 
-Uploading tarball of [.] to [gs://grace-2-hazard-prod_cloudbuild/source/1780814956.763642-175067c523434772aca2812f827f0907.tgz]
-Created [https://cloudbuild.googleapis.com/v1/projects/grace-2-hazard-prod/locations/global/builds/b4bd5fc3-379c-468f-a2eb-40fb74deac90].
-Logs are available at [ https://console.cloud.google.com/cloud-build/builds/b4bd5fc3-379c-468f-a2eb-40fb74deac90?project=425352658356 ].
+Uploading tarball of [.] to [gs://grace-2-hazard-prod_cloudbuild/source/1780815181.360562-88a068143f394c078e67859b9cce686c.tgz]
+Created [https://cloudbuild.googleapis.com/v1/projects/grace-2-hazard-prod/locations/global/builds/d603bef0-5bf5-48f6-b2b1-19efb9a2e861].
+Logs are available at [ https://console.cloud.google.com/cloud-build/builds/d603bef0-5bf5-48f6-b2b1-19efb9a2e861?project=425352658356 ].
 
 gcloud builds submit only displays logs from Cloud Storage. To view logs from Cloud Logging, run:
 gcloud beta builds submit
 
 Waiting for build to complete. Polling interval: 1 second(s).
+ID                                    CREATE_TIME                DURATION  SOURCE                                                                                             IMAGES                                                                                             STATUS
+d603bef0-5bf5-48f6-b2b1-19efb9a2e861  2026-06-07T06:53:09+00:00  48S       gs://grace-2-hazard-prod_cloudbuild/source/1780815181.360562-88a068143f394c078e67859b9cce686c.tgz  us-central1-docker.pkg.dev/grace-2-hazard-prod/grace-2-containers/grace-2-sfincs-solver (+1 more)  SUCCESS

@@ -1,0 +1,98 @@
+{
+  "apiVersion": "run.googleapis.com/v1",
+  "kind": "Job",
+  "metadata": {
+    "annotations": {
+      "run.googleapis.com/creator": "natealmanza3@gmail.com",
+      "run.googleapis.com/lastModifier": "natealmanza3@gmail.com",
+      "run.googleapis.com/operation-id": "48ad5e76-c584-4359-ae37-b3a6f09196f9"
+    },
+    "creationTimestamp": "2026-06-07T06:56:19.574751Z",
+    "generation": 1,
+    "labels": {
+      "cloud.googleapis.com/location": "us-central1",
+      "component": "sfincs-solver",
+      "env": "dev",
+      "goog-terraform-provisioned": "true",
+      "project": "grace-2",
+      "run.googleapis.com/lastUpdatedTime": "2026-06-07T06:56:19.574751Z",
+      "sprint": "07"
+    },
+    "name": "grace-2-sfincs-solver",
+    "namespace": "425352658356",
+    "resourceVersion": "AAZTpGQjXT4",
+    "selfLink": "/apis/run.googleapis.com/v1/namespaces/425352658356/jobs/grace-2-sfincs-solver",
+    "uid": "d52e6804-cfd9-4425-8b21-2a9fdba08090"
+  },
+  "spec": {
+    "template": {
+      "metadata": {
+        "annotations": {
+          "run.googleapis.com/execution-environment": "gen2"
+        },
+        "labels": {
+          "component": "sfincs-solver",
+          "env": "dev",
+          "project": "grace-2",
+          "sprint": "07"
+        }
+      },
+      "spec": {
+        "parallelism": 1,
+        "taskCount": 1,
+        "template": {
+          "spec": {
+            "containers": [
+              {
+                "env": [
+                  {
+                    "name": "GRACE2_RUN_ID"
+                  },
+                  {
+                    "name": "GCP_PROJECT",
+                    "value": "grace-2-hazard-prod"
+                  },
+                  {
+                    "name": "GRACE2_CACHE_BUCKET",
+                    "value": "grace-2-hazard-prod-cache"
+                  },
+                  {
+                    "name": "GRACE2_MANIFEST_URI"
+                  },
+                  {
+                    "name": "GRACE2_RUNS_BUCKET",
+                    "value": "grace-2-hazard-prod-runs"
+                  },
+                  {
+                    "name": "GOOGLE_CLOUD_PROJECT",
+                    "value": "grace-2-hazard-prod"
+                  }
+                ],
+                "image": "us-central1-docker.pkg.dev/grace-2-hazard-prod/grace-2-containers/grace-2-sfincs-solver@sha256:89ce6e275317bb44008d6a756f5be084ae4750ede6d0c6742c7ffa1a71ad4c44",
+                "resources": {
+                  "limits": {
+                    "cpu": "4",
+                    "memory": "4Gi"
+                  }
+                }
+              }
+            ],
+            "maxRetries": 1,
+            "serviceAccountName": "sfincs-runtime@grace-2-hazard-prod.iam.gserviceaccount.com",
+            "timeoutSeconds": "1800"
+          }
+        }
+      }
+    }
+  },
+  "status": {
+    "conditions": [
+      {
+        "lastTransitionTime": "2026-06-07T06:56:20.045118Z",
+        "status": "True",
+        "type": "Ready"
+      }
+    ],
+    "observedGeneration": 1
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "bindings": [
+    {
+      "members": [
+        "projectEditor:grace-2-hazard-prod",
+        "projectOwner:grace-2-hazard-prod"
+      ],
+      "role": "roles/storage.legacyBucketOwner"
+    },
+    {
+      "members": [
+        "projectViewer:grace-2-hazard-prod"
+      ],
+      "role": "roles/storage.legacyBucketReader"
+    },
+    {
+      "members": [
+        "projectEditor:grace-2-hazard-prod",
+        "projectOwner:grace-2-hazard-prod"
+      ],
+      "role": "roles/storage.legacyObjectOwner"
+    },
+    {
+      "members": [
+        "projectViewer:grace-2-hazard-prod"
+      ],
+      "role": "roles/storage.legacyObjectReader"
+    },
+    {
+      "members": [
+        "serviceAccount:agent-runtime@grace-2-hazard-prod.iam.gserviceaccount.com",
+        "serviceAccount:pyqgis-worker-runtime@grace-2-hazard-prod.iam.gserviceaccount.com"
+      ],
+      "role": "roles/storage.objectAdmin"
+    },
+    {
+      "members": [
+        "serviceAccount:sfincs-runtime@grace-2-hazard-prod.iam.gserviceaccount.com"
+      ],
+      "role": "roles/storage.objectViewer"
+    }
+  ],
+  "etag": "CAQ="
+}

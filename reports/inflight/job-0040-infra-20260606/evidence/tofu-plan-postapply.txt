@@ -1,0 +1,46 @@
+[0m[1mgoogle_project.grace2: Refreshing state... [id=projects/grace-2-hazard-prod][0m
+[0m[1mgoogle_project_service.enabled["pubsub.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/pubsub.googleapis.com][0m
+[0m[1mgoogle_project_service.enabled["aiplatform.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/aiplatform.googleapis.com][0m
+[0m[1mgoogle_project_service.enabled["cloudbuild.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/cloudbuild.googleapis.com][0m
+[0m[1mgoogle_project_service.enabled["storage.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/storage.googleapis.com][0m
+[0m[1mgoogle_project_service.enabled["cloudresourcemanager.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/cloudresourcemanager.googleapis.com][0m
+[0m[1mgoogle_project_service.enabled["logging.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/logging.googleapis.com][0m
+[0m[1mgoogle_project_service.enabled["serviceusage.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/serviceusage.googleapis.com][0m
+[0m[1mgoogle_project_service.enabled["workflows.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/workflows.googleapis.com][0m
+[0m[1mgoogle_project_service.enabled["run.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/run.googleapis.com][0m
+[0m[1mgoogle_project_service.enabled["secretmanager.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/secretmanager.googleapis.com][0m
+[0m[1mgoogle_project_service.enabled["iam.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/iam.googleapis.com][0m
+[0m[1mgoogle_project_service.enabled["monitoring.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/monitoring.googleapis.com][0m
+[0m[1mgoogle_project_service.enabled["iamcredentials.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/iamcredentials.googleapis.com][0m
+[0m[1mgoogle_project_service.enabled["artifactregistry.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/artifactregistry.googleapis.com][0m
+[0m[1mgoogle_service_account.workflow_invoker_sfincs: Refreshing state... [id=projects/grace-2-hazard-prod/serviceAccounts/workflow-invoker-sfincs@grace-2-hazard-prod.iam.gserviceaccount.com][0m
+[0m[1mgoogle_service_account.sfincs_runtime: Refreshing state... [id=projects/grace-2-hazard-prod/serviceAccounts/sfincs-runtime@grace-2-hazard-prod.iam.gserviceaccount.com][0m
+[0m[1mgoogle_artifact_registry_repository.containers: Refreshing state... [id=projects/grace-2-hazard-prod/locations/us-central1/repositories/grace-2-containers][0m
+[0m[1mgoogle_storage_bucket.runs: Refreshing state... [id=grace-2-hazard-prod-runs][0m
+[0m[1mgoogle_storage_bucket.qgs: Refreshing state... [id=grace-2-hazard-prod-qgs][0m
+[0m[1mgoogle_storage_bucket.cache: Refreshing state... [id=grace-2-hazard-prod-cache][0m
+[0m[1mgoogle_storage_bucket_iam_member.workflow_invoker_runs_viewer: Refreshing state... [id=b/grace-2-hazard-prod-runs/roles/storage.objectViewer/serviceAccount:workflow-invoker-sfincs@grace-2-hazard-prod.iam.gserviceaccount.com][0m
+[0m[1mgoogle_project_iam_member.workflow_invoker_log_writer: Refreshing state... [id=grace-2-hazard-prod/roles/logging.logWriter/serviceAccount:workflow-invoker-sfincs@grace-2-hazard-prod.iam.gserviceaccount.com][0m
+[0m[1mgoogle_storage_bucket_iam_member.sfincs_runtime_cache_viewer: Refreshing state... [id=b/grace-2-hazard-prod-cache/roles/storage.objectViewer/serviceAccount:sfincs-runtime@grace-2-hazard-prod.iam.gserviceaccount.com][0m
+[0m[1mgoogle_storage_bucket_iam_member.sfincs_runtime_runs_admin: Refreshing state... [id=b/grace-2-hazard-prod-runs/roles/storage.objectAdmin/serviceAccount:sfincs-runtime@grace-2-hazard-prod.iam.gserviceaccount.com][0m
+[0m[1mgoogle_storage_bucket_iam_member.sfincs_runtime_qgs_viewer: Refreshing state... [id=b/grace-2-hazard-prod-qgs/roles/storage.objectViewer/serviceAccount:sfincs-runtime@grace-2-hazard-prod.iam.gserviceaccount.com][0m
+[0m[1mgoogle_cloud_run_v2_job.sfincs_solver: Refreshing state... [id=projects/grace-2-hazard-prod/locations/us-central1/jobs/grace-2-sfincs-solver][0m
+[0m[1mgoogle_cloud_run_v2_job_iam_member.workflow_invoker_runs_job: Refreshing state... [id=projects/grace-2-hazard-prod/locations/us-central1/jobs/grace-2-sfincs-solver/roles/run.invoker/serviceAccount:workflow-invoker-sfincs@grace-2-hazard-prod.iam.gserviceaccount.com][0m
+[0m[1mgoogle_workflows_workflow.sfincs_orchestrator: Refreshing state... [id=projects/grace-2-hazard-prod/locations/us-central1/workflows/grace-2-sfincs-orchestrator][0m
+
+[0m[1m[32mNo changes.[0m[1m Your infrastructure matches the configuration.[0m
+
+[0mOpenTofu has compared your real infrastructure against your configuration and
+found no differences, so no changes are needed.
+[33m╷[0m[0m
+[33m│[0m [0m[1m[33mWarning: [0m[0m[1mResource targeting is in effect[0m
+[33m│[0m [0m
+[33m│[0m [0m[0mYou are creating a plan with either the -target option or the -exclude
+[33m│[0m [0moption, which means that the result of this plan may not represent all of
+[33m│[0m [0mthe changes requested by the current configuration.
+[33m│[0m [0m
+[33m│[0m [0mThe -target and -exclude options are not for routine use, and are provided
+[33m│[0m [0monly for exceptional situations such as recovering from errors or mistakes,
+[33m│[0m [0mor when OpenTofu specifically suggests to use it as part of an error
+[33m│[0m [0mmessage.
+[33m╵[0m[0m

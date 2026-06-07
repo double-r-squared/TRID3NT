@@ -1,0 +1,4 @@
+Created [94d07cf6-a977-4f4c-be94-54e2888a371c].
+
+To view the workflow status, you can use following command:
+gcloud workflows executions describe 94d07cf6-a977-4f4c-be94-54e2888a371c --workflow grace-2-sfincs-orchestrator --location us-central1

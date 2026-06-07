@@ -1,0 +1,25 @@
+{
+  "creation_time": "2026-06-07T06:55:59+0000",
+  "default_storage_class": "STANDARD",
+  "generation": 1780815359033763212,
+  "labels": {
+    "component": "sfincs-solver",
+    "env": "dev",
+    "goog-terraform-provisioned": "true",
+    "project": "grace-2",
+    "sprint": "07"
+  },
+  "location": "US-CENTRAL1",
+  "location_type": "region",
+  "metageneration": 3,
+  "name": "grace-2-hazard-prod-runs",
+  "public_access_prevention": "enforced",
+  "soft_delete_policy": {
+    "effectiveTime": "2026-06-07T06:55:59.188000+00:00",
+    "retentionDurationSeconds": "604800"
+  },
+  "storage_url": "gs://grace-2-hazard-prod-runs/",
+  "uniform_bucket_level_access": true,
+  "update_time": "2026-06-07T06:56:15+0000",
+  "versioning_enabled": true
+}
