@@ -162,12 +162,19 @@
       "description": "Comprehensive hydromt-sfincs 1.2.x API-migration audit (escalation from 0049/0052/0053 hotfix chain). Live-inspected every setup_* method's 1.2.2 signature, cross-walked to library source. Two material mismatches caught + fixed in one pass: OQ-53 closed (setup_river_inflow: dropped hydrography='merit_hydro' — artifact_data catalog ships Italy-only rasters; rivers FGB carries needed geometry per workflows/flwdir.py:194-197 `if da_uparea is not None:` guard); OQ-54 closed (setup_precip_forcing: replaced invalid precip/duration_hr with v1.2.x-accepted magnitude in mm/hr — Atlas 14 11.9 in/24 hr → 12.59 mm/hr). Expanded canonical docstring with live signatures for every step; added all-steps signature audit test (`test_build_sfincs_model_all_setup_steps_match_live_signatures`) as residual guard against future drift. M5 re-run: PARTIAL SUCCESS / NEW FAILURE CLASS — chain advances through **all 5 setup steps cleanly** (`setup_river_inflow` finds 39 inflow points!) and fails INSIDE hydromt-sfincs 1.2.2 itself at `set_forcing_1d` (sfincs.py:1858) calling `pd.RangeIndex.is_integer()` which was REMOVED in pandas ≥ 2.0 (we run 3.0.3). Upstream library bug, not API mismatch. Surfaced as OQ-54-HYDROMT-SFINCS-PANDAS-3X-INCOMPAT; recommended remediation: drop setup_river_inflow from v0.1 pluvial deck (river inflow is M5+ scope). 3 new tests + 17 in test_model_flood_scenario.py; 157 agent suite passes (2 fails are concurrent job-0047 pre-existing). Chained-hotfix loop broken. Commit bc30638.",
       "model": "opus",
       "subagent_tokens": 181195
+    },
+    {
+      "job_id": "job-0047-engine-20260607",
+      "sprint": 8,
+      "description": "Stage B: catalog_search + catalog_fetch atomic tools + generic Tier-2 OGC adapter — the §F.1.2 Mode 1 substrate. tools/ogc_adapter.py exposes fetch_ogc_layer(service_type=WMS|WCS|WFS|ArcGIS-REST, version, image_format, ...) with defensive exception-XML detection (raises OGCAdapterError rather than caching error bodies as raster). WCS 1.0.0 sweet spot preserves job-0044's MRLC fix; direct `requests` over `owslib` for Mode 1 retrieval (OQ-47-OWSLIB-CHOICE). **fetch_landcover refactored** to call into adapter — identical WCS 1.0.0 request shape + cache key + exception wrap; job-0044's pinning test still passes + new revert-prevention test added. **Live catalog_search**: topic=flood zones + Fort Myers bbox → rank-1 fema-nfhl-flood-zones (score 7.0); topic=DEM → Copernicus GLO-30/GLO-90/HydroSHEDS (score 8.0); source_filter=landcover restricts; Africa bbox correctly drops 3DEP via CONUS heuristic. **Live catalog_fetch**: fema-nfhl-flood-zones → 8,045,110 bytes real GeoJSON polygons from hazards.fema.gov; usgs-3dep-elevation → 4,195,622 bytes real GeoTIFF (F32 1024×1024) from elevation.nationalmap.gov. 16 tools at startup verified (14+2). 23 new tests + 159/159 agent + 142/142 contracts. OQ-47-CATALOG-YAML-SECRET-REFS (2 of 30 entries — Census ACS + NASA FIRMS — declare credential_tier:2 but lack api_key_secret_ref; routes to infra Secret Manager + engine curator amendment). Commit 034dfd5.",
+      "model": "opus",
+      "subagent_tokens": 285820
     }
   ],
   "totals_by_sprint": {
     "6": 1265567,
     "7": 1863284,
-    "8": 984404
+    "8": 1270224
   },
   "historical_context": {
     "note": "Captured for accountability — NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
