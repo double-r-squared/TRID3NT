@@ -1,0 +1,19 @@
+2026-06-06 20:51:13,475 INFO grace2_agent.tools.cache read_through miss-write tool=geocode_location key=60958d6fd598245510990616a4b4a877 bytes=281 customTime=2026-06-07T03:51:13.352122+00:00
+2026-06-06 20:51:13,476 INFO grace2_agent.tools.data_fetch geocode_location query='Fort Myers, FL' resolved name='Fort Myers, Lee County, Florida, United States' cache_hit=False
+=== geocode_location result ===
+{
+  "name": "Fort Myers, Lee County, Florida, United States",
+  "latitude": 26.640628,
+  "longitude": -81.8723084,
+  "bbox": [
+    -81.9126085,
+    26.5476424,
+    -81.7511414,
+    26.689176
+  ],
+  "source": "nominatim",
+  "query": "Fort Myers, FL",
+  "osm_type": "relation",
+  "osm_id": 118879,
+  "place_id": 304657668
+}

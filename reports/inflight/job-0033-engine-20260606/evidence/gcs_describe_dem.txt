@@ -1,0 +1,5 @@
+cache_control: public, max-age=2592000
+content_type: image/tiff
+custom_time: 2026-06-07T03:51:32+0000
+name: cache/static-30d/dem/8aa23925b1df7a56e6f9a6afac210ab2.tif
+size: 67648

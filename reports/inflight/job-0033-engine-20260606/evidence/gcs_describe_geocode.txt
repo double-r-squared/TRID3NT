@@ -1,0 +1,5 @@
+cache_control: public, max-age=3600
+content_type: application/json
+custom_time: 2026-06-07T03:51:13+0000
+name: cache/dynamic-1h/geocode/60958d6fd598245510990616a4b4a877.json
+size: 281

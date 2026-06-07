@@ -1,0 +1,12 @@
+2026-06-06 20:51:29,408 INFO rasterio.session boto3 not available, falling back to a DummySession.
+2026-06-06 20:51:32,902 INFO grace2_agent.tools.cache read_through miss-write tool=fetch_dem key=8aa23925b1df7a56e6f9a6afac210ab2 bytes=67648 customTime=2026-06-07T03:51:32.686722+00:00
+=== fetch_dem result ===
+layer_id: dem--81.8802-26.6197-30m
+name: USGS 3DEP DEM (30m)
+layer_type: raster
+uri: gs://grace-2-hazard-prod-cache/cache/static-30d/dem/8aa23925b1df7a56e6f9a6afac210ab2.tif
+style_preset: continuous_dem
+units: meters
+Error in sys.excepthook:
+
+Original exception was:
