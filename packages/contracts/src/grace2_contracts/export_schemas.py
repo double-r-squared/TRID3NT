@@ -34,6 +34,9 @@ _EXPORTS: list[tuple[str, type[BaseModel]]] = [
     ("article_document", collections.ArticleDocument),
     ("event_document", collections.EventDocument),
     ("session_document", collections.SessionDocument),
+    # Appendix D sprint-08 additions (Mode 1 catalog substrate, §F.1.2)
+    ("catalog_entry_document", collections.CatalogEntryDocument),
+    ("catalog_audit_log_document", collections.CatalogAuditLogDocument),
     # Appendix D.6 PipelineStepSummary — exported standalone so the
     # extended field surface (progress_percent / error_code / error_message)
     # is independently inspectable by the web client mirror + agent emitter

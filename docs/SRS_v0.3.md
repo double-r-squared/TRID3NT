@@ -1504,6 +1504,76 @@ Agent needs the user to choose between substantively different response paths an
 
 Options are 2-4 substantively different paths. The `description` field is required (not optional) — it shows the user what each path will produce. Timeout: 60s default (typical path choice).
 
+#### `recovery-choice`
+*(sprint-08 amendment, FR-FR-1 — landed by job-0045-schema-20260607.)*
+
+Agent emits when an atomic-tool step fails with a *recoverable* error class (per FR-FR-2 routing). The web client renders a small out-of-chat modal (mirrors §F.3 popup discipline) offering deny / retry / chat actions. Substrate-integrity / user-initiated / budget-overrun error codes fail closed without gating.
+
+```json
+{
+  "type": "recovery-choice",
+  "payload": {
+    "request_id": "01HX...",
+    "failed_step_id": "01HX...",
+    "error_code": "UPSTREAM_API_ERROR",
+    "error_message": "USGS 3DEP returned HTTP 503 — service unavailable",
+    "context": "fetching DEM at Fort Myers bbox for flood scenario",
+    "options": ["deny", "retry", "chat"],
+    "ttl_seconds": 300
+  }
+}
+```
+
+- `error_code` is `SCREAMING_SNAKE_CASE` per §A.6 (open set; shape-validated)
+- `error_message` and `context` are each capped at 512 chars
+- `options` is a non-empty subset of `["deny", "retry", "chat"]`; the routing table per FR-FR-2 may narrow it (e.g. omit `"retry"` for `GEOCODE_NO_MATCH` where retry is futile)
+- `ttl_seconds` defaults to 300; on expiry the gate becomes a typed failure
+
+#### `offer-catalog-addition`
+*(sprint-08 amendment, §F.1.2 Mode 2 — landed by job-0045-schema-20260607.)*
+
+Agent encountered a candidate `.gov` / `.edu` URL during research or user-query interpretation, performed a conformity probe per §F.1.2 Mode 2, and is offering to add it to the catalog. The web client renders a dedicated review modal (popup, focus-trapped, separate from chat envelope) showing the URL + probe findings + the suggested catalog entry. User accepts, rejects, or edits before accepting.
+
+```json
+{
+  "type": "offer-catalog-addition",
+  "payload": {
+    "request_id": "01HX...",
+    "url": "https://hazards.fema.gov/nfhlv2/services/public/NFHL/MapServer/WFSServer",
+    "discovered_via": "user-query",
+    "probe_findings": {
+      "tls_cert_org": "U.S. Department of Homeland Security",
+      "access_tier_inferred": 2,
+      "supports_range_requests": false,
+      "stac_root_found": false,
+      "ogc_capabilities_found": true,
+      "license_observed": "Public domain (US Federal)",
+      "content_type": "application/xml",
+      "last_modified_header": "Wed, 01 Jun 2026 12:00:00 GMT"
+    },
+    "suggested_catalog_entry": {
+      "id": "femanflp-discharge-stations",
+      "name": "FEMA NFHL discharge stations",
+      "description": "Discharge stations from the FEMA NFHL WFS feed.",
+      "urls": ["https://hazards.fema.gov/nfhlv2/services/public/NFHL/MapServer/WFSServer"],
+      "access_tier": 2,
+      "credential_tier": 1,
+      "ttl_class": "semi-static-7d",
+      "source_class": "flood_zone",
+      "license_claim": "Public domain (US Federal)",
+      "how_to_use": "OGC WFS GetFeature; bbox in EPSG:4326; layer NFHL:DischargeStations"
+    },
+    "ttl_seconds": 600
+  }
+}
+```
+
+- `discovered_via` is a closed `Literal`: `"user-query"` / `"web-research"` / `"catalog-cross-reference"` / `"other"`
+- `probe_findings` sub-fields are all optional (probe may not be able to determine every axis)
+- `suggested_catalog_entry` is a permissive draft (fields the agent could infer from the probe); the user may edit any field; agent service round-trips an accepted draft through the full `CatalogEntry` model before writing to `catalog_entries` (D.11)
+- `license_claim` (not `license`) signals the probe's *observation* vs. the curator-attested value
+- `ttl_seconds` defaults to 600 (review modals get more time than retry gates because the user is reading + sanity-checking provenance)
+
 ### A.4b Client → Agent (user input responses)
 
 #### `spatial-input-response`
@@ -1565,6 +1635,57 @@ User has chosen one of the clarification options.
 ```
 
 Cancellation: `cancelled: true` instead of `option_id`. The agent then aborts the pending operation.
+
+#### `recovery-choice-response`
+*(sprint-08 amendment, FR-FR-1 — landed by job-0045-schema-20260607.)*
+
+User has picked one of the three actions OR cancelled the modal.
+
+```json
+{
+  "type": "recovery-choice-response",
+  "payload": {
+    "request_id": "01HX...",
+    "choice": "chat",
+    "chat_text": "try the WCS endpoint instead of WMS"
+  }
+}
+```
+
+- `choice` is `"deny"` / `"retry"` / `"chat"` or `null` when cancelled
+- `chat_text` is populated only when `choice == "chat"`; carries the focused single-line nudge the user typed; capped at 4096 chars
+- Cancellation: `cancelled: true` instead of `choice` (mirrors the existing A.4b response shapes)
+
+#### `catalog-addition-response`
+*(sprint-08 amendment, §F.1.2 Mode 2 — landed by job-0045-schema-20260607.)*
+
+User has accepted / rejected the offered catalog addition. On accept, the agent writes the entry to `catalog_entries` (D.11) with `status: "user_proposed_pending_curator_review"` and logs to `catalog_audit_log` (D.12) with `event_type: "user_proposed"`. Reject events are also audited.
+
+```json
+{
+  "type": "catalog-addition-response",
+  "payload": {
+    "request_id": "01HX...",
+    "decision": "accept",
+    "edited_catalog_entry": {
+      "id": "femanflp-discharge-stations",
+      "name": "FEMA NFHL Discharge Stations (curator-edited)",
+      "urls": ["https://hazards.fema.gov/nfhlv2/services/public/NFHL/MapServer/WFSServer"],
+      "access_tier": 2,
+      "credential_tier": 1,
+      "ttl_class": "semi-static-7d",
+      "source_class": "flood_zone",
+      "license_claim": "Public domain (US Federal)",
+      "how_to_use": "OGC WFS GetFeature; bbox in EPSG:4326; layer NFHL:DischargeStations"
+    }
+  }
+}
+```
+
+- `decision` is `"accept"` / `"reject"` or `null` when cancelled
+- `edited_catalog_entry` (same permissive shape as the offer's `suggested_catalog_entry`) is populated only when the user edited any field; when None on accept the agent writes the original `suggested_catalog_entry`
+- `reject_reason` is populated only when `decision == "reject"`; optional; capped at 512 chars
+- Cancellation: `cancelled: true` instead of `decision`
 
 ### A.5 Connection lifecycle
 
@@ -3074,6 +3195,98 @@ If infrastructure budget is constrained in early v0.1, dropping the `runs` vecto
 - **Index review cadence**: indexes will need pruning or addition as real query patterns emerge. Schedule a review after M7 when news pipeline is operational and query patterns are observable.
 - **Vector index dimension choices**: `text-embedding-005` defaults to 768; smaller dimensions (256, 128) trade recall for index size/cost. Verify on a small corpus before committing.
 - **Whether to extend soft delete to `runs`**: useful for "I made a mistake, let me delete this run from my history" but adds complexity. Currently no.
+
+### D.11 Collection: `catalog_entries` *(sprint-08 amendment — landed by job-0045-schema-20260607)*
+
+The Mode 1 curated data-source catalog (§F.1.2). Each document is a `CatalogEntry` (FR-PHC-2 binding shape — see Appendix F §F.1.2 Mode 1). The collection schema *is* the `CatalogEntry` schema; no wrapper fields are added.
+
+```python
+class CatalogEntryDocument(CatalogEntry):
+    # All fields inherited from CatalogEntry (FR-PHC-2 + §F.1.2 Mode 1):
+    #   schema_version: Literal["v1"]
+    #   id: str                          # stable identifier; the Mongo _id
+    #   name: str
+    #   description: str
+    #   urls: list[str]                  # primary URL + alternative mirrors
+    #   access_tier: Literal[1, 2, 3, 4]  # §F.1.1
+    #   credential_tier: Literal[1, 2, 3] # §F.1
+    #   ttl_class: Literal["static-30d", "semi-static-7d", "dynamic-1h", "live-no-cache"]
+    #   source_class: str                # FR-DC-1 bucket-prefix
+    #   license: str
+    #   citation: str
+    #   vintage: str | None
+    #   last_verified: datetime
+    #   status: Literal["active", "deprecated", "user_proposed_pending_curator_review"]
+    #   how_to_use: str                  # invocation examples + quirks
+    #   api_key_secret_ref: str | None   # required when credential_tier >= 2
+    pass
+```
+
+The Mongo `_id` is the entry `id` (a free-form stable string identifier curated at entry-creation time, e.g. `"usgs-3dep-dem-1m"`, `"worldpop-1km-aggregated"`); the write path sets `_id = id` at insert time. No `_id` alias on the model — `CatalogEntry` stays a single shape across wire / YAML / Mongo, and the entry `id` is not a ULID.
+
+**Indexes:**
+```
+{ source_class: 1 }                                  // catalog_search by domain
+{ status: 1, source_class: 1 }                       // active-only by source (the common query path)
+```
+
+**TTL configuration:** none. Catalog entries are durable until a curator deprecates them (the `status` lifecycle does the soft-delete work).
+
+**Status lifecycle:**
+- `active`: curator-vetted; `catalog_search` returns this entry.
+- `deprecated`: curator-removed; retained for audit / historical run-provenance lookups but excluded from active search results.
+- `user_proposed_pending_curator_review`: a §F.1.2 Mode 2 user-accepted `offer-catalog-addition` entry; included in `catalog_search` results but surfaced as provisional until a curator flips it to `active`.
+
+**Cross-field rule** (enforced by the `CatalogEntry` model validator): when `credential_tier == 1`, `api_key_secret_ref` must be `None`; when `credential_tier >= 2`, `api_key_secret_ref` is required (non-empty string — typically the Secret Manager resource path).
+
+### D.12 Collection: `catalog_audit_log` *(sprint-08 amendment — landed by job-0045-schema-20260607)*
+
+Append-only audit trail for the catalog. Every catalog mutation lands one document here. Mode 2 user-proposed entries produce a `user_proposed` event at acceptance; curator-side approval / rejection produce a `curator_approved` / `curator_rejected` event against the same `entry_id`. Decision M (claim provenance) requires this trail to be inspectable: the catalog query path may surface user-proposed entries as provisional, and downstream `RunDocument` references to a catalog entry can be resolved back through this collection to recover the proposal + review context.
+
+```python
+class CatalogAuditLogDocument(BaseModel):
+    schema_version: Literal["v1"] = "v1"
+
+    # Identity
+    _id: str                          # ULID; the audit-event id
+
+    # Subject
+    entry_id: str                     # references CatalogEntry.id
+
+    # Origin (optional — populated when the event happened inside a session
+    # or when user identity is available; v0.1 leaves user_id None since
+    # identity machinery is not yet wired)
+    session_id: str | None
+    user_id: str | None
+
+    # Event
+    event_type: Literal[
+        "add",                        # curator added a new entry directly (Mode 1)
+        "update",                     # curator edited an existing entry's metadata
+        "deprecate",                  # curator flipped status to "deprecated"
+        "user_proposed",              # Mode 2 user accepted an offer-catalog-addition
+        "curator_approved",           # curator flipped a user-proposed entry to "active"
+        "curator_rejected",           # curator removed a user-proposed entry
+    ]
+    event_payload: dict               # shape varies by event_type; see below
+
+    # Time
+    timestamp: datetime
+```
+
+**`event_payload` shape (varies by `event_type`):**
+- `add` / `update`: the diff (`{ "fields_changed": [...], "before": {...}, "after": {...} }`).
+- `deprecate`: the curator note (`{ "note": "..." }`).
+- `user_proposed`: conformity-probe findings + the originating `offer-catalog-addition` request id (`{ "probe_findings": {...}, "request_id": "01HX..." }`).
+- `curator_approved`: the curator note + reviewing-curator identifier (post-M6+).
+- `curator_rejected`: the curator note + rejection reason.
+
+**Indexes:**
+```
+{ entry_id: 1, timestamp: -1 }                       // audit-trail-for-an-entry query path
+```
+
+**TTL configuration:** none. Audit-log entries are durable indefinitely per Decision M (claim provenance must survive across all retention windows).
 
 ## Appendix E: QGIS Plugins Inventory
 

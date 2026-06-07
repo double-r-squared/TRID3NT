@@ -850,6 +850,9 @@ CLIENT_TO_AGENT_PAYLOADS: dict[str, type[GraceModel]] = {
     SpatialInputResponsePayload.MESSAGE_TYPE: SpatialInputResponsePayload,
     DisambiguationResponsePayload.MESSAGE_TYPE: DisambiguationResponsePayload,
     ClarificationResponsePayload.MESSAGE_TYPE: ClarificationResponsePayload,
+    # sprint-08 — FR-FR-1 + §F.1.2 Mode 2
+    RecoveryChoiceResponsePayload.MESSAGE_TYPE: RecoveryChoiceResponsePayload,
+    CatalogAdditionResponsePayload.MESSAGE_TYPE: CatalogAdditionResponsePayload,
 }
 
 AGENT_TO_CLIENT_PAYLOADS: dict[str, type[GraceModel]] = {
@@ -867,6 +870,9 @@ AGENT_TO_CLIENT_PAYLOADS: dict[str, type[GraceModel]] = {
     SpatialInputRequestPayload.MESSAGE_TYPE: SpatialInputRequestPayload,
     DisambiguationRequestPayload.MESSAGE_TYPE: DisambiguationRequestPayload,
     ClarificationRequestPayload.MESSAGE_TYPE: ClarificationRequestPayload,
+    # sprint-08 — FR-FR-1 + §F.1.2 Mode 2
+    RecoveryChoicePayload.MESSAGE_TYPE: RecoveryChoicePayload,
+    OfferCatalogAdditionPayload.MESSAGE_TYPE: OfferCatalogAdditionPayload,
 }
 
 ALL_PAYLOADS: dict[str, type[GraceModel]] = {

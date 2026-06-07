@@ -27,6 +27,9 @@ def test_export_writes_one_file_per_top_level_contract(tmp_path: Path) -> None:
         "event_document",
         "session_document",
         "catalog_entry",
+        # sprint-08 — Mode 1 catalog substrate
+        "catalog_entry_document",
+        "catalog_audit_log_document",
         "model_setup",
         "execution_handle",
         "run_result",

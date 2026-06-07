@@ -30,6 +30,8 @@ from typing import Any, Literal
 
 from pydantic import ConfigDict, Field, field_validator
 
+from .catalog import CatalogEntry
+from .catalog import CatalogEntry
 from .common import GraceModel, ULIDStr, UTCDatetime
 from .event import EventMetadata
 
@@ -55,6 +57,9 @@ __all__ = [
     "PipelineSnapshot",
     "MapView",
     "SessionDocument",
+    "CatalogEntryDocument",
+    "CatalogAuditEventType",
+    "CatalogAuditLogDocument",
     "MONGO_DUMP_KWARGS",
     "EMBEDDING_MODEL_DEFAULT",
     "EMBEDDING_DIMENSIONS_DEFAULT",
@@ -63,6 +68,8 @@ __all__ = [
     "EVENTS_VECTOR_INDEX",
     "VECTOR_INDEXES",
     "SESSIONS_TTL",
+    "CATALOG_ENTRIES_INDEXES",
+    "CATALOG_AUDIT_LOG_INDEXES",
 ]
 
 
@@ -391,3 +398,138 @@ SESSIONS_TTL: dict[str, Any] = {
     "field": "expires_at",
     "expire_after_seconds": 30 * 24 * 60 * 60,  # 30 days past expires_at
 }
+
+
+# --------------------------------------------------------------------------- #
+# Mode 1 catalog substrate (sprint-08): catalog_entries + catalog_audit_log
+# --------------------------------------------------------------------------- #
+# Forward-looking — Decision F + §F.1.2 Mode 1 binding for sprint-08.
+#
+# Numbering note: SRS Appendix D already uses D.7..D.10 for cross-cutting /
+# storage-sizing / design-rationale / known-open-choices meta sections. The
+# new collections therefore land at **D.11 catalog_entries** and **D.12
+# catalog_audit_log** rather than D.8/D.9 (the kickoff's numbering assumed
+# D.1-D.6 were the only existing sections). Surfaced in report Open Questions
+# so the user can override during audit if D.8/D.9 is preferred (would require
+# renumbering the existing meta sections).
+#
+# Neither collection is TTL-eligible:
+# - ``catalog_entries`` are durable until a curator deprecates / removes them
+#   (status lifecycle does the soft-delete work).
+# - ``catalog_audit_log`` is append-only retention; Mode 2 user-proposed +
+#   curator-review provenance must survive indefinitely per Decision M.
+
+
+class CatalogEntryDocument(CatalogEntry):
+    """``catalog_entries`` (D.11): one curated Mode 1 catalog entry.
+
+    The collection schema *is* the ``CatalogEntry`` schema (Appendix F /
+    FR-PHC-2 + §F.1.2 Mode 1); no wrapper fields are added. The Mongo ``_id``
+    is the entry ``id`` (a stable string identifier curated at entry-creation
+    time, e.g. ``"usgs-3dep-dem-1m"``, ``"worldpop-1km-aggregated"``); the
+    write path sets ``_id = id`` at insert time.
+
+    We do NOT alias here — keeping ``CatalogEntry`` a single shape across wire,
+    YAML, and Mongo is more useful than the ``_id`` alias would be, and the
+    ``id`` field is already a free-form stable string (not a ULID), so the
+    Mongo-side aliasing of the ULID-based ``DocModel`` doesn't apply.
+
+    Indexes (declared in ``CATALOG_ENTRIES_INDEXES`` below): one on
+    ``source_class`` for ``catalog_search`` by domain, and a compound on
+    ``(status, source_class)`` for the common "active-only by source"
+    query path (``status: "active"`` filter + ``source_class`` selector).
+    """
+
+
+#: Audit-log event vocabulary per §F.1.2 Mode 1 + Mode 2.
+#:
+#: - ``add`` — curator added a new entry directly (Mode 1 path).
+#: - ``update`` — curator edited an existing entry's metadata.
+#: - ``deprecate`` — curator flipped ``status`` to ``"deprecated"``.
+#: - ``user_proposed`` — Mode 2 user accepted an ``offer-catalog-addition``;
+#:   entry written with ``status: "user_proposed_pending_curator_review"``.
+#: - ``curator_approved`` — curator flipped a user-proposed entry to
+#:   ``status: "active"``.
+#: - ``curator_rejected`` — curator removed a user-proposed entry that did
+#:   not pass review.
+CatalogAuditEventType = Literal[
+    "add",
+    "update",
+    "deprecate",
+    "user_proposed",
+    "curator_approved",
+    "curator_rejected",
+]
+
+
+class CatalogAuditLogDocument(DocModel):
+    """``catalog_audit_log`` (D.12): append-only audit trail for the catalog.
+
+    Every catalog mutation lands one document here. Mode 2 user-proposed entries
+    produce a ``user_proposed`` event at acceptance; curator-side approval /
+    rejection produce a ``curator_approved`` / ``curator_rejected`` event
+    against the same ``entry_id``. Decision M (claim provenance) requires this
+    trail to be inspectable: the catalog query path may surface user-proposed
+    entries as provisional, and downstream run-document `CatalogReference`
+    fields can be resolved back through this collection to recover the
+    proposal + review context.
+
+    Fields:
+
+    - ``id`` — ULID, the audit-event id (this is the document ``_id``).
+    - ``entry_id`` — the ``CatalogEntry.id`` this event applies to. Indexed
+      for the ``(entry_id, timestamp DESC)`` query path.
+    - ``session_id`` — optional ULID; populated when the event originated
+      inside an active session (Mode 2 user-proposed flow).
+    - ``user_id`` — optional opaque user identifier; populated when user
+      identity is available (post-M6+ user accounts). v0.1 leaves this None
+      since identity machinery is not yet wired; the field is here so the
+      audit trail is forward-compatible.
+    - ``event_type`` — ``CatalogAuditEventType`` literal.
+    - ``event_payload`` — open dict (shape varies by ``event_type``); for
+      ``user_proposed`` it carries the conformity-probe findings + the
+      ``offer-catalog-addition`` request id; for ``curator_approved`` /
+      ``curator_rejected`` it carries the curator note; for ``update`` it
+      carries the diff.
+    - ``timestamp`` — UTC datetime when the event was recorded.
+
+    No TTL — the audit trail is durable. No cost field anywhere (Invariant 9).
+    """
+
+    schema_version: Literal["v1"] = "v1"
+
+    id: ULIDStr = Field(alias="_id")
+    entry_id: str = Field(min_length=1)  # references CatalogEntry.id
+    session_id: ULIDStr | None = None
+    user_id: str | None = None
+    event_type: CatalogAuditEventType
+    event_payload: dict = Field(default_factory=dict)
+    timestamp: UTCDatetime
+
+
+# --------------------------------------------------------------------------- #
+# D.11 catalog_entries indexes (declared; infra provisions)
+# --------------------------------------------------------------------------- #
+
+CATALOG_ENTRIES_INDEXES: list[dict[str, Any]] = [
+    # source_class: catalog_search by domain (e.g. "dem", "landcover", "flood_zone").
+    {"key": [("source_class", 1)], "name": "catalog_entries_source_class_1"},
+    # (status, source_class): the common "active-only by source" query.
+    {
+        "key": [("status", 1), ("source_class", 1)],
+        "name": "catalog_entries_status_1_source_class_1",
+    },
+]
+
+
+# --------------------------------------------------------------------------- #
+# D.12 catalog_audit_log indexes (declared; infra provisions)
+# --------------------------------------------------------------------------- #
+
+CATALOG_AUDIT_LOG_INDEXES: list[dict[str, Any]] = [
+    # entry_id + timestamp DESC: the audit-trail-for-an-entry query path.
+    {
+        "key": [("entry_id", 1), ("timestamp", -1)],
+        "name": "catalog_audit_log_entry_id_1_timestamp_-1",
+    },
+]
