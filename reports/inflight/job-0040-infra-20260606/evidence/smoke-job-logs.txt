@@ -1,0 +1,21 @@
+
+Container called exit(2).
+2026-06-07 07:06:17,536 INFO grace2.worker.sfincs — wrote completion -> gs://grace-2-hazard-prod-runs/smoke-job-0040-v2-1780815697/completion.json
+2026-06-07 07:06:17,385 INFO grace2.worker.sfincs — uploading /opt/grace2/work/sfincs.stderr -> gs://grace-2-hazard-prod-runs/smoke-job-0040-v2-1780815697/sfincs.stderr
+2026-06-07 07:06:17,298 INFO grace2.worker.sfincs — uploading /opt/grace2/work/sfincs.stdout -> gs://grace-2-hazard-prod-runs/smoke-job-0040-v2-1780815697/sfincs.stdout
+2026-06-07 07:06:17,298 INFO grace2.worker.sfincs — sfincs exit=2 stdout_bytes=1296 stderr_bytes=7
+2026-06-07 07:06:17,101 INFO grace2.worker.sfincs — exec: /usr/local/bin/sfincs (cwd=/opt/grace2/work)
+2026-06-07 07:06:16,968 INFO grace2.worker.sfincs — reading manifest gs://grace-2-hazard-prod-cache/cache/static-30d/sfincs-smoke/manifest.json
+2026-06-07 07:06:16,923 INFO grace2.worker.sfincs — grace-2-sfincs-solver starting — project=grace-2-hazard-prod run_id=smoke-job-0040-v2-1780815697 manifest=gs://grace-2-hazard-prod-cache/cache/static-30d/sfincs-smoke/manifest.json
+  warnings.warn(message, FutureWarning)
+/usr/local/lib/python3.10/dist-packages/google/api_core/_python_version_support.py:255: FutureWarning: You are using a Python version (3.10.12) which Google will stop supporting in new releases of google.api_core once it reaches its end of life (2026-10-04). Please upgrade to the latest Python version, or at least Python 3.11, to continue receiving updates for google.api_core past that date.
+Container called exit(2).
+2026-06-07 07:04:29,933 INFO grace2.worker.sfincs — wrote completion -> gs://grace-2-hazard-prod-runs/smoke-job-0040-v2-1780815697/completion.json
+2026-06-07 07:04:29,774 INFO grace2.worker.sfincs — uploading /opt/grace2/work/sfincs.stderr -> gs://grace-2-hazard-prod-runs/smoke-job-0040-v2-1780815697/sfincs.stderr
+2026-06-07 07:04:29,689 INFO grace2.worker.sfincs — uploading /opt/grace2/work/sfincs.stdout -> gs://grace-2-hazard-prod-runs/smoke-job-0040-v2-1780815697/sfincs.stdout
+2026-06-07 07:04:29,689 INFO grace2.worker.sfincs — sfincs exit=2 stdout_bytes=1296 stderr_bytes=7
+2026-06-07 07:04:29,473 INFO grace2.worker.sfincs — exec: /usr/local/bin/sfincs (cwd=/opt/grace2/work)
+2026-06-07 07:04:29,306 INFO grace2.worker.sfincs — reading manifest gs://grace-2-hazard-prod-cache/cache/static-30d/sfincs-smoke/manifest.json
+2026-06-07 07:04:29,258 INFO grace2.worker.sfincs — grace-2-sfincs-solver starting — project=grace-2-hazard-prod run_id=smoke-job-0040-v2-1780815697 manifest=gs://grace-2-hazard-prod-cache/cache/static-30d/sfincs-smoke/manifest.json
+  warnings.warn(message, FutureWarning)
+/usr/local/lib/python3.10/dist-packages/google/api_core/_python_version_support.py:255: FutureWarning: You are using a Python version (3.10.12) which Google will stop supporting in new releases of google.api_core once it reaches its end of life (2026-10-04). Please upgrade to the latest Python version, or at least Python 3.11, to continue receiving updates for google.api_core past that date.

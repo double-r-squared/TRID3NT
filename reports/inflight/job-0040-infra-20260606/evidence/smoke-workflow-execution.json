@@ -1,0 +1,26 @@
+{
+  "argument": "{\"manifest_uri\":\"gs://grace-2-hazard-prod-cache/cache/static-30d/sfincs-smoke/manifest.json\",\"run_id\":\"smoke-job-0040-v3-1780816094\"}",
+  "createTime": "2026-06-07T07:08:15.740313999Z",
+  "duration": "179.586792593s",
+  "endTime": "2026-06-07T07:11:15.327106592Z",
+  "labels": {
+    "component": "sfincs-solver",
+    "env": "dev",
+    "goog-terraform-provisioned": "true",
+    "project": "grace-2",
+    "sprint": "07"
+  },
+  "name": "projects/425352658356/locations/us-central1/workflows/grace-2-sfincs-orchestrator/executions/dde07ade-0277-42d7-bfca-3b6cbe4c2b94",
+  "result": "{\"error\":\"sfincs job execution failed: {\\\"message\\\":\\\"An error occurred during execution of a long-running operation.\\\",\\\"operation\\\":{\\\"done\\\":true,\\\"error\\\":{\\\"code\\\":10,\\\"message\\\":\\\"Task grace-2-sfincs-solver-94lpv-task0 failed with exit code: 2 and message: The container exited with an error.\\\"},\\\"metadata\\\":{\\\"@type\\\":\\\"type.googleapis.com/google.cloud.run.v2.Execution\\\",\\\"completionTime\\\":\\\"2026-06-07T07:10:55.284905Z\\\",\\\"conditions\\\":[{\\\"lastTransitionTime\\\":\\\"2026-06-07T07:09:05.098713Z\\\",\\\"message\\\":\\\"Started deployed execution in 48.29s.\\\",\\\"state\\\":\\\"CONDITION_SUCCEEDED\\\",\\\"type\\\":\\\"Started\\\"},{\\\"executionReason\\\":\\\"NON_ZERO_EXIT_CODE\\\",\\\"lastTransitionTime\\\":\\\"2026-06-07T07:10:55.284905Z\\\",\\\"message\\\":\\\"Task grace-2-sfincs-solver-94lpv-task0 failed with exit code: 2 and message: The container exited with an error.\\\",\\\"state\\\":\\\"CONDITION_FAILED\\\",\\\"type\\\":\\\"Completed\\\"},{\\\"lastTransitionTime\\\":\\\"2026-06-07T07:08:16.694242Z\\\",\\\"message\\\":\\\"Imported container image.\\\",\\\"state\\\":\\\"CONDITION_SUCCEEDED\\\",\\\"type\\\":\\\"ContainerReady\\\"},{\\\"lastTransitionTime\\\":\\\"2026-06-07T07:08:16.805440Z\\\",\\\"message\\\":\\\"Provisioned imported containers.\\\",\\\"state\\\":\\\"CONDITION_SUCCEEDED\\\",\\\"type\\\":\\\"ResourcesAvailable\\\"}],\\\"createTime\\\":\\\"2026-06-07T07:08:15.953113Z\\\",\\\"creator\\\":\\\"workflow-invoker-sfincs@grace-2-hazard-prod.iam.gserviceaccount.com\\\",\\\"etag\\\":\\\"\\\\\\\"CN-xlNEGEKizvcYD/cHJvamVjdHMvZ3JhY2UtMi1oYXphcmQtcHJvZC9sb2NhdGlvbnMvdXMtY2VudHJhbDEvam9icy9ncmFjZS0yLXNmaW5jcy1zb2x2ZXIvZXhlY3V0aW9ucy9ncmFjZS0yLXNmaW5jcy1zb2x2ZXItOTRscHY\\\\\\\"\\\",\\\"failedCount\\\":1,\\\"generation\\\":\\\"1\\\",\\\"job\\\":\\\"grace-2-sfincs-solver\\\",\\\"labels\\\":{\\\"component\\\":\\\"sfincs-solver\\\",\\\"env\\\":\\\"dev\\\",\\\"project\\\":\\\"grace-2\\\",\\\"sprint\\\":\\\"07\\\"},\\\"launchStage\\\":\\\"GA\\\",\\\"logUri\\\":\\\"https://console.cloud.google.com/logs/viewer?project=grace-2-hazard-prod\\\\u0026advancedFilter=resource.type%3D%22cloud_run_job%22%0Aresource.labels.job_name%3D%22grace-2-sfincs-solver%22%0Aresource.labels.location%3D%22us-central1%22%0Alabels.%22run.googleapis.com/execution_name%22%3D%22grace-2-sfincs-solver-94lpv%22\\\",\\\"name\\\":\\\"projects/grace-2-hazard-prod/locations/us-central1/jobs/grace-2-sfincs-solver/executions/grace-2-sfincs-solver-94lpv\\\",\\\"observedGeneration\\\":\\\"1\\\",\\\"parallelism\\\":1,\\\"retriedCount\\\":1,\\\"startTime\\\":\\\"2026-06-07T07:08:24.180858Z\\\",\\\"taskCount\\\":1,\\\"template\\\":{\\\"containers\\\":[{\\\"env\\\":[{\\\"name\\\":\\\"GRACE2_RUN_ID\\\",\\\"value\\\":\\\"smoke-job-0040-v3-1780816094\\\"},{\\\"name\\\":\\\"GCP_PROJECT\\\",\\\"value\\\":\\\"grace-2-hazard-prod\\\"},{\\\"name\\\":\\\"GRACE2_CACHE_BUCKET\\\",\\\"value\\\":\\\"grace-2-hazard-prod-cache\\\"},{\\\"name\\\":\\\"GRACE2_MANIFEST_URI\\\",\\\"value\\\":\\\"gs://grace-2-hazard-prod-cache/cache/static-30d/sfincs-smoke/manifest.json\\\"},{\\\"name\\\":\\\"GRACE2_RUNS_BUCKET\\\",\\\"value\\\":\\\"grace-2-hazard-prod-runs\\\"},{\\\"name\\\":\\\"GOOGLE_CLOUD_PROJECT\\\",\\\"value\\\":\\\"grace-2-hazard-prod\\\"}],\\\"image\\\":\\\"us-central1-docker.pkg.dev/grace-2-hazard-prod/grace-2-containers/grace-2-sfincs-solver@sha256:89ce6e275317bb44008d6a756f5be084ae4750ede6d0c6742c7ffa1a71ad4c44\\\",\\\"resources\\\":{\\\"limits\\\":{\\\"cpu\\\":\\\"4\\\",\\\"memory\\\":\\\"4Gi\\\"}}}],\\\"executionEnvironment\\\":\\\"EXECUTION_ENVIRONMENT_GEN2\\\",\\\"maxRetries\\\":1,\\\"serviceAccount\\\":\\\"sfincs-runtime@grace-2-hazard-prod.iam.gserviceaccount.com\\\",\\\"timeout\\\":\\\"1800s\\\"},\\\"uid\\\":\\\"22b963b1-76cf-4412-9eda-0c4d0e79d39f\\\",\\\"updateTime\\\":\\\"2026-06-07T07:08:15.953113Z\\\"},\\\"name\\\":\\\"projects/grace-2-hazard-prod/locations/us-central1/operations/d890869c-ede4-481c-ab6c-7b0765b3b550\\\"},\\\"tags\\\":[\\\"OperationError\\\"]}\",\"run_id\":\"smoke-job-0040-v3-1780816094\",\"status\":\"error\"}",
+  "startTime": "2026-06-07T07:08:15.740313999Z",
+  "state": "SUCCEEDED",
+  "status": {
+    "currentSteps": [
+      {
+        "routine": "main",
+        "step": "return_job_error"
+      }
+    ]
+  },
+  "workflowRevisionId": "000001-d2c"
+}

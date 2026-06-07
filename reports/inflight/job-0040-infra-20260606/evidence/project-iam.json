@@ -56,6 +56,12 @@
     },
     {
       "members": [
+        "serviceAccount:workflow-invoker-sfincs@grace-2-hazard-prod.iam.gserviceaccount.com"
+      ],
+      "role": "roles/run.viewer"
+    },
+    {
+      "members": [
         "serviceAccount:agent-runtime@grace-2-hazard-prod.iam.gserviceaccount.com"
       ],
       "role": "roles/secretmanager.secretAccessor"
@@ -67,6 +73,6 @@
       "role": "roles/workflows.serviceAgent"
     }
   ],
-  "etag": "BwZTpGUi3DM=",
+  "etag": "BwZTpI3EuTg=",
   "version": 1
 }

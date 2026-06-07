@@ -21,3 +21,25 @@ output "cache_bucket_url" {
   description = "gs:// URL for the atomic-tool fetch cache bucket."
   value       = "gs://${google_storage_bucket.cache.name}"
 }
+
+# --- SFINCS substrate (sprint-07 / job-0040) ------------------------------
+#
+# Consumed by the agent service's run_solver + wait_for_completion tools
+# (job-0041) so the Cloud Run Job name + Workflows workflow name + runs
+# bucket name are not hardcoded in services/agent/. Agent reads from
+# `tofu output -json` at deploy time.
+
+output "sfincs_job_name" {
+  description = "Cloud Run Job name for the SFINCS solver (FR-CE-1)."
+  value       = google_cloud_run_v2_job.sfincs_solver.name
+}
+
+output "sfincs_workflow_name" {
+  description = "Cloud Workflows workflow name orchestrating the SFINCS Job (FR-CE-2)."
+  value       = google_workflows_workflow.sfincs_orchestrator.name
+}
+
+output "runs_bucket_name" {
+  description = "GCS bucket name for persisted solver outputs (FR-CE-3)."
+  value       = google_storage_bucket.runs.name
+}

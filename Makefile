@@ -38,6 +38,7 @@ ATLAS_PROJECT_ID ?= 6a234700a0e1295958d10cf9
         atlas-allowlist-me secret-srv-show \
         qgis-server-build qgis-server-push qgis-server-deploy \
         worker-build worker-push worker-deploy worker-run-job \
+        sfincs-build sfincs-push sfincs-deploy \
         srs
 
 help:
@@ -70,6 +71,10 @@ help:
 	@echo "  worker-push         alias of worker-build (Cloud Build pushes to AR)"
 	@echo "  worker-deploy       tofu apply the Cloud Run Job + SA + IAM bindings"
 	@echo "  worker-run-job      execute the PyQGIS worker Cloud Run Job (QGS_URI=... LAYER=...)"
+	@echo ""
+	@echo "  sfincs-build        build the SFINCS solver image via Cloud Build (linux/amd64)"
+	@echo "  sfincs-push         alias of sfincs-build (Cloud Build pushes to AR)"
+	@echo "  sfincs-deploy       tofu apply the SFINCS Cloud Run Job + Workflows + runs bucket + IAM"
 	@echo ""
 	@echo "  srs                 regenerate docs/SRS_v0.3.md from docs/srs/* parts (lossless concat)"
 
@@ -284,6 +289,53 @@ worker-run-job:
 	  --region=$(GCP_REGION) \
 	  --args="--qgs-uri,$(QGS_URI),--layer-to-add,$(LAYER)" \
 	  --wait
+
+# --- SFINCS solver (job-0040) ----------------------------------------------
+#
+# Builds linux/amd64 only (project-wide Linux substrate decision; see
+# qgis-server section above for rationale). Cloud Build is canonical for the
+# same reason: zero local credential surface, image pushed to AR by GCP.
+# Dockerfile lives at services/workers/sfincs/Dockerfile; build context is
+# repo root so `COPY services/workers/sfincs/ ...` pulls the entrypoint
+# shim from current HEAD.
+#
+# After a build, the new digest is logged by Cloud Build and printed by
+# `gcloud artifacts docker images list ... | grep sfincs-solver`. Update
+# infra/sfincs.tf's `sfincs_image_digest` local to that digest, then
+# `make sfincs-deploy`.
+
+SFINCS_AR_REPO   ?= grace-2-containers
+SFINCS_IMAGE     ?= grace-2-sfincs-solver
+SFINCS_IMAGE_URI ?= $(GCP_REGION)-docker.pkg.dev/$(GCP_PROJECT_ID)/$(SFINCS_AR_REPO)/$(SFINCS_IMAGE):latest
+
+sfincs-build:
+	@echo "Building $(SFINCS_IMAGE_URI) via Cloud Build (linux/amd64)..."
+	gcloud builds submit \
+	  --project=$(GCP_PROJECT_ID) \
+	  --config=infra/sfincs/cloudbuild.yaml \
+	  --substitutions=_REGION=$(GCP_REGION),_AR_REPO=$(SFINCS_AR_REPO),_IMAGE=$(SFINCS_IMAGE) \
+	  .
+
+# Cloud Build pushes during `submit`; this alias preserves the
+# build/push/deploy three-target shape symmetric with qgis-server-* + worker-*.
+sfincs-push: sfincs-build
+
+sfincs-deploy:
+	tofu -chdir=infra apply -auto-approve \
+	  -target=google_storage_bucket.runs \
+	  -target=google_service_account.sfincs_runtime \
+	  -target=google_storage_bucket_iam_member.sfincs_runtime_cache_viewer \
+	  -target=google_storage_bucket_iam_member.sfincs_runtime_runs_admin \
+	  -target=google_storage_bucket_iam_member.sfincs_runtime_qgs_viewer \
+	  -target=google_cloud_run_v2_job.sfincs_solver \
+	  -target=google_service_account.workflow_invoker_sfincs \
+	  -target=google_cloud_run_v2_job_iam_member.workflow_invoker_runs_job \
+	  -target=google_cloud_run_v2_job_iam_member.workflow_invoker_runs_job_developer \
+	  -target=google_service_account_iam_member.workflow_invoker_actas_sfincs_runtime \
+	  -target=google_storage_bucket_iam_member.workflow_invoker_runs_viewer \
+	  -target=google_project_iam_member.workflow_invoker_log_writer \
+	  -target=google_project_iam_member.workflow_invoker_run_viewer \
+	  -target=google_workflows_workflow.sfincs_orchestrator
 
 # --- Playwright + screenshots (job-0027) -----------------------------------
 #

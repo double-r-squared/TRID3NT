@@ -1,0 +1,11 @@
+{
+  "run_id": "smoke-job-0040-v3-1780816094",
+  "status": "error",
+  "exit_code": 2,
+  "sfincs_stdout_uri": "gs://grace-2-hazard-prod-runs/smoke-job-0040-v3-1780816094/sfincs.stdout",
+  "sfincs_stderr_uri": "gs://grace-2-hazard-prod-runs/smoke-job-0040-v3-1780816094/sfincs.stderr",
+  "output_uris": [],
+  "started_at": "2026-06-07T07:10:49Z",
+  "finished_at": "2026-06-07T07:10:50Z",
+  "error": "sfincs exited with non-zero code 2"
+}

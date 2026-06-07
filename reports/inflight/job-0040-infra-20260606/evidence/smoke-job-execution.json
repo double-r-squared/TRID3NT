@@ -1,0 +1,123 @@
+{
+  "apiVersion": "run.googleapis.com/v1",
+  "kind": "Execution",
+  "metadata": {
+    "annotations": {
+      "run.googleapis.com/creator": "workflow-invoker-sfincs@grace-2-hazard-prod.iam.gserviceaccount.com",
+      "run.googleapis.com/execution-environment": "gen2",
+      "run.googleapis.com/lastModifier": "workflow-invoker-sfincs@grace-2-hazard-prod.iam.gserviceaccount.com",
+      "run.googleapis.com/operation-id": "40c28cc3-f9a0-41e8-9aa4-0dfc4be41a62"
+    },
+    "creationTimestamp": "2026-06-07T07:01:38.521388Z",
+    "generation": 1,
+    "labels": {
+      "cloud.googleapis.com/location": "us-central1",
+      "component": "sfincs-solver",
+      "env": "dev",
+      "project": "grace-2",
+      "run.googleapis.com/job": "grace-2-sfincs-solver",
+      "run.googleapis.com/jobGeneration": "1",
+      "run.googleapis.com/jobResourceVersion": "1780815380045118",
+      "run.googleapis.com/jobUid": "d52e6804-cfd9-4425-8b21-2a9fdba08090",
+      "sprint": "07"
+    },
+    "name": "grace-2-sfincs-solver-8g985",
+    "namespace": "425352658356",
+    "ownerReferences": [
+      {
+        "apiVersion": "serving.knative.dev/v1",
+        "blockOwnerDeletion": true,
+        "controller": true,
+        "kind": "Job",
+        "name": "grace-2-sfincs-solver",
+        "uid": "d52e6804-cfd9-4425-8b21-2a9fdba08090"
+      }
+    ],
+    "resourceVersion": "AAZTpIgqC/k",
+    "selfLink": "/apis/run.googleapis.com/v1/namespaces/425352658356/executions/grace-2-sfincs-solver-8g985",
+    "uid": "b96a230f-d679-4559-bf2f-1d320c44b055"
+  },
+  "spec": {
+    "parallelism": 1,
+    "taskCount": 1,
+    "template": {
+      "spec": {
+        "containers": [
+          {
+            "env": [
+              {
+                "name": "GRACE2_RUN_ID",
+                "value": "smoke-job-0040-v2-1780815697"
+              },
+              {
+                "name": "GCP_PROJECT",
+                "value": "grace-2-hazard-prod"
+              },
+              {
+                "name": "GRACE2_CACHE_BUCKET",
+                "value": "grace-2-hazard-prod-cache"
+              },
+              {
+                "name": "GRACE2_MANIFEST_URI",
+                "value": "gs://grace-2-hazard-prod-cache/cache/static-30d/sfincs-smoke/manifest.json"
+              },
+              {
+                "name": "GRACE2_RUNS_BUCKET",
+                "value": "grace-2-hazard-prod-runs"
+              },
+              {
+                "name": "GOOGLE_CLOUD_PROJECT",
+                "value": "grace-2-hazard-prod"
+              }
+            ],
+            "image": "us-central1-docker.pkg.dev/grace-2-hazard-prod/grace-2-containers/grace-2-sfincs-solver@sha256:89ce6e275317bb44008d6a756f5be084ae4750ede6d0c6742c7ffa1a71ad4c44",
+            "resources": {
+              "limits": {
+                "cpu": "4",
+                "memory": "4Gi"
+              }
+            }
+          }
+        ],
+        "maxRetries": 1,
+        "serviceAccountName": "sfincs-runtime@grace-2-hazard-prod.iam.gserviceaccount.com",
+        "timeoutSeconds": "1800"
+      }
+    }
+  },
+  "status": {
+    "completionTime": "2026-06-07T07:06:22.865337Z",
+    "conditions": [
+      {
+        "lastTransitionTime": "2026-06-07T07:06:22.865337Z",
+        "message": "Task grace-2-sfincs-solver-8g985-task0 failed with exit code: 2 and message: The container exited with an error.",
+        "reason": "NonZeroExitCode",
+        "status": "False",
+        "type": "Completed"
+      },
+      {
+        "lastTransitionTime": "2026-06-07T07:02:06.640292Z",
+        "message": "Provisioned imported containers.",
+        "status": "True",
+        "type": "ResourcesAvailable"
+      },
+      {
+        "lastTransitionTime": "2026-06-07T07:04:27.540147Z",
+        "message": "Started deployed execution in 2m20.89s.",
+        "status": "True",
+        "type": "Started"
+      },
+      {
+        "lastTransitionTime": "2026-06-07T07:02:06.534664Z",
+        "message": "Imported container image in 28.01s.",
+        "status": "True",
+        "type": "ContainerReady"
+      }
+    ],
+    "failedCount": 1,
+    "logUri": "https://console.cloud.google.com/logs/viewer?project=grace-2-hazard-prod&advancedFilter=resource.type%3D%22cloud_run_job%22%0Aresource.labels.job_name%3D%22grace-2-sfincs-solver%22%0Aresource.labels.location%3D%22us-central1%22%0Alabels.%22run.googleapis.com/execution_name%22%3D%22grace-2-sfincs-solver-8g985%22",
+    "observedGeneration": 1,
+    "retriedCount": 1,
+    "startTime": "2026-06-07T07:02:18.180226Z"
+  }
+}
