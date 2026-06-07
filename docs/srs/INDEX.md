@@ -4,7 +4,7 @@ This directory is the **canonical editing surface** for the GRACE-2 Software Req
 
 | Section | File | Purpose |
 | --- | --- | --- |
-| Preamble | [`00-preamble.md`](00-preamble.md) | Title, version (v0.3.19), authors, supersedes note, opening hr separator. Loaded only by tools regenerating the monolith. |
+| Preamble | [`00-preamble.md`](00-preamble.md) | Title, version (v0.3.20), authors, supersedes note, opening hr separator. Loaded only by tools regenerating the monolith. |
 | §1 Purpose and Scope | [`01-purpose-and-scope.md`](01-purpose-and-scope.md) | What GRACE-2 is, audience, scope boundaries. Load when reasoning about v0.1 vs deferred-future scope. |
 | §2 System Overview | [`02-system-overview.md`](02-system-overview.md) | Decisions A–O (§2.1; Decision O caches-mediated data fetching added in v0.3.15), architecture diagram (§2.2), engine contract `(location, forcing) → AssessmentEnvelope` (§2.3) with 8 new Deferred engine rows added in v0.3.15. The invariant substrate. Load for any cross-cutting architecture work; orchestrator-pinned invariants derive from §2.1. |
 | §3 Functional Requirements | [`03-functional-requirements.md`](03-functional-requirements.md) | All ten FR-XX groups (FR-WC, FR-AS, FR-TA, FR-HEP, FR-QS, FR-PHC, FR-DT, FR-MP, FR-CE, FR-DC). FR-DC (data caching, six labeled requirements) and new §3.9 added in v0.3.15. Kept as one file: no single FR group exceeds 120 lines after the amendment, cross-references are dense, splitting would fragment tightly-coupled material. Load when authoring/reviewing any specialist work (every kickoff cites FR-XX-N anchors). |
