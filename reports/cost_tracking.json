@@ -92,11 +92,18 @@
       "description": "run_solver + wait_for_completion atomic tools — Cloud Workflows submission against grace-2-sfincs-orchestrator (job-0040 substrate); progress emission via job-0035 PipelineEmitter.update_progress (36 emissions captured on ~3min smoke run, linear-in-wallclock curve clamped ≤95%); FR-DC-6 uncacheable; EmitterBinding DI seam mirrors job-0032 set_mcp_client pattern; Invariant 8 cancel chain verified live end-to-end at 850 ms (35× under NFR-R-3 30s budget); RunResult correctly maps completion.json error to A.6 error code; 10 new tests + 104/104 agent suite; 7 OQ-41-* surfaced including OQ-41-COMPUTE-CLASS-NAMING (FR-CE-3 medium↔schema standard alias). Commit c7ce917.",
       "model": "opus",
       "subagent_tokens": 275263
+    },
+    {
+      "job_id": "job-0042-engine-20260606",
+      "sprint": 7,
+      "description": "M5 capstone composition — new workflows/ package per Decision G; model_flood_scenario composes geocode → fetch_dem → fetch_landcover → fetch_river_geometry → lookup_precip_return_period → build_sfincs_model (with NLCD validation gate per OQ-4 Invariant 7 mitigation) → run_solver → wait_for_completion → postprocess_flood → AssessmentEnvelope Flood subtype; run_model_flood_scenario atomic-tool wrapper; manning_mapping.csv v1.0.0 (20 canonical L48 classes, 4-source citation bundle). **NLCD validation gate FIRED LIVE on real production data — caught MRLC WMS palette-encoding silent-wrong-answer mode** (raster bytes are palette indices [1,3,4,5,6,7,9,10,11,13,14,18,20,21] not canonical NLCD integers); workflow returned typed failed envelope with solver_version='failed:LULC_MAPPING_MISMATCH' instead of producing silently-wrong flood maps. Real Cloud Workflows execution afd364bd through grace-2-sfincs-orchestrator succeeded (synthetic-manifest expected SOLVER_FAILED). 11 new tests + 115/115 agent suite; 14 tools registered. Closes OQ-36-QGIS-PROCESS-DEMO-CHAIN. 9 OQ-42-* incl. critical OQ-42-NLCD-WMS-PALETTE-ENCODING routed to job-0044 hotfix. Commit cca57bd.",
+      "model": "opus",
+      "subagent_tokens": 310417
     }
   ],
   "totals_by_sprint": {
     "6": 1265567,
-    "7": 1019531
+    "7": 1329948
   },
   "historical_context": {
     "note": "Captured for accountability — NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
