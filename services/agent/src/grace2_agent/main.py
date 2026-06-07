@@ -50,6 +50,12 @@ def _import_tools_registry() -> int:
     are FR-DC-6 uncacheable (``cacheable=False``, ``ttl_class="live-no-cache"``,
     ``source_class="solver_dispatch"``) — they drive Cloud Workflows
     executions of the M5 SFINCS substrate landed by job-0040.
+
+    job-0042: imports ``workflows.model_flood_scenario`` so the M5 capstone
+    workflow's thin atomic-tool wrapper ``run_model_flood_scenario`` is
+    registered alongside the atomic tools it composes. The workflow itself
+    is deterministic Python (FR-TA-1, Decision G); the wrapper exists so the
+    LLM sees a single invocable tool that triggers the whole chain.
     """
     from . import tools  # noqa: F401 — side-effect: registers atomic tools
     # job-0033: register the 4 data-fetch atomic tools (FROZEN __init__.py).
@@ -58,6 +64,8 @@ def _import_tools_registry() -> int:
     from .tools import qgis_discovery  # noqa: F401
     # job-0041: register run_solver + wait_for_completion (M5 substrate).
     from .tools import solver  # noqa: F401
+    # job-0042: register run_model_flood_scenario (M5 capstone workflow wrapper).
+    from .workflows import model_flood_scenario  # noqa: F401
 
     return len(tools.TOOL_REGISTRY)
 

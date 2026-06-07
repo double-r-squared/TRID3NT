@@ -1,0 +1,18 @@
+{
+  "phase": "dispatch_chain",
+  "manifest_uri": "gs://grace-2-hazard-prod-cache/cache/static-30d/sfincs-smoke/manifest-job-0042-dispatch-1780821839.json",
+  "run_result": null,
+  "envelope_summary": {
+    "envelope_id": "01KTGM8WQ7HHS4RA4RBX33J5CE",
+    "envelope_type": "modeled",
+    "hazard_type": "flood",
+    "workflow_name": "model_flood_scenario",
+    "solver_run_ids": [
+      "01KTGM1Q7THE9K8Y64N1NGG2B1"
+    ],
+    "layers_count": 0,
+    "flood_solver_version": "failed:SOLVER_FAILED",
+    "flood_max_depth_m": 0.0,
+    "data_source_count": 4
+  }
+}

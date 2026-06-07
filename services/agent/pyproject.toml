@@ -40,6 +40,14 @@ dependencies = [
     # OQ-37-WORLDPOP-STAC-ENDPOINT). We still pin pystac-client now so the
     # dep set is stable for sprint-07's downstream fetcher jobs (job-0039).
     "pystac-client>=0.8,<1",
+    # job-0042 M5 capstone: HydroMT-SFINCS drives build_sfincs_model per the
+    # OQ-4 §4 decision (full HydroMT reliance). The < 2.0 cap holds until
+    # SfincsModel v2.0 RC exits release-candidate status — v2.0 breaks the
+    # component-based API. fsspec[gcs] is the GCS bridging layer HydroMT
+    # uses to materialize the staged deck to the cache bucket.
+    "hydromt>=1.0,<2",
+    "hydromt-sfincs>=1.1.2,<2.0",
+    "fsspec[gcs]>=2024.6",
     "websockets>=13,<16",
     "pymongo>=4.8,<5",
     "pydantic>=2,<3",

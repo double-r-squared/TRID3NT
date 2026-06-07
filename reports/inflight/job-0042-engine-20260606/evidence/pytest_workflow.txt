@@ -1,0 +1,22 @@
+============================= test session starts ==============================
+platform linux -- Python 3.13.5, pytest-9.0.3, pluggy-1.6.0 -- /home/nate/Documents/GRACE-2/.venv-agent/bin/python
+cachedir: .pytest_cache
+rootdir: /home/nate/Documents/GRACE-2/services/agent
+configfile: pyproject.toml
+plugins: anyio-4.13.0, asyncio-1.4.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 11 items
+
+services/agent/tests/test_model_flood_scenario.py::test_registry_registers_run_model_flood_scenario_wrapper PASSED [  9%]
+services/agent/tests/test_model_flood_scenario.py::test_nlcd_validation_gate_raises_on_unmapped_class PASSED [ 18%]
+services/agent/tests/test_model_flood_scenario.py::test_nlcd_validation_gate_passes_when_subset_of_mapping PASSED [ 27%]
+services/agent/tests/test_model_flood_scenario.py::test_load_manning_mapping_returns_expected_classes PASSED [ 36%]
+services/agent/tests/test_model_flood_scenario.py::test_workflow_happy_path_returns_flood_envelope PASSED [ 45%]
+services/agent/tests/test_model_flood_scenario.py::test_workflow_returns_failed_envelope_when_run_solver_fails PASSED [ 54%]
+services/agent/tests/test_model_flood_scenario.py::test_workflow_returns_failed_envelope_when_nlcd_gate_fires PASSED [ 63%]
+services/agent/tests/test_model_flood_scenario.py::test_workflow_geocode_fallback_when_bbox_missing PASSED [ 72%]
+services/agent/tests/test_model_flood_scenario.py::test_workflow_direct_bbox_path_skips_geocode PASSED [ 81%]
+services/agent/tests/test_model_flood_scenario.py::test_workflow_bbox_wins_when_both_supplied PASSED [ 90%]
+services/agent/tests/test_model_flood_scenario.py::test_workflow_cancellation_propagates PASSED [100%]
+
+============================== 11 passed in 0.08s ==============================
