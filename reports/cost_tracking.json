@@ -1,0 +1,55 @@
+{
+  "tracking_started": "2026-06-06",
+  "rationale": "Per-job subagent token accounting. Tracking began after the cost-discipline lesson (see memory/feedback_cost_discipline_model_routing.md) — three failed v0.3.15 workflow attempts burned ~1.4M subagent tokens with zero applied output, prompting the model-routing + orchestrator-direct discipline.",
+  "fields": {
+    "job_id": "Job ID per AGENTS.md naming convention",
+    "sprint": "Sprint number",
+    "description": "One-sentence summary of what the job did",
+    "subagent_tokens": "Token count consumed by the specialist subagent for this job (does NOT include orchestrator-side tokens, audit closeout, or commit operations)"
+  },
+  "entries": [
+    {
+      "job_id": "job-0030-schema-20260606",
+      "sprint": 6,
+      "description": "Extended Appendix D.6 PipelineStepSummary with progress_percent/error_code/error_message and added AtomicToolMetadata model with 4-class TTL Literal for FunctionTool registration; 91 → 131 contracts tests green; closes OQ-W-26 from sprint-05.",
+      "subagent_tokens": 126553
+    },
+    {
+      "job_id": "job-0031-infra-20260606",
+      "sprint": 6,
+      "description": "Provisioned gs://grace-2-hazard-prod-cache GCS bucket via OpenTofu with 4 Object Lifecycle Management rules per FR-DC-5 TTL classes and bucket-scoped objectAdmin IAM for agent-runtime and pyqgis-worker-runtime SAs; customTime round-trip verified live.",
+      "subagent_tokens": 134496
+    },
+    {
+      "job_id": "job-0032-agent-20260606",
+      "sprint": 6,
+      "description": "Landed services/agent/src/grace2_agent/tools/ package — registry decorator + TOOL_REGISTRY, FR-DC-3 cache shim (compute_cache_key sha256[:32], read_through with live-no-cache short-circuit + force_refresh), and mongo_query/qgis_process pass-through stubs awaiting DI binding; 24 unit tests green.",
+      "subagent_tokens": 145526
+    }
+  ],
+  "totals_by_sprint": {
+    "6": 406575
+  },
+  "historical_context": {
+    "note": "Captured for accountability — NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
+    "failed_workflows": [
+      {
+        "workflow_id": "wodu3a4xm",
+        "description": "v0.3.15 SRS amendment first attempt — research + synthesis + adversarial verify across 7 subagents, REFUTED with 11 issues, no edits applied.",
+        "subagent_tokens": 418672
+      },
+      {
+        "workflow_id": "w19x3p71s_w94k2zzx6",
+        "description": "v0.3.15 SRS amendment second attempt — 3-judge adversarial panel failed at StructuredOutput synthesis (all 3 judges); user interrupted; resumed and re-failed.",
+        "subagent_tokens": 0
+      },
+      {
+        "workflow_id": "ww020fjtg_old_job-0028_duplicate",
+        "description": "Old job-0028 (M3 acceptance) workflow that completed AFTER I had already manually closed job-0028 with a single Agent call — produced duplicate work in inflight dir that was cleaned up.",
+        "subagent_tokens": 391943
+      }
+    ],
+    "historical_total_wasted": 810615,
+    "approximate_total_including_unmeasured": 1400000
+  }
+}
