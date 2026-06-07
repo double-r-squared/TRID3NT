@@ -1,6 +1,6 @@
 # Audit: Agent tool registry + cache shim + registry pass-throughs (M4 substrate)
 
-**Job ID:** job-0032-agent-20260606, **Sprint:** sprint-06, **Auditor:** Development Orchestrator, **Status:** assigned
+**Job ID:** job-0032-agent-20260606, **Sprint:** sprint-06, **Auditor:** Development Orchestrator, **Status:** approved
 
 ## Task Assignment
 
@@ -105,3 +105,72 @@ Linux Debian dev host. `services/agent/grace2_agent/` is the agent service (Clou
 - [ ] `services/agent/pyproject.toml` includes `google-cloud-storage` runtime dep (commit the lockfile too if `uv.lock` or similar is in tree).
 
 Surface contestable choices as Open Questions with TENTATIVE tags — at minimum: cache key truncation length (32 hex chars is the kickoff value — TENTATIVE; longer reduces collision probability), TTL-bucket-vintage canonicalization for `live-no-cache` (currently treated as always-miss; alternative: use `fetched_at` itself which makes the key unique per call), how to handle `Cache-Control` header attachment (object metadata vs GCS bucket-level — pick object metadata for per-object visibility), whether `read_through` should expose an `force_refresh` parameter for the FR-DC-6 `cache=false` override case (TENTATIVE: yes; document in README).
+
+## Assessment
+
+**Verdict:** approved.
+
+The tool registry skeleton + FR-DC-3 cache shim + two FR-DC-6 pass-throughs land cleanly across four new modules (`tools/__init__.py` 200 lines, `tools/cache.py` 357 lines, `tools/passthroughs.py` 205 lines, `tools/README.md` 128 lines) plus a startup-side wiring edit to `main.py` (+55 net). The kickoff path-drift (`services/agent/grace2_agent/` vs the actual `services/agent/src/grace2_agent/` src layout) was caught and adapted without back-and-forth — pre-existing project layout, specialist navigated correctly.
+
+`@register_tool(metadata)` decorator validates `AtomicToolMetadata`, populates `TOOL_REGISTRY` keyed by name, and raises `ToolRegistrationError` on duplicate names — the FR-CE-8 fail-fast registration discipline is in place at import time. Live verification: `python -m grace2_agent --startup-only` exits 0 with `tool registry loaded: 2 tool(s): ['mongo_query', 'qgis_process']`. Eager passthroughs import populates the registry at package import time per FR-CE-8.
+
+The cache shim's `compute_cache_key` is deterministic by construction (pure-function sha256 of `source_id || canonical_params_json || ttl_bucket_vintage`). 32-hex-char (128-bit) truncation is the kickoff value — well above any realistic collision threshold for the M4 working set. `cache_path` produces `cache/<ttl-class>/<source-class>/<hash>.<ext>` matching the live bucket layout from job-0031 exactly, not the FR-DC-1 literal prose (correct — follow the substrate; OQ-INFRA-31-FR-DC-1 captures the v0.3.16 prose alignment).
+
+`read_through`'s `live-no-cache` short-circuit is the right call: returns `uri=None, hit=False` without GCS traffic, so the shim consumes zero network for FR-DC-6 enumerated tools. The `force_refresh: bool = False` parameter implements the FR-DC-6 `cache=false` per-call opt-in cleanly. On `fetch_fn` failure: re-raises without writing a sentinel per the kickoff (lets FR-AS-11 surface decide retry/clarify/fallback).
+
+The pass-throughs being `NotImplementedError` stubs is a defensible design choice — the registry metadata is correct, the routing path is wired, but the bodies are deferred to follow-up jobs (job-0033 for `mongo_query` MCP wiring, job-0034 for `qgis_process` Cloud Run Jobs submission). The dependency-injection seam (`set_mcp_client(client)` / `set_worker_submitter(submitter)`) is clean and lets later jobs bind real handles without re-touching this job's code. Surfaced as OQ-32-PASSTHROUGH-INTEGRATION; non-blocking for the M4 substrate goal.
+
+24 unit/integration tests pass in 3.49s. Contracts suite still 131/131 green (no regression). Test coverage spans: registry happy path + duplicate rejection + metadata validation; cache-key determinism + vintage separation + canonicalization; cache-path shape; read-through hit/miss with stubbed GCS; live-no-cache short-circuit; `force_refresh` behavior; startup-side registry import.
+
+## Invariant Check
+
+- **Invariant 1 (Determinism boundary):** preserved. `compute_cache_key` is a pure function over deterministic inputs. No LLM in the cache path. Tests assert key reproducibility.
+- **Invariant 8 (Cancellation is first-class):** preserved. `read_through` is a blocking I/O call against GCS; cancellation routes through the existing M1 cancel chain (`GraceWs.cancel` interrupts the running tool call). No separate cancellation mechanism introduced.
+- **Invariant 9 (Confirmation before consequence — no cost theater):** preserved. Grep for `cost` / `dollar` / `usd` / `eta` / `estimate` across the new modules returns zero hits.
+- **FR-CE-8 fail-fast registration:** verified at import time. Duplicate-name registration raises `ToolRegistrationError`; misconfigured `AtomicToolMetadata` raises at construction via the model_validator job-0030 landed.
+- **FR-DC-6 enumeration honored:** `mongo_query` and `qgis_process` declare `cacheable=False` + `ttl_class="live-no-cache"`; the shim's `live-no-cache` short-circuit ensures zero cache writes for these tools.
+
+## Dependency Check
+
+- **job-0030-schema-20260606 (APPROVED)** — `AtomicToolMetadata` imported from `grace2_contracts.tool_registry`, NOT redefined. The model_validator cross-field rule from job-0030 fires at construction for misconfigured pass-throughs (verified by the registry-validation tests).
+- **job-0031-infra-20260606 (APPROVED)** — `CACHE_BUCKET = "grace-2-hazard-prod-cache"` constant matches the live bucket name. `cache_path` produces the exact prefix layout job-0031 wired into the GCS lifecycle rules.
+- **job-0015-agent-20260605** (M1 agent service) — extended additively. `main.py` adds the registry import + ADK registration call; no refactor to the existing WS/MCP/Gemini wiring.
+- **v0.3.15 SRS** (Decision O + FR-DC-1..6 + FR-CE-8) — substrate matches the contract. The TTL-class literal values used in `Literal["static-30d", "semi-static-7d", "dynamic-1h", "live-no-cache"]` come from `AtomicToolMetadata`, which traces to §3.9 FR-DC-2.
+
+## Decisions Validated
+
+All key decisions reviewed and accepted:
+
+1. **32-hex (128-bit) cache-key truncation** — well above collision threshold for M4 working set; consistent with the kickoff value. Accepted.
+2. **bbox/date quantization is engine-side responsibility, not shim-side** — correct. Per-source quantization (3DEP 10m vs NLCD 30m vs ATCF 6h windows) is genuinely a per-source concern; the shim shouldn't presume. Engine specialists in job-0033 land per-source quantization in their fetcher tools. Surfaced as OQ-32-QUANTIZATION-LOCATION.
+3. **`live-no-cache` returns `uri=None`/`hit=False`** without GCS traffic — correct. Zero network for FR-DC-6 enumerated tools; the registry stub is the only artifact for those calls.
+4. **`force_refresh: bool = False` parameter exposed for FR-DC-6 `cache=false` opt-in** — correct per the kickoff Open Question recommendation; documented in README.
+5. **`Cache-Control` as per-object metadata** (not bucket-level) — correct. Per-object visibility for diagnostics + bucket-level lifecycle handles the actual eviction.
+6. **Pass-through bodies as `NotImplementedError` stubs with DI hooks** — correct seam. Registry is in place, FR-DC-6 metadata is honored, real handles bind in later jobs via `set_mcp_client` / `set_worker_submitter`. Lets job-0033/0034 wire the real paths without re-touching job-0032 code.
+7. **`live-no-cache` vintage as literal `"live"`** — minor implementation choice; deterministic enough because the read short-circuits before key matters. Accepted.
+
+## Open Questions Resolved
+
+Filed for triage (none blocks closure):
+
+- **OQ-32-PASSTHROUGH-INTEGRATION** — `mongo_query` MCP async→sync adapter + `qgis_process` Cloud Run Jobs submitter are M4 follow-ups. Bodies raise `NotImplementedError` until `set_mcp_client(client)` / `set_worker_submitter(submitter)` are called by job-0033 / job-0034 wiring. Acceptable for the M4 substrate goal; the registry + metadata + routing path are in place.
+- **OQ-32-CACHE-KEY-LEN (TENTATIVE: keep 32 hex)** — 128-bit truncation. Increase only if production cache populates past ~10^15 entries (won't happen in v0.1).
+- **OQ-32-QUANTIZATION-LOCATION** — bbox/date quantization stays caller-side per-source. Confirm in job-0033 when the first real fetcher (`fetch_dem`) lands.
+- **OQ-32-LIVE-NO-CACHE-KEY-VINTAGE** — literal `"live"`. Cosmetic.
+- **OQ-32-KICKOFF-PATH-DRIFT (resolved)** — `services/agent/src/grace2_agent/` is the actual layout; future kickoffs should cite this path.
+- **OQ-32-FROZEN-SERVER-WS-NAME (resolved)** — `server.py` is the M1 module (not `ws.py`); future kickoffs should cite this name.
+- **OQ-32-REGISTER-WITH-ADK-API** — `register_with_adk(agent)` kept thin: iterates `TOOL_REGISTRY` and calls `agent.register_tool(...)`. If ADK's actual API differs at integration time (job-0033 wiring), surface a follow-up.
+
+## Follow-up Actions
+
+1. **Unblock Stage C** — job-0033 (engine: 4 data-fetch atomic tools — `fetch_dem`, `fetch_buildings`, `fetch_population`, `geocode_location`) + job-0034 (engine: 2 QGIS discovery atomic tools — `list_qgis_algorithms`, `describe_qgis_algorithm`) + job-0035 (agent: real `pipeline-state` + `session-state.loaded_layers` emission using job-0030 D.6 fields). All three are file-disjoint and run in parallel.
+2. **Wire the DI seams** — job-0033 binds `set_mcp_client` for `mongo_query`; job-0034 binds `set_worker_submitter` for `qgis_process`. Bundle the seam wiring with each pass-through's first real consumer.
+3. **Three SRS-prose follow-ups carry forward** for v0.3.16 housekeeping (OQ-W-26 TTL-literal naming + OQ-INFRA-31-FR-DC-1 bucket layout + OQ-INFRA-31-LIVE-NO-CACHE-LIFECYCLE-NOOP from Stage A + the path/name corrections from this audit).
+
+## Sign-off
+
+**Approved 2026-06-06 by Development Orchestrator.**
+
+All 10 acceptance criteria from the kickoff met with concrete evidence (24 tests green + live `--startup-only` CLI capture + commit stat showing only the allowed paths touched). Invariants 1, 8, 9 + FR-CE-8 + FR-DC-6 preserved. FROZEN paths (`server.py`, `mcp.py`, workers, contracts, infra, web, docs/srs, styles, reports/complete) untouched. The M4 substrate — tool registry + cache shim + pass-through scaffolding — is in place.
+
+Sprint-06 Stage B complete. Stage C is unblocked (3 parallel jobs); scaffolding next.
