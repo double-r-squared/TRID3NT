@@ -136,7 +136,29 @@ Repo is a git repository on branch `main`, root-commit `6fd37e6`. Remote: `https
 
 ## Next up
 
-**Sprint-06 OPENED 2026-06-06** — M4 (Agent tools + atomic-tool starter set). 7 jobs reserved 0030-0036. Stage A in flight: job-0030 (schema D.6 + AtomicToolMetadata), job-0031 (infra cache bucket + 4 lifecycle rules). Stage B job-0032 (agent tool registry + cache shim) gated on 0030+0031. Stage C 0033/0034/0035 (parallel: engine data-fetch tools / engine QGIS discovery / agent pipeline-state emission). Stage D job-0036 (M4 acceptance + Fort Myers demo). See `reports/sprints/sprint-06.md`.
+**Sprint-06 CLOSED 2026-06-06** — M4 (Agent tools + atomic-tool starter set) ACHIEVED. 7 jobs approved (0030 schema, 0031 infra, 0032 agent substrate, 0033 engine data-fetch, 0034 engine QGIS discovery, 0035 agent emitter, 0036 testing M4 acceptance). Live `fetch_dem` cache write verified on production GCS with `customTime` as datetime (OQ-33 hotfix verified end-to-end). Real agent emission replaces M3 dev-injection seam — closes OQ-T-28-SIM-WS-BOUNDARY definitively. 250 invocations green across 5 test tiers. 1 critical bug caught + hotfixed mid-sprint (OQ-33 cache customTime type). See `reports/sprints/sprint-06.md` Retrospective.
+
+**Sprint-07 (M5 — SFINCS engine v0) — PLANNING.** Proposed scope:
+
+1. **SFINCS solver container** (Dockerfile + Cloud Build push + Cloud Run Job + Cloud Workflows orchestration per FR-CE-1/2/3).
+2. **3 new fetcher atomic tools**: `fetch_landcover` (NLCD/ESA WorldCover, `static-30d`), `fetch_river_geometry` (NHDPlus HR, `static-30d`), `lookup_precip_return_period` (NOAA Atlas 14, `static-30d`).
+3. **HydroMT integration depth decision** — closes OQ-4.
+4. **`model_flood_scenario` workflow** (FR-TA-1) — composes `geocode + fetch_dem + fetch_landcover + fetch_river_geometry + lookup_precip_return_period + run_solver(SFINCS) + postprocess_flood`. Resolves OQ-36-QGIS-PROCESS-DEMO-CHAIN.
+5. **`run_solver` + `wait_for_completion` atomic tools** — long-running, progress-emitting (exercises the `update_progress` opt-in from job-0035).
+6. **AssessmentEnvelope return** (Appendix B.4 Flood subtype).
+7. **Mini infra/engine job (sprint-07 opening)**: provision Census API key in Secret Manager + thread key into `_fetch_acs_population_bytes` — closes OQ-36-CENSUS-API-KEY-REQUIRED so the original Fort Myers demo passes end-to-end.
+
+**Demo target:** "model the flood from Hurricane Ian on Fort Myers" → workflow chain → SFINCS run on Cloud Run → flood depth COG → rendered as a layer on the web client. ~10–20 min wall-clock per run.
+
+**Pre-flight (before sprint-07 opens):**
+- **OQ-4 HydroMT depth decision** (full reliance vs custom config builders) — needs orchestrator-direct authoring or a short research subagent on Sonnet.
+- **v0.3.16 SRS housekeeping pass** bundling carry-forwards (OQ-W-26 TTL-literal naming, OQ-INFRA-31-FR-DC-1 bucket layout, OQ-INFRA-31-LIVE-NO-CACHE-LIFECYCLE-NOOP, OQ-33-GEOCODED-LOCATION-CONTRACT-PROMOTION, OQ-35-WIRE-PAYLOAD-ERROR-FIELDS-VISIBILITY, OQ-36-CACHE-REGRESSION-FAKE-FIDELITY). Orchestrator-direct, single-pass.
+- **NFR-P-4** (15 min for ≤200km² at 30m) becomes load-bearing for the first real solver run.
+
+**Awaiting user input:**
+- **Sprint-06 close sign-off.** M4 substrate achieved; ready to open sprint-07.
+- **OQ-4 HydroMT depth decision direction** (or authorization to research first via Sonnet subagent).
+- **Sprint-07 scope (above) — go / tweak / hold.**
 
 **Sprint-05 CLOSED 2026-06-06** — M3 (Web client skeleton) achieved. 5 jobs approved (job-0025 basemap pivot + LayerPanel + App shell; job-0026 PipelineStrip + cancel button; job-0027 Playwright tooling + AFK loop; job-0028 M3 acceptance suite; mid-sprint job-0029 CORS fix). NFR-P-3 qualified at p50≈300ms / p95≈360ms (~7× margin under 2000ms target). Cross-browser visual smokes + cancel-chain end-to-end + Tier separation all verified live on deployed substrate. See `reports/sprints/sprint-05.md` Retrospective.
 

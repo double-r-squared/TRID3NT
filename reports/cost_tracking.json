@@ -50,10 +50,17 @@
       "description": "Landed PipelineEmitter with 6 transition methods + replace-not-reconcile (A.7) structurally enforced (no merge helper exists; test-guarded) + ErrorCodeRegistry + emit_tool_call wrapper; integrated into server.py tool-call site; captured 13-frame live WS transcript (4 session-state + 9 pipeline-state) demonstrating real agent emission; closes OQ-T-28-SIM-WS-BOUNDARY.",
       "model": "opus",
       "subagent_tokens": 225817
+    },
+    {
+      "job_id": "job-0036-testing-20260606",
+      "sprint": 6,
+      "description": "Landed M4 acceptance suite — Fort Myers demo driving real grace2-agent subprocess via /invoke directives, OQ-33 regression test using StrictCustomTimeBlob SDK-fidelity fake, M3 test_pipeline_strip rewritten to drive real agent emission (closes OQ-T-28-SIM-WS-BOUNDARY), make test-m4 opt-in target; demo PASS with 2 honest qualifications (fetch_population qualified at upstream API — Census now requires key; qgis_process legs qualified at M5 workflow composition); 247→250 invocations green; fetch_dem cache write verified live on production GCS with datetime customTime (OQ-33 hotfix end-to-end verified).",
+      "model": "opus",
+      "subagent_tokens": 261674
     }
   ],
   "totals_by_sprint": {
-    "6": 1003893
+    "6": 1265567
   },
   "historical_context": {
     "note": "Captured for accountability — NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",

@@ -1,8 +1,8 @@
 # Sprint 06: Agent tools + atomic-tool starter set (SRS v0.3 M4)
 
-**Status:** active (Stage D in flight — job-0036 ready-for-audit, orchestrator finalizes close)
+**Status:** closed
 **Opened:** 2026-06-06
-**Closed:** —
+**Closed:** 2026-06-06
 **SRS milestones covered:** M4 (Agent tool registry + 7 atomic tools enabling the "Fort Myers below 3m elevation" demo end-to-end against the live agent).
 
 ## Goal
@@ -17,13 +17,13 @@ M4 is strictly atomic-tool work plus the agent-side pipeline-state emission that
 
 | Job ID | Specialist | Task | Depends on | Status |
 |---|---|---|---|---|
-| job-0030-schema-20260606 | schema | Appendix D.6 `PipelineStepSummary` extension (`progress_percent`/`error_code`/`error_message`) + FR-DC TTL-class metadata field on FunctionTool registration; pydantic contract bump; JSON Schema re-export | — | planned |
-| job-0031-infra-20260606 | infra | Provision `gs://grace-2-hazard-prod-cache/` bucket via OpenTofu + 4 GCS Object Lifecycle Management rules per FR-DC-5 (one per TTL class) + IAM for agent-runtime SA | — | planned |
-| job-0032-agent-20260606 | agent | Tool registry skeleton (`services/agent/tools/__init__.py`); shared cache shim implementing FR-DC-3 read-through / write-on-miss / content-addressed keys; `mongo_query` + `qgis_process` registry pass-throughs | job-0030, job-0031 | planned |
-| job-0033-engine-20260606 | engine | 4 data-fetch atomic tools — `fetch_dem` (USGS 3DEP via py3dep, `static-30d`), `fetch_buildings` (MS Building Footprints FlatGeobuf, `static-30d`), `fetch_population` (WorldPop or US Census, `static-30d`), `geocode_location` (Nominatim/Mapbox, `dynamic-1h`) | job-0032 | planned |
-| job-0034-engine-20260606 | engine | 2 QGIS discovery atomic tools — `list_qgis_algorithms` + `describe_qgis_algorithm` wrapping `qgis_process list` / `qgis_process help` against the deployed PyQGIS worker (operational from sprint-04 job-0021) | job-0032 | planned |
-| job-0035-agent-20260606 | agent | Real `pipeline-state` + `session-state.loaded_layers` emission from the agent service using the D.6 fields from job-0030; closes OQ-T-28-SIM-WS-BOUNDARY (M3 tests rewrite to drive real agent emission) | job-0030 | planned |
-| job-0036-testing-20260606 | testing | M4 acceptance: end-to-end "Fort Myers below 3m" demo + per-tool cache hit/miss verification + dedup guarantee (FR-DC-4) + uncacheable enumeration (FR-DC-6) honored + full M1+M2+M3+M4 regression. Closes sprint-06. | job-0033, job-0034, job-0035 | ready-for-audit |
+| job-0030-schema-20260606 | schema | Appendix D.6 `PipelineStepSummary` extension (`progress_percent`/`error_code`/`error_message`) + FR-DC TTL-class metadata field on FunctionTool registration; pydantic contract bump; JSON Schema re-export | — | approved |
+| job-0031-infra-20260606 | infra | Provision `gs://grace-2-hazard-prod-cache/` bucket via OpenTofu + 4 GCS Object Lifecycle Management rules per FR-DC-5 (one per TTL class) + IAM for agent-runtime SA | — | approved |
+| job-0032-agent-20260606 | agent | Tool registry skeleton (`services/agent/tools/__init__.py`); shared cache shim implementing FR-DC-3 read-through / write-on-miss / content-addressed keys; `mongo_query` + `qgis_process` registry pass-throughs | job-0030, job-0031 | approved |
+| job-0033-engine-20260606 | engine | 4 data-fetch atomic tools — `fetch_dem` (USGS 3DEP via py3dep, `static-30d`), `fetch_buildings` (MS Building Footprints FlatGeobuf, `static-30d`), `fetch_population` (WorldPop or US Census, `static-30d`), `geocode_location` (Nominatim/Mapbox, `dynamic-1h`) | job-0032 | approved |
+| job-0034-engine-20260606 | engine | 2 QGIS discovery atomic tools — `list_qgis_algorithms` + `describe_qgis_algorithm` wrapping `qgis_process list` / `qgis_process help` against the deployed PyQGIS worker (operational from sprint-04 job-0021) | job-0032 | approved |
+| job-0035-agent-20260606 | agent | Real `pipeline-state` + `session-state.loaded_layers` emission from the agent service using the D.6 fields from job-0030; closes OQ-T-28-SIM-WS-BOUNDARY (M3 tests rewrite to drive real agent emission) | job-0030 | approved |
+| job-0036-testing-20260606 | testing | M4 acceptance: end-to-end "Fort Myers below 3m" demo + per-tool cache hit/miss verification + dedup guarantee (FR-DC-4) + uncacheable enumeration (FR-DC-6) honored + full M1+M2+M3+M4 regression. Closes sprint-06. | job-0033, job-0034, job-0035 | approved |
 
 ## Execution order
 
