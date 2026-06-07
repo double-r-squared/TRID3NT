@@ -134,12 +134,26 @@
       "description": "Mode 1 catalog schema substrate — CatalogEntry pydantic rewritten to §F.1.2 binding shape (id/name/description/urls/access_tier 1-4/credential_tier 1-3/ttl_class/source_class/license/citation/vintage/last_verified/status/how_to_use/api_key_secret_ref + model_validator credential consistency). D.11 catalog_entries + D.12 catalog_audit_log Mongo collections with FR-MP-5-aligned indexes (D.11/D.12 numbering vs kickoff's D.8/D.9 — live-verification of existing D.7-D.10 meta sections; OQ-45-D-NUMBERING). 4 envelopes registered in CLIENT_TO_AGENT_PAYLOADS/AGENT_TO_CLIENT_PAYLOADS routing dicts (payload classes themselves added by concurrent job-0048's scope creep — clean concurrent reconciliation). 11 new tests + 142/142 contracts green. 6 new JSON Schemas exported idempotently. SRS A + D extensions; make srs idempotent. 7 OQ-45-* surfaced. Commit 3c66ab2.",
       "model": "opus",
       "subagent_tokens": 215062
+    },
+    {
+      "job_id": "job-0052-engine-20260607",
+      "sprint": 8,
+      "description": "Mid-sprint hotfix #1: yaml.safe_load fix at sfincs_builder.py:692. M5 chain advances meaningfully (11.47s → 41.11s execution; HydroMT actually runs setup_grid_from_region + setup_dep DEM IDW on 96 cells + setup_mask_active). Next honest blocker: setup_manning_roughness rejects map_fn kwarg in hydromt-sfincs 1.2.x. Substrate-integrity guard worked — TypeError caught + typed as SFINCSSetupError per FR-FR-2 routing. +2 tests + 132/132 agent suite. Closes OQ-49-HYDROMT-BUILD-OPT-ARGUMENT-SHAPE; OQ-52 routed to job-0053. Commit 1b7bf88.",
+      "model": "opus",
+      "subagent_tokens": 109143
+    },
+    {
+      "job_id": "job-0046-research-20260607",
+      "sprint": 8,
+      "description": "Catalog seed research — public_data_source_catalog.yaml v0.1.0 with 30 vetted entries across all 8 domains (terrain 4, hydrology 5, weather/precip 4, buildings 4, population 3, landcover 3, fire 4, seismic 3). 21 distinct source_class values (finer than the 8 high-level domains; correct per FR-DC-1). **9 access-tier deviations from documentation caught via live probe** — NEXRAD bucket renamed Sep 2025, FEMA NFHL URL moved, USGS 3DEP subdomain change, USFS WHP ArcGIS 403 → Tier 4 FSRDA fallback, LANDFIRE WCS workspaces unconfirmed, WorldPop Tier 4 re-confirmed, MRMS subdomain change, FEMA NRI endpoint deferred to sprint-09, CO-OPS permanent redirect. 4 domain gaps disclosed honestly in footer (not padded). Sonnet routing validated: 142,889 tokens at 63% of sprint-7 Opus average; without live probe, catalog would have shipped with 9 stale URLs requiring sprint-09 hotfix cascades. Commit 3aa394e.",
+      "model": "sonnet",
+      "subagent_tokens": 142889
     }
   ],
   "totals_by_sprint": {
     "6": 1265567,
     "7": 1863284,
-    "8": 431693
+    "8": 683725
   },
   "historical_context": {
     "note": "Captured for accountability — NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
