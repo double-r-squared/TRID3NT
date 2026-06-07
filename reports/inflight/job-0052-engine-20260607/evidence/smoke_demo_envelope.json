@@ -1,0 +1,55 @@
+{
+  "demo": "Hurricane Ian / Fort Myers (M5 acceptance smoke)",
+  "elapsed_seconds": 41.107494689989835,
+  "envelope_id": "01KTHKTM62XMAJH9YFASV40F3P",
+  "envelope_type": "modeled",
+  "hazard_type": "flood",
+  "workflow_name": "model_flood_scenario",
+  "solver_run_ids": [],
+  "bbox": [
+    -81.9126085,
+    26.5476424,
+    -81.7511414,
+    26.689176
+  ],
+  "layer_count": 0,
+  "layer_uris": [],
+  "flood_solver_version": "failed:HYDROMT_BUILD_FAILED",
+  "flood_max_depth_m": 0.0,
+  "flood_grid_resolution_m": 30.0,
+  "forcing_type": "pluvial_synthetic",
+  "forcing_source": "NOAA Atlas 14 Volume 9 Version 2 \u2014 100-yr / 24-hr design storm",
+  "forcing_parameters": {
+    "precip_inches": 11.9,
+    "duration_hours": 24.0,
+    "return_period_years": 100,
+    "vintage_volume": "NOAA Atlas 14 Volume 9 Version 2",
+    "project_area": "Southeastern States"
+  },
+  "data_source_count": 5,
+  "data_sources": [
+    {
+      "name": "OpenStreetMap Nominatim",
+      "uri": "nominatim:relation/118879"
+    },
+    {
+      "name": "USGS 3DEP",
+      "uri": "gs://grace-2-hazard-prod-cache/cache/static-30d/dem/87ba00463af0275d02115f7463afe6e9.tif"
+    },
+    {
+      "name": "NLCD 2021 (MRLC WMS)",
+      "uri": "gs://grace-2-hazard-prod-cache/cache/static-30d/landcover/7dac3520db9a0f6092a434be438d02d9.tif"
+    },
+    {
+      "name": "NHDPlus HR (USGS)",
+      "uri": "gs://grace-2-hazard-prod-cache/cache/static-30d/river_geometry/4fa2fd4e5d2192020dc04d60502d6aaa.fgb"
+    },
+    {
+      "name": "NOAA Atlas 14 Volume 9 Version 2",
+      "uri": "noaa-atlas14-pfds"
+    }
+  ],
+  "outcome": "HONEST FAILURE",
+  "error_code": "HYDROMT_BUILD_FAILED",
+  "substrate_verification": "Chain ran end-to-end through fetcher cache + NLCD gate (PASS) + Atlas 14 forcing + landed at HYDROMT_BUILD_FAILED per OQ-42 PARTIAL-FAILURE-ENVELOPE-SHAPE. Acceptable M5 outcome per kickoff \u00a71."
+}

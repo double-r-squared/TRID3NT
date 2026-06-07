@@ -62,6 +62,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from grace2_contracts import new_ulid
 from grace2_contracts.execution import LayerURI, ModelSetup
 
@@ -686,10 +688,19 @@ def build_sfincs_model(
         )
         yaml_path.write_text(yaml_text, encoding="utf-8")
         try:
+            # OQ-49 hotfix (job-0052): hydromt-sfincs 1.2.x expects ``opt`` as a
+            # parsed ``Dict[str, Dict[str, Any]]`` (step-name → step-kwargs), NOT
+            # a raw YAML text string. Passing the unparsed string raises
+            # ``'str' object has no attribute 'keys'`` deep inside HydroMT's
+            # ``_parse_steps``. Parse with ``yaml.safe_load`` here so the dict
+            # the v1.x API documents is what reaches ``SfincsModel.build``.
+            # Malformed YAML at this seam surfaces as ``HYDROMT_BUILD_FAILED``
+            # via the broad except below (FR-FR-2 substrate-integrity routing).
+            opt_dict = yaml.safe_load(yaml_text)
             model = SfincsModel(root=str(tmp / "deck"), mode="w")
             # ``SfincsModel.build`` is the v1.x entrypoint; v2 RC changes to
             # component-based, hence the OQ-4 §4 pin to < 2.0.
-            model.build(opt=yaml_text)
+            model.build(opt=opt_dict)
             model.write()
         except SFINCSSetupError:
             raise

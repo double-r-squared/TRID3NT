@@ -629,3 +629,182 @@ async def test_workflow_cancellation_propagates() -> None:
             await model_flood_scenario(
                 bbox=(-81.92, 26.55, -81.80, 26.68),
             )
+
+
+# --------------------------------------------------------------------------- #
+# Test 12 — OQ-49 hotfix (job-0052): SfincsModel.build receives a parsed dict,
+# NOT the raw YAML text blob. This is the regression guard for the
+# ``'str' object has no attribute 'keys'`` failure surfaced by job-0049's
+# M5 smoke run against hydromt-sfincs 1.2.2.
+# --------------------------------------------------------------------------- #
+
+
+def test_build_sfincs_model_passes_parsed_dict_to_hydromt_build(
+    tmp_path: Path,
+) -> None:
+    """``model.build(opt=...)`` must receive a Dict[str, Dict], not a YAML string.
+
+    hydromt-sfincs 1.2.x's ``SfincsModel.build`` parses ``opt`` by calling
+    ``.keys()`` on every step value, so a raw YAML text blob raises
+    ``'str' object has no attribute 'keys'`` deep inside ``_parse_steps``.
+    The OQ-49 fix is ``yaml.safe_load(yaml_text)`` before passing — this test
+    asserts the corrected path: ``model.build`` is called exactly once with
+    ``opt`` shaped as a parsed mapping carrying the expected top-level step
+    keys (``setup_config``, ``setup_grid_from_region``, ...).
+    """
+    # Subset Manning's CSV the gate will accept against fetched_classes={11, 41}.
+    mapping_path = tmp_path / "manning.csv"
+    mapping_path.write_text(
+        "nlcd_class,manning_n,description\n"
+        "11,0.025,Open Water\n"
+        "41,0.150,Deciduous Forest\n",
+        encoding="utf-8",
+    )
+
+    captured: dict[str, Any] = {}
+
+    class _FakeSfincsModel:
+        def __init__(self, root: str, mode: str) -> None:  # noqa: D401
+            captured["root"] = root
+            captured["mode"] = mode
+
+        def build(self, opt: Any) -> None:  # noqa: D401
+            captured["opt"] = opt
+            captured["opt_type"] = type(opt).__name__
+
+        def write(self) -> None:  # noqa: D401
+            captured["write_called"] = True
+
+    fake_module = MagicMock()
+    fake_module.SfincsModel = _FakeSfincsModel
+
+    forcing = ForcingSpec(
+        forcing_type="pluvial_synthetic",
+        precip_inches=11.9,
+        duration_hours=24.0,
+        return_period_years=100,
+        provenance={"source": "noaa-atlas14"},
+    )
+
+    with (
+        patch.dict(
+            "sys.modules",
+            {"hydromt_sfincs": fake_module},
+        ),
+        patch(
+            "grace2_agent.workflows.sfincs_builder._extract_unique_nlcd_classes",
+            return_value={11, 41},
+        ),
+        # fsspec upload is best-effort — let it fail and fall back to file://.
+        patch.dict(
+            "sys.modules",
+            {"fsspec": MagicMock(filesystem=MagicMock(side_effect=RuntimeError("no gcs in test")))},
+            clear=False,
+        ),
+    ):
+        setup = build_sfincs_model(
+            dem_uri="gs://test/dem.tif",
+            landcover_uri="gs://test/landcover.tif",
+            river_geometry_uri=None,
+            forcing=forcing,
+            bbox=(-81.92, 26.55, -81.80, 26.68),
+            options=BuildOptions(grid_resolution_m=30.0, simulation_hours=24.0),
+            nlcd_vintage_year=2021,
+            manning_mapping_csv=mapping_path,
+        )
+
+    # The fix: opt is a parsed dict (not the YAML string) — the type that
+    # hydromt-sfincs 1.2.x ``_parse_steps`` actually accepts.
+    assert "opt" in captured, "model.build was not called"
+    assert captured["opt_type"] == "dict", (
+        f"OQ-49 regression: model.build received {captured['opt_type']!r} "
+        f"(expected 'dict'); raw YAML string would re-trigger "
+        f"'str' object has no attribute 'keys' inside hydromt-sfincs 1.2.x."
+    )
+    opt = captured["opt"]
+    assert isinstance(opt, dict)
+    # The parsed step keys our YAML config emits; nested values are dicts too.
+    assert len(opt) > 0, "parsed opt dict is empty — YAML config generation broke"
+    for step_name, step_kwargs in opt.items():
+        assert isinstance(step_name, str)
+        # hydromt-sfincs calls .keys() on every step value — must be a mapping.
+        assert hasattr(step_kwargs, "keys"), (
+            f"step {step_name!r} value is not a mapping; this is exactly the "
+            f"'str' object has no attribute 'keys' shape that OQ-49 hit."
+        )
+    assert captured.get("write_called") is True
+    assert setup.solver == "sfincs"
+
+
+# --------------------------------------------------------------------------- #
+# Test 13 — OQ-49 hotfix: malformed YAML surfaces as typed HYDROMT_BUILD_FAILED
+# (FR-FR-2 substrate-integrity routing). yaml.safe_load is the seam where a
+# bad config raises; the broad except wraps it into a SFINCSSetupError carrying
+# the underlying message — never an uncaught crash.
+# --------------------------------------------------------------------------- #
+
+
+def test_build_sfincs_model_malformed_yaml_surfaces_typed_error(
+    tmp_path: Path,
+) -> None:
+    """Malformed YAML from the config generator → HYDROMT_BUILD_FAILED."""
+    mapping_path = tmp_path / "manning.csv"
+    mapping_path.write_text(
+        "nlcd_class,manning_n,description\n"
+        "11,0.025,Open Water\n"
+        "41,0.150,Deciduous Forest\n",
+        encoding="utf-8",
+    )
+
+    # Patch the YAML generator to emit a string yaml.safe_load cannot parse.
+    # The fake hydromt_sfincs module should never be reached (the parse fails
+    # before model.build is invoked).
+    fake_module = MagicMock()
+    fake_module.SfincsModel = MagicMock(
+        side_effect=AssertionError("SfincsModel must NOT be constructed on parse failure")
+    )
+
+    forcing = ForcingSpec(
+        forcing_type="pluvial_synthetic",
+        precip_inches=11.9,
+        duration_hours=24.0,
+        return_period_years=100,
+        provenance={"source": "noaa-atlas14"},
+    )
+
+    malformed_yaml = "this: is: not: valid: yaml: ::: ["
+
+    with (
+        patch.dict("sys.modules", {"hydromt_sfincs": fake_module}, clear=False),
+        patch(
+            "grace2_agent.workflows.sfincs_builder._extract_unique_nlcd_classes",
+            return_value={11, 41},
+        ),
+        patch(
+            "grace2_agent.workflows.sfincs_builder._generate_hydromt_yaml_config",
+            return_value=malformed_yaml,
+        ),
+    ):
+        with pytest.raises(SFINCSSetupError) as excinfo:
+            build_sfincs_model(
+                dem_uri="gs://test/dem.tif",
+                landcover_uri="gs://test/landcover.tif",
+                river_geometry_uri=None,
+                forcing=forcing,
+                bbox=(-81.92, 26.55, -81.80, 26.68),
+                options=BuildOptions(grid_resolution_m=30.0, simulation_hours=24.0),
+                nlcd_vintage_year=2021,
+                manning_mapping_csv=mapping_path,
+            )
+
+    err = excinfo.value
+    assert err.error_code == "HYDROMT_BUILD_FAILED", (
+        f"malformed YAML must surface as HYDROMT_BUILD_FAILED for FR-FR-2 "
+        f"substrate-integrity routing; got {err.error_code!r}"
+    )
+    # Provenance: the wrapped error carries the bbox + URIs so the failed
+    # envelope's pipeline strip can render a meaningful failure.
+    assert err.details["bbox"] == [-81.92, 26.55, -81.80, 26.68]
+    assert err.details["dem_uri"] == "gs://test/dem.tif"
+    assert err.details["landcover_uri"] == "gs://test/landcover.tif"
+    assert "underlying" in err.details
