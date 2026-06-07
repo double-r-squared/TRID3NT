@@ -1,6 +1,6 @@
 # Audit: Appendix D.6 PipelineStepSummary fields + FR-DC TTL-class metadata on FunctionTool registration
 
-**Job ID:** job-0030-schema-20260606, **Sprint:** sprint-06, **Auditor:** Development Orchestrator, **Status:** assigned
+**Job ID:** job-0030-schema-20260606, **Sprint:** sprint-06, **Auditor:** Development Orchestrator, **Status:** approved
 
 ## Task Assignment
 
@@ -93,3 +93,66 @@ Linux Debian dev host. `grace2-contracts` editable-installed in the test venv at
 - [ ] Pydantic model placement decision (`agent.py` vs new `tool_registry.py`) surfaced as a Decision Made in the report with rationale.
 
 Surface contestable choices as Open Questions with TENTATIVE tags — at minimum: pydantic model placement for `AtomicToolMetadata`, whether `progress_percent` should be `Decimal` instead of `int` for finer-grained tracking, whether to add a `progress_total` companion field, whether `error_code` should be a closed `Literal` registry vs the current open-set discipline, the per-tool default for tools that genuinely could be either `static-30d` or `dynamic-1h` (e.g., earthquake catalog).
+
+## Assessment
+
+**Verdict:** approved.
+
+`PipelineStepSummary` correctly gains the three optional fields with proper pydantic validators: `progress_percent: int | None` with `Field(ge=0, le=100)`, `error_code: str | None` regex-validated against the A.6 SCREAMING_SNAKE_CASE convention, `error_message: str | None` with `max_length=512`. Defaults are `None` so existing consumers don't break. The web client's job-0026 mirror already carries the same optional shape — no client-side change needed; tightening to required-when-state-X is correctly surfaced as a follow-up rather than landed eagerly.
+
+`AtomicToolMetadata` lands in a new `tool_registry.py` module — clean placement decision. The cross-field `model_validator` enforces FR-DC-6 consistency: `cacheable=True` requires non-`live-no-cache` TTL + a `source_class`; `cacheable=False` requires `live-no-cache` and may omit `source_class`. Misconfigured tools fail-fast at import per FR-CE-8 — the registration-time validation discipline the kickoff demanded.
+
+JSON Schema export is idempotent (verified `diff -qr` between two runs); two new schemas land standalone (`pipeline_step_summary.json`, `atomic_tool_metadata.json`) plus `session_document.json` updated in place. Test suite went from 91 to **131 green in 0.39s** (+40 net) covering field-validator behavior, regex bounds, and the model_validator cross-field rules.
+
+Appendix D.6 prose updated with both the three new fields and the new model; `make srs` regenerates `docs/SRS_v0.3.md` (2911 → 3045 at v0.3.15 → 3058 at this delta, +13 lines matching the prose addition). Idempotent: re-running `make srs` is a no-op.
+
+One TTL-literal mismatch surfaced honestly: §3.9 FR-DC-2 prose uses `"none"` as the encoded form of the live-no-cache TTL class, while the pydantic `Literal` uses `"live-no-cache"` verbatim. The specialist chose the verbatim form (matches Decision O's authoritative class-name list in §2.1) and surfaced the prose mismatch as an Open Question proposing a v0.3.16 SRS-prose alignment. Right call — the SRS prose drifts to the contract, not the other way around.
+
+Path note from the specialist: the kickoff cited `_export.py` but the actual export module is `export_schemas.py`. Caught and corrected without backtracking. The kickoff is updated to cite the right module via this audit-side reference, no kickoff edit needed.
+
+## Invariant Check
+
+- **Invariant 1 (Determinism boundary):** preserved. `progress_percent` is an int from workflow logic (chunk-N-of-M attribution), not an LLM estimate. `error_code` values are workflow-registered SCREAMING_SNAKE_CASE strings, not LLM-narrated free text. No banned cost/duration-estimate vocabulary anywhere in the new fields.
+- **Invariant 9 (Confirmation before consequence — no cost theater):** preserved. Grep across `packages/contracts/src/grace2_contracts/{collections,tool_registry}.py` for `cost` / `dollar` / `usd` / `eta` / `estimate` returns zero hits in the new code.
+- **Schema Consumer Pushback discipline:** this job IS the schema-side resolution of the web client's OQ-W-26 push from sprint-05 job-0026. Properly cited in the report as the resolution rationale.
+
+## Dependency Check
+
+- **job-0013-schema-20260605** (contracts package + JSON Schema export pipeline) — extended cleanly. No churn to the auto-discovery machinery; the new model auto-discovers per the v0.1.0 pattern.
+- **job-0026-web-20260606 OQ-W-26-PIPELINE-STEP-FIELDS** — resolved. Web client's optional fields are now canonical.
+- **v0.3.15 SRS amendment** (commit `e435d8a`) — §3.9 FR-DC-2 TTL class names map exactly to the `Literal` values used in `AtomicToolMetadata`.
+
+## Decisions Validated
+
+All three decisions reviewed and accepted:
+
+1. **`AtomicToolMetadata` in new `tool_registry.py` module** — correct. Keeps tool-registration metadata separate from agent-service shapes in `agent.py`. Module-name choice (`tool_registry.py` over `tool_metadata.py`) matches FR-TA-3's "registry" framing. Accepted.
+2. **`error_code` stays open shape-validated, NOT closed `Literal`** — correct per Decision G (open-enum discipline) + Appendix A.6 explicit "the error code list will grow". Closed `Literal` would force a schema bump on every new error code. The regex enforces the SCREAMING_SNAKE_CASE shape, which is what A.6 actually mandates. Accepted.
+3. **`progress_percent` stays `int` (not `Decimal`/`float`)** — correct. 1% granularity is appropriate for UI progress display; sub-percent precision is overkill and invites the cost-theater pattern of false precision. Accepted.
+
+## Open Questions Resolved
+
+Closed:
+- **OQ-W-26-PIPELINE-STEP-FIELDS** (from job-0026) — resolved by this job. The three D.6 fields are now canonical. Web client mirror unchanged (already had the optional shape). M4 agent emission (job-0035) can populate the fields against the canonical D.6 schema.
+
+Filed for triage (none blocks closure):
+- **TTL-literal naming mismatch (`"none"` in §3.9 prose vs `"live-no-cache"` in the pydantic Literal)** — schema-pushback for v0.3.16. SRS prose should align to the canonical contract value, not the other way around. **Routing: schema (with orchestrator landing the v0.3.16 prose fix).** Non-blocking for M4.
+- **`error_code` closed-Literal migration at M6** — TENTATIVE follow-up; revisit when error-code registry stabilizes.
+- **`progress_percent` precision (`int` vs `Decimal`)** — accepted as int. Revisit only if a workflow surfaces a real need.
+- **`progress_total` companion field deferral** — accepted as deferred; `progress_percent` is sufficient until a multi-stage workflow demonstrates need.
+- **Required-when tightening** for the three new fields (e.g., `error_code` required when `state == "failed"`) — accepted as deferred. The current open-state shape works for M4; tightening can ride along with the M5/M6 error-handling pass.
+- **Dual-class TTL override policy (`dynamic_ttl_keys` extension proposal)** — TENTATIVE forward look. The current FR-DC-2 per-call response-metadata override mechanism is sufficient for M4; a structured `dynamic_ttl_keys` extension can land if an atomic tool surfaces a real need for declaratively dual-class behavior.
+
+## Follow-up Actions
+
+1. **v0.3.16 SRS prose alignment** — update §3.9 FR-DC-2 to use the canonical `"live-no-cache"` Literal value rather than the `"none"` encoding. Single-line prose edit; bundle with any other small v0.3.16 amendments. Tag for the next SRS-housekeeping pass.
+2. **Closed OQ-W-26** — remove from the outstanding amendment pile in PROJECT_STATE.
+3. **Unblock job-0032** (agent tool registry + cache shim) — job-0030 is now approved; job-0031 (infra cache bucket) remains in flight as the other gate.
+
+## Sign-off
+
+**Approved 2026-06-06 by Development Orchestrator.**
+
+All 8 acceptance criteria from the kickoff met with concrete evidence (test count + idempotence diff + grep counts + make srs roundtrip). Invariants 1 + 9 preserved. Schema Consumer Pushback discipline honored: web-client-surfaced OQ-W-26 now lands as canonical Appendix D.6 schema. FROZEN paths untouched (git show confirms only `packages/contracts/`, `docs/srs/D-mongodb-collection-schemas.md`, regenerated `docs/SRS_v0.3.md`, and the inflight report dir were modified). Test suite expanded from 91 to 131 green (+40) — the M4 schema substrate is in place.
+
+Sprint-06 Stage A one of two complete. Stage B (job-0032 agent tool registry + cache shim) gated on job-0031 (infra cache bucket) which remains in flight.
