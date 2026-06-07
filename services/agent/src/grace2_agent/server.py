@@ -52,6 +52,8 @@ from grace2_contracts.ws import (
     UserMessagePayload,
 )
 
+from .main import MAX_TURNS_PER_SESSION
+
 from .adapter import GeminiSettings, build_client, load_settings, stream_reply
 from .pipeline_emitter import PipelineEmitter
 from .tools import TOOL_REGISTRY
@@ -83,6 +85,12 @@ class SessionState:
     current_pipeline_steps: list[PipelineStep] = field(default_factory=list)
     inflight_task: asyncio.Task | None = None
     emitter: PipelineEmitter | None = None
+    # FR-FR-3 (job-0048): per-session turn counter.  Increments on every
+    # user-message dispatch (Gemini stream or /invoke directive). When
+    # turn_count > MAX_TURNS_PER_SESSION the agent refuses further dispatch
+    # and emits a ``session-state(status="max_turns_reached")`` envelope.
+    # New WebSocket connection → new SessionState → fresh counter at 0.
+    turn_count: int = 0
 
 
 def _new_envelope(message_type: str, session_id: str, payload: Any) -> str:
@@ -101,6 +109,62 @@ async def _send_error(
 ) -> None:
     payload = ErrorPayload(error_code=code, message=message, retryable=retryable)
     await websocket.send(_new_envelope("error", session_id, payload))
+
+
+async def _handle_max_turns_reached(
+    websocket: ServerConnection, state: SessionState
+) -> None:
+    """FR-FR-3 (job-0048): emit the cap-hit envelope sequence.
+
+    1. Emit ``session-state`` with ``status="max_turns_reached"`` so the
+       client knows the session is at its turn limit.
+    2. Send a closing ``agent-message-chunk`` summarising what's been done
+       and directing the user to start a new session.
+
+    Called instead of the normal dispatch when ``state.turn_count`` exceeds
+    ``MAX_TURNS_PER_SESSION``. No tool calls are dispatched.
+    """
+    _ensure_emitter(websocket, state)
+    # Re-emit session-state with the cap status so the client can render a
+    # "session full" indicator.
+    closing_payload = SessionStatePayload(
+        chat_history=state.chat_history,
+        status="max_turns_reached",
+    )
+    await websocket.send(
+        _new_envelope("session-state", state.session_id, closing_payload)
+    )
+    # Send a closing agent-message-chunk so the user sees a human-readable
+    # explanation in the chat panel.
+    message_id = new_ulid()
+    closing_text = (
+        "This session has reached its turn limit "
+        f"({MAX_TURNS_PER_SESSION} turns). "
+        "No further tool calls will be dispatched. "
+        "Start a new session to continue working."
+    )
+    await websocket.send(
+        _new_envelope(
+            "agent-message-chunk",
+            state.session_id,
+            AgentMessageChunkPayload(
+                message_id=message_id, delta=closing_text, done=False
+            ),
+        )
+    )
+    await websocket.send(
+        _new_envelope(
+            "agent-message-chunk",
+            state.session_id,
+            AgentMessageChunkPayload(message_id=message_id, delta="", done=True),
+        )
+    )
+    logger.info(
+        "max-turns-reached session=%s turn_count=%d limit=%d",
+        state.session_id,
+        state.turn_count,
+        MAX_TURNS_PER_SESSION,
+    )
 
 
 async def _stream_gemini_reply(
@@ -375,6 +439,19 @@ def _make_handler(settings: GeminiSettings):
 
                     elif msg_type == "user-message":
                         um = UserMessagePayload.model_validate(payload_dict)
+                        # FR-FR-3 (job-0048): check the turn cap BEFORE
+                        # dispatching. Increment first so "26th turn" fires
+                        # on turn_count == MAX_TURNS_PER_SESSION + 1 (i.e.
+                        # the (MAX+1)th call). Sessions that have already hit
+                        # the cap continue to be refused on every subsequent
+                        # user-message with the same cap-hit envelope.
+                        state.turn_count += 1
+                        if (
+                            MAX_TURNS_PER_SESSION > 0
+                            and state.turn_count > MAX_TURNS_PER_SESSION
+                        ):
+                            await _handle_max_turns_reached(websocket, state)
+                            continue
                         # Cancel any in-flight generation for this session
                         # before starting a new one (simple M1 policy).
                         if state.inflight_task and not state.inflight_task.done():

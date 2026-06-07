@@ -59,6 +59,7 @@ __all__ = [
     "PipelineStatePayload",
     "MapCommandPayload",
     "ConfirmationRequestPayload",
+    "SessionStateStatus",
     "SessionStatePayload",
     "ErrorPayload",
     "LocationResolvedPayload",
@@ -69,6 +70,17 @@ __all__ = [
     "DisambiguationRequestPayload",
     "ClarificationOption",
     "ClarificationRequestPayload",
+    # agent -> client (sprint-08 forward-looking) — FR-FR-1 + §F.1.2 Mode 2
+    "RecoveryChoiceOption",
+    "RecoveryChoicePayload",
+    "ProbeFindings",
+    "SuggestedCatalogEntry",
+    "OfferCatalogAdditionPayload",
+    # client -> agent (sprint-08 forward-looking) — FR-FR-1 + §F.1.2 Mode 2
+    "RecoveryChoice",
+    "RecoveryChoiceResponsePayload",
+    "CatalogAdditionDecision",
+    "CatalogAdditionResponsePayload",
     # map-command args (A.4)
     "LoadLayerArgs",
     "RemoveLayerArgs",
@@ -437,6 +449,17 @@ class ConfirmationRequestPayload(GraceModel):
     default_timeout_seconds: int = 60
 
 
+SessionStateStatus = Literal["active", "max_turns_reached"]
+"""Status of the session at the moment a ``session-state`` envelope is sent.
+
+- ``active``: normal operation (default).
+- ``max_turns_reached``: the agent has hit ``MAX_TURNS_PER_SESSION`` (FR-FR-3).
+  No further tool calls will be dispatched; the user must start a new session.
+
+Added by job-0048 (sprint-08, FR-FR-3).
+"""
+
+
 class SessionStatePayload(GraceModel):
     """``session-state`` (A.4): lets the client reconstruct the session.
 
@@ -445,6 +468,10 @@ class SessionStatePayload(GraceModel):
     ``MapView``). They are carried as plain ``dict``/``list`` here to avoid a
     circular contract dependency between ws.py and collections.py; the agent
     serializes the real D.6 models into them. See report OQ-S4.
+
+    ``status`` is ``"active"`` in normal operation; ``"max_turns_reached"``
+    when the FR-FR-3 cap fires (job-0048). Defaults to ``"active"`` so
+    existing consumers do not need to change.
     """
 
     MESSAGE_TYPE: ClassVar[str] = "session-state"
@@ -454,6 +481,7 @@ class SessionStatePayload(GraceModel):
     pipeline_history: list[dict] = Field(default_factory=list)
     current_pipeline: dict | None = None
     map_view: dict | None = None
+    status: SessionStateStatus = "active"  # FR-FR-3 / job-0048
 
 
 class ErrorPayload(GraceModel):
@@ -563,6 +591,251 @@ class ClarificationRequestPayload(GraceModel):
     question: str
     options: list[ClarificationOption] = Field(min_length=2, max_length=4)
     default_timeout_seconds: int = 60
+
+
+# =========================================================================== #
+# recovery-choice + recovery-choice-response (sprint-08 — FR-FR-1 substrate)
+# =========================================================================== #
+# Forward-looking — §3.10 FR-FR-1 deny/retry/chat recovery gate. The web-client
+# implementation follows the existing `request_clarification` modal pattern; the
+# response carries the user's selection (`deny` | `retry` | `chat`) and, when
+# `choice == "chat"`, the focused free-text the user typed to nudge the agent.
+#
+# Routing per FR-FR-2: only emitted for "recoverable" error classes (transient
+# upstream, recoverable-with-context). Substrate-integrity / user-initiated /
+# budget-overrun error codes fail closed without gating.
+
+
+#: The three actions a recovery-choice modal can return (FR-FR-1).
+RecoveryChoiceOption = Literal["deny", "retry", "chat"]
+
+
+class RecoveryChoicePayload(GraceModel):
+    """``recovery-choice`` (A.4 — sprint-08 amendment, FR-FR-1).
+
+    Agent emits this when an atomic-tool step fails with a *recoverable*
+    error class (FR-FR-2 routing table). The web client renders a small
+    out-of-chat modal (mirrors the §F.3 popup discipline) offering the user
+    deny / retry / chat actions.
+
+    Fields:
+
+    - ``request_id`` — ULID identifying the gate; the response carries it back.
+    - ``failed_step_id`` — the ULID of the pipeline step the gate is about.
+      The client surfaces this so the user knows which step is being decided.
+    - ``error_code`` — Appendix A.6 SCREAMING_SNAKE_CASE code that the failed
+      step's PipelineStepSummary carried. Open set (regex-validated shape).
+    - ``error_message`` — short human-readable explanation (e.g. ``"USGS 3DEP
+      returned HTTP 503 — service unavailable"``). Capped at 512 chars to
+      mirror the PipelineStepSummary discipline.
+    - ``context`` — short free-text describing what the agent was doing when
+      the step failed (e.g. ``"fetching DEM at Fort Myers bbox for flood
+      scenario"``). Helps the user pick the right action.
+    - ``options`` — non-empty subset of {``"deny"``, ``"retry"``, ``"chat"``}.
+      The routing table per FR-FR-2 may narrow this (e.g. omit ``"retry"`` for
+      ``GEOCODE_NO_MATCH`` where retry is futile). The client renders one
+      button per option.
+    - ``ttl_seconds`` — gate validity (seconds since envelope ``ts``); on
+      expiry the gate becomes a typed failure (``CONFIRMATION_TIMEOUT``-style
+      error from the agent). Default 300s per the SRS example.
+
+    No cost field anywhere (Invariant 9).
+    """
+
+    MESSAGE_TYPE: ClassVar[str] = "recovery-choice"
+
+    request_id: ULIDStr
+    failed_step_id: ULIDStr
+    error_code: str  # SCREAMING_SNAKE_CASE per A.6 (open set)
+    error_message: str = Field(max_length=512)
+    context: str = Field(max_length=512)
+    options: list[RecoveryChoiceOption] = Field(min_length=1, max_length=3)
+    ttl_seconds: int = Field(default=300, ge=1)
+
+
+#: The user's selection from a ``recovery-choice`` modal.
+RecoveryChoice = Literal["deny", "retry", "chat"]
+
+
+class RecoveryChoiceResponsePayload(GraceModel):
+    """``recovery-choice-response`` (A.4b — sprint-08 amendment, FR-FR-1).
+
+    User has picked one of the three actions OR cancelled the gate.
+
+    Fields:
+
+    - ``request_id`` — matches the originating ``recovery-choice`` request.
+    - ``choice`` — ``"deny"`` / ``"retry"`` / ``"chat"`` OR None when the user
+      cancelled. (Cancellation rare; modeled the same way as the existing
+      ``clarification-response`` / ``disambiguation-response`` shapes.)
+    - ``chat_text`` — populated only when ``choice == "chat"``; carries the
+      focused single-line nudge the user typed. Capped at 4096 chars.
+    - ``cancelled`` — set to True when the user explicitly dismissed the modal.
+
+    Cross-shape discipline (lightweight — full enforcement is the consumer's
+    responsibility, matching the existing A.4b response shapes): ``chat_text``
+    SHOULD be populated when ``choice == "chat"`` and SHOULD be None
+    otherwise; the agent service validates at receipt time per FR-AS-11.
+    """
+
+    MESSAGE_TYPE: ClassVar[str] = "recovery-choice-response"
+
+    request_id: ULIDStr
+    choice: RecoveryChoice | None = None
+    chat_text: str | None = Field(default=None, max_length=4096)
+    cancelled: bool = False
+
+
+# =========================================================================== #
+# offer-catalog-addition + catalog-addition-response (sprint-08 — §F.1.2 Mode 2)
+# =========================================================================== #
+# Forward-looking — §F.1.2 Mode 2 bounded-growth-path. Agent encounters a
+# candidate `.gov` / `.edu` URL during research, performs a conformity probe,
+# and surfaces a review modal with the probe findings + a suggested catalog
+# entry shape. User accepts (-> writes to catalog_entries with status
+# `user_proposed_pending_curator_review`), rejects, or edits the suggested
+# entry before accepting.
+#
+# Note: the suggested-entry shape carried in `payload.suggested_catalog_entry`
+# is a `CatalogEntry`-shaped dict (per the SRS §F.1.2 Mode 2 envelope example),
+# NOT a fully-validated nested `CatalogEntry` model. We model it as a
+# permissive sub-model below so the wire shape is documented + introspectable,
+# while keeping the field tolerant of the case where the probe-time draft
+# doesn't yet carry a Secret Manager reference. The agent service round-trips
+# this through the full `CatalogEntry` model before writing to MongoDB.
+
+
+class ProbeFindings(GraceModel):
+    """Conformity-probe results captured by the agent during Mode 2 discovery.
+
+    All fields are optional because a given probe may not be able to determine
+    every axis (the OGC GetCapabilities check may fail while the STAC root
+    check succeeds, etc.). The client renders findings as a structured table
+    in the review modal so the user can sanity-check the agent's classification.
+    """
+
+    tls_cert_org: str | None = None  # e.g., "U.S. Department of …"
+    access_tier_inferred: Literal[1, 2, 3, 4] | None = None  # §F.1.1 tier
+    supports_range_requests: bool | None = None
+    stac_root_found: bool | None = None
+    ogc_capabilities_found: bool | None = None
+    license_observed: str | None = None
+    content_type: str | None = None
+    last_modified_header: str | None = None
+
+
+class SuggestedCatalogEntry(GraceModel):
+    """Agent-drafted catalog entry surfaced inside an ``offer-catalog-addition``.
+
+    Permissive shape: the agent supplies the fields it can infer from the
+    conformity probe; the user may edit any of them in the review modal before
+    accepting. The agent service round-trips an accepted draft through the
+    full ``CatalogEntry`` model (which enforces cross-field rules) before
+    writing to the ``catalog_entries`` collection.
+
+    Mirrors the SRS §F.1.2 Mode 2 envelope example fields:
+    ``id`` / ``name`` / ``description`` / ``urls`` / ``access_tier`` /
+    ``credential_tier`` / ``ttl_class`` / ``source_class`` / ``license_claim``
+    / ``how_to_use``. Probe-time drafts may omit ``description``, ``vintage``,
+    or the conditional ``api_key_secret_ref``; the curator review fills any
+    gaps before flipping ``status`` to ``"active"``.
+
+    Renamed from the SRS sketch: ``license_claim`` here (the SRS prose uses
+    ``license`` inside the suggested-entry block but the outer ``CatalogEntry``
+    also uses ``license``; the ``_claim`` suffix marks that this is the probe's
+    *observation*, not the curator-attested value). Surfaced in Open Questions.
+    """
+
+    id: str | None = None
+    name: str | None = None
+    description: str | None = None
+    urls: list[str] = Field(default_factory=list)
+    access_tier: Literal[1, 2, 3, 4] | None = None
+    credential_tier: Literal[1, 2, 3] | None = None
+    ttl_class: Literal["static-30d", "semi-static-7d", "dynamic-1h", "live-no-cache"] | None = None
+    source_class: str | None = None
+    license_claim: str | None = None
+    how_to_use: str | None = None
+
+
+class OfferCatalogAdditionPayload(GraceModel):
+    """``offer-catalog-addition`` (A.4 — sprint-08 amendment, §F.1.2 Mode 2).
+
+    Agent encountered a candidate `.gov` / `.edu` URL during research, ran a
+    conformity probe, and is offering to add it to the catalog. The web client
+    renders a dedicated review modal (mirrors §F.3 secret-form pattern — popup,
+    focus-trapped, separate from chat envelope) showing the URL + probe
+    findings + the suggested catalog entry.
+
+    Fields:
+
+    - ``request_id`` — ULID identifying the offer; the response carries it back.
+    - ``url`` — the candidate URL (must be `.gov` or `.edu` per Mode 2 trust
+      model; the agent service enforces this before emission).
+    - ``discovered_via`` — how the agent encountered the URL (``"user-query"``
+      / ``"web-research"`` / ``"catalog-cross-reference"`` / ``"other"``).
+      Open ``Literal`` so new discovery surfaces can be added without a
+      breaking schema change.
+    - ``probe_findings`` — structured ``ProbeFindings`` block (all sub-fields
+      optional; rendered as a table in the modal).
+    - ``suggested_catalog_entry`` — agent-drafted ``SuggestedCatalogEntry``;
+      the user may edit any field before accepting.
+    - ``ttl_seconds`` — offer validity. Default 600s (10 minutes — review
+      modals get more time than retry gates because the user is reading +
+      sanity-checking provenance).
+    """
+
+    MESSAGE_TYPE: ClassVar[str] = "offer-catalog-addition"
+
+    request_id: ULIDStr
+    url: str = Field(min_length=1)
+    discovered_via: Literal[
+        "user-query",
+        "web-research",
+        "catalog-cross-reference",
+        "other",
+    ]
+    probe_findings: ProbeFindings
+    suggested_catalog_entry: SuggestedCatalogEntry
+    ttl_seconds: int = Field(default=600, ge=1)
+
+
+#: User's decision on a Mode 2 offer-catalog-addition review modal.
+CatalogAdditionDecision = Literal["accept", "reject"]
+
+
+class CatalogAdditionResponsePayload(GraceModel):
+    """``catalog-addition-response`` (A.4b — sprint-08 amendment, §F.1.2 Mode 2).
+
+    User has accepted / rejected the offered catalog addition.
+
+    Fields:
+
+    - ``request_id`` — matches the originating ``offer-catalog-addition``.
+    - ``decision`` — ``"accept"`` or ``"reject"`` (or None when ``cancelled``).
+    - ``edited_catalog_entry`` — populated only when ``decision == "accept"``
+      AND the user edited any field in the modal. When None on accept, the
+      agent writes the original ``suggested_catalog_entry`` as-is (modulo
+      cross-field validation). Mirrors the same permissive shape as the
+      offer's ``suggested_catalog_entry`` so the round-trip is field-for-field.
+    - ``reject_reason`` — free-text reason populated only when
+      ``decision == "reject"``. Capped at 512 chars. Optional — the user may
+      decline without explanation.
+    - ``cancelled`` — set when the user dismissed the modal without deciding.
+
+    Decision M (claim provenance): the response is logged to
+    ``catalog_audit_log`` (D.12) with ``event_type: "user_proposed"`` on
+    accept; reject events are also audited (open dict carries the
+    ``reject_reason``).
+    """
+
+    MESSAGE_TYPE: ClassVar[str] = "catalog-addition-response"
+
+    request_id: ULIDStr
+    decision: CatalogAdditionDecision | None = None
+    edited_catalog_entry: SuggestedCatalogEntry | None = None
+    reject_reason: str | None = Field(default=None, max_length=512)
+    cancelled: bool = False
 
 
 # =========================================================================== #

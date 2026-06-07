@@ -25,6 +25,19 @@ import logging
 import os
 import sys
 
+# ---------------------------------------------------------------------------
+# FR-FR-3 (job-0048): agent-side max-turns cap — cheap insurance.
+#
+# ``MAX_TURNS_PER_SESSION`` is the maximum number of user-message / tool-call
+# turns allowed before the agent refuses further dispatch and emits a
+# ``session-state`` envelope with ``status="max_turns_reached"``.
+#
+# Override via the ``GRACE2_MAX_TURNS_PER_SESSION`` environment variable for
+# ops flexibility (e.g. set to 0 to disable — sentinel value; or raise for
+# long sessions during demos). TENTATIVE default 25 per OQ-FR-1.
+# ---------------------------------------------------------------------------
+MAX_TURNS_PER_SESSION: int = int(os.environ.get("GRACE2_MAX_TURNS_PER_SESSION", "25"))
+
 
 def _import_tools_registry() -> int:
     """Import ``grace2_agent.tools`` to populate ``TOOL_REGISTRY``.
