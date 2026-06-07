@@ -176,12 +176,19 @@
       "description": "Mid-sprint follow-up to job-0054 audit rec (b): dropped `setup_river_inflow` from v0.1 pluvial YAML deck. river_local_path kept in signature (still fetched + cached for v0.2+); the block emission removed with 17-line comment block citing v0.1 scope + OQ-54 routing. **Bonus in-scope fix**: SFINCS time format `tref/tstart/tstop` corrected from ISO 8601 (`2026-01-01T00:00:00`) to native (`20260101 000000`) per sfincs_input.py `strptime(val, '%Y%m%d %H%M%S')` parser — discovered live during run. M5 chain advances FURTHER: clears all 4 setup steps + emits `setup_precip_forcing.magnitude: 12.5946...` correctly, then dies INSIDE hydromt-sfincs 1.2.2 at sfincs.py:2456 calling `pd.date_range(..., freq=\"10T\")` — pandas 3.0 removed the \"T\" minute frequency alias (use \"10min\"). NEW upstream incompat **OQ-55-PRECIP-FORCING-PANDAS3X-FREQ-ALIAS** (same class as OQ-54's is_integer()). Routing rec: single pandas pin in services/agent/pyproject.toml should unblock BOTH. 17/17 model_flood_scenario tests + 159/159 agent suite. No screenshot moment. Cost: 114,514 tokens (Sonnet — mechanical execution of Opus's audit recommendation, second sprint-8 Sonnet routing win). Commit cf9bfd3.",
       "model": "sonnet",
       "subagent_tokens": 114514
+    },
+    {
+      "job_id": "job-0056-infra-20260607",
+      "sprint": 8,
+      "description": "**Major milestone**: pandas 2.2.3 pinned. Path A (pandas>=2.1,<2.2) failed — Python 3.13 cp313 wheel constraint (pandas 2.1.x has no cp313 wheel; build from source fails on _PyLong_AsByteArray signature change). pandas 2.2.x is earliest with cp313 wheel AND both deprecated APIs still functional (FutureWarnings). One pin closes both OQ-54 (is_integer) + OQ-55 (freq=\"10T\"). **No cascade** — numpy/geopandas/rasterio/xarray/pyproj/shapely all unchanged. 162/162 tests (159 baseline + 3 regression guards in test_pandas_pin_regression.py). **M5 chain advances FAR FURTHER — HydroMT model build completes for the first time in project history**: all setup_* steps green + SFINCS deck (sfincs.inp + DEM + Manning + precip forcing) uploaded to gs://grace-2-hazard-prod-cache/cache/static-30d/sfincs_setup/01KTHQP54XVAAF2NPGKTAMP4PV/ + **Cloud Workflows execution 08370fe0-a31b-4edb-a173-1f77ef3cec77 dispatched + ran ~3.8 minutes** in real solver Cloud Run Job. New honest blocker: **SOLVER_FAILED** on the REAL manifest (prior 0040/0042/0044 SOLVER_FAILED outcomes were on synthetic manifests). Chain is past ALL HydroMT + pandas + setup_* issues. Surfaced as **OQ-56-SFINCS-SOLVER-FAILED-REAL-MANIFEST** — routes to infra (Cloud Run Job container review + execution log inspection) or engine (SFINCS deck completeness validation). Commit ad915bf.",
+      "model": "sonnet",
+      "subagent_tokens": 82694
     }
   ],
   "totals_by_sprint": {
     "6": 1265567,
     "7": 1863284,
-    "8": 1384738
+    "8": 1467432
   },
   "historical_context": {
     "note": "Captured for accountability — NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
