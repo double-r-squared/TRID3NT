@@ -113,11 +113,33 @@
       "description": "M5 acceptance — Hurricane Ian/Fort Myers demo end-to-end on deployed substrate. HONEST FAILURE per kickoff §1 substrate-verification criterion: full chain runs through 5 live fetcher cache hits + **Invariant 7 NLCD validation gate PASS branch verified LIVE on canonical WCS bytes** (sister branch to job-0042's FAIL — gate fired BOTH branches in production this sprint; sprint-7 headline win) + NOAA Atlas 14 11.9-inch 100-yr 24-hr forcing for Fort Myers + chain terminates at build_sfincs_model HYDROMT_UNAVAILABLE (hydromt-sfincs not in dev venv; production SFINCS container has it). AssessmentEnvelope returned with typed failure + 5 cited data sources. **Three screenshots captured + surfaced to user via SendUserFile proactive** (baseline + mid_run with progress emissions + final_honest_failure with typed error visible). **Invariant 8 cancel chain measured 8.24 s on full workflow** (3.6× under NFR-R-3 30s budget; combined with job-0041's 850 ms run_solver baseline = both Invariant 8 measurements verified live). NFR-P-4 honestly qualified (substrate only; real SFINCS pends OQ-43-HYDROMT-SFINCS-DEV-VENV-INSTALL). 301 unique-function invocations green across 7 test tiers (largest in project history). 7 OQ-43-* surfaced. Sprint-07 retrospective drafted. Commit 448fd1b.",
       "model": "opus",
       "subagent_tokens": 273634
+    },
+    {
+      "job_id": "job-0048-agent-20260607",
+      "sprint": 8,
+      "description": "FR-FR-3 MAX_TURNS_PER_SESSION=25 env-var-overridable cap; SessionStateStatus widening (active|max_turns_reached); counter per WS connection + closing message + status flip on cap. 11 new tests + 130/130 agent suite. Scope crept into job-0045 territory (also added 4 §F.1.2 + §3.10 envelope payload classes to ws.py); concurrent job-0045 reconciled with test factories. OQ-48-PARALLEL-SCHEMA-FILE-OWNERSHIP filed. First sprint-08 Sonnet model-routing win. Commit 1c6537a.",
+      "model": "sonnet",
+      "subagent_tokens": 103900
+    },
+    {
+      "job_id": "job-0049-infra-20260607",
+      "sprint": 8,
+      "description": "hydromt-sfincs install in agent service. Honest pin correction: OQ-4 §4 paper pin hydromt-sfincs>=1.1.2 doesn't exist on PyPI (sequence 1.1.0→1.2.0); corrected to >=1.1.0,<2.0 (resolved 1.2.2 + hydromt 0.10.1). M5 chain advances past HYDROMT_UNAVAILABLE: fetchers cache-hit + Invariant 7 gate PASS again + Atlas 14 forcing loads + HydroMT-SFINCS initialises + new honest blocker HYDROMT_BUILD_FAILED at sfincs_builder.py:692 (raw YAML string to .build(opt=...); 1.2.x expects dict). One-line engine fix surfaced as OQ-49-HYDROMT-BUILD-OPT-ARGUMENT-SHAPE → job-0052 hotfix. infra/THIRD_PARTY_LICENSES.md NEW. Closes OQ-43-HYDROMT-SFINCS-DEV-VENV-INSTALL. Commit b314153.",
+      "model": "opus",
+      "subagent_tokens": 112731
+    },
+    {
+      "job_id": "job-0045-schema-20260607",
+      "sprint": 8,
+      "description": "Mode 1 catalog schema substrate — CatalogEntry pydantic rewritten to §F.1.2 binding shape (id/name/description/urls/access_tier 1-4/credential_tier 1-3/ttl_class/source_class/license/citation/vintage/last_verified/status/how_to_use/api_key_secret_ref + model_validator credential consistency). D.11 catalog_entries + D.12 catalog_audit_log Mongo collections with FR-MP-5-aligned indexes (D.11/D.12 numbering vs kickoff's D.8/D.9 — live-verification of existing D.7-D.10 meta sections; OQ-45-D-NUMBERING). 4 envelopes registered in CLIENT_TO_AGENT_PAYLOADS/AGENT_TO_CLIENT_PAYLOADS routing dicts (payload classes themselves added by concurrent job-0048's scope creep — clean concurrent reconciliation). 11 new tests + 142/142 contracts green. 6 new JSON Schemas exported idempotently. SRS A + D extensions; make srs idempotent. 7 OQ-45-* surfaced. Commit 3c66ab2.",
+      "model": "opus",
+      "subagent_tokens": 215062
     }
   ],
   "totals_by_sprint": {
     "6": 1265567,
-    "7": 1863284
+    "7": 1863284,
+    "8": 431693
   },
   "historical_context": {
     "note": "Captured for accountability — NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
