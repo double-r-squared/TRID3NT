@@ -398,6 +398,28 @@ def test_every_a3_a4_a4b_payload_round_trips(session_id: str) -> None:
                 ws.ClarificationOption(id="b", label="B", description="b"),
             ],
         ),
+        # sprint-08 — FR-FR-1 + §F.1.2 Mode 2
+        "recovery-choice": lambda: ws.RecoveryChoicePayload(
+            request_id=new_ulid(),
+            failed_step_id=new_ulid(),
+            error_code="UPSTREAM_API_ERROR",
+            error_message="x",
+            context="x",
+            options=["deny", "retry", "chat"],
+        ),
+        "recovery-choice-response": lambda: ws.RecoveryChoiceResponsePayload(
+            request_id=new_ulid(), choice="retry"
+        ),
+        "offer-catalog-addition": lambda: ws.OfferCatalogAdditionPayload(
+            request_id=new_ulid(),
+            url="https://example.gov/data/foo",
+            discovered_via="user-query",
+            probe_findings=ws.ProbeFindings(),
+            suggested_catalog_entry=ws.SuggestedCatalogEntry(),
+        ),
+        "catalog-addition-response": lambda: ws.CatalogAdditionResponsePayload(
+            request_id=new_ulid(), decision="reject"
+        ),
     }
     # Every payload registered in ws.ALL_PAYLOADS must have a minimal factory
     # (i.e., the test covers the full inventory).
