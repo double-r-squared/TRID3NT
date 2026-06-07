@@ -16,6 +16,9 @@ dependencies = [
     "google-adk>=2.2,<3",
     "google-genai>=2.8,<3",
     "google-cloud-secret-manager>=2.20,<3",
+    # job-0032 M4 substrate: cache shim writes to gs://grace-2-hazard-prod-cache/
+    # provisioned by job-0031; reaches it via ADC in deployed contexts.
+    "google-cloud-storage>=2.18,<3",
     "websockets>=13,<16",
     "pymongo>=4.8,<5",
     "pydantic>=2,<3",
