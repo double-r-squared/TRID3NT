@@ -1,0 +1,22 @@
+2026-06-07 11:30:42,454 INFO live_catalog_search ==== catalog_search(topic='flood zones', location=fort_myers_bbox) ====
+2026-06-07 11:30:42,491 WARNING grace2_agent.tools.catalog skipping catalog row id='us-census-acs-5year-api' — validation failed: 1 validation error for CatalogEntry
+  Value error, credential_tier=2 requires a non-empty api_key_secret_ref (Secret Manager resource path) so the catalog-driven fetcher can resolve the credential at call time. [type=value_error, input_value={'id': 'us-census-acs-5ye... TIGER REST service.\n'}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/value_error
+2026-06-07 11:30:42,491 WARNING grace2_agent.tools.catalog skipping catalog row id='nasa-firms-viirs-active-fire' — validation failed: 1 validation error for CatalogEntry
+  Value error, credential_tier=2 requires a non-empty api_key_secret_ref (Secret Manager resource path) so the catalog-driven fetcher can resolve the credential at call time. [type=value_error, input_value={'id': 'nasa-firms-viirs-...nificant detections.\n'}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/value_error
+2026-06-07 11:30:42,491 INFO grace2_agent.tools.catalog loaded 28 catalog entries from /home/nate/Documents/GRACE-2/public_data_source_catalog.yaml
+2026-06-07 11:30:42,492 INFO grace2_agent.tools.cache read_through miss-write tool=catalog_search key=11a6a7d6cdea986299138826f6041e7c bytes=4772 customTime=2026-06-07T12:00:00+00:00
+2026-06-07 11:30:42,492 INFO grace2_agent.tools.catalog catalog_search topic='flood zones' n_matches=3 cache_hit=False
+2026-06-07 11:30:42,492 INFO live_catalog_search n_matches=3
+2026-06-07 11:30:42,492 INFO live_catalog_search   rank=1 id=fema-nfhl-flood-zones score=7.00 source_class=flood_zone access_tier=2
+2026-06-07 11:30:42,492 INFO live_catalog_search   rank=2 id=mrms-qpe-01h-pass2 score=1.00 source_class=precipitation_qpe access_tier=4
+2026-06-07 11:30:42,492 INFO live_catalog_search   rank=3 id=fema-national-risk-index score=1.00 source_class=multi_hazard_risk access_tier=2
+2026-06-07 11:30:42,492 INFO live_catalog_search ==== catalog_search(topic='DEM') ====
+2026-06-07 11:30:42,492 INFO grace2_agent.tools.cache read_through miss-write tool=catalog_search key=46b69e7dfadc195ca9e89445a9f101a5 bytes=6065 customTime=2026-06-07T12:00:00+00:00
+2026-06-07 11:30:42,492 INFO grace2_agent.tools.catalog catalog_search topic='DEM' n_matches=4 cache_hit=False
+2026-06-07 11:30:42,492 INFO live_catalog_search n_matches=4
+2026-06-07 11:30:42,492 INFO live_catalog_search   rank=1 id=copernicus-dem-glo-30-stac score=8.00 source_class=dem access_tier=1
+2026-06-07 11:30:42,492 INFO live_catalog_search   rank=2 id=copernicus-dem-glo-90-stac score=8.00 source_class=dem access_tier=1
+2026-06-07 11:30:42,492 INFO live_catalog_search   rank=3 id=hydrosheds-v1-dem-conditioned score=8.00 source_class=dem access_tier=4
+2026-06-07 11:30:42,493 INFO live_catalog_search PASS — wrote reports/inflight/job-0047-engine-20260607/evidence/live_catalog_search_result.json

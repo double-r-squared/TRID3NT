@@ -79,6 +79,8 @@ def _import_tools_registry() -> int:
     from .tools import solver  # noqa: F401
     # job-0042: register run_model_flood_scenario (M5 capstone workflow wrapper).
     from .workflows import model_flood_scenario  # noqa: F401
+    # job-0047: register catalog_search + catalog_fetch (Mode 1 substrate).
+    from .tools import catalog  # noqa: F401
 
     return len(tools.TOOL_REGISTRY)
 

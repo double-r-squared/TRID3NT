@@ -1,0 +1,22 @@
+2026-06-07 11:33:03,817 INFO live_catalog_fetch ==== catalog_fetch('fema-nfhl-flood-zones', layer_id=28, bbox=fort_myers) ====
+2026-06-07 11:33:03,854 WARNING grace2_agent.tools.catalog skipping catalog row id='us-census-acs-5year-api' — validation failed: 1 validation error for CatalogEntry
+  Value error, credential_tier=2 requires a non-empty api_key_secret_ref (Secret Manager resource path) so the catalog-driven fetcher can resolve the credential at call time. [type=value_error, input_value={'id': 'us-census-acs-5ye... TIGER REST service.\n'}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/value_error
+2026-06-07 11:33:03,854 WARNING grace2_agent.tools.catalog skipping catalog row id='nasa-firms-viirs-active-fire' — validation failed: 1 validation error for CatalogEntry
+  Value error, credential_tier=2 requires a non-empty api_key_secret_ref (Secret Manager resource path) so the catalog-driven fetcher can resolve the credential at call time. [type=value_error, input_value={'id': 'nasa-firms-viirs-...nificant detections.\n'}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/value_error
+2026-06-07 11:33:03,854 INFO grace2_agent.tools.catalog loaded 28 catalog entries from /home/nate/Documents/GRACE-2/public_data_source_catalog.yaml
+2026-06-07 11:33:05,564 INFO grace2_agent.tools.ogc_adapter ogc_adapter ARCGIS_REST url=https://hazards.fema.gov/arcgis/rest/services/public/NFHL/MapServer/28/query layer=28 bytes=8045110 content_type=application/geo+json;charset=UTF-8
+2026-06-07 11:33:05,567 INFO grace2_agent.tools.cache read_through miss-write tool=catalog_fetch key=176289c4fdccec0a325821276f1481ee bytes=8045110 customTime=2026-06-07T12:00:00+00:00
+2026-06-07 11:33:05,568 INFO grace2_agent.tools.catalog catalog_fetch entry_id='fema-nfhl-flood-zones' tier=2 cache_hit=False bytes=8045110
+2026-06-07 11:33:05,568 INFO live_catalog_fetch   layer.uri=gs://grace-2-hazard-prod-cache/cache/static-30d/catalog_fetch/176289c4fdccec0a325821276f1481ee.json entry_id=fema-nfhl-flood-zones tier=2 source_class=flood_zone
+2026-06-07 11:33:05,568 INFO live_catalog_fetch   bytes=8045110 cache_hit=False
+2026-06-07 11:33:05,568 INFO live_catalog_fetch   cached_path=cache/static-30d/catalog_fetch/176289c4fdccec0a325821276f1481ee.json body_first_120=b'{"type":"FeatureCollection","features":[{"type":"Feature","id":25288707,"geometry":{"type":"Polygon","coordinates":[[[-8'
+2026-06-07 11:33:05,568 INFO live_catalog_fetch ==== catalog_fetch('usgs-3dep-elevation-image-service', bbox=fort_myers) ====
+2026-06-07 11:33:08,331 INFO grace2_agent.tools.ogc_adapter ogc_adapter ARCGIS_REST url=https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer/exportImage layer=exportImage bytes=4195622 content_type=image/tiff
+2026-06-07 11:33:08,333 INFO grace2_agent.tools.cache read_through miss-write tool=catalog_fetch key=3f20c3960d531180a838966390e58d82 bytes=4195622 customTime=2026-06-07T12:00:00+00:00
+2026-06-07 11:33:08,334 INFO grace2_agent.tools.catalog catalog_fetch entry_id='usgs-3dep-elevation-image-service' tier=2 cache_hit=False bytes=4195622
+2026-06-07 11:33:08,334 INFO live_catalog_fetch   layer.uri=gs://grace-2-hazard-prod-cache/cache/static-30d/catalog_fetch/3f20c3960d531180a838966390e58d82.tif entry_id=usgs-3dep-elevation-image-service tier=2 source_class=dem
+2026-06-07 11:33:08,334 INFO live_catalog_fetch   bytes=4195622 cache_hit=False
+2026-06-07 11:33:08,334 INFO live_catalog_fetch   cached_path=cache/static-30d/catalog_fetch/3f20c3960d531180a838966390e58d82.tif body_first_120=b'II*\x00\x08\x00\x00\x00\x12\x00\x00\x01\x03\x00\x01\x00\x00\x00\x00\x04\x00\x00\x01\x01\x03\x00\x01\x00\x00\x00\x00\x04\x00\x00\x02\x01\x03\x00\x01\x00\x00\x00 \x00\x00\x00\x03\x01\x03\x00\x01\x00\x00\x00\x01\x00\x00\x00\x06\x01\x03\x00\x01\x00\x00\x00\x01\x00\x00\x00\x15\x01\x03\x00\x01\x00\x00\x00\x01\x00\x00\x00\x1c\x01\x03\x00\x01\x00\x00\x00\x01\x00\x00\x00B\x01\x03\x00\x01\x00\x00\x00\x80\x00\x00\x00C\x01\x03\x00\x01\x00\x00\x00\x80\x00\x00\x00D\x01'
+2026-06-07 11:33:08,335 INFO live_catalog_fetch wrote reports/inflight/job-0047-engine-20260607/evidence/live_catalog_fetch_result.json

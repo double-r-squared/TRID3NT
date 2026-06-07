@@ -1,0 +1,66 @@
+{
+  "search_topic_1": "flood zones",
+  "search_location": [
+    -81.92,
+    26.55,
+    -81.8,
+    26.68
+  ],
+  "n_matches_flood": 3,
+  "top_flood_ids": [
+    "fema-nfhl-flood-zones",
+    "mrms-qpe-01h-pass2",
+    "fema-national-risk-index"
+  ],
+  "top_flood_entry": {
+    "relevance_score": 7.0,
+    "schema_version": "v1",
+    "id": "fema-nfhl-flood-zones",
+    "name": "FEMA National Flood Hazard Layer (NFHL) \u2014 ArcGIS REST",
+    "description": "FEMA Flood Insurance Rate Map (FIRM) digital database with 31 feature layers: flood hazard zones (AE, VE, X, etc.), base flood elevations, cross-sections, FIRM panels, LOMRs/LOMAs, levees, coastal transects. Authoritative source for regulatory flood zones in the US.\n",
+    "urls": [
+      "https://hazards.fema.gov/arcgis/rest/services/public/NFHL/MapServer"
+    ],
+    "access_tier": 2,
+    "credential_tier": 1,
+    "ttl_class": "semi-static-7d",
+    "source_class": "flood_zone",
+    "license": "Public domain (FEMA federal data)",
+    "citation": "FEMA, National Flood Hazard Layer (NFHL). Accessed via https://hazards.fema.gov/arcgis/rest/services/public/NFHL/MapServer. Accessed 2026-06-07.\n",
+    "vintage": "updated continuously (FIRM amendments)",
+    "last_verified": "2026-06-07T00:00:00Z",
+    "status": "active",
+    "how_to_use": "Base URL: https://hazards.fema.gov/arcgis/rest/services/public/NFHL/MapServer\nLayer 28: Flood Hazard Zones (FLD_ZONE, FLD_ZONE_SUBTY fields).\nQuery example (ensure correct where clause format):\n  /MapServer/28/query?where=FLD_ZONE+%3C%3E+%27AREA+NOT+INCLUDED%27\n  &geometry=<bbox>&geometryType=esriGeometryEnvelope&inSR=4326\n  &outFields=FLD_ZONE,FLD_ZONE_SUBTY&f=json\nKey flood zones: AE=100-yr with BFE, X=500-yr/0.2%, VE=coastal wave,\nD=undetermined. For WMS visualization: WMS endpoint at same base path\n(append /MapServer/WMSServer?service=WMS&request=GetCapabilities).\n",
+    "api_key_secret_ref": null
+  },
+  "search_topic_2": "DEM",
+  "n_matches_dem": 4,
+  "top_dem_ids": [
+    "copernicus-dem-glo-30-stac",
+    "copernicus-dem-glo-90-stac",
+    "hydrosheds-v1-dem-conditioned",
+    "usgs-3dep-elevation-image-service"
+  ],
+  "top_dem_entry": {
+    "relevance_score": 8.0,
+    "schema_version": "v1",
+    "id": "copernicus-dem-glo-30-stac",
+    "name": "Copernicus DEM GLO-30 (Microsoft Planetary Computer STAC)",
+    "description": "Global 30-meter digital surface model derived from TanDEM-X radar satellite data. Covers the entire Earth (-180 to 180\u00b0, -90 to 90\u00b0). Cloud-Optimized GeoTIFF tiles queryable via STAC. Preferred global DEM when 3DEP coverage is absent (international locations, offshore areas).\n",
+    "urls": [
+      "https://planetarycomputer.microsoft.com/api/stac/v1/collections/cop-dem-glo-30",
+      "https://planetarycomputer.microsoft.com/api/stac/v1"
+    ],
+    "access_tier": 1,
+    "credential_tier": 1,
+    "ttl_class": "static-30d",
+    "source_class": "dem",
+    "license": "Proprietary \u2014 Copernicus DEM license (free for most uses; see ESA Mission-specific Annex)",
+    "citation": "European Space Agency (licensor), Sinergise (producer). Copernicus Digital Elevation Model (GLO-30). Hosted by Microsoft Planetary Computer. DOI: 10.5069/G9028PQB (OpenTopography). Accessed 2026-06-07.\n",
+    "vintage": "2021-04-22",
+    "last_verified": "2026-06-07T00:00:00Z",
+    "status": "active",
+    "how_to_use": "Use pystac-client to query: Client.open(\"https://planetarycomputer.microsoft.com/api/stac/v1\")\nthen search collection=\"cop-dem-glo-30\" with bbox and datetime. Assets key\n\"data\" yields the COG href. HTTP Range is supported \u2014 use rasterio + GDAL\n/vsicurl/ for windowed reads. Resolution is ~30m GSD. CRS is EPSG:4326.\nNote: the GLO-30 license permits free use including commercial; read the\nCopernicus DEM License Summary before redistribution.\n",
+    "api_key_secret_ref": null
+  }
+}

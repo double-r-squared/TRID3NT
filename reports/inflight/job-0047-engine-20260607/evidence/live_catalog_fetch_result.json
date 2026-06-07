@@ -1,0 +1,39 @@
+{
+  "flood_fetch": {
+    "ok": true,
+    "entry_id": "fema-nfhl-flood-zones",
+    "params": {
+      "bbox": [
+        -81.92,
+        26.55,
+        -81.8,
+        26.68
+      ],
+      "layer_id": "28"
+    },
+    "result_summary": {
+      "uri": "gs://grace-2-hazard-prod-cache/cache/static-30d/catalog_fetch/176289c4fdccec0a325821276f1481ee.json",
+      "access_tier": 2,
+      "source_class": "flood_zone",
+      "bytes": 8045110
+    }
+  },
+  "dem_fetch": {
+    "ok": true,
+    "entry_id": "usgs-3dep-elevation-image-service",
+    "params": {
+      "bbox": [
+        -81.92,
+        26.55,
+        -81.8,
+        26.68
+      ]
+    },
+    "result_summary": {
+      "uri": "gs://grace-2-hazard-prod-cache/cache/static-30d/catalog_fetch/3f20c3960d531180a838966390e58d82.tif",
+      "access_tier": 2,
+      "source_class": "dem",
+      "bytes": 4195622
+    }
+  }
+}

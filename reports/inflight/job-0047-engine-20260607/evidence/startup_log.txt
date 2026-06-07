@@ -1,0 +1,2 @@
+2026-06-07 11:33:20,215 INFO grace2_agent.main tool registry loaded: 16 tool(s): ['catalog_fetch', 'catalog_search', 'describe_qgis_algorithm', 'fetch_buildings', 'fetch_dem', 'fetch_landcover', 'fetch_population', 'fetch_river_geometry', 'geocode_location', 'list_qgis_algorithms', 'lookup_precip_return_period', 'mongo_query', 'qgis_process', 'run_model_flood_scenario', 'run_solver', 'wait_for_completion']
+2026-06-07 11:33:20,215 INFO grace2_agent.main --startup-only: tool registry verified; exiting without serving

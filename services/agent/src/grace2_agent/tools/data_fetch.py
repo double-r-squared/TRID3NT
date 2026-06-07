@@ -1341,51 +1341,45 @@ def _fetch_nlcd_landcover_bytes(
     width_px = max(16, min(4096, int(round(width_m / 30.0))))
     height_px = max(16, min(4096, int(round(height_m / 30.0))))
 
-    # WCS 1.0.0 GetCoverage with FORMAT=GeoTIFF + CRS=EPSG:4326. Live probe
-    # (job-0044, 2026-06-07) confirmed the server returns a properly-formed
-    # GeoTIFF with content-type ``image/tiff`` whose raster band carries
-    # canonical NLCD class integers. The "PALETTE_INDEX" range-type label
-    # in the DescribeCoverage XML is a GeoServer artifact — the byte values
-    # are the canonical NLCD codes, not redirected indices.
-    params = {
-        "service": "WCS",
-        "version": "1.0.0",
-        "request": "GetCoverage",
-        "Coverage": coverage,
-        "CRS": "EPSG:4326",
-        "BBOX": f"{min_lon},{min_lat},{max_lon},{max_lat}",
-        "WIDTH": str(width_px),
-        "HEIGHT": str(height_px),
-        "FORMAT": "GeoTIFF",
-    }
+    # WCS 1.0.0 GetCoverage via the shared generic OGC adapter (job-0047
+    # refactor — single source of truth for §F.1.1 Tier 2 retrieval). The
+    # adapter handles the WCS request shape (Coverage, CRS, BBOX, WIDTH,
+    # HEIGHT, FORMAT), surfaces OGC exception XMLs as typed errors, and
+    # validates the GeoTIFF content-type so a misconfigured GeoServer
+    # response (HTML error page, ExceptionReport XML) doesn't poison the
+    # cache. The MRLC WCS sub-protocol (1.0.0 over 1.1.1/2.0.1) was
+    # established in job-0044's live-verification rounds and is preserved.
+    from .ogc_adapter import OGCAdapterError, fetch_ogc_layer
+
     try:
-        resp = requests.get(
-            _MRLC_WCS_URL,
-            params=params,
-            headers={"User-Agent": _DEFAULT_USER_AGENT},
-            timeout=120.0,
+        ogc_resp = fetch_ogc_layer(
+            url=_MRLC_WCS_URL,
+            layer_name=coverage,
+            bbox=bbox,
+            crs="EPSG:4326",
+            service_type="WCS",
+            image_format="GeoTIFF",
+            version="1.0.0",
+            width_px=width_px,
+            height_px=height_px,
+            timeout_s=120.0,
+            user_agent=_DEFAULT_USER_AGENT,
         )
-        resp.raise_for_status()
-    except requests.RequestException as exc:
+    except OGCAdapterError as exc:
         raise UpstreamAPIError(
             f"MRLC WCS GetCoverage failed for coverage={coverage} bbox={bbox}: {exc}"
         ) from exc
 
-    # On a service error (e.g. invalid coverage name, projection mapping
-    # bug, sub-pixel request) GeoServer returns an OGC exception XML. Surface
-    # that as a typed error so callers see the real failure mode.
-    ct = resp.headers.get("content-type", "")
+    # Extra defensive check: the adapter already validates content-type and
+    # body length, but we re-check the TIFF content-type because the cache
+    # write extension is fixed at ``.tif``.
+    ct = ogc_resp.content_type
     if "tiff" not in ct.lower() and "geotiff" not in ct.lower():
         raise UpstreamAPIError(
             f"MRLC WCS returned unexpected content-type={ct!r} for coverage={coverage} "
-            f"bbox={bbox}; body preview: {resp.text[:300]!r}"
+            f"bbox={bbox}; body preview: {ogc_resp.content[:300]!r}"
         )
-    if not resp.content or len(resp.content) < 64:
-        raise UpstreamAPIError(
-            f"MRLC WCS returned empty/short body ({len(resp.content)} bytes) "
-            f"for coverage={coverage} bbox={bbox}"
-        )
-    return resp.content
+    return ogc_resp.content
 
 
 def _fetch_esa_worldcover_bytes(
