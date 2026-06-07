@@ -1566,3 +1566,100 @@ def test_build_sfincs_model_setup_uri_points_at_manifest_file(
         f"Manifest override was mutated unexpectedly; "
         f"got {setup_manifest_override.setup_uri!r}"
     )
+
+
+# --------------------------------------------------------------------------- #
+# Test 20 — job-0058 OQ-58: postprocess_flood squeezes singleton timemax dim
+# before COG write. HydroMT-SFINCS 1.2.2 emits hmax with shape
+# (timemax=1, n, m); rasterio.write(arr, 1) expects exactly 2D.
+# This test constructs a fake sfincs_map.nc with hmax shape (1, 8, 8) and
+# asserts _extract_peak_depth_geotiff succeeds + produces a 2D raster.
+# --------------------------------------------------------------------------- #
+
+
+def test_extract_peak_depth_geotiff_squeezes_singleton_timemax_dim(
+    tmp_path: Path,
+) -> None:
+    """``_extract_peak_depth_geotiff`` handles hmax shape (1, n, m) without error.
+
+    HydroMT-SFINCS 1.2.2 emits ``hmax`` with an extra leading ``timemax=1``
+    dimension.  Before the OQ-58 fix, rasterio raised:
+
+        ``Source shape (1, 1, 527, 540) is inconsistent with given indexes 1``
+
+    because ``dst.write(arr, 1)`` expects a 2D array when the band index is
+    supplied as an int.  After the fix, the singleton dim is squeezed before the
+    write so the COG is a valid 2D single-band raster.
+
+    Regression guard: if the squeeze is removed, this test re-triggers the
+    ``COG_WRITE_FAILED`` error.
+    """
+    import numpy as np
+
+    try:
+        import xarray as xr
+    except ImportError:
+        pytest.skip("xarray not installed; skipping COG-squeeze integration test")
+
+    try:
+        import rasterio
+    except ImportError:
+        pytest.skip("rasterio not installed; skipping COG-squeeze integration test")
+
+    from grace2_agent.workflows.postprocess_flood import _extract_peak_depth_geotiff
+
+    # Build a synthetic sfincs_map.nc with hmax shape (timemax=1, n=8, m=8).
+    n, m = 8, 8
+    rng = np.random.default_rng(42)
+    # Some dry (0.0) and some flooded cells (0.1 – 3.5 m) to exercise metrics.
+    hmax_data = rng.uniform(0.0, 3.5, (1, n, m)).astype("float32")
+    hmax_data[0, :2, :] = 0.0  # force some dry cells
+
+    x_vals = np.linspace(-81.92, -81.80, m, dtype="float64")
+    y_vals = np.linspace(26.55, 26.68, n, dtype="float64")
+
+    ds = xr.Dataset(
+        {
+            "hmax": xr.DataArray(
+                hmax_data,
+                dims=["timemax", "y", "x"],
+                attrs={"units": "m"},
+            ),
+        },
+        coords={
+            "x": xr.DataArray(x_vals, dims=["x"]),
+            "y": xr.DataArray(y_vals, dims=["y"]),
+        },
+        attrs={"crs": "EPSG:4326"},
+    )
+
+    netcdf_path = tmp_path / "sfincs_map.nc"
+    ds.to_netcdf(str(netcdf_path))
+    ds.close()
+
+    # Should not raise (the pre-fix code raised COG_WRITE_FAILED here).
+    cog_path, metrics = _extract_peak_depth_geotiff(netcdf_path)
+
+    try:
+        # Verify the COG is a valid single-band 2D raster.
+        with rasterio.open(str(cog_path)) as src:
+            assert src.count == 1, (
+                f"OQ-58 regression: COG has {src.count} band(s); expected 1"
+            )
+            assert src.width == m, (
+                f"OQ-58: COG width {src.width} != expected {m}"
+            )
+            assert src.height == n, (
+                f"OQ-58: COG height {src.height} != expected {n}"
+            )
+            band = src.read(1)
+            assert band.shape == (n, m), (
+                f"OQ-58: band shape {band.shape} != expected ({n}, {m})"
+            )
+
+        # Metrics must reflect the flooded cells.
+        assert metrics["max_depth_m"] > 0.0, "max_depth_m should be > 0 (some cells flooded)"
+        assert metrics["flooded_cell_count"] > 0, "flooded_cell_count should be > 0"
+        assert metrics["units"] == "meters"
+    finally:
+        cog_path.unlink(missing_ok=True)

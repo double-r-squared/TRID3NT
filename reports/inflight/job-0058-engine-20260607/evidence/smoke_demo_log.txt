@@ -1,0 +1,172 @@
+2026-06-07 12:54:52,924 INFO smoke_demo registered 16 agent tools (M5 expects 14)
+2026-06-07 12:54:52,924 INFO smoke_demo ==== M5 demo: model_flood_scenario(Fort Myers, FL) ====
+2026-06-07 12:54:52,924 INFO grace2_agent.workflows.model_flood_scenario model_flood_scenario start bbox=None location_query='Fort Myers, FL' event_id=None return_period_yr=100 duration_hr=24 compute_class=medium
+2026-06-07 12:54:54,169 INFO grace2_agent.tools.cache read_through hit tool=geocode_location key=c9c367057b77afd1a81b1d8e96c8f516 bytes=281
+2026-06-07 12:54:54,170 INFO grace2_agent.tools.data_fetch geocode_location query='Fort Myers, FL' resolved name='Fort Myers, Lee County, Florida, United States' cache_hit=True
+2026-06-07 12:54:56,044 INFO grace2_agent.tools.cache read_through hit tool=fetch_dem key=87ba00463af0275d02115f7463afe6e9 bytes=1924297
+2026-06-07 12:54:57,524 INFO grace2_agent.tools.cache read_through hit tool=fetch_landcover key=7dac3520db9a0f6092a434be438d02d9 bytes=289170
+2026-06-07 12:54:59,044 INFO grace2_agent.tools.cache read_through hit tool=fetch_river_geometry key=4fa2fd4e5d2192020dc04d60502d6aaa bytes=274376
+2026-06-07 12:55:00,222 INFO grace2_agent.tools.cache read_through hit tool=lookup_precip_return_period key=8cbc276afacf4ed50e2daac1ab261ccb bytes=1614
+2026-06-07 12:55:00,222 INFO grace2_agent.tools.data_fetch lookup_precip_return_period (lat=26.616666667 lon=-81.833333333 ari=100 dur=24-hr) -> 11.900 inches cache_hit=True
+2026-06-07 12:55:00,222 INFO grace2_agent.workflows.sfincs_builder manning_mapping loaded version=1.0.0 classes=20 path=/home/nate/Documents/GRACE-2/services/agent/src/grace2_agent/workflows/manning_mapping.csv
+2026-06-07 12:55:01,248 INFO grace2_agent.workflows.sfincs_builder landcover classes observed: [11, 21, 22, 23, 24, 31, 41, 42, 43, 52, 71, 81, 82, 90, 95] (vintage_year=2021)
+2026-06-07 12:55:02,291 INFO gcsfs gcsfs experimental features enabled via GCSFS_EXPERIMENTAL_ZB_HNS_SUPPORT.
+2026-06-07 12:55:02,573 INFO hydromt_sfincs.sfincs Initializing sfincs model from hydromt_sfincs (v1.2.2).
+2026-06-07 12:55:02,573 INFO hydromt_sfincs.sfincs setup_grid_from_region.region: {'bbox': [-81.9126085, 26.5476424, -81.7511414, 26.689176]}
+2026-06-07 12:55:02,573 INFO hydromt_sfincs.sfincs setup_grid_from_region.res: 30.0
+2026-06-07 12:55:02,573 INFO hydromt_sfincs.sfincs setup_grid_from_region.crs: utm
+2026-06-07 12:55:02,573 INFO hydromt_sfincs.sfincs setup_grid_from_region.rotated: False
+2026-06-07 12:55:02,573 INFO hydromt_sfincs.sfincs setup_grid_from_region.hydrography_fn: None
+2026-06-07 12:55:02,573 INFO hydromt_sfincs.sfincs setup_grid_from_region.basin_index_fn: None
+2026-06-07 12:55:02,573 INFO hydromt_sfincs.sfincs setup_grid_from_region.align: False
+2026-06-07 12:55:02,573 INFO hydromt_sfincs.sfincs setup_grid_from_region.dec_origin: 0
+2026-06-07 12:55:02,573 INFO hydromt_sfincs.sfincs setup_grid_from_region.dec_rotation: 3
+2026-06-07 12:55:02,579 INFO hydromt_sfincs.sfincs setup_dep.datasets_dep: [{'elevtn': 'gs://grace-2-hazard-prod-cache/cache/static-30d/dem/87ba00463af0275d02115f7463afe6e9.tif'}]
+2026-06-07 12:55:02,579 INFO hydromt_sfincs.sfincs setup_dep.buffer_cells: 0
+2026-06-07 12:55:02,579 INFO hydromt_sfincs.sfincs setup_dep.interp_method: linear
+2026-06-07 12:55:02,849 INFO hydromt_sfincs.sfincs Reading data catalog artifact_data latest
+2026-06-07 12:55:02,849 INFO hydromt_sfincs.sfincs Parsing data catalog from /home/nate/.hydromt_data/artifact_data/v0.0.9/data_catalog.yml
+2026-06-07 12:55:04,549 INFO hydromt_sfincs.sfincs Reading  raster data from gs://grace-2-hazard-prod-cache/cache/static-30d/dem/87ba00463af0275d02115f7463afe6e9.tif
+2026-06-07 12:55:04,647 WARNING gcsfs Could not determine bucket type for bucket name test: 403 The billing account for the owning project is disabled in state absent, falling back to GCSFileSystem
+2026-06-07 12:55:07,694 WARNING gcsfs Could not determine bucket type for bucket name test: 403 The billing account for the owning project is disabled in state absent, falling back to GCSFileSystem
+2026-06-07 12:55:18,289 WARNING hydromt_sfincs.sfincs Dataset [1406839.6490086552, 492522.54080268106, 1425196.0698493002, 510384.41464761924] does not fully cover bbox [1406724.715, 492424.737, 1425316.759, 510494.000]
+2026-06-07 12:55:18,535 WARNING gcsfs Could not determine bucket type for bucket name test: 403 The billing account for the owning project is disabled in state absent, falling back to GCSFileSystem
+2026-06-07 12:55:21,810 WARNING hydromt_sfincs.sfincs Interpolate elevation at 96 cells
+2026-06-07 12:55:21,836 INFO hydromt_sfincs.sfincs setup_mask_active.mask: None
+2026-06-07 12:55:21,836 INFO hydromt_sfincs.sfincs setup_mask_active.include_mask: None
+2026-06-07 12:55:21,836 INFO hydromt_sfincs.sfincs setup_mask_active.exclude_mask: None
+2026-06-07 12:55:21,836 INFO hydromt_sfincs.sfincs setup_mask_active.mask_buffer: 0
+2026-06-07 12:55:21,836 INFO hydromt_sfincs.sfincs setup_mask_active.zmin: -10.0
+2026-06-07 12:55:21,836 INFO hydromt_sfincs.sfincs setup_mask_active.zmax: 10.0
+2026-06-07 12:55:21,836 INFO hydromt_sfincs.sfincs setup_mask_active.fill_area: 10.0
+2026-06-07 12:55:21,836 INFO hydromt_sfincs.sfincs setup_mask_active.drop_area: 0.0
+2026-06-07 12:55:21,836 INFO hydromt_sfincs.sfincs setup_mask_active.connectivity: 8
+2026-06-07 12:55:21,836 INFO hydromt_sfincs.sfincs setup_mask_active.all_touched: True
+2026-06-07 12:55:21,836 INFO hydromt_sfincs.sfincs setup_mask_active.reset_mask: True
+2026-06-07 12:55:21,856 INFO hydromt_sfincs.sfincs 16 gaps outside valid elevation range < 10.0 km2.
+2026-06-07 12:55:21,861 INFO hydromt_sfincs.sfincs Derive region geometry based on active cells.
+2026-06-07 12:55:21,863 WARNING rasterio._env CPLE_AppDefined in DeprecationWarning: 'Memory' driver is deprecated since GDAL 3.11. Use 'MEM' onwards. Further messages of this type will be suppressed.
+2026-06-07 12:55:21,871 WARNING hydromt_sfincs.sfincs Replacing geom: region
+2026-06-07 12:55:21,872 INFO hydromt_sfincs.sfincs setup_manning_roughness.datasets_rgh: [{'lulc': 'gs://grace-2-hazard-prod-cache/cache/static-30d/landcover/7dac3520db9a0f6092a434be438d02d9.tif', 'reclass_table': '/tmp/claude-1000/sfincs-build-p5eiocso/manning_reclass.csv'}]
+2026-06-07 12:55:21,872 INFO hydromt_sfincs.sfincs setup_manning_roughness.manning_land: 0.04
+2026-06-07 12:55:21,872 INFO hydromt_sfincs.sfincs setup_manning_roughness.manning_sea: 0.02
+2026-06-07 12:55:21,872 INFO hydromt_sfincs.sfincs setup_manning_roughness.rgh_lev_land: 0
+2026-06-07 12:55:21,945 INFO hydromt_sfincs.sfincs Reading  raster data from gs://grace-2-hazard-prod-cache/cache/static-30d/landcover/7dac3520db9a0f6092a434be438d02d9.tif
+2026-06-07 12:55:22,029 WARNING gcsfs Could not determine bucket type for bucket name test: 403 The billing account for the owning project is disabled in state absent, falling back to GCSFileSystem
+2026-06-07 12:55:32,103 WARNING hydromt_sfincs.sfincs Dataset [-81.91266720899999, 26.54752066099999, -81.751093655, 26.689274164999986] does not fully cover bbox [-81.914, 26.547, -81.750, 26.690]
+2026-06-07 12:55:32,110 INFO hydromt_sfincs.sfincs Reading  csv data from /tmp/claude-1000/sfincs-build-p5eiocso/manning_reclass.csv
+2026-06-07 12:55:32,125 WARNING hydromt.raster The nodata value None is not in the reclass table.None will be used for the params.
+2026-06-07 12:55:32,256 WARNING gcsfs Could not determine bucket type for bucket name test: 403 The billing account for the owning project is disabled in state absent, falling back to GCSFileSystem
+2026-06-07 12:55:35,075 WARNING hydromt_sfincs.sfincs nan values in manning roughness array
+2026-06-07 12:55:35,089 INFO hydromt_sfincs.sfincs setup_precip_forcing.timeseries: None
+2026-06-07 12:55:35,089 INFO hydromt_sfincs.sfincs setup_precip_forcing.magnitude: 12.594166666666666
+2026-06-07 12:55:35,095 INFO hydromt_sfincs.sfincs Writing model data to /tmp/claude-1000/sfincs-build-p5eiocso/deck
+2026-06-07 12:55:35,120 INFO hydromt_sfincs.sfincs Write raster file(s) for grid to 'gis' subfolder
+2026-06-07 12:55:35,289 INFO hydromt_sfincs.sfincs Write geom files
+2026-06-07 12:55:35,289 INFO hydromt_sfincs.sfincs Write vector file(s) for geoms to 'gis' subfolder
+2026-06-07 12:55:35,291 INFO pyogrio._io Created 1 records
+2026-06-07 12:55:35,291 INFO hydromt_sfincs.sfincs Write forcing files
+2026-06-07 12:55:35,293 WARNING hydromt_sfincs.sfincs zsini not in states, skipping
+2026-06-07 12:55:35,293 INFO hydromt_sfincs.sfincs Writing model data to /tmp/claude-1000/sfincs-build-p5eiocso/deck
+2026-06-07 12:55:35,298 INFO hydromt_sfincs.sfincs Write raster file(s) for grid to 'gis' subfolder
+2026-06-07 12:55:35,374 INFO hydromt_sfincs.sfincs Write geom files
+2026-06-07 12:55:35,374 INFO hydromt_sfincs.sfincs Write vector file(s) for geoms to 'gis' subfolder
+2026-06-07 12:55:35,375 INFO pyogrio._io Created 1 records
+2026-06-07 12:55:35,375 INFO hydromt_sfincs.sfincs Write forcing files
+2026-06-07 12:55:35,377 WARNING hydromt_sfincs.sfincs zsini not in states, skipping
+2026-06-07 12:55:35,377 INFO grace2_agent.workflows.sfincs_builder composed manifest.json with 11 input(s); deck_prefix=gs://grace-2-hazard-prod-cache/cache/static-30d/sfincs_setup/01KTHTEB1433D7XP428JCC82KM/deck/ target=gs://grace-2-hazard-prod-cache/cache/static-30d/sfincs_setup/01KTHTEB1433D7XP428JCC82KM/manifest.json
+2026-06-07 12:55:36,817 INFO grace2_agent.workflows.sfincs_builder uploaded SFINCS deck to gs://grace-2-hazard-prod-cache/cache/static-30d/sfincs_setup/01KTHTEB1433D7XP428JCC82KM/ (under deck/ prefix)
+2026-06-07 12:55:37,186 INFO grace2_agent.workflows.sfincs_builder uploaded manifest.json to gs://grace-2-hazard-prod-cache/cache/static-30d/sfincs_setup/01KTHTEB1433D7XP428JCC82KM/manifest.json
+2026-06-07 12:55:37,189 INFO grace2_agent.tools.solver run_solver solver=sfincs run_id=01KTHTFCV5E588A293N0JFQTZH compute_class=medium parent=projects/grace-2-hazard-prod/locations/us-central1/workflows/grace-2-sfincs-orchestrator
+2026-06-07 12:55:38,679 INFO grace2_agent.tools.solver run_solver submitted handle_id=01KTHTFE9PA9JADV19W3WX2H9B workflows_execution_id=projects/425352658356/locations/us-central1/workflows/grace-2-sfincs-orchestrator/executions/427fdf22-e0d8-44c9-a465-d6dd876e2232
+2026-06-07 12:55:39,319 INFO grace2_agent.tools.solver wait_for_completion handle_id=01KTHTFE9PA9JADV19W3WX2H9B name=projects/425352658356/locations/us-central1/workflows/grace-2-sfincs-orchestrator/executions/427fdf22-e0d8-44c9-a465-d6dd876e2232 poll_interval=10s timeout=1800s
+2026-06-07 13:04:36,750 INFO grace2_agent.workflows.postprocess_flood uploaded flood-depth COG to gs://grace-2-hazard-prod-runs/01KTHTFCV5E588A293N0JFQTZH/flood_depth_peak.tif
+2026-06-07 13:04:36,751 INFO grace2_agent.workflows.model_flood_scenario model_flood_scenario complete envelope_id=01KTHTZVRF1JTFHAH6R5BDYCQ1 run_ids=['01KTHTFCV5E588A293N0JFQTZH'] layers=1
+2026-06-07 13:04:36,752 INFO smoke_demo outcome=SUCCESS solver_version=sfincs-v2.3.3 layers=1 elapsed=583.83s
+2026-06-07 13:04:36,754 INFO smoke_demo smoke transcript written to /home/nate/Documents/GRACE-2/reports/inflight/job-0058-engine-20260607/evidence/smoke_demo_envelope.json
+ERROR 3: 7dac3520db9a0f6092a434be438d02d9.tif: I/O error
+Exception ignored in: <function ThreadURIManager.__del__ at 0x7fd5399031a0>
+Traceback (most recent call last):
+  File "/home/nate/Documents/GRACE-2/.venv-agent/lib/python3.13/site-packages/rioxarray/_io.py", line 233, in __del__
+    self.close()
+  File "/home/nate/Documents/GRACE-2/.venv-agent/lib/python3.13/site-packages/rioxarray/_io.py", line 229, in close
+    self._file_handle.close()
+  File "rasterio/_base.pyx", line 456, in rasterio._base.DatasetBase.close
+SystemError: <cyfunction DatasetBase.stop at 0x7fd57c3a9230> returned a result with an exception set
+ERROR 3: 87ba00463af0275d02115f7463afe6e9.tif: I/O error
+Exception ignored in: <function ThreadURIManager.__del__ at 0x7fd5399031a0>
+Traceback (most recent call last):
+  File "/home/nate/Documents/GRACE-2/.venv-agent/lib/python3.13/site-packages/rioxarray/_io.py", line 233, in __del__
+    self.close()
+  File "/home/nate/Documents/GRACE-2/.venv-agent/lib/python3.13/site-packages/rioxarray/_io.py", line 229, in close
+    self._file_handle.close()
+  File "rasterio/_base.pyx", line 456, in rasterio._base.DatasetBase.close
+SystemError: <cyfunction DatasetBase.stop at 0x7fd57c3a9230> returned a result with an exception set
+Exception ignored in: <_cython_3_2_0.generator object at 0x7fd537fcd6d0>
+Traceback (most recent call last):
+  File "rasterio/_vsiopener.pyx", line 437, in _opener_registration
+LookupError: <ContextVar name='opener_registery' at 0x7fd57c3da480>
+ERROR 3: 7dac3520db9a0f6092a434be438d02d9.tif: I/O error
+Exception ignored in: <function URIManager.__del__ at 0x7fd5399036a0>
+Traceback (most recent call last):
+  File "/home/nate/Documents/GRACE-2/.venv-agent/lib/python3.13/site-packages/rioxarray/_io.py", line 281, in __del__
+    self.close(needs_lock=False)
+  File "/home/nate/Documents/GRACE-2/.venv-agent/lib/python3.13/site-packages/rioxarray/_io.py", line 277, in close
+    self._local.thread_manager.close()
+  File "/home/nate/Documents/GRACE-2/.venv-agent/lib/python3.13/site-packages/rioxarray/_io.py", line 229, in close
+    self._file_handle.close()
+  File "rasterio/_base.pyx", line 456, in rasterio._base.DatasetBase.close
+SystemError: <cyfunction DatasetBase.stop at 0x7fd57c3a9230> returned a result with an exception set
+Exception ignored in: <function ThreadURIManager.__del__ at 0x7fd5399031a0>
+Traceback (most recent call last):
+  File "/home/nate/Documents/GRACE-2/.venv-agent/lib/python3.13/site-packages/rioxarray/_io.py", line 233, in __del__
+    self.close()
+  File "/home/nate/Documents/GRACE-2/.venv-agent/lib/python3.13/site-packages/rioxarray/_io.py", line 229, in close
+    self._file_handle.close()
+  File "rasterio/_base.pyx", line 458, in rasterio._base.DatasetBase.close
+  File "/usr/lib/python3.13/contextlib.py", line 627, in close
+    self.__exit__(None, None, None)
+  File "/usr/lib/python3.13/contextlib.py", line 619, in __exit__
+    raise exc
+  File "/usr/lib/python3.13/contextlib.py", line 604, in __exit__
+    if cb(*exc_details):
+  File "/usr/lib/python3.13/contextlib.py", line 148, in __exit__
+    next(self.gen)
+  File "rasterio/_vsiopener.pyx", line 437, in _opener_registration
+LookupError: <ContextVar name='opener_registery' at 0x7fd57c3da480>
+ERROR 3: 87ba00463af0275d02115f7463afe6e9.tif: I/O error
+Exception ignored in: <function URIManager.__del__ at 0x7fd5399036a0>
+Traceback (most recent call last):
+  File "/home/nate/Documents/GRACE-2/.venv-agent/lib/python3.13/site-packages/rioxarray/_io.py", line 281, in __del__
+    self.close(needs_lock=False)
+  File "/home/nate/Documents/GRACE-2/.venv-agent/lib/python3.13/site-packages/rioxarray/_io.py", line 277, in close
+    self._local.thread_manager.close()
+  File "/home/nate/Documents/GRACE-2/.venv-agent/lib/python3.13/site-packages/rioxarray/_io.py", line 229, in close
+    self._file_handle.close()
+  File "rasterio/_base.pyx", line 456, in rasterio._base.DatasetBase.close
+SystemError: <cyfunction DatasetBase.stop at 0x7fd57c3a9230> returned a result with an exception set
+Exception ignored in: <function ThreadURIManager.__del__ at 0x7fd5399031a0>
+Traceback (most recent call last):
+  File "/home/nate/Documents/GRACE-2/.venv-agent/lib/python3.13/site-packages/rioxarray/_io.py", line 233, in __del__
+    self.close()
+  File "/home/nate/Documents/GRACE-2/.venv-agent/lib/python3.13/site-packages/rioxarray/_io.py", line 229, in close
+    self._file_handle.close()
+  File "rasterio/_base.pyx", line 458, in rasterio._base.DatasetBase.close
+  File "/usr/lib/python3.13/contextlib.py", line 627, in close
+    self.__exit__(None, None, None)
+  File "/usr/lib/python3.13/contextlib.py", line 619, in __exit__
+    raise exc
+  File "/usr/lib/python3.13/contextlib.py", line 604, in __exit__
+    if cb(*exc_details):
+  File "/usr/lib/python3.13/contextlib.py", line 148, in __exit__
+    next(self.gen)
+  File "rasterio/_vsiopener.pyx", line 437, in _opener_registration
+LookupError: <ContextVar name='opener_registery' at 0x7fd57c3da480>
+Exception ignored in: <_cython_3_2_0.generator object at 0x7fd537fcfb10>
+Traceback (most recent call last):
+  File "rasterio/_vsiopener.pyx", line 437, in _opener_registration
+LookupError: <ContextVar name='opener_registery' at 0x7fd57c3da480>
+Exception ignored in: <function SfincsModel.__del__ at 0x7fd538885e40>
+Traceback (most recent call last):
+  File "/home/nate/Documents/GRACE-2/.venv-agent/lib/python3.13/site-packages/hydromt_sfincs/sfincs.py", line 150, in __del__
+AttributeError: 'NoneType' object has no attribute 'FileHandler'

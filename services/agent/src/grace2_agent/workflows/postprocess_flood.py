@@ -70,6 +70,9 @@ class PostprocessError(RuntimeError):
     - ``RUN_OUTPUT_EMPTY`` — output exists but contains no depth field /
       no timesteps (defensive; surfaces alongside the typed envelope
       so the user understands why the layer is missing).
+    - ``RUN_OUTPUT_UNEXPECTED_SHAPE`` — the extracted depth array has extra
+      singleton dims that do not collapse to 2D after squeeze; indicates an
+      unexpected HydroMT-SFINCS output shape variant.
     - ``COG_WRITE_FAILED`` — rasterio could not write the COG (encoder
       error, disk full).
     - ``COG_UPLOAD_FAILED`` — the GCS upload of the staged COG failed.
@@ -189,6 +192,18 @@ def _extract_peak_depth_geotiff(netcdf_path: Path) -> tuple[Path, dict[str, Any]
             )
 
         arr = np.asarray(depth.values, dtype="float32")
+        # Squeeze any singleton leading dims (e.g. HydroMT-SFINCS 1.2.2 emits
+        # hmax with shape (timemax=1, n, m)). COG writer expects exactly 2D.
+        if arr.ndim > 2:
+            arr = np.squeeze(arr)
+            if arr.ndim != 2:
+                raise PostprocessError(
+                    "RUN_OUTPUT_UNEXPECTED_SHAPE",
+                    message=(
+                        f"depth array has shape {arr.shape}; expected 2D after squeeze"
+                    ),
+                    details={"netcdf_path": str(netcdf_path), "shape": list(arr.shape)},
+                )
         # Mask non-positive depths to NaN so the COG is dry-cell-aware.
         arr_masked = np.where(arr > 0.0, arr, np.nan)
         flooded = arr_masked[~np.isnan(arr_masked)]
