@@ -1,0 +1,10 @@
+2026-06-07 02:07:53,453 INFO live_landcover_canonical ==== fetch_landcover live (WCS 1.0.0 path) bbox=(-81.92, 26.55, -81.8, 26.68) ====
+2026-06-07 02:07:55,869 INFO grace2_agent.tools.cache read_through miss-write tool=fetch_landcover key=743c930ab7d892d6006512bc84c6bea8 bytes=385954 customTime=2026-06-07T09:07:55.538978+00:00
+2026-06-07 02:07:55,869 INFO live_landcover_canonical returned source=mrlc-wcs vintage=2021
+2026-06-07 02:07:55,869 INFO live_landcover_canonical cached COG uri=gs://grace-2-hazard-prod-cache/cache/static-30d/landcover/743c930ab7d892d6006512bc84c6bea8.tif
+2026-06-07 02:07:56,958 INFO live_landcover_canonical downloaded cached COG to /tmp/claude-1000/tmpxbmdv08i.tif (385954 bytes)
+2026-06-07 02:07:57,032 INFO live_landcover_canonical CRS=EPSG:4326 shape=(483, 399) dtype=('uint8',) nodata=255.0
+2026-06-07 02:07:57,033 INFO live_landcover_canonical unique band1 values: [11, 21, 22, 23, 24, 31, 41, 42, 43, 52, 71, 81, 90, 95, 255]
+2026-06-07 02:07:57,033 INFO live_landcover_canonical non-nodata band values: [11, 21, 22, 23, 24, 31, 41, 42, 43, 52, 71, 81, 90, 95]
+2026-06-07 02:07:57,033 INFO live_landcover_canonical canonical_nlcd match (subset): True
+2026-06-07 02:07:57,033 INFO live_landcover_canonical PASS: all band values are canonical NLCD integers + nodata sentinels

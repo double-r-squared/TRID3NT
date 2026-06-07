@@ -1,0 +1,8 @@
+name: cache/static-30d/landcover/743c930ab7d892d6006512bc84c6bea8.tif
+size: 385954
+content_type: image/tiff
+cache_control: public, max-age=2592000
+custom_time: 2026-06-07 09:07:55.538978+00:00
+time_created: 2026-06-07 09:07:55.868000+00:00
+md5_hash: eP9xcpfKk8OST2E69rV59w==
+etag: CNr8j9bj9JQDEAE=

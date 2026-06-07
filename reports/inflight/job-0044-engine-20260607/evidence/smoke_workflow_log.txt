@@ -1,0 +1,31 @@
+2026-06-07 02:08:18,422 INFO smoke_workflow uploaded synthetic SFINCS manifest: gs://grace-2-hazard-prod-cache/cache/static-30d/sfincs-smoke/manifest-job-0042-happy-1780823297.json
+2026-06-07 02:08:18,423 INFO smoke_workflow ==== smoke: model_flood_scenario(Fort Myers) — composing M5 chain ====
+2026-06-07 02:08:18,423 INFO grace2_agent.workflows.model_flood_scenario model_flood_scenario start bbox=(-81.92, 26.55, -81.8, 26.68) location_query=None event_id=None return_period_yr=100 duration_hr=24 compute_class=medium
+2026-06-07 02:08:19,363 INFO grace2_agent.tools.cache read_through hit tool=fetch_dem key=36ddf05761b1171c38db0acd856169ec bytes=1264146
+2026-06-07 02:08:20,129 INFO grace2_agent.tools.cache read_through hit tool=fetch_landcover key=743c930ab7d892d6006512bc84c6bea8 bytes=385954
+2026-06-07 02:08:21,051 INFO grace2_agent.tools.cache read_through hit tool=fetch_river_geometry key=66f7c0ca862d1eae948f20d5c2d493c0 bytes=229296
+2026-06-07 02:08:21,633 INFO grace2_agent.tools.cache read_through hit tool=lookup_precip_return_period key=e3caee4c6517cd9d10ad262d3bf216aa bytes=1614
+2026-06-07 02:08:21,633 INFO grace2_agent.tools.data_fetch lookup_precip_return_period (lat=26.616666667 lon=-81.858333333 ari=100 dur=24-hr) -> 11.900 inches cache_hit=True
+2026-06-07 02:08:21,634 INFO smoke_workflow [stub build_sfincs_model] downloading landcover gs://grace-2-hazard-prod-cache/cache/static-30d/landcover/743c930ab7d892d6006512bc84c6bea8.tif for local read
+2026-06-07 02:08:22,382 INFO smoke_workflow [stub build_sfincs_model] reading classes from /tmp/claude-1000/tmpdvwx72gh.tif
+2026-06-07 02:08:22,703 INFO smoke_workflow [stub build_sfincs_model] NLCD gate PASS — fetched=[11, 21, 22, 23, 24, 31, 41, 42, 43, 52, 71, 81, 90, 95] subset of mapping(20)
+2026-06-07 02:08:22,703 INFO grace2_agent.tools.solver run_solver solver=sfincs run_id=01KTGNE8HFJ07H62K4PQ0KDBJ7 compute_class=medium parent=projects/grace-2-hazard-prod/locations/us-central1/workflows/grace-2-sfincs-orchestrator
+2026-06-07 02:08:23,539 INFO grace2_agent.tools.solver run_solver submitted handle_id=01KTGNE9BKRH76Z2FZJ5W4W49K workflows_execution_id=projects/425352658356/locations/us-central1/workflows/grace-2-sfincs-orchestrator/executions/1d98f3e9-83f5-40d7-a3d5-ecfb6449e2dc
+2026-06-07 02:08:23,547 INFO grace2_agent.tools.solver wait_for_completion handle_id=01KTGNE9BKRH76Z2FZJ5W4W49K name=projects/425352658356/locations/us-central1/workflows/grace-2-sfincs-orchestrator/executions/1d98f3e9-83f5-40d7-a3d5-ecfb6449e2dc poll_interval=10s timeout=1800s
+2026-06-07 02:12:17,598 INFO smoke_workflow envelope_id=01KTGNNDXX740W0FV86ZQY7KZY envelope_type=modeled solver_run_ids=['01KTGNE8HFJ07H62K4PQ0KDBJ7'] layers=0
+2026-06-07 02:12:17,598 INFO smoke_workflow flood.solver_version=failed:SOLVER_FAILED flood.max_depth_m=0.0
+2026-06-07 02:12:17,602 INFO smoke_workflow smoke transcript written to evidence/smoke_envelope.json
+2026-06-07 02:12:18,145 INFO smoke_workflow uploaded synthetic SFINCS manifest: gs://grace-2-hazard-prod-cache/cache/static-30d/sfincs-smoke/manifest-job-0042-dispatch-1780823537.json
+2026-06-07 02:12:18,146 INFO smoke_workflow ==== smoke: dispatch chain — live run_solver + wait_for_completion ====
+2026-06-07 02:12:18,146 INFO grace2_agent.workflows.model_flood_scenario model_flood_scenario start bbox=(-81.92, 26.55, -81.8, 26.68) location_query=None event_id=None return_period_yr=100 duration_hr=24 compute_class=medium
+2026-06-07 02:12:19,189 INFO grace2_agent.tools.cache read_through hit tool=fetch_dem key=36ddf05761b1171c38db0acd856169ec bytes=1264146
+2026-06-07 02:12:20,005 INFO grace2_agent.tools.cache read_through hit tool=fetch_landcover key=743c930ab7d892d6006512bc84c6bea8 bytes=385954
+2026-06-07 02:12:20,769 INFO grace2_agent.tools.cache read_through hit tool=fetch_river_geometry key=66f7c0ca862d1eae948f20d5c2d493c0 bytes=229296
+2026-06-07 02:12:21,383 INFO grace2_agent.tools.cache read_through hit tool=lookup_precip_return_period key=e3caee4c6517cd9d10ad262d3bf216aa bytes=1614
+2026-06-07 02:12:21,384 INFO grace2_agent.tools.data_fetch lookup_precip_return_period (lat=26.616666667 lon=-81.858333333 ari=100 dur=24-hr) -> 11.900 inches cache_hit=True
+2026-06-07 02:12:21,384 INFO smoke_workflow [stub build_sfincs_model] (gate-bypassed) returning ModelSetup -> gs://grace-2-hazard-prod-cache/cache/static-30d/sfincs-smoke/manifest-job-0042-dispatch-1780823537.json
+2026-06-07 02:12:21,385 INFO grace2_agent.tools.solver run_solver solver=sfincs run_id=01KTGNNHM9BBVBN2X6S6Q3Y2YA compute_class=medium parent=projects/grace-2-hazard-prod/locations/us-central1/workflows/grace-2-sfincs-orchestrator
+2026-06-07 02:12:22,162 INFO grace2_agent.tools.solver run_solver submitted handle_id=01KTGNNJCJ90KYRN8V79V9P251 workflows_execution_id=projects/425352658356/locations/us-central1/workflows/grace-2-sfincs-orchestrator/executions/0a184f21-11cd-48fa-8b78-e93c05fd1504
+2026-06-07 02:12:22,169 INFO grace2_agent.tools.solver wait_for_completion handle_id=01KTGNNJCJ90KYRN8V79V9P251 name=projects/425352658356/locations/us-central1/workflows/grace-2-sfincs-orchestrator/executions/0a184f21-11cd-48fa-8b78-e93c05fd1504 poll_interval=10s timeout=1800s
+2026-06-07 02:17:06,699 INFO smoke_workflow envelope_id=01KTGNY88B19246FBCGCD46F74 solver_run_ids=['01KTGNNHM9BBVBN2X6S6Q3Y2YA'] flood.solver_version=failed:SOLVER_FAILED
+2026-06-07 02:17:06,704 INFO smoke_workflow dispatch transcript written to evidence/smoke_dispatch.json

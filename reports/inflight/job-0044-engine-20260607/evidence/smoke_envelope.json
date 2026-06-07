@@ -1,0 +1,54 @@
+{
+  "bbox": [
+    -81.92,
+    26.55,
+    -81.8,
+    26.68
+  ],
+  "fetched_classes_observed": [
+    11,
+    21,
+    22,
+    23,
+    24,
+    31,
+    41,
+    42,
+    43,
+    52,
+    71,
+    81,
+    90,
+    95
+  ],
+  "manning_mapping_path": "/home/nate/Documents/GRACE-2/services/agent/src/grace2_agent/workflows/manning_mapping.csv",
+  "manifest_uri": "gs://grace-2-hazard-prod-cache/cache/static-30d/sfincs-smoke/manifest-job-0042-happy-1780823297.json",
+  "envelope_summary": {
+    "envelope_id": "01KTGNNDXX740W0FV86ZQY7KZY",
+    "envelope_type": "modeled",
+    "hazard_type": "flood",
+    "workflow_name": "model_flood_scenario",
+    "bbox": [
+      -81.92,
+      26.55,
+      -81.8,
+      26.68
+    ],
+    "layers_count": 0,
+    "solver_run_ids": [
+      "01KTGNE8HFJ07H62K4PQ0KDBJ7"
+    ],
+    "forcing_type": "pluvial_synthetic",
+    "forcing_params": {
+      "precip_inches": 11.9,
+      "duration_hours": 24.0,
+      "return_period_years": 100,
+      "vintage_volume": "NOAA Atlas 14 Volume 9 Version 2",
+      "project_area": "Southeastern States"
+    },
+    "flood_solver_version": "failed:SOLVER_FAILED",
+    "flood_max_depth_m": 0.0,
+    "flood_grid_resolution_m": 30.0,
+    "data_source_count": 4
+  }
+}

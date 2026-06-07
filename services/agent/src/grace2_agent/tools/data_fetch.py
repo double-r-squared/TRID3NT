@@ -1158,11 +1158,13 @@ def geocode_location(query: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# fetch_landcover — NLCD (MRLC) / ESA WorldCover (sprint-07 Stage B, job-0039).
+# fetch_landcover — NLCD (MRLC) / ESA WorldCover (sprint-07 Stage B, job-0039;
+# job-0044 hotfix: WMS → WCS 1.0.0 to fix palette encoding).
 # ---------------------------------------------------------------------------
 #
-# Access pattern tier — LIVE-VERIFIED (the kickoff inferred Tier 3 / direct
-# HTTPS + Range + COG-backed; live probing rejected that path):
+# Access pattern tier — LIVE-VERIFIED THROUGH TWO ROUNDS:
+#
+# Round 1 (job-0039, 2026-06-07):
 #
 #   * The MRLC direct file mirror (``s3-us-west-2.amazonaws.com/mrlc/
 #     Annual_NLCD_LndCov_<YEAR>_CU_C1V0.tif``) returned an HTTP 200 with a
@@ -1170,27 +1172,62 @@ def geocode_location(query: str) -> dict[str, Any]:
 #     offsets — not a real raster). 2019 and 2021 file URLs at the same path
 #     return HTTP 403. The "direct HTTPS + Range" path the kickoff inferred is
 #     NOT a real surface for NLCD bytes.
-#   * The MRLC WCS endpoint (`/geoserver/mrlc_display/wcs`) accepts a connection
-#     but times out before serving GetCapabilities (≥ 30 s).
+#   * The MRLC WCS endpoint (`/geoserver/mrlc_display/wcs`) timed out on
+#     GetCapabilities in the first probe.
 #   * MRLC's **WMS** GeoServer at ``www.mrlc.gov/geoserver/mrlc_display/wms``
 #     serves NLCD year layers (``NLCD_2021_Land_Cover_L48`` etc.) and supports
-#     ``GetMap?format=image/geotiff`` — that returns actual NLCD raster bytes
-#     for a bbox. This is the **Tier 2 (OGC service)** access pattern in §F.1.1.
+#     ``GetMap?format=image/geotiff`` — Tier 2 (OGC service) byte materialized.
+#     Substrate landed against WMS GetMap.
 #
-# Decision: implement the NLCD branch against MRLC WMS GetMap with
-# ``format=image/geotiff``. Per §F.1.1 Tier 2 discipline the layer reference
-# IS the URL and QGIS Server would normally proxy/re-render. But for SFINCS
-# setup (job-0042 build_sfincs_model) we need raster bytes for the HydroMT
-# roughness component — so the fetcher pulls a GetMap GeoTIFF for the bbox at
-# 30 m resolution and writes it to the FR-DC-3 cache as if it were a Tier-1
-# COG (the cache shim doesn't care about the tier; the on-disk artifact is
-# a real GeoTIFF either way). The tier classification in the docstring is
-# accurate — Tier 2 OGC service, byte materialized via GetMap — even though
-# this fetcher is **not** the §F.2 Discovery-First lane pattern (no layer
-# reference returned to the LLM; the bytes are clipped and cached).
+# Round 2 (job-0044, 2026-06-07 — THE PALETTE-ENCODING HOTFIX):
 #
-# This deviation from the kickoff's inferred tier is surfaced as
-# **OQ-39-NLCD-TIER-DEVIATION** for orchestrator triage.
+#   * Job-0042's NLCD validation gate (Invariant 7 mitigation) fired on a real
+#     Fort Myers smoke run: the WMS GetMap GeoTIFF returns raster bytes that
+#     are **palette indices** (1, 3, 4, 5, ..., 21) NOT canonical NLCD class
+#     integers (11, 21, 22, 23, ..., 95) — surfaced as
+#     OQ-42-NLCD-WMS-PALETTE-ENCODING. The Manning's mapping CSV is keyed by
+#     canonical integers; SFINCS dispatch was blocked end-to-end.
+#   * Live-probed both candidate fix paths per §F.1.1 live-verification discipline:
+#
+#     - **Path A (palette decode):** the WMS GeoTIFF carries a 256-entry
+#       ColorTable in its IFD; the index→RGB→canonical NLCD mapping is fixed
+#       (idx 1 = open-water = (71,107,160) = NLCD 11; idx 3 = developed-open
+#       = (221,201,201) = NLCD 21; …). Decoding via the embedded ColorTable
+#       and an inverse RGB→class table is feasible but adds a fragile
+#       client-side translation step (one MRLC palette reorder breaks us).
+#     - **Path B (WCS 1.0.0 GetCoverage):** ``mrlc_display:NLCD_2021_Land_
+#       Cover_L48`` coverage served by the WCS 1.0.0 endpoint with
+#       ``REQUEST=GetCoverage&CRS=EPSG:4326&BBOX=...&WIDTH=...&HEIGHT=...&FORMAT=GeoTIFF``
+#       returns canonical NLCD class integers DIRECTLY (verified: unique band1
+#       values for Fort Myers bbox = [11, 21, 22, 23, 24, 31, 41, 42, 43, 52,
+#       71, 81, 82, 90, 95, 255-nodata] — every value cleanly mapped to
+#       manning_mapping.csv v1.0.0). The DescribeCoverage XML calls the band
+#       "PALETTE_INDEX" but the integers ARE the canonical NLCD codes — WCS
+#       1.0.0 emits the source dataset's raw byte values whereas WMS GetMap
+#       emits the rendered (re-indexed) palette indices.
+#     - **WCS 2.0.1 / 1.1.1:** also tried; both fail in different ways. WCS
+#       2.0.1 hits a GeoServer "Unable to map projection Popular Visualisation
+#       Pseudo Mercator" exception (GeoServer projection-mapping bug on its
+#       own native CRS). WCS 1.1.1 rejects bbox-only requests as "less than a
+#       pixel would be read." WCS 1.0.0 with explicit WIDTH/HEIGHT is the
+#       reliable byte surface.
+#
+#   * **Path B chosen.** Canonical bytes from the server is a clean win over
+#     client-side palette decoding: no RGB→class lookup to maintain, no
+#     fragility to MRLC palette reorders, no Round-3 silent-wrong-answer risk.
+#     Both paths are §F.1.1 Tier 2 (OGC service) — substrate stays Tier 2,
+#     vendor sub-protocol switches from WMS GetMap to WCS GetCoverage.
+#
+# Job-0044 cache-migration policy: cache key now includes ``source: "mrlc-wcs"``
+# (the palette-encoded ``mrlc-wms`` entries from job-0039's evidence land
+# under a different cache prefix and naturally evict on the 30-day TTL — no
+# explicit invalidation needed). Job-0039's evidence COGs at
+# ``cache/static-30d/landcover/56bad09bfa8a71d502ed61badc785a00.tif`` will
+# remain until TTL eviction; the new canonical-bytes COGs land at a new key.
+#
+# Round 1 deviation (job-0039) is still recorded as OQ-39-NLCD-TIER-DEVIATION
+# (kickoff inferred Tier 3 → live Tier 2). Round 2 hotfix (job-0044) closes
+# OQ-42-NLCD-WMS-PALETTE-ENCODING.
 #
 # Vintage discipline: NLCD vintages 2019, 2021 (default), and 2023 are most-
 # relevant. The Annual NLCD Collection 1.0 (2023 release) is published as the
@@ -1234,98 +1271,119 @@ _FETCH_LANDCOVER_METADATA = AtomicToolMetadata(
 )
 
 
-# MRLC WMS GeoServer endpoint (Tier 2 OGC service, live-verified 2026-06-07).
-_MRLC_WMS_URL = "https://www.mrlc.gov/geoserver/mrlc_display/wms"
+# MRLC WCS 1.0.0 GeoServer endpoint (Tier 2 OGC service, live-verified
+# 2026-06-07 in job-0044). WCS 1.0.0 GetCoverage returns canonical NLCD class
+# integers in the raster band — the WMS GetMap path job-0039 landed against
+# returned palette-encoded indices (the OQ-42-NLCD-WMS-PALETTE-ENCODING
+# blocker job-0042's validation gate caught). WCS 1.0.0 was chosen over
+# WCS 1.1.1 / 2.0.1: 2.0.1 hits a GeoServer projection-mapping bug ("Unable
+# to map projection Popular Visualisation Pseudo Mercator") on its own
+# native EPSG:3857; 1.1.1 rejects bbox-only requests; 1.0.0 with explicit
+# CRS=EPSG:4326 + WIDTH/HEIGHT + FORMAT=GeoTIFF is the reliable surface.
+_MRLC_WCS_URL = "https://www.mrlc.gov/geoserver/mrlc_display/wcs"
 
-# NLCD year → WMS layer name in the MRLC GeoServer GetCapabilities catalog.
-# Live-verified 2026-06-07 (the GetCapabilities document lists discrete-year
-# CONUS L48 layers through 2021; older years are present for completeness).
-_NLCD_WMS_LAYER_BY_YEAR: dict[int, str] = {
-    2001: "NLCD_2001_Land_Cover_L48",
-    2004: "NLCD_2004_Land_Cover_L48",
-    2006: "NLCD_2006_Land_Cover_L48",
-    2008: "NLCD_2008_Land_Cover_L48",
-    2011: "NLCD_2011_Land_Cover_L48",
-    2013: "NLCD_2013_Land_Cover_L48",
-    2016: "NLCD_2016_Land_Cover_L48",
-    2019: "NLCD_2019_Land_Cover_L48",
-    2021: "NLCD_2021_Land_Cover_L48",
+# NLCD year → WCS coverage ID in the MRLC GeoServer catalog. WCS uses the
+# qualified workspace:coverage form ``mrlc_display:NLCD_<YEAR>_Land_Cover_L48``
+# (the underlying GeoServer layer); live-verified 2026-06-07.
+_NLCD_WCS_COVERAGE_BY_YEAR: dict[int, str] = {
+    2001: "mrlc_display:NLCD_2001_Land_Cover_L48",
+    2004: "mrlc_display:NLCD_2004_Land_Cover_L48",
+    2006: "mrlc_display:NLCD_2006_Land_Cover_L48",
+    2008: "mrlc_display:NLCD_2008_Land_Cover_L48",
+    2011: "mrlc_display:NLCD_2011_Land_Cover_L48",
+    2013: "mrlc_display:NLCD_2013_Land_Cover_L48",
+    2016: "mrlc_display:NLCD_2016_Land_Cover_L48",
+    2019: "mrlc_display:NLCD_2019_Land_Cover_L48",
+    2021: "mrlc_display:NLCD_2021_Land_Cover_L48",
 }
 
 
 def _fetch_nlcd_landcover_bytes(
     bbox: tuple[float, float, float, float], vintage_year: int
 ) -> bytes:
-    """Fetch NLCD landcover for ``bbox`` at the given vintage year via MRLC WMS.
+    """Fetch NLCD landcover for ``bbox`` at the given vintage year via MRLC WCS 1.0.0.
 
-    Tier 2 access pattern (per §F.1.1) — MRLC WMS GetMap with
-    ``format=image/geotiff`` returns NLCD raster bytes for the bbox. The
-    returned TIFF is the WMS server's GeoTIFF rendering at the requested
-    pixel grid (computed from the bbox + 30 m native resolution); it carries
-    a GeoTIFF header with CRS + transform, which is sufficient for HydroMT
-    consumption downstream (job-0042 ``build_sfincs_model``).
+    Tier 2 access pattern (per §F.1.1) — MRLC WCS 1.0.0 ``GetCoverage`` with
+    ``FORMAT=GeoTIFF`` returns the canonical NLCD class integers (11, 21, 22,
+    23, 24, 31, 41, 42, 43, 51, 52, 71, 72, 73, 74, 81, 82, 90, 95) in the
+    raster band — NOT palette indices. This is the job-0044 hotfix that
+    unblocks job-0042's NLCD validation gate. The returned GeoTIFF carries a
+    proper geo-header (EPSG:4326 in this request shape) so HydroMT's
+    ``setup_manning_roughness`` consumes the bytes directly without a
+    client-side palette decode.
+
+    Path-comparison summary (live-verified 2026-06-07):
+    - WMS GetMap: returned palette indices [1, 3, 4, 5, 6, 7, 9, 10, 11, 13,
+      14, 18, 19, 20, 21] for Fort Myers — BROKEN (Manning's mapping keyed by
+      canonical integers).
+    - WCS 1.0.0 GetCoverage: returned canonical integers [11, 21, 22, 23, 24,
+      31, 41, 42, 43, 52, 71, 81, 82, 90, 95, 255-nodata] — CORRECT.
     """
     _validate_bbox(bbox)
-    layer = _NLCD_WMS_LAYER_BY_YEAR.get(vintage_year)
-    if layer is None:
-        available = sorted(_NLCD_WMS_LAYER_BY_YEAR.keys())
+    coverage = _NLCD_WCS_COVERAGE_BY_YEAR.get(vintage_year)
+    if coverage is None:
+        available = sorted(_NLCD_WCS_COVERAGE_BY_YEAR.keys())
         raise UpstreamAPIError(
-            f"NLCD vintage year {vintage_year} not in MRLC WMS catalog "
-            f"(available: {available}); add 2023 once the MRLC GetCapabilities "
-            f"lists ``NLCD_2023_Land_Cover_L48`` (see OQ-39-NLCD-VINTAGE-DEFAULT)."
+            f"NLCD vintage year {vintage_year} not in MRLC WCS catalog "
+            f"(available: {available}); add 2023 once MRLC publishes "
+            f"``mrlc_display:NLCD_2023_Land_Cover_L48`` (see OQ-39-NLCD-VINTAGE-DEFAULT)."
         )
 
-    # Pixel grid: 30 m native, sized to the bbox in EPSG:4326 — the WMS
-    # server resamples internally to fit. Use a tight bound on width/height
-    # so we don't issue a request for a million pixels on a small bbox.
+    # Pixel grid: 30 m native, sized to the bbox in EPSG:4326. WCS 1.0.0
+    # requires explicit WIDTH/HEIGHT (no resolution shorthand at this version).
     min_lon, min_lat, max_lon, max_lat = bbox
     mid_lat = 0.5 * (min_lat + max_lat)
     m_per_deg_lon = 111_320.0 * math.cos(math.radians(mid_lat))
     width_m = (max_lon - min_lon) * m_per_deg_lon
     height_m = (max_lat - min_lat) * 111_320.0
-    # 30 m native; clamp to 16 px..4096 px on each axis (WMS server may
-    # reject very large requests; 4096 covers a 122 km wide bbox at 30 m).
+    # 30 m native; clamp 16 px..4096 px per axis (the server rejects very
+    # large GetCoverage requests; 4096 covers ~122 km wide bbox at 30 m).
     width_px = max(16, min(4096, int(round(width_m / 30.0))))
     height_px = max(16, min(4096, int(round(height_m / 30.0))))
 
+    # WCS 1.0.0 GetCoverage with FORMAT=GeoTIFF + CRS=EPSG:4326. Live probe
+    # (job-0044, 2026-06-07) confirmed the server returns a properly-formed
+    # GeoTIFF with content-type ``image/tiff`` whose raster band carries
+    # canonical NLCD class integers. The "PALETTE_INDEX" range-type label
+    # in the DescribeCoverage XML is a GeoServer artifact — the byte values
+    # are the canonical NLCD codes, not redirected indices.
     params = {
-        "service": "WMS",
-        "version": "1.1.1",
-        "request": "GetMap",
-        "layers": layer,
-        "srs": "EPSG:4326",
-        "bbox": f"{min_lon},{min_lat},{max_lon},{max_lat}",
-        "width": str(width_px),
-        "height": str(height_px),
-        "format": "image/geotiff",
+        "service": "WCS",
+        "version": "1.0.0",
+        "request": "GetCoverage",
+        "Coverage": coverage,
+        "CRS": "EPSG:4326",
+        "BBOX": f"{min_lon},{min_lat},{max_lon},{max_lat}",
+        "WIDTH": str(width_px),
+        "HEIGHT": str(height_px),
+        "FORMAT": "GeoTIFF",
     }
     try:
         resp = requests.get(
-            _MRLC_WMS_URL,
+            _MRLC_WCS_URL,
             params=params,
             headers={"User-Agent": _DEFAULT_USER_AGENT},
-            timeout=60.0,
+            timeout=120.0,
         )
         resp.raise_for_status()
     except requests.RequestException as exc:
         raise UpstreamAPIError(
-            f"MRLC WMS GetMap failed for layer={layer} bbox={bbox}: {exc}"
+            f"MRLC WCS GetCoverage failed for coverage={coverage} bbox={bbox}: {exc}"
         ) from exc
 
-    # The GeoServer returns image/geotiff content-type on success. On a
-    # service error (e.g. invalid layer name), it returns an
-    # application/vnd.ogc.se_xml ServiceException — surface that as a typed
-    # error so callers see the real failure.
+    # On a service error (e.g. invalid coverage name, projection mapping
+    # bug, sub-pixel request) GeoServer returns an OGC exception XML. Surface
+    # that as a typed error so callers see the real failure mode.
     ct = resp.headers.get("content-type", "")
     if "tiff" not in ct.lower() and "geotiff" not in ct.lower():
         raise UpstreamAPIError(
-            f"MRLC WMS returned unexpected content-type={ct!r} for layer={layer} "
-            f"bbox={bbox}; body preview: {resp.text[:200]!r}"
+            f"MRLC WCS returned unexpected content-type={ct!r} for coverage={coverage} "
+            f"bbox={bbox}; body preview: {resp.text[:300]!r}"
         )
     if not resp.content or len(resp.content) < 64:
         raise UpstreamAPIError(
-            f"MRLC WMS returned empty/short body ({len(resp.content)} bytes) "
-            f"for layer={layer} bbox={bbox}"
+            f"MRLC WCS returned empty/short body ({len(resp.content)} bytes) "
+            f"for coverage={coverage} bbox={bbox}"
         )
     return resp.content
 
@@ -1381,19 +1439,29 @@ def fetch_landcover(
     point classification); Alaska / Hawaii / Puerto Rico (separate MRLC
     layers; not in v0.1 substrate).
 
-    Access pattern: **Tier 2 (OGC service — MRLC WMS GeoServer)** per §F.1.1.
-    The kickoff inferred Tier 3 (direct HTTPS + Range + COG-backed), but live
-    verification (2026-06-07) revealed that MRLC's direct file mirror at
-    ``s3-us-west-2.amazonaws.com/mrlc/Annual_NLCD_LndCov_<YEAR>_CU_C1V0.tif``
-    is a 42-byte placeholder stub, not a real COG, and the WCS endpoint times
-    out on GetCapabilities. The reliable byte-shape is **WMS GetMap with
-    ``format=image/geotiff``** through the MRLC GeoServer at
-    ``www.mrlc.gov/geoserver/mrlc_display/wms``. The returned GeoTIFF carries
-    a real raster + CRS + transform usable by HydroMT downstream. The fetcher
-    materializes the bytes through GetMap and writes through the FR-DC-3
-    cache so the bbox-quantized cache key dedups across callers. (See
-    OQ-39-NLCD-TIER-DEVIATION for the kickoff vs live-verified tier
-    discrepancy.)
+    Access pattern: **Tier 2 (OGC service — MRLC WCS 1.0.0 GeoServer)** per
+    §F.1.1. Two rounds of live verification:
+
+    - Round 1 (job-0039, 2026-06-07): MRLC's direct file mirror at
+      ``s3-us-west-2.amazonaws.com/mrlc/Annual_NLCD_LndCov_<YEAR>_CU_C1V0.tif``
+      is a 42-byte placeholder stub, not a real COG. The substrate landed
+      against MRLC WMS GetMap with ``format=image/geotiff`` — Tier 2 byte-
+      materialized through the GeoServer at ``www.mrlc.gov/geoserver/
+      mrlc_display/wms``. (See OQ-39-NLCD-TIER-DEVIATION.)
+    - Round 2 (job-0044, 2026-06-07 — palette-encoding hotfix): job-0042's
+      NLCD validation gate (Invariant 7) fired on the WMS GetMap GeoTIFF —
+      the band values were palette indices (1, 3, 4, …, 21) NOT canonical
+      NLCD class integers (11, 21, …, 95), so the Manning's mapping CSV
+      lookup couldn't proceed. Live-probed the WCS endpoint
+      ``www.mrlc.gov/geoserver/mrlc_display/wcs`` (which had become available
+      since Round 1's timeout); WCS 1.0.0 GetCoverage with ``FORMAT=GeoTIFF``
+      returns canonical NLCD class integers directly. Path B (WCS) chosen
+      over Path A (client-side palette decode via the GeoTIFF ColorTable)
+      because canonical bytes from the server are robust to MRLC palette
+      reorders. (See OQ-42-NLCD-WMS-PALETTE-ENCODING closure.)
+
+    The fetcher materializes WCS GetCoverage bytes and writes through the
+    FR-DC-3 cache so the bbox-quantized cache key dedups across callers.
 
     Params:
         bbox: ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326.
@@ -1461,7 +1529,11 @@ def fetch_landcover(
                 "guardrail for fetch_landcover (MRLC WMS will reject; use a tiled "
                 "workflow for larger domains)."
             )
-        params = {"bbox": list(quantized), "dataset": dataset, "source": "mrlc-wms"}
+        # Cache-key source tag is ``mrlc-wcs`` after job-0044's hotfix; the
+        # palette-encoded ``mrlc-wms`` entries from job-0039 land under a
+        # different key and naturally evict on the 30-day TTL — no explicit
+        # invalidation needed (cached COG migration is a no-op).
+        params = {"bbox": list(quantized), "dataset": dataset, "source": "mrlc-wcs"}
         result = read_through(
             metadata=_FETCH_LANDCOVER_METADATA,
             params=params,
@@ -1482,7 +1554,7 @@ def fetch_landcover(
             "layer": layer,
             "nlcd_vintage_year": vintage_year,
             "dataset": dataset,
-            "source": "mrlc-wms",
+            "source": "mrlc-wcs",
         }
 
     if dataset.startswith("esa_worldcover_"):

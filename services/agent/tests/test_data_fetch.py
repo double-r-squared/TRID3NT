@@ -608,7 +608,9 @@ def test_fetch_landcover_returns_nlcd_vintage_year_sidecar(monkeypatch):
     assert "nlcd_vintage_year" in result, "Invariant 7 sidecar required"
     assert result["nlcd_vintage_year"] == 2021
     assert result["dataset"] == "nlcd_2021"
-    assert result["source"] == "mrlc-wms"
+    # job-0044 hotfix: switched WMS -> WCS 1.0.0 because WMS GetMap returned
+    # palette-encoded indices instead of canonical NLCD class integers.
+    assert result["source"] == "mrlc-wcs"
 
     layer = result["layer"]
     assert layer.layer_type == "raster"
@@ -707,6 +709,147 @@ def test_fetch_landcover_rejects_oversized_bbox():
     huge = (-100.0, 25.0, -80.0, 45.0)  # ~2.2M km^2
     with pytest.raises(BboxInvalidError):
         fetch_landcover(huge, dataset="nlcd_2021")
+
+
+# ---------------------------------------------------------------------------
+# job-0044 hotfix — fetch_landcover (WCS 1.0.0 path, palette-encoding fix).
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_landcover_uses_wcs_not_wms_after_hotfix():
+    """job-0044: the fetcher MUST issue WCS 1.0.0 GetCoverage, not WMS GetMap.
+
+    Path A (palette decode) vs Path B (WCS GetCoverage) was live-probed; Path B
+    won because canonical NLCD class integers come straight from the server,
+    avoiding the OQ-42-NLCD-WMS-PALETTE-ENCODING silent-wrong-answer condition
+    that bounced job-0042's validation gate. This test pins the choice — if
+    someone reverts to WMS the band values become palette indices again and
+    SFINCS dispatch silently breaks.
+    """
+    # Inspect the WCS coverage table — the symbol is the substrate hook the
+    # hotfix introduced; reverting it would remove the alias.
+    assert hasattr(data_fetch, "_MRLC_WCS_URL")
+    assert hasattr(data_fetch, "_NLCD_WCS_COVERAGE_BY_YEAR")
+    assert data_fetch._MRLC_WCS_URL.endswith("/wcs")
+    # 2021 (the default) and 2019 (the second-most-recent discrete vintage)
+    # are both in the WCS catalog.
+    assert 2021 in data_fetch._NLCD_WCS_COVERAGE_BY_YEAR
+    assert 2019 in data_fetch._NLCD_WCS_COVERAGE_BY_YEAR
+    # The coverage IDs use the qualified ``mrlc_display:`` workspace prefix
+    # WCS expects (per the 2026-06-07 live probe).
+    assert data_fetch._NLCD_WCS_COVERAGE_BY_YEAR[2021].startswith(
+        "mrlc_display:NLCD_2021_Land_Cover_L48"
+    )
+
+
+def test_fetch_landcover_cache_key_source_is_mrlc_wcs(monkeypatch):
+    """job-0044 cache-migration policy: cache-key params carry source=mrlc-wcs.
+
+    The job-0039 substrate landed cache entries under source=mrlc-wms (WMS
+    GetMap); after the hotfix the cache-key tag flips to mrlc-wcs so the
+    palette-encoded entries naturally evict on TTL (30 days from their write
+    time) rather than colliding with the new canonical-bytes entries.
+    """
+    fake_storage = FakeStorageClient()
+    from grace2_agent.tools import cache as cache_mod
+
+    monkeypatch.setattr(
+        data_fetch,
+        "_fetch_nlcd_landcover_bytes",
+        lambda bbox, year: b"FAKE_NLCD_GEOTIFF_BYTES_WCS",
+    )
+    monkeypatch.setattr(
+        data_fetch,
+        "read_through",
+        lambda *a, **kw: cache_mod.read_through(
+            *a, storage_client=fake_storage, now=PINNED_NOW, **kw
+        ),
+    )
+
+    result = fetch_landcover(FORT_MYERS_BBOX, dataset="nlcd_2021")
+    # Source tag in the returned dict is mrlc-wcs.
+    assert result["source"] == "mrlc-wcs"
+    # Same cache prefix (cache/static-30d/landcover/) but the key hash differs
+    # from the WMS-source hash because the source string is part of the
+    # canonicalized params dict the cache key is derived from.
+    paths = list(fake_storage.store.keys())
+    assert len(paths) == 1
+    assert paths[0].startswith("cache/static-30d/landcover/")
+    assert paths[0].endswith(".tif")
+
+
+def test_fetch_nlcd_landcover_bytes_issues_wcs_1_0_0_getcoverage(monkeypatch):
+    """The internal fetcher issues a WCS 1.0.0 GetCoverage request, not WMS GetMap.
+
+    Asserts the actual request shape so a future refactor can't silently
+    flip back to WMS without this test catching it. Captures the kwargs the
+    fetcher passes into ``requests.get``.
+    """
+    captured: dict = {}
+
+    class _FakeResp:
+        status_code = 200
+        headers = {"content-type": "image/tiff"}
+        content = b"\x49\x49\x2a\x00" + b"\x00" * 256  # TIFF magic prefix
+        text = ""
+
+        def raise_for_status(self):
+            return None
+
+    def _capture_get(url, params=None, headers=None, timeout=None, **_kw):
+        captured["url"] = url
+        captured["params"] = params
+        captured["headers"] = headers
+        captured["timeout"] = timeout
+        return _FakeResp()
+
+    monkeypatch.setattr(data_fetch.requests, "get", _capture_get)
+    out = data_fetch._fetch_nlcd_landcover_bytes(FORT_MYERS_BBOX, 2021)
+    assert isinstance(out, bytes) and len(out) > 4
+    # URL is the WCS endpoint, not WMS.
+    assert captured["url"].endswith("/wcs"), captured["url"]
+    # Params shape is WCS 1.0.0 GetCoverage with Coverage + CRS + BBOX +
+    # WIDTH + HEIGHT + FORMAT.
+    p = captured["params"]
+    assert p["service"] == "WCS"
+    assert p["version"] == "1.0.0"
+    assert p["request"] == "GetCoverage"
+    assert p["Coverage"].startswith("mrlc_display:NLCD_2021_Land_Cover_L48")
+    assert p["CRS"] == "EPSG:4326"
+    assert "BBOX" in p
+    assert "WIDTH" in p and "HEIGHT" in p
+    assert p["FORMAT"] == "GeoTIFF"
+    # MUST NOT be the WMS shape.
+    assert p.get("layers") is None  # WMS would use ``layers``
+    assert p.get("format") is None  # WMS GetMap shape
+
+
+def test_fetch_nlcd_landcover_bytes_surfaces_geoserver_exception(monkeypatch):
+    """If the WCS server returns an OGC ExceptionReport XML, surface UpstreamAPIError.
+
+    The WCS endpoint returns 200 + ``application/xml`` with an
+    ``ows:ExceptionReport`` body when (e.g.) the projection mapping bug fires
+    or the requested area is sub-pixel. We MUST NOT cache that body as if it
+    were a GeoTIFF — the no-sentinel-on-failure cache contract demands a
+    typed raise instead.
+    """
+
+    class _FakeXMLResp:
+        status_code = 200
+        headers = {"content-type": "application/xml"}
+        content = b"<?xml version=\"1.0\"?><ows:ExceptionReport/>"
+        text = "<?xml version=\"1.0\"?><ows:ExceptionReport/>"
+
+        def raise_for_status(self):
+            return None
+
+    monkeypatch.setattr(
+        data_fetch.requests,
+        "get",
+        lambda *a, **kw: _FakeXMLResp(),
+    )
+    with pytest.raises(UpstreamAPIError):
+        data_fetch._fetch_nlcd_landcover_bytes(FORT_MYERS_BBOX, 2021)
 
 
 # ---------------------------------------------------------------------------

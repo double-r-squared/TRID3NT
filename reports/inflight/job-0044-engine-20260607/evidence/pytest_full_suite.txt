@@ -1,0 +1,8 @@
+tests/test_tools_registry.py::test_register_with_adk_appends_each_tool_to_agent_tools
+tests/test_tools_registry.py::test_register_with_adk_appends_each_tool_to_agent_tools
+tests/test_tools_registry.py::test_register_with_adk_appends_each_tool_to_agent_tools
+tests/test_tools_registry.py::test_register_with_adk_appends_each_tool_to_agent_tools
+  <frozen abc>:106: DeprecationWarning: BaseAgentConfig is deprecated and will be removed in future versions.
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+119 passed, 4 warnings in 1.24s
