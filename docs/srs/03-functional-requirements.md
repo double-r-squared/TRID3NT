@@ -558,6 +558,19 @@ The table below summarizes the five-collection structure. Full collection schema
 | **Events** | `events` — `EventMetadata` documents (Appendix C) with embeddings | Forcing data files if derived | MongoDB document |
 | **Sessions** | `sessions` — chat history, project IDs, pipeline history, current map state | (none) | MongoDB |
 
+**FR-MP-6: Case UX (forward-looking; v0.2+)**
+
+"Case" is the user-facing name for a `projects` document (FR-MP-5). The Case UX flow shall bind these behaviors:
+
+- **Landing state.** On first visit, the user sees a two-pane shell: **Cases** in the left panel (list of the user's existing projects); **Chat** in the right panel. If no Cases exist yet, the left panel is hidden until a Case is created. Both side panels have a collapse toggle so the user can maximize the map.
+- **Case creation.** The first agent prompt in a session that begins outside any Case implicitly creates a new Case (a new `projects` document) and binds the session to it. The Case's metadata captures the initial bbox/hazard/intent the agent infers.
+- **In-Case state.** Within a Case, the left panel switches from "Cases list" view to "Case detail" view (the loaded layers list with visibility/opacity/order controls, per the layer-emission-contract in `docs/decisions/layer-emission-contract.md`). A "back to Cases" nav element returns to the list view.
+- **Persistence.** When `model_flood_scenario` (or any layer-producing workflow) returns layers, the layers are saved into the Case's `projects` document `layer_summary` field, persisted at sprint-09's `publish_layer` tool exit. Chat history is persisted into the bound `sessions` document.
+- **Resume.** Re-opening a Case rehydrates: chat history loads into the chat panel; layers re-register against QGIS Server (the published `.qgs` URI is the canonical source-of-truth per FR-MP-3); the agent receives the prior conversation context so it knows what the project is about.
+- **Out-of-Case context.** Navigating back to the Cases list resets the chat to a fresh agent context (no prior conversation memory). The user clearly signals "leaving this project" by navigating; the chat panel UI shall reflect the context change (e.g., empty state with "select a Case or start a new one").
+
+Implementation refinement is deferred to its target sprint; the contract above pins intent. The Case identifier maps 1:1 to the `projects._id` ULID; UI labels say "Case", schema and code say "Project" (FR-MP-5 nomenclature stays canonical).
+
 ### 3.8 Cloud Execution (FR-CE)
 
 **FR-CE-1: Solver containerization**

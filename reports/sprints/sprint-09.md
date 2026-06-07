@@ -29,7 +29,9 @@ What's missing is exactly **three small jobs** — the gap the layer-emission-co
 | job-0061-infra-20260608 | infra | **IAM grant:** `qgis-server-runtime` SA receives `roles/storage.objectViewer` on `grace-2-hazard-prod-runs` so `/vsigs/<runs-bucket>/<run_id>/flood_depth_peak.tif` resolves at WMS render time. Tofu addition; ~5 LOC; verified via `gcloud projects get-iam-policy` + a curl of the WMS GetMap once a layer is registered. | — | planned |
 | job-0062-engine-20260608 | engine | **Atomic `publish_layer` tool:** new agent tool that invokes the existing PyQGIS worker round-trip to add a fresh COG as a published WMS layer. Worker: read `gs://grace-2-hazard-prod-qgs/grace2-sample.qgs` (or a per-session project), `QgsRasterLayer("/vsigs/<runs-bucket>/<run_id>/flood_depth_peak.tif")`, `apply_style_preset(layer, "continuous_flood_depth")`, `project.addMapLayer(layer)`, `QgsProject.write()`, Pub/Sub notify. Returns the WMS URL: `<qgis-server>/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=<layer_id>`. Cache-shim integration: `cacheable=False` (the worker round-trip is the side effect). The `model_flood_scenario` workflow calls `publish_layer` after `postprocess_flood` succeeds. | job-0060, job-0061 | planned |
 | job-0063-engine-20260608 | engine | **(Optional carry-forward):** OQ-59 CRS-label fix in `postprocess_flood` — write the COG's CRS tag from the SFINCS dataset's actual CRS variable (not the .attrs default) so the tag matches the coordinates. ~3 LOC + 1 test. | — | planned |
-| job-0064-testing-20260608 | testing | **Sprint-09 acceptance:** drive the full end-to-end via Playwright — user prompt in the chat panel → M5 workflow runs → flood layer appears on the MapLibre basemap → user toggles visibility in LayerPanel. Capture screenshots at 3 states (baseline empty map; mid-run with pipeline strip active; final with flood layer rendered over basemap). The third screenshot is the actual headline deliverable: WEB-UI-RENDERED flood layer, not an orchestrator-direct PNG. Closes sprint-09. | job-0060, job-0061, job-0062 | planned |
+| job-0064-web-20260608 | web | **UI tweak #1 (per user direction 2026-06-07):** pipeline cards inline in chat. Move `PipelineStrip.tsx`'s cards out of the strip and into the chat stream beside assistant messages. Stacked in call order; one-line format `operation N%`. Clears the basemap of pipeline chrome. Keeps the existing pipeline-state envelope contract (no schema change). | — | planned |
+| job-0065-web-20260608 | web | **UI tweak #2 (per user direction 2026-06-07):** (a) Render a layer legend / colorbar (gradient key) at the bottom of the map, horizontally centered between the two side panels — mirrors matplotlib's colorbar for the active continuous raster layer (initially `continuous_flood_depth` preset with client-side stops). (b) Hide the `LayerPanel.tsx` when `loaded_layers.length === 0`. (c) Add collapse toggles on both side panels (chevron buttons; persists in localStorage). | — | planned |
+| job-0066-testing-20260608 | testing | **Sprint-09 acceptance:** drive the full end-to-end via Playwright — user prompt in the chat panel → M5 workflow runs → flood layer appears on the MapLibre basemap → user toggles visibility in LayerPanel → colorbar renders at bottom of map → both panels collapsible. Capture screenshots at 3 states (baseline empty map; mid-run with inline pipeline cards in chat; final with flood layer rendered + colorbar + LayerPanel showing the layer). The third screenshot is the headline deliverable: WEB-UI-RENDERED flood layer with the new chrome, not an orchestrator-direct PNG. Closes sprint-09. | job-0060, job-0061, job-0062, job-0064, job-0065 | planned |
 
 ## Execution order
 
@@ -43,12 +45,17 @@ stage B:
   job-0062-engine  (atomic publish_layer tool + workflow integration)
   ← gated on 0060 + 0061
 
-stage C (testing):
-  job-0064-testing (Playwright end-to-end + 3 screenshots)
-  ← gated on 0062 (which is gated on 0060 + 0061)
+stage C (UI tweaks, parallel — file-disjoint within web/):
+  job-0064-web     (pipeline cards inline in chat)
+  job-0065-web     (colorbar + hide-empty LayerPanel + collapse toggles)
+  ← gated on 0062 lands (so layers exist to test the new chrome against)
+
+stage D (testing):
+  job-0066-testing (Playwright end-to-end + 3 screenshots with new chrome)
+  ← gated on 0062 + 0064 + 0065
 ```
 
-Plus orchestrator-direct **v0.3.20 SRS housekeeping pass** lands in parallel with Stage A.
+Plus orchestrator-direct **v0.3.21 SRS amendment** (FR-MP-6 Case UX) already landed before Stage A dispatches; **v0.3.20 SRS housekeeping pass** carryover still scheduled as orchestrator-direct in parallel with Stage A or B.
 
 ## Exit criteria
 
