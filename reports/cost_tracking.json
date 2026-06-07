@@ -71,11 +71,18 @@
       "description": "Flipped fetch_population default to WorldPop Tier-1 per Appendix F.1 (ACS opt-in via dataset='acs_2022' preserved); discovered MS Planetary Computer worldpop-100m collection + WorldPop Hub STAC don't exist; pivoted to direct REST + GeoTIFF download; 4 GB 100m product can't be windowed via /vsicurl/ (server returns 200 not 206 for range requests) so substituted 50 MB 1km Aggregated product as practical compromise; live Fort Myers fetch verified end-to-end (78.7s wall-clock, COG at GCS with datetime customTime); 72/72 agent tests green; 8 OQ-37-* surfaced + OQ-36 carry-forward.",
       "model": "opus",
       "subagent_tokens": 165405
+    },
+    {
+      "job_id": "job-0040-infra-20260606",
+      "sprint": 7,
+      "description": "SFINCS solver substrate landed live and end-to-end-verified: gs://grace-2-hazard-prod-runs bucket (UBA + PAP enforced + versioning ON; deliberate to protect solver outputs) + Cloud Run Job grace-2-sfincs-solver pinned at @sha256:89ce6e27 (thin layer over deltares/sfincs-cpu:sfincs-v2.3.3) + Cloud Workflows grace-2-sfincs-orchestrator + sfincs-runtime/workflow-invoker-sfincs SAs (sfincs-runtime ZERO project-level grants; workflow-invoker has 2 non-storage project grants required by Cloud Logging + Cloud Run LRO API, honestly disclosed); smoke run end-to-end via Workflow execution → Cloud Run Job execution → typed error envelope (exit 2 expected for no model deck); two false-start Dockerfile builds (PEP-668 + binary path) diagnosed + resolved; 23 evidence files; 5 OQs surfaced including OQ-INFRA-40-WORKFLOW-INVOKER-SCOPE.",
+      "model": "opus",
+      "subagent_tokens": 233895
     }
   ],
   "totals_by_sprint": {
     "6": 1265567,
-    "7": 245375
+    "7": 479270
   },
   "historical_context": {
     "note": "Captured for accountability — NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",

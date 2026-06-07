@@ -1,6 +1,6 @@
 # Audit: SFINCS solver container + Cloud Run Job + Workflows step (M5 substrate)
 
-**Job ID:** job-0040-infra-20260606, **Sprint:** sprint-07, **Auditor:** Development Orchestrator, **Status:** assigned
+**Job ID:** job-0040-infra-20260606, **Sprint:** sprint-07, **Auditor:** Development Orchestrator, **Status:** approved
 
 ## Task Assignment
 
@@ -86,3 +86,70 @@ SFINCS upstream: Deltares' `deltares/sfincs-cpu` Docker image (or hand-built fro
 - [ ] No edits to FROZEN paths.
 
 Surface contestable choices as Open Questions with TENTATIVE tags — at minimum: pull-through-Artifact-Registry of `deltares/sfincs-cpu` vs Docker Hub direct (TENTATIVE: thin layer over Docker Hub pin; if rate limits bite, switch to pull-through); runs bucket lifecycle policy (TENTATIVE: none for v0.1 — user owns retention; revisit at M9 polish); workflow timeout (TENTATIVE: 30 min hard); image digest pin discipline (TENTATIVE: bump-on-build mirror of qgis-server pattern).
+
+## Assessment
+
+**Verdict:** approved.
+
+The SFINCS substrate lands cleanly and end-to-end-verified: thin Dockerfile over `deltares/sfincs-cpu:sfincs-v2.3.3` (240 MB built image, digest-pinned `@sha256:89ce6e27...`); `entrypoint.py` shim handles input download + solver invocation + output upload + structured completion manifest; `infra/sfincs.tf` provisions the runs bucket + Cloud Run Job + Cloud Workflows orchestrator + 2 SAs with proper IAM scoping. **Smoke run proven end-to-end** via Workflow execution `dde07ade-0277-42d7-bfca-3b6cbe4c2b94` → Cloud Run Job execution `grace-2-sfincs-solver-94lpv` → typed error envelope (exit 2 expected — no real model deck). The Workflows → Job → Workflow-completion chain works.
+
+**Live verification highlights:**
+- Runs bucket `grace-2-hazard-prod-runs`: UBA ✓ + PAP `enforced` ✓ + **versioning ON** (deliberate choice — protects against accidental overwrite of solver outputs; differs from cache bucket where versioning OFF was correct because cache contents are reproducible).
+- SA scoping: `sfincs-runtime` has **ZERO** project-level grants ✓ — verified via `gcloud projects get-iam-policy`. All storage access is bucket-scoped (cache:objectViewer + runs:objectAdmin + qgs:objectViewer).
+- `workflow-invoker-sfincs` SA has two non-storage project-level grants: `roles/logging.logWriter` + `roles/run.viewer`. **Honestly disclosed as OQ-INFRA-40-WORKFLOW-INVOKER-SCOPE.** Both are non-storage and required by Cloud Logging (writer needs project-level by API design) + Cloud Run LRO poll path (no resource-scoped binding exists in the v2 API). The zero-storage-grants discipline from job-0021 + job-0031 is preserved; these grants are infrastructure-API requirements, not architectural slips.
+
+**Two false-start builds before success** — Dockerfile iteration through:
+1. PEP-668 `--break-system-packages` flag rejected by Ubuntu 22.04's pip 22.x (it's a 23+ flag). Resolved by switching to a venv-based install.
+2. Initial entrypoint assumed `/sfincs/sfincs` binary path; actual location is `/usr/local/bin/sfincs`. Resolved by inspecting the upstream image.
+
+These iterations are exactly the "diagnose before fix" discipline working — capture the build error, inspect the substrate, adjust. No silent workarounds.
+
+23 evidence files captured: 2 plan logs + 2 apply logs + Cloud Build trigger + image listing + Workflow describe + Job describe + 3 IAM JSON files + 4 smoke execution artifacts. Comprehensive.
+
+`tofu plan` post-apply: zero drift. Substrate is reconciled.
+
+**Decisions Made (all accepted):**
+- Thin layer over `deltares/sfincs-cpu:sfincs-v2.3.3` via Docker Hub direct (not pull-through Artifact Registry) — pragmatic for v0.1; switch to pull-through only if rate limits bite. Surfaced as OQ-INFRA-40-PULL-THROUGH-AR.
+- Runs bucket versioning ON, no lifecycle — user owns retention policy. Revisit at sprint-09 NFR-C cost work. Surfaced as OQ-INFRA-40-RUNS-LIFECYCLE.
+- 3-field SFINCS manifest schema (input_uri, output_uri, options) — locked as v0.1 contract. Job-0042 (`model_flood_scenario` workflow) may push back when it integrates HydroMT — surfaced as OQ-INFRA-40-SFINCS-MANIFEST-CONTRACT.
+- Base image Ubuntu 22.04 with Python 3.10 (EOL 2026-10-04) — informational only; SFINCS is the workload, Python is incidental.
+
+## Invariant Check
+
+- **Invariant 5 (Tier separation):** preserved. Runs bucket internal to agent ⇄ worker stack; PAP enforced.
+- **Invariant 8 (Cancellation):** the Workflows execution + Cloud Run Job execution support cancel via the standard APIs; full end-to-end cancel verification is job-0041's responsibility (when `run_solver` + `wait_for_completion` atomic tools land and exercise the cancel chain through the real running solver).
+- **NFR-S-2/3 (credentials):** preserved with full honesty. Bucket-scoped storage IAM only; non-storage project grants documented + justified by upstream API requirements.
+- **NFR-C-2 (zero idle):** preserved. Cloud Run Job has no min instances.
+- **NFR-P-4 (≤15 min for ≤200 km²):** the substrate enables this; actual timing verification is job-0043's M5 acceptance scope.
+- **Decision E (Google Cloud throughout):** consistent — single project, single region, OpenTofu-managed.
+
+## Dependency Check
+
+- **job-0021 + job-0031** (SA discipline patterns): mirrored exactly. The IAM shape is identical to the PyQGIS worker + cache bucket patterns.
+- **v0.3.15 SRS §3.9 caching architecture**: cache bucket consumed via `cache:objectViewer` (read-only) per FR-DC-1 substrate. Runs bucket is the new sibling for solver outputs per FR-CE-3.
+- **job-0038 OQ-4 HydroMT decision**: the Dockerfile does NOT yet bundle `hydromt-sfincs` per the decision — that's job-0042's container responsibility when `build_sfincs_model` lands. Job-0040's image is solver-only.
+- **Unblocks job-0041** (run_solver + wait_for_completion atomic tools): the SFINCS Cloud Workflows is reachable via the `executions.create` API; job-0041 wires the submission path.
+
+## Open Questions Resolved
+
+Filed for triage (none blocks closure):
+
+- **OQ-INFRA-40-RUNS-LIFECYCLE** — no lifecycle on runs bucket. Defer to sprint-09 NFR-C cost work. Non-blocking.
+- **OQ-INFRA-40-PULL-THROUGH-AR** — Docker Hub direct for v0.1; switch to pull-through Artifact Registry only if rate limits bite. Monitor; non-blocking.
+- **OQ-INFRA-40-WORKFLOW-INVOKER-SCOPE** — `workflow-invoker-sfincs` has 2 non-storage project-level grants (logging.logWriter + run.viewer). Required by API design; no resource-scoped alternative exists. Accepted as cost of operating Cloud Workflows + Cloud Run LRO poll. Surface in any future security review.
+- **OQ-INFRA-40-SFINCS-MANIFEST-CONTRACT** — 3-field manifest schema locked. Job-0042 may push back when it composes the HydroMT layer; if so, route as schema consumer-pushback to a follow-up infra/0040.5 mini-job.
+- **OQ-INFRA-40-IMAGE-BASE-UBUNTU-22-PYTHON-3-10** — Python 3.10 EOL 2026-10-04. Informational; rebuild image with newer base when SFINCS upstream provides one.
+
+## Follow-up Actions
+
+1. **Unblock Stage B (job-0039 — 3 new fetcher tools)** AND **Stage C (job-0041 — run_solver + wait_for_completion atomic tools)** — both can launch now in parallel. Stage B is gated on 0037 + 0038 (both approved); Stage C is gated on 0040 (this job, approved).
+2. **GPLv3 documentation per OQ-4 decision** — `infra/THIRD_PARTY_LICENSES.md` must document `hydromt-sfincs` GPLv3 (and the SFINCS solver license) at the point where the HydroMT layer lands in job-0042's container. Route reminder to job-0042.
+3. **Cold-start measurement** — capture during job-0043 acceptance per the OQ-4 decision's noted concern.
+
+## Sign-off
+
+**Approved 2026-06-07 by Development Orchestrator.**
+
+All 9 acceptance criteria met with concrete live evidence (23 evidence files, smoke run end-to-end, IAM scoping verified, zero drift post-apply). Two false-start build iterations correctly diagnosed + resolved (PEP-668 + binary path). Five OQs honestly surfaced with proper triage routing. The SFINCS substrate is live and ready to be invoked by the agent-side tools (job-0041) and composed into the `model_flood_scenario` workflow (job-0042).
+
+Sprint-07 Stage A complete (all 3 jobs approved). Stage B + Stage C parallel launch unblocked.
