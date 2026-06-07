@@ -1,0 +1,27 @@
+{
+  "netcdf": "/tmp/grace2-m5-success/sfincs_map.nc",
+  "crs_variable_present": true,
+  "crs_variable_attrs": {
+    "EPSG": "-",
+    "epsg_code": "EPSG:32617"
+  },
+  "crs_variable_value": 32617,
+  "_read_crs_from_dataset_result": "EPSG:32617",
+  "cog_crs_tag": "EPSG:32617",
+  "cog_crs_epsg": 32617,
+  "cog_bounds": [
+    409109.0,
+    2936568.0,
+    425279.0,
+    2952348.0
+  ],
+  "cog_shape_hw": [
+    527,
+    540
+  ],
+  "metrics_crs": "EPSG:32617",
+  "metrics_max_depth_m": 3.515181064605713,
+  "before_fix_crs": "EPSG:3857",
+  "after_fix_crs": "EPSG:32617",
+  "fix_correct": true
+}

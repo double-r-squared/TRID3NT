@@ -143,6 +143,57 @@ def _resolve_run_output_to_local(run_outputs_uri: str) -> Path:
     )
 
 
+def _read_crs_from_dataset(ds: Any) -> str:
+    """Read CRS from a SFINCS netCDF dataset; CF-convention compliant (OQ-59 fix).
+
+    SFINCS stores the CRS in a **data variable** named ``crs``, not in
+    ``ds.attrs``.  The variable carries EPSG information in its attributes
+    following CF conventions.  We try the known SFINCS encodings in order:
+
+    1. ``crs_var.attrs["epsg_code"]`` — SFINCS emits ``"EPSG:32617"`` (string
+       already prefixed); strip any accidental whitespace and return as-is.
+    2. ``crs_var.attrs["crs_wkt"]`` — CF canonical WKT string; parse via
+       pyproj and return the EPSG authority string.
+    3. ``crs_var.attrs["spatial_ref"]`` — OGC WKT variant used by some GDAL
+       writers; parse via pyproj.
+    4. Fallback: ``ds.attrs.get("crs", "EPSG:3857")`` — original logic,
+       retained for any dataset that does not carry the ``crs`` variable.
+
+    A logged warning is emitted whenever the fallback fires so the mismatch
+    is visible in the pipeline-strip log rather than silently using EPSG:3857.
+    """
+    if "crs" in ds.variables:
+        crs_var = ds["crs"]
+        attrs = crs_var.attrs
+
+        if "epsg_code" in attrs:
+            # SFINCS emits e.g. "EPSG:32617" — may occasionally be bare int.
+            raw = str(attrs["epsg_code"]).strip()
+            if raw.upper().startswith("EPSG:"):
+                return raw  # already canonical
+            try:
+                return f"EPSG:{int(raw)}"
+            except ValueError:
+                pass  # fall through to next key
+
+        for wkt_key in ("crs_wkt", "spatial_ref"):
+            if wkt_key in attrs:
+                try:
+                    import pyproj  # optional; rasterio ships pyproj
+                    return pyproj.CRS.from_wkt(attrs[wkt_key]).to_string()
+                except Exception:  # noqa: BLE001
+                    pass  # malformed WKT — fall through
+
+    # Fallback: old .attrs encoding or bare dataset without a crs variable.
+    fallback = ds.attrs.get("crs", "EPSG:3857")
+    if fallback == "EPSG:3857":
+        logger.warning(
+            "postprocess_flood: no 'crs' variable found in sfincs_map.nc; "
+            "falling back to EPSG:3857 — COG CRS tag may not match pixel coords."
+        )
+    return fallback
+
+
 def _extract_peak_depth_geotiff(netcdf_path: Path) -> tuple[Path, dict[str, Any]]:
     """Read sfincs_map.nc, compute the per-cell peak depth, write a COG to a tmp path.
 
@@ -223,8 +274,10 @@ def _extract_peak_depth_geotiff(netcdf_path: Path) -> tuple[Path, dict[str, Any]
             }
 
         # Write a COG. Best-effort CRS + transform from the dataset; SFINCS
-        # output carries a 'spatial_ref'/'crs' attr in v1.x.
-        crs = ds.attrs.get("crs", "EPSG:3857")
+        # output carries its CRS in a data variable named 'crs' (CF-convention),
+        # not in .attrs.  Read from the variable first; fall back to .attrs for
+        # any dataset that still uses the old encoding (OQ-59 fix, job-0063).
+        crs = _read_crs_from_dataset(ds)
         try:
             x = ds["x"].values
             y = ds["y"].values

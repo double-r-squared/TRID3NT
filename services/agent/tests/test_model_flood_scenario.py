@@ -1663,3 +1663,479 @@ def test_extract_peak_depth_geotiff_squeezes_singleton_timemax_dim(
         assert metrics["units"] == "meters"
     finally:
         cog_path.unlink(missing_ok=True)
+
+
+# --------------------------------------------------------------------------- #
+# Test 21 — job-0060: run_model_flood_scenario returns LayerURI on success.
+#
+# Layer-emission contract (docs/decisions/layer-emission-contract.md,
+# ADOPTED 2026-06-07): the atomic-tool wrapper must return LayerURI so the
+# PipelineEmitter gate at pipeline_emitter.py:517 fires add_loaded_layer and
+# populates session-state.loaded_layers. Returning a dict misses that branch.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_run_model_flood_scenario_returns_layer_uri() -> None:
+    """``run_model_flood_scenario`` returns ``LayerURI`` (not a dict) on success.
+
+    Guards the layer-emission contract pin introduced by job-0060:
+    ``docs/decisions/layer-emission-contract.md`` (ADOPTED 2026-06-07).
+    The PipelineEmitter gate ``isinstance(result, LayerURI)`` at
+    ``pipeline_emitter.py:517`` only fires when the tool returns a
+    ``LayerURI`` instance — a dict return misses it entirely.
+    """
+    run_id = new_ulid()
+    handle = _make_handle(run_id=run_id)
+
+    landcover_result = {
+        "layer": _mock_layer_uri("landcover"),
+        "nlcd_vintage_year": 2021,
+        "dataset": "nlcd_2021",
+        "source": "mrlc-wms",
+    }
+    precip_result = {
+        "precip_inches": 12.1,
+        "units": "inches",
+        "location": [26.6, -81.9],
+        "return_period_years": 100,
+        "duration_hours": 24.0,
+        "vintage_volume": "NOAA Atlas 14 Volume 9 Version 2",
+        "project_area": "Southeastern States",
+        "source": "noaa-atlas14-pfds",
+    }
+    model_setup = ModelSetup(
+        setup_id=new_ulid(),
+        solver="sfincs",
+        setup_uri="gs://test-cache/cache/static-30d/sfincs_setup/test/manifest.json",
+        grid_resolution_m=30.0,
+        bbox=(-81.92, 26.55, -81.80, 26.68),
+        parameters={"nlcd_vintage_year": 2021},
+        created_at=datetime.now(timezone.utc),
+    )
+    run_result_ok = RunResult(
+        run_id=run_id,
+        handle_id=handle.handle_id,
+        status="complete",
+        output_uri=f"gs://grace-2-hazard-prod-runs/{run_id}/",
+        started_at=datetime.now(timezone.utc),
+        completed_at=datetime.now(timezone.utc),
+        duration_seconds=120.0,
+    )
+    flood_layer = LayerURI(
+        layer_id=f"flood-depth-peak-{run_id}",
+        name="Flood Depth (peak)",
+        layer_type="raster",
+        uri=f"gs://grace-2-hazard-prod-runs/{run_id}/flood_depth_peak.tif",
+        style_preset="continuous_flood_depth",
+        role="primary",
+        units="meters",
+    )
+    depth_metrics = {
+        "max_depth_m": 2.4,
+        "mean_depth_m": 0.6,
+        "p95_depth_m": 1.9,
+        "flooded_cell_count": 12_345,
+        "crs": "EPSG:3857",
+        "units": "meters",
+    }
+
+    async def _wfc(handle):  # noqa: ANN001
+        return run_result_ok
+
+    with (
+        patch("grace2_agent.workflows.model_flood_scenario.fetch_dem", return_value=_mock_layer_uri("dem")),
+        patch("grace2_agent.workflows.model_flood_scenario.fetch_landcover", return_value=landcover_result),
+        patch("grace2_agent.workflows.model_flood_scenario.fetch_river_geometry", return_value=_mock_layer_uri("rivers")),
+        patch("grace2_agent.workflows.model_flood_scenario.lookup_precip_return_period", return_value=precip_result),
+        patch("grace2_agent.workflows.model_flood_scenario.build_sfincs_model", return_value=model_setup),
+        patch("grace2_agent.workflows.model_flood_scenario.run_solver", return_value=handle),
+        patch("grace2_agent.workflows.model_flood_scenario.wait_for_completion", side_effect=_wfc),
+        patch(
+            "grace2_agent.workflows.model_flood_scenario.postprocess_flood",
+            return_value=([flood_layer], depth_metrics),
+        ),
+    ):
+        result = await run_model_flood_scenario(
+            bbox=(-81.92, 26.55, -81.80, 26.68),
+            return_period_yr=100,
+            duration_hr=24,
+            compute_class="medium",
+        )
+
+    # The critical assertion: LayerURI (not dict) so PipelineEmitter fires.
+    assert isinstance(result, LayerURI), (
+        f"job-0060 layer-emission contract: run_model_flood_scenario must return "
+        f"LayerURI on success (not {type(result).__name__!r}). The PipelineEmitter "
+        f"gate at pipeline_emitter.py:517 only fires add_loaded_layer when "
+        f"isinstance(result, LayerURI) is True. See "
+        f"docs/decisions/layer-emission-contract.md (ADOPTED 2026-06-07)."
+    )
+    assert result.uri == f"gs://grace-2-hazard-prod-runs/{run_id}/flood_depth_peak.tif"
+    assert result.style_preset == "continuous_flood_depth"
+    assert result.role == "primary"
+    assert result.layer_type == "raster"
+    assert result.units == "meters"
+
+
+# --------------------------------------------------------------------------- #
+# Test 22 — job-0060: PipelineEmitter.add_loaded_layer is invoked when
+# run_model_flood_scenario returns a LayerURI and emit_tool_call wraps it.
+#
+# This guards the full emission chain: tool returns LayerURI →
+# emit_tool_call's isinstance gate fires → add_loaded_layer appends to
+# _loaded_layers → emit_session_state emits a session-state envelope with
+# non-empty loaded_layers.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_run_model_flood_scenario_triggers_loaded_layers_emit() -> None:
+    """``add_loaded_layer`` is called and ``loaded_layers`` is populated on success.
+
+    Verifies the full emission chain mandated by the layer-emission contract
+    (``docs/decisions/layer-emission-contract.md``, ADOPTED 2026-06-07):
+
+        run_model_flood_scenario → LayerURI
+            → PipelineEmitter.emit_tool_call isinstance gate (pipeline_emitter.py:517)
+            → add_loaded_layer (pipeline_emitter.py:413)
+            → session-state envelope with non-empty loaded_layers
+
+    The test mocks ``PipelineEmitter.add_loaded_layer`` directly and asserts
+    it is called exactly once with the COG LayerURI.  It then asserts that
+    the emitter's ``_loaded_layers`` list would be non-empty with the correct
+    URI (simulating what ``emit_session_state`` would serialise).
+    """
+    import json as _json
+
+    from grace2_agent.pipeline_emitter import PipelineEmitter
+
+    run_id = new_ulid()
+    handle = _make_handle(run_id=run_id)
+
+    landcover_result = {
+        "layer": _mock_layer_uri("landcover"),
+        "nlcd_vintage_year": 2021,
+        "dataset": "nlcd_2021",
+        "source": "mrlc-wms",
+    }
+    precip_result = {
+        "precip_inches": 12.1,
+        "units": "inches",
+        "location": [26.6, -81.9],
+        "return_period_years": 100,
+        "duration_hours": 24.0,
+        "vintage_volume": "NOAA Atlas 14 Volume 9 Version 2",
+        "project_area": "Southeastern States",
+        "source": "noaa-atlas14-pfds",
+    }
+    model_setup = ModelSetup(
+        setup_id=new_ulid(),
+        solver="sfincs",
+        setup_uri="gs://test-cache/cache/static-30d/sfincs_setup/test/manifest.json",
+        grid_resolution_m=30.0,
+        bbox=(-81.92, 26.55, -81.80, 26.68),
+        parameters={"nlcd_vintage_year": 2021},
+        created_at=datetime.now(timezone.utc),
+    )
+    run_result_ok = RunResult(
+        run_id=run_id,
+        handle_id=handle.handle_id,
+        status="complete",
+        output_uri=f"gs://grace-2-hazard-prod-runs/{run_id}/",
+        started_at=datetime.now(timezone.utc),
+        completed_at=datetime.now(timezone.utc),
+        duration_seconds=120.0,
+    )
+    expected_cog_uri = f"gs://grace-2-hazard-prod-runs/{run_id}/flood_depth_peak.tif"
+    flood_layer = LayerURI(
+        layer_id=f"flood-depth-peak-{run_id}",
+        name="Flood Depth (peak)",
+        layer_type="raster",
+        uri=expected_cog_uri,
+        style_preset="continuous_flood_depth",
+        role="primary",
+        units="meters",
+    )
+    depth_metrics = {
+        "max_depth_m": 2.4,
+        "mean_depth_m": 0.6,
+        "p95_depth_m": 1.9,
+        "flooded_cell_count": 12_345,
+        "crs": "EPSG:3857",
+        "units": "meters",
+    }
+
+    async def _wfc(handle):  # noqa: ANN001
+        return run_result_ok
+
+    # Build a minimal PipelineEmitter with a capturing sink.
+    # The sink receives JSON-serialised Envelope strings (as server.py does).
+    captured_frames: list[dict[str, Any]] = []
+    test_session_id = new_ulid()
+
+    async def _sink(json_str: str) -> None:
+        captured_frames.append(_json.loads(json_str))
+
+    emitter = PipelineEmitter(session_id=test_session_id, sink=_sink)
+
+    # Spy on add_loaded_layer — capture calls while still executing the real
+    # implementation so _loaded_layers is actually populated.
+    add_loaded_layer_calls: list[LayerURI] = []
+    original_add_loaded_layer = emitter.add_loaded_layer
+
+    async def _spy_add_loaded_layer(layer: LayerURI) -> None:
+        add_loaded_layer_calls.append(layer)
+        await original_add_loaded_layer(layer)
+
+    emitter.add_loaded_layer = _spy_add_loaded_layer  # type: ignore[method-assign]
+
+    with (
+        patch("grace2_agent.workflows.model_flood_scenario.fetch_dem", return_value=_mock_layer_uri("dem")),
+        patch("grace2_agent.workflows.model_flood_scenario.fetch_landcover", return_value=landcover_result),
+        patch("grace2_agent.workflows.model_flood_scenario.fetch_river_geometry", return_value=_mock_layer_uri("rivers")),
+        patch("grace2_agent.workflows.model_flood_scenario.lookup_precip_return_period", return_value=precip_result),
+        patch("grace2_agent.workflows.model_flood_scenario.build_sfincs_model", return_value=model_setup),
+        patch("grace2_agent.workflows.model_flood_scenario.run_solver", return_value=handle),
+        patch("grace2_agent.workflows.model_flood_scenario.wait_for_completion", side_effect=_wfc),
+        patch(
+            "grace2_agent.workflows.model_flood_scenario.postprocess_flood",
+            return_value=([flood_layer], depth_metrics),
+        ),
+    ):
+        result = await emitter.emit_tool_call(
+            name="M5 flood scenario",
+            tool_name="run_model_flood_scenario",
+            invoke=lambda: run_model_flood_scenario(
+                bbox=(-81.92, 26.55, -81.80, 26.68),
+                return_period_yr=100,
+                duration_hr=24,
+                compute_class="medium",
+            ),
+        )
+
+    # 1. add_loaded_layer must have been called exactly once.
+    assert len(add_loaded_layer_calls) == 1, (
+        f"job-0060: add_loaded_layer must be called once on success; "
+        f"called {len(add_loaded_layer_calls)} time(s). "
+        f"The emit_tool_call gate at pipeline_emitter.py:517 fires only when "
+        f"isinstance(result, LayerURI) is True."
+    )
+    assert add_loaded_layer_calls[0].uri == expected_cog_uri, (
+        f"add_loaded_layer called with wrong URI: {add_loaded_layer_calls[0].uri!r}"
+    )
+
+    # 2. The emitter's _loaded_layers list is non-empty after the call.
+    assert len(emitter._loaded_layers) == 1, (
+        f"_loaded_layers should have 1 entry after the successful run; "
+        f"got {len(emitter._loaded_layers)}."
+    )
+    assert emitter._loaded_layers[0].uri == expected_cog_uri, (
+        f"_loaded_layers[0].uri mismatch: {emitter._loaded_layers[0].uri!r}"
+    )
+
+    # 3. A session-state envelope was emitted with non-empty loaded_layers.
+    # Frames are JSON-parsed wire envelopes: {"type": "session-state", "payload": {...}}
+    session_state_frames = [f for f in captured_frames if f.get("type") == "session-state"]
+    assert session_state_frames, (
+        "No session-state envelope was emitted; emit_session_state should have "
+        "been called by add_loaded_layer."
+    )
+    last_payload = session_state_frames[-1]["payload"]
+    loaded_layers_wire = last_payload.get("loaded_layers", [])
+    assert loaded_layers_wire, (
+        "session-state.loaded_layers is empty; the COG LayerURI was not "
+        "serialised into the session-state envelope."
+    )
+    # loaded_layers is a list of dicts (model_dump output from emit_session_state).
+    first_layer = loaded_layers_wire[0]
+    assert first_layer.get("uri") == expected_cog_uri, (
+        f"session-state.loaded_layers[0].uri mismatch: {first_layer.get('uri')!r}"
+    )
+
+
+# =========================================================================== #
+# Tests 22-24 — job-0063 OQ-59: postprocess_flood reads CRS from the dataset's
+# 'crs' data variable (CF-convention) instead of ds.attrs.
+#
+# SFINCS stores its CRS in a data variable named 'crs', not in .attrs.  Before
+# the fix, ds.attrs.get("crs", "EPSG:3857") always returned the fallback, so
+# the COG was tagged EPSG:3857 while its pixel coordinates were in UTM 17N
+# (EPSG:32617) — a ~10 000 km geolocation error in any CRS-aware GIS client.
+#
+# Test 22: crs variable with epsg_code="EPSG:32617" → COG tagged EPSG:32617
+# Test 23: crs variable with spatial_ref=<UTM 17N WKT> → COG tagged EPSG:32617
+# Test 24: no crs variable; ds.attrs["crs"]="EPSG:3857" → EPSG:3857 (fallback)
+# =========================================================================== #
+
+
+def _build_synthetic_sfincs_nc_oq59(
+    tmp_path: Path,
+    *,
+    crs_var_attrs: "dict | None" = None,
+    ds_attrs: "dict | None" = None,
+    filename: str = "sfincs_map.nc",
+) -> Path:
+    """Write a minimal sfincs_map.nc with hmax (1, 8, 8) to tmp_path.
+
+    If ``crs_var_attrs`` is provided a ``crs`` data variable is added carrying
+    those attributes (mimicking SFINCS CF encoding).  ``ds_attrs`` go on the
+    Dataset itself.
+    """
+    import numpy as np
+    import xarray as xr
+
+    n, m = 8, 8
+    rng = np.random.default_rng(99)
+    hmax_data = rng.uniform(0.1, 2.0, (1, n, m)).astype("float32")
+
+    # Plausible UTM 17N easting/northing coords for Fort Myers FL
+    x_vals = np.linspace(409000.0, 425000.0, m, dtype="float64")
+    y_vals = np.linspace(2937000.0, 2952000.0, n, dtype="float64")
+
+    data_vars: dict = {
+        "hmax": xr.DataArray(
+            hmax_data,
+            dims=["timemax", "y", "x"],
+            attrs={"units": "m"},
+        ),
+    }
+    if crs_var_attrs is not None:
+        data_vars["crs"] = xr.DataArray(np.int32(32617), attrs=crs_var_attrs)
+
+    ds = xr.Dataset(
+        data_vars,
+        coords={
+            "x": xr.DataArray(x_vals, dims=["x"]),
+            "y": xr.DataArray(y_vals, dims=["y"]),
+        },
+        attrs=ds_attrs or {},
+    )
+    path = tmp_path / filename
+    ds.to_netcdf(str(path))
+    ds.close()
+    return path
+
+
+def test_extract_peak_depth_geotiff_reads_crs_from_epsg_code_var(
+    tmp_path: Path,
+) -> None:
+    """OQ-59 Test 22: crs variable with epsg_code attr → COG tagged EPSG:32617.
+
+    SFINCS emits ``ds['crs'].attrs['epsg_code'] = 'EPSG:32617'`` (string with
+    prefix).  Before the OQ-59 fix, ds.attrs.get("crs", "EPSG:3857") fired the
+    fallback and tagged the COG EPSG:3857 while coordinates were UTM 17N.
+    After the fix the CRS tag matches the dataset's crs variable.
+    """
+    try:
+        import xarray as xr  # noqa: F401
+    except ImportError:
+        pytest.skip("xarray not installed")
+    try:
+        import rasterio
+    except ImportError:
+        pytest.skip("rasterio not installed")
+
+    from grace2_agent.workflows.postprocess_flood import _extract_peak_depth_geotiff
+
+    netcdf_path = _build_synthetic_sfincs_nc_oq59(
+        tmp_path,
+        crs_var_attrs={"EPSG": "-", "epsg_code": "EPSG:32617"},
+    )
+
+    cog_path, metrics = _extract_peak_depth_geotiff(netcdf_path)
+    try:
+        with rasterio.open(str(cog_path)) as src:
+            assert src.crs is not None, "OQ-59: COG has no CRS tag"
+            assert "32617" in src.crs.to_string(), (
+                f"OQ-59 (epsg_code): expected EPSG:32617 in CRS string, "
+                f"got {src.crs.to_string()!r}"
+            )
+        assert metrics["crs"] == "EPSG:32617", (
+            f"OQ-59: metrics['crs'] should be 'EPSG:32617', got {metrics['crs']!r}"
+        )
+    finally:
+        cog_path.unlink(missing_ok=True)
+
+
+def test_extract_peak_depth_geotiff_reads_crs_from_spatial_ref_wkt(
+    tmp_path: Path,
+) -> None:
+    """OQ-59 Test 23: crs variable with spatial_ref WKT → COG tagged EPSG:32617.
+
+    Some SFINCS / GDAL variants write a WKT string under the ``spatial_ref``
+    attr rather than an EPSG code.  The fix resolves via
+    ``pyproj.CRS.from_wkt`` and returns the authority string.  pyproj is a
+    rasterio dependency so it is always present when rasterio is installed.
+    """
+    try:
+        import xarray as xr  # noqa: F401
+    except ImportError:
+        pytest.skip("xarray not installed")
+    try:
+        import rasterio
+        import pyproj
+    except ImportError:
+        pytest.skip("rasterio/pyproj not installed")
+
+    from grace2_agent.workflows.postprocess_flood import _extract_peak_depth_geotiff
+
+    utm17n_wkt = pyproj.CRS.from_epsg(32617).to_wkt()
+    netcdf_path = _build_synthetic_sfincs_nc_oq59(
+        tmp_path,
+        crs_var_attrs={"spatial_ref": utm17n_wkt},
+        filename="sfincs_map_wkt.nc",
+    )
+
+    cog_path, metrics = _extract_peak_depth_geotiff(netcdf_path)
+    try:
+        with rasterio.open(str(cog_path)) as src:
+            assert src.crs is not None, "OQ-59 (spatial_ref): COG has no CRS tag"
+            assert src.crs.to_epsg() == 32617, (
+                f"OQ-59 (spatial_ref WKT): expected EPSG 32617, got {src.crs}"
+            )
+    finally:
+        cog_path.unlink(missing_ok=True)
+
+
+def test_extract_peak_depth_geotiff_falls_back_to_attrs_crs_when_no_var(
+    tmp_path: Path,
+) -> None:
+    """OQ-59 Test 24: no crs variable; ds.attrs['crs']='EPSG:3857' → EPSG:3857.
+
+    Backward-compat guard: datasets that store CRS in .attrs (old encoding)
+    must still produce a correctly tagged COG.  Exercises the fallback branch
+    of ``_read_crs_from_dataset``.
+    """
+    try:
+        import xarray as xr  # noqa: F401
+    except ImportError:
+        pytest.skip("xarray not installed")
+    try:
+        import rasterio
+    except ImportError:
+        pytest.skip("rasterio not installed")
+
+    from grace2_agent.workflows.postprocess_flood import _extract_peak_depth_geotiff
+
+    # No crs_var_attrs → no 'crs' variable in the dataset; fall back to .attrs.
+    netcdf_path = _build_synthetic_sfincs_nc_oq59(
+        tmp_path,
+        crs_var_attrs=None,
+        ds_attrs={"crs": "EPSG:3857"},
+        filename="sfincs_map_attrs.nc",
+    )
+
+    cog_path, metrics = _extract_peak_depth_geotiff(netcdf_path)
+    try:
+        with rasterio.open(str(cog_path)) as src:
+            assert src.crs is not None, "OQ-59 fallback: COG has no CRS tag"
+            assert src.crs.to_epsg() == 3857, (
+                f"OQ-59 fallback: expected EPSG:3857, got {src.crs}"
+            )
+        assert metrics["crs"] == "EPSG:3857", (
+            f"OQ-59 fallback: metrics['crs'] should be 'EPSG:3857', "
+            f"got {metrics['crs']!r}"
+        )
+    finally:
+        cog_path.unlink(missing_ok=True)
