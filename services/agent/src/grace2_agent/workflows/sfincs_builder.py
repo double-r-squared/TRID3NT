@@ -523,7 +523,15 @@ def _generate_hydromt_yaml_config(
     (job-0054 comprehensive migration audit):
 
       * setup_config — config-file passthrough (``SfincsModel.setup_config``
-        takes ``**cfdict`` per inheritance from ``hydromt.Model``).
+        takes ``**cfdict`` per inheritance from ``hydromt.Model``). Time
+        values (``tref``, ``tstart``, ``tstop``) MUST be in SFINCS format
+        ``YYYYMMDD HHMMSS`` (e.g. ``"20260101 000000"``), NOT ISO 8601 —
+        ``sfincs_input.py`` parses them via
+        ``datetime.strptime(val, "%Y%m%d %H%M%S")``, and
+        ``utils.parse_datetime`` uses the same format. ISO 8601 strings
+        raise ``ValueError: time data '...' does not match format '%Y%m%d
+        %H%M%S'`` inside ``setup_precip_forcing → get_model_time()``.
+        (Discovered and fixed in job-0055.)
       * setup_grid_from_region — defines the SFINCS grid. Live sig:
         ``(region: dict, res: float = 100, crs: Union[str, int] = "utm", ...)``.
         We pass ``region: {bbox: [...]}`` + ``res``; ``crs`` left at the
@@ -542,22 +550,19 @@ def _generate_hydromt_yaml_config(
         supports ``manning`` (gridded n) OR ``lulc`` + ``reclass_table``);
         the CSV must be ``index_col=0`` + column literally ``N`` —
         ``_write_hydromt_reclass_table_csv`` materializes that view.
-      * setup_river_inflow — discharge-point setup from rivers. Live sig:
-        ``(rivers: Union[str, Path, gpd.GeoDataFrame] = None, hydrography:
-        Union[str, Path, xr.Dataset] = None, buffer: float = 200,
-        river_upa: float = 10.0, river_len: float = 1e3, river_width: float
-        = 500, merge: bool = False, ...)``. When ``rivers`` is provided
-        (we pass the NHDPlus HR FlatGeobuf path), ``hydrography`` is
-        OPTIONAL — the source code at sfincs.py:949-984 takes the rivers
-        branch and ``da_uparea`` stays ``None`` (only used for optional
-        sort/sample of source points in ``river_source_points``).
-        OQ-53 fix: we previously emitted ``hydrography: 'merit_hydro'``;
-        the bundled ``artifact_data`` catalog DOES register ``merit_hydro``
-        but its rasters only cover Northern Italy (lon 11.6-13, lat
-        45.2-46.8 — verified live), so a Florida bbox query returns ``No
-        data was read from source: merit_hydro (No data available)``. We
-        drop the ``hydrography`` key entirely and rely on the
-        ``rivers``-only path.
+      * setup_river_inflow — NOT EMITTED for v0.1 pluvial deck. The v0.1
+        M5 demo is pluvial-only (Atlas 14 design storm, no river forcing
+        required). Additionally, hydromt-sfincs 1.2.2's ``set_forcing_1d``
+        (sfincs.py:1858) calls ``pd.RangeIndex.is_integer()`` which was
+        removed in pandas ≥ 2.0 (we run 3.0.3); this upstream library bug
+        is exercised by the river-inflow discharge-point path. Dropping this
+        block bypasses ``set_forcing_1d`` entirely and lets the chain reach
+        solver dispatch (job-0055, OQ-54 routing recommendation b).
+        The ``river_local_path`` parameter is RETAINED in the function
+        signature (so call sites still pass the cached FGB without change);
+        re-enabling river inflow for v0.2+ (real ATCF storm surge) requires
+        adding this block back AND either pinning pandas < 2.0 or applying
+        the upstream hydromt-sfincs fix (``pd.api.types.is_integer_dtype``).
       * setup_precip_forcing — uniform precip forcing. Live sig:
         ``(timeseries=None, magnitude=None)`` — accepts EITHER a tabulated
         timeseries CSV OR a single ``magnitude`` float in ``mm/hr``
@@ -576,11 +581,14 @@ def _generate_hydromt_yaml_config(
     components: list[str] = []
     components.append("setup_config:")
     components.append(f"  crs: {crs}")
-    components.append(f'  tref: "2026-01-01T00:00:00"')
-    components.append(f'  tstart: "2026-01-01T00:00:00"')
-    components.append(
-        f'  tstop: "2026-01-{1 + int(max(1, options.simulation_hours / 24))}T00:00:00"'
-    )
+    # Time values MUST be in SFINCS format "YYYYMMDD HHMMSS" — sfincs_input.py
+    # parses them with strptime(val, "%Y%m%d %H%M%S"). ISO 8601 format raises
+    # ValueError inside setup_precip_forcing -> get_model_time() (job-0055).
+    sim_days = max(1, int(options.simulation_hours / 24))
+    tstop_day = 1 + sim_days
+    components.append(f'  tref: "20260101 000000"')
+    components.append(f'  tstart: "20260101 000000"')
+    components.append(f'  tstop: "202601{tstop_day:02d} 000000"')
     components.append("setup_grid_from_region:")
     components.append(
         f"  region: {{ bbox: [{bbox[0]}, {bbox[1]}, {bbox[2]}, {bbox[3]}] }}"
@@ -596,18 +604,23 @@ def _generate_hydromt_yaml_config(
         f"  datasets_rgh: [{{ lulc: '{landcover_local_path}', "
         f"reclass_table: '{mapping_csv_path}' }}]"
     )
-    if river_local_path is not None:
-        # OQ-53 fix (job-0054): rivers-only branch — DO NOT emit
-        # ``hydrography``. The 1.2.x source resolves the ``hydrography`` key
-        # against ``data_catalog.get_rasterdataset(...)`` and our runtime's
-        # default catalog (``artifact_data``) only has Northern Italy
-        # coverage for ``merit_hydro``, so a CONUS bbox raises
-        # ``NoDataException``. The NHDPlus HR FlatGeobuf we pass via
-        # ``rivers`` is sufficient — ``river_source_points`` only needs
-        # ``da_uparea`` for optional sorting/sampling (line ``if da_uparea
-        # is not None`` in workflows/flwdir.py:195).
-        components.append("setup_river_inflow:")
-        components.append(f"  rivers: '{river_local_path}'")
+    # v0.1 SCOPE DECISION (job-0055, OQ-54 routing recommendation b):
+    # ``setup_river_inflow`` is intentionally NOT emitted for the v0.1 pluvial
+    # deck. Two reasons:
+    #   1. Scope: the v0.1 M5 demo is pluvial-only (Atlas 14 design storm);
+    #      river inflow is M5+ / sprint-9+ scope (real ATCF + storm surge).
+    #   2. Upstream bug: hydromt-sfincs 1.2.2's ``set_forcing_1d``
+    #      (sfincs.py:1858) calls ``pd.RangeIndex.is_integer()`` which was
+    #      removed in pandas ≥ 2.0 (we run pandas 3.0.3). This bug is
+    #      exercised by the river-inflow discharge-point path — dropping this
+    #      block bypasses ``set_forcing_1d`` entirely and lets the chain
+    #      proceed to solver dispatch without triggering the upstream defect.
+    # ``river_local_path`` is kept in the function signature so call sites
+    # continue to pass the cached NHDPlus HR FlatGeobuf unchanged; the FGB
+    # is fetched and cached for future use but not wired into this deck.
+    # To re-enable for v0.2+ (real ATCF + river inflow): add the block back
+    # AND pin pandas < 2.0 OR apply the upstream patch
+    # (``pd.api.types.is_integer_dtype(idx)`` instead of ``idx.is_integer()``).
     if forcing.forcing_type == "pluvial_synthetic" and forcing.precip_inches is not None:
         # OQ-54 fix (job-0054): the live 1.2.x signature is
         # ``setup_precip_forcing(timeseries=None, magnitude=None)``; ``precip``

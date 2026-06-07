@@ -966,15 +966,18 @@ def test_build_sfincs_model_emits_v1_2_x_manning_roughness_kwargs(
 
 
 # --------------------------------------------------------------------------- #
-# Test 15 — OQ-53 hotfix (job-0054 comprehensive API migration): the
-# setup_river_inflow step must NOT emit the ``hydrography: merit_hydro`` key.
-# Live ``inspect.signature(SfincsModel.setup_river_inflow)`` confirms
-# ``hydrography`` is OPTIONAL when ``rivers`` is provided. The bundled
-# ``artifact_data`` catalog DOES register ``merit_hydro`` (auto-loaded by the
-# DataCatalog's ``_fallback_lib``) — but its rasters only cover Northern Italy
-# (lon 11.6-13, lat 45.2-46.8 — verified live), so a CONUS bbox raises
-# ``NoDataException: No data was read from source: merit_hydro (No data
-# available)``. The NHDPlus HR FlatGeobuf passed via ``rivers`` is sufficient.
+# Test 15 — v0.1 scope guard (job-0055, OQ-54 routing recommendation b):
+# ``setup_river_inflow`` must NOT appear in the YAML for ``pluvial_synthetic``
+# mode. The v0.1 M5 demo is pluvial-only (Atlas 14 design storm); river inflow
+# is M5+ / sprint-9+ scope. Additionally, hydromt-sfincs 1.2.2's
+# ``set_forcing_1d`` (sfincs.py:1858) calls ``pd.RangeIndex.is_integer()``
+# which was removed in pandas ≥ 2.0 (we run 3.0.3); this upstream bug is
+# exercised by the river-inflow path. Dropping the step bypasses
+# ``set_forcing_1d`` entirely.
+#
+# Historical note (job-0054, OQ-53): this was previously a guard that
+# ``setup_river_inflow`` was present but WITHOUT ``hydrography: merit_hydro``.
+# Job-0055 advances this to a complete step-omission guard for v0.1 pluvial.
 # --------------------------------------------------------------------------- #
 
 
@@ -1040,69 +1043,55 @@ def _build_with_capture(
     return captured
 
 
-def test_build_sfincs_model_river_inflow_drops_hydrography_kwarg(
+def test_build_sfincs_model_river_inflow_not_emitted_in_pluvial_synthetic(
     tmp_path: Path,
 ) -> None:
-    """OQ-53 regression: ``setup_river_inflow`` must NOT carry ``hydrography``.
+    """v0.1 scope guard: ``setup_river_inflow`` MUST NOT appear in pluvial_synthetic YAML.
 
-    Failure mode this guards against:
-      * Re-emitting ``hydrography: 'merit_hydro'`` — the artifact_data
-        catalog's MERIT-Hydro tile only covers Northern Italy and a CONUS
-        bbox raises ``No data was read from source: merit_hydro (No data
-        available)`` inside ``SfincsModel.setup_river_inflow`` at the
-        ``data_catalog.get_rasterdataset(hydrography, bbox=self.bbox,
-        variables=['uparea', 'flwdir'])`` site (sfincs.py:939-946).
+    Failure modes this guards against:
+      * Re-introducing the ``setup_river_inflow`` block for v0.1 — the river-
+        inflow path triggers hydromt-sfincs 1.2.2's ``set_forcing_1d``
+        (sfincs.py:1858) which calls ``pd.RangeIndex.is_integer()``, removed
+        in pandas ≥ 2.0 (we run 3.0.3). This upstream bug blocks the chain
+        from reaching solver dispatch (job-0054 honest outcome disclosure).
+      * Scope creep: the v0.1 M5 demo is pluvial-only (Atlas 14 design storm);
+        river inflow is M5+ / sprint-9+ scope (real ATCF + storm surge).
 
-    The rivers-only path is sufficient: ``river_source_points`` only uses
-    ``da_uparea`` for optional sorting at workflows/flwdir.py:194 (``if
-    da_uparea is not None``), and the NHDPlus HR FlatGeobuf we pass via
-    ``rivers`` carries the geometries the source-point extraction needs.
+    The ``river_geometry_uri`` is still passed to ``build_sfincs_model`` (the
+    FGB is fetched and cached for future use); only the YAML step is omitted.
+
+    Historical context: job-0054 (OQ-53) fixed ``setup_river_inflow`` to omit
+    the ``hydrography: merit_hydro`` kwarg (CONUS bboxes raised
+    ``NoDataException`` against the Italy-only artifact_data tile). Job-0055
+    (OQ-54 routing recommendation b) completes the v0.1 remediation by
+    dropping the entire block.
     """
-    captured = _build_with_capture(
+    # Case 1: river_geometry_uri supplied (the FGB is available) — step still omitted.
+    captured_with_river = _build_with_capture(
         tmp_path=tmp_path,
         river_geometry_uri="gs://test/river.fgb",
     )
-
-    opt = captured.get("opt")
-    assert isinstance(opt, dict)
-    assert "setup_river_inflow" in opt, (
-        f"setup_river_inflow step missing from build opt; got keys {list(opt)}"
-    )
-    riv_kwargs = opt["setup_river_inflow"]
-    assert isinstance(riv_kwargs, dict)
-
-    # The OQ-53 regression: ``hydrography`` MUST NOT appear.
-    assert "hydrography" not in riv_kwargs, (
-        "OQ-53 regression: setup_river_inflow emitted ``hydrography`` kwarg — "
-        "the artifact_data catalog's MERIT-Hydro coverage is Northern Italy "
-        "only, so CONUS bboxes raise NoDataException. The rivers-only path "
-        "is the live 1.2.x-supported route when a vector ``rivers`` source "
-        "is available."
+    opt_with = captured_with_river.get("opt")
+    assert isinstance(opt_with, dict)
+    assert "setup_river_inflow" not in opt_with, (
+        "job-0055 v0.1 scope violation: setup_river_inflow was re-introduced "
+        "into the pluvial_synthetic YAML. This step triggers hydromt-sfincs "
+        "1.2.2's set_forcing_1d which calls pd.RangeIndex.is_integer() — "
+        "removed in pandas ≥ 2.0 (we run 3.0.3). The v0.1 M5 demo is "
+        "pluvial-only; river inflow is M5+ scope. "
+        f"Opt keys found: {list(opt_with)}"
     )
 
-    # ``rivers`` must still be present — this is the load-bearing input.
-    assert "rivers" in riv_kwargs, (
-        f"setup_river_inflow missing ``rivers`` kwarg; got {riv_kwargs}"
+    # Case 2: river_geometry_uri=None — step also omitted (same code path).
+    captured_no_river = _build_with_capture(
+        tmp_path=tmp_path,
+        river_geometry_uri=None,
     )
-
-    # All keys must be a subset of the live 1.2.2 signature.
-    valid_keys = {
-        "rivers",
-        "hydrography",
-        "buffer",
-        "river_upa",
-        "river_len",
-        "river_width",
-        "merge",
-        "first_index",
-        "keep_rivers_geom",
-        "reverse_river_geom",
-        "src_type",
-    }
-    extra = set(riv_kwargs.keys()) - valid_keys
-    assert not extra, (
-        f"setup_river_inflow has kwargs {extra} not in the live 1.2.2 "
-        f"signature; accepted: {valid_keys}."
+    opt_none = captured_no_river.get("opt")
+    assert isinstance(opt_none, dict)
+    assert "setup_river_inflow" not in opt_none, (
+        "setup_river_inflow appeared when river_geometry_uri=None — "
+        f"unexpected; opt keys: {list(opt_none)}"
     )
 
 
