@@ -68,18 +68,78 @@ Plus orchestrator-direct **v0.3.20 SRS housekeeping pass** lands in parallel wit
 
 ## Exit criteria
 
-- [ ] **v0.3.20 SRS housekeeping pass landed** — carry-forwards from v0.3.17–v0.3.19 reconciled into the prose.
-- [ ] **`CatalogEntry` pydantic model + MongoDB collection D.8 + audit log D.9 in schema** — JSON Schemas re-exported idempotently; contracts test count grows.
-- [ ] **Appendix A envelope amendments for `offer-catalog-addition` + `catalog-addition-response`** — forward-looking; sprint-09 Mode 2 consumer.
-- [ ] **`public_data_source_catalog.yaml` v0.1.0 with 30–60 entries** across the 8 domains; each entry's access_tier live-verified before commit per §F.1.1 discipline.
-- [ ] **`catalog_search` + `catalog_fetch` atomic tools registered** — startup shows ≥16 tools (14 + 2 new); both route through cache shim per FR-CE-8.
-- [ ] **Generic Tier-2 OGC adapter** — single implementation that `fetch_landcover` (WCS, post-job-0044) and `catalog_fetch` (any OGC entry) both route through.
-- [ ] **FR-FR-3 MAX_TURNS_PER_SESSION cap** — single config line + session-state enum value + closing message on cap hit.
-- [ ] **hydromt-sfincs install in agent service Cloud Run** — verified by re-running the M5 Fort Myers demo and getting past `HYDROMT_UNAVAILABLE` (either to a successful flood-depth COG or to the next honest blocker).
-- [ ] **ATCF Hurricane Ian forcing** (if landed) — `fetch_hurricane_track` + `model_flood_scenario` design-storm-vs-real-forcing branch.
-- [ ] **Sprint-08 acceptance**: catalog demo + max-turns demo + hydromt-sfincs install verification + M5 re-run + full regression preserved.
-- [ ] **Screenshot moment** — if hydromt-sfincs + ATCF land successfully and the M5 chain produces a real flood-depth render, capture + surface via SendUserFile proactive (orchestrator-direct per memory feedback_orchestrator_drives_ui_verification).
+- [ ] **v0.3.20 SRS housekeeping pass landed** — carry-forwards from v0.3.17–v0.3.19 reconciled into the prose. _(orchestrator-direct; pending)_
+- [x] **`CatalogEntry` pydantic model + MongoDB collection D.8 + audit log D.9 in schema** — JSON Schemas re-exported idempotently; contracts test count grows. _(job-0045; D.11/D.12 numbering; 142/142 contracts green)_
+- [x] **Appendix A envelope amendments for `offer-catalog-addition` + `catalog-addition-response`** — forward-looking; sprint-09 Mode 2 consumer. _(job-0045; 4 envelopes registered in routing dicts)_
+- [x] **`public_data_source_catalog.yaml` v0.1.0 with 30–60 entries** across the 8 domains; each entry's access_tier live-verified before commit per §F.1.1 discipline. _(job-0046; 30 entries; 9 URL deviations caught live; 2 skipped at load time per OQ-47-CATALOG-YAML-SECRET-REFS)_
+- [x] **`catalog_search` + `catalog_fetch` atomic tools registered** — startup shows ≥16 tools (14 + 2 new); both route through cache shim per FR-CE-8. _(job-0047; confirmed 16 tools live 2026-06-07; fema-nfhl 7.74 MB + 3DEP 4.00 MB fetched live)_
+- [x] **Generic Tier-2 OGC adapter** — single implementation that `fetch_landcover` (WCS, post-job-0044) and `catalog_fetch` (any OGC entry) both route through. _(job-0047; `tools/ogc_adapter.py`)_
+- [x] **FR-FR-3 MAX_TURNS_PER_SESSION cap** — single config line + session-state enum value + closing message on cap hit. _(job-0048; 11 tests + 2 acceptance integration tests; all pass)_
+- [x] **hydromt-sfincs install in agent service Cloud Run** — verified by re-running the M5 Fort Myers demo and getting past `HYDROMT_UNAVAILABLE`. _(jobs 0049→0058; chain advanced through full 1.2.x migration + PRODUCTION M5 SUCCESS)_
+- [ ] **ATCF Hurricane Ian forcing** (if landed) — `fetch_hurricane_track` + `model_flood_scenario` design-storm-vs-real-forcing branch. _(job-0050 DESCOPED — sprint-09/sprint-10)_
+- [x] **Sprint-08 acceptance**: catalog demo + max-turns demo + hydromt-sfincs install verification + M5 re-run + full regression preserved. _(job-0059; 165/165 agent + 142/142 contracts; all live verifications PASS)_
+- [x] **Screenshot moment** — M5 chain produced real flood-depth COG. _(job-0057 orchestrator-direct PNG; job-0058 production COG render; job-0059 re-run COG at gs://grace-2-hazard-prod-runs/01KTJ3PP1JMF96WR4CCZZ4JRYS/flood_depth_peak.tif)_
+
+## Notes on sprint-08 vs originally planned scope
+
+Sprint-08 was planned as a 6-job sprint (4-parallel Stage A + Stage B catalog tools + Stage D testing).
+Actual execution was 12 jobs. Three scopes delivered:
+
+1. **Mode 1 catalog substrate** (planned): CatalogEntry, 30-entry YAML, catalog_search + catalog_fetch,
+   generic OGC adapter, 16 tools live.
+2. **hydromt-sfincs 1.2.x migration through-line** (unplanned but necessary): 7 sequential hotfixes
+   (jobs 0052–0058) resolving 1.2.x API mismatches, pandas-3 incompatibilities, manifest.json emission,
+   and COG squeeze. The escalation rule at job-0054 (comprehensive audit after 3rd mismatch) was
+   the correct call.
+3. **First PRODUCTION M5 SUCCESS** (unplanned, emergent): job-0057 first flood-depth output
+   (SFINCS exit 0, hmax 3.52 m); job-0058 production COG path closed; job-0059 re-run confirms
+   reproducibility.
+
+The reserved job-0051-testing slot was superseded by job-0059-testing because the counter advanced
+past 0051 during the hotfix chain. The sprint manifest reflects this correctly.
+
+ATCF Hurricane Ian forcing (job-0050) was descoped — it was always marked optional (Stage C) and the
+hotfix chain consumed the capacity.
 
 ## Retrospective
 
-_Filled at close._
+**What worked:**
+- Escalation rule fired correctly at job-0054: 3 consecutive 1.2.x mismatches triggered a comprehensive
+  audit rather than a 4th point hotfix. One audit job replaced at least 3 more one-at-a-time hotfixes.
+- Sonnet routing discipline delivered 6 wins (50% of sprint jobs by count) at 38.9% of tokens.
+  Sprint-08 is 10% cheaper than sprint-07 despite more jobs delivered.
+- The NLCD validation gate (Invariant 7) continued to fire correctly across all production runs
+  (PASS branch confirmed; FAIL branch from job-0042 remains the canonical positive control).
+- Live catalog probe discipline in job-0046 caught 9 stale/wrong URLs before commit, avoiding
+  9 sprint-09 hotfix cascades.
+- The layer-emission-contract.md decision (orchestrator-direct) landed cleanly between job-0058
+  and job-0059, giving sprint-09 a frozen architectural contract before the sprint opens.
+
+**What to change:**
+- Parallel job file ownership enforcement: jobs 0045 and 0048 both touched ws.py concurrently.
+  Reconciliation worked but was unclean. Next sprint: serialize or split file ownership for
+  concurrent ws.py changes (OQ-48-PARALLEL-SCHEMA-FILE-OWNERSHIP).
+- Sprint-08 planned capacity was tight for a "small carry-forwards" sprint that uncovered a
+  full 1.2.x migration. OQ-4 from sprint-07 surface-treated the HydroMT depth decision but
+  did not expose the API-migration scope. Future hydromt upgrades warrant a pre-sprint
+  migration audit job before committing the install.
+- Counter management: 8 hotfix/follow-up jobs advancing the counter 0052–0059 past the
+  reserved testing slot (0051) is fine mechanically, but retroactively patching the sprint
+  manifest mid-sprint is harder than forward-planning. Add "hotfix counter reserve" of 3–5
+  slots to sprint manifests for sprints that touch external library installs.
+
+**Cost telemetry:** 1,675,748 total sprint-08 tokens. Opus: 1,023,435 (61.1%), Sonnet: 652,313 (38.9%).
+See `reports/cost_tracking.json` for per-job breakdown.
+
+**Open OQs carried forward:**
+- OQ-59-FLOOD-COG-CRS-LABEL-VS-COORDS (NEW — sprint-09 engine housekeeping)
+- OQ-47-CATALOG-YAML-SECRET-REFS (infra + engine, not blocking)
+- OQ-47-OWSLIB-CHOICE (needs formal decision doc)
+- OQ-49-AGENT-CLOUD-RUN-DEPLOY-PENDING (infra, not blocking)
+- OQ-48-PARALLEL-SCHEMA-FILE-OWNERSHIP (process recommendation)
+- OQ-W-26, OQ-33, OQ-35, OQ-36, OQ-41-COMPUTE-CLASS-NAMING, OQ-44, OQ-45-D-NUMBERING (pre-sprint-08)
+
+**Sprint-09 hand-off:** Three jobs implied by layer-emission-contract.md — (1) engine: change
+`run_model_flood_scenario` return to `LayerURI`; (2) engine/infra: atomic `publish_layer` tool via
+PyQGIS worker + `.qgs` mutation; (3) infra: IAM grant on runs bucket for qgis-server-runtime SA.
+Orchestrator scopes sprint-09; this testing job confirms the hand-off only.
