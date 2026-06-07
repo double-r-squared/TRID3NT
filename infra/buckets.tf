@@ -155,3 +155,35 @@ resource "google_storage_bucket_iam_member" "qgs_server_fgb_viewer" {
 # Kickoff TENTATIVE was "declare here for single source of truth"; revised:
 # declare with the SA in 0021 (the SA + its binding are one atomic unit).
 # This is the right cut for a clean job-0021 plan.
+
+# --- IAM: QGIS Server SA gets objectViewer on the runs bucket (job-0061) ---
+#
+# WHY THIS EXISTS:
+#   The sprint-09 `publish_layer` atomic tool (job-0062) registers flood-depth
+#   COGs produced by the SFINCS solver into the canonical `.qgs` project file
+#   as `/vsigs/grace-2-hazard-prod-runs/<run_id>/flood_depth_peak.tif`. When
+#   QGIS Server handles a WMS GetMap request against that project, GDAL's
+#   /vsigs/ driver fetches the COG using the QGIS Server runtime SA's
+#   credentials. Without this binding the fetch fails with a GDAL "Permission
+#   denied" error and the WMS returns a 500 instead of the rendered tile.
+#
+# SCOPE:
+#   Bucket-scoped only — `roles/storage.objectViewer` on
+#   `gs://grace-2-hazard-prod-runs/` (the resource defined in sfincs.tf as
+#   `google_storage_bucket.runs`). No project-level grant, consistent with the
+#   zero-project-grants invariant established in job-0021 and NFR-S-2
+#   (service-account-scoped IAM).
+#
+# REFERENCES:
+#   - job-0061-infra-20260607 (this change)
+#   - docs/decisions/layer-emission-contract.md (ADOPTED 2026-06-07): §"IAM
+#     (sprint-09 infra job)" — explicitly binds this grant as a prerequisite
+#     for the publish_layer flow
+#   - job-0062 (engine): publish_layer atomic tool that registers layers from
+#     the runs bucket into the .qgs
+
+resource "google_storage_bucket_iam_member" "qgis_server_runs_viewer" {
+  bucket = google_storage_bucket.runs.name
+  role   = "roles/storage.objectViewer"
+  member = "serviceAccount:${google_service_account.qgis_server.email}"
+}
