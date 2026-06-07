@@ -23,6 +23,53 @@ The atomic-tool data fetchers in §3.3 FR-TA-2 draw from many public APIs. They 
 
 **Per-deployment vs per-user provisioning of Tier-2 keys.** Until §F.3 lands, Tier-2 keys live at deployment scope in Secret Manager (one Census key per deployment, shared by all users). When §F.3 lands, Tier-2 keys can be provisioned per-user; deployment-scope provisioning remains as a fallback for ops-managed sources.
 
+### F.1.1 Access pattern tiering — the "data stores in the wild" problem *(Forward-looking — v0.3.17 amendment. v0.1 operates within the 4-tier happy-path enumeration below; agent-mediated discovery + adaptation to uncatalogued patterns is a v0.2+ capability and is captured as OQ-AT-2 below.)*
+
+**The principle.** A hazard-modeling agent in operation will encounter geospatial data **wherever it lives** — across an arbitrary variety of provider conventions, access patterns, and protocols. The architecture must accommodate that variety rather than assume a uniform interface. The §F.1 credential tiering is one axis (which providers need a key); access pattern tiering is the **orthogonal axis** (how do we actually retrieve bytes once we know the source).
+
+**v0.1 happy-path enumeration — four access tiers.** Every data-fetch atomic tool is implemented against exactly one tier, chosen at implementation time by the engineer based on a live verification of the upstream provider. The tier is recorded in the tool's FR-TA-3 docstring "Access pattern" line and (forward-looking — see schema note at end of §F.1.1) in an `AtomicToolMetadata.access_tier` field when the schema gains it.
+
+| Tier | Pattern | Byte-shape per call | Cache discipline | Example providers (v0.1) |
+|---|---|---|---|---|
+| **1** — STAC + COG | STAC catalog (`/api/stac/v1/`) with Cloud-Optimized GeoTIFF backend; bbox-aware item query; HTTP Range supported | byte-window (≤ MB per fetch) | single-stage cache key `(source, bbox-quantized, vintage)` per FR-DC-3 | NASA / USGS via Microsoft Planetary Computer (some collections); STAC-hosted ESA WorldCover; future NASA Earthdata STAC collections |
+| **2** — OGC service (WMS/WMTS/WCS/WFS) | Provider hosts only a query-rendering service; layer reference IS the URL; bytes computed server-side per request | per-tile render (varies) | **layer not cached to GCS** — the WMS URL itself is the cached reference; QGIS Server proxies / re-renders downstream | FEMA NFHL (Flood zones via WMS), USFS Wildfire Hazard Potential (WMS), NOAA SLOSH outputs (WMS), USGS National Seismic Hazard Map (WMS) — the §F.2 Discovery-First lane sources |
+| **3** — Direct HTTPS file with Range support | Provider exposes raw GeoTIFF / FlatGeobuf / NetCDF URLs; HTTP server honors Range requests (returns `206 Partial Content`); GDAL `/vsicurl/` windowed reads work | byte-window (≤ MB) | same as Tier 1 — single-stage `(source, bbox-quantized, vintage)` | USGS 3DEP DEM tiles, NHDPlus HR FlatGeobuf, some NOAA Atlas 14 endpoints, MS Building Footprints PMTiles |
+| **4** — Region download + local clip | Provider exposes only whole-region / whole-country file URLs; no Range support OR no bbox-aware index; full-file download required followed by local windowed clip | full-file (MB–GB) per region, then byte-window per clip | **two-stage cache** per OQ-37-COUNTRY-FILE-CACHING-STRATEGY: country file at `cache/static-30d/<source>/_regions/<region>.<ext>` (downloaded once, shared across all clips inside that region); per-call clip at `cache/static-30d/<source>/<hash>.<ext>` | WorldPop (job-0037 substrate; 50 MB 1km Aggregated per country), some legacy USGS products, older NOAA gridded archives |
+
+**Tier-selection discipline (v0.1).**
+
+- The tier is chosen at tool-implementation time, NOT at runtime. A tool is implemented against one specific tier; runtime fallback between tiers is **deferred indefinitely** (OQ-AT-1 below).
+- The tier choice requires live verification of the provider — not just "does the provider claim to publish STAC." Specifically: a STAC catalog must be live AND its backend must support HTTP Range AND the COG headers must be valid. Otherwise the source falls to Tier 3 (if direct HTTPS with Range) or Tier 4 (if not).
+- The tier is recorded in the tool's docstring per FR-AS-3 / FR-TA-3 metadata discipline. When the `AtomicToolMetadata.access_tier` schema field lands (forward-looking — see note at end of §F.1.1), the tier ALSO populates that field and is validated at registration per FR-CE-8.
+- Tier 2 (OGC services) is structurally different: the cache shim is bypassed; the layer reference IS the URL; QGIS Server is the rendering substrate. This is the §F.2 Discovery-First lane's primary access pattern and lives outside the FR-DC cache architecture for layer bytes. (Metadata about the OGC source IS still cached per FR-DC-2 `semi-static-7d` — capability lists, layer indices, etc.)
+
+**Forward-looking — Agent-mediated data-source discovery and adaptation (v0.2+).**
+
+The v0.1 enumeration is exhaustive for the providers we anticipate registering tools against. But the design principle is broader: **the agent shall be able to handle an arbitrary new data source it encounters at runtime** — surfaced via user request, web research per FR-AS-9 capability discovery, or a §F.2 catalog amendment — and characterize its access pattern without engineer intervention.
+
+The forward-looking capability mirrors FR-AS-9's solver discovery pattern, applied to data sources:
+
+- **Discovery** (Level 1b analog): user query mentions a data source not in any registered atomic tool. Agent searches the web / official catalogs, finds the provider's access documentation.
+- **Characterization**: agent probes the source to determine its tier — `HEAD` request to check for `Accept-Ranges: bytes`; `GET` to a STAC root URL to check for `/api/stac/v1/`; check for OGC `GetCapabilities` response shape. The agent records the discovered tier in a dynamic source registry.
+- **Adaptation**: agent constructs a one-shot fetch using the discovered tier — Tier 1 STAC item query, Tier 2 WMS GetMap, Tier 3 `/vsicurl/` windowed read, or Tier 4 region-download fallback. The fetch routes through the same cache shim per FR-CE-8; the dynamic source gets an auto-registered `AtomicToolMetadata` (or equivalent) with the discovered tier + TTL class.
+
+This capability requires several things the v0.1 architecture does NOT yet have:
+- Agent-side autonomous network probing discipline (timeout, retry, error classification — needs Invariant 8 cancellation hooks).
+- Dynamic tool registration at runtime (current `@register_tool` decorator runs at import; the FR-CE-8 fail-fast validation assumes startup-time discovery).
+- A dynamic source registry that survives session restarts (likely a new MongoDB collection per Decision F).
+- User-facing surfacing of "the agent discovered a new source" so the user can verify provenance per Decision M (claim provenance).
+
+**Status: DEFERRED to v0.2+.** OQ-AT-2 below captures the question. v0.1 operates within the 4-tier happy-path enumeration with engineer-curated, implementation-time tier selection.
+
+**Forward-looking schema note.** `AtomicToolMetadata` (`grace2_contracts.tool_registry`) does NOT currently carry an `access_tier` field. The forward-looking schema bump that adds it is intentionally deferred — for v0.1 the tier is recorded in the tool's docstring per FR-AS-3 / FR-TA-3. The schema bump lands in a future schema sprint when (a) downstream consumers actually need to introspect the tier (e.g., a tool-router that picks differently based on tier), or (b) the v0.2+ agent-mediated discovery capability above starts auto-populating the field for newly-characterized sources. Until then, the access tier is documentation-discipline, not enforced.
+
+**Open Questions from §F.1.1.**
+
+- **OQ-AT-1: Runtime fallback between access tiers** *(TENTATIVE: defer indefinitely)*. Should an atomic tool whose primary tier (e.g., Tier 1 STAC) goes down attempt a secondary tier (e.g., Tier 3 direct HTTPS) automatically? Adds latency + complexity to every fetch path; v0.1 prefers fail-fast `UPSTREAM_API_ERROR` so the agent's FR-AS-11 clarification surface decides next steps. Revisit if upstream reliability becomes a load-bearing problem (post-M9).
+- **OQ-AT-2: Agent-mediated data-source discovery and adaptation** *(TENTATIVE: v0.2+)*. The forward-looking capability described above. Decision affects: agent capability surface (new FR-AS-* requirements), MongoDB schema (new dynamic-source-registry collection), Cloud Workflows orchestration (autonomous probing has timeout + retry needs that look like a mini-workflow), security posture (NFR-S — agent-initiated outbound requests to URLs from user queries are an attack surface; needs SSRF guardrails). Same shape as OQ-8 / OQ-9 / OQ-11 (forward-looking, decide before the capability ships).
+
+---
+
 ### F.2 Discovery-First lane (public hazard catalog)
 
 For many user queries the right answer is to surface an authoritative pre-computed hazard layer rather than to run a solver. This is the Discovery-First lane — already scoped in §3.5.5 FR-PHC and FR-AS-9 Level 1b, formalized as a v0.1 design principle here.

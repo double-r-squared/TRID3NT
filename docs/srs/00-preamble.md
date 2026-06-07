@@ -2,10 +2,10 @@
 
 ## Hazard Modeling Agent — A Web-Based AI Workbench for Multi-Hazard Modeling
 
-**Version:** 0.3.16
+**Version:** 0.3.17
 **Status:** Draft
 **Authors:** Nathaniel J Almanza
-**Last updated:** 2026-06-06
+**Last updated:** 2026-06-07
 **Supersedes:** v0.2 (2026-06-04)
 
 ---
