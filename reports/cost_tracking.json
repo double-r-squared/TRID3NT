@@ -148,12 +148,26 @@
       "description": "Catalog seed research — public_data_source_catalog.yaml v0.1.0 with 30 vetted entries across all 8 domains (terrain 4, hydrology 5, weather/precip 4, buildings 4, population 3, landcover 3, fire 4, seismic 3). 21 distinct source_class values (finer than the 8 high-level domains; correct per FR-DC-1). **9 access-tier deviations from documentation caught via live probe** — NEXRAD bucket renamed Sep 2025, FEMA NFHL URL moved, USGS 3DEP subdomain change, USFS WHP ArcGIS 403 → Tier 4 FSRDA fallback, LANDFIRE WCS workspaces unconfirmed, WorldPop Tier 4 re-confirmed, MRMS subdomain change, FEMA NRI endpoint deferred to sprint-09, CO-OPS permanent redirect. 4 domain gaps disclosed honestly in footer (not padded). Sonnet routing validated: 142,889 tokens at 63% of sprint-7 Opus average; without live probe, catalog would have shipped with 9 stale URLs requiring sprint-09 hotfix cascades. Commit 3aa394e.",
       "model": "sonnet",
       "subagent_tokens": 142889
+    },
+    {
+      "job_id": "job-0053-engine-20260607",
+      "sprint": 8,
+      "description": "Mid-sprint hotfix #2: setup_manning_roughness v1.2.x kwarg fix via live `inspect.signature(model.setup_manning_roughness)` — closes OQ-52-MANNING-ROUGHNESS-MAP-FN-MISMATCH. Reshape reclass_table into datasets_rgh entries; new _write_hydromt_reclass_table_csv helper. M5 chain advances setup_grid_from_region → setup_dep → setup_mask_active → setup_manning_roughness CLEAR; fails at setup_river_inflow with merit_hydro DataCatalog not loaded — **NEW CLASS of mismatch** (DataCatalog binding vs signature kwarg). Three consecutive 1.2.x mismatches confirms systematic migration need; ESCALATION RULE FIRES → comprehensive 1.2.x API-migration audit (job-0054) rather than 4th hotfix. +1 test + 133/133 agent suite. Commit a6399d2.",
+      "model": "opus",
+      "subagent_tokens": 119484
+    },
+    {
+      "job_id": "job-0054-engine-20260607",
+      "sprint": 8,
+      "description": "Comprehensive hydromt-sfincs 1.2.x API-migration audit (escalation from 0049/0052/0053 hotfix chain). Live-inspected every setup_* method's 1.2.2 signature, cross-walked to library source. Two material mismatches caught + fixed in one pass: OQ-53 closed (setup_river_inflow: dropped hydrography='merit_hydro' — artifact_data catalog ships Italy-only rasters; rivers FGB carries needed geometry per workflows/flwdir.py:194-197 `if da_uparea is not None:` guard); OQ-54 closed (setup_precip_forcing: replaced invalid precip/duration_hr with v1.2.x-accepted magnitude in mm/hr — Atlas 14 11.9 in/24 hr → 12.59 mm/hr). Expanded canonical docstring with live signatures for every step; added all-steps signature audit test (`test_build_sfincs_model_all_setup_steps_match_live_signatures`) as residual guard against future drift. M5 re-run: PARTIAL SUCCESS / NEW FAILURE CLASS — chain advances through **all 5 setup steps cleanly** (`setup_river_inflow` finds 39 inflow points!) and fails INSIDE hydromt-sfincs 1.2.2 itself at `set_forcing_1d` (sfincs.py:1858) calling `pd.RangeIndex.is_integer()` which was REMOVED in pandas ≥ 2.0 (we run 3.0.3). Upstream library bug, not API mismatch. Surfaced as OQ-54-HYDROMT-SFINCS-PANDAS-3X-INCOMPAT; recommended remediation: drop setup_river_inflow from v0.1 pluvial deck (river inflow is M5+ scope). 3 new tests + 17 in test_model_flood_scenario.py; 157 agent suite passes (2 fails are concurrent job-0047 pre-existing). Chained-hotfix loop broken. Commit bc30638.",
+      "model": "opus",
+      "subagent_tokens": 181195
     }
   ],
   "totals_by_sprint": {
     "6": 1265567,
     "7": 1863284,
-    "8": 683725
+    "8": 984404
   },
   "historical_context": {
     "note": "Captured for accountability — NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
