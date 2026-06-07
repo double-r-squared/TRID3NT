@@ -183,12 +183,19 @@
       "description": "**Major milestone**: pandas 2.2.3 pinned. Path A (pandas>=2.1,<2.2) failed — Python 3.13 cp313 wheel constraint (pandas 2.1.x has no cp313 wheel; build from source fails on _PyLong_AsByteArray signature change). pandas 2.2.x is earliest with cp313 wheel AND both deprecated APIs still functional (FutureWarnings). One pin closes both OQ-54 (is_integer) + OQ-55 (freq=\"10T\"). **No cascade** — numpy/geopandas/rasterio/xarray/pyproj/shapely all unchanged. 162/162 tests (159 baseline + 3 regression guards in test_pandas_pin_regression.py). **M5 chain advances FAR FURTHER — HydroMT model build completes for the first time in project history**: all setup_* steps green + SFINCS deck (sfincs.inp + DEM + Manning + precip forcing) uploaded to gs://grace-2-hazard-prod-cache/cache/static-30d/sfincs_setup/01KTHQP54XVAAF2NPGKTAMP4PV/ + **Cloud Workflows execution 08370fe0-a31b-4edb-a173-1f77ef3cec77 dispatched + ran ~3.8 minutes** in real solver Cloud Run Job. New honest blocker: **SOLVER_FAILED** on the REAL manifest (prior 0040/0042/0044 SOLVER_FAILED outcomes were on synthetic manifests). Chain is past ALL HydroMT + pandas + setup_* issues. Surfaced as **OQ-56-SFINCS-SOLVER-FAILED-REAL-MANIFEST** — routes to infra (Cloud Run Job container review + execution log inspection) or engine (SFINCS deck completeness validation). Commit ad915bf.",
       "model": "sonnet",
       "subagent_tokens": 82694
+    },
+    {
+      "job_id": "job-0057-engine-20260607",
+      "sprint": 8,
+      "description": "**🎉 M5 PIPELINE SUCCESS — FIRST FLOOD-DEPTH OUTPUT IN PROJECT HISTORY**. Two-part root-cause fix in `_default_setup_uri` + `build_sfincs_model`: (1) URI returns `/manifest.json` (file), not trailing-slash directory; (2) emits worker-contract `manifest.json` with `{inputs:[{gs_uri,dest}], sfincs_args:[], outputs:[...]}` enumerating all 11 deck files. fsspec.upload preserves the `deck/` prefix so manifest gs_uri values are correct. **Live E2E**: worker reads manifest with NO 404 → all 11 inputs downloaded → **SFINCS binary ran 287s + exit 0** → `sfincs_map.nc` produced at gs://grace-2-hazard-prod-runs/01KTHS9C5HH9N15SXQ0KEKKBGX/sfincs_map.nc (38 MB, 527×540 grid @ 30 m, EPSG:32617, **hmax 3.52 m**, 27.4% cells with depth ≥50 cm — plausible pluvial response for 100-yr 24-hr Atlas 14 11.9 in design storm over flat Fort Myers terrain). completion.json status=ok exit_code=0. 2 new manifest tests + 164/164 agent suite. Orchestrator-direct hmax → PNG render surfaced via SendUserFile proactive per memory rule. Remaining trivial follow-up: postprocess_flood COG_WRITE_FAILED on singleton timemax dim → job-0058. Commit 15e7832.",
+      "model": "sonnet",
+      "subagent_tokens": 138172
     }
   ],
   "totals_by_sprint": {
     "6": 1265567,
     "7": 1863284,
-    "8": 1467432
+    "8": 1605604
   },
   "historical_context": {
     "note": "Captured for accountability — NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
