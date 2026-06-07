@@ -55,6 +55,21 @@ dependencies = [
     # infra/THIRD_PARTY_LICENSES.md OQ-49 note. fsspec[gcs] is the GCS
     # bridging layer HydroMT uses to materialize the staged deck.
     "hydromt-sfincs>=1.1.0,<2.0",
+    # job-0056 pandas pin — resolves two upstream hydromt-sfincs 1.2.2 pandas-3 incompats:
+    #   OQ-54 (sfincs.py:1858): pd.Index.is_integer() — removed in pandas 2.0, still
+    #         present (deprecated) in pandas 2.x. Repro: pd.RangeIndex(1,5).is_integer()
+    #         → AttributeError on pandas 3.x.
+    #   OQ-55 (sfincs.py:2456): pd.date_range(..., freq="10T") — "T" minute alias
+    #         deprecated in pandas 2.2, removed in pandas 3.0.
+    # pandas 2.2.x is the earliest series with pre-built wheels for Python 3.13
+    # (pandas 2.1.x and older have no cp313 wheel and fail to compile against the
+    # CPython 3.13 changed _PyLong_AsByteArray API). Both deprecated APIs remain
+    # functional under pandas 2.2.x with FutureWarnings — acceptable for v0.1 scope.
+    # Migration path: when hydromt-sfincs upstream lands a pandas-3 fix (likely
+    # v1.2.3 or v2.0 RC — upstream should replace is_integer() with
+    # pd.api.types.is_integer_dtype() and "10T" with "10min"), drop this pin and
+    # bump hydromt-sfincs to the fixed release.
+    "pandas>=2.2,<2.3",
     "fsspec[gcs]>=2024.6",
     "websockets>=13,<16",
     "pymongo>=4.8,<5",
