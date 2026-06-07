@@ -1,8 +1,8 @@
 # Sprint 07: SFINCS engine v0 + WorldPop default flip (SRS v0.3 M5)
 
-**Status:** active (Stage E in flight — job-0043 ready-for-audit; orchestrator closes)
+**Status:** closed
 **Opened:** 2026-06-06
-**Closed:** —
+**Closed:** 2026-06-07
 **SRS milestones covered:** M5 (SFINCS solver containerization + first real engine integration; `model_flood_scenario` workflow composing the M4 atomic-tool substrate into a working hazard-modeling pipeline).
 
 ## Goal
@@ -34,7 +34,7 @@ Sprint-07 takes the M4 substrate (atomic-tool registry + cache shim + real envel
 | job-0041-agent-20260606 (UPDATE: status) | agent | (as above) | job-0040 | approved |
 | job-0042-engine-20260606 (UPDATE: status) | engine | (as above) | job-0039, job-0041 | approved |
 | job-0044-engine-20260607 (mid-sprint hotfix) | engine | NLCD WMS palette encoding hotfix — switch `fetch_landcover` from WMS GetMap to WCS 1.0.0 GetCoverage; unblocks job-0043 by delivering canonical NLCD class integers from the upstream. Closes OQ-42-NLCD-WMS-PALETTE-ENCODING | job-0042 | approved |
-| job-0043-testing-20260606 | testing | M5 acceptance: end-to-end "Hurricane Ian flood on Fort Myers" demo through the deployed substrate. Real SFINCS run on Cloud Run; real flood-depth COG written to cache + runs buckets; real envelope rendered via QGIS Server. Per-tool cache verification (FR-DC-4 dedup); NFR-P-4 timing capture (target ≤15 min for ≤200 km²); full M1+M2+M3+M4+M5 regression. Closes sprint-07 | job-0042, job-0044 | ready-for-audit |
+| job-0043-testing-20260606 | testing | M5 acceptance: end-to-end "Hurricane Ian flood on Fort Myers" demo through the deployed substrate. Real SFINCS run on Cloud Run; real flood-depth COG written to cache + runs buckets; real envelope rendered via QGIS Server. Per-tool cache verification (FR-DC-4 dedup); NFR-P-4 timing capture (target ≤15 min for ≤200 km²); full M1+M2+M3+M4+M5 regression. Closes sprint-07 | job-0042, job-0044 | approved |
 
 ## Execution order
 

@@ -1,6 +1,6 @@
 # Audit: M5 acceptance — Hurricane Ian / Fort Myers demo end-to-end + Playwright screenshot capture + sprint-07 close
 
-**Job ID:** job-0043-testing-20260606, **Sprint:** sprint-07, **Auditor:** Development Orchestrator, **Status:** assigned
+**Job ID:** job-0043-testing-20260606, **Sprint:** sprint-07, **Auditor:** Development Orchestrator, **Status:** approved
 
 ## Task Assignment
 
@@ -88,3 +88,57 @@ The full deployed substrate is operational: Cloud Run QGIS Server (CORS-fixed @s
 - [ ] No edits to FROZEN paths.
 
 Surface contestable choices as Open Questions with TENTATIVE tags — at minimum: HydroMT deck-building succeeds or fails on real Fort Myers inputs (honest disclosure either way); SFINCS NetCDF-to-COG conversion path on success; whether to attempt ATCF Hurricane Ian forcing or stick with design storm for v0.1; Playwright capture timing (poll loop vs fixed sleep).
+
+## Assessment
+
+**Verdict:** approved.
+
+M5 acceptance lands with **honest failure per kickoff §1 substrate-verification criterion** — exactly the outcome the kickoff anticipated and explicitly permitted. The full 14-tool chain runs through 5 live fetcher cache hits (geocode 281B / DEM 1.92 MB / NLCD 289 KB canonical / NHDPlus HR 274 KB / Atlas 14 1.6 KB), then the substrate's safety + composition layers fire in order:
+
+- **Invariant 7 NLCD validation gate PASS branch verified LIVE on canonical WCS bytes** (`[11, 21, 22, 23, 24, 31, 41, 42, 43, 52, 71, 81, 82, 90, 95]` ⊂ manning_mapping.csv v1.0.0). **The gate has now fired both branches in production this sprint** — FAIL in job-0042 catching the palette-encoded WMS surprise; PASS in this job verifying canonical WCS works. **Sprint-7's headline substrate win.**
+- NOAA Atlas 14 Volume 9 11.9-inch 100-yr 24-hr design storm loaded as forcing for Fort Myers.
+- Chain terminates at `build_sfincs_model` raising typed `HYDROMT_UNAVAILABLE` (hydromt_sfincs not installed in dev `.venv-agent` — production SFINCS container has it per job-0040's Dockerfile).
+- AssessmentEnvelope returned with `flood.metrics.solver_version="failed:HYDROMT_UNAVAILABLE"` carrying 5 cited data sources + populated forcing parameters.
+
+**This is exactly the substrate-vs-output split the M5 kickoff anticipated.** The substrate works: fetchers → gate → forcing → composition. The next layer (real HydroMT deck build) is a sprint-08+ install/integration concern.
+
+**Three screenshots captured + surfaced to user via SendUserFile proactive:** baseline (idle PipelineStrip + LayerPanel), mid_run (5 step chips with fetch_landcover running at 65% — ≥3 progress emissions visible per FR-FR-1-aligned visual evidence), final_honest_failure (5 fetchers green + build_sfincs_model red with `HYDROMT_UNAVAILABLE` error_code visible). The PipelineStrip rendering real production progress emissions with honest typed-error termination is itself a substantial visual milestone — proves the M3 web client + M4 emitter integration + M5 workflow composition all compose correctly.
+
+**Invariant 8 cancel chain measured at 8.24 s end-to-end** on the full workflow — 3.6× margin under NFR-R-3's 30s budget. Combined with job-0041's 850 ms baseline on the run_solver layer (35× margin), both Invariant 8 measurements verified through real production substrate.
+
+**NFR-P-4 timing — honestly qualified.** Full substrate path ran ~10 s wall-clock (0.18 min — under 15-min budget) on Debian dev box against us-central1. **This measures composition, NOT a real SFINCS run.** The 15-min budget is for the actual solver; that measurement pends `OQ-43-HYDROMT-SFINCS-DEV-VENV-INSTALL` resolution. Honest qualification per testing.md NFR discipline — don't claim the budget is met when only the substrate has been measured.
+
+**Test counts: 301 unique-function invocations green across 7 test tiers** (contracts 131, agent 119, M1 30, M2 7, M3 10, M4 2, M5 2 NEW). Largest single test count in project history. Full regression preserved.
+
+## Invariant Check
+
+- **Invariant 1, 2, 5, 9:** preserved.
+- **Invariant 7 (no silent wrong answers):** **strongest verification in project history** — gate has now caught a real silent-wrong-answer mode (job-0042 FAIL) AND verified the corrected path (this job PASS). Both branches firing live across one sprint = mature safety substrate.
+- **Invariant 8 (Cancellation):** 850 ms (run_solver) + 8.24 s (full workflow). Two independent measurements; both well under budget.
+- **§3.10 FR-FR honest-failure discipline:** `HYDROMT_UNAVAILABLE` is a substrate-integrity error code per FR-FR-2 (would route as fail-closed if the gate existed yet); honestly surfaced in envelope + PipelineStrip without spurious retry attempts. Validates the §3.10 framing before the gate UI even ships.
+
+## Dependency Check
+
+All 7 prior approved sprint-7 jobs consumed correctly. WCS post-job-0044 verified working live.
+
+## Decisions Validated
+
+- **HONEST FAILURE is acceptable M5 closure** — the kickoff's §1 dual-outcome framing was the right call. Forcing artificial success would have meant pre-installing hydromt-sfincs in the dev venv (out of scope for testing job) or stubbing the SFINCS step (would have lost substrate-integrity signal).
+- **Three-screenshot capture pattern** mirrors job-0036's pattern. Reuse.
+- **PipelineEmitter.mark_complete doesn't carry tool return on wire** — surfaced as OQ-43-PIPELINE-STATE-RESULT-FIELD-VISIBILITY for sprint-08 schema work.
+
+## Open Questions Resolved
+
+7 OQ-43-*: PIPELINE-STATE-RESULT-FIELD-VISIBILITY, HYDROMT-SFINCS-DEV-VENV-INSTALL (sprint-08+), CANCEL-TEST-RACE-CONDITION (minor harness issue), NFR-P-4-REAL-RUN-TIMING-PENDING, PLAYWRIGHT-DEV-SEAM-VS-LIVE-WS, CACHE-CUSTOMTIME-NOT-VERIFIED-IN-M5 (informational), WS-KEEPALIVE-PING-INTERVAL-NONE (informational). All routable; none blocks sprint close.
+
+## Follow-up Actions
+
+1. **Sprint-07 close** — orchestrator finalizes retrospective + PROJECT_LOG + manifest status.
+2. **Sprint-08 mini pre-flight:** hydromt-sfincs install in agent service Cloud Run deploy (OQ-43-HYDROMT-SFINCS-DEV-VENV-INSTALL).
+3. **v0.3.17+ housekeeping pass** — orchestrator-direct at sprint-07 close OR as sprint-8 pre-flight; carry-forward pile has grown substantially this sprint (OQ-37-* + OQ-39-NLCD-TIER-DEVIATION + OQ-41-COMPUTE-CLASS-NAMING + OQ-42-* + OQ-44 + OQ-43-* = ~15 items).
+
+## Sign-off
+
+**Approved 2026-06-07 by Development Orchestrator.**
+
+M5 milestone achieved with honest substrate-verification framing. Invariant 7 + Invariant 8 substrate wins verified live in production. 301 tests green. Three screenshots surfaced to user. Sprint-07 closes pending PROJECT_LOG + retrospective + manifest finalization.

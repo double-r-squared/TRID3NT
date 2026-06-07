@@ -106,11 +106,18 @@
       "description": "Mid-sprint hotfix for OQ-42-NLCD-WMS-PALETTE-ENCODING. Path B (MRLC WCS 1.0.0 GetCoverage) chosen over Path A (WMS palette ColorTable decode) and Path C (forked variant) — server-side canonical bytes eliminates a future Invariant 7 risk that Path A's client-side RGB→class lookup would introduce if MRLC reorders palette legend. WCS 1.0.0 over 2.0.1 (GeoServer EPSG:3857 projection bug) over 1.1.1 (sub-pixel rejection on small bbox); multi-version live verification before pinning. Re-ran job-0042 model_flood_scenario smoke end-to-end: validation gate PASS (fetched [11,21,22,23,24,31,41,42,43,52,71,81,90,95] ⊂ manning_mapping.csv v1.0.0 20 classes); real Cloud Workflows execution 1d98f3e9 dispatched; wait_for_completion polled ~4 min; SOLVER_FAILED on synthetic manifest (same outcome class as job-0040/0042 — not introduced here). HydroMT deck generation is honest next blocker, scoped to job-0043. 4 new tests + 119/119 agent suite; 14 tools registered. Closes OQ-42-NLCD-WMS-PALETTE-ENCODING. Commit 53e2f05.",
       "model": "opus",
       "subagent_tokens": 259702
+    },
+    {
+      "job_id": "job-0043-testing-20260606",
+      "sprint": 7,
+      "description": "M5 acceptance — Hurricane Ian/Fort Myers demo end-to-end on deployed substrate. HONEST FAILURE per kickoff §1 substrate-verification criterion: full chain runs through 5 live fetcher cache hits + **Invariant 7 NLCD validation gate PASS branch verified LIVE on canonical WCS bytes** (sister branch to job-0042's FAIL — gate fired BOTH branches in production this sprint; sprint-7 headline win) + NOAA Atlas 14 11.9-inch 100-yr 24-hr forcing for Fort Myers + chain terminates at build_sfincs_model HYDROMT_UNAVAILABLE (hydromt-sfincs not in dev venv; production SFINCS container has it). AssessmentEnvelope returned with typed failure + 5 cited data sources. **Three screenshots captured + surfaced to user via SendUserFile proactive** (baseline + mid_run with progress emissions + final_honest_failure with typed error visible). **Invariant 8 cancel chain measured 8.24 s on full workflow** (3.6× under NFR-R-3 30s budget; combined with job-0041's 850 ms run_solver baseline = both Invariant 8 measurements verified live). NFR-P-4 honestly qualified (substrate only; real SFINCS pends OQ-43-HYDROMT-SFINCS-DEV-VENV-INSTALL). 301 unique-function invocations green across 7 test tiers (largest in project history). 7 OQ-43-* surfaced. Sprint-07 retrospective drafted. Commit 448fd1b.",
+      "model": "opus",
+      "subagent_tokens": 273634
     }
   ],
   "totals_by_sprint": {
     "6": 1265567,
-    "7": 1589650
+    "7": 1863284
   },
   "historical_context": {
     "note": "Captured for accountability — NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
