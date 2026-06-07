@@ -99,11 +99,18 @@
       "description": "M5 capstone composition — new workflows/ package per Decision G; model_flood_scenario composes geocode → fetch_dem → fetch_landcover → fetch_river_geometry → lookup_precip_return_period → build_sfincs_model (with NLCD validation gate per OQ-4 Invariant 7 mitigation) → run_solver → wait_for_completion → postprocess_flood → AssessmentEnvelope Flood subtype; run_model_flood_scenario atomic-tool wrapper; manning_mapping.csv v1.0.0 (20 canonical L48 classes, 4-source citation bundle). **NLCD validation gate FIRED LIVE on real production data — caught MRLC WMS palette-encoding silent-wrong-answer mode** (raster bytes are palette indices [1,3,4,5,6,7,9,10,11,13,14,18,20,21] not canonical NLCD integers); workflow returned typed failed envelope with solver_version='failed:LULC_MAPPING_MISMATCH' instead of producing silently-wrong flood maps. Real Cloud Workflows execution afd364bd through grace-2-sfincs-orchestrator succeeded (synthetic-manifest expected SOLVER_FAILED). 11 new tests + 115/115 agent suite; 14 tools registered. Closes OQ-36-QGIS-PROCESS-DEMO-CHAIN. 9 OQ-42-* incl. critical OQ-42-NLCD-WMS-PALETTE-ENCODING routed to job-0044 hotfix. Commit cca57bd.",
       "model": "opus",
       "subagent_tokens": 310417
+    },
+    {
+      "job_id": "job-0044-engine-20260607",
+      "sprint": 7,
+      "description": "Mid-sprint hotfix for OQ-42-NLCD-WMS-PALETTE-ENCODING. Path B (MRLC WCS 1.0.0 GetCoverage) chosen over Path A (WMS palette ColorTable decode) and Path C (forked variant) — server-side canonical bytes eliminates a future Invariant 7 risk that Path A's client-side RGB→class lookup would introduce if MRLC reorders palette legend. WCS 1.0.0 over 2.0.1 (GeoServer EPSG:3857 projection bug) over 1.1.1 (sub-pixel rejection on small bbox); multi-version live verification before pinning. Re-ran job-0042 model_flood_scenario smoke end-to-end: validation gate PASS (fetched [11,21,22,23,24,31,41,42,43,52,71,81,90,95] ⊂ manning_mapping.csv v1.0.0 20 classes); real Cloud Workflows execution 1d98f3e9 dispatched; wait_for_completion polled ~4 min; SOLVER_FAILED on synthetic manifest (same outcome class as job-0040/0042 — not introduced here). HydroMT deck generation is honest next blocker, scoped to job-0043. 4 new tests + 119/119 agent suite; 14 tools registered. Closes OQ-42-NLCD-WMS-PALETTE-ENCODING. Commit 53e2f05.",
+      "model": "opus",
+      "subagent_tokens": 259702
     }
   ],
   "totals_by_sprint": {
     "6": 1265567,
-    "7": 1329948
+    "7": 1589650
   },
   "historical_context": {
     "note": "Captured for accountability — NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",

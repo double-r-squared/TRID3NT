@@ -1,6 +1,6 @@
 # Audit: NLCD WMS palette encoding hotfix (OQ-42 critical blocker for M5 real SFINCS runs)
 
-**Job ID:** job-0044-engine-20260607, **Sprint:** sprint-07 (mid-sprint addition), **Auditor:** Development Orchestrator, **Status:** assigned
+**Job ID:** job-0044-engine-20260607, **Sprint:** sprint-07 (mid-sprint addition), **Auditor:** Development Orchestrator, **Status:** approved
 
 ## Task Assignment
 
@@ -68,3 +68,67 @@ Two possible fix paths:
 - [ ] No edits to FROZEN paths.
 
 Surface contestable choices as Open Questions with TENTATIVE tags — at minimum: Path A vs Path B vs Path C decision (with live evidence cited); MRLC canonical NLCD colormap citation; whether to also re-attempt the s3 mirror after this fix (revisit OQ-39-NLCD-TIER-DEVIATION); cached-COG migration policy (do existing palette-encoded cache entries get invalidated, or is the cache key shape enough to make this a no-op?).
+
+## Assessment
+
+**Verdict:** approved.
+
+The NLCD palette encoding blocker is resolved. **Path B (MRLC WCS 1.0.0 GetCoverage)** chosen with explicit live-verification of all three candidate paths + a calibrated tradeoff rationale: WCS returns canonical NLCD integers `[11, 21, 22, 23, 24, 31, 41, 42, 43, 52, 71, 81, 90, 95]` directly from the server, whereas Path A's RGB→class lookup would itself be a silent-wrong-answer surface if MRLC ever reorders its palette legend. **The choice prefers server-side canonical bytes over client-side decoding precisely because it eliminates a future Invariant 7 risk** — exactly the right reasoning for a substrate-integrity fix.
+
+**WCS version selection done thoughtfully:** WCS 1.0.0 over WCS 2.0.1 (GeoServer projection-mapping bug on EPSG:3857) over WCS 1.1.1 (sub-pixel rejection on small bbox). Multiple live probes; not a guess from documentation. This is the §F.1.1 live-verification discipline applied recursively at the protocol-version layer.
+
+**Re-running job-0042's smoke is the verification capstone:**
+- Validation gate **PASS** — fetched class set `[11, 21-24, 31, 41-43, 52, 71, 81, 90, 95]` is a clean subset of `manning_mapping.csv` v1.0.0's 20-class taxonomy.
+- `run_solver` dispatched real Cloud Workflows execution `1d98f3e9-83f5-40d7-a3d5-ecfb6449e2dc`.
+- `wait_for_completion` polled ~4 min with PipelineEmitter progress emission.
+- SFINCS itself failed on the synthetic manifest — **same outcome class as job-0040 / job-0042** dispatch tests (synthetic input deck; not a regression introduced by this hotfix).
+
+The specialist's honest disclosure: "real HydroMT deck generation is the next blocker, not this hotfix's scope." This is the right framing — the M5 acceptance job (0043) is where the real HydroMT-built model deck gets exercised end-to-end. This hotfix removes the bad-data condition; whether HydroMT can build a successful Fort Myers deck is a separate question.
+
+**Tests + telemetry:** 4 new tests (test_data_fetch.py 46→50); agent suite 115→119; contracts 131/131 unchanged; 14 tools registered.
+
+**Closes OQ-42-NLCD-WMS-PALETTE-ENCODING.**
+
+## Invariant Check
+
+- **Invariant 1 (Determinism boundary):** preserved. WCS GetCoverage returns deterministic canonical bytes.
+- **Invariant 5 (Tier separation):** preserved.
+- **Invariant 7 (no silent wrong answers):** strengthened — the fix preserves the gate's semantics AND eliminates a future palette-reorder silent-failure surface that Path A would have introduced.
+- **§F.1.1 access tier:** updated from Tier 2 WMS to Tier 2 WCS (sub-protocol swap within the same access tier).
+- **Diagnose before fix:** exemplary — live-probed all 3 paths, picked based on actual response shapes + version-bug discoveries.
+
+## Dependency Check
+
+- **job-0039** — extended additively; existing landcover tests preserved.
+- **job-0042** — re-ran the M5 smoke chain end-to-end through the validation gate; gate now PASSES; SFINCS dispatch + wait_for_completion verified composable.
+- **v0.3.17 §F.1.1 + v0.3.18 §F.1.2** — Tier 2 sub-protocol swap (WMS → WCS) doesn't change the tier; updates the "how to use" metadata for the future catalog entry.
+
+## Decisions Validated
+
+All decisions reviewed and accepted:
+1. **Path B (WCS GetCoverage) over Path A (palette decode) over Path C (forked variant)** — server-side canonical bytes eliminates a future Invariant 7 risk that client-side decoding would introduce. Strong reasoning.
+2. **WCS 1.0.0 over 2.0.1 over 1.1.1** — version-bug discoveries from live probes; pinned the working version.
+3. **No retroactive cache invalidation** — old palette-encoded cache entries will live out their TTL; the cache key includes the WMS-vs-WCS request shape (different params → different keys) so this is a clean cutover with no manual purge needed.
+
+## Open Questions Resolved
+
+**Closes:** OQ-42-NLCD-WMS-PALETTE-ENCODING.
+
+Filed for triage (all small, none v0.1-blocking):
+- **OQ-44-MANNING-MAPPING-CSV-COMMENT-WMS-REF** — stale symbol reference in the v1.0.0 CSV header (still says "WMS" in a comment). Tiny follow-up; FROZEN CSV in this job's scope. Bundle into v0.3.17+ housekeeping pass.
+- **OQ-44-WMS-WCS-SAME-SERVER-AGREEMENT** — informational; visualization could stay WMS (palette OK for display), model inputs use WCS (canonical OK for math). Confirmed both endpoints agree on coverage extent.
+- **OQ-44-WMS-WCS-VINTAGE-PARITY** — informational; WCS catalog matches WMS 1:1 across vintages.
+- **OQ-44-WCS-FOR-OTHER-MRLC-PRODUCTS** — informational; impervious / tree-canopy / etc. on the same MRLC GeoServer instance likely follow the same WCS shape. Useful for future expansion.
+
+## Follow-up Actions
+
+1. **Scaffold + dispatch job-0043 (M5 acceptance + Hurricane Ian / Fort Myers demo + screenshot capture)** — Stage E. With this fix landed, the chain can attempt a real HydroMT model deck build. Outcome will determine whether the demo produces a successful pipeline (the screenshot moment) or fails honestly on the next blocker.
+2. **v0.3.17+ housekeeping carry-forwards grow by one** — OQ-44-MANNING-MAPPING-CSV-COMMENT-WMS-REF + the §F.1 NLCD prose alignment (WCS not WMS for model inputs) bundle in.
+
+## Sign-off
+
+**Approved 2026-06-07 by Development Orchestrator.**
+
+Critical mid-sprint hotfix lands cleanly with multi-version live verification, calibrated tradeoff rationale, and the M5 smoke re-run confirming the gate now passes on real production data. Closes OQ-42-NLCD-WMS-PALETTE-ENCODING. Real SFINCS runs are unblocked at the input-data layer; HydroMT deck generation is the next layer's challenge (job-0043 territory).
+
+Sprint-07 ready for Stage E (M5 acceptance) — the last job before sprint close.
