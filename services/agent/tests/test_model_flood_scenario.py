@@ -808,3 +808,158 @@ def test_build_sfincs_model_malformed_yaml_surfaces_typed_error(
     assert err.details["dem_uri"] == "gs://test/dem.tif"
     assert err.details["landcover_uri"] == "gs://test/landcover.tif"
     assert "underlying" in err.details
+
+
+# --------------------------------------------------------------------------- #
+# Test 14 — OQ-52 hotfix (job-0053): the setup_manning_roughness step emits
+# the hydromt-sfincs 1.2.x-accepted kwarg shape. The live signature is
+# ``setup_manning_roughness(datasets_rgh, manning_land, manning_sea,
+# rgh_lev_land)`` — there is NO top-level ``map_fn`` keyword. The LULC →
+# Manning's reclass CSV is threaded INSIDE each ``datasets_rgh`` entry
+# under the key ``reclass_table`` (per ``_parse_datasets_rgh``), and the
+# CSV itself must have first column = LULC class (index_col=0) plus a
+# column literally named ``N``. This test is the regression guard.
+# --------------------------------------------------------------------------- #
+
+
+def test_build_sfincs_model_emits_v1_2_x_manning_roughness_kwargs(
+    tmp_path: Path,
+) -> None:
+    """``setup_manning_roughness`` kwargs must match hydromt-sfincs 1.2.x.
+
+    Failure modes this guards against:
+      * Re-emitting a top-level ``map_fn`` key (1.2.x rejects with
+        ``TypeError: setup_manning_roughness() got an unexpected keyword
+        argument 'map_fn'`` — the OQ-52 blocker observed by job-0052).
+      * Forgetting ``reclass_table`` inside each ``datasets_rgh`` entry —
+        without it, ``_parse_datasets_rgh`` raises ``IOError("Manning
+        roughness 'reclass_table' csv file must be provided")``.
+      * Writing the reclass CSV without an ``N`` column — HydroMT
+        reclassifies via ``df_map[["N"]]``; the wrong column header is a
+        silent-wrong-answer in waiting.
+    """
+    mapping_path = tmp_path / "manning.csv"
+    mapping_path.write_text(
+        "nlcd_class,manning_n,description\n"
+        "11,0.025,Open Water\n"
+        "41,0.150,Deciduous Forest\n",
+        encoding="utf-8",
+    )
+
+    captured: dict[str, Any] = {}
+
+    class _FakeSfincsModel:
+        def __init__(self, root: str, mode: str) -> None:  # noqa: D401
+            captured["root"] = root
+
+        def build(self, opt: Any) -> None:  # noqa: D401
+            captured["opt"] = opt
+
+        def write(self) -> None:  # noqa: D401
+            captured["write_called"] = True
+
+    fake_module = MagicMock()
+    fake_module.SfincsModel = _FakeSfincsModel
+
+    forcing = ForcingSpec(
+        forcing_type="pluvial_synthetic",
+        precip_inches=11.9,
+        duration_hours=24.0,
+        return_period_years=100,
+        provenance={"source": "noaa-atlas14"},
+    )
+
+    with (
+        patch.dict("sys.modules", {"hydromt_sfincs": fake_module}, clear=False),
+        patch(
+            "grace2_agent.workflows.sfincs_builder._extract_unique_nlcd_classes",
+            return_value={11, 41},
+        ),
+    ):
+        build_sfincs_model(
+            dem_uri="gs://test/dem.tif",
+            landcover_uri="gs://test/landcover.tif",
+            river_geometry_uri=None,
+            forcing=forcing,
+            bbox=(-81.92, 26.55, -81.80, 26.68),
+            options=BuildOptions(grid_resolution_m=30.0, simulation_hours=24.0),
+            nlcd_vintage_year=2021,
+            manning_mapping_csv=mapping_path,
+        )
+
+    opt = captured.get("opt")
+    assert isinstance(opt, dict), "model.build was not called with a parsed dict"
+    assert "setup_manning_roughness" in opt, (
+        f"setup_manning_roughness step missing from build opt; got keys {list(opt)}"
+    )
+    rgh_kwargs = opt["setup_manning_roughness"]
+    assert isinstance(rgh_kwargs, dict)
+
+    # The OQ-52 regression: ``map_fn`` MUST NOT appear as a top-level key.
+    assert "map_fn" not in rgh_kwargs, (
+        "OQ-52 regression: setup_manning_roughness emitted top-level 'map_fn' "
+        "kwarg — hydromt-sfincs 1.2.x raises "
+        "'TypeError: got an unexpected keyword argument map_fn'. The reclass "
+        "table belongs INSIDE each datasets_rgh entry as 'reclass_table'."
+    )
+
+    # Verify the v1.2.x-accepted kwarg names are present (every key here is
+    # a parameter of the live 1.2.2 SfincsModel.setup_manning_roughness
+    # signature: datasets_rgh, manning_land, manning_sea, rgh_lev_land).
+    assert "datasets_rgh" in rgh_kwargs
+    valid_top_level_keys = {
+        "datasets_rgh",
+        "manning_land",
+        "manning_sea",
+        "rgh_lev_land",
+    }
+    extra = set(rgh_kwargs.keys()) - valid_top_level_keys
+    assert not extra, (
+        f"setup_manning_roughness has unexpected top-level kwargs {extra}; "
+        f"hydromt-sfincs 1.2.x accepts only {valid_top_level_keys}."
+    )
+
+    # datasets_rgh is a list[dict]; each entry must carry lulc + reclass_table
+    # (the only path through ``_parse_datasets_rgh`` that hits a
+    # reclassification). Without reclass_table the parser raises IOError.
+    datasets = rgh_kwargs["datasets_rgh"]
+    assert isinstance(datasets, list) and len(datasets) == 1
+    entry = datasets[0]
+    assert "lulc" in entry, f"datasets_rgh entry missing 'lulc'; got {entry}"
+    assert "reclass_table" in entry, (
+        f"datasets_rgh entry missing 'reclass_table' (this was 'map_fn' "
+        f"pre-fix); hydromt-sfincs 1.2.x ``_parse_datasets_rgh`` requires "
+        f"this key alongside ``lulc``. Got: {entry}"
+    )
+
+    # The reclass_table the YAML points at must exist and carry the v1.2.x
+    # column shape (first column = LULC class index; column named ``N``).
+    reclass_csv_path = Path(entry["reclass_table"])
+    assert reclass_csv_path.exists() or reclass_csv_path.name == "manning_reclass.csv", (
+        f"reclass_table CSV path {reclass_csv_path} should be the temp file "
+        f"written by _write_hydromt_reclass_table_csv"
+    )
+
+    # Independent unit check on the writer itself — round-trip the in-memory
+    # mapping through the CSV format hydromt-sfincs 1.2.x reads. This is the
+    # behavior of the helper that supplies the on-disk substrate the YAML
+    # references.
+    from grace2_agent.workflows.sfincs_builder import (
+        _write_hydromt_reclass_table_csv,
+    )
+
+    out = _write_hydromt_reclass_table_csv(
+        {11: 0.025, 41: 0.150}, tmp_path / "rt.csv"
+    )
+    text = out.read_text(encoding="utf-8")
+    # First row is the header: first column = index, then ``N``.
+    header_line = text.splitlines()[0]
+    cols = [c.strip() for c in header_line.split(",")]
+    assert cols[0] in {"nlcd_class", "lulc", "class"}, (
+        f"reclass_table first column must be the LULC class index; got {cols[0]!r}"
+    )
+    assert "N" in cols, (
+        f"reclass_table must have a column literally named 'N' — "
+        f"hydromt-sfincs 1.2.x ``_parse_datasets_rgh`` indexes ``df_map[['N']]``. "
+        f"Got header columns: {cols}"
+    )

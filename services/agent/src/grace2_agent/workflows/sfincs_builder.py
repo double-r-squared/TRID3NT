@@ -455,6 +455,40 @@ def _extract_unique_nlcd_classes(landcover_uri: str) -> set[int]:
 # --------------------------------------------------------------------------- #
 
 
+def _write_hydromt_reclass_table_csv(
+    mapping: dict[int, float],
+    out_path: Path,
+) -> Path:
+    """Write a reclass-table CSV in the **hydromt-sfincs 1.2.x** expected format.
+
+    OQ-52 hotfix (job-0053). ``_parse_datasets_rgh`` reads the reclass table
+    via ``data_catalog.get_dataframe(reclass_table, index_col=0)`` then
+    indexes ``df_map[["N"]]`` — i.e. the first column must be the LULC class
+    integer (used as the index), and there must be a column literally named
+    ``N`` carrying the Manning's roughness value. Our authored
+    ``manning_mapping.csv`` uses ``nlcd_class,manning_n,description`` columns
+    (load-bearing for ``load_manning_mapping`` + the OQ-4 §4 validation gate);
+    here we rewrite the in-memory mapping into the v1.2.x-shaped CSV that
+    HydroMT will actually consume during ``setup_manning_roughness``.
+
+    Args:
+        mapping: ``{nlcd_class_int: manning_n_float}`` as loaded by
+            ``load_manning_mapping`` (the substrate-version-pinned set).
+        out_path: destination path inside the per-build temp dir.
+
+    Returns:
+        ``out_path`` for convenience.
+    """
+    with out_path.open("w", encoding="utf-8", newline="") as fh:
+        writer = csv.writer(fh)
+        # First column is the LULC class integer (index_col=0); the ``N``
+        # column is what HydroMT's reclassify call picks up.
+        writer.writerow(["nlcd_class", "N"])
+        for cls in sorted(mapping.keys()):
+            writer.writerow([cls, mapping[cls]])
+    return out_path
+
+
 def _default_setup_uri(bbox: tuple[float, float, float, float]) -> str:
     """Compose a default gs:// URI for the staged SFINCS deck.
 
@@ -520,8 +554,20 @@ def _generate_hydromt_yaml_config(
     components.append("  zmin: -10.0")
     components.append("  zmax: 10.0")
     components.append("setup_manning_roughness:")
-    components.append(f"  datasets_rgh: [{{ lulc: '{landcover_local_path}' }}]")
-    components.append(f"  map_fn: '{mapping_csv_path}'")
+    # OQ-52 hotfix (job-0053): hydromt-sfincs 1.2.x ``setup_manning_roughness``
+    # signature is ``(datasets_rgh, manning_land, manning_sea, rgh_lev_land)``
+    # — there is NO top-level ``map_fn`` keyword (verified via
+    # ``inspect.signature(SfincsModel.setup_manning_roughness)`` on the
+    # installed v1.2.2 binding). The LULC → Manning's reclass table is
+    # threaded INSIDE the ``datasets_rgh`` entry under the key
+    # ``reclass_table`` (per ``_parse_datasets_rgh``: each dict supports
+    # ``manning`` (gridded n) OR ``lulc`` + ``reclass_table`` (csv index_col=0
+    # with column ``N``)). ``mapping_csv_path`` is written by
+    # ``_write_hydromt_reclass_table_csv`` in the v1.2.x-accepted format.
+    components.append(
+        f"  datasets_rgh: [{{ lulc: '{landcover_local_path}', "
+        f"reclass_table: '{mapping_csv_path}' }}]"
+    )
     if river_local_path is not None:
         components.append("setup_river_inflow:")
         components.append(f"  rivers: '{river_local_path}'")
@@ -676,6 +722,16 @@ def build_sfincs_model(
     # the gs:// URI of the deck root.
     with tempfile.TemporaryDirectory(prefix="sfincs-build-") as tmpdir:
         tmp = Path(tmpdir)
+        # OQ-52 hotfix (job-0053): the authored ``manning_mapping.csv`` uses
+        # our column names (``nlcd_class,manning_n,description``) that are
+        # load-bearing for ``load_manning_mapping`` + the OQ-4 §4 validation
+        # gate. hydromt-sfincs 1.2.x expects ``index_col=0`` + a column
+        # literally named ``N``. Write a v1.2.x-shaped reclass table into the
+        # build's temp dir and point the YAML config's ``reclass_table`` key
+        # at it — the original substrate file is unchanged.
+        reclass_csv_path = _write_hydromt_reclass_table_csv(
+            mapping, tmp / "manning_reclass.csv"
+        )
         yaml_path = tmp / "sfincs_build.yml"
         yaml_text = _generate_hydromt_yaml_config(
             bbox=bbox,
@@ -684,7 +740,7 @@ def build_sfincs_model(
             landcover_local_path=landcover_uri,
             river_local_path=river_geometry_uri,
             forcing=forcing,
-            mapping_csv_path=mapping_path,
+            mapping_csv_path=str(reclass_csv_path),
         )
         yaml_path.write_text(yaml_text, encoding="utf-8")
         try:
