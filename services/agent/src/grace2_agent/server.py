@@ -53,6 +53,8 @@ from grace2_contracts.ws import (
 )
 
 from .adapter import GeminiSettings, build_client, load_settings, stream_reply
+from .pipeline_emitter import PipelineEmitter
+from .tools import TOOL_REGISTRY
 
 logger = logging.getLogger("grace2_agent.server")
 
@@ -66,13 +68,21 @@ CONFIRMATION_TRIGGERS: set[str] = set()
 @dataclass
 class SessionState:
     """Per-session in-memory state. M1 keeps everything in-process; Mongo-backed
-    session restore (NFR-R-2) lands when the LLM-facing DB seam is wired."""
+    session restore (NFR-R-2) lands when the LLM-facing DB seam is wired.
+
+    job-0035 (M4): adds the per-session ``PipelineEmitter`` that owns the
+    current ``PipelineSnapshot`` + ``loaded_layers`` accumulator and broadcasts
+    real ``pipeline-state`` / ``session-state`` envelopes (Appendix A.7
+    replace-not-reconcile). ``current_pipeline_id`` / ``current_pipeline_steps``
+    stay as the M1 mirror for the LLM-streaming reply path (which doesn't go
+    through the emitter — there are no tool calls there)."""
 
     session_id: str
     chat_history: list[dict] = field(default_factory=list)
     current_pipeline_id: str | None = None
     current_pipeline_steps: list[PipelineStep] = field(default_factory=list)
     inflight_task: asyncio.Task | None = None
+    emitter: PipelineEmitter | None = None
 
 
 def _new_envelope(message_type: str, session_id: str, payload: Any) -> str:
@@ -206,15 +216,107 @@ async def _handle_session_resume(
     websocket: ServerConnection, state: SessionState
 ) -> None:
     """Reply with a fresh session-state. M1 in-memory only; Mongo replay lands
-    when the session-records seam is wired."""
-    state_payload = SessionStatePayload(
+    when the session-records seam is wired.
+
+    job-0035: routes through the emitter so the initial ``session-state`` is
+    A.7-snapshot-shaped (current_pipeline mirrors the live emitter state)."""
+    _ensure_emitter(websocket, state)
+    await state.emitter.emit_session_state()
+
+
+def _ensure_emitter(websocket: ServerConnection, state: SessionState) -> None:
+    """Bind a ``PipelineEmitter`` to this session if one isn't already.
+
+    The emitter's sink is the WebSocket ``send`` — every transition method
+    writes one envelope on the wire (Appendix A.7 replace-not-reconcile)."""
+    if state.emitter is not None:
+        return
+
+    async def _sink(text: str) -> None:
+        await websocket.send(text)
+
+    state.emitter = PipelineEmitter(
+        session_id=state.session_id,
+        sink=_sink,
         chat_history=state.chat_history,
-        loaded_layers=[],
-        pipeline_history=[],
-        current_pipeline=None,
-        map_view=None,
     )
-    await websocket.send(_new_envelope("session-state", state.session_id, state_payload))
+
+
+async def _invoke_tool_via_emitter(
+    websocket: ServerConnection,
+    state: SessionState,
+    tool_name: str,
+    params: dict,
+) -> Any:
+    """Tool-call site (job-0035 integration with the M4 registry).
+
+    Every ``TOOL_REGISTRY[name].fn(...)`` invocation goes through this
+    wrapper so that:
+
+    - the per-session ``PipelineEmitter`` auto-creates a step,
+    - emits ``pipeline-state`` on every state transition (Appendix A.7),
+    - re-emits ``session-state`` whenever the tool returns a ``LayerURI``,
+    - propagates ``asyncio.CancelledError`` (Invariant 8) and classifies
+      arbitrary exceptions into the open-set A.6 error-code registry.
+
+    The kickoff scopes this to the M4 tool registry; M5+ solver dispatch
+    keeps the same shape, simply yielding ``progress_percent`` updates
+    through ``emitter.update_progress`` between solver chunks.
+    """
+    _ensure_emitter(websocket, state)
+    if tool_name not in TOOL_REGISTRY:
+        # FR-AS-3: unknown tool name surfaces as A.6 TOOL_NOT_FOUND. The
+        # emitter classifier already encodes this when a KeyError is raised
+        # inside emit_tool_call; we surface up-front so the step never opens.
+        await _send_error(
+            websocket,
+            state.session_id,
+            "TOOL_NOT_FOUND",
+            f"tool {tool_name!r} not in TOOL_REGISTRY",
+        )
+        return None
+    entry = TOOL_REGISTRY[tool_name]
+    state.current_pipeline_id = state.emitter.start_pipeline()
+    try:
+        result = await state.emitter.emit_tool_call(
+            name=entry.metadata.name,
+            tool_name=tool_name,
+            invoke=lambda: entry.fn(**params),
+        )
+    finally:
+        state.emitter.close_pipeline()
+        state.current_pipeline_id = None
+    return result
+
+
+def _parse_invoke_directive(text: str) -> tuple[str, dict] | None:
+    """If ``text`` is an ``/invoke <tool_name> <json-params>`` directive,
+    return ``(tool_name, params)``; else return None.
+
+    Used by the M4 live-evidence harness to drive real tool invocations
+    end-to-end through the registry + emitter. NOT the LLM tool-call path —
+    that lands when Gemini-side function-calling is wired (M4 follow-up).
+    The directive shape is debug-only; intentionally not in Appendix A.
+    """
+    if not text.startswith("/invoke "):
+        return None
+    rest = text[len("/invoke ") :].strip()
+    # Split on first whitespace: "<tool_name> <json>"
+    parts = rest.split(None, 1)
+    if not parts:
+        return None
+    tool_name = parts[0]
+    if len(parts) == 1:
+        return tool_name, {}
+    import json as _json
+
+    try:
+        params = _json.loads(parts[1])
+        if not isinstance(params, dict):
+            return None
+    except Exception:  # noqa: BLE001
+        return None
+    return tool_name, params
 
 
 def _make_handler(settings: GeminiSettings):
@@ -277,11 +379,30 @@ def _make_handler(settings: GeminiSettings):
                         # before starting a new one (simple M1 policy).
                         if state.inflight_task and not state.inflight_task.done():
                             state.inflight_task.cancel()
-                        task = asyncio.create_task(
-                            _stream_gemini_reply(
-                                websocket, state, settings, um.text, um.research_mode
+                        # job-0035 M4 live-evidence path: ``/invoke <tool>
+                        # <json>`` drives real tool invocation through the
+                        # PipelineEmitter so the Gemini-side function-calling
+                        # path (M4 follow-up) lands on top of an already-
+                        # verified emission seam. Non-directive user-messages
+                        # still stream through the M1 Gemini path.
+                        directive = _parse_invoke_directive(um.text)
+                        if directive is not None:
+                            tool_name, params = directive
+                            task = asyncio.create_task(
+                                _invoke_tool_via_emitter(
+                                    websocket, state, tool_name, params
+                                )
                             )
-                        )
+                        else:
+                            task = asyncio.create_task(
+                                _stream_gemini_reply(
+                                    websocket,
+                                    state,
+                                    settings,
+                                    um.text,
+                                    um.research_mode,
+                                )
+                            )
                         state.inflight_task = task
 
                     elif msg_type == "cancel":
@@ -351,4 +472,9 @@ async def run_server(host: str = "127.0.0.1", port: int | None = None) -> None:
         await asyncio.Future()  # serve forever
 
 
-__all__ = ["run_server", "SessionState"]
+__all__ = [
+    "run_server",
+    "SessionState",
+    "_invoke_tool_via_emitter",
+    "_parse_invoke_directive",
+]

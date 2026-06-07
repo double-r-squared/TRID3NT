@@ -1,0 +1,17 @@
+# job-0035 live WS transcript (session_id=01KTG39A9CKQ15Y474AVH93VJV)
+# Total frames: 13
+# Type histogram: {"session-state": 4, "pipeline-state": 9}
+#
+[00] session-state loaded_layers=[] current_pipeline=None
+[01] pipeline-state pipeline_id=01KTG39A9EYMG6JYBB12GY4A9B steps=['demo_geocode=pending']
+[02] pipeline-state pipeline_id=01KTG39A9EYMG6JYBB12GY4A9B steps=['demo_geocode=running']
+[03] pipeline-state pipeline_id=01KTG39A9EYMG6JYBB12GY4A9B steps=['demo_geocode=complete']
+[04] pipeline-state pipeline_id=01KTG39A9EYMG6JYBB12GY4A9H steps=['demo_fetch_dem=pending']
+[05] pipeline-state pipeline_id=01KTG39A9EYMG6JYBB12GY4A9H steps=['demo_fetch_dem=running']
+[06] session-state loaded_layers=['gs://grace-2-hazard-prod-cache/cache/static-30d/usgs-3dep/demo-dem.tif'] current_pipeline=pipeline_id=01KTG39A9EYMG6JYBB12GY4A9H final_state=None
+[07] pipeline-state pipeline_id=01KTG39A9EYMG6JYBB12GY4A9H steps=['demo_fetch_dem=complete']
+[08] pipeline-state pipeline_id=01KTG39A9FZBWAVMPYGYPM3S8S steps=['demo_fetch_pop=pending']
+[09] pipeline-state pipeline_id=01KTG39A9FZBWAVMPYGYPM3S8S steps=['demo_fetch_pop=running']
+[10] session-state loaded_layers=['gs://grace-2-hazard-prod-cache/cache/static-30d/usgs-3dep/demo-dem.tif', 'gs://grace-2-hazard-prod-cache/cache/static-30d/worldpop/demo-pop.tif'] current_pipeline=pipeline_id=01KTG39A9FZBWAVMPYGYPM3S8S final_state=None
+[11] pipeline-state pipeline_id=01KTG39A9FZBWAVMPYGYPM3S8S steps=['demo_fetch_pop=complete']
+[12] session-state loaded_layers=['gs://grace-2-hazard-prod-cache/cache/static-30d/usgs-3dep/demo-dem.tif', 'gs://grace-2-hazard-prod-cache/cache/static-30d/worldpop/demo-pop.tif'] current_pipeline=None
