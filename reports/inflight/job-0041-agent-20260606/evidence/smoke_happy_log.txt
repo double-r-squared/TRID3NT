@@ -1,0 +1,44 @@
+2026-06-07 01:03:01,684 INFO smoke ==== smoke: HAPPY PATH (waiting through SFINCS exit) ====
+2026-06-07 01:03:02,254 INFO smoke uploaded synthetic manifest: gs://grace-2-hazard-prod-cache/cache/static-30d/sfincs-smoke/manifest-job-0041-happy-1780819381.json
+2026-06-07 01:03:02,254 INFO grace2_agent.tools.solver run_solver solver=sfincs run_id=01KTGHPKZEPDW660QHWKVY8KGC compute_class=medium parent=projects/grace-2-hazard-prod/locations/us-central1/workflows/grace-2-sfincs-orchestrator
+2026-06-07 01:03:02,954 INFO grace2_agent.tools.solver run_solver submitted handle_id=01KTGHPMNAKBW3P3AM9QN0KD81 workflows_execution_id=projects/425352658356/locations/us-central1/workflows/grace-2-sfincs-orchestrator/executions/877e8ca5-404e-42b8-a99f-00fc6ab42032
+2026-06-07 01:03:02,954 INFO smoke run_solver returned handle: handle_id=01KTGHPMNAKBW3P3AM9QN0KD81 run_id=01KTGHPKZEPDW660QHWKVY8KGC name=projects/425352658356/locations/us-central1/workflows/grace-2-sfincs-orchestrator/executions/877e8ca5-404e-42b8-a99f-00fc6ab42032
+2026-06-07 01:03:02,954 INFO grace2_agent.tools.solver wait_for_completion handle_id=01KTGHPMNAKBW3P3AM9QN0KD81 name=projects/425352658356/locations/us-central1/workflows/grace-2-sfincs-orchestrator/executions/877e8ca5-404e-42b8-a99f-00fc6ab42032 poll_interval=5s timeout=600s
+2026-06-07 01:03:03,052 INFO smoke progress: 0% (step=smoke-step-happy)
+2026-06-07 01:03:08,164 INFO smoke progress: 0% (step=smoke-step-happy)
+2026-06-07 01:03:13,271 INFO smoke progress: 1% (step=smoke-step-happy)
+2026-06-07 01:03:18,573 INFO smoke progress: 1% (step=smoke-step-happy)
+2026-06-07 01:03:23,716 INFO smoke progress: 2% (step=smoke-step-happy)
+2026-06-07 01:03:28,822 INFO smoke progress: 2% (step=smoke-step-happy)
+2026-06-07 01:03:33,921 INFO smoke progress: 3% (step=smoke-step-happy)
+2026-06-07 01:03:39,027 INFO smoke progress: 4% (step=smoke-step-happy)
+2026-06-07 01:03:44,123 INFO smoke progress: 4% (step=smoke-step-happy)
+2026-06-07 01:03:49,213 INFO smoke progress: 5% (step=smoke-step-happy)
+2026-06-07 01:03:54,509 INFO smoke progress: 5% (step=smoke-step-happy)
+2026-06-07 01:03:59,614 INFO smoke progress: 6% (step=smoke-step-happy)
+2026-06-07 01:04:04,713 INFO smoke progress: 6% (step=smoke-step-happy)
+2026-06-07 01:04:09,831 INFO smoke progress: 7% (step=smoke-step-happy)
+2026-06-07 01:04:14,932 INFO smoke progress: 8% (step=smoke-step-happy)
+2026-06-07 01:04:20,043 INFO smoke progress: 8% (step=smoke-step-happy)
+2026-06-07 01:04:25,126 INFO smoke progress: 9% (step=smoke-step-happy)
+2026-06-07 01:04:30,226 INFO smoke progress: 9% (step=smoke-step-happy)
+2026-06-07 01:04:35,317 INFO smoke progress: 10% (step=smoke-step-happy)
+2026-06-07 01:04:40,412 INFO smoke progress: 10% (step=smoke-step-happy)
+2026-06-07 01:04:45,534 INFO smoke progress: 11% (step=smoke-step-happy)
+2026-06-07 01:04:50,641 INFO smoke progress: 12% (step=smoke-step-happy)
+2026-06-07 01:04:55,769 INFO smoke progress: 12% (step=smoke-step-happy)
+2026-06-07 01:05:00,891 INFO smoke progress: 13% (step=smoke-step-happy)
+2026-06-07 01:05:06,041 INFO smoke progress: 13% (step=smoke-step-happy)
+2026-06-07 01:05:11,139 INFO smoke progress: 14% (step=smoke-step-happy)
+2026-06-07 01:05:16,251 INFO smoke progress: 14% (step=smoke-step-happy)
+2026-06-07 01:05:21,361 INFO smoke progress: 15% (step=smoke-step-happy)
+2026-06-07 01:05:26,453 INFO smoke progress: 16% (step=smoke-step-happy)
+2026-06-07 01:05:31,547 INFO smoke progress: 16% (step=smoke-step-happy)
+2026-06-07 01:05:36,645 INFO smoke progress: 17% (step=smoke-step-happy)
+2026-06-07 01:05:41,736 INFO smoke progress: 17% (step=smoke-step-happy)
+2026-06-07 01:05:46,849 INFO smoke progress: 18% (step=smoke-step-happy)
+2026-06-07 01:05:51,937 INFO smoke progress: 18% (step=smoke-step-happy)
+2026-06-07 01:05:57,057 INFO smoke progress: 19% (step=smoke-step-happy)
+2026-06-07 01:06:02,156 INFO smoke progress: 100% (step=smoke-step-happy)
+2026-06-07 01:06:02,745 INFO smoke RunResult: status=failed output_uri=None error_code=SOLVER_FAILED
+2026-06-07 01:06:02,746 INFO smoke HAPPY PATH: 36 progress emissions captured

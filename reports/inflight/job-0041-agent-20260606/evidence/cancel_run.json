@@ -1,0 +1,19 @@
+{
+  "handle": {
+    "schema_version": "v1",
+    "handle_id": "01KTGHNZ14C9BTRT97JH9P9TEF",
+    "run_id": "01KTGHNY8ZWTT35Q4J4B3AEC2A",
+    "solver": "sfincs",
+    "compute_class": "standard",
+    "workflows_execution_id": "projects/425352658356/locations/us-central1/workflows/grace-2-sfincs-orchestrator/executions/b17fa03f-6253-44dc-973c-d9d44932124c",
+    "workflow_name": "grace-2-sfincs-orchestrator",
+    "workflow_location": "us-central1",
+    "submitted_at": "2026-06-07T08:02:40.031215Z"
+  },
+  "cancel_initiated_at": "2026-06-07T08:02:45.807632+00:00",
+  "cancel_observed_at": "2026-06-07T08:02:45.967473+00:00",
+  "workflow_terminal_at": "2026-06-07T08:02:46.660544+00:00",
+  "workflow_terminal_state": "CANCELLED",
+  "elapsed_seconds_to_terminal": 0.852912,
+  "nfr_r_3_budget_met": true
+}

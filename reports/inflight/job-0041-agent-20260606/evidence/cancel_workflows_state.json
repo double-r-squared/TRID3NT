@@ -1,0 +1,7 @@
+{
+  "name": "projects/425352658356/locations/us-central1/workflows/grace-2-sfincs-orchestrator/executions/b17fa03f-6253-44dc-973c-d9d44932124c",
+  "final_state": "CANCELLED",
+  "start_time": "2026-06-07 08:02:40.670766+00:00",
+  "end_time": "2026-06-07 08:02:45.878914+00:00",
+  "error_payload": ""
+}

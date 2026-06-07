@@ -1,0 +1,182 @@
+[
+  {
+    "ts": "2026-06-07T08:03:03.051991+00:00",
+    "step_id": "smoke-step-happy",
+    "progress_percent": 0
+  },
+  {
+    "ts": "2026-06-07T08:03:08.164698+00:00",
+    "step_id": "smoke-step-happy",
+    "progress_percent": 0
+  },
+  {
+    "ts": "2026-06-07T08:03:13.271342+00:00",
+    "step_id": "smoke-step-happy",
+    "progress_percent": 1
+  },
+  {
+    "ts": "2026-06-07T08:03:18.573016+00:00",
+    "step_id": "smoke-step-happy",
+    "progress_percent": 1
+  },
+  {
+    "ts": "2026-06-07T08:03:23.715937+00:00",
+    "step_id": "smoke-step-happy",
+    "progress_percent": 2
+  },
+  {
+    "ts": "2026-06-07T08:03:28.822067+00:00",
+    "step_id": "smoke-step-happy",
+    "progress_percent": 2
+  },
+  {
+    "ts": "2026-06-07T08:03:33.921860+00:00",
+    "step_id": "smoke-step-happy",
+    "progress_percent": 3
+  },
+  {
+    "ts": "2026-06-07T08:03:39.027443+00:00",
+    "step_id": "smoke-step-happy",
+    "progress_percent": 4
+  },
+  {
+    "ts": "2026-06-07T08:03:44.123820+00:00",
+    "step_id": "smoke-step-happy",
+    "progress_percent": 4
+  },
+  {
+    "ts": "2026-06-07T08:03:49.213749+00:00",
+    "step_id": "smoke-step-happy",
+    "progress_percent": 5
+  },
+  {
+    "ts": "2026-06-07T08:03:54.509772+00:00",
+    "step_id": "smoke-step-happy",
+    "progress_percent": 5
+  },
+  {
+    "ts": "2026-06-07T08:03:59.614885+00:00",
+    "step_id": "smoke-step-happy",
+    "progress_percent": 6
+  },
+  {
+    "ts": "2026-06-07T08:04:04.713486+00:00",
+    "step_id": "smoke-step-happy",
+    "progress_percent": 6
+  },
+  {
+    "ts": "2026-06-07T08:04:09.831902+00:00",
+    "step_id": "smoke-step-happy",
+    "progress_percent": 7
+  },
+  {
+    "ts": "2026-06-07T08:04:14.932141+00:00",
+    "step_id": "smoke-step-happy",
+    "progress_percent": 8
+  },
+  {
+    "ts": "2026-06-07T08:04:20.043817+00:00",
+    "step_id": "smoke-step-happy",
+    "progress_percent": 8
+  },
+  {
+    "ts": "2026-06-07T08:04:25.126555+00:00",
+    "step_id": "smoke-step-happy",
+    "progress_percent": 9
+  },
+  {
+    "ts": "2026-06-07T08:04:30.226871+00:00",
+    "step_id": "smoke-step-happy",
+    "progress_percent": 9
+  },
+  {
+    "ts": "2026-06-07T08:04:35.317808+00:00",
+    "step_id": "smoke-step-happy",
+    "progress_percent": 10
+  },
+  {
+    "ts": "2026-06-07T08:04:40.412130+00:00",
+    "step_id": "smoke-step-happy",
+    "progress_percent": 10
+  },
+  {
+    "ts": "2026-06-07T08:04:45.534476+00:00",
+    "step_id": "smoke-step-happy",
+    "progress_percent": 11
+  },
+  {
+    "ts": "2026-06-07T08:04:50.641618+00:00",
+    "step_id": "smoke-step-happy",
+    "progress_percent": 12
+  },
+  {
+    "ts": "2026-06-07T08:04:55.769337+00:00",
+    "step_id": "smoke-step-happy",
+    "progress_percent": 12
+  },
+  {
+    "ts": "2026-06-07T08:05:00.890994+00:00",
+    "step_id": "smoke-step-happy",
+    "progress_percent": 13
+  },
+  {
+    "ts": "2026-06-07T08:05:06.041330+00:00",
+    "step_id": "smoke-step-happy",
+    "progress_percent": 13
+  },
+  {
+    "ts": "2026-06-07T08:05:11.139904+00:00",
+    "step_id": "smoke-step-happy",
+    "progress_percent": 14
+  },
+  {
+    "ts": "2026-06-07T08:05:16.251329+00:00",
+    "step_id": "smoke-step-happy",
+    "progress_percent": 14
+  },
+  {
+    "ts": "2026-06-07T08:05:21.361529+00:00",
+    "step_id": "smoke-step-happy",
+    "progress_percent": 15
+  },
+  {
+    "ts": "2026-06-07T08:05:26.453499+00:00",
+    "step_id": "smoke-step-happy",
+    "progress_percent": 16
+  },
+  {
+    "ts": "2026-06-07T08:05:31.547783+00:00",
+    "step_id": "smoke-step-happy",
+    "progress_percent": 16
+  },
+  {
+    "ts": "2026-06-07T08:05:36.645295+00:00",
+    "step_id": "smoke-step-happy",
+    "progress_percent": 17
+  },
+  {
+    "ts": "2026-06-07T08:05:41.736518+00:00",
+    "step_id": "smoke-step-happy",
+    "progress_percent": 17
+  },
+  {
+    "ts": "2026-06-07T08:05:46.849486+00:00",
+    "step_id": "smoke-step-happy",
+    "progress_percent": 18
+  },
+  {
+    "ts": "2026-06-07T08:05:51.937171+00:00",
+    "step_id": "smoke-step-happy",
+    "progress_percent": 18
+  },
+  {
+    "ts": "2026-06-07T08:05:57.057540+00:00",
+    "step_id": "smoke-step-happy",
+    "progress_percent": 19
+  },
+  {
+    "ts": "2026-06-07T08:06:02.156059+00:00",
+    "step_id": "smoke-step-happy",
+    "progress_percent": 100
+  }
+]

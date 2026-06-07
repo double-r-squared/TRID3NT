@@ -1,0 +1,13 @@
+{
+  "schema_version": "v1",
+  "run_id": "01KTGHPKZEPDW660QHWKVY8KGC",
+  "handle_id": "01KTGHPMNAKBW3P3AM9QN0KD81",
+  "status": "failed",
+  "output_uri": null,
+  "started_at": "2026-06-07T08:05:46Z",
+  "completed_at": "2026-06-07T08:05:47Z",
+  "duration_seconds": 1.0,
+  "error_code": "SOLVER_FAILED",
+  "error_message": "sfincs exited with non-zero code 2",
+  "cancellation_reason": null
+}

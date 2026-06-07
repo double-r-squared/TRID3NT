@@ -44,12 +44,20 @@ def _import_tools_registry() -> int:
     ``describe_qgis_algorithm``) register at startup. Together with
     ``passthroughs.qgis_process`` they complete the FR-AS-9 Level 1a
     capability-discovery loop.
+
+    job-0041: imports ``solver`` so the 2 solver-dispatch atomic tools
+    (``run_solver`` + ``wait_for_completion``) register at startup. These
+    are FR-DC-6 uncacheable (``cacheable=False``, ``ttl_class="live-no-cache"``,
+    ``source_class="solver_dispatch"``) — they drive Cloud Workflows
+    executions of the M5 SFINCS substrate landed by job-0040.
     """
     from . import tools  # noqa: F401 — side-effect: registers atomic tools
     # job-0033: register the 4 data-fetch atomic tools (FROZEN __init__.py).
     from .tools import data_fetch  # noqa: F401
     # job-0034: register the 2 QGIS discovery atomic tools.
     from .tools import qgis_discovery  # noqa: F401
+    # job-0041: register run_solver + wait_for_completion (M5 substrate).
+    from .tools import solver  # noqa: F401
 
     return len(tools.TOOL_REGISTRY)
 

@@ -1,0 +1,14 @@
+2026-06-07 01:02:39,526 INFO smoke ==== smoke: CANCEL PATH (≤30 s budget per NFR-R-3) ====
+2026-06-07 01:02:40,030 INFO smoke uploaded synthetic manifest: gs://grace-2-hazard-prod-cache/cache/static-30d/sfincs-smoke/manifest-job-0041-cancel-1780819359.json
+2026-06-07 01:02:40,031 INFO grace2_agent.tools.solver run_solver solver=sfincs run_id=01KTGHNY8ZWTT35Q4J4B3AEC2A compute_class=medium parent=projects/grace-2-hazard-prod/locations/us-central1/workflows/grace-2-sfincs-orchestrator
+2026-06-07 01:02:40,805 INFO grace2_agent.tools.solver run_solver submitted handle_id=01KTGHNZ14C9BTRT97JH9P9TEF workflows_execution_id=projects/425352658356/locations/us-central1/workflows/grace-2-sfincs-orchestrator/executions/b17fa03f-6253-44dc-973c-d9d44932124c
+2026-06-07 01:02:40,805 INFO smoke run_solver(cancel) returned handle: name=projects/425352658356/locations/us-central1/workflows/grace-2-sfincs-orchestrator/executions/b17fa03f-6253-44dc-973c-d9d44932124c
+2026-06-07 01:02:40,805 INFO grace2_agent.tools.solver wait_for_completion handle_id=01KTGHNZ14C9BTRT97JH9P9TEF name=projects/425352658356/locations/us-central1/workflows/grace-2-sfincs-orchestrator/executions/b17fa03f-6253-44dc-973c-d9d44932124c poll_interval=3s timeout=600s
+2026-06-07 01:02:40,925 INFO smoke progress: 0% (step=smoke-step-cancel)
+2026-06-07 01:02:44,048 INFO smoke progress: 0% (step=smoke-step-cancel)
+2026-06-07 01:02:45,807 INFO smoke user cancel: cancelling wait_for_completion task
+2026-06-07 01:02:45,807 INFO grace2_agent.tools.solver wait_for_completion CANCELLED handle_id=01KTGHNZ14C9BTRT97JH9P9TEF; issuing workflows.executions.cancel(projects/425352658356/locations/us-central1/workflows/grace-2-sfincs-orchestrator/executions/b17fa03f-6253-44dc-973c-d9d44932124c)
+2026-06-07 01:02:45,967 INFO grace2_agent.tools.solver cancel_execution issued for projects/425352658356/locations/us-central1/workflows/grace-2-sfincs-orchestrator/executions/b17fa03f-6253-44dc-973c-d9d44932124c
+2026-06-07 01:02:45,967 INFO smoke wait_for_completion CancelledError observed; elapsed=0.16s
+2026-06-07 01:02:46,660 INFO smoke workflow state: CANCELLED
+2026-06-07 01:02:46,662 INFO smoke CANCEL PATH: final_state=CANCELLED elapsed=0.85s nfr_r_3=True

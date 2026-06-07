@@ -1,0 +1,12 @@
+[
+  {
+    "ts": "2026-06-07T08:02:40.925523+00:00",
+    "step_id": "smoke-step-cancel",
+    "progress_percent": 0
+  },
+  {
+    "ts": "2026-06-07T08:02:44.047957+00:00",
+    "step_id": "smoke-step-cancel",
+    "progress_percent": 0
+  }
+]

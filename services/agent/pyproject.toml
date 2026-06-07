@@ -19,6 +19,11 @@ dependencies = [
     # job-0032 M4 substrate: cache shim writes to gs://grace-2-hazard-prod-cache/
     # provisioned by job-0031; reaches it via ADC in deployed contexts.
     "google-cloud-storage>=2.18,<3",
+    # job-0041 M5 Stage C: solver dispatch (run_solver + wait_for_completion)
+    # drives Cloud Workflows executions of the SFINCS substrate (job-0040)
+    # and cancels them via workflows.executions.cancel for the Invariant-8
+    # cancel chain (≤30 s per NFR-R-3).
+    "google-cloud-workflows>=1.16,<2",
     # job-0033 M4 Stage C: data-fetch atomic tools.
     # py3dep wraps the USGS 3DEP DEM service (CONUS DEM at 10/30m); pulls in
     # rioxarray + rasterio for COG serialization. requests is the HTTP client
