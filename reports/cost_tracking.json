@@ -204,12 +204,27 @@
       "description": "**Sprint-08 Stage D acceptance + close** (supersedes 0051 reservation). Verified live: (1) Mode 1 catalog substrate — catalog_search returns FEMA NFHL rank-1 for flood-zone topic; catalog_fetch fema-nfhl 7.74 MB GeoJSON live; catalog_fetch 3DEP 4.00 MB GeoTIFF live; 16 tools at startup. (2) FR-FR-3 MAX_TURNS=25 cap fires correctly. (3) **Reproducible PRODUCTION M5 SUCCESS — 3rd live SFINCS run** at gs://grace-2-hazard-prod-runs/01KTJ3PP1JMF96WR4CCZZ4JRYS/flood_depth_peak.tif (527s exit 0, identical hmax 3.515 m, 527×540 grid, 197,404 cells >5cm flooded — chain is mechanically sound, not a one-off). (4) Invariant 7 NLCD gate PASS branch live again. (5) Full regression green. Retrospective: sprint-08 6 jobs planned → 12 delivered; 10% LOWER total tokens than sprint-07 (1,675,748 + this job = 1,786,238 vs sprint-7's 1,863,284) despite delivering substantially more; 6 Sonnet routing wins at 38.9% of tokens. Sprint healthy. Sprint-08 closing screenshot surfaced via SendUserFile (reports/screenshots/sprint-08-close-m5-reproducible-cog.png). Commit 89587c1.",
       "model": "sonnet",
       "subagent_tokens": 110490
+    },
+    {
+      "job_id": "job-0063-engine-20260607",
+      "sprint": 9,
+      "description": "Stage A: OQ-59-FLOOD-COG-CRS-LABEL-VS-COORDS resolved. Diagnosed SFINCS netCDF CRS encoding: `ds[\"crs\"]` data variable carries attrs={\"EPSG\":\"-\", \"epsg_code\":\"EPSG:32617\"}; ds.attrs has no \"crs\" key, so the original `.attrs.get(\"crs\", \"EPSG:3857\")` always returned EPSG:3857 (Web Mercator tag on UTM-17N coords → ~10,000 km misplacement in any GIS that respects the tag). Added `_read_crs_from_dataset(ds)` helper reading CF-convention encodings in order: epsg_code (handles \"EPSG:32617\" string AND bare int forms) → crs_wkt/spatial_ref via pyproj WKT parse → ds.attrs.get(\"crs\") fallback with warning. BEFORE EPSG:3857; AFTER EPSG:32617. 3 new tests + OQ-58 squeeze guard preserved. 169/170 agent suite (1 pre-existing failure unrelated, from concurrent job-0060 mid-flight). Bug-class scan: no other instances. Commit 0990d1c.",
+      "model": "sonnet",
+      "subagent_tokens": 66081
+    },
+    {
+      "job_id": "job-0061-infra-20260607",
+      "sprint": 9,
+      "description": "Stage A: IAM grant — qgis-server-runtime SA receives roles/storage.objectViewer on gs://grace-2-hazard-prod-runs/. Single google_storage_bucket_iam_member added to infra/buckets.tf (co-located with existing -qgs/-cog/-fgb viewers). Tofu plan 1-add 0-change 0-destroy; apply clean. **Live WMS smoke verified**: test .qgs referencing /vsigs/grace-2-hazard-prod-runs/01KTHTFCV5E588A293N0JFQTZH/flood_depth_peak.tif → QGIS Server GetMap returned HTTP 200 + 256×256 RGBA PNG (no GDAL permission error). NFR-S-2 preserved (no project-level grant; bucket-scoped only). Infrastructure ready for sprint-09 publish_layer tool (job-0062). NEW carry-forward OQ-61-CLOUD-RUN-SCALING-BLOCK-DRIFT (pre-existing untargeted plan drift, unrelated). Commit 1b2f989.",
+      "model": "sonnet",
+      "subagent_tokens": 66184
     }
   ],
   "totals_by_sprint": {
     "6": 1265567,
     "7": 1863284,
-    "8": 1786238
+    "8": 1786238,
+    "9": 132265
   },
   "historical_context": {
     "note": "Captured for accountability — NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
