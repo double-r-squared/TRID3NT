@@ -1,6 +1,6 @@
 # Audit: 3 new fetcher atomic tools (fetch_landcover, fetch_river_geometry, lookup_precip_return_period)
 
-**Job ID:** job-0039-engine-20260606, **Sprint:** sprint-07, **Auditor:** Development Orchestrator, **Status:** assigned
+**Job ID:** job-0039-engine-20260606, **Sprint:** sprint-07, **Auditor:** Development Orchestrator, **Status:** approved
 
 ## Task Assignment
 
@@ -86,3 +86,65 @@ The three new fetchers consume from these Tier-1 (key-free) sources:
 - [ ] No edits to FROZEN paths.
 
 Surface contestable choices as Open Questions with TENTATIVE tags — at minimum: NLCD vintage default (2021 vs 2023); NHDPlus HR HUC4-scope per-call routing; Atlas 14 partial-bbox vs single-point behavior; any access-tier deviation from the kickoff's inferred tier (live-verified wins).
+
+## Assessment
+
+**Verdict:** approved.
+
+Three new fetcher tools land in `data_fetch.py` (+1029 lines additive, no refactor of existing M4 fetchers). Tool registry now reports 13 tools — exact expected count (2 passthroughs + 4 M4 fetchers + 2 QGIS discovery + 3 new this job + 2 solver tools from concurrent job-0041). Tests: 22 new + 82 prior = 104/104 agent suite green in 1.32s. Contracts still 131/131.
+
+**Significant live-verification discovery — NLCD is Tier 2, not Tier 3.** The kickoff inferred direct HTTPS + Range based on documentation; live probing revealed the MRLC direct file mirror at `s3-us-west-2.amazonaws.com/mrlc/Annual_NLCD_LndCov_*.tif` returns a **42-byte placeholder stub** (1×1 TIFF IFD with two `0xFFFFFFFF` strip offsets — not a real raster), and the MRLC WCS GetCapabilities endpoint times out. The actual usable surface is **MRLC GeoServer WMS GetMap** with `format=image/geotiff` — that's Tier 2 per §F.1.1 (OGC service), not Tier 3.
+
+This is exactly the live-verification discipline the §F.1.1 amendment demands and the second sprint-07 example (after job-0037's WorldPop discoveries) of the kickoff-inferred-tier ≠ live-reality pattern. Surfaced as **OQ-39-NLCD-TIER-DEVIATION**. The §F.1 prose alignment carry-forward for v0.3.17+ housekeeping now grows by one more item: update §F.1 NLCD entry to reflect Tier 2 WMS GetMap as the canonical access path.
+
+**Invariant 7 mitigation verified.** `fetch_landcover` returns the NLCD vintage year (`nlcd_vintage_year: 2021`) as sidecar metadata per the OQ-4 HydroMT decision contract. Job-0042's `build_sfincs_model` will consume this for the Manning's mapping CSV validation gate that prevents silent-wrong Manning's grids. The sidecar is delivered as a dict top-level field (not via `LayerURI.metadata`) because `LayerURI` is `extra="forbid"` per contracts FROZEN — correct boundary preservation; routed as OQ-39-LANDCOVER-RETURN-SHAPE-CONTRACT-PROMOTION.
+
+**Live evidence solid** — all 3 tools exercised against Fort Myers bbox with real GCS writes:
+- NLCD 2021 GeoTIFF: 194,837 bytes COG via WMS GetMap, datetime customTime ✓
+- NHDPlus HR HUC4 0309: 567-feature NHDFlowline FlatGeobuf 229,296 bytes after 144 MB HUC4 GDB region download + bbox clip (Tier 4 confirmed)
+- NOAA Atlas 14 V9V2 100-yr 24-hr precipitation at Fort Myers: **12.1 inches**, 1597-byte CSV cached; second call hit cache verified.
+
+**Commit attribution race noted.** Commit `ea70c1d` carries this job's files (data_fetch.py + tests + 9 evidence files) but was authored under job-0041's commit message because both jobs ran concurrently and the git-add operation was misdirected. Commit `c7ce917` then landed job-0041's actual files with a "previous misfile" note. Per AGENTS.md Completed Job Immutability, the commit messages stay as-is; PROJECT_LOG clarifies which commit holds which job's work. No code or evidence is lost.
+
+## Invariant Check
+
+- **Invariant 1 (Determinism boundary):** preserved. Quantization is pure-function; no LLM in the data path.
+- **Invariant 5 (Tier separation):** preserved.
+- **Invariant 7 (no silent wrong answers / claims have provenance):** verified by NLCD vintage-year sidecar — exactly the OQ-4 mitigation requirement. Job-0042 inherits the validation gate.
+- **FR-CE-8 fail-fast registration:** verified.
+- **§F.1.1 access tier discipline:** honored — tier recorded in each tool's docstring from live verification, not kickoff inference. NLCD tier deviation correctly surfaced.
+
+## Dependency Check
+
+- **job-0033, 0037** (data_fetch.py pattern) — extended additively.
+- **job-0038 OQ-4 decision** — sidecar contract honored; downstream consumer ready for job-0042.
+- **v0.3.17 §F.1.1 + v0.3.18 §F.1.2** — access tier discipline applied; NLCD deviation feeds catalog entries when sprint-08 lands Mode 1.
+
+## Decisions Validated
+
+All key decisions reviewed and accepted: NLCD WMS GetMap pivot (Tier 2 over the broken Tier 3 mirror); vintage default 2021 (MRLC catalog tops at L48 NLCD); HUC4-scoped region download for NHDPlus HR; Atlas 14 single-point CSV via PFDS endpoint.
+
+## Open Questions Resolved
+
+Filed for triage:
+- **OQ-39-NLCD-TIER-DEVIATION** — feeds §F.1 prose housekeeping (NLCD now Tier 2 WMS not Tier 3) at planned sprint-07-close pass.
+- **OQ-39-LANDCOVER-RETURN-SHAPE-CONTRACT-PROMOTION** — `LayerURI` extra="forbid" forces sidecar on dict top-level; future schema sprint can promote to proper field with `metadata: dict[str, Any]`.
+- **OQ-39-NLCD-VINTAGE-DEFAULT** — 2021 picked; revisit at sprint-09+ when MRLC publishes 2023.
+- **OQ-39-ESA-WORLDCOVER-SUBSTRATE** — opt-in path scaffolded but not exercised live.
+- **OQ-39-NHDPLUSHR-HUC4-ROUTING-HEURISTIC** — current bbox→HUC4 routing is a simple envelope; revisit if multi-HUC4 bboxes surface.
+- **OQ-39-NHDPLUSHR-TWO-STAGE-CACHE** — region-file caching strategy follow-up (mirrors OQ-37-COUNTRY-FILE-CACHING-STRATEGY).
+- **OQ-39-ATLAS14-SINGLE-POINT-VS-BBOX** — current API supports single-point only; bbox averaging is a follow-up if needed.
+
+## Follow-up Actions
+
+1. **Unblock Stage D (job-0042 `model_flood_scenario` workflow)** — job-0039 + 0041 both approved.
+2. **v0.3.17 housekeeping pass at sprint-07 close** — add NLCD Tier 2 prose alignment to the pile.
+3. **PROJECT_LOG commit attribution clarification** — note that `ea70c1d` carries job-0039 files (under job-0041's accidentally-attributed message); `c7ce917` is job-0041's real commit.
+
+## Sign-off
+
+**Approved 2026-06-07 by Development Orchestrator.**
+
+All 8 acceptance criteria met. Live NLCD tier discovery is exactly the kind of catch §F.1.1 was designed to surface. Invariant 7 sidecar contract delivered. 13 tools registered on startup. 22 new tests; 104/104 agent suite green.
+
+Sprint-07 Stage B complete.

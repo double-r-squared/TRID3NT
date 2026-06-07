@@ -78,11 +78,25 @@
       "description": "SFINCS solver substrate landed live and end-to-end-verified: gs://grace-2-hazard-prod-runs bucket (UBA + PAP enforced + versioning ON; deliberate to protect solver outputs) + Cloud Run Job grace-2-sfincs-solver pinned at @sha256:89ce6e27 (thin layer over deltares/sfincs-cpu:sfincs-v2.3.3) + Cloud Workflows grace-2-sfincs-orchestrator + sfincs-runtime/workflow-invoker-sfincs SAs (sfincs-runtime ZERO project-level grants; workflow-invoker has 2 non-storage project grants required by Cloud Logging + Cloud Run LRO API, honestly disclosed); smoke run end-to-end via Workflow execution → Cloud Run Job execution → typed error envelope (exit 2 expected for no model deck); two false-start Dockerfile builds (PEP-668 + binary path) diagnosed + resolved; 23 evidence files; 5 OQs surfaced including OQ-INFRA-40-WORKFLOW-INVOKER-SCOPE.",
       "model": "opus",
       "subagent_tokens": 233895
+    },
+    {
+      "job_id": "job-0039-engine-20260606",
+      "sprint": 7,
+      "description": "3 new fetcher atomic tools — fetch_landcover (NLCD WMS GetMap; LIVE-VERIFIED Tier 2 not kickoff-inferred Tier 3 since MRLC direct mirror returns 42-byte placeholder stub; NLCD vintage year sidecar per OQ-4 Invariant 7 mitigation) + fetch_river_geometry (NHDPlus HR HUC4-scoped Tier 4 region download + bbox clip → FlatGeobuf 567 features) + lookup_precip_return_period (NOAA Atlas 14 PFDS Tier 3; 12.1 inches 100-yr 24-hr at Fort Myers); 22 new tests + 104/104 agent suite green; 13 tools registered on startup; 7 OQ-39-* surfaced; 9 evidence files. Commit ea70c1d (misfiled under job-0041 attribution due to concurrent git-add race; files are correctly job-0039's).",
+      "model": "opus",
+      "subagent_tokens": 264998
+    },
+    {
+      "job_id": "job-0041-agent-20260606",
+      "sprint": 7,
+      "description": "run_solver + wait_for_completion atomic tools — Cloud Workflows submission against grace-2-sfincs-orchestrator (job-0040 substrate); progress emission via job-0035 PipelineEmitter.update_progress (36 emissions captured on ~3min smoke run, linear-in-wallclock curve clamped ≤95%); FR-DC-6 uncacheable; EmitterBinding DI seam mirrors job-0032 set_mcp_client pattern; Invariant 8 cancel chain verified live end-to-end at 850 ms (35× under NFR-R-3 30s budget); RunResult correctly maps completion.json error to A.6 error code; 10 new tests + 104/104 agent suite; 7 OQ-41-* surfaced including OQ-41-COMPUTE-CLASS-NAMING (FR-CE-3 medium↔schema standard alias). Commit c7ce917.",
+      "model": "opus",
+      "subagent_tokens": 275263
     }
   ],
   "totals_by_sprint": {
     "6": 1265567,
-    "7": 479270
+    "7": 1019531
   },
   "historical_context": {
     "note": "Captured for accountability — NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
