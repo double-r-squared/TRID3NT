@@ -95,6 +95,105 @@ Cache class per FR-DC-2: `static-30d` for the layer geometries (catalog re-issue
 
 **Implementation status.** `hazard_catalog_search` / `fetch_public_hazard_layer` / `summarize_layer_in_bbox` were defined in FR-TA-2 but deferred from M4 (sprint-06). Recommended landing alongside M5 (sprint-07) SFINCS, or as a fast-follow mini-sprint after M5 — landing the Discovery atomic tools requires only the public-hazard-catalog content (`public_hazard_catalog.yaml`, currently NOT YET CREATED — engine owner) plus straightforward HTTP / vector-tile retrieval. No new substrate.
 
+### F.1.2 Trust model for source discovery — three-mode framing *(v0.3.18 amendment; binding for v0.2+ catalog substrate, sprint-08 scope.)*
+
+**The principle (refined from §F.1.1 OQ-AT-2).** The "data stores in the wild" capability (§F.1.1) requires a **trust model** that bounds where the agent can fetch from. Naïve autonomous discovery (probe any URL the agent encounters) creates an SSRF attack surface, provenance ambiguity, and license-attribution risk. Naïve catalog-only operation (no agent-mediated growth) means the catalog calcifies — new authoritative data products dropping don't reach users until an engineer manually curates them. The architecture splits the trust surface into three explicit modes, with the broad uncertain-source case deferred until the discipline matures.
+
+**Mode 1 — Catalog-mediated (PRIMARY; v0.1 binding for sprint-08).** The curated `public_data_source_catalog.yaml` (and its MongoDB-collection successor `catalog_entries` per Decision F) is the single source of truth for vetted endpoints. Every entry is **research-driven and labeled** at curator time with:
+
+- `id`, `name`, `description` — identification
+- `url(s)` — primary endpoint + alternative mirrors when they exist
+- `access_tier` per §F.1.1 (STAC, OGC service, HTTPS+Range, region-download)
+- `ttl_class` per FR-DC-2
+- `source_class` per FR-DC-1
+- `credential_tier` per §F.1 (key-free, key-required, paid)
+- `license`, `citation`, `vintage`, `last_verified`
+- `status` — `active`, `deprecated`, `user_proposed_pending_curator_review` (see Mode 2)
+- **"How to use" metadata** — invocation examples, parameter constraints, known quirks (e.g., "WorldPop returns HTTP 200 not 206 for Range requests — use region-download tier; specify country in `params.iso3`"). This labeling is the difference between a sterile URL list and an actionable catalog.
+
+Atomic tools that consume the catalog (sprint-08 scope, FR-TA-2 additions):
+
+- `catalog_search(topic, location?, source_filter?) → list[CatalogEntry]` — agent queries the catalog by domain (terrain, hydrology, weather, building, population, landcover, hazard, etc.) + optional spatial + filter. Returns ranked matches.
+- `catalog_fetch(entry_id, params) → LayerURI | dict` — generic fetcher that dispatches to the entry's `access_tier` (Tier 1 STAC query / Tier 2 OGC WMS GetMap / Tier 3 `/vsicurl/` windowed read / Tier 4 region download + clip). Cache shim discipline per FR-DC-3 / FR-CE-8 applies; entry's `ttl_class` + `source_class` populate the cache key.
+
+The existing hardcoded atomic tools (`fetch_dem`, `fetch_landcover`, `fetch_population`, `geocode_location`) coexist with catalog-driven access. Hardcoded tools remain the **friendly per-domain shortcuts** for the canonical sources (3DEP for DEM, NLCD for landcover); the catalog covers the long tail (state GIS portals, regional gauge networks, alternative providers). At engineer discretion, hardcoded tools may later be reimplemented as catalog-driven syntactic sugar (post-v0.1 consolidation).
+
+**Mode 2 — Offer-to-add on `.gov` and `.edu` (v0.2+; bounded growth path).** When the agent encounters a candidate URL during research or user-query interpretation that is (a) not in the catalog AND (b) hosted on `.gov` or `.edu`, the agent shall NOT autonomously fetch. Instead:
+
+1. The agent performs a **conformity probe** — HEAD request (check `Accept-Ranges`, content-type, TLS cert org subject), STAC root check (`<base>/api/stac/v1/` or `<base>/stac/catalog.json`), OGC `GetCapabilities` check, COG header inspection. Each probe respects the SSRF guardrails below.
+2. The agent emits an `offer-catalog-addition` envelope (NEW Appendix A amendment — sprint-08 schema scope):
+   ```jsonc
+   {
+     "type": "offer-catalog-addition",
+     "id": "01K…", "ts": "…Z", "session_id": "01K…",
+     "payload": {
+       "request_id": "01K…",
+       "url": "https://example.gov/data/foo",
+       "discovered_via": "user-query | web-research | …",
+       "probe_findings": {
+         "tls_cert_org": "U.S. Department of …",
+         "access_tier_inferred": 1,                 // §F.1.1 tier
+         "supports_range_requests": true,
+         "stac_root_found": false,
+         "ogc_capabilities_found": true,
+         "license_observed": "Public domain (U.S. Federal data)",
+         "content_type": "application/json",
+         "last_modified_header": "…"
+       },
+       "suggested_catalog_entry": {
+         "id": "femanflp-discharge-…",
+         "name": "FEMA NFHL discharge stations",
+         "access_tier": 2,
+         "ttl_class": "semi-static-7d",
+         "source_class": "flood_zone",
+         "credential_tier": 1,
+         "license_claim": "Public domain (US Federal)",
+         "how_to_use": "OGC WFS GetFeature; bbox in EPSG:4326; … "
+       },
+       "ttl_seconds": 600
+     }
+   }
+   ```
+3. The client renders a **dedicated review modal** (mirrors §F.3 secret-form pattern — popup, focus-trapped, separate from chat envelope) showing the URL + probe findings + the suggested catalog entry. The user accepts, rejects, or edits.
+4. On accept, the agent writes the entry to the catalog with `status: "user_proposed_pending_curator_review"`; the catalog query then includes this entry but a curator review is required (out-of-band) to flip status to `active`. This keeps the growth path bounded — entries that fail curator review are removed without ever having been part of the "active" surface.
+5. On reject, the agent falls back to an alternative cataloged source for the user's query OR surfaces failure ("I couldn't find an active source for your query; the candidate I found at <url> was declined").
+6. All offer-to-add events are recorded in an audit log (MongoDB collection `catalog_audit_log` per Decision F): URL, user, classification, probe findings, accept/reject, eventual curator-review outcome. Provenance per Decision M.
+
+**Why `.gov` and `.edu`?** Both have registry-controlled policing (DotGov Registry / EDUCAUSE) sufficient to bound the agent's autonomous-probing surface. False positives (bad data on a `.gov` URL — press releases vs. structured data, deprecated endpoints, contractor content) are caught by the conformity probe — the OGC GetCapabilities check rejects a press release outright. Cross-confirmation with the existing catalog is the additional defense: if a `.gov` URL is wildly inconsistent with the catalog's other entries for the same domain (license, vintage, format conventions), the user's review modal surfaces that mismatch.
+
+**Mode 3 — Anything else: DEFERRED INDEFINITELY (per user direction 2026-06-07).** Non-`.gov`/non-`.edu` URLs the agent encounters (general `.com`, `.org`, country TLDs, IP addresses, etc.) shall NOT be probed and shall NOT trigger an `offer-catalog-addition` flow. When the agent encounters such a URL during research or query interpretation, it narrates:
+
+> "I found a candidate source at `<url>` that may be relevant, but it doesn't meet the v0.1 trustworthiness criteria for autonomous use. You can review it manually and add it to the catalog via the curator CLI if it's appropriate."
+
+This is the muddier case the trust signal is hardest to read on — `.org` includes both OpenStreetMap and questionable advocacy sites; `.com` includes Microsoft Planetary Computer (excellent) and arbitrary commercial sites. The curator-only path keeps these sources reachable but **requires explicit human curation** rather than agent judgment. Revisit when:
+
+- Decision M provenance discipline is fully operational across the agent
+- User-identity machinery from §F.3 lands (per-user catalog adds become accountable)
+- A more nuanced trustworthiness signal is implementable (cross-confirmation against NASA CMR + Microsoft Planetary Computer + USGS ScienceBase + academic citation graph)
+
+OQ-AT-3 below captures the question.
+
+**Curator-side validation criteria (applies to Mode 1 hand-curated AND Mode 2 user-accepted adds before they flip to `status: "active"`):** four orthogonal axes — domain provenance (TLD policing + cert org subject), protocol conformity (response matches a known geospatial standard), metadata sufficiency (declared license + citation + vintage), cross-confirmation (entry referenced by ≥1 of: existing catalog entries, SRS prose, vetted external aggregator like NASA CMR / Microsoft Planetary Computer / USGS ScienceBase). All four ideally; ≥2 of 4 + curator override is the minimum bar.
+
+**SSRF guardrails (infra-side, NFR-S concern; binding for all modes):**
+
+- Egress allowlist enforcement at the agent-service VPC perimeter (Cloud Run egress through VPC connector with explicit egress targets per Decision E).
+- Private IP block: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.0/8, 169.254.169.254/32 (GCE metadata) — agent egress to any of these returns a typed error per FR-AS-11.
+- DNS rebinding defense: re-resolve domain at fetch time; fail closed if resolved IP differs from probe-time resolution OR enters a blocked range.
+- Max response size: 100 MB default for probe responses; 4 GB default for cataloged Tier-4 region-download fetches.
+- Per-domain rate limit: 10 requests/min default; per-entry override allowed.
+- All outbound network operations audit-logged.
+
+**Open Questions from §F.1.2.**
+
+- **OQ-AT-1 (carried from §F.1.1)** — Runtime fallback between access tiers within a single catalog entry. Deferred. Out of scope for v0.2+ catalog substrate.
+- **OQ-AT-2 (rescoped from §F.1.1)** — Agent-mediated data-source discovery. **Rescoped:** the original "agent crawls any URL" framing is replaced by Mode 2 (bounded to `.gov`/`.edu` with mandatory user surfacing + conformity probe + curator review pipeline). The narrower Mode 2 lands in sprint-08. Closed-by-rescoping at v0.3.18.
+- **OQ-AT-3 (NEW)** — Mode 3 / wider trustworthiness signal. The deferred path: how do we eventually permit autonomous probing of non-`.gov`/`.edu` sources without the SSRF / provenance / license-attribution exposure? Requires the three prerequisites listed under Mode 3 above. Defer indefinitely until the prerequisites mature. Forward-looking marker pattern matching OQ-8 / OQ-9 / OQ-11.
+
+**Sprint-08 scope implication.** Land Mode 1 (catalog substrate + Sonnet-driven 30–60-entry seed YAML + `catalog_search` / `catalog_fetch` atomic tools + generic Tier-2 OGC adapter + SSRF guardrails) as the headline. Mode 2 (offer-to-add on `.gov`/`.edu`) is a fast-follow within sprint-08 if scope permits, or sprint-09 if SSRF guardrails take longer than expected. Mode 3 remains deferred.
+
+---
+
 ### F.3 Deferred Secrets UX (`request_secret` envelope) — pop-up form, NOT inline chat
 
 **Status:** deferred indefinitely until explicit user direction. NOT in v0.1, NOT in v0.2. Requires M6+ user-identity machinery as prerequisite (per-user Secret Manager namespacing depends on user identity). This appendix documents the architecture so it does not get reinvented when the time comes.
