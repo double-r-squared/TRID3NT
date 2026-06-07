@@ -36,7 +36,7 @@ Sprint-08 is the **first sprint where Sonnet research carries serious weight** �
 | job-0052-engine-20260607 | engine | **Mid-sprint hotfix #1:** HYDROMT_BUILD_FAILED one-line `yaml.safe_load` fix at sfincs_builder.py:692. Closes OQ-49-HYDROMT-BUILD-OPT-ARGUMENT-SHAPE. | job-0049 | **approved** (commit 1b7bf88) |
 | job-0053-engine-20260607 | engine | **Mid-sprint hotfix #2:** `setup_manning_roughness` v1.2.x kwarg fix via live signature inspection. Closes OQ-52. Escalation rule: if 4th 1.2.x mismatch surfaces, comprehensive migration audit replaces a 4th hotfix. | job-0052 | **approved** (commit a6399d2) |
 | job-0054-engine-20260607 | engine | **Escalation:** comprehensive hydromt-sfincs 1.2.x API-migration audit. Inspect every setup_* signature; cross-walk to 1.2.2 source; audit DataCatalog wiring; land all mismatches in one commit. | job-0053 | **approved** (commit bc30638) |
-| job-0055-engine-20260607 | engine | **Mid-sprint follow-up to 0054 audit recommendation (b):** drop `setup_river_inflow` from v0.1 pluvial deck — pluvial-only is intended M5 shape; river inflow is M5+ scope. Bypasses upstream pandas-3 incompat in hydromt-sfincs 1.2.2 `set_forcing_1d`. If chain produces real flood-depth COG → first M5 SUCCESS. | job-0054 | assigned |
+| job-0055-engine-20260607 | engine | **Mid-sprint follow-up to 0054 audit recommendation (b):** drop `setup_river_inflow` from v0.1 pluvial deck — pluvial-only is intended M5 shape; river inflow is M5+ scope. Bypasses upstream pandas-3 incompat in hydromt-sfincs 1.2.2 `set_forcing_1d`. If chain produces real flood-depth COG → first M5 SUCCESS. | job-0054 | **approved** (commit cf9bfd3; chain advances further; NEW pandas-3 incompat OQ-55 freq="10T" at sfincs.py:2456) |
 
 ## Execution order
 

@@ -169,12 +169,19 @@
       "description": "Stage B: catalog_search + catalog_fetch atomic tools + generic Tier-2 OGC adapter — the §F.1.2 Mode 1 substrate. tools/ogc_adapter.py exposes fetch_ogc_layer(service_type=WMS|WCS|WFS|ArcGIS-REST, version, image_format, ...) with defensive exception-XML detection (raises OGCAdapterError rather than caching error bodies as raster). WCS 1.0.0 sweet spot preserves job-0044's MRLC fix; direct `requests` over `owslib` for Mode 1 retrieval (OQ-47-OWSLIB-CHOICE). **fetch_landcover refactored** to call into adapter — identical WCS 1.0.0 request shape + cache key + exception wrap; job-0044's pinning test still passes + new revert-prevention test added. **Live catalog_search**: topic=flood zones + Fort Myers bbox → rank-1 fema-nfhl-flood-zones (score 7.0); topic=DEM → Copernicus GLO-30/GLO-90/HydroSHEDS (score 8.0); source_filter=landcover restricts; Africa bbox correctly drops 3DEP via CONUS heuristic. **Live catalog_fetch**: fema-nfhl-flood-zones → 8,045,110 bytes real GeoJSON polygons from hazards.fema.gov; usgs-3dep-elevation → 4,195,622 bytes real GeoTIFF (F32 1024×1024) from elevation.nationalmap.gov. 16 tools at startup verified (14+2). 23 new tests + 159/159 agent + 142/142 contracts. OQ-47-CATALOG-YAML-SECRET-REFS (2 of 30 entries — Census ACS + NASA FIRMS — declare credential_tier:2 but lack api_key_secret_ref; routes to infra Secret Manager + engine curator amendment). Commit 034dfd5.",
       "model": "opus",
       "subagent_tokens": 285820
+    },
+    {
+      "job_id": "job-0055-engine-20260607",
+      "sprint": 8,
+      "description": "Mid-sprint follow-up to job-0054 audit rec (b): dropped `setup_river_inflow` from v0.1 pluvial YAML deck. river_local_path kept in signature (still fetched + cached for v0.2+); the block emission removed with 17-line comment block citing v0.1 scope + OQ-54 routing. **Bonus in-scope fix**: SFINCS time format `tref/tstart/tstop` corrected from ISO 8601 (`2026-01-01T00:00:00`) to native (`20260101 000000`) per sfincs_input.py `strptime(val, '%Y%m%d %H%M%S')` parser — discovered live during run. M5 chain advances FURTHER: clears all 4 setup steps + emits `setup_precip_forcing.magnitude: 12.5946...` correctly, then dies INSIDE hydromt-sfincs 1.2.2 at sfincs.py:2456 calling `pd.date_range(..., freq=\"10T\")` — pandas 3.0 removed the \"T\" minute frequency alias (use \"10min\"). NEW upstream incompat **OQ-55-PRECIP-FORCING-PANDAS3X-FREQ-ALIAS** (same class as OQ-54's is_integer()). Routing rec: single pandas pin in services/agent/pyproject.toml should unblock BOTH. 17/17 model_flood_scenario tests + 159/159 agent suite. No screenshot moment. Cost: 114,514 tokens (Sonnet — mechanical execution of Opus's audit recommendation, second sprint-8 Sonnet routing win). Commit cf9bfd3.",
+      "model": "sonnet",
+      "subagent_tokens": 114514
     }
   ],
   "totals_by_sprint": {
     "6": 1265567,
     "7": 1863284,
-    "8": 1270224
+    "8": 1384738
   },
   "historical_context": {
     "note": "Captured for accountability — NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
