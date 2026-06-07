@@ -197,12 +197,19 @@
       "description": "**🎉 PRODUCTION M5 END-TO-END SUCCESS** (sprint-08 capstone deliverable). postprocess_flood squeeze fix: handle HydroMT-SFINCS 1.2.2's hmax shape (timemax=1, n, m) → squeeze to 2D before COG write; raises RUN_OUTPUT_UNEXPECTED_SHAPE if ndim still > 2 after squeeze (defense-in-depth for true multi-time runs). 1 new regression test (synthetic xarray dataset with hmax(1,8,8) → COG write succeeds). 165/165 agent suite. **Live E2E SUCCESS**: AssessmentEnvelope.outcome=SUCCESS; layer_uris=[gs://grace-2-hazard-prod-runs/01KTHTFCV5E588A293N0JFQTZH/flood_depth_peak.tif]; solver_version=sfincs-v2.3.3; flood_max_depth_m=3.515. rasterio verification: 1.4 MiB LZW COG, 527×540 float32 single-band, 284,580 flooded cells. Production PNG render of the COG surfaced to user via SendUserFile proactive (reports/screenshots/job-0058-m5-production-cog.png). New OQ-59-FLOOD-COG-CRS-LABEL-VS-COORDS surfaced: postprocess writes UTM-17N coordinates with EPSG:3857 tag (data correct, label wrong; sprint-9 housekeeping). Commit 49494af.",
       "model": "sonnet",
       "subagent_tokens": 70144
+    },
+    {
+      "job_id": "job-0059-testing-20260607",
+      "sprint": 8,
+      "description": "**Sprint-08 Stage D acceptance + close** (supersedes 0051 reservation). Verified live: (1) Mode 1 catalog substrate — catalog_search returns FEMA NFHL rank-1 for flood-zone topic; catalog_fetch fema-nfhl 7.74 MB GeoJSON live; catalog_fetch 3DEP 4.00 MB GeoTIFF live; 16 tools at startup. (2) FR-FR-3 MAX_TURNS=25 cap fires correctly. (3) **Reproducible PRODUCTION M5 SUCCESS — 3rd live SFINCS run** at gs://grace-2-hazard-prod-runs/01KTJ3PP1JMF96WR4CCZZ4JRYS/flood_depth_peak.tif (527s exit 0, identical hmax 3.515 m, 527×540 grid, 197,404 cells >5cm flooded — chain is mechanically sound, not a one-off). (4) Invariant 7 NLCD gate PASS branch live again. (5) Full regression green. Retrospective: sprint-08 6 jobs planned → 12 delivered; 10% LOWER total tokens than sprint-07 (1,675,748 + this job = 1,786,238 vs sprint-7's 1,863,284) despite delivering substantially more; 6 Sonnet routing wins at 38.9% of tokens. Sprint healthy. Sprint-08 closing screenshot surfaced via SendUserFile (reports/screenshots/sprint-08-close-m5-reproducible-cog.png). Commit 89587c1.",
+      "model": "sonnet",
+      "subagent_tokens": 110490
     }
   ],
   "totals_by_sprint": {
     "6": 1265567,
     "7": 1863284,
-    "8": 1675748
+    "8": 1786238
   },
   "historical_context": {
     "note": "Captured for accountability — NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",

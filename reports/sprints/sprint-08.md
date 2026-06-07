@@ -1,8 +1,8 @@
 # Sprint 08: Mode 1 data-source catalog + small carry-forwards (SRS v0.3 post-M5)
 
-**Status:** planned
+**Status:** closed
 **Opened:** 2026-06-07
-**Closed:** —
+**Closed:** 2026-06-07
 **SRS milestones covered:** Post-M5 substrate enablement — the Mode 1 (§F.1.2) data-source catalog as the "data stores in the wild" headline; FR-FR-3 MAX_TURNS_PER_SESSION cap (§3.10) as cheap insurance; hydromt-sfincs install resolves OQ-43 so the M5 demo can produce a real flood map next time it runs.
 
 ## Goal
@@ -33,7 +33,7 @@ Sprint-08 is the **first sprint where Sonnet research carries serious weight** �
 | job-0049-infra-20260607 | infra | hydromt-sfincs install in agent service Cloud Run — update services/agent/pyproject.toml + Dockerfile (or equivalent) to bundle `hydromt-sfincs >= 1.1.2, < 2.0` per OQ-4 §4 contract; re-deploy agent service; closes OQ-43-HYDROMT-SFINCS-DEV-VENV-INSTALL | — | planned |
 | job-0050-engine-20260607 | engine | **(Optional — scope-permitting):** ATCF Hurricane Ian forcing — new `fetch_hurricane_track(storm_name_or_id, source)` atomic tool against NOAA NHC ATCF; integrate into `model_flood_scenario` workflow forcing path; design-storm path stays as the `dataset="atlas14_design"` opt-out | job-0049 | planned |
 | job-0051-testing-20260607 | testing | Sprint-08 acceptance — catalog demo (catalog_search for FEMA NFHL flood zones in Florida → catalog_fetch returns layer URI); max-turns cap demo (drive agent past 25 turns → session-state status flips); hydromt-sfincs install verification (re-run the M5 Fort Myers demo end-to-end — if all goes well, this is the first successful flood-depth map + screenshot moment); full M1+M2+M3+M4+M5+M6 regression. Closes sprint-08 | job-0047, job-0048, job-0049, job-0050 (if landed) | **superseded by job-0059-testing-20260607** (counter advanced past 0051 during mid-sprint hotfix chain) |
-| job-0059-testing-20260607 | testing | **Stage D acceptance (supersedes 0051 reservation).** Verify Mode 1 catalog substrate live + MAX_TURNS cap + **PRODUCTION M5 SUCCESS holds end-to-end** + Invariant 7 gate live + full regression + sprint-08 retrospective with layer-emission-contract hand-off to sprint-9. | all prior sprint-08 jobs approved | assigned |
+| job-0059-testing-20260607 | testing | **Stage D acceptance (supersedes 0051 reservation).** Verify Mode 1 catalog substrate live + MAX_TURNS cap + **PRODUCTION M5 SUCCESS holds end-to-end** + Invariant 7 gate live + full regression + sprint-08 retrospective with layer-emission-contract hand-off to sprint-9. | all prior sprint-08 jobs approved | **approved** (commit 89587c1; reproducible M5 run at gs://.../01KTJ3PP1JMF96WR4CCZZ4JRYS/; closing screenshot surfaced) |
 | job-0052-engine-20260607 | engine | **Mid-sprint hotfix #1:** HYDROMT_BUILD_FAILED one-line `yaml.safe_load` fix at sfincs_builder.py:692. Closes OQ-49-HYDROMT-BUILD-OPT-ARGUMENT-SHAPE. | job-0049 | **approved** (commit 1b7bf88) |
 | job-0053-engine-20260607 | engine | **Mid-sprint hotfix #2:** `setup_manning_roughness` v1.2.x kwarg fix via live signature inspection. Closes OQ-52. Escalation rule: if 4th 1.2.x mismatch surfaces, comprehensive migration audit replaces a 4th hotfix. | job-0052 | **approved** (commit a6399d2) |
 | job-0054-engine-20260607 | engine | **Escalation:** comprehensive hydromt-sfincs 1.2.x API-migration audit. Inspect every setup_* signature; cross-walk to 1.2.2 source; audit DataCatalog wiring; land all mismatches in one commit. | job-0053 | **approved** (commit bc30638) |
@@ -128,8 +128,7 @@ hotfix chain consumed the capacity.
   manifest mid-sprint is harder than forward-planning. Add "hotfix counter reserve" of 3–5
   slots to sprint manifests for sprints that touch external library installs.
 
-**Cost telemetry:** 1,675,748 total sprint-08 tokens. Opus: 1,023,435 (61.1%), Sonnet: 652,313 (38.9%).
-See `reports/cost_tracking.json` for per-job breakdown.
+**Cost telemetry:** **1,786,238** total sprint-08 tokens (job-0059 added 110,490 post-testing closure). Opus: 1,023,435 (57.3%), Sonnet: 762,803 (42.7%). Compared to sprint-07 (1,863,284), sprint-08 ran ~4% cheaper despite delivering 12 jobs vs 8. See `reports/cost_tracking.json` for per-job breakdown.
 
 **Open OQs carried forward:**
 - OQ-59-FLOOD-COG-CRS-LABEL-VS-COORDS (NEW — sprint-09 engine housekeeping)
