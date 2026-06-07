@@ -313,3 +313,145 @@ def test_sessions_ttl_config() -> None:
     assert SESSIONS_TTL["collection"] == "sessions"
     assert SESSIONS_TTL["field"] == "expires_at"
     assert SESSIONS_TTL["expire_after_seconds"] == 30 * 24 * 60 * 60
+
+
+# --- D.6 PipelineStepSummary extended fields (job-0030) -------------------- #
+# Closes job-0026 OQ-W-26-PIPELINE-STEP-FIELDS.
+
+
+def test_pipeline_step_summary_carries_new_optional_fields_roundtrip() -> None:
+    """Extended D.6 fields (progress_percent / error_code / error_message)
+    populate and JSON-roundtrip on a single step."""
+    step = PipelineStepSummary(
+        step_id=new_ulid(),
+        name="run_sfincs_solver",
+        tool_name="run_solver",
+        state="running",
+        started_at="2026-06-06T12:00:00Z",
+        progress_percent=42,
+    )
+    dumped_a = step.model_dump(mode="json")
+    assert dumped_a["progress_percent"] == 42
+    assert dumped_a["error_code"] is None
+    assert dumped_a["error_message"] is None
+
+    text_a = json.dumps(dumped_a, sort_keys=True)
+    step_b = PipelineStepSummary.model_validate(json.loads(text_a))
+    dumped_b = step_b.model_dump(mode="json")
+    text_b = json.dumps(dumped_b, sort_keys=True)
+    assert text_a == text_b
+
+    # All three new fields default to None (preserves backward field set).
+    minimal = PipelineStepSummary(
+        step_id=new_ulid(),
+        name="step",
+        tool_name="t",
+        state="pending",
+    )
+    assert minimal.progress_percent is None
+    assert minimal.error_code is None
+    assert minimal.error_message is None
+
+
+@pytest.mark.parametrize("good", [0, 1, 42, 99, 100])
+def test_pipeline_step_summary_progress_percent_accepts_0_to_100(good: int) -> None:
+    """Field(ge=0, le=100) accepts the inclusive endpoints + interior."""
+    step = PipelineStepSummary(
+        step_id=new_ulid(),
+        name="step",
+        tool_name="t",
+        state="running",
+        progress_percent=good,
+    )
+    assert step.progress_percent == good
+
+
+@pytest.mark.parametrize("bad", [-1, 101, 200, 1_000_000])
+def test_pipeline_step_summary_progress_percent_rejects_out_of_range(
+    bad: int,
+) -> None:
+    """Field(ge=0, le=100) rejects anything outside [0, 100]."""
+    with pytest.raises(ValidationError):
+        PipelineStepSummary(
+            step_id=new_ulid(),
+            name="step",
+            tool_name="t",
+            state="running",
+            progress_percent=bad,
+        )
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "SFINCS_TIMEOUT",
+        "DEM_SOURCE_UNAVAILABLE",
+        "RATE_LIMITED",
+        "A",
+        "X_1",
+        "FOO_BAR_BAZ_42",
+    ],
+)
+def test_pipeline_step_summary_error_code_accepts_screaming_snake(code: str) -> None:
+    """Appendix A.6: SCREAMING_SNAKE_CASE is the wire convention."""
+    step = PipelineStepSummary(
+        step_id=new_ulid(),
+        name="step",
+        tool_name="t",
+        state="failed",
+        error_code=code,
+    )
+    assert step.error_code == code
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "camelCase",
+        "snake_case",
+        "kebab-case",
+        "lower_UPPER",
+        "_LEADING_UNDERSCORE",
+        "TRAILING_",
+        "DOUBLE__UNDERSCORE",
+        "1_LEADING_DIGIT",
+        "WITH SPACE",
+        "",
+    ],
+)
+def test_pipeline_step_summary_error_code_rejects_non_screaming_snake(bad: str) -> None:
+    """Non-SCREAMING_SNAKE shapes are rejected by the field validator."""
+    with pytest.raises(ValidationError):
+        PipelineStepSummary(
+            step_id=new_ulid(),
+            name="step",
+            tool_name="t",
+            state="failed",
+            error_code=bad,
+        )
+
+
+def test_pipeline_step_summary_error_message_512_char_cap() -> None:
+    """error_message is capped at 512 chars to discourage stack-trace leakage."""
+    # 512 is accepted
+    step = PipelineStepSummary(
+        step_id=new_ulid(),
+        name="step",
+        tool_name="t",
+        state="failed",
+        error_code="SFINCS_TIMEOUT",
+        error_message="x" * 512,
+    )
+    assert step.error_message is not None
+    assert len(step.error_message) == 512
+
+    # 513 is rejected
+    with pytest.raises(ValidationError):
+        PipelineStepSummary(
+            step_id=new_ulid(),
+            name="step",
+            tool_name="t",
+            state="failed",
+            error_code="SFINCS_TIMEOUT",
+            error_message="x" * 513,
+        )

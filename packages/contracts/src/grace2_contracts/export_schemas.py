@@ -18,7 +18,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from . import catalog, collections, envelope, event, execution, ws
+from . import catalog, collections, envelope, event, execution, tool_registry, ws
 
 # (filename stem, model) for every top-level contract we export.
 _EXPORTS: list[tuple[str, type[BaseModel]]] = [
@@ -34,6 +34,11 @@ _EXPORTS: list[tuple[str, type[BaseModel]]] = [
     ("article_document", collections.ArticleDocument),
     ("event_document", collections.EventDocument),
     ("session_document", collections.SessionDocument),
+    # Appendix D.6 PipelineStepSummary — exported standalone so the
+    # extended field surface (progress_percent / error_code / error_message)
+    # is independently inspectable by the web client mirror + agent emitter
+    # (job-0030, sprint-06 M4 pre-flight; closes job-0026 OQ-W-26).
+    ("pipeline_step_summary", collections.PipelineStepSummary),
     # FR-PHC-2
     ("catalog_entry", catalog.CatalogEntry),
     # FR-TA-2 solver shapes
@@ -41,6 +46,8 @@ _EXPORTS: list[tuple[str, type[BaseModel]]] = [
     ("execution_handle", execution.ExecutionHandle),
     ("run_result", execution.RunResult),
     ("layer_uri", execution.LayerURI),
+    # FR-DC-2 / FR-CE-8 atomic-tool registration metadata
+    ("atomic_tool_metadata", tool_registry.AtomicToolMetadata),
 ]
 
 

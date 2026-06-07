@@ -303,6 +303,9 @@ class PipelineStepSummary(BaseModel):
     state: Literal["pending", "running", "complete", "failed", "cancelled"]
     started_at: datetime | None
     completed_at: datetime | None
+    progress_percent: int | None     # 0..100; workflow-attributed, never LLM-estimated
+    error_code: str | None           # SCREAMING_SNAKE_CASE per Appendix A.6; present only when state == "failed"
+    error_message: str | None        # short human-readable; capped at 512 chars to discourage stack-trace leakage
 
 class MapView(BaseModel):
     center: tuple[float, float]       # [lon, lat]
@@ -318,6 +321,16 @@ class MapView(BaseModel):
 ```
 
 **TTL configuration:** documents are eligible for auto-deletion 30 days after `expires_at`. Active sessions update `expires_at` on each interaction (sliding-window expiry). Inactive sessions naturally age out.
+
+**PipelineStepSummary progress + error fields (additive, all optional).** Three optional fields support the M3 PipelineStrip render and M4's real `pipeline-state` emission (Appendix A.4 `pipeline-state` payload). All three default to `None` and never appear on a healthy `pending` / `complete` step.
+
+- `progress_percent: int | None` — integer in `[0, 100]` (pydantic `Field(ge=0, le=100)`). Populated by the workflow when it can reasonably attribute progress (solver chunk N of M, n-of-M dataset rows processed). Never an LLM estimate (Invariant 1: determinism boundary). Tightening to required when `state == "running"` is a future amendment; for v0.1 the field stays optional everywhere.
+- `error_code: str | None` — `SCREAMING_SNAKE_CASE` literal aligned with the Appendix A.6 error-code convention; populated only when `state == "failed"`. The set of valid codes is **open** per A.6 (every workflow may register its own); the schema validates shape, not membership.
+- `error_message: str | None` — short human-readable explanation accompanying `error_code`. Free text, capped at 512 characters by `Field(max_length=512)` to discourage stack-trace leakage through the WebSocket envelope.
+
+No cost / dollar / duration-estimate field is added anywhere (Invariant 9: no cost theater). The web client's `PipelineStepSummary` mirror already carries the three fields as optional from job-0026; this amendment lands them in the canonical schema, closing OQ-W-26-PIPELINE-STEP-FIELDS.
+
+**AtomicToolMetadata (collateral, not a collection document).** A separate pydantic model defined in `grace2_contracts.tool_registry` carries the FR-DC-2 TTL-class declaration every external-API atomic tool registers at definition time (`name` / `ttl_class` / `source_class` / `cacheable`, with a cross-field `model_validator` enforcing the FR-DC-6 consistency rule). It is not persisted to MongoDB — it lives in the agent service's tool registry — but the schema is owned alongside the Appendix D collection schemas so the contract surface is single-sourced. See §3.9 for the cache architecture this metadata feeds.
 
 ### D.7 Cross-cutting decisions
 

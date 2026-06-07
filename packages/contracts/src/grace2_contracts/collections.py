@@ -25,12 +25,21 @@ constants here, NOT a locked Atlas config.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Literal
 
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict, Field, field_validator
 
 from .common import GraceModel, ULIDStr, UTCDatetime
 from .event import EventMetadata
+
+#: SCREAMING_SNAKE_CASE error-code pattern (Appendix A.6).
+#: Open set per A.6: codes are validated by shape, not against a closed registry,
+#: so every workflow/tool may register new codes without a schema change.
+_ERROR_CODE_RE: re.Pattern[str] = re.compile(r"^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*$")
+
+#: Cap on ``error_message`` length to discourage stack-trace leakage (D.6).
+_ERROR_MESSAGE_MAX_LEN: int = 512
 
 __all__ = [
     "DocModel",
@@ -255,7 +264,26 @@ class ChatMessage(GraceModel):
 
 
 class PipelineStepSummary(GraceModel):
-    """A step in a persisted pipeline snapshot. ``cancelled`` is distinct."""
+    """A step in a persisted pipeline snapshot. ``cancelled`` is distinct.
+
+    Optional progress + error fields (job-0030, sprint-06 M4 pre-flight,
+    resolving job-0026 OQ-W-26-PIPELINE-STEP-FIELDS):
+
+    - ``progress_percent`` is an integer 0..100, populated by the workflow
+      when it can reasonably attribute progress (e.g. solver chunk N of M,
+      n-of-M rows processed). Optional everywhere — never an LLM estimate
+      (Invariant 1: determinism boundary).
+    - ``error_code`` is a ``SCREAMING_SNAKE_CASE`` literal aligned with the
+      Appendix A.6 error-code convention; populated only when ``state ==
+      "failed"``. The set of valid codes is **open** per A.6 (every workflow
+      may register its own); validation is shape-only (regex).
+    - ``error_message`` is a short human-readable accompanier, capped at
+      512 chars to discourage stack-trace leakage. Free text.
+
+    Tightening these to required on ``state == "running"`` / ``state ==
+    "failed"`` is a deliberate follow-up — see report Open Questions.
+    No cost field anywhere (Invariant 9).
+    """
 
     step_id: ULIDStr
     name: str
@@ -263,6 +291,22 @@ class PipelineStepSummary(GraceModel):
     state: Literal["pending", "running", "complete", "failed", "cancelled"]
     started_at: UTCDatetime | None = None
     completed_at: UTCDatetime | None = None
+    progress_percent: int | None = Field(default=None, ge=0, le=100)
+    error_code: str | None = None
+    error_message: str | None = Field(default=None, max_length=_ERROR_MESSAGE_MAX_LEN)
+
+    @field_validator("error_code")
+    @classmethod
+    def _validate_error_code_shape(cls, value: str | None) -> str | None:
+        """Enforce SCREAMING_SNAKE_CASE shape per Appendix A.6 convention."""
+        if value is None:
+            return value
+        if not _ERROR_CODE_RE.match(value):
+            raise ValueError(
+                f"error_code must be SCREAMING_SNAKE_CASE (matching {_ERROR_CODE_RE.pattern!r}); "
+                f"got {value!r}"
+            )
+        return value
 
 
 class PipelineSnapshot(GraceModel):

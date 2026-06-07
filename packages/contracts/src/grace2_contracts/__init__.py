@@ -18,7 +18,16 @@ for the ``_id``-aliased collection documents; see ``collections.MONGO_DUMP_KWARG
 
 from __future__ import annotations
 
-from . import catalog, collections, envelope, event, execution, tool_metadata, ws
+from . import (
+    catalog,
+    collections,
+    envelope,
+    event,
+    execution,
+    tool_metadata,
+    tool_registry,
+    ws,
+)
 from .common import (
     BBox,
     GraceModel,
@@ -44,6 +53,7 @@ __all__ = [
     "catalog",
     "execution",
     "tool_metadata",
+    "tool_registry",
     # common primitives
     "GraceModel",
     "ULIDStr",
