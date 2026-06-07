@@ -1,0 +1,21 @@
+2026-06-07 10:46:06,847 INFO smoke_demo registered 14 agent tools (M5 expects 14)
+2026-06-07 10:46:06,847 INFO smoke_demo ==== M5 demo: model_flood_scenario(Fort Myers, FL) ====
+2026-06-07 10:46:06,847 INFO grace2_agent.workflows.model_flood_scenario model_flood_scenario start bbox=None location_query='Fort Myers, FL' event_id=None return_period_yr=100 duration_hr=24 compute_class=medium
+2026-06-07 10:46:09,712 INFO grace2_agent.tools.cache read_through miss-write tool=geocode_location key=9c558f586f06e4275549c00e0549148d bytes=281 customTime=2026-06-07T17:46:09.530483+00:00
+2026-06-07 10:46:09,712 INFO grace2_agent.tools.data_fetch geocode_location query='Fort Myers, FL' resolved name='Fort Myers, Lee County, Florida, United States' cache_hit=False
+2026-06-07 10:46:11,641 INFO grace2_agent.tools.cache read_through hit tool=fetch_dem key=87ba00463af0275d02115f7463afe6e9 bytes=1924297
+2026-06-07 10:46:13,048 INFO grace2_agent.tools.cache read_through hit tool=fetch_landcover key=7dac3520db9a0f6092a434be438d02d9 bytes=289170
+2026-06-07 10:46:14,547 INFO grace2_agent.tools.cache read_through hit tool=fetch_river_geometry key=4fa2fd4e5d2192020dc04d60502d6aaa bytes=274376
+2026-06-07 10:46:15,711 INFO grace2_agent.tools.cache read_through hit tool=lookup_precip_return_period key=8cbc276afacf4ed50e2daac1ab261ccb bytes=1614
+2026-06-07 10:46:15,711 INFO grace2_agent.tools.data_fetch lookup_precip_return_period (lat=26.616666667 lon=-81.833333333 ari=100 dur=24-hr) -> 11.900 inches cache_hit=True
+2026-06-07 10:46:15,712 INFO grace2_agent.workflows.sfincs_builder manning_mapping loaded version=1.0.0 classes=20 path=/home/nate/Documents/GRACE-2/services/agent/src/grace2_agent/workflows/manning_mapping.csv
+2026-06-07 10:46:16,863 INFO grace2_agent.workflows.sfincs_builder landcover classes observed: [11, 21, 22, 23, 24, 31, 41, 42, 43, 52, 71, 81, 82, 90, 95] (vintage_year=2021)
+2026-06-07 10:46:18,043 INFO gcsfs gcsfs experimental features enabled via GCSFS_EXPERIMENTAL_ZB_HNS_SUPPORT.
+2026-06-07 10:46:18,318 INFO hydromt_sfincs.sfincs Initializing sfincs model from hydromt_sfincs (v1.2.2).
+2026-06-07 10:46:18,318 WARNING grace2_agent.workflows.model_flood_scenario build_sfincs_model raised HYDROMT_BUILD_FAILED (details={'bbox': [-81.9126085, 26.5476424, -81.7511414, 26.689176], 'dem_uri': 'gs://grace-2-hazard-prod-cache/cache/static-30d/dem/87ba00463af0275d02115f7463afe6e9.tif', 'landcover_uri': 'gs://grace-2-hazard-prod-cache/cache/static-30d/landcover/7dac3520db9a0f6092a434be438d02d9.tif', 'river_geometry_uri': 'gs://grace-2-hazard-prod-cache/cache/static-30d/river_geometry/4fa2fd4e5d2192020dc04d60502d6aaa.fgb', 'underlying': "'str' object has no attribute 'keys'"}) — returning failed envelope
+2026-06-07 10:46:18,318 INFO smoke_demo outcome=HONEST FAILURE solver_version=failed:HYDROMT_BUILD_FAILED layers=0 elapsed=11.47s
+2026-06-07 10:46:18,318 INFO smoke_demo smoke transcript written to /home/nate/Documents/GRACE-2/reports/inflight/job-0049-infra-20260607/evidence/smoke_demo_envelope.json
+Exception ignored in: <function SfincsModel.__del__ at 0x7f4794a2ad40>
+Traceback (most recent call last):
+  File "/home/nate/Documents/GRACE-2/.venv-agent/lib/python3.13/site-packages/hydromt_sfincs/sfincs.py", line 150, in __del__
+AttributeError: 'NoneType' object has no attribute 'FileHandler'
