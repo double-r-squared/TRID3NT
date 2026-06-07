@@ -53,6 +53,7 @@ chain has run. The workflow itself is the LLM-exposed surface (via the thin
 from __future__ import annotations
 
 import csv
+import json
 import logging
 import os
 import tempfile
@@ -490,7 +491,19 @@ def _write_hydromt_reclass_table_csv(
 
 
 def _default_setup_uri(bbox: tuple[float, float, float, float]) -> str:
-    """Compose a default gs:// URI for the staged SFINCS deck.
+    """Compose a default gs:// URI for the SFINCS setup manifest JSON file.
+
+    Returns the URI of the manifest FILE (not the directory), per the worker
+    contract in ``services/workers/sfincs/entrypoint.py``:
+
+        ``manifest_uri`` must be a single JSON file URI (``gs://.../setup.json``)
+        — the worker calls ``blob.download_as_text()`` on it, then
+        ``json.loads(text)``. Passing a trailing-slash directory URI hits a
+        ``404 No such object`` because GCS has no object at that path.
+
+    The directory prefix ``gs://{bucket}/cache/static-30d/sfincs_setup/{id}/``
+    is implicit — deck files land there; the manifest URI is that prefix +
+    ``manifest.json``.
 
     Lives under the cache bucket's ``static-30d/sfincs_setup/`` source-class
     prefix (a new dispatch class for staged decks). Per-deck uniqueness is
@@ -499,7 +512,7 @@ def _default_setup_uri(bbox: tuple[float, float, float, float]) -> str:
     """
     cache_bucket = os.environ.get("GRACE2_CACHE_BUCKET", "grace-2-hazard-prod-cache")
     setup_id = new_ulid()
-    return f"gs://{cache_bucket}/cache/static-30d/sfincs_setup/{setup_id}/"
+    return f"gs://{cache_bucket}/cache/static-30d/sfincs_setup/{setup_id}/manifest.json"
 
 
 def _generate_hydromt_yaml_config(
@@ -775,11 +788,30 @@ def build_sfincs_model(
             details={"import_error": str(exc)},
         ) from exc
 
-    setup_uri = opts.output_setup_uri or _default_setup_uri(bbox)
+    # Resolve manifest URI + directory base URI.
+    # The worker contract (services/workers/sfincs/entrypoint.py:9-23) requires
+    # ``manifest_uri`` to be a single JSON FILE that the worker reads via
+    # ``blob.download_as_text()``.  A trailing-slash directory URI hits 404.
+    #
+    # ``_default_setup_uri`` already returns a manifest file URI; if the caller
+    # passes an ``output_setup_uri`` override we normalise it: if it ends with
+    # ``/manifest.json`` we use it as-is; if it ends with ``/`` (directory) we
+    # append ``manifest.json``; otherwise we treat it as the manifest URI.
+    _raw_setup_uri = opts.output_setup_uri or _default_setup_uri(bbox)
+    if _raw_setup_uri.endswith("/manifest.json"):
+        manifest_uri = _raw_setup_uri
+    elif _raw_setup_uri.endswith("/"):
+        manifest_uri = _raw_setup_uri + "manifest.json"
+    else:
+        # Assume it's already a manifest file URI (no trailing slash).
+        manifest_uri = _raw_setup_uri
+    # The directory base is the manifest URI without the ``manifest.json`` suffix.
+    deck_base_uri = manifest_uri[: -len("manifest.json")]  # ends with "/"
 
     # YAML config + HydroMT invocation. We build inside a temp dir, then
-    # upload the staged deck via fsspec[gcs]. The hand-off to run_solver is
-    # the gs:// URI of the deck root.
+    # upload the staged deck + a manifest.json via fsspec[gcs]. The hand-off
+    # to run_solver is the gs:// URI of the manifest JSON file (NOT the
+    # directory), matching the worker contract.
     with tempfile.TemporaryDirectory(prefix="sfincs-build-") as tmpdir:
         tmp = Path(tmpdir)
         # OQ-52 hotfix (job-0053): the authored ``manning_mapping.csv`` uses
@@ -833,24 +865,81 @@ def build_sfincs_model(
                 },
             ) from exc
 
-        # Upload staged deck to GCS via fsspec[gcs]. Best-effort: fall back to
-        # leaving the deck at a local URI if GCS unavailable (smoke run still
+        # --- Compose the worker-contract manifest.json ---
+        # Worker reads this file first (services/workers/sfincs/entrypoint.py
+        # line 121-130, ``_read_manifest``); it must exist at ``manifest_uri``
+        # as a JSON object matching:
+        #   {
+        #     "inputs": [{"gs_uri": "gs://...", "dest": "<relative-path>"}],
+        #     "sfincs_args": [],
+        #     "outputs": ["sfincs_map.nc", "*.nc", "*.tif"]
+        #   }
+        #
+        # fsspec.upload(deck_dir, deck_base_uri, recursive=True) uploads
+        # the "deck" directory itself as a child of deck_base_uri — i.e.
+        # files land at ``{deck_base_uri}deck/{relative_path}``, not at
+        # ``{deck_base_uri}{relative_path}``.  The manifest gs_uri values must
+        # reflect this actual upload layout (deck/ subdirectory).
+        #
+        # ``dest`` is the relative path from the deck directory root; the
+        # worker does ``dest = scratch / item["dest"]`` and creates any needed
+        # parent dirs, so ``gis/dep.tif`` works fine.
+        deck_dir = tmp / "deck"
+        # The on-GCS prefix for deck files: deck_base_uri + "deck/" because
+        # fsspec recursive upload preserves the source directory name.
+        deck_gcs_prefix = deck_base_uri + "deck/"
+        deck_files = sorted(
+            f for f in deck_dir.glob("**/*") if f.is_file()
+        )
+        manifest_inputs = []
+        for deck_file in deck_files:
+            # Relative path from the deck dir root (e.g. "sfincs.inp" or
+            # "gis/dep.tif").  Use POSIX separators — GCS key is a POSIX path.
+            rel = deck_file.relative_to(deck_dir).as_posix()
+            gs_uri = deck_gcs_prefix + rel
+            dest = rel  # worker does scratch / dest; preserves any subdir
+            manifest_inputs.append({"gs_uri": gs_uri, "dest": dest})
+        manifest_dict = {
+            "inputs": manifest_inputs,
+            "sfincs_args": [],
+            "outputs": ["sfincs_map.nc", "*.nc", "*.tif"],
+        }
+        manifest_local = tmp / "manifest.json"
+        manifest_local.write_text(
+            json.dumps(manifest_dict, indent=2), encoding="utf-8"
+        )
+        logger.info(
+            "composed manifest.json with %d input(s); deck_prefix=%s target=%s",
+            len(manifest_inputs),
+            deck_gcs_prefix,
+            manifest_uri,
+        )
+
+        # Upload staged deck + manifest to GCS via fsspec[gcs]. Best-effort:
+        # fall back to a local URI if GCS unavailable (smoke run still
         # produces a typed ModelSetup the workflow can hand to run_solver,
         # which will surface its own dispatch error if the URI isn't gs://).
+        final_setup_uri = manifest_uri
         try:
             import fsspec  # type: ignore[import-not-found]
 
             fs = fsspec.filesystem("gcs")
-            fs.upload(str(tmp / "deck"), setup_uri, recursive=True)
-            logger.info("uploaded SFINCS deck to %s", setup_uri)
+            # fsspec.upload(src_dir, dest_prefix, recursive=True) uploads
+            # src_dir as a child of dest_prefix, so deck files land at
+            # deck_base_uri/deck/<relative_path>.
+            fs.upload(str(deck_dir), deck_base_uri, recursive=True)
+            logger.info("uploaded SFINCS deck to %s (under deck/ prefix)", deck_base_uri)
+            # Upload manifest.json alongside the deck directory.
+            fs.upload(str(manifest_local), manifest_uri)
+            logger.info("uploaded manifest.json to %s", manifest_uri)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "fsspec gcs upload failed (%s); using local URI %s",
+                "fsspec gcs upload failed (%s); using local manifest URI",
                 exc,
-                tmp / "deck",
             )
-            setup_uri = f"file://{tmp / 'deck'}"
+            final_setup_uri = f"file://{manifest_local}"
 
+    setup_uri = final_setup_uri
     return ModelSetup(
         setup_id=new_ulid(),
         solver="sfincs",

@@ -1230,3 +1230,339 @@ def test_build_sfincs_model_all_setup_steps_match_live_signatures(
             f"not in live 1.2.2 signature {live_params}. Update "
             f"_generate_hydromt_yaml_config to match the v1.2.x API."
         )
+
+
+# --------------------------------------------------------------------------- #
+# Test 18 — job-0057: build_sfincs_model emits a manifest.json that conforms
+# to the worker contract (services/workers/sfincs/entrypoint.py:9-23).
+#
+# Schema the worker reads:
+#   {
+#     "inputs": [{"gs_uri": "gs://...", "dest": "<filename>"}, ...],
+#     "sfincs_args": [],
+#     "outputs": ["sfincs_map.nc", "*.nc", "*.tif"]
+#   }
+#
+# The worker calls ``blob.download_as_text()`` on the manifest URI then
+# ``json.loads(text)`` — so the manifest MUST be a JSON FILE, not a
+# directory. This was the exact bug that caused SOLVER_FAILED in job-0056.
+# --------------------------------------------------------------------------- #
+
+
+def test_build_sfincs_model_emits_manifest_json_with_input_list(
+    tmp_path: Path,
+) -> None:
+    """``build_sfincs_model`` writes a manifest.json with the worker-contract shape.
+
+    Asserts:
+    - A ``manifest.json`` is emitted alongside the deck build.
+    - Its ``inputs`` list contains at least one entry for every deck file
+      produced by HydroMT (mocked to produce sfincs.inp + dep.tif).
+    - Each input entry has both ``gs_uri`` and ``dest`` keys.
+    - ``sfincs_args`` is a list (empty for v0.1).
+    - ``outputs`` contains ``"sfincs_map.nc"`` (the headline output the
+      postprocessing step reads).
+    - The ``gs_uri`` values start with ``gs://`` and include the deck base
+      prefix; ``dest`` values are bare filenames (no path separators).
+    """
+    import json as _json
+
+    mapping_path = tmp_path / "manning.csv"
+    mapping_path.write_text(
+        "nlcd_class,manning_n,description\n"
+        "11,0.025,Open Water\n"
+        "41,0.150,Deciduous Forest\n",
+        encoding="utf-8",
+    )
+
+    # We'll capture what files the fake HydroMT writes into the deck dir so
+    # we can assert the manifest covers them all.
+    captured_manifest: dict[str, Any] = {}
+
+    class _FakeSfincsModel:
+        def __init__(self, root: str, mode: str) -> None:  # noqa: D401
+            self._root = root
+
+        def build(self, opt: Any) -> None:  # noqa: D401
+            # Simulate HydroMT writing deck files into the root directory.
+            deck_dir = Path(self._root)
+            deck_dir.mkdir(parents=True, exist_ok=True)
+            (deck_dir / "sfincs.inp").write_text("[sfincs input]\n", encoding="utf-8")
+            (deck_dir / "dep.tif").write_bytes(b"FAKE_GEOTIFF")
+
+        def write(self) -> None:  # noqa: D401
+            pass  # write() is already called inside build above in our stub
+
+    fake_module = MagicMock()
+    fake_module.SfincsModel = _FakeSfincsModel
+
+    forcing = ForcingSpec(
+        forcing_type="pluvial_synthetic",
+        precip_inches=11.9,
+        duration_hours=24.0,
+        return_period_years=100,
+        provenance={"source": "noaa-atlas14"},
+    )
+
+    # Use a fixed setup URI so we can assert the gs_uri prefix in the manifest.
+    fixed_manifest_uri = (
+        "gs://grace-2-hazard-prod-cache/cache/static-30d/sfincs_setup/"
+        "TESTID01/manifest.json"
+    )
+
+    # Mock fsspec upload to capture the local manifest.json content instead of
+    # actually uploading to GCS. We intercept the upload call for the manifest
+    # and read the file content immediately (while the TemporaryDirectory is
+    # still alive — the upload happens inside the ``with tempfile.TemporaryDirectory``
+    # block, so the file exists at that moment).
+    uploaded_files: dict[str, Any] = {}
+
+    class _FakeFS:
+        def upload(self, local_path: str, remote_uri: str, recursive: bool = False) -> None:
+            if remote_uri.endswith("manifest.json"):
+                # Read content while the temp dir is still alive.
+                uploaded_files["manifest_content"] = _json.loads(
+                    Path(local_path).read_text(encoding="utf-8")
+                )
+                uploaded_files["manifest_uri"] = remote_uri
+            # Don't raise — let the deck upload succeed silently.
+
+    fake_fsspec = MagicMock()
+    fake_fsspec.filesystem.return_value = _FakeFS()
+
+    with (
+        patch.dict("sys.modules", {"hydromt_sfincs": fake_module, "fsspec": fake_fsspec}, clear=False),
+        patch(
+            "grace2_agent.workflows.sfincs_builder._extract_unique_nlcd_classes",
+            return_value={11, 41},
+        ),
+        patch(
+            "grace2_agent.workflows.sfincs_builder._default_setup_uri",
+            return_value=fixed_manifest_uri,
+        ),
+    ):
+        setup = build_sfincs_model(
+            dem_uri="gs://test/dem.tif",
+            landcover_uri="gs://test/landcover.tif",
+            river_geometry_uri=None,
+            forcing=forcing,
+            bbox=(-81.92, 26.55, -81.80, 26.68),
+            options=BuildOptions(grid_resolution_m=30.0, simulation_hours=24.0),
+            nlcd_vintage_year=2021,
+            manning_mapping_csv=mapping_path,
+        )
+
+    # The manifest file should have been captured by our fake fsspec.
+    assert "manifest_content" in uploaded_files, (
+        "build_sfincs_model did not upload a manifest.json via fsspec; "
+        "the worker would hit 404 on the manifest URI."
+    )
+    manifest = uploaded_files["manifest_content"]
+
+    # Shape assertions — must match the worker contract schema.
+    assert isinstance(manifest, dict), "manifest.json must be a JSON object"
+    assert "inputs" in manifest, "manifest missing 'inputs' key"
+    assert "sfincs_args" in manifest, "manifest missing 'sfincs_args' key"
+    assert "outputs" in manifest, "manifest missing 'outputs' key"
+
+    inputs = manifest["inputs"]
+    assert isinstance(inputs, list), "'inputs' must be a list"
+    assert len(inputs) >= 1, (
+        "manifest 'inputs' list is empty — worker would download nothing "
+        "and SFINCS would fail to find sfincs.inp"
+    )
+
+    # Every input entry must have both 'gs_uri' and 'dest'.
+    for entry in inputs:
+        assert "gs_uri" in entry, f"input entry missing 'gs_uri': {entry}"
+        assert "dest" in entry, f"input entry missing 'dest': {entry}"
+        assert entry["gs_uri"].startswith("gs://"), (
+            f"input gs_uri must be a gs:// URI; got {entry['gs_uri']!r}"
+        )
+        # dest may be a relative path (e.g. "gis/dep.tif" for subdirectory
+        # files); the worker does ``scratch / item["dest"]`` which handles
+        # POSIX relative paths correctly.
+        assert entry["dest"]  # non-empty
+        assert not entry["dest"].startswith("/"), (
+            f"input dest must be relative, not absolute; got {entry['dest']!r}"
+        )
+
+    # sfincs.inp must appear in inputs (SFINCS reads it from CWD).
+    dest_names = {e["dest"] for e in inputs}
+    assert "sfincs.inp" in dest_names, (
+        f"manifest 'inputs' does not include 'sfincs.inp'; "
+        f"SFINCS requires this file in CWD. Found: {sorted(dest_names)}"
+    )
+
+    # dep.tif must also appear (the DEM the model was built with).
+    assert "dep.tif" in dest_names, (
+        f"manifest 'inputs' does not include 'dep.tif'; found: {sorted(dest_names)}"
+    )
+
+    # gs_uri values must include the expected deck-base/deck/ prefix.
+    # fsspec.upload(deck_dir, deck_base_uri, recursive=True) uploads the
+    # "deck" directory as a child of deck_base_uri, so files land at
+    # deck_base_uri/deck/<relative>.
+    expected_prefix = (
+        "gs://grace-2-hazard-prod-cache/cache/static-30d/sfincs_setup/TESTID01/deck/"
+    )
+    for entry in inputs:
+        assert entry["gs_uri"].startswith(expected_prefix), (
+            f"input gs_uri {entry['gs_uri']!r} does not start with the "
+            f"expected deck prefix {expected_prefix!r}. The worker "
+            "downloads each input by its gs_uri; a mismatched prefix means "
+            "the files are not where the manifest says they are."
+        )
+
+    # sfincs_args must be a list (empty for v0.1).
+    assert isinstance(manifest["sfincs_args"], list), (
+        "'sfincs_args' must be a list"
+    )
+
+    # outputs must include the headline flood-depth file.
+    assert "sfincs_map.nc" in manifest["outputs"], (
+        f"'sfincs_map.nc' missing from outputs; "
+        f"postprocess_flood looks for this file. Got: {manifest['outputs']}"
+    )
+
+    # Regression: setup_uri must be the manifest file URI (not the directory).
+    assert setup.setup_uri == fixed_manifest_uri, (
+        f"ModelSetup.setup_uri should be the manifest file URI "
+        f"{fixed_manifest_uri!r}; got {setup.setup_uri!r}. "
+        "The worker passes this to _read_manifest → blob.download_as_text(); "
+        "a directory URI hits 404."
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Test 19 — job-0057: ModelSetup.setup_uri returned by build_sfincs_model
+# ends with ``/manifest.json`` — confirming the agent hands the worker a
+# file URI, not a trailing-slash directory URI.
+#
+# This is the regression guard for the exact 404 observed in job-0056:
+#   "ERROR google.api_core.exceptions.NotFound: 404 GET .../sfincs_setup/
+#    01KTHQP54XVAAF2NPGKTAMP4PV/: No such object"
+# --------------------------------------------------------------------------- #
+
+
+def test_build_sfincs_model_setup_uri_points_at_manifest_file(
+    tmp_path: Path,
+) -> None:
+    """``ModelSetup.setup_uri`` must end with ``/manifest.json``, never with ``/``.
+
+    The worker contract (entrypoint.py:9-23) requires ``--manifest-uri`` to be
+    a single JSON file URI.  The agent passes ``ModelSetup.setup_uri`` as that
+    URI.  A trailing-slash directory URI causes:
+
+        ``404 GET .../sfincs_setup/<id>/: No such object``
+
+    because GCS has no object with that exact key.
+
+    This test exercises the default path (no ``output_setup_uri`` override)
+    and an override path where the caller supplies a directory URI, verifying
+    that the normalisation logic appends ``manifest.json`` in both cases.
+    """
+    mapping_path = tmp_path / "manning.csv"
+    mapping_path.write_text(
+        "nlcd_class,manning_n,description\n"
+        "11,0.025,Open Water\n"
+        "41,0.150,Deciduous Forest\n",
+        encoding="utf-8",
+    )
+
+    class _FakeSfincsModel:
+        def __init__(self, root: str, mode: str) -> None:  # noqa: D401
+            self._root = root
+
+        def build(self, opt: Any) -> None:  # noqa: D401
+            deck_dir = Path(self._root)
+            deck_dir.mkdir(parents=True, exist_ok=True)
+            (deck_dir / "sfincs.inp").write_text("[sfincs input]\n", encoding="utf-8")
+
+        def write(self) -> None:  # noqa: D401
+            pass
+
+    fake_module = MagicMock()
+    fake_module.SfincsModel = _FakeSfincsModel
+
+    forcing = ForcingSpec(
+        forcing_type="pluvial_synthetic",
+        precip_inches=11.9,
+        duration_hours=24.0,
+        return_period_years=100,
+        provenance={"source": "noaa-atlas14"},
+    )
+
+    fake_fsspec = MagicMock()
+    fake_fsspec.filesystem.return_value = MagicMock(
+        upload=MagicMock()  # swallow uploads silently
+    )
+
+    def _run_build(options: BuildOptions) -> "ModelSetup":
+        with (
+            patch.dict("sys.modules", {"hydromt_sfincs": fake_module, "fsspec": fake_fsspec}, clear=False),
+            patch(
+                "grace2_agent.workflows.sfincs_builder._extract_unique_nlcd_classes",
+                return_value={11, 41},
+            ),
+        ):
+            return build_sfincs_model(
+                dem_uri="gs://test/dem.tif",
+                landcover_uri="gs://test/landcover.tif",
+                river_geometry_uri=None,
+                forcing=forcing,
+                bbox=(-81.92, 26.55, -81.80, 26.68),
+                options=options,
+                nlcd_vintage_year=2021,
+                manning_mapping_csv=mapping_path,
+            )
+
+    # --- Case 1: default path (no output_setup_uri override) ---
+    setup_default = _run_build(BuildOptions(grid_resolution_m=30.0, simulation_hours=24.0))
+    assert setup_default.setup_uri.endswith("/manifest.json"), (
+        f"Default path: ModelSetup.setup_uri must end with '/manifest.json'; "
+        f"got {setup_default.setup_uri!r}. A directory URI (trailing '/') "
+        "causes 404 in the worker's _read_manifest call."
+    )
+    assert not setup_default.setup_uri.endswith("//manifest.json"), (
+        "Double-slash in URI: deck_base + manifest.json produced '//' — "
+        f"check the URI composition logic. Got {setup_default.setup_uri!r}"
+    )
+
+    # --- Case 2: output_setup_uri override as a directory URI (trailing /) ---
+    # Callers that previously passed a directory override must still work;
+    # the normalisation logic should append 'manifest.json'.
+    setup_dir_override = _run_build(
+        BuildOptions(
+            grid_resolution_m=30.0,
+            simulation_hours=24.0,
+            output_setup_uri="gs://grace-2-hazard-prod-cache/cache/custom-run/test-setup/",
+        )
+    )
+    assert setup_dir_override.setup_uri.endswith("/manifest.json"), (
+        f"Directory-override path: setup_uri must end with '/manifest.json'; "
+        f"got {setup_dir_override.setup_uri!r}."
+    )
+    assert setup_dir_override.setup_uri == (
+        "gs://grace-2-hazard-prod-cache/cache/custom-run/test-setup/manifest.json"
+    ), (
+        f"Directory override did not normalise correctly; "
+        f"got {setup_dir_override.setup_uri!r}"
+    )
+
+    # --- Case 3: output_setup_uri already ends with /manifest.json ---
+    setup_manifest_override = _run_build(
+        BuildOptions(
+            grid_resolution_m=30.0,
+            simulation_hours=24.0,
+            output_setup_uri=(
+                "gs://grace-2-hazard-prod-cache/cache/custom-run/test-setup/manifest.json"
+            ),
+        )
+    )
+    assert setup_manifest_override.setup_uri == (
+        "gs://grace-2-hazard-prod-cache/cache/custom-run/test-setup/manifest.json"
+    ), (
+        f"Manifest override was mutated unexpectedly; "
+        f"got {setup_manifest_override.setup_uri!r}"
+    )
