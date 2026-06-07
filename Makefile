@@ -423,7 +423,8 @@ SRS_PARTS = \
   docs/srs/B-assessment-envelope-schema.md \
   docs/srs/C-event-metadata-schema.md \
   docs/srs/D-mongodb-collection-schemas.md \
-  docs/srs/E-qgis-plugins-inventory.md
+  docs/srs/E-qgis-plugins-inventory.md \
+  docs/srs/F-data-sources-discovery-secrets.md
 
 srs: docs/SRS_v0.3.md
 
