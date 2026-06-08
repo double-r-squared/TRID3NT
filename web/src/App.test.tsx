@@ -14,7 +14,7 @@
 // separately verified by the browser screenshot evidence; unit tests here
 // cover state correctness and localStorage round-trip.
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { useState } from "react";
 
@@ -447,5 +447,185 @@ describe("Theme toggle (job-0076 bundled enhancement)", () => {
     act(() => { fireEvent.click(btn); });
     expect(screen.getByTestId("theme-host")).toHaveAttribute("data-theme", "light");
     expect(localStorage.getItem(LS_THEME)).toBe("light");
+  });
+});
+
+// --- job-0140: PayloadWarningInline seam + component tests ---------------- //
+//
+// Tests the dev-injection seam __grace2InjectPayloadWarning and verifies that:
+//   1. The seam wires setPayloadWarnings so PayloadWarningInline renders.
+//   2. The component shows estimated_mb, threshold_mb, recommendation.
+//   3. All 3 option buttons render (proceed / cancel / narrow_scope).
+//   4. Clicking "Proceed" calls onDecide with decision="proceed", revised=null.
+//   5. Clicking "Cancel" calls onDecide with decision="cancel", revised=null.
+//   6. Clicking "Narrow scope" with alternative_args calls onDecide with
+//      decision="narrow_scope" and the provided alternative_args.
+//
+// The seam itself is integration-tested via a PayloadWarningShell component
+// that mirrors the App.tsx queue pattern without importing WebSocket/WebGL.
+
+import { PayloadWarningInline } from "./components/PayloadWarningInline";
+import type { PayloadWarningEnvelopePayload, PayloadConfirmationDecision } from "./contracts";
+
+// Minimal shell mirroring the App.tsx payloadWarnings queue pattern.
+function PayloadWarningShell({
+  initialWarning,
+}: {
+  initialWarning?: PayloadWarningEnvelopePayload;
+}): JSX.Element {
+  const [warnings, setWarnings] = useState<PayloadWarningEnvelopePayload[]>(
+    initialWarning ? [initialWarning] : [],
+  );
+
+  // Expose the seam function on window so tests can call it.
+  // In production App.tsx this is registered in a useEffect guarded by
+  // import.meta.env.DEV.  Here we register unconditionally for testing.
+  (window as Window & { __grace2InjectPayloadWarning?: (p: PayloadWarningEnvelopePayload) => void }).__grace2InjectPayloadWarning = (p) => {
+    setWarnings((prev) => [p, ...prev]);
+  };
+
+  function handleDecide(
+    warningId: string,
+    _decision: PayloadConfirmationDecision,
+    _revised: Record<string, unknown> | null,
+  ): void {
+    setWarnings((prev) => prev.filter((w) => w.warning_id !== warningId));
+  }
+
+  return (
+    <div data-testid="warning-shell">
+      {warnings.map((w) => (
+        <PayloadWarningInline
+          key={w.warning_id}
+          warning={w}
+          onDecide={(decision, revised) => handleDecide(w.warning_id, decision, revised)}
+        />
+      ))}
+    </div>
+  );
+}
+
+// Sample payload factory.
+function makeWarning(
+  overrides: Partial<PayloadWarningEnvelopePayload> = {},
+): PayloadWarningEnvelopePayload {
+  return {
+    warning_id: "test-warning-001",
+    tool_name: "fetch_dem",
+    tool_args: { bbox: [-82, 26, -81, 27] },
+    estimated_mb: 42.5,
+    threshold_mb: 25,
+    recommendation: "Consider narrowing the bbox to reduce payload size.",
+    alternative_args: { bbox: [-81.8, 26.2, -81.2, 26.8] },
+    options: ["proceed", "narrow_scope", "cancel"],
+    ...overrides,
+  };
+}
+
+describe("PayloadWarningInline component (job-0140)", () => {
+  it("renders estimated_mb, threshold_mb, recommendation", () => {
+    const w = makeWarning();
+    render(
+      <PayloadWarningInline warning={w} onDecide={vi.fn()} />,
+    );
+    expect(screen.getByTestId("payload-warning-estimated-mb")).toHaveTextContent("42.5");
+    expect(screen.getByTestId("payload-warning-threshold-mb")).toHaveTextContent("25");
+    expect(screen.getByTestId("payload-warning-recommendation")).toHaveTextContent(
+      "Consider narrowing the bbox to reduce payload size.",
+    );
+  });
+
+  it("renders 3 action buttons: Proceed, Narrow scope, Cancel", () => {
+    const w = makeWarning();
+    render(<PayloadWarningInline warning={w} onDecide={vi.fn()} />);
+    expect(screen.getByTestId("payload-warning-button-proceed")).toBeInTheDocument();
+    expect(screen.getByTestId("payload-warning-button-narrow_scope")).toBeInTheDocument();
+    expect(screen.getByTestId("payload-warning-button-cancel")).toBeInTheDocument();
+  });
+
+  it("clicking Proceed calls onDecide with 'proceed' and null revised", () => {
+    const onDecide = vi.fn();
+    const w = makeWarning();
+    render(<PayloadWarningInline warning={w} onDecide={onDecide} />);
+    act(() => {
+      fireEvent.click(screen.getByTestId("payload-warning-button-proceed"));
+    });
+    expect(onDecide).toHaveBeenCalledOnce();
+    expect(onDecide).toHaveBeenCalledWith("proceed", null);
+  });
+
+  it("clicking Cancel calls onDecide with 'cancel' and null revised", () => {
+    const onDecide = vi.fn();
+    const w = makeWarning();
+    render(<PayloadWarningInline warning={w} onDecide={onDecide} />);
+    act(() => {
+      fireEvent.click(screen.getByTestId("payload-warning-button-cancel"));
+    });
+    expect(onDecide).toHaveBeenCalledOnce();
+    expect(onDecide).toHaveBeenCalledWith("cancel", null);
+  });
+
+  it("clicking Narrow scope with alternative_args calls onDecide with 'narrow_scope' + alternative_args", () => {
+    const onDecide = vi.fn();
+    const w = makeWarning();
+    render(<PayloadWarningInline warning={w} onDecide={onDecide} />);
+    act(() => {
+      fireEvent.click(screen.getByTestId("payload-warning-button-narrow_scope"));
+    });
+    expect(onDecide).toHaveBeenCalledOnce();
+    expect(onDecide).toHaveBeenCalledWith("narrow_scope", w.alternative_args);
+  });
+
+  it("after a decision, buttons are disabled and 'Sent' footer appears", () => {
+    const w = makeWarning();
+    render(<PayloadWarningInline warning={w} onDecide={vi.fn()} />);
+    act(() => {
+      fireEvent.click(screen.getByTestId("payload-warning-button-proceed"));
+    });
+    expect(screen.getByTestId("payload-warning-button-proceed")).toBeDisabled();
+    expect(screen.getByTestId("payload-warning-sent")).toHaveTextContent("Sent:");
+  });
+});
+
+describe("__grace2InjectPayloadWarning dev seam (job-0140)", () => {
+  afterEach(() => {
+    delete (window as Window & { __grace2InjectPayloadWarning?: unknown }).__grace2InjectPayloadWarning;
+  });
+
+  it("seam absent before shell mounts → no warning card", () => {
+    render(<div data-testid="empty" />);
+    expect(screen.queryByTestId("payload-warning-inline")).toBeNull();
+  });
+
+  it("injecting a warning via seam renders PayloadWarningInline", () => {
+    render(<PayloadWarningShell />);
+    act(() => {
+      (window as Window & { __grace2InjectPayloadWarning?: (p: PayloadWarningEnvelopePayload) => void }).__grace2InjectPayloadWarning?.(makeWarning());
+    });
+    expect(screen.getByTestId("payload-warning-inline")).toBeInTheDocument();
+  });
+
+  it("injected warning shows tool name", () => {
+    render(<PayloadWarningShell />);
+    act(() => {
+      (window as Window & { __grace2InjectPayloadWarning?: (p: PayloadWarningEnvelopePayload) => void }).__grace2InjectPayloadWarning?.(makeWarning({ tool_name: "fetch_buildings" }));
+    });
+    expect(screen.getByTestId("payload-warning-tool")).toHaveTextContent("fetch_buildings");
+  });
+
+  it("shell initialised with a warning renders it immediately", () => {
+    render(<PayloadWarningShell initialWarning={makeWarning()} />);
+    expect(screen.getByTestId("payload-warning-inline")).toBeInTheDocument();
+  });
+
+  it("clicking Proceed removes the card from the queue", () => {
+    render(<PayloadWarningShell initialWarning={makeWarning()} />);
+    act(() => {
+      fireEvent.click(screen.getByTestId("payload-warning-button-proceed"));
+    });
+    // After onDecide the shell removes it from the warnings list; the inline
+    // card shows the 'Sent' footer for a brief moment but the shell removes
+    // the entry — the card no longer has buttons.
+    expect(screen.queryByTestId("payload-warning-button-proceed")).toBeNull();
   });
 });

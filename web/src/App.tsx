@@ -37,7 +37,11 @@ import { MapView, type MapCommandSubscribeFunc, type MapTheme } from "./Map";
 import { Chat } from "./Chat";
 import { LayerPanel, createLayerPanelBus } from "./LayerPanel";
 import { LayerLegend } from "./components/LayerLegend";
-import { AuthPanel } from "./components/AuthPanel";
+import {
+  AuthGate,
+  clearAnonymousAccepted,
+  readAnonymousAccepted,
+} from "./components/AuthGate";
 import { SecretsPanel } from "./components/SecretsPanel";
 import { CasesPanel } from "./components/CasesPanel";
 import { PersistenceChip } from "./components/PersistenceChip";
@@ -46,7 +50,7 @@ import {
   Mode2OfferModal,
 } from "./components/Mode2OfferModal";
 import { PayloadWarningInline } from "./components/PayloadWarningInline";
-import { AuthUser, onAuthChanged } from "./auth";
+import { AuthUser, onAuthChanged, signOut as authSignOut } from "./auth";
 import { GraceWs } from "./ws";
 import { Mode2CandidatePayload } from "./lib/mode2_suppression";
 import { useCases } from "./hooks/useCases";
@@ -110,6 +114,8 @@ declare global {
     __grace2InjectCaseList?: (p: CaseListEnvelopePayload) => void;
     /** Dev seam for case-open (job-0137); wired by App.tsx GraceWs handler. */
     __grace2InjectCaseOpen?: (p: CaseOpenEnvelopePayload) => void;
+    /** Dev seam for payload-warning (job-0140); wired by App.tsx GraceWs handler. */
+    __grace2InjectPayloadWarning?: (p: PayloadWarningEnvelopePayload) => void;
   }
 }
 
@@ -159,13 +165,81 @@ export function App(): JSX.Element {
   const [theme, setTheme] = useState<MapTheme>(() => readTheme());
 
   // Auth state (job-0123, sprint-12-mega Wave 2). Subscribed at the App level
-  // so AuthPanel re-renders and any future auth-gated UI (Cases, share links)
-  // can be driven off this single source. When Firebase is unconfigured
-  // (anonymous-only dev) the subscription resolves to null once and stays.
+  // so the AuthGate / residual indicator and any future auth-gated UI
+  // (Cases, share links) can be driven off this single source. When Firebase
+  // is unconfigured (anonymous-only dev) the subscription resolves to null
+  // once and stays.
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  // Tracks whether the auth subscription has emitted at least once. Before
+  // the first emission we don't know if the user is signed in (Firebase
+  // restoring a cached session is async), so we hold the AuthGate render
+  // back until we hear from it — otherwise a signed-in user briefly sees
+  // the gate on every load.
+  const [authResolved, setAuthResolved] = useState<boolean>(false);
   useEffect(() => {
-    const unsub = onAuthChanged((u) => setAuthUser(u));
+    const unsub = onAuthChanged((u) => {
+      setAuthUser(u);
+      setAuthResolved(true);
+    });
     return unsub;
+  }, []);
+
+  // job-0138: anonymous-accepted flag. Replaces the old AuthPanel's
+  // "Continue as anonymous" button — the user now lands on a full-page
+  // AuthGate and must explicitly choose to proceed without saving. The flag
+  // is persisted in localStorage so reloads bypass the gate, and is cleared
+  // on sign-out or anonymous→authenticated upgrade so subsequent visits
+  // honour the new state.
+  const [anonymousAccepted, setAnonymousAccepted] = useState<boolean>(() =>
+    readAnonymousAccepted(),
+  );
+  // Upgrade-to-authenticated toast (kickoff item 6): cleared after a few
+  // seconds. Null means no toast showing.
+  const [upgradeToast, setUpgradeToast] = useState<string | null>(null);
+  // Track the previous-render auth identity so we can detect the
+  // "was anonymous-flag + now authenticated" transition exactly once.
+  const prevSignedInRef = useRef<boolean>(false);
+  useEffect(() => {
+    const nowSignedIn = !!authUser && !authUser.isAnonymous;
+    const wasSignedIn = prevSignedInRef.current;
+    prevSignedInRef.current = nowSignedIn;
+    if (nowSignedIn && !wasSignedIn && anonymousAccepted) {
+      // Anonymous → authenticated upgrade. Clear the flag so future visits
+      // don't bypass the gate with a stale anonymous accept, and surface a
+      // welcome toast (kickoff item 6).
+      clearAnonymousAccepted();
+      setAnonymousAccepted(false);
+      setUpgradeToast("Welcome back — your Cases will now sync");
+      const t = setTimeout(() => setUpgradeToast(null), 4500);
+      return () => clearTimeout(t);
+    }
+    return undefined;
+  }, [authUser, anonymousAccepted]);
+
+  // Gate render rule (kickoff §2): show the app only when we either have an
+  // authenticated (non-anonymous) Firebase user OR the user has explicitly
+  // accepted the anonymous flow. A Firebase anonymous-sign-in user is NOT
+  // sufficient to bypass — the flag is the explicit consent signal.
+  const appShouldRender: boolean =
+    authResolved &&
+    ((!!authUser && !authUser.isAnonymous) || anonymousAccepted);
+
+  // AuthGate handlers — wired to the real auth.ts surface in production;
+  // overridable for tests.
+  const handleAnonymousAccept = useCallback(() => {
+    setAnonymousAccepted(true);
+  }, []);
+  const handleSignOut = useCallback(async () => {
+    try {
+      await authSignOut();
+    } catch {
+      // Sign-out failures are non-fatal — we still clear local state so the
+      // user returns to the gate.
+    }
+    clearAnonymousAccepted();
+    setAnonymousAccepted(false);
+    // authResolved stays true so we render the gate (not a flash of nothing)
+    // — onAuthChanged will fire with null and update authUser.
   }, []);
 
   // Secrets state (job-0125, sprint-12-mega Wave 2 — SRS §F.3 per-Case API
@@ -483,6 +557,11 @@ export function App(): JSX.Element {
     // would route through so behavior is identical end-to-end.
     window.__grace2InjectCaseList = (p) => useCases_onCaseList(p);
     window.__grace2InjectCaseOpen = (p) => useCases_onCaseOpen(p);
+    // job-0140: dev seam to inject payload-warning envelopes (Playwright
+    // verification path — no real WS / agent needed).
+    window.__grace2InjectPayloadWarning = (p) => {
+      setPayloadWarnings((prev) => [p, ...prev]);
+    };
     // __grace2InjectPipelineState is registered by Chat.tsx's GraceWs.
     return () => {
       delete window.__grace2InjectSessionState;
@@ -491,6 +570,7 @@ export function App(): JSX.Element {
       delete window.__grace2InjectMode2Candidate;
       delete window.__grace2InjectCaseList;
       delete window.__grace2InjectCaseOpen;
+      delete window.__grace2InjectPayloadWarning;
     };
   }, [bus, fanoutMode2Candidate, useCases_onCaseList, useCases_onCaseOpen]);
 
@@ -517,6 +597,33 @@ export function App(): JSX.Element {
   // keep the leftCollapsed toggle so users can hide the rail entirely.
   const showLayersHamburger = leftCollapsed;
   const showChatHamburger = rightCollapsed;
+
+  // job-0138: AuthGate full-screen gating. When the user has neither signed
+  // in nor explicitly accepted anonymous mode, render the gate INSTEAD of
+  // the main app shell. The map, panels, hamburgers, chat — everything —
+  // is hidden behind it. We also gate on `authResolved` so we don't flash
+  // the gate while Firebase is restoring a cached session.
+  if (!appShouldRender) {
+    return (
+      <AuthGate
+        onAnonymousAccept={handleAnonymousAccept}
+      />
+    );
+  }
+
+  // Residual signed-in / anonymous identity chip — replaces the dismissed
+  // floating AuthPanel. Renders just to the left of the chat hamburger so
+  // it's discoverable but unobtrusive. Includes a sign-out button that
+  // returns the user to the AuthGate (kickoff item 4 + 5).
+  const identityLabel: string = (() => {
+    if (authUser && !authUser.isAnonymous) {
+      return authUser.email ?? authUser.displayName ?? "Signed in";
+    }
+    if (anonymousAccepted) {
+      return "Anonymous";
+    }
+    return "Signed in";
+  })();
 
   return (
     <div
@@ -647,16 +754,76 @@ export function App(): JSX.Element {
         </div>
       )}
 
-      {/* AuthPanel (job-0123): top-right, to the LEFT of the chat hamburger /
-          chat panel edge so it never overlaps. Always mounted (signed-in or
-          signed-out variants render differently). The rightOffset moves it
-          left of the chat hamburger (chat hamburger sits at right:12, width
-          40; we leave 60px gap when chat is collapsed, and more when chat is
-          open since the chat panel itself takes the right edge). */}
-      <AuthPanel rightOffset={rightCollapsed ? 60 : 380} />
-      {/* PersistenceChip (job-0137): renders to the LEFT of AuthPanel so the
-          two affordances are visually adjacent — auth identity + persistence
-          state, the two things that gate whether work is being saved. */}
+      {/* Identity chip (job-0138, replaces job-0123 AuthPanel): a small
+          residual indicator showing the user's signed-in identity (email
+          or "Anonymous") + a sign-out button that returns the app to the
+          full-screen AuthGate. Position: top-right, mirroring where the
+          AuthPanel used to sit so the user finds the auth controls where
+          they expect them. The rightOffset moves it left of the chat
+          hamburger (chat hamburger sits at right:12, width 40; we leave
+          60px gap when chat is collapsed, more when chat is open). */}
+      <div
+        data-testid="grace2-identity-chip"
+        data-auth-mode={
+          authUser && !authUser.isAnonymous
+            ? "authenticated"
+            : "anonymous"
+        }
+        style={{
+          position: "absolute",
+          top: 12,
+          right: rightCollapsed ? 60 : 380,
+          background: "rgba(20,20,25,0.85)",
+          border: "1px solid #444",
+          borderRadius: 6,
+          color: "#ccc",
+          padding: "6px 10px",
+          fontSize: 12,
+          zIndex: 30,
+          display: "flex",
+          flexDirection: "row",
+          alignItems: "center",
+          gap: 8,
+          maxWidth: 260,
+        }}
+      >
+        <span
+          data-testid="grace2-identity-chip-label"
+          style={{
+            maxWidth: 160,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+          title={identityLabel}
+        >
+          {identityLabel}
+        </span>
+        <button
+          data-testid="grace2-identity-chip-signout"
+          onClick={() => {
+            void handleSignOut();
+          }}
+          aria-label="Sign out"
+          style={{
+            background: "rgba(40,40,50,0.9)",
+            border: "1px solid #555",
+            borderRadius: 4,
+            color: "#ddd",
+            padding: "3px 8px",
+            cursor: "pointer",
+            fontSize: 11,
+            fontFamily: "inherit",
+            lineHeight: 1.2,
+          }}
+        >
+          Sign out
+        </button>
+      </div>
+      {/* PersistenceChip (job-0137): renders to the LEFT of the identity
+          chip so the two affordances are visually adjacent — auth identity
+          + persistence state, the two things that gate whether work is
+          being saved. */}
       <div
         data-testid="grace2-persistence-chip-wrap"
         style={{
@@ -668,6 +835,29 @@ export function App(): JSX.Element {
       >
         <PersistenceChip state={persistenceState} />
       </div>
+      {/* Upgrade toast (job-0138 kickoff item 6): rendered when an
+          anonymous user signs in. Auto-dismisses after a few seconds. */}
+      {upgradeToast && (
+        <div
+          data-testid="grace2-upgrade-toast"
+          role="status"
+          style={{
+            position: "absolute",
+            top: 56,
+            right: rightCollapsed ? 60 : 380,
+            background: "rgba(20,40,60,0.95)",
+            border: "1px solid #3b82f6",
+            borderRadius: 6,
+            color: "#dde6f5",
+            padding: "8px 12px",
+            fontSize: 12,
+            zIndex: 35,
+            maxWidth: 280,
+          }}
+        >
+          {upgradeToast}
+        </div>
+      )}
       {/* hidden marker so tests can assert App subscribes to auth changes */}
       <span
         data-testid="grace2-app-auth-state"
