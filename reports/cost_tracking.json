@@ -776,6 +776,41 @@
       "description": "Sprint-12-mega Wave 3 parallel: Case UX web shell \u2014 CasesPanel + chat-replay rehydration + ConfirmationDialog + PersistenceChip (FR-MP-6 headline)",
       "model": "opus",
       "subagent_tokens": 167627
+    },
+    {
+      "job_id": "job-0138-web-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 3.5 (Stage A fix): AuthGate full-screen gate (replaces AuthPanel) + identity chip + sign-out flow + anonymous-accept flag + Why-sign-in modal",
+      "model": "opus",
+      "subagent_tokens": 173506
+    },
+    {
+      "job_id": "job-0139-web-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 3.5 (Stage A fix): Map.tsx vector rendering \u2014 THE CRITICAL UNBLOCK; 190/190 web tests; species + WDPA + Pelicun vectors all render on map; subtle isStyleLoaded-flip bug found+fixed",
+      "model": "opus",
+      "subagent_tokens": 173506
+    },
+    {
+      "job_id": "job-0140-web-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 3.5 (Stage A fix): Payload-warning dev injection seam (__grace2InjectPayloadWarning)",
+      "model": "sonnet",
+      "subagent_tokens": 80000
+    },
+    {
+      "job_id": "job-0141-engine-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 3.5 (Stage A fix): MRMS evidence audit \u2014 re-captured cache URIs + summary stats",
+      "model": "sonnet",
+      "subagent_tokens": 80000
+    },
+    {
+      "job_id": "job-0142-testing-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 3.5 (Stage B verification): Mid-sprint Playwright verification \u2014 7 scenarios \u2192 11 screenshots; AuthGate + anonymous \u2192 app + Cases+chat replay + Case 1 with vectors on map + Pelicun + Wave 2 UI in real running state + dark/light parity",
+      "model": "opus",
+      "subagent_tokens": 173506
     }
   ],
   "totals_by_sprint": {
@@ -785,7 +820,7 @@
     "9": 713020,
     "10": 1540974,
     "11": 999540,
-    "12": 9960866
+    "12": 10641384
   },
   "historical_context": {
     "note": "Captured for accountability \u2014 NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
