@@ -1,0 +1,68 @@
+[driver] launching Vite dev server: npm run dev -- --port 49287 --strictPort
+[driver] vite dev server up at http://127.0.0.1:49287
+[driver] page loaded
+[driver] dev-injection seam present
+[driver] injecting session-state...
+[driver] layer panel mounted
+[driver] settled; 130 total WMS GetMap URLs captured
+[driver] STYLE SPEC: {
+  "layer_ids": [
+    "qgis-basemap",
+    "osm-fallback-basemap",
+    "flood-depth-job-0075-demo"
+  ],
+  "sources": {
+    "qgis-wms": {
+      "type": "raster",
+      "tiles": [
+        "https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&LAYERS=basemap-osm-conus&CRS=EPSG:3857&FORMAT=image/png&TRANSPARENT=true&BBOX={bbox-epsg-3857}&WIDTH=256&HEIGHT=256&STYLES="
+      ],
+      "tileSize": 256,
+      "bounds": null
+    },
+    "osm-fallback": {
+      "type": "raster",
+      "tiles": [
+        "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+      ],
+      "tileSize": 256,
+      "bounds": null
+    },
+    "flood-depth-job-0075-demo": {
+      "type": "raster",
+      "tiles": [
+        "https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=flood-depth-job-0075-demo&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX={bbox-epsg-3857}&WIDTH=256&HEIGHT=256&STYLES="
+      ],
+      "tileSize": 256,
+      "bounds": null
+    }
+  },
+  "center": [
+    -81.83,
+    26.62
+  ],
+  "zoom": 13,
+  "bounds": [
+    [
+      -81.89179809570352,
+      26.585465182439975
+    ],
+    [
+      -81.76820190429737,
+      26.654524387876023
+    ]
+  ]
+}
+[driver] flood URLs: 65; basemap URLs: 65
+[driver] FIRST FLOOD URL:
+https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=flood-depth-job-0075-demo&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-11271098.442818949,3757032.814272985,-10018754.171394622,5009377.085697312&WIDTH=256&HEIGHT=256&STYLES=
+[driver] FIRST BASEMAP URL:
+https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&LAYERS=basemap-osm-conus&CRS=EPSG:3857&FORMAT=image/png&TRANSPARENT=true&BBOX=-11271098.442818949,3757032.814272985,-10018754.171394622,5009377.085697312&WIDTH=256&HEIGHT=256&STYLES=
+[driver] distinct flood BBOXes: 65
+[driver] distinct basemap BBOXes: 65
+[driver] BBOXes in flood NOT in basemap: 0
+[driver] BBOXes in basemap NOT in flood: 0
+[driver] BBOXes in BOTH: 65
+[driver] wrote /home/nate/Documents/GRACE-2/reports/inflight/job-0078-web-20260608/evidence/url_pairs.json
+[driver] saved /home/nate/Documents/GRACE-2/reports/inflight/job-0078-web-20260608/evidence/capture_zoom13.png
+[driver] done.

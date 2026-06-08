@@ -321,11 +321,28 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
             tiles: [tileUrl],
             tileSize: 256,
           });
+          // raster-resampling: nearest preserves discrete COG cell boundaries
+          // (job-0078 diagnosis). Without this, MapLibre's default `linear`
+          // bilinear interpolation smears flood-depth cells across screen pixels,
+          // making it impossible to visually verify per-cell alignment with
+          // underlying basemap features (streets, building blocks). nearest
+          // shows the source-projection grid 1:1 — the user can see that each
+          // flood cell sits over the specific street/lot it covers, which is
+          // the only visually-irrefutable proof of geographic alignment.
+          // The diagnosis confirmed MapLibre requests identical bboxes for
+          // flood and basemap tiles (see evidence/url_pairs.json), and the
+          // server returns correctly-georeferenced tiles for those bboxes
+          // (see evidence/curl_*_3857.png pair). The remaining gap was that
+          // the rendered overlay looked "smeared" at z13 with linear resampling,
+          // which the user read as misalignment.
           m.addLayer({
             id: layer.layer_id,
             type: "raster",
             source: layer.layer_id,
-            paint: { "raster-opacity": opacity },
+            paint: {
+              "raster-opacity": opacity,
+              "raster-resampling": "nearest",
+            },
             layout: { visibility: visible ? "visible" : "none" },
           });
           addedSourceIds.current.add(layer.layer_id);

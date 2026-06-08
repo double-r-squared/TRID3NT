@@ -200,6 +200,36 @@ describe("MapView — session-state WMS source wiring (job-0068 change 4)", () =
     expect((layerDef as { type: string }).type).toBe("raster");
   });
 
+  it("sets raster-resampling: nearest so per-cell alignment is visually verifiable (job-0078)", () => {
+    // job-0078 diagnosis: the default `linear` bilinear resampling smeared
+    // flood-depth COG cells across screen pixels at z=13, hiding the per-cell
+    // alignment between the flood overlay and the basemap street grid. The
+    // user read this as misalignment. The fix is `raster-resampling: nearest`
+    // so each source cell shows as a discrete block — making it visually
+    // obvious that each flood cell is positioned over the correct street/lot.
+    const sessionBus = makeSessionBus();
+
+    render(
+      <MapView
+        subscribeSessionState={sessionBus.subscribe as (cb: SessionStateSubscriber) => () => void}
+      />,
+    );
+
+    act(() => {
+      sessionBus.push({
+        loaded_layers: [makeWireLayer("flood-demo")],
+      });
+    });
+
+    const m = lastMapMock!;
+    expect(m.addLayer).toHaveBeenCalledOnce();
+    const [layerDef] = m.addLayer.mock.calls[0] as MockCallArgs;
+    const paint = (layerDef as { paint: Record<string, unknown> }).paint;
+    expect(paint["raster-resampling"]).toBe("nearest");
+    // raster-opacity must still be set (from layer.opacity wire field).
+    expect(paint).toHaveProperty("raster-opacity");
+  });
+
   it("removes source+layer when layer disappears from session-state (A.7 reconcile)", () => {
     const sessionBus = makeSessionBus();
 
