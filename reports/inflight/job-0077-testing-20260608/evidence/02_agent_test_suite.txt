@@ -1,0 +1,20 @@
+## Evidence: Agent service test suite
+## Command: PYTHONPATH=services/agent/src:packages/contracts/src .venv-agent/bin/python -m pytest services/agent/tests/ -q
+## Date: 2026-06-08
+
+........................................................................ [ 38%]
+..............................s......................................... [ 76%]
+............................................                             [100%]
+=============================== warnings summary ===============================
+tests/test_tools_registry.py::test_register_with_adk_appends_each_tool_to_agent_tools
+tests/test_tools_registry.py::test_register_with_adk_appends_each_tool_to_agent_tools
+tests/test_tools_registry.py::test_register_with_adk_appends_each_tool_to_agent_tools
+tests/test_tools_registry.py::test_register_with_adk_appends_each_tool_to_agent_tools
+  <frozen abc>:106: DeprecationWarning: BaseAgentConfig is deprecated and will be removed in future versions.
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+187 passed, 1 skipped, 4 warnings in 319.55s (0:05:19)
+
+RESULT: PASS — 187/187 tests passed (1 skipped), 4 deprecation warnings (benign)
+Expected threshold: 187+ (from job-0071 +7 tests)
+Note: 1 skipped test is pre-existing (test_pandas_pin_regression.py — requires specific pandas version)

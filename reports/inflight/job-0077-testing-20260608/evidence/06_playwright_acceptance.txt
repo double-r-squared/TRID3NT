@@ -1,0 +1,59 @@
+## Evidence: Playwright dev-injection acceptance tests
+## Command: .venv-agent/bin/python -m pytest tests/m6/playwright/test_sprint09_acceptance.py -v
+## Date: 2026-06-08
+
+============================= test session starts ==============================
+platform linux -- Python 3.13.5, pytest-9.0.3, pluggy-1.6.0 -- /home/nate/Documents/GRACE-2/.venv-agent/bin/python
+cachedir: .pytest_cache
+rootdir: /home/nate/Documents/GRACE-2/tests
+configfile: pyproject.toml
+plugins: zarr-3.2.1, anyio-4.13.0, asyncio-1.4.0
+asyncio: mode=AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 4 items
+
+tests/m6/playwright/test_sprint09_acceptance.py::test_baseline_empty PASSED    [ 25%]
+tests/m6/playwright/test_sprint09_acceptance.py::test_mid_run_pipeline_cards PASSED [ 50%]
+tests/m6/playwright/test_sprint09_acceptance.py::test_final_flood_layer PASSED [ 75%]
+tests/m6/playwright/test_sprint09_acceptance.py::test_panels_collapsed_e2e FAILED [100%]
+
+=================================== FAILURES ===================================
+__________________________ test_panels_collapsed_e2e ___________________________
+
+Error: playwright._impl._errors.TimeoutError: Locator.bounding_box: Timeout 30000ms exceeded.
+Call log:
+  - waiting for locator("[data-testid=\"grace2-left-panel-slot\"]")
+
+========================= 1 failed, 3 passed in 37.80s ==========================
+
+DIAGNOSIS (HONEST):
+  test_panels_collapsed_e2e FAILED — sprint-11 carry-forward (NOT FIXED in this job per kickoff)
+
+  Root cause: The test looks for [data-testid="grace2-left-panel-slot"],
+  [data-testid="grace2-right-panel-slot"], and [data-testid="grace2-map-area"] which
+  were DOM elements in the sprint-9 flex-row layout (job-0065). Job-0068 reverted
+  the layout to overlay-panels-on-map (user direction: "we are basically going back
+  to the map underneath panels"). The flex-row panel slots were replaced with
+  absolutely-positioned overlays — the three data-testids the test relies on no
+  longer exist in App.tsx.
+
+  git blame confirms: web/src/App.tsx last modified in commit 96e0060 (job-0076).
+  No grace2-left-panel-slot, grace2-right-panel-slot, or grace2-map-area data-testids
+  exist in the current App.tsx (confirmed via grep).
+
+  PASSING TESTS (3/4):
+  - test_baseline_empty: PASS — LayerPanel absent when no layers; Chat visible; no pipeline cards
+  - test_mid_run_pipeline_cards: PASS — 3 pipeline cards render; cancel button visible; step names match
+  - test_final_flood_layer: PASS — LayerPanel + LayerLegend appear on session-state inject;
+    legend shows "Max flood depth" title; "0 m" and "3.5 m" tick labels; gradient bar visible
+
+  FAILING TEST (1/4):
+  - test_panels_collapsed_e2e: FAIL — data-testid="grace2-left-panel-slot" no longer exists
+    in App.tsx (layout reversion in job-0068 removed the flex-row slot model)
+
+SPRINT-11 CARRY-FORWARD:
+  The collapse test needs to be rewritten to match the new overlay layout:
+  - Left panel hamburger: data-testid="grace2-layers-hamburger"
+  - Right panel hamburger: data-testid="grace2-chat-hamburger"
+  - No "panel slots" — panels are absolutely positioned overlays
+  - Collapse behavior hides/shows overlays, not changes flex widths
+  This rewrite belongs in the sprint-11 testing acceptance job.

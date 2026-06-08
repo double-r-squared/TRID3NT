@@ -1,0 +1,31 @@
+## Evidence: PyQGIS worker test suite
+## Command: .venv-agent/bin/python -m pytest services/workers/pyqgis/tests/test_worker_raster.py -v
+## Date: 2026-06-08
+## Note: Must be run from repo root WITHOUT services/workers/pyqgis in PYTHONPATH (would shadow stdlib types module)
+
+============================= test session starts ==============================
+platform linux -- Python 3.13.5, pytest-9.0.3, pluggy-1.6.0 -- /home/nate/Documents/GRACE-2/.venv-agent/bin/python
+cachedir: .pytest_cache
+rootdir: /home/nate/Documents/GRACE-2
+plugins: zarr-3.2.1, anyio-4.13.0, asyncio-1.4.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 13 items
+
+services/workers/pyqgis/tests/test_worker_raster.py::test_build_wms_url_format PASSED [  7%]
+services/workers/pyqgis/tests/test_worker_raster.py::test_build_wms_url_default_server PASSED [ 15%]
+services/workers/pyqgis/tests/test_worker_raster.py::test_resolve_style_preset_path_by_name_container_first PASSED [ 23%]
+services/workers/pyqgis/tests/test_worker_raster.py::test_resolve_style_preset_path_by_name_repo_fallback PASSED [ 30%]
+services/workers/pyqgis/tests/test_worker_raster.py::test_resolve_style_preset_path_by_name_missing PASSED [ 38%]
+services/workers/pyqgis/tests/test_worker_raster.py::test_worker_result_to_dict_includes_wms_url PASSED [ 46%]
+services/workers/pyqgis/tests/test_worker_raster.py::test_worker_result_to_dict_omits_wms_url_when_none PASSED [ 53%]
+services/workers/pyqgis/tests/test_worker_raster.py::test_append_raster_layer_calls_addmaplayer PASSED [ 61%]
+services/workers/pyqgis/tests/test_worker_raster.py::test_append_raster_layer_raises_on_invalid_layer PASSED [ 69%]
+services/workers/pyqgis/tests/test_worker_raster.py::test_polygon_path_does_not_call_append_raster_layer PASSED [ 76%]
+services/workers/pyqgis/tests/test_worker_raster.py::test_publish_raster_local_mode_no_double_mnt_prefix PASSED [ 84%]
+services/workers/pyqgis/tests/test_worker_raster.py::test_publish_raster_local_mode_non_mnt_path_uses_basename PASSED [ 92%]
+services/workers/pyqgis/tests/test_worker_raster.py::test_append_raster_layer_writes_wms_crs_list PASSED [100%]
+
+============================== 13 passed in 0.06s ==============================
+
+RESULT: PASS — 13/13 tests passed
+Expected threshold: 13+ (from job-0074 +3 tests)

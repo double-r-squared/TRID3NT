@@ -1,0 +1,21 @@
+## Evidence: Web test suite (npm run test)
+## Command: cd web && npm run test -- --run
+## Date: 2026-06-08
+
+> grace2-web@0.1.0 test
+> vitest run --run
+
+12:26:41 AM [vite] warning: `esbuild` option was specified by "vite:react-babel" plugin. This option is deprecated, please use `oxc` instead.
+12:26:41 AM [vite] warning: `optimizeDeps.esbuildOptions` option was specified by "vite:react-babel" plugin. This option is deprecated, please use `optimizeDeps.rolldownOptions` instead.
+Both esbuild and oxc options were set. oxc options will be used and esbuild options will be ignored. The following esbuild options were set: `{ jsx: 'automatic', jsxImportSource: undefined }`
+
+ RUN  v4.1.8 /home/nate/Documents/GRACE-2/web
+
+
+ Test Files  7 passed (7)
+      Tests  72 passed (72)
+   Start at  00:26:41
+   Duration  1.04s (transform 558ms, setup 437ms, import 1.11s, tests 374ms, environment 3.79s)
+
+RESULT: PASS — 72/72 tests passed across 7 test files
+Expected threshold: 72+ (from job-0076 +9 tests)

@@ -1,0 +1,20 @@
+## Evidence: TypeScript type check
+## Command: cd web && npx tsc --noEmit
+## Date: 2026-06-08
+
+src/ws.test.tsx(58,3): error TS2322: Type 'WebSocket | undefined' is not assignable to type 'WebSocket | null'.
+  Type 'undefined' is not assignable to type 'WebSocket | null'.
+src/ws.test.tsx(78,32): error TS2558: Expected 0-1 type arguments, but got 2.
+src/ws.test.tsx(79,37): error TS2322: Type 'Mock<[MapCommandPayload]>' is not assignable to type '((p: MapCommandPayload) => void) | undefined'.
+  Type 'Mock<[MapCommandPayload]>' is not assignable to type '(p: MapCommandPayload) => void'.
+    Types of parameters 'args' and 'p' are incompatible.
+      Type '[p: MapCommandPayload]' is not assignable to type 'never'.
+src/ws.test.tsx(102,22): error TS2532: Object is possibly 'undefined'.
+
+RESULT: QUALIFIED — ws.test.tsx has 3 pre-existing TSC errors (OQ-74-TSC-WS-TEST-ERRORS)
+  - These are pre-existing errors from job-0072's ws.ts contract addition
+  - ws.test.tsx was last modified in commit 876798b (job-0072 — schema specialist)
+  - FROZEN per kickoff: "OQ-74-TSC-WS-TEST-ERRORS (low; pre-existing tsc errors in FROZEN ws.test.tsx)"
+  - All owned source files (Map.tsx, App.tsx, Map.test.tsx, App.test.tsx) are CLEAN
+  - ws.test.tsx is in the testing specialist boundary for sprint-10 only for regression measurement,
+    not for fixing (production source code is not affected by test-file-only TSC issues)
