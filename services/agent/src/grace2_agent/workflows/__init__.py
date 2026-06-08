@@ -35,8 +35,24 @@ Workflows authored under this package (job-0042 lands the M5 capstone):
   validation gate (``LULC_MAPPING_MISMATCH``) fires inside
   ``build_sfincs_model`` (``sfincs_builder.py``) before HydroMT's roughness
   component runs.
+
+- ``model_flood_habitat_scenario(bbox, species_keys?, rainfall_event?,
+   protected_area_designation?, place_clip_polygon_uri?, place_label?,
+   *, pipeline_emitter?, project_id?, session_id?) → CaseOneResult`` —
+  Case 1 higher-order composer (Everglades / Big Cypress / Apalachicola
+  flood + habitat exposure). Sequences fetch_wdpa_protected_areas → per-species
+  fetch_gbif_occurrences → model_flood_scenario → compute_zonal_statistics →
+  (optional) clip_raster_to_polygon + clip_vector_to_polygon →
+  deterministic case_summary_text. LLM exposure as
+  ``run_model_flood_habitat_scenario`` (workflow_dispatch metadata).
 """
 
 from __future__ import annotations
+
+# Import the workflow modules so their @register_tool decorators fire at
+# package import time and the LLM-facing wrappers land in TOOL_REGISTRY.
+from . import model_flood_habitat_scenario as _model_flood_habitat_scenario  # noqa: F401
+from . import model_flood_scenario as _model_flood_scenario  # noqa: F401
+from . import model_news_event_ingest as _model_news_event_ingest  # noqa: F401  — job-0119 Case 2 composer
 
 __all__: list[str] = []
