@@ -304,6 +304,13 @@
       "description": "Stage 1: D.2 amendment bundle — 5 carry-forward schema OQs closed. Python contracts: 3 new optional fields on ProjectLayerSummary (wms_url, opacity, z_index). JSON Schema regenerated idempotent (4 files). TypeScript: source_url → uri rename; added wms_url; opacity + z_index kept REQUIRED on TS side (LayerPanel.tsx arithmetic; Python-vs-TS asymmetry by design). ws.ts: MapCommandPayload + onMapCommand callback + 'map-command' case; 3 new Vitest tests. Closes OQ-62-LAYERURI-URI-FIELD + OQ-W-65-STYLE-PRESET + OQ-0068-URI + OQ-0068-MAPCMD-WS + OQ-0068-ZIDX. 2 NEW OQs: OQ-72-APP-MAPCMD-WIRING (App.tsx needs 1-line onMapCommand callback for production routing — bundle into Stage 2 or tiny carry-forward), OQ-72-LAYERURI-WMS-FIELD (next schema sprint). Test counts: contracts 142→145, agent 180→180, web 60→63, tsc clean. Sprint-10 Sonnet win #4. Commit 876798b.",
       "model": "sonnet",
       "subagent_tokens": 136443
+    },
+    {
+      "job_id": "job-0071-engine-20260607",
+      "sprint": 10,
+      "description": "Stage 1: 4 tight code changes + 7 new tests + 3 pre-existing broken tests fixed; suite 180→187. (1) Rotation fix: diagnosed HydroMT-SFINCS 1.2.2 emits hmax with dims (timemax, m, n) not (timemax, n, m); xarray dim-name inspection + transpose handles square AND non-square unambiguously. (2) Transparency belt+suspenders: NODATA_DEPTH_M=0.05 constant + mask threshold change + QML lowest-stop alpha=0. (3) CRS_TAG_MISMATCH guard at postprocess_flood:~306 — re-open written COG + 3 assertions (crs round-trip + geographic |x|≤360 + projected |x|>1000); raises PostprocessError before GCS upload (research-workflow recommendation). (4) publish_layer dispatch: verified JobsClient.run_job() accepts request= only (not name=/overrides= kwargs); fixed to RunJobRequest(name=..., overrides=Overrides(container_overrides=[ContainerOverride(env=[EnvVar(...)])])). Pre-existing fixes: 3 tests broken by job-0062's gs:// → WMS URL substitution but still asserting gs:// — corrected to WMS pattern. Live verification gates on job-0074. 2 minor non-blocking OQs surfaced (square-grid-rotation + nodata-flooded-count-delta). Sprint-10 Sonnet win #5. Commits 0cbfa43 + 2eb98bc.",
+      "model": "sonnet",
+      "subagent_tokens": 156991
     }
   ],
   "totals_by_sprint": {
@@ -311,7 +318,7 @@
     "7": 1863284,
     "8": 1786238,
     "9": 713020,
-    "10": 911840
+    "10": 1068831
   },
   "historical_context": {
     "note": "Captured for accountability — NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
