@@ -30,8 +30,36 @@
     }
   },
   "additionalProperties": false,
-  "description": "Returned by ``postprocess_flood`` (one per output layer).\n\nAligned field-for-field with ``map-command load-layer`` args and with\n``ResultLayer`` so postprocess output maps onto the visualization seam with\nno translation. ``uri`` is a COG (raster) or FlatGeobuf/GeoParquet (vector).",
+  "description": "Returned by ``postprocess_flood`` (one per output layer).\n\nAligned field-for-field with ``map-command load-layer`` args and with\n``ResultLayer`` so postprocess output maps onto the visualization seam with\nno translation. ``uri`` is a COG (raster) or FlatGeobuf/GeoParquet (vector).\n\n``bbox`` is optional (job-0068): when present the pipeline emitter emits a\n``map-command(zoom-to)`` after ``add_loaded_layer`` so the client camera\nflies to the layer's geographic extent. Format: ``(min_lon, min_lat,\nmax_lon, max_lat)`` in EPSG:4326.",
   "properties": {
+    "bbox": {
+      "anyOf": [
+        {
+          "maxItems": 4,
+          "minItems": 4,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Bbox"
+    },
     "layer_id": {
       "title": "Layer Id",
       "type": "string"

@@ -19,6 +19,7 @@ import {
   CancelPayload,
   Envelope,
   ErrorPayload,
+  MapCommandPayload,
   PipelineStatePayload,
   ResearchMode,
   SessionResumePayload,
@@ -40,6 +41,10 @@ export interface WsHandlers {
   onPipelineState: (p: PipelineStatePayload) => void;
   onSessionState: (p: SessionStatePayload) => void;
   onError: (p: ErrorPayload) => void;
+  // OQ-0068-MAPCMD-WS: production routing for map-command envelopes (job-0072).
+  // Optional so existing callers (App.tsx, Chat.tsx) need no change; callers that
+  // own a LayerPanelBus should pass `onMapCommand: (p) => bus.pushMapCommand(p)`.
+  onMapCommand?: (p: MapCommandPayload) => void;
 }
 
 const SESSION_KEY = "grace2.session_id";
@@ -187,9 +192,16 @@ export class GraceWs {
       case "error":
         this.handlers.onError(payload as unknown as ErrorPayload);
         break;
+      case "map-command":
+        // OQ-0068-MAPCMD-WS: production routing for map-command envelopes (job-0072).
+        // Callers that own a LayerPanelBus pass `onMapCommand: (p) => bus.pushMapCommand(p)`.
+        if (this.handlers.onMapCommand) {
+          this.handlers.onMapCommand(payload as unknown as MapCommandPayload);
+        }
+        break;
       default:
-        // M1 stub ignores tool-call-*, map-command, location-resolved, and the
-        // pick-mode requests; they land with the M3 client. Logging only.
+        // Ignores tool-call-*, location-resolved, and the pick-mode requests.
+        // Logging only.
         // eslint-disable-next-line no-console
         console.debug("[ws] unhandled frame type:", env.type);
     }

@@ -2,7 +2,7 @@
   "$defs": {
     "ProjectLayerSummary": {
       "additionalProperties": false,
-      "description": "Denormalized layer entry on a project (and on session map state).",
+      "description": "Denormalized layer entry on a project (and on session map state).\n\nThe ``wms_url`` field carries the QGIS Server WMS endpoint the client uses\nfor MapLibre source registration; ``uri`` remains the underlying GCS file\npointer (gs://...). ``style_preset`` drives client-side legend matching.\n``opacity`` (0.0\u20131.0) and ``z_index`` enable layer-stack arbitration;\nclients fall back to ``1.0`` / a default order if both are absent.\n\nCloses OQ-62-LAYERURI-URI-FIELD, OQ-W-65-STYLE-PRESET, OQ-0068-ZIDX.",
       "properties": {
         "layer_id": {
           "title": "Layer Id",
@@ -19,6 +19,18 @@
         "name": {
           "title": "Name",
           "type": "string"
+        },
+        "opacity": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Opacity"
         },
         "role": {
           "enum": [
@@ -44,6 +56,30 @@
         "visible": {
           "title": "Visible",
           "type": "boolean"
+        },
+        "wms_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Wms Url"
+        },
+        "z_index": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Z Index"
         }
       },
       "required": [

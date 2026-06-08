@@ -20,6 +20,7 @@ function makeLayer(id: string, z_index = 1): ProjectLayerSummary {
     layer_id: id,
     name: `Layer ${id}`,
     layer_type: "raster",
+    uri: `gs://grace-2/runs/${id}/depth.cog.tif`,
     visible: true,
     opacity: 1,
     z_index,

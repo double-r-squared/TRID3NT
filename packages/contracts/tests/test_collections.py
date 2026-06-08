@@ -455,3 +455,90 @@ def test_pipeline_step_summary_error_message_512_char_cap() -> None:
             error_code="SFINCS_TIMEOUT",
             error_message="x" * 513,
         )
+
+
+# --- D.2 ProjectLayerSummary: job-0072 new optional fields ------------------ #
+# Closes OQ-62-LAYERURI-URI-FIELD, OQ-W-65-STYLE-PRESET, OQ-0068-ZIDX.
+
+
+def test_project_layer_summary_new_optional_fields_default_to_none() -> None:
+    """All three new optional fields (wms_url, opacity, z_index) default to None."""
+    layer = ProjectLayerSummary(
+        layer_id="run-01HX-flood-depth",
+        name="Flood depth (m)",
+        layer_type="raster",
+        uri="gs://grace-2/runs/01HX/depth.cog.tif",
+        style_preset="flood_depth_blue",
+        visible=True,
+        role="primary",
+        temporal=False,
+    )
+    assert layer.wms_url is None
+    assert layer.opacity is None
+    assert layer.z_index is None
+
+
+def test_project_layer_summary_new_optional_fields_roundtrip_non_default() -> None:
+    """Non-None values for wms_url, opacity, z_index round-trip through JSON."""
+    layer = ProjectLayerSummary(
+        layer_id="run-01HX-flood-depth",
+        name="Flood depth (m)",
+        layer_type="raster",
+        uri="gs://grace-2/runs/01HX/depth.cog.tif",
+        style_preset="flood_depth_blue",
+        visible=True,
+        role="primary",
+        temporal=False,
+        wms_url="https://qgis.example.com/wms?MAP=01HX.qgs&LAYERS=flood_depth",
+        opacity=0.75,
+        z_index=10,
+    )
+    assert layer.wms_url == "https://qgis.example.com/wms?MAP=01HX.qgs&LAYERS=flood_depth"
+    assert layer.opacity == 0.75
+    assert layer.z_index == 10
+
+    dumped = layer.model_dump(mode="json")
+    assert dumped["wms_url"] == layer.wms_url
+    assert dumped["opacity"] == 0.75
+    assert dumped["z_index"] == 10
+
+    # Idempotent JSON round-trip.
+    import json
+    text_a = json.dumps(dumped, sort_keys=True)
+    layer_b = ProjectLayerSummary.model_validate(json.loads(text_a))
+    dumped_b = layer_b.model_dump(mode="json")
+    text_b = json.dumps(dumped_b, sort_keys=True)
+    assert text_a == text_b
+
+
+def test_project_layer_summary_backward_compat_missing_new_fields() -> None:
+    """Documents written before job-0072 (without wms_url/opacity/z_index) still parse."""
+    import json
+
+    old_doc = {
+        "layer_id": "run-01HX-flood-depth",
+        "name": "Flood depth (m)",
+        "layer_type": "raster",
+        "uri": "gs://grace-2/runs/01HX/depth.cog.tif",
+        "style_preset": "flood_depth_blue",
+        "visible": True,
+        "role": "primary",
+        "temporal": False,
+        # no wms_url, no opacity, no z_index
+    }
+    layer = ProjectLayerSummary.model_validate(old_doc)
+    assert layer.wms_url is None
+    assert layer.opacity is None
+    assert layer.z_index is None
+
+    # Re-serialized form includes the new fields as null.
+    dumped = layer.model_dump(mode="json")
+    assert dumped["wms_url"] is None
+    assert dumped["opacity"] is None
+    assert dumped["z_index"] is None
+
+    # Re-parsing the serialized form is also stable.
+    layer_b = ProjectLayerSummary.model_validate(json.loads(json.dumps(dumped)))
+    assert layer_b.wms_url is None
+    assert layer_b.opacity is None
+    assert layer_b.z_index is None

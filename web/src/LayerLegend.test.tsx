@@ -17,6 +17,7 @@ function makeLayer(overrides: Partial<ProjectLayerSummary> = {}): ProjectLayerSu
     layer_id: "layer-001",
     name: "Test layer",
     layer_type: "raster",
+    uri: "gs://grace-2/runs/test/depth.cog.tif",
     visible: true,
     opacity: 1,
     z_index: 1,

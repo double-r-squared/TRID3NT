@@ -103,7 +103,16 @@ class DocModel(GraceModel):
 
 
 class ProjectLayerSummary(GraceModel):
-    """Denormalized layer entry on a project (and on session map state)."""
+    """Denormalized layer entry on a project (and on session map state).
+
+    The ``wms_url`` field carries the QGIS Server WMS endpoint the client uses
+    for MapLibre source registration; ``uri`` remains the underlying GCS file
+    pointer (gs://...). ``style_preset`` drives client-side legend matching.
+    ``opacity`` (0.0–1.0) and ``z_index`` enable layer-stack arbitration;
+    clients fall back to ``1.0`` / a default order if both are absent.
+
+    Closes OQ-62-LAYERURI-URI-FIELD, OQ-W-65-STYLE-PRESET, OQ-0068-ZIDX.
+    """
 
     layer_id: str
     name: str
@@ -113,6 +122,11 @@ class ProjectLayerSummary(GraceModel):
     visible: bool
     role: Literal["primary", "context", "input"]
     temporal: bool  # has WMS-T config
+
+    # --- Fields added by job-0072 (D.2 amendment) --- #
+    wms_url: str | None = None       # QGIS Server WMS URL for MapLibre tile registration
+    opacity: float | None = None     # 0.0–1.0; client falls back to 1.0 if absent
+    z_index: int | None = None       # MapLibre layer-order arbitration; lower draws first
 
 
 class ProjectDocument(DocModel):

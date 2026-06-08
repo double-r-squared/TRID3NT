@@ -186,19 +186,15 @@ export interface ProjectLayerSummary {
   layer_id: string;        // ULID assigned by the agent / worker
   name: string;            // human-readable, e.g. "Storm-surge max" or "Basemap"
   layer_type: ProjectLayerType;
-  source_url?: string | null;   // WMS endpoint or GeoJSON URL — never gs:// (Invariant 5)
+  uri: string;             // gs://... GCS file pointer (COG / FlatGeobuf / GeoParquet)
+  wms_url?: string | null; // QGIS Server WMS endpoint for MapLibre tile registration (job-0072, OQ-62-LAYERURI-URI-FIELD)
   attribution?: string | null;  // displayed in the LayerPanel row
   visible: boolean;        // initial visibility from the project state
   opacity: number;         // 0..1, clamped on render
   z_index: number;         // integer; lower draws first (bottom of stack)
   temporal?: TemporalConfig | null; // null for non-temporal layers
-  // OQ-W-65-STYLE-PRESET: consumer pushback (job-0065) — LayerLegend needs to
-  // know which client-side colorbar preset to render. This field is added here
-  // as an optional extension; the authoritative definition belongs in
-  // Appendix D.2 (schema's domain). Until schema lands the amendment the agent
-  // worker (publish_layer, job-0062) should populate this from the QML preset
-  // name it applied (e.g. "continuous_flood_depth"). If absent, the legend
-  // hides gracefully. See report.md Open Questions for the full pushback.
+  // style_preset formally defined in D.2 via job-0072 (closes OQ-W-65-STYLE-PRESET).
+  // Optional here because older documents may omit it; UI hides legend affordance gracefully.
   style_preset?: string | null;
 }
 
