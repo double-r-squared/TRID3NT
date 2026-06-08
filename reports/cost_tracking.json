@@ -374,6 +374,13 @@
       "description": "Sprint-11 Stage 1 parallel: fetch_administrative_boundaries TIGER/Line 2024. NEW Tier-1 free fetcher: 4 levels (state/county/place/zcta), Strategy A nationwide+per-state ZIP download, geopandas intersects()+pyogrio bbox clip, FR-DC cache static-30d source_class=admin_boundaries, EPSG:4269->4326 reproject, FlatGeobuf output, LayerURI(layer_type=vector,role=context). Typed error hierarchy (Level/Upstream/Empty). 19 unit + 3 live tests pass; --startup-only shows 23 tools. **Live E2E**: Fort Myers bbox -> 54,824-byte FlatGeobuf, 3 features (Lee+Collier+Charlotte counties), 19.78s real Census download. OQs: ZCTA-DOWNLOAD-SIZE (504MB first-fetch, accepted for v0.1), GEOPANDAS-PYOGRIO-EXPLICIT-DEPS (transitive via hydromt, route schema/infra), TIGER-YEAR-ADVANCEMENT (2024 pinned, cache-key safe). Commit 20eecde.",
       "model": "sonnet",
       "subagent_tokens": 106895
+    },
+    {
+      "job_id": "job-0085-engine-20260608",
+      "sprint": 11,
+      "description": "Sprint-11 Stage 1 parallel: clip_raster_to_bbox utility tool. NEW dual-path GDAL wrap: fast path gdal_translate -projwin when bbox_crs == source_crs (no PROJ lookup); general path gdalwarp -te -te_srs [-t_srs] for any CRS mismatch or reprojection. CRS comparison via rasterio.open().crs. _gdal_subprocess_env() sets PROJ_LIB=/usr/share/proj to resolve conda-GDAL proj.db schema-version mismatch (v4 vs >=6 expected). FR-DC cache static-30d, source_class=clip_raster. 8 unit tests pass; full agent suite 261 pass, 8 expected skips. **Live E2E**: Fort Myers DEM (EPSG:5070, 122x130 px) clipped to western 50% bbox -> 61x130 px GeoTIFF in GCS cache. --startup-only registers 23 tools. OQs: PROJ-LIB-OVERRIDE-HARMLESS (Cloud Run debian GDAL has native PROJ; accept v0.1), CRS-REP-MISMATCH-SAFE-FALLBACK (rasterio comparison failures correctly fall through to gdalwarp). Commit 69e8311.",
+      "model": "sonnet",
+      "subagent_tokens": 113154
     }
   ],
   "totals_by_sprint": {
@@ -382,7 +389,7 @@
     "8": 1786238,
     "9": 713020,
     "10": 1540974,
-    "11": 525419
+    "11": 638573
   },
   "historical_context": {
     "note": "Captured for accountability \u2014 NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
