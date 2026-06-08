@@ -325,6 +325,13 @@
       "description": "Stage 2 follow-up: pure regeneration M5 → fresh COG → auto-dispatch publish → visible-corrections screenshot. Part 1 smoke SUCCESS 585s; new run_id 01KTJX71NKGDMXB9TN0DV75JWK; CRS EPSG:32617; **transparency fix CONFIRMED at COG level** (job-0070: 0/284,580 NaN @ 0% min depth 0.010 with > 0.0 threshold; job-0075: 87,176/284,580 NaN @ 30.6% min depth 0.050 with > NODATA_DEPTH_M=0.05 threshold). Part 2 **auto-dispatch CONFIRMED** — publish_layer succeeded CONDITION_SUCCEEDED; job-0071's RunJobRequest.Overrides fix verified in production. New WMS URL flood-depth-job-0075-demo. Part 3 honest visual: WMS tile comparison clearly shows fix (wms_full_0074 349 KB faint blue wash VS wms_full_0075 307 KB transparent dry + concentrated inundation — 42 KB drop = added NaN cells). Playwright zoom-11 visually identical (0.03% diff) due to MapLibre downsampling; zoom-13+ would show. **OQ-75-ROTATION-NOT-TRIGGERED**: rotation guard didn't fire — Fort Myers SFINCS emits (n,m) order natively (transform.a=+29.94, transform.e=-29.94 north-up). User's perceived rotation in job-0070 may have been comparison artifact; COG was always correctly oriented. Code is correct + guarded. OQ-75-PLAYWRIGHT-TILE-VISIBILITY (non-blocking — WMS evidence conclusive). Sprint-10 Sonnet win #7. Commit 70b8dbb.",
       "model": "sonnet",
       "subagent_tokens": 79482
+    },
+    {
+      "job_id": "job-0076-web-20260607",
+      "sprint": 10,
+      "description": "THE actual headline unblock (Opus). **ROOT CAUSE**: Map.tsx:210 pre-fix had `if (!m.isStyleLoaded()) return;` in session-state subscriber — basemap WMS tiles always take >2s on fresh page load so the bail fired every time, silently dropping the entire flood-layer wiring. LayerPanel populated through a different subscriber (no gate); flood addSource/addLayer was NEVER called. THIS is why every headline screenshot since job-0066 was basemap-only with UI chrome (jobs 0066, 0070, 0074, 0075). 3 Sonnet agents reported 'screenshot captured' based on UI-chrome signals; orchestrator trusted them. User caught the actual pixel-level gap. **FIX**: idle-retry pattern — register once('idle', apply) when style not loaded; idempotent via useRef<Set<string>> source tracker. **BUNDLED dark-theme** per user direction: theme prop + CartoDB DarkMatter vector style + beforeId stacking + App.tsx toggle button + localStorage. **FINAL screenshots both visibly contain blue flood overlay**: headline_light_FINAL.png 37.6% bluish, headline_dark_FINAL.png 26.9% bluish unmistakable against DarkMatter. 63→72 tests; tsc clean. 3 non-blocking OQs (CARTO rate limit, MAPCMD-WS production routing pending, IDLE-RETRY-ACCUMULATION minor). Opus well-justified — broke the 3-cycle silent-failure pattern. Commit 96e0060.",
+      "model": "opus",
+      "subagent_tokens": 165989
     }
   ],
   "totals_by_sprint": {
@@ -332,7 +339,7 @@
     "7": 1863284,
     "8": 1786238,
     "9": 713020,
-    "10": 1269315
+    "10": 1435304
   },
   "historical_context": {
     "note": "Captured for accountability — NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
