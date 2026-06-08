@@ -811,6 +811,48 @@
       "description": "Sprint-12-mega Wave 3.5 (Stage B verification): Mid-sprint Playwright verification \u2014 7 scenarios \u2192 11 screenshots; AuthGate + anonymous \u2192 app + Cases+chat replay + Case 1 with vectors on map + Pelicun + Wave 2 UI in real running state + dark/light parity",
       "model": "opus",
       "subagent_tokens": 173506
+    },
+    {
+      "job_id": "job-0143-web-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 4 UX polish (Stage A): Left rail + nav hierarchy (Cases\u2194CaseView toggle) + [Settings][Secrets] bottom-row popups + useSaveGate hook + identity chip removed + MapLibre nav repositioned",
+      "model": "opus",
+      "subagent_tokens": 220000
+    },
+    {
+      "job_id": "job-0144-web-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 4 UX polish (Stage A): Chat input redesign \u2014 Claude Code-style merged \u2191/\u25a0 button + dynamic auto-grow textarea (48px\u219240vh) + drop shadow + rounded overlay (88px scroll padding)",
+      "model": "opus",
+      "subagent_tokens": 220000
+    },
+    {
+      "job_id": "job-0145-web-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 4 UX polish (Stage A): Inline chat cards \u2014 InlineChatCard primitive + SourceSuggestionInline (drops \"Mode 2\" terminology \u2014 patterns translated) + restyled PayloadWarningInline",
+      "model": "opus",
+      "subagent_tokens": 220000
+    },
+    {
+      "job_id": "job-0146-web-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 4 UX polish (Stage A): Vector style polish \u2014 curated 12-color palette (partial: 2 species ended up same color \u2014 Wave 4.5 follow-up) + Pelicun ds_mean choropleth gradient (working)",
+      "model": "sonnet",
+      "subagent_tokens": 130000
+    },
+    {
+      "job_id": "job-0147-engine-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 4 UX polish (Stage A): Pelicun assets upgrade \u2014 run_pelicun_with_buildings composer using compute_building_density grid",
+      "model": "sonnet",
+      "subagent_tokens": 130000
+    },
+    {
+      "job_id": "job-0148-testing-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 4 UX polish (Stage B verification): Stage B Playwright verification \u2014 12 screenshots captured (Cases-root, Case-active, popups, chat input states, polished cards, palette, choropleth)",
+      "model": "opus",
+      "subagent_tokens": 220000
     }
   ],
   "totals_by_sprint": {
@@ -820,7 +862,7 @@
     "9": 713020,
     "10": 1540974,
     "11": 999540,
-    "12": 10641384
+    "12": 11781384
   },
   "historical_context": {
     "note": "Captured for accountability \u2014 NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
