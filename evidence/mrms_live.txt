@@ -1,0 +1,42 @@
+MRMS QPE live-fetch evidence (job-0103)
+
+=== Test 1: full CONUS 24H QPE (test_live_fetch_24h_conus_writes_evidence_file) ===
+timestamp_utc:           2026-06-08T12:51:05.840150+00:00
+accumulation:            24H (Pass2 gauge-corrected)
+bbox:                    CONUS-wide (supports_global_query=True)
+source:                  s3://noaa-mrms-pds/CONUS/MultiSensor_QPE_24H_Pass2_00.00/
+geotiff_bytes:           12,861,714
+shape:                   (3500, 7000)
+crs:                     EPSG:4326
+bounds:                  (-130.0000, 20.0000, -60.0000, 55.0000)
+positive_pixel_count:    7,631,788
+max_mm:                  318.70
+mean_mm:                 8.4538
+nodata:                  -9999.0 (MRMS sentinels -3 / -1 collapsed)
+
+=== Test 2: Florida Gulf coast 24H QPE clipped (test_live_fetch_24h_florida_clipped_intersects_florida) ===
+bbox_requested:          (-83.0, 25.0, -80.0, 28.0)  # Florida Gulf coast
+output_bounds:           (-83.0000, 24.9900, -79.9900, 28.0000)
+crs:                     EPSG:4326
+geographic_correctness:  PASS — clipped bounds fall within Florida ±0.5° tolerance
+
+=== Test 3: full registered-tool path (cache write to gs://grace-2-hazard-prod-cache) ===
+invocation:              fetch_mrms_qpe(bbox=(-83.0, 25.0, -80.0, 28.0), accumulation='24H')
+returned LayerURI:
+  layer_id:     mrms-qpe-24H--83.0000-25.0000--80.0000-28.0000-latest
+  name:         MRMS QPE 24H (Pass2 gauge-corrected, mm)
+  layer_type:   raster
+  uri:          gs://grace-2-hazard-prod-cache/cache/dynamic-1h/mrms_qpe/2312fbb557dd25599658b7b2eeefa449.tif
+  style_preset: precipitation_mm
+  role:         primary
+  units:        mm
+  bbox:         (-83.0, 25.0, -80.0, 28.0)
+
+GCS cache blob:          61,176 bytes
+GeoTIFF shape:           (301, 301)
+GeoTIFF bounds:          (-83.0000, 24.9900, -79.9900, 28.0000)  # within Florida
+CRS:                     EPSG:4326
+positive pixels:         23,707
+max_mm:                  40.30
+mean_mm:                 5.10
+geographic_correctness:  PASS — clip bounds inside Florida bbox; realistic 24h precip values

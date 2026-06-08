@@ -131,6 +131,8 @@ def _import_tools_registry() -> int:
     from .tools import clip_vector_to_polygon  # noqa: F401
     # job-0104: register fetch_goes_satellite (GOES-16/17/18/19 satellite imagery via NOAA Big-Data S3).
     from .tools import fetch_goes_satellite  # noqa: F401
+    # job-0103: register fetch_mrms_qpe (NOAA MRMS gauge-corrected QPE precipitation; SFINCS Harvey reference).
+    from .tools import fetch_mrms_qpe  # noqa: F401
 
     return len(tools.TOOL_REGISTRY)
 
