@@ -519,6 +519,80 @@ class Persistence:
             },
         )
 
+    async def get_secret_value(
+        self,
+        secret_ref: "SecretRecord",
+        *,
+        secret_manager_client=None,
+    ) -> str:
+        """Read the live key value from GCP Secret Manager (job-0124).
+
+        Called by Tier-2 fetchers (eBird / OpenWeatherMap / etc.) at
+        tool-invocation time to materialize the raw key for the outbound
+        HTTP request. The handler never logs the returned value.
+
+        Fail-closed semantics:
+
+        - If the record's ``is_active`` flag is ``False`` (soft-revoked),
+          we raise ``SecretRevokedError`` BEFORE touching Secret Manager
+          so a revoked secret never resurrects via stale cache.
+        - If the Secret Manager fetch raises (missing version, permission
+          denied, etc.) we surface the original exception — Tier-2
+          fetchers wrap this in a tool-level error envelope.
+
+        Args:
+            secret_ref: the persisted ``SecretRecord`` (vault-ref only —
+                we read ``secret_ref.vault_ref`` to construct the GCP
+                ``access_secret_version`` request name).
+            secret_manager_client: optional pre-constructed client (tests
+                pass a mock; production lazy-constructs a live client).
+
+        Returns:
+            The raw key value as a string. **Caller MUST NOT log this.**
+
+        Raises:
+            SecretRevokedError: when ``secret_ref.is_active is False``.
+        """
+        # Local import — avoids a circular dependency between persistence
+        # and secrets_handler (which imports Persistence).
+        from .secrets_handler import SecretRevokedError
+
+        if not secret_ref.is_active:
+            raise SecretRevokedError(
+                f"secret {secret_ref.secret_id!r} has been revoked "
+                f"(provider={secret_ref.provider})"
+            )
+
+        # The stored vault_ref is the resource name (no scheme prefix).
+        # Tolerate the legacy ``gcp-sm://`` shape used in some test
+        # fixtures by stripping it before the SDK call.
+        name = secret_ref.vault_ref
+        if name.startswith("gcp-sm://"):
+            name = name[len("gcp-sm://") :]
+
+        client = secret_manager_client
+        if client is None:
+            from google.cloud import secretmanager  # local — production only
+
+            client = secretmanager.SecretManagerServiceClient()
+
+        response = client.access_secret_version(request={"name": name})
+        # The live SDK returns a ``SecretPayload`` proto with a ``data``
+        # bytes field. Mock clients used in tests return the same shape.
+        data = getattr(response, "payload", None)
+        raw = getattr(data, "data", None) if data is not None else None
+        if raw is None:
+            # Some mocks/proto variants stuff the bytes directly on the
+            # response. Try a fallback before failing.
+            raw = getattr(response, "data", None)
+        if raw is None:
+            raise RuntimeError(
+                "Secret Manager access_secret_version returned no payload data"
+            )
+        if isinstance(raw, bytes):
+            return raw.decode("utf-8")
+        return str(raw)
+
     # ----- Audit log -------------------------------------------------------- #
 
     async def append_audit(self, event_type: str, payload: dict) -> None:
