@@ -1,0 +1,24 @@
+============================= test session starts ==============================
+platform linux -- Python 3.13.5, pytest-9.0.3, pluggy-1.6.0 -- /home/nate/Documents/GRACE-2/.venv-agent/bin/python
+cachedir: .pytest_cache
+rootdir: /home/nate/Documents/GRACE-2/services/agent
+configfile: pyproject.toml
+plugins: zarr-3.2.1, anyio-4.13.0, asyncio-1.4.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 11 items
+
+services/agent/tests/test_extract_landcover_class.py::test_extract_landcover_class_registered PASSED
+services/agent/tests/test_extract_landcover_class.py::test_extract_single_class_water_only PASSED
+services/agent/tests/test_extract_landcover_class.py::test_extract_multiple_classes_forest PASSED
+services/agent/tests/test_extract_landcover_class.py::test_bbox_window_read_top_right PASSED
+services/agent/tests/test_extract_landcover_class.py::test_nodata_preserved PASSED
+services/agent/tests/test_extract_landcover_class.py::test_cache_miss_hit_skips_recompute PASSED
+services/agent/tests/test_extract_landcover_class.py::test_empty_classes_raises_typed_error PASSED
+services/agent/tests/test_extract_landcover_class.py::test_invalid_class_code_raises_typed_error PASSED
+services/agent/tests/test_extract_landcover_class.py::test_returns_layer_uri_fields PASSED
+services/agent/tests/test_extract_landcover_class.py::test_cache_keys_vary_across_params PASSED
+services/agent/tests/test_extract_landcover_class.py::test_live_fortmyers_water_mask 
+live_test extract_landcover_class: water=39075 / developed=177972 / nodata=1578 bounds=BoundingBox(left=-81.91266720899999, bottom=26.54752066099999, right=-81.751093655, top=26.689274164999986) crs=EPSG:4326
+PASSED
+
+============================== 11 passed in 0.96s ==============================

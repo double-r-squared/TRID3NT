@@ -115,6 +115,8 @@ def _import_tools_registry() -> int:
     from .tools import compute_impervious_surface  # noqa: F401
     # job-0094: register extract_landcover_class (NLCD binary-mask extractor for zone_input).
     from .tools import extract_landcover_class  # noqa: F401
+    # job-0096: register compute_building_density (MS Global ML Building Footprints density raster).
+    from .tools import compute_building_density  # noqa: F401
 
     return len(tools.TOOL_REGISTRY)
 
