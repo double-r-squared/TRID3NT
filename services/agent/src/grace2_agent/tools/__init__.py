@@ -221,3 +221,4 @@ from . import fetch_roads_osm  # noqa: E402,F401 — job-0097: registers fetch_r
 from . import run_pelicun_damage_assessment  # noqa: E402,F401 — job-0098: registers run_pelicun_damage_assessment (Wave 1 stub; Wave 2 composer is job-0106)
 from . import clip_vector_to_polygon  # noqa: E402,F401 — job-0107: registers clip_vector_to_polygon
 from . import fetch_goes_satellite  # noqa: E402,F401 — job-0104: registers fetch_goes_satellite (GOES-16/17/18/19 satellite imagery)
+from . import fetch_nexrad_reflectivity  # noqa: E402,F401 — job-0102: registers fetch_nexrad_reflectivity (Iowa Mesonet NEXRAD WMS passthrough)
