@@ -1,24 +1,29 @@
-// GRACE-2 web — PayloadWarningInline (job-0127, sprint-12-mega Wave 2).
+// GRACE-2 web — PayloadWarningInline (job-0127 → restyled in job-0145,
+// sprint-12-mega Wave 4).
 //
 // Inline chat card the user sees when the agent's payload estimator
 // projects a response larger than the warning threshold (default 25 MB).
 // Shows: tool name, projected MB, threshold MB, the agent's recommendation,
-// and one button per advertised option (Proceed / Cancel / Narrow scope).
+// and one action per advertised option (Proceed / Cancel / Narrow scope).
+//
+// job-0145 restyle: now sits on top of the common `InlineChatCard`
+// primitive so its visual language matches the SourceSuggestionInline and
+// any future agent-emitted inline informational cards. Card variant is
+// `danger` for the over-hard-cap path (no proceed option) and `warning`
+// otherwise.
 //
 // When the user picks "Narrow scope" and the warning carried
-// `alternative_args`, the card shows a brief one-line summary of what the
-// agent will narrow to and dispatches with those args. If `alternative_args`
-// is absent, the card opens a tiny clarifier dialog (an editable JSON
-// textarea seeded with the original tool_args) so the user can hand-edit
-// before confirming.
-//
-// The card's onDecide callback is wired by Chat.tsx into
-// GraceWs.sendPayloadConfirmation(). After a decision is made the card
-// disables its buttons and shows a small "Sent: <decision>" footer so the
-// user can see their choice was registered.
+// `alternative_args`, the card dispatches with those args directly. If
+// `alternative_args` is absent, the card opens a small clarifier dialog
+// (an editable JSON textarea seeded with the original tool_args) so the
+// user can hand-edit before confirming.
 //
 // Invariant 9 (no cost theater): the card surfaces ONLY the payload MB +
 // the threshold MB. No dollar / latency / quota figure.
+//
+// User-facing language discipline: NO surfacing of "Mode 2", "Tier 1/2",
+// or "OQ-*". The agent's emission is what it is; this card uses plain
+// language ("Large response expected", "Narrow scope").
 
 import { useMemo, useState } from "react";
 import {
@@ -26,17 +31,12 @@ import {
   PayloadWarningEnvelopePayload,
   PayloadWarningOption,
 } from "../contracts";
+import { InlineChatCard, InlineChatCardAction } from "./InlineChatCard";
 
 const OPTION_LABEL: Record<PayloadWarningOption, string> = {
-  proceed: "Proceed",
+  proceed: "Proceed anyway",
   cancel: "Cancel",
   narrow_scope: "Narrow scope",
-};
-
-const OPTION_COLOR: Record<PayloadWarningOption, string> = {
-  proceed: "#3b82f6",
-  cancel: "#6b7280",
-  narrow_scope: "#eab308",
 };
 
 export interface PayloadWarningInlineProps {
@@ -118,45 +118,69 @@ export function PayloadWarningInline({
     decide("narrow_scope", parsed);
   }
 
-  return (
-    <div
-      data-testid="payload-warning-inline"
-      data-warning-id={warning.warning_id}
-      style={{
-        border: `1px solid ${overHardCap ? "#ef4444" : "#eab308"}`,
-        borderLeft: `4px solid ${overHardCap ? "#ef4444" : "#eab308"}`,
-        background: "rgba(40,30,20,0.85)",
-        color: "#eee",
-        padding: 10,
-        borderRadius: 6,
-        fontSize: 12,
-        display: "flex",
-        flexDirection: "column",
-        gap: 6,
-      }}
-    >
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <strong style={{ fontSize: 13, color: overHardCap ? "#ef4444" : "#eab308" }}>
-          {overHardCap ? "Large payload — hard cap" : "Large payload"}
-        </strong>
+  // Translate the option tokens to InlineChatCard actions.
+  const actions: InlineChatCardAction[] = warning.options.map((opt) => {
+    const handler =
+      opt === "proceed"
+        ? handleProceed
+        : opt === "cancel"
+          ? handleCancel
+          : handleNarrow;
+    const tone: "primary" | "secondary" | "muted" =
+      opt === "proceed" && !overHardCap
+        ? "secondary" // "proceed" is the not-recommended path; muted
+        : opt === "narrow_scope"
+          ? "primary"
+          : opt === "cancel"
+            ? "muted"
+            : "secondary";
+    return {
+      label: OPTION_LABEL[opt],
+      onClick: handler,
+      tone,
+      disabled: sent !== null,
+      testId: `payload-warning-button-${opt}`,
+    };
+  });
+
+  // Body: metrics row + recommendation + (optional) clarifier
+  const body = (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <div
+        style={{
+          display: "flex",
+          gap: 12,
+          fontSize: 11,
+          color: "#9ca3af",
+          flexWrap: "wrap",
+        }}
+      >
         <span
           data-testid="payload-warning-tool"
-          style={{ color: "#aaa", fontSize: 11, fontFamily: "monospace" }}
+          style={{
+            fontFamily:
+              'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+            color: "#d1d5db",
+          }}
         >
           {warning.tool_name}
         </span>
-      </div>
-      <div style={{ display: "flex", gap: 12, fontSize: 11, color: "#ccc" }}>
         <span data-testid="payload-warning-estimated-mb">
-          Estimated: <strong>{warning.estimated_mb.toFixed(1)} MB</strong>
+          Estimated:{" "}
+          <strong style={{ color: "#e5e7eb" }}>
+            {warning.estimated_mb.toFixed(1)} MB
+          </strong>
         </span>
         <span data-testid="payload-warning-threshold-mb">
-          Threshold: <strong>{warning.threshold_mb.toFixed(0)} MB</strong>
+          Threshold:{" "}
+          <strong style={{ color: "#e5e7eb" }}>
+            {warning.threshold_mb.toFixed(0)} MB
+          </strong>
         </span>
       </div>
       <div
         data-testid="payload-warning-recommendation"
-        style={{ color: "#ddd", lineHeight: 1.4 }}
+        style={{ color: "#d1d5db", lineHeight: 1.45 }}
       >
         {warning.recommendation}
       </div>
@@ -166,104 +190,133 @@ export function PayloadWarningInline({
           data-testid="payload-warning-clarifier"
           style={{ display: "flex", flexDirection: "column", gap: 4 }}
         >
-          <label style={{ color: "#aaa", fontSize: 11 }}>
+          <label
+            style={{ color: "#9ca3af", fontSize: 11 }}
+            htmlFor={`payload-warning-clarifier-textarea-${warning.warning_id}`}
+          >
             Revised args (JSON object):
           </label>
           <textarea
+            id={`payload-warning-clarifier-textarea-${warning.warning_id}`}
             data-testid="payload-warning-clarifier-textarea"
             value={editedJson}
             onChange={(e) => setEditedJson(e.target.value)}
             rows={5}
             style={{
-              background: "#111",
-              color: "#eee",
-              border: "1px solid #333",
-              borderRadius: 4,
-              padding: 6,
-              fontFamily: "monospace",
+              background: "rgba(0,0,0,0.4)",
+              color: "#e5e7eb",
+              border: "1px solid #3f3f46",
+              borderRadius: 6,
+              padding: 8,
+              fontFamily:
+                'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
               fontSize: 11,
+              resize: "vertical",
             }}
           />
           {jsonError && (
             <div
               data-testid="payload-warning-clarifier-error"
-              style={{ color: "#f88", fontSize: 11 }}
+              style={{ color: "#fca5a5", fontSize: 11 }}
             >
               {jsonError}
             </div>
           )}
           <div style={{ display: "flex", gap: 6 }}>
             <button
+              type="button"
               data-testid="payload-warning-clarifier-submit"
               onClick={handleClarifierSubmit}
               disabled={sent !== null}
-              style={btnStyle("#eab308", sent !== null)}
+              style={clarifierBtnStyle("primary", sent !== null)}
             >
               Submit revised args
             </button>
             <button
+              type="button"
               data-testid="payload-warning-clarifier-cancel"
               onClick={() => {
                 setShowClarifier(false);
                 setJsonError(null);
               }}
               disabled={sent !== null}
-              style={btnStyle("#6b7280", sent !== null)}
+              style={clarifierBtnStyle("secondary", sent !== null)}
             >
               Back
             </button>
           </div>
         </div>
       )}
+    </div>
+  );
 
-      {!showClarifier && (
-        <div
-          data-testid="payload-warning-actions"
-          style={{ display: "flex", gap: 6, flexWrap: "wrap" }}
-        >
-          {warning.options.map((opt) => {
-            const handler =
-              opt === "proceed"
-                ? handleProceed
-                : opt === "cancel"
-                  ? handleCancel
-                  : handleNarrow;
-            return (
-              <button
-                key={opt}
-                data-testid={`payload-warning-button-${opt}`}
-                onClick={handler}
-                disabled={sent !== null}
-                style={btnStyle(OPTION_COLOR[opt], sent !== null)}
-              >
-                {OPTION_LABEL[opt]}
-              </button>
-            );
-          })}
-        </div>
-      )}
-
-      {sent !== null && (
-        <div
-          data-testid="payload-warning-sent"
-          style={{ color: "#888", fontSize: 11 }}
-        >
-          Sent: <strong>{sent}</strong>
-        </div>
-      )}
+  return (
+    <div
+      data-testid="payload-warning-inline"
+      data-warning-id={warning.warning_id}
+    >
+      <InlineChatCard
+        variant={overHardCap ? "danger" : "warning"}
+        title={
+          overHardCap
+            ? "Response too large — cannot proceed"
+            : "Large response expected"
+        }
+        body={body}
+        actions={showClarifier ? [] : actions}
+        testId="payload-warning-card"
+        ariaLabel="Large payload warning"
+        footer={
+          sent !== null ? (
+            <span data-testid="payload-warning-sent">
+              Sent: <strong>{sent}</strong>
+            </span>
+          ) : undefined
+        }
+      />
     </div>
   );
 }
 
-function btnStyle(color: string, disabled: boolean): React.CSSProperties {
+function clarifierBtnStyle(
+  tone: "primary" | "secondary",
+  disabled: boolean,
+): React.CSSProperties {
+  if (disabled) {
+    return {
+      background: "rgba(255,255,255,0.04)",
+      color: "#555",
+      border: "1px solid #333",
+      borderRadius: 6,
+      padding: "5px 10px",
+      fontSize: 11,
+      fontWeight: 600,
+      cursor: "default",
+      fontFamily: "inherit",
+    };
+  }
+  if (tone === "primary") {
+    return {
+      background: "#eab308",
+      color: "#0b0b0e",
+      border: "1px solid #eab308",
+      borderRadius: 6,
+      padding: "5px 10px",
+      fontSize: 11,
+      fontWeight: 600,
+      cursor: "pointer",
+      fontFamily: "inherit",
+    };
+  }
   return {
-    background: disabled ? "#222" : color,
-    color: disabled ? "#666" : "#000",
-    border: "none",
-    borderRadius: 4,
+    background: "rgba(255,255,255,0.05)",
+    color: "#e5e7eb",
+    border: "1px solid #3f3f46",
+    borderRadius: 6,
     padding: "5px 10px",
     fontSize: 11,
     fontWeight: 600,
-    cursor: disabled ? "default" : "pointer",
+    cursor: "pointer",
+    fontFamily: "inherit",
   };
 }

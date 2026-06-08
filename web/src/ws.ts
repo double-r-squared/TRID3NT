@@ -40,12 +40,19 @@ import {
   newUlid,
 } from "./contracts";
 import { getIdToken } from "./auth";
+// Wire-shape mirrors for the server's source-suggestion candidate envelopes.
+// Server-internal envelope_type names (`mode2-candidate`, etc.) are preserved
+// on the wire; UI text never references them (translated by
+// SourceSuggestionInline). job-0145 renamed the local TS module from
+// mode2_suppression → source_suggestion_suppression and the type aliases;
+// envelope_type literals and method names on the wire are unchanged so the
+// server contract is not affected.
 import {
-  Mode2AddConfirmedPayload,
-  Mode2AuditEventPayload,
-  Mode2CandidatePayload,
-  Mode2SuggestedKind,
-} from "./lib/mode2_suppression";
+  SourceAddConfirmedPayload as Mode2AddConfirmedPayload,
+  SourceAuditEventPayload as Mode2AuditEventPayload,
+  SourceCandidatePayload as Mode2CandidatePayload,
+  SourceSuggestedKind as Mode2SuggestedKind,
+} from "./lib/source_suggestion_suppression";
 
 /**
  * Wire shape for the `auth-token` envelope (job-0123, sprint-12-mega Wave 2).
