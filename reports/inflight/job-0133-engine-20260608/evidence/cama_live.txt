@@ -1,0 +1,63 @@
+# CaMa-Flood live invocation evidence — job-0133
+# Date: 2026-06-08
+# Tool: fetch_cama_flood_discharge
+# Call: fetch_cama_flood_discharge(bbox=(-92.0, 30.0, -89.0, 32.0),
+#                                  start_date='2024-09-01',
+#                                  end_date='2024-09-01',
+#                                  version='v4.0.1')
+#
+# Resolved base_url: https://hydro.iis.u-tokyo.ac.jp/~yamadai/cama-flood/CaMa-Flood_v4/data/runoff/
+# (kickoff-named legacy default; no GRACE2_CAMA_FLOOD_BASE_URL mirror set)
+#
+# Result: CaMaFloodUnreachableError (typed, retryable=False)
+# Reason: Every candidate netCDF URL under the legacy ~yamadai/* path family
+#         now returns the Japanese-text HTML redirect page that announces the
+#         Yamazaki Lab site has moved to https://global-hydrodynamics.github.io/.
+#         The tool detected the HTML sentinel (leading '<' byte) and emitted
+#         the documented unreachable error rather than letting xarray crash
+#         downstream on the parse.
+#
+# Live HTTP curl verification (independent confirmation):
+#
+#   $ curl -sIL -m 10 https://hydro.iis.u-tokyo.ac.jp/~yamadai/cama-flood/CaMa-Flood_v4/data/runoff/
+#   HTTP/1.1 302 Found
+#   Location: https://hydro.iis.u-tokyo.ac.jp/~yamadai/index.html
+#   ...
+#   HTTP/1.1 200 OK
+#   Server: Apache/2.4.66 (FreeBSD) OpenSSL/1.1.1w-freebsd
+#   Last-Modified: Thu, 12 Feb 2026 04:40:44 GMT
+#   Content-Type: text/html
+#
+#   $ curl -sL .../runoff_VIC_BC_2014.nc
+#   <!doctype html><html lang="ja">...
+#     <title>Yamazaki Lab Webpage has moved</title>
+#     <meta http-equiv="refresh" content="10; url=https://global-hydrodynamics.github.io/" />
+#   </html>
+#
+# Migration target distribution (confirmed via global-hydrodynamics.github.io/CaMa-Flood/):
+#   1. Google Form registration: https://forms.gle/bhq1qWqybeAk157v9
+#   2. Password-protected Dropbox folder, password emailed after registration
+#
+# Tool live behavior — captured 2026-06-08 via real HTTP to the legacy URL:
+#
+#   Calling tool against the kickoff-documented legacy URL (no mirror)…
+#   EXPECTED: CaMaFloodUnreachableError detected
+#   error_code: CAMA_FLOOD_UNREACHABLE
+#   retryable: False
+#   message excerpt: CaMa-Flood data source migrated: the kickoff-named
+#     U.Tokyo Hydra URL family returns an HTML redirect page (Yamazaki Lab
+#     moved to https://global-hydrodynamics.github.io/). Current distribution
+#     is gated via Google-Form registration + Dropbox password. Configure
+#     GRACE2_CAMA_FLOOD_BASE_URL or pass base_url=... to a mirror that serves
+#     netCDFs (see OQ-0133-CAMA-DATA-SOURCE-MIGRATION).
+#
+# Verification: qualified (per AGENTS.md "Live E2E required" — environment
+#   does not currently expose a no-auth CaMa-Flood discharge endpoint; the
+#   tool's documented error surface IS the testable live behavior against
+#   the kickoff-named URL today).
+#
+# Path to satisfaction:
+#   - Operator sets GRACE2_CAMA_FLOOD_BASE_URL to a GRACE-2 mirror (Cloud
+#     Storage bucket populated out-of-band from the Dropbox download), OR
+#   - Wave 3 sibling job extends the tool with Dropbox-direct-link + password
+#     auth (mirroring the per-Case secret_ref pattern from ERA5/Movebank).
