@@ -1,0 +1,69 @@
+# job-0132 GTSM live verification — QUALIFIED
+#
+# Status: SKIPPED — no Copernicus CDS API key available in this sandbox.
+#
+# Required env (NOT present):
+#   GRACE2_TEST_LIVE_GTSM=1
+#   Either GRACE2_COPERNICUS_CDS_API_KEY=<key> or ~/.cdsapirc populated
+#
+# The kickoff explicitly mandates the live test be env-gated and the unit
+# suite MUST NOT fail if the key is missing (audit.md, "Tier-2 secret
+# handling": "Mark live test as `pytest.mark.skipif` based on key
+# availability — do NOT fail unit suite if key is missing."). The live test
+# ``test_live_florida_coast_hurricane_ian`` is wired with
+# ``@pytest.mark.skipif(not (_LIVE_GTSM and _LIVE_CDS_KEY), reason=...)``
+# and the explicit live bbox + dates from the kickoff:
+#
+#   fetch_gtsm_tide_surge(
+#       bbox=(-83.0, 25.0, -80.0, 28.0),       # Florida coast
+#       start_date="2022-09-26",                # Hurricane Ian approach
+#       end_date="2022-09-29",                  # Ian post-landfall
+#       output="water_level",
+#   )
+#
+# To run the live test on a machine with a ~/.cdsapirc:
+#   GRACE2_TEST_LIVE_GTSM=1 .venv-agent/bin/python -m pytest \
+#       services/agent/tests/test_fetch_gtsm_tide_surge.py \
+#       -v -k test_live_florida_coast_hurricane_ian
+#
+# Or with an explicit env-var key:
+#   GRACE2_TEST_LIVE_GTSM=1 \
+#   GRACE2_COPERNICUS_CDS_API_KEY=<cds-key> \
+#       .venv-agent/bin/python -m pytest \
+#       services/agent/tests/test_fetch_gtsm_tide_surge.py \
+#       -v -k test_live_florida_coast_hurricane_ian
+#
+# The live test asserts:
+# - the FlatGeobuf is non-empty and starts with the "fgb" magic header
+# - geopandas can read the file back into a GeoDataFrame
+# - at least one GTSM gauge falls inside the requested Florida bbox
+# - the gauge time-series carries finite water-level values
+# - evidence (gauge count, gauge ids, wl statistics) is appended to this file
+#
+# Mocked CDS roundtrip evidence (from the unit-test suite):
+# - test_end_to_end_mocked_happy_path PASSES, writes a FlatGeobuf via the
+#   pyogrio driver into the fake GCS shim at
+#   gs://grace-2-hazard-prod-cache/cache/static-30d/gtsm/<key>.fgb
+#   carrying the requested bbox + dates + output.
+# - test_cache_hit_on_second_identical_call PASSES (FR-DC-4 dedup; second
+#   identical call reuses cached FlatGeobuf — only one CDS retrieve fires).
+# - test_output_flavor_distinct_cache_keys PASSES (water_level vs surge_only
+#   request distinct cache entries with distinct style presets).
+# - test_netcdf_to_gauge_records_selects_in_bbox PASSES (geographic-
+#   correctness gate per job-0086 codified lesson: gauges outside the
+#   requested bbox are filtered).
+# - test_netcdf_to_gauge_records_longitude_normalization PASSES (0..360
+#   GTSM longitude convention is normalised to -180..180 before bbox match).
+# - test_netcdf_to_gauge_records_all_nan_filtered PASSES (all-NaN gauges
+#   raise GTSMEmptyError; offline / out-of-coverage stations are skipped).
+# - test_extract_netcdfs_from_zip_malformed_raises PASSES (corrupted ZIP
+#   surfaces as GTSMUpstreamError (retryable), not an uncaught crash).
+#
+# Unit-suite tally (services/agent/tests/test_fetch_gtsm_tide_surge.py):
+#   37 collected — 36 passed, 1 skipped (the live test above).
+#
+# Tool registry:
+#   fetch_gtsm_tide_surge appears in TOOL_REGISTRY (total now 38 tools).
+#   metadata: name=fetch_gtsm_tide_surge ttl=static-30d source=gtsm
+#             cacheable=True supports_global_query=False
+#   estimator: 0.04 MB for Florida bbox × 4-day Ian window.
