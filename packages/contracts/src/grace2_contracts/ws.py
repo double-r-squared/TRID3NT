@@ -866,7 +866,19 @@ from .secrets import (  # noqa: E402 — module-level imports below the dict lit
     SECRET_CLIENT_TO_AGENT_PAYLOADS,
 )
 
+# sprint-12-mega Wave 2 (job-0127): tool payload-warning envelopes. The
+# warning is agent->client (gate emission); the confirmation is client->agent
+# (user decision). See payload_warning.py for the contract; see
+# services/agent/src/grace2_agent/server.py for the dispatcher gate.
+from .payload_warning import (  # noqa: E402
+    PayloadConfirmationEnvelopePayload,
+    PayloadWarningEnvelopePayload,
+)
+
 CLIENT_TO_AGENT_PAYLOADS.update(SECRET_CLIENT_TO_AGENT_PAYLOADS)
+CLIENT_TO_AGENT_PAYLOADS[
+    PayloadConfirmationEnvelopePayload.MESSAGE_TYPE
+] = PayloadConfirmationEnvelopePayload
 
 AGENT_TO_CLIENT_PAYLOADS: dict[str, type[GraceModel]] = {
     AgentMessageChunkPayload.MESSAGE_TYPE: AgentMessageChunkPayload,
@@ -888,6 +900,9 @@ AGENT_TO_CLIENT_PAYLOADS: dict[str, type[GraceModel]] = {
     OfferCatalogAdditionPayload.MESSAGE_TYPE: OfferCatalogAdditionPayload,
 }
 AGENT_TO_CLIENT_PAYLOADS.update(SECRET_AGENT_TO_CLIENT_PAYLOADS)
+AGENT_TO_CLIENT_PAYLOADS[
+    PayloadWarningEnvelopePayload.MESSAGE_TYPE
+] = PayloadWarningEnvelopePayload
 
 ALL_PAYLOADS: dict[str, type[GraceModel]] = {
     **CLIENT_TO_AGENT_PAYLOADS,

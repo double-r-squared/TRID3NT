@@ -454,6 +454,19 @@ def test_every_a3_a4_a4b_payload_round_trips(session_id: str) -> None:
         ),
         "secret-revoke": lambda: ws.SecretRevokeEnvelopePayload(secret_id=new_ulid()),
         "secrets-list": lambda: ws.SecretsListEnvelopePayload(),
+        # job-0127 — tool payload-warning envelopes (Wave 2)
+        "tool-payload-warning": lambda: ws.PayloadWarningEnvelopePayload(
+            warning_id=new_ulid(),
+            tool_name="fetch_dem",
+            tool_args={},
+            estimated_mb=50.0,
+            threshold_mb=25.0,
+            recommendation="narrow",
+        ),
+        "tool-payload-confirmation": lambda: ws.PayloadConfirmationEnvelopePayload(
+            warning_id=new_ulid(),
+            decision="proceed",
+        ),
     }
     # Every payload registered in ws.ALL_PAYLOADS must have a minimal factory
     # (i.e., the test covers the full inventory).

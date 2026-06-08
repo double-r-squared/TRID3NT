@@ -47,6 +47,12 @@ from grace2_contracts.case import (
     CaseOpenEnvelopePayload,
     CaseSummary,
 )
+from grace2_contracts.payload_warning import (
+    HARD_CAP_MB_DEFAULT,
+    WARNING_THRESHOLD_MB_DEFAULT,
+    PayloadConfirmationEnvelopePayload,
+    PayloadWarningEnvelopePayload,
+)
 from grace2_contracts.secrets import (
     SecretAddEnvelopePayload,
     SecretRevokeEnvelopePayload,
@@ -232,6 +238,18 @@ class SessionState:
     firebase_uid: str | None = None
     tier: str = "free"
     auth_handshake_complete: bool = False
+    # job-0127 (Wave 2): per-session pending payload-warning gates.
+    # Key is the ``warning_id`` ULID; value is an asyncio.Future that the
+    # inbound ``tool-payload-confirmation`` handler completes with the user's
+    # decision payload. ``_invoke_tool_via_emitter`` awaits it before
+    # dispatching (or skipping) the underlying tool.
+    pending_payload_warnings: dict[str, asyncio.Future] = field(default_factory=dict)
+    # job-0127 (Wave 2): per-session audit log of payload-warning events.
+    # Each entry is a dict carrying ``warning_id``, ``tool_name``,
+    # ``estimated_mb``, ``threshold_mb``, ``decision`` (set on confirmation),
+    # and the ULID timestamps. Surfaces in tests + post-mortem; persisted
+    # to the active Case as part of the chat turn record (best-effort).
+    payload_warning_audit_log: list[dict] = field(default_factory=list)
 
 
 def _new_envelope(message_type: str, session_id: str, payload: Any) -> str:
@@ -872,6 +890,233 @@ async def _persist_chat_turn(
         )
 
 
+# --------------------------------------------------------------------------- #
+# Payload-warning gate (job-0127, sprint-12-mega Wave 2).
+# --------------------------------------------------------------------------- #
+
+
+def _get_warning_threshold_mb() -> float:
+    """Read the warning threshold from env, falling back to the default."""
+    raw = os.environ.get("GRACE2_PAYLOAD_WARNING_MB")
+    if raw is None:
+        return WARNING_THRESHOLD_MB_DEFAULT
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning(
+            "GRACE2_PAYLOAD_WARNING_MB=%r is not a float; using default %s",
+            raw,
+            WARNING_THRESHOLD_MB_DEFAULT,
+        )
+        return WARNING_THRESHOLD_MB_DEFAULT
+
+
+def _get_hard_cap_mb() -> float:
+    """Read the hard cap from env, falling back to the default."""
+    raw = os.environ.get("GRACE2_PAYLOAD_HARDCAP_MB")
+    if raw is None:
+        return HARD_CAP_MB_DEFAULT
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning(
+            "GRACE2_PAYLOAD_HARDCAP_MB=%r is not a float; using default %s",
+            raw,
+            HARD_CAP_MB_DEFAULT,
+        )
+        return HARD_CAP_MB_DEFAULT
+
+
+def _resolve_payload_estimator(tool_name: str, estimator_name: str) -> Any | None:
+    """Look up the named estimator callable on the tool's module.
+
+    The Wave 1.5 ``AtomicToolMetadata.payload_mb_estimator_name`` field
+    carries a Python identifier (not the callable itself) so the metadata
+    stays serializable. Resolution at gate-time walks
+    ``RegisteredTool.module`` to find the callable. Returns ``None`` if the
+    module/attribute lookup fails — the gate then skips for this call.
+    """
+    try:
+        from importlib import import_module
+
+        entry = TOOL_REGISTRY.get(tool_name)
+        if entry is None:
+            return None
+        mod = import_module(entry.module)
+        fn = getattr(mod, estimator_name, None)
+        if not callable(fn):
+            return None
+        return fn
+    except Exception:  # noqa: BLE001 — defensive; gate must never raise
+        logger.exception(
+            "payload-warning: estimator lookup failed tool=%s name=%s",
+            tool_name,
+            estimator_name,
+        )
+        return None
+
+
+async def _maybe_gate_on_payload_warning(
+    websocket: ServerConnection,
+    state: SessionState,
+    tool_name: str,
+    params: dict,
+) -> tuple[bool, dict]:
+    """Run the payload-warning gate before dispatching ``tool_name``.
+
+    Returns ``(should_dispatch, effective_params)``:
+
+    - ``(True, params)`` — no warning needed (no estimator, estimate below
+      threshold) OR user picked ``proceed``. Dispatch with ``params``.
+    - ``(True, revised_args)`` — user picked ``narrow_scope``. Dispatch with
+      the user's revised args.
+    - ``(False, params)`` — user picked ``cancel`` OR the gate timed out.
+      Skip the dispatch; the caller surfaces a typed failure to chat.
+
+    Audit-log entries are appended to ``state.payload_warning_audit_log``
+    on both emission AND decision. Never raises — a gate failure logs +
+    falls through to dispatch (the gate is a UX nudge, not a hard
+    invariant; a broken estimator should not break the tool).
+    """
+    entry = TOOL_REGISTRY.get(tool_name)
+    if entry is None:
+        return True, params
+    estimator_name = entry.metadata.payload_mb_estimator_name
+    if not estimator_name:
+        return True, params
+    estimator_fn = _resolve_payload_estimator(tool_name, estimator_name)
+    if estimator_fn is None:
+        return True, params
+    try:
+        estimated_mb = float(estimator_fn(**params))
+    except Exception:  # noqa: BLE001 — never let the gate kill a tool
+        logger.exception(
+            "payload-warning: estimator raised tool=%s name=%s; skipping gate",
+            tool_name,
+            estimator_name,
+        )
+        return True, params
+
+    threshold_mb = _get_warning_threshold_mb()
+    hard_cap_mb = _get_hard_cap_mb()
+    if estimated_mb < threshold_mb:
+        return True, params
+
+    over_hard_cap = estimated_mb > hard_cap_mb
+    options = (
+        ["cancel", "narrow_scope"]
+        if over_hard_cap
+        else ["proceed", "cancel", "narrow_scope"]
+    )
+    recommendation = (
+        f"Estimated payload {estimated_mb:.1f} MB exceeds the "
+        f"{'hard cap' if over_hard_cap else 'warning threshold'} "
+        f"({hard_cap_mb if over_hard_cap else threshold_mb:.0f} MB). "
+        "Consider narrowing bbox or other scope parameters."
+    )
+
+    warning_id = new_ulid()
+    warning_payload = PayloadWarningEnvelopePayload(
+        warning_id=warning_id,
+        tool_name=tool_name,
+        tool_args=params,
+        estimated_mb=estimated_mb,
+        threshold_mb=hard_cap_mb if over_hard_cap else threshold_mb,
+        recommendation=recommendation,
+        options=options,
+    )
+
+    # Audit-log the emission.
+    audit_entry: dict = {
+        "warning_id": warning_id,
+        "tool_name": tool_name,
+        "estimated_mb": estimated_mb,
+        "threshold_mb": warning_payload.threshold_mb,
+        "options": list(options),
+        "emitted_at": now_utc().isoformat(),
+        "decision": None,
+    }
+    state.payload_warning_audit_log.append(audit_entry)
+
+    # Create the future the inbound handler will complete.
+    loop = asyncio.get_running_loop()
+    fut: asyncio.Future = loop.create_future()
+    state.pending_payload_warnings[warning_id] = fut
+
+    await websocket.send(
+        _new_envelope("tool-payload-warning", state.session_id, warning_payload)
+    )
+    logger.info(
+        "payload-warning emitted session=%s tool=%s warning_id=%s estimated_mb=%.2f over_hard_cap=%s",
+        state.session_id,
+        tool_name,
+        warning_id,
+        estimated_mb,
+        over_hard_cap,
+    )
+
+    # Await the confirmation (TTL on the envelope is advisory; we honour it
+    # with an asyncio timeout so the dispatch coroutine doesn't hang forever).
+    try:
+        decision_payload: PayloadConfirmationEnvelopePayload = await asyncio.wait_for(
+            fut, timeout=warning_payload.ttl_seconds
+        )
+    except asyncio.TimeoutError:
+        audit_entry["decision"] = "timeout"
+        logger.warning(
+            "payload-warning timeout session=%s tool=%s warning_id=%s",
+            state.session_id,
+            tool_name,
+            warning_id,
+        )
+        await _send_error(
+            websocket,
+            state.session_id,
+            "CONFIRMATION_TIMEOUT",
+            f"tool {tool_name!r} payload-warning gate timed out",
+        )
+        return False, params
+    finally:
+        state.pending_payload_warnings.pop(warning_id, None)
+
+    audit_entry["decision"] = decision_payload.decision
+    audit_entry["decided_at"] = now_utc().isoformat()
+    logger.info(
+        "payload-warning decision session=%s tool=%s warning_id=%s decision=%s",
+        state.session_id,
+        tool_name,
+        warning_id,
+        decision_payload.decision,
+    )
+
+    if decision_payload.decision == "cancel":
+        await _send_error(
+            websocket,
+            state.session_id,
+            "USER_INPUT_CANCELLED",
+            f"tool {tool_name!r} cancelled by user at payload-warning gate "
+            f"(estimated {estimated_mb:.1f} MB)",
+        )
+        return False, params
+    if decision_payload.decision == "proceed":
+        if over_hard_cap:
+            # Defense in depth: the warning envelope omitted ``proceed`` so a
+            # well-behaved client can't pick it. Refuse if it does anyway.
+            await _send_error(
+                websocket,
+                state.session_id,
+                "TOOL_PARAMS_INVALID",
+                f"tool {tool_name!r} exceeds hard cap "
+                f"({estimated_mb:.1f} > {hard_cap_mb:.0f} MB); "
+                "'proceed' is not an allowed response",
+            )
+            return False, params
+        return True, params
+    # narrow_scope
+    revised = decision_payload.revised_args or {}
+    return True, revised
+
+
 def _ensure_emitter(websocket: ServerConnection, state: SessionState) -> None:
     """Bind a ``PipelineEmitter`` to this session if one isn't already.
 
@@ -960,6 +1205,17 @@ async def _invoke_tool_via_emitter(
     # ``publish_layer`` accepts it; other tools do not.
     if tool_name != "publish_layer" and "case_id" in params:
         params = {k: v for k, v in params.items() if k != "case_id"}
+
+    # job-0127 (Wave 2): payload-warning gate. When the tool declares a
+    # ``payload_mb_estimator_name`` and the estimate exceeds the warning
+    # threshold, emit ``tool-payload-warning`` and await
+    # ``tool-payload-confirmation``. Skip / revise dispatch per the user's
+    # decision. No-op when the tool didn't declare an estimator.
+    should_dispatch, params = await _maybe_gate_on_payload_warning(
+        websocket, state, tool_name, params
+    )
+    if not should_dispatch:
+        return None
 
     state.current_pipeline_id = state.emitter.start_pipeline()
     state.current_turn_pipeline_id = state.current_pipeline_id
@@ -1484,6 +1740,42 @@ def _make_handler(settings: GeminiSettings):
                             except (asyncio.CancelledError, asyncio.TimeoutError):
                                 pass
 
+                    elif msg_type == "tool-payload-confirmation":
+                        # job-0127: route the confirmation to the paused
+                        # dispatch coroutine. Validate the envelope here so
+                        # malformed payloads don't poison the future.
+                        try:
+                            conf = (
+                                PayloadConfirmationEnvelopePayload.model_validate(
+                                    payload_dict
+                                )
+                            )
+                        except ValidationError as ve:
+                            await _send_error(
+                                websocket,
+                                state.session_id,
+                                "TOOL_PARAMS_INVALID",
+                                f"tool-payload-confirmation invalid: {ve.errors()[0]['msg']}",
+                            )
+                            continue
+                        fut = state.pending_payload_warnings.get(conf.warning_id)
+                        if fut is None or fut.done():
+                            logger.warning(
+                                "tool-payload-confirmation for unknown/closed "
+                                "warning_id=%s session=%s",
+                                conf.warning_id,
+                                state.session_id,
+                            )
+                            continue
+                        fut.set_result(conf)
+                        logger.info(
+                            "tool-payload-confirmation accepted session=%s "
+                            "warning_id=%s decision=%s",
+                            state.session_id,
+                            conf.warning_id,
+                            conf.decision,
+                        )
+
                     elif msg_type in (
                         "confirm-response",
                         "spatial-input-response",
@@ -1551,6 +1843,7 @@ __all__ = [
     "run_server",
     "SessionState",
     "_invoke_tool_via_emitter",
+    "_maybe_gate_on_payload_warning",
     "_parse_invoke_directive",
     "get_persistence",
     "set_persistence",

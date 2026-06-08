@@ -175,6 +175,29 @@ export function App(): JSX.Element {
   // (case_id=null) only — surfaced as OQ-0125-CASE-ID-WIRING.
   const currentCaseId: string | null = null;
 
+  // job-0127 (sprint-12-mega Wave 2): tool payload-warning gates. The agent
+  // emits `tool-payload-warning` before dispatching a tool whose estimated
+  // response payload exceeds the threshold; we render an inline card and
+  // emit `tool-payload-confirmation` carrying the user's decision.
+  const [payloadWarnings, setPayloadWarnings] = useState<
+    PayloadWarningEnvelopePayload[]
+  >([]);
+  const handlePayloadWarningDecide = useCallback(
+    (
+      warningId: string,
+      decision: PayloadConfirmationDecision,
+      revised: Record<string, unknown> | null,
+    ) => {
+      wsRef.current?.sendPayloadConfirmation(warningId, decision, revised);
+      // Remove the decided warning from the visible queue. Keep the others
+      // so a multi-gate burst still renders.
+      setPayloadWarnings((prev) =>
+        prev.filter((w) => w.warning_id !== warningId),
+      );
+    },
+    [],
+  );
+
   // job-0126: Mode 2 candidate fan-out. The GraceWs handler routes
   // `mode2-candidate` envelopes here; the Mode2OfferModal subscribes via the
   // stable `subscribeMode2Candidate` callback below. We keep a Set of
@@ -532,6 +555,36 @@ export function App(): JSX.Element {
         subscribeCandidate={subscribeMode2Candidate}
         onAction={handleMode2Action}
       />
+
+      {/* job-0127: Payload-warning gates stack as inline cards in a small
+          column anchored below the chat header. Each renders its own
+          options; on decide we send `tool-payload-confirmation` and pop the
+          gate from the queue. Newest-first so a fresh gate is always visible. */}
+      {payloadWarnings.length > 0 && (
+        <div
+          data-testid="payload-warning-stack"
+          style={{
+            position: "absolute",
+            right: 16,
+            top: 80,
+            width: 360,
+            display: "flex",
+            flexDirection: "column",
+            gap: 8,
+            zIndex: 1000,
+          }}
+        >
+          {payloadWarnings.map((w) => (
+            <PayloadWarningInline
+              key={w.warning_id}
+              warning={w}
+              onDecide={(decision, revised) =>
+                handlePayloadWarningDecide(w.warning_id, decision, revised)
+              }
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }

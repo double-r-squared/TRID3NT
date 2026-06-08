@@ -338,6 +338,41 @@ export interface SecretRevokePayload {
   secret_id: string;
 }
 
+// --- Tool payload-warning envelopes (job-0127, sprint-12-mega Wave 2) ---- //
+//
+// Mirrors packages/contracts/src/grace2_contracts/payload_warning.py.
+// Agent emits `tool-payload-warning` before dispatching a tool whose
+// estimated response payload exceeds the warning threshold (default 25 MB).
+// Client renders an inline chat card with [Proceed] [Cancel] [Narrow scope]
+// buttons. The user's selection rides back on `tool-payload-confirmation`.
+//
+// Invariant 9 (no cost theater): `estimated_mb` is a payload-size estimate,
+// not a dollar / latency / quota figure. No cost field anywhere.
+
+export type PayloadWarningOption = "proceed" | "cancel" | "narrow_scope";
+
+export interface PayloadWarningEnvelopePayload {
+  envelope_type?: "tool-payload-warning";
+  warning_id: string;
+  tool_name: string;
+  tool_args: Record<string, unknown>;
+  estimated_mb: number;
+  threshold_mb: number;
+  recommendation: string;
+  alternative_args?: Record<string, unknown> | null;
+  options: PayloadWarningOption[];
+  ttl_seconds?: number;
+}
+
+export type PayloadConfirmationDecision = "proceed" | "cancel" | "narrow_scope";
+
+export interface PayloadConfirmationEnvelopePayload {
+  envelope_type?: "tool-payload-confirmation";
+  warning_id: string;
+  decision: PayloadConfirmationDecision;
+  revised_args?: Record<string, unknown> | null;
+}
+
 // --- Outbound message constructors -------------------------------------- //
 
 /** Generate a fresh ULID-like 26-char Crockford base32 id.
