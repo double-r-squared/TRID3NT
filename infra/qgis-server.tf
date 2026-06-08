@@ -92,6 +92,29 @@ resource "google_cloud_run_v2_service" "qgis_server" {
     component = "qgis-server"
   })
 
+  # Service-level scaling block (job-0073 reconciliation — Option A: codify live state).
+  #
+  # The Google provider ~6.x schema exposes TWO scaling blocks:
+  #   1. Service-level  scaling {} — controls whole-service mode (AUTOMATIC/MANUAL).
+  #      Attributes: manual_instance_count, min_instance_count, scaling_mode.
+  #   2. Template-level scaling {} (inside template {}) — controls per-revision limits.
+  #      Attributes: min_instance_count, max_instance_count.
+  #
+  # GCP API auto-fills the service-level block with min_instance_count=0 and
+  # manual_instance_count=0 even for AUTOMATIC-mode services (scaling_mode omitted =
+  # AUTOMATIC). Without this block in code, `tofu plan` continuously detected those
+  # GCP-API-auto-filled values as drift and proposed to null them out
+  # (OQ-61 / OQ-67 / OQ-69 carry-forward).
+  #
+  # Codifying the auto-filled values here is correct: the service IS in automatic
+  # mode, min_instance_count=0 preserves NFR-C-2 scale-to-zero, and
+  # manual_instance_count=0 is the GCP default for automatic-mode services.
+  # No runtime behavior changes — only the IaC now matches what GCP returns.
+  scaling {
+    min_instance_count    = 0
+    manual_instance_count = 0
+  }
+
   template {
     service_account = google_service_account.qgis_server.email
 
