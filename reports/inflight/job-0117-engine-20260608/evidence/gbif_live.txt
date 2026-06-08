@@ -1,0 +1,44 @@
+# GBIF live verification — job-0117 (OQ-0087-PANTHER-TAXON-KEY follow-up)
+# Run: 2026-06-08
+# Env: GRACE2_TEST_LIVE_GBIF=1, GOOGLE_APPLICATION_CREDENTIALS set
+# Command: .venv-agent/bin/python -m pytest \
+#   services/agent/tests/test_fetch_gbif_occurrences.py::test_live_florida_panther_over_big_cypress \
+#   services/agent/tests/test_fetch_gbif_occurrences.py::test_live_florida_panther_via_scientific_name_resolves_to_correct_key \
+#   -v -s
+
+# -------- Test 1: live fetch via integer taxonKey --------
+# species_key:  2435099  (Puma concolor — species-level, NOT subspecies 7193927)
+# bbox:         (-81.5, 25.5, -80.5, 26.5)   # Big Cypress / Everglades
+# result.uri:   gs://grace-2-hazard-prod-cache/cache/static-30d/gbif/bfb5ad111f7d713499ccc6cd38e20b0d.fgb
+# feature count: 251
+# every feature inside requested bbox: yes (geographic-correctness gate)
+
+feature 0: gbifID=1122705807 species=Puma concolor eventDate=1989-07-26              basis=PRESERVED_SPECIMEN  POINT(-80.628, 25.623)
+feature 1: gbifID=1986571407 species=Puma concolor eventDate=2019-01-02T15:02:19     basis=HUMAN_OBSERVATION   POINT(-80.689, 25.577)
+feature 2: gbifID=2235549238 species=Puma concolor eventDate=2019-03-31T10:59        basis=HUMAN_OBSERVATION   POINT(-80.759, 25.503)
+feature 3: gbifID=2235552082 species=Puma concolor eventDate=2019-03-31T10:44        basis=HUMAN_OBSERVATION   POINT(-80.798, 25.584)
+feature 4: gbifID=1122713550 species=Puma concolor eventDate=2011-04-30              basis=PRESERVED_SPECIMEN  POINT(-80.873, 25.805)
+
+# -------- Test 2: live fetch via scientific-name string --------
+# species_key:        "Puma concolor"
+# resolved taxonKey:  2435099    (via GBIF /species/match)
+# bbox:               (-81.5, 25.5, -80.5, 26.5)
+# result.uri:         gs://grace-2-hazard-prod-cache/cache/static-30d/gbif/bfb5ad111f7d713499ccc6cd38e20b0d.fgb
+# feature count:      251
+# CACHE-KEY IDENTITY: both tests produced the same .fgb URI — confirms name
+#   resolution → int normalization in the cache key (OQ-0087 lesson + cache hygiene).
+
+# -------- Test 3 (offline, structural): species_reference dict --------
+# .venv-agent/bin/python -m pytest services/agent/tests/test_species_reference.py
+# 6 passed:
+#   test_florida_demo_species_is_nonempty
+#   test_florida_demo_species_canonical_keys_present
+#   test_every_entry_has_required_fields
+#   test_florida_panther_uses_species_level_taxon_key   ← asserts NOT 7193927
+#   test_taxon_keys_are_unique
+#   test_demo_species_entry_typed_dict_signature
+
+# -------- Full suite (gbif + species_reference) --------
+# .venv-agent/bin/python -m pytest services/agent/tests/test_species_reference.py services/agent/tests/test_fetch_gbif_occurrences.py
+# 29 passed, 2 skipped (the 2 skipped are live tests, gated by GRACE2_TEST_LIVE_GBIF=1).
+# With GRACE2_TEST_LIVE_GBIF=1: 31 passed.

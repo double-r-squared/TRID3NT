@@ -1,0 +1,35 @@
+job-0114-schema-20260608 work landed under sibling commit ed51327 (Wave 1.5 commit-label-swap race).
+
+Commit ed51327 is labeled "job-0110: fetch_nifc_fire_perimeters atomic tool"
+but its diff contains BOTH job-0110's NIFC tool AND the full job-0114 schema
+amendment (AtomicToolMetadata.supports_global_query +
+.payload_mb_estimator_name, grace2_contracts.errors.ToolInputError, and the
+@register_tool decorator kwarg plumbing).
+
+The sibling Wave 1.5 commit-race did `git add -A` while my job-0114 files
+were modified/untracked in the working tree. Per Wave-1 protocol
+(e81a53f job-0111: marker — fetch_landfire_fuels landed in c5fb88d under
+sibling job-0109 label), this marker file documents the label-swap so
+audit/closeout knows where the actual job-0114 changes live in main.
+
+Files belonging to job-0114 that are in ed51327:
+- packages/contracts/src/grace2_contracts/__init__.py (+4)
+- packages/contracts/src/grace2_contracts/errors.py (+115, new)
+- packages/contracts/src/grace2_contracts/tool_registry.py (+47)
+- packages/contracts/tests/test_errors.py (+153, new)
+- packages/contracts/tests/test_tool_registry.py (+191)
+- reports/inflight/job-0114-schema-20260608/STATE (+1)
+- reports/inflight/job-0114-schema-20260608/report.md (+67, new)
+- services/agent/src/grace2_agent/tools/__init__.py (+ register_tool kwargs)
+- services/agent/tests/test_register_tool_wave15_kwargs.py (+193, new)
+
+Files belonging to job-0110 (NIFC) in same commit ed51327:
+- evidence/nifc_live.txt
+- services/agent/src/grace2_agent/main.py (registration import)
+- services/agent/src/grace2_agent/tools/fetch_nifc_fire_perimeters.py
+- services/agent/tests/test_fetch_nifc_fire_perimeters.py
+- reports/inflight/job-0110-engine-20260608/STATE + report.md
+
+The label says job-0110, the diff has both jobs. Status:
+- job-0114 STATE = ready-for-audit (committed in ed51327)
+- job-0110 STATE = ready-for-audit (also committed in ed51327)
