@@ -1,0 +1,1251 @@
+[
+  {
+    "insertId": "bz8t1se15vxk",
+    "labels": {
+      "run.googleapis.com/execution_name": "grace-2-pyqgis-worker-flff7"
+    },
+    "logName": "projects/grace-2-hazard-prod/logs/cloudaudit.googleapis.com%2Fsystem_event",
+    "protoPayload": {
+      "@type": "type.googleapis.com/google.cloud.audit.AuditLog",
+      "methodName": "/Jobs.RunJob",
+      "resourceName": "namespaces/grace-2-hazard-prod/executions/grace-2-pyqgis-worker-flff7",
+      "response": {
+        "@type": "type.googleapis.com/google.cloud.run.v1.Execution",
+        "apiVersion": "run.googleapis.com/v1",
+        "kind": "Execution",
+        "metadata": {
+          "annotations": {
+            "run.googleapis.com/creator": "natealmanza3@gmail.com",
+            "run.googleapis.com/execution-environment": "gen2",
+            "run.googleapis.com/lastModifier": "natealmanza3@gmail.com",
+            "run.googleapis.com/operation-id": "1afbd8b5-dc30-4755-90bc-eacab734b9f9"
+          },
+          "creationTimestamp": "2026-06-08T03:26:28.081801Z",
+          "generation": 1,
+          "labels": {
+            "cloud.googleapis.com/location": "us-central1",
+            "component": "pyqgis-worker",
+            "env": "dev",
+            "project": "grace-2",
+            "run.googleapis.com/job": "grace-2-pyqgis-worker",
+            "run.googleapis.com/jobGeneration": "3",
+            "run.googleapis.com/jobResourceVersion": "1780887387029554",
+            "run.googleapis.com/jobUid": "e423cb06-7e57-4d1f-b36c-5694b69b57c1",
+            "sprint": "04"
+          },
+          "name": "grace-2-pyqgis-worker-flff7",
+          "namespace": "425352658356",
+          "ownerReferences": [
+            {
+              "apiVersion": "serving.knative.dev/v1",
+              "blockOwnerDeletion": true,
+              "controller": true,
+              "kind": "Job",
+              "name": "grace-2-pyqgis-worker",
+              "uid": "e423cb06-7e57-4d1f-b36c-5694b69b57c1"
+            }
+          ],
+          "resourceVersion": "AAZTtZtIuVU",
+          "selfLink": "/apis/run.googleapis.com/v1/namespaces/425352658356/executions/grace-2-pyqgis-worker-flff7",
+          "uid": "1faadc12-5f4f-411e-8641-45910ae2e969"
+        },
+        "spec": {
+          "parallelism": 1,
+          "taskCount": 1,
+          "template": {
+            "spec": {
+              "containers": [
+                {
+                  "env": [
+                    {
+                      "name": "GCP_PROJECT",
+                      "value": "grace-2-hazard-prod"
+                    },
+                    {
+                      "name": "CPL_MACHINE_IS_GCE",
+                      "value": "YES"
+                    },
+                    {
+                      "name": "LAYER_TO_ADD"
+                    },
+                    {
+                      "name": "GDAL_HTTP_USERAGENT",
+                      "value": "grace-2-pyqgis-worker/0.1"
+                    },
+                    {
+                      "name": "QGS_URI",
+                      "value": "/mnt/qgs/grace2-sample.qgs"
+                    },
+                    {
+                      "name": "PUBSUB_TOPIC",
+                      "value": "grace-2-worker-events"
+                    },
+                    {
+                      "name": "CPL_GS_USE_INSTANCE_PROFILE",
+                      "value": "YES"
+                    },
+                    {
+                      "name": "GOOGLE_CLOUD_PROJECT",
+                      "value": "grace-2-hazard-prod"
+                    },
+                    {
+                      "name": "WORKER_OP",
+                      "value": "publish-raster"
+                    },
+                    {
+                      "name": "RASTER_URI",
+                      "value": "/vsigs/grace-2-hazard-prod-runs/01KTJKTAPX4V7GW0AS3C8BDYHK/flood_depth_peak.tif"
+                    },
+                    {
+                      "name": "RASTER_LAYER_ID",
+                      "value": "flood-depth-job-0070-demo"
+                    },
+                    {
+                      "name": "STYLE_PRESET_NAME",
+                      "value": "continuous_flood_depth"
+                    }
+                  ],
+                  "image": "us-central1-docker.pkg.dev/grace-2-hazard-prod/grace-2-containers/grace-2-pyqgis-worker@sha256:94dad2bc8964c426d962bcad05b01f917e0e05408fa87e3557e47a2844a19119",
+                  "resources": {
+                    "limits": {
+                      "cpu": "2",
+                      "memory": "2Gi"
+                    }
+                  },
+                  "volumeMounts": [
+                    {
+                      "mountPath": "/mnt/qgs",
+                      "name": "qgs-bucket"
+                    }
+                  ]
+                }
+              ],
+              "maxRetries": 0,
+              "serviceAccountName": "pyqgis-worker-runtime@grace-2-hazard-prod.iam.gserviceaccount.com",
+              "timeoutSeconds": "900",
+              "volumes": [
+                {
+                  "csi": {
+                    "driver": "gcsfuse.run.googleapis.com",
+                    "volumeAttributes": {
+                      "bucketName": "grace-2-hazard-prod-qgs"
+                    }
+                  },
+                  "name": "qgs-bucket"
+                }
+              ]
+            }
+          }
+        },
+        "status": {
+          "completionTime": "2026-06-08T03:28:38.961917Z",
+          "conditions": [
+            {
+              "lastTransitionTime": "2026-06-08T03:28:38.961917Z",
+              "message": "Execution completed successfully in 2m2.96s.",
+              "status": "True",
+              "type": "Completed"
+            },
+            {
+              "lastTransitionTime": "2026-06-08T03:26:28.896389Z",
+              "message": "Provisioned imported containers.",
+              "status": "True",
+              "type": "ResourcesAvailable"
+            },
+            {
+              "lastTransitionTime": "2026-06-08T03:28:19.178618Z",
+              "message": "Started deployed execution in 1m50.28s.",
+              "status": "True",
+              "type": "Started"
+            },
+            {
+              "lastTransitionTime": "2026-06-08T03:26:28.801462Z",
+              "message": "Imported container image.",
+              "status": "True",
+              "type": "ContainerReady"
+            },
+            {
+              "lastTransitionTime": "2026-06-08T03:28:39.684437Z",
+              "message": "System will retry after 00:00 from lastTransitionTime for attempt 0.",
+              "reason": "ImmediateRetry",
+              "severity": "Info",
+              "status": "True",
+              "type": "Retry"
+            }
+          ],
+          "logUri": "https://console.cloud.google.com/logs/viewer?project=grace-2-hazard-prod&advancedFilter=resource.type%3D%22cloud_run_job%22%0Aresource.labels.job_name%3D%22grace-2-pyqgis-worker%22%0Aresource.labels.location%3D%22us-central1%22%0Alabels.%22run.googleapis.com/execution_name%22%3D%22grace-2-pyqgis-worker-flff7%22",
+          "observedGeneration": 1,
+          "startTime": "2026-06-08T03:26:35.996518Z",
+          "succeededCount": 1
+        }
+      },
+      "serviceName": "run.googleapis.com",
+      "status": {
+        "message": "Execution grace-2-pyqgis-worker-flff7 has completed successfully."
+      }
+    },
+    "receiveTimestamp": "2026-06-08T03:28:40.474839455Z",
+    "resource": {
+      "labels": {
+        "job_name": "grace-2-pyqgis-worker",
+        "location": "us-central1",
+        "project_id": "grace-2-hazard-prod"
+      },
+      "type": "cloud_run_job"
+    },
+    "severity": "INFO",
+    "timestamp": "2026-06-08T03:28:39.701413Z"
+  },
+  {
+    "insertId": "6a2636e2000a3bb82e128d74",
+    "labels": {
+      "component": "pyqgis-worker",
+      "container_name": "worker",
+      "env": "dev",
+      "instanceId": "002f8ffd478a46623d95d964cd0f4c90a3e29af2b514c3751aa3520681b115efae0c7ebf7b43093ddb07304bbc59b467095cfa79287abde9a332e2b41d983dc7cb6e7e221b19b96d8fe2c6b589e481baa2fe61d21c6c4d78e0ea05",
+      "project": "grace-2",
+      "run.googleapis.com/execution_name": "grace-2-pyqgis-worker-flff7",
+      "run.googleapis.com/task_attempt": "0",
+      "run.googleapis.com/task_index": "0",
+      "sprint": "04"
+    },
+    "logName": "projects/grace-2-hazard-prod/logs/run.googleapis.com%2Fvarlog%2Fsystem",
+    "receiveTimestamp": "2026-06-08T03:28:34.678318229Z",
+    "resource": {
+      "labels": {
+        "job_name": "grace-2-pyqgis-worker",
+        "location": "us-central1",
+        "project_id": "grace-2-hazard-prod"
+      },
+      "type": "cloud_run_job"
+    },
+    "severity": "INFO",
+    "textPayload": "Container called exit(0).",
+    "timestamp": "2026-06-08T03:28:34.670606Z"
+  },
+  {
+    "insertId": "6a2636e20000a719b2879d7e",
+    "labels": {
+      "component": "pyqgis-worker",
+      "env": "dev",
+      "instanceId": "002f8ffd478a46623d95d964cd0f4c90a3e29af2b514c3751aa3520681b115efae0c7ebf7b43093ddb07304bbc59b467095cfa79287abde9a332e2b41d983dc7cb6e7e221b19b96d8fe2c6b589e481baa2fe61d21c6c4d78e0ea05",
+      "project": "grace-2",
+      "run.googleapis.com/execution_name": "grace-2-pyqgis-worker-flff7",
+      "run.googleapis.com/task_attempt": "0",
+      "run.googleapis.com/task_index": "0",
+      "sprint": "04"
+    },
+    "logName": "projects/grace-2-hazard-prod/logs/run.googleapis.com%2Fstdout",
+    "receiveTimestamp": "2026-06-08T03:28:34.380292417Z",
+    "resource": {
+      "labels": {
+        "job_name": "grace-2-pyqgis-worker",
+        "location": "us-central1",
+        "project_id": "grace-2-hazard-prod"
+      },
+      "type": "cloud_run_job"
+    },
+    "textPayload": "}",
+    "timestamp": "2026-06-08T03:28:34.042777Z"
+  },
+  {
+    "insertId": "6a2636e20000a7167d2f28af",
+    "labels": {
+      "component": "pyqgis-worker",
+      "env": "dev",
+      "instanceId": "002f8ffd478a46623d95d964cd0f4c90a3e29af2b514c3751aa3520681b115efae0c7ebf7b43093ddb07304bbc59b467095cfa79287abde9a332e2b41d983dc7cb6e7e221b19b96d8fe2c6b589e481baa2fe61d21c6c4d78e0ea05",
+      "project": "grace-2",
+      "run.googleapis.com/execution_name": "grace-2-pyqgis-worker-flff7",
+      "run.googleapis.com/task_attempt": "0",
+      "run.googleapis.com/task_index": "0",
+      "sprint": "04"
+    },
+    "logName": "projects/grace-2-hazard-prod/logs/run.googleapis.com%2Fstdout",
+    "receiveTimestamp": "2026-06-08T03:28:34.380292417Z",
+    "resource": {
+      "labels": {
+        "job_name": "grace-2-pyqgis-worker",
+        "location": "us-central1",
+        "project_id": "grace-2-hazard-prod"
+      },
+      "type": "cloud_run_job"
+    },
+    "textPayload": "  \"wms_url\": \"https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/mnt/qgs/grace2-sample.qgs&LAYERS=flood-depth-job-0070-demo\"",
+    "timestamp": "2026-06-08T03:28:34.042774Z"
+  },
+  {
+    "insertId": "6a2636e20000a71174fa2799",
+    "labels": {
+      "component": "pyqgis-worker",
+      "env": "dev",
+      "instanceId": "002f8ffd478a46623d95d964cd0f4c90a3e29af2b514c3751aa3520681b115efae0c7ebf7b43093ddb07304bbc59b467095cfa79287abde9a332e2b41d983dc7cb6e7e221b19b96d8fe2c6b589e481baa2fe61d21c6c4d78e0ea05",
+      "project": "grace-2",
+      "run.googleapis.com/execution_name": "grace-2-pyqgis-worker-flff7",
+      "run.googleapis.com/task_attempt": "0",
+      "run.googleapis.com/task_index": "0",
+      "sprint": "04"
+    },
+    "logName": "projects/grace-2-hazard-prod/logs/run.googleapis.com%2Fstdout",
+    "receiveTimestamp": "2026-06-08T03:28:34.380292417Z",
+    "resource": {
+      "labels": {
+        "job_name": "grace-2-pyqgis-worker",
+        "location": "us-central1",
+        "project_id": "grace-2-hazard-prod"
+      },
+      "type": "cloud_run_job"
+    },
+    "textPayload": "  \"ts\": \"2026-06-08T03:28:29.929Z\",",
+    "timestamp": "2026-06-08T03:28:34.042769Z"
+  },
+  {
+    "insertId": "6a2636e20000a70ee1ebd243",
+    "labels": {
+      "component": "pyqgis-worker",
+      "env": "dev",
+      "instanceId": "002f8ffd478a46623d95d964cd0f4c90a3e29af2b514c3751aa3520681b115efae0c7ebf7b43093ddb07304bbc59b467095cfa79287abde9a332e2b41d983dc7cb6e7e221b19b96d8fe2c6b589e481baa2fe61d21c6c4d78e0ea05",
+      "project": "grace-2",
+      "run.googleapis.com/execution_name": "grace-2-pyqgis-worker-flff7",
+      "run.googleapis.com/task_attempt": "0",
+      "run.googleapis.com/task_index": "0",
+      "sprint": "04"
+    },
+    "logName": "projects/grace-2-hazard-prod/logs/run.googleapis.com%2Fstdout",
+    "receiveTimestamp": "2026-06-08T03:28:34.380292417Z",
+    "resource": {
+      "labels": {
+        "job_name": "grace-2-pyqgis-worker",
+        "location": "us-central1",
+        "project_id": "grace-2-hazard-prod"
+      },
+      "type": "cloud_run_job"
+    },
+    "textPayload": "  \"qgs_version\": \"3.44.11-Solothurn\",",
+    "timestamp": "2026-06-08T03:28:34.042766Z"
+  },
+  {
+    "insertId": "6a2636e20000a70acdf6ca81",
+    "labels": {
+      "component": "pyqgis-worker",
+      "env": "dev",
+      "instanceId": "002f8ffd478a46623d95d964cd0f4c90a3e29af2b514c3751aa3520681b115efae0c7ebf7b43093ddb07304bbc59b467095cfa79287abde9a332e2b41d983dc7cb6e7e221b19b96d8fe2c6b589e481baa2fe61d21c6c4d78e0ea05",
+      "project": "grace-2",
+      "run.googleapis.com/execution_name": "grace-2-pyqgis-worker-flff7",
+      "run.googleapis.com/task_attempt": "0",
+      "run.googleapis.com/task_index": "0",
+      "sprint": "04"
+    },
+    "logName": "projects/grace-2-hazard-prod/logs/run.googleapis.com%2Fstdout",
+    "receiveTimestamp": "2026-06-08T03:28:34.380292417Z",
+    "resource": {
+      "labels": {
+        "job_name": "grace-2-pyqgis-worker",
+        "location": "us-central1",
+        "project_id": "grace-2-hazard-prod"
+      },
+      "type": "cloud_run_job"
+    },
+    "textPayload": "  \"error\": null,",
+    "timestamp": "2026-06-08T03:28:34.042762Z"
+  },
+  {
+    "insertId": "6a2636e20000a7079c85492b",
+    "labels": {
+      "component": "pyqgis-worker",
+      "env": "dev",
+      "instanceId": "002f8ffd478a46623d95d964cd0f4c90a3e29af2b514c3751aa3520681b115efae0c7ebf7b43093ddb07304bbc59b467095cfa79287abde9a332e2b41d983dc7cb6e7e221b19b96d8fe2c6b589e481baa2fe61d21c6c4d78e0ea05",
+      "project": "grace-2",
+      "run.googleapis.com/execution_name": "grace-2-pyqgis-worker-flff7",
+      "run.googleapis.com/task_attempt": "0",
+      "run.googleapis.com/task_index": "0",
+      "sprint": "04"
+    },
+    "logName": "projects/grace-2-hazard-prod/logs/run.googleapis.com%2Fstdout",
+    "receiveTimestamp": "2026-06-08T03:28:34.380292417Z",
+    "resource": {
+      "labels": {
+        "job_name": "grace-2-pyqgis-worker",
+        "location": "us-central1",
+        "project_id": "grace-2-hazard-prod"
+      },
+      "type": "cloud_run_job"
+    },
+    "textPayload": "  \"status\": \"ok\",",
+    "timestamp": "2026-06-08T03:28:34.042759Z"
+  },
+  {
+    "insertId": "6a2636e20000a7041b120b4a",
+    "labels": {
+      "component": "pyqgis-worker",
+      "env": "dev",
+      "instanceId": "002f8ffd478a46623d95d964cd0f4c90a3e29af2b514c3751aa3520681b115efae0c7ebf7b43093ddb07304bbc59b467095cfa79287abde9a332e2b41d983dc7cb6e7e221b19b96d8fe2c6b589e481baa2fe61d21c6c4d78e0ea05",
+      "project": "grace-2",
+      "run.googleapis.com/execution_name": "grace-2-pyqgis-worker-flff7",
+      "run.googleapis.com/task_attempt": "0",
+      "run.googleapis.com/task_index": "0",
+      "sprint": "04"
+    },
+    "logName": "projects/grace-2-hazard-prod/logs/run.googleapis.com%2Fstdout",
+    "receiveTimestamp": "2026-06-08T03:28:34.048734678Z",
+    "resource": {
+      "labels": {
+        "job_name": "grace-2-pyqgis-worker",
+        "location": "us-central1",
+        "project_id": "grace-2-hazard-prod"
+      },
+      "type": "cloud_run_job"
+    },
+    "textPayload": "  \"notify_message_id\": \"19965854113826451\",",
+    "timestamp": "2026-06-08T03:28:34.042756Z"
+  },
+  {
+    "insertId": "6a2636e20000a700fad3ee51",
+    "labels": {
+      "component": "pyqgis-worker",
+      "env": "dev",
+      "instanceId": "002f8ffd478a46623d95d964cd0f4c90a3e29af2b514c3751aa3520681b115efae0c7ebf7b43093ddb07304bbc59b467095cfa79287abde9a332e2b41d983dc7cb6e7e221b19b96d8fe2c6b589e481baa2fe61d21c6c4d78e0ea05",
+      "project": "grace-2",
+      "run.googleapis.com/execution_name": "grace-2-pyqgis-worker-flff7",
+      "run.googleapis.com/task_attempt": "0",
+      "run.googleapis.com/task_index": "0",
+      "sprint": "04"
+    },
+    "logName": "projects/grace-2-hazard-prod/logs/run.googleapis.com%2Fstdout",
+    "receiveTimestamp": "2026-06-08T03:28:34.048734678Z",
+    "resource": {
+      "labels": {
+        "job_name": "grace-2-pyqgis-worker",
+        "location": "us-central1",
+        "project_id": "grace-2-hazard-prod"
+      },
+      "type": "cloud_run_job"
+    },
+    "textPayload": "  ],",
+    "timestamp": "2026-06-08T03:28:34.042752Z"
+  },
+  {
+    "insertId": "6a2636e20000a6fdbd6df80f",
+    "labels": {
+      "component": "pyqgis-worker",
+      "env": "dev",
+      "instanceId": "002f8ffd478a46623d95d964cd0f4c90a3e29af2b514c3751aa3520681b115efae0c7ebf7b43093ddb07304bbc59b467095cfa79287abde9a332e2b41d983dc7cb6e7e221b19b96d8fe2c6b589e481baa2fe61d21c6c4d78e0ea05",
+      "project": "grace-2",
+      "run.googleapis.com/execution_name": "grace-2-pyqgis-worker-flff7",
+      "run.googleapis.com/task_attempt": "0",
+      "run.googleapis.com/task_index": "0",
+      "sprint": "04"
+    },
+    "logName": "projects/grace-2-hazard-prod/logs/run.googleapis.com%2Fstdout",
+    "receiveTimestamp": "2026-06-08T03:28:34.048734678Z",
+    "resource": {
+      "labels": {
+        "job_name": "grace-2-pyqgis-worker",
+        "location": "us-central1",
+        "project_id": "grace-2-hazard-prod"
+      },
+      "type": "cloud_run_job"
+    },
+    "textPayload": "    \"flood-depth-job-0070-demo\"",
+    "timestamp": "2026-06-08T03:28:34.042749Z"
+  },
+  {
+    "insertId": "6a2636e20000a6f90970f48f",
+    "labels": {
+      "component": "pyqgis-worker",
+      "env": "dev",
+      "instanceId": "002f8ffd478a46623d95d964cd0f4c90a3e29af2b514c3751aa3520681b115efae0c7ebf7b43093ddb07304bbc59b467095cfa79287abde9a332e2b41d983dc7cb6e7e221b19b96d8fe2c6b589e481baa2fe61d21c6c4d78e0ea05",
+      "project": "grace-2",
+      "run.googleapis.com/execution_name": "grace-2-pyqgis-worker-flff7",
+      "run.googleapis.com/task_attempt": "0",
+      "run.googleapis.com/task_index": "0",
+      "sprint": "04"
+    },
+    "logName": "projects/grace-2-hazard-prod/logs/run.googleapis.com%2Fstdout",
+    "receiveTimestamp": "2026-06-08T03:28:34.048734678Z",
+    "resource": {
+      "labels": {
+        "job_name": "grace-2-pyqgis-worker",
+        "location": "us-central1",
+        "project_id": "grace-2-hazard-prod"
+      },
+      "type": "cloud_run_job"
+    },
+    "textPayload": "    \"flood-depth-job-0069-demo\",",
+    "timestamp": "2026-06-08T03:28:34.042745Z"
+  },
+  {
+    "insertId": "6a2636e20000a6f64d82bfa9",
+    "labels": {
+      "component": "pyqgis-worker",
+      "env": "dev",
+      "instanceId": "002f8ffd478a46623d95d964cd0f4c90a3e29af2b514c3751aa3520681b115efae0c7ebf7b43093ddb07304bbc59b467095cfa79287abde9a332e2b41d983dc7cb6e7e221b19b96d8fe2c6b589e481baa2fe61d21c6c4d78e0ea05",
+      "project": "grace-2",
+      "run.googleapis.com/execution_name": "grace-2-pyqgis-worker-flff7",
+      "run.googleapis.com/task_attempt": "0",
+      "run.googleapis.com/task_index": "0",
+      "sprint": "04"
+    },
+    "logName": "projects/grace-2-hazard-prod/logs/run.googleapis.com%2Fstdout",
+    "receiveTimestamp": "2026-06-08T03:28:34.048734678Z",
+    "resource": {
+      "labels": {
+        "job_name": "grace-2-pyqgis-worker",
+        "location": "us-central1",
+        "project_id": "grace-2-hazard-prod"
+      },
+      "type": "cloud_run_job"
+    },
+    "textPayload": "    \"basemap-osm-conus\",",
+    "timestamp": "2026-06-08T03:28:34.042742Z"
+  },
+  {
+    "insertId": "6a2636e20000a6f2f1b9c43b",
+    "labels": {
+      "component": "pyqgis-worker",
+      "env": "dev",
+      "instanceId": "002f8ffd478a46623d95d964cd0f4c90a3e29af2b514c3751aa3520681b115efae0c7ebf7b43093ddb07304bbc59b467095cfa79287abde9a332e2b41d983dc7cb6e7e221b19b96d8fe2c6b589e481baa2fe61d21c6c4d78e0ea05",
+      "project": "grace-2",
+      "run.googleapis.com/execution_name": "grace-2-pyqgis-worker-flff7",
+      "run.googleapis.com/task_attempt": "0",
+      "run.googleapis.com/task_index": "0",
+      "sprint": "04"
+    },
+    "logName": "projects/grace-2-hazard-prod/logs/run.googleapis.com%2Fstdout",
+    "receiveTimestamp": "2026-06-08T03:28:34.048734678Z",
+    "resource": {
+      "labels": {
+        "job_name": "grace-2-pyqgis-worker",
+        "location": "us-central1",
+        "project_id": "grace-2-hazard-prod"
+      },
+      "type": "cloud_run_job"
+    },
+    "textPayload": "  \"layers_after\": [",
+    "timestamp": "2026-06-08T03:28:34.042738Z"
+  },
+  {
+    "insertId": "6a2636e20000a6eff270fdb1",
+    "labels": {
+      "component": "pyqgis-worker",
+      "env": "dev",
+      "instanceId": "002f8ffd478a46623d95d964cd0f4c90a3e29af2b514c3751aa3520681b115efae0c7ebf7b43093ddb07304bbc59b467095cfa79287abde9a332e2b41d983dc7cb6e7e221b19b96d8fe2c6b589e481baa2fe61d21c6c4d78e0ea05",
+      "project": "grace-2",
+      "run.googleapis.com/execution_name": "grace-2-pyqgis-worker-flff7",
+      "run.googleapis.com/task_attempt": "0",
+      "run.googleapis.com/task_index": "0",
+      "sprint": "04"
+    },
+    "logName": "projects/grace-2-hazard-prod/logs/run.googleapis.com%2Fstdout",
+    "receiveTimestamp": "2026-06-08T03:28:34.048734678Z",
+    "resource": {
+      "labels": {
+        "job_name": "grace-2-pyqgis-worker",
+        "location": "us-central1",
+        "project_id": "grace-2-hazard-prod"
+      },
+      "type": "cloud_run_job"
+    },
+    "textPayload": "  ],",
+    "timestamp": "2026-06-08T03:28:34.042735Z"
+  },
+  {
+    "insertId": "6a2636e20000a6ebb7eff9fb",
+    "labels": {
+      "component": "pyqgis-worker",
+      "env": "dev",
+      "instanceId": "002f8ffd478a46623d95d964cd0f4c90a3e29af2b514c3751aa3520681b115efae0c7ebf7b43093ddb07304bbc59b467095cfa79287abde9a332e2b41d983dc7cb6e7e221b19b96d8fe2c6b589e481baa2fe61d21c6c4d78e0ea05",
+      "project": "grace-2",
+      "run.googleapis.com/execution_name": "grace-2-pyqgis-worker-flff7",
+      "run.googleapis.com/task_attempt": "0",
+      "run.googleapis.com/task_index": "0",
+      "sprint": "04"
+    },
+    "logName": "projects/grace-2-hazard-prod/logs/run.googleapis.com%2Fstdout",
+    "receiveTimestamp": "2026-06-08T03:28:34.048734678Z",
+    "resource": {
+      "labels": {
+        "job_name": "grace-2-pyqgis-worker",
+        "location": "us-central1",
+        "project_id": "grace-2-hazard-prod"
+      },
+      "type": "cloud_run_job"
+    },
+    "textPayload": "    \"flood-depth-job-0069-demo\"",
+    "timestamp": "2026-06-08T03:28:34.042731Z"
+  },
+  {
+    "insertId": "6a2636e20000a6e8c838fb7f",
+    "labels": {
+      "component": "pyqgis-worker",
+      "env": "dev",
+      "instanceId": "002f8ffd478a46623d95d964cd0f4c90a3e29af2b514c3751aa3520681b115efae0c7ebf7b43093ddb07304bbc59b467095cfa79287abde9a332e2b41d983dc7cb6e7e221b19b96d8fe2c6b589e481baa2fe61d21c6c4d78e0ea05",
+      "project": "grace-2",
+      "run.googleapis.com/execution_name": "grace-2-pyqgis-worker-flff7",
+      "run.googleapis.com/task_attempt": "0",
+      "run.googleapis.com/task_index": "0",
+      "sprint": "04"
+    },
+    "logName": "projects/grace-2-hazard-prod/logs/run.googleapis.com%2Fstdout",
+    "receiveTimestamp": "2026-06-08T03:28:34.048734678Z",
+    "resource": {
+      "labels": {
+        "job_name": "grace-2-pyqgis-worker",
+        "location": "us-central1",
+        "project_id": "grace-2-hazard-prod"
+      },
+      "type": "cloud_run_job"
+    },
+    "textPayload": "    \"basemap-osm-conus\",",
+    "timestamp": "2026-06-08T03:28:34.042728Z"
+  },
+  {
+    "insertId": "6a2636e20000a6e3b44adeb1",
+    "labels": {
+      "component": "pyqgis-worker",
+      "env": "dev",
+      "instanceId": "002f8ffd478a46623d95d964cd0f4c90a3e29af2b514c3751aa3520681b115efae0c7ebf7b43093ddb07304bbc59b467095cfa79287abde9a332e2b41d983dc7cb6e7e221b19b96d8fe2c6b589e481baa2fe61d21c6c4d78e0ea05",
+      "project": "grace-2",
+      "run.googleapis.com/execution_name": "grace-2-pyqgis-worker-flff7",
+      "run.googleapis.com/task_attempt": "0",
+      "run.googleapis.com/task_index": "0",
+      "sprint": "04"
+    },
+    "logName": "projects/grace-2-hazard-prod/logs/run.googleapis.com%2Fstdout",
+    "receiveTimestamp": "2026-06-08T03:28:34.048734678Z",
+    "resource": {
+      "labels": {
+        "job_name": "grace-2-pyqgis-worker",
+        "location": "us-central1",
+        "project_id": "grace-2-hazard-prod"
+      },
+      "type": "cloud_run_job"
+    },
+    "textPayload": "  \"layers_before\": [",
+    "timestamp": "2026-06-08T03:28:34.042723Z"
+  },
+  {
+    "insertId": "6a2636e20000a6de02d83c23",
+    "labels": {
+      "component": "pyqgis-worker",
+      "env": "dev",
+      "instanceId": "002f8ffd478a46623d95d964cd0f4c90a3e29af2b514c3751aa3520681b115efae0c7ebf7b43093ddb07304bbc59b467095cfa79287abde9a332e2b41d983dc7cb6e7e221b19b96d8fe2c6b589e481baa2fe61d21c6c4d78e0ea05",
+      "project": "grace-2",
+      "run.googleapis.com/execution_name": "grace-2-pyqgis-worker-flff7",
+      "run.googleapis.com/task_attempt": "0",
+      "run.googleapis.com/task_index": "0",
+      "sprint": "04"
+    },
+    "logName": "projects/grace-2-hazard-prod/logs/run.googleapis.com%2Fstdout",
+    "receiveTimestamp": "2026-06-08T03:28:34.048734678Z",
+    "resource": {
+      "labels": {
+        "job_name": "grace-2-pyqgis-worker",
+        "location": "us-central1",
+        "project_id": "grace-2-hazard-prod"
+      },
+      "type": "cloud_run_job"
+    },
+    "textPayload": "  \"qgs_uri\": \"/mnt/qgs/grace2-sample.qgs\",",
+    "timestamp": "2026-06-08T03:28:34.042718Z"
+  },
+  {
+    "insertId": "6a2636e20000a6cb2faa7558",
+    "labels": {
+      "component": "pyqgis-worker",
+      "env": "dev",
+      "instanceId": "002f8ffd478a46623d95d964cd0f4c90a3e29af2b514c3751aa3520681b115efae0c7ebf7b43093ddb07304bbc59b467095cfa79287abde9a332e2b41d983dc7cb6e7e221b19b96d8fe2c6b589e481baa2fe61d21c6c4d78e0ea05",
+      "project": "grace-2",
+      "run.googleapis.com/execution_name": "grace-2-pyqgis-worker-flff7",
+      "run.googleapis.com/task_attempt": "0",
+      "run.googleapis.com/task_index": "0",
+      "sprint": "04"
+    },
+    "logName": "projects/grace-2-hazard-prod/logs/run.googleapis.com%2Fstdout",
+    "receiveTimestamp": "2026-06-08T03:28:34.048734678Z",
+    "resource": {
+      "labels": {
+        "job_name": "grace-2-pyqgis-worker",
+        "location": "us-central1",
+        "project_id": "grace-2-hazard-prod"
+      },
+      "type": "cloud_run_job"
+    },
+    "textPayload": "{",
+    "timestamp": "2026-06-08T03:28:34.042699Z"
+  },
+  {
+    "insertId": "6a2636dd000db1caf7e946b5",
+    "labels": {
+      "component": "pyqgis-worker",
+      "env": "dev",
+      "instanceId": "002f8ffd478a46623d95d964cd0f4c90a3e29af2b514c3751aa3520681b115efae0c7ebf7b43093ddb07304bbc59b467095cfa79287abde9a332e2b41d983dc7cb6e7e221b19b96d8fe2c6b589e481baa2fe61d21c6c4d78e0ea05",
+      "project": "grace-2",
+      "run.googleapis.com/execution_name": "grace-2-pyqgis-worker-flff7",
+      "run.googleapis.com/task_attempt": "0",
+      "run.googleapis.com/task_index": "0",
+      "sprint": "04"
+    },
+    "logName": "projects/grace-2-hazard-prod/logs/run.googleapis.com%2Fstderr",
+    "receiveTimestamp": "2026-06-08T03:28:30.129460781Z",
+    "resource": {
+      "labels": {
+        "job_name": "grace-2-pyqgis-worker",
+        "location": "us-central1",
+        "project_id": "grace-2-hazard-prod"
+      },
+      "type": "cloud_run_job"
+    },
+    "textPayload": "Warning 1: Unable to save auxiliary information in /vsigs/grace-2-hazard-prod-runs/01KTJKTAPX4V7GW0AS3C8BDYHK/flood_depth_peak.tif.aux.xml.",
+    "timestamp": "2026-06-08T03:28:29.897482Z"
+  },
+  {
+    "insertId": "6a2636dd00080c4ec2f95d93",
+    "labels": {
+      "component": "pyqgis-worker",
+      "env": "dev",
+      "instanceId": "002f8ffd478a46623d95d964cd0f4c90a3e29af2b514c3751aa3520681b115efae0c7ebf7b43093ddb07304bbc59b467095cfa79287abde9a332e2b41d983dc7cb6e7e221b19b96d8fe2c6b589e481baa2fe61d21c6c4d78e0ea05",
+      "project": "grace-2",
+      "run.googleapis.com/execution_name": "grace-2-pyqgis-worker-flff7",
+      "run.googleapis.com/task_attempt": "0",
+      "run.googleapis.com/task_index": "0",
+      "sprint": "04"
+    },
+    "logName": "projects/grace-2-hazard-prod/logs/run.googleapis.com%2F%2Fvar%2Flog%2Fsystem",
+    "receiveTimestamp": "2026-06-08T03:28:29.687903809Z",
+    "resource": {
+      "labels": {
+        "job_name": "grace-2-pyqgis-worker",
+        "location": "us-central1",
+        "project_id": "grace-2-hazard-prod"
+      },
+      "type": "cloud_run_job"
+    },
+    "textPayload": "time=\"08/06/2026 03:28:29.524897\" severity=INFO message=\"Existing file grace2-sample.qgs of size 43278 bytes (non-zero) will use legacy staged writes. Streaming writes is supported for sequential writes to new/empty files. For more details, see: https://github.com/GoogleCloudPlatform/gcsfuse/blob/master/docs/semantics.md#writes\" mount-id=grace-2-hazard-prod-qgs-d2ab2c4c",
+    "timestamp": "2026-06-08T03:28:29.527438Z"
+  },
+  {
+    "insertId": "6a2636dd00046e59749c9a48",
+    "labels": {
+      "component": "pyqgis-worker",
+      "env": "dev",
+      "instanceId": "002f8ffd478a46623d95d964cd0f4c90a3e29af2b514c3751aa3520681b115efae0c7ebf7b43093ddb07304bbc59b467095cfa79287abde9a332e2b41d983dc7cb6e7e221b19b96d8fe2c6b589e481baa2fe61d21c6c4d78e0ea05",
+      "project": "grace-2",
+      "run.googleapis.com/execution_name": "grace-2-pyqgis-worker-flff7",
+      "run.googleapis.com/task_attempt": "0",
+      "run.googleapis.com/task_index": "0",
+      "sprint": "04"
+    },
+    "logName": "projects/grace-2-hazard-prod/logs/run.googleapis.com%2F%2Fvar%2Flog%2Fsystem",
+    "receiveTimestamp": "2026-06-08T03:28:29.353478797Z",
+    "resource": {
+      "labels": {
+        "job_name": "grace-2-pyqgis-worker",
+        "location": "us-central1",
+        "project_id": "grace-2-hazard-prod"
+      },
+      "type": "cloud_run_job"
+    },
+    "textPayload": "time=\"08/06/2026 03:28:29.288225\" severity=INFO message=\"Existing file grace2-sample.qgs~ of size 28308 bytes (non-zero) will use legacy staged writes. Streaming writes is supported for sequential writes to new/empty files. For more details, see: https://github.com/GoogleCloudPlatform/gcsfuse/blob/master/docs/semantics.md#writes\" mount-id=grace-2-hazard-prod-qgs-d2ab2c4c",
+    "timestamp": "2026-06-08T03:28:29.290393Z"
+  },
+  {
+    "insertId": "6a2636dd0002e3aa3f426560",
+    "labels": {
+      "component": "pyqgis-worker",
+      "env": "dev",
+      "instanceId": "002f8ffd478a46623d95d964cd0f4c90a3e29af2b514c3751aa3520681b115efae0c7ebf7b43093ddb07304bbc59b467095cfa79287abde9a332e2b41d983dc7cb6e7e221b19b96d8fe2c6b589e481baa2fe61d21c6c4d78e0ea05",
+      "project": "grace-2",
+      "run.googleapis.com/execution_name": "grace-2-pyqgis-worker-flff7",
+      "run.googleapis.com/task_attempt": "0",
+      "run.googleapis.com/task_index": "0",
+      "sprint": "04"
+    },
+    "logName": "projects/grace-2-hazard-prod/logs/run.googleapis.com%2Fstderr",
+    "receiveTimestamp": "2026-06-08T03:28:29.463959029Z",
+    "resource": {
+      "labels": {
+        "job_name": "grace-2-pyqgis-worker",
+        "location": "us-central1",
+        "project_id": "grace-2-hazard-prod"
+      },
+      "type": "cloud_run_job"
+    },
+    "textPayload": "2026-06-08 03:28:29,187 INFO grace2.worker.pyqgis — post-mutate layers_after=['basemap-osm-conus', 'flood-depth-job-0069-demo', 'flood-depth-job-0070-demo'] wms_url=https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/mnt/qgs/grace2-sample.qgs&LAYERS=flood-depth-job-0070-demo",
+    "timestamp": "2026-06-08T03:28:29.189354Z"
+  },
+  {
+    "insertId": "6a2636dc000da4ff7b18d952",
+    "labels": {
+      "component": "pyqgis-worker",
+      "env": "dev",
+      "instanceId": "002f8ffd478a46623d95d964cd0f4c90a3e29af2b514c3751aa3520681b115efae0c7ebf7b43093ddb07304bbc59b467095cfa79287abde9a332e2b41d983dc7cb6e7e221b19b96d8fe2c6b589e481baa2fe61d21c6c4d78e0ea05",
+      "project": "grace-2",
+      "run.googleapis.com/execution_name": "grace-2-pyqgis-worker-flff7",
+      "run.googleapis.com/task_attempt": "0",
+      "run.googleapis.com/task_index": "0",
+      "sprint": "04"
+    },
+    "logName": "projects/grace-2-hazard-prod/logs/run.googleapis.com%2Fstderr",
+    "receiveTimestamp": "2026-06-08T03:28:29.132784713Z",
+    "resource": {
+      "labels": {
+        "job_name": "grace-2-pyqgis-worker",
+        "location": "us-central1",
+        "project_id": "grace-2-hazard-prod"
+      },
+      "type": "cloud_run_job"
+    },
+    "textPayload": "2026-06-08 03:28:28,892 INFO grace2.worker.pyqgis — publish_raster_round_trip: read /mnt/qgs/grace2-sample.qgs — layers_before=['basemap-osm-conus', 'flood-depth-job-0069-demo'] raster_uri=/vsigs/grace-2-hazard-prod-runs/01KTJKTAPX4V7GW0AS3C8BDYHK/flood_depth_peak.tif",
+    "timestamp": "2026-06-08T03:28:28.894207Z"
+  },
+  {
+    "insertId": "6a2636da000709ccb110073d",
+    "labels": {
+      "component": "pyqgis-worker",
+      "env": "dev",
+      "instanceId": "002f8ffd478a46623d95d964cd0f4c90a3e29af2b514c3751aa3520681b115efae0c7ebf7b43093ddb07304bbc59b467095cfa79287abde9a332e2b41d983dc7cb6e7e221b19b96d8fe2c6b589e481baa2fe61d21c6c4d78e0ea05",
+      "project": "grace-2",
+      "run.googleapis.com/execution_name": "grace-2-pyqgis-worker-flff7",
+      "run.googleapis.com/task_attempt": "0",
+      "run.googleapis.com/task_index": "0",
+      "sprint": "04"
+    },
+    "logName": "projects/grace-2-hazard-prod/logs/run.googleapis.com%2Fstderr",
+    "receiveTimestamp": "2026-06-08T03:28:26.468453730Z",
+    "resource": {
+      "labels": {
+        "job_name": "grace-2-pyqgis-worker",
+        "location": "us-central1",
+        "project_id": "grace-2-hazard-prod"
+      },
+      "type": "cloud_run_job"
+    },
+    "textPayload": "QStandardPaths: XDG_RUNTIME_DIR not set, defaulting to '/tmp/runtime-root'",
+    "timestamp": "2026-06-08T03:28:26.461260Z"
+  },
+  {
+    "insertId": "6a2636d3000b93784f1ef141",
+    "labels": {
+      "component": "pyqgis-worker",
+      "env": "dev",
+      "instanceId": "002f8ffd478a46623d95d964cd0f4c90a3e29af2b514c3751aa3520681b115efae0c7ebf7b43093ddb07304bbc59b467095cfa79287abde9a332e2b41d983dc7cb6e7e221b19b96d8fe2c6b589e481baa2fe61d21c6c4d78e0ea05",
+      "project": "grace-2",
+      "run.googleapis.com/execution_name": "grace-2-pyqgis-worker-flff7",
+      "run.googleapis.com/task_attempt": "0",
+      "run.googleapis.com/task_index": "0",
+      "sprint": "04"
+    },
+    "logName": "projects/grace-2-hazard-prod/logs/run.googleapis.com%2F%2Fvar%2Flog%2Fsystem",
+    "receiveTimestamp": "2026-06-08T03:28:20.026358126Z",
+    "resource": {
+      "labels": {
+        "job_name": "grace-2-pyqgis-worker",
+        "location": "us-central1",
+        "project_id": "grace-2-hazard-prod"
+      },
+      "type": "cloud_run_job"
+    },
+    "textPayload": "time=\"08/06/2026 03:28:19.507134\" severity=INFO message=\"File system has been successfully mounted.\" mount-id=grace-2-hazard-prod-qgs-d2ab2c4c",
+    "timestamp": "2026-06-08T03:28:19.758648Z"
+  },
+  {
+    "insertId": "6a2636d3000b926f78b1657c",
+    "labels": {
+      "component": "pyqgis-worker",
+      "env": "dev",
+      "instanceId": "002f8ffd478a46623d95d964cd0f4c90a3e29af2b514c3751aa3520681b115efae0c7ebf7b43093ddb07304bbc59b467095cfa79287abde9a332e2b41d983dc7cb6e7e221b19b96d8fe2c6b589e481baa2fe61d21c6c4d78e0ea05",
+      "project": "grace-2",
+      "run.googleapis.com/execution_name": "grace-2-pyqgis-worker-flff7",
+      "run.googleapis.com/task_attempt": "0",
+      "run.googleapis.com/task_index": "0",
+      "sprint": "04"
+    },
+    "logName": "projects/grace-2-hazard-prod/logs/run.googleapis.com%2F%2Fvar%2Flog%2Fsystem",
+    "receiveTimestamp": "2026-06-08T03:28:20.026358126Z",
+    "resource": {
+      "labels": {
+        "job_name": "grace-2-pyqgis-worker",
+        "location": "us-central1",
+        "project_id": "grace-2-hazard-prod"
+      },
+      "type": "cloud_run_job"
+    },
+    "textPayload": "time=\"08/06/2026 03:28:19.506765\" severity=INFO message=\"Mounting file system \\\"grace-2-hazard-prod-qgs\\\"...\" mount-id=grace-2-hazard-prod-qgs-d2ab2c4c",
+    "timestamp": "2026-06-08T03:28:19.758383Z"
+  },
+  {
+    "insertId": "6a2636d3000b926aea5b2822",
+    "labels": {
+      "component": "pyqgis-worker",
+      "env": "dev",
+      "instanceId": "002f8ffd478a46623d95d964cd0f4c90a3e29af2b514c3751aa3520681b115efae0c7ebf7b43093ddb07304bbc59b467095cfa79287abde9a332e2b41d983dc7cb6e7e221b19b96d8fe2c6b589e481baa2fe61d21c6c4d78e0ea05",
+      "project": "grace-2",
+      "run.googleapis.com/execution_name": "grace-2-pyqgis-worker-flff7",
+      "run.googleapis.com/task_attempt": "0",
+      "run.googleapis.com/task_index": "0",
+      "sprint": "04"
+    },
+    "logName": "projects/grace-2-hazard-prod/logs/run.googleapis.com%2F%2Fvar%2Flog%2Fsystem",
+    "receiveTimestamp": "2026-06-08T03:28:20.026358126Z",
+    "resource": {
+      "labels": {
+        "job_name": "grace-2-pyqgis-worker",
+        "location": "us-central1",
+        "project_id": "grace-2-hazard-prod"
+      },
+      "type": "cloud_run_job"
+    },
+    "textPayload": "time=\"08/06/2026 03:28:19.502849\" severity=INFO message=\"Success in fetching cred.UniverseDomain\" mount-id=grace-2-hazard-prod-qgs-d2ab2c4c",
+    "timestamp": "2026-06-08T03:28:19.758378Z"
+  },
+  {
+    "insertId": "6a2636d3000b925fa447f596",
+    "labels": {
+      "component": "pyqgis-worker",
+      "env": "dev",
+      "instanceId": "002f8ffd478a46623d95d964cd0f4c90a3e29af2b514c3751aa3520681b115efae0c7ebf7b43093ddb07304bbc59b467095cfa79287abde9a332e2b41d983dc7cb6e7e221b19b96d8fe2c6b589e481baa2fe61d21c6c4d78e0ea05",
+      "project": "grace-2",
+      "run.googleapis.com/execution_name": "grace-2-pyqgis-worker-flff7",
+      "run.googleapis.com/task_attempt": "0",
+      "run.googleapis.com/task_index": "0",
+      "sprint": "04"
+    },
+    "logName": "projects/grace-2-hazard-prod/logs/run.googleapis.com%2F%2Fvar%2Flog%2Fsystem",
+    "receiveTimestamp": "2026-06-08T03:28:20.026358126Z",
+    "resource": {
+      "labels": {
+        "job_name": "grace-2-pyqgis-worker",
+        "location": "us-central1",
+        "project_id": "grace-2-hazard-prod"
+      },
+      "type": "cloud_run_job"
+    },
+    "textPayload": "time=\"08/06/2026 03:28:19.502324\" severity=INFO message=\"Calling cred.UniverseDomain request for \\\"credentials\\\" with deadline=30s\" mount-id=grace-2-hazard-prod-qgs-d2ab2c4c",
+    "timestamp": "2026-06-08T03:28:19.758367Z"
+  },
+  {
+    "insertId": "6a2636d3000b914d76ebbc95",
+    "labels": {
+      "component": "pyqgis-worker",
+      "env": "dev",
+      "instanceId": "002f8ffd478a46623d95d964cd0f4c90a3e29af2b514c3751aa3520681b115efae0c7ebf7b43093ddb07304bbc59b467095cfa79287abde9a332e2b41d983dc7cb6e7e221b19b96d8fe2c6b589e481baa2fe61d21c6c4d78e0ea05",
+      "project": "grace-2",
+      "run.googleapis.com/execution_name": "grace-2-pyqgis-worker-flff7",
+      "run.googleapis.com/task_attempt": "0",
+      "run.googleapis.com/task_index": "0",
+      "sprint": "04"
+    },
+    "logName": "projects/grace-2-hazard-prod/logs/run.googleapis.com%2F%2Fvar%2Flog%2Fsystem",
+    "receiveTimestamp": "2026-06-08T03:28:20.026358126Z",
+    "resource": {
+      "labels": {
+        "job_name": "grace-2-pyqgis-worker",
+        "location": "us-central1",
+        "project_id": "grace-2-hazard-prod"
+      },
+      "type": "cloud_run_job"
+    },
+    "textPayload": "time=\"08/06/2026 03:28:19.502256\" severity=INFO message=\"GetStorageLayout -> (grace-2-hazard-prod-qgs) 79 msec\" mount-id=grace-2-hazard-prod-qgs-d2ab2c4c",
+    "timestamp": "2026-06-08T03:28:19.758093Z"
+  },
+  {
+    "insertId": "6a2636d3000b8ea31c058c6d",
+    "labels": {
+      "component": "pyqgis-worker",
+      "env": "dev",
+      "instanceId": "002f8ffd478a46623d95d964cd0f4c90a3e29af2b514c3751aa3520681b115efae0c7ebf7b43093ddb07304bbc59b467095cfa79287abde9a332e2b41d983dc7cb6e7e221b19b96d8fe2c6b589e481baa2fe61d21c6c4d78e0ea05",
+      "project": "grace-2",
+      "run.googleapis.com/execution_name": "grace-2-pyqgis-worker-flff7",
+      "run.googleapis.com/task_attempt": "0",
+      "run.googleapis.com/task_index": "0",
+      "sprint": "04"
+    },
+    "logName": "projects/grace-2-hazard-prod/logs/run.googleapis.com%2F%2Fvar%2Flog%2Fsystem",
+    "receiveTimestamp": "2026-06-08T03:28:20.026358126Z",
+    "resource": {
+      "labels": {
+        "job_name": "grace-2-pyqgis-worker",
+        "location": "us-central1",
+        "project_id": "grace-2-hazard-prod"
+      },
+      "type": "cloud_run_job"
+    },
+    "textPayload": "time=\"08/06/2026 03:28:19.422899\" severity=INFO message=\"Calling GetStorageLayout request for \\\"projects/_/buckets/grace-2-hazard-prod-qgs/storageLayout\\\" with deadline=30s\" mount-id=grace-2-hazard-prod-qgs-d2ab2c4c",
+    "timestamp": "2026-06-08T03:28:19.757411Z"
+  },
+  {
+    "insertId": "6a2636d3000b8db0b2f72040",
+    "labels": {
+      "component": "pyqgis-worker",
+      "env": "dev",
+      "instanceId": "002f8ffd478a46623d95d964cd0f4c90a3e29af2b514c3751aa3520681b115efae0c7ebf7b43093ddb07304bbc59b467095cfa79287abde9a332e2b41d983dc7cb6e7e221b19b96d8fe2c6b589e481baa2fe61d21c6c4d78e0ea05",
+      "project": "grace-2",
+      "run.googleapis.com/execution_name": "grace-2-pyqgis-worker-flff7",
+      "run.googleapis.com/task_attempt": "0",
+      "run.googleapis.com/task_index": "0",
+      "sprint": "04"
+    },
+    "logName": "projects/grace-2-hazard-prod/logs/run.googleapis.com%2F%2Fvar%2Flog%2Fsystem",
+    "receiveTimestamp": "2026-06-08T03:28:20.026358126Z",
+    "resource": {
+      "labels": {
+        "job_name": "grace-2-pyqgis-worker",
+        "location": "us-central1",
+        "project_id": "grace-2-hazard-prod"
+      },
+      "type": "cloud_run_job"
+    },
+    "textPayload": "time=\"08/06/2026 03:28:19.422870\" severity=INFO message=\"GetStorageLayout <- (grace-2-hazard-prod-qgs)\" mount-id=grace-2-hazard-prod-qgs-d2ab2c4c",
+    "timestamp": "2026-06-08T03:28:19.757168Z"
+  },
+  {
+    "insertId": "6a2636d3000b8dab4276d003",
+    "labels": {
+      "component": "pyqgis-worker",
+      "env": "dev",
+      "instanceId": "002f8ffd478a46623d95d964cd0f4c90a3e29af2b514c3751aa3520681b115efae0c7ebf7b43093ddb07304bbc59b467095cfa79287abde9a332e2b41d983dc7cb6e7e221b19b96d8fe2c6b589e481baa2fe61d21c6c4d78e0ea05",
+      "project": "grace-2",
+      "run.googleapis.com/execution_name": "grace-2-pyqgis-worker-flff7",
+      "run.googleapis.com/task_attempt": "0",
+      "run.googleapis.com/task_index": "0",
+      "sprint": "04"
+    },
+    "logName": "projects/grace-2-hazard-prod/logs/run.googleapis.com%2F%2Fvar%2Flog%2Fsystem",
+    "receiveTimestamp": "2026-06-08T03:28:20.026358126Z",
+    "resource": {
+      "labels": {
+        "job_name": "grace-2-pyqgis-worker",
+        "location": "us-central1",
+        "project_id": "grace-2-hazard-prod"
+      },
+      "type": "cloud_run_job"
+    },
+    "textPayload": "time=\"08/06/2026 03:28:19.422857\" severity=INFO message=\"Set up root directory for bucket grace-2-hazard-prod-qgs\" mount-id=grace-2-hazard-prod-qgs-d2ab2c4c",
+    "timestamp": "2026-06-08T03:28:19.757163Z"
+  },
+  {
+    "insertId": "6a2636d3000b8cce24d919e1",
+    "labels": {
+      "component": "pyqgis-worker",
+      "env": "dev",
+      "instanceId": "002f8ffd478a46623d95d964cd0f4c90a3e29af2b514c3751aa3520681b115efae0c7ebf7b43093ddb07304bbc59b467095cfa79287abde9a332e2b41d983dc7cb6e7e221b19b96d8fe2c6b589e481baa2fe61d21c6c4d78e0ea05",
+      "project": "grace-2",
+      "run.googleapis.com/execution_name": "grace-2-pyqgis-worker-flff7",
+      "run.googleapis.com/task_attempt": "0",
+      "run.googleapis.com/task_index": "0",
+      "sprint": "04"
+    },
+    "logName": "projects/grace-2-hazard-prod/logs/run.googleapis.com%2F%2Fvar%2Flog%2Fsystem",
+    "receiveTimestamp": "2026-06-08T03:28:20.026358126Z",
+    "resource": {
+      "labels": {
+        "job_name": "grace-2-pyqgis-worker",
+        "location": "us-central1",
+        "project_id": "grace-2-hazard-prod"
+      },
+      "type": "cloud_run_job"
+    },
+    "textPayload": "time=\"08/06/2026 03:28:19.422845\" severity=INFO message=\"MRD cache (LRU-based) enabled with maxSize=1000 (pools closed-file MRDs)\" mount-id=grace-2-hazard-prod-qgs-d2ab2c4c",
+    "timestamp": "2026-06-08T03:28:19.756942Z"
+  },
+  {
+    "insertId": "6a2636d3000b8bdf8d976712",
+    "labels": {
+      "component": "pyqgis-worker",
+      "env": "dev",
+      "instanceId": "002f8ffd478a46623d95d964cd0f4c90a3e29af2b514c3751aa3520681b115efae0c7ebf7b43093ddb07304bbc59b467095cfa79287abde9a332e2b41d983dc7cb6e7e221b19b96d8fe2c6b589e481baa2fe61d21c6c4d78e0ea05",
+      "project": "grace-2",
+      "run.googleapis.com/execution_name": "grace-2-pyqgis-worker-flff7",
+      "run.googleapis.com/task_attempt": "0",
+      "run.googleapis.com/task_index": "0",
+      "sprint": "04"
+    },
+    "logName": "projects/grace-2-hazard-prod/logs/run.googleapis.com%2F%2Fvar%2Flog%2Fsystem",
+    "receiveTimestamp": "2026-06-08T03:28:20.026358126Z",
+    "resource": {
+      "labels": {
+        "job_name": "grace-2-pyqgis-worker",
+        "location": "us-central1",
+        "project_id": "grace-2-hazard-prod"
+      },
+      "type": "cloud_run_job"
+    },
+    "textPayload": "time=\"08/06/2026 03:28:19.422823\" severity=INFO message=\"Creating a new server...\\n\" mount-id=grace-2-hazard-prod-qgs-d2ab2c4c",
+    "timestamp": "2026-06-08T03:28:19.756703Z"
+  },
+  {
+    "insertId": "6a2636d3000b8bd9b26980c0",
+    "labels": {
+      "component": "pyqgis-worker",
+      "env": "dev",
+      "instanceId": "002f8ffd478a46623d95d964cd0f4c90a3e29af2b514c3751aa3520681b115efae0c7ebf7b43093ddb07304bbc59b467095cfa79287abde9a332e2b41d983dc7cb6e7e221b19b96d8fe2c6b589e481baa2fe61d21c6c4d78e0ea05",
+      "project": "grace-2",
+      "run.googleapis.com/execution_name": "grace-2-pyqgis-worker-flff7",
+      "run.googleapis.com/task_attempt": "0",
+      "run.googleapis.com/task_index": "0",
+      "sprint": "04"
+    },
+    "logName": "projects/grace-2-hazard-prod/logs/run.googleapis.com%2F%2Fvar%2Flog%2Fsystem",
+    "receiveTimestamp": "2026-06-08T03:28:20.026358126Z",
+    "resource": {
+      "labels": {
+        "job_name": "grace-2-pyqgis-worker",
+        "location": "us-central1",
+        "project_id": "grace-2-hazard-prod"
+      },
+      "type": "cloud_run_job"
+    },
+    "textPayload": "time=\"08/06/2026 03:28:19.422175\" severity=INFO message=\"Success in fetching cred.UniverseDomain\" mount-id=grace-2-hazard-prod-qgs-d2ab2c4c",
+    "timestamp": "2026-06-08T03:28:19.756697Z"
+  },
+  {
+    "insertId": "6a2636d3000b8a97bd02ced8",
+    "labels": {
+      "component": "pyqgis-worker",
+      "env": "dev",
+      "instanceId": "002f8ffd478a46623d95d964cd0f4c90a3e29af2b514c3751aa3520681b115efae0c7ebf7b43093ddb07304bbc59b467095cfa79287abde9a332e2b41d983dc7cb6e7e221b19b96d8fe2c6b589e481baa2fe61d21c6c4d78e0ea05",
+      "project": "grace-2",
+      "run.googleapis.com/execution_name": "grace-2-pyqgis-worker-flff7",
+      "run.googleapis.com/task_attempt": "0",
+      "run.googleapis.com/task_index": "0",
+      "sprint": "04"
+    },
+    "logName": "projects/grace-2-hazard-prod/logs/run.googleapis.com%2F%2Fvar%2Flog%2Fsystem",
+    "receiveTimestamp": "2026-06-08T03:28:20.026358126Z",
+    "resource": {
+      "labels": {
+        "job_name": "grace-2-pyqgis-worker",
+        "location": "us-central1",
+        "project_id": "grace-2-hazard-prod"
+      },
+      "type": "cloud_run_job"
+    },
+    "textPayload": "time=\"08/06/2026 03:28:19.421892\" severity=INFO message=\"Calling cred.UniverseDomain request for \\\"credentials\\\" with deadline=30s\" mount-id=grace-2-hazard-prod-qgs-d2ab2c4c",
+    "timestamp": "2026-06-08T03:28:19.756375Z"
+  },
+  {
+    "insertId": "6a2636d3000b8a8de79c9a7c",
+    "labels": {
+      "component": "pyqgis-worker",
+      "env": "dev",
+      "instanceId": "002f8ffd478a46623d95d964cd0f4c90a3e29af2b514c3751aa3520681b115efae0c7ebf7b43093ddb07304bbc59b467095cfa79287abde9a332e2b41d983dc7cb6e7e221b19b96d8fe2c6b589e481baa2fe61d21c6c4d78e0ea05",
+      "project": "grace-2",
+      "run.googleapis.com/execution_name": "grace-2-pyqgis-worker-flff7",
+      "run.googleapis.com/task_attempt": "0",
+      "run.googleapis.com/task_index": "0",
+      "sprint": "04"
+    },
+    "logName": "projects/grace-2-hazard-prod/logs/run.googleapis.com%2F%2Fvar%2Flog%2Fsystem",
+    "receiveTimestamp": "2026-06-08T03:28:20.026358126Z",
+    "resource": {
+      "labels": {
+        "job_name": "grace-2-pyqgis-worker",
+        "location": "us-central1",
+        "project_id": "grace-2-hazard-prod"
+      },
+      "type": "cloud_run_job"
+    },
+    "textPayload": "time=\"08/06/2026 03:28:19.421834\" severity=INFO message=\"UserAgent = gcsfuse/3.9.1 (Go version go1.26.2) (GPN:gcsfuse-serverless) (Cfg:0:0:0:1:0:0) (mount-id:grace-2-hazard-prod-qgs-d2ab2c4c)\\n\" mount-id=grace-2-hazard-prod-qgs-d2ab2c4c",
+    "timestamp": "2026-06-08T03:28:19.756365Z"
+  },
+  {
+    "insertId": "6a2636d3000b88d200d9f1af",
+    "labels": {
+      "component": "pyqgis-worker",
+      "env": "dev",
+      "instanceId": "002f8ffd478a46623d95d964cd0f4c90a3e29af2b514c3751aa3520681b115efae0c7ebf7b43093ddb07304bbc59b467095cfa79287abde9a332e2b41d983dc7cb6e7e221b19b96d8fe2c6b589e481baa2fe61d21c6c4d78e0ea05",
+      "project": "grace-2",
+      "run.googleapis.com/execution_name": "grace-2-pyqgis-worker-flff7",
+      "run.googleapis.com/task_attempt": "0",
+      "run.googleapis.com/task_index": "0",
+      "sprint": "04"
+    },
+    "logName": "projects/grace-2-hazard-prod/logs/run.googleapis.com%2F%2Fvar%2Flog%2Fsystem",
+    "receiveTimestamp": "2026-06-08T03:28:20.026358126Z",
+    "resource": {
+      "labels": {
+        "job_name": "grace-2-pyqgis-worker",
+        "location": "us-central1",
+        "project_id": "grace-2-hazard-prod"
+      },
+      "type": "cloud_run_job"
+    },
+    "textPayload": "time=\"08/06/2026 03:28:19.421817\" severity=INFO message=\"Creating Storage handle...\" mount-id=grace-2-hazard-prod-qgs-d2ab2c4c",
+    "timestamp": "2026-06-08T03:28:19.755922Z"
+  },
+  {
+    "insertId": "6a2636d30006654d6be2bbec",
+    "labels": {
+      "component": "pyqgis-worker",
+      "env": "dev",
+      "instanceId": "002f8ffd478a46623d95d964cd0f4c90a3e29af2b514c3751aa3520681b115efae0c7ebf7b43093ddb07304bbc59b467095cfa79287abde9a332e2b41d983dc7cb6e7e221b19b96d8fe2c6b589e481baa2fe61d21c6c4d78e0ea05",
+      "project": "grace-2",
+      "run.googleapis.com/execution_name": "grace-2-pyqgis-worker-flff7",
+      "run.googleapis.com/task_attempt": "0",
+      "run.googleapis.com/task_index": "0",
+      "sprint": "04"
+    },
+    "logName": "projects/grace-2-hazard-prod/logs/run.googleapis.com%2F%2Fvar%2Flog%2Fsystem",
+    "receiveTimestamp": "2026-06-08T03:28:19.687870736Z",
+    "resource": {
+      "labels": {
+        "job_name": "grace-2-pyqgis-worker",
+        "location": "us-central1",
+        "project_id": "grace-2-hazard-prod"
+      },
+      "type": "cloud_run_job"
+    },
+    "textPayload": "time=\"08/06/2026 03:28:19.416790\" severity=INFO message=\"GCSFuse Config\" mount-id=grace-2-hazard-prod-qgs-d2ab2c4c \"Full Config\"=\"&{AppName:serverless CacheDir: CloudProfiler:{AllocatedHeap:true Cpu:true Enabled:false Goroutines:false Heap:true Label:gcsfuse-0.0.0 Mutex:false ServiceName:gcsfuse} Debug:{ExitOnInvariantViolation:false Fuse:false Gcs:false LogMutex:false} DisableAutoconfig:false DisableListAccessCheck:true DummyIo:{Enable:false PerMbLatency:0s ReaderLatency:0s} EnableAtomicRenameObject:true EnableGoogleLibAuth:true EnableHns:true EnableNewReader:true EnableStandardSymlinks:true EnableTypeCacheDeprecation:true EnableUnsupportedPathSupport:true FileCache:{CacheFileForRangeRead:false DownloadChunkSizeMb:200 EnableCrc:false EnableExperimentalSharedChunkCache:false EnableODirect:false EnableParallelDownloads:false ExcludeRegex: ExperimentalDisableSizeCalculationFix:false ExperimentalEnableChunkCache:false ExperimentalParallelDownloadsDefaultOn:true IncludeRegex: MaxParallelDownloads:16 MaxSizeMb:-1 ParallelDownloadsPerFile:16 SharedCacheChunkSizeMb:8 WriteBufferSize:4194304} FileSystem:{CongestionThreshold:0 DirMode:511 DisableParallelDirops:false EnableKernelReader:false ExperimentalEnableDentryCache:false ExperimentalEnablePirlo:false ExperimentalEnableReaddirplus:false ExperimentalODirect:false FileMode:438 FuseOptions:[allow_other] Gid:1000 IgnoreInterrupts:true InactiveMrdCacheSize:1000 KernelListCacheTtlSecs:0 KernelParamsFile: MaxBackground:0 MaxReadAheadKb:0 PreconditionErrors:true RenameDirLimit:0 TempDir: Uid:1000} Foreground:true GcsAuth:{AnonymousAccess:false KeyFile: ReuseTokenFromUrl:true TokenUrl:} GcsConnection:{BillingProject: ClientProtocol:http1 CustomEndpoint: EnableHttpDnsCache:true ExperimentalEnableJsonRead:false ExperimentalLocalSocketAddress: GrpcConnPoolSize:1 GrpcPathStrategy:direct-path-with-fallback HttpClientTimeout:0s LimitBytesPerSec:-1 LimitOpsPerSec:-1 MaxConnsPerHost:0 MaxIdleConnsPerHost:100 SequentialReadSizeMb:200} GcsRetries:{ChunkRetryDeadlineSecs:120 ChunkTransferTimeoutSecs:10 ExperimentalNonrapidFolderApiStallRetry:false MaxRetryAttempts:9223372036854775807 MaxRetrySleep:30s Multiplier:2 ReadStall:{Enable:true InitialReqTimeout:20s MaxReqTimeout:20m0s MinReqTimeout:1.5s ReqIncreaseRate:15 ReqTargetPercentile:0.99}} ImplicitDirs:true List:{EnableEmptyManagedFolders:false} Logging:{FilePath: Format:text LogRotate:{BackupFileCount:10 Compress:true MaxFileSizeMb:512} Severity:INFO WireLog:} MachineType: MetadataCache:{DeprecatedStatCacheCapacity:20460 DeprecatedStatCacheTtl:1m0s DeprecatedTypeCacheTtl:1m0s EnableMetadataPrefetch:false EnableNonexistentTypeCache:false ExperimentalMetadataPrefetchOnMount:disabled MetadataPrefetchEntriesLimit:5000 MetadataPrefetchMaxWorkers:10 NegativeTtlSecs:5 StatCacheMaxSizeMb:34 TtlSecs:60 TypeCacheMaxSizeMb:4} Metrics:{BufferSize:256 CloudMetricsExportIntervalSecs:0 ExperimentalEnableGrpcMetrics:true PrometheusPort:0 StackdriverExportInterval:0s UseNewNames:false Workers:3} Mrd:{PoolSize:4} OnlyDir: Profile: Read:{BlockSizeMb:16 EnableBufferedRead:false GlobalMaxBlocks:40 InactiveStreamTimeout:10s MaxBlocksPerHandle:20 MinBlocksPerHandle:4 RandomSeekThreshold:3 StartBlocksPerHandle:1} Trace:{Exporters:[gcpexporter] ProjectId: SamplingRatio:0} WorkloadInsight:{ForwardMergeThresholdMb:0 OutputFile: Visualize:false} Write:{BlockSizeMb:32 CreateEmptyFile:false EnableRapidAppends:true EnableStreamingWrites:true FinalizeFileForRapid:false GlobalMaxBlocks:4 MaxBlocksPerFile:1}}\"",
+    "timestamp": "2026-06-08T03:28:19.419149Z"
+  },
+  {
+    "insertId": "6a2636d30006611d4fff5dde",
+    "labels": {
+      "component": "pyqgis-worker",
+      "env": "dev",
+      "instanceId": "002f8ffd478a46623d95d964cd0f4c90a3e29af2b514c3751aa3520681b115efae0c7ebf7b43093ddb07304bbc59b467095cfa79287abde9a332e2b41d983dc7cb6e7e221b19b96d8fe2c6b589e481baa2fe61d21c6c4d78e0ea05",
+      "project": "grace-2",
+      "run.googleapis.com/execution_name": "grace-2-pyqgis-worker-flff7",
+      "run.googleapis.com/task_attempt": "0",
+      "run.googleapis.com/task_index": "0",
+      "sprint": "04"
+    },
+    "logName": "projects/grace-2-hazard-prod/logs/run.googleapis.com%2F%2Fvar%2Flog%2Fsystem",
+    "receiveTimestamp": "2026-06-08T03:28:19.687870736Z",
+    "resource": {
+      "labels": {
+        "job_name": "grace-2-pyqgis-worker",
+        "location": "us-central1",
+        "project_id": "grace-2-hazard-prod"
+      },
+      "type": "cloud_run_job"
+    },
+    "textPayload": "time=\"08/06/2026 03:28:19.416692\" severity=INFO message=\"GCSFuse Config\" mount-id=grace-2-hazard-prod-qgs-d2ab2c4c \"CLI Flags\"=\"map[app-name:serverless dir-mode:777 file-mode:666 foreground:true gid:1000 ignore-interrupts:true implicit-dirs:true log-format:text o:[allow_other] uid:1000]\"",
+    "timestamp": "2026-06-08T03:28:19.418077Z"
+  },
+  {
+    "insertId": "6a2636d3000555389c9e4678",
+    "labels": {
+      "component": "pyqgis-worker",
+      "env": "dev",
+      "instanceId": "002f8ffd478a46623d95d964cd0f4c90a3e29af2b514c3751aa3520681b115efae0c7ebf7b43093ddb07304bbc59b467095cfa79287abde9a332e2b41d983dc7cb6e7e221b19b96d8fe2c6b589e481baa2fe61d21c6c4d78e0ea05",
+      "project": "grace-2",
+      "run.googleapis.com/execution_name": "grace-2-pyqgis-worker-flff7",
+      "run.googleapis.com/task_attempt": "0",
+      "run.googleapis.com/task_index": "0",
+      "sprint": "04"
+    },
+    "logName": "projects/grace-2-hazard-prod/logs/run.googleapis.com%2F%2Fvar%2Flog%2Fsystem",
+    "receiveTimestamp": "2026-06-08T03:28:19.358267070Z",
+    "resource": {
+      "labels": {
+        "job_name": "grace-2-pyqgis-worker",
+        "location": "us-central1",
+        "project_id": "grace-2-hazard-prod"
+      },
+      "type": "cloud_run_job"
+    },
+    "textPayload": "GCSFuse is mounted with bucket grace-2-hazard-prod-qgs. Enable GCSFuse logging with mount options for more logs",
+    "timestamp": "2026-06-08T03:28:19.349496Z"
+  }
+]
