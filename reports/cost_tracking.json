@@ -740,6 +740,42 @@
       "description": "Sprint-12-mega Wave 2 parallel: fetch_cama_flood_discharge Tier-1 (CaMa-Flood \u2014 compound-flood fluvial substrate). Wave 2 fan-out closed 16/16 ready-for-audit (commit-label-swap pattern continued; HEAD files correct; marker commits document landings).",
       "model": "opus",
       "subagent_tokens": 208314
+    },
+    {
+      "job_id": "playwright-wave2-capture-20260608",
+      "sprint": 12,
+      "description": "Orchestrator-delegated Playwright UI capture of Wave 2 surfaces. Captured 12 screenshots: AuthPanel both states, SecretsPanel empty+populated, Mode2OfferModal at 0.9 confidence, Case 1 demo composite (LayerPanel discipline visible but map-rendering gap surfaced). 3 OQs: OQ-PAY-MAP-VECTOR-UNSUPPORTED (CRITICAL \u2014 Map.tsx is raster-only), OQ-PAY-NO-PAYLOAD-WARNING-SEAM (3-line dev seam), OQ-PAY-NO-EVIDENCE-MRMS (evidence dir empty despite log claim).",
+      "model": "opus",
+      "kind": "orchestrator-delegate",
+      "subagent_tokens": 81236
+    },
+    {
+      "job_id": "job-0134-testing-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 3 parallel: Case 1 acceptance \u2014 Big Cypress live run (species + WDPA \u2713; flood blocked by 5000km\u00b2 guardrail \u2014 honest failure as designed)",
+      "model": "sonnet",
+      "subagent_tokens": 167627
+    },
+    {
+      "job_id": "job-0135-testing-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 3 parallel: Case 2 partial acceptance \u2014 East Palestine spill ingest demo (all 6 acceptance criteria pass)",
+      "model": "sonnet",
+      "subagent_tokens": 167627
+    },
+    {
+      "job_id": "job-0136-testing-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 3 parallel: Pelicun acceptance \u2014 Fort Myers damage choropleth",
+      "model": "sonnet",
+      "subagent_tokens": 167627
+    },
+    {
+      "job_id": "job-0137-web-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 3 parallel: Case UX web shell \u2014 CasesPanel + chat-replay rehydration + ConfirmationDialog + PersistenceChip (FR-MP-6 headline)",
+      "model": "opus",
+      "subagent_tokens": 167627
     }
   ],
   "totals_by_sprint": {
@@ -749,7 +785,7 @@
     "9": 713020,
     "10": 1540974,
     "11": 999540,
-    "12": 9209122
+    "12": 9960866
   },
   "historical_context": {
     "note": "Captured for accountability \u2014 NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
