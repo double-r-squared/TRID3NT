@@ -1,0 +1,22 @@
+============================= test session starts ==============================
+platform linux -- Python 3.13.5, pytest-9.0.3, pluggy-1.6.0 -- /home/nate/Documents/GRACE-2/.venv-agent/bin/python
+cachedir: .pytest_cache
+rootdir: /home/nate/Documents/GRACE-2/services/agent
+configfile: pyproject.toml
+plugins: zarr-3.2.1, anyio-4.13.0, asyncio-1.4.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 11 items
+
+services/agent/tests/test_run_pelicun_damage_assessment.py::test_run_pelicun_damage_assessment_registered PASSED [  9%]
+services/agent/tests/test_run_pelicun_damage_assessment.py::test_bad_fragility_set_raises_input_error PASSED [ 18%]
+services/agent/tests/test_run_pelicun_damage_assessment.py::test_none_assets_uri_raises_input_error PASSED [ 27%]
+services/agent/tests/test_run_pelicun_damage_assessment.py::test_none_hazard_raster_uri_raises_input_error PASSED [ 36%]
+services/agent/tests/test_run_pelicun_damage_assessment.py::test_empty_component_types_list_raises_input_error PASSED [ 45%]
+services/agent/tests/test_run_pelicun_damage_assessment.py::test_nonpositive_realization_count_raises_input_error[0] PASSED [ 54%]
+services/agent/tests/test_run_pelicun_damage_assessment.py::test_nonpositive_realization_count_raises_input_error[-1] PASSED [ 63%]
+services/agent/tests/test_run_pelicun_damage_assessment.py::test_nonpositive_realization_count_raises_input_error[-100] PASSED [ 72%]
+services/agent/tests/test_run_pelicun_damage_assessment.py::test_stub_raises_pelicun_not_implemented_yet PASSED [ 81%]
+services/agent/tests/test_run_pelicun_damage_assessment.py::test_pelicun_not_implemented_yet_carries_typed_error_surface PASSED [ 90%]
+services/agent/tests/test_run_pelicun_damage_assessment.py::test_live_stub_invocation_against_placeholder_uris PASSED [100%]
+
+============================== 11 passed in 0.02s ==============================

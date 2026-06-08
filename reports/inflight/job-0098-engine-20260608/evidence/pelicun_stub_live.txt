@@ -1,0 +1,4 @@
+EXPECTED: PelicunNotImplementedYet raised
+  error_code = PELICUN_NOT_IMPLEMENTED_YET
+  retryable  = False
+  message    = Implementation deferred to job-0106 composer; this tool registration locks the LLM-visible API contract.
