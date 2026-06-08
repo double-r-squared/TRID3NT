@@ -1,0 +1,62 @@
+job-0097 fetch_roads_osm — live Overpass capture
+endpoint: https://overpass-api.de/api/interpreter
+bbox    : (-82.0, 26.5, -81.8, 26.7)
+classes : ('primary', 'motorway')
+----------------------------------------------------------------
+fetched FlatGeobuf size: 382840 bytes
+feature count       : 1497
+geometry total bbox : (np.float64(-82.0071), np.float64(26.4929), np.float64(-81.792), np.float64(26.7171))
+CRS                 : EPSG:4326
+geometry types      : {'LineString'}
+highway tag values  : ['motorway', 'primary']
+columns             : ['osm_id', 'name', 'highway', 'lanes', 'maxspeed', 'geometry']
+named features      : 1471 of 1497 have a 'name' tag
+distinct named roads:
+   - Bayshore Road
+   - Ben C Pratt Parkway
+   - Ben C Pratt Six Mile Cypress Parkway
+   - Boy Scout Drive
+   - Cape Coral Bridge Road
+   - Cape Coral Parkway East
+   - Cape Coral Parkway West
+   - Cleveland Avenue
+   - Cleveland Avenue US 41 Caloosahatchee River Bridg
+   - College Parkway
+   - Colonial Boulevard
+   - Cypress Lake Drive
+   - Daniels Parkway
+   - Del Prado Boulevard North
+   - Del Prado Boulevard South
+   - Doctor Martin Luther King Boulevard
+   - Dr Martin Luther King Boulevard
+   - Edison Bridge
+   - Edison Bridge North
+   - Edison Bridge South
+   - Evans Avenue
+   - First Street
+   - Fowler Street
+   - Gladiolus Drive
+   - McGregor Boulevard
+   - Metro Parkway
+   - Michael G Rippe Parkway
+   - North Cleveland Avenue
+   - North Tamiami Trail
+   - Northeast Pine Island Road
+   - Palm Beach Boulevard
+   - Park Avenue
+   - Pine Island Road
+   - SR 82
+   - Seaboard Street
+   - Second Street
+   - South Cleveland Avenue
+   - South Tamiami Trail
+   - Southwest Pine Island Road
+   - Summerlin Road
+   ... and 1 more
+geographic markers  : ['tamiami', 'us 41']
+first 3 features:
+   [0] osm_id=134809242 highway='primary' name='Three Oaks Parkway' bounds=(-81.801, 26.4959, -81.8009, 26.5041) coords=6
+   [1] osm_id=134809241 highway='primary' name='Three Oaks Parkway' bounds=(-81.8013, 26.4929, -81.801, 26.5097) coords=17
+   [2] osm_id=1036502573 highway='primary' name='Three Oaks Parkway' bounds=(-81.801, 26.5041, -81.801, 26.508) coords=4
+----------------------------------------------------------------
+ACCEPTANCE PASSED
