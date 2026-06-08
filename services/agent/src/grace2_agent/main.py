@@ -145,6 +145,14 @@ def _import_tools_registry() -> int:
     from .tools import fetch_mtbs_burn_severity  # noqa: F401
     # job-0110: register fetch_nifc_fire_perimeters (NIFC current wildfire perimeters; Wave 1.5).
     from .tools import fetch_nifc_fire_perimeters  # noqa: F401
+    # job-0128: register fetch_ebird_observations (Cornell Lab eBird Tier-2 recent sightings; per-Case secret_ref).
+    from .tools import fetch_ebird_observations  # noqa: F401
+    # job-0129: register fetch_iucn_red_list_range (IUCN Red List Tier-2 species range info fetcher; per-Case secret_ref).
+    from .tools import fetch_iucn_red_list_range  # noqa: F401
+    # job-0130: register fetch_movebank_tracks (Movebank Tier-2 animal-tracking trajectories; per-Case secret_ref).
+    from .tools import fetch_movebank_tracks  # noqa: F401
+    # job-0131: register fetch_era5_reanalysis (Copernicus ERA5 reanalysis Tier-2 fetcher; compound-flood global substrate).
+    from .tools import fetch_era5_reanalysis  # noqa: F401
 
     return len(tools.TOOL_REGISTRY)
 

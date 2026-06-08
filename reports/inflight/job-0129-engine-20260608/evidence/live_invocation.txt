@@ -1,0 +1,53 @@
+======================================================================
+STEP 1: Auth gate (no credentials) → typed error surface
+======================================================================
+  IUCNAuthError raised as expected.
+  error_code = 'IUCN_AUTH_ERROR'
+  retryable  = False
+  message    = no IUCN Red List API key resolved; pass api_key=, secret_ref=, or set $GRACE2_IUCN_RED_LIST_API_KEY
+
+======================================================================
+STEP 2: Tool registry at startup
+======================================================================
+  Total tools in registry: 36
+  name          = fetch_iucn_red_list_range
+  ttl_class     = static-30d
+  source_class  = iucn_red_list
+  cacheable     = True
+  supports_global_query = True
+  payload_estimator = estimate_payload_mb
+  module        = grace2_agent.tools.fetch_iucn_red_list_range
+
+======================================================================
+STEP 3: End-to-end live-shape simulation (IUCN's documented Puma response)
+======================================================================
+  LayerURI returned:
+    layer_id      = iucn-puma-concolor-global
+    name          = IUCN Red List — Puma concolor
+    layer_type    = vector
+    role          = context
+    units         = None
+    style_preset  = iucn_red_list_range
+    uri           = gs://grace-2-hazard-prod-cache/cache/static-30d/iucn_red_list/0bcf62683988c1ea7e05f17d00065417.fgb
+  FlatGeobuf round-trip:
+    feature_count = 1
+    crs           = EPSG:4326
+    scientific_name        = 'Puma concolor'
+    common_name            = 'Cougar'
+    category               = 'LC'  (semantic check: in IUCN enum)
+    population_trend       = 'Decreasing'
+    is_placeholder_geometry= True (OQ-0129-RANGE-SPATIAL)
+    region                 = 'global'
+    taxonid                = 18868
+    bytes written          = 2368
+    Geographic-correctness gate (job-0086): category is a documented IUCN enum value.
+
+======================================================================
+STEP 4: Cache hit verification (second call with different api_key)
+======================================================================
+  call_n after second invocation: 0 (expected 0 — cache HIT)
+  r2.uri == r1.uri: True
+  Both URIs: gs://grace-2-hazard-prod-cache/cache/static-30d/iucn_red_list/0bcf62683988c1ea7e05f17d00065417.fgb
+  --> the api_key value is NOT part of the cache key, confirming key-isolation.
+
+VERIFICATION COMPLETE.

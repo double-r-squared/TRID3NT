@@ -260,3 +260,8 @@ from . import fetch_landfire_fuels  # noqa: E402,F401 — job-0111: registers fe
 from . import fetch_gcn250_curve_numbers  # noqa: E402,F401 — job-0113: registers fetch_gcn250_curve_numbers (GCN250 global SCS curve numbers, Figshare AMC-I/II/III)
 from . import fetch_mtbs_burn_severity  # noqa: E402,F401 — job-0109: registers fetch_mtbs_burn_severity (MTBS burn-severity polygons)
 from . import fetch_nifc_fire_perimeters  # noqa: E402,F401 — job-0110: registers fetch_nifc_fire_perimeters (NIFC active wildfire perimeters)
+from . import fetch_ebird_observations  # noqa: E402,F401 — job-0128: registers fetch_ebird_observations (Cornell Lab eBird Tier-2 recent sightings)
+from . import fetch_iucn_red_list_range  # noqa: E402,F401 — job-0129: registers fetch_iucn_red_list_range (IUCN Red List Tier-2 species range info fetcher)
+from . import fetch_movebank_tracks  # noqa: E402,F401 — job-0130: registers fetch_movebank_tracks (Movebank Tier-2 animal-tracking trajectories)
+
+from . import fetch_era5_reanalysis  # noqa: E402,F401 — job-0131: registers fetch_era5_reanalysis (Copernicus ERA5 reanalysis Tier-2 fetcher; compound-flood global substrate)

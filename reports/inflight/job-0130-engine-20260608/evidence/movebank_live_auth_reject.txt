@@ -1,0 +1,5 @@
+OK: MovebankLicenseError raised (live 403 from movebank.org)
+  retryable: False
+  message: Movebank account has not accepted the Data Use Statement for study_id=1259686571 (HTTP 403). Log into movebank.org and accept the licence before retrying.
+HTTP 500
+first 200 chars: <!doctype html><html lang="en"><head><title>HTTP Status 500 – Internal Server Error</title><style type="text/css">body {font-family:Tahoma,Arial,sans-serif;} h1, h2, h3, b {color:white;background-colo
