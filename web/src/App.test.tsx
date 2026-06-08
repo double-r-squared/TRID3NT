@@ -367,3 +367,85 @@ describe("App overlay layout — conditional mount + hamburger (job-0068 changes
     );
   });
 });
+
+// --- Theme-toggle harness (job-0076 bundled enhancement) ------------------ //
+
+const LS_THEME = "grace2.theme";
+
+function readTheme(): "light" | "dark" {
+  try {
+    const v = localStorage.getItem(LS_THEME);
+    return v === "dark" ? "dark" : "light";
+  } catch {
+    return "light";
+  }
+}
+
+function ThemeShell(): JSX.Element {
+  const [theme, setTheme] = useState<"light" | "dark">(() => readTheme());
+  function toggle(): void {
+    setTheme((prev) => {
+      const next = prev === "light" ? "dark" : "light";
+      try { localStorage.setItem(LS_THEME, next); } catch { /* */ }
+      return next;
+    });
+  }
+  return (
+    <div data-testid="theme-host" data-theme={theme}>
+      <button
+        data-testid="grace2-theme-toggle"
+        aria-label={theme === "light" ? "Switch to dark theme" : "Switch to light theme"}
+        aria-pressed={theme === "dark"}
+        onClick={toggle}
+      >
+        {theme === "light" ? "☾" : "☀"}
+      </button>
+    </div>
+  );
+}
+
+describe("Theme toggle (job-0076 bundled enhancement)", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  it("defaults to light theme when localStorage is empty", () => {
+    render(<ThemeShell />);
+    expect(screen.getByTestId("theme-host")).toHaveAttribute("data-theme", "light");
+    expect(screen.getByTestId("grace2-theme-toggle")).toHaveAttribute(
+      "aria-label",
+      "Switch to dark theme",
+    );
+  });
+
+  it("clicking toggle flips to dark and writes localStorage", () => {
+    render(<ThemeShell />);
+    act(() => {
+      fireEvent.click(screen.getByTestId("grace2-theme-toggle"));
+    });
+    expect(screen.getByTestId("theme-host")).toHaveAttribute("data-theme", "dark");
+    expect(localStorage.getItem(LS_THEME)).toBe("dark");
+    expect(screen.getByTestId("grace2-theme-toggle")).toHaveAttribute(
+      "aria-label",
+      "Switch to light theme",
+    );
+  });
+
+  it("re-mount reads persisted dark from localStorage", () => {
+    localStorage.setItem(LS_THEME, "dark");
+    render(<ThemeShell />);
+    expect(screen.getByTestId("theme-host")).toHaveAttribute("data-theme", "dark");
+  });
+
+  it("clicking twice returns to light", () => {
+    render(<ThemeShell />);
+    const btn = screen.getByTestId("grace2-theme-toggle");
+    act(() => { fireEvent.click(btn); });
+    act(() => { fireEvent.click(btn); });
+    expect(screen.getByTestId("theme-host")).toHaveAttribute("data-theme", "light");
+    expect(localStorage.getItem(LS_THEME)).toBe("light");
+  });
+});

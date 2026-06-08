@@ -41,6 +41,11 @@ interface MapMock {
   getSource: ReturnType<typeof vi.fn>;
   isStyleLoaded: ReturnType<typeof vi.fn>;
   remove: ReturnType<typeof vi.fn>;
+  on: ReturnType<typeof vi.fn>;
+  once: ReturnType<typeof vi.fn>;
+  getStyle: ReturnType<typeof vi.fn>;
+  _addedLayers: Set<string>;
+  _addedSources: Set<string>;
 }
 
 // Track the most-recently created mock map instance.
@@ -50,10 +55,24 @@ vi.mock("maplibre-gl", () => {
   class MockNavigationControl {}
 
   class MockMap {
-    addSource = vi.fn();
-    addLayer = vi.fn();
-    removeLayer = vi.fn();
-    removeSource = vi.fn();
+    // The mock tracks added source/layer IDs internally so getLayer/getSource
+    // can return realistic answers. Tests can also override these mocks per
+    // case if they need different behavior.
+    _addedLayers = new Set<string>(["qgis-basemap", "osm-fallback-basemap"]);
+    _addedSources = new Set<string>(["qgis-wms", "osm-fallback"]);
+
+    addSource = vi.fn((id: string, _def: unknown) => {
+      this._addedSources.add(id);
+    });
+    addLayer = vi.fn((def: { id: string }, _beforeId?: string) => {
+      this._addedLayers.add(def.id);
+    });
+    removeLayer = vi.fn((id: string) => {
+      this._addedLayers.delete(id);
+    });
+    removeSource = vi.fn((id: string) => {
+      this._addedSources.delete(id);
+    });
     setPaintProperty = vi.fn();
     setLayoutProperty = vi.fn();
     fitBounds = vi.fn();
@@ -62,10 +81,22 @@ vi.mock("maplibre-gl", () => {
     keyboard = { disableRotation: vi.fn() };
     // isStyleLoaded must return true for the session-state handler to apply.
     isStyleLoaded = vi.fn().mockReturnValue(true);
-    // getLayer / getSource return null unless we've "added" them via addSource.
-    getLayer = vi.fn().mockReturnValue(null);
-    getSource = vi.fn().mockReturnValue(null);
+    // getLayer / getSource consult the internal tracking sets.
+    getLayer = vi.fn((id: string) => (this._addedLayers.has(id) ? { id } : null));
+    getSource = vi.fn((id: string) => (this._addedSources.has(id) ? { type: "raster" } : null));
     remove = vi.fn();
+    // Event handlers — applyLatest attaches `once("idle", ...)` after every
+    // session-state push; the mock just no-ops (synchronous apply path is
+    // what tests verify).
+    on = vi.fn();
+    once = vi.fn();
+    // getStyle is used by the theme-swap effect to find existing layers.
+    getStyle = vi.fn(() => ({
+      layers: Array.from(this._addedLayers).map((id) => ({ id })),
+      sources: Object.fromEntries(
+        Array.from(this._addedSources).map((id) => [id, { type: "raster" }]),
+      ),
+    }));
 
     constructor() {
       lastMapMock = this as unknown as MapMock;
@@ -276,5 +307,158 @@ describe("MapView — map-command zoom-to handler (job-0068 change 5 client side
       "invalidate-tiles",
     );
     warnSpy.mockRestore();
+  });
+});
+
+describe("MapView — buildWmsTileUrl (job-0076 diagnosis)", () => {
+  it("produces a tile URL with all WMS GetMap params MapLibre needs", async () => {
+    // Reimport to grab the exported helper for direct assertion.
+    const { buildWmsTileUrl } = await import("./Map");
+    const url = buildWmsTileUrl(
+      "https://qgis.example.com/ogc/wms?MAP=/mnt/qgs/x.qgs&LAYERS=flood-demo",
+    );
+    // The {bbox-epsg-3857} placeholder must be there for MapLibre's raster
+    // source to substitute per-tile.
+    expect(url).toContain("{bbox-epsg-3857}");
+    // All required WMS GetMap params must be present (else QGIS Server 400s
+    // and MapLibre paints nothing — the job-0076 hypothesis #1 chain).
+    expect(url).toContain("SERVICE=WMS");
+    expect(url).toContain("VERSION=1.3.0");
+    expect(url).toContain("REQUEST=GetMap");
+    expect(url).toContain("CRS=EPSG:3857");
+    expect(url).toMatch(/FORMAT=image[/%]2[Ff]png/);
+    expect(url).toContain("TRANSPARENT=true");
+    expect(url).toContain("WIDTH=256");
+    expect(url).toContain("HEIGHT=256");
+    // LAYERS= must come from the caller (we only append after the base URL).
+    expect(url).toContain("LAYERS=flood-demo");
+  });
+});
+
+describe("MapView — session-state idle-retry (job-0076 root-cause fix)", () => {
+  beforeEach(() => {
+    lastMapMock = null;
+  });
+
+  it("registers a once('idle', ...) handler when session-state arrives so a not-yet-loaded style re-applies", () => {
+    const sessionBus = makeSessionBus();
+
+    render(
+      <MapView
+        subscribeSessionState={sessionBus.subscribe as (cb: SessionStateSubscriber) => () => void}
+      />,
+    );
+
+    const m = lastMapMock!;
+    // Simulate style NOT loaded at the moment the bus event arrives — the
+    // job-0066-through-0075 silent-drop race condition.
+    m.isStyleLoaded.mockReturnValue(false);
+
+    act(() => {
+      sessionBus.push({
+        loaded_layers: [makeWireLayer("flood-demo")],
+      });
+    });
+
+    // The synchronous apply path is correctly skipped (no addSource yet)...
+    expect(m.addSource).not.toHaveBeenCalled();
+    // ...but an idle handler IS attached so a later style-load retries apply.
+    expect(m.once).toHaveBeenCalled();
+    const onceCalls = m.once.mock.calls;
+    const idleHandler = onceCalls.find((c) => (c as MockCallArgs)[0] === "idle");
+    expect(idleHandler).toBeDefined();
+
+    // Now simulate the style finishing load + the idle handler firing.
+    m.isStyleLoaded.mockReturnValue(true);
+    (idleHandler as MockCallArgs)[1] && ((idleHandler as MockCallArgs)[1] as () => void)();
+
+    // The apply function reads the ref and now wires the flood layer.
+    expect(m.addSource).toHaveBeenCalledOnce();
+    const [sourceId] = m.addSource.mock.calls[0] as MockCallArgs;
+    expect(sourceId).toBe("flood-demo");
+    expect(m.addLayer).toHaveBeenCalledOnce();
+  });
+});
+
+describe("MapView — dark-theme swap (job-0076 bundled enhancement)", () => {
+  beforeEach(() => {
+    lastMapMock = null;
+  });
+
+  it("applies the light basemap on first mount when theme prop is light (default)", () => {
+    render(<MapView />);
+    const m = lastMapMock!;
+    // The seed style added qgis-basemap; the theme effect saw light theme
+    // and did not need to add anything new. Confirm dark basemap is NOT
+    // present in the layer set.
+    expect(m._addedLayers.has("qgis-basemap")).toBe(true);
+    expect(m._addedLayers.has("carto-dark-basemap")).toBe(false);
+  });
+
+  it("swaps to CartoDB dark basemap when theme prop = 'dark'", () => {
+    const { rerender } = render(<MapView theme="light" />);
+    const m = lastMapMock!;
+    expect(m._addedLayers.has("carto-dark-basemap")).toBe(false);
+
+    rerender(<MapView theme="dark" />);
+
+    // dark basemap source + layer must have been added; light basemap layer
+    // removed (source kept, harmless).
+    expect(m.addSource).toHaveBeenCalledWith(
+      "carto-dark",
+      expect.objectContaining({
+        type: "raster",
+        tiles: expect.arrayContaining([
+          expect.stringContaining("basemaps.cartocdn.com/dark_all"),
+        ]),
+        attribution: expect.stringContaining("CARTO"),
+      }),
+    );
+    expect(m.addLayer).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "carto-dark-basemap", type: "raster" }),
+      undefined, // no flood overlays yet → beforeId is undefined (top of stack)
+    );
+    expect(m.removeLayer).toHaveBeenCalledWith("qgis-basemap");
+  });
+
+  it("re-adds the QGIS WMS basemap under a flood overlay when toggling back to light", () => {
+    const sessionBus = makeSessionBus();
+    const { rerender } = render(
+      <MapView
+        theme="light"
+        subscribeSessionState={sessionBus.subscribe as (cb: SessionStateSubscriber) => () => void}
+      />,
+    );
+
+    // Push a flood overlay first.
+    act(() => {
+      sessionBus.push({ loaded_layers: [makeWireLayer("flood-demo")] });
+    });
+
+    const m = lastMapMock!;
+    expect(m._addedLayers.has("flood-demo")).toBe(true);
+
+    // Toggle to dark.
+    rerender(
+      <MapView
+        theme="dark"
+        subscribeSessionState={sessionBus.subscribe as (cb: SessionStateSubscriber) => () => void}
+      />,
+    );
+
+    // Toggle back to light — the QGIS WMS basemap layer must re-mount
+    // UNDER the flood overlay (beforeId = "flood-demo").
+    m.addLayer.mockClear();
+    rerender(
+      <MapView
+        theme="light"
+        subscribeSessionState={sessionBus.subscribe as (cb: SessionStateSubscriber) => () => void}
+      />,
+    );
+
+    expect(m.addLayer).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "qgis-basemap", source: "qgis-wms" }),
+      "flood-demo",
+    );
   });
 });

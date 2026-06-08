@@ -33,7 +33,7 @@
 // seed components without an agent.
 
 import { useEffect, useMemo, useState } from "react";
-import { MapView, type MapCommandSubscribeFunc } from "./Map";
+import { MapView, type MapCommandSubscribeFunc, type MapTheme } from "./Map";
 import { Chat } from "./Chat";
 import { LayerPanel, createLayerPanelBus } from "./LayerPanel";
 import { LayerLegend } from "./components/LayerLegend";
@@ -48,6 +48,17 @@ import {
 // localStorage keys for panel collapse state (job-0065).
 const LS_LEFT_COLLAPSED = "grace2.leftPanelCollapsed";
 const LS_RIGHT_COLLAPSED = "grace2.rightPanelCollapsed";
+// localStorage key for map theme (job-0076).
+const LS_THEME = "grace2.theme";
+
+function readTheme(): MapTheme {
+  try {
+    const v = localStorage.getItem(LS_THEME);
+    return v === "dark" ? "dark" : "light";
+  } catch {
+    return "light";
+  }
+}
 
 function readCollapsed(key: string): boolean {
   try {
@@ -111,6 +122,19 @@ export function App(): JSX.Element {
   // Sourced directly from bus subscription (not via onLayersChange callback
   // from LayerPanel) so it works even when LayerPanel isn't mounted.
   const [layers, setLayers] = useState<ProjectLayerSummary[]>([]);
+
+  // Map theme (job-0076): light = QGIS Server WMS basemap (default);
+  // dark = CartoDB DarkMatter raster. Persisted in localStorage so reloads
+  // remember user preference.
+  const [theme, setTheme] = useState<MapTheme>(() => readTheme());
+
+  function toggleTheme(): void {
+    setTheme((prev) => {
+      const next: MapTheme = prev === "light" ? "dark" : "light";
+      try { localStorage.setItem(LS_THEME, next); } catch { /* non-fatal */ }
+      return next;
+    });
+  }
 
   function collapseLeft(): void {
     setLeftCollapsed(true);
@@ -205,6 +229,7 @@ export function App(): JSX.Element {
       <MapView
         subscribeSessionState={bus.subscribeSessionState}
         subscribeMapCommand={bus.subscribeMapCommand as MapCommandSubscribeFunc}
+        theme={theme}
       />
 
       {/* LayerLegend — bottom-center absolute; z-index 10. */}
@@ -254,6 +279,26 @@ export function App(): JSX.Element {
           ☰
         </button>
       )}
+
+      {/* Theme toggle (job-0076 bundled): top-center, between the two
+          hamburgers so it never collides. Click cycles light↔dark; persists
+          in localStorage under grace2.theme. Sun = currently light (click to
+          go dark), moon = currently dark (click to go light). z-index 30 so
+          it overlays panels just like the hamburgers. */}
+      <button
+        data-testid="grace2-theme-toggle"
+        aria-label={theme === "light" ? "Switch to dark theme" : "Switch to light theme"}
+        aria-pressed={theme === "dark"}
+        onClick={toggleTheme}
+        style={{
+          ...hamburgerBtnStyle,
+          left: "50%",
+          transform: "translateX(-50%)",
+        }}
+        title={theme === "light" ? "Switch to dark theme" : "Switch to light theme"}
+      >
+        {theme === "light" ? "☾" : "☀"}
+      </button>
     </div>
   );
 }

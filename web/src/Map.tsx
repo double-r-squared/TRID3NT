@@ -36,6 +36,23 @@ import maplibregl, { Map as MapLibreMap, StyleSpecification } from "maplibre-gl"
 import "maplibre-gl/dist/maplibre-gl.css";
 import type { MapCommandPayload, SessionStatePayload } from "./contracts";
 
+/** UI theme — see App.tsx for toggle implementation (job-0076). */
+export type MapTheme = "light" | "dark";
+
+/**
+ * CartoDB DarkMatter raster tiles (CC-BY, no API key). Used as the dark-theme
+ * basemap. Raster (not vector) is chosen for two reasons:
+ *   1. The light-theme basemap is also raster (QGIS Server WMS), so swapping
+ *      raster-for-raster preserves the layer/source type and avoids re-tuning
+ *      paint props for the flood overlay.
+ *   2. The vector style.json brings in glyphs/sprites + multiple sub-sources
+ *      that complicate the swap path; raster is one-source one-layer.
+ * Attribution per CartoDB ToS: "© OpenStreetMap contributors © CARTO".
+ */
+const CARTO_DARK_TILE_TEMPLATE = "https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png";
+const CARTO_DARK_ATTRIBUTION =
+  '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors © <a href="https://carto.com/attributions" target="_blank" rel="noopener noreferrer">CARTO</a>';
+
 // QGIS Server WMS endpoint. Overridable via VITE_GRACE2_WMS_URL at build/dev
 // start. Default = deployed M2 substrate (job-0018 + job-0024).
 //
@@ -152,22 +169,54 @@ export type MapCommandSubscribeFunc = (cb: (p: WireMapCommand) => void) => () =>
 export interface MapViewProps {
   subscribeSessionState?: (cb: SessionStateSubscriber) => () => void;
   subscribeMapCommand?: MapCommandSubscribeFunc;
+  /** Light = QGIS Server WMS basemap. Dark = CartoDB DarkMatter raster.
+   *  job-0076 bundled enhancement (dark backdrop makes flood overlay obvious). */
+  theme?: MapTheme;
 }
 
 /**
  * Build the WMS tile URL for a given base WMS URL (which already includes
  * LAYERS=...). MapLibre substitutes {bbox-epsg-3857} per tile.
  * Invariant 4: QGIS Server renders; client just registers the URL.
+ *
+ * The base URL must already carry MAP= and LAYERS= (the agent emits the full
+ * QGIS Server endpoint per `flood-emission-contract.md`). This helper appends
+ * the per-tile WMS GetMap parameter set MapLibre's raster source needs.
  */
-function buildWmsTileUrl(wmsUrl: string): string {
+export function buildWmsTileUrl(wmsUrl: string): string {
   return `${wmsUrl}&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX={bbox-epsg-3857}&WIDTH=256&HEIGHT=256&STYLES=`;
 }
 
-export function MapView({ subscribeSessionState, subscribeMapCommand }: MapViewProps = {}): JSX.Element {
+// Layer + source IDs for the swappable basemap. The light basemap source is
+// the QGIS Server WMS proxy (already in the seed style); the dark basemap
+// source is added/removed at runtime when the theme changes.
+const BASEMAP_LAYER_ID = "qgis-basemap";
+const BASEMAP_SOURCE_ID = "qgis-wms";
+const DARK_BASEMAP_LAYER_ID = "carto-dark-basemap";
+const DARK_BASEMAP_SOURCE_ID = "carto-dark";
+
+export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "light" }: MapViewProps = {}): JSX.Element {
   const container = useRef<HTMLDivElement | null>(null);
   const map = useRef<MapLibreMap | null>(null);
   // useRef so this survives effect re-runs without triggering re-render (A.7).
   const addedSourceIds = useRef<Set<string>>(new Set());
+  // ROOT-CAUSE FIX (job-0076 diagnosis): the prior implementation read
+  // `payload.loaded_layers` synchronously in the subscriber and bailed if
+  // `m.isStyleLoaded()` was false — so when session-state arrived BEFORE the
+  // remote QGIS Server basemap tiles finished loading, the entire flood-layer
+  // wiring was dropped on the floor with no retry. Diagnosis evidence:
+  // `reports/inflight/job-0076-*/evidence/diagnosis.log` shows 69 basemap
+  // tile responses + ZERO flood tile responses, and the post-injection style
+  // spec contained only the basemap sources (no `flood-depth-job-0075-demo`
+  // source/layer entries). Headline screenshots since job-0066 were
+  // basemap-only because of this race.
+  //
+  // Fix: stash the latest session-state payload in a ref, and run an apply
+  // function that (a) executes immediately if the style is ready, OR
+  // (b) defers to the next `idle` / `load` event. The ref always carries
+  // the latest payload, so multiple in-flight events collapse to the
+  // most-recent state (still replace-not-reconcile per A.7).
+  const latestSessionState = useRef<SessionStatePayload | null>(null);
 
   useEffect(() => {
     if (!container.current || map.current) return;
@@ -192,22 +241,45 @@ export function MapView({ subscribeSessionState, subscribeMapCommand }: MapViewP
     map.current = m;
     activeMap = m;
 
+    // Dev-only seam: expose the live MapLibre instance so the Playwright
+    // diagnostic driver (reports/inflight/job-0076-*/evidence/) can introspect
+    // m.getStyle() — i.e. confirm flood layer was added, capture the actual
+    // tile URL template, etc. Production builds drop this via import.meta.env.
+    if (import.meta.env.DEV) {
+      (window as unknown as { __grace2GetMap?: () => MapLibreMap | null }).__grace2GetMap = () => map.current;
+    }
+
     return () => {
       m.remove();
       map.current = null;
       if (activeMap === m) activeMap = null;
+      if (import.meta.env.DEV) {
+        delete (window as unknown as { __grace2GetMap?: () => MapLibreMap | null }).__grace2GetMap;
+      }
     };
   }, []);
 
-  // Subscribe to session-state and wire WMS raster sources (job-0068, change 4).
-  // Replace-not-reconcile per A.7: diff loaded_layers against addedSourceIds ref.
+  // Subscribe to session-state and wire WMS raster sources (job-0068, change 4;
+  // job-0076 race-condition fix). Replace-not-reconcile per A.7: diff
+  // loaded_layers against addedSourceIds ref.
   // Invariant 4: QGIS Server renders all Tier B raster data; Map.tsx only
   // registers tile URLs — never computes colors, reads COGs, or touches GCS.
   useEffect(() => {
     if (!subscribeSessionState) return;
-    const unsub = subscribeSessionState((payload) => {
+
+    /**
+     * Apply the latest session-state payload (from `latestSessionState`) to
+     * the live map. Idempotent — reads the ref each call so multiple deferred
+     * calls collapse to the most-recent payload. Called both from the bus
+     * subscription AND from the map "idle" handler in case the bus event
+     * arrived before the style finished loading.
+     */
+    const applyLatest = () => {
       const m = map.current;
-      if (!m || !m.isStyleLoaded()) return;
+      const payload = latestSessionState.current;
+      if (!m || !payload) return;
+      // If style isn't loaded yet, the deferred idle handler will retry.
+      if (!m.isStyleLoaded()) return;
 
       const currentLayers = payload.loaded_layers ?? [];
       const currentIds = new Set(currentLayers.map((l) => l.layer_id));
@@ -235,7 +307,14 @@ export function MapView({ subscribeSessionState, subscribeMapCommand }: MapViewP
             m.setLayoutProperty(layer.layer_id, "visibility", visible ? "visible" : "none");
           }
         } else {
-          // New layer — add source + layer.
+          // New layer — add source + layer. MapLibre paints layers in
+          // insertion order; we don't pass an explicit beforeId here because
+          // the basemap was added first via the seed style spec, so any
+          // flood layer added now will paint ABOVE it (correct stacking).
+          // The dark-theme swap path (`applyTheme` below) preserves this
+          // invariant by re-adding the basemap with `beforeId =` first flood
+          // layer, so flood overlays always stay on top of whichever
+          // basemap is active.
           const tileUrl = buildWmsTileUrl(layer.uri);
           m.addSource(layer.layer_id, {
             type: "raster",
@@ -252,9 +331,108 @@ export function MapView({ subscribeSessionState, subscribeMapCommand }: MapViewP
           addedSourceIds.current.add(layer.layer_id);
         }
       }
+    };
+
+    const unsub = subscribeSessionState((payload) => {
+      latestSessionState.current = payload;
+      const m = map.current;
+      if (!m) return;
+      if (m.isStyleLoaded()) {
+        applyLatest();
+      }
+      // Whether or not we applied synchronously, attach an idle handler so
+      // any subsequent style-load completes the reconciliation. `idle` fires
+      // once per loop-tick when all in-flight requests settle.
+      m.once("idle", applyLatest);
     });
     return unsub;
   }, [subscribeSessionState]);
+
+  // Subscribe to theme prop changes and swap the basemap source+layer
+  // (job-0076 bundled enhancement). The swap pattern:
+  //   1. Pick the lowest-priority existing flood-overlay layer as the
+  //      beforeId target so the new basemap renders UNDER everything else.
+  //   2. Remove the current basemap layer + source.
+  //   3. Add the new basemap source + layer, passing beforeId so MapLibre
+  //      inserts it underneath the flood overlays.
+  // Order-preservation note: flood overlays were added via addLayer with no
+  // beforeId, so they live at the TOP of the layer stack. Re-inserting the
+  // basemap underneath them keeps the same painter's-algorithm order.
+  useEffect(() => {
+    const m = map.current;
+    if (!m) return;
+
+    const applyTheme = () => {
+      const currentMap = map.current;
+      if (!currentMap || !currentMap.isStyleLoaded()) {
+        // Defer until style is ready.
+        currentMap?.once("idle", applyTheme);
+        return;
+      }
+
+      const style = currentMap.getStyle();
+      const layerIds = style.layers.map((l) => l.id);
+
+      // The lowest flood-overlay layer (i.e. the first one we added beyond the
+      // basemap layers) is our `beforeId` target — the new basemap layer
+      // should be inserted just before it. If no flood overlays exist yet,
+      // append; the basemap will be the top layer until a flood overlay is
+      // added, at which point the flood overlay will paint above it (correct).
+      const firstFloodLayer = layerIds.find(
+        (id) => id !== BASEMAP_LAYER_ID && id !== DARK_BASEMAP_LAYER_ID && id !== "osm-fallback-basemap",
+      );
+
+      if (theme === "dark") {
+        // Remove light basemap layer+source if present.
+        if (currentMap.getLayer(BASEMAP_LAYER_ID)) currentMap.removeLayer(BASEMAP_LAYER_ID);
+        // (Leave the qgis-wms source in place — removing it can race with
+        // any pending tile requests; harmless to keep since it has no layer
+        // referencing it.)
+        // Add dark basemap if not already there.
+        if (!currentMap.getSource(DARK_BASEMAP_SOURCE_ID)) {
+          currentMap.addSource(DARK_BASEMAP_SOURCE_ID, {
+            type: "raster",
+            tiles: [CARTO_DARK_TILE_TEMPLATE],
+            tileSize: 256,
+            attribution: CARTO_DARK_ATTRIBUTION,
+            maxzoom: 19,
+          });
+        }
+        if (!currentMap.getLayer(DARK_BASEMAP_LAYER_ID)) {
+          currentMap.addLayer(
+            {
+              id: DARK_BASEMAP_LAYER_ID,
+              type: "raster",
+              source: DARK_BASEMAP_SOURCE_ID,
+              minzoom: 0,
+              maxzoom: 22,
+            },
+            firstFloodLayer,
+          );
+        }
+      } else {
+        // light theme — restore QGIS WMS basemap.
+        if (currentMap.getLayer(DARK_BASEMAP_LAYER_ID)) currentMap.removeLayer(DARK_BASEMAP_LAYER_ID);
+        if (!currentMap.getLayer(BASEMAP_LAYER_ID)) {
+          // Source was kept; just re-add the layer.
+          currentMap.addLayer(
+            {
+              id: BASEMAP_LAYER_ID,
+              type: "raster",
+              source: BASEMAP_SOURCE_ID,
+              minzoom: 0,
+              maxzoom: 22,
+            },
+            firstFloodLayer,
+          );
+        }
+      }
+    };
+
+    applyTheme();
+    // No cleanup — basemap state lives in the map's style; the next theme
+    // change will reconcile it.
+  }, [theme]);
 
   // Subscribe to map-command for zoom-to and transient camera/animation verbs
   // (job-0068, change 5 client side). Layer-CRUD verbs are DEFERRED (handled
