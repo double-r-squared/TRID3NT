@@ -120,7 +120,7 @@ resource "google_cloud_run_v2_job" "pyqgis_worker" {
         # display; the second (7649cfde...) adds `QT_QPA_PLATFORM=offscreen`
         # to the Dockerfile and is the one pinned below. `:latest` AR tag
         # points to the same digest.
-        image = "${var.gcp_region}-docker.pkg.dev/${google_project.grace2.project_id}/${google_artifact_registry_repository.containers.repository_id}/grace-2-pyqgis-worker@sha256:94dad2bc8964c426d962bcad05b01f917e0e05408fa87e3557e47a2844a19119"
+        image = "${var.gcp_region}-docker.pkg.dev/${google_project.grace2.project_id}/${google_artifact_registry_repository.containers.repository_id}/grace-2-pyqgis-worker@sha256:56df8f4c719c66432e207ad696efea289674a24b3704db907d927f96775cc4b4"
 
         resources {
           limits = {

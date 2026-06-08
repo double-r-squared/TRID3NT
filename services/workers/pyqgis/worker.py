@@ -436,6 +436,36 @@ def _append_raster_layer(
 
     project.addMapLayer(layer)
 
+    # OQ-69-WMS-LAYER-EPSG4326-EMPTY fix: declare the project-level WMS CRS
+    # list so QGIS Server will reproject on-demand for clients that request
+    # EPSG:4326 or any other listed CRS.  ``QgsProject.writeEntry`` with key
+    # "WMSCrsList" / "/" and a QStringList of authids is the documented QGIS
+    # Server WMS capabilities hook (same as the "WMS CRS" tab in QGIS Desktop
+    # Project Properties → OWS Server).  Calling this after every
+    # ``addMapLayer`` is idempotent — it overwrites the project-wide list each
+    # time, which is correct for our append-only worker model.
+    #
+    # CRS set: EPSG:4326 (geographic, lat/lon), EPSG:3857 (Web Mercator —
+    # MapLibre native), EPSG:32617 (UTM 17N — the Fort Myers COG native CRS).
+    # All three entries are always written; QGIS Server ignores entries that
+    # are not natively supported by its GDAL stack (no error).
+    try:
+        project.writeEntry("WMSCrsList", "/", ["EPSG:4326", "EPSG:3857", "EPSG:32617"])
+        logger.info(
+            "_append_raster_layer: wrote WMSCrsList [EPSG:4326, EPSG:3857, EPSG:32617] "
+            "to project for layer %r",
+            layer_id,
+        )
+    except Exception as exc:  # noqa: BLE001
+        # Non-fatal: MapLibre always requests EPSG:3857; EPSG:4326 support is
+        # a nice-to-have.  Log and continue rather than aborting the round-trip.
+        logger.warning(
+            "_append_raster_layer: writeEntry(WMSCrsList) failed for layer %r: %s — "
+            "continuing without explicit CRS list (OQ-69-WMS-LAYER-EPSG4326-EMPTY carry-forward)",
+            layer_id,
+            exc,
+        )
+
     if style_qml_path is not None:
         _apply_style_preset(layer, style_qml_path)
     else:
@@ -823,10 +853,16 @@ def publish_raster_round_trip(
     if key is not None:
         wms_url = _build_wms_url(key, layer_id)
     else:
-        # Local mode: build a pseudo-WMS URL from the local path so the
-        # function signature is consistent; callers can detect local mode by
-        # checking for the "file://" prefix.
-        wms_url = _build_wms_url(read_path.lstrip("/"), layer_id)
+        # Local mode (OQ-69-WMS-URL-DOUBLE-MNT-PREFIX fix): when read_path is
+        # already a /mnt/qgs/ absolute path (the Cloud Run Job GCS-bucket-mount
+        # case), `read_path.lstrip("/")` produced "mnt/qgs/grace2-sample.qgs"
+        # which _build_wms_url then re-prefixed with "/mnt/qgs/" → double prefix
+        # "MAP=/mnt/qgs/mnt/qgs/grace2-sample.qgs".  Use only the basename so
+        # _build_wms_url always gets the bare filename (e.g. "grace2-sample.qgs"),
+        # producing "MAP=/mnt/qgs/grace2-sample.qgs" — the correct single-prefix
+        # form.  For non-/mnt/qgs/ local dev paths (e.g. /tmp/test.qgs) the same
+        # basename approach also produces a valid QGIS Server MAP= parameter.
+        wms_url = _build_wms_url(Path(read_path).name, layer_id)
 
     with tempfile.TemporaryDirectory(prefix="grace2-worker-raster-") as tmpdir_str:
         tmpdir = Path(tmpdir_str)

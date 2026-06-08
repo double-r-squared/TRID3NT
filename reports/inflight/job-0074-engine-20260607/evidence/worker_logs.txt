@@ -1,0 +1,29 @@
+2026-06-08T05:43:10.168797Z time="08/06/2026 05:43:09.923034" severity=INFO message="File system has been successfully mounted." mount-id=grace-2-hazard-prod-qgs-fbd4f2a7
+2026-06-08T05:43:16.307533Z QStandardPaths: XDG_RUNTIME_DIR not set, defaulting to '/tmp/runtime-root'
+2026-06-08T05:43:18.752550Z 2026-06-08 05:43:18,750 INFO grace2.worker.pyqgis — publish_raster_round_trip: read /mnt/qgs/grace2-sample.qgs — layers_before=['basemap-osm-conus', 'flood-depth-job-0069-demo', 'flood-depth-job-0070-demo'] raster_uri=/vsigs/grace-2-hazard-prod-runs/01KTJKTAPX4V7GW0AS3C8BDYHK/flood_depth_peak.tif
+2026-06-08T05:43:18.954874Z 2026-06-08 05:43:18,953 INFO grace2.worker.pyqgis — _append_raster_layer: wrote WMSCrsList [EPSG:4326, EPSG:3857, EPSG:32617] to project for layer 'flood-depth-job-0074-demo'
+2026-06-08T05:43:18.957381Z 2026-06-08 05:43:18,955 INFO grace2.worker.pyqgis — post-mutate layers_after=['basemap-osm-conus', 'flood-depth-job-0069-demo', 'flood-depth-job-0070-demo', 'flood-depth-job-0074-demo'] wms_url=https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=flood-depth-job-0074-demo
+2026-06-08T05:43:19.049814Z time="08/06/2026 05:43:19.047976" severity=INFO message="Existing file grace2-sample.qgs~ of size 43278 bytes (non-zero) will use legacy staged writes. Streaming writes is supported for sequential writes to new/empty files. For more details, see: https://github.com/GoogleCloudPlatform/gcsfuse/blob/master/docs/semantics.md#writes" mount-id=grace-2-hazard-prod-qgs-fbd4f2a7
+2026-06-08T05:43:19.348627Z time="08/06/2026 05:43:19.346492" severity=INFO message="Existing file grace2-sample.qgs of size 59043 bytes (non-zero) will use legacy staged writes. Streaming writes is supported for sequential writes to new/empty files. For more details, see: https://github.com/GoogleCloudPlatform/gcsfuse/blob/master/docs/semantics.md#writes" mount-id=grace-2-hazard-prod-qgs-fbd4f2a7
+2026-06-08T05:43:19.712499Z Warning 1: Unable to save auxiliary information in /vsigs/grace-2-hazard-prod-runs/01KTJKTAPX4V7GW0AS3C8BDYHK/flood_depth_peak.tif.aux.xml.
+2026-06-08T05:43:22.367372Z {
+2026-06-08T05:43:22.367396Z   "qgs_uri": "/mnt/qgs/grace2-sample.qgs",
+2026-06-08T05:43:22.367401Z   "layers_before": [
+2026-06-08T05:43:22.367405Z     "basemap-osm-conus",
+2026-06-08T05:43:22.367409Z     "flood-depth-job-0069-demo",
+2026-06-08T05:43:22.367412Z     "flood-depth-job-0070-demo"
+2026-06-08T05:43:22.367416Z   ],
+2026-06-08T05:43:22.367420Z   "layers_after": [
+2026-06-08T05:43:22.367423Z     "basemap-osm-conus",
+2026-06-08T05:43:22.367427Z     "flood-depth-job-0069-demo",
+2026-06-08T05:43:22.367431Z     "flood-depth-job-0070-demo",
+2026-06-08T05:43:22.367435Z     "flood-depth-job-0074-demo"
+2026-06-08T05:43:22.367438Z   ],
+2026-06-08T05:43:22.367442Z   "notify_message_id": "19965214338523150",
+2026-06-08T05:43:22.367446Z   "status": "ok",
+2026-06-08T05:43:22.367450Z   "error": null,
+2026-06-08T05:43:22.367454Z   "qgs_version": "3.44.11-Solothurn",
+2026-06-08T05:43:22.367457Z   "ts": "2026-06-08T05:43:19.731Z",
+2026-06-08T05:43:22.367462Z   "wms_url": "https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=flood-depth-job-0074-demo"
+2026-06-08T05:43:22.367465Z }
+2026-06-08T05:43:22.886618Z Container called exit(0).

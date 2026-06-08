@@ -149,6 +149,7 @@ export function App(): JSX.Element {
       onSessionState: (p) => {
         bus.pushSessionState(p);
       },
+      onMapCommand: (p) => bus.pushMapCommand(p),
       onError: () => {
         // Chat panel renders connection errors.
       },

@@ -361,3 +361,190 @@ def test_polygon_path_does_not_call_append_raster_layer() -> None:
     # Raster path was NOT called.
     mock_raster.assert_not_called()
     assert result.status == "ok"
+
+
+# ---------------------------------------------------------------------------
+# Tests 8–10 — job-0074 bug-fix regressions
+# ---------------------------------------------------------------------------
+
+# Test 8 — OQ-69-WMS-URL-DOUBLE-MNT-PREFIX regression guard: local-mode path
+# (/mnt/qgs/...) must produce single-prefix "MAP=/mnt/qgs/<filename>", not
+# "MAP=/mnt/qgs/mnt/qgs/<filename>".
+
+
+def test_publish_raster_local_mode_no_double_mnt_prefix() -> None:
+    """OQ-69-WMS-URL-DOUBLE-MNT-PREFIX: /mnt/qgs/ path yields single-prefix WMS URL.
+
+    Regression guard: when publish_raster_round_trip is called with a local
+    /mnt/qgs/ qgs_uri (the Cloud Run Job GCS-bucket-mount path), the emitted
+    wms_url must contain exactly one "/mnt/qgs/" prefix in the MAP= parameter.
+    Before the fix, read_path.lstrip("/") → "mnt/qgs/grace2-sample.qgs" was
+    passed to _build_wms_url which then prepended "/mnt/qgs/" again, producing
+    MAP=/mnt/qgs/mnt/qgs/grace2-sample.qgs.
+    """
+    with _patch_qgis():
+        import importlib
+        import services.workers.pyqgis.worker as worker_module
+        importlib.reload(worker_module)
+
+        mock_project = MagicMock()
+        mock_layer = MagicMock()
+        mock_layer.isValid.return_value = True
+        mock_layer.name.return_value = "flood-depth-job-0074-demo"
+
+        qgis_core_mock = MagicMock()
+        qgis_core_mock.QgsRasterLayer.return_value = mock_layer
+        qgis_core_mock.Qgis.QGIS_VERSION = "3.44.11-Solothurn"
+
+        with patch.dict(sys.modules, {**_QGIS_STUBS, "qgis.core": qgis_core_mock}):
+            importlib.reload(worker_module)
+
+            with (
+                patch.object(
+                    worker_module,
+                    "_parse_qgs_uri",
+                    return_value=("local", None, None, "/mnt/qgs/grace2-sample.qgs"),
+                ),
+                patch.object(worker_module, "_resolve_style_preset_path_by_name", return_value=None),
+                patch.object(worker_module, "_qgis_app") as mock_app_cm,
+                patch.object(worker_module, "_layer_names", side_effect=[["basemap"], ["basemap", "flood-depth-job-0074-demo"]]),
+                patch.object(worker_module, "_gcs_upload"),
+                patch.dict(os.environ, {"QGIS_SERVER_URL": "https://qgis.test.example.com/ogc/wms"}),
+            ):
+                mock_app_cm.return_value.__enter__ = MagicMock(return_value=None)
+                mock_app_cm.return_value.__exit__ = MagicMock(return_value=False)
+
+                with patch.object(worker_module, "QgsProject") as mock_qgsproject_cls:
+                    mock_qgsproject_cls.instance.return_value = mock_project
+                    mock_project.read.return_value = True
+                    mock_project.write.return_value = True
+
+                    result = worker_module.publish_raster_round_trip(
+                        qgs_uri="/mnt/qgs/grace2-sample.qgs",
+                        raster_uri="/vsigs/grace-2-hazard-prod-runs/run-abc/flood_depth_peak.tif",
+                        layer_id="flood-depth-job-0074-demo",
+                        style_preset_name="continuous_flood_depth",
+                        publish=False,
+                    )
+
+    # The WMS URL must contain a single /mnt/qgs/ prefix — not doubled.
+    assert result.wms_url is not None, "wms_url should be set on success"
+    assert "/mnt/qgs/mnt/qgs/" not in result.wms_url, (
+        f"double /mnt/qgs/ prefix found in wms_url: {result.wms_url!r}"
+    )
+    assert "MAP=/mnt/qgs/grace2-sample.qgs" in result.wms_url, (
+        f"expected single-prefix MAP param; got: {result.wms_url!r}"
+    )
+
+
+# Test 9 — OQ-69-WMS-URL-DOUBLE-MNT-PREFIX: non-/mnt/qgs local dev path
+# also produces a clean basename-only MAP param.
+
+
+def test_publish_raster_local_mode_non_mnt_path_uses_basename() -> None:
+    """OQ-69-WMS-URL-DOUBLE-MNT-PREFIX: /tmp/... local dev path yields basename MAP= param."""
+    with _patch_qgis():
+        import importlib
+        import services.workers.pyqgis.worker as worker_module
+        importlib.reload(worker_module)
+
+        mock_project = MagicMock()
+        mock_layer = MagicMock()
+        mock_layer.isValid.return_value = True
+        mock_layer.name.return_value = "flood-depth-test"
+
+        qgis_core_mock = MagicMock()
+        qgis_core_mock.QgsRasterLayer.return_value = mock_layer
+        qgis_core_mock.Qgis.QGIS_VERSION = "3.44.11-Solothurn"
+
+        with patch.dict(sys.modules, {**_QGIS_STUBS, "qgis.core": qgis_core_mock}):
+            importlib.reload(worker_module)
+
+            with (
+                patch.object(
+                    worker_module,
+                    "_parse_qgs_uri",
+                    return_value=("local", None, None, "/tmp/my_project.qgs"),
+                ),
+                patch.object(worker_module, "_resolve_style_preset_path_by_name", return_value=None),
+                patch.object(worker_module, "_qgis_app") as mock_app_cm,
+                patch.object(worker_module, "_layer_names", side_effect=[["basemap"], ["basemap", "flood-depth-test"]]),
+                patch.object(worker_module, "_gcs_upload"),
+                patch.dict(os.environ, {"QGIS_SERVER_URL": "https://qgis.test.example.com/ogc/wms"}),
+            ):
+                mock_app_cm.return_value.__enter__ = MagicMock(return_value=None)
+                mock_app_cm.return_value.__exit__ = MagicMock(return_value=False)
+
+                with patch.object(worker_module, "QgsProject") as mock_qgsproject_cls:
+                    mock_qgsproject_cls.instance.return_value = mock_project
+                    mock_project.read.return_value = True
+                    mock_project.write.return_value = True
+
+                    result = worker_module.publish_raster_round_trip(
+                        qgs_uri="/tmp/my_project.qgs",
+                        raster_uri="/vsigs/test-bucket/test.tif",
+                        layer_id="flood-depth-test",
+                        style_preset_name="continuous_flood_depth",
+                        publish=False,
+                    )
+
+    assert result.wms_url is not None
+    # Basename "my_project.qgs" used; path traversal not present.
+    assert "MAP=/mnt/qgs/my_project.qgs" in result.wms_url, (
+        f"expected MAP=/mnt/qgs/my_project.qgs in wms_url; got: {result.wms_url!r}"
+    )
+    assert "/tmp/" not in result.wms_url, (
+        f"raw /tmp/ path leaked into WMS URL: {result.wms_url!r}"
+    )
+
+
+# Test 10 — OQ-69-WMS-LAYER-EPSG4326-EMPTY: _append_raster_layer calls
+# project.writeEntry("WMSCrsList", ...) after addMapLayer.
+
+
+def test_append_raster_layer_writes_wms_crs_list(tmp_path: Path) -> None:
+    """OQ-69-WMS-LAYER-EPSG4326-EMPTY: _append_raster_layer writes WMSCrsList to project.
+
+    QGIS Server uses the project's WMSCrsList entry to decide which CRSes it
+    will reproject on-demand.  This test asserts that writeEntry is called
+    with ("WMSCrsList", "/", [...]) after the layer is added, so EPSG:4326
+    requests return real tiles instead of transparent placeholders.
+    """
+    mock_layer = MagicMock()
+    mock_layer.isValid.return_value = True
+    mock_layer.name.return_value = "flood-depth-peak-0074"
+
+    mock_project = MagicMock()
+
+    style_path = tmp_path / "continuous_flood_depth.qml"
+    style_path.write_text("<qgis/>")
+
+    qgis_core_mock = MagicMock()
+    qgis_core_mock.QgsRasterLayer.return_value = mock_layer
+
+    with patch.dict(sys.modules, {**_QGIS_STUBS, "qgis.core": qgis_core_mock}):
+        import importlib
+        import services.workers.pyqgis.worker as worker_module
+        importlib.reload(worker_module)
+
+        with patch.object(worker_module, "_apply_style_preset"):
+            worker_module._append_raster_layer(
+                project=mock_project,
+                raster_uri="/vsigs/grace-2-hazard-prod-runs/run-0074/flood_depth_peak.tif",
+                layer_id="flood-depth-peak-0074",
+                style_qml_path=style_path,
+            )
+
+    # writeEntry must have been called with WMSCrsList including EPSG:4326.
+    mock_project.writeEntry.assert_called_once()
+    call_args = mock_project.writeEntry.call_args
+    key_scope, key_name, crs_list = call_args[0]
+    assert key_scope == "WMSCrsList", (
+        f"expected writeEntry key_scope='WMSCrsList'; got {key_scope!r}"
+    )
+    assert "EPSG:4326" in crs_list, (
+        f"EPSG:4326 not in WMSCrsList: {crs_list!r}"
+    )
+    assert "EPSG:3857" in crs_list, (
+        f"EPSG:3857 not in WMSCrsList: {crs_list!r}"
+    )
