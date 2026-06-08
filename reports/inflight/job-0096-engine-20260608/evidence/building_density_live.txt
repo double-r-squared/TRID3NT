@@ -1,0 +1,40 @@
+=== compute_building_density live verification — Fort Myers/Cape Coral ===
+bbox: (-82.0, 26.5, -81.8, 26.7)  cell_size_m: 100  source: ms_footprints
+
+_fetch_building_density_bytes runtime: 19.59s
+output COG bytes: 35487
+
+COG dimensions: 249 x 223 (float32)
+COG CRS: EPSG:3857
+COG transform: | 100.00, 0.00,-9128198.25|
+| 0.00,-100.00, 3086041.04|
+| 0.00, 0.00, 1.00|
+COG tags:
+  AREA_OR_POINT=Area
+  bbox=(-82.0, 26.5, -81.8, 26.7)
+  building_centroids_total=413156
+  cell_size_m=100.0
+  grid_crs=EPSG:3857
+  quadkey_zoom=9
+  quadkeys_present_in_index=1
+  quadkeys_total=1
+  source=ms_footprints
+  source_class=building_density
+  tool=compute_building_density
+  units=buildings_per_cell
+
+Density statistics:
+  total buildings (sum): 127348
+  max count per cell: 36
+  mean count per cell: 2.293
+  cells with ≥1 building: 32302 / 55527
+
+Geographic correctness probes (codified job-0086 lesson):
+  Downtown Fort Myers              (-81.872,26.640) -> row= 74 col=142 cell=  1.0 5x5_mean= 1.12
+  Cape Coral residential           (-81.950,26.620) -> row= 99 col= 55 cell=  7.0 5x5_mean= 5.92
+  Caloosahatchee River mid         (-81.900,26.625) -> row= 93 col=111 cell=  0.0 5x5_mean= 0.00
+  Estero Bay (water)               (-81.875,26.510) -> row=236 col=139 cell=  0.0 5x5_mean= 0.68
+  NW corner of bbox                (-81.999,26.699) -> row=  1 col=  1 cell=  0.0 5x5_mean= 1.12
+  SE corner of bbox                (-81.801,26.501) -> row=247 col=221 cell=  0.0 5x5_mean= 0.06
+
+=== verification PASS: high signal on Cape Coral (dense suburb), zero on mid-river ===
