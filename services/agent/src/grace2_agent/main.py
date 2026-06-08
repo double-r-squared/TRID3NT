@@ -91,6 +91,10 @@ def _import_tools_registry() -> int:
     from .tools import compute_aspect  # noqa: F401
     # job-0083: register compute_zonal_statistics (hazard-analysis primitive; raster + vector zone).
     from .tools import compute_zonal_statistics  # noqa: F401
+    # job-0085: register clip_raster_to_bbox (gdal_translate / gdalwarp bbox clip; gs:// or local).
+    from .tools import clip_raster_to_bbox  # noqa: F401
+    # job-0084: register fetch_administrative_boundaries (TIGER/Line 2024; state/county/place/zcta).
+    from .tools import fetch_administrative_boundaries  # noqa: F401
 
     return len(tools.TOOL_REGISTRY)
 
