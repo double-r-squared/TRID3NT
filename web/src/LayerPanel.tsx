@@ -186,13 +186,16 @@ export interface LayerPanelProps {
   initialLayers?: ProjectLayerSummary[];
   subscribeSessionState?: (cb: SessionStateSubscriber) => () => void;
   subscribeMapCommand?: (cb: MapCommandSubscriber) => () => void;
+  /** Called whenever the layer list changes (used by App.tsx to drive LayerLegend). */
+  onLayersChange?: (layers: ProjectLayerSummary[]) => void;
 }
 
 export function LayerPanel({
   initialLayers,
   subscribeSessionState,
   subscribeMapCommand,
-}: LayerPanelProps): JSX.Element {
+  onLayersChange,
+}: LayerPanelProps): JSX.Element | null {
   const initial = useMemo<LayerPanelState>(
     () => ({ layers: sortTopFirst(initialLayers ?? []) }),
     // intentionally only on mount; initialLayers is a seed, not a reactive source.
@@ -217,6 +220,11 @@ export function LayerPanel({
       unsubs.forEach((u) => u());
     };
   }, [subscribeSessionState, subscribeMapCommand]);
+
+  // Notify parent of layer-list changes so App.tsx can drive LayerLegend.
+  useEffect(() => {
+    onLayersChange?.(state.layers);
+  }, [state.layers, onLayersChange]);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
@@ -260,6 +268,10 @@ export function LayerPanel({
     // eslint-disable-next-line no-console
     console.debug("[LayerPanel] opacity intent:", { layerId, opacity });
   }
+
+  // Tweak 2 (job-0065): hide the panel entirely when no layers are loaded.
+  // Hooks must all run before this conditional return.
+  if (state.layers.length === 0) return null;
 
   return (
     <aside

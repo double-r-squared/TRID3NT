@@ -192,6 +192,14 @@ export interface ProjectLayerSummary {
   opacity: number;         // 0..1, clamped on render
   z_index: number;         // integer; lower draws first (bottom of stack)
   temporal?: TemporalConfig | null; // null for non-temporal layers
+  // OQ-W-65-STYLE-PRESET: consumer pushback (job-0065) — LayerLegend needs to
+  // know which client-side colorbar preset to render. This field is added here
+  // as an optional extension; the authoritative definition belongs in
+  // Appendix D.2 (schema's domain). Until schema lands the amendment the agent
+  // worker (publish_layer, job-0062) should populate this from the QML preset
+  // name it applied (e.g. "continuous_flood_depth"). If absent, the legend
+  // hides gracefully. See report.md Open Questions for the full pushback.
+  style_preset?: string | null;
 }
 
 // Appendix D.6 temporal block (subset web reads). Driven by WMS TIME param.
