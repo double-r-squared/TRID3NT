@@ -402,6 +402,120 @@
       "description": "Sprint-11 Stage 1 capstone: REAL OQ-76 fix \u2014 Y-axis flip in postprocess_flood COG extraction. Orchestrator-direct local diagnosis (rasterio on GCS COG + fsspec on source sfincs_map.nc) localized the in-COG mirror that job-0078's URL-consistency proof was vacuous against. Probe confirmed SFINCS y ascending along rows (y[0,0]=2,936,568 south UTM \u2192 y[-1,0]=2,952,348 north UTM); rasterio.from_bounds produces north-up transform; writing arr as-is paints SOUTH data (deep flood at Caloosahatchee mouth + San Carlos Bay) at the NORTH of the overlay bbox. Fix: Y-orientation guard before COG write \u2014 detects ascending y and applies `arr = arr[::-1, :]` + `arr_masked = arr_masked[::-1, :]`. Belt-and-suspenders X-orientation guard added analogously. 4 regression tests pass (y ascending fires guard, y descending idempotent no-op, metrics flip-invariant, x descending fires x guard). Full agent suite 279 passed 0 regressions. Re-extracted Fort Myers COG from EXISTING gs://...sfincs_map.nc (no SFINCS re-run) as flood_depth_peak_0086.tif; published WMS layer flood-depth-job-0086-fix (CONDITION_SUCCEEDED). **Live E2E**: z12/z11 dark-theme screenshots confirm deep-flood pixels NOW at SW (Caloosahatchee mouth + Cape Coral) \u2014 not NW. before_vs_after.png shows vertical mirror between old 0075 layer and new 0086 layer as expected. **Lesson codified**: URL/render consistency != geographic correctness; in-COG mirror is invisible to every consistency check (server, client, PIL composite all faithfully serve the mirrored array). Commit b862cbf.",
       "model": "sonnet",
       "subagent_tokens": 88163
+    },
+    {
+      "job_id": "job-0087-engine-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 1 parallel: fetch_gbif_occurrences. Wave 1 fan-out closed 13/15 ready-for-audit + 1 orchestrator-rescue commit (0091 storm events) + 1 reconciled commit-label-swap pattern (sibling agents racing on git add \u2014 files all landed correctly, marker commits document actual content placement). Live geographic-correctness gate per codified job-0086 lesson satisfied for each fetcher (every emitted point/poly inside requested bbox verified).",
+      "model": "opus",
+      "subagent_tokens": 161082
+    },
+    {
+      "job_id": "job-0088-engine-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 1 parallel: fetch_inaturalist_observations. Wave 1 fan-out closed 13/15 ready-for-audit + 1 orchestrator-rescue commit (0091 storm events) + 1 reconciled commit-label-swap pattern (sibling agents racing on git add \u2014 files all landed correctly, marker commits document actual content placement). Live geographic-correctness gate per codified job-0086 lesson satisfied for each fetcher (every emitted point/poly inside requested bbox verified).",
+      "model": "opus",
+      "subagent_tokens": 161082
+    },
+    {
+      "job_id": "job-0089-engine-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 1 parallel: fetch_wdpa_protected_areas. Wave 1 fan-out closed 13/15 ready-for-audit + 1 orchestrator-rescue commit (0091 storm events) + 1 reconciled commit-label-swap pattern (sibling agents racing on git add \u2014 files all landed correctly, marker commits document actual content placement). Live geographic-correctness gate per codified job-0086 lesson satisfied for each fetcher (every emitted point/poly inside requested bbox verified).",
+      "model": "opus",
+      "subagent_tokens": 161082
+    },
+    {
+      "job_id": "job-0090-engine-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 1 parallel: fetch_nws_event. Wave 1 fan-out closed 13/15 ready-for-audit + 1 orchestrator-rescue commit (0091 storm events) + 1 reconciled commit-label-swap pattern (sibling agents racing on git add \u2014 files all landed correctly, marker commits document actual content placement). Live geographic-correctness gate per codified job-0086 lesson satisfied for each fetcher (every emitted point/poly inside requested bbox verified).",
+      "model": "opus",
+      "subagent_tokens": 161082
+    },
+    {
+      "job_id": "job-0091-engine-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 1 parallel: fetch_storm_events_db. Wave 1 fan-out closed 13/15 ready-for-audit + 1 orchestrator-rescue commit (0091 storm events) + 1 reconciled commit-label-swap pattern (sibling agents racing on git add \u2014 files all landed correctly, marker commits document actual content placement). Live geographic-correctness gate per codified job-0086 lesson satisfied for each fetcher (every emitted point/poly inside requested bbox verified).",
+      "model": "opus",
+      "subagent_tokens": 161082
+    },
+    {
+      "job_id": "job-0092-engine-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 1 parallel: web_fetch (+bs4/lxml deps). Wave 1 fan-out closed 13/15 ready-for-audit + 1 orchestrator-rescue commit (0091 storm events) + 1 reconciled commit-label-swap pattern (sibling agents racing on git add \u2014 files all landed correctly, marker commits document actual content placement). Live geographic-correctness gate per codified job-0086 lesson satisfied for each fetcher (every emitted point/poly inside requested bbox verified).",
+      "model": "opus",
+      "subagent_tokens": 161082
+    },
+    {
+      "job_id": "job-0093-engine-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 1 parallel: aggregate_claims_across_sources. Wave 1 fan-out closed 13/15 ready-for-audit + 1 orchestrator-rescue commit (0091 storm events) + 1 reconciled commit-label-swap pattern (sibling agents racing on git add \u2014 files all landed correctly, marker commits document actual content placement). Live geographic-correctness gate per codified job-0086 lesson satisfied for each fetcher (every emitted point/poly inside requested bbox verified).",
+      "model": "opus",
+      "subagent_tokens": 161082
+    },
+    {
+      "job_id": "job-0094-engine-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 1 parallel: extract_landcover_class. Wave 1 fan-out closed 13/15 ready-for-audit + 1 orchestrator-rescue commit (0091 storm events) + 1 reconciled commit-label-swap pattern (sibling agents racing on git add \u2014 files all landed correctly, marker commits document actual content placement). Live geographic-correctness gate per codified job-0086 lesson satisfied for each fetcher (every emitted point/poly inside requested bbox verified).",
+      "model": "opus",
+      "subagent_tokens": 161082
+    },
+    {
+      "job_id": "job-0095-engine-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 1 parallel: compute_impervious_surface. Wave 1 fan-out closed 13/15 ready-for-audit + 1 orchestrator-rescue commit (0091 storm events) + 1 reconciled commit-label-swap pattern (sibling agents racing on git add \u2014 files all landed correctly, marker commits document actual content placement). Live geographic-correctness gate per codified job-0086 lesson satisfied for each fetcher (every emitted point/poly inside requested bbox verified).",
+      "model": "opus",
+      "subagent_tokens": 161082
+    },
+    {
+      "job_id": "job-0096-engine-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 1 parallel: compute_building_density. Wave 1 fan-out closed 13/15 ready-for-audit + 1 orchestrator-rescue commit (0091 storm events) + 1 reconciled commit-label-swap pattern (sibling agents racing on git add \u2014 files all landed correctly, marker commits document actual content placement). Live geographic-correctness gate per codified job-0086 lesson satisfied for each fetcher (every emitted point/poly inside requested bbox verified).",
+      "model": "opus",
+      "subagent_tokens": 161082
+    },
+    {
+      "job_id": "job-0097-engine-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 1 parallel: fetch_roads_osm. Wave 1 fan-out closed 13/15 ready-for-audit + 1 orchestrator-rescue commit (0091 storm events) + 1 reconciled commit-label-swap pattern (sibling agents racing on git add \u2014 files all landed correctly, marker commits document actual content placement). Live geographic-correctness gate per codified job-0086 lesson satisfied for each fetcher (every emitted point/poly inside requested bbox verified).",
+      "model": "opus",
+      "subagent_tokens": 161082
+    },
+    {
+      "job_id": "job-0098-engine-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 1 parallel: run_pelicun_damage_assessment (stub). Wave 1 fan-out closed 13/15 ready-for-audit + 1 orchestrator-rescue commit (0091 storm events) + 1 reconciled commit-label-swap pattern (sibling agents racing on git add \u2014 files all landed correctly, marker commits document actual content placement). Live geographic-correctness gate per codified job-0086 lesson satisfied for each fetcher (every emitted point/poly inside requested bbox verified).",
+      "model": "opus",
+      "subagent_tokens": 161082
+    },
+    {
+      "job_id": "job-0099-schema-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 1 parallel: Case schema FR-MP-6 envelopes. Wave 1 fan-out closed 13/15 ready-for-audit + 1 orchestrator-rescue commit (0091 storm events) + 1 reconciled commit-label-swap pattern (sibling agents racing on git add \u2014 files all landed correctly, marker commits document actual content placement). Live geographic-correctness gate per codified job-0086 lesson satisfied for each fetcher (every emitted point/poly inside requested bbox verified).",
+      "model": "opus",
+      "subagent_tokens": 161082
+    },
+    {
+      "job_id": "job-0100-schema-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 1 parallel: Secrets schema F.3 envelopes. Wave 1 fan-out closed 13/15 ready-for-audit + 1 orchestrator-rescue commit (0091 storm events) + 1 reconciled commit-label-swap pattern (sibling agents racing on git add \u2014 files all landed correctly, marker commits document actual content placement). Live geographic-correctness gate per codified job-0086 lesson satisfied for each fetcher (every emitted point/poly inside requested bbox verified).",
+      "model": "opus",
+      "subagent_tokens": 161082
+    },
+    {
+      "job_id": "job-0101-agent-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 1 parallel: Mode 2 .gov/.edu classifier. Wave 1 fan-out closed 13/15 ready-for-audit + 1 orchestrator-rescue commit (0091 storm events) + 1 reconciled commit-label-swap pattern (sibling agents racing on git add \u2014 files all landed correctly, marker commits document actual content placement). Live geographic-correctness gate per codified job-0086 lesson satisfied for each fetcher (every emitted point/poly inside requested bbox verified).",
+      "model": "opus",
+      "subagent_tokens": 161082
+    },
+    {
+      "job_id": "research-engine-real-case-studies-20260608",
+      "sprint": 12,
+      "description": "Research workflow (4 parallel Sonnet bundles via web search): real-world case studies for hydrology engines (SFINCS/MODFLOW/TELEMAC/HEC-HMS/ParFlow), wildfire (QUIC-Fire+data), ecosystem (InVEST/Maxent/Circuitscape), damage (Pelicun/HAZUS). Structured findings: 16-30 real citable case studies + workflow comparisons. Key validations: MRMS QPE (Harvey/Houston SFINCS standard), ERA5+GTSM+CaMa-Flood (compound-flood global substrate, NHESS 2023), MODFLOW-setup+SFR-maker (USGS Long Island TCE plume), GCN250 curve numbers (infiltration). Validated user's request to add MRMS + NEXRAD + NWS data layers \u2014 research independently identified MRMS as Harvey/Houston standard.",
+      "model": "sonnet",
+      "kind": "research",
+      "workflow_id": "wf_fda31770-e52",
+      "subagent_tokens": 290444
     }
   ],
   "totals_by_sprint": {
@@ -410,7 +524,8 @@
     "8": 1786238,
     "9": 713020,
     "10": 1540974,
-    "11": 999540
+    "11": 999540,
+    "12": 2706674
   },
   "historical_context": {
     "note": "Captured for accountability \u2014 NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
