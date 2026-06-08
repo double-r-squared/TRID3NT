@@ -360,6 +360,13 @@
       "description": "Sprint-11 Stage 1 parallel: compute_slope atomic tool. SlopeComputeError typed errors; gdaldem slope with -p (percent) + -alg ZevenbergenThorne flags; cache static-30d, source_class=slope. 10 new tests against real gdaldem (synthetic 1°-gradient DEM verified mean slope ≈ 1.0° degrees + ≈ 1.745% percent; cache miss/hit; error paths; 4 distinct cache keys). Full agent suite 212 passed. **Live E2E confirmed**: Fort Myers DEM cached → slope GeoTIFF in cache; cache hit on second call. 21 tools at startup. 1 minor OQ: SLOPE-STYLE-PRESET-FOLLOWUP. Sprint-11 Sonnet win #3. Commit 145ba27.",
       "model": "sonnet",
       "subagent_tokens": 125018
+    },
+    {
+      "job_id": "job-0083-engine-20260608",
+      "sprint": 11,
+      "description": "Sprint-11 Stage 1 parallel: compute_zonal_statistics — THE foundational hazard-analysis primitive. Rolled own aggregation (rasterio + numpy; ~600 LOC); 10 statistics. Vector zone via osgeo.ogr + fiona fallback; per-polygon rasterize. Raster-zone grid mismatch auto-warp via rasterio.warp.reproject. NaN nodata explicitly guarded. 11 tests. **LIVE E2E ON REAL DATA**: job-0075 Fort Myers flood COG + synthetic center-quarter mask → count=48,155 mean=0.37m max=1.94m p95=0.89m. Result cached. First analysis tool returning real hazard-relevant numbers (vs derivative layers). 22 tools at startup. 3 OQs: VECTOR-CRS (silent CRS mismatch on vector zones — sprint-12 fix), UNITS (publish_layer should tag write-time), RASTERSTATS (deferred). Sprint-11 Sonnet win #4. Commit 8a0d7e0.",
+      "model": "sonnet",
+      "subagent_tokens": 99152
     }
   ],
   "totals_by_sprint": {
@@ -368,7 +375,7 @@
     "8": 1786238,
     "9": 713020,
     "10": 1540974,
-    "11": 319372
+    "11": 418524
   },
   "historical_context": {
     "note": "Captured for accountability — NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
