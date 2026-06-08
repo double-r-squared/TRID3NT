@@ -1,0 +1,22 @@
+=== job-0088 live verification ===
+call: fetch_inaturalist_observations('American alligator', (-81.5, 25.5, -80.5, 26.5))
+started: 2026-06-08T11:50:34.383978+00:00
+ended:   2026-06-08T11:50:35.564233+00:00
+duration_s: 1.18
+LayerURI.uri: gs://grace-2-hazard-prod-cache/cache/static-30d/inaturalist/df6c1c6541afa948b6a9fd8452d3b5b3.fgb
+LayerURI.layer_id: inat-26159--81.5000-25.5000
+LayerURI.name: iNat Observations — taxon=26159
+LayerURI.layer_type: vector
+LayerURI.role: context
+LayerURI.units: None
+LayerURI.bbox: (-81.5, 25.5, -80.5, 26.5)
+LayerURI.style_preset: inaturalist_observations
+FlatGeobuf bytes: 30720
+feature count: 100
+points inside requested bbox: 100/100
+points outside requested bbox: 0
+first 3 (lon, lat): [(-80.6373525129, 25.7397309362), (-80.6375464732, 25.7397620411), (-80.6395322344, 25.679147065)]
+column summary: {'species_guess_nunique': 5, 'user_login_nunique': 54, 'has_photo_url': 100}
+
+GEOGRAPHIC-CORRECTNESS CHECK (codified job-0086 lesson):
+PASS: all 100 points fall inside requested Everglades bbox
