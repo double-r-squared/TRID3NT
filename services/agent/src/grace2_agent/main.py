@@ -95,6 +95,8 @@ def _import_tools_registry() -> int:
     from .tools import clip_raster_to_bbox  # noqa: F401
     # job-0084: register fetch_administrative_boundaries (TIGER/Line 2024; state/county/place/zcta).
     from .tools import fetch_administrative_boundaries  # noqa: F401
+    # job-0079: register compute_hillshade (gdaldem hillshade; 5 style presets; swiss_double multiply-blend).
+    from .tools import compute_hillshade  # noqa: F401
 
     return len(tools.TOOL_REGISTRY)
 

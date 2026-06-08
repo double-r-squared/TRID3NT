@@ -204,3 +204,4 @@ from . import compute_aspect  # noqa: E402,F401 — job-0082: registers compute_
 from . import compute_zonal_statistics  # noqa: E402,F401 — job-0083: registers compute_zonal_statistics
 from . import clip_raster_to_bbox  # noqa: E402,F401 — job-0085: registers clip_raster_to_bbox
 from . import fetch_administrative_boundaries  # noqa: E402,F401 — job-0084: registers fetch_administrative_boundaries
+from . import compute_hillshade  # noqa: E402,F401 — job-0079: registers compute_hillshade
