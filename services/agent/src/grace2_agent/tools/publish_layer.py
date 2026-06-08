@@ -415,6 +415,7 @@ def publish_layer(
     layer_id: str,
     style_preset: str = "continuous_flood_depth",
     project_qgs_uri: str | None = None,
+    case_id: str | None = None,
 ) -> str:
     """Publish a COG raster layer to QGIS Server via the PyQGIS worker.
 
@@ -445,6 +446,15 @@ def publish_layer(
             Defaults to ``gs://grace-2-hazard-prod-qgs/grace2-sample.qgs``
             (the v0.1 canonical project). The FR-MP-6 Case UX will eventually
             own per-Case project resolution.
+        case_id: optional Case identifier (FR-MP-6 / job-0121). When passed,
+            the server wrapper resolves the case-scoped ``.qgs`` URI via
+            ``case_lifecycle.ensure_case_qgs`` BEFORE invoking this tool;
+            this parameter is a transport-only carrier so the LLM-visible
+            tool surface is honest about Case context. The atomic tool body
+            itself does not perform Persistence I/O — the server-side
+            wrapper does the lazy-init and substitutes the resolved URI
+            into ``project_qgs_uri``. Defaults to ``None`` (single-tenant
+            demo path; OQ-62-QGS-MUTATION-CONFLICT preserved verbatim).
 
     Returns:
         WMS URL string:

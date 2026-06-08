@@ -1,0 +1,441 @@
+"""Unit tests for the Case lifecycle handlers in ``server.py`` (job-0121).
+
+These tests exercise the server-side dispatch without binding a real
+WebSocket — a ``MockWebSocket`` collects every envelope and the tests
+assert on the envelope sequence + the persistence side effects.
+
+Coverage (>=10 unit tests + 1 integration):
+- ``test_case_create_emits_case_open_and_case_list`` — create dispatches
+  to upsert_case + emits case-open with empty session_state, then case-list.
+- ``test_case_select_emits_case_open_with_chat_history`` — select hydrates
+  CaseSessionState including chat history.
+- ``test_case_rename_updates_title_and_refreshes_case_list`` — rename
+  updates persisted title; case-list re-emitted.
+- ``test_case_archive_soft_archives_and_refreshes_case_list`` — archive
+  flips status; case-list re-emitted.
+- ``test_case_delete_soft_deletes_and_clears_active_case`` — delete flips
+  status; active_case_id cleared when matching.
+- ``test_case_command_without_persistence_emits_error`` — no Persistence
+  bound -> INTERNAL_ERROR envelope.
+- ``test_case_command_rename_missing_case_id_emits_error`` — rename
+  without case_id -> INTERNAL_ERROR.
+- ``test_case_command_rename_missing_title_emits_error`` — rename
+  without args.title -> INTERNAL_ERROR.
+- ``test_emit_case_list_skips_when_persistence_unbound`` — emit silently
+  skips with no Persistence.
+- ``test_active_case_id_set_after_create_and_select`` — active context
+  follows command dispatch.
+- ``test_persist_chat_turn_writes_when_active_case_set`` — chat message
+  appended to mongo.
+- ``test_persist_chat_turn_noop_when_no_active_case`` — no active context
+  = no write.
+- ``test_integration_e2e_case_flow`` — full flow: create case A, persist
+  chat, archive, create case B, verify isolation (case A's chat does NOT
+  appear in case B's rehydration).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from datetime import datetime, timezone
+from typing import Any
+
+import pytest
+
+from grace2_agent import server as server_mod
+from grace2_agent.persistence import (
+    CASES_COLLECTION,
+    CHAT_COLLECTION,
+    Persistence,
+)
+from grace2_agent.server import (
+    SessionState,
+    _emit_case_list,
+    _emit_case_open,
+    _handle_case_command,
+    _persist_chat_turn,
+    get_persistence,
+    set_persistence,
+)
+from grace2_contracts.case import (
+    CaseChatMessage,
+    CaseCommandEnvelopePayload,
+    CaseSummary,
+)
+from grace2_contracts.common import new_ulid
+
+from .test_persistence import MockMCPClient, _fresh_case_summary
+
+
+# --------------------------------------------------------------------------- #
+# Mocks
+# --------------------------------------------------------------------------- #
+
+
+class MockWebSocket:
+    """Collects every envelope ``send`` would have written to the wire.
+
+    Each entry is the parsed envelope as a dict. The tests assert on
+    ``type`` + ``payload`` fields.
+    """
+
+    def __init__(self) -> None:
+        self.sent: list[dict] = []
+
+    async def send(self, raw: Any) -> None:
+        if isinstance(raw, (bytes, bytearray)):
+            raw = raw.decode("utf-8")
+        if isinstance(raw, str):
+            self.sent.append(json.loads(raw))
+        else:
+            self.sent.append(raw)
+
+
+@pytest.fixture()
+def _persistence_bound():
+    """Bind a fresh ``Persistence`` (backed by ``MockMCPClient``) for the test.
+
+    Restores the previous binding on teardown so subsequent tests don't see
+    the mock leak.
+    """
+    saved = get_persistence()
+    mock = MockMCPClient()
+    p = Persistence(mock)
+    set_persistence(p)
+    try:
+        yield p
+    finally:
+        set_persistence(saved)
+
+
+def _fresh_state(session_id: str | None = None) -> SessionState:
+    return SessionState(session_id=session_id or new_ulid())
+
+
+# --------------------------------------------------------------------------- #
+# Case lifecycle handlers
+# --------------------------------------------------------------------------- #
+
+
+def test_case_create_emits_case_open_and_case_list(_persistence_bound: Persistence) -> None:
+    """``case-command(create)`` upserts the Case, sets active context, emits
+    ``case-open`` (empty session_state) then ``case-list`` updated."""
+    ws = MockWebSocket()
+    state = _fresh_state()
+    cmd = CaseCommandEnvelopePayload(
+        command="create", args={"title": "My new flood case"}
+    )
+    asyncio.run(_handle_case_command(ws, state, cmd))
+
+    types = [env["type"] for env in ws.sent]
+    assert "case-open" in types
+    assert "case-list" in types
+    # case-open carries the fresh (empty) session_state for the new Case
+    case_open = next(env for env in ws.sent if env["type"] == "case-open")
+    assert case_open["payload"]["session_state"] is not None
+    assert (
+        case_open["payload"]["session_state"]["case"]["title"]
+        == "My new flood case"
+    )
+    # Active context is set to the newly-minted Case
+    assert state.active_case_id == case_open["payload"]["session_state"]["case"]["case_id"]
+    # case-list carries at least one Case (the one we just created)
+    case_list = next(env for env in ws.sent if env["type"] == "case-list")
+    case_ids = [c["case_id"] for c in case_list["payload"]["cases"]]
+    assert state.active_case_id in case_ids
+
+
+def test_case_select_emits_case_open_with_chat_history(
+    _persistence_bound: Persistence,
+) -> None:
+    """``case-command(select)`` rehydrates chat history via ``get_session_state``."""
+    case = _fresh_case_summary()
+    asyncio.run(_persistence_bound.upsert_case(case))
+    chat = CaseChatMessage(
+        message_id=new_ulid(),
+        case_id=case.case_id,
+        role="user",
+        content="model the flooding",
+        created_at=datetime(2026, 6, 8, 12, 0, 0, tzinfo=timezone.utc),
+    )
+    asyncio.run(_persistence_bound.append_chat_message(chat))
+
+    ws = MockWebSocket()
+    state = _fresh_state()
+    cmd = CaseCommandEnvelopePayload(command="select", case_id=case.case_id)
+    asyncio.run(_handle_case_command(ws, state, cmd))
+
+    case_open = next(env for env in ws.sent if env["type"] == "case-open")
+    payload = case_open["payload"]
+    assert payload["session_state"] is not None
+    assert payload["session_state"]["case"]["case_id"] == case.case_id
+    history = payload["session_state"]["chat_history"]
+    assert len(history) == 1
+    assert history[0]["content"] == "model the flooding"
+    assert state.active_case_id == case.case_id
+
+
+def test_case_rename_updates_title_and_refreshes_case_list(
+    _persistence_bound: Persistence,
+) -> None:
+    """``case-command(rename)`` updates ``title`` and re-emits case-list."""
+    case = _fresh_case_summary()
+    asyncio.run(_persistence_bound.upsert_case(case))
+    ws = MockWebSocket()
+    state = _fresh_state()
+    cmd = CaseCommandEnvelopePayload(
+        command="rename",
+        case_id=case.case_id,
+        args={"title": "Renamed case"},
+    )
+    asyncio.run(_handle_case_command(ws, state, cmd))
+
+    # Persistence reflects the rename
+    fetched = asyncio.run(_persistence_bound.get_case(case.case_id))
+    assert fetched is not None
+    assert fetched.title == "Renamed case"
+    # case-list emitted (with the renamed case)
+    case_list = next(env for env in ws.sent if env["type"] == "case-list")
+    titles = [c["title"] for c in case_list["payload"]["cases"]]
+    assert "Renamed case" in titles
+
+
+def test_case_archive_soft_archives_and_refreshes_case_list(
+    _persistence_bound: Persistence,
+) -> None:
+    """``case-command(archive)`` flips status to ``archived`` and emits case-list."""
+    case = _fresh_case_summary()
+    asyncio.run(_persistence_bound.upsert_case(case))
+    ws = MockWebSocket()
+    state = _fresh_state()
+    cmd = CaseCommandEnvelopePayload(command="archive", case_id=case.case_id)
+    asyncio.run(_handle_case_command(ws, state, cmd))
+
+    fetched = asyncio.run(_persistence_bound.get_case(case.case_id))
+    assert fetched is not None
+    assert fetched.status == "archived"
+    assert any(env["type"] == "case-list" for env in ws.sent)
+
+
+def test_case_delete_soft_deletes_and_clears_active_case(
+    _persistence_bound: Persistence,
+) -> None:
+    """``case-command(delete)`` flips status; clears active_case_id when matching."""
+    case = _fresh_case_summary()
+    asyncio.run(_persistence_bound.upsert_case(case))
+    ws = MockWebSocket()
+    state = _fresh_state()
+    state.active_case_id = case.case_id  # we're "in" this Case
+    cmd = CaseCommandEnvelopePayload(command="delete", case_id=case.case_id)
+    asyncio.run(_handle_case_command(ws, state, cmd))
+
+    fetched = asyncio.run(_persistence_bound.get_case(case.case_id))
+    assert fetched is not None
+    assert fetched.status == "deleted"
+    # Active case context cleared because we deleted the active one
+    assert state.active_case_id is None
+
+
+def test_case_command_without_persistence_emits_error() -> None:
+    """No Persistence bound -> INTERNAL_ERROR envelope (FR-MP-6 needs Mongo)."""
+    saved = get_persistence()
+    set_persistence(None)
+    try:
+        ws = MockWebSocket()
+        state = _fresh_state()
+        cmd = CaseCommandEnvelopePayload(command="create")
+        asyncio.run(_handle_case_command(ws, state, cmd))
+        types = [env["type"] for env in ws.sent]
+        assert "error" in types
+        err = next(env for env in ws.sent if env["type"] == "error")
+        assert err["payload"]["error_code"] == "INTERNAL_ERROR"
+    finally:
+        set_persistence(saved)
+
+
+def test_case_command_rename_missing_case_id_emits_error(
+    _persistence_bound: Persistence,
+) -> None:
+    """Rename without case_id -> INTERNAL_ERROR (required-field guard)."""
+    ws = MockWebSocket()
+    state = _fresh_state()
+    cmd = CaseCommandEnvelopePayload(
+        command="rename", args={"title": "x"}
+    )  # no case_id
+    asyncio.run(_handle_case_command(ws, state, cmd))
+    types = [env["type"] for env in ws.sent]
+    assert "error" in types
+
+
+def test_case_command_rename_missing_title_emits_error(
+    _persistence_bound: Persistence,
+) -> None:
+    """Rename without args.title -> INTERNAL_ERROR (non-empty required)."""
+    case = _fresh_case_summary()
+    asyncio.run(_persistence_bound.upsert_case(case))
+    ws = MockWebSocket()
+    state = _fresh_state()
+    cmd = CaseCommandEnvelopePayload(
+        command="rename", case_id=case.case_id, args={}
+    )
+    asyncio.run(_handle_case_command(ws, state, cmd))
+    types = [env["type"] for env in ws.sent]
+    assert "error" in types
+
+
+def test_emit_case_list_skips_when_persistence_unbound() -> None:
+    """``_emit_case_list`` is a silent no-op when Persistence is unbound."""
+    saved = get_persistence()
+    set_persistence(None)
+    try:
+        ws = MockWebSocket()
+        state = _fresh_state()
+        asyncio.run(_emit_case_list(ws, state))
+        # Nothing emitted
+        assert ws.sent == []
+    finally:
+        set_persistence(saved)
+
+
+def test_active_case_id_set_after_create_and_select(
+    _persistence_bound: Persistence,
+) -> None:
+    """active_case_id follows ``create`` and ``select`` commands."""
+    ws = MockWebSocket()
+    state = _fresh_state()
+    asyncio.run(_handle_case_command(ws, state, CaseCommandEnvelopePayload(command="create")))
+    first_active = state.active_case_id
+    assert first_active is not None
+
+    # Create a second case, then select the first one again
+    asyncio.run(_handle_case_command(ws, state, CaseCommandEnvelopePayload(command="create")))
+    second_active = state.active_case_id
+    assert second_active is not None
+    assert second_active != first_active
+
+    asyncio.run(
+        _handle_case_command(
+            ws, state, CaseCommandEnvelopePayload(command="select", case_id=first_active)
+        )
+    )
+    assert state.active_case_id == first_active
+
+
+# --------------------------------------------------------------------------- #
+# Chat persistence
+# --------------------------------------------------------------------------- #
+
+
+def test_persist_chat_turn_writes_when_active_case_set(
+    _persistence_bound: Persistence,
+) -> None:
+    """``_persist_chat_turn`` appends a CaseChatMessage when a Case is active."""
+    case = _fresh_case_summary()
+    asyncio.run(_persistence_bound.upsert_case(case))
+    state = _fresh_state()
+    state.active_case_id = case.case_id
+    state.current_turn_layer_ids = ["flood-depth-A", "nlcd-AOI"]
+    asyncio.run(
+        _persist_chat_turn(
+            state, role="user", content="model the flooding"
+        )
+    )
+    # One CaseChatMessage landed in the chat collection
+    session_state = asyncio.run(_persistence_bound.get_session_state(case.case_id))
+    assert len(session_state.chat_history) == 1
+    msg = session_state.chat_history[0]
+    assert msg.content == "model the flooding"
+    assert msg.role == "user"
+    assert msg.layer_emissions == ["flood-depth-A", "nlcd-AOI"]
+
+
+def test_persist_chat_turn_noop_when_no_active_case(
+    _persistence_bound: Persistence,
+) -> None:
+    """``_persist_chat_turn`` is a silent no-op without an active Case context."""
+    state = _fresh_state()
+    state.active_case_id = None
+    asyncio.run(
+        _persist_chat_turn(state, role="user", content="hello (no case)")
+    )
+    # No writes to the chat collection
+    mcp_mock = _persistence_bound._mcp  # type: ignore[attr-defined]
+    chat_inserts = [
+        (n, a) for n, a in mcp_mock.calls
+        if n == "insert-one" and a.get("collection") == CHAT_COLLECTION
+    ]
+    assert chat_inserts == []
+
+
+# --------------------------------------------------------------------------- #
+# Integration: full Case flow
+# --------------------------------------------------------------------------- #
+
+
+def test_integration_e2e_case_flow(_persistence_bound: Persistence) -> None:
+    """End-to-end: create Case A → publish-like chat persist → select Case B → isolation.
+
+    Verifies:
+    1. Creating Case A sets active context.
+    2. Chat turn persists into Case A only.
+    3. Creating Case B switches active context.
+    4. Case B's rehydration shows ZERO chat history (Case A's chat is isolated).
+    5. Selecting Case A again rehydrates the original chat.
+    """
+    ws = MockWebSocket()
+    state = _fresh_state()
+
+    # 1. Create Case A.
+    asyncio.run(
+        _handle_case_command(
+            ws, state, CaseCommandEnvelopePayload(
+                command="create", args={"title": "Case A — Fort Myers flood"}
+            )
+        )
+    )
+    case_a_id = state.active_case_id
+    assert case_a_id is not None
+
+    # 2. Persist a couple of chat turns into Case A.
+    state.current_turn_layer_ids = ["flood-depth-A"]
+    asyncio.run(_persist_chat_turn(state, role="user", content="model the flooding"))
+    state.current_turn_layer_ids = []  # reset
+    asyncio.run(
+        _persist_chat_turn(
+            state,
+            role="agent",
+            content="[invoked publish_layer]",
+            pipeline_id=new_ulid(),
+        )
+    )
+
+    # 3. Create Case B (switches active context).
+    asyncio.run(
+        _handle_case_command(
+            ws, state, CaseCommandEnvelopePayload(
+                command="create", args={"title": "Case B — wildfire smoke"}
+            )
+        )
+    )
+    case_b_id = state.active_case_id
+    assert case_b_id is not None
+    assert case_b_id != case_a_id
+
+    # 4. Case B's rehydration shows ZERO chat history.
+    state_b = asyncio.run(_persistence_bound.get_session_state(case_b_id))
+    assert state_b.chat_history == []
+
+    # 5. Selecting Case A again rehydrates the original chat.
+    ws_a = MockWebSocket()
+    asyncio.run(
+        _handle_case_command(
+            ws_a, state, CaseCommandEnvelopePayload(command="select", case_id=case_a_id)
+        )
+    )
+    assert state.active_case_id == case_a_id
+    case_open = next(env for env in ws_a.sent if env["type"] == "case-open")
+    history = case_open["payload"]["session_state"]["chat_history"]
+    assert len(history) == 2
+    contents = sorted(m["content"] for m in history)
+    assert contents == sorted(["model the flooding", "[invoked publish_layer]"])

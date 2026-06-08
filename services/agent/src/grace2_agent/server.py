@@ -47,6 +47,11 @@ from grace2_contracts.case import (
     CaseOpenEnvelopePayload,
     CaseSummary,
 )
+from grace2_contracts.secrets import (
+    SecretAddEnvelopePayload,
+    SecretRevokeEnvelopePayload,
+    SecretsListEnvelopePayload,
+)
 from grace2_contracts.ws import (
     AgentMessageChunkPayload,
     CancelPayload,
@@ -76,6 +81,12 @@ from .mode2_classifier import (
 )
 from .persistence import Persistence
 from .pipeline_emitter import PipelineEmitter
+from .secrets_handler import (
+    SecretError,
+    handle_secret_add,
+    handle_secret_revoke,
+    handle_secrets_list,
+)
 from .tools import TOOL_REGISTRY
 
 # job-0122: auth-token envelope (Appendix H.5 connect handshake).
@@ -1122,6 +1133,173 @@ async def _dispatch_tool_and_persist(
             )
 
 
+# --------------------------------------------------------------------------- #
+# Secrets envelope handlers (job-0124, FR-AS-4 + §F.3)
+# --------------------------------------------------------------------------- #
+
+
+async def _emit_secrets_list(
+    websocket: ServerConnection,
+    state: SessionState,
+    *,
+    case_id: str | None = None,
+) -> None:
+    """Emit a fresh ``secrets-list`` envelope for the caller.
+
+    Multi-tenant isolation: scopes the listing on
+    ``state.authenticated_user_id``. Falls back to the session_id when
+    auth-handshake hasn't completed (the in-flight handshake fallback
+    elsewhere in the dispatcher ensures this is rare).
+
+    Best-effort on Persistence unbound — emits an empty list rather than
+    raising so the client UI can render the "no secrets yet" empty state.
+    """
+    p = get_persistence()
+    user_id = state.authenticated_user_id or state.session_id
+    if p is None:
+        logger.warning(
+            "secrets-list session=%s: Persistence unbound; emitting empty",
+            state.session_id,
+        )
+        empty = SecretsListEnvelopePayload(secrets=[])
+        await websocket.send(
+            _new_envelope("secrets-list", state.session_id, empty)
+        )
+        return
+    try:
+        payload = await handle_secrets_list(
+            user_id=user_id, case_id=case_id, persistence=p
+        )
+    except SecretError as exc:
+        await _send_error(
+            websocket,
+            state.session_id,
+            "INTERNAL_ERROR",
+            f"secrets-list failed: {exc}",
+        )
+        return
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("secrets-list failed session=%s", state.session_id)
+        await _send_error(
+            websocket,
+            state.session_id,
+            "INTERNAL_ERROR",
+            f"secrets-list failed: {exc}",
+        )
+        return
+    await websocket.send(
+        _new_envelope("secrets-list", state.session_id, payload)
+    )
+    logger.info(
+        "secrets-list emitted session=%s case=%s count=%d",
+        state.session_id,
+        case_id,
+        len(payload.secrets),
+    )
+
+
+async def _handle_secret_add(
+    websocket: ServerConnection,
+    state: SessionState,
+    envelope: SecretAddEnvelopePayload,
+) -> None:
+    """Process a ``secret-add`` envelope and emit a refreshed ``secrets-list``.
+
+    Per Decision F the raw ``key_value`` field on the inbound envelope is
+    consumed by the handler (written to GCP Secret Manager) and **never**
+    echoed back. The handler returns a vault-ref-only ``SecretRecord``;
+    we drop it on the floor and re-emit a full ``secrets-list`` so the
+    client renders the full collection (including the new entry).
+
+    Per FR-AS-8 this is NOT a confirmation trigger (the user explicitly
+    typed the key into the form — the action itself IS the user's
+    confirmation). The handler proceeds without a ``confirmation-request``
+    pause, matching the Case-lifecycle command pattern.
+    """
+    p = get_persistence()
+    user_id = state.authenticated_user_id or state.session_id
+    if p is None:
+        await _send_error(
+            websocket,
+            state.session_id,
+            "INTERNAL_ERROR",
+            "secret-add requires Persistence; the agent service was started "
+            "without GRACE2_MONGO_MCP_STDIO=1.",
+        )
+        return
+    try:
+        await handle_secret_add(
+            envelope, user_id=user_id, persistence=p,
+        )
+    except SecretError as exc:
+        await _send_error(
+            websocket,
+            state.session_id,
+            "INTERNAL_ERROR",
+            f"secret-add failed: {exc}",
+        )
+        return
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("secret-add failed session=%s", state.session_id)
+        await _send_error(
+            websocket,
+            state.session_id,
+            "INTERNAL_ERROR",
+            f"secret-add failed: {exc}",
+        )
+        return
+    # Re-emit the full secrets-list so the client refreshes its panel.
+    await _emit_secrets_list(
+        websocket, state, case_id=envelope.case_id
+    )
+
+
+async def _handle_secret_revoke(
+    websocket: ServerConnection,
+    state: SessionState,
+    envelope: SecretRevokeEnvelopePayload,
+) -> None:
+    """Process a ``secret-revoke`` envelope (soft-revoke + refresh list).
+
+    The GCP Secret Manager entry is intentionally NOT deleted — preserves
+    audit trail. Re-emits a refreshed ``secrets-list`` so the client UI
+    drops the revoked entry from its active list.
+    """
+    p = get_persistence()
+    user_id = state.authenticated_user_id or state.session_id
+    if p is None:
+        await _send_error(
+            websocket,
+            state.session_id,
+            "INTERNAL_ERROR",
+            "secret-revoke requires Persistence; the agent service was "
+            "started without GRACE2_MONGO_MCP_STDIO=1.",
+        )
+        return
+    try:
+        await handle_secret_revoke(
+            envelope.secret_id, user_id=user_id, persistence=p,
+        )
+    except SecretError as exc:
+        await _send_error(
+            websocket,
+            state.session_id,
+            "INTERNAL_ERROR",
+            f"secret-revoke failed: {exc}",
+        )
+        return
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("secret-revoke failed session=%s", state.session_id)
+        await _send_error(
+            websocket,
+            state.session_id,
+            "INTERNAL_ERROR",
+            f"secret-revoke failed: {exc}",
+        )
+        return
+    await _emit_secrets_list(websocket, state)
+
+
 def _make_handler(settings: GeminiSettings):
     """Build the per-connection coroutine, closing over the resolved settings."""
 
@@ -1260,6 +1438,38 @@ def _make_handler(settings: GeminiSettings):
                         )
                         await _handle_case_command(websocket, state, cmd)
 
+                    elif msg_type == "secret-add":
+                        # job-0124 (FR-AS-4 + §F.3): per-Case secret add.
+                        # Key value is consumed by the handler (written to
+                        # GCP Secret Manager) and never echoed back. The
+                        # reply is a refreshed ``secrets-list`` envelope.
+                        sa = SecretAddEnvelopePayload.model_validate(
+                            payload_dict
+                        )
+                        await _handle_secret_add(websocket, state, sa)
+
+                    elif msg_type == "secret-revoke":
+                        # job-0124: soft-revoke a per-Case secret.
+                        sr = SecretRevokeEnvelopePayload.model_validate(
+                            payload_dict
+                        )
+                        await _handle_secret_revoke(websocket, state, sr)
+
+                    elif msg_type == "secrets-list-request":
+                        # job-0124: explicit list-refresh request. The
+                        # envelope payload is loosely-shaped (an empty
+                        # object for global list; optional ``case_id`` to
+                        # scope) — kept untyped on the schema side for
+                        # forward-compat. We read case_id directly here.
+                        req_case_id = None
+                        if isinstance(payload_dict, dict):
+                            cid = payload_dict.get("case_id")
+                            if isinstance(cid, str) and cid:
+                                req_case_id = cid
+                        await _emit_secrets_list(
+                            websocket, state, case_id=req_case_id
+                        )
+
                     elif msg_type == "cancel":
                         CancelPayload.model_validate(payload_dict)
                         logger.info("cancel session=%s", state.session_id)
@@ -1352,4 +1562,8 @@ __all__ = [
     "_persist_chat_turn",
     "_dispatch_tool_and_persist",
     "_dispatch_gemini_and_persist",
+    # job-0124: secrets envelope handlers.
+    "_emit_secrets_list",
+    "_handle_secret_add",
+    "_handle_secret_revoke",
 ]
