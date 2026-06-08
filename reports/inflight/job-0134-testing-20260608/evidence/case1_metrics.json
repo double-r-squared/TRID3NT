@@ -1,0 +1,97 @@
+{
+  "impact_metrics": {},
+  "case_summary_text": "Within Big Cypress / Everglades: 244 species occurrence(s) (244 2435099, 0 2441370, 0 2480803); flood modeling for the atlas14_100yr event did not complete (error: BBOX_INVALID); bbox=[-81.5000, 25.7000, -80.7000, 26.5000].",
+  "species_counts": {
+    "2435099": 244,
+    "2441370": 0,
+    "2480803": 0
+  },
+  "bbox": [
+    -81.5,
+    25.7,
+    -80.7,
+    26.5
+  ],
+  "flood_layer_uri": null,
+  "wdpa_layer_uri": {
+    "layer_id": "wdpa--81.5000-25.7000",
+    "name": "Protected Areas \u2014 WDPA",
+    "layer_type": "vector",
+    "uri": "gs://grace-2-hazard-prod-cache/cache/static-30d/wdpa/60478b2981661d507eaf65d108a3ae30.fgb",
+    "style_preset": "wdpa_protected_areas",
+    "temporal": null,
+    "role": "context",
+    "units": null,
+    "bbox": null
+  },
+  "species_layers": [
+    {
+      "layer_id": "gbif-2435099--81.5000-25.7000",
+      "name": "GBIF Occurrences \u2014 taxonKey 2435099",
+      "layer_type": "vector",
+      "uri": "gs://grace-2-hazard-prod-cache/cache/static-30d/gbif/020f35d132127ea9f6181fd9e1d95e29.fgb",
+      "style_preset": "gbif_occurrences",
+      "temporal": null,
+      "role": "context",
+      "units": null,
+      "bbox": null
+    },
+    {
+      "layer_id": "gbif-2441370--81.5000-25.7000",
+      "name": "GBIF Occurrences \u2014 taxonKey 2441370",
+      "layer_type": "vector",
+      "uri": "gs://grace-2-hazard-prod-cache/cache/static-30d/gbif/540eebf507d0b481c44486f37dff30d0.fgb",
+      "style_preset": "gbif_occurrences",
+      "temporal": null,
+      "role": "context",
+      "units": null,
+      "bbox": null
+    },
+    {
+      "layer_id": "gbif-2480803--81.5000-25.7000",
+      "name": "GBIF Occurrences \u2014 taxonKey 2480803",
+      "layer_type": "vector",
+      "uri": "gs://grace-2-hazard-prod-cache/cache/static-30d/gbif/6d5b696fc6af43966ffd288779144154.fgb",
+      "style_preset": "gbif_occurrences",
+      "temporal": null,
+      "role": "context",
+      "units": null,
+      "bbox": null
+    }
+  ],
+  "schema_version": "v1",
+  "_capture_elapsed_seconds": 134.72138860542327,
+  "geographic_correctness_verification": {
+    "species_2435099_Puma_concolor": {
+      "n": 244,
+      "in_bbox": 244,
+      "pct_in_bbox": 100.0,
+      "species": "Puma concolor (Florida panther)"
+    },
+    "species_2441370_Alligator_mississippiensis": {
+      "n": 4439,
+      "in_bbox": 4439,
+      "pct_in_bbox": 100.0,
+      "species": "Alligator mississippiensis"
+    },
+    "species_2480803_Platalea_ajaja": {
+      "n": 5000,
+      "in_bbox": 5000,
+      "pct_in_bbox": 100.0,
+      "species": "Platalea ajaja (Roseate spoonbill)"
+    },
+    "wdpa_polygons": {
+      "n": 23,
+      "in_bbox": 23,
+      "pct_in_bbox": 100.0
+    },
+    "verification_method": "pyogrio.read_dataframe on downloaded FlatGeobuf from GCS; per-point bbox containment check",
+    "note": "species_counts dict shows 0 for keys 2441370/2480803 because _count_features_safely fails silently on gs:// URIs; actual feature counts verified via direct GCS download"
+  },
+  "gcs_object_sizes_bytes": {
+    "gbif_2435099_Puma_concolor": 48320,
+    "gbif_2441370_Alligator_mississippiensis": 964656,
+    "gbif_2480803_Platalea_ajaja": 938520,
+    "wdpa_polygons": 2987600
+  }
+}

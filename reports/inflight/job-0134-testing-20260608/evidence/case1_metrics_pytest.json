@@ -1,0 +1,63 @@
+{
+  "schema_version": "v1",
+  "bbox": [
+    -81.5,
+    25.7,
+    -80.7,
+    26.5
+  ],
+  "flood_layer_uri": null,
+  "species_layers": [
+    {
+      "layer_id": "gbif-2435099--81.5000-25.7000",
+      "name": "GBIF Occurrences \u2014 taxonKey 2435099",
+      "layer_type": "vector",
+      "uri": "gs://grace-2-hazard-prod-cache/cache/static-30d/gbif/020f35d132127ea9f6181fd9e1d95e29.fgb",
+      "style_preset": "gbif_occurrences",
+      "temporal": null,
+      "role": "context",
+      "units": null,
+      "bbox": null
+    },
+    {
+      "layer_id": "gbif-2441370--81.5000-25.7000",
+      "name": "GBIF Occurrences \u2014 taxonKey 2441370",
+      "layer_type": "vector",
+      "uri": "gs://grace-2-hazard-prod-cache/cache/static-30d/gbif/540eebf507d0b481c44486f37dff30d0.fgb",
+      "style_preset": "gbif_occurrences",
+      "temporal": null,
+      "role": "context",
+      "units": null,
+      "bbox": null
+    },
+    {
+      "layer_id": "gbif-2480803--81.5000-25.7000",
+      "name": "GBIF Occurrences \u2014 taxonKey 2480803",
+      "layer_type": "vector",
+      "uri": "gs://grace-2-hazard-prod-cache/cache/static-30d/gbif/6d5b696fc6af43966ffd288779144154.fgb",
+      "style_preset": "gbif_occurrences",
+      "temporal": null,
+      "role": "context",
+      "units": null,
+      "bbox": null
+    }
+  ],
+  "wdpa_layer_uri": {
+    "layer_id": "wdpa--81.5000-25.7000",
+    "name": "Protected Areas \u2014 WDPA",
+    "layer_type": "vector",
+    "uri": "gs://grace-2-hazard-prod-cache/cache/static-30d/wdpa/60478b2981661d507eaf65d108a3ae30.fgb",
+    "style_preset": "wdpa_protected_areas",
+    "temporal": null,
+    "role": "context",
+    "units": null,
+    "bbox": null
+  },
+  "impact_metrics": {},
+  "case_summary_text": "Within Big Cypress / Everglades: 9683 species occurrence(s) (244 2435099, 4439 2441370, 5000 2480803); flood modeling for the atlas14_100yr event did not complete (error: BBOX_INVALID); bbox=[-81.5000, 25.7000, -80.7000, 26.5000].",
+  "species_counts": {
+    "2435099": 244,
+    "2441370": 4439,
+    "2480803": 5000
+  }
+}

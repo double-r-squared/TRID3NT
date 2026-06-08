@@ -1,0 +1,125 @@
+{
+  "schema_version": "v1",
+  "event_type": "spill",
+  "derived_params": {
+    "location": {
+      "schema_version": "v1",
+      "value": "East Palestine, Ohio",
+      "confidence": 0.8,
+      "supporting_sources": [
+        "https://www.example-news.com/norfolk-southern-spill-2023",
+        "https://apnews.example.com/east-palestine-derailment-2023"
+      ],
+      "alternatives": [
+        {
+          "value": "Spill Near East Palestine, Ohio",
+          "supporting_sources": [
+            "https://www.example-news.com/norfolk-southern-spill-2023"
+          ]
+        },
+        {
+          "value": "We Know\n\nEAST PALESTINE, Ohio",
+          "supporting_sources": [
+            "https://apnews.example.com/east-palestine-derailment-2023"
+          ]
+        },
+        {
+          "value": "Columbiana County, Ohio",
+          "supporting_sources": [
+            "https://apnews.example.com/east-palestine-derailment-2023"
+          ]
+        }
+      ],
+      "below_threshold": false
+    },
+    "scale": {
+      "schema_version": "v1",
+      "value": {
+        "value": 100000.0,
+        "unit": "gallon"
+      },
+      "confidence": 0.8,
+      "supporting_sources": [
+        "https://www.example-news.com/norfolk-southern-spill-2023",
+        "https://apnews.example.com/east-palestine-derailment-2023"
+      ],
+      "alternatives": [],
+      "below_threshold": false
+    },
+    "contaminant": {
+      "schema_version": "v1",
+      "value": "vinyl chloride",
+      "confidence": 0.8,
+      "supporting_sources": [
+        "https://www.example-news.com/norfolk-southern-spill-2023",
+        "https://apnews.example.com/east-palestine-derailment-2023"
+      ],
+      "alternatives": [
+        {
+          "value": "lead",
+          "supporting_sources": [
+            "https://apnews.example.com/east-palestine-derailment-2023"
+          ]
+        }
+      ],
+      "below_threshold": false
+    },
+    "date": {
+      "schema_version": "v1",
+      "value": "2023-02-03",
+      "confidence": 0.8,
+      "supporting_sources": [
+        "https://www.example-news.com/norfolk-southern-spill-2023",
+        "https://apnews.example.com/east-palestine-derailment-2023"
+      ],
+      "alternatives": [
+        {
+          "value": "2023-02-05",
+          "supporting_sources": [
+            "https://apnews.example.com/east-palestine-derailment-2023"
+          ]
+        }
+      ],
+      "below_threshold": false
+    },
+    "casualties": {
+      "schema_version": "v1",
+      "value": 3,
+      "confidence": 0.5,
+      "supporting_sources": [
+        "https://www.example-news.com/norfolk-southern-spill-2023"
+      ],
+      "alternatives": [],
+      "below_threshold": true
+    }
+  },
+  "provenance": [
+    {
+      "schema_version": "v1",
+      "source_type": "url",
+      "identifier": "https://www.example-news.com/norfolk-southern-spill-2023",
+      "final_url": "https://www.example-news.com/norfolk-southern-spill-2023",
+      "title": "Norfolk Southern Train Derailment Causes Chemical Spill Near East Palestine, Ohi",
+      "citation_snippet": "Norfolk Southern Train Derailment Causes Chemical Spill Near East Palestine, Ohi\nNorfolk Southern Train Derailment Causes Chemical Spill Near East Palestine, Ohio\n\nA Norfolk Southern freight train carrying hazardous materials derailed on\nFebruary 3, 2023 near East Palestine, Ohio...",
+      "source_authority_tier": 2,
+      "fetched_at": "2026-06-08T00:00:00Z"
+    },
+    {
+      "schema_version": "v1",
+      "source_type": "url",
+      "identifier": "https://apnews.example.com/east-palestine-derailment-2023",
+      "final_url": "https://apnews.example.com/east-palestine-derailment-2023",
+      "title": "East Palestine Train Derailment: What We Know",
+      "citation_snippet": "East Palestine Train Derailment: What We Know\nEast Palestine Train Derailment: What We Know\n\nEAST PALESTINE, Ohio (AP) \u2014 A Norfolk Southern freight train derailed on\nFebruary 3, 2023 in East Palestine, Ohio, leading to the emergency release\nand burning of vinyl chloride. Official...",
+      "source_authority_tier": 2,
+      "fetched_at": "2026-06-08T00:00:00Z"
+    }
+  ],
+  "bbox": [
+    -80.5562,
+    40.8151,
+    -80.5021,
+    40.8562
+  ],
+  "presentation_text": "Event ingest summary \u2014 spill\n  - location: East Palestine, Ohio (confidence 0.80; 2 sources)\n  - date: 2023-02-03 (confidence 0.80; 2 sources)\n  - scale: 100000 gallon (confidence 0.80; 2 sources)\n  - contaminant: vinyl chloride (confidence 0.80; 2 sources)\n  - casualties: 3 (confidence 0.50; 1 source)\nResolved bbox: (-80.5562, 40.8151, -80.5021, 40.8562) EPSG:4326\nSources consulted: 2\nSTOP \u2014 review derived parameters before downstream modeling."
+}
