@@ -265,3 +265,5 @@ from . import fetch_iucn_red_list_range  # noqa: E402,F401 — job-0129: registe
 from . import fetch_movebank_tracks  # noqa: E402,F401 — job-0130: registers fetch_movebank_tracks (Movebank Tier-2 animal-tracking trajectories)
 
 from . import fetch_era5_reanalysis  # noqa: E402,F401 — job-0131: registers fetch_era5_reanalysis (Copernicus ERA5 reanalysis Tier-2 fetcher; compound-flood global substrate)
+from . import fetch_gtsm_tide_surge  # noqa: E402,F401 — job-0132: registers fetch_gtsm_tide_surge (GTSM v3.0 Tier-2 coastal water-level via CDS; compound-flood coastal boundary)
+from . import fetch_cama_flood_discharge  # noqa: E402,F401 — job-0133: registers fetch_cama_flood_discharge (CaMa-Flood global river discharge Tier-2 fetcher; compound-flood fluvial forcing)

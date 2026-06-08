@@ -153,6 +153,10 @@ def _import_tools_registry() -> int:
     from .tools import fetch_movebank_tracks  # noqa: F401
     # job-0131: register fetch_era5_reanalysis (Copernicus ERA5 reanalysis Tier-2 fetcher; compound-flood global substrate).
     from .tools import fetch_era5_reanalysis  # noqa: F401
+    # job-0132: register fetch_gtsm_tide_surge (GTSM v3.0 Tier-2 coastal water-level via CDS; compound-flood coastal boundary).
+    from .tools import fetch_gtsm_tide_surge  # noqa: F401
+    # job-0133: register fetch_cama_flood_discharge (CaMa-Flood global river discharge Tier-2 fetcher; compound-flood fluvial forcing).
+    from .tools import fetch_cama_flood_discharge  # noqa: F401
 
     return len(tools.TOOL_REGISTRY)
 

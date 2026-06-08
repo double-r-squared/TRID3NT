@@ -1,0 +1,74 @@
+# job-0128 fetch_ebird_observations — live E2E evidence
+
+## Live HTTP path verified — invalid key → real eBird API 403 → typed error
+
+The full live test (per audit.md acceptance: bewickwren over CA bbox with a
+real key) requires a registered eBird API key, which is not provisioned in
+this environment. As an alternative live verification, we exercised the
+real eBird API with an invalid key to confirm:
+
+1. The tool reaches the real ``api.ebird.org`` endpoint (network path live).
+2. The 403 response is mapped to ``EBirdAuthError`` (typed-error surface live).
+3. The error envelope carries ``error_code="EBIRD_AUTH_ERROR"`` and
+   ``retryable=False`` (FR-AS-11 compliance live).
+
+Reproduce:
+
+    GRACE2_EBIRD_API_KEY=INVALID-DUMMY-KEY-FOR-AUTH-PATH-TEST \
+        .venv-agent/bin/python -c "
+        from grace2_agent.tools.fetch_ebird_observations import fetch_ebird_observations
+        fetch_ebird_observations(species_code='bewwre',
+                                 bbox=(-122.4, 38.0, -122.0, 38.4),
+                                 days_back=7)
+        "
+
+Result transcript (2026-06-08):
+
+    ### LIVE auth-rejection smoke test: invalid key → expect EBirdAuthError ###
+    SUCCESS: live eBird API rejected invalid key as expected
+      error_code: EBIRD_AUTH_ERROR
+      retryable: False
+      msg (truncated): eBird API rejected the key (status 403):
+
+## Live test path (env-gated — pending eBird key registration)
+
+The full live test (``test_live_bewickwren_over_ca_bbox``) is gated by
+``GRACE2_TEST_LIVE_EBIRD=1`` + ``GRACE2_EBIRD_API_KEY=...``. When run with
+a real key it:
+
+- Hits ``https://api.ebird.org/v2/data/obs/geo/recent/bewwre?lat=...&lng=...``
+  for each tile center in the bbox (-122, 38, -119, 40) cover.
+- Dedupes by ``subId`` across tiles.
+- Hard-filters to keep only points strictly inside the requested bbox
+  (job-0086 codified lesson).
+- Writes evidence to ``services/agent/evidence/ebird_live_job_0128.txt``.
+
+This test is marked ``pytest.mark.skipif`` so it does NOT fail the unit
+suite when the key is absent — per audit.md "do NOT fail unit suite if
+key is missing".
+
+## Tool registration via main.py path
+
+    main.py _import_tools_registry registered: 55 tools
+    fetch_ebird_observations registered via main.py: OK
+
+## Unit-test suite
+
+    38 passed, 1 skipped in 0.34s
+    # test_fetch_ebird_observations.py — full coverage:
+    # - registration / metadata
+    # - bbox / days_back / species_code validation (typed errors, retryable flags)
+    # - key resolution priority: kwarg > secret_ref > env var > MissingKeyError
+    # - Persistence-backed secret_ref materialization
+    # - single-tile + multi-tile bbox + subId dedup
+    # - empty response → empty FlatGeobuf
+    # - 401/403 → EBirdAuthError, 404 → EBirdInputError, 5xx → EBirdUpstreamError
+    # - geographic-correctness filter (job-0086) — points outside bbox dropped
+    # - LayerURI shape verification (layer_type, role, style_preset, units)
+    # - cache hit short-circuit
+    # - cache key omits api_key (callers share cache)
+    # - howMany="X" presence-only handling
+
+## Full agent test suite (no regressions)
+
+    920 passed, 44 skipped in 448.06s
