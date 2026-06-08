@@ -52,13 +52,17 @@
           </colorramp>
           <!--
             Color stops mirror matplotlib Blues colormap sampled at 7 levels.
-            Value range: 0.0 m (dry, near-white) to 3.5 m (deep, dark navy).
-            Dry areas (0 m) are nearly transparent via layer opacity=0.82 +
-            a nodata transparent entry above; wet-near-zero still shows light
-            blue so the flood extent is visible even at 0.01 m.
+            Value range: 0.05 m (threshold, fully transparent) to 3.5 m (deep, dark navy).
+
+            Belt-and-suspenders transparency (job-0071):
+            - Data side: postprocess_flood masks depth < NODATA_DEPTH_M (0.05 m) to NaN,
+              so the COG carries no sub-threshold values at all.
+            - Renderer side: the lowest stop at 0.05 m has alpha=0 so any residual
+              near-zero value (floating-point boundary, upsampling artefact) renders
+              fully transparent rather than as a faint blue tint over dry land.
+            Values above 0.05 m ramp from near-white through dark navy.
           -->
-          <item value="0" color="#f7fbff" alpha="0" label="0.0 m (dry)"/>
-          <item value="0.05" color="#deebf7" alpha="200" label="0.05 m"/>
+          <item value="0.05" color="#deebf7" alpha="0" label="0.05 m (threshold, transparent)"/>
           <item value="0.5" color="#c6dbef" alpha="220" label="0.5 m"/>
           <item value="1.0" color="#9ecae1" alpha="230" label="1.0 m"/>
           <item value="1.5" color="#6baed6" alpha="240" label="1.5 m"/>

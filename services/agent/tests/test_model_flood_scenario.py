@@ -1771,7 +1771,13 @@ async def test_run_model_flood_scenario_returns_layer_uri() -> None:
         f"isinstance(result, LayerURI) is True. See "
         f"docs/decisions/layer-emission-contract.md (ADOPTED 2026-06-07)."
     )
-    assert result.uri == f"gs://grace-2-hazard-prod-runs/{run_id}/flood_depth_peak.tif"
+    # After job-0062, publish_layer substitutes the WMS URL into LayerURI.uri;
+    # the gs:// URI is no longer returned directly (see test 28 for the same
+    # assertion with an explicit WMS URL mock — test corrected by job-0071).
+    assert result.uri.startswith("https://"), (
+        f"job-0062: run_model_flood_scenario must return a WMS URL in LayerURI.uri "
+        f"(publish_layer substitutes the WMS URL); got {result.uri!r}"
+    )
     assert result.style_preset == "continuous_flood_depth"
     assert result.role == "primary"
     assert result.layer_type == "raster"
@@ -1921,8 +1927,11 @@ async def test_run_model_flood_scenario_triggers_loaded_layers_emit() -> None:
         f"The emit_tool_call gate at pipeline_emitter.py:517 fires only when "
         f"isinstance(result, LayerURI) is True."
     )
-    assert add_loaded_layer_calls[0].uri == expected_cog_uri, (
-        f"add_loaded_layer called with wrong URI: {add_loaded_layer_calls[0].uri!r}"
+    # After job-0062, publish_layer substitutes the WMS URL into LayerURI.uri.
+    # Assert the URI is a WMS URL (not gs://) — corrected by job-0071.
+    assert add_loaded_layer_calls[0].uri.startswith("https://"), (
+        f"add_loaded_layer called with wrong URI (expected WMS URL after job-0062): "
+        f"{add_loaded_layer_calls[0].uri!r}"
     )
 
     # 2. The emitter's _loaded_layers list is non-empty after the call.
@@ -1930,8 +1939,9 @@ async def test_run_model_flood_scenario_triggers_loaded_layers_emit() -> None:
         f"_loaded_layers should have 1 entry after the successful run; "
         f"got {len(emitter._loaded_layers)}."
     )
-    assert emitter._loaded_layers[0].uri == expected_cog_uri, (
-        f"_loaded_layers[0].uri mismatch: {emitter._loaded_layers[0].uri!r}"
+    assert emitter._loaded_layers[0].uri.startswith("https://"), (
+        f"_loaded_layers[0].uri should be WMS URL after job-0062; "
+        f"got {emitter._loaded_layers[0].uri!r}"
     )
 
     # 3. A session-state envelope was emitted with non-empty loaded_layers.
@@ -1949,8 +1959,9 @@ async def test_run_model_flood_scenario_triggers_loaded_layers_emit() -> None:
     )
     # loaded_layers is a list of dicts (model_dump output from emit_session_state).
     first_layer = loaded_layers_wire[0]
-    assert first_layer.get("uri") == expected_cog_uri, (
-        f"session-state.loaded_layers[0].uri mismatch: {first_layer.get('uri')!r}"
+    assert first_layer.get("uri", "").startswith("https://"), (
+        f"session-state.loaded_layers[0].uri should be WMS URL after job-0062; "
+        f"got {first_layer.get('uri')!r}"
     )
 
 
@@ -2593,5 +2604,395 @@ async def test_run_model_flood_scenario_wrapper_uri_is_wms_url() -> None:
         f"integration; got {result.uri!r}. "
         f"The client needs a WMS URL in session-state.loaded_layers[0].uri "
         f"to render via MapLibre."
+    )
+
+
+# =========================================================================== #
+# Tests 29-34 — job-0071: rotation fix + transparency belt-and-suspenders
+# + CRS_TAG_MISMATCH guard
+# =========================================================================== #
+
+
+# --------------------------------------------------------------------------- #
+# Test 29 — Rotation fix: hmax with transposed axes (m, n) → north-up COG
+#
+# SFINCS netCDF convention: ds["x"].dims = ("m",), ds["y"].dims = ("n",) where
+# m=x-cols and n=y-rows.  HydroMT-SFINCS 1.2.2 Fort Myers run emitted hmax with
+# dims (timemax, m, n) instead of (timemax, n, m).  After squeeze this gives
+# arr.shape = (m, n) — rows and cols are swapped.  The rotation fix detects
+# this (arr.shape[-1] == len(y) AND arr.shape[-2] == len(x)) and transposes.
+#
+# Verified transforms:
+#   transform.a > 0 → positive pixel width (west→east, correct for geographic x)
+#   transform.e < 0 → negative pixel height (north→south, north-up COG)
+# --------------------------------------------------------------------------- #
+
+
+def test_extract_peak_depth_geotiff_rotation_fix_transposed_axes(
+    tmp_path: Path,
+) -> None:
+    """Rotation fix (job-0071): hmax with dims (timemax, m, n) → north-up COG.
+
+    Regression guard for the 90° CW rotation observed in the job-0070 Fort Myers
+    screenshot.  The SFINCS grid had hmax dims (timemax, m, n) — x-cols in the
+    leading spatial axis — so after squeeze arr.shape = (m, n) where m > n
+    (landscape grid).  The pre-fix code computed from_bounds with
+    width=arr.shape[-1]=n (wrong: should be m) and height=arr.shape[-2]=m
+    (wrong: should be n), producing a rotated raster.
+
+    The fix checks: if arr.shape[-1] == len(y) AND arr.shape[-2] == len(x),
+    transpose before writing.
+    """
+    try:
+        import numpy as np
+        import xarray as xr
+        import rasterio
+    except ImportError:
+        pytest.skip("numpy/xarray/rasterio not installed")
+
+    from grace2_agent.workflows.postprocess_flood import _extract_peak_depth_geotiff
+
+    # Use a non-square grid (m=12 cols, n=8 rows) so transposition is detectable.
+    n, m = 8, 12  # n=y-rows, m=x-cols
+    # SFINCS transposed convention: hmax dims = (timemax, m, n)
+    rng = np.random.default_rng(42)
+    hmax_data = rng.uniform(0.5, 3.0, (1, m, n)).astype("float32")  # (timemax, m, n) — transposed!
+
+    # Plausible UTM 17N coords for Fort Myers
+    x_vals = np.linspace(409000.0, 425000.0, m, dtype="float64")  # m x-coords
+    y_vals = np.linspace(2937000.0, 2952000.0, n, dtype="float64")  # n y-coords
+
+    ds = xr.Dataset(
+        {
+            "hmax": xr.DataArray(hmax_data, dims=["timemax", "m", "n"], attrs={"units": "m"}),
+            "crs": xr.DataArray(
+                __import__("numpy").int32(32617),
+                attrs={"epsg_code": "EPSG:32617"},
+            ),
+        },
+        coords={
+            "x": xr.DataArray(x_vals, dims=["m"]),  # x varies over m (cols)
+            "y": xr.DataArray(y_vals, dims=["n"]),  # y varies over n (rows)
+        },
+    )
+    netcdf_path = tmp_path / "sfincs_map_transposed.nc"
+    ds.to_netcdf(str(netcdf_path))
+    ds.close()
+
+    cog_path, metrics = _extract_peak_depth_geotiff(netcdf_path)
+    try:
+        with rasterio.open(str(cog_path)) as src:
+            # After the fix the COG must be (n rows, m cols) = (8, 12).
+            assert src.height == n, (
+                f"job-0071 rotation fix: COG height={src.height} should be n={n} "
+                f"(y-rows). Rotation produces height=m={m} — swap detected."
+            )
+            assert src.width == m, (
+                f"job-0071 rotation fix: COG width={src.width} should be m={m} "
+                f"(x-cols). Rotation produces width=n={n} — swap detected."
+            )
+            # North-up transform: a > 0 (E-W positive pixel width),
+            # e < 0 (N-S negative pixel height).
+            assert src.transform.a > 0, (
+                f"job-0071: transform.a={src.transform.a} should be > 0 "
+                f"(positive E-W pixel width for a north-up COG)"
+            )
+            assert src.transform.e < 0, (
+                f"job-0071: transform.e={src.transform.e} should be < 0 "
+                f"(negative N-S pixel height for a north-up COG)"
+            )
+    finally:
+        cog_path.unlink(missing_ok=True)
+
+
+# --------------------------------------------------------------------------- #
+# Test 30 — Rotation: correct axis order (n, m) → no transpose, still north-up
+# --------------------------------------------------------------------------- #
+
+
+def test_extract_peak_depth_geotiff_rotation_correct_axis_order(
+    tmp_path: Path,
+) -> None:
+    """Rotation fix (job-0071): correct axis order (timemax, n, m) → north-up, no transpose.
+
+    When hmax dims are already (timemax, n, m) — the correct SFINCS convention
+    with n=y-rows, m=x-cols — the code must NOT transpose (identity path).
+    The resulting COG must still be north-up: transform.a > 0, transform.e < 0.
+    """
+    try:
+        import numpy as np
+        import xarray as xr
+        import rasterio
+    except ImportError:
+        pytest.skip("numpy/xarray/rasterio not installed")
+
+    from grace2_agent.workflows.postprocess_flood import _extract_peak_depth_geotiff
+
+    n, m = 8, 12  # n=y-rows, m=x-cols
+    rng = np.random.default_rng(7)
+    hmax_data = rng.uniform(0.5, 3.0, (1, n, m)).astype("float32")  # (timemax, n, m) — correct
+
+    x_vals = np.linspace(409000.0, 425000.0, m, dtype="float64")
+    y_vals = np.linspace(2937000.0, 2952000.0, n, dtype="float64")
+
+    ds = xr.Dataset(
+        {
+            "hmax": xr.DataArray(hmax_data, dims=["timemax", "n", "m"], attrs={"units": "m"}),
+            "crs": xr.DataArray(
+                __import__("numpy").int32(32617),
+                attrs={"epsg_code": "EPSG:32617"},
+            ),
+        },
+        coords={
+            "x": xr.DataArray(x_vals, dims=["m"]),
+            "y": xr.DataArray(y_vals, dims=["n"]),
+        },
+    )
+    netcdf_path = tmp_path / "sfincs_map_correct.nc"
+    ds.to_netcdf(str(netcdf_path))
+    ds.close()
+
+    cog_path, metrics = _extract_peak_depth_geotiff(netcdf_path)
+    try:
+        with rasterio.open(str(cog_path)) as src:
+            assert src.height == n, (
+                f"correct axis order: COG height={src.height} should be n={n}"
+            )
+            assert src.width == m, (
+                f"correct axis order: COG width={src.width} should be m={m}"
+            )
+            assert src.transform.a > 0, (
+                f"job-0071: transform.a={src.transform.a} must be > 0 (north-up COG)"
+            )
+            assert src.transform.e < 0, (
+                f"job-0071: transform.e={src.transform.e} must be < 0 (north-up COG)"
+            )
+    finally:
+        cog_path.unlink(missing_ok=True)
+
+
+# --------------------------------------------------------------------------- #
+# Test 31 — Transparency data-side: sub-threshold depths masked to NaN
+# --------------------------------------------------------------------------- #
+
+
+def test_extract_peak_depth_geotiff_transparency_threshold(
+    tmp_path: Path,
+) -> None:
+    """Transparency belt-and-suspenders (job-0071): depth < 0.05 m → NaN in COG.
+
+    NODATA_DEPTH_M = 0.05 m. Values [0.0, 0.03, 0.10, 1.5] → NaN exactly where
+    depth < 0.05.  The COG carries no sub-threshold values so the renderer's
+    alpha=0 stop is redundant (belt-and-suspenders, not the only guard).
+    """
+    try:
+        import numpy as np
+        import xarray as xr
+        import rasterio
+    except ImportError:
+        pytest.skip("numpy/xarray/rasterio not installed")
+
+    from grace2_agent.workflows.postprocess_flood import (
+        _extract_peak_depth_geotiff,
+        NODATA_DEPTH_M,
+    )
+
+    assert NODATA_DEPTH_M == pytest.approx(0.05), (
+        f"NODATA_DEPTH_M constant changed from 0.05 to {NODATA_DEPTH_M!r}; "
+        "update this test and the QML bottom stop."
+    )
+
+    # 2×2 grid with the four canonical depth values: 0.0, 0.03, 0.10, 1.50 m.
+    # Expected mask: 0.0 → NaN, 0.03 → NaN, 0.10 → 0.10, 1.50 → 1.50.
+    hmax_data = np.array([[0.0, 0.03], [0.10, 1.50]], dtype="float32").reshape(1, 2, 2)
+
+    x_vals = np.array([409000.0, 410000.0], dtype="float64")  # 2 x-coords
+    y_vals = np.array([2937000.0, 2938000.0], dtype="float64")  # 2 y-coords
+
+    ds = xr.Dataset(
+        {
+            "hmax": xr.DataArray(hmax_data, dims=["timemax", "n", "m"], attrs={"units": "m"}),
+            "crs": xr.DataArray(
+                np.int32(32617),
+                attrs={"epsg_code": "EPSG:32617"},
+            ),
+        },
+        coords={
+            "x": xr.DataArray(x_vals, dims=["m"]),
+            "y": xr.DataArray(y_vals, dims=["n"]),
+        },
+    )
+    netcdf_path = tmp_path / "sfincs_map_threshold.nc"
+    ds.to_netcdf(str(netcdf_path))
+    ds.close()
+
+    cog_path, metrics = _extract_peak_depth_geotiff(netcdf_path)
+    try:
+        with rasterio.open(str(cog_path)) as src:
+            band = src.read(1)
+            # Two cells are below threshold (0.0 m and 0.03 m < 0.05 m = NODATA_DEPTH_M)
+            # → NaN in the COG.  Two cells above threshold (0.10 m and 1.50 m) → preserved.
+            # We count NaNs rather than asserting specific pixel positions because
+            # rasterio's north-up convention may reorder rows during COG write.
+            nan_count = int(np.sum(np.isnan(band)))
+            assert nan_count == 2, (
+                f"job-0071 transparency: expected 2 NaN cells (depth < {NODATA_DEPTH_M} m); "
+                f"got {nan_count}. Cells: {band.tolist()}"
+            )
+            # The two surviving values must be exactly 0.10 and 1.50 m.
+            valid_vals = sorted(band[~np.isnan(band)].tolist())
+            assert len(valid_vals) == 2, (
+                f"job-0071: expected 2 valid depth cells; got {valid_vals}"
+            )
+            assert valid_vals[0] == pytest.approx(0.10, abs=1e-4), (
+                f"job-0071: lower valid depth should be ≈0.10 m; got {valid_vals[0]!r}"
+            )
+            assert valid_vals[1] == pytest.approx(1.50, abs=1e-4), (
+                f"job-0071: upper valid depth should be ≈1.50 m; got {valid_vals[1]!r}"
+            )
+    finally:
+        cog_path.unlink(missing_ok=True)
+
+    # flooded_cell_count must reflect only the above-threshold cells.
+    assert metrics["flooded_cell_count"] == 2, (
+        f"job-0071: flooded_cell_count should be 2 (0.10 m + 1.50 m); "
+        f"got {metrics['flooded_cell_count']}"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Tests 32-34 — CRS_TAG_MISMATCH guard (job-0071)
+# --------------------------------------------------------------------------- #
+
+
+def _build_netcdf_for_crs_guard(
+    tmp_path: Path,
+    *,
+    epsg_code: str,
+    x_min: float,
+    x_max: float,
+    y_min: float,
+    y_max: float,
+    filename: str = "sfincs_map.nc",
+) -> Path:
+    """Write a minimal sfincs_map.nc for CRS guard tests."""
+    import numpy as np
+    import xarray as xr
+
+    n, m = 4, 4
+    hmax_data = np.full((1, n, m), 1.0, dtype="float32")
+    x_vals = np.linspace(x_min, x_max, m, dtype="float64")
+    y_vals = np.linspace(y_min, y_max, n, dtype="float64")
+
+    ds = xr.Dataset(
+        {
+            "hmax": xr.DataArray(hmax_data, dims=["timemax", "n", "m"], attrs={"units": "m"}),
+            "crs": xr.DataArray(
+                np.int32(int(epsg_code.split(":")[-1])),
+                attrs={"epsg_code": epsg_code},
+            ),
+        },
+        coords={
+            "x": xr.DataArray(x_vals, dims=["m"]),
+            "y": xr.DataArray(y_vals, dims=["n"]),
+        },
+    )
+    path = tmp_path / filename
+    ds.to_netcdf(str(path))
+    ds.close()
+    return path
+
+
+def test_crs_tag_mismatch_guard_correct_case_no_raise(tmp_path: Path) -> None:
+    """CRS_TAG_MISMATCH guard (job-0071): correct projected CRS + projected coords → no raise.
+
+    UTM 17N (EPSG:32617) with easting/northing coords around Fort Myers
+    (|x| > 1000) must pass both guard checks and produce a valid COG.
+    """
+    try:
+        import xarray as xr  # noqa: F401
+        import rasterio  # noqa: F401
+    except ImportError:
+        pytest.skip("xarray/rasterio not installed")
+
+    from grace2_agent.workflows.postprocess_flood import _extract_peak_depth_geotiff, PostprocessError
+
+    netcdf_path = _build_netcdf_for_crs_guard(
+        tmp_path,
+        epsg_code="EPSG:32617",
+        x_min=409000.0, x_max=425000.0,
+        y_min=2937000.0, y_max=2952000.0,
+        filename="sfincs_map_correct_crs.nc",
+    )
+
+    # Must NOT raise PostprocessError(CRS_TAG_MISMATCH)
+    cog_path, metrics = _extract_peak_depth_geotiff(netcdf_path)
+    cog_path.unlink(missing_ok=True)
+    assert metrics["crs"] == "EPSG:32617"
+
+
+def test_crs_tag_mismatch_guard_geographic_tag_projected_coords(tmp_path: Path) -> None:
+    """CRS_TAG_MISMATCH guard (job-0071): geographic-tag with projected coords → raises.
+
+    EPSG:4326 is geographic (|x| ≤ 180 for valid lon), but the dataset's x
+    coordinates are UTM eastings (~409 000 m, i.e. |x| >> 360).  The guard
+    detects this inconsistency and raises PostprocessError("CRS_TAG_MISMATCH")
+    before the mistagged COG is uploaded.
+    """
+    try:
+        import xarray as xr  # noqa: F401
+        import rasterio  # noqa: F401
+    except ImportError:
+        pytest.skip("xarray/rasterio not installed")
+
+    from grace2_agent.workflows.postprocess_flood import _extract_peak_depth_geotiff, PostprocessError
+
+    netcdf_path = _build_netcdf_for_crs_guard(
+        tmp_path,
+        epsg_code="EPSG:4326",        # geographic tag
+        x_min=409000.0, x_max=425000.0,  # projected coords — mismatch!
+        y_min=2937000.0, y_max=2952000.0,
+        filename="sfincs_map_geo_tag_proj_coords.nc",
+    )
+
+    with pytest.raises(PostprocessError) as excinfo:
+        _extract_peak_depth_geotiff(netcdf_path)
+
+    assert excinfo.value.error_code == "CRS_TAG_MISMATCH", (
+        f"job-0071 CRS guard: geographic-tag + projected-coords must raise "
+        f"CRS_TAG_MISMATCH; got error_code={excinfo.value.error_code!r}"
+    )
+
+
+def test_crs_tag_mismatch_guard_projected_tag_geographic_coords(tmp_path: Path) -> None:
+    """CRS_TAG_MISMATCH guard (job-0071): projected-tag with geographic coords → raises.
+
+    EPSG:32617 is a projected CRS (coords in metres, |x| > 1000 for any
+    non-degenerate CONUS extent), but the dataset's x coordinates are lon
+    values in the range -81.92 to -81.80 (|x| << 1000).  The guard detects
+    this inconsistency and raises PostprocessError("CRS_TAG_MISMATCH").
+    """
+    try:
+        import xarray as xr  # noqa: F401
+        import rasterio  # noqa: F401
+    except ImportError:
+        pytest.skip("xarray/rasterio not installed")
+
+    from grace2_agent.workflows.postprocess_flood import _extract_peak_depth_geotiff, PostprocessError
+
+    netcdf_path = _build_netcdf_for_crs_guard(
+        tmp_path,
+        epsg_code="EPSG:32617",          # projected tag
+        x_min=-81.92, x_max=-81.80,      # geographic coords — mismatch!
+        y_min=26.55,  y_max=26.68,
+        filename="sfincs_map_proj_tag_geo_coords.nc",
+    )
+
+    with pytest.raises(PostprocessError) as excinfo:
+        _extract_peak_depth_geotiff(netcdf_path)
+
+    assert excinfo.value.error_code == "CRS_TAG_MISMATCH", (
+        f"job-0071 CRS guard: projected-tag + geographic-coords must raise "
+        f"CRS_TAG_MISMATCH; got error_code={excinfo.value.error_code!r}"
     )
 

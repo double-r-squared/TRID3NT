@@ -43,6 +43,7 @@ __all__ = [
     "PostprocessError",
     "postprocess_flood",
     "FLOOD_DEPTH_STYLE_PRESET",
+    "NODATA_DEPTH_M",
     "RUNS_BUCKET_DEFAULT",
 ]
 
@@ -57,6 +58,14 @@ RUNS_BUCKET_DEFAULT: str = "grace-2-hazard-prod-runs"
 #: authors the matching ``continuous_flood_depth.qml``. Surfaced as
 #: OQ-42-FLOOD-DEPTH-PRESET-QML.
 FLOOD_DEPTH_STYLE_PRESET: str = "continuous_flood_depth"
+
+#: Minimum depth threshold below which cells are masked to NaN (treated as dry).
+#: 5 cm is the physically meaningful wet-cell threshold — matches the
+#: ``flooded_cell_count`` reporting convention (job-0058 evidence) and the
+#: lowest QML colour stop (``continuous_flood_depth.qml`` alpha=0 at 0.05 m).
+#: Belt-and-suspenders: the QML renderer also hides values < 0.05 m (alpha=0),
+#: so the two layers reinforce each other (job-0071 transparency fix).
+NODATA_DEPTH_M: float = 0.05
 
 
 class PostprocessError(RuntimeError):
@@ -76,6 +85,14 @@ class PostprocessError(RuntimeError):
     - ``COG_WRITE_FAILED`` — rasterio could not write the COG (encoder
       error, disk full).
     - ``COG_UPLOAD_FAILED`` — the GCS upload of the staged COG failed.
+    - ``CRS_TAG_MISMATCH`` — belt-and-suspenders guard (job-0071 /
+      research-workflow recommendation 2026-06-07): the CRS tag written to
+      the COG does not match what rasterio reads back, OR the tag's
+      geographic/projected classification is inconsistent with the actual
+      coordinate magnitudes (geographic → |x| ≤ 360; projected → |x| > 1000).
+      Raised before the COG is uploaded to the runs bucket so a mistagged
+      raster never lands in production. Closes the broader bug class around
+      OQ-59 / OQ-69.
     """
 
     error_code: str = "POSTPROCESS_FAILED"
@@ -255,8 +272,39 @@ def _extract_peak_depth_geotiff(netcdf_path: Path) -> tuple[Path, dict[str, Any]
                     ),
                     details={"netcdf_path": str(netcdf_path), "shape": list(arr.shape)},
                 )
-        # Mask non-positive depths to NaN so the COG is dry-cell-aware.
-        arr_masked = np.where(arr > 0.0, arr, np.nan)
+
+        # --- Rotation fix (job-0071) ---
+        # SFINCS netCDF convention: ds["x"].dims = ("m",), ds["y"].dims = ("n",)
+        # where m=x-cols, n=y-rows.  Diagnostic (2026-06-07): the Fort Myers run
+        # had hmax dims (timemax, m, n) — x-cols in the leading spatial axis —
+        # so after squeeze depth.dims = ("m", "n") with shape (m, n).
+        # The COG writer expects arr.shape = (y_rows, x_cols); we detect the
+        # mismatch by comparing the squeezed DataArray's dim names against
+        # ds["x"].dims[0] and ds["y"].dims[0], then transpose if needed.
+        # Using dim names (not array shapes) handles square grids correctly.
+        try:
+            _x_dim = ds["x"].dims[0]  # e.g. "m"
+            _y_dim = ds["y"].dims[0]  # e.g. "n"
+            _depth_squeezed = depth.squeeze()
+            _depth_dims = _depth_squeezed.dims  # e.g. ("n", "m") or ("m", "n")
+            if _depth_dims[-1] == _y_dim and _depth_dims[-2] == _x_dim:
+                # Axes are swapped: arr is (x_cols, y_rows); transpose to (y_rows, x_cols).
+                logger.info(
+                    "postprocess_flood: transposing depth array — dims %s have x-dim "
+                    "(%s) in rows and y-dim (%s) in cols; expected (y_rows, x_cols). "
+                    "This indicates SFINCS hmax was emitted as (timemax, m, n) instead of "
+                    "(timemax, n, m). Rotation fix applied (job-0071).",
+                    _depth_dims, _x_dim, _y_dim,
+                )
+                arr = arr.T
+        except Exception:  # noqa: BLE001 — dim inspection failure falls through to identity
+            pass
+
+        # Mask sub-threshold depths to NaN so the COG is dry-cell-aware.
+        # NODATA_DEPTH_M = 0.05 m is the physical wet-cell threshold (job-0071
+        # transparency belt-and-suspenders).  Belt-and-suspenders: the QML
+        # renderer also hides values < 0.05 m via alpha=0 at the bottom stop.
+        arr_masked = np.where(arr > NODATA_DEPTH_M, arr, np.nan)
         flooded = arr_masked[~np.isnan(arr_masked)]
         if flooded.size == 0:
             metrics_summary = {
@@ -277,12 +325,15 @@ def _extract_peak_depth_geotiff(netcdf_path: Path) -> tuple[Path, dict[str, Any]
         # output carries its CRS in a data variable named 'crs' (CF-convention),
         # not in .attrs.  Read from the variable first; fall back to .attrs for
         # any dataset that still uses the old encoding (OQ-59 fix, job-0063).
+        # x and y may have been read above in the rotation block; reuse them.
         crs = _read_crs_from_dataset(ds)
         try:
-            x = ds["x"].values
-            y = ds["y"].values
+            # x/y may already be bound from the rotation block; re-read to be safe
+            # (the rotation block catches exceptions so x/y may not be in scope).
+            _x = ds["x"].values
+            _y = ds["y"].values
             transform = rasterio.transform.from_bounds(
-                float(x.min()), float(y.min()), float(x.max()), float(y.max()),
+                float(_x.min()), float(_y.min()), float(_x.max()), float(_y.max()),
                 arr.shape[-1], arr.shape[-2],
             )
         except Exception:  # noqa: BLE001
@@ -310,6 +361,42 @@ def _extract_peak_depth_geotiff(netcdf_path: Path) -> tuple[Path, dict[str, Any]
                 message=f"COG write failed: {exc}",
                 details={"netcdf_path": str(netcdf_path)},
             ) from exc
+
+        # --- CRS_TAG_MISMATCH guard (job-0071 / research-workflow 2026-06-07) ---
+        # Re-open the COG and verify the CRS tag was written correctly BEFORE
+        # uploading to the runs bucket.  Two checks:
+        # 1. Round-trip: str(verify.crs) must equal str(crs).
+        # 2. Sanity: geographic CRS → |x| ≤ 360; projected → |x| > 1000.
+        with rasterio.open(tmp_cog, "r") as verify:
+            if str(verify.crs) != str(crs):
+                raise PostprocessError(
+                    "CRS_TAG_MISMATCH",
+                    message=(
+                        f"COG written with crs={crs!r} but rasterio read back "
+                        f"{verify.crs!r}"
+                    ),
+                    details={"netcdf_path": str(netcdf_path)},
+                )
+            is_geographic = verify.crs.is_geographic
+            bounds_max = max(abs(verify.bounds.left), abs(verify.bounds.right))
+            if is_geographic and bounds_max > 360:
+                raise PostprocessError(
+                    "CRS_TAG_MISMATCH",
+                    message=(
+                        f"crs={crs!r} is geographic but bounds.left="
+                        f"{verify.bounds.left} implies projected coords (|x|>360)"
+                    ),
+                    details={"netcdf_path": str(netcdf_path)},
+                )
+            if (not is_geographic) and bounds_max < 1000:
+                raise PostprocessError(
+                    "CRS_TAG_MISMATCH",
+                    message=(
+                        f"crs={crs!r} is projected but bounds.left="
+                        f"{verify.bounds.left} implies geographic coords (|x|<1000)"
+                    ),
+                    details={"netcdf_path": str(netcdf_path)},
+                )
 
         metrics_summary["crs"] = crs
         metrics_summary["units"] = "meters"

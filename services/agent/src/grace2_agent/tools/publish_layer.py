@@ -516,15 +516,34 @@ def publish_layer(
         {e["name"]: e["value"] for e in env_overrides},
     )
 
+    # Build the RunJobRequest with overrides using the correct proto-plus API.
+    # Verified against installed google-cloud-run: JobsClient.run_job() accepts
+    # a ``request`` positional/keyword arg of type RunJobRequest (or dict), but
+    # does NOT accept ``name=`` + ``overrides=`` as separate keyword args —
+    # that shape raises TypeError in the installed library version.
+    # (Diagnosis: help(JobsClient.run_job); fix: OQ-70-AUTO-PUBLISH-DISPATCH.)
     try:
-        # ``run_job`` triggers a new execution of the named Job; overrides
-        # inject the env vars that ``__main__.py`` reads.
-        operation = jobs_client.run_job(
+        from google.cloud.run_v2.types import RunJobRequest as _RunJobRequest
+        from google.cloud.run_v2.types import EnvVar as _EnvVar
+
+        _request = _RunJobRequest(
             name=job_resource_name,
-            overrides={
-                "container_overrides": [{"env": env_overrides}],
-            },
+            overrides=_RunJobRequest.Overrides(
+                container_overrides=[
+                    _RunJobRequest.Overrides.ContainerOverride(
+                        env=[_EnvVar(name=e["name"], value=e["value"]) for e in env_overrides],
+                    )
+                ]
+            ),
         )
+    except Exception as exc:  # noqa: BLE001
+        raise PublishLayerError(
+            "JOBS_CLIENT_UNAVAILABLE",
+            f"Could not construct RunJobRequest (google-cloud-run unavailable?): {exc}",
+        ) from exc
+
+    try:
+        operation = jobs_client.run_job(request=_request)
     except Exception as exc:  # noqa: BLE001
         raise PublishLayerError(
             "WORKER_JOB_DISPATCH_FAILED",

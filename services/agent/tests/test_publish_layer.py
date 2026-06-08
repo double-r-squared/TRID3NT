@@ -42,6 +42,14 @@ from grace2_agent.tools.publish_layer import (
     set_pyqgis_worker_job_name,
 )
 
+# Test 8 is imported here (job-0071 auto-dispatch shape guard).
+# The import of RunJobRequest validates the library is present.
+try:
+    from google.cloud.run_v2.types import RunJobRequest as _RunJobRequest, EnvVar as _EnvVar
+    _RUN_V2_AVAILABLE = True
+except Exception:
+    _RUN_V2_AVAILABLE = False
+
 
 # --------------------------------------------------------------------------- #
 # Helpers
@@ -137,16 +145,20 @@ def test_publish_layer_returns_wms_url() -> None:
         "&LAYERS=flood-depth-peak-run-abc"
     ), f"unexpected WMS URL: {result}"
 
-    # Verify run_job was called once with the correct job name and env overrides.
+    # Verify run_job was called once with request=RunJobRequest(...) (job-0071 fix).
     mock_client.run_job.assert_called_once()
     call_kwargs = mock_client.run_job.call_args
-    assert "name" in call_kwargs.kwargs or len(call_kwargs.args) > 0
-    # Extract job name from positional or keyword arg.
-    job_name_arg = (
-        call_kwargs.kwargs.get("name")
-        or (call_kwargs.args[0] if call_kwargs.args else None)
+    # After the job-0071 auto-dispatch fix, run_job is called with request=RunJobRequest(...)
+    # not name=/overrides= as direct kwargs.
+    assert "request" in call_kwargs.kwargs, (
+        f"job-0071: run_job must be called with request=RunJobRequest(...); "
+        f"got kwargs={list(call_kwargs.kwargs)}"
     )
-    assert "grace-2-pyqgis-worker" in job_name_arg, f"unexpected job name: {job_name_arg}"
+    req = call_kwargs.kwargs["request"]
+    # The job name must appear in the RunJobRequest.name field.
+    assert "grace-2-pyqgis-worker" in req.name, (
+        f"job-0071: RunJobRequest.name must include the job name; got {req.name!r}"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -255,3 +267,111 @@ def test_parse_qgs_key() -> None:
     with pytest.raises(PublishLayerError) as exc_info:
         _parse_qgs_key("gs://no-key-here/")
     assert exc_info.value.error_code == "QGS_URI_PARSE_ERROR"
+
+
+# --------------------------------------------------------------------------- #
+# Test 8 — publish_layer auto-dispatch fix (job-0071, OQ-70-AUTO-PUBLISH-DISPATCH)
+#
+# Pre-fix: publish_layer called
+#   jobs_client.run_job(name=..., overrides={...})
+# which raises TypeError because JobsClient.run_job() does NOT accept
+# ``name`` and ``overrides`` as separate kwargs — it expects a ``request``
+# positional arg (or ``request=`` kwarg) of type RunJobRequest.
+#
+# Post-fix: the code constructs a RunJobRequest proto with the env overrides
+# and passes it as ``jobs_client.run_job(request=request)``.
+#
+# This test asserts:
+# 1. The mock client's run_job is called with ``request=`` (not ``name=``,
+#    ``overrides=``).
+# 2. The ``request`` is a RunJobRequest (or dict-shaped equivalent with the
+#    correct structure).
+# 3. The env overrides list contains the expected WORKER_OP and QGS_URI keys.
+# --------------------------------------------------------------------------- #
+
+
+def test_publish_layer_dispatch_uses_run_job_request_not_kwargs() -> None:
+    """Auto-dispatch fix (job-0071): run_job is called with request=RunJobRequest.
+
+    Regression guard for OQ-70-AUTO-PUBLISH-DISPATCH: the pre-fix code called
+    ``jobs_client.run_job(name=..., overrides=...)`` which raises TypeError in
+    the installed google-cloud-run version.  The fix uses:
+        ``jobs_client.run_job(request=RunJobRequest(...))``
+    """
+    if not _RUN_V2_AVAILABLE:
+        pytest.skip("google-cloud-run not installed; cannot validate RunJobRequest shape")
+
+    import inspect
+
+    execution = _make_succeeded_execution()
+    mock_client = _make_jobs_client(execution)
+
+    set_jobs_client(mock_client)
+    set_qgis_server_url("https://qgis.test.example.com/ogc/wms")
+    set_default_qgs_uri("gs://test-qgs-bucket/grace2-sample.qgs")
+    set_gcp_project("test-project")
+    set_gcp_location("us-central1")
+    set_pyqgis_worker_job_name("grace-2-pyqgis-worker")
+
+    try:
+        publish_layer(
+            layer_uri="gs://grace-2-hazard-prod-runs/run-xyz/flood_depth_peak.tif",
+            layer_id="flood-depth-peak-run-xyz",
+            style_preset="continuous_flood_depth",
+        )
+    finally:
+        set_jobs_client(None)
+        set_qgis_server_url(None)
+        set_default_qgs_uri(None)
+        set_gcp_project(None)
+        set_gcp_location(None)
+        set_pyqgis_worker_job_name(None)
+
+    # Assert run_job was called exactly once.
+    mock_client.run_job.assert_called_once()
+    call_args = mock_client.run_job.call_args
+
+    # Critical: must NOT have 'overrides' as a direct kwarg (the pre-fix bug).
+    assert "overrides" not in call_args.kwargs, (
+        "job-0071 auto-dispatch fix regression: run_job was called with "
+        "'overrides=' as a direct kwarg. This raises TypeError in the installed "
+        "google-cloud-run version. Use request=RunJobRequest(...) instead."
+    )
+
+    # Must be called with ``request=`` keyword arg (the fixed shape).
+    assert "request" in call_args.kwargs, (
+        f"job-0071: run_job must be called with 'request=RunJobRequest(...)'; "
+        f"got kwargs={list(call_args.kwargs)}"
+    )
+
+    req = call_args.kwargs["request"]
+
+    # The request must be a RunJobRequest instance (proto-plus message).
+    assert isinstance(req, _RunJobRequest), (
+        f"job-0071: request must be a RunJobRequest instance; got {type(req).__name__!r}"
+    )
+
+    # The request must carry the correct job name.
+    assert "grace-2-pyqgis-worker" in req.name, (
+        f"job-0071: RunJobRequest.name must include the job name; got {req.name!r}"
+    )
+
+    # The overrides must include at least one ContainerOverride with env vars.
+    container_overrides = list(req.overrides.container_overrides)
+    assert container_overrides, (
+        "job-0071: RunJobRequest.overrides.container_overrides must be non-empty"
+    )
+    env_list = list(container_overrides[0].env)
+    assert env_list, (
+        "job-0071: ContainerOverride.env must be non-empty"
+    )
+    env_names = {e.name for e in env_list}
+    assert "WORKER_OP" in env_names, (
+        f"job-0071: env overrides must include WORKER_OP; got {env_names}"
+    )
+    assert "QGS_URI" in env_names, (
+        f"job-0071: env overrides must include QGS_URI; got {env_names}"
+    )
+    assert "RASTER_URI" in env_names, (
+        f"job-0071: env overrides must include RASTER_URI; got {env_names}"
+    )
