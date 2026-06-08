@@ -1132,17 +1132,46 @@ def run_pelicun_damage_assessment(
         Layer metadata: ``layer_type="vector"``, ``role="primary"``,
         ``units="damage_state"``, ``style_preset="pelicun_damage_state"``.
 
+    Assets convention (``assets_uri``):
+        Preferred source — **building footprints / density grid** from
+        ``compute_building_density`` or ``fetch_buildings``.  A density grid
+        from ``compute_building_density`` produces one point-asset per 100 m
+        cell (or whatever ``cell_size_m`` was requested), so the output damage
+        choropleth shows spatially-varying damage aligned with where buildings
+        actually exist — not with administrative boundaries.
+
+        v0.1 cache-first preference: if ``compute_building_density`` has
+        already been called for the same bbox (a cache hit exists in GCS),
+        pass its returned ``LayerURI.uri`` directly as ``assets_uri``.  The
+        tool reads the COG, samples every non-zero cell as an asset point, and
+        runs the Pelicun loop.  This is the **preferred pattern** for any flow
+        that has already computed building density.
+
+        Fallback only — ``fetch_administrative_boundaries(level='place')``:
+        CDP polygons (Census Designated Places) cover large administrative
+        areas and produce a low-resolution rectangular pattern in the damage
+        output.  Use the admin-boundary fallback ONLY when building-footprint
+        data is unavailable (international bbox with no Microsoft coverage,
+        or explicit user request for an administrative aggregate).
+
+        Convenience composer: ``run_pelicun_with_buildings`` (in
+        ``grace2_agent.workflows.pelicun_damage_with_buildings``) encapsulates
+        the "fetch building density → pass as assets" pattern in one call.
+
     LLM guidance:
-        - Pair with ``run_model_flood_scenario`` output: pass its returned
-          flood depth COG URI as ``hazard_raster_uri``.
-        - ``assets_uri``: use ``fetch_administrative_boundaries(level='place')``
-          as a coarse asset proxy in v0.1 (each place polygon = one asset).
-          Sprint-13 will swap in actual building footprints from
-          ``fetch_buildings`` / ``compute_building_density``.
-        - For Case 1 demo flows: model flood → run Pelicun on flood COG +
-          fetched place polygons → narrate ds_mean + repair_cost_mean from
-          the returned feature properties (never from LLM-generated numbers
-          — invariant 1).
+        - Preferred pattern: compute_building_density(bbox) → use the returned
+          URI as ``assets_uri`` here.  The resulting damage layer shows real
+          spatial structure (building density grid) rather than administrative
+          rectangles.
+        - For quick composition: use the ``run_pelicun_with_buildings`` workflow
+          wrapper — it handles the building-density fetch internally and
+          returns the same ``LayerURI`` this tool returns.
+        - Administrative-boundary fallback: ``fetch_administrative_boundaries(
+          level='place')`` is acceptable when building data is unavailable.
+          The output will be coarser (one point per CDP polygon) and may look
+          rectangular — prefer the building-density path when precision matters.
+        - Narrate ds_mean + repair_cost_mean from the returned feature
+          properties — never from LLM-generated numbers (invariant 1).
 
     Cache: ``ttl_class="static-30d"``, ``source_class="pelicun_damage"``.
     The Monte-Carlo loop is seeded per-asset for byte-identical reproducibility

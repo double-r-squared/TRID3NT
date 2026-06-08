@@ -54,5 +54,6 @@ from __future__ import annotations
 from . import model_flood_habitat_scenario as _model_flood_habitat_scenario  # noqa: F401
 from . import model_flood_scenario as _model_flood_scenario  # noqa: F401
 from . import model_news_event_ingest as _model_news_event_ingest  # noqa: F401  — job-0119 Case 2 composer
+from . import pelicun_damage_with_buildings as _pelicun_damage_with_buildings  # noqa: F401  — job-0147 buildings→Pelicun composer
 
 __all__: list[str] = []

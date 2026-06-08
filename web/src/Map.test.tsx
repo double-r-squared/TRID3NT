@@ -620,8 +620,10 @@ describe("MapView — vector layer rendering (job-0139)", () => {
     expect(layerDef.type).toBe("fill");
     expect(layerDef.paint).toHaveProperty("fill-color");
     expect(layerDef.paint).toHaveProperty("fill-opacity");
-    // wdpa_polygon style_preset → green per presetColorFor.
-    expect(layerDef.paint["fill-color"]).toBe("#2ca25f");
+    // wdpa_polygon style_preset → slate #708090 per the job-0146 curated palette
+    // (WDPA areas are admin-boundary context overlays, not focal layers — slate
+    // reads clearly against the dark basemap without competing with species layers).
+    expect(layerDef.paint["fill-color"]).toBe("#708090");
   });
 
   it("adds a line layer for linestring geometry (e.g. OSM roads)", async () => {
@@ -718,7 +720,8 @@ describe("MapView — vector layer rendering (job-0139)", () => {
     const m = lastMapMock!;
     const layerCall = m.addLayer.mock.calls.find((c) => ((c as MockCallArgs)[0] as { id: string }).id === "nws-alerts");
     const def = (layerCall as MockCallArgs)[0] as { paint: Record<string, unknown> };
-    expect(def.paint["circle-color"]).toBe("#e6550d");
+    // job-0146 curated palette: nws_alert → fire red #FF4444
+    expect(def.paint["circle-color"]).toBe("#FF4444");
   });
 
   it("removes the vector source+layer when it disappears from session-state (A.7)", async () => {
@@ -828,16 +831,18 @@ describe("vector_rendering — pure helpers", () => {
     }
   });
 
-  it("presetColorFor maps WDPA to green and NWS alert to red-orange", () => {
-    expect(presetColorFor("wdpa_polygon")).toBe("#2ca25f");
-    expect(presetColorFor("nws_alert")).toBe("#e6550d");
+  it("presetColorFor maps WDPA to slate and NWS alert to fire red (job-0146 curated palette)", () => {
+    // job-0146: WDPA → slate #708090 (admin-boundary context), NWS alert → fire red #FF4444
+    expect(presetColorFor("wdpa_polygon")).toBe("#708090");
+    expect(presetColorFor("nws_alert")).toBe("#FF4444");
     expect(presetColorFor("totally_unknown")).toBeUndefined();
     expect(presetColorFor(null)).toBeUndefined();
     expect(presetColorFor(undefined)).toBeUndefined();
   });
 
   it("resolveVectorColor prefers preset over palette", () => {
-    expect(resolveVectorColor("panther", "wdpa_polygon")).toBe("#2ca25f");
+    // job-0146: WDPA → slate #708090
+    expect(resolveVectorColor("panther", "wdpa_polygon")).toBe("#708090");
     expect(resolveVectorColor("panther", null)).toBe(paletteColorFor("panther"));
   });
 });

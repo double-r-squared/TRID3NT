@@ -39,6 +39,12 @@ import type { FeatureCollection } from "geojson";
 import {
   fetchVectorAsGeoJson,
   resolveVectorColor,
+  isPelicunDamageLayer,
+  buildDsMeanExpression,
+  POLYGON_FILL_OPACITY,
+  POLYGON_STROKE_WIDTH,
+  CLUSTER_THRESHOLD,
+  CLUSTER_RADIUS,
   type VectorGeomKind,
 } from "./lib/vector_rendering";
 
@@ -344,10 +350,16 @@ export async function addVectorLayer(
  * Inner registration helper — adds a GeoJSON source + the right paint layer
  * to the map. Pure side-effect; no race-guard logic (the caller handles
  * those before invoking).
+ *
+ * job-0146 additions:
+ *   - Pelicun damage polygon path: uses ds_mean choropleth expression (Part 2)
+ *   - POLYGON_FILL_OPACITY constant (0.4) for basemap readability (Part 3)
+ *   - POLYGON_STROKE_WIDTH constant (1.5px) for polygon edge visibility (Part 3)
+ *   - Cluster source for dense point layers >CLUSTER_THRESHOLD features (Part 4)
  */
 function registerVectorOnMap(
   m: MapLibreMap,
-  layer: { layer_id: string },
+  layer: { layer_id: string; style_preset?: string | null },
   fc: FeatureCollection,
   geomKind: VectorGeomKind,
   color: string,
@@ -355,31 +367,102 @@ function registerVectorOnMap(
   visible: boolean,
   geomKindRef: { current: Map<string, VectorGeomKind> },
 ): void {
-  // Add the GeoJSON source.
-  m.addSource(layer.layer_id, {
-    type: "geojson",
-    data: fc,
-  });
+  // Add the GeoJSON source. For dense point layers (>CLUSTER_THRESHOLD features),
+  // enable MapLibre clustering so thousands of GBIF/iNat/eBird points don't
+  // paint as individual overlapping circles at low zoom (Part 4).
+  const isPointLayer = geomKind === "point";
+  const isDense = isPointLayer && fc.features.length > CLUSTER_THRESHOLD;
+
+  if (isDense) {
+    m.addSource(layer.layer_id, {
+      type: "geojson",
+      data: fc,
+      cluster: true,
+      clusterRadius: CLUSTER_RADIUS,
+      clusterMaxZoom: 14, // clusters disappear above z14 → individual points show
+    });
+  } else {
+    m.addSource(layer.layer_id, {
+      type: "geojson",
+      data: fc,
+    });
+  }
 
   // Add the paint layer. We place vector overlays at the TOP of the stack
   // (no beforeId), matching the raster-overlay convention. Future enhancement:
   // place beneath labels using a known beforeId (e.g. "waterway-label")
   // when one is detected in the active style.
   if (geomKind === "point") {
-    m.addLayer({
-      id: layer.layer_id,
-      type: "circle",
-      source: layer.layer_id,
-      paint: {
-        "circle-radius": 5,
-        "circle-color": color,
-        "circle-stroke-color": "#ffffff",
-        "circle-stroke-width": 1,
-        "circle-opacity": opacity,
-        "circle-stroke-opacity": opacity,
-      },
-      layout: { visibility: visible ? "visible" : "none" },
-    });
+    if (isDense) {
+      // Cluster circle layer (shows aggregate circles with count text).
+      m.addLayer({
+        id: `${layer.layer_id}-clusters`,
+        type: "circle",
+        source: layer.layer_id,
+        filter: ["has", "point_count"],
+        paint: {
+          "circle-radius": [
+            "step",
+            ["get", "point_count"],
+            12, 10,   // < 10 points → r12
+            18, 100,  // 10–99 points → r18
+            24,       // ≥100 points → r24
+          ],
+          "circle-color": color,
+          "circle-stroke-color": "#ffffff",
+          "circle-stroke-width": 1.5,
+          "circle-opacity": opacity * 0.85,
+        },
+        layout: { visibility: visible ? "visible" : "none" },
+      });
+      // Cluster count label layer.
+      m.addLayer({
+        id: `${layer.layer_id}-cluster-count`,
+        type: "symbol",
+        source: layer.layer_id,
+        filter: ["has", "point_count"],
+        layout: {
+          "text-field": "{point_count_abbreviated}",
+          "text-size": 11,
+          "text-font": ["Open Sans Regular"],
+          visibility: visible ? "visible" : "none",
+        },
+        paint: {
+          "text-color": "#ffffff",
+        },
+      });
+      // Individual unclustered points at high zoom.
+      m.addLayer({
+        id: layer.layer_id,
+        type: "circle",
+        source: layer.layer_id,
+        filter: ["!", ["has", "point_count"]],
+        paint: {
+          "circle-radius": 5,
+          "circle-color": color,
+          "circle-stroke-color": "#ffffff",
+          "circle-stroke-width": 1,
+          "circle-opacity": opacity,
+          "circle-stroke-opacity": opacity,
+        },
+        layout: { visibility: visible ? "visible" : "none" },
+      });
+    } else {
+      m.addLayer({
+        id: layer.layer_id,
+        type: "circle",
+        source: layer.layer_id,
+        paint: {
+          "circle-radius": 5,
+          "circle-color": color,
+          "circle-stroke-color": "#ffffff",
+          "circle-stroke-width": 1,
+          "circle-opacity": opacity,
+          "circle-stroke-opacity": opacity,
+        },
+        layout: { visibility: visible ? "visible" : "none" },
+      });
+    }
   } else if (geomKind === "line") {
     m.addLayer({
       id: layer.layer_id,
@@ -393,17 +476,41 @@ function registerVectorOnMap(
       layout: { visibility: visible ? "visible" : "none" },
     });
   } else if (geomKind === "polygon") {
+    // Pelicun damage: apply ds_mean choropleth gradient expression (Part 2).
+    // All other polygons: flat fill with POLYGON_FILL_OPACITY (Part 3).
+    const fillColor = isPelicunDamageLayer(layer.style_preset)
+      ? buildDsMeanExpression()
+      : color;
+
     m.addLayer({
       id: layer.layer_id,
       type: "fill",
       source: layer.layer_id,
       paint: {
-        "fill-color": color,
-        // Polygons are intentionally translucent so the basemap + underlying
-        // rasters stay visible — WDPA boundaries are a context overlay, not
-        // a focal layer.
-        "fill-opacity": opacity * 0.5,
+        // MapLibre fill-color accepts expression arrays natively.
+        "fill-color": fillColor as string,
+        // Reduced fill opacity (0.4) so basemap labels stay readable
+        // underneath polygon fills (Part 3). Pelicun uses 0.7 so the
+        // damage gradient is visually prominent.
+        "fill-opacity": isPelicunDamageLayer(layer.style_preset)
+          ? opacity * 0.7
+          : opacity * POLYGON_FILL_OPACITY,
+        // Subtle stroke softens the CDP-rectangle look while keeping edges
+        // distinguishable (Part 3 / Pelicun "less rectangular" ask).
         "fill-outline-color": color,
+      },
+      layout: { visibility: visible ? "visible" : "none" },
+    });
+    // Add a separate line layer for the polygon stroke so we can set stroke
+    // width (fill-outline-color only draws 1px; line layer gives us 1.5px).
+    m.addLayer({
+      id: `${layer.layer_id}-outline`,
+      type: "line",
+      source: layer.layer_id,
+      paint: {
+        "line-color": color,
+        "line-width": POLYGON_STROKE_WIDTH,
+        "line-opacity": opacity * 0.6,
       },
       layout: { visibility: visible ? "visible" : "none" },
     });
@@ -470,8 +577,20 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
     // change can't silently re-enable it.
     m.touchZoomRotate.disableRotation();
     m.keyboard.disableRotation();
-    // Navigation control at bottom-right so it doesn't overlap the Chat panel (top-right).
-    m.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom-right");
+    // job-0143: navigation control moves from bottom-right (overlapped the
+    // Chat panel) to TOP-RIGHT. Chat is always anchored to the right edge,
+    // so we stack the nav control above the chat hamburger (when collapsed)
+    // or against the chat panel's top edge (when expanded). The control is
+    // ~80px tall, hamburger is at top:12 with height 40 — adding container
+    // padding via a wrapper CSS class would require global styles, so we
+    // accept the brief visual proximity to the chat hamburger (the nav
+    // control sits at top:12 left of the hamburger by the maplibre default
+    // 10px margin).
+    //
+    // Hidden in unit tests where MapLibre never finishes init; .css class
+    // `.maplibregl-ctrl-top-right` carries the position so a future
+    // refinement can offset it via App.tsx-owned CSS.
+    m.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
     map.current = m;
     activeMap = m;
 
@@ -551,7 +670,12 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
             } else if (geomKind === "line") {
               m.setPaintProperty(layer.layer_id, "line-opacity", opacity);
             } else if (geomKind === "polygon") {
-              m.setPaintProperty(layer.layer_id, "fill-opacity", opacity * 0.5);
+              // job-0146: use POLYGON_FILL_OPACITY (0.4) for basemap readability;
+              // Pelicun damage layers use 0.7 for gradient visibility.
+              const polyOpacity = isPelicunDamageLayer(layer.style_preset)
+                ? opacity * 0.7
+                : opacity * POLYGON_FILL_OPACITY;
+              m.setPaintProperty(layer.layer_id, "fill-opacity", polyOpacity);
               m.setPaintProperty(layer.layer_id, "fill-outline-color", resolveVectorColor(layer.layer_id, layer.style_preset));
             } else {
               // Raster (existing behaviour) or unknown — preserve the
