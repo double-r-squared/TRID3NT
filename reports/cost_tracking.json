@@ -318,6 +318,13 @@
       "description": "Stage 2: 5 cross-specialty parts in one commit. (1) Worker DOUBLE-MNT-PREFIX fix — Path(read_path).name when /mnt/qgs/ prefix; native URL emission confirmed. (2) Worker EPSG:4326 WMSCrsList fix — project.writeEntry after addMapLayer; 552 KB tiles vs 1117-byte transparent before. (3) App.tsx 1-line onMapCommand callback closes OQ-72 production routing. (4) Worker rebuild Cloud Build caa0a59f 1m59s; digest sha256:56df8f4c pinned; tofu apply 1-change clean. (5) Re-publish-raster SUCCEEDED; .qgs 4 layers; server-side curl 333 KB EPSG:3857 + 552 KB EPSG:4326. HONEST CAVEAT: re-used job-0070's COG which predates 0071's rotation+transparency-data fixes — structural improvements all live (DOUBLE-MNT + EPSG:4326 + App.tsx + native URL) but visible rotation+transparency may persist; fresh-COG re-screenshot is sprint-10 follow-up. 13/13 worker tests + 63/63 web. 2 minor OQs: OQ-74-KICKOFF-WORKER-OP-MISMATCH (low; doc error), OQ-74-TSC-WS-TEST-ERRORS (low; pre-existing). Sprint-10 Sonnet win #6. Commit 344de30.",
       "model": "sonnet",
       "subagent_tokens": 121002
+    },
+    {
+      "job_id": "job-0075-engine-20260607",
+      "sprint": 10,
+      "description": "Stage 2 follow-up: pure regeneration M5 → fresh COG → auto-dispatch publish → visible-corrections screenshot. Part 1 smoke SUCCESS 585s; new run_id 01KTJX71NKGDMXB9TN0DV75JWK; CRS EPSG:32617; **transparency fix CONFIRMED at COG level** (job-0070: 0/284,580 NaN @ 0% min depth 0.010 with > 0.0 threshold; job-0075: 87,176/284,580 NaN @ 30.6% min depth 0.050 with > NODATA_DEPTH_M=0.05 threshold). Part 2 **auto-dispatch CONFIRMED** — publish_layer succeeded CONDITION_SUCCEEDED; job-0071's RunJobRequest.Overrides fix verified in production. New WMS URL flood-depth-job-0075-demo. Part 3 honest visual: WMS tile comparison clearly shows fix (wms_full_0074 349 KB faint blue wash VS wms_full_0075 307 KB transparent dry + concentrated inundation — 42 KB drop = added NaN cells). Playwright zoom-11 visually identical (0.03% diff) due to MapLibre downsampling; zoom-13+ would show. **OQ-75-ROTATION-NOT-TRIGGERED**: rotation guard didn't fire — Fort Myers SFINCS emits (n,m) order natively (transform.a=+29.94, transform.e=-29.94 north-up). User's perceived rotation in job-0070 may have been comparison artifact; COG was always correctly oriented. Code is correct + guarded. OQ-75-PLAYWRIGHT-TILE-VISIBILITY (non-blocking — WMS evidence conclusive). Sprint-10 Sonnet win #7. Commit 70b8dbb.",
+      "model": "sonnet",
+      "subagent_tokens": 79482
     }
   ],
   "totals_by_sprint": {
@@ -325,7 +332,7 @@
     "7": 1863284,
     "8": 1786238,
     "9": 713020,
-    "10": 1189833
+    "10": 1269315
   },
   "historical_context": {
     "note": "Captured for accountability — NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
