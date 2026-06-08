@@ -339,6 +339,13 @@
       "description": "Sprint-10 close. HEALTHY verdict. All 4 regression suites pass (web 72/72, agent 187/187, contracts 145/145, pyqgis 13/13). tsc qualified — 3 errors in FROZEN ws.test.tsx pre-existing (OQ-74-TSC-WS-TEST-ERRORS); production source clean. Playwright 3/4 — test_panels_collapsed_e2e fails because sprint-10's layout reversion removed data-testids the sprint-9 test relied on (carry-forward to sprint-11). Sprint-10 retrospective in-place covering planned-vs-actual (5 → 9+research), cost telemetry, 3-cycle false-success pattern, orchestrator lesson codified (pixel-evidence required, not UI-chrome signals), architectural wins, 8-item OQ carry-forward. Sprint-11 manifest authored per saved roadmap (Case UX headline + alignment + hillshade + map-command WS + Case persistence + acceptance + v0.3.22 SRS housekeeping pre-flight). Sprint-10 Sonnet win #8. Commit a7bff00.",
       "model": "sonnet",
       "subagent_tokens": 105670
+    },
+    {
+      "job_id": "job-0080-engine-20260608",
+      "sprint": 11,
+      "description": "Sprint-11 Stage 1 parallel: compute_colored_relief atomic tool wrapping gdaldem color-relief. 4 ramp presets (terrain/elevation_blue_green/grayscale/viridis) inline as Python dicts; -alpha -compute_edges flags; /vsigs/ for GCS reads; cache via read_through (static-30d, colored_relief). Full FR-TA-3 docstring with LLM-pickable guidance per ramp. 19 new tests + full agent suite 202 passed (5 skipped); tool registry 17→19. Live E2E qualified (dev GCS ADC missing — fine in prod). 3 minor OQs: STYLE-PRESET-FOLLOWUP, GDALDEM-PATH-ENV-VAR, VSIGS-AUTH-PROD. Sprint-11 Sonnet win #1. Commit 6a7be2e.",
+      "model": "sonnet",
+      "subagent_tokens": 118426
     }
   ],
   "totals_by_sprint": {
@@ -346,7 +353,8 @@
     "7": 1863284,
     "8": 1786238,
     "9": 713020,
-    "10": 1540974
+    "10": 1540974,
+    "11": 118426
   },
   "historical_context": {
     "note": "Captured for accountability — NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
