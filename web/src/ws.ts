@@ -28,6 +28,34 @@ import {
   envelope,
   newUlid,
 } from "./contracts";
+import { getIdToken } from "./auth";
+
+/**
+ * Wire shape for the `auth-token` envelope (job-0123, sprint-12-mega Wave 2).
+ *
+ * The agent service consumes this after the connect handshake to bind the
+ * Firebase `uid` → `UserDocument` (per SRS Appendix H.5). The payload is
+ * intentionally narrow — Wave 2 schema (job-0122) will land the canonical
+ * pydantic shape in `packages/contracts`; until then this mirrors what the
+ * agent verifier reads:
+ *   - `id_token`: Firebase ID JWT (1h lifetime)
+ *   - `provider`: best-effort signal for telemetry (firebase | anonymous)
+ *
+ * H.5 names the connect-frame mechanism as a Wave 2 schema decision; we
+ * implement the envelope-after-connect path because the WebSocket handshake
+ * subprotocol surface is awkward for a long JWT (chrome rejects oversize
+ * headers). Surfaced as OQ-0123-AUTH-TOKEN-HANDSHAKE-VS-ENVELOPE.
+ */
+export interface AuthTokenPayload {
+  id_token: string;
+  provider: "firebase" | "anonymous";
+}
+
+/**
+ * Token retrieval seam — injectable so unit tests don't need a real Firebase
+ * Auth subsystem. Defaults to `getIdToken()` from `./auth`.
+ */
+export type IdTokenGetter = () => Promise<string | null>;
 
 export type ConnectionStatus =
   | "connecting"
@@ -45,6 +73,12 @@ export interface WsHandlers {
   // Optional so existing callers (App.tsx, Chat.tsx) need no change; callers that
   // own a LayerPanelBus should pass `onMapCommand: (p) => bus.pushMapCommand(p)`.
   onMapCommand?: (p: MapCommandPayload) => void;
+  /**
+   * Auth-token retriever (job-0123). Optional — when absent we fall back to
+   * `getIdToken()` from `./auth` directly. Injected by tests to avoid
+   * dynamic-importing Firebase.
+   */
+  idTokenGetter?: IdTokenGetter;
 }
 
 const SESSION_KEY = "grace2.session_id";
@@ -151,6 +185,11 @@ export class GraceWs {
         {} as SessionResumePayload,
       );
       this.sendEnvelope(resume);
+      // Send the Firebase ID token if available (job-0123, SRS Appendix H.5).
+      // If no token (Firebase disabled, signed-out, or fetch fails), we skip
+      // the auth-token envelope and let the agent fall back to anonymous —
+      // kickoff §4: "skip and let server fall back to anonymous."
+      void this.maybeSendAuthToken();
     });
     ws.addEventListener("message", (ev) => this.handleMessage(ev.data));
     ws.addEventListener("close", () => {
@@ -210,6 +249,35 @@ export class GraceWs {
   private sendEnvelope<P>(env: Envelope<P>): void {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return;
     this.socket.send(JSON.stringify(env));
+  }
+
+  /**
+   * Fetch the Firebase ID token (if any) and emit the `auth-token` envelope.
+   *
+   * Job-0123 / SRS H.5: when a token is available, the agent's
+   * connection-acceptor verifies it via `firebase_admin.auth.verify_id_token`
+   * and binds the resolved User to the session. When no token is available
+   * (Firebase disabled / signed out / fetch failed), we skip the envelope
+   * entirely — the agent's anonymous fallback handles the session.
+   */
+  private async maybeSendAuthToken(): Promise<void> {
+    const getter = this.handlers.idTokenGetter ?? getIdToken;
+    let token: string | null = null;
+    try {
+      token = await getter();
+    } catch {
+      // Treat any error as no-token (anonymous fallback). The Firebase SDK
+      // can throw on network errors, expired refresh tokens, etc.
+      token = null;
+    }
+    if (!token) return;
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return;
+    const env: Envelope<AuthTokenPayload> = envelope(
+      "auth-token",
+      this.sessionId,
+      { id_token: token, provider: "firebase" },
+    );
+    this.sendEnvelope(env);
   }
 
   private scheduleReconnect(): void {

@@ -37,6 +37,8 @@ import { MapView, type MapCommandSubscribeFunc, type MapTheme } from "./Map";
 import { Chat } from "./Chat";
 import { LayerPanel, createLayerPanelBus } from "./LayerPanel";
 import { LayerLegend } from "./components/LayerLegend";
+import { AuthPanel } from "./components/AuthPanel";
+import { AuthUser, onAuthChanged } from "./auth";
 import { GraceWs } from "./ws";
 import {
   MapCommandPayload,
@@ -127,6 +129,16 @@ export function App(): JSX.Element {
   // dark = CartoDB DarkMatter raster. Persisted in localStorage so reloads
   // remember user preference.
   const [theme, setTheme] = useState<MapTheme>(() => readTheme());
+
+  // Auth state (job-0123, sprint-12-mega Wave 2). Subscribed at the App level
+  // so AuthPanel re-renders and any future auth-gated UI (Cases, share links)
+  // can be driven off this single source. When Firebase is unconfigured
+  // (anonymous-only dev) the subscription resolves to null once and stays.
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  useEffect(() => {
+    const unsub = onAuthChanged((u) => setAuthUser(u));
+    return unsub;
+  }, []);
 
   function toggleTheme(): void {
     setTheme((prev) => {
@@ -279,6 +291,21 @@ export function App(): JSX.Element {
           ☰
         </button>
       )}
+
+      {/* AuthPanel (job-0123): top-right, to the LEFT of the chat hamburger /
+          chat panel edge so it never overlaps. Always mounted (signed-in or
+          signed-out variants render differently). The rightOffset moves it
+          left of the chat hamburger (chat hamburger sits at right:12, width
+          40; we leave 60px gap when chat is collapsed, and more when chat is
+          open since the chat panel itself takes the right edge). */}
+      <AuthPanel rightOffset={rightCollapsed ? 60 : 380} />
+      {/* hidden marker so tests can assert App subscribes to auth changes */}
+      <span
+        data-testid="grace2-app-auth-state"
+        data-auth-uid={authUser?.uid ?? ""}
+        data-auth-anonymous={authUser?.isAnonymous ? "true" : "false"}
+        style={{ display: "none" }}
+      />
 
       {/* Theme toggle (job-0076 bundled): top-center, between the two
           hamburgers so it never collides. Click cycles light↔dark; persists

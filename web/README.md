@@ -77,3 +77,51 @@ The orchestrator's pattern (per `feedback_playwright_afk_iteration_loop.md`):
 `status='proactive'` routes to the user's phone push, not just the
 current desktop session. One-line captions per shot (route + state +
 notable elements) so the user can navigate phone-side without zooming.
+
+## Firebase Auth setup (job-0123, sprint-12-mega Wave 2)
+
+The client integrates Firebase Authentication per SRS Appendix H (Decision P).
+Authenticated mode (Google sign-in) requires a Firebase project; anonymous
+mode works without any provisioning.
+
+### Anonymous-only (no Firebase project)
+
+The web client boots and runs against a local agent with no Firebase config.
+The AuthPanel shows "Sign in with Google" (disabled, tooltip explains why)
+and "Continue as anonymous" (functional). The `ws.ts` connect handler skips
+the `auth-token` envelope; the agent's anonymous fallback handles the session.
+
+### Authenticated mode (Firebase project provisioned)
+
+1. Create a Firebase project at https://console.firebase.google.com/.
+2. Enable Email/Password, Google, and Anonymous sign-in providers under
+   Authentication → Sign-in method.
+3. Add a web app (`</> Web`) to the project and copy the config.
+4. Copy `.env.example` to `.env.local` and fill in the five `VITE_FIREBASE_*`
+   vars from the config snippet.
+5. Restart the dev server. The "Sign in with Google" button is now active.
+
+The Firebase API key is **safe to ship to clients** — Firebase enforces
+security via Auth rules + Identity Platform IAM, not by hiding the key.
+See Firebase docs § "Is it safe to expose Firebase API key to the public?".
+
+### Wire protocol (Appendix H.5)
+
+On WebSocket connect, `ws.ts` fetches the current Firebase ID token via
+`getIdToken()` and emits an `auth-token` envelope:
+
+```json
+{
+  "type": "auth-token",
+  "id": "<ulid>",
+  "ts": "2026-06-08T...Z",
+  "session_id": "<session-ulid>",
+  "payload": {
+    "id_token": "<firebase JWT>",
+    "provider": "firebase"
+  }
+}
+```
+
+If no token is available (signed out, Firebase disabled, fetch failed) the
+envelope is skipped — the agent's anonymous fallback handles the session.
