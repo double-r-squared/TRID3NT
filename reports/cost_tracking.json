@@ -346,6 +346,13 @@
       "description": "Sprint-11 Stage 1 parallel: compute_colored_relief atomic tool wrapping gdaldem color-relief. 4 ramp presets (terrain/elevation_blue_green/grayscale/viridis) inline as Python dicts; -alpha -compute_edges flags; /vsigs/ for GCS reads; cache via read_through (static-30d, colored_relief). Full FR-TA-3 docstring with LLM-pickable guidance per ramp. 19 new tests + full agent suite 202 passed (5 skipped); tool registry 17→19. Live E2E qualified (dev GCS ADC missing — fine in prod). 3 minor OQs: STYLE-PRESET-FOLLOWUP, GDALDEM-PATH-ENV-VAR, VSIGS-AUTH-PROD. Sprint-11 Sonnet win #1. Commit 6a7be2e.",
       "model": "sonnet",
       "subagent_tokens": 118426
+    },
+    {
+      "job_id": "job-0082-engine-20260608",
+      "sprint": 11,
+      "description": "Sprint-11 Stage 1 parallel: compute_aspect atomic tool. Mirrors compute_slope exactly. gdaldem aspect with Horn/ZT algorithms + zero_for_flat option. Cache static-30d, source_class=aspect, units=degrees. 11 tests pass against real gdaldem (synthetic DEMs verifying aspect ≈ 180° south-facing, flat-DEM branches, cache miss/hit, error paths, 4 distinct cache keys). 21 tools at startup. Idempotent concurrent registration. 1 minor OQ: style preset followup. Sprint-11 Sonnet win #2 (cheapest yet at 75,928 — pattern-mirroring efficiency). Commit 6717c39.",
+      "model": "sonnet",
+      "subagent_tokens": 75928
     }
   ],
   "totals_by_sprint": {
@@ -354,7 +361,7 @@
     "8": 1786238,
     "9": 713020,
     "10": 1540974,
-    "11": 118426
+    "11": 194354
   },
   "historical_context": {
     "note": "Captured for accountability — NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
