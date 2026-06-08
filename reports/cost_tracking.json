@@ -516,6 +516,118 @@
       "kind": "research",
       "workflow_id": "wf_fda31770-e52",
       "subagent_tokens": 290444
+    },
+    {
+      "job_id": "job-0102-engine-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 1.5 parallel: fetch_nexrad_reflectivity (Iowa Mesonet WMS). Wave 1.5 fan-out closed 16/16 ready-for-audit (with same commit-label-swap race pattern as Wave 1; HEAD files all correct; marker commits document actual landings). Live geographic-correctness gate satisfied for each.",
+      "model": "opus",
+      "subagent_tokens": 198089
+    },
+    {
+      "job_id": "job-0103-engine-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 1.5 parallel: fetch_mrms_qpe (NOAA MRMS Pass2 gauge-corrected; Harvey/SFINCS standard). Wave 1.5 fan-out closed 16/16 ready-for-audit (with same commit-label-swap race pattern as Wave 1; HEAD files all correct; marker commits document actual landings). Live geographic-correctness gate satisfied for each.",
+      "model": "opus",
+      "subagent_tokens": 198089
+    },
+    {
+      "job_id": "job-0104-engine-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 1.5 parallel: fetch_goes_satellite (NOAA GOES-16/17/18/19 ABI L2 CMIP). Wave 1.5 fan-out closed 16/16 ready-for-audit (with same commit-label-swap race pattern as Wave 1; HEAD files all correct; marker commits document actual landings). Live geographic-correctness gate satisfied for each.",
+      "model": "opus",
+      "subagent_tokens": 198089
+    },
+    {
+      "job_id": "job-0105-engine-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 1.5 parallel: fetch_nws_alerts_conus (CONUS-wide active alerts sibling). Wave 1.5 fan-out closed 16/16 ready-for-audit (with same commit-label-swap race pattern as Wave 1; HEAD files all correct; marker commits document actual landings). Live geographic-correctness gate satisfied for each.",
+      "model": "opus",
+      "subagent_tokens": 198089
+    },
+    {
+      "job_id": "job-0106-engine-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 1.5 parallel: clip_raster_to_polygon (in-[place] raster mask). Wave 1.5 fan-out closed 16/16 ready-for-audit (with same commit-label-swap race pattern as Wave 1; HEAD files all correct; marker commits document actual landings). Live geographic-correctness gate satisfied for each.",
+      "model": "opus",
+      "subagent_tokens": 198089
+    },
+    {
+      "job_id": "job-0107-engine-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 1.5 parallel: clip_vector_to_polygon (in-[place] vector clip). Wave 1.5 fan-out closed 16/16 ready-for-audit (with same commit-label-swap race pattern as Wave 1; HEAD files all correct; marker commits document actual landings). Live geographic-correctness gate satisfied for each.",
+      "model": "opus",
+      "subagent_tokens": 198089
+    },
+    {
+      "job_id": "job-0108-engine-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 1.5 parallel: fetch_firms_active_fire (NASA FIRMS VIIRS/MODIS). Wave 1.5 fan-out closed 16/16 ready-for-audit (with same commit-label-swap race pattern as Wave 1; HEAD files all correct; marker commits document actual landings). Live geographic-correctness gate satisfied for each.",
+      "model": "opus",
+      "subagent_tokens": 198089
+    },
+    {
+      "job_id": "job-0109-engine-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 1.5 parallel: fetch_mtbs_burn_severity (MTBS historic polygons). Wave 1.5 fan-out closed 16/16 ready-for-audit (with same commit-label-swap race pattern as Wave 1; HEAD files all correct; marker commits document actual landings). Live geographic-correctness gate satisfied for each.",
+      "model": "opus",
+      "subagent_tokens": 198089
+    },
+    {
+      "job_id": "job-0110-engine-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 1.5 parallel: fetch_nifc_fire_perimeters (NIFC active fires). Wave 1.5 fan-out closed 16/16 ready-for-audit (with same commit-label-swap race pattern as Wave 1; HEAD files all correct; marker commits document actual landings). Live geographic-correctness gate satisfied for each.",
+      "model": "opus",
+      "subagent_tokens": 198089
+    },
+    {
+      "job_id": "job-0111-engine-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 1.5 parallel: fetch_landfire_fuels (LANDFIRE fuel models). Wave 1.5 fan-out closed 16/16 ready-for-audit (with same commit-label-swap race pattern as Wave 1; HEAD files all correct; marker commits document actual landings). Live geographic-correctness gate satisfied for each.",
+      "model": "opus",
+      "subagent_tokens": 198089
+    },
+    {
+      "job_id": "job-0112-engine-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 1.5 parallel: fetch_hrsl_population (Meta HRSL persons/cell). Wave 1.5 fan-out closed 16/16 ready-for-audit (with same commit-label-swap race pattern as Wave 1; HEAD files all correct; marker commits document actual landings). Live geographic-correctness gate satisfied for each.",
+      "model": "opus",
+      "subagent_tokens": 198089
+    },
+    {
+      "job_id": "job-0113-engine-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 1.5 parallel: fetch_gcn250_curve_numbers (GCN250 SCS \u2014 SFINCS substrate). Wave 1.5 fan-out closed 16/16 ready-for-audit (with same commit-label-swap race pattern as Wave 1; HEAD files all correct; marker commits document actual landings). Live geographic-correctness gate satisfied for each.",
+      "model": "opus",
+      "subagent_tokens": 198089
+    },
+    {
+      "job_id": "job-0114-schema-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 1.5 parallel: AtomicToolMetadata: supports_global_query + estimate_payload_mb fields. Wave 1.5 fan-out closed 16/16 ready-for-audit (with same commit-label-swap race pattern as Wave 1; HEAD files all correct; marker commits document actual landings). Live geographic-correctness gate satisfied for each.",
+      "model": "opus",
+      "subagent_tokens": 198089
+    },
+    {
+      "job_id": "job-0115-agent-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 1.5 parallel: MongoDB MCP Persistence module + User schema + ws.py secrets registry. Wave 1.5 fan-out closed 16/16 ready-for-audit (with same commit-label-swap race pattern as Wave 1; HEAD files all correct; marker commits document actual landings). Live geographic-correctness gate satisfied for each.",
+      "model": "opus",
+      "subagent_tokens": 198089
+    },
+    {
+      "job_id": "job-0116-schema-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 1.5 parallel: SRS Appendix H \u2014 Auth/Users (Firebase Auth, Decision E). Wave 1.5 fan-out closed 16/16 ready-for-audit (with same commit-label-swap race pattern as Wave 1; HEAD files all correct; marker commits document actual landings). Live geographic-correctness gate satisfied for each.",
+      "model": "opus",
+      "subagent_tokens": 198089
+    },
+    {
+      "job_id": "job-0117-engine-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 1.5 parallel: Florida panther taxon-key correction + _species_reference dict. Wave 1.5 fan-out closed 16/16 ready-for-audit (with same commit-label-swap race pattern as Wave 1; HEAD files all correct; marker commits document actual landings). Live geographic-correctness gate satisfied for each.",
+      "model": "opus",
+      "subagent_tokens": 198089
     }
   ],
   "totals_by_sprint": {
@@ -525,7 +637,7 @@
     "9": 713020,
     "10": 1540974,
     "11": 999540,
-    "12": 2706674
+    "12": 5876098
   },
   "historical_context": {
     "note": "Captured for accountability \u2014 NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
