@@ -13,9 +13,12 @@ Coverage:
   OUTSIDE the bbox is filtered before serialization.
 - Cache hit: a second call with identical params reuses the cached URI.
 
-Live test (gated by ``GRACE2_TEST_LIVE_GBIF=1``):
-- Florida panther (taxonKey 7193927) over Big Cypress / Everglades bbox.
-  Records to evidence/gbif_live.txt.
+Live tests (gated by ``GRACE2_TEST_LIVE_GBIF=1``):
+- Florida panther via taxonKey (2435099 = Puma concolor, species-level) over
+  Big Cypress / Everglades bbox. Records to evidence/gbif_live.txt.
+- Florida panther via scientific-name string ("Puma concolor") over the same
+  bbox — exercises the species/match resolution path AND verifies the name
+  resolves to the same species-level taxonKey (job-0117 OQ-0087 follow-up).
 """
 
 from __future__ import annotations
@@ -50,13 +53,18 @@ _PINNED_NOW = datetime(2026, 6, 8, 12, 0, 0, tzinfo=timezone.utc)
 # Big Cypress / Everglades bbox — known Florida panther range.
 _EVERGLADES_BBOX = (-81.5, 25.5, -80.5, 26.5)
 
-# Florida panther taxonKey — for live tests we use the species-level key
-# (Puma concolor = 2435099) since the subspecies-level key (7193927 =
-# P. concolor concolor) has ~310 records globally, NONE in Florida — GBIF
-# Florida-panther observations are mostly catalogued under the parent species.
-# See OQ-0087-PANTHER-TAXON-KEY for the audit-md vs reality discrepancy.
-_PANTHER_TAXON_KEY = 7193927  # used by unit tests (just an int placeholder)
-_PANTHER_LIVE_TAXON_KEY = 2435099  # Puma concolor — used by the live test
+# Florida panther taxonKey resolution — OQ-0087-PANTHER-TAXON-KEY (job-0117):
+#
+# job-0087's kickoff specified taxonKey 7193927 ("Puma concolor concolor"),
+# but that subspecies has ~310 records globally and NONE in Florida — GBIF
+# Florida-panther observations are catalogued under the parent species
+# Puma concolor = 2435099 (~250 records in this bbox). The mocked unit tests
+# still use 7193927 as an arbitrary int placeholder (no real GBIF call), but
+# every LIVE test now hits the species-level key 2435099. The canonical
+# common-name → key mapping is in ``_species_reference.FLORIDA_DEMO_SPECIES``.
+_PANTHER_TAXON_KEY = 7193927  # mock-only placeholder; never sent to real GBIF
+_PANTHER_LIVE_TAXON_KEY = 2435099  # Puma concolor — used by the live tests
+_PANTHER_LIVE_SCIENTIFIC_NAME = "Puma concolor"  # name-resolution live path
 
 # Live-test gate.
 _LIVE_GBIF = os.environ.get("GRACE2_TEST_LIVE_GBIF") == "1"
@@ -713,7 +721,7 @@ def test_live_florida_panther_over_big_cypress(tmp_path):
 
     # Capture evidence (sample first 5 records).
     evidence_lines = [
-        f"# GBIF live test — Florida panther (taxonKey {_PANTHER_TAXON_KEY})",
+        f"# GBIF live test — Florida panther (Puma concolor, taxonKey {_PANTHER_LIVE_TAXON_KEY})",
         f"# bbox: {_EVERGLADES_BBOX}",
         f"# result.uri: {result.uri}",
         f"# feature count: {len(gdf)}",
@@ -723,3 +731,73 @@ def test_live_florida_panther_over_big_cypress(tmp_path):
         evidence_lines.append(f"feature {i}: {row}")
     evidence_text = "\n".join(evidence_lines)
     print("\n" + evidence_text)
+
+
+@pytest.mark.skipif(not _LIVE_GBIF, reason="GRACE2_TEST_LIVE_GBIF=1 not set")
+def test_live_florida_panther_via_scientific_name_resolves_to_correct_key():
+    """LIVE: ``species_key="Puma concolor"`` resolves through species/match
+    to taxonKey 2435099 and yields ≥1 in-bbox feature.
+
+    Covers OQ-0087-PANTHER-TAXON-KEY end-to-end: a user (or LLM) supplying
+    the scientific name MUST land on the species-level key, not the
+    subspecies key. We confirm by inspecting the URI — the cache filename
+    is keyed on the RESOLVED taxonKey.
+    """
+    fake_gcs = FakeStorageClient()
+    with patch(
+        "grace2_agent.tools.fetch_gbif_occurrences.read_through",
+        side_effect=_make_read_through_injector(fake_gcs),
+    ):
+        result = fetch_gbif_occurrences(
+            species_key=_PANTHER_LIVE_SCIENTIFIC_NAME,
+            bbox=_EVERGLADES_BBOX,
+            max_records=1000,
+        )
+
+    assert result.uri is not None
+    # LayerURI layer_id embeds the RESOLVED taxonKey — confirm the
+    # name-resolution path landed on 2435099 (Puma concolor, species).
+    assert str(_PANTHER_LIVE_TAXON_KEY) in result.layer_id, (
+        f"name-resolution should land on species-level taxonKey "
+        f"{_PANTHER_LIVE_TAXON_KEY}; got layer_id={result.layer_id!r}"
+    )
+    assert f"taxonKey {_PANTHER_LIVE_TAXON_KEY}" in result.name
+
+    [(path, data)] = list(fake_gcs.store.items())
+    assert path.startswith("cache/static-30d/gbif/")
+    assert path.endswith(".fgb")
+
+    import tempfile
+    import geopandas as gpd  # type: ignore[import-not-found]
+
+    with tempfile.NamedTemporaryFile(suffix=".fgb", delete=False) as tf:
+        tf.write(data)
+        tf_path = tf.name
+    try:
+        gdf = gpd.read_file(tf_path, engine="pyogrio")
+    finally:
+        os.unlink(tf_path)
+
+    assert len(gdf) >= 1, (
+        f"Expected ≥1 Florida panther occurrence in Big Cypress via name "
+        f"resolution; got {len(gdf)}"
+    )
+
+    # Geographic-correctness check: every emitted point lies within the bbox.
+    for geom in gdf.geometry:
+        x, y = geom.x, geom.y
+        assert _EVERGLADES_BBOX[0] <= x <= _EVERGLADES_BBOX[2], (
+            f"feature lon {x} outside Big Cypress bbox"
+        )
+        assert _EVERGLADES_BBOX[1] <= y <= _EVERGLADES_BBOX[3], (
+            f"feature lat {y} outside Big Cypress bbox"
+        )
+
+    print(
+        f"\n# GBIF live name-resolution test\n"
+        f"# species_key: {_PANTHER_LIVE_SCIENTIFIC_NAME!r}\n"
+        f"# resolved taxonKey: {_PANTHER_LIVE_TAXON_KEY}\n"
+        f"# bbox: {_EVERGLADES_BBOX}\n"
+        f"# result.uri: {result.uri}\n"
+        f"# feature count: {len(gdf)}"
+    )

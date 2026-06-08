@@ -1,0 +1,27 @@
+# job-0117 Wave 1.5 commit-label-swap marker
+
+The Wave 1.5 commit-label-swap race struck again: parts of my work were
+swept into a sibling's `git add -A` and landed under the wrong commit label.
+
+Files landed in commit 69bfc8b ("job-0114: marker — schema amendment landed
+in ed51327 under sibling job-0110 label"):
+
+  - services/agent/src/grace2_agent/tools/_species_reference.py
+  - services/agent/tests/test_species_reference.py
+  - reports/inflight/job-0117-engine-20260608/evidence/gbif_live.txt
+
+Files landed under THIS commit (job-0117 marker):
+
+  - services/agent/tests/test_fetch_gbif_occurrences.py  (additive: 2nd live
+    test for scientific-name resolution + clarified panther taxon-key
+    comments + module docstring update)
+  - reports/inflight/job-0117-engine-20260608/STATE      (= ready-for-audit)
+  - reports/inflight/job-0117-engine-20260608/.commit-marker/landed-under.txt
+    (this file)
+
+Audit/closeout should treat the union of 69bfc8b + this commit as the
+job-0117 deliverable. The kickoff's file-ownership list — `_species_reference.py`,
+the new `test_species_reference.py`, the additive test edits to
+`test_fetch_gbif_occurrences.py`, and `reports/inflight/job-0117-…/` — all
+landed cleanly; only the commit labels are scrambled (the codified Wave 1.5
+risk pattern).
