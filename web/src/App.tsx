@@ -43,11 +43,14 @@ import {
   Mode2OfferAction,
   Mode2OfferModal,
 } from "./components/Mode2OfferModal";
+import { PayloadWarningInline } from "./components/PayloadWarningInline";
 import { AuthUser, onAuthChanged } from "./auth";
 import { GraceWs } from "./ws";
 import { Mode2CandidatePayload } from "./lib/mode2_suppression";
 import {
   MapCommandPayload,
+  PayloadConfirmationDecision,
+  PayloadWarningEnvelopePayload,
   PipelineStatePayload,
   ProjectLayerSummary,
   ProviderID,
@@ -301,6 +304,12 @@ export function App(): JSX.Element {
       onMode2Candidate: (p) => {
         // job-0126: fan out the Mode 2 candidate to the offer modal.
         fanoutMode2Candidate(p);
+      },
+      onPayloadWarning: (p) => {
+        // job-0127: surface the payload-warning card. We keep a queue so a
+        // burst of warnings (multi-tool workflow) renders newest-first
+        // without dropping older gates the user hasn't decided yet.
+        setPayloadWarnings((prev) => [p, ...prev]);
       },
       onError: () => {
         // Chat panel renders connection errors.

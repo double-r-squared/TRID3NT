@@ -20,6 +20,9 @@ import {
   Envelope,
   ErrorPayload,
   MapCommandPayload,
+  PayloadConfirmationDecision,
+  PayloadConfirmationEnvelopePayload,
+  PayloadWarningEnvelopePayload,
   PipelineStatePayload,
   ProviderID,
   ResearchMode,
@@ -89,6 +92,13 @@ export interface WsHandlers {
    * paths wire this to push payloads into a SecretsBus subscription.
    */
   onSecretsList?: (p: SecretsListPayload) => void;
+  /**
+   * Tool payload-warning envelope (job-0127, sprint-12-mega Wave 2). Optional
+   * so chat-only callers can ignore. Chat.tsx mounts the inline warning card
+   * by subscribing here and emits the matching `tool-payload-confirmation`
+   * via {@link GraceWs.sendPayloadConfirmation}.
+   */
+  onPayloadWarning?: (p: PayloadWarningEnvelopePayload) => void;
   /**
    * Mode 2 candidate envelope (job-0126, sprint-12-mega Wave 2). Optional so
    * existing callers (Chat.tsx) don't need to change. App.tsx wires this into
@@ -231,6 +241,34 @@ export class GraceWs {
     };
     const env: Envelope<SecretRevokePayload> = envelope(
       "secret-revoke",
+      this.sessionId,
+      payload,
+    );
+    this.sendEnvelope(env);
+  }
+
+  /**
+   * Emit a `tool-payload-confirmation` envelope (job-0127, sprint-12-mega Wave 2).
+   *
+   * Returns the user's decision on the inline payload-warning card to the
+   * agent's paused dispatch coroutine. `decision="narrow_scope"` REQUIRES
+   * `revisedArgs` (a dict — may be the agent's `alternative_args` echoed back
+   * or a user-edited variant). `proceed` and `cancel` MUST NOT carry
+   * `revisedArgs` — the contract validator on the agent side rejects them.
+   */
+  sendPayloadConfirmation(
+    warningId: string,
+    decision: PayloadConfirmationDecision,
+    revisedArgs: Record<string, unknown> | null = null,
+  ): void {
+    const payload: PayloadConfirmationEnvelopePayload = {
+      envelope_type: "tool-payload-confirmation",
+      warning_id: warningId,
+      decision,
+      revised_args: decision === "narrow_scope" ? revisedArgs ?? {} : null,
+    };
+    const env: Envelope<PayloadConfirmationEnvelopePayload> = envelope(
+      "tool-payload-confirmation",
       this.sessionId,
       payload,
     );
@@ -382,6 +420,17 @@ export class GraceWs {
         if (this.handlers.onMode2Candidate) {
           this.handlers.onMode2Candidate(
             payload as unknown as Mode2CandidatePayload,
+          );
+        }
+        break;
+      case "tool-payload-warning":
+        // job-0127: Tool payload-warning envelope. Chat.tsx subscribes and
+        // renders an inline PayloadWarningInline card with the proceed /
+        // cancel / narrow-scope options the agent advertised. The user's
+        // decision rides back via sendPayloadConfirmation().
+        if (this.handlers.onPayloadWarning) {
+          this.handlers.onPayloadWarning(
+            payload as unknown as PayloadWarningEnvelopePayload,
           );
         }
         break;
