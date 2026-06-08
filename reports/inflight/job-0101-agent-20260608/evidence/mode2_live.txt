@@ -1,0 +1,24 @@
+=== Live evidence: job-0101 mode2-candidate ===
+Tool return shape: dict (url='https://www.weather.gov/about-data')
+Envelopes emitted on wire (in order): ['pipeline-state', 'pipeline-state', 'pipeline-state', 'mode2-candidate']
+Mode2 envelope payload: {
+  "candidate_id": "01KTKJJ249MYBQ1M6NRY1HY22J",
+  "url": "https://www.weather.gov/about-data",
+  "domain": "www.weather.gov",
+  "domain_tld": "gov",
+  "confidence": 0.9,
+  "detected_patterns": [
+    "json-ld",
+    "openapi-spec-link",
+    "rest-endpoint-pattern",
+    "data-download-link"
+  ],
+  "title": "NWS Public Data Access",
+  "suggested_tool_kind": "endpoint",
+  "snippet": "<html><head><script type=\"application/ld+json\">{\"@context\":\"https://schema.org\",\"@type\":\"Dataset\",\"name\":\"NWS observations\"}</script><title>NWS Public Data Access</title></head><body><h1>Data download</h1><p>The NWS public API is do"
+}
+
+Audit log lines written:
+{"ts": "2026-06-08T12:15:44.778066+00:00", "session_id": "01KTKJJ249MYBQ1M6NRY1HY22C", "candidate": {"candidate_id": "01KTKJJ249MYBQ1M6NRY1HY22J", "url": "https://www.weather.gov/about-data", "domain": "www.weather.gov", "domain_tld": "gov", "confidence": 0.9, "detected_patterns": ["json-ld", "openapi-spec-link", "rest-endpoint-pattern", "data-download-link"], "title": "NWS Public Data Access", "suggested_tool_kind": "endpoint", "snippet": "<html><head><script type=\"application/ld+json\">{\"@context\":\"https://schema.org\",\"@type\":\"Dataset\",\"name\":\"NWS observations\"}</script><title>NWS Public Data Access</title></head><body><h1>Data download</h1><p>The NWS public API is do"}}
+
+OK — live evidence passes all assertions.

@@ -55,6 +55,11 @@ from grace2_contracts.ws import (
 from .main import MAX_TURNS_PER_SESSION
 
 from .adapter import GeminiSettings, build_client, load_settings, stream_reply
+from .mode2_classifier import (
+    Mode2CandidateEnvelope,
+    append_audit_log,
+    classify_for_mode2,
+)
 from .pipeline_emitter import PipelineEmitter
 from .tools import TOOL_REGISTRY
 
@@ -350,7 +355,50 @@ async def _invoke_tool_via_emitter(
     finally:
         state.emitter.close_pipeline()
         state.current_pipeline_id = None
+    # job-0101: Mode 2 .gov/.edu classifier — when web_fetch returns a dict
+    # that looks like a structured-data candidate, emit a `mode2-candidate`
+    # envelope and append an audit-log line. Deterministic side-effect; the
+    # web modal (Wave 2/3) renders the offer. See mode2_classifier.py.
+    if tool_name == "web_fetch" and isinstance(result, dict):
+        await _maybe_emit_mode2_candidate(websocket, state, result)
     return result
+
+
+async def _maybe_emit_mode2_candidate(
+    websocket: ServerConnection, state: SessionState, result: dict
+) -> None:
+    """Run ``classify_for_mode2`` and emit ``mode2-candidate`` if it lands.
+
+    Best-effort: a classifier or send failure is logged but never raised — the
+    caller already returned the tool result and we will not let a side-effect
+    take down a perfectly good ``web_fetch`` invocation (FR-AS-7 boundary).
+    """
+    import json as _json
+
+    try:
+        candidate = classify_for_mode2(result)
+        if candidate is None:
+            return
+        envelope = Mode2CandidateEnvelope(candidate=candidate)
+        await websocket.send(
+            _json.dumps(
+                {
+                    "type": "mode2-candidate",
+                    "session_id": state.session_id,
+                    "payload": envelope.to_wire_dict(),
+                }
+            )
+        )
+        append_audit_log(candidate, session_id=state.session_id)
+        logger.info(
+            "mode2-candidate session=%s url=%s confidence=%.2f patterns=%s",
+            state.session_id,
+            candidate.url,
+            candidate.confidence,
+            candidate.detected_patterns,
+        )
+    except Exception:  # noqa: BLE001 — side effect, never bubble up
+        logger.exception("mode2-candidate emission failed")
 
 
 def _parse_invoke_directive(text: str) -> tuple[str, dict] | None:
