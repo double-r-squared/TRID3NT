@@ -1,0 +1,7 @@
+fetch_gcn250_curve_numbers live test — Fort Myers FL
+bbox: (-81.95, 26.55, -81.55, 26.85)
+AMC-II (avg): mean=79.65, min=59, max=94, size=9489 bytes
+AMC-I  (dry): mean=63.64
+AMC-III (wet): mean=90.54
+AMC-III > AMC-I: True
+source: Figshare DOI 10.6084/m9.figshare.7756202
