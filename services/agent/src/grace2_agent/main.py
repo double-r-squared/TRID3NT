@@ -117,6 +117,10 @@ def _import_tools_registry() -> int:
     from .tools import extract_landcover_class  # noqa: F401
     # job-0096: register compute_building_density (MS Global ML Building Footprints density raster).
     from .tools import compute_building_density  # noqa: F401
+    # job-0097: register fetch_roads_osm (OSM Overpass road LineStrings; major+arterial default).
+    from .tools import fetch_roads_osm  # noqa: F401
+    # job-0098: register run_pelicun_damage_assessment (Wave 1 stub; Wave 2 composer is job-0106).
+    from .tools import run_pelicun_damage_assessment  # noqa: F401
 
     return len(tools.TOOL_REGISTRY)
 

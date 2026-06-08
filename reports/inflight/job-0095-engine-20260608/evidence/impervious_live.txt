@@ -1,0 +1,13 @@
+============================= test session starts ==============================
+platform linux -- Python 3.13.5, pytest-9.0.3, pluggy-1.6.0 -- /home/nate/Documents/GRACE-2/.venv-agent/bin/python
+cachedir: .pytest_cache
+rootdir: /home/nate/Documents/GRACE-2/services/agent
+configfile: pyproject.toml
+plugins: zarr-3.2.1, anyio-4.13.0, asyncio-1.4.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 1 item
+
+services/agent/tests/test_compute_impervious_surface.py::test_live_compute_impervious_against_fort_myers_landcover live test: shape=(928, 996) min=0.000 max=0.900 mean=0.165
+PASSED
+
+============================== 1 passed in 5.47s ===============================

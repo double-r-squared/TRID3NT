@@ -215,3 +215,5 @@ from . import aggregate_claims_across_sources  # noqa: E402,F401 — job-0093: r
 from . import extract_landcover_class  # noqa: E402,F401 — job-0094: registers extract_landcover_class
 from . import compute_impervious_surface  # noqa: E402,F401 — job-0095: registers compute_impervious_surface
 from . import compute_building_density  # noqa: E402,F401 — job-0096: registers compute_building_density
+from . import fetch_roads_osm  # noqa: E402,F401 — job-0097: registers fetch_roads_osm
+from . import run_pelicun_damage_assessment  # noqa: E402,F401 — job-0098: registers run_pelicun_damage_assessment (Wave 1 stub; Wave 2 composer is job-0106)
