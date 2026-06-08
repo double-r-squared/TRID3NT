@@ -37,7 +37,23 @@ import {
   CaseSessionState,
   CaseSummary,
 } from "../contracts";
-import type { PersistenceState } from "../components/PersistenceChip";
+/**
+ * Closed enum of persistence states used by the Cases lifecycle. Previously
+ * lived on `components/PersistenceChip.tsx`; that floating chip was removed
+ * in job-0143 (auth controls live in Settings now). The type stays here
+ * because `useCases` drives it and downstream consumers (App.tsx, future
+ * status surfaces) read it as a closed-vocabulary signal.
+ *
+ *   - "saved"        — no in-flight case-command, signed-in user.
+ *   - "saving"       — one or more case-commands awaiting server ack.
+ *   - "anonymous"    — no signed-in user; persistence is best-effort.
+ *   - "disconnected" — WS dropped (reserved; not currently emitted).
+ */
+export type PersistenceState =
+  | "saved"
+  | "saving"
+  | "anonymous"
+  | "disconnected";
 
 /** Bound emitter for the `case-command` envelope. Matches GraceWs.sendCaseCommand. */
 export type CaseCommandEmitter = (

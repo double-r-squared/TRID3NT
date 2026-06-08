@@ -1,5 +1,5 @@
-// GRACE-2 web — CasesPanel + ConfirmationDialog + PersistenceChip + useCases
-// tests (job-0137, sprint-12-mega Wave 3 — FR-MP-6).
+// GRACE-2 web — CasesPanel + ConfirmationDialog + useCases tests
+// (job-0137 + job-0143).
 //
 // Verifies:
 //   1. CasesPanel renders the empty state when cases=[].
@@ -14,9 +14,7 @@
 //   8. Delete button opens ConfirmationDialog; Confirm calls onDelete; Cancel
 //      does NOT call onDelete.
 //   9. ConfirmationDialog: Esc cancels; backdrop click cancels.
-//  10. PersistenceChip: state="saved" renders "Saved" + green; state="saving"
-//      renders "Saving…" + amber; state="anonymous" renders "Sign in to save"
-//      + gray.
+//      (job-0143: PersistenceChip removed — auth state lives in Settings.)
 //  11. useCases: createCase emits case-command(create) with optional title arg.
 //  12. useCases: selectCase emits case-command(select, case_id).
 //  13. useCases: renameCase emits case-command(rename, case_id, {title}).
@@ -45,7 +43,6 @@ import {
   formatBbox,
 } from "./components/CasesPanel";
 import { ConfirmationDialog } from "./components/ConfirmationDialog";
-import { PersistenceChip } from "./components/PersistenceChip";
 import { useCases } from "./hooks/useCases";
 import type {
   CaseListEnvelopePayload,
@@ -355,34 +352,6 @@ describe("ConfirmationDialog", () => {
     // Click dialog body — should NOT bubble to backdrop
     fireEvent.click(screen.getByTestId("grace2-confirmation-dialog"));
     expect(onCancel).toHaveBeenCalledTimes(1);
-  });
-});
-
-// --- PersistenceChip --------------------------------------------------- //
-
-describe("PersistenceChip", () => {
-  it("renders Saved when state=saved", () => {
-    render(<PersistenceChip state="saved" />);
-    expect(
-      screen.getByTestId("grace2-persistence-chip-label").textContent,
-    ).toBe("Saved");
-    expect(
-      screen.getByTestId("grace2-persistence-chip").getAttribute("data-state"),
-    ).toBe("saved");
-  });
-
-  it("renders Saving… when state=saving", () => {
-    render(<PersistenceChip state="saving" />);
-    expect(
-      screen.getByTestId("grace2-persistence-chip-label").textContent,
-    ).toMatch(/Saving/);
-  });
-
-  it("renders Sign in to save when state=anonymous", () => {
-    render(<PersistenceChip state="anonymous" />);
-    expect(
-      screen.getByTestId("grace2-persistence-chip-label").textContent,
-    ).toBe("Sign in to save");
   });
 });
 
