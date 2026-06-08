@@ -205,3 +205,9 @@ from . import compute_zonal_statistics  # noqa: E402,F401 — job-0083: register
 from . import clip_raster_to_bbox  # noqa: E402,F401 — job-0085: registers clip_raster_to_bbox
 from . import fetch_administrative_boundaries  # noqa: E402,F401 — job-0084: registers fetch_administrative_boundaries
 from . import compute_hillshade  # noqa: E402,F401 — job-0079: registers compute_hillshade
+from . import fetch_wdpa_protected_areas  # noqa: E402,F401 — job-0089: registers fetch_wdpa_protected_areas
+from . import fetch_gbif_occurrences  # noqa: E402,F401 — job-0087: registers fetch_gbif_occurrences
+from . import fetch_inaturalist_observations  # noqa: E402,F401 — job-0088: registers fetch_inaturalist_observations
+from . import web_fetch  # noqa: E402,F401 — job-0092: registers web_fetch
+from . import fetch_storm_events_db  # noqa: E402,F401 — job-0091: registers fetch_storm_events_db
+from . import fetch_nws_event  # noqa: E402,F401 — job-0090: registers fetch_nws_event

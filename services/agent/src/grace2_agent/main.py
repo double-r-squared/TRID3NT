@@ -97,6 +97,18 @@ def _import_tools_registry() -> int:
     from .tools import fetch_administrative_boundaries  # noqa: F401
     # job-0079: register compute_hillshade (gdaldem hillshade; 5 style presets; swiss_double multiply-blend).
     from .tools import compute_hillshade  # noqa: F401
+    # job-0089: register fetch_wdpa_protected_areas (WDPA ArcGIS REST; designation_filter; FlatGeobuf).
+    from .tools import fetch_wdpa_protected_areas  # noqa: F401
+    # job-0092: register web_fetch (generic web-page ingest with 4 extraction modes).
+    from .tools import web_fetch  # noqa: F401
+    # job-0088: register fetch_inaturalist_observations (iNat API v1; vetted citizen-science points).
+    from .tools import fetch_inaturalist_observations  # noqa: F401
+    # job-0087: register fetch_gbif_occurrences (GBIF Tier-1 species occurrence point fetcher).
+    from .tools import fetch_gbif_occurrences  # noqa: F401
+    # job-0091: register fetch_storm_events_db (NOAA Storm Events DB Tier-1 fetcher).
+    from .tools import fetch_storm_events_db  # noqa: F401
+    # job-0090: register fetch_nws_event (NWS active alerts/events; dynamic-1h Tier-1 fetcher).
+    from .tools import fetch_nws_event  # noqa: F401
 
     return len(tools.TOOL_REGISTRY)
 

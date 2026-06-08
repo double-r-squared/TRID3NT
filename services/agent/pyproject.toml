@@ -71,6 +71,12 @@ dependencies = [
     # bump hydromt-sfincs to the fixed release.
     "pandas>=2.2,<2.3",
     "fsspec[gcs]>=2024.6",
+    # job-0092 web_fetch: BeautifulSoup4 + lxml drive the main_text/metadata
+    # extraction modes (boilerplate strip + Open Graph tag parse). lxml was
+    # already present transitively (rasterio chain); pin it explicitly here
+    # so a future dep churn doesn't silently drop the parser.
+    "beautifulsoup4>=4.12,<5",
+    "lxml>=5.0,<7",
     "websockets>=13,<16",
     "pymongo>=4.8,<5",
     "pydantic>=2,<3",
