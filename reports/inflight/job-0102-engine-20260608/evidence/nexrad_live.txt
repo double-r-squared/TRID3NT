@@ -1,0 +1,21 @@
+REGISTRY tools: 25
+fetch_nexrad_reflectivity registered: True
+
+--- CASE 1: bbox=None product=n0r (CONUS default) ---
+layer_id = nexrad-n0r-conus
+name     = NEXRAD Composite Reflectivity (Iowa State Mesonet)
+uri      = https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0r.cgi
+units    = dBZ
+role     = context
+bbox     = None
+
+--- CASE 2: bbox=Fort Myers product=n0q ---
+layer_id = nexrad-n0q--82.0000-26.0000--81.0000-27.0000
+uri      = https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q.cgi?BBOX=-82.0%2C26.0%2C-81.0%2C27.0
+units    = dBZ
+bbox     = (-82.0, 26.0, -81.0, 27.0)
+
+--- CASE 3: bbox=None product=vil ---
+layer_id = nexrad-vil-conus
+uri      = https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/vil.cgi
+units    = kg/m^2

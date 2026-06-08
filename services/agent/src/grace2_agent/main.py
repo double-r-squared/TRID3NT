@@ -93,6 +93,8 @@ def _import_tools_registry() -> int:
     from .tools import compute_zonal_statistics  # noqa: F401
     # job-0085: register clip_raster_to_bbox (gdal_translate / gdalwarp bbox clip; gs:// or local).
     from .tools import clip_raster_to_bbox  # noqa: F401
+    # job-0106: register clip_raster_to_polygon (rasterio.mask; arbitrary polygon clip; gs:// or local).
+    from .tools import clip_raster_to_polygon  # noqa: F401
     # job-0084: register fetch_administrative_boundaries (TIGER/Line 2024; state/county/place/zcta).
     from .tools import fetch_administrative_boundaries  # noqa: F401
     # job-0079: register compute_hillshade (gdaldem hillshade; 5 style presets; swiss_double multiply-blend).
@@ -109,6 +111,8 @@ def _import_tools_registry() -> int:
     from .tools import fetch_storm_events_db  # noqa: F401
     # job-0090: register fetch_nws_event (NWS active alerts/events; dynamic-1h Tier-1 fetcher).
     from .tools import fetch_nws_event  # noqa: F401
+    # job-0105: register fetch_nws_alerts_conus (CONUS-wide companion to fetch_nws_event).
+    from .tools import fetch_nws_alerts_conus  # noqa: F401
     # job-0093: register aggregate_claims_across_sources (cross-source FR-HEP claim aggregator).
     from .tools import aggregate_claims_across_sources  # noqa: F401
     # job-0095: register compute_impervious_surface (NLCD impervious-fraction raster).
@@ -121,6 +125,12 @@ def _import_tools_registry() -> int:
     from .tools import fetch_roads_osm  # noqa: F401
     # job-0098: register run_pelicun_damage_assessment (Wave 1 stub; Wave 2 composer is job-0106).
     from .tools import run_pelicun_damage_assessment  # noqa: F401
+    # job-0102: register fetch_nexrad_reflectivity (Iowa Mesonet NEXRAD WMS passthrough).
+    from .tools import fetch_nexrad_reflectivity  # noqa: F401
+    # job-0107: register clip_vector_to_polygon (vector clip-to-polygon utility).
+    from .tools import clip_vector_to_polygon  # noqa: F401
+    # job-0104: register fetch_goes_satellite (GOES-16/17/18/19 satellite imagery via NOAA Big-Data S3).
+    from .tools import fetch_goes_satellite  # noqa: F401
 
     return len(tools.TOOL_REGISTRY)
 

@@ -203,6 +203,7 @@ from . import compute_slope  # noqa: E402,F401 — job-0081: registers compute_s
 from . import compute_aspect  # noqa: E402,F401 — job-0082: registers compute_aspect
 from . import compute_zonal_statistics  # noqa: E402,F401 — job-0083: registers compute_zonal_statistics
 from . import clip_raster_to_bbox  # noqa: E402,F401 — job-0085: registers clip_raster_to_bbox
+from . import clip_raster_to_polygon  # noqa: E402,F401 — job-0106: registers clip_raster_to_polygon
 from . import fetch_administrative_boundaries  # noqa: E402,F401 — job-0084: registers fetch_administrative_boundaries
 from . import compute_hillshade  # noqa: E402,F401 — job-0079: registers compute_hillshade
 from . import fetch_wdpa_protected_areas  # noqa: E402,F401 — job-0089: registers fetch_wdpa_protected_areas
@@ -211,9 +212,12 @@ from . import fetch_inaturalist_observations  # noqa: E402,F401 — job-0088: re
 from . import web_fetch  # noqa: E402,F401 — job-0092: registers web_fetch
 from . import fetch_storm_events_db  # noqa: E402,F401 — job-0091: registers fetch_storm_events_db
 from . import fetch_nws_event  # noqa: E402,F401 — job-0090: registers fetch_nws_event
+from . import fetch_nws_alerts_conus  # noqa: E402,F401 — job-0105: registers fetch_nws_alerts_conus (CONUS-wide companion to fetch_nws_event)
 from . import aggregate_claims_across_sources  # noqa: E402,F401 — job-0093: registers aggregate_claims_across_sources
 from . import extract_landcover_class  # noqa: E402,F401 — job-0094: registers extract_landcover_class
 from . import compute_impervious_surface  # noqa: E402,F401 — job-0095: registers compute_impervious_surface
 from . import compute_building_density  # noqa: E402,F401 — job-0096: registers compute_building_density
 from . import fetch_roads_osm  # noqa: E402,F401 — job-0097: registers fetch_roads_osm
 from . import run_pelicun_damage_assessment  # noqa: E402,F401 — job-0098: registers run_pelicun_damage_assessment (Wave 1 stub; Wave 2 composer is job-0106)
+from . import clip_vector_to_polygon  # noqa: E402,F401 — job-0107: registers clip_vector_to_polygon
+from . import fetch_goes_satellite  # noqa: E402,F401 — job-0104: registers fetch_goes_satellite (GOES-16/17/18/19 satellite imagery)
