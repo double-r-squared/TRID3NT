@@ -1,0 +1,42 @@
+job-0120 Fort Myers Pelicun damage assessment
+============================================================
+hazard_raster_uri : gs://grace-2-hazard-prod-runs/01KTJX71NKGDMXB9TN0DV75JWK/flood_depth_peak_0086.tif
+assets_uri        : gs://grace-2-hazard-prod-cache/cache/static-30d/admin_boundaries/cdcd57b0cdcbbb0e3e38d81ec718e6f1.fgb
+fragility_set     : hazus_flood_v6
+realization_count : 500
+output_uri        : gs://grace-2-hazard-prod-cache/cache/static-30d/pelicun_damage/66d866c5e1c5cc8407be91fa57ba7911.fgb
+
+n_assets          : 20
+columns           : ['STATEFP', 'PLACEFP', 'PLACENS', 'GEOID', 'GEOIDFQ', 'NAME', 'NAMELSAD', 'LSAD', 'CLASSFP', 'PCICBSA', 'MTFCC', 'FUNCSTAT', 'ALAND', 'AWATER', 'INTPTLAT', 'INTPTLON', 'component_type_used', 'fragility_curve_id', 'hazard_depth_sampled', 'ds_mean', 'ds_p05', 'ds_p95', 'loss_ratio_mean', 'loss_ratio_p95', 'repair_cost_mean', 'repair_cost_p95', 'replacement_value', 'geometry']
+
+Per-asset results:
+                     NAME   GEOID component_type_used  hazard_depth_sampled  ds_mean  ds_p05  ds_p95  loss_ratio_mean  loss_ratio_p95  repair_cost_mean  repair_cost_p95  replacement_value
+                  Gateway 1225655                RES1              0.000000    0.000     0.0     0.0         0.000000        0.000000          0.000000         0.000000           250000.0
+             Lehigh Acres 1239925                RES1              0.000000    0.000     0.0     0.0         0.000000        0.000000          0.000000         0.000000           250000.0
+                     Alva 1201125                RES1              0.000000    0.000     0.0     0.0         0.000000        0.000000          0.000000         0.000000           250000.0
+                     Olga 1251400                RES1              0.000000    0.000     0.0     0.0         0.000000        0.000000          0.000000         0.000000           250000.0
+        Fort Myers Shores 1224175                RES1              0.000000    0.000     0.0     0.0         0.000000        0.000000          0.000000         0.000000           250000.0
+                     Tice 1271800                RES1              0.050266    1.364     1.0     2.0         0.185806        0.328601      46451.571061     82150.142517           250000.0
+                 Verandah 1274016                RES1              0.000000    0.000     0.0     0.0         0.000000        0.000000          0.000000         0.000000           250000.0
+               Buckingham 1209350                RES1              0.000000    0.000     0.0     0.0         0.000000        0.000000          0.000000         0.000000           250000.0
+Lochmoor Waterway Estates 1240985                RES1              0.000000    0.000     0.0     0.0         0.000000        0.000000          0.000000         0.000000           250000.0
+             Palmona Park 1254357                RES1              0.000000    0.000     0.0     0.0         0.000000        0.000000          0.000000         0.000000           250000.0
+         North Fort Myers 1249350                RES1              0.000000    0.000     0.0     0.0         0.000000        0.000000          0.000000         0.000000           250000.0
+         Suncoast Estates 1269275                RES1              0.000000    0.000     0.0     0.0         0.000000        0.000000          0.000000         0.000000           250000.0
+               Cape Coral 1210275                RES1              0.000000    0.000     0.0     0.0         0.000000        0.000000          0.000000         0.000000           250000.0
+               Fort Myers 1224125                RES1              0.000000    0.000     0.0     0.0         0.000000        0.000000          0.000000         0.000000           250000.0
+                Page Park 1253775                RES1              0.120300    1.362     1.0     2.0         0.192189        0.331370      48047.235129     82842.459658           250000.0
+                 McGregor 1242090                RES1              0.000000    0.000     0.0     0.0         0.000000        0.000000          0.000000         0.000000           250000.0
+            Whiskey Creek 1277137                RES1              0.000000    0.000     0.0     0.0         0.000000        0.000000          0.000000         0.000000           250000.0
+               Pine Manor 1257025                RES1              0.129990    1.424     1.0     2.0         0.202544        0.360427      50635.935992     90106.756774           250000.0
+                   Villas 1274512                RES1              0.402983    1.588     1.0     2.0         0.230203        0.402479      57550.761334    100619.692123           250000.0
+             Cypress Lake 1216062                RES1              0.000000    0.000     0.0     0.0         0.000000        0.000000          0.000000         0.000000           250000.0
+
+Aggregate statistics:
+  total replacement_value: $5,000,000
+  total repair_cost_mean : $202,686
+  total repair_cost_p95  : $355,719
+  max ds_mean            : 1.588
+  mean ds_mean           : 0.287
+  max sampled depth (m)  : 0.403
+  mean sampled depth (m) : 0.035
