@@ -83,6 +83,14 @@ def _import_tools_registry() -> int:
     from .tools import catalog  # noqa: F401
     # job-0062: register publish_layer (COG → QGIS Server WMS bridge; side-effect tool).
     from .tools import publish_layer  # noqa: F401
+    # job-0080: register compute_colored_relief (gdaldem color-relief; 4 ramp presets).
+    from .tools import compute_colored_relief  # noqa: F401
+    # job-0081: register compute_slope (gdaldem slope; degrees + percent units; Horn + ZevenbergenThorne).
+    from .tools import compute_slope  # noqa: F401
+    # job-0082: register compute_aspect (gdaldem aspect; Horn + ZevenbergenThorne; zero_for_flat flag).
+    from .tools import compute_aspect  # noqa: F401
+    # job-0083: register compute_zonal_statistics (hazard-analysis primitive; raster + vector zone).
+    from .tools import compute_zonal_statistics  # noqa: F401
 
     return len(tools.TOOL_REGISTRY)
 

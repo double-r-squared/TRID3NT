@@ -198,3 +198,7 @@ def register_with_adk(agent: Any) -> int:
 # always be available at startup belong here.
 # ---------------------------------------------------------------------------
 from . import passthroughs  # noqa: E402,F401 — registers mongo_query, qgis_process
+from . import compute_colored_relief  # noqa: E402,F401 — job-0080: registers compute_colored_relief
+from . import compute_slope  # noqa: E402,F401 — job-0081: registers compute_slope
+from . import compute_aspect  # noqa: E402,F401 — job-0082: registers compute_aspect
+from . import compute_zonal_statistics  # noqa: E402,F401 — job-0083: registers compute_zonal_statistics
