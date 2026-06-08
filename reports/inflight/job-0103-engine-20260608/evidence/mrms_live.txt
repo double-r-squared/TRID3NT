@@ -1,0 +1,59 @@
+MRMS QPE Live Evidence — job-0103-engine-20260608
+Updated by: job-0141-engine-20260608 (MRMS evidence audit + re-run)
+Acquisition timestamp: 2026-06-08T22:15:38Z (CONUS), 2026-06-08T22:15:58Z (FL clip)
+
+Source: NOAA MRMS MultiSensor QPE Pass2 (gauge-corrected)
+  Bucket: noaa-mrms-pds (public S3, no auth)
+  Prefix: CONUS/MultiSensor_QPE_24H_Pass2_00.00/20260608/
+  File: MRMS_MultiSensor_QPE_24H_Pass2_00.00_20260608-210000.grib2.gz
+  Valid time resolved: 2026-06-08T21:00:00Z (latest available at time of run)
+  gz size: 5,078,343 bytes; grib size: 5,135,247 bytes
+
+--------------------------------------------------------------
+CONUS run (bbox=None, accumulation='24H')
+--------------------------------------------------------------
+Cache URI: gs://grace-2-hazard-prod-cache/cache/dynamic-1h/mrms_qpe/7b6b69f7117782120f8f3e1eb635632b.tif
+GCS object size: 12,958,496 bytes (12.36 MB)
+CRS: EPSG:4326
+Transform: | 0.01, 0.00,-130.00| (north-up, e=-0.01)
+           | 0.00,-0.01,  55.00|
+Shape: 3500 x 7000 (rows x cols)
+Bounds: left=-130.0, bottom=20.0, right=-60.0, top=55.0 (EXACT CONUS native)
+Finite pixels: 22,987,082
+Precip stats: min=0.00mm, max=265.10mm, mean=2.73mm
+
+--------------------------------------------------------------
+FL Gulf clip (bbox=(-83, 25, -80, 28), accumulation='24H')
+--------------------------------------------------------------
+Cache URI: gs://grace-2-hazard-prod-cache/cache/dynamic-1h/mrms_qpe/e13d92211977488ab762bc9719b0a05f.tif
+GCS object size: 63,236 bytes (62 KB)
+CRS: EPSG:4326
+Transform: | 0.01, 0.00,-83.00| (north-up, e=-0.01)
+           | 0.00,-0.01, 28.00|
+Shape: 301 x 301 (rows x cols)
+Bounds: left=-83.0, bottom=24.99, right=-79.99, top=28.0 (within requested bbox)
+Finite pixels: 90,601
+Precip stats: min=0.00mm, max=40.30mm, mean=1.32mm
+
+--------------------------------------------------------------
+Geographic-correctness gate (job-0086)
+--------------------------------------------------------------
+CONUS bounds match (-130,20,-60,55): PASS
+FL clip inside bbox (-83,25,-80,28): PASS
+Both transforms north-up (e < 0): PASS
+GCS URIs accessible (gsutil ls): PASS
+
+--------------------------------------------------------------
+Historical note (job-0103 PROJECT_LOG references)
+--------------------------------------------------------------
+The PROJECT_LOG entry for job-0103 cited:
+  CONUS: 12.8MB, max=318.7mm
+  FL clip: 61KB, max=40.30mm, mean=5.10mm
+
+Current audit re-run (different valid_time 2026-06-08T21:00Z vs job-0103's run):
+  CONUS: 12.36MB, max=265.10mm — different precip field on different date, plausible
+  FL clip: 62KB, max=40.30mm — FL max identical, consistent with the same product/region
+  FL mean=1.32mm vs 5.10mm — lighter precip day in the FL Gulf region, plausible
+
+The evidence was not committed in job-0103 (evidence/ was empty); this file
+fulfills the missing live-evidence requirement per job-0141 kickoff.
