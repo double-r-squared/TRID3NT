@@ -225,13 +225,20 @@
       "description": "Stage A: `run_model_flood_scenario` returns `LayerURI | dict` per layer-emission-contract.md. Success path constructs LayerURI from envelope.layers[0]; failure path falls back to envelope.model_dump (preserves structured error info for LLM). PipelineEmitter's isinstance(LayerURI) auto-emit branch at pipeline_emitter.py:517 now fires → add_loaded_layer → session-state.loaded_layers populated (A.7 replace-not-reconcile). 25/25 tests pass. Live session_state_envelope captured: loaded_layers[0].uri == gs://grace-2-hazard-prod-runs/<run_id>/flood_depth_peak.tif, style_preset=continuous_flood_depth, role=primary. (Live M5 smoke hit environmental GCS-creds blocker on landcover read — unrelated to the change.) Sprint-09 Sonnet routing win #3. Stage A COMPLETE (3/3). Commit edfeb06.",
       "model": "sonnet",
       "subagent_tokens": 126487
+    },
+    {
+      "job_id": "job-0062-engine-20260607",
+      "sprint": 9,
+      "description": "Stage B linchpin: publish_layer atomic tool + PyQGIS worker raster path + flood QML + workflow integration. 4 pieces in one commit. **17 tools at startup verified** (16+publish_layer). styles/continuous_flood_depth.qml singleBandPseudoColor Blues 0–3.5 m, nodata transparent. PyQGIS worker `_append_raster_layer` + `publish_raster_round_trip` + `--op publish-raster` CLI discriminator (Option A from kickoff); existing polygon path preserved. tools/publish_layer.py with 6 DI seams + 6 typed error codes + Cloud Run v2 LRO dispatch (cacheable=False per FR-CE-8 + FR-DC-6). model_flood_scenario Step 9 calls publish_layer after postprocess_flood and substitutes LayerURI.uri with WMS URL (graceful gs:// fallback on PublishLayerError). 180 passing tests (+24 from 156 baseline); 21 new tests. Dry-run smoke (mock client) returns expected WMS URL. Live E2E gated on OQ-62-WORKER-SA-RUNS-BUCKET-GRANT (job-0067). 4 OQs surfaced: LAYERURI-URI-FIELD (sprint-10 schema cleanup), WORKER-SA-RUNS-BUCKET-GRANT (job-0067), PUBSUB-COMPLETION-POLL (defer), QGS-MUTATION-CONFLICT (FR-MP-6 scope). Sprint-9 Sonnet routing win #4. Commit f202a31.",
+      "model": "sonnet",
+      "subagent_tokens": 68556
     }
   ],
   "totals_by_sprint": {
     "6": 1265567,
     "7": 1863284,
     "8": 1786238,
-    "9": 258752
+    "9": 327308
   },
   "historical_context": {
     "note": "Captured for accountability — NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
