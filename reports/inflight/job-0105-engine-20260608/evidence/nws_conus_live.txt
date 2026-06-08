@@ -1,0 +1,5 @@
+Live FGB bytes: 374776
+Features: 264
+Distinct event types: 22
+Top 5 events: [('Small Craft Advisory', 106), ('Flood Warning', 37), ('Flood Watch', 22), ('Fire Weather Watch', 16), ('Red Flag Warning', 15)]
+Geographic gate: inside=59 outside=0 null_geom=205
