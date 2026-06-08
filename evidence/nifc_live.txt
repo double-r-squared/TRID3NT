@@ -1,0 +1,19 @@
+============================= test session starts ==============================
+platform linux -- Python 3.13.5, pytest-9.0.3, pluggy-1.6.0 -- /home/nate/Documents/GRACE-2/.venv-agent/bin/python
+cachedir: .pytest_cache
+rootdir: /home/nate/Documents/GRACE-2/services/agent
+configfile: pyproject.toml
+plugins: zarr-3.2.1, anyio-4.13.0, asyncio-1.4.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 2 items
+
+services/agent/tests/test_fetch_nifc_fire_perimeters.py::test_live_conus_sweep_returns_valid_response 
+[LIVE NIFC] CONUS sweep returned 52 active perimeter(s)
+  top incidents (first 5): [('Shell', 2822.0), ('Russian bend', 34.0), ('Hwy 82', 22419.0), ('Woodlawn', 632.0), ('Rose Bay Canal', 433.0)]
+  geographic gate: inside=52 outside=0
+PASSED
+services/agent/tests/test_fetch_nifc_fire_perimeters.py::test_live_bbox_filter_returns_subset 
+[LIVE NIFC] Western-US bbox returned 27 active perimeter(s)
+PASSED
+
+============================== 2 passed in 5.86s ===============================

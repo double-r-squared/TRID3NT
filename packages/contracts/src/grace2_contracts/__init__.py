@@ -25,11 +25,13 @@ from . import (
     catalog,
     collections,
     envelope,
+    errors,
     event,
     execution,
     secrets,
     tool_metadata,
     tool_registry,
+    user,
     ws,
 )
 from .common import (
@@ -52,6 +54,7 @@ __all__ = [
     # modules
     "ws",
     "envelope",
+    "errors",
     "event",
     "collections",
     "catalog",
@@ -60,6 +63,7 @@ __all__ = [
     "secrets",
     "tool_metadata",
     "tool_registry",
+    "user",
     # common primitives
     "GraceModel",
     "ULIDStr",

@@ -44,6 +44,22 @@ __all__ = [
 ]
 
 
+# Re-export ToolInputError + codes here as a convenience for tools that
+# already import from ``grace2_contracts.tool_registry``. Authoritative
+# home is ``grace2_contracts.errors``; consumers may use either path.
+from .errors import (  # noqa: E402  (intentional: keep __all__ above the re-export)
+    TOOL_INPUT_ERROR_CODES,
+    ToolInputError,
+    ToolInputErrorCode,
+)
+
+__all__ += [
+    "ToolInputError",
+    "ToolInputErrorCode",
+    "TOOL_INPUT_ERROR_CODES",
+]
+
+
 #: The four TTL classes registered per atomic tool (SRS FR-DC-2).
 #:
 #: Names match the kickoff verbatim. NOTE: SRS FR-DC-2 prose at
@@ -106,6 +122,37 @@ class AtomicToolMetadata(GraceModel):
     ttl_class: TTLClass
     source_class: str | None = None
     cacheable: bool = True
+
+    # --- Wave 1.5 additions (job-0114-schema-20260608) --- #
+    #
+    # Both fields default to safe / opt-out values so the ~30 existing
+    # ``AtomicToolMetadata(...)`` call sites in services/agent/src/
+    # grace2_agent/tools/*.py keep working untouched. New tools and
+    # follow-ups opt in by passing the keyword.
+
+    supports_global_query: bool = Field(
+        default=False,
+        description=(
+            "True if this tool accepts ``bbox=None`` to mean global/CONUS-wide "
+            "query. Default False (safer — tools opt in). When False, calling "
+            "with ``bbox=None`` must raise ``ToolInputError(code='BBOX_REQUIRED', "
+            "retryable=False)`` BEFORE issuing any network call. See memory: "
+            "feedback_layer_global_bbox_policy."
+        ),
+    )
+
+    payload_mb_estimator_name: str | None = Field(
+        default=None,
+        description=(
+            "Optional reference (Python identifier) to a callable in the tool "
+            "module's ``__init__`` that estimates expected payload MB given "
+            "the tool's args. The callable signature is "
+            "``estimate_payload_mb(**args) -> float``. The Wave 2 chat-warning "
+            "system (``tool-payload-warning`` envelope) reads this metadata to "
+            "decide when to gate a large fetch behind explicit user "
+            "confirmation. See memory: feedback_large_payload_chat_warning."
+        ),
+    )
 
     @model_validator(mode="after")
     def _validate_cacheable_consistency(self) -> AtomicToolMetadata:
