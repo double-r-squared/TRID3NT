@@ -39,6 +39,8 @@ import { LayerPanel, createLayerPanelBus } from "./LayerPanel";
 import { LayerLegend } from "./components/LayerLegend";
 import { AuthPanel } from "./components/AuthPanel";
 import { SecretsPanel } from "./components/SecretsPanel";
+import { CasesPanel } from "./components/CasesPanel";
+import { PersistenceChip } from "./components/PersistenceChip";
 import {
   Mode2OfferAction,
   Mode2OfferModal,
@@ -47,7 +49,10 @@ import { PayloadWarningInline } from "./components/PayloadWarningInline";
 import { AuthUser, onAuthChanged } from "./auth";
 import { GraceWs } from "./ws";
 import { Mode2CandidatePayload } from "./lib/mode2_suppression";
+import { useCases } from "./hooks/useCases";
 import {
+  CaseListEnvelopePayload,
+  CaseOpenEnvelopePayload,
   MapCommandPayload,
   PayloadConfirmationDecision,
   PayloadWarningEnvelopePayload,
@@ -101,6 +106,10 @@ declare global {
     __grace2InjectSecretsList?: (p: SecretsListPayload) => void;
     /** Dev seam for mode2-candidate (job-0126); wired by App.tsx GraceWs handler. */
     __grace2InjectMode2Candidate?: (p: Mode2CandidatePayload) => void;
+    /** Dev seam for case-list (job-0137); wired by App.tsx GraceWs handler. */
+    __grace2InjectCaseList?: (p: CaseListEnvelopePayload) => void;
+    /** Dev seam for case-open (job-0137); wired by App.tsx GraceWs handler. */
+    __grace2InjectCaseOpen?: (p: CaseOpenEnvelopePayload) => void;
   }
 }
 
@@ -170,10 +179,41 @@ export function App(): JSX.Element {
     catch { return false; }
   });
   const wsRef = useRef<GraceWs | null>(null);
-  // Forward-looking: when the Case-UX shell (sibling Wave-2 job) lands a
-  // currentCaseId selector, wire it here. Until then secrets are user-level
-  // (case_id=null) only — surfaced as OQ-0125-CASE-ID-WIRING.
-  const currentCaseId: string | null = null;
+
+  // job-0137 (sprint-12-mega Wave 3): Cases UX shell. The useCases hook wraps
+  // the case-list / case-open envelopes + the case-command emitters. We pass
+  // a stable `sendCaseCommand` that proxies through wsRef so the hook does
+  // not need a WS reference of its own. Anonymous users still get cases (the
+  // agent's session_id placeholder path) but the PersistenceChip surfaces
+  // "Sign in to save" so the user knows they should authenticate before
+  // relying on long-term persistence.
+  const sendCaseCommand = useCallback(
+    (command: Parameters<GraceWs["sendCaseCommand"]>[0], caseId: string | null, args: Record<string, unknown>) => {
+      wsRef.current?.sendCaseCommand(command, caseId, args);
+    },
+    [],
+  );
+  const isSignedIn = !!authUser && !authUser.isAnonymous;
+  const {
+    cases,
+    activeCaseId,
+    activeSession,
+    persistenceState,
+    onCaseList: useCases_onCaseList,
+    onCaseOpen: useCases_onCaseOpen,
+    createCase,
+    selectCase,
+    renameCase,
+    archiveCase,
+    deleteCase,
+    // clearActive is exposed by useCases for future "Close Case" affordance;
+    // not currently surfaced in the UI but referenced via the hook return.
+  } = useCases({ sendCaseCommand, isSignedIn });
+
+  // job-0125 wiring update: the currentCaseId now actually has a source.
+  // Secrets emitted from SecretsPanel are scoped to the active Case when one
+  // is selected; user-wide when null.
+  const currentCaseId: string | null = activeCaseId;
 
   // job-0127 (sprint-12-mega Wave 2): tool payload-warning gates. The agent
   // emits `tool-payload-warning` before dispatching a tool whose estimated
@@ -334,6 +374,19 @@ export function App(): JSX.Element {
         // without dropping older gates the user hasn't decided yet.
         setPayloadWarnings((prev) => [p, ...prev]);
       },
+      onCaseList: (p: CaseListEnvelopePayload) => {
+        // job-0137: refresh the left-rail list. The useCases hook owns the
+        // state; we just forward the envelope.
+        useCases_onCaseList(p);
+      },
+      onCaseOpen: (p: CaseOpenEnvelopePayload) => {
+        // job-0137: rehydrate the Case session. The useCases hook drives the
+        // chat history, loaded layers, and map view replay (App.tsx
+        // synthesizes a session-state envelope below to feed the existing
+        // bus subscribers, then optionally fitBounds to case.bbox via a
+        // load-style map-command).
+        useCases_onCaseOpen(p);
+      },
       onError: () => {
         // Chat panel renders connection errors.
       },
@@ -345,6 +398,56 @@ export function App(): JSX.Element {
       ws.close();
     };
   }, [bus]);
+
+  // job-0137: Case rehydration replay. When a `case-open` envelope arrives,
+  // useCases stores `activeSession`. We project that session into the
+  // existing bus so the LayerPanel / Map / LayerLegend re-bind WITHOUT any
+  // new wiring — the SessionStatePayload shape carries `loaded_layers` and
+  // `map_view`, which is exactly what `session-state` envelopes carry. We
+  // also emit a `zoom-to` map-command if the Case has a bbox so the map
+  // re-centers on the Case AOI.
+  //
+  // When activeSession transitions to null (archived/deleted/clearActive),
+  // we push an empty session-state so the left panel hides and the map
+  // resets back to CONUS default (the bus is the single source of truth for
+  // layer state).
+  useEffect(() => {
+    if (activeSession === null) {
+      // Clear layers cleanly back to empty so LayerPanel + LayerLegend
+      // reflect "no Case open".
+      bus.pushSessionState({
+        loaded_layers: [],
+        chat_history: [],
+        pipeline_history: [],
+        current_pipeline: null,
+        map_view: null,
+      });
+      return;
+    }
+    // Project CaseSessionState onto the SessionStatePayload shape the bus
+    // expects. The fields are intentionally compatible (D.6 surface).
+    bus.pushSessionState({
+      loaded_layers: activeSession.loaded_layers ?? [],
+      chat_history: activeSession.chat_history ?? [],
+      pipeline_history: activeSession.pipeline_history ?? [],
+      current_pipeline: activeSession.current_pipeline ?? null,
+      map_view: null, // map_view is per-Case; we use bbox below instead
+    });
+    // If the Case carries a bbox, dispatch a zoom-to map-command so the
+    // map fits the AOI. We use the same bus the live `map-command` envelope
+    // path uses — the existing Map.tsx handler (job-0068) processes zoom-to
+    // via fitBounds.
+    const bbox = activeSession.case.bbox;
+    if (bbox && bbox.length === 4) {
+      // Map.tsx (job-0068) zoom-to handler reads `args.bbox` — the M3-deferred
+      // command shape per WireMapCommand. Cast through unknown is intentional
+      // since MapCommandPayload doesn't include zoom-to in v0.1 (FR-WC-12).
+      bus.pushMapCommand({
+        command: "zoom-to",
+        args: { bbox },
+      } as unknown as MapCommandPayload);
+    }
+  }, [activeSession, bus]);
 
   // Lift layers from session-state so we can gate the left panel mount.
   // This subscription is separate from LayerPanel's own subscription so
@@ -374,14 +477,22 @@ export function App(): JSX.Element {
     // job-0126: dev seam to inject mode2-candidate envelopes (Playwright
     // verification path — no real WS / web_fetch needed).
     window.__grace2InjectMode2Candidate = (p) => fanoutMode2Candidate(p);
+    // job-0137: dev seams to inject case-list / case-open envelopes
+    // (Playwright + unit-test verification path — no real WS / Persistence
+    // backend needed). Routes through the same handler the production WS
+    // would route through so behavior is identical end-to-end.
+    window.__grace2InjectCaseList = (p) => useCases_onCaseList(p);
+    window.__grace2InjectCaseOpen = (p) => useCases_onCaseOpen(p);
     // __grace2InjectPipelineState is registered by Chat.tsx's GraceWs.
     return () => {
       delete window.__grace2InjectSessionState;
       delete window.__grace2InjectMapCommand;
       delete window.__grace2InjectSecretsList;
       delete window.__grace2InjectMode2Candidate;
+      delete window.__grace2InjectCaseList;
+      delete window.__grace2InjectCaseOpen;
     };
-  }, [bus, fanoutMode2Candidate]);
+  }, [bus, fanoutMode2Candidate, useCases_onCaseList, useCases_onCaseOpen]);
 
   // job-0125: bridge SecretsPanel callbacks to the active GraceWs. The panel
   // hands us a payload; we route it through wsRef.current. Captured secrets
@@ -401,12 +512,10 @@ export function App(): JSX.Element {
     wsRef.current.sendSecretRevoke(secretId);
   }
 
-  // Whether to show the left panel:
-  //   - layers must be present (no layers → no panel, no hamburger)
-  //   - and user must not have collapsed it
-  const showLeftPanel = layers.length > 0 && !leftCollapsed;
-  // Hamburger is shown when layers exist but panel is collapsed by user.
-  const showLayersHamburger = layers.length > 0 && leftCollapsed;
+  // job-0137: the left rail (CasesPanel + LayerPanel) is now always available
+  // — the CasesPanel is the entry surface even before any layers load. We
+  // keep the leftCollapsed toggle so users can hide the rail entirely.
+  const showLayersHamburger = leftCollapsed;
   const showChatHamburger = rightCollapsed;
 
   return (
@@ -427,10 +536,36 @@ export function App(): JSX.Element {
       {/* LayerLegend — bottom-center absolute; z-index 10. */}
       <LayerLegend layers={layers} />
 
-      {/* Left panel — conditionally mounted: only when layers exist AND not
-          collapsed. When no layers loaded, neither panel nor hamburger renders
-          (per user direction: "hide layers panel until something is loaded"). */}
-      {showLeftPanel && (
+      {/* Left rail (job-0137): CasesPanel is the headline left-rail surface
+          (always shown when leftCollapsed=false). LayerPanel keeps its
+          existing absolute positioning (left:16, top:16, bottom:16, width:280)
+          and renders as a sibling overlay. To prevent visual overlap when
+          both are mounted, the CasesPanel shifts RIGHT past LayerPanel's
+          width (16 + 280 + 8 = 304px from viewport left). With no layers
+          loaded, CasesPanel sits at the canonical top-left (12,12). */}
+      {!leftCollapsed && (
+        <div
+          data-testid="grace2-left-rail"
+          style={{
+            position: "absolute",
+            top: 12,
+            left: layers.length > 0 ? 304 : 12,
+            zIndex: 20,
+            maxHeight: "calc(100vh - 24px)",
+          }}
+        >
+          <CasesPanel
+            cases={cases}
+            activeCaseId={activeCaseId}
+            onCreate={() => createCase()}
+            onSelect={selectCase}
+            onRename={renameCase}
+            onArchive={archiveCase}
+            onDelete={deleteCase}
+          />
+        </div>
+      )}
+      {!leftCollapsed && layers.length > 0 && (
         <LayerPanel
           subscribeSessionState={bus.subscribeSessionState}
           subscribeMapCommand={bus.subscribeMapCommand}
@@ -519,11 +654,32 @@ export function App(): JSX.Element {
           40; we leave 60px gap when chat is collapsed, and more when chat is
           open since the chat panel itself takes the right edge). */}
       <AuthPanel rightOffset={rightCollapsed ? 60 : 380} />
+      {/* PersistenceChip (job-0137): renders to the LEFT of AuthPanel so the
+          two affordances are visually adjacent — auth identity + persistence
+          state, the two things that gate whether work is being saved. */}
+      <div
+        data-testid="grace2-persistence-chip-wrap"
+        style={{
+          position: "absolute",
+          top: 18,
+          right: (rightCollapsed ? 60 : 380) + 110,
+          zIndex: 30,
+        }}
+      >
+        <PersistenceChip state={persistenceState} />
+      </div>
       {/* hidden marker so tests can assert App subscribes to auth changes */}
       <span
         data-testid="grace2-app-auth-state"
         data-auth-uid={authUser?.uid ?? ""}
         data-auth-anonymous={authUser?.isAnonymous ? "true" : "false"}
+        style={{ display: "none" }}
+      />
+      {/* hidden marker so tests can assert App tracks active Case state */}
+      <span
+        data-testid="grace2-app-case-state"
+        data-active-case-id={activeCaseId ?? ""}
+        data-cases-count={String(cases.length)}
         style={{ display: "none" }}
       />
 

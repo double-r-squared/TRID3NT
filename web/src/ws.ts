@@ -17,6 +17,10 @@
 import {
   AgentMessageChunkPayload,
   CancelPayload,
+  CaseCommand,
+  CaseCommandEnvelopePayload,
+  CaseListEnvelopePayload,
+  CaseOpenEnvelopePayload,
   Envelope,
   ErrorPayload,
   MapCommandPayload,
@@ -105,6 +109,19 @@ export interface WsHandlers {
    * the Mode2OfferModal subscription bus.
    */
   onMode2Candidate?: (p: Mode2CandidatePayload) => void;
+  /**
+   * Case-list envelope (job-0137, sprint-12-mega Wave 3 — FR-MP-6). Optional
+   * so chat-only callers can ignore. CasesPanel mount wires this to refresh
+   * the left-rail list.
+   */
+  onCaseList?: (p: CaseListEnvelopePayload) => void;
+  /**
+   * Case-open envelope (job-0137, sprint-12-mega Wave 3 — FR-MP-6). Optional
+   * so chat-only callers can ignore. App.tsx wires this to drive Case state
+   * machine: hydrate chat + loaded_layers + map_view on open; clear cleanly
+   * when session_state is null.
+   */
+  onCaseOpen?: (p: CaseOpenEnvelopePayload) => void;
   /**
    * Auth-token retriever (job-0123). Optional — when absent we fall back to
    * `getIdToken()` from `./auth` directly. Injected by tests to avoid
@@ -309,6 +326,45 @@ export class GraceWs {
   }
 
   /**
+   * Emit a `case-command` envelope (job-0137, sprint-12-mega Wave 3 — FR-MP-6).
+   *
+   * Sent when the user creates / selects / renames / archives / deletes a
+   * Case via CasesPanel. `case_id` is REQUIRED for every command except
+   * `create` (the server generates the ULID on create). `args` is
+   * command-specific:
+   *
+   *   - create:  optional { title: "..." } hint (defaults to "Untitled Case"
+   *              server-side).
+   *   - rename:  required { title: "<new title>" }.
+   *   - select / archive / delete: ignored (empty {} is fine).
+   *
+   * The server response is `case-open` (create / select) or `case-list`
+   * (rename / archive / delete) — both arrive on the existing handlers above.
+   *
+   * Invariant 9 (no cost theater): no cost / quota / quote field. Invariant 8
+   * (cancellation): cancellation of an in-flight tool flows through the
+   * existing `cancel` envelope, not a case-command.
+   */
+  sendCaseCommand(
+    command: CaseCommand,
+    caseId: string | null = null,
+    args: Record<string, unknown> = {},
+  ): void {
+    const payload: CaseCommandEnvelopePayload = {
+      envelope_type: "case-command",
+      command,
+      case_id: caseId,
+      args,
+    };
+    const env: Envelope<CaseCommandEnvelopePayload> = envelope(
+      "case-command",
+      this.sessionId,
+      payload,
+    );
+    this.sendEnvelope(env);
+  }
+
+  /**
    * Emit a `mode2-audit-event` envelope (job-0126, sprint-12-mega Wave 2).
    *
    * Fired on every Mode2OfferModal display + user action so the server
@@ -420,6 +476,26 @@ export class GraceWs {
         if (this.handlers.onMode2Candidate) {
           this.handlers.onMode2Candidate(
             payload as unknown as Mode2CandidatePayload,
+          );
+        }
+        break;
+      case "case-list":
+        // job-0137: FR-MP-6 Case left-rail refresh. CasesPanel subscribes
+        // through App.tsx's useCases hook. Server emits on connect and after
+        // every successful case-command (create / rename / archive / delete).
+        if (this.handlers.onCaseList) {
+          this.handlers.onCaseList(
+            payload as unknown as CaseListEnvelopePayload,
+          );
+        }
+        break;
+      case "case-open":
+        // job-0137: FR-MP-6 Case rehydration. App.tsx hydrates chat history,
+        // loaded_layers, and map_view from session_state; null = empty state
+        // (server couldn't rehydrate — Case archived/deleted between list+select).
+        if (this.handlers.onCaseOpen) {
+          this.handlers.onCaseOpen(
+            payload as unknown as CaseOpenEnvelopePayload,
           );
         }
         break;

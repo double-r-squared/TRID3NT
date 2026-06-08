@@ -338,6 +338,91 @@ export interface SecretRevokePayload {
   secret_id: string;
 }
 
+// --- Case persistence envelopes (job-0137, sprint-12-mega Wave 3 — FR-MP-6) //
+//
+// Mirrors packages/contracts/src/grace2_contracts/case.py (the canonical
+// pydantic shapes). The Case is the user-facing left-rail entity; the storage
+// model name "project" stays canonical, but the wire envelopes use "case".
+//
+// Wire shapes:
+//   - case-list (server -> client): list of CaseSummary; emitted on connect
+//     and after every successful case-command.
+//   - case-open (server -> client): CaseSessionState | null; emitted on
+//     case-command(create|select) when the rehydration succeeds; null when
+//     the server cannot rehydrate (archived/deleted between list+select).
+//   - case-command (client -> server): one of create / select / rename /
+//     archive / delete; carries optional case_id (REQUIRED for every command
+//     except create) and an args dict (e.g. { title: "..." } for rename and
+//     create-hint).
+//
+// Invariant 9 (no cost theater): no cost / quota / quote field anywhere.
+// Invariant 8 (cancellation is first-class): no cancel field on case-command;
+// cancellation flows through the standard `cancel` envelope (A.3).
+
+export type CaseStatus = "active" | "archived" | "deleted";
+
+export interface CaseSummary {
+  schema_version?: "v1";
+  case_id: string;          // ULID; maps 1:1 to projects._id (FR-MP-6)
+  title: string;
+  created_at: string;       // ISO-8601 UTC Z
+  updated_at: string;       // ISO-8601 UTC Z
+  status: CaseStatus;
+  bbox?: [number, number, number, number] | null; // [minLon, minLat, maxLon, maxLat]
+  primary_hazard?: string | null;
+  layer_summary?: string[]; // flat list of layer_ids
+  qgs_project_uri?: string | null;
+}
+
+// CaseChatMessage — one persisted chat exchange in a Case session. The
+// rehydration replay reconstructs the chat panel from a list of these.
+// `map_command_emissions` is kept as `unknown[]` here because the agent
+// validates each entry against the MapCommandPayload union before write; the
+// web side replays them through the existing map-command dispatch path.
+export interface CaseChatMessage {
+  schema_version?: "v1";
+  message_id: string;
+  case_id: string;
+  role: "user" | "agent" | "system";
+  content: string;
+  pipeline_id?: string | null;
+  layer_emissions?: string[];
+  map_command_emissions?: MapCommandPayload[]; // typed-loose union; agent validates
+  created_at: string;
+}
+
+// CaseSessionState — the rehydration envelope returned when a user opens
+// a Case. Mirrors the server-side CaseSessionState from case.py: the client
+// rebuilds chat from chat_history, the LayerPanel from loaded_layers, and
+// the map jumps to the Case bbox.
+export interface CaseSessionState {
+  schema_version?: "v1";
+  case: CaseSummary;
+  chat_history?: CaseChatMessage[];
+  loaded_layers?: ProjectLayerSummary[];
+  pipeline_history?: PipelineSnapshot[];
+  current_pipeline?: PipelineSnapshot | null;
+}
+
+export interface CaseListEnvelopePayload {
+  envelope_type?: "case-list";
+  cases: CaseSummary[];
+}
+
+export interface CaseOpenEnvelopePayload {
+  envelope_type?: "case-open";
+  session_state: CaseSessionState | null;
+}
+
+export type CaseCommand = "create" | "select" | "rename" | "archive" | "delete";
+
+export interface CaseCommandEnvelopePayload {
+  envelope_type?: "case-command";
+  command: CaseCommand;
+  case_id?: string | null;
+  args?: Record<string, unknown>;
+}
+
 // --- Tool payload-warning envelopes (job-0127, sprint-12-mega Wave 2) ---- //
 //
 // Mirrors packages/contracts/src/grace2_contracts/payload_warning.py.
