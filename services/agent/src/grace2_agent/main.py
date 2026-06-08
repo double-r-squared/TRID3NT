@@ -133,6 +133,8 @@ def _import_tools_registry() -> int:
     from .tools import fetch_goes_satellite  # noqa: F401
     # job-0103: register fetch_mrms_qpe (NOAA MRMS gauge-corrected QPE precipitation; SFINCS Harvey reference).
     from .tools import fetch_mrms_qpe  # noqa: F401
+    # job-0112: register fetch_hrsl_population (Meta + CIESIN HRSL persons/cell via global VRT; Wave 1.5).
+    from .tools import fetch_hrsl_population  # noqa: F401
 
     return len(tools.TOOL_REGISTRY)
 

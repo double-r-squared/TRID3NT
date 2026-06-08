@@ -1,0 +1,9 @@
+# fetch_hrsl_population live test (job-0112)
+bbox = (-82.0, 26.5, -81.8, 26.7)
+cog_bytes = 263040
+crs = EPSG:4326
+bounds = BoundingBox(left=-82.00013888881007, bottom=26.500138888852824, right=-81.80013888880991, top=26.700138888852983)
+shape = (720, 720)
+finite_pixels = 174011
+sum_population = 380701.2
+max_pixel = 265.03
