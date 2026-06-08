@@ -1,0 +1,137 @@
+{
+  "01": {
+    "cases_panel_visible": true,
+    "case_rows": 3,
+    "left_rail_mode": "cases-list",
+    "layer_panel_present": 0,
+    "case_view_present": 0
+  },
+  "02": {
+    "case_view_visible": true,
+    "breadcrumb_visible": true,
+    "left_rail_mode": "case-view",
+    "case_title": "Big Cypress habitat \u00d7 flood",
+    "cases_panel_count": 0,
+    "layer_panel_wrap": 1
+  },
+  "03": {
+    "btn_row": {
+      "x": 12,
+      "y": 961,
+      "width": 171.15625,
+      "height": 27
+    },
+    "cases_panel": {
+      "x": 12,
+      "y": 12,
+      "width": 282,
+      "height": 264
+    },
+    "settings": {
+      "x": 12,
+      "y": 961,
+      "width": 82.859375,
+      "height": 27
+    },
+    "secrets": {
+      "x": 100.859375,
+      "y": 961,
+      "width": 82.296875,
+      "height": 27
+    },
+    "btn_row_below_cases": true
+  },
+  "04": {
+    "popup_visible": true,
+    "card_visible": true,
+    "close_present": 1,
+    "theme_toggle_present": 1,
+    "account_label": "Anonymous mode",
+    "build_sha_present": 1
+  },
+  "05": {
+    "popup_visible": true,
+    "card_visible": true,
+    "close_present": 1
+  },
+  "06": {
+    "wrapper_state": "idle",
+    "box_shadow": "rgba(0, 0, 0, 0.35) 0px 2px 12px 0px",
+    "border_radius": "14px",
+    "button_state": "idle",
+    "button_disabled": true,
+    "button_bg": "rgb(30, 58, 138)",
+    "glyph_kind": "up-arrow"
+  },
+  "07": {
+    "textarea_height": 298,
+    "wrapper_height": 320,
+    "wrapper_top": 652,
+    "chat_count": 0
+  },
+  "08": {
+    "wrapper_state": "in-flight",
+    "button_state": "in-flight",
+    "button_bg": "rgb(107, 107, 118)",
+    "glyph_kind": "stop"
+  },
+  "09": {
+    "card_present": true,
+    "tool_text": "fetch_goes_satellite",
+    "est_text": "Estimated: 150.0 MB",
+    "thr_text": "Threshold: 25 MB",
+    "width": 340,
+    "box_shadow": "none",
+    "border_radius": "0px"
+  },
+  "10": {
+    "card_present": true,
+    "visible_text": "\u24d8\nFound a useful data source you might want to add\nwater.weather.gov\nAHPS Inundation Mapping\nHas machine-readable metadata\nOffers data downloads\nOperational river inundation forecast maps from the National Water Prediction Service.\n78% match\nAdd data source\nMaybe later\nDon't suggest this domain again",
+    "forbidden_matches": []
+  },
+  "11": {
+    "layer_ids": [
+      "osm-fallback-basemap",
+      "carto-dark-basemap",
+      "flood-depth-job-0086-fix",
+      "wdpa-big-cypress",
+      "wdpa-big-cypress-outline",
+      "gbif-panther-fl",
+      "gbif-spoonbill-fl",
+      "gbif-alligator-fl"
+    ],
+    "colors": {
+      "gbif-panther-fl": "#4477FF",
+      "gbif-spoonbill-fl": "#4477FF",
+      "gbif-alligator-fl": "#98FF98",
+      "wdpa-big-cypress": "TypeError: Cannot read properties of undefined (reading 'value')"
+    }
+  },
+  "12": {
+    "fill_color": [
+      "case",
+      [
+        "has",
+        "ds_mean"
+      ],
+      [
+        "interpolate",
+        [
+          "linear"
+        ],
+        [
+          "get",
+          "ds_mean"
+        ],
+        0,
+        "#2DC937",
+        0.5,
+        "#E7B416",
+        1,
+        "#CC3232"
+      ],
+      "#708090"
+    ],
+    "fill_opacity": 0.595
+  }
+}

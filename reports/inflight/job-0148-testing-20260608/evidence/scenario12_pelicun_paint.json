@@ -1,0 +1,27 @@
+{
+  "fill_color": [
+    "case",
+    [
+      "has",
+      "ds_mean"
+    ],
+    [
+      "interpolate",
+      [
+        "linear"
+      ],
+      [
+        "get",
+        "ds_mean"
+      ],
+      0,
+      "#2DC937",
+      0.5,
+      "#E7B416",
+      1,
+      "#CC3232"
+    ],
+    "#708090"
+  ],
+  "fill_opacity": 0.595
+}

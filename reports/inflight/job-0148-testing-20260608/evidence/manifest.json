@@ -1,0 +1,50 @@
+[
+  {
+    "file": "01_cases_root_view.png",
+    "caption": "Cases-root view: CasesPanel left rail with 3 fake Cases, NO LayerPanel (0=0 expected), CaseView absent (0=0 expected), data-mode=cases-list."
+  },
+  {
+    "file": "02_case_active_view.png",
+    "caption": "Case-active view: CaseView breadcrumb (\"Big Cypress habitat \u00d7 flood\") visible, LayerPanel mounted below (wrap count=1), CasesPanel list NOT present in this mode (0=0 expected), data-mode=case-view."
+  },
+  {
+    "file": "03_bottom_row_buttons.png",
+    "caption": "Bottom-row [Settings] [Secrets] pills visible under the CasesPanel \u2014 btn_row.y=961 cases_bottom=276 below=True."
+  },
+  {
+    "file": "04_settings_popup.png",
+    "caption": "Settings full-screen popup: Account ('Anonymous mode'), Appearance (theme toggle), About (build SHA), close X. Theme toggle count=1, close count=1."
+  },
+  {
+    "file": "05_secrets_popup.png",
+    "caption": "Secrets full-screen popup: SecretsPanel mounted inside overlay (2 fake provider entries injected). popup_visible=True close=1."
+  },
+  {
+    "file": "06_chat_input_idle.png",
+    "caption": "Chat input idle empty: wrapper data-state=idle, glyph=up-arrow, button data-action-state=idle disabled=True bg=rgb(30, 58, 138), shadow='rgba(0, 0, 0, 0.35) 0px 2px 12px 0px', radius=14px."
+  },
+  {
+    "file": "07_chat_input_typing_grows.png",
+    "caption": "Chat input typing multi-line: textarea grew to 298px (wrapper 320px). Chat content (2 seeded agent messages) remains visible above the floating input wrapper at top=652px."
+  },
+  {
+    "file": "08_chat_input_inflight.png",
+    "caption": "Chat input in-flight (synthetic running pipeline step injected via __grace2InjectPipelineState): wrapper data-state=in-flight, button data-action-state=in-flight, glyph=stop (expected 'stop'), button bg=rgb(107, 107, 118) (grey, not blue)."
+  },
+  {
+    "file": "09_payload_warning_card.png",
+    "caption": "Payload-warning inline card surfaced via __grace2InjectPayloadWarning: tool='fetch_goes_satellite' est=Estimated: 150.0 MB threshold=Threshold: 25 MB, width=340px, shadow='none', radius=0px (polished \u2014 drop shadow + rounded corners, in chat column, NOT a modal)."
+  },
+  {
+    "file": "10_source_suggestion_card.png",
+    "caption": "Source-suggestion inline card from mode2-candidate envelope: card_present=True, forbidden internal terms found in card text = [] (expected empty list). Confidence (0.78) and 4 detected_patterns translated to user-friendly text."
+  },
+  {
+    "file": "11_case1_curated_palette.png",
+    "caption": "Case 1 headline z11 dark theme: per-species curated palette colors \u2014 panther=#4477FF, spoonbill=#4477FF, alligator=#98FF98, WDPA=TypeError: Cannot read properties of undefined (reading 'value'). Each species visually distinguishable."
+  },
+  {
+    "file": "12_pelicun_choropleth_polished.png",
+    "caption": "Pelicun damage choropleth (Fort Myers, z13 dark): 20 polygons with varied ds_mean. fill-color is_expression=True (truthy = ds_mean\u2192gradient interpolation active), fill-opacity=0.595."
+  }
+]

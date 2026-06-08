@@ -1,0 +1,18 @@
+{
+  "layer_ids": [
+    "osm-fallback-basemap",
+    "carto-dark-basemap",
+    "flood-depth-job-0086-fix",
+    "wdpa-big-cypress",
+    "wdpa-big-cypress-outline",
+    "gbif-panther-fl",
+    "gbif-spoonbill-fl",
+    "gbif-alligator-fl"
+  ],
+  "colors": {
+    "gbif-panther-fl": "#4477FF",
+    "gbif-spoonbill-fl": "#4477FF",
+    "gbif-alligator-fl": "#98FF98",
+    "wdpa-big-cypress": "TypeError: Cannot read properties of undefined (reading 'value')"
+  }
+}
