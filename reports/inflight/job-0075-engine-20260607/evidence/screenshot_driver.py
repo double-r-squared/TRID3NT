@@ -1,0 +1,221 @@
+"""Headline screenshot driver — job-0075 Part 3 (visible-corrections verification).
+
+Drives the dev-injection seam (window.__grace2InjectSessionState +
+window.__grace2InjectMapCommand) with the REAL WMS URL for the freshly
+published flood-depth-job-0075-demo layer — regenerated end-to-end with
+job-0071 fixes baked in:
+
+  - Rotation fix: xarray dim-name inspection + transpose (no 90-CW rotation)
+  - Transparency fix: NODATA_DEPTH_M=0.05 + QML alpha=0 at 0.05 m stop
+    (dry land shows basemap; only flooded cells ≥ 5 cm show blue overlay)
+  - CRS fix: EPSG:32617 confirmed (job-0063, still in place)
+
+Differences from job-0074 driver:
+  - Layer ID: flood-depth-job-0075-demo (regenerated fresh COG)
+  - WMS URL: points to flood-depth-job-0075-demo (new layer published via
+    auto-dispatch — first live test of job-0071's overrides kwarg fix)
+  - Same FORT_MYERS_BBOX and opacity=0.9
+
+Usage:
+    .venv-agent/bin/python reports/inflight/job-0075-engine-20260607/evidence/screenshot_driver.py
+
+Prerequisites:
+    - web/ Vite dev server can be launched (npm run dev)
+    - Playwright + Chromium installed in .venv-agent
+    - QGIS Server serving flood-depth-job-0075-demo (Part 2 done)
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import socket
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[4]
+WEB_DIR = REPO_ROOT / "web"
+EVIDENCE_DIR = Path(__file__).resolve().parent
+
+# WMS URL for the freshly regenerated COG with 0071 fixes baked in.
+# Published via auto-dispatch (job-0071 overrides kwarg fix confirmed working).
+REAL_WMS_URL = (
+    "https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms"
+    "?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=flood-depth-job-0075-demo"
+)
+
+# Fort Myers BBOX (lon/lat)
+FORT_MYERS_BBOX = [-81.91, 26.55, -81.75, 26.69]
+
+
+def _free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def _wait_for_http(url: str, timeout: float = 90.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(url, timeout=2.0) as resp:
+                if 200 <= resp.status < 500:
+                    return True
+        except (urllib.error.URLError, ConnectionError, TimeoutError):
+            time.sleep(0.3)
+        except Exception:  # noqa: BLE001
+            time.sleep(0.3)
+    return False
+
+
+def main() -> int:
+    from playwright.sync_api import sync_playwright
+
+    port = _free_port()
+    cmd = ["npm", "run", "dev", "--", "--port", str(port), "--strictPort"]
+    print(f"[driver] launching Vite dev server: {' '.join(cmd)} (cwd={WEB_DIR})")
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(WEB_DIR),
+        env=os.environ.copy(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    base_url = f"http://127.0.0.1:{port}"
+    if not _wait_for_http(base_url, timeout=90.0):
+        proc.terminate()
+        try:
+            proc.wait(timeout=5.0)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        print("[driver] FATAL: vite dev server never responded", file=sys.stderr)
+        if proc.stderr:
+            print(proc.stderr.read().decode(errors="replace")[-2000:], file=sys.stderr)
+        return 1
+    print(f"[driver] vite dev server up at {base_url}")
+
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1440, "height": 900})
+                page = context.new_page()
+                page.goto(base_url, wait_until="load", timeout=60_000)
+
+                page.wait_for_function(
+                    "() => typeof window.__grace2InjectSessionState === 'function'"
+                    "   && typeof window.__grace2InjectMapCommand === 'function'",
+                    timeout=15_000,
+                )
+
+                session_state = {
+                    "chat_history": [],
+                    "loaded_layers": [
+                        {
+                            "layer_id": "flood-depth-job-0075-demo",
+                            "name": "Hurricane Ian — peak flood depth (job-0075, visible-corrections)",
+                            "layer_type": "raster",
+                            "uri": REAL_WMS_URL,
+                            "source_url": REAL_WMS_URL,
+                            "style_preset": "continuous_flood_depth",
+                            "visible": True,
+                            "opacity": 0.9,
+                            "z_index": 2,
+                            "role": "primary",
+                            "bbox": FORT_MYERS_BBOX,
+                            "attribution": (
+                                "GRACE-2 job-0075 — visible-corrections verification "
+                                "(rotation fix + transparency fix baked into COG; "
+                                "auto-dispatch confirmed working)"
+                            ),
+                            "temporal": None,
+                        }
+                    ],
+                    "pipeline_history": [],
+                    "current_pipeline": None,
+                    "map_view": {
+                        "center": [-81.83, 26.62],
+                        "zoom": 11,
+                        "bearing": 0,
+                        "pitch": 0,
+                    },
+                }
+                print("[driver] injecting session-state with REAL WMS URL (flood-depth-job-0075-demo)...")
+                page.evaluate(
+                    "(payload) => window.__grace2InjectSessionState(payload)",
+                    session_state,
+                )
+
+                page.wait_for_selector(
+                    '[data-testid="grace2-layer-panel"]',
+                    timeout=10_000,
+                )
+                page.wait_for_selector(
+                    '[data-testid="grace2-layer-legend"]',
+                    timeout=10_000,
+                )
+
+                # --- Headline screenshot: Fort Myers with flood overlay ---------
+                # This COG was regenerated end-to-end with job-0071 fixes baked in:
+                # - Rotation fix: dim-name inspection + transpose
+                #   → rivers should appear oriented E-W (not 90-CW rotated)
+                # - Transparency fix: NODATA_DEPTH_M=0.05 mask + QML alpha=0 at 0.05 m
+                #   → dry land shows basemap unobstructed (no faint blue tint)
+                #   → only flooded areas (depth >= 5 cm) show blue overlay
+                # - CRS: EPSG:32617 confirmed (job-0063 fix still in place)
+                print("[driver] zoom-to Fort Myers via map-command...")
+                page.evaluate(
+                    "(payload) => window.__grace2InjectMapCommand(payload)",
+                    {"command": "zoom-to", "args": {"bbox": FORT_MYERS_BBOX}},
+                )
+                # 7 seconds for WMS tiles to fetch and render (kickoff spec: "Wait 5+ seconds")
+                page.wait_for_timeout(7000)
+
+                out_path = EVIDENCE_DIR / "headline_fort_myers_VISIBLE_CORRECTIONS.png"
+                print(f"[driver] screenshotting -> {out_path}")
+                page.screenshot(path=str(out_path), full_page=False)
+                print("[driver] saved headline_fort_myers_VISIBLE_CORRECTIONS.png")
+
+                # Dump DOM state for diagnostics / audit
+                added_layers = page.evaluate(
+                    """() => {
+                        const rows = Array.from(document.querySelectorAll(
+                            '[data-testid="layer-row"]'
+                        )).map(r => r.textContent || '');
+                        const legend = document.querySelector('[data-testid="grace2-layer-legend"]');
+                        return {
+                            layer_panel_rows: rows,
+                            legend_present: !!legend,
+                            legend_text: legend ? legend.textContent : null,
+                        };
+                    }"""
+                )
+                print(f"[driver] DOM state: {json.dumps(added_layers, indent=2)}")
+
+                context.close()
+            finally:
+                browser.close()
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5.0)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        for stream in (proc.stdout, proc.stderr):
+            if stream:
+                try:
+                    stream.close()
+                except Exception:  # noqa: BLE001
+                    pass
+
+    print("[driver] done.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
