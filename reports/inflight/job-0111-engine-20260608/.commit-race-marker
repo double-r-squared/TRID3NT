@@ -1,0 +1,23 @@
+Wave 1.5 commit-race notice for job-0111-engine-20260608.
+
+The job-0111 source files (services/agent/src/grace2_agent/tools/fetch_landfire_fuels.py +
+services/agent/tests/test_fetch_landfire_fuels.py + evidence/landfire_live.txt +
+the __init__.py and main.py registration lines + STATE flip to ready-for-audit)
+landed in commit c5fb88d, but that commit's message labels the change as job-0109.
+The label-swap was caused by a sibling Wave 1.5 subagent invoking `git commit`
+while my files were staged in the shared index — Wave 1.5's documented
+commit-race precedent (see kickoff "Wave 1 commit-label-swap mitigation").
+
+The actual files in c5fb88d (under the job-0109 label) are job-0111's:
+- services/agent/src/grace2_agent/tools/fetch_landfire_fuels.py
+- services/agent/tests/test_fetch_landfire_fuels.py
+- evidence/landfire_live.txt
+- registration lines in tools/__init__.py + main.py
+- reports/inflight/job-0111-engine-20260608/STATE -> ready-for-audit
+
+Job-0109's own source files (fetch_mtbs_burn_severity.py + tests) were untracked
+at the time c5fb88d was created and remain to be committed by job-0109's
+runner in a follow-up commit.
+
+This marker is committed under the correct job-0111 label so the orchestrator
+audit can trace the work to the proper job.
