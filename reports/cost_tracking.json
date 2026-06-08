@@ -290,6 +290,13 @@
       "description": "OQ-69-COG-CRS-MISTAG CLOSED. Pure regeneration job (no code changes). Re-ran M5 smoke harness → AssessmentEnvelope.outcome=SUCCESS → new COG at gs://grace-2-hazard-prod-runs/01KTJKTAPX4V7GW0AS3C8BDYHK/flood_depth_peak.tif. **rasterio.open(...).crs.to_string()=='EPSG:32617' CONFIRMED** (job-0063's _read_crs_from_dataset fix verified live); bounds (409109..425279, 2936568..2952348) UTM-17N Fort Myers values. publish-raster Cloud Run Job grace-2-pyqgis-worker-flff7 SUCCEEDED; .qgs now carries 3 layers (basemap + 0069-demo + 0070-demo); qgs_version=3.44.11-Solothurn. Server-side curl WMS GetMap at Fort Myers EPSG:3857 bbox returns 315 KB real flood-depth styled PNG showing Caloosahatchee River inundation pattern. **Headline screenshot captured + surfaced**: 1440×900 dev UI zoomed to Fort Myers — full-viewport map, LayerPanel left ('Hurricane Ian — peak flood depth', 85% opacity), LayerLegend bottom-center, real flood-depth WMS layer at correct geographic location. NEW OQ-70-AUTO-PUBLISH-DISPATCH (medium): publish_layer.py auto-dispatch fails with `JobsClient.run_job() got unexpected keyword argument 'overrides'` (manual CLI works). Sprint-10 Sonnet win #2. Commit 4597332.",
       "model": "sonnet",
       "subagent_tokens": 72187
+    },
+    {
+      "job_id": "job-0073-infra-20260607",
+      "sprint": 10,
+      "description": "Stage 1: OQ-61-CLOUD-RUN-SCALING-BLOCK-DRIFT closed. Crisp diagnosis: Google provider 6.50.x has TWO scaling blocks on google_cloud_run_v2_service (service-level + template-level). Tofu had only template-level; GCP API auto-fills service-level with min_instance_count=0/manual_instance_count=0 for all AUTOMATIC-mode services. Each plan saw it as drift and would propose removing it; Option B (push Tofu to GCP) would loop. Option A: codify the empty service-level scaling{} block in infra/qgis-server.tf to match live reality. No tofu apply needed — pure IaC declaration alignment. Final untargeted plan returns 0-add/0-change/0-destroy on GCP resources. Smoke tests confirm QGIS Server WMS GetCapabilities 200, pyqgis-worker + sfincs-solver Ready True, image digests untouched. Sprint-10 Sonnet win #3. Commit 2ed3efa.",
+      "model": "sonnet",
+      "subagent_tokens": 73698
     }
   ],
   "totals_by_sprint": {
@@ -297,7 +304,7 @@
     "7": 1863284,
     "8": 1786238,
     "9": 713020,
-    "10": 701699
+    "10": 775397
   },
   "historical_context": {
     "note": "Captured for accountability — NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
