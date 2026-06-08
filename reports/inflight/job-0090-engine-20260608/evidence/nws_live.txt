@@ -1,0 +1,23 @@
+=== fetch_nws_event LIVE EVIDENCE — job-0090 ===
+timestamp: 2026-06-08T11:49:31.054915+00:00
+
+CASE 1: area=FL, event_types=[Hurricane Warning, Flood Warning]
+  URL: https://api.weather.gov/alerts/active?area=FL&status=actual&message_type=alert&event=Hurricane%20Warning&event=Flood%20Warning
+  upstream type=FeatureCollection features=0
+  FlatGeobuf bytes: 1728
+
+CASE 2: area=FL, no event_types filter (all active alerts)
+  URL: https://api.weather.gov/alerts/active?area=FL&status=actual&message_type=alert
+  upstream features=0
+
+CASE 3: area=TX, no filter
+  URL: https://api.weather.gov/alerts/active?area=TX&status=actual&message_type=alert
+  upstream features=1
+  sample events: ['Flood Warning']
+
+CASE 4: bbox→point (job-0086 lesson)
+  bbox=(-81.9, 26.5, -81.7, 26.7) → canon={'kind': 'point', 'lat': 26.6, 'lon': -81.8, 'bbox': [-81.9, 26.5, -81.7, 26.7]}
+  URL: https://api.weather.gov/alerts/active?point=26.6%2C-81.8&status=actual&message_type=alert
+  upstream features=0
+
+=== ALL CASES SUCCEEDED ===
