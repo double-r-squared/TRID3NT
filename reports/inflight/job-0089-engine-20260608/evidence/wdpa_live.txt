@@ -1,0 +1,58 @@
+== live invocation: fetch_wdpa_protected_areas Everglades bbox ==
+LayerURI:
+  layer_id=wdpa--81.5000-25.0000
+  name=Protected Areas — WDPA
+  layer_type=vector
+  uri=gs://grace-2-hazard-prod-cache/cache/static-30d/wdpa/7f4eeee114b7c8b6211b99698dbbf123.fgb
+  style_preset=wdpa_protected_areas
+  role=context
+  units=None
+FlatGeobuf bytes in fake-cache: 4563680
+FlatGeobuf feature count: 44
+CRS: EPSG:4326
+Columns: ['name_eng', 'desig_eng', 'iucn_cat', 'status', 'status_yr', 'site_id', 'geometry']
+
+Geography correctness (Everglades NP at Everglades bbox): PASS
+
+Unique designations found:
+  - County Managed Area
+  - Marine Protected Area
+  - Mitigation Bank
+  - National Estuarine Research Reserve
+  - National Park
+  - National Wildlife Refuge
+  - Park
+  - Preserve
+  - Preserve State Park
+  - Reserve Program
+  - Sanctuary
+  - Specially Protected Area (Cartagena Convention)
+  - Wetland of International Importance (Ramsar Site)
+  - Wilderness Area
+  - Wildlife and Environmental Area
+  - World Heritage Site (natural or mixed)
+
+Sample matched site_names (first 10):
+  - Big Cypress
+  - Camp Keais Strand
+  - Cape Romano - Ten Thousand Islands Aquatic Preserve
+  - Cowpens
+  - Everglades
+  - Everglades National Park
+  - Fakahatchee Strand
+  - Fakahatchee Strand State Preserve
+  - Florida Keys
+  - Florida Keys National Marine Sanctuary
+
+== second call should be cache HIT (no second fetch) ==
+WDPA fetcher invocations on second call: 0 (expected 0 = HIT)
+r1.uri == r2.uri: True
+
+== designation_filter='National Park' should narrow results ==
+Filtered URI: gs://grace-2-hazard-prod-cache/cache/static-30d/wdpa/50e335682c47e3b69993ea7d06d596e8.fgb
+Different cache key (vs unfiltered): True
+Filtered feature count: 1 (unfiltered was 44)
+Filtered unique designations: {'National Park'}
+Designation filter narrowing: PASS
+
+== all live checks PASS ==
