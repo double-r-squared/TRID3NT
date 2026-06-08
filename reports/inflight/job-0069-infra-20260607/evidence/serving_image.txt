@@ -1,0 +1,1 @@
+us-central1-docker.pkg.dev/grace-2-hazard-prod/grace-2-containers/grace-2-pyqgis-worker@sha256:94dad2bc8964c426d962bcad05b01f917e0e05408fa87e3557e47a2844a19119

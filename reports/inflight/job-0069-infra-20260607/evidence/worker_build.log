@@ -1,0 +1,23 @@
+Building us-central1-docker.pkg.dev/grace-2-hazard-prod/grace-2-containers/grace-2-pyqgis-worker:latest via Cloud Build (linux/amd64)...
+gcloud builds submit \
+  --project=grace-2-hazard-prod \
+  --config=infra/worker/cloudbuild.yaml \
+  --substitutions=_REGION=us-central1,_AR_REPO=grace-2-containers,_IMAGE=grace-2-pyqgis-worker \
+  .
+Creating temporary archive of 778 file(s) totalling 45.3 MiB before compression.
+Some files were not included in the source upload.
+
+Check the gcloud log [/home/nate/.config/gcloud/logs/2026.06.07/19.48.23.493982.log] to see which files and the contents of the
+default gcloudignore file used (see `$ gcloud topic gcloudignore` to learn
+more).
+
+Uploading tarball of [.] to [gs://grace-2-hazard-prod_cloudbuild/source/1780886903.885959-46c91059176f4a9b914c0b03e0fdb1cf.tgz]
+Created [https://cloudbuild.googleapis.com/v1/projects/grace-2-hazard-prod/locations/global/builds/b67ecb30-b2f7-4e7c-a17c-9a6084e7dabf].
+Logs are available at [ https://console.cloud.google.com/cloud-build/builds/b67ecb30-b2f7-4e7c-a17c-9a6084e7dabf?project=425352658356 ].
+
+gcloud builds submit only displays logs from Cloud Storage. To view logs from Cloud Logging, run:
+gcloud beta builds submit
+
+Waiting for build to complete. Polling interval: 1 second(s).
+ID                                    CREATE_TIME                DURATION  SOURCE                                                                                             IMAGES                                                                                             STATUS
+b67ecb30-b2f7-4e7c-a17c-9a6084e7dabf  2026-06-08T02:48:39+00:00  2M6S      gs://grace-2-hazard-prod_cloudbuild/source/1780886903.885959-46c91059176f4a9b914c0b03e0fdb1cf.tgz  us-central1-docker.pkg.dev/grace-2-hazard-prod/grace-2-containers/grace-2-pyqgis-worker (+1 more)  SUCCESS
