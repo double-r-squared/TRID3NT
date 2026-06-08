@@ -135,6 +135,8 @@ def _import_tools_registry() -> int:
     from .tools import fetch_mrms_qpe  # noqa: F401
     # job-0112: register fetch_hrsl_population (Meta + CIESIN HRSL persons/cell via global VRT; Wave 1.5).
     from .tools import fetch_hrsl_population  # noqa: F401
+    # job-0108: register fetch_firms_active_fire (NASA FIRMS VIIRS/MODIS active-fire detections; Wave 1.5).
+    from .tools import fetch_firms_active_fire  # noqa: F401
 
     return len(tools.TOOL_REGISTRY)
 

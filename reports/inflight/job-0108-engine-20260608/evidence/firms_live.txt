@@ -1,0 +1,32 @@
+platform linux -- Python 3.13.5, pytest-9.0.3, pluggy-1.6.0 -- /home/nate/Documents/GRACE-2/.venv-agent/bin/python
+cachedir: .pytest_cache
+rootdir: /home/nate/Documents/GRACE-2/services/agent
+configfile: pyproject.toml
+plugins: zarr-3.2.1, anyio-4.13.0, asyncio-1.4.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 15 items
+
+services/agent/tests/test_fetch_firms_active_fire.py::test_tool_is_registered_in_registry PASSED [  6%]
+services/agent/tests/test_fetch_firms_active_fire.py::test_invalid_source_raises_typed_error PASSED [ 13%]
+services/agent/tests/test_fetch_firms_active_fire.py::test_invalid_days_back_raises_typed_error PASSED [ 20%]
+services/agent/tests/test_fetch_firms_active_fire.py::test_invalid_bbox_raises_typed_error PASSED [ 26%]
+services/agent/tests/test_fetch_firms_active_fire.py::test_arg_errors_are_not_retryable PASSED [ 33%]
+services/agent/tests/test_fetch_firms_active_fire.py::test_parse_csv_to_fgb_yields_points PASSED [ 40%]
+services/agent/tests/test_fetch_firms_active_fire.py::test_parse_csv_empty_returns_zero_feature_fgb PASSED [ 46%]
+services/agent/tests/test_fetch_firms_active_fire.py::test_parse_csv_blank_response_raises PASSED [ 53%]
+services/agent/tests/test_fetch_firms_active_fire.py::test_parse_csv_missing_required_columns_raises PASSED [ 60%]
+services/agent/tests/test_fetch_firms_active_fire.py::test_geography_correctness_california_synthetic_rows PASSED [ 66%]
+services/agent/tests/test_fetch_firms_active_fire.py::test_invalid_map_key_response_raises_auth_error PASSED [ 73%]
+services/agent/tests/test_fetch_firms_active_fire.py::test_resolve_map_key_honors_env_var PASSED [ 80%]
+services/agent/tests/test_fetch_firms_active_fire.py::test_cache_miss_invokes_fetch_and_writes PASSED [ 86%]
+services/agent/tests/test_fetch_firms_active_fire.py::test_cache_hit_skips_fetch PASSED [ 93%]
+services/agent/tests/test_fetch_firms_active_fire.py::test_live_fetch_california_last_5d PASSED [100%]
+
+============================== 15 passed in 0.88s ==============================
+LIVE FIRMS endpoint reached.
+Typed error fired: FirmsAuthError
+error_code: FIRMS_AUTH_ERROR
+retryable: False
+message: FIRMS rejected the MAP_KEY. Set GRACE2_FIRMS_MAP_KEY to a valid key from https://firms.modaps.eosdis.nasa.gov/api/map_key/. See OQ-0108-MAP-KEY-AUTH for product
+tool count: 32
+fetch_firms_active_fire registered: True

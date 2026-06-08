@@ -225,3 +225,4 @@ from . import fetch_nexrad_reflectivity  # noqa: E402,F401 — job-0102: registe
 from . import fetch_mrms_qpe  # noqa: E402,F401 — job-0103: registers fetch_mrms_qpe (NOAA MRMS gauge-corrected QPE)
 from . import fetch_hrsl_population  # noqa: E402,F401 — job-0112: registers fetch_hrsl_population (Meta + CIESIN HRSL persons/cell, COG via global VRT)
 from . import fetch_firms_active_fire  # noqa: E402,F401 — job-0108: registers fetch_firms_active_fire (NASA FIRMS VIIRS/MODIS active-fire detections)
+from . import fetch_landfire_fuels  # noqa: E402,F401 — job-0111: registers fetch_landfire_fuels (LANDFIRE LF2022 fuels & canopy rasters)
