@@ -302,6 +302,19 @@ def run(argv: list[str] | None = None) -> int:
     # to resolve a local qgis_process is informational, not fatal.
     _bind_worker_submitter()
 
+    # job-0122 Wave 2: initialize Firebase Admin SDK via GCP ADC for the WS
+    # connect handshake (Appendix H.5). Best-effort — if firebase_admin is
+    # not installed or ADC is unavailable, the connect handshake transparently
+    # falls through to the anonymous-fallback path (Appendix H.3) and the
+    # agent service still serves.
+    from .auth_handshake import init_firebase_admin
+
+    fb_ready = init_firebase_admin()
+    logger.info(
+        "firebase_admin init: ready=%s (anonymous-fallback path always available)",
+        fb_ready,
+    )
+
     if startup_only:
         logger.info("--startup-only: tool registry verified; exiting without serving")
         return 0

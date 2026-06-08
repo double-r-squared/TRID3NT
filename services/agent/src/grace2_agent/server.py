@@ -39,7 +39,14 @@ from typing import Any
 from pydantic import ValidationError
 from websockets.asyncio.server import ServerConnection, serve
 
-from grace2_contracts import new_ulid
+from grace2_contracts import new_ulid, now_utc
+from grace2_contracts.case import (
+    CaseChatMessage,
+    CaseCommandEnvelopePayload,
+    CaseListEnvelopePayload,
+    CaseOpenEnvelopePayload,
+    CaseSummary,
+)
 from grace2_contracts.ws import (
     AgentMessageChunkPayload,
     CancelPayload,
@@ -55,6 +62,13 @@ from grace2_contracts.ws import (
 from .main import MAX_TURNS_PER_SESSION
 
 from .adapter import GeminiSettings, build_client, load_settings, stream_reply
+from .auth_handshake import (
+    AuthResult,
+    authenticate_token,
+    build_auth_ack,
+    get_auth_token_timeout_s,
+)
+from .case_lifecycle import CaseLifecycleError, ensure_case_qgs
 from .mode2_classifier import (
     Mode2CandidateEnvelope,
     append_audit_log,
@@ -63,6 +77,9 @@ from .mode2_classifier import (
 from .persistence import Persistence
 from .pipeline_emitter import PipelineEmitter
 from .tools import TOOL_REGISTRY
+
+# job-0122: auth-token envelope (Appendix H.5 connect handshake).
+from grace2_contracts.auth import AuthTokenEnvelope
 
 logger = logging.getLogger("grace2_agent.server")
 
@@ -174,6 +191,36 @@ class SessionState:
     # and emits a ``session-state(status="max_turns_reached")`` envelope.
     # New WebSocket connection → new SessionState → fresh counter at 0.
     turn_count: int = 0
+    # job-0121 (FR-MP-6): per-connection active-Case context.
+    #
+    # ``None`` for fresh sessions (no Case selected yet — the M1 stateless
+    # demo path remains supported). Updated by ``case-command(create|select)``;
+    # cleared (left as-is) on ``archive``/``delete``. When non-None, the
+    # tool-call wrapper (``_invoke_tool_via_emitter``) carries the case
+    # context into tools that opt in via a ``case_id`` parameter
+    # (currently ``publish_layer``); chat persistence routes every
+    # user-message + agent reply into Mongo via ``Persistence``.
+    active_case_id: str | None = None
+    # job-0121: per-turn layer + map-command emission accumulators. Reset at
+    # the start of every dispatch (Gemini stream or /invoke tool). The
+    # CaseChatMessage write at turn close reads from these so a Case replay
+    # can re-bind layers via the same emission sequence.
+    current_turn_layer_ids: list[str] = field(default_factory=list)
+    current_turn_pipeline_id: str | None = None
+    # job-0122 (Appendix H.5): per-connection authenticated user context.
+    #
+    # Populated by the connect-handshake (``_perform_auth_handshake``) after
+    # the ``auth-token`` envelope verifies (or after the 5-second anonymous
+    # fallback timeout). When set, every subsequent envelope for this
+    # connection is scoped to ``authenticated_user_id`` — Case lookups
+    # (``Persistence.list_cases_for_user``) filter by it, and Case creation
+    # binds it as ``owner_user_id``. ``None`` only between connect and the
+    # handshake completion; never ``None`` after handshake.
+    authenticated_user_id: str | None = None
+    is_anonymous: bool = True
+    firebase_uid: str | None = None
+    tier: str = "free"
+    auth_handshake_complete: bool = False
 
 
 def _new_envelope(message_type: str, session_id: str, payload: Any) -> str:
@@ -366,9 +413,452 @@ async def _handle_session_resume(
     when the session-records seam is wired.
 
     job-0035: routes through the emitter so the initial ``session-state`` is
-    A.7-snapshot-shaped (current_pipeline mirrors the live emitter state)."""
+    A.7-snapshot-shaped (current_pipeline mirrors the live emitter state).
+
+    job-0121: also emits a ``case-list`` so the client renders the left-rail
+    Case list on initial connect (FR-MP-6 landing state). Best-effort — if
+    Persistence is unbound the case-list emission is skipped and the M1
+    in-memory path keeps working."""
     _ensure_emitter(websocket, state)
     await state.emitter.emit_session_state()
+    await _emit_case_list(websocket, state)
+
+
+# --------------------------------------------------------------------------- #
+# job-0122: Connect-handshake (Appendix H.5 + H.3)
+# --------------------------------------------------------------------------- #
+
+
+async def _handle_auth_token(
+    websocket: ServerConnection,
+    state: SessionState,
+    payload_dict: dict,
+) -> None:
+    """Process the client's ``auth-token`` envelope and emit ``auth-ack``.
+
+    Per Appendix H.5 (job-0122 scope):
+
+    1. Validate the payload through ``AuthTokenEnvelope``.
+    2. Call ``authenticate_token`` → resolves to a ``User`` via Persistence
+       (or provisions an anonymous fallback).
+    3. Bind the resolved ``user_id`` + tier + anonymous-flag into the
+       SessionState — every subsequent envelope is scoped to this user.
+    4. Emit ``auth-ack`` so the client knows its session identity.
+    """
+    tok: AuthTokenEnvelope | None
+    try:
+        tok = AuthTokenEnvelope.model_validate(payload_dict)
+    except ValidationError as ve:
+        await _send_error(
+            websocket,
+            state.session_id,
+            "AUTH_TOKEN_INVALID",
+            f"auth-token validation failed: {ve.errors()[0]['msg']}",
+        )
+        # Even on validation failure we run the anonymous fallback so the
+        # connection is still usable (per H.3).
+        tok = None
+
+    result = await authenticate_token(tok, get_persistence())
+    _bind_auth_result(state, result)
+    ack = build_auth_ack(result)
+    await websocket.send(_new_envelope("auth-ack", state.session_id, ack))
+    logger.info(
+        "auth-ack session=%s user_id=%s anonymous=%s tier=%s firebase_uid=%s",
+        state.session_id,
+        result.user.user_id,
+        result.is_anonymous,
+        result.tier,
+        result.firebase_uid,
+    )
+
+
+def _bind_auth_result(state: SessionState, result: AuthResult) -> None:
+    """Copy the resolved auth identity into the SessionState.
+
+    Separate from ``_handle_auth_token`` so tests can drive the bind
+    directly without parsing an envelope.
+    """
+    state.authenticated_user_id = result.user.user_id
+    state.is_anonymous = result.is_anonymous
+    state.firebase_uid = result.firebase_uid
+    state.tier = result.tier
+    state.auth_handshake_complete = True
+
+
+async def _ensure_auth_handshake(
+    websocket: ServerConnection,
+    state: SessionState,
+) -> None:
+    """Synchronous fallback: if the handshake hasn't run, run it as anonymous.
+
+    Called when a non-``auth-token`` envelope arrives before the handshake
+    has completed (the client either didn't send auth-token, or another
+    envelope raced ahead). Mirrors the 5-second timeout path from H.3 —
+    instead of waiting 5 seconds we trip the anonymous fallback inline so
+    the user is bound before their first real interaction.
+    """
+    if state.auth_handshake_complete:
+        return
+    result = await authenticate_token(None, get_persistence())
+    _bind_auth_result(state, result)
+    ack = build_auth_ack(result)
+    try:
+        await websocket.send(_new_envelope("auth-ack", state.session_id, ack))
+    except Exception:  # noqa: BLE001 — socket may be down
+        pass
+    logger.info(
+        "auth-ack(implicit-anonymous) session=%s user_id=%s",
+        state.session_id,
+        result.user.user_id,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Case lifecycle handlers (job-0121, FR-MP-6)
+# --------------------------------------------------------------------------- #
+
+
+async def _emit_case_list(websocket: ServerConnection, state: SessionState) -> None:
+    """Emit the ``case-list`` envelope for the client's left rail.
+
+    Best-effort: if Persistence is unbound (M1 in-memory path) we silently
+    skip. If the listing call fails we log + skip; the case-list is a
+    derivable view, so failing it should not break the chat path.
+
+    Auth-stub note: ``list_cases_for_user`` currently passes the session_id
+    as the user_id placeholder. The Auth/Users track will replace this with
+    the resolved Firebase UID; the persistence layer's filter is already
+    backward-compatible (``$or`` includes ``user_id: {$exists: False}``).
+    """
+    p = get_persistence()
+    if p is None:
+        logger.debug("case-list: Persistence unbound; skipping emit")
+        return
+    try:
+        cases = await p.list_cases_for_user(state.session_id)
+    except Exception:  # noqa: BLE001 — best-effort
+        logger.exception("case-list: list_cases_for_user failed")
+        return
+    payload = CaseListEnvelopePayload(cases=cases)
+    await websocket.send(_new_envelope("case-list", state.session_id, payload))
+    logger.info(
+        "case-list emitted session=%s count=%d", state.session_id, len(cases)
+    )
+
+
+async def _emit_case_open(
+    websocket: ServerConnection,
+    state: SessionState,
+    case_id: str,
+) -> None:
+    """Emit a ``case-open`` envelope hydrating ``CaseSessionState`` from Mongo.
+
+    Sets ``state.active_case_id`` BEFORE emitting so subsequent tool calls
+    (and chat persistence) carry the Case context. If the Case is missing
+    or Persistence is unbound, emits a ``case-open`` with ``session_state=None``
+    so the client falls back to the empty state per
+    ``CaseOpenEnvelopePayload`` semantics.
+    """
+    state.active_case_id = case_id
+    p = get_persistence()
+    if p is None:
+        logger.warning(
+            "case-open session=%s case=%s: Persistence unbound; emitting empty",
+            state.session_id,
+            case_id,
+        )
+        payload = CaseOpenEnvelopePayload(session_state=None)
+        await websocket.send(
+            _new_envelope("case-open", state.session_id, payload)
+        )
+        return
+    try:
+        session_state = await p.get_session_state(case_id)
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "case-open: get_session_state failed for case=%s", case_id
+        )
+        payload = CaseOpenEnvelopePayload(session_state=None)
+        await websocket.send(
+            _new_envelope("case-open", state.session_id, payload)
+        )
+        return
+    payload = CaseOpenEnvelopePayload(session_state=session_state)
+    await websocket.send(_new_envelope("case-open", state.session_id, payload))
+    logger.info(
+        "case-open session=%s case=%s chat=%d",
+        state.session_id,
+        case_id,
+        len(session_state.chat_history),
+    )
+
+
+async def _handle_case_command(
+    websocket: ServerConnection,
+    state: SessionState,
+    cmd: CaseCommandEnvelopePayload,
+) -> None:
+    """Dispatch one ``case-command`` (FR-MP-6 Case lifecycle).
+
+    Commands:
+
+    - ``create`` — generate a new ``CaseSummary``, persist via
+      ``Persistence.upsert_case``, set as active, emit ``case-open`` with
+      the fresh (empty) session state, then refresh ``case-list``.
+    - ``select`` — load the persisted ``CaseSessionState`` and emit
+      ``case-open`` with the full rehydration (chat history, loaded
+      layers, pipeline history — per FR-MP-6 chat-replay default).
+    - ``rename`` — update ``CaseSummary.title``, persist, emit
+      ``case-list`` updated.
+    - ``archive`` — soft-archive via ``Persistence.archive_case``, emit
+      ``case-list`` updated.
+    - ``delete`` — soft-delete via ``Persistence.delete_case``, emit
+      ``case-list`` updated. Memory rule: the web UI confirms with the
+      user BEFORE firing this command; the server does not double-confirm.
+
+    Errors surface as ``error`` envelopes with ``error_code=INTERNAL_ERROR``
+    (the case-lifecycle commands are NOT a confirmation trigger per
+    FR-AS-8; only solver runs and non-session-collection Mongo writes are).
+    """
+    p = get_persistence()
+    if p is None:
+        await _send_error(
+            websocket,
+            state.session_id,
+            "INTERNAL_ERROR",
+            "case-command requires Persistence; the agent service was started "
+            "without GRACE2_MONGO_MCP_STDIO=1 and cannot satisfy FR-MP-6.",
+        )
+        return
+
+    command = cmd.command
+
+    if command == "create":
+        # Generate a fresh ULID and persist. ``args.title`` is an optional hint.
+        new_case_id = new_ulid()
+        title = (cmd.args or {}).get("title") or "Untitled Case"
+        if not isinstance(title, str) or not title.strip():
+            title = "Untitled Case"
+        now = now_utc()
+        case = CaseSummary(
+            case_id=new_case_id,
+            title=title.strip(),
+            created_at=now,
+            updated_at=now,
+            status="active",
+        )
+        try:
+            await p.upsert_case(case)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("case-command(create) upsert failed: %s", exc)
+            await _send_error(
+                websocket,
+                state.session_id,
+                "INTERNAL_ERROR",
+                f"case create failed: {exc}",
+            )
+            return
+        state.active_case_id = new_case_id
+        # Emit case-open with the empty session state for the fresh Case.
+        payload = CaseOpenEnvelopePayload(
+            session_state=await p.get_session_state(new_case_id)
+        )
+        await websocket.send(
+            _new_envelope("case-open", state.session_id, payload)
+        )
+        await _emit_case_list(websocket, state)
+        logger.info(
+            "case-command create session=%s case=%s title=%r",
+            state.session_id,
+            new_case_id,
+            title,
+        )
+        return
+
+    if command == "select":
+        if not cmd.case_id:
+            await _send_error(
+                websocket,
+                state.session_id,
+                "INTERNAL_ERROR",
+                "case-command(select) requires case_id",
+            )
+            return
+        await _emit_case_open(websocket, state, cmd.case_id)
+        return
+
+    if command == "rename":
+        if not cmd.case_id:
+            await _send_error(
+                websocket,
+                state.session_id,
+                "INTERNAL_ERROR",
+                "case-command(rename) requires case_id",
+            )
+            return
+        new_title = (cmd.args or {}).get("title")
+        if not isinstance(new_title, str) or not new_title.strip():
+            await _send_error(
+                websocket,
+                state.session_id,
+                "INTERNAL_ERROR",
+                "case-command(rename) requires args.title (non-empty string)",
+            )
+            return
+        existing = await p.get_case(cmd.case_id)
+        if existing is None:
+            await _send_error(
+                websocket,
+                state.session_id,
+                "INTERNAL_ERROR",
+                f"case-command(rename): case {cmd.case_id!r} not found",
+            )
+            return
+        updated = existing.model_copy(
+            update={"title": new_title.strip(), "updated_at": now_utc()}
+        )
+        try:
+            await p.upsert_case(updated)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("case-command(rename) upsert failed: %s", exc)
+            await _send_error(
+                websocket,
+                state.session_id,
+                "INTERNAL_ERROR",
+                f"case rename failed: {exc}",
+            )
+            return
+        await _emit_case_list(websocket, state)
+        logger.info(
+            "case-command rename session=%s case=%s title=%r",
+            state.session_id,
+            cmd.case_id,
+            new_title,
+        )
+        return
+
+    if command == "archive":
+        if not cmd.case_id:
+            await _send_error(
+                websocket,
+                state.session_id,
+                "INTERNAL_ERROR",
+                "case-command(archive) requires case_id",
+            )
+            return
+        try:
+            await p.archive_case(cmd.case_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("case-command(archive) failed: %s", exc)
+            await _send_error(
+                websocket,
+                state.session_id,
+                "INTERNAL_ERROR",
+                f"case archive failed: {exc}",
+            )
+            return
+        await _emit_case_list(websocket, state)
+        logger.info(
+            "case-command archive session=%s case=%s",
+            state.session_id,
+            cmd.case_id,
+        )
+        return
+
+    if command == "delete":
+        if not cmd.case_id:
+            await _send_error(
+                websocket,
+                state.session_id,
+                "INTERNAL_ERROR",
+                "case-command(delete) requires case_id",
+            )
+            return
+        try:
+            await p.delete_case(cmd.case_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("case-command(delete) failed: %s", exc)
+            await _send_error(
+                websocket,
+                state.session_id,
+                "INTERNAL_ERROR",
+                f"case delete failed: {exc}",
+            )
+            return
+        # If the deleted Case was the active one, clear the context — any
+        # subsequent publish will fall through to the single-tenant default
+        # rather than mutate a soft-deleted ``.qgs``.
+        if state.active_case_id == cmd.case_id:
+            state.active_case_id = None
+        await _emit_case_list(websocket, state)
+        logger.info(
+            "case-command delete session=%s case=%s",
+            state.session_id,
+            cmd.case_id,
+        )
+        return
+
+    # Closed enum guard — pydantic should have rejected before we got here.
+    await _send_error(
+        websocket,
+        state.session_id,
+        "INTERNAL_ERROR",
+        f"unknown case-command: {command!r}",
+    )
+
+
+async def _persist_chat_turn(
+    state: SessionState,
+    *,
+    role: str,
+    content: str,
+    pipeline_id: str | None = None,
+) -> None:
+    """Append one ``CaseChatMessage`` to Mongo for the active Case.
+
+    Best-effort: a missing Persistence binding OR no active Case context
+    short-circuits (the M1 in-memory chat keeps working). A failed write
+    is logged but not raised — chat persistence is a side-effect, not the
+    happy path of message delivery.
+
+    Per FR-AS-8 / Decision F the chat-message collection is part of the
+    agent's own session record (it is per-turn replay material, not a
+    solver result); the confirmation-hook carveout in ``CONFIRMATION_TRIGGERS``
+    means this write does NOT pause for user approval.
+    """
+    if not state.active_case_id:
+        return
+    p = get_persistence()
+    if p is None:
+        return
+    msg = CaseChatMessage(
+        message_id=new_ulid(),
+        case_id=state.active_case_id,
+        role=role,  # type: ignore[arg-type]
+        content=content,
+        pipeline_id=pipeline_id,
+        layer_emissions=list(state.current_turn_layer_ids),
+        created_at=now_utc(),
+    )
+    try:
+        await p.append_chat_message(msg)
+        logger.debug(
+            "chat-persist session=%s case=%s role=%s msg_id=%s pipeline_id=%s layers=%d",
+            state.session_id,
+            state.active_case_id,
+            role,
+            msg.message_id,
+            pipeline_id,
+            len(msg.layer_emissions),
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "chat-persist failed session=%s case=%s role=%s",
+            state.session_id,
+            state.active_case_id,
+            role,
+        )
 
 
 def _ensure_emitter(websocket: ServerConnection, state: SessionState) -> None:
@@ -423,7 +913,45 @@ async def _invoke_tool_via_emitter(
         )
         return None
     entry = TOOL_REGISTRY[tool_name]
+
+    # job-0121: per-Case ``.qgs`` lazy-init for ``publish_layer``.
+    #
+    # When invoked inside a Case context (``state.active_case_id`` set) we
+    # resolve (or initialize) the per-Case ``.qgs`` URI BEFORE the tool body
+    # runs, then substitute it into ``project_qgs_uri`` so the worker mutates
+    # the case-scoped file rather than the shared default. This is the
+    # OQ-62-QGS-MUTATION-CONFLICT resolution path.
+    if tool_name == "publish_layer" and state.active_case_id:
+        try:
+            case_qgs = await ensure_case_qgs(
+                get_persistence(), state.active_case_id
+            )
+        except CaseLifecycleError as exc:
+            logger.warning(
+                "case-qgs lazy-init failed code=%s case=%s err=%s; "
+                "falling back to default .qgs",
+                exc.error_code,
+                state.active_case_id,
+                exc,
+            )
+        else:
+            # Substitute (additively) without clobbering an explicit override.
+            params = dict(params)
+            params.setdefault("project_qgs_uri", case_qgs)
+            params.setdefault("case_id", state.active_case_id)
+            logger.info(
+                "publish_layer routed to case-scoped qgs case=%s qgs=%s",
+                state.active_case_id,
+                case_qgs,
+            )
+
+    # Drop ``case_id`` for tools that don't declare it — defense in depth.
+    # ``publish_layer`` accepts it; other tools do not.
+    if tool_name != "publish_layer" and "case_id" in params:
+        params = {k: v for k, v in params.items() if k != "case_id"}
+
     state.current_pipeline_id = state.emitter.start_pipeline()
+    state.current_turn_pipeline_id = state.current_pipeline_id
     try:
         result = await state.emitter.emit_tool_call(
             name=entry.metadata.name,
@@ -433,6 +961,15 @@ async def _invoke_tool_via_emitter(
     finally:
         state.emitter.close_pipeline()
         state.current_pipeline_id = None
+
+    # Track layer emissions on the active turn so the next ``CaseChatMessage``
+    # write captures them. ``publish_layer`` returns a WMS URL string; we use
+    # the tool's ``layer_id`` parameter as the canonical layer identifier.
+    if tool_name == "publish_layer" and "layer_id" in params:
+        lid = params.get("layer_id")
+        if isinstance(lid, str) and lid:
+            state.current_turn_layer_ids.append(lid)
+
     # job-0101: Mode 2 .gov/.edu classifier — when web_fetch returns a dict
     # that looks like a structured-data candidate, emit a `mode2-candidate`
     # envelope and append an audit-log line. Deterministic side-effect; the
@@ -509,6 +1046,82 @@ def _parse_invoke_directive(text: str) -> tuple[str, dict] | None:
     return tool_name, params
 
 
+# --------------------------------------------------------------------------- #
+# Dispatch wrappers with chat persistence (job-0121, FR-MP-6)
+# --------------------------------------------------------------------------- #
+
+
+async def _dispatch_gemini_and_persist(
+    websocket: ServerConnection,
+    state: SessionState,
+    settings: GeminiSettings,
+    user_text: str,
+    research_mode: str,
+) -> None:
+    """Stream Gemini reply, then persist the agent's reply to the active Case.
+
+    Wraps ``_stream_gemini_reply`` so the Case chat-history append happens
+    after the stream completes (the streamed text is the canonical
+    ``content`` field on ``CaseChatMessage``). On cancel/error we still
+    attempt a best-effort persist of whatever the chat-history accumulator
+    captured (the stream pushes a ``{role, text}`` dict on completion).
+    """
+    pre_chat_len = len(state.chat_history)
+    try:
+        await _stream_gemini_reply(
+            websocket, state, settings, user_text, research_mode
+        )
+    finally:
+        # The current Gemini streaming path appends ``{role: user, text: ...}``
+        # to ``state.chat_history`` on stream complete (line ~362 above).
+        # The agent's reply text itself isn't accumulated into chat_history
+        # — we record a placeholder content marker so Case replay knows the
+        # turn happened. A future job (full reply accumulation) will
+        # capture the actual streamed deltas; for now the per-turn record
+        # carries the user message + tool emissions, which is sufficient
+        # for FR-MP-6 replay (chat-replay default per user 2026-06-08).
+        if state.active_case_id and len(state.chat_history) > pre_chat_len:
+            # Best-effort: append an agent-reply CaseChatMessage so a Case
+            # replay shows a marker for the turn. ``content`` is empty
+            # because the Gemini stream isn't currently accumulated; the
+            # ``layer_emissions`` accumulator carries the side-effects.
+            await _persist_chat_turn(
+                state,
+                role="agent",
+                content="",  # reply text not currently accumulated
+                pipeline_id=state.current_turn_pipeline_id,
+            )
+
+
+async def _dispatch_tool_and_persist(
+    websocket: ServerConnection,
+    state: SessionState,
+    tool_name: str,
+    params: dict,
+    raw_user_text: str,
+) -> None:
+    """Invoke a tool, then persist the agent's reply (tool result) to the
+    active Case.
+
+    Wraps ``_invoke_tool_via_emitter`` so the Case chat-history append
+    happens after the tool returns. The persisted ``content`` is a
+    user-readable summary of the tool result (the stringified result for
+    primitive returns, or a marker for complex returns).
+    """
+    try:
+        await _invoke_tool_via_emitter(
+            websocket, state, tool_name, params
+        )
+    finally:
+        if state.active_case_id:
+            await _persist_chat_turn(
+                state,
+                role="agent",
+                content=f"[invoked {tool_name}]",
+                pipeline_id=state.current_turn_pipeline_id,
+            )
+
+
 def _make_handler(settings: GeminiSettings):
     """Build the per-connection coroutine, closing over the resolved settings."""
 
@@ -559,6 +1172,21 @@ def _make_handler(settings: GeminiSettings):
                 # Dispatch on message type. Every payload is re-validated
                 # through its concrete grace2_contracts model.
                 try:
+                    # job-0122 (Appendix H.5 / H.3): the auth-token envelope
+                    # is the connect-handshake. If we receive it, run the
+                    # full handshake. If we receive anything else and the
+                    # handshake has not completed, trip the anonymous
+                    # fallback inline so the SessionState.authenticated_user_id
+                    # is bound before any user-scoped action runs.
+                    if msg_type == "auth-token":
+                        await _handle_auth_token(websocket, state, payload_dict)
+                        continue
+                    # Implicit anonymous fallback when any other envelope
+                    # arrives before the handshake — keeps the legacy
+                    # no-auth-token clients working.
+                    if not state.auth_handshake_complete:
+                        await _ensure_auth_handshake(websocket, state)
+
                     if msg_type == "session-resume":
                         SessionResumePayload.model_validate(payload_dict)
                         await _handle_session_resume(websocket, state)
@@ -582,6 +1210,19 @@ def _make_handler(settings: GeminiSettings):
                         # before starting a new one (simple M1 policy).
                         if state.inflight_task and not state.inflight_task.done():
                             state.inflight_task.cancel()
+                        # job-0121: reset per-turn layer accumulator before
+                        # the dispatch so the CaseChatMessage write captures
+                        # only this turn's emissions.
+                        state.current_turn_layer_ids = []
+                        state.current_turn_pipeline_id = None
+                        # job-0121: persist user message to the active Case
+                        # (FR-MP-6). Best-effort — no active Case OR no
+                        # Persistence = no-op; the M1 stateless path keeps
+                        # working. Per FR-AS-8 this is a session-record
+                        # write and is NOT a confirmation trigger.
+                        await _persist_chat_turn(
+                            state, role="user", content=um.text
+                        )
                         # job-0035 M4 live-evidence path: ``/invoke <tool>
                         # <json>`` drives real tool invocation through the
                         # PipelineEmitter so the Gemini-side function-calling
@@ -592,13 +1233,13 @@ def _make_handler(settings: GeminiSettings):
                         if directive is not None:
                             tool_name, params = directive
                             task = asyncio.create_task(
-                                _invoke_tool_via_emitter(
-                                    websocket, state, tool_name, params
+                                _dispatch_tool_and_persist(
+                                    websocket, state, tool_name, params, um.text
                                 )
                             )
                         else:
                             task = asyncio.create_task(
-                                _stream_gemini_reply(
+                                _dispatch_gemini_and_persist(
                                     websocket,
                                     state,
                                     settings,
@@ -607,6 +1248,17 @@ def _make_handler(settings: GeminiSettings):
                                 )
                             )
                         state.inflight_task = task
+
+                    elif msg_type == "case-command":
+                        # job-0121 (FR-MP-6): Case lifecycle dispatch. The
+                        # envelope is validated through the pydantic model
+                        # so an unknown command raises ValidationError and
+                        # surfaces TOOL_PARAMS_INVALID via the outer block
+                        # (closed enum — see CaseCommand Literal).
+                        cmd = CaseCommandEnvelopePayload.model_validate(
+                            payload_dict
+                        )
+                        await _handle_case_command(websocket, state, cmd)
 
                     elif msg_type == "cancel":
                         CancelPayload.model_validate(payload_dict)
@@ -693,4 +1345,11 @@ __all__ = [
     "get_persistence",
     "set_persistence",
     "init_persistence_from_env",
+    # job-0121: Case lifecycle handlers + chat persistence.
+    "_emit_case_list",
+    "_emit_case_open",
+    "_handle_case_command",
+    "_persist_chat_turn",
+    "_dispatch_tool_and_persist",
+    "_dispatch_gemini_and_persist",
 ]

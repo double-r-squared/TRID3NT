@@ -21,7 +21,9 @@ for the ``_id``-aliased collection documents; see ``collections.MONGO_DUMP_KWARG
 from __future__ import annotations
 
 from . import (
+    auth,
     case,
+    case_results,
     catalog,
     collections,
     envelope,
@@ -33,6 +35,12 @@ from . import (
     tool_registry,
     user,
     ws,
+)
+from .case_results import (
+    CaseOneResult,
+    DerivedEventParam,
+    EventIngestProvenance,
+    EventIngestResult,
 )
 from .common import (
     BBox,
@@ -52,6 +60,7 @@ __all__ = [
     "__version__",
     "SCHEMA_VERSION",
     # modules
+    "auth",
     "ws",
     "envelope",
     "errors",
@@ -59,11 +68,17 @@ __all__ = [
     "collections",
     "catalog",
     "case",
+    "case_results",
     "execution",
     "secrets",
     "tool_metadata",
     "tool_registry",
     "user",
+    # case-workflow results
+    "CaseOneResult",
+    "DerivedEventParam",
+    "EventIngestProvenance",
+    "EventIngestResult",
     # common primitives
     "GraceModel",
     "ULIDStr",
