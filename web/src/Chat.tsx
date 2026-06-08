@@ -25,7 +25,7 @@
 // The chat is a CONSUMER of frames — every glyph on screen came from the
 // agent. No client-side text generation.
 
-import { KeyboardEvent, useEffect, useReducer, useRef, useState } from "react";
+import { useEffect, useReducer, useRef, useState } from "react";
 import { ConnectionStatus, GraceWs } from "./ws";
 import {
   AgentMessageChunkPayload,
@@ -37,6 +37,7 @@ import {
   SessionStatePayload,
 } from "./contracts";
 import { PipelineCard } from "./components/PipelineCard";
+import { ChatInput, ChatInputState } from "./components/ChatInput";
 
 // --- Chat message shape -------------------------------------------------- //
 
@@ -184,7 +185,6 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
   });
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
   const [researchMode] = useState<ResearchMode>("research"); // toggle UI lands M3
-  const [draft, setDraft] = useState("");
   const [lastError, setLastError] = useState<string | null>(null);
 
   const wsRef = useRef<GraceWs | null>(null);
@@ -230,23 +230,14 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
     }
   }, [messages, pipeline]);
 
-  function submit(): void {
-    const text = draft.trim();
+  function submit(text: string): void {
     if (!text || !wsRef.current) return;
     setMessages((prev) => [
       ...prev,
       { id: `user-${prev.length}`, role: "user", text, done: true },
     ]);
     wsRef.current.sendUserMessage(text, researchMode);
-    setDraft("");
     setLastError(null);
-  }
-
-  function onKey(e: KeyboardEvent<HTMLTextAreaElement>): void {
-    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
-      e.preventDefault();
-      submit();
-    }
   }
 
   function cancel(): void {
@@ -255,6 +246,12 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
 
   const showCancel = shouldShowCancel(pipeline);
   const liveSteps = pipeline.live?.steps ?? [];
+  // Merged send/stop control: in-flight whenever the cancel predicate fires
+  // (any running step in the live pipeline, OR a non-null
+  // session-state.current_pipeline). Returns to idle on terminal /
+  // cancelled pipeline-state per the existing pipelineReducer.
+  const inputState: ChatInputState = showCancel ? "in-flight" : "idle";
+  const inputDisabled = status !== "connected";
 
   return (
     <div
@@ -332,13 +329,18 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
         )}
       </header>
 
-      {/* ---- Scrollable conversation area ---- */}
+      {/* ---- Scrollable conversation area ----                                   */}
+      {/* job-0144: bottom-padding leaves room for the overlay ChatInput so       */}
+      {/* messages aren't hidden behind it. The input grows from ~68px → ~40vh;   */}
+      {/* the padding here is sized for the idle state and the input floats over  */}
+      {/* the bottom of the scroll when it grows (Kickoff Part 4 — overlay,       */}
+      {/* don't displace content).                                                */}
       <div
         ref={scrollRef}
         style={{
           flex: 1,
           overflowY: "auto",
-          padding: "12px",
+          padding: "12px 12px 88px 12px",
           display: "flex",
           flexDirection: "column",
           gap: 10,
@@ -410,71 +412,28 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
         )}
       </div>
 
-      {/* ---- Input footer ---- */}
-      <footer
+      {/* ---- Overlay input wrapper (job-0144) ----                              */}
+      {/* Floats at the bottom of the chat panel; the scroll above has matching   */}
+      {/* bottom-padding so messages aren't hidden behind it. The merged          */}
+      {/* send/stop control lives inside ChatInput — there is no separate         */}
+      {/* displayed Cancel button per Kickoff Part 6.                             */}
+      <div
+        data-testid="chat-input-overlay"
         style={{
-          padding: 10,
-          borderTop: "1px solid #333",
-          display: "flex",
-          gap: 6,
+          position: "absolute",
+          left: 12,
+          right: 12,
+          bottom: 12,
+          pointerEvents: "auto",
         }}
       >
-        <textarea
-          data-testid="chat-input"
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={onKey}
-          placeholder="Ctrl/Cmd+Enter to send"
-          rows={2}
-          style={{
-            flex: 1,
-            resize: "none",
-            background: "#111",
-            color: "#eee",
-            border: "1px solid #333",
-            borderRadius: 4,
-            padding: 6,
-            fontFamily: "inherit",
-            fontSize: 13,
-          }}
+        <ChatInput
+          state={inputState}
+          onSubmit={submit}
+          onCancel={cancel}
+          disabled={inputDisabled}
         />
-        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-          <button
-            data-testid="chat-send"
-            onClick={submit}
-            disabled={!draft.trim() || status !== "connected"}
-            style={{
-              background: "#37a",
-              color: "#fff",
-              border: 0,
-              borderRadius: 4,
-              padding: "6px 10px",
-              cursor: "pointer",
-              fontSize: 12,
-            }}
-          >
-            Send
-          </button>
-          {/* Cancel button — FR-WC-9, Invariant 8. Active when pipeline running. */}
-          <button
-            data-testid="chat-cancel"
-            onClick={cancel}
-            disabled={!showCancel || status !== "connected"}
-            aria-label="cancel pipeline"
-            style={{
-              background: showCancel ? "#7f1d1d" : "#333",
-              color: showCancel ? "#fee2e2" : "#888",
-              border: showCancel ? "1px solid #b91c1c" : "1px solid #444",
-              borderRadius: 4,
-              padding: "6px 10px",
-              cursor: showCancel ? "pointer" : "default",
-              fontSize: 12,
-            }}
-          >
-            Cancel
-          </button>
-        </div>
-      </footer>
+      </div>
     </div>
   );
 }
