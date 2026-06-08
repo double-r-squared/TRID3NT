@@ -628,6 +628,118 @@
       "description": "Sprint-12-mega Wave 1.5 parallel: Florida panther taxon-key correction + _species_reference dict. Wave 1.5 fan-out closed 16/16 ready-for-audit (with same commit-label-swap race pattern as Wave 1; HEAD files all correct; marker commits document actual landings). Live geographic-correctness gate satisfied for each.",
       "model": "opus",
       "subagent_tokens": 198089
+    },
+    {
+      "job_id": "job-0118-engine-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 2 parallel: model_flood_habitat_scenario Case 1 composer + CaseOneResult contract. Wave 2 fan-out closed 16/16 ready-for-audit (commit-label-swap pattern continued; HEAD files correct; marker commits document landings).",
+      "model": "opus",
+      "subagent_tokens": 208314
+    },
+    {
+      "job_id": "job-0119-agent-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 2 parallel: model_news_event_ingest Case 2 partial composer + EventIngestResult. Wave 2 fan-out closed 16/16 ready-for-audit (commit-label-swap pattern continued; HEAD files correct; marker commits document landings).",
+      "model": "opus",
+      "subagent_tokens": 208314
+    },
+    {
+      "job_id": "job-0120-engine-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 2 parallel: Pelicun composer (real impl) + HAZUS v6.1 flood loss functions + Fort Myers damage E2E. Wave 2 fan-out closed 16/16 ready-for-audit (commit-label-swap pattern continued; HEAD files correct; marker commits document landings).",
+      "model": "opus",
+      "subagent_tokens": 208314
+    },
+    {
+      "job_id": "job-0121-agent-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 2 parallel: Case UX agent backend \u2014 per-Case .qgs lazy-init + Persistence wiring + chat replay. Wave 2 fan-out closed 16/16 ready-for-audit (commit-label-swap pattern continued; HEAD files correct; marker commits document landings).",
+      "model": "opus",
+      "subagent_tokens": 208314
+    },
+    {
+      "job_id": "job-0122-agent-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 2 parallel: Auth backend \u2014 Firebase ID-token verifier + WS connect handshake. Wave 2 fan-out closed 16/16 ready-for-audit (commit-label-swap pattern continued; HEAD files correct; marker commits document landings).",
+      "model": "opus",
+      "subagent_tokens": 208314
+    },
+    {
+      "job_id": "job-0123-web-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 2 parallel: Firebase Auth web client + AuthPanel + auth-token envelope. Wave 2 fan-out closed 16/16 ready-for-audit (commit-label-swap pattern continued; HEAD files correct; marker commits document landings).",
+      "model": "opus",
+      "subagent_tokens": 208314
+    },
+    {
+      "job_id": "job-0124-agent-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 2 parallel: Secrets agent backend \u2014 GCP Secret Manager vault + ws handlers. Wave 2 fan-out closed 16/16 ready-for-audit (commit-label-swap pattern continued; HEAD files correct; marker commits document landings).",
+      "model": "opus",
+      "subagent_tokens": 208314
+    },
+    {
+      "job_id": "job-0125-web-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 2 parallel: Secrets UX web \u2014 SecretsPanel + Tier2UnlockBadge + ws wiring. Wave 2 fan-out closed 16/16 ready-for-audit (commit-label-swap pattern continued; HEAD files correct; marker commits document landings).",
+      "model": "opus",
+      "subagent_tokens": 208314
+    },
+    {
+      "job_id": "job-0126-web-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 2 parallel: Mode 2 .gov/.edu offer-to-add modal. Wave 2 fan-out closed 16/16 ready-for-audit (commit-label-swap pattern continued; HEAD files correct; marker commits document landings).",
+      "model": "opus",
+      "subagent_tokens": 208314
+    },
+    {
+      "job_id": "job-0127-schema-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 2 parallel: Tool payload-warning system \u2014 cross-cut schema+agent+web envelopes + inline UI. Wave 2 fan-out closed 16/16 ready-for-audit (commit-label-swap pattern continued; HEAD files correct; marker commits document landings).",
+      "model": "opus",
+      "subagent_tokens": 208314
+    },
+    {
+      "job_id": "job-0128-engine-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 2 parallel: fetch_ebird_observations Tier-2 (Cornell Lab eBird API). Wave 2 fan-out closed 16/16 ready-for-audit (commit-label-swap pattern continued; HEAD files correct; marker commits document landings).",
+      "model": "opus",
+      "subagent_tokens": 208314
+    },
+    {
+      "job_id": "job-0129-engine-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 2 parallel: fetch_iucn_red_list_range Tier-2. Wave 2 fan-out closed 16/16 ready-for-audit (commit-label-swap pattern continued; HEAD files correct; marker commits document landings).",
+      "model": "opus",
+      "subagent_tokens": 208314
+    },
+    {
+      "job_id": "job-0130-engine-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 2 parallel: fetch_movebank_tracks Tier-2. Wave 2 fan-out closed 16/16 ready-for-audit (commit-label-swap pattern continued; HEAD files correct; marker commits document landings).",
+      "model": "opus",
+      "subagent_tokens": 208314
+    },
+    {
+      "job_id": "job-0131-engine-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 2 parallel: fetch_era5_reanalysis Tier-2 (Copernicus CDS \u2014 compound-flood substrate). Wave 2 fan-out closed 16/16 ready-for-audit (commit-label-swap pattern continued; HEAD files correct; marker commits document landings).",
+      "model": "opus",
+      "subagent_tokens": 208314
+    },
+    {
+      "job_id": "job-0132-engine-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 2 parallel: fetch_gtsm_tide_surge Tier-2 (GTSM v3.0 coastal water-level \u2014 compound-flood substrate). Wave 2 fan-out closed 16/16 ready-for-audit (commit-label-swap pattern continued; HEAD files correct; marker commits document landings).",
+      "model": "opus",
+      "subagent_tokens": 208314
+    },
+    {
+      "job_id": "job-0133-engine-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 2 parallel: fetch_cama_flood_discharge Tier-1 (CaMa-Flood \u2014 compound-flood fluvial substrate). Wave 2 fan-out closed 16/16 ready-for-audit (commit-label-swap pattern continued; HEAD files correct; marker commits document landings).",
+      "model": "opus",
+      "subagent_tokens": 208314
     }
   ],
   "totals_by_sprint": {
@@ -637,7 +749,7 @@
     "9": 713020,
     "10": 1540974,
     "11": 999540,
-    "12": 5876098
+    "12": 9209122
   },
   "historical_context": {
     "note": "Captured for accountability \u2014 NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
