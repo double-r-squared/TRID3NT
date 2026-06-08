@@ -246,13 +246,20 @@
       "description": "Stage B follow-up: pyqgis-worker SA → runs bucket grant. Single google_storage_bucket_iam_member added to infra/buckets.tf (co-located after qgis_server_runs_viewer). Targeted tofu plan 1-add 0-change 0-destroy; apply clean. NFR-S-2 preserved. Live worker smoke uncovered NEW blocker — deployed image sha256:fffd7e0f from job-0021 predates job-0062's --op publish-raster CLI; argparse exits 2 (NOT GCS permission error). NEW carry-forward OQ-67-WORKER-IMAGE-REBUILD: `make worker-build` → capture digest → pin in infra/worker.tf → targeted apply. Mirrors QGIS Server rebuild pattern (jobs 0024+0029). Can defer to sprint-10; sprint-9 Playwright UI acceptance uses dev-injection-driven mocked loaded_layers (same approach as job-0065 screenshots). Sprint-9 Sonnet win #6. Commit 726f79d.",
       "model": "sonnet",
       "subagent_tokens": 65817
+    },
+    {
+      "job_id": "job-0064-web-20260607",
+      "sprint": 9,
+      "description": "Stage C UI tweak #1: pipeline cards inline in chat per user direction 2026-06-07. Option A chosen — PipelineStrip deleted entirely (basemap fully clean). NEW PipelineCard.tsx one-line cards: `<name> 47%` running with progress-fill gradient bg; `<name> ✓` complete; `<name> ✗` failed; `<name> ⊘` cancelled — Invariant 8 distinct visual states. Chat.tsx owns pipeline-state via its own GraceWs handler + pipelineReducer enforcing A.7 replace-not-reconcile; PipelineStepGroup stacks cards at conversation bottom while live, scrolls into history on terminal state. Cancel button moved to chat footer (red, enabled when running step OR session current_pipeline non-null). App.tsx removed pipelineBus / PipelineStrip mount / wsRef; preserved job-0065 collapse toggles + LayerLegend. Dev injection seam `window.__grace2InjectPipelineState` registered. 46/46 tests pass + clean build. 2 screenshots surfaced (full viewport + zoomed chat panel; 3 [data-testid='pipeline-card'] elements verified). Stage C COMPLETE. Sprint-9 Sonnet win #7. Commit cec1071.",
+      "model": "sonnet",
+      "subagent_tokens": 115728
     }
   ],
   "totals_by_sprint": {
     "6": 1265567,
     "7": 1863284,
     "8": 1786238,
-    "9": 483580
+    "9": 599308
   },
   "historical_context": {
     "note": "Captured for accountability — NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
