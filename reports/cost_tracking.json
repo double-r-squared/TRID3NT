@@ -395,6 +395,13 @@
       "description": "Sprint-11 Stage 1: OQ-76-MAP-ALIGNMENT diagnosis + fix. **Diagnostic finding**: the flood-overlay 'misalignment' user-flagged in job-0076 was a perception artifact of MapLibre's default `raster-resampling: linear` smearing the COG's discrete ~3-10m flood-depth cells across screen pixels at zoom 13 \u2014 NOT a geographic offset. All 5 hypotheses ranked in kickoff REJECTED with evidence: (1) WMS URL params identical (60/60 flood/basemap BBOX matches via page.on('request') Playwright instrumentation), (2) MapLibre `bounds:` not the cause, (3) tileSize 256 matches across sources, (4) WMS 1.3.0 axis-order OK, (5) EPSG:32617->3857 reproject correct (PIL composite of curl'd flood + basemap matches MapLibre render to ~3% mean pixel diff). **Fix**: one-line `raster-resampling: nearest` paint-property addition in web/src/Map.tsx \u2014 each COG cell now renders as discrete sharp block, making per-cell alignment with basemap streets/blocks visually verifiable. Tests 72->73 all passing, 1 new regression test. **Evidence**: aligned_light.png + aligned_dark.png + basemap-only counterparts (alignment proof: flood OFF view at same camera state) + 4-up composite + side-by-side proofs + diagnosis.md + url_pairs.json. OQs (non-blocking): OQ-78-AGENT-RASTER-RESAMPLING-FIELD (schema: should agent suggest resampling mode per layer type?), OQ-78-LIGHT-THEME-ALIGNMENT-ANCHORS (cosmetic: OSM water tones blend with light-blue flood palette), OQ-78-OPACITY-WIRE-DEFAULT (agent: 0.9 deliberate or placeholder?). **OPUS DIAGNOSTIC WIN**: 168K tokens to rule out 5 hypotheses with concrete data rather than chase the wrong fix \u2014 exactly what Opus is for. Commit 9acec1d.",
       "model": "opus",
       "subagent_tokens": 168529
+    },
+    {
+      "job_id": "job-0086-engine-20260608",
+      "sprint": 11,
+      "description": "Sprint-11 Stage 1 capstone: REAL OQ-76 fix \u2014 Y-axis flip in postprocess_flood COG extraction. Orchestrator-direct local diagnosis (rasterio on GCS COG + fsspec on source sfincs_map.nc) localized the in-COG mirror that job-0078's URL-consistency proof was vacuous against. Probe confirmed SFINCS y ascending along rows (y[0,0]=2,936,568 south UTM \u2192 y[-1,0]=2,952,348 north UTM); rasterio.from_bounds produces north-up transform; writing arr as-is paints SOUTH data (deep flood at Caloosahatchee mouth + San Carlos Bay) at the NORTH of the overlay bbox. Fix: Y-orientation guard before COG write \u2014 detects ascending y and applies `arr = arr[::-1, :]` + `arr_masked = arr_masked[::-1, :]`. Belt-and-suspenders X-orientation guard added analogously. 4 regression tests pass (y ascending fires guard, y descending idempotent no-op, metrics flip-invariant, x descending fires x guard). Full agent suite 279 passed 0 regressions. Re-extracted Fort Myers COG from EXISTING gs://...sfincs_map.nc (no SFINCS re-run) as flood_depth_peak_0086.tif; published WMS layer flood-depth-job-0086-fix (CONDITION_SUCCEEDED). **Live E2E**: z12/z11 dark-theme screenshots confirm deep-flood pixels NOW at SW (Caloosahatchee mouth + Cape Coral) \u2014 not NW. before_vs_after.png shows vertical mirror between old 0075 layer and new 0086 layer as expected. **Lesson codified**: URL/render consistency != geographic correctness; in-COG mirror is invisible to every consistency check (server, client, PIL composite all faithfully serve the mirrored array). Commit b862cbf.",
+      "model": "sonnet",
+      "subagent_tokens": 88163
     }
   ],
   "totals_by_sprint": {
@@ -403,7 +410,7 @@
     "8": 1786238,
     "9": 713020,
     "10": 1540974,
-    "11": 911377
+    "11": 999540
   },
   "historical_context": {
     "note": "Captured for accountability \u2014 NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
