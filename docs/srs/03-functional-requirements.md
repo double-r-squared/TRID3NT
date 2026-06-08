@@ -571,6 +571,8 @@ The table below summarizes the five-collection structure. Full collection schema
 
 Implementation refinement is deferred to its target sprint; the contract above pins intent. The Case identifier maps 1:1 to the `projects._id` ULID; UI labels say "Case", schema and code say "Project" (FR-MP-5 nomenclature stays canonical).
 
+**v0.3.22 amendment (sprint-12-mega Wave 1, job-0099).** The Case-persistence envelopes that back FR-MP-6 are locked in `packages/contracts/src/grace2_contracts/case.py`: `CaseSummary` (the left-rail entity, denormalized from `projects`), `CaseChatMessage` (a persisted single chat exchange carrying per-turn `layer_emissions` + `map_command_emissions` so rehydration can replay the layer-binding sequence deterministically — Invariant 1), `CaseSessionState` (the rehydration envelope returned on Case open), and the Appendix A.4/A.3 lifecycle envelopes `case-list` (server → client left-rail list), `case-open` (server → client rehydrate), and `case-command` (client → server `create` / `select` / `rename` / `archive` / `delete`, with a closed-enum command discriminator mirroring the `map-command` one-umbrella-type pattern). All envelopes are pydantic v2 `GraceModel` subclasses, carry `schema_version: "v1"`, carry no cost field (Invariant 9), and route cancellation through the existing A.3 `cancel` message (Invariant 8 — no `case-command` cancellation variant). The `case_id` is the `projects._id` ULID 1:1; FR-MP-5 nomenclature stays canonical in storage. Wave 2 Case UX work (agent + web) consumes this envelope shape as the gating contract.
+
 ### 3.8 Cloud Execution (FR-CE)
 
 **FR-CE-1: Solver containerization**

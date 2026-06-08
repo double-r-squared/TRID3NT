@@ -7,6 +7,8 @@ Single source of truth for every type that crosses a specialist boundary:
 - ``collections``: the five MongoDB collection schemas + vector index configs
   + TTL config (Appendix D).
 - ``catalog``: CatalogEntry — the public_hazard_catalog.yaml entry (FR-PHC-2).
+- ``case``: Case persistence envelopes (CaseSummary/CaseChatMessage/
+  CaseSessionState) + Case-lifecycle WebSocket envelopes (FR-MP-6).
 - ``execution``: ModelSetup / ExecutionHandle / RunResult / LayerURI (FR-TA-2).
 - ``tool_metadata``: tool-docstring metadata + ``tool_category`` conventions
   (FR-TA-3, FR-AS-3) — convention only; ``agent`` owns the registry code.
@@ -19,11 +21,13 @@ for the ``_id``-aliased collection documents; see ``collections.MONGO_DUMP_KWARG
 from __future__ import annotations
 
 from . import (
+    case,
     catalog,
     collections,
     envelope,
     event,
     execution,
+    secrets,
     tool_metadata,
     tool_registry,
     ws,
@@ -51,7 +55,9 @@ __all__ = [
     "event",
     "collections",
     "catalog",
+    "case",
     "execution",
+    "secrets",
     "tool_metadata",
     "tool_registry",
     # common primitives
