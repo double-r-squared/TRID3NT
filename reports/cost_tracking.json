@@ -311,6 +311,13 @@
       "description": "Stage 1: 4 tight code changes + 7 new tests + 3 pre-existing broken tests fixed; suite 180→187. (1) Rotation fix: diagnosed HydroMT-SFINCS 1.2.2 emits hmax with dims (timemax, m, n) not (timemax, n, m); xarray dim-name inspection + transpose handles square AND non-square unambiguously. (2) Transparency belt+suspenders: NODATA_DEPTH_M=0.05 constant + mask threshold change + QML lowest-stop alpha=0. (3) CRS_TAG_MISMATCH guard at postprocess_flood:~306 — re-open written COG + 3 assertions (crs round-trip + geographic |x|≤360 + projected |x|>1000); raises PostprocessError before GCS upload (research-workflow recommendation). (4) publish_layer dispatch: verified JobsClient.run_job() accepts request= only (not name=/overrides= kwargs); fixed to RunJobRequest(name=..., overrides=Overrides(container_overrides=[ContainerOverride(env=[EnvVar(...)])])). Pre-existing fixes: 3 tests broken by job-0062's gs:// → WMS URL substitution but still asserting gs:// — corrected to WMS pattern. Live verification gates on job-0074. 2 minor non-blocking OQs surfaced (square-grid-rotation + nodata-flooded-count-delta). Sprint-10 Sonnet win #5. Commits 0cbfa43 + 2eb98bc.",
       "model": "sonnet",
       "subagent_tokens": 156991
+    },
+    {
+      "job_id": "job-0074-engine-20260607",
+      "sprint": 10,
+      "description": "Stage 2: 5 cross-specialty parts in one commit. (1) Worker DOUBLE-MNT-PREFIX fix — Path(read_path).name when /mnt/qgs/ prefix; native URL emission confirmed. (2) Worker EPSG:4326 WMSCrsList fix — project.writeEntry after addMapLayer; 552 KB tiles vs 1117-byte transparent before. (3) App.tsx 1-line onMapCommand callback closes OQ-72 production routing. (4) Worker rebuild Cloud Build caa0a59f 1m59s; digest sha256:56df8f4c pinned; tofu apply 1-change clean. (5) Re-publish-raster SUCCEEDED; .qgs 4 layers; server-side curl 333 KB EPSG:3857 + 552 KB EPSG:4326. HONEST CAVEAT: re-used job-0070's COG which predates 0071's rotation+transparency-data fixes — structural improvements all live (DOUBLE-MNT + EPSG:4326 + App.tsx + native URL) but visible rotation+transparency may persist; fresh-COG re-screenshot is sprint-10 follow-up. 13/13 worker tests + 63/63 web. 2 minor OQs: OQ-74-KICKOFF-WORKER-OP-MISMATCH (low; doc error), OQ-74-TSC-WS-TEST-ERRORS (low; pre-existing). Sprint-10 Sonnet win #6. Commit 344de30.",
+      "model": "sonnet",
+      "subagent_tokens": 121002
     }
   ],
   "totals_by_sprint": {
@@ -318,7 +325,7 @@
     "7": 1863284,
     "8": 1786238,
     "9": 713020,
-    "10": 1068831
+    "10": 1189833
   },
   "historical_context": {
     "note": "Captured for accountability — NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
