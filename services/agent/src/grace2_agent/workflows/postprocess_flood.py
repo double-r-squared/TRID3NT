@@ -339,6 +339,53 @@ def _extract_peak_depth_geotiff(netcdf_path: Path) -> tuple[Path, dict[str, Any]
         except Exception:  # noqa: BLE001
             transform = rasterio.Affine.identity()
 
+        # --- Y-orientation guard (job-0086) ---
+        # SFINCS often emits y ascending along rows (row 0 = south). COG built via
+        # rasterio.transform.from_bounds(...) declares row 0 = north. If we write
+        # arr as-is into that transform, the COG is internally Y-flipped: deep-flood
+        # pixels (at the SOUTH river mouth) paint onto the NORTH of the bbox.
+        # Detect direction along the row axis and flip BOTH arr + arr_masked.
+        try:
+            _y_vals = ds["y"].values
+            if _y_vals.ndim == 2:
+                y_ascends_along_rows = bool(_y_vals[0, 0] < _y_vals[-1, 0])
+            else:
+                y_ascends_along_rows = bool(_y_vals[0] < _y_vals[-1])
+            if y_ascends_along_rows:
+                logger.info(
+                    "postprocess_flood: flipping rows — SFINCS y ascends along rows "
+                    "(row 0 = south, %.2f → %.2f); COG expects row 0 = north. "
+                    "Y-axis flip applied (job-0086).",
+                    float(_y_vals.flat[0]), float(_y_vals.flat[-1]),
+                )
+                arr = arr[::-1, :]
+                arr_masked = arr_masked[::-1, :]
+        except Exception:  # noqa: BLE001 — defensive; bad y → identity, no harm
+            logger.warning("postprocess_flood: y-orientation probe failed; not flipping")
+
+        # --- X-orientation guard (job-0086, belt-and-suspenders) ---
+        # Curvilinear grids can also have x descending along columns (col 0 = east).
+        # COG from_bounds always produces west-to-east (ascending x), so if the
+        # data has x descending along cols, flip columns to match. Do NOT flip when
+        # x is already ascending — this guard is identity for all normal SFINCS runs.
+        try:
+            _x_vals = ds["x"].values
+            if _x_vals.ndim == 2:
+                x_descends_along_cols = bool(_x_vals[0, 0] > _x_vals[0, -1])
+            else:
+                x_descends_along_cols = bool(_x_vals[0] > _x_vals[-1])
+            if x_descends_along_cols:
+                logger.info(
+                    "postprocess_flood: flipping cols — SFINCS x descends along cols "
+                    "(col 0 = east, %.2f → %.2f); COG expects col 0 = west. "
+                    "X-axis flip applied (job-0086).",
+                    float(_x_vals.flat[0]), float(_x_vals.flat[-1]),
+                )
+                arr = arr[:, ::-1]
+                arr_masked = arr_masked[:, ::-1]
+        except Exception:  # noqa: BLE001 — defensive; bad x → identity, no harm
+            logger.warning("postprocess_flood: x-orientation probe failed; not flipping")
+
         tmp_cog = Path(tempfile.NamedTemporaryFile(suffix=".tif", delete=False).name)
         try:
             with rasterio.open(
