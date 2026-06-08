@@ -1,0 +1,21 @@
+{
+  "layerIds": [
+    "osm-fallback-basemap",
+    "carto-dark-basemap",
+    "flood-depth-job-0086-fix",
+    "wdpa-big-cypress",
+    "gbif-panther-fl",
+    "gbif-spoonbill-fl",
+    "gbif-alligator-fl"
+  ],
+  "sourceIds": [
+    "qgis-wms",
+    "osm-fallback",
+    "flood-depth-job-0086-fix",
+    "wdpa-big-cypress",
+    "gbif-panther-fl",
+    "gbif-spoonbill-fl",
+    "gbif-alligator-fl",
+    "carto-dark"
+  ]
+}

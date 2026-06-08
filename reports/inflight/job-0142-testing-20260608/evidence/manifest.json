@@ -1,0 +1,46 @@
+[
+  {
+    "file": "01_auth_gate_dark.png",
+    "caption": "AuthGate full-screen (anonymous flag cleared). gate_visible=True, app-shell present=False \u2014 gate covers the app."
+  },
+  {
+    "file": "02_anonymous_app_loaded.png",
+    "caption": "After clicking 'Continue without saving': AuthGate dismissed, main app shell visible (map + chat + panels). Anonymous flag persisted to localStorage."
+  },
+  {
+    "file": "03_cases_panel_populated.png",
+    "caption": "CasesPanel populated with 3 Cases (Ian Fort Myers, Big Cypress, CA wildfire). DOM rows=3."
+  },
+  {
+    "file": "04_chat_replay_with_layers.png",
+    "caption": "Case-open envelope rehydrated: chat shows 4 messages (user + agent), Big Cypress raster + panther vector layer loaded, map jumped to case bbox."
+  },
+  {
+    "file": "05_case1_z11_dark_with_vectors.png",
+    "caption": "Case 1 headline \u2014 z11 dark theme with flood-depth raster, WDPA Big Cypress polygon, and 3 distinct per-species GBIF point layers (panther/spoonbill/alligator). Each species styled by `species_*` preset \u2192 palette hash for stable distinct colours."
+  },
+  {
+    "file": "06_case1_z11_dark_basemap_only.png",
+    "caption": "Same camera (z11, Big Cypress) \u2014 all overlay layers hidden. Basemap-only alignment proof per job-0086 codified lesson."
+  },
+  {
+    "file": "07_pelicun_damage_z13_dark.png",
+    "caption": "Pelicun damage choropleth at z13 dark theme \u2014 20 footprint polygons over Fort Myers, single-colour vector fill (palette-derived) plus flood raster context. NOTE: per-feature ds_mean colour-grading would require a vector-preset registry that style-presets.ts does not yet expose; current rendering uses a single damage_loss_ratio palette colour. Surfaced as OQ-0142-PELICUN-CHOROPLETH-GRADIENT."
+  },
+  {
+    "file": "08_secrets_panel_populated.png",
+    "caption": "SecretsPanel populated with 2 entries (eBird + IUCN Red List), revoke action per row."
+  },
+  {
+    "file": "09_mode2_modal.png",
+    "caption": "Mode2OfferModal at confidence 0.9 \u2014 water.weather.gov AHPS Inundation source, .gov accent, 4 detected-pattern chips."
+  },
+  {
+    "file": "10_payload_warning_inline.png",
+    "caption": "PayloadWarningInline card surfaced via the job-0140 __grace2InjectPayloadWarning dev seam: fetch_goes_satellite 150 MB > 25 MB threshold; Proceed/Cancel/Narrow-scope actions visible."
+  },
+  {
+    "file": "11_light_theme_with_vectors.png",
+    "caption": "Case 1 vectors in LIGHT theme \u2014 same three species + WDPA polygon over QGIS Server OSM basemap. Continuity check that theme toggle does not regress vector overlays."
+  }
+]
