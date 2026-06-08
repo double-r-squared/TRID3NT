@@ -1,0 +1,39 @@
+# GBIF live invocation evidence — job-0087
+# Date: 2026-06-08
+# Tool: fetch_gbif_occurrences
+# species_key: 2435099 (Puma concolor = Florida panther species)
+# bbox: (-81.5, 25.5, -80.5, 26.5) = Big Cypress / Everglades, FL
+# max_records: 1000
+
+## Result
+layer_id: gbif-2435099--81.5000-25.5000
+name: GBIF Occurrences — taxonKey 2435099
+layer_type: vector
+uri: gs://grace-2-hazard-prod-cache/cache/static-30d/gbif/bfb5ad111f7d713499ccc6cd38e20b0d.fgb
+style_preset: gbif_occurrences
+role: context
+units: None
+
+## FlatGeobuf payload
+cache path: cache/static-30d/gbif/bfb5ad111f7d713499ccc6cd38e20b0d.fgb
+bytes: 49680
+feature count: 251
+columns: ['gbifID', 'species', 'eventDate', 'coordinateUncertaintyInMeters', 'basisOfRecord', 'geometry']
+CRS: EPSG:4326
+
+## Geography validation (job-0086 codified lesson)
+lon range: [-81.4972, -80.5394] — requested west,east = [-81.5, -80.5]
+lat range: [25.5035, 26.4951] — requested south,north = [25.5, 26.5]
+every point within requested bbox: True
+
+## First 10 features
+  feature 0: Pandas(gbifID='1122705807', species='Puma concolor', eventDate='1989-07-26', coordinateUncertaintyInMeters=nan, basisOfRecord='PRESERVED_SPECIMEN', geometry=<POINT (-80.628 25.623)>)
+  feature 1: Pandas(gbifID='1986571407', species='Puma concolor', eventDate='2019-01-02T15:02:19', coordinateUncertaintyInMeters=29958.0, basisOfRecord='HUMAN_OBSERVATION', geometry=<POINT (-80.689 25.577)>)
+  feature 2: Pandas(gbifID='2235549238', species='Puma concolor', eventDate='2019-03-31T10:59', coordinateUncertaintyInMeters=29958.0, basisOfRecord='HUMAN_OBSERVATION', geometry=<POINT (-80.759 25.503)>)
+  feature 3: Pandas(gbifID='2235552082', species='Puma concolor', eventDate='2019-03-31T10:44', coordinateUncertaintyInMeters=29958.0, basisOfRecord='HUMAN_OBSERVATION', geometry=<POINT (-80.798 25.584)>)
+  feature 4: Pandas(gbifID='1122713550', species='Puma concolor', eventDate='2011-04-30', coordinateUncertaintyInMeters=nan, basisOfRecord='PRESERVED_SPECIMEN', geometry=<POINT (-80.873 25.805)>)
+  feature 5: Pandas(gbifID='1122712405', species='Puma concolor', eventDate='2005-02-11', coordinateUncertaintyInMeters=nan, basisOfRecord='PRESERVED_SPECIMEN', geometry=<POINT (-80.932 25.845)>)
+  feature 6: Pandas(gbifID='1122713368', species='Puma concolor', eventDate='2003-06-19', coordinateUncertaintyInMeters=nan, basisOfRecord='PRESERVED_SPECIMEN', geometry=<POINT (-80.986 25.95)>)
+  feature 7: Pandas(gbifID='1122712456', species='Puma concolor', eventDate='2006-03-21', coordinateUncertaintyInMeters=nan, basisOfRecord='PRESERVED_SPECIMEN', geometry=<POINT (-80.903 25.979)>)
+  feature 8: Pandas(gbifID='1122712262', species='Puma concolor', eventDate='2002-11-16', coordinateUncertaintyInMeters=nan, basisOfRecord='PRESERVED_SPECIMEN', geometry=<POINT (-80.888 25.974)>)
+  feature 9: Pandas(gbifID='1638477199', species='Puma concolor', eventDate='2007-08-01', coordinateUncertaintyInMeters=nan, basisOfRecord='PRESERVED_SPECIMEN', geometry=<POINT (-80.883 25.96)>)
