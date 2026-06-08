@@ -381,6 +381,13 @@
       "description": "Sprint-11 Stage 1 parallel: clip_raster_to_bbox utility tool. NEW dual-path GDAL wrap: fast path gdal_translate -projwin when bbox_crs == source_crs (no PROJ lookup); general path gdalwarp -te -te_srs [-t_srs] for any CRS mismatch or reprojection. CRS comparison via rasterio.open().crs. _gdal_subprocess_env() sets PROJ_LIB=/usr/share/proj to resolve conda-GDAL proj.db schema-version mismatch (v4 vs >=6 expected). FR-DC cache static-30d, source_class=clip_raster. 8 unit tests pass; full agent suite 261 pass, 8 expected skips. **Live E2E**: Fort Myers DEM (EPSG:5070, 122x130 px) clipped to western 50% bbox -> 61x130 px GeoTIFF in GCS cache. --startup-only registers 23 tools. OQs: PROJ-LIB-OVERRIDE-HARMLESS (Cloud Run debian GDAL has native PROJ; accept v0.1), CRS-REP-MISMATCH-SAFE-FALLBACK (rasterio comparison failures correctly fall through to gdalwarp). Commit 69e8311.",
       "model": "sonnet",
       "subagent_tokens": 113154
+    },
+    {
+      "job_id": "job-0079-engine-20260608",
+      "sprint": 11,
+      "description": "Sprint-11 Stage 1: compute_hillshade atomic tool with 5 style presets. NEW gdaldem hillshade wrap: standard (Horn/315/45), swiss_double (Horn 315+135 numpy multiply-blend pre-composited to single GeoTIFF per kickoff Option A), multidirectional (-multidirectional flag, GDAL constraint fix: omit -az), combined (-combined flag), smooth (ZevenbergenThorne algorithm). Cache key on (dem_uri,style,algorithm,azimuth,altitude,z_factor) at cache/static-30d/hillshade/. 14 unit tests pass; full agent suite 275 passed. **Live E2E**: swiss_double on job-0075 Fort Myers DEM -> gs://grace-2-hazard-prod-cache/cache/static-30d/hillshade/2b7ca6d8faa4fd4a5ee7d13cce5a98be.tif (388KB) in 1.88s first call, 0.38s cache hit on repeat. --startup-only shows 24 tools. OQ-79-PUBLISH-TERRAIN-COMPOSITE deferred (higher-order composite: hillshade + colorramp + flood stack with QGIS blend modes \u2014 sprint-11 follow-up or sprint-12 case-UX work). Commit 03fd1bf.",
+      "model": "sonnet",
+      "subagent_tokens": 104275
     }
   ],
   "totals_by_sprint": {
@@ -389,7 +396,7 @@
     "8": 1786238,
     "9": 713020,
     "10": 1540974,
-    "11": 638573
+    "11": 742848
   },
   "historical_context": {
     "note": "Captured for accountability \u2014 NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
