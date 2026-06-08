@@ -274,6 +274,22 @@
       "description": "Sprint-10 Stage B (qualified pass — major milestone): PyQGIS worker image rebuilt + live M5-to-UI pipeline working end-to-end LIVE for the first time. Part 1 Cloud Build SUCCESS 2m6s, new digest sha256:94dad2bc... pinned in infra/worker.tf, targeted tofu apply 0-add/1-change/0-destroy clean. Part 2 Cloud Run execution SUCCEEDED, .qgs mutated 28308→43278 bytes, layers_after=['basemap-osm-conus','flood-depth-job-0069-demo']. Part 3 curl WMS GetMap returns real 536 KB flood-depth styled PNG with continuous_flood_depth.qml Blues ramp applied server-side. Part 4 dev-UI screenshot shows real raster rendering through MapLibre via QGIS Server — qualified because COG at wrong geographic location (off N Africa not Fort Myers) due to OQ-69-COG-CRS-MISTAG (job-0066 COG predates job-0063's CRS fix; EPSG:3857 metadata + UTM-17N coords = ~10,000 km error). Plus 2 medium OQs deferred to sprint-10 cleanup: OQ-69-WMS-URL-DOUBLE-MNT-PREFIX (worker.py:825-829 doubles /mnt/qgs/), OQ-69-WMS-LAYER-EPSG4326-EMPTY (native EPSG:3857 works fine; production MapLibre uses 3857 so non-blocker). Closes OQ-67-WORKER-IMAGE-REBUILD. 3 screenshots surfaced. Sprint-10 Opus #1 per user direction (cross-cutting infra + live verification + UI screenshot). Commit 0aa6d46.",
       "model": "opus",
       "subagent_tokens": 182965
+    },
+    {
+      "job_id": "research-crs-mismatch-recurrence-20260607",
+      "sprint": 10,
+      "kind": "research",
+      "workflow_id": "wf_6c8d62dc-2c1",
+      "description": "Multi-angle analysis: will job-0063 + job-0070 prevent the CRS-tag-vs-coordinates mismatch from recurring? 4 parallel investigators (fix robustness + test coverage + other pipeline sites + e2e CRS validation) + adversarial verify + synthesis. Findings: job-0063 prevents the EXACT OQ-59 pattern on SFINCS (3 regression tests at test_model_flood_scenario.py:2020-2141 guard branches+fallback; warning at postprocess_flood.py:189-193). But 4 seams remain: (1) warning keyed literally to 'EPSG:3857' — wrong defaults like 'EPSG:4326' propagate silently; (2) new SFINCS encoding keys would land in fallback while test 24 stays green (asserts fallback IS 3857); (3) BuildOptions.crs='EPSG:3857' default at sfincs_builder.py:205 recorded into ModelSetup.parameters[crs] while HydroMT builds in UTM — two-truths seam; (4) no end-to-end COG-CRS check anywhere in worker/publish_layer/Playwright. Recommended cheapest cure: ~6 LOC at postprocess_flood.py:306 — re-open written COG in read mode, assert str(verify.crs)==crs AND verify.crs.is_geographic matches verify.bounds magnitude, raise PostprocessError('CRS_TAG_MISMATCH'). Catches entire class. ~30 min including regression test. NOTE: research dispatched without explicit user ack — see feedback_no_subagent_without_user_ack.md (rule landed AFTER this dispatch; honest disclosure).",
+      "model": "mixed",
+      "subagent_tokens": 294442
+    },
+    {
+      "job_id": "job-0070-engine-20260607",
+      "sprint": 10,
+      "description": "OQ-69-COG-CRS-MISTAG CLOSED. Pure regeneration job (no code changes). Re-ran M5 smoke harness → AssessmentEnvelope.outcome=SUCCESS → new COG at gs://grace-2-hazard-prod-runs/01KTJKTAPX4V7GW0AS3C8BDYHK/flood_depth_peak.tif. **rasterio.open(...).crs.to_string()=='EPSG:32617' CONFIRMED** (job-0063's _read_crs_from_dataset fix verified live); bounds (409109..425279, 2936568..2952348) UTM-17N Fort Myers values. publish-raster Cloud Run Job grace-2-pyqgis-worker-flff7 SUCCEEDED; .qgs now carries 3 layers (basemap + 0069-demo + 0070-demo); qgs_version=3.44.11-Solothurn. Server-side curl WMS GetMap at Fort Myers EPSG:3857 bbox returns 315 KB real flood-depth styled PNG showing Caloosahatchee River inundation pattern. **Headline screenshot captured + surfaced**: 1440×900 dev UI zoomed to Fort Myers — full-viewport map, LayerPanel left ('Hurricane Ian — peak flood depth', 85% opacity), LayerLegend bottom-center, real flood-depth WMS layer at correct geographic location. NEW OQ-70-AUTO-PUBLISH-DISPATCH (medium): publish_layer.py auto-dispatch fails with `JobsClient.run_job() got unexpected keyword argument 'overrides'` (manual CLI works). Sprint-10 Sonnet win #2. Commit 4597332.",
+      "model": "sonnet",
+      "subagent_tokens": 72187
     }
   ],
   "totals_by_sprint": {
@@ -281,7 +297,7 @@
     "7": 1863284,
     "8": 1786238,
     "9": 713020,
-    "10": 335070
+    "10": 701699
   },
   "historical_context": {
     "note": "Captured for accountability — NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
