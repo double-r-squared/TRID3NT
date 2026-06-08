@@ -1,8 +1,8 @@
 # Sprint 09: M5→UI wiring (layer surfacing on basemap) + sprint-8 carry-forwards
 
-**Status:** planned
+**Status:** closed
 **Opened:** 2026-06-07
-**Closed:** —
+**Closed:** 2026-06-07
 **SRS milestones covered:** Closes the gap between sprint-8's PRODUCTION M5 SUCCESS (real flood-depth COG produced) and the M3 web client (the COG appears as a layer over the basemap and is browsable in the LayerPanel). Plus sprint-8 carry-forwards (v0.3.20 SRS housekeeping is sprint-9 opener; OQ-59 CRS-label fix; OQ-49 agent Dockerfile/deploy).
 
 ## Goal
@@ -32,7 +32,7 @@ What's missing is exactly **three small jobs** — the gap the layer-emission-co
 | job-0063-engine-20260607 | engine | **(Optional carry-forward):** OQ-59 CRS-label fix in `postprocess_flood` — write the COG's CRS tag from the SFINCS dataset's actual CRS variable (not the .attrs default) so the tag matches the coordinates. ~3 LOC + 1 test. | — | **approved** (commit 0990d1c; BEFORE EPSG:3857 — AFTER EPSG:32617; live re-run verified) |
 | job-0064-web-20260607 | web | **UI tweak #1 (per user direction 2026-06-07):** pipeline cards inline in chat. Move `PipelineStrip.tsx`'s cards out of the strip and into the chat stream beside assistant messages. Stacked in call order; one-line format `operation N%`. Clears the basemap of pipeline chrome. Keeps the existing pipeline-state envelope contract (no schema change). | — | **approved** (commit cec1071; Option A — PipelineStrip deleted entirely; 2 screenshots surfaced; 46/46 tests) |
 | job-0065-web-20260607 | web | **UI tweak #2 (per user direction 2026-06-07):** (a) Render a layer legend / colorbar (gradient key) at the bottom of the map, horizontally centered between the two side panels — mirrors matplotlib's colorbar for the active continuous raster layer (initially `continuous_flood_depth` preset with client-side stops). (b) Hide the `LayerPanel.tsx` when `loaded_layers.length === 0`. (c) Add collapse toggles on both side panels (chevron buttons; persists in localStorage). | — | **approved** (commit 485ed93; 3 screenshots surfaced; NEW OQ-W-65-STYLE-PRESET → sprint-10 schema) |
-| job-0066-testing-20260607 | testing | **Sprint-09 acceptance:** drive the full end-to-end via Playwright — user prompt in the chat panel → M5 workflow runs → flood layer appears on the MapLibre basemap → user toggles visibility in LayerPanel → colorbar renders at bottom of map → both panels collapsible. Capture screenshots at 4 states (baseline empty; mid-run with inline pipeline cards; final with flood layer rendered + colorbar; collapsed panels). Honest scope: UI integration verified via dev-injection hooks; live worker round-trip deferred to sprint-10 per OQ-67-WORKER-IMAGE-REBUILD. Closes sprint-09. | job-0060, job-0061, job-0062, job-0064, job-0065, job-0067 | assigned |
+| job-0066-testing-20260607 | testing | **Sprint-09 acceptance:** drive the full end-to-end via Playwright — user prompt in the chat panel → M5 workflow runs → flood layer appears on the MapLibre basemap → user toggles visibility in LayerPanel → colorbar renders at bottom of map → both panels collapsible. Capture screenshots at 4 states (baseline empty; mid-run with inline pipeline cards; final with flood layer rendered + colorbar; collapsed panels). Honest scope: UI integration verified via dev-injection hooks; live worker round-trip deferred to sprint-10 per OQ-67-WORKER-IMAGE-REBUILD. Closes sprint-09. | job-0060, job-0061, job-0062, job-0064, job-0065, job-0067 | **approved** (commit 142146e; 4/4 Playwright pass; 4 headline screenshots surfaced; full regression green) |
 
 ## Execution order
 

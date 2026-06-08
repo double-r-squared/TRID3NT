@@ -253,13 +253,20 @@
       "description": "Stage C UI tweak #1: pipeline cards inline in chat per user direction 2026-06-07. Option A chosen — PipelineStrip deleted entirely (basemap fully clean). NEW PipelineCard.tsx one-line cards: `<name> 47%` running with progress-fill gradient bg; `<name> ✓` complete; `<name> ✗` failed; `<name> ⊘` cancelled — Invariant 8 distinct visual states. Chat.tsx owns pipeline-state via its own GraceWs handler + pipelineReducer enforcing A.7 replace-not-reconcile; PipelineStepGroup stacks cards at conversation bottom while live, scrolls into history on terminal state. Cancel button moved to chat footer (red, enabled when running step OR session current_pipeline non-null). App.tsx removed pipelineBus / PipelineStrip mount / wsRef; preserved job-0065 collapse toggles + LayerLegend. Dev injection seam `window.__grace2InjectPipelineState` registered. 46/46 tests pass + clean build. 2 screenshots surfaced (full viewport + zoomed chat panel; 3 [data-testid='pipeline-card'] elements verified). Stage C COMPLETE. Sprint-9 Sonnet win #7. Commit cec1071.",
       "model": "sonnet",
       "subagent_tokens": 115728
+    },
+    {
+      "job_id": "job-0066-testing-20260607",
+      "sprint": 9,
+      "description": "Stage D Sprint-09 acceptance + close. 4 Playwright tests pass (Chromium headless, Vite dev server, 19.54s): baseline_empty (LayerPanel hidden + Chat visible + 0 cards — verifies job-0065 hide-when-empty); mid_run_pipeline_cards (3 [data-testid='pipeline-card'] + cancel enabled — verifies job-0064 inline cards); **final_flood_layer (HEADLINE — LayerPanel 1 row + LayerLegend with 'Max flood depth (m)' 0 m / 3.5 m ticks — verifies job-0065 colorbar)**; panels_collapsed_e2e (both panels reduce to ~28px + map grows + localStorage persistence verified). 4 canonical screenshots committed. Full regression green: 46/46 web + 180/180 agent + 142/142 contracts + 10/10 pyqgis-worker. Sprint-09 retrospective written: 6 jobs planned → 8 delivered; 100% Sonnet routing wins (8/8); 2 architectural decisions landed (layer-emission-contract + FR-MP-6 Case UX); 6-OQ carry-forward list; sprint-10 hand-off. Honest scope: UI integration verified via dev-injection; live worker round-trip deferred to sprint-10 per OQ-67. Sprint-9 Sonnet win #8 (100% rate). Commit 142146e.",
+      "model": "sonnet",
+      "subagent_tokens": 113712
     }
   ],
   "totals_by_sprint": {
     "6": 1265567,
     "7": 1863284,
     "8": 1786238,
-    "9": 599308
+    "9": 713020
   },
   "historical_context": {
     "note": "Captured for accountability — NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
