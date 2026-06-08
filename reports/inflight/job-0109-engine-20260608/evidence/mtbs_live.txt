@@ -1,0 +1,63 @@
+=== LIVE fetch_mtbs_burn_severity ===
+bbox: (-122.0, 38.0, -119.0, 40.0)
+year_range: (2020, 2023)
+
+FlatGeobuf bytes: 4755056
+Feature count: 31
+Columns: ['ACRES', 'ASMNT_TYPE', 'FIRE_ID', 'FIRE_NAME', 'FIRE_TYPE', 'IG_DATE', 'IRWINID', 'LATITUDE', 'LONGITUDE', 'MAP_ID', 'MAP_PROG', 'YEAR', 'geometry']
+CRS: EPSG:4326
+
+Centroids inside bbox: 26/31
+
+YEAR values in result: [2020, 2021, 2022, 2023]
+
+Top 5 fires by acreage:
+    FIRE_NAME  YEAR FIRE_TYPE  ACRES
+        DIXIE  2021  Wildfire 979795
+NORTH COMPLEX  2020  Wildfire 316556
+    HENNESSEY  2020  Wildfire 314241
+       CALDOR  2021  Wildfire 226583
+        SUGAR  2021  Wildfire 108368
+
+Famous-fire name matches: ['caldor', 'dixie', 'north complex']
+
+=== Cache round-trip via public API ===
+Traceback (most recent call last):
+  File "<stdin>", line 71, in <module>
+  File "/home/nate/Documents/GRACE-2/services/agent/src/grace2_agent/tools/fetch_mtbs_burn_severity.py", line 558, in fetch_mtbs_burn_severity
+    result = read_through(
+        metadata=_METADATA,
+    ...<2 lines>...
+        fetch_fn=lambda: _fetch_mtbs_bytes(q_bbox, normalized_year_range),
+    )
+  File "/home/nate/Documents/GRACE-2/services/agent/src/grace2_agent/tools/cache.py", line 316, in read_through
+    storage_client = storage.Client()
+  File "/home/nate/Documents/GRACE-2/.venv-agent/lib/python3.13/site-packages/google/cloud/storage/client.py", line 267, in __init__
+    super(Client, self).__init__(
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        project=project,
+        ^^^^^^^^^^^^^^^^
+    ...<2 lines>...
+        _http=_http,
+        ^^^^^^^^^^^^
+    )
+    ^
+  File "/home/nate/Documents/GRACE-2/.venv-agent/lib/python3.13/site-packages/google/cloud/client/__init__.py", line 339, in __init__
+    _ClientProjectMixin.__init__(self, project=project, credentials=credentials)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/nate/Documents/GRACE-2/.venv-agent/lib/python3.13/site-packages/google/cloud/client/__init__.py", line 290, in __init__
+    raise EnvironmentError(
+    ...<2 lines>...
+    )
+OSError: Project was not passed and could not be determined from the environment.
+
+=== Cache round-trip via public API ===
+LayerURI: layer_id=mtbs--122.0000-38.0000
+  name=MTBS Burn Severity — Burned Areas (2020–2023)
+  layer_type=vector
+  uri=gs://grace-2-hazard-prod-cache/cache/static-30d/mtbs_burn_severity/6dc75bef18afebe17ce1af33dde8a9ba.fgb
+  style_preset=mtbs_burn_severity
+  role=primary
+  units=None
+
+Second call same URI (cache HIT): True

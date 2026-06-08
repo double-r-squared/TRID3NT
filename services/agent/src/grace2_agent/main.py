@@ -141,6 +141,8 @@ def _import_tools_registry() -> int:
     from .tools import fetch_landfire_fuels  # noqa: F401
     # job-0113: register fetch_gcn250_curve_numbers (GCN250 global SCS curve numbers; Wave 1.5).
     from .tools import fetch_gcn250_curve_numbers  # noqa: F401
+    # job-0109: register fetch_mtbs_burn_severity (MTBS historic burn-severity polygons; CONUS+AK+HI 1984-).
+    from .tools import fetch_mtbs_burn_severity  # noqa: F401
 
     return len(tools.TOOL_REGISTRY)
 
