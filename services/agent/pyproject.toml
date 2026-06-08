@@ -98,6 +98,13 @@ dependencies = [
     # is already pinned to 2.2.x by job-0056 (HydroMT-SFINCS compat) which is
     # within pelicun's pandas>=2.2,<3 range.
     "pelicun>=3.9,<4",
+    # job-0131 Wave 2: Copernicus CDS API client for fetch_era5_reanalysis.
+    # cdsapi wraps the queue/poll/stream lifecycle of CDS retrievals; we
+    # call ``Client.retrieve()`` from the engine atomic tool and convert
+    # the returned NetCDF into a CRS-tagged COG. Tier-2 Copernicus CDS
+    # secret resolution flows through the Wave 2 sibling job-0124
+    # ``Persistence.get_secret_value`` path.
+    "cdsapi>=0.7,<1",
     # Consumed verbatim from packages/contracts/ (editable install via make run-agent).
     "grace2-contracts>=0.1,<0.2",
 ]

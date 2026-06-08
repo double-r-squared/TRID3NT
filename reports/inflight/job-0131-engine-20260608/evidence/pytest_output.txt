@@ -1,0 +1,28 @@
+collecting ... collected 24 items
+
+services/agent/tests/test_fetch_era5_reanalysis.py::test_tool_is_registered_in_registry PASSED [  4%]
+services/agent/tests/test_fetch_era5_reanalysis.py::test_fr_dc_6_cross_field_consistency PASSED [  8%]
+services/agent/tests/test_fetch_era5_reanalysis.py::test_degenerate_bbox_raises_input_error PASSED [ 12%]
+services/agent/tests/test_fetch_era5_reanalysis.py::test_lon_out_of_range_raises_input_error PASSED [ 16%]
+services/agent/tests/test_fetch_era5_reanalysis.py::test_lat_out_of_range_raises_input_error PASSED [ 20%]
+services/agent/tests/test_fetch_era5_reanalysis.py::test_invalid_variable_raises_input_error PASSED [ 25%]
+services/agent/tests/test_fetch_era5_reanalysis.py::test_non_iso_start_date_raises_input_error PASSED [ 29%]
+services/agent/tests/test_fetch_era5_reanalysis.py::test_inverted_date_range_raises_input_error PASSED [ 33%]
+services/agent/tests/test_fetch_era5_reanalysis.py::test_huge_date_range_raises_input_error PASSED [ 37%]
+services/agent/tests/test_fetch_era5_reanalysis.py::test_input_error_is_not_retryable PASSED [ 41%]
+services/agent/tests/test_fetch_era5_reanalysis.py::test_round_bbox_to_6dp PASSED [ 45%]
+services/agent/tests/test_fetch_era5_reanalysis.py::test_build_cds_request_shape PASSED [ 50%]
+services/agent/tests/test_fetch_era5_reanalysis.py::test_estimate_payload_mb_matches_audit_md_spec PASSED [ 54%]
+services/agent/tests/test_fetch_era5_reanalysis.py::test_resolve_explicit_key_takes_priority PASSED [ 58%]
+services/agent/tests/test_fetch_era5_reanalysis.py::test_resolve_env_fallback_when_no_kwarg PASSED [ 62%]
+services/agent/tests/test_fetch_era5_reanalysis.py::test_resolve_returns_none_when_all_paths_miss PASSED [ 66%]
+services/agent/tests/test_fetch_era5_reanalysis.py::test_resolve_secret_ref_string_shortcut PASSED [ 70%]
+services/agent/tests/test_fetch_era5_reanalysis.py::test_mocked_happy_path_total_precipitation PASSED [ 75%]
+services/agent/tests/test_fetch_era5_reanalysis.py::test_two_variables_produce_distinct_cache_keys PASSED [ 79%]
+services/agent/tests/test_fetch_era5_reanalysis.py::test_cache_hit_skips_cdsapi PASSED [ 83%]
+services/agent/tests/test_fetch_era5_reanalysis.py::test_cdsapi_failure_surfaces_as_upstream_error PASSED [ 87%]
+services/agent/tests/test_fetch_era5_reanalysis.py::test_cdsapi_auth_error_surfaces_as_auth_error PASSED [ 91%]
+services/agent/tests/test_fetch_era5_reanalysis.py::test_layer_uri_shape_fields PASSED [ 95%]
+services/agent/tests/test_fetch_era5_reanalysis.py::test_live_fort_myers_total_precipitation SKIPPED [100%]
+
+======================== 23 passed, 1 skipped in 0.75s =========================

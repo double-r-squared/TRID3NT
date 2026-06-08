@@ -1,0 +1,42 @@
+# job-0131 ERA5 live verification — QUALIFIED
+#
+# Status: SKIPPED — no Copernicus CDS API key available in this sandbox.
+#
+# Required env (NOT present):
+#   GRACE2_TEST_LIVE_ERA5=1
+#   Either GRACE2_COPERNICUS_CDS_API_KEY=<key> or ~/.cdsapirc populated
+#
+# The kickoff explicitly mandates the live test be env-gated and the unit
+# suite MUST NOT fail if the key is missing (audit.md, "Tier-2 secret
+# handling"). The live test
+# ``test_live_fort_myers_total_precipitation`` is wired with
+# ``@pytest.mark.skipif(not _LIVE_ERA5, reason=...)`` and the explicit live
+# bbox + variable + date range from the kickoff:
+#
+#   fetch_era5_reanalysis(
+#       bbox=(-82.0, 26.0, -81.0, 27.0),
+#       variable="total_precipitation",
+#       start_date="2024-09-26",
+#       end_date="2024-09-26",
+#   )
+#
+# To run the live test on a machine with a ~/.cdsapirc:
+#   GRACE2_TEST_LIVE_ERA5=1 .venv-agent/bin/python -m pytest \
+#       services/agent/tests/test_fetch_era5_reanalysis.py \
+#       -v -k test_live_fort_myers_total_precipitation
+#
+# The live test asserts:
+# - the COG is non-empty and starts with the TIFF magic header
+# - rasterio.open(uri).crs is set
+# - the COG's bounds intersect the requested bbox
+# - the in-bbox window contains at least one finite pixel
+# - evidence is appended to this file
+#
+# Mocked CDS roundtrip evidence (from the unit-test suite):
+# - test_mocked_happy_path_total_precipitation PASSES, writes a
+#   COG via the rioxarray-driver path into the fake GCS shim at
+#   gs://grace-2-hazard-prod-cache/cache/static-30d/era5/<key>.tif
+#   carrying the requested bbox + variable + date range.
+# - test_two_variables_produce_distinct_cache_keys PASSES (FR-DC-3
+#   variable separation).
+# - test_cache_hit_skips_cdsapi PASSES (FR-DC-4 dedup).

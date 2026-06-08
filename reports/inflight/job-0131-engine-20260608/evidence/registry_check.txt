@@ -1,0 +1,22 @@
+# job-0131 — tool registry verification
+# Command:
+#   GRACE2_SKIP_WORKER_SUBMITTER=1 .venv-agent/bin/python -c '
+#       from grace2_agent import main
+#       n = main._import_tools_registry()
+#       print("tool registry n:", n)
+#       from grace2_agent.tools import TOOL_REGISTRY
+#       print("era5 registered:", "fetch_era5_reanalysis" in TOOL_REGISTRY)
+#       md = TOOL_REGISTRY["fetch_era5_reanalysis"].metadata
+#       print("  ttl_class:", md.ttl_class)
+#       print("  source_class:", md.source_class)
+#       print("  supports_global_query:", md.supports_global_query)
+#       print("  payload_mb_estimator_name:", md.payload_mb_estimator_name)
+#   '
+#
+# Output:
+tool registry n: 55
+era5 registered: True
+  ttl_class: static-30d
+  source_class: era5
+  supports_global_query: True
+  payload_mb_estimator_name: estimate_payload_mb
