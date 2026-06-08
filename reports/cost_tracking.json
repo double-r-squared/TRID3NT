@@ -297,6 +297,13 @@
       "description": "Stage 1: OQ-61-CLOUD-RUN-SCALING-BLOCK-DRIFT closed. Crisp diagnosis: Google provider 6.50.x has TWO scaling blocks on google_cloud_run_v2_service (service-level + template-level). Tofu had only template-level; GCP API auto-fills service-level with min_instance_count=0/manual_instance_count=0 for all AUTOMATIC-mode services. Each plan saw it as drift and would propose removing it; Option B (push Tofu to GCP) would loop. Option A: codify the empty service-level scaling{} block in infra/qgis-server.tf to match live reality. No tofu apply needed — pure IaC declaration alignment. Final untargeted plan returns 0-add/0-change/0-destroy on GCP resources. Smoke tests confirm QGIS Server WMS GetCapabilities 200, pyqgis-worker + sfincs-solver Ready True, image digests untouched. Sprint-10 Sonnet win #3. Commit 2ed3efa.",
       "model": "sonnet",
       "subagent_tokens": 73698
+    },
+    {
+      "job_id": "job-0072-schema-20260607",
+      "sprint": 10,
+      "description": "Stage 1: D.2 amendment bundle — 5 carry-forward schema OQs closed. Python contracts: 3 new optional fields on ProjectLayerSummary (wms_url, opacity, z_index). JSON Schema regenerated idempotent (4 files). TypeScript: source_url → uri rename; added wms_url; opacity + z_index kept REQUIRED on TS side (LayerPanel.tsx arithmetic; Python-vs-TS asymmetry by design). ws.ts: MapCommandPayload + onMapCommand callback + 'map-command' case; 3 new Vitest tests. Closes OQ-62-LAYERURI-URI-FIELD + OQ-W-65-STYLE-PRESET + OQ-0068-URI + OQ-0068-MAPCMD-WS + OQ-0068-ZIDX. 2 NEW OQs: OQ-72-APP-MAPCMD-WIRING (App.tsx needs 1-line onMapCommand callback for production routing — bundle into Stage 2 or tiny carry-forward), OQ-72-LAYERURI-WMS-FIELD (next schema sprint). Test counts: contracts 142→145, agent 180→180, web 60→63, tsc clean. Sprint-10 Sonnet win #4. Commit 876798b.",
+      "model": "sonnet",
+      "subagent_tokens": 136443
     }
   ],
   "totals_by_sprint": {
@@ -304,7 +311,7 @@
     "7": 1863284,
     "8": 1786238,
     "9": 713020,
-    "10": 775397
+    "10": 911840
   },
   "historical_context": {
     "note": "Captured for accountability — NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
