@@ -353,6 +353,13 @@
       "description": "Sprint-11 Stage 1 parallel: compute_aspect atomic tool. Mirrors compute_slope exactly. gdaldem aspect with Horn/ZT algorithms + zero_for_flat option. Cache static-30d, source_class=aspect, units=degrees. 11 tests pass against real gdaldem (synthetic DEMs verifying aspect ≈ 180° south-facing, flat-DEM branches, cache miss/hit, error paths, 4 distinct cache keys). 21 tools at startup. Idempotent concurrent registration. 1 minor OQ: style preset followup. Sprint-11 Sonnet win #2 (cheapest yet at 75,928 — pattern-mirroring efficiency). Commit 6717c39.",
       "model": "sonnet",
       "subagent_tokens": 75928
+    },
+    {
+      "job_id": "job-0081-engine-20260608",
+      "sprint": 11,
+      "description": "Sprint-11 Stage 1 parallel: compute_slope atomic tool. SlopeComputeError typed errors; gdaldem slope with -p (percent) + -alg ZevenbergenThorne flags; cache static-30d, source_class=slope. 10 new tests against real gdaldem (synthetic 1°-gradient DEM verified mean slope ≈ 1.0° degrees + ≈ 1.745% percent; cache miss/hit; error paths; 4 distinct cache keys). Full agent suite 212 passed. **Live E2E confirmed**: Fort Myers DEM cached → slope GeoTIFF in cache; cache hit on second call. 21 tools at startup. 1 minor OQ: SLOPE-STYLE-PRESET-FOLLOWUP. Sprint-11 Sonnet win #3. Commit 145ba27.",
+      "model": "sonnet",
+      "subagent_tokens": 125018
     }
   ],
   "totals_by_sprint": {
@@ -361,7 +368,7 @@
     "8": 1786238,
     "9": 713020,
     "10": 1540974,
-    "11": 194354
+    "11": 319372
   },
   "historical_context": {
     "note": "Captured for accountability — NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
