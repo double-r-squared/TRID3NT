@@ -260,13 +260,21 @@
       "description": "Stage D Sprint-09 acceptance + close. 4 Playwright tests pass (Chromium headless, Vite dev server, 19.54s): baseline_empty (LayerPanel hidden + Chat visible + 0 cards — verifies job-0065 hide-when-empty); mid_run_pipeline_cards (3 [data-testid='pipeline-card'] + cancel enabled — verifies job-0064 inline cards); **final_flood_layer (HEADLINE — LayerPanel 1 row + LayerLegend with 'Max flood depth (m)' 0 m / 3.5 m ticks — verifies job-0065 colorbar)**; panels_collapsed_e2e (both panels reduce to ~28px + map grows + localStorage persistence verified). 4 canonical screenshots committed. Full regression green: 46/46 web + 180/180 agent + 142/142 contracts + 10/10 pyqgis-worker. Sprint-09 retrospective written: 6 jobs planned → 8 delivered; 100% Sonnet routing wins (8/8); 2 architectural decisions landed (layer-emission-contract + FR-MP-6 Case UX); 6-OQ carry-forward list; sprint-10 hand-off. Honest scope: UI integration verified via dev-injection; live worker round-trip deferred to sprint-10 per OQ-67. Sprint-9 Sonnet win #8 (100% rate). Commit 142146e.",
       "model": "sonnet",
       "subagent_tokens": 113712
+    },
+    {
+      "job_id": "job-0068-web-20260607",
+      "sprint": 10,
+      "description": "Sprint-10 Stage A (headline): UI correction reversion + raster wiring + zoom-to per user direction 2026-06-07. 5 changes in order 4→5→3→1→2: (1) Map.tsx subscribes to session-state + useRef<Set<string>> tracks source IDs surviving effect re-runs (A.7 structural enforcement); addSource/addLayer/removeSource per loaded_layers diff with WMS BBOX={bbox-epsg-3857} placeholder; map-command useEffect handles zoom-to via fitBounds; NavigationControl moved bottom-right. (2) LayerURI.bbox additive + pipeline_emitter.emit_map_command + add_loaded_layer emits zoom-to when bbox present + model_flood_scenario populates bbox. (3) App.tsx state-lift of layers + showLeftPanel/showLayersHamburger booleans (no empty-tab bug). (4) App.tsx position:fixed inset:0 wrapper; MapView full-bleed first DOM; LayerPanel + Chat as position:absolute siblings; deleted COLLAPSED_WIDTH. (5) Deleted chevrons; ☰ hamburgers TL/TR at z:30 + × close buttons in panel headers. 5 live-injection screenshots surfaced (baseline / layer_arrival w/ Fort Myers zoom / collapsed_via_close / expanded_via_hamburger / persistence_after_reload). 60 web tests pass (46+14 new); 0 TS errors; 142 contracts + 180 agent unchanged. 3 OQs surfaced for job-0070 schema cleanup: OQ-0068-URI (contracts.ts source_url vs Python uri), OQ-0068-MAPCMD-WS (ws.ts doesn't route map-command to handler — production routing pending; dev seam works), OQ-0068-ZIDX (opacity/z_index ?? 1 fallback). Sprint-10 Sonnet win #1. Commit e5398b8.",
+      "model": "sonnet",
+      "subagent_tokens": 152105
     }
   ],
   "totals_by_sprint": {
     "6": 1265567,
     "7": 1863284,
     "8": 1786238,
-    "9": 713020
+    "9": 713020,
+    "10": 152105
   },
   "historical_context": {
     "note": "Captured for accountability — NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
