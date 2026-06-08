@@ -1,0 +1,72 @@
+{
+  "claims": {
+    "location": {
+      "value": "East Palestine, Ohio",
+      "confidence": 0.8500000000000001,
+      "supporting_sources": [
+        "https://example.org/news/derailment-report",
+        "https://example.org/wire/spill-update",
+        "https://example.org/agency/incident-summary"
+      ],
+      "alternatives": []
+    },
+    "date": {
+      "value": "2023-02-03",
+      "confidence": 0.8500000000000001,
+      "supporting_sources": [
+        "https://example.org/news/derailment-report",
+        "https://example.org/wire/spill-update",
+        "https://example.org/agency/incident-summary"
+      ],
+      "alternatives": []
+    },
+    "contaminant": {
+      "value": "vinyl chloride",
+      "confidence": 0.8500000000000001,
+      "supporting_sources": [
+        "https://example.org/news/derailment-report",
+        "https://example.org/wire/spill-update",
+        "https://example.org/agency/incident-summary"
+      ],
+      "alternatives": [
+        {
+          "value": "benzene",
+          "supporting_sources": [
+            "https://example.org/wire/spill-update"
+          ]
+        }
+      ]
+    },
+    "scale": {
+      "value": {
+        "value": 1000000.0,
+        "unit": "gallon"
+      },
+      "confidence": 0.8,
+      "supporting_sources": [
+        "https://example.org/news/derailment-report",
+        "https://example.org/agency/incident-summary"
+      ],
+      "alternatives": []
+    },
+    "casualties": {
+      "value": 5,
+      "confidence": 0.8500000000000001,
+      "supporting_sources": [
+        "https://example.org/news/derailment-report",
+        "https://example.org/wire/spill-update",
+        "https://example.org/agency/incident-summary"
+      ],
+      "alternatives": []
+    }
+  },
+  "stats": {
+    "sources_consulted": 3,
+    "claims_resolved": 5,
+    "confidence_threshold": 0.7
+  }
+}
+
+GEO-CHECK PASS: location resolved to 'East Palestine, Ohio' (documented site of the Feb 2023 derailment), confidence=0.85, supported by 3 sources.
+
+ALL-CLAIMS PASS: 5/5 targets resolved with >= 0.85 confidence (3-source agreement).

@@ -211,3 +211,6 @@ from . import fetch_inaturalist_observations  # noqa: E402,F401 — job-0088: re
 from . import web_fetch  # noqa: E402,F401 — job-0092: registers web_fetch
 from . import fetch_storm_events_db  # noqa: E402,F401 — job-0091: registers fetch_storm_events_db
 from . import fetch_nws_event  # noqa: E402,F401 — job-0090: registers fetch_nws_event
+from . import aggregate_claims_across_sources  # noqa: E402,F401 — job-0093: registers aggregate_claims_across_sources
+from . import extract_landcover_class  # noqa: E402,F401 — job-0094: registers extract_landcover_class
+from . import compute_impervious_surface  # noqa: E402,F401 — job-0095: registers compute_impervious_surface

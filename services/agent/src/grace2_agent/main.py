@@ -109,6 +109,12 @@ def _import_tools_registry() -> int:
     from .tools import fetch_storm_events_db  # noqa: F401
     # job-0090: register fetch_nws_event (NWS active alerts/events; dynamic-1h Tier-1 fetcher).
     from .tools import fetch_nws_event  # noqa: F401
+    # job-0093: register aggregate_claims_across_sources (cross-source FR-HEP claim aggregator).
+    from .tools import aggregate_claims_across_sources  # noqa: F401
+    # job-0095: register compute_impervious_surface (NLCD impervious-fraction raster).
+    from .tools import compute_impervious_surface  # noqa: F401
+    # job-0094: register extract_landcover_class (NLCD binary-mask extractor for zone_input).
+    from .tools import extract_landcover_class  # noqa: F401
 
     return len(tools.TOOL_REGISTRY)
 
