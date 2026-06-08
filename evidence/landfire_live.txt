@@ -1,0 +1,14 @@
+job-0111 fetch_landfire_fuels LIVE test
+timestamp: 2026-06-08T13:08:41.448040+00:00
+layer: fbfm40
+bbox: (-122.0, 38.0, -119.0, 40.0)
+tiff bytes: 33561392
+width x height: 4096 x 4096
+crs: EPSG:4326
+bounds: BoundingBox(left=-122.0, bottom=37.5, right=-119.0, top=40.5)
+unique pixel values (first 20): [91, 92, 93, 98, 99, 101, 102, 103, 104, 121, 122, 123, 141, 142, 143, 144, 145, 146, 147, 161]
+valid FBFM40 codes detected: [91, 92, 93, 98, 99, 101, 102, 103, 104, 121, 122, 123, 141, 142, 143, 144, 145, 146, 147, 161]
+LayerURI.uri: gs://grace-2-hazard-prod-cache/cache/static-30d/landfire_fuels/2b09fab609a14ac8d0fc752f404ed5f6.tif
+LayerURI.layer_id: landfire-fbfm40--122.0000-38.0000--119.0000-40.0000
+LayerURI.name: LANDFIRE 2022 - FBFM40
+LayerURI.style_preset: categorical_landcover

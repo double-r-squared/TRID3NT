@@ -93,6 +93,9 @@ TOOL_REGISTRY: dict[str, RegisteredTool] = {}
 
 def register_tool(
     metadata: AtomicToolMetadata,
+    *,
+    supports_global_query: bool | None = None,
+    payload_mb_estimator_name: str | None = None,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Return a decorator that records ``fn`` + ``metadata`` in ``TOOL_REGISTRY``.
 
@@ -101,6 +104,22 @@ def register_tool(
         @register_tool(AtomicToolMetadata(name="x", ttl_class="static-30d",
                                           source_class="x"))
         def x(...): ...
+
+    Wave 1.5 (job-0114) added two metadata flags. They may be set either
+    on the constructed ``AtomicToolMetadata`` directly OR passed as
+    decorator-level kwargs (kwargs win and produce a new metadata via
+    ``model_copy(update=...)``)::
+
+        @register_tool(_BASE_META, supports_global_query=True)
+        def fetch_nws_alerts_conus(bbox=None): ...
+
+    Both kwargs default to ``None`` meaning "use whatever the metadata
+    already declares" — the kwarg path is a convenience for tool authors
+    who want the decorator site to be the single visible declaration of
+    the flag. Backward-compatible: existing tools that pre-date the
+    kwargs continue to work; the metadata defaults
+    (``supports_global_query=False``, ``payload_mb_estimator_name=None``)
+    preserve pre-Wave-1.5 behaviour.
 
     Fail-fast invariants (FR-CE-8):
 
@@ -118,6 +137,18 @@ def register_tool(
         raise TypeError(
             f"register_tool expects AtomicToolMetadata, got {type(metadata).__name__}"
         )
+
+    # If the caller passed Wave-1.5 flags at the decorator level, fold them
+    # into a fresh metadata. ``model_copy(update=...)`` re-runs validators
+    # because pydantic v2 ``GraceModel`` has ``validate_assignment=True``,
+    # so a bad combination still fails fast at import time.
+    overrides: dict[str, Any] = {}
+    if supports_global_query is not None:
+        overrides["supports_global_query"] = supports_global_query
+    if payload_mb_estimator_name is not None:
+        overrides["payload_mb_estimator_name"] = payload_mb_estimator_name
+    if overrides:
+        metadata = metadata.model_copy(update=overrides)
 
     def _decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
         name = metadata.name
@@ -226,3 +257,4 @@ from . import fetch_mrms_qpe  # noqa: E402,F401 — job-0103: registers fetch_mr
 from . import fetch_hrsl_population  # noqa: E402,F401 — job-0112: registers fetch_hrsl_population (Meta + CIESIN HRSL persons/cell, COG via global VRT)
 from . import fetch_firms_active_fire  # noqa: E402,F401 — job-0108: registers fetch_firms_active_fire (NASA FIRMS VIIRS/MODIS active-fire detections)
 from . import fetch_landfire_fuels  # noqa: E402,F401 — job-0111: registers fetch_landfire_fuels (LANDFIRE LF2022 fuels & canopy rasters)
+from . import fetch_gcn250_curve_numbers  # noqa: E402,F401 — job-0113: registers fetch_gcn250_curve_numbers (GCN250 global SCS curve numbers, Figshare AMC-I/II/III)

@@ -137,6 +137,10 @@ def _import_tools_registry() -> int:
     from .tools import fetch_hrsl_population  # noqa: F401
     # job-0108: register fetch_firms_active_fire (NASA FIRMS VIIRS/MODIS active-fire detections; Wave 1.5).
     from .tools import fetch_firms_active_fire  # noqa: F401
+    # job-0111: register fetch_landfire_fuels (LANDFIRE LF2022 fuels & canopy rasters; Wave 1.5).
+    from .tools import fetch_landfire_fuels  # noqa: F401
+    # job-0113: register fetch_gcn250_curve_numbers (GCN250 global SCS curve numbers; Wave 1.5).
+    from .tools import fetch_gcn250_curve_numbers  # noqa: F401
 
     return len(tools.TOOL_REGISTRY)
 
