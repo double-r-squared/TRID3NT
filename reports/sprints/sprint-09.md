@@ -79,4 +79,64 @@ Plus orchestrator-direct **v0.3.21 SRS amendment** (FR-MP-6 Case UX) already lan
 
 ## Retrospective
 
-_Filled at close._
+### Planned vs actual
+
+Planned: 5 reserved jobs (0060/0061/0062/0063/0064/0065) + 1 testing close job (0066) = 6 jobs.
+Actual: 8 jobs delivered (0060/0061/0062/0063/0064/0065/0067/0066). One IAM follow-up (job-0067 — pyqgis-worker SA runs-bucket grant) was added mid-sprint after job-0062 surfaced OQ-62-WORKER-SA-RUNS-BUCKET-GRANT. The added job was narrow (single IAM grant, mirrors job-0061 pattern) and did not widen scope.
+
+All 8 jobs ran on Sonnet 4.6 — 100% Sonnet routing win rate for the sprint.
+
+### Cost telemetry (sprint-09)
+
+| Job | Specialist | Model | Tokens |
+|-----|-----------|-------|--------|
+| job-0060-engine-20260607 | engine | Sonnet | 126,487 |
+| job-0061-infra-20260607 | infra | Sonnet | 66,184 |
+| job-0062-engine-20260607 | engine | Sonnet | 68,556 |
+| job-0063-engine-20260607 | engine | Sonnet | 66,081 |
+| job-0064-web-20260607 | web | Sonnet | 115,728 |
+| job-0065-web-20260607 | web | Sonnet | 90,455 |
+| job-0067-infra-20260607 | infra | Sonnet | 65,817 |
+| job-0066-testing-20260607 | testing | Sonnet | _this job_ |
+
+Sprint-09 total (excl. this job): 599,308 tokens. Opus: 0. Sonnet: 100%.
+Cumulative across all sprints (excl. this job): 5,514,397 tokens.
+
+### Architectural decisions landed
+
+1. **`docs/decisions/layer-emission-contract.md`** (2026-06-07, orchestrator-direct): The authoritative contract spine for layer delivery is `session-state.loaded_layers` (declarative, replace-not-reconcile per Appendix A.7). `map-command` is reserved for transient verbs. WMS URL is the `LayerURI.uri` payload. Resolves the design ambiguity that blocked M5→UI wiring.
+
+2. **SRS v0.3.21 FR-MP-6 Case UX** (2026-06-07, orchestrator-direct): Formalizes the Case-scoped layer isolation path for future multi-case sessions.
+
+### What worked
+
+- **Sonnet efficiency**: 7 consecutive specialist jobs on Sonnet with clean deliverables. No revision loops, no blocked jobs. The sprint was a clean linear execution of the dependency graph.
+- **Disjoint file ownership**: job-0064 and job-0065 ran concurrently (Stage C) with no merge conflicts — the file-ownership split between Chat.tsx (pipeline cards) and App.tsx (collapse toggles / LayerLegend) was clean.
+- **Dev-injection seam pattern**: The `window.__grace2InjectSessionState` / `window.__grace2InjectPipelineState` seams established in M3 continued to pay off in sprint-09 UI verification (job-0064/0065 screenshots, this M6 acceptance suite). Decoupling UI verification from live agent emission was the right call.
+- **Stage A parallel dispatch**: jobs-0060/0061/0063 ran in parallel with disjoint file ownership and all approved in the same day.
+- **Non-fatal fallback in publish_layer** (job-0062): the `PublishLayerError` catch-and-continue pattern preserves envelope emission even when the worker round-trip fails, keeping M5 demo survivable under the OQ-67 worker image gap.
+
+### What to change next sprint
+
+- **Worker image rebuild earlier in sprint**: OQ-67-WORKER-IMAGE-REBUILD was identified at the end of sprint-09 (job-0067) because worker-SA IAM grant was the last infra job. Sprint-10 should open with the image rebuild as the first job so E2E live-worker tests are unblocked early.
+- **Schema D.2 amendment before E2E**: `style_preset` and `LayerURI.wms_url` were consumer-pushback OQs from job-0065 and job-0062 respectively. Having the schema amendment job run in Stage A of sprint-10 (before web/engine jobs consume the field) avoids the tentative/forward-declared field pattern.
+
+### Open OQ carry-forward list
+
+| OQ ID | Origin job | Description | Sprint-10 routing |
+|-------|-----------|-------------|-------------------|
+| OQ-67-WORKER-IMAGE-REBUILD | job-0067 | pyqgis-worker container image is stale (does not have the publish-raster CLI added in job-0062); needs rebuild + redeploy before live worker round-trip works | infra — sprint-10 opener |
+| OQ-62-LAYERURI-URI-FIELD | job-0062 | `LayerURI.uri` now carries a WMS URL (not `gs://`); schema amendment to add `wms_url: str \| None` field needed in Appendix D.2 | schema — bundle with OQ-W-65 |
+| OQ-W-65-STYLE-PRESET | job-0065 | `style_preset` added to `ProjectLayerSummary` in web-side contracts mirror; authoritative definition belongs in Appendix D.2 under schema | schema — bundle with OQ-62-LAYERURI |
+| OQ-62-PUBSUB-COMPLETION-POLL | job-0062 | WMS URL is reconstructed deterministically rather than decoded from Pub/Sub envelope; fine for M5 demo but fragile if QGS key or layer ID becomes non-deterministic | agent — defer to M5 multi-session work |
+| OQ-62-QGS-MUTATION-CONFLICT | job-0062 | Concurrent `publish_layer` calls on same `project_qgs_uri` are not atomic (last writer wins); acceptable for single-session M5 demo | engine — when FR-MP-6 Case UX adds per-Case `.qgs` isolation |
+| OQ-61-CLOUD-RUN-SCALING-BLOCK-DRIFT | pre-existing | Cloud Run concurrency/scaling limits for QGIS Server not validated under concurrent requests | infra — sprint-10 |
+
+### Sprint-10 opening hand-off
+
+Likely jobs in priority order:
+
+1. **infra**: Worker image rebuild + redeploy (OQ-67-WORKER-IMAGE-REBUILD). Unblocks the live end-to-end worker round-trip that sprint-09 deferred. This is the sprint-10 critical path opener.
+2. **schema**: D.2 amendment bundle — `wms_url: str | None` on LayerURI + `style_preset: str | None` on ProjectLayerSummary (OQ-62-LAYERURI-URI-FIELD + OQ-W-65-STYLE-PRESET). Small additive contract change; coordinates with engine (publish_layer populated value) and web (consume without the optional-field workaround).
+3. **infra**: Cloud Run scaling reconciliation — validate QGIS Server concurrency limits under load, reconcile with FR-NFR-P targets (OQ-61-CLOUD-RUN-SCALING-BLOCK-DRIFT).
+4. **agent/engine**: Mode 2 `.gov`/`.edu` offer-to-add OR ATCF Hurricane Ian real-forcing branch (`fetch_hurricane_track` + `model_flood_scenario` real-forcing path). The Mode 2 path requires envelope shapes + agent emission detection + web popup modal + audit log; ATCF is a pure engine/data addition. Orchestrator decides priority after sprint-10 openers land.

@@ -1,0 +1,26 @@
+{
+  "chat_history": [],
+  "loaded_layers": [
+    {
+      "layer_id": "flood-demo-1",
+      "name": "Flood depth — Hurricane Ian demo",
+      "layer_type": "raster",
+      "uri": "https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=basemap-osm-conus",
+      "source_url": "https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=basemap-osm-conus",
+      "style_preset": "continuous_flood_depth",
+      "visible": true,
+      "opacity": 0.85,
+      "z_index": 2,
+      "attribution": "GRACE-2 M5 demo — substituted basemap layer per OQ-67 deferral",
+      "temporal": null
+    }
+  ],
+  "pipeline_history": [],
+  "current_pipeline": null,
+  "map_view": {
+    "center": [-81.8, 26.6],
+    "zoom": 9,
+    "bearing": 0,
+    "pitch": 0
+  }
+}

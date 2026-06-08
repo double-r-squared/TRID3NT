@@ -1,0 +1,29 @@
+{
+  "pipeline_id": "01HXX00000M6PIPELINE000001",
+  "steps": [
+    {
+      "step_id": "01HXX00000M6STEP000000001A",
+      "name": "fetch_dem",
+      "tool_name": "fetch_dem",
+      "state": "complete",
+      "progress_percent": 100,
+      "started_at": "2026-06-07T10:00:00Z",
+      "completed_at": "2026-06-07T10:00:18Z"
+    },
+    {
+      "step_id": "01HXX00000M6STEP000000001B",
+      "name": "build_sfincs_model",
+      "tool_name": "build_sfincs_model",
+      "state": "running",
+      "progress_percent": 47,
+      "started_at": "2026-06-07T10:00:18Z"
+    },
+    {
+      "step_id": "01HXX00000M6STEP000000001C",
+      "name": "run_sfincs",
+      "tool_name": "run_sfincs",
+      "state": "pending",
+      "progress_percent": 0
+    }
+  ]
+}
