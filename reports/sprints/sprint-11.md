@@ -1,8 +1,8 @@
 # Sprint 11: FR-MP-6 Case UX + sprint-10 carry-forwards + compute_hillshade atomic tool
 
-**Status:** planned
+**Status:** closed
 **Opened:** 2026-06-08
-**Closed:** —
+**Closed:** 2026-06-08
 **SRS milestones covered:** FR-MP-6 Case UX implementation (SRS v0.3.21, §3.7); sprint-10 OQ carry-forwards (OQ-76-MAP-ALIGNMENT top priority; OQ-76-MAPCMD-WS small); compute_hillshade atomic tool (SRS §3.5 Tier A hillshade overlay, bumped up per user direction 2026-06-08).
 
 ## Goal
@@ -93,6 +93,30 @@ Order pending user-defined case need; TELEMAC is likely first if technical readi
 
 - ATCF Hurricane Ian real storm forcing (`fetch_hurricane_track` + `model_flood_scenario` real-forcing branch) — per user direction 2026-06-07: "defer that and maybe surface my input later on when the time is right." Will be a sprint with a clear deliverable shape when a real-event case is defined.
 
-## Retrospective
+## Retrospective (closed 2026-06-08)
 
-_Filled at close._
+**Outcome.** Sprint-11 Stage 1 landed 9 jobs (0077–0086) totalling ~999K tokens — well under sprint-10's 1.54M. Stage 1 deliverable bundle: 7 new atomic engine tools (`compute_hillshade` w/ 5 presets, `compute_colored_relief`, `compute_slope`, `compute_aspect`, `compute_zonal_statistics`, `fetch_administrative_boundaries` TIGER/Line, `clip_raster_to_bbox`) + the OQ-76-MAP-ALIGNMENT real root-cause fix (job-0086 — Y-axis flip in `postprocess_flood._extract_peak_depth_geotiff`).
+
+**Stage 2 (Case UX shell) and Stage 3 (acceptance) MOVED to sprint-12-mega per user direction 2026-06-08** ("pivot put that on the back burner and focus on demo related features… execute the next stage + sprints into one big sprint"). Case UX, Case 1 + Case 2 demo substrate, FR-HEP news pipeline, Secrets UX, Mode 2 .gov/.edu, Pelicun, and a broad atomic-tool batch all land in one wide-parallel mega-sprint. MODFLOW + Case 2 full E2E carved off into a dedicated sprint-13.
+
+**Major codified lesson (job-0078 → job-0086):** URL/render consistency ≠ geographic correctness. In-COG axis mirrors are invisible to every consistency check (server, client, PIL composite all faithfully serve the mirrored array). Future rendered-geometry OQ diagnoses MUST include a pixel-content-vs-geography test ("are the wettest pixels where the river mouth actually is?"), not just URL/BBOX-parameter consistency. The orchestrator-direct probe + careful reasoning was what caught the real bug, with the runner (Sonnet) landing the surgical fix at 88K once the kickoff front-loaded the diagnosis.
+
+**Routing/cost lesson:** Sonnet front-loaded by a complete orchestrator-authored kickoff (job-0086 at 88K) outperformed Opus chasing a diagnostic from scratch (job-0078 at 168K). The orchestrator does the design; runners execute. Going into sprint-12-mega, that policy reverses to liberal Opus per user direction — Sonnet narrows to Playwright runs, sub-200-LOC mechanical edits, research, and acceptance verification only.
+
+**Jobs:**
+
+| Job | Specialist | Outcome | Cost (tok) | Model |
+|---|---|---|---|---|
+| 0077 | testing | Sprint-10 close + sprint-11 manifest | — | sonnet |
+| 0078 | web | OQ-76 client-side diagnosis (5 hypotheses ruled out; raster-resampling nearest fix) — DID NOT catch the real Y-flip | 168,529 | opus |
+| 0079 | engine | `compute_hillshade` + 5 presets, swiss_double pre-composite | 104,275 | sonnet |
+| 0080 | engine | `compute_colored_relief` + 4 ramps | ~95K | sonnet |
+| 0081 | engine | `compute_slope` | 125,018 | sonnet |
+| 0082 | engine | `compute_aspect` (pattern-mirror cheap win) | 75,928 | sonnet |
+| 0083 | engine | `compute_zonal_statistics` — hazard primitive | ~122K | sonnet |
+| 0084 | engine | `fetch_administrative_boundaries` TIGER/Line | 106,895 | sonnet |
+| 0085 | engine | `clip_raster_to_bbox` | 113,154 | sonnet |
+| 0086 | engine | **REAL OQ-76 fix** — Y-axis flip in postprocess_flood + regenerate Fort Myers COG + republish | 88,163 | sonnet |
+
+**Tool registry: 24 atomic tools** at startup (entered sprint-11 at 17).
+
