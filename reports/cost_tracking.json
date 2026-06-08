@@ -232,13 +232,27 @@
       "description": "Stage B linchpin: publish_layer atomic tool + PyQGIS worker raster path + flood QML + workflow integration. 4 pieces in one commit. **17 tools at startup verified** (16+publish_layer). styles/continuous_flood_depth.qml singleBandPseudoColor Blues 0–3.5 m, nodata transparent. PyQGIS worker `_append_raster_layer` + `publish_raster_round_trip` + `--op publish-raster` CLI discriminator (Option A from kickoff); existing polygon path preserved. tools/publish_layer.py with 6 DI seams + 6 typed error codes + Cloud Run v2 LRO dispatch (cacheable=False per FR-CE-8 + FR-DC-6). model_flood_scenario Step 9 calls publish_layer after postprocess_flood and substitutes LayerURI.uri with WMS URL (graceful gs:// fallback on PublishLayerError). 180 passing tests (+24 from 156 baseline); 21 new tests. Dry-run smoke (mock client) returns expected WMS URL. Live E2E gated on OQ-62-WORKER-SA-RUNS-BUCKET-GRANT (job-0067). 4 OQs surfaced: LAYERURI-URI-FIELD (sprint-10 schema cleanup), WORKER-SA-RUNS-BUCKET-GRANT (job-0067), PUBSUB-COMPLETION-POLL (defer), QGS-MUTATION-CONFLICT (FR-MP-6 scope). Sprint-9 Sonnet routing win #4. Commit f202a31.",
       "model": "sonnet",
       "subagent_tokens": 68556
+    },
+    {
+      "job_id": "job-0065-web-20260607",
+      "sprint": 9,
+      "description": "Stage C UI tweak #2: 3 chrome additions per user direction 2026-06-07. (1) LayerLegend.tsx NEW horizontal colorbar absolute-positioned bottom-24 over map area (auto-recenters via translateX(-50%) as panels collapse); 9 gradient stops mirror continuous_flood_depth.qml verbatim (hex → rgba); 0 m / 3.5 m tick labels; semi-transparent blurred background. Hides when no continuous-raster layer with known preset present. (2) style-presets.ts NEW — client-side preset registry. (3) LayerPanel hide-when-empty (return null on layers.length===0). (4) App.tsx flex-row layout + chevron collapse toggles + 28px collapsed width + localStorage persistence. (5) contracts.ts — added style_preset?: string|null to ProjectLayerSummary with OQ-W-65-STYLE-PRESET annotation. 23 new tests + vitest infra wired. 3 screenshots surfaced: legend visible, panels collapsed (max-map view), empty hidden. Drove via existing App.tsx dev-injection hooks. NEW OQ-W-65-STYLE-PRESET (schema D.2 formal amendment; sprint-10 bundling with OQ-62-LAYERURI-URI-FIELD). Sprint-9 Sonnet win #5. Commit 485ed93.",
+      "model": "sonnet",
+      "subagent_tokens": 90455
+    },
+    {
+      "job_id": "job-0067-infra-20260607",
+      "sprint": 9,
+      "description": "Stage B follow-up: pyqgis-worker SA → runs bucket grant. Single google_storage_bucket_iam_member added to infra/buckets.tf (co-located after qgis_server_runs_viewer). Targeted tofu plan 1-add 0-change 0-destroy; apply clean. NFR-S-2 preserved. Live worker smoke uncovered NEW blocker — deployed image sha256:fffd7e0f from job-0021 predates job-0062's --op publish-raster CLI; argparse exits 2 (NOT GCS permission error). NEW carry-forward OQ-67-WORKER-IMAGE-REBUILD: `make worker-build` → capture digest → pin in infra/worker.tf → targeted apply. Mirrors QGIS Server rebuild pattern (jobs 0024+0029). Can defer to sprint-10; sprint-9 Playwright UI acceptance uses dev-injection-driven mocked loaded_layers (same approach as job-0065 screenshots). Sprint-9 Sonnet win #6. Commit 726f79d.",
+      "model": "sonnet",
+      "subagent_tokens": 65817
     }
   ],
   "totals_by_sprint": {
     "6": 1265567,
     "7": 1863284,
     "8": 1786238,
-    "9": 327308
+    "9": 483580
   },
   "historical_context": {
     "note": "Captured for accountability — NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
