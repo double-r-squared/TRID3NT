@@ -1,0 +1,25 @@
+[debug] [vite] connecting...
+[debug] [vite] connected.
+[info] %cDownload the React DevTools for a better development experience: https://reactjs.org/link/react-devtools font-weight:bold
+[warning] WebSocket connection to 'ws://localhost:8765/' failed: WebSocket is closed before the connection is established.
+[debug] [vite] connecting...
+[debug] [vite] connected.
+[info] %cDownload the React DevTools for a better development experience: https://reactjs.org/link/react-devtools font-weight:bold
+[warning] WebSocket connection to 'ws://localhost:8765/' failed: WebSocket is closed before the connection is established.
+[warning] WebSocket connection to 'ws://localhost:8765/' failed: WebSocket is closed before the connection is established.
+[warning] [GroupMarkerNotSet(crbug.com/242999)!:A0B01E00843F0000]Automatic fallback to software WebGL has been deprecated. Please use the --enable-unsafe-swiftshader flag to opt in to lower security guarantees for trusted content.
+[warning] [.WebGL-0x3614000d1b00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels
+[warning] [.WebGL-0x3614000d1b00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels
+[warning] [.WebGL-0x3614000d1b00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels
+[warning] [.WebGL-0x3614000d1b00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels (this message will no longer repeat)
+[log] [MapView] addVectorLayer start: wdpa-big-cypress gen=1
+[log] [MapView] addVectorLayer start: panther-occurrences gen=1
+[log] [MapView] addVectorLayer start: spoonbill-occurrences gen=1
+[log] [MapView] addVectorLayer start: alligator-occurrences gen=1
+[log] [MapView] addVectorLayer addSource (sync): wdpa-big-cypress kind=polygon features=1
+[log] [MapView] addVectorLayer defer (style not loaded): panther-occurrences
+[log] [MapView] addVectorLayer defer (style not loaded): spoonbill-occurrences
+[log] [MapView] addVectorLayer defer (style not loaded): alligator-occurrences
+[log] [MapView] addVectorLayer addSource (retry 1): panther-occurrences kind=point features=5
+[log] [MapView] addVectorLayer addSource (retry 2): spoonbill-occurrences kind=point features=4
+[log] [MapView] addVectorLayer addSource (retry 3): alligator-occurrences kind=point features=5

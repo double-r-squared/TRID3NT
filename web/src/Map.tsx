@@ -35,6 +35,12 @@ import { useEffect, useRef } from "react";
 import maplibregl, { Map as MapLibreMap, StyleSpecification } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import type { MapCommandPayload, SessionStatePayload } from "./contracts";
+import type { FeatureCollection } from "geojson";
+import {
+  fetchVectorAsGeoJson,
+  resolveVectorColor,
+  type VectorGeomKind,
+} from "./lib/vector_rendering";
 
 /** UI theme — see App.tsx for toggle implementation (job-0076). */
 export type MapTheme = "light" | "dark";
@@ -150,6 +156,9 @@ interface WireLayerSummary {
   uri: string;          // agent wire format (Python `uri` field)
   visible?: boolean;
   opacity?: number;
+  // job-0139 — vector layer additions. Optional because raster layers omit them.
+  style_preset?: string | null;
+  bbox?: [number, number, number, number] | null;
 }
 
 // Extended map-command discriminator: contracts.ts only mirrors the 5 layer-CRUD
@@ -195,11 +204,236 @@ const BASEMAP_SOURCE_ID = "qgis-wms";
 const DARK_BASEMAP_LAYER_ID = "carto-dark-basemap";
 const DARK_BASEMAP_SOURCE_ID = "carto-dark";
 
+/**
+ * Async vector-layer registration (job-0139). Fetches the layer's GeoJSON
+ * (or FlatGeobuf-converted-to-GeoJSON), adds a `geojson` source, and adds an
+ * appropriate paint layer based on geometry kind. Generation-guarded so a
+ * remove-before-resolve race terminates cleanly without leaving an orphan
+ * source on the map.
+ *
+ * Why this is exported (`MapView`-local closure would be cleaner): the
+ * function captures several refs as parameters so it can be exercised in
+ * isolation by unit tests without rendering a full MapView. Sole call site
+ * is the apply loop inside MapView's session-state effect.
+ *
+ * Invariant 1: every coordinate painted on the map comes from `fc.features`
+ * — we never compute geometry client-side.
+ */
+export async function addVectorLayer(
+  m: MapLibreMap,
+  layer: {
+    layer_id: string;
+    uri: string;
+    opacity?: number;
+    visible?: boolean;
+    style_preset?: string | null;
+  },
+  generation: number,
+  fetchGenRef: { current: Map<string, number> },
+  geomKindRef: { current: Map<string, VectorGeomKind> },
+  addedSourceIdsRef: { current: Set<string> },
+): Promise<void> {
+  const opacity = layer.opacity ?? 1;
+  const visible = layer.visible !== false;
+  const color = resolveVectorColor(layer.layer_id, layer.style_preset);
+
+  // Debug-only console.log behind import.meta.env.DEV (matches existing
+  // diagnostic-seam pattern). Helps the Playwright capture confirm the
+  // vector branch was actually entered.
+  if (import.meta.env.DEV) {
+    // eslint-disable-next-line no-console
+    console.log(`[MapView] addVectorLayer start: ${layer.layer_id} gen=${generation}`);
+  }
+  let fc;
+  let geomKind: VectorGeomKind;
+  try {
+    const result = await fetchVectorAsGeoJson(layer.uri);
+    fc = result.featureCollection;
+    geomKind = result.geomKind;
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn(`[MapView] vector fetch failed for ${layer.layer_id}:`, err);
+    // Release the slot so a future session-state push with the same layer_id
+    // can retry.
+    if (addedSourceIdsRef.current.has(layer.layer_id)) {
+      addedSourceIdsRef.current.delete(layer.layer_id);
+    }
+    return;
+  }
+
+  // Race-guard: if a remove or re-add happened during the fetch, the
+  // generation counter advanced. Bail out cleanly.
+  const currentGen = fetchGenRef.current.get(layer.layer_id) ?? -1;
+  if (currentGen !== generation) {
+    if (import.meta.env.DEV) {
+      // eslint-disable-next-line no-console
+      console.log(`[MapView] addVectorLayer abort (gen): ${layer.layer_id} expected=${generation} actual=${currentGen}`);
+    }
+    return;
+  }
+  // Race-guard: addedSourceIdsRef may have been cleared by removal.
+  if (!addedSourceIdsRef.current.has(layer.layer_id)) {
+    if (import.meta.env.DEV) {
+      // eslint-disable-next-line no-console
+      console.log(`[MapView] addVectorLayer abort (removed): ${layer.layer_id}`);
+    }
+    return;
+  }
+  // If the map has been torn down (e.g. component unmount during fetch),
+  // there's nothing to add to. The MapLibre instance throws on calls after
+  // remove(); _loaded is the cheapest reliable check.
+  // (We use a duck-typed property; tests can mock it as needed.)
+  // If isStyleLoaded throws, we treat it as unavailable.
+  let styleLoaded = false;
+  try {
+    styleLoaded = m.isStyleLoaded() ?? false;
+  } catch {
+    return;
+  }
+  if (!styleLoaded) {
+    if (import.meta.env.DEV) {
+      // eslint-disable-next-line no-console
+      console.log(`[MapView] addVectorLayer defer (style not loaded): ${layer.layer_id}`);
+    }
+    // The MapLibre style is mid-load — typically because a SIBLING vector
+    // layer's addSource we just kicked off triggered tile resolution, or
+    // the basemap's WMS tiles are still resolving. We must NOT abandon the
+    // layer (otherwise a multi-layer Case 1 push only lands the first one).
+    // Chain retries via m.once("idle", ...) until either the style settles
+    // or the generation guard signals the layer was removed.
+    //
+    // Why m.once instead of a setTimeout: idle fires exactly when all
+    // pending source/tile requests settle, which is the cheapest accurate
+    // "ready" signal MapLibre exposes. Each retry guards against runaway
+    // chains by capping at MAX_RETRIES.
+    const MAX_RETRIES = 20;
+    let attempt = 0;
+    const retry = () => {
+      attempt += 1;
+      // Race-recheck guards before touching the map.
+      if ((fetchGenRef.current.get(layer.layer_id) ?? -1) !== generation) return;
+      if (!addedSourceIdsRef.current.has(layer.layer_id)) return;
+      let nowLoaded = false;
+      try { nowLoaded = m.isStyleLoaded() ?? false; } catch { return; }
+      if (!nowLoaded) {
+        if (attempt < MAX_RETRIES) {
+          m.once("idle", retry);
+        } else if (import.meta.env.DEV) {
+          // eslint-disable-next-line no-console
+          console.warn(`[MapView] addVectorLayer giving up after ${MAX_RETRIES} retries: ${layer.layer_id}`);
+        }
+        return;
+      }
+      if (import.meta.env.DEV) {
+        // eslint-disable-next-line no-console
+        console.log(`[MapView] addVectorLayer addSource (retry ${attempt}): ${layer.layer_id} kind=${geomKind} features=${fc.features.length}`);
+      }
+      registerVectorOnMap(m, layer, fc, geomKind, color, opacity, visible, geomKindRef);
+    };
+    m.once("idle", retry);
+    return;
+  }
+  if (import.meta.env.DEV) {
+    // eslint-disable-next-line no-console
+    console.log(`[MapView] addVectorLayer addSource (sync): ${layer.layer_id} kind=${geomKind} features=${fc.features.length}`);
+  }
+  registerVectorOnMap(m, layer, fc, geomKind, color, opacity, visible, geomKindRef);
+}
+
+/**
+ * Inner registration helper — adds a GeoJSON source + the right paint layer
+ * to the map. Pure side-effect; no race-guard logic (the caller handles
+ * those before invoking).
+ */
+function registerVectorOnMap(
+  m: MapLibreMap,
+  layer: { layer_id: string },
+  fc: FeatureCollection,
+  geomKind: VectorGeomKind,
+  color: string,
+  opacity: number,
+  visible: boolean,
+  geomKindRef: { current: Map<string, VectorGeomKind> },
+): void {
+  // Add the GeoJSON source.
+  m.addSource(layer.layer_id, {
+    type: "geojson",
+    data: fc,
+  });
+
+  // Add the paint layer. We place vector overlays at the TOP of the stack
+  // (no beforeId), matching the raster-overlay convention. Future enhancement:
+  // place beneath labels using a known beforeId (e.g. "waterway-label")
+  // when one is detected in the active style.
+  if (geomKind === "point") {
+    m.addLayer({
+      id: layer.layer_id,
+      type: "circle",
+      source: layer.layer_id,
+      paint: {
+        "circle-radius": 5,
+        "circle-color": color,
+        "circle-stroke-color": "#ffffff",
+        "circle-stroke-width": 1,
+        "circle-opacity": opacity,
+        "circle-stroke-opacity": opacity,
+      },
+      layout: { visibility: visible ? "visible" : "none" },
+    });
+  } else if (geomKind === "line") {
+    m.addLayer({
+      id: layer.layer_id,
+      type: "line",
+      source: layer.layer_id,
+      paint: {
+        "line-color": color,
+        "line-width": 2,
+        "line-opacity": opacity,
+      },
+      layout: { visibility: visible ? "visible" : "none" },
+    });
+  } else if (geomKind === "polygon") {
+    m.addLayer({
+      id: layer.layer_id,
+      type: "fill",
+      source: layer.layer_id,
+      paint: {
+        "fill-color": color,
+        // Polygons are intentionally translucent so the basemap + underlying
+        // rasters stay visible — WDPA boundaries are a context overlay, not
+        // a focal layer.
+        "fill-opacity": opacity * 0.5,
+        "fill-outline-color": color,
+      },
+      layout: { visibility: visible ? "visible" : "none" },
+    });
+  } else {
+    // Unknown geometry — leave the source registered but skip the paint
+    // layer. The LayerPanel still shows the row (driven by session-state),
+    // and the next style-preset addition can rescue.
+    // eslint-disable-next-line no-console
+    console.warn(`[MapView] unknown geometry kind for ${layer.layer_id}; skipping paint layer`);
+  }
+
+  geomKindRef.current.set(layer.layer_id, geomKind);
+}
+
 export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "light" }: MapViewProps = {}): JSX.Element {
   const container = useRef<HTMLDivElement | null>(null);
   const map = useRef<MapLibreMap | null>(null);
   // useRef so this survives effect re-runs without triggering re-render (A.7).
   const addedSourceIds = useRef<Set<string>>(new Set());
+  // Per-layer geometry kind for added vector layers. Lets the update branch
+  // pick the right paint property name (`circle-opacity` vs `line-opacity`
+  // vs `fill-opacity`) when opacity/visibility changes on a known vector layer.
+  // Also lets the visibility/opacity update path skip raster-only ops on vectors.
+  const vectorGeomKinds = useRef<Map<string, VectorGeomKind>>(new Map());
+  // Tracks the in-flight vector-fetch generation per layer_id. When a layer is
+  // removed mid-fetch, this counter advances so a late-arriving fetch resolves
+  // into a no-op rather than re-registering the source (kickoff §scope:
+  // "Cleanup on remove: when a layer is removed... remove both source and
+  // layer cleanly").
+  const vectorFetchGen = useRef<Map<string, number>>(new Map());
   // ROOT-CAUSE FIX (job-0076 diagnosis): the prior implementation read
   // `payload.loaded_layers` synchronously in the subscriber and bailed if
   // `m.isStyleLoaded()` was false — so when session-state arrived BEFORE the
@@ -290,6 +524,10 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
           if (m.getLayer(id)) m.removeLayer(id);
           if (m.getSource(id)) m.removeSource(id);
           addedSourceIds.current.delete(id);
+          // job-0139: tear down vector bookkeeping too. Bump fetch generation
+          // so any in-flight fetch for this layer_id resolves into a no-op.
+          vectorGeomKinds.current.delete(id);
+          vectorFetchGen.current.set(id, (vectorFetchGen.current.get(id) ?? 0) + 1);
         }
       }
 
@@ -300,21 +538,55 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
         const layer = _layer as unknown as WireLayerSummary;
         const opacity = layer.opacity ?? 1;
         const visible = layer.visible !== false;
+        const layerType = layer.layer_type;
+
         if (addedSourceIds.current.has(layer.layer_id)) {
-          // Update paint/layout on existing layer.
+          // Update paint/layout on existing layer. Branch on the tracked
+          // geometry kind for vector layers so we set the correct paint key.
           if (m.getLayer(layer.layer_id)) {
-            m.setPaintProperty(layer.layer_id, "raster-opacity", opacity);
+            const geomKind = vectorGeomKinds.current.get(layer.layer_id);
+            if (geomKind === "point") {
+              m.setPaintProperty(layer.layer_id, "circle-opacity", opacity);
+              m.setPaintProperty(layer.layer_id, "circle-stroke-opacity", opacity);
+            } else if (geomKind === "line") {
+              m.setPaintProperty(layer.layer_id, "line-opacity", opacity);
+            } else if (geomKind === "polygon") {
+              m.setPaintProperty(layer.layer_id, "fill-opacity", opacity * 0.5);
+              m.setPaintProperty(layer.layer_id, "fill-outline-color", resolveVectorColor(layer.layer_id, layer.style_preset));
+            } else {
+              // Raster (existing behaviour) or unknown — preserve the
+              // raster-only path so the flood-depth COG keeps rendering.
+              m.setPaintProperty(layer.layer_id, "raster-opacity", opacity);
+            }
             m.setLayoutProperty(layer.layer_id, "visibility", visible ? "visible" : "none");
           }
+          continue;
+        }
+
+        // New layer — branch on layer_type.
+        if (layerType === "vector" || layerType === "geojson") {
+          // job-0139: vector layer path. Fetch GeoJSON/FlatGeobuf, add a
+          // GeoJSON source, paint per geometry kind.
+          //
+          // We mark the slot reserved (addedSourceIds.add) BEFORE the async
+          // fetch resolves so a second session-state push during the fetch
+          // doesn't double-register. The fetch generation counter guards
+          // against the re-add race where a layer is removed + re-added
+          // before the original fetch resolves.
+          addedSourceIds.current.add(layer.layer_id);
+          const gen = (vectorFetchGen.current.get(layer.layer_id) ?? 0) + 1;
+          vectorFetchGen.current.set(layer.layer_id, gen);
+          void addVectorLayer(m, layer, gen, vectorFetchGen, vectorGeomKinds, addedSourceIds);
         } else {
-          // New layer — add source + layer. MapLibre paints layers in
-          // insertion order; we don't pass an explicit beforeId here because
-          // the basemap was added first via the seed style spec, so any
-          // flood layer added now will paint ABOVE it (correct stacking).
-          // The dark-theme swap path (`applyTheme` below) preserves this
-          // invariant by re-adding the basemap with `beforeId =` first flood
-          // layer, so flood overlays always stay on top of whichever
-          // basemap is active.
+          // Raster (existing path).
+          //
+          // MapLibre paints layers in insertion order; we don't pass an
+          // explicit beforeId here because the basemap was added first via
+          // the seed style spec, so any flood layer added now will paint
+          // ABOVE it (correct stacking). The dark-theme swap path
+          // (`applyTheme` below) preserves this invariant by re-adding the
+          // basemap with `beforeId =` first overlay layer, so overlays
+          // always stay on top of whichever basemap is active.
           const tileUrl = buildWmsTileUrl(layer.uri);
           m.addSource(layer.layer_id, {
             type: "raster",
@@ -329,12 +601,6 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
           // shows the source-projection grid 1:1 — the user can see that each
           // flood cell sits over the specific street/lot it covers, which is
           // the only visually-irrefutable proof of geographic alignment.
-          // The diagnosis confirmed MapLibre requests identical bboxes for
-          // flood and basemap tiles (see evidence/url_pairs.json), and the
-          // server returns correctly-georeferenced tiles for those bboxes
-          // (see evidence/curl_*_3857.png pair). The remaining gap was that
-          // the rendered overlay looked "smeared" at z13 with linear resampling,
-          // which the user read as misalignment.
           m.addLayer({
             id: layer.layer_id,
             type: "raster",

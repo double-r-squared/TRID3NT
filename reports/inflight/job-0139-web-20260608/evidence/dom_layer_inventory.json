@@ -1,0 +1,83 @@
+{
+  "total_layers": 6,
+  "total_sources": 6,
+  "source_ids": [
+    "qgis-wms",
+    "osm-fallback",
+    "wdpa-big-cypress",
+    "panther-occurrences",
+    "spoonbill-occurrences",
+    "alligator-occurrences"
+  ],
+  "vector_layers": [
+    {
+      "layer_id": "wdpa-big-cypress",
+      "type": "fill",
+      "source": "wdpa-big-cypress",
+      "feature_count": 1,
+      "first_feature_coord": [
+        -81.55,
+        25.8
+      ],
+      "paint": {
+        "fill-color": "#2ca25f",
+        "fill-opacity": 0.5,
+        "fill-outline-color": "#2ca25f"
+      }
+    },
+    {
+      "layer_id": "panther-occurrences",
+      "type": "circle",
+      "source": "panther-occurrences",
+      "feature_count": 5,
+      "first_feature_coord": [
+        -81.34,
+        26.1
+      ],
+      "paint": {
+        "circle-radius": 5,
+        "circle-color": "#e41a1c",
+        "circle-stroke-color": "#ffffff",
+        "circle-stroke-width": 1,
+        "circle-opacity": 1,
+        "circle-stroke-opacity": 1
+      }
+    },
+    {
+      "layer_id": "spoonbill-occurrences",
+      "type": "circle",
+      "source": "spoonbill-occurrences",
+      "feature_count": 4,
+      "first_feature_coord": [
+        -80.95,
+        25.85
+      ],
+      "paint": {
+        "circle-radius": 5,
+        "circle-color": "#ff7f00",
+        "circle-stroke-color": "#ffffff",
+        "circle-stroke-width": 1,
+        "circle-opacity": 1,
+        "circle-stroke-opacity": 1
+      }
+    },
+    {
+      "layer_id": "alligator-occurrences",
+      "type": "circle",
+      "source": "alligator-occurrences",
+      "feature_count": 5,
+      "first_feature_coord": [
+        -81.05,
+        26.15
+      ],
+      "paint": {
+        "circle-radius": 5,
+        "circle-color": "#66a61e",
+        "circle-stroke-color": "#ffffff",
+        "circle-stroke-width": 1,
+        "circle-opacity": 1,
+        "circle-stroke-opacity": 1
+      }
+    }
+  ]
+}

@@ -126,6 +126,9 @@ interface WireSessionState {
     uri: string;
     visible?: boolean;
     opacity?: number;
+    // job-0139 — vector additions.
+    style_preset?: string | null;
+    bbox?: [number, number, number, number] | null;
   }>;
 }
 
@@ -490,5 +493,405 @@ describe("MapView — dark-theme swap (job-0076 bundled enhancement)", () => {
       expect.objectContaining({ id: "qgis-basemap", source: "qgis-wms" }),
       "flood-demo",
     );
+  });
+});
+
+// --- job-0139 — vector layer rendering tests ---------------------------- //
+//
+// Resolves OQ-PAY-MAP-VECTOR-UNSUPPORTED: Map.tsx now branches on
+// layer_type. Vector layers go through `addVectorLayer` which fetches GeoJSON
+// (or FlatGeobuf-converted-to-GeoJSON), adds a `geojson` source, and adds
+// the right paint layer per geometry kind.
+//
+// The fetch is mocked per test with the desired FeatureCollection. We use
+// vi.spyOn(global, 'fetch') because Map.tsx calls the default `fetch` global
+// through `fetchVectorAsGeoJson`'s default arg. Tests stub fetch to return
+// a Response-shaped object with .json() returning the FC.
+
+import { addVectorLayer } from "./Map";
+import { detectGeomKind, paletteColorFor, presetColorFor, resolveVectorColor, VECTOR_PALETTE } from "./lib/vector_rendering";
+
+function makeFetchResponse(body: object): Response {
+  return {
+    ok: true,
+    status: 200,
+    statusText: "OK",
+    json: async () => body,
+    arrayBuffer: async () => new ArrayBuffer(0),
+  } as unknown as Response;
+}
+
+function makeWireVectorLayer(
+  id: string,
+  uri: string,
+  opts: { style_preset?: string | null; visible?: boolean; opacity?: number } = {},
+) {
+  return {
+    layer_id: id,
+    name: id,
+    layer_type: "vector",
+    uri,
+    visible: opts.visible ?? true,
+    opacity: opts.opacity ?? 1,
+    style_preset: opts.style_preset ?? null,
+  };
+}
+
+describe("MapView — vector layer rendering (job-0139)", () => {
+  beforeEach(() => {
+    lastMapMock = null;
+    vi.restoreAllMocks();
+  });
+
+  it("adds a geojson source + circle layer for point geometry", async () => {
+    const fc = {
+      type: "FeatureCollection",
+      features: [
+        { type: "Feature", geometry: { type: "Point", coordinates: [-81.0, 26.0] }, properties: { species: "panther" } },
+        { type: "Feature", geometry: { type: "Point", coordinates: [-81.1, 26.1] }, properties: { species: "panther" } },
+      ],
+    };
+    vi.spyOn(global, "fetch").mockResolvedValue(makeFetchResponse(fc));
+
+    const sessionBus = makeSessionBus();
+    render(<MapView subscribeSessionState={sessionBus.subscribe as (cb: SessionStateSubscriber) => () => void} />);
+
+    act(() => {
+      sessionBus.push({
+        loaded_layers: [makeWireVectorLayer("panther-occurrences", "https://example.com/panther.geojson")],
+      });
+    });
+
+    // Vector path is async — wait a microtask for the fetch to resolve.
+    await new Promise((r) => setTimeout(r, 0));
+
+    const m = lastMapMock!;
+    // Confirm fetch was called with the layer's uri.
+    expect(global.fetch).toHaveBeenCalledWith("https://example.com/panther.geojson");
+    // Source registered as geojson with the parsed FeatureCollection.
+    const sourceCall = m.addSource.mock.calls.find((c) => (c as MockCallArgs)[0] === "panther-occurrences");
+    expect(sourceCall).toBeDefined();
+    const sourceDef = (sourceCall as MockCallArgs)[1] as { type: string; data: unknown };
+    expect(sourceDef.type).toBe("geojson");
+    expect((sourceDef.data as { type: string }).type).toBe("FeatureCollection");
+
+    // Paint layer added with type=circle.
+    const layerCall = m.addLayer.mock.calls.find((c) => ((c as MockCallArgs)[0] as { id: string }).id === "panther-occurrences");
+    expect(layerCall).toBeDefined();
+    const layerDef = (layerCall as MockCallArgs)[0] as { type: string; paint: Record<string, unknown> };
+    expect(layerDef.type).toBe("circle");
+    expect(layerDef.paint).toHaveProperty("circle-color");
+    expect(layerDef.paint).toHaveProperty("circle-radius");
+    expect(layerDef.paint).toHaveProperty("circle-stroke-color");
+  });
+
+  it("adds a fill layer for polygon geometry (e.g. WDPA protected areas)", async () => {
+    const fc = {
+      type: "FeatureCollection",
+      features: [
+        {
+          type: "Feature",
+          geometry: {
+            type: "Polygon",
+            coordinates: [[[-81.0, 26.0], [-81.1, 26.0], [-81.1, 26.1], [-81.0, 26.1], [-81.0, 26.0]]],
+          },
+          properties: { name: "Big Cypress National Preserve" },
+        },
+      ],
+    };
+    vi.spyOn(global, "fetch").mockResolvedValue(makeFetchResponse(fc));
+
+    const sessionBus = makeSessionBus();
+    render(<MapView subscribeSessionState={sessionBus.subscribe as (cb: SessionStateSubscriber) => () => void} />);
+
+    act(() => {
+      sessionBus.push({
+        loaded_layers: [
+          makeWireVectorLayer("wdpa-big-cypress", "https://example.com/wdpa.geojson", { style_preset: "wdpa_polygon" }),
+        ],
+      });
+    });
+    await new Promise((r) => setTimeout(r, 0));
+
+    const m = lastMapMock!;
+    const layerCall = m.addLayer.mock.calls.find((c) => ((c as MockCallArgs)[0] as { id: string }).id === "wdpa-big-cypress");
+    expect(layerCall).toBeDefined();
+    const layerDef = (layerCall as MockCallArgs)[0] as { type: string; paint: Record<string, unknown> };
+    expect(layerDef.type).toBe("fill");
+    expect(layerDef.paint).toHaveProperty("fill-color");
+    expect(layerDef.paint).toHaveProperty("fill-opacity");
+    // wdpa_polygon style_preset → green per presetColorFor.
+    expect(layerDef.paint["fill-color"]).toBe("#2ca25f");
+  });
+
+  it("adds a line layer for linestring geometry (e.g. OSM roads)", async () => {
+    const fc = {
+      type: "FeatureCollection",
+      features: [
+        {
+          type: "Feature",
+          geometry: { type: "LineString", coordinates: [[-81.0, 26.0], [-81.1, 26.1]] },
+          properties: { highway: "primary" },
+        },
+      ],
+    };
+    vi.spyOn(global, "fetch").mockResolvedValue(makeFetchResponse(fc));
+
+    const sessionBus = makeSessionBus();
+    render(<MapView subscribeSessionState={sessionBus.subscribe as (cb: SessionStateSubscriber) => () => void} />);
+
+    act(() => {
+      sessionBus.push({
+        loaded_layers: [makeWireVectorLayer("osm-primary-roads", "https://example.com/roads.geojson")],
+      });
+    });
+    await new Promise((r) => setTimeout(r, 0));
+
+    const m = lastMapMock!;
+    const layerCall = m.addLayer.mock.calls.find((c) => ((c as MockCallArgs)[0] as { id: string }).id === "osm-primary-roads");
+    expect(layerCall).toBeDefined();
+    const layerDef = (layerCall as MockCallArgs)[0] as { type: string };
+    expect(layerDef.type).toBe("line");
+  });
+
+  it("adds multiple vector layers with deterministically-different palette colors", async () => {
+    const makeFc = (lng: number) => ({
+      type: "FeatureCollection",
+      features: [{ type: "Feature", geometry: { type: "Point", coordinates: [lng, 26.0] }, properties: {} }],
+    });
+    // Sequential fetch responses — vi.spyOn().mockResolvedValueOnce chain.
+    const fetchSpy = vi.spyOn(global, "fetch")
+      .mockResolvedValueOnce(makeFetchResponse(makeFc(-81.0)))
+      .mockResolvedValueOnce(makeFetchResponse(makeFc(-81.1)))
+      .mockResolvedValueOnce(makeFetchResponse(makeFc(-81.2)));
+
+    const sessionBus = makeSessionBus();
+    render(<MapView subscribeSessionState={sessionBus.subscribe as (cb: SessionStateSubscriber) => () => void} />);
+
+    act(() => {
+      sessionBus.push({
+        loaded_layers: [
+          makeWireVectorLayer("panther-occurrences", "https://ex.com/p.geojson"),
+          makeWireVectorLayer("spoonbill-occurrences", "https://ex.com/s.geojson"),
+          makeWireVectorLayer("alligator-occurrences", "https://ex.com/a.geojson"),
+        ],
+      });
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+    const m = lastMapMock!;
+    const calls = ["panther-occurrences", "spoonbill-occurrences", "alligator-occurrences"].map((id) =>
+      m.addLayer.mock.calls.find((c) => ((c as MockCallArgs)[0] as { id: string }).id === id),
+    );
+    expect(calls.every((c) => c !== undefined)).toBe(true);
+    const colors = calls.map((c) => {
+      const def = (c as MockCallArgs)[0] as { paint: Record<string, unknown> };
+      return def.paint["circle-color"] as string;
+    });
+    // Per-species discipline: each species gets a distinct deterministic colour.
+    expect(new Set(colors).size).toBe(3);
+    // All from the palette.
+    for (const c of colors) {
+      expect(VECTOR_PALETTE).toContain(c);
+    }
+  });
+
+  it("uses style_preset color when present (overrides palette)", async () => {
+    const fc = {
+      type: "FeatureCollection",
+      features: [{ type: "Feature", geometry: { type: "Point", coordinates: [-81.0, 26.0] }, properties: {} }],
+    };
+    vi.spyOn(global, "fetch").mockResolvedValue(makeFetchResponse(fc));
+
+    const sessionBus = makeSessionBus();
+    render(<MapView subscribeSessionState={sessionBus.subscribe as (cb: SessionStateSubscriber) => () => void} />);
+
+    act(() => {
+      sessionBus.push({
+        loaded_layers: [makeWireVectorLayer("nws-alerts", "https://ex.com/alerts.geojson", { style_preset: "nws_alert" })],
+      });
+    });
+    await new Promise((r) => setTimeout(r, 0));
+
+    const m = lastMapMock!;
+    const layerCall = m.addLayer.mock.calls.find((c) => ((c as MockCallArgs)[0] as { id: string }).id === "nws-alerts");
+    const def = (layerCall as MockCallArgs)[0] as { paint: Record<string, unknown> };
+    expect(def.paint["circle-color"]).toBe("#e6550d");
+  });
+
+  it("removes the vector source+layer when it disappears from session-state (A.7)", async () => {
+    const fc = {
+      type: "FeatureCollection",
+      features: [{ type: "Feature", geometry: { type: "Point", coordinates: [-81.0, 26.0] }, properties: {} }],
+    };
+    vi.spyOn(global, "fetch").mockResolvedValue(makeFetchResponse(fc));
+
+    const sessionBus = makeSessionBus();
+    render(<MapView subscribeSessionState={sessionBus.subscribe as (cb: SessionStateSubscriber) => () => void} />);
+
+    act(() => {
+      sessionBus.push({
+        loaded_layers: [makeWireVectorLayer("panther", "https://ex.com/p.geojson")],
+      });
+    });
+    await new Promise((r) => setTimeout(r, 0));
+
+    const m = lastMapMock!;
+    // Confirm layer added.
+    expect(m._addedLayers.has("panther")).toBe(true);
+
+    // Now drop it.
+    act(() => {
+      sessionBus.push({ loaded_layers: [] });
+    });
+
+    expect(m.removeLayer).toHaveBeenCalledWith("panther");
+    expect(m.removeSource).toHaveBeenCalledWith("panther");
+  });
+
+  it("does not break existing raster path when a session-state push has both raster and vector layers", async () => {
+    const fc = {
+      type: "FeatureCollection",
+      features: [{ type: "Feature", geometry: { type: "Point", coordinates: [-81.0, 26.0] }, properties: {} }],
+    };
+    vi.spyOn(global, "fetch").mockResolvedValue(makeFetchResponse(fc));
+
+    const sessionBus = makeSessionBus();
+    render(<MapView subscribeSessionState={sessionBus.subscribe as (cb: SessionStateSubscriber) => () => void} />);
+
+    act(() => {
+      sessionBus.push({
+        loaded_layers: [
+          // Raster — flood depth COG.
+          { layer_id: "flood-demo", name: "Flood depth", layer_type: "raster", uri: "https://qgis.example.com/wms?LAYERS=flood-demo", visible: true },
+          // Vector — species points.
+          makeWireVectorLayer("panther", "https://ex.com/p.geojson"),
+        ],
+      });
+    });
+    await new Promise((r) => setTimeout(r, 0));
+
+    const m = lastMapMock!;
+    // Raster source uses tiles[] + raster type.
+    const floodSourceCall = m.addSource.mock.calls.find((c) => (c as MockCallArgs)[0] === "flood-demo");
+    expect(floodSourceCall).toBeDefined();
+    expect(((floodSourceCall as MockCallArgs)[1] as { type: string }).type).toBe("raster");
+    // Vector source uses geojson type.
+    const pantherSourceCall = m.addSource.mock.calls.find((c) => (c as MockCallArgs)[0] === "panther");
+    expect(pantherSourceCall).toBeDefined();
+    expect(((pantherSourceCall as MockCallArgs)[1] as { type: string }).type).toBe("geojson");
+  });
+});
+
+// --- vector_rendering helper unit tests ---------------------------------- //
+
+describe("vector_rendering — pure helpers", () => {
+  it("detectGeomKind returns 'point' for Point and MultiPoint", () => {
+    expect(detectGeomKind({ type: "FeatureCollection", features: [
+      { type: "Feature", geometry: { type: "Point", coordinates: [0, 0] }, properties: {} },
+    ] })).toBe("point");
+    expect(detectGeomKind({ type: "FeatureCollection", features: [
+      { type: "Feature", geometry: { type: "MultiPoint", coordinates: [[0, 0], [1, 1]] }, properties: {} },
+    ] })).toBe("point");
+  });
+
+  it("detectGeomKind returns 'polygon' for Polygon and MultiPolygon", () => {
+    expect(detectGeomKind({ type: "FeatureCollection", features: [
+      { type: "Feature", geometry: { type: "Polygon", coordinates: [[[0, 0], [1, 0], [1, 1], [0, 0]]] }, properties: {} },
+    ] })).toBe("polygon");
+  });
+
+  it("detectGeomKind returns 'line' for LineString", () => {
+    expect(detectGeomKind({ type: "FeatureCollection", features: [
+      { type: "Feature", geometry: { type: "LineString", coordinates: [[0, 0], [1, 1]] }, properties: {} },
+    ] })).toBe("line");
+  });
+
+  it("detectGeomKind returns 'unknown' for an empty FeatureCollection", () => {
+    expect(detectGeomKind({ type: "FeatureCollection", features: [] })).toBe("unknown");
+  });
+
+  it("paletteColorFor is deterministic across calls (same id → same colour)", () => {
+    expect(paletteColorFor("panther")).toBe(paletteColorFor("panther"));
+    expect(paletteColorFor("alligator")).toBe(paletteColorFor("alligator"));
+    // (Note: with a 12-colour palette + FNV-1a, distinct IDs may share a
+    // colour by birthday-paradox collisions. Determinism is the load-bearing
+    // property we test; distinctness is exercised in the multi-layer
+    // rendering test above using non-colliding IDs.)
+  });
+
+  it("paletteColorFor always returns a colour from VECTOR_PALETTE", () => {
+    for (const id of ["a", "panther", "spoonbill", "alligator", "very-long-layer-id-12345"]) {
+      expect(VECTOR_PALETTE).toContain(paletteColorFor(id));
+    }
+  });
+
+  it("presetColorFor maps WDPA to green and NWS alert to red-orange", () => {
+    expect(presetColorFor("wdpa_polygon")).toBe("#2ca25f");
+    expect(presetColorFor("nws_alert")).toBe("#e6550d");
+    expect(presetColorFor("totally_unknown")).toBeUndefined();
+    expect(presetColorFor(null)).toBeUndefined();
+    expect(presetColorFor(undefined)).toBeUndefined();
+  });
+
+  it("resolveVectorColor prefers preset over palette", () => {
+    expect(resolveVectorColor("panther", "wdpa_polygon")).toBe("#2ca25f");
+    expect(resolveVectorColor("panther", null)).toBe(paletteColorFor("panther"));
+  });
+});
+
+// --- addVectorLayer race-guards (job-0139 — cleanup-on-remove) --------- //
+
+describe("addVectorLayer — race guards", () => {
+  function makeMockMap() {
+    return {
+      addSource: vi.fn(),
+      addLayer: vi.fn(),
+      isStyleLoaded: vi.fn().mockReturnValue(true),
+    } as unknown as Parameters<typeof addVectorLayer>[0];
+  }
+
+  it("aborts cleanly when the layer is removed before the fetch resolves (generation guard)", async () => {
+    const fc = {
+      type: "FeatureCollection",
+      features: [{ type: "Feature", geometry: { type: "Point", coordinates: [-81, 26] }, properties: {} }],
+    };
+    vi.spyOn(global, "fetch").mockResolvedValue(makeFetchResponse(fc));
+
+    const m = makeMockMap();
+    const fetchGen = { current: new Map<string, number>([["lyr", 1]]) };
+    const geomKinds = { current: new Map() };
+    const addedIds = { current: new Set<string>(["lyr"]) };
+
+    // Start the async add with generation=1.
+    const promise = addVectorLayer(m, { layer_id: "lyr", uri: "https://ex/g.geojson" }, 1, fetchGen, geomKinds, addedIds);
+    // Simulate removal mid-fetch: bump generation.
+    fetchGen.current.set("lyr", 2);
+    addedIds.current.delete("lyr");
+
+    await promise;
+    // No source/layer should have been added because the guard caught it.
+    expect((m as unknown as { addSource: ReturnType<typeof vi.fn> }).addSource).not.toHaveBeenCalled();
+    expect((m as unknown as { addLayer: ReturnType<typeof vi.fn> }).addLayer).not.toHaveBeenCalled();
+  });
+
+  it("logs and exits when fetch throws (no orphan source registered)", async () => {
+    vi.spyOn(global, "fetch").mockRejectedValue(new Error("net"));
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const m = makeMockMap();
+    const fetchGen = { current: new Map<string, number>([["lyr", 1]]) };
+    const geomKinds = { current: new Map() };
+    const addedIds = { current: new Set<string>(["lyr"]) };
+
+    await addVectorLayer(m, { layer_id: "lyr", uri: "https://ex/g.geojson" }, 1, fetchGen, geomKinds, addedIds);
+
+    expect((m as unknown as { addSource: ReturnType<typeof vi.fn> }).addSource).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalled();
+    // Slot must be released so a retry can re-register.
+    expect(addedIds.current.has("lyr")).toBe(false);
+    warnSpy.mockRestore();
   });
 });
