@@ -1,0 +1,8 @@
+GOES-16 visible live fetch
+bbox: (-82.0, 26.0, -80.0, 28.0)
+CRS: EPSG:4326
+bounds: BoundingBox(left=-82.0, bottom=26.0, right=-80.0, top=28.0)
+shape: (100, 100)
+mean reflectance (finite): 0.0541
+min, max (finite): 0.0190, 0.2816
+finite pixel count: 10000
