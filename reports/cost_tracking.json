@@ -267,6 +267,13 @@
       "description": "Sprint-10 Stage A (headline): UI correction reversion + raster wiring + zoom-to per user direction 2026-06-07. 5 changes in order 4→5→3→1→2: (1) Map.tsx subscribes to session-state + useRef<Set<string>> tracks source IDs surviving effect re-runs (A.7 structural enforcement); addSource/addLayer/removeSource per loaded_layers diff with WMS BBOX={bbox-epsg-3857} placeholder; map-command useEffect handles zoom-to via fitBounds; NavigationControl moved bottom-right. (2) LayerURI.bbox additive + pipeline_emitter.emit_map_command + add_loaded_layer emits zoom-to when bbox present + model_flood_scenario populates bbox. (3) App.tsx state-lift of layers + showLeftPanel/showLayersHamburger booleans (no empty-tab bug). (4) App.tsx position:fixed inset:0 wrapper; MapView full-bleed first DOM; LayerPanel + Chat as position:absolute siblings; deleted COLLAPSED_WIDTH. (5) Deleted chevrons; ☰ hamburgers TL/TR at z:30 + × close buttons in panel headers. 5 live-injection screenshots surfaced (baseline / layer_arrival w/ Fort Myers zoom / collapsed_via_close / expanded_via_hamburger / persistence_after_reload). 60 web tests pass (46+14 new); 0 TS errors; 142 contracts + 180 agent unchanged. 3 OQs surfaced for job-0070 schema cleanup: OQ-0068-URI (contracts.ts source_url vs Python uri), OQ-0068-MAPCMD-WS (ws.ts doesn't route map-command to handler — production routing pending; dev seam works), OQ-0068-ZIDX (opacity/z_index ?? 1 fallback). Sprint-10 Sonnet win #1. Commit e5398b8.",
       "model": "sonnet",
       "subagent_tokens": 152105
+    },
+    {
+      "job_id": "job-0069-infra-20260607",
+      "sprint": 10,
+      "description": "Sprint-10 Stage B (qualified pass — major milestone): PyQGIS worker image rebuilt + live M5-to-UI pipeline working end-to-end LIVE for the first time. Part 1 Cloud Build SUCCESS 2m6s, new digest sha256:94dad2bc... pinned in infra/worker.tf, targeted tofu apply 0-add/1-change/0-destroy clean. Part 2 Cloud Run execution SUCCEEDED, .qgs mutated 28308→43278 bytes, layers_after=['basemap-osm-conus','flood-depth-job-0069-demo']. Part 3 curl WMS GetMap returns real 536 KB flood-depth styled PNG with continuous_flood_depth.qml Blues ramp applied server-side. Part 4 dev-UI screenshot shows real raster rendering through MapLibre via QGIS Server — qualified because COG at wrong geographic location (off N Africa not Fort Myers) due to OQ-69-COG-CRS-MISTAG (job-0066 COG predates job-0063's CRS fix; EPSG:3857 metadata + UTM-17N coords = ~10,000 km error). Plus 2 medium OQs deferred to sprint-10 cleanup: OQ-69-WMS-URL-DOUBLE-MNT-PREFIX (worker.py:825-829 doubles /mnt/qgs/), OQ-69-WMS-LAYER-EPSG4326-EMPTY (native EPSG:3857 works fine; production MapLibre uses 3857 so non-blocker). Closes OQ-67-WORKER-IMAGE-REBUILD. 3 screenshots surfaced. Sprint-10 Opus #1 per user direction (cross-cutting infra + live verification + UI screenshot). Commit 0aa6d46.",
+      "model": "opus",
+      "subagent_tokens": 182965
     }
   ],
   "totals_by_sprint": {
@@ -274,7 +281,7 @@
     "7": 1863284,
     "8": 1786238,
     "9": 713020,
-    "10": 152105
+    "10": 335070
   },
   "historical_context": {
     "note": "Captured for accountability — NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
