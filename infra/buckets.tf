@@ -187,3 +187,30 @@ resource "google_storage_bucket_iam_member" "qgis_server_runs_viewer" {
   role   = "roles/storage.objectViewer"
   member = "serviceAccount:${google_service_account.qgis_server.email}"
 }
+
+# --- IAM: PyQGIS worker SA gets objectViewer on the runs bucket (job-0067) ---
+#
+# WHY THIS EXISTS:
+#   OQ-62-WORKER-SA-RUNS-BUCKET-GRANT (job-0062-engine-20260607): the PyQGIS
+#   worker reads flood-depth COGs from the runs bucket via GDAL's /vsigs/ driver
+#   (e.g., `/vsigs/grace-2-hazard-prod-runs/<run_id>/flood_depth_peak.tif`)
+#   during the `publish-raster` operation. Without this grant, GDAL returns a
+#   "Permission denied" error and the publish_layer atomic tool fails before
+#   it can append the raster layer to the canonical .qgs.
+#
+# SCOPE:
+#   Bucket-scoped only — `roles/storage.objectViewer` on
+#   `gs://grace-2-hazard-prod-runs/` (resource `google_storage_bucket.runs`
+#   in sfincs.tf). No project-level grant; preserves zero-project-grants
+#   invariant (job-0021) and NFR-S-2.
+#
+# REFERENCES:
+#   - job-0067-infra-20260607 (this change)
+#   - job-0062-engine-20260607: OQ-62-WORKER-SA-RUNS-BUCKET-GRANT
+#   - job-0061-infra-20260607: mirrors the qgis_server_runs_viewer pattern above
+
+resource "google_storage_bucket_iam_member" "pyqgis_worker_runs_viewer" {
+  bucket = google_storage_bucket.runs.name
+  role   = "roles/storage.objectViewer"
+  member = "serviceAccount:${google_service_account.pyqgis_worker.email}"
+}
