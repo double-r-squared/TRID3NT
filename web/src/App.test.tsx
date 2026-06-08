@@ -189,3 +189,181 @@ describe("App collapse toggles (tweak 3)", () => {
     expect(screen.getByTestId("right-panel")).toHaveAttribute("data-collapsed", "false");
   });
 });
+
+// --- job-0068: conditional mount + hamburger tests ----------------------- //
+//
+// Tests for the new overlay layout, hamburger pattern, and conditional mount.
+// Uses a minimal AppShell that mirrors the job-0068 App.tsx logic without
+// importing WebSocket/WebGL/MapLibre deps (same rationale as CollapseShell
+// above). Live browser E2E is captured in the 5 evidence screenshots.
+
+import { act } from "@testing-library/react";
+
+// Minimal shell mirroring the job-0068 conditional-mount + hamburger logic.
+function AppShell({ initialLayers = 0, startLeftCollapsed = false }: {
+  initialLayers?: number;
+  startLeftCollapsed?: boolean;
+}): JSX.Element {
+  const [layerCount, setLayerCount] = useState(initialLayers);
+  const [leftCollapsed, setLeftCollapsed] = useState(startLeftCollapsed);
+  const [rightCollapsed, setRightCollapsed] = useState(false);
+
+  const showLeftPanel = layerCount > 0 && !leftCollapsed;
+  const showLayersHamburger = layerCount > 0 && leftCollapsed;
+  const showChatHamburger = rightCollapsed;
+
+  return (
+    <div>
+      {/* Simulate layer arrival button */}
+      <button
+        data-testid="sim-add-layer"
+        onClick={() => setLayerCount((c) => c + 1)}
+      >
+        Add Layer
+      </button>
+      <button
+        data-testid="sim-remove-all-layers"
+        onClick={() => setLayerCount(0)}
+      >
+        Remove All
+      </button>
+
+      {showLeftPanel && (
+        <div data-testid="grace2-layer-panel">
+          <button
+            data-testid="grace2-layer-panel-close"
+            onClick={() => setLeftCollapsed(true)}
+          >
+            ×
+          </button>
+        </div>
+      )}
+
+      {showLayersHamburger && (
+        <button
+          data-testid="grace2-layers-hamburger"
+          aria-label="Show layers"
+          onClick={() => setLeftCollapsed(false)}
+        >
+          ☰
+        </button>
+      )}
+
+      {!rightCollapsed && (
+        <div data-testid="grace2-chat">
+          <button
+            data-testid="grace2-chat-close"
+            onClick={() => setRightCollapsed(true)}
+          >
+            ×
+          </button>
+        </div>
+      )}
+
+      {showChatHamburger && (
+        <button
+          data-testid="grace2-chat-hamburger"
+          aria-label="Show chat"
+          onClick={() => setRightCollapsed(false)}
+        >
+          ☰
+        </button>
+      )}
+    </div>
+  );
+}
+
+describe("App overlay layout — conditional mount + hamburger (job-0068 changes 1-3)", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  it("no layers → LayerPanel NOT mounted AND Layers hamburger NOT rendered", () => {
+    render(<AppShell initialLayers={0} />);
+    expect(screen.queryByTestId("grace2-layer-panel")).toBeNull();
+    expect(screen.queryByTestId("grace2-layers-hamburger")).toBeNull();
+  });
+
+  it("layers > 0 → LayerPanel mounts (left overlay)", () => {
+    render(<AppShell initialLayers={1} />);
+    expect(screen.getByTestId("grace2-layer-panel")).toBeInTheDocument();
+  });
+
+  it("adding a layer after start causes LayerPanel to appear", () => {
+    render(<AppShell initialLayers={0} />);
+    expect(screen.queryByTestId("grace2-layer-panel")).toBeNull();
+
+    act(() => {
+      fireEvent.click(screen.getByTestId("sim-add-layer"));
+    });
+
+    expect(screen.getByTestId("grace2-layer-panel")).toBeInTheDocument();
+  });
+
+  it("removing all layers collapses LayerPanel AND hamburger disappears", () => {
+    render(<AppShell initialLayers={1} />);
+    expect(screen.getByTestId("grace2-layer-panel")).toBeInTheDocument();
+
+    act(() => {
+      fireEvent.click(screen.getByTestId("sim-remove-all-layers"));
+    });
+
+    expect(screen.queryByTestId("grace2-layer-panel")).toBeNull();
+    expect(screen.queryByTestId("grace2-layers-hamburger")).toBeNull();
+  });
+
+  it("layers present + leftCollapsed → hamburger top-left renders, panel hidden", () => {
+    render(<AppShell initialLayers={1} startLeftCollapsed />);
+    expect(screen.queryByTestId("grace2-layer-panel")).toBeNull();
+    expect(screen.getByTestId("grace2-layers-hamburger")).toBeInTheDocument();
+    expect(screen.getByTestId("grace2-layers-hamburger")).toHaveAttribute(
+      "aria-label",
+      "Show layers",
+    );
+  });
+
+  it("clicking hamburger expands panel and hamburger disappears", () => {
+    render(<AppShell initialLayers={1} startLeftCollapsed />);
+    expect(screen.getByTestId("grace2-layers-hamburger")).toBeInTheDocument();
+
+    act(() => {
+      fireEvent.click(screen.getByTestId("grace2-layers-hamburger"));
+    });
+
+    expect(screen.queryByTestId("grace2-layers-hamburger")).toBeNull();
+    expect(screen.getByTestId("grace2-layer-panel")).toBeInTheDocument();
+  });
+
+  it("clicking × close in LayerPanel collapses panel and shows hamburger", () => {
+    render(<AppShell initialLayers={1} />);
+    expect(screen.getByTestId("grace2-layer-panel")).toBeInTheDocument();
+
+    act(() => {
+      fireEvent.click(screen.getByTestId("grace2-layer-panel-close"));
+    });
+
+    expect(screen.queryByTestId("grace2-layer-panel")).toBeNull();
+    expect(screen.getByTestId("grace2-layers-hamburger")).toBeInTheDocument();
+  });
+
+  it("Chat panel always present (it is the way to request layers)", () => {
+    render(<AppShell initialLayers={0} />);
+    expect(screen.getByTestId("grace2-chat")).toBeInTheDocument();
+  });
+
+  it("clicking Chat × hides chat; chat hamburger appears top-right", () => {
+    render(<AppShell initialLayers={0} />);
+    act(() => {
+      fireEvent.click(screen.getByTestId("grace2-chat-close"));
+    });
+    expect(screen.queryByTestId("grace2-chat")).toBeNull();
+    expect(screen.getByTestId("grace2-chat-hamburger")).toHaveAttribute(
+      "aria-label",
+      "Show chat",
+    );
+  });
+});

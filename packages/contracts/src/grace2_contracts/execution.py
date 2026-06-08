@@ -116,6 +116,11 @@ class LayerURI(GraceModel):
     Aligned field-for-field with ``map-command load-layer`` args and with
     ``ResultLayer`` so postprocess output maps onto the visualization seam with
     no translation. ``uri`` is a COG (raster) or FlatGeobuf/GeoParquet (vector).
+
+    ``bbox`` is optional (job-0068): when present the pipeline emitter emits a
+    ``map-command(zoom-to)`` after ``add_loaded_layer`` so the client camera
+    flies to the layer's geographic extent. Format: ``(min_lon, min_lat,
+    max_lon, max_lat)`` in EPSG:4326.
     """
 
     layer_id: str  # stable id; flows into map-command load-layer args
@@ -126,3 +131,4 @@ class LayerURI(GraceModel):
     temporal: TemporalConfig | None = None  # present iff time-varying
     role: Literal["primary", "context", "input"] = "primary"
     units: str | None = None
+    bbox: tuple[float, float, float, float] | None = None  # (min_lon, min_lat, max_lon, max_lat); triggers zoom-to

@@ -153,6 +153,8 @@ export function shouldShowCancel(state: PipelineInlineState): boolean {
 
 export interface ChatProps {
   wsUrl: string;
+  /** Called when the user clicks the × close button (job-0068). */
+  onClose?: () => void;
 }
 
 // --- Connection status display ------------------------------------------- //
@@ -173,7 +175,7 @@ const STATUS_COLOR: Record<ConnectionStatus, string> = {
 
 // --- Component ----------------------------------------------------------- //
 
-export function Chat({ wsUrl }: ChatProps): JSX.Element {
+export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [pipeline, dispatchPipeline] = useReducer(pipelineReducer, {
     live: null,
@@ -308,6 +310,26 @@ export function Chat({ wsUrl }: ChatProps): JSX.Element {
           />
           {STATUS_LABEL[status]}
         </span>
+        {onClose && (
+          <button
+            data-testid="grace2-chat-close"
+            aria-label="Close chat panel"
+            onClick={onClose}
+            style={{
+              background: "none",
+              border: "none",
+              color: "#888",
+              cursor: "pointer",
+              fontSize: 16,
+              lineHeight: 1,
+              padding: "0 2px",
+              display: "flex",
+              alignItems: "center",
+            }}
+          >
+            ×
+          </button>
+        )}
       </header>
 
       {/* ---- Scrollable conversation area ---- */}

@@ -188,6 +188,8 @@ export interface LayerPanelProps {
   subscribeMapCommand?: (cb: MapCommandSubscriber) => () => void;
   /** Called whenever the layer list changes (used by App.tsx to drive LayerLegend). */
   onLayersChange?: (layers: ProjectLayerSummary[]) => void;
+  /** Called when the user clicks the × close button (job-0068). */
+  onClose?: () => void;
 }
 
 export function LayerPanel({
@@ -195,6 +197,7 @@ export function LayerPanel({
   subscribeSessionState,
   subscribeMapCommand,
   onLayersChange,
+  onClose,
 }: LayerPanelProps): JSX.Element | null {
   const initial = useMemo<LayerPanelState>(
     () => ({ layers: sortTopFirst(initialLayers ?? []) }),
@@ -306,6 +309,27 @@ export function LayerPanel({
         <span style={{ color: "#888", fontSize: 11 }}>
           {state.layers.length} loaded
         </span>
+        <span style={{ flex: 1 }} />
+        {onClose && (
+          <button
+            data-testid="grace2-layer-panel-close"
+            aria-label="Close layer panel"
+            onClick={onClose}
+            style={{
+              background: "none",
+              border: "none",
+              color: "#888",
+              cursor: "pointer",
+              fontSize: 16,
+              lineHeight: 1,
+              padding: "0 2px",
+              display: "flex",
+              alignItems: "center",
+            }}
+          >
+            ×
+          </button>
+        )}
       </header>
       <div
         style={{

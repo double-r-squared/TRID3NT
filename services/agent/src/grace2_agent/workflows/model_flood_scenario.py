@@ -558,6 +558,7 @@ async def model_flood_scenario(
                         temporal=lyr.temporal,
                         role=lyr.role,
                         units=lyr.units,
+                        bbox=resolved_bbox,
                     )
                 )
                 logger.info(

@@ -69,6 +69,7 @@ from grace2_contracts.collections import (
 from grace2_contracts.execution import LayerURI
 from grace2_contracts.ws import (
     Envelope,
+    MapCommandPayload,
     PipelineStatePayload,
     PipelineStep,
     SessionStatePayload,
@@ -438,6 +439,12 @@ class PipelineEmitter:
         else:
             self._loaded_layers.append(summary)
         await self.emit_session_state()
+        # Emit zoom-to map-command when the LayerURI carries a bbox (job-0068).
+        if layer.bbox is not None:
+            await self.emit_map_command(
+                "zoom-to",
+                {"bbox": list(layer.bbox)},
+            )
 
     async def emit_session_state(self) -> None:
         """Emit a full ``session-state`` envelope. Used after a layer lands or
@@ -455,6 +462,16 @@ class PipelineEmitter:
             map_view=self._map_view,
         )
         await self._send("session-state", payload)
+
+    async def emit_map_command(self, command: str, args: dict) -> None:
+        """Emit a ``map-command`` envelope (job-0068).
+
+        Used for transient verbs that are not pure state — primarily ``zoom-to``
+        after a layer lands. Layer-CRUD verbs are conveyed via ``session-state``
+        (layer-emission-contract.md decision).
+        """
+        payload = MapCommandPayload(command=command, args=args)  # type: ignore[arg-type]
+        await self._send("map-command", payload)
 
     # ------------------------------------------------------------------ #
     # Tool-call wrapper — the integration seam for server.py

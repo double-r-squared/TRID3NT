@@ -1,27 +1,30 @@
 // GRACE-2 web — top-level shell.
 //
-// M3 layout (job-0025, job-0064, job-0065):
+// job-0068 layout (overlay panels over full-viewport map):
 //
 //   +-----------------------------------------------------------+
+//   |  [☰ Layers] (TL hamburger, when left hidden)              |
+//   |                                            [☰ Chat] (TR)  |
 //   |                                                           |
-//   |   [LayerPanel] (left, 280px)            [Chat] (right)    |
+//   |   [LayerPanel] (left overlay, 280px)   [Chat] (right)     |
 //   |                                                           |
 //   |                       Map (full bleed)                    |
-//   |                                                           |
+//   |                                       [LayerLegend] (BC)  |
 //   +-----------------------------------------------------------+
 //
-// LayerPanel and Chat float over the full-bleed map. Both panels support
-// collapse/expand toggles (job-0065).
+// Reverts sprint-9's flex-row split-pane to the original M3 intent:
+//   - Map is full-viewport (position: fixed, inset: 0)
+//   - Panels are position:absolute overlays floating ABOVE the map
+//   - Collapsed = panel fully hidden + hamburger icon on same side (TL/TR)
+//   - Left panel only mounts when layers.length > 0 (no empty-tab bug)
 //
 // job-0064 (Option A): PipelineStrip deleted. Pipeline cards now render
 // inline in the Chat stream (FR-WC-8). The basemap stays clean. The
 // cancel button lives in Chat's footer (FR-WC-9; Invariant 8).
 //
-// Subscription wiring: the LayerPanel consumes session-state +
-// map-command envelopes via a local in-process bus (LayerPanelBus). The
-// App connects a GraceWs instance for session-state + map-command routing.
-// Chat.tsx owns its own GraceWs and handles pipeline-state, agent messages,
-// and errors directly.
+// Subscription wiring: bus is shared between LayerPanel, MapView, and the
+// App's own session-state subscriber (which lifts `layers` for LayerLegend
+// and the conditional-mount gate). Chat.tsx owns its own GraceWs.
 //
 // Dev-only debug seam: in dev mode the App attaches
 // `window.__grace2InjectSessionState`, `window.__grace2InjectMapCommand`,
@@ -30,7 +33,7 @@
 // seed components without an agent.
 
 import { useEffect, useMemo, useState } from "react";
-import { MapView } from "./Map";
+import { MapView, type MapCommandSubscribeFunc } from "./Map";
 import { Chat } from "./Chat";
 import { LayerPanel, createLayerPanelBus } from "./LayerPanel";
 import { LayerLegend } from "./components/LayerLegend";
@@ -54,9 +57,6 @@ function readCollapsed(key: string): boolean {
   }
 }
 
-/** Width of a collapsed panel strip (px) — wide enough for the chevron button. */
-const COLLAPSED_WIDTH = 28;
-
 // WebSocket endpoint — local agent (job-0015) defaults to ws://localhost:8765.
 // Override at build time with VITE_GRACE2_WS_URL.
 const WS_URL: string =
@@ -72,11 +72,32 @@ declare global {
   }
 }
 
+// Shared hamburger button style (job-0068). Same-side-as-panel per user direction.
+// z-index 30 so it renders above panels (z=20) and legend (z=10).
+const hamburgerBtnStyle: React.CSSProperties = {
+  position: "absolute",
+  background: "rgba(20,20,25,0.85)",
+  border: "1px solid #444",
+  borderRadius: 6,
+  color: "#ccc",
+  width: 40,
+  height: 40,
+  padding: 0,
+  cursor: "pointer",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  fontSize: 18,
+  zIndex: 30,
+  lineHeight: 1,
+  top: 12,
+};
+
 export function App(): JSX.Element {
   const bus = useMemo(() => createLayerPanelBus(), []);
 
-  // Collapse toggles (job-0065) — initialised from localStorage so reloads
-  // remember the user's preference.
+  // Collapse toggles — initialised from localStorage so reloads remember
+  // the user's preference. leftCollapsed only matters when layers.length > 0.
   const [leftCollapsed, setLeftCollapsed] = useState<boolean>(() =>
     readCollapsed(LS_LEFT_COLLAPSED),
   );
@@ -84,27 +105,31 @@ export function App(): JSX.Element {
     readCollapsed(LS_RIGHT_COLLAPSED),
   );
 
-  // Current layer list — tracked here so LayerLegend can read it (job-0065).
+  // Layers lifted here from session-state so:
+  //   (a) LayerLegend can read the list
+  //   (b) we can gate the left panel conditional mount on layers.length > 0
+  // Sourced directly from bus subscription (not via onLayersChange callback
+  // from LayerPanel) so it works even when LayerPanel isn't mounted.
   const [layers, setLayers] = useState<ProjectLayerSummary[]>([]);
 
-  function toggleLeft(): void {
-    setLeftCollapsed((prev) => {
-      const next = !prev;
-      try {
-        localStorage.setItem(LS_LEFT_COLLAPSED, String(next));
-      } catch { /* storage unavailable; non-fatal */ }
-      return next;
-    });
+  function collapseLeft(): void {
+    setLeftCollapsed(true);
+    try { localStorage.setItem(LS_LEFT_COLLAPSED, "true"); } catch { /* non-fatal */ }
   }
 
-  function toggleRight(): void {
-    setRightCollapsed((prev) => {
-      const next = !prev;
-      try {
-        localStorage.setItem(LS_RIGHT_COLLAPSED, String(next));
-      } catch { /* storage unavailable; non-fatal */ }
-      return next;
-    });
+  function expandLeft(): void {
+    setLeftCollapsed(false);
+    try { localStorage.setItem(LS_LEFT_COLLAPSED, "false"); } catch { /* non-fatal */ }
+  }
+
+  function collapseRight(): void {
+    setRightCollapsed(true);
+    try { localStorage.setItem(LS_RIGHT_COLLAPSED, "true"); } catch { /* non-fatal */ }
+  }
+
+  function expandRight(): void {
+    setRightCollapsed(false);
+    try { localStorage.setItem(LS_RIGHT_COLLAPSED, "false"); } catch { /* non-fatal */ }
   }
 
   // Mount a GraceWs that routes session-state and map-command envelopes
@@ -132,6 +157,16 @@ export function App(): JSX.Element {
     return () => ws.close();
   }, [bus]);
 
+  // Lift layers from session-state so we can gate the left panel mount.
+  // This subscription is separate from LayerPanel's own subscription so
+  // layers are tracked even when the panel is unmounted (no layers case).
+  useEffect(() => {
+    const unsub = bus.subscribeSessionState((p) => {
+      setLayers(p.loaded_layers ?? []);
+    });
+    return unsub;
+  }, [bus]);
+
   // Dev-only debug seam — exposes the buses to the browser console so a
   // local-dev verifier can inject session-state / map-command /
   // pipeline-state envelopes without an agent. Wrapped in
@@ -149,103 +184,75 @@ export function App(): JSX.Element {
     };
   }, [bus]);
 
-  // Shared chevron button style for both panel collapse toggles (job-0065).
-  const chevronBtnStyle: React.CSSProperties = {
-    position: "absolute",
-    top: "50%",
-    transform: "translateY(-50%)",
-    background: "rgba(20,20,25,0.85)",
-    border: "1px solid #444",
-    borderRadius: 4,
-    color: "#aaa",
-    width: 22,
-    height: 36,
-    padding: 0,
-    cursor: "pointer",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    fontSize: 12,
-    zIndex: 20,
-    lineHeight: 1,
-  };
+  // Whether to show the left panel:
+  //   - layers must be present (no layers → no panel, no hamburger)
+  //   - and user must not have collapsed it
+  const showLeftPanel = layers.length > 0 && !leftCollapsed;
+  // Hamburger is shown when layers exist but panel is collapsed by user.
+  const showLayersHamburger = layers.length > 0 && leftCollapsed;
+  const showChatHamburger = rightCollapsed;
 
   return (
     <div
+      data-testid="grace2-app-shell"
       style={{
         position: "fixed",
         inset: 0,
-        display: "flex",
-        flexDirection: "row",
       }}
     >
-      {/* Left panel slot — collapses to thin strip (job-0065). */}
-      <div
-        data-testid="grace2-left-panel-slot"
-        style={{
-          position: "relative",
-          flexShrink: 0,
-          width: leftCollapsed ? COLLAPSED_WIDTH : 296, // 280 panel + 16 margin
-          transition: "width 0.2s ease",
-          zIndex: 10,
-        }}
-      >
-        {/* LayerPanel renders itself absolutely; slot gives it a clipping context. */}
-        {!leftCollapsed && (
-          <LayerPanel
-            subscribeSessionState={bus.subscribeSessionState}
-            subscribeMapCommand={bus.subscribeMapCommand}
-            onLayersChange={setLayers}
-          />
-        )}
-        {/* Collapse / expand chevron — on the inward (right) edge of the left slot. */}
+      {/* Full-bleed map — first in DOM so panels render above it. */}
+      <MapView
+        subscribeSessionState={bus.subscribeSessionState}
+        subscribeMapCommand={bus.subscribeMapCommand as MapCommandSubscribeFunc}
+      />
+
+      {/* LayerLegend — bottom-center absolute; z-index 10. */}
+      <LayerLegend layers={layers} />
+
+      {/* Left panel — conditionally mounted: only when layers exist AND not
+          collapsed. When no layers loaded, neither panel nor hamburger renders
+          (per user direction: "hide layers panel until something is loaded"). */}
+      {showLeftPanel && (
+        <LayerPanel
+          subscribeSessionState={bus.subscribeSessionState}
+          subscribeMapCommand={bus.subscribeMapCommand}
+          initialLayers={layers}
+          onClose={collapseLeft}
+        />
+      )}
+
+      {/* Right panel — always mounted (chat is the only way to request layers). */}
+      {!rightCollapsed && (
+        <Chat wsUrl={WS_URL} onClose={collapseRight} />
+      )}
+
+      {/* Layers hamburger — top-LEFT, same side as LayerPanel.
+          Shown when layers exist but panel is user-collapsed. */}
+      {showLayersHamburger && (
         <button
-          data-testid="grace2-left-collapse-toggle"
-          aria-label={leftCollapsed ? "Expand layer panel" : "Collapse layer panel"}
-          onClick={toggleLeft}
-          style={{ ...chevronBtnStyle, right: -11 }}
+          data-testid="grace2-layers-hamburger"
+          aria-label="Show layers"
+          aria-expanded={false}
+          aria-controls="grace2-layer-panel"
+          onClick={expandLeft}
+          style={{ ...hamburgerBtnStyle, left: 12 }}
         >
-          {leftCollapsed ? "›" : "‹"}
+          ☰
         </button>
-      </div>
+      )}
 
-      {/* Map area — grows to fill space released by collapsed panels. */}
-      <div
-        data-testid="grace2-map-area"
-        style={{ position: "relative", flex: 1, overflow: "hidden" }}
-      >
-        {/* Full-bleed map */}
-        <MapView />
-
-        {/* Layer legend — bottom-center of the map area (job-0065). */}
-        <LayerLegend layers={layers} />
-      </div>
-
-      {/* Right panel slot — collapses to thin strip (job-0065). */}
-      <div
-        data-testid="grace2-right-panel-slot"
-        style={{
-          position: "relative",
-          flexShrink: 0,
-          width: rightCollapsed ? COLLAPSED_WIDTH : 340, // Chat default width
-          transition: "width 0.2s ease",
-          zIndex: 10,
-          overflow: "hidden",
-        }}
-      >
-        {/* Chat panel — owns inline pipeline cards + cancel button (job-0064).
-            PipelineStrip removed; basemap is now clear per user direction. */}
-        {!rightCollapsed && <Chat wsUrl={WS_URL} />}
-        {/* Collapse / expand chevron — on the inward (left) edge of the right slot. */}
+      {/* Chat hamburger — top-RIGHT, same side as Chat panel. */}
+      {showChatHamburger && (
         <button
-          data-testid="grace2-right-collapse-toggle"
-          aria-label={rightCollapsed ? "Expand chat panel" : "Collapse chat panel"}
-          onClick={toggleRight}
-          style={{ ...chevronBtnStyle, left: -11 }}
+          data-testid="grace2-chat-hamburger"
+          aria-label="Show chat"
+          aria-expanded={false}
+          onClick={expandRight}
+          style={{ ...hamburgerBtnStyle, right: 12 }}
         >
-          {rightCollapsed ? "‹" : "›"}
+          ☰
         </button>
-      </div>
+      )}
     </div>
   );
 }
