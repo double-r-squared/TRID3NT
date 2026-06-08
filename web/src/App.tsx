@@ -32,18 +32,27 @@
 // Chat.tsx via its own GraceWs handler) so a local browser console can
 // seed components without an agent.
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MapView, type MapCommandSubscribeFunc, type MapTheme } from "./Map";
 import { Chat } from "./Chat";
 import { LayerPanel, createLayerPanelBus } from "./LayerPanel";
 import { LayerLegend } from "./components/LayerLegend";
 import { AuthPanel } from "./components/AuthPanel";
+import { SecretsPanel } from "./components/SecretsPanel";
+import {
+  Mode2OfferAction,
+  Mode2OfferModal,
+} from "./components/Mode2OfferModal";
 import { AuthUser, onAuthChanged } from "./auth";
 import { GraceWs } from "./ws";
+import { Mode2CandidatePayload } from "./lib/mode2_suppression";
 import {
   MapCommandPayload,
   PipelineStatePayload,
   ProjectLayerSummary,
+  ProviderID,
+  SecretRecord,
+  SecretsListPayload,
   SessionStatePayload,
 } from "./contracts";
 
@@ -52,6 +61,9 @@ const LS_LEFT_COLLAPSED = "grace2.leftPanelCollapsed";
 const LS_RIGHT_COLLAPSED = "grace2.rightPanelCollapsed";
 // localStorage key for map theme (job-0076).
 const LS_THEME = "grace2.theme";
+// Visibility of the SecretsPanel overlay (job-0125). Persisted so a reload
+// keeps the panel open when the user was actively managing keys.
+const LS_SECRETS_OPEN = "grace2.secretsPanelOpen";
 
 function readTheme(): MapTheme {
   try {
@@ -82,6 +94,10 @@ declare global {
     __grace2InjectMapCommand?: (p: MapCommandPayload) => void;
     /** Dev seam for pipeline-state; wired by Chat.tsx via its GraceWs handler. */
     __grace2InjectPipelineState?: (p: PipelineStatePayload) => void;
+    /** Dev seam for secrets-list (job-0125); wired by App.tsx GraceWs handler. */
+    __grace2InjectSecretsList?: (p: SecretsListPayload) => void;
+    /** Dev seam for mode2-candidate (job-0126); wired by App.tsx GraceWs handler. */
+    __grace2InjectMode2Candidate?: (p: Mode2CandidatePayload) => void;
   }
 }
 
@@ -140,6 +156,98 @@ export function App(): JSX.Element {
     return unsub;
   }, []);
 
+  // Secrets state (job-0125, sprint-12-mega Wave 2 — SRS §F.3 per-Case API
+  // keys). The list is driven by `secrets-list` envelopes the agent emits;
+  // the SecretsPanel reads it. The ref to the active GraceWs lets the panel
+  // emit `secret-add` / `secret-revoke` envelopes via the same socket the
+  // App opens for layer routing.
+  const [secrets, setSecrets] = useState<SecretRecord[]>([]);
+  const [secretsPanelOpen, setSecretsPanelOpen] = useState<boolean>(() => {
+    try { return localStorage.getItem(LS_SECRETS_OPEN) === "true"; }
+    catch { return false; }
+  });
+  const wsRef = useRef<GraceWs | null>(null);
+  // Forward-looking: when the Case-UX shell (sibling Wave-2 job) lands a
+  // currentCaseId selector, wire it here. Until then secrets are user-level
+  // (case_id=null) only — surfaced as OQ-0125-CASE-ID-WIRING.
+  const currentCaseId: string | null = null;
+
+  // job-0126: Mode 2 candidate fan-out. The GraceWs handler routes
+  // `mode2-candidate` envelopes here; the Mode2OfferModal subscribes via the
+  // stable `subscribeMode2Candidate` callback below. We keep a Set of
+  // subscribers so a future settings UI could observe candidates without
+  // displacing the modal. In practice there's one subscriber (the modal).
+  const mode2SubscribersRef = useRef<
+    Set<(p: Mode2CandidatePayload) => void>
+  >(new Set());
+  const subscribeMode2Candidate = useCallback(
+    (cb: (p: Mode2CandidatePayload) => void) => {
+      mode2SubscribersRef.current.add(cb);
+      return () => {
+        mode2SubscribersRef.current.delete(cb);
+      };
+    },
+    [],
+  );
+  const fanoutMode2Candidate = useCallback(
+    (p: Mode2CandidatePayload) => {
+      mode2SubscribersRef.current.forEach((cb) => {
+        try {
+          cb(p);
+        } catch {
+          // Subscriber threw — log but never let one bad subscriber take
+          // down sibling subscribers or the WS handler chain.
+          // eslint-disable-next-line no-console
+          console.error("[mode2] subscriber threw");
+        }
+      });
+    },
+    [],
+  );
+
+  // Bridge the Mode2OfferModal action callback to the active GraceWs.
+  // Emits the `mode2-add-confirmed` envelope on "add" + a `mode2-audit-event`
+  // on every action ("add" / "dismiss" / "suppress") so the server-side log
+  // captures the full lifecycle.
+  const handleMode2Action = useCallback((action: Mode2OfferAction) => {
+    const ws = wsRef.current;
+    const c = action.candidate;
+    // Confidence-derived surface, so the server can attribute the event to
+    // either the modal or the toast path.
+    const surface: "modal" | "toast" = c.confidence >= 0.7 ? "modal" : "toast";
+    if (action.kind === "add") {
+      ws?.sendMode2AddConfirmed({
+        candidate_id: c.candidate_id,
+        url: c.url,
+        domain: c.domain,
+        suggested_tool_kind: c.suggested_tool_kind,
+      });
+    }
+    ws?.sendMode2AuditEvent({
+      candidate_id: c.candidate_id,
+      domain: c.domain,
+      action: action.kind,
+      confidence: c.confidence,
+      surface,
+    });
+    // Mirror to console.debug so a developer running without an agent can
+    // still see the audit lifecycle (kickoff §3 "audit log entry").
+    // eslint-disable-next-line no-console
+    console.debug(
+      `[mode2-audit] ${action.kind} surface=${surface} domain=${c.domain} candidate=${c.candidate_id}`,
+    );
+  }, []);
+
+  function openSecretsPanel(): void {
+    setSecretsPanelOpen(true);
+    try { localStorage.setItem(LS_SECRETS_OPEN, "true"); } catch { /* non-fatal */ }
+  }
+
+  function closeSecretsPanel(): void {
+    setSecretsPanelOpen(false);
+    try { localStorage.setItem(LS_SECRETS_OPEN, "false"); } catch { /* non-fatal */ }
+  }
+
   function toggleTheme(): void {
     setTheme((prev) => {
       const next: MapTheme = prev === "light" ? "dark" : "light";
@@ -168,9 +276,9 @@ export function App(): JSX.Element {
     try { localStorage.setItem(LS_RIGHT_COLLAPSED, "false"); } catch { /* non-fatal */ }
   }
 
-  // Mount a GraceWs that routes session-state and map-command envelopes
-  // into the LayerPanel bus. Chat.tsx handles pipeline-state and agent
-  // messages via its own GraceWs.
+  // Mount a GraceWs that routes session-state, map-command, AND secrets-list
+  // envelopes. Chat.tsx handles pipeline-state and agent messages via its own
+  // GraceWs.
   useEffect(() => {
     const ws = new GraceWs(WS_URL, {
       onStatus: () => {
@@ -186,12 +294,24 @@ export function App(): JSX.Element {
         bus.pushSessionState(p);
       },
       onMapCommand: (p) => bus.pushMapCommand(p),
+      onSecretsList: (p) => {
+        // job-0125: surface §F.3 secrets-list to the SecretsPanel.
+        setSecrets(p.secrets ?? []);
+      },
+      onMode2Candidate: (p) => {
+        // job-0126: fan out the Mode 2 candidate to the offer modal.
+        fanoutMode2Candidate(p);
+      },
       onError: () => {
         // Chat panel renders connection errors.
       },
     });
+    wsRef.current = ws;
     ws.connect();
-    return () => ws.close();
+    return () => {
+      wsRef.current = null;
+      ws.close();
+    };
   }, [bus]);
 
   // Lift layers from session-state so we can gate the left panel mount.
@@ -214,12 +334,40 @@ export function App(): JSX.Element {
       bus.pushSessionState(p);
     };
     window.__grace2InjectMapCommand = (p) => bus.pushMapCommand(p);
+    // job-0125: dev seam to inject secrets-list envelopes (Playwright
+    // verification path — no real WS needed).
+    window.__grace2InjectSecretsList = (p) => {
+      setSecrets(p.secrets ?? []);
+    };
+    // job-0126: dev seam to inject mode2-candidate envelopes (Playwright
+    // verification path — no real WS / web_fetch needed).
+    window.__grace2InjectMode2Candidate = (p) => fanoutMode2Candidate(p);
     // __grace2InjectPipelineState is registered by Chat.tsx's GraceWs.
     return () => {
       delete window.__grace2InjectSessionState;
       delete window.__grace2InjectMapCommand;
+      delete window.__grace2InjectSecretsList;
+      delete window.__grace2InjectMode2Candidate;
     };
-  }, [bus]);
+  }, [bus, fanoutMode2Candidate]);
+
+  // job-0125: bridge SecretsPanel callbacks to the active GraceWs. The panel
+  // hands us a payload; we route it through wsRef.current. Captured secrets
+  // (returned secrets-list) flow back via the onSecretsList handler above.
+  function handleSecretAdd(payload: {
+    provider: ProviderID;
+    case_id: string | null;
+    label: string | null;
+    key_value: string;
+  }): void {
+    if (!wsRef.current) return;
+    wsRef.current.sendSecretAdd(payload);
+  }
+
+  function handleSecretRevoke(secretId: string): void {
+    if (!wsRef.current) return;
+    wsRef.current.sendSecretRevoke(secretId);
+  }
 
   // Whether to show the left panel:
   //   - layers must be present (no layers → no panel, no hamburger)
@@ -292,6 +440,46 @@ export function App(): JSX.Element {
         </button>
       )}
 
+      {/* SecretsPanel (job-0125): bottom-LEFT floating overlay; toggled by a
+          key icon button next to the bottom-left LayerLegend. Mounted only
+          when the user opens it (default closed). The toggle button itself
+          renders unconditionally so a verifier can open it on first load. */}
+      <button
+        data-testid="grace2-secrets-toggle"
+        aria-label={secretsPanelOpen ? "Hide API keys panel" : "Show API keys panel"}
+        aria-expanded={secretsPanelOpen}
+        aria-controls="grace2-secrets-panel-region"
+        onClick={() => (secretsPanelOpen ? closeSecretsPanel() : openSecretsPanel())}
+        style={{
+          ...hamburgerBtnStyle,
+          top: "auto",
+          bottom: 12,
+          left: 12,
+        }}
+        title={secretsPanelOpen ? "Hide API keys" : "Manage API keys"}
+      >
+        {/* Key glyph (U+1F511). Kept consistent with the muted overlay aesthetic. */}
+        🔑
+      </button>
+      {secretsPanelOpen && (
+        <div
+          id="grace2-secrets-panel-region"
+          style={{
+            position: "absolute",
+            bottom: 64,
+            left: 12,
+            zIndex: 25,
+          }}
+        >
+          <SecretsPanel
+            secrets={secrets}
+            caseId={currentCaseId}
+            onSecretAdd={handleSecretAdd}
+            onSecretRevoke={handleSecretRevoke}
+          />
+        </div>
+      )}
+
       {/* AuthPanel (job-0123): top-right, to the LEFT of the chat hamburger /
           chat panel edge so it never overlaps. Always mounted (signed-in or
           signed-out variants render differently). The rightOffset moves it
@@ -326,6 +514,15 @@ export function App(): JSX.Element {
       >
         {theme === "light" ? "☾" : "☀"}
       </button>
+
+      {/* Mode 2 offer-to-add modal (job-0126): listens for `mode2-candidate`
+          envelopes from the Wave 1 classifier. High-confidence → full modal;
+          low-confidence → silent toast. Always mounted (its own render gating
+          handles the empty case). */}
+      <Mode2OfferModal
+        subscribeCandidate={subscribeMode2Candidate}
+        onAction={handleMode2Action}
+      />
     </div>
   );
 }

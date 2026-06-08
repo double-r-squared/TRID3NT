@@ -280,6 +280,64 @@ export type MapCommandPayload =
   | SetLayerOpacityCommand
   | SetLayerOrderCommand;
 
+// --- Per-Case secrets (job-0125, sprint-12-mega Wave 2) ----------------- //
+//
+// Mirrors packages/contracts/src/grace2_contracts/secrets.py (the canonical
+// pydantic shapes). Closed Literal vocabulary; broadening the set requires
+// the corresponding SRS §F.3 amendment + secrets.py update.
+//
+// Wire shapes:
+//   - secrets-list (server -> client): list of SecretRecord
+//   - secret-add (client -> server): { provider, case_id, label, key_value }
+//   - secret-revoke (client -> server): { secret_id }
+//
+// Decision F: `key_value` is transient on the wire; the server writes it to
+// the vault on receipt and never echoes it back. The web client clears the
+// key from local React state immediately after submit.
+// Invariant 9 (no cost theater): no cost / quota / usage-count field.
+
+export type ProviderID =
+  | "ebird"
+  | "iucn_red_list"
+  | "movebank"
+  | "nws"
+  | "openweathermap"
+  | "openai"
+  | "anthropic"
+  | "google_genai"
+  | "mapbox"
+  | "maptiler";
+
+export interface SecretRecord {
+  schema_version?: "v1";
+  secret_id: string;        // ULID
+  provider: ProviderID;
+  case_id?: string | null;  // null = user-level (M6+ identity required)
+  vault_ref: string;        // opaque vault URI (never the key value)
+  label?: string | null;
+  added_at: string;         // ISO-8601 Z
+  last_used_at?: string | null;
+  is_active: boolean;
+}
+
+export interface SecretsListPayload {
+  envelope_type?: "secrets-list";
+  secrets: SecretRecord[];
+}
+
+export interface SecretAddPayload {
+  envelope_type?: "secret-add";
+  provider: ProviderID;
+  case_id?: string | null;
+  label?: string | null;
+  key_value: string;        // transient — cleared after submit
+}
+
+export interface SecretRevokePayload {
+  envelope_type?: "secret-revoke";
+  secret_id: string;
+}
+
 // --- Outbound message constructors -------------------------------------- //
 
 /** Generate a fresh ULID-like 26-char Crockford base32 id.

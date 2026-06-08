@@ -21,7 +21,11 @@ import {
   ErrorPayload,
   MapCommandPayload,
   PipelineStatePayload,
+  ProviderID,
   ResearchMode,
+  SecretAddPayload,
+  SecretRevokePayload,
+  SecretsListPayload,
   SessionResumePayload,
   SessionStatePayload,
   UserMessagePayload,
@@ -29,6 +33,12 @@ import {
   newUlid,
 } from "./contracts";
 import { getIdToken } from "./auth";
+import {
+  Mode2AddConfirmedPayload,
+  Mode2AuditEventPayload,
+  Mode2CandidatePayload,
+  Mode2SuggestedKind,
+} from "./lib/mode2_suppression";
 
 /**
  * Wire shape for the `auth-token` envelope (job-0123, sprint-12-mega Wave 2).
@@ -73,6 +83,18 @@ export interface WsHandlers {
   // Optional so existing callers (App.tsx, Chat.tsx) need no change; callers that
   // own a LayerPanelBus should pass `onMapCommand: (p) => bus.pushMapCommand(p)`.
   onMapCommand?: (p: MapCommandPayload) => void;
+  /**
+   * Per-Case secrets list (job-0125, sprint-12-mega Wave 2 — SRS §F.3).
+   * Optional so existing callers don't need to change; SecretsPanel mount
+   * paths wire this to push payloads into a SecretsBus subscription.
+   */
+  onSecretsList?: (p: SecretsListPayload) => void;
+  /**
+   * Mode 2 candidate envelope (job-0126, sprint-12-mega Wave 2). Optional so
+   * existing callers (Chat.tsx) don't need to change. App.tsx wires this into
+   * the Mode2OfferModal subscription bus.
+   */
+  onMode2Candidate?: (p: Mode2CandidatePayload) => void;
   /**
    * Auth-token retriever (job-0123). Optional — when absent we fall back to
    * `getIdToken()` from `./auth` directly. Injected by tests to avoid
@@ -165,6 +187,111 @@ export class GraceWs {
     this.sendEnvelope(env);
   }
 
+  /**
+   * Emit a `secret-add` envelope (job-0125 / SRS §F.3).
+   *
+   * Carries the transient `key_value` to the agent service; the server
+   * writes the key to the vault on receipt and clears the field before
+   * any logging / persistence. The web client does NOT echo or persist
+   * the key value anywhere — SecretsPanel clears its form state
+   * immediately after calling this method.
+   */
+  sendSecretAdd(args: {
+    provider: ProviderID;
+    case_id: string | null;
+    label: string | null;
+    key_value: string;
+  }): void {
+    const payload: SecretAddPayload = {
+      envelope_type: "secret-add",
+      provider: args.provider,
+      case_id: args.case_id,
+      label: args.label,
+      key_value: args.key_value,
+    };
+    const env: Envelope<SecretAddPayload> = envelope(
+      "secret-add",
+      this.sessionId,
+      payload,
+    );
+    this.sendEnvelope(env);
+  }
+
+  /**
+   * Emit a `secret-revoke` envelope (job-0125 / SRS §F.3).
+   *
+   * Soft-revoke — the server flips `is_active=False` on the matching
+   * SecretRecord but does NOT delete the vault entry (audit-trail
+   * preservation). The response is a fresh `secrets-list` envelope.
+   */
+  sendSecretRevoke(secretId: string): void {
+    const payload: SecretRevokePayload = {
+      envelope_type: "secret-revoke",
+      secret_id: secretId,
+    };
+    const env: Envelope<SecretRevokePayload> = envelope(
+      "secret-revoke",
+      this.sessionId,
+      payload,
+    );
+    this.sendEnvelope(env);
+  }
+
+  /**
+   * Emit a `mode2-add-confirmed` envelope (job-0126, sprint-12-mega Wave 2).
+   *
+   * Sent when the user clicks "Add to Mode 2 catalog" on Mode2OfferModal.
+   * The agent-side receiver shape is NOT YET REGISTERED in
+   * packages/contracts/.../ws.py (kickoff §1 explicitly notes "define in
+   * Wave 1.5 ws.py registry if not present — surface as OQ if missing");
+   * tracked as OQ-0126-MODE2-ADD-CONFIRMED-SCHEMA. The payload mirrors the
+   * minimal subset of `Mode2Candidate` the server needs to (a) correlate to
+   * the originating audit-log entry by candidate_id and (b) hand off to the
+   * heavier `offer-catalog-addition` flow (sprint-08).
+   */
+  sendMode2AddConfirmed(args: {
+    candidate_id: string;
+    url: string;
+    domain: string;
+    suggested_tool_kind: Mode2SuggestedKind;
+  }): void {
+    const payload: Mode2AddConfirmedPayload = {
+      envelope_type: "mode2-add-confirmed",
+      candidate_id: args.candidate_id,
+      url: args.url,
+      domain: args.domain,
+      suggested_tool_kind: args.suggested_tool_kind,
+    };
+    const env: Envelope<Mode2AddConfirmedPayload> = envelope(
+      "mode2-add-confirmed",
+      this.sessionId,
+      payload,
+    );
+    this.sendEnvelope(env);
+  }
+
+  /**
+   * Emit a `mode2-audit-event` envelope (job-0126, sprint-12-mega Wave 2).
+   *
+   * Fired on every Mode2OfferModal display + user action so the server
+   * audit-log captures the full lifecycle (display-modal, display-toast,
+   * add, dismiss, suppress). Server-side persistence is
+   * OQ-0126-AUDIT-PERSISTENCE — the agent's default-branch
+   * console.debug suffices until schema promotes it.
+   */
+  sendMode2AuditEvent(payload: Mode2AuditEventPayload): void {
+    const full: Mode2AuditEventPayload = {
+      envelope_type: "mode2-audit-event",
+      ...payload,
+    };
+    const env: Envelope<Mode2AuditEventPayload> = envelope(
+      "mode2-audit-event",
+      this.sessionId,
+      full,
+    );
+    this.sendEnvelope(env);
+  }
+
   private openSocket(initialStatus: ConnectionStatus): void {
     this.handlers.onStatus(initialStatus);
     let ws: WebSocket;
@@ -236,6 +363,26 @@ export class GraceWs {
         // Callers that own a LayerPanelBus pass `onMapCommand: (p) => bus.pushMapCommand(p)`.
         if (this.handlers.onMapCommand) {
           this.handlers.onMapCommand(payload as unknown as MapCommandPayload);
+        }
+        break;
+      case "secrets-list":
+        // job-0125: server -> client secrets list (§F.3). Optional handler so
+        // chat-only callers can ignore. SecretsPanel mount wires it via the
+        // SecretsBus subscription.
+        if (this.handlers.onSecretsList) {
+          this.handlers.onSecretsList(
+            payload as unknown as SecretsListPayload,
+          );
+        }
+        break;
+      case "mode2-candidate":
+        // job-0126: Mode 2 candidate envelope from the Wave 1 classifier
+        // (services/agent/src/grace2_agent/mode2_classifier.py). App.tsx
+        // wires this into the Mode2OfferModal subscription bus when mounted.
+        if (this.handlers.onMode2Candidate) {
+          this.handlers.onMode2Candidate(
+            payload as unknown as Mode2CandidatePayload,
+          );
         }
         break;
       default:
