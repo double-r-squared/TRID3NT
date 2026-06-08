@@ -16,6 +16,18 @@ from pydantic import ValidationError
 from grace2_contracts import ws
 from grace2_contracts.common import GraceModel, new_ulid
 
+# Re-export the secrets payloads onto ``ws`` so the inline lambdas below stay
+# tidy; the per-module accessors are also still exposed for direct import.
+ws.SecretAddEnvelopePayload = ws.SecretAddEnvelopePayload if hasattr(ws, "SecretAddEnvelopePayload") else __import__(
+    "grace2_contracts.secrets", fromlist=["SecretAddEnvelopePayload"]
+).SecretAddEnvelopePayload
+ws.SecretRevokeEnvelopePayload = ws.SecretRevokeEnvelopePayload if hasattr(ws, "SecretRevokeEnvelopePayload") else __import__(
+    "grace2_contracts.secrets", fromlist=["SecretRevokeEnvelopePayload"]
+).SecretRevokeEnvelopePayload
+ws.SecretsListEnvelopePayload = ws.SecretsListEnvelopePayload if hasattr(ws, "SecretsListEnvelopePayload") else __import__(
+    "grace2_contracts.secrets", fromlist=["SecretsListEnvelopePayload"]
+).SecretsListEnvelopePayload
+
 
 def _wrap(payload: GraceModel, session_id: str) -> ws.Envelope:
     msg_type = getattr(payload, "MESSAGE_TYPE")
@@ -338,6 +350,22 @@ def test_clarification_request_ok(session_id: str) -> None:
 # --------------------------------------------------------------------------- #
 
 
+def test_secrets_payloads_registered_in_ws_dicts() -> None:
+    """job-0115 — OQ-0100-WS-REGISTRY-WIRING resolved by splatting the §F.3
+    per-Case secrets payloads into the ws.py routing dicts.
+
+    Mirrors the per-module ``SECRET_*_PAYLOADS`` dicts the secrets module
+    already exposes; this test guards against a future refactor accidentally
+    dropping the wire-up.
+    """
+    assert "secret-add" in ws.CLIENT_TO_AGENT_PAYLOADS
+    assert "secret-revoke" in ws.CLIENT_TO_AGENT_PAYLOADS
+    assert "secrets-list" in ws.AGENT_TO_CLIENT_PAYLOADS
+    # And in the aggregated registry the smoke factory test consumes
+    for t in ("secret-add", "secret-revoke", "secrets-list"):
+        assert t in ws.ALL_PAYLOADS, f"{t} missing from ws.ALL_PAYLOADS"
+
+
 def test_envelope_payload_always_an_object(session_id: str) -> None:
     """A.1: payload is always an object, never null/string/list."""
     payload = ws.SessionResumePayload()
@@ -420,6 +448,12 @@ def test_every_a3_a4_a4b_payload_round_trips(session_id: str) -> None:
         "catalog-addition-response": lambda: ws.CatalogAdditionResponsePayload(
             request_id=new_ulid(), decision="reject"
         ),
+        # job-0115 — §F.3 per-Case secrets envelopes (OQ-0100-WS-REGISTRY-WIRING)
+        "secret-add": lambda: ws.SecretAddEnvelopePayload(
+            provider="ebird", case_id=new_ulid(), key_value="x"
+        ),
+        "secret-revoke": lambda: ws.SecretRevokeEnvelopePayload(secret_id=new_ulid()),
+        "secrets-list": lambda: ws.SecretsListEnvelopePayload(),
     }
     # Every payload registered in ws.ALL_PAYLOADS must have a minimal factory
     # (i.e., the test covers the full inventory).

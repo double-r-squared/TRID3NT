@@ -60,6 +60,7 @@ from .mode2_classifier import (
     append_audit_log,
     classify_for_mode2,
 )
+from .persistence import Persistence
 from .pipeline_emitter import PipelineEmitter
 from .tools import TOOL_REGISTRY
 
@@ -70,6 +71,83 @@ logger = logging.getLogger("grace2_agent.server")
 # writes (Appendix D.6) are NOT a trigger — that carveout is documented in
 # the report, not represented as data here.
 CONFIRMATION_TRIGGERS: set[str] = set()
+
+
+# job-0115: app-level Persistence singleton (Wave 1.5).
+#
+# The MongoDB Atlas MCP server is the LLM-facing DB path (FR-AS-4, Decision F).
+# ``Persistence`` wraps it with a typed surface that the agent code calls into
+# (CaseSummary / User / SecretRecord / CaseChatMessage). The singleton is
+# bound at startup if ``GRACE2_MONGO_MCP_URL`` is set OR a stdio MCP config is
+# resolved (via the existing ``grace2_agent.mcp.MCPClient``); otherwise it
+# stays ``None`` and callers fall back to in-memory state (the M1 path).
+#
+# Holding a module-level singleton (rather than per-connection) is intentional:
+# - the MCP client is expensive to start (subprocess spawn / TLS handshake);
+# - per-session writes only need a typed wrapper, not connection isolation;
+# - the singleton resets on process restart so the test harness can swap it.
+_PERSISTENCE: Persistence | None = None
+
+
+def get_persistence() -> Persistence | None:
+    """Return the app-level ``Persistence`` singleton, or ``None`` if unbound.
+
+    Callers (chiefly the message-dispatch path in this module) MUST handle
+    the ``None`` case gracefully — the M1 in-memory path is still supported
+    when the MCP environment is not provisioned (e.g. CI without Atlas).
+    """
+    return _PERSISTENCE
+
+
+def set_persistence(p: Persistence | None) -> None:
+    """Bind or clear the app-level ``Persistence`` singleton.
+
+    The agent service startup path calls this once after launching the MCP
+    client; tests call it directly with a mock-backed ``Persistence`` to
+    exercise the wired-in code paths.
+    """
+    global _PERSISTENCE
+    _PERSISTENCE = p
+
+
+async def init_persistence_from_env() -> Persistence | None:
+    """Resolve a ``Persistence`` instance from environment configuration.
+
+    Order:
+    1. ``GRACE2_MONGO_MCP_URL`` — if set, this is the live MCP endpoint
+       (Cloud Run sidecar URL once OQ-2 lands). For v0.1 the live deployment
+       always uses the stdio sidecar path (FR-AS-4 + OQ-2 resolution), so
+       this is reserved for the future HTTP MCP transport.
+    2. ``GRACE2_MONGO_MCP_STDIO=1`` — launch the ``mongodb-mcp-server``
+       stdio subprocess using ``MCPClient.start`` and the SRV from
+       Secret Manager. This is the production deployment path.
+    3. Otherwise — return None; the agent service still starts (M1
+       in-memory chat/pipeline path keeps working), and any caller that
+       requires persistence raises a clear error.
+
+    Returns the ``Persistence`` instance or ``None``.
+    """
+    url = os.environ.get("GRACE2_MONGO_MCP_URL")
+    if url:
+        logger.warning(
+            "GRACE2_MONGO_MCP_URL=%s is reserved for the HTTP MCP transport (not yet wired); "
+            "falling through to stdio resolution",
+            url,
+        )
+    if os.environ.get("GRACE2_MONGO_MCP_STDIO") == "1":
+        from .mcp import MCPClient, fetch_srv_from_secret_manager
+
+        srv = fetch_srv_from_secret_manager()
+        client = await MCPClient.start(srv)
+        logger.info("MCP client started; binding Persistence singleton")
+        p = Persistence(client)
+        set_persistence(p)
+        return p
+    logger.info(
+        "MCP not provisioned (set GRACE2_MONGO_MCP_STDIO=1 to enable); "
+        "Persistence singleton remains unbound"
+    )
+    return None
 
 
 @dataclass
@@ -580,7 +658,13 @@ def _make_handler(settings: GeminiSettings):
 
 
 async def run_server(host: str = "127.0.0.1", port: int | None = None) -> None:
-    """Serve forever. Override port via ``GRACE2_AGENT_PORT``."""
+    """Serve forever. Override port via ``GRACE2_AGENT_PORT``.
+
+    job-0115: best-effort init of the ``Persistence`` singleton. If the MCP
+    environment is not provisioned (the typical local-dev case), the agent
+    service starts anyway — the M1 in-memory chat/pipeline path keeps
+    working, and any caller that requires persistence raises a clear error.
+    """
     if port is None:
         port = int(os.environ.get("GRACE2_AGENT_PORT", "8765"))
     settings = load_settings()
@@ -592,6 +676,10 @@ async def run_server(host: str = "127.0.0.1", port: int | None = None) -> None:
         settings.project,
         settings.location,
     )
+    try:
+        await init_persistence_from_env()
+    except Exception as exc:  # noqa: BLE001 — startup must not abort on MCP issues
+        logger.warning("Persistence init failed (continuing without MCP): %s", exc)
     handler = _make_handler(settings)
     async with serve(handler, host, port):
         await asyncio.Future()  # serve forever
@@ -602,4 +690,7 @@ __all__ = [
     "SessionState",
     "_invoke_tool_via_emitter",
     "_parse_invoke_directive",
+    "get_persistence",
+    "set_persistence",
+    "init_persistence_from_env",
 ]

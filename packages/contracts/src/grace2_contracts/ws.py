@@ -855,6 +855,19 @@ CLIENT_TO_AGENT_PAYLOADS: dict[str, type[GraceModel]] = {
     CatalogAdditionResponsePayload.MESSAGE_TYPE: CatalogAdditionResponsePayload,
 }
 
+# sprint-12-mega Wave 1.5 (job-0115): resolve OQ-0100-WS-REGISTRY-WIRING by
+# splatting the per-Case secrets envelopes (§F.3) into the routing dicts. The
+# secrets module owns the typed payloads + provider vocabulary; ws.py owns the
+# Appendix A.3/A.4 registry surface, so the wiring lives here. Cases envelope
+# wiring lands separately in Wave 2 with the Case UX agent job (do NOT add
+# case-* payloads here).
+from .secrets import (  # noqa: E402 — module-level imports below the dict literals
+    SECRET_AGENT_TO_CLIENT_PAYLOADS,
+    SECRET_CLIENT_TO_AGENT_PAYLOADS,
+)
+
+CLIENT_TO_AGENT_PAYLOADS.update(SECRET_CLIENT_TO_AGENT_PAYLOADS)
+
 AGENT_TO_CLIENT_PAYLOADS: dict[str, type[GraceModel]] = {
     AgentMessageChunkPayload.MESSAGE_TYPE: AgentMessageChunkPayload,
     ToolCallStartPayload.MESSAGE_TYPE: ToolCallStartPayload,
@@ -874,6 +887,7 @@ AGENT_TO_CLIENT_PAYLOADS: dict[str, type[GraceModel]] = {
     RecoveryChoicePayload.MESSAGE_TYPE: RecoveryChoicePayload,
     OfferCatalogAdditionPayload.MESSAGE_TYPE: OfferCatalogAdditionPayload,
 }
+AGENT_TO_CLIENT_PAYLOADS.update(SECRET_AGENT_TO_CLIENT_PAYLOADS)
 
 ALL_PAYLOADS: dict[str, type[GraceModel]] = {
     **CLIENT_TO_AGENT_PAYLOADS,
