@@ -23,6 +23,8 @@ import {
   forceMostRecentRunningToFailed,
   pipelineReducer,
   PipelineInlineState,
+  buildInterleavedStream,
+  InterleavedEntry,
 } from "./Chat";
 import {
   ErrorPayload,
@@ -517,5 +519,232 @@ describe("pipelineReducer — error → ChatInput force-idle (job-0173 Part 2)",
       tool_name: null,
     });
     expect(shouldShowCancel(next)).toBe(false); // ChatInput renders idle (up-arrow)
+  });
+});
+
+// --- buildInterleavedStream (job-0176) ---------------------------------- //
+//
+// The interleave refactor's pure helper. Verifies arrival-order sorting,
+// that tool cards land between agent text bubbles at their natural slot,
+// and that re-ordered tool snapshots keep their first-arrival position.
+
+describe("buildInterleavedStream (job-0176 — chronological interleave)", () => {
+  it("returns an empty list when nothing has arrived yet", () => {
+    expect(
+      buildInterleavedStream([], [], null, new Map(), new Map()),
+    ).toEqual([]);
+  });
+
+  it("orders [user → agent → tool → agent] from seq 1..4 as the user sees it", () => {
+    // The canonical kickoff scenario:
+    //   1. user prompt
+    //   2. agent narration "I'm locating the area..."
+    //   3. geocode_location tool card
+    //   4. agent narration "I've added the location."
+    const messageOrder = new Map<string, number>([
+      ["user-0", 1],
+      ["msg-pre", 2],
+      ["msg-post", 4],
+    ]);
+    const stepOrder = new Map<string, number>([["geocode_location|geocode_location", 3]]);
+    const messages = [
+      { id: "user-0", role: "user" as const, text: "Show me Fort Myers", done: true },
+      { id: "msg-pre", role: "agent" as const, text: "I'm locating...", done: true },
+      { id: "msg-post", role: "agent" as const, text: "Added.", done: true },
+    ];
+    const toolSnap: PipelineStatePayload = {
+      pipeline_id: "pipe-A",
+      steps: [
+        {
+          step_id: "step-geo",
+          name: "geocode_location",
+          tool_name: "geocode_location",
+          state: "complete",
+        },
+      ],
+    };
+    const stream = buildInterleavedStream(
+      messages,
+      [toolSnap],
+      null,
+      messageOrder,
+      stepOrder,
+    );
+    expect(stream.map((e: InterleavedEntry) => e.kind)).toEqual([
+      "user-message",
+      "agent-message",
+      "tool",
+      "agent-message",
+    ]);
+    expect(stream.map((e: InterleavedEntry) => e.seq)).toEqual([1, 2, 3, 4]);
+  });
+
+  it("places a NEW tool card AT THE END when its first-arrival seq is the latest", () => {
+    // User has scrolled and an agent message arrived (seq=1); then a tool
+    // dispatches (seq=2) → tool card should land AFTER the agent bubble.
+    const messageOrder = new Map<string, number>([["msg-1", 1]]);
+    const stepOrder = new Map<string, number>([["fetch_dem|fetch_dem", 2]]);
+    const messages = [
+      { id: "msg-1", role: "agent" as const, text: "Working...", done: false },
+    ];
+    const snap: PipelineStatePayload = {
+      pipeline_id: "pipe-A",
+      steps: [
+        {
+          step_id: "step-dem",
+          name: "fetch_dem",
+          tool_name: "fetch_dem",
+          state: "running",
+          progress_percent: 25,
+        },
+      ],
+    };
+    const stream = buildInterleavedStream(
+      messages,
+      [],
+      snap,
+      messageOrder,
+      stepOrder,
+    );
+    expect(stream).toHaveLength(2);
+    expect(stream[0]!.kind).toBe("agent-message");
+    expect(stream[1]!.kind).toBe("tool");
+  });
+
+  it("does NOT move a tool card when later snapshots change its state (sticky slot)", () => {
+    // Tool first arrives at seq=2, then transitions running → complete.
+    // The card must remain at slot 2 (between msg-1 seq=1 and msg-2 seq=3),
+    // never jump to the bottom on completion.
+    const messageOrder = new Map<string, number>([
+      ["msg-1", 1],
+      ["msg-2", 3],
+    ]);
+    const stepOrder = new Map<string, number>([["fetch_dem|fetch_dem", 2]]);
+    const messages = [
+      { id: "msg-1", role: "agent" as const, text: "Pre", done: true },
+      { id: "msg-2", role: "agent" as const, text: "Post", done: true },
+    ];
+    // Two snapshots — running then complete; merge picks the complete state.
+    const running: PipelineStatePayload = {
+      pipeline_id: "pipe-A",
+      steps: [
+        {
+          step_id: "step-dem",
+          name: "fetch_dem",
+          tool_name: "fetch_dem",
+          state: "running",
+        },
+      ],
+    };
+    const complete: PipelineStatePayload = {
+      pipeline_id: "pipe-A",
+      steps: [
+        {
+          step_id: "step-dem",
+          name: "fetch_dem",
+          tool_name: "fetch_dem",
+          state: "complete",
+        },
+      ],
+    };
+    const stream = buildInterleavedStream(
+      messages,
+      [running, complete],
+      null,
+      messageOrder,
+      stepOrder,
+    );
+    expect(stream.map((e: InterleavedEntry) => e.kind)).toEqual([
+      "agent-message",
+      "tool",
+      "agent-message",
+    ]);
+    // Tool card is in the COMPLETE state at its sticky slot.
+    const tool = stream[1]! as Extract<InterleavedEntry, { kind: "tool" }>;
+    expect(tool.step.state).toBe("complete");
+  });
+
+  it("interleaves multiple tool dispatches between multiple agent narrations", () => {
+    // Pattern from kickoff:
+    //   msg-1 → tool-A (geocode) → msg-2 → tool-B (WDPA) → msg-3
+    const messageOrder = new Map<string, number>([
+      ["user-0", 1],
+      ["msg-1", 2],
+      ["msg-2", 4],
+      ["msg-3", 6],
+    ]);
+    const stepOrder = new Map<string, number>([
+      ["geocode_location|geocode_location", 3],
+      ["fetch_wdpa_protected_areas|fetch_wdpa_protected_areas", 5],
+    ]);
+    const messages = [
+      { id: "user-0", role: "user" as const, text: "Q", done: true },
+      { id: "msg-1", role: "agent" as const, text: "Locating...", done: true },
+      { id: "msg-2", role: "agent" as const, text: "Fetching WDPA...", done: true },
+      { id: "msg-3", role: "agent" as const, text: "Added 2.", done: true },
+    ];
+    const snap: PipelineStatePayload = {
+      pipeline_id: "pipe-A",
+      steps: [
+        {
+          step_id: "step-geo",
+          name: "geocode_location",
+          tool_name: "geocode_location",
+          state: "complete",
+        },
+        {
+          step_id: "step-wdpa",
+          name: "fetch_wdpa_protected_areas",
+          tool_name: "fetch_wdpa_protected_areas",
+          state: "complete",
+        },
+      ],
+    };
+    const stream = buildInterleavedStream(
+      messages,
+      [snap],
+      null,
+      messageOrder,
+      stepOrder,
+    );
+    expect(stream.map((e: InterleavedEntry) => e.kind)).toEqual([
+      "user-message",
+      "agent-message",
+      "tool",
+      "agent-message",
+      "tool",
+      "agent-message",
+    ]);
+  });
+
+  it("falls back to MAX_SAFE_INTEGER and renders deterministically when seq is missing", () => {
+    // Belt-and-suspenders: a message or step without a recorded seq sorts
+    // AFTER everything that has one (per the function's contract).
+    const messageOrder = new Map<string, number>([["msg-1", 1]]);
+    const stepOrder = new Map<string, number>(); // empty
+    const messages = [
+      { id: "msg-1", role: "agent" as const, text: "Hi", done: true },
+    ];
+    const snap: PipelineStatePayload = {
+      pipeline_id: "pipe-A",
+      steps: [
+        {
+          step_id: "step-x",
+          name: "unknown",
+          tool_name: "unknown",
+          state: "complete",
+        },
+      ],
+    };
+    const stream = buildInterleavedStream(
+      messages,
+      [],
+      snap,
+      messageOrder,
+      stepOrder,
+    );
+    expect(stream).toHaveLength(2);
+    expect(stream[0]!.kind).toBe("agent-message");
+    expect(stream[1]!.kind).toBe("tool");
   });
 });

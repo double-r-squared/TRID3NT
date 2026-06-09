@@ -1,0 +1,25 @@
+[debug] [vite] connecting...
+[debug] [vite] connected.
+[info] %cDownload the React DevTools for a better development experience: https://reactjs.org/link/react-devtools font-weight:bold
+[warning] WebSocket connection to 'ws://localhost:8765/' failed: WebSocket is closed before the connection is established.
+[debug] [vite] connecting...
+[debug] [vite] connected.
+[info] %cDownload the React DevTools for a better development experience: https://reactjs.org/link/react-devtools font-weight:bold
+[warning] WebSocket connection to 'ws://localhost:8765/' failed: WebSocket is closed before the connection is established.
+[warning] WebSocket connection to 'ws://localhost:8765/' failed: WebSocket is closed before the connection is established.
+[warning] [.WebGL-0x23ec00159e00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels
+[warning] [.WebGL-0x23ec00159e00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels
+[warning] [.WebGL-0x23ec00159e00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels
+[warning] [.WebGL-0x23ec00159e00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels (this message will no longer repeat)
+[log] [MapView] addVectorLayer start: admin-place--81.8171-26.0789 gen=1 inline=false
+[warning] [MapView] vector fetch failed for admin-place--81.8171-26.0789: Error: [vector_rendering] refusing to fetch gs:// URL from client (invariant 5): gs://grace-2-hazard-prod-cache/cache/static-30d/admin_boundaries/5e9445bbac6e7fc3bd069a824dc68aaa.fgb
+    at fetchVectorAsGeoJson (http://127.0.0.1:5177/src/lib/vector_rendering.ts?t=1780992710999:48:11)
+    at addVectorLayer (http://127.0.0.1:5177/src/Map.tsx?t=1780992826992:148:28)
+    at applyLatest (http://127.0.0.1:5177/src/Map.tsx?t=1780992826992:439:16)
+    at http://127.0.0.1:5177/src/Map.tsx?t=1780992826992:480:9
+    at http://127.0.0.1:5177/src/LayerPanel.tsx?t=1780984834823:561:57
+    at Set.forEach (<anonymous>)
+    at Object.pushSessionState (http://127.0.0.1:5177/src/LayerPanel.tsx?t=1780984834823:561:42)
+    at Object.onSessionState (http://127.0.0.1:5177/src/App.tsx?t=1780992826992:312:34)
+    at GraceWs.dispatchEnvelope (http://127.0.0.1:5177/src/ws.ts?t=1780986428823:365:23)
+    at GraceWs.deliverFannedOut (http://127.0.0.1:5177/src/ws.ts?t=1780986428823:129:10)

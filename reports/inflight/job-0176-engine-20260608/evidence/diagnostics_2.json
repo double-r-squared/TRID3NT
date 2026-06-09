@@ -1,0 +1,38 @@
+{
+  "scenario": "naples_admin_boundaries",
+  "prompt": "I want to understand the geography of Naples, Florida. First tell me you are looking it up, then geocode it, then describe what you found and tell me you'll fetch admin boundaries, then fetch_administrative_boundaries for it, then summarize.",
+  "stream_rows": [
+    {
+      "kind": "user",
+      "label": "I want to understand the geography of Naples, Florida. First tell me you are looking it up, then geo"
+    },
+    {
+      "kind": "tool",
+      "label": "Thinking\u2026 [complete]"
+    },
+    {
+      "kind": "agent",
+      "label": "I am looking up Naples, Florida.Looking up Naples, Florida.\nI have found it. Naples is a city in Col"
+    },
+    {
+      "kind": "tool",
+      "label": "geocode_location [complete]"
+    },
+    {
+      "kind": "tool",
+      "label": "fetch_administrative_boundaries [complete]"
+    }
+  ],
+  "kinds": [
+    "user",
+    "tool",
+    "agent",
+    "tool",
+    "tool"
+  ],
+  "canonical_interleave_during_poll": false,
+  "interleaved_final": false,
+  "has_agent_before_tool": false,
+  "has_agent_after_tool": true,
+  "screenshot": "02_live_interleave_naples.png"
+}

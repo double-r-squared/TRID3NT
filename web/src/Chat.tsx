@@ -1,20 +1,40 @@
-// GRACE-2 web — Chat panel with inline pipeline cards (FR-WC-7, FR-WC-8, FR-WC-9).
+// GRACE-2 web — Chat panel with TRULY INTERLEAVED inline pipeline cards
+// (FR-WC-7, FR-WC-8, FR-WC-9; job-0176 interleave refactor).
 //
 // Renders the streamed agent reply token-by-token from `agent-message-chunk`
 // deltas (Appendix A.4, replace-not-reconcile semantics on `done: true`).
 // Multi-line input with Ctrl/Cmd+Enter submit. No markdown for M1 (M3
 // adds markdown + tool-call blocks).
 //
-// PIPELINE CARDS INLINE (job-0064; job-0162 single-card-per-step refactor):
-//   Pipeline step cards are rendered inline in the conversation stream — one
-//   card per unique `step_id`, transitioning through pending → running →
-//   complete / failed / cancelled. The server emits one pipeline_id per tool
-//   dispatch (see services/agent/server.py); previously this resulted in a
-//   separate "group" per tool with a stale running card stacked above a
-//   completed card. job-0162 collapses this by merging every snapshot by
-//   step_id across both the live pipeline and historical pipelines, so the
-//   user sees one transitioning card per tool dispatch. The visual states are
-//   driven by PipelineCard per `feedback_pipeline_card_visual_states`.
+// PIPELINE CARDS INLINE — INTERLEAVED (job-0176, supersedes job-0064/0162):
+//   Pipeline step cards are now interleaved INLINE in the conversation scroll
+//   in actual arrival order alongside agent text bubbles, NOT collected into
+//   a separate strip / stack at the bottom of the panel. The user-visible
+//   pattern (per memory `feedback_chat_tool_interleave`):
+//
+//     [user]    "Show me protected areas in Fort Myers"
+//     [agent]   "I'm locating the area..."
+//     [tool]    Locating area [Nominatim] (0:01) ✓
+//     [agent]   "Now fetching protected areas..."
+//     [tool]    Fetching protected areas [WDPA] (0:08) ✓
+//     [agent]   "I've added 2 protected areas (...)."
+//
+//   Implementation: every received envelope advances a single ``arrivalSeq``
+//   monotonic counter; the FIRST time a ``message_id`` (agent) or a logical
+//   step key (``name|tool_name`` — same collapsing key the legacy
+//   ``mergeStepsByStepId`` used) is seen, we record ``seq`` against it. The
+//   rendered stream is the union (user msgs + agent msgs + merged tool
+//   steps) sorted by ``seq``. Subsequent envelopes for the same message_id
+//   / step_key update content + state in place — the stream position is
+//   fixed at first-arrival. This gives a stable chronological scroll that
+//   matches how the agent + tools actually unfolded.
+//
+//   One card per unique step_key (collapsed across pipeline_ids per the
+//   server's per-tool start_pipeline pattern + the llm_generation reissue
+//   edge case from job-0166 Part 3), transitioning through pending →
+//   running → complete / failed / cancelled. Visual states are driven by
+//   PipelineCard per `feedback_pipeline_card_visual_states` + humanized
+//   labels per `feedback_pipeline_card_humanized_labels`.
 //
 // CANCEL PREDICATE (FR-WC-9, Invariant 8):
 //   Cancel button enabled iff:
@@ -364,6 +384,25 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
   const [researchMode] = useState<ResearchMode>("research"); // toggle UI lands M3
   const [lastError, setLastError] = useState<string | null>(null);
 
+  // job-0176 — arrival-order tracking for chronological interleave.
+  // ``messageOrder`` is keyed on ``message_id`` (user_id for user lines);
+  // ``stepOrder`` is keyed on the step-collapse key (``name|tool_name`` —
+  // matches mergeStepsByStepId's second-pass dedupe so the llm_generation
+  // reissue edge case from job-0166 Part 3 stays a single card at its
+  // original slot). First-encounter seq is sticky; subsequent envelopes for
+  // the same key update content/state IN PLACE without moving the row.
+  const arrivalSeqRef = useRef<number>(0);
+  const messageOrderRef = useRef<Map<string, number>>(new Map());
+  const stepOrderRef = useRef<Map<string, number>>(new Map());
+  // Trigger-only state for re-renders when we update the refs above (refs
+  // by themselves don't fire React updates; the messages / pipeline state
+  // updates do fire them, so we don't actually need a separate signal —
+  // updates that follow envelope arrivals always touch one of the existing
+  // states. Keeping a numeric tick as belt-and-suspenders for the case-open
+  // reset which would otherwise leave stale order maps + no other state
+  // change to flush them).
+  const [, bumpStreamTick] = useState<number>(0);
+
   const wsRef = useRef<GraceWs | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -383,13 +422,39 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
   // reading position isn't disrupted) and surface the scroll-to-bottom arrow.
   const atBottomRef = useRef<boolean>(true);
 
+  // job-0176 — record first-arrival seq for a message_id; updates in place
+  // afterwards. Called from onAgentChunk + submit() + rehydrate.
+  const recordMessageSeq = useCallback((messageId: string) => {
+    if (!messageOrderRef.current.has(messageId)) {
+      arrivalSeqRef.current += 1;
+      messageOrderRef.current.set(messageId, arrivalSeqRef.current);
+    }
+  }, []);
+
+  // job-0176 — record first-arrival seq for every (name|tool_name) step key
+  // encountered in a pipeline-state snapshot. Matches mergeStepsByStepId's
+  // collapse key so the interleave anchors at the same point as the merged
+  // card.
+  const recordPipelineStepSeqs = useCallback((p: PipelineStatePayload) => {
+    const steps = p.steps ?? [];
+    for (const s of steps) {
+      const key = `${s.name}|${s.tool_name}`;
+      if (!stepOrderRef.current.has(key)) {
+        arrivalSeqRef.current += 1;
+        stepOrderRef.current.set(key, arrivalSeqRef.current);
+      }
+    }
+  }, []);
+
   useEffect(() => {
     const ws = new GraceWs(wsUrl, {
       onStatus: (s) => setStatus(s),
       onAgentChunk: (p: AgentMessageChunkPayload) => {
+        recordMessageSeq(p.message_id);
         setMessages((prev) => appendDelta(prev, p));
       },
       onPipelineState: (p: PipelineStatePayload) => {
+        recordPipelineStepSeqs(p);
         dispatchPipeline({ type: "pipeline-state", payload: p });
       },
       onSessionState: (p: SessionStatePayload) => {
@@ -404,12 +469,23 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
       // giving the user a clean empty state per Appendix A.7 discipline.
       onCaseOpen: (p: CaseOpenEnvelopePayload) => {
         const rehydrated = rehydrateMessagesFromCaseOpen(p);
+        // job-0176 — reset arrival-order maps + counter so the new Case's
+        // stream starts from seq=1; then re-record seq for every replayed
+        // chat message in encounter order so rehydrated history retains
+        // its original chronology.
+        arrivalSeqRef.current = 0;
+        messageOrderRef.current = new Map();
+        stepOrderRef.current = new Map();
+        for (const m of rehydrated) {
+          recordMessageSeq(m.id);
+        }
         setMessages(rehydrated);
         // Reset the inline pipeline state: the live snapshot belonged to
         // the OUTGOING Case (if any). The next pipeline-state envelope for
         // THIS Case will repopulate it.
         dispatchPipeline({ type: "case-open" });
         setLastError(null);
+        bumpStreamTick((n) => n + 1);
       },
       onError: (p: ErrorPayload) => {
         setLastError(`${p.error_code}: ${p.message}`);
@@ -429,14 +505,22 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
   // Playwright scripts can drive the inline cards without a live agent.
   // Registered here (inside Chat) so it dispatches directly to the same
   // dispatchPipeline function that the live WS uses.
+  //
+  // job-0176 — injected pipeline-states must also bump arrival-order seqs
+  // for new step keys so dev-injected cards interleave at the right slot.
+  // Per `feedback_playwright_must_drive_live_agent` this seam is INVALID
+  // for end-to-end verification; only unit tests + component-state
+  // Playwright tests may use it.
   useEffect(() => {
     if (!import.meta.env.DEV) return;
-    window.__grace2InjectPipelineState = (p) =>
+    window.__grace2InjectPipelineState = (p) => {
+      recordPipelineStepSeqs(p);
       dispatchPipeline({ type: "pipeline-state", payload: p });
+    };
     return () => {
       delete window.__grace2InjectPipelineState;
     };
-  }, []);
+  }, [recordPipelineStepSeqs]);
 
   // job-0166 dev-only seam: inject an error envelope so Playwright can
   // verify Part 1 (running → failed force-transition on LLM_UNAVAILABLE /
@@ -490,10 +574,16 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
 
   function submit(text: string): void {
     if (!text || !wsRef.current) return;
-    setMessages((prev) => [
-      ...prev,
-      { id: `user-${prev.length}`, role: "user", text, done: true },
-    ]);
+    setMessages((prev) => {
+      const userId = `user-${prev.length}`;
+      // job-0176 — record arrival seq for the user bubble so it interleaves
+      // chronologically with subsequent agent text + tool cards.
+      recordMessageSeq(userId);
+      return [
+        ...prev,
+        { id: userId, role: "user", text, done: true },
+      ];
+    });
     wsRef.current.sendUserMessage(text, researchMode);
     setLastError(null);
   }
@@ -621,24 +711,17 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
             </p>
           )}
 
-        {/* Chat messages — user as right-aligned grey bubble; agent as          */}
-        {/* unaligned markdown block (job-0153 Parts 1 + 2).                      */}
-        {messages.map((m) =>
-          m.role === "user" ? (
-            <UserBubble key={m.id} text={m.text} />
-          ) : (
-            <AgentMessage key={m.id} text={m.text} done={m.done} />
-          ),
-        )}
-
-        {/* Pipeline cards — one per unique step_id across all snapshots          */}
-        {/* (history + live). Each step transitions through pending → running   */}
-        {/* → complete / failed / cancelled. job-0162: no separate "running"    */}
-        {/* and "completed" groups; no borderlines; vertical separation is via  */}
-        {/* gap below.                                                          */}
-        <PipelineCardStack
+        {/* job-0176 — single chronological stream. Tool cards interleave   */}
+        {/* in-line with user + agent bubbles, sorted by first-arrival     */}
+        {/* seq. Tool steps reuse the (name|tool_name) collapse key so the */}
+        {/* llm_generation reissue edge case (job-0166 Part 3) stays as a  */}
+        {/* single transitioning card pinned to its original chat slot.    */}
+        <InterleavedChatStream
+          messages={messages}
           history={pipeline.history}
           live={pipeline.live}
+          messageOrder={messageOrderRef.current}
+          stepOrder={stepOrderRef.current}
         />
 
         {lastError && (
@@ -709,9 +792,9 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
   );
 }
 
-// --- Pipeline card stack ------------------------------------------------- //
+// --- Pipeline merge (job-0162) ------------------------------------------- //
 //
-// job-0162 — merge every snapshot (history + live) by step_id and render ONE
+// merge every snapshot (history + live) by step_id and render ONE
 // card per step in encounter order. Each tool dispatch on the agent side
 // creates a fresh pipeline_id (server.py per-tool start_pipeline +
 // close_pipeline); without merging, a turn that dispatches N tools renders
@@ -719,6 +802,11 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
 // complete renders as a stale running card above the completed one. We
 // dedupe by step_id (unique across pipelines per ULID semantics) and prefer
 // the latest snapshot of each.
+//
+// job-0176 — this function still produces the merged-step list; the
+// rendering surface moved from PipelineCardStack to the InterleavedChatStream
+// below. The PipelineCardStack export is preserved for tests that pin its
+// data-testid; in production it is no longer mounted by Chat.
 //
 // Visual treatment is delegated entirely to PipelineCard (state-driven
 // background + animated text + spinner per the memory spec).
@@ -786,7 +874,9 @@ export function mergeStepsByStepId(
   return result;
 }
 
-function PipelineCardStack({
+// Preserved for completeness + legacy tests; not mounted by Chat post job-0176.
+// Exported so future tests can pin its data-testid without rewiring.
+export function PipelineCardStack({
   history,
   live,
 }: PipelineCardStackProps): JSX.Element | null {
@@ -807,6 +897,142 @@ function PipelineCardStack({
       {steps.map((step) => (
         <PipelineCard key={step.step_id} step={step} />
       ))}
+    </div>
+  );
+}
+
+// --- Interleaved chat stream (job-0176) ---------------------------------- //
+//
+// Renders user bubbles, agent text bubbles, AND merged pipeline tool cards
+// in a single sorted-by-first-arrival list. Each row carries a stable key
+// (``message_id`` for chat rows, ``step_id`` for tool rows) so React's
+// reconciliation preserves each card's identity across re-renders even as
+// new envelopes arrive between existing rows. (A new step's first
+// pipeline-state will land at the END of the current scroll because its
+// arrivalSeq is the latest; thereafter that card's position is sticky.)
+//
+// Stream-entry construction is pure: messages + merged steps + order maps
+// in, sorted list of stream-entry view-models out. Exported as
+// ``buildInterleavedStream`` for unit testing.
+
+export type InterleavedEntry =
+  | { kind: "user-message"; seq: number; id: string; text: string }
+  | {
+      kind: "agent-message";
+      seq: number;
+      id: string;
+      text: string;
+      done: boolean;
+    }
+  | {
+      kind: "tool";
+      seq: number;
+      // step_key (``name|tool_name``) is the React key; matches what we
+      // record in stepOrder so the row is stable across pipeline_id
+      // reissues (job-0166 Part 3).
+      stepKey: string;
+      step: PipelineStepSummary;
+    };
+
+export function buildInterleavedStream(
+  messages: ChatMessage[],
+  history: PipelineStatePayload[],
+  live: PipelineStatePayload | null,
+  messageOrder: Map<string, number>,
+  stepOrder: Map<string, number>,
+): InterleavedEntry[] {
+  const out: InterleavedEntry[] = [];
+  // Messages — seq comes from messageOrder; absent → fall back to a large
+  // sentinel so it sorts AFTER recorded rows (defensive — every message
+  // gets recorded via recordMessageSeq today, but this keeps render
+  // deterministic if recording was missed).
+  for (const m of messages) {
+    const seq = messageOrder.get(m.id) ?? Number.MAX_SAFE_INTEGER;
+    if (m.role === "user") {
+      out.push({ kind: "user-message", seq, id: m.id, text: m.text });
+    } else {
+      out.push({
+        kind: "agent-message",
+        seq,
+        id: m.id,
+        text: m.text,
+        done: m.done,
+      });
+    }
+  }
+  // Tool cards — feed mergeStepsByStepId then look up seq via the
+  // (name|tool_name) collapse key. The collapse key matches what
+  // recordPipelineStepSeqs records, so the rendered position is sticky
+  // across pipeline_id reissues + state transitions.
+  const mergedSteps = mergeStepsByStepId(history, live);
+  for (const step of mergedSteps) {
+    const key = `${step.name}|${step.tool_name}`;
+    const seq = stepOrder.get(key) ?? Number.MAX_SAFE_INTEGER;
+    out.push({ kind: "tool", seq, stepKey: key, step });
+  }
+  // Stable sort by seq; ties broken by insertion order (preserved by the
+  // standard ``Array.prototype.sort`` in V8/spidermonkey/JSC since
+  // ES2019). Insertion order here is: messages first then tools, so a
+  // tool row that arrived in the SAME tick as a message bubble will land
+  // just after it — which is the correct visual chronology since chat
+  // bubbles are rendered first when they share a tick (the message
+  // arrives in agent-message-chunk; the tool comes a moment later when
+  // the agent emits its pipeline-state).
+  out.sort((a, b) => a.seq - b.seq);
+  return out;
+}
+
+interface InterleavedChatStreamProps {
+  messages: ChatMessage[];
+  history: PipelineStatePayload[];
+  live: PipelineStatePayload | null;
+  messageOrder: Map<string, number>;
+  stepOrder: Map<string, number>;
+}
+
+function InterleavedChatStream({
+  messages,
+  history,
+  live,
+  messageOrder,
+  stepOrder,
+}: InterleavedChatStreamProps): JSX.Element | null {
+  const stream = buildInterleavedStream(
+    messages,
+    history,
+    live,
+    messageOrder,
+    stepOrder,
+  );
+  if (stream.length === 0) return null;
+  return (
+    <div
+      data-testid="chat-stream"
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        // job-0162 memory spec: 12-16px gap between stacked rows; preserved
+        // here for the unified stream so tool cards and bubbles read with
+        // the same visual rhythm.
+        gap: 14,
+      }}
+    >
+      {stream.map((entry) => {
+        if (entry.kind === "user-message") {
+          return <UserBubble key={entry.id} text={entry.text} />;
+        }
+        if (entry.kind === "agent-message") {
+          return (
+            <AgentMessage
+              key={entry.id}
+              text={entry.text}
+              done={entry.done}
+            />
+          );
+        }
+        // tool
+        return <PipelineCard key={entry.stepKey} step={entry.step} />;
+      })}
     </div>
   );
 }

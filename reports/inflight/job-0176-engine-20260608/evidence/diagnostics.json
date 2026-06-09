@@ -1,0 +1,32 @@
+{
+  "scenario": "live_interleave_fort_myers_wdpa",
+  "stream_rows": {
+    "rows": [
+      {
+        "kind": "user",
+        "label": "Fetch and display all protected areas (WDPA polygons) around Fort Myers, Florida"
+      },
+      {
+        "kind": "tool",
+        "label": "Thinking\u2026 [complete]"
+      },
+      {
+        "kind": "tool",
+        "label": "geocode_location [complete]"
+      },
+      {
+        "kind": "tool",
+        "label": "fetch_wdpa_protected_areas [failed]"
+      },
+      {
+        "kind": "agent",
+        "label": "I am sorry, I cannot fulfill this request. The fetch_wdpa_protected_areas tool i"
+      }
+    ],
+    "total": 5
+  },
+  "headline_screenshot": "01_live_interleave.png",
+  "interleaved": false,
+  "has_agent_before_tool": false,
+  "has_agent_after_tool": true
+}

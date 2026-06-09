@@ -1,0 +1,13 @@
+[debug] [vite] connecting...
+[debug] [vite] connected.
+[info] %cDownload the React DevTools for a better development experience: https://reactjs.org/link/react-devtools font-weight:bold
+[warning] WebSocket connection to 'ws://localhost:8765/' failed: WebSocket is closed before the connection is established.
+[debug] [vite] connecting...
+[debug] [vite] connected.
+[info] %cDownload the React DevTools for a better development experience: https://reactjs.org/link/react-devtools font-weight:bold
+[warning] WebSocket connection to 'ws://localhost:8765/' failed: WebSocket is closed before the connection is established.
+[warning] WebSocket connection to 'ws://localhost:8765/' failed: WebSocket is closed before the connection is established.
+[warning] [.WebGL-0x29c00159e00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels
+[warning] [.WebGL-0x29c00159e00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels
+[warning] [.WebGL-0x29c00159e00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels
+[warning] [.WebGL-0x29c00159e00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels (this message will no longer repeat)
