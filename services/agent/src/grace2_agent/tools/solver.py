@@ -330,6 +330,9 @@ def run_solver(
     solver: str,
     model_setup_uri: str,
     compute_class: str = "medium",
+    # job-0164: absorb LLM-invented kwargs (centralized at server.py via
+    # tool_arg_normalizer, but kept as belt-and-suspenders).
+    **_extra_ignored: Any,
 ) -> ExecutionHandle:
     """Submit a solver execution to the deployed Cloud Workflows orchestrator.
 
@@ -585,6 +588,9 @@ async def wait_for_completion(
     handle: ExecutionHandle,
     poll_interval_s: int = DEFAULT_POLL_INTERVAL_S,
     timeout_s: int = DEFAULT_TIMEOUT_S,
+    # job-0164: absorb LLM-invented kwargs (centralized at server.py via
+    # tool_arg_normalizer, but kept as belt-and-suspenders).
+    **_extra_ignored: Any,
 ) -> RunResult:
     """Poll the Cloud Workflows execution backing ``handle`` until terminal.
 

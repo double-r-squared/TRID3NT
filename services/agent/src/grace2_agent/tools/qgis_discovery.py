@@ -540,6 +540,9 @@ def _parse_outputs_block(lines: list[str]) -> list[QGISAlgorithmOutput]:
 def list_qgis_algorithms(
     category_filter: str | None = None,
     search_terms: str | None = None,
+    # job-0164: absorb LLM-invented kwargs (centralized at server.py via
+    # tool_arg_normalizer, but kept as belt-and-suspenders).
+    **_extra_ignored: Any,
 ) -> list[QGISAlgorithmSummary]:
     """Enumerate QGIS Processing algorithms available on the worker substrate.
 
@@ -638,7 +641,7 @@ def _filter_and_rank_summaries(
 
 
 @register_tool(_DESCRIBE_METADATA)
-def describe_qgis_algorithm(algorithm_id: str) -> QGISAlgorithmDescription:
+def describe_qgis_algorithm(algorithm_id: str, **_extra_ignored: Any) -> QGISAlgorithmDescription:
     """Describe a single QGIS Processing algorithm's signature.
 
     Use this when: ``list_qgis_algorithms`` surfaced a candidate algorithm

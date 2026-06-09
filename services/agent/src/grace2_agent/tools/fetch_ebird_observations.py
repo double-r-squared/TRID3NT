@@ -794,6 +794,9 @@ def fetch_ebird_observations(
     days_back: int = _DEFAULT_DAYS_BACK,
     api_key: str | None = None,
     secret_ref: Any | None = None,
+    # job-0164: absorb LLM-invented kwargs (centralized at server.py via
+    # tool_arg_normalizer, but kept as belt-and-suspenders).
+    **_extra_ignored: Any,
 ) -> LayerURI:
     """Cornell Lab eBird Tier-2 recent-observations fetcher.
 

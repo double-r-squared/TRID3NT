@@ -677,6 +677,9 @@ _RUN_MODEL_NEWS_EVENT_INGEST_METADATA = AtomicToolMetadata(
 async def run_model_news_event_ingest(
     sources: list[dict[str, Any]],
     target_event_type: str = "spill",
+    # job-0164: absorb LLM-invented kwargs (centralized at server.py via
+    # tool_arg_normalizer, but kept as belt-and-suspenders).
+    **_extra_ignored: Any,
 ) -> dict[str, Any]:
     """Ingest news / alert sources and derive event parameters for user review.
 

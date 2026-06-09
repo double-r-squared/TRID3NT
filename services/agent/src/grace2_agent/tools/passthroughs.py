@@ -92,6 +92,9 @@ def mongo_query(
     collection: str,
     filter: dict[str, Any],  # noqa: A002 — matches MongoDB-domain naming
     projection: dict[str, Any] | None = None,
+    # job-0164: absorb LLM-invented kwargs (centralized at server.py via
+    # tool_arg_normalizer, but kept as belt-and-suspenders).
+    **_extra_ignored: Any,
 ) -> list[dict[str, Any]]:
     """Run a read query against the agent's MongoDB MCP server.
 
@@ -165,6 +168,9 @@ def mongo_query(
 def qgis_process(
     algorithm: str,
     params: dict[str, Any],
+    # job-0164: absorb LLM-invented kwargs (centralized at server.py via
+    # tool_arg_normalizer, but kept as belt-and-suspenders).
+    **_extra_ignored: Any,
 ) -> dict[str, Any]:
     """Submit a PyQGIS Processing algorithm for execution on the worker.
 

@@ -1052,6 +1052,9 @@ def fetch_gtsm_tide_surge(
     output: str = "water_level",
     api_key: str | None = None,
     secret_ref: Any | None = None,
+    # job-0164: absorb LLM-invented kwargs (centralized at server.py via
+    # tool_arg_normalizer, but kept as belt-and-suspenders).
+    **_extra_ignored: Any,
 ) -> LayerURI:
     """Global Tide and Surge Model v3.0 Tier-2 coastal water-level fetcher.
 

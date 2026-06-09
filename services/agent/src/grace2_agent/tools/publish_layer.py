@@ -416,6 +416,9 @@ def publish_layer(
     style_preset: str = "continuous_flood_depth",
     project_qgs_uri: str | None = None,
     case_id: str | None = None,
+    # job-0164: absorb LLM-invented kwargs (centralized at server.py via
+    # tool_arg_normalizer, but kept as belt-and-suspenders).
+    **_extra_ignored: Any,
 ) -> str:
     """Publish a COG raster layer to QGIS Server via the PyQGIS worker.
 

@@ -303,6 +303,9 @@ def catalog_search(
     topic: str,
     location: tuple[float, float, float, float] | None = None,
     source_filter: str | None = None,
+    # job-0164: absorb LLM-invented kwargs (centralized at server.py via
+    # tool_arg_normalizer, but kept as belt-and-suspenders).
+    **_extra_ignored: Any,
 ) -> list[dict[str, Any]]:
     """Search the curated public data-source catalog for vetted entries on a topic.
 
@@ -652,7 +655,7 @@ def _tier4_region_fetch(
 
 
 @register_tool(_CATALOG_FETCH_METADATA)
-def catalog_fetch(entry_id: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+def catalog_fetch(entry_id: str, params: dict[str, Any] | None = None, **_extra_ignored: Any) -> dict[str, Any]:
     """Fetch bytes for a vetted catalog entry by its stable id (§F.1.2 Mode 1).
 
     Use this when: the LLM has chosen a `CatalogEntry` from `catalog_search`

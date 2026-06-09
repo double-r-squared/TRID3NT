@@ -42,7 +42,7 @@ import logging
 import os
 import subprocess
 import tempfile
-from typing import Literal
+from typing import Literal, Any
 
 from grace2_contracts.execution import LayerURI
 from grace2_contracts.tool_registry import AtomicToolMetadata
@@ -270,6 +270,9 @@ def compute_slope(
     *,
     _storage_client: object | None = None,
     _bucket: str | None = None,
+    # job-0164: absorb LLM-invented kwargs (centralized at server.py via
+    # tool_arg_normalizer, but kept as belt-and-suspenders).
+    **_extra_ignored: Any,
 ) -> LayerURI:
     """Compute terrain slope from a DEM. Wraps ``gdaldem slope``.
 

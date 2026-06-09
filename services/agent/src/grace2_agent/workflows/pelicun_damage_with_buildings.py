@@ -54,7 +54,7 @@ FR-TA-1 / FR-TA-2 / FR-CE-8 / invariants 1, 2, 3, 10.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from grace2_contracts.execution import LayerURI
 from grace2_contracts.tool_registry import AtomicToolMetadata
@@ -357,6 +357,9 @@ async def run_pelicun_with_buildings(
     cell_size_m: float = 100.0,
     fragility_set: str = "hazus_flood_v6",
     realization_count: int = 100,
+    # job-0164: absorb LLM-invented kwargs (centralized at server.py via
+    # tool_arg_normalizer, but kept as belt-and-suspenders).
+    **_extra_ignored: Any,
 ) -> LayerURI:
     """Fetch building footprints density grid → run Pelicun damage assessment.
 

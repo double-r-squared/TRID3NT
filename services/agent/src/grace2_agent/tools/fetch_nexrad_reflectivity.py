@@ -47,7 +47,7 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import Literal
+from typing import Literal, Any
 from urllib.parse import urlencode
 
 from grace2_contracts.execution import LayerURI
@@ -215,6 +215,9 @@ def _build_wms_url(
 def fetch_nexrad_reflectivity(
     bbox: tuple[float, float, float, float] | None = None,
     product: Literal["n0r", "n0q", "vil"] = "n0r",
+    # job-0164: absorb LLM-invented kwargs (centralized at server.py via
+    # tool_arg_normalizer, but kept as belt-and-suspenders).
+    **_extra_ignored: Any,
 ) -> LayerURI:
     """Compose a LayerURI for NEXRAD composite radar reflectivity (live WMS).
 

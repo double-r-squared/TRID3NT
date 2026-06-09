@@ -720,6 +720,9 @@ def fetch_movebank_tracks(
     time_range: tuple[datetime, datetime] | None = None,
     max_records: int = 500_000,
     geometry_type: GeometryType = "linestring",
+    # job-0164: absorb LLM-invented kwargs (centralized at server.py via
+    # tool_arg_normalizer, but kept as belt-and-suspenders).
+    **_extra_ignored: Any,
 ) -> LayerURI:
     """Movebank Tier-2 animal-tracking trajectory fetcher.
 

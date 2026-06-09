@@ -797,6 +797,9 @@ def fetch_cama_flood_discharge(
     end_date: str,
     version: str = "v4.0.1",
     base_url: str | None = None,
+    # job-0164: absorb LLM-invented kwargs (centralized at server.py via
+    # tool_arg_normalizer, but kept as belt-and-suspenders).
+    **_extra_ignored: Any,
 ) -> LayerURI:
     """CaMa-Flood global river discharge Tier-2 fetcher (compound-flood fluvial forcing).
 

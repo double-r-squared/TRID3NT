@@ -452,6 +452,9 @@ def _fetch_nifc_bytes(
 def fetch_nifc_fire_perimeters(
     bbox: tuple[float, float, float, float] | None = None,
     status: str = "active",
+    # job-0164: absorb LLM-invented kwargs (centralized at server.py via
+    # tool_arg_normalizer, but kept as belt-and-suspenders).
+    **_extra_ignored: Any,
 ) -> LayerURI:
     """NIFC current wildland fire perimeters as a FlatGeobuf polygon layer.
 

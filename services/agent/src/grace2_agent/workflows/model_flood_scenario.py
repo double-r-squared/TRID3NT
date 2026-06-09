@@ -680,19 +680,18 @@ async def run_model_flood_scenario(
     return_period_yr: int = 100,
     duration_hr: int = 24,
     compute_class: str = "medium",
+    # job-0164: absorb LLM-invented kwargs (centralized at server.py via
+    # tool_arg_normalizer, but kept as belt-and-suspenders).
+    **_extra_ignored: Any,
 ) -> LayerURI | dict[str, Any]:
     """Run the full deterministic flood-modeling workflow.
 
     Use this when: the user asks to model a flood scenario, simulate flood
     inundation, compute peak flood depth, run a flood simulation, estimate
-    flood extent, or analyze flooding for any specific location. Examples:
-    "model the flood from a 100-year storm in Fort Myers, FL",
-    "what would peak flood depth be from a 25-year design storm in Houston",
-    "simulate flood inundation for Hurricane Ian near Fort Myers",
-    "run a flood scenario for New Orleans with a 500-year return period".
-    Also use for any request mentioning "return period", "design storm",
-    "ARI", "flood risk", "inundation depth", or "flood extent" for a named
-    location or bounding box.
+    flood extent, or analyze flooding for any specific location. Also use
+    for any request mentioning "return period", "design storm", "ARI",
+    "flood risk", "inundation depth", or "flood extent" for a named location
+    or bounding box.
 
     Do NOT use this for: running a custom solver dispatch (use ``run_solver``
     + ``wait_for_completion`` directly); composing a non-flood hazard
@@ -700,15 +699,29 @@ async def run_model_flood_scenario(
     a running flood scenario (use the WS ``cancel`` envelope — the cancel
     chain propagates through ``wait_for_completion``).
 
+    Examples:
+        - "model the flood from a 100-year storm in Fort Myers, FL"
+          → location_query: Fort Myers, FL ; return_period_years: 100
+        - "peak flood depth from a 25-year design storm in Houston"
+          → location_query: Houston ; return_period_years: 25
+        - "simulate flood inundation for Hurricane Ian near Fort Myers"
+          → location_query: Fort Myers ; return_period_years: 100 (default)
+        - "500-year flood for New Orleans, 48-hour duration"
+          → location_query: New Orleans ; return_period_years: 500 ; duration_hours: 48
+
     Params:
         bbox: ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326. When
             ``None``, ``location_query`` is used to geocode. Direct bbox
             wins when both are supplied.
-        location_query: free-text place name (e.g. ``"Fort Myers, FL"``).
+        location_query: free-text place name (geocoded via Nominatim).
         event_id: optional event ID for HEP-side provenance (v0.1: carried
             on the envelope's provenance hook; HEP integration M5.5+).
-        return_period_yr: design-storm ARI. Default 100.
-        duration_hr: design-storm duration (hours). Default 24.
+        return_period_years: design-storm ARI in years. Atlas 14 publishes
+            {1, 2, 5, 10, 25, 50, 100, 200, 500, 1000}. Default 100.
+            (Alias ``return_period_yr`` is accepted for backward compat.)
+        duration_hours: design-storm duration in hours. Atlas 14 publishes
+            durations 5-min through 60-day. Default 24.
+            (Alias ``duration_hr`` is accepted for backward compat.)
         compute_class: FR-CE-3 compute class. Default ``"medium"``.
 
     Returns:

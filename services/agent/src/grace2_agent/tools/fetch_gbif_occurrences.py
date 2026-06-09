@@ -546,6 +546,9 @@ def fetch_gbif_occurrences(
     bbox: tuple[float, float, float, float],
     year_range: tuple[int, int] | None = None,
     max_records: int = 5000,
+    # job-0164: absorb LLM-invented kwargs (centralized at server.py via
+    # tool_arg_normalizer, but kept as belt-and-suspenders).
+    **_extra_ignored: Any,
 ) -> LayerURI:
     """GBIF Tier-1 species occurrence point fetcher.
 

@@ -673,6 +673,9 @@ def fetch_iucn_red_list_range(
     secret_ref: SecretRecord | None = None,
     *,
     persistence: Any | None = None,
+    # job-0164: absorb LLM-invented kwargs (centralized at server.py via
+    # tool_arg_normalizer, but kept as belt-and-suspenders).
+    **_extra_ignored: Any,
 ) -> LayerURI:
     """IUCN Red List species range info Tier-2 fetcher.
 

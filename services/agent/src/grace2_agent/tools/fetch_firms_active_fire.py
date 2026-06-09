@@ -52,7 +52,7 @@ import logging
 import math
 import os
 import tempfile
-from typing import Literal
+from typing import Literal, Any
 
 import requests
 
@@ -438,6 +438,9 @@ def fetch_firms_active_fire(
     source: Literal[
         "VIIRS_SNPP_NRT", "VIIRS_NOAA20_NRT", "MODIS_NRT"
     ] = "VIIRS_SNPP_NRT",
+    # job-0164: absorb LLM-invented kwargs (centralized at server.py via
+    # tool_arg_normalizer, but kept as belt-and-suspenders).
+    **_extra_ignored: Any,
 ) -> LayerURI:
     """NASA FIRMS active fire / thermal anomaly detections.
 

@@ -81,7 +81,7 @@ import math
 import os
 import tempfile
 import urllib.parse
-from typing import Literal
+from typing import Literal, Any
 
 import requests
 
@@ -478,6 +478,9 @@ def _is_all_nodata(tiff_bytes: bytes) -> bool:
 def fetch_landfire_fuels(
     bbox: tuple[float, float, float, float],
     layer: Literal["fbfm40", "fbfm13", "cbh", "cbd"] = "fbfm40",
+    # job-0164: absorb LLM-invented kwargs (centralized at server.py via
+    # tool_arg_normalizer, but kept as belt-and-suspenders).
+    **_extra_ignored: Any,
 ) -> LayerURI:
     """Fetch LANDFIRE fuels & vegetation raster for a CONUS bbox.
 

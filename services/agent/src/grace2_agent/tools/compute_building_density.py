@@ -58,7 +58,7 @@ import logging
 import math
 import os
 import tempfile
-from typing import Iterable
+from typing import Iterable, Any
 
 import requests
 
@@ -698,6 +698,9 @@ def compute_building_density(
     bbox: tuple[float, float, float, float],
     cell_size_m: float = 100.0,
     source: str = "ms_footprints",
+    # job-0164: absorb LLM-invented kwargs (centralized at server.py via
+    # tool_arg_normalizer, but kept as belt-and-suspenders).
+    **_extra_ignored: Any,
 ) -> LayerURI:
     """Microsoft Global ML Building Footprints density raster.
 

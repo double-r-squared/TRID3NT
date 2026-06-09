@@ -569,6 +569,9 @@ async def run_model_flood_habitat_scenario(
     protected_area_designation: list[str] | None = None,
     place_clip_polygon_uri: str | None = None,
     place_label: str | None = None,
+    # job-0164: absorb LLM-invented kwargs (centralized at server.py via
+    # tool_arg_normalizer, but kept as belt-and-suspenders).
+    **_extra_ignored: Any,
 ) -> dict[str, Any]:
     """Run the Case 1 (flood + habitat) composer end-to-end.
 

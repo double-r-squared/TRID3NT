@@ -602,6 +602,9 @@ def aggregate_claims_across_sources(
     sources: list[dict[str, Any]],
     claim_targets: list[str],
     confidence_threshold: float = 0.6,
+    # job-0164: absorb LLM-invented kwargs (centralized at server.py via
+    # tool_arg_normalizer, but kept as belt-and-suspenders).
+    **_extra_ignored: Any,
 ) -> dict[str, Any]:
     """Cross-source claim aggregation for FR-HEP news/event ingest.
 

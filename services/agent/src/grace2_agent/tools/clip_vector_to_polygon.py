@@ -427,6 +427,9 @@ def clip_vector_to_polygon(
     *,
     _storage_client: object | None = None,
     _bucket: str | None = None,
+    # job-0164: absorb LLM-invented kwargs (centralized at server.py via
+    # tool_arg_normalizer, but kept as belt-and-suspenders).
+    **_extra_ignored: Any,
 ) -> LayerURI:
     """Clip a vector (points / lines / polygons) to an arbitrary polygon mask.
 

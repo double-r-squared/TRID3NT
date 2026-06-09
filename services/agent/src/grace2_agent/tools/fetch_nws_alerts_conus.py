@@ -388,6 +388,9 @@ def _fetch_nws_alerts_conus_bytes(
 def fetch_nws_alerts_conus(
     event_types: list[str] | None = None,
     status: str = "actual",
+    # job-0164: absorb LLM-invented kwargs (centralized at server.py via
+    # tool_arg_normalizer, but kept as belt-and-suspenders).
+    **_extra_ignored: Any,
 ) -> LayerURI:
     """NWS active weather alerts — CONUS-wide companion to ``fetch_nws_event``.
 

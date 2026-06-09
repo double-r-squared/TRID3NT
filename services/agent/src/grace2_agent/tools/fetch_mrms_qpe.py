@@ -63,7 +63,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Literal, Any
 
 from grace2_contracts.execution import LayerURI
 from grace2_contracts.tool_registry import AtomicToolMetadata
@@ -611,6 +611,9 @@ def fetch_mrms_qpe(
     bbox: tuple[float, float, float, float] | None = None,
     accumulation: Literal["01H", "03H", "06H", "12H", "24H", "48H", "72H"] = "01H",
     valid_time: str | None = None,
+    # job-0164: absorb LLM-invented kwargs (centralized at server.py via
+    # tool_arg_normalizer, but kept as belt-and-suspenders).
+    **_extra_ignored: Any,
 ) -> LayerURI:
     """Fetch NOAA MRMS Quantitative Precipitation Estimate (QPE) as a GeoTIFF.
 

@@ -103,6 +103,7 @@ from .secrets_handler import (
     handle_secret_revoke,
     handle_secrets_list,
 )
+from .tool_arg_normalizer import normalize_args
 from .tools import TOOL_REGISTRY
 
 # job-0122: auth-token envelope (Appendix H.5 connect handshake).
@@ -1278,6 +1279,17 @@ async def _invoke_tool_via_emitter(
     )
     if not should_dispatch:
         return None
+
+    # job-0164: centralized kwarg sweep. Gemini routinely invents kwargs that
+    # don't exist on our tools (``run_name``, ``scenario_id``,
+    # ``return_period_years`` when the tool accepts ``return_period_yr``, etc.).
+    # ``normalize_args`` inspects ``entry.fn``'s signature and rewrites
+    # bidirectional aliases (``_yr`` ↔ ``_years``, ``_hr`` ↔ ``_hours``,
+    # ``durationHours`` ↔ ``duration_hours``), parses string-form forcing specs
+    # (``forcing="atlas14_100yr"`` → ``return_period_years=100``), absorbs
+    # silent-drop convenience kwargs, and logs+drops the rest — never raises.
+    # See ``tool_arg_normalizer.py``.
+    params = normalize_args(tool_name, params, entry.fn)
 
     state.current_pipeline_id = state.emitter.start_pipeline()
     state.current_turn_pipeline_id = state.current_pipeline_id

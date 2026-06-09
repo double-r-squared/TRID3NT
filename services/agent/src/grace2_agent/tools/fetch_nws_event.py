@@ -473,6 +473,9 @@ def fetch_nws_event(
     event_types: list[str] | None = None,
     status: str = "actual",
     message_type: str = "alert",
+    # job-0164: absorb LLM-invented kwargs (centralized at server.py via
+    # tool_arg_normalizer, but kept as belt-and-suspenders).
+    **_extra_ignored: Any,
 ) -> LayerURI:
     """NWS active alerts/events Tier-1 fetcher.
 

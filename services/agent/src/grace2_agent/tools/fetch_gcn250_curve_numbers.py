@@ -491,6 +491,9 @@ def _fetch_gcn250_bytes(
 def fetch_gcn250_curve_numbers(
     bbox: tuple[float, float, float, float],
     antecedent_moisture: Literal["dry", "average", "wet"] = "average",
+    # job-0164: absorb LLM-invented kwargs (centralized at server.py via
+    # tool_arg_normalizer, but kept as belt-and-suspenders).
+    **_extra_ignored: Any,
 ) -> LayerURI:
     """Fetch GCN250 global SCS curve-number raster for infiltration / runoff modeling.
 

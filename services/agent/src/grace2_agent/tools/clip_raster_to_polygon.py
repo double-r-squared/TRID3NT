@@ -474,6 +474,9 @@ def clip_raster_to_polygon(
     *,
     _storage_client: Any | None = None,
     _bucket: str | None = None,
+    # job-0164: absorb LLM-invented kwargs (centralized at server.py via
+    # tool_arg_normalizer, but kept as belt-and-suspenders).
+    **_extra_ignored: Any,
 ) -> LayerURI:
     """Clip a raster to an arbitrary polygon (vs ``clip_raster_to_bbox`` which only does bbox rectangles).
 

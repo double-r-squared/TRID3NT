@@ -29,7 +29,7 @@ import logging
 import os
 import subprocess
 import tempfile
-from typing import Literal
+from typing import Literal, Any
 
 from grace2_contracts.execution import LayerURI
 from grace2_contracts.tool_registry import AtomicToolMetadata
@@ -280,6 +280,9 @@ def _run_colored_relief(dem_uri: str, ramp: str) -> bytes:
 def compute_colored_relief(
     dem_uri: str,
     ramp: Literal["terrain", "elevation_blue_green", "grayscale", "viridis"] = "terrain",
+    # job-0164: absorb LLM-invented kwargs (centralized at server.py via
+    # tool_arg_normalizer, but kept as belt-and-suspenders).
+    **_extra_ignored: Any,
 ) -> LayerURI:
     """Color-tint a DEM by elevation using ``gdaldem color-relief``.
 

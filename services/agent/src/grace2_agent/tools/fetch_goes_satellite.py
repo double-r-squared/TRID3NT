@@ -65,7 +65,7 @@ import os
 import re
 import tempfile
 from datetime import datetime, timedelta, timezone
-from typing import Literal
+from typing import Literal, Any
 
 import requests
 
@@ -669,6 +669,9 @@ def fetch_goes_satellite(
     bbox: tuple[float, float, float, float],
     band: str = "visible",
     satellite: str = "goes-16",
+    # job-0164: absorb LLM-invented kwargs (centralized at server.py via
+    # tool_arg_normalizer, but kept as belt-and-suspenders).
+    **_extra_ignored: Any,
 ) -> LayerURI:
     """GOES-16/17/18/19 satellite imagery fetcher for cloud distribution.
 

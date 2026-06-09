@@ -353,6 +353,9 @@ def web_fetch(
     extract: Literal["full_html", "main_text", "json", "metadata"] = "main_text",
     timeout_s: float = 30.0,
     user_agent: str = _DEFAULT_USER_AGENT,
+    # job-0164: absorb LLM-invented kwargs (centralized at server.py via
+    # tool_arg_normalizer, but kept as belt-and-suspenders).
+    **_extra_ignored: Any,
 ) -> dict[str, Any]:
     """Generic web-page ingest with content extraction modes.
 

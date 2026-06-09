@@ -828,6 +828,9 @@ def fetch_era5_reanalysis(
     end_date: str,
     api_key: str | None = None,
     secret_ref: Any | None = None,
+    # job-0164: absorb LLM-invented kwargs (centralized at server.py via
+    # tool_arg_normalizer, but kept as belt-and-suspenders).
+    **_extra_ignored: Any,
 ) -> LayerURI:
     """Copernicus ERA5 reanalysis Tier-2 fetcher (single-level hourly).
 

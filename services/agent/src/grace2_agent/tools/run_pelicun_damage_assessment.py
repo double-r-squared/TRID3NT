@@ -1036,6 +1036,9 @@ def run_pelicun_damage_assessment(
     fragility_set: FragilitySet = "hazus_flood_v6",
     component_types: list[str] | None = None,
     realization_count: int = 100,
+    # job-0164: absorb LLM-invented kwargs (centralized at server.py via
+    # tool_arg_normalizer, but kept as belt-and-suspenders).
+    **_extra_ignored: Any,
 ) -> LayerURI:
     """Fragility-curve-driven damage assessment via Pelicun.
 

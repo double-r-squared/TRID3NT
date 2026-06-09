@@ -446,6 +446,9 @@ def _fetch_wdpa_bytes(
 def fetch_wdpa_protected_areas(
     bbox: tuple[float, float, float, float],
     designation_filter: list[str] | None = None,
+    # job-0164: absorb LLM-invented kwargs (centralized at server.py via
+    # tool_arg_normalizer, but kept as belt-and-suspenders).
+    **_extra_ignored: Any,
 ) -> LayerURI:
     """Fetch WDPA (World Database on Protected Areas) polygons clipped to a bbox.
 

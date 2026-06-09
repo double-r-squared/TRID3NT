@@ -410,6 +410,9 @@ def fetch_storm_events_db(
     year: int,
     state: str | None = None,
     event_types: list[str] | None = None,
+    # job-0164: absorb LLM-invented kwargs (centralized at server.py via
+    # tool_arg_normalizer, but kept as belt-and-suspenders).
+    **_extra_ignored: Any,
 ) -> LayerURI:
     """Fetch NOAA Storm Events Database events as a point FlatGeobuf.
 

@@ -288,6 +288,9 @@ def _fetch_3dep_dem_bytes(
 def fetch_dem(
     bbox: tuple[float, float, float, float],
     resolution_m: int = 10,
+    # job-0164: absorb LLM-invented kwargs (centralized at server.py via
+    # tool_arg_normalizer, but kept as belt-and-suspenders).
+    **_extra_ignored: Any,
 ) -> LayerURI:
     """Fetch a digital elevation model (DEM) for a bbox from USGS 3DEP.
 
@@ -472,6 +475,9 @@ def _fetch_msft_buildings_bytes(
 def fetch_buildings(
     bbox: tuple[float, float, float, float],
     source: str = "msft",
+    # job-0164: absorb LLM-invented kwargs (centralized at server.py via
+    # tool_arg_normalizer, but kept as belt-and-suspenders).
+    **_extra_ignored: Any,
 ) -> LayerURI:
     """Fetch building footprints for a bbox.
 
@@ -902,6 +908,9 @@ def _state_fips_for_lonlat(lon: float, lat: float) -> str | None:
 def fetch_population(
     bbox: tuple[float, float, float, float],
     dataset: str = "worldpop_2020",
+    # job-0164: absorb LLM-invented kwargs (centralized at server.py via
+    # tool_arg_normalizer, but kept as belt-and-suspenders).
+    **_extra_ignored: Any,
 ) -> LayerURI:
     """Fetch population data for a bbox from WorldPop (Tier-1 default) or Census ACS.
 
@@ -1096,7 +1105,7 @@ def _fetch_nominatim_geocode_bytes(query: str) -> bytes:
 
 
 @register_tool(_GEOCODE_LOCATION_METADATA)
-def geocode_location(query: str) -> dict[str, Any]:
+def geocode_location(query: str, **_extra_ignored: Any) -> dict[str, Any]:
     """Forward-geocode a place name to a bbox + canonical name (Nominatim).
 
     Use this when: the agent receives a free-text location reference
@@ -1417,6 +1426,9 @@ def _round_bbox_to_30m_nlcd(
 def fetch_landcover(
     bbox: tuple[float, float, float, float],
     dataset: str = "nlcd_2021",
+    # job-0164: absorb LLM-invented kwargs (centralized at server.py via
+    # tool_arg_normalizer, but kept as belt-and-suspenders).
+    **_extra_ignored: Any,
 ) -> dict[str, Any]:
     """Fetch landcover (NLCD or ESA WorldCover) for a bbox; returns dict with vintage sidecar.
 
@@ -1833,6 +1845,9 @@ def _fetch_nhdplushr_geometry_bytes(
 def fetch_river_geometry(
     bbox: tuple[float, float, float, float],
     source: str = "nhdplus_hr",
+    # job-0164: absorb LLM-invented kwargs (centralized at server.py via
+    # tool_arg_normalizer, but kept as belt-and-suspenders).
+    **_extra_ignored: Any,
 ) -> LayerURI:
     """Fetch river / stream geometry for a bbox from NHDPlus HR (USGS).
 
@@ -2126,6 +2141,9 @@ def lookup_precip_return_period(
     location: tuple[float, float],
     return_period_years: int,
     duration_hours: float,
+    # job-0164: absorb LLM-invented kwargs (centralized at server.py via
+    # tool_arg_normalizer, but kept as belt-and-suspenders).
+    **_extra_ignored: Any,
 ) -> dict[str, Any]:
     """Look up a precipitation return-period depth at a point via NOAA Atlas 14 PFDS.
 

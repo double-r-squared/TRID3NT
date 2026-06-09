@@ -452,6 +452,9 @@ def fetch_hrsl_population(
     bbox: tuple[float, float, float, float],
     year: int = 2020,
     source: str = "meta_hrsl",
+    # job-0164: absorb LLM-invented kwargs (centralized at server.py via
+    # tool_arg_normalizer, but kept as belt-and-suspenders).
+    **_extra_ignored: Any,
 ) -> LayerURI:
     """Fetch Meta + CIESIN High-Resolution Settlement Layer (HRSL) population.
 
