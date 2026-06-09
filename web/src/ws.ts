@@ -155,6 +155,85 @@ function loadOrCreateSessionId(): string {
   return id;
 }
 
+// ---------------------------------------------------------------------------
+// job-0159: per-session fan-out hub for envelopes that drive shared UI state.
+//
+// Problem this solves: the agent's `PipelineEmitter` is bound 1:1 to a single
+// `ServerConnection` (see services/agent/src/grace2_agent/server.py:1180-1188).
+// When the user types a message, the tool runs on the WebSocket that
+// delivered the `user-message` — and the resulting `session-state`,
+// `map-command`, `case-list`, `case-open`, `secrets-list`, `mode2-candidate`,
+// and `tool-payload-warning` envelopes go out ONLY on that wire. But the
+// web client mounts TWO `GraceWs` instances per tab — Chat.tsx (chat panel)
+// and App.tsx (map + layer panel + secrets + cases) — each with its own
+// connection. Pre-job-0159 the App-side instance never saw the workflow's
+// session-state, so the flood-depth raster never reached MapLibre even
+// though `add_loaded_layer` had fired server-side.
+//
+// Fix: keep one socket each, but fan out the SESSION-SCOPED envelope types
+// in-process across all `GraceWs` instances that share the same
+// `session_id`. Message-level envelopes (`agent-message-chunk`,
+// `pipeline-state`, `error`) are NOT fanned out — those follow the
+// user-message that originated them and routing them across instances
+// would duplicate chat messages and pipeline cards.
+//
+// The hub is a passive event bus; subscribers are existing `GraceWs`
+// instances. Registration is automatic in the constructor; unregistration
+// is automatic in `close()`. Listeners deliver to their bound handlers
+// only — there is no observer-of-observers pattern.
+// ---------------------------------------------------------------------------
+
+/** Envelope types that carry session-scoped state and therefore need fan-out. */
+const SESSION_SCOPED_TYPES = new Set<string>([
+  "session-state",
+  "map-command",
+  "case-list",
+  "case-open",
+  "secrets-list",
+  "mode2-candidate",
+  "tool-payload-warning",
+]);
+
+const SESSION_HUB: Map<string, Set<GraceWs>> = new Map();
+
+function hubRegister(ws: GraceWs, sessionId: string): void {
+  let set = SESSION_HUB.get(sessionId);
+  if (!set) {
+    set = new Set();
+    SESSION_HUB.set(sessionId, set);
+  }
+  set.add(ws);
+}
+
+function hubUnregister(ws: GraceWs, sessionId: string): void {
+  const set = SESSION_HUB.get(sessionId);
+  if (!set) return;
+  set.delete(ws);
+  if (set.size === 0) SESSION_HUB.delete(sessionId);
+}
+
+function hubBroadcast(
+  fromWs: GraceWs,
+  sessionId: string,
+  envType: string,
+  payload: unknown,
+): void {
+  const set = SESSION_HUB.get(sessionId);
+  if (!set) return;
+  for (const peer of set) {
+    if (peer === fromWs) continue;
+    peer.deliverFannedOut(envType, payload);
+  }
+}
+
+// Exposed for tests (Vitest). Production code does not call these directly.
+export function __test_resetSessionHub(): void {
+  SESSION_HUB.clear();
+}
+export function __test_sessionHubSize(sessionId: string): number {
+  return SESSION_HUB.get(sessionId)?.size ?? 0;
+}
+
 export class GraceWs {
   private url: string;
   private handlers: WsHandlers;
@@ -169,6 +248,10 @@ export class GraceWs {
     this.url = url;
     this.handlers = handlers;
     this.sessionId = loadOrCreateSessionId();
+    // job-0159: register with the per-session fan-out hub so envelopes
+    // received by sibling GraceWs instances (e.g. App's instance when the
+    // tool ran on Chat's instance) are still delivered to OUR handlers.
+    hubRegister(this, this.sessionId);
   }
 
   /** Current session ULID; survives page reload via localStorage. */
@@ -195,7 +278,20 @@ export class GraceWs {
       }
       this.socket = null;
     }
+    // job-0159: drop our hub registration so a re-mount doesn't leak.
+    hubUnregister(this, this.sessionId);
     this.handlers.onStatus("disconnected");
+  }
+
+  /**
+   * job-0159: deliver a session-scoped envelope that originated on a
+   * SIBLING `GraceWs` instance for the same `session_id`. Called by the
+   * fan-out hub; never invoked directly. Routes through the same handler
+   * fan-out as a natively-received envelope so subscribers can't tell the
+   * difference, which is the whole point.
+   */
+  deliverFannedOut(envType: string, payload: unknown): void {
+    this.dispatchEnvelope(envType, payload);
   }
 
   sendUserMessage(text: string, researchMode: ResearchMode = "research"): void {
@@ -442,7 +538,27 @@ export class GraceWs {
     const env = parsed as { type?: unknown; payload?: unknown };
     if (typeof env.type !== "string" || typeof env.payload !== "object") return;
     const payload = env.payload as Record<string, unknown>;
-    switch (env.type) {
+    // job-0159: fan out session-scoped envelope types to sibling GraceWs
+    // instances bound to the same session_id BEFORE dispatching locally.
+    // Order doesn't matter for correctness (both deliveries are synchronous
+    // and independent) but fanning out first keeps the cross-instance
+    // arrival close in time to the local arrival, which is friendlier to
+    // any UI ordering assumptions downstream.
+    if (SESSION_SCOPED_TYPES.has(env.type)) {
+      hubBroadcast(this, this.sessionId, env.type, payload);
+    }
+    this.dispatchEnvelope(env.type, payload);
+  }
+
+  /**
+   * Dispatch a parsed envelope to the bound handlers. Extracted from
+   * `handleMessage` so the job-0159 hub fan-out can deliver an envelope
+   * received by a sibling instance through the same routing logic.
+   */
+  private dispatchEnvelope(envType: string, rawPayload: unknown): void {
+    if (!rawPayload || typeof rawPayload !== "object") return;
+    const payload = rawPayload as Record<string, unknown>;
+    switch (envType) {
       case "agent-message-chunk":
         this.handlers.onAgentChunk(payload as unknown as AgentMessageChunkPayload);
         break;
@@ -521,7 +637,7 @@ export class GraceWs {
         // Ignores tool-call-*, location-resolved, and the pick-mode requests.
         // Logging only.
         // eslint-disable-next-line no-console
-        console.debug("[ws] unhandled frame type:", env.type);
+        console.debug("[ws] unhandled frame type:", envType);
     }
   }
 
