@@ -25,7 +25,7 @@
 // The chat is a CONSUMER of frames — every glyph on screen came from the
 // agent. No client-side text generation.
 
-import { useEffect, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { ConnectionStatus, GraceWs } from "./ws";
 import {
   AgentMessageChunkPayload,
@@ -38,6 +38,19 @@ import {
 } from "./contracts";
 import { PipelineCard } from "./components/PipelineCard";
 import { ChatInput, ChatInputState } from "./components/ChatInput";
+import { AgentMessage } from "./components/AgentMessage";
+import { UserBubble } from "./components/UserBubble";
+import { ScrollToBottom } from "./components/ScrollToBottom";
+
+// job-0153 Part 4 — gap between input wrapper and the last chat message.
+// Scroll-area bottom padding = inputHeight + INPUT_GAP_PX.
+const INPUT_GAP_PX = 16;
+// Default input wrapper height (single-line state) — used until the first
+// onHeightChange callback fires from the mounted ChatInput.
+const DEFAULT_INPUT_HEIGHT_PX = 68;
+// job-0153 Part 3 — bottom-arrow appears when scrollTop is more than this
+// many pixels above the bottom of the scroll container.
+const SCROLL_BOTTOM_THRESHOLD_PX = 50;
 
 // --- Chat message shape -------------------------------------------------- //
 
@@ -190,6 +203,22 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
   const wsRef = useRef<GraceWs | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
+  // job-0153 Part 4 — dynamic chat-input wrapper height; the scroll area's
+  // bottom-padding grows with it so messages aren't clipped by the overlay.
+  const [inputHeightPx, setInputHeightPx] = useState<number>(
+    DEFAULT_INPUT_HEIGHT_PX,
+  );
+
+  // job-0153 Part 3 — visibility of the scroll-to-bottom button. Toggled on
+  // every scroll event in the conversation area. Auto-scroll on new content
+  // also re-evaluates this.
+  const [scrollArrowVisible, setScrollArrowVisible] = useState<boolean>(false);
+
+  // Track whether the user is "at bottom". When at bottom we auto-scroll on
+  // new content; when scrolled up we leave the position alone (so the user's
+  // reading position isn't disrupted) and surface the scroll-to-bottom arrow.
+  const atBottomRef = useRef<boolean>(true);
+
   useEffect(() => {
     const ws = new GraceWs(wsUrl, {
       onStatus: (s) => setStatus(s),
@@ -224,11 +253,41 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
     };
   }, []);
 
+  // Auto-scroll on new content only when the user is already at the bottom.
+  // This preserves the user's reading position when they've scrolled up to
+  // read history while the stream is still landing new tokens.
   useEffect(() => {
-    if (scrollRef.current) {
+    if (scrollRef.current && atBottomRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [messages, pipeline]);
+
+  // job-0153 Part 3 — scroll handler. Computes "near bottom" against the
+  // current scroll position and toggles the arrow visibility + the
+  // atBottomRef latch used by the auto-scroll effect above.
+  const handleScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const distanceFromBottom =
+      el.scrollHeight - el.scrollTop - el.clientHeight;
+    const nearBottom = distanceFromBottom <= SCROLL_BOTTOM_THRESHOLD_PX;
+    atBottomRef.current = nearBottom;
+    setScrollArrowVisible(!nearBottom);
+  }, []);
+
+  const scrollToBottom = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+    atBottomRef.current = true;
+    setScrollArrowVisible(false);
+  }, []);
+
+  // Stable callback for ChatInput.onHeightChange so it doesn't fire the
+  // measure useLayoutEffect on every Chat render.
+  const handleInputHeightChange = useCallback((h: number) => {
+    setInputHeightPx((prev) => (Math.abs(prev - h) < 0.5 ? prev : h));
+  }, []);
 
   function submit(text: string): void {
     if (!text || !wsRef.current) return;
@@ -330,17 +389,18 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
       </header>
 
       {/* ---- Scrollable conversation area ----                                   */}
-      {/* job-0144: bottom-padding leaves room for the overlay ChatInput so       */}
-      {/* messages aren't hidden behind it. The input grows from ~68px → ~40vh;   */}
-      {/* the padding here is sized for the idle state and the input floats over  */}
-      {/* the bottom of the scroll when it grows (Kickoff Part 4 — overlay,       */}
-      {/* don't displace content).                                                */}
+      {/* job-0153 Part 4: bottom-padding tracks the actual measured input        */}
+      {/* wrapper height (plus a 16px gap) so the floating ChatInput overlay      */}
+      {/* never clips the last message, payload-warning card, or source           */}
+      {/* suggestion card — even when the textarea grows to ~40vh.                */}
       <div
         ref={scrollRef}
+        data-testid="chat-scroll"
+        onScroll={handleScroll}
         style={{
           flex: 1,
           overflowY: "auto",
-          padding: "12px 12px 88px 12px",
+          padding: `12px 12px ${inputHeightPx + INPUT_GAP_PX}px 12px`,
           display: "flex",
           flexDirection: "column",
           gap: 10,
@@ -350,32 +410,19 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
           liveSteps.length === 0 &&
           pipeline.history.length === 0 && (
             <p style={{ color: "#888", margin: 0 }}>
-              Ask a question. Ctrl/Cmd+Enter to send.
+              Ask a question. Press Enter to send.
             </p>
           )}
 
-        {/* Chat messages */}
-        {messages.map((m) => (
-          <div
-            key={m.id}
-            data-role={m.role}
-            data-done={m.done ? "true" : "false"}
-            style={{
-              alignSelf: m.role === "user" ? "flex-end" : "flex-start",
-              maxWidth: "85%",
-              background: m.role === "user" ? "#264" : "#222",
-              padding: "8px 10px",
-              borderRadius: 6,
-              whiteSpace: "pre-wrap",
-              wordBreak: "break-word",
-            }}
-          >
-            {m.text}
-            {!m.done && m.role === "agent" && (
-              <span style={{ color: "#888" }}> ▌</span>
-            )}
-          </div>
-        ))}
+        {/* Chat messages — user as right-aligned grey bubble; agent as          */}
+        {/* unaligned markdown block (job-0153 Parts 1 + 2).                      */}
+        {messages.map((m) =>
+          m.role === "user" ? (
+            <UserBubble key={m.id} text={m.text} />
+          ) : (
+            <AgentMessage key={m.id} text={m.text} done={m.done} />
+          ),
+        )}
 
         {/* Historical pipeline snapshots (terminal) — scroll into history. */}
         {pipeline.history.map((snapshot) => (
@@ -412,11 +459,35 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
         )}
       </div>
 
-      {/* ---- Overlay input wrapper (job-0144) ----                              */}
+      {/* ---- Scroll-to-bottom affordance (job-0153 Part 3) ----                 */}
+      {/* Floats centered above the chat-input overlay. Shows when the user is    */}
+      {/* scrolled up; smooth-scrolls and hides on click; auto-hides when the     */}
+      {/* user reaches the bottom (handled by onScroll above).                    */}
+      <div
+        data-testid="scroll-to-bottom-anchor"
+        style={{
+          position: "absolute",
+          left: 0,
+          right: 0,
+          bottom: inputHeightPx + INPUT_GAP_PX + 8,
+          display: "flex",
+          justifyContent: "center",
+          pointerEvents: "none",
+          zIndex: 2,
+        }}
+      >
+        <div style={{ pointerEvents: scrollArrowVisible ? "auto" : "none" }}>
+          <ScrollToBottom
+            visible={scrollArrowVisible}
+            onClick={scrollToBottom}
+          />
+        </div>
+      </div>
+
+      {/* ---- Overlay input wrapper (job-0144 + job-0153) ----                    */}
       {/* Floats at the bottom of the chat panel; the scroll above has matching   */}
-      {/* bottom-padding so messages aren't hidden behind it. The merged          */}
-      {/* send/stop control lives inside ChatInput — there is no separate         */}
-      {/* displayed Cancel button per Kickoff Part 6.                             */}
+      {/* bottom-padding (driven by onHeightChange) so messages and inline cards  */}
+      {/* are never hidden behind it, even when the textarea grows multi-line.    */}
       <div
         data-testid="chat-input-overlay"
         style={{
@@ -425,6 +496,7 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
           right: 12,
           bottom: 12,
           pointerEvents: "auto",
+          zIndex: 3,
         }}
       >
         <ChatInput
@@ -432,6 +504,7 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
           onSubmit={submit}
           onCancel={cancel}
           disabled={inputDisabled}
+          onHeightChange={handleInputHeightChange}
         />
       </div>
     </div>

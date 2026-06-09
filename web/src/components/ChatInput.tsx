@@ -9,9 +9,13 @@
 //        - busy  : stop-square (■) on a grey ground, click emits cancel
 //        - returns to idle when the pipeline completes/cancels
 //
-// Submission semantics (FR-WC-7):
-//   - Enter inserts a newline.
-//   - Cmd+Enter / Ctrl+Enter submits.
+// Submission semantics (FR-WC-7, updated job-0153):
+//   - Enter alone        → submit (clear text, send).
+//   - Shift+Enter        → insert newline (multi-line input).
+//   - Cmd+Enter/Ctrl+Enter → also submit (preserved as alternate hotkey for
+//                            users coming from the prior job-0144 behavior).
+// This flip matches Claude Code + user expectations; it resolves
+// OQ-0144-CMD-ENTER-VS-PLAIN-ENTER-DEFAULT.
 //
 // Cancel semantics (FR-WC-9 / Invariant 8):
 //   - Pressing the in-flight stop-square dispatches `cancel` via the
@@ -66,6 +70,12 @@ export interface ChatInputProps {
   placeholder?: string;
   /** Maximum height the textarea grows to before it scrolls internally (vh). */
   maxVh?: number;
+  /**
+   * Called whenever the wrapper's measured pixel height changes (job-0153
+   * Part 4). The parent uses this to grow the chat scroll's bottom-padding
+   * so the floating input never clips messages.
+   */
+  onHeightChange?: (heightPx: number) => void;
 }
 
 const MIN_HEIGHT_PX = 48;
@@ -126,11 +136,13 @@ export function ChatInput({
   onSubmit,
   onCancel,
   disabled = false,
-  placeholder = "Reply to GRACE-2…  (Enter for newline, Cmd/Ctrl+Enter to send)",
+  placeholder = "Reply to GRACE-2",
   maxVh = DEFAULT_MAX_VH,
+  onHeightChange,
 }: ChatInputProps): JSX.Element {
   const [draft, setDraft] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
 
   // Auto-grow: measure scrollHeight against the configured maxHeight every
   // time the draft changes. Falls back to MIN_HEIGHT when empty.
@@ -144,7 +156,15 @@ export function ChatInput({
     const target = Math.min(Math.max(el.scrollHeight, MIN_HEIGHT_PX), maxPx);
     el.style.height = `${target}px`;
     el.style.overflowY = el.scrollHeight > maxPx ? "auto" : "hidden";
-  }, [draft, maxVh]);
+    // job-0153 Part 4: report total wrapper height so the parent can grow
+    // its scroll-area bottom-padding when the textarea expands. We measure
+    // the wrapper (not the textarea) so wrapper padding + border are
+    // included in the reported pixel value.
+    if (onHeightChange && wrapperRef.current) {
+      const h = wrapperRef.current.getBoundingClientRect().height;
+      onHeightChange(h);
+    }
+  }, [draft, maxVh, onHeightChange]);
 
   // When transitioning back from in-flight to idle, focus the textarea so
   // the user can immediately type their next message — matches the Claude
@@ -178,8 +198,10 @@ export function ChatInput({
   }
 
   function onKeyDown(e: KeyboardEvent<HTMLTextAreaElement>): void {
-    // Cmd+Enter / Ctrl+Enter → submit. Plain Enter → newline (default).
-    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+    // job-0153 Part 6 — Enter alone submits; Shift+Enter inserts a newline.
+    // Cmd+Enter / Ctrl+Enter also submit (kept as alternate hotkey for users
+    // who learned the prior job-0144 behavior).
+    if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSubmit();
     }
@@ -230,6 +252,7 @@ export function ChatInput({
 
   return (
     <div
+      ref={wrapperRef}
       data-testid="chat-input-wrapper"
       data-state={state}
       style={wrapperStyle}

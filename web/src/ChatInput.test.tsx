@@ -86,24 +86,45 @@ describe("ChatInput — submit semantics", () => {
     );
   });
 
-  it("Ctrl+Enter submits; plain Enter does NOT submit (inserts newline default)", () => {
+  it("plain Enter submits; Shift+Enter does NOT submit (newline)", () => {
+    // job-0153 Part 6: flipped semantics — Enter alone submits.
     const { onSubmit } = renderIdle();
     const ta = screen.getByTestId("chat-input") as HTMLTextAreaElement;
     fireEvent.change(ta, { target: { value: "Hurricane Ian Fort Myers" } });
-    // Plain Enter — should not submit.
-    fireEvent.keyDown(ta, { key: "Enter" });
+    // Shift+Enter — should NOT submit (inserts newline; browser handles it).
+    fireEvent.keyDown(ta, { key: "Enter", shiftKey: true });
     expect(onSubmit).not.toHaveBeenCalled();
-    // Ctrl+Enter — should submit.
-    fireEvent.keyDown(ta, { key: "Enter", ctrlKey: true });
+    // Plain Enter — should submit.
+    fireEvent.keyDown(ta, { key: "Enter" });
     expect(onSubmit).toHaveBeenCalledWith("Hurricane Ian Fort Myers");
   });
 
   it("Cmd+Enter (metaKey) also submits", () => {
+    // job-0153 Part 6: any non-Shift Enter modifier still submits.
     const { onSubmit } = renderIdle();
     const ta = screen.getByTestId("chat-input") as HTMLTextAreaElement;
     fireEvent.change(ta, { target: { value: "go" } });
     fireEvent.keyDown(ta, { key: "Enter", metaKey: true });
     expect(onSubmit).toHaveBeenCalledWith("go");
+  });
+
+  it("Ctrl+Enter also submits", () => {
+    const { onSubmit } = renderIdle();
+    const ta = screen.getByTestId("chat-input") as HTMLTextAreaElement;
+    fireEvent.change(ta, { target: { value: "go" } });
+    fireEvent.keyDown(ta, { key: "Enter", ctrlKey: true });
+    expect(onSubmit).toHaveBeenCalledWith("go");
+  });
+
+  it("empty input + Enter does NOT submit", () => {
+    const { onSubmit } = renderIdle();
+    const ta = screen.getByTestId("chat-input") as HTMLTextAreaElement;
+    // No text — Enter must not fire onSubmit (whitespace-trim guard).
+    fireEvent.keyDown(ta, { key: "Enter" });
+    expect(onSubmit).not.toHaveBeenCalled();
+    fireEvent.change(ta, { target: { value: "   " } });
+    fireEvent.keyDown(ta, { key: "Enter" });
+    expect(onSubmit).not.toHaveBeenCalled();
   });
 
   it("does NOT submit while in-flight even with text", () => {
@@ -125,10 +146,46 @@ describe("ChatInput — submit semantics", () => {
         onCancel={onCancel}
       />,
     );
-    // Cmd+Enter while in-flight: the action button is now Stop; pressing
-    // Cmd+Enter on the textarea should NOT submit a second message.
-    fireEvent.keyDown(ta, { key: "Enter", ctrlKey: true });
+    // Enter while in-flight: the action button is now Stop; pressing Enter
+    // on the textarea should NOT submit a second message.
+    fireEvent.keyDown(ta, { key: "Enter" });
     expect(onSubmit).not.toHaveBeenCalled();
+  });
+});
+
+describe("ChatInput — placeholder (job-0153 Part 5)", () => {
+  it("defaults to the short 'Reply to GRACE-2' placeholder", () => {
+    renderIdle();
+    const ta = screen.getByTestId("chat-input") as HTMLTextAreaElement;
+    expect(ta.placeholder).toBe("Reply to GRACE-2");
+  });
+
+  it("accepts an override via the placeholder prop", () => {
+    renderIdle({ placeholder: "Ask GRACE-2..." });
+    const ta = screen.getByTestId("chat-input") as HTMLTextAreaElement;
+    expect(ta.placeholder).toBe("Ask GRACE-2...");
+  });
+});
+
+describe("ChatInput — onHeightChange (job-0153 Part 4)", () => {
+  it("invokes onHeightChange on mount + on every draft change", () => {
+    const onHeightChange = vi.fn();
+    const onSubmit = vi.fn();
+    const onCancel = vi.fn();
+    render(
+      <ChatInput
+        state="idle"
+        onSubmit={onSubmit}
+        onCancel={onCancel}
+        onHeightChange={onHeightChange}
+      />,
+    );
+    // Fires on initial useLayoutEffect.
+    expect(onHeightChange).toHaveBeenCalled();
+    const callsBefore = onHeightChange.mock.calls.length;
+    const ta = screen.getByTestId("chat-input") as HTMLTextAreaElement;
+    fireEvent.change(ta, { target: { value: "line1\nline2\nline3" } });
+    expect(onHeightChange.mock.calls.length).toBeGreaterThan(callsBefore);
   });
 });
 
