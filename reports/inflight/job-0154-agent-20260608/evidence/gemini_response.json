@@ -1,0 +1,35 @@
+{
+  "note": "Real Gemini call not made (requires live Vertex AI credentials). The mocked response below is the FunctionCallEvent shape produced by stream_events() when Gemini returns a function_call part — verified by test_agent_routing.py::test_stream_events_yields_function_call_event.",
+  "mock_gemini_response": {
+    "candidates": [
+      {
+        "content": {
+          "role": "model",
+          "parts": [
+            {
+              "function_call": {
+                "name": "run_model_flood_scenario",
+                "id": "call-abc123",
+                "args": {
+                  "location_query": "Fort Myers, FL",
+                  "return_period_yr": 100
+                }
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "stream_event_produced": {
+    "type": "FunctionCallEvent",
+    "name": "run_model_flood_scenario",
+    "call_id": "call-abc123",
+    "args": {
+      "location_query": "Fort Myers, FL",
+      "return_period_yr": 100
+    }
+  },
+  "dispatch_path": "_stream_gemini_reply -> _invoke_tool_via_emitter('run_model_flood_scenario', {'location_query': 'Fort Myers, FL', 'return_period_yr': 100})",
+  "test_evidence": "6/6 tests pass in services/agent/tests/test_agent_routing.py (run: 2026-06-08)"
+}

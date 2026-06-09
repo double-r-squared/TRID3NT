@@ -657,12 +657,16 @@ async def run_model_flood_scenario(
 ) -> LayerURI | dict[str, Any]:
     """Run the full deterministic flood-modeling workflow.
 
-    Use this when: the agent has a flood-modeling intent grounded in a
-    location (either a free-text place name or a bbox) and needs the typed
-    AssessmentEnvelope (with a flood-depth COG layer and structured flood
-    metrics) for narration + rendering. The workflow composes the M5
-    fetcher chain → HydroMT SFINCS setup (with NLCD validation gate per OQ-4
-    §4 — guards Invariant 7) → Cloud Run solver dispatch → postprocess.
+    Use this when: the user asks to model a flood scenario, simulate flood
+    inundation, compute peak flood depth, run a flood simulation, estimate
+    flood extent, or analyze flooding for any specific location. Examples:
+    "model the flood from a 100-year storm in Fort Myers, FL",
+    "what would peak flood depth be from a 25-year design storm in Houston",
+    "simulate flood inundation for Hurricane Ian near Fort Myers",
+    "run a flood scenario for New Orleans with a 500-year return period".
+    Also use for any request mentioning "return period", "design storm",
+    "ARI", "flood risk", "inundation depth", or "flood extent" for a named
+    location or bounding box.
 
     Do NOT use this for: running a custom solver dispatch (use ``run_solver``
     + ``wait_for_completion`` directly); composing a non-flood hazard

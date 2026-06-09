@@ -1,0 +1,79 @@
+{
+  "model": "gemini-2.5-pro",
+  "system_instruction": "You are GRACE \u2014 a geospatial hazard-modeling assistant. You help users analyze,\nvisualize, and model natural hazards (flooding, fire, hurricanes, etc.) using\nreal data and physics-based simulation tools.\n\nWhen a user asks you to model, analyze, simulate, or compute anything related\nto a hazard or geographic data, call the appropriate tool. Do not say you\ncannot help with modeling requests \u2014 you have tools for that.\n\nKey behaviors:\n- If the user asks to model a flood scenario, run a flood simulation, compute\n  flood depth, or analyze inundation for any location, call\n  run_model_flood_scenario immediately.\n- For geographic data queries (elevation, population, land cover, roads,\n  buildings), call the matching fetch_* tool.\n- For QGIS geoprocessing (clip, slope, hillshade, zonal statistics), call the\n  matching compute_* or clip_* tool.\n- Never fabricate numbers. All depth, area, and count values in your replies\n  must come from the tool result, not from your own generation.\n- When a tool result contains a flood depth layer, describe the results from\n  the returned metrics \u2014 do not invent values.\n- Keep responses concise and focused on the hazard modeling context.\n",
+  "tool_count": 53,
+  "tool_names": [
+    "aggregate_claims_across_sources",
+    "clip_raster_to_bbox",
+    "clip_raster_to_polygon",
+    "clip_vector_to_polygon",
+    "compute_aspect",
+    "compute_building_density",
+    "compute_colored_relief",
+    "compute_hillshade",
+    "compute_impervious_surface",
+    "compute_slope",
+    "compute_zonal_statistics",
+    "extract_landcover_class",
+    "fetch_administrative_boundaries",
+    "fetch_buildings",
+    "fetch_cama_flood_discharge",
+    "fetch_dem",
+    "fetch_ebird_observations",
+    "fetch_era5_reanalysis",
+    "fetch_firms_active_fire",
+    "fetch_gbif_occurrences",
+    "fetch_gcn250_curve_numbers",
+    "fetch_goes_satellite",
+    "fetch_gtsm_tide_surge",
+    "fetch_hrsl_population",
+    "fetch_inaturalist_observations",
+    "fetch_iucn_red_list_range",
+    "fetch_landcover",
+    "fetch_landfire_fuels",
+    "fetch_movebank_tracks",
+    "fetch_mrms_qpe",
+    "fetch_mtbs_burn_severity",
+    "fetch_nexrad_reflectivity",
+    "fetch_nifc_fire_perimeters",
+    "fetch_nws_alerts_conus",
+    "fetch_nws_event",
+    "fetch_population",
+    "fetch_river_geometry",
+    "fetch_roads_osm",
+    "fetch_storm_events_db",
+    "fetch_wdpa_protected_areas",
+    "geocode_location",
+    "lookup_precip_return_period",
+    "mongo_query",
+    "publish_layer",
+    "qgis_process",
+    "run_model_flood_habitat_scenario",
+    "run_model_flood_scenario",
+    "run_model_news_event_ingest",
+    "run_pelicun_damage_assessment",
+    "run_pelicun_with_buildings",
+    "run_solver",
+    "wait_for_completion",
+    "web_fetch"
+  ],
+  "flood_tool_declaration": {
+    "name": "run_model_flood_scenario",
+    "description": "Run the full deterministic flood-modeling workflow.\n\nUse this when: the user asks to model a flood scenario, simulate flood\ninundation, compute peak flood depth, run a flood simulation, estimate\nflood extent, or analyze flooding for any specific location. Examples:\n\"model the flood from a 100-year storm in Fort Myers, FL\",\n\"what would peak flood depth be from a 25-year design storm in Houston\",\n\"simulate flood inundation for Hurricane Ian near Fort Myers\",\n\"run a flood scenario for New Orleans with a 500-year return period\".\nAlso use for any request mentioning \"return period\", \"design storm\",\n\"ARI\", \"flood risk\", \"inundation depth\", or \"flood extent\" for a named\nlocation or bounding box.\n\nDo NOT use this for: running a custom solver dispatch (use ``run_solver``\n+ ``wait_for_completion`` directly); composing a non-flood hazard\n(other hazard workflows land in their respective milestones); cancelling\na running flood scenario (use the WS ``cancel`` envelope \u2014 the cancel\nchain propagates th",
+    "has_parameters": false
+  },
+  "contents": [
+    {
+      "role": "user",
+      "parts": [
+        {
+          "text": "Model peak flood depth from a 100-year design storm in Fort Myers, FL"
+        }
+      ]
+    }
+  ],
+  "automatic_function_calling": {
+    "disable": true
+  },
+  "note": "Real Gemini call not made (requires live Vertex AI credentials). Tool catalog and system prompt verified correct."
+}

@@ -72,7 +72,17 @@ from grace2_contracts.ws import (
 
 from .main import MAX_TURNS_PER_SESSION
 
-from .adapter import GeminiSettings, build_client, load_settings, stream_reply
+from .adapter import (
+    FunctionCallEvent,
+    GeminiSettings,
+    SYSTEM_PROMPT,
+    TextDeltaEvent,
+    build_client,
+    build_tool_declarations,
+    load_settings,
+    stream_events,
+    stream_reply,  # noqa: F401 — retained for any callers that use it directly
+)
 from .auth_handshake import (
     AuthResult,
     authenticate_token,
@@ -333,7 +343,20 @@ async def _stream_gemini_reply(
     user_text: str,
     research_mode: str,
 ) -> None:
-    """Stream one user-message reply. Cancellable via asyncio cancellation."""
+    """Stream one user-message reply. Cancellable via asyncio cancellation.
+
+    job-0154: now passes the full TOOL_REGISTRY as FunctionDeclarations +
+    a focused system prompt to Gemini so it can call tools (e.g.
+    ``run_model_flood_scenario``) instead of emitting prose refusals.
+
+    Event loop:
+    - ``TextDeltaEvent`` → wrapped in ``agent-message-chunk`` and sent.
+    - ``FunctionCallEvent`` → dispatched via ``_invoke_tool_via_emitter``;
+      the result is NOT fed back to Gemini in this v0.1 implementation
+      (single-shot function-call; the emitter owns the pipeline-state +
+      session-state side effects).  A follow-up job adds multi-turn
+      function-call / function-response cycling.
+    """
     logger.info(
         "user-message session=%s research_mode=%s text=%r",
         state.session_id,
@@ -367,8 +390,18 @@ async def _stream_gemini_reply(
     first_token_logged = False
     started_at = asyncio.get_running_loop().time()
 
+    # Build tool declarations + system prompt for this request.
+    tool_decls = build_tool_declarations(TOOL_REGISTRY)
+
     try:
-        async for delta in stream_reply(client, settings.model, user_text):
+        async for event in stream_events(
+            client,
+            settings.model,
+            user_text,
+            tool_declarations=tool_decls,
+            system_prompt=SYSTEM_PROMPT,
+            chat_history=state.chat_history,
+        ):
             if not first_token_logged:
                 first_token_logged = True
                 elapsed_ms = (asyncio.get_running_loop().time() - started_at) * 1000.0
@@ -378,16 +411,36 @@ async def _stream_gemini_reply(
                     elapsed_ms,
                     settings.model,
                 )
-            chunk = AgentMessageChunkPayload(
-                message_id=message_id, delta=delta, done=False
-            )
-            await websocket.send(_new_envelope("agent-message-chunk", state.session_id, chunk))
 
-        # Terminal frame.
+            if isinstance(event, TextDeltaEvent):
+                chunk = AgentMessageChunkPayload(
+                    message_id=message_id, delta=event.delta, done=False
+                )
+                await websocket.send(
+                    _new_envelope("agent-message-chunk", state.session_id, chunk)
+                )
+
+            elif isinstance(event, FunctionCallEvent):
+                logger.info(
+                    "gemini function-call session=%s tool=%s call_id=%s args=%r",
+                    state.session_id,
+                    event.name,
+                    event.call_id,
+                    event.args,
+                )
+                # Dispatch through the registry + emitter (Invariant 2 — the
+                # LLM's tool choice IS the classification).  The terminal
+                # agent-message-chunk + pipeline-state(complete) are emitted
+                # by the emitter; we close the outer "thinking" step here.
+                await _invoke_tool_via_emitter(
+                    websocket, state, event.name, event.args
+                )
+
+        # Terminal frame for any streamed text.
         terminal = AgentMessageChunkPayload(message_id=message_id, delta="", done=True)
         await websocket.send(_new_envelope("agent-message-chunk", state.session_id, terminal))
 
-        # Complete the pipeline snapshot.
+        # Complete the pipeline snapshot (LLM generation phase).
         thinking_step = PipelineStep(
             step_id=step_id,
             name="llm_generation",
