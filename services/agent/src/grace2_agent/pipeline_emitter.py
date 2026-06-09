@@ -305,6 +305,37 @@ class PipelineEmitter:
         """Return a defensive shallow copy of the current loaded_layers list."""
         return list(self._loaded_layers)
 
+    def reset_loaded_layers(self, layers: list[dict] | None) -> None:
+        """Replace the in-memory ``_loaded_layers`` from a persisted snapshot.
+
+        job-0172 Part B: called on ``case-open`` to seed the per-connection
+        accumulator with whatever ``CaseSessionState.loaded_layers`` held.
+        Each input dict is validated through ``ProjectLayerSummary`` so a
+        malformed entry doesn't corrupt the in-memory state. Malformed
+        entries are skipped (logged) — partial seeding is preferable to
+        wholesale rollback because the next legitimate emission will
+        re-stabilize the wire shape via the existing dedup-by-uri rule.
+
+        Pass ``None`` or ``[]`` to flush (used on ``case-command(create)``).
+        Does NOT emit a ``session-state`` — the caller decides when to send
+        the next snapshot.
+        """
+        if not layers:
+            self._loaded_layers = []
+            return
+        seeded: list[ProjectLayerSummary] = []
+        for layer_dict in layers:
+            if not isinstance(layer_dict, dict):
+                continue
+            try:
+                seeded.append(ProjectLayerSummary.model_validate(layer_dict))
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "reset_loaded_layers: skipping malformed layer dict"
+                )
+                continue
+        self._loaded_layers = seeded
+
     def current_snapshot(self) -> PipelineSnapshot | None:
         """Return the current ``PipelineSnapshot`` (D.6 persistence shape) or
         ``None`` if no pipeline is running. Used by ``session-state`` emission

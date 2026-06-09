@@ -83,3 +83,12 @@ class User(GraceModel):
     created_at: UTCDatetime
     is_active: bool = True
     prefs: dict = Field(default_factory=dict)
+    # job-0172 Part C: distinguishes the H.3 anonymous-fallback Users from
+    # Firebase-verified Users. The web client persists its assigned anonymous
+    # ``user_id`` in localStorage and replays it on every reconnect via the
+    # ``AuthTokenEnvelope.anonymous_user_id`` hint; the agent looks up that id
+    # here, confirms ``is_anonymous=True``, and re-binds the same User record
+    # rather than minting a fresh one. Default ``False`` so Firebase-verified
+    # Users (the existing path) are unaffected. (Decision F: this field never
+    # leaks the credential — anonymous Users have no credential to leak.)
+    is_anonymous: bool = False

@@ -73,6 +73,17 @@ import {
 export interface AuthTokenPayload {
   id_token: string;
   provider: "firebase" | "anonymous";
+  /**
+   * job-0172 Part C — sticky anonymous user_id hint. When ``id_token`` is
+   * empty (anonymous fallback) the agent consults this field; if it carries
+   * a ULID matching an existing anonymous ``UserDocument``, the same User
+   * is re-bound and the user's Cases stay reachable. Ignored entirely when
+   * ``id_token`` verifies (the JWT is the credential). The server-side
+   * shape on ``AuthTokenEnvelope`` uses the name ``token`` not ``id_token``
+   * because that is the pydantic field; the wire envelope translation in
+   * ``maybeSendAuthToken`` below converts.
+   */
+  anonymous_user_id?: string | null;
 }
 
 /**
@@ -135,9 +146,28 @@ export interface WsHandlers {
    * dynamic-importing Firebase.
    */
   idTokenGetter?: IdTokenGetter;
+  /**
+   * job-0172 Part C — auth-ack handler. Fires once per WebSocket connect
+   * after the server has either verified the Firebase ID token OR fallen
+   * through to the H.3 anonymous fallback. Optional so existing callers
+   * don't need to opt in; ws.ts always persists the sticky anonymous
+   * user_id internally regardless. Consumers (App.tsx) can use it to
+   * drive auth-aware UI without a separate round-trip.
+   */
+  onAuthAck?: (p: AuthAckPayload) => void;
 }
 
 const SESSION_KEY = "grace2.session_id";
+// job-0172 Part C — sticky anonymous user_id. The server's H.3 anonymous
+// fallback mints a fresh ULID on every connect; without a client-side cache,
+// reconnects (browser refresh, WS drop + reconnect) orphan the user's Cases
+// because the new connection binds to a different user_id. We persist the
+// auth-ack's user_id when ``is_anonymous=true`` and replay it on the next
+// auth-token envelope as a hint; the agent re-binds the same User record.
+//
+// Cleared by ``clearAnonymousUserId()`` after a real sign-in lands (the
+// authenticated identity takes over and the anonymous hint is moot).
+const ANONYMOUS_USER_ID_KEY = "grace2.anonymous_user_id";
 
 function loadOrCreateSessionId(): string {
   try {
@@ -153,6 +183,59 @@ function loadOrCreateSessionId(): string {
     // ignore
   }
   return id;
+}
+
+/** job-0172 Part C — read the persisted anonymous user_id hint, if any. */
+export function readAnonymousUserId(): string | null {
+  try {
+    const v = window.localStorage.getItem(ANONYMOUS_USER_ID_KEY);
+    if (v && v.length === 26) return v;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/** job-0172 Part C — store the assigned anonymous user_id hint. */
+export function writeAnonymousUserId(userId: string): void {
+  try {
+    if (userId && userId.length === 26) {
+      window.localStorage.setItem(ANONYMOUS_USER_ID_KEY, userId);
+    }
+  } catch {
+    // ignore
+  }
+}
+
+/** job-0172 Part C — wipe the cached anonymous user_id (e.g. on sign-in). */
+export function clearAnonymousUserId(): void {
+  try {
+    window.localStorage.removeItem(ANONYMOUS_USER_ID_KEY);
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * job-0172 Part C — Wire shape for ``auth-ack`` (server -> client).
+ *
+ * The agent sends this exactly once after WebSocket connect — either after
+ * verifying a Firebase ID token OR after the H.3 anonymous fallback. We
+ * read ``is_anonymous`` + ``user_id`` to persist the sticky anonymous
+ * identity (the server mints a fresh anonymous user every connect
+ * otherwise, orphaning the user's Cases on every refresh).
+ *
+ * The full ack shape lives in ``packages/contracts/.../auth.py``
+ * (``AuthAckEnvelope``); this is the minimal subset ws.ts needs to drive
+ * the persistence side-effect. Extra fields (``firebase_uid``, ``tier``)
+ * are passed through to ``onAuthAck`` consumers but not used by ws.ts
+ * itself.
+ */
+export interface AuthAckPayload {
+  user_id: string;
+  firebase_uid?: string | null;
+  is_anonymous: boolean;
+  tier?: "free" | "pro" | "enterprise";
 }
 
 // ---------------------------------------------------------------------------
@@ -633,6 +716,25 @@ export class GraceWs {
           );
         }
         break;
+      case "auth-ack": {
+        // job-0172 Part C — server's auth-ack confirms the resolved identity.
+        // When ``is_anonymous=true`` we cache the assigned user_id so the
+        // next reconnect can replay it as a hint and re-bind the same User.
+        // When ``is_anonymous=false`` (real sign-in) we clear the cached
+        // hint — the authenticated identity supersedes anything anonymous.
+        const ack = payload as unknown as AuthAckPayload;
+        if (ack && typeof ack.user_id === "string") {
+          if (ack.is_anonymous === true) {
+            writeAnonymousUserId(ack.user_id);
+          } else {
+            clearAnonymousUserId();
+          }
+        }
+        if (this.handlers.onAuthAck) {
+          this.handlers.onAuthAck(ack);
+        }
+        break;
+      }
       default:
         // Ignores tool-call-*, location-resolved, and the pick-mode requests.
         // Logging only.
@@ -665,12 +767,23 @@ export class GraceWs {
       // can throw on network errors, expired refresh tokens, etc.
       token = null;
     }
-    if (!token) return;
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return;
+    // job-0172 Part C — always send the auth-token envelope (even with an
+    // empty ``id_token``) so the agent receives the sticky
+    // ``anonymous_user_id`` hint and re-binds the same anonymous User on
+    // reconnect. Previously we returned early when ``token`` was null and
+    // relied on the agent's implicit-anonymous fallback (which mints a
+    // FRESH user_id every connect — the bug this part fixes).
+    const stickyHint = token ? null : readAnonymousUserId();
+    const payload: AuthTokenPayload = {
+      id_token: token ?? "",
+      provider: token ? "firebase" : "anonymous",
+      anonymous_user_id: stickyHint,
+    };
     const env: Envelope<AuthTokenPayload> = envelope(
       "auth-token",
       this.sessionId,
-      { id_token: token, provider: "firebase" },
+      payload,
     );
     this.sendEnvelope(env);
   }

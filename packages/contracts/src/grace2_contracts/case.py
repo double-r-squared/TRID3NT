@@ -111,6 +111,16 @@ class CaseSummary(GraceModel):
     # the left-rail summary stays cheap.
     layer_summary: list[str] = Field(default_factory=list)
 
+    # job-0172 Part B: per-Case persisted ``ProjectLayerSummary`` dicts. The
+    # PipelineEmitter holds these per-connection in memory; we mirror them
+    # onto the Case document so a Case re-open (fresh connection, fresh
+    # emitter) rehydrates ``loaded_layers`` deterministically rather than
+    # showing an empty LayerPanel. Entries are full ``ProjectLayerSummary``
+    # ``model_dump(mode="json")`` shapes (matches Appendix D.2 envelope
+    # discipline + ``CaseSessionState.loaded_layers``). Dedup is by ``uri``:
+    # republishing the same layer overwrites the existing entry in place.
+    loaded_layer_summaries: list[dict] = Field(default_factory=list)
+
     qgs_project_uri: str | None = None  # gs://.../{case_id}.qgs (lazy-init)
 
 

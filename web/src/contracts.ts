@@ -371,6 +371,11 @@ export interface CaseSummary {
   bbox?: [number, number, number, number] | null; // [minLon, minLat, maxLon, maxLat]
   primary_hazard?: string | null;
   layer_summary?: string[]; // flat list of layer_ids
+  // job-0172 Part B: per-Case ``ProjectLayerSummary`` snapshots persisted
+  // server-side so a Case re-open rehydrates ``loaded_layers``. The web
+  // client reads ``CaseSessionState.loaded_layers`` on case-open rather
+  // than this field; it's exposed on the summary for forward compatibility.
+  loaded_layer_summaries?: ProjectLayerSummary[];
   qgs_project_uri?: string | null;
 }
 

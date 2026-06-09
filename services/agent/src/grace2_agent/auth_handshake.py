@@ -190,11 +190,18 @@ async def authenticate_token(
        step 3). Tier defaults to ``"free"`` if no ``tier`` claim is present
        on the JWT.
 
-    2. **Missing / empty / invalid token.** Provision an ephemeral
-       anonymous user with a fresh ULID, ``firebase_uid=None``,
-       ``is_active=True``. If persistence is provisioned, the user is
-       upserted; otherwise the anonymous user stays in-memory for the
-       session (M1 substrate path).
+    2. **Missing / empty / invalid token, anonymous hint provided.** When
+       the envelope carries ``anonymous_user_id`` and the lookup finds an
+       existing ``UserDocument`` with ``is_anonymous=True``, re-bind the
+       same User (job-0172 Part C). This is the sticky anonymous path that
+       prevents page-refresh from minting a fresh user every reconnect —
+       the persisted Cases stay reachable across browser reloads.
+
+    3. **Missing / empty / invalid token, no usable hint.** Provision an
+       ephemeral anonymous user with a fresh ULID, ``firebase_uid=None``,
+       ``is_active=True``, ``is_anonymous=True``. If persistence is
+       provisioned, the user is upserted; otherwise the anonymous user
+       stays in-memory for the session (M1 substrate path).
 
     Always returns an ``AuthResult`` — verification failure is a path, not
     an exception.
@@ -202,6 +209,21 @@ async def authenticate_token(
     # 1. Anonymous fallback: no envelope, empty token, or no firebase_admin.
     token_str = (token_envelope.token if token_envelope else "").strip()
     if not token_str:
+        anon_hint = (
+            token_envelope.anonymous_user_id if token_envelope else None
+        )
+        if anon_hint and persistence is not None:
+            existing = await _try_reuse_anonymous_user(persistence, anon_hint)
+            if existing is not None:
+                logger.info(
+                    "anonymous reuse: rebound user_id=%s (sticky)", existing.user_id
+                )
+                return AuthResult(
+                    user=existing,
+                    firebase_uid=None,
+                    is_anonymous=True,
+                    tier="free",
+                )
         return await _provision_anonymous_user(persistence)
 
     # 2. Verify the token.
@@ -266,6 +288,7 @@ async def _provision_anonymous_user(persistence: Persistence | None) -> AuthResu
         created_at=now_utc(),
         is_active=True,
         prefs={},
+        is_anonymous=True,  # job-0172 Part C: pin the H.3 fallback as anonymous.
     )
     if persistence is not None:
         try:
@@ -280,6 +303,54 @@ async def _provision_anonymous_user(persistence: Persistence | None) -> AuthResu
         is_anonymous=True,
         tier="free",
     )
+
+
+async def _try_reuse_anonymous_user(
+    persistence: Persistence,
+    anonymous_user_id: str,
+) -> User | None:
+    """Look up the User by ULID and reuse iff it's an anonymous record.
+
+    job-0172 Part C: the sticky-anonymous path. Returns the existing User
+    only when (a) a record exists for ``anonymous_user_id`` and (b) that
+    record is marked ``is_anonymous=True``. Returns ``None`` to fall
+    through to fresh-user provisioning when either condition fails.
+
+    Why the is_anonymous gate: an attacker could fish a known authenticated
+    User id from a log and replay it; we MUST NOT re-bind a Firebase-verified
+    User without the actual JWT. Anonymous Users have no credential, so
+    re-binding them is the entire point — the id IS the only identifier
+    they ever had.
+    """
+    try:
+        existing = await persistence.get_user_by_id(anonymous_user_id)
+    except Exception as exc:  # noqa: BLE001 — best-effort: fall back to fresh
+        logger.warning(
+            "anonymous reuse: get_user_by_id(%s) failed (%s); minting fresh",
+            anonymous_user_id,
+            exc,
+        )
+        return None
+    if existing is None:
+        logger.info(
+            "anonymous reuse: hint %s not found; minting fresh", anonymous_user_id
+        )
+        return None
+    if not existing.is_anonymous:
+        # Forbid re-binding to a Firebase-verified record without the JWT.
+        logger.warning(
+            "anonymous reuse: hint %s belongs to a non-anonymous user; "
+            "rejecting (minting fresh anonymous)",
+            anonymous_user_id,
+        )
+        return None
+    if not existing.is_active:
+        logger.info(
+            "anonymous reuse: hint %s is_active=False; minting fresh",
+            anonymous_user_id,
+        )
+        return None
+    return existing
 
 
 async def _resolve_or_provision_user(

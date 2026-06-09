@@ -112,6 +112,19 @@ class AuthTokenEnvelope(GraceModel):
     #: against the JWT claims; this field is informational only.
     anonymous: bool = False
 
+    #: job-0172 Part C: sticky anonymous identity hint. When the connect path
+    #: has no Firebase token AND this field carries a ULID, the agent looks
+    #: up the matching ``UserDocument`` and re-binds the existing anonymous
+    #: User if (a) the User exists and (b) ``user.is_anonymous`` is True.
+    #: Otherwise the agent mints a fresh anonymous User. The web client
+    #: persists this id in localStorage on first connect and replays it on
+    #: every reconnect, so a browser refresh re-binds the same User and the
+    #: user's Cases stay visible across reloads.
+    #:
+    #: NEVER trusted for Firebase-verified Users — when ``token`` verifies,
+    #: this hint is ignored entirely (the JWT claims are the credential).
+    anonymous_user_id: ULIDStr | None = Field(default=None)
+
 
 # --------------------------------------------------------------------------- #
 # Agent → Client: auth-ack (Appendix H.5)

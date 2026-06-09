@@ -369,7 +369,16 @@ class Persistence:
             except Exception:  # noqa: BLE001
                 logger.warning("skipping malformed CaseChatMessage doc: %s", d)
                 continue
-        return CaseSessionState(case=case, chat_history=chat)
+        # job-0172 Part B: hydrate ``loaded_layers`` from the persisted
+        # ``Case.loaded_layer_summaries`` so a Case re-open repopulates the
+        # LayerPanel deterministically. The PipelineEmitter holds these in
+        # memory per-connection; without this hydration step a browser
+        # refresh (new WS, new emitter) shows an empty LayerPanel even
+        # though the layers are still published on the per-Case ``.qgs``.
+        loaded_layers = list(case.loaded_layer_summaries)
+        return CaseSessionState(
+            case=case, chat_history=chat, loaded_layers=loaded_layers,
+        )
 
     # ----- Users (Auth/Users track stub) ----------------------------------- #
 
@@ -410,6 +419,38 @@ class Persistence:
             },
         )
         return user
+
+    async def get_user_by_id(self, user_id: str) -> User | None:
+        """Find a user by ULID. Returns ``None`` if not found.
+
+        job-0172 Part C: the anonymous-fallback path needs an id-based lookup
+        so a reconnecting browser can re-bind to the same ephemeral User via
+        the ``AuthTokenEnvelope.anonymous_user_id`` hint. Mirrors the shape
+        of ``get_user_by_firebase_uid`` so the call site stays symmetric.
+        """
+        raw = await self._mcp.call_tool(
+            "find-one",
+            {
+                "database": self._db,
+                "collection": USERS_COLLECTION,
+                "filter": {"_id": user_id},
+            },
+        )
+        doc = _unwrap_mcp_result(raw)
+        if not doc or not isinstance(doc, dict):
+            return None
+        normalized = {k: v for k, v in doc.items() if k != "_id"}
+        if "user_id" not in normalized:
+            normalized["user_id"] = user_id
+        # Forward-compat: drop fields the v0.1 schema doesn't carry so a
+        # future User schema bump doesn't break the existing record.
+        allowed = set(User.model_fields.keys())
+        normalized = {k: v for k, v in normalized.items() if k in allowed}
+        try:
+            return User.model_validate(normalized)
+        except Exception:  # noqa: BLE001
+            logger.warning("malformed user doc for user_id=%s", user_id)
+            return None
 
     # ----- Per-Case secrets (§F.3) ----------------------------------------- #
 
