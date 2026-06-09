@@ -1,0 +1,12 @@
+HTTP/2 403 
+content-type: application/xml; charset=UTF-8
+x-guploader-uploadid: AJ5rDhH-kfuGW4Zk-1gkL4tOzKyyhiLgo8odUAVgQio7u3CcpUAxFyj00AZe2OQdDbLVTLvv
+content-length: 449
+date: Tue, 09 Jun 2026 06:02:54 GMT
+expires: Tue, 09 Jun 2026 06:02:54 GMT
+cache-control: private, max-age=0
+server: UploadServer
+alt-svc: h3=":443"; ma=2592000,h3-29=":443"; ma=2592000
+
+---
+Bucket auth probe (anonymous HEAD) — confirms 403 / not public-readable from browser

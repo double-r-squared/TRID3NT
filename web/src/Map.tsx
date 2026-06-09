@@ -190,16 +190,83 @@ export interface MapViewProps {
 }
 
 /**
- * Build the WMS tile URL for a given base WMS URL (which already includes
- * LAYERS=...). MapLibre substitutes {bbox-epsg-3857} per tile.
+ * Style-preset → WMS LAYERS value derivation table for upstream tools that
+ * emit a bare WMS endpoint (no `?LAYERS=…`) and rely on the client to
+ * supply the layer name. Currently used for Iowa State Mesonet NEXRAD
+ * (`fetch_nexrad_reflectivity` — job-0102/0105 family) whose LayerURI.uri
+ * is `https://…/wms/nexrad/<product>.cgi` with the LAYERS value implicit
+ * in the path.
+ *
+ * job-0171: the producer contract documented in
+ * `docs/decisions/layer-emission-contract.md:36` says `ProjectLayerSummary.uri`
+ * MUST be a full WMS URL with `LAYERS=` baked in. Several Tier-1
+ * data-source atomic tools violated that contract by emitting only the
+ * service endpoint. This map is the compatibility shim that recovers the
+ * intended LAYERS name from `style_preset`; the long-term fix is for those
+ * tools to emit a complete URL (raised as OQ-0171-WMS-URL-CONTRACT).
+ *
+ * The presets here mirror the values registered in
+ * `services/agent/src/grace2_agent/tools/fetch_nexrad_reflectivity.py:111-117`
+ * (`_PRODUCT_LAYER_NAME`).
+ */
+const STYLE_PRESET_TO_WMS_LAYERS: Record<string, string> = {
+  // job-0171 live diagnosis (evidence/iowa_capabilities_audit.txt): the
+  // Iowa Mesonet WMS does NOT publish `nexrad-{product}-wmst` layers — that
+  // value in the agent tool's `_PRODUCT_LAYER_NAME` table is wrong. The
+  // EPSG:3857 (Web Mercator) layer name follows the legacy `-900913`
+  // convention (the original Web-Mercator EPSG code, kept for back-compat
+  // by Iowa Mesonet). We use the `-900913` suffix because MapLibre's raster
+  // source requests tiles in EPSG:3857. Tracked as OQ-0171-NEXRAD-LAYER-NAME.
+  nexrad_n0r: "nexrad-n0r-900913",
+  nexrad_n0q: "nexrad-n0q-900913",
+  nexrad_vil: "nexrad-vil-900913",
+};
+
+/**
+ * Build the WMS tile URL for a given base WMS URL. MapLibre substitutes
+ * `{bbox-epsg-3857}` per tile.
+ *
  * Invariant 4: QGIS Server renders; client just registers the URL.
  *
- * The base URL must already carry MAP= and LAYERS= (the agent emits the full
- * QGIS Server endpoint per `flood-emission-contract.md`). This helper appends
- * the per-tile WMS GetMap parameter set MapLibre's raster source needs.
+ * Contract (per `docs/decisions/layer-emission-contract.md:36`): the
+ * base URL is expected to already include `?` + the WMS service params
+ * MAP and LAYERS. job-0171 diagnosis (evidence/radar_diag.json) shows
+ * the Iowa State Mesonet NEXRAD tool emits the bare `*.cgi` endpoint
+ * without either `?` or `LAYERS=`, which means this helper used to
+ * produce malformed URLs like `…n0r.cgi&SERVICE=WMS&…&LAYERS=` (no
+ * `LAYERS` value) that the Iowa Mesonet WMS rejects as a 400.
+ *
+ * This helper now defensively normalises:
+ *   1. Use `?` as separator when the base URL has no `?` yet, `&` otherwise.
+ *   2. If the base URL is missing a `LAYERS=` param, fall back to the
+ *      `style_preset → STYLE_PRESET_TO_WMS_LAYERS` lookup. Logs a warn
+ *      when neither is present so the diagnosis is loud.
+ *   3. Add the per-tile WMS GetMap params MapLibre's raster source needs.
  */
-export function buildWmsTileUrl(wmsUrl: string): string {
-  return `${wmsUrl}&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX={bbox-epsg-3857}&WIDTH=256&HEIGHT=256&STYLES=`;
+export function buildWmsTileUrl(wmsUrl: string, stylePreset?: string | null): string {
+  const sep = wmsUrl.includes("?") ? "&" : "?";
+  let layersParam = "";
+  // The upstream URL may already contain LAYERS=. If it doesn't, attempt to
+  // synthesise one from the style preset so the tile request is actually
+  // valid (otherwise the WMS server 400s and MapLibre silently paints
+  // nothing — the user-reported symptom).
+  if (!/[?&]LAYERS=/i.test(wmsUrl)) {
+    const layers = stylePreset ? STYLE_PRESET_TO_WMS_LAYERS[stylePreset] : undefined;
+    if (layers) {
+      layersParam = `&LAYERS=${encodeURIComponent(layers)}`;
+    } else {
+      // No LAYERS in URL and no preset mapping. Tile fetch is doomed; log
+      // loudly so this is diagnosable without needing the network panel.
+      // We still emit the URL so a future fix can pick up cleanly without
+      // changing the call sites (defense in depth, not silent suppression).
+      // eslint-disable-next-line no-console
+      console.warn(
+        "[Map] buildWmsTileUrl: WMS URL has no LAYERS= and no known style preset; tile fetch will likely 400. " +
+          "See OQ-0171-WMS-URL-CONTRACT. uri=" + wmsUrl + " style_preset=" + String(stylePreset),
+      );
+    }
+  }
+  return `${wmsUrl}${sep}SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX={bbox-epsg-3857}&WIDTH=256&HEIGHT=256&STYLES=${layersParam}`;
 }
 
 // Layer + source IDs for the swappable basemap. The light basemap source is
@@ -704,7 +771,10 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
           // (`applyTheme` below) preserves this invariant by re-adding the
           // basemap with `beforeId =` first overlay layer, so overlays
           // always stay on top of whichever basemap is active.
-          const tileUrl = buildWmsTileUrl(layer.uri);
+          // job-0171: pass style_preset so the LAYERS= shim can recover the
+          // missing parameter for tools that emit only the bare WMS endpoint
+          // (e.g. fetch_nexrad_reflectivity). See OQ-0171-WMS-URL-CONTRACT.
+          const tileUrl = buildWmsTileUrl(layer.uri, layer.style_preset ?? null);
           m.addSource(layer.layer_id, {
             type: "raster",
             tiles: [tileUrl],

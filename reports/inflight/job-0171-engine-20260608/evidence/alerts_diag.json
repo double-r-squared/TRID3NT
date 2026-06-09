@@ -1,0 +1,36 @@
+{
+  "report": {
+    "lastSs_layer_ids": [],
+    "lastSs_layer_types": [],
+    "lastSs_layer_uris": [],
+    "mapLayerIds": [
+      "qgis-basemap",
+      "osm-fallback-basemap"
+    ],
+    "mapSourceIds": [
+      "qgis-wms",
+      "osm-fallback"
+    ]
+  },
+  "consoleLines": [
+    "[debug] [vite] connecting...",
+    "[debug] [vite] connected.",
+    "[info] %cDownload the React DevTools for a better development experience: https://reactjs.org/link/react-devtools font-weight:bold",
+    "[warning] WebSocket connection to 'ws://localhost:8765/' failed: WebSocket is closed before the connection is established.",
+    "[warning] WebSocket connection to 'ws://localhost:8765/' failed: WebSocket is closed before the connection is established.",
+    "[warning] [GroupMarkerNotSet(crbug.com/242999)!:A0B01E001C210000]Automatic fallback to software WebGL has been deprecated. Please use the --enable-unsafe-swiftshader flag to opt in to lower security guarantees for trusted content.",
+    "[warning] [.WebGL-0x1e0402fe9c00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels",
+    "[warning] [.WebGL-0x1e0402fe9c00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels",
+    "[debug] [ws] unhandled frame type: auth-ack",
+    "[debug] [ws] unhandled frame type: auth-ack",
+    "[warning] [.WebGL-0x1e0402fe9c00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels",
+    "[warning] [.WebGL-0x1e0402fe9c00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels (this message will no longer repeat)",
+    "[log] [MapView] addVectorLayer start: nws-conus-actual-all gen=1",
+    "[warning] [MapView] vector fetch failed for nws-conus-actual-all: Error: [vector_rendering] refusing to fetch gs:// URL from client (invariant 5): gs://grace-2-hazard-prod-cache/cache/dynamic-1h/nws_alerts_conus/e231bb1732ef9ff629820fc0728fdc8a.fgb\n    at fetchVectorAsGeoJson (http://localhost:5173/src/lib/vector_rendering.ts?t=1780971737817:41:11)\n    at addVectorLayer (http://localhost:5173/src/Map.tsx?t=1780971737817:105:26)\n    at applyLatest (http://localhost:5173/src/Map.tsx?t=1780971737817:395:16)\n    at http://localhost:5173/src/Map.tsx?t=1780971737817:422:9\n    at http://localhost:5173/src/LayerPanel.tsx?t=1780984204590:561:57\n    at Set.forEach (<anonymous>)\n    at Object.pushSessionState (http://localhost:5173/src/LayerPanel.tsx?t=1780984204590:561:42)\n    at Object.onSessionState (http://localhost:5173/src/App.tsx?t=1780984290697:312:34)\n    at GraceWs.dispatchEnvelope (http://localhost:5173/src/ws.ts?t=1780971808871:341:23)\n    at GraceWs.deliverFannedOut (http://localhost:5173/src/ws.ts?t=1780971808871:105:10)",
+    "[debug] [vite] invalidate /src/Chat.tsx: Could not Fast Refresh (\"forceMostRecentRunningToFailed\" export is incompatible). Learn more at https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-react#consistent-components-exports",
+    "[debug] [vite] hot updated: /src/Chat.tsx",
+    "[debug] [vite] hot updated: /src/App.tsx",
+    "[debug] [ws] unhandled frame type: auth-ack",
+    "[debug] [ws] unhandled frame type: auth-ack"
+  ]
+}

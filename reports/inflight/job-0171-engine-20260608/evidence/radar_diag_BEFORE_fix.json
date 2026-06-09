@@ -1,0 +1,324 @@
+{
+  "timestamp": "2026-06-09T05:51:05.456Z",
+  "mapReport": {
+    "layer_count": 3,
+    "layers": [
+      {
+        "id": "qgis-basemap",
+        "type": "raster",
+        "source": "qgis-wms",
+        "visibility": "visible"
+      },
+      {
+        "id": "osm-fallback-basemap",
+        "type": "raster",
+        "source": "osm-fallback",
+        "visibility": "none"
+      },
+      {
+        "id": "nexrad-n0r-conus",
+        "type": "raster",
+        "source": "nexrad-n0r-conus",
+        "visibility": "visible"
+      }
+    ],
+    "sources": {
+      "qgis-wms": {
+        "type": "raster",
+        "tiles": [
+          "https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&LAYERS=basemap-osm-conus&CRS=EPSG:3857&FORMAT=image/png&TRANSPARENT=true&BBOX={bbox-epsg-3857}&WIDTH=256&HEIGHT=256&STYLES="
+        ]
+      },
+      "osm-fallback": {
+        "type": "raster",
+        "tiles": [
+          "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+        ]
+      },
+      "nexrad-n0r-conus": {
+        "type": "raster",
+        "tiles": [
+          "https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0r.cgi&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX={bbox-epsg-3857}&WIDTH=256&HEIGHT=256&STYLES="
+        ]
+      }
+    },
+    "styleLoaded": true,
+    "center": {
+      "lng": -95.5,
+      "lat": 37
+    },
+    "zoom": 4
+  },
+  "layerPanel": {
+    "row_count": 0,
+    "row_texts": []
+  },
+  "wsFrameCount": 18,
+  "wsFrames": [
+    {
+      "dir": "in",
+      "t": 1780984230953,
+      "type": "connected",
+      "parsed": null,
+      "len": 20
+    },
+    {
+      "dir": "out",
+      "t": 1780984232035,
+      "type": "session-resume",
+      "parsed": null,
+      "len": 146
+    },
+    {
+      "dir": "out",
+      "t": 1780984232037,
+      "type": "session-resume",
+      "parsed": null,
+      "len": 146
+    },
+    {
+      "dir": "in",
+      "t": 1780984232191,
+      "type": "auth-ack",
+      "parsed": null,
+      "len": 235
+    },
+    {
+      "dir": "in",
+      "t": 1780984232194,
+      "type": "auth-ack",
+      "parsed": null,
+      "len": 235
+    },
+    {
+      "dir": "in",
+      "t": 1780984232199,
+      "type": "session-state",
+      "parsed": {
+        "loaded_layer_ids": [],
+        "loaded_layer_types": [],
+        "loaded_layer_uris": []
+      },
+      "len": 264
+    },
+    {
+      "dir": "in",
+      "t": 1780984232202,
+      "type": "case-list",
+      "parsed": null,
+      "len": 439
+    },
+    {
+      "dir": "in",
+      "t": 1780984232202,
+      "type": "session-state",
+      "parsed": {
+        "loaded_layer_ids": [],
+        "loaded_layer_types": [],
+        "loaded_layer_uris": []
+      },
+      "len": 264
+    },
+    {
+      "dir": "in",
+      "t": 1780984232202,
+      "type": "case-list",
+      "parsed": null,
+      "len": 439
+    },
+    {
+      "dir": "out",
+      "t": 1780984234493,
+      "type": "user-message",
+      "parsed": {
+        "text": "Show me radar over America"
+      },
+      "len": 206
+    },
+    {
+      "dir": "in",
+      "t": 1780984234497,
+      "type": "pipeline-state",
+      "parsed": {
+        "steps": [
+          {
+            "name": "llm_generation",
+            "state": "running"
+          }
+        ]
+      },
+      "len": 376
+    },
+    {
+      "dir": "in",
+      "t": 1780984240129,
+      "type": "pipeline-state",
+      "parsed": {
+        "steps": [
+          {
+            "name": "fetch_nexrad_reflectivity",
+            "state": "pending"
+          }
+        ]
+      },
+      "len": 397
+    },
+    {
+      "dir": "in",
+      "t": 1780984240135,
+      "type": "pipeline-state",
+      "parsed": {
+        "steps": [
+          {
+            "name": "fetch_nexrad_reflectivity",
+            "state": "running"
+          }
+        ]
+      },
+      "len": 422
+    },
+    {
+      "dir": "in",
+      "t": 1780984240143,
+      "type": "session-state",
+      "parsed": {
+        "loaded_layer_ids": [
+          "nexrad-n0r-conus"
+        ],
+        "loaded_layer_types": [
+          "raster"
+        ],
+        "loaded_layer_uris": [
+          "https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0r.cgi"
+        ]
+      },
+      "len": 960
+    },
+    {
+      "dir": "in",
+      "t": 1780984240148,
+      "type": "pipeline-state",
+      "parsed": {
+        "steps": [
+          {
+            "name": "fetch_nexrad_reflectivity",
+            "state": "complete"
+          }
+        ]
+      },
+      "len": 448
+    },
+    {
+      "dir": "in",
+      "t": 1780984240348,
+      "type": "agent-message-chunk",
+      "parsed": null,
+      "len": 218
+    },
+    {
+      "dir": "in",
+      "t": 1780984240486,
+      "type": "pipeline-state",
+      "parsed": {
+        "steps": [
+          {
+            "name": "llm_generation",
+            "state": "complete"
+          }
+        ]
+      },
+      "len": 377
+    },
+    {
+      "dir": "out",
+      "t": 1780984260956,
+      "type": "ping",
+      "parsed": null,
+      "len": 15
+    }
+  ],
+  "consoleLines": [
+    "[debug] [vite] connecting...",
+    "[debug] [vite] connected.",
+    "[info] %cDownload the React DevTools for a better development experience: https://reactjs.org/link/react-devtools font-weight:bold",
+    "[warning] WebSocket connection to 'ws://localhost:8765/' failed: WebSocket is closed before the connection is established.",
+    "[warning] WebSocket connection to 'ws://localhost:8765/' failed: WebSocket is closed before the connection is established.",
+    "[warning] [GroupMarkerNotSet(crbug.com/242999)!:A0B01E00AC390000]Automatic fallback to software WebGL has been deprecated. Please use the --enable-unsafe-swiftshader flag to opt in to lower security guarantees for trusted content.",
+    "[warning] [.WebGL-0x14fc02d00e00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels",
+    "[warning] [.WebGL-0x14fc02d00e00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels",
+    "[debug] [ws] unhandled frame type: auth-ack",
+    "[debug] [ws] unhandled frame type: auth-ack",
+    "[warning] [.WebGL-0x14fc02d00e00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels",
+    "[warning] [.WebGL-0x14fc02d00e00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels (this message will no longer repeat)",
+    "[error] Failed to load resource: the server responded with a status of 400 (Bad Request)",
+    "[error] L: AJAXError: Bad Request (400): https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0r.cgi&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-11271098.442818949,3757032.814272985,-10018754.171394622,5009377.085697312&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:35:23)",
+    "[error] Failed to load resource: the server responded with a status of 400 (Bad Request)",
+    "[error] L: AJAXError: Bad Request (400): https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0r.cgi&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-11271098.442818949,2504688.542848654,-10018754.171394622,3757032.814272985&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:35:23)",
+    "[error] Failed to load resource: the server responded with a status of 400 (Bad Request)",
+    "[error] L: AJAXError: Bad Request (400): https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0r.cgi&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-12523442.714243278,5009377.085697312,-11271098.442818949,6261721.357121639&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:35:23)",
+    "[error] Failed to load resource: the server responded with a status of 400 (Bad Request)",
+    "[error] L: AJAXError: Bad Request (400): https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0r.cgi&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-12523442.714243278,3757032.814272985,-11271098.442818949,5009377.085697312&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:35:23)",
+    "[error] Failed to load resource: the server responded with a status of 400 (Bad Request)",
+    "[error] Failed to load resource: the server responded with a status of 400 (Bad Request)",
+    "[error] L: AJAXError: Bad Request (400): https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0r.cgi&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-11271098.442818949,5009377.085697312,-10018754.171394622,6261721.357121639&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:35:23)",
+    "[error] L: AJAXError: Bad Request (400): https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0r.cgi&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-10018754.171394622,3757032.814272985,-8766409.899970295,5009377.085697312&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:35:23)",
+    "[error] Failed to load resource: the server responded with a status of 400 (Bad Request)",
+    "[error] L: AJAXError: Bad Request (400): https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0r.cgi&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-10018754.171394622,5009377.085697312,-8766409.899970295,6261721.357121639&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:35:23)",
+    "[error] Failed to load resource: the server responded with a status of 400 (Bad Request)",
+    "[error] L: AJAXError: Bad Request (400): https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0r.cgi&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-10018754.171394622,2504688.542848654,-8766409.899970295,3757032.814272985&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:35:23)",
+    "[error] Failed to load resource: the server responded with a status of 400 (Bad Request)",
+    "[error] L: AJAXError: Bad Request (400): https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0r.cgi&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-12523442.714243278,2504688.542848654,-11271098.442818949,3757032.814272985&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:35:23)",
+    "[error] Failed to load resource: the server responded with a status of 400 (Bad Request)",
+    "[error] L: AJAXError: Bad Request (400): https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0r.cgi&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-11271098.442818949,6261721.357121639,-10018754.171394622,7514065.628545966&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:35:23)",
+    "[error] Failed to load resource: the server responded with a status of 400 (Bad Request)",
+    "[error] L: AJAXError: Bad Request (400): https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0r.cgi&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-8766409.899970295,3757032.814272985,-7514065.628545966,5009377.085697312&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:35:23)",
+    "[error] Failed to load resource: the server responded with a status of 400 (Bad Request)",
+    "[error] L: AJAXError: Bad Request (400): https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0r.cgi&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-13775786.985667605,3757032.814272985,-12523442.714243278,5009377.085697312&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:35:23)",
+    "[error] Failed to load resource: the server responded with a status of 400 (Bad Request)",
+    "[error] L: AJAXError: Bad Request (400): https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0r.cgi&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-11271098.442818949,1252344.271424327,-10018754.171394622,2504688.542848654&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:35:23)",
+    "[error] Failed to load resource: the server responded with a status of 400 (Bad Request)",
+    "[error] L: AJAXError: Bad Request (400): https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0r.cgi&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-10018754.171394622,6261721.357121639,-8766409.899970295,7514065.628545966&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:35:23)",
+    "[error] Failed to load resource: the server responded with a status of 400 (Bad Request)",
+    "[error] L: AJAXError: Bad Request (400): https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0r.cgi&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-12523442.714243278,6261721.357121639,-11271098.442818949,7514065.628545966&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:35:23)",
+    "[error] Failed to load resource: the server responded with a status of 400 (Bad Request)",
+    "[error] L: AJAXError: Bad Request (400): https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0r.cgi&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-8766409.899970295,5009377.085697312,-7514065.628545966,6261721.357121639&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:35:23)",
+    "[error] Failed to load resource: the server responded with a status of 400 (Bad Request)",
+    "[error] L: AJAXError: Bad Request (400): https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0r.cgi&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-13775786.985667605,5009377.085697312,-12523442.714243278,6261721.357121639&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:35:23)",
+    "[error] Failed to load resource: the server responded with a status of 400 (Bad Request)",
+    "[error] L: AJAXError: Bad Request (400): https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0r.cgi&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-8766409.899970295,2504688.542848654,-7514065.628545966,3757032.814272985&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:35:23)",
+    "[error] Failed to load resource: the server responded with a status of 400 (Bad Request)",
+    "[error] L: AJAXError: Bad Request (400): https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0r.cgi&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-13775786.985667605,2504688.542848654,-12523442.714243278,3757032.814272985&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:35:23)",
+    "[error] Failed to load resource: the server responded with a status of 400 (Bad Request)",
+    "[error] L: AJAXError: Bad Request (400): https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0r.cgi&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-10018754.171394622,1252344.271424327,-8766409.899970295,2504688.542848654&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:35:23)",
+    "[error] Failed to load resource: the server responded with a status of 400 (Bad Request)",
+    "[error] L: AJAXError: Bad Request (400): https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0r.cgi&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-12523442.714243278,1252344.271424327,-11271098.442818949,2504688.542848654&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:35:23)",
+    "[error] Failed to load resource: the server responded with a status of 400 (Bad Request)",
+    "[error] L: AJAXError: Bad Request (400): https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0r.cgi&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-8766409.899970295,6261721.357121639,-7514065.628545966,7514065.628545966&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:35:23)",
+    "[error] Failed to load resource: the server responded with a status of 400 (Bad Request)",
+    "[error] L: AJAXError: Bad Request (400): https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0r.cgi&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-13775786.985667605,6261721.357121639,-12523442.714243278,7514065.628545966&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:35:23)",
+    "[error] Failed to load resource: the server responded with a status of 400 (Bad Request)",
+    "[error] L: AJAXError: Bad Request (400): https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0r.cgi&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-8766409.899970295,1252344.271424327,-7514065.628545966,2504688.542848654&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:35:23)",
+    "[error] Failed to load resource: the server responded with a status of 400 (Bad Request)",
+    "[error] L: AJAXError: Bad Request (400): https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0r.cgi&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-13775786.985667605,1252344.271424327,-12523442.714243278,2504688.542848654&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:35:23)",
+    "[error] Failed to load resource: the server responded with a status of 400 (Bad Request)",
+    "[error] L: AJAXError: Bad Request (400): https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0r.cgi&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-7514065.628545966,3757032.814272985,-6261721.357121639,5009377.085697312&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:35:23)",
+    "[error] Failed to load resource: the server responded with a status of 400 (Bad Request)",
+    "[error] L: AJAXError: Bad Request (400): https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0r.cgi&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-15028131.257091932,3757032.814272985,-13775786.985667605,5009377.085697312&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:35:23)",
+    "[error] Failed to load resource: the server responded with a status of 400 (Bad Request)",
+    "[error] L: AJAXError: Bad Request (400): https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0r.cgi&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-7514065.628545966,5009377.085697312,-6261721.357121639,6261721.357121639&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:35:23)",
+    "[error] Failed to load resource: the server responded with a status of 400 (Bad Request)",
+    "[error] L: AJAXError: Bad Request (400): https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0r.cgi&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-15028131.257091932,5009377.085697312,-13775786.985667605,6261721.357121639&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:35:23)",
+    "[error] Failed to load resource: the server responded with a status of 400 (Bad Request)",
+    "[error] L: AJAXError: Bad Request (400): https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0r.cgi&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-7514065.628545966,2504688.542848654,-6261721.357121639,3757032.814272985&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:35:23)",
+    "[error] Failed to load resource: the server responded with a status of 400 (Bad Request)",
+    "[error] L: AJAXError: Bad Request (400): https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0r.cgi&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-15028131.257091932,2504688.542848654,-13775786.985667605,3757032.814272985&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:35:23)",
+    "[error] Failed to load resource: the server responded with a status of 400 (Bad Request)",
+    "[error] L: AJAXError: Bad Request (400): https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0r.cgi&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-7514065.628545966,6261721.357121639,-6261721.357121639,7514065.628545966&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:35:23)",
+    "[error] Failed to load resource: the server responded with a status of 400 (Bad Request)",
+    "[error] L: AJAXError: Bad Request (400): https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0r.cgi&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-15028131.257091932,6261721.357121639,-13775786.985667605,7514065.628545966&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:35:23)",
+    "[error] Failed to load resource: the server responded with a status of 400 (Bad Request)",
+    "[error] L: AJAXError: Bad Request (400): https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0r.cgi&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-7514065.628545966,1252344.271424327,-6261721.357121639,2504688.542848654&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:35:23)",
+    "[error] Failed to load resource: the server responded with a status of 400 (Bad Request)",
+    "[error] L: AJAXError: Bad Request (400): https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0r.cgi&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-15028131.257091932,1252344.271424327,-13775786.985667605,2504688.542848654&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=e800d1dc:35:23)"
+  ]
+}

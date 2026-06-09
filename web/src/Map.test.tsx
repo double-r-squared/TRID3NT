@@ -372,6 +372,54 @@ describe("MapView — buildWmsTileUrl (job-0076 diagnosis)", () => {
     // LAYERS= must come from the caller (we only append after the base URL).
     expect(url).toContain("LAYERS=flood-demo");
   });
+
+  // job-0171: regression coverage for the malformed-URL family the live
+  // "Show me radar over America" repro surfaced
+  // (reports/inflight/job-0171-engine-20260608/evidence/radar_diag.json:41).
+  it("uses '?' as the separator when the base URL has no query string", async () => {
+    const { buildWmsTileUrl } = await import("./Map");
+    const url = buildWmsTileUrl(
+      "https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0r.cgi",
+      "nexrad_n0r",
+    );
+    // The first param-separator after the .cgi must be '?', not '&'. The
+    // pre-job-0171 code produced `…n0r.cgi&SERVICE=…` which is malformed.
+    expect(url).toMatch(/n0r\.cgi\?SERVICE=WMS/);
+  });
+
+  it("synthesises LAYERS= from style_preset when the base URL lacks one", async () => {
+    const { buildWmsTileUrl } = await import("./Map");
+    const url = buildWmsTileUrl(
+      "https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0r.cgi",
+      "nexrad_n0r",
+    );
+    // The preset map shim recovers the EPSG:3857-compatible LAYERS value
+    // from `nexrad_n0r`. The Iowa Mesonet WMS exposes Web-Mercator-projected
+    // tiles under the legacy `-900913` suffix (EPSG:3857 in its older
+    // EPSG-code form). See evidence/iowa_capabilities_audit.txt.
+    expect(url).toContain("LAYERS=nexrad-n0r-900913");
+  });
+
+  it("warns when a WMS URL has neither LAYERS= nor a known style_preset", async () => {
+    const { buildWmsTileUrl } = await import("./Map");
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    buildWmsTileUrl("https://example.com/wms", "unknown_preset_xyz");
+    expect(warnSpy).toHaveBeenCalled();
+    const msg = String(warnSpy.mock.calls[0]?.[0] ?? "");
+    expect(msg).toMatch(/OQ-0171-WMS-URL-CONTRACT/);
+    warnSpy.mockRestore();
+  });
+
+  it("uses '&' as the separator when the base URL already has a query string", async () => {
+    const { buildWmsTileUrl } = await import("./Map");
+    const url = buildWmsTileUrl(
+      "https://qgis.example.com/ogc/wms?MAP=/mnt/qgs/x.qgs&LAYERS=flood-demo",
+    );
+    // Existing QGIS Server pattern must still produce a single '?' followed
+    // by '&'-separated params.
+    const qmCount = (url.match(/\?/g) ?? []).length;
+    expect(qmCount).toBe(1);
+  });
 });
 
 describe("MapView — session-state idle-retry (job-0076 root-cause fix)", () => {
