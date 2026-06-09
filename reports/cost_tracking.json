@@ -980,6 +980,48 @@
       "description": "Sprint-12-mega Wave 4.7: Cross-cutting Gemini-kwargs fuzz harness \u2014 regression guard for the sweep",
       "model": "sonnet",
       "subagent_tokens": 95000
+    },
+    {
+      "job_id": "job-0169-engine-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 4.8: Multi-turn function_call \u2192 function_response loop (THE blocker). Live PASS: Fort Myers \u2192 geocode \u2192 fetch_wdpa with bbox \u2192 narrative. 12 tests + agent suite 2190/0. MAX_TURN_ITERATIONS=8.",
+      "model": "opus",
+      "subagent_tokens": 290000
+    },
+    {
+      "job_id": "job-0170-engine-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 4.8: rasterio /vsigs/ migration \u2014 gcsfs segfault mitigated",
+      "model": "opus",
+      "subagent_tokens": 240000
+    },
+    {
+      "job_id": "job-0171-engine-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 4.8: Layer rendering investigation + fix (Map.tsx WMS source registration)",
+      "model": "opus",
+      "subagent_tokens": 280000
+    },
+    {
+      "job_id": "job-0172-engine-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 4.8: Client replace-not-reconcile + agent Case layer persistence + sticky anonymous user_id",
+      "model": "opus",
+      "subagent_tokens": 310000
+    },
+    {
+      "job_id": "job-0173-engine-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 4.8: UX bundle \u2014 Thinking label + chat unstick + map pan + remove \u25b2/\u25bc",
+      "model": "opus",
+      "subagent_tokens": 220000
+    },
+    {
+      "job_id": "job-0174-testing-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 4.8: Wave 4.8 LIVE Playwright verify (no inject seams) \u2014 partial honesty: radar PASS, weather alerts FAIL after 4min, multi-turn confirmed working",
+      "model": "opus",
+      "subagent_tokens": 70000
     }
   ],
   "totals_by_sprint": {
@@ -989,7 +1031,7 @@
     "9": 713020,
     "10": 1540974,
     "11": 999540,
-    "12": 14627953
+    "12": 16037953
   },
   "historical_context": {
     "note": "Captured for accountability \u2014 NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
