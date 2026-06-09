@@ -1,0 +1,50 @@
+======================================================================
+JOB-0169 LIVE EVIDENCE — multi-turn function_call → function_response
+======================================================================
+
+User: "Show me protected areas in Fort Myers"
+
+======================================================================
+CONTENTS GEMINI SAW EACH TURN (proves the loop feeds back)
+======================================================================
+
+Turn 1:
+  [user] text: 'Show me protected areas in Fort Myers'
+
+Turn 2:
+  [user] text: 'Show me protected areas in Fort Myers'
+  [model] function_call: geocode_location({'query': 'Fort Myers, FL'})
+  [user] function_response: geocode_location -> {'tool': 'geocode_location', 'status': 'ok', 'result': {'name': 'Fort Myers, FL', 'bbox': [-82.0, 26.5, -81.7, 26.8], 'precision_class': 'precise'}}
+
+Turn 3:
+  [user] text: 'Show me protected areas in Fort Myers'
+  [model] function_call: geocode_location({'query': 'Fort Myers, FL'})
+  [user] function_response: geocode_location -> {'tool': 'geocode_location', 'status': 'ok', 'result': {'name': 'Fort Myers, FL', 'bbox': [-82.0, 26.5, -81.7, 26.8], 'precision_class': 'precise'}}
+  [model] function_call: fetch_wdpa_protected_areas({'bbox': [-82.0, 26.5, -81.7, 26.8]})
+  [user] function_response: fetch_wdpa_protected_areas -> {'tool': 'fetch_wdpa_protected_areas', 'status': 'ok', 'result': {'layer_id': 'wdpa-fort-myers', 'wms_url': 'https://qgis.example.com/wms?LAYERS=wdpa-fort-myers', [...]
+
+======================================================================
+TOOL DISPATCH ORDER (proves both tools fired, not just the first)
+======================================================================
+  1. geocode_location({'query': 'Fort Myers, FL'})
+  2. fetch_wdpa_protected_areas({'bbox': [-82.0, 26.5, -81.7, 26.8]})
+
+======================================================================
+WEBSOCKET ENVELOPES SENT (proves stream + pipeline-state lifecycle)
+======================================================================
+   1. pipeline-state           step_states=['running']
+   2. agent-message-chunk      delta='Found 2 protected areas inside the Fort Myers bbox (J.N. "Ding" Darling NWR + Estero Bay Aquatic Preserve). Layer is now on the map.' done=False
+   3. agent-message-chunk      delta=''                                                 done=True
+   4. pipeline-state           step_states=['complete']
+
+======================================================================
+ACCEPTANCE CHECKS (verbatim against the kickoff Verify section)
+======================================================================
+  [PASS] geocode_location → fetch_wdpa_protected_areas dispatched in order
+  [PASS] fetch_wdpa received bbox synthesized from geocode response
+  [PASS] turn-2 contents include function_call + function_response
+  [PASS] turn-3 contents include both call+response pairs in order
+  [PASS] narrative delivered to client: 'Found 2 protected areas inside the Fort Myers bbox (J.N. "Ding" Darling NWR + Estero Bay Aquatic Preserve). Layer is now on the map.'
+  [PASS] outer pipeline-state ends in 'complete'
+
+ALL ACCEPTANCE CHECKS PASS — job-0169 multi-turn loop verified live.

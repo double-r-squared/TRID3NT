@@ -25,6 +25,31 @@ callable + docstring) plus a focused system prompt to ``generate_content_stream`
 then demultiplexes each chunk into either a ``TextDeltaEvent`` or a
 ``FunctionCallEvent`` so the server can dispatch the tool through the registry.
 ``stream_reply`` is retained as a thin compatibility shim (text-only calls).
+
+job-0169: multi-turn function_call → function_response loop.  job-0154 stopped
+after the first function_call (single-shot dispatch) — every multi-tool prompt
+("Show me protected areas in Fort Myers" → geocode_location → fetch_wdpa) hung
+because Gemini never saw the result of its first call and so never decided to
+call the next tool.  This module now exposes:
+
+  * ``stream_events`` (single-turn primitive — unchanged contract; still
+    accepts ``user_text`` for backward compatibility).  Existing tests use it.
+  * ``stream_events_with_contents`` (new primitive used by the loop driver):
+    accepts a fully-built ``contents: list[Content]`` and streams one turn.
+  * ``build_contents_from_history`` — converts ``state.chat_history`` plus the
+    current user_text into the initial ``contents`` list.
+  * ``summarize_tool_result`` — compacts a tool result into the dict that
+    becomes the ``function_response.response`` payload Gemini reads on the
+    next turn.  Per the kickoff: SUMMARY shape (LayerURI metadata, key
+    metrics, error code) — NEVER the full raw tool result (which can be MB
+    of GeoJSON).
+  * ``build_function_call_content`` / ``build_function_response_content`` —
+    typed helpers for appending the model+function turn pair after a
+    dispatch.
+
+The loop driver itself lives in ``server.py`` (``_stream_gemini_reply``) so it
+can dispatch tools through ``_invoke_tool_via_emitter`` (registry + emitter
+side effects).  This file stays the Gemini-containment seam.
 """
 
 from __future__ import annotations
@@ -254,6 +279,209 @@ def build_client(settings: GeminiSettings) -> genai.Client:
 
 
 # ---------------------------------------------------------------------------
+# Content / function_response builders (job-0169)
+# ---------------------------------------------------------------------------
+
+# Hard upper bound on chars we send back to Gemini per function_response.
+# Anything bigger gets clipped — Gemini doesn't need megabytes of GeoJSON to
+# decide the next tool call; it needs the LayerURI, key metrics, error code,
+# and a couple of identifying fields.
+_FUNCTION_RESPONSE_CHAR_BUDGET = 4_000
+
+# Maximum loop iterations for the multi-turn driver.  Each iteration is one
+# Gemini stream + (optionally) one dispatched tool call.  ~8 turns is enough
+# for the longest documented Mode-1 workflow chain
+# (geocode → fetch_dem → fetch_landcover → fetch_river_geom → lookup_precip →
+# run_solver → wait → postprocess) plus headroom; if Gemini somehow loops past
+# this, that's a Gemini-side runaway and the cap is the right fail-stop.
+MAX_TURN_ITERATIONS = 8
+
+
+def build_contents_from_history(
+    user_text: str,
+    chat_history: list[dict] | None = None,
+) -> list[genai_types.Content]:
+    """Convert ``chat_history`` + a new ``user_text`` into Gemini ``Content``s.
+
+    Chat history entries are ``{role, text}`` dicts where role is one of
+    ``user`` / ``agent`` / ``assistant`` / ``model``.  Gemini only understands
+    ``user`` and ``model`` roles — agent/assistant collapse into ``model``.
+    Empty-text entries are dropped (the persistence layer writes empty rows
+    for the LLM's reply-turn marker; those carry no signal for Gemini).
+    """
+    contents: list[genai_types.Content] = []
+    if chat_history:
+        for entry in chat_history:
+            role = entry.get("role", "user")
+            text = entry.get("text", "")
+            if not text:
+                continue
+            gem_role = "model" if role in ("agent", "assistant", "model") else "user"
+            contents.append(
+                genai_types.Content(
+                    role=gem_role,
+                    parts=[genai_types.Part(text=text)],
+                )
+            )
+    contents.append(
+        genai_types.Content(
+            role="user",
+            parts=[genai_types.Part(text=user_text)],
+        )
+    )
+    return contents
+
+
+def _coerce_to_summary_value(value: Any, depth: int = 0) -> Any:
+    """Recursive helper for ``summarize_tool_result``.
+
+    Walks the tool-result structure; converts non-JSON-native types to strings,
+    truncates long lists and strings, drops nested dicts past depth 2.  The
+    goal isn't fidelity — it's giving Gemini enough signal to decide the next
+    call without sending it megabytes of GeoJSON.
+    """
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        # Long strings (HTML bodies, base64 payloads) get clipped.
+        if len(value) > 500:
+            return value[:500] + "…[truncated]"
+        return value
+    if isinstance(value, (list, tuple)):
+        if depth >= 2:
+            return f"[list len={len(value)}]"
+        # Keep up to 5 items; summarize the rest by count.
+        items = [_coerce_to_summary_value(v, depth + 1) for v in list(value)[:5]]
+        if len(value) > 5:
+            items.append(f"…[+{len(value) - 5} more items]")
+        return items
+    if isinstance(value, dict):
+        if depth >= 2:
+            return f"{{dict keys={list(value.keys())[:8]}}}"
+        out: dict[str, Any] = {}
+        for k, v in value.items():
+            if not isinstance(k, str):
+                k = str(k)
+            # Filter obviously huge / opaque fields the LLM doesn't need.
+            if k in {"raw_bytes", "raw_body", "binary", "geometry_wkb", "pixels"}:
+                out[k] = f"[{k} suppressed]"
+                continue
+            out[k] = _coerce_to_summary_value(v, depth + 1)
+        return out
+    # Pydantic models / dataclasses / arbitrary objects — repr-coerce, clip.
+    s = repr(value)
+    if len(s) > 200:
+        s = s[:200] + "…"
+    return s
+
+
+def summarize_tool_result(
+    tool_name: str,
+    result: Any,
+    error: BaseException | None = None,
+) -> dict[str, Any]:
+    """Compact a tool result into the ``function_response.response`` payload.
+
+    Per the kickoff: SUMMARY, not full result.  Gemini reads this between
+    turns to decide its next move; it needs LayerURI metadata, key metrics,
+    error codes, and counts — not the raw GeoJSON bytes.
+
+    Conventions enforced:
+
+    * Errors become ``{"error": str, "error_type": type-name}``.  Gemini
+      reads this and either retries with different args, calls a different
+      tool, or narrates the failure to the user.
+    * ``None`` results (the ``_invoke_tool_via_emitter`` path returns ``None``
+      on payload-warning skip, TOOL_NOT_FOUND, etc.) become
+      ``{"status": "no_result"}``.
+    * Dict results are walked through ``_coerce_to_summary_value`` and then
+      JSON-clipped to ``_FUNCTION_RESPONSE_CHAR_BUDGET`` chars.
+    * Primitive / string results become ``{"result": value}``.
+    * The final dict always carries ``"tool"`` and ``"status"`` keys so the
+      LLM has a stable shape to reason over.
+    """
+    import json as _json
+
+    if error is not None:
+        return {
+            "tool": tool_name,
+            "status": "error",
+            "error": str(error)[:500],
+            "error_type": type(error).__name__,
+        }
+
+    if result is None:
+        return {"tool": tool_name, "status": "no_result"}
+
+    if isinstance(result, dict):
+        summary = _coerce_to_summary_value(result)
+        payload: dict[str, Any] = {
+            "tool": tool_name,
+            "status": "ok",
+            "result": summary,
+        }
+    else:
+        payload = {
+            "tool": tool_name,
+            "status": "ok",
+            "result": _coerce_to_summary_value(result),
+        }
+
+    # Final char-budget clip: serialize, if oversized clip and re-wrap.
+    try:
+        encoded = _json.dumps(payload, default=str)
+    except Exception:  # noqa: BLE001 — pathological non-serializable
+        return {
+            "tool": tool_name,
+            "status": "ok",
+            "result_repr": repr(result)[:1000],
+            "note": "result not JSON-serializable; coerced via repr",
+        }
+    if len(encoded) > _FUNCTION_RESPONSE_CHAR_BUDGET:
+        return {
+            "tool": tool_name,
+            "status": "ok",
+            "result_summary": encoded[:_FUNCTION_RESPONSE_CHAR_BUDGET] + "…[clipped]",
+            "note": "full result exceeded char budget; clipped for LLM context",
+        }
+    return payload
+
+
+def build_function_call_content(
+    name: str,
+    args: dict[str, Any],
+    call_id: str | None = None,
+) -> genai_types.Content:
+    """Build the ``model``-role Content wrapping the function_call.
+
+    This is appended to ``contents`` after a dispatch so the next Gemini
+    stream sees its own prior tool-call decision.
+    """
+    fn_call = genai_types.FunctionCall(name=name, args=args or {}, id=call_id)
+    return genai_types.Content(
+        role="model",
+        parts=[genai_types.Part(function_call=fn_call)],
+    )
+
+
+def build_function_response_content(
+    name: str,
+    response: dict[str, Any],
+    call_id: str | None = None,
+) -> genai_types.Content:
+    """Build the ``function``-role Content wrapping the function_response.
+
+    Appended right after the matching ``model`` function_call content so
+    Gemini has the (call, response) pair before deciding its next turn.
+    """
+    fn_resp = genai_types.FunctionResponse(name=name, response=response, id=call_id)
+    return genai_types.Content(
+        role="user",
+        parts=[genai_types.Part(function_response=fn_resp)],
+    )
+
+
+# ---------------------------------------------------------------------------
 # stream_events — tool-aware streaming (job-0154, root fix)
 # ---------------------------------------------------------------------------
 
@@ -292,30 +520,44 @@ async def stream_events(
             ``SessionState.chat_history``.  Included as prior ``Content``
             turns so Gemini has conversational context.
     """
-    loop = asyncio.get_running_loop()
+    contents = build_contents_from_history(user_text, chat_history)
+    async for event in stream_events_with_contents(
+        client,
+        model,
+        contents,
+        tool_declarations=tool_declarations,
+        system_prompt=system_prompt,
+    ):
+        yield event
 
-    # Build contents list: prior turns (if any) + current user message.
-    contents: list[genai_types.Content] = []
-    if chat_history:
-        for entry in chat_history:
-            role = entry.get("role", "user")
-            text = entry.get("text", "")
-            if not text:
-                continue
-            # Gemini uses "user" and "model" roles.
-            gem_role = "model" if role in ("agent", "assistant", "model") else "user"
-            contents.append(
-                genai_types.Content(
-                    role=gem_role,
-                    parts=[genai_types.Part(text=text)],
-                )
-            )
-    contents.append(
-        genai_types.Content(
-            role="user",
-            parts=[genai_types.Part(text=user_text)],
-        )
-    )
+
+# ---------------------------------------------------------------------------
+# stream_events_with_contents — single-turn primitive for the multi-turn loop
+# ---------------------------------------------------------------------------
+
+
+async def stream_events_with_contents(
+    client: genai.Client,
+    model: str,
+    contents: list[genai_types.Content],
+    tool_declarations: list[genai_types.FunctionDeclaration] | None = None,
+    system_prompt: str | None = None,
+) -> AsyncIterator[StreamEvent]:
+    """Stream one Gemini turn from a fully-built ``contents`` list (job-0169).
+
+    This is the primitive the multi-turn loop driver in ``server.py`` uses.
+    Each call corresponds to exactly one ``generate_content_stream`` round —
+    the driver appends function_call + function_response Content entries to
+    ``contents`` and re-calls this until Gemini emits no further function
+    calls (only text → terminal turn).
+
+    ``stream_events`` (the user-text variant) now delegates here after
+    building ``contents`` via ``build_contents_from_history``.
+
+    Cancellation: ``asyncio.CancelledError`` cancels the underlying producer
+    thread and re-raises.
+    """
+    loop = asyncio.get_running_loop()
 
     # Build the tool list for the config.
     gem_tools: list[genai_types.Tool] | None = None
@@ -417,14 +659,20 @@ async def stream_reply(
 
 __all__ = [
     "GEMINI_DEFAULT_MODEL",
+    "MAX_TURN_ITERATIONS",
     "GeminiSettings",
     "StreamEvent",
     "TextDeltaEvent",
     "FunctionCallEvent",
     "SYSTEM_PROMPT",
     "build_client",
+    "build_contents_from_history",
+    "build_function_call_content",
+    "build_function_response_content",
     "build_tool_declarations",
     "load_settings",
     "stream_events",
+    "stream_events_with_contents",
     "stream_reply",
+    "summarize_tool_result",
 ]

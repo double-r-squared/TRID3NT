@@ -75,13 +75,19 @@ from .main import MAX_TURNS_PER_SESSION
 from .adapter import (
     FunctionCallEvent,
     GeminiSettings,
+    MAX_TURN_ITERATIONS,
     SYSTEM_PROMPT,
     TextDeltaEvent,
     build_client,
+    build_contents_from_history,
+    build_function_call_content,
+    build_function_response_content,
     build_tool_declarations,
     load_settings,
-    stream_events,
+    stream_events,  # noqa: F401 — retained for tests / direct text-only callers
+    stream_events_with_contents,
     stream_reply,  # noqa: F401 — retained for any callers that use it directly
+    summarize_tool_result,
 )
 from .auth_handshake import (
     AuthResult,
@@ -353,19 +359,29 @@ async def _stream_gemini_reply(
     user_text: str,
     research_mode: str,
 ) -> None:
-    """Stream one user-message reply. Cancellable via asyncio cancellation.
+    """Stream one user-message reply with multi-turn tool dispatch (job-0169).
 
-    job-0154: now passes the full TOOL_REGISTRY as FunctionDeclarations +
-    a focused system prompt to Gemini so it can call tools (e.g.
-    ``run_model_flood_scenario``) instead of emitting prose refusals.
+    The previous (job-0154) shape dispatched the first function_call but never
+    fed the result back to Gemini, so every multi-tool prompt
+    ("Show me protected areas in Fort Myers" → geocode → fetch_wdpa) stopped
+    after the first call.  The fix is the canonical Gemini agent loop:
 
-    Event loop:
-    - ``TextDeltaEvent`` → wrapped in ``agent-message-chunk`` and sent.
-    - ``FunctionCallEvent`` → dispatched via ``_invoke_tool_via_emitter``;
-      the result is NOT fed back to Gemini in this v0.1 implementation
-      (single-shot function-call; the emitter owns the pipeline-state +
-      session-state side effects).  A follow-up job adds multi-turn
-      function-call / function-response cycling.
+        contents = history + user_text
+        for _ in range(MAX_TURN_ITERATIONS):
+            stream Gemini:
+                text deltas → forward as agent-message-chunk
+                function_calls → collect (this turn)
+            if no function_calls this turn:
+                break  # final narrative turn
+            for each call:
+                result = await _invoke_tool_via_emitter(...)
+                summary = summarize_tool_result(name, result, error)
+                append model Content (function_call) + function Content (response)
+            # then loop: Gemini now sees the call + result and decides next
+            # tool call OR narrates the answer.
+
+    Cancellation: ``asyncio.CancelledError`` aborts the whole loop and emits a
+    cancelled ``pipeline-state`` for the outer ``llm_generation`` step.
     """
     logger.info(
         "user-message session=%s research_mode=%s text=%r",
@@ -380,7 +396,8 @@ async def _stream_gemini_reply(
     state.current_pipeline_id = pipeline_id
 
     # Emit a one-step "thinking" pipeline snapshot so the client has a
-    # cancellable handle. When the solver lands the step list will grow.
+    # cancellable handle. The loop driver keeps this single outer step; each
+    # dispatched tool gets its own step through the emitter.
     thinking_step = PipelineStep(
         step_id=step_id,
         name="llm_generation",
@@ -403,54 +420,126 @@ async def _stream_gemini_reply(
     # Build tool declarations + system prompt for this request.
     tool_decls = build_tool_declarations(TOOL_REGISTRY)
 
+    # Seed the multi-turn contents list with chat history + this user_text.
+    contents = build_contents_from_history(user_text, state.chat_history)
+
+    iterations = 0
     try:
-        async for event in stream_events(
-            client,
-            settings.model,
-            user_text,
-            tool_declarations=tool_decls,
-            system_prompt=SYSTEM_PROMPT,
-            chat_history=state.chat_history,
-        ):
-            if not first_token_logged:
-                first_token_logged = True
-                elapsed_ms = (asyncio.get_running_loop().time() - started_at) * 1000.0
-                logger.info(
-                    "first-token session=%s elapsed_ms=%.1f model=%s",
-                    state.session_id,
-                    elapsed_ms,
-                    settings.model,
-                )
+        while iterations < MAX_TURN_ITERATIONS:
+            iterations += 1
+            # Per-turn collectors: text emitted, function-calls Gemini requested.
+            turn_text_parts: list[str] = []
+            turn_function_calls: list[FunctionCallEvent] = []
 
-            if isinstance(event, TextDeltaEvent):
-                chunk = AgentMessageChunkPayload(
-                    message_id=message_id, delta=event.delta, done=False
-                )
-                await websocket.send(
-                    _new_envelope("agent-message-chunk", state.session_id, chunk)
-                )
+            async for event in stream_events_with_contents(
+                client,
+                settings.model,
+                contents,
+                tool_declarations=tool_decls,
+                system_prompt=SYSTEM_PROMPT,
+            ):
+                if not first_token_logged:
+                    first_token_logged = True
+                    elapsed_ms = (asyncio.get_running_loop().time() - started_at) * 1000.0
+                    logger.info(
+                        "first-token session=%s elapsed_ms=%.1f model=%s",
+                        state.session_id,
+                        elapsed_ms,
+                        settings.model,
+                    )
 
-            elif isinstance(event, FunctionCallEvent):
+                if isinstance(event, TextDeltaEvent):
+                    chunk = AgentMessageChunkPayload(
+                        message_id=message_id, delta=event.delta, done=False
+                    )
+                    await websocket.send(
+                        _new_envelope("agent-message-chunk", state.session_id, chunk)
+                    )
+                    turn_text_parts.append(event.delta)
+
+                elif isinstance(event, FunctionCallEvent):
+                    logger.info(
+                        "gemini function-call session=%s iter=%d tool=%s call_id=%s args=%r",
+                        state.session_id,
+                        iterations,
+                        event.name,
+                        event.call_id,
+                        event.args,
+                    )
+                    turn_function_calls.append(event)
+
+            # Turn ended.  If Gemini emitted no function_calls this turn, it
+            # is finished — either narrated the answer or had nothing more to
+            # do.  Break out of the loop.
+            if not turn_function_calls:
                 logger.info(
-                    "gemini function-call session=%s tool=%s call_id=%s args=%r",
+                    "gemini loop terminal session=%s iter=%d text_chunks=%d",
                     state.session_id,
-                    event.name,
-                    event.call_id,
-                    event.args,
+                    iterations,
+                    len(turn_text_parts),
                 )
+                break
+
+            # Otherwise: dispatch each call, then append the call + summarized
+            # response back into contents so the next Gemini turn sees them.
+            for call in turn_function_calls:
                 # Dispatch through the registry + emitter (Invariant 2 — the
-                # LLM's tool choice IS the classification).  The terminal
-                # agent-message-chunk + pipeline-state(complete) are emitted
-                # by the emitter; we close the outer "thinking" step here.
-                await _invoke_tool_via_emitter(
-                    websocket, state, event.name, event.args
+                # LLM's tool choice IS the classification).  ``result`` may be
+                # ``None`` (TOOL_NOT_FOUND, payload-warning skip, etc.); the
+                # summarizer encodes that as ``status: "no_result"`` which
+                # Gemini reads and reacts to.
+                dispatch_error: BaseException | None = None
+                result: Any = None
+                try:
+                    result = await _invoke_tool_via_emitter(
+                        websocket, state, call.name, call.args
+                    )
+                except asyncio.CancelledError:
+                    # Propagate cancel through the loop — handled below.
+                    raise
+                except Exception as exc:  # noqa: BLE001 — surface to Gemini
+                    logger.exception(
+                        "tool dispatch raised session=%s tool=%s err=%s",
+                        state.session_id,
+                        call.name,
+                        exc,
+                    )
+                    dispatch_error = exc
+
+                summary = summarize_tool_result(
+                    call.name, result, error=dispatch_error
+                )
+                logger.info(
+                    "function-response queued session=%s iter=%d tool=%s summary_keys=%s",
+                    state.session_id,
+                    iterations,
+                    call.name,
+                    sorted(summary.keys()),
+                )
+                contents.append(
+                    build_function_call_content(call.name, call.args, call.call_id)
+                )
+                contents.append(
+                    build_function_response_content(call.name, summary, call.call_id)
                 )
 
-        # Terminal frame for any streamed text.
+            # Loop: re-stream with the appended call + response so Gemini can
+            # decide its next move (another tool call OR a narrative wrap-up).
+        else:
+            # Loop fell through the cap.  Log + treat as terminal (no more
+            # tool calls dispatched).  This is a fail-stop for runaway Gemini
+            # loops, not a normal exit.
+            logger.warning(
+                "gemini loop hit MAX_TURN_ITERATIONS=%d session=%s — stopping",
+                MAX_TURN_ITERATIONS,
+                state.session_id,
+            )
+
+        # Terminal frame for the message stream.
         terminal = AgentMessageChunkPayload(message_id=message_id, delta="", done=True)
         await websocket.send(_new_envelope("agent-message-chunk", state.session_id, terminal))
 
-        # Complete the pipeline snapshot (LLM generation phase).
+        # Complete the outer pipeline snapshot (LLM generation phase).
         thinking_step = PipelineStep(
             step_id=step_id,
             name="llm_generation",
@@ -678,11 +767,23 @@ async def _emit_case_open(
         return
     payload = CaseOpenEnvelopePayload(session_state=session_state)
     await websocket.send(_new_envelope("case-open", state.session_id, payload))
+
+    # job-0172 Part B: seed the emitter with the persisted loaded_layers
+    # so any subsequent ``session-state`` emission (e.g. from the next
+    # tool call inside this Case) carries them rather than overwriting
+    # with an empty list. The emitter's _loaded_layers is the truth set
+    # the next ``add_loaded_layer`` dedups against; without seeding, a
+    # republish of an existing layer would be treated as a fresh append.
+    _ensure_emitter(websocket, state)
+    if state.emitter is not None:
+        state.emitter.reset_loaded_layers(session_state.loaded_layers)
+
     logger.info(
-        "case-open session=%s case=%s chat=%d",
+        "case-open session=%s case=%s chat=%d layers=%d",
         state.session_id,
         case_id,
         len(session_state.chat_history),
+        len(session_state.loaded_layers),
     )
 
 
@@ -759,6 +860,13 @@ async def _handle_case_command(
         await websocket.send(
             _new_envelope("case-open", state.session_id, payload)
         )
+        # job-0172 Part B: a fresh Case starts with NO loaded layers; flush
+        # the emitter's per-connection accumulator so a subsequent tool call
+        # in this Case doesn't accidentally inherit layers from whatever Case
+        # the user just left (replace-not-reconcile applied server-side).
+        _ensure_emitter(websocket, state)
+        if state.emitter is not None:
+            state.emitter.reset_loaded_layers([])
         await _emit_case_list(websocket, state)
         logger.info(
             "case-command create session=%s case=%s title=%r",
@@ -1311,6 +1419,23 @@ async def _invoke_tool_via_emitter(
         if isinstance(lid, str) and lid:
             state.current_turn_layer_ids.append(lid)
 
+    # job-0172 Part B: per-Case layer persistence.
+    #
+    # The PipelineEmitter holds ``_loaded_layers`` per-connection in memory;
+    # without persistence, a Case re-open (fresh WS, fresh emitter) loses
+    # everything the prior session published. Sync the current
+    # ``ProjectLayerSummary[]`` accumulator onto the Case document so the
+    # next ``case-open`` hydration replays them deterministically. Dedup is
+    # by ``uri`` (matches the emitter's own dedup policy) and the lighter
+    # ``layer_summary: list[str]`` field is kept in lockstep for the
+    # left-rail cheap summary.
+    #
+    # Best-effort: a Persistence failure is logged but never raised — chat
+    # persistence is a side-effect, not the happy path. Only fires inside an
+    # active Case context; the demo / single-tenant path stays untouched.
+    if state.active_case_id and state.emitter is not None:
+        await _persist_case_loaded_layers(state)
+
     # job-0101: Mode 2 .gov/.edu classifier — when web_fetch returns a dict
     # that looks like a structured-data candidate, emit a `mode2-candidate`
     # envelope and append an audit-log line. Deterministic side-effect; the
@@ -1318,6 +1443,70 @@ async def _invoke_tool_via_emitter(
     if tool_name == "web_fetch" and isinstance(result, dict):
         await _maybe_emit_mode2_candidate(websocket, state, result)
     return result
+
+
+async def _persist_case_loaded_layers(state: SessionState) -> None:
+    """Sync the emitter's ``_loaded_layers`` onto the active ``CaseSummary``.
+
+    job-0172 Part B: writes the current ``ProjectLayerSummary[]`` accumulator
+    into ``Case.loaded_layer_summaries`` (full dicts for rehydration) and
+    keeps ``Case.layer_summary`` (the lightweight ``layer_id[]`` projection)
+    in lockstep. Idempotent and dedup-by-uri because the emitter already
+    dedups upstream; the persisted shape mirrors the in-memory shape.
+
+    Best-effort: a Persistence failure is logged but never raised. The
+    Case lookup gates the write — if the Case was archived / deleted
+    mid-turn we silently skip (no surprise resurrection of a tombstoned
+    Case via this side-channel).
+    """
+    p = get_persistence()
+    if p is None or state.emitter is None or not state.active_case_id:
+        return
+    try:
+        case = await p.get_case(state.active_case_id)
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "case-layer-persist: get_case failed case=%s",
+            state.active_case_id,
+        )
+        return
+    if case is None:
+        logger.debug(
+            "case-layer-persist: case=%s missing; skipping",
+            state.active_case_id,
+        )
+        return
+
+    loaded = state.emitter.loaded_layers  # defensive copy from the emitter
+    summaries_dicts: list[dict] = [layer.model_dump(mode="json") for layer in loaded]
+    layer_ids: list[str] = [layer.layer_id for layer in loaded]
+
+    # If nothing has changed, skip the round-trip.
+    if (
+        case.loaded_layer_summaries == summaries_dicts
+        and case.layer_summary == layer_ids
+    ):
+        return
+
+    updated = case.model_copy(
+        update={
+            "loaded_layer_summaries": summaries_dicts,
+            "layer_summary": layer_ids,
+            "updated_at": now_utc(),
+        }
+    )
+    try:
+        await p.upsert_case(updated)
+        logger.debug(
+            "case-layer-persist case=%s layers=%d",
+            state.active_case_id,
+            len(layer_ids),
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "case-layer-persist: upsert failed case=%s",
+            state.active_case_id,
+        )
 
 
 async def _maybe_emit_mode2_candidate(
