@@ -1,0 +1,15 @@
+{
+  "scenario": "payload_warning_polished",
+  "dom_info": {
+    "element_tag": "DIV",
+    "data_variant": "warning",
+    "data_warning_id": "warn_job0150",
+    "box_shadow": "rgba(0, 0, 0, 0.35) 0px 4px 14px 0px",
+    "border_radius": "8px",
+    "background": "rgba(28, 28, 34, 0.92) none repeat scroll 0% 0% / auto padding-box border-box",
+    "inline_box_shadow": "rgba(0, 0, 0, 0.35) 0px 4px 14px",
+    "inline_border_radius": "8px",
+    "card_present": true
+  },
+  "screenshot": "payload_warning_polished.png"
+}

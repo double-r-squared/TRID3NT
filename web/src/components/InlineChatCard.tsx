@@ -103,6 +103,12 @@ export interface InlineChatCardProps {
   role?: "status" | "alert" | "region";
   /** Optional ARIA labelledby/describedby ids (consumer-managed). */
   ariaLabel?: string;
+  /**
+   * Optional extra data-* attributes spread onto the root element.
+   * Use for consumer-specific identifiers (e.g. data-warning-id) that
+   * don't belong in the shared card API.
+   */
+  extraAttrs?: Record<string, string>;
 }
 
 // --- Style helpers ------------------------------------------------------- //
@@ -173,6 +179,7 @@ export function InlineChatCard({
   testId,
   role,
   ariaLabel,
+  extraAttrs,
 }: InlineChatCardProps): JSX.Element {
   const accent = VARIANT_ACCENT[variant];
   const glyph = icon !== undefined ? icon : VARIANT_GLYPH[variant];
@@ -184,6 +191,7 @@ export function InlineChatCard({
       data-variant={variant}
       role={ariaRole}
       aria-label={ariaLabel}
+      {...extraAttrs}
       style={{
         // Semi-transparent surface over the chat background; subtle border
         // tinted by the variant accent for at-a-glance categorization.

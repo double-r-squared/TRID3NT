@@ -195,3 +195,38 @@ describe("PayloadWarningInline — Invariant 9 (no cost theater)", () => {
     expect(text).not.toMatch(/\$|USD|cost|quota|latency/i);
   });
 });
+
+describe("PayloadWarningInline — visual polish (job-0150)", () => {
+  // The card root carries data-testid="payload-warning-inline" directly on
+  // InlineChatCard (no outer wrapper). Its inline styles must include a
+  // non-trivial box-shadow and a border-radius >= 8px so Playwright
+  // getComputedStyle shows polish rather than browser defaults.
+
+  it("root element has a non-empty box-shadow inline style", () => {
+    render(<PayloadWarningInline warning={makeWarning()} onDecide={vi.fn()} />);
+    const card = screen.getByTestId("payload-warning-inline");
+    // happy-dom reflects inline style properties through getComputedStyle.
+    const cs = window.getComputedStyle(card);
+    expect(cs.boxShadow).toBeTruthy();
+    expect(cs.boxShadow).not.toBe("none");
+  });
+
+  it("root element has border-radius >= 8px inline style", () => {
+    render(<PayloadWarningInline warning={makeWarning()} onDecide={vi.fn()} />);
+    const card = screen.getByTestId("payload-warning-inline");
+    // Read the inline style directly — more reliable than getComputedStyle
+    // for pixel-value assertions in happy-dom.
+    const el = card as HTMLElement;
+    const rawRadius = el.style.borderRadius;
+    // Parse the leading numeric value — may be "8px", "12px", etc.
+    const px = parseFloat(rawRadius);
+    expect(px).toBeGreaterThanOrEqual(8);
+  });
+
+  it("carries data-warning-id attribute with the correct warning_id", () => {
+    const w = makeWarning({ warning_id: "test-warn-0150" });
+    render(<PayloadWarningInline warning={w} onDecide={vi.fn()} />);
+    const card = screen.getByTestId("payload-warning-inline");
+    expect(card.getAttribute("data-warning-id")).toBe("test-warn-0150");
+  });
+});

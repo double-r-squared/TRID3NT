@@ -251,30 +251,26 @@ export function PayloadWarningInline({
   );
 
   return (
-    <div
-      data-testid="payload-warning-inline"
-      data-warning-id={warning.warning_id}
-    >
-      <InlineChatCard
-        variant={overHardCap ? "danger" : "warning"}
-        title={
-          overHardCap
-            ? "Response too large — cannot proceed"
-            : "Large response expected"
-        }
-        body={body}
-        actions={showClarifier ? [] : actions}
-        testId="payload-warning-card"
-        ariaLabel="Large payload warning"
-        footer={
-          sent !== null ? (
-            <span data-testid="payload-warning-sent">
-              Sent: <strong>{sent}</strong>
-            </span>
-          ) : undefined
-        }
-      />
-    </div>
+    <InlineChatCard
+      variant={overHardCap ? "danger" : "warning"}
+      title={
+        overHardCap
+          ? "Response too large — cannot proceed"
+          : "Large response expected"
+      }
+      body={body}
+      actions={showClarifier ? [] : actions}
+      testId="payload-warning-inline"
+      ariaLabel="Large payload warning"
+      extraAttrs={{ "data-warning-id": warning.warning_id }}
+      footer={
+        sent !== null ? (
+          <span data-testid="payload-warning-sent">
+            Sent: <strong>{sent}</strong>
+          </span>
+        ) : undefined
+      }
+    />
   );
 }
 
