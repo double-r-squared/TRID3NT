@@ -39,3 +39,23 @@ Live:
 
 ## FROZEN
 Single commit prefix `job-0172:`.
+
+### Part C — Sticky anonymous user_id (CRITICAL — user-flagged 2026-06-08)
+
+User observation: "I suspect some of our persistence errors could possibly be coming from auth."
+
+Confirmed in agent log: every WS reconnect creates a NEW anonymous `user_id` even for the same browser session. Cases keyed by user_id get orphaned across page refreshes / reconnects:
+
+```
+auth-ack(implicit-anonymous) session=01KTMT0QH7Q3Z5X3QTC7XRTEXA user_id=01KTNEBP8ZYYND6QPJP2379FWW
+auth-ack(implicit-anonymous) session=01KTMT0QH7Q3Z5X3QTC7XRTEXA user_id=01KTNEBPP8MF821816R4ANMDG9  ← DIFFERENT
+```
+
+Same browser, same session, different user_ids. That's the persistence bug source.
+
+**Fix:**
+- Client-side: store an `anonymous_user_id` in localStorage on first connect (or accept fallback). On every reconnect, send it as a hint via `auth-token` envelope or query param so the server can re-bind to the same user record.
+- Server-side: when no Firebase ID token AND incoming `anonymous_user_id` exists in Persistence + has `is_anonymous=True`, reuse it. Else create new.
+- Migration: existing in-progress sessions that have already created multiple anonymous users — leave alone; only fix forward.
+
+Acceptance: open the app, create a Case, hard-refresh — the SAME user_id is re-bound and the Case is still visible.
