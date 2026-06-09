@@ -1,0 +1,149 @@
+{
+  "ss1": {
+    "gate_present": true,
+    "wordmark_text": "GRACE-2",
+    "google_btn_present": true,
+    "anonymous_btn_present": true,
+    "app_shell_not_visible": true,
+    "page_errors": []
+  },
+  "ss2": {
+    "app_shell_present": true,
+    "cases_empty_state": true,
+    "cases_new_button": true,
+    "connection_status": "connected",
+    "page_errors": []
+  },
+  "ss3": {
+    "active_case_id": "01KTN4TKSG7K71AZESZ4CBWF2H",
+    "case_view_present": true,
+    "case_view_title": "Untitled Case",
+    "left_rail_mode": "case-view",
+    "ws_case_frame_count": 4,
+    "ws_case_frames_sample": [
+      {
+        "url": "ws://localhost:8765/",
+        "payload": "{\"type\":\"case-list\",\"id\":\"01KTN4TG6Z6DCNQHDWTPJ7KVQM\",\"ts\":\"2026-06-09T02:54:10.143223Z\",\"session_id\":\"01KTN4TFR68X48ETA42EGSM4D1\",\"payload\":{\"envelope_type\":\"case-list\",\"cases\":[]}}"
+      },
+      {
+        "url": "ws://localhost:8765/",
+        "payload": "{\"type\":\"case-list\",\"id\":\"01KTN4TG76WB8T4MQX8Y61AMY3\",\"ts\":\"2026-06-09T02:54:10.150879Z\",\"session_id\":\"01KTN4TFR68X48ETA42EGSM4D1\",\"payload\":{\"envelope_type\":\"case-list\",\"cases\":[]}}"
+      },
+      {
+        "url": "ws://localhost:8765/",
+        "payload": "{\"type\":\"case-open\",\"id\":\"01KTN4TKSNMC2BYZYEG9D7MSDF\",\"ts\":\"2026-06-09T02:54:13.813363Z\",\"session_id\":\"01KTN4TFR68X48ETA42EGSM4D1\",\"payload\":{\"envelope_type\":\"case-open\",\"session_state\":{\"schema_versi"
+      },
+      {
+        "url": "ws://localhost:8765/",
+        "payload": "{\"type\":\"case-list\",\"id\":\"01KTN4TKSPBFG66EFEE9JFS95G\",\"ts\":\"2026-06-09T02:54:13.814614Z\",\"session_id\":\"01KTN4TFR68X48ETA42EGSM4D1\",\"payload\":{\"envelope_type\":\"case-list\",\"cases\":[{\"schema_version\":\"v1"
+      }
+    ],
+    "page_errors": []
+  },
+  "ss4": {
+    "before_center": {
+      "lng": -95.5,
+      "lat": 37,
+      "zoom": 4
+    },
+    "after_center": null,
+    "zoom_settled_after_ms": null,
+    "ws_map_or_session_frames_seen": 2,
+    "ws_frames_sample": [
+      {
+        "url": "ws://localhost:8765/",
+        "preview": "{\"type\":\"session-state\",\"id\":\"01KTN4V5WXY174FGHNW29S783X\",\"ts\":\"2026-06-09T02:54:32.349962Z\",\"session_id\":\"01KTN4V5TVQ05QJ30WH0KD5PR4\",\"payload\":{\"chat_history\":[],\"loaded_layers\":[],\"pipeline_history\":[],\"current_pipeline\":null,\"map_view\":null,\"status\":\"active\"}}"
+      },
+      {
+        "url": "ws://localhost:8765/",
+        "preview": "{\"type\":\"session-state\",\"id\":\"01KTN4V614HJP6E979Q0XQW8AY\",\"ts\":\"2026-06-09T02:54:32.484203Z\",\"session_id\":\"01KTN4V5TVQ05QJ30WH0KD5PR4\",\"payload\":{\"chat_history\":[],\"loaded_layers\":[],\"pipeline_history\":[],\"current_pipeline\":null,\"map_view\":null,\"status\":\"active\"}}"
+      }
+    ],
+    "page_errors": []
+  },
+  "ss5": {
+    "stack_found": true,
+    "card_count": 4,
+    "indicator_count": 2,
+    "names": [
+      "geocode_location",
+      "fetch_dem",
+      "lookup_precip_return_period",
+      "run_model_flood_scenario"
+    ],
+    "cardStates": [
+      {
+        "name": "geocode_location",
+        "cardBg": "rgba(40, 200, 100, 0.18)",
+        "cardOpacity": "1",
+        "hasIndicator": false,
+        "nameBackgroundImage": "none",
+        "nameBackgroundClip": "border-box"
+      },
+      {
+        "name": "fetch_dem",
+        "cardBg": "rgba(255, 255, 255, 0.08)",
+        "cardOpacity": "1",
+        "hasIndicator": true,
+        "nameBackgroundImage": "linear-gradient(90deg, rgb(255, 107, 107), rgb(255, 217, 61), rgb(107, 203, 119), rgb(77, 150, 255), rgb(178, 102, 255), rgb(255, 107, 107))",
+        "nameBackgroundClip": "text"
+      },
+      {
+        "name": "lookup_precip_return_period",
+        "cardBg": "rgba(255, 255, 255, 0.08)",
+        "cardOpacity": "1",
+        "hasIndicator": true,
+        "nameBackgroundImage": "linear-gradient(90deg, rgb(255, 107, 107), rgb(255, 217, 61), rgb(107, 203, 119), rgb(77, 150, 255), rgb(178, 102, 255), rgb(255, 107, 107))",
+        "nameBackgroundClip": "text"
+      },
+      {
+        "name": "run_model_flood_scenario",
+        "cardBg": "rgba(255, 255, 255, 0.04)",
+        "cardOpacity": "1",
+        "hasIndicator": false,
+        "nameBackgroundImage": "none",
+        "nameBackgroundClip": "border-box"
+      }
+    ],
+    "page_errors": []
+  },
+  "ss6": {
+    "map_layer_registered": true,
+    "map_layer_type": "fill",
+    "map_center": {
+      "lng": -81.89999999999998,
+      "lat": 26.625068355507864
+    },
+    "map_zoom": 11.009611692200556,
+    "layer_panel_present": false,
+    "page_errors": []
+  },
+  "ss7": {
+    "before_collapse": {
+      "chat_visible": true,
+      "scroll_present": true,
+      "user_bubble_count": 1,
+      "bubble_texts": [
+        "Test message that must survive a collapse cycle."
+      ],
+      "close_btn_glyph": "›"
+    },
+    "after_collapse": {
+      "chat_still_mounted_hidden": true,
+      "user_bubble_count_in_dom": 1,
+      "bubble_texts": [
+        "Test message that must survive a collapse cycle."
+      ],
+      "hamburger_visible": true
+    },
+    "after_reexpand": {
+      "chat_present": true,
+      "visible_parent": true,
+      "user_bubble_count": 1,
+      "bubble_texts": [
+        "Test message that must survive a collapse cycle."
+      ]
+    },
+    "page_errors": []
+  }
+}

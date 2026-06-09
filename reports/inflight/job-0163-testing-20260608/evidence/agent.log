@@ -1,0 +1,108 @@
+2026-06-08 19:53:27,733 INFO grace2_agent.main tool registry loaded: 57 tool(s): ['aggregate_claims_across_sources', 'catalog_fetch', 'catalog_search', 'clip_raster_to_bbox', 'clip_raster_to_polygon', 'clip_vector_to_polygon', 'compute_aspect', 'compute_building_density', 'compute_colored_relief', 'compute_hillshade', 'compute_impervious_surface', 'compute_slope', 'compute_zonal_statistics', 'describe_qgis_algorithm', 'extract_landcover_class', 'fetch_administrative_boundaries', 'fetch_buildings', 'fetch_cama_flood_discharge', 'fetch_dem', 'fetch_ebird_observations', 'fetch_era5_reanalysis', 'fetch_firms_active_fire', 'fetch_gbif_occurrences', 'fetch_gcn250_curve_numbers', 'fetch_goes_satellite', 'fetch_gtsm_tide_surge', 'fetch_hrsl_population', 'fetch_inaturalist_observations', 'fetch_iucn_red_list_range', 'fetch_landcover', 'fetch_landfire_fuels', 'fetch_movebank_tracks', 'fetch_mrms_qpe', 'fetch_mtbs_burn_severity', 'fetch_nexrad_reflectivity', 'fetch_nifc_fire_perimeters', 'fetch_nws_alerts_conus', 'fetch_nws_event', 'fetch_population', 'fetch_river_geometry', 'fetch_roads_osm', 'fetch_storm_events_db', 'fetch_wdpa_protected_areas', 'geocode_location', 'list_qgis_algorithms', 'lookup_precip_return_period', 'mongo_query', 'publish_layer', 'qgis_process', 'run_model_flood_habitat_scenario', 'run_model_flood_scenario', 'run_model_news_event_ingest', 'run_pelicun_damage_assessment', 'run_pelicun_with_buildings', 'run_solver', 'wait_for_completion', 'web_fetch']
+2026-06-08 19:53:28,311 INFO grace2_agent.main dev Persistence bound at /home/nate/.grace2/dev_persistence (file-backed; set GRACE2_DEV_PERSISTENCE=0 to disable or GRACE2_MONGO_MCP_STDIO=1 for live MCP)
+2026-06-08 19:53:28,315 INFO grace2_agent.auth_handshake firebase_admin initialized via ADC
+2026-06-08 19:53:28,315 INFO grace2_agent.main firebase_admin init: ready=True (anonymous-fallback path always available)
+2026-06-08 19:53:28,316 INFO grace2_agent.server starting agent server host=127.0.0.1 port=8765 model=gemini-2.5-pro project=grace-2-hazard-prod location=us-central1
+2026-06-08 19:53:28,316 INFO grace2_agent.server MCP not provisioned (set GRACE2_MONGO_MCP_STDIO=1 to enable); pre-bound Persistence singleton retained
+2026-06-08 19:53:28,316 INFO websockets.server server listening on 127.0.0.1:8765
+2026-06-08 19:53:28,324 INFO websockets.server connection open
+2026-06-08 19:53:28,330 INFO grace2_agent.server auth-ack(implicit-anonymous) session=01KTMT0QH7Q3Z5X3QTC7XRTEXA user_id=01KTN4S7C5ZQJDSW8DS5FEKJGC
+2026-06-08 19:53:28,331 INFO grace2_agent.server case-list emitted session=01KTMT0QH7Q3Z5X3QTC7XRTEXA count=1
+2026-06-08 19:53:29,154 INFO websockets.server connection open
+2026-06-08 19:53:29,163 INFO grace2_agent.server auth-ack(implicit-anonymous) session=01KTMT0QH7Q3Z5X3QTC7XRTEXA user_id=01KTN4S8653VS79625F157GEVX
+2026-06-08 19:53:29,165 INFO grace2_agent.server case-list emitted session=01KTMT0QH7Q3Z5X3QTC7XRTEXA count=1
+2026-06-08 19:54:03,920 INFO websockets.server connection open
+2026-06-08 19:54:03,931 INFO websockets.server connection open
+2026-06-08 19:54:03,937 INFO grace2_agent.server auth-ack(implicit-anonymous) session=01KTN4TA4FA78GM7CDXCCF03J4 user_id=01KTN4TA4XQHHHSJWT3NCMJKXQ
+2026-06-08 19:54:03,938 INFO grace2_agent.server case-list emitted session=01KTN4TA4FA78GM7CDXCCF03J4 count=0
+2026-06-08 19:54:05,785 INFO websockets.server connection open
+2026-06-08 19:54:05,796 INFO websockets.server connection open
+2026-06-08 19:54:05,863 INFO websockets.server connection open
+2026-06-08 19:54:05,877 INFO websockets.server connection open
+2026-06-08 19:54:06,267 INFO grace2_agent.server auth-ack(implicit-anonymous) session=01KTN4TBYR54DNYP8DA02ECPKN user_id=01KTN4TCCHMESRF6MYNKY85KA1
+2026-06-08 19:54:06,274 INFO grace2_agent.server case-list emitted session=01KTN4TBYR54DNYP8DA02ECPKN count=0
+2026-06-08 19:54:06,309 INFO grace2_agent.server auth-ack(implicit-anonymous) session=01KTN4TBYR54DNYP8DA02ECPKN user_id=01KTN4TCE5Z6C6XC0NTRFJHPDN
+2026-06-08 19:54:06,311 INFO grace2_agent.server case-list emitted session=01KTN4TBYR54DNYP8DA02ECPKN count=0
+2026-06-08 19:54:09,672 INFO websockets.server connection open
+2026-06-08 19:54:09,684 INFO websockets.server connection open
+2026-06-08 19:54:09,731 INFO websockets.server connection open
+2026-06-08 19:54:09,772 INFO websockets.server connection open
+2026-06-08 19:54:10,142 INFO grace2_agent.server auth-ack(implicit-anonymous) session=01KTN4TFR68X48ETA42EGSM4D1 user_id=01KTN4TG6N7ZTBZJ893MXHBDS8
+2026-06-08 19:54:10,143 INFO grace2_agent.server case-list emitted session=01KTN4TFR68X48ETA42EGSM4D1 count=0
+2026-06-08 19:54:10,149 INFO grace2_agent.server auth-ack(implicit-anonymous) session=01KTN4TFR68X48ETA42EGSM4D1 user_id=01KTN4TG70JXY3Y8C5ZSQPEX5P
+2026-06-08 19:54:10,151 INFO grace2_agent.server case-list emitted session=01KTN4TFR68X48ETA42EGSM4D1 count=0
+2026-06-08 19:54:13,815 INFO grace2_agent.server case-list emitted session=01KTN4TFR68X48ETA42EGSM4D1 count=1
+2026-06-08 19:54:13,815 INFO grace2_agent.server case-command create session=01KTN4TFR68X48ETA42EGSM4D1 case=01KTN4TKSG7K71AZESZ4CBWF2H title='Untitled Case'
+2026-06-08 19:54:32,285 INFO websockets.server connection open
+2026-06-08 19:54:32,295 INFO websockets.server connection open
+2026-06-08 19:54:32,314 INFO websockets.server connection open
+2026-06-08 19:54:32,325 INFO websockets.server connection open
+2026-06-08 19:54:32,349 INFO grace2_agent.server auth-ack(implicit-anonymous) session=01KTN4V5TVQ05QJ30WH0KD5PR4 user_id=01KTN4V5WRASJYP3EGHQ25XA4D
+2026-06-08 19:54:32,350 INFO grace2_agent.server case-list emitted session=01KTN4V5TVQ05QJ30WH0KD5PR4 count=1
+2026-06-08 19:54:32,483 INFO grace2_agent.server auth-ack(implicit-anonymous) session=01KTN4V5TVQ05QJ30WH0KD5PR4 user_id=01KTN4V60W31RV3MEHN8D2A2C3
+2026-06-08 19:54:32,486 INFO grace2_agent.server case-list emitted session=01KTN4V5TVQ05QJ30WH0KD5PR4 count=1
+2026-06-08 19:54:35,920 INFO grace2_agent.server case-open session=01KTN4V5TVQ05QJ30WH0KD5PR4 case=01KTN4TKSG7K71AZESZ4CBWF2H chat=0
+2026-06-08 19:54:37,557 INFO grace2_agent.server user-message session=01KTN4V5TVQ05QJ30WH0KD5PR4 research_mode=research text='Model peak flood depth from a 100-year design storm in Fort Myers, FL'
+2026-06-08 19:54:37,778 INFO google_genai.types 
+Note: Conversion of fields that are not included in the JSONSchema class are ignored.
+Json Schema is now supported natively by both Gemini Enterprise Agent Platform and Gemini API. Users
+are recommended to pass/receive Json Schema directly to/from the API. For example:
+1. the counter part of GenerateContentConfig.response_schema is
+   GenerateContentConfig.response_json_schema, which accepts [JSON
+  Schema](https://json-schema.org/)
+2. the counter part of FunctionDeclaration.parameters is
+   FunctionDeclaration.parameters_json_schema, which accepts [JSON
+   Schema](https://json-schema.org/)
+3. the counter part of FunctionDeclaration.response is
+   FunctionDeclaration.response_json_schema, which accepts [JSON
+   Schema](https://json-schema.org/)
+
+2026-06-08 19:54:37,879 WARNING google.auth._default No project ID could be determined. Consider running `gcloud config set project` or setting the GOOGLE_CLOUD_PROJECT environment variable
+2026-06-08 19:54:43,859 INFO httpx HTTP Request: POST https://us-central1-aiplatform.googleapis.com/v1beta1/projects/grace-2-hazard-prod/locations/us-central1/publishers/google/models/gemini-2.5-pro:streamGenerateContent?alt=sse "HTTP/1.1 200 OK"
+2026-06-08 19:54:43,881 INFO grace2_agent.server first-token session=01KTN4V5TVQ05QJ30WH0KD5PR4 elapsed_ms=6107.9 model=gemini-2.5-pro
+2026-06-08 19:54:43,881 INFO grace2_agent.server gemini function-call session=01KTN4V5TVQ05QJ30WH0KD5PR4 tool=run_model_flood_scenario call_id=None args={'location_query': 'Fort Myers, FL', 'rainfall_event': 'atlas14_100yr'}
+2026-06-08 19:54:43,884 ERROR grace2_agent.server gemini stream failed: run_model_flood_scenario() got an unexpected keyword argument 'rainfall_event'
+Traceback (most recent call last):
+  File "/home/nate/Documents/GRACE-2/services/agent/src/grace2_agent/server.py", line 444, in _stream_gemini_reply
+    await _invoke_tool_via_emitter(
+        websocket, state, event.name, event.args
+    )
+  File "/home/nate/Documents/GRACE-2/services/agent/src/grace2_agent/server.py", line 1285, in _invoke_tool_via_emitter
+    result = await state.emitter.emit_tool_call(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<3 lines>...
+    )
+    ^
+  File "/home/nate/Documents/GRACE-2/services/agent/src/grace2_agent/pipeline_emitter.py", line 564, in emit_tool_call
+    result = invoke()
+  File "/home/nate/Documents/GRACE-2/services/agent/src/grace2_agent/server.py", line 1288, in <lambda>
+    invoke=lambda: entry.fn(**params),
+                   ~~~~~~~~^^^^^^^^^^
+TypeError: run_model_flood_scenario() got an unexpected keyword argument 'rainfall_event'
+2026-06-08 19:55:08,842 INFO websockets.server connection open
+2026-06-08 19:55:08,854 INFO websockets.server connection open
+2026-06-08 19:55:08,869 INFO websockets.server connection open
+2026-06-08 19:55:08,880 INFO websockets.server connection open
+2026-06-08 19:55:08,906 INFO grace2_agent.server auth-ack(implicit-anonymous) session=01KTN4W9H9D8W3RW9YFTZZ4WNT user_id=01KTN4W9K025ZMTN0YXCXY9SBW
+2026-06-08 19:55:08,906 INFO grace2_agent.server case-list emitted session=01KTN4W9H9D8W3RW9YFTZZ4WNT count=1
+2026-06-08 19:55:09,025 INFO grace2_agent.server auth-ack(implicit-anonymous) session=01KTN4W9H9D8W3RW9YFTZZ4WNT user_id=01KTN4W9PS5G6V1D6Y3VHWX2HD
+2026-06-08 19:55:09,027 INFO grace2_agent.server case-list emitted session=01KTN4W9H9D8W3RW9YFTZZ4WNT count=1
+2026-06-08 19:55:13,466 INFO websockets.server connection open
+2026-06-08 19:55:13,476 INFO websockets.server connection open
+2026-06-08 19:55:13,492 INFO websockets.server connection open
+2026-06-08 19:55:13,503 INFO websockets.server connection open
+2026-06-08 19:55:13,578 INFO grace2_agent.server auth-ack(implicit-anonymous) session=01KTN4WE1RHR4YCWJ6S7PBK63S user_id=01KTN4WE56BN6X371SCDX0YXEE
+2026-06-08 19:55:13,579 INFO grace2_agent.server case-list emitted session=01KTN4WE1RHR4YCWJ6S7PBK63S count=1
+2026-06-08 19:55:13,582 INFO grace2_agent.server auth-ack(implicit-anonymous) session=01KTN4WE1RHR4YCWJ6S7PBK63S user_id=01KTN4WE5B5HEQF1B067AGZBW4
+2026-06-08 19:55:13,583 INFO grace2_agent.server case-list emitted session=01KTN4WE1RHR4YCWJ6S7PBK63S count=1
+2026-06-08 19:55:23,222 INFO websockets.server connection open
+2026-06-08 19:55:23,233 INFO websockets.server connection open
+2026-06-08 19:55:23,248 INFO websockets.server connection open
+2026-06-08 19:55:23,258 INFO websockets.server connection open
+2026-06-08 19:55:23,284 INFO grace2_agent.server auth-ack(implicit-anonymous) session=01KTN4WQJNG07QS5DR2TFJNRB4 user_id=01KTN4WQMGRJ82BAP35RT6403M
+2026-06-08 19:55:23,284 INFO grace2_agent.server case-list emitted session=01KTN4WQJNG07QS5DR2TFJNRB4 count=1
+2026-06-08 19:55:23,394 INFO grace2_agent.server auth-ack(implicit-anonymous) session=01KTN4WQJNG07QS5DR2TFJNRB4 user_id=01KTN4WQQVD8K4Y3MQHN4T8QDP
+2026-06-08 19:55:23,396 INFO grace2_agent.server case-list emitted session=01KTN4WQJNG07QS5DR2TFJNRB4 count=1
+2026-06-08 19:55:26,322 INFO grace2_agent.server case-open session=01KTN4WQJNG07QS5DR2TFJNRB4 case=01KTN4TKSG7K71AZESZ4CBWF2H chat=0
+2026-06-08 19:55:27,924 INFO grace2_agent.server user-message session=01KTN4WQJNG07QS5DR2TFJNRB4 research_mode=research text='Test message that must survive a collapse cycle.'
+2026-06-08 19:55:32,176 INFO httpx HTTP Request: POST https://us-central1-aiplatform.googleapis.com/v1beta1/projects/grace-2-hazard-prod/locations/us-central1/publishers/google/models/gemini-2.5-pro:streamGenerateContent?alt=sse "HTTP/1.1 200 OK"

@@ -107,6 +107,46 @@ Key behaviors:
 # Tool declaration builder (job-0154)
 # ---------------------------------------------------------------------------
 
+def _strip_private_params(decl: genai_types.FunctionDeclaration) -> genai_types.FunctionDeclaration:
+    """Remove underscore-prefixed parameters from a generated FunctionDeclaration.
+
+    job-0163 finding: 16+ atomic tools (``compute_zonal_statistics``,
+    ``compute_impervious_surface``, ``extract_landcover_class``,
+    ``clip_raster_to_*``, ``compute_hillshade``/``slope``/``aspect``, etc.)
+    accept underscore-prefixed test-injection kwargs such as
+    ``_storage_client: object | None = None`` and ``_bucket: str | None = None``.
+    These are Python's standard "internal/private" naming convention and exist
+    only so unit tests can pass a mock GCS client — they must NEVER be visible
+    to the LLM.
+
+    ``FunctionDeclaration.from_callable_with_api_option`` includes them in the
+    generated schema; ``_storage_client: object | None`` becomes a Schema with
+    only ``nullable=True`` (no ``type`` field), which Vertex Gemini rejects
+    with ``400 INVALID_ARGUMENT: schema didn't specify the schema type field``,
+    blocking the ENTIRE tool catalog — Gemini cannot dispatch any tool. This
+    function surgically removes every underscore-prefixed property from the
+    schema (and from ``required``) before the declaration is returned.
+
+    Bug-class fix (per AGENTS.md "Bundle small fixes; scan for all instances"):
+    the filter is keyed on the underscore prefix, so any future tool with a
+    test-injection kwarg automatically gets the same treatment.
+    """
+    if decl.parameters is None or decl.parameters.properties is None:
+        return decl
+    cleaned_props = {
+        n: s for n, s in decl.parameters.properties.items() if not n.startswith("_")
+    }
+    cleaned_required = (
+        [r for r in (decl.parameters.required or []) if not r.startswith("_")]
+        if decl.parameters.required is not None
+        else decl.parameters.required
+    )
+    new_parameters = decl.parameters.model_copy(
+        update={"properties": cleaned_props, "required": cleaned_required}
+    )
+    return decl.model_copy(update={"parameters": new_parameters})
+
+
 def build_tool_declarations(
     tool_registry: dict[str, Any],
 ) -> list[genai_types.FunctionDeclaration]:
@@ -126,6 +166,10 @@ def build_tool_declarations(
     a machine-readable parameter schema.  Gemini can infer arg names from the
     "Params:" section and the calling context.
 
+    Every generated declaration is post-processed through
+    ``_strip_private_params`` to remove underscore-prefixed kwargs (job-0163;
+    see that helper's docstring for the Vertex 400 trace).
+
     OQ-0154-DECL-FALLBACK: Many tools with complex type annotations fall back
     here.  A follow-up job should add a ``@simple_schema`` decorator or a
     hand-authored ``schema: dict`` class attribute on the tool functions so
@@ -139,7 +183,7 @@ def build_tool_declarations(
                 callable=entry.fn,
                 api_option="VERTEX_AI",
             )
-            declarations.append(decl)
+            declarations.append(_strip_private_params(decl))
         except Exception as exc:  # noqa: BLE001 — fallback gracefully
             logger.debug(
                 "tool declaration fallback for %r (complex signature): %s", name, exc
