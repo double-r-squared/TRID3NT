@@ -945,6 +945,41 @@
       "description": "Sprint-12-mega Wave 4.6: Wave 4.6 Playwright verify \u2014 7 screenshots confirming full Fort Myers demo flow works end-to-end",
       "model": "opus",
       "subagent_tokens": 65000
+    },
+    {
+      "job_id": "job-0164-engine-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 4.7: Harness sweep \u2014 tool_arg_normalizer.py + **_extra_ignored on all 53 @register_tool functions + sanitized docstrings; 28+4 tests + 1104/0 suite",
+      "model": "opus",
+      "subagent_tokens": 280000
+    },
+    {
+      "job_id": "job-0165-engine-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 4.7: SRS Appendix I \u2014 LLM tool harness conventions + Decision F (v0.3.22)",
+      "model": "opus",
+      "subagent_tokens": 240000
+    },
+    {
+      "job_id": "job-0166-web-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 4.7: UX cleanup bundle (5 parts) \u2014 pipeline failure terminates animation + font consistency + single transitioning card + delete-removes-case + case-name-required",
+      "model": "opus",
+      "subagent_tokens": 270000
+    },
+    {
+      "job_id": "job-0167-web-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 4.7: Wave 4.7 Playwright verify \u2014 5 screenshots confirming end-to-end demo flow",
+      "model": "opus",
+      "subagent_tokens": 100000
+    },
+    {
+      "job_id": "job-0168-testing-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 4.7: Cross-cutting Gemini-kwargs fuzz harness \u2014 regression guard for the sweep",
+      "model": "sonnet",
+      "subagent_tokens": 95000
     }
   ],
   "totals_by_sprint": {
@@ -954,7 +989,7 @@
     "9": 713020,
     "10": 1540974,
     "11": 999540,
-    "12": 13642953
+    "12": 14627953
   },
   "historical_context": {
     "note": "Captured for accountability \u2014 NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
