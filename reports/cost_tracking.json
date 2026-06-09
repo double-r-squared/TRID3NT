@@ -910,6 +910,41 @@
       "description": "Sprint-12-mega Wave 4.5 (Stage B verify): Wave 4.5 Playwright re-verify \u2014 7/7 pass; all 7 verification screenshots produced",
       "model": "sonnet",
       "subagent_tokens": 95000
+    },
+    {
+      "job_id": "job-0159-engine-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 4.6: Layer emission fix \u2014 dual-WebSocket diagnostic; SESSION_HUB fan-out in web/src/ws.ts; 325/325 web tests",
+      "model": "opus",
+      "subagent_tokens": 220000
+    },
+    {
+      "job_id": "job-0160-engine-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 4.6: Auto-zoom fix (LayerURI was missing bbox) + zoom-on-area-first via ContextVar emitter \u2014 fires zoom-to immediately after _resolve_bbox",
+      "model": "opus",
+      "subagent_tokens": 230000
+    },
+    {
+      "job_id": "job-0161-engine-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 4.6: Cases FilePersistence dev fallback \u2014 JSON files in ~/.grace2/dev_persistence/",
+      "model": "opus",
+      "subagent_tokens": 220000
+    },
+    {
+      "job_id": "job-0162-engine-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 4.6: Web UI bundle \u2014 collapse preserves chat + chevron icon + single transitioning pipeline card + visual states per memory spec",
+      "model": "opus",
+      "subagent_tokens": 240000
+    },
+    {
+      "job_id": "job-0163-testing-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 4.6: Wave 4.6 Playwright verify \u2014 7 screenshots confirming full Fort Myers demo flow works end-to-end",
+      "model": "opus",
+      "subagent_tokens": 65000
     }
   ],
   "totals_by_sprint": {
@@ -919,7 +954,7 @@
     "9": 713020,
     "10": 1540974,
     "11": 999540,
-    "12": 12667953
+    "12": 13642953
   },
   "historical_context": {
     "note": "Captured for accountability \u2014 NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
