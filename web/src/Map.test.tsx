@@ -981,3 +981,125 @@ describe("addVectorLayer — race guards", () => {
     warnSpy.mockRestore();
   });
 });
+
+// --- inline GeoJSON path (job-0175) ------------------------------------ //
+
+describe("addVectorLayer — inline GeoJSON (job-0175)", () => {
+  function makeMockMap() {
+    return {
+      addSource: vi.fn(),
+      addLayer: vi.fn(),
+      isStyleLoaded: vi.fn().mockReturnValue(true),
+    } as unknown as Parameters<typeof addVectorLayer>[0];
+  }
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("renders from inline_geojson without calling fetch (gs:// uri bypassed)", async () => {
+    const fc = {
+      type: "FeatureCollection",
+      features: [
+        {
+          type: "Feature",
+          geometry: {
+            type: "Polygon",
+            coordinates: [[[-100, 30], [-99, 30], [-99, 31], [-100, 31], [-100, 30]]],
+          },
+          properties: { event: "Flood Warning" },
+        },
+      ],
+    };
+    const fetchSpy = vi.spyOn(global, "fetch").mockResolvedValue(makeFetchResponse({}));
+
+    const m = makeMockMap();
+    const fetchGen = { current: new Map<string, number>([["nws-conus-all", 1]]) };
+    const geomKinds = { current: new Map() };
+    const addedIds = { current: new Set<string>(["nws-conus-all"]) };
+
+    await addVectorLayer(
+      m,
+      {
+        layer_id: "nws-conus-all",
+        uri: "gs://grace-2-hazard-prod-cache/cache/dynamic-1h/nws_alerts_conus/abc.fgb",
+        style_preset: "nws_alerts",
+        inline_geojson: fc,
+      },
+      1,
+      fetchGen,
+      geomKinds,
+      addedIds,
+    );
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    const addSource = (m as unknown as { addSource: ReturnType<typeof vi.fn> }).addSource;
+    expect(addSource).toHaveBeenCalled();
+    const sourceArgs = addSource.mock.calls[0]!;
+    expect(sourceArgs[0]).toBe("nws-conus-all");
+    const sourceDef = sourceArgs[1] as { type: string; data: { type: string } };
+    expect(sourceDef.type).toBe("geojson");
+    expect(sourceDef.data.type).toBe("FeatureCollection");
+    const addLayer = (m as unknown as { addLayer: ReturnType<typeof vi.fn> }).addLayer;
+    expect(addLayer).toHaveBeenCalled();
+    const layerDef = addLayer.mock.calls.find((c) => ((c as MockCallArgs)[0] as { id: string }).id === "nws-conus-all")?.[0] as { type: string };
+    expect(layerDef.type).toBe("fill");
+  });
+
+  it("falls back to URI fetch when inline_geojson is absent", async () => {
+    const fc = {
+      type: "FeatureCollection",
+      features: [
+        { type: "Feature", geometry: { type: "Point", coordinates: [-81, 26] }, properties: {} },
+      ],
+    };
+    const fetchSpy = vi.spyOn(global, "fetch").mockResolvedValue(makeFetchResponse(fc));
+
+    const m = makeMockMap();
+    const fetchGen = { current: new Map<string, number>([["lyr-https", 1]]) };
+    const geomKinds = { current: new Map() };
+    const addedIds = { current: new Set<string>(["lyr-https"]) };
+
+    await addVectorLayer(
+      m,
+      { layer_id: "lyr-https", uri: "https://example.com/data.geojson" },
+      1,
+      fetchGen,
+      geomKinds,
+      addedIds,
+    );
+
+    expect(fetchSpy).toHaveBeenCalledWith("https://example.com/data.geojson");
+    const addSource = (m as unknown as { addSource: ReturnType<typeof vi.fn> }).addSource;
+    expect(addSource).toHaveBeenCalled();
+  });
+
+  it("logs + releases slot when inline_geojson is malformed", async () => {
+    const fetchSpy = vi.spyOn(global, "fetch").mockResolvedValue(makeFetchResponse({}));
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const m = makeMockMap();
+    const fetchGen = { current: new Map<string, number>([["bad-inline", 1]]) };
+    const geomKinds = { current: new Map() };
+    const addedIds = { current: new Set<string>(["bad-inline"]) };
+
+    await addVectorLayer(
+      m,
+      {
+        layer_id: "bad-inline",
+        uri: "gs://bucket/key.fgb",
+        inline_geojson: { not_a: "feature_collection" },
+      },
+      1,
+      fetchGen,
+      geomKinds,
+      addedIds,
+    );
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect((m as unknown as { addSource: ReturnType<typeof vi.fn> }).addSource).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalled();
+    expect(addedIds.current.has("bad-inline")).toBe(false);
+    warnSpy.mockRestore();
+  });
+});

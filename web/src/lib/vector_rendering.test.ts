@@ -26,7 +26,38 @@ import {
   CLUSTER_THRESHOLD,
   CLUSTER_RADIUS,
   PELICUN_DAMAGE_PRESET,
+  vectorResultFromInlineGeoJson,
 } from "./vector_rendering";
+
+// ---------------------------------------------------------------------------
+// job-0175 — inline GeoJSON synchronous validator
+// ---------------------------------------------------------------------------
+
+describe("vectorResultFromInlineGeoJson (job-0175)", () => {
+  it("classifies polygon FeatureCollection", () => {
+    const fc = {
+      type: "FeatureCollection",
+      features: [
+        {
+          type: "Feature",
+          geometry: { type: "Polygon", coordinates: [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]] },
+          properties: {},
+        },
+      ],
+    };
+    const res = vectorResultFromInlineGeoJson(fc);
+    expect(res.geomKind).toBe("polygon");
+    expect(res.featureCollection.features.length).toBe(1);
+  });
+
+  it("throws on non-FeatureCollection input", () => {
+    expect(() => vectorResultFromInlineGeoJson({ type: "Feature" })).toThrow(
+      /not a FeatureCollection/i,
+    );
+    expect(() => vectorResultFromInlineGeoJson(null)).toThrow();
+    expect(() => vectorResultFromInlineGeoJson(undefined)).toThrow();
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Part 1 — Curated palette

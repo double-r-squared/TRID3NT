@@ -387,3 +387,140 @@ def test_no_merge_helper_exists() -> None:
         "Appendix A.7 mandates replace-not-reconcile, structurally enforced "
         "by NOT shipping a merge-style API. Remove or rename."
     )
+
+
+# --------------------------------------------------------------------------- #
+# 9. Vector inline-GeoJSON (job-0175)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_vector_layer_inlines_geojson_into_session_state(
+    emitter: PipelineEmitter, sink: _CapturingSink, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When a tool returns a vector LayerURI, the emitter reads bytes from
+    GCS, parses, and embeds the result on the wire as ``inline_geojson``."""
+    fake_fc = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "geometry": {"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]]},
+                "properties": {"event": "Flood Warning"},
+            }
+        ],
+    }
+
+    async def fake_reader(uri: str):
+        assert uri == "gs://b/alerts.fgb"
+        return fake_fc
+
+    monkeypatch.setattr(
+        "grace2_agent.pipeline_emitter._read_vector_uri_as_geojson", fake_reader,
+    )
+
+    vector_layer = LayerURI(
+        layer_id="nws-conus-all",
+        name="NWS Alerts CONUS",
+        layer_type="vector",
+        uri="gs://b/alerts.fgb",
+        style_preset="nws_alerts",
+    )
+    await emitter.add_loaded_layer(vector_layer)
+
+    sess_frames = _session_frames(sink)
+    assert len(sess_frames) == 1
+    layers = sess_frames[-1]["payload"]["loaded_layers"]
+    assert len(layers) == 1
+    assert "inline_geojson" in layers[0]
+    assert layers[0]["inline_geojson"]["type"] == "FeatureCollection"
+    assert len(layers[0]["inline_geojson"]["features"]) == 1
+    assert layers[0]["uri"] == "gs://b/alerts.fgb"
+
+
+@pytest.mark.asyncio
+async def test_vector_layer_inline_geojson_failure_is_non_fatal(
+    emitter: PipelineEmitter, sink: _CapturingSink, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the GCS read / parse fails, the layer still lands; the wire
+    payload omits ``inline_geojson``."""
+
+    async def boom(uri: str):
+        raise RuntimeError("simulated GCS failure")
+
+    monkeypatch.setattr(
+        "grace2_agent.pipeline_emitter._read_vector_uri_as_geojson", boom,
+    )
+
+    vector_layer = LayerURI(
+        layer_id="nws-fail",
+        name="NWS Alerts (broken)",
+        layer_type="vector",
+        uri="gs://b/missing.fgb",
+        style_preset="nws_alerts",
+    )
+    await emitter.add_loaded_layer(vector_layer)
+
+    sess_frames = _session_frames(sink)
+    assert len(sess_frames) == 1
+    layers = sess_frames[-1]["payload"]["loaded_layers"]
+    assert len(layers) == 1
+    assert "inline_geojson" not in layers[0]
+
+
+@pytest.mark.asyncio
+async def test_raster_layer_does_not_trigger_inline_path(
+    emitter: PipelineEmitter, sink: _CapturingSink, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Raster layers don't pass through the inline path."""
+    calls: list[str] = []
+
+    async def fake_reader(uri: str):
+        calls.append(uri)
+        return None
+
+    monkeypatch.setattr(
+        "grace2_agent.pipeline_emitter._read_vector_uri_as_geojson", fake_reader,
+    )
+
+    raster_layer = LayerURI(
+        layer_id="dem_1",
+        name="Demo DEM",
+        layer_type="raster",
+        uri="gs://b/dem.tif",
+        style_preset="dem-default",
+    )
+    await emitter.add_loaded_layer(raster_layer)
+
+    assert calls == []
+    sess_frames = _session_frames(sink)
+    layers = sess_frames[-1]["payload"]["loaded_layers"]
+    assert "inline_geojson" not in layers[0]
+
+
+@pytest.mark.asyncio
+async def test_reset_loaded_layers_clears_inline_table(
+    emitter: PipelineEmitter, sink: _CapturingSink, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``reset_loaded_layers`` flushes the inline-GeoJSON side-table."""
+
+    async def fake_reader(uri: str):
+        return {"type": "FeatureCollection", "features": []}
+
+    monkeypatch.setattr(
+        "grace2_agent.pipeline_emitter._read_vector_uri_as_geojson", fake_reader,
+    )
+
+    vector_layer = LayerURI(
+        layer_id="a",
+        name="A",
+        layer_type="vector",
+        uri="gs://b/a.fgb",
+        style_preset="nws_alerts",
+    )
+    await emitter.add_loaded_layer(vector_layer)
+    emitter.reset_loaded_layers([])
+    assert emitter.loaded_layers == []
+    await emitter.emit_session_state()
+    last = _session_frames(sink)[-1]
+    assert last["payload"]["loaded_layers"] == []

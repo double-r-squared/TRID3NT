@@ -90,6 +90,36 @@ export function detectGeomKind(fc: FeatureCollection): VectorGeomKind {
 }
 
 /**
+ * Build a `VectorFetchResult` from an already-materialized GeoJSON
+ * FeatureCollection (job-0175). Used by the inline-GeoJSON code path:
+ * when the agent embeds the parsed FeatureCollection on the
+ * `ProjectLayerSummary.inline_geojson` field, the client skips the URI
+ * fetch entirely and just classifies geometry.
+ *
+ * Why this exists as a sibling to `fetchVectorAsGeoJson` rather than
+ * folding into it: the fetch path is async (network); this is purely
+ * synchronous validation. Keeping them apart keeps the type and call
+ * sites unambiguous in `Map.tsx`.
+ *
+ * Throws when the input is not a FeatureCollection — the caller logs and
+ * skips.
+ */
+export function vectorResultFromInlineGeoJson(
+  inline: unknown,
+): VectorFetchResult {
+  if (
+    !inline ||
+    typeof inline !== "object" ||
+    (inline as { type?: string }).type !== "FeatureCollection" ||
+    !Array.isArray((inline as { features?: unknown }).features)
+  ) {
+    throw new Error("[vector_rendering] inline_geojson is not a FeatureCollection");
+  }
+  const fc = inline as FeatureCollection;
+  return { featureCollection: fc, geomKind: detectGeomKind(fc) };
+}
+
+/**
  * Fetch a vector layer URI and return it as a GeoJSON FeatureCollection plus
  * its geometry kind. Supports:
  *   - .fgb (FlatGeobuf): parsed via the `flatgeobuf` npm package.

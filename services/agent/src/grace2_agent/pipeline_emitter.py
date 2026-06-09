@@ -207,6 +207,132 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+# --------------------------------------------------------------------------- #
+# Vector layer inline-GeoJSON helper (job-0175)
+# --------------------------------------------------------------------------- #
+
+
+def _parse_gs_uri(gs_uri: str) -> tuple[str, str] | None:
+    """Return ``(bucket, key)`` from a ``gs://bucket/key`` URI, or ``None``."""
+    if not gs_uri.startswith("gs://"):
+        return None
+    rest = gs_uri[len("gs://"):]
+    slash = rest.find("/")
+    if slash <= 0 or slash == len(rest) - 1:
+        return None
+    return rest[:slash], rest[slash + 1:]
+
+
+def _fgb_bytes_to_geojson(fgb_bytes: bytes) -> dict[str, Any] | None:
+    """Convert FlatGeobuf bytes to a GeoJSON FeatureCollection dict via
+    pyogrio + geopandas. Returns None if read fails."""
+    import os
+    import tempfile
+    try:
+        import geopandas as gpd  # type: ignore[import-not-found]
+    except ImportError as exc:
+        logger.warning("_fgb_bytes_to_geojson: geopandas missing: %s", exc)
+        return None
+    tmp_path: str | None = None
+    try:
+        try:
+            with tempfile.NamedTemporaryFile(
+                suffix=".fgb", delete=False, prefix="grace2_inline_"
+            ) as f:
+                f.write(fgb_bytes)
+                tmp_path = f.name
+            gdf = gpd.read_file(tmp_path, engine="pyogrio")
+        finally:
+            if tmp_path is not None:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("_fgb_bytes_to_geojson: read failed: %s", exc)
+        return None
+    if gdf is None or len(gdf) == 0:
+        return {"type": "FeatureCollection", "features": []}
+    try:
+        gdf = gdf[gdf.geometry.notna()]
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        if gdf.crs is None:
+            gdf = gdf.set_crs("EPSG:4326")
+        elif str(gdf.crs).upper() not in {"EPSG:4326", "WGS84"}:
+            gdf = gdf.to_crs("EPSG:4326")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("_fgb_bytes_to_geojson: CRS reproj failed: %s", exc)
+    try:
+        import json
+        return json.loads(gdf.to_json())
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("_fgb_bytes_to_geojson: GeoJSON dump failed: %s", exc)
+        return None
+
+
+async def _read_vector_uri_as_geojson(uri: str) -> dict[str, Any] | None:
+    """Read a vector LayerURI from GCS, parse FlatGeobuf, return GeoJSON dict.
+
+    Supports ``gs://`` URIs for FlatGeobuf (`.fgb`) and GeoJSON (`.json` /
+    `.geojson`). Returns ``None`` and logs a warning on any failure.
+    Runs in a thread pool so the synchronous GCS + pyogrio call doesn't
+    block the asyncio loop.
+    """
+    if not uri.startswith("gs://"):
+        logger.warning("_read_vector_uri_as_geojson: non-gs URI not supported: %s", uri)
+        return None
+    parsed = _parse_gs_uri(uri)
+    if parsed is None:
+        logger.warning("_read_vector_uri_as_geojson: malformed uri: %s", uri)
+        return None
+    bucket_name, key = parsed
+    ext = key.rsplit(".", 1)[-1].lower() if "." in key else ""
+
+    loop = asyncio.get_running_loop()
+
+    def _read_and_parse() -> dict[str, Any] | None:
+        try:
+            from google.cloud import storage  # type: ignore[import-not-found]
+        except ImportError as exc:
+            logger.warning("_read_vector_uri_as_geojson: google-cloud-storage missing: %s", exc)
+            return None
+        try:
+            client = storage.Client()
+            blob = client.bucket(bucket_name).blob(key)
+            data = blob.download_as_bytes()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "_read_vector_uri_as_geojson: GCS download failed bucket=%s key=%s: %s",
+                bucket_name, key, exc,
+            )
+            return None
+        if ext == "fgb":
+            return _fgb_bytes_to_geojson(data)
+        if ext in {"json", "geojson"}:
+            try:
+                import json
+                obj = json.loads(data)
+                if not isinstance(obj, dict) or obj.get("type") != "FeatureCollection":
+                    logger.warning(
+                        "_read_vector_uri_as_geojson: not a FeatureCollection uri=%s", uri,
+                    )
+                    return None
+                return obj
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "_read_vector_uri_as_geojson: JSON parse failed uri=%s: %s", uri, exc,
+                )
+                return None
+        logger.warning(
+            "_read_vector_uri_as_geojson: unsupported extension '%s' for uri=%s", ext, uri,
+        )
+        return None
+
+    return await loop.run_in_executor(None, _read_and_parse)
+
+
 @dataclass
 class _StepState:
     """Internal mutable record for one step. Materialized into ``PipelineStep``
@@ -292,6 +418,12 @@ class PipelineEmitter:
         #: Accumulated layers — appended each time a tool returns a ``LayerURI``.
         self._loaded_layers: list[ProjectLayerSummary] = []
 
+        #: Inline GeoJSON side-table for vector layers (job-0175).
+        #: Keyed by ``layer_id``; merged into ``loaded_layers`` wire payload
+        #: in ``emit_session_state`` as additive ``inline_geojson`` field.
+        #: Preserves ``ProjectLayerSummary`` extra="forbid" strictness.
+        self._inline_geojson_by_layer_id: dict[str, dict[str, Any]] = {}
+
     # ------------------------------------------------------------------ #
     # Snapshot accessors (read-only views; tests + integrations introspect)
     # ------------------------------------------------------------------ #
@@ -322,6 +454,8 @@ class PipelineEmitter:
         """
         if not layers:
             self._loaded_layers = []
+            # job-0175: flush inline side-table alongside loaded_layers.
+            self._inline_geojson_by_layer_id.clear()
             return
         seeded: list[ProjectLayerSummary] = []
         for layer_dict in layers:
@@ -335,6 +469,11 @@ class PipelineEmitter:
                 )
                 continue
         self._loaded_layers = seeded
+        # job-0175: keep only inline entries that match a still-loaded layer.
+        active_ids = {layer.layer_id for layer in seeded}
+        self._inline_geojson_by_layer_id = {
+            k: v for k, v in self._inline_geojson_by_layer_id.items() if k in active_ids
+        }
 
     def current_snapshot(self) -> PipelineSnapshot | None:
         """Return the current ``PipelineSnapshot`` (D.6 persistence shape) or
@@ -504,6 +643,26 @@ class PipelineEmitter:
                 break
         else:
             self._loaded_layers.append(summary)
+        # Vector inline-GeoJSON (job-0175). Best-effort; failure is non-fatal.
+        # Logs loudly so the audit can grep for "inlined GeoJSON layer_id=...".
+        if layer.layer_type == "vector":
+            try:
+                geojson_obj = await _read_vector_uri_as_geojson(layer.uri)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "add_loaded_layer: inline GeoJSON conversion failed for "
+                    "layer_id=%s uri=%s; falling back to URI-only delivery: %s",
+                    layer.layer_id, layer.uri, exc,
+                )
+                self._inline_geojson_by_layer_id.pop(layer.layer_id, None)
+            else:
+                if geojson_obj is not None:
+                    self._inline_geojson_by_layer_id[layer.layer_id] = geojson_obj
+                    feat_count = len(geojson_obj.get("features") or [])
+                    logger.info(
+                        "add_loaded_layer: inlined GeoJSON layer_id=%s features=%d",
+                        layer.layer_id, feat_count,
+                    )
         await self.emit_session_state()
         # Emit zoom-to map-command when the LayerURI carries a bbox (job-0068).
         if layer.bbox is not None:
@@ -516,13 +675,23 @@ class PipelineEmitter:
         """Emit a full ``session-state`` envelope. Used after a layer lands or
         whenever the integration site wants to refresh the client's view of
         ``current_pipeline``.
+
+        Vector inline-GeoJSON merge (job-0175): for any vector layer whose
+        ``layer_id`` has an inline GeoJSON entry, the field ``inline_geojson``
+        is appended to the wire dict (additive to the strict schema).
         """
         snap = self.current_snapshot()
+        # Build loaded_layers dump with inline_geojson merged in.
+        loaded_dump_with_inline: list[dict[str, Any]] = []
+        for _layer in self._loaded_layers:
+            _d = _layer.model_dump(mode="json")
+            _inline = self._inline_geojson_by_layer_id.get(_layer.layer_id)
+            if _inline is not None:
+                _d["inline_geojson"] = _inline
+            loaded_dump_with_inline.append(_d)
         payload = SessionStatePayload(
             chat_history=list(self._chat_history),
-            loaded_layers=[
-                layer.model_dump(mode="json") for layer in self._loaded_layers
-            ],
+            loaded_layers=loaded_dump_with_inline,
             pipeline_history=list(self._pipeline_history),
             current_pipeline=(snap.model_dump(mode="json") if snap is not None else None),
             map_view=self._map_view,

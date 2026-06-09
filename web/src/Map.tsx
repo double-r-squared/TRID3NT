@@ -38,6 +38,7 @@ import type { MapCommandPayload, SessionStatePayload } from "./contracts";
 import type { FeatureCollection } from "geojson";
 import {
   fetchVectorAsGeoJson,
+  vectorResultFromInlineGeoJson,
   resolveVectorColor,
   isPelicunDamageLayer,
   buildDsMeanExpression,
@@ -165,6 +166,13 @@ interface WireLayerSummary {
   // job-0139 — vector layer additions. Optional because raster layers omit them.
   style_preset?: string | null;
   bbox?: [number, number, number, number] | null;
+  // job-0175 — inline GeoJSON for vector layers. When present, the client
+  // skips the `uri` fetch (which would hit Invariant 5's gs:// guardrail
+  // and silently no-op) and renders directly from this FeatureCollection.
+  // The agent populates this for every cacheable vector fetcher (see
+  // `services/agent/src/grace2_agent/pipeline_emitter.py:add_loaded_layer`).
+  // Optional — older session-state snapshots predate this field.
+  inline_geojson?: unknown;
 }
 
 // Extended map-command discriminator: contracts.ts only mirrors the 5 layer-CRUD
@@ -300,6 +308,11 @@ export async function addVectorLayer(
     opacity?: number;
     visible?: boolean;
     style_preset?: string | null;
+    /** job-0175: inline GeoJSON FeatureCollection from the agent. When present
+     *  the client renders from this directly, bypassing the `uri` fetch path
+     *  that would otherwise hit the gs:// guardrail in `fetchVectorAsGeoJson`
+     *  (Invariant 5) and silently no-op. */
+    inline_geojson?: unknown;
   },
   generation: number,
   fetchGenRef: { current: Map<string, number> },
@@ -315,23 +328,48 @@ export async function addVectorLayer(
   // vector branch was actually entered.
   if (import.meta.env.DEV) {
     // eslint-disable-next-line no-console
-    console.log(`[MapView] addVectorLayer start: ${layer.layer_id} gen=${generation}`);
+    console.log(`[MapView] addVectorLayer start: ${layer.layer_id} gen=${generation} inline=${layer.inline_geojson !== undefined}`);
   }
   let fc;
   let geomKind: VectorGeomKind;
-  try {
-    const result = await fetchVectorAsGeoJson(layer.uri);
-    fc = result.featureCollection;
-    geomKind = result.geomKind;
-  } catch (err) {
-    // eslint-disable-next-line no-console
-    console.warn(`[MapView] vector fetch failed for ${layer.layer_id}:`, err);
-    // Release the slot so a future session-state push with the same layer_id
-    // can retry.
-    if (addedSourceIdsRef.current.has(layer.layer_id)) {
-      addedSourceIdsRef.current.delete(layer.layer_id);
+  // job-0175: prefer inline GeoJSON over URI fetch. The agent populates
+  // `inline_geojson` for every vector layer it can read from GCS; falling
+  // back to URI is preserved for layers the agent could not inline (failure
+  // is logged + the row still appears in the LayerPanel without rendering).
+  if (layer.inline_geojson !== undefined && layer.inline_geojson !== null) {
+    try {
+      const result = vectorResultFromInlineGeoJson(layer.inline_geojson);
+      fc = result.featureCollection;
+      geomKind = result.geomKind;
+      if (import.meta.env.DEV) {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[MapView] addVectorLayer inline-geojson hit: ${layer.layer_id} features=${fc.features.length} kind=${geomKind}`,
+        );
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn(`[MapView] inline GeoJSON parse failed for ${layer.layer_id}:`, err);
+      if (addedSourceIdsRef.current.has(layer.layer_id)) {
+        addedSourceIdsRef.current.delete(layer.layer_id);
+      }
+      return;
     }
-    return;
+  } else {
+    try {
+      const result = await fetchVectorAsGeoJson(layer.uri);
+      fc = result.featureCollection;
+      geomKind = result.geomKind;
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn(`[MapView] vector fetch failed for ${layer.layer_id}:`, err);
+      // Release the slot so a future session-state push with the same layer_id
+      // can retry.
+      if (addedSourceIdsRef.current.has(layer.layer_id)) {
+        addedSourceIdsRef.current.delete(layer.layer_id);
+      }
+      return;
+    }
   }
 
   // Race-guard: if a remove or re-add happened during the fetch, the
