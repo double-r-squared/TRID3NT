@@ -1,0 +1,81 @@
+{
+  "ss1": {
+    "colorReport": {
+      "colors": {
+        "gbif-panther-fl": "#00BFFF",
+        "gbif-spoonbill-fl": "#4477FF",
+        "gbif-alligator-fl": "#ADFF2F"
+      },
+      "unique_colors": 3,
+      "collision": false
+    },
+    "pageErrors": []
+  },
+  "ss2": {
+    "injected": true,
+    "domInfo": {
+      "found": true,
+      "box_shadow": "rgba(0, 0, 0, 0.35) 0px 4px 14px 0px",
+      "border_radius": "8px",
+      "inline_box_shadow": "rgba(0, 0, 0, 0.35) 0px 4px 14px",
+      "inline_border_radius": "8px"
+    },
+    "pageErrors": []
+  },
+  "ss3": {
+    "flatCheck": {
+      "popup_found": true,
+      "panel_found": true,
+      "nested_card_found": false,
+      "header_text": "API Keys"
+    },
+    "pageErrors": []
+  },
+  "ss4": {
+    "mapClean": {
+      "zoom_in_button": false,
+      "zoom_out_button": false,
+      "compass_button": false,
+      "attribution_control": false,
+      "osm_link": false
+    },
+    "pageErrors": []
+  },
+  "ss5": {
+    "result": "ok",
+    "inspect05": {
+      "agentCount": 1,
+      "userCount": 1,
+      "headings": [
+        "Flood scenario summary"
+      ],
+      "codeBlocks": 1,
+      "placeholder": "Reply to GRACE-2"
+    },
+    "pageErrors": []
+  },
+  "ss6": {
+    "result": "ok",
+    "inspect06": {
+      "arrowFound": true,
+      "arrowVisible": "true",
+      "arrowOpacity": "1",
+      "scrollTop": 0,
+      "scrollHeight": 1170
+    },
+    "pageErrors": []
+  },
+  "ss7": {
+    "inspect07_idle": {
+      "found": true,
+      "placeholder": "Reply to GRACE-2",
+      "value": ""
+    },
+    "submitResult": [
+      "test message for enter-submit"
+    ],
+    "placeholderOk": true,
+    "enterSubmitted": true,
+    "pageErrors": []
+  }
+}
