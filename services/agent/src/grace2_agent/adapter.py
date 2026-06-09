@@ -375,6 +375,56 @@ def _coerce_to_summary_value(value: Any, depth: int = 0) -> Any:
     return s
 
 
+def _classify_error(error: BaseException) -> tuple[str, bool]:
+    """Derive ``(error_code, retryable)`` for a tool-dispatch exception.
+
+    job-0177: typed tool exceptions across the registry already declare
+    ``error_code`` (str) and ``retryable`` (bool) class attributes
+    (``WDPAError``, ``HRSLError``, ``MTBSError``, ``MRMSError``,
+    ``INatError``, ``IUCNError``, ``FIRMSError``, ``GTSMError``,
+    ``LANDFIREError``, ``OSMRoadsError``, ``GBIFError``,
+    ``CAMaFloodError``, ``GOESError``, ``CompFireError``,
+    ``ColoredReliefError``, ``NIFCError``, ``NWSAlertsError``, etc.).
+    Harvest those directly so the function_response the multi-turn loop
+    feeds back to Gemini carries the retry signal the tool already knew.
+
+    For untyped exceptions, fall back to a conservative heuristic:
+
+    - ``asyncio.TimeoutError`` / ``TimeoutError``  → retryable
+    - ``ConnectionError`` / ``OSError`` (network-ish) → retryable
+    - ``ValueError`` / ``TypeError`` / ``KeyError`` / ``AttributeError``
+      (programmer / arg shape error) → NOT retryable
+    - everything else (``RuntimeError`` and friends) → retryable
+      (Gemini reads ``message`` and decides; the cap is
+      ``MAX_TURN_ITERATIONS`` either way).
+
+    Never raises — even pathological exceptions yield a stable dict shape
+    so the multi-turn loop keeps going.
+    """
+    # 1. Honour typed-tool exception class attributes when present.
+    code_attr = getattr(error, "error_code", None)
+    retry_attr = getattr(error, "retryable", None)
+    if isinstance(code_attr, str) and code_attr:
+        code = code_attr
+    else:
+        code = type(error).__name__.upper()
+    if isinstance(retry_attr, bool):
+        return code, retry_attr
+
+    # 2. Heuristic fallback for untyped exceptions.
+    import asyncio as _asyncio
+
+    if isinstance(error, (_asyncio.TimeoutError, TimeoutError)):
+        return code, True
+    if isinstance(error, (ConnectionError, OSError)):
+        return code, True
+    if isinstance(error, (ValueError, TypeError, KeyError, AttributeError)):
+        return code, False
+    # Default: retryable so Gemini gets one more shot (capped by
+    # MAX_TURN_ITERATIONS).
+    return code, True
+
+
 def summarize_tool_result(
     tool_name: str,
     result: Any,
@@ -388,9 +438,16 @@ def summarize_tool_result(
 
     Conventions enforced:
 
-    * Errors become ``{"error": str, "error_type": type-name}``.  Gemini
-      reads this and either retries with different args, calls a different
-      tool, or narrates the failure to the user.
+    * Errors (job-0177) become
+      ``{"status": "error", "error_code": str, "message": str, "retryable": bool, "error_type": str}``.
+      ``error_code`` + ``retryable`` are harvested from the tool's typed
+      exception class (FR-AS-11 surface) when present, else derived
+      from the exception class name / runtime kind via ``_classify_error``.
+      Gemini reads this and either retries with corrected args, calls a
+      different tool, or narrates the failure honestly. The
+      ``MAX_TURN_ITERATIONS`` cap protects against runaway retry.
+      The legacy ``"error"`` field is retained as an alias of ``message``
+      so older tests / consumers don't break.
     * ``None`` results (the ``_invoke_tool_via_emitter`` path returns ``None``
       on payload-warning skip, TOOL_NOT_FOUND, etc.) become
       ``{"status": "no_result"}``.
@@ -403,10 +460,18 @@ def summarize_tool_result(
     import json as _json
 
     if error is not None:
+        code, retryable = _classify_error(error)
+        message = str(error)[:500]
         return {
             "tool": tool_name,
             "status": "error",
-            "error": str(error)[:500],
+            "error_code": code,
+            "message": message,
+            "retryable": retryable,
+            # Legacy alias — preserved so existing tests / callers that
+            # read ``error`` continue to work.  ``message`` is the new
+            # canonical field; both carry the same string.
+            "error": message,
             "error_type": type(error).__name__,
         }
 

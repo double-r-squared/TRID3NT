@@ -1,0 +1,109 @@
+=== job-0177 wire-payload evidence ===
+Multi-turn loop function_response.response shape Gemini reads on tool failure.
+
+--- typed UPSTREAM (retryable=True) ---
+{
+  "tool": "fetch_wdpa_protected_areas",
+  "status": "error",
+  "error_code": "WDPA_UPSTREAM_ERROR",
+  "message": "WDPA ArcGIS REST 503 \u2014 temporary outage",
+  "retryable": true,
+  "error": "WDPA ArcGIS REST 503 \u2014 temporary outage",
+  "error_type": "WDPAUpstreamError"
+}
+
+--- typed BBOX_INVALID (retryable=False) ---
+{
+  "tool": "fetch_wdpa_protected_areas",
+  "status": "error",
+  "error_code": "WDPA_BBOX_INVALID",
+  "message": "bbox out of valid lon/lat range",
+  "retryable": false,
+  "error": "bbox out of valid lon/lat range",
+  "error_type": "WDPABboxError"
+}
+
+--- untyped RuntimeError → heuristic retryable=True ---
+{
+  "tool": "fetch_dem",
+  "status": "error",
+  "error_code": "RUNTIMEERROR",
+  "message": "DEM upstream 503",
+  "retryable": true,
+  "error": "DEM upstream 503",
+  "error_type": "RuntimeError"
+}
+
+--- untyped ValueError → heuristic retryable=False ---
+{
+  "tool": "fetch_dem",
+  "status": "error",
+  "error_code": "VALUEERROR",
+  "message": "bbox must be 4-tuple of floats",
+  "retryable": false,
+  "error": "bbox must be 4-tuple of floats",
+  "error_type": "ValueError"
+}
+
+--- asyncio.TimeoutError → heuristic retryable=True ---
+{
+  "tool": "fetch_dem",
+  "status": "error",
+  "error_code": "TIMEOUTERROR",
+  "message": "",
+  "retryable": true,
+  "error": "",
+  "error_type": "TimeoutError"
+}
+
+=== _classify_error truth table ===
+  typed WDPAUpstreamError                → code=WDPA_UPSTREAM_ERROR            retryable=True
+  typed WDPABboxError                    → code=WDPA_BBOX_INVALID              retryable=False
+  untyped RuntimeError                   → code=RUNTIMEERROR                   retryable=True
+  untyped ValueError                     → code=VALUEERROR                     retryable=False
+  untyped KeyError                       → code=KEYERROR                       retryable=False
+  untyped TypeError                      → code=TYPEERROR                      retryable=False
+  untyped TimeoutError                   → code=TIMEOUTERROR                   retryable=True
+  untyped asyncio.TimeoutError           → code=TIMEOUTERROR                   retryable=True
+  untyped ConnectionError                → code=CONNECTIONERROR                retryable=True
+  untyped OSError                        → code=OSERROR                        retryable=True
+============================= test session starts ==============================
+platform linux -- Python 3.13.5, pytest-9.0.3, pluggy-1.6.0 -- /home/nate/Documents/GRACE-2/.venv-agent/bin/python
+cachedir: .pytest_cache
+rootdir: /home/nate/Documents/GRACE-2/services/agent
+configfile: pyproject.toml
+plugins: zarr-3.2.1, anyio-4.13.0, asyncio-1.4.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 14 items
+
+services/agent/tests/test_tool_retry_on_failure.py::test_summarize_tool_result_error_carries_structured_fields PASSED [  7%]
+services/agent/tests/test_tool_retry_on_failure.py::test_summarize_tool_result_error_harvests_typed_attributes PASSED [ 14%]
+services/agent/tests/test_tool_retry_on_failure.py::test_summarize_tool_result_error_typed_upstream_is_retryable PASSED [ 21%]
+services/agent/tests/test_tool_retry_on_failure.py::test_classify_error_value_error_not_retryable PASSED [ 28%]
+services/agent/tests/test_tool_retry_on_failure.py::test_classify_error_type_error_not_retryable PASSED [ 35%]
+services/agent/tests/test_tool_retry_on_failure.py::test_classify_error_key_attribute_not_retryable PASSED [ 42%]
+services/agent/tests/test_tool_retry_on_failure.py::test_classify_error_timeout_retryable PASSED [ 50%]
+services/agent/tests/test_tool_retry_on_failure.py::test_classify_error_connection_retryable PASSED [ 57%]
+services/agent/tests/test_tool_retry_on_failure.py::test_classify_error_runtime_error_retryable PASSED [ 64%]
+services/agent/tests/test_tool_retry_on_failure.py::test_classify_error_typed_overrides_heuristic PASSED [ 71%]
+services/agent/tests/test_tool_retry_on_failure.py::test_error_summary_is_json_serializable PASSED [ 78%]
+services/agent/tests/test_tool_retry_on_failure.py::test_stream_gemini_reply_retry_after_recoverable_failure PASSED [ 85%]
+services/agent/tests/test_tool_retry_on_failure.py::test_stream_gemini_reply_failed_retry_caps_at_max_iterations PASSED [ 92%]
+services/agent/tests/test_tool_retry_on_failure.py::test_summarize_tool_result_error_legacy_alias_preserved PASSED [100%]
+
+============================== 14 passed in 0.67s ==============================
+---
+Verifying loop terminates after MAX_TURN_ITERATIONS retries (cap-stop)...
+============================= test session starts ==============================
+platform linux -- Python 3.13.5, pytest-9.0.3, pluggy-1.6.0 -- /home/nate/Documents/GRACE-2/.venv-agent/bin/python
+cachedir: .pytest_cache
+rootdir: /home/nate/Documents/GRACE-2/services/agent
+configfile: pyproject.toml
+plugins: zarr-3.2.1, anyio-4.13.0, asyncio-1.4.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 2 items
+
+services/agent/tests/test_tool_retry_on_failure.py::test_stream_gemini_reply_failed_retry_caps_at_max_iterations PASSED [ 50%]
+services/agent/tests/test_tool_retry_on_failure.py::test_stream_gemini_reply_retry_after_recoverable_failure PASSED [100%]
+
+============================== 2 passed in 0.68s ===============================
