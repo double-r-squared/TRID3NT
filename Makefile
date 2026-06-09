@@ -500,7 +500,8 @@ SRS_PARTS = \
   docs/srs/D-mongodb-collection-schemas.md \
   docs/srs/E-qgis-plugins-inventory.md \
   docs/srs/F-data-sources-discovery-secrets.md \
-  docs/srs/H-auth-and-users.md
+  docs/srs/H-auth-and-users.md \
+  docs/srs/I-llm-tool-harness.md
 
 srs: docs/SRS_v0.3.md
 

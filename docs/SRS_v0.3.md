@@ -2,10 +2,10 @@
 
 ## Hazard Modeling Agent — A Web-Based AI Workbench for Multi-Hazard Modeling
 
-**Version:** 0.3.21
+**Version:** 0.3.22
 **Status:** Draft
 **Authors:** Nathaniel J Almanza
-**Last updated:** 2026-06-07
+**Last updated:** 2026-06-08
 **Supersedes:** v0.2 (2026-06-04)
 
 ---
@@ -1093,6 +1093,7 @@ Milestones M4, M5, M6, M7, M8 can be parallelized to a meaningful degree given m
 | 0.3.13 | 2026-06-05 | Introduced impact post-processing as a forward-looking second tool class alongside engines (all additions explicitly deferred post-M5 so in-flight sprint-03 work is not disturbed). **New Decision N**: engines emit `AssessmentEnvelope`, post-processors consume one and emit an `ImpactEnvelope`. Pelicun (NHERI SimCenter, FEMA P-58 / HAZUS via the bundled Damage and Loss Model Library) is the first member. **§2.3**: post-processing tool-class contract added next to the engine common contract; new "Post-processing tool classes" table with one Pelicun row. **FR-CE-5/6/7**: Pelicun runs as a Cloud Run Job orchestrated by Cloud Workflows with an `AssessmentEnvelope` precondition enforced via MongoDB lookup and 30-second cancellation conformance (FR-AS-6 / NFR-R-3). **FR-TA-1**: return-type widened to `AssessmentEnvelope` or `ImpactEnvelope`; new impact-post-processing workflow group with `run_pelicun_impact`. **FR-AS-7 / FR-AS-8**: extended to source narrative numbers from `ImpactEnvelope` and to confirmation-gate any impact post-processing execution. **Appendix B.6c / B.6d**: full `ImpactEnvelope` Pydantic shape (sibling type with its own `envelope_type: Literal["impact"]`; `AssessmentEnvelope.envelope_type` is unchanged), supporting types, and a worked Hurricane Ian Pelicun example. B.7 design-rationale bullets extended to acknowledge the impact case. **Appendix D.3**: `RunDocument.run_type` literal extended with `"impact"`; comment clarified that "modeled"/"discovered" mirror `AssessmentEnvelope.envelope_type` and "impact" mirrors `ImpactEnvelope.envelope_type`. **FR-MP-5**: new Impact runs row co-located in the `runs` collection. **Milestones**: new M5.5 ("Impact post-processing (Pelicun) v0") inserted after M5, parallelizes with M6/M7. **OQ-8**: fragility/consequence-curve sourcing (HAZUS vs FEMA P-58 vs bundled vs user-supplied). |
 | 0.3.14 | 2026-06-05 | Added openTELEMAC-MASCARET as a forward-looking multi-solver hydrodynamic engine (all additions explicitly deferred post-MVP / v0.2+ so in-flight M1 / sprint-03 work is not disturbed; same discipline as the 0.3.13 Pelicun amendment). **§2.3**: one new row in the Deferred engines table for the TELEMAC-MASCARET suite — Solver column lists openTELEMAC-MASCARET (TELEMAC-2D/3D, TOMAWAC, ARTEMIS, GAIA, MASCARET) on one line matching the cadence of surrounding rows; Likely mode is **Python shim** (HermesPy for Selafin I/O grace-2-side; consortium `telemac2d.py` / `telemac3d.py` / `tomawac.py` driver scripts invoked from the workflow), conforming to the §2.3 Engine selection principle which defines only Plugin-backed or Python shim modes; Target v0.3. Containerization and MPI-binary packaging are FR-CE-1 execution details, not an integration mode, and live in the M11 milestone description (mirroring how SFINCS is 'Python shim via HydroMT' in the v0.1 catalog despite running in a Cloud Run Job). **§2.3 substantial-new-tooling paragraph**: clarifying sentence added — mesh-based shallow-water suites with mature Python driver tooling and out-of-process invocation (TELEMAC-MASCARET) are roadmap-included and distinct from the OpenFOAM-class indefinitely-deferred set; '3D ocean simulation' in that paragraph refers to full 3D Navier–Stokes coastal CFD, not TELEMAC-3D's RANS shallow-water 3D mode. **FR-TA-1**: new forward-looking TELEMAC modeling-workflow group appended after `model_news_event` (i.e. inside the `envelope_type: "modeled"` subsection, preserving envelope_type grouping modeled → discovered → impact) with `run_coastal_storm_surge_telemac` (TELEMAC-2D unstructured-mesh higher-fidelity complement to SFINCS), `run_coupled_surge_wave` (TELEMAC-2D + TOMAWAC), `run_river_hydraulics_mascaret` (1D Saint-Venant), `run_sediment_transport_gaia` (GAIA on a prior TELEMAC `solver_run_id`); engine common contract preserved (workflow + atomic-tool registration only, no engine-core changes). **Milestones**: new M11 ("TELEMAC-MASCARET engine v0 (coastal / river hydrodynamics)") inserted after M5.5 to cluster the two forward-looking engine/post-processor rows together (mirrors the M5.5 half-step convention) — M10 (Polish and v0.1 release; dependency 'all above') remains the last row of the v0.1 milestone block; M11 is a parallel-track v0.3 deliverable depending on M5/M6/M7; deliverable includes container packaging (simvia/opentelemac base image, MPI-enabled binaries) under FR-CE-1/2/3, mesh-toolchain selection per OQ-9, one end-to-end TELEMAC workflow on a real event, hazard subtype registration deferred to a follow-up Appendix B.4 amendment when the workflows actually land. **OQ-9**: mesh-generation toolchain selection (GMSH vs OceanMesh2D vs BlueKenue vs in-suite Telemac preprocessors), mirroring OQ-8's named-alternatives shape. **License posture**: TELEMAC is GPL v3 (main modules) + LGPL v3 (BIEF); GRACE-2 stays MIT (NFR-L) because the integration is out-of-process — TELEMAC binaries inside a separate Docker image, invoked as a separate Cloud Run Job, communicating only via GCS file artifacts and Cloud Workflows step transitions, with no grace-2 source linked against TELEMAC or BIEF. **Known follow-ups (not in this amendment)**: when TELEMAC workflows actually land, Appendix B.4 hazard subtypes will gain entries like `coastal_storm_surge_telemac` / `coupled_surge_wave_telemac` / `river_1d_mascaret` / `sediment_gaia`; FR-HEP-7 storm-surge forcing reconstruction will need a solver-agnostic phrasing or a TELEMAC sibling entry; the §5 Out-of-Scope row referencing '3D ocean simulation' is consistent with the §2.3 clarification (TELEMAC excluded from that row by construction). |
 | 0.3.21 | 2026-06-07 | Forward-looking **FR-MP-6 Case UX** amendment (per user direction 2026-06-07 — "Add this to the SRS and we can discuss refining the idea when we get to it"). "Case" is the user-facing name for a `projects` document (FR-MP-5). Pins the binding UX flow: (a) **landing** = two-pane shell, Cases list left + Chat right; left panel hidden until first Case exists; both panels collapsible for max-map view. (b) **Case creation** = first agent prompt in a session outside any Case implicitly creates a `projects` document and binds the session. (c) **In-Case state** = left panel switches from Cases list to Case detail (loaded layers list with visibility/opacity/order per the layer-emission-contract decision); "back to Cases" nav element exposed. (d) **Persistence** = layer-producing workflow outputs save into the Case's `layer_summary` (sprint-09's `publish_layer` tool persists at exit); chat history persists into the bound `sessions` document. (e) **Resume** = re-opening a Case rehydrates chat + re-registers layers + restores agent context. (f) **Out-of-Case context** = navigating back to Cases list resets chat to a fresh agent context with no prior conversation memory; UI clearly reflects the context change. Implementation refinement deferred to the target sprint; the contract above pins intent only. UI label "Case" ↔ schema name "Project" (FR-MP-5 nomenclature stays canonical). No schema change in this amendment; consumers of FR-MP-6 will propose D.x amendments at implementation time. |
+| 0.3.22 | 2026-06-08 | New **Appendix I: LLM Tool Harness Conventions** (per user direction 2026-06-08 — "we can now tighten the harness"). Codifies five conventions binding from sprint-12-mega Wave 4.7 forward (job-0164 engine sweep + job-0165 this appendix) for every `@register_tool`-registered atomic tool (FR-TA-2) and workflow exposure (FR-TA-1). **§I.1 Param naming**: full unabbreviated English words (`return_period_years`, `duration_hours`); the two v0.1 abbreviation suffixes `_yr` / `_hr` retain bounded backward-compat aliases (`return_period_yr` / `duration_hr` as `int \| None = None`, normalized at top of body) until v0.2; new tools ship with full-word names from the first commit. **§I.2 `**_extra_ignored` absorb policy**: every registered function ends with `**_extra_ignored: Any` so frontier-LLM-invented kwargs (`run_name`, `scenario_id`, `description`, `mode`, …) do not raise `TypeError`; absorb is *input*-side noise tolerance — `extra="forbid"` on schema models (Appendices A–D) unchanged; Invariants 1 / 7 / 10 preserved. **§I.3 Docstring discipline**: dedicated `Examples:` doctest block at end of every tool docstring; no inline `key="value"` substrings in prose `Use this when:` / `Do NOT use this for:` / `Params:` sections (Gemini-3 re-emits inline-prose key=value substrings as call arguments — empirically observed root cause of `forcing=` / `rainfall_event=` failures). Extends FR-AS-3 / FR-TA-3 docstring discipline (does not amend either FR). **§I.4 Normalization layer**: NEW `services/agent/src/grace2_agent/tool_arg_normalizer.py` (sibling job-0164 in code) with `normalize_args(tool_name, raw_args) → (normalized, dropped_unknowns)`; wired into `server.py:_invoke_tool_via_emitter` before `entry.fn(**params)`; performs alias map (tool-name-keyed) + bounded fuzzy match (camelCase→snake_case, edit distance ≤ 1, single-candidate only) + per-tool string-form parser (e.g. `forcing="atlas14_100yr"` → `return_period_years=100`; reference impl in `run_model_flood_scenario` body) + drop-and-log unknown keys. Never raises on unknown kwargs; never silently fabricates values; per-tool counters emitted to structured logs. **§I.5 Per-tool tests**: cross-cutting parametrized conformance test (every registered tool accepts invented kwargs without `TypeError`; docstring conforms to §I.3 sectioning; signature ends with `**_extra_ignored`) + property-based fuzz on the normalizer with 0–5 random unknown keys per call. Owned by `testing`; CI-gating on PRs touching `services/agent/src/grace2_agent/{tools,workflows}/*.py` or the normalizer. **§I.6 Decision F (harness conventions) — adopted 2026-06-08**: records the adoption with empirical-signal rationale (strict signature binding was the #1 pre-application-logic failure across ~57 atomic tools in sprint-12-mega) and alternatives considered (strict + re-prompt; pydantic-model-per-tool; normalizer without `**_extra_ignored`). Forward path pins v0.2 alias retirement (`_yr`/`_hr` aliases removed; full-word names sole accepted form). **Cross-references**: §2.1 Decision F (harness conventions row — appendix I is the body); FR-AS-3 + FR-TA-3 extended by §I.3; Invariants 1 / 7 / 10 preserved verbatim; AGENTS.md pre-MVP "no legacy support" honored (the §I.1 alias is the only bounded backward-compat layer); engine sweep job-0164 is the implementation companion; this appendix is the conventions surface. **Files touched**: NEW `docs/srs/I-llm-tool-harness.md`; `docs/srs/INDEX.md` Appendix I row added; `Makefile` `SRS_PARTS` list extended. No schema changes (Appendices A–D unchanged); no FR amendments (FR-AS-3 / FR-TA-3 extended-not-amended via the convention layer). |
 | 0.3.20 | 2026-06-07 | Focused housekeeping pass — reconciles 3 critical carry-forwards before sprint-08 catalog work begins (deferred items remain for a later pass). **§F.1 WorldPop prose alignment** (OQ-37-*): live ecosystem delivered neither STAC nor 100m product (WorldPop Hub STAC returns 404; 4 GB 100m server returns HTTP 200 not 206 for Range so /vsicurl/ windowed reads fail) — prose now correctly states Tier 4 region-download with 50 MB 1km Aggregated COG per country via direct REST; vintage default `worldpop_2020`; units **people-per-1km-cell** semantics clarified for downstream zonal-stats consumers (OQ-37-WORLDPOP-COG-CRS-AND-UNITS). **§F.1 NLCD prose alignment** (OQ-39-NLCD-TIER-DEVIATION + OQ-42-NLCD-WMS-PALETTE-ENCODING + OQ-44 fix): NLCD via MRLC is **Tier 2 OGC WCS 1.0.0 GetCoverage for canonical class integers** (model inputs), not Tier 3 direct HTTPS as v0.3.16 implied. WMS GetMap returns palette-encoded indices (silent-wrong-answer mode caught live by Invariant 7 gate in job-0042) — WMS retained as the visualization-only path; WCS is the canonical-bytes path. **§3.9 FR-DC-1 bucket layout clarification** (OQ-INFRA-31-FR-DC-1): per-TTL-class prefix nesting (`cache/<ttl-class>/<source-class>/<hash>.<ext>`) per job-0031 live substrate is the actual on-disk layout — scales past GCS 100-rule cap that per-source rules would burn through. Appendix B worked-example paths kept as aliases; cache shim normalizes. **§3.9 FR-DC-5 live-no-cache lifecycle clarification** (OQ-INFRA-31-LIVE-NO-CACHE-LIFECYCLE-NOOP): the `cache/live-no-cache/` lifecycle rule is intentionally a no-op (GCS rejects `daysSinceCustomTime=0`); acceptable because FR-DC-6 enumerates these tools as uncacheable-by-construction; rule exists as defense-in-depth, not load-bearing enforcement. **Deferred to a later pass** (intentionally NOT bundled here to keep this amendment focused): OQ-W-26 TTL-literal naming reconciliation; OQ-33-GEOCODED-LOCATION-CONTRACT-PROMOTION (sprint-08 schema scope); OQ-35-WIRE-PAYLOAD-ERROR-FIELDS-VISIBILITY; OQ-36-CACHE-REGRESSION-FAKE-FIDELITY; OQ-41-COMPUTE-CLASS-NAMING (sprint-08 schema scope); OQ-42-* + OQ-43-* + OQ-44-MANNING-MAPPING-CSV-COMMENT-WMS-REF (smaller code-side fixes). Sprint-08 catalog seed (job-0046) reads this updated prose for canonical "how to use" metadata. |
 | 0.3.19 | 2026-06-07 | New §3.10 Failure Recovery (FR-FR) — deny/retry/chat gate substrate + max-turns cap + explicit deferrals for the larger subsystem buildouts. Per user direction 2026-06-07 ("keep amendments short so we aren't detoured too much; defer larger sub system buildouts that are nice to have until we have a working demo"). **Status note** documents what v0.1 already has (Invariant 8 cancel chain at 850 ms verified job-0041; hard solver timeouts; fail-fast typed upstream errors per FR-AS-11 + FR-DC-3; Invariant 7 validation gates fail-closed — verified LIVE in production job-0042 NLCD palette case). **FR-FR-1**: deny/retry/chat recovery-choice envelope substrate — when atomic tool fails with a recoverable error class, agent surfaces a 3-button modal (mirrors §F.3 popup discipline — out of band of chat envelope per Decision F): Deny (record decision, mark failed, narrate honestly), Retry (re-attempt; cache shim discipline still applies), Chat (focused single-line input becomes user-message payload to nudge agent). NEW Appendix A envelopes `recovery-choice` + `recovery-choice-response` (schema lands at next schema sprint slot). **FR-FR-2**: per-error-code routing table classifies failures into transient-upstream (gate), recoverable-with-context (gate, chat path high-value), substrate-integrity / FAIL CLOSED (no gate — LULC_MAPPING_MISMATCH, SCHEMA_VALIDATION_FAILED, IAM_PERMISSION_DENIED, etc.; honest narration only), user-initiated (no gate), cost/budget (no gate, halt session). **FR-FR-3**: agent-side `MAX_TURNS_PER_SESSION` cap — cheap insurance against runaway LLM tool-call chains, TENTATIVE default 25 (OQ-FR-1); single config line in services/agent main.py + new `session-state.status="max_turns_reached"` enum value. **Targeted landing: sprint-08 small task.** **FR-FR-4** (DEFERRED): per-session token budget — internal accounting fails closed before Vertex AI tokens run away; separate from Invariant 9 no-cost-theater discipline (which forbids surfacing dollar estimates). Out of v0.1. **FR-FR-5** (DEFERRED INDEFINITELY): multi-agent pre-verifier — planner / executor / verifier subsystem that catches "faceplant" failures before user involvement; mitigates the bulk of the failure modes the deny/retry/chat gate exists for. Slot at M6+ post-MVP or whenever production review surfaces it as the bottleneck. Per user direction: "we will implement multi agent system that will hopefully mitigate this faceplant type of problem before the user needs to get involved we should slot a minimal version and then later add the multi agent/user guided workflow." **FR-FR-6** (DEFERRED): scientific output verification (cross-check flood depth against historical observations / FEMA NFHL overlays / USGS gauge records during modeled event); post-M5 milestone-level work given research-grade nature. **6 OQ-FR-* surfaced**, none v0.1-blocking. v0.3.17+ housekeeping carry-forward pile NOT bundled — explicit user direction to keep this amendment short. Sprint-07 close pass remains the planned housekeeping landing point. |
 | 0.3.18 | 2026-06-07 | New §F.1.2 Trust model for source discovery — three-mode framing that resolves OQ-AT-2 by rescoping it. **Mode 1 — Catalog-mediated (PRIMARY, v0.2+ sprint-08 binding):** curated `public_data_source_catalog.yaml` (and successor MongoDB `catalog_entries` collection) is the single source of truth for vetted endpoints. Each entry is research-driven + labeled at curator time with id/name/description/url(s)/access_tier (per §F.1.1)/ttl_class/source_class/credential_tier (per §F.1)/license/citation/vintage/last_verified/status + "how to use" metadata (invocation examples + parameter constraints + known quirks — e.g. "WorldPop returns 200 not 206 for Range requests; use region-download tier; specify country in params.iso3"). New atomic tools `catalog_search(topic, location?, source_filter?) → list[CatalogEntry]` + `catalog_fetch(entry_id, params) → LayerURI | dict` (generic dispatcher over the entry's access_tier, routes through FR-DC cache shim). Existing hardcoded tools (`fetch_dem`/`fetch_landcover`/`fetch_population`/`geocode_location`) coexist as friendly per-domain shortcuts for canonical sources; catalog covers the long tail. **Mode 2 — Offer-to-add on `.gov` and `.edu` (v0.2+, narrow growth path):** when agent encounters a candidate URL not in catalog AND on `.gov`/`.edu`, it does NOT autonomously fetch — instead performs a conformity probe (HEAD + STAC root + OGC GetCapabilities + COG headers + TLS cert org), emits a new `offer-catalog-addition` envelope (Appendix A amendment for sprint-08) with probe findings + suggested entry shape; client renders a dedicated review modal (mirrors §F.3 popup pattern; out of band of chat envelope per Decision F discipline); user accepts/rejects/edits; on accept the entry lands with `status: "user_proposed_pending_curator_review"` until curator review flips to `active`. Bounded growth path with mandatory user surfacing and audit log (`catalog_audit_log` MongoDB collection per Decision F). Why `.gov` + `.edu`: registry-controlled TLD policing (DotGov / EDUCAUSE) bounds the autonomous-probing surface; conformity probe + cross-confirmation against existing catalog catches false positives (press releases vs structured data, deprecated endpoints). **Mode 3 — Anything else (DEFERRED INDEFINITELY per user direction 2026-06-07):** non-.gov/non-.edu URLs (general .com, .org, country TLDs, IPs) shall NOT be probed and shall NOT trigger offer-to-add; agent narrates "candidate found at <url>; doesn't meet v0.1 trustworthiness criteria — review manually via curator CLI if appropriate." Revisit when Decision M provenance discipline + §F.3 user-identity + cross-confirmation signal mature. **4-axis trustworthiness model** = curator-side validation criteria for Mode 1 hand-curated AND Mode 2 user-accepted adds before status flips to `active`: domain provenance (TLD + cert org subject), protocol conformity (matches a known geospatial standard), metadata sufficiency (declared license + citation + vintage), cross-confirmation (referenced by existing catalog + SRS + vetted aggregator like NASA CMR / Microsoft Planetary Computer / USGS ScienceBase). All 4 ideal; ≥2 of 4 + curator override = minimum bar. **SSRF guardrails (infra-side, NFR-S; binding all modes):** Cloud Run VPC connector egress allowlist + private-IP block (10/8, 172.16/12, 192.168/16, 127/8, 169.254.169.254 GCE metadata) + DNS rebinding defense (re-resolve at fetch; fail closed on mismatch) + max response size (100 MB probe / 4 GB cataloged Tier-4) + per-domain rate limit + audit log. **OQ-AT-2 closed by rescoping**; **new OQ-AT-3** captures the wider Mode 3 trustworthiness question (deferred indefinitely). **Sprint-08 scope:** Mode 1 (catalog substrate + Sonnet-driven 30–60-entry seed + atomic tools + generic Tier-2 OGC adapter + SSRF guardrails) is headline; Mode 2 (offer-to-add) is fast-follow within sprint-08 if scope permits, sprint-09 otherwise. v0.3.17+ housekeeping carry-forwards (OQ-W-26, OQ-INFRA-31-FR-DC-1, OQ-INFRA-31-LIVE-NO-CACHE-LIFECYCLE-NOOP, OQ-33-GEOCODED-LOCATION-CONTRACT-PROMOTION, OQ-35-WIRE-PAYLOAD-ERROR-FIELDS-VISIBILITY, OQ-36-CACHE-REGRESSION-FAKE-FIDELITY, OQ-37-* WorldPop prose alignment) intentionally NOT bundled — planned sprint-07 close pass. |
@@ -3809,3 +3810,198 @@ GRACE-2 uses Firebase Authentication as the v0.1 identity provider, with GCP Ide
 - Appendix F §F.3 (Deferred Secrets UX) — H.6's per-user secret scoping is the architectural prerequisite §F.3 calls "M6+ user-identity machinery."
 
 ---
+## Appendix I: LLM Tool Harness Conventions
+
+> *(Decision F harness conventions, adopted 2026-06-08 per user direction "we can now tighten the harness." Binding from sprint-12-mega Wave 4.7 forward — see job-0164 (engine sweep) and job-0165 (this appendix). The conventions formalize the lessons of ~57 atomic tools shipped through sprint-12 against a Gemini-3 frontier LLM that routinely invents kwargs, abbreviation variants, and natural-language parameter strings.)*
+
+**Purpose.** This appendix codifies five conventions that every `@register_tool`-registered atomic tool and workflow in `services/agent/src/grace2_agent/{tools,workflows}/*.py` must conform to, plus the centralized normalization layer that backstops them. Together they harden the agent harness against the empirically observed failure mode where a frontier LLM emits well-intentioned but invented arguments — `run_name`, `scenario_id`, `description`, `rainfall_event="atlas14_100yr"`, `return_period_years` when the tool defines `return_period_yr`, `durationHours` when the tool defines `duration_hours` — and Python's strict signature-binding rejects every one with a `TypeError: unexpected keyword argument`. The conventions trade a small amount of per-tool boilerplate for end-to-end resilience: the harness absorbs noise, normalizes legitimate variants, fails loud only on substantive ambiguity, and surfaces unknown kwargs to logs without blocking the call.
+
+**Scope.** These conventions apply to **every** function decorated with `@register_tool` — atomic tools (FR-TA-2), workflow exposures (FR-TA-1), pass-throughs to MongoDB MCP, and dispatchers (e.g. `run_solver`, `catalog_fetch`). They are out of scope for: schema models (Appendices A–D — those are pydantic v2 contracts, not tool signatures), client-side rendering, infra provisioning, and tests (which exercise the conventions but do not author them).
+
+**Relationship to other contracts.** This appendix is a **convention layer**, not a schema. It does not introduce new Appendix A messages, Appendix B/C/D fields, or Appendix F catalog entries. It documents the discipline that the `agent` specialist enforces in code and that `engine` specialists conform to when registering tools. Tool-result shapes remain governed by Appendices A–D (e.g. `LayerURI` for layer-emitting tools, `AssessmentEnvelope` for workflows). Invariants 1 (determinism boundary) and 7 (claims carry provenance) are preserved verbatim — the harness silently absorbs *input* noise but never silently fabricates *output* values.
+
+### I.1 Parameter naming convention — full words, with bounded backward-compat aliases
+
+**Rule.** Parameter names use full unabbreviated English words separated by `_`. The two specific abbreviations historically embedded in the v0.1 atomic-tool surface are renamed and an alias is retained for backward-compatibility during the v0.1 transition.
+
+- `_yr` (year, years) → `_years` (e.g. `return_period_yr` → `return_period_years`)
+- `_hr` (hour, hours) → `_hours` (e.g. `duration_hr` → `duration_hours`)
+
+**Why.** Gemini-3 (the v0.1 LLM per FR-AS-1) generates `return_period_years` and `duration_hours` by default; the abbreviated forms read as cryptic to both the model and to humans inspecting tool docstrings via `tool-call-start` envelopes (A.4). Standardizing on full words eliminates the most common observed `unexpected keyword argument` failure class without per-call normalization.
+
+**Alias discipline.** For each renamed parameter, the old name is retained as `<old>: <type> | None = None` and normalized at the top of the function body. The alias never participates in the public docstring `Params:` section (it is implementation detail), but is retained until v0.2 to honor in-flight scripts and prompt-cached LLM examples that learned the v0.1 names. Example pattern (verbatim from `run_model_flood_scenario`):
+
+```python
+async def run_model_flood_scenario(
+    ...,
+    return_period_years: int = 100,
+    duration_hours: int = 24,
+    # Backward-compat aliases for legacy short forms
+    return_period_yr: int | None = None,
+    duration_hr: int | None = None,
+    **_extra_ignored: Any,
+) -> LayerURI | dict[str, Any]:
+    """..."""
+    effective_return_period = (
+        return_period_yr if return_period_yr is not None else return_period_years
+    )
+    effective_duration = duration_hr if duration_hr is not None else duration_hours
+    ...
+```
+
+**Forward extension.** Any future abbreviation hits this rule by construction: a new tool author writes the full-word form from the start. Aliases are only introduced for renames of *already-shipped* parameters, never for new ones.
+
+**Pluralization.** The full-word form is plural when the underlying quantity is a count or a span (`years`, `hours`, `meters`, `kilometers`). Singular forms (`year`, `hour`) are reserved for the rare case where a single discrete unit is meant (e.g. a calendar year, not a duration). Default to plural; if uncertain, prefer plural.
+
+**Non-goals.** This rule does *not* mandate fully verbose names where the abbreviation is universally understood and not a unit-bearing suffix (e.g. `bbox` stays `bbox`, not `bounding_box`; `dem` stays `dem`, not `digital_elevation_model`; `crs` stays `crs`, not `coordinate_reference_system`). The renames target unit-suffix abbreviations that the LLM has no prior reason to expect.
+
+### I.2 `**_extra_ignored` absorb-and-log policy
+
+**Rule.** Every `@register_tool`-registered function shall accept `**_extra_ignored: Any` as its final parameter, after all positional-or-keyword parameters and any backward-compat aliases.
+
+**Rationale.** Strict Python signature binding rejects unknown keyword arguments with `TypeError`. Frontier LLMs routinely emit kwargs that look reasonable from the prompt or examples but do not exist on the target tool — `run_name`, `scenario_id`, `description`, `notes`, `mode`, `version`, `priority`. With strict binding, each invented kwarg fails the entire call; absorb-and-log accepts the call, ignores the noise, and surfaces the kwargs to structured logs for harness telemetry.
+
+**Naming.** The parameter name is exactly `_extra_ignored` (underscore prefix marks it as deliberately unused per PEP 8 convention; the name `_extra_ignored` is the project convention so harness tooling and reviewers can grep for it). Do not rename it per-tool.
+
+**Type annotation.** `**_extra_ignored: Any`. The `Any` annotation is deliberate — the values are not validated and not consumed.
+
+**Logging.** When the function body receives a non-empty `_extra_ignored`, the harness shall log at `INFO` level a structured record `{tool_name, ignored_keys, session_id?}` so the operations side can monitor which kwargs the LLM is inventing most often. Logging is the responsibility of the centralized normalizer (§I.4) when it executes before the tool body; tools themselves do not need to add a log line. (Per §I.4, the normalizer logs only the *unknown-after-normalization* residue, not the raw input keys — keys consumed by alias normalization are not "ignored.")
+
+**Interaction with `extra="forbid"` on pydantic models.** The absorb policy applies to **tool signatures only**, not to pydantic models. Schema models (Appendices A–D) retain `extra="forbid"` per the `grace2-contracts` v0.1.0 discipline — wire shapes are strict, tool signatures are permissive. The two layers serve different purposes: schemas enforce wire-level integrity (Invariant 7); tool signatures protect against LLM-side noise.
+
+**Reference pattern.** `services/agent/src/grace2_agent/workflows/model_flood_scenario.py` `run_model_flood_scenario` is the canonical example (already in production, sprint-07 substrate); job-0164 propagates the pattern across the remaining ~57 functions.
+
+### I.3 Docstring discipline — no inline param-syntax-looking example strings
+
+**Rule.** Docstrings shall not embed example values that *look like* valid Python keyword arguments inside the prose. Specifically:
+
+- Do NOT write inline as prose: `... pass forcing="atlas14_100yr" to invoke ...`
+- Do NOT write inline as prose: `... use return_period_years=100 for ...`
+
+Such strings are visually indistinguishable from real parameter definitions when Gemini-3 reads the docstring via the ADK FunctionTool surface — the model frequently re-emits them verbatim as call arguments, even when no parameter by that name exists on the tool. This is the empirically observed root cause of invented kwargs like `forcing` and `rainfall_event` on the flood-scenario workflow.
+
+**Format.** Per-tool docstrings shall conform to the following sectioned format (already mandated in part by FR-AS-3 / FR-TA-3 — this appendix tightens it):
+
+```
+<one-sentence summary on a single line>
+
+Use this when: <natural-language usage triggers, with example USER PROMPTS in
+quotes — these are demonstrations of *what the user might say*, not example
+parameter values>. Multiple sentences allowed.
+
+Do NOT use this for: <complementary exclusions>.
+
+Params:
+    <param_name>: <one-line description>. Default <default>.
+    ...
+
+Returns:
+    <one-line description of the success return type>.
+
+    <Optional block for failure / partial-failure shape.>
+
+Examples:
+    >>> result = await <tool_name>(<keyword>=<value>, <keyword>=<value>)
+    >>> <follow-up call illustrating composition>
+
+<Optional FR-XX / Appendix-X anchor notes.>
+```
+
+**The `Examples:` block.** All call-shaped examples — anything that looks like Python syntax for calling the tool — live exclusively under a dedicated `Examples:` block at the end of the docstring. The block uses doctest-style `>>>` prefixes so the LLM has an unambiguous signal that the lines are demonstration code, not prose. Free-text "use this when" examples (in the `Use this when:` block) are framed as user prompts in quotes, never as parameter expressions.
+
+**Why this works.** Gemini-3 treats prose `key=value` substrings as if they were function-signature examples and re-emits them. Quoted user prompts (`"model the flood from a 100-year storm in Fort Myers, FL"`) are read as natural-language utterances. A dedicated `Examples:` block isolates call syntax to one labeled region the model can parse without confusion.
+
+**Migration discipline.** Existing tool docstrings that embed inline `key="value"` substrings shall be rewritten under this convention. The mechanical pass is part of job-0164's Part 4. New tools (sprint-12-mega Wave 5 onward) shall conform from the first commit.
+
+**Cross-reference to FR-AS-3 / FR-TA-3.** Those FRs mandate the existence of docstring metadata (one-sentence summary, "Use this when:", "Do NOT use this for:", param + return descriptions). This appendix specifies the **discipline of example placement** within that structure — the prior FRs did not anticipate the inline-`key=value`-as-prose hazard.
+
+### I.4 Normalization layer — `tool_arg_normalizer.py`
+
+**Rule.** All tool invocations dispatched by the agent's `_invoke_tool_via_emitter` (or equivalent ADK FunctionTool callsite in `services/agent/src/grace2_agent/server.py`) shall route through a centralized normalizer **before** the underlying `entry.fn(**params)` call.
+
+**Module location.** `services/agent/src/grace2_agent/tool_arg_normalizer.py` (sibling to `server.py`, owned by `agent` specialist; job-0164 lands the initial implementation in code).
+
+**Surface.** A single entry point:
+
+```python
+def normalize_args(
+    tool_name: str,
+    raw_args: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Returns (normalized_args, dropped_unknown_args).
+
+    normalized_args is suitable for `entry.fn(**normalized_args)`.
+    dropped_unknown_args is logged at INFO; callers should not
+    inject it back into the call.
+    """
+```
+
+**Behaviors (in order).**
+
+1. **Alias map** — a tool-name-keyed registry of `{old_param: new_param}` mappings. Maintained alongside the §I.1 backward-compat aliases; when an old name appears in `raw_args`, the value is moved to the new name (if the new name is absent) and the old key is removed. Conflicts (both old and new keys supplied with different values) are logged at WARNING and the new-name value wins.
+2. **Fuzzy match** — for keys that exactly match neither a real param nor a known alias, attempt a bounded Levenshtein / camelCase-to-snake_case normalization (e.g. `durationHours` → `duration_hours`, `returnPeriodYears` → `return_period_years`, `bbx` → `bbox` only if edit distance ≤ 1 and the candidate is unambiguous). Multiple ambiguous candidates → no rewrite; key falls through to the absorb-policy bucket. Fuzzy match is conservative by default; the matcher has a hard cap of one rewrite per call key.
+3. **String-form parsing** — for parameters with documented string-form shorthands (e.g. `forcing="atlas14_100yr"` parsing to `return_period_years=100` per `run_model_flood_scenario`), apply per-tool string parsers registered alongside the alias map. The reference implementation is in `run_model_flood_scenario` body (job-0042 substrate); the centralized normalizer hoists this into a reusable layer.
+4. **Drop-and-collect unknowns** — any key remaining after steps 1–3 that does not match a real parameter name on the target function shall be collected into `dropped_unknown_args` (the second tuple member), logged at INFO with `{tool_name, dropped_keys, session_id}`, and absent from `normalized_args`. The `**_extra_ignored` absorb at the function level (§I.2) is the safety net for any kwargs that escape the normalizer (e.g. when the registry has not yet seen the tool).
+
+**Where it wires.** `services/agent/src/grace2_agent/server.py` in `_invoke_tool_via_emitter` (or the renamed equivalent) shall call `normalized, dropped = normalize_args(tool_name, raw_args)` immediately before `await entry.fn(**normalized)`. Dropped kwargs are logged via the existing structured logger; they are not transmitted on the `tool-call-start` or `tool-call-complete` envelope (they are harness-internal telemetry, not user-visible).
+
+**Failure handling.** The normalizer never raises on unknown keys (that is the whole point). It MAY raise on internal-consistency errors (registry malformation, mismatched alias map). Raised errors are routed through the agent's existing error envelope (A.6 `error` message, code `TOOL_ARG_NORMALIZER_FAILED` — a new code to be added to A.6 in a sibling schema amendment).
+
+**Telemetry.** Per-tool counters of `{normalized_count, dropped_count, fuzzy_rewrite_count}` are emitted to the agent's structured-log stream so operations can spot tools that disproportionately attract invented kwargs — those are candidates for docstring tightening or signature redesign.
+
+**Out of scope for the normalizer.** It does **not** validate types (pydantic does that at the schema layer where applicable). It does **not** auto-fix substantively wrong values (e.g. a negative `return_period_years`). It does **not** silently fabricate defaults — defaults remain the responsibility of the tool's function signature. It is a *naming-noise* shim, not a *value-validation* shim.
+
+### I.5 Per-tool tests — cross-cutting fuzz
+
+**Rule.** Every `@register_tool`-registered function shall have a cross-cutting test that exercises the §I.2 absorb policy and §I.1 alias acceptance.
+
+**Test surface (recommended).** A single parametrized test file `tests/test_tool_harness_conventions.py` (owned by `testing`; out of scope for this appendix to author) that iterates over the live registry and asserts, for each tool:
+
+1. The function accepts an empty kwargs dict via the absorb policy (i.e. calling with `**{"run_name": "smoke"}` does not raise `TypeError`).
+2. Each documented alias resolves to its new-name parameter without error (when applicable per §I.1).
+3. The docstring conforms to the §I.3 sectioned format — `Use this when:`, `Do NOT use this for:`, `Params:`, `Returns:`, `Examples:` sections exist; no inline `key="value"` prose in `Use this when:` / `Do NOT use this for:` / `Params:` regions.
+4. The signature ends with `**_extra_ignored: Any`.
+
+**Fuzz layer (recommended).** A property-based test that feeds tools a kwargs dict including 0–5 randomly generated unknown keys (alphanumeric, length ≤ 12, plus snake_case noise) and asserts the call returns without raising signature-binding `TypeError`. Coverage target: every tool returned by the registry, run with a fixed seed for reproducibility.
+
+**CI gate.** The per-tool conformance tests run on every PR touching `services/agent/src/grace2_agent/{tools,workflows}/*.py` and gate merge. The fuzz tests run on every PR touching the normalizer or any registered tool.
+
+**Test ownership.** `testing` specialist authors the test file and CI hooks; `engine` and `agent` specialists ensure their tools pass.
+
+### I.6 Decision F (harness conventions) — adopted 2026-06-08
+
+**Decision.** The five conventions §I.1–§I.5 above are adopted as the LLM tool-harness discipline for GRACE-2 v0.1 forward, binding from sprint-12-mega Wave 4.7. The decision is recorded here (Appendix I) and in §2.1 Decisions (Decision F slot — already pinned to "harness conventions" by orchestrator update; this appendix is the canonical reference for the convention body).
+
+**Rationale.**
+
+- **Empirical signal.** Across ~57 atomic tools and ~5 workflows shipped through sprint-12-mega, the single most-common reason an LLM tool call fails before any application logic runs is signature-binding mismatch — invented kwargs, abbreviation variants, natural-language string-form parameter values. Whack-a-mole patching of individual tools has been the pattern through sprint-12; centralized conventions stop the cycle.
+- **No backward-compat for *new* shapes.** Per the AGENTS.md pre-MVP cross-cutting principle, no backward-compat shims for new shapes; the §I.1 aliases are the **only** backward-compat layer, and they are bounded to already-shipped parameter names (`_yr` / `_hr`) being renamed. New tools (sprint-12 Wave 5 forward) ship with full-word names from the first commit and do not get aliases.
+- **Convention, not schema.** This appendix does not introduce new wire fields or pydantic models; it tightens *implementation discipline*. Schemas (Appendices A–D) remain strict (`extra="forbid"`); tool signatures become permissive (`**_extra_ignored`). The two layers serve different purposes.
+- **Forward-looking surface.** As new tools land — Pelicun (M5.5), TELEMAC (M11), conservation utilities (OQ-11 pending), Tier-2 fetchers, Mode-2 catalog adds — the conventions apply uniformly without further amendment.
+
+**Alternatives considered.**
+
+- **Strict signature with whitelist auto-strip** — reject the call early on unknown kwargs and let the agent re-prompt. Rejected: re-prompting is expensive in turns and tokens; the LLM frequently re-invents the same kwargs the second time.
+- **Pydantic models in every signature** — define a model per tool, use `model_construct` with `extra="allow"`. Rejected: too heavy for atomic tools; pydantic v2's per-tool overhead dwarfs the call body for simple fetchers; harms readability and makes ADK FunctionTool registration less direct.
+- **Pure normalizer with no `**_extra_ignored`** — rely on the centralized normalizer alone to strip unknown kwargs. Rejected: the normalizer cannot know about every tool at all times (registry races during reload), and `**_extra_ignored` is a one-line per-tool safety net with no downside. Belt-and-suspenders.
+
+**Forward path.**
+
+- **v0.2 alias retirement.** When v0.2 ships, the §I.1 backward-compat aliases (`return_period_yr`, `duration_hr`) are removed; the full-word names are the only accepted form. Doctring `Use this when:` / `Examples:` blocks updated to reference only full-word names.
+- **Normalizer evolution.** The normalizer's fuzzy-match cap may relax as telemetry shows which rewrites are safe. The string-form parser registry grows per-tool as new shorthand patterns emerge from production usage.
+- **Convention propagation to non-tool surfaces.** If the agent later exposes resource-typed handles (MCP resources, tool-class sub-types), the absorb policy may extend to those surfaces under a sibling appendix.
+
+**Cross-references.**
+
+- §2.1 Decision F (harness conventions row) — this appendix is the body.
+- FR-AS-3 (atomic-tool metadata discipline) — extended by §I.3.
+- FR-TA-3 (tool-docstring discipline) — extended by §I.3.
+- Invariant 1 (determinism boundary) — preserved; harness absorbs *input* noise but never silently fabricates *output* values.
+- Invariant 7 (claims carry provenance) — preserved; tool result shapes are unchanged.
+- Invariant 10 (minimal parameter surface) — preserved and reinforced; full-word names + no inline example syntax = smaller cognitive parameter surface.
+- AGENTS.md pre-MVP "no legacy support" — honored; the only backward-compat is the bounded §I.1 alias set for already-shipped parameter names.
+- Job-0164 (engine sweep) — the implementation companion to this appendix; lands `**_extra_ignored`, renames, docstring fixes, and wires the normalizer.
+- Job-0165 (this appendix) — authors the appendix itself.
+
+---
+
