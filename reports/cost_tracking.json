@@ -853,6 +853,63 @@
       "description": "Sprint-12-mega Wave 4 UX polish (Stage B verification): Stage B Playwright verification \u2014 12 screenshots captured (Cases-root, Case-active, popups, chat input states, polished cards, palette, choropleth)",
       "model": "opus",
       "subagent_tokens": 220000
+    },
+    {
+      "job_id": "opus-parallel-diagnostic-job-0154-20260608",
+      "sprint": 12,
+      "description": "Opus parallel diagnostic for job-0154 (read-only). Independently confirmed hypothesis B (registration disconnect) \u2014 TOOL_REGISTRY never wired into Gemini tools=. Cross-checked Sonnet fix: all 3 required pieces present (disable autocall + FunctionDeclaration.from_callable + dispatch via _invoke_tool_via_emitter). Surfaced 6 new OQs \u2014 2 real bugs (function-response-feedback for prose narration; chat-history-asymmetry).",
+      "model": "opus",
+      "kind": "orchestrator-delegate-parallel",
+      "subagent_tokens": 96569
+    },
+    {
+      "job_id": "job-0149-web-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 4.5 (Stage A): Vector palette collision fix \u2014 djb2 hash gives 3 distinct species colors",
+      "model": "sonnet",
+      "subagent_tokens": 95000
+    },
+    {
+      "job_id": "job-0150-web-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 4.5 (Stage A): PayloadWarning restyle apply \u2014 shadow + radius now visible at runtime",
+      "model": "sonnet",
+      "subagent_tokens": 95000
+    },
+    {
+      "job_id": "job-0151-web-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 4.5 (Stage A): Secrets popup flatten \u2014 single card surface, no nested inset",
+      "model": "sonnet",
+      "subagent_tokens": 95000
+    },
+    {
+      "job_id": "job-0152-web-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 4.5 (Stage A): Hide MapLibre nav controls + OSM attribution tag",
+      "model": "sonnet",
+      "subagent_tokens": 95000
+    },
+    {
+      "job_id": "job-0153-web-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 4.5 (Stage A): Chat polish bundle \u2014 markdown renderer + scroll arrow + user bubble + placeholder + Enter-to-send (all 6 deliverables; 319/319 tests; 5 screenshots)",
+      "model": "opus",
+      "subagent_tokens": 220000
+    },
+    {
+      "job_id": "job-0154-agent-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 4.5 (Stage A): Wire Gemini tool catalog + system prompt \u2014 fixes \"I can't model\" refusal (Opus diagnostic confirmed root cause hypothesis B)",
+      "model": "sonnet",
+      "subagent_tokens": 95000
+    },
+    {
+      "job_id": "job-0155-testing-20260608",
+      "sprint": 12,
+      "description": "Sprint-12-mega Wave 4.5 (Stage B verify): Wave 4.5 Playwright re-verify \u2014 7/7 pass; all 7 verification screenshots produced",
+      "model": "sonnet",
+      "subagent_tokens": 95000
     }
   ],
   "totals_by_sprint": {
@@ -862,7 +919,7 @@
     "9": 713020,
     "10": 1540974,
     "11": 999540,
-    "12": 11781384
+    "12": 12667953
   },
   "historical_context": {
     "note": "Captured for accountability \u2014 NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
