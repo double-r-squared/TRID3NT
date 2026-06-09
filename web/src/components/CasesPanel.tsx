@@ -185,6 +185,8 @@ function CaseRow({
               borderRadius: 4,
               padding: "3px 6px",
               fontSize: 13,
+              // job-0166 — form controls don't inherit font-family by default.
+              fontFamily: "inherit",
             }}
           />
         ) : (
@@ -297,6 +299,8 @@ const iconBtnStyle: React.CSSProperties = {
   display: "inline-flex",
   alignItems: "center",
   justifyContent: "center",
+  // job-0166 — buttons need explicit fontFamily so they don't fall back to UA serif.
+  fontFamily: "inherit",
 };
 
 // --- CasesPanel --------------------------------------------------------- //
@@ -371,6 +375,8 @@ export function CasesPanel({
             fontSize: 12,
             fontWeight: 600,
             cursor: "pointer",
+            // job-0166 — buttons need explicit fontFamily.
+            fontFamily: "inherit",
           }}
         >
           + New Case

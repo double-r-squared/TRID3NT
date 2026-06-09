@@ -92,6 +92,10 @@ export function ConfirmationDialog({
           flexDirection: "column",
           gap: 12,
           boxShadow: "0 8px 24px rgba(0,0,0,0.6)",
+          // job-0166 — explicit sans-serif so the modal text doesn't fall
+          // back to UA serif before the global.css baseline kicks in.
+          fontFamily:
+            "-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif",
         }}
       >
         <strong
@@ -145,5 +149,7 @@ function btnStyle(color: string): React.CSSProperties {
     fontSize: 12,
     fontWeight: 600,
     cursor: "pointer",
+    // job-0166 — keep buttons on the sans-serif stack the dialog uses.
+    fontFamily: "inherit",
   };
 }

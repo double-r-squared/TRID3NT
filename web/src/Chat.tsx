@@ -85,7 +85,17 @@ interface PipelineInlineState {
 
 type PipelineAction =
   | { type: "pipeline-state"; payload: PipelineStatePayload }
-  | { type: "session-state"; payload: SessionStatePayload };
+  | { type: "session-state"; payload: SessionStatePayload }
+  // job-0166 Part 1 — A.6 error envelope arrives without an accompanying
+  // pipeline-state(failed) snapshot from the agent in the LLM_UNAVAILABLE /
+  // tool-TypeError paths in server.py. The client must force-transition the
+  // most-recent running step to failed so the rainbow animation stops and
+  // the user sees a terminal RED card.
+  | {
+      type: "error";
+      payload: ErrorPayload;
+      tool_name?: string | null;
+    };
 
 function narrowCurrentPipeline(x: unknown): PipelineSnapshot | null {
   if (x === null || x === undefined) return null;
@@ -152,9 +162,118 @@ function pipelineReducer(
       const cp = narrowCurrentPipeline(action.payload.current_pipeline);
       return { ...state, currentPipelineFromSession: cp };
     }
+    case "error": {
+      // job-0166 Part 1 — find the most-recent running step across (live,
+      // history). Preference: a step whose tool_name matches the error's
+      // tool_name when supplied (forward-compatible — ErrorPayload doesn't
+      // currently carry tool_name, but the agent may surface it as a future
+      // amendment); fall back to the latest running step in encounter order.
+      //
+      // The chosen step is force-transitioned to `failed` with the
+      // error_code + message attached so PipelineCard renders the typed RED
+      // card with no spinner. Other steps are left alone (a failed tool
+      // does not invalidate sibling completed steps in the same pipeline).
+      return forceMostRecentRunningToFailed(
+        state,
+        action.payload,
+        action.tool_name ?? null,
+      );
+    }
     default:
       return state;
   }
+}
+
+// --- Error → failed transition (job-0166 Part 1) ------------------------- //
+//
+// Walk every pipeline snapshot we currently render (history + live) in order;
+// the LAST running step encountered (preferring a tool_name match) becomes
+// the target. We rewrite the matching step in BOTH live and history so the
+// mergeStepsByStepId pass renders the failure regardless of which snapshot
+// the step's most-recent state lived in.
+
+function rewriteStep(
+  snap: PipelineStatePayload,
+  step_id: string,
+  next: PipelineStepSummary,
+): PipelineStatePayload {
+  return {
+    ...snap,
+    steps: (snap.steps ?? []).map((s) =>
+      s.step_id === step_id ? next : s,
+    ),
+  };
+}
+
+export function forceMostRecentRunningToFailed(
+  state: PipelineInlineState,
+  err: ErrorPayload,
+  tool_name: string | null,
+): PipelineInlineState {
+  // Collect every snapshot in order: history then live.
+  const allSnapshots: PipelineStatePayload[] = [...state.history];
+  if (state.live) allSnapshots.push(state.live);
+
+  // First pass — tool_name match wins. Scan in reverse to prefer most-recent.
+  let targetStepId: string | null = null;
+  if (tool_name) {
+    outer: for (let i = allSnapshots.length - 1; i >= 0; i--) {
+      const snap = allSnapshots[i]!;
+      for (let j = (snap.steps?.length ?? 0) - 1; j >= 0; j--) {
+        const s = snap.steps![j]!;
+        if (s.state === "running" && s.tool_name === tool_name) {
+          targetStepId = s.step_id;
+          break outer;
+        }
+      }
+    }
+  }
+  // Second pass — any most-recent running step.
+  if (targetStepId === null) {
+    outer: for (let i = allSnapshots.length - 1; i >= 0; i--) {
+      const snap = allSnapshots[i]!;
+      for (let j = (snap.steps?.length ?? 0) - 1; j >= 0; j--) {
+        const s = snap.steps![j]!;
+        if (s.state === "running") {
+          targetStepId = s.step_id;
+          break outer;
+        }
+      }
+    }
+  }
+
+  // Nothing to flip — leave the world alone.
+  if (targetStepId === null) return state;
+
+  // Build the failed replacement carrying the error_code + message so
+  // PipelineCard renders the typed RED card with the chip + tooltip.
+  const buildFailed = (
+    prev: PipelineStepSummary,
+  ): PipelineStepSummary => ({
+    ...prev,
+    state: "failed",
+    error_code: err.error_code,
+    error_message: err.message,
+  });
+
+  // Rewrite every snapshot containing the target step_id (defensive — the
+  // step should be in at most one but mergeStepsByStepId tolerates duplicates).
+  const nextHistory = state.history.map((snap) => {
+    const hit = (snap.steps ?? []).find(
+      (s) => s.step_id === targetStepId,
+    );
+    return hit ? rewriteStep(snap, targetStepId!, buildFailed(hit)) : snap;
+  });
+  let nextLive = state.live;
+  if (nextLive) {
+    const hit = (nextLive.steps ?? []).find(
+      (s) => s.step_id === targetStepId,
+    );
+    if (hit) {
+      nextLive = rewriteStep(nextLive, targetStepId, buildFailed(hit));
+    }
+  }
+  return { ...state, history: nextHistory, live: nextLive };
 }
 
 // Export for testing.
@@ -236,6 +355,11 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
       },
       onError: (p: ErrorPayload) => {
         setLastError(`${p.error_code}: ${p.message}`);
+        // job-0166 Part 1 — force the most-recent running step to failed so
+        // the rainbow animation terminates and the user sees a RED card.
+        // Sender envelope shape does not currently include tool_name; pass
+        // null and rely on the most-recent-running fallback.
+        dispatchPipeline({ type: "error", payload: p, tool_name: null });
       },
     });
     wsRef.current = ws;
@@ -253,6 +377,20 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
       dispatchPipeline({ type: "pipeline-state", payload: p });
     return () => {
       delete window.__grace2InjectPipelineState;
+    };
+  }, []);
+
+  // job-0166 dev-only seam: inject an error envelope so Playwright can
+  // verify Part 1 (running → failed force-transition on LLM_UNAVAILABLE /
+  // tool TypeError) without a live agent failure.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    window.__grace2InjectError = (p) => {
+      setLastError(`${p.error_code}: ${p.message}`);
+      dispatchPipeline({ type: "error", payload: p, tool_name: null });
+    };
+    return () => {
+      delete window.__grace2InjectError;
     };
   }, []);
 
@@ -540,6 +678,18 @@ export function mergeStepsByStepId(
   // step_id's most-recently-encountered snapshot is the rendered one; the
   // first-encountered position is the display order (stable across
   // re-renders).
+  //
+  // job-0166 Part 3 — second-pass dedupe by (name, tool_name). The agent
+  // emits the "llm_generation" thinking step on a fresh pipeline_id per
+  // user-message; if the wrapping `_invoke_tool_via_emitter` lifecycle
+  // races such that a stale running snapshot is archived before the
+  // matching complete arrives, the merge by step_id keeps both visible
+  // (different step_ids). This second pass collapses any two cards
+  // sharing the same (name, tool_name) within a single render to the
+  // most-recent one, so the user sees ONE transitioning llm_generation
+  // card whose state advances pending → running → complete (or failed /
+  // cancelled), never a stale blue rainbow card stacked next to a green
+  // completed one.
   const orderedIds: string[] = [];
   const latest = new Map<string, PipelineStepSummary>();
   const consume = (steps: PipelineStepSummary[] | undefined): void => {
@@ -553,7 +703,29 @@ export function mergeStepsByStepId(
   };
   for (const snap of history) consume(snap.steps);
   if (live) consume(live.steps);
-  return orderedIds.map((id) => latest.get(id)!);
+
+  // First-pass result, in original encounter order.
+  const merged = orderedIds.map((id) => latest.get(id)!);
+
+  // Second-pass: collapse by (name|tool_name) — preserves the most-recently
+  // encountered card for each pair; preserves first-encounter ORDER of
+  // that pair (so the llm_generation card stays at its original position
+  // when its step_id is reissued mid-stream).
+  const byKey = new Map<string, number>(); // key → index in result
+  const result: PipelineStepSummary[] = [];
+  for (const s of merged) {
+    const key = `${s.name}|${s.tool_name}`;
+    const prevIdx = byKey.get(key);
+    if (prevIdx === undefined) {
+      byKey.set(key, result.length);
+      result.push(s);
+    } else {
+      // Same logical step encountered again with a different step_id —
+      // replace in place so the latest state wins at the existing position.
+      result[prevIdx] = s;
+    }
+  }
+  return result;
 }
 
 function PipelineCardStack({

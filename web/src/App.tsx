@@ -112,6 +112,8 @@ declare global {
     __grace2InjectMapCommand?: (p: MapCommandPayload) => void;
     /** Dev seam for pipeline-state; wired by Chat.tsx via its GraceWs handler. */
     __grace2InjectPipelineState?: (p: PipelineStatePayload) => void;
+    /** Dev seam for error (job-0166); wired by Chat.tsx via its GraceWs handler. */
+    __grace2InjectError?: (p: import("./contracts").ErrorPayload) => void;
     /** Dev seam for secrets-list (job-0125); wired by App.tsx GraceWs handler. */
     __grace2InjectSecretsList?: (p: SecretsListPayload) => void;
     /** Dev seam for source-suggestion (job-0126 → renamed job-0145); wired by App.tsx GraceWs handler. */

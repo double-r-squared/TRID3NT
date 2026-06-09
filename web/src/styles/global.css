@@ -1,0 +1,42 @@
+/* GRACE-2 web — global font normalization (job-0166).
+ *
+ * Three browser-default surfaces render with a serif (Times-New-Roman-like)
+ * font when no font-family is declared on them or an ancestor:
+ *
+ *   - <body> when the host page has not set one
+ *   - <input> / <textarea> / <select> / <button>: these elements do NOT
+ *     inherit the body font in any browser; they explicitly fall back to
+ *     the platform UA stylesheet, which is serif on most platforms.
+ *
+ * Wave 4.6 left CasesPanel / CaseView / ConfirmationDialog / Chat / etc. each
+ * declaring their own fontFamily inline, but the (initially hidden) inputs and
+ * buttons inside them still rendered as Times because the inline rule only
+ * covered the wrapper, not the form controls.
+ *
+ * Rather than auditing every <input>/<button>/<textarea> in the tree, we set
+ * a single source of truth: the SAME system-ui sans-serif stack used by
+ * Chat.tsx / LayerPanel.tsx / LayerLegend.tsx (the existing convention).
+ *
+ * The stack here is the union of the conventions already in use across
+ * components — favors the platform-native sans-serif on macOS / Windows /
+ * Linux, with `system-ui` as the generic fallback.
+ */
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,
+    Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-size: 14px;
+  color: #222;
+  background: #fff;
+}
+
+/* Form controls do NOT inherit font-family by default. Force them to. */
+input,
+textarea,
+select,
+button {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+}
