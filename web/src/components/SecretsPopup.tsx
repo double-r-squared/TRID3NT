@@ -1,9 +1,9 @@
-// GRACE-2 web — SecretsPopup (job-0143, sprint-12-mega Wave 4).
+// GRACE-2 web — SecretsPopup (job-0143 Wave 4; job-0151 flatten).
 //
-// Wraps SecretsPanel in the same full-screen overlay pattern as
-// SettingsPopup. Replaces the inline bottom-left SecretsPanel toggle (the
-// 🔑 button + corner panel) — the user opens secrets management as a
-// modal now, consistent with Settings.
+// Full-screen overlay for API-key management. job-0151: flattened the
+// card-within-card nesting — SecretsPanel's own card chrome was removed so
+// this overlay is the single card surface, matching SettingsPopup in width
+// and close-X position.
 
 import { useEffect } from "react";
 import { SecretsPanel } from "./SecretsPanel";
@@ -41,13 +41,22 @@ const cardStyle: React.CSSProperties = {
   background: "rgba(20,22,30,0.98)",
   border: "1px solid #444",
   borderRadius: 12,
-  width: "min(420px, 92vw)",
+  // Width matches SettingsPopup for visual parity.
+  width: "min(480px, 92vw)",
   maxHeight: "85vh",
   overflowY: "auto",
   color: "#e8eaf0",
   boxShadow: "0 24px 64px rgba(0,0,0,0.55)",
   position: "relative",
-  padding: "28px 18px 18px",
+  // Padding matches SettingsPopup: 28px top (for close-X), 30px sides, 24px bottom.
+  padding: "28px 30px 24px",
+};
+
+const headerStyle: React.CSSProperties = {
+  fontSize: 20,
+  fontWeight: 600,
+  margin: "0 0 16px",
+  color: "#e8eaf0",
 };
 
 const closeBtnStyle: React.CSSProperties = {
@@ -104,6 +113,7 @@ export function SecretsPopup({
         >
           ✕
         </button>
+        <h2 style={headerStyle}>API Keys</h2>
         <SecretsPanel
           secrets={secrets}
           caseId={caseId}

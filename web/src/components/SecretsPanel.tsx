@@ -83,24 +83,13 @@ export interface SecretsPanelProps {
 
 // --- Styles -------------------------------------------------------------- //
 
+// panelStyle carries only typography/color — no card chrome (background,
+// border, borderRadius, width, maxHeight). SecretsPopup is the sole card
+// surface; the panel content lays out flat inside it.
 const panelStyle: React.CSSProperties = {
-  background: "rgba(20,20,25,0.92)",
-  border: "1px solid #444",
-  borderRadius: 6,
   color: "#ccc",
-  padding: "12px 14px",
   fontSize: 13,
-  width: 320,
-  maxHeight: "70vh",
-  overflowY: "auto",
   fontFamily: "inherit",
-};
-
-const headerStyle: React.CSSProperties = {
-  fontSize: 14,
-  fontWeight: 600,
-  marginBottom: 8,
-  color: "#ddd",
 };
 
 const sectionLabelStyle: React.CSSProperties = {
@@ -235,15 +224,13 @@ export function SecretsPanel({
 
   return (
     <div data-testid="grace2-secrets-panel" style={panelStyle}>
-      <div style={headerStyle}>API Keys</div>
-
       {/* Empty state — friendly copy when nothing exists yet. */}
       {activeSecrets.length === 0 && (
         <div
           data-testid="grace2-secrets-empty-state"
           style={emptyStateStyle}
         >
-          Add a key to unlock Tier-2 data sources ({TIER2_EMPTY_STATE_NAMES}).
+          Add a key to unlock additional data sources ({TIER2_EMPTY_STATE_NAMES}).
         </div>
       )}
 

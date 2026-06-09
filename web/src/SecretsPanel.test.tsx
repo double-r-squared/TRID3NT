@@ -110,8 +110,9 @@ describe("SecretsPanel — empty state (kickoff §4)", () => {
     );
     const empty = screen.getByTestId("grace2-secrets-empty-state");
     expect(empty).toBeInTheDocument();
-    // Must mention Tier-2 unlock + at least one of the conservation providers
-    expect(empty.textContent ?? "").toMatch(/Tier-2/);
+    // Must mention unlock copy + at least one of the conservation providers.
+    // (job-0151: "Tier-2" is an internal term — removed from user-facing copy.)
+    expect(empty.textContent ?? "").toMatch(/unlock/i);
     expect(empty.textContent ?? "").toMatch(/eBird/);
   });
 
