@@ -1,0 +1,9 @@
+{
+  "total_layers": 2,
+  "total_sources": 2,
+  "source_ids": [
+    "qgis-wms",
+    "osm-fallback"
+  ],
+  "vector_layers": []
+}

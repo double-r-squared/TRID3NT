@@ -1,0 +1,11 @@
+{
+  "layer_ids": [
+    "gbif-panther-fl",
+    "gbif-spoonbill-fl",
+    "gbif-alligator-fl"
+  ],
+  "colors": {},
+  "unique_color_count": 0,
+  "collision_detected": true,
+  "verdict": "FAIL — palette collision remains (not all 3 species have distinct colours)"
+}

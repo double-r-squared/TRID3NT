@@ -1,0 +1,20 @@
+{
+  "layer_ids": [
+    "osm-fallback-basemap",
+    "qgis-basemap",
+    "wdpa-big-cypress",
+    "wdpa-big-cypress-outline",
+    "gbif-panther-fl",
+    "gbif-spoonbill-fl",
+    "gbif-alligator-fl"
+  ],
+  "colors": {
+    "gbif-panther-fl": "#00BFFF",
+    "gbif-spoonbill-fl": "#4477FF",
+    "gbif-alligator-fl": "#ADFF2F",
+    "wdpa-big-cypress": "TypeError: Cannot read properties of undefined (reading 'value')"
+  },
+  "unique_color_count": 3,
+  "collision_detected": false,
+  "verdict": "PASS \u2014 3 distinct species colours confirmed"
+}
