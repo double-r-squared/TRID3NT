@@ -2996,3 +2996,201 @@ def test_crs_tag_mismatch_guard_projected_tag_geographic_coords(tmp_path: Path) 
         f"CRS_TAG_MISMATCH; got error_code={excinfo.value.error_code!r}"
     )
 
+
+# --------------------------------------------------------------------------- #
+# job-0170 — rasterio /vsigs/ migration (eliminate gcsfs segfault)
+#
+# Codified lessons (from the kickoff): the agent crashed mid-run with
+# ``SystemError: <cyfunction DatasetBase.stop> returned a result with an
+# exception set`` from rasterio reading remote rasters via gcsfs (HydroMT's
+# setup_manning_roughness → rioxarray.open_rasterio path). job-0170 replaces
+# the gcsfs read path with rasterio's native /vsigs/ virtual filesystem.
+#
+# The four guards below cover:
+#   1. ``_to_vsigs`` URI rewriting — pure helper, no I/O.
+#   2. The YAML config plumbs ``/vsigs/`` (not ``gs://``) into HydroMT's
+#      ``setup_dep`` + ``setup_manning_roughness`` blocks. This is the
+#      load-bearing assertion — if it regresses, HydroMT picks up gcsfs
+#      again and the segfault returns.
+#   3. ``GDAL_NUM_THREADS=1`` set at module import (the second half of
+#      the segfault fix — single-threaded GDAL avoids the cyfunction
+#      destructor race even when ``/vsigs/`` is used).
+#   4. ``_rasterio_open_with_retry`` retries transient failures.
+# --------------------------------------------------------------------------- #
+
+
+def test_to_vsigs_rewrites_gs_uri_to_vsigs_path() -> None:
+    """``_to_vsigs('gs://bucket/key')`` → ``/vsigs/bucket/key``.
+
+    Failure mode this guards against: regressing to passing ``gs://`` URIs
+    to HydroMT / rasterio. That dispatches the read through ``gcsfs``,
+    which segfaults inside ``DatasetBase.stop`` under HydroMT's concurrent
+    open/close pattern (job-0170 root cause).
+    """
+    from grace2_agent.workflows.sfincs_builder import _to_vsigs
+
+    # The headline rewrite.
+    assert _to_vsigs("gs://grace-2-hazard-prod-cache/cache/static-30d/landcover/x.tif") == (
+        "/vsigs/grace-2-hazard-prod-cache/cache/static-30d/landcover/x.tif"
+    )
+
+    # Idempotence — calling twice does not double-prefix.
+    once = _to_vsigs("gs://bucket/key.tif")
+    twice = _to_vsigs(once)
+    assert twice == once == "/vsigs/bucket/key.tif"
+
+    # ``file://`` prefix stripped — local fixtures still readable.
+    assert _to_vsigs("file:///tmp/local.tif") == "/tmp/local.tif"
+
+    # Bare local paths pass through unchanged.
+    assert _to_vsigs("/tmp/local.tif") == "/tmp/local.tif"
+    assert _to_vsigs("relative/path.tif") == "relative/path.tif"
+
+
+def test_hydromt_yaml_emits_vsigs_paths_for_gs_inputs(tmp_path: Path) -> None:
+    """The YAML config plumbed into HydroMT must use ``/vsigs/`` for ``gs://`` inputs.
+
+    The headline regression guard for job-0170. The captured ``opt`` dict
+    that ``SfincsModel.build`` receives must show ``/vsigs/...`` paths in
+    both ``setup_dep.datasets_dep[0].elevtn`` and
+    ``setup_manning_roughness.datasets_rgh[0].lulc`` when the upstream
+    ``dem_uri`` / ``landcover_uri`` are ``gs://`` URIs. If either path
+    still starts with ``gs://``, HydroMT will hand it to
+    ``rioxarray.open_rasterio`` which dispatches via ``gcsfs`` → segfault.
+    """
+    captured = _build_with_capture(
+        tmp_path=tmp_path,
+        river_geometry_uri=None,
+    )
+
+    opt = captured.get("opt")
+    assert isinstance(opt, dict)
+
+    # setup_dep — DEM path must be /vsigs/
+    setup_dep = opt.get("setup_dep")
+    assert isinstance(setup_dep, dict), (
+        f"setup_dep missing or wrong shape; got {setup_dep!r}"
+    )
+    datasets_dep = setup_dep.get("datasets_dep")
+    assert isinstance(datasets_dep, list) and datasets_dep, (
+        f"datasets_dep missing or empty; got {datasets_dep!r}"
+    )
+    elevtn_path = datasets_dep[0].get("elevtn")
+    assert isinstance(elevtn_path, str) and elevtn_path.startswith("/vsigs/"), (
+        f"job-0170 regression: setup_dep.datasets_dep[0].elevtn must be a "
+        f"/vsigs/ path so HydroMT's rioxarray.open_rasterio uses GDAL's "
+        f"native libcurl backend, NOT gcsfs (which segfaults inside "
+        f"DatasetBase.stop). Got: {elevtn_path!r}"
+    )
+    assert "gs://" not in elevtn_path, (
+        f"job-0170 regression: elevtn still contains 'gs://' — the path "
+        f"will dispatch through gcsfs and segfault. Got: {elevtn_path!r}"
+    )
+
+    # setup_manning_roughness — landcover path must be /vsigs/. This is
+    # the actual segfault site from the kickoff narrative.
+    setup_rgh = opt.get("setup_manning_roughness")
+    assert isinstance(setup_rgh, dict), (
+        f"setup_manning_roughness missing; got {setup_rgh!r}"
+    )
+    datasets_rgh = setup_rgh.get("datasets_rgh")
+    assert isinstance(datasets_rgh, list) and datasets_rgh, (
+        f"datasets_rgh missing or empty; got {datasets_rgh!r}"
+    )
+    lulc_path = datasets_rgh[0].get("lulc")
+    assert isinstance(lulc_path, str) and lulc_path.startswith("/vsigs/"), (
+        f"job-0170 HEADLINE regression: setup_manning_roughness lulc must "
+        f"be a /vsigs/ path. This is the exact path that triggered the "
+        f"SystemError: DatasetBase.stop segfault when handed a gs:// URI. "
+        f"Got: {lulc_path!r}"
+    )
+    assert "gs://" not in lulc_path, (
+        f"job-0170 HEADLINE regression: lulc still contains 'gs://' — "
+        f"HydroMT's setup_manning_roughness will dispatch through gcsfs "
+        f"and segfault. Got: {lulc_path!r}"
+    )
+
+
+def test_gdal_num_threads_pinned_at_module_import() -> None:
+    """``GDAL_NUM_THREADS=1`` must be set when the sfincs_builder module imports.
+
+    The second half of the job-0170 cure. Multi-threaded GDAL reads
+    through /vsigs/ have historically interacted badly with rasterio's
+    dataset finaliser — the same cyfunction destructor that segfaulted
+    under gcsfs. Pinning to 1 thread eliminates the race; bandwidth, not
+    CPU, is the bottleneck for our typical bbox-sized NLCD/DEM reads.
+
+    This test imports the module (idempotent — already imported by the
+    test suite) and verifies the env key is set. Uses ``setdefault``
+    semantics so a caller can override by setting the env BEFORE import.
+    """
+    import os
+    import grace2_agent.workflows.sfincs_builder  # noqa: F401 — triggers env setup
+
+    assert os.environ.get("GDAL_NUM_THREADS") == "1", (
+        f"job-0170 env regression: GDAL_NUM_THREADS must be '1' at module "
+        f"import time to avoid the cyfunction destructor race that "
+        f"segfaulted under gcsfs. Got: {os.environ.get('GDAL_NUM_THREADS')!r}"
+    )
+    # Defensive: at least one of the GS-relevant HTTP retry keys must be set
+    # so transient GCS hiccups don't surface as raw exceptions to HydroMT.
+    assert os.environ.get("GDAL_HTTP_MAX_RETRY") is not None, (
+        "job-0170: GDAL_HTTP_MAX_RETRY must be set at module import for "
+        "transient GS resilience (NFR-R-1)."
+    )
+
+
+def test_rasterio_open_with_retry_backs_off_and_succeeds() -> None:
+    """``_rasterio_open_with_retry`` retries on transient failures.
+
+    Simulates two transient ``RuntimeError`` failures followed by a
+    success, mimicking a flaky /vsigs/ HTTP read. The retry wrapper must
+    swallow the first two failures (with backoff) and return the third
+    attempt's result.
+    """
+    from grace2_agent.workflows import sfincs_builder
+    from unittest.mock import patch, MagicMock
+
+    fake_open = MagicMock(
+        side_effect=[
+            RuntimeError("transient HTTP 503"),
+            RuntimeError("transient HTTP 503"),
+            "ok-dataset",
+        ]
+    )
+    with patch("rasterio.open", fake_open), patch("time.sleep") as fake_sleep:
+        result = sfincs_builder._rasterio_open_with_retry(
+            "/vsigs/bucket/key.tif", max_attempts=3
+        )
+
+    assert result == "ok-dataset"
+    assert fake_open.call_count == 3, (
+        f"_rasterio_open_with_retry should retry 3 times before succeeding; "
+        f"called rasterio.open {fake_open.call_count} times"
+    )
+    # Exponential backoff: 1s then 2s (no sleep after the final attempt).
+    fake_sleep.assert_any_call(1)
+    fake_sleep.assert_any_call(2)
+
+
+def test_rasterio_open_with_retry_exhausts_attempts_and_reraises() -> None:
+    """``_rasterio_open_with_retry`` re-raises the underlying exception after exhaustion.
+
+    On final failure the wrapper must surface the real cause unwrapped so
+    the caller's typed-error translation (``SFINCSSetupError("LANDCOVER_
+    READ_FAILED", ...)``) carries the actual error message. Wrapping in a
+    fresh exception would lose the libcurl details the caller needs to
+    diagnose.
+    """
+    from grace2_agent.workflows import sfincs_builder
+    from unittest.mock import patch, MagicMock
+
+    underlying = RuntimeError("persistent /vsigs/ 503")
+    fake_open = MagicMock(side_effect=underlying)
+
+    with patch("rasterio.open", fake_open), patch("time.sleep"):
+        with pytest.raises(RuntimeError, match=r"persistent /vsigs/ 503"):
+            sfincs_builder._rasterio_open_with_retry(
+                "/vsigs/bucket/key.tif", max_attempts=2
+            )
+    assert fake_open.call_count == 2

@@ -22,7 +22,12 @@ surface lifts into a failed AssessmentEnvelope. See the matching
 Decision OQ-4 §3 "Selected: Option A — Full HydroMT" (job-0038, approved):
 - ``build_sfincs_model`` wraps Deltares' ``hydromt_sfincs.SfincsModel`` with a
   ``DataCatalog`` constructed from our atomic-tool ``LayerURI`` GCS paths.
-- GCS bridging uses ``fsspec[gcs]`` per OQ-4 §4 contract.
+- GCS READS into HydroMT use GDAL's ``/vsigs/`` virtual filesystem
+  (job-0170): the YAML config rewrites every ``gs://`` URI to ``/vsigs/``
+  before it reaches ``rioxarray.open_rasterio``, keeping the unstable
+  ``gcsfs`` backend out of the read path. Deck UPLOADS (manifest +
+  staging) still use ``fsspec[gcs]`` — those write paths are stable and
+  not in the segfault-prone ``DatasetBase.stop`` finaliser chain.
 - ``hydromt-sfincs >= 1.1.2, < 2.0`` is the pinned dependency; v2.0 RC has
   breaking ``SfincsModel`` API changes — defer until it exits RC.
 
@@ -80,6 +85,56 @@ __all__ = [
 ]
 
 logger = logging.getLogger("grace2_agent.workflows.sfincs_builder")
+
+
+# --------------------------------------------------------------------------- #
+# GDAL/rasterio env (job-0170): stabilize remote-raster reads + kill gcsfs
+# --------------------------------------------------------------------------- #
+#
+# job-0170 headline: the agent process was crashing mid-run with
+#
+#   SystemError: <cyfunction DatasetBase.stop> returned a result with an
+#   exception set
+#
+# traced to ``hydromt_sfincs.setup_manning_roughness`` →
+# ``rioxarray.open_rasterio`` → ``gcsfs``. The gcsfs backend on the agent
+# venv is unstable under HydroMT's concurrent open/close pattern and
+# segfaults inside the cyfunction destructor — taking the agent process
+# down with it (NFR-R-1 breach).
+#
+# The cure is to keep gcsfs out of the read path entirely: rasterio ships
+# GDAL with a native ``/vsigs/`` virtual filesystem that talks GCS via
+# libcurl + libgoogle_cloud_storage and is rock-solid under concurrency.
+# Two things must hold for ``/vsigs/`` to work:
+#
+# 1. ``GDAL_NUM_THREADS=1`` — multi-threaded GDAL reads through ``/vsigs/``
+#    have historically interacted badly with rasterio's dataset finaliser
+#    (the same cyfunction destructor that segfaulted under gcsfs). Pinning
+#    to 1 thread eliminates the race; remote bandwidth, not CPU, is the
+#    bottleneck for our typical bbox-sized NLCD/DEM reads anyway.
+#
+# 2. ``CPL_GS_OAUTH2_REFRESH_TOKEN`` OR ADC — GDAL's GS driver needs auth.
+#    Cloud Run service accounts and the dev box's ADC both surface as ADC;
+#    GDAL picks ADC up automatically as long as
+#    ``GOOGLE_APPLICATION_CREDENTIALS`` is set or
+#    ``~/.config/gcloud/application_default_credentials.json`` exists. We
+#    do NOT set ``CPL_GS_OAUTH2_REFRESH_TOKEN`` (that would shadow ADC and
+#    hard-pin a stale token); we just trust ADC, which is what
+#    ``fetch_dem``/``fetch_landcover`` already rely on for their py3dep
+#    and STAC reads.
+#
+# These env keys are set at module-import time so any importer (the agent
+# Cloud Run service, the test harness, the dev box) inherits the safe
+# defaults without needing entrypoint plumbing. ``setdefault`` semantics
+# mean a caller can override (e.g. ``GDAL_NUM_THREADS=4`` for a CPU-bound
+# local raster job) by setting the env BEFORE importing the workflow.
+os.environ.setdefault("GDAL_NUM_THREADS", "1")
+# Modest VSI cache + timeout for transient GCS hiccups (FR-DT-2 cache is
+# external; this is the per-read pace inside GDAL).
+os.environ.setdefault("GDAL_HTTP_TIMEOUT", "60")
+os.environ.setdefault("GDAL_HTTP_MAX_RETRY", "3")
+os.environ.setdefault("GDAL_HTTP_RETRY_DELAY", "1")
+os.environ.setdefault("CPL_VSIL_CURL_CHUNK_SIZE", "1048576")  # 1 MiB
 
 
 # --------------------------------------------------------------------------- #
@@ -379,6 +434,94 @@ def validate_nlcd_vintage_against_mapping(
 
 
 # --------------------------------------------------------------------------- #
+# GCS path helper — gs:// → /vsigs/ (job-0170)
+# --------------------------------------------------------------------------- #
+
+
+def _to_vsigs(uri: str) -> str:
+    """Convert a ``gs://bucket/key`` URI to a GDAL ``/vsigs/`` path.
+
+    The ``/vsigs/`` virtual filesystem is rasterio's native, libcurl-backed
+    GCS reader — distinct from (and unaffected by) the fragile ``gcsfs``
+    backend that ``rioxarray.open_rasterio`` would otherwise pick up when
+    handed a ``gs://`` URI.
+
+    Local paths (``file://`` or absolute) pass through unchanged; already-
+    converted ``/vsigs/`` paths are idempotent. Anything else is treated
+    as a local path (the caller's resolver layer is the gate).
+
+    Args:
+        uri: ``gs://...`` GCS URI, ``/vsigs/...`` GDAL virtual path, or
+            local filesystem path (with or without ``file://`` prefix).
+
+    Returns:
+        The GDAL-readable string GDAL drivers (rasterio, HydroMT's
+        rioxarray, the gdal CLI) can open without invoking ``gcsfs``.
+    """
+    if uri.startswith("/vsigs/"):
+        return uri
+    if uri.startswith("gs://"):
+        return "/vsigs/" + uri[len("gs://"):]
+    if uri.startswith("file://"):
+        return uri[len("file://"):]
+    return uri
+
+
+def _rasterio_open_with_retry(read_path: str, *, max_attempts: int = 3):
+    """Open a raster via rasterio with retry-and-backoff for transient GS hiccups.
+
+    ``/vsigs/`` reads can fail with transient HTTP errors when the GCS
+    endpoint rate-limits or returns a 5xx. Retry up to ``max_attempts``
+    times with exponential backoff (1s, 2s, 4s); on final failure re-raise
+    the underlying exception unwrapped so the caller's typed-error
+    translation layer sees the real cause.
+
+    The retry loop only catches ``rasterio.errors.RasterioIOError`` /
+    generic ``RuntimeError`` / ``OSError`` — programming errors
+    (TypeError, ValueError on the path string) escape immediately.
+
+    NFR-R-1: external-API resilience — segfault root cause (gcsfs) is
+    avoided structurally by the ``/vsigs/`` swap; this wrapper handles
+    the remaining transient layer.
+    """
+    import time
+
+    import rasterio  # local — caller already vouched for the import
+
+    try:
+        from rasterio.errors import RasterioIOError  # type: ignore[import-not-found]
+        retryable_excs: tuple[type[BaseException], ...] = (
+            RasterioIOError,
+            RuntimeError,
+            OSError,
+        )
+    except Exception:  # noqa: BLE001
+        retryable_excs = (RuntimeError, OSError)
+
+    last_exc: BaseException | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return rasterio.open(read_path)
+        except retryable_excs as exc:  # type: ignore[misc]
+            last_exc = exc
+            if attempt == max_attempts:
+                break
+            backoff_s = 2 ** (attempt - 1)
+            logger.warning(
+                "rasterio.open(%s) transient failure on attempt %d/%d (%s); "
+                "retrying in %.1fs",
+                read_path,
+                attempt,
+                max_attempts,
+                exc,
+                backoff_s,
+            )
+            time.sleep(backoff_s)
+    assert last_exc is not None  # logic guarantee — the loop sets last_exc on each fail
+    raise last_exc
+
+
+# --------------------------------------------------------------------------- #
 # Landcover-class extraction
 # --------------------------------------------------------------------------- #
 
@@ -411,21 +554,25 @@ def _extract_unique_nlcd_classes(landcover_uri: str) -> set[int]:
         ) from exc
 
     # GCS URIs need to be rewritten to the /vsigs/ form for rasterio's
-    # GDAL backend. Local paths pass through unchanged.
-    if landcover_uri.startswith("gs://"):
-        read_path = "/vsigs/" + landcover_uri[len("gs://") :]
-    else:
-        read_path = landcover_uri
+    # GDAL backend. ``_to_vsigs`` handles ``gs://`` + ``file://`` + local
+    # paths uniformly (job-0170 — kills the gcsfs path that segfaulted
+    # inside the cyfunction destructor under HydroMT).
+    read_path = _to_vsigs(landcover_uri)
 
     try:
-        with rasterio.open(read_path) as src:
+        # ``_rasterio_open_with_retry`` wraps transient ``/vsigs/`` HTTP
+        # failures in exponential backoff; programming errors escape.
+        src = _rasterio_open_with_retry(read_path)
+        try:
             arr = src.read(1)
             nodata = src.nodata
+        finally:
+            src.close()
     except Exception as exc:  # noqa: BLE001
         raise SFINCSSetupError(
             "LANDCOVER_READ_FAILED",
             message=f"rasterio.open({landcover_uri}) failed: {exc}",
-            details={"landcover_uri": landcover_uri},
+            details={"landcover_uri": landcover_uri, "read_path": read_path},
         ) from exc
 
     try:
@@ -607,14 +754,21 @@ def _generate_hydromt_yaml_config(
         f"  region: {{ bbox: [{bbox[0]}, {bbox[1]}, {bbox[2]}, {bbox[3]}] }}"
     )
     components.append(f"  res: {grid_res}")
+    # job-0170: pass /vsigs/ paths (not gs://) to HydroMT. HydroMT's
+    # ``setup_dep`` / ``setup_manning_roughness`` open these via
+    # ``rioxarray.open_rasterio`` which dispatches a ``gs://`` URI through
+    # ``gcsfs`` — the segfault site. The ``/vsigs/`` rewrite keeps the read
+    # on GDAL's native libcurl backend. Local paths pass through unchanged.
+    dem_read_path = _to_vsigs(dem_local_path)
+    landcover_read_path = _to_vsigs(landcover_local_path)
     components.append("setup_dep:")
-    components.append(f"  datasets_dep: [{{ elevtn: '{dem_local_path}' }}]")
+    components.append(f"  datasets_dep: [{{ elevtn: '{dem_read_path}' }}]")
     components.append("setup_mask_active:")
     components.append("  zmin: -10.0")
     components.append("  zmax: 10.0")
     components.append("setup_manning_roughness:")
     components.append(
-        f"  datasets_rgh: [{{ lulc: '{landcover_local_path}', "
+        f"  datasets_rgh: [{{ lulc: '{landcover_read_path}', "
         f"reclass_table: '{mapping_csv_path}' }}]"
     )
     # v0.1 SCOPE DECISION (job-0055, OQ-54 routing recommendation b):
@@ -828,7 +982,11 @@ def build_sfincs_model(
         yaml_text = _generate_hydromt_yaml_config(
             bbox=bbox,
             options=opts,
-            dem_local_path=dem_uri,  # SfincsModel handles gs:// via fsspec[gcs]
+            # job-0170: ``_generate_hydromt_yaml_config`` rewrites
+            # ``gs://`` → ``/vsigs/`` internally so HydroMT's
+            # ``rioxarray.open_rasterio`` reads through GDAL's native
+            # libcurl backend, not the segfault-prone ``gcsfs``.
+            dem_local_path=dem_uri,
             landcover_local_path=landcover_uri,
             river_local_path=river_geometry_uri,
             forcing=forcing,
