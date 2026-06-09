@@ -1,0 +1,570 @@
+{
+  "ss1": {
+    "app_shell_present": true,
+    "active_case_id": "01KTNK6XS3MGEGX6RXRXAHDQ3W",
+    "cases": [],
+    "case_view_present": true,
+    "page_errors": [
+      "console.error: Warning: `value` prop on `%s` should not be null. Consider using an empty string to clear the component or `undefined` for uncontrolled components.%s input \n    at input\n    at div\n    at div\n    at SortableRow (http://localhost:5173/src/LayerPanel.tsx?t=1780984835170:367:3)\n    at SortableContext (http://localhost:5173/node_modules/.vite/deps/@dnd-kit_sortable.js?v=e800d1dc:261:5)\n    at DndContext2 (http://localhost:5173/node_modules/.vite/deps/chunk-A5UIQW2K.js?v=e800d1dc:2521:5)\n    at div\n    at aside\n    at LayerPanel (http://localhost:5173/src/LayerPanel.tsx?t=1780984835170:126:3)\n    at div\n    at div\n    at div\n    at App (http://localhost:5173/src/App.tsx?t=1780986429457:85:15)"
+    ]
+  },
+  "ss2": {
+    "prompt": "Show me radar over America",
+    "submit_t0": 1780988745277,
+    "elapsed_ms": 25750,
+    "settled_with_overlay": true,
+    "new_layers": [
+      {
+        "id": "nexrad-n0r-conus",
+        "type": "raster",
+        "source": "nexrad-n0r-conus"
+      }
+    ],
+    "map_center": {
+      "lng": -95.5,
+      "lat": 37
+    },
+    "map_zoom": 4,
+    "chat_idle_after": {
+      "idle": true,
+      "elapsed_ms": 10536,
+      "observation": {
+        "input_disabled": false,
+        "input_busy": null,
+        "running_count": 0
+      }
+    }
+  },
+  "ss3": {
+    "prompt": "Show me weather alerts across America",
+    "submit_t0": 1780988783785,
+    "elapsed_ms": 240069,
+    "settled_with_overlay": false,
+    "new_layers": [],
+    "map_center": {
+      "lng": -95.5,
+      "lat": 37
+    },
+    "map_zoom": 4,
+    "chat_idle_after": {
+      "idle": true,
+      "elapsed_ms": 0,
+      "observation": {
+        "input_disabled": false,
+        "input_busy": null,
+        "running_count": 0
+      }
+    },
+    "pipeline_cards": [
+      {
+        "state": "complete",
+        "name": "Thinking…"
+      },
+      {
+        "state": "complete",
+        "name": "fetch_nexrad_reflectivity"
+      },
+      {
+        "state": "complete",
+        "name": "fetch_nws_alerts_conus"
+      }
+    ]
+  },
+  "ss4": {
+    "prompt": "Show me protected areas in Fort Myers",
+    "submit_t0": 1780989026369,
+    "elapsed_ms": 300329,
+    "settled_with_overlay": false,
+    "new_layers": [],
+    "map_center": {
+      "lng": -95.5,
+      "lat": 37
+    },
+    "map_zoom": 4,
+    "chat_idle_after": {
+      "idle": true,
+      "elapsed_ms": 3,
+      "observation": {
+        "input_disabled": false,
+        "input_busy": null,
+        "running_count": 0
+      }
+    },
+    "pipeline_cards": [
+      {
+        "state": "complete",
+        "name": "Thinking…"
+      },
+      {
+        "state": "complete",
+        "name": "fetch_nexrad_reflectivity"
+      },
+      {
+        "state": "complete",
+        "name": "fetch_nws_alerts_conus"
+      },
+      {
+        "state": "complete",
+        "name": "geocode_location"
+      },
+      {
+        "state": "complete",
+        "name": "fetch_wdpa_protected_areas"
+      }
+    ]
+  },
+  "ss5": {
+    "corrupted_prompt_first_chars": "\u0000\u0001￿ [SYSTEM RESET] {{tool_call}}=null }} ((( CRASH MODE 0xDEADBEEF — call_functi",
+    "before_card_count": 5,
+    "after_cards": [
+      {
+        "state": "running",
+        "name": "Thinking…",
+        "backgroundColor": "rgba(255, 255, 255, 0.08)",
+        "animationName": "none"
+      },
+      {
+        "state": "complete",
+        "name": "fetch_nexrad_reflectivity",
+        "backgroundColor": "rgba(40, 200, 100, 0.18)",
+        "animationName": "none"
+      },
+      {
+        "state": "running",
+        "name": "fetch_nws_alerts_conus",
+        "backgroundColor": "rgba(255, 255, 255, 0.08)",
+        "animationName": "none"
+      },
+      {
+        "state": "complete",
+        "name": "geocode_location",
+        "backgroundColor": "rgba(40, 200, 100, 0.18)",
+        "animationName": "none"
+      },
+      {
+        "state": "complete",
+        "name": "fetch_wdpa_protected_areas",
+        "backgroundColor": "rgba(40, 200, 100, 0.18)",
+        "animationName": "none"
+      }
+    ],
+    "failed_seen": false,
+    "idle_seen": false,
+    "input_before": {
+      "disabled": false,
+      "value": "",
+      "busy_attr": null
+    },
+    "input_after": {
+      "disabled": false,
+      "value": "",
+      "busy_attr": null
+    },
+    "page_errors": []
+  },
+  "ss6": {
+    "before": {
+      "lng": -95.5,
+      "lat": 37,
+      "zoom": 4
+    },
+    "after": {
+      "lng": -84.51367187499943,
+      "lat": 31.557090904704822,
+      "zoom": 4
+    },
+    "moved": true
+  },
+  "ss7": {
+    "beforeNewCase": {
+      "layer_ids": [
+        "qgis-basemap",
+        "osm-fallback-basemap",
+        "nexrad-n0r-conus"
+      ],
+      "pipeline_cards": [
+        {
+          "state": "running",
+          "name": "Thinking…"
+        },
+        {
+          "state": "complete",
+          "name": "fetch_nexrad_reflectivity"
+        },
+        {
+          "state": "running",
+          "name": "fetch_nws_alerts_conus"
+        },
+        {
+          "state": "complete",
+          "name": "geocode_location"
+        },
+        {
+          "state": "complete",
+          "name": "fetch_wdpa_protected_areas"
+        }
+      ],
+      "active_case_id": "01KTNK6XS3MGEGX6RXRXAHDQ3W",
+      "overlay_only": [
+        "nexrad-n0r-conus"
+      ]
+    },
+    "afterSwitchToB": {
+      "layer_ids": [
+        "qgis-basemap",
+        "osm-fallback-basemap"
+      ],
+      "pipeline_cards": [
+        {
+          "state": "running",
+          "name": "Thinking…"
+        },
+        {
+          "state": "complete",
+          "name": "fetch_nexrad_reflectivity"
+        },
+        {
+          "state": "running",
+          "name": "fetch_nws_alerts_conus"
+        },
+        {
+          "state": "complete",
+          "name": "geocode_location"
+        },
+        {
+          "state": "complete",
+          "name": "fetch_wdpa_protected_areas"
+        }
+      ],
+      "active_case_id": "",
+      "overlay_only": [],
+      "empty_overlay_layers": true,
+      "case_id_changed": true
+    },
+    "backClicked": true,
+    "afterSwitchBack": {
+      "layer_ids": [
+        "qgis-basemap",
+        "osm-fallback-basemap"
+      ],
+      "pipeline_cards": [
+        {
+          "state": "running",
+          "name": "Thinking…"
+        },
+        {
+          "state": "complete",
+          "name": "fetch_nexrad_reflectivity"
+        },
+        {
+          "state": "running",
+          "name": "fetch_nws_alerts_conus"
+        },
+        {
+          "state": "complete",
+          "name": "geocode_location"
+        },
+        {
+          "state": "complete",
+          "name": "fetch_wdpa_protected_areas"
+        }
+      ],
+      "active_case_id": "",
+      "overlay_only": [],
+      "case_id_restored": false,
+      "overlay_restored": false
+    }
+  },
+  "ws_frames": [
+    {
+      "t_ms": 1780988733215,
+      "label": "ss1",
+      "preview": "{\"type\":\"session-state\",\"id\":\"01KTNK6SRXE3V3BDK8RPTEVH0W\",\"ts\":\"2026-06-09T07:05:33.213818Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"chat_history\":[],\"loaded_layers\":[],\"pipeline_history\":[],\"current_pipeline\":null,\"map_view\":null,\"status\":\"active\"}}"
+    },
+    {
+      "t_ms": 1780988733215,
+      "label": "ss1",
+      "preview": "{\"type\":\"error\",\"id\":\"01KTNK6SRYMS6TDGV73T4KBKK9\",\"ts\":\"2026-06-09T07:05:33.214378Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"error_code\":\"TOOL_PARAMS_INVALID\",\"message\":\"payload validation failed: Input should be 'AUTH_FAILED', 'RATE_LIMITED', 'INTERNAL_ERROR', 'LLM"
+    },
+    {
+      "t_ms": 1780988734110,
+      "label": "ss1",
+      "preview": "{\"type\":\"session-state\",\"id\":\"01KTNK6THN9XH2SAJSPXWAHFTK\",\"ts\":\"2026-06-09T07:05:34.005075Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"chat_history\":[],\"loaded_layers\":[],\"pipeline_history\":[],\"current_pipeline\":null,\"map_view\":null,\"status\":\"active\"}}"
+    },
+    {
+      "t_ms": 1780988734111,
+      "label": "ss1",
+      "preview": "{\"type\":\"error\",\"id\":\"01KTNK6THQT4R04HA38TMCW82H\",\"ts\":\"2026-06-09T07:05:34.007056Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"error_code\":\"TOOL_PARAMS_INVALID\",\"message\":\"payload validation failed: Input should be 'AUTH_FAILED', 'RATE_LIMITED', 'INTERNAL_ERROR', 'LLM"
+    },
+    {
+      "t_ms": 1780988744765,
+      "label": "ss1",
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTNK751PC7TSN14Q3H5DTX1M\",\"ts\":\"2026-06-09T07:05:44.758771Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"pipeline_id\":\"01KTNK751PC7TSN14Q3H5DTX1J\",\"steps\":[{\"step_id\":\"01KTNK751PC7TSN14Q3H5DTX1K\",\"name\":\"llm_generation\",\"tool_name\":\"gemi"
+    },
+    {
+      "t_ms": 1780988769959,
+      "label": "ss1",
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTNK7XK6ECCN88NAW66F6DYK\",\"ts\":\"2026-06-09T07:06:09.894270Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"pipeline_id\":\"01KTNK7XK5A63EG5JRYFDMN1KF\",\"steps\":[{\"step_id\":\"01KTNK7XK5ECCN88NAW66F6DYJ\",\"name\":\"fetch_nexrad_reflectivity\",\"tool_"
+    },
+    {
+      "t_ms": 1780988770058,
+      "label": "ss1",
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTNK7XK6ECCN88NAW66F6DYM\",\"ts\":\"2026-06-09T07:06:09.894952Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"pipeline_id\":\"01KTNK7XK5A63EG5JRYFDMN1KF\",\"steps\":[{\"step_id\":\"01KTNK7XK5ECCN88NAW66F6DYJ\",\"name\":\"fetch_nexrad_reflectivity\",\"tool_"
+    },
+    {
+      "t_ms": 1780988770062,
+      "label": "ss1",
+      "preview": "{\"type\":\"session-state\",\"id\":\"01KTNK7XK7BNW1BXZE78FNE11W\",\"ts\":\"2026-06-09T07:06:09.896018Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"chat_history\":[],\"loaded_layers\":[{\"layer_id\":\"nexrad-n0r-conus\",\"name\":\"NEXRAD Composite Reflectivity (Iowa State Mesonet)\",\"layer_t"
+    },
+    {
+      "t_ms": 1780988770062,
+      "label": "ss1",
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTNK7XK8BKHHRE59YNGGRJZP\",\"ts\":\"2026-06-09T07:06:09.896670Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"pipeline_id\":\"01KTNK7XK5A63EG5JRYFDMN1KF\",\"steps\":[{\"step_id\":\"01KTNK7XK5ECCN88NAW66F6DYJ\",\"name\":\"fetch_nexrad_reflectivity\",\"tool_"
+    },
+    {
+      "t_ms": 1780988780798,
+      "label": "ss1",
+      "preview": "{\"type\":\"agent-message-chunk\",\"id\":\"01KTNK887V133C2TX2W92NHCZJ\",\"ts\":\"2026-06-09T07:06:20.795263Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"message_id\":\"01KTNK751PC7TSN14Q3H5DTX1H\",\"delta\":\"I'\",\"done\":false}}"
+    },
+    {
+      "t_ms": 1780988781115,
+      "label": "ss1",
+      "preview": "{\"type\":\"agent-message-chunk\",\"id\":\"01KTNK88HRYWVA42K94JGDM6WV\",\"ts\":\"2026-06-09T07:06:21.112984Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"message_id\":\"01KTNK751PC7TSN14Q3H5DTX1H\",\"delta\":\"ve added a layer to the map showing the current NEXRAD composite radar reflec"
+    },
+    {
+      "t_ms": 1780988781131,
+      "label": "ss1",
+      "preview": "{\"type\":\"agent-message-chunk\",\"id\":\"01KTNK88HWZSNK0GA0NCDS00V3\",\"ts\":\"2026-06-09T07:06:21.116844Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"message_id\":\"01KTNK751PC7TSN14Q3H5DTX1H\",\"delta\":\" the United States. You can see the storm systems moving across the country.\\"
+    },
+    {
+      "t_ms": 1780988781181,
+      "label": "ss1",
+      "preview": "{\"type\":\"agent-message-chunk\",\"id\":\"01KTNK88KTRRBH4AGAMERDJ89N\",\"ts\":\"2026-06-09T07:06:21.178976Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"message_id\":\"01KTNK751PC7TSN14Q3H5DTX1H\",\"delta\":\" else can I help you with?\\n\",\"done\":false}}"
+    },
+    {
+      "t_ms": 1780988781229,
+      "label": "ss1",
+      "preview": "{\"type\":\"agent-message-chunk\",\"id\":\"01KTNK88NBP57VY7ZWV7QSGK77\",\"ts\":\"2026-06-09T07:06:21.227560Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"message_id\":\"01KTNK751PC7TSN14Q3H5DTX1H\",\"delta\":\"\",\"done\":true}}"
+    },
+    {
+      "t_ms": 1780988781243,
+      "label": "ss1",
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTNK88NCH4AD9WPNM3NAWKVN\",\"ts\":\"2026-06-09T07:06:21.228167Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"pipeline_id\":\"01KTNK751PC7TSN14Q3H5DTX1J\",\"steps\":[{\"step_id\":\"01KTNK751PC7TSN14Q3H5DTX1K\",\"name\":\"llm_generation\",\"tool_name\":\"gemi"
+    },
+    {
+      "t_ms": 1780988783275,
+      "label": "ss1",
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTNK8AN8Q25P6S4MBX7AA1NE\",\"ts\":\"2026-06-09T07:06:23.272836Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"pipeline_id\":\"01KTNK8AN8Q25P6S4MBX7AA1NC\",\"steps\":[{\"step_id\":\"01KTNK8AN8Q25P6S4MBX7AA1ND\",\"name\":\"llm_generation\",\"tool_name\":\"gemi"
+    },
+    {
+      "t_ms": 1780988818588,
+      "label": "ss1",
+      "preview": "{\"type\":\"agent-message-chunk\",\"id\":\"01KTNK9D4TSQ94BPAMT4WZD8AC\",\"ts\":\"2026-06-09T07:06:58.586409Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"message_id\":\"01KTNK8AN8Q25P6S4MBX7AA1NB\",\"delta\":\"I am fetching the national weather radar and the current weather alerts for t"
+    },
+    {
+      "t_ms": 1780988818755,
+      "label": "ss1",
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTNK9DA1SPQR5CQVZQGEEGKG\",\"ts\":\"2026-06-09T07:06:58.753314Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"pipeline_id\":\"01KTNK9DA0M0SSN8QDZF4DEBTW\",\"steps\":[{\"step_id\":\"01KTNK9DA1SPQR5CQVZQGEEGKF\",\"name\":\"fetch_nexrad_reflectivity\",\"tool_"
+    },
+    {
+      "t_ms": 1780988818776,
+      "label": "ss1",
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTNK9DA1SPQR5CQVZQGEEGKH\",\"ts\":\"2026-06-09T07:06:58.753977Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"pipeline_id\":\"01KTNK9DA0M0SSN8QDZF4DEBTW\",\"steps\":[{\"step_id\":\"01KTNK9DA1SPQR5CQVZQGEEGKF\",\"name\":\"fetch_nexrad_reflectivity\",\"tool_"
+    },
+    {
+      "t_ms": 1780988818799,
+      "label": "ss1",
+      "preview": "{\"type\":\"session-state\",\"id\":\"01KTNK9DA31CDTJMWDHCTS2QP1\",\"ts\":\"2026-06-09T07:06:58.755054Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"chat_history\":[],\"loaded_layers\":[{\"layer_id\":\"nexrad-n0r-conus\",\"name\":\"NEXRAD Composite Reflectivity (Iowa State Mesonet)\",\"layer_t"
+    },
+    {
+      "t_ms": 1780988818799,
+      "label": "ss1",
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTNK9DA31CDTJMWDHCTS2QP2\",\"ts\":\"2026-06-09T07:06:58.755830Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"pipeline_id\":\"01KTNK9DA0M0SSN8QDZF4DEBTW\",\"steps\":[{\"step_id\":\"01KTNK9DA1SPQR5CQVZQGEEGKF\",\"name\":\"fetch_nexrad_reflectivity\",\"tool_"
+    },
+    {
+      "t_ms": 1780988818799,
+      "label": "ss1",
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTNK9DA5NSDYNN0YE9PKDY4C\",\"ts\":\"2026-06-09T07:06:58.757487Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"pipeline_id\":\"01KTNK9DA5NSDYNN0YE9PKDY4A\",\"steps\":[{\"step_id\":\"01KTNK9DA5NSDYNN0YE9PKDY4B\",\"name\":\"fetch_nws_alerts_conus\",\"tool_nam"
+    },
+    {
+      "t_ms": 1780988818799,
+      "label": "ss1",
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTNK9DA5NSDYNN0YE9PKDY4D\",\"ts\":\"2026-06-09T07:06:58.758024Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"pipeline_id\":\"01KTNK9DA5NSDYNN0YE9PKDY4A\",\"steps\":[{\"step_id\":\"01KTNK9DA5NSDYNN0YE9PKDY4B\",\"name\":\"fetch_nws_alerts_conus\",\"tool_nam"
+    },
+    {
+      "t_ms": 1780988844281,
+      "label": "ss1",
+      "preview": "{\"type\":\"session-state\",\"id\":\"01KTNKA67K5DWE7T7H189ZR9H6\",\"ts\":\"2026-06-09T07:07:24.275277Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"chat_history\":[],\"loaded_layers\":[{\"layer_id\":\"nexrad-n0r-conus\",\"name\":\"NEXRAD Composite Reflectivity (Iowa State Mesonet)\",\"layer_t"
+    },
+    {
+      "t_ms": 1780988844529,
+      "label": "ss1",
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTNKA67MTXJDY60DZK72HY1W\",\"ts\":\"2026-06-09T07:07:24.276098Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"pipeline_id\":\"01KTNK9DA5NSDYNN0YE9PKDY4A\",\"steps\":[{\"step_id\":\"01KTNK9DA5NSDYNN0YE9PKDY4B\",\"name\":\"fetch_nws_alerts_conus\",\"tool_nam"
+    },
+    {
+      "t_ms": 1780988863995,
+      "label": "ss1",
+      "preview": "{\"type\":\"agent-message-chunk\",\"id\":\"01KTNKASFSZM716HGQV45B2FGH\",\"ts\":\"2026-06-09T07:07:43.993181Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"message_id\":\"01KTNK8AN8Q25P6S4MBX7AA1NB\",\"delta\":\"I'\",\"done\":false}}"
+    },
+    {
+      "t_ms": 1780988864352,
+      "label": "ss1",
+      "preview": "{\"type\":\"agent-message-chunk\",\"id\":\"01KTNKASTYCH5SSJE7ZKMB6EB4\",\"ts\":\"2026-06-09T07:07:44.350547Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"message_id\":\"01KTNK8AN8Q25P6S4MBX7AA1NB\",\"delta\":\"ve added two layers to the map. One shows the current NEXRAD radar composite\""
+    },
+    {
+      "t_ms": 1780988864707,
+      "label": "ss1",
+      "preview": "{\"type\":\"agent-message-chunk\",\"id\":\"01KTNKAT612T5HM3KF31BFNXQE\",\"ts\":\"2026-06-09T07:07:44.705391Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"message_id\":\"01KTNK8AN8Q25P6S4MBX7AA1NB\",\"delta\":\" for the United States. The other shows all active weather alerts from the Na"
+    },
+    {
+      "t_ms": 1780988865828,
+      "label": "ss1",
+      "preview": "{\"type\":\"agent-message-chunk\",\"id\":\"01KTNKAV92XEE51ENGWA9G3RTS\",\"ts\":\"2026-06-09T07:07:45.826407Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"message_id\":\"01KTNK8AN8Q25P6S4MBX7AA1NB\",\"delta\":\" Service.\\n\",\"done\":false}}"
+    },
+    {
+      "t_ms": 1780988865979,
+      "label": "ss1",
+      "preview": "{\"type\":\"agent-message-chunk\",\"id\":\"01KTNKAVDSN5XWVH1NXY49Z9C9\",\"ts\":\"2026-06-09T07:07:45.977258Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"message_id\":\"01KTNK8AN8Q25P6S4MBX7AA1NB\",\"delta\":\"\",\"done\":true}}"
+    },
+    {
+      "t_ms": 1780988865993,
+      "label": "ss1",
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTNKAVDSN5XWVH1NXY49Z9CA\",\"ts\":\"2026-06-09T07:07:45.977916Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"pipeline_id\":\"01KTNK8AN8Q25P6S4MBX7AA1NC\",\"steps\":[{\"step_id\":\"01KTNK8AN8Q25P6S4MBX7AA1ND\",\"name\":\"llm_generation\",\"tool_name\":\"gemi"
+    },
+    {
+      "t_ms": 1780989025859,
+      "label": "ss1",
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTNKFQHVXRNMC04R55Z0S1NB\",\"ts\":\"2026-06-09T07:10:25.851149Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"pipeline_id\":\"01KTNKFQHVXRNMC04R55Z0S1N9\",\"steps\":[{\"step_id\":\"01KTNKFQHVXRNMC04R55Z0S1NA\",\"name\":\"llm_generation\",\"tool_name\":\"gemi"
+    },
+    {
+      "t_ms": 1780989053276,
+      "label": "ss1",
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTNKGJATJ7WNDB226TW6W1NV\",\"ts\":\"2026-06-09T07:10:53.274235Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"pipeline_id\":\"01KTNKGJASCD99SWQH0E9J981Z\",\"steps\":[{\"step_id\":\"01KTNKGJASCD99SWQH0E9J9820\",\"name\":\"fetch_nws_alerts_conus\",\"tool_nam"
+    },
+    {
+      "t_ms": 1780989053295,
+      "label": "ss1",
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTNKGJATJ7WNDB226TW6W1NW\",\"ts\":\"2026-06-09T07:10:53.274895Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"pipeline_id\":\"01KTNKGJASCD99SWQH0E9J981Z\",\"steps\":[{\"step_id\":\"01KTNKGJASCD99SWQH0E9J9820\",\"name\":\"fetch_nws_alerts_conus\",\"tool_nam"
+    },
+    {
+      "t_ms": 1780989101149,
+      "label": "ss1",
+      "preview": "{\"type\":\"session-state\",\"id\":\"01KTNKJ12RDZHNQYDAZ2V7CCFA\",\"ts\":\"2026-06-09T07:11:41.144940Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"chat_history\":[],\"loaded_layers\":[{\"layer_id\":\"nexrad-n0r-conus\",\"name\":\"NEXRAD Composite Reflectivity (Iowa State Mesonet)\",\"layer_t"
+    },
+    {
+      "t_ms": 1780989101398,
+      "label": "ss1",
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTNKJ12TN2AM7DA1G1TSH95C\",\"ts\":\"2026-06-09T07:11:41.146095Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"pipeline_id\":\"01KTNKGJASCD99SWQH0E9J981Z\",\"steps\":[{\"step_id\":\"01KTNKGJASCD99SWQH0E9J9820\",\"name\":\"fetch_nws_alerts_conus\",\"tool_nam"
+    },
+    {
+      "t_ms": 1780989101398,
+      "label": "ss1",
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTNKJ12VYA4AFHB1D0VNSG39\",\"ts\":\"2026-06-09T07:11:41.147815Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"pipeline_id\":\"01KTNKJ12VYA4AFHB1D0VNSG37\",\"steps\":[{\"step_id\":\"01KTNKJ12VYA4AFHB1D0VNSG38\",\"name\":\"fetch_nexrad_reflectivity\",\"tool_"
+    },
+    {
+      "t_ms": 1780989101422,
+      "label": "ss1",
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTNKJ12WN2CE4PK89GRF4JSV\",\"ts\":\"2026-06-09T07:11:41.148409Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"pipeline_id\":\"01KTNKJ12VYA4AFHB1D0VNSG37\",\"steps\":[{\"step_id\":\"01KTNKJ12VYA4AFHB1D0VNSG38\",\"name\":\"fetch_nexrad_reflectivity\",\"tool_"
+    },
+    {
+      "t_ms": 1780989101423,
+      "label": "ss1",
+      "preview": "{\"type\":\"session-state\",\"id\":\"01KTNKJ12XEY8B8H12KSKREEN8\",\"ts\":\"2026-06-09T07:11:41.149442Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"chat_history\":[],\"loaded_layers\":[{\"layer_id\":\"nexrad-n0r-conus\",\"name\":\"NEXRAD Composite Reflectivity (Iowa State Mesonet)\",\"layer_t"
+    },
+    {
+      "t_ms": 1780989101425,
+      "label": "ss1",
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTNKJ12YYWWXR9ZNX6DZ3FG8\",\"ts\":\"2026-06-09T07:11:41.150359Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"pipeline_id\":\"01KTNKJ12VYA4AFHB1D0VNSG37\",\"steps\":[{\"step_id\":\"01KTNKJ12VYA4AFHB1D0VNSG38\",\"name\":\"fetch_nexrad_reflectivity\",\"tool_"
+    },
+    {
+      "t_ms": 1780989101425,
+      "label": "ss1",
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTNKJ130PQFYFNDSBE7ET0N0\",\"ts\":\"2026-06-09T07:11:41.152285Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"pipeline_id\":\"01KTNKJ12ZPQFYFNDSBE7ET0MY\",\"steps\":[{\"step_id\":\"01KTNKJ130PQFYFNDSBE7ET0MZ\",\"name\":\"geocode_location\",\"tool_name\":\"ge"
+    },
+    {
+      "t_ms": 1780989101425,
+      "label": "ss1",
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTNKJ130PQFYFNDSBE7ET0N1\",\"ts\":\"2026-06-09T07:11:41.152847Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"pipeline_id\":\"01KTNKJ12ZPQFYFNDSBE7ET0MY\",\"steps\":[{\"step_id\":\"01KTNKJ130PQFYFNDSBE7ET0MZ\",\"name\":\"geocode_location\",\"tool_name\":\"ge"
+    },
+    {
+      "t_ms": 1780989148024,
+      "label": "ss1",
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTNKKEVP5GE3QETZKE3P92D9\",\"ts\":\"2026-06-09T07:12:28.022902Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"pipeline_id\":\"01KTNKJ12ZPQFYFNDSBE7ET0MY\",\"steps\":[{\"step_id\":\"01KTNKJ130PQFYFNDSBE7ET0MZ\",\"name\":\"geocode_location\",\"tool_name\":\"ge"
+    },
+    {
+      "t_ms": 1780989169917,
+      "label": "ss1",
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTNKM47V8DP7RJNYHE2VG41V\",\"ts\":\"2026-06-09T07:12:49.915895Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"pipeline_id\":\"01KTNKM47V8DP7RJNYHE2VG41S\",\"steps\":[{\"step_id\":\"01KTNKM47V8DP7RJNYHE2VG41T\",\"name\":\"fetch_wdpa_protected_areas\",\"tool"
+    },
+    {
+      "t_ms": 1780989169939,
+      "label": "ss1",
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTNKM47WF41TYP6N3XVN5DDT\",\"ts\":\"2026-06-09T07:12:49.916547Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"pipeline_id\":\"01KTNKM47V8DP7RJNYHE2VG41S\",\"steps\":[{\"step_id\":\"01KTNKM47V8DP7RJNYHE2VG41T\",\"name\":\"fetch_wdpa_protected_areas\",\"tool"
+    },
+    {
+      "t_ms": 1780989222191,
+      "label": "ss1",
+      "preview": "{\"type\":\"session-state\",\"id\":\"01KTNKNQ9AQ3P7ZC2W3H2KGH3F\",\"ts\":\"2026-06-09T07:13:42.186790Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"chat_history\":[],\"loaded_layers\":[{\"layer_id\":\"nexrad-n0r-conus\",\"name\":\"NEXRAD Composite Reflectivity (Iowa State Mesonet)\",\"layer_t"
+    },
+    {
+      "t_ms": 1780989222228,
+      "label": "ss1",
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTNKNQ9BTN9FWQTW1P81FKKG\",\"ts\":\"2026-06-09T07:13:42.187905Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"pipeline_id\":\"01KTNKM47V8DP7RJNYHE2VG41S\",\"steps\":[{\"step_id\":\"01KTNKM47V8DP7RJNYHE2VG41T\",\"name\":\"fetch_wdpa_protected_areas\",\"tool"
+    },
+    {
+      "t_ms": 1780989244780,
+      "label": "ss1",
+      "preview": "{\"type\":\"agent-message-chunk\",\"id\":\"01KTNKPDBAY8C0CMH866EH5C4G\",\"ts\":\"2026-06-09T07:14:04.778797Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"message_id\":\"01KTNKFQHVXRNMC04R55Z0S1N8\",\"delta\":\"I've added the following layers to the map:\\n\\n*   **NEXRAD Composite Reflect"
+    },
+    {
+      "t_ms": 1780989245434,
+      "label": "ss1",
+      "preview": "{\"type\":\"agent-message-chunk\",\"id\":\"01KTNKPDZRHARDSFR5QJFBYK1X\",\"ts\":\"2026-06-09T07:14:05.432075Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"message_id\":\"01KTNKFQHVXRNMC04R55Z0S1N8\",\"delta\":\" Live weather radar for the United States.\\n*   **NWS Active Alerts**: All cu"
+    },
+    {
+      "t_ms": 1780989245536,
+      "label": "ss1",
+      "preview": "{\"type\":\"agent-message-chunk\",\"id\":\"01KTNKPE2YSNTDZC6ATMYQC8AE\",\"ts\":\"2026-06-09T07:14:05.534606Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"message_id\":\"01KTNKFQHVXRNMC04R55Z0S1N8\",\"delta\":\"\",\"done\":true}}"
+    },
+    {
+      "t_ms": 1780989245568,
+      "label": "ss1",
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTNKPE2ZVA3BGATX94J767Y5\",\"ts\":\"2026-06-09T07:14:05.535226Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"pipeline_id\":\"01KTNKFQHVXRNMC04R55Z0S1N9\",\"steps\":[{\"step_id\":\"01KTNKFQHVXRNMC04R55Z0S1NA\",\"name\":\"llm_generation\",\"tool_name\":\"gemi"
+    },
+    {
+      "t_ms": 1780989329212,
+      "label": "ss1",
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTNKRZS80C8YCK8AYJ0XEYQF\",\"ts\":\"2026-06-09T07:15:29.192261Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"pipeline_id\":\"01KTNKRZS80C8YCK8AYJ0XEYQD\",\"steps\":[{\"step_id\":\"01KTNKRZS80C8YCK8AYJ0XEYQE\",\"name\":\"llm_generation\",\"tool_name\":\"gemi"
+    },
+    {
+      "t_ms": 1780989337993,
+      "label": "ss1",
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTNKS8C7TQYADB7KAK47Q4Y4\",\"ts\":\"2026-06-09T07:15:37.991790Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"pipeline_id\":\"01KTNKS8C7TQYADB7KAK47Q4Y2\",\"steps\":[{\"step_id\":\"01KTNKS8C7TQYADB7KAK47Q4Y3\",\"name\":\"fetch_nexrad_reflectivity\",\"tool_"
+    },
+    {
+      "t_ms": 1780989338025,
+      "label": "ss1",
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTNKS8C8MF333BY8BF7K3184\",\"ts\":\"2026-06-09T07:15:37.992475Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"pipeline_id\":\"01KTNKS8C7TQYADB7KAK47Q4Y2\",\"steps\":[{\"step_id\":\"01KTNKS8C7TQYADB7KAK47Q4Y3\",\"name\":\"fetch_nexrad_reflectivity\",\"tool_"
+    },
+    {
+      "t_ms": 1780989338057,
+      "label": "ss1",
+      "preview": "{\"type\":\"session-state\",\"id\":\"01KTNKS8C934T04Z8SBAEP6R5D\",\"ts\":\"2026-06-09T07:15:37.993579Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"chat_history\":[],\"loaded_layers\":[{\"layer_id\":\"nexrad-n0r-conus\",\"name\":\"NEXRAD Composite Reflectivity (Iowa State Mesonet)\",\"layer_t"
+    },
+    {
+      "t_ms": 1780989338060,
+      "label": "ss1",
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTNKS8CACX75A8T82Y6SGMNX\",\"ts\":\"2026-06-09T07:15:37.994700Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"pipeline_id\":\"01KTNKS8C7TQYADB7KAK47Q4Y2\",\"steps\":[{\"step_id\":\"01KTNKS8C7TQYADB7KAK47Q4Y3\",\"name\":\"fetch_nexrad_reflectivity\",\"tool_"
+    },
+    {
+      "t_ms": 1780989338060,
+      "label": "ss1",
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTNKS8CCZX6KNM1Q77V19MVK\",\"ts\":\"2026-06-09T07:15:37.996411Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"pipeline_id\":\"01KTNKS8CCZX6KNM1Q77V19MVH\",\"steps\":[{\"step_id\":\"01KTNKS8CCZX6KNM1Q77V19MVJ\",\"name\":\"fetch_nws_alerts_conus\",\"tool_nam"
+    },
+    {
+      "t_ms": 1780989338060,
+      "label": "ss1",
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTNKS8CCZX6KNM1Q77V19MVM\",\"ts\":\"2026-06-09T07:15:37.996971Z\",\"session_id\":\"01KTNK6SRBAB89VF9WBK74REHZ\",\"payload\":{\"pipeline_id\":\"01KTNKS8CCZX6KNM1Q77V19MVH\",\"steps\":[{\"step_id\":\"01KTNKS8CCZX6KNM1Q77V19MVJ\",\"name\":\"fetch_nws_alerts_conus\",\"tool_nam"
+    }
+  ]
+}
