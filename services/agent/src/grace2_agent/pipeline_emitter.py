@@ -53,6 +53,7 @@ on the wire is a full snapshot per A.7.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 from collections.abc import Awaitable, Callable
 from contextlib import contextmanager
@@ -82,7 +83,41 @@ __all__ = [
     "StepNotFoundError",
     "PipelineEmitter",
     "EmissionSink",
+    "current_emitter",
 ]
+
+
+# --------------------------------------------------------------------------- #
+# Active-emitter ContextVar (job-0160)
+# --------------------------------------------------------------------------- #
+#
+# ``emit_tool_call`` binds the active ``PipelineEmitter`` into a ContextVar
+# for the lifetime of the tool/workflow invocation. Workflow bodies (e.g.
+# ``model_flood_scenario``) read ``current_emitter()`` to fire transient
+# map-command verbs (zoom-to bbox immediately after geocode resolves, BEFORE
+# the long SFINCS solve) — invariant 8's "responsive design" complement.
+#
+# Why a ContextVar, not a module-level binding (cf. ``tools.solver._EMITTER_BINDING``):
+# multiple sessions may be servicing tool calls concurrently in the same
+# process; a ContextVar is per-task and never leaks across asyncio tasks.
+# The solver-side binding is module-level because it was scoped to a single
+# wait-loop owned by the same task; the broader workflow surface needs the
+# per-task isolation.
+
+_CURRENT_EMITTER: contextvars.ContextVar["PipelineEmitter | None"] = (
+    contextvars.ContextVar("grace2_current_emitter", default=None)
+)
+
+
+def current_emitter() -> "PipelineEmitter | None":
+    """Return the ``PipelineEmitter`` bracketing the current tool/workflow call.
+
+    Returns ``None`` outside an ``emit_tool_call`` scope (direct calls, unit
+    tests without an emitter, smoke harnesses). Callers MUST handle ``None``
+    gracefully — emitting a transient verb is a UX nice-to-have, not a
+    correctness gate.
+    """
+    return _CURRENT_EMITTER.get()
 
 logger = logging.getLogger("grace2_agent.pipeline_emitter")
 
@@ -519,22 +554,30 @@ class PipelineEmitter:
         """
         step_id = await self.add_step(name=name, tool_name=tool_name)
         await self.mark_running(step_id)
+        # Bind self as the active emitter for the lifetime of the invoke so
+        # workflow bodies can fire transient map-command verbs (job-0160 —
+        # zoom-on-area-first UX). reset_token ensures the binding is unwound
+        # exactly once, even on cancellation / exception paths.
+        token = _CURRENT_EMITTER.set(self)
         try:
-            result = invoke()
-            if asyncio.iscoroutine(result):
-                result = await result
-        except asyncio.CancelledError:
-            await self.mark_cancelled(step_id)
-            raise
-        except Exception as exc:  # noqa: BLE001 — classify-and-re-raise
-            code, message = self._classify_exception(exc)
-            await self.mark_failed(step_id, error_code=code, error_message=message)
-            raise
-        # Honor LayerURI return shape — append to loaded_layers + emit session-state.
-        if isinstance(result, LayerURI):
-            await self.add_loaded_layer(result)
-        await self.mark_complete(step_id)
-        return result
+            try:
+                result = invoke()
+                if asyncio.iscoroutine(result):
+                    result = await result
+            except asyncio.CancelledError:
+                await self.mark_cancelled(step_id)
+                raise
+            except Exception as exc:  # noqa: BLE001 — classify-and-re-raise
+                code, message = self._classify_exception(exc)
+                await self.mark_failed(step_id, error_code=code, error_message=message)
+                raise
+            # Honor LayerURI return shape — append to loaded_layers + emit session-state.
+            if isinstance(result, LayerURI):
+                await self.add_loaded_layer(result)
+            await self.mark_complete(step_id)
+            return result
+        finally:
+            _CURRENT_EMITTER.reset(token)
 
     # ------------------------------------------------------------------ #
     # Internal helpers

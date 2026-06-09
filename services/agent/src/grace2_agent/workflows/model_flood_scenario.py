@@ -79,6 +79,7 @@ from grace2_contracts.envelope import (
 from grace2_contracts.execution import LayerURI, RunResult
 from grace2_contracts.tool_registry import AtomicToolMetadata
 
+from ..pipeline_emitter import current_emitter
 from ..tools import register_tool
 from ..tools.data_fetch import (
     fetch_dem,
@@ -331,6 +332,31 @@ async def model_flood_scenario(
                 accessed_at=datetime.now(timezone.utc),
             )
         )
+
+    # --- Zoom-on-area-first (job-0160): emit ``map-command(zoom-to)`` BEFORE
+    # any compute starts. As soon as we have a bbox, the map zooms — the
+    # user sees immediate response while the multi-minute SFINCS chain runs.
+    # The emitter binding is set by ``PipelineEmitter.emit_tool_call`` via
+    # the ``_CURRENT_EMITTER`` ContextVar; outside that scope (direct call,
+    # smoke harness, unit test without an emitter) ``current_emitter()``
+    # returns ``None`` and we skip silently — emitting a transient verb is
+    # a UX nice-to-have, not a correctness gate.
+    emitter = current_emitter()
+    if emitter is not None:
+        try:
+            await emitter.emit_map_command(
+                "zoom-to",
+                {"bbox": list(resolved_bbox)},
+            )
+            logger.info(
+                "model_flood_scenario: zoom-on-area-first emitted bbox=%s",
+                resolved_bbox,
+            )
+        except Exception as exc:  # noqa: BLE001 — non-fatal UX hint
+            logger.warning(
+                "model_flood_scenario: zoom-on-area-first emit failed (non-fatal): %s",
+                exc,
+            )
 
     # --- Step 1-4: atomic-tool fetcher chain ---
     forcing_summary: ForcingSummary | None = None
@@ -718,6 +744,12 @@ async def run_model_flood_scenario(
     # add_loaded_layer → session-state.loaded_layers (declarative, A.7
     # replace-not-reconcile).  On failure the envelope has no layers; fall
     # back to the dict so the LLM can narrate the error honestly.
+    #
+    # job-0160 bbox fix: include ``envelope.bbox`` on the returned LayerURI so
+    # ``PipelineEmitter.add_loaded_layer`` fires the post-publish
+    # ``emit_map_command("zoom-to")`` (pipeline_emitter.py:443-447). Prior to
+    # this fix the wrapper dropped bbox (``envelope.layers[0]`` is a
+    # ``ResultLayer`` with no bbox field) → silent no-zoom after layer landed.
     if envelope.layers:
         primary = envelope.layers[0]
         return LayerURI(
@@ -729,5 +761,6 @@ async def run_model_flood_scenario(
             temporal=primary.temporal,
             role=primary.role,
             units=primary.units,
+            bbox=envelope.bbox,
         )
     return envelope.model_dump(mode="json")
