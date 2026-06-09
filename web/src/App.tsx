@@ -640,10 +640,19 @@ export function App(): JSX.Element {
         />
       )}
 
-      {/* Right panel — always mounted (chat is the only way to request layers). */}
-      {!rightCollapsed && (
+      {/* Right panel — Chat stays MOUNTED across collapse so its internal       */}
+      {/* state (messages, pipeline history, lastError) is preserved. job-0162: */}
+      {/* clicking the chevron-collapse button no longer destroys chat content. */}
+      {/* Visually hidden via display:none + aria-hidden when collapsed.        */}
+      <div
+        data-testid="grace2-chat-mount"
+        aria-hidden={rightCollapsed}
+        style={{
+          display: rightCollapsed ? "none" : "contents",
+        }}
+      >
         <Chat wsUrl={WS_URL} onClose={collapseRight} />
-      )}
+      </div>
 
       {/* Layers hamburger — top-LEFT. */}
       {showLayersHamburger && (

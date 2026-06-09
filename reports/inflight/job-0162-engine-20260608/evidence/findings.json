@@ -1,0 +1,21 @@
+{
+  "mixedStack": {
+    "cardCount": 3,
+    "hasGroupHeaders": 0
+  },
+  "collapsePreserve": {
+    "statusOk": true,
+    "beforeText": [
+      "Run flood scenario for Fort Myers"
+    ],
+    "afterText": [
+      "Run flood scenario for Fort Myers"
+    ],
+    "preserved": true,
+    "collapsedState": {
+      "mountAriaHidden": "true",
+      "mountStyleDisplay": "none",
+      "hamburgerPresent": true
+    }
+  }
+}

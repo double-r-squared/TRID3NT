@@ -5,13 +5,16 @@
 // Multi-line input with Ctrl/Cmd+Enter submit. No markdown for M1 (M3
 // adds markdown + tool-call blocks).
 //
-// PIPELINE CARDS INLINE (job-0064):
-//   Pipeline step cards are rendered at the bottom of the conversation stream
-//   while a pipeline is in flight. On completion they scroll into history and
-//   show a terminal visual (✓/✗/⊘) without the percentage. Cards are stacked
-//   in the order steps appear in the `pipeline-state` snapshot (snapshot order
-//   == call order per Appendix A.7 replace-not-reconcile: the server always
-//   sends the full ordered step list).
+// PIPELINE CARDS INLINE (job-0064; job-0162 single-card-per-step refactor):
+//   Pipeline step cards are rendered inline in the conversation stream — one
+//   card per unique `step_id`, transitioning through pending → running →
+//   complete / failed / cancelled. The server emits one pipeline_id per tool
+//   dispatch (see services/agent/server.py); previously this resulted in a
+//   separate "group" per tool with a stale running card stacked above a
+//   completed card. job-0162 collapses this by merging every snapshot by
+//   step_id across both the live pipeline and historical pipelines, so the
+//   user sees one transitioning card per tool dispatch. The visual states are
+//   driven by PipelineCard per `feedback_pipeline_card_visual_states`.
 //
 // CANCEL PREDICATE (FR-WC-9, Invariant 8):
 //   Cancel button enabled iff:
@@ -369,21 +372,29 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
         {onClose && (
           <button
             data-testid="grace2-chat-close"
-            aria-label="Close chat panel"
+            aria-label="Collapse chat panel"
+            title="Collapse chat panel"
             onClick={onClose}
             style={{
               background: "none",
               border: "none",
               color: "#888",
               cursor: "pointer",
-              fontSize: 16,
+              fontSize: 18,
               lineHeight: 1,
-              padding: "0 2px",
+              padding: "0 4px",
               display: "flex",
               alignItems: "center",
+              fontFamily: "system-ui, sans-serif",
+              fontWeight: 600,
             }}
           >
-            ×
+            {/* job-0162: chevron-right ("collapse panel" idiom) replaces ×    */}
+            {/* ("close" idiom) — collapsing must NEVER imply destruction of    */}
+            {/* the chat history. The persistence is implemented in App.tsx by */}
+            {/* keeping <Chat /> mounted across collapse so its message state  */}
+            {/* survives.                                                       */}
+            ›
           </button>
         )}
       </header>
@@ -424,24 +435,15 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
           ),
         )}
 
-        {/* Historical pipeline snapshots (terminal) — scroll into history. */}
-        {pipeline.history.map((snapshot) => (
-          <PipelineStepGroup
-            key={snapshot.pipeline_id}
-            pipelineId={snapshot.pipeline_id}
-            steps={snapshot.steps ?? []}
-            isLive={false}
-          />
-        ))}
-
-        {/* Live pipeline steps — stays at bottom while in flight. */}
-        {pipeline.live !== null && liveSteps.length > 0 && (
-          <PipelineStepGroup
-            pipelineId={pipeline.live.pipeline_id}
-            steps={liveSteps}
-            isLive={true}
-          />
-        )}
+        {/* Pipeline cards — one per unique step_id across all snapshots          */}
+        {/* (history + live). Each step transitions through pending → running   */}
+        {/* → complete / failed / cancelled. job-0162: no separate "running"    */}
+        {/* and "completed" groups; no borderlines; vertical separation is via  */}
+        {/* gap below.                                                          */}
+        <PipelineCardStack
+          history={pipeline.history}
+          live={pipeline.live}
+        />
 
         {lastError && (
           <div
@@ -511,46 +513,67 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
   );
 }
 
-// --- Pipeline step group ------------------------------------------------- //
+// --- Pipeline card stack ------------------------------------------------- //
 //
-// Renders a labelled group of PipelineCards for one snapshot.
+// job-0162 — merge every snapshot (history + live) by step_id and render ONE
+// card per step in encounter order. Each tool dispatch on the agent side
+// creates a fresh pipeline_id (server.py per-tool start_pipeline +
+// close_pipeline); without merging, a turn that dispatches N tools renders
+// N separate "groups" — and a tool that transitions pending → running →
+// complete renders as a stale running card above the completed one. We
+// dedupe by step_id (unique across pipelines per ULID semantics) and prefer
+// the latest snapshot of each.
+//
+// Visual treatment is delegated entirely to PipelineCard (state-driven
+// background + animated text + spinner per the memory spec).
 
-interface PipelineStepGroupProps {
-  pipelineId: string;
-  steps: PipelineStepSummary[];
-  isLive: boolean;
+interface PipelineCardStackProps {
+  history: PipelineStatePayload[];
+  live: PipelineStatePayload | null;
 }
 
-function PipelineStepGroup({
-  pipelineId,
-  steps,
-  isLive,
-}: PipelineStepGroupProps): JSX.Element {
+export function mergeStepsByStepId(
+  history: PipelineStatePayload[],
+  live: PipelineStatePayload | null,
+): PipelineStepSummary[] {
+  // Walk history in order, then live last (so live wins on tie). Each
+  // step_id's most-recently-encountered snapshot is the rendered one; the
+  // first-encountered position is the display order (stable across
+  // re-renders).
+  const orderedIds: string[] = [];
+  const latest = new Map<string, PipelineStepSummary>();
+  const consume = (steps: PipelineStepSummary[] | undefined): void => {
+    if (!steps) return;
+    for (const s of steps) {
+      if (!latest.has(s.step_id)) {
+        orderedIds.push(s.step_id);
+      }
+      latest.set(s.step_id, s);
+    }
+  };
+  for (const snap of history) consume(snap.steps);
+  if (live) consume(live.steps);
+  return orderedIds.map((id) => latest.get(id)!);
+}
+
+function PipelineCardStack({
+  history,
+  live,
+}: PipelineCardStackProps): JSX.Element | null {
+  const steps = mergeStepsByStepId(history, live);
+  if (steps.length === 0) return null;
   return (
     <div
-      data-testid="pipeline-step-group"
-      data-pipeline-id={pipelineId}
-      data-live={isLive ? "true" : "false"}
+      data-testid="pipeline-card-stack"
       style={{
         display: "flex",
         flexDirection: "column",
-        gap: 3,
-        padding: "6px 0",
-        borderTop: "1px solid #2a2a2a",
+        // job-0162 memory spec: 12-16px vertical gap between stacked cards;
+        // no borderlines, no group header, no horizontal dividers.
+        gap: 14,
+        padding: "4px 0",
       }}
     >
-      <div
-        style={{
-          fontSize: 10,
-          color: "#555",
-          letterSpacing: "0.05em",
-          textTransform: "uppercase",
-          paddingLeft: 6,
-          marginBottom: 2,
-        }}
-      >
-        {isLive ? "running" : "completed"} · {pipelineId.slice(-8)}
-      </div>
       {steps.map((step) => (
         <PipelineCard key={step.step_id} step={step} />
       ))}

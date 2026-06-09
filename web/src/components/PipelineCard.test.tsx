@@ -1,11 +1,16 @@
-// GRACE-2 web — PipelineCard unit tests (job-0064).
+// GRACE-2 web — PipelineCard unit tests (job-0064; job-0162 visual redesign).
 //
-// Verifies:
-//   1. pipeline-state arrives → card renders with correct operation name + %.
-//   2. Multiple steps → multiple cards (tested via PipelineCard directly).
-//   3. Step completion → "done" state (✓ suffix, no percentage).
-//   4. Failed / cancelled states render their markers.
-//   5. Error code appears on failed steps.
+// Verifies the job-0162 visual treatment per
+// `feedback_pipeline_card_visual_states`:
+//
+//   - pending  → grey-subdued background, no right-side indicator
+//   - running  → spinner indicator + animated gradient text style
+//   - complete → green-tinted background, no checkmark / no "completed" text
+//   - failed   → red-tinted background, optional error_code chip
+//   - cancelled→ yellow-tinted background, distinct from failed
+//
+// The old "X%" / "✓" / "✗" / "⊘" / "pending" right-side status text and the
+// blue left-border accent are gone. Tests are rewritten accordingly.
 
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
@@ -28,55 +33,109 @@ function makeStep(
   };
 }
 
-// --- Rendering tests ----------------------------------------------------- //
+// --- Name rendering ------------------------------------------------------- //
 
-describe("PipelineCard — one-line format", () => {
-  it("renders operation name for a running step", () => {
-    render(<PipelineCard step={makeStep({ state: "running", progress_percent: 47 })} />);
-    const card = screen.getByTestId("pipeline-card");
-    expect(card).toBeInTheDocument();
-    expect(screen.getByTestId("pipeline-card-name")).toHaveTextContent("fetch_dem");
+describe("PipelineCard — name rendering", () => {
+  it("renders the step name for every state", () => {
+    const states: PipelineStepSummary["state"][] = [
+      "pending",
+      "running",
+      "complete",
+      "failed",
+      "cancelled",
+    ];
+    for (const state of states) {
+      const { unmount } = render(
+        <PipelineCard step={makeStep({ state, name: `op_${state}` })} />,
+      );
+      expect(screen.getByTestId("pipeline-card-name")).toHaveTextContent(
+        `op_${state}`,
+      );
+      unmount();
+    }
   });
+});
 
-  it("renders progress % for a running step with progress_percent", () => {
-    render(<PipelineCard step={makeStep({ state: "running", progress_percent: 47 })} />);
-    expect(screen.getByTestId("pipeline-card-status")).toHaveTextContent("47%");
-  });
+// --- Visual state surfaces (job-0162 spec) ------------------------------- //
 
-  it("renders 100% for a running step at 100", () => {
-    render(<PipelineCard step={makeStep({ state: "running", progress_percent: 100 })} />);
-    expect(screen.getByTestId("pipeline-card-status")).toHaveTextContent("100%");
-  });
-
-  it("renders … for a running step with no progress_percent", () => {
+describe("PipelineCard — job-0162 visual states", () => {
+  it("running state shows a spinner indicator", () => {
     render(<PipelineCard step={makeStep({ state: "running" })} />);
-    expect(screen.getByTestId("pipeline-card-status")).toHaveTextContent("…");
+    expect(screen.getByTestId("pipeline-card-indicator")).toBeInTheDocument();
   });
 
-  it("renders ✓ (no percentage) for a complete step — done state", () => {
-    render(<PipelineCard step={makeStep({ state: "complete", progress_percent: 100 })} />);
-    const status = screen.getByTestId("pipeline-card-status");
-    expect(status).toHaveTextContent("✓");
-    // Must NOT show a percentage in the status cell.
-    expect(status.textContent).not.toMatch(/\d+%/);
+  it("non-running states do NOT show a spinner indicator", () => {
+    const nonRunning: PipelineStepSummary["state"][] = [
+      "pending",
+      "complete",
+      "failed",
+      "cancelled",
+    ];
+    for (const state of nonRunning) {
+      const { unmount } = render(<PipelineCard step={makeStep({ state })} />);
+      expect(screen.queryByTestId("pipeline-card-indicator")).toBeNull();
+      unmount();
+    }
   });
 
-  it("renders ✗ for a failed step", () => {
-    render(<PipelineCard step={makeStep({ state: "failed" })} />);
-    expect(screen.getByTestId("pipeline-card-status")).toHaveTextContent("✗");
+  it("does NOT render legacy glyphs ✓ ✗ ⊘ or '…' in any state", () => {
+    const allStates: PipelineStepSummary["state"][] = [
+      "pending",
+      "running",
+      "complete",
+      "failed",
+      "cancelled",
+    ];
+    for (const state of allStates) {
+      const { container, unmount } = render(
+        <PipelineCard step={makeStep({ state })} />,
+      );
+      const text = container.textContent ?? "";
+      expect(text).not.toMatch(/✓|✗|⊘|…/);
+      unmount();
+    }
   });
 
-  it("renders ⊘ for a cancelled step — Invariant 8 distinct from failed", () => {
-    render(<PipelineCard step={makeStep({ state: "cancelled" })} />);
-    expect(screen.getByTestId("pipeline-card-status")).toHaveTextContent("⊘");
+  it("does NOT visually render legacy 'completed' / 'running' / 'pending' text labels", () => {
+    // SR-only prefixes (e.g. "completed: ") are allowed for a11y; we filter
+    // by checking only nodes that are visually rendered (clip:rect(0,0,0,0)
+    // is the visually-hidden pattern).
+    const allStates: PipelineStepSummary["state"][] = [
+      "pending",
+      "running",
+      "complete",
+      "failed",
+      "cancelled",
+    ];
+    for (const state of allStates) {
+      const { container, unmount } = render(
+        <PipelineCard step={makeStep({ state, name: "fetch_dem" })} />,
+      );
+      // Walk the DOM; reject any element with clip:rect(0... (the SR-only
+      // marker) before reading its text.
+      const visibleText: string[] = [];
+      const walker = (el: Element): void => {
+        const style = (el as HTMLElement).style;
+        const isSrOnly =
+          style && style.clip && style.clip.includes("rect(0");
+        if (!isSrOnly) {
+          for (const child of Array.from(el.childNodes)) {
+            if (child.nodeType === Node.TEXT_NODE) {
+              visibleText.push(child.textContent ?? "");
+            } else if (child.nodeType === Node.ELEMENT_NODE) {
+              walker(child as Element);
+            }
+          }
+        }
+      };
+      walker(container);
+      const joined = visibleText.join("");
+      expect(joined).not.toMatch(/completed|running|pending/i);
+      unmount();
+    }
   });
 
-  it("renders 'pending' for a pending step with no progress", () => {
-    render(<PipelineCard step={makeStep({ state: "pending" })} />);
-    expect(screen.getByTestId("pipeline-card-status")).toHaveTextContent("pending");
-  });
-
-  it("renders error_code inline for a failed step", () => {
+  it("renders error_code chip on failed step", () => {
     render(
       <PipelineCard
         step={makeStep({
@@ -86,86 +145,59 @@ describe("PipelineCard — one-line format", () => {
         })}
       />,
     );
-    expect(screen.getByTestId("pipeline-card-error")).toHaveTextContent("SOLVER_FAILED");
+    expect(screen.getByTestId("pipeline-card-error")).toHaveTextContent(
+      "SOLVER_FAILED",
+    );
   });
 
-  it("does not render error block for non-failed steps", () => {
+  it("does NOT render error chip on non-failed states", () => {
+    const nonFailed: PipelineStepSummary["state"][] = [
+      "pending",
+      "running",
+      "complete",
+      "cancelled",
+    ];
+    for (const state of nonFailed) {
+      const { unmount } = render(
+        <PipelineCard
+          step={makeStep({
+            state,
+            error_code: "WHATEVER",
+            error_message: "should not show",
+          })}
+        />,
+      );
+      expect(screen.queryByTestId("pipeline-card-error")).toBeNull();
+      unmount();
+    }
+  });
+
+  it("running card carries a rainbow-gradient background-image on the name", () => {
+    render(<PipelineCard step={makeStep({ state: "running" })} />);
+    const name = screen.getByTestId("pipeline-card-name");
+    // jsdom resolves inline styles; the rainbow gradient is the only
+    // backgroundImage we set, so its presence is a sufficient signal.
+    const bg = (name as HTMLElement).style.backgroundImage;
+    expect(bg).toContain("linear-gradient");
+  });
+
+  it("complete card has a green-tint background", () => {
     render(<PipelineCard step={makeStep({ state: "complete" })} />);
-    expect(screen.queryByTestId("pipeline-card-error")).toBeNull();
+    const card = screen.getByTestId("pipeline-card");
+    const bg = (card as HTMLElement).style.background;
+    // The 40,200,100 RGB is the green tint per the memory spec.
+    expect(bg).toContain("40, 200, 100");
+  });
+
+  it("failed card has a red-tint background", () => {
+    render(<PipelineCard step={makeStep({ state: "failed" })} />);
+    const card = screen.getByTestId("pipeline-card");
+    const bg = (card as HTMLElement).style.background;
+    expect(bg).toContain("220, 60, 60");
   });
 });
 
-// --- Multiple cards stacked (call order test) ----------------------------- //
-
-describe("PipelineCard — multiple cards", () => {
-  it("renders multiple cards in the order provided", () => {
-    const steps: PipelineStepSummary[] = [
-      { step_id: "s1", name: "fetch_dem", tool_name: "t1", state: "complete" },
-      { step_id: "s2", name: "build_sfincs_model", tool_name: "t2", state: "running", progress_percent: 47 },
-      { step_id: "s3", name: "run_sfincs", tool_name: "t3", state: "pending" },
-    ];
-
-    const { container } = render(
-      <div>
-        {steps.map((s) => (
-          <PipelineCard key={s.step_id} step={s} />
-        ))}
-      </div>,
-    );
-
-    const cards = container.querySelectorAll("[data-testid='pipeline-card']");
-    expect(cards).toHaveLength(3);
-
-    // Verify order: step_id attribute matches expected order.
-    expect(cards[0]!.getAttribute("data-step-id")).toBe("s1");
-    expect(cards[1]!.getAttribute("data-step-id")).toBe("s2");
-    expect(cards[2]!.getAttribute("data-step-id")).toBe("s3");
-  });
-
-  it("second card shows correct progress", () => {
-    const steps: PipelineStepSummary[] = [
-      { step_id: "s1", name: "fetch_dem", tool_name: "t1", state: "complete" },
-      { step_id: "s2", name: "build_sfincs_model", tool_name: "t2", state: "running", progress_percent: 47 },
-    ];
-
-    render(
-      <div>
-        {steps.map((s) => (
-          <PipelineCard key={s.step_id} step={s} />
-        ))}
-      </div>,
-    );
-
-    // find all status cells
-    const statusCells = screen.getAllByTestId("pipeline-card-status");
-    expect(statusCells[0]!).toHaveTextContent("✓"); // first step complete
-    expect(statusCells[1]!).toHaveTextContent("47%"); // second step 47%
-  });
-
-  it("all terminal steps show done markers", () => {
-    const steps: PipelineStepSummary[] = [
-      { step_id: "s1", name: "fetch_dem", tool_name: "t1", state: "complete" },
-      { step_id: "s2", name: "build_sfincs_model", tool_name: "t2", state: "complete" },
-      { step_id: "s3", name: "run_sfincs", tool_name: "t3", state: "complete" },
-    ];
-
-    render(
-      <div>
-        {steps.map((s) => (
-          <PipelineCard key={s.step_id} step={s} />
-        ))}
-      </div>,
-    );
-
-    const statusCells = screen.getAllByTestId("pipeline-card-status");
-    statusCells.forEach((cell) => {
-      expect(cell).toHaveTextContent("✓");
-      expect(cell.textContent).not.toMatch(/\d+%/);
-    });
-  });
-});
-
-// --- data-state attribute ------------------------------------------------ //
+// --- data-state attribute (preserved for tests + e2e selectors) ----------- //
 
 describe("PipelineCard — data-state attribute", () => {
   const allStates: PipelineStepSummary["state"][] = [
@@ -184,5 +216,29 @@ describe("PipelineCard — data-state attribute", () => {
         state,
       );
     });
+  });
+});
+
+// --- Multiple cards stacked (preserves call order) ----------------------- //
+
+describe("PipelineCard — multiple cards", () => {
+  it("renders multiple cards in the order provided", () => {
+    const steps: PipelineStepSummary[] = [
+      { step_id: "s1", name: "fetch_dem", tool_name: "t1", state: "complete" },
+      { step_id: "s2", name: "build_sfincs_model", tool_name: "t2", state: "running" },
+      { step_id: "s3", name: "run_sfincs", tool_name: "t3", state: "pending" },
+    ];
+    const { container } = render(
+      <div>
+        {steps.map((s) => (
+          <PipelineCard key={s.step_id} step={s} />
+        ))}
+      </div>,
+    );
+    const cards = container.querySelectorAll("[data-testid='pipeline-card']");
+    expect(cards).toHaveLength(3);
+    expect(cards[0]!.getAttribute("data-step-id")).toBe("s1");
+    expect(cards[1]!.getAttribute("data-step-id")).toBe("s2");
+    expect(cards[2]!.getAttribute("data-step-id")).toBe("s3");
   });
 });
