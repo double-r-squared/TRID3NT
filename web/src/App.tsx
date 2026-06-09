@@ -620,7 +620,26 @@ export function App(): JSX.Element {
               data-testid="grace2-case-view-layer-panel-wrap"
               style={{ position: "absolute", top: 64, left: 0, right: 0, bottom: 60, zIndex: 20, pointerEvents: "none" }}
             >
-              <div style={{ pointerEvents: "auto", position: "relative", width: "100%", height: "100%" }}>
+              {/* job-0173 Part 3 — confine the pointer-events:auto region to
+                  the LayerPanel column only. The prior implementation made the
+                  inner div full-bleed (width:100%, height:100%) with
+                  pointerEvents:"auto", which blocked map drag/pan everywhere
+                  inside the (top:64 → bottom:60, left:0 → right:0) zone —
+                  i.e. virtually the entire map. LayerPanel is absolutely
+                  positioned at left:16 / top:16 / bottom:16 / width:280
+                  relative to this wrapper, so a 280px-wide column from the
+                  left edge is the exact click target. Outside that column,
+                  map pan/drag passes through (parent pointerEvents:"none"). */}
+              <div
+                style={{
+                  pointerEvents: "auto",
+                  position: "absolute",
+                  left: 0,
+                  top: 0,
+                  bottom: 0,
+                  width: 280 + 16 + 16, // left:16 offset + 280 panel + 16 right padding
+                }}
+              >
                 <LayerPanel
                   subscribeSessionState={bus.subscribeSessionState}
                   subscribeMapCommand={bus.subscribeMapCommand}

@@ -32,6 +32,7 @@ import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { ConnectionStatus, GraceWs } from "./ws";
 import {
   AgentMessageChunkPayload,
+  CaseOpenEnvelopePayload,
   ErrorPayload,
   PipelineSnapshot,
   PipelineStatePayload,
@@ -73,7 +74,7 @@ interface ChatMessage {
 // `history` accumulates completed snapshots so they remain visible in the
 // chat history after the pipeline terminates.
 
-interface PipelineInlineState {
+export interface PipelineInlineState {
   // The current live snapshot (null = no pipeline active).
   live: PipelineStatePayload | null;
   // Snapshots that have reached a terminal state (all steps terminal).
@@ -95,7 +96,15 @@ type PipelineAction =
       type: "error";
       payload: ErrorPayload;
       tool_name?: string | null;
-    };
+    }
+  // job-0172 Part A — case-open is replace-not-reconcile applied to the
+  // inline pipeline view-model. Drop the live + history snapshots that
+  // belonged to the previously-active Case so the panel reflects the
+  // newly-opened Case from a clean slate. Persisted PipelineRecords for
+  // this Case will surface again via ``session-state.pipeline_history``
+  // on the next hydration; on a brand-new Case the inline strip stays
+  // empty until the user issues the first prompt.
+  | { type: "case-open" };
 
 function narrowCurrentPipeline(x: unknown): PipelineSnapshot | null {
   if (x === null || x === undefined) return null;
@@ -117,7 +126,7 @@ function narrowCurrentPipeline(x: unknown): PipelineSnapshot | null {
   };
 }
 
-function pipelineReducer(
+export function pipelineReducer(
   state: PipelineInlineState,
   action: PipelineAction,
 ): PipelineInlineState {
@@ -162,6 +171,14 @@ function pipelineReducer(
       const cp = narrowCurrentPipeline(action.payload.current_pipeline);
       return { ...state, currentPipelineFromSession: cp };
     }
+    case "case-open": {
+      // job-0172 Part A — replace-not-reconcile on Case switch.
+      return {
+        live: null,
+        history: [],
+        currentPipelineFromSession: null,
+      };
+    }
     case "error": {
       // job-0166 Part 1 — find the most-recent running step across (live,
       // history). Preference: a step whose tool_name matches the error's
@@ -173,11 +190,36 @@ function pipelineReducer(
       // error_code + message attached so PipelineCard renders the typed RED
       // card with no spinner. Other steps are left alone (a failed tool
       // does not invalidate sibling completed steps in the same pipeline).
-      return forceMostRecentRunningToFailed(
+      //
+      // job-0173 Part 2 — additionally force ChatInput back to idle so the
+      // user can send a new prompt after a Gemini failure / agent crash /
+      // dispatch TypeError. The cancel predicate (shouldShowCancel) reads
+      // (a) live.steps.some(running) and (b) currentPipelineFromSession !==
+      // null; rewriting the running step to failed kills (a) but the
+      // session.current_pipeline lingers on the error path because the
+      // agent never gets to emit a terminal session-state. We clear (b)
+      // here, AND if after the force-flip no live step is still running we
+      // move the live snapshot to history so the inline render keeps the
+      // failed-state card visible without a residual "in-flight" pipeline.
+      const flipped = forceMostRecentRunningToFailed(
         state,
         action.payload,
         action.tool_name ?? null,
       );
+      const liveStillRunning =
+        flipped.live?.steps?.some((s) => s.state === "running") ?? false;
+      let nextHistory = flipped.history;
+      let nextLive = flipped.live;
+      if (!liveStillRunning && flipped.live !== null) {
+        nextHistory = [...flipped.history, flipped.live];
+        nextLive = null;
+      }
+      return {
+        ...flipped,
+        live: nextLive,
+        history: nextHistory,
+        currentPipelineFromSession: null,
+      };
     }
     default:
       return state;
@@ -352,6 +394,22 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
       },
       onSessionState: (p: SessionStatePayload) => {
         dispatchPipeline({ type: "session-state", payload: p });
+      },
+      // job-0172 Part A: case-open is replace-not-reconcile applied
+      // CLIENT-SIDE. When a Case opens we FLUSH the chat panel's local
+      // message buffer + pipeline view-model THEN hydrate from
+      // ``session_state.chat_history`` so the Chat panel reflects the
+      // newly-opened Case rather than stale messages from the prior one.
+      // ``session_state === null`` (server couldn't rehydrate) also clears,
+      // giving the user a clean empty state per Appendix A.7 discipline.
+      onCaseOpen: (p: CaseOpenEnvelopePayload) => {
+        const rehydrated = rehydrateMessagesFromCaseOpen(p);
+        setMessages(rehydrated);
+        // Reset the inline pipeline state: the live snapshot belonged to
+        // the OUTGOING Case (if any). The next pipeline-state envelope for
+        // THIS Case will repopulate it.
+        dispatchPipeline({ type: "case-open" });
+        setLastError(null);
       },
       onError: (p: ErrorPayload) => {
         setLastError(`${p.error_code}: ${p.message}`);
@@ -758,6 +816,37 @@ function PipelineCardStack({
 // Apply an agent-message-chunk delta to the message list.
 // `agent-message-chunk.delta` is incremental per A.4 (not accumulated); we
 // append by `message_id` and finalize on `done: true`.
+/**
+ * job-0172 Part A — convert a ``case-open`` payload's ``chat_history`` into
+ * the local ``ChatMessage[]`` view-model. Server-side ``CaseChatMessage``
+ * carries ``{message_id, role, content, ...}``; the local shape carries
+ * ``{id, role, text, done}``. We mark every replayed message as ``done:
+ * true`` because they're persisted turns (no in-flight streaming). The
+ * server's ``role`` may be ``"agent"``, ``"user"``, or ``"system"``; the
+ * local view only renders ``"agent"`` / ``"user"``, so system messages are
+ * filtered (no surprise rendering of internal scaffolding). Returns ``[]``
+ * for a brand-new Case OR when ``session_state`` is null (server couldn't
+ * rehydrate) so the panel cleanly resets either way.
+ */
+export function rehydrateMessagesFromCaseOpen(
+  p: CaseOpenEnvelopePayload,
+): ChatMessage[] {
+  const session = p.session_state;
+  if (!session) return [];
+  const chat = session.chat_history ?? [];
+  const out: ChatMessage[] = [];
+  for (const m of chat) {
+    if (m.role !== "agent" && m.role !== "user") continue;
+    out.push({
+      id: m.message_id,
+      role: m.role,
+      text: m.content ?? "",
+      done: true,
+    });
+  }
+  return out;
+}
+
 function appendDelta(
   prev: ChatMessage[],
   p: AgentMessageChunkPayload,

@@ -153,6 +153,24 @@ function Spinner({ reduced }: { reduced: boolean }): JSX.Element {
   );
 }
 
+// --- Humanized step label ------------------------------------------------ //
+//
+// Memory spec `feedback_pipeline_card_humanized_labels` (job-0173 Part 1):
+// the agent emits the Gemini-reasoning step as the internal token
+// `llm_generation`. The user-facing surface should read `Thinking…` instead —
+// "no internal terms in user-facing surfaces" (codified web-lesson #3 from
+// job-0086 et al.). The mapping is keyed on the verbatim emitted `step.name`;
+// unknown names pass through unchanged so engineer-named tools continue to
+// render their own labels.
+
+const HUMANIZED_STEP_NAMES: Record<string, string> = {
+  llm_generation: "Thinking…",
+};
+
+export function humanizeStepName(rawName: string): string {
+  return HUMANIZED_STEP_NAMES[rawName] ?? rawName;
+}
+
 // --- Card ----------------------------------------------------------------- //
 
 export interface PipelineCardProps {
@@ -228,9 +246,9 @@ export function PipelineCard({ step }: PipelineCardProps): JSX.Element {
           whiteSpace: "nowrap",
           ...labelStyle,
         }}
-        title={step.name}
+        title={humanizeStepName(step.name)}
       >
-        {step.name}
+        {humanizeStepName(step.name)}
       </span>
       {isRunning && <Spinner reduced={reduced} />}
       {isFailed && (step.error_code || step.error_message) && (

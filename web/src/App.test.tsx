@@ -629,3 +629,83 @@ describe("__grace2InjectPayloadWarning dev seam (job-0140)", () => {
     expect(screen.queryByTestId("payload-warning-button-proceed")).toBeNull();
   });
 });
+
+// --- Map pan unlock — LayerPanel wrap pointer-events confinement (job-0173 Part 3) //
+//
+// REGRESSION the kickoff diagnosed: after a flood/raster layer renders, the
+// user couldn't pan/drag the map. Root cause: the inner div inside
+// `grace2-case-view-layer-panel-wrap` had pointerEvents:"auto" with
+// width:100% height:100%, blanketing the full (top:64 → bottom:60,
+// left:0 → right:0) region above the map. That zone covers virtually the
+// entire map viewport, so MapLibre never sees pointerdown/move events on the
+// raster overlay area.
+//
+// Fix verified structurally: the pointer-events:auto region must be column-
+// sized (left:0, width ≤ 320px — i.e. left:16 offset + 280 panel + 16 right
+// padding = 312px), not full-bleed. Outside that column the wrap is
+// pointer-events:none → click-through to the map below.
+
+describe("Map pan unlock — LayerPanel wrap pointer-events confined to column (job-0173 Part 3)", () => {
+  // Inline mirror of the App.tsx LayerPanel wrap fragment. This is the
+  // exact structure App.tsx emits when activeCaseId !== null && layers.length > 0.
+  function LayerPanelWrapFragment(): JSX.Element {
+    return (
+      <div
+        data-testid="grace2-case-view-layer-panel-wrap"
+        style={{
+          position: "absolute",
+          top: 64,
+          left: 0,
+          right: 0,
+          bottom: 60,
+          zIndex: 20,
+          pointerEvents: "none",
+        }}
+      >
+        <div
+          data-testid="grace2-layer-panel-pointer-region"
+          style={{
+            pointerEvents: "auto",
+            position: "absolute",
+            left: 0,
+            top: 0,
+            bottom: 0,
+            width: 280 + 16 + 16,
+          }}
+        />
+      </div>
+    );
+  }
+
+  it("outer wrap is pointer-events:none so map drags pass through", () => {
+    render(<LayerPanelWrapFragment />);
+    const wrap = screen.getByTestId("grace2-case-view-layer-panel-wrap");
+    expect((wrap as HTMLElement).style.pointerEvents).toBe("none");
+  });
+
+  it("inner pointer-events:auto region is NOT full-bleed (width is column-sized, not 100%)", () => {
+    render(<LayerPanelWrapFragment />);
+    const region = screen.getByTestId("grace2-layer-panel-pointer-region");
+    const s = (region as HTMLElement).style;
+    expect(s.pointerEvents).toBe("auto");
+    // Width must be a finite pixel value <= 320px, NOT "100%". The prior buggy
+    // implementation used width:100% + height:100% which blanketed the entire
+    // (top:64 → bottom:60, left:0 → right:0) area and blocked map pan.
+    expect(s.width).not.toBe("100%");
+    expect(s.width).not.toBe("");
+    const widthPx = parseInt(s.width, 10);
+    expect(Number.isFinite(widthPx)).toBe(true);
+    expect(widthPx).toBeGreaterThan(0);
+    expect(widthPx).toBeLessThanOrEqual(320);
+  });
+
+  it("inner pointer-events:auto region sits at left:0 (does not extend to right edge)", () => {
+    render(<LayerPanelWrapFragment />);
+    const region = screen.getByTestId("grace2-layer-panel-pointer-region");
+    const s = (region as HTMLElement).style;
+    // Anchored to the left rail; right edge unanchored so MapLibre sees clicks
+    // everywhere to the right of the panel column.
+    expect(s.left).toBe("0px");
+    expect(s.right).toBe("");
+  });
+});

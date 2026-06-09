@@ -242,3 +242,25 @@ describe("PipelineCard — multiple cards", () => {
     expect(cards[2]!.getAttribute("data-step-id")).toBe("s3");
   });
 });
+
+// --- Humanized step names (job-0173 Part 1) ----------------------------- //
+
+describe("PipelineCard — humanized step labels", () => {
+  it("renders 'llm_generation' as 'Thinking…' for the user", () => {
+    render(<PipelineCard step={makeStep({ state: "running", name: "llm_generation" })} />);
+    const label = screen.getByTestId("pipeline-card-name");
+    expect(label).toHaveTextContent("Thinking…");
+    expect(label.textContent).not.toContain("llm_generation");
+  });
+
+  it("uses the humanized label as the tooltip title too (no internal term leaks)", () => {
+    render(<PipelineCard step={makeStep({ state: "complete", name: "llm_generation" })} />);
+    const label = screen.getByTestId("pipeline-card-name");
+    expect(label.getAttribute("title")).toBe("Thinking…");
+  });
+
+  it("preserves engineer-named tool labels (passthrough for unknown names)", () => {
+    render(<PipelineCard step={makeStep({ state: "complete", name: "fetch_dem" })} />);
+    expect(screen.getByTestId("pipeline-card-name")).toHaveTextContent("fetch_dem");
+  });
+});

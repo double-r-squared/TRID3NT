@@ -8,7 +8,10 @@
 //   - visibility checkbox
 //   - opacity slider (0..1)
 //   - name + attribution
-//   - up/down keyboard buttons for a11y (per FR-WC-4 v0.1 scope kickoff)
+//
+// The ▲/▼ nudge buttons were dropped in job-0173 Part 4 — they were
+// redundant with @dnd-kit's drag-and-drop reorder (which also provides
+// the keyboard reorder a11y path the nudge buttons were nominally for).
 //
 // In M3 (this job), user-side clicks emit a local intent log + invoke
 // optional handler props for downstream tests; the AGENT does not yet
@@ -249,17 +252,6 @@ export function LayerPanel({
     console.debug("[LayerPanel] reorder intent:", reorderedIds);
   }
 
-  function nudge(layerId: string, direction: -1 | 1): void {
-    const i = state.layers.findIndex((l) => l.layer_id === layerId);
-    if (i === -1) return;
-    const target = i + direction;
-    if (target < 0 || target >= state.layers.length) return;
-    const reordered = arrayMove(state.layers, i, target).map((l) => l.layer_id);
-    dispatch({ type: "local-reorder", layer_ids: reordered });
-    // eslint-disable-next-line no-console
-    console.debug("[LayerPanel] nudge intent:", { layerId, direction, reordered });
-  }
-
   function onVisibilityToggle(layerId: string, visible: boolean): void {
     dispatch({ type: "local-visibility", layer_id: layerId, visible });
     // eslint-disable-next-line no-console
@@ -355,16 +347,12 @@ export function LayerPanel({
             items={state.layers.map((l) => l.layer_id)}
             strategy={verticalListSortingStrategy}
           >
-            {state.layers.map((layer, i) => (
+            {state.layers.map((layer) => (
               <SortableRow
                 key={layer.layer_id}
                 layer={layer}
-                isFirst={i === 0}
-                isLast={i === state.layers.length - 1}
                 onVisibilityToggle={onVisibilityToggle}
                 onOpacityChange={onOpacityChange}
-                onNudgeUp={() => nudge(layer.layer_id, -1)}
-                onNudgeDown={() => nudge(layer.layer_id, +1)}
               />
             ))}
           </SortableContext>
@@ -378,22 +366,14 @@ export function LayerPanel({
 
 interface SortableRowProps {
   layer: ProjectLayerSummary;
-  isFirst: boolean;
-  isLast: boolean;
   onVisibilityToggle: (layerId: string, visible: boolean) => void;
   onOpacityChange: (layerId: string, opacity: number) => void;
-  onNudgeUp: () => void;
-  onNudgeDown: () => void;
 }
 
 function SortableRow({
   layer,
-  isFirst,
-  isLast,
   onVisibilityToggle,
   onOpacityChange,
-  onNudgeUp,
-  onNudgeDown,
 }: SortableRowProps): JSX.Element {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id: layer.layer_id });
@@ -455,26 +435,6 @@ function SortableRow({
         >
           {layer.name}
         </span>
-        <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
-          <button
-            onClick={onNudgeUp}
-            disabled={isFirst}
-            aria-label={`move ${layer.name} up`}
-            data-testid="layer-nudge-up"
-            style={nudgeBtnStyle}
-          >
-            ▲
-          </button>
-          <button
-            onClick={onNudgeDown}
-            disabled={isLast}
-            aria-label={`move ${layer.name} down`}
-            data-testid="layer-nudge-down"
-            style={nudgeBtnStyle}
-          >
-            ▼
-          </button>
-        </div>
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
         <span style={{ fontSize: 10, color: "#888", width: 38 }}>opacity</span>
@@ -514,19 +474,6 @@ function SortableRow({
     </div>
   );
 }
-
-const nudgeBtnStyle: React.CSSProperties = {
-  background: "transparent",
-  border: "1px solid #444",
-  borderRadius: 3,
-  color: "#aaa",
-  width: 18,
-  height: 14,
-  padding: 0,
-  fontSize: 8,
-  lineHeight: "10px",
-  cursor: "pointer",
-};
 
 // --- Test-injectable global bus ---------------------------------------- //
 //

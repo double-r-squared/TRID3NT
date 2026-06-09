@@ -111,3 +111,41 @@ describe("LayerPanel — hide-when-empty (tweak 2)", () => {
     expect(lastCall.map((l) => l.layer_id).sort()).toEqual(["y", "z"]);
   });
 });
+
+// --- No-nudge-buttons regression (job-0173 Part 4) ---------------------- //
+//
+// The ▲/▼ z-order nudge buttons were dropped — drag-and-drop reorder is the
+// sole reorder affordance now. The drag handle (data-testid layer-drag-handle)
+// must remain so the reorder path is still available.
+
+describe("LayerPanel — no nudge buttons (job-0173 Part 4)", () => {
+  it("renders rows without layer-nudge-up / layer-nudge-down buttons", () => {
+    render(
+      <LayerPanel
+        initialLayers={[makeLayer("a", 2), makeLayer("b", 1)]}
+      />,
+    );
+    expect(screen.queryAllByTestId("layer-nudge-up")).toHaveLength(0);
+    expect(screen.queryAllByTestId("layer-nudge-down")).toHaveLength(0);
+  });
+
+  it("rows do NOT contain ▲ or ▼ glyph characters", () => {
+    const { container } = render(
+      <LayerPanel initialLayers={[makeLayer("a"), makeLayer("b", 2)]} />,
+    );
+    const text = container.textContent ?? "";
+    expect(text).not.toContain("▲");
+    expect(text).not.toContain("▼");
+  });
+
+  it("preserves the drag handle on every layer row (reorder still possible)", () => {
+    render(<LayerPanel initialLayers={[makeLayer("a"), makeLayer("b", 2)]} />);
+    expect(screen.getAllByTestId("layer-drag-handle")).toHaveLength(2);
+  });
+
+  it("preserves visibility checkbox + opacity slider (controls unaffected)", () => {
+    render(<LayerPanel initialLayers={[makeLayer("a")]} />);
+    expect(screen.getByTestId("layer-visibility")).toBeInTheDocument();
+    expect(screen.getByTestId("layer-opacity")).toBeInTheDocument();
+  });
+});

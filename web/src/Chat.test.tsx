@@ -21,6 +21,8 @@ import {
   shouldShowCancel,
   mergeStepsByStepId,
   forceMostRecentRunningToFailed,
+  pipelineReducer,
+  PipelineInlineState,
 } from "./Chat";
 import {
   ErrorPayload,
@@ -391,5 +393,129 @@ describe("forceMostRecentRunningToFailed", () => {
     );
     expect(next.live!.steps![0]!.state).toBe("complete");
     expect(next.live!.steps![1]!.state).toBe("cancelled");
+  });
+});
+
+// --- pipelineReducer error → ChatInput idle (job-0173 Part 2) ----------- //
+//
+// Kickoff: when an `error` envelope arrives (Gemini failure, agent crash +
+// reconnect, dispatch TypeError, etc.), force-transition ChatInput state
+// back to `idle` so the user can send a new prompt. The cancel predicate
+// reads (a) live.steps.some(running) and (b) currentPipelineFromSession.
+// After error: both must be false.
+
+describe("pipelineReducer — error → ChatInput force-idle (job-0173 Part 2)", () => {
+  const ERR: ErrorPayload = {
+    error_code: "LLM_UNAVAILABLE",
+    message: "Gemini generation failed: 500",
+  } as ErrorPayload;
+
+  it("clears currentPipelineFromSession on error so shouldShowCancel returns false", () => {
+    const live: PipelineStatePayload = {
+      pipeline_id: "pipe-A",
+      steps: [makeStep("s1", "running", 30)],
+    };
+    const state: PipelineInlineState = {
+      live,
+      history: [],
+      currentPipelineFromSession: {
+        pipeline_id: "pipe-A",
+        steps: [makeStep("s1", "running")],
+        started_at: null,
+        completed_at: null,
+        final_state: null,
+      },
+    };
+    const next = pipelineReducer(state, {
+      type: "error",
+      payload: ERR,
+      tool_name: null,
+    });
+    expect(next.currentPipelineFromSession).toBeNull();
+    expect(shouldShowCancel(next)).toBe(false);
+  });
+
+  it("moves the live snapshot to history when no step is still running after the flip", () => {
+    const live: PipelineStatePayload = {
+      pipeline_id: "pipe-A",
+      steps: [
+        makeStep("s1", "complete"),
+        makeStep("s2", "running", 50),
+      ],
+    };
+    const state: PipelineInlineState = {
+      live,
+      history: [],
+      currentPipelineFromSession: null,
+    };
+    const next = pipelineReducer(state, {
+      type: "error",
+      payload: ERR,
+      tool_name: null,
+    });
+    // live should be null (moved to history); history should contain the
+    // rewritten snapshot with s2 → failed.
+    expect(next.live).toBeNull();
+    expect(next.history).toHaveLength(1);
+    const movedSteps = next.history[0]!.steps!;
+    expect(movedSteps.find((s) => s.step_id === "s2")!.state).toBe("failed");
+    expect(shouldShowCancel(next)).toBe(false);
+  });
+
+  it("leaves live in place when a sibling step is still running (multi-step pipeline)", () => {
+    // Two running steps; error flips only the most-recent → the other is still
+    // running, so live should stay live and the cancel button still shows.
+    const live: PipelineStatePayload = {
+      pipeline_id: "pipe-A",
+      steps: [
+        makeStep("s1", "running", 20),
+        makeStep("s2", "running", 80),
+      ],
+    };
+    const state: PipelineInlineState = {
+      live,
+      history: [],
+      currentPipelineFromSession: null,
+    };
+    const next = pipelineReducer(state, {
+      type: "error",
+      payload: ERR,
+      tool_name: null,
+    });
+    // One step was flipped to failed; the other remains running → live stays.
+    expect(next.live).not.toBeNull();
+    const failed = next.live!.steps!.filter((s) => s.state === "failed");
+    const running = next.live!.steps!.filter((s) => s.state === "running");
+    expect(failed).toHaveLength(1);
+    expect(running).toHaveLength(1);
+    // Cancel button is still appropriate (a sibling tool truly is still running).
+    expect(shouldShowCancel(next)).toBe(true);
+  });
+
+  it("end-to-end: live running + session current_pipeline → after error, idle", () => {
+    // The canonical bug pattern from the kickoff: dispatch fails, session-state
+    // never gets a terminal update, current_pipeline lingers; the live running
+    // step is the only step. After error the ChatInput must return to idle.
+    const live: PipelineStatePayload = {
+      pipeline_id: "pipe-A",
+      steps: [makeStep("only-step", "running", 10)],
+    };
+    const state: PipelineInlineState = {
+      live,
+      history: [],
+      currentPipelineFromSession: {
+        pipeline_id: "pipe-A",
+        steps: live.steps!,
+        started_at: null,
+        completed_at: null,
+        final_state: null,
+      },
+    };
+    const next = pipelineReducer(state, {
+      type: "error",
+      payload: ERR,
+      tool_name: null,
+    });
+    expect(shouldShowCancel(next)).toBe(false); // ChatInput renders idle (up-arrow)
   });
 });
