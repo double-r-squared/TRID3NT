@@ -1,0 +1,270 @@
+[
+  {
+    "name": "S1 \u2014 Radar over America",
+    "expects": "raster_overlay (NEXRAD green/yellow/red)",
+    "image_size": [
+      1600,
+      1000
+    ],
+    "baseline": {
+      "total": 400000,
+      "radar_green": 0,
+      "radar_yellow": 11,
+      "radar_warm": 0,
+      "road_red_orange": 0,
+      "alert_polygon": 0,
+      "wdpa_green_outline": 914,
+      "basemap_landgreen": 21850,
+      "basemap_water": 96927,
+      "dark": 29265,
+      "bright_chroma": 151
+    },
+    "with_overlay": {
+      "total": 400000,
+      "radar_green": 3494,
+      "radar_yellow": 1040,
+      "radar_warm": 230,
+      "road_red_orange": 149,
+      "alert_polygon": 0,
+      "wdpa_green_outline": 2155,
+      "basemap_landgreen": 19269,
+      "basemap_water": 48769,
+      "dark": 27776,
+      "bright_chroma": 9967
+    },
+    "deltas": {
+      "total": 0,
+      "radar_green": 3494,
+      "radar_yellow": 1029,
+      "radar_warm": 230,
+      "road_red_orange": 149,
+      "alert_polygon": 0,
+      "wdpa_green_outline": 1241,
+      "basemap_landgreen": -2581,
+      "basemap_water": -48158,
+      "dark": -1489,
+      "bright_chroma": 9816
+    },
+    "signature_keys": [
+      "radar_green",
+      "radar_yellow",
+      "radar_warm"
+    ],
+    "signature_delta": 4753,
+    "rendered": true
+  },
+  {
+    "name": "S2 \u2014 Weather alerts CONUS",
+    "expects": "vector_polygon (NWS yellow/red transparent fills)",
+    "image_size": [
+      1600,
+      1000
+    ],
+    "baseline": {
+      "total": 400000,
+      "radar_green": 0,
+      "radar_yellow": 11,
+      "radar_warm": 0,
+      "road_red_orange": 0,
+      "alert_polygon": 0,
+      "wdpa_green_outline": 914,
+      "basemap_landgreen": 21850,
+      "basemap_water": 96927,
+      "dark": 29265,
+      "bright_chroma": 151
+    },
+    "with_overlay": {
+      "total": 400000,
+      "radar_green": 3493,
+      "radar_yellow": 963,
+      "radar_warm": 641,
+      "road_red_orange": 465,
+      "alert_polygon": 0,
+      "wdpa_green_outline": 2224,
+      "basemap_landgreen": 19110,
+      "basemap_water": 48763,
+      "dark": 29757,
+      "bright_chroma": 11099
+    },
+    "deltas": {
+      "total": 0,
+      "radar_green": 3493,
+      "radar_yellow": 952,
+      "radar_warm": 641,
+      "road_red_orange": 465,
+      "alert_polygon": 0,
+      "wdpa_green_outline": 1310,
+      "basemap_landgreen": -2740,
+      "basemap_water": -48164,
+      "dark": 492,
+      "bright_chroma": 10948
+    },
+    "signature_keys": [
+      "radar_green",
+      "radar_yellow",
+      "bright_chroma"
+    ],
+    "signature_delta": 15393,
+    "rendered": true
+  },
+  {
+    "name": "S3 \u2014 WDPA Big Cypress",
+    "expects": "vector_polygon (WDPA green outlines)",
+    "image_size": [
+      1600,
+      1000
+    ],
+    "baseline": {
+      "total": 400000,
+      "radar_green": 0,
+      "radar_yellow": 11,
+      "radar_warm": 358,
+      "road_red_orange": 343,
+      "alert_polygon": 0,
+      "wdpa_green_outline": 915,
+      "basemap_landgreen": 21774,
+      "basemap_water": 96919,
+      "dark": 29265,
+      "bright_chroma": 616
+    },
+    "with_overlay": {
+      "total": 400000,
+      "radar_green": 3665,
+      "radar_yellow": 1053,
+      "radar_warm": 410,
+      "road_red_orange": 317,
+      "alert_polygon": 0,
+      "wdpa_green_outline": 2177,
+      "basemap_landgreen": 19191,
+      "basemap_water": 48764,
+      "dark": 31905,
+      "bright_chroma": 11227
+    },
+    "deltas": {
+      "total": 0,
+      "radar_green": 3665,
+      "radar_yellow": 1042,
+      "radar_warm": 52,
+      "road_red_orange": -26,
+      "alert_polygon": 0,
+      "wdpa_green_outline": 1262,
+      "basemap_landgreen": -2583,
+      "basemap_water": -48155,
+      "dark": 2640,
+      "bright_chroma": 10611
+    },
+    "signature_keys": [
+      "wdpa_green_outline",
+      "bright_chroma"
+    ],
+    "signature_delta": 11873,
+    "rendered": true
+  },
+  {
+    "name": "S4 \u2014 OSM roads Fort Myers",
+    "expects": "vector_linestring (OSM red/orange road lines)",
+    "image_size": [
+      1600,
+      1000
+    ],
+    "baseline": {
+      "total": 400000,
+      "radar_green": 0,
+      "radar_yellow": 11,
+      "radar_warm": 358,
+      "road_red_orange": 343,
+      "alert_polygon": 0,
+      "wdpa_green_outline": 915,
+      "basemap_landgreen": 21774,
+      "basemap_water": 96919,
+      "dark": 29265,
+      "bright_chroma": 616
+    },
+    "with_overlay": {
+      "total": 400000,
+      "radar_green": 1546,
+      "radar_yellow": 361,
+      "radar_warm": 438,
+      "road_red_orange": 438,
+      "alert_polygon": 0,
+      "wdpa_green_outline": 6593,
+      "basemap_landgreen": 44937,
+      "basemap_water": 38318,
+      "dark": 55699,
+      "bright_chroma": 14243
+    },
+    "deltas": {
+      "total": 0,
+      "radar_green": 1546,
+      "radar_yellow": 350,
+      "radar_warm": 80,
+      "road_red_orange": 95,
+      "alert_polygon": 0,
+      "wdpa_green_outline": 5678,
+      "basemap_landgreen": 23163,
+      "basemap_water": -58601,
+      "dark": 26434,
+      "bright_chroma": 13627
+    },
+    "signature_keys": [
+      "road_red_orange",
+      "radar_warm",
+      "bright_chroma"
+    ],
+    "signature_delta": 13802,
+    "rendered": true
+  },
+  {
+    "name": "S5 \u2014 Retry path WDPA Florida",
+    "expects": "vector_polygon (WDPA retry success) + retry chain in chat",
+    "image_size": [
+      1600,
+      1000
+    ],
+    "baseline": {
+      "total": 400000,
+      "radar_green": 1562,
+      "radar_yellow": 425,
+      "radar_warm": 450,
+      "road_red_orange": 450,
+      "alert_polygon": 0,
+      "wdpa_green_outline": 6357,
+      "basemap_landgreen": 57451,
+      "basemap_water": 52995,
+      "dark": 44710,
+      "bright_chroma": 15588
+    },
+    "with_overlay": {
+      "total": 400000,
+      "radar_green": 176,
+      "radar_yellow": 12275,
+      "radar_warm": 407,
+      "road_red_orange": 407,
+      "alert_polygon": 0,
+      "wdpa_green_outline": 6471,
+      "basemap_landgreen": 44518,
+      "basemap_water": 38192,
+      "dark": 59738,
+      "bright_chroma": 19865
+    },
+    "deltas": {
+      "total": 0,
+      "radar_green": -1386,
+      "radar_yellow": 11850,
+      "radar_warm": -43,
+      "road_red_orange": -43,
+      "alert_polygon": 0,
+      "wdpa_green_outline": 114,
+      "basemap_landgreen": -12933,
+      "basemap_water": -14803,
+      "dark": 15028,
+      "bright_chroma": 4277
+    },
+    "signature_keys": [
+      "wdpa_green_outline",
+      "bright_chroma"
+    ],
+    "signature_delta": 4391,
+    "rendered": true
+  }
+]

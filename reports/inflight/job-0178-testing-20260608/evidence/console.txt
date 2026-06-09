@@ -1,0 +1,98 @@
+[debug] [vite] connecting...
+[debug] [vite] connected.
+[info] %cDownload the React DevTools for a better development experience: https://reactjs.org/link/react-devtools font-weight:bold
+[warning] WebSocket connection to 'ws://localhost:8765/' failed: WebSocket is closed before the connection is established.
+[debug] [vite] connecting...
+[debug] [vite] connected.
+[info] %cDownload the React DevTools for a better development experience: https://reactjs.org/link/react-devtools font-weight:bold
+[warning] WebSocket connection to 'ws://localhost:8765/' failed: WebSocket is closed before the connection is established.
+[warning] WebSocket connection to 'ws://localhost:8765/' failed: WebSocket is closed before the connection is established.
+[warning] [.WebGL-0x4400159e00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels
+[warning] [.WebGL-0x4400159e00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels
+[warning] [.WebGL-0x4400159e00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels
+[warning] [.WebGL-0x4400159e00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels (this message will no longer repeat)
+[error] Warning: `value` prop on `%s` should not be null. Consider using an empty string to clear the component or `undefined` for uncontrolled components.%s input 
+    at input
+    at div
+    at div
+    at SortableRow (http://127.0.0.1:5177/src/LayerPanel.tsx?t=1780984834823:367:3)
+    at SortableContext (http://127.0.0.1:5177/node_modules/.vite/deps/@dnd-kit_sortable.js?v=745e80aa:261:5)
+    at DndContext2 (http://127.0.0.1:5177/node_modules/.vite/deps/chunk-A5UIQW2K.js?v=745e80aa:2521:5)
+    at div
+    at aside
+    at LayerPanel (http://127.0.0.1:5177/src/LayerPanel.tsx?t=1780984834823:126:3)
+    at div
+    at div
+    at div
+    at App (http://127.0.0.1:5177/src/App.tsx?t=1780996283655:85:15)
+[log] [MapView] addVectorLayer start: nws-conus-actual-all gen=1 inline=true
+[log] [MapView] addVectorLayer inline-geojson hit: nws-conus-actual-all features=69 kind=polygon
+[log] [MapView] addVectorLayer addSource (sync): nws-conus-actual-all kind=polygon features=69
+[error] Error: Source "nws-conus-actual-all" cannot be removed while layer "nws-conus-actual-all-outline" is using it.
+    at de.removeSource (http://127.0.0.1:5177/node_modules/.vite/deps/maplibre-gl.js?v=745e80aa:12422:105)
+    at t.Map.removeSource (http://127.0.0.1:5177/node_modules/.vite/deps/maplibre-gl.js?v=745e80aa:17087:31)
+    at applyLatest (http://127.0.0.1:5177/src/Map.tsx?t=1780996283655:405:34)
+    at http://127.0.0.1:5177/src/Map.tsx?t=1780996283655:466:9
+    at http://127.0.0.1:5177/src/LayerPanel.tsx?t=1780984834823:561:57
+    at Set.forEach (<anonymous>)
+    at Object.pushSessionState (http://127.0.0.1:5177/src/LayerPanel.tsx?t=1780984834823:561:42)
+    at http://127.0.0.1:5177/src/App.tsx?t=1780996283655:341:11
+    at commitHookEffectListMount (http://127.0.0.1:5177/node_modules/.vite/deps/chunk-NUMECXU6.js?v=745e80aa:16915:34)
+    at commitPassiveMountOnFiber (http://127.0.0.1:5177/node_modules/.vite/deps/chunk-NUMECXU6.js?v=745e80aa:18156:19)
+[log] [MapView] addVectorLayer start: nws-conus-actual-all gen=3 inline=true
+[log] [MapView] addVectorLayer inline-geojson hit: nws-conus-actual-all features=69 kind=polygon
+[log] [MapView] addVectorLayer defer (style not loaded): nws-conus-actual-all
+[log] [MapView] addVectorLayer start: wdpa--81.3833-25.6127 gen=1 inline=true
+[log] [MapView] addVectorLayer inline-geojson hit: wdpa--81.3833-25.6127 features=0 kind=unknown
+[log] [MapView] addVectorLayer defer (style not loaded): wdpa--81.3833-25.6127
+[log] [MapView] addVectorLayer addSource (retry 1): nws-conus-actual-all kind=polygon features=69
+[log] [MapView] addVectorLayer addSource (retry 1): wdpa--81.3833-25.6127 kind=unknown features=0
+[warning] [MapView] unknown geometry kind for wdpa--81.3833-25.6127; skipping paint layer
+[error] Error: Source "nws-conus-actual-all" cannot be removed while layer "nws-conus-actual-all-outline" is using it.
+    at de.removeSource (http://127.0.0.1:5177/node_modules/.vite/deps/maplibre-gl.js?v=745e80aa:12422:105)
+    at t.Map.removeSource (http://127.0.0.1:5177/node_modules/.vite/deps/maplibre-gl.js?v=745e80aa:17087:31)
+    at applyLatest (http://127.0.0.1:5177/src/Map.tsx?t=1780996283655:405:34)
+    at http://127.0.0.1:5177/src/Map.tsx?t=1780996283655:466:9
+    at http://127.0.0.1:5177/src/LayerPanel.tsx?t=1780984834823:561:57
+    at Set.forEach (<anonymous>)
+    at Object.pushSessionState (http://127.0.0.1:5177/src/LayerPanel.tsx?t=1780984834823:561:42)
+    at http://127.0.0.1:5177/src/App.tsx?t=1780996283655:341:11
+    at commitHookEffectListMount (http://127.0.0.1:5177/node_modules/.vite/deps/chunk-NUMECXU6.js?v=745e80aa:16915:34)
+    at commitPassiveMountOnFiber (http://127.0.0.1:5177/node_modules/.vite/deps/chunk-NUMECXU6.js?v=745e80aa:18156:19)
+[log] [MapView] addVectorLayer start: nws-conus-actual-all gen=5 inline=true
+[log] [MapView] addVectorLayer inline-geojson hit: nws-conus-actual-all features=69 kind=polygon
+[log] [MapView] addVectorLayer defer (style not loaded): nws-conus-actual-all
+[log] [MapView] addVectorLayer start: wdpa--81.3833-25.6127 gen=3 inline=true
+[log] [MapView] addVectorLayer inline-geojson hit: wdpa--81.3833-25.6127 features=0 kind=unknown
+[log] [MapView] addVectorLayer defer (style not loaded): wdpa--81.3833-25.6127
+[log] [MapView] addVectorLayer start: osm-roads--81.9126-26.5476 gen=1 inline=true
+[log] [MapView] addVectorLayer inline-geojson hit: osm-roads--81.9126-26.5476 features=2383 kind=line
+[log] [MapView] addVectorLayer defer (style not loaded): osm-roads--81.9126-26.5476
+[error] Error: Source "nws-conus-actual-all" cannot be removed while layer "nws-conus-actual-all-outline" is using it.
+    at de.removeSource (http://127.0.0.1:5177/node_modules/.vite/deps/maplibre-gl.js?v=745e80aa:12422:105)
+    at t.Map.removeSource (http://127.0.0.1:5177/node_modules/.vite/deps/maplibre-gl.js?v=745e80aa:17087:31)
+    at applyLatest (http://127.0.0.1:5177/src/Map.tsx?t=1780996283655:405:34)
+    at http://127.0.0.1:5177/src/Map.tsx?t=1780996283655:466:9
+    at http://127.0.0.1:5177/src/LayerPanel.tsx?t=1780984834823:561:57
+    at Set.forEach (<anonymous>)
+    at Object.pushSessionState (http://127.0.0.1:5177/src/LayerPanel.tsx?t=1780984834823:561:42)
+    at http://127.0.0.1:5177/src/App.tsx?t=1780996283655:350:9
+    at commitHookEffectListMount (http://127.0.0.1:5177/node_modules/.vite/deps/chunk-NUMECXU6.js?v=745e80aa:16915:34)
+    at commitPassiveMountOnFiber (http://127.0.0.1:5177/node_modules/.vite/deps/chunk-NUMECXU6.js?v=745e80aa:18156:19)
+[log] [MapView] addVectorLayer start: nws-conus-actual-all gen=7 inline=true
+[log] [MapView] addVectorLayer inline-geojson hit: nws-conus-actual-all features=69 kind=polygon
+[log] [MapView] addVectorLayer defer (style not loaded): nws-conus-actual-all
+[log] [MapView] addVectorLayer start: wdpa--81.3833-25.6127 gen=5 inline=true
+[log] [MapView] addVectorLayer inline-geojson hit: wdpa--81.3833-25.6127 features=0 kind=unknown
+[log] [MapView] addVectorLayer defer (style not loaded): wdpa--81.3833-25.6127
+[log] [MapView] addVectorLayer start: osm-roads--81.9126-26.5476 gen=3 inline=true
+[log] [MapView] addVectorLayer inline-geojson hit: osm-roads--81.9126-26.5476 features=2383 kind=line
+[log] [MapView] addVectorLayer defer (style not loaded): osm-roads--81.9126-26.5476
+[log] [MapView] addVectorLayer start: wdpa--87.0000-24.0000 gen=1 inline=true
+[log] [MapView] addVectorLayer inline-geojson hit: wdpa--87.0000-24.0000 features=1684 kind=polygon
+[log] [MapView] addVectorLayer defer (style not loaded): wdpa--87.0000-24.0000
+[log] [MapView] addVectorLayer addSource (retry 1): nws-conus-actual-all kind=polygon features=69
+[log] [MapView] addVectorLayer addSource (retry 1): wdpa--81.3833-25.6127 kind=unknown features=0
+[warning] [MapView] unknown geometry kind for wdpa--81.3833-25.6127; skipping paint layer
+[log] [MapView] addVectorLayer addSource (retry 2): osm-roads--81.9126-26.5476 kind=line features=2383
+[log] [MapView] addVectorLayer addSource (retry 3): wdpa--87.0000-24.0000 kind=polygon features=1684
