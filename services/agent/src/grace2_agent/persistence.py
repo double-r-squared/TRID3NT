@@ -619,10 +619,283 @@ class Persistence:
         )
 
 
+# --------------------------------------------------------------------------- #
+# Local-dev file-backed MCP client (job-0161, Wave 4.6)
+# --------------------------------------------------------------------------- #
+#
+# The MongoDB Atlas MCP server is the production LLM-facing DB seam (FR-AS-4).
+# For LOCAL DEV without Atlas/MCP, this file-backed shim satisfies the same
+# ``MCPClientProtocol`` surface so the ``Persistence`` class above doesn't
+# need to know which substrate it is talking to. The Persistence singleton
+# can therefore be bound at startup regardless of whether MCP is provisioned,
+# so the Case-create / select / archive / delete UI surface works on a fresh
+# clone without Atlas credentials.
+#
+# Storage layout:
+#   ``~/.grace2/dev_persistence/<database>/<collection>.json``
+#   one JSON file per collection — a dict mapping ``_id`` → document
+#
+# Atomicity:
+#   - per-collection ``asyncio.Lock`` serializes concurrent calls
+#   - writes go to a sibling ``<collection>.json.tmp`` then ``os.replace``
+#     (POSIX-atomic rename on the same filesystem)
+#
+# Scope (matches the subset of MCP tools Persistence actually invokes):
+#   ``insert-one`` / ``update-one`` (with ``$set`` + optional ``upsert``) /
+#   ``find-one`` / ``find`` (with optional sort by single key, ±1 direction).
+#
+# This is NOT a Mongo emulator — it's just enough query semantics to round-trip
+# the Persistence layer's calls. When real MCP lands the Persistence singleton
+# is constructed with the live ``MCPClient`` instead, and this file-backed
+# shim is never instantiated.
+
+import asyncio as _asyncio
+import json as _json_for_file
+import os as _os_for_file
+from pathlib import Path as _Path
+
+DEV_PERSISTENCE_DIR_ENV = "GRACE2_DEV_PERSISTENCE_DIR"
+DEV_PERSISTENCE_ENABLED_ENV = "GRACE2_DEV_PERSISTENCE"
+
+
+def _default_dev_persistence_dir() -> _Path:
+    """Resolve the on-disk directory for the file-backed dev substrate.
+
+    Override via ``GRACE2_DEV_PERSISTENCE_DIR`` (used by tests + CI to point
+    at a tmpdir). Default is ``~/.grace2/dev_persistence/`` per the job-0161
+    kickoff so a fresh clone gets a stable, user-scoped location.
+    """
+    override = _os_for_file.environ.get(DEV_PERSISTENCE_DIR_ENV)
+    if override:
+        return _Path(override).expanduser()
+    return _Path.home() / ".grace2" / "dev_persistence"
+
+
+class FileMCPClient:
+    """File-backed shim that satisfies :class:`MCPClientProtocol`.
+
+    Implements the four MCP tool methods the :class:`Persistence` wrapper
+    actually invokes (``insert-one``, ``update-one``, ``find-one``, ``find``)
+    against a per-collection JSON file in ``base_dir / database / coll.json``.
+
+    The return shape mirrors what ``Persistence._unwrap_mcp_result`` expects:
+    we return a plain dict for single-document operations and a
+    ``{"documents": [...]}`` envelope for list operations. This keeps the
+    Persistence layer agnostic of substrate — the same code paths that
+    deserialize MCP-server JSON responses deserialize our file payloads.
+    """
+
+    def __init__(self, base_dir: _Path | None = None) -> None:
+        self._base_dir = base_dir or _default_dev_persistence_dir()
+        self._base_dir.mkdir(parents=True, exist_ok=True)
+        # collection-path -> asyncio.Lock, lazily allocated. Per-collection
+        # rather than global so reads from one collection don't block another.
+        self._locks: dict[str, _asyncio.Lock] = {}
+
+    # ------------------------------------------------------------------ #
+    # Storage helpers
+    # ------------------------------------------------------------------ #
+
+    def _collection_path(self, database: str, collection: str) -> _Path:
+        db_dir = self._base_dir / database
+        db_dir.mkdir(parents=True, exist_ok=True)
+        return db_dir / f"{collection}.json"
+
+    def _lock_for(self, path: _Path) -> _asyncio.Lock:
+        key = str(path)
+        lock = self._locks.get(key)
+        if lock is None:
+            lock = _asyncio.Lock()
+            self._locks[key] = lock
+        return lock
+
+    @staticmethod
+    def _read_store(path: _Path) -> dict[str, dict]:
+        if not path.exists():
+            return {}
+        try:
+            with path.open("r", encoding="utf-8") as fh:
+                data = _json_for_file.load(fh)
+        except (_json_for_file.JSONDecodeError, OSError) as exc:
+            logger.warning(
+                "FilePersistence: failed to read %s (%s); treating as empty",
+                path,
+                exc,
+            )
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        return data
+
+    @staticmethod
+    def _atomic_write(path: _Path, store: dict[str, dict]) -> None:
+        """Atomic JSON write: tmp file + os.replace (POSIX-atomic rename)."""
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        with tmp.open("w", encoding="utf-8") as fh:
+            _json_for_file.dump(store, fh, indent=2, sort_keys=True)
+            fh.flush()
+            try:
+                _os_for_file.fsync(fh.fileno())
+            except OSError:
+                # fsync isn't available on every filesystem; the os.replace
+                # below is still atomic on POSIX so we don't escalate.
+                pass
+        _os_for_file.replace(tmp, path)
+
+    # ------------------------------------------------------------------ #
+    # Query matcher — same subset MockMCPClient supports in tests
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _matches(doc: dict, filt: dict) -> bool:
+        """Tiny query matcher: equality, ``$or``, ``$exists``."""
+        for k, v in filt.items():
+            if k == "$or":
+                if not any(FileMCPClient._matches(doc, sub) for sub in v):
+                    return False
+                continue
+            if isinstance(v, dict) and "$exists" in v:
+                present = k in doc
+                if v["$exists"] is False and present:
+                    return False
+                if v["$exists"] is True and not present:
+                    return False
+                continue
+            if doc.get(k) != v:
+                return False
+        return True
+
+    # ------------------------------------------------------------------ #
+    # MCP tool surface
+    # ------------------------------------------------------------------ #
+
+    async def call_tool(
+        self, name: str, arguments: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        args = dict(arguments or {})
+        database = args.get("database", DEFAULT_DATABASE)
+        collection = args.get("collection")
+        if not collection:
+            raise ValueError(
+                f"FileMCPClient: tool {name!r} requires a 'collection' argument"
+            )
+        path = self._collection_path(database, collection)
+        lock = self._lock_for(path)
+
+        if name == "insert-one":
+            async with lock:
+                store = self._read_store(path)
+                doc = args["document"]
+                doc_id = doc.get("_id")
+                if doc_id is None:
+                    raise ValueError(
+                        "FileMCPClient insert-one: document missing '_id'"
+                    )
+                store[doc_id] = doc
+                self._atomic_write(path, store)
+                return {"insertedId": doc_id}
+
+        if name == "update-one":
+            async with lock:
+                store = self._read_store(path)
+                filt = args.get("filter", {})
+                update = args.get("update", {})
+                set_ = update.get("$set", {})
+                upsert = bool(args.get("upsert", False))
+                target_id = filt.get("_id")
+                matched = 0
+                modified = 0
+                if target_id and target_id in store:
+                    store[target_id].update(set_)
+                    matched = 1
+                    modified = 1
+                elif upsert and target_id:
+                    store[target_id] = {**set_, "_id": target_id}
+                    matched = 1
+                    modified = 1
+                else:
+                    # Update by non-_id filter (e.g. firebase_uid). First match wins.
+                    for doc in store.values():
+                        if self._matches(doc, filt):
+                            doc.update(set_)
+                            matched = 1
+                            modified = 1
+                            break
+                self._atomic_write(path, store)
+                return {"matchedCount": matched, "modifiedCount": modified}
+
+        if name == "find-one":
+            async with lock:
+                store = self._read_store(path)
+                filt = args.get("filter", {})
+                for doc in store.values():
+                    if self._matches(doc, filt):
+                        return {"document": doc}
+                return {"document": None}
+
+        if name == "find":
+            async with lock:
+                store = self._read_store(path)
+                filt = args.get("filter", {})
+                sort = args.get("sort", {})
+                results = [d for d in store.values() if self._matches(d, filt)]
+                if sort:
+                    key = next(iter(sort.keys()))
+                    direction = sort[key]
+                    results.sort(
+                        key=lambda d: d.get(key, ""),
+                        reverse=(direction == -1),
+                    )
+                return {"documents": results}
+
+        raise NotImplementedError(
+            f"FileMCPClient: unsupported MCP tool {name!r} "
+            f"(supports insert-one / update-one / find-one / find)"
+        )
+
+
+def is_dev_persistence_enabled() -> bool:
+    """Resolve whether the file-backed dev substrate should engage.
+
+    Order:
+    - explicit ``GRACE2_DEV_PERSISTENCE=0`` disables (escape hatch for CI
+      that wants the M1 None-Persistence path even on a dev box);
+    - explicit ``GRACE2_DEV_PERSISTENCE=1`` enables;
+    - if neither is set AND MongoDB MCP is not provisioned (no
+      ``GRACE2_MONGO_MCP_STDIO=1`` nor ``GRACE2_MONGO_MCP_URL``), default ON
+      so a fresh local clone gets working Case persistence with zero config.
+
+    The MCP-provisioned check is a string read (we don't try to start the
+    sidecar here); ``init_persistence_from_env`` in ``server.py`` is the
+    single place that actually decides between FilePersistence and the live
+    MCP-backed Persistence, and it owns the precedence (real MCP wins).
+    """
+    raw = _os_for_file.environ.get(DEV_PERSISTENCE_ENABLED_ENV)
+    if raw is not None:
+        return raw.strip().lower() in {"1", "true", "yes", "on"}
+    mcp_stdio = _os_for_file.environ.get("GRACE2_MONGO_MCP_STDIO") == "1"
+    mcp_url = bool(_os_for_file.environ.get("GRACE2_MONGO_MCP_URL"))
+    return not (mcp_stdio or mcp_url)
+
+
+def make_file_persistence(base_dir: _Path | None = None) -> Persistence:
+    """Construct a ``Persistence`` backed by the file-backed MCP shim.
+
+    Convenience for ``server.init_persistence_from_env`` and tests — wraps
+    the substrate selection so the call site stays a one-liner.
+    """
+    return Persistence(FileMCPClient(base_dir=base_dir))
+
+
 __all__ = [
     "Persistence",
     "MCPClientProtocol",
+    "FileMCPClient",
+    "make_file_persistence",
+    "is_dev_persistence_enabled",
     "DEFAULT_DATABASE",
+    "DEV_PERSISTENCE_DIR_ENV",
+    "DEV_PERSISTENCE_ENABLED_ENV",
     "CASES_COLLECTION",
     "CHAT_COLLECTION",
     "SESSIONS_COLLECTION",

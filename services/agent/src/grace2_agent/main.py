@@ -252,6 +252,54 @@ def _default_qgis_process_submitter():
     return _submit
 
 
+def _maybe_bind_dev_persistence() -> None:
+    """job-0161 (sprint-12-mega Wave 4.6): bind file-backed dev Persistence.
+
+    Local-dev fallback for when MongoDB MCP is not provisioned (the typical
+    fresh-clone case). Engages a JSON-on-disk substrate so the Case lifecycle
+    (create / select / archive / delete) and chat persistence work without
+    any Atlas / MCP setup.
+
+    Precedence:
+    - ``GRACE2_DEV_PERSISTENCE=0`` → never engage (escape hatch for CI that
+      wants the M1 None-Persistence path even on a dev box);
+    - ``GRACE2_MONGO_MCP_STDIO=1`` OR ``GRACE2_MONGO_MCP_URL`` set → defer to
+      the real MCP path; ``server.init_persistence_from_env`` constructs the
+      MCP-backed singleton at server startup and we leave this no-op;
+    - otherwise (default on a fresh local clone) → bind a ``FilePersistence``
+      singleton pointing at ``~/.grace2/dev_persistence/`` (override via
+      ``GRACE2_DEV_PERSISTENCE_DIR``).
+
+    Production agent containers always set ``GRACE2_MONGO_MCP_STDIO=1`` so
+    this path is bypassed at deploy.
+    """
+    from .persistence import (
+        is_dev_persistence_enabled,
+        make_file_persistence,
+        _default_dev_persistence_dir,
+    )
+    from .server import get_persistence, set_persistence
+
+    log = logging.getLogger("grace2_agent.main")
+    if not is_dev_persistence_enabled():
+        return
+    if get_persistence() is not None:
+        # Already bound (test harness or a prior init pass) — don't trample.
+        log.info("dev Persistence: singleton already bound; skipping")
+        return
+    try:
+        p = make_file_persistence()
+        set_persistence(p)
+        log.info(
+            "dev Persistence bound at %s (file-backed; "
+            "set GRACE2_DEV_PERSISTENCE=0 to disable or "
+            "GRACE2_MONGO_MCP_STDIO=1 for live MCP)",
+            _default_dev_persistence_dir(),
+        )
+    except Exception as exc:  # noqa: BLE001 — startup must not abort on dev-fallback
+        log.warning("dev Persistence bind failed: %s", exc)
+
+
 def _bind_worker_submitter() -> None:
     """Bind the default ``qgis_process`` submitter into ``passthroughs``.
 
@@ -313,6 +361,13 @@ def run(argv: list[str] | None = None) -> int:
     # qgis_process pass-through can reach the substrate. Best-effort: failure
     # to resolve a local qgis_process is informational, not fatal.
     _bind_worker_submitter()
+
+    # job-0161: pre-bind the file-backed dev Persistence when MongoDB MCP is
+    # not provisioned. ``server.init_persistence_from_env`` (called inside
+    # ``run_server``) preserves a pre-bound singleton, so the dev fallback
+    # survives the regular MCP-not-provisioned branch. Production agents set
+    # ``GRACE2_MONGO_MCP_STDIO=1`` and this is a no-op.
+    _maybe_bind_dev_persistence()
 
     # job-0122 Wave 2: initialize Firebase Admin SDK via GCP ADC for the WS
     # connect handshake (Appendix H.5). Best-effort — if firebase_admin is

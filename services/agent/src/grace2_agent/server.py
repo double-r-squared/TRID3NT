@@ -187,6 +187,15 @@ async def init_persistence_from_env() -> Persistence | None:
         p = Persistence(client)
         set_persistence(p)
         return p
+    # job-0161: this method does NOT clear a pre-bound singleton. The agent
+    # startup path (``main._maybe_bind_dev_persistence``) may have already
+    # bound a file-backed ``Persistence`` for LOCAL DEV; we preserve it.
+    if get_persistence() is not None:
+        logger.info(
+            "MCP not provisioned (set GRACE2_MONGO_MCP_STDIO=1 to enable); "
+            "pre-bound Persistence singleton retained"
+        )
+        return get_persistence()
     logger.info(
         "MCP not provisioned (set GRACE2_MONGO_MCP_STDIO=1 to enable); "
         "Persistence singleton remains unbound"

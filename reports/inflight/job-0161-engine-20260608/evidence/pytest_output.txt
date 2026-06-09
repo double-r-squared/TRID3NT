@@ -1,0 +1,45 @@
+rootdir: /home/nate/Documents/GRACE-2/services/agent
+configfile: pyproject.toml
+plugins: zarr-3.2.1, anyio-4.13.0, asyncio-1.4.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 37 items
+
+services/agent/tests/test_file_persistence.py::test_file_mcp_round_trip_case PASSED [  2%]
+services/agent/tests/test_file_persistence.py::test_file_mcp_list_cases PASSED [  5%]
+services/agent/tests/test_file_persistence.py::test_file_mcp_rename_case PASSED [  8%]
+services/agent/tests/test_file_persistence.py::test_file_mcp_archive_then_delete PASSED [ 10%]
+services/agent/tests/test_file_persistence.py::test_file_mcp_chat_round_trip PASSED [ 13%]
+services/agent/tests/test_file_persistence.py::test_file_mcp_atomic_writes_survive_partial_tmp PASSED [ 16%]
+services/agent/tests/test_file_persistence.py::test_is_dev_persistence_enabled_default_on_when_mcp_unset PASSED [ 18%]
+services/agent/tests/test_file_persistence.py::test_is_dev_persistence_enabled_off_when_explicitly_disabled PASSED [ 21%]
+services/agent/tests/test_file_persistence.py::test_is_dev_persistence_enabled_defers_to_real_mcp PASSED [ 24%]
+services/agent/tests/test_file_persistence.py::test_is_dev_persistence_enabled_explicit_wins_over_mcp PASSED [ 27%]
+services/agent/tests/test_file_persistence.py::test_maybe_bind_dev_persistence_engages_file_fallback PASSED [ 29%]
+services/agent/tests/test_file_persistence.py::test_maybe_bind_dev_persistence_respects_disable PASSED [ 32%]
+services/agent/tests/test_file_persistence.py::test_make_file_persistence_default_dir PASSED [ 35%]
+services/agent/tests/test_persistence.py::test_get_case_returns_none_on_missing PASSED [ 37%]
+services/agent/tests/test_persistence.py::test_upsert_case_then_get_round_trip PASSED [ 40%]
+services/agent/tests/test_persistence.py::test_list_cases_for_user PASSED [ 43%]
+services/agent/tests/test_persistence.py::test_archive_case_sets_status PASSED [ 45%]
+services/agent/tests/test_persistence.py::test_delete_case_sets_status PASSED [ 48%]
+services/agent/tests/test_persistence.py::test_append_chat_message_and_hydrate_session PASSED [ 51%]
+services/agent/tests/test_persistence.py::test_session_state_for_missing_case_returns_tombstone PASSED [ 54%]
+services/agent/tests/test_persistence.py::test_user_round_trip PASSED    [ 56%]
+services/agent/tests/test_persistence.py::test_user_lookup_returns_none_when_missing PASSED [ 59%]
+services/agent/tests/test_persistence.py::test_list_secrets_filters_active_only PASSED [ 62%]
+services/agent/tests/test_persistence.py::test_upsert_secret_refuses_key_value_field PASSED [ 64%]
+services/agent/tests/test_persistence.py::test_revoke_secret_sets_is_active_false PASSED [ 67%]
+services/agent/tests/test_persistence.py::test_append_audit_writes_log_entry PASSED [ 70%]
+services/agent/tests/test_persistence.py::test_live_mcp_write_then_read SKIPPED [ 72%]
+services/agent/tests/test_case_lifecycle.py::test_case_qgs_uri_default_bucket PASSED [ 75%]
+services/agent/tests/test_case_lifecycle.py::test_case_qgs_uri_env_override PASSED [ 78%]
+services/agent/tests/test_case_lifecycle.py::test_ensure_case_qgs_lazy_init_copies_template PASSED [ 81%]
+services/agent/tests/test_case_lifecycle.py::test_ensure_case_qgs_second_call_short_circuits PASSED [ 83%]
+services/agent/tests/test_case_lifecycle.py::test_ensure_case_qgs_returns_persisted_uri_on_no_copy PASSED [ 86%]
+services/agent/tests/test_case_lifecycle.py::test_ensure_case_qgs_raises_when_persistence_unbound PASSED [ 89%]
+services/agent/tests/test_case_lifecycle.py::test_ensure_case_qgs_raises_when_case_missing PASSED [ 91%]
+services/agent/tests/test_case_lifecycle.py::test_ensure_case_qgs_raises_when_copy_unbound PASSED [ 94%]
+services/agent/tests/test_case_lifecycle.py::test_ensure_case_qgs_wraps_copy_failure PASSED [ 97%]
+services/agent/tests/test_case_lifecycle.py::test_ensure_case_qgs_async_copier_awaited PASSED [100%]
+
+======================== 36 passed, 1 skipped in 0.71s =========================
