@@ -46,6 +46,8 @@ interface MapMock {
   getStyle: ReturnType<typeof vi.fn>;
   _addedLayers: Set<string>;
   _addedSources: Set<string>;
+  // job-0152: captures constructor options to assert attributionControl: false
+  _constructorOptions: Record<string, unknown>;
 }
 
 // Track the most-recently created mock map instance.
@@ -98,7 +100,11 @@ vi.mock("maplibre-gl", () => {
       ),
     }));
 
-    constructor() {
+    // job-0152: capture constructor options so tests can assert attributionControl: false
+    _constructorOptions: Record<string, unknown> = {};
+
+    constructor(options: Record<string, unknown> = {}) {
+      this._constructorOptions = options;
       lastMapMock = this as unknown as MapMock;
     }
   }
@@ -493,6 +499,33 @@ describe("MapView — dark-theme swap (job-0076 bundled enhancement)", () => {
       expect.objectContaining({ id: "qgis-basemap", source: "qgis-wms" }),
       "flood-demo",
     );
+  });
+});
+
+// --- job-0152 — NavigationControl + attribution removal tests ----------- //
+//
+// Asserts that neither the zoom/compass buttons nor the OSM attribution tag
+// are injected into the DOM. Both were removed per user direction 2026-06-08:
+// users scroll/pinch to zoom; the attribution tag overlays other UI.
+//
+// See audit.md OQ: attribution removal is technically against OSM tile-use
+// terms — production hosting should re-enable it.
+
+describe("MapView — nav controls + attribution hidden (job-0152)", () => {
+  beforeEach(() => {
+    lastMapMock = null;
+  });
+
+  it("does not call addControl (no NavigationControl injected)", () => {
+    render(<MapView />);
+    const m = lastMapMock!;
+    expect(m.addControl).not.toHaveBeenCalled();
+  });
+
+  it("initialises the map with attributionControl: false", () => {
+    render(<MapView />);
+    const m = lastMapMock!;
+    expect(m._constructorOptions.attributionControl).toBe(false);
   });
 });
 

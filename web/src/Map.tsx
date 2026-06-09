@@ -570,27 +570,20 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       dragRotate: false,
       pitchWithRotate: false,
       touchPitch: false,
-      attributionControl: { compact: false },
+      // job-0152: attribution tag removed for v0.1 demo (overlays other UI).
+      // Users zoom via scroll/pinch/keyboard — no NavigationControl added below.
+      // Production hosting should restore attribution per OSM tile-use terms.
+      attributionControl: false,
     });
     // Decision I: 2D-only navigation. Belt + suspenders — explicitly disable
     // rotation in addition to constructor options so a future MapLibre default
     // change can't silently re-enable it.
     m.touchZoomRotate.disableRotation();
     m.keyboard.disableRotation();
-    // job-0143: navigation control moves from bottom-right (overlapped the
-    // Chat panel) to TOP-RIGHT. Chat is always anchored to the right edge,
-    // so we stack the nav control above the chat hamburger (when collapsed)
-    // or against the chat panel's top edge (when expanded). The control is
-    // ~80px tall, hamburger is at top:12 with height 40 — adding container
-    // padding via a wrapper CSS class would require global styles, so we
-    // accept the brief visual proximity to the chat hamburger (the nav
-    // control sits at top:12 left of the hamburger by the maplibre default
-    // 10px margin).
-    //
-    // Hidden in unit tests where MapLibre never finishes init; .css class
-    // `.maplibregl-ctrl-top-right` carries the position so a future
-    // refinement can offset it via App.tsx-owned CSS.
-    m.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
+    // job-0152: NavigationControl (zoom +/- and compass) removed — overlays
+    // other UI elements. Scroll-zoom, pinch-zoom, and keyboard +/- remain
+    // active (MapLibre defaults; no code change needed). See OQ below re: OSM
+    // attribution terms.
     map.current = m;
     activeMap = m;
 
