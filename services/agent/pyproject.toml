@@ -78,6 +78,11 @@ dependencies = [
     # only transitively (3.10.0) — undeclared deps are how the fsspec stale-
     # venv plume bug shipped (job-0235).
     "flopy>=3.9,<4",
+    # job-0244 (OQ-0244-PUBLISH-NO-RUN-V2): google-cloud-run provides
+    # run_v2.JobsClient — publish_layer dispatches the PyQGIS worker as a
+    # Cloud Run Job execution. Absent from the venv, EVERY fresh layer
+    # publish (plume, flood) fails and nothing new renders on the map.
+    "google-cloud-run>=0.10",
     # Wave 4.10 job-A2: s3fs is the fsspec S3 backend for the NOAA Big Data
     # Program anonymous S3 mirrors consumed by fetch_hrrr_forecast (HRRR-Zarr
     # at s3://hrrrzarr/) and a planned fetch_hrrr_smoke. Wraps boto3 +
