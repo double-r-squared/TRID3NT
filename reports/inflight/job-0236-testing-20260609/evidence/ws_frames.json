@@ -1,0 +1,168 @@
+[
+  {
+    "t_rel_ms": 988,
+    "type": "session-state",
+    "tool_name": null,
+    "preview": "{\"type\":\"session-state\",\"id\":\"01KTR6WTYWQNY8NY9RWTK29MPK\",\"ts\":\"2026-06-10T07:28:07.132633Z\",\"session_id\":\"01KTR6WTY1912KW7C0SPQSPTY7\",\"payload\":{\"chat_history\":[],\"loaded_layers\":[],\"pipeline_history\":[],\"current_pipeline\":null,\"map_view\":null,\"status\":\"active\"}}"
+  },
+  {
+    "t_rel_ms": 2063,
+    "type": "session-state",
+    "tool_name": null,
+    "preview": "{\"type\":\"session-state\",\"id\":\"01KTR6WVV0WZPTAZF0VSJN48FT\",\"ts\":\"2026-06-10T07:28:08.032316Z\",\"session_id\":\"01KTR6WTY1912KW7C0SPQSPTY7\",\"payload\":{\"chat_history\":[],\"loaded_layers\":[],\"pipeline_history\":[],\"current_pipeline\":null,\"map_view\":null,\"status\":\"active\"}}"
+  },
+  {
+    "t_rel_ms": 8823,
+    "type": "SENT:user-message",
+    "preview": "{\"type\":\"user-message\",\"id\":\"01KTR6X2KF5R80ZB6NBSTJQS9X\",\"ts\":\"2026-06-10T07:28:14.959Z\",\"session_id\":\"01KTR6WTY1912KW7C0SPQSPTY7\",\"payload\":{\"text\":\"Show me active flood warnings in Idaho, then model the flood for the most severe one.\",\"research_mode\":\"research\"}}"
+  },
+  {
+    "t_rel_ms": 8826,
+    "type": "pipeline-state",
+    "tool_name": [
+      "gemini_generate"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTR6X2KHP072KE1SF6FFQA8K\",\"ts\":\"2026-06-10T07:28:14.961105Z\",\"session_id\":\"01KTR6WTY1912KW7C0SPQSPTY7\",\"payload\":{\"pipeline_id\":\"01KTR6X2KGXEJ6KNQ4V3R08XXJ\",\"steps\":[{\"step_id\":\"01KTR6X2KGXEJ6KNQ4V3R08XXK\",\"name\":\"llm_generation\",\"tool_name\":\"gemini_generate\",\"state\":\"running\",\"started_at\":null,\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 37383,
+    "type": "pipeline-state",
+    "tool_name": [
+      "list_categories"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTR6XYG719D0M5Q9S90ZA1VM\",\"ts\":\"2026-06-10T07:28:43.527211Z\",\"session_id\":\"01KTR6WTY1912KW7C0SPQSPTY7\",\"payload\":{\"pipeline_id\":\"01KTR6XYG62A36S95CTR96FS6R\",\"steps\":[{\"step_id\":\"01KTR6XYG62A36S95CTR96FS6S\",\"name\":\"list_categories\",\"tool_name\":\"list_categories\",\"state\":\"pending\",\"started_at\":null,\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 37392,
+    "type": "pipeline-state",
+    "tool_name": [
+      "list_categories"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTR6XYG719D0M5Q9S90ZA1VN\",\"ts\":\"2026-06-10T07:28:43.527822Z\",\"session_id\":\"01KTR6WTY1912KW7C0SPQSPTY7\",\"payload\":{\"pipeline_id\":\"01KTR6XYG62A36S95CTR96FS6R\",\"steps\":[{\"step_id\":\"01KTR6XYG62A36S95CTR96FS6S\",\"name\":\"list_categories\",\"tool_name\":\"list_categories\",\"state\":\"running\",\"started_at\":\"2026-06-10T07:28:43.527642Z\",\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 37454,
+    "type": "pipeline-state",
+    "tool_name": [
+      "list_categories"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTR6XYG8N91HJSFEQH7N7M6P\",\"ts\":\"2026-06-10T07:28:43.528410Z\",\"session_id\":\"01KTR6WTY1912KW7C0SPQSPTY7\",\"payload\":{\"pipeline_id\":\"01KTR6XYG62A36S95CTR96FS6R\",\"steps\":[{\"step_id\":\"01KTR6XYG62A36S95CTR96FS6S\",\"name\":\"list_categories\",\"tool_name\":\"list_categories\",\"state\":\"complete\",\"started_at\":\"2026-06-10T07:28:43.527642Z\",\"completed_at\":\"2026-06-10T07:28:43.528223Z\",\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 39963,
+    "type": "pipeline-state",
+    "tool_name": [
+      "list_tools_in_category"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTR6Y10WN7FYZSCZSW3HQG3Z\",\"ts\":\"2026-06-10T07:28:46.108334Z\",\"session_id\":\"01KTR6WTY1912KW7C0SPQSPTY7\",\"payload\":{\"pipeline_id\":\"01KTR6Y10V75EJGYQW7C1B1DKQ\",\"steps\":[{\"step_id\":\"01KTR6Y10WN7FYZSCZSW3HQG3Y\",\"name\":\"list_tools_in_category\",\"tool_name\":\"list_tools_in_category\",\"state\":\"pending\",\"started_at\":null,\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 39970,
+    "type": "pipeline-state",
+    "tool_name": [
+      "list_tools_in_category"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTR6Y10WN7FYZSCZSW3HQG40\",\"ts\":\"2026-06-10T07:28:46.108911Z\",\"session_id\":\"01KTR6WTY1912KW7C0SPQSPTY7\",\"payload\":{\"pipeline_id\":\"01KTR6Y10V75EJGYQW7C1B1DKQ\",\"steps\":[{\"step_id\":\"01KTR6Y10WN7FYZSCZSW3HQG3Y\",\"name\":\"list_tools_in_category\",\"tool_name\":\"list_tools_in_category\",\"state\":\"running\",\"started_at\":\"2026-06-10T07:28:46.108740Z\",\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 39976,
+    "type": "pipeline-state",
+    "tool_name": [
+      "list_tools_in_category"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTR6Y10Y6YMAGNFGGPDCZ2P1\",\"ts\":\"2026-06-10T07:28:46.110137Z\",\"session_id\":\"01KTR6WTY1912KW7C0SPQSPTY7\",\"payload\":{\"pipeline_id\":\"01KTR6Y10V75EJGYQW7C1B1DKQ\",\"steps\":[{\"step_id\":\"01KTR6Y10WN7FYZSCZSW3HQG3Y\",\"name\":\"list_tools_in_category\",\"tool_name\":\"list_tools_in_category\",\"state\":\"complete\",\"started_at\":\"2026-06-10T07:28:46.108740Z\",\"completed_at\":\"2026-06-10T07:28:46.109931Z\",\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 43675,
+    "type": "pipeline-state",
+    "tool_name": [
+      "run_model_nws_flood_event_scenario"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTR6Y4MWD14AG3WVP507A4GY\",\"ts\":\"2026-06-10T07:28:49.820231Z\",\"session_id\":\"01KTR6WTY1912KW7C0SPQSPTY7\",\"payload\":{\"pipeline_id\":\"01KTR6Y4MV9SC7XVRFH6RSGN6H\",\"steps\":[{\"step_id\":\"01KTR6Y4MV9SC7XVRFH6RSGN6J\",\"name\":\"run_model_nws_flood_event_scenario\",\"tool_name\":\"run_model_nws_flood_event_scenario\",\"state\":\"pending\",\"started_at\":null,\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 43683,
+    "type": "pipeline-state",
+    "tool_name": [
+      "run_model_nws_flood_event_scenario"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTR6Y4MWD14AG3WVP507A4GZ\",\"ts\":\"2026-06-10T07:28:49.820863Z\",\"session_id\":\"01KTR6WTY1912KW7C0SPQSPTY7\",\"payload\":{\"pipeline_id\":\"01KTR6Y4MV9SC7XVRFH6RSGN6H\",\"steps\":[{\"step_id\":\"01KTR6Y4MV9SC7XVRFH6RSGN6J\",\"name\":\"run_model_nws_flood_event_scenario\",\"tool_name\":\"run_model_nws_flood_event_scenario\",\"state\":\"running\",\"started_at\":\"2026-06-10T07:28:49.820680Z\",\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 51243,
+    "type": "pipeline-state",
+    "tool_name": [
+      "run_model_nws_flood_event_scenario"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTR6YC1BS9F3N8YFDYY6VSN6\",\"ts\":\"2026-06-10T07:28:57.387788Z\",\"session_id\":\"01KTR6WTY1912KW7C0SPQSPTY7\",\"payload\":{\"pipeline_id\":\"01KTR6Y4MV9SC7XVRFH6RSGN6H\",\"steps\":[{\"step_id\":\"01KTR6Y4MV9SC7XVRFH6RSGN6J\",\"name\":\"run_model_nws_flood_event_scenario\",\"tool_name\":\"run_model_nws_flood_event_scenario\",\"state\":\"complete\",\"started_at\":\"2026-06-10T07:28:49.820680Z\",\"completed_at\":\"2026-06-10T07:28:57.387503Z\",\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 59221,
+    "type": "agent-message-chunk",
+    "tool_name": null,
+    "preview": "{\"type\":\"agent-message-chunk\",\"id\":\"01KTR6YKTPZNBTXRYTFWYVTFJQ\",\"ts\":\"2026-06-10T07:29:05.366107Z\",\"session_id\":\"01KTR6WTY1912KW7C0SPQSPTY7\",\"payload\":{\"message_id\":\"01KTR6X2KGXEJ6KNQ4V3R08XXH\",\"delta"
+  },
+  {
+    "t_rel_ms": 59403,
+    "type": "agent-message-chunk",
+    "tool_name": null,
+    "preview": "{\"type\":\"agent-message-chunk\",\"id\":\"01KTR6YM0C80AJP5QQB8ZZRQBV\",\"ts\":\"2026-06-10T07:29:05.548446Z\",\"session_id\":\"01KTR6WTY1912KW7C0SPQSPTY7\",\"payload\":{\"message_id\":\"01KTR6X2KGXEJ6KNQ4V3R08XXH\",\"delta"
+  },
+  {
+    "t_rel_ms": 59426,
+    "type": "agent-message-chunk",
+    "tool_name": null,
+    "preview": "{\"type\":\"agent-message-chunk\",\"id\":\"01KTR6YM0Q2VQZCPXP2DQCRVN6\",\"ts\":\"2026-06-10T07:29:05.559918Z\",\"session_id\":\"01KTR6WTY1912KW7C0SPQSPTY7\",\"payload\":{\"message_id\":\"01KTR6X2KGXEJ6KNQ4V3R08XXH\",\"delta"
+  },
+  {
+    "t_rel_ms": 59426,
+    "type": "pipeline-state",
+    "tool_name": [
+      "gemini_generate"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTR6YM0RX2AJKRYAJA72STST\",\"ts\":\"2026-06-10T07:29:05.560685Z\",\"session_id\":\"01KTR6WTY1912KW7C0SPQSPTY7\",\"payload\":{\"pipeline_id\":\"01KTR6X2KGXEJ6KNQ4V3R08XXJ\",\"steps\":[{\"step_id\":\"01KTR6X2KGXEJ6KNQ4V3R08XXK\",\"name\":\"llm_generation\",\"tool_name\":\"gemini_generate\",\"state\":\"complete\",\"started_at\":null,\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 1213191,
+    "type": "SENT:user-message",
+    "preview": "{\"type\":\"user-message\",\"id\":\"01KTR81TR47QK77S6Q64XT86J2\",\"ts\":\"2026-06-10T07:48:19.332Z\",\"session_id\":\"01KTR6WTY1912KW7C0SPQSPTY7\",\"payload\":{\"text\":\"Since there are no active flood warnings in Idaho right now, show me flood warnings and model the flood in the most affected area instead.\",\"research_mode\":\"research\"}}"
+  },
+  {
+    "t_rel_ms": 1213192,
+    "type": "pipeline-state",
+    "tool_name": [
+      "gemini_generate"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTR81TR50GMJ77DVZ4G9CZHY\",\"ts\":\"2026-06-10T07:48:19.333542Z\",\"session_id\":\"01KTR6WTY1912KW7C0SPQSPTY7\",\"payload\":{\"pipeline_id\":\"01KTR81TR50GMJ77DVZ4G9CZHW\",\"steps\":[{\"step_id\":\"01KTR81TR50GMJ77DVZ4G9CZHX\",\"name\":\"llm_generation\",\"tool_name\":\"gemini_generate\",\"state\":\"running\",\"started_at\":null,\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 1224088,
+    "type": "pipeline-state",
+    "tool_name": [
+      "run_model_nws_flood_event_scenario"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTR825CRG9MZQ630ET1QCM48\",\"ts\":\"2026-06-10T07:48:30.232619Z\",\"session_id\":\"01KTR6WTY1912KW7C0SPQSPTY7\",\"payload\":{\"pipeline_id\":\"01KTR825CRG9MZQ630ET1QCM46\",\"steps\":[{\"step_id\":\"01KTR825CRG9MZQ630ET1QCM47\",\"name\":\"run_model_nws_flood_event_scenario\",\"tool_name\":\"run_model_nws_flood_event_scenario\",\"state\":\"pending\",\"started_at\":null,\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 1224099,
+    "type": "pipeline-state",
+    "tool_name": [
+      "run_model_nws_flood_event_scenario"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTR825CS0SZXEPWNWNN2SBX5\",\"ts\":\"2026-06-10T07:48:30.233201Z\",\"session_id\":\"01KTR6WTY1912KW7C0SPQSPTY7\",\"payload\":{\"pipeline_id\":\"01KTR825CRG9MZQ630ET1QCM46\",\"steps\":[{\"step_id\":\"01KTR825CRG9MZQ630ET1QCM47\",\"name\":\"run_model_nws_flood_event_scenario\",\"tool_name\":\"run_model_nws_flood_event_scenario\",\"state\":\"running\",\"started_at\":\"2026-06-10T07:48:30.233015Z\",\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 1244088,
+    "type": "map-command",
+    "tool_name": null,
+    "preview": "{\"type\":\"map-command\",\"id\":\"01KTR82RXGFE2H096V46Q8BY6H\",\"ts\":\"2026-06-10T07:48:50.224880Z\",\"session_id\":\"01KTR6WTY1912KW7C0SPQSPTY7\",\"payload\":{\"command\":\"zoom-to\",\"args\":{\"bbox\":[-95.21,37.26,-95.08,37.54]}}}"
+  },
+  {
+    "t_rel_ms": 1247163,
+    "type": "pipeline-state",
+    "tool_name": [
+      "run_model_nws_flood_event_scenario"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTR82VXVVWGCKDTKWGDWWT3E\",\"ts\":\"2026-06-10T07:48:53.307458Z\",\"session_id\":\"01KTR6WTY1912KW7C0SPQSPTY7\",\"payload\":{\"pipeline_id\":\"01KTR825CRG9MZQ630ET1QCM46\",\"steps\":[{\"step_id\":\"01KTR825CRG9MZQ630ET1QCM47\",\"name\":\"run_model_nws_flood_event_scenario\",\"tool_name\":\"run_model_nws_flood_event_scenario\",\"state\":\"complete\",\"started_at\":\"2026-06-10T07:48:30.233015Z\",\"completed_at\":\"2026-06-10T07:48:53.307241Z\",\"progress_percent\":null}]}}"
+  }
+]
