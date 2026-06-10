@@ -1,0 +1,63 @@
+writing simulation...
+  writing simulation name file...
+  writing simulation tdis package...
+  writing solution package ims_-1...
+  writing model smoke...
+    writing model name file...
+    writing package dis...
+    writing package ic...
+    writing package npf...
+    writing package chd_0...
+INFORMATION: maxbound in ('', 'chd', 'dimensions') changed to 20 based on size of stress_period_data
+    writing package oc...
+=== flopy wrote simulation to /tmp/mf6_smoke/model ===
+    mfsim.nam
+    smoke.chd
+    smoke.dis
+    smoke.ic
+    smoke.ims
+    smoke.nam
+    smoke.npf
+    smoke.oc
+    smoke.tdis
+=== running mf6 ===
+FloPy is using the following executable to run the model: ../mf6
+                                   MODFLOW 6
+                U.S. GEOLOGICAL SURVEY MODULAR HYDROLOGIC MODEL
+                            VERSION 6.5.0 05/23/2024
+
+   MODFLOW 6 compiled May 23 2024 18:02:47 with Intel(R) Fortran Intel(R) 64
+   Compiler Classic for applications running on Intel(R) 64, Version 2021.7.0
+                             Build 20220726_000000
+
+This software has been approved for release by the U.S. Geological 
+Survey (USGS). Although the software has been subjected to rigorous 
+review, the USGS reserves the right to update the software as needed 
+pursuant to further analysis and review. No warranty, expressed or 
+implied, is made by the USGS or the U.S. Government as to the 
+functionality of the software and related material nor shall the 
+fact of release constitute any such warranty. Furthermore, the 
+software is released on condition that neither the USGS nor the U.S. 
+Government shall be held liable for any damages resulting from its 
+authorized or unauthorized use. Also refer to the USGS Water 
+Resources Software User Rights Notice for complete use, copyright, 
+and distribution information.
+
+ 
+ MODFLOW runs in SEQUENTIAL mode
+ 
+ Run start date and time (yyyy/mm/dd hh:mm:ss): 2026/06/09 18:42:06
+ 
+ Writing simulation list file: mfsim.lst
+ Using Simulation name file: mfsim.nam
+ 
+    Solving:  Stress period:     1    Time step:     1
+ 
+ Run end date and time (yyyy/mm/dd hh:mm:ss): 2026/06/09 18:42:06
+ Elapsed run time:  0.065 Seconds
+ 
+ Normal termination of simulation.
+=== mf6 run_simulation success = True ===
+=== mfsim.lst NORMAL TERMINATION = True | convergence-failure-string-present = False ===
+=== head file: smoke.hds | shape = (1, 10, 10) | size_bytes = 852 | min = 2.0 | max = 8.0 | all_finite = True ===
+=== SMOKE TEST PASS ===

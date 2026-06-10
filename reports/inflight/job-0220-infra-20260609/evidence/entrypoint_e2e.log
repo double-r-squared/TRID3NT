@@ -1,0 +1,43 @@
+2026-06-09 18:49:37,552 INFO grace2.worker.modflow — grace-2-modflow-solver starting — project=grace-2-hazard-prod run_id=e2e-test-001 manifest=gs://fake-cache/modflow/e2e-test-001/manifest.json
+2026-06-09 18:49:37,552 INFO grace2.worker.modflow — reading manifest gs://fake-cache/modflow/e2e-test-001/manifest.json
+2026-06-09 18:49:37,552 INFO grace2.worker.modflow — downloading gs://fake-cache/modflow/e2e-test-001/mfsim.nam -> /tmp/mf6_e2e_scratch/mfsim.nam
+2026-06-09 18:49:37,552 INFO grace2.worker.modflow — downloading gs://fake-cache/modflow/e2e-test-001/smoke.tdis -> /tmp/mf6_e2e_scratch/smoke.tdis
+2026-06-09 18:49:37,552 INFO grace2.worker.modflow — downloading gs://fake-cache/modflow/e2e-test-001/smoke.ims -> /tmp/mf6_e2e_scratch/smoke.ims
+2026-06-09 18:49:37,552 INFO grace2.worker.modflow — downloading gs://fake-cache/modflow/e2e-test-001/smoke.nam -> /tmp/mf6_e2e_scratch/smoke.nam
+2026-06-09 18:49:37,552 INFO grace2.worker.modflow — downloading gs://fake-cache/modflow/e2e-test-001/smoke.dis -> /tmp/mf6_e2e_scratch/smoke.dis
+2026-06-09 18:49:37,552 INFO grace2.worker.modflow — downloading gs://fake-cache/modflow/e2e-test-001/smoke.ic -> /tmp/mf6_e2e_scratch/smoke.ic
+2026-06-09 18:49:37,552 INFO grace2.worker.modflow — downloading gs://fake-cache/modflow/e2e-test-001/smoke.npf -> /tmp/mf6_e2e_scratch/smoke.npf
+2026-06-09 18:49:37,552 INFO grace2.worker.modflow — downloading gs://fake-cache/modflow/e2e-test-001/smoke.chd -> /tmp/mf6_e2e_scratch/smoke.chd
+2026-06-09 18:49:37,553 INFO grace2.worker.modflow — downloading gs://fake-cache/modflow/e2e-test-001/smoke.oc -> /tmp/mf6_e2e_scratch/smoke.oc
+2026-06-09 18:49:37,553 INFO grace2.worker.modflow — exec: /tmp/mf6_smoke/mf6 (cwd=/tmp/mf6_e2e_scratch)
+2026-06-09 18:49:37,566 INFO grace2.worker.modflow — mf6 exit=0 stdout_bytes=1520 stderr_bytes=0
+2026-06-09 18:49:37,566 INFO grace2.worker.modflow — uploading /tmp/mf6_e2e_scratch/mf6.stdout -> gs://fake-runs/e2e-test-001/mf6.stdout
+2026-06-09 18:49:37,566 INFO grace2.worker.modflow — uploading /tmp/mf6_e2e_scratch/mf6.stderr -> gs://fake-runs/e2e-test-001/mf6.stderr
+2026-06-09 18:49:37,566 INFO grace2.worker.modflow — uploading /tmp/mf6_e2e_scratch/mfsim.lst -> gs://fake-runs/e2e-test-001/mfsim.lst
+2026-06-09 18:49:37,566 INFO grace2.worker.modflow — uploading /tmp/mf6_e2e_scratch/smoke.cbc -> gs://fake-runs/e2e-test-001/smoke.cbc
+2026-06-09 18:49:37,566 INFO grace2.worker.modflow — uploading /tmp/mf6_e2e_scratch/smoke.hds -> gs://fake-runs/e2e-test-001/smoke.hds
+2026-06-09 18:49:37,566 INFO grace2.worker.modflow — uploading /tmp/mf6_e2e_scratch/smoke.lst -> gs://fake-runs/e2e-test-001/smoke.lst
+2026-06-09 18:49:37,567 INFO grace2.worker.modflow — wrote completion -> gs://fake-runs/e2e-test-001/completion.json
+============================================================
+entrypoint main() returned exit_code = 0
+completion.json =
+{
+  "run_id": "e2e-test-001",
+  "status": "ok",
+  "exit_code": 0,
+  "converged": true,
+  "model_crs": "EPSG:26915",
+  "mf6_stdout_uri": "gs://fake-runs/e2e-test-001/mf6.stdout",
+  "mf6_stderr_uri": "gs://fake-runs/e2e-test-001/mf6.stderr",
+  "output_uris": [
+    "gs://fake-runs/e2e-test-001/mfsim.lst",
+    "gs://fake-runs/e2e-test-001/smoke.cbc",
+    "gs://fake-runs/e2e-test-001/smoke.hds",
+    "gs://fake-runs/e2e-test-001/smoke.lst"
+  ],
+  "started_at": "2026-06-10T01:49:37Z",
+  "finished_at": "2026-06-10T01:49:37Z",
+  "error": null
+}
+uploaded smoke.hds bytes = 852
+ALL E2E ASSERTIONS PASSED

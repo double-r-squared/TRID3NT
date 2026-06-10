@@ -1,0 +1,60 @@
+# cloudbuild.yaml — Cloud Build pipeline for the GRACE-2 MODFLOW 6 solver image.
+#
+# Sprint-13 / MOD-1 / job-0220. Mirrors infra/sfincs/cloudbuild.yaml so all
+# GRACE-2 worker images use the same build path: Cloud Build, AR repo
+# `grace-2-containers`, region us-central1, linux/amd64-only (Cloud Build
+# default builder).
+#
+# Why Cloud Build (not local `docker build`):
+#   - The Debian dev box has no reachable docker daemon (socket permission
+#     denied) and gcloud is not installed; Cloud Build runs inside GCP next to
+#     Artifact Registry, so the image arrives in AR with zero local credential
+#     surface.
+#   - linux/amd64 only — matches the project-wide Linux-only substrate.
+#
+# Invocation (via Makefile `modflow-build`):
+#   gcloud builds submit --project=grace-2-hazard-prod \
+#     --config=infra/modflow/cloudbuild.yaml \
+#     --substitutions=_REGION=us-central1,_AR_REPO=grace-2-containers,_IMAGE=grace-2-modflow-solver \
+#     .
+#
+# Build context: repo root (`.`) so `COPY services/workers/modflow/ ...` in the
+# Dockerfile pulls the entrypoint shim + fixtures from HEAD.
+#
+# Output: the image is tagged `:latest` AND the build's resolved digest is
+# logged. The Cloud Run Job in infra/modflow.tf pins to the digest (not
+# :latest) for drift visibility — same discipline as infra/sfincs.tf.
+#
+# NOTE: the MODFLOW Dockerfile downloads the mf6 6.5.0 zip (~133 MB) from the
+# USGS GitHub release at build time and SHA-256-verifies it. Cloud Build has
+# outbound network access, so this works in-build. The download + flopy/rasterio
+# pip install make the MODFLOW image build slower than the SFINCS thin layer;
+# the timeout below is raised accordingly.
+
+substitutions:
+  _REGION: us-central1
+  _AR_REPO: grace-2-containers
+  _IMAGE: grace-2-modflow-solver
+
+steps:
+  - id: build-modflow-solver
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --tag=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_IMAGE}:latest
+      - --file=services/workers/modflow/Dockerfile
+      - .
+
+images:
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_IMAGE}:latest
+
+# E2_HIGHCPU_8 matches the qgis-server / sfincs sizing. The MODFLOW image pulls
+# the 133 MB mf6 zip + installs flopy/rasterio/numpy, so the first build is
+# heavier than the SFINCS thin layer; subsequent builds hit the layer cache.
+options:
+  machineType: E2_HIGHCPU_8
+  logging: CLOUD_LOGGING_ONLY
+
+# 2400s (40 min) — above the SFINCS 1800s to absorb the mf6 zip download +
+# rasterio/GDAL wheel install on a cold builder.
+timeout: 2400s

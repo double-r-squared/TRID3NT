@@ -39,6 +39,7 @@ ATLAS_PROJECT_ID ?= 6a234700a0e1295958d10cf9
         qgis-server-build qgis-server-push qgis-server-deploy \
         worker-build worker-push worker-deploy worker-run-job \
         sfincs-build sfincs-push sfincs-deploy \
+        modflow-build modflow-push modflow-deploy \
         srs
 
 help:
@@ -76,6 +77,10 @@ help:
 	@echo "  sfincs-build        build the SFINCS solver image via Cloud Build (linux/amd64)"
 	@echo "  sfincs-push         alias of sfincs-build (Cloud Build pushes to AR)"
 	@echo "  sfincs-deploy       tofu apply the SFINCS Cloud Run Job + Workflows + runs bucket + IAM"
+	@echo ""
+	@echo "  modflow-build       build the MODFLOW 6 solver image via Cloud Build (linux/amd64)"
+	@echo "  modflow-push        alias of modflow-build (Cloud Build pushes to AR)"
+	@echo "  modflow-deploy      tofu apply the MODFLOW Cloud Run Job + Workflows + SA + IAM"
 	@echo ""
 	@echo "  srs                 regenerate docs/SRS_v0.3.md from docs/srs/* parts (lossless concat)"
 
@@ -337,6 +342,60 @@ sfincs-deploy:
 	  -target=google_project_iam_member.workflow_invoker_log_writer \
 	  -target=google_project_iam_member.workflow_invoker_run_viewer \
 	  -target=google_workflows_workflow.sfincs_orchestrator
+
+# --- MODFLOW 6 solver (sprint-13 / MOD-1 / job-0220) -----------------------
+#
+# Builds linux/amd64 only (project-wide Linux substrate decision). Cloud Build
+# is canonical for the same reason as the other worker images: zero local
+# credential surface, image pushed to AR by GCP. Dockerfile lives at
+# services/workers/modflow/Dockerfile; build context is repo root so
+# `COPY services/workers/modflow/ ...` pulls the entrypoint shim + fixtures
+# from current HEAD.
+#
+# Unlike the SFINCS thin layer, the MODFLOW Dockerfile downloads the mf6 6.5.0
+# zip (~133 MB) from the USGS GitHub release at build time and SHA-256-verifies
+# it, then installs flopy/rasterio/numpy into a venv. Cloud Build has outbound
+# network access so this works in-build; the build is heavier than SFINCS (the
+# cloudbuild.yaml timeout is raised to 2400s accordingly).
+#
+# BLOCKED-ENV NOTE (job-0220): this target is documented but was NOT executed
+# in job-0220 — the dev box has no reachable docker daemon (socket permission
+# denied) and gcloud is not installed. Run it from a box with gcloud + auth.
+# After a build, the new digest is logged by Cloud Build and printed by
+# `gcloud artifacts docker images list ... | grep modflow-solver`. Update
+# infra/modflow.tf's `modflow_image_digest` local to that digest, then
+# `make modflow-deploy`. See job-0220 report.md § "User unblock steps".
+
+MODFLOW_AR_REPO   ?= grace-2-containers
+MODFLOW_IMAGE     ?= grace-2-modflow-solver
+MODFLOW_IMAGE_URI ?= $(GCP_REGION)-docker.pkg.dev/$(GCP_PROJECT_ID)/$(MODFLOW_AR_REPO)/$(MODFLOW_IMAGE):latest
+
+modflow-build:
+	@echo "Building $(MODFLOW_IMAGE_URI) via Cloud Build (linux/amd64)..."
+	gcloud builds submit \
+	  --project=$(GCP_PROJECT_ID) \
+	  --config=infra/modflow/cloudbuild.yaml \
+	  --substitutions=_REGION=$(GCP_REGION),_AR_REPO=$(MODFLOW_AR_REPO),_IMAGE=$(MODFLOW_IMAGE) \
+	  .
+
+# Cloud Build pushes during `submit`; this alias preserves the
+# build/push/deploy three-target shape symmetric with sfincs-* + worker-*.
+modflow-push: modflow-build
+
+modflow-deploy:
+	tofu -chdir=infra apply -auto-approve \
+	  -target=google_service_account.modflow_runtime \
+	  -target=google_storage_bucket_iam_member.modflow_runtime_cache_viewer \
+	  -target=google_storage_bucket_iam_member.modflow_runtime_runs_admin \
+	  -target=google_cloud_run_v2_job.modflow_solver \
+	  -target=google_service_account.workflow_invoker_modflow \
+	  -target=google_cloud_run_v2_job_iam_member.workflow_invoker_modflow_runs_job \
+	  -target=google_cloud_run_v2_job_iam_member.workflow_invoker_modflow_runs_job_developer \
+	  -target=google_service_account_iam_member.workflow_invoker_actas_modflow_runtime \
+	  -target=google_storage_bucket_iam_member.workflow_invoker_modflow_runs_viewer \
+	  -target=google_project_iam_member.workflow_invoker_modflow_log_writer \
+	  -target=google_project_iam_member.workflow_invoker_modflow_run_viewer \
+	  -target=google_workflows_workflow.modflow_orchestrator
 
 # --- Playwright + screenshots (job-0027) -----------------------------------
 #

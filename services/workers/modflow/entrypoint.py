@@ -1,0 +1,399 @@
+"""MODFLOW 6 Cloud Run Job entrypoint — thin shim around the `mf6` binary.
+
+Sprint-13 / MOD-1 / job-0220 / FR-CE-1/2/3. The MODFLOW-6 analogue of
+services/workers/sfincs/entrypoint.py. Same GCS-IN -> RUN -> GCS-OUT envelope;
+the two MODFLOW-specific differences from the SFINCS shim are:
+
+  1. Subdirectory-preserving input layout. SFINCS takes a flat `sfincs.inp`
+     deck; MODFLOW 6 uses a simulation namefile (`mfsim.nam`) that references
+     GWF and GWT model namefiles in `gwf/` and `gwt/` subdirectories. The
+     manifest's `inputs[].dest` carries the relative path (e.g.
+     `gwf/gwf_model.nam`); we `mkdir -p` the parent before each download
+     exactly as the SFINCS shim does, so the subdir tree is reconstructed in
+     scratch. `mf6` runs in the scratch ROOT where `mfsim.nam` sits.
+
+  2. Convergence guard via the list file (design doc § 8). MODFLOW 6 can exit
+     0 while still emitting a convergence-failure warning to `mfsim.lst` when
+     the outer-iteration tolerance is met only at the final iteration. The
+     list file is authoritative. After `mf6` exits we parse `mfsim.lst` for
+     the string "FAILED TO MEET SOLVER CONVERGENCE CRITERIA"; if present we
+     override exit_code -> 2 and error -> "solver_diverged" even on a 0 exit.
+
+Contract:
+
+    Input  (env or CLI):
+        --run-id RUN_ID
+            Run identifier. Outputs land under
+            gs://${GRACE2_RUNS_BUCKET}/${RUN_ID}/.
+        --manifest-uri gs://bucket/path/manifest.json
+            JSON setup manifest. Schema (design doc § 6):
+                {
+                  "inputs": [
+                    {"gs_uri": "gs://.../mfsim.nam",      "dest": "mfsim.nam"},
+                    {"gs_uri": "gs://.../gwf/gwf.nam",    "dest": "gwf/gwf_model.nam"},
+                    {"gs_uri": "gs://.../gwt/gwt.nam",    "dest": "gwt/gwt_model.nam"},
+                    ...
+                  ],
+                  "mf6_args": ["..."],          # optional argv to mf6 (usually [])
+                  "model_crs": "EPSG:26915",    # MODFLOW-specific: model grid CRS
+                                                # (read by the agent-side postprocess
+                                                #  step for reprojection; the solver
+                                                #  shim only echoes it into completion)
+                  "outputs": [                   # glob patterns to upload
+                    "gwf/gwf_model.hds",
+                    "gwt/gwt_model.ucn",
+                    "*.lst",
+                    "mfsim.lst"
+                  ]
+                }
+            All `inputs` are downloaded into the scratch dir (subdir layout
+            preserved) before mf6 runs; all `outputs` (recursive glob) are
+            uploaded to the runs bucket after mf6 exits.
+
+    Output:
+        gs://${GRACE2_RUNS_BUCKET}/${RUN_ID}/<every output file>
+        gs://${GRACE2_RUNS_BUCKET}/${RUN_ID}/completion.json
+            Terminal manifest. Schema (mirrors the SFINCS completion schema
+            with mf6_* keys + a `converged` boolean + echoed `model_crs`):
+                {
+                  "run_id": "<run_id>",
+                  "status": "ok" | "error",
+                  "exit_code": <int>,        # 0 ok; 2 solver_diverged; other = error
+                  "converged": <bool>,       # mfsim.lst convergence guard result
+                  "model_crs": "<EPSG>" | null,
+                  "mf6_stdout_uri": "gs://.../mf6.stdout",
+                  "mf6_stderr_uri": "gs://.../mf6.stderr",
+                  "output_uris": ["gs://.../<path>", ...],
+                  "started_at": "<ISO8601 Z>",
+                  "finished_at": "<ISO8601 Z>",
+                  "error": "<message>" | null
+                }
+            The agent's wait-for-completion (job-0227) polls this object; its
+            presence with status="ok" or status="error" is the terminal
+            signal. Truthful: NOT in this image's scope to assert the run is
+            physically meaningful — only that mf6 executed and the list file
+            reports convergence.
+
+Design notes:
+    - mf6 takes its inputs from CWD (it reads `mfsim.nam` from the working
+      directory by convention). We chdir into the scratch dir before exec.
+    - We do NOT mount GCS; we download via google-cloud-storage SDK (same
+      reasoning as the SFINCS shim — outputs are bounded; explicit upload is
+      auditable; no gcsfuse complexity).
+    - The smoke-pattern (kickoff verification): the fixtures/ deck under this
+      package is a minimal 10x10 single-layer GWF model; staged into the cache
+      bucket with a manifest pointing at it, the entrypoint reproduces the
+      host smoke run inside the container.
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as _dt
+import glob
+import json
+import logging
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+from google.cloud import storage  # type: ignore
+
+LOG = logging.getLogger("grace2.worker.modflow")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s — %(message)s",
+)
+
+MF6_BIN = os.environ.get("GRACE2_MF6_BIN", "/usr/local/bin/mf6")
+SCRATCH = Path(os.environ.get("GRACE2_MF6_SCRATCH", "/opt/grace2/work"))
+GCP_PROJECT = os.environ.get("GCP_PROJECT", "grace-2-hazard-prod")
+RUNS_BUCKET = os.environ.get("GRACE2_RUNS_BUCKET", "grace-2-hazard-prod-runs")
+
+# MODFLOW 6.4+ list-file string emitted when the outer solver loop exhausts
+# its iteration budget without meeting the dvclose tolerance. Pinned to the
+# 6.5.0 release we ship (design doc OQ-MOD-1). The mf6 binary can return
+# exit 0 with this string present, so the list file — not the exit code — is
+# the authoritative convergence signal.
+CONVERGENCE_FAILURE_MARKER = "FAILED TO MEET SOLVER CONVERGENCE CRITERIA"
+NORMAL_TERMINATION_MARKER = "Normal termination of simulation"
+
+
+def _utc_now() -> str:
+    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _parse_gs_uri(uri: str) -> tuple[str, str]:
+    if not uri.startswith("gs://"):
+        raise ValueError(f"not a gs:// URI: {uri!r}")
+    path = uri[len("gs://") :]
+    bucket, _, blob = path.partition("/")
+    if not bucket or not blob:
+        raise ValueError(f"malformed gs:// URI: {uri!r}")
+    return bucket, blob
+
+
+def _download(client: storage.Client, gs_uri: str, dest: Path) -> None:
+    bucket_name, blob_name = _parse_gs_uri(gs_uri)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    LOG.info("downloading %s -> %s", gs_uri, dest)
+    bucket = client.bucket(bucket_name)
+    blob = bucket.blob(blob_name)
+    blob.download_to_filename(str(dest))
+
+
+def _upload(client: storage.Client, src: Path, gs_uri: str) -> str:
+    bucket_name, blob_name = _parse_gs_uri(gs_uri)
+    LOG.info("uploading %s -> %s", src, gs_uri)
+    bucket = client.bucket(bucket_name)
+    blob = bucket.blob(blob_name)
+    blob.upload_from_filename(str(src))
+    return gs_uri
+
+
+def _read_manifest(client: storage.Client, manifest_uri: str) -> dict:
+    bucket_name, blob_name = _parse_gs_uri(manifest_uri)
+    LOG.info("reading manifest %s", manifest_uri)
+    bucket = client.bucket(bucket_name)
+    blob = bucket.blob(blob_name)
+    text = blob.download_as_text()
+    data = json.loads(text)
+    if not isinstance(data, dict):
+        raise ValueError("manifest must be a JSON object")
+    return data
+
+
+def _prepare_scratch() -> Path:
+    if SCRATCH.exists():
+        shutil.rmtree(SCRATCH)
+    SCRATCH.mkdir(parents=True, exist_ok=True)
+    return SCRATCH
+
+
+def _run_mf6(args: list[str], cwd: Path) -> tuple[int, Path, Path]:
+    """Run mf6 in `cwd` (where mfsim.nam sits). Returns (returncode, stdout, stderr)."""
+    stdout_path = cwd / "mf6.stdout"
+    stderr_path = cwd / "mf6.stderr"
+    cmd = [MF6_BIN, *args]
+    LOG.info("exec: %s (cwd=%s)", " ".join(cmd), cwd)
+    with open(stdout_path, "wb") as out, open(stderr_path, "wb") as err:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(cwd),
+            stdout=out,
+            stderr=err,
+            check=False,
+        )
+    LOG.info(
+        "mf6 exit=%d stdout_bytes=%d stderr_bytes=%d",
+        proc.returncode,
+        stdout_path.stat().st_size,
+        stderr_path.stat().st_size,
+    )
+    return proc.returncode, stdout_path, stderr_path
+
+
+def _check_convergence(cwd: Path) -> tuple[bool, str | None]:
+    """Parse mfsim.lst for the convergence-failure marker (design doc § 8).
+
+    Returns (converged, note). MODFLOW 6 can exit 0 with a convergence
+    warning in the list file, so the list file is authoritative. If
+    mfsim.lst is absent (mf6 never started, e.g. deck-invalid exit 1), we
+    treat convergence as unknown -> not-converged with a note.
+    """
+    lst_path = cwd / "mfsim.lst"
+    if not lst_path.exists():
+        return False, "mfsim.lst absent (mf6 produced no list file)"
+    try:
+        text = lst_path.read_text(errors="replace")
+    except OSError as exc:  # pragma: no cover — defensive
+        return False, f"could not read mfsim.lst: {exc}"
+    if CONVERGENCE_FAILURE_MARKER in text:
+        return False, "solver_diverged"
+    if NORMAL_TERMINATION_MARKER in text:
+        return True, None
+    # No failure marker AND no normal-termination marker: mf6 likely aborted
+    # mid-run (input error surfaced to list file). Treat as not-converged.
+    return False, "mfsim.lst has neither normal-termination nor convergence-failure marker"
+
+
+def _expand_outputs(patterns: list[str], cwd: Path) -> list[Path]:
+    """Recursive glob over the scratch tree (subdir-aware for gwf/ + gwt/)."""
+    seen: set[Path] = set()
+    for pat in patterns:
+        for hit in glob.glob(str(cwd / pat), recursive=True):
+            p = Path(hit)
+            if p.is_file():
+                seen.add(p.resolve())
+    return sorted(seen)
+
+
+def _build_argv_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="grace2-modflow-entrypoint",
+        description="GRACE-2 MODFLOW 6 Cloud Run Job entrypoint (FR-CE-1/2/3).",
+    )
+    p.add_argument(
+        "--run-id",
+        default=os.environ.get("GRACE2_RUN_ID", "").strip(),
+        help="Run identifier (also $GRACE2_RUN_ID).",
+    )
+    p.add_argument(
+        "--manifest-uri",
+        default=os.environ.get("GRACE2_MANIFEST_URI", "").strip(),
+        help="gs:// URI of the setup manifest (also $GRACE2_MANIFEST_URI).",
+    )
+    return p
+
+
+def _write_completion(
+    client: storage.Client,
+    run_id: str,
+    status: str,
+    exit_code: int,
+    converged: bool,
+    model_crs: str | None,
+    output_uris: list[str],
+    stdout_uri: str | None,
+    stderr_uri: str | None,
+    started_at: str,
+    error: str | None,
+) -> str:
+    payload = {
+        "run_id": run_id,
+        "status": status,
+        "exit_code": exit_code,
+        "converged": converged,
+        "model_crs": model_crs,
+        "mf6_stdout_uri": stdout_uri,
+        "mf6_stderr_uri": stderr_uri,
+        "output_uris": output_uris,
+        "started_at": started_at,
+        "finished_at": _utc_now(),
+        "error": error,
+    }
+    completion_uri = f"gs://{RUNS_BUCKET}/{run_id}/completion.json"
+    bucket_name, blob_name = _parse_gs_uri(completion_uri)
+    bucket = client.bucket(bucket_name)
+    blob = bucket.blob(blob_name)
+    blob.upload_from_string(
+        json.dumps(payload, indent=2),
+        content_type="application/json",
+    )
+    LOG.info("wrote completion -> %s", completion_uri)
+    return completion_uri
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = _build_argv_parser()
+    args = parser.parse_args(argv)
+
+    run_id = args.run_id
+    manifest_uri = args.manifest_uri
+    if not run_id:
+        LOG.error("run_id is required (pass --run-id or set $GRACE2_RUN_ID)")
+        return 2
+    if not manifest_uri:
+        LOG.error("manifest_uri is required (pass --manifest-uri or set $GRACE2_MANIFEST_URI)")
+        return 2
+
+    LOG.info(
+        "grace-2-modflow-solver starting — project=%s run_id=%s manifest=%s",
+        GCP_PROJECT,
+        run_id,
+        manifest_uri,
+    )
+    started_at = _utc_now()
+    client = storage.Client(project=GCP_PROJECT)
+
+    # Best-effort completion writing: even on hard error we attempt to write
+    # completion.json so wait-for-completion (job-0227) sees a terminal state
+    # instead of polling forever.
+    output_uris: list[str] = []
+    stdout_uri: str | None = None
+    stderr_uri: str | None = None
+    error_msg: str | None = None
+    exit_code = 1
+    status = "error"
+    converged = False
+    model_crs: str | None = None
+
+    try:
+        manifest = _read_manifest(client, manifest_uri)
+        inputs = manifest.get("inputs", []) or []
+        mf6_args = manifest.get("mf6_args", []) or []
+        outputs = manifest.get("outputs", []) or []
+        model_crs = manifest.get("model_crs")
+
+        scratch = _prepare_scratch()
+
+        for item in inputs:
+            gs_uri = item["gs_uri"]
+            # dest may carry a subdir path (gwf/..., gwt/...); _download
+            # mkdir -p's the parent, reconstructing the mfsim.nam-referenced
+            # subdirectory tree in scratch.
+            dest = scratch / item["dest"]
+            _download(client, gs_uri, dest)
+
+        rc, stdout_path, stderr_path = _run_mf6(list(mf6_args), scratch)
+
+        # Convergence guard — list file is authoritative (design doc § 8).
+        converged, conv_note = _check_convergence(scratch)
+
+        # Always upload stdout/stderr so the smoke run produces evidence.
+        stdout_uri = _upload(
+            client, stdout_path, f"gs://{RUNS_BUCKET}/{run_id}/mf6.stdout"
+        )
+        stderr_uri = _upload(
+            client, stderr_path, f"gs://{RUNS_BUCKET}/{run_id}/mf6.stderr"
+        )
+
+        for path in _expand_outputs(list(outputs), scratch):
+            rel = path.relative_to(scratch)
+            uri = _upload(client, path, f"gs://{RUNS_BUCKET}/{run_id}/{rel}")
+            output_uris.append(uri)
+
+        # Exit-code resolution (design doc § 8):
+        #   - mf6 nonzero  -> error, surface the raw code.
+        #   - mf6 zero but list file shows divergence -> override exit_code=2
+        #     (solver_diverged), status=error. The list file overrides the 0.
+        #   - mf6 zero and converged -> ok.
+        if rc != 0:
+            exit_code = rc
+            status = "error"
+            error_msg = f"mf6 exited with non-zero code {rc}"
+        elif not converged:
+            exit_code = 2
+            status = "error"
+            error_msg = conv_note or "solver_diverged"
+        else:
+            exit_code = 0
+            status = "ok"
+
+    except Exception as exc:  # pragma: no cover — defensive, logged + emitted
+        LOG.exception("solver entrypoint failed")
+        error_msg = f"{type(exc).__name__}: {exc}"
+        exit_code = 1
+        status = "error"
+        converged = False
+
+    _write_completion(
+        client=client,
+        run_id=run_id,
+        status=status,
+        exit_code=exit_code,
+        converged=converged,
+        model_crs=model_crs,
+        output_uris=output_uris,
+        stdout_uri=stdout_uri,
+        stderr_uri=stderr_uri,
+        started_at=started_at,
+        error=error_msg,
+    )
+    return exit_code
+
+
+if __name__ == "__main__":  # pragma: no cover
+    sys.exit(main())

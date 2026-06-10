@@ -1,0 +1,18 @@
+MODFLOW 6 binary provenance — job-0220 mf6 HOST smoke test (2026-06-09)
+=======================================================================
+
+Release asset (canonical URL, 301-redirects to MODFLOW-ORG):
+  https://github.com/MODFLOW-USGS/modflow6/releases/download/6.5.0/mf6.5.0_linux.zip
+
+Zip SHA-256 (verified on download; pinned in Dockerfile ARG MF6_ZIP_SHA256):
+  0fac00211c42b7a74c7266abbe50776a6215ea8409c8ce887e5decd4a9335940
+
+Zip size: 140404992 bytes (~133 MiB)
+
+Binary version string (mf6 --version):
+  mf6: 6.5.0 05/23/2024
+
+Smoke model: minimal 10x10 single-layer steady-state GWF deck built via flopy
+3.10.0, CHD left-edge 8 m -> right-edge 2 m gradient, K=1e-4 m/s. mf6 reported
+"Normal termination of simulation"; head output (smoke.hds, 852 bytes) min=2.0
+max=8.0 all-finite. See mf6_smoke.log for the full transcript.
