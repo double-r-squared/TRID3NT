@@ -13,10 +13,15 @@
 // redundant with @dnd-kit's drag-and-drop reorder (which also provides
 // the keyboard reorder a11y path the nudge buttons were nominally for).
 //
-// In M3 (this job), user-side clicks emit a local intent log + invoke
-// optional handler props for downstream tests; the AGENT does not yet
-// consume client → agent layer intents (M4 work). The console.debug logs
-// document what M4 will wire to outbound map-command envelopes.
+// job-0258 (LAYER CONTROLS DEAD root-cause fix): user-side clicks now emit
+// real `map-command` payloads through the optional `onMapCommand` prop —
+// App.tsx wires it to the shared LayerPanelBus so MapView applies them to
+// the live MapLibre instance (setPaintProperty / setLayoutProperty /
+// moveLayer). Before this job the handlers below ONLY dispatched to the
+// panel's local reducer + console.debug "intent" logs (the M3 stubs), so
+// the opacity slider and drag-reorder visibly did nothing on the map.
+// Agent-side persistence of these intents remains future work (the bus is
+// client-local; nothing is sent to the agent yet).
 //
 // The panel renders the layer list **top-of-stack-first** (top of list =
 // rendered on top). `z_index` from ProjectLayerSummary is INTERPRETED:
@@ -193,6 +198,15 @@ export interface LayerPanelProps {
   onLayersChange?: (layers: ProjectLayerSummary[]) => void;
   /** Called when the user clicks the × close button (job-0068). */
   onClose?: () => void;
+  /**
+   * job-0258: outbound map-command emission for user layer-control intents
+   * (set-layer-opacity / set-layer-visibility / set-layer-order). App.tsx
+   * wires this to `bus.pushMapCommand`, which fans out to MapView (applies
+   * to the MapLibre instance) AND back into this panel's own reducer (an
+   * idempotent echo — the local dispatch below already applied the same
+   * change, so the echo is a no-op re-set of identical values).
+   */
+  onMapCommand?: (cmd: MapCommandPayload) => void;
 }
 
 export function LayerPanel({
@@ -201,6 +215,7 @@ export function LayerPanel({
   subscribeMapCommand,
   onLayersChange,
   onClose,
+  onMapCommand,
 }: LayerPanelProps): JSX.Element | null {
   const initial = useMemo<LayerPanelState>(
     () => ({ layers: sortTopFirst(initialLayers ?? []) }),
@@ -247,21 +262,29 @@ export function LayerPanel({
       (l) => l.layer_id,
     );
     dispatch({ type: "local-reorder", layer_ids: reorderedIds });
-    // M3: local-only intent — log + (future) emit map-command to agent.
+    // job-0258: emit the real map-command so MapView re-stacks the MapLibre
+    // layers (moveLayer). `reorderedIds` is top-of-stack first — the
+    // set-layer-order contract (contracts.ts SetLayerOrderCommand).
+    onMapCommand?.({ command: "set-layer-order", layer_ids: reorderedIds });
     // eslint-disable-next-line no-console
     console.debug("[LayerPanel] reorder intent:", reorderedIds);
   }
 
   function onVisibilityToggle(layerId: string, visible: boolean): void {
     dispatch({ type: "local-visibility", layer_id: layerId, visible });
+    // job-0258: emit so MapView flips layout visibility on the live map.
+    onMapCommand?.({ command: "set-layer-visibility", layer_id: layerId, visible });
     // eslint-disable-next-line no-console
     console.debug("[LayerPanel] visibility intent:", { layerId, visible });
   }
 
   function onOpacityChange(layerId: string, opacity: number): void {
-    dispatch({ type: "local-opacity", layer_id: layerId, opacity });
+    const clamped = clamp01(opacity);
+    dispatch({ type: "local-opacity", layer_id: layerId, opacity: clamped });
+    // job-0258: emit so MapView updates the paint properties on the live map.
+    onMapCommand?.({ command: "set-layer-opacity", layer_id: layerId, opacity: clamped });
     // eslint-disable-next-line no-console
-    console.debug("[LayerPanel] opacity intent:", { layerId, opacity });
+    console.debug("[LayerPanel] opacity intent:", { layerId, opacity: clamped });
   }
 
   // Tweak 2 (job-0065): hide the panel entirely when no layers are loaded.

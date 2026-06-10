@@ -149,3 +149,81 @@ describe("LayerPanel — no nudge buttons (job-0173 Part 4)", () => {
     expect(screen.getByTestId("layer-opacity")).toBeInTheDocument();
   });
 });
+
+// --- job-0258: user controls emit map-commands (LAYER CONTROLS DEAD fix) --- //
+//
+// Root cause being pinned: before job-0258 the slider/checkbox handlers only
+// dispatched to the panel's local reducer (M3 "intent" stubs) — nothing left
+// the component, so the MapLibre instance never changed. These tests assert
+// the new outbound `onMapCommand` emission contract that App.tsx wires to
+// the shared bus (MapView consumes it; see Map.test.tsx for that half).
+
+import { fireEvent } from "@testing-library/react";
+import type { MapCommandPayload } from "./contracts";
+
+describe("LayerPanel — user controls emit map-commands (job-0258)", () => {
+  it("opacity slider change emits set-layer-opacity with the new value", () => {
+    const onMapCommand = vi.fn<(cmd: MapCommandPayload) => void>();
+    render(
+      <LayerPanel
+        initialLayers={[makeLayer("flood-demo")]}
+        onMapCommand={onMapCommand}
+      />,
+    );
+
+    const slider = screen.getByTestId("layer-opacity");
+    fireEvent.change(slider, { target: { value: "0.35" } });
+
+    expect(onMapCommand).toHaveBeenCalledWith({
+      command: "set-layer-opacity",
+      layer_id: "flood-demo",
+      opacity: 0.35,
+    });
+  });
+
+  it("visibility checkbox toggle emits set-layer-visibility", () => {
+    const onMapCommand = vi.fn<(cmd: MapCommandPayload) => void>();
+    render(
+      <LayerPanel
+        initialLayers={[makeLayer("flood-demo")]}
+        onMapCommand={onMapCommand}
+      />,
+    );
+
+    const checkbox = screen.getByTestId("layer-visibility");
+    fireEvent.click(checkbox); // visible:true → false
+
+    expect(onMapCommand).toHaveBeenCalledWith({
+      command: "set-layer-visibility",
+      layer_id: "flood-demo",
+      visible: false,
+    });
+  });
+
+  it("panel state still updates locally alongside the emission (slider %)", () => {
+    const onMapCommand = vi.fn<(cmd: MapCommandPayload) => void>();
+    render(
+      <LayerPanel
+        initialLayers={[makeLayer("flood-demo")]}
+        onMapCommand={onMapCommand}
+      />,
+    );
+
+    fireEvent.change(screen.getByTestId("layer-opacity"), {
+      target: { value: "0.35" },
+    });
+    // The % readout reflects the reducer state (35%), proving the local
+    // dispatch and the emission both happened from one handler.
+    expect(screen.getByText("35%")).toBeTruthy();
+  });
+
+  it("emission is optional — controls do not throw without onMapCommand", () => {
+    render(<LayerPanel initialLayers={[makeLayer("flood-demo")]} />);
+    expect(() => {
+      fireEvent.change(screen.getByTestId("layer-opacity"), {
+        target: { value: "0.5" },
+      });
+      fireEvent.click(screen.getByTestId("layer-visibility"));
+    }).not.toThrow();
+  });
+});

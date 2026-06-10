@@ -33,6 +33,7 @@ interface MapMock {
   removeSource: ReturnType<typeof vi.fn>;
   setPaintProperty: ReturnType<typeof vi.fn>;
   setLayoutProperty: ReturnType<typeof vi.fn>;
+  moveLayer: ReturnType<typeof vi.fn>;
   fitBounds: ReturnType<typeof vi.fn>;
   addControl: ReturnType<typeof vi.fn>;
   touchZoomRotate: { disableRotation: ReturnType<typeof vi.fn> };
@@ -77,6 +78,8 @@ vi.mock("maplibre-gl", () => {
     });
     setPaintProperty = vi.fn();
     setLayoutProperty = vi.fn();
+    // job-0258: layer re-stacking (set-layer-order map-command).
+    moveLayer = vi.fn();
     fitBounds = vi.fn();
     addControl = vi.fn();
     touchZoomRotate = { disableRotation: vi.fn() };
@@ -464,6 +467,50 @@ describe("MapView — session-state idle-retry (job-0076 root-cause fix)", () =>
     const [sourceId] = m.addSource.mock.calls[0] as MockCallArgs;
     expect(sourceId).toBe("flood-demo");
     expect(m.addLayer).toHaveBeenCalledOnce();
+  });
+
+  it("re-arms once('idle') when the idle callback fires while style is STILL not loaded (job-0258 live-probe finding)", () => {
+    // Live repro: with theme=dark, applyTheme mutates the style inside the
+    // same idle dispatch that runs applyLatest, so isStyleLoaded() is false
+    // again when applyLatest fires. Pre-fix, applyLatest bailed WITHOUT
+    // re-arming and the layer batch was silently dropped until the next
+    // session-state push.
+    const sessionBus = makeSessionBus();
+
+    render(
+      <MapView
+        subscribeSessionState={sessionBus.subscribe as (cb: SessionStateSubscriber) => () => void}
+      />,
+    );
+
+    const m = lastMapMock!;
+    m.isStyleLoaded.mockReturnValue(false);
+
+    act(() => {
+      sessionBus.push({ loaded_layers: [makeWireLayer("flood-demo")] });
+    });
+
+    const idleCallsBefore = m.once.mock.calls.filter((c) => (c as MockCallArgs)[0] === "idle");
+    expect(idleCallsBefore.length).toBeGreaterThan(0);
+    const firstIdle = idleCallsBefore[idleCallsBefore.length - 1] as MockCallArgs;
+
+    // Fire the idle callback while the style is STILL not loaded.
+    act(() => {
+      (firstIdle[1] as () => void)();
+    });
+    expect(m.addSource).not.toHaveBeenCalled();
+    // The fix: a NEW once('idle') registration must exist.
+    const idleCallsAfter = m.once.mock.calls.filter((c) => (c as MockCallArgs)[0] === "idle");
+    expect(idleCallsAfter.length).toBeGreaterThan(idleCallsBefore.length);
+
+    // Style settles → the re-armed callback applies the batch.
+    m.isStyleLoaded.mockReturnValue(true);
+    const rearmed = idleCallsAfter[idleCallsAfter.length - 1] as MockCallArgs;
+    act(() => {
+      (rearmed[1] as () => void)();
+    });
+    expect(m.addSource).toHaveBeenCalledOnce();
+    expect((m.addSource.mock.calls[0] as MockCallArgs)[0]).toBe("flood-demo");
   });
 });
 
@@ -1101,5 +1148,248 @@ describe("addVectorLayer — inline GeoJSON (job-0175)", () => {
     expect(warnSpy).toHaveBeenCalled();
     expect(addedIds.current.has("bad-inline")).toBe(false);
     warnSpy.mockRestore();
+  });
+});
+
+// --- job-0258: layer-control wiring (LAYER CONTROLS DEAD root-cause fix) --- //
+//
+// Root cause: LayerPanel's user controls dispatched ONLY to its local reducer
+// ("M3 local intent" stubs) and Map.tsx had (a) no handler for the
+// set-layer-opacity / set-layer-visibility / set-layer-order map-commands and
+// (b) no moveLayer call anywhere. These tests pin the new contract:
+//   1. The exported apply helpers address the whole MapLibre layer group.
+//   2. MapView applies the three layer-control map-commands from the bus.
+//   3. END-TO-END: a LayerPanel slider change reaches the MapLibre instance
+//      when both components share the App bus (the exact wiring App.tsx uses).
+
+import {
+  applyLayerOpacity,
+  applyLayerVisibility,
+  applyLayerOrder,
+  layerGroupMemberIds,
+} from "./Map";
+import { fireEvent, screen } from "@testing-library/react";
+import { LayerPanel, createLayerPanelBus } from "./LayerPanel";
+import type { ProjectLayerSummary, SessionStatePayload, MapCommandPayload } from "./contracts";
+
+/** Minimal fake map for the pure helpers — existence-set driven. */
+function makeHelperMap(existing: string[]) {
+  const layers = new Set(existing);
+  return {
+    getLayer: vi.fn((id: string) => (layers.has(id) ? { id } : undefined)),
+    setPaintProperty: vi.fn(),
+    setLayoutProperty: vi.fn(),
+    moveLayer: vi.fn(),
+  } as unknown as import("maplibre-gl").Map & {
+    setPaintProperty: ReturnType<typeof vi.fn>;
+    setLayoutProperty: ReturnType<typeof vi.fn>;
+    moveLayer: ReturnType<typeof vi.fn>;
+  };
+}
+
+describe("layer-control helpers (job-0258)", () => {
+  it("layerGroupMemberIds returns existing members bottom-to-top", () => {
+    const m = makeHelperMap(["pts", "pts-clusters", "pts-cluster-count"]);
+    expect(layerGroupMemberIds(m, "pts")).toEqual([
+      "pts-clusters",
+      "pts-cluster-count",
+      "pts",
+    ]);
+    const m2 = makeHelperMap(["poly", "poly-outline"]);
+    expect(layerGroupMemberIds(m2, "poly")).toEqual(["poly", "poly-outline"]);
+    const m3 = makeHelperMap(["raster-1"]);
+    expect(layerGroupMemberIds(m3, "raster-1")).toEqual(["raster-1"]);
+  });
+
+  it("applyLayerOpacity raster fallback sets raster-opacity", () => {
+    const m = makeHelperMap(["flood-demo"]);
+    applyLayerOpacity(m, "flood-demo", 0.25, undefined, null);
+    expect(m.setPaintProperty).toHaveBeenCalledWith("flood-demo", "raster-opacity", 0.25);
+  });
+
+  it("applyLayerOpacity polygon covers fill AND the -outline sublayer", () => {
+    const m = makeHelperMap(["poly", "poly-outline"]);
+    applyLayerOpacity(m, "poly", 0.5, "polygon", null);
+    // 0.5 × POLYGON_FILL_OPACITY (0.4) = 0.2
+    expect(m.setPaintProperty).toHaveBeenCalledWith("poly", "fill-opacity", 0.2);
+    expect(m.setPaintProperty).toHaveBeenCalledWith("poly-outline", "line-opacity", 0.5 * 0.6);
+  });
+
+  it("applyLayerOpacity dense-point covers cluster sublayers", () => {
+    const m = makeHelperMap(["pts", "pts-clusters", "pts-cluster-count"]);
+    applyLayerOpacity(m, "pts", 0.6, "point", null);
+    expect(m.setPaintProperty).toHaveBeenCalledWith("pts", "circle-opacity", 0.6);
+    expect(m.setPaintProperty).toHaveBeenCalledWith("pts", "circle-stroke-opacity", 0.6);
+    expect(m.setPaintProperty).toHaveBeenCalledWith("pts-clusters", "circle-opacity", 0.6 * 0.85);
+    expect(m.setPaintProperty).toHaveBeenCalledWith("pts-cluster-count", "text-opacity", 0.6);
+  });
+
+  it("applyLayerOpacity no-ops when the base layer is absent (mid-fetch race)", () => {
+    const m = makeHelperMap([]);
+    applyLayerOpacity(m, "ghost", 0.5, undefined, null);
+    expect(m.setPaintProperty).not.toHaveBeenCalled();
+  });
+
+  it("applyLayerVisibility flips layout visibility on every group member", () => {
+    const m = makeHelperMap(["poly", "poly-outline"]);
+    applyLayerVisibility(m, "poly", false);
+    expect(m.setLayoutProperty).toHaveBeenCalledWith("poly", "visibility", "none");
+    expect(m.setLayoutProperty).toHaveBeenCalledWith("poly-outline", "visibility", "none");
+    applyLayerVisibility(m, "poly", true);
+    expect(m.setLayoutProperty).toHaveBeenCalledWith("poly", "visibility", "visible");
+    expect(m.setLayoutProperty).toHaveBeenCalledWith("poly-outline", "visibility", "visible");
+  });
+
+  it("applyLayerOrder moves groups bottom-first so first id ends up on top", () => {
+    const m = makeHelperMap(["a", "b", "b-outline"]);
+    // Panel order (top-first): a above b.
+    applyLayerOrder(m, ["a", "b"]);
+    // moveLayer(id) pulls to top — so b's group moves first, a last.
+    expect(m.moveLayer.mock.calls.map((c) => c[0])).toEqual(["b", "b-outline", "a"]);
+  });
+});
+
+describe("MapView — map-command layer controls (job-0258)", () => {
+  beforeEach(() => {
+    lastMapMock = null;
+  });
+
+  function renderWithLayers(ids: string[]) {
+    const sessionBus = makeSessionBus();
+    const cmdBus = makeMapCmdBus();
+    render(
+      <MapView
+        subscribeSessionState={sessionBus.subscribe as (cb: SessionStateSubscriber) => () => void}
+        subscribeMapCommand={cmdBus.subscribe as unknown as MapCommandSubscribeFunc}
+      />,
+    );
+    act(() => {
+      sessionBus.push({ loaded_layers: ids.map((id) => makeWireLayer(id)) });
+    });
+    return { sessionBus, cmdBus, m: lastMapMock! };
+  }
+
+  it("set-layer-opacity reaches setPaintProperty(raster-opacity) on the map", () => {
+    const { cmdBus, m } = renderWithLayers(["flood-demo"]);
+    m.setPaintProperty.mockClear();
+
+    act(() => {
+      cmdBus.push({ command: "set-layer-opacity", layer_id: "flood-demo", opacity: 0.3 } as unknown as ZoomToCommand);
+    });
+
+    expect(m.setPaintProperty).toHaveBeenCalledWith("flood-demo", "raster-opacity", 0.3);
+  });
+
+  it("set-layer-opacity clamps out-of-range values to 0..1", () => {
+    const { cmdBus, m } = renderWithLayers(["flood-demo"]);
+    m.setPaintProperty.mockClear();
+
+    act(() => {
+      cmdBus.push({ command: "set-layer-opacity", layer_id: "flood-demo", opacity: 7 } as unknown as ZoomToCommand);
+    });
+
+    expect(m.setPaintProperty).toHaveBeenCalledWith("flood-demo", "raster-opacity", 1);
+  });
+
+  it("set-layer-visibility reaches setLayoutProperty(visibility) on the map", () => {
+    const { cmdBus, m } = renderWithLayers(["flood-demo"]);
+    m.setLayoutProperty.mockClear();
+
+    act(() => {
+      cmdBus.push({ command: "set-layer-visibility", layer_id: "flood-demo", visible: false } as unknown as ZoomToCommand);
+    });
+
+    expect(m.setLayoutProperty).toHaveBeenCalledWith("flood-demo", "visibility", "none");
+  });
+
+  it("set-layer-order re-stacks via moveLayer, bottom-first", () => {
+    const { cmdBus, m } = renderWithLayers(["layer-a", "layer-b"]);
+    m.moveLayer.mockClear();
+
+    // Panel/top-first order: layer-a on top of layer-b.
+    act(() => {
+      cmdBus.push({ command: "set-layer-order", layer_ids: ["layer-a", "layer-b"] } as unknown as ZoomToCommand);
+    });
+
+    expect(m.moveLayer.mock.calls.map((c: MockCallArgs) => c[0])).toEqual(["layer-b", "layer-a"]);
+  });
+});
+
+describe("LayerPanel ↔ MapView end-to-end over the App bus (job-0258)", () => {
+  beforeEach(() => {
+    lastMapMock = null;
+  });
+
+  function makePanelLayer(id: string, z = 1): ProjectLayerSummary {
+    return {
+      layer_id: id,
+      name: `Layer ${id}`,
+      layer_type: "raster",
+      uri: `https://qgis.example.com/wms?LAYERS=${id}`,
+      visible: true,
+      opacity: 1,
+      z_index: z,
+    };
+  }
+
+  /** Mirrors App.tsx wiring: shared bus + onMapCommand={bus.pushMapCommand}. */
+  function renderShell(layers: ProjectLayerSummary[]) {
+    const bus = createLayerPanelBus();
+    render(
+      <>
+        <MapView
+          subscribeSessionState={bus.subscribeSessionState as unknown as (cb: SessionStateSubscriber) => () => void}
+          subscribeMapCommand={bus.subscribeMapCommand as unknown as MapCommandSubscribeFunc}
+        />
+        <LayerPanel
+          subscribeSessionState={bus.subscribeSessionState}
+          subscribeMapCommand={bus.subscribeMapCommand}
+          initialLayers={layers}
+          onMapCommand={bus.pushMapCommand as (cmd: MapCommandPayload) => void}
+        />
+      </>,
+    );
+    act(() => {
+      bus.pushSessionState({ loaded_layers: layers } as SessionStatePayload);
+    });
+    return { bus, m: lastMapMock! };
+  }
+
+  it("moving the opacity slider updates the MapLibre paint property", () => {
+    const { m } = renderShell([makePanelLayer("flood-demo")]);
+    m.setPaintProperty.mockClear();
+
+    const slider = screen.getByTestId("layer-opacity");
+    fireEvent.change(slider, { target: { value: "0.3" } });
+
+    expect(m.setPaintProperty).toHaveBeenCalledWith("flood-demo", "raster-opacity", 0.3);
+  });
+
+  it("toggling the visibility checkbox updates the MapLibre layout property", () => {
+    const { m } = renderShell([makePanelLayer("flood-demo")]);
+    m.setLayoutProperty.mockClear();
+
+    const checkbox = screen.getByTestId("layer-visibility");
+    fireEvent.click(checkbox); // initial visible:true → toggles off
+
+    expect(m.setLayoutProperty).toHaveBeenCalledWith("flood-demo", "visibility", "none");
+  });
+
+  it("a set-layer-order push (drag-reorder emission path) re-stacks the map", () => {
+    const { bus, m } = renderShell([
+      makePanelLayer("layer-a", 2),
+      makePanelLayer("layer-b", 1),
+    ]);
+    m.moveLayer.mockClear();
+
+    // Same payload LayerPanel.onDragEnd emits after the user drags layer-b
+    // above layer-a (top-first list). jsdom cannot synthesize the dnd-kit
+    // pointer drag reliably; the Playwright evidence run covers the real
+    // mouse drag. This pins the bus→map half of the path.
+    act(() => {
+      bus.pushMapCommand({ command: "set-layer-order", layer_ids: ["layer-b", "layer-a"] });
+    });
+
+    expect(m.moveLayer.mock.calls.map((c: MockCallArgs) => c[0])).toEqual(["layer-a", "layer-b"]);
   });
 });

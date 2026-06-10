@@ -1,0 +1,64 @@
+{
+  "checks": [
+    {
+      "name": "baseline: polygon painted at fill-opacity 0.4 (opacity 1 × POLYGON_FILL_OPACITY)",
+      "pass": true,
+      "detail": {
+        "polyFillOpacity": 0.4
+      }
+    },
+    {
+      "name": "opacity slider → map fill-opacity dropped",
+      "pass": true,
+      "detail": {
+        "before": 0.4,
+        "after": 0.032
+      }
+    },
+    {
+      "name": "opacity slider → map raster-opacity dropped (flood-COG path)",
+      "pass": true,
+      "detail": {
+        "before": 1,
+        "after": 0.28
+      }
+    },
+    {
+      "name": "drag-reorder → MapLibre paint order changed (points now above raster)",
+      "pass": true,
+      "detail": {
+        "beforeOrder": [
+          "osm-fallback-basemap",
+          "carto-dark-basemap",
+          "job0258-points",
+          "job0258-raster",
+          "job0258-poly",
+          "job0258-poly-outline"
+        ],
+        "afterOrder": [
+          "osm-fallback-basemap",
+          "carto-dark-basemap",
+          "job0258-poly",
+          "job0258-poly-outline",
+          "job0258-raster",
+          "job0258-points"
+        ]
+      }
+    },
+    {
+      "name": "visibility checkbox → map layout visibility none",
+      "pass": true,
+      "detail": {
+        "visibility": "none"
+      }
+    },
+    {
+      "name": "visibility checkbox → map layout visibility restored",
+      "pass": true,
+      "detail": {
+        "visibility": "visible"
+      }
+    }
+  ],
+  "console_errors": []
+}

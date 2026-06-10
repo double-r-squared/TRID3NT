@@ -630,6 +630,122 @@ function registerVectorOnMap(
   geomKindRef.current.set(layer.layer_id, geomKind);
 }
 
+// --- Layer-control application helpers (job-0258) ----------------------- //
+//
+// ROOT-CAUSE CONTEXT: until job-0258, the LayerPanel's user controls
+// (opacity slider / visibility checkbox / drag-reorder) dispatched ONLY to
+// the panel's local reducer ("M3 local intent" stubs, LayerPanel.tsx) and
+// never reached the MapLibre instance — and Map.tsx had no `moveLayer` call
+// anywhere, so stack reordering was impossible even for agent-driven
+// `set-layer-order` envelopes. These exported helpers are the single shared
+// "apply to map" path, used by BOTH the session-state reconciliation loop
+// and the map-command subscription that the LayerPanel now feeds through
+// the App bus.
+//
+// One logical GRACE-2 layer (`layer_id`) can own several MapLibre layers:
+//   - dense point layers:  `${id}-clusters`, `${id}-cluster-count`, `${id}`
+//   - polygon layers:      `${id}`, `${id}-outline`
+//   - raster/line/points:  `${id}` only
+// (see `registerVectorOnMap` above). Every control operation must address
+// the whole group, otherwise outlines/clusters get visually orphaned.
+
+/**
+ * Existing MapLibre layer ids belonging to one logical layer, in
+ * bottom-to-top paint order (the order `registerVectorOnMap` added them).
+ */
+export function layerGroupMemberIds(m: MapLibreMap, layerId: string): string[] {
+  const candidates = [
+    `${layerId}-clusters`,
+    `${layerId}-cluster-count`,
+    layerId,
+    `${layerId}-outline`,
+  ];
+  return candidates.filter((id) => {
+    try {
+      return Boolean(m.getLayer(id));
+    } catch {
+      return false;
+    }
+  });
+}
+
+/**
+ * Apply a 0..1 opacity to every paint property of the layer group, using the
+ * same per-geometry multipliers `registerVectorOnMap` used at creation time
+ * (cluster circles ×0.85, polygon fill ×POLYGON_FILL_OPACITY or ×0.7 for
+ * Pelicun damage, outline ×0.6). Raster/unknown falls through to
+ * `raster-opacity` — the original flood-COG path.
+ */
+export function applyLayerOpacity(
+  m: MapLibreMap,
+  layerId: string,
+  opacity: number,
+  geomKind: VectorGeomKind | undefined,
+  stylePreset?: string | null,
+): void {
+  if (!m.getLayer(layerId)) return;
+  if (geomKind === "point") {
+    m.setPaintProperty(layerId, "circle-opacity", opacity);
+    m.setPaintProperty(layerId, "circle-stroke-opacity", opacity);
+    if (m.getLayer(`${layerId}-clusters`)) {
+      m.setPaintProperty(`${layerId}-clusters`, "circle-opacity", opacity * 0.85);
+    }
+    if (m.getLayer(`${layerId}-cluster-count`)) {
+      m.setPaintProperty(`${layerId}-cluster-count`, "text-opacity", opacity);
+    }
+  } else if (geomKind === "line") {
+    m.setPaintProperty(layerId, "line-opacity", opacity);
+  } else if (geomKind === "polygon") {
+    const polyOpacity = isPelicunDamageLayer(stylePreset)
+      ? opacity * 0.7
+      : opacity * POLYGON_FILL_OPACITY;
+    m.setPaintProperty(layerId, "fill-opacity", polyOpacity);
+    m.setPaintProperty(layerId, "fill-outline-color", resolveVectorColor(layerId, stylePreset));
+    if (m.getLayer(`${layerId}-outline`)) {
+      m.setPaintProperty(`${layerId}-outline`, "line-opacity", opacity * 0.6);
+    }
+  } else {
+    // Raster or unknown — preserve the raster path so the flood-depth COG
+    // keeps responding (the original demo symptom).
+    m.setPaintProperty(layerId, "raster-opacity", opacity);
+  }
+}
+
+/** Flip layout visibility on every member of the layer group. */
+export function applyLayerVisibility(
+  m: MapLibreMap,
+  layerId: string,
+  visible: boolean,
+): void {
+  for (const id of layerGroupMemberIds(m, layerId)) {
+    m.setLayoutProperty(id, "visibility", visible ? "visible" : "none");
+  }
+}
+
+/**
+ * Re-stack overlay layer groups to match `layerIdsTopFirst` (the LayerPanel /
+ * `set-layer-order` convention: first element renders ON TOP). MapLibre's
+ * `moveLayer(id)` with no beforeId moves a layer to the top of the stack, so
+ * iterating bottom-first pulls each group to the top in turn — the last
+ * (top-of-panel) group ends up painted last, i.e. on top. Basemap layers are
+ * never named in the command, so they stay at the bottom. Group members move
+ * in their internal bottom-to-top order so sublayers keep their relative
+ * stacking (e.g. cluster counts above cluster circles).
+ */
+export function applyLayerOrder(m: MapLibreMap, layerIdsTopFirst: string[]): void {
+  const bottomFirst = [...layerIdsTopFirst].reverse();
+  for (const layerId of bottomFirst) {
+    for (const member of layerGroupMemberIds(m, layerId)) {
+      try {
+        m.moveLayer(member);
+      } catch {
+        // Mid-removal race (style mutation between getLayer and moveLayer) —
+        // skip; the next session-state reconciliation restores consistency.
+      }
+    }
+  }
+}
+
 export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "light" }: MapViewProps = {}): JSX.Element {
   const container = useRef<HTMLDivElement | null>(null);
   const map = useRef<MapLibreMap | null>(null);
@@ -640,6 +756,10 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
   // vs `fill-opacity`) when opacity/visibility changes on a known vector layer.
   // Also lets the visibility/opacity update path skip raster-only ops on vectors.
   const vectorGeomKinds = useRef<Map<string, VectorGeomKind>>(new Map());
+  // job-0258: style_preset per layer_id, recorded when the layer is wired in.
+  // The map-command opacity path needs it for the Pelicun fill multiplier,
+  // and the command envelope itself doesn't carry presets.
+  const layerStylePresets = useRef<Map<string, string | null>>(new Map());
   // Tracks the in-flight vector-fetch generation per layer_id. When a layer is
   // removed mid-fetch, this counter advances so a late-arriving fetch resolves
   // into a no-op rather than re-registering the source (kickoff §scope:
@@ -729,8 +849,20 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       const m = map.current;
       const payload = latestSessionState.current;
       if (!m || !payload) return;
-      // If style isn't loaded yet, the deferred idle handler will retry.
-      if (!m.isStyleLoaded()) return;
+      // If the style isn't loaded yet, RE-ARM and retry on the next idle.
+      // job-0258 live-probe finding: the previous `return` here did NOT
+      // re-arm — the subscriber registers exactly one once("idle") per push,
+      // and when that idle callback ran right after applyTheme had mutated
+      // the style in the SAME idle dispatch (dark theme swaps the basemap),
+      // isStyleLoaded() was false again and the whole layer batch was
+      // silently dropped until the next session-state push. Re-arming makes
+      // the deferral actually converge; applyLatest is idempotent
+      // (replace-not-reconcile diff against addedSourceIds), so extra idle
+      // invocations are harmless.
+      if (!m.isStyleLoaded()) {
+        m.once("idle", applyLatest);
+        return;
+      }
 
       const currentLayers = payload.loaded_layers ?? [];
       const currentIds = new Set(currentLayers.map((l) => l.layer_id));
@@ -744,6 +876,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
           // job-0139: tear down vector bookkeeping too. Bump fetch generation
           // so any in-flight fetch for this layer_id resolves into a no-op.
           vectorGeomKinds.current.delete(id);
+          layerStylePresets.current.delete(id);
           vectorFetchGen.current.set(id, (vectorFetchGen.current.get(id) ?? 0) + 1);
         }
       }
@@ -756,31 +889,19 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
         const opacity = layer.opacity ?? 1;
         const visible = layer.visible !== false;
         const layerType = layer.layer_type;
+        // job-0258: keep the preset bookkeeping current for the map-command
+        // opacity path (Pelicun fill multiplier).
+        layerStylePresets.current.set(layer.layer_id, layer.style_preset ?? null);
 
         if (addedSourceIds.current.has(layer.layer_id)) {
-          // Update paint/layout on existing layer. Branch on the tracked
-          // geometry kind for vector layers so we set the correct paint key.
+          // Update paint/layout on existing layer via the shared helpers
+          // (job-0258) — these branch on the tracked geometry kind AND cover
+          // sublayers (`-outline`, `-clusters`, `-cluster-count`) that the
+          // previous inline branch missed.
           if (m.getLayer(layer.layer_id)) {
             const geomKind = vectorGeomKinds.current.get(layer.layer_id);
-            if (geomKind === "point") {
-              m.setPaintProperty(layer.layer_id, "circle-opacity", opacity);
-              m.setPaintProperty(layer.layer_id, "circle-stroke-opacity", opacity);
-            } else if (geomKind === "line") {
-              m.setPaintProperty(layer.layer_id, "line-opacity", opacity);
-            } else if (geomKind === "polygon") {
-              // job-0146: use POLYGON_FILL_OPACITY (0.4) for basemap readability;
-              // Pelicun damage layers use 0.7 for gradient visibility.
-              const polyOpacity = isPelicunDamageLayer(layer.style_preset)
-                ? opacity * 0.7
-                : opacity * POLYGON_FILL_OPACITY;
-              m.setPaintProperty(layer.layer_id, "fill-opacity", polyOpacity);
-              m.setPaintProperty(layer.layer_id, "fill-outline-color", resolveVectorColor(layer.layer_id, layer.style_preset));
-            } else {
-              // Raster (existing behaviour) or unknown — preserve the
-              // raster-only path so the flood-depth COG keeps rendering.
-              m.setPaintProperty(layer.layer_id, "raster-opacity", opacity);
-            }
-            m.setLayoutProperty(layer.layer_id, "visibility", visible ? "visible" : "none");
+            applyLayerOpacity(m, layer.layer_id, opacity, geomKind, layer.style_preset);
+            applyLayerVisibility(m, layer.layer_id, visible);
           }
           continue;
         }
@@ -943,8 +1064,13 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
   }, [theme]);
 
   // Subscribe to map-command for zoom-to and transient camera/animation verbs
-  // (job-0068, change 5 client side). Layer-CRUD verbs are DEFERRED (handled
-  // via session-state per layer-emission-contract.md).
+  // (job-0068, change 5 client side) PLUS the layer-control verbs
+  // set-layer-opacity / set-layer-visibility / set-layer-order (job-0258 —
+  // the LayerPanel user controls emit these through the App bus; until this
+  // handler existed they never reached the map, which is why the panel's
+  // opacity slider and drag-reorder were dead in the live demo). Layer CRUD
+  // (load-layer / remove-layer) stays DEFERRED to the session-state path per
+  // layer-emission-contract.md.
   // WireMapCommand extends frozen contracts.ts MapCommandPayload with zoom-to
   // (which is deferred in contracts.ts but needed here per kickoff).
   useEffect(() => {
@@ -961,6 +1087,19 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
             { padding: 40, duration: 1200 },
           );
         }
+      } else if (payload.command === "set-layer-opacity") {
+        const opacity = Math.max(0, Math.min(1, payload.opacity));
+        applyLayerOpacity(
+          m,
+          payload.layer_id,
+          opacity,
+          vectorGeomKinds.current.get(payload.layer_id),
+          layerStylePresets.current.get(payload.layer_id) ?? null,
+        );
+      } else if (payload.command === "set-layer-visibility") {
+        applyLayerVisibility(m, payload.layer_id, payload.visible);
+      } else if (payload.command === "set-layer-order") {
+        applyLayerOrder(m, payload.layer_ids);
       } else {
         // eslint-disable-next-line no-console
         console.warn("[MapView] MapCommand not yet implemented:", payload.command);

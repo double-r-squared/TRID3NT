@@ -746,6 +746,11 @@ export function App(): JSX.Element {
                   subscribeMapCommand={bus.subscribeMapCommand}
                   initialLayers={layers}
                   onClose={collapseLeft}
+                  /* job-0258: user layer-control intents (opacity slider /
+                     visibility checkbox / drag-reorder) flow through the bus
+                     so MapView applies them to the live MapLibre instance.
+                     Without this the panel controls were dead in the demo. */
+                  onMapCommand={bus.pushMapCommand}
                 />
               </div>
             </div>
