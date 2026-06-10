@@ -530,6 +530,16 @@ class SessionState:
     # evidence showed only user turns survived because this text was never
     # accumulated (the old code persisted ``content=""`` markers).
     current_turn_narration: list[str] = field(default_factory=list)
+    # job-0268: the Case this TURN is bound to. Pinned by ``_prepare_user_turn``
+    # at dispatch time (after the auto-create-from-root hand-off, before the
+    # first write). Every turn-scoped persistence write — chat rows, tool
+    # cards, layer attribution, per-Case .qgs routing, charts — targets THIS
+    # binding via ``_turn_case_id``, never the live ``active_case_id``, which
+    # a mid-stream ``case-command(select)`` re-points. Pre-fix, Case A's
+    # narration + tool cards persisted into Case B permanently when the user
+    # switched Cases during a long-running turn (job-0267 verifier probes A+B;
+    # the window is minutes-long for SFINCS-class tools).
+    current_turn_case_id: str | None = None
     # job-0122 (Appendix H.5): per-connection authenticated user context.
     #
     # Populated by the connect-handshake (``_perform_auth_handshake``) after
@@ -2033,10 +2043,28 @@ async def _prepare_user_turn(
         auto_case_id = await _auto_create_case_from_root(
             websocket, state, text
         )
+    # job-0268: pin the turn's Case binding NOW — after the auto-create
+    # hand-off, before the first write. Everything this turn persists
+    # (user row, tool cards, narration, layers, charts, .qgs routing)
+    # follows this pin; a mid-stream case switch must not re-aim it.
+    state.current_turn_case_id = state.active_case_id
     await _persist_chat_turn(state, role="user", content=text)
     if auto_case_id is not None:
         await _emit_auto_case_open(websocket, state, auto_case_id)
     return directive
+
+
+def _turn_case_id(state: SessionState) -> str | None:
+    """The Case the current turn is bound to (job-0268).
+
+    Prefers the pin set by ``_prepare_user_turn`` at dispatch time; falls
+    back to the live ``active_case_id`` for callers outside a prepared turn
+    (direct tool invocations in tests, legacy paths). The fallback IS the
+    pre-fix behavior — every persistence site read ``active_case_id`` at
+    WRITE time, so a ``case-command(select)`` arriving mid-stream re-aimed
+    in-flight writes at the newly selected Case (job-0267 verifier).
+    """
+    return state.current_turn_case_id or state.active_case_id
 
 
 async def _persist_chat_turn(
@@ -2047,6 +2075,7 @@ async def _persist_chat_turn(
     pipeline_id: str | None = None,
     tool_card: ToolCardRecord | None = None,
     layer_emissions: list[str] | None = None,
+    case_id: str | None = None,
 ) -> None:
     """Append one ``CaseChatMessage`` to Mongo for the active Case.
 
@@ -2064,15 +2093,21 @@ async def _persist_chat_turn(
     ``role="tool"`` rows; ``layer_emissions`` overrides the default
     per-turn accumulator snapshot (tool rows pass ``[]`` so the turn's
     layer ids stay attributed to the closing agent row, exactly as before).
+
+    job-0268: ``case_id`` pins the target Case explicitly (the dispatch
+    wrappers capture it at task entry so even a cancel-and-redispatch race
+    cannot re-aim the write); when omitted it resolves via ``_turn_case_id``
+    — never the raw write-time ``active_case_id``.
     """
-    if not state.active_case_id:
+    target_case = case_id if case_id is not None else _turn_case_id(state)
+    if not target_case:
         return
     p = get_persistence()
     if p is None:
         return
     msg = CaseChatMessage(
         message_id=new_ulid(),
-        case_id=state.active_case_id,
+        case_id=target_case,
         role=role,  # type: ignore[arg-type]
         content=content,
         pipeline_id=pipeline_id,
@@ -2088,12 +2123,12 @@ async def _persist_chat_turn(
         await p.append_chat_message(msg)
         # Per-turn D.6 heartbeat (job-0203 / M4): the chat turn is the
         # activity signal that keeps the session record's TTL fresh and
-        # the active Case registered in ``project_ids``.
-        await _touch_session_record(state)
+        # the turn's Case registered in ``project_ids``.
+        await _touch_session_record(state, case_id=target_case)
         logger.debug(
             "chat-persist session=%s case=%s role=%s msg_id=%s pipeline_id=%s layers=%d",
             state.session_id,
-            state.active_case_id,
+            target_case,
             role,
             msg.message_id,
             pipeline_id,
@@ -2103,7 +2138,7 @@ async def _persist_chat_turn(
         logger.exception(
             "chat-persist failed session=%s case=%s role=%s",
             state.session_id,
-            state.active_case_id,
+            target_case,
             role,
         )
 
@@ -2116,6 +2151,7 @@ async def _persist_tool_card(
     card_state: str,
     started_at_fallback: datetime,
     duration_ms_fallback: int,
+    case_id: str | None = None,
 ) -> None:
     """Persist one replayable tool-card row for the active Case (job-0267).
 
@@ -2160,12 +2196,13 @@ async def _persist_tool_card(
             pipeline_id=state.current_turn_pipeline_id,
             tool_card=record,
             layer_emissions=[],
+            case_id=case_id,
         )
     except Exception:  # noqa: BLE001 — replay material, never the happy path
         logger.exception(
             "tool-card persist failed session=%s case=%s tool=%s",
             state.session_id,
-            state.active_case_id,
+            case_id if case_id is not None else _turn_case_id(state),
             tool_name,
         )
 
@@ -2718,34 +2755,40 @@ async def _invoke_tool_via_emitter(
         raise ToolNotFoundError(tool_name, list(TOOL_REGISTRY))
     entry = TOOL_REGISTRY[tool_name]
 
+    # job-0268: bind this dispatch to the turn's Case ONCE, up front. The
+    # .qgs routing, tool-card persist, and layer attribution below all use
+    # this capture — a mid-dispatch ``case-command(select)`` must not re-aim
+    # them at the newly visible Case (verified contamination, job-0267).
+    turn_case_id = _turn_case_id(state)
+
     # job-0121: per-Case ``.qgs`` lazy-init for ``publish_layer``.
     #
-    # When invoked inside a Case context (``state.active_case_id`` set) we
+    # When invoked inside a Case context (turn bound to a Case) we
     # resolve (or initialize) the per-Case ``.qgs`` URI BEFORE the tool body
     # runs, then substitute it into ``project_qgs_uri`` so the worker mutates
     # the case-scoped file rather than the shared default. This is the
     # OQ-62-QGS-MUTATION-CONFLICT resolution path.
-    if tool_name == "publish_layer" and state.active_case_id:
+    if tool_name == "publish_layer" and turn_case_id:
         try:
             case_qgs = await ensure_case_qgs(
-                get_persistence(), state.active_case_id
+                get_persistence(), turn_case_id
             )
         except CaseLifecycleError as exc:
             logger.warning(
                 "case-qgs lazy-init failed code=%s case=%s err=%s; "
                 "falling back to default .qgs",
                 exc.error_code,
-                state.active_case_id,
+                turn_case_id,
                 exc,
             )
         else:
             # Substitute (additively) without clobbering an explicit override.
             params = dict(params)
             params.setdefault("project_qgs_uri", case_qgs)
-            params.setdefault("case_id", state.active_case_id)
+            params.setdefault("case_id", turn_case_id)
             logger.info(
                 "publish_layer routed to case-scoped qgs case=%s qgs=%s",
-                state.active_case_id,
+                turn_case_id,
                 case_qgs,
             )
 
@@ -2857,7 +2900,7 @@ async def _invoke_tool_via_emitter(
         # BEFORE the narration row that closes the turn — the chat
         # collection's ``created_at`` order IS the replay order. Best-effort,
         # never raises, never masks the original exception.
-        if _card_state is not None and state.active_case_id:
+        if _card_state is not None and turn_case_id:
             await _persist_tool_card(
                 state,
                 tool_name=tool_name,
@@ -2867,6 +2910,7 @@ async def _invoke_tool_via_emitter(
                 duration_ms_fallback=int(
                     (asyncio.get_running_loop().time() - _card_t0) * 1000.0
                 ),
+                case_id=turn_case_id,
             )
         # job-0259: persist the Case layer accumulator in the FINALLY block —
         # the round-3 plume evidence showed a published layer vanishing from
@@ -2876,13 +2920,13 @@ async def _invoke_tool_via_emitter(
         # BEFORE it emits, so persisting here captures the layer even when
         # the wire write failed. Never raises (and never masks the original
         # exception) — persistence is a side-effect, not the happy path.
-        if state.active_case_id and state.emitter is not None:
+        if turn_case_id and state.emitter is not None:
             try:
-                await _persist_case_loaded_layers(state)
+                await _persist_case_loaded_layers(state, case_id=turn_case_id)
             except Exception:  # noqa: BLE001 — best-effort, never mask
                 logger.exception(
                     "case-layer-persist (finally) failed case=%s",
-                    state.active_case_id,
+                    turn_case_id,
                 )
 
     # job-0263: register every URI the result carries (LayerURI layer_id↔uri
@@ -2912,8 +2956,10 @@ async def _invoke_tool_via_emitter(
     return result
 
 
-async def _persist_case_loaded_layers(state: SessionState) -> None:
-    """Sync the emitter's ``_loaded_layers`` onto the active ``CaseSummary``.
+async def _persist_case_loaded_layers(
+    state: SessionState, *, case_id: str | None = None
+) -> None:
+    """Sync the emitter's ``_loaded_layers`` onto the turn's ``CaseSummary``.
 
     job-0172 Part B: writes the current ``ProjectLayerSummary[]`` accumulator
     into ``Case.loaded_layer_summaries`` (full dicts for rehydration) and
@@ -2925,22 +2971,27 @@ async def _persist_case_loaded_layers(state: SessionState) -> None:
     Case lookup gates the write — if the Case was archived / deleted
     mid-turn we silently skip (no surprise resurrection of a tombstoned
     Case via this side-channel).
+
+    job-0268: ``case_id`` pins the target Case explicitly (callers inside a
+    tool dispatch pass their entry-time capture); default resolves via
+    ``_turn_case_id`` so a mid-turn Case switch never re-aims attribution.
     """
+    target_case = case_id if case_id is not None else _turn_case_id(state)
     p = get_persistence()
-    if p is None or state.emitter is None or not state.active_case_id:
+    if p is None or state.emitter is None or not target_case:
         return
     try:
-        case = await p.get_case(state.active_case_id)
+        case = await p.get_case(target_case)
     except Exception:  # noqa: BLE001
         logger.exception(
             "case-layer-persist: get_case failed case=%s",
-            state.active_case_id,
+            target_case,
         )
         return
     if case is None:
         logger.debug(
             "case-layer-persist: case=%s missing; skipping",
-            state.active_case_id,
+            target_case,
         )
         return
 
@@ -2990,13 +3041,13 @@ async def _persist_case_loaded_layers(state: SessionState) -> None:
         await p.upsert_case(updated)
         logger.debug(
             "case-layer-persist case=%s layers=%d",
-            state.active_case_id,
+            target_case,
             len(layer_ids),
         )
     except Exception:  # noqa: BLE001
         logger.exception(
             "case-layer-persist: upsert failed case=%s",
-            state.active_case_id,
+            target_case,
         )
 
 
@@ -3223,7 +3274,9 @@ async def _persist_chart_record(state: SessionState, payload: dict) -> None:
         )
         from .persistence import DEFAULT_DATABASE, SESSIONS_COLLECTION
 
-        doc_id = state.active_case_id or state.session_id
+        # job-0268: charts are turn-scoped emissions — key them by the Case
+        # that OWNS the turn, not whatever Case is visible at write time.
+        doc_id = _turn_case_id(state) or state.session_id
         record = SessionChartRecord(
             session_id=doc_id,
             payload=ChartEmissionPayload.model_validate(payload),
@@ -3375,6 +3428,10 @@ async def _dispatch_gemini_and_persist(
     nothing — user-verified: only their own messages survived a Case reopen.
     """
     pre_chat_len = len(state.chat_history)
+    # job-0268: capture the turn's Case at task entry — the finally-persist
+    # below must land in the Case that OWNED this turn even when the user
+    # switched Cases (or a newer turn re-pinned the binding) mid-stream.
+    turn_case_id = _turn_case_id(state)
     try:
         await _stream_gemini_reply(
             websocket, state, settings, user_text, research_mode
@@ -3387,12 +3444,13 @@ async def _dispatch_gemini_and_persist(
         # narration-less turns, so the replay row count stays faithful.
         narration = "".join(state.current_turn_narration).strip()
         stream_completed = len(state.chat_history) > pre_chat_len
-        if state.active_case_id and (narration or stream_completed):
+        if turn_case_id and (narration or stream_completed):
             await _persist_chat_turn(
                 state,
                 role="agent",
                 content=narration,
                 pipeline_id=state.current_turn_pipeline_id,
+                case_id=turn_case_id,
             )
 
 
@@ -3424,6 +3482,8 @@ async def _dispatch_tool_and_persist(
     (``PayloadWarningCancelledError``) are also caught so the manual surface
     sees the cancellation reason explicitly instead of disappearing.
     """
+    # job-0268: entry-time Case capture — see _dispatch_gemini_and_persist.
+    turn_case_id = _turn_case_id(state)
     try:
         try:
             await _invoke_tool_via_emitter(
@@ -3460,12 +3520,13 @@ async def _dispatch_tool_and_persist(
                 retryable=exc.retryable,
             )
     finally:
-        if state.active_case_id:
+        if turn_case_id:
             await _persist_chat_turn(
                 state,
                 role="agent",
                 content=f"[invoked {tool_name}]",
                 pipeline_id=state.current_turn_pipeline_id,
+                case_id=turn_case_id,
             )
 
 
@@ -3965,6 +4026,8 @@ __all__ = [
     "_emit_case_open",
     "_handle_case_command",
     "_persist_chat_turn",
+    # job-0268: turn-start Case binding (cross-Case contamination fix).
+    "_turn_case_id",
     "_dispatch_tool_and_persist",
     "_dispatch_gemini_and_persist",
     # job-0262: auto-create Case from the Cases root.
