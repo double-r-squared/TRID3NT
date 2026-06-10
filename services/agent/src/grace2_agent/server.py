@@ -434,6 +434,36 @@ async def init_persistence_from_env() -> Persistence | None:
     return None
 
 
+# job-0259: session-scoped active-Case registry. The web client mounts TWO
+# WebSocket connections per tab (Chat.tsx + App.tsx, both bound to the same
+# localStorage session_id — web/src/ws.ts job-0159 hub). The server builds a
+# fresh ``SessionState`` PER CONNECTION, so any Case context stored on the
+# connection object splits brain: ``case-command`` arrives on one socket,
+# ``user-message`` (and therefore every tool dispatch + persistence write) on
+# the other. This registry keys the active Case by ``session_id`` so all
+# connections of a session — including post-reconnect replacements — observe
+# the same Case context. Bounded: oldest entries evicted past the cap (the
+# value is one short string per browser session; eviction only means a stale
+# session's next case-command re-establishes context).
+_SESSION_ACTIVE_CASE: dict[str, str | None] = {}
+_SESSION_ACTIVE_CASE_CAP = 4096
+
+#: Sentinel for ``SessionState.case_context_synced_to`` — distinct from None
+#: because ``None`` is a legitimate "no active Case" binding.
+_CASE_SYNC_NEVER = "__case-context-never-synced__"
+
+
+def _set_session_active_case(session_id: str, case_id: str | None) -> None:
+    """Bind ``case_id`` as the active Case for every connection of ``session_id``."""
+    if (
+        session_id not in _SESSION_ACTIVE_CASE
+        and len(_SESSION_ACTIVE_CASE) >= _SESSION_ACTIVE_CASE_CAP
+    ):
+        # Evict oldest (insertion order) — bounded memory, see note above.
+        _SESSION_ACTIVE_CASE.pop(next(iter(_SESSION_ACTIVE_CASE)))
+    _SESSION_ACTIVE_CASE[session_id] = case_id
+
+
 @dataclass
 class SessionState:
     """Per-session in-memory state. M1 keeps everything in-process; Mongo-backed
@@ -458,16 +488,26 @@ class SessionState:
     # and emits a ``session-state(status="max_turns_reached")`` envelope.
     # New WebSocket connection → new SessionState → fresh counter at 0.
     turn_count: int = 0
-    # job-0121 (FR-MP-6): per-connection active-Case context.
+    # job-0259: ``active_case_id`` is now a PROPERTY backed by the module-level
+    # ``_SESSION_ACTIVE_CASE`` registry (keyed by ``session_id``), NOT a
+    # per-connection dataclass field. Root cause of the "Case layers not
+    # rehydrating" bug: the web client mounts TWO GraceWs sockets per tab
+    # (Chat.tsx carries ``user-message``; App.tsx carries ``case-command`` —
+    # see web/src/ws.ts job-0159 hub comment). With a per-connection field,
+    # ``case-command(select)`` set the case on App's connection while every
+    # tool dispatch ran on Chat's connection with ``active_case_id=None`` —
+    # so ``_persist_chat_turn`` + ``_persist_case_loaded_layers`` +
+    # ``ensure_case_qgs`` all silently no-opped and a Case re-open came back
+    # empty. Keying by session_id makes the Case context shared across every
+    # connection of the session (and survive reconnects). See
+    # ``case_context_synced_to`` + ``_sync_case_context`` for the
+    # per-connection in-memory catch-up (chat_history / emitter seed).
     #
-    # ``None`` for fresh sessions (no Case selected yet — the M1 stateless
-    # demo path remains supported). Updated by ``case-command(create|select)``;
-    # cleared (left as-is) on ``archive``/``delete``. When non-None, the
-    # tool-call wrapper (``_invoke_tool_via_emitter``) carries the case
-    # context into tools that opt in via a ``case_id`` parameter
-    # (currently ``publish_layer``); chat persistence routes every
-    # user-message + agent reply into Mongo via ``Persistence``.
-    active_case_id: str | None = None
+    # job-0259: per-connection marker of which Case this connection's
+    # in-memory context (chat_history + emitter loaded_layers) was last
+    # synced to. A string sentinel (never a valid case id) means "never
+    # synced"; ``None`` is a legitimate value (no active Case).
+    case_context_synced_to: str | None = _CASE_SYNC_NEVER
     # job-0121: per-turn layer + map-command emission accumulators. Reset at
     # the start of every dispatch (Gemini stream or /invoke tool). The
     # CaseChatMessage write at turn close reads from these so a Case replay
@@ -535,6 +575,28 @@ class SessionState:
     # which ``summarize_tool_result`` surfaces as the Wave 4.9 structured envelope
     # so Gemini reads the signal and narrates the outage honestly.
     circuit_breaker: ToolCircuitBreaker = field(default_factory=ToolCircuitBreaker)
+
+    # ------------------------------------------------------------------ #
+    # job-0259: active-Case context — session-scoped, NOT per-connection.
+    # ------------------------------------------------------------------ #
+
+    @property
+    def active_case_id(self) -> str | None:
+        """The active Case for this SESSION (shared across its connections).
+
+        ``None`` for fresh sessions (no Case selected yet — the M1 stateless
+        demo path remains supported). Updated by ``case-command(create|select)``
+        on ANY connection of the session; cleared on ``delete`` of the active
+        Case. When non-None, the tool-call wrapper
+        (``_invoke_tool_via_emitter``) carries the case context into tools
+        that opt in via ``case_id`` (currently ``publish_layer``); chat +
+        layer persistence route every turn into the Case record.
+        """
+        return _SESSION_ACTIVE_CASE.get(self.session_id)
+
+    @active_case_id.setter
+    def active_case_id(self, value: str | None) -> None:
+        _set_session_active_case(self.session_id, value)
 
 
 def _new_envelope(message_type: str, session_id: str, payload: Any) -> str:
@@ -1365,6 +1427,63 @@ async def _emit_case_list(websocket: ServerConnection, state: SessionState) -> N
     )
 
 
+async def _sync_case_context(
+    websocket: ServerConnection, state: SessionState
+) -> None:
+    """Catch this CONNECTION's in-memory context up to the session's active Case.
+
+    job-0259: ``active_case_id`` is session-scoped (see ``_SESSION_ACTIVE_CASE``)
+    but ``chat_history`` (the Gemini context) and the emitter's
+    ``loaded_layers`` accumulator are per-connection. When a ``case-command``
+    was handled on a SIBLING connection (the web client's App.tsx socket) —
+    or when this is a fresh reconnect — this connection never ran the
+    ``_emit_case_open`` resets. Called at the top of every ``user-message``
+    dispatch: if the connection's context was last synced to a different
+    Case, apply the job-0245 replace-not-reconcile reset (clear LLM history)
+    and seed the emitter from the persisted Case so subsequent
+    ``add_loaded_layer`` dedup + ``_persist_case_loaded_layers`` writes
+    operate on the full persisted truth set.
+
+    Best-effort: a Persistence failure logs and leaves the emitter seeded
+    empty — the merge in ``_persist_case_loaded_layers`` prevents an
+    unseeded accumulator from clobbering previously persisted layers.
+    """
+    current = state.active_case_id
+    if state.case_context_synced_to == current:
+        return
+    state.case_context_synced_to = current
+    # Replace-not-reconcile (job-0245, applied cross-connection): this
+    # connection's LLM context belongs to whatever Case it was last driving.
+    state.chat_history.clear()
+    state.turn_count = 1  # count the in-flight turn that triggered the sync
+    _ensure_emitter(websocket, state)
+    if state.emitter is None:  # pragma: no cover — _ensure_emitter always binds
+        return
+    if current is None:
+        state.emitter.reset_loaded_layers([])
+        return
+    p = get_persistence()
+    if p is None:
+        state.emitter.reset_loaded_layers([])
+        return
+    try:
+        session_state = await p.get_session_state(current)
+        state.emitter.reset_loaded_layers(session_state.loaded_layers)
+        logger.info(
+            "case-context-sync session=%s case=%s layers=%d",
+            state.session_id,
+            current,
+            len(session_state.loaded_layers),
+        )
+    except Exception:  # noqa: BLE001 — best-effort, never break the turn
+        logger.exception(
+            "case-context-sync failed session=%s case=%s",
+            state.session_id,
+            current,
+        )
+        state.emitter.reset_loaded_layers([])
+
+
 async def _emit_case_open(
     websocket: ServerConnection,
     state: SessionState,
@@ -1379,6 +1498,12 @@ async def _emit_case_open(
     ``CaseOpenEnvelopePayload`` semantics.
     """
     state.active_case_id = case_id
+    # job-0259: this connection runs the full case-open reset below, so its
+    # context is (about to be) synced to ``case_id`` — record it so the next
+    # ``user-message`` on THIS connection skips the redundant re-sync.
+    # Sibling connections of the same session keep their stale marker and
+    # catch up via ``_sync_case_context`` on their next dispatch.
+    state.case_context_synced_to = case_id
     # job-0245 (OQ-0245-CONTEXT-CARRYOVER-MISROUTE): a Case switch must reset
     # the per-connection LLM conversation, not just the case state — round-3
     # live testing proved every post-switch prompt re-routed to the PREVIOUS
@@ -1501,6 +1626,8 @@ async def _handle_case_command(
             )
             return
         state.active_case_id = new_case_id
+        # job-0259: see _emit_case_open — this connection is now synced.
+        state.case_context_synced_to = new_case_id
         # job-0245: fresh Case = fresh LLM context (see _emit_case_open note).
         state.chat_history.clear()
         state.turn_count = 0
@@ -1643,6 +1770,9 @@ async def _handle_case_command(
         # rather than mutate a soft-deleted ``.qgs``.
         if state.active_case_id == cmd.case_id:
             state.active_case_id = None
+            # job-0259: preserve pre-existing behavior on THIS connection (no
+            # chat clear on delete); siblings re-sync on their next dispatch.
+            state.case_context_synced_to = None
         await _emit_case_list(websocket, state)
         logger.info(
             "case-command delete session=%s case=%s",
@@ -2425,6 +2555,22 @@ async def _invoke_tool_via_emitter(
     finally:
         state.emitter.close_pipeline()
         state.current_pipeline_id = None
+        # job-0259: persist the Case layer accumulator in the FINALLY block —
+        # the round-3 plume evidence showed a published layer vanishing from
+        # the reopened Case because the post-invoke ``session-state`` emission
+        # raised on a dying WebSocket, which skipped a persist placed after
+        # the try-block. ``add_loaded_layer`` appends to ``_loaded_layers``
+        # BEFORE it emits, so persisting here captures the layer even when
+        # the wire write failed. Never raises (and never masks the original
+        # exception) — persistence is a side-effect, not the happy path.
+        if state.active_case_id and state.emitter is not None:
+            try:
+                await _persist_case_loaded_layers(state)
+            except Exception:  # noqa: BLE001 — best-effort, never mask
+                logger.exception(
+                    "case-layer-persist (finally) failed case=%s",
+                    state.active_case_id,
+                )
 
     # Track layer emissions on the active turn so the next ``CaseChatMessage``
     # write captures them. ``publish_layer`` returns a WMS URL string; we use
@@ -2434,22 +2580,10 @@ async def _invoke_tool_via_emitter(
         if isinstance(lid, str) and lid:
             state.current_turn_layer_ids.append(lid)
 
-    # job-0172 Part B: per-Case layer persistence.
-    #
-    # The PipelineEmitter holds ``_loaded_layers`` per-connection in memory;
-    # without persistence, a Case re-open (fresh WS, fresh emitter) loses
-    # everything the prior session published. Sync the current
-    # ``ProjectLayerSummary[]`` accumulator onto the Case document so the
-    # next ``case-open`` hydration replays them deterministically. Dedup is
-    # by ``uri`` (matches the emitter's own dedup policy) and the lighter
-    # ``layer_summary: list[str]`` field is kept in lockstep for the
-    # left-rail cheap summary.
-    #
-    # Best-effort: a Persistence failure is logged but never raised — chat
-    # persistence is a side-effect, not the happy path. Only fires inside an
-    # active Case context; the demo / single-tenant path stays untouched.
-    if state.active_case_id and state.emitter is not None:
-        await _persist_case_loaded_layers(state)
+    # job-0172 Part B / job-0259: per-Case layer persistence now happens in
+    # the ``finally`` block above so it ALSO fires when the tool (or its
+    # post-invoke envelope emission on a dying WebSocket) raised — the
+    # emitter's accumulator already contains the layer at that point.
 
     # job-0101: Mode 2 .gov/.edu classifier — when web_fetch returns a dict
     # that looks like a structured-data candidate, emit a `mode2-candidate`
@@ -2493,19 +2627,43 @@ async def _persist_case_loaded_layers(state: SessionState) -> None:
         return
 
     loaded = state.emitter.loaded_layers  # defensive copy from the emitter
-    summaries_dicts: list[dict] = [layer.model_dump(mode="json") for layer in loaded]
-    layer_ids: list[str] = [layer.layer_id for layer in loaded]
+    emitter_dicts: list[dict] = [layer.model_dump(mode="json") for layer in loaded]
+
+    # job-0259: MERGE (append + replace-by-layer_id) instead of wholesale
+    # replace. An emitter that was never seeded with the Case's persisted
+    # layers (fresh connection, sync failure, sibling-socket dispatch) must
+    # never CLOBBER previously persisted summaries down to its own partial
+    # view — union them, with the emitter's fresher entry winning on a
+    # layer_id collision. There is no server-side layer-remove flow at v0.1,
+    # so union semantics lose nothing.
+    merged: list[dict] = [
+        dict(d) for d in case.loaded_layer_summaries if isinstance(d, dict)
+    ]
+    index_by_layer_id = {
+        d.get("layer_id"): i for i, d in enumerate(merged) if d.get("layer_id")
+    }
+    for d in emitter_dicts:
+        lid = d.get("layer_id")
+        pos = index_by_layer_id.get(lid)
+        if pos is None:
+            index_by_layer_id[lid] = len(merged)
+            merged.append(d)
+        else:
+            merged[pos] = d
+    layer_ids: list[str] = [
+        d.get("layer_id") for d in merged if isinstance(d.get("layer_id"), str)
+    ]
 
     # If nothing has changed, skip the round-trip.
     if (
-        case.loaded_layer_summaries == summaries_dicts
+        case.loaded_layer_summaries == merged
         and case.layer_summary == layer_ids
     ):
         return
 
     updated = case.model_copy(
         update={
-            "loaded_layer_summaries": summaries_dicts,
+            "loaded_layer_summaries": merged,
             "layer_summary": layer_ids,
             "updated_at": now_utc(),
         }
@@ -3251,6 +3409,12 @@ def _make_handler(settings: GeminiSettings):
                         # only this turn's emissions.
                         state.current_turn_layer_ids = []
                         state.current_turn_pipeline_id = None
+                        # job-0259: the session's active Case may have been
+                        # selected/created on a SIBLING connection (App.tsx
+                        # socket) — catch this connection's in-memory context
+                        # up BEFORE persisting the user turn so chat + layer
+                        # writes land on the right Case.
+                        await _sync_case_context(websocket, state)
                         # job-0121: persist user message to the active Case
                         # (FR-MP-6). Best-effort — no active Case OR no
                         # Persistence = no-op; the M1 stateless path keeps

@@ -1,0 +1,68 @@
+job-0259 demo-log forensics — /tmp/agent_demo_ready.log (live agent pid 3213497, started 2026-06-10 10:39:51, file-backed dev persistence at ~/.grace2/dev_persistence)
+
+== EVERY case-open this morning showed chat=0 layers=0 while 31-33 Cases existed ==
+13:2026-06-10 11:38:34,106 INFO grace2_agent.server case-list emitted session=01KTQK7RA0Y3GDKS3YH40EXHYH count=31
+17:2026-06-10 11:38:34,144 INFO grace2_agent.server case-list emitted session=01KTQK7RA0Y3GDKS3YH40EXHYH count=31
+20:2026-06-10 11:38:43,239 INFO grace2_agent.server case-open session=01KTQK7RA0Y3GDKS3YH40EXHYH case=01KTS7QM2BEGCRQX1Z3PEGDWYM chat=0 layers=0
+21:2026-06-10 11:38:51,491 INFO grace2_agent.server case-open session=01KTQK7RA0Y3GDKS3YH40EXHYH case=01KTS7QM2BEGCRQX1Z3PEGDWYM chat=0 layers=0
+22:2026-06-10 11:38:53,005 INFO grace2_agent.server case-open session=01KTQK7RA0Y3GDKS3YH40EXHYH case=01KTS5T9DJVMYCKSPPSXXGFFQH chat=0 layers=0
+23:2026-06-10 11:38:55,977 INFO grace2_agent.server case-open session=01KTQK7RA0Y3GDKS3YH40EXHYH case=01KTS4519Y7GX21PQQSGZXK00X chat=0 layers=0
+134:2026-06-10 11:57:08,312 INFO grace2_agent.server case-list emitted session=01KTQK7RA0Y3GDKS3YH40EXHYH count=31
+139:2026-06-10 11:57:08,501 INFO grace2_agent.server case-list emitted session=01KTQK7RA0Y3GDKS3YH40EXHYH count=31
+142:2026-06-10 11:57:11,551 INFO grace2_agent.server case-list emitted session=01KTQK7RA0Y3GDKS3YH40EXHYH count=32
+143:2026-06-10 11:57:11,551 INFO grace2_agent.server case-command create session=01KTQK7RA0Y3GDKS3YH40EXHYH case=01KTSEAJBCM23FZ1XRXJBDRVBF title='Untitled Case'
+298:2026-06-10 11:58:35,414 INFO grace2_agent.server case-list emitted session=01KTQK7RA0Y3GDKS3YH40EXHYH count=32
+302:2026-06-10 11:58:35,482 INFO grace2_agent.server case-list emitted session=01KTQK7RA0Y3GDKS3YH40EXHYH count=32
+318:2026-06-10 11:58:36,566 INFO grace2_agent.server case-list emitted session=01KTSED4ZVBNFFCFKJN36K0CGM count=32
+479:2026-06-10 12:24:51,182 INFO grace2_agent.server case-open session=01KTQK7RA0Y3GDKS3YH40EXHYH case=01KTSEAJBCM23FZ1XRXJBDRVBF chat=0 layers=0
+480:2026-06-10 12:24:54,014 INFO grace2_agent.server case-open session=01KTQK7RA0Y3GDKS3YH40EXHYH case=01KTS7QM2BEGCRQX1Z3PEGDWYM chat=0 layers=0
+481:2026-06-10 12:28:19,359 INFO grace2_agent.server case-list emitted session=01KTQK7RA0Y3GDKS3YH40EXHYH count=32
+482:2026-06-10 12:28:19,360 INFO grace2_agent.server case-command delete session=01KTQK7RA0Y3GDKS3YH40EXHYH case=01KTS2BNQ36NWN4ZJ6QC4H4DV0
+483:2026-06-10 12:28:23,779 INFO grace2_agent.server case-list emitted session=01KTQK7RA0Y3GDKS3YH40EXHYH count=32
+484:2026-06-10 12:28:23,780 INFO grace2_agent.server case-command delete session=01KTQK7RA0Y3GDKS3YH40EXHYH case=01KTSEAJBCM23FZ1XRXJBDRVBF
+485:2026-06-10 12:29:08,685 INFO grace2_agent.server case-list emitted session=01KTQK7RA0Y3GDKS3YH40EXHYH count=32
+486:2026-06-10 12:29:08,685 INFO grace2_agent.server case-command delete session=01KTQK7RA0Y3GDKS3YH40EXHYH case=01KTS7QM2BEGCRQX1Z3PEGDWYM
+487:2026-06-10 12:29:13,078 INFO grace2_agent.server case-open session=01KTQK7RA0Y3GDKS3YH40EXHYH case=01KTNK6XS3MGEGX6RXRXAHDQ3W chat=0 layers=0
+488:2026-06-10 12:29:20,068 INFO grace2_agent.server case-list emitted session=01KTQK7RA0Y3GDKS3YH40EXHYH count=33
+489:2026-06-10 12:29:20,068 INFO grace2_agent.server case-command create session=01KTQK7RA0Y3GDKS3YH40EXHYH case=01KTSG5DNJQ5DWEFQ66HFEP318 title='Untitled Case'
+490:2026-06-10 12:29:24,320 INFO grace2_agent.server case-open session=01KTQK7RA0Y3GDKS3YH40EXHYH case=01KTSG5DNJQ5DWEFQ66HFEP318 chat=0 layers=0
+491:2026-06-10 12:29:33,423 INFO grace2_agent.server case-list emitted session=01KTQK7RA0Y3GDKS3YH40EXHYH count=33
+492:2026-06-10 12:29:33,424 INFO grace2_agent.server case-command rename session=01KTQK7RA0Y3GDKS3YH40EXHYH case=01KTSG5DNJQ5DWEFQ66HFEP318 title='Hillshade'
+532:2026-06-10 12:34:56,545 INFO grace2_agent.server case-open session=01KTQK7RA0Y3GDKS3YH40EXHYH case=01KTS5T9DJVMYCKSPPSXXGFFQH chat=0 layers=0
+533:2026-06-10 12:34:56,552 INFO grace2_agent.server case-open session=01KTQK7RA0Y3GDKS3YH40EXHYH case=01KTSG5DNJQ5DWEFQ66HFEP318 chat=0 layers=0
+534:2026-06-10 12:34:56,560 INFO grace2_agent.server case-open session=01KTQK7RA0Y3GDKS3YH40EXHYH case=01KTSG5DNJQ5DWEFQ66HFEP318 chat=0 layers=0
+
+== Composer publish went to the DEFAULT .qgs (no case context on the dispatching connection) ==
+126:2026-06-10 11:54:59,516 INFO grace2_agent.tools.publish_layer publish_layer layer_id=flood-depth-peak-01KTSDSMWHJHG8TNHB7TRNVC9H raster_uri=/vsigs/grace-2-hazard-prod-runs/01KTSDSMWHJHG8TNHB7TRNVC9H/flood_depth_peak.tif qgs_uri=gs://grace-2-hazard-prod-qgs/grace2-sample.qgs style=continuous_flood_depth wms_url=https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=flood-depth-peak-01KTSDSMWHJHG8TNHB7TRNVC9H
+405:2026-06-10 12:00:57,540 INFO grace2_agent.tools.publish_layer publish_layer layer_id=elevation-washington raster_uri=/vsigs/grace-2-hazard-prod-cache/cache/static-30d/dem/7b06696390d3b1e3234d24d948fbe3cf.tif qgs_uri=gs://grace-2-hazard-prod-qgs/grace2-sample.qgs style=continuous_flood_depth wms_url=https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=elevation-washington
+471:2026-06-10 12:05:31,074 INFO grace2_agent.tools.publish_layer publish_layer layer_id=chicago-hillshade raster_uri=/vsigs/grace-2-hazard-prod-cache/cache/static-30d/hillshade/090a4ff8d9a083b28499252309d12999.tif qgs_uri=gs://grace-2-hazard-prod-qgs/grace2-sample.qgs style=grayscale wms_url=https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=chicago-hillshade
+
+== Two sibling WS connections open per page-load (Chat.tsx + App.tsx GraceWs instances) ==
+2026-06-10 11:57:08,269 INFO websockets.server connection open
+2026-06-10 11:57:08,307 INFO grace2_agent.server auth-ack(implicit-anonymous) session=01KTQK7RA0Y3GDKS3YH40EXHYH user_id=01KTSEAF5JZNB2YVM7F9JJF5WX
+2026-06-10 11:57:08,312 INFO grace2_agent.server case-list emitted session=01KTQK7RA0Y3GDKS3YH40EXHYH count=31
+2026-06-10 11:57:08,321 INFO grace2_agent.auth_handshake anonymous reuse: rebound user_id=01KTQK7RXNKV17TBE8GJFQN99Y (sticky)
+2026-06-10 11:57:08,327 INFO grace2_agent.server auth-ack session=01KTQK7RA0Y3GDKS3YH40EXHYH user_id=01KTQK7RXNKV17TBE8GJFQN99Y anonymous=True tier=free firebase_uid=None
+2026-06-10 11:57:08,328 INFO websockets.server connection open
+2026-06-10 11:57:08,496 INFO grace2_agent.server auth-ack(implicit-anonymous) session=01KTQK7RA0Y3GDKS3YH40EXHYH user_id=01KTSEAFBEJHR63KMV9NPCCQXT
+2026-06-10 11:57:08,501 INFO grace2_agent.server case-list emitted session=01KTQK7RA0Y3GDKS3YH40EXHYH count=31
+2026-06-10 11:57:08,507 INFO grace2_agent.auth_handshake anonymous reuse: rebound user_id=01KTQK7RXNKV17TBE8GJFQN99Y (sticky)
+2026-06-10 11:57:08,513 INFO grace2_agent.server auth-ack session=01KTQK7RA0Y3GDKS3YH40EXHYH user_id=01KTQK7RXNKV17TBE8GJFQN99Y anonymous=True tier=free firebase_uid=None
+2026-06-10 11:57:11,551 INFO grace2_agent.server case-list emitted session=01KTQK7RA0Y3GDKS3YH40EXHYH count=32
+2026-06-10 11:57:11,551 INFO grace2_agent.server case-command create session=01KTQK7RA0Y3GDKS3YH40EXHYH case=01KTSEAJBCM23FZ1XRXJBDRVBF title='Untitled Case'
+2026-06-10 11:57:19,500 INFO httpx HTTP Request: POST https://us-central1-aiplatform.googleapis.com/v1beta1/projects/grace-2-hazard-prod/locations/us-central1/publishers/google/models/gemini-2.5-pro:streamGenerateContent?alt=sse "HTTP/1.1 200 OK"
+
+== SEPARATE INCIDENT: dev-persistence store wiped mid-demo at 12:38:33 (case-list 33 -> 0) ==
+591:2026-06-10 12:38:33,455 INFO grace2_agent.server case-list emitted session=01KTQK7RA0Y3GDKS3YH40EXHYH count=0
+607:2026-06-10 12:39:23,392 INFO grace2_agent.server case-list emitted session=01KTQK7RA0Y3GDKS3YH40EXHYH count=0
+612:2026-06-10 12:39:23,764 INFO grace2_agent.server case-list emitted session=01KTQK7RA0Y3GDKS3YH40EXHYH count=0
+618:2026-06-10 12:56:58,020 INFO grace2_agent.server case-list emitted session=01KTQK7RA0Y3GDKS3YH40EXHYH count=0
+622:2026-06-10 12:56:58,048 INFO grace2_agent.server case-list emitted session=01KTQK7RA0Y3GDKS3YH40EXHYH count=0
+627:2026-06-10 12:56:59,891 INFO grace2_agent.server case-list emitted session=01KTQK7RA0Y3GDKS3YH40EXHYH count=0
+total 268
+drwxrwxr-x 2 nate nate   4096 Jun 10 13:06 .
+drwxrwxr-x 3 nate nate   4096 Jun  9 00:05 ..
+-rw-rw-r-- 1 nate nate      2 Jun 10 12:38 projects.json
+-rw-rw-r-- 1 nate nate    260 Jun 10 13:06 sessions.json
+-rw-rw-r-- 1 nate nate  98196 Jun 10 13:01 tool_call_telemetry.json
+-rw-rw-r-- 1 nate nate 156496 Jun 10 13:06 users.json

@@ -1,0 +1,6 @@
+state: done
+job: job-0259-agent-20260610
+verdict: FIXED
+owner: agent (Fable-5 fix agent)
+updated: 2026-06-10
+note: session-scoped active-Case registry + cross-socket context sync + persist-in-finally + merge-by-layer_id; 7 regression tests green; :8765 restart pending (orchestrator)

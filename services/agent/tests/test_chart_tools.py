@@ -508,9 +508,11 @@ class TestEmitChart:
         from grace2_agent.server import SessionState
         from grace2_contracts import new_ulid
 
-        return SessionState(
-            session_id=session_id or new_ulid(), active_case_id=case_id
-        )
+        # job-0259: active_case_id is now a session-scoped property (not a
+        # dataclass field) — set it after construction.
+        state = SessionState(session_id=session_id or new_ulid())
+        state.active_case_id = case_id
+        return state
 
     async def test_emits_envelope_and_persists(self, tmp_path, monkeypatch):
         import grace2_agent.server as server
