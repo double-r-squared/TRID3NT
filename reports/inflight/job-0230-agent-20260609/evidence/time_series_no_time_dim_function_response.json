@@ -1,0 +1,9 @@
+{
+  "tool": "generate_time_series",
+  "status": "error",
+  "error_code": "NO_TIME_DIMENSION",
+  "message": "This raster has no time dimension (single band or no time tags). Use generate_histogram for its value distribution.",
+  "retryable": false,
+  "error": "This raster has no time dimension (single band or no time tags). Use generate_histogram for its value distribution.",
+  "error_type": "ChartToolError"
+}

@@ -1,0 +1,78 @@
+{
+  "envelope_type": "chart-emission",
+  "chart_id": "01KTQPZ9CE6HFVZTC1YBGEJP41",
+  "vega_lite_spec": {
+    "title": "Damage-state distribution",
+    "data": {
+      "values": [
+        {
+          "damage_state": "DS0 None",
+          "ds_key": "DS0_none",
+          "ds_index": 0,
+          "count": 16
+        },
+        {
+          "damage_state": "DS1 Slight",
+          "ds_key": "DS1_slight",
+          "ds_index": 1,
+          "count": 3
+        },
+        {
+          "damage_state": "DS2 Moderate",
+          "ds_key": "DS2_moderate",
+          "ds_index": 2,
+          "count": 1
+        },
+        {
+          "damage_state": "DS3 Extensive",
+          "ds_key": "DS3_extensive",
+          "ds_index": 3,
+          "count": 0
+        },
+        {
+          "damage_state": "DS4 Complete",
+          "ds_key": "DS4_complete",
+          "ds_index": 4,
+          "count": 0
+        }
+      ]
+    },
+    "mark": {
+      "type": "bar",
+      "tooltip": true
+    },
+    "encoding": {
+      "x": {
+        "field": "damage_state",
+        "type": "ordinal",
+        "title": "damage state",
+        "sort": [
+          "DS0 None",
+          "DS1 Slight",
+          "DS2 Moderate",
+          "DS3 Extensive",
+          "DS4 Complete"
+        ]
+      },
+      "y": {
+        "field": "count",
+        "type": "quantitative",
+        "title": "structures"
+      },
+      "color": {
+        "field": "ds_index",
+        "type": "ordinal",
+        "scale": {
+          "scheme": "yellorred"
+        },
+        "legend": null
+      }
+    },
+    "width": "container",
+    "$schema": "https://vega.github.io/schema/vega-lite/v5.json"
+  },
+  "title": "Damage-state distribution",
+  "caption": "20 structures \u00b7 4 damaged (DS1+) \u00b7 0 destroyed (DS4)",
+  "source_layer_uri": "/home/nate/Documents/GRACE-2/reports/inflight/job-0136-testing-20260608/evidence/fort_myers_damage.fgb",
+  "created_turn_id": null
+}

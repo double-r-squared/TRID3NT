@@ -78,6 +78,7 @@ from .adapter import (
     MAX_TURN_ITERATIONS,
     SYSTEM_PROMPT,
     TextDeltaEvent,
+    UsageMetadataEvent,
     build_client,
     build_contents_from_history,
     build_function_call_content,
@@ -89,6 +90,7 @@ from .adapter import (
     stream_reply,  # noqa: F401 — retained for any callers that use it directly
     summarize_tool_result,
 )
+from .gemini_cache import get_or_create_cache
 from .auth_handshake import (
     AuthResult,
     authenticate_token,
@@ -109,8 +111,16 @@ from .secrets_handler import (
     handle_secret_revoke,
     handle_secrets_list,
 )
+from .telemetry import compute_args_hash, emit_tool_call_event
 from .tool_arg_normalizer import normalize_args
 from .tools import TOOL_REGISTRY
+from .tools.chart_tools import is_chart_emission_result
+from .categories import (
+    AllowedToolSet,
+    OutOfAllowedSetError,
+    validate_function_call,
+)
+from .circuit_breaker import CircuitBreakerError, ToolCircuitBreaker
 
 # job-0122: auth-token envelope (Appendix H.5 connect handshake).
 from grace2_contracts.auth import AuthTokenEnvelope
@@ -122,6 +132,71 @@ logger = logging.getLogger("grace2_agent.server")
 # writes (Appendix D.6) are NOT a trigger — that carveout is documented in
 # the report, not represented as data here.
 CONFIRMATION_TRIGGERS: set[str] = set()
+
+
+# ---------------------------------------------------------------------------
+# Routing-layer typed exceptions (B-rev job, FR-AS-11 surface).
+#
+# These live here rather than in a shared exceptions module because they are
+# raised exclusively inside ``_invoke_tool_via_emitter`` — the server-side
+# routing layer. They follow the same FR-AS-11 contract as the tool-level
+# typed exceptions (``WDPAError``, ``HRSLError``, etc.): ``error_code`` is a
+# SCREAMING_SNAKE_CASE string and ``retryable`` is False for both (the LLM
+# cannot retry its way out of a missing tool registration; it must revise its
+# function-call decision).
+#
+# ``summarize_tool_result`` in ``adapter.py`` harvests ``error_code`` +
+# ``retryable`` from any exception that carries them (job-0177 logic), so
+# these propagate as a full structured error envelope to Gemini — the same
+# shape as any ``fetch_*`` / ``compute_*`` typed exception.
+# ---------------------------------------------------------------------------
+
+
+class ToolNotFoundError(RuntimeError):
+    """Raised when ``_invoke_tool_via_emitter`` receives a tool name that is
+    not registered in ``TOOL_REGISTRY``.
+
+    ``retryable=False``: Gemini cannot retry its way to a registration it
+    invented — it must revise its call (use a different tool, narrate that
+    it cannot help, or ask for clarification).
+
+    The ``valid_tools`` attribute carries the first 20 registered names so
+    the Gemini function-response payload gives the LLM a correction hint
+    without blowing the response character budget.
+    """
+
+    error_code: str = "TOOL_NOT_FOUND"
+    retryable: bool = False
+
+    def __init__(self, tool_name: str, valid_tools: list[str]) -> None:
+        # Limit to first 20 names to stay within _FUNCTION_RESPONSE_CHAR_BUDGET.
+        hint = valid_tools[:20]
+        super().__init__(
+            f"tool {tool_name!r} not in TOOL_REGISTRY; "
+            f"valid tools (first 20): {hint}"
+        )
+        self.tool_name = tool_name
+        self.valid_tools = hint
+
+
+class PayloadWarningCancelledError(RuntimeError):
+    """Raised when the payload-warning gate skips dispatch because the user
+    chose ``cancel`` or the gate timed out.
+
+    ``retryable=False``: the user explicitly declined; Gemini should narrate
+    the cancellation honestly and not re-issue the same call without narrower
+    scope.
+    """
+
+    error_code: str = "PAYLOAD_WARNING_CANCELLED"
+    retryable: bool = False
+
+    def __init__(self, tool_name: str) -> None:
+        super().__init__(
+            f"tool {tool_name!r} dispatch cancelled via payload-warning gate "
+            "(user chose 'cancel' or gate timed out)"
+        )
+        self.tool_name = tool_name
 
 
 # job-0115: app-level Persistence singleton (Wave 1.5).
@@ -276,6 +351,42 @@ class SessionState:
     # and the ULID timestamps. Surfaces in tests + post-mortem; persisted
     # to the active Case as part of the chat turn record (best-effort).
     payload_warning_audit_log: list[dict] = field(default_factory=list)
+    # job-B5 (Wave 4.10 Stage 2): per-session post-hoc allowed-set tracker.
+    #
+    # Under Wave 4.10 CachedContent Option A, the full tool catalog is cached
+    # in the Gemini ``CachedContent.tools[]`` slot at session start and the
+    # ``allowed_function_names`` filter is enforced in OUR code, not in
+    # Gemini's request (Vertex 400s when ``tool_config`` is passed alongside
+    # ``cached_content``). Every Gemini-emitted ``function_call`` is validated
+    # against this set via ``categories.validate_function_call`` before
+    # dispatch. The set is **monotonically growing** within a session — it
+    # starts at the 8-tool hot set and widens as the LLM opens categories
+    # (``list_tools_in_category``) or successfully dispatches tools.
+    allowed_tool_set: AllowedToolSet = field(default_factory=AllowedToolSet)
+    # job-B6 (Wave 4.10 Stage 2): per-session Gemini CachedContent reference.
+    #
+    # Lazy-initialised on the first ``user-message``: ``get_or_create_cache``
+    # caches the full tool catalog + system instruction in Vertex once per
+    # session, and every subsequent ``generate_content_stream`` call sets
+    # ``GenerateContentConfig.cached_content=<this>`` (skipping ``tools[]``
+    # and ``tool_config``). ``None`` when cache creation failed (transient
+    # Vertex error, catalog below cache minimum, kill-switch set) — the
+    # adapter falls back to the non-cached path automatically.
+    #
+    # Refreshed transparently by ``get_or_create_cache`` when within 60s of
+    # expiry; the stored value here is the *latest* name observed so the
+    # stream call always sees the freshest cache.
+    gemini_cache_name: str | None = None
+    # job-B8 (Wave 4.10 Stage 3): per-session circuit breaker.
+    #
+    # Tracks consecutive failures per tool; trips after GRACE2_CIRCUIT_THRESHOLD
+    # (default 3) consecutive failures, enforcing a GRACE2_CIRCUIT_COOLDOWN_S
+    # (default 60s) cooldown.  ``_stream_gemini_reply`` checks ``is_tripped``
+    # before every ``_invoke_tool_via_emitter`` dispatch and records success/
+    # failure after each attempt.  A tripped breaker raises ``CircuitBreakerError``
+    # which ``summarize_tool_result`` surfaces as the Wave 4.9 structured envelope
+    # so Gemini reads the signal and narrates the outage honestly.
+    circuit_breaker: ToolCircuitBreaker = field(default_factory=ToolCircuitBreaker)
 
 
 def _new_envelope(message_type: str, session_id: str, payload: Any) -> str:
@@ -294,6 +405,73 @@ async def _send_error(
 ) -> None:
     payload = ErrorPayload(error_code=code, message=message, retryable=retryable)
     await websocket.send(_new_envelope("error", session_id, payload))
+
+
+async def _send_loop_exhausted(
+    websocket: ServerConnection,
+    session_id: str,
+) -> None:
+    """Emit the distinct ``loop_exhausted`` envelope (job-B9, Wave 4.10 Stage 3).
+
+    Fires when the multi-turn loop hits ``MAX_TURN_ITERATIONS`` without a
+    natural termination (no tool-call-free turn).  Sends a raw-JSON envelope
+    typed ``"loop_exhausted"`` — distinct from the generic ``"error"`` type —
+    so the web UI can render "Agent ran out of steps" rather than a generic
+    failure indicator.
+
+    Wire shape:
+        {
+          "type": "loop_exhausted",
+          "session_id": str,
+          "payload": {
+            "status": "loop_exhausted",
+            "error_code": "MAX_ITERATIONS_REACHED",
+            "message": "Agent reached max iteration limit (N) before completing the request.",
+            "retryable": False
+          }
+        }
+
+    The ``payload.error_code`` key follows the Wave 4.9 SCREAMING_SNAKE_CASE
+    convention but lives in the ``loop_exhausted`` typed envelope, not the
+    ``error`` envelope, so clients can distinguish "tool chain too long" from
+    "Gemini API failed" (LLM_UNAVAILABLE). ``retryable=False`` because the
+    agent already consumed all its turns; the user should rephrase or narrow
+    scope.
+
+    Best-effort: a wire failure is logged but not re-raised so the terminal
+    agent-message-chunk can still fire.
+    """
+    import json as _json
+
+    try:
+        payload = {
+            "status": "loop_exhausted",
+            "error_code": "MAX_ITERATIONS_REACHED",
+            "message": (
+                f"Agent reached max iteration limit ({MAX_TURN_ITERATIONS}) "
+                "before completing the request. "
+                "Try rephrasing your request with a narrower scope."
+            ),
+            "retryable": False,
+        }
+        await websocket.send(
+            _json.dumps(
+                {
+                    "type": "loop_exhausted",
+                    "session_id": session_id,
+                    "payload": payload,
+                }
+            )
+        )
+        logger.info(
+            "loop_exhausted envelope sent session=%s max_iter=%d",
+            session_id,
+            MAX_TURN_ITERATIONS,
+        )
+    except Exception:  # noqa: BLE001 — observability; never break the reply path
+        logger.exception(
+            "loop_exhausted envelope send failed session=%s", session_id
+        )
 
 
 async def _handle_max_turns_reached(
@@ -350,6 +528,57 @@ async def _handle_max_turns_reached(
         state.turn_count,
         MAX_TURNS_PER_SESSION,
     )
+
+
+async def _emit_cache_status(
+    websocket: ServerConnection,
+    state: SessionState,
+    usage: UsageMetadataEvent,
+) -> None:
+    """Emit a ``cache-status`` envelope so the UI can render live cache hit rate.
+
+    Job-B6 (Wave 4.10): forwarded once per Gemini stream after the
+    ``UsageMetadataEvent`` lands. Payload shape:
+
+        {
+            "cache_hit":     bool,
+            "cached_tokens": int,
+            "total_tokens":  int,
+            "prompt_tokens": int | null,
+            "candidates_tokens": int | null,
+            "cache_name":    str | null   (the cached_content name in use this turn),
+        }
+
+    The envelope is intentionally raw-JSON (no contract model) — it is
+    observability surface, not a wire-API contract. Mirrors the existing
+    pattern for ``mode2-candidate`` (server.py line ~1685). A wire-side
+    failure is logged but never raised: cache-status reporting must not
+    break the agent loop.
+    """
+    import json as _json
+
+    try:
+        payload = {
+            "cache_hit": bool(usage.cache_hit),
+            "cached_tokens": int(usage.cached_content_token_count or 0),
+            "total_tokens": int(usage.total_token_count or 0),
+            "prompt_tokens": usage.prompt_token_count,
+            "candidates_tokens": usage.candidates_token_count,
+            "cache_name": state.gemini_cache_name,
+        }
+        await websocket.send(
+            _json.dumps(
+                {
+                    "type": "cache-status",
+                    "session_id": state.session_id,
+                    "payload": payload,
+                }
+            )
+        )
+    except Exception:  # noqa: BLE001 — observability, never bubble up
+        logger.exception(
+            "cache-status emission failed session=%s", state.session_id
+        )
 
 
 async def _stream_gemini_reply(
@@ -420,8 +649,48 @@ async def _stream_gemini_reply(
     # Build tool declarations + system prompt for this request.
     tool_decls = build_tool_declarations(TOOL_REGISTRY)
 
+    # job-B6 (Wave 4.10): lazy-create the per-session Gemini CachedContent
+    # entry on the first user-message. Subsequent turns reuse the cached
+    # ``name``. A creation failure (None return) drops us back to the
+    # non-cached path automatically — the multi-turn loop is otherwise
+    # unchanged. See ``gemini_cache.get_or_create_cache``.
+    if state.gemini_cache_name is None:
+        try:
+            state.gemini_cache_name = await get_or_create_cache(
+                client, state.session_id
+            )
+        except Exception:  # noqa: BLE001 — cache is best-effort
+            logger.warning(
+                "gemini-cache: get_or_create_cache raised session=%s; "
+                "falling back to non-cached path",
+                state.session_id,
+                exc_info=True,
+            )
+            state.gemini_cache_name = None
+    else:
+        # Refresh on every turn so an expiry mid-session triggers a recreate.
+        try:
+            refreshed = await get_or_create_cache(client, state.session_id)
+            if refreshed:
+                state.gemini_cache_name = refreshed
+        except Exception:  # noqa: BLE001
+            pass
+
     # Seed the multi-turn contents list with chat history + this user_text.
     contents = build_contents_from_history(user_text, state.chat_history)
+
+    # Wave 4.11 M6: refresh the dynamic hot set once per user-message dispatch
+    # so the allowed set is primed with the user's most-dispatched tools before
+    # any Gemini function_call arrives.  No-op when ``GRACE2_DYNAMIC_HOT_SET``
+    # is unset (delegates synchronously to the static path).  Failure is silent
+    # — the static fallback is always available inside ``as_frozenset_async``.
+    try:
+        await state.allowed_tool_set.as_frozenset_async()
+    except Exception:  # noqa: BLE001 — dynamic hot-set is best-effort
+        pass
+
+    # Per-turn usage metadata harvested from the stream (job-B6).
+    last_usage: UsageMetadataEvent | None = None
 
     iterations = 0
     try:
@@ -430,6 +699,7 @@ async def _stream_gemini_reply(
             # Per-turn collectors: text emitted, function-calls Gemini requested.
             turn_text_parts: list[str] = []
             turn_function_calls: list[FunctionCallEvent] = []
+            last_usage = None
 
             async for event in stream_events_with_contents(
                 client,
@@ -437,6 +707,7 @@ async def _stream_gemini_reply(
                 contents,
                 tool_declarations=tool_decls,
                 system_prompt=SYSTEM_PROMPT,
+                cached_content_name=state.gemini_cache_name,
             ):
                 if not first_token_logged:
                     first_token_logged = True
@@ -468,6 +739,33 @@ async def _stream_gemini_reply(
                     )
                     turn_function_calls.append(event)
 
+                elif isinstance(event, UsageMetadataEvent):
+                    # job-B6: Gemini surfaces aggregate usage on the terminal
+                    # chunk. Cache the event so the post-turn block can:
+                    #  (a) pipe ``cached_content_token_count`` into the
+                    #      telemetry record for each dispatched tool, and
+                    #  (b) emit a single ``cache-status`` envelope so the
+                    #      web UI can render the live cache hit rate.
+                    last_usage = event
+                    logger.info(
+                        "gemini usage session=%s iter=%d cached=%s total=%s "
+                        "prompt=%s candidates=%s hit=%s",
+                        state.session_id,
+                        iterations,
+                        event.cached_content_token_count,
+                        event.total_token_count,
+                        event.prompt_token_count,
+                        event.candidates_token_count,
+                        event.cache_hit,
+                    )
+
+            # Emit a cache-status envelope so the UI can render the cache
+            # hit-rate live. Best-effort — a serialization failure logs but
+            # does not break the turn (the envelope is observability, not
+            # part of the agent loop's correctness contract).
+            if last_usage is not None:
+                await _emit_cache_status(websocket, state, last_usage)
+
             # Turn ended.  If Gemini emitted no function_calls this turn, it
             # is finished — either narrated the answer or had nothing more to
             # do.  Break out of the loop.
@@ -484,16 +782,84 @@ async def _stream_gemini_reply(
             # response back into contents so the next Gemini turn sees them.
             for call in turn_function_calls:
                 # Dispatch through the registry + emitter (Invariant 2 — the
-                # LLM's tool choice IS the classification).  ``result`` may be
-                # ``None`` (TOOL_NOT_FOUND, payload-warning skip, etc.); the
-                # summarizer encodes that as ``status: "no_result"`` which
-                # Gemini reads and reacts to.
+                # LLM's tool choice IS the classification).  Routing failures
+                # (TOOL_NOT_FOUND, PAYLOAD_WARNING_CANCELLED) now raise typed
+                # exceptions (B-rev) so the except-block below routes them
+                # through summarize_tool_result(error=...) — a structured
+                # {status: "error", error_code: str, retryable: bool} envelope
+                # that Gemini can distinguish from "tool ran and returned
+                # nothing" (FR-AS-11).
                 dispatch_error: BaseException | None = None
                 result: Any = None
+                _tool_start = asyncio.get_running_loop().time()
                 try:
+                    # job-B8 (Wave 4.10 Stage 3): per-session circuit breaker.
+                    # Short-circuit before allowed-set validation and dispatch
+                    # if the tool has failed repeatedly this session. Raises
+                    # ``CircuitBreakerError`` which the except-block routes
+                    # through ``summarize_tool_result(error=...)`` so Gemini
+                    # reads the structured cooldown signal (not retryable).
+                    if state.circuit_breaker.is_tripped(call.name):
+                        remaining = state.circuit_breaker.cooldown_remaining_s(call.name)
+                        raise CircuitBreakerError(call.name, remaining)
+                    # job-B5 (Wave 4.10): post-hoc allowed-set validation. Per
+                    # the CachedContent Option A architecture, Gemini sees the
+                    # full catalog but our code enforces the per-turn allowed
+                    # set. A function_call outside the allowed set raises
+                    # ``OutOfAllowedSetError``, which the except-block below
+                    # routes through ``summarize_tool_result(error=...)`` as a
+                    # Wave 4.9 structured envelope so Gemini can retry
+                    # (typically by first calling ``list_tools_in_category``).
+                    validate_function_call(call.name, state.allowed_tool_set)
                     result = await _invoke_tool_via_emitter(
                         websocket, state, call.name, call.args
                     )
+                    # Wave 4.11 Follow-up A: emit ``impact-envelope`` WS envelope
+                    # whenever ``compute_impact_envelope`` returns a result that
+                    # carries a valid ImpactEnvelope (key signal: ``raw_envelope``
+                    # dict with ``n_structures_total`` inside).  Fires IN ADDITION
+                    # to the standard ``function_response`` — the web client gets
+                    # both: function_response for Gemini-loop replay,
+                    # impact-envelope for ImpactPanel state.
+                    if (
+                        call.name == "compute_impact_envelope"
+                        and isinstance(result, dict)
+                        and isinstance(result.get("raw_envelope"), dict)
+                        and "n_structures_total" in result["raw_envelope"]
+                    ):
+                        await _maybe_emit_impact_envelope(websocket, state, result["raw_envelope"])
+                    # job-0230 (sprint-13 Stage 2): emit a ``chart-emission`` WS
+                    # envelope whenever a chart-generation tool returns a
+                    # ChartEmissionPayload-shaped dict (key signal:
+                    # ``envelope_type == "chart-emission"`` + a dict
+                    # ``vega_lite_spec``). Fires IN ADDITION to the standard
+                    # ``function_response`` — the web client gets both: the full
+                    # Vega-Lite spec on the chart-emission envelope (for
+                    # vega-embed rendering + the stacked gallery), and a COMPACT
+                    # data summary on the function_response (the spec is stripped
+                    # by ``summarize_tool_result`` so Gemini narrates from the
+                    # numbers, not the inline rows). Also persists a
+                    # SessionChartRecord so the chart replays on Case rehydration.
+                    if is_chart_emission_result(result):
+                        await _maybe_emit_chart(websocket, state, result)
+                    # job-B8: record success so the consecutive-failure counter
+                    # resets — a recovered tool should not stay penalised.
+                    state.circuit_breaker.record_success(call.name)
+                    # On a successful dispatch, mark the tool sticky so the
+                    # LLM can re-issue the same tool on a later turn with
+                    # refined args without re-opening its category.
+                    state.allowed_tool_set.record_dispatch(call.name)
+                    # If the call was ``list_tools_in_category``, open the
+                    # requested category (sticky-after-list) — every member
+                    # tool of that category is now reachable for the rest of
+                    # the session.
+                    if (
+                        call.name == "list_tools_in_category"
+                        and isinstance(result, dict)
+                    ):
+                        cat_id = result.get("category_id")
+                        if isinstance(cat_id, str) and cat_id:
+                            state.allowed_tool_set.open_category(cat_id)
                 except asyncio.CancelledError:
                     # Propagate cancel through the loop — handled below.
                     raise
@@ -504,7 +870,15 @@ async def _stream_gemini_reply(
                         call.name,
                         exc,
                     )
+                    # job-B8: record failure for ANY exception (not just
+                    # upstream errors) — repeated dispatch failures for the
+                    # same tool indicate a runaway loop we want to break.
+                    # CircuitBreakerError is excluded: it means the breaker
+                    # already fired and we must not increment again.
+                    if not isinstance(exc, CircuitBreakerError):
+                        state.circuit_breaker.record_failure(call.name)
                     dispatch_error = exc
+                _tool_latency_ms = (asyncio.get_running_loop().time() - _tool_start) * 1000.0
 
                 summary = summarize_tool_result(
                     call.name, result, error=dispatch_error
@@ -516,8 +890,54 @@ async def _stream_gemini_reply(
                     call.name,
                     sorted(summary.keys()),
                 )
+
+                # B-tel: fire-and-forget telemetry for this LLM-initiated
+                # function_call. Non-blocking — ``emit_tool_call_event`` wraps
+                # the write in ``asyncio.ensure_future`` so no await is needed
+                # here. A write failure is logged at WARNING by the module and
+                # NEVER raises (telemetry must not break the dispatch loop).
+                _tel_error_code: str | None = None
+                if dispatch_error is not None:
+                    _tel_error_code = str(
+                        getattr(dispatch_error, "error_code", None)
+                        or type(dispatch_error).__name__.upper()
+                    )
+                # job-B6 (Wave 4.10): the adapter now surfaces
+                # ``UsageMetadataEvent`` at the end of each Gemini stream;
+                # ``last_usage`` carries the most recent observation. Pipe
+                # ``cached_content_token_count`` through so the telemetry
+                # record empirically reflects the Vertex 90% discount.
+                _tel_cached_tokens = (
+                    last_usage.cached_content_token_count
+                    if last_usage is not None
+                    else None
+                )
+                await emit_tool_call_event(
+                    session_id=state.session_id,
+                    ts=now_utc().isoformat(),
+                    tool_name=call.name,
+                    source="llm",
+                    args_hash=compute_args_hash(call.args),
+                    success=dispatch_error is None,
+                    latency_ms=_tool_latency_ms,
+                    error_code=_tel_error_code,
+                    cached_content_token_count=_tel_cached_tokens,
+                )
+                # job-B10: pass the thought_signature harvested off the
+                # function_call Part through to the replayed model turn.
+                # Gemini 3 requires the same opaque byte-blob on the replayed
+                # function_call Part or generate_content_stream errors with
+                # ``thought-signature mismatch``. Gemini 2.5 surfaces None
+                # here (no signatures in 2.5) — the helper treats None as a
+                # no-op, so this is forward-compat with no behavior change
+                # on the current default model.
                 contents.append(
-                    build_function_call_content(call.name, call.args, call.call_id)
+                    build_function_call_content(
+                        call.name,
+                        call.args,
+                        call.call_id,
+                        thought_signature=call.thought_signature,
+                    )
                 )
                 contents.append(
                     build_function_response_content(call.name, summary, call.call_id)
@@ -526,14 +946,18 @@ async def _stream_gemini_reply(
             # Loop: re-stream with the appended call + response so Gemini can
             # decide its next move (another tool call OR a narrative wrap-up).
         else:
-            # Loop fell through the cap.  Log + treat as terminal (no more
-            # tool calls dispatched).  This is a fail-stop for runaway Gemini
-            # loops, not a normal exit.
+            # Loop fell through the cap.  This is a fail-stop for runaway
+            # Gemini loops, not a normal exit.  job-B9: emit a distinct
+            # ``loop_exhausted`` envelope (error_code=MAX_ITERATIONS_REACHED)
+            # so the web UI can render "Agent ran out of steps" rather than a
+            # generic failure or silent stop.
             logger.warning(
-                "gemini loop hit MAX_TURN_ITERATIONS=%d session=%s — stopping",
+                "gemini loop hit MAX_TURN_ITERATIONS=%d session=%s — "
+                "emitting loop_exhausted envelope",
                 MAX_TURN_ITERATIONS,
                 state.session_id,
             )
+            await _send_loop_exhausted(websocket, state.session_id)
 
         # Terminal frame for the message stream.
         terminal = AgentMessageChunkPayload(message_id=message_id, delta="", done=True)
@@ -659,12 +1083,18 @@ def _bind_auth_result(state: SessionState, result: AuthResult) -> None:
 
     Separate from ``_handle_auth_token`` so tests can drive the bind
     directly without parsing an envelope.
+
+    Wave 4.11 M6: also propagates the resolved ``user_id`` into
+    ``state.allowed_tool_set.user_id`` so ``get_dynamic_hot_set`` can
+    filter telemetry per-user when ``GRACE2_DYNAMIC_HOT_SET=1``.
     """
     state.authenticated_user_id = result.user.user_id
     state.is_anonymous = result.is_anonymous
     state.firebase_uid = result.firebase_uid
     state.tier = result.tier
     state.auth_handshake_complete = True
+    # Propagate user_id so dynamic hot-set queries are per-user scoped.
+    state.allowed_tool_set.user_id = result.user.user_id
 
 
 async def _ensure_auth_handshake(
@@ -1329,16 +1759,15 @@ async def _invoke_tool_via_emitter(
     """
     _ensure_emitter(websocket, state)
     if tool_name not in TOOL_REGISTRY:
-        # FR-AS-3: unknown tool name surfaces as A.6 TOOL_NOT_FOUND. The
-        # emitter classifier already encodes this when a KeyError is raised
-        # inside emit_tool_call; we surface up-front so the step never opens.
-        await _send_error(
-            websocket,
-            state.session_id,
-            "TOOL_NOT_FOUND",
-            f"tool {tool_name!r} not in TOOL_REGISTRY",
-        )
-        return None
+        # B-rev: raise ToolNotFoundError so the existing exception handler at
+        # the call site (server.py:500-507) routes through
+        # summarize_tool_result(error=...) which emits the full Wave 4.9
+        # structured envelope — error_code + retryable + message — so Gemini
+        # can distinguish "tool ran and returned nothing" from "tool name was
+        # never registered". The _send_error side-channel is NOT needed here;
+        # the function_response envelope IS the signal Gemini reads between
+        # turns. (FR-AS-3, FR-AS-11, job B-rev.)
+        raise ToolNotFoundError(tool_name, list(TOOL_REGISTRY))
     entry = TOOL_REGISTRY[tool_name]
 
     # job-0121: per-Case ``.qgs`` lazy-init for ``publish_layer``.
@@ -1386,7 +1815,13 @@ async def _invoke_tool_via_emitter(
         websocket, state, tool_name, params
     )
     if not should_dispatch:
-        return None
+        # B-rev: raise PayloadWarningCancelledError so Gemini sees a structured
+        # envelope ({status: "error", error_code: "PAYLOAD_WARNING_CANCELLED",
+        # retryable: False}) instead of {"status": "no_result"} which it cannot
+        # interpret. retryable=False because the user explicitly cancelled; the
+        # LLM should narrate the cancellation and not re-issue the call unless
+        # the user provides a narrower scope. (FR-AS-11, job B-rev.)
+        raise PayloadWarningCancelledError(tool_name)
 
     # job-0164: centralized kwarg sweep. Gemini routinely invents kwargs that
     # don't exist on our tools (``run_name``, ``scenario_id``,
@@ -1506,6 +1941,200 @@ async def _persist_case_loaded_layers(state: SessionState) -> None:
         logger.exception(
             "case-layer-persist: upsert failed case=%s",
             state.active_case_id,
+        )
+
+
+async def _maybe_emit_impact_envelope(
+    websocket: ServerConnection,
+    state: SessionState,
+    raw_envelope: dict,
+) -> None:
+    """Emit an ``impact-envelope`` WS envelope for the ImpactPanel (Wave 4.11 Follow-up A).
+
+    Called when ``compute_impact_envelope`` returns a result that contains a
+    valid ``raw_envelope`` dict (ImpactEnvelope shape, key signal:
+    ``n_structures_total`` present at the top level).
+
+    The envelope is emitted IN ADDITION to the standard ``function_response``
+    so the web client gets both:
+
+    - ``function_response`` → Gemini-loop replay (Gemini reads the summary).
+    - ``impact-envelope``   → ImpactPanel state update (P4 UI surface).
+
+    Wire shape::
+
+        {
+          "type": "impact-envelope",
+          "session_id": str,
+          "payload": { ...full ImpactEnvelope dict... }
+        }
+
+    Best-effort: a serialization / wire failure is logged but never raised —
+    the ``function_response`` path (and thus the agent loop) must not be
+    interrupted by a side-channel emission failure.
+    """
+    import json as _json
+
+    try:
+        await websocket.send(
+            _json.dumps(
+                {
+                    "type": "impact-envelope",
+                    "session_id": state.session_id,
+                    "payload": raw_envelope,
+                }
+            )
+        )
+        logger.info(
+            "impact-envelope emitted session=%s n_structures_total=%s",
+            state.session_id,
+            raw_envelope.get("n_structures_total"),
+        )
+    except Exception:  # noqa: BLE001 — side effect, never bubble up
+        logger.exception(
+            "impact-envelope emission failed session=%s", state.session_id
+        )
+
+
+async def _maybe_emit_chart(
+    websocket: ServerConnection,
+    state: SessionState,
+    chart_result: dict,
+) -> None:
+    """Emit a ``chart-emission`` WS envelope + persist the chart (job-0230).
+
+    Called when a chart-generation tool (``generate_histogram`` /
+    ``generate_choropleth_legend`` / ``generate_time_series`` /
+    ``generate_damage_distribution``) returns a ChartEmissionPayload-shaped dict
+    (``is_chart_emission_result(result)`` is True). Fires IN ADDITION to the
+    standard ``function_response``:
+
+    - ``chart-emission`` → the FULL Vega-Lite spec for the web client to render
+      via vega-embed (inline stacked preview + gallery). The function_response
+      Gemini reads is a COMPACT summary with the spec stripped
+      (``adapter.summarize_tool_result``) so narration sources the numbers, not
+      the inline rows.
+    - ``SessionChartRecord`` persisted to the ``sessions`` collection so the
+      chart replays on Case rehydration.
+
+    The ``created_turn_id`` is stamped here (from the per-turn pipeline id) when
+    the tool did not set one, so the client groups charts emitted in the same
+    turn into one UI stack.
+
+    Wire shape::
+
+        {
+          "type": "chart-emission",
+          "session_id": str,
+          "payload": { ...full ChartEmissionPayload dict... }
+        }
+
+    Best-effort: a serialization / wire / persistence failure is logged but
+    never raised — the ``function_response`` path (and thus the agent loop) must
+    not be interrupted by a side-channel emission failure.
+    """
+    import json as _json
+
+    payload = dict(chart_result)
+    # Stamp the UI stack-grouping key from the current turn if the tool left it
+    # unset, so charts from the same turn render as one stack (chart_contracts
+    # ``created_turn_id`` semantics).
+    if not payload.get("created_turn_id"):
+        turn_id = (
+            state.current_turn_pipeline_id
+            or state.current_pipeline_id
+            or state.session_id
+        )
+        payload["created_turn_id"] = turn_id
+
+    try:
+        await websocket.send(
+            _json.dumps(
+                {
+                    "type": "chart-emission",
+                    "session_id": state.session_id,
+                    "payload": payload,
+                }
+            )
+        )
+        logger.info(
+            "chart-emission emitted session=%s chart_id=%s title=%r",
+            state.session_id,
+            payload.get("chart_id"),
+            payload.get("title"),
+        )
+    except Exception:  # noqa: BLE001 — side effect, never bubble up
+        logger.exception(
+            "chart-emission emission failed session=%s", state.session_id
+        )
+
+    # Persist the chart so it replays on Case rehydration (best-effort).
+    await _persist_chart_record(state, payload)
+
+
+async def _persist_chart_record(state: SessionState, payload: dict) -> None:
+    """Append a ``SessionChartRecord`` to the session document (job-0230).
+
+    Same pattern as the telemetry writer (M3): resolve the ``Persistence``
+    singleton and ``$push`` the record onto the session document's append-only
+    ``charts`` array via the underlying MCP ``update-one`` call (the typed
+    Persistence methods own Case/User/Secret shapes; charts go directly on the
+    MCP client like telemetry, keeping the Persistence public API narrow).
+
+    Keyed by the active Case id when one is selected (so charts replay on Case
+    rehydration via the same document the chat history lives on), else by the
+    session id (the M1 stateless path). ``upsert=True`` so the first chart on a
+    fresh session document creates it.
+
+    Never raises — a persistence failure is logged at WARNING. Replay (the read
+    side that rehydrates the ``charts`` array) is web/agent-rehydration scope
+    (job-0231 / session-resume); this is the write half of the contract.
+    """
+    persistence = get_persistence()
+    if persistence is None:
+        # M1 in-memory / CI-without-Atlas path: charts live only in-flight.
+        logger.debug(
+            "chart persistence skipped (no Persistence bound) session=%s",
+            state.session_id,
+        )
+        return
+
+    try:
+        from grace2_contracts.chart_contracts import (
+            ChartEmissionPayload,
+            SessionChartRecord,
+        )
+        from .persistence import DEFAULT_DATABASE, SESSIONS_COLLECTION
+
+        doc_id = state.active_case_id or state.session_id
+        record = SessionChartRecord(
+            session_id=doc_id,
+            payload=ChartEmissionPayload.model_validate(payload),
+            emitted_at=now_utc(),
+        )
+        body = record.model_dump(mode="json")
+        await persistence._mcp.call_tool(  # noqa: SLF001 — telemetry-writer pattern
+            "update-one",
+            {
+                "database": DEFAULT_DATABASE,
+                "collection": SESSIONS_COLLECTION,
+                "filter": {"_id": doc_id},
+                "update": {"$push": {"charts": body}},
+                "upsert": True,
+            },
+        )
+        logger.info(
+            "chart persisted session=%s doc_id=%s chart_id=%s",
+            state.session_id,
+            doc_id,
+            payload.get("chart_id"),
+        )
+    except Exception:  # noqa: BLE001 — persistence must not break the loop
+        logger.warning(
+            "chart persistence failed session=%s chart_id=%s",
+            state.session_id,
+            payload.get("chart_id"),
+            exc_info=True,
         )
 
 
@@ -1637,11 +2266,55 @@ async def _dispatch_tool_and_persist(
     happens after the tool returns. The persisted ``content`` is a
     user-readable summary of the tool result (the stringified result for
     primitive returns, or a marker for complex returns).
+
+    B-rev FIX: ``_invoke_tool_via_emitter`` now raises ``ToolNotFoundError``
+    when the directive references an unregistered tool name. This caller is
+    the ``/invoke`` directive path — a manual operator-debug surface dispatched
+    via ``asyncio.create_task`` (no awaiter exists to catch propagated
+    exceptions). To prevent the typed exception from surfacing as an
+    unhandled-task "exception was never retrieved" warning, we catch it here
+    and route it through ``_send_error`` so the operator's chat surface
+    receives a structured ``error`` envelope (``TOOL_NOT_FOUND`` /
+    ``retryable=False``) — the same shape Gemini's multi-turn loop produces
+    via ``summarize_tool_result``. Other typed routing exceptions
+    (``PayloadWarningCancelledError``) are also caught so the manual surface
+    sees the cancellation reason explicitly instead of disappearing.
     """
     try:
-        await _invoke_tool_via_emitter(
-            websocket, state, tool_name, params
-        )
+        try:
+            await _invoke_tool_via_emitter(
+                websocket, state, tool_name, params
+            )
+        except asyncio.CancelledError:
+            raise
+        except ToolNotFoundError as exc:
+            logger.info(
+                "/invoke directive references unregistered tool "
+                "session=%s tool=%s",
+                state.session_id,
+                tool_name,
+            )
+            await _send_error(
+                websocket,
+                state.session_id,
+                exc.error_code,
+                str(exc),
+                retryable=exc.retryable,
+            )
+        except PayloadWarningCancelledError as exc:
+            logger.info(
+                "/invoke directive cancelled via payload-warning gate "
+                "session=%s tool=%s",
+                state.session_id,
+                tool_name,
+            )
+            await _send_error(
+                websocket,
+                state.session_id,
+                exc.error_code,
+                str(exc),
+                retryable=exc.retryable,
+            )
     finally:
         if state.active_case_id:
             await _persist_chat_turn(
@@ -2081,6 +2754,14 @@ async def run_server(host: str = "127.0.0.1", port: int | None = None) -> None:
     environment is not provisioned (the typical local-dev case), the agent
     service starts anyway — the M1 in-memory chat/pipeline path keeps
     working, and any caller that requires persistence raises a clear error.
+
+    Wave 4.10 job-C1: also mounts the read-only HTTP catalog endpoint at
+    ``GRACE2_AGENT_HTTP_PORT`` (default 8766) so the web Tools page can
+    fetch the full tool catalog without going through the WS path. The
+    HTTP server is a sibling of the WS server (same asyncio loop, same
+    process). A failure to start the HTTP listener logs but does not abort
+    WS startup — the catalog page is a discovery convenience, not a
+    requirement for the chat path.
     """
     if port is None:
         port = int(os.environ.get("GRACE2_AGENT_PORT", "8765"))
@@ -2098,8 +2779,29 @@ async def run_server(host: str = "127.0.0.1", port: int | None = None) -> None:
     except Exception as exc:  # noqa: BLE001 — startup must not abort on MCP issues
         logger.warning("Persistence init failed (continuing without MCP): %s", exc)
     handler = _make_handler(settings)
-    async with serve(handler, host, port):
-        await asyncio.Future()  # serve forever
+
+    # Wave 4.10 C1: best-effort mount of the catalog HTTP listener.
+    http_server = None
+    try:
+        from .tool_catalog_http import serve_catalog_http
+
+        http_server = await serve_catalog_http(host=host)
+    except Exception:  # noqa: BLE001 — discovery surface, never blocks WS
+        logger.exception(
+            "tool-catalog HTTP listener failed to start; "
+            "continuing without /api/tool-catalog"
+        )
+
+    try:
+        async with serve(handler, host, port):
+            await asyncio.Future()  # serve forever
+    finally:
+        if http_server is not None:
+            http_server.close()
+            try:
+                await http_server.wait_closed()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 __all__ = [
@@ -2122,4 +2824,8 @@ __all__ = [
     "_emit_secrets_list",
     "_handle_secret_add",
     "_handle_secret_revoke",
+    # job-B8+B9 (Wave 4.10 Stage 3): circuit breaker + loop_exhausted.
+    "_send_loop_exhausted",
+    "CircuitBreakerError",
+    "ToolCircuitBreaker",
 ]

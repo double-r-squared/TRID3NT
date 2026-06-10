@@ -102,7 +102,8 @@ CATEGORIES: tuple[CategorySpec, ...] = (
         id="hazard_modeling",
         name="Hazard modeling",
         description=(
-            "End-to-end hazard simulation workflows: flood (SFINCS), flood "
+            "End-to-end hazard simulation workflows: flood (SFINCS), "
+            "groundwater contamination plume (MODFLOW 6 + MF6-GWT), flood "
             "+ habitat composers, Pelicun damage assessment. Use this when the "
             "user wants to RUN a model, not just fetch source data."
         ),
@@ -229,6 +230,8 @@ PRIMARY_CATEGORY: dict[str, str] = {
     "run_model_flood_scenario": "hazard_modeling",
     "run_model_flood_habitat_scenario": "hazard_modeling",
     "run_model_news_event_ingest": "hazard_modeling",
+    "run_model_nws_flood_event_scenario": "hazard_modeling",
+    "run_modflow_job": "hazard_modeling",
     "run_pelicun_damage_assessment": "hazard_modeling",
     "run_pelicun_with_buildings": "hazard_modeling",
     "run_solver": "hazard_modeling",
@@ -304,6 +307,12 @@ PRIMARY_CATEGORY: dict[str, str] = {
     "summarize_layer_statistics": "geographic_primitives",
     "count_features_above_threshold": "geographic_primitives",
     "aggregate_property_within_zone": "geographic_primitives",
+    # job-0230 (sprint-13 Stage 2): chart-generation tools — visual companions
+    # to the analytical Q&A tools above (conversational data-analysis layer).
+    "generate_histogram": "geographic_primitives",
+    "generate_choropleth_legend": "geographic_primitives",
+    "generate_time_series": "geographic_primitives",
+    "generate_damage_distribution": "geographic_primitives",
     "publish_layer": "geographic_primitives",
     "discover_dataset": "geographic_primitives",
     "catalog_search": "geographic_primitives",
@@ -330,6 +339,10 @@ SECONDARY_CATEGORIES: dict[str, tuple[str, ...]] = {
     # NWS event ingest spans hazard_modeling (it's the news-event composer)
     # AND news_events (it's the canonical entry point to that category).
     "run_model_news_event_ingest": ("news_events",),
+    # Case 3 composer spans hazard_modeling (it runs SFINCS) AND
+    # weather_atmosphere (it's driven by an active NWS flood warning + MRMS
+    # observed precip — the canonical "model the live flood" entry point).
+    "run_model_nws_flood_event_scenario": ("weather_atmosphere",),
 }
 
 

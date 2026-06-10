@@ -1,0 +1,14 @@
+{
+  "tool": "generate_damage_distribution",
+  "status": "ok",
+  "result": {
+    "chart_emitted": true,
+    "chart_id": "01KTQPZ9CE6HFVZTC1YBGEJP41",
+    "title": "Damage-state distribution",
+    "caption": "20 structures \u00b7 4 damaged (DS1+) \u00b7 0 destroyed (DS4)",
+    "chart_type": "bar",
+    "n_data_rows": 5,
+    "source_layer_uri": "/home/nate/Documents/GRACE-2/reports/inflight/job-0136-testing-20260608/evidence/fort_myers_damage.fgb",
+    "note": "A chart has been rendered for the user. Narrate what it shows using the numbers in 'caption'; do NOT restate the raw data rows."
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "tool": "generate_histogram",
+  "status": "ok",
+  "result": {
+    "chart_emitted": true,
+    "chart_id": "01KTQPZ9ESAY9R17FS8BTVE0YK",
+    "title": "Histogram \u2014 value",
+    "caption": "284,580 values \u00b7 min 0.01 \u00b7 mean 0.338 \u00b7 max 3.52 \u00b7 10 bins",
+    "chart_type": "bar",
+    "n_data_rows": 10,
+    "source_layer_uri": "/tmp/flood_depth_peak.tif",
+    "note": "A chart has been rendered for the user. Narrate what it shows using the numbers in 'caption'; do NOT restate the raw data rows."
+  }
+}

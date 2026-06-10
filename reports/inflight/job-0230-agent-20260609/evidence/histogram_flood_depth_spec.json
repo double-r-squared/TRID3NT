@@ -1,0 +1,94 @@
+{
+  "envelope_type": "chart-emission",
+  "chart_id": "01KTQPZ9ESAY9R17FS8BTVE0YK",
+  "vega_lite_spec": {
+    "title": "Distribution of value",
+    "data": {
+      "values": [
+        {
+          "bin_start": 0.010016918182373047,
+          "bin_end": 0.360533332824707,
+          "bin_label": "0.01\u20130.361",
+          "count": 180565
+        },
+        {
+          "bin_start": 0.360533332824707,
+          "bin_end": 0.711049747467041,
+          "bin_label": "0.361\u20130.711",
+          "count": 47680
+        },
+        {
+          "bin_start": 0.711049747467041,
+          "bin_end": 1.0615661621093748,
+          "bin_label": "0.711\u20131.06",
+          "count": 49686
+        },
+        {
+          "bin_start": 1.0615661621093748,
+          "bin_end": 1.412082576751709,
+          "bin_label": "1.06\u20131.41",
+          "count": 3862
+        },
+        {
+          "bin_start": 1.412082576751709,
+          "bin_end": 1.762598991394043,
+          "bin_label": "1.41\u20131.76",
+          "count": 1508
+        },
+        {
+          "bin_start": 1.762598991394043,
+          "bin_end": 2.1131154060363766,
+          "bin_label": "1.76\u20132.11",
+          "count": 675
+        },
+        {
+          "bin_start": 2.1131154060363766,
+          "bin_end": 2.4636318206787107,
+          "bin_label": "2.11\u20132.46",
+          "count": 234
+        },
+        {
+          "bin_start": 2.4636318206787107,
+          "bin_end": 2.8141482353210447,
+          "bin_label": "2.46\u20132.81",
+          "count": 223
+        },
+        {
+          "bin_start": 2.8141482353210447,
+          "bin_end": 3.164664649963379,
+          "bin_label": "2.81\u20133.16",
+          "count": 145
+        },
+        {
+          "bin_start": 3.164664649963379,
+          "bin_end": 3.515181064605713,
+          "bin_label": "3.16\u20133.52",
+          "count": 2
+        }
+      ]
+    },
+    "mark": {
+      "type": "bar",
+      "tooltip": true
+    },
+    "encoding": {
+      "x": {
+        "field": "bin_label",
+        "type": "ordinal",
+        "title": "value",
+        "sort": null
+      },
+      "y": {
+        "field": "count",
+        "type": "quantitative",
+        "title": "count"
+      }
+    },
+    "width": "container",
+    "$schema": "https://vega.github.io/schema/vega-lite/v5.json"
+  },
+  "title": "Histogram \u2014 value",
+  "caption": "284,580 values \u00b7 min 0.01 \u00b7 mean 0.338 \u00b7 max 3.52 \u00b7 10 bins",
+  "source_layer_uri": "/tmp/flood_depth_peak.tif",
+  "created_turn_id": null
+}

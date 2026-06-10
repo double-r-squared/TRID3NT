@@ -1,0 +1,56 @@
+{
+  "envelope_type": "chart-emission",
+  "chart_id": "01KTQPZ9EZJ2EZ4C8GJD83NHRJ",
+  "vega_lite_spec": {
+    "title": "Choropleth classes \u2014 repair_cost_mean",
+    "data": {
+      "values": [
+        {
+          "class_index": 0,
+          "class_label": "0\u20139.29e+03",
+          "break_low": 0.0,
+          "break_high": 9290.314212143183,
+          "count": 16
+        },
+        {
+          "class_index": 1,
+          "class_label": "9.29e+03\u20135.76e+04",
+          "break_low": 9290.314212143183,
+          "break_high": 57550.761334348725,
+          "count": 4
+        }
+      ]
+    },
+    "mark": {
+      "type": "bar",
+      "tooltip": true
+    },
+    "encoding": {
+      "x": {
+        "field": "class_label",
+        "type": "ordinal",
+        "title": "repair_cost_mean class",
+        "sort": null
+      },
+      "y": {
+        "field": "count",
+        "type": "quantitative",
+        "title": "feature count"
+      },
+      "color": {
+        "field": "class_index",
+        "type": "ordinal",
+        "scale": {
+          "scheme": "blues"
+        },
+        "legend": null
+      }
+    },
+    "width": "container",
+    "$schema": "https://vega.github.io/schema/vega-lite/v5.json"
+  },
+  "title": "Choropleth legend \u2014 repair_cost_mean",
+  "caption": "2 quantile classes over repair_cost_mean \u00b7 20 features",
+  "source_layer_uri": "/home/nate/Documents/GRACE-2/reports/inflight/job-0136-testing-20260608/evidence/fort_myers_damage.fgb",
+  "created_turn_id": null
+}

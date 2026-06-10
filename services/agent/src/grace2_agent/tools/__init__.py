@@ -309,6 +309,8 @@ from . import fetch_raws_weather  # noqa: E402,F401 — job-A12 (Wave 4.10): reg
 from . import fetch_3dep_extra  # noqa: E402,F401 — job-A11 (Wave 4.10): registers fetch_3dep_extra (USGS 3DEP non-default resolutions via pfdf.data.usgs.tnm.dem — 1 arc-sec / 1/9 arc-sec / 1 m / 2 arc-sec / 5 m)
 from . import discover_dataset  # noqa: E402,F401 — job-B7 (Wave 4.10 Stage 2): registers discover_dataset (hybrid BM25 + dense retrieval over audited docstrings + tool_query_corpus.yaml; routes free-text user queries to top-k atomic tools via RRF fusion; hot-set tool surfaced by B5 per-turn filter)
 from . import analytical_qa  # noqa: E402,F401 — job-0224 (sprint-13 Stage 1): registers summarize_layer_statistics + count_features_above_threshold + aggregate_property_within_zone
+from . import chart_tools  # noqa: E402,F401 — job-0230 (sprint-13 Stage 2): registers generate_histogram + generate_choropleth_legend + generate_time_series + generate_damage_distribution
+from . import run_modflow_tool  # noqa: E402,F401 — job-0227 (sprint-13 Stage 2): registers run_modflow_job (MODFLOW 6 + MF6-GWT groundwater-plume engine; Cloud Workflows + local mf6 modes)
 
 # job-B5 (Wave 4.10 Stage 2): the 12-category registry + the two meta-tools
 # (``list_categories`` + ``list_tools_in_category``) live alongside the rest
