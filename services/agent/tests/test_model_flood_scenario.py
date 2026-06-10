@@ -695,6 +695,13 @@ def test_build_sfincs_model_passes_parsed_dict_to_hydromt_build(
             "grace2_agent.workflows.sfincs_builder._extract_unique_nlcd_classes",
             return_value={11, 41},
         ),
+        patch(
+            "grace2_agent.workflows.sfincs_builder._stage_gcs_local",
+            side_effect=lambda uri: (
+                "/tmp/staged-" + uri[len("gs://"):].replace("/", "_")
+                if uri.startswith("gs://") else uri
+            ),
+        ),
         # fsspec upload is best-effort — let it fail and fall back to file://.
         patch.dict(
             "sys.modules",
@@ -779,6 +786,13 @@ def test_build_sfincs_model_malformed_yaml_surfaces_typed_error(
         patch(
             "grace2_agent.workflows.sfincs_builder._extract_unique_nlcd_classes",
             return_value={11, 41},
+        ),
+        patch(
+            "grace2_agent.workflows.sfincs_builder._stage_gcs_local",
+            side_effect=lambda uri: (
+                "/tmp/staged-" + uri[len("gs://"):].replace("/", "_")
+                if uri.startswith("gs://") else uri
+            ),
         ),
         patch(
             "grace2_agent.workflows.sfincs_builder._generate_hydromt_yaml_config",
@@ -869,11 +883,31 @@ def test_build_sfincs_model_emits_v1_2_x_manning_roughness_kwargs(
         provenance={"source": "noaa-atlas14"},
     )
 
+    def _fake_stage(uri: str) -> str:
+        # job-0249: mirror _stage_gcs_local without network — gs:// inputs
+        # become deterministic staged-local paths, locals pass through.
+        if uri.startswith("gs://"):
+            return str(tmp_path / "staged" / uri[len("gs://"):].replace("/", "_"))
+        if uri.startswith("file://"):
+            return uri[len("file://"):]
+        return uri
+
     with (
         patch.dict("sys.modules", {"hydromt_sfincs": fake_module}, clear=False),
         patch(
             "grace2_agent.workflows.sfincs_builder._extract_unique_nlcd_classes",
             return_value={11, 41},
+        ),
+        patch(
+            "grace2_agent.workflows.sfincs_builder._stage_gcs_local",
+            side_effect=lambda uri: (
+                "/tmp/staged-" + uri[len("gs://"):].replace("/", "_")
+                if uri.startswith("gs://") else uri
+            ),
+        ),
+        patch(
+            "grace2_agent.workflows.sfincs_builder._stage_gcs_local",
+            side_effect=_fake_stage,
         ),
     ):
         build_sfincs_model(
@@ -1023,11 +1057,31 @@ def _build_with_capture(
         provenance={"source": "noaa-atlas14"},
     )
 
+    def _fake_stage(uri: str) -> str:
+        # job-0249: mirror _stage_gcs_local without network — gs:// inputs
+        # become deterministic staged-local paths, locals pass through.
+        if uri.startswith("gs://"):
+            return str(tmp_path / "staged" / uri[len("gs://"):].replace("/", "_"))
+        if uri.startswith("file://"):
+            return uri[len("file://"):]
+        return uri
+
     with (
         patch.dict("sys.modules", {"hydromt_sfincs": fake_module}, clear=False),
         patch(
             "grace2_agent.workflows.sfincs_builder._extract_unique_nlcd_classes",
             return_value={11, 41},
+        ),
+        patch(
+            "grace2_agent.workflows.sfincs_builder._stage_gcs_local",
+            side_effect=lambda uri: (
+                "/tmp/staged-" + uri[len("gs://"):].replace("/", "_")
+                if uri.startswith("gs://") else uri
+            ),
+        ),
+        patch(
+            "grace2_agent.workflows.sfincs_builder._stage_gcs_local",
+            side_effect=_fake_stage,
         ),
     ):
         build_sfincs_model(
@@ -1337,6 +1391,13 @@ def test_build_sfincs_model_emits_manifest_json_with_input_list(
             return_value={11, 41},
         ),
         patch(
+            "grace2_agent.workflows.sfincs_builder._stage_gcs_local",
+            side_effect=lambda uri: (
+                "/tmp/staged-" + uri[len("gs://"):].replace("/", "_")
+                if uri.startswith("gs://") else uri
+            ),
+        ),
+        patch(
             "grace2_agent.workflows.sfincs_builder._default_setup_uri",
             return_value=fixed_manifest_uri,
         ),
@@ -1504,6 +1565,13 @@ def test_build_sfincs_model_setup_uri_points_at_manifest_file(
             patch(
                 "grace2_agent.workflows.sfincs_builder._extract_unique_nlcd_classes",
                 return_value={11, 41},
+            ),
+            patch(
+                "grace2_agent.workflows.sfincs_builder._stage_gcs_local",
+                side_effect=lambda uri: (
+                    "/tmp/staged-" + uri[len("gs://"):].replace("/", "_")
+                    if uri.startswith("gs://") else uri
+                ),
             ),
         ):
             return build_sfincs_model(
@@ -3047,16 +3115,14 @@ def test_to_vsigs_rewrites_gs_uri_to_vsigs_path() -> None:
     assert _to_vsigs("relative/path.tif") == "relative/path.tif"
 
 
-def test_hydromt_yaml_emits_vsigs_paths_for_gs_inputs(tmp_path: Path) -> None:
-    """The YAML config plumbed into HydroMT must use ``/vsigs/`` for ``gs://`` inputs.
-
-    The headline regression guard for job-0170. The captured ``opt`` dict
-    that ``SfincsModel.build`` receives must show ``/vsigs/...`` paths in
-    both ``setup_dep.datasets_dep[0].elevtn`` and
-    ``setup_manning_roughness.datasets_rgh[0].lulc`` when the upstream
-    ``dem_uri`` / ``landcover_uri`` are ``gs://`` URIs. If either path
-    still starts with ``gs://``, HydroMT will hand it to
-    ``rioxarray.open_rasterio`` which dispatches via ``gcsfs`` → segfault.
+def test_hydromt_yaml_emits_staged_local_paths_for_gs_inputs(tmp_path: Path) -> None:
+    """The YAML config plumbed into HydroMT must use STAGED LOCAL paths for
+    ``gs://`` inputs — never ``gs://`` (gcsfs segfault, job-0170) and never
+    ``/vsigs/`` (HydroMT's data adapter stats catalog paths with fsspec's
+    LOCAL filesystem before GDAL opens them, so a /vsigs/ GDAL-ism raises
+    "No such file found" — proven live in the Stage 3 round-5 gate,
+    OQ-0248-FLOOD-BUILD-VSIGS / job-0249). ``_stage_gcs_local`` downloads
+    the object and hands HydroMT a real local file.
     """
     captured = _build_with_capture(
         tmp_path=tmp_path,
@@ -3066,7 +3132,6 @@ def test_hydromt_yaml_emits_vsigs_paths_for_gs_inputs(tmp_path: Path) -> None:
     opt = captured.get("opt")
     assert isinstance(opt, dict)
 
-    # setup_dep — DEM path must be /vsigs/
     setup_dep = opt.get("setup_dep")
     assert isinstance(setup_dep, dict), (
         f"setup_dep missing or wrong shape; got {setup_dep!r}"
@@ -3076,19 +3141,22 @@ def test_hydromt_yaml_emits_vsigs_paths_for_gs_inputs(tmp_path: Path) -> None:
         f"datasets_dep missing or empty; got {datasets_dep!r}"
     )
     elevtn_path = datasets_dep[0].get("elevtn")
-    assert isinstance(elevtn_path, str) and elevtn_path.startswith("/vsigs/"), (
-        f"job-0170 regression: setup_dep.datasets_dep[0].elevtn must be a "
-        f"/vsigs/ path so HydroMT's rioxarray.open_rasterio uses GDAL's "
-        f"native libcurl backend, NOT gcsfs (which segfaults inside "
-        f"DatasetBase.stop). Got: {elevtn_path!r}"
-    )
+    assert isinstance(elevtn_path, str)
     assert "gs://" not in elevtn_path, (
-        f"job-0170 regression: elevtn still contains 'gs://' — the path "
-        f"will dispatch through gcsfs and segfault. Got: {elevtn_path!r}"
+        f"job-0170 regression: elevtn still contains 'gs://' — gcsfs "
+        f"dispatch segfaults. Got: {elevtn_path!r}"
+    )
+    assert not elevtn_path.startswith("/vsigs/"), (
+        f"job-0249 regression: elevtn is a /vsigs/ GDAL-ism — HydroMT's "
+        f"adapter fails fs.exists() on it ('No such file found', proven "
+        f"live round-5). Catalog paths must be staged LOCAL files. "
+        f"Got: {elevtn_path!r}"
+    )
+    assert "staged" in elevtn_path, (
+        f"expected the fake staged-local path from _fake_stage; got "
+        f"{elevtn_path!r}"
     )
 
-    # setup_manning_roughness — landcover path must be /vsigs/. This is
-    # the actual segfault site from the kickoff narrative.
     setup_rgh = opt.get("setup_manning_roughness")
     assert isinstance(setup_rgh, dict), (
         f"setup_manning_roughness missing; got {setup_rgh!r}"
@@ -3098,17 +3166,12 @@ def test_hydromt_yaml_emits_vsigs_paths_for_gs_inputs(tmp_path: Path) -> None:
         f"datasets_rgh missing or empty; got {datasets_rgh!r}"
     )
     lulc_path = datasets_rgh[0].get("lulc")
-    assert isinstance(lulc_path, str) and lulc_path.startswith("/vsigs/"), (
-        f"job-0170 HEADLINE regression: setup_manning_roughness lulc must "
-        f"be a /vsigs/ path. This is the exact path that triggered the "
-        f"SystemError: DatasetBase.stop segfault when handed a gs:// URI. "
+    assert isinstance(lulc_path, str)
+    assert "gs://" not in lulc_path and not lulc_path.startswith("/vsigs/"), (
+        f"lulc must be a staged LOCAL path (no gs://, no /vsigs/). "
         f"Got: {lulc_path!r}"
     )
-    assert "gs://" not in lulc_path, (
-        f"job-0170 HEADLINE regression: lulc still contains 'gs://' — "
-        f"HydroMT's setup_manning_roughness will dispatch through gcsfs "
-        f"and segfault. Got: {lulc_path!r}"
-    )
+    assert "staged" in lulc_path
 
 
 def test_gdal_num_threads_pinned_at_module_import() -> None:
