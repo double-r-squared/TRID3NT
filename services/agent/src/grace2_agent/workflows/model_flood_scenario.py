@@ -95,6 +95,7 @@ from .sfincs_builder import (
     BuildOptions,
     ForcingSpec,
     SFINCSSetupError,
+    _to_vsigs,
     build_sfincs_model,
 )
 
@@ -102,6 +103,8 @@ __all__ = [
     "model_flood_scenario",
     "run_model_flood_scenario",
     "WorkflowError",
+    "PrecipForcingError",
+    "compute_precip_area_mean_mm_per_hr",
 ]
 
 logger = logging.getLogger("grace2_agent.workflows.model_flood_scenario")
@@ -241,6 +244,140 @@ def _bbox_area_km2(bbox: tuple[float, float, float, float]) -> float:
 
 
 # --------------------------------------------------------------------------- #
+# job-0225 v2 — real-precip forcing branch (area-mean netamt)
+# --------------------------------------------------------------------------- #
+
+
+class PrecipForcingError(RuntimeError):
+    """Raised when the observed-precip-raster forcing path cannot be computed.
+
+    Carries an A.6 open-set ``error_code`` so the workflow surface lifts it
+    into a failed AssessmentEnvelope (same pattern as ``SFINCSSetupError``).
+    Codes:
+    - ``PRECIP_RASTER_READ_FAILED`` — the raster bytes were unreadable.
+    - ``PRECIP_RASTER_EMPTY`` — the raster had no valid (non-nodata) cells in
+      the domain → no area-mean is computable.
+    """
+
+    def __init__(self, error_code: str, message: str) -> None:
+        super().__init__(message)
+        self.error_code = error_code
+
+
+def compute_precip_area_mean_mm_per_hr(
+    forcing_raster_uri: str,
+    bbox: tuple[float, float, float, float],
+    accumulation_hours: float,
+    *,
+    raster_units: str = "mm",
+) -> tuple[float, float]:
+    """Compute the AREA-MEAN accumulated precip over the model domain → mm/hr.
+
+    job-0225 v2 (OQ-6 netamt fallback). Reads the precipitation raster at
+    ``forcing_raster_uri`` (an accumulated-precip COG — MRMS QPE, ERA5,
+    gridMET, …), computes the mean over all valid cells, and converts that
+    single domain-mean accumulated depth into a uniform SFINCS ``netamt``
+    rate in **mm/hr** by dividing by the ``accumulation_hours`` window.
+
+    This collapses the raster's spatial structure to one number — the v0.1
+    netamt fallback locked by manifest OQ-6. The spw spatially-varying-precip
+    upgrade path (ingest the raster as a 2D time grid) is documented in
+    ``sfincs_builder._generate_hydromt_yaml_config`` + this job's report.md.
+
+    Domain handling (v0.1): we average over EVERY valid cell in the raster.
+    The fetchers that produce the precip raster (e.g. ``fetch_mrms_qpe``) clip
+    to roughly the requested bbox already, so the raster footprint ≈ the model
+    domain. A future refinement would window-read the raster to the exact bbox
+    before averaging (captured as OQ-225-EXACT-DOMAIN-WINDOW); for v0.1 the
+    whole-raster mean is the documented behavior.
+
+    Args:
+        forcing_raster_uri: ``gs://...`` (or local path / ``/vsigs/...``) URI
+            of the accumulated-precip COG.
+        bbox: ``(min_lon, min_lat, max_lon, max_lat)`` — the model domain.
+            Carried for provenance + future exact-window cropping; v0.1 uses
+            the whole-raster mean.
+        accumulation_hours: the precip accumulation window in hours (e.g. 24
+            for a 24h QPE product). The area-mean accumulated depth is divided
+            by this to yield mm/hr. Must be positive.
+        raster_units: declared units of the raster values. Default ``"mm"``
+            (the MRMS/ERA5/gridMET convention used by our fetchers). If
+            ``"inches"`` the mean is multiplied by 25.4 to reach mm before the
+            per-hour conversion.
+
+    Returns:
+        ``(magnitude_mm_per_hr, area_mean_mm)`` — the uniform SFINCS netamt
+        rate AND the area-mean accumulated depth in mm (echoed into forcing
+        provenance for narration).
+
+    Raises:
+        PrecipForcingError("PRECIP_RASTER_READ_FAILED"): the read failed.
+        PrecipForcingError("PRECIP_RASTER_EMPTY"): no valid cells.
+        ValueError: ``accumulation_hours <= 0``.
+    """
+    if accumulation_hours <= 0:
+        raise ValueError(
+            f"accumulation_hours must be positive; got {accumulation_hours!r}"
+        )
+    try:
+        import numpy as np  # type: ignore[import-not-found]
+        import rasterio  # type: ignore[import-not-found]
+    except Exception as exc:  # noqa: BLE001
+        raise PrecipForcingError(
+            "PRECIP_RASTER_READ_FAILED",
+            f"rasterio/numpy not available for precip area-mean: {exc}",
+        ) from exc
+
+    # GCS URIs → /vsigs/ for rasterio's GDAL backend (job-0170 — keeps the
+    # fragile gcsfs path out of the read). Local/file:// paths pass through.
+    read_path = _to_vsigs(forcing_raster_uri)
+    try:
+        with rasterio.open(read_path) as src:
+            arr = src.read(1).astype("float64")
+            nodata = src.nodata
+    except Exception as exc:  # noqa: BLE001
+        raise PrecipForcingError(
+            "PRECIP_RASTER_READ_FAILED",
+            f"rasterio.open({forcing_raster_uri}) failed: {exc}",
+        ) from exc
+
+    # Mask nodata + common sentinels + non-finite values. Negative precip is
+    # physically invalid (some products use negatives as fill) — mask those
+    # too so they don't drag the mean.
+    mask = np.isfinite(arr)
+    if nodata is not None:
+        mask &= arr != nodata
+    mask &= arr != -9999.0
+    mask &= arr >= 0.0
+    valid = arr[mask]
+    if valid.size == 0:
+        raise PrecipForcingError(
+            "PRECIP_RASTER_EMPTY",
+            f"precip raster {forcing_raster_uri} has no valid cells over the "
+            f"domain {bbox} — no area-mean computable",
+        )
+
+    area_mean = float(valid.mean())
+    if raster_units == "inches":
+        area_mean_mm = area_mean * 25.4
+    else:
+        area_mean_mm = area_mean
+    magnitude_mm_per_hr = area_mean_mm / accumulation_hours
+    logger.info(
+        "precip area-mean: raster=%s valid_cells=%d mean=%.4f %s "
+        "(%.4f mm) / %.2f hr → %.6f mm/hr",
+        forcing_raster_uri,
+        int(valid.size),
+        area_mean,
+        raster_units,
+        area_mean_mm,
+        accumulation_hours,
+        magnitude_mm_per_hr,
+    )
+    return magnitude_mm_per_hr, area_mean_mm
+
+
+# --------------------------------------------------------------------------- #
 # The workflow itself
 # --------------------------------------------------------------------------- #
 
@@ -252,6 +389,7 @@ async def model_flood_scenario(
     return_period_yr: int = 100,
     duration_hr: int = 24,
     compute_class: str = "medium",
+    forcing_raster_uri: str | None = None,
     *,
     project_id: str | None = None,
     session_id: str | None = None,
@@ -285,6 +423,17 @@ async def model_flood_scenario(
         duration_hr: design-storm duration in hours. Atlas 14 publishes a
             fixed row set; 24 hr is the v0.1 default.
         compute_class: FR-CE-3 compute class. Default ``"medium"``.
+        forcing_raster_uri: optional ``gs://...`` (or local) URI of an
+            OBSERVED accumulated-precip raster (job-0225 v2, Case 3). When
+            set, the workflow SKIPS the ``lookup_precip_return_period`` Atlas
+            14 design-storm lookup and instead computes the AREA-MEAN
+            accumulated precip over the model domain, converting it to a
+            uniform SFINCS ``netamt`` rate (mm/hr) — the OQ-6 area-mean
+            fallback (spw spatial upgrade path documented in
+            ``sfincs_builder``). ``duration_hr`` is reused as the precip
+            accumulation window for the depth→rate conversion. When ``None``
+            (the default) the Atlas 14 design-storm path runs unchanged —
+            behavior is **identical** to the v1 workflow (regression-critical).
         project_id / session_id: ULID identifiers from the WS session. When
             ``None``, fresh ULIDs are minted (for direct-call / smoke).
 
@@ -306,13 +455,15 @@ async def model_flood_scenario(
 
     logger.info(
         "model_flood_scenario start bbox=%s location_query=%r event_id=%r "
-        "return_period_yr=%s duration_hr=%s compute_class=%s",
+        "return_period_yr=%s duration_hr=%s compute_class=%s "
+        "forcing_raster_uri=%r",
         bbox,
         location_query,
         event_id,
         return_period_yr,
         duration_hr,
         compute_class,
+        forcing_raster_uri,
     )
 
     # --- Step 0: bbox resolution (Decision K; bbox-direct wins precedence) ---
@@ -360,6 +511,11 @@ async def model_flood_scenario(
 
     # --- Step 1-4: atomic-tool fetcher chain ---
     forcing_summary: ForcingSummary | None = None
+    # job-0225 v2: ``precip_inches`` is the Atlas 14 design-storm depth (None
+    # on the observed-raster path); ``precip_magnitude_mm_per_hr`` is the
+    # pre-computed uniform netamt rate (None on the design-storm path).
+    precip_inches: float | None = None
+    precip_magnitude_mm_per_hr: float | None = None
     try:
         dem_layer = fetch_dem(resolved_bbox, resolution_m=int(grid_resolution_m))
         data_sources.append(
@@ -383,35 +539,85 @@ async def model_flood_scenario(
                 accessed_at=datetime.now(timezone.utc),
             )
         )
-        mid_lon = 0.5 * (resolved_bbox[0] + resolved_bbox[2])
-        mid_lat = 0.5 * (resolved_bbox[1] + resolved_bbox[3])
-        precip_result = lookup_precip_return_period(
-            location=(mid_lat, mid_lon),
-            return_period_years=return_period_yr,
-            duration_hours=float(duration_hr),
-        )
-        precip_inches = float(precip_result["precip_inches"])
-        data_sources.append(
-            DataSource(
-                name=precip_result.get("vintage_volume", "NOAA Atlas 14"),
-                uri="noaa-atlas14-pfds",
-                accessed_at=datetime.now(timezone.utc),
+        if forcing_raster_uri is not None:
+            # --- job-0225 v2: OBSERVED-precip forcing branch (Case 3) ---
+            # Compute the AREA-MEAN accumulated precip over the model domain
+            # and convert to a uniform SFINCS netamt rate (mm/hr). ``duration_hr``
+            # is reused as the accumulation window. The Atlas 14 design-storm
+            # lookup is SKIPPED entirely on this path.
+            precip_magnitude_mm_per_hr, area_mean_mm = (
+                compute_precip_area_mean_mm_per_hr(
+                    forcing_raster_uri=forcing_raster_uri,
+                    bbox=resolved_bbox,
+                    accumulation_hours=float(duration_hr),
+                )
             )
-        )
-        forcing_summary = ForcingSummary(
-            forcing_type="pluvial_synthetic",
-            source=(
-                f"{precip_result.get('vintage_volume', 'NOAA Atlas 14')} — "
-                f"{return_period_yr}-yr / {duration_hr}-hr design storm"
-            ),
-            parameters={
-                "precip_inches": precip_inches,
-                "duration_hours": float(duration_hr),
-                "return_period_years": return_period_yr,
-                "vintage_volume": precip_result.get("vintage_volume"),
-                "project_area": precip_result.get("project_area"),
-            },
-        )
+            data_sources.append(
+                DataSource(
+                    name="Observed precipitation raster (area-mean netamt)",
+                    uri=forcing_raster_uri,
+                    accessed_at=datetime.now(timezone.utc),
+                )
+            )
+            # Envelope-side ``ForcingSummary.forcing_type`` is a contract-owned
+            # Literal that does NOT (yet) include ``"pluvial_observed"`` — the
+            # observed precip raster IS a pluvial-precip forcing on the same
+            # SFINCS netamt path, so we summarise it as ``"pluvial_synthetic"``
+            # and carry the observed/area-mean distinction in the free-form
+            # ``parameters`` dict (``forcing_mode="area_mean_netamt"`` +
+            # ``forcing_raster_uri``) + the human-readable ``source``. The
+            # ENGINE-internal ``ForcingSpec.forcing_type`` (below) is
+            # ``"pluvial_observed"`` — that drives the deck-builder branch and
+            # is engine-owned. A future schema amendment could add a dedicated
+            # ``"pluvial_observed"`` envelope literal (OQ-225-OBSERVED-FORCING-
+            # LITERAL — propose to the schema specialist).
+            forcing_summary = ForcingSummary(
+                forcing_type="pluvial_synthetic",
+                source=(
+                    f"Observed precip raster {forcing_raster_uri} — "
+                    f"area-mean {area_mean_mm:.2f} mm over {duration_hr}-hr "
+                    "accumulation → uniform netamt (OQ-6 area-mean fallback)"
+                ),
+                parameters={
+                    "forcing_raster_uri": forcing_raster_uri,
+                    "area_mean_mm": area_mean_mm,
+                    "precip_magnitude_mm_per_hr": precip_magnitude_mm_per_hr,
+                    "accumulation_hours": float(duration_hr),
+                    "forcing_mode": "area_mean_netamt",
+                },
+                inputs_uri=forcing_raster_uri,
+            )
+        else:
+            # --- Atlas 14 design-storm path (v1 behavior, unchanged) ---
+            mid_lon = 0.5 * (resolved_bbox[0] + resolved_bbox[2])
+            mid_lat = 0.5 * (resolved_bbox[1] + resolved_bbox[3])
+            precip_result = lookup_precip_return_period(
+                location=(mid_lat, mid_lon),
+                return_period_years=return_period_yr,
+                duration_hours=float(duration_hr),
+            )
+            precip_inches = float(precip_result["precip_inches"])
+            data_sources.append(
+                DataSource(
+                    name=precip_result.get("vintage_volume", "NOAA Atlas 14"),
+                    uri="noaa-atlas14-pfds",
+                    accessed_at=datetime.now(timezone.utc),
+                )
+            )
+            forcing_summary = ForcingSummary(
+                forcing_type="pluvial_synthetic",
+                source=(
+                    f"{precip_result.get('vintage_volume', 'NOAA Atlas 14')} — "
+                    f"{return_period_yr}-yr / {duration_hr}-hr design storm"
+                ),
+                parameters={
+                    "precip_inches": precip_inches,
+                    "duration_hours": float(duration_hr),
+                    "return_period_years": return_period_yr,
+                    "vintage_volume": precip_result.get("vintage_volume"),
+                    "project_area": precip_result.get("project_area"),
+                },
+            )
     except Exception as exc:  # noqa: BLE001
         logger.exception("fetcher chain failed: %s", exc)
         return _build_failed_envelope(
@@ -431,13 +637,22 @@ async def model_flood_scenario(
 
     # --- Step 5: build_sfincs_model with NLCD validation gate ---
     try:
-        forcing_spec = ForcingSpec(
-            forcing_type="pluvial_synthetic",
-            precip_inches=precip_inches,
-            duration_hours=float(duration_hr),
-            return_period_years=return_period_yr,
-            provenance=dict(forcing_summary.parameters if forcing_summary else {}),
-        )
+        if forcing_raster_uri is not None:
+            # Observed-precip netamt path: carry the pre-computed magnitude.
+            forcing_spec = ForcingSpec(
+                forcing_type="pluvial_observed",
+                duration_hours=float(duration_hr),
+                precip_magnitude_mm_per_hr=precip_magnitude_mm_per_hr,
+                provenance=dict(forcing_summary.parameters if forcing_summary else {}),
+            )
+        else:
+            forcing_spec = ForcingSpec(
+                forcing_type="pluvial_synthetic",
+                precip_inches=precip_inches,
+                duration_hours=float(duration_hr),
+                return_period_years=return_period_yr,
+                provenance=dict(forcing_summary.parameters if forcing_summary else {}),
+            )
         options = BuildOptions(
             grid_resolution_m=grid_resolution_m,
             simulation_hours=float(duration_hr),
@@ -680,24 +895,46 @@ async def run_model_flood_scenario(
     return_period_yr: int = 100,
     duration_hr: int = 24,
     compute_class: str = "medium",
+    forcing_raster_uri: str | None = None,
     # job-0164: absorb LLM-invented kwargs (centralized at server.py via
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI | dict[str, Any]:
-    """Run the full deterministic flood-modeling workflow.
+    """Run the full deterministic SFINCS flood-modeling workflow end-to-end.
 
-    Use this when: the user asks to model a flood scenario, simulate flood
-    inundation, compute peak flood depth, run a flood simulation, estimate
-    flood extent, or analyze flooding for any specific location. Also use
-    for any request mentioning "return period", "design storm", "ARI",
-    "flood risk", "inundation depth", or "flood extent" for a named location
-    or bounding box.
+    Nine-step composition chain (all deterministic Python, zero LLM calls):
+    1. ``geocode_location(location_query)`` — optional; derives bbox from
+       a free-text place name when ``bbox`` is not provided.
+    2. ``fetch_dem(bbox)`` — downloads USGS 3DEP or CoastalDEM to a COG.
+    3. ``fetch_landcover(bbox)`` — downloads NLCD landcover for Manning's
+       roughness parameterization.
+    4. ``fetch_river_geometry(bbox)`` — downloads NHD river geometry for
+       channel routing.
+    5. ``lookup_precip_return_period(bbox, return_period_years, duration_hours)``
+       — looks up NOAA Atlas 14 design-storm precipitation depth.
+    6. ``build_sfincs_model(dem_uri, landcover_uri, river_uri, forcing, bbox)``
+       — assembles the HydroMT-SFINCS deck in GCS with NLCD validation gate.
+    7. ``run_solver(model_setup)`` — submits the SFINCS Cloud Run Job.
+    8. ``wait_for_completion(run_id)`` — polls until SUCCEEDED or FAILED;
+       emits progress events per FR-WC-12.
+    9. ``postprocess_flood(run_outputs_uri)`` → ``publish_layer(flood_depth_cog)``
+       — extracts peak depth COG, uploads to the runs bucket, and publishes
+       to QGIS Server WMS.
 
-    Do NOT use this for: running a custom solver dispatch (use ``run_solver``
-    + ``wait_for_completion`` directly); composing a non-flood hazard
-    (other hazard workflows land in their respective milestones); cancelling
-    a running flood scenario (use the WS ``cancel`` envelope — the cancel
-    chain propagates through ``wait_for_completion``).
+    When to use:
+        - User asks to model a flood scenario, simulate flood inundation,
+          compute peak flood depth, run a flood simulation, or estimate flood
+          extent for a named location.
+        - Any request mentioning "return period", "design storm", "ARI",
+          "flood risk", "inundation depth", or "flood extent" for a named
+          location or bounding box.
+
+    When NOT to use:
+        - Custom solver dispatch (use ``run_solver`` + ``wait_for_completion``
+          directly).
+        - Non-flood hazards (separate workflow milestones).
+        - Cancelling a running flood scenario (use the WS ``cancel`` envelope;
+          cancellation propagates through ``wait_for_completion``).
 
     Examples:
         - "model the flood from a 100-year storm in Fort Myers, FL"
@@ -723,6 +960,14 @@ async def run_model_flood_scenario(
             durations 5-min through 60-day. Default 24.
             (Alias ``duration_hr`` is accepted for backward compat.)
         compute_class: FR-CE-3 compute class. Default ``"medium"``.
+        forcing_raster_uri: optional ``gs://...`` URI of an OBSERVED
+            accumulated-precipitation raster (e.g. an MRMS QPE COG from
+            ``fetch_mrms_qpe``). When provided, the workflow forces SFINCS
+            with the AREA-MEAN of this raster over the model domain (converted
+            to a uniform rain rate) INSTEAD of the Atlas 14 design storm — this
+            is the Case 3 real-data forcing path. ``duration_hours`` is reused
+            as the accumulation window. Leave unset (``None``) for the standard
+            return-period design-storm scenario.
 
     Returns:
         On success: the primary flood-depth COG as a ``LayerURI`` — the
@@ -742,6 +987,21 @@ async def run_model_flood_scenario(
     ``ttl_class="live-no-cache"`` + ``source_class="workflow_dispatch"`` (a new
     FR-DC-6 source class for the workflow exposure surface — same shape as
     job-0041's ``solver_dispatch``).
+
+    Cross-tool dependencies:
+        Upstream (consumes) — the 9-step fetch + solve chain above:
+        - ``geocode_location`` (optional) → ``fetch_dem`` → ``fetch_landcover``
+          → ``fetch_river_geometry`` → ``lookup_precip_return_period``
+          → ``build_sfincs_model`` → ``run_solver`` → ``wait_for_completion``
+          → ``postprocess_flood`` → ``publish_layer``
+        Downstream (feeds):
+        - ``run_model_flood_habitat_scenario`` — calls this sub-workflow as
+          step 3 to generate the flood layer for Case 1 habitat analysis.
+        - ``run_pelicun_damage_assessment`` / ``run_pelicun_with_buildings`` —
+          consume the returned flood-depth COG ``LayerURI.uri`` as
+          ``hazard_raster_uri`` for building-damage assessment.
+        - ``compute_zonal_statistics`` — flood-depth COG as ``value_raster_uri``
+          for population-in-flood-zone or habitat-impact metrics.
     """
     envelope = await model_flood_scenario(
         bbox=bbox,
@@ -750,6 +1010,7 @@ async def run_model_flood_scenario(
         return_period_yr=return_period_yr,
         duration_hr=duration_hr,
         compute_class=compute_class,
+        forcing_raster_uri=forcing_raster_uri,
     )
     # --- Layer-emission contract pin (docs/decisions/layer-emission-contract.md, 2026-06-07) ---
     # Return the primary flood-depth COG as a LayerURI so PipelineEmitter's

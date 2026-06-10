@@ -219,20 +219,38 @@ class ForcingSpec:
     Fields used by the v0.1 pluvial SFINCS deck:
 
     - ``forcing_type`` — drives the SFINCS forcing component(s) HydroMT
-      configures (``"pluvial_synthetic"`` → uniform rainfall hyetograph;
-      ``"storm_surge"`` → wind/pressure/water-level series; future).
-    - ``precip_inches`` — total depth from Atlas 14.
-    - ``duration_hours`` — design-storm duration (Atlas 14 row).
-    - ``return_period_years`` — ARI (Atlas 14 column).
+      configures (``"pluvial_synthetic"`` → uniform rainfall hyetograph from
+      an Atlas 14 design storm; ``"pluvial_observed"`` → uniform rainfall
+      hyetograph from an OBSERVED precip raster (job-0225 v2, area-mean
+      netamt fallback); ``"storm_surge"`` → wind/pressure/water-level series;
+      future).
+    - ``precip_inches`` — total depth from Atlas 14 (design-storm path).
+    - ``duration_hours`` — design-storm / accumulation duration (Atlas 14 row
+      for ``pluvial_synthetic``; the precip-raster accumulation window for
+      ``pluvial_observed``).
+    - ``return_period_years`` — ARI (Atlas 14 column; ``None`` for observed
+      forcing — observed precip has no ARI).
+    - ``precip_magnitude_mm_per_hr`` — pre-computed uniform-rain rate in mm/hr
+      (job-0225 v2 ``pluvial_observed`` netamt path). When set, the YAML
+      emitter uses it VERBATIM as the SFINCS ``setup_precip_forcing``
+      ``magnitude`` (mm/hr) — bypassing the Atlas 14
+      ``precip_inches / duration_hours`` arithmetic. This is the seam where
+      the area-mean of a real precip raster (MRMS QPE, ERA5, gridMET …)
+      enters the deck. ``None`` for the design-storm path (where magnitude is
+      derived from ``precip_inches``). See ``model_flood_scenario``'s
+      ``forcing_raster_uri`` branch + OQ-6 (area-mean netamt v0.1; spw
+      upgrade path documented there).
     - ``provenance`` — free-form dict echoed into ``ForcingSummary.parameters``
       so the AssessmentEnvelope carries the Atlas 14 volume / project_area /
-      vintage strings for narration.
+      vintage strings (design storm) or the precip-raster URI + area-mean
+      depth (observed) for narration.
     """
 
     forcing_type: str
     precip_inches: float | None = None
     duration_hours: float | None = None
     return_period_years: int | None = None
+    precip_magnitude_mm_per_hr: float | None = None
     provenance: dict[str, Any] = field(default_factory=dict)
 
 
@@ -788,7 +806,55 @@ def _generate_hydromt_yaml_config(
     # To re-enable for v0.2+ (real ATCF + river inflow): add the block back
     # AND pin pandas < 2.0 OR apply the upstream patch
     # (``pd.api.types.is_integer_dtype(idx)`` instead of ``idx.is_integer()``).
-    if forcing.forcing_type == "pluvial_synthetic" and forcing.precip_inches is not None:
+    # --- Precip forcing emission (uniform netamt magnitude) ---
+    #
+    # Two upstream paths converge on the same SFINCS ``setup_precip_forcing``
+    # ``magnitude`` (mm/hr) — a single uniform precipitation hyetograph the
+    # source projects onto a 10-minute time grid (``get_model_time()``):
+    #
+    #   1. ``pluvial_synthetic`` (Atlas 14 design storm, M5 v0.1): the
+    #      magnitude is DERIVED here from ``precip_inches`` over
+    #      ``duration_hours`` (depth → rate arithmetic).
+    #   2. ``pluvial_observed`` (job-0225 v2, real precip raster): the
+    #      magnitude is PRE-COMPUTED by ``model_flood_scenario``'s
+    #      ``forcing_raster_uri`` branch (area-mean of the precip raster over
+    #      the model domain, in mm, divided by the accumulation window) and
+    #      carried on ``forcing.precip_magnitude_mm_per_hr``. We emit it
+    #      verbatim — this is the netamt fallback locked by OQ-6 (see below).
+    #
+    # OQ-6 (manifest, TENTATIVE → LOCKED here): SFINCS accepts precipitation
+    # as ``netamt`` (uniform mm/hr — what ``setup_precip_forcing``'s
+    # ``magnitude`` produces) OR ``spw`` (spatially-variable precip via
+    # NetCDF). v0.1 maps a precip raster to a SINGLE area-mean ``magnitude``
+    # (netamt). This collapses spatial structure but demonstrates the
+    # real-data forcing path end-to-end. SPW UPGRADE PATH: when the SFINCS
+    # container is confirmed to support spw spatially-varying precip, replace
+    # this single-magnitude emission for ``pluvial_observed`` with a
+    # ``setup_precip_forcing_from_grid`` (hydromt-sfincs ≥ 1.1) step that
+    # ingests the precip raster as a time-resolved 2D grid → SFINCS
+    # ``precip_2d.nc`` (spw). That keeps the raster's spatial gradient (e.g.
+    # an MRMS QPE band crossing the domain) instead of flattening to a mean.
+    # The container-support finding for spw is recorded in this job's
+    # report.md (job-0225).
+    if (
+        forcing.forcing_type == "pluvial_observed"
+        and forcing.precip_magnitude_mm_per_hr is not None
+    ):
+        # job-0225 v2 — area-mean netamt path. The magnitude was computed
+        # upstream from a real precip raster (MRMS QPE / ERA5 / gridMET); we
+        # do NOT re-derive it from depth here. ``precip_inches`` may be None
+        # on this path (observed forcing has no Atlas 14 depth).
+        magnitude_mm_per_hr = forcing.precip_magnitude_mm_per_hr
+        accum_hr = forcing.duration_hours or 24.0
+        mean_mm = magnitude_mm_per_hr * accum_hr
+        components.append("setup_precip_forcing:")
+        components.append(
+            f"  magnitude: {magnitude_mm_per_hr}  # mm/hr "
+            f"(observed precip raster: area-mean {mean_mm:.4f} mm over "
+            f"{accum_hr} hr → {magnitude_mm_per_hr:.4f} mm/hr; netamt fallback, "
+            "OQ-6 — spw spatial path is the documented upgrade)"
+        )
+    elif forcing.forcing_type == "pluvial_synthetic" and forcing.precip_inches is not None:
         # OQ-54 fix (job-0054): the live 1.2.x signature is
         # ``setup_precip_forcing(timeseries=None, magnitude=None)``; ``precip``
         # / ``duration_hr`` (what we previously emitted) are NOT accepted
@@ -888,6 +954,24 @@ def build_sfincs_model(
             message=(
                 f"pluvial forcing requires positive precip_inches; "
                 f"got {forcing.precip_inches!r}"
+            ),
+            details={"forcing": forcing.__dict__},
+        )
+    # job-0225 v2: the observed-precip-raster (netamt area-mean) path carries
+    # a pre-computed ``precip_magnitude_mm_per_hr`` instead of an Atlas 14
+    # ``precip_inches`` depth. Require it to be positive — a zero / missing
+    # magnitude would silently emit no precip forcing (Invariant 7: a flood
+    # deck with no rainfall is a silent-wrong-answer).
+    if forcing.forcing_type == "pluvial_observed" and (
+        forcing.precip_magnitude_mm_per_hr is None
+        or forcing.precip_magnitude_mm_per_hr <= 0
+    ):
+        raise SFINCSSetupError(
+            "FORCING_OUT_OF_RANGE",
+            message=(
+                "pluvial_observed forcing requires positive "
+                f"precip_magnitude_mm_per_hr; got "
+                f"{forcing.precip_magnitude_mm_per_hr!r}"
             ),
             details={"forcing": forcing.__dict__},
         )
