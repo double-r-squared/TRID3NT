@@ -382,6 +382,15 @@ HOT_SET_TOOLS: frozenset[str] = frozenset(
         "list_categories",
         "list_tools_in_category",
         "discover_dataset",
+        # job-0247 (OQ-0247-CODE-EXEC-NOT-IN-HOT-SET): code-exec is a
+        # cross-cutting capability like the meta-tools, not a geographic
+        # primitive the agent should have to discover via category listing.
+        # Round-4 live: Gemini called it CORRECTLY on the first turn, the
+        # post-hoc validator rejected it (OutOfAllowedSetError), and the
+        # agent narrated a false "I am unable to run Python code" instead
+        # of widening. Always reachable; the user-confirm gate (job-0233)
+        # remains the safety boundary.
+        "code_exec_request",
     }
 )
 

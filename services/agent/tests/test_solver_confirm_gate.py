@@ -240,3 +240,12 @@ def test_dispatch_source_contains_strip_and_gate() -> None:
     assert "SOLVER_CONFIRM_TOOLS" in src
     assert 'params.pop("confirmed", None)' in src
     assert "SolverConfirmationCancelledError" in src
+
+
+def test_code_exec_request_in_hot_set() -> None:
+    """job-0247 (OQ-0247-CODE-EXEC-NOT-IN-HOT-SET): code_exec_request must be
+    hot-set-reachable — round-4 live showed the validator rejecting Gemini's
+    CORRECT first-turn call, producing a false 'cannot run Python' narration."""
+    from grace2_agent.categories import HOT_SET_TOOLS
+
+    assert "code_exec_request" in HOT_SET_TOOLS
