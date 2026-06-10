@@ -107,6 +107,12 @@ ENV QGIS_SERVER_LOG_LEVEL=0 \
     QGIS_SERVER_MAX_THREADS=2 \
     QGIS_SERVER_CACHE_DIRECTORY=/tmp/qgis-server-cache \
     QGIS_SERVER_CACHE_SIZE=50000000 \
+    # job-0245 (OQ-0245-QGIS-PROJECT-CACHE): without a project-cache strategy
+    # QGIS Server NEVER re-parses the gcsfuse-mounted .qgs, so freshly
+    # published layers 404 (LayerNotDefined) until a cold start. 'periodic'
+    # re-checks the project file every CHECK_INTERVAL ms.
+    QGIS_SERVER_PROJECT_CACHE_STRATEGY=periodic \
+    QGIS_SERVER_PROJECT_CACHE_CHECK_INTERVAL=10000 \
     QGIS_PROJECT_FILE="" \
     QGIS_SERVER_IGNORE_BAD_LAYERS=false \
     GRACE2_STYLES_DIR=/etc/qgis/styles

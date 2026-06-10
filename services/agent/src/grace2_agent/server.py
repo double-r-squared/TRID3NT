@@ -1355,6 +1355,16 @@ async def _emit_case_open(
     ``CaseOpenEnvelopePayload`` semantics.
     """
     state.active_case_id = case_id
+    # job-0245 (OQ-0245-CONTEXT-CARRYOVER-MISROUTE): a Case switch must reset
+    # the per-connection LLM conversation, not just the case state — round-3
+    # live testing proved every post-switch prompt re-routed to the PREVIOUS
+    # Case's composer (a Fort Myers flood ask and a numpy ask both got the
+    # Twin Falls groundwater gate) because build_contents_from_history kept
+    # feeding the old turns to Gemini. Clean slate per Case (the Wave 4.8 A.7
+    # replace-not-reconcile rule, applied server-side); the visible chat
+    # replay comes from the persisted Case history, not this list.
+    state.chat_history.clear()
+    state.turn_count = 0
     await _touch_session_record(state, case_id=case_id)  # D.6 heartbeat (M4)
     p = get_persistence()
     if p is None:
@@ -1467,6 +1477,9 @@ async def _handle_case_command(
             )
             return
         state.active_case_id = new_case_id
+        # job-0245: fresh Case = fresh LLM context (see _emit_case_open note).
+        state.chat_history.clear()
+        state.turn_count = 0
         await _touch_session_record(state, case_id=new_case_id)  # D.6 (M4)
         # Emit case-open with the empty session state for the fresh Case.
         payload = CaseOpenEnvelopePayload(

@@ -175,6 +175,17 @@ resource "google_cloud_run_v2_service" "qgis_server" {
         value = "2"
       }
       env {
+        # job-0245 (OQ-0245-QGIS-PROJECT-CACHE): re-parse the gcsfuse-mounted
+        # .qgs periodically so freshly published layers become visible without
+        # a cold start (LayerNotDefined otherwise).
+        name  = "QGIS_SERVER_PROJECT_CACHE_STRATEGY"
+        value = "periodic"
+      }
+      env {
+        name  = "QGIS_SERVER_PROJECT_CACHE_CHECK_INTERVAL"
+        value = "10000"
+      }
+      env {
         # Canonical preset path baked at /etc/qgis/styles/ by the Dockerfile
         # (job-0024 rebuild). /opt/grace2/styles/ kept as a back-compat alias
         # in the image but the env points to the canonical path.
