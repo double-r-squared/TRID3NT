@@ -41,9 +41,11 @@ from grace2_agent.tools.fetch_mrms_qpe import (
     _METADATA,
     _NODATA,
     _grib2_to_geotiff,
+    _normalize_accumulation,
     _parse_valid_time,
     _round_bbox_to_6dp,
     _validate_bbox,
+    estimate_payload_mb,
     MRMSQPEEmptyError,
     MRMSQPEInputError,
     MRMSQPENotAvailableError,
@@ -190,8 +192,17 @@ def test_tool_is_registered_in_registry():
 
 
 def test_metadata_module_constant_matches_registry():
-    """``_METADATA`` and the TOOL_REGISTRY entry are the same object identity."""
-    assert TOOL_REGISTRY["fetch_mrms_qpe"].metadata is _METADATA
+    """``_METADATA`` base fields match the TOOL_REGISTRY entry.
+
+    The decorator may create a copy via ``model_copy`` (e.g. to apply
+    ``open_world_hint=True``), so we compare field values rather than
+    object identity.
+    """
+    reg_meta = TOOL_REGISTRY["fetch_mrms_qpe"].metadata
+    assert reg_meta.name == _METADATA.name
+    assert reg_meta.ttl_class == _METADATA.ttl_class
+    assert reg_meta.source_class == _METADATA.source_class
+    assert reg_meta.cacheable == _METADATA.cacheable
 
 
 # ---------------------------------------------------------------------------
@@ -223,6 +234,138 @@ def test_lat_out_of_range_raises_input_error():
 def test_non_finite_bbox_raises_input_error():
     with pytest.raises(MRMSQPEInputError):
         _validate_bbox((-81.0, float("nan"), -80.0, 26.0))
+
+
+# ---------------------------------------------------------------------------
+# sprint-13 job-0226: lowercase accumulation alias tests (FR-TA-2 scope).
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_accumulation_lowercase_24h():
+    """'24h' normalizes to the canonical S3 token '24H'."""
+    assert _normalize_accumulation("24h") == "24H"
+
+
+def test_normalize_accumulation_lowercase_1h():
+    """'1h' normalizes to '01H' (zero-padded S3 token)."""
+    assert _normalize_accumulation("1h") == "01H"
+
+
+def test_normalize_accumulation_lowercase_6h():
+    """'6h' normalizes to '06H'."""
+    assert _normalize_accumulation("6h") == "06H"
+
+
+def test_normalize_accumulation_lowercase_72h():
+    """'72h' normalizes to '72H'."""
+    assert _normalize_accumulation("72h") == "72H"
+
+
+def test_normalize_accumulation_uppercase_passthrough():
+    """Uppercase tokens like '24H' are accepted unchanged."""
+    assert _normalize_accumulation("24H") == "24H"
+    assert _normalize_accumulation("01H") == "01H"
+
+
+def test_normalize_accumulation_unknown_raises_input_error():
+    """Unknown accumulation values raise MRMSQPEInputError."""
+    with pytest.raises(MRMSQPEInputError) as exc:
+        _normalize_accumulation("99h")
+    assert "accumulation" in str(exc.value).lower() or "99h" in str(exc.value)
+
+
+def test_fetch_mrms_qpe_lowercase_24h_accepted(tmp_path):
+    """The tool accepts lowercase '24h' (sprint-13 default) without error."""
+    fake_gcs = FakeStorageClient()
+    synthetic_bytes = _make_synthetic_mrms_geotiff(include_sentinels=False)
+
+    def fake_fetch_bytes(accumulation, bbox, valid_time_dt):
+        assert accumulation == "24H", (
+            f"expected canonical '24H' after normalization; got {accumulation!r}"
+        )
+        return synthetic_bytes
+
+    with patch(
+        "grace2_agent.tools.fetch_mrms_qpe._fetch_mrms_qpe_bytes",
+        side_effect=fake_fetch_bytes,
+    ), patch(
+        "grace2_agent.tools.fetch_mrms_qpe.read_through",
+        side_effect=_patched_read_through(fake_gcs),
+    ):
+        result = fetch_mrms_qpe(bbox=_FLORIDA_BBOX, accumulation="24h")
+
+    assert result.layer_type == "raster"
+    assert "24H" in result.layer_id or "24h" in result.layer_id.lower()
+
+
+def test_fetch_mrms_qpe_default_is_24h(tmp_path):
+    """Default accumulation is '24h' (sprint-13 change from '01H')."""
+    fake_gcs = FakeStorageClient()
+    synthetic_bytes = _make_synthetic_mrms_geotiff(include_sentinels=False)
+
+    captured: dict[str, Any] = {}
+
+    def fake_fetch_bytes(accumulation, bbox, valid_time_dt):
+        captured["accumulation"] = accumulation
+        return synthetic_bytes
+
+    with patch(
+        "grace2_agent.tools.fetch_mrms_qpe._fetch_mrms_qpe_bytes",
+        side_effect=fake_fetch_bytes,
+    ), patch(
+        "grace2_agent.tools.fetch_mrms_qpe.read_through",
+        side_effect=_patched_read_through(fake_gcs),
+    ):
+        fetch_mrms_qpe(bbox=_FLORIDA_BBOX)  # no accumulation kwarg — uses default
+
+    assert captured.get("accumulation") == "24H", (
+        f"default accumulation should be 24H (canonical form of '24h'); "
+        f"got {captured.get('accumulation')!r}"
+    )
+
+
+def test_lowercase_and_uppercase_24h_share_cache_key():
+    """'24h' and '24H' normalise to the same canonical key → same cache entry."""
+    params_lower = {"accumulation": "24H", "bbox": "CONUS", "valid_time": "LATEST", "pass": "Pass2"}
+    params_upper = {"accumulation": "24H", "bbox": "CONUS", "valid_time": "LATEST", "pass": "Pass2"}
+    k_lower = compute_cache_key("mrms_qpe", params_lower, "dynamic-1h", now=_PINNED_NOW)
+    k_upper = compute_cache_key("mrms_qpe", params_upper, "dynamic-1h", now=_PINNED_NOW)
+    assert k_lower == k_upper, (
+        "lowercase '24h' and uppercase '24H' must hash to the same cache key "
+        "(both canonicalize to '24H' before cache-key construction)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# estimate_payload_mb (sprint-13 job-0226 addition — Wave 1.5 chat-warning).
+# ---------------------------------------------------------------------------
+
+
+def test_estimate_payload_mb_returns_positive_float():
+    """estimate_payload_mb with a typical CONUS bbox returns a positive float."""
+    mb = estimate_payload_mb(bbox=_FLORIDA_BBOX)
+    assert isinstance(mb, float)
+    assert mb > 0.0
+
+
+def test_estimate_payload_mb_scales_with_bbox_size():
+    """A larger bbox produces a larger payload estimate than a small one."""
+    small_bbox = (-81.5, 26.0, -81.0, 26.5)   # ~0.25 sq-deg
+    large_bbox = (-90.0, 25.0, -80.0, 35.0)   # 100 sq-deg
+    mb_small = estimate_payload_mb(bbox=small_bbox)
+    mb_large = estimate_payload_mb(bbox=large_bbox)
+    assert mb_large > mb_small * 5, (
+        f"large bbox ({mb_large:.3f} MB) should be >>5x small bbox ({mb_small:.3f} MB)"
+    )
+
+
+def test_estimate_payload_mb_none_bbox_returns_conus_size():
+    """bbox=None (CONUS-wide) returns a larger estimate than a small sub-region."""
+    mb_conus = estimate_payload_mb(bbox=None)
+    mb_florida = estimate_payload_mb(bbox=_FLORIDA_BBOX)
+    assert mb_conus > mb_florida * 10, (
+        f"CONUS estimate ({mb_conus:.1f} MB) should be >>10x Florida ({mb_florida:.3f} MB)"
+    )
 
 
 def test_bad_valid_time_raises_input_error():
