@@ -96,6 +96,10 @@ def register_tool(
     *,
     supports_global_query: bool | None = None,
     payload_mb_estimator_name: str | None = None,
+    read_only_hint: bool | None = None,
+    open_world_hint: bool | None = None,
+    destructive_hint: bool | None = None,
+    idempotent_hint: bool | None = None,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Return a decorator that records ``fn`` + ``metadata`` in ``TOOL_REGISTRY``.
 
@@ -113,13 +117,22 @@ def register_tool(
         @register_tool(_BASE_META, supports_global_query=True)
         def fetch_nws_alerts_conus(bbox=None): ...
 
-    Both kwargs default to ``None`` meaning "use whatever the metadata
+    Wave 4.10 (job-B12) added four MCP annotation hints as decorator-level
+    kwargs using the same pattern::
+
+        @register_tool(_BASE_META, read_only_hint=True, open_world_hint=True,
+                       destructive_hint=False, idempotent_hint=True)
+        def fetch_dem(bbox): ...
+
+    All kwargs default to ``None`` meaning "use whatever the metadata
     already declares" — the kwarg path is a convenience for tool authors
     who want the decorator site to be the single visible declaration of
     the flag. Backward-compatible: existing tools that pre-date the
     kwargs continue to work; the metadata defaults
-    (``supports_global_query=False``, ``payload_mb_estimator_name=None``)
-    preserve pre-Wave-1.5 behaviour.
+    (``supports_global_query=False``, ``payload_mb_estimator_name=None``,
+    ``read_only_hint=True``, ``open_world_hint=False``,
+    ``destructive_hint=False``, ``idempotent_hint=True``)
+    preserve pre-Wave-4.10 behaviour.
 
     Fail-fast invariants (FR-CE-8):
 
@@ -138,15 +151,24 @@ def register_tool(
             f"register_tool expects AtomicToolMetadata, got {type(metadata).__name__}"
         )
 
-    # If the caller passed Wave-1.5 flags at the decorator level, fold them
-    # into a fresh metadata. ``model_copy(update=...)`` re-runs validators
-    # because pydantic v2 ``GraceModel`` has ``validate_assignment=True``,
-    # so a bad combination still fails fast at import time.
+    # If the caller passed Wave-1.5 / Wave-4.10 flags at the decorator level,
+    # fold them into a fresh metadata. ``model_copy(update=...)`` re-runs
+    # validators because pydantic v2 ``GraceModel`` has
+    # ``validate_assignment=True``, so a bad combination still fails fast at
+    # import time.
     overrides: dict[str, Any] = {}
     if supports_global_query is not None:
         overrides["supports_global_query"] = supports_global_query
     if payload_mb_estimator_name is not None:
         overrides["payload_mb_estimator_name"] = payload_mb_estimator_name
+    if read_only_hint is not None:
+        overrides["read_only_hint"] = read_only_hint
+    if open_world_hint is not None:
+        overrides["open_world_hint"] = open_world_hint
+    if destructive_hint is not None:
+        overrides["destructive_hint"] = destructive_hint
+    if idempotent_hint is not None:
+        overrides["idempotent_hint"] = idempotent_hint
     if overrides:
         metadata = metadata.model_copy(update=overrides)
 
@@ -250,6 +272,8 @@ from . import compute_impervious_surface  # noqa: E402,F401 — job-0095: regist
 from . import compute_building_density  # noqa: E402,F401 — job-0096: registers compute_building_density
 from . import fetch_roads_osm  # noqa: E402,F401 — job-0097: registers fetch_roads_osm
 from . import run_pelicun_damage_assessment  # noqa: E402,F401 — job-0098: registers run_pelicun_damage_assessment (Wave 1 stub; Wave 2 composer is job-0106)
+from . import postprocess_pelicun  # noqa: E402,F401 — Wave 4.11 P2: registers postprocess_pelicun (aggregates Pelicun per-asset FGB → ImpactEnvelope)
+from ..workflows import compute_impact_envelope as _compute_impact_envelope_workflow  # noqa: E402,F401 — Wave 4.11 P3: registers compute_impact_envelope (composes NSI/MS → Pelicun → postprocess into one envelope tool)
 from . import clip_vector_to_polygon  # noqa: E402,F401 — job-0107: registers clip_vector_to_polygon
 from . import fetch_goes_satellite  # noqa: E402,F401 — job-0104: registers fetch_goes_satellite (GOES-16/17/18/19 satellite imagery)
 from . import fetch_nexrad_reflectivity  # noqa: E402,F401 — job-0102: registers fetch_nexrad_reflectivity (Iowa Mesonet NEXRAD WMS passthrough)
@@ -267,3 +291,29 @@ from . import fetch_movebank_tracks  # noqa: E402,F401 — job-0130: registers f
 from . import fetch_era5_reanalysis  # noqa: E402,F401 — job-0131: registers fetch_era5_reanalysis (Copernicus ERA5 reanalysis Tier-2 fetcher; compound-flood global substrate)
 from . import fetch_gtsm_tide_surge  # noqa: E402,F401 — job-0132: registers fetch_gtsm_tide_surge (GTSM v3.0 Tier-2 coastal water-level via CDS; compound-flood coastal boundary)
 from . import fetch_cama_flood_discharge  # noqa: E402,F401 — job-0133: registers fetch_cama_flood_discharge (CaMa-Flood global river discharge Tier-2 fetcher; compound-flood fluvial forcing)
+from . import fetch_usace_nsi  # noqa: E402,F401 — job-A6: registers fetch_usace_nsi (USACE National Structure Inventory; preferred Pelicun assets in CONUS)
+from . import fetch_fema_nfhl_zones  # noqa: E402,F401 — job-A1: registers fetch_fema_nfhl_zones (FEMA National Flood Hazard Layer regulatory flood-zone polygons; ArcGIS REST MapServer/28)
+from . import fetch_usace_levees  # noqa: E402,F401 — job-A4: registers fetch_usace_levees (USACE National Levee Database critical-infrastructure polygons/lines; ArcGIS REST FeatureServer)
+from . import fetch_noaa_nwm_streamflow  # noqa: E402,F401 — job-A3 (Wave 4.10): registers fetch_noaa_nwm_streamflow (NOAA National Water Model streamflow; CONUS fluvial forcing via NHDPlus reaches)
+from . import fetch_hrrr_forecast  # noqa: E402,F401 — job-A2 (Wave 4.10): registers fetch_hrrr_forecast (NOAA HRRR 3km hourly CONUS short-term weather forecast via U.Utah HRRR-Zarr S3 mirror)
+from . import fetch_hrrr_smoke  # noqa: E402,F401 — job-A13 (Wave 4.10): registers fetch_hrrr_smoke (NOAA HRRR-Smoke smoke/aerosol forecast via U.Utah HRRR-Zarr S3 mirror; pairs with NIFC fire perimeters for air-quality demo)
+from . import fetch_asos_metar  # noqa: E402,F401 — job-A7 (Wave 4.10): registers fetch_asos_metar (Iowa State IEM ASOS/METAR hourly surface observations; station weather obs for hazard context)
+from . import fetch_gridmet  # noqa: E402,F401 — job-A8 (Wave 4.10): registers fetch_gridmet (gridMET CONUS daily 4 km meteorology via NKN THREDDS OPeNDAP; fire-weather + drought substrate)
+from . import fetch_noaa_coops_tides  # noqa: E402,F401 — job-A9 (Wave 4.10): registers fetch_noaa_coops_tides (NOAA CO-OPS tide-station water-level observations + predictions; SFINCS coastal boundary forcing for US/territory basins)
+from . import fetch_usace_dams  # noqa: E402,F401 — job-A5 (Wave 4.10): registers fetch_usace_dams (USACE National Inventory of Dams point inventory via public ESRI Living Atlas mirror; dam-break / hazard-overlay substrate)
+from . import fetch_noaa_slr_scenarios  # noqa: E402,F401 — job-A10 (Wave 4.10): registers fetch_noaa_slr_scenarios (NOAA OCM SLR Viewer bathtub inundation polygons for 0–10 ft scenarios; CONUS coastal planning-level overlay)
+from . import fetch_usfs_canopy_fuels  # noqa: E402,F401 — job-A14 (Wave 4.10): registers fetch_usfs_canopy_fuels (USFS LANDFIRE LF2022 canopy base height + bulk density rasters; crown-fire model inputs CBH/CBD)
+from . import fetch_statsgo_soils  # noqa: E402,F401 — job-A11 (Wave 4.10): registers fetch_statsgo_soils (USGS STATSGO COG collection — KFFACT / THICK — via pfdf.data.usgs.statsgo; post-fire debris-flow + runoff-CN substrate)
+from . import fetch_nhdplus_nldi_navigate  # noqa: E402,F401 — job-A11 (Wave 4.10): registers fetch_nhdplus_nldi_navigate (USGS NLDI navigate over the NHDPlus v2.1 channel network — UM / UT / DM / DD traversal from a seed point or COMID)
+from . import fetch_raws_weather  # noqa: E402,F401 — job-A12 (Wave 4.10): registers fetch_raws_weather (Iowa Mesonet IEM RAWS fire-weather station observations; wind/RH/temp/solar for wildfire hazard context + fire-behavior model forcing)
+from . import fetch_3dep_extra  # noqa: E402,F401 — job-A11 (Wave 4.10): registers fetch_3dep_extra (USGS 3DEP non-default resolutions via pfdf.data.usgs.tnm.dem — 1 arc-sec / 1/9 arc-sec / 1 m / 2 arc-sec / 5 m)
+from . import discover_dataset  # noqa: E402,F401 — job-B7 (Wave 4.10 Stage 2): registers discover_dataset (hybrid BM25 + dense retrieval over audited docstrings + tool_query_corpus.yaml; routes free-text user queries to top-k atomic tools via RRF fusion; hot-set tool surfaced by B5 per-turn filter)
+from . import analytical_qa  # noqa: E402,F401 — job-0224 (sprint-13 Stage 1): registers summarize_layer_statistics + count_features_above_threshold + aggregate_property_within_zone
+
+# job-B5 (Wave 4.10 Stage 2): the 12-category registry + the two meta-tools
+# (``list_categories`` + ``list_tools_in_category``) live alongside the rest
+# of the tool surface. Importing the module fires its two ``@register_tool``
+# decorators so the meta-tools are in TOOL_REGISTRY at startup; the hot set,
+# allowed-set tracker, and post-hoc validator are exposed through
+# ``grace2_agent.categories`` for the server.py dispatch loop.
+from .. import categories as _categories  # noqa: E402,F401

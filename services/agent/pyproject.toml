@@ -71,6 +71,19 @@ dependencies = [
     # bump hydromt-sfincs to the fixed release.
     "pandas>=2.2,<2.3",
     "fsspec[gcs]>=2024.6",
+    # Wave 4.10 job-A2: s3fs is the fsspec S3 backend for the NOAA Big Data
+    # Program anonymous S3 mirrors consumed by fetch_hrrr_forecast (HRRR-Zarr
+    # at s3://hrrrzarr/) and a planned fetch_hrrr_smoke. Wraps boto3 +
+    # aiobotocore for async-friendly access; we use it only in sync calls via
+    # fsspec.filesystem('s3', anon=True). MRMS already exists on the same
+    # bucket family but uses urllib.request via the public HTTPS endpoint, so
+    # s3fs was not required there.
+    "s3fs>=2024.6",
+    # Wave 4.10 job-A2: zarr is the chunked array backend for HRRR-Zarr
+    # (and pulled in transitively by xarray.open_zarr in other tools).
+    # Zarr v3 is fully back-compatible with v2 stores at read time, which
+    # is what hrrrzarr publishes.
+    "zarr>=2.18,<4",
     # job-0092 web_fetch: BeautifulSoup4 + lxml drive the main_text/metadata
     # extraction modes (boilerplate strip + Open Graph tag parse). lxml was
     # already present transitively (rasterio chain); pin it explicitly here
@@ -105,6 +118,31 @@ dependencies = [
     # secret resolution flows through the Wave 2 sibling job-0124
     # ``Persistence.get_secret_value`` path.
     "cdsapi>=0.7,<1",
+    # Wave 4.10 job-A11: USGS Landslide Hazards Program post-fire debris-flow
+    # library. We import it for its data-source wrappers (not the assessment
+    # engine) — fetch_statsgo_soils uses pfdf.data.usgs.statsgo to materialize
+    # STATSGO COGs from ScienceBase, and fetch_3dep_extra uses
+    # pfdf.data.usgs.tnm.dem for the non-default 3DEP resolutions
+    # (1 arc-sec / 1/9 arc-sec / 1 m / 2 arc-sec / 5 m). pfdf 3.x requires
+    # Python >= 3.11 (matches our floor). NOT on PyPI: distributed only via
+    # USGS GitLab (code.usgs.gov/ghsc/lhp/pfdf). Install via direct VCS URL
+    # in environments that need it — production Cloud Run container must
+    # bake the wheel from the GitLab clone during image build (mirrors how
+    # hydromt-sfincs is pulled).
+    "pfdf @ git+https://code.usgs.gov/ghsc/lhp/pfdf.git",
+    # Wave 4.10 job-B7: rank_bm25 backs the BM25 channel of discover_dataset's
+    # hybrid lexical+dense retrieval over the audited tool-docstring corpus +
+    # tool_query_corpus.yaml synthetic queries. Pure-Python (numpy dep only),
+    # ~9 KB wheel; the BM25Okapi class is the canonical implementation.
+    # Sentence-transformers / Vertex embeddings are imported opportunistically
+    # at runtime (no hard dep) so the agent service still starts when the
+    # dense backend is unavailable — see discover_dataset._select_dense_backend.
+    "rank_bm25>=0.2,<1",
+    # job-0224 sprint-13 Stage 1: analytical Q&A tools (summarize_layer_statistics,
+    # count_features_above_threshold, aggregate_property_within_zone) use geopandas
+    # for vector reading + spatial join. geopandas pulls in shapely + pyogrio (GDAL-backed
+    # vector I/O); pyogrio replaces fiona as the default driver in geopandas >= 1.0.
+    "geopandas>=1.0,<2",
     # Consumed verbatim from packages/contracts/ (editable install via make run-agent).
     "grace2-contracts>=0.1,<0.2",
 ]
