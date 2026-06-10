@@ -3,6 +3,8 @@
 Single source of truth for every type that crosses a specialist boundary:
 - ``ws``: WebSocket protocol — envelope + every message type (Appendix A).
 - ``envelope``: AssessmentEnvelope + flood subtype (Appendix B).
+- ``impact_envelope``: ImpactEnvelope — Pelicun post-processor output
+  contract (Appendix B.6c).
 - ``event``: EventMetadata + ClaimSet/NumericClaim + intensity union (Appendix C).
 - ``collections``: the five MongoDB collection schemas + vector index configs
   + TTL config (Appendix D).
@@ -30,6 +32,8 @@ from . import (
     errors,
     event,
     execution,
+    impact_envelope,
+    modflow_contracts,
     payload_warning,
     secrets,
     tool_metadata,
@@ -53,6 +57,7 @@ from .common import (
     new_ulid,
     now_utc,
 )
+from .modflow_contracts import MODFLOWRunArgs, PlumeLayerURI
 
 __version__ = "0.1.0"
 SCHEMA_VERSION = "v1"
@@ -64,6 +69,7 @@ __all__ = [
     "auth",
     "ws",
     "envelope",
+    "impact_envelope",
     "errors",
     "event",
     "collections",
@@ -71,6 +77,7 @@ __all__ = [
     "case",
     "case_results",
     "execution",
+    "modflow_contracts",
     "payload_warning",
     "secrets",
     "tool_metadata",
@@ -81,6 +88,9 @@ __all__ = [
     "DerivedEventParam",
     "EventIngestProvenance",
     "EventIngestResult",
+    # MODFLOW groundwater contracts (sprint-13)
+    "MODFLOWRunArgs",
+    "PlumeLayerURI",
     # common primitives
     "GraceModel",
     "ULIDStr",
