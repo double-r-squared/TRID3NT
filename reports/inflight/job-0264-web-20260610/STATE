@@ -1,0 +1,13 @@
+DONE — job-0264-web-20260610 (LAYER UI POLISH + TOOL TIMERS)
+
+Part 1 (LayerPanel polish): DONE — eye toggle, kind chips, hover opacity, transitions,
+  dark-theme gradient panel, empty-state "No layers yet". All test ids preserved.
+Part 2 (tool timers): DONE — contracts duration_ms (ws + collections + 3 schemas),
+  emitter terminal-stamp (complete/failed/cancelled), client live ticker + authoritative
+  final duration. contracts.ts mirror.
+
+Verify: web vitest 557/557; contracts pytest 383; agent test_pipeline_emitter 21
+  (6 new); tsc clean on my files; live dev-seam Playwright snapshots in evidence/.
+
+Committed on main. tool_registry.py / impact_envelope.py / mongo_collections.py in
+git status are concurrent-job files — NOT touched here.

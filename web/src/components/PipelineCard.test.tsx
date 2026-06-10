@@ -12,9 +12,9 @@
 // The old "X%" / "✓" / "✗" / "⊘" / "pending" right-side status text and the
 // blue left-border accent are gone. Tests are rewritten accordingly.
 
-import { describe, it, expect } from "vitest";
-import { render, screen } from "@testing-library/react";
-import { PipelineCard } from "./PipelineCard";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { render, screen, act } from "@testing-library/react";
+import { PipelineCard, formatDuration } from "./PipelineCard";
 import { PipelineStepSummary } from "../contracts";
 
 function makeStep(
@@ -30,6 +30,10 @@ function makeStep(
     progress_percent: partial.progress_percent,
     error_code: partial.error_code,
     error_message: partial.error_message,
+    // job-0264: thread timer fields through so duration / ticker tests work.
+    started_at: partial.started_at,
+    completed_at: partial.completed_at,
+    duration_ms: partial.duration_ms,
   };
 }
 
@@ -262,5 +266,165 @@ describe("PipelineCard — humanized step labels", () => {
   it("preserves engineer-named tool labels (passthrough for unknown names)", () => {
     render(<PipelineCard step={makeStep({ state: "complete", name: "fetch_dem" })} />);
     expect(screen.getByTestId("pipeline-card-name")).toHaveTextContent("fetch_dem");
+  });
+});
+
+// --- Tool timer (job-0264) ----------------------------------------------- //
+//
+// ELEVATED requirement: running cards show a live (m:ss) ticker; terminal
+// cards show the AUTHORITATIVE step.duration_ms.
+
+describe("formatDuration (job-0264)", () => {
+  it.each([
+    [0, "0:00"],
+    [1, "0:00"], // sub-second floors to 0:00
+    [999, "0:00"],
+    [1000, "0:01"],
+    [9000, "0:09"],
+    [60_000, "1:00"],
+    [154_000, "2:34"], // the memory-spec example
+    [600_000, "10:00"],
+    [3_600_000, "60:00"], // hours roll into minutes (no leading-hours field)
+    [-5000, "0:00"], // negative clamps to 0:00
+  ])("formats %ims as %s", (ms, expected) => {
+    expect(formatDuration(ms)).toBe(expected);
+  });
+});
+
+describe("PipelineCard — tool timer (job-0264)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("running card shows a live ticker that advances ~1s/tick", () => {
+    vi.useFakeTimers();
+    const anchor = new Date("2026-06-10T12:00:00.000Z").getTime();
+    vi.setSystemTime(anchor);
+
+    render(
+      <PipelineCard
+        step={makeStep({
+          state: "running",
+          started_at: "2026-06-10T12:00:00.000Z",
+        })}
+      />,
+    );
+
+    // First paint anchors at 0:00.
+    const timer = screen.getByTestId("pipeline-card-timer");
+    expect(timer).toHaveTextContent("0:00");
+    expect(timer.getAttribute("data-authoritative")).toBe("false");
+
+    // advanceTimersByTime advances Date.now() under fake timers AND fires the
+    // 1s interval — don't also call setSystemTime or the clock double-counts.
+    act(() => {
+      vi.advanceTimersByTime(3000);
+    });
+    expect(screen.getByTestId("pipeline-card-timer")).toHaveTextContent("0:03");
+
+    // Advance to 1m05s total (62s more).
+    act(() => {
+      vi.advanceTimersByTime(62_000);
+    });
+    expect(screen.getByTestId("pipeline-card-timer")).toHaveTextContent("1:05");
+  });
+
+  it("running ticker anchors on started_at (elapsed reflects server time, not mount time)", () => {
+    vi.useFakeTimers();
+    const started = new Date("2026-06-10T12:00:00.000Z").getTime();
+    // Mount 40s AFTER the tool started (simulates a reconnect / late render).
+    vi.setSystemTime(started + 40_000);
+
+    render(
+      <PipelineCard
+        step={makeStep({
+          state: "running",
+          started_at: "2026-06-10T12:00:00.000Z",
+        })}
+      />,
+    );
+
+    // The ticker should read 0:40, not 0:00 — it counts from started_at.
+    expect(screen.getByTestId("pipeline-card-timer")).toHaveTextContent("0:40");
+  });
+
+  it("completed card shows the AUTHORITATIVE duration_ms (locked, no ticking)", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-10T12:10:00.000Z").getTime());
+
+    render(
+      <PipelineCard
+        step={makeStep({
+          state: "complete",
+          started_at: "2026-06-10T12:00:00.000Z",
+          completed_at: "2026-06-10T12:02:34.000Z",
+          duration_ms: 154_000,
+        })}
+      />,
+    );
+
+    const timer = screen.getByTestId("pipeline-card-timer");
+    expect(timer).toHaveTextContent("2:34");
+    expect(timer.getAttribute("data-authoritative")).toBe("true");
+
+    // Advancing time does NOT change a terminal card's duration.
+    act(() => {
+      vi.advanceTimersByTime(10_000);
+    });
+    expect(screen.getByTestId("pipeline-card-timer")).toHaveTextContent("2:34");
+  });
+
+  it("failed card shows its authoritative duration_ms too", () => {
+    render(
+      <PipelineCard
+        step={makeStep({
+          state: "failed",
+          duration_ms: 5_500,
+          error_code: "UPSTREAM_API_ERROR",
+        })}
+      />,
+    );
+    const timer = screen.getByTestId("pipeline-card-timer");
+    expect(timer).toHaveTextContent("0:05");
+    expect(timer.getAttribute("data-authoritative")).toBe("true");
+  });
+
+  it("cancelled card shows its authoritative duration_ms", () => {
+    render(
+      <PipelineCard
+        step={makeStep({ state: "cancelled", duration_ms: 12_000 })}
+      />,
+    );
+    expect(screen.getByTestId("pipeline-card-timer")).toHaveTextContent("0:12");
+  });
+
+  it("renders 0:00 for a sub-second completed tool (duration_ms == 0, honest not hidden)", () => {
+    render(
+      <PipelineCard step={makeStep({ state: "complete", duration_ms: 0 })} />,
+    );
+    expect(screen.getByTestId("pipeline-card-timer")).toHaveTextContent("0:00");
+  });
+
+  it("pending card shows NO timer (nothing to count yet)", () => {
+    render(<PipelineCard step={makeStep({ state: "pending" })} />);
+    expect(screen.queryByTestId("pipeline-card-timer")).toBeNull();
+  });
+
+  it("terminal card WITHOUT duration_ms shows no timer (older agent / never fabricated)", () => {
+    // No duration_ms field at all → the card must not invent a number.
+    render(<PipelineCard step={makeStep({ state: "complete" })} />);
+    expect(screen.queryByTestId("pipeline-card-timer")).toBeNull();
+  });
+
+  it("running card shows BOTH the ticker and the spinner", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-10T12:00:00.000Z").getTime());
+    render(
+      <PipelineCard
+        step={makeStep({ state: "running", started_at: "2026-06-10T12:00:00.000Z" })}
+      />,
+    );
+    expect(screen.getByTestId("pipeline-card-timer")).toBeInTheDocument();
+    expect(screen.getByTestId("pipeline-card-indicator")).toBeInTheDocument();
   });
 });

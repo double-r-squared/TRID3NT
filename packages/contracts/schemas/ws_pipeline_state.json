@@ -2,7 +2,7 @@
   "$defs": {
     "PipelineStep": {
       "additionalProperties": false,
-      "description": "One step in the pipeline snapshot.",
+      "description": "One step in the pipeline snapshot.\n\n``duration_ms`` (job-0264, ELEVATED tool-timer requirement) is the\nauthoritative wall-clock elapsed time the workflow stamps on the\n**terminal** transition (complete / failed / cancelled). It is derived\ndeterministically from ``completed_at - started_at`` by the\n``PipelineEmitter`` \u2014 NOT an LLM estimate (Invariant 1). Optional and\n``None`` for pending/running steps: the client renders a cosmetic live\nticker until this lands, then locks the card to this number. Milliseconds\nso a sub-second tool reads honestly (0 displays as \"0:00\"). ``ge=0``.",
       "properties": {
         "completed_at": {
           "anyOf": [
@@ -16,6 +16,19 @@
           ],
           "default": null,
           "title": "Completed At"
+        },
+        "duration_ms": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Duration Ms"
         },
         "name": {
           "title": "Name",

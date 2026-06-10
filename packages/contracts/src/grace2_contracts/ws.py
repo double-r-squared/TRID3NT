@@ -304,7 +304,17 @@ PipelineStepState = Literal["pending", "running", "complete", "failed", "cancell
 
 
 class PipelineStep(GraceModel):
-    """One step in the pipeline snapshot."""
+    """One step in the pipeline snapshot.
+
+    ``duration_ms`` (job-0264, ELEVATED tool-timer requirement) is the
+    authoritative wall-clock elapsed time the workflow stamps on the
+    **terminal** transition (complete / failed / cancelled). It is derived
+    deterministically from ``completed_at - started_at`` by the
+    ``PipelineEmitter`` — NOT an LLM estimate (Invariant 1). Optional and
+    ``None`` for pending/running steps: the client renders a cosmetic live
+    ticker until this lands, then locks the card to this number. Milliseconds
+    so a sub-second tool reads honestly (0 displays as "0:00"). ``ge=0``.
+    """
 
     step_id: ULIDStr
     name: str
@@ -313,6 +323,7 @@ class PipelineStep(GraceModel):
     started_at: UTCDatetime | None = None
     completed_at: UTCDatetime | None = None
     progress_percent: int | None = Field(default=None, ge=0, le=100)
+    duration_ms: int | None = Field(default=None, ge=0)
 
 
 class PipelineStatePayload(GraceModel):

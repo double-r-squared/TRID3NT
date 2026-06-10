@@ -112,6 +112,13 @@ export interface PipelineStepSummary {
   // amendment lands. Never fabricated client-side.
   error_code?: string | null;
   error_message?: string | null;
+  // duration_ms (job-0264, ELEVATED tool-timer requirement): authoritative
+  // wall-clock elapsed time the agent stamps on the TERMINAL transition
+  // (complete / failed / cancelled), derived deterministically from
+  // completed_at - started_at. `None` for pending/running — PipelineCard
+  // shows a cosmetic live ticker until this lands, then locks to this value.
+  // Never fabricated client-side. Mirrors PipelineStep.duration_ms (ws.py).
+  duration_ms?: number | null;
 }
 
 // PipelineSnapshot — Appendix D.6 (`collections.py` PipelineSnapshot). Carried

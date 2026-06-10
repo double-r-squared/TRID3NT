@@ -457,6 +457,69 @@ def test_pipeline_step_summary_error_message_512_char_cap() -> None:
         )
 
 
+# --- D.6 PipelineStepSummary.duration_ms (job-0264) ------------------------- #
+# ELEVATED tool-timer requirement: authoritative wall-clock duration stamped
+# on the terminal transition. Optional, ge=0, defaults None.
+
+
+def test_pipeline_step_summary_duration_ms_defaults_none() -> None:
+    """duration_ms defaults to None and JSON-serializes (backward-compatible)."""
+    step = PipelineStepSummary(
+        step_id=new_ulid(),
+        name="step",
+        tool_name="t",
+        state="pending",
+    )
+    assert step.duration_ms is None
+    assert step.model_dump(mode="json")["duration_ms"] is None
+
+
+def test_pipeline_step_summary_duration_ms_roundtrips() -> None:
+    """A populated duration_ms survives a JSON round-trip unchanged."""
+    step = PipelineStepSummary(
+        step_id=new_ulid(),
+        name="run_sfincs_solver",
+        tool_name="run_solver",
+        state="complete",
+        started_at="2026-06-10T12:00:00Z",
+        completed_at="2026-06-10T12:02:34Z",
+        duration_ms=154_000,
+    )
+    dumped_a = step.model_dump(mode="json")
+    assert dumped_a["duration_ms"] == 154_000
+    text_a = json.dumps(dumped_a, sort_keys=True)
+    step_b = PipelineStepSummary.model_validate(json.loads(text_a))
+    assert step_b.duration_ms == 154_000
+    text_b = json.dumps(step_b.model_dump(mode="json"), sort_keys=True)
+    assert text_a == text_b
+
+
+@pytest.mark.parametrize("good", [0, 1, 250, 154_000, 12_600_000])
+def test_pipeline_step_summary_duration_ms_accepts_non_negative(good: int) -> None:
+    """Field(ge=0) accepts zero (sub-ms tool) through long-running solvers."""
+    step = PipelineStepSummary(
+        step_id=new_ulid(),
+        name="step",
+        tool_name="t",
+        state="complete",
+        duration_ms=good,
+    )
+    assert step.duration_ms == good
+
+
+@pytest.mark.parametrize("bad", [-1, -250, -1_000_000])
+def test_pipeline_step_summary_duration_ms_rejects_negative(bad: int) -> None:
+    """Field(ge=0) rejects a negative duration (clock-skew never reaches here)."""
+    with pytest.raises(ValidationError):
+        PipelineStepSummary(
+            step_id=new_ulid(),
+            name="step",
+            tool_name="t",
+            state="complete",
+            duration_ms=bad,
+        )
+
+
 # --- D.2 ProjectLayerSummary: job-0072 new optional fields ------------------ #
 # Closes OQ-62-LAYERURI-URI-FIELD, OQ-W-65-STYLE-PRESET, OQ-0068-ZIDX.
 

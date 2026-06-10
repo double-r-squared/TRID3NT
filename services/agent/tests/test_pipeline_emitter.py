@@ -524,3 +524,151 @@ async def test_reset_loaded_layers_clears_inline_table(
     await emitter.emit_session_state()
     last = _session_frames(sink)[-1]
     assert last["payload"]["loaded_layers"] == []
+
+
+# --------------------------------------------------------------------------- #
+# duration_ms stamping (job-0264, ELEVATED tool-timer requirement)
+# --------------------------------------------------------------------------- #
+
+
+def _stub_clock(emitter: PipelineEmitter, instants: list) -> None:
+    """Patch the emitter's ``_now_fn`` to return ``instants`` in order, then
+    repeat the last instant forever (so any extra clock reads don't IndexError).
+    Pass timezone-aware UTC ``datetime`` objects."""
+    seq = list(instants)
+    idx = {"i": 0}
+
+    def _fn():
+        i = idx["i"]
+        if i < len(seq):
+            idx["i"] = i + 1
+            return seq[i]
+        return seq[-1]
+
+    emitter._now_fn = staticmethod(_fn)  # type: ignore[method-assign]
+
+
+@pytest.mark.asyncio
+async def test_complete_stamps_authoritative_duration_ms(
+    session_id: str, sink: _CapturingSink
+) -> None:
+    """On the complete transition the step carries duration_ms = the
+    wall-clock elapsed time between mark_running and mark_complete."""
+    from datetime import datetime, timezone
+
+    emitter = PipelineEmitter(session_id=session_id, sink=sink)
+    # add_step (start_pipeline + step), mark_running (started_at),
+    # mark_complete (completed_at). Clock reads: pipeline_started, started_at,
+    # completed_at — give a 2m34s gap between running and complete.
+    t0 = datetime(2026, 6, 10, 12, 0, 0, tzinfo=timezone.utc)
+    t_run = datetime(2026, 6, 10, 12, 0, 1, tzinfo=timezone.utc)
+    t_done = datetime(2026, 6, 10, 12, 2, 35, tzinfo=timezone.utc)  # +154s from t_run
+    _stub_clock(emitter, [t0, t_run, t_done])
+
+    step_id = await emitter.add_step(name="run_sfincs", tool_name="run_solver")
+    await emitter.mark_running(step_id)
+    await emitter.mark_complete(step_id)
+
+    last = _pipeline_frames(sink)[-1]["payload"]["steps"][-1]
+    assert last["state"] == "complete"
+    assert last["duration_ms"] == 154_000
+
+
+@pytest.mark.asyncio
+async def test_failed_stamps_duration_ms(
+    session_id: str, sink: _CapturingSink
+) -> None:
+    """A failed step also carries the elapsed-before-failure duration_ms."""
+    from datetime import datetime, timezone
+
+    emitter = PipelineEmitter(session_id=session_id, sink=sink)
+    t0 = datetime(2026, 6, 10, 12, 0, 0, tzinfo=timezone.utc)
+    t_run = datetime(2026, 6, 10, 12, 0, 0, tzinfo=timezone.utc)
+    t_fail = datetime(2026, 6, 10, 12, 0, 5, 500_000, tzinfo=timezone.utc)  # +5.5s
+    _stub_clock(emitter, [t0, t_run, t_fail])
+
+    step_id = await emitter.add_step(name="fetch_dem", tool_name="fetch_dem")
+    await emitter.mark_running(step_id)
+    await emitter.mark_failed(step_id, error_code="UPSTREAM_API_ERROR", error_message="503")
+
+    last = _pipeline_frames(sink)[-1]["payload"]["steps"][-1]
+    assert last["state"] == "failed"
+    assert last["duration_ms"] == 5_500
+
+
+@pytest.mark.asyncio
+async def test_cancelled_stamps_duration_ms(
+    session_id: str, sink: _CapturingSink
+) -> None:
+    """A cancelled step carries the elapsed-before-cancel duration_ms so the
+    yellow card locks rather than ticking forever."""
+    from datetime import datetime, timezone
+
+    emitter = PipelineEmitter(session_id=session_id, sink=sink)
+    t0 = datetime(2026, 6, 10, 12, 0, 0, tzinfo=timezone.utc)
+    t_run = datetime(2026, 6, 10, 12, 0, 0, tzinfo=timezone.utc)
+    t_cancel = datetime(2026, 6, 10, 12, 0, 12, tzinfo=timezone.utc)  # +12s
+    _stub_clock(emitter, [t0, t_run, t_cancel])
+
+    step_id = await emitter.add_step(name="long_fetch", tool_name="fetch_dem")
+    await emitter.mark_running(step_id)
+    await emitter.mark_cancelled(step_id)
+
+    last = _pipeline_frames(sink)[-1]["payload"]["steps"][-1]
+    assert last["state"] == "cancelled"
+    assert last["duration_ms"] == 12_000
+
+
+@pytest.mark.asyncio
+async def test_pending_and_running_have_no_duration_ms(
+    emitter: PipelineEmitter, sink: _CapturingSink
+) -> None:
+    """duration_ms is None while pending and running — only the terminal
+    transition stamps it. The cosmetic client ticker fills the gap."""
+    step_id = await emitter.add_step(name="run_sfincs", tool_name="run_solver")
+    pending = _pipeline_frames(sink)[-1]["payload"]["steps"][-1]
+    assert pending["state"] == "pending"
+    assert pending["duration_ms"] is None
+
+    await emitter.mark_running(step_id)
+    running = _pipeline_frames(sink)[-1]["payload"]["steps"][-1]
+    assert running["state"] == "running"
+    assert running["duration_ms"] is None
+
+
+@pytest.mark.asyncio
+async def test_zero_duration_for_subsecond_tool(
+    session_id: str, sink: _CapturingSink
+) -> None:
+    """A tool that completes within the same instant reports duration_ms == 0
+    (honest, not None) — the contract is ge=0."""
+    from datetime import datetime, timezone
+
+    emitter = PipelineEmitter(session_id=session_id, sink=sink)
+    t = datetime(2026, 6, 10, 12, 0, 0, tzinfo=timezone.utc)
+    _stub_clock(emitter, [t, t, t])
+
+    step_id = await emitter.add_step(name="geocode", tool_name="geocode_location")
+    await emitter.mark_running(step_id)
+    await emitter.mark_complete(step_id)
+
+    last = _pipeline_frames(sink)[-1]["payload"]["steps"][-1]
+    assert last["duration_ms"] == 0
+
+
+@pytest.mark.asyncio
+async def test_emit_tool_call_stamps_duration_end_to_end(
+    session_id: str, sink: _CapturingSink
+) -> None:
+    """The full emit_tool_call wrapper stamps a non-negative duration_ms on
+    the terminal complete frame (integration of the seam server.py drives)."""
+    emitter = PipelineEmitter(session_id=session_id, sink=sink)
+
+    async def tool() -> str:
+        return "ok"
+
+    await emitter.emit_tool_call(name="fetch_dem", tool_name="fetch_dem", invoke=tool)
+    last = _pipeline_frames(sink)[-1]["payload"]["steps"][-1]
+    assert last["state"] == "complete"
+    assert last["duration_ms"] is not None
+    assert last["duration_ms"] >= 0

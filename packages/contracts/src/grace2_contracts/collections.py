@@ -300,6 +300,11 @@ class PipelineStepSummary(GraceModel):
       may register its own); validation is shape-only (regex).
     - ``error_message`` is a short human-readable accompanier, capped at
       512 chars to discourage stack-trace leakage. Free text.
+    - ``duration_ms`` (job-0264, ELEVATED tool-timer requirement) is the
+      authoritative wall-clock elapsed time, derived deterministically from
+      ``completed_at - started_at`` and stamped on the **terminal** transition
+      (complete / failed / cancelled) by the ``PipelineEmitter``. Never an LLM
+      estimate (Invariant 1). Optional / ``None`` for pending/running. ``ge=0``.
 
     Tightening these to required on ``state == "running"`` / ``state ==
     "failed"`` is a deliberate follow-up — see report Open Questions.
@@ -315,6 +320,7 @@ class PipelineStepSummary(GraceModel):
     progress_percent: int | None = Field(default=None, ge=0, le=100)
     error_code: str | None = None
     error_message: str | None = Field(default=None, max_length=_ERROR_MESSAGE_MAX_LEN)
+    duration_ms: int | None = Field(default=None, ge=0)
 
     @field_validator("error_code")
     @classmethod

@@ -28,7 +28,87 @@
 // logic here). The caller (Chat.tsx) owns the replace-not-reconcile semantics
 // + the merge-by-step_id dedupe and passes the current snapshot of each step.
 
+import { useEffect, useRef, useState } from "react";
 import { PipelineStepSummary, PipelineStepState } from "../contracts";
+
+// --- Duration formatting + live ticker (job-0264) ------------------------ //
+//
+// ELEVATED tool-timer requirement (feedback_pipeline_card_humanized_labels):
+//   (a) running cards show a live (mm:ss) ticker next to the spinner so the
+//       user can see how long a tool has been running;
+//   (b) completed / failed / cancelled cards show the AUTHORITATIVE duration
+//       the agent stamped (`step.duration_ms`), so the displayed number is
+//       deterministic — the client ticker is purely cosmetic between
+//       envelopes.
+//
+// The "m:ss" format matches the memory spec's label table (e.g. "2:34").
+// Hours roll into the minutes field (e.g. 75min → "75:00") — solver runs can
+// exceed an hour and a leading-hours field would clutter the inline card.
+
+/** Format whole milliseconds as "m:ss" (minutes uncapped, seconds 00-59). */
+export function formatDuration(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+}
+
+// Terminal states carry the authoritative duration; running shows a ticker.
+const TERMINAL_STATES: ReadonlySet<PipelineStepState> = new Set([
+  "complete",
+  "failed",
+  "cancelled",
+]);
+
+/**
+ * The live elapsed-ms for a *running* step, ticking once per second.
+ *
+ * Anchor preference:
+ *   1. ``step.started_at`` (server truth) — survives remounts / reconnects so
+ *      the ticker reflects real elapsed time, not time-since-this-mount.
+ *   2. a local mount timestamp fallback when ``started_at`` is absent (older
+ *      agents, or the pending→running frame raced ahead of the stamp).
+ *
+ * Returns 0 and does not tick for non-running steps (the caller renders the
+ * authoritative ``duration_ms`` instead). SSR-safe: ``Date.now`` only.
+ */
+function useRunningElapsedMs(step: PipelineStepSummary): number {
+  const isRunning = step.state === "running";
+  // Resolve the anchor (epoch ms) once per running span. started_at is an
+  // ISO-8601 string with a literal Z; Date.parse handles it. NaN (unparseable)
+  // falls back to the local mount time.
+  const anchorRef = useRef<number | null>(null);
+  if (isRunning && anchorRef.current === null) {
+    const parsed = step.started_at ? Date.parse(step.started_at) : NaN;
+    anchorRef.current = Number.isNaN(parsed) ? Date.now() : parsed;
+  }
+  if (!isRunning) {
+    // Reset so a future re-run (same component instance) re-anchors cleanly.
+    anchorRef.current = null;
+  }
+
+  const [elapsed, setElapsed] = useState<number>(() =>
+    isRunning && anchorRef.current !== null
+      ? Math.max(0, Date.now() - anchorRef.current)
+      : 0,
+  );
+
+  useEffect(() => {
+    if (!isRunning) {
+      setElapsed(0);
+      return;
+    }
+    const anchor = anchorRef.current ?? Date.now();
+    // Tick immediately so the first paint isn't a stale 0, then every second.
+    const tick = (): void => setElapsed(Math.max(0, Date.now() - anchor));
+    tick();
+    const id = window.setInterval(tick, 1000);
+    return () => window.clearInterval(id);
+    // started_at change re-arms the interval against the new anchor.
+  }, [isRunning, step.started_at]);
+
+  return isRunning ? elapsed : 0;
+}
 
 // --- Reduced-motion detection (SSR-safe) --------------------------------- //
 
@@ -182,6 +262,21 @@ export function PipelineCard({ step }: PipelineCardProps): JSX.Element {
   const reduced = prefersReducedMotion();
   const isRunning = step.state === "running";
   const isFailed = step.state === "failed";
+  const isTerminal = TERMINAL_STATES.has(step.state);
+
+  // job-0264 tool timer. While running: a cosmetic live (m:ss) ticker.
+  // On a terminal state: the AUTHORITATIVE duration the agent stamped
+  // (step.duration_ms). The ticker hook returns 0 for non-running steps.
+  const liveElapsedMs = useRunningElapsedMs(step);
+  const hasAuthoritativeDuration =
+    isTerminal && step.duration_ms !== null && step.duration_ms !== undefined;
+  // Timer text precedence: authoritative terminal duration > running ticker.
+  // Pending / terminal-without-duration show no timer (nothing to count).
+  const timerText: string | null = hasAuthoritativeDuration
+    ? formatDuration(step.duration_ms as number)
+    : isRunning
+      ? formatDuration(liveElapsedMs)
+      : null;
 
   // The label uses an animated rainbow gradient when running (unless the
   // user prefers reduced motion). Background-clip:text is the gradient
@@ -250,6 +345,27 @@ export function PipelineCard({ step }: PipelineCardProps): JSX.Element {
       >
         {humanizeStepName(step.name)}
       </span>
+      {timerText !== null && (
+        <span
+          data-testid="pipeline-card-timer"
+          data-authoritative={hasAuthoritativeDuration ? "true" : "false"}
+          aria-hidden="true"
+          style={{
+            fontVariantNumeric: "tabular-nums",
+            fontSize: 11,
+            // Running: dimmed so the rainbow label stays the focus. Terminal:
+            // slightly brighter since the spinner is gone and this is the
+            // card's only right-side affordance.
+            color: isRunning ? "rgba(255,255,255,0.55)" : "rgba(255,255,255,0.7)",
+            flexShrink: 0,
+            // Lock min-width so the ticking digits don't jitter the layout.
+            minWidth: 30,
+            textAlign: "right",
+          }}
+        >
+          {timerText}
+        </span>
+      )}
       {isRunning && <Spinner reduced={reduced} />}
       {isFailed && (step.error_code || step.error_message) && (
         <span

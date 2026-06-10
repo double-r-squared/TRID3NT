@@ -55,6 +55,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import logging
+import os
 from collections.abc import Awaitable, Callable
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -207,6 +208,22 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _elapsed_ms(started_at: datetime | None, completed_at: datetime | None) -> int | None:
+    """Compute wall-clock elapsed time in whole milliseconds (job-0264).
+
+    Returns ``None`` when either endpoint is missing (can't attribute a
+    duration without both). Clamped at 0 so a clock-skew / non-monotonic
+    wall-clock never yields a negative duration on the wire (the contract is
+    ``ge=0``). Rounds to the nearest millisecond.
+    """
+    if started_at is None or completed_at is None:
+        return None
+    delta = (completed_at - started_at).total_seconds() * 1000.0
+    if delta < 0:
+        return 0
+    return int(round(delta))
+
+
 # --------------------------------------------------------------------------- #
 # Vector layer inline-GeoJSON helper (job-0175)
 # --------------------------------------------------------------------------- #
@@ -299,7 +316,7 @@ async def _read_vector_uri_as_geojson(uri: str) -> dict[str, Any] | None:
             logger.warning("_read_vector_uri_as_geojson: google-cloud-storage missing: %s", exc)
             return None
         try:
-            client = storage.Client()
+            client = storage.Client(project=os.environ.get("GOOGLE_CLOUD_PROJECT", "grace-2-hazard-prod"))
             blob = client.bucket(bucket_name).blob(key)
             data = blob.download_as_bytes()
         except Exception as exc:  # noqa: BLE001
@@ -349,6 +366,10 @@ class _StepState:
     progress_percent: int | None = None
     error_code: str | None = None
     error_message: str | None = None
+    #: Authoritative wall-clock elapsed time in milliseconds (job-0264).
+    #: Stamped on the terminal transition from ``started_at``→``completed_at``;
+    #: ``None`` while pending/running. Deterministic — never an LLM estimate.
+    duration_ms: int | None = None
 
 
 class PipelineEmitter:
@@ -578,6 +599,10 @@ class PipelineEmitter:
         step = self._require_step(step_id)
         step.state = "complete"
         step.completed_at = self._now_fn()
+        # job-0264: stamp authoritative wall-clock duration on the terminal
+        # transition (started_at→completed_at). Deterministic; the client
+        # locks its cosmetic ticker to this number once it arrives.
+        step.duration_ms = _elapsed_ms(step.started_at, step.completed_at)
         # Per D.6 discipline: clear progress_percent on terminal states so
         # the client doesn't render a stale "99%" alongside a green chip.
         # We leave it set when the tool deliberately reported 100 — that's a
@@ -599,6 +624,10 @@ class PipelineEmitter:
         EMITTER_ERROR_CODES.register(error_code)
         step.state = "failed"
         step.completed_at = self._now_fn()
+        # job-0264: failed cards show the final duration too (mm:ss of how
+        # long the tool ran before failing). started_at may be None if the
+        # step failed before mark_running — _elapsed_ms returns None then.
+        step.duration_ms = _elapsed_ms(step.started_at, step.completed_at)
         step.error_code = error_code
         step.error_message = self._truncate_message(error_message)
         await self._emit_pipeline_state()
@@ -610,6 +639,9 @@ class PipelineEmitter:
         step = self._require_step(step_id)
         step.state = "cancelled"
         step.completed_at = self._now_fn()
+        # job-0264: cancelled is terminal — stamp duration so the yellow card
+        # locks to the elapsed-before-cancel time rather than ticking forever.
+        step.duration_ms = _elapsed_ms(step.started_at, step.completed_at)
         await self._emit_pipeline_state()
 
     # ------------------------------------------------------------------ #
@@ -841,6 +873,7 @@ class PipelineEmitter:
             started_at=s.started_at,
             completed_at=s.completed_at,
             progress_percent=s.progress_percent,
+            duration_ms=s.duration_ms,
         )
 
     def _to_summary(self, step_id: str) -> PipelineStepSummary:
@@ -855,6 +888,7 @@ class PipelineEmitter:
             progress_percent=s.progress_percent,
             error_code=s.error_code,
             error_message=s.error_message,
+            duration_ms=s.duration_ms,
         )
 
     async def _emit_pipeline_state(self) -> None:

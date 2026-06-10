@@ -208,6 +208,39 @@ def test_pipeline_state_invalid_step_state_rejected() -> None:
         ws.PipelineStep(step_id=new_ulid(), name="x", tool_name="x", state="aborted")  # type: ignore[arg-type]
 
 
+def test_pipeline_step_duration_ms_wire_roundtrip(session_id: str) -> None:
+    """job-0264: duration_ms is carried on the pipeline-state wire shape.
+
+    Optional + ge=0; defaults to None for non-terminal steps and round-trips
+    through the envelope serialization unchanged when populated.
+    """
+    payload = ws.PipelineStatePayload(
+        pipeline_id=new_ulid(),
+        steps=[
+            ws.PipelineStep(step_id=new_ulid(), name="fetch DEM", tool_name="fetch_dem", state="running"),
+            ws.PipelineStep(
+                step_id=new_ulid(),
+                name="run solver",
+                tool_name="run_solver",
+                state="complete",
+                duration_ms=154_000,
+            ),
+        ],
+    )
+    dumped = _roundtrip_idempotent(_wrap(payload, session_id))
+    steps = dumped["payload"]["steps"]
+    assert steps[0]["duration_ms"] is None
+    assert steps[1]["duration_ms"] == 154_000
+
+
+def test_pipeline_step_duration_ms_rejects_negative() -> None:
+    """job-0264: Field(ge=0) rejects negative durations on the wire shape."""
+    with pytest.raises(ValidationError):
+        ws.PipelineStep(
+            step_id=new_ulid(), name="x", tool_name="x", state="complete", duration_ms=-1
+        )
+
+
 # --- map-command and the per-command args models ---------------------------- #
 
 

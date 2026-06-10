@@ -33,7 +33,7 @@
 // because: (a) actively maintained, (b) full keyboard a11y out of the box
 // (the extra up/down buttons are belt+suspenders), (c) zero global state.
 
-import { useEffect, useMemo, useReducer } from "react";
+import { useEffect, useMemo, useReducer, useState } from "react";
 import {
   DndContext,
   closestCenter,
@@ -180,6 +180,65 @@ function clamp01(x: number): number {
   return x;
 }
 
+// --- Kind chip (job-0264 polish) --------------------------------------- //
+//
+// A short, color-coded chip that classifies the layer at a glance — the
+// kickoff names flood / plume / hillshade / vector as the canonical examples.
+// Derivation is presentation-only (no new data flow): the kind is inferred
+// from `style_preset` first (most specific), then `layer_type`. Unknown
+// presets fall back to the raster/vector type so every row still gets a chip.
+// The label is a single lowercase word; the color tints the chip background.
+
+interface LayerKind {
+  label: string;
+  color: string; // chip text + border accent (background is a faint tint of it)
+}
+
+// Ordered substring rules over style_preset — first match wins.
+const KIND_RULES: ReadonlyArray<readonly [RegExp, LayerKind]> = [
+  [/flood|inundation|depth|nfhl|slr|surge/, { label: "flood", color: "#4aa3ff" }],
+  [/plume|dispersion|smoke|ash|concentration/, { label: "plume", color: "#c084fc" }],
+  [/hillshade/, { label: "hillshade", color: "#b9a06a" }],
+  [/relief|slope|aspect|dem|elevation/, { label: "terrain", color: "#b9a06a" }],
+  [/fire|burn|firms|mtbs|nifc/, { label: "fire", color: "#ff7a45" }],
+  [/damage|pelicun|hazus|impact/, { label: "damage", color: "#ff5d6c" }],
+  [/precip|rain|qpe|streamflow|discharge|nwm/, { label: "water", color: "#36c5d6" }],
+  [/population|building|impervious|density|nsi/, { label: "exposure", color: "#f6c453" }],
+  [/landcover|nlcd|fuel|landfire/, { label: "landcover", color: "#5fc27e" }],
+  [/gbif|inaturalist|ebird|iucn|wdpa|movebank|species|habitat/, { label: "biodiversity", color: "#5fc27e" }],
+  [/admin|boundaries|roads|osm|levee|dam/, { label: "vector", color: "#9aa7b8" }],
+  [/alert|storm|weather|metar|asos|raws/, { label: "weather", color: "#36c5d6" }],
+];
+
+export function layerKind(layer: ProjectLayerSummary): LayerKind {
+  const preset = (layer.style_preset ?? "").toLowerCase();
+  if (preset) {
+    for (const [rx, kind] of KIND_RULES) {
+      if (rx.test(preset)) return kind;
+    }
+  }
+  // Fallback to the broad geometry type so every row carries a chip.
+  switch (layer.layer_type) {
+    case "vector":
+    case "geojson":
+      return { label: "vector", color: "#9aa7b8" };
+    case "wms":
+    case "wmts":
+      return { label: "tiles", color: "#9aa7b8" };
+    case "raster":
+    default:
+      return { label: "raster", color: "#9aa7b8" };
+  }
+}
+
+function hexToRgba(hex: string, alpha: number): string {
+  const h = hex.replace("#", "");
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
 // --- Subscription wiring ----------------------------------------------- //
 //
 // The App layer wires `subscribeSessionState` and `subscribeMapCommand` to
@@ -299,30 +358,51 @@ export function LayerPanel({
         left: 16,
         top: 16,
         bottom: 16,
-        width: 280,
-        background: "rgba(20,20,25,0.92)",
-        color: "#eee",
-        borderRadius: 8,
-        boxShadow: "0 4px 24px rgba(0,0,0,0.4)",
+        width: 288,
+        // Subtle gradient + hairline border + soft shadow for a sleeker,
+        // more modern panel than the flat slab (job-0264 polish).
+        background:
+          "linear-gradient(180deg, rgba(26,27,33,0.96) 0%, rgba(18,19,24,0.96) 100%)",
+        color: "#e8e8ec",
+        borderRadius: 12,
+        border: "1px solid rgba(255,255,255,0.06)",
+        boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
+        backdropFilter: "blur(6px)",
+        WebkitBackdropFilter: "blur(6px)",
         display: "flex",
         flexDirection: "column",
-        fontFamily: "system-ui, sans-serif",
+        fontFamily:
+          "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif",
         fontSize: 13,
         overflow: "hidden",
       }}
     >
       <header
         style={{
-          padding: "10px 12px",
-          borderBottom: "1px solid #333",
+          padding: "12px 14px",
+          borderBottom: "1px solid rgba(255,255,255,0.06)",
           display: "flex",
           alignItems: "center",
           gap: 8,
         }}
       >
-        <strong style={{ fontSize: 14 }}>Layers</strong>
-        <span style={{ color: "#888", fontSize: 11 }}>
-          {state.layers.length} loaded
+        <strong
+          style={{ fontSize: 13, letterSpacing: 0.3, fontWeight: 600 }}
+        >
+          Layers
+        </strong>
+        <span
+          data-testid="grace2-layer-panel-count"
+          style={{
+            color: "#7d8794",
+            fontSize: 11,
+            background: "rgba(255,255,255,0.06)",
+            borderRadius: 999,
+            padding: "1px 8px",
+            fontVariantNumeric: "tabular-nums",
+          }}
+        >
+          {state.layers.length}
         </span>
         <span style={{ flex: 1 }} />
         {onClose && (
@@ -333,14 +413,17 @@ export function LayerPanel({
             style={{
               background: "none",
               border: "none",
-              color: "#888",
+              color: "#8a929e",
               cursor: "pointer",
-              fontSize: 16,
+              fontSize: 18,
               lineHeight: 1,
               padding: "0 2px",
               display: "flex",
               alignItems: "center",
+              transition: "color 120ms ease",
             }}
+            onMouseEnter={(e) => (e.currentTarget.style.color = "#e8e8ec")}
+            onMouseLeave={(e) => (e.currentTarget.style.color = "#8a929e")}
           >
             ×
           </button>
@@ -357,8 +440,16 @@ export function LayerPanel({
         }}
       >
         {state.layers.length === 0 && (
-          <p style={{ color: "#888", margin: 8 }}>
-            No layers loaded. Ask the agent to load one.
+          <p
+            data-testid="grace2-layer-panel-empty"
+            style={{
+              color: "#6b7280",
+              margin: "auto",
+              fontSize: 12,
+              fontStyle: "italic",
+            }}
+          >
+            No layers yet
           </p>
         )}
         <DndContext
@@ -393,6 +484,29 @@ interface SortableRowProps {
   onOpacityChange: (layerId: string, opacity: number) => void;
 }
 
+// Eye glyph — open (visible) / slashed (hidden). Inline SVG so it inherits
+// currentColor and needs no asset. 14px to sit neatly inline.
+function EyeIcon({ visible }: { visible: boolean }): JSX.Element {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      width="15"
+      height="15"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      style={{ display: "block" }}
+    >
+      <path d="M1 8s2.5-4.5 7-4.5S15 8 15 8s-2.5 4.5-7 4.5S1 8 1 8z" />
+      <circle cx="8" cy="8" r="2" />
+      {!visible && <line x1="2.5" y1="2.5" x2="13.5" y2="13.5" />}
+    </svg>
+  );
+}
+
 function SortableRow({
   layer,
   onVisibilityToggle,
@@ -400,67 +514,152 @@ function SortableRow({
 }: SortableRowProps): JSX.Element {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id: layer.layer_id });
+  // Hover (or active drag) reveals the compact opacity slider — keeps the
+  // resting row clean while controls stay one gesture away. The row also
+  // stays "expanded" while the pointer is over it.
+  const [hovered, setHovered] = useState(false);
+  const showOpacity = hovered || isDragging;
+  const kind = layerKind(layer);
+  const dimmed = !layer.visible;
+
   const style: React.CSSProperties = {
     transform: CSS.Transform.toString(transform),
-    transition,
-    background: isDragging ? "#2a3b55" : "#222",
-    border: "1px solid #333",
-    borderRadius: 6,
-    padding: 8,
+    transition: transition ?? "background 140ms ease, border-color 140ms ease",
+    background: isDragging
+      ? "rgba(70,110,170,0.28)"
+      : hovered
+        ? "rgba(255,255,255,0.06)"
+        : "rgba(255,255,255,0.03)",
+    border: `1px solid ${
+      isDragging ? "rgba(120,160,220,0.5)" : "rgba(255,255,255,0.06)"
+    }`,
+    borderRadius: 8,
+    padding: "7px 9px",
     display: "flex",
     flexDirection: "column",
-    gap: 6,
-    opacity: isDragging ? 0.85 : 1,
+    gap: showOpacity ? 7 : 0,
+    opacity: isDragging ? 0.9 : 1,
+    boxShadow: isDragging ? "0 6px 18px rgba(0,0,0,0.45)" : "none",
   };
+
   return (
     <div
       ref={setNodeRef}
       style={style}
       data-testid="layer-row"
       data-layer-id={layer.layer_id}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
         <button
           aria-label={`drag handle for ${layer.name}`}
           {...attributes}
           {...listeners}
+          title="Drag to reorder"
           style={{
             cursor: "grab",
             background: "transparent",
-            border: "1px solid #444",
-            borderRadius: 4,
-            color: "#aaa",
-            width: 22,
+            border: "none",
+            color: hovered ? "#8a929e" : "#5a626d",
+            width: 16,
             height: 22,
             padding: 0,
-            lineHeight: "20px",
-            fontSize: 14,
+            fontSize: 13,
+            lineHeight: "22px",
+            flexShrink: 0,
+            transition: "color 120ms ease",
+            touchAction: "none",
           }}
           data-testid="layer-drag-handle"
         >
           ⠿
         </button>
-        <input
-          type="checkbox"
-          checked={layer.visible}
-          onChange={(e) => onVisibilityToggle(layer.layer_id, e.target.checked)}
-          aria-label={`visibility for ${layer.name}`}
-          data-testid="layer-visibility"
-        />
+        {/* Eye toggle. The checkbox input is visually hidden (overlaid) so the
+            existing data-testid + a11y contract are preserved while the
+            user sees the polished eye glyph. */}
+        <label
+          style={{
+            position: "relative",
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 22,
+            height: 22,
+            flexShrink: 0,
+            cursor: "pointer",
+            color: layer.visible ? "#cfd4db" : "#5a626d",
+            transition: "color 120ms ease",
+          }}
+          title={layer.visible ? "Hide layer" : "Show layer"}
+        >
+          <input
+            type="checkbox"
+            checked={layer.visible}
+            onChange={(e) => onVisibilityToggle(layer.layer_id, e.target.checked)}
+            aria-label={`visibility for ${layer.name}`}
+            data-testid="layer-visibility"
+            style={{
+              position: "absolute",
+              inset: 0,
+              margin: 0,
+              opacity: 0,
+              cursor: "pointer",
+            }}
+          />
+          <EyeIcon visible={layer.visible} />
+        </label>
         <span
           style={{
             flex: 1,
+            minWidth: 0,
             overflow: "hidden",
             textOverflow: "ellipsis",
             whiteSpace: "nowrap",
+            fontSize: 12.5,
+            color: dimmed ? "#8a929e" : "#e8e8ec",
+            transition: "color 120ms ease",
           }}
           title={layer.name}
         >
           {layer.name}
         </span>
+        <span
+          data-testid="layer-kind-chip"
+          data-kind={kind.label}
+          title={layer.style_preset ?? kind.label}
+          style={{
+            flexShrink: 0,
+            fontSize: 9.5,
+            fontWeight: 600,
+            letterSpacing: 0.3,
+            textTransform: "uppercase",
+            color: kind.color,
+            background: hexToRgba(kind.color, 0.14),
+            border: `1px solid ${hexToRgba(kind.color, 0.32)}`,
+            borderRadius: 5,
+            padding: "1px 6px",
+            lineHeight: "15px",
+          }}
+        >
+          {kind.label}
+        </span>
       </div>
-      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-        <span style={{ fontSize: 10, color: "#888", width: 38 }}>opacity</span>
+      {/* Opacity row: collapses to 0-height when not hovered for a clean
+          resting state, expands smoothly on hover. Always mounted so the
+          slider's data-testid + value are stable for tests + screen readers. */}
+      <div
+        data-testid="layer-opacity-row"
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          overflow: "hidden",
+          maxHeight: showOpacity ? 24 : 0,
+          opacity: showOpacity ? 1 : 0,
+          transition: "max-height 160ms ease, opacity 160ms ease",
+        }}
+      >
         <input
           type="range"
           min={0}
@@ -472,28 +671,25 @@ function SortableRow({
           }
           aria-label={`opacity for ${layer.name}`}
           data-testid="layer-opacity"
-          style={{ flex: 1 }}
+          style={{
+            flex: 1,
+            height: 4,
+            accentColor: kind.color,
+            cursor: "pointer",
+          }}
         />
         <span
-          style={{ fontSize: 10, color: "#aaa", width: 32, textAlign: "right" }}
+          style={{
+            fontSize: 10,
+            color: "#9aa1ab",
+            width: 30,
+            textAlign: "right",
+            fontVariantNumeric: "tabular-nums",
+          }}
         >
           {(layer.opacity * 100).toFixed(0)}%
         </span>
       </div>
-      {layer.attribution && (
-        <div
-          style={{
-            fontSize: 10,
-            color: "#888",
-            whiteSpace: "nowrap",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-          }}
-          title={layer.attribution}
-        >
-          {layer.attribution}
-        </div>
-      )}
     </div>
   );
 }
