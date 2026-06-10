@@ -1,0 +1,38 @@
+=== job-0237 P5 / conv-analysis live diagnosis ===
+Captured: 2026-06-10T08:46:50Z
+
+## Turn-1 agent tool sequence (from agent_startup.log)
+243:2026-06-10 00:28:43,525 INFO grace2_agent.server gemini function-call session=01KTR6WTY1912KW7C0SPQSPTY7 iter=2 tool=list_categories call_id=None args={}
+247:2026-06-10 00:28:46,101 INFO grace2_agent.server gemini function-call session=01KTR6WTY1912KW7C0SPQSPTY7 iter=3 tool=list_tools_in_category call_id=None args={'category_id': 'hazard_modeling'}
+251:2026-06-10 00:28:49,814 INFO grace2_agent.server gemini function-call session=01KTR6WTY1912KW7C0SPQSPTY7 iter=4 tool=run_model_nws_flood_event_scenario call_id=None args={'state': 'ID'}
+257:2026-06-10 00:28:53,953 INFO grace2_agent.tools.fetch_nws_alerts_conus fetch_nws_alerts_conus: FlatGeobuf = 59536 bytes (33 feature(s))
+267:2026-06-10 00:48:19,332 INFO grace2_agent.server user-message session=01KTR6WTY1912KW7C0SPQSPTY7 research_mode=research text='Since there are no active flood warnings in Idaho right now, show me flood warni'
+270:2026-06-10 00:48:30,231 INFO grace2_agent.server gemini function-call session=01KTR6WTY1912KW7C0SPQSPTY7 iter=1 tool=run_model_nws_flood_event_scenario call_id=None args={}
+365:2026-06-10 01:26:02,114 INFO grace2_agent.server user-message session=01KTRA6PNMVGY35YYA1PXDMW6E research_mode=research text='Assess the flood damage for Fort Myers, FL (bbox [-81.95, 26.5, -81.8, 26.7]) us'
+370:2026-06-10 01:26:57,771 INFO grace2_agent.server gemini function-call session=01KTRA6PNMVGY35YYA1PXDMW6E iter=1 tool=compute_impact_envelope call_id=None args={'structure_inventory_source': 'USACE_NSI', 'flood_layer_uri': 'gs://grace-2-hazard-prod-runs/01KTJKTAPX4V7GW0AS3C8BDYHK/flood_depth_peak.tif', 'bbox': [-81.95, 26.5, -81.8, 26.7]}
+372:2026-06-10 01:26:57,789 ERROR grace2_agent.server tool dispatch raised session=01KTRA6PNMVGY35YYA1PXDMW6E tool=compute_impact_envelope err=tool 'compute_impact_envelope' not in allowed set; consider calling list_tools_in_category(...) first to widen the allowed set. hot-set tools currently available (first 16): ['discover_dataset', 'fetch_dem', 'fetch_nws_alerts_conus', 'geocode_location', 'list_categories', 'list_tools_in_category', 'run_model_flood_habitat_scenario', 'run_model_flood_scenario']
+381:2026-06-10 01:27:14,658 INFO grace2_agent.server gemini function-call session=01KTRA6PNMVGY35YYA1PXDMW6E iter=2 tool=list_tools_in_category call_id=None args={'category_id': 'impact'}
+383:2026-06-10 01:27:14,723 ERROR grace2_agent.server tool dispatch raised session=01KTRA6PNMVGY35YYA1PXDMW6E tool=list_tools_in_category err=category 'impact' is not one of the 12 registered categories; valid ids are ['coastal', 'conservation_ecology', 'damage_assessment', 'fire', 'flood_infrastructure', 'geographic_primitives', 'hazard_modeling', 'hydrology', 'land_cover_development', 'news_events', 'terrain_elevation', 'weather_atmosphere']
+404:    raise UnknownCategoryError(category_id, valid_ids)
+405:grace2_agent.categories.UnknownCategoryError: category 'impact' is not one of the 12 registered categories; valid ids are ['coastal', 'conservation_ecology', 'damage_assessment', 'fire', 'flood_infrastructure', 'geographic_primitives', 'hazard_modeling', 'hydrology', 'land_cover_development', 'news_events', 'terrain_elevation', 'weather_atmosphere']
+408:2026-06-10 01:27:21,900 INFO grace2_agent.server gemini function-call session=01KTRA6PNMVGY35YYA1PXDMW6E iter=3 tool=list_tools_in_category call_id=None args={'category_id': 'damage_assessment'}
+413:2026-06-10 01:27:39,634 INFO grace2_agent.server gemini function-call session=01KTRA6PNMVGY35YYA1PXDMW6E iter=4 tool=compute_impact_envelope call_id=None args={'bbox': [-81.95, 26.5, -81.8, 26.7], 'flood_layer_uri': 'gs://grace-2-hazard-prod-runs/01KTJKTAPX4V7GW0AS3C8BDYHK/flood_depth_peak.tif', 'structure_inventory_source': 'USACE_NSI'}
+415:2026-06-10 01:27:39,737 INFO grace2_agent.workflows.compute_impact_envelope compute_impact_envelope: NSI path — fetch_usace_nsi bbox=(-81.95, 26.5, -81.8, 26.7)
+416:2026-06-10 01:28:35,162 INFO grace2_agent.tools.fetch_usace_nsi fetch_usace_nsi: POST https://nsi.sec.usace.army.mil/nsiapi/structures
+419:2026-06-10 01:30:05,277 INFO grace2_agent.tools.fetch_usace_nsi fetch_usace_nsi: FlatGeobuf = 40681064 bytes (114209 feature(s))
+421:2026-06-10 01:31:10,022 INFO grace2_agent.workflows.compute_impact_envelope compute_impact_envelope: run_pelicun_damage_assessment hazard=gs://grace-2-hazard-prod-runs/01KTJKTAPX4V7GW0AS3C8BDYHK/flood_depth_peak.tif assets=gs://grace-2-hazard-prod-cache/cache/static-30d/usace_nsi/015724d74b08fad6a318e861ffe75c9a.fgb fragility=hazus_flood_v6
+422:2026-06-10 01:31:10,022 INFO grace2_agent.tools.run_pelicun_damage_assessment run_pelicun_damage_assessment: invoked hazard_raster_uri=gs://grace-2-hazard-prod-runs/01KTJKTAPX4V7GW0AS3C8BDYHK/flood_depth_peak.tif assets_uri=gs://grace-2-hazard-prod-cache/cache/static-30d/usace_nsi/015724d74b08fad6a318e861ffe75c9a.fgb fragility_set=hazus_flood_v6 component_types=None realization_count=100
+
+## Agent process CPU (near-zero over ~12 min => I/O blocked, not computing)
+utime_ticks=1531 stime_ticks=249 (100 ticks/s) => ~17.8s CPU total over 2h+ uptime
+
+## Thread wchan (main in do_sys_poll, workers in futex_wait => executor idle)
+tid=2805891 wchan=do_sys_poll
+tid=2805893 wchan=futex_wait_queue
+tid=2805894 wchan=futex_wait_queue
+tid=2805895 wchan=futex_wait_queue
+tid=2805896 wchan=futex_wait_queue
+tid=2805897 wchan=futex_wait_queue
+tid=2805898 wchan=futex_wait_queue
+tid=2805899 wchan=futex_wait_queue
+tid=2819291 wchan=futex_wait_queue

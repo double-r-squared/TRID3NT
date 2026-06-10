@@ -1,0 +1,74 @@
+{
+  "steps": {
+    "turn1_prompt": "Assess the flood damage for Fort Myers, FL (bbox [-81.95, 26.5, -81.8, 26.7]) using the existing flood depth layer at gs://grace-2-hazard-prod-runs/01KTJKTAPX4V7GW0AS3C8BDYHK/flood_depth_peak.tif. Use the National Structure Inventory. Give me the impact summary.",
+    "turn1_settled": {
+      "settled": false,
+      "failed": 0
+    },
+    "impact_panel_present": false,
+    "impact_envelope_frame": null,
+    "turn1_tools": [],
+    "turn1_narration_tail": "Assess the flood damage for Fort Myers, FL (bbox [-81.95, 26.5, -81.8, 26.7]) using the existing flood depth layer at gs://grace-2-hazard-prod-runs/01KTJKTAPX4V7GW0AS3C8BDYHK/flood_depth_peak.tif. Use the National Structure Inventory. Give me the impact summary.completed: list_tools_in_categoryrunning: compute_impact_envelope",
+    "turn2_prompt": "How many structures are impacted above damage state 2?",
+    "turn2_settled": {
+      "settled": false,
+      "failed": 0
+    },
+    "turn2_tools": [],
+    "turn2_narration_tail": "Assess the flood damage for Fort Myers, FL (bbox [-81.95, 26.5, -81.8, 26.7]) using the existing flood depth layer at gs://grace-2-hazard-prod-runs/01KTJKTAPX4V7GW0AS3C8BDYHK/flood_depth_peak.tif. Use the National Structure Inventory. Give me the impact summary.completed: list_tools_in_categoryrunning: compute_impact_envelope",
+    "turn2_count_result_preview": null,
+    "turn3_prompt": "Show me the damage distribution as a chart.",
+    "turn3_settled": {
+      "settled": false,
+      "failed": 0
+    },
+    "turn3_tools": [],
+    "chart_emission": null,
+    "chart_stack_inline_count": 0,
+    "case_open_preview": "{\"type\":\"case-list\",\"id\":\"01KTRA6TA57JK32QGM66KR64MJ\",\"ts\":\"2026-06-10T08:25:59.877798Z\",\"session_id\":\"01KTRA6PNMVGY35YYA1PXDMW6E\",\"payload\":{\"envelope_type\":\"case-list\",\"cases\":[{\"schema_version\":\"v1\",\"case_id\":\"01KTNK6XS3MGEGX6RXRXAHDQ3W\",\"title\":\"Test 4.8\",\"created_at\":\"2026-06-09T07:05:37.315851Z\",\"updated_at\":\"2026-06-09T07:05:41.141267Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"loaded_layer_summaries\":[],\"qgs_project_uri\":null},{\"schema_version\":\"v1\",\"case_id\":\"01KTNMGENBETZYNRSHR4RBWRRD\",\"title\":\"Untitled Case\",\"created_at\":\"2026-06-09T07:28:18.092029Z\",\"updated_at\":\"2026-06-09T07:28:18.092029Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"loaded_layer_summaries\":[],\"qgs_project_uri\":null},{\"schema_version\":\"v1\",\"case_id\":\"01KTNVB9MND4ZDX9A2YPTAFTY0\",\"title\":\"Untitled Case\",\"created_at\":\"2026-06-09T09:27:49.141703Z\",\"updated_at\":\"2026-06-09T09:27:49.141703Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"loaded_layer_summaries\":[],\"qgs_project_uri\":null},{\"schema_version\":\"v1\",\"case_id\":\"01KTNVGJK7FDCRPRTTJSHWQGTK\",\"title\":\"Untitled Case\",\"created_at\":\"2026-06-09T09:30:42.151217Z\",\"updated_at\":\"2026-06-09T09:30:42.151217Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"loaded_layer_summaries\":[],\"qgs_project_uri\":null},{\"schema_version\":\"v1\",\"case_id\":\"01KTNVHSSWSJ",
+    "active_case_id_dom": null,
+    "reload_case_rows": 0,
+    "chart_replay_count": 0
+  },
+  "dev_seam_check": {
+    "console_mentions_inject": []
+  },
+  "asserts": {
+    "impact_panel_rendered": false,
+    "impact_envelope_ws_frame_present": false,
+    "compute_impact_envelope_called": false,
+    "count_tool_called": false,
+    "damage_distribution_called": false,
+    "chart_emission_ws_frame_present": false,
+    "vega_lite_spec_valid": false,
+    "chart_stack_inline": false,
+    "chart_gallery_opened": false,
+    "chart_persisted_on_reload": false,
+    "no_dev_seam_inject": true,
+    "panel_structures_text": null,
+    "envelope_n_damaged": null
+  },
+  "page_errors": [],
+  "console_tail": [
+    "debug: [vite] connecting...",
+    "debug: [vite] connected.",
+    "info: %cDownload the React DevTools for a better development experience: https://reactjs.org/link/react-devtools font-weight:bold",
+    "warning: WebSocket connection to 'ws://localhost:8765/' failed: WebSocket is closed before the connection is established.",
+    "warning: WebSocket connection to 'ws://localhost:8765/' failed: WebSocket is closed before the connection is established.",
+    "warning: [GroupMarkerNotSet(crbug.com/242999)!:A0B01E002C2A0000]Automatic fallback to software WebGL has been deprecated. Please use the --enable-unsafe-swiftshader flag to opt in to lower security guarantees for trusted content.",
+    "warning: [.WebGL-0x2774000cf800]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels",
+    "warning: [.WebGL-0x2774000cf800]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels",
+    "warning: [.WebGL-0x2774000cf800]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels",
+    "warning: [.WebGL-0x2774000cf800]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels (this message will no longer repeat)",
+    "debug: [ws] unhandled frame type: cache-status",
+    "debug: [ws] unhandled frame type: cache-status",
+    "debug: [ws] unhandled frame type: cache-status",
+    "debug: [ws] unhandled frame type: cache-status",
+    "debug: [vite] connecting...",
+    "debug: [vite] connected.",
+    "info: %cDownload the React DevTools for a better development experience: https://reactjs.org/link/react-devtools font-weight:bold",
+    "warning: WebSocket connection to 'ws://localhost:8765/' failed: WebSocket is closed before the connection is established.",
+    "warning: WebSocket connection to 'ws://localhost:8765/' failed: WebSocket is closed before the connection is established.",
+    "warning: [GroupMarkerNotSet(crbug.com/242999)!:A0B01E002C2A0000]Automatic fallback to software WebGL has been deprecated. Please use the --enable-unsafe-swiftshader flag to opt in to lower security guarantees for trusted content."
+  ]
+}

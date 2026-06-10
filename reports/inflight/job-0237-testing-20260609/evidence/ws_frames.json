@@ -1,0 +1,115 @@
+[
+  {
+    "t_rel_ms": 503,
+    "type": "session-state",
+    "tool_name": null,
+    "preview": "{\"type\":\"session-state\",\"id\":\"01KTRA6PPFKFMWTR189VZHVA36\",\"ts\":\"2026-06-10T08:25:56.175178Z\",\"session_id\":\"01KTRA6PNMVGY35YYA1PXDMW6E\",\"payload\":{\"chat_history\":[],\"loaded_layers\":[],\"pipeline_history\":[],\"current_pipeline\":null,\"map_view\":null,\"status\":\"active\"}}"
+  },
+  {
+    "t_rel_ms": 503,
+    "type": "case-list",
+    "tool_name": null,
+    "preview": "{\"type\":\"case-list\",\"id\":\"01KTRA6PPFKFMWTR189VZHVA37\",\"ts\":\"2026-06-10T08:25:56.175604Z\",\"session_id\":\"01KTRA6PNMVGY35YYA1PXDMW6E\",\"payload\":{\"envelope_type\":\"case-list\",\"cases\":[{\"schema_version\":\"v1\",\"case_id\":\"01KTNK6XS3MGEGX6RXRXAHDQ3W\",\"title\":\"Test 4.8\",\"created_at\":\"2026-06-09T07:05:37.315851Z\",\"updated_at\":\"2026-06-09T07:05:41.141267Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"loaded_layer_summaries\":[],\"qgs_project_uri\":null},{\"schema_version\":\"v1\",\"case_id\":\"01KTNMGENBETZYNRSHR4RBWRRD\",\"title\":\"Untitled Case\",\"created_at\":\"2026-06-09T07:28:18.092029Z\",\"updated_at\":\"2026-06-09T07:28:18.092029Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"loaded_layer_summaries\":[],\"qgs_project_uri\":null},{\"schema_version\":\"v1\",\"case_id\":\"01KTNVB9MND4ZDX9A2YPTAFTY0\",\"title\":\"Untitled Case\",\"created_at\":\"2026-06-09T09:27:49.141703Z\",\"updated_at\":\"2026-06-09T09:27:49.141703Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"loaded_layer_summaries\":[],\"qgs_project_uri\":null},{\"schema_version\":\"v1\",\"case_id\":\"01KTNVGJK7FDCRPRTTJSHWQGTK\",\"title\":\"Untitled Case\",\"created_at\":\"2026-06-09T09:30:42.151217Z\",\"updated_at\":\"2026-06-09T09:30:42.151217Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"loaded_layer_summaries\":[],\"qgs_project_uri\":null},{\"schema_version\":\"v1\",\"case_id\":\"01KTNVHSSWSJ"
+  },
+  {
+    "t_rel_ms": 1389,
+    "type": "session-state",
+    "tool_name": null,
+    "preview": "{\"type\":\"session-state\",\"id\":\"01KTRA6QF1GH7997Q3D6JJTTTD\",\"ts\":\"2026-06-10T08:25:56.961520Z\",\"session_id\":\"01KTRA6PNMVGY35YYA1PXDMW6E\",\"payload\":{\"chat_history\":[],\"loaded_layers\":[],\"pipeline_history\":[],\"current_pipeline\":null,\"map_view\":null,\"status\":\"active\"}}"
+  },
+  {
+    "t_rel_ms": 1389,
+    "type": "case-list",
+    "tool_name": null,
+    "preview": "{\"type\":\"case-list\",\"id\":\"01KTRA6QF3VFCDV4X9B121X08N\",\"ts\":\"2026-06-10T08:25:56.963464Z\",\"session_id\":\"01KTRA6PNMVGY35YYA1PXDMW6E\",\"payload\":{\"envelope_type\":\"case-list\",\"cases\":[{\"schema_version\":\"v1\",\"case_id\":\"01KTNK6XS3MGEGX6RXRXAHDQ3W\",\"title\":\"Test 4.8\",\"created_at\":\"2026-06-09T07:05:37.315851Z\",\"updated_at\":\"2026-06-09T07:05:41.141267Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"loaded_layer_summaries\":[],\"qgs_project_uri\":null},{\"schema_version\":\"v1\",\"case_id\":\"01KTNMGENBETZYNRSHR4RBWRRD\",\"title\":\"Untitled Case\",\"created_at\":\"2026-06-09T07:28:18.092029Z\",\"updated_at\":\"2026-06-09T07:28:18.092029Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"loaded_layer_summaries\":[],\"qgs_project_uri\":null},{\"schema_version\":\"v1\",\"case_id\":\"01KTNVB9MND4ZDX9A2YPTAFTY0\",\"title\":\"Untitled Case\",\"created_at\":\"2026-06-09T09:27:49.141703Z\",\"updated_at\":\"2026-06-09T09:27:49.141703Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"loaded_layer_summaries\":[],\"qgs_project_uri\":null},{\"schema_version\":\"v1\",\"case_id\":\"01KTNVGJK7FDCRPRTTJSHWQGTK\",\"title\":\"Untitled Case\",\"created_at\":\"2026-06-09T09:30:42.151217Z\",\"updated_at\":\"2026-06-09T09:30:42.151217Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"loaded_layer_summaries\":[],\"qgs_project_uri\":null},{\"schema_version\":\"v1\",\"case_id\":\"01KTNVHSSWSJ"
+  },
+  {
+    "t_rel_ms": 4207,
+    "type": "case-open",
+    "tool_name": null,
+    "preview": "{\"type\":\"case-open\",\"id\":\"01KTRA6TA3W3K4HCMF832PCK45\",\"ts\":\"2026-06-10T08:25:59.875705Z\",\"session_id\":\"01KTRA6PNMVGY35YYA1PXDMW6E\",\"payload\":{\"envelope_type\":\"case-open\",\"session_state\":{\"schema_version\":\"v1\",\"case\":{\"schema_version\":\"v1\",\"case_id\":\"01KTRA6T9RZQ9D7M5V37QAZ48H\",\"title\":\"Untitled Case\",\"created_at\":\"2026-06-10T08:25:59.864680Z\",\"updated_at\":\"2026-06-10T08:25:59.864680Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"loaded_layer_summaries\":[],\"qgs_project_uri\":null},\"chat_history\":[],\"loaded_layers\":[],\"pipeline_history\":[],\"current_pipeline\":null}}}"
+  },
+  {
+    "t_rel_ms": 4217,
+    "type": "case-list",
+    "tool_name": null,
+    "preview": "{\"type\":\"case-list\",\"id\":\"01KTRA6TA57JK32QGM66KR64MJ\",\"ts\":\"2026-06-10T08:25:59.877798Z\",\"session_id\":\"01KTRA6PNMVGY35YYA1PXDMW6E\",\"payload\":{\"envelope_type\":\"case-list\",\"cases\":[{\"schema_version\":\"v1\",\"case_id\":\"01KTNK6XS3MGEGX6RXRXAHDQ3W\",\"title\":\"Test 4.8\",\"created_at\":\"2026-06-09T07:05:37.315851Z\",\"updated_at\":\"2026-06-09T07:05:41.141267Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"loaded_layer_summaries\":[],\"qgs_project_uri\":null},{\"schema_version\":\"v1\",\"case_id\":\"01KTNMGENBETZYNRSHR4RBWRRD\",\"title\":\"Untitled Case\",\"created_at\":\"2026-06-09T07:28:18.092029Z\",\"updated_at\":\"2026-06-09T07:28:18.092029Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"loaded_layer_summaries\":[],\"qgs_project_uri\":null},{\"schema_version\":\"v1\",\"case_id\":\"01KTNVB9MND4ZDX9A2YPTAFTY0\",\"title\":\"Untitled Case\",\"created_at\":\"2026-06-09T09:27:49.141703Z\",\"updated_at\":\"2026-06-09T09:27:49.141703Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"loaded_layer_summaries\":[],\"qgs_project_uri\":null},{\"schema_version\":\"v1\",\"case_id\":\"01KTNVGJK7FDCRPRTTJSHWQGTK\",\"title\":\"Untitled Case\",\"created_at\":\"2026-06-09T09:30:42.151217Z\",\"updated_at\":\"2026-06-09T09:30:42.151217Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"loaded_layer_summaries\":[],\"qgs_project_uri\":null},{\"schema_version\":\"v1\",\"case_id\":\"01KTNVHSSWSJ"
+  },
+  {
+    "t_rel_ms": 6452,
+    "type": "SENT:user-message",
+    "preview": "{\"type\":\"user-message\",\"id\":\"01KTRA6WG1TBKTAPD01QPJACAZ\",\"ts\":\"2026-06-10T08:26:02.113Z\",\"session_id\":\"01KTRA6PNMVGY35YYA1PXDMW6E\",\"payload\":{\"text\":\"Assess the flood damage for Fort Myers, FL (bbox [-81.95, 26.5, -81.8, 26.7]) using the existing flood depth layer at gs://grace-2-hazard-prod-runs/01"
+  },
+  {
+    "t_rel_ms": 6454,
+    "type": "pipeline-state",
+    "tool_name": [
+      "gemini_generate"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRA6WG3FR5BDDWM2Z4A4V56\",\"ts\":\"2026-06-10T08:26:02.115169Z\",\"session_id\":\"01KTRA6PNMVGY35YYA1PXDMW6E\",\"payload\":{\"pipeline_id\":\"01KTRA6WG27818DJPX9N3031TK\",\"steps\":[{\"step_id\":\"01KTRA6WG27818DJPX9N3031TM\",\"name\":\"llm_generation\",\"tool_name\":\"gemini_generate\",\"state\":\"running\",\"started_at\":null,\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 79051,
+    "type": "pipeline-state",
+    "tool_name": [
+      "list_tools_in_category"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRA93D17EF0ECDY844DNXQN\",\"ts\":\"2026-06-10T08:27:14.721652Z\",\"session_id\":\"01KTRA6PNMVGY35YYA1PXDMW6E\",\"payload\":{\"pipeline_id\":\"01KTRA93D17EF0ECDY844DNXQK\",\"steps\":[{\"step_id\":\"01KTRA93D17EF0ECDY844DNXQM\",\"name\":\"list_tools_in_category\",\"tool_name\":\"list_tools_in_category\",\"state\":\"pending\",\"started_at\":null,\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 79057,
+    "type": "pipeline-state",
+    "tool_name": [
+      "list_tools_in_category"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRA93D2GAZNJGTRZ7TP073S\",\"ts\":\"2026-06-10T08:27:14.722300Z\",\"session_id\":\"01KTRA6PNMVGY35YYA1PXDMW6E\",\"payload\":{\"pipeline_id\":\"01KTRA93D17EF0ECDY844DNXQK\",\"steps\":[{\"step_id\":\"01KTRA93D17EF0ECDY844DNXQM\",\"name\":\"list_tools_in_category\",\"tool_name\":\"list_tools_in_category\",\"state\":\"running\",\"started_at\":\"2026-06-10T08:27:14.722111Z\",\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 79117,
+    "type": "pipeline-state",
+    "tool_name": [
+      "list_tools_in_category"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRA93D2GAZNJGTRZ7TP073T\",\"ts\":\"2026-06-10T08:27:14.722969Z\",\"session_id\":\"01KTRA6PNMVGY35YYA1PXDMW6E\",\"payload\":{\"pipeline_id\":\"01KTRA93D17EF0ECDY844DNXQK\",\"steps\":[{\"step_id\":\"01KTRA93D17EF0ECDY844DNXQM\",\"name\":\"list_tools_in_category\",\"tool_name\":\"list_tools_in_category\",\"state\":\"failed\",\"started_at\":\"2026-06-10T08:27:14.722111Z\",\"completed_at\":\"2026-06-10T08:27:14.722778Z\",\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 86323,
+    "type": "pipeline-state",
+    "tool_name": [
+      "list_tools_in_category"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRA9AG9Q0JBX8MRKW2NM8H2\",\"ts\":\"2026-06-10T08:27:21.993746Z\",\"session_id\":\"01KTRA6PNMVGY35YYA1PXDMW6E\",\"payload\":{\"pipeline_id\":\"01KTRA9AG9Q0JBX8MRKW2NM8H0\",\"steps\":[{\"step_id\":\"01KTRA9AG9Q0JBX8MRKW2NM8H1\",\"name\":\"list_tools_in_category\",\"tool_name\":\"list_tools_in_category\",\"state\":\"pending\",\"started_at\":null,\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 86329,
+    "type": "pipeline-state",
+    "tool_name": [
+      "list_tools_in_category"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRA9AGA6Q85MZVKQ52RSMPJ\",\"ts\":\"2026-06-10T08:27:21.994320Z\",\"session_id\":\"01KTRA6PNMVGY35YYA1PXDMW6E\",\"payload\":{\"pipeline_id\":\"01KTRA9AG9Q0JBX8MRKW2NM8H0\",\"steps\":[{\"step_id\":\"01KTRA9AG9Q0JBX8MRKW2NM8H1\",\"name\":\"list_tools_in_category\",\"tool_name\":\"list_tools_in_category\",\"state\":\"running\",\"started_at\":\"2026-06-10T08:27:21.994139Z\",\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 86336,
+    "type": "pipeline-state",
+    "tool_name": [
+      "list_tools_in_category"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRA9AGBA4APBGPAHERGRS2G\",\"ts\":\"2026-06-10T08:27:21.995345Z\",\"session_id\":\"01KTRA6PNMVGY35YYA1PXDMW6E\",\"payload\":{\"pipeline_id\":\"01KTRA9AG9Q0JBX8MRKW2NM8H0\",\"steps\":[{\"step_id\":\"01KTRA9AG9Q0JBX8MRKW2NM8H1\",\"name\":\"list_tools_in_category\",\"tool_name\":\"list_tools_in_category\",\"state\":\"complete\",\"started_at\":\"2026-06-10T08:27:21.994139Z\",\"completed_at\":\"2026-06-10T08:27:21.995150Z\",\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 104066,
+    "type": "pipeline-state",
+    "tool_name": [
+      "compute_impact_envelope"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRA9VTR89JS1VM9VV84S9SQ\",\"ts\":\"2026-06-10T08:27:39.736884Z\",\"session_id\":\"01KTRA6PNMVGY35YYA1PXDMW6E\",\"payload\":{\"pipeline_id\":\"01KTRA9VTR89JS1VM9VV84S9SN\",\"steps\":[{\"step_id\":\"01KTRA9VTR89JS1VM9VV84S9SP\",\"name\":\"compute_impact_envelope\",\"tool_name\":\"compute_impact_envelope\",\"state\":\"pending\",\"started_at\":null,\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 104073,
+    "type": "pipeline-state",
+    "tool_name": [
+      "compute_impact_envelope"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRA9VTSHP1KCFAV39ZTBG1Y\",\"ts\":\"2026-06-10T08:27:39.737477Z\",\"session_id\":\"01KTRA6PNMVGY35YYA1PXDMW6E\",\"payload\":{\"pipeline_id\":\"01KTRA9VTR89JS1VM9VV84S9SN\",\"steps\":[{\"step_id\":\"01KTRA9VTR89JS1VM9VV84S9SP\",\"name\":\"compute_impact_envelope\",\"tool_name\":\"compute_impact_envelope\",\"state\":\"running\",\"started_at\":\"2026-06-10T08:27:39.737286Z\",\"completed_at\":null,\"progress_percent\":null}]}}"
+  }
+]
