@@ -18,7 +18,13 @@ dependencies = [
     "google-cloud-secret-manager>=2.20,<3",
     # job-0032 M4 substrate: cache shim writes to gs://grace-2-hazard-prod-cache/
     # provisioned by job-0031; reaches it via ADC in deployed contexts.
-    "google-cloud-storage>=2.18,<3",
+    # job-0250: relaxed <3 -> <4. The old <3 pin silently forced gcsfs back
+    # to 0.8.0 (2021) — modern gcsfs requires google-cloud-storage>=3 — and
+    # that ancient gcsfs crashed on fsspec 2026's NoOpCallback in
+    # postprocess_flood (round-6 live: two completed SFINCS solves, zero
+    # published layers). Our storage usage is stable Blob APIs (upload/
+    # download/list); 3.x is compatible.
+    "google-cloud-storage>=3,<4",
     # job-0041 M5 Stage C: solver dispatch (run_solver + wait_for_completion)
     # drives Cloud Workflows executions of the SFINCS substrate (job-0040)
     # and cancels them via workflows.executions.cancel for the Invariant-8
@@ -71,6 +77,9 @@ dependencies = [
     # bump hydromt-sfincs to the fixed release.
     "pandas>=2.2,<2.3",
     "fsspec[gcs]>=2024.6",
+    # job-0250: pin gcsfs explicitly IN LOCKSTEP with fsspec — fsspec[gcs]
+    # alone let the resolver pick gcsfs 0.8.0 under the old storage<3 pin.
+    "gcsfs>=2026.1",
     # job-0241 (OQ-227-FLOPY-DEP): flopy is the MODFLOW 6 deck builder + UCN
     # reader for the GWT groundwater-transport path (run_modflow /
     # postprocess_modflow / gwt_adapter). 3.9 is the first series with the

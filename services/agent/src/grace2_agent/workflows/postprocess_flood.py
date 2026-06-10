@@ -118,32 +118,44 @@ def _resolve_run_output_to_local(run_outputs_uri: str) -> Path:
     """
     if run_outputs_uri.startswith("gs://"):
         try:
-            import fsspec  # type: ignore[import-not-found]
+            # job-0250 (OQ-0250-POSTPROCESS-FSSPEC-NOOPCALLBACK): download via
+            # google-cloud-storage, NOT fsspec/gcsfs. The fsspec.get() path
+            # crashed live (round-6 Stage 3: two completed SFINCS solves,
+            # zero published layers) when a version-skewed gcsfs (0.8.0,
+            # forced by the old storage<3 pin) choked on modern fsspec's
+            # NoOpCallback. The storage client is the proven-everywhere ADC
+            # path (cache shim, MODFLOW staging) — same pattern as
+            # sfincs_builder._stage_gcs_local.
+            from google.cloud import storage
 
-            fs = fsspec.filesystem("gcs")
-            # Try directory listing first.
             tmpdir = Path(tempfile.mkdtemp(prefix="sfincs-output-"))
             local_target = tmpdir / "sfincs_map.nc"
+            source = (
+                run_outputs_uri
+                if run_outputs_uri.endswith(".nc")
+                else run_outputs_uri.rstrip("/") + "/sfincs_map.nc"
+            )
+            bucket_name, _, blob_name = source[len("gs://"):].partition("/")
             try:
-                # If the URI ends with .nc, fetch it directly.
-                if run_outputs_uri.endswith(".nc"):
-                    fs.get(run_outputs_uri, str(local_target))
-                else:
-                    # Treat as a directory / prefix: find sfincs_map.nc inside.
-                    prefix = run_outputs_uri.rstrip("/")
-                    candidate = f"{prefix}/sfincs_map.nc"
-                    fs.get(candidate, str(local_target))
+                client = storage.Client(
+                    project=os.environ.get(
+                        "GOOGLE_CLOUD_PROJECT", "grace-2-hazard-prod"
+                    )
+                )
+                client.bucket(bucket_name).blob(blob_name).download_to_filename(
+                    str(local_target)
+                )
             except Exception as exc:  # noqa: BLE001
                 raise PostprocessError(
                     "RUN_OUTPUT_READ_FAILED",
-                    message=f"could not fetch run output {run_outputs_uri}: {exc}",
+                    message=f"could not fetch run output {source}: {exc}",
                     details={"run_outputs_uri": run_outputs_uri},
                 ) from exc
             return local_target
         except ImportError as exc:
             raise PostprocessError(
                 "RUN_OUTPUT_READ_FAILED",
-                message=f"fsspec[gcs] not available for {run_outputs_uri}: {exc}",
+                message=f"google-cloud-storage not available for {run_outputs_uri}: {exc}",
                 details={"run_outputs_uri": run_outputs_uri},
             ) from exc
     p = Path(run_outputs_uri.replace("file://", ""))
