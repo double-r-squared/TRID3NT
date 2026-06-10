@@ -372,9 +372,29 @@ export function App(): JSX.Element {
   const currentCaseId: string | null = activeCaseId;
 
   // job-0127: payload-warning gates.
+  //
+  // job-0266 — confirmations are keyed by Case: each warning is tagged with
+  // the Case that was active when it arrived (null = root), and only the
+  // warnings belonging to the CURRENTLY visible Case render. A warning for
+  // a non-visible Case buffers until the user returns to that Case — it is
+  // never painted into another Case's view.
   const [payloadWarnings, setPayloadWarnings] = useState<
-    PayloadWarningEnvelopePayload[]
+    Array<{ warning: PayloadWarningEnvelopePayload; caseId: string | null }>
   >([]);
+  // Latest activeCaseId for the once-bound WS handler closures. Assigned
+  // during render so a warning arriving any time after a Case switch tags
+  // with the up-to-date Case.
+  const activeCaseIdRef = useRef<string | null>(null);
+  activeCaseIdRef.current = activeCaseId;
+  const handlePayloadWarning = useCallback(
+    (p: PayloadWarningEnvelopePayload) => {
+      setPayloadWarnings((prev) => [
+        { warning: p, caseId: activeCaseIdRef.current },
+        ...prev,
+      ]);
+    },
+    [],
+  );
   const handlePayloadWarningDecide = useCallback(
     (
       warningId: string,
@@ -383,7 +403,7 @@ export function App(): JSX.Element {
     ) => {
       wsRef.current?.sendPayloadConfirmation(warningId, decision, revised);
       setPayloadWarnings((prev) =>
-        prev.filter((w) => w.warning_id !== warningId),
+        prev.filter((t) => t.warning.warning_id !== warningId),
       );
     },
     [],
@@ -487,7 +507,8 @@ export function App(): JSX.Element {
       onMapCommand: (p) => bus.pushMapCommand(p),
       onSecretsList: (p) => setSecrets(p.secrets ?? []),
       onMode2Candidate: (p) => fanoutSourceSuggestion(p),
-      onPayloadWarning: (p) => setPayloadWarnings((prev) => [p, ...prev]),
+      // job-0266 — tags the warning with the Case active at arrival.
+      onPayloadWarning: (p) => handlePayloadWarning(p),
       onCaseList: (p: CaseListEnvelopePayload) => useCases_onCaseList(p),
       onCaseOpen: (p: CaseOpenEnvelopePayload) => useCases_onCaseOpen(p),
       onError: () => { /* Chat owns rendering */ },
@@ -502,7 +523,7 @@ export function App(): JSX.Element {
       wsRef.current = null;
       ws.close();
     };
-  }, [bus, fanoutSourceSuggestion, useCases_onCaseList, useCases_onCaseOpen, handleChartEmission]);
+  }, [bus, fanoutSourceSuggestion, useCases_onCaseList, useCases_onCaseOpen, handleChartEmission, handlePayloadWarning]);
 
   // job-0137: Case rehydration replay.
   useEffect(() => {
@@ -564,8 +585,7 @@ export function App(): JSX.Element {
     window.__grace2InjectSourceSuggestion = (p) => fanoutSourceSuggestion(p);
     window.__grace2InjectCaseList = (p) => useCases_onCaseList(p);
     window.__grace2InjectCaseOpen = (p) => useCases_onCaseOpen(p);
-    window.__grace2InjectPayloadWarning = (p) =>
-      setPayloadWarnings((prev) => [p, ...prev]);
+    window.__grace2InjectPayloadWarning = (p) => handlePayloadWarning(p);
     window.__grace2InjectImpactEnvelope = (p) => setImpactEnvelope(p);
     // sprint-13 job-0231: chart injection seam for Playwright snapshots.
     // App.tsx owns the window seam; Chat.tsx receives the fan-out via
@@ -590,7 +610,7 @@ export function App(): JSX.Element {
       delete window.__grace2InjectChartEmission;
       delete window.__grace2ClearCharts;
     };
-  }, [bus, fanoutSourceSuggestion, useCases_onCaseList, useCases_onCaseOpen, handleChartEmission]);
+  }, [bus, fanoutSourceSuggestion, useCases_onCaseList, useCases_onCaseOpen, handleChartEmission, handlePayloadWarning]);
 
   // job-0125: bridge SecretsPanel callbacks to the active GraceWs.
   function handleSecretAdd(payload: {
@@ -624,6 +644,12 @@ export function App(): JSX.Element {
   const activeCase = activeCaseId
     ? cases.find((c) => c.case_id === activeCaseId) ?? null
     : null;
+
+  // job-0266 — only the warnings belonging to the visible Case (or the
+  // root, for warnings tagged null) render; the rest buffer per-Case.
+  const visiblePayloadWarnings = payloadWarnings.filter(
+    (t) => t.caseId === activeCaseId,
+  );
 
   return (
     <div
@@ -778,7 +804,14 @@ export function App(): JSX.Element {
           display: rightCollapsed ? "none" : "contents",
         }}
       >
-        <Chat wsUrl={WS_URL} onClose={collapseRight} />
+        {/* job-0266 — activeCaseId selects Chat's visible per-Case stream:
+            switching Cases swaps the entire stream; null (root) shows the
+            clean empty composer. */}
+        <Chat
+          wsUrl={WS_URL}
+          onClose={collapseRight}
+          activeCaseId={activeCaseId}
+        />
       </div>
 
       {/* Layers hamburger — top-LEFT. */}
@@ -882,8 +915,9 @@ export function App(): JSX.Element {
           }}
         >
           {/* Payload-warning gates (job-0127 → restyled job-0145). Newest
-              first so a fresh gate is always at the top of the stack. */}
-          {payloadWarnings.map((w) => (
+              first so a fresh gate is always at the top of the stack.
+              job-0266: filtered to the visible Case's warnings only. */}
+          {visiblePayloadWarnings.map(({ warning: w }) => (
             <PayloadWarningInline
               key={w.warning_id}
               warning={w}
@@ -906,7 +940,7 @@ export function App(): JSX.Element {
           `payload-warning-stack` test id reachable so existing App / e2e
           tests continue to find the column. Mounted only when at least one
           warning is active, mirroring the prior conditional-render. */}
-      {payloadWarnings.length > 0 && (
+      {visiblePayloadWarnings.length > 0 && (
         <span
           data-testid="payload-warning-stack"
           aria-hidden="true"

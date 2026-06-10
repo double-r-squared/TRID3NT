@@ -47,12 +47,37 @@
 //
 // The chat is a CONSUMER of frames — every glyph on screen came from the
 // agent. No client-side text generation.
+//
+// PER-CASE CHAT STREAMS (job-0266 — "Case = conversation thread"):
+//   Every piece of conversational state — messages, tool cards, sandbox
+//   cards, charts, errors, arrival-order maps — lives in a per-Case
+//   ``StreamState`` keyed by ``case_id`` inside a ref-held ``ChatStreams``
+//   map. The VISIBLE stream is selected by the ``activeCaseId`` prop
+//   (App.tsx wires it from useCases):
+//
+//     - Switching Cases swaps the ENTIRE visible stream.
+//     - Root view (activeCaseId === null) renders the root stream, which is
+//       reset to a clean empty composer whenever the user navigates OUT of
+//       a Case (the Case's stream persists server-side AND in the in-memory
+//       map for this session).
+//     - Streaming envelopes route to the stream of the Case that OWNS the
+//       in-flight turn (``ChatStreams.targetKey`` — captured at submit
+//       time). An envelope arriving for a non-visible Case buffers into
+//       that Case's stream; it is never painted into the visible one.
+//     - Typing from root: the server auto-creates a Case (job-0262) and
+//       emits ``case-open`` BEFORE the turn dispatches. ``routeCaseOpen``
+//       adopts the in-flight root turn into the new Case (targetKey
+//       reassignment), clears the root buffer (the typed message is in the
+//       rehydrated ``chat_history``), and App's activeCaseId prop flips the
+//       visible stream to the new Case — the user sees the thread from
+//       turn 1.
 
-import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ConnectionStatus, GraceWs } from "./ws";
 import {
   AgentMessageChunkPayload,
   CaseOpenEnvelopePayload,
+  CaseSessionState,
   ErrorPayload,
   PipelineSnapshot,
   PipelineStatePayload,
@@ -96,7 +121,7 @@ const SCROLL_BOTTOM_THRESHOLD_PX = 50;
 
 // --- Chat message shape -------------------------------------------------- //
 
-interface ChatMessage {
+export interface ChatMessage {
   id: string;        // message_id from agent-message-chunk (or "user-<n>" for user lines)
   role: "user" | "agent";
   text: string;
@@ -452,12 +477,299 @@ export function shouldShowCancel(state: PipelineInlineState): boolean {
   return aRunning || bSession;
 }
 
+// --- Per-Case chat streams (job-0266) ------------------------------------ //
+//
+// The pure stream-routing core. Exported for unit testing (Chat itself
+// cannot mount in happy-dom — it opens a WebSocket — so the per-Case
+// behavior is verified through these functions, following the same
+// pure-helper pattern as pipelineReducer / buildInterleavedStream).
+//
+// A ``StreamState`` is the complete conversational view-model of ONE Case
+// (or of the Cases root, under the ``ROOT_STREAM_KEY`` sentinel). The
+// ``ChatStreams`` container holds every stream touched this session plus
+// ``targetKey`` — the key of the stream that OWNS currently-arriving
+// streaming envelopes. ``targetKey`` is set at submit time (the Case that
+// was visible when the user sent the message) and is re-pointed by
+// ``routeCaseOpen`` when the server auto-creates a Case for a root prompt
+// (job-0262 adoption). This is the "active case at arrival/submit" routing
+// the product shape blesses: late envelopes for a turn the user navigated
+// away from buffer into the owning Case's stream, never the visible one.
+
+/** Sentinel stream key for the Cases root (no active Case). */
+export const ROOT_STREAM_KEY = "__root__";
+
+export interface StreamState {
+  messages: ChatMessage[];
+  pipeline: PipelineInlineState;
+  charts: ChartPayload[];
+  sandboxRequests: CodeExecRequestPayload[];
+  sandboxResults: Map<string, CodeExecResultPayload>;
+  sandboxDecisions: Map<string, SandboxCardDecision>;
+  /** First-arrival seq per code_exec_id (chronological interleave). */
+  sandboxSeqs: Map<string, number>;
+  /** Monotonic arrival counter for this stream (job-0176 interleave). */
+  arrivalSeq: number;
+  messageOrder: Map<string, number>;
+  stepOrder: Map<string, number>;
+  lastError: string | null;
+}
+
+export function emptyStreamState(): StreamState {
+  return {
+    messages: [],
+    pipeline: { live: null, history: [], currentPipelineFromSession: null },
+    charts: [],
+    sandboxRequests: [],
+    sandboxResults: new Map(),
+    sandboxDecisions: new Map(),
+    sandboxSeqs: new Map(),
+    arrivalSeq: 0,
+    messageOrder: new Map(),
+    stepOrder: new Map(),
+    lastError: null,
+  };
+}
+
+export interface ChatStreams {
+  /** Every stream touched this session, keyed by case_id / ROOT_STREAM_KEY. */
+  streams: Map<string, StreamState>;
+  /** Stream key that owns currently-arriving streaming envelopes. */
+  targetKey: string;
+}
+
+export function createChatStreams(): ChatStreams {
+  return { streams: new Map(), targetKey: ROOT_STREAM_KEY };
+}
+
+/** Map an active Case id (null = root) to its stream key. */
+export function streamKeyFor(caseId: string | null | undefined): string {
+  return caseId ?? ROOT_STREAM_KEY;
+}
+
+/** Get (lazily creating) the stream for a key. */
+export function getStream(cs: ChatStreams, key: string): StreamState {
+  let s = cs.streams.get(key);
+  if (!s) {
+    s = emptyStreamState();
+    cs.streams.set(key, s);
+  }
+  return s;
+}
+
+/** Reset the root stream to a clean slate (navigate-out-of-Case rule). */
+export function clearRootStream(cs: ChatStreams): void {
+  cs.streams.set(ROOT_STREAM_KEY, emptyStreamState());
+}
+
+// job-0176 arrival-order recording, per-stream. First-encounter seq is
+// sticky; subsequent envelopes update content in place.
+function recordMessageSeqIn(s: StreamState, messageId: string): void {
+  if (!s.messageOrder.has(messageId)) {
+    s.arrivalSeq += 1;
+    s.messageOrder.set(messageId, s.arrivalSeq);
+  }
+}
+
+function recordPipelineStepSeqsIn(
+  s: StreamState,
+  p: PipelineStatePayload,
+): void {
+  for (const step of p.steps ?? []) {
+    const key = `${step.name}|${step.tool_name}`;
+    if (!s.stepOrder.has(key)) {
+      s.arrivalSeq += 1;
+      s.stepOrder.set(key, s.arrivalSeq);
+    }
+  }
+}
+
+/** Append the user's submitted message to the visible stream and take turn
+ * ownership for it: every streaming envelope that follows belongs to this
+ * stream until the next submit (or a job-0262 auto-create adoption). */
+export function routeUserMessage(
+  cs: ChatStreams,
+  visibleKey: string,
+  text: string,
+): void {
+  cs.targetKey = visibleKey;
+  const s = getStream(cs, visibleKey);
+  const userId = `user-${s.messages.length}`;
+  recordMessageSeqIn(s, userId);
+  s.messages = [...s.messages, { id: userId, role: "user", text, done: true }];
+  s.lastError = null;
+}
+
+export function routeAgentChunk(
+  cs: ChatStreams,
+  p: AgentMessageChunkPayload,
+): void {
+  const s = getStream(cs, cs.targetKey);
+  recordMessageSeqIn(s, p.message_id);
+  s.messages = appendDelta(s.messages, p);
+}
+
+export function routePipelineState(
+  cs: ChatStreams,
+  p: PipelineStatePayload,
+): void {
+  const s = getStream(cs, cs.targetKey);
+  recordPipelineStepSeqsIn(s, p);
+  s.pipeline = pipelineReducer(s.pipeline, {
+    type: "pipeline-state",
+    payload: p,
+  });
+}
+
+export function routeSessionState(
+  cs: ChatStreams,
+  p: SessionStatePayload,
+): void {
+  const s = getStream(cs, cs.targetKey);
+  s.pipeline = pipelineReducer(s.pipeline, {
+    type: "session-state",
+    payload: p,
+  });
+}
+
+export function routeError(cs: ChatStreams, p: ErrorPayload): void {
+  const s = getStream(cs, cs.targetKey);
+  s.lastError = `${p.error_code}: ${p.message}`;
+  // job-0166 Part 1 — force the most-recent running step to failed so the
+  // rainbow animation terminates and the user sees a RED card (in the
+  // OWNING Case's stream, even if it is not currently visible).
+  s.pipeline = pipelineReducer(s.pipeline, {
+    type: "error",
+    payload: p,
+    tool_name: null,
+  });
+}
+
+export function routeChartEmission(cs: ChatStreams, p: ChartPayload): void {
+  const s = getStream(cs, cs.targetKey);
+  // De-dupe on chart_id so hub-delivered + direct arrivals don't double-stack.
+  if (s.charts.some((c) => c.chart_id === p.chart_id)) return;
+  s.charts = [...s.charts, p];
+}
+
+export function routeCodeExecRequest(
+  cs: ChatStreams,
+  p: CodeExecRequestPayload,
+): void {
+  const s = getStream(cs, cs.targetKey);
+  if (s.sandboxRequests.some((r) => r.code_exec_id === p.code_exec_id)) return;
+  if (!s.sandboxSeqs.has(p.code_exec_id)) {
+    s.arrivalSeq += 1;
+    s.sandboxSeqs.set(p.code_exec_id, s.arrivalSeq);
+  }
+  s.sandboxRequests = [...s.sandboxRequests, p];
+}
+
+export function routeCodeExecResult(
+  cs: ChatStreams,
+  p: CodeExecResultPayload,
+): void {
+  // Route to whichever stream holds the matching REQUEST card — the user
+  // may have submitted in another Case since the request arrived, moving
+  // targetKey; the result must still resolve the card where it lives.
+  let owner: StreamState | null = null;
+  for (const s of cs.streams.values()) {
+    if (s.sandboxRequests.some((r) => r.code_exec_id === p.code_exec_id)) {
+      owner = s;
+      break;
+    }
+  }
+  const s = owner ?? getStream(cs, cs.targetKey);
+  const next = new Map(s.sandboxResults);
+  next.set(p.code_exec_id, p);
+  s.sandboxResults = next;
+}
+
+/** Record the user's sandbox gate decision against the stream it lives in. */
+export function recordSandboxDecision(
+  cs: ChatStreams,
+  key: string,
+  codeExecId: string,
+  decision: SandboxCardDecision,
+): void {
+  const s = getStream(cs, key);
+  const next = new Map(s.sandboxDecisions);
+  next.set(codeExecId, decision);
+  s.sandboxDecisions = next;
+}
+
+/** Extract persisted charts from a case-open session (sprint-13 schema —
+ * ``charts`` is not yet on the TS CaseSessionState type; read defensively
+ * the same way App.tsx does). */
+export function chartsFromSession(session: CaseSessionState): ChartPayload[] {
+  const sessionCharts = (session as unknown as { charts?: ChartPayload[] })
+    .charts;
+  if (!Array.isArray(sessionCharts)) return [];
+  return sessionCharts.filter(
+    (c) => c && typeof c.chart_id === "string" && !!c.vega_lite_spec,
+  );
+}
+
+/**
+ * Handle a ``case-open`` envelope against the stream map.
+ *
+ *   - ``session_state === null`` (server couldn't rehydrate): reset the
+ *     root stream (App's useCases clears activeCaseId, so the root becomes
+ *     visible — it must be clean). Returns null.
+ *   - Otherwise: if the in-flight turn was submitted from the ROOT (the
+ *     job-0262 auto-create flow), ADOPT it into the opened Case — targetKey
+ *     moves to the Case so the streaming envelopes that follow land in its
+ *     stream — and clear the root buffer (the typed message is included in
+ *     the rehydrated ``chat_history``; job-0262 persists the user turn
+ *     BEFORE emitting case-open).
+ *   - First open of a Case this session: build its stream from the
+ *     rehydrated ``chat_history`` + persisted session charts.
+ *   - Re-open of a Case already in the map: keep the in-memory buffer
+ *     as-is (it holds everything the user saw — including live tool cards
+ *     and anything buffered while they were away — and avoids the
+ *     refetch repaint).
+ *
+ * Returns the opened case_id (or null).
+ */
+export function routeCaseOpen(
+  cs: ChatStreams,
+  p: CaseOpenEnvelopePayload,
+): string | null {
+  const session = p.session_state;
+  if (!session) {
+    clearRootStream(cs);
+    return null;
+  }
+  const caseId = session.case.case_id;
+  if (cs.targetKey === ROOT_STREAM_KEY) {
+    // Adoption: a turn submitted from root belongs to the opened Case.
+    cs.targetKey = caseId;
+    clearRootStream(cs);
+  }
+  if (!cs.streams.has(caseId)) {
+    const s = emptyStreamState();
+    const rehydrated = rehydrateMessagesFromCaseOpen(p);
+    for (const m of rehydrated) {
+      recordMessageSeqIn(s, m.id);
+    }
+    s.messages = rehydrated;
+    s.charts = chartsFromSession(session);
+    cs.streams.set(caseId, s);
+  }
+  return caseId;
+}
+
 // --- Props --------------------------------------------------------------- //
 
 export interface ChatProps {
   wsUrl: string;
   /** Called when the user clicks the × close button (job-0068). */
   onClose?: () => void;
+  /**
+   * job-0266 — the active Case id (null = Cases root). Selects the VISIBLE
+   * per-Case chat stream. App.tsx wires this from useCases; switching Cases
+   * swaps the entire stream, navigating to root shows the clean root view.
+   */
+  activeCaseId?: string | null;
 }
 
 // --- Connection status display ------------------------------------------- //
@@ -478,72 +790,54 @@ const STATUS_COLOR: Record<ConnectionStatus, string> = {
 
 // --- Component ----------------------------------------------------------- //
 
-export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [pipeline, dispatchPipeline] = useReducer(pipelineReducer, {
-    live: null,
-    history: [],
-    currentPipelineFromSession: null,
-  });
+export function Chat({
+  wsUrl,
+  onClose,
+  activeCaseId = null,
+}: ChatProps): JSX.Element {
+  // job-0266 — PER-CASE CHAT STREAMS. All conversational state (messages,
+  // tool cards, charts, sandbox cards, errors, arrival-order maps) lives in
+  // per-Case StreamState entries inside a ref-held ChatStreams map; React
+  // re-renders are driven by a numeric tick bumped after every routed
+  // envelope. The VISIBLE stream is selected by the activeCaseId prop.
+  const streamsRef = useRef<ChatStreams>(createChatStreams());
+  const [, bumpStreamTick] = useState<number>(0);
+  const bump = useCallback(() => bumpStreamTick((n) => n + 1), []);
+
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
   const [researchMode] = useState<ResearchMode>("research"); // toggle UI lands M3
-  const [lastError, setLastError] = useState<string | null>(null);
 
-  // sprint-13 job-0231: chart-emission state in Chat.
-  // Charts accumulate per session; Case switch resets to [] via the case-open handler.
-  // Gallery state for the full-viewport chart viewer.
-  const [charts, setCharts] = useState<ChartPayload[]>([]);
+  // sprint-13 job-0231 — gallery state for the full-viewport chart viewer.
+  // UI state, not stream content; closed on stream swap so charts from the
+  // outgoing Case don't linger in the overlay.
   const [galleryOpen, setGalleryOpen] = useState<boolean>(false);
   const [galleryCharts, setGalleryCharts] = useState<ChartPayload[]>([]);
   const [galleryInitialIndex, setGalleryInitialIndex] = useState<number>(0);
 
-  // sprint-13 job-0234: sandbox code-exec cards.
-  //
-  // sandboxRequests: ordered list of code-exec-request payloads, in arrival
-  // order. Each request gets a SandboxCard rendered inline in the chat scroll.
-  //
-  // sandboxResults: keyed by code_exec_id — the result arrives asynchronously
-  // after the user approves and the sandbox runs. The card looks up its result
-  // here to transition from RUNNING → RESULT state.
-  //
-  // sandboxDecisions: keyed by code_exec_id — the user's decision (proceed /
-  // cancel). Locks the gate buttons after click; drives RUNNING state when
-  // "proceed" and no result yet.
-  //
-  // sandboxSeqMap: first-arrival seq for each code_exec_id so the SandboxCard
-  // interleaves chronologically in the unified chat stream. Keyed by
-  // code_exec_id.
-  //
-  // Case switch resets all sandbox state to empty (replace-not-reconcile).
-  const [sandboxRequests, setSandboxRequests] = useState<CodeExecRequestPayload[]>([]);
-  const [sandboxResults, setSandboxResults] = useState<Map<string, CodeExecResultPayload>>(new Map());
-  const [sandboxDecisions, setSandboxDecisions] = useState<Map<string, SandboxCardDecision>>(new Map());
-  // Arrival seqs for sandbox cards — stored in a plain Map ref (not state)
-  // so the sort in the render pass stays stable across re-renders without
-  // triggering extra React cycles.
-  const sandboxSeqRef = useRef<Map<string, number>>(new Map());
-
-  // job-0176 — arrival-order tracking for chronological interleave.
-  // ``messageOrder`` is keyed on ``message_id`` (user_id for user lines);
-  // ``stepOrder`` is keyed on the step-collapse key (``name|tool_name`` —
-  // matches mergeStepsByStepId's second-pass dedupe so the llm_generation
-  // reissue edge case from job-0166 Part 3 stays a single card at its
-  // original slot). First-encounter seq is sticky; subsequent envelopes for
-  // the same key update content/state IN PLACE without moving the row.
-  const arrivalSeqRef = useRef<number>(0);
-  const messageOrderRef = useRef<Map<string, number>>(new Map());
-  const stepOrderRef = useRef<Map<string, number>>(new Map());
-  // Trigger-only state for re-renders when we update the refs above (refs
-  // by themselves don't fire React updates; the messages / pipeline state
-  // updates do fire them, so we don't actually need a separate signal —
-  // updates that follow envelope arrivals always touch one of the existing
-  // states. Keeping a numeric tick as belt-and-suspenders for the case-open
-  // reset which would otherwise leave stale order maps + no other state
-  // change to flush them).
-  const [, bumpStreamTick] = useState<number>(0);
-
   const wsRef = useRef<GraceWs | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+
+  // job-0266 — visible stream key + view-model for this render. getStream
+  // lazily creates the entry; the ref-map mutation during render is
+  // idempotent and safe.
+  const visibleKey = streamKeyFor(activeCaseId);
+  const visible = getStream(streamsRef.current, visibleKey);
+
+  // job-0266 — navigating OUT of a Case to the root clears the visible
+  // chat: the root view is always a clean empty composer (the Case's
+  // stream persists server-side and in the in-memory map). Also closes the
+  // chart gallery on any stream swap (it showed the outgoing stream's
+  // charts).
+  const prevVisibleKeyRef = useRef<string>(visibleKey);
+  useEffect(() => {
+    if (prevVisibleKeyRef.current === visibleKey) return;
+    prevVisibleKeyRef.current = visibleKey;
+    if (visibleKey === ROOT_STREAM_KEY) {
+      clearRootStream(streamsRef.current);
+    }
+    setGalleryOpen(false);
+    bump();
+  }, [visibleKey, bump]);
 
   // job-0153 Part 4 — dynamic chat-input wrapper height; the scroll area's
   // bottom-padding grows with it so messages aren't clipped by the overlay.
@@ -561,130 +855,59 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
   // reading position isn't disrupted) and surface the scroll-to-bottom arrow.
   const atBottomRef = useRef<boolean>(true);
 
-  // job-0176 — record first-arrival seq for a message_id; updates in place
-  // afterwards. Called from onAgentChunk + submit() + rehydrate.
-  const recordMessageSeq = useCallback((messageId: string) => {
-    if (!messageOrderRef.current.has(messageId)) {
-      arrivalSeqRef.current += 1;
-      messageOrderRef.current.set(messageId, arrivalSeqRef.current);
-    }
-  }, []);
-
-  // job-0176 — record first-arrival seq for every (name|tool_name) step key
-  // encountered in a pipeline-state snapshot. Matches mergeStepsByStepId's
-  // collapse key so the interleave anchors at the same point as the merged
-  // card.
-  const recordPipelineStepSeqs = useCallback((p: PipelineStatePayload) => {
-    const steps = p.steps ?? [];
-    for (const s of steps) {
-      const key = `${s.name}|${s.tool_name}`;
-      if (!stepOrderRef.current.has(key)) {
-        arrivalSeqRef.current += 1;
-        stepOrderRef.current.set(key, arrivalSeqRef.current);
-      }
-    }
-  }, []);
-
   useEffect(() => {
+    // job-0266 — every handler routes its envelope into the OWNING Case's
+    // stream (ChatStreams.targetKey — the Case that was visible at submit
+    // time, or the Case adopted by routeCaseOpen on the job-0262
+    // auto-create flow) and bumps the render tick. Envelopes for a
+    // non-visible Case buffer silently into that Case's stream.
     const ws = new GraceWs(wsUrl, {
       onStatus: (s) => setStatus(s),
       onAgentChunk: (p: AgentMessageChunkPayload) => {
-        recordMessageSeq(p.message_id);
-        setMessages((prev) => appendDelta(prev, p));
+        routeAgentChunk(streamsRef.current, p);
+        bump();
       },
       onPipelineState: (p: PipelineStatePayload) => {
-        recordPipelineStepSeqs(p);
-        dispatchPipeline({ type: "pipeline-state", payload: p });
+        routePipelineState(streamsRef.current, p);
+        bump();
       },
       onSessionState: (p: SessionStatePayload) => {
-        dispatchPipeline({ type: "session-state", payload: p });
+        routeSessionState(streamsRef.current, p);
+        bump();
       },
-      // job-0172 Part A: case-open is replace-not-reconcile applied
-      // CLIENT-SIDE. When a Case opens we FLUSH the chat panel's local
-      // message buffer + pipeline view-model THEN hydrate from
-      // ``session_state.chat_history`` so the Chat panel reflects the
-      // newly-opened Case rather than stale messages from the prior one.
-      // ``session_state === null`` (server couldn't rehydrate) also clears,
-      // giving the user a clean empty state per Appendix A.7 discipline.
+      // job-0266 (supersedes the job-0172 flush-and-rehydrate): case-open
+      // creates / reuses the opened Case's stream in the map and handles the
+      // job-0262 root-turn adoption. The VISIBLE stream swaps via the
+      // activeCaseId prop, which App.tsx updates from the same envelope.
       onCaseOpen: (p: CaseOpenEnvelopePayload) => {
-        const rehydrated = rehydrateMessagesFromCaseOpen(p);
-        // job-0176 — reset arrival-order maps + counter so the new Case's
-        // stream starts from seq=1; then re-record seq for every replayed
-        // chat message in encounter order so rehydrated history retains
-        // its original chronology.
-        arrivalSeqRef.current = 0;
-        messageOrderRef.current = new Map();
-        stepOrderRef.current = new Map();
-        for (const m of rehydrated) {
-          recordMessageSeq(m.id);
-        }
-        setMessages(rehydrated);
-        // Reset the inline pipeline state: the live snapshot belonged to
-        // the OUTGOING Case (if any). The next pipeline-state envelope for
-        // THIS Case will repopulate it.
-        dispatchPipeline({ type: "case-open" });
-        setLastError(null);
-        // sprint-13 job-0231: Case switch resets charts in Chat too
-        // (replace-not-reconcile applied client-side). Rehydration from
-        // session.charts is handled in App.tsx and arrives via
-        // onChartEmission fan-out on reconnect; we start from a clean
-        // slate so stale charts from the prior Case don't linger.
-        setCharts([]);
-        setGalleryOpen(false);
-        // sprint-13 job-0234: Case switch resets sandbox state too.
-        setSandboxRequests([]);
-        setSandboxResults(new Map());
-        setSandboxDecisions(new Map());
-        sandboxSeqRef.current = new Map();
-        bumpStreamTick((n) => n + 1);
+        routeCaseOpen(streamsRef.current, p);
+        bump();
       },
       onError: (p: ErrorPayload) => {
-        setLastError(`${p.error_code}: ${p.message}`);
-        // job-0166 Part 1 — force the most-recent running step to failed so
-        // the rainbow animation terminates and the user sees a RED card.
-        // Sender envelope shape does not currently include tool_name; pass
-        // null and rely on the most-recent-running fallback.
-        dispatchPipeline({ type: "error", payload: p, tool_name: null });
+        routeError(streamsRef.current, p);
+        bump();
       },
-      // sprint-13 job-0231: chart-emission routing in Chat's own GraceWs
-      // instance. Because chart-emission is in SESSION_SCOPED_TYPES, Chat
-      // receives it via the fan-out hub even when it was emitted on
-      // App.tsx's connection. De-dupe on chart_id so both hub-delivered and
-      // direct arrivals don't double-stack.
+      // sprint-13 job-0231: chart-emission is in SESSION_SCOPED_TYPES, so
+      // Chat receives it via the fan-out hub even when it was emitted on
+      // App.tsx's connection. routeChartEmission de-dupes on chart_id.
       onChartEmission: (p: ChartPayload) => {
-        setCharts((prev) => {
-          if (prev.some((c) => c.chart_id === p.chart_id)) return prev;
-          return [...prev, p];
-        });
+        routeChartEmission(streamsRef.current, p);
+        bump();
       },
-      // sprint-13 job-0234: code-exec-request — render a SandboxCard gate
-      // card inline in the chat. De-dupe on code_exec_id so reconnect fan-out
-      // doesn't double-add the same request.
+      // sprint-13 job-0234: code-exec gate cards, now per-Case.
       onCodeExecRequest: (p: CodeExecRequestPayload) => {
-        setSandboxRequests((prev) => {
-          if (prev.some((r) => r.code_exec_id === p.code_exec_id)) return prev;
-          // Record arrival seq for chronological interleave.
-          if (!sandboxSeqRef.current.has(p.code_exec_id)) {
-            arrivalSeqRef.current += 1;
-            sandboxSeqRef.current.set(p.code_exec_id, arrivalSeqRef.current);
-          }
-          return [...prev, p];
-        });
+        routeCodeExecRequest(streamsRef.current, p);
+        bump();
       },
-      // sprint-13 job-0234: code-exec-result — update the matching SandboxCard
-      // from RUNNING → RESULT state (keyed by code_exec_id).
       onCodeExecResult: (p: CodeExecResultPayload) => {
-        setSandboxResults((prev) => {
-          const next = new Map(prev);
-          next.set(p.code_exec_id, p);
-          return next;
-        });
+        routeCodeExecResult(streamsRef.current, p);
+        bump();
       },
     });
     wsRef.current = ws;
     ws.connect();
     return () => ws.close();
-  }, [wsUrl]);
+  }, [wsUrl, bump]);
 
   // Dev-only seam: expose pipeline-state injection so the browser console /
   // Playwright scripts can drive the inline cards without a live agent.
@@ -699,13 +922,13 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
   useEffect(() => {
     if (!import.meta.env.DEV) return;
     window.__grace2InjectPipelineState = (p) => {
-      recordPipelineStepSeqs(p);
-      dispatchPipeline({ type: "pipeline-state", payload: p });
+      routePipelineState(streamsRef.current, p);
+      bump();
     };
     return () => {
       delete window.__grace2InjectPipelineState;
     };
-  }, [recordPipelineStepSeqs]);
+  }, [bump]);
 
   // job-0166 dev-only seam: inject an error envelope so Playwright can
   // verify Part 1 (running → failed force-transition on LLM_UNAVAILABLE /
@@ -713,13 +936,33 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
   useEffect(() => {
     if (!import.meta.env.DEV) return;
     window.__grace2InjectError = (p) => {
-      setLastError(`${p.error_code}: ${p.message}`);
-      dispatchPipeline({ type: "error", payload: p, tool_name: null });
+      routeError(streamsRef.current, p);
+      bump();
     };
     return () => {
       delete window.__grace2InjectError;
     };
-  }, []);
+  }, [bump]);
+
+  // job-0266 dev-only seam: drive Chat's per-Case stream map with a
+  // case-open without a live agent. The App-level __grace2InjectCaseOpen
+  // seam reaches only useCases (App's GraceWs handler); Chat's stream map
+  // hangs off Chat's own GraceWs handler, so UI snapshot scripts call BOTH
+  // seams to simulate the full envelope fan-out. Per
+  // `feedback_playwright_must_drive_live_agent` this seam is INVALID for
+  // end-to-end verification; only UI snapshots + unit tests may use it.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    (window as unknown as Record<string, unknown>).__grace2InjectCaseOpenChat =
+      (p: CaseOpenEnvelopePayload) => {
+        routeCaseOpen(streamsRef.current, p);
+        bump();
+      };
+    return () => {
+      delete (window as unknown as Record<string, unknown>)
+        .__grace2InjectCaseOpenChat;
+    };
+  }, [bump]);
 
   // sprint-13 job-0231: chart injection dev seam for Playwright snapshots.
   // App.tsx owns the primary __grace2InjectChartEmission window seam.
@@ -746,11 +989,9 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
     // existing App seam so both App and Chat state update together.
     const prev = (window as unknown as Record<string, unknown>).__grace2InjectChartEmission as ((p: ChartPayload) => void) | undefined;
     const combined = (p: ChartPayload) => {
-      // Drive Chat state first.
-      setCharts((prevCharts) => {
-        if (prevCharts.some((c) => c.chart_id === p.chart_id)) return prevCharts;
-        return [...prevCharts, p];
-      });
+      // Drive Chat state first (job-0266: routed to the owning stream).
+      routeChartEmission(streamsRef.current, p);
+      bump();
       // Then call App's handler if it exists.
       prev?.(p);
     };
@@ -763,7 +1004,7 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
         delete (window as unknown as Record<string, unknown>).__grace2InjectChartEmission;
       }
     };
-  }, []);
+  }, [bump]);
 
   // sprint-13 job-0234: dev seam for code-exec injection.
   // Playwright UI-only snapshot tests (UI seam PERMITTED per
@@ -779,42 +1020,48 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
       decision?: SandboxCardDecision;
     }) => {
       const { request, result, decision } = args;
-      setSandboxRequests((prev) => {
-        if (prev.some((r) => r.code_exec_id === request.code_exec_id)) return prev;
-        if (!sandboxSeqRef.current.has(request.code_exec_id)) {
-          arrivalSeqRef.current += 1;
-          sandboxSeqRef.current.set(request.code_exec_id, arrivalSeqRef.current);
-        }
-        return [...prev, request];
-      });
+      // job-0266 — same routed path as real envelopes: request + result +
+      // decision land in the OWNING (targetKey) stream.
+      routeCodeExecRequest(streamsRef.current, request);
       if (result !== undefined) {
-        setSandboxResults((prev) => {
-          const next = new Map(prev);
-          next.set(result.code_exec_id, result);
-          return next;
-        });
+        routeCodeExecResult(streamsRef.current, result);
       }
       if (decision !== undefined) {
-        setSandboxDecisions((prev) => {
-          const next = new Map(prev);
-          next.set(request.code_exec_id, decision);
-          return next;
-        });
+        recordSandboxDecision(
+          streamsRef.current,
+          streamsRef.current.targetKey,
+          request.code_exec_id,
+          decision,
+        );
       }
+      bump();
     };
     return () => {
       delete (window as unknown as Record<string, unknown>).__grace2InjectCodeExec;
     };
-  }, []);
+  }, [bump]);
 
   // Auto-scroll on new content only when the user is already at the bottom.
   // This preserves the user's reading position when they've scrolled up to
   // read history while the stream is still landing new tokens.
+  //
+  // job-0266 — dependencies are the VISIBLE stream's fields (route* replaces
+  // the field identity on every update), so an envelope buffered into a
+  // non-visible Case's stream does NOT scroll the visible one. A stream
+  // swap (visibleKey change) also re-fires, snapping the newly visible
+  // stream to its bottom.
   useEffect(() => {
     if (scrollRef.current && atBottomRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [messages, pipeline, charts, sandboxRequests, sandboxResults]);
+  }, [
+    visibleKey,
+    visible.messages,
+    visible.pipeline,
+    visible.charts,
+    visible.sandboxRequests,
+    visible.sandboxResults,
+  ]);
 
   // job-0153 Part 3 — scroll handler. Computes "near bottom" against the
   // current scroll position and toggles the arrow visibility + the
@@ -846,12 +1093,11 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
   // sprint-13 job-0234: sandbox gate decision handler.
   // Wired to SandboxCard.onDecide; reuses sendPayloadConfirmation with the
   // code_exec_id as warning_id per the job-0233 confirm-gate seam design.
+  // job-0266 — the decision is recorded against the VISIBLE stream (the
+  // card the user clicked lives there).
   function handleSandboxDecide(codeExecId: string, decision: SandboxCardDecision): void {
-    setSandboxDecisions((prev) => {
-      const next = new Map(prev);
-      next.set(codeExecId, decision);
-      return next;
-    });
+    recordSandboxDecision(streamsRef.current, visibleKey, codeExecId, decision);
+    bump();
     wsRef.current?.sendPayloadConfirmation(
       codeExecId,
       decision === "proceed" ? "proceed" : "cancel",
@@ -861,23 +1107,23 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
 
   function submit(text: string): void {
     if (!text || !wsRef.current) return;
-    setMessages((prev) => {
-      const userId = `user-${prev.length}`;
-      // job-0176 — record arrival seq for the user bubble so it interleaves
-      // chronologically with subsequent agent text + tool cards.
-      recordMessageSeq(userId);
-      return [
-        ...prev,
-        { id: userId, role: "user", text, done: true },
-      ];
-    });
+    // job-0266 — the user bubble lands in the VISIBLE stream, which also
+    // takes ownership of the turn's streaming envelopes (targetKey).
+    routeUserMessage(streamsRef.current, visibleKey, text);
+    bump();
     wsRef.current.sendUserMessage(text, researchMode);
-    setLastError(null);
   }
 
   function cancel(): void {
     wsRef.current?.sendCancel("user-cancel");
   }
+
+  // job-0266 — render view-model = the visible Case's stream.
+  const messages = visible.messages;
+  const pipeline = visible.pipeline;
+  const charts = visible.charts;
+  const sandboxRequests = visible.sandboxRequests;
+  const lastError = visible.lastError;
 
   const showCancel = shouldShowCancel(pipeline);
   const liveSteps = pipeline.live?.steps ?? [];
@@ -891,6 +1137,7 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
   return (
     <div
       data-testid="grace2-chat"
+      data-stream-key={visibleKey}
       style={{
         position: "absolute",
         right: 16,
@@ -1012,8 +1259,8 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
           messages={messages}
           history={pipeline.history}
           live={pipeline.live}
-          messageOrder={messageOrderRef.current}
-          stepOrder={stepOrderRef.current}
+          messageOrder={visible.messageOrder}
+          stepOrder={visible.stepOrder}
         />
 
         {/* wave-4-10 ephemeral Thinking indicator — italic muted-gray     */}
@@ -1027,8 +1274,8 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
             messages,
             pipeline.history,
             pipeline.live,
-            messageOrderRef.current,
-            stepOrderRef.current,
+            visible.messageOrder,
+            visible.stepOrder,
           )}
         />
 
@@ -1070,8 +1317,8 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
         {sandboxRequests.length > 0 && (() => {
           // Sort by arrival seq for stable chronological display.
           const sorted = [...sandboxRequests].sort((a, b) => {
-            const sa = sandboxSeqRef.current.get(a.code_exec_id) ?? Number.MAX_SAFE_INTEGER;
-            const sb = sandboxSeqRef.current.get(b.code_exec_id) ?? Number.MAX_SAFE_INTEGER;
+            const sa = visible.sandboxSeqs.get(a.code_exec_id) ?? Number.MAX_SAFE_INTEGER;
+            const sb = visible.sandboxSeqs.get(b.code_exec_id) ?? Number.MAX_SAFE_INTEGER;
             return sa - sb;
           });
           return (
@@ -1083,8 +1330,8 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
                 <SandboxCard
                   key={req.code_exec_id}
                   request={req}
-                  result={sandboxResults.get(req.code_exec_id)}
-                  decided={sandboxDecisions.get(req.code_exec_id) ?? null}
+                  result={visible.sandboxResults.get(req.code_exec_id)}
+                  decided={visible.sandboxDecisions.get(req.code_exec_id) ?? null}
                   onDecide={(d) => handleSandboxDecide(req.code_exec_id, d)}
                 />
               ))}
@@ -1148,7 +1395,11 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
           zIndex: 3,
         }}
       >
+        {/* job-0266 — keyed by the visible stream so navigating between
+            Cases / root remounts the composer with an empty draft ("clean
+            empty composer" per the per-Case product shape). */}
         <ChatInput
+          key={visibleKey}
           state={inputState}
           onSubmit={submit}
           onCancel={cancel}

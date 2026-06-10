@@ -316,15 +316,14 @@ export function CasesPanel({
 }: CasesPanelProps): JSX.Element {
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
 
-  // Sort: active first, then most-recently updated, then created at.
+  // job-0266 — the rail lists ACTIVE Cases only. Archived / deleted Cases
+  // are EXCLUDED client-side (the server's case-list may still carry them;
+  // the user saw a deleted Case linger in the rail). Sort: most-recently
+  // updated first.
   const sortedCases = useMemo(() => {
-    return [...cases].sort((a, b) => {
-      // Active Cases above archived/deleted regardless of timestamp.
-      const ar = a.status === "active" ? 0 : 1;
-      const br = b.status === "active" ? 0 : 1;
-      if (ar !== br) return ar - br;
-      return b.updated_at.localeCompare(a.updated_at);
-    });
+    return cases
+      .filter((c) => c.status === "active")
+      .sort((a, b) => b.updated_at.localeCompare(a.updated_at));
   }, [cases]);
 
   const pendingCase = pendingDeleteId

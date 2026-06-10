@@ -281,10 +281,16 @@ describe("CasesPanel", () => {
     expect(onDelete).toHaveBeenCalledWith(CASE_FORT_MYERS.case_id);
   });
 
-  it("sorts active cases above archived/deleted", () => {
+  it("EXCLUDES archived/deleted cases from the rail (job-0266)", () => {
+    const CASE_DELETED = {
+      ...CASE_NORCAL_FIRE,
+      case_id: "01ABCDEFGHJKMNPQRSTVWX0009",
+      title: "Deleted case",
+      status: "deleted" as const,
+    };
     render(
       <CasesPanel
-        cases={[CASE_OLD_ARCHIVE, CASE_FORT_MYERS, CASE_NORCAL_FIRE]}
+        cases={[CASE_OLD_ARCHIVE, CASE_FORT_MYERS, CASE_NORCAL_FIRE, CASE_DELETED]}
         activeCaseId={null}
         onCreate={vi.fn()}
         onSelect={vi.fn()}
@@ -294,8 +300,31 @@ describe("CasesPanel", () => {
       />,
     );
     const rows = screen.getAllByTestId("grace2-case-row");
-    // CASE_OLD_ARCHIVE is archived → must come last.
-    expect(rows[2]!.getAttribute("data-case-id")).toBe(CASE_OLD_ARCHIVE.case_id);
+    // Only the two ACTIVE cases render; archived + deleted are filtered out.
+    expect(rows).toHaveLength(2);
+    const ids = rows.map((r) => r.getAttribute("data-case-id"));
+    expect(ids).not.toContain(CASE_OLD_ARCHIVE.case_id);
+    expect(ids).not.toContain(CASE_DELETED.case_id);
+    expect(ids).toContain(CASE_FORT_MYERS.case_id);
+    expect(ids).toContain(CASE_NORCAL_FIRE.case_id);
+  });
+
+  it("sorts the rail most-recently-updated first (job-0266)", () => {
+    render(
+      <CasesPanel
+        cases={[CASE_NORCAL_FIRE, CASE_FORT_MYERS]}
+        activeCaseId={null}
+        onCreate={vi.fn()}
+        onSelect={vi.fn()}
+        onRename={vi.fn()}
+        onArchive={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    );
+    const rows = screen.getAllByTestId("grace2-case-row");
+    // Fort Myers (updated 2026-06-08) above NorCal (updated 2026-06-07).
+    expect(rows[0]!.getAttribute("data-case-id")).toBe(CASE_FORT_MYERS.case_id);
+    expect(rows[1]!.getAttribute("data-case-id")).toBe(CASE_NORCAL_FIRE.case_id);
   });
 });
 

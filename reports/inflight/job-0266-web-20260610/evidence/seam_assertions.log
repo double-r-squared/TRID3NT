@@ -1,0 +1,24 @@
+[screenshot] loading http://localhost:5173
+[VERIFY] rail shows exactly 2 rows (got 2) OK
+[VERIFY] deleted case EXCLUDED from rail OK
+[VERIFY] archived case EXCLUDED from rail OK
+[VERIFY] root stream key is __root__ (got __root__) OK
+[VERIFY] root chat is the clean empty composer state OK
+[screenshot] (1) per_case_root_clean.png saved
+[VERIFY] Case A stream shows its own messages OK
+[VERIFY] Case A agent reply rendered from rehydration OK
+[screenshot] (2) per_case_case_a_stream.png saved
+[VERIFY] Case B stream shows its own messages OK
+[VERIFY] Case A's messages are NOT painted into Case B OK
+[VERIFY] Case A's tool card not in Case B OK
+[screenshot] (3) per_case_case_b_stream.png saved
+[VERIFY] Case A revisit: messages still there OK
+[VERIFY] Case B's messages are NOT in Case A OK
+[VERIFY] Case A revisit: interleaved stream non-empty OK
+[screenshot] (4) per_case_case_a_revisit.png saved
+[VERIFY] root after nav-out is clean (empty composer) OK
+[VERIFY] no Case content leaks into root view OK
+[screenshot] (5) per_case_root_after_nav.png saved
+[VERIFY] rail refreshed on case-list envelope (got ["01CASEAAAAAAAAAAAAAAAAAAAA"]) OK
+
+[RESULT] all job-0266 dev-seam assertions PASSED
