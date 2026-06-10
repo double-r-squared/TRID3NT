@@ -456,6 +456,51 @@ def validate_nlcd_vintage_against_mapping(
 # --------------------------------------------------------------------------- #
 
 
+def _stage_gcs_local(uri: str) -> str:
+    """Materialize a ``gs://`` object to a local cache path for HydroMT.
+
+    job-0248 (OQ-0248-FLOOD-BUILD-VSIGS): HydroMT's data adapter stats every
+    catalog path with *fsspec's local filesystem* BEFORE GDAL ever sees it
+    (``data_adapter.py: self.fs.exists(fn)``), so a ``/vsigs/`` GDAL-ism
+    fails the existence check with "No such file found" even though the GCS
+    object exists and GDAL could open it. The job-0170 ``/vsigs/`` rewrite is
+    still correct for DIRECT rasterio reads (see the landcover extraction
+    above) — but paths handed to the HydroMT CATALOG must be real local
+    files. Staging via google-cloud-storage (ADC — the proven auth path on
+    both Cloud Run and the dev box) also keeps gcsfs out of the read path,
+    preserving job-0170's segfault avoidance.
+
+    Local paths pass through unchanged. Downloads are content-keyed under
+    a process-stable cache dir and reused across builds in the same host.
+    """
+    if not uri.startswith("gs://"):
+        if uri.startswith("file://"):
+            return uri[len("file://"):]
+        return uri
+
+    import hashlib
+    from pathlib import Path as _Path
+
+    cache_dir = _Path(tempfile.gettempdir()) / "grace2-hydromt-stage"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    suffix = _Path(uri).suffix or ".bin"
+    local = cache_dir / (hashlib.sha256(uri.encode()).hexdigest()[:24] + suffix)
+    if local.exists() and local.stat().st_size > 0:
+        return str(local)
+
+    from google.cloud import storage  # ADC — same client the cache shim uses
+
+    bucket_name, _, blob_name = uri[len("gs://"):].partition("/")
+    client = storage.Client(
+        project=os.environ.get("GOOGLE_CLOUD_PROJECT", "grace-2-hazard-prod")
+    )
+    tmp = local.with_suffix(local.suffix + ".part")
+    client.bucket(bucket_name).blob(blob_name).download_to_filename(str(tmp))
+    os.replace(tmp, local)
+    logger.info("staged %s -> %s (%d bytes)", uri, local, local.stat().st_size)
+    return str(local)
+
+
 def _to_vsigs(uri: str) -> str:
     """Convert a ``gs://bucket/key`` URI to a GDAL ``/vsigs/`` path.
 
@@ -772,13 +817,16 @@ def _generate_hydromt_yaml_config(
         f"  region: {{ bbox: [{bbox[0]}, {bbox[1]}, {bbox[2]}, {bbox[3]}] }}"
     )
     components.append(f"  res: {grid_res}")
-    # job-0170: pass /vsigs/ paths (not gs://) to HydroMT. HydroMT's
-    # ``setup_dep`` / ``setup_manning_roughness`` open these via
-    # ``rioxarray.open_rasterio`` which dispatches a ``gs://`` URI through
-    # ``gcsfs`` — the segfault site. The ``/vsigs/`` rewrite keeps the read
-    # on GDAL's native libcurl backend. Local paths pass through unchanged.
-    dem_read_path = _to_vsigs(dem_local_path)
-    landcover_read_path = _to_vsigs(landcover_local_path)
+    # job-0248 (supersedes the job-0170 /vsigs/ rewrite FOR THE CATALOG PATH
+    # ONLY): HydroMT's data adapter stats catalog paths with fsspec's LOCAL
+    # filesystem before GDAL ever opens them, so a /vsigs/ GDAL-ism raises
+    # "No such file found" even when the GCS object exists (proven live,
+    # round-5 Stage 3). gs:// inputs are therefore STAGED to a local cache
+    # via google-cloud-storage (ADC) and HydroMT receives a real local path
+    # — which also keeps gcsfs out of the read path (job-0170's segfault
+    # avoidance holds). Direct rasterio reads elsewhere still use /vsigs/.
+    dem_read_path = _stage_gcs_local(dem_local_path)
+    landcover_read_path = _stage_gcs_local(landcover_local_path)
     components.append("setup_dep:")
     components.append(f"  datasets_dep: [{{ elevtn: '{dem_read_path}' }}]")
     components.append("setup_mask_active:")
