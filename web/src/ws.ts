@@ -41,6 +41,7 @@ import {
 } from "./contracts";
 import type { ImpactEnvelope } from "./components/ImpactPanel";
 import type { ChartPayload } from "./components/ChartStack";
+import type { CodeExecRequestPayload, CodeExecResultPayload } from "./components/SandboxCard";
 import { getIdToken } from "./auth";
 // Wire-shape mirrors for the server's source-suggestion candidate envelopes.
 // Server-internal envelope_type names (`mode2-candidate`, etc.) are preserved
@@ -162,6 +163,20 @@ export interface WsHandlers {
    * Optional so chat-only callers need no change.
    */
   onChartEmission?: (p: ChartPayload) => void;
+  /**
+   * Code-exec-request envelope (sprint-13 job-0234). Emitted by the agent
+   * BEFORE dispatching the sandbox so the user can approve/deny. Chat.tsx
+   * renders a SandboxCard gate card and calls sendPayloadConfirmation with
+   * the code_exec_id as the warning_id. Optional so existing callers need
+   * no change.
+   */
+  onCodeExecRequest?: (p: CodeExecRequestPayload) => void;
+  /**
+   * Code-exec-result envelope (sprint-13 job-0234). Emitted by the agent
+   * AFTER the sandbox returns. Chat.tsx updates the matching SandboxCard
+   * (keyed on code_exec_id) to RESULT state. Optional.
+   */
+  onCodeExecResult?: (p: CodeExecResultPayload) => void;
   /**
    * Auth-token retriever (job-0123). Optional — when absent we fall back to
    * `getIdToken()` from `./auth` directly. Injected by tests to avoid
@@ -303,6 +318,10 @@ const SESSION_SCOPED_TYPES = new Set<string>([
   // sprint-13: chart-emission is session-scoped so App.tsx GraceWs sees it
   // even when the chart-generation tool ran on Chat.tsx's WebSocket connection.
   "chart-emission",
+  // sprint-13 job-0234: code-exec envelopes are session-scoped so Chat.tsx
+  // GraceWs sees them even when the tool ran on App.tsx's connection.
+  "code-exec-request",
+  "code-exec-result",
 ]);
 
 const SESSION_HUB: Map<string, Set<GraceWs>> = new Map();
@@ -774,6 +793,35 @@ export class GraceWs {
           } else {
             // eslint-disable-next-line no-console
             console.warn("[ws] chart-emission dropped: missing chart_id or vega_lite_spec", payload);
+          }
+        }
+        break;
+      case "code-exec-request":
+        // sprint-13 job-0234: agent emits this before sandbox dispatch so the
+        // user can approve/deny. Chat.tsx renders a SandboxCard gate card.
+        // Malformed payloads (missing code_exec_id or python_code) are dropped
+        // with a console.warn to avoid crashing the React tree.
+        if (this.handlers.onCodeExecRequest) {
+          const req = payload as unknown as CodeExecRequestPayload;
+          if (req && typeof req.code_exec_id === "string" && typeof req.python_code === "string") {
+            this.handlers.onCodeExecRequest(req);
+          } else {
+            // eslint-disable-next-line no-console
+            console.warn("[ws] code-exec-request dropped: missing code_exec_id or python_code", payload);
+          }
+        }
+        break;
+      case "code-exec-result":
+        // sprint-13 job-0234: agent emits this after the sandbox returns.
+        // Chat.tsx updates the matching SandboxCard to RESULT state.
+        // Malformed payloads (missing code_exec_id or status) are dropped.
+        if (this.handlers.onCodeExecResult) {
+          const res = payload as unknown as CodeExecResultPayload;
+          if (res && typeof res.code_exec_id === "string" && typeof res.status === "string") {
+            this.handlers.onCodeExecResult(res);
+          } else {
+            // eslint-disable-next-line no-console
+            console.warn("[ws] code-exec-result dropped: missing code_exec_id or status", payload);
           }
         }
         break;

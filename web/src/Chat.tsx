@@ -68,6 +68,7 @@ import { ScrollToBottom } from "./components/ScrollToBottom";
 import { ThinkingIndicator } from "./components/ThinkingIndicator";
 import { ChartStack, type ChartPayload } from "./components/ChartStack";
 import { ChartGallery } from "./components/ChartGallery";
+import { SandboxCard, type CodeExecRequestPayload, type CodeExecResultPayload, type SandboxCardDecision } from "./components/SandboxCard";
 
 // wave-4-10 thinking-state — the agent emits the Gemini "thinking" phase as
 // a pipeline-state step keyed on this raw ``name`` (`llm_generation` per
@@ -496,6 +497,32 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
   const [galleryCharts, setGalleryCharts] = useState<ChartPayload[]>([]);
   const [galleryInitialIndex, setGalleryInitialIndex] = useState<number>(0);
 
+  // sprint-13 job-0234: sandbox code-exec cards.
+  //
+  // sandboxRequests: ordered list of code-exec-request payloads, in arrival
+  // order. Each request gets a SandboxCard rendered inline in the chat scroll.
+  //
+  // sandboxResults: keyed by code_exec_id — the result arrives asynchronously
+  // after the user approves and the sandbox runs. The card looks up its result
+  // here to transition from RUNNING → RESULT state.
+  //
+  // sandboxDecisions: keyed by code_exec_id — the user's decision (proceed /
+  // cancel). Locks the gate buttons after click; drives RUNNING state when
+  // "proceed" and no result yet.
+  //
+  // sandboxSeqMap: first-arrival seq for each code_exec_id so the SandboxCard
+  // interleaves chronologically in the unified chat stream. Keyed by
+  // code_exec_id.
+  //
+  // Case switch resets all sandbox state to empty (replace-not-reconcile).
+  const [sandboxRequests, setSandboxRequests] = useState<CodeExecRequestPayload[]>([]);
+  const [sandboxResults, setSandboxResults] = useState<Map<string, CodeExecResultPayload>>(new Map());
+  const [sandboxDecisions, setSandboxDecisions] = useState<Map<string, SandboxCardDecision>>(new Map());
+  // Arrival seqs for sandbox cards — stored in a plain Map ref (not state)
+  // so the sort in the render pass stays stable across re-renders without
+  // triggering extra React cycles.
+  const sandboxSeqRef = useRef<Map<string, number>>(new Map());
+
   // job-0176 — arrival-order tracking for chronological interleave.
   // ``messageOrder`` is keyed on ``message_id`` (user_id for user lines);
   // ``stepOrder`` is keyed on the step-collapse key (``name|tool_name`` —
@@ -604,6 +631,11 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
         // slate so stale charts from the prior Case don't linger.
         setCharts([]);
         setGalleryOpen(false);
+        // sprint-13 job-0234: Case switch resets sandbox state too.
+        setSandboxRequests([]);
+        setSandboxResults(new Map());
+        setSandboxDecisions(new Map());
+        sandboxSeqRef.current = new Map();
         bumpStreamTick((n) => n + 1);
       },
       onError: (p: ErrorPayload) => {
@@ -623,6 +655,29 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
         setCharts((prev) => {
           if (prev.some((c) => c.chart_id === p.chart_id)) return prev;
           return [...prev, p];
+        });
+      },
+      // sprint-13 job-0234: code-exec-request — render a SandboxCard gate
+      // card inline in the chat. De-dupe on code_exec_id so reconnect fan-out
+      // doesn't double-add the same request.
+      onCodeExecRequest: (p: CodeExecRequestPayload) => {
+        setSandboxRequests((prev) => {
+          if (prev.some((r) => r.code_exec_id === p.code_exec_id)) return prev;
+          // Record arrival seq for chronological interleave.
+          if (!sandboxSeqRef.current.has(p.code_exec_id)) {
+            arrivalSeqRef.current += 1;
+            sandboxSeqRef.current.set(p.code_exec_id, arrivalSeqRef.current);
+          }
+          return [...prev, p];
+        });
+      },
+      // sprint-13 job-0234: code-exec-result — update the matching SandboxCard
+      // from RUNNING → RESULT state (keyed by code_exec_id).
+      onCodeExecResult: (p: CodeExecResultPayload) => {
+        setSandboxResults((prev) => {
+          const next = new Map(prev);
+          next.set(p.code_exec_id, p);
+          return next;
         });
       },
     });
@@ -710,6 +765,48 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
     };
   }, []);
 
+  // sprint-13 job-0234: dev seam for code-exec injection.
+  // Playwright UI-only snapshot tests (UI seam PERMITTED per
+  // `feedback_bundle_ui_verification_with_existing_queries`) can call:
+  //   window.__grace2InjectCodeExec({ request: {...}, result?: {...} })
+  // to insert a SandboxCard without a live agent connection.
+  // Guards behind import.meta.env.DEV so it's stripped in production builds.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    (window as unknown as Record<string, unknown>).__grace2InjectCodeExec = (args: {
+      request: CodeExecRequestPayload;
+      result?: CodeExecResultPayload;
+      decision?: SandboxCardDecision;
+    }) => {
+      const { request, result, decision } = args;
+      setSandboxRequests((prev) => {
+        if (prev.some((r) => r.code_exec_id === request.code_exec_id)) return prev;
+        if (!sandboxSeqRef.current.has(request.code_exec_id)) {
+          arrivalSeqRef.current += 1;
+          sandboxSeqRef.current.set(request.code_exec_id, arrivalSeqRef.current);
+        }
+        return [...prev, request];
+      });
+      if (result !== undefined) {
+        setSandboxResults((prev) => {
+          const next = new Map(prev);
+          next.set(result.code_exec_id, result);
+          return next;
+        });
+      }
+      if (decision !== undefined) {
+        setSandboxDecisions((prev) => {
+          const next = new Map(prev);
+          next.set(request.code_exec_id, decision);
+          return next;
+        });
+      }
+    };
+    return () => {
+      delete (window as unknown as Record<string, unknown>).__grace2InjectCodeExec;
+    };
+  }, []);
+
   // Auto-scroll on new content only when the user is already at the bottom.
   // This preserves the user's reading position when they've scrolled up to
   // read history while the stream is still landing new tokens.
@@ -717,7 +814,7 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
     if (scrollRef.current && atBottomRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [messages, pipeline, charts]);
+  }, [messages, pipeline, charts, sandboxRequests, sandboxResults]);
 
   // job-0153 Part 3 — scroll handler. Computes "near bottom" against the
   // current scroll position and toggles the arrow visibility + the
@@ -745,6 +842,22 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
   const handleInputHeightChange = useCallback((h: number) => {
     setInputHeightPx((prev) => (Math.abs(prev - h) < 0.5 ? prev : h));
   }, []);
+
+  // sprint-13 job-0234: sandbox gate decision handler.
+  // Wired to SandboxCard.onDecide; reuses sendPayloadConfirmation with the
+  // code_exec_id as warning_id per the job-0233 confirm-gate seam design.
+  function handleSandboxDecide(codeExecId: string, decision: SandboxCardDecision): void {
+    setSandboxDecisions((prev) => {
+      const next = new Map(prev);
+      next.set(codeExecId, decision);
+      return next;
+    });
+    wsRef.current?.sendPayloadConfirmation(
+      codeExecId,
+      decision === "proceed" ? "proceed" : "cancel",
+      null,
+    );
+  }
 
   function submit(text: string): void {
     if (!text || !wsRef.current) return;
@@ -946,6 +1059,38 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
             ))}
           </div>
         )}
+
+        {/* sprint-13 job-0234: sandbox code-exec cards.
+            Rendered sorted by arrival seq so they interleave chronologically
+            with the rest of the chat stream. Each SandboxCard handles its own
+            REQUEST → RUNNING → RESULT state machine driven by the three
+            sandbox state maps. The onDecide callback is wired to
+            sendPayloadConfirmation (reusing the existing payload-warning gate
+            seam with code_exec_id as warning_id per job-0233 design). */}
+        {sandboxRequests.length > 0 && (() => {
+          // Sort by arrival seq for stable chronological display.
+          const sorted = [...sandboxRequests].sort((a, b) => {
+            const sa = sandboxSeqRef.current.get(a.code_exec_id) ?? Number.MAX_SAFE_INTEGER;
+            const sb = sandboxSeqRef.current.get(b.code_exec_id) ?? Number.MAX_SAFE_INTEGER;
+            return sa - sb;
+          });
+          return (
+            <div
+              data-testid="sandbox-cards-section"
+              style={{ display: "flex", flexDirection: "column", gap: 10 }}
+            >
+              {sorted.map((req) => (
+                <SandboxCard
+                  key={req.code_exec_id}
+                  request={req}
+                  result={sandboxResults.get(req.code_exec_id)}
+                  decided={sandboxDecisions.get(req.code_exec_id) ?? null}
+                  onDecide={(d) => handleSandboxDecide(req.code_exec_id, d)}
+                />
+              ))}
+            </div>
+          );
+        })()}
 
         {lastError && (
           <div
