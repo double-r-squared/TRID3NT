@@ -9,10 +9,18 @@ sweep is far cheaper than 50 state calls.
 
 Endpoint:
     https://api.weather.gov/alerts/active?status={status}
+    https://api.weather.gov/alerts/active?area={STATE}&status={status}  (job-0261)
 
-No ``area`` filter is sent. ``event_types`` filtering is applied client-side
-after fetch (preserving cache reuse across event-type filters of a single
-CONUS sweep).
+job-0261 state-aware path: the live demo "weather alerts for Texas" rendered
+alerts in surrounding states because this tool had NO geographic filter and
+the state-scoped sibling was outside the allowed set. The optional ``area``
+param now accepts a US state (2-letter code OR full name, e.g. "TX" /
+"Texas") and applies NWS's precise server-side ``?area=`` filter so a named
+state never spills into its neighbors. When ``area`` is omitted the original
+unscoped CONUS sweep is preserved.
+
+``event_types`` filtering is applied client-side after fetch (preserving
+cache reuse across event-type filters of a single sweep).
 
 Cache: ``dynamic-1h`` — alerts change frequently; one-hour bucketing matches
 the FR-DC-3 minimum window for active-state data.
@@ -45,6 +53,7 @@ from grace2_contracts.tool_registry import AtomicToolMetadata
 
 from . import register_tool
 from .cache import read_through
+from .us_states import resolve_state_code, state_display_name
 
 __all__ = [
     "fetch_nws_alerts_conus",
@@ -55,6 +64,7 @@ __all__ = [
     "_build_nws_conus_url",
     "_filter_features_by_event_types",
     "_geojson_to_fgb",
+    "_resolve_area_or_raise",
 ]
 
 logger = logging.getLogger("grace2_agent.tools.fetch_nws_alerts_conus")
@@ -160,19 +170,55 @@ _METADATA = AtomicToolMetadata(
 # ---------------------------------------------------------------------------
 
 
-def _build_nws_conus_url(status: str) -> str:
-    """Build the api.weather.gov/alerts/active URL for the CONUS-wide sweep.
+def _build_nws_conus_url(status: str, area_code: str | None = None) -> str:
+    """Build the api.weather.gov/alerts/active URL for the sweep.
 
-    No ``area`` filter is sent. ``event_types`` filtering is applied client-side
-    after fetch so the CONUS payload can be reused across queries that differ
-    only in event-type filter (same cache hit).
+    ``area_code`` (job-0261): a resolved 2-letter NWS area code ("TX"). When
+    provided, NWS filters server-side via ``?area={code}`` — the precise
+    state-scoped query that prevents a named state's alerts from spilling
+    into neighbors. When ``None``, the original unscoped CONUS sweep URL is
+    returned.
 
-    Note: ``message_type`` is intentionally NOT sent — for CONUS sweeps,
-    omitting it returns the full union of active alert/update messages, which
-    matches the "show me all warnings nationwide" semantics.
+    ``event_types`` filtering is applied client-side after fetch so the
+    payload can be reused across queries that differ only in event-type
+    filter (same cache hit).
+
+    Note: ``message_type`` is intentionally NOT sent — omitting it returns
+    the full union of active alert/update messages, which matches the
+    "show me all warnings" semantics.
     """
-    # No urlencode needed — single param, ASCII value.
+    # No urlencode needed — ASCII enum values only.
+    if area_code:
+        return f"{_NWS_BASE}/alerts/active?area={area_code}&status={status}"
     return f"{_NWS_BASE}/alerts/active?status={status}"
+
+
+def _resolve_area_or_raise(area: str | None) -> str | None:
+    """Resolve the LLM-supplied ``area`` to a 2-letter NWS code, or raise.
+
+    - ``None`` / empty string → ``None`` (unscoped CONUS sweep).
+    - "TX" / "Texas" / "state of texas" → "TX".
+    - Anything unrecognized → ``NWSConusInputError`` (non-retryable) with
+      guidance so Gemini routes county/bbox-scoped queries to
+      ``fetch_nws_event`` instead of silently rendering nationwide alerts.
+    """
+    if area is None:
+        return None
+    if not isinstance(area, str):
+        raise NWSConusInputError(
+            f"area must be a US state name or 2-letter code (str); "
+            f"got {type(area).__name__}"
+        )
+    if not area.strip():
+        return None
+    code = resolve_state_code(area)
+    if code is None:
+        raise NWSConusInputError(
+            f"area={area!r} is not a recognized US state/territory name or "
+            f"2-letter code. For county-FIPS or bbox scoping use "
+            f"fetch_nws_event; omit area entirely for the nationwide sweep."
+        )
+    return code
 
 
 # ---------------------------------------------------------------------------
@@ -360,14 +406,18 @@ def _geojson_to_fgb(geojson: dict[str, Any]) -> bytes:
 def _fetch_nws_alerts_conus_bytes(
     status: str,
     event_types: list[str] | None,
+    area_code: str | None = None,
 ) -> bytes:
-    """End-to-end fetcher: build URL → GET CONUS GeoJSON → client-side filter →
+    """End-to-end fetcher: build URL → GET GeoJSON → client-side filter →
     convert to FlatGeobuf bytes.
+
+    ``area_code`` (job-0261): resolved 2-letter NWS code for the precise
+    server-side state filter; ``None`` keeps the unscoped CONUS sweep.
 
     Wrapped in a single try so we never leak an httpx exception past the typed
     error boundary.
     """
-    url = _build_nws_conus_url(status)
+    url = _build_nws_conus_url(status, area_code)
     geojson = _fetch_nws_conus_geojson(url)
     features = geojson.get("features", []) or []
     filtered = _filter_features_by_event_types(features, event_types)
@@ -384,75 +434,81 @@ def _fetch_nws_alerts_conus_bytes(
 # ---------------------------------------------------------------------------
 
 
-@register_tool(_METADATA)
+@register_tool(
+    _METADATA,
+    # Annotations: readOnlyHint=True (read-only; no state mutation),
+    # openWorldHint=True (calls api.weather.gov external REST API),
+    # destructiveHint=False, idempotentHint=True (cache shim deduplicates).
+    open_world_hint=True,
+)
 def fetch_nws_alerts_conus(
     event_types: list[str] | None = None,
     status: str = "actual",
+    area: str | None = None,
     # job-0164: absorb LLM-invented kwargs (centralized at server.py via
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """NWS active weather alerts — CONUS-wide companion to ``fetch_nws_event``.
+    """Fetch active National Weather Service alerts — nationwide, or precisely scoped to one US state.
 
-    Use this when: the agent needs the current set of ALL active National
-    Weather Service alerts across the United States in a single call — for
-    example "show me every hurricane warning in America right now" or
-    "summarize today's severe weather nationwide". One CONUS sweep returns
-    typically ~500 active alerts (~200KB payload), making it far cheaper than
-    iterating over 50 state-level ``fetch_nws_event`` calls.
+    **What it does:** Calls ``api.weather.gov/alerts/active`` and returns the
+    active NWS alert polygons as a FlatGeobuf vector layer. With ``area``
+    omitted it sweeps the entire US (typically ~500 features, ~200 KB). With
+    ``area`` set to a US state ("TX" or "Texas") it applies NWS's precise
+    server-side state filter (``?area=TX``) so ONLY that state's alerts are
+    returned — never the surrounding states. Optional client-side event-type
+    filtering narrows the result without issuing a new upstream call.
 
-    Do NOT use this for: state- or county-scoped queries (use
-    ``fetch_nws_event`` with ``area=<state>`` or ``area=<FIPS>`` — same NWS
-    surface but with server-side area filtering, smaller payload, and cache
-    keyed per-state); historical alerts (use ``fetch_storm_events_db`` for
-    NOAA Storm Events DB lookups instead — NWS active-alerts is current-only,
-    typically 0-7 days); international alerts (NWS is US + territories +
-    marine zones only).
+    **When to use:**
+    - User asks for weather alerts in a SPECIFIC STATE ("weather alerts for
+      Texas") — ALWAYS pass ``area="TX"`` (2-letter code) or ``area="Texas"``
+      (full name). Without ``area`` the result is nationwide and will render
+      alerts far outside the state the user asked about.
+    - User asks "show me every hurricane warning in America right now" or
+      "summarize today's severe weather nationwide" — omit ``area`` for the
+      single CONUS sweep (far cheaper than 50 state-level calls).
+    - The Hazard Event Pipeline needs all active alerts matching a hazard
+      type (e.g. all Flash Flood Watches) without a known state.
+    - Situational-awareness overlay for a multi-state or national dashboard.
 
-    Params:
-        event_types: Optional list of NWS event-type strings to filter to
-            (e.g. ``["Hurricane Warning", "Flood Warning"]``). Filtering is
-            applied CLIENT-SIDE after the CONUS fetch so the same cached
-            CONUS sweep services multiple event-type queries within the
-            one-hour cache window. When None / empty, returns ALL active
-            alerts CONUS-wide. Match is case-sensitive against the canonical
-            NWS event-type strings (NWS uses Title Case throughout).
-        status: NWS alert status. Default ``"actual"`` (real alerts; never
-            test/exercise/draft). Accepted: actual, exercise, system, test, draft.
+    **When NOT to use:**
+    - County- or bbox-scoped queries — use ``fetch_nws_event`` with a 5-digit
+      county FIPS or a bbox; for sub-state areas of interest, clip the result
+      to the admin polygon (``fetch_administrative_boundaries`` +
+      ``clip_vector_to_polygon``) rather than trusting a rectangle.
+    - Historical weather events — NWS active-alerts is current-only (0–7 day
+      horizon); use ``fetch_storm_events_db`` for historical data.
+    - International alerts — NWS covers US states, territories, and marine
+      zones only.
 
-    Returns:
-        A ``LayerURI`` pointing at a FlatGeobuf in the cache bucket:
-        ``gs://grace-2-hazard-prod-cache/cache/dynamic-1h/nws_alerts_conus/<key>.fgb``
-        containing all active CONUS alert polygons + properties.
-        ``layer_type="vector"``, ``role="primary"``, ``units=None``.
+    **Parameters:**
+    - ``event_types`` (list[str] | None, default None): Optional NWS event-type
+      filter. Examples: ``["Hurricane Warning"]``, ``["Flood Warning",
+      "Flash Flood Watch"]``. Filtering is case-sensitive Title Case (NWS
+      convention). None means return all active alert types.
+    - ``status`` (str, default ``"actual"``): NWS alert status. Valid values:
+      ``"actual"``, ``"exercise"``, ``"system"``, ``"test"``, ``"draft"``.
+      Always use ``"actual"`` for production use.
+    - ``area`` (str | None, default None): US state/territory scope. Accepts
+      a 2-letter code (``"TX"``) or full name (``"Texas"``, case-insensitive).
+      None means nationwide. Unrecognized values raise a non-retryable input
+      error (cities/counties are NOT valid — geocode or use
+      ``fetch_nws_event`` for those).
 
-    Cache: ``dynamic-1h`` (FR-DC-2 active-state). Two identical calls inside
-    the same hour-bucket reuse the cached FlatGeobuf; a one-hour boundary
-    crossing forces a refresh. Because ``event_types`` filtering is client-side,
-    a fresh ``event_types`` filter on the same status reuses the same cache key
-    (status is the only server-affecting param) and re-filters the cached FGB.
+    **Returns:**
+    A ``LayerURI`` pointing at a FlatGeobuf in the cache bucket:
+    ``gs://grace-2-hazard-prod-cache/cache/dynamic-1h/nws_alerts_conus/<key>.fgb``
+    containing the alert polygons. Properties: ``event``, ``headline``,
+    ``description``, ``severity``, ``urgency``, ``certainty``, ``effective``,
+    ``onset``, ``ends``, ``expires``, ``senderName``, ``areaDesc``,
+    ``instruction``. ``layer_type="vector"``, ``role="primary"``.
+    Cached for 1 hour (``dynamic-1h``), keyed per (status, area, event_types).
+    Source-tier FR-HEP-2 Tier 1.
 
-    Note: in this Wave 1.5 implementation the cache key DOES include
-    ``event_types_sorted`` because the cached artifact is the FILTERED FGB,
-    not the raw CONUS sweep. A future refactor (deferred — see
-    OQ-0105-CACHE-RAW-VS-FILTERED) could cache the raw sweep and re-filter
-    on each hit, giving even better reuse across filter variations.
-
-    Cache key: SHA-256 of ``(status, event_types_sorted, "dynamic-1h" vintage)``.
-
-    External-API resilience (NFR-R-1): NWS rate-limits unauthenticated
-    requests and REQUIRES a descriptive User-Agent header (returns 403
-    otherwise — see ``_USER_AGENT``). On network failure / non-2xx /
-    malformed JSON the tool raises ``NWSConusUpstreamError(retryable=True)``
-    so the agent's FR-AS-11 surface can decide.
-
-    Source-tier: FR-HEP-2 Tier 1 (federal agency authoritative source).
-    Claims derived from this tool should be marked
-    ``source_authority_tier=1`` in any ``ClaimSet`` aggregation.
-
-    Payload estimation: ~0.2MB CONUS (typical ~500 alerts × ~400 bytes each).
-
-    See also: ``fetch_nws_event`` for state-/county-/bbox-scoped queries.
+    **Cross-tool dependencies:**
+    - No upstream tool required (no bbox needed; state scoping is built in).
+    - Sibling to: ``fetch_nws_event`` (county-FIPS/bbox-scoped variant).
+    - Feeds: Hazard Event Pipeline claim aggregation; map overlay display.
     """
     # Validate status early — fixed enum on the NWS side. Bad values are caller
     # error, not retryable.
@@ -460,6 +516,10 @@ def fetch_nws_alerts_conus(
         raise NWSConusInputError(
             f"status={status!r} not in {sorted(_VALID_STATUSES)}"
         )
+
+    # Resolve the state scope (job-0261). None → nationwide sweep; "Texas" /
+    # "TX" → server-side ?area=TX filter; garbage → typed input error.
+    area_code = _resolve_area_or_raise(area)
 
     # Validate event_types shape.
     sorted_event_types: list[str] | None = None
@@ -475,31 +535,38 @@ def fetch_nws_alerts_conus(
     params: dict[str, Any] = {
         "status": status,
         "event_types": sorted_event_types,
+        "area": area_code,
     }
 
     result = read_through(
         metadata=_METADATA,
         params=params,
         ext="fgb",
-        fetch_fn=lambda: _fetch_nws_alerts_conus_bytes(status, sorted_event_types),
+        fetch_fn=lambda: _fetch_nws_alerts_conus_bytes(
+            status, sorted_event_types, area_code,
+        ),
     )
     assert result.uri is not None, (
         "fetch_nws_alerts_conus is cacheable; uri must be set by read_through"
     )
 
-    # LayerURI display name reflects the filter, if any, for diagnostics.
+    # LayerURI display name reflects the scope + filter for diagnostics.
+    scope_label = (
+        f"{state_display_name(area_code)} ({area_code})" if area_code else "CONUS"
+    )
+    scope_slug = area_code if area_code else "conus"
     if sorted_event_types:
         filter_label = ", ".join(sorted_event_types[:3])
         if len(sorted_event_types) > 3:
             filter_label += f", +{len(sorted_event_types) - 3} more"
-        name = f"NWS Active Alerts — CONUS ({filter_label})"
+        name = f"NWS Active Alerts — {scope_label} ({filter_label})"
         layer_id = (
-            f"nws-conus-{status}-"
+            f"nws-{scope_slug}-{status}-"
             + "-".join(t.replace(" ", "_") for t in sorted_event_types[:2])
         )
     else:
-        name = "NWS Active Alerts — CONUS (all events)"
-        layer_id = f"nws-conus-{status}-all"
+        name = f"NWS Active Alerts — {scope_label} (all events)"
+        layer_id = f"nws-{scope_slug}-{status}-all"
 
     return LayerURI(
         layer_id=layer_id,

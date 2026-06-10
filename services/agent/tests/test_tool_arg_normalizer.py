@@ -271,3 +271,28 @@ def test_forcing_string_table(
         assert out.get("return_period_years") == expected_year
     if expected_hour is not None:
         assert out.get("duration_hours") == expected_hour
+
+
+# ---------------------------------------------------------------------------
+# job-0261: NWS alert tools — LLM-invented state kwargs land on "area" so the
+# precise server-side ?area= filter engages instead of the CONUS sweep.
+# ---------------------------------------------------------------------------
+
+
+def test_nws_conus_state_kwarg_maps_to_area() -> None:
+    def fake_conus(event_types=None, status="actual", area=None):  # type: ignore[no-untyped-def]
+        return None
+
+    for wrong in ("state", "state_code", "state_name", "location", "region"):
+        out = normalize_args("fetch_nws_alerts_conus", {wrong: "Texas"}, fake_conus)
+        assert out == {"area": "Texas"}, f"{wrong!r} should map to area"
+
+
+def test_nws_event_state_and_fips_kwargs_map_to_area() -> None:
+    def fake_event(area=None, event_types=None, status="actual", message_type="alert"):  # type: ignore[no-untyped-def]
+        return None
+
+    out = normalize_args("fetch_nws_event", {"state": "TX"}, fake_event)
+    assert out == {"area": "TX"}
+    out = normalize_args("fetch_nws_event", {"county_fips": "12071"}, fake_event)
+    assert out == {"area": "12071"}

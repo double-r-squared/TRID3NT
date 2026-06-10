@@ -498,7 +498,7 @@ def test_cache_miss_invokes_fetch_fn_then_hit_skips():
     fetch_count = {"n": 0}
     fake_bytes = _fake_fgb_bytes("CONUS")
 
-    def patched_fetch_bytes(status, event_types):
+    def patched_fetch_bytes(status, event_types, area_code=None):
         fetch_count["n"] += 1
         return fake_bytes
 
@@ -526,7 +526,7 @@ def test_event_types_filter_changes_cache_key():
     """
     fake_gcs = FakeStorageClient()
 
-    def patched_fetch_bytes(status, event_types):
+    def patched_fetch_bytes(status, event_types, area_code=None):
         return _fake_fgb_bytes(str(event_types))
 
     with patch(
@@ -547,7 +547,7 @@ def test_event_types_order_does_not_affect_cache_key():
     fake_gcs = FakeStorageClient()
     fetch_count = {"n": 0}
 
-    def patched_fetch_bytes(status, event_types):
+    def patched_fetch_bytes(status, event_types, area_code=None):
         fetch_count["n"] += 1
         return _fake_fgb_bytes("X")
 
@@ -781,3 +781,159 @@ def test_live_conus_with_filter_narrows():
             os.unlink(path)
         except OSError:
             pass
+
+
+# ---------------------------------------------------------------------------
+# job-0261: state-aware path — "weather alerts for Texas" must NOT spill
+# into surrounding states.
+# ---------------------------------------------------------------------------
+
+
+def test_build_url_with_area_code_uses_server_side_state_filter():
+    """area_code='TX' → precise NWS server-side filter ?area=TX."""
+    url = _build_nws_conus_url("actual", "TX")
+    assert url.startswith("https://api.weather.gov/alerts/active?")
+    assert "area=TX" in url, f"state-scoped URL must carry area=TX: {url}"
+    assert "status=actual" in url
+    assert "point=" not in url
+
+
+def test_build_url_without_area_unchanged_conus_sweep():
+    """Back-compat: no area_code → identical unscoped CONUS URL as before."""
+    assert _build_nws_conus_url("actual") == (
+        "https://api.weather.gov/alerts/active?status=actual"
+    )
+    assert _build_nws_conus_url("actual", None) == (
+        "https://api.weather.gov/alerts/active?status=actual"
+    )
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        (None, None),
+        ("", None),
+        ("   ", None),
+        ("TX", "TX"),
+        ("tx", "TX"),
+        ("Texas", "TX"),
+        ("texas", "TX"),          # the live-demo prompt form
+        ("state of Texas", "TX"),
+        ("New Mexico", "NM"),
+        ("Puerto Rico", "PR"),
+    ],
+)
+def test_resolve_area_or_raise_accepts(raw, expected):
+    from grace2_agent.tools.fetch_nws_alerts_conus import _resolve_area_or_raise
+    assert _resolve_area_or_raise(raw) == expected
+
+
+@pytest.mark.parametrize("raw", ["Houston", "Lee County", "Canada", "XX", "12071"])
+def test_resolve_area_or_raise_rejects_non_states(raw):
+    """Unrecognized areas raise a typed, non-retryable input error that points
+    Gemini at fetch_nws_event rather than silently sweeping the nation."""
+    from grace2_agent.tools.fetch_nws_alerts_conus import _resolve_area_or_raise
+    with pytest.raises(NWSConusInputError, match="fetch_nws_event"):
+        _resolve_area_or_raise(raw)
+
+
+def test_resolve_area_or_raise_non_string_raises():
+    from grace2_agent.tools.fetch_nws_alerts_conus import _resolve_area_or_raise
+    with pytest.raises(NWSConusInputError):
+        _resolve_area_or_raise(("TX",))  # type: ignore[arg-type]
+
+
+def test_area_texas_end_to_end_sends_area_param_and_labels_layer():
+    """fetch_nws_alerts_conus(area='Texas') sends ?area=TX upstream and the
+    returned layer is labeled as Texas-scoped (not CONUS)."""
+    fake_gcs = FakeStorageClient()
+    fake_geojson = _sample_conus_geojson(10)
+    seen_urls: list[str] = []
+
+    def capture_geojson(url):
+        seen_urls.append(url)
+        return fake_geojson
+
+    with patch(
+        "grace2_agent.tools.fetch_nws_alerts_conus._fetch_nws_conus_geojson",
+        side_effect=capture_geojson,
+    ), patch(
+        "grace2_agent.tools.fetch_nws_alerts_conus.read_through",
+        side_effect=_make_read_through_injector(fake_gcs),
+    ):
+        result = fetch_nws_alerts_conus(area="Texas")
+
+    assert len(seen_urls) == 1
+    assert "area=TX" in seen_urls[0], (
+        f"upstream URL must carry the server-side state filter: {seen_urls[0]}"
+    )
+    assert "Texas (TX)" in result.name
+    assert "CONUS" not in result.name
+    assert result.layer_id == "nws-TX-actual-all"
+
+
+def test_area_changes_cache_key():
+    """TX-scoped, FL-scoped, and unscoped sweeps must not share a cache key."""
+    fake_gcs = FakeStorageClient()
+
+    def patched_fetch_bytes(status, event_types, area_code=None):
+        return _fake_fgb_bytes(str(area_code))
+
+    with patch(
+        "grace2_agent.tools.fetch_nws_alerts_conus._fetch_nws_alerts_conus_bytes",
+        side_effect=patched_fetch_bytes,
+    ), patch(
+        "grace2_agent.tools.fetch_nws_alerts_conus.read_through",
+        side_effect=_make_read_through_injector(fake_gcs),
+    ):
+        r_conus = fetch_nws_alerts_conus()
+        r_tx = fetch_nws_alerts_conus(area="TX")
+        r_tx_name = fetch_nws_alerts_conus(area="Texas")
+        r_fl = fetch_nws_alerts_conus(area="FL")
+
+    assert r_conus.uri != r_tx.uri
+    assert r_tx.uri != r_fl.uri
+    # "TX" and "Texas" canonicalize to the SAME key (one upstream fetch).
+    assert r_tx.uri == r_tx_name.uri
+    assert len(fake_gcs.store) == 3
+
+
+def test_garbage_area_raises_before_any_fetch():
+    """A non-state area must fail loud (typed input error) without touching
+    the network or the cache."""
+    with patch(
+        "grace2_agent.tools.fetch_nws_alerts_conus.read_through",
+    ) as rt:
+        with pytest.raises(NWSConusInputError, match="not a recognized"):
+            fetch_nws_alerts_conus(area="Gulf of Mexico City")
+    rt.assert_not_called()
+
+
+@pytest.mark.skipif(
+    not _LIVE_NWS_CONUS,
+    reason="Set GRACE2_TEST_LIVE_NWS_CONUS=1 to run live NWS CONUS tests",
+)
+def test_live_area_tx_every_feature_is_texas():
+    """LIVE (job-0261 acceptance): api.weather.gov/alerts/active?area=TX —
+    every returned feature's geocode/areaDesc references Texas.
+
+    NWS UGC zone/county codes are state-prefixed ("TXZ123", "TXC201"); an
+    alert returned by the TX-scoped query must carry at least one TX UGC.
+    This is the Gemini-free proof that the named state cannot spill into
+    its neighbors the way the unscoped CONUS sweep did in the live demo.
+    """
+    from grace2_agent.tools.fetch_nws_alerts_conus import _fetch_nws_conus_geojson
+
+    url = _build_nws_conus_url("actual", "TX")
+    body = _fetch_nws_conus_geojson(url)
+    features = body.get("features", []) or []
+    print(f"\n[LIVE NWS area=TX] {len(features)} active alert(s)")
+    for feat in features:
+        props = feat.get("properties") or {}
+        geocode = props.get("geocode") or {}
+        ugc = geocode.get("UGC") or []
+        area_desc = props.get("areaDesc") or ""
+        assert any(str(code).upper().startswith("TX") for code in ugc), (
+            f"non-Texas feature returned by area=TX query: "
+            f"id={props.get('id')!r} areaDesc={area_desc!r} UGC={ugc!r}"
+        )

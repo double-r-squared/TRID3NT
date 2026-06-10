@@ -37,9 +37,10 @@ Twelve categories (from ``project_generic_endpoint_architecture.md``):
 12. ``news_events`` — web_fetch, NWS event, storm events, aggregate claims
 
 The hot set (always-on at session start, before any category has been opened)
-is defined in ``HOT_SET_TOOLS`` — eight tools that span the most common entry
+is defined in ``HOT_SET_TOOLS`` — ten tools that span the most common entry
 points to a session: the two top-level workflow composers, geocoding, terrain,
-weather alerts, and the meta-tools (list_categories, list_tools_in_category,
+weather alerts (CONUS sweep + state/county-scoped — job-0261), code-exec
+(job-0247), and the meta-tools (list_categories, list_tools_in_category,
 discover_dataset).
 """
 
@@ -359,16 +360,18 @@ SECONDARY_CATEGORIES: dict[str, tuple[str, ...]] = {
 
 
 # ---------------------------------------------------------------------------
-# Hot set — eight always-on tools surfaced before any category has been
-# opened. Picked to span the most-common entry points to a session:
+# Hot set — always-on tools surfaced before any category has been opened.
+# Picked to span the most-common entry points to a session:
 #
 # - run_model_flood_scenario, run_model_flood_habitat_scenario — the two
 #   top-level workflow composers a user is likely to invoke first.
-# - geocode_location, fetch_dem, fetch_nws_alerts_conus — the three most
-#   commonly cited "before you can do anything else" tools.
+# - geocode_location, fetch_dem, fetch_nws_alerts_conus, fetch_nws_event —
+#   the most commonly cited "before you can do anything else" tools
+#   (fetch_nws_event added by job-0261 — see inline comment).
 # - list_categories, list_tools_in_category, discover_dataset — the three
 #   meta-tools that let Gemini surface anything else when the hot set
 #   isn't enough.
+# - code_exec_request — cross-cutting capability (job-0247).
 # ---------------------------------------------------------------------------
 
 
@@ -391,6 +394,14 @@ HOT_SET_TOOLS: frozenset[str] = frozenset(
         # of widening. Always reachable; the user-confirm gate (job-0233)
         # remains the safety boundary.
         "code_exec_request",
+        # job-0261: same failure mode as job-0247, worse outcome. Live demo
+        # "show me weather alerts in texas": Gemini called
+        # fetch_nws_event(area='TX') CORRECTLY on the first turn, the
+        # validator rejected it, and Gemini fell back to the in-hot-set
+        # fetch_nws_alerts_conus() — the UNSCOPED national sweep — so
+        # alerts rendered far beyond the named state. The state-scoped NWS
+        # tool must be as reachable as its CONUS sibling.
+        "fetch_nws_event",
     }
 )
 
@@ -463,7 +474,7 @@ class AllowedToolSet:
     Composition (from ``project_wave_4_10_research_findings.md`` §
     Architecture decisions):
 
-    - **Hot set** (always on): the 8 tools in ``HOT_SET_TOOLS`` (static), OR
+    - **Hot set** (always on): the tools in ``HOT_SET_TOOLS`` (static), OR
       the top-K tools from ``get_dynamic_hot_set`` when
       ``GRACE2_DYNAMIC_HOT_SET=1`` and Mongo is available (M6 wire-up).
       The dynamic hot set is fetched lazily on the first ``as_frozenset``

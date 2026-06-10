@@ -1,0 +1,5 @@
+state: DONE
+job: job-0261-engine-20260610
+owner: engine
+updated: 2026-06-10
+summary: NWS state-spill fixed (hot-set + area param + state-name resolution + normalizer aliases); live area=TX proof 7/7 Texas, 0 leakage.

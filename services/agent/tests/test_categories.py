@@ -226,17 +226,22 @@ def test_list_tools_in_category_is_registered() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_hot_set_has_nine_tools() -> None:
+def test_hot_set_has_ten_tools() -> None:
     """Hot set: the original 8 (Wave 4.10 kickoff) + code_exec_request
-    (job-0247 — cross-cutting capability, see OQ-0247-CODE-EXEC-NOT-IN-HOT-SET)."""
-    assert len(HOT_SET_TOOLS) == 9
+    (job-0247 — cross-cutting capability, see OQ-0247-CODE-EXEC-NOT-IN-HOT-SET)
+    + fetch_nws_event (job-0261 — validator rejected Gemini's correct
+    state-scoped NWS call; the CONUS fallback spilled alerts nationwide)."""
+    assert len(HOT_SET_TOOLS) == 10
 
 
 def test_hot_set_contains_required_anchors() -> None:
     """The hot set must include the meta-tools + discover_dataset so the LLM
     can always reach more tools when the initial set isn't enough, plus
     code_exec_request (job-0247: the validator rejected Gemini's CORRECT
-    first-turn call and the agent narrated a false 'cannot run Python')."""
+    first-turn call and the agent narrated a false 'cannot run Python') and
+    fetch_nws_event (job-0261: same first-turn-rejection failure mode —
+    Gemini fell back to the unscoped CONUS sweep for 'weather alerts in
+    texas' and rendered alerts in surrounding states)."""
     required = {
         "list_categories",
         "list_tools_in_category",
@@ -244,11 +249,25 @@ def test_hot_set_contains_required_anchors() -> None:
         "geocode_location",
         "fetch_dem",
         "fetch_nws_alerts_conus",
+        "fetch_nws_event",
         "run_model_flood_scenario",
         "run_model_flood_habitat_scenario",
         "code_exec_request",
     }
     assert required == HOT_SET_TOOLS
+
+
+def test_hot_set_dispatch_of_state_scoped_nws_call_is_allowed() -> None:
+    """job-0261 regression: validate_function_call('fetch_nws_event') must
+    pass on a FRESH session (no categories opened, nothing dispatched) —
+    exactly the live-demo first turn that previously raised
+    OutOfAllowedSetError and pushed Gemini to the unscoped CONUS sweep."""
+    from grace2_agent.categories import AllowedToolSet, validate_function_call
+
+    fresh = AllowedToolSet()
+    # Must not raise.
+    validate_function_call("fetch_nws_event", fresh)
+    validate_function_call("fetch_nws_alerts_conus", fresh)
 
 
 def test_all_hot_set_tools_are_registered() -> None:

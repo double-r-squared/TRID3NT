@@ -813,3 +813,56 @@ def test_live_hurricane_warning_filter():
             os.unlink(path)
         except OSError:
             pass
+
+
+# ---------------------------------------------------------------------------
+# job-0261: full state names accepted ("Texas" → state TX), so location text
+# the LLM passes verbatim engages the precise server-side ?area= filter
+# instead of erroring into the unscoped CONUS fallback.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "raw,code",
+    [
+        ("Texas", "TX"),
+        ("texas", "TX"),           # the live-demo prompt form
+        ("  Texas  ", "TX"),
+        ("State of Texas", "TX"),
+        ("Florida", "FL"),
+        ("new mexico", "NM"),
+        ("Puerto Rico", "PR"),
+    ],
+)
+def test_canonicalize_area_full_state_name(raw, code):
+    from grace2_agent.tools.fetch_nws_event import _canonicalize_area
+    assert _canonicalize_area(raw) == {"kind": "state", "value": code}
+
+
+def test_canonicalize_area_full_name_builds_area_param_url():
+    """'Texas' canonicalizes to the same URL as 'TX' (?area=TX)."""
+    from grace2_agent.tools.fetch_nws_event import (
+        _build_nws_url,
+        _canonicalize_area,
+    )
+    url_name = _build_nws_url(_canonicalize_area("Texas"), None, "actual", "alert")
+    url_code = _build_nws_url(_canonicalize_area("TX"), None, "actual", "alert")
+    assert url_name == url_code
+    assert "area=TX" in url_name
+
+
+def test_canonicalize_area_city_still_rejected():
+    """Cities are still not valid areas — typed input error, not a silent
+    nationwide fallback."""
+    from grace2_agent.tools.fetch_nws_event import NWSInputError, _canonicalize_area
+    with pytest.raises(NWSInputError, match="not a recognized"):
+        _canonicalize_area("Houston")
+
+
+def test_bbox_fallback_unchanged_by_state_name_support():
+    """job-0261 must not disturb the bbox→point path (non-state areas)."""
+    from grace2_agent.tools.fetch_nws_event import _canonicalize_area
+    canon = _canonicalize_area((-106.6, 25.8, -93.5, 36.5))  # Texas-ish bbox
+    assert canon["kind"] == "point"
+    assert canon["lat"] == pytest.approx((25.8 + 36.5) / 2, abs=1e-4)
+    assert canon["lon"] == pytest.approx((-106.6 + -93.5) / 2, abs=1e-4)

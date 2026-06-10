@@ -106,6 +106,357 @@ _TOOL_SPECIFIC_ALIASES: dict[str, dict[str, str]] = {
         "place": "place_label",
         "location_name": "place_label",
     },
+    # -----------------------------------------------------------------------
+    # NWS alert tools (job-0261): the LLM names the state freely ("state",
+    # "state_code", "location", "region") — all land on the canonical "area"
+    # param so the precise server-side ?area= filter engages instead of the
+    # unscoped CONUS sweep.
+    # -----------------------------------------------------------------------
+    "fetch_nws_alerts_conus": {
+        "state": "area",
+        "state_code": "area",
+        "state_name": "area",
+        "location": "area",
+        "region": "area",
+    },
+    "fetch_nws_event": {
+        "state": "area",
+        "state_code": "area",
+        "state_name": "area",
+        "location": "area",
+        "region": "area",
+        "fips": "area",
+        "county_fips": "area",
+    },
+    # -----------------------------------------------------------------------
+    # Wave 4.10 endpoint aliases (job B13).
+    # For each new tool: param-name variants Gemini is likely to invent based
+    # on (a) common GIS/API terminology, (b) naming patterns in adjacent tools,
+    # (c) docstring prose that names related concepts.
+    # -----------------------------------------------------------------------
+    "fetch_fema_nfhl_zones": {
+        # bbox aliases (common across all spatial tools)
+        "bounding_box": "bbox",
+        "extent": "bbox",
+        "bounds": "bbox",
+        # sfha_only aliases — Gemini may expand the acronym or use noun form
+        "sfha": "sfha_only",
+        "special_flood_hazard": "sfha_only",
+        "sfha_filter": "sfha_only",
+        "flood_hazard_only": "sfha_only",
+        # zone_filter aliases — Gemini may use plural or shorter names
+        "zones": "zone_filter",
+        "flood_zones": "zone_filter",
+        "zone_codes": "zone_filter",
+        "flood_zone_filter": "zone_filter",
+        "zone_types": "zone_filter",
+    },
+    "fetch_hrrr_forecast": {
+        # bbox aliases
+        "bounding_box": "bbox",
+        "extent": "bbox",
+        "bounds": "bbox",
+        # variable aliases — Gemini may use "vars", "fields", or shortened forms
+        "vars": "variable",
+        "fields": "variable",
+        "variables": "variable",
+        "field": "variable",
+        # forecast_hour aliases — common meteorological shorthand
+        "fcst_hr": "forecast_hour",
+        "fhr": "forecast_hour",
+        "hour": "forecast_hour",
+        "lead_hour": "forecast_hour",
+        "lead_time": "forecast_hour",
+        "forecast_lead": "forecast_hour",
+        # cycle aliases — Gemini may use ISO or descriptive names
+        "cycle_iso": "cycle",
+        "run_time": "cycle",
+        "init_time": "cycle",
+        "cycle_time": "cycle",
+        "model_run": "cycle",
+    },
+    "fetch_noaa_nwm_streamflow": {
+        # bbox aliases
+        "bounding_box": "bbox",
+        "extent": "bbox",
+        "bounds": "bbox",
+        # product / configuration aliases
+        "configuration": "product",
+        "model_run": "product",
+        "cfg": "product",
+        "run_type": "product",
+        "model_config": "product",
+        # valid_time aliases — Gemini may use datetime / date / time
+        "datetime": "valid_time",
+        "date": "valid_time",
+        "time": "valid_time",
+        "timestamp": "valid_time",
+        "valid_datetime": "valid_time",
+        # forecast_hour aliases
+        "fcst_hr": "forecast_hour",
+        "fhr": "forecast_hour",
+        "hour": "forecast_hour",
+        "lead_hour": "forecast_hour",
+    },
+    "fetch_usace_levees": {
+        # bbox aliases
+        "bounding_box": "bbox",
+        "extent": "bbox",
+        "bounds": "bbox",
+        # layer aliases — Gemini may use "type", "layer_type", or specific layer names
+        "layer_type": "layer",
+        "geometry_type": "layer",
+        "levee_type": "layer",
+        "feature_type": "layer",
+        "dataset": "layer",
+    },
+    "fetch_usace_dams": {
+        # bbox is the only param; cover its common aliases
+        "bounding_box": "bbox",
+        "extent": "bbox",
+        "bounds": "bbox",
+        "region": "bbox",
+        "area": "bbox",
+    },
+    "fetch_usace_nsi": {
+        # bbox is the only param
+        "bounding_box": "bbox",
+        "extent": "bbox",
+        "bounds": "bbox",
+        "region": "bbox",
+        "area": "bbox",
+    },
+    "fetch_asos_metar": {
+        # bbox aliases
+        "bounding_box": "bbox",
+        "extent": "bbox",
+        "bounds": "bbox",
+        # start_time aliases — Gemini often invents start_date / begin / from
+        "start_date": "start_time",
+        "begin": "start_time",
+        "start": "start_time",
+        "from_time": "start_time",
+        "datetime_start": "start_time",
+        "time_start": "start_time",
+        # end_time aliases
+        "end_date": "end_time",
+        "end": "end_time",
+        "stop": "end_time",
+        "to_time": "end_time",
+        "datetime_end": "end_time",
+        "time_end": "end_time",
+    },
+    "fetch_gridmet": {
+        # bbox aliases
+        "bounding_box": "bbox",
+        "extent": "bbox",
+        "bounds": "bbox",
+        # variable aliases
+        "vars": "variable",
+        "field": "variable",
+        "variables": "variable",
+        "param": "variable",
+        "metric": "variable",
+        # start_date aliases
+        "start": "start_date",
+        "begin": "start_date",
+        "from_date": "start_date",
+        "datetime_start": "start_date",
+        "start_time": "start_date",
+        "date_start": "start_date",
+        # end_date aliases
+        "end": "end_date",
+        "stop": "end_date",
+        "to_date": "end_date",
+        "datetime_end": "end_date",
+        "end_time": "end_date",
+        "date_end": "end_date",
+    },
+    "fetch_noaa_coops_tides": {
+        # bbox aliases
+        "bounding_box": "bbox",
+        "extent": "bbox",
+        "bounds": "bbox",
+        # start_date aliases
+        "start": "start_date",
+        "begin": "start_date",
+        "from_date": "start_date",
+        "start_time": "start_date",
+        "datetime_start": "start_date",
+        "date_start": "start_date",
+        # end_date aliases
+        "end": "end_date",
+        "stop": "end_date",
+        "to_date": "end_date",
+        "end_time": "end_date",
+        "datetime_end": "end_date",
+        "date_end": "end_date",
+        # product aliases — Gemini may use "data_type", "observation_type"
+        "data_type": "product",
+        "observation_type": "product",
+        "tide_product": "product",
+        "measurement": "product",
+    },
+    "fetch_noaa_slr_scenarios": {
+        # bbox aliases
+        "bounding_box": "bbox",
+        "extent": "bbox",
+        "bounds": "bbox",
+        # scenario_ft aliases — Gemini may use scenario, sea_level_rise, slr
+        "scenario": "scenario_ft",
+        "scenarios": "scenario_ft",
+        "sea_level_rise": "scenario_ft",
+        "slr": "scenario_ft",
+        "slr_ft": "scenario_ft",
+        "rise_ft": "scenario_ft",
+        "feet": "scenario_ft",
+    },
+    "fetch_gtsm_tide_surge": {
+        # bbox aliases
+        "bounding_box": "bbox",
+        "extent": "bbox",
+        "bounds": "bbox",
+        # start_date aliases
+        "start": "start_date",
+        "begin": "start_date",
+        "from_date": "start_date",
+        "start_time": "start_date",
+        "datetime_start": "start_date",
+        # end_date aliases
+        "end": "end_date",
+        "stop": "end_date",
+        "to_date": "end_date",
+        "end_time": "end_date",
+        "datetime_end": "end_date",
+        # output aliases — Gemini may use "variable", "product", "data_type"
+        "variable": "output",
+        "product": "output",
+        "data_type": "output",
+        "output_type": "output",
+        "field": "output",
+    },
+    "fetch_raws_weather": {
+        # bbox aliases
+        "bounding_box": "bbox",
+        "extent": "bbox",
+        "bounds": "bbox",
+        # start_time aliases
+        "start_date": "start_time",
+        "begin": "start_time",
+        "start": "start_time",
+        "from_time": "start_time",
+        "datetime_start": "start_time",
+        "time_start": "start_time",
+        # end_time aliases
+        "end_date": "end_time",
+        "end": "end_time",
+        "stop": "end_time",
+        "to_time": "end_time",
+        "datetime_end": "end_time",
+        "time_end": "end_time",
+    },
+    "fetch_nhdplus_nldi_navigate": {
+        # seed_point aliases — Gemini may use "point", "location", "coordinate"
+        "point": "seed_point",
+        "location": "seed_point",
+        "coordinate": "seed_point",
+        "coordinates": "seed_point",
+        "lat_lon": "seed_point",
+        "latlon": "seed_point",
+        # comid aliases — Gemini may use "reach_id", "nhd_id", "feature_id"
+        "reach_id": "comid",
+        "nhd_id": "comid",
+        "feature_id": "comid",
+        "nhdplus_id": "comid",
+        "nhd_comid": "comid",
+        # direction aliases
+        "nav_direction": "direction",
+        "navigation": "direction",
+        "navigate": "direction",
+        "upstream_downstream": "direction",
+        # distance_km aliases
+        "distance": "distance_km",
+        "km": "distance_km",
+        "length_km": "distance_km",
+        "search_distance": "distance_km",
+        "max_distance_km": "distance_km",
+    },
+    "fetch_statsgo_soils": {
+        # bbox aliases
+        "bounding_box": "bbox",
+        "extent": "bbox",
+        "bounds": "bbox",
+        # field aliases — Gemini may use "attribute", "variable", "soil_property"
+        "attribute": "field",
+        "variable": "field",
+        "soil_property": "field",
+        "property": "field",
+        "soil_attribute": "field",
+        "soil_field": "field",
+        # timeout_s aliases — Gemini may omit the _s suffix or use different forms
+        "timeout": "timeout_s",
+        "timeout_seconds": "timeout_s",
+        "http_timeout": "timeout_s",
+        "request_timeout": "timeout_s",
+    },
+    "fetch_hrrr_smoke": {
+        # bbox aliases
+        "bounding_box": "bbox",
+        "extent": "bbox",
+        "bounds": "bbox",
+        # variable aliases — same as fetch_hrrr_forecast
+        "vars": "variable",
+        "field": "variable",
+        "variables": "variable",
+        "smoke_variable": "variable",
+        # forecast_hour aliases
+        "fcst_hr": "forecast_hour",
+        "fhr": "forecast_hour",
+        "hour": "forecast_hour",
+        "lead_hour": "forecast_hour",
+        "lead_time": "forecast_hour",
+        # cycle aliases — same as fetch_hrrr_forecast
+        "cycle_iso": "cycle",
+        "run_time": "cycle",
+        "init_time": "cycle",
+        "cycle_time": "cycle",
+        "model_run": "cycle",
+    },
+    "fetch_3dep_extra": {
+        # bbox aliases
+        "bounding_box": "bbox",
+        "extent": "bbox",
+        "bounds": "bbox",
+        # resolution aliases — Gemini may use "res", "cell_size", "pixel_size"
+        "res": "resolution",
+        "cell_size": "resolution",
+        "pixel_size": "resolution",
+        "spatial_resolution": "resolution",
+        "grid_resolution": "resolution",
+        # max_tiles aliases
+        "tile_limit": "max_tiles",
+        "max_tile_count": "max_tiles",
+        "tiles": "max_tiles",
+        "num_tiles": "max_tiles",
+        # timeout_s aliases
+        "timeout": "timeout_s",
+        "timeout_seconds": "timeout_s",
+        "http_timeout": "timeout_s",
+        "request_timeout": "timeout_s",
+    },
+    "fetch_usfs_canopy_fuels": {
+        # bbox aliases
+        "bounding_box": "bbox",
+        "extent": "bbox",
+        "bounds": "bbox",
+        # layer aliases — Gemini may use "variable", "fuel_layer", "product"
+        "variable": "layer",
+        "fuel_layer": "layer",
+        "product": "layer",
+        "dataset": "layer",
+        "layer_name": "layer",
+        "fuel_type": "layer",
+    },
 }
 
 

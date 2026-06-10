@@ -50,6 +50,7 @@ from grace2_contracts.tool_registry import AtomicToolMetadata
 
 from . import register_tool
 from .cache import read_through
+from .us_states import NWS_AREA_CODES, resolve_state_code
 
 __all__ = [
     "fetch_nws_event",
@@ -133,18 +134,10 @@ _VALID_STATUSES = frozenset({"actual", "exercise", "system", "test", "draft"})
 # Valid messageType values per NWS alert schema.
 _VALID_MESSAGE_TYPES = frozenset({"alert", "update", "cancel"})
 
-# 2-letter US state codes (50 + DC + 5 territories) accepted by /alerts/active.
-_VALID_STATE_CODES = frozenset({
-    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "DC", "FL", "GA", "HI",
-    "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN",
-    "MS", "MO", "MT", "NE", "NV", "NH", "NJ", "NM", "NY", "NC", "ND", "OH",
-    "OK", "OR", "PA", "RI", "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA",
-    "WV", "WI", "WY",
-    # Territories
-    "AS", "GU", "MP", "PR", "VI",
-    # Marine zones
-    "PZ", "PK", "PH", "PS", "PM", "AN", "AM", "GM", "LS", "LM", "LH", "LC", "LE", "LO",
-})
+# 2-letter US state codes (50 + DC + 5 territories + marine zones) accepted
+# by /alerts/active. Shared with fetch_nws_alerts_conus via us_states
+# (job-0261) so the two NWS tools can never diverge.
+_VALID_STATE_CODES = NWS_AREA_CODES
 
 # 5-digit FIPS code pattern.
 _FIPS_PATTERN = re.compile(r"^\d{5}$")
@@ -244,9 +237,16 @@ def _canonicalize_area(
             return {"kind": "fips", "value": s}
         if s in _VALID_STATE_CODES:
             return {"kind": "state", "value": s}
+        # job-0261: accept full state/territory names ("Texas", "state of
+        # texas") — the LLM passes location text verbatim more often than it
+        # abbreviates, and rejecting "Texas" pushed the live agent into the
+        # unscoped CONUS sweep (alerts spilled beyond the named state).
+        name_code = resolve_state_code(area)
+        if name_code is not None:
+            return {"kind": "state", "value": name_code}
         raise NWSInputError(
-            f"area={area!r} is not a recognized 2-letter state code, "
-            f"5-digit county FIPS, or bbox tuple"
+            f"area={area!r} is not a recognized US state name, 2-letter "
+            f"state code, 5-digit county FIPS, or bbox tuple"
         )
     raise NWSInputError(
         f"area must be str (state code or FIPS) or tuple bbox; got {type(area).__name__}"
@@ -467,7 +467,13 @@ def _fetch_nws_event_bytes(
 # ---------------------------------------------------------------------------
 
 
-@register_tool(_METADATA)
+@register_tool(
+    _METADATA,
+    # Annotations: readOnlyHint=True (read-only; no state mutation),
+    # openWorldHint=True (calls external public API endpoint),
+    # destructiveHint=False, idempotentHint=True (cache shim deduplicates).
+    open_world_hint=True,
+)
 def fetch_nws_event(
     area: str | tuple[float, float, float, float],
     event_types: list[str] | None = None,
@@ -477,65 +483,59 @@ def fetch_nws_event(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """NWS active alerts/events Tier-1 fetcher.
+    """Fetch active National Weather Service alerts scoped to a US state, county, or bbox.
 
-    Use this when: the agent needs the current set of active National Weather
-    Service alerts (hurricane warnings, flood warnings, severe thunderstorm,
-    winter storm, etc.) for a US state, county, or geographic area. The tool
-    returns a FlatGeobuf of alert polygons + properties (severity, headline,
-    event, onset, ends, description) suitable for overlay on the map and for
-    feeding into the Hazard Event Pipeline as agency-tier (FR-HEP-2 Tier 1)
-    forcing evidence.
+    **What it does:** Issues a call to ``api.weather.gov/alerts/active``
+    filtered to a specific US geographic scope — a 2-letter state code, a
+    5-digit county FIPS, or a bbox (converted to a point center for the NWS
+    forecast-zone lookup). Returns alert polygons with severity, headline,
+    event type, onset/ends timestamps, and instruction text as a FlatGeobuf
+    vector layer. Cached ``dynamic-1h`` (FR-DC-2 active-state).
 
-    Do NOT use this for: historical alerts (use ``fetch_storm_events_db`` for
-    NOAA Storm Events DB lookups instead — NWS active-alerts is current-only,
-    typically 0-7 days); reverse-geocoding a single point to a forecast zone
-    (different NWS endpoint); rainfall return periods or river forecasts
-    (different NWS surfaces — use ``lookup_precip_return_period`` etc.);
-    international weather alerts (NWS is US-only).
+    **When to use:**
+    - User asks about current weather hazards in a specific state or county
+      (e.g. "are there any flood warnings in Lee County, FL?").
+    - Agent needs geographically scoped alerts to drive the Hazard Event
+      Pipeline for a bounded study area rather than the full CONUS sweep.
+    - Workflow requires per-FIPS or per-state alert filtering before
+      intersecting with a hazard footprint.
 
-    Params:
-        area: One of three forms —
-            * 2-letter US state/territory code: "FL", "TX", "PR", ...
-              (also accepts marine zones like "GM" for Gulf of Mexico);
-            * 5-digit county FIPS code as a string: "12071" (Lee County FL);
-            * bbox tuple ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326
-              — converted to a point center ``(lat, lon)`` and sent as
-              ``?point=`` (NWS does not accept bbox; the point lookup returns
-              all alerts whose forecast zones contain that point).
-        event_types: Optional list of NWS event-type strings to filter to
-            (e.g. ``["Hurricane Warning", "Flood Warning"]``). When provided,
-            NWS supports a repeated ``&event=`` query param per type. When
-            None / empty, returns ALL active alerts for the area.
-        status: NWS alert status. Default ``"actual"`` (real alerts; never
-            test/exercise/draft). Accepted: actual, exercise, system, test, draft.
-        message_type: NWS alert message_type. Default ``"alert"`` (the
-            originating message). Accepted: alert, update, cancel.
+    **When NOT to use:**
+    - CONUS-wide alert sweeps — use ``fetch_nws_alerts_conus`` instead
+      (single call, no area argument required).
+    - Historical alert lookups (NWS active-alerts is current-only, 0-7 days);
+      use ``fetch_storm_events_db`` for past events.
+    - Rainfall return periods or river forecast data (different NWS surfaces).
+    - International weather alerts (NWS is US/territory-only).
 
-    Returns:
-        A ``LayerURI`` pointing at a FlatGeobuf in the cache bucket:
-        ``gs://grace-2-hazard-prod-cache/cache/dynamic-1h/nws_event/<key>.fgb``
-        containing alert polygons + properties.
-        ``layer_type="vector"``, ``role="context"``, ``units=None``.
+    **Parameters:**
+    - ``area`` (str or tuple): 2-letter state code (``"FL"``) or full state
+      name (``"Florida"``, case-insensitive), 5-digit county FIPS
+      (``"12071"`` for Lee County FL), or bbox tuple
+      ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326 (converted to
+      point center for NWS zone lookup — use state/FIPS when the user names
+      one; for sub-state areas prefer clipping to the admin polygon via
+      ``fetch_administrative_boundaries`` + ``clip_vector_to_polygon``
+      instead of trusting a rectangle).
+    - ``event_types`` (list[str] or None): NWS event-type filter strings, e.g.
+      ``["Hurricane Warning", "Flood Warning"]``. ``None`` returns all types.
+    - ``status`` (str): one of ``"actual"`` (default), ``"exercise"``,
+      ``"system"``, ``"test"``, ``"draft"``.
+    - ``message_type`` (str): one of ``"alert"`` (default), ``"update"``,
+      ``"cancel"``.
 
-    Cache: ``dynamic-1h`` (FR-DC-2 active-state). Two identical calls inside
-    the same hour-bucket reuse the cached FlatGeobuf; a one-hour boundary
-    crossing forces a refresh.
+    **Returns:**
+    ``LayerURI(layer_type="vector", role="context", units=None)`` pointing at
+    a FlatGeobuf with fields: ``event``, ``headline``, ``description``,
+    ``severity``, ``urgency``, ``certainty``, ``effective``, ``onset``,
+    ``ends``, ``expires``, ``senderName``, ``areaDesc``, ``instruction``,
+    ``response``, ``id``.
 
-    Cache key: SHA-256 of ``(area_canonicalized, event_types_sorted, status,
-    message_type, "dynamic-1h" vintage)``. ``area_canonicalized`` is one of
-    ``{kind="state", value=...}``, ``{kind="fips", value=...}``, or
-    ``{kind="point", lat=round(lat,4), lon=round(lon,4)}``.
-
-    External-API resilience (NFR-R-1): NWS rate-limits unauthenticated
-    requests and REQUIRES a descriptive User-Agent header (returns 403
-    otherwise — see ``_USER_AGENT``). On network failure / non-2xx /
-    malformed JSON the tool raises ``NWSUpstreamError(retryable=True)``
-    so the agent's FR-AS-11 surface can decide.
-
-    Source-tier: FR-HEP-2 Tier 1 (federal agency authoritative source).
-    Claims derived from this tool should be marked
-    ``source_authority_tier=1`` in any ``ClaimSet`` aggregation.
+    **Cross-tool dependencies:**
+    - Narrower-scope alternative to: ``fetch_nws_alerts_conus`` (CONUS sweep).
+    - Upstream of: hazard-event-pipeline tools that consume NWS alert
+      geometry + severity metadata as forcing evidence (FR-HEP-2 Tier 1).
+    - For historical context: pair with ``fetch_storm_events_db``.
     """
     # Validate status / message_type early — the kickoff says these have
     # fixed enums on the NWS side. Bad values are caller error, not retryable.
