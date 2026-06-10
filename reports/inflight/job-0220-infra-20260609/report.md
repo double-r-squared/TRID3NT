@@ -132,3 +132,58 @@ NOT created (owned by job-0221, parallel): gwt_adapter.py, test_gwt_adapter.py.
   unblock). Host mf6 smoke + fake-GCS entrypoint e2e cover the full solver-container
   logic minus the cloud plumbing (tofu validate-clean, structurally identical to
   the live-verified SFINCS path).
+
+---
+
+## Fix round 1 (adversarial panel — REFUTED)
+
+The panel REFUTED the job on a single build-breaking bug (CORRECTNESS [major] +
+LIVE-VERIFY [major], same root cause). Everything else was independently PASS.
+
+### The bug
+
+`services/workers/modflow/Dockerfile` lines 88-90 (pre-fix) extracted/installed
+the mf6 binary from `mf6.${MF6_VERSION}_linux/...`. With `ARG MF6_VERSION=6.5.0`
+that expands to **`mf6.6.5.0_linux`** — but the USGS 6.5.0 release zip's actual
+top-level directory is **`mf6.5.0_linux`** (the zip filename `mf6.5.0_linux.zip`
+already drops the leading "6." that the Dockerfile re-prepended). The `unzip`
+glob matched nothing → exit 11 → the `&&`-chained RUN step aborts → `docker build`
+fails at that layer → no image is ever produced. The host smoke test missed it
+because it ran flopy against a separately pre-extracted binary, never the
+Dockerfile's unzip/install lines.
+
+### The fix (recommended ARG form)
+
+Added `ARG MF6_ZIP_DIR=mf6.5.0_linux` after the MF6_VERSION/URL/SHA pins
+(Dockerfile line 57, with a comment explaining the USGS naming inconsistency:
+zip dir is `mf6.5.0` while `mf6 --version` reports `6.5.0`), and replaced the
+three `mf6.${MF6_VERSION}_linux` occurrences (unzip glob + two install source
+paths, now lines 94-96) with `${MF6_ZIP_DIR}`. The SHA pin, MF6_ZIP_URL,
+entrypoint.py, infra/modflow.tf, Makefile, and cloudbuild.yaml were all already
+correct and were left untouched.
+
+### Re-verification (all green)
+
+Re-ran the panel's exact reproduce commands against the SHA-256-verified zip
+(`reports/inflight/job-0220-infra-20260609/verify/mf6_dl/mf6.zip`):
+
+- Panel-buggy glob `unzip -o mf6.zip "mf6.6.5.0_linux/bin/mf6" -d /tmp/x` →
+  `caution: filename not matched`, **exit 11**, nothing extracted (confirms the bug).
+- Fixed glob `unzip -o mf6.zip "mf6.5.0_linux/bin/mf6" -d /tmp/x2` → inflates the
+  binary, **exit 0**.
+- Full RUN-block simulation with the expanded ARG values
+  (`sha256sum -c` → `unzip "${MF6_ZIP_DIR}/bin/{mf6,libmf6.so}"` →
+  `install -m 755 .../${MF6_ZIP_DIR}/bin/mf6 → /usr/local/bin/mf6` + libmf6.so):
+  sha **OK**, both files inflated, both installed `-rwxr-xr-x`, `test -x` passes —
+  **FULL CHAIN OK, exit 0**.
+- `grep` confirms the only remaining `mf6.${MF6_VERSION}_linux` / `mf6.6.5.0_linux`
+  tokens are in the new explanatory comment (lines 55-56); all three functional
+  paths use `${MF6_ZIP_DIR}`.
+- No regression in `infra/modflow.tf` (it never referenced the zip dir):
+  `tofu fmt -check` exit 0 (no diff), `tofu validate` → "The configuration is
+  valid." exit 0.
+
+`docker build` itself could not be run (docker daemon is down in this sandbox,
+same BLOCKED-ENV as step 7), but the refutation was specifically the unzip/install
+path resolution, which is now verified end-to-end at the shell level with the
+real zip. Build-time smoke (`mf6 --version`, lines 98 + 130) is now reachable.

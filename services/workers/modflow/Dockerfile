@@ -49,6 +49,12 @@ LABEL org.opencontainers.image.title="grace-2-modflow-solver" \
 ARG MF6_VERSION=6.5.0
 ARG MF6_ZIP_URL=https://github.com/MODFLOW-USGS/modflow6/releases/download/6.5.0/mf6.5.0_linux.zip
 ARG MF6_ZIP_SHA256=0fac00211c42b7a74c7266abbe50776a6215ea8409c8ce887e5decd4a9335940
+# USGS naming is inconsistent: the 6.5.0 release zip + its top-level dir are
+# both `mf6.5.0_linux` (the leading "6." is dropped), even though the binary's
+# `mf6 --version` reports "6.5.0". So MF6_ZIP_DIR is pinned separately from
+# MF6_VERSION rather than derived — `mf6.${MF6_VERSION}_linux` would wrongly
+# expand to `mf6.6.5.0_linux`, which is NOT a path in the zip.
+ARG MF6_ZIP_DIR=mf6.5.0_linux
 
 # --- System deps (single layer) ------------------------------------------
 # ca-certificates (HTTPS), curl (binary download), unzip (mf6 zip extract).
@@ -85,9 +91,9 @@ ENV PATH="$VENV/bin:$PATH"
 # GWF+GWT demo path).
 RUN curl -fL "$MF6_ZIP_URL" -o /tmp/mf6.zip \
     && echo "${MF6_ZIP_SHA256}  /tmp/mf6.zip" | sha256sum -c - \
-    && unzip -o /tmp/mf6.zip "mf6.${MF6_VERSION}_linux/bin/mf6" "mf6.${MF6_VERSION}_linux/bin/libmf6.so" -d /tmp/mf6_extracted \
-    && install -m 755 "/tmp/mf6_extracted/mf6.${MF6_VERSION}_linux/bin/mf6" /usr/local/bin/mf6 \
-    && install -m 755 "/tmp/mf6_extracted/mf6.${MF6_VERSION}_linux/bin/libmf6.so" /usr/local/lib/libmf6.so \
+    && unzip -o /tmp/mf6.zip "${MF6_ZIP_DIR}/bin/mf6" "${MF6_ZIP_DIR}/bin/libmf6.so" -d /tmp/mf6_extracted \
+    && install -m 755 "/tmp/mf6_extracted/${MF6_ZIP_DIR}/bin/mf6" /usr/local/bin/mf6 \
+    && install -m 755 "/tmp/mf6_extracted/${MF6_ZIP_DIR}/bin/libmf6.so" /usr/local/lib/libmf6.so \
     && rm -rf /tmp/mf6.zip /tmp/mf6_extracted \
     && mf6 --version
 
