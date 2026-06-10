@@ -76,7 +76,6 @@ class _FakeWS:
 class _FakeState:
     def __init__(self) -> None:
         self.session_id = new_ulid()
-        self.pending_payload_warnings: dict[str, asyncio.Future] = {}
 
 
 @pytest.mark.asyncio
@@ -92,11 +91,11 @@ async def test_server_gate_approve_injects_confirmed() -> None:
     async def _approve_soon() -> None:
         # Wait for the gate to register its future, then complete it.
         for _ in range(200):
-            if state.pending_payload_warnings:
+            if server._PENDING_CONFIRMATIONS:
                 break
             await asyncio.sleep(0.005)
-        cx_id = next(iter(state.pending_payload_warnings))
-        fut = state.pending_payload_warnings[cx_id]
+        cx_id = next(iter(server._PENDING_CONFIRMATIONS))
+        fut = server._PENDING_CONFIRMATIONS[cx_id][1]
         fut.set_result(
             PayloadConfirmationEnvelopePayload(warning_id=cx_id, decision="proceed")
         )
@@ -125,11 +124,11 @@ async def test_server_gate_cancel_blocks_dispatch() -> None:
 
     async def _cancel_soon() -> None:
         for _ in range(200):
-            if state.pending_payload_warnings:
+            if server._PENDING_CONFIRMATIONS:
                 break
             await asyncio.sleep(0.005)
-        cx_id = next(iter(state.pending_payload_warnings))
-        state.pending_payload_warnings[cx_id].set_result(
+        cx_id = next(iter(server._PENDING_CONFIRMATIONS))
+        server._PENDING_CONFIRMATIONS[cx_id][1].set_result(
             PayloadConfirmationEnvelopePayload(warning_id=cx_id, decision="cancel")
         )
 

@@ -26,6 +26,7 @@ from typing import Any
 
 import pytest
 
+from grace2_agent import server
 from grace2_agent.server import (
     SessionState,
     _invoke_tool_via_emitter,
@@ -184,7 +185,7 @@ def test_medium_payload_emits_warning_and_pauses() -> None:
         assert "narrow_scope" in payload["options"]
         # Confirm with proceed.
         wid = payload["warning_id"]
-        fut = state.pending_payload_warnings[wid]
+        fut = server._PENDING_CONFIRMATIONS[wid][1]
         fut.set_result(
             PayloadConfirmationEnvelopePayload(
                 warning_id=wid, decision="proceed"
@@ -220,7 +221,7 @@ def test_cancel_decision_skips_dispatch() -> None:
             e for e in ws.sent if e["type"] == "tool-payload-warning"
         )
         wid = warning_env["payload"]["warning_id"]
-        fut = state.pending_payload_warnings[wid]
+        fut = server._PENDING_CONFIRMATIONS[wid][1]
         fut.set_result(
             PayloadConfirmationEnvelopePayload(
                 warning_id=wid, decision="cancel"
@@ -255,7 +256,7 @@ def test_narrow_scope_decision_uses_revised_args() -> None:
             e for e in ws.sent if e["type"] == "tool-payload-warning"
         )
         wid = warning_env["payload"]["warning_id"]
-        fut = state.pending_payload_warnings[wid]
+        fut = server._PENDING_CONFIRMATIONS[wid][1]
         fut.set_result(
             PayloadConfirmationEnvelopePayload(
                 warning_id=wid,
@@ -295,7 +296,7 @@ def test_hard_cap_warning_omits_proceed_option() -> None:
         assert "narrow_scope" in payload["options"]
         # Cancel to clean up.
         wid = payload["warning_id"]
-        fut = state.pending_payload_warnings[wid]
+        fut = server._PENDING_CONFIRMATIONS[wid][1]
         fut.set_result(
             PayloadConfirmationEnvelopePayload(
                 warning_id=wid, decision="cancel"
@@ -324,7 +325,7 @@ def test_hard_cap_rejects_proceed_decision() -> None:
             e for e in ws.sent if e["type"] == "tool-payload-warning"
         )
         wid = warning_env["payload"]["warning_id"]
-        fut = state.pending_payload_warnings[wid]
+        fut = server._PENDING_CONFIRMATIONS[wid][1]
         fut.set_result(
             PayloadConfirmationEnvelopePayload(
                 warning_id=wid, decision="proceed"
@@ -362,7 +363,7 @@ def test_audit_log_records_every_event() -> None:
         kwargs["warning_id"] = wid
         if decision == "narrow_scope":
             kwargs["revised_args"] = revised or {}
-        fut = state.pending_payload_warnings[wid]
+        fut = server._PENDING_CONFIRMATIONS[wid][1]
         fut.set_result(PayloadConfirmationEnvelopePayload(**kwargs))
         await gate_task
 
@@ -430,7 +431,7 @@ def test_threshold_env_override() -> None:
             assert warning_env["payload"]["estimated_mb"] == 10.0
             assert warning_env["payload"]["threshold_mb"] == 5.0
             wid = warning_env["payload"]["warning_id"]
-            fut = state.pending_payload_warnings[wid]
+            fut = server._PENDING_CONFIRMATIONS[wid][1]
             fut.set_result(
                 PayloadConfirmationEnvelopePayload(
                     warning_id=wid, decision="cancel"
@@ -471,7 +472,7 @@ def test_invoke_tool_via_emitter_dispatches_after_proceed() -> None:
             e for e in ws.sent if e["type"] == "tool-payload-warning"
         )
         wid = warning_env["payload"]["warning_id"]
-        fut = state.pending_payload_warnings[wid]
+        fut = server._PENDING_CONFIRMATIONS[wid][1]
         fut.set_result(
             PayloadConfirmationEnvelopePayload(
                 warning_id=wid, decision="proceed"
@@ -487,10 +488,20 @@ def test_invoke_tool_via_emitter_dispatches_after_proceed() -> None:
 
 
 def test_invoke_tool_via_emitter_skips_after_cancel() -> None:
-    """End-to-end: warning → cancel → tool does NOT run, None returned."""
+    """End-to-end: warning → cancel → tool does NOT run, raises PayloadWarningCancelledError.
+
+    B-rev: previously this returned None (opaque to Gemini); now it raises
+    PayloadWarningCancelledError so the multi-turn loop feeds a structured
+    error envelope back to Gemini (error_code=PAYLOAD_WARNING_CANCELLED,
+    retryable=False).
+    """
+    from grace2_agent.server import PayloadWarningCancelledError
+
     _register_dummy("integration_cancel_tool")
     ws = MockWebSocket()
     state = SessionState(session_id=new_ulid())
+
+    raised: list[BaseException] = []
 
     async def _run() -> Any:
         invoke_task = asyncio.create_task(
@@ -506,19 +517,27 @@ def test_invoke_tool_via_emitter_skips_after_cancel() -> None:
             e for e in ws.sent if e["type"] == "tool-payload-warning"
         )
         wid = warning_env["payload"]["warning_id"]
-        fut = state.pending_payload_warnings[wid]
+        fut = server._PENDING_CONFIRMATIONS[wid][1]
         fut.set_result(
             PayloadConfirmationEnvelopePayload(
                 warning_id=wid, decision="cancel"
             )
         )
-        return await invoke_task
+        try:
+            return await invoke_task
+        except PayloadWarningCancelledError as exc:
+            raised.append(exc)
+            return None
 
-    result = asyncio.run(_run())
-    assert result is None
+    asyncio.run(_run())
+    # B-rev: must have raised PayloadWarningCancelledError, not returned None.
+    assert len(raised) == 1, "expected PayloadWarningCancelledError to be raised"
+    assert raised[0].error_code == "PAYLOAD_WARNING_CANCELLED"
+    assert raised[0].retryable is False
+    assert "integration_cancel_tool" in str(raised[0])
     # No tool-call-start envelope: the emitter never opened a pipeline.
     assert not any(e["type"] == "tool-call-start" for e in ws.sent)
-    # USER_INPUT_CANCELLED frame WAS emitted.
+    # USER_INPUT_CANCELLED frame WAS emitted by the gate (pre-raise side effect).
     assert any(
         e["type"] == "error"
         and e["payload"]["error_code"] == "USER_INPUT_CANCELLED"

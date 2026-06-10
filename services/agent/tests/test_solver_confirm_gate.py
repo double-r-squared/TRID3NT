@@ -47,7 +47,6 @@ class _FakeWS:
 class _FakeState:
     def __init__(self) -> None:
         self.session_id = new_ulid()
-        self.pending_payload_warnings: dict[str, asyncio.Future] = {}
 
 
 def _patch_extraction(monkeypatch):
@@ -83,11 +82,11 @@ async def test_gate_emits_card_and_approve_injects_confirmed(monkeypatch) -> Non
 
     async def _approve_soon() -> None:
         for _ in range(200):
-            if state.pending_payload_warnings:
+            if server._PENDING_CONFIRMATIONS:
                 break
             await asyncio.sleep(0.005)
-        wid = next(iter(state.pending_payload_warnings))
-        state.pending_payload_warnings[wid].set_result(
+        wid = next(iter(server._PENDING_CONFIRMATIONS))
+        server._PENDING_CONFIRMATIONS[wid][1].set_result(
             PayloadConfirmationEnvelopePayload(warning_id=wid, decision="proceed")
         )
 
@@ -116,11 +115,11 @@ async def test_gate_cancel_fails_closed(monkeypatch) -> None:
 
     async def _cancel_soon() -> None:
         for _ in range(200):
-            if state.pending_payload_warnings:
+            if server._PENDING_CONFIRMATIONS:
                 break
             await asyncio.sleep(0.005)
-        wid = next(iter(state.pending_payload_warnings))
-        state.pending_payload_warnings[wid].set_result(
+        wid = next(iter(server._PENDING_CONFIRMATIONS))
+        server._PENDING_CONFIRMATIONS[wid][1].set_result(
             PayloadConfirmationEnvelopePayload(warning_id=wid, decision="cancel")
         )
 
@@ -211,11 +210,11 @@ async def test_dispatch_path_strips_llm_supplied_confirmed(monkeypatch) -> None:
 
     async def _approve_soon() -> None:
         for _ in range(200):
-            if state.pending_payload_warnings:
+            if server._PENDING_CONFIRMATIONS:
                 break
             await asyncio.sleep(0.005)
-        wid = next(iter(state.pending_payload_warnings))
-        state.pending_payload_warnings[wid].set_result(
+        wid = next(iter(server._PENDING_CONFIRMATIONS))
+        server._PENDING_CONFIRMATIONS[wid][1].set_result(
             PayloadConfirmationEnvelopePayload(warning_id=wid, decision="proceed")
         )
 

@@ -265,6 +265,70 @@ SOLVER_CONFIRM_TOOLS: set[str] = {
 }
 
 
+# --------------------------------------------------------------------------- #
+# Session-scoped confirmation registry (job-0243)
+# --------------------------------------------------------------------------- #
+#
+# The Stage 3 re-verify (job-0242) proved the per-connection seam structurally
+# broken on the live path: ``pending_payload_warnings`` lived on the
+# per-CONNECTION ``SessionState``, but the web client opens MULTIPLE WebSocket
+# connections per browser session (React StrictMode double-mount + reconnect —
+# four "connection open" events observed in one session). A gate registered on
+# connection A could never be resolved by the Proceed click arriving on
+# connection B: the lookup hit a different, empty dict and the click was
+# dropped ("unknown/closed warning_id"). EVERY confirmation gate — payload
+# warning, code-exec, solver — shared the hole.
+#
+# Fix: ONE module-level registry keyed on the (globally unique, unguessable
+# ULID) warning_id, tagged with the owning session_id. Any connection's
+# inbound ``tool-payload-confirmation`` handler can resolve a pending gate as
+# long as the session matches — reconnects mid-gate now work instead of
+# soft-locking the gate until timeout.
+
+_PENDING_CONFIRMATIONS: dict[str, tuple[str, asyncio.Future]] = {}
+
+
+def _register_pending_confirmation(
+    session_id: str, warning_id: str, fut: "asyncio.Future"
+) -> None:
+    _PENDING_CONFIRMATIONS[warning_id] = (session_id, fut)
+
+
+def _pop_pending_confirmation(warning_id: str) -> None:
+    _PENDING_CONFIRMATIONS.pop(warning_id, None)
+
+
+def _resolve_pending_confirmation(
+    session_id: str, conf: "PayloadConfirmationEnvelopePayload"
+) -> bool:
+    """Complete the pending gate future for ``conf.warning_id``.
+
+    Returns True when a live future was resolved. False when the warning_id is
+    unknown/already-resolved, or when the confirming session is not the owner
+    (cross-session confirmation is refused loudly — the warning_id is an
+    unguessable ULID, but defense-in-depth costs one string compare).
+    """
+    entry = _PENDING_CONFIRMATIONS.get(conf.warning_id)
+    if entry is None:
+        return False
+    owner_session, fut = entry
+    if owner_session != session_id:
+        logger.warning(
+            "tool-payload-confirmation REFUSED: session=%s is not the owner "
+            "(owner=%s) for warning_id=%s",
+            session_id,
+            owner_session,
+            conf.warning_id,
+        )
+        return False
+    if fut.done():
+        _PENDING_CONFIRMATIONS.pop(conf.warning_id, None)
+        return False
+    fut.set_result(conf)
+    _PENDING_CONFIRMATIONS.pop(conf.warning_id, None)
+    return True
+
+
 # job-0115: app-level Persistence singleton (Wave 1.5).
 #
 # The MongoDB Atlas MCP server is the LLM-facing DB path (FR-AS-4, Decision F).
@@ -424,7 +488,6 @@ class SessionState:
     # inbound ``tool-payload-confirmation`` handler completes with the user's
     # decision payload. ``_invoke_tool_via_emitter`` awaits it before
     # dispatching (or skipping) the underlying tool.
-    pending_payload_warnings: dict[str, asyncio.Future] = field(default_factory=dict)
     # job-0127 (Wave 2): per-session audit log of payload-warning events.
     # Each entry is a dict carrying ``warning_id``, ``tool_name``,
     # ``estimated_mb``, ``threshold_mb``, ``decision`` (set on confirmation),
@@ -1768,7 +1831,7 @@ async def _maybe_gate_on_payload_warning(
     # Create the future the inbound handler will complete.
     loop = asyncio.get_running_loop()
     fut: asyncio.Future = loop.create_future()
-    state.pending_payload_warnings[warning_id] = fut
+    _register_pending_confirmation(state.session_id, warning_id, fut)
 
     await websocket.send(
         _new_envelope("tool-payload-warning", state.session_id, warning_payload)
@@ -1804,7 +1867,7 @@ async def _maybe_gate_on_payload_warning(
         )
         return False, params
     finally:
-        state.pending_payload_warnings.pop(warning_id, None)
+        _pop_pending_confirmation(warning_id)
 
     audit_entry["decision"] = decision_payload.decision
     audit_entry["decided_at"] = now_utc().isoformat()
@@ -1887,7 +1950,7 @@ async def _gate_on_code_exec(
     # (keyed on code_exec_id == warning_id). Same seam as the payload-warning gate.
     loop = asyncio.get_running_loop()
     fut: asyncio.Future = loop.create_future()
-    state.pending_payload_warnings[code_exec_id] = fut
+    _register_pending_confirmation(state.session_id, code_exec_id, fut)
 
     await websocket.send(
         _new_envelope("code-exec-request", state.session_id, request_payload)
@@ -1919,7 +1982,7 @@ async def _gate_on_code_exec(
         )
         return False, params
     finally:
-        state.pending_payload_warnings.pop(code_exec_id, None)
+        _pop_pending_confirmation(code_exec_id)
 
     logger.info(
         "code-exec confirm decision session=%s code_exec_id=%s decision=%s",
@@ -2014,7 +2077,7 @@ async def _gate_on_solver_confirm(
     warning_id = envelope.warning_id
     loop = asyncio.get_running_loop()
     fut: asyncio.Future = loop.create_future()
-    state.pending_payload_warnings[warning_id] = fut
+    _register_pending_confirmation(state.session_id, warning_id, fut)
 
     await websocket.send(
         _new_envelope("tool-payload-warning", state.session_id, envelope)
@@ -2049,7 +2112,7 @@ async def _gate_on_solver_confirm(
         )
         return False, params
     finally:
-        state.pending_payload_warnings.pop(warning_id, None)
+        _pop_pending_confirmation(warning_id)
 
     logger.info(
         "solver-confirm decision session=%s tool=%s warning_id=%s decision=%s",
@@ -3172,8 +3235,13 @@ def _make_handler(settings: GeminiSettings):
                                 f"tool-payload-confirmation invalid: {ve.errors()[0]['msg']}",
                             )
                             continue
-                        fut = state.pending_payload_warnings.get(conf.warning_id)
-                        if fut is None or fut.done():
+                        # job-0243: resolve via the SESSION-scoped module
+                        # registry — the gate may have been registered on a
+                        # DIFFERENT WebSocket connection of this same session
+                        # (StrictMode double-mount / reconnect).
+                        if not _resolve_pending_confirmation(
+                            state.session_id, conf
+                        ):
                             logger.warning(
                                 "tool-payload-confirmation for unknown/closed "
                                 "warning_id=%s session=%s",
@@ -3181,7 +3249,6 @@ def _make_handler(settings: GeminiSettings):
                                 state.session_id,
                             )
                             continue
-                        fut.set_result(conf)
                         logger.info(
                             "tool-payload-confirmation accepted session=%s "
                             "warning_id=%s decision=%s",
