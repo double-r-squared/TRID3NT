@@ -92,6 +92,16 @@ dependencies = [
     # Cloud Run Job execution. Absent from the venv, EVERY fresh layer
     # publish (plume, flood) fails and nothing new renders on the map.
     "google-cloud-run>=0.10",
+    # job-0265 sprint-13.5 PREREQ: cloud sandbox result transport via Cloud
+    # Logging (OQ-SANDBOX-3 option b). The egress-denied executor prints its
+    # result envelope (GRACE2_SANDBOX_ENVELOPE_V1 marker) to stdout -> Cloud
+    # Logging; read_sandbox_result reads it back via logging.Client.list_entries
+    # under the AGENT'S identity, keeping the sandbox runtime SA objectViewer-only
+    # (Invariant 5). Resolves cleanly against the load-bearing storage<4 /
+    # fsspec+gcsfs 2026.1.0 pins (pip check stays clean; only pulls in
+    # google-cloud-appengine-logging + google-cloud-audit-log, all transitive
+    # deps already satisfied).
+    "google-cloud-logging>=3.9,<4",
     # Wave 4.10 job-A2: s3fs is the fsspec S3 backend for the NOAA Big Data
     # Program anonymous S3 mirrors consumed by fetch_hrrr_forecast (HRRR-Zarr
     # at s3://hrrrzarr/) and a planned fetch_hrrr_smoke. Wraps boto3 +

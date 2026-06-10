@@ -300,18 +300,27 @@ def code_exec_request(
     )
 
     # Dispatch through the sandbox runner. In local mode this returns a finished
-    # envelope dict synchronously; in cloud mode it returns a pending handle (the
-    # v0.1 cloud-result readback is NOT wired — OQ-SANDBOX-3 — so we surface a
-    # typed error rather than pretend a result exists).
+    # envelope dict synchronously; in cloud mode it returns a pending handle whose
+    # result envelope is read back from Cloud Logging (job-0265 — the executor
+    # prints a marker-prefixed envelope to stdout -> Cloud Logging, read under the
+    # agent's identity). A genuine readback failure surfaces a typed error which
+    # we convert to an honest error envelope (never a fabricated result).
     dispatch = sandbox_runner.submit_sandbox_job(python_code, layer_refs or {})
 
     if isinstance(dispatch, sandbox_runner.SandboxExecutionHandle):
-        # Cloud dispatch: no synchronous result in v0.1. Read the handle (which
-        # raises the typed SandboxCloudModeUnavailable) and convert it to an
-        # honest error result rather than blocking forever.
+        # Cloud dispatch: the executor printed its result envelope to stdout,
+        # which Cloud Run ships to Cloud Logging. read_sandbox_result (job-0265)
+        # polls Cloud Logging for the marker line and returns the parsed envelope.
+        # On a genuine readback failure (envelope not ingested in time, or the
+        # logging client can't be built) it raises a typed error — we convert
+        # that to an HONEST error envelope (never a fabricated result) so the
+        # agent narrates the limitation truthfully (Invariant 1 / Decision H).
         try:
             envelope = sandbox_runner.read_sandbox_result(dispatch)
-        except sandbox_runner.SandboxCloudModeUnavailable as exc:
+        except (
+            sandbox_runner.SandboxResultNotFound,
+            sandbox_runner.SandboxCloudModeUnavailable,
+        ) as exc:
             envelope = {
                 "status": "error",
                 "error": str(exc),

@@ -10,7 +10,11 @@
   ``ExecutionHandle`` — a pending-result handle whose execution id is the seam the
   agent polls / cancels on). The Cloud Run Job in ``infra/python-sandbox.tf`` runs
   ``infra/python-sandbox/executor.py`` inside the egress-denied container; the
-  result envelope lands in the runs/cache bucket (job-0233 wires the readback).
+  executor prints its result envelope (``GRACE2_SANDBOX_ENVELOPE_V1`` marker) to
+  stdout -> Cloud Logging, and ``read_sandbox_result`` (job-0265) reads it back
+  from Cloud Logging under the AGENT'S identity — keeping the sandbox runtime SA
+  ``objectViewer``-only (no GCS/Logging write on a hostile-code-reachable SA;
+  Invariant 5). This is option (b) of OQ-SANDBOX-3.
 
 * **Local-subprocess fallback (``GRACE2_SANDBOX_LOCAL=1``).** Runs the SAME
   ``executor.py`` harness in a child ``python`` subprocess on this machine — no
@@ -49,8 +53,9 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -58,23 +63,27 @@ LOG = logging.getLogger("grace2.agent.sandbox_runner")
 
 
 class SandboxCloudModeUnavailable(RuntimeError):
-    """Cloud-mode result readback is NOT wired in v0.1 (job-0233 OQ-SANDBOX-3).
+    """Cloud-mode result readback could not run (job-0265 — the readback CLIENT
+    is unavailable, distinct from "the envelope was not found").
 
-    The executor writes its result envelope to **stdout** (which lands in Cloud
-    Run logs), and the sandbox runtime service account is ``objectViewer``-only —
-    it CANNOT write the envelope to a GCS ``result_uri``. Rather than bake a GCS
-    write into the read-only SA (which would widen the hostile-code blast radius
-    and break Invariant 5), v0.1 keeps cloud dispatch as a fire-and-poll handle
-    with NO result readback path, and ``read_sandbox_result`` raises this typed
-    error so the agent narrates the limitation honestly instead of hanging or
-    fabricating a result.
+    job-0265 wired the sprint-13.5 cloud-result transport: the executor writes
+    its result envelope to **stdout** (which lands in Cloud Logging), and
+    ``read_sandbox_result`` reads it back from Cloud Logging filtered on the
+    execution name + the ``GRACE2_SANDBOX_ENVELOPE_V1`` marker — option (b) of
+    the OQ-SANDBOX-3 decision. This keeps the runtime SA ``objectViewer``-only
+    (no GCS write into a hostile-code-reachable SA — Invariant 5 preserved): the
+    AGENT'S identity (not the sandbox runtime's) does the privileged Cloud
+    Logging read.
 
-    The v0.1 supported path is the **local-subprocess** mode
+    This typed error is raised ONLY when the readback transport itself cannot
+    run — ``google-cloud-logging`` is not importable, or ADC / the logging client
+    cannot be constructed. (A successfully-queried-but-empty result raises
+    :class:`SandboxResultNotFound` instead, so the agent can distinguish "I
+    couldn't look" from "I looked and the run produced nothing readable yet".)
+
+    The always-available path remains **local-subprocess** mode
     (``GRACE2_SANDBOX_LOCAL=1``), which reads the child's stdout directly and
-    returns a complete result envelope synchronously. The sprint-13.5 identity
-    decision (which writer-identity transports the cloud result — a separate
-    objectAdmin sidecar SA, a Cloud Logging read, or a structured-log sink) is
-    documented in the job-0233 report.
+    returns a complete result envelope synchronously.
 
     ``error_code`` / ``retryable`` follow the FR-AS-11 typed-exception convention
     so ``summarize_tool_result`` surfaces a structured function_response to
@@ -84,6 +93,29 @@ class SandboxCloudModeUnavailable(RuntimeError):
 
     error_code: str = "SANDBOX_CLOUD_MODE_UNAVAILABLE"
     retryable: bool = False
+
+
+class SandboxResultNotFound(RuntimeError):
+    """The Cloud Logging readback ran but no result envelope was found in time
+    (job-0265).
+
+    Raised when ``read_sandbox_result`` queried Cloud Logging for the execution's
+    marker line and, after polling up to
+    :data:`SANDBOX_LOG_READ_TIMEOUT_SECONDS`, found no parseable
+    ``GRACE2_SANDBOX_ENVELOPE_V1`` entry — e.g. log ingestion lag exceeded the
+    window, the execution never reached the emit (it was killed before flushing),
+    or the execution name was wrong. The agent should narrate the missing result
+    honestly (NOT fabricate one) and may retry the READBACK once more or fall
+    back to local mode.
+
+    ``retryable=True`` because the failure is transient (ingestion lag): a later
+    readback of the SAME execution may succeed. The agent must NOT re-DISPATCH
+    the code on this error (that would double-run the user's confirmed snippet);
+    it may re-READ the same handle.
+    """
+
+    error_code: str = "SANDBOX_RESULT_NOT_FOUND"
+    retryable: bool = True
 
 # Wallclock cap (seconds) — matches infra/python-sandbox.tf's 60s Job timeout and
 # the executor's GRACE2_SANDBOX_TIMEOUT. The runner's OUTER subprocess timeout is
@@ -100,6 +132,30 @@ MAX_ENVELOPE_BYTES = int(os.environ.get("GRACE2_SANDBOX_MAX_ENVELOPE_BYTES", str
 
 # Cloud Run Job name (must match infra/python-sandbox.tf).
 SANDBOX_JOB_NAME = os.environ.get("GRACE2_SANDBOX_JOB_NAME", "grace-2-python-sandbox")
+
+# Envelope marker prefix the executor stamps on its result line — MUST stay in
+# lockstep with ``infra/python-sandbox/executor.py``'s ``ENVELOPE_MARKER``. The
+# executor lives in the container build context (not on the agent import path),
+# so the constant is duplicated here rather than imported. The local parser uses
+# it to tolerate the prefix; the cloud readback uses it as the Cloud Logging
+# textPayload filter token. A drift would silently break cloud readback, so a
+# unit test asserts the two literals match.
+SANDBOX_ENVELOPE_MARKER = "GRACE2_SANDBOX_ENVELOPE_V1"
+
+# --- Cloud Logging readback (job-0265) ------------------------------------- #
+# How long to poll Cloud Logging for the result line after the Cloud Run Job
+# execution finishes. The executor runs under a 60s wallclock cap; logs are
+# usually queryable within a few seconds of the write, but ingestion lag can be
+# tens of seconds, so we poll up to this bound before declaring the envelope
+# un-readable. Kept generous because a missing envelope means an honest error,
+# not a fabricated result.
+SANDBOX_LOG_READ_TIMEOUT_SECONDS = int(
+    os.environ.get("GRACE2_SANDBOX_LOG_READ_TIMEOUT", "120")
+)
+# Delay between Cloud Logging poll attempts while the envelope has not yet landed.
+SANDBOX_LOG_POLL_INTERVAL_SECONDS = float(
+    os.environ.get("GRACE2_SANDBOX_LOG_POLL_INTERVAL", "3")
+)
 
 
 def _is_local_mode() -> bool:
@@ -140,10 +196,13 @@ class SandboxExecutionHandle:
         (``projects/.../jobs/grace-2-python-sandbox/executions/...``) — the
         cancellation/poll seam.
       - ``payload_uri`` — gs:// staging file the Job reads (python_code + refs).
-      - ``result_uri`` — gs:// object the Job's result envelope lands at
-        (job-0233 wires the readback; the executor writes nothing today — this is
-        the agreed location).
-      - ``submitted_at`` — UTC submit time.
+      - ``result_uri`` — gs:// object reserved for a future GCS transport.
+        VESTIGIAL in the job-0265 transport: the executor writes its envelope to
+        stdout -> Cloud Logging (NOT this object), and ``read_sandbox_result``
+        reads it back from Cloud Logging keyed on ``execution_name``. The field
+        is retained for back-compat + a possible future GCS-sink transport.
+      - ``submitted_at`` — UTC submit time (also the Cloud Logging readback's
+        ``timestamp>=`` floor — see ``_build_log_filter``).
       - ``mode`` — "cloud" (always, for this handle type).
     """
 
@@ -324,10 +383,23 @@ def _parse_envelope(stdout: str, stderr: str, returncode: int | None) -> dict[st
     FINDING 2: we parse the FULL (unsliced) stdout line, then bound the string
     fields inside the parsed dict via :func:`_bound_envelope` so the returned
     envelope is always valid JSON with honestly-marked truncation — never a
-    corrupt slice of a JSON document."""
+    corrupt slice of a JSON document.
+
+    job-0265: the executor now prefixes the envelope line with
+    ``ENVELOPE_MARKER`` (``GRACE2_SANDBOX_ENVELOPE_V1 {...}``) so the cloud
+    Cloud-Logging readback can pin it. We tolerate that prefix here by extracting
+    the JSON from the first ``{`` on the line — a marker-prefixed line and a bare
+    ``{...}`` line both parse, so the SAME emit path serves both transports."""
     candidate: str | None = None
     for line in reversed(stdout.splitlines()):
         line = line.strip()
+        # Tolerate the ``GRACE2_SANDBOX_ENVELOPE_V1 {...}`` marker prefix: take
+        # the JSON from the first ``{`` to the last ``}`` on the line.
+        if SANDBOX_ENVELOPE_MARKER in line:
+            brace = line.find("{")
+            if brace != -1 and line.endswith("}"):
+                candidate = line[brace:]
+                break
         if line.startswith("{") and line.endswith("}"):
             candidate = line
             break
@@ -443,23 +515,248 @@ def _submit_cloud(
     return handle
 
 
-def read_sandbox_result(handle: SandboxExecutionHandle) -> dict[str, Any]:
-    """Read the result envelope for a cloud dispatch — NOT WIRED in v0.1.
+def read_sandbox_result(
+    handle: SandboxExecutionHandle,
+    *,
+    timeout_seconds: int | None = None,
+    poll_interval_seconds: float | None = None,
+    logging_client: Any | None = None,
+) -> dict[str, Any]:
+    """Read the cloud dispatch's result envelope back from Cloud Logging (job-0265).
 
-    OQ-SANDBOX-3 (job-0232) resolution: the executor writes its envelope to
-    stdout (Cloud Run logs) and the runtime SA is ``objectViewer``-only, so there
-    is no GCS object at ``handle.result_uri`` to read. Rather than bake a GCS
-    write into the read-only SA, v0.1 declares cloud-mode readback NOT-YET-WIRED
-    and raises :class:`SandboxCloudModeUnavailable` here. The supported v0.1 path
-    is local mode (``submit_sandbox_job`` returns a finished envelope dict
-    directly). See the job-0233 report for the sprint-13.5 identity decision."""
-    raise SandboxCloudModeUnavailable(
-        "cloud-mode sandbox result readback is not wired in v0.1 "
-        f"(handle={handle.handle_id}, execution={handle.execution_name}); "
-        "the executor writes to stdout/Cloud Run logs and the runtime SA cannot "
-        "write GCS. Use local mode (GRACE2_SANDBOX_LOCAL=1) for a synchronous "
-        "result, or await the sprint-13.5 cloud-result transport decision."
+    Transport — option (b) of OQ-SANDBOX-3
+    --------------------------------------
+    The egress-denied executor prints its result envelope (prefixed with
+    ``GRACE2_SANDBOX_ENVELOPE_V1``) to stdout, which Cloud Run ships to Cloud
+    Logging. The sandbox runtime SA stays ``objectViewer``-only (Invariant 5: it
+    never gains a GCS/Logging WRITE that hostile code could abuse). Instead THIS
+    process — the agent, running under its own identity with ``logging.viewer`` —
+    reads the marker line back via the Cloud Logging API, parses the JSON
+    envelope, and returns it in the SAME shape ``run_sandbox_local`` produces.
+
+    Polling
+    -------
+    Cloud Logging ingestion lags the stdout write by seconds (occasionally tens
+    of seconds). We poll the API every ``poll_interval_seconds`` until the marker
+    entry appears or ``timeout_seconds`` elapses. On success we return the parsed,
+    field-bounded envelope. On timeout-with-no-entry we raise
+    :class:`SandboxResultNotFound` (transient — the agent may re-read). If the
+    logging client itself can't be built (no ``google-cloud-logging`` / no ADC)
+    we raise :class:`SandboxCloudModeUnavailable` (the agent should fall back to
+    local mode or narrate honestly).
+
+    Args:
+        handle: the cloud :class:`SandboxExecutionHandle` returned by
+            ``submit_sandbox_job`` in cloud mode (carries the execution name).
+        timeout_seconds / poll_interval_seconds: readback poll bounds (default to
+            the module constants; overridable for tests).
+        logging_client: a pre-built ``google.cloud.logging.Client`` (tests inject
+            a mock; production builds one lazily via ADC).
+    """
+    timeout = (
+        timeout_seconds if timeout_seconds is not None else SANDBOX_LOG_READ_TIMEOUT_SECONDS
     )
+    interval = (
+        poll_interval_seconds
+        if poll_interval_seconds is not None
+        else SANDBOX_LOG_POLL_INTERVAL_SECONDS
+    )
+
+    if logging_client is None:
+        try:
+            logging_client = _get_logging_client(
+                _project_from_execution_name(handle.execution_name)
+            )
+        except SandboxCloudModeUnavailable:
+            raise
+        except Exception as exc:  # noqa: BLE001 — any client-construction failure
+            raise SandboxCloudModeUnavailable(
+                "cloud-mode sandbox result readback could not construct a Cloud "
+                f"Logging client (handle={handle.handle_id}, "
+                f"execution={handle.execution_name}): {type(exc).__name__}: {exc}. "
+                "Use local mode (GRACE2_SANDBOX_LOCAL=1) for a synchronous result."
+            ) from exc
+
+    log_filter = _build_log_filter(handle)
+    LOG.info(
+        "read_sandbox_result (cloud) handle_id=%s execution=%s filter=%r timeout=%ds",
+        handle.handle_id,
+        handle.execution_name,
+        log_filter,
+        timeout,
+    )
+
+    deadline = time.monotonic() + timeout
+    attempts = 0
+    while True:
+        attempts += 1
+        try:
+            envelope = _read_envelope_from_logging(logging_client, log_filter)
+        except SandboxCloudModeUnavailable:
+            raise
+        except Exception as exc:  # noqa: BLE001 — a query error is transient
+            LOG.warning(
+                "read_sandbox_result query attempt %d failed (handle=%s): %s",
+                attempts,
+                handle.handle_id,
+                exc,
+            )
+            envelope = None
+        if envelope is not None:
+            LOG.info(
+                "read_sandbox_result found envelope after %d attempt(s) (handle=%s)",
+                attempts,
+                handle.handle_id,
+            )
+            return _bound_envelope(envelope)
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(min(interval, max(deadline - time.monotonic(), 0)))
+
+    raise SandboxResultNotFound(
+        "no sandbox result envelope found in Cloud Logging after "
+        f"{timeout}s / {attempts} attempt(s) (handle={handle.handle_id}, "
+        f"execution={handle.execution_name}, marker={SANDBOX_ENVELOPE_MARKER!r}). "
+        "Log ingestion may still be lagging, or the execution did not reach the "
+        "envelope emit. Re-read the handle later, or use local mode "
+        "(GRACE2_SANDBOX_LOCAL=1)."
+    )
+
+
+def _project_from_execution_name(execution_name: str) -> str | None:
+    """Extract the project id from a Cloud Run Job execution resource name.
+
+    Execution names look like
+    ``projects/<project>/locations/<loc>/jobs/<job>/executions/<exec>``. The
+    Cloud Logging client must target the same project the Job ran in. Falls back
+    to the GCP_PROJECT / GOOGLE_CLOUD_PROJECT env if the name isn't parseable."""
+    parts = (execution_name or "").split("/")
+    if len(parts) >= 2 and parts[0] == "projects" and parts[1]:
+        return parts[1]
+    return os.environ.get("GCP_PROJECT") or os.environ.get("GOOGLE_CLOUD_PROJECT")
+
+
+def _execution_short_name(execution_name: str) -> str:
+    """The trailing ``<exec>`` id of a full execution resource name.
+
+    Cloud Run Job log entries carry the execution in the
+    ``run.googleapis.com/execution_name`` label as the SHORT id (not the full
+    resource path), so the log filter matches on this."""
+    return (execution_name or "").rstrip("/").split("/")[-1]
+
+
+def _build_log_filter(handle: SandboxExecutionHandle) -> str:
+    """Build the Cloud Logging advanced filter that pins the result line.
+
+    Three conjuncts, narrowest first:
+      1. the Cloud Run Job stdout log stream,
+      2. the execution-name label (so we only read THIS dispatch's logs), and
+      3. the envelope marker substring (so we skip the user-code stdout lines and
+         match only the result envelope line).
+
+    A ``timestamp >=`` floor (submit time minus a small skew) bounds the scan to
+    this run's window so an old execution with a recycled short-name can't match."""
+    short = _execution_short_name(handle.execution_name)
+    # Floor a minute before submit to absorb clock skew between this process and
+    # the Cloud Run control plane; format as RFC3339 UTC.
+    floor = (handle.submitted_at - timedelta(minutes=1)).astimezone(timezone.utc)
+    floor_rfc3339 = floor.strftime("%Y-%m-%dT%H:%M:%SZ")
+    return (
+        'resource.type="cloud_run_job" '
+        'AND logName:"run.googleapis.com%2Fstdout" '
+        f'AND labels."run.googleapis.com/execution_name"="{short}" '
+        f'AND textPayload:"{SANDBOX_ENVELOPE_MARKER}" '
+        f'AND timestamp>="{floor_rfc3339}"'
+    )
+
+
+def _read_envelope_from_logging(logging_client: Any, log_filter: str) -> dict[str, Any] | None:
+    """Run one Cloud Logging query and parse the FIRST marker entry into an envelope.
+
+    Returns the parsed envelope dict, or ``None`` if no matching entry exists yet
+    (the caller polls). We order by ``timestamp desc`` and take the most recent
+    matching entry — a retried Job execution emits its own marker line, and the
+    latest is the authoritative result for this execution id. The text payload is
+    ``GRACE2_SANDBOX_ENVELOPE_V1 {json}``; :func:`_extract_envelope_from_text`
+    strips the prefix and parses the JSON (rejecting a non-dict / status-less
+    parse so a coincidental ``{...}`` substring can't masquerade as a result)."""
+    entries = logging_client.list_entries(
+        filter_=log_filter,
+        order_by="timestamp desc",
+        page_size=10,
+    )
+    for entry in entries:
+        text = _entry_text_payload(entry)
+        if not text or SANDBOX_ENVELOPE_MARKER not in text:
+            continue
+        envelope = _extract_envelope_from_text(text)
+        if envelope is not None:
+            return envelope
+    return None
+
+
+def _entry_text_payload(entry: Any) -> str | None:
+    """Pull the text payload string out of a Cloud Logging entry.
+
+    ``google-cloud-logging`` returns ``TextEntry`` objects whose ``payload`` is
+    the string; we also tolerate a ``.text_payload`` attribute and a plain dict
+    shape (defensive for mocks / struct entries)."""
+    payload = getattr(entry, "payload", None)
+    if isinstance(payload, str):
+        return payload
+    text = getattr(entry, "text_payload", None)
+    if isinstance(text, str):
+        return text
+    if isinstance(entry, dict):
+        for key in ("textPayload", "text_payload", "payload"):
+            val = entry.get(key)
+            if isinstance(val, str):
+                return val
+    return None
+
+
+def _extract_envelope_from_text(text: str) -> dict[str, Any] | None:
+    """Strip the marker prefix from a log line and parse the JSON envelope.
+
+    Format: ``GRACE2_SANDBOX_ENVELOPE_V1 {json}`` (possibly with surrounding
+    whitespace / a trailing newline). We take the substring from the first ``{``
+    after the marker to the last ``}`` and JSON-parse it. Returns the dict only
+    if it parses to a dict carrying ``status`` (the result-envelope shape); else
+    ``None`` so a malformed or partial line is skipped, never returned as a fake
+    result (honesty — Invariant 1)."""
+    line = text.strip()
+    marker_at = line.find(SANDBOX_ENVELOPE_MARKER)
+    if marker_at == -1:
+        return None
+    brace = line.find("{", marker_at)
+    last = line.rfind("}")
+    if brace == -1 or last == -1 or last < brace:
+        return None
+    candidate = line[brace : last + 1]
+    try:
+        parsed = json.loads(candidate)
+    except (TypeError, ValueError):
+        return None
+    if isinstance(parsed, dict) and "status" in parsed:
+        return parsed
+    return None
+
+
+def _get_logging_client(project: str | None) -> Any:
+    """Build a ``google.cloud.logging.Client`` lazily (mirror of the storage/run
+    client discipline — import inside the function so the agent boots without
+    ``google-cloud-logging`` / ADC in CI).
+
+    Raises :class:`SandboxCloudModeUnavailable` if the package isn't importable so
+    the caller surfaces an honest typed error rather than an ImportError."""
+    try:
+        from google.cloud import logging as gcloud_logging  # noqa: PLC0415
+    except ImportError as exc:  # pragma: no cover — declared dep, present in venv
+        raise SandboxCloudModeUnavailable(
+            "google-cloud-logging is not installed; cloud-mode sandbox result "
+            "readback is unavailable. Use local mode (GRACE2_SANDBOX_LOCAL=1)."
+        ) from exc
+    return gcloud_logging.Client(project=project)
 
 
 def _get_storage_client(project: str | None) -> Any:

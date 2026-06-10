@@ -114,6 +114,41 @@ NET_ALLOW_SUFFIXES = tuple(
 # Always-allowed loopback hosts (never leave the host regardless of allowlist).
 _LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
 
+# --------------------------------------------------------------------------- #
+# Envelope marker (Cloud Logging readback transport — sprint-13.5 job-0265)
+# --------------------------------------------------------------------------- #
+#
+# In CLOUD mode the executor's stdout lands in Cloud Run logs, NOT a GCS object
+# (the runtime SA is objectViewer-only and must not be widened — Invariant 5).
+# The host-side ``read_sandbox_result`` reads the result envelope back from Cloud
+# Logging filtered on the execution name PLUS this unambiguous marker prefix, so
+# it never mistakes a user ``print`` of a ``{...}`` line (which the user code's
+# captured stdout already truncates into the envelope's ``stdout`` field, but a
+# defensive marker removes all ambiguity) for the result envelope.
+#
+# Wire format: the marker token, a single space, then the one-line JSON envelope:
+#     GRACE2_SANDBOX_ENVELOPE_V1 {"status": "ok", ...}
+# This is ONE log entry / ONE stdout line, so a single Cloud Logging textPayload
+# filter pins it. The marker is ALSO embedded inside the JSON as
+# ``_envelope_marker`` so a consumer that parses the JSON can assert provenance
+# without re-matching the prefix. The local-subprocess parser
+# (``sandbox_runner._parse_envelope``) tolerates the prefix by extracting from
+# the first ``{`` — so the SAME emit path works for both transports.
+ENVELOPE_MARKER = "GRACE2_SANDBOX_ENVELOPE_V1"
+
+
+def _emit_envelope(envelope: dict[str, Any], stream: Any) -> None:
+    """Print the result ``envelope`` as a single marker-prefixed JSON line.
+
+    The marker prefix (``ENVELOPE_MARKER``) lets the host-side Cloud Logging
+    readback pin the result line unambiguously; it is also stamped INSIDE the
+    JSON as ``_envelope_marker`` for parse-side provenance. Both transports (the
+    local subprocess that reads stdout directly and the cloud readback that reads
+    Cloud Logging) consume this same line."""
+    stamped = dict(envelope)
+    stamped.setdefault("_envelope_marker", ENVELOPE_MARKER)
+    print(f"{ENVELOPE_MARKER} {json.dumps(stamped)}", file=stream)
+
 
 class SandboxTimeout(Exception):
     """User code exceeded the wallclock cap."""
@@ -767,27 +802,29 @@ def main(argv: list[str] | None = None) -> int:
     try:
         payload = load_payload(argv)
     except Exception as exc:  # noqa: BLE001
-        print(
-            json.dumps({"status": "error", "error": f"payload load failed: {exc}",
-                        "stdout": "", "stderr": "", "result": {"kind": "none", "value": None}}),
-            file=real_stdout,
+        _emit_envelope(
+            {"status": "error", "error": f"payload load failed: {exc}",
+             "stdout": "", "stderr": "", "result": {"kind": "none", "value": None}},
+            real_stdout,
         )
         return 1
 
     code = payload.get("python_code", "")
     layer_refs = payload.get("layer_refs", {}) or {}
     if not isinstance(code, str) or not code.strip():
-        print(
-            json.dumps({"status": "error", "error": "payload.python_code missing or empty",
-                        "stdout": "", "stderr": "", "result": {"kind": "none", "value": None}}),
-            file=real_stdout,
+        _emit_envelope(
+            {"status": "error", "error": "payload.python_code missing or empty",
+             "stdout": "", "stderr": "", "result": {"kind": "none", "value": None}},
+            real_stdout,
         )
         return 1
 
     envelope = run_user_code(code, layer_refs)
 
-    # Emit exactly one line of JSON on the real stdout.
-    print(json.dumps(envelope), file=real_stdout)
+    # Emit exactly one marker-prefixed JSON line on the real stdout. The marker
+    # lets the cloud readback pin this line in Cloud Logging; the local runner
+    # extracts the JSON from the first ``{`` so the SAME line works for both.
+    _emit_envelope(envelope, real_stdout)
     real_stdout.flush()
     # Process exit code: 0 on ok, non-zero on a harness-level failure category so
     # the Cloud Run Job execution status reflects the outcome. We DO NOT treat a
