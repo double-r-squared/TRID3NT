@@ -619,7 +619,29 @@ def _download_uri_to_local(uri: str, suffix: str, storage_client: Any | None = N
         blob = bucket_obj.blob(blob_path)
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tf:
             local_path = tf.name
-        blob.download_to_filename(local_path)
+        try:
+            blob.download_to_filename(local_path)
+        except Exception as first_exc:  # noqa: BLE001
+            # job-0253 (OQ-0253-PELICUN-URI-RUNS-PREFIX-MANGLE): the LLM
+            # RECONSTRUCTS gs:// paths (the flood result's LayerURI.uri is
+            # the WMS URL per OQ-62, so the COG path never appears verbatim
+            # for it to copy) and mangles them with phantom prefix segments —
+            # observed live: gs://...-runs/runs/<run_id>/flood_depth_peak.tif.
+            # Repair: retry the LAST TWO path segments (<run_id>/<file>)
+            # against the same bucket, which strips any invented prefix.
+            parts = blob_path.split("/")
+            if len(parts) > 2:
+                repaired = "/".join(parts[-2:])
+                logger.warning(
+                    "gs:// download failed for %r; retrying suffix-repaired "
+                    "path gs://%s/%s (LLM path-mangle guard, job-0253)",
+                    uri,
+                    bucket_name,
+                    repaired,
+                )
+                bucket_obj.blob(repaired).download_to_filename(local_path)
+            else:
+                raise first_exc
         return local_path
     except Exception as exc:  # noqa: BLE001
         raise PelicunRuntimeError(

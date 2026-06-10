@@ -645,3 +645,45 @@ def test_live_pelicun_fort_myers_e2e(tmp_path) -> None:
         f"GEOGRAPHIC-CORRECTNESS FAIL: every Fort Myers asset got ds_mean=0; "
         f"sampled depths={gdf['hazard_depth_sampled'].tolist()}"
     )
+
+
+def test_download_repairs_llm_mangled_prefix(monkeypatch, tmp_path):
+    """job-0253: a phantom path prefix (gs://bucket/runs/<id>/f.tif when the
+    object lives at gs://bucket/<id>/f.tif) is repaired by retrying the
+    last-two-segment suffix. Live failure: rounds 8/9 Pelicun 404."""
+    from grace2_agent.tools.run_pelicun_damage_assessment import (
+        _download_uri_to_local,
+    )
+
+    calls = []
+
+    class _Blob:
+        def __init__(self, path):
+            self.path = path
+
+        def download_to_filename(self, fn):
+            calls.append(self.path)
+            if self.path != "01RUNID/flood_depth_peak.tif":
+                raise RuntimeError("404 No such object")
+            open(fn, "wb").write(b"cog")
+
+    class _Bucket:
+        def blob(self, path):
+            return _Blob(path)
+
+    class _Client:
+        def bucket(self, name):
+            return _Bucket()
+
+    out = _download_uri_to_local(
+        "gs://bucket-runs/runs/01RUNID/flood_depth_peak.tif",
+        suffix=".tif",
+        storage_client=_Client(),
+    )
+    assert calls == [
+        "runs/01RUNID/flood_depth_peak.tif",
+        "01RUNID/flood_depth_peak.tif",
+    ]
+    import os as _os
+
+    assert _os.path.getsize(out) == 3
