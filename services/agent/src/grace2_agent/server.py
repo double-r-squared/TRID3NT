@@ -976,6 +976,21 @@ async def _stream_gemini_reply(
                         and "n_structures_total" in result["raw_envelope"]
                     ):
                         await _maybe_emit_impact_envelope(websocket, state, result["raw_envelope"])
+                    # job-0260 (demo UX): snap the map to a geocoded location
+                    # IMMEDIATELY — the user should not wait for a downstream
+                    # layer publish to see the map move. Best-effort.
+                    if (
+                        call.name == "geocode_location"
+                        and isinstance(result, dict)
+                        and result.get("bbox")
+                        and state.emitter is not None
+                    ):
+                        try:
+                            await state.emitter.emit_map_command(
+                                "zoom-to", {"bbox": list(result["bbox"])}
+                            )
+                        except Exception:  # noqa: BLE001 — UX nicety only
+                            logger.debug("geocode zoom-to emit failed", exc_info=True)
                     # job-0230 (sprint-13 Stage 2): emit a ``chart-emission`` WS
                     # envelope whenever a chart-generation tool returns a
                     # ChartEmissionPayload-shaped dict (key signal:
@@ -1137,6 +1152,10 @@ async def _stream_gemini_reply(
             )
         )
         state.chat_history.append({"role": "user", "text": user_text})
+        # job-0260: name an Untitled Case from its first prompt + refresh
+        # the left rail so accumulated demo Cases are distinguishable.
+        if await _maybe_autoname_case(state, user_text):
+            await _emit_case_list(websocket, state)
 
     except asyncio.CancelledError:
         # Invariant 8 — distinct cancelled step state, not failed.
@@ -1639,6 +1658,63 @@ async def _handle_case_command(
         "INTERNAL_ERROR",
         f"unknown case-command: {command!r}",
     )
+
+
+#: job-0260: Cases already auto-named this process (avoid a get_case read
+#: on every user turn — only the first turn per Case checks the title).
+_AUTONAMED_CASES: set[str] = set()
+
+_TITLE_STOPWORDS = frozenset(
+    "a an the and or of for with to in on at by from using use run model "
+    "show me my please can you what how is are this that".split()
+)
+
+
+def _derive_case_title(prompt: str) -> str | None:
+    """Heuristic 3-6 word Case title from the first user prompt (job-0260).
+
+    v0.1 of the deferred auto-case-name feature: significant tokens,
+    title-cased, capped at ~48 chars. Returns None for degenerate prompts.
+    """
+    words = [
+        w.strip(".,!?:;()[]\"'")
+        for w in prompt.split()
+    ]
+    keep = [
+        w for w in words if w and w.lower() not in _TITLE_STOPWORDS
+    ][:6]
+    if len(keep) < 2:
+        return None
+    title = " ".join(w if w[:1].isupper() else w.capitalize() for w in keep)
+    return title[:48].rstrip() or None
+
+
+async def _maybe_autoname_case(state: SessionState, prompt: str) -> bool:
+    """Name an 'Untitled Case' from its first user prompt (job-0260).
+
+    Demo finding: accumulated untitled Cases are indistinguishable in the
+    left rail. Best-effort, once per Case per process; never raises.
+    """
+    case_id = state.active_case_id
+    if not case_id or case_id in _AUTONAMED_CASES:
+        return False
+    _AUTONAMED_CASES.add(case_id)
+    p = get_persistence()
+    if p is None:
+        return False
+    try:
+        case = await p.get_case(case_id)
+        if case is None or case.title != "Untitled Case":
+            return False
+        title = _derive_case_title(prompt)
+        if not title:
+            return False
+        await p.upsert_case(case.model_copy(update={"title": title}))
+        logger.info("case auto-named case=%s title=%r", case_id, title)
+        return True
+    except Exception:  # noqa: BLE001 — naming is a nicety
+        logger.debug("case auto-name failed case=%s", case_id, exc_info=True)
+    return False
 
 
 async def _persist_chat_turn(

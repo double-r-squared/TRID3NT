@@ -223,8 +223,11 @@ resource "google_cloud_run_v2_job" "sfincs_solver" {
         # tightens the compute-class selection contract.
         resources {
           limits = {
-            cpu    = "4"
-            memory = "4Gi"
+            # job-0260 (demo finding): solves took 10-21 min at 4 CPU/4Gi.
+            # SFINCS is OpenMP-parallel; 8 CPU + 16Gi roughly halves the
+            # demo-grid wall clock. User-authorized live bump 2026-06-10.
+            cpu    = "8"
+            memory = "16Gi"
           }
         }
 
