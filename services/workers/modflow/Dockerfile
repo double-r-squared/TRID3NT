@@ -58,11 +58,17 @@ ARG MF6_ZIP_DIR=mf6.5.0_linux
 
 # --- System deps (single layer) ------------------------------------------
 # ca-certificates (HTTPS), curl (binary download), unzip (mf6 zip extract).
+# libexpat1: rasterio's manylinux wheel dlopen()s libexpat.so.1 at import
+# (GDAL's XML/GML driver chain) but does NOT bundle it; python:3.11-slim ships
+# no expat, so `import rasterio` fails with
+# `ImportError: libexpat.so.1: cannot open shared object file` unless we add it
+# (caught at build time by the venv import smoke — job-0240 first build).
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
         unzip \
+        libexpat1 \
     && rm -rf /var/lib/apt/lists/*
 
 # --- Python venv + deps (single layer, design doc § 3) -------------------

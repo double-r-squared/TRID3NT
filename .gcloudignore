@@ -1,0 +1,57 @@
+# .gcloudignore — controls the build context uploaded by `gcloud builds submit`.
+#
+# Authored job-0240-infra-20260610 for the MODFLOW + python-sandbox Cloud Build
+# submits. The build context is the repo root (`.`) because both Dockerfiles use
+# repo-root-relative COPYs (services/workers/modflow/, infra/python-sandbox/).
+#
+# Without this file gcloud falls back to .gitignore semantics but STILL uploads
+# untracked-not-ignored files — which here is ~1 GB of mf6 6.5.0 zips + extracted
+# binaries left in reports/inflight/**/verify/ by prior smoke runs (job-0220 /
+# job-0221). Those are irrelevant to the Docker build (the image curls mf6 itself)
+# and would bloat the upload. We keep the context to the source the Dockerfiles
+# actually COPY plus what they need at build time.
+#
+# Strategy: ignore the known-heavy / build-irrelevant trees, then re-include the
+# two source dirs the Dockerfiles COPY from so they are never accidentally
+# excluded by a broad pattern.
+
+# Version control + tooling
+.git/
+.gitignore
+
+# Heavy / build-irrelevant trees (none are COPY'd by either Dockerfile)
+reports/
+web/
+docs/
+agents/
+tests/
+evidence/
+styles/
+packages/
+
+# Python / Node / Terraform build detritus
+**/__pycache__/
+**/*.pyc
+**/.venv/
+**/.venv*/
+**/node_modules/
+**/.terraform/
+**/dist/
+**/build/
+
+# Re-include the two source trees the Dockerfiles COPY (repo-root relative):
+#   MODFLOW Dockerfile:  COPY services/workers/modflow/ ...
+#   sandbox  Dockerfile: COPY infra/python-sandbox/executor.py ...
+!services/
+!services/workers/
+!services/workers/modflow/
+!services/workers/modflow/**
+!infra/
+!infra/python-sandbox/
+!infra/python-sandbox/**
+!infra/modflow/
+!infra/modflow/**
+
+# Even within the re-included trees, drop caches/zips
+services/workers/modflow/__pycache__/
+infra/python-sandbox/__pycache__/

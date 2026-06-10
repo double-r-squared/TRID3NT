@@ -69,12 +69,15 @@ locals {
   # This box has no reachable docker daemon + no gcloud, so the image has NOT
   # been built/pushed in this job (BLOCKED-ENV — see
   # reports/inflight/job-0220-infra-20260609/report.md § "User unblock steps").
-  # `tofu validate` passes with a placeholder digest (validate does not touch
-  # the registry); `tofu apply` will fail to pull until the real digest is
-  # recorded here after the Cloud Build. The Dockerfile + host mf6 6.5.0 smoke
-  # run (evidence/mf6_smoke.log) prove the image contents are sound; only the
-  # AR push + digest pin remain, gated on the user's gcloud/docker unblock.
-  modflow_image_digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  # UNBLOCKED + BUILT job-0240-infra-20260610: gcloud confirmed live; Cloud Build
+  # 21adac05-5158-4a9d-a01a-bd4c970add9e (us-central1, 1m34s) built + pushed the
+  # image to AR. First build failed the venv import smoke on
+  # `ImportError: libexpat.so.1` (rasterio wheel dlopen, missing on slim); fixed
+  # by adding libexpat1 to the Dockerfile apt layer, rebuild SUCCESS. Digest below
+  # is the resolved AR manifest digest (verified via both `gcloud builds describe`
+  # results.images[].digest and `gcloud artifacts docker images describe`).
+  # `tofu validate` passes; `tofu apply` (separate gated step) will pull this pin.
+  modflow_image_digest = "sha256:0b075e1b05dd2be0fb0adc5690f896231e7de89aa66ce16a9291c93ba95908ed"
 }
 
 # --- Runs bucket ----------------------------------------------------------

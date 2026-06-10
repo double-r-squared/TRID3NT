@@ -1,0 +1,59 @@
+job-0240-infra-20260610 — Cloud Build summary
+================================================
+
+Project: grace-2-hazard-prod
+Region:  us-central1
+AR repo: grace-2-containers  (same repo as findsfincs/grace-2-sfincs-solver/qgis)
+Machine: E2_HIGHCPU_8 (per each cloudbuild.yaml)
+Upload context: 201 files / 3.7 MiB (after adding repo-root .gcloudignore — without it
+  gcloud would have uploaded ~1 GB of untracked mf6 zips from prior verify dirs).
+
+IMAGE 1 — grace-2-modflow-solver
+  Dockerfile:  services/workers/modflow/Dockerfile
+  cloudbuild:  infra/modflow/cloudbuild.yaml
+  Attempt 1:   build 141f5fa9-ad38-4302-b6a7-b58e89b40f91  FAILURE (step 0)
+               cause: venv import smoke -> `import rasterio` ->
+                 ImportError: libexpat.so.1: cannot open shared object file
+               (rasterio manylinux wheel dlopen()s libexpat.so.1; python:3.11-slim
+                ships no expat; Dockerfile apt layer had only ca-certificates/curl/unzip)
+  Fix:         added `libexpat1` to the Dockerfile apt --no-install-recommends layer
+  Attempt 2:   build 21adac05-5158-4a9d-a01a-bd4c970add9e  SUCCESS
+               duration: 1m34s
+               digest:  sha256:0b075e1b05dd2be0fb0adc5690f896231e7de89aa66ce16a9291c93ba95908ed
+  Image (pinned in infra/modflow.tf:80):
+    us-central1-docker.pkg.dev/grace-2-hazard-prod/grace-2-containers/grace-2-modflow-solver
+      @sha256:0b075e1b05dd2be0fb0adc5690f896231e7de89aa66ce16a9291c93ba95908ed
+
+IMAGE 2 — grace-2-python-sandbox
+  Dockerfile:  infra/python-sandbox/Dockerfile
+  cloudbuild:  infra/python-sandbox/cloudbuild.yaml
+  Attempt 1:   build 145e71b9-09c0-4f28-8d59-b4f7cf95fb62  SUCCESS (first try)
+               duration: 2m28s
+               (Dockerfile's libgdal-dev/libgeos-dev/libproj-dev apt layer pulls
+                libexpat transitively, so it dodged the MODFLOW import error;
+                executor in-process smoke `result = 1 + 1` passed at build time)
+               digest:  sha256:0ad156ac4ca33af6e109c797b76564044a5873a0484e460e884e9b2e7b7fc056
+  Image (pinned in infra/python-sandbox.tf:130):
+    us-central1-docker.pkg.dev/grace-2-hazard-prod/grace-2-containers/grace-2-python-sandbox
+      @sha256:0ad156ac4ca33af6e109c797b76564044a5873a0484e460e884e9b2e7b7fc056
+
+DIGEST CROSS-CHECK (both sources agreed):
+  `gcloud builds describe <id> --format='value(results.images[].digest)'`
+  == `gcloud artifacts docker images describe <image>:latest --format='value(image_summary.digest)'`
+
+TOFU VALIDATION:
+  cd infra && tofu validate  ->  "Success! The configuration is valid."
+  (providers served from the pre-existing .terraform cache: google/random/mongodbatlas;
+   `tofu init -backend=false` could not re-reach registry.opentofu.org from this
+   sandbox host, but validate ran fine against the cached plugins.)
+  NOT run: `tofu apply` (resource creation is a separately gated step, per kickoff).
+
+COST ESTIMATE (Cloud Build):
+  Build minutes billed = ceil(duration) per build on E2_HIGHCPU_8.
+  E2_HIGHCPU_8 = $0.016/build-minute (default-pool premium machine rate).
+    Attempt 1 (MODFLOW, FAILURE): ~1.7 min  -> ~2 min billed -> ~$0.032
+    Attempt 2 (MODFLOW, SUCCESS): 1m34s      -> ~2 min billed -> ~$0.032
+    python-sandbox (SUCCESS):     2m28s      -> ~3 min billed -> ~$0.048
+  Total Cloud Build compute: ~7 build-minutes -> ~$0.112
+  Plus negligible AR storage (~few hundred MB at $0.10/GB-month) and trivial GCS
+  source-staging egress. Total job GCP cost: well under $0.20.

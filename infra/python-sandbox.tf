@@ -118,13 +118,16 @@ locals {
   # digest. This box has no reachable docker daemon + no gcloud, so the image has
   # NOT been built/pushed in this job (BLOCKED-ENV — see
   # reports/inflight/job-0232-infra-20260609/report.md § "User unblock steps").
-  # `tofu validate` passes with a placeholder digest (validate does not touch the
-  # registry); `tofu apply` will fail to pull until the real digest is recorded
-  # here after the Cloud Build. The Dockerfile + the host harness smoke
-  # (evidence/*.log, run via the local-subprocess fallback) prove the image
-  # contents are sound; only the AR push + digest pin remain, gated on the user's
-  # gcloud/docker unblock.
-  python_sandbox_image_digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  # UNBLOCKED + BUILT job-0240-infra-20260610: gcloud confirmed live; Cloud Build
+  # 145e71b9-09c0-4f28-8d59-b4f7cf95fb62 (us-central1, 2m28s) built + pushed the
+  # image to AR on the FIRST attempt (the Dockerfile's libgdal-dev/libgeos-dev/
+  # libproj-dev apt layer pulls libexpat transitively, so it dodged the
+  # libexpat.so.1 import error the MODFLOW image hit; the executor in-process
+  # smoke at build time passed). Digest below is the resolved AR manifest digest
+  # (verified via both `gcloud builds describe` results.images[].digest and
+  # `gcloud artifacts docker images describe`). `tofu validate` passes;
+  # `tofu apply` (separate gated step) will pull this pin.
+  python_sandbox_image_digest = "sha256:0ad156ac4ca33af6e109c797b76564044a5873a0484e460e884e9b2e7b7fc056"
 
   # restricted.googleapis.com Private Google Access VIP range. This is the
   # GCS-restricted PGA endpoint: a route to it reaches Cloud Storage (+ the
