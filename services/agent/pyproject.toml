@@ -71,6 +71,13 @@ dependencies = [
     # bump hydromt-sfincs to the fixed release.
     "pandas>=2.2,<2.3",
     "fsspec[gcs]>=2024.6",
+    # job-0241 (OQ-227-FLOPY-DEP): flopy is the MODFLOW 6 deck builder + UCN
+    # reader for the GWT groundwater-transport path (run_modflow /
+    # postprocess_modflow / gwt_adapter). 3.9 is the first series with the
+    # MF6-GWT API used here; <4 guards the next major. Previously present
+    # only transitively (3.10.0) — undeclared deps are how the fsspec stale-
+    # venv plume bug shipped (job-0235).
+    "flopy>=3.9,<4",
     # Wave 4.10 job-A2: s3fs is the fsspec S3 backend for the NOAA Big Data
     # Program anonymous S3 mirrors consumed by fetch_hrrr_forecast (HRRR-Zarr
     # at s3://hrrrzarr/) and a planned fetch_hrrr_smoke. Wraps boto3 +

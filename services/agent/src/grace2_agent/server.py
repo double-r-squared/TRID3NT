@@ -232,6 +232,39 @@ class CodeExecConfirmationCancelledError(RuntimeError):
         self.code_exec_id = code_exec_id
 
 
+class SolverConfirmationCancelledError(RuntimeError):
+    """Raised when a solver confirm gate denies the dispatch (job-0241).
+
+    A solver run is a consequence (FR-AS-8 / Invariant 9): the user must
+    approve the derived forcing parameters before the model executes. Cancel,
+    timeout, and disconnect all fail closed. ``retryable=False`` so Gemini
+    narrates the decline honestly instead of re-dispatching the same run.
+    """
+
+    error_code: str = "SOLVER_CONFIRMATION_CANCELLED"
+    retryable: bool = False
+
+    def __init__(self, tool_name: str) -> None:
+        super().__init__(
+            f"{tool_name} declined at the parameter-confirmation gate "
+            "(user chose 'cancel' or the gate timed out); the solver did not run"
+        )
+        self.tool_name = tool_name
+
+
+# Tools whose dispatch is a consequence (a solver run, FR-AS-8 / Invariant 9)
+# and MUST pass a parameter-confirmation gate on the LLM path (job-0241 — the
+# Stage 3 live gate caught run_model_groundwater_contamination_scenario
+# dispatching MODFLOW with zero user confirmation). The gate runs the
+# composer's PURE extraction to build the confirm card, blocks on the same
+# pending_payload_warnings future seam as payload-warning/code-exec, and
+# injects confirmed=True only after the user approves. Extensible: the flood
+# composers join once they grow confirm-envelope builders (OQ-FIXWAVE-FLOOD-GATE).
+SOLVER_CONFIRM_TOOLS: set[str] = {
+    "run_model_groundwater_contamination_scenario",
+}
+
+
 # job-0115: app-level Persistence singleton (Wave 1.5).
 #
 # The MongoDB Atlas MCP server is the LLM-facing DB path (FR-AS-4, Decision F).
@@ -1914,6 +1947,141 @@ async def _gate_on_code_exec(
     return True, approved
 
 
+async def _gate_on_solver_confirm(
+    websocket: ServerConnection,
+    state: SessionState,
+    tool_name: str,
+    params: dict,
+) -> tuple[bool, dict]:
+    """Parameter-confirmation gate for solver composers (job-0241) — fail-closed.
+
+    Mirrors :func:`_gate_on_code_exec`: build the confirm card, emit it as a
+    ``tool-payload-warning`` (the inline card the web client already renders),
+    block on the ``pending_payload_warnings`` future seam (``warning_id`` is
+    the correlation key the ``tool-payload-confirmation`` reply carries), and
+    inject ``confirmed=True`` only after an explicit ``proceed``.
+
+    The card is built from the composer's PURE extraction (no emitter, no
+    solver) so the user confirms the actual derived forcing — "12,000 gal TCE
+    over 6 h → 3.07 kg/s at (42.56, -114.47)" — plus the demo-aquifer caveat.
+    The composer re-runs the (cache-backed) extraction after approval; the
+    confirmed values are deterministic, so card and run cannot diverge.
+
+    An extraction failure here falls through to dispatch (``True``) so the
+    composer raises its own typed extraction error — the gate must not mask
+    parameter problems behind a confusing confirm card.
+    """
+    from .workflows.model_groundwater_contamination_scenario import (
+        _build_confirmation_envelope,
+        extract_spill_parameters,
+    )
+    from grace2_contracts.modflow_contracts import MODFLOWRunArgs
+
+    article_text = params.get("article_text")
+    if not isinstance(article_text, str) or not article_text.strip():
+        # source_url path or missing text: let the composer fetch/validate and
+        # surface its own typed error; gating happens on the derived params at
+        # the next dispatch once article_text is materialized by the composer.
+        # (v0.1: the live path always supplies article_text — see job-0235.)
+        return True, params
+
+    try:
+        # extract_spill_parameters is synchronous (pure extraction + cached
+        # geocode); run it off the event loop so the WS heartbeat stays live.
+        derived = await asyncio.to_thread(
+            extract_spill_parameters, article_text, geocode=True
+        )
+        kwargs: dict[str, Any] = dict(
+            spill_location_latlon=derived["spill_location_latlon"],
+            contaminant=derived["contaminant"],
+            release_rate_kg_s=derived["release_rate_kg_s"],
+            duration_days=derived["duration_days"],
+        )
+        if params.get("aquifer_k_ms") is not None:
+            kwargs["aquifer_k_ms"] = float(params["aquifer_k_ms"])
+        if params.get("porosity") is not None:
+            kwargs["porosity"] = float(params["porosity"])
+        envelope = _build_confirmation_envelope(derived, MODFLOWRunArgs(**kwargs))
+    except Exception:  # noqa: BLE001 — never mask extraction errors with a gate
+        logger.warning(
+            "solver-confirm gate could not build the confirm card for %s; "
+            "falling through so the composer raises its typed error",
+            tool_name,
+            exc_info=True,
+        )
+        return True, params
+
+    warning_id = envelope.warning_id
+    loop = asyncio.get_running_loop()
+    fut: asyncio.Future = loop.create_future()
+    state.pending_payload_warnings[warning_id] = fut
+
+    await websocket.send(
+        _new_envelope("tool-payload-warning", state.session_id, envelope)
+    )
+    logger.info(
+        "solver-confirm gate emitted session=%s tool=%s warning_id=%s "
+        "contaminant=%r location=%r",
+        state.session_id,
+        tool_name,
+        warning_id,
+        envelope.tool_args.get("contaminant"),
+        envelope.tool_args.get("location_name"),
+    )
+
+    try:
+        decision_payload: PayloadConfirmationEnvelopePayload = await asyncio.wait_for(
+            fut, timeout=CODE_EXEC_CONFIRM_TIMEOUT_SECONDS
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "solver-confirm gate timeout session=%s tool=%s warning_id=%s",
+            state.session_id,
+            tool_name,
+            warning_id,
+        )
+        await _send_error(
+            websocket,
+            state.session_id,
+            "CONFIRMATION_TIMEOUT",
+            f"{tool_name} parameter-confirmation gate timed out; "
+            "the solver did not run",
+        )
+        return False, params
+    finally:
+        state.pending_payload_warnings.pop(warning_id, None)
+
+    logger.info(
+        "solver-confirm decision session=%s tool=%s warning_id=%s decision=%s",
+        state.session_id,
+        tool_name,
+        warning_id,
+        decision_payload.decision,
+    )
+
+    if decision_payload.decision != "proceed":
+        # cancel OR narrow_scope (meaningless for a solver run; fail-closed).
+        await _send_error(
+            websocket,
+            state.session_id,
+            "USER_INPUT_CANCELLED",
+            f"{tool_name} declined by user "
+            f"(decision={decision_payload.decision!r}); the solver did not run",
+        )
+        return False, params
+
+    approved = dict(params)
+    approved["confirmed"] = True
+    return True, approved
+
+
+def _ensure_emitter(websocket: ServerConnection, state: SessionState) -> None:
+    """Bind a ``PipelineEmitter`` to this session if one isn't already.
+
+    The emitter's sink is the WebSocket ``send`` — every transition method
+    writes one envelope on the wire (Appendix A.7 replace-not-reconcile)."""
+
+
 def _ensure_emitter(websocket: ServerConnection, state: SessionState) -> None:
     """Bind a ``PipelineEmitter`` to this session if one isn't already.
 
@@ -2035,6 +2203,17 @@ async def _invoke_tool_via_emitter(
             raise CodeExecConfirmationCancelledError(
                 params.get("code_exec_id", "unknown")
             )
+
+    # Confirmation-before-consequence for solver composers (job-0241,
+    # Invariant 9 / FR-AS-8). The LLM-supplied ``confirmed`` is STRIPPED first
+    # — the gate is server-owned; only an explicit user "proceed" injects it.
+    if tool_name in SOLVER_CONFIRM_TOOLS:
+        params.pop("confirmed", None)
+        should_run, params = await _gate_on_solver_confirm(
+            websocket, state, tool_name, params
+        )
+        if not should_run:
+            raise SolverConfirmationCancelledError(tool_name)
 
     # job-0164: centralized kwarg sweep. Gemini routinely invents kwargs that
     # don't exist on our tools (``run_name``, ``scenario_id``,

@@ -986,6 +986,10 @@ async def run_model_groundwater_contamination_scenario(
     aquifer_k_ms: float | None = None,
     porosity: float | None = None,
     compute_class: str = "standard",
+    # job-0241: server-managed confirmation flag. The solver-confirm gate in
+    # server.py strips any LLM-supplied value and injects True only after the
+    # user approves the derived parameters. Default False = fail-closed.
+    confirmed: bool = False,
     # job-0164: absorb LLM-invented kwargs (centralized at server.py via
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
@@ -1037,10 +1041,11 @@ async def run_model_groundwater_contamination_scenario(
         agent narrates honestly.
 
     Confirmation-before-consequence (Invariant 9): the MODFLOW run is gated
-    behind a user-confirm. This LLM-facing wrapper relies on the server-side
-    confirmation hook around ``run_modflow_job`` (a solver run) as the
-    fail-closed backstop; the composer's own parameter-confirmation envelope is
-    surfaced through the agent's confirmation channel when one is wired.
+    behind a user-confirm. The server's solver-confirm gate
+    (``server.SOLVER_CONFIRM_TOOLS`` → ``_gate_on_solver_confirm``, job-0241)
+    runs the pure extraction, shows the user the derived forcing on a
+    ``tool-payload-warning`` card, and injects ``confirmed=True`` only on an
+    explicit proceed. Without that injection this wrapper fails closed.
 
     FR-DC-6: ``cacheable=False`` + ``ttl_class="live-no-cache"`` +
     ``source_class="workflow_dispatch"`` — the cache shim is NOT invoked.
@@ -1051,15 +1056,18 @@ async def run_model_groundwater_contamination_scenario(
         ``geocode_location`` (location -> spill point), ``run_modflow_job``
         (deck build -> mf6 -> postprocess -> publish -> ``PlumeLayerURI``).
     """
-    # The LLM-facing surface relies on the server confirmation hook around
-    # ``run_modflow_job`` as the fail-closed backstop, so ``confirmed=True`` is
-    # passed here: the consequence (the solver run) is still gated — just by the
-    # server's per-solver hook rather than the composer's own envelope, which
-    # the programmatic / test harness drives instead.
+    # job-0241 (Stage 3 live-gate fix): ``confirmed`` is injected as True by the
+    # server-side solver-confirm gate (server.SOLVER_CONFIRM_TOOLS) ONLY after
+    # the user approves the derived parameters on the tool-payload-warning
+    # card. Default False = fail-closed — the previous hardcoded
+    # ``confirmed=True`` relied on a "server hook around run_modflow_job" that
+    # never existed, and the live Case 2 acceptance (job-0235) proved the
+    # solver ran with zero user confirmation. The server also STRIPS any
+    # LLM-supplied ``confirmed`` before gating, so Gemini cannot self-approve.
     result = await model_groundwater_contamination_scenario(
         article_text=article_text,
         source_url=source_url,
-        confirmed=True,
+        confirmed=confirmed,
         aquifer_k_ms=aquifer_k_ms,
         porosity=porosity,
         compute_class=compute_class,

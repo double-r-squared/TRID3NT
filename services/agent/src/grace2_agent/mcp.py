@@ -27,6 +27,7 @@ import asyncio
 import json
 import os
 import shutil
+import signal
 from collections.abc import Mapping
 from typing import Any
 
@@ -93,6 +94,24 @@ class MCPClient:
         # before any write tools are exposed.
         env.setdefault("MDB_MCP_READ_ONLY", "true")
 
+        def _preexec() -> None:
+            # job-0241: own session/process-group so close() can signal the
+            # WHOLE tree (npx spawns a Node grandchild — the actual server),
+            # and PR_SET_PDEATHSIG so the tree dies if the agent dies
+            # abnormally (SIGKILL/crash). 43 orphaned mongodb-mcp-server
+            # processes (~2.9 GB RSS) accumulated on the dev box from Wave
+            # 4.11-era agent restarts without this.
+            os.setsid()
+            try:
+                import ctypes
+
+                PR_SET_PDEATHSIG = 1
+                ctypes.CDLL("libc.so.6", use_errno=True).prctl(
+                    PR_SET_PDEATHSIG, signal.SIGKILL
+                )
+            except Exception:  # noqa: BLE001 — non-Linux: setsid alone
+                pass
+
         proc = await asyncio.create_subprocess_exec(
             npx,
             "-y",
@@ -101,6 +120,7 @@ class MCPClient:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
+            preexec_fn=_preexec,
         )
         client = cls(proc)
         client._reader_task = asyncio.create_task(client._read_loop())
@@ -117,14 +137,22 @@ class MCPClient:
         if self._reader_task and not self._reader_task.done():
             self._reader_task.cancel()
         if self._proc.returncode is None:
+            # job-0241: signal the PROCESS GROUP, not just the npx PID — the
+            # Node grandchild (the actual server) otherwise survives.
             try:
-                self._proc.terminate()
-            except ProcessLookupError:
-                pass
+                os.killpg(os.getpgid(self._proc.pid), signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                try:
+                    self._proc.terminate()
+                except ProcessLookupError:
+                    pass
             try:
                 await asyncio.wait_for(self._proc.wait(), timeout=5.0)
             except asyncio.TimeoutError:
-                self._proc.kill()
+                try:
+                    os.killpg(os.getpgid(self._proc.pid), signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    self._proc.kill()
                 await self._proc.wait()
 
     # ----- JSON-RPC plumbing ------------------------------------------------

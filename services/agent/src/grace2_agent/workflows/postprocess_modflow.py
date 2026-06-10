@@ -414,10 +414,24 @@ def _upload_cog(local_cog: Path, run_id: str, runs_bucket: str | None) -> str:
         fs.put(str(local_cog), dest)
         logger.info("uploaded plume COG to %s", dest)
         return dest
+    except ImportError as exc:
+        # job-0241: a missing fsspec[gcs] is a DEPLOY/ENV DEFECT (it is a
+        # declared dependency), not a transient GCS error — this exact gap
+        # made the Case 2 live plume silently fail to render (job-0235).
+        # Classify it loudly so the next stale-venv regression is one log
+        # line, not a basemap-only map.
+        logger.error(
+            "plume COG upload to %s SKIPPED — fsspec[gcs] not importable (%s). "
+            "This is a deploy/env defect: fsspec is a declared dependency. "
+            "The plume will fall back to file:// and will NOT render. "
+            "Fix: pip install -e . in services/agent (installs fsspec[gcs]).",
+            dest,
+            exc,
+        )
+        return f"file://{local_cog}"
     except Exception as exc:  # noqa: BLE001
-        # Local-mode / GCS-unavailable: keep the local COG and surface a
-        # file:// URI so the pipeline completes (live-evidence path). A cloud
-        # deployment with a reachable bucket will not hit this branch.
+        # GCS-unavailable (auth, network, bucket): keep the local COG and
+        # surface a file:// URI so the pipeline completes (offline-dev path).
         logger.warning(
             "plume COG upload to %s failed (%s); using local file:// URI",
             dest,
@@ -439,6 +453,17 @@ def _dispatch_publish_layer(cog_uri: str, layer_id: str) -> str | None:
     non-gs:// URIs (local mode has nothing for QGIS Server to read).
     """
     if not cog_uri.startswith("gs://"):
+        # job-0241: loud, not silent — a non-gs:// URI here means the GCS
+        # upload fell back (stale venv / auth / network) and the plume will
+        # NOT appear on the map. The Case 2 live gate (job-0235) burned on
+        # exactly this as a debug-invisible skip.
+        logger.warning(
+            "publish_layer SKIPPED for %s: COG URI is not gs:// (%s); the "
+            "plume will NOT render as a map layer. Check fsspec[gcs] is "
+            "installed and the GCS upload succeeded.",
+            layer_id,
+            cog_uri,
+        )
         return None
     try:
         from ..tools.publish_layer import PublishLayerError, publish_layer
