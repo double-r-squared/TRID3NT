@@ -1,0 +1,337 @@
+2026-06-10 10:11:40,547 INFO grace2_agent.workflows.postprocess_flood postprocess_flood: flipping rows — SFINCS y ascends along rows (row 0 = south, 2936568.00 → 2952348.00); COG expects row 0 = north. Y-axis flip applied (job-0086).
+2026-06-10 10:11:41,921 INFO grace2_agent.workflows.postprocess_flood uploaded flood-depth COG to gs://grace-2-hazard-prod-runs/01KTS7RVWPEDKPRV5W7CHH0NTZ/flood_depth_peak.tif
+2026-06-10 10:11:41,922 INFO grace2_agent.tools.publish_layer publish_layer layer_id=flood-depth-peak-01KTS7RVWPEDKPRV5W7CHH0NTZ raster_uri=/vsigs/grace-2-hazard-prod-runs/01KTS7RVWPEDKPRV5W7CHH0NTZ/flood_depth_peak.tif qgs_uri=gs://grace-2-hazard-prod-qgs/grace2-sample.qgs style=continuous_flood_depth wms_url=https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=flood-depth-peak-01KTS7RVWPEDKPRV5W7CHH0NTZ
+2026-06-10 10:11:42,763 INFO grace2_agent.tools.publish_layer publish_layer: dispatching Cloud Run Job projects/grace-2-hazard-prod/locations/us-central1/jobs/grace-2-pyqgis-worker env_overrides={'WORKER_OP': 'publish-raster', 'QGS_URI': 'gs://grace-2-hazard-prod-qgs/grace2-sample.qgs', 'RASTER_URI': '/vsigs/grace-2-hazard-prod-runs/01KTS7RVWPEDKPRV5W7CHH0NTZ/flood_depth_peak.tif', 'RASTER_LAYER_ID': 'flood-depth-peak-01KTS7RVWPEDKPRV5W7CHH0NTZ', 'STYLE_PRESET_NAME': 'continuous_flood_depth'}
+2026-06-10 10:13:47,836 INFO grace2_agent.tools.publish_layer publish_layer: execution completed state=CONDITION_SUCCEEDED layer_id=flood-depth-peak-01KTS7RVWPEDKPRV5W7CHH0NTZ wms_url=https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=flood-depth-peak-01KTS7RVWPEDKPRV5W7CHH0NTZ
+2026-06-10 10:13:47,837 INFO grace2_agent.workflows.model_flood_scenario publish_layer succeeded layer_id=flood-depth-peak-01KTS7RVWPEDKPRV5W7CHH0NTZ wms_url=https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=flood-depth-peak-01KTS7RVWPEDKPRV5W7CHH0NTZ
+2026-06-10 10:13:47,838 INFO grace2_agent.workflows.model_flood_scenario model_flood_scenario complete envelope_id=01KTS8D81XCTRAQXG59CC01ZZ8 run_ids=['01KTS7RVWPEDKPRV5W7CHH0NTZ'] layers=1
+2026-06-10 10:13:47,840 INFO grace2_agent.server function-response queued session=01KTS7QFMKWMKWG8V54D8GMH89 iter=1 tool=run_model_flood_scenario summary_keys=['result', 'status', 'tool']
+2026-06-10 10:14:04,585 INFO httpx HTTP Request: POST https://us-central1-aiplatform.googleapis.com/v1beta1/projects/grace-2-hazard-prod/locations/us-central1/publishers/google/models/gemini-2.5-pro:streamGenerateContent?alt=sse "HTTP/1.1 200 OK"
+2026-06-10 10:14:04,593 INFO grace2_agent.server gemini function-call session=01KTS7QFMKWMKWG8V54D8GMH89 iter=2 tool=geocode_location call_id=None args={'query': 'Fort Myers, FL'}
+2026-06-10 10:14:04,675 INFO grace2_agent.server gemini usage session=01KTS7QFMKWMKWG8V54D8GMH89 iter=2 cached=91105 total=91594 prompt=91294 candidates=8 hit=True
+2026-06-10 10:14:06,723 INFO grace2_agent.tools.cache read_through miss-write tool=geocode_location key=caa0cbbb84556a2537e4bf93ab3df231 bytes=281 customTime=2026-06-10T17:14:06.521871+00:00
+2026-06-10 10:14:06,723 INFO grace2_agent.tools.data_fetch geocode_location query='Fort Myers, FL' resolved name='Fort Myers, Lee County, Florida, United States' cache_hit=False
+2026-06-10 10:14:06,725 INFO grace2_agent.server function-response queued session=01KTS7QFMKWMKWG8V54D8GMH89 iter=2 tool=geocode_location summary_keys=['result', 'status', 'tool']
+2026-06-10 10:14:11,119 INFO httpx HTTP Request: POST https://us-central1-aiplatform.googleapis.com/v1beta1/projects/grace-2-hazard-prod/locations/us-central1/publishers/google/models/gemini-2.5-pro:streamGenerateContent?alt=sse "HTTP/1.1 200 OK"
+2026-06-10 10:14:11,124 INFO grace2_agent.server gemini function-call session=01KTS7QFMKWMKWG8V54D8GMH89 iter=3 tool=fetch_usace_nsi call_id=None args={'bbox': [-81.9126085, 26.5476424, -81.7511414, 26.689176]}
+2026-06-10 10:14:11,125 INFO grace2_agent.server gemini usage session=01KTS7QFMKWMKWG8V54D8GMH89 iter=3 cached=91105 total=91603 prompt=91352 candidates=12 hit=True
+2026-06-10 10:14:11,126 ERROR grace2_agent.server tool dispatch raised session=01KTS7QFMKWMKWG8V54D8GMH89 tool=fetch_usace_nsi err=tool 'fetch_usace_nsi' not in allowed set; consider calling list_tools_in_category(...) first to widen the allowed set. hot-set tools currently available (first 16): ['code_exec_request', 'discover_dataset', 'fetch_dem', 'fetch_nws_alerts_conus', 'geocode_location', 'list_categories', 'list_tools_in_category', 'run_model_flood_habitat_scenario', 'run_model_flood_scenario']
+Traceback (most recent call last):
+  File "/home/nate/Documents/GRACE-2/services/agent/src/grace2_agent/server.py", line 956, in _stream_gemini_reply
+    validate_function_call(call.name, state.allowed_tool_set)
+  File "/home/nate/Documents/GRACE-2/services/agent/src/grace2_agent/categories.py", line 651, in validate_function_call
+    raise OutOfAllowedSetError(call_name, hot_set=HOT_SET_TOOLS)
+grace2_agent.categories.OutOfAllowedSetError: tool 'fetch_usace_nsi' not in allowed set; consider calling list_tools_in_category(...) first to widen the allowed set. hot-set tools currently available (first 16): ['code_exec_request', 'discover_dataset', 'fetch_dem', 'fetch_nws_alerts_conus', 'geocode_location', 'list_categories', 'list_tools_in_category', 'run_model_flood_habitat_scenario', 'run_model_flood_scenario']
+2026-06-10 10:14:11,131 INFO grace2_agent.server function-response queued session=01KTS7QFMKWMKWG8V54D8GMH89 iter=3 tool=fetch_usace_nsi summary_keys=['error', 'error_code', 'error_type', 'message', 'retryable', 'status', 'tool']
+2026-06-10 10:14:16,072 INFO httpx HTTP Request: POST https://us-central1-aiplatform.googleapis.com/v1beta1/projects/grace-2-hazard-prod/locations/us-central1/publishers/google/models/gemini-2.5-pro:streamGenerateContent?alt=sse "HTTP/1.1 200 OK"
+2026-06-10 10:14:16,076 INFO grace2_agent.server gemini function-call session=01KTS7QFMKWMKWG8V54D8GMH89 iter=4 tool=list_categories call_id=None args={}
+2026-06-10 10:14:16,143 INFO grace2_agent.server gemini usage session=01KTS7QFMKWMKWG8V54D8GMH89 iter=4 cached=91105 total=91927 prompt=91625 candidates=3 hit=True
+2026-06-10 10:14:16,146 INFO grace2_agent.server function-response queued session=01KTS7QFMKWMKWG8V54D8GMH89 iter=4 tool=list_categories summary_keys=['result', 'status', 'tool']
+2026-06-10 10:14:30,834 INFO httpx HTTP Request: POST https://us-central1-aiplatform.googleapis.com/v1beta1/projects/grace-2-hazard-prod/locations/us-central1/publishers/google/models/gemini-2.5-pro:streamGenerateContent?alt=sse "HTTP/1.1 200 OK"
+2026-06-10 10:14:30,836 INFO grace2_agent.server gemini function-call session=01KTS7QFMKWMKWG8V54D8GMH89 iter=5 tool=list_tools_in_category call_id=None args={'category_id': 'data'}
+2026-06-10 10:14:30,891 INFO grace2_agent.server gemini usage session=01KTS7QFMKWMKWG8V54D8GMH89 iter=5 cached=91105 total=91826 prompt=91706 candidates=11 hit=True
+2026-06-10 10:14:30,894 ERROR grace2_agent.server tool dispatch raised session=01KTS7QFMKWMKWG8V54D8GMH89 tool=list_tools_in_category err=category 'data' is not one of the 12 registered categories; valid ids are ['coastal', 'conservation_ecology', 'damage_assessment', 'fire', 'flood_infrastructure', 'geographic_primitives', 'hazard_modeling', 'hydrology', 'land_cover_development', 'news_events', 'terrain_elevation', 'weather_atmosphere']
+Traceback (most recent call last):
+  File "/home/nate/Documents/GRACE-2/services/agent/src/grace2_agent/server.py", line 957, in _stream_gemini_reply
+    result = await _invoke_tool_via_emitter(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/nate/Documents/GRACE-2/services/agent/src/grace2_agent/server.py", line 2308, in _invoke_tool_via_emitter
+    result = await state.emitter.emit_tool_call(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/nate/Documents/GRACE-2/services/agent/src/grace2_agent/pipeline_emitter.py", line 765, in emit_tool_call
+    result = invoke()
+             ^^^^^^^^
+  File "/home/nate/Documents/GRACE-2/services/agent/src/grace2_agent/server.py", line 2311, in <lambda>
+    invoke=lambda: entry.fn(**params),
+                   ^^^^^^^^^^^^^^^^^^
+  File "/home/nate/Documents/GRACE-2/services/agent/src/grace2_agent/categories.py", line 789, in list_tools_in_category
+    return _list_tools_in_category_impl(category_id)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/nate/Documents/GRACE-2/services/agent/src/grace2_agent/categories.py", line 685, in _list_tools_in_category_impl
+    names = tools_for_category(category_id)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/nate/Documents/GRACE-2/services/agent/src/grace2_agent/categories.py", line 619, in tools_for_category
+    raise UnknownCategoryError(category_id, valid_ids)
+grace2_agent.categories.UnknownCategoryError: category 'data' is not one of the 12 registered categories; valid ids are ['coastal', 'conservation_ecology', 'damage_assessment', 'fire', 'flood_infrastructure', 'geographic_primitives', 'hazard_modeling', 'hydrology', 'land_cover_development', 'news_events', 'terrain_elevation', 'weather_atmosphere']
+2026-06-10 10:14:30,898 INFO grace2_agent.server function-response queued session=01KTS7QFMKWMKWG8V54D8GMH89 iter=5 tool=list_tools_in_category summary_keys=['error', 'error_code', 'error_type', 'message', 'retryable', 'status', 'tool']
+2026-06-10 10:14:48,553 INFO httpx HTTP Request: POST https://us-central1-aiplatform.googleapis.com/v1beta1/projects/grace-2-hazard-prod/locations/us-central1/publishers/google/models/gemini-2.5-pro:streamGenerateContent?alt=sse "HTTP/1.1 200 OK"
+2026-06-10 10:14:48,559 INFO grace2_agent.server gemini function-call session=01KTS7QFMKWMKWG8V54D8GMH89 iter=6 tool=list_tools_in_category call_id=None args={'category_id': 'flood_infrastructure'}
+2026-06-10 10:14:48,607 INFO grace2_agent.server gemini usage session=01KTS7QFMKWMKWG8V54D8GMH89 iter=6 cached=91105 total=92238 prompt=91905 candidates=13 hit=True
+2026-06-10 10:14:48,610 INFO grace2_agent.circuit_breaker circuit-breaker: tool='list_tools_in_category' SUCCESS after 1 prior failure(s); counter reset
+2026-06-10 10:14:48,611 INFO grace2_agent.server function-response queued session=01KTS7QFMKWMKWG8V54D8GMH89 iter=6 tool=list_tools_in_category summary_keys=['result', 'status', 'tool']
+2026-06-10 10:14:52,839 INFO httpx HTTP Request: POST https://us-central1-aiplatform.googleapis.com/v1beta1/projects/grace-2-hazard-prod/locations/us-central1/publishers/google/models/gemini-2.5-pro:streamGenerateContent?alt=sse "HTTP/1.1 200 OK"
+2026-06-10 10:14:52,908 INFO grace2_agent.server gemini function-call session=01KTS7QFMKWMKWG8V54D8GMH89 iter=7 tool=fetch_usace_nsi call_id=None args={'bbox': [-81.9126085, 26.5476424, -81.7511414, 26.689176]}
+2026-06-10 10:14:52,909 INFO grace2_agent.server gemini usage session=01KTS7QFMKWMKWG8V54D8GMH89 iter=7 cached=91105 total=92236 prompt=91976 candidates=12 hit=True
+2026-06-10 10:14:52,909 ERROR grace2_agent.server tool dispatch raised session=01KTS7QFMKWMKWG8V54D8GMH89 tool=fetch_usace_nsi err=tool 'fetch_usace_nsi' not in allowed set; consider calling list_tools_in_category(...) first to widen the allowed set. hot-set tools currently available (first 16): ['code_exec_request', 'discover_dataset', 'fetch_dem', 'fetch_nws_alerts_conus', 'geocode_location', 'list_categories', 'list_tools_in_category', 'run_model_flood_habitat_scenario', 'run_model_flood_scenario']
+Traceback (most recent call last):
+  File "/home/nate/Documents/GRACE-2/services/agent/src/grace2_agent/server.py", line 956, in _stream_gemini_reply
+    validate_function_call(call.name, state.allowed_tool_set)
+  File "/home/nate/Documents/GRACE-2/services/agent/src/grace2_agent/categories.py", line 651, in validate_function_call
+    raise OutOfAllowedSetError(call_name, hot_set=HOT_SET_TOOLS)
+grace2_agent.categories.OutOfAllowedSetError: tool 'fetch_usace_nsi' not in allowed set; consider calling list_tools_in_category(...) first to widen the allowed set. hot-set tools currently available (first 16): ['code_exec_request', 'discover_dataset', 'fetch_dem', 'fetch_nws_alerts_conus', 'geocode_location', 'list_categories', 'list_tools_in_category', 'run_model_flood_habitat_scenario', 'run_model_flood_scenario']
+2026-06-10 10:14:52,911 INFO grace2_agent.server function-response queued session=01KTS7QFMKWMKWG8V54D8GMH89 iter=7 tool=fetch_usace_nsi summary_keys=['error', 'error_code', 'error_type', 'message', 'retryable', 'status', 'tool']
+2026-06-10 10:15:02,897 INFO httpx HTTP Request: POST https://us-central1-aiplatform.googleapis.com/v1beta1/projects/grace-2-hazard-prod/locations/us-central1/publishers/google/models/gemini-2.5-pro:streamGenerateContent?alt=sse "HTTP/1.1 200 OK"
+2026-06-10 10:15:02,901 INFO grace2_agent.server gemini function-call session=01KTS7QFMKWMKWG8V54D8GMH89 iter=8 tool=list_tools_in_category call_id=None args={'category_id': 'damage_assessment'}
+2026-06-10 10:15:02,944 INFO grace2_agent.server gemini usage session=01KTS7QFMKWMKWG8V54D8GMH89 iter=8 cached=91105 total=92956 prompt=92249 candidates=13 hit=True
+2026-06-10 10:15:02,947 INFO grace2_agent.server function-response queued session=01KTS7QFMKWMKWG8V54D8GMH89 iter=8 tool=list_tools_in_category summary_keys=['result', 'status', 'tool']
+2026-06-10 10:15:21,721 INFO httpx HTTP Request: POST https://us-central1-aiplatform.googleapis.com/v1beta1/projects/grace-2-hazard-prod/locations/us-central1/publishers/google/models/gemini-2.5-pro:streamGenerateContent?alt=sse "HTTP/1.1 200 OK"
+2026-06-10 10:15:21,724 INFO grace2_agent.server gemini function-call session=01KTS7QFMKWMKWG8V54D8GMH89 iter=9 tool=fetch_usace_nsi call_id=None args={'bbox': [-81.9126085, 26.5476424, -81.7511414, 26.689176]}
+2026-06-10 10:15:21,785 INFO grace2_agent.server gemini usage session=01KTS7QFMKWMKWG8V54D8GMH89 iter=9 cached=91105 total=92590 prompt=92342 candidates=12 hit=True
+2026-06-10 10:15:29,152 INFO grace2_agent.tools.cache read_through hit tool=fetch_usace_nsi key=852a6cc379b18c865bf9d99ec1acaa35 bytes=25116296
+2026-06-10 10:15:38,562 INFO grace2_agent.pipeline_emitter add_loaded_layer: inlined GeoJSON layer_id=usace-nsi--81.9126-26.5476--81.7511-26.6892 features=70740
+2026-06-10 10:15:39,201 INFO grace2_agent.circuit_breaker circuit-breaker: tool='fetch_usace_nsi' SUCCESS after 2 prior failure(s); counter reset
+2026-06-10 10:15:39,201 INFO grace2_agent.server function-response queued session=01KTS7QFMKWMKWG8V54D8GMH89 iter=9 tool=fetch_usace_nsi summary_keys=['result', 'status', 'tool']
+2026-06-10 10:15:47,965 INFO httpx HTTP Request: POST https://us-central1-aiplatform.googleapis.com/v1beta1/projects/grace-2-hazard-prod/locations/us-central1/publishers/google/models/gemini-2.5-pro:streamGenerateContent?alt=sse "HTTP/1.1 200 OK"
+2026-06-10 10:15:47,973 INFO grace2_agent.server gemini function-call session=01KTS7QFMKWMKWG8V54D8GMH89 iter=10 tool=run_model_flood_scenario call_id=None args={'location_query': 'Fort Myers'}
+2026-06-10 10:15:48,002 INFO grace2_agent.server gemini usage session=01KTS7QFMKWMKWG8V54D8GMH89 iter=10 cached=91105 total=93132 prompt=92479 candidates=12 hit=True
+2026-06-10 10:15:48,005 INFO grace2_agent.workflows.model_flood_scenario model_flood_scenario start bbox=None location_query='Fort Myers' event_id=None return_period_yr=100 duration_hr=24 compute_class=medium forcing_raster_uri=None
+2026-06-10 10:15:49,335 INFO grace2_agent.tools.cache read_through hit tool=geocode_location key=cdae26a5bd0fcd6930a73096ef63ab36 bytes=277
+2026-06-10 10:15:49,336 INFO grace2_agent.tools.data_fetch geocode_location query='Fort Myers' resolved name='Fort Myers, Lee County, Florida, United States' cache_hit=True
+2026-06-10 10:15:49,337 INFO grace2_agent.workflows.model_flood_scenario model_flood_scenario: zoom-on-area-first emitted bbox=(-81.9126085, 26.5476424, -81.7511414, 26.689176)
+2026-06-10 10:15:51,279 INFO grace2_agent.tools.cache read_through hit tool=fetch_dem key=87ba00463af0275d02115f7463afe6e9 bytes=1924297
+2026-06-10 10:15:52,917 INFO grace2_agent.tools.cache read_through hit tool=fetch_landcover key=7dac3520db9a0f6092a434be438d02d9 bytes=289170
+2026-06-10 10:15:54,365 INFO grace2_agent.tools.cache read_through hit tool=fetch_river_geometry key=4fa2fd4e5d2192020dc04d60502d6aaa bytes=274376
+2026-06-10 10:15:55,682 INFO grace2_agent.tools.cache read_through hit tool=lookup_precip_return_period key=8cbc276afacf4ed50e2daac1ab261ccb bytes=1614
+2026-06-10 10:15:55,683 INFO grace2_agent.tools.data_fetch lookup_precip_return_period (lat=26.616666667 lon=-81.833333333 ari=100 dur=24-hr) -> 11.900 inches cache_hit=True
+2026-06-10 10:15:55,683 INFO grace2_agent.workflows.sfincs_builder manning_mapping loaded version=1.0.0 classes=20 path=/home/nate/Documents/GRACE-2/services/agent/src/grace2_agent/workflows/manning_mapping.csv
+2026-06-10 10:15:55,705 INFO grace2_agent.workflows.sfincs_builder landcover classes observed: [11, 21, 22, 23, 24, 31, 41, 42, 43, 52, 71, 81, 82, 90, 95] (vintage_year=2021)
+2026-06-10 10:15:55,739 INFO hydromt_sfincs.sfincs Initializing sfincs model from hydromt_sfincs (v1.2.2).
+2026-06-10 10:15:55,740 INFO hydromt_sfincs.sfincs setup_grid_from_region.region: {'bbox': [-81.9126085, 26.5476424, -81.7511414, 26.689176]}
+2026-06-10 10:15:55,740 INFO hydromt_sfincs.sfincs setup_grid_from_region.res: 30.0
+2026-06-10 10:15:55,740 INFO hydromt_sfincs.sfincs setup_grid_from_region.crs: utm
+2026-06-10 10:15:55,741 INFO hydromt_sfincs.sfincs setup_grid_from_region.rotated: False
+2026-06-10 10:15:55,741 INFO hydromt_sfincs.sfincs setup_grid_from_region.hydrography_fn: None
+2026-06-10 10:15:55,741 INFO hydromt_sfincs.sfincs setup_grid_from_region.basin_index_fn: None
+2026-06-10 10:15:55,741 INFO hydromt_sfincs.sfincs setup_grid_from_region.align: False
+2026-06-10 10:15:55,741 INFO hydromt_sfincs.sfincs setup_grid_from_region.dec_origin: 0
+2026-06-10 10:15:55,741 INFO hydromt_sfincs.sfincs setup_grid_from_region.dec_rotation: 3
+2026-06-10 10:15:55,755 INFO hydromt_sfincs.sfincs setup_dep.datasets_dep: [{'elevtn': '/tmp/grace2-hydromt-stage/da43bff9c4a9234aeda1aca0.tif'}]
+2026-06-10 10:15:55,756 INFO hydromt_sfincs.sfincs setup_dep.buffer_cells: 0
+2026-06-10 10:15:55,756 INFO hydromt_sfincs.sfincs setup_dep.interp_method: linear
+2026-06-10 10:15:56,176 INFO hydromt_sfincs.sfincs Reading data catalog artifact_data latest
+2026-06-10 10:15:56,176 INFO hydromt_sfincs.sfincs Parsing data catalog from /home/nate/.hydromt_data/artifact_data/v0.0.9/data_catalog.yml
+2026-06-10 10:15:57,048 INFO hydromt_sfincs.sfincs Reading  raster data from /tmp/grace2-hydromt-stage/da43bff9c4a9234aeda1aca0.tif
+2026-06-10 10:15:57,066 WARNING hydromt_sfincs.sfincs Dataset [1406839.6490086552, 492522.54080268106, 1425196.0698493002, 510384.41464761924] does not fully cover bbox [1406724.715, 492424.737, 1425316.759, 510494.000]
+2026-06-10 10:15:57,128 WARNING hydromt_sfincs.sfincs Interpolate elevation at 96 cells
+2026-06-10 10:15:57,137 INFO hydromt_sfincs.sfincs setup_mask_active.mask: None
+2026-06-10 10:15:57,137 INFO hydromt_sfincs.sfincs setup_mask_active.include_mask: None
+2026-06-10 10:15:57,137 INFO hydromt_sfincs.sfincs setup_mask_active.exclude_mask: None
+2026-06-10 10:15:57,137 INFO hydromt_sfincs.sfincs setup_mask_active.mask_buffer: 0
+2026-06-10 10:15:57,137 INFO hydromt_sfincs.sfincs setup_mask_active.zmin: -10.0
+2026-06-10 10:15:57,137 INFO hydromt_sfincs.sfincs setup_mask_active.zmax: 10.0
+2026-06-10 10:15:57,137 INFO hydromt_sfincs.sfincs setup_mask_active.fill_area: 10.0
+2026-06-10 10:15:57,137 INFO hydromt_sfincs.sfincs setup_mask_active.drop_area: 0.0
+2026-06-10 10:15:57,137 INFO hydromt_sfincs.sfincs setup_mask_active.connectivity: 8
+2026-06-10 10:15:57,137 INFO hydromt_sfincs.sfincs setup_mask_active.all_touched: True
+2026-06-10 10:15:57,137 INFO hydromt_sfincs.sfincs setup_mask_active.reset_mask: True
+2026-06-10 10:15:57,149 INFO hydromt_sfincs.sfincs 16 gaps outside valid elevation range < 10.0 km2.
+2026-06-10 10:15:57,152 INFO hydromt_sfincs.sfincs Derive region geometry based on active cells.
+2026-06-10 10:15:57,160 WARNING hydromt_sfincs.sfincs Replacing geom: region
+2026-06-10 10:15:57,160 INFO hydromt_sfincs.sfincs setup_manning_roughness.datasets_rgh: [{'lulc': '/tmp/grace2-hydromt-stage/c13f1fcafd269573337bf99b.tif', 'reclass_table': '/tmp/sfincs-build-vj74szv4/manning_reclass.csv'}]
+2026-06-10 10:15:57,160 INFO hydromt_sfincs.sfincs setup_manning_roughness.manning_land: 0.04
+2026-06-10 10:15:57,160 INFO hydromt_sfincs.sfincs setup_manning_roughness.manning_sea: 0.02
+2026-06-10 10:15:57,160 INFO hydromt_sfincs.sfincs setup_manning_roughness.rgh_lev_land: 0
+2026-06-10 10:15:57,162 INFO hydromt_sfincs.sfincs Reading  raster data from /tmp/grace2-hydromt-stage/c13f1fcafd269573337bf99b.tif
+2026-06-10 10:15:57,170 WARNING hydromt_sfincs.sfincs Dataset [-81.91266720899999, 26.54752066099999, -81.751093655, 26.689274164999986] does not fully cover bbox [-81.914, 26.547, -81.750, 26.690]
+2026-06-10 10:15:57,171 INFO hydromt_sfincs.sfincs Reading  csv data from /tmp/sfincs-build-vj74szv4/manning_reclass.csv
+2026-06-10 10:15:57,173 WARNING hydromt.raster The nodata value None is not in the reclass table.None will be used for the params.
+2026-06-10 10:15:57,228 WARNING hydromt_sfincs.sfincs nan values in manning roughness array
+2026-06-10 10:15:57,230 INFO hydromt_sfincs.sfincs setup_precip_forcing.timeseries: None
+2026-06-10 10:15:57,230 INFO hydromt_sfincs.sfincs setup_precip_forcing.magnitude: 12.594166666666666
+2026-06-10 10:15:57,231 INFO hydromt_sfincs.sfincs Writing model data to /tmp/sfincs-build-vj74szv4/deck
+2026-06-10 10:15:57,236 INFO hydromt_sfincs.sfincs Write raster file(s) for grid to 'gis' subfolder
+2026-06-10 10:15:57,324 INFO hydromt_sfincs.sfincs Write geom files
+2026-06-10 10:15:57,325 INFO hydromt_sfincs.sfincs Write vector file(s) for geoms to 'gis' subfolder
+2026-06-10 10:15:57,326 INFO pyogrio._io Created 1 records
+2026-06-10 10:15:57,326 INFO hydromt_sfincs.sfincs Write forcing files
+2026-06-10 10:15:57,328 WARNING hydromt_sfincs.sfincs zsini not in states, skipping
+2026-06-10 10:15:57,328 INFO hydromt_sfincs.sfincs Writing model data to /tmp/sfincs-build-vj74szv4/deck
+2026-06-10 10:15:57,333 INFO hydromt_sfincs.sfincs Write raster file(s) for grid to 'gis' subfolder
+2026-06-10 10:15:57,421 INFO hydromt_sfincs.sfincs Write geom files
+2026-06-10 10:15:57,421 INFO hydromt_sfincs.sfincs Write vector file(s) for geoms to 'gis' subfolder
+2026-06-10 10:15:57,423 INFO pyogrio._io Created 1 records
+2026-06-10 10:15:57,423 INFO hydromt_sfincs.sfincs Write forcing files
+2026-06-10 10:15:57,424 WARNING hydromt_sfincs.sfincs zsini not in states, skipping
+2026-06-10 10:15:57,425 INFO grace2_agent.workflows.sfincs_builder composed manifest.json with 11 input(s); deck_prefix=gs://grace-2-hazard-prod-cache/cache/static-30d/sfincs_setup/01KTS8H4XT49J3F4ZCWTF47S6Y/deck/ target=gs://grace-2-hazard-prod-cache/cache/static-30d/sfincs_setup/01KTS8H4XT49J3F4ZCWTF47S6Y/manifest.json
+2026-06-10 10:15:59,144 INFO grace2_agent.workflows.sfincs_builder uploaded SFINCS deck to gs://grace-2-hazard-prod-cache/cache/static-30d/sfincs_setup/01KTS8H4XT49J3F4ZCWTF47S6Y/ (under deck/ prefix)
+2026-06-10 10:15:59,630 INFO grace2_agent.workflows.sfincs_builder uploaded manifest.json to gs://grace-2-hazard-prod-cache/cache/static-30d/sfincs_setup/01KTS8H4XT49J3F4ZCWTF47S6Y/manifest.json
+2026-06-10 10:15:59,635 INFO grace2_agent.tools.solver run_solver solver=sfincs run_id=01KTS8H8RJT6311A2V4BKX6H8A compute_class=medium parent=projects/grace-2-hazard-prod/locations/us-central1/workflows/grace-2-sfincs-orchestrator
+2026-06-10 10:16:01,212 INFO grace2_agent.tools.solver run_solver submitted handle_id=01KTS8HA9W2Q4GVWSNZWS5PF76 workflows_execution_id=projects/425352658356/locations/us-central1/workflows/grace-2-sfincs-orchestrator/executions/0a933871-eb5f-4c42-b3c3-39350a51a473
+2026-06-10 10:16:01,864 INFO grace2_agent.tools.solver wait_for_completion handle_id=01KTS8HA9W2Q4GVWSNZWS5PF76 name=projects/425352658356/locations/us-central1/workflows/grace-2-sfincs-orchestrator/executions/0a933871-eb5f-4c42-b3c3-39350a51a473 poll_interval=10s timeout=1800s
+2026-06-10 10:22:59,259 INFO grace2_agent.workflows.postprocess_flood postprocess_flood: flipping rows — SFINCS y ascends along rows (row 0 = south, 2936568.00 → 2952348.00); COG expects row 0 = north. Y-axis flip applied (job-0086).
+2026-06-10 10:23:00,576 INFO grace2_agent.workflows.postprocess_flood uploaded flood-depth COG to gs://grace-2-hazard-prod-runs/01KTS8H8RJT6311A2V4BKX6H8A/flood_depth_peak.tif
+2026-06-10 10:23:00,577 INFO grace2_agent.tools.publish_layer publish_layer layer_id=flood-depth-peak-01KTS8H8RJT6311A2V4BKX6H8A raster_uri=/vsigs/grace-2-hazard-prod-runs/01KTS8H8RJT6311A2V4BKX6H8A/flood_depth_peak.tif qgs_uri=gs://grace-2-hazard-prod-qgs/grace2-sample.qgs style=continuous_flood_depth wms_url=https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=flood-depth-peak-01KTS8H8RJT6311A2V4BKX6H8A
+2026-06-10 10:23:01,223 INFO grace2_agent.tools.publish_layer publish_layer: dispatching Cloud Run Job projects/grace-2-hazard-prod/locations/us-central1/jobs/grace-2-pyqgis-worker env_overrides={'WORKER_OP': 'publish-raster', 'QGS_URI': 'gs://grace-2-hazard-prod-qgs/grace2-sample.qgs', 'RASTER_URI': '/vsigs/grace-2-hazard-prod-runs/01KTS8H8RJT6311A2V4BKX6H8A/flood_depth_peak.tif', 'RASTER_LAYER_ID': 'flood-depth-peak-01KTS8H8RJT6311A2V4BKX6H8A', 'STYLE_PRESET_NAME': 'continuous_flood_depth'}
+2026-06-10 10:26:14,402 INFO grace2_agent.tools.publish_layer publish_layer: execution completed state=CONDITION_SUCCEEDED layer_id=flood-depth-peak-01KTS8H8RJT6311A2V4BKX6H8A wms_url=https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=flood-depth-peak-01KTS8H8RJT6311A2V4BKX6H8A
+2026-06-10 10:26:14,403 INFO grace2_agent.workflows.model_flood_scenario publish_layer succeeded layer_id=flood-depth-peak-01KTS8H8RJT6311A2V4BKX6H8A wms_url=https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=flood-depth-peak-01KTS8H8RJT6311A2V4BKX6H8A
+2026-06-10 10:26:14,403 INFO grace2_agent.workflows.model_flood_scenario model_flood_scenario complete envelope_id=01KTS94143W5PPVZKT13DB2B19 run_ids=['01KTS8H8RJT6311A2V4BKX6H8A'] layers=1
+2026-06-10 10:26:15,155 INFO grace2_agent.server function-response queued session=01KTS7QFMKWMKWG8V54D8GMH89 iter=10 tool=run_model_flood_scenario summary_keys=['result', 'status', 'tool']
+2026-06-10 10:26:22,206 INFO httpx HTTP Request: POST https://us-central1-aiplatform.googleapis.com/v1beta1/projects/grace-2-hazard-prod/locations/us-central1/publishers/google/models/gemini-2.5-pro:streamGenerateContent?alt=sse "HTTP/1.1 200 OK"
+2026-06-10 10:26:22,209 INFO grace2_agent.server gemini function-call session=01KTS7QFMKWMKWG8V54D8GMH89 iter=11 tool=run_pelicun_damage_assessment call_id=None args={'assets_uri': 'gs://grace-2-hazard-prod-cache/cache/static-30d/usace_nsi/20240516140505.fgb', 'hazard_raster_uri': 'https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=flood-depth-peak-01KTS8H8RJT6311A2V4BKX6H8A'}
+2026-06-10 10:26:22,231 INFO grace2_agent.server gemini usage session=01KTS7QFMKWMKWG8V54D8GMH89 iter=11 cached=91105 total=93045 prompt=92608 candidates=146 hit=True
+2026-06-10 10:26:22,233 INFO grace2_agent.tools.run_pelicun_damage_assessment run_pelicun_damage_assessment: invoked hazard_raster_uri=https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=flood-depth-peak-01KTS8H8RJT6311A2V4BKX6H8A assets_uri=gs://grace-2-hazard-prod-cache/cache/static-30d/usace_nsi/20240516140505.fgb fragility_set=hazus_flood_v6 component_types=None realization_count=100
+2026-06-10 10:26:23,518 ERROR grace2_agent.server tool dispatch raised session=01KTS7QFMKWMKWG8V54D8GMH89 tool=run_pelicun_damage_assessment err=local path does not exist: 'https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=flood-depth-peak-01KTS8H8RJT6311A2V4BKX6H8A'
+Traceback (most recent call last):
+  File "/home/nate/Documents/GRACE-2/services/agent/src/grace2_agent/server.py", line 957, in _stream_gemini_reply
+    result = await _invoke_tool_via_emitter(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/nate/Documents/GRACE-2/services/agent/src/grace2_agent/server.py", line 2308, in _invoke_tool_via_emitter
+    result = await state.emitter.emit_tool_call(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/nate/Documents/GRACE-2/services/agent/src/grace2_agent/pipeline_emitter.py", line 765, in emit_tool_call
+    result = invoke()
+             ^^^^^^^^
+  File "/home/nate/Documents/GRACE-2/services/agent/src/grace2_agent/server.py", line 2311, in <lambda>
+    invoke=lambda: entry.fn(**params),
+                   ^^^^^^^^^^^^^^^^^^
+  File "/home/nate/Documents/GRACE-2/services/agent/src/grace2_agent/tools/run_pelicun_damage_assessment.py", line 1304, in run_pelicun_damage_assessment
+    result = read_through(
+             ^^^^^^^^^^^^^
+  File "/home/nate/Documents/GRACE-2/services/agent/src/grace2_agent/tools/cache.py", line 338, in read_through
+    data = fetch_fn()
+           ^^^^^^^^^^
+  File "/home/nate/Documents/GRACE-2/services/agent/src/grace2_agent/tools/run_pelicun_damage_assessment.py", line 1308, in <lambda>
+    fetch_fn=lambda: _fetch_pelicun_damage_bytes(
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/nate/Documents/GRACE-2/services/agent/src/grace2_agent/tools/run_pelicun_damage_assessment.py", line 1026, in _fetch_pelicun_damage_bytes
+    hazard_local = _download_uri_to_local(hazard_raster_uri, ".tif")
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/nate/Documents/GRACE-2/services/agent/src/grace2_agent/tools/run_pelicun_damage_assessment.py", line 597, in _download_uri_to_local
+    raise PelicunRuntimeError(
+grace2_agent.tools.run_pelicun_damage_assessment.PelicunRuntimeError: local path does not exist: 'https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=flood-depth-peak-01KTS8H8RJT6311A2V4BKX6H8A'
+2026-06-10 10:26:23,522 INFO grace2_agent.server function-response queued session=01KTS7QFMKWMKWG8V54D8GMH89 iter=11 tool=run_pelicun_damage_assessment summary_keys=['error', 'error_code', 'error_type', 'message', 'retryable', 'status', 'tool']
+2026-06-10 10:26:30,189 INFO httpx HTTP Request: POST https://us-central1-aiplatform.googleapis.com/v1beta1/projects/grace-2-hazard-prod/locations/us-central1/publishers/google/models/gemini-2.5-pro:streamGenerateContent?alt=sse "HTTP/1.1 200 OK"
+2026-06-10 10:26:30,193 INFO grace2_agent.server gemini function-call session=01KTS7QFMKWMKWG8V54D8GMH89 iter=12 tool=run_model_flood_scenario call_id=None args={'location_query': 'Fort Myers'}
+2026-06-10 10:26:30,273 INFO grace2_agent.server gemini usage session=01KTS7QFMKWMKWG8V54D8GMH89 iter=12 cached=91105 total=93390 prompt=92986 candidates=12 hit=True
+2026-06-10 10:26:30,275 INFO grace2_agent.workflows.model_flood_scenario model_flood_scenario start bbox=None location_query='Fort Myers' event_id=None return_period_yr=100 duration_hr=24 compute_class=medium forcing_raster_uri=None
+2026-06-10 10:26:31,606 INFO grace2_agent.tools.cache read_through hit tool=geocode_location key=cdae26a5bd0fcd6930a73096ef63ab36 bytes=277
+2026-06-10 10:26:31,607 INFO grace2_agent.tools.data_fetch geocode_location query='Fort Myers' resolved name='Fort Myers, Lee County, Florida, United States' cache_hit=True
+2026-06-10 10:26:31,608 INFO grace2_agent.workflows.model_flood_scenario model_flood_scenario: zoom-on-area-first emitted bbox=(-81.9126085, 26.5476424, -81.7511414, 26.689176)
+2026-06-10 10:26:33,744 INFO grace2_agent.tools.cache read_through hit tool=fetch_dem key=87ba00463af0275d02115f7463afe6e9 bytes=1924297
+2026-06-10 10:26:35,394 INFO grace2_agent.tools.cache read_through hit tool=fetch_landcover key=7dac3520db9a0f6092a434be438d02d9 bytes=289170
+2026-06-10 10:26:36,929 INFO grace2_agent.tools.cache read_through hit tool=fetch_river_geometry key=4fa2fd4e5d2192020dc04d60502d6aaa bytes=274376
+2026-06-10 10:26:38,261 INFO grace2_agent.tools.cache read_through hit tool=lookup_precip_return_period key=8cbc276afacf4ed50e2daac1ab261ccb bytes=1614
+2026-06-10 10:26:38,262 INFO grace2_agent.tools.data_fetch lookup_precip_return_period (lat=26.616666667 lon=-81.833333333 ari=100 dur=24-hr) -> 11.900 inches cache_hit=True
+2026-06-10 10:26:38,263 INFO grace2_agent.workflows.sfincs_builder manning_mapping loaded version=1.0.0 classes=20 path=/home/nate/Documents/GRACE-2/services/agent/src/grace2_agent/workflows/manning_mapping.csv
+2026-06-10 10:26:38,285 INFO grace2_agent.workflows.sfincs_builder landcover classes observed: [11, 21, 22, 23, 24, 31, 41, 42, 43, 52, 71, 81, 82, 90, 95] (vintage_year=2021)
+2026-06-10 10:26:38,296 INFO hydromt_sfincs.sfincs Initializing sfincs model from hydromt_sfincs (v1.2.2).
+2026-06-10 10:26:38,297 INFO hydromt_sfincs.sfincs setup_grid_from_region.region: {'bbox': [-81.9126085, 26.5476424, -81.7511414, 26.689176]}
+2026-06-10 10:26:38,297 INFO hydromt_sfincs.sfincs setup_grid_from_region.res: 30.0
+2026-06-10 10:26:38,297 INFO hydromt_sfincs.sfincs setup_grid_from_region.crs: utm
+2026-06-10 10:26:38,297 INFO hydromt_sfincs.sfincs setup_grid_from_region.rotated: False
+2026-06-10 10:26:38,298 INFO hydromt_sfincs.sfincs setup_grid_from_region.hydrography_fn: None
+2026-06-10 10:26:38,298 INFO hydromt_sfincs.sfincs setup_grid_from_region.basin_index_fn: None
+2026-06-10 10:26:38,298 INFO hydromt_sfincs.sfincs setup_grid_from_region.align: False
+2026-06-10 10:26:38,298 INFO hydromt_sfincs.sfincs setup_grid_from_region.dec_origin: 0
+2026-06-10 10:26:38,298 INFO hydromt_sfincs.sfincs setup_grid_from_region.dec_rotation: 3
+2026-06-10 10:26:38,312 INFO hydromt_sfincs.sfincs setup_dep.datasets_dep: [{'elevtn': '/tmp/grace2-hydromt-stage/da43bff9c4a9234aeda1aca0.tif'}]
+2026-06-10 10:26:38,312 INFO hydromt_sfincs.sfincs setup_dep.buffer_cells: 0
+2026-06-10 10:26:38,312 INFO hydromt_sfincs.sfincs setup_dep.interp_method: linear
+2026-06-10 10:26:38,779 INFO hydromt_sfincs.sfincs Reading data catalog artifact_data latest
+2026-06-10 10:26:38,780 INFO hydromt_sfincs.sfincs Parsing data catalog from /home/nate/.hydromt_data/artifact_data/v0.0.9/data_catalog.yml
+2026-06-10 10:26:39,473 INFO hydromt_sfincs.sfincs Reading  raster data from /tmp/grace2-hydromt-stage/da43bff9c4a9234aeda1aca0.tif
+2026-06-10 10:26:39,491 WARNING hydromt_sfincs.sfincs Dataset [1406839.6490086552, 492522.54080268106, 1425196.0698493002, 510384.41464761924] does not fully cover bbox [1406724.715, 492424.737, 1425316.759, 510494.000]
+2026-06-10 10:26:39,553 WARNING hydromt_sfincs.sfincs Interpolate elevation at 96 cells
+2026-06-10 10:26:39,561 INFO hydromt_sfincs.sfincs setup_mask_active.mask: None
+2026-06-10 10:26:39,561 INFO hydromt_sfincs.sfincs setup_mask_active.include_mask: None
+2026-06-10 10:26:39,561 INFO hydromt_sfincs.sfincs setup_mask_active.exclude_mask: None
+2026-06-10 10:26:39,561 INFO hydromt_sfincs.sfincs setup_mask_active.mask_buffer: 0
+2026-06-10 10:26:39,561 INFO hydromt_sfincs.sfincs setup_mask_active.zmin: -10.0
+2026-06-10 10:26:39,561 INFO hydromt_sfincs.sfincs setup_mask_active.zmax: 10.0
+2026-06-10 10:26:39,561 INFO hydromt_sfincs.sfincs setup_mask_active.fill_area: 10.0
+2026-06-10 10:26:39,561 INFO hydromt_sfincs.sfincs setup_mask_active.drop_area: 0.0
+2026-06-10 10:26:39,561 INFO hydromt_sfincs.sfincs setup_mask_active.connectivity: 8
+2026-06-10 10:26:39,561 INFO hydromt_sfincs.sfincs setup_mask_active.all_touched: True
+2026-06-10 10:26:39,562 INFO hydromt_sfincs.sfincs setup_mask_active.reset_mask: True
+2026-06-10 10:26:39,573 INFO hydromt_sfincs.sfincs 16 gaps outside valid elevation range < 10.0 km2.
+2026-06-10 10:26:39,575 INFO hydromt_sfincs.sfincs Derive region geometry based on active cells.
+2026-06-10 10:26:39,584 WARNING hydromt_sfincs.sfincs Replacing geom: region
+2026-06-10 10:26:39,584 INFO hydromt_sfincs.sfincs setup_manning_roughness.datasets_rgh: [{'lulc': '/tmp/grace2-hydromt-stage/c13f1fcafd269573337bf99b.tif', 'reclass_table': '/tmp/sfincs-build-3zatecjh/manning_reclass.csv'}]
+2026-06-10 10:26:39,584 INFO hydromt_sfincs.sfincs setup_manning_roughness.manning_land: 0.04
+2026-06-10 10:26:39,584 INFO hydromt_sfincs.sfincs setup_manning_roughness.manning_sea: 0.02
+2026-06-10 10:26:39,584 INFO hydromt_sfincs.sfincs setup_manning_roughness.rgh_lev_land: 0
+2026-06-10 10:26:39,586 INFO hydromt_sfincs.sfincs Reading  raster data from /tmp/grace2-hydromt-stage/c13f1fcafd269573337bf99b.tif
+2026-06-10 10:26:39,598 WARNING hydromt_sfincs.sfincs Dataset [-81.91266720899999, 26.54752066099999, -81.751093655, 26.689274164999986] does not fully cover bbox [-81.914, 26.547, -81.750, 26.690]
+2026-06-10 10:26:39,598 INFO hydromt_sfincs.sfincs Reading  csv data from /tmp/sfincs-build-3zatecjh/manning_reclass.csv
+2026-06-10 10:26:39,600 WARNING hydromt.raster The nodata value None is not in the reclass table.None will be used for the params.
+2026-06-10 10:26:39,654 WARNING hydromt_sfincs.sfincs nan values in manning roughness array
+2026-06-10 10:26:39,656 INFO hydromt_sfincs.sfincs setup_precip_forcing.timeseries: None
+2026-06-10 10:26:39,656 INFO hydromt_sfincs.sfincs setup_precip_forcing.magnitude: 12.594166666666666
+2026-06-10 10:26:39,657 INFO hydromt_sfincs.sfincs Writing model data to /tmp/sfincs-build-3zatecjh/deck
+2026-06-10 10:26:39,662 INFO hydromt_sfincs.sfincs Write raster file(s) for grid to 'gis' subfolder
+2026-06-10 10:26:39,743 INFO hydromt_sfincs.sfincs Write geom files
+2026-06-10 10:26:39,743 INFO hydromt_sfincs.sfincs Write vector file(s) for geoms to 'gis' subfolder
+2026-06-10 10:26:39,745 INFO pyogrio._io Created 1 records
+2026-06-10 10:26:39,745 INFO hydromt_sfincs.sfincs Write forcing files
+2026-06-10 10:26:39,746 WARNING hydromt_sfincs.sfincs zsini not in states, skipping
+2026-06-10 10:26:39,746 INFO hydromt_sfincs.sfincs Writing model data to /tmp/sfincs-build-3zatecjh/deck
+2026-06-10 10:26:39,751 INFO hydromt_sfincs.sfincs Write raster file(s) for grid to 'gis' subfolder
+2026-06-10 10:26:39,834 INFO hydromt_sfincs.sfincs Write geom files
+2026-06-10 10:26:39,834 INFO hydromt_sfincs.sfincs Write vector file(s) for geoms to 'gis' subfolder
+2026-06-10 10:26:39,836 INFO pyogrio._io Created 1 records
+2026-06-10 10:26:39,836 INFO hydromt_sfincs.sfincs Write forcing files
+2026-06-10 10:26:39,838 WARNING hydromt_sfincs.sfincs zsini not in states, skipping
+2026-06-10 10:26:39,838 INFO grace2_agent.workflows.sfincs_builder composed manifest.json with 11 input(s); deck_prefix=gs://grace-2-hazard-prod-cache/cache/static-30d/sfincs_setup/01KTS94REDA6B8EFS23YS86GRQ/deck/ target=gs://grace-2-hazard-prod-cache/cache/static-30d/sfincs_setup/01KTS94REDA6B8EFS23YS86GRQ/manifest.json
+2026-06-10 10:26:41,742 INFO grace2_agent.workflows.sfincs_builder uploaded SFINCS deck to gs://grace-2-hazard-prod-cache/cache/static-30d/sfincs_setup/01KTS94REDA6B8EFS23YS86GRQ/ (under deck/ prefix)
+2026-06-10 10:26:42,256 INFO grace2_agent.workflows.sfincs_builder uploaded manifest.json to gs://grace-2-hazard-prod-cache/cache/static-30d/sfincs_setup/01KTS94REDA6B8EFS23YS86GRQ/manifest.json
+2026-06-10 10:26:42,261 INFO grace2_agent.tools.solver run_solver solver=sfincs run_id=01KTS94WAMBTRMEFKVGAVA3BWR compute_class=medium parent=projects/grace-2-hazard-prod/locations/us-central1/workflows/grace-2-sfincs-orchestrator
+2026-06-10 10:26:43,785 INFO grace2_agent.tools.solver run_solver submitted handle_id=01KTS94XT8G35VRXN5C4738BXJ workflows_execution_id=projects/425352658356/locations/us-central1/workflows/grace-2-sfincs-orchestrator/executions/3a88a293-2a5b-4988-aabb-f8984bdadd8b
+2026-06-10 10:26:44,421 INFO grace2_agent.tools.solver wait_for_completion handle_id=01KTS94XT8G35VRXN5C4738BXJ name=projects/425352658356/locations/us-central1/workflows/grace-2-sfincs-orchestrator/executions/3a88a293-2a5b-4988-aabb-f8984bdadd8b poll_interval=10s timeout=1800s
+2026-06-10 10:27:13,483 INFO grace2_agent.tools.solver wait_for_completion CANCELLED handle_id=01KTS94XT8G35VRXN5C4738BXJ; issuing workflows.executions.cancel(projects/425352658356/locations/us-central1/workflows/grace-2-sfincs-orchestrator/executions/3a88a293-2a5b-4988-aabb-f8984bdadd8b)
+2026-06-10 10:27:14,922 INFO grace2_agent.tools.solver cancel_execution issued for projects/425352658356/locations/us-central1/workflows/grace-2-sfincs-orchestrator/executions/3a88a293-2a5b-4988-aabb-f8984bdadd8b
+2026-06-10 10:27:14,922 INFO grace2_agent.workflows.model_flood_scenario model_flood_scenario cancelled while awaiting solver
+2026-06-10 10:27:14,924 ERROR grace2_agent.server tool dispatch raised session=01KTS7QFMKWMKWG8V54D8GMH89 tool=run_model_flood_scenario err=received 1001 (going away); then sent 1001 (going away)
+Traceback (most recent call last):
+  File "/home/nate/Documents/GRACE-2/services/agent/src/grace2_agent/server.py", line 957, in _stream_gemini_reply
+    result = await _invoke_tool_via_emitter(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/nate/Documents/GRACE-2/services/agent/src/grace2_agent/server.py", line 2308, in _invoke_tool_via_emitter
+    result = await state.emitter.emit_tool_call(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/nate/Documents/GRACE-2/services/agent/src/grace2_agent/pipeline_emitter.py", line 769, in emit_tool_call
+    await self.mark_cancelled(step_id)
+  File "/home/nate/Documents/GRACE-2/services/agent/src/grace2_agent/pipeline_emitter.py", line 614, in mark_cancelled
+    await self._emit_pipeline_state()
+  File "/home/nate/Documents/GRACE-2/services/agent/src/grace2_agent/pipeline_emitter.py", line 874, in _emit_pipeline_state
+    await self._send("pipeline-state", payload)
+  File "/home/nate/Documents/GRACE-2/services/agent/src/grace2_agent/pipeline_emitter.py", line 880, in _send
+    await self._sink(env.model_dump_json())
+  File "/home/nate/Documents/GRACE-2/services/agent/src/grace2_agent/server.py", line 2170, in _sink
+    await websocket.send(text)
+  File "/home/nate/Documents/GRACE-2/services/agent/.venv/lib/python3.12/site-packages/websockets/asyncio/connection.py", line 476, in send
+    async with self.send_context():
+               ^^^^^^^^^^^^^^^^^^^
+  File "/home/nate/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/contextlib.py", line 210, in __aenter__
+    return await anext(self.gen)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/nate/Documents/GRACE-2/services/agent/.venv/lib/python3.12/site-packages/websockets/asyncio/connection.py", line 957, in send_context
+    raise self.protocol.close_exc from original_exc
+websockets.exceptions.ConnectionClosedOK: received 1001 (going away); then sent 1001 (going away)
+2026-06-10 10:27:14,930 INFO grace2_agent.server function-response queued session=01KTS7QFMKWMKWG8V54D8GMH89 iter=12 tool=run_model_flood_scenario summary_keys=['error', 'error_code', 'error_type', 'message', 'retryable', 'status', 'tool']
+2026-06-10 10:27:14,931 WARNING grace2_agent.server gemini loop hit MAX_TURN_ITERATIONS=12 session=01KTS7QFMKWMKWG8V54D8GMH89 — emitting loop_exhausted envelope
+2026-06-10 10:27:14,931 ERROR grace2_agent.server loop_exhausted envelope send failed session=01KTS7QFMKWMKWG8V54D8GMH89
+Traceback (most recent call last):
+  File "/home/nate/Documents/GRACE-2/services/agent/src/grace2_agent/server.py", line 600, in _send_loop_exhausted
+    await websocket.send(
+  File "/home/nate/Documents/GRACE-2/services/agent/.venv/lib/python3.12/site-packages/websockets/asyncio/connection.py", line 476, in send
+    async with self.send_context():
+               ^^^^^^^^^^^^^^^^^^^
+  File "/home/nate/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/contextlib.py", line 210, in __aenter__
+    return await anext(self.gen)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/nate/Documents/GRACE-2/services/agent/.venv/lib/python3.12/site-packages/websockets/asyncio/connection.py", line 957, in send_context
+    raise self.protocol.close_exc from original_exc
+websockets.exceptions.ConnectionClosedOK: received 1001 (going away); then sent 1001 (going away)
+2026-06-10 10:27:14,934 ERROR grace2_agent.server gemini stream failed: received 1001 (going away); then sent 1001 (going away)
+Traceback (most recent call last):
+  File "/home/nate/Documents/GRACE-2/services/agent/src/grace2_agent/server.py", line 1117, in _stream_gemini_reply
+    await websocket.send(_new_envelope("agent-message-chunk", state.session_id, terminal))
+  File "/home/nate/Documents/GRACE-2/services/agent/.venv/lib/python3.12/site-packages/websockets/asyncio/connection.py", line 476, in send
+    async with self.send_context():
+               ^^^^^^^^^^^^^^^^^^^
+  File "/home/nate/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/contextlib.py", line 210, in __aenter__
+    return await anext(self.gen)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/nate/Documents/GRACE-2/services/agent/.venv/lib/python3.12/site-packages/websockets/asyncio/connection.py", line 957, in send_context
+    raise self.protocol.close_exc from original_exc
+websockets.exceptions.ConnectionClosedOK: received 1001 (going away); then sent 1001 (going away)
