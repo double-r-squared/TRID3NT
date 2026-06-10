@@ -65,3 +65,7 @@ Atlas-connected verification (real SRV from Secret Manager): needs gcloud ADC on
 - **OQ-0203-FIND-PAGINATION**: translator caps logical `find` at limit=1000 / 8MiB responseBytesLimit. Chat histories beyond that need cursor pagination (post-v0.1; sessions are 90-turn-capped today so headroom is ~10×).
 - **OQ-0203-MCP-VERSION-PIN**: the npm server's tool surface changed names at least once historically. Production should pin `mongodb-mcp-server@<version>` in the deploy (sprint-13.5 infra) and re-run `evidence/mcp_protocol_smoke.py` on every bump.
 - **OQ-0115-CASE-USER-LINK** (carried): `list_cases_for_user` `$exists:False` backward-compat clause still shows pre-Auth cases to all users — owned by sprint-13.5 Auth track.
+
+## Panel outcome (2026-06-09, wf_6b02d89c-aa9)
+
+**4/4 CONFIRM — ADVANCE** (correctness:minor, regression:none, contract:minor, live-verify). Report corrections per the correctness lens: (a) the "585 passed / 1 failed" full-suite count was author-environment-specific — on a deps-light environment the same suite shows 51 pre-existing env/dependency failures, none in M4-owned modules (verified orthogonal via git show --name-only); (b) new-test count is 32 across 3 new files (13+16+3), not 38. Contract-lens note for the schema track: SESSIONS_TTL (30d past expires_at) + touch_session (expires_at=now+30d) = effective 60-day retention after last activity — consistent with the collections.py:408 comment but flagged for explicit user confirmation of intended retention.

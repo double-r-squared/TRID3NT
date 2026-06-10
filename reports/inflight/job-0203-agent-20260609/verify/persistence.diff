@@ -1,0 +1,472 @@
+commit a62ae1cb0dd9e0b3ff90db45b0808cb648be7739
+Author: nate <nate@maturin.maturin.home>
+Date:   Tue Jun 9 20:44:58 2026 -0700
+
+    job-0203-agent-20260609: M4 — CRUD truly routes through MongoDB MCP (surface translator + D.6 session record + mode2 audit migration)
+    
+    - MCPSurfaceTranslator: live mongodb-mcp-server exposes find/insert-many/
+      update-many (NOT find-one/insert-one/update-one) with EJSON payloads in
+      untrusted-data tags and default find limit=10 — every production CRUD
+      call would have failed on first contact. Single translation boundary;
+      logical surface preserved at all 23 call sites.
+    - D.6 sessions collection goes live: touch_session/upsert/get + header
+      repair; wired on auth bind, case create/open, every persisted chat turn.
+    - Mode-2 audit: bespoke JSONL writer deleted (remove-don't-shim); routes
+      through Persistence.append_audit -> audit_log (D.15).
+    - FileMCPClient: $push/$setOnInsert/$addToSet support (job-0230 chart
+      $push was silently dropped on dev substrate).
+    - init_persistence_from_env: wraps live client in translator + sets
+      MDB_MCP_READ_ONLY=false (read-only default hid all write tools).
+    - mcp.py: lazy google.cloud.secretmanager import (MCPClient usable without
+      GCP SDK on dev boxes).
+    - Evidence: 6/6 CRUD round-trip vs REAL mongod 7.0.14 + REAL npm MCP server
+      through the production stdio client. 38 new tests; 585-test suite green
+      (1 pre-existing data_fetch docstring failure, untouched).
+    
+    Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+diff --git a/services/agent/src/grace2_agent/persistence.py b/services/agent/src/grace2_agent/persistence.py
+index 6d8e33e..f7c27b4 100644
+--- a/services/agent/src/grace2_agent/persistence.py
++++ b/services/agent/src/grace2_agent/persistence.py
+@@ -98,6 +98,192 @@ class MCPClientProtocol(Protocol):
+         ...
+ 
+ 
++# --------------------------------------------------------------------------- #
++# Live-server surface translation (job-0203 / Wave 4.11 M4)
++# --------------------------------------------------------------------------- #
++#
++# FINDING (2026-06-09, live protocol smoke against mongodb-mcp-server@latest):
++# the real npm server does NOT expose ``find-one`` / ``insert-one`` /
++# ``update-one`` at all. Its actual document surface is ``find`` /
++# ``insert-many`` / ``update-many`` (+ ``delete-many``, ``count``, ...), and
++# ``find`` results come back as EJSON wrapped in
++# ``<untrusted-user-data-{uuid}>`` tags in the SECOND content entry — the
++# first is a human-readable "Found N documents" banner. Every Persistence
++# call written against the logical surface would have failed on first
++# contact with production.
++#
++# Resolution: the logical surface (``find-one``/``insert-one``/
++# ``update-one``/``find``) is OUR seam contract (``MCPClientProtocol``) —
++# ``FileMCPClient``, every test mock, and every call site speak it. This
++# translator is the single boundary that adapts the logical surface to the
++# real server's tool names and response shape. When MongoDB renames tools
++# again, this class is the only thing that changes.
++#
++# ``server.init_persistence_from_env`` wraps the live ``MCPClient`` in this
++# translator before handing it to ``Persistence``.
++
++
++def _ejson_normalize(value: Any) -> Any:
++    """Collapse the EJSON extended-type wrappers we can encounter.
++
++    GRACE-2 documents store string ULIDs and ISO-8601 strings, so most
++    round-trips are plain JSON. Mongo may still emit ``{"$date": ...}`` /
++    ``{"$oid": ...}`` / ``{"$numberLong": ...}`` for fields written by
++    other paths — collapse them to their plain value so Pydantic
++    validation sees normal scalars.
++    """
++    if isinstance(value, dict):
++        if len(value) == 1:
++            ((k, v),) = value.items()
++            if k == "$oid":
++                return v
++            if k == "$numberLong" or k == "$numberInt" or k == "$numberDouble":
++                try:
++                    return float(v) if "." in str(v) else int(v)
++                except (TypeError, ValueError):
++                    return v
++            if k == "$date":
++                # {"$date": "ISO"} or {"$date": {"$numberLong": "ms"}}
++                if isinstance(v, dict) and "$numberLong" in v:
++                    return v["$numberLong"]
++                return v
++        return {k: _ejson_normalize(v) for k, v in value.items()}
++    if isinstance(value, list):
++        return [_ejson_normalize(v) for v in value]
++    return value
++
++
++import re as _re
++
++# The warning prose MENTIONS both tags inline ("between the <tag> and
++# </tag> tags may lead to...") BEFORE the actual payload block — a lazy
++# match from the first mention captures the prose word "and" instead of
++# the payload. The real block is newline-delimited (``<tag>\npayload\n</tag>``
++# per formatUntrustedData), so the mandatory ``\n`` on both sides skips the
++# prose mentions. Verified against a live mongod round-trip (evidence/).
++_UNTRUSTED_RE = _re.compile(
++    r"<untrusted-user-data-([0-9a-fA-F-]+)>\n(.*?)\n</untrusted-user-data-\1>",
++    _re.DOTALL,
++)
++
++
++def _extract_untrusted_payload(raw: dict[str, Any]) -> Any | None:
++    """Pull the EJSON document payload out of a real-server tool result.
++
++    Returns the parsed (and EJSON-normalized) payload, or ``None`` when no
++    untrusted-data block is present (e.g. "Found 0 documents" responses).
++    """
++    content = raw.get("content")
++    if not isinstance(content, list):
++        return None
++    for entry in content:
++        if not isinstance(entry, dict):
++            continue
++        text = entry.get("text")
++        if not isinstance(text, str):
++            continue
++        m = _UNTRUSTED_RE.search(text)
++        if not m:
++            continue
++        import json as _json
++
++        try:
++            return _ejson_normalize(_json.loads(m.group(2)))
++        except _json.JSONDecodeError:
++            logger.warning("untrusted-data block was not valid EJSON")
++            return None
++    return None
++
++
++class MCPSurfaceTranslator:
++    """Adapt the logical MCP surface to the real ``mongodb-mcp-server``.
++
++    Implements :class:`MCPClientProtocol`. Wraps a raw client (the live
++    stdio :class:`grace2_agent.mcp.MCPClient`) whose tool names are the
++    REAL server surface, and translates:
++
++    - ``find-one``   → ``find`` with ``limit=1`` → ``{"document": doc|None}``
++    - ``find``       → ``find`` with an explicit generous limit (the real
++      server DEFAULTS TO limit=10 — unbounded logical reads like chat
++      history would silently truncate) → ``{"documents": [...]}``
++    - ``insert-one`` → ``insert-many`` with ``documents=[doc]``
++    - ``update-one`` → ``update-many`` (every GRACE-2 update filters on a
++      unique key, so the semantics coincide)
++
++    Any other tool name passes through untouched.
++    """
++
++    #: Explicit limit injected when the logical ``find`` has none. The
++    #: real server also caps responses at ``responseBytesLimit`` (1 MiB
++    #: default) — we raise it for chat-history reads; documents beyond
++    #: either cap surface as OQ-0203-FIND-PAGINATION.
++    DEFAULT_FIND_LIMIT = 1000
++    RESPONSE_BYTES_LIMIT = 8 * 1024 * 1024
++
++    def __init__(self, raw_client: MCPClientProtocol) -> None:
++        self._raw = raw_client
++
++    async def call_tool(
++        self, name: str, arguments: dict[str, Any] | None = None
++    ) -> dict[str, Any]:
++        args = dict(arguments or {})
++
++        if name == "find-one":
++            real = {
++                "database": args["database"],
++                "collection": args["collection"],
++                "filter": args.get("filter", {}),
++                "limit": 1,
++            }
++            raw = await self._raw.call_tool("find", real)
++            docs = _extract_untrusted_payload(raw)
++            doc = docs[0] if isinstance(docs, list) and docs else None
++            return {"document": doc}
++
++        if name == "find":
++            real = {
++                "database": args["database"],
++                "collection": args["collection"],
++                "filter": args.get("filter", {}),
++                "limit": args.get("limit", self.DEFAULT_FIND_LIMIT),
++                "responseBytesLimit": self.RESPONSE_BYTES_LIMIT,
++            }
++            if args.get("sort"):
++                real["sort"] = args["sort"]
++            raw = await self._raw.call_tool("find", real)
++            docs = _extract_untrusted_payload(raw)
++            if docs is None:
++                docs = []
++            if isinstance(docs, dict):
++                docs = [docs]
++            return {"documents": docs}
++
++        if name == "insert-one":
++            raw = await self._raw.call_tool(
++                "insert-many",
++                {
++                    "database": args["database"],
++                    "collection": args["collection"],
++                    "documents": [args["document"]],
++                },
++            )
++            return raw if isinstance(raw, dict) else {}
++
++        if name == "update-one":
++            real = {
++                "database": args["database"],
++                "collection": args["collection"],
++                "filter": args.get("filter", {}),
++                "update": args.get("update", {}),
++            }
++            if args.get("upsert"):
++                real["upsert"] = True
++            raw = await self._raw.call_tool("update-many", real)
++            return raw if isinstance(raw, dict) else {}
++
++        return await self._raw.call_tool(name, args)
++
++
+ # --------------------------------------------------------------------------- #
+ # Persistence wrapper
+ # --------------------------------------------------------------------------- #
+@@ -380,6 +566,156 @@ class Persistence:
+             case=case, chat_history=chat, loaded_layers=loaded_layers,
+         )
+ 
++    # ----- Session records (D.6 ``sessions`` collection) ------------------- #
++    #
++    # job-0203 (Wave 4.11 M4): the agent's own session record goes live. The
++    # ``sessions`` document is the TTL-cleaned activity header (D.6 +
++    # ``SESSIONS_TTL``): who/when, which Cases were touched, and — since
++    # job-0230 — the append-only ``charts`` array that chart-emission
++    # ``$push``es onto. Chat content canonically lives in
++    # ``case_chat_messages`` (FR-MP-6); ``SessionDocument.chat_history``
++    # stays empty at v0.1 so the two stores never diverge.
++
++    async def upsert_session_record(self, doc: "SessionDocument") -> None:
++        """Insert or fully overwrite a session record.
++
++        ``$set`` of the full document body — storage-only extras a previous
++        ``$push`` added (e.g. ``charts``) survive because ``$set`` of named
++        fields does not remove unnamed ones.
++        """
++        body = doc.model_dump(mode="json", by_alias=True)
++        session_id = body.pop("_id")
++        await self._mcp.call_tool(
++            "update-one",
++            {
++                "database": self._db,
++                "collection": SESSIONS_COLLECTION,
++                "filter": {"_id": session_id},
++                "update": {"$set": body},
++                "upsert": True,
++            },
++        )
++
++    async def touch_session(
++        self,
++        session_id: str,
++        *,
++        client_fingerprint: str | None = None,
++        case_id: str | None = None,
++        ttl_seconds: int | None = None,
++    ) -> None:
++        """Activity heartbeat for a session — one upsert round-trip.
++
++        - ``$set`` ``last_active_at`` + ``expires_at`` (TTL driver, D.6) so
++          every interaction pushes cleanup 30 days out (``SESSIONS_TTL``).
++        - ``$setOnInsert`` the immutable header (``schema_version``,
++          ``created_at``) so the first touch creates a well-formed record
++          and later touches never rewrite history.
++        - ``$addToSet`` the active Case into ``project_ids`` when given —
++          deduped, so per-turn touches stay idempotent.
++
++        Fire-and-forget discipline at call sites (same as telemetry M3 and
++        chart persistence job-0230): callers wrap in ``try/except`` or a
++        task; a persistence hiccup never takes down the user's turn.
++        """
++        from grace2_contracts.collections import SESSIONS_TTL
++
++        now = now_utc()
++        ttl = ttl_seconds if ttl_seconds is not None else SESSIONS_TTL["expire_after_seconds"]
++        from datetime import timedelta
++
++        iso_now = now.isoformat().replace("+00:00", "Z")
++        iso_exp = (now + timedelta(seconds=ttl)).isoformat().replace("+00:00", "Z")
++        set_fields: dict[str, Any] = {
++            "last_active_at": iso_now,
++            "expires_at": iso_exp,
++        }
++        if client_fingerprint is not None:
++            set_fields["client_fingerprint"] = client_fingerprint
++        update: dict[str, Any] = {
++            "$set": set_fields,
++            "$setOnInsert": {
++                "schema_version": "v1",
++                "created_at": iso_now,
++            },
++        }
++        if case_id is not None:
++            update["$addToSet"] = {"project_ids": case_id}
++        await self._mcp.call_tool(
++            "update-one",
++            {
++                "database": self._db,
++                "collection": SESSIONS_COLLECTION,
++                "filter": {"_id": session_id},
++                "update": update,
++                "upsert": True,
++            },
++        )
++        # Header repair: a session doc created by an earlier bare ``$push``
++        # (chart-emission upserts before any touch — job-0230 ordering) has
++        # no ``created_at``/``schema_version``, and ``$setOnInsert`` above
++        # can never backfill an EXISTING doc (real Mongo semantics too).
++        # Detect and repair once; ``created_at=now`` is the best available
++        # approximation for a doc whose true start was never recorded.
++        raw = await self._mcp.call_tool(
++            "find-one",
++            {
++                "database": self._db,
++                "collection": SESSIONS_COLLECTION,
++                "filter": {"_id": session_id},
++            },
++        )
++        doc = _unwrap_mcp_result(raw)
++        if isinstance(doc, dict) and (
++            "created_at" not in doc or "schema_version" not in doc
++        ):
++            repair: dict[str, Any] = {}
++            if "created_at" not in doc:
++                repair["created_at"] = iso_now
++            if "schema_version" not in doc:
++                repair["schema_version"] = "v1"
++            await self._mcp.call_tool(
++                "update-one",
++                {
++                    "database": self._db,
++                    "collection": SESSIONS_COLLECTION,
++                    "filter": {"_id": session_id},
++                    "update": {"$set": repair},
++                },
++            )
++
++    async def get_session_record(self, session_id: str) -> "SessionDocument | None":
++        """Read one session record back as a typed ``SessionDocument``.
++
++        Tolerant normalization (same discipline as ``_doc_to_case_summary``):
++        storage-only extras — notably the job-0230 ``charts`` array — are
++        dropped before validation so the contract model stays narrow while
++        the storage document accretes.
++        """
++        from grace2_contracts.collections import SessionDocument
++
++        raw = await self._mcp.call_tool(
++            "find-one",
++            {
++                "database": self._db,
++                "collection": SESSIONS_COLLECTION,
++                "filter": {"_id": session_id},
++            },
++        )
++        doc = _unwrap_mcp_result(raw)
++        if not doc or not isinstance(doc, dict):
++            return None
++        allowed = set(SessionDocument.model_fields.keys())
++        # ``id`` is aliased to ``_id`` — keep the alias key, drop the rest.
++        normalized = {
++            k: v for k, v in doc.items() if k in allowed or k == "_id"
++        }
++        try:
++            return SessionDocument.model_validate(normalized)
++        except Exception:  # noqa: BLE001
++            logger.warning("malformed session doc for session_id=%s", session_id)
++            return None
++
+     # ----- Users (Auth/Users track stub) ----------------------------------- #
+ 
+     async def get_user_by_firebase_uid(self, uid: str) -> User | None:
+@@ -806,6 +1142,52 @@ class FileMCPClient:
+                 return False
+         return True
+ 
++    # ------------------------------------------------------------------ #
++    # Update-operator application (job-0203 / M4)
++    # ------------------------------------------------------------------ #
++
++    @staticmethod
++    def _apply_update(doc: dict, update: dict, *, inserting: bool) -> None:
++        """Apply a Mongo update document in-place, Mongo-faithful semantics.
++
++        Supported operators (the set Persistence + chart-emission actually
++        send): ``$set``, ``$setOnInsert`` (applied ONLY when ``inserting``),
++        ``$push`` (appends; creates the array if missing), ``$addToSet``
++        (appends iff not already present — dict values compared by equality).
++
++        Before job-0203 only ``$set`` was honored, which silently DROPPED the
++        job-0230 chart ``$push`` on the dev substrate (the upsert created a
++        bare ``{_id}`` doc and the chart vanished). Unknown operators now
++        raise so the next gap fails loudly instead.
++        """
++        for op, fields in update.items():
++            if op == "$set":
++                doc.update(fields)
++            elif op == "$setOnInsert":
++                if inserting:
++                    for k, v in fields.items():
++                        doc.setdefault(k, v)
++            elif op == "$push":
++                for k, v in fields.items():
++                    arr = doc.get(k)
++                    if not isinstance(arr, list):
++                        arr = []
++                        doc[k] = arr
++                    arr.append(v)
++            elif op == "$addToSet":
++                for k, v in fields.items():
++                    arr = doc.get(k)
++                    if not isinstance(arr, list):
++                        arr = []
++                        doc[k] = arr
++                    if v not in arr:
++                        arr.append(v)
++            else:
++                raise NotImplementedError(
++                    f"FileMCPClient update-one: unsupported operator {op!r} "
++                    f"(supports $set / $setOnInsert / $push / $addToSet)"
++                )
++
+     # ------------------------------------------------------------------ #
+     # MCP tool surface
+     # ------------------------------------------------------------------ #
+@@ -841,24 +1223,25 @@ class FileMCPClient:
+                 store = self._read_store(path)
+                 filt = args.get("filter", {})
+                 update = args.get("update", {})
+-                set_ = update.get("$set", {})
+                 upsert = bool(args.get("upsert", False))
+                 target_id = filt.get("_id")
+                 matched = 0
+                 modified = 0
+                 if target_id and target_id in store:
+-                    store[target_id].update(set_)
++                    self._apply_update(store[target_id], update, inserting=False)
+                     matched = 1
+                     modified = 1
+                 elif upsert and target_id:
+-                    store[target_id] = {**set_, "_id": target_id}
++                    fresh: dict[str, Any] = {"_id": target_id}
++                    self._apply_update(fresh, update, inserting=True)
++                    store[target_id] = fresh
+                     matched = 1
+                     modified = 1
+                 else:
+                     # Update by non-_id filter (e.g. firebase_uid). First match wins.
+                     for doc in store.values():
+                         if self._matches(doc, filt):
+-                            doc.update(set_)
++                            self._apply_update(doc, update, inserting=False)
+                             matched = 1
+                             modified = 1
+                             break
+@@ -931,6 +1314,7 @@ def make_file_persistence(base_dir: _Path | None = None) -> Persistence:
+ __all__ = [
+     "Persistence",
+     "MCPClientProtocol",
++    "MCPSurfaceTranslator",
+     "FileMCPClient",
+     "make_file_persistence",
+     "is_dev_persistence_enabled",

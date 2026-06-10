@@ -1022,6 +1022,249 @@
       "description": "Sprint-12-mega Wave 4.8: Wave 4.8 LIVE Playwright verify (no inject seams) \u2014 partial honesty: radar PASS, weather alerts FAIL after 4min, multi-turn confirmed working",
       "model": "opus",
       "subagent_tokens": 70000
+    },
+    {
+      "job_id": "research-geospatial-endpoints-20260609",
+      "sprint": 12,
+      "description": "Research workflow (4 parallel Sonnet bundles): coral/marine GIS + popular geospatial overlays + ArcGIS Hub programmatic access + STAC/OGC discovery patterns. Decoded the user-shared NOAA Hub item e64176... as ESA pillar coral critical habitat shapefile. Identified 9 high-priority coral sources (Coral Reef Watch, MPA Inventory, Allen Coral Atlas, GEBCO bathymetry, BlueTopo) + arch plan for fetch_from_stac + fetch_from_arcgis_hub + discover_dataset hybrid surface.",
+      "model": "sonnet",
+      "kind": "research",
+      "workflow_id": "wf_8a13c612-3c7",
+      "subagent_tokens": 234639
+    },
+    {
+      "job_id": "research-tool-usage-arch-20260609",
+      "sprint": 12,
+      "description": "Tool-usage architecture research before Wave 4.10 dispatch. 10 parallel surveys (OpenAI/Anthropic/Gemini/MCP/LangChain/semantic-retrieval/lazy-hierarchical/production-agents/description-craft/failure-recovery) + Opus synthesis + Opus adversarial critique. Surfaced: switch per-turn filtering to Gemini CachedContent + allowed_function_names (not re-declare); discover_dataset must index synthetic example queries (not desc-only); hybrid BM25+dense with RRF; description audit is #1 lever; raise MAX_TURN_ITERATIONS to 10-12 + circuit breaker; audit Gemini 3 thought_signature preservation. Critique flagged 4 pre-dispatch verification blockers.",
+      "model": "sonnet+opus",
+      "kind": "research",
+      "workflow_id": "wf_f4b9ddc2-00f",
+      "subagent_tokens": 784502
+    },
+    {
+      "job_id": "verify-wave-4-10-pre-dispatch-20260609",
+      "sprint": 12,
+      "description": "Wave 4.10 pre-dispatch verification (7 Opus agents). Confirmed: raw google-genai SDK (NOT ADK); current TOOL_NOT_FOUND path emits weak no_result envelope (not one-line fix); thought_signature NOT preserved (must fix before Gemini 3); parallel call bundling already correct; Vertex 400s when tool_config sent with cached_content (Option A revise = cache + post-hoc validator); 5/9 citations solid + 2 arxiv numbers hallucinated; hot-set must drop publish_layer/fetch_admin/zonal_stats (zero LLM dispatches in telemetry); concurrent dispatch deferred (pipeline emitter races). Verdict GO_WITH_REVISIONS at ~3.5M.",
+      "model": "opus",
+      "kind": "research",
+      "workflow_id": "wf_f896af97-9ea",
+      "subagent_tokens": 400421
+    },
+    {
+      "job_id": "wave-4-10-stage-0-baseline-20260609",
+      "sprint": 12,
+      "description": "Wave 4.10 Stage 0: eval_routing_live.py harness + 5-anchor live baseline. NO __grace2Inject seams. Measured: first-tool 60% / full-sequence 20%. Surfaced: A2 system-prompt does not enforce follow-on dispatch after named tool; A3 confirmed HRRR + 10 GRACE-1 endpoints unregistered; A4 watchdog 120s too short for SFINCS NFR-P-4 15min budget; A5 driver race after long composite. Reports/inflight/wave-4-10-stage-0-baseline-20260609 has 5 screenshots + metrics JSON + harness log.",
+      "model": "opus",
+      "kind": "engineering",
+      "workflow_id": "wf_974e317e-e8e",
+      "subagent_tokens": 144924
+    },
+    {
+      "job_id": "wave-4-10-stage-1-20260609",
+      "sprint": 12,
+      "description": "Wave 4.10 Stage 1: 14 endpoints + audit (3 tiers) + telemetry + TOOL_NOT_FOUND refactor + system-prompt amendment + harness refinement + error-envelope investigation + adversarial-verify panels on B-rev/B-sys. Outcome: 14/14 endpoints landed live + tested (FEMA NFHL/HRRR/NWM/NLD/NID/NSI/METAR/gridMET/CO-OPS/SLR/pfdf+3 sub/RAWS/HRRR-Smoke/USFS canopy). All 71 tool descriptions audited; 445-query synthetic corpus at services/agent/src/grace2_agent/data/tool_query_corpus.yaml. B-rev + B-sys BLOCKED by adversarial verify (B-rev: missed second caller of _invoke_tool_via_emitter; B-sys: SYSTEM_PROMPT worked example contract drift on fetch_administrative_boundaries signature). Fix jobs dispatching.",
+      "model": "opus+sonnet",
+      "kind": "engineering",
+      "workflow_id": "wf_ebcd6267-607",
+      "subagent_tokens": 3659733
+    },
+    {
+      "job_id": "wave-4-10-stage-1-fixes-20260609",
+      "sprint": 12,
+      "description": "Wave 4.10 Stage 1 fixes: B-rev (_dispatch_tool_and_persist second-caller audit + routes ToolNotFoundError through _send_error) + B-sys (SYSTEM_PROMPT Miami-Dade worked example aligned to real fetch_administrative_boundaries signature). Both fixes cleared 4/4 re-adversarial. Anchor A2 empirically PASSED post-fix: observed chain [geocode_location, fetch_wdpa_protected_areas], full_sequence_correct=true. Bonus: B-sys discovered + patched eval_routing_live.py early-exit bug.",
+      "model": "opus",
+      "kind": "engineering",
+      "workflow_id": "wf_2f6aed7c-929",
+      "subagent_tokens": 589224
+    },
+    {
+      "job_id": "wave-4-10-stage-2-independents-20260609",
+      "sprint": 12,
+      "description": "Wave 4.10 Stage 2 independents: B7 discover_dataset hybrid BM25+dense+name-substring (570 LOC, 21 tests, RRF k=60); B11 Gemini OpenAPI subset compliance audit (HEADLINE: root-caused 50 of 58 tools silently falling back to docstring-only FunctionDeclarations because Python annotations - tuple/Union/LayerURI - failed get_type_hints; fix centralized in adapter.py with 5 helpers + normalize_callable_for_gemini); B12 tool annotation metadata (read_only_hint/open_world_hint/destructive_hint/idempotent_hint on all 70 tools - publish_layer is sole destructive); B13 tool_arg_normalizer alias pre-population for all 17 Wave 4.10 endpoints (237 aliases total). Ran parallel to Stage 1 fix workflow per pacing memo.",
+      "model": "opus+sonnet",
+      "kind": "engineering",
+      "workflow_id": "wf_6b453149-f18",
+      "subagent_tokens": 440455
+    },
+    {
+      "job_id": "wave-4-10-parallel-doc-track-20260609",
+      "sprint": 12,
+      "description": "Parallel doc work while Stage 2 dependents in flight: (1) sprint manifests for wave-4-11 (16 jobs ~2.71M, 3 workstreams: MongoDB MCP + Pelicun + wildfire), sprint-13 (20 jobs ~3.98M, MODFLOW + Cases 2+3 + conversational analysis + Python sandbox), sprint-13-5 (11 jobs ~3.9M, every job adversarial-verify gated). (2) ImpactEnvelope Pydantic schema + Appendix B.6c.1 amendment + 47/47 tests pass, 296/296 full suite green. (3) CLAUDE.md ADK\u2192raw google-genai correction + SRS 02-system-overview.md Decisions D+E corrected + citation corrections in research findings memory.",
+      "model": "sonnet",
+      "kind": "engineering",
+      "workflow_id": "wf_1f21f342-1af",
+      "subagent_tokens": 216653
+    },
+    {
+      "job_id": "wave-4-10-parallel-design-track-20260609",
+      "sprint": 12,
+      "description": "Forward-prep design docs: (1) postprocess_pelicun design at reports/inflight/wave-4-11-p2-postprocess-pelicun-design (254 LOC, FGB input, ds_mean thresholds 1.0/3.5, convex hull impact area, ttl=static-30d, 10 tests + 6 OQs). (2) MODFLOW container design at reports/inflight/sprint-13-mod-1-modflow-container-design (343 LOC, mf6 6.5.0 official binary, single binary GWF+GWT confirms sprint-13 OQ1, 8GiB/7200s, postprocess agent-side, mfsim.lst convergence parse, 6 OQs).",
+      "model": "sonnet",
+      "kind": "engineering",
+      "workflow_id": "wf_a62f709c-9a0",
+      "subagent_tokens": 141470
+    },
+    {
+      "job_id": "wave-4-10-stage-2-dependents-20260609",
+      "sprint": 12,
+      "description": "Wave 4.10 Stage 2 dependents: B5 (12-category registry + list_categories/list_tools_in_category + post-hoc validator + OutOfAllowedSetError + 38 tests) + B6 (gemini_cache.py with get_or_create_cache, 1h TTL, kill-switch) + B10 (thought_signature on Part level, parallel-call bundling regression tests). 12 adversarial verifiers ran but verdicts didn't make it back into workflow output structure - grouping logic mismatch on job field. Specialists all PASS by self-report; adversarial verification incomplete.",
+      "model": "opus",
+      "kind": "engineering",
+      "workflow_id": "wf_df02b5ad-8bc",
+      "subagent_tokens": 1712829
+    },
+    {
+      "job_id": "wave-4-10-c1-tools-catalog-ui-20260609",
+      "sprint": 12,
+      "description": "Wave 4.10 C1 Tools catalog UI: backend HTTP endpoint at services/agent/src/grace2_agent/tool_catalog_http.py (port 8766, /api/tool-catalog, /api/health, CORS) + ToolsCatalogPopup.tsx web component (accessed via Settings > View all tools) + 12 vitest cases + live Playwright screenshot. Surfaces 76 tools across 12 categories with quiet-by-default annotation badges, supports_global_query indicator, click-to-copy sample queries. All 377 web vitest tests pass.",
+      "model": "opus",
+      "kind": "engineering",
+      "workflow_id": "wf_e31608c8-5e2",
+      "subagent_tokens": 232634
+    },
+    {
+      "job_id": "wave-4-10-stage-2-readversarial-20260609",
+      "sprint": 12,
+      "description": "Re-run 12 adversarial verifiers (B5/B6/B10 \u00d7 4 lenses) with index-based grouping. Results: B5 3/1 ADVANCE, B10 4/0 ADVANCE, B6 3/1 ADVANCE. KEY EMPIRICAL FINDING: B6 live-verify against real Vertex Gemini 2.5 Pro proved the cache architecture: 99.98% of prompt tokens cached (65700/65715), 90% discount, 3 sequential turns all cache-hit. The pre-dispatch verification round's #1 blocker (cache claim) is empirically resolved. Real regression caught: test_multi_turn_loop.py::test_stream_gemini_reply_multi_turn_loop fails because validator rejects fetch_wdpa_protected_areas not in hot set + no category opened. Fix scheduled.",
+      "model": "opus",
+      "kind": "research",
+      "workflow_id": "wf_bf8011b1-4c5",
+      "subagent_tokens": 1142865
+    },
+    {
+      "job_id": "wave-4-10-stage-3-20260609",
+      "sprint": 12,
+      "description": "Wave 4.10 Stage 3: test_multi_turn_loop regression fix (Option A - now simulates list_tools_in_category recovery flow) + B8+B9 consolidated (per-session ToolCircuitBreaker with 3-fail trip + 60s cooldown + env overrides; MAX_TURN_ITERATIONS 8->12; loop_exhausted envelope distinct from generic error; 36 new tests). Pre-existing test_telemetry failures confirmed not regressions.",
+      "model": "sonnet",
+      "kind": "engineering",
+      "workflow_id": "wf_2d219336-043",
+      "subagent_tokens": 168999
+    },
+    {
+      "job_id": "wave-4-10-stage-4-sweep-20260609",
+      "sprint": 12,
+      "description": "Wave 4.10 Stage 4 anchor sweep: FAIL due to env issue (google-cloud-storage missing from runtime venv \u2192 every tool dispatch ModuleNotFoundError at tools/cache.py:314 read_through). Routing measured at baseline (60/20) because tools error before returning. EMPIRICAL WINS: cache integration verified (every call hit=True, 81K cached tokens); always-narrate clause working (4/4 anchors emitted final narration); 76 tools + 12 categories loaded; AuthGate fix landed (envelope count 2\u21921). Real routing issue surfaced: A3 still picks geocode over fetch_hrrr_forecast despite registration.",
+      "model": "opus",
+      "kind": "engineering",
+      "workflow_id": "wf_73263cb5-95c",
+      "subagent_tokens": 73198
+    },
+    {
+      "job_id": "wave-4-10-thinking-state-ephemeral-20260609",
+      "sprint": 12,
+      "description": "Wave 4.10 small UX refinement: Thinking indicator becomes ephemeral (no box, italic #888 'Thinking...', pinned to end of chat scroll, auto-vanishes on first text chunk / first tool card / terminal state). Matches ChatGPT/Claude/Gemini convention. llm_generation pseudo-step filtered out of InterleavedChatStream. 19 new vitest tests + full suite (27 files, 396 tests) pass. Note: Playwright snapshot used __grace2InjectPipelineState seam (visual only, not behavior verification) because agent backend was being modified by parallel Stage 4 re-sweep.",
+      "model": "opus",
+      "kind": "engineering",
+      "workflow_id": "wf_5aad09b7-621",
+      "subagent_tokens": 132961
+    },
+    {
+      "job_id": "wave-4-10-stage-4-resweep-attempt1-20260609",
+      "sprint": 12,
+      "description": "Wave 4.10 Stage 4 re-sweep attempt #1 (PARTIAL): installed google-cloud-storage in services/agent/.venv (was missing despite pyproject declaration); added Wave 4.10 endpoint name->tool map + anti-discovery clause to SYSTEM_PROMPT; updated A3 anchor spec (watchdog 120->300s, expected_first_tool_any_of widened to include geocode_location since fetch_hrrr_forecast genuinely needs bbox). KEY CORRECTION SURFACED: Stage 0 BEFORE baseline was 60/40 (per JSON), not 60/20 as harness text said. Final 5-anchor sweep launched but didn't complete in workflow session - A1/A2/A3 screenshots captured at 11:59 but no final metrics written. Fresh sweep dispatched.",
+      "model": "opus",
+      "kind": "engineering",
+      "workflow_id": "wf_0eabb9d7-961",
+      "subagent_tokens": 123928
+    },
+    {
+      "job_id": "wave-4-10-stage-4-fresh-sweep-20260609",
+      "sprint": 12,
+      "description": "Wave 4.10 Stage 4 fresh sweep attempt #2: workflow timed out at 9.5min before sweep finished (vs ~17min needed). KEY FINDING: services/agent/.venv also missing playwright; installed playwright 1.60.0 + deps. Background sweep PID 2408944 launched and confirmed alive (A1 PNG captured at 12:11). Collect-results polling agent dispatched separately to wait for completion.",
+      "model": "opus",
+      "kind": "engineering",
+      "workflow_id": "wf_bc9f758a-2b5",
+      "subagent_tokens": 45835
+    },
+    {
+      "job_id": "wave-4-10-stage-4-sweep-collect-20260609",
+      "sprint": 12,
+      "description": "Wave 4.10 Stage 4 sweep finally completed via polling-collect agent (waited ~24min on background PID 2408944). FINAL METRICS: first_tool=100% (+40pp, PASS threshold 80%), full_sequence=20% (-20pp REGRESSION vs 40% baseline, FAIL threshold 70%). ARCHITECTURE THESIS VALIDATED: 5/5 anchors picked correct first tool (routing layer + always-narrate + endpoint name map all working). FULL-SEQUENCE REGRESSION IS ENVIRONMENTAL: every anchor 2-5 hit 'OSERROR Project was not passed' \u2014 GCP project env var not set when agent starts (same pattern as earlier missing deps google-cloud-storage and playwright). A4 routed correctly straight to run_model_flood_scenario but Cloud Run config error.",
+      "model": "sonnet",
+      "kind": "engineering",
+      "workflow_id": "wf_2709baa7-205",
+      "subagent_tokens": 68505
+    },
+    {
+      "job_id": "wave-4-10-close-a2-verify-AND-wave-4-11-p2-20260609",
+      "sprint": 12,
+      "description": "Parallel pair (PASS+PASS in ~13min): (A) Wave 4.10 A2 single-anchor verify \u2014 full_sequence_correct=TRUE, cache HIT (82K\u00d77 iter), GCP fallback fix VERIFIED end-to-end. Observed chain shows full architectural cascade: geocode \u2192 discover_dataset \u2192 list_categories \u2192 list_tools_in_category \u2192 fetch_wdpa (post-hoc validator routing in production). (B) Wave 4.11 P2 postprocess_pelicun atomic tool \u2014 18 tests pass, 0 regressions, ImpactEnvelope output validates. Zero Gemini for P2.",
+      "model": "sonnet+opus",
+      "kind": "engineering",
+      "workflow_id": "wf_37d591af-9a9",
+      "subagent_tokens": 159064
+    },
+    {
+      "job_id": "wave-4-11-p3-composer-AND-m1-mongo-mcp-20260609",
+      "sprint": 12,
+      "description": "Parallel pair PASS+PASS (~18.5min): (A) Wave 4.11 P3 compute_impact_envelope composer - chains geocode\u2192NSI\u2192Pelicun\u2192postprocess into single LLM-visible tool; 13/13 tests pass; deterministic narrative format. (B) Wave 4.11 M1 MongoDB MCP infra - surprising find: MCP substrate was already fully wired (server.py/mcp.py/persistence.py complete). Job became scaffolding (infra/mongo-mcp/ README + start.sh + .env.example) + 3 Pydantic collection schemas + wiring tests.",
+      "model": "opus+sonnet",
+      "kind": "engineering",
+      "workflow_id": "wf_8ab324b3-42e",
+      "subagent_tokens": 275953
+    },
+    {
+      "job_id": "wave-4-11-p4-impact-panel-AND-m3-telemetry-mongo-20260609",
+      "sprint": 12,
+      "description": "Parallel pair PASS+PASS (~23min): (A) Wave 4.11 P4 ImpactPanel - slide-out web panel rendering ImpactEnvelope (4 headline cards, DS distribution bars, per-occupancy table, provenance footer); 23 vitest cases, prefers-reduced-motion respected, dev seam __grace2InjectImpactEnvelope; OQ: agent needs to emit 'impact-envelope' WS envelope for production wiring. (B) Wave 4.11 M3 telemetry writer Mongo backend - emit_tool_call_event now routes through Persistence singleton when GRACE2_MONGO_MCP_STDIO=1, validates against ToolCallTelemetryDocument; falls back to v0 local-file otherwise; 20 tests pass; fixed pre-existing test_telemetry flakiness.",
+      "model": "opus+sonnet",
+      "kind": "engineering",
+      "workflow_id": "wf_8bc4cdc8-3a8",
+      "subagent_tokens": 256068
+    },
+    {
+      "job_id": "wave-4-11-m5-discover-mongo-AND-m7-dashboard-20260609",
+      "sprint": 12,
+      "description": "Parallel pair PASS+PASS (~26min): (A) Wave 4.11 M5 discover_dataset 4th channel - co-occurrence boost from tool_call_telemetry Mongo collection via Persistence._mcp.call_tool; 5-min cache refresh + threading lock; get_dynamic_hot_set substrate for M6 (top-K from Mongo with static fallback); 12 new + 21 existing tests pass; graceful fallback when Mongo unbound. (B) Wave 4.11 M7 routing dashboard - /api/telemetry/summary endpoint + RoutingQualityDashboard modal (4 KPI cards + top-15 bar chart + per-tool table + chains pills); 30s auto-refresh; Mongo\u2192file fallback.",
+      "model": "opus",
+      "kind": "engineering",
+      "workflow_id": "wf_3ca32c73-6bb",
+      "subagent_tokens": 285620
+    },
+    {
+      "job_id": "wave-4-11-followups-20260609",
+      "sprint": 12,
+      "description": "Wave 4.11 follow-ups PASS+PASS (~17min): (A) impact-envelope WS emission helper after compute_impact_envelope dispatch + M6 wire-up (AllowedToolSet.user_id + _dynamic_hot_set cache + as_frozenset_async() behind GRACE2_DYNAMIC_HOT_SET=1 flag). (B) ws.ts onImpactEnvelope handler + App.tsx wiring + SESSION_SCOPED_TYPES fan-out. Closes Wave 4.11 OQ on production WS routing.",
+      "model": "sonnet",
+      "kind": "engineering",
+      "workflow_id": "wf_3f18a372-d49",
+      "subagent_tokens": 217209
+    },
+    {
+      "job_id": "sprint-13-stage-1-20260609",
+      "sprint": 13,
+      "description": "Sprint-13 Stage 1 (7 jobs, 5 tracks, 22 agents): MODFLOW container+adapter+contracts, chart schema, analytical QA, flood v2 forcing, MRMS enhancement. Panels: 0220 2/4->fix->4/4 (Dockerfile zip-dir bug caught), 0221 4/4, 0223 2/2.",
+      "model": "opus+sonnet",
+      "kind": "engineering",
+      "workflow_id": "wf_2edd3fdb-1c3",
+      "subagent_tokens": 1942707
+    },
+    {
+      "job_id": "job-0232-infra-20260609",
+      "sprint": 13,
+      "description": "Python sandbox container pull-forward + 4-lens panel: ADVANCE first-pass (4/4). Egress-denied sandbox (VPC default-deny + in-process guard), local-subprocess fallback, 19 tests. 2 non-blocking correctness findings (large-result data loss, blind envelope truncation) handed to job-0233.",
+      "model": "opus",
+      "kind": "engineering",
+      "workflow_id": "wf_327fa8ea-b60",
+      "subagent_tokens": 518359
+    },
+    {
+      "job_id": "sprint-13-stage-2-20260609",
+      "sprint": 13,
+      "description": "Stage 2 (5 jobs, 3 tracks, 9 agents): MODFLOW workflows+tool (0227, live mf6 plume 1122 mg/L), Case 2 composer (0228, panel 4/4 first-pass, Twin Falls TCE E2E), Case 3 composer (0229), chart tools+emission loop (0230), chart web UI (0231).",
+      "model": "opus+sonnet",
+      "kind": "engineering",
+      "workflow_id": "wf_6765f0af-f1b",
+      "subagent_tokens": 1481668
+    },
+    {
+      "job_id": "job-0203-m4-panel-20260609",
+      "sprint": 13,
+      "description": "M4 4-lens Opus adversarial panel on orchestrator-authored job-0203: 4/4 CONFIRM first pass. Lenses enumerated 11 update-one call sites, adversarial untrusted-tag attacks, concurrent-touch race, full ownership/regression sweep. 2 report-accuracy nits amended.",
+      "model": "opus",
+      "kind": "verification",
+      "workflow_id": "wf_6b02d89c-aa9",
+      "subagent_tokens": 348712
     }
   ],
   "totals_by_sprint": {
@@ -1031,7 +1274,8 @@
     "9": 713020,
     "10": 1540974,
     "11": 999540,
-    "12": 16037953
+    "12": 27545642,
+    "13": 4291446
   },
   "historical_context": {
     "note": "Captured for accountability \u2014 NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
