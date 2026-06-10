@@ -673,7 +673,11 @@ function SortableRow({
           data-testid="layer-opacity"
           style={{
             flex: 1,
-            height: 4,
+            // 16px box so the native thumb (~14-16px) fits INSIDE the
+            // element — at 4px it overflowed and the row's overflow:hidden
+            // clipped the dot top+bottom (user-reported). The track itself
+            // still renders thin; only the hit/box height grows.
+            height: 16,
             accentColor: kind.color,
             cursor: "pointer",
           }}
