@@ -1,0 +1,12 @@
+ Integer          0.82247200    
+ Real             1.9499280     
+ -------------------------------
+ Total            2.7832650     
+ Virtual          0.0000000     
+ -------------------------------
+
+
+ 
+ Run end date and time (yyyy/mm/dd hh:mm:ss): 2026/06/09 19:50:10
+ Elapsed run time:  0.476 Seconds
+ Normal termination of simulation.

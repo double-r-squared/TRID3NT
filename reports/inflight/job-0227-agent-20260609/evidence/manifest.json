@@ -1,0 +1,95 @@
+{
+  "inputs": [
+    {
+      "gs_uri": "gs://grace-2-hazard-prod-cache/modflow/01KTQPZWGDZBHT9WCHGBQMRDPG/gwf/gwf_model.chd",
+      "dest": "gwf/gwf_model.chd"
+    },
+    {
+      "gs_uri": "gs://grace-2-hazard-prod-cache/modflow/01KTQPZWGDZBHT9WCHGBQMRDPG/gwf/gwf_model.dis",
+      "dest": "gwf/gwf_model.dis"
+    },
+    {
+      "gs_uri": "gs://grace-2-hazard-prod-cache/modflow/01KTQPZWGDZBHT9WCHGBQMRDPG/gwf/gwf_model.ic",
+      "dest": "gwf/gwf_model.ic"
+    },
+    {
+      "gs_uri": "gs://grace-2-hazard-prod-cache/modflow/01KTQPZWGDZBHT9WCHGBQMRDPG/gwf/gwf_model.ims",
+      "dest": "gwf/gwf_model.ims"
+    },
+    {
+      "gs_uri": "gs://grace-2-hazard-prod-cache/modflow/01KTQPZWGDZBHT9WCHGBQMRDPG/gwf/gwf_model.nam",
+      "dest": "gwf/gwf_model.nam"
+    },
+    {
+      "gs_uri": "gs://grace-2-hazard-prod-cache/modflow/01KTQPZWGDZBHT9WCHGBQMRDPG/gwf/gwf_model.npf",
+      "dest": "gwf/gwf_model.npf"
+    },
+    {
+      "gs_uri": "gs://grace-2-hazard-prod-cache/modflow/01KTQPZWGDZBHT9WCHGBQMRDPG/gwf/gwf_model.oc",
+      "dest": "gwf/gwf_model.oc"
+    },
+    {
+      "gs_uri": "gs://grace-2-hazard-prod-cache/modflow/01KTQPZWGDZBHT9WCHGBQMRDPG/gwfgwt.exg",
+      "dest": "gwfgwt.exg"
+    },
+    {
+      "gs_uri": "gs://grace-2-hazard-prod-cache/modflow/01KTQPZWGDZBHT9WCHGBQMRDPG/gwt/gwt_model.adv",
+      "dest": "gwt/gwt_model.adv"
+    },
+    {
+      "gs_uri": "gs://grace-2-hazard-prod-cache/modflow/01KTQPZWGDZBHT9WCHGBQMRDPG/gwt/gwt_model.dis",
+      "dest": "gwt/gwt_model.dis"
+    },
+    {
+      "gs_uri": "gs://grace-2-hazard-prod-cache/modflow/01KTQPZWGDZBHT9WCHGBQMRDPG/gwt/gwt_model.dsp",
+      "dest": "gwt/gwt_model.dsp"
+    },
+    {
+      "gs_uri": "gs://grace-2-hazard-prod-cache/modflow/01KTQPZWGDZBHT9WCHGBQMRDPG/gwt/gwt_model.ic",
+      "dest": "gwt/gwt_model.ic"
+    },
+    {
+      "gs_uri": "gs://grace-2-hazard-prod-cache/modflow/01KTQPZWGDZBHT9WCHGBQMRDPG/gwt/gwt_model.ims",
+      "dest": "gwt/gwt_model.ims"
+    },
+    {
+      "gs_uri": "gs://grace-2-hazard-prod-cache/modflow/01KTQPZWGDZBHT9WCHGBQMRDPG/gwt/gwt_model.mst",
+      "dest": "gwt/gwt_model.mst"
+    },
+    {
+      "gs_uri": "gs://grace-2-hazard-prod-cache/modflow/01KTQPZWGDZBHT9WCHGBQMRDPG/gwt/gwt_model.nam",
+      "dest": "gwt/gwt_model.nam"
+    },
+    {
+      "gs_uri": "gs://grace-2-hazard-prod-cache/modflow/01KTQPZWGDZBHT9WCHGBQMRDPG/gwt/gwt_model.oc",
+      "dest": "gwt/gwt_model.oc"
+    },
+    {
+      "gs_uri": "gs://grace-2-hazard-prod-cache/modflow/01KTQPZWGDZBHT9WCHGBQMRDPG/gwt/gwt_model.src",
+      "dest": "gwt/gwt_model.src"
+    },
+    {
+      "gs_uri": "gs://grace-2-hazard-prod-cache/modflow/01KTQPZWGDZBHT9WCHGBQMRDPG/gwt/gwt_model.ssm",
+      "dest": "gwt/gwt_model.ssm"
+    },
+    {
+      "gs_uri": "gs://grace-2-hazard-prod-cache/modflow/01KTQPZWGDZBHT9WCHGBQMRDPG/mfsim.nam",
+      "dest": "mfsim.nam"
+    },
+    {
+      "gs_uri": "gs://grace-2-hazard-prod-cache/modflow/01KTQPZWGDZBHT9WCHGBQMRDPG/mfsim.tdis",
+      "dest": "mfsim.tdis"
+    }
+  ],
+  "mf6_args": [],
+  "model_crs": "EPSG:32617",
+  "outputs": [
+    "gwt_model.ucn",
+    "gwf_model.hds",
+    "*.cbc",
+    "*.lst",
+    "mfsim.lst",
+    "**/gwt_model.ucn",
+    "**/*.lst"
+  ]
+}

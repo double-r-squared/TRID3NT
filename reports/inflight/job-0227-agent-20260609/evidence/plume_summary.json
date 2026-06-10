@@ -1,0 +1,16 @@
+{
+  "layer_id": "plume-concentration-01KTQPYJ9ACS7EVFHB1GEJAESQ",
+  "name": "Contaminant Plume (peak concentration)",
+  "layer_type": "raster",
+  "uri": "file:///tmp/tmpampz9on5_4326.tif",
+  "style_preset": "continuous_plume_concentration",
+  "units": "mg/L",
+  "bbox": [
+    -81.88011533513323,
+    26.63092933421118,
+    -81.86004396794641,
+    26.6490891426183
+  ],
+  "max_concentration_mgl": 1122.3360955576966,
+  "plume_area_km2": 0.0275
+}

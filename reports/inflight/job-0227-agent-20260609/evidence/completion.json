@@ -1,0 +1,21 @@
+{
+  "run_id": "01KTQPZWGDZBHT9WCHGBQMRDPG",
+  "status": "ok",
+  "exit_code": 0,
+  "converged": true,
+  "model_crs": "EPSG:32617",
+  "mf6_stdout_uri": "file:///home/nate/Documents/GRACE-2/reports/inflight/job-0227-agent-20260609/evidence/deck_keep/deck/mf6.stdout",
+  "mf6_stderr_uri": "file:///home/nate/Documents/GRACE-2/reports/inflight/job-0227-agent-20260609/evidence/deck_keep/deck/mf6.stderr",
+  "output_uris": [
+    "file:///home/nate/Documents/GRACE-2/reports/inflight/job-0227-agent-20260609/evidence/deck_keep/deck/gwf/gwf_model.lst",
+    "file:///home/nate/Documents/GRACE-2/reports/inflight/job-0227-agent-20260609/evidence/deck_keep/deck/gwf_model.cbc",
+    "file:///home/nate/Documents/GRACE-2/reports/inflight/job-0227-agent-20260609/evidence/deck_keep/deck/gwf_model.hds",
+    "file:///home/nate/Documents/GRACE-2/reports/inflight/job-0227-agent-20260609/evidence/deck_keep/deck/gwt/gwt_model.lst",
+    "file:///home/nate/Documents/GRACE-2/reports/inflight/job-0227-agent-20260609/evidence/deck_keep/deck/gwt_model.cbc",
+    "file:///home/nate/Documents/GRACE-2/reports/inflight/job-0227-agent-20260609/evidence/deck_keep/deck/gwt_model.ucn",
+    "file:///home/nate/Documents/GRACE-2/reports/inflight/job-0227-agent-20260609/evidence/deck_keep/deck/mfsim.lst"
+  ],
+  "started_at": "2026-06-10T02:50:10Z",
+  "finished_at": "2026-06-10T02:50:10Z",
+  "error": null
+}
