@@ -192,3 +192,16 @@ Repo is a git repository on branch `main`, root-commit `6fd37e6`. Remote: `https
 - **Sprint-05 close sign-off.** M3 milestone achieved; ready to open sprint-06 (M4 atomic-tool starter set) per the orchestrator-driven sprint loop.
 - **SRS v0.3.15 amendment posture.** Either (a) authorize relaunch with verdict fixes + Decision P stripped, or (b) hand-author by user, or (c) defer until M4 surfaces hard requirements that force resolution.
 - **OQ-W-26-PIPELINE-STEP-FIELDS routing.** Confirm schema-extension of Appendix D.6 with the three optional fields before sprint-06 emits real pipeline-state.
+
+## Sprint-13 Stage 3+4 close (2026-06-10)
+
+Stage 3 live gate: 10 rounds, 13 structural defects found+fixed (ledger in
+`reports/inflight/sprint-13-stage-3-close-20260610/report.md`). Case 2 PASS
+(full chain incl. render), sandbox PASS, flood publish+render PASS, P5 chain
+proven link-by-link Gemini-free (ImpactEnvelope over 70,740 NSI structures);
+live one-conversation P5 assembly = user demo exercise. Stage 4 sweep: agent
+4131 pass (3 pre-existing working-tree drift), contracts 371, web 503. ALL
+SOLVERS NOW GATED (confirm cards). Agent demo build = commit 76f6aab.
+Tails: QGIS env one-liner (USER_UNBLOCK.md), Case-3 weather-gated legs,
+13.5 items (source_cog_uri schema, honest-narration classifier, loop-stall).
+HALTED before sprint-13.5 per user directive (live demo first).

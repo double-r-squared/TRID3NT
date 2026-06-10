@@ -1327,6 +1327,78 @@
       "model": "opus",
       "kind": "acceptance",
       "subagent_tokens": 225000
+    },
+    {
+      "job_id": "job-0245-reverify-round3-20260610",
+      "sprint": 13,
+      "description": "Round 3 + panels (PARTIAL, 3 turns): publish_layer PROVEN end-to-end (worker CONDITION_SUCCEEDED, layer in served .qgs; OQ-0244-PUBLISH CLOSED). 2 NEW root causes: QGIS project-cache staleness (infra; env fix in repo + USER_UNBLOCK runbook, live mutation refused by auto-mode) + LLM context carryover across Cases (agent; fixed orchestrator-direct 74fc0d6).",
+      "model": "opus",
+      "kind": "acceptance",
+      "workflow_id": "wf_eafa0b64-ae7",
+      "subagent_tokens": 470440
+    },
+    {
+      "job_id": "job-0247-reverify-round4-20260610",
+      "sprint": 13,
+      "description": "Round 4 + panels (PARTIAL, 2 turns): context-carryover fix VERIFIED LIVE (OQ-0245 CLOSED, gw_hits=0 both fresh cases); QGIS cache self-resolved on cold start (round-3 plume layer now serves); NEW OQ-0247 code_exec_request not in hot-set -> false 'cannot run Python' (fixed orchestrator-direct 5026784); p5 BLOCKED-benign (honest clarification).",
+      "model": "opus",
+      "kind": "acceptance",
+      "workflow_id": "wf_bc403fe7-dcd",
+      "subagent_tokens": 532288
+    },
+    {
+      "job_id": "job-0248-reverify-round5-20260610",
+      "sprint": 13,
+      "description": "Round 5 FINAL + panels (PARTIAL, 3 turns): sandbox gate PASS end-to-end live (hot-set fix verified, mean 6.75/max 12 narrated); Case 2 render PASS zero-Gemini (WMS GetMap 340 plume px over Twin Falls); hot-set self-widening recovery proven (70,740 NSI structures fetched). P5 blocked by NEW OQ-0248-FLOOD-BUILD-VSIGS (hydromt 'No such file' on existing GCS DEM).",
+      "model": "opus",
+      "kind": "acceptance",
+      "workflow_id": "wf_31450e0f-adb",
+      "subagent_tokens": 465455
+    },
+    {
+      "job_id": "job-0250-reverify-round6-20260610",
+      "sprint": 13,
+      "description": "Round 6 + panels (FAIL-honest, 2 turns): staging fix PROVEN live (cache-hit reads + 2 complete cloud SFINCS solves); NEW OQ-0250 postprocess gcsfs-0.8.0 NoOpCallback (storage<3 pin forced ancient gcsfs). Fixed orchestrator-direct 0b35791 (storage-client fetch + fsspec family harmonized 2026.1.0 + storage 3.x); proven Gemini-free against the real solve output.",
+      "model": "opus",
+      "kind": "acceptance",
+      "workflow_id": "wf_35605796-462",
+      "subagent_tokens": 417599
+    },
+    {
+      "job_id": "job-0252-reverify-round7-20260610",
+      "sprint": 13,
+      "description": "Round 7 + panels (PARTIAL, 1 turn): postprocess fix PROVEN LIVE end-to-end \u2014 flood layer published + rendered in MapLibre w/ colorbar (first full flood chain in the loop). Last defect OQ-0252 Pelicun hazard-URI hallucination (fixed orchestrator-direct d534f4c: SYSTEM_PROMPT GCS-URI discipline + Pelicun declaration contract).",
+      "model": "opus",
+      "kind": "acceptance",
+      "workflow_id": "wf_12e1fb9b-982",
+      "subagent_tokens": 570716
+    },
+    {
+      "job_id": "job-0253-reverify-rounds89-20260610",
+      "sprint": 13,
+      "description": "Rounds 8/9 + panels (FAIL-honest, 3 turns): URI-discipline fix killed cache-path invention but Gemini RECONSTRUCTS (flood result uri = WMS URL per OQ-62; gs:// COG never visible) -> phantom runs/ prefix -> 404. Fixed orchestrator-direct 6804588: Pelicun suffix-repair guard (proven on the exact mangled URI) + DLML data restored (venv-sync regression, 7 suite failures).",
+      "model": "opus",
+      "kind": "acceptance",
+      "workflow_id": "wf_05ccd834-6c1",
+      "subagent_tokens": 909456
+    },
+    {
+      "job_id": "job-0255-reverify-round10-20260610",
+      "sprint": 13,
+      "description": "Round 10 + panels (FAIL-honest, 1 turn): flood chain solid (solve+postprocess+publish+render); NEW OQ-0255 WMS-URL-as-hazard (Gemini copied the only URI visible \u2014 OQ-62 makes LayerURI.uri the WMS link) + re-solve loop. Fixed orchestrator-direct 76f6aab: WMS reverse-map (proven Gemini-free to full ImpactEnvelope over 70,740 structures), scope/no-re-solve prompt clauses, flood solvers gated.",
+      "model": "opus",
+      "kind": "acceptance",
+      "workflow_id": "wf_a9f93c02-eb2",
+      "subagent_tokens": 637467
+    },
+    {
+      "job_id": "sprint-13-stage-4-sweep-20260610",
+      "sprint": 13,
+      "description": "Stage 4 close sweep: agent 4131 passed/3 pre-existing-drift failures (uncommitted Wave 4.10 data_fetch docstring edits), contracts 371/371, web 503/503. Stage 3 closed (10 live rounds, 13 structural fixes, ~28 Gemini turns). STOPPED per user directive for live demo.",
+      "model": "n/a",
+      "kind": "close",
+      "workflow_id": "local",
+      "subagent_tokens": 0
     }
   ],
   "totals_by_sprint": {
@@ -1337,7 +1409,7 @@
     "10": 1540974,
     "11": 999540,
     "12": 27545642,
-    "13": 6449996,
+    "13": 10453417,
     "13.5": 175296
   },
   "historical_context": {
