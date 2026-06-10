@@ -1049,6 +1049,22 @@ def summarize_tool_result(
     ):
         return _summarize_chart_emission(tool_name, result)
 
+    # job-0233 (sprint-13 Stage 2): code_exec_request returns a COMPACT summary
+    # (status / result descriptor / stdout tail / truncated / duration) PLUS the
+    # full ``code-exec-result`` wire payload under ``_code_exec_result`` (which
+    # carries the larger 16-KiB stdout/stderr fields). The full payload already
+    # went to the client on the ``code-exec-result`` WS envelope
+    # (server.py ``_maybe_emit_code_exec_result``); strip it from the
+    # function_response so Gemini narrates from the compact summary + structured
+    # ``result``, not the raw logs.
+    if isinstance(result, dict) and "_code_exec_result" in result:
+        compact = {k: v for k, v in result.items() if k != "_code_exec_result"}
+        return {
+            "tool": tool_name,
+            "status": "ok",
+            "result": _coerce_to_summary_value(compact),
+        }
+
     if isinstance(result, dict):
         summary = _coerce_to_summary_value(result)
         payload: dict[str, Any] = {

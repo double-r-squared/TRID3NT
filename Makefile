@@ -40,6 +40,7 @@ ATLAS_PROJECT_ID ?= 6a234700a0e1295958d10cf9
         worker-build worker-push worker-deploy worker-run-job \
         sfincs-build sfincs-push sfincs-deploy \
         modflow-build modflow-push modflow-deploy \
+        python-sandbox-build python-sandbox-push \
         srs
 
 help:
@@ -81,6 +82,9 @@ help:
 	@echo "  modflow-build       build the MODFLOW 6 solver image via Cloud Build (linux/amd64)"
 	@echo "  modflow-push        alias of modflow-build (Cloud Build pushes to AR)"
 	@echo "  modflow-deploy      tofu apply the MODFLOW Cloud Run Job + Workflows + SA + IAM"
+	@echo ""
+	@echo "  python-sandbox-build  build the conversational-analysis Python sandbox image via Cloud Build"
+	@echo "  python-sandbox-push   alias of python-sandbox-build (Cloud Build pushes to AR)"
 	@echo ""
 	@echo "  srs                 regenerate docs/SRS_v0.3.md from docs/srs/* parts (lossless concat)"
 
@@ -396,6 +400,30 @@ modflow-deploy:
 	  -target=google_project_iam_member.workflow_invoker_modflow_log_writer \
 	  -target=google_project_iam_member.workflow_invoker_modflow_run_viewer \
 	  -target=google_workflows_workflow.modflow_orchestrator
+
+# --- Python sandbox image (job-0232 substrate; target added job-0233) -------
+#
+# The conversational-analysis Python sandbox Cloud Run Job image
+# (infra/python-sandbox/). Mirrors modflow-build / sfincs-build: Cloud Build to
+# the grace-2-containers AR repo, linux/amd64. After a build the new digest is
+# logged; paste it into infra/python-sandbox.tf's image-digest local then
+# `cd infra && tofu apply`. See job-0232 report.md § "BLOCKED-ENV runbook".
+
+SANDBOX_AR_REPO   ?= grace-2-containers
+SANDBOX_IMAGE     ?= grace-2-python-sandbox
+SANDBOX_IMAGE_URI ?= $(GCP_REGION)-docker.pkg.dev/$(GCP_PROJECT_ID)/$(SANDBOX_AR_REPO)/$(SANDBOX_IMAGE):latest
+
+python-sandbox-build:
+	@echo "Building $(SANDBOX_IMAGE_URI) via Cloud Build (linux/amd64)..."
+	gcloud builds submit \
+	  --project=$(GCP_PROJECT_ID) \
+	  --config=infra/python-sandbox/cloudbuild.yaml \
+	  --substitutions=_REGION=$(GCP_REGION),_AR_REPO=$(SANDBOX_AR_REPO),_IMAGE=$(SANDBOX_IMAGE) \
+	  .
+
+# Cloud Build pushes during `submit`; this alias keeps the build/push pair
+# symmetric with sfincs-* / modflow-* / worker-*.
+python-sandbox-push: python-sandbox-build
 
 # --- Playwright + screenshots (job-0027) -----------------------------------
 #

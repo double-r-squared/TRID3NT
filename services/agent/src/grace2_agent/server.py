@@ -53,6 +53,7 @@ from grace2_contracts.payload_warning import (
     PayloadConfirmationEnvelopePayload,
     PayloadWarningEnvelopePayload,
 )
+from grace2_contracts.sandbox_contracts import CodeExecRequestPayload
 from grace2_contracts.secrets import (
     SecretAddEnvelopePayload,
     SecretRevokeEnvelopePayload,
@@ -114,6 +115,10 @@ from .telemetry import compute_args_hash, emit_tool_call_event
 from .tool_arg_normalizer import normalize_args
 from .tools import TOOL_REGISTRY
 from .tools.chart_tools import is_chart_emission_result
+from .tools.code_exec_tool import (
+    CODE_EXEC_RESULT_KEY,
+    is_code_exec_result,
+)
 from .categories import (
     AllowedToolSet,
     OutOfAllowedSetError,
@@ -131,6 +136,14 @@ logger = logging.getLogger("grace2_agent.server")
 # writes (Appendix D.6) are NOT a trigger — that carveout is documented in
 # the report, not represented as data here.
 CONFIRMATION_TRIGGERS: set[str] = set()
+
+# job-0233: the ``code_exec_request`` confirm gate validity window (seconds).
+# Running arbitrary Python is a deliberate user decision; the gate gets the same
+# 300s read-decision TTL as the payload-warning gate. On expiry the gate fails
+# closed (CONFIRMATION_TIMEOUT) and the sandbox does not run.
+CODE_EXEC_CONFIRM_TIMEOUT_SECONDS: int = int(
+    os.environ.get("GRACE2_CODE_EXEC_CONFIRM_TIMEOUT", "300")
+)
 
 
 # ---------------------------------------------------------------------------
@@ -196,6 +209,27 @@ class PayloadWarningCancelledError(RuntimeError):
             "(user chose 'cancel' or gate timed out)"
         )
         self.tool_name = tool_name
+
+
+class CodeExecConfirmationCancelledError(RuntimeError):
+    """Raised when the ``code_exec_request`` confirm gate denies the run because
+    the user chose ``cancel`` or the gate timed out (job-0233).
+
+    Running arbitrary Python is a consequential action; the gate fails closed.
+    ``retryable=False``: the user explicitly declined to run THIS code — Gemini
+    should narrate the decline honestly and not re-issue the identical snippet
+    without the user changing course.
+    """
+
+    error_code: str = "CODE_EXEC_CANCELLED"
+    retryable: bool = False
+
+    def __init__(self, code_exec_id: str) -> None:
+        super().__init__(
+            f"code_exec_request {code_exec_id!r} cancelled at the confirm gate "
+            "(user chose 'cancel' or gate timed out); the sandbox did not run"
+        )
+        self.code_exec_id = code_exec_id
 
 
 # job-0115: app-level Persistence singleton (Wave 1.5).
@@ -855,6 +889,16 @@ async def _stream_gemini_reply(
                     # SessionChartRecord so the chart replays on Case rehydration.
                     if is_chart_emission_result(result):
                         await _maybe_emit_chart(websocket, state, result)
+                    # job-0233 (sprint-13 Stage 2): emit a ``code-exec-result`` WS
+                    # envelope whenever ``code_exec_request`` returns a result
+                    # carrying the full code-exec-result payload (key signal:
+                    # ``_code_exec_result`` with ``envelope_type ==
+                    # "code-exec-result"``). Fires IN ADDITION to the standard
+                    # function_response — the web client gets the full result
+                    # card via the envelope, and Gemini gets the COMPACT summary
+                    # (the full payload is stripped by ``summarize_tool_result``).
+                    if is_code_exec_result(result):
+                        await _maybe_emit_code_exec_result(websocket, state, result)
                     # job-B8: record success so the consecutive-failure counter
                     # resets — a recovered tool should not stay penalised.
                     state.circuit_breaker.record_success(call.name)
@@ -1767,6 +1811,109 @@ async def _maybe_gate_on_payload_warning(
     return True, revised
 
 
+async def _gate_on_code_exec(
+    websocket: ServerConnection,
+    state: SessionState,
+    params: dict,
+) -> tuple[bool, dict]:
+    """Confirm gate for ``code_exec_request`` (job-0233) — MANDATORY, fail-closed.
+
+    Running arbitrary Python is a consequential action; the user MUST approve the
+    exact code before the sandbox runs. This gate emits a ``code-exec-request``
+    confirm card and blocks on the SAME ``pending_payload_warnings`` future seam
+    the payload-warning gate uses (the ``code_exec_id`` is the correlation key,
+    carried back as the ``tool-payload-confirmation.warning_id``) — no new
+    confirm plumbing.
+
+    Returns ``(should_dispatch, effective_params)``:
+
+    - ``(True, params + {confirmed: True, code_exec_id})`` — user approved
+      (``decision="proceed"``). The tool body runs the sandbox.
+    - ``(False, params)`` — user chose ``cancel`` / gate timed out. The caller
+      raises :class:`CodeExecConfirmationCancelledError` so Gemini sees a typed,
+      non-retryable error and narrates the decline honestly.
+
+    ``narrow_scope`` is NOT offered for code-exec (you don't "narrow" a code
+    snippet — you cancel and the agent rewrites it); a ``narrow_scope`` reply is
+    treated as a cancel (fail-closed).
+    """
+    python_code = params.get("python_code")
+    if not isinstance(python_code, str) or not python_code.strip():
+        # No code to confirm — let the tool body raise its own params error.
+        return True, params
+
+    code_exec_id = new_ulid()
+    request_payload = CodeExecRequestPayload(
+        code_exec_id=code_exec_id,
+        python_code=python_code,
+        layer_refs=params.get("layer_refs") or {},
+        rationale=params.get("rationale"),
+    )
+
+    # Create the future the inbound ``tool-payload-confirmation`` handler completes
+    # (keyed on code_exec_id == warning_id). Same seam as the payload-warning gate.
+    loop = asyncio.get_running_loop()
+    fut: asyncio.Future = loop.create_future()
+    state.pending_payload_warnings[code_exec_id] = fut
+
+    await websocket.send(
+        _new_envelope("code-exec-request", state.session_id, request_payload)
+    )
+    logger.info(
+        "code-exec-request emitted session=%s code_exec_id=%s code_len=%d n_layers=%d",
+        state.session_id,
+        code_exec_id,
+        len(python_code),
+        len(request_payload.layer_refs),
+    )
+
+    try:
+        decision_payload: PayloadConfirmationEnvelopePayload = await asyncio.wait_for(
+            fut, timeout=CODE_EXEC_CONFIRM_TIMEOUT_SECONDS
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "code-exec confirm gate timeout session=%s code_exec_id=%s",
+            state.session_id,
+            code_exec_id,
+        )
+        await _send_error(
+            websocket,
+            state.session_id,
+            "CONFIRMATION_TIMEOUT",
+            f"code_exec_request {code_exec_id!r} confirm gate timed out; "
+            "the sandbox did not run",
+        )
+        return False, params
+    finally:
+        state.pending_payload_warnings.pop(code_exec_id, None)
+
+    logger.info(
+        "code-exec confirm decision session=%s code_exec_id=%s decision=%s",
+        state.session_id,
+        code_exec_id,
+        decision_payload.decision,
+    )
+
+    if decision_payload.decision != "proceed":
+        # cancel OR narrow_scope (the latter is meaningless for code; fail-closed).
+        await _send_error(
+            websocket,
+            state.session_id,
+            "USER_INPUT_CANCELLED",
+            f"code_exec_request {code_exec_id!r} declined by user "
+            f"(decision={decision_payload.decision!r}); the sandbox did not run",
+        )
+        return False, params
+
+    # Approved: inject the gate-cleared flags so the tool body dispatches with the
+    # SAME code_exec_id the request card carried (so request/result cards correlate).
+    approved = dict(params)
+    approved["confirmed"] = True
+    approved["code_exec_id"] = code_exec_id
+    return True, approved
+
+
 def _ensure_emitter(websocket: ServerConnection, state: SessionState) -> None:
     """Bind a ``PipelineEmitter`` to this session if one isn't already.
 
@@ -1871,6 +2018,23 @@ async def _invoke_tool_via_emitter(
         # LLM should narrate the cancellation and not re-issue the call unless
         # the user provides a narrower scope. (FR-AS-11, job B-rev.)
         raise PayloadWarningCancelledError(tool_name)
+
+    # job-0233: code_exec_request confirm gate. Running arbitrary Python is a
+    # consequential action — the user MUST approve the exact code first. The gate
+    # emits a ``code-exec-request`` card, blocks on the SAME
+    # ``pending_payload_warnings`` future seam (code_exec_id == warning_id), and
+    # on approval injects ``confirmed=True`` + the minted ``code_exec_id`` into
+    # params so the tool body dispatches the sandbox. A direct programmatic call
+    # that already carries ``confirmed=True`` (a trusted composer / test) is NOT
+    # re-gated — but a LLM-issued call never carries it, so the gate is mandatory
+    # on the LLM path. Fail-closed: cancel / timeout raises a typed, non-retryable
+    # error so Gemini narrates the decline and does not re-run the same snippet.
+    if tool_name == "code_exec_request" and not params.get("confirmed"):
+        should_run, params = await _gate_on_code_exec(websocket, state, params)
+        if not should_run:
+            raise CodeExecConfirmationCancelledError(
+                params.get("code_exec_id", "unknown")
+            )
 
     # job-0164: centralized kwarg sweep. Gemini routinely invents kwargs that
     # don't exist on our tools (``run_name``, ``scenario_id``,
@@ -2042,6 +2206,67 @@ async def _maybe_emit_impact_envelope(
     except Exception:  # noqa: BLE001 — side effect, never bubble up
         logger.exception(
             "impact-envelope emission failed session=%s", state.session_id
+        )
+
+
+async def _maybe_emit_code_exec_result(
+    websocket: ServerConnection,
+    state: SessionState,
+    code_exec_result: dict,
+) -> None:
+    """Emit a ``code-exec-result`` WS envelope (job-0233).
+
+    Called when ``code_exec_request`` returns a result carrying the full
+    code-exec-result payload under ``_code_exec_result``
+    (``is_code_exec_result(result)`` is True). Fires IN ADDITION to the standard
+    ``function_response``:
+
+    - ``code-exec-result`` → the FULL result payload (status + stdout/stderr
+      tails + the structured result descriptor + truncated flag + duration) for
+      the web client to render the result card. The function_response Gemini
+      reads is the COMPACT summary (the full payload is stripped by
+      ``adapter.summarize_tool_result`` via the ``_code_exec_result`` key) so
+      narration sources the structured ``result``, not the raw logs.
+
+    Wire shape mirrors ``chart-emission`` (the precedent)::
+
+        {
+          "type": "code-exec-result",
+          "session_id": str,
+          "payload": { ...full CodeExecResultPayload dict... }
+        }
+
+    Best-effort: a serialization / wire failure is logged but never raised — the
+    function_response path (and thus the agent loop) must not be interrupted by a
+    side-channel emission failure. Code-exec results are ephemeral (not persisted
+    to the session ``charts`` array) — a re-opened Case replays the chat + charts,
+    not transient computations.
+    """
+    import json as _json
+
+    payload = code_exec_result.get(CODE_EXEC_RESULT_KEY)
+    if not isinstance(payload, dict):
+        return
+    try:
+        await websocket.send(
+            _json.dumps(
+                {
+                    "type": "code-exec-result",
+                    "session_id": state.session_id,
+                    "payload": payload,
+                }
+            )
+        )
+        logger.info(
+            "code-exec-result emitted session=%s code_exec_id=%s status=%s truncated=%s",
+            state.session_id,
+            payload.get("code_exec_id"),
+            payload.get("status"),
+            payload.get("truncated"),
+        )
+    except Exception:  # noqa: BLE001 — side effect, never bubble up
+        logger.exception(
+            "code-exec-result emission failed session=%s", state.session_id
         )
 
 

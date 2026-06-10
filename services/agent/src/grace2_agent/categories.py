@@ -314,6 +314,13 @@ PRIMARY_CATEGORY: dict[str, str] = {
     "generate_choropleth_legend": "geographic_primitives",
     "generate_time_series": "geographic_primitives",
     "generate_damage_distribution": "geographic_primitives",
+    # job-0233 (sprint-13 Stage 2): user-confirmed Python sandbox — the ad-hoc
+    # computation escape hatch behind the conversational data-analysis layer.
+    # The kickoff named a "data_analysis" category; no such category exists, so
+    # this is filed under geographic_primitives alongside the analytical Q&A +
+    # chart tools (the conversational-analysis surface). See job-0233 report
+    # OQ-CODE-EXEC-CATEGORY.
+    "code_exec_request": "geographic_primitives",
     "publish_layer": "geographic_primitives",
     "discover_dataset": "geographic_primitives",
     "catalog_search": "geographic_primitives",

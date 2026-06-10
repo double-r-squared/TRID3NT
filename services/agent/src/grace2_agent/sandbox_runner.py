@@ -56,6 +56,35 @@ from typing import Any
 
 LOG = logging.getLogger("grace2.agent.sandbox_runner")
 
+
+class SandboxCloudModeUnavailable(RuntimeError):
+    """Cloud-mode result readback is NOT wired in v0.1 (job-0233 OQ-SANDBOX-3).
+
+    The executor writes its result envelope to **stdout** (which lands in Cloud
+    Run logs), and the sandbox runtime service account is ``objectViewer``-only —
+    it CANNOT write the envelope to a GCS ``result_uri``. Rather than bake a GCS
+    write into the read-only SA (which would widen the hostile-code blast radius
+    and break Invariant 5), v0.1 keeps cloud dispatch as a fire-and-poll handle
+    with NO result readback path, and ``read_sandbox_result`` raises this typed
+    error so the agent narrates the limitation honestly instead of hanging or
+    fabricating a result.
+
+    The v0.1 supported path is the **local-subprocess** mode
+    (``GRACE2_SANDBOX_LOCAL=1``), which reads the child's stdout directly and
+    returns a complete result envelope synchronously. The sprint-13.5 identity
+    decision (which writer-identity transports the cloud result — a separate
+    objectAdmin sidecar SA, a Cloud Logging read, or a structured-log sink) is
+    documented in the job-0233 report.
+
+    ``error_code`` / ``retryable`` follow the FR-AS-11 typed-exception convention
+    so ``summarize_tool_result`` surfaces a structured function_response to
+    Gemini (the agent should fall back to local mode or narrate honestly, NOT
+    retry the identical cloud dispatch).
+    """
+
+    error_code: str = "SANDBOX_CLOUD_MODE_UNAVAILABLE"
+    retryable: bool = False
+
 # Wallclock cap (seconds) — matches infra/python-sandbox.tf's 60s Job timeout and
 # the executor's GRACE2_SANDBOX_TIMEOUT. The runner's OUTER subprocess timeout is
 # this + a grace window so the executor's own SIGALRM fires first (cleaner error:
@@ -210,16 +239,92 @@ def run_sandbox_local(
         except OSError:
             pass
 
-    # The executor prints exactly one JSON envelope line on stdout. Parse the LAST
-    # non-empty line (defensive: user code may have leaked to the real stdout in a
-    # pathological case, though the executor redirects it; the envelope is last).
-    out = (out or "")[:MAX_ENVELOPE_BYTES]
+    # The executor prints exactly one JSON envelope line on stdout. We do NOT
+    # blind-slice ``out`` to MAX_ENVELOPE_BYTES (job-0233 FINDING 2): a raw byte
+    # slice through a JSON document corrupts it (cuts mid-token / mid-escape) and
+    # yields an un-parseable envelope. Instead we PARSE the full stdout, then
+    # bound the string fields INSIDE the parsed envelope with honest markers
+    # (``_parse_envelope`` -> ``_bound_envelope``). If the raw stdout itself is
+    # absurdly large (a misbehaving harness that printed the unbounded result to
+    # the real stdout) we reject with a typed too-large error rather than parse
+    # gigabytes — also honest, never silently corrupt.
+    out = out or ""
+    if len(out) > MAX_ENVELOPE_BYTES:
+        return {
+            "stdout": "",
+            "stderr": (err or "")[-2000:],
+            "result": {"kind": "none", "value": None},
+            "status": "error",
+            "error": (
+                f"sandbox stdout ({len(out)} bytes) exceeded MAX_ENVELOPE_BYTES "
+                f"({MAX_ENVELOPE_BYTES}); refusing to parse a potentially-corrupt "
+                "envelope (the executor's own MAX_RESULT_BYTES / MAX_OUTPUT_CHARS "
+                "caps should keep a well-behaved envelope well under this bound)"
+            ),
+            "stdout_truncated": True,
+            "stderr_truncated": False,
+            "wallclock_cap_seconds": WALLCLOCK_CAP_SECONDS,
+            "envelope_truncated": True,
+        }
     envelope = _parse_envelope(out, err or "", proc.returncode)
     return envelope
 
 
+#: Per-field char bound applied INSIDE a parsed envelope (FINDING 2). The
+#: executor already caps stdout/stderr at MAX_OUTPUT_CHARS and the result
+#: descriptor at MAX_RESULT_BYTES; this is the host-side defense-in-depth bound
+#: that guarantees the envelope this runner returns can never carry an
+#: unboundedly-large string field even if an env override loosened the executor's
+#: own caps. Truncation is honest: a ``*_truncated`` flag is set when it fires.
+MAX_ENVELOPE_FIELD_CHARS = int(
+    os.environ.get("GRACE2_SANDBOX_MAX_ENVELOPE_FIELD_CHARS", str(256 * 1024))
+)
+
+
+def _bound_str_field(value: Any, *, cap: int | None = None) -> tuple[Any, bool]:
+    """Bound a string field to ``cap`` chars; return ``(bounded, was_truncated)``.
+
+    Non-string values pass through unchanged. The marker is appended so the
+    truncation is visible in the field itself, and the boolean lets the caller
+    flip the matching ``*_truncated`` flag (honest, never silent). ``cap``
+    defaults to the module-level :data:`MAX_ENVELOPE_FIELD_CHARS` read at CALL
+    time (so an env / monkeypatch override of the constant takes effect)."""
+    if cap is None:
+        cap = MAX_ENVELOPE_FIELD_CHARS
+    if not isinstance(value, str) or len(value) <= cap:
+        return value, False
+    marker = f"...[truncated {len(value) - cap} chars]"
+    return value[:cap] + marker, True
+
+
+def _bound_envelope(envelope: dict[str, Any]) -> dict[str, Any]:
+    """Bound the string fields of a parsed envelope (FINDING 2 — parse-then-bound).
+
+    Truncates INSIDE the already-parsed dict (so JSON validity is preserved by
+    construction) rather than slicing the raw JSON string. Sets the matching
+    ``stdout_truncated`` / ``stderr_truncated`` flags when a bound fires."""
+    out_bounded, out_trunc = _bound_str_field(envelope.get("stdout"))
+    err_bounded, err_trunc = _bound_str_field(envelope.get("stderr"))
+    if out_trunc:
+        envelope["stdout"] = out_bounded
+        envelope["stdout_truncated"] = True
+    if err_trunc:
+        envelope["stderr"] = err_bounded
+        envelope["stderr_truncated"] = True
+    # ``error`` is a short message; bound it too for completeness.
+    err_msg_bounded, _ = _bound_str_field(envelope.get("error"))
+    if envelope.get("error") is not None:
+        envelope["error"] = err_msg_bounded
+    return envelope
+
+
 def _parse_envelope(stdout: str, stderr: str, returncode: int | None) -> dict[str, Any]:
-    """Parse the executor's JSON envelope from stdout; synthesize on parse failure."""
+    """Parse the executor's JSON envelope from stdout; synthesize on parse failure.
+
+    FINDING 2: we parse the FULL (unsliced) stdout line, then bound the string
+    fields inside the parsed dict via :func:`_bound_envelope` so the returned
+    envelope is always valid JSON with honestly-marked truncation — never a
+    corrupt slice of a JSON document."""
     candidate: str | None = None
     for line in reversed(stdout.splitlines()):
         line = line.strip()
@@ -230,21 +335,21 @@ def _parse_envelope(stdout: str, stderr: str, returncode: int | None) -> dict[st
         try:
             parsed = json.loads(candidate)
             if isinstance(parsed, dict) and "status" in parsed:
-                return parsed
+                return _bound_envelope(parsed)
         except (TypeError, ValueError):
             pass
     # No well-formed envelope — the child crashed before emitting one.
     return {
-        "stdout": stdout,
-        "stderr": stderr,
+        "stdout": _bound_str_field(stdout)[0],
+        "stderr": _bound_str_field(stderr)[0],
         "result": {"kind": "none", "value": None},
         "status": "error",
         "error": (
             f"sandbox child produced no parseable result envelope "
             f"(returncode={returncode}); stderr tail: {stderr[-500:]!r}"
         ),
-        "stdout_truncated": False,
-        "stderr_truncated": False,
+        "stdout_truncated": len(stdout) > MAX_ENVELOPE_FIELD_CHARS,
+        "stderr_truncated": len(stderr) > MAX_ENVELOPE_FIELD_CHARS,
         "wallclock_cap_seconds": WALLCLOCK_CAP_SECONDS,
     }
 
@@ -336,6 +441,25 @@ def _submit_cloud(
         handle.payload_uri,
     )
     return handle
+
+
+def read_sandbox_result(handle: SandboxExecutionHandle) -> dict[str, Any]:
+    """Read the result envelope for a cloud dispatch — NOT WIRED in v0.1.
+
+    OQ-SANDBOX-3 (job-0232) resolution: the executor writes its envelope to
+    stdout (Cloud Run logs) and the runtime SA is ``objectViewer``-only, so there
+    is no GCS object at ``handle.result_uri`` to read. Rather than bake a GCS
+    write into the read-only SA, v0.1 declares cloud-mode readback NOT-YET-WIRED
+    and raises :class:`SandboxCloudModeUnavailable` here. The supported v0.1 path
+    is local mode (``submit_sandbox_job`` returns a finished envelope dict
+    directly). See the job-0233 report for the sprint-13.5 identity decision."""
+    raise SandboxCloudModeUnavailable(
+        "cloud-mode sandbox result readback is not wired in v0.1 "
+        f"(handle={handle.handle_id}, execution={handle.execution_name}); "
+        "the executor writes to stdout/Cloud Run logs and the runtime SA cannot "
+        "write GCS. Use local mode (GRACE2_SANDBOX_LOCAL=1) for a synchronous "
+        "result, or await the sprint-13.5 cloud-result transport decision."
+    )
 
 
 def _get_storage_client(project: str | None) -> Any:

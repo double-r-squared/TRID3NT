@@ -84,6 +84,18 @@ MAX_DATAFRAME_ROWS = int(os.environ.get("GRACE2_SANDBOX_MAX_DF_ROWS", "5000"))
 # matplotlib figure; above this we emit a descriptor without the inline PNG.
 MAX_FIGURE_PNG_BYTES = int(os.environ.get("GRACE2_SANDBOX_MAX_FIG_BYTES", str(2 * 1024 * 1024)))
 
+# Total serialized-byte ceiling for the RESULT DESCRIPTOR's payload (job-0233
+# FINDING 1). The per-kind caps above bound DataFrame ROWS, array SIZE, and PNG
+# BYTES — but NOT the total serialized bytes of a JSON-native str/list/dict
+# (e.g. ``result = "x" * 9_000_000`` or a deeply-nested dict). Without this cap a
+# multi-megabyte JSON-native result would balloon the envelope, blow the host
+# runner's MAX_ENVELOPE_BYTES bound, and corrupt the JSON on the way out. We cap
+# the descriptor's serialized size and mark ``truncated=true`` HONESTLY (never a
+# silent drop): an oversized scalar is hard-truncated with a marker; an oversized
+# container is replaced by a typed too-large descriptor that still carries the
+# size + a repr head so the agent can narrate the truncation truthfully.
+MAX_RESULT_BYTES = int(os.environ.get("GRACE2_SANDBOX_MAX_RESULT_BYTES", str(2 * 1024 * 1024)))
+
 # Host suffixes the in-process net guard permits (comma-separated). Defaults to
 # the GCS + Atlas surface; the VPC layer is the real allowlist, this mirrors it
 # so legitimate gcsfs reads aren't tripped by the guard in local mode.
@@ -284,7 +296,18 @@ def convert_result(result: Any) -> dict[str, Any]:
       - JSON-native (number/str/bool/
         None/list/dict)               -> {"kind": "json", "value": ...}
       - anything else                 -> {"kind": "repr", "value": repr(result)}
+
+    Every descriptor is passed through :func:`_bound_result_descriptor` before
+    return so its total serialized size is ``<= MAX_RESULT_BYTES`` (job-0233
+    FINDING 1): an oversized JSON-native / repr result is HONESTLY truncated with
+    a ``truncated=true`` marker rather than silently corrupting the envelope.
     """
+    descriptor = _convert_result_inner(result)
+    return _bound_result_descriptor(descriptor)
+
+
+def _convert_result_inner(result: Any) -> dict[str, Any]:
+    """The per-kind conversion (pre size-bounding). See :func:`convert_result`."""
     if result is None:
         return {"kind": "none", "value": None}
 
@@ -314,6 +337,91 @@ def convert_result(result: Any) -> dict[str, Any]:
             return {"kind": "repr", "value": repr(result)[:MAX_OUTPUT_CHARS]}
 
     return {"kind": "repr", "value": repr(result)[:MAX_OUTPUT_CHARS]}
+
+
+def _descriptor_size_bytes(descriptor: dict[str, Any]) -> int:
+    """Serialized UTF-8 byte size of ``descriptor`` (the size on the wire)."""
+    try:
+        return len(json.dumps(descriptor).encode("utf-8"))
+    except (TypeError, ValueError):
+        # Non-serializable descriptor — shouldn't happen (every kind above is
+        # JSON-native) but be defensive: treat as over-cap so it gets replaced.
+        return MAX_RESULT_BYTES + 1
+
+
+def _bound_result_descriptor(descriptor: dict[str, Any]) -> dict[str, Any]:
+    """Cap the serialized size of ``descriptor`` at ``MAX_RESULT_BYTES`` (FINDING 1).
+
+    The per-kind converters already bound DataFrame rows, array size, and PNG
+    bytes; this is the FINAL safety rail for the categories they do NOT bound —
+    a multi-megabyte JSON-native string, a giant nested list/dict, or a huge
+    repr. Truncation is HONEST: the returned descriptor always carries
+    ``truncated=true`` and an ``original_bytes`` count so the agent narrates the
+    truncation truthfully (Decision H / Invariant 1 — never fabricate a complete
+    result from a truncated one).
+
+    Strategy by kind:
+      - ``json``/``repr`` with a STRING value -> hard-truncate the string to fit
+        the budget, append a ``...[truncated N bytes]`` marker, keep ``kind``.
+      - any other oversized descriptor (list/dict ``json`` value, ``array``,
+        ``dataframe`` that is still too big after the row cap, ``chart`` whose
+        PNG slipped through) -> replace the payload with a typed
+        ``too_large`` descriptor carrying the size + a bounded repr head, so the
+        envelope stays small and the agent can explain what happened.
+    """
+    size = _descriptor_size_bytes(descriptor)
+    if size <= MAX_RESULT_BYTES:
+        return descriptor
+
+    kind = descriptor.get("kind")
+    value = descriptor.get("value")
+
+    # String-valued json/repr: hard-truncate the string to fit the budget.
+    if kind in ("json", "repr") and isinstance(value, str):
+        # Budget for the string itself = total cap minus the descriptor's
+        # non-string overhead (keys, markers). Compute against a worst-case
+        # skeleton so the final dumps stays under MAX_RESULT_BYTES.
+        skeleton = {
+            "kind": kind,
+            "value": "",
+            "truncated": True,
+            "original_bytes": size,
+            "note": "result string exceeded MAX_RESULT_BYTES; truncated honestly",
+        }
+        overhead = _descriptor_size_bytes(skeleton) + 64  # 64B slack for the marker
+        budget = max(MAX_RESULT_BYTES - overhead, 0)
+        # Truncate on a UTF-8 codepoint boundary: encode, slice, decode-ignore.
+        truncated_str = value.encode("utf-8")[:budget].decode("utf-8", "ignore")
+        marker = f"...[truncated {len(value) - len(truncated_str)} chars]"
+        return {
+            "kind": kind,
+            "value": truncated_str + marker,
+            "truncated": True,
+            "original_bytes": size,
+            "note": "result string exceeded MAX_RESULT_BYTES; truncated honestly",
+        }
+
+    # Any other oversized descriptor: replace with a typed too-large descriptor
+    # that still carries the original kind + a bounded repr head so the result is
+    # never silently dropped (honest truncation).
+    head = ""
+    try:
+        head = repr(value)[:1024] if value is not None else repr(descriptor)[:1024]
+    except Exception:  # noqa: BLE001
+        head = "<unrepresentable>"
+    return {
+        "kind": "too_large",
+        "original_kind": kind,
+        "value": None,
+        "truncated": True,
+        "original_bytes": size,
+        "max_result_bytes": MAX_RESULT_BYTES,
+        "repr_head": head,
+        "note": (
+            f"result of kind {kind!r} serialized to {size} bytes, exceeding the "
+            f"{MAX_RESULT_BYTES}-byte cap; payload omitted (truncated honestly)"
+        ),
+    }
 
 
 def _as_figure(obj: Any) -> Any:

@@ -311,6 +311,7 @@ from . import discover_dataset  # noqa: E402,F401 — job-B7 (Wave 4.10 Stage 2)
 from . import analytical_qa  # noqa: E402,F401 — job-0224 (sprint-13 Stage 1): registers summarize_layer_statistics + count_features_above_threshold + aggregate_property_within_zone
 from . import chart_tools  # noqa: E402,F401 — job-0230 (sprint-13 Stage 2): registers generate_histogram + generate_choropleth_legend + generate_time_series + generate_damage_distribution
 from . import run_modflow_tool  # noqa: E402,F401 — job-0227 (sprint-13 Stage 2): registers run_modflow_job (MODFLOW 6 + MF6-GWT groundwater-plume engine; Cloud Workflows + local mf6 modes)
+from . import code_exec_tool  # noqa: E402,F401 — job-0233 (sprint-13 Stage 2): registers code_exec_request (user-confirmed Python sandbox; conversational data-analysis escape hatch)
 
 # job-B5 (Wave 4.10 Stage 2): the 12-category registry + the two meta-tools
 # (``list_categories`` + ``list_tools_in_category``) live alongside the rest

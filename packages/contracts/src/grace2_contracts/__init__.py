@@ -36,6 +36,7 @@ from . import (
     impact_envelope,
     modflow_contracts,
     payload_warning,
+    sandbox_contracts,
     secrets,
     tool_metadata,
     tool_registry,
@@ -63,6 +64,11 @@ from .common import (
     now_utc,
 )
 from .modflow_contracts import MODFLOWRunArgs, PlumeLayerURI
+from .sandbox_contracts import (
+    CodeExecRequestPayload,
+    CodeExecResultPayload,
+    CodeExecStatus,
+)
 
 __version__ = "0.1.0"
 SCHEMA_VERSION = "v1"
@@ -85,6 +91,7 @@ __all__ = [
     "execution",
     "modflow_contracts",
     "payload_warning",
+    "sandbox_contracts",
     "secrets",
     "tool_metadata",
     "tool_registry",
@@ -100,6 +107,10 @@ __all__ = [
     # chart-emission contracts (sprint-13 conversational analysis layer)
     "ChartEmissionPayload",
     "SessionChartRecord",
+    # python-sandbox code-exec contracts (sprint-13 conversational analysis layer)
+    "CodeExecRequestPayload",
+    "CodeExecResultPayload",
+    "CodeExecStatus",
     # common primitives
     "GraceModel",
     "ULIDStr",

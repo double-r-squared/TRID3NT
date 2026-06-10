@@ -914,6 +914,18 @@ from .chart_contracts import (  # noqa: E402
 
 AGENT_TO_CLIENT_PAYLOADS.update(CHART_AGENT_TO_CLIENT_PAYLOADS)
 
+# sprint-13 (job-0233): python-sandbox code-exec envelopes. Both agent->client
+# (A.4): ``code-exec-request`` (confirm card before the sandbox runs) +
+# ``code-exec-result`` (the run outcome). The confirmation REPLY rides the
+# existing ``tool-payload-confirmation`` message (no new client->agent shape).
+# See sandbox_contracts.py for the contracts; splatted here following the
+# secrets / payload_warning / chart-emission precedent.
+from .sandbox_contracts import (  # noqa: E402
+    SANDBOX_AGENT_TO_CLIENT_PAYLOADS,
+)
+
+AGENT_TO_CLIENT_PAYLOADS.update(SANDBOX_AGENT_TO_CLIENT_PAYLOADS)
+
 ALL_PAYLOADS: dict[str, type[GraceModel]] = {
     **CLIENT_TO_AGENT_PAYLOADS,
     **AGENT_TO_CLIENT_PAYLOADS,

@@ -16,6 +16,10 @@ from pydantic import ValidationError
 from grace2_contracts import ws
 from grace2_contracts.chart_contracts import ChartEmissionPayload
 from grace2_contracts.common import GraceModel, new_ulid
+from grace2_contracts.sandbox_contracts import (
+    CodeExecRequestPayload,
+    CodeExecResultPayload,
+)
 
 # Re-export the secrets payloads onto ``ws`` so the inline lambdas below stay
 # tidy; the per-module accessors are also still exposed for direct import.
@@ -477,6 +481,22 @@ def test_every_a3_a4_a4b_payload_round_trips(session_id: str) -> None:
                 "encoding": {"x": {"field": "a"}, "y": {"field": "b"}},
             },
             title="Damage distribution",
+        ),
+        # job-0233 — python-sandbox code-exec envelopes (sprint-13 Stage 2)
+        "code-exec-request": lambda: CodeExecRequestPayload(
+            code_exec_id=new_ulid(),
+            python_code="result = dem.read(1).mean()",
+            layer_refs={"dem": "gs://bucket/dem.tif"},
+            rationale="mean elevation",
+        ),
+        "code-exec-result": lambda: CodeExecResultPayload(
+            code_exec_id=new_ulid(),
+            status="ok",
+            stdout_tail="done\n",
+            stderr_tail="",
+            result={"kind": "json", "value": 42},
+            truncated=False,
+            duration_s=0.5,
         ),
     }
     # Every payload registered in ws.ALL_PAYLOADS must have a minimal factory
