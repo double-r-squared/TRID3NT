@@ -1,0 +1,6 @@
+state: done
+job: job-0262-agent-20260610
+verdict: FIXED
+owner: agent (Fable-5 fix agent)
+updated: 2026-06-10
+note: root prompts auto-create a prompt-named Case before the turn dispatches (server-side _prepare_user_turn seam); case-open+case-list emitted post-persist so web flips to Case view (web already wired, no web edits); 12 new tests + full suite green (5 pre-existing failures owned by concurrent jobs); :8765 restart pending (orchestrator)

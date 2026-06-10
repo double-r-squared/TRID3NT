@@ -1847,6 +1847,156 @@ async def _maybe_autoname_case(state: SessionState, prompt: str) -> bool:
     return False
 
 
+async def _auto_create_case_from_root(
+    websocket: ServerConnection,
+    state: SessionState,
+    prompt: str,
+) -> str | None:
+    """Create + activate a Case for a chat prompt arriving with NO active Case.
+
+    job-0262 (AUTO-CREATE CASE FROM ROOT): live demo showed prompts sent from
+    the Cases root ran stateless — no Case, no Case view / layer panel, and
+    orphaned results (chat turns + published layers attributed nowhere).
+    When a non-directive ``user-message`` arrives and the session has no
+    active Case, mint one server-side BEFORE the turn dispatches so
+    ``_persist_chat_turn`` + ``_persist_case_loaded_layers`` +
+    ``ensure_case_qgs`` + the ``publish_layer`` case_id injection all land in
+    it. The Case is named from the prompt via ``_derive_case_title``
+    (job-0260 heuristic; "Untitled Case" fallback for degenerate prompts).
+
+    Deliberately NOT the ``case-command(create)`` reset path: the in-flight
+    message IS the Case's first turn, so the per-connection LLM context
+    (``chat_history``) and the FR-FR-3 ``turn_count`` are left untouched
+    (v0.1 of the deferred auto-case-name design, simplified).
+
+    Returns the new ``case_id``, or ``None`` when Persistence is unbound or
+    the upsert fails — the M1 stateless path keeps working either way.
+    """
+    p = get_persistence()
+    if p is None:
+        return None
+    title = _derive_case_title(prompt) or "Untitled Case"
+    now = now_utc()
+    case = CaseSummary(
+        case_id=new_ulid(),
+        title=title,
+        created_at=now,
+        updated_at=now,
+        status="active",
+    )
+    try:
+        await p.upsert_case(case)
+    except Exception:  # noqa: BLE001 — fall back to the stateless path
+        logger.exception(
+            "auto-create-case upsert failed session=%s", state.session_id
+        )
+        return None
+    state.active_case_id = case.case_id
+    # This connection's in-memory context IS the new Case's context (the
+    # triggering message is its first turn) — mark synced so the next
+    # dispatch skips the _sync_case_context reset.
+    state.case_context_synced_to = case.case_id
+    # The creating prompt already named the Case — skip the job-0260
+    # first-turn rename probe (it would be a wasted get_case round-trip).
+    _AUTONAMED_CASES.add(case.case_id)
+    await _touch_session_record(state, case_id=case.case_id)  # D.6 heartbeat
+    # Fresh Case starts with zero layers — flush the per-connection
+    # accumulator (replace-not-reconcile server-side; mirrors
+    # ``case-command(create)``).
+    _ensure_emitter(websocket, state)
+    if state.emitter is not None:
+        state.emitter.reset_loaded_layers([])
+    logger.info(
+        "auto-created case from root session=%s case=%s title=%r",
+        state.session_id,
+        case.case_id,
+        title,
+    )
+    return case.case_id
+
+
+async def _emit_auto_case_open(
+    websocket: ServerConnection,
+    state: SessionState,
+    case_id: str,
+) -> None:
+    """Emit ``case-open`` + ``case-list`` for an auto-created Case (job-0262).
+
+    Distinct from ``_emit_case_open``: NO context reset (no ``chat_history``
+    clear, no ``turn_count`` reset, no emitter re-seed) — the in-flight user
+    message IS the first turn of this Case and
+    ``_auto_create_case_from_root`` already established the connection
+    context. Must be called AFTER the user turn is persisted so the
+    rehydration payload carries it: Chat.tsx's case-open handler is
+    replace-not-reconcile (it flushes the local message buffer and re-renders
+    from ``session_state.chat_history``), so emitting before the persist
+    would blank the just-typed message bubble. The web client's ws.ts hub
+    fans ``case-open`` out to App.tsx's socket (SESSION_SCOPED_TYPES), where
+    ``useCases.onCaseOpen`` sets ``activeCaseId`` and the left rail flips
+    from the Cases root into the Case view.
+
+    Best-effort: when rehydration fails we SKIP case-open (a
+    ``session_state=None`` frame would null the client's activeCaseId and
+    flush the chat panel) but still refresh ``case-list`` so the left rail
+    at least shows the new Case.
+    """
+    p = get_persistence()
+    if p is not None:
+        try:
+            payload = CaseOpenEnvelopePayload(
+                session_state=await p.get_session_state(case_id)
+            )
+            await websocket.send(
+                _new_envelope("case-open", state.session_id, payload)
+            )
+        except Exception:  # noqa: BLE001 — emission is best-effort
+            logger.exception(
+                "auto-case-open emission failed session=%s case=%s",
+                state.session_id,
+                case_id,
+            )
+    await _emit_case_list(websocket, state)
+
+
+async def _prepare_user_turn(
+    websocket: ServerConnection,
+    state: SessionState,
+    text: str,
+) -> tuple[str, dict] | None:
+    """Pre-dispatch sequence for one ``user-message`` (job-0262 extraction).
+
+    Runs, in order, BEFORE the turn task is created (so the dispatched turn —
+    Gemini stream or ``/invoke`` directive — observes the final Case
+    context):
+
+    1. ``_sync_case_context`` — catch this connection up to the session's
+       active Case (job-0259 sibling-connection sync).
+    2. job-0262 auto-create: a non-directive prompt with NO active Case
+       mints + activates a prompt-named Case (see
+       ``_auto_create_case_from_root``). ``/invoke`` debug directives stay on
+       the stateless path.
+    3. ``_persist_chat_turn`` — the user turn lands in the (possibly brand
+       new) active Case. Best-effort; no Case / no Persistence = no-op.
+    4. For an auto-created Case: emit ``case-open`` + ``case-list`` so the
+       web client switches from the Cases root into the Case view (after the
+       persist — see ``_emit_auto_case_open``).
+
+    Returns the parsed ``/invoke`` directive (``(tool_name, params)``) or
+    ``None`` for the Gemini path — the caller branches on it.
+    """
+    await _sync_case_context(websocket, state)
+    directive = _parse_invoke_directive(text)
+    auto_case_id: str | None = None
+    if directive is None and state.active_case_id is None:
+        auto_case_id = await _auto_create_case_from_root(
+            websocket, state, text
+        )
+    await _persist_chat_turn(state, role="user", content=text)
+    if auto_case_id is not None:
+        await _emit_auto_case_open(websocket, state, auto_case_id)
+    return directive
+
+
 async def _persist_chat_turn(
     state: SessionState,
     *,
@@ -3409,27 +3559,20 @@ def _make_handler(settings: GeminiSettings):
                         # only this turn's emissions.
                         state.current_turn_layer_ids = []
                         state.current_turn_pipeline_id = None
-                        # job-0259: the session's active Case may have been
-                        # selected/created on a SIBLING connection (App.tsx
-                        # socket) — catch this connection's in-memory context
-                        # up BEFORE persisting the user turn so chat + layer
-                        # writes land on the right Case.
-                        await _sync_case_context(websocket, state)
-                        # job-0121: persist user message to the active Case
-                        # (FR-MP-6). Best-effort — no active Case OR no
-                        # Persistence = no-op; the M1 stateless path keeps
-                        # working. Per FR-AS-8 this is a session-record
-                        # write and is NOT a confirmation trigger.
-                        await _persist_chat_turn(
-                            state, role="user", content=um.text
+                        # job-0259 + job-0121 + job-0262 pre-dispatch
+                        # sequence (see ``_prepare_user_turn``): sibling-
+                        # connection Case sync, AUTO-CREATE Case for a
+                        # non-directive prompt from the Cases root (named
+                        # via _derive_case_title; case-open + case-list
+                        # emitted so the UI flips into the Case view), and
+                        # the user-turn chat persist — all BEFORE the turn
+                        # task starts so chat + layer attribution land on
+                        # the right (possibly brand-new) Case. Returns the
+                        # parsed ``/invoke`` directive for the M4
+                        # live-evidence path; None streams through Gemini.
+                        directive = await _prepare_user_turn(
+                            websocket, state, um.text
                         )
-                        # job-0035 M4 live-evidence path: ``/invoke <tool>
-                        # <json>`` drives real tool invocation through the
-                        # PipelineEmitter so the Gemini-side function-calling
-                        # path (M4 follow-up) lands on top of an already-
-                        # verified emission seam. Non-directive user-messages
-                        # still stream through the M1 Gemini path.
-                        directive = _parse_invoke_directive(um.text)
                         if directive is not None:
                             tool_name, params = directive
                             task = asyncio.create_task(
@@ -3654,6 +3797,10 @@ __all__ = [
     "_persist_chat_turn",
     "_dispatch_tool_and_persist",
     "_dispatch_gemini_and_persist",
+    # job-0262: auto-create Case from the Cases root.
+    "_auto_create_case_from_root",
+    "_emit_auto_case_open",
+    "_prepare_user_turn",
     # job-0124: secrets envelope handlers.
     "_emit_secrets_list",
     "_handle_secret_add",
