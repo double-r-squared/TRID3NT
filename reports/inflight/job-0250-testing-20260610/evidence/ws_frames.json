@@ -1,0 +1,538 @@
+[
+  {
+    "t_rel_ms": 1234,
+    "type": "session-state",
+    "tool_name": null,
+    "preview": "{\"type\":\"session-state\",\"id\":\"01KTRYZ7WPRDTMVH1GFKNTMZY7\",\"ts\":\"2026-06-10T14:28:51.734404Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"chat_history\":[],\"loaded_layers\":[],\"pipeline_history\":[],\"current_pipeline\":null,\"map_view\":null,\"status\":\"active\"}}"
+  },
+  {
+    "t_rel_ms": 1234,
+    "type": "case-list",
+    "tool_name": null,
+    "preview": "{\"type\":\"case-list\",\"id\":\"01KTRYZ7WQJAH5A7GPMVRWTRGV\",\"ts\":\"2026-06-10T14:28:51.735242Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"envelope_type\":\"case-list\",\"cases\":[{\"schema_version\":\"v1\",\"case_id\":\"01KTNK6XS3MGEGX6RXRXAHDQ3W\",\"title\":\"Test 4.8\",\"created_at\":\"2026-06-09T07:05:37.315851Z\",\"updated_at\":\"2026-06-09T07:05:41.141267Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"loaded_layer_summaries\":[],\"qgs_project_uri\":null},{\"schema_version\":\"v1\",\"case_id\":\"01KTNMGENBETZYNRSHR4RBWRRD\",\"title\":\"Untitled Case\",\"created_at\":\"2026-06-09T07:28:18.092029Z\",\"updated_at\":\"2026-06-09T07:28:18.092029Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"loaded_layer_summaries\":[],\"qgs_project_uri\":null},{\"schema_version\":\"v1\",\"case_id\":\"01KTNVB9MND4ZDX9A2YPTAFTY0\",\"title\":\"Untitled Case\",\"created_at\":\"2026-06-09T09:27:49.141703Z\",\"updated_at\":\"2026-06-09T09:27:49.141703Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"loaded_layer_summaries\":[],\"qgs_project_uri\":null},{\"schema_version\":\"v1\",\"case_id\":\"01KTNVGJK7FDCRPRTTJSHWQGTK\",\"title\":\"Untitled Case\",\"created_at\":\"2026-06-09T09:30:42.151217Z\",\"updated_at\":\"2026-06-09T09:30:42.151217Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"loaded_layer_summaries\":[],\"qgs_project_uri\":null},{\"schema_version\":\"v1\",\"case_id\":\"01KTNVHSSWSJV9SZRXT4H9NCTH\",\"title\":\"Untitled Case\",\"created_at\":\"2026-06-09T09:31:22.300663Z\",\"updated_at\":\"2026-06-09T09:31:22.300663Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"lo"
+  },
+  {
+    "t_rel_ms": 2236,
+    "type": "session-state",
+    "tool_name": null,
+    "preview": "{\"type\":\"session-state\",\"id\":\"01KTRYZ8RN81XPQXN5W5XZ3EXN\",\"ts\":\"2026-06-10T14:28:52.629400Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"chat_history\":[],\"loaded_layers\":[],\"pipeline_history\":[],\"current_pipeline\":null,\"map_view\":null,\"status\":\"active\"}}"
+  },
+  {
+    "t_rel_ms": 2237,
+    "type": "case-list",
+    "tool_name": null,
+    "preview": "{\"type\":\"case-list\",\"id\":\"01KTRYZ8RRMCP60PVEM2H7ZVS9\",\"ts\":\"2026-06-10T14:28:52.632590Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"envelope_type\":\"case-list\",\"cases\":[{\"schema_version\":\"v1\",\"case_id\":\"01KTNK6XS3MGEGX6RXRXAHDQ3W\",\"title\":\"Test 4.8\",\"created_at\":\"2026-06-09T07:05:37.315851Z\",\"updated_at\":\"2026-06-09T07:05:41.141267Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"loaded_layer_summaries\":[],\"qgs_project_uri\":null},{\"schema_version\":\"v1\",\"case_id\":\"01KTNMGENBETZYNRSHR4RBWRRD\",\"title\":\"Untitled Case\",\"created_at\":\"2026-06-09T07:28:18.092029Z\",\"updated_at\":\"2026-06-09T07:28:18.092029Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"loaded_layer_summaries\":[],\"qgs_project_uri\":null},{\"schema_version\":\"v1\",\"case_id\":\"01KTNVB9MND4ZDX9A2YPTAFTY0\",\"title\":\"Untitled Case\",\"created_at\":\"2026-06-09T09:27:49.141703Z\",\"updated_at\":\"2026-06-09T09:27:49.141703Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"loaded_layer_summaries\":[],\"qgs_project_uri\":null},{\"schema_version\":\"v1\",\"case_id\":\"01KTNVGJK7FDCRPRTTJSHWQGTK\",\"title\":\"Untitled Case\",\"created_at\":\"2026-06-09T09:30:42.151217Z\",\"updated_at\":\"2026-06-09T09:30:42.151217Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"loaded_layer_summaries\":[],\"qgs_project_uri\":null},{\"schema_version\":\"v1\",\"case_id\":\"01KTNVHSSWSJV9SZRXT4H9NCTH\",\"title\":\"Untitled Case\",\"created_at\":\"2026-06-09T09:31:22.300663Z\",\"updated_at\":\"2026-06-09T09:31:22.300663Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"lo"
+  },
+  {
+    "t_rel_ms": 5309,
+    "type": "SENT:case-command",
+    "preview": "{\"type\":\"case-command\",\"id\":\"01KTRYZBVGAAFPYQ8TFDPM048E\",\"ts\":\"2026-06-10T14:28:55.792Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"envelope_type\":\"case-command\",\"command\":\"create\",\"case_id\":null,\"args\":{}}}"
+  },
+  {
+    "t_rel_ms": 5312,
+    "type": "case-open",
+    "tool_name": null,
+    "preview": "{\"type\":\"case-open\",\"id\":\"01KTRYZBVXMD4XZ6H6TW0QA98F\",\"ts\":\"2026-06-10T14:28:55.805804Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"envelope_type\":\"case-open\",\"session_state\":{\"schema_version\":\"v1\",\"case\":{\"schema_version\":\"v1\",\"case_id\":\"01KTRYZBVHXM5GS40F63ZKDBEN\",\"title\":\"Untitled Case\",\"created_at\":\"2026-06-10T14:28:55.793986Z\",\"updated_at\":\"2026-06-10T14:28:55.793986Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"loaded_layer_summaries\":[],\"qgs_project_uri\":null},\"chat_history\":[],\"loaded_layers\":[],\"pipeline_history\":[],\"current_pipeline\":null}}}"
+  },
+  {
+    "t_rel_ms": 5331,
+    "type": "case-list",
+    "tool_name": null,
+    "preview": "{\"type\":\"case-list\",\"id\":\"01KTRYZBW0PAT7N87WT66EZZF8\",\"ts\":\"2026-06-10T14:28:55.808869Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"envelope_type\":\"case-list\",\"cases\":[{\"schema_version\":\"v1\",\"case_id\":\"01KTNK6XS3MGEGX6RXRXAHDQ3W\",\"title\":\"Test 4.8\",\"created_at\":\"2026-06-09T07:05:37.315851Z\",\"updated_at\":\"2026-06-09T07:05:41.141267Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"loaded_layer_summaries\":[],\"qgs_project_uri\":null},{\"schema_version\":\"v1\",\"case_id\":\"01KTNMGENBETZYNRSHR4RBWRRD\",\"title\":\"Untitled Case\",\"created_at\":\"2026-06-09T07:28:18.092029Z\",\"updated_at\":\"2026-06-09T07:28:18.092029Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"loaded_layer_summaries\":[],\"qgs_project_uri\":null},{\"schema_version\":\"v1\",\"case_id\":\"01KTNVB9MND4ZDX9A2YPTAFTY0\",\"title\":\"Untitled Case\",\"created_at\":\"2026-06-09T09:27:49.141703Z\",\"updated_at\":\"2026-06-09T09:27:49.141703Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"loaded_layer_summaries\":[],\"qgs_project_uri\":null},{\"schema_version\":\"v1\",\"case_id\":\"01KTNVGJK7FDCRPRTTJSHWQGTK\",\"title\":\"Untitled Case\",\"created_at\":\"2026-06-09T09:30:42.151217Z\",\"updated_at\":\"2026-06-09T09:30:42.151217Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"loaded_layer_summaries\":[],\"qgs_project_uri\":null},{\"schema_version\":\"v1\",\"case_id\":\"01KTNVHSSWSJV9SZRXT4H9NCTH\",\"title\":\"Untitled Case\",\"created_at\":\"2026-06-09T09:31:22.300663Z\",\"updated_at\":\"2026-06-09T09:31:22.300663Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"lo"
+  },
+  {
+    "t_rel_ms": 6855,
+    "type": "SENT:case-command",
+    "preview": "{\"type\":\"case-command\",\"id\":\"01KTRYZDBYY3EYAS578FSPYT83\",\"ts\":\"2026-06-10T14:28:57.342Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"envelope_type\":\"case-command\",\"command\":\"select\",\"case_id\":\"01KTRYZBVHXM5GS40F63ZKDBEN\",\"args\":{}}}"
+  },
+  {
+    "t_rel_ms": 6856,
+    "type": "case-open",
+    "tool_name": null,
+    "preview": "{\"type\":\"case-open\",\"id\":\"01KTRYZDC6SXB2PJFEBD7HAYT4\",\"ts\":\"2026-06-10T14:28:57.350606Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"envelope_type\":\"case-open\",\"session_state\":{\"schema_version\":\"v1\",\"case\":{\"schema_version\":\"v1\",\"case_id\":\"01KTRYZBVHXM5GS40F63ZKDBEN\",\"title\":\"Untitled Case\",\"created_at\":\"2026-06-10T14:28:55.793986Z\",\"updated_at\":\"2026-06-10T14:28:55.793986Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"loaded_layer_summaries\":[],\"qgs_project_uri\":null},\"chat_history\":[],\"loaded_layers\":[],\"pipeline_history\":[],\"current_pipeline\":null}}}"
+  },
+  {
+    "t_rel_ms": 9103,
+    "type": "SENT:user-message",
+    "preview": "{\"type\":\"user-message\",\"id\":\"01KTRYZFJ9T8DM1SRATN12MHS1\",\"ts\":\"2026-06-10T14:28:59.593Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"text\":\"Run a flood damage assessment for Fort Myers with Pelicun using the NSI building inventory and the existing Fort Myers flood depth layer.\",\"research_mode\":\"research\"}}"
+  },
+  {
+    "t_rel_ms": 9107,
+    "type": "pipeline-state",
+    "tool_name": [
+      "gemini_generate"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRYZFJBDW6V7XHQMXWGYJ50\",\"ts\":\"2026-06-10T14:28:59.595262Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRYZFJBDW6V7XHQMXWGYJ4Y\",\"steps\":[{\"step_id\":\"01KTRYZFJBDW6V7XHQMXWGYJ4Z\",\"name\":\"llm_generation\",\"tool_name\":\"gemini_generate\",\"state\":\"running\",\"started_at\":null,\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 29432,
+    "type": "pipeline-state",
+    "tool_name": [
+      "geocode_location"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZ03DTDN5KQH6V9NMZCR3Z\",\"ts\":\"2026-06-10T14:29:19.930532Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZ03DTDN5KQH6V9NMZCR3X\",\"steps\":[{\"step_id\":\"01KTRZ03DTDN5KQH6V9NMZCR3Y\",\"name\":\"geocode_location\",\"tool_name\":\"geocode_location\",\"state\":\"pending\",\"started_at\":null,\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 29436,
+    "type": "pipeline-state",
+    "tool_name": [
+      "geocode_location"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZ03DVKPR1CP9MRR65HKN6\",\"ts\":\"2026-06-10T14:29:19.931163Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZ03DTDN5KQH6V9NMZCR3X\",\"steps\":[{\"step_id\":\"01KTRZ03DTDN5KQH6V9NMZCR3Y\",\"name\":\"geocode_location\",\"tool_name\":\"geocode_location\",\"state\":\"running\",\"started_at\":\"2026-06-10T14:29:19.930965Z\",\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 31272,
+    "type": "pipeline-state",
+    "tool_name": [
+      "geocode_location"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZ057BDJ4X3VWSTG1QPAHV\",\"ts\":\"2026-06-10T14:29:21.771968Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZ03DTDN5KQH6V9NMZCR3X\",\"steps\":[{\"step_id\":\"01KTRZ03DTDN5KQH6V9NMZCR3Y\",\"name\":\"geocode_location\",\"tool_name\":\"geocode_location\",\"state\":\"complete\",\"started_at\":\"2026-06-10T14:29:19.930965Z\",\"completed_at\":\"2026-06-10T14:29:21.771696Z\",\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 46835,
+    "type": "pipeline-state",
+    "tool_name": [
+      "list_categories"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZ0MDPWZS0A44YV053T0KT\",\"ts\":\"2026-06-10T14:29:37.334459Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZ0MDPWZS0A44YV053T0KR\",\"steps\":[{\"step_id\":\"01KTRZ0MDPWZS0A44YV053T0KS\",\"name\":\"list_categories\",\"tool_name\":\"list_categories\",\"state\":\"pending\",\"started_at\":null,\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 46840,
+    "type": "pipeline-state",
+    "tool_name": [
+      "list_categories"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZ0MDQ2AG8TNGJRHTFTBKM\",\"ts\":\"2026-06-10T14:29:37.335063Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZ0MDPWZS0A44YV053T0KR\",\"steps\":[{\"step_id\":\"01KTRZ0MDPWZS0A44YV053T0KS\",\"name\":\"list_categories\",\"tool_name\":\"list_categories\",\"state\":\"running\",\"started_at\":\"2026-06-10T14:29:37.334864Z\",\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 46848,
+    "type": "pipeline-state",
+    "tool_name": [
+      "list_categories"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZ0MDQ2AG8TNGJRHTFTBKN\",\"ts\":\"2026-06-10T14:29:37.335662Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZ0MDPWZS0A44YV053T0KR\",\"steps\":[{\"step_id\":\"01KTRZ0MDPWZS0A44YV053T0KS\",\"name\":\"list_categories\",\"tool_name\":\"list_categories\",\"state\":\"complete\",\"started_at\":\"2026-06-10T14:29:37.334864Z\",\"completed_at\":\"2026-06-10T14:29:37.335485Z\",\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 54108,
+    "type": "pipeline-state",
+    "tool_name": [
+      "discover_dataset"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZ0VGZ77H8XACWK26KH1Z3\",\"ts\":\"2026-06-10T14:29:44.607249Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZ0VGYN3V6E9Z5QFPQX8KB\",\"steps\":[{\"step_id\":\"01KTRZ0VGYN3V6E9Z5QFPQX8KC\",\"name\":\"discover_dataset\",\"tool_name\":\"discover_dataset\",\"state\":\"pending\",\"started_at\":null,\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 54114,
+    "type": "pipeline-state",
+    "tool_name": [
+      "discover_dataset"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZ0VGZ77H8XACWK26KH1Z4\",\"ts\":\"2026-06-10T14:29:44.607893Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZ0VGYN3V6E9Z5QFPQX8KB\",\"steps\":[{\"step_id\":\"01KTRZ0VGYN3V6E9Z5QFPQX8KC\",\"name\":\"discover_dataset\",\"tool_name\":\"discover_dataset\",\"state\":\"running\",\"started_at\":\"2026-06-10T14:29:44.607714Z\",\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 54461,
+    "type": "pipeline-state",
+    "tool_name": [
+      "discover_dataset"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZ0VW26ES0CEH4SWMJTCKR\",\"ts\":\"2026-06-10T14:29:44.962396Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZ0VGYN3V6E9Z5QFPQX8KB\",\"steps\":[{\"step_id\":\"01KTRZ0VGYN3V6E9Z5QFPQX8KC\",\"name\":\"discover_dataset\",\"tool_name\":\"discover_dataset\",\"state\":\"complete\",\"started_at\":\"2026-06-10T14:29:44.607714Z\",\"completed_at\":\"2026-06-10T14:29:44.962330Z\",\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 59639,
+    "type": "pipeline-state",
+    "tool_name": [
+      "list_tools_in_category"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZ10XTXB3JN24F90KSEP6Q\",\"ts\":\"2026-06-10T14:29:50.138649Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZ10XTXB3JN24F90KSEP6N\",\"steps\":[{\"step_id\":\"01KTRZ10XTXB3JN24F90KSEP6P\",\"name\":\"list_tools_in_category\",\"tool_name\":\"list_tools_in_category\",\"state\":\"pending\",\"started_at\":null,\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 59644,
+    "type": "pipeline-state",
+    "tool_name": [
+      "list_tools_in_category"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZ10XV9AD4D5JSJYPN8CJ8\",\"ts\":\"2026-06-10T14:29:50.139256Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZ10XTXB3JN24F90KSEP6N\",\"steps\":[{\"step_id\":\"01KTRZ10XTXB3JN24F90KSEP6P\",\"name\":\"list_tools_in_category\",\"tool_name\":\"list_tools_in_category\",\"state\":\"running\",\"started_at\":\"2026-06-10T14:29:50.139068Z\",\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 59653,
+    "type": "pipeline-state",
+    "tool_name": [
+      "list_tools_in_category"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZ10XV9AD4D5JSJYPN8CJ9\",\"ts\":\"2026-06-10T14:29:50.139944Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZ10XTXB3JN24F90KSEP6N\",\"steps\":[{\"step_id\":\"01KTRZ10XTXB3JN24F90KSEP6P\",\"name\":\"list_tools_in_category\",\"tool_name\":\"list_tools_in_category\",\"state\":\"failed\",\"started_at\":\"2026-06-10T14:29:50.139068Z\",\"completed_at\":\"2026-06-10T14:29:50.139754Z\",\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 69056,
+    "type": "pipeline-state",
+    "tool_name": [
+      "list_tools_in_category"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZ1A434HZ0F40EPGDFVAHG\",\"ts\":\"2026-06-10T14:29:59.555519Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZ1A434HZ0F40EPGDFVAHE\",\"steps\":[{\"step_id\":\"01KTRZ1A434HZ0F40EPGDFVAHF\",\"name\":\"list_tools_in_category\",\"tool_name\":\"list_tools_in_category\",\"state\":\"pending\",\"started_at\":null,\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 69061,
+    "type": "pipeline-state",
+    "tool_name": [
+      "list_tools_in_category"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZ1A44PY691108E01TS648\",\"ts\":\"2026-06-10T14:29:59.556123Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZ1A434HZ0F40EPGDFVAHE\",\"steps\":[{\"step_id\":\"01KTRZ1A434HZ0F40EPGDFVAHF\",\"name\":\"list_tools_in_category\",\"tool_name\":\"list_tools_in_category\",\"state\":\"running\",\"started_at\":\"2026-06-10T14:29:59.555933Z\",\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 69068,
+    "type": "pipeline-state",
+    "tool_name": [
+      "list_tools_in_category"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZ1A45Q4FRR16NQSR6EZ8T\",\"ts\":\"2026-06-10T14:29:59.557238Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZ1A434HZ0F40EPGDFVAHE\",\"steps\":[{\"step_id\":\"01KTRZ1A434HZ0F40EPGDFVAHF\",\"name\":\"list_tools_in_category\",\"tool_name\":\"list_tools_in_category\",\"state\":\"complete\",\"started_at\":\"2026-06-10T14:29:59.555933Z\",\"completed_at\":\"2026-06-10T14:29:59.557033Z\",\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 74382,
+    "type": "pipeline-state",
+    "tool_name": [
+      "fetch_usace_nsi"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZ1FAJX8F0BW2EJWW2R6R1\",\"ts\":\"2026-06-10T14:30:04.882223Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZ1FAHGH923F5FS9KSASKE\",\"steps\":[{\"step_id\":\"01KTRZ1FAHGH923F5FS9KSASKF\",\"name\":\"fetch_usace_nsi\",\"tool_name\":\"fetch_usace_nsi\",\"state\":\"pending\",\"started_at\":null,\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 74389,
+    "type": "pipeline-state",
+    "tool_name": [
+      "fetch_usace_nsi"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZ1FAJX8F0BW2EJWW2R6R2\",\"ts\":\"2026-06-10T14:30:04.882829Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZ1FAHGH923F5FS9KSASKE\",\"steps\":[{\"step_id\":\"01KTRZ1FAHGH923F5FS9KSASKF\",\"name\":\"fetch_usace_nsi\",\"tool_name\":\"fetch_usace_nsi\",\"state\":\"running\",\"started_at\":\"2026-06-10T14:30:04.882649Z\",\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 95748,
+    "type": "session-state",
+    "tool_name": null,
+    "preview": "{\"type\":\"session-state\",\"id\":\"01KTRZ21F0V1J8SHBDTPRE39DP\",\"ts\":\"2026-06-10T14:30:23.456514Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"chat_history\":[],\"loaded_layers\":[{\"layer_id\":\"usace-nsi--81.9126-26.5476--81.7511-26.6892\",\"name\":\"USACE NSI Structures — bbox (-81.913,26.548,-81.751,26.689)\",\"layer_type\":\"vector\",\"uri\":\"gs://grace-2-hazard-prod-cache/cache/static-30d/usace_nsi/852a6cc379b18c865bf9d99ec1acaa35.fgb\",\"style_preset\":\"usace_nsi\",\"visible\":true,\"role\":\"primary\",\"temporal\":false,\"wms_url\":null,\"opacity\":null,\"z_index\":null,\"inline_geojson\":{\"type\":\"FeatureCollection\",\"features\":[{\"id\":\"0\",\"type\":\"Feature\",\"properties\":{\"fd_id\":496548787,\"occtype\":\"COM4\",\"st_damcat\":\"COM\",\"bldgtype\":\"C\",\"found_type\":\"S\",\"found_ht\":0.5,\"num_story\":1,\"sqft\":96378.0,\"med_yr_blt\":2017,\"val_struct\":13919320.5,\"val_cont\":13919320.5,\"val_vehic\":36000,\"firmzone\":null,\"cbfips\":\"120719800001026\",\"ground_elv\":29.29260818222046,\"ground_elv_m\":8.928386688232422,\"pop2amu65\":0,\"pop2amo65\":0,\"pop2pmu65\":0,\"pop2pmo65\":0,\"students\":0,\"source\":\"P\",\"component_type\":\"COM4\",\"replacement_value\":13919320.5},\"geometry\":{\"type\":\"Point\",\"coordinates\":[-81.753242,26.549522]}},{\"id\":\"1\",\"type\":\"Feature\",\"properties\":{\"fd_id\":497494423,\"occtype\":\"COM4\",\"st_damcat\":\"COM\",\"bldgtype\":\"C\",\"found_type\":\"S\",\"found_ht\":0.5,\"num_story\":1,\"sqft\":16467.3,\"med_yr_blt\":2003,\"val_struct\":2072719.28,\"val_cont\":2072719.28,\"val_vehic\":27000,\"firmzone\":null,\"cbfips\":\"120710401141105\",\"ground_elv\":27.367963189849853,\"ground_elv_m\":8.341754913330078,\"pop2amu65\":0,\"pop2amo65\":0,\"pop2pmu65\":6,\"pop2pmo65\":0,\"students\""
+  },
+  {
+    "t_rel_ms": 95749,
+    "type": "pipeline-state",
+    "tool_name": [
+      "fetch_usace_nsi"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZ222J1R98HA8X1K47CHA1\",\"ts\":\"2026-06-10T14:30:24.082099Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZ1FAHGH923F5FS9KSASKE\",\"steps\":[{\"step_id\":\"01KTRZ1FAHGH923F5FS9KSASKF\",\"name\":\"fetch_usace_nsi\",\"tool_name\":\"fetch_usace_nsi\",\"state\":\"complete\",\"started_at\":\"2026-06-10T14:30:04.882649Z\",\"completed_at\":\"2026-06-10T14:30:24.082024Z\",\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 99266,
+    "type": "pipeline-state",
+    "tool_name": [
+      "run_pelicun_damage_assessment"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZ27M600FYK1JJ0H8RDNMB\",\"ts\":\"2026-06-10T14:30:29.766216Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZ27M5D5R55MY4FM0WG4EW\",\"steps\":[{\"step_id\":\"01KTRZ27M5D5R55MY4FM0WG4EX\",\"name\":\"run_pelicun_damage_assessment\",\"tool_name\":\"run_pelicun_damage_assessment\",\"state\":\"pending\",\"started_at\":null,\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 99272,
+    "type": "pipeline-state",
+    "tool_name": [
+      "run_pelicun_damage_assessment"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZ27M600FYK1JJ0H8RDNMC\",\"ts\":\"2026-06-10T14:30:29.766849Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZ27M5D5R55MY4FM0WG4EW\",\"steps\":[{\"step_id\":\"01KTRZ27M5D5R55MY4FM0WG4EX\",\"name\":\"run_pelicun_damage_assessment\",\"tool_name\":\"run_pelicun_damage_assessment\",\"state\":\"running\",\"started_at\":\"2026-06-10T14:30:29.766659Z\",\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 109301,
+    "type": "pipeline-state",
+    "tool_name": [
+      "run_pelicun_damage_assessment"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZ2HDSHV7T046P55CDXMR4\",\"ts\":\"2026-06-10T14:30:39.801222Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZ27M5D5R55MY4FM0WG4EW\",\"steps\":[{\"step_id\":\"01KTRZ27M5D5R55MY4FM0WG4EX\",\"name\":\"run_pelicun_damage_assessment\",\"tool_name\":\"run_pelicun_damage_assessment\",\"state\":\"failed\",\"started_at\":\"2026-06-10T14:30:29.766659Z\",\"completed_at\":\"2026-06-10T14:30:39.800947Z\",\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 116986,
+    "type": "pipeline-state",
+    "tool_name": [
+      "run_model_flood_scenario"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZ2RXSBDHYNM652NKAMBQ6\",\"ts\":\"2026-06-10T14:30:47.481855Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZ2RXSBDHYNM652NKAMBQ4\",\"steps\":[{\"step_id\":\"01KTRZ2RXSBDHYNM652NKAMBQ5\",\"name\":\"run_model_flood_scenario\",\"tool_name\":\"run_model_flood_scenario\",\"state\":\"pending\",\"started_at\":null,\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 116988,
+    "type": "pipeline-state",
+    "tool_name": [
+      "run_model_flood_scenario"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZ2RXTV4WE23C1W9M5AX1K\",\"ts\":\"2026-06-10T14:30:47.482447Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZ2RXSBDHYNM652NKAMBQ4\",\"steps\":[{\"step_id\":\"01KTRZ2RXSBDHYNM652NKAMBQ5\",\"name\":\"run_model_flood_scenario\",\"tool_name\":\"run_model_flood_scenario\",\"state\":\"running\",\"started_at\":\"2026-06-10T14:30:47.482258Z\",\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 117004,
+    "type": "map-command",
+    "tool_name": null,
+    "preview": "{\"type\":\"map-command\",\"id\":\"01KTRZ2RXVC74WP9KNN6QC20AT\",\"ts\":\"2026-06-10T14:30:47.483213Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"command\":\"zoom-to\",\"args\":{\"bbox\":[-81.9126085,26.5476424,-81.7511414,26.689176]}}}"
+  },
+  {
+    "t_rel_ms": 732822,
+    "type": "pipeline-state",
+    "tool_name": [
+      "run_model_flood_scenario"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZNJATHTN37CPJ6CX1VCCS\",\"ts\":\"2026-06-10T14:41:03.322419Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZ2RXSBDHYNM652NKAMBQ4\",\"steps\":[{\"step_id\":\"01KTRZ2RXSBDHYNM652NKAMBQ5\",\"name\":\"run_model_flood_scenario\",\"tool_name\":\"run_model_flood_scenario\",\"state\":\"complete\",\"started_at\":\"2026-06-10T14:30:47.482258Z\",\"completed_at\":\"2026-06-10T14:41:03.322118Z\",\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 745829,
+    "type": "pipeline-state",
+    "tool_name": [
+      "run_pelicun_damage_assessment"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZNZ184FN1VWXJATD5T06Q\",\"ts\":\"2026-06-10T14:41:16.328866Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZNZ184FN1VWXJATD5T06N\",\"steps\":[{\"step_id\":\"01KTRZNZ184FN1VWXJATD5T06P\",\"name\":\"run_pelicun_damage_assessment\",\"tool_name\":\"run_pelicun_damage_assessment\",\"state\":\"pending\",\"started_at\":null,\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 745834,
+    "type": "pipeline-state",
+    "tool_name": [
+      "run_pelicun_damage_assessment"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZNZ196RXSMKRBQ4VDJMAE\",\"ts\":\"2026-06-10T14:41:16.329480Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZNZ184FN1VWXJATD5T06N\",\"steps\":[{\"step_id\":\"01KTRZNZ184FN1VWXJATD5T06P\",\"name\":\"run_pelicun_damage_assessment\",\"tool_name\":\"run_pelicun_damage_assessment\",\"state\":\"running\",\"started_at\":\"2026-06-10T14:41:16.329278Z\",\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 748286,
+    "type": "pipeline-state",
+    "tool_name": [
+      "run_pelicun_damage_assessment"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZP1E1HQ5GPCT7NF351Q1Y\",\"ts\":\"2026-06-10T14:41:18.785711Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZNZ184FN1VWXJATD5T06N\",\"steps\":[{\"step_id\":\"01KTRZNZ184FN1VWXJATD5T06P\",\"name\":\"run_pelicun_damage_assessment\",\"tool_name\":\"run_pelicun_damage_assessment\",\"state\":\"failed\",\"started_at\":\"2026-06-10T14:41:16.329278Z\",\"completed_at\":\"2026-06-10T14:41:18.785435Z\",\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 763849,
+    "type": "agent-message-chunk",
+    "tool_name": null,
+    "preview": "{\"type\":\"agent-message-chunk\",\"id\":\"01KTRZPGMDEWPCQCXHNQ042R0G\",\"ts\":\"2026-06-10T14:41:34.349175Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"message_id\":\"01KTRYZFJAV24MCTJ7TAHX3E08\",\"delta\":\"I am sorry, but I was unable to find "
+  },
+  {
+    "t_rel_ms": 764671,
+    "type": "agent-message-chunk",
+    "tool_name": null,
+    "preview": "{\"type\":\"agent-message-chunk\",\"id\":\"01KTRZPHE2AR0ME9TF26XX43HJ\",\"ts\":\"2026-06-10T14:41:35.170950Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"message_id\":\"01KTRYZFJAV24MCTJ7TAHX3E08\",\"delta\":\" will now try to generate it by runni"
+  },
+  {
+    "t_rel_ms": 764750,
+    "type": "agent-message-chunk",
+    "tool_name": null,
+    "preview": "{\"type\":\"agent-message-chunk\",\"id\":\"01KTRZPHGHYA4564WGXCXKDA4D\",\"ts\":\"2026-06-10T14:41:35.249985Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"message_id\":\"01KTRYZFJAV24MCTJ7TAHX3E08\",\"delta\":\"\",\"done\":true}}"
+  },
+  {
+    "t_rel_ms": 764766,
+    "type": "pipeline-state",
+    "tool_name": [
+      "gemini_generate"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZPHGJP6CW6DAFRG786X6C\",\"ts\":\"2026-06-10T14:41:35.250551Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRYZFJBDW6V7XHQMXWGYJ4Y\",\"steps\":[{\"step_id\":\"01KTRYZFJBDW6V7XHQMXWGYJ4Z\",\"name\":\"llm_generation\",\"tool_name\":\"gemini_generate\",\"state\":\"complete\",\"started_at\":null,\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 789201,
+    "type": "SENT:user-message",
+    "preview": "{\"type\":\"user-message\",\"id\":\"01KTRZQ9C4BW0PFPHMGQVAYSV9\",\"ts\":\"2026-06-10T14:41:59.684Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"text\":\"Use the NSI inventory.\",\"research_mode\":\"research\"}}"
+  },
+  {
+    "t_rel_ms": 789203,
+    "type": "pipeline-state",
+    "tool_name": [
+      "gemini_generate"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZQ9C68B194CPJJH8EHZ6M\",\"ts\":\"2026-06-10T14:41:59.686457Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZQ9C68B194CPJJH8EHZ6J\",\"steps\":[{\"step_id\":\"01KTRZQ9C68B194CPJJH8EHZ6K\",\"name\":\"llm_generation\",\"tool_name\":\"gemini_generate\",\"state\":\"running\",\"started_at\":null,\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 805016,
+    "type": "pipeline-state",
+    "tool_name": [
+      "geocode_location"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZQRTWH9T8EVFB7A36VBBW\",\"ts\":\"2026-06-10T14:42:15.516261Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZQRTVT0VCSED0TAT08ZXR\",\"steps\":[{\"step_id\":\"01KTRZQRTVT0VCSED0TAT08ZXS\",\"name\":\"geocode_location\",\"tool_name\":\"geocode_location\",\"state\":\"pending\",\"started_at\":null,\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 805028,
+    "type": "pipeline-state",
+    "tool_name": [
+      "geocode_location"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZQRTWH9T8EVFB7A36VBBX\",\"ts\":\"2026-06-10T14:42:15.516861Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZQRTVT0VCSED0TAT08ZXR\",\"steps\":[{\"step_id\":\"01KTRZQRTVT0VCSED0TAT08ZXS\",\"name\":\"geocode_location\",\"tool_name\":\"geocode_location\",\"state\":\"running\",\"started_at\":\"2026-06-10T14:42:15.516684Z\",\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 807572,
+    "type": "pipeline-state",
+    "tool_name": [
+      "geocode_location"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZQVAR48XPMCBK0488SJ4B\",\"ts\":\"2026-06-10T14:42:18.072738Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZQRTVT0VCSED0TAT08ZXR\",\"steps\":[{\"step_id\":\"01KTRZQRTVT0VCSED0TAT08ZXS\",\"name\":\"geocode_location\",\"tool_name\":\"geocode_location\",\"state\":\"complete\",\"started_at\":\"2026-06-10T14:42:15.516684Z\",\"completed_at\":\"2026-06-10T14:42:18.072476Z\",\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 811775,
+    "type": "pipeline-state",
+    "tool_name": [
+      "fetch_usace_nsi"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZQZE3N9DT7YG5EPFXGMFB\",\"ts\":\"2026-06-10T14:42:22.275197Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZQZE2SZYFF6WZBFTAT3TA\",\"steps\":[{\"step_id\":\"01KTRZQZE2SZYFF6WZBFTAT3TB\",\"name\":\"fetch_usace_nsi\",\"tool_name\":\"fetch_usace_nsi\",\"state\":\"pending\",\"started_at\":null,\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 811786,
+    "type": "pipeline-state",
+    "tool_name": [
+      "fetch_usace_nsi"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZQZE3N9DT7YG5EPFXGMFC\",\"ts\":\"2026-06-10T14:42:22.275853Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZQZE2SZYFF6WZBFTAT3TA\",\"steps\":[{\"step_id\":\"01KTRZQZE2SZYFF6WZBFTAT3TB\",\"name\":\"fetch_usace_nsi\",\"tool_name\":\"fetch_usace_nsi\",\"state\":\"running\",\"started_at\":\"2026-06-10T14:42:22.275674Z\",\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 831123,
+    "type": "session-state",
+    "tool_name": null,
+    "preview": "{\"type\":\"session-state\",\"id\":\"01KTRZRFSK2BCQSNG8BXNW9WXG\",\"ts\":\"2026-06-10T14:42:39.027248Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"chat_history\":[],\"loaded_layers\":[{\"layer_id\":\"usace-nsi--81.9126-26.5476--81.7511-26.6892\",\"name\":\"USACE NSI Structures — bbox (-81.913,26.548,-81.751,26.689)\",\"layer_type\":\"vector\",\"uri\":\"gs://grace-2-hazard-prod-cache/cache/static-30d/usace_nsi/852a6cc379b18c865bf9d99ec1acaa35.fgb\",\"style_preset\":\"usace_nsi\",\"visible\":true,\"role\":\"primary\",\"temporal\":false,\"wms_url\":null,\"opacity\":null,\"z_index\":null,\"inline_geojson\":{\"type\":\"FeatureCollection\",\"features\":[{\"id\":\"0\",\"type\":\"Feature\",\"properties\":{\"fd_id\":496548787,\"occtype\":\"COM4\",\"st_damcat\":\"COM\",\"bldgtype\":\"C\",\"found_type\":\"S\",\"found_ht\":0.5,\"num_story\":1,\"sqft\":96378.0,\"med_yr_blt\":2017,\"val_struct\":13919320.5,\"val_cont\":13919320.5,\"val_vehic\":36000,\"firmzone\":null,\"cbfips\":\"120719800001026\",\"ground_elv\":29.29260818222046,\"ground_elv_m\":8.928386688232422,\"pop2amu65\":0,\"pop2amo65\":0,\"pop2pmu65\":0,\"pop2pmo65\":0,\"students\":0,\"source\":\"P\",\"component_type\":\"COM4\",\"replacement_value\":13919320.5},\"geometry\":{\"type\":\"Point\",\"coordinates\":[-81.753242,26.549522]}},{\"id\":\"1\",\"type\":\"Feature\",\"properties\":{\"fd_id\":497494423,\"occtype\":\"COM4\",\"st_damcat\":\"COM\",\"bldgtype\":\"C\",\"found_type\":\"S\",\"found_ht\":0.5,\"num_story\":1,\"sqft\":16467.3,\"med_yr_blt\":2003,\"val_struct\":2072719.28,\"val_cont\":2072719.28,\"val_vehic\":27000,\"firmzone\":null,\"cbfips\":\"120710401141105\",\"ground_elv\":27.367963189849853,\"ground_elv_m\":8.341754913330078,\"pop2amu65\":0,\"pop2amo65\":0,\"pop2pmu65\":6,\"pop2pmo65\":0,\"students\""
+  },
+  {
+    "t_rel_ms": 831123,
+    "type": "pipeline-state",
+    "tool_name": [
+      "fetch_usace_nsi"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZRGDACKKVSVVJ3EYDH2V7\",\"ts\":\"2026-06-10T14:42:39.658103Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZQZE2SZYFF6WZBFTAT3TA\",\"steps\":[{\"step_id\":\"01KTRZQZE2SZYFF6WZBFTAT3TB\",\"name\":\"fetch_usace_nsi\",\"tool_name\":\"fetch_usace_nsi\",\"state\":\"complete\",\"started_at\":\"2026-06-10T14:42:22.275674Z\",\"completed_at\":\"2026-06-10T14:42:39.657994Z\",\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 833590,
+    "type": "pipeline-state",
+    "tool_name": [
+      "list_tools_in_category"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZRMQS0QSSJ85MJZGWSB6N\",\"ts\":\"2026-06-10T14:42:44.089806Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZRMQS0QSSJ85MJZGWSB6K\",\"steps\":[{\"step_id\":\"01KTRZRMQS0QSSJ85MJZGWSB6M\",\"name\":\"list_tools_in_category\",\"tool_name\":\"list_tools_in_category\",\"state\":\"pending\",\"started_at\":null,\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 833603,
+    "type": "pipeline-state",
+    "tool_name": [
+      "list_tools_in_category"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZRMQTQFP1KEMTYG93DVCZ\",\"ts\":\"2026-06-10T14:42:44.090422Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZRMQS0QSSJ85MJZGWSB6K\",\"steps\":[{\"step_id\":\"01KTRZRMQS0QSSJ85MJZGWSB6M\",\"name\":\"list_tools_in_category\",\"tool_name\":\"list_tools_in_category\",\"state\":\"running\",\"started_at\":\"2026-06-10T14:42:44.090237Z\",\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 833620,
+    "type": "pipeline-state",
+    "tool_name": [
+      "list_tools_in_category"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZRMQVKTXWZFQDRNT7ZT3S\",\"ts\":\"2026-06-10T14:42:44.091065Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZRMQS0QSSJ85MJZGWSB6K\",\"steps\":[{\"step_id\":\"01KTRZRMQS0QSSJ85MJZGWSB6M\",\"name\":\"list_tools_in_category\",\"tool_name\":\"list_tools_in_category\",\"state\":\"failed\",\"started_at\":\"2026-06-10T14:42:44.090237Z\",\"completed_at\":\"2026-06-10T14:42:44.090872Z\",\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 841269,
+    "type": "pipeline-state",
+    "tool_name": [
+      "list_categories"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZRW7RW0QDQZ8P5H25W71R\",\"ts\":\"2026-06-10T14:42:51.768580Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZRW7RW0QDQZ8P5H25W71P\",\"steps\":[{\"step_id\":\"01KTRZRW7RW0QDQZ8P5H25W71Q\",\"name\":\"list_categories\",\"tool_name\":\"list_categories\",\"state\":\"pending\",\"started_at\":null,\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 841290,
+    "type": "pipeline-state",
+    "tool_name": [
+      "list_categories"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZRW7S825EXZHK707QP943\",\"ts\":\"2026-06-10T14:42:51.769182Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZRW7RW0QDQZ8P5H25W71P\",\"steps\":[{\"step_id\":\"01KTRZRW7RW0QDQZ8P5H25W71Q\",\"name\":\"list_categories\",\"tool_name\":\"list_categories\",\"state\":\"running\",\"started_at\":\"2026-06-10T14:42:51.768978Z\",\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 841311,
+    "type": "pipeline-state",
+    "tool_name": [
+      "list_categories"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZRW7S825EXZHK707QP944\",\"ts\":\"2026-06-10T14:42:51.769731Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZRW7RW0QDQZ8P5H25W71P\",\"steps\":[{\"step_id\":\"01KTRZRW7RW0QDQZ8P5H25W71Q\",\"name\":\"list_categories\",\"tool_name\":\"list_categories\",\"state\":\"complete\",\"started_at\":\"2026-06-10T14:42:51.768978Z\",\"completed_at\":\"2026-06-10T14:42:51.769557Z\",\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 844567,
+    "type": "pipeline-state",
+    "tool_name": [
+      "list_tools_in_category"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZRZEVXSNMFWRHZXFG5X5Z\",\"ts\":\"2026-06-10T14:42:55.067551Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZRZEVXSNMFWRHZXFG5X5X\",\"steps\":[{\"step_id\":\"01KTRZRZEVXSNMFWRHZXFG5X5Y\",\"name\":\"list_tools_in_category\",\"tool_name\":\"list_tools_in_category\",\"state\":\"pending\",\"started_at\":null,\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 844579,
+    "type": "pipeline-state",
+    "tool_name": [
+      "list_tools_in_category"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZRZEWS21VA1FH6PZ8594J\",\"ts\":\"2026-06-10T14:42:55.068142Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZRZEVXSNMFWRHZXFG5X5X\",\"steps\":[{\"step_id\":\"01KTRZRZEVXSNMFWRHZXFG5X5Y\",\"name\":\"list_tools_in_category\",\"tool_name\":\"list_tools_in_category\",\"state\":\"running\",\"started_at\":\"2026-06-10T14:42:55.067941Z\",\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 844594,
+    "type": "pipeline-state",
+    "tool_name": [
+      "list_tools_in_category"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZRZEXTEEEJ67M5N4PV8H4\",\"ts\":\"2026-06-10T14:42:55.069546Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZRZEVXSNMFWRHZXFG5X5X\",\"steps\":[{\"step_id\":\"01KTRZRZEVXSNMFWRHZXFG5X5Y\",\"name\":\"list_tools_in_category\",\"tool_name\":\"list_tools_in_category\",\"state\":\"complete\",\"started_at\":\"2026-06-10T14:42:55.067941Z\",\"completed_at\":\"2026-06-10T14:42:55.069337Z\",\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 848214,
+    "type": "pipeline-state",
+    "tool_name": [
+      "list_tools_in_category"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZS30TV14DJWK06CZGHCV5\",\"ts\":\"2026-06-10T14:42:58.714364Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZS30TV14DJWK06CZGHCV3\",\"steps\":[{\"step_id\":\"01KTRZS30TV14DJWK06CZGHCV4\",\"name\":\"list_tools_in_category\",\"tool_name\":\"list_tools_in_category\",\"state\":\"pending\",\"started_at\":null,\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 848225,
+    "type": "pipeline-state",
+    "tool_name": [
+      "list_tools_in_category"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZS30TV14DJWK06CZGHCV6\",\"ts\":\"2026-06-10T14:42:58.714955Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZS30TV14DJWK06CZGHCV3\",\"steps\":[{\"step_id\":\"01KTRZS30TV14DJWK06CZGHCV4\",\"name\":\"list_tools_in_category\",\"tool_name\":\"list_tools_in_category\",\"state\":\"running\",\"started_at\":\"2026-06-10T14:42:58.714770Z\",\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 848247,
+    "type": "pipeline-state",
+    "tool_name": [
+      "list_tools_in_category"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZS30WRGZNZG551H6MBQZ8\",\"ts\":\"2026-06-10T14:42:58.716296Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZS30TV14DJWK06CZGHCV3\",\"steps\":[{\"step_id\":\"01KTRZS30TV14DJWK06CZGHCV4\",\"name\":\"list_tools_in_category\",\"tool_name\":\"list_tools_in_category\",\"state\":\"complete\",\"started_at\":\"2026-06-10T14:42:58.714770Z\",\"completed_at\":\"2026-06-10T14:42:58.716077Z\",\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 856319,
+    "type": "pipeline-state",
+    "tool_name": [
+      "run_model_flood_scenario"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZSAY3W3VNMHGRVVWMB6D4\",\"ts\":\"2026-06-10T14:43:06.819501Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZSAY3W3VNMHGRVVWMB6D2\",\"steps\":[{\"step_id\":\"01KTRZSAY3W3VNMHGRVVWMB6D3\",\"name\":\"run_model_flood_scenario\",\"tool_name\":\"run_model_flood_scenario\",\"state\":\"pending\",\"started_at\":null,\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 856330,
+    "type": "pipeline-state",
+    "tool_name": [
+      "run_model_flood_scenario"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZSAY4T998HDSE3M8BW221\",\"ts\":\"2026-06-10T14:43:06.820116Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZSAY3W3VNMHGRVVWMB6D2\",\"steps\":[{\"step_id\":\"01KTRZSAY3W3VNMHGRVVWMB6D3\",\"name\":\"run_model_flood_scenario\",\"tool_name\":\"run_model_flood_scenario\",\"state\":\"running\",\"started_at\":\"2026-06-10T14:43:06.819926Z\",\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 857759,
+    "type": "map-command",
+    "tool_name": null,
+    "preview": "{\"type\":\"map-command\",\"id\":\"01KTRZSCAWK0VVYHCNXFXWACZW\",\"ts\":\"2026-06-10T14:43:08.252883Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"command\":\"zoom-to\",\"args\":{\"bbox\":[-81.9126085,26.5476424,-81.7511414,26.689176]}}}"
+  },
+  {
+    "t_rel_ms": 1400475,
+    "type": "pipeline-state",
+    "tool_name": [
+      "run_model_flood_scenario"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTS09YB0SGB3EGWC9DF8TKWB\",\"ts\":\"2026-06-10T14:52:10.976696Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZSAY3W3VNMHGRVVWMB6D2\",\"steps\":[{\"step_id\":\"01KTRZSAY3W3VNMHGRVVWMB6D3\",\"name\":\"run_model_flood_scenario\",\"tool_name\":\"run_model_flood_scenario\",\"state\":\"complete\",\"started_at\":\"2026-06-10T14:43:06.819926Z\",\"completed_at\":\"2026-06-10T14:52:10.976595Z\",\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 1423932,
+    "type": "pipeline-state",
+    "tool_name": [
+      "run_pelicun_damage_assessment"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTS0AN80Q98K390HSHEFM3K3\",\"ts\":\"2026-06-10T14:52:34.432186Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTS0AN7Z2S1AV5CHE9F5HFYQ\",\"steps\":[{\"step_id\":\"01KTS0AN7Z2S1AV5CHE9F5HFYR\",\"name\":\"run_pelicun_damage_assessment\",\"tool_name\":\"run_pelicun_damage_assessment\",\"state\":\"pending\",\"started_at\":null,\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 1423946,
+    "type": "pipeline-state",
+    "tool_name": [
+      "run_pelicun_damage_assessment"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTS0AN80Q98K390HSHEFM3K4\",\"ts\":\"2026-06-10T14:52:34.432807Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTS0AN7Z2S1AV5CHE9F5HFYQ\",\"steps\":[{\"step_id\":\"01KTS0AN7Z2S1AV5CHE9F5HFYR\",\"name\":\"run_pelicun_damage_assessment\",\"tool_name\":\"run_pelicun_damage_assessment\",\"state\":\"running\",\"started_at\":\"2026-06-10T14:52:34.432623Z\",\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 1426796,
+    "type": "pipeline-state",
+    "tool_name": [
+      "run_pelicun_damage_assessment"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTS0AR1G4Q88NHVP1Q0NB7EH\",\"ts\":\"2026-06-10T14:52:37.296505Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTS0AN7Z2S1AV5CHE9F5HFYQ\",\"steps\":[{\"step_id\":\"01KTS0AN7Z2S1AV5CHE9F5HFYR\",\"name\":\"run_pelicun_damage_assessment\",\"tool_name\":\"run_pelicun_damage_assessment\",\"state\":\"failed\",\"started_at\":\"2026-06-10T14:52:34.432623Z\",\"completed_at\":\"2026-06-10T14:52:37.296235Z\",\"progress_percent\":null}]}}"
+  }
+]

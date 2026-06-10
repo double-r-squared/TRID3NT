@@ -1,0 +1,137 @@
+{
+  "scenarios": {
+    "B": {
+      "b_frames_start": 9,
+      "prompt": "Run a flood damage assessment for Fort Myers with Pelicun using the NSI building inventory and the existing Fort Myers flood depth layer.",
+      "groundwater_hit_count": 0,
+      "flood_route_hit_count": 23,
+      "flood_route_sample": [
+        {
+          "idx": 26,
+          "type": "pipeline-state",
+          "tool_name": [
+            "fetch_usace_nsi"
+          ],
+          "snippet": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZ1FAJX8F0BW2EJWW2R6R1\",\"ts\":\"2026-06-10T14:30:04.882223Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZ1FAHGH923F5FS9KSASKE\",\"steps\":[{\"step_id\":\"01KTRZ1FA"
+        },
+        {
+          "idx": 27,
+          "type": "pipeline-state",
+          "tool_name": [
+            "fetch_usace_nsi"
+          ],
+          "snippet": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZ1FAJX8F0BW2EJWW2R6R2\",\"ts\":\"2026-06-10T14:30:04.882829Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZ1FAHGH923F5FS9KSASKE\",\"steps\":[{\"step_id\":\"01KTRZ1FA"
+        },
+        {
+          "idx": 28,
+          "type": "session-state",
+          "tool_name": null,
+          "snippet": "{\"type\":\"session-state\",\"id\":\"01KTRZ21F0V1J8SHBDTPRE39DP\",\"ts\":\"2026-06-10T14:30:23.456514Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"chat_history\":[],\"loaded_layers\":[{\"layer_id\":\"usace-nsi--81.9126-26.5476"
+        },
+        {
+          "idx": 29,
+          "type": "pipeline-state",
+          "tool_name": [
+            "fetch_usace_nsi"
+          ],
+          "snippet": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZ222J1R98HA8X1K47CHA1\",\"ts\":\"2026-06-10T14:30:24.082099Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZ1FAHGH923F5FS9KSASKE\",\"steps\":[{\"step_id\":\"01KTRZ1FA"
+        },
+        {
+          "idx": 30,
+          "type": "pipeline-state",
+          "tool_name": [
+            "run_pelicun_damage_assessment"
+          ],
+          "snippet": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZ27M600FYK1JJ0H8RDNMB\",\"ts\":\"2026-06-10T14:30:29.766216Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZ27M5D5R55MY4FM0WG4EW\",\"steps\":[{\"step_id\":\"01KTRZ27M"
+        },
+        {
+          "idx": 31,
+          "type": "pipeline-state",
+          "tool_name": [
+            "run_pelicun_damage_assessment"
+          ],
+          "snippet": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZ27M600FYK1JJ0H8RDNMC\",\"ts\":\"2026-06-10T14:30:29.766849Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZ27M5D5R55MY4FM0WG4EW\",\"steps\":[{\"step_id\":\"01KTRZ27M"
+        },
+        {
+          "idx": 32,
+          "type": "pipeline-state",
+          "tool_name": [
+            "run_pelicun_damage_assessment"
+          ],
+          "snippet": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZ2HDSHV7T046P55CDXMR4\",\"ts\":\"2026-06-10T14:30:39.801222Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZ27M5D5R55MY4FM0WG4EW\",\"steps\":[{\"step_id\":\"01KTRZ27M"
+        },
+        {
+          "idx": 33,
+          "type": "pipeline-state",
+          "tool_name": [
+            "run_model_flood_scenario"
+          ],
+          "snippet": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZ2RXSBDHYNM652NKAMBQ6\",\"ts\":\"2026-06-10T14:30:47.481855Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZ2RXSBDHYNM652NKAMBQ4\",\"steps\":[{\"step_id\":\"01KTRZ2RX"
+        },
+        {
+          "idx": 34,
+          "type": "pipeline-state",
+          "tool_name": [
+            "run_model_flood_scenario"
+          ],
+          "snippet": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZ2RXTV4WE23C1W9M5AX1K\",\"ts\":\"2026-06-10T14:30:47.482447Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZ2RXSBDHYNM652NKAMBQ4\",\"steps\":[{\"step_id\":\"01KTRZ2RX"
+        },
+        {
+          "idx": 36,
+          "type": "pipeline-state",
+          "tool_name": [
+            "run_model_flood_scenario"
+          ],
+          "snippet": "{\"type\":\"pipeline-state\",\"id\":\"01KTRZNJATHTN37CPJ6CX1VCCS\",\"ts\":\"2026-06-10T14:41:03.322419Z\",\"session_id\":\"01KTRYZ7VS818WAREPXS3FFFF9\",\"payload\":{\"pipeline_id\":\"01KTRZ2RXSBDHYNM652NKAMBQ4\",\"steps\":[{\"step_id\":\"01KTRZ2RX"
+        }
+      ],
+      "clarification_answered": true,
+      "impact_panel_present": false,
+      "impact_envelope_frame": false,
+      "b1_scroll_tail": "Run a flood damage assessment for Fort Myers with Pelicun using the NSI building inventory and the existing Fort Myers flood depth layer.completed: geocode_locationcompleted: list_categoriescompleted: discover_datasetcompleted: list_tools_in_categorycompleted: fetch_usace_nsifailed: run_pelicun_damage_assessmentcompleted: run_model_flood_scenarioI am sorry, but I was unable to find the existing flood depth layer for Fort Myers. I will now try to generate it by running a 100-year flood scenario. This may take a few minutes. I will then proceed with the damage assessment using the NSI building inventory as you requested. I will notify you once the full analysis is complete.Use the NSI inventory.",
+      "b1_map": {
+        "layers": [
+          {
+            "id": "qgis-basemap",
+            "type": "raster",
+            "source": "qgis-wms"
+          },
+          {
+            "id": "osm-fallback-basemap",
+            "type": "raster",
+            "source": "osm-fallback"
+          },
+          {
+            "id": "usace-nsi--81.9126-26.5476--81.7511-26.6892-clusters",
+            "type": "circle",
+            "source": "usace-nsi--81.9126-26.5476--81.7511-26.6892"
+          },
+          {
+            "id": "usace-nsi--81.9126-26.5476--81.7511-26.6892",
+            "type": "circle",
+            "source": "usace-nsi--81.9126-26.5476--81.7511-26.6892"
+          }
+        ],
+        "sources": [
+          "qgis-wms",
+          "osm-fallback",
+          "usace-nsi--81.9126-26.5476--81.7511-26.6892"
+        ],
+        "center": {
+          "lng": -81.83187494999999,
+          "lat": 26.618431102173815
+        },
+        "zoom": 11.830479549626718
+      },
+      "b23_skipped": true,
+      "b23_skip_reason": "no_impact_panel"
+    }
+  },
+  "rate_limited": false,
+  "turns_sent": 2,
+  "page_errors": [
+    "console.error: Failed to load resource: the server responded with a status of 404 ()",
+    "console.error: Error: layers.usace-nsi--81.9126-26.5476--81.7511-26.6892-cluster-count.layout.text-field: use of \"text-field\" requires a style \"glyphs\" property\n    at Object.xi [as t] (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:3003:67)\n    at ce (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:12122:34)\n    at de._validate (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:12661:54)\n    at de.addLayer (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:12444:152)\n    at t.Map.addLayer (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:17131:59)\n    at registerVectorOnMap (http://localhost:5173/src/Map.tsx?t=1780996283977:260:9)\n    at addVectorLayer (http://localhost:5173/src/Map.tsx?t=1780996283977:213:3)\n    at applyLatest (http://localhost:5173/src/Map.tsx?t=1780996283977:439:16)\n    at http://localhost:5173/src/Map.tsx?t=1780996283977:466:9\n    at http://localhost:5173/src/LayerPanel.tsx?t=1780984835170:561:57",
+    "console.error: Warning: `value` prop on `%s` should not be null. Consider using an empty string to clear the component or `undefined` for uncontrolled components.%s input \n    at input\n    at div\n    at div\n    at SortableRow (http://localhost:5173/src/LayerPanel.tsx?t=1780984835170:367:3)\n    at SortableContext (http://localhost:5173/node_modules/.vite/deps/@dnd-kit_sortable.js?v=7164eefb:261:5)\n    at DndContext2 (http://localhost:5173/node_modules/.vite/deps/chunk-PC23ANUS.js?v=7164eefb:2521:5)\n    at div\n    at aside\n    at LayerPanel (http://localhost:5173/src/LayerPanel.tsx?t=1780984835170:126:3)\n    at div\n    at div\n    at div\n    at App (http://localhost:5173/src/App.tsx?t=1781067938585:92:15)"
+  ]
+}
