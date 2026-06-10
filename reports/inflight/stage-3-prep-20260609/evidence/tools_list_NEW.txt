@@ -1,0 +1,93 @@
+# Stage-3 prep — NEW agent tool catalog snapshot
+# captured 2026-06-09, agent PID 2805891, GET http://127.0.0.1:8766/api/tool-catalog
+# count = 89
+
+  1. aggregate_claims_across_sources
+  2. aggregate_property_within_zone
+  3. catalog_fetch
+  4. catalog_search
+  5. clip_raster_to_bbox
+  6. clip_raster_to_polygon
+  7. clip_vector_to_polygon
+  8. code_exec_request  <-- sprint-13
+  9. compute_aspect
+ 10. compute_building_density
+ 11. compute_colored_relief
+ 12. compute_hillshade
+ 13. compute_impact_envelope
+ 14. compute_impervious_surface
+ 15. compute_slope
+ 16. compute_zonal_statistics
+ 17. count_features_above_threshold
+ 18. describe_qgis_algorithm
+ 19. discover_dataset
+ 20. extract_landcover_class
+ 21. fetch_3dep_extra
+ 22. fetch_administrative_boundaries
+ 23. fetch_asos_metar
+ 24. fetch_buildings
+ 25. fetch_cama_flood_discharge
+ 26. fetch_dem
+ 27. fetch_ebird_observations
+ 28. fetch_era5_reanalysis
+ 29. fetch_fema_nfhl_zones
+ 30. fetch_firms_active_fire
+ 31. fetch_gbif_occurrences
+ 32. fetch_gcn250_curve_numbers
+ 33. fetch_goes_satellite
+ 34. fetch_gridmet
+ 35. fetch_gtsm_tide_surge
+ 36. fetch_hrrr_forecast
+ 37. fetch_hrrr_smoke
+ 38. fetch_hrsl_population
+ 39. fetch_inaturalist_observations
+ 40. fetch_iucn_red_list_range
+ 41. fetch_landcover
+ 42. fetch_landfire_fuels
+ 43. fetch_movebank_tracks
+ 44. fetch_mrms_qpe
+ 45. fetch_mtbs_burn_severity
+ 46. fetch_nexrad_reflectivity
+ 47. fetch_nhdplus_nldi_navigate
+ 48. fetch_nifc_fire_perimeters
+ 49. fetch_noaa_coops_tides
+ 50. fetch_noaa_nwm_streamflow
+ 51. fetch_noaa_slr_scenarios
+ 52. fetch_nws_alerts_conus
+ 53. fetch_nws_event
+ 54. fetch_population
+ 55. fetch_raws_weather
+ 56. fetch_river_geometry
+ 57. fetch_roads_osm
+ 58. fetch_statsgo_soils
+ 59. fetch_storm_events_db
+ 60. fetch_usace_dams
+ 61. fetch_usace_levees
+ 62. fetch_usace_nsi
+ 63. fetch_usfs_canopy_fuels
+ 64. fetch_wdpa_protected_areas
+ 65. generate_choropleth_legend
+ 66. generate_damage_distribution
+ 67. generate_histogram
+ 68. generate_time_series
+ 69. geocode_location
+ 70. list_categories
+ 71. list_qgis_algorithms
+ 72. list_tools_in_category
+ 73. lookup_precip_return_period
+ 74. mongo_query
+ 75. postprocess_pelicun
+ 76. publish_layer
+ 77. qgis_process
+ 78. run_model_flood_habitat_scenario
+ 79. run_model_flood_scenario
+ 80. run_model_groundwater_contamination_scenario  <-- sprint-13
+ 81. run_model_news_event_ingest
+ 82. run_model_nws_flood_event_scenario  <-- sprint-13
+ 83. run_modflow_job  <-- sprint-13
+ 84. run_pelicun_damage_assessment
+ 85. run_pelicun_with_buildings
+ 86. run_solver
+ 87. summarize_layer_statistics
+ 88. wait_for_completion
+ 89. web_fetch

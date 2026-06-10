@@ -1,0 +1,7 @@
+# mf6 binary verification — Tue Jun  9 11:36:50 PM PDT 2026
+path: /tmp/mf6
+-rwxr-xr-x 1 nate nate 99078464 Jun  9 18:42 /tmp/mf6
+--- /tmp/mf6 --version ---
+ 
+mf6: 6.5.0 05/23/2024
+ 

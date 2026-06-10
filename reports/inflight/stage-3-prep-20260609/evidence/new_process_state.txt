@@ -1,0 +1,14 @@
+# NEW agent process state — Tue Jun  9 11:36:50 PM PDT 2026
+    PID    PPID                  STARTED     ELAPSED CMD
+2805891    2353 Tue Jun  9 23:25:18 2026       11:31 .venv/bin/python -m grace2_agent.main
+--- mandated env ---
+GOOGLE_CLOUD_LOCATION=us-central1
+GOOGLE_CLOUD_PROJECT=grace-2-hazard-prod
+GOOGLE_GENAI_USE_VERTEXAI=True
+GRACE2_MF6_BIN=/tmp/mf6
+GRACE2_MODFLOW_LOCAL=1
+PATH=/home/nate/tools/google-cloud-sdk/bin:/home/nate/.local/bin:/home/nate/.nvm/versions/node/v20.20.2/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games
+--- listening ports ---
+LISTEN 0      100                      127.0.0.1:8765       0.0.0.0:*    users:(("python",pid=2805891,fd=8))   
+LISTEN 0      100                      127.0.0.1:8766       0.0.0.0:*    users:(("python",pid=2805891,fd=7))   
+LISTEN 0      511                        0.0.0.0:5173       0.0.0.0:*    users:(("node",pid=1694056,fd=24))    
