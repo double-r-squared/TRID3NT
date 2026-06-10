@@ -1,0 +1,227 @@
+{
+  "scenarios": {
+    "B": {
+      "b_frames_start": 9,
+      "prompt": "Run a flood damage assessment for Fort Myers with Pelicun using the NSI building inventory and the existing Fort Myers flood depth layer.",
+      "groundwater_hit_count": 0,
+      "flood_route_hit_count": 15,
+      "flood_route_sample": [
+        {
+          "idx": 23,
+          "type": "pipeline-state",
+          "tool_name": [
+            "fetch_usace_nsi"
+          ],
+          "snippet": "{\"type\":\"pipeline-state\",\"id\":\"01KTS2FRTKYEAPF8XN3E27MXRS\",\"ts\":\"2026-06-10T15:30:19.091977Z\",\"session_id\":\"01KTS2BGXW30YBZ304JCG6W7YQ\",\"payload\":{\"pipeline_id\":\"01KTS2FRTKYEAPF8XN3E27MXRQ\",\"steps\":[{\"step_id\":\"01KTS2FRTKYEAPF8XN3E27MXRR\",\"name\":\"fetch_usace_n"
+        },
+        {
+          "idx": 24,
+          "type": "pipeline-state",
+          "tool_name": [
+            "fetch_usace_nsi"
+          ],
+          "snippet": "{\"type\":\"pipeline-state\",\"id\":\"01KTS2FRTMCAD8BEXQ5EP5DSDM\",\"ts\":\"2026-06-10T15:30:19.092585Z\",\"session_id\":\"01KTS2BGXW30YBZ304JCG6W7YQ\",\"payload\":{\"pipeline_id\":\"01KTS2FRTKYEAPF8XN3E27MXRQ\",\"steps\":[{\"step_id\":\"01KTS2FRTKYEAPF8XN3E27MXRR\",\"name\":\"fetch_usace_n"
+        },
+        {
+          "idx": 25,
+          "type": "session-state",
+          "tool_name": null,
+          "snippet": "{\"type\":\"session-state\",\"id\":\"01KTS2GAJJ09MTPWN4WCW8BDF5\",\"ts\":\"2026-06-10T15:30:37.266252Z\",\"session_id\":\"01KTS2BGXW30YBZ304JCG6W7YQ\",\"payload\":{\"chat_history\":[],\"loaded_layers\":[{\"layer_id\":\"usace-nsi--81.9126-26.5476--81.7511-26.6892\",\"name\":\"USACE NSI Str"
+        },
+        {
+          "idx": 26,
+          "type": "pipeline-state",
+          "tool_name": [
+            "fetch_usace_nsi"
+          ],
+          "snippet": "{\"type\":\"pipeline-state\",\"id\":\"01KTS2GB5SBQRD6MAP2ZFZ3DGQ\",\"ts\":\"2026-06-10T15:30:37.881548Z\",\"session_id\":\"01KTS2BGXW30YBZ304JCG6W7YQ\",\"payload\":{\"pipeline_id\":\"01KTS2FRTKYEAPF8XN3E27MXRQ\",\"steps\":[{\"step_id\":\"01KTS2FRTKYEAPF8XN3E27MXRR\",\"name\":\"fetch_usace_n"
+        },
+        {
+          "idx": 27,
+          "type": "pipeline-state",
+          "tool_name": [
+            "run_pelicun_damage_assessment"
+          ],
+          "snippet": "{\"type\":\"pipeline-state\",\"id\":\"01KTS2GKWZBF8TJJXSS39X6K7G\",\"ts\":\"2026-06-10T15:30:46.815760Z\",\"session_id\":\"01KTS2BGXW30YBZ304JCG6W7YQ\",\"payload\":{\"pipeline_id\":\"01KTS2GKWZBF8TJJXSS39X6K7E\",\"steps\":[{\"step_id\":\"01KTS2GKWZBF8TJJXSS39X6K7F\",\"name\":\"run_pelicun_d"
+        },
+        {
+          "idx": 28,
+          "type": "pipeline-state",
+          "tool_name": [
+            "run_pelicun_damage_assessment"
+          ],
+          "snippet": "{\"type\":\"pipeline-state\",\"id\":\"01KTS2GKX0T609QYSJSGD6Q2JQ\",\"ts\":\"2026-06-10T15:30:46.816369Z\",\"session_id\":\"01KTS2BGXW30YBZ304JCG6W7YQ\",\"payload\":{\"pipeline_id\":\"01KTS2GKWZBF8TJJXSS39X6K7E\",\"steps\":[{\"step_id\":\"01KTS2GKWZBF8TJJXSS39X6K7F\",\"name\":\"run_pelicun_d"
+        },
+        {
+          "idx": 29,
+          "type": "pipeline-state",
+          "tool_name": [
+            "run_pelicun_damage_assessment"
+          ],
+          "snippet": "{\"type\":\"pipeline-state\",\"id\":\"01KTS2GP58RFP4JC3HHH9QCXRW\",\"ts\":\"2026-06-10T15:30:49.129195Z\",\"session_id\":\"01KTS2BGXW30YBZ304JCG6W7YQ\",\"payload\":{\"pipeline_id\":\"01KTS2GKWZBF8TJJXSS39X6K7E\",\"steps\":[{\"step_id\":\"01KTS2GKWZBF8TJJXSS39X6K7F\",\"name\":\"run_pelicun_d"
+        },
+        {
+          "idx": 30,
+          "type": "agent-message-chunk",
+          "tool_name": null,
+          "snippet": "{\"type\":\"agent-message-chunk\",\"id\":\"01KTS2H6RSVMR0H9FEBY9KQFVD\",\"ts\":\"2026-06-10T15:31:06.137384Z\",\"session_id\":\"01KTS2BGXW30YBZ304JCG6W7YQ\",\"payload\":{\"message_id\":\"01KTS2BSEY8VMG8GZNAWTQ02YK\",\"delta\":\"I am unable to access the flood\",\"don"
+        },
+        {
+          "idx": 31,
+          "type": "agent-message-chunk",
+          "tool_name": null,
+          "snippet": "{\"type\":\"agent-message-chunk\",\"id\":\"01KTS2H7C1WDGJQFYG9N22A23Z\",\"ts\":\"2026-06-10T15:31:06.753428Z\",\"session_id\":\"01KTS2BGXW30YBZ304JCG6W7YQ\",\"payload\":{\"message_id\":\"01KTS2BSEY8VMG8GZNAWTQ02YK\",\"delta\":\" depth layer you mentioned. As a work"
+        },
+        {
+          "idx": 32,
+          "type": "pipeline-state",
+          "tool_name": [
+            "run_model_flood_scenario"
+          ],
+          "snippet": "{\"type\":\"pipeline-state\",\"id\":\"01KTS2H7F8P06ATJC921A6J7HD\",\"ts\":\"2026-06-10T15:31:06.856214Z\",\"session_id\":\"01KTS2BGXW30YBZ304JCG6W7YQ\",\"payload\":{\"pipeline_id\":\"01KTS2H7F7KFDDSTAGY3DFBNQP\",\"steps\":[{\"step_id\":\"01KTS2H7F7KFDDSTAGY3DFBNQQ\",\"name\":\"run_model_flo"
+        },
+        {
+          "idx": 33,
+          "type": "pipeline-state",
+          "tool_name": [
+            "run_model_flood_scenario"
+          ],
+          "snippet": "{\"type\":\"pipeline-state\",\"id\":\"01KTS2H7F8P06ATJC921A6J7HE\",\"ts\":\"2026-06-10T15:31:06.856810Z\",\"session_id\":\"01KTS2BGXW30YBZ304JCG6W7YQ\",\"payload\":{\"pipeline_id\":\"01KTS2H7F7KFDDSTAGY3DFBNQP\",\"steps\":[{\"step_id\":\"01KTS2H7F7KFDDSTAGY3DFBNQQ\",\"name\":\"run_model_flo"
+        },
+        {
+          "idx": 35,
+          "type": "session-state",
+          "tool_name": null,
+          "snippet": "{\"type\":\"session-state\",\"id\":\"01KTS37N4W3AGWXTAKZ6PD0HVJ\",\"ts\":\"2026-06-10T15:43:21.756703Z\",\"session_id\":\"01KTS2BGXW30YBZ304JCG6W7YQ\",\"payload\":{\"chat_history\":[],\"loaded_layers\":[{\"layer_id\":\"usace-nsi--81.9126-26.5476--81.7511-26.6892\",\"name\":\"USACE NSI Str"
+        }
+      ],
+      "publish_route_hits": [],
+      "clarification_answered": false,
+      "map_command_count": 2,
+      "layer_panel": {
+        "panel_present": true,
+        "panel_text": "Layers2 loaded×⠿USACE NSI Structures — bbox (-81.913,26.548,-81.751,26.689)opacity0%⠿Flood Depth (peak)opacity0%\n    To pick up a draggable item, press the space bar.\n    While dragging, use the arrow keys to move the item.\n    Press space again to drop the item in its new position, or press escape to cancel.\n  ",
+        "rows": [
+          "Max flood depth (m)0 m3.5 m",
+          "Layers2 loaded×⠿USACE NSI Structures — bbox (-81.913,26.548,-81.751,26.689)opacity0%⠿Flood Depth (peak)opacity0%\n    To pick up a draggable item, press the space bar.\n    While dragging, use the arrow keys to move the item.\n    Press space again to drop the item in its new position, or press escape to cancel.",
+          "×",
+          "⠿USACE NSI Structures — bbox (-81.913,26.548,-81.751,26.689)opacity0%",
+          "⠿Flood Depth (peak)opacity0%"
+        ]
+      },
+      "layer_panel_has_flood": true,
+      "b1_map": {
+        "layers": [
+          {
+            "id": "qgis-basemap",
+            "type": "raster",
+            "source": "qgis-wms"
+          },
+          {
+            "id": "osm-fallback-basemap",
+            "type": "raster",
+            "source": "osm-fallback"
+          },
+          {
+            "id": "usace-nsi--81.9126-26.5476--81.7511-26.6892-clusters",
+            "type": "circle",
+            "source": "usace-nsi--81.9126-26.5476--81.7511-26.6892"
+          },
+          {
+            "id": "usace-nsi--81.9126-26.5476--81.7511-26.6892",
+            "type": "circle",
+            "source": "usace-nsi--81.9126-26.5476--81.7511-26.6892"
+          },
+          {
+            "id": "flood-depth-peak-01KTS2HNC393Q9PZ563ASB96AA",
+            "type": "raster",
+            "source": "flood-depth-peak-01KTS2HNC393Q9PZ563ASB96AA"
+          }
+        ],
+        "sources": [
+          "qgis-wms",
+          "osm-fallback",
+          "usace-nsi--81.9126-26.5476--81.7511-26.6892",
+          "flood-depth-peak-01KTS2HNC393Q9PZ563ASB96AA"
+        ],
+        "center": {
+          "lng": -81.83187494999999,
+          "lat": 26.618431102173815
+        },
+        "zoom": 11.830479549626718
+      },
+      "map_has_flood_overlay": true,
+      "flood_layer_published": true,
+      "flood_layer_renders_on_map": true,
+      "impact_panel_present": false,
+      "impact_envelope_frame": false,
+      "b1_scroll_tail": "Run a flood damage assessment for Fort Myers with Pelicun using the NSI building inventory and the existing Fort Myers flood depth layer.completed: geocode_locationcompleted: list_categoriescompleted: list_tools_in_categorycompleted: fetch_usace_nsirunning: run_pelicun_damage_assessmentI am unable to access the flood depth layer you mentioned. As a workaround, I will run a new flood simulation for Fort Myers to generate an up-to-date flood depth layer, and then proceed with the damage assessment. This may take a few minutes.I am running a flood damage assessment for Fort Myers. This involves three steps:\n\nGeocoding the location to get a bounding box for the analysis.\nFetching the USACE National Structure Inventory (NSI) for that bounding box to get the building data.\nRunning the Pelicun damage assessment model using the NSI data and a flood depth layer for Fort Myers.\n\nI have already completed the first two steps. I am now rerunning the final step. ▌completed: run_model_flood_scenario",
+      "b23_skipped": true,
+      "b23_skip_reason": "no_impact_panel"
+    }
+  },
+  "rate_limited": false,
+  "turns_sent": 1,
+  "page_errors": [
+    "console.error: Error: layers.usace-nsi--81.9126-26.5476--81.7511-26.6892-cluster-count.layout.text-field: use of \"text-field\" requires a style \"glyphs\" property\n    at Object.xi [as t] (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:3003:67)\n    at ce (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:12122:34)\n    at de._validate (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:12661:54)\n    at de.addLayer (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:12444:152)\n    at t.Map.addLayer (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:17131:59)\n    at registerVectorOnMap (http://localhost:5173/src/Map.tsx?t=1780996283977:260:9)\n    at addVectorLayer (http://localhost:5173/src/Map.tsx?t=1780996283977:213:3)\n    at applyLatest (http://localhost:5173/src/Map.tsx?t=1780996283977:439:16)\n    at http://localhost:5173/src/Map.tsx?t=1780996283977:466:9\n    at http://localhost:5173/src/LayerPanel.tsx?t=1780984835170:561:57",
+    "console.error: Warning: `value` prop on `%s` should not be null. Consider using an empty string to clear the component or `undefined` for uncontrolled components.%s input \n    at input\n    at div\n    at div\n    at SortableRow (http://localhost:5173/src/LayerPanel.tsx?t=1780984835170:367:3)\n    at SortableContext (http://localhost:5173/node_modules/.vite/deps/@dnd-kit_sortable.js?v=7164eefb:261:5)\n    at DndContext2 (http://localhost:5173/node_modules/.vite/deps/chunk-PC23ANUS.js?v=7164eefb:2521:5)\n    at div\n    at aside\n    at LayerPanel (http://localhost:5173/src/LayerPanel.tsx?t=1780984835170:126:3)\n    at div\n    at div\n    at div\n    at App (http://localhost:5173/src/App.tsx?t=1781067938585:92:15)",
+    "console.error: Failed to load resource: the server responded with a status of 400 ()",
+    "console.error: Failed to load resource: the server responded with a status of 400 ()",
+    "console.error: Failed to load resource: the server responded with a status of 400 ()",
+    "console.error: Failed to load resource: the server responded with a status of 400 ()",
+    "console.error: Failed to load resource: the server responded with a status of 400 ()",
+    "console.error: Failed to load resource: the server responded with a status of 400 ()",
+    "console.error: L: AJAXError:  (400): https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=flood-depth-peak-01KTS2HNC393Q9PZ563ASB96AA&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-9113739.756498136,3072157.0408378057,-9108847.786687884,3077049.010648057&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:35:23)",
+    "console.error: Failed to load resource: the server responded with a status of 400 ()",
+    "console.error: L: AJAXError:  (400): https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=flood-depth-peak-01KTS2HNC393Q9PZ563ASB96AA&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-9113739.756498136,3067265.0710275546,-9108847.786687884,3072157.0408378057&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:35:23)",
+    "console.error: Failed to load resource: the server responded with a status of 400 ()",
+    "console.error: L: AJAXError:  (400): https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=flood-depth-peak-01KTS2HNC393Q9PZ563ASB96AA&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-9118631.726308387,3072157.0408378057,-9113739.756498136,3077049.010648057&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:35:23)",
+    "console.error: L: AJAXError:  (400): https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=flood-depth-peak-01KTS2HNC393Q9PZ563ASB96AA&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-9113739.756498136,3077049.010648057,-9108847.786687884,3081940.980458308&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:35:23)",
+    "console.error: L: AJAXError:  (400): https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=flood-depth-peak-01KTS2HNC393Q9PZ563ASB96AA&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-9108847.786687884,3072157.0408378057,-9103955.816877633,3077049.010648057&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:35:23)",
+    "console.error: L: AJAXError:  (400): https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=flood-depth-peak-01KTS2HNC393Q9PZ563ASB96AA&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-9118631.726308387,3077049.010648057,-9113739.756498136,3081940.980458308&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:35:23)",
+    "console.error: Failed to load resource: the server responded with a status of 400 ()",
+    "console.error: L: AJAXError:  (400): https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=flood-depth-peak-01KTS2HNC393Q9PZ563ASB96AA&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-9108847.786687884,3077049.010648057,-9103955.816877633,3081940.980458308&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:35:23)",
+    "console.error: L: AJAXError:  (400): https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=flood-depth-peak-01KTS2HNC393Q9PZ563ASB96AA&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-9108847.786687884,3067265.0710275546,-9103955.816877633,3072157.0408378057&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:35:23)",
+    "console.error: Failed to load resource: the server responded with a status of 400 ()",
+    "console.error: L: AJAXError:  (400): https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=flood-depth-peak-01KTS2HNC393Q9PZ563ASB96AA&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-9103955.816877633,3072157.0408378057,-9099063.847067382,3077049.010648057&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:35:23)",
+    "console.error: Failed to load resource: the server responded with a status of 400 ()",
+    "console.error: L: AJAXError:  (400): https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=flood-depth-peak-01KTS2HNC393Q9PZ563ASB96AA&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-9113739.756498136,3081940.980458308,-9108847.786687884,3086832.950268559&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:35:23)",
+    "console.error: L: AJAXError:  (400): https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=flood-depth-peak-01KTS2HNC393Q9PZ563ASB96AA&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-9103955.816877633,3077049.010648057,-9099063.847067382,3081940.980458308&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:35:23)",
+    "console.error: Failed to load resource: the server responded with a status of 400 ()",
+    "console.error: Failed to load resource: the server responded with a status of 400 ()",
+    "console.error: Failed to load resource: the server responded with a status of 400 ()",
+    "console.error: Failed to load resource: the server responded with a status of 400 ()",
+    "console.error: L: AJAXError:  (400): https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=flood-depth-peak-01KTS2HNC393Q9PZ563ASB96AA&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-9108847.786687884,3081940.980458308,-9103955.816877633,3086832.950268559&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:35:23)",
+    "console.error: Failed to load resource: the server responded with a status of 400 ()",
+    "console.error: Failed to load resource: the server responded with a status of 400 ()",
+    "console.error: L: AJAXError:  (400): https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=flood-depth-peak-01KTS2HNC393Q9PZ563ASB96AA&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-9103955.816877633,3067265.0710275546,-9099063.847067382,3072157.0408378057&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:35:23)",
+    "console.error: L: AJAXError:  (400): https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=flood-depth-peak-01KTS2HNC393Q9PZ563ASB96AA&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-9118631.726308387,3067265.0710275546,-9113739.756498136,3072157.0408378057&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:35:23)",
+    "console.error: Failed to load resource: the server responded with a status of 400 ()",
+    "console.error: Failed to load resource: the server responded with a status of 400 ()",
+    "console.error: L: AJAXError:  (400): https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=flood-depth-peak-01KTS2HNC393Q9PZ563ASB96AA&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-9118631.726308387,3081940.980458308,-9113739.756498136,3086832.950268559&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:35:23)",
+    "console.error: L: AJAXError:  (400): https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=flood-depth-peak-01KTS2HNC393Q9PZ563ASB96AA&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-9113739.756498136,3062373.1012172997,-9108847.786687884,3067265.0710275546&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:35:23)",
+    "console.error: L: AJAXError:  (400): https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=flood-depth-peak-01KTS2HNC393Q9PZ563ASB96AA&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-9108847.786687884,3062373.1012172997,-9103955.816877633,3067265.0710275546&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:35:23)",
+    "console.error: Failed to load resource: the server responded with a status of 400 ()",
+    "console.error: L: AJAXError:  (400): https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=flood-depth-peak-01KTS2HNC393Q9PZ563ASB96AA&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-9103955.816877633,3081940.980458308,-9099063.847067382,3086832.950268559&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:35:23)",
+    "console.error: L: AJAXError:  (400): https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=flood-depth-peak-01KTS2HNC393Q9PZ563ASB96AA&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-9123523.696118638,3072157.0408378057,-9118631.726308387,3077049.010648057&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:35:23)",
+    "console.error: Failed to load resource: the server responded with a status of 400 ()",
+    "console.error: Failed to load resource: the server responded with a status of 400 ()",
+    "console.error: L: AJAXError:  (400): https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=flood-depth-peak-01KTS2HNC393Q9PZ563ASB96AA&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-9123523.696118638,3077049.010648057,-9118631.726308387,3081940.980458308&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:35:23)",
+    "console.error: Failed to load resource: the server responded with a status of 400 ()",
+    "console.error: Failed to load resource: the server responded with a status of 400 ()",
+    "console.error: L: AJAXError:  (400): https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=flood-depth-peak-01KTS2HNC393Q9PZ563ASB96AA&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-9099063.847067382,3072157.0408378057,-9094171.87725713,3077049.010648057&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:35:23)",
+    "console.error: L: AJAXError:  (400): https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=flood-depth-peak-01KTS2HNC393Q9PZ563ASB96AA&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-9123523.696118638,3067265.0710275546,-9118631.726308387,3072157.0408378057&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:35:23)",
+    "console.error: Failed to load resource: the server responded with a status of 400 ()",
+    "console.error: Failed to load resource: the server responded with a status of 400 ()",
+    "console.error: Failed to load resource: the server responded with a status of 400 ()",
+    "console.error: L: AJAXError:  (400): https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=flood-depth-peak-01KTS2HNC393Q9PZ563ASB96AA&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-9118631.726308387,3062373.1012172997,-9113739.756498136,3067265.0710275546&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:35:23)",
+    "console.error: L: AJAXError:  (400): https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=flood-depth-peak-01KTS2HNC393Q9PZ563ASB96AA&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-9123523.696118638,3081940.980458308,-9118631.726308387,3086832.950268559&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:35:23)",
+    "console.error: Failed to load resource: the server responded with a status of 400 ()",
+    "console.error: L: AJAXError:  (400): https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=flood-depth-peak-01KTS2HNC393Q9PZ563ASB96AA&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-9099063.847067382,3081940.980458308,-9094171.87725713,3086832.950268559&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:35:23)",
+    "console.error: Failed to load resource: the server responded with a status of 400 ()",
+    "console.error: Failed to load resource: the server responded with a status of 400 ()",
+    "console.error: Failed to load resource: the server responded with a status of 400 ()",
+    "console.error: L: AJAXError:  (400): https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=flood-depth-peak-01KTS2HNC393Q9PZ563ASB96AA&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-9099063.847067382,3077049.010648057,-9094171.87725713,3081940.980458308&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:35:23)",
+    "console.error: L: AJAXError:  (400): https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=flood-depth-peak-01KTS2HNC393Q9PZ563ASB96AA&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&CRS=EPSG:3857&FORMAT=image%2Fpng&TRANSPARENT=true&BBOX=-9099063.847067382,3067265.0710275546,-9094171.87725713,3072157.0408378057&WIDTH=256&HEIGHT=256&STYLES=\n    at http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:281:25\n    at Generator.next (<anonymous>)\n    at a2 (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:35:23)"
+  ]
+}
