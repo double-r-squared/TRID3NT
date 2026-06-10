@@ -25,6 +25,7 @@ from grace2_contracts.case import (
     CaseOpenEnvelopePayload,
     CaseSessionState,
     CaseSummary,
+    ToolCardRecord,
 )
 from grace2_contracts.common import new_ulid
 
@@ -410,3 +411,130 @@ def test_module_exports_via_package_namespace() -> None:
     assert grace2_contracts.case.CaseListEnvelopePayload is CaseListEnvelopePayload
     assert grace2_contracts.case.CaseOpenEnvelopePayload is CaseOpenEnvelopePayload
     assert grace2_contracts.case.CaseCommandEnvelopePayload is CaseCommandEnvelopePayload
+
+
+# --------------------------------------------------------------------------- #
+# ToolCardRecord + role="tool" (job-0267 — full-stream persistence)
+# --------------------------------------------------------------------------- #
+
+
+def _fresh_tool_card() -> ToolCardRecord:
+    return ToolCardRecord(
+        tool_name="fetch_3dep_dem",
+        state="complete",
+        started_at="2026-06-10T12:00:00Z",
+        duration_ms=2340,
+        label="fetch_3dep_dem",
+    )
+
+
+def test_tool_card_record_roundtrip() -> None:
+    card = _fresh_tool_card()
+    dumped = _roundtrip(card)
+    assert dumped["tool_name"] == "fetch_3dep_dem"
+    assert dumped["state"] == "complete"
+    assert dumped["duration_ms"] == 2340
+    assert dumped["started_at"].endswith("Z")
+
+
+def test_tool_card_record_failed_state_roundtrip() -> None:
+    card = ToolCardRecord(tool_name="run_solver", state="failed")
+    dumped = _roundtrip(card)
+    assert dumped["state"] == "failed"
+    # Minimal record: timing + label are optional (wire-death fallback path).
+    assert dumped["started_at"] is None
+    assert dumped["duration_ms"] is None
+    assert dumped["label"] is None
+
+
+def test_tool_card_record_rejects_unknown_state() -> None:
+    """Closed enum: pending/running/cancelled are live-wire-only states."""
+    for bad in ("pending", "running", "cancelled", "ok"):
+        with pytest.raises(ValidationError):
+            ToolCardRecord(tool_name="x", state=bad)  # type: ignore[arg-type]
+
+
+def test_tool_card_record_rejects_negative_duration() -> None:
+    with pytest.raises(ValidationError):
+        ToolCardRecord(tool_name="x", state="complete", duration_ms=-1)
+
+
+def test_case_chat_message_tool_role_roundtrip() -> None:
+    """role="tool" rows carry the typed card + its JSON twin in content."""
+    card = _fresh_tool_card()
+    msg = CaseChatMessage(
+        message_id=new_ulid(),
+        case_id=new_ulid(),
+        role="tool",
+        content=card.model_dump_json(),
+        pipeline_id=new_ulid(),
+        tool_card=card,
+        created_at="2026-06-10T12:00:02Z",
+    )
+    dumped = _roundtrip(msg)
+    assert dumped["role"] == "tool"
+    assert dumped["tool_card"]["tool_name"] == "fetch_3dep_dem"
+    assert dumped["tool_card"]["state"] == "complete"
+    assert dumped["tool_card"]["duration_ms"] == 2340
+    # content is the JSON twin — parseable, same tool_name.
+    assert json.loads(dumped["content"])["tool_name"] == "fetch_3dep_dem"
+
+
+def test_case_chat_message_tool_card_default_none_backcompat() -> None:
+    """Pre-job-0267 documents (no ``tool_card`` key at all) validate unchanged."""
+    raw = {
+        "schema_version": "v1",
+        "message_id": new_ulid(),
+        "case_id": new_ulid(),
+        "role": "agent",
+        "content": "Done — flood depth published.",
+        "pipeline_id": None,
+        "layer_emissions": [],
+        "map_command_emissions": [],
+        "created_at": "2026-06-05T12:01:00Z",
+    }
+    msg = CaseChatMessage.model_validate(raw)
+    assert msg.tool_card is None
+
+
+def test_case_chat_message_still_rejects_assistant_role() -> None:
+    """The role enum gained "tool", not an open set — "assistant" stays out."""
+    with pytest.raises(ValidationError):
+        CaseChatMessage(
+            message_id=new_ulid(),
+            case_id=new_ulid(),
+            role="assistant",  # type: ignore[arg-type]
+            content="...",
+            created_at="2026-06-10T12:00:00Z",
+        )
+
+
+def test_case_session_state_carries_interleaved_stream() -> None:
+    """chat_history holds the FULL stream: user -> tool -> agent rows."""
+    case = _fresh_case_summary()
+    card = _fresh_tool_card()
+    user_row = CaseChatMessage(
+        message_id=new_ulid(),
+        case_id=case.case_id,
+        role="user",
+        content="Fetch the DEM",
+        created_at="2026-06-10T12:00:00Z",
+    )
+    tool_row = CaseChatMessage(
+        message_id=new_ulid(),
+        case_id=case.case_id,
+        role="tool",
+        content=card.model_dump_json(),
+        tool_card=card,
+        created_at="2026-06-10T12:00:02Z",
+    )
+    agent_row = CaseChatMessage(
+        message_id=new_ulid(),
+        case_id=case.case_id,
+        role="agent",
+        content="I fetched the DEM and added it to the map.",
+        created_at="2026-06-10T12:00:05Z",
+    )
+    state = CaseSessionState(case=case, chat_history=[user_row, tool_row, agent_row])
+    dumped = _roundtrip(state)
+    assert [m["role"] for m in dumped["chat_history"]] == ["user", "tool", "agent"]

@@ -386,18 +386,38 @@ export interface CaseSummary {
   qgs_project_uri?: string | null;
 }
 
+// ToolCardRecord — job-0267 (full-stream persistence): the replayable
+// terminal record of ONE tool dispatch inside a Case turn. Mirrors
+// `grace2_contracts.case.ToolCardRecord`. The live tool cards render from
+// `pipeline-state` envelopes (wire-only); this record is their persisted
+// twin so a Case reopen re-renders the inline cards. `state` is a CLOSED
+// two-value enum — cancelled dispatches persist nothing (Invariant 8) and
+// pending/running are live-wire-only states.
+export interface ToolCardRecord {
+  schema_version?: "v1";
+  tool_name: string;
+  state: "complete" | "failed";
+  started_at?: string | null;
+  duration_ms?: number | null;
+  label?: string | null;
+}
+
 // CaseChatMessage — one persisted chat exchange in a Case session. The
 // rehydration replay reconstructs the chat panel from a list of these.
 // `map_command_emissions` is kept as `unknown[]` here because the agent
 // validates each entry against the MapCommandPayload union before write; the
 // web side replays them through the existing map-command dispatch path.
+// job-0267: `role` gains "tool" — one row per dispatched registry tool,
+// interleaved with user/agent turns by `created_at`; the typed payload is
+// `tool_card` (content carries the same record as a JSON string).
 export interface CaseChatMessage {
   schema_version?: "v1";
   message_id: string;
   case_id: string;
-  role: "user" | "agent" | "system";
+  role: "user" | "agent" | "system" | "tool";
   content: string;
   pipeline_id?: string | null;
+  tool_card?: ToolCardRecord | null; // set IFF role === "tool" (job-0267)
   layer_emissions?: string[];
   map_command_emissions?: MapCommandPayload[]; // typed-loose union; agent validates
   created_at: string;

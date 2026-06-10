@@ -445,6 +445,15 @@ class PipelineEmitter:
         #: Preserves ``ProjectLayerSummary`` extra="forbid" strictness.
         self._inline_geojson_by_layer_id: dict[str, dict[str, Any]] = {}
 
+        #: job-0267: terminal summary of the most recent ``emit_tool_call``
+        #: step. Carries the AUTHORITATIVE job-0264 stamps (``started_at`` /
+        #: ``duration_ms``) so the tool-card persistence hook in
+        #: ``server._invoke_tool_via_emitter`` records exactly the duration
+        #: the live card displayed — no second clock. Set on every terminal
+        #: transition of ``emit_tool_call`` (complete / failed / cancelled);
+        #: read-only everywhere else.
+        self.last_tool_step: PipelineStepSummary | None = None
+
     # ------------------------------------------------------------------ #
     # Snapshot accessors (read-only views; tests + integrations introspect)
     # ------------------------------------------------------------------ #
@@ -798,15 +807,21 @@ class PipelineEmitter:
                     result = await result
             except asyncio.CancelledError:
                 await self.mark_cancelled(step_id)
+                # job-0267: record the terminal step even on cancel — the
+                # persistence hook skips cancelled cards, but the accessor
+                # must never carry a STALE prior step past this dispatch.
+                self.last_tool_step = self._to_summary(step_id)
                 raise
             except Exception as exc:  # noqa: BLE001 — classify-and-re-raise
                 code, message = self._classify_exception(exc)
                 await self.mark_failed(step_id, error_code=code, error_message=message)
+                self.last_tool_step = self._to_summary(step_id)  # job-0267
                 raise
             # Honor LayerURI return shape — append to loaded_layers + emit session-state.
             if isinstance(result, LayerURI):
                 await self.add_loaded_layer(result)
             await self.mark_complete(step_id)
+            self.last_tool_step = self._to_summary(step_id)  # job-0267
             return result
         finally:
             _CURRENT_EMITTER.reset(token)

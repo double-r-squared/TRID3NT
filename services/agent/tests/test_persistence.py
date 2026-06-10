@@ -117,7 +117,7 @@ class MockMCPClient:
 
     @staticmethod
     def _matches(doc: dict, filt: dict) -> bool:
-        """Tiny query matcher: equality, ``$or``, ``$exists=False``."""
+        """Tiny query matcher: equality, ``$or``, ``$exists=False``, ``$nin``."""
         for k, v in filt.items():
             if k == "$or":
                 if not any(MockMCPClient._matches(doc, sub) for sub in v):
@@ -128,6 +128,13 @@ class MockMCPClient:
                 if v["$exists"] is False and present:
                     return False
                 if v["$exists"] is True and not present:
+                    return False
+                continue
+            if isinstance(v, dict) and "$nin" in v:
+                # job-0267: mirrors FileMCPClient — a missing field matches
+                # (doc.get returns None, which is "not in" the exclusion
+                # list unless None is listed).
+                if doc.get(k) in v["$nin"]:
                     return False
                 continue
             if doc.get(k) != v:

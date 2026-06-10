@@ -76,6 +76,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ConnectionStatus, GraceWs } from "./ws";
 import {
   AgentMessageChunkPayload,
+  CaseChatMessage as CaseChatMessageWire,
   CaseOpenEnvelopePayload,
   CaseSessionState,
   ErrorPayload,
@@ -747,15 +748,71 @@ export function routeCaseOpen(
   }
   if (!cs.streams.has(caseId)) {
     const s = emptyStreamState();
-    const rehydrated = rehydrateMessagesFromCaseOpen(p);
-    for (const m of rehydrated) {
-      recordMessageSeqIn(s, m.id);
-    }
-    s.messages = rehydrated;
+    replayStreamFromChatHistory(s, session.chat_history ?? []);
     s.charts = chartsFromSession(session);
     cs.streams.set(caseId, s);
   }
   return caseId;
+}
+
+/**
+ * job-0267 — rebuild a stream from the persisted FULL-stream chat history.
+ *
+ * The agent now persists three row kinds per turn (interleaved by
+ * ``created_at``, which is the array order the server returns):
+ *
+ *   - ``role="user"`` / ``role="agent"`` → chat bubbles (agent rows carry
+ *     the REAL accumulated narration since job-0267 — previously empty);
+ *   - ``role="tool"`` + ``tool_card`` → one replayed inline tool card per
+ *     dispatched registry tool (terminal state + authoritative job-0264
+ *     ``duration_ms``).
+ *
+ * Tool rows synthesize a single-step ``PipelineStatePayload`` appended to
+ * ``s.pipeline.history`` — the exact shape the live ``pipeline-state``
+ * envelopes produce — so ``buildInterleavedStream`` renders replayed cards
+ * through the SAME PipelineCard path as live ones (green/red tint +
+ * duration). Seqs are recorded in a single ordered walk so cards interleave
+ * between the bubbles exactly where they happened. Unknown roles (and tool
+ * rows without the typed card) are skipped — no surprise rendering.
+ */
+export function replayStreamFromChatHistory(
+  s: StreamState,
+  chat: CaseChatMessageWire[],
+): void {
+  const messages: ChatMessage[] = [];
+  const replayed: PipelineStatePayload[] = [];
+  for (const m of chat) {
+    if (m.role === "user" || m.role === "agent") {
+      recordMessageSeqIn(s, m.message_id);
+      messages.push({
+        id: m.message_id,
+        role: m.role,
+        text: m.content ?? "",
+        done: true,
+      });
+    } else if (m.role === "tool" && m.tool_card) {
+      const card = m.tool_card;
+      const snap: PipelineStatePayload = {
+        pipeline_id: m.pipeline_id ?? `replay-${m.message_id}`,
+        steps: [
+          {
+            step_id: `replay-${m.message_id}`,
+            name: card.label ?? card.tool_name,
+            tool_name: card.tool_name,
+            state: card.state,
+            started_at: card.started_at ?? null,
+            duration_ms: card.duration_ms ?? null,
+          },
+        ],
+      };
+      recordPipelineStepSeqsIn(s, snap);
+      replayed.push(snap);
+    }
+  }
+  s.messages = messages;
+  if (replayed.length > 0) {
+    s.pipeline = { ...s.pipeline, history: replayed };
+  }
 }
 
 // --- Props --------------------------------------------------------------- //

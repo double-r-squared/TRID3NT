@@ -404,13 +404,22 @@ class Persistence:
         return case
 
     async def list_cases_for_user(self, user_id: str) -> list[CaseSummary]:
-        """List Cases (filtered by ``user_id`` once the Auth track lands).
+        """List the user's LIVE Cases (``status="active"`` only).
 
         v0.1 Auth-stub note: the ``projects`` collection schema does not
         currently carry a ``user_id`` field (FR-MP-5 was specified pre-Auth).
         We pass the filter anyway — once the Auth/Users track adds the field
         the query starts narrowing; until then it returns the full Case list
         for the deployment. Surfaced as OQ-0115-CASE-USER-LINK.
+
+        job-0267 (server-side case-list hardening): soft-deleted and archived
+        Cases are excluded HERE, in the query AND a post-validation guard —
+        the user saw a deleted ghost in the left rail because exclusion was
+        previously a client-side concern. The ``$nin`` filter still matches
+        docs with no ``status`` field at all (pre-status records are live by
+        definition: ``CaseSummary.status`` defaults to ``"active"``); the
+        Python guard is the belt-and-suspenders for MCP backends whose filter
+        dialect quietly ignores the operator.
         """
         # Backward-compat: include records that pre-date the Auth track (no
         # user_id field at all) so the Wave 1.5 stub returns a useful list.
@@ -425,6 +434,8 @@ class Persistence:
                         {"owner_user_id": user_id},
                         {"user_id": {"$exists": False}},
                     ],
+                    # job-0267: tombstones never reach the wire.
+                    "status": {"$nin": ["deleted", "archived"]},
                 },
             },
         )
@@ -440,10 +451,14 @@ class Persistence:
             if not isinstance(d, dict):
                 continue
             try:
-                cases.append(self._doc_to_case_summary(d))
+                case = self._doc_to_case_summary(d)
             except Exception:  # noqa: BLE001 — skip malformed docs
                 logger.warning("skipping malformed Case doc: %s", d)
                 continue
+            if case.status in ("deleted", "archived"):
+                # job-0267 guard: backend ignored/mangled the $nin filter.
+                continue
+            cases.append(case)
         return cases
 
     async def archive_case(self, case_id: str) -> None:
@@ -555,6 +570,12 @@ class Persistence:
             except Exception:  # noqa: BLE001
                 logger.warning("skipping malformed CaseChatMessage doc: %s", d)
                 continue
+        # job-0267: deterministic replay order regardless of backend sort
+        # support — the full stream (user turns, tool cards, agent narration)
+        # interleaves by ``created_at``; ULID ``message_id`` breaks ties in
+        # write order. Python's sort is stable, so backends that already
+        # honored the ``created_at`` sort are untouched.
+        chat.sort(key=lambda m: (m.created_at, m.message_id))
         # job-0172 Part B: hydrate ``loaded_layers`` from the persisted
         # ``Case.loaded_layer_summaries`` so a Case re-open repopulates the
         # LayerPanel deterministically. The PipelineEmitter holds these in
@@ -1125,7 +1146,7 @@ class FileMCPClient:
 
     @staticmethod
     def _matches(doc: dict, filt: dict) -> bool:
-        """Tiny query matcher: equality, ``$or``, ``$exists``."""
+        """Tiny query matcher: equality, ``$or``, ``$exists``, ``$nin``."""
         for k, v in filt.items():
             if k == "$or":
                 if not any(FileMCPClient._matches(doc, sub) for sub in v):
@@ -1136,6 +1157,14 @@ class FileMCPClient:
                 if v["$exists"] is False and present:
                     return False
                 if v["$exists"] is True and not present:
+                    return False
+                continue
+            if isinstance(v, dict) and "$nin" in v:
+                # Mongo-faithful: a MISSING field matches $nin (the doc's
+                # value, None, is "not in" the exclusion list unless None is
+                # listed). job-0267 uses this for the case-list status filter
+                # so pre-status Case docs stay listed.
+                if doc.get(k) in v["$nin"]:
                     return False
                 continue
             if doc.get(k) != v:

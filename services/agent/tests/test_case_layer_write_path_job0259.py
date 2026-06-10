@@ -159,8 +159,15 @@ async def test_split_brain_two_connections_layer_and_chat_persist(
     assert len(session_state.loaded_layers) == 1
     assert session_state.loaded_layers[0]["layer_id"] == "L-plume-001"
     assert session_state.case.layer_summary == ["L-plume-001"]
-    assert len(session_state.chat_history) == 1
+    # job-0267: the tool dispatch now ALSO persists a replayable tool-card
+    # row (role="tool"), interleaved after the user turn by created_at.
+    assert len(session_state.chat_history) == 2
+    assert session_state.chat_history[0].role == "user"
     assert session_state.chat_history[0].content == "model the plume"
+    assert session_state.chat_history[1].role == "tool"
+    assert session_state.chat_history[1].tool_card is not None
+    assert session_state.chat_history[1].tool_card.tool_name == FAKE_TOOL
+    assert session_state.chat_history[1].tool_card.state == "complete"
 
 
 @pytest.mark.asyncio

@@ -59,6 +59,8 @@ __all__ = [
     "CaseSummary",
     "CaseChatMessage",
     "CaseSessionState",
+    "ToolCardRecord",
+    "ToolCardState",
     # WebSocket envelopes (A.4 / A.3 amendments)
     "CaseListEnvelopePayload",
     "CaseOpenEnvelopePayload",
@@ -124,6 +126,41 @@ class CaseSummary(GraceModel):
     qgs_project_uri: str | None = None  # gs://.../{case_id}.qgs (lazy-init)
 
 
+# Closed enum: terminal tool-card outcomes that are worth replaying. The set
+# is intentionally minimal at v0.1 (job-0267): a cancelled dispatch produces
+# NO persisted card (Invariant 8 — cancellation aborts the turn; there is no
+# completed exchange to replay), and transient pending/running states are
+# live-wire-only (``pipeline-state`` envelopes), never persisted.
+ToolCardState = Literal["complete", "failed"]
+
+
+class ToolCardRecord(GraceModel):
+    """Replayable record of ONE tool dispatch inside a Case turn (job-0267).
+
+    The live UI renders tool usage cards inline in the chat scroll from
+    ``pipeline-state`` envelopes (``feedback_chat_tool_interleave``); those
+    envelopes are wire-only and were LOST on Case reopen. This record is the
+    persisted twin: minimal terminal state of one dispatched registry tool so
+    the rehydration replay (``CaseSessionState.chat_history``) can re-render
+    the card without replaying the live pipeline.
+
+    ``duration_ms`` / ``started_at`` mirror the authoritative job-0264 stamps
+    on ``PipelineStepSummary`` (the agent copies them from the emitter's
+    terminal step, falling back to a wall-clock measure around the dispatch).
+    ``label`` is the human-facing step name the live card showed (the registry
+    display name); the web client MAY override it with its own humanizer keyed
+    on ``tool_name``.
+    """
+
+    schema_version: Literal["v1"] = "v1"
+
+    tool_name: str  # registry tool name (e.g. "fetch_3dep_dem")
+    state: ToolCardState
+    started_at: UTCDatetime | None = None
+    duration_ms: int | None = Field(default=None, ge=0)
+    label: str | None = None  # human-facing card label at dispatch time
+
+
 class CaseChatMessage(GraceModel):
     """One persisted chat exchange in a Case session (FR-MP-6 persistence).
 
@@ -138,14 +175,28 @@ class CaseChatMessage(GraceModel):
     text. We hold them as ``dict`` here to avoid a cross-module import cycle
     (ws.py imports from common only). The agent service round-trips each entry
     through ``MAP_COMMAND_ARGS`` validation before write.
+
+    job-0267 (full-stream persistence): ``role`` gains the ``"tool"`` value —
+    one ``role="tool"`` message per dispatched registry tool, interleaved with
+    the ``user`` / ``agent`` turns by ``created_at``, so a Case reopen replays
+    the FULL stream (user prompt → tool cards → agent narration) in arrival
+    order. For tool messages the typed payload is ``tool_card``
+    (``ToolCardRecord``) — the contract-blessed access path the web renderer
+    consumes — and ``content`` carries the same record as a JSON string
+    (belt-and-suspenders for non-contract consumers; never free text).
+    ``tool_card`` is ``None`` for every other role, and pre-job-0267 documents
+    (no ``tool_card`` field at all) validate unchanged.
     """
 
     schema_version: Literal["v1"] = "v1"
 
     message_id: ULIDStr  # matches the WS envelope id for agent messages
     case_id: ULIDStr  # owning Case
-    role: Literal["user", "agent", "system"]
+    role: Literal["user", "agent", "system", "tool"]
     content: str  # accumulated text after streaming completes
+
+    # job-0267: typed tool-card payload; set IFF ``role == "tool"``.
+    tool_card: ToolCardRecord | None = None
 
     # Link to the PipelineRecord (D.6 PipelineSnapshot) this turn dispatched,
     # if any. None for pure-chat turns that emitted no pipeline.

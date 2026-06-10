@@ -34,6 +34,7 @@ import asyncio
 import logging
 import os
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 from pydantic import ValidationError
@@ -46,6 +47,7 @@ from grace2_contracts.case import (
     CaseListEnvelopePayload,
     CaseOpenEnvelopePayload,
     CaseSummary,
+    ToolCardRecord,
 )
 from grace2_contracts.payload_warning import (
     HARD_CAP_MB_DEFAULT,
@@ -519,6 +521,15 @@ class SessionState:
     # can re-bind layers via the same emission sequence.
     current_turn_layer_ids: list[str] = field(default_factory=list)
     current_turn_pipeline_id: str | None = None
+    # job-0267: per-turn narration accumulator. ``_stream_gemini_reply``
+    # resets it at stream start and appends every ``TextDeltaEvent`` delta
+    # (across ALL loop iterations — they share one ``message_id`` bubble on
+    # the wire). ``_dispatch_gemini_and_persist`` joins it at turn close and
+    # persists the agent's narration as a ``CaseChatMessage(role="agent")``
+    # so a Case reopen replays what the agent actually said — round-5 user
+    # evidence showed only user turns survived because this text was never
+    # accumulated (the old code persisted ``content=""`` markers).
+    current_turn_narration: list[str] = field(default_factory=list)
     # job-0122 (Appendix H.5): per-connection authenticated user context.
     #
     # Populated by the connect-handshake (``_perform_auth_handshake``) after
@@ -838,6 +849,10 @@ async def _stream_gemini_reply(
     pipeline_id = new_ulid()
     step_id = new_ulid()
     state.current_pipeline_id = pipeline_id
+    # job-0267: fresh narration accumulator for this stream. One stream ==
+    # one ``message_id`` bubble on the wire == one persisted ``role="agent"``
+    # CaseChatMessage at turn close (``_dispatch_gemini_and_persist``).
+    state.current_turn_narration = []
 
     # Emit a one-step "thinking" pipeline snapshot so the client has a
     # cancellable handle. The loop driver keeps this single outer step; each
@@ -942,6 +957,9 @@ async def _stream_gemini_reply(
                         _new_envelope("agent-message-chunk", state.session_id, chunk)
                     )
                     turn_text_parts.append(event.delta)
+                    # job-0267: accumulate across ALL iterations — the turn
+                    # close persists the full narration for Case replay.
+                    state.current_turn_narration.append(event.delta)
 
                 elif isinstance(event, FunctionCallEvent):
                     logger.info(
@@ -2027,6 +2045,8 @@ async def _persist_chat_turn(
     role: str,
     content: str,
     pipeline_id: str | None = None,
+    tool_card: ToolCardRecord | None = None,
+    layer_emissions: list[str] | None = None,
 ) -> None:
     """Append one ``CaseChatMessage`` to Mongo for the active Case.
 
@@ -2039,6 +2059,11 @@ async def _persist_chat_turn(
     agent's own session record (it is per-turn replay material, not a
     solver result); the confirmation-hook carveout in ``CONFIRMATION_TRIGGERS``
     means this write does NOT pause for user approval.
+
+    job-0267: ``tool_card`` carries the typed ``ToolCardRecord`` for
+    ``role="tool"`` rows; ``layer_emissions`` overrides the default
+    per-turn accumulator snapshot (tool rows pass ``[]`` so the turn's
+    layer ids stay attributed to the closing agent row, exactly as before).
     """
     if not state.active_case_id:
         return
@@ -2051,7 +2076,12 @@ async def _persist_chat_turn(
         role=role,  # type: ignore[arg-type]
         content=content,
         pipeline_id=pipeline_id,
-        layer_emissions=list(state.current_turn_layer_ids),
+        tool_card=tool_card,
+        layer_emissions=(
+            list(state.current_turn_layer_ids)
+            if layer_emissions is None
+            else list(layer_emissions)
+        ),
         created_at=now_utc(),
     )
     try:
@@ -2075,6 +2105,68 @@ async def _persist_chat_turn(
             state.session_id,
             state.active_case_id,
             role,
+        )
+
+
+async def _persist_tool_card(
+    state: SessionState,
+    *,
+    tool_name: str,
+    label: str,
+    card_state: str,
+    started_at_fallback: datetime,
+    duration_ms_fallback: int,
+) -> None:
+    """Persist one replayable tool-card row for the active Case (job-0267).
+
+    Written by ``_invoke_tool_via_emitter`` on every terminal tool dispatch
+    (complete OR failed; cancelled dispatches persist nothing — Invariant 8).
+    Storage shape: ``CaseChatMessage(role="tool")`` in the SAME chat
+    collection as user/agent turns, so the rehydration replay interleaves
+    the full stream by ``created_at`` with zero extra queries. The typed
+    payload is ``tool_card`` (``ToolCardRecord``); ``content`` carries the
+    identical record as a JSON string for non-contract consumers.
+
+    Timing source of truth: the emitter's ``last_tool_step`` (the job-0264
+    authoritative ``started_at`` / ``duration_ms`` stamps the live card
+    displayed). The wall-clock fallbacks only engage when the emitter stamp
+    is unavailable (e.g. the wire died before the terminal transition).
+
+    Best-effort, never raises: record construction is wrapped here and the
+    underlying ``_persist_chat_turn`` already swallows write failures.
+    """
+    try:
+        started_at = started_at_fallback
+        duration_ms: int = max(0, int(duration_ms_fallback))
+        emitter_step = (
+            state.emitter.last_tool_step if state.emitter is not None else None
+        )
+        if emitter_step is not None and emitter_step.tool_name == tool_name:
+            if emitter_step.started_at is not None:
+                started_at = emitter_step.started_at
+            if emitter_step.duration_ms is not None:
+                duration_ms = emitter_step.duration_ms
+        record = ToolCardRecord(
+            tool_name=tool_name,
+            state=card_state,  # type: ignore[arg-type]
+            started_at=started_at,
+            duration_ms=duration_ms,
+            label=label,
+        )
+        await _persist_chat_turn(
+            state,
+            role="tool",
+            content=record.model_dump_json(),
+            pipeline_id=state.current_turn_pipeline_id,
+            tool_card=record,
+            layer_emissions=[],
+        )
+    except Exception:  # noqa: BLE001 — replay material, never the happy path
+        logger.exception(
+            "tool-card persist failed session=%s case=%s tool=%s",
+            state.session_id,
+            state.active_case_id,
+            tool_name,
         )
 
 
@@ -2736,16 +2828,46 @@ async def _invoke_tool_via_emitter(
     # called inside run_model_flood_scenario) register the gs:// COG ↔ WMS
     # association even though the composer's envelope only carries the WMS URL.
     _uri_reg_token = activate_registry(uri_registry)
+    # job-0267: tool-card persistence bookkeeping. ``_card_state`` stays None
+    # on cancellation (Invariant 8 — no replayable outcome); the wall-clock
+    # pair is only the FALLBACK timing — ``_persist_tool_card`` prefers the
+    # emitter's authoritative job-0264 ``last_tool_step`` stamps.
+    _card_state: str | None = None
+    _card_started_at = now_utc()
+    _card_t0 = asyncio.get_running_loop().time()
     try:
         result = await state.emitter.emit_tool_call(
             name=entry.metadata.name,
             tool_name=tool_name,
             invoke=lambda: entry.fn(**params),
         )
+        _card_state = "complete"
+    except asyncio.CancelledError:
+        raise
+    except BaseException:
+        _card_state = "failed"
+        raise
     finally:
         deactivate_registry(_uri_reg_token)
         state.emitter.close_pipeline()
         state.current_pipeline_id = None
+        # job-0267: persist the replayable tool-card row so a Case reopen
+        # re-renders the inline tool card (user-verified loss: only user
+        # messages survived). Fires for complete AND failed terminal states,
+        # BEFORE the narration row that closes the turn — the chat
+        # collection's ``created_at`` order IS the replay order. Best-effort,
+        # never raises, never masks the original exception.
+        if _card_state is not None and state.active_case_id:
+            await _persist_tool_card(
+                state,
+                tool_name=tool_name,
+                label=entry.metadata.name,
+                card_state=_card_state,
+                started_at_fallback=_card_started_at,
+                duration_ms_fallback=int(
+                    (asyncio.get_running_loop().time() - _card_t0) * 1000.0
+                ),
+            )
         # job-0259: persist the Case layer accumulator in the FINALLY block —
         # the round-3 plume evidence showed a published layer vanishing from
         # the reopened Case because the post-invoke ``session-state`` emission
@@ -3242,8 +3364,15 @@ async def _dispatch_gemini_and_persist(
     Wraps ``_stream_gemini_reply`` so the Case chat-history append happens
     after the stream completes (the streamed text is the canonical
     ``content`` field on ``CaseChatMessage``). On cancel/error we still
-    attempt a best-effort persist of whatever the chat-history accumulator
-    captured (the stream pushes a ``{role, text}`` dict on completion).
+    attempt a best-effort persist of whatever the narration accumulator
+    captured before the stream died.
+
+    job-0267 (full-stream persistence): the persisted ``content`` is now the
+    REAL accumulated narration — ``_stream_gemini_reply`` resets
+    ``state.current_turn_narration`` at stream start and appends every
+    ``TextDeltaEvent`` delta across all loop iterations. Pre-fix this wrote
+    ``content=""`` markers, which the web replay (rightly) rendered as
+    nothing — user-verified: only their own messages survived a Case reopen.
     """
     pre_chat_len = len(state.chat_history)
     try:
@@ -3251,23 +3380,18 @@ async def _dispatch_gemini_and_persist(
             websocket, state, settings, user_text, research_mode
         )
     finally:
-        # The current Gemini streaming path appends ``{role: user, text: ...}``
-        # to ``state.chat_history`` on stream complete (line ~362 above).
-        # The agent's reply text itself isn't accumulated into chat_history
-        # — we record a placeholder content marker so Case replay knows the
-        # turn happened. A future job (full reply accumulation) will
-        # capture the actual streamed deltas; for now the per-turn record
-        # carries the user message + tool emissions, which is sufficient
-        # for FR-MP-6 replay (chat-replay default per user 2026-06-08).
-        if state.active_case_id and len(state.chat_history) > pre_chat_len:
-            # Best-effort: append an agent-reply CaseChatMessage so a Case
-            # replay shows a marker for the turn. ``content`` is empty
-            # because the Gemini stream isn't currently accumulated; the
-            # ``layer_emissions`` accumulator carries the side-effects.
+        # job-0267: join the per-turn narration accumulator. Persist when
+        # the agent actually said something OR the stream completed cleanly
+        # (``state.chat_history`` grew at the terminal-frame append) — the
+        # latter preserves the pre-existing "turn happened" marker for
+        # narration-less turns, so the replay row count stays faithful.
+        narration = "".join(state.current_turn_narration).strip()
+        stream_completed = len(state.chat_history) > pre_chat_len
+        if state.active_case_id and (narration or stream_completed):
             await _persist_chat_turn(
                 state,
                 role="agent",
-                content="",  # reply text not currently accumulated
+                content=narration,
                 pipeline_id=state.current_turn_pipeline_id,
             )
 
