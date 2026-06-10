@@ -1,0 +1,2 @@
+URL: https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&LAYERS=plume-concentration-01KTRNPCV4NEN0RRQ3H0QMZQY6&CRS=EPSG:4326&BBOX=42.5415,-114.4876,42.5702,-114.4527&WIDTH=512&HEIGHT=512&FORMAT=image/png&TRANSPARENT=TRUE&STYLES=
+HTTP:200 type:image/png bytes:1320

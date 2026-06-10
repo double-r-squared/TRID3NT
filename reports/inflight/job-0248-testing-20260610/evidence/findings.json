@@ -1,0 +1,185 @@
+{
+  "scenarios": {
+    "R": {
+      "case_rows_visible": 23,
+      "case_row_texts": [
+        "Untitled Case✎⟲✕5m ago",
+        "Untitled Case✎⟲✕29m ago",
+        "Untitled Case✎⟲✕47m ago",
+        "Untitled Case✎⟲✕1h ago",
+        "Untitled Case✎⟲✕1h ago",
+        "Untitled Case✎⟲✕1h ago",
+        "Untitled Case✎⟲✕1h ago",
+        "Untitled Case✎⟲✕2h ago",
+        "Untitled Case✎⟲✕3h ago",
+        "Untitled Case✎⟲✕3h ago",
+        "Untitled Case✎⟲✕4h ago",
+        "Untitled Case✎⟲✕5h ago",
+        "Untitled Case✎⟲✕5h ago",
+        "Untitled Case✎⟲✕6h ago",
+        "Untitled Case✎⟲✕6h ago",
+        "Untitled Case✎⟲✕1d ago",
+        "Untitled Case✎⟲✕1d ago",
+        "Untitled Case✎⟲✕1d ago",
+        "Untitled Case✎⟲✕1d ago",
+        "Untitled Case✎⟲✕1d ago",
+        "Untitled Case✎⟲✕1d ago",
+        "Untitled Case✎⟲✕1d ago",
+        "Test 4.8✎⟲✕1d ago"
+      ],
+      "deeplink_case_open_seen": false,
+      "in_case_view_after_deeplink": false,
+      "layer_panel": {
+        "panel_present": false,
+        "empty_layers_marker": false,
+        "panel_text": null,
+        "row_count": 0,
+        "rows": []
+      },
+      "map": {
+        "layers": [
+          {
+            "id": "qgis-basemap",
+            "type": "raster",
+            "source": "qgis-wms"
+          },
+          {
+            "id": "osm-fallback-basemap",
+            "type": "raster",
+            "source": "osm-fallback"
+          }
+        ],
+        "sources": [
+          "qgis-wms",
+          "osm-fallback"
+        ],
+        "center": {
+          "lng": -95.5,
+          "lat": 37
+        },
+        "zoom": 4
+      },
+      "map_has_qgis_overlay": true,
+      "map_layer_ids": [
+        "qgis-basemap",
+        "osm-fallback-basemap"
+      ],
+      "map_in_idaho": false
+    },
+    "B": {
+      "b_frames_start": 13,
+      "prompt": "Model a flood scenario for Fort Myers, Florida, then run a Pelicun damage assessment on the resulting flood depth layer using the USACE NSI building inventory. Show me the impact summary.",
+      "groundwater_hit_count": 0,
+      "flood_route_hit_count": 7,
+      "flood_route_sample": [
+        {
+          "idx": 15,
+          "type": "pipeline-state",
+          "tool_name": [
+            "run_model_flood_scenario"
+          ],
+          "snippet": "{\"type\":\"pipeline-state\",\"id\":\"01KTRVD0TWHB4XG34JHCKSD55X\",\"ts\":\"2026-06-10T13:26:28.956083Z\",\"session_id\":\"01KTRVADP20JR8VGZ9700T9VM5\",\"payload\":{\"pipeline_id\":\"01KTRVD0TV9653CG6X0HTF7047\",\"steps\":[{\"step_id\":\"01KTRVD0T"
+        },
+        {
+          "idx": 16,
+          "type": "pipeline-state",
+          "tool_name": [
+            "run_model_flood_scenario"
+          ],
+          "snippet": "{\"type\":\"pipeline-state\",\"id\":\"01KTRVD0TWHB4XG34JHCKSD55Y\",\"ts\":\"2026-06-10T13:26:28.956735Z\",\"session_id\":\"01KTRVADP20JR8VGZ9700T9VM5\",\"payload\":{\"pipeline_id\":\"01KTRVD0TV9653CG6X0HTF7047\",\"steps\":[{\"step_id\":\"01KTRVD0T"
+        },
+        {
+          "idx": 18,
+          "type": "pipeline-state",
+          "tool_name": [
+            "run_model_flood_scenario"
+          ],
+          "snippet": "{\"type\":\"pipeline-state\",\"id\":\"01KTRVDDB23D9B4QWCTCM2XTN5\",\"ts\":\"2026-06-10T13:26:41.762860Z\",\"session_id\":\"01KTRVADP20JR8VGZ9700T9VM5\",\"payload\":{\"pipeline_id\":\"01KTRVD0TV9653CG6X0HTF7047\",\"steps\":[{\"step_id\":\"01KTRVD0T"
+        },
+        {
+          "idx": 19,
+          "type": "agent-message-chunk",
+          "tool_name": null,
+          "snippet": "{\"type\":\"agent-message-chunk\",\"id\":\"01KTRVFMY6H119ED68WYY3CGD9\",\"ts\":\"2026-06-10T13:27:55.078111Z\",\"session_id\":\"01KTRVADP20JR8VGZ9700T9VM5\",\"payload\":{\"message_id\":\"01KTRVC3TZAKM6AV7YBG89AD70\",\"delta\":\"I have initiated "
+        },
+        {
+          "idx": 24,
+          "type": "pipeline-state",
+          "tool_name": [
+            "run_model_flood_scenario"
+          ],
+          "snippet": "{\"type\":\"pipeline-state\",\"id\":\"01KTRVGW69P806QHDY6HKQ0WSW\",\"ts\":\"2026-06-10T13:28:35.273869Z\",\"session_id\":\"01KTRVADP20JR8VGZ9700T9VM5\",\"payload\":{\"pipeline_id\":\"01KTRVGW69P806QHDY6HKQ0WST\",\"steps\":[{\"step_id\":\"01KTRVGW6"
+        },
+        {
+          "idx": 25,
+          "type": "pipeline-state",
+          "tool_name": [
+            "run_model_flood_scenario"
+          ],
+          "snippet": "{\"type\":\"pipeline-state\",\"id\":\"01KTRVGW6AZCQ56HSSHYRJVDS2\",\"ts\":\"2026-06-10T13:28:35.274455Z\",\"session_id\":\"01KTRVADP20JR8VGZ9700T9VM5\",\"payload\":{\"pipeline_id\":\"01KTRVGW69P806QHDY6HKQ0WST\",\"steps\":[{\"step_id\":\"01KTRVGW6"
+        },
+        {
+          "idx": 27,
+          "type": "pipeline-state",
+          "tool_name": [
+            "run_model_flood_scenario"
+          ],
+          "snippet": "{\"type\":\"pipeline-state\",\"id\":\"01KTRVH5DCB12ZDAX0VJ2NC01R\",\"ts\":\"2026-06-10T13:28:44.716513Z\",\"session_id\":\"01KTRVADP20JR8VGZ9700T9VM5\",\"payload\":{\"pipeline_id\":\"01KTRVGW69P806QHDY6HKQ0WST\",\"steps\":[{\"step_id\":\"01KTRVGW6"
+        }
+      ],
+      "clarification_answered": true,
+      "impact_panel_present": false,
+      "impact_envelope_frame": false,
+      "b1_scroll_tail": "Model a flood scenario for Fort Myers, Florida, then run a Pelicun damage assessment on the resulting flood depth layer using the USACE NSI building inventory. Show me the impact summary.completed: run_model_flood_scenarioI have initiated the flood scenario model for Fort Myers, Florida. Once the model is complete, I will run the Pelicun damage assessment using the USACE NSI building inventory and provide you with the impact summary. Please wait.Use the NSI inventory.",
+      "b1_map": {
+        "layers": [
+          {
+            "id": "qgis-basemap",
+            "type": "raster",
+            "source": "qgis-wms"
+          },
+          {
+            "id": "osm-fallback-basemap",
+            "type": "raster",
+            "source": "osm-fallback"
+          }
+        ],
+        "sources": [
+          "qgis-wms",
+          "osm-fallback"
+        ],
+        "center": {
+          "lng": -81.83187494999999,
+          "lat": 26.618431102173815
+        },
+        "zoom": 11.830479549626718
+      },
+      "b23_skipped": true,
+      "b23_skip_reason": "no_impact_panel"
+    },
+    "C": {
+      "c_frames_start": 58,
+      "groundwater_hit_count": 0,
+      "sandbox_request_present": true,
+      "code_exec_request_frame": true,
+      "code_exec_request_idx": 65,
+      "sandbox_card": {
+        "code": "import numpy\nmy_array = numpy.array([1, 5, 9, 12])\nresult = {'mean': numpy.mean(my_array), 'max': numpy.max(my_array)}",
+        "title": "Python sandbox — confirm execution"
+      },
+      "result_status_chip": "ok",
+      "result_stdout": "",
+      "result_descriptor": "Result\"{'mean': np.float64(6.75), 'max': np.int64(12)}\"",
+      "c_scroll_tail": "Run a quick Python computation: compute the mean and max of the numpy array [1, 5, 9, 12] and print both.completed: run_model_flood_scenariocompleted: code_exec_requestI have initiated the flood scenario for Fort Myers, Florida, and it has completed successfully. I also ran the Python computation you requested, and the result is a mean of 6.75 and a max of 12.\nNow, I will proceed with the Pelicun damage assessment. To do this, I first need to locate the flood depth layer that was generated by the flood scenario. ▌running: compute_impact_envelope⬡Python sandbox resultokTo compute the mean and max of the user-provided numpy array.Python codeimport numpy\nmy_array = numpy.array([1, 5, 9, 12])\nresult = {'mean': numpy.mean(my_array), 'max': numpy.max(my_array)}Result\"{'mean': np.float64(6.75), 'max': np.int64(12)}\"Save result JSON",
+      "code_exec_result_idx": 70,
+      "code_exec_result_frame": true,
+      "request_before_execution": true,
+      "code_exec_result_frame_preview": "{\"type\": \"code-exec-result\", \"session_id\": \"01KTRVADP20JR8VGZ9700T9VM5\", \"payload\": {\"envelope_type\": \"code-exec-result\", \"code_exec_id\": \"01KTRVQ7NRR20ZBWVXNXYPBM97\", \"status\": \"ok\", \"stdout_tail\": \"\", \"stderr_tail\": \"\", \"result\": {\"kind\": \"repr\", \"value\": \"{'mean': np.float64(6.75), 'max': np.int64(12)}\"}, \"truncated\": false, \"duration_s\": 0.0}}",
+      "has_mean_675": true,
+      "has_max_12": true
+    }
+  },
+  "rate_limited": false,
+  "turns_sent": 3,
+  "page_errors": []
+}

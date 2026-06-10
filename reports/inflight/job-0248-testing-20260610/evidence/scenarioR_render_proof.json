@@ -1,0 +1,43 @@
+{
+  "scenario": "R \u2014 Case-2 render proof (ZERO Gemini turns)",
+  "method": "WMS GetMap fallback (kickoff-sanctioned: case loaded_layer_summaries predates publish)",
+  "round3_case_id": "01KTRNN4P2M2J11SJ79CBSY3MZ",
+  "round3_session_id": "01KTRNN09HZ5BWVQXE5D9C9Y3Q",
+  "case_record_loaded_layer_summaries": 0,
+  "case_record_qgs_project_uri": null,
+  "case_rehydration_note": "projects.json case record has loaded_layer_summaries=[] and qgs_project_uri=null; the round-3 publish wrote the layer into the CANONICAL gs:// .qgs (shared) but did NOT persist into this case's loaded_layer_summaries \u2014 so UI rehydration cannot repopulate the panel. Fallback path per kickoff.",
+  "plume_layer_id": "plume-concentration-01KTRNPCV4NEN0RRQ3H0QMZQY6",
+  "raster_uri": "/vsigs/grace-2-hazard-prod-runs/01KTRNPCV4NEN0RRQ3H0QMZQY6/plume_concentration_4326.tif",
+  "wms_getcapabilities": {
+    "http": 200,
+    "layer_present": true
+  },
+  "plume_geo_bbox_epsg4326": {
+    "west": -114.4826,
+    "east": -114.457661,
+    "south": 42.546548,
+    "north": 42.56512
+  },
+  "idaho_bbox_check": {
+    "idaho_bbox": {
+      "lon": [
+        -117.24,
+        -111.04
+      ],
+      "lat": [
+        41.99,
+        49.0
+      ]
+    },
+    "plume_within_idaho": true
+  },
+  "getmap_render": {
+    "tight_png": "R_getmap_plume_tight.png (600x600, HTTP 200, non-transparent plume cells present)",
+    "transparent_render_nonzero_alpha_px": 340,
+    "transparent_render_total_px": 262144,
+    "over_basemap_png": "R_getmap_plume_over_basemap.png (Twin Falls street grid + plume cell)",
+    "context_png": "R_getmap_twinfalls_context.png (city-scale OSM basemap + plume)"
+  },
+  "gemini_turns": 0,
+  "verdict": "PASS \u2014 WMS GetMap serves the round-3 plume raster (real non-transparent pixels) at the correct Twin Falls, Idaho coordinates with ZERO Gemini turns. QGIS Server cold-start picked up the canonical .qgs layer (GetCapabilities-confirmed round 4; GetMap-confirmed this round)."
+}

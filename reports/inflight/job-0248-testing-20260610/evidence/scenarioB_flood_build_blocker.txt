@@ -1,0 +1,40 @@
+OQ-0248-FLOOD-BUILD-VSIGS-BLOCKER (env/infra, blocks fresh-case P5)
+==================================================================
+Scenario B (run 2) P5 prompt: "Model a flood scenario for Fort Myers, Florida, then run a
+Pelicun damage assessment on the resulting flood depth layer using the USACE NSI building
+inventory. Show me the impact summary."
+
+ROUTING (CORRECT, no regression): new session 01KTRVADP20JR8VGZ9700T9VM5
+  iter=1 tool=run_model_flood_scenario (HOT_SET, dispatched directly — no widening friction)
+  model_flood_scenario start location_query='Fort Myers, Florida' return_period_yr=100 duration_hr=24
+  zoom-on-area-first bbox=(-81.9126085, 26.5476424, -81.7511414, 26.689176)  [correct Fort Myers]
+  fetched precip return period (cache hit), landcover classes parsed (NLCD 2021)
+
+FAILURE: build_sfincs_model raised HYDROMT_BUILD_FAILED
+  underlying: "No such file found: /vsigs/grace-2-hazard-prod-cache/cache/static-30d/dem/
+               87ba00463af0275d02115f7463afe6e9.tif"
+  -> returned a structured failed envelope (function_response queued, status=...)
+
+ROOT CAUSE (verified): the DEM object EXISTS in GCS:
+  gs://grace-2-hazard-prod-cache/cache/static-30d/dem/87ba00463af0275d02115f7463afe6e9.tif
+  1,924,297 bytes (1.84 MiB), created 2026-06-07T09:37:13Z.
+The sfincs_builder rewrites gs:// -> /vsigs/ for GDAL/rasterio (job-0170, to avoid gcsfs),
+but the LOCAL agent's GDAL /vsigs read of that existing object fails ("No such file found").
+=> local GDAL /vsigs credential/config gap (ADC set via GOOGLE_APPLICATION_CREDENTIALS, but
+   GDAL /vsigs in this local process does not authenticate to the private cache bucket).
+This blocks a FRESH-case SFINCS flood build locally; the object is present, so it is NOT a
+cache lifecycle expiry. Owner: infra/engine (local GDAL /vsigs auth for the SFINCS builder).
+
+AGENT BEHAVIOR (correct): routed to the right tool, fetched inputs, received the structured
+failure, narrated, and on the user nudge ("Use the NSI inventory") RETRIED run_model_flood_scenario
+(same env blocker). gw_hit_count=0 (NO Twin-Falls/groundwater regression); flood_route_hit_count=7.
+
+CONSEQUENCE for p5_impact: BLOCKED. With no flood depth layer (build fails), Pelicun + impact
+envelope cannot run -> no ImpactPanel. Not an agent-logic defect; an env/infra blocker for
+fresh flood builds. The published Fort Myers flood layers (flood-depth-peak-*) DO exist in the
+QGIS Server project (served), so P5 would work against an EXISTING case that already holds a
+flood layer — the fresh-case path is what the local /vsigs gap blocks.
+
+Minor narration note (OQ-0248-FLOOD-NARRATION-OPTIMISM, low): the agent narrated "I have
+initiated the flood scenario model ... Please wait" although run_model_flood_scenario returned a
+FAILURE envelope on that turn. Routing was correct; the narration over-stated progress.

@@ -1,0 +1,80 @@
+{
+  "scenarios": {
+    "R": {
+      "case_rows_visible": 22,
+      "case_row_texts": [
+        "Untitled Case✎⟲✕23m ago",
+        "Untitled Case✎⟲✕40m ago",
+        "Untitled Case✎⟲✕1h ago",
+        "Untitled Case✎⟲✕1h ago",
+        "Untitled Case✎⟲✕1h ago",
+        "Untitled Case✎⟲✕1h ago",
+        "Untitled Case✎⟲✕2h ago",
+        "Untitled Case✎⟲✕3h ago",
+        "Untitled Case✎⟲✕3h ago",
+        "Untitled Case✎⟲✕4h ago",
+        "Untitled Case✎⟲✕4h ago",
+        "Untitled Case✎⟲✕5h ago",
+        "Untitled Case✎⟲✕6h ago",
+        "Untitled Case✎⟲✕6h ago",
+        "Untitled Case✎⟲✕1d ago",
+        "Untitled Case✎⟲✕1d ago",
+        "Untitled Case✎⟲✕1d ago",
+        "Untitled Case✎⟲✕1d ago",
+        "Untitled Case✎⟲✕1d ago",
+        "Untitled Case✎⟲✕1d ago",
+        "Untitled Case✎⟲✕1d ago",
+        "Test 4.8✎⟲✕1d ago"
+      ],
+      "deeplink_case_open_seen": false,
+      "in_case_view_after_deeplink": false,
+      "layer_panel": {
+        "panel_present": false,
+        "empty_layers_marker": false,
+        "panel_text": null,
+        "row_count": 0,
+        "rows": []
+      },
+      "map": {
+        "layers": [
+          {
+            "id": "qgis-basemap",
+            "type": "raster",
+            "source": "qgis-wms"
+          },
+          {
+            "id": "osm-fallback-basemap",
+            "type": "raster",
+            "source": "osm-fallback"
+          }
+        ],
+        "sources": [
+          "qgis-wms",
+          "osm-fallback"
+        ],
+        "center": {
+          "lng": -95.5,
+          "lat": 37
+        },
+        "zoom": 4
+      },
+      "map_has_qgis_overlay": true,
+      "map_layer_ids": [
+        "qgis-basemap",
+        "osm-fallback-basemap"
+      ],
+      "map_in_idaho": false
+    },
+    "B": {
+      "b_frames_start": 13,
+      "prompt": "Run a flood damage assessment for Fort Myers with Pelicun using the NSI building inventory and the existing Fort Myers flood depth layer."
+    }
+  },
+  "fatal_error": "page.waitForTimeout: Target page, context or browser has been closed\n    at main (/home/nate/Documents/GRACE-2/web/tools/stage3_reverify_round5_job0248.mjs:367:20)",
+  "rate_limited": false,
+  "turns_sent": 1,
+  "page_errors": [
+    "console.error: Error: layers.usace-nsi--81.9126-26.5476--81.7511-26.6892-cluster-count.layout.text-field: use of \"text-field\" requires a style \"glyphs\" property\n    at Object.xi [as t] (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:3003:67)\n    at ce (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:12122:34)\n    at de._validate (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:12661:54)\n    at de.addLayer (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:12444:152)\n    at t.Map.addLayer (http://localhost:5173/node_modules/.vite/deps/maplibre-gl.js?v=7164eefb:17131:59)\n    at registerVectorOnMap (http://localhost:5173/src/Map.tsx?t=1780996283977:260:9)\n    at addVectorLayer (http://localhost:5173/src/Map.tsx?t=1780996283977:213:3)\n    at applyLatest (http://localhost:5173/src/Map.tsx?t=1780996283977:439:16)\n    at http://localhost:5173/src/Map.tsx?t=1780996283977:466:9\n    at http://localhost:5173/src/LayerPanel.tsx?t=1780984835170:561:57",
+    "console.error: Warning: `value` prop on `%s` should not be null. Consider using an empty string to clear the component or `undefined` for uncontrolled components.%s input \n    at input\n    at div\n    at div\n    at SortableRow (http://localhost:5173/src/LayerPanel.tsx?t=1780984835170:367:3)\n    at SortableContext (http://localhost:5173/node_modules/.vite/deps/@dnd-kit_sortable.js?v=7164eefb:261:5)\n    at DndContext2 (http://localhost:5173/node_modules/.vite/deps/chunk-PC23ANUS.js?v=7164eefb:2521:5)\n    at div\n    at aside\n    at LayerPanel (http://localhost:5173/src/LayerPanel.tsx?t=1780984835170:126:3)\n    at div\n    at div\n    at div\n    at App (http://localhost:5173/src/App.tsx?t=1781067938585:92:15)"
+  ]
+}
