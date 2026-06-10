@@ -1,0 +1,5 @@
+CANONICAL .qgs gs://grace-2-hazard-prod-qgs/grace2-sample.qgs
+  updated: 2026-06-10 11:49:34.329000+00:00 generation: 1781092174312777 size: 180502
+  contains round-3 plume layer 'plume-concentration-01KTRNPCV4NEN0RRQ3H0QMZQY6': True
+  maplayer count: 11
+  plume-ish ids: ['plume-concentration', 'plume_concentration', 'plume_smoke']

@@ -1,0 +1,9 @@
+# OQ-0245-CONTEXT-CARRYOVER-MISROUTE — reproduced on 2 consecutive turns (B1 flood prompt + C numpy prompt) in reused WS session 01KTRNN09HZ5BWVQXE5D9C9Y3Q
+
+2026-06-10 04:46:42,252 INFO grace2_agent.server solver-confirm gate emitted session=01KTRNN09HZ5BWVQXE5D9C9Y3Q tool=run_model_groundwater_contamination_scenario warning_id=01KTRNPAEBSE38AWFETJ3F5W1J contaminant='trichloroethylene' location='Twin Falls, Idaho'
+2026-06-10 04:56:37,475 INFO grace2_agent.server user-message session=01KTRNN09HZ5BWVQXE5D9C9Y3Q research_mode=research text='Model flood damage for Fort Myers, Florida. Run a flood scenario there if no flo'
+2026-06-10 04:56:56,616 INFO grace2_agent.server solver-confirm gate emitted session=01KTRNN09HZ5BWVQXE5D9C9Y3Q tool=run_model_groundwater_contamination_scenario warning_id=01KTRP92D7AFR5YDZGBTE06NB7 contaminant='trichloroethylene' location='Twin Falls, Idaho'
+    raise SolverConfirmationCancelledError(tool_name)
+grace2_agent.server.SolverConfirmationCancelledError: run_model_groundwater_contamination_scenario declined at the parameter-confirmation gate (user chose 'cancel' or the gate timed out); the solver did not run
+2026-06-10 05:13:48,900 INFO grace2_agent.server user-message session=01KTRNN09HZ5BWVQXE5D9C9Y3Q research_mode=research text='Run a quick Python computation: compute the mean and max of the flood depth rast'
+2026-06-10 05:14:05,114 INFO grace2_agent.server solver-confirm gate emitted session=01KTRNN09HZ5BWVQXE5D9C9Y3Q tool=run_model_groundwater_contamination_scenario warning_id=01KTRQ8ESSXTTKPHVP7KBC4WKX contaminant='trichloroethylene' location='Twin Falls, Idaho'

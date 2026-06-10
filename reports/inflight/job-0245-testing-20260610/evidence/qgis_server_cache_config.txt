@@ -1,0 +1,5 @@
+106:    QGIS_SERVER_PARALLEL_RENDERING=true \
+107:    QGIS_SERVER_MAX_THREADS=2 \
+108:    QGIS_SERVER_CACHE_DIRECTORY=/tmp/qgis-server-cache \
+109:    QGIS_SERVER_CACHE_SIZE=50000000 \
+(no QGIS_SERVER_PROJECT_CACHE_STRATEGY / _CHECK_INTERVAL set — project cache never invalidates for gcsfuse-backed .qgs)

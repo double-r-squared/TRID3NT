@@ -1265,6 +1265,68 @@
       "kind": "verification",
       "workflow_id": "wf_6b02d89c-aa9",
       "subagent_tokens": 348712
+    },
+    {
+      "job_id": "sprint-13-sandbox-tail-20260609",
+      "sprint": 13,
+      "description": "Stage 2 tail: 0233 code_exec tool + envelopes + all five 0232 panel findings resolved (13+12 new tests, live 8-scenario E2E incl. confirm-gate fail-closed + 9MB truncation honesty); 0234 SandboxCard web (34 vitest) + 3 Playwright captures.",
+      "model": "opus+sonnet",
+      "kind": "engineering",
+      "workflow_id": "wf_2a3ad464-8fe",
+      "subagent_tokens": 325857
+    },
+    {
+      "job_id": "stage-3-parallel-work-20260610",
+      "sprint": 13,
+      "description": "Parallel lane while Stage 3 ran: fix-design (5 root causes incl. 2-hole gate bypass + stale-venv fsspec), Cloud Build both images (libexpat1 Dockerfile fix found by real build; digests pinned), 13.5 manifest refresh.",
+      "model": "opus+sonnet",
+      "kind": "engineering",
+      "workflow_id": "wf_10feb602-f55",
+      "subagent_tokens": 317861
+    },
+    {
+      "job_id": "sprint-13-5-auth-design-20260610",
+      "sprint": 13.5,
+      "description": "Auth+signed-URL design pre-work (369 lines, e4ebcab): web auth already built (13.5 = hardening not greenfield); OQ-0115 ownership chain COMPLETELY absent write-side (new job-0249-schema); Cloud Run signer + subprocess-in-container MCP recommended; 12-job decomposition; 9 user-decision items.",
+      "model": "opus",
+      "kind": "design",
+      "workflow_id": "wf_d0b3c571-9c4",
+      "subagent_tokens": 175296
+    },
+    {
+      "job_id": "sprint-13-stage-3-live-gate-20260610",
+      "sprint": 13,
+      "description": "Stage 3 live gate (prep + 3 sessions, HALT_429): prep PASS (agent restart, 89 tools); 0235 Case 2 FAIL (gate bypass + fsspec plume \u2014 both real, routing/extraction/solve worked, 2 turns); 0236 Case 3 PARTIAL (zero CONUS flood warnings; honest degrade; SFINCS infra confirmed live; 2 turns); 0237 BLOCKED at 429 (1 turn); 0238+panels not run. 5 Gemini turns total.",
+      "model": "opus+sonnet",
+      "kind": "acceptance",
+      "workflow_id": "wf_99b38cd6-d30",
+      "subagent_tokens": 656791
+    },
+    {
+      "job_id": "job-0242-reverify-round1-20260610",
+      "sprint": 13,
+      "description": "Re-verify round 1 + panels (PARTIAL, 2 turns): case2_gate PASS (job-0241 fix proven at emission); NEW BLOCKER found \u2014 Proceed dropped (per-connection pending_payload_warnings vs multi-WS browser sessions; affects ALL gates). Root cause traced + panel-confirmed in source. Sandbox egress leg PASS Gemini-free.",
+      "model": "opus",
+      "kind": "acceptance",
+      "workflow_id": "wf_211c1ddd-389",
+      "subagent_tokens": 379511
+    },
+    {
+      "job_id": "job-0244-reverify-round2-20260610",
+      "sprint": 13,
+      "description": "Round 2 + panels (PARTIAL, 3 turns; incl. dead-runner resume 64K): registry fix PROVEN live (confirmation accepted, MODFLOW ran, COG in GCS). Remaining = env gaps (run_v2 missing -> publish fails; vsigs no creds; sandbox cloud path) + 2 agent OQs (loop stall on degraded envelope; narration claimed map-add after failed publish). Env gaps fixed orchestrator-direct (fdf9b6d), publish+vsigs proven Gemini-free.",
+      "model": "opus",
+      "kind": "acceptance",
+      "workflow_id": "wf_16769e04-838",
+      "subagent_tokens": 478530
+    },
+    {
+      "job_id": "job-0245-testing-20260610",
+      "sprint": 13,
+      "description": "Round 3 closing re-verify (PARTIAL, 3 Gemini turns): OQ-0244-PUBLISH-NO-RUN-V2 CLOSED (publish_layer dispatches run_v2, worker CONDITION_SUCCEEDED, plume layer persisted into served .qgs - Gemini-free GCS proof). case2_render FAILS on NEW infra gap OQ-0245-QGIS-PROJECT-CACHE (QGIS Server serves stale cached project -> LayerNotDefined, no overlay). sandbox_gate_live + p5_impact BLOCKED by NEW agent gap OQ-0245-CONTEXT-CARRYOVER-MISROUTE (reused WS session re-routes every fresh prompt to prior Twin-Falls groundwater composer; reproduced B1+C). No 429s.",
+      "model": "opus",
+      "kind": "acceptance",
+      "subagent_tokens": 225000
     }
   ],
   "totals_by_sprint": {
@@ -1275,7 +1337,8 @@
     "10": 1540974,
     "11": 999540,
     "12": 27545642,
-    "13": 4291446
+    "13": 6449996,
+    "13.5": 175296
   },
   "historical_context": {
     "note": "Captured for accountability \u2014 NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
