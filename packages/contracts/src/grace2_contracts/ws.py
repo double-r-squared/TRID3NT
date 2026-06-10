@@ -904,6 +904,16 @@ AGENT_TO_CLIENT_PAYLOADS[
     PayloadWarningEnvelopePayload.MESSAGE_TYPE
 ] = PayloadWarningEnvelopePayload
 
+# sprint-13 (job-0223): chart-emission envelope. Agent->client (A.4); the agent
+# emits a Vega-Lite chart spec for the conversational data-analysis layer. See
+# chart_contracts.py for the contract; the per-module fragment is splatted here
+# following the secrets / payload_warning precedent.
+from .chart_contracts import (  # noqa: E402
+    CHART_AGENT_TO_CLIENT_PAYLOADS,
+)
+
+AGENT_TO_CLIENT_PAYLOADS.update(CHART_AGENT_TO_CLIENT_PAYLOADS)
+
 ALL_PAYLOADS: dict[str, type[GraceModel]] = {
     **CLIENT_TO_AGENT_PAYLOADS,
     **AGENT_TO_CLIENT_PAYLOADS,

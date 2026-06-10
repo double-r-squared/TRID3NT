@@ -27,6 +27,7 @@ from . import (
     case,
     case_results,
     catalog,
+    chart_contracts,
     collections,
     envelope,
     errors,
@@ -46,6 +47,10 @@ from .case_results import (
     DerivedEventParam,
     EventIngestProvenance,
     EventIngestResult,
+)
+from .chart_contracts import (
+    ChartEmissionPayload,
+    SessionChartRecord,
 )
 from .common import (
     BBox,
@@ -76,6 +81,7 @@ __all__ = [
     "catalog",
     "case",
     "case_results",
+    "chart_contracts",
     "execution",
     "modflow_contracts",
     "payload_warning",
@@ -91,6 +97,9 @@ __all__ = [
     # MODFLOW groundwater contracts (sprint-13)
     "MODFLOWRunArgs",
     "PlumeLayerURI",
+    # chart-emission contracts (sprint-13 conversational analysis layer)
+    "ChartEmissionPayload",
+    "SessionChartRecord",
     # common primitives
     "GraceModel",
     "ULIDStr",

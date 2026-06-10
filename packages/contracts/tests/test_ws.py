@@ -14,6 +14,7 @@ import pytest
 from pydantic import ValidationError
 
 from grace2_contracts import ws
+from grace2_contracts.chart_contracts import ChartEmissionPayload
 from grace2_contracts.common import GraceModel, new_ulid
 
 # Re-export the secrets payloads onto ``ws`` so the inline lambdas below stay
@@ -466,6 +467,16 @@ def test_every_a3_a4_a4b_payload_round_trips(session_id: str) -> None:
         "tool-payload-confirmation": lambda: ws.PayloadConfirmationEnvelopePayload(
             warning_id=new_ulid(),
             decision="proceed",
+        ),
+        # job-0223 — chart-emission envelope (sprint-13 conversational analysis)
+        "chart-emission": lambda: ChartEmissionPayload(
+            chart_id=new_ulid(),
+            vega_lite_spec={
+                "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+                "mark": "bar",
+                "encoding": {"x": {"field": "a"}, "y": {"field": "b"}},
+            },
+            title="Damage distribution",
         ),
     }
     # Every payload registered in ws.ALL_PAYLOADS must have a minimal factory
