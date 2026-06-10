@@ -1,0 +1,21 @@
+=== job-0247 Gemini-free local sandbox proof (numpy [1,5,9,12]) ===
+code:
+import numpy as np
+a = np.array([1, 5, 9, 12])
+print("mean", float(a.mean()))
+print("max", float(a.max()))
+
+result:
+{
+  "stdout": "mean 6.75\nmax 12.0\n",
+  "stderr": "",
+  "result": {
+    "kind": "none",
+    "value": null
+  },
+  "status": "ok",
+  "error": null,
+  "stdout_truncated": false,
+  "stderr_truncated": false,
+  "wallclock_cap_seconds": 60
+}

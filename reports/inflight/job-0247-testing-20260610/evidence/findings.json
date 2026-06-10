@@ -1,0 +1,63 @@
+{
+  "scenarios": {
+    "B": {
+      "b_frames_start": 7,
+      "context_isolation": {
+        "groundwater_route_hits": [],
+        "groundwater_hit_count": 0,
+        "flood_route_hit_count": 1,
+        "flood_route_sample": [
+          {
+            "idx": 9,
+            "type": "agent-message-chunk",
+            "tool_name": null,
+            "snippet": "{\"type\":\"agent-message-chunk\",\"id\":\"01KTRRMSTHMTYQ1CHQ3NM04EWJ\",\"ts\":\"2026-06-10T12:38:18.193843Z\",\"session_id\":\"01KTRRM6RCANWAGDC8DC1ZQHCM\",\"payload\":{\"message_id\":\"01KTRRMFYF49NGVN97JGRQBN4F\",\"delta"
+          }
+        ],
+        "payload_warning_inline_count": 0
+      },
+      "impact_panel_present": false,
+      "b1_stalled": false,
+      "b1_scroll_tail": "Model flood damage for Fort Myers using the existing flood layer.I can model flood damage for Fort Myers using the existing flood layer, but I need to know which asset layer to use. Should I use the USACE NSI structure inventory, or building footprints?",
+      "impact_envelope_frame": false,
+      "b1_map": {
+        "layers": [
+          {
+            "id": "qgis-basemap",
+            "type": "raster",
+            "source": "qgis-wms"
+          },
+          {
+            "id": "osm-fallback-basemap",
+            "type": "raster",
+            "source": "osm-fallback"
+          }
+        ],
+        "sources": [
+          "qgis-wms",
+          "osm-fallback"
+        ],
+        "center": {
+          "lng": -95.5,
+          "lat": 37
+        },
+        "zoom": 4
+      },
+      "b1_narration_tail": "Model flood damage for Fort Myers using the existing flood layer.I can model flood damage for Fort Myers using the existing flood layer, but I need to know which asset layer to use. Should I use the USACE NSI structure inventory, or building footprints?",
+      "b23_skipped": true,
+      "b23_skip_reason": "no_impact_panel"
+    },
+    "C": {
+      "c_frames_start": 16,
+      "groundwater_route_hits": [],
+      "groundwater_hit_count": 0,
+      "sandbox_request_present": false,
+      "code_exec_request_frame": false,
+      "code_exec_request_idx": null,
+      "c_scroll_tail": "Run a quick Python computation: compute the mean and max of the numpy array [1, 5, 9, 12] and print both.Of course. I can model flood damage, but I'll need a flood layer to do so. Please provide the flood layer you'd like to use. Or, I can run a new flood scenario for you.\nIn the meantime, I'll run your Python computation:I am sorry, but I cannot fulfill both of your requests at the same time. While I can model flood damage for Fort Myers, I am unable to run Python code directly. Please let me know if you would like to proceed with the flood damage assessment, and I can provide you with an estimate of the potential damages."
+    }
+  },
+  "rate_limited": false,
+  "turns_sent": 2,
+  "page_errors": []
+}

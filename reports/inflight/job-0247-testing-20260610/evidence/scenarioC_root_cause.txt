@@ -1,0 +1,12 @@
+=== job-0247 Scenario C root cause: code_exec_request not in hot-set; agent did NOT self-widen ===
+
+categories.py:323 — code_exec_request categorized under 'geographic_primitives' but NOT in HOT_SET_TOOLS
+
+--- live agent chain (Scenario C, fresh case, same WS session) ---
+2026-06-10 05:55:20,066 INFO grace2_agent.server user-message session=01KTRRM6RCANWAGDC8DC1ZQHCM research_mode=research text='Run a quick Python computation: compute the mean and max of the numpy array [1, '
+2026-06-10 05:55:31,869 INFO grace2_agent.server gemini function-call session=01KTRRM6RCANWAGDC8DC1ZQHCM iter=1 tool=code_exec_request call_id=None args={'python_code': '\nimport numpy as np\nprint(np.mean([1, 5, 9, 12]))\nprint(np.max([1, 5, 9, 12]))\n'}
+2026-06-10 05:55:31,928 INFO grace2_agent.server gemini usage session=01KTRRM6RCANWAGDC8DC1ZQHCM iter=1 cached=90811 total=91466 prompt=90854 candidates=110 hit=True
+2026-06-10 05:55:31,929 ERROR grace2_agent.server tool dispatch raised session=01KTRRM6RCANWAGDC8DC1ZQHCM tool=code_exec_request err=tool 'code_exec_request' not in allowed set; consider calling list_tools_in_category(...) first to widen the allowed set. hot-set tools currently available (first 16): ['discover_dataset', 'fetch_dem', 'fetch_nws_alerts_conus', 'geocode_location', 'list_categories', 'list_tools_in_category', 'run_model_flood_habitat_scenario', 'run_model_flood_scenario']
+2026-06-10 05:55:31,934 INFO grace2_agent.server function-response queued session=01KTRRM6RCANWAGDC8DC1ZQHCM iter=1 tool=code_exec_request summary_keys=['error', 'error_code', 'error_type', 'message', 'retryable', 'status', 'tool']
+2026-06-10 05:55:40,223 INFO grace2_agent.server gemini usage session=01KTRRM6RCANWAGDC8DC1ZQHCM iter=2 cached=90811 total=91590 prompt=91145 candidates=65 hit=True
+2026-06-10 05:55:40,223 INFO grace2_agent.server gemini loop terminal session=01KTRRM6RCANWAGDC8DC1ZQHCM iter=2 text_chunks=2

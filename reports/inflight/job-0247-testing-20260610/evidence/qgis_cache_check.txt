@@ -1,0 +1,38 @@
+=== job-0247 Gemini-free QGIS GetCapabilities check (2026-06-10T12:35:38Z) ===
+URL: https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&SERVICE=WMS&REQUEST=GetCapabilities
+
+HTTP status: 200
+Response bytes: 19860
+
+--- plume-concentration layer count (grep -c) ---
+3
+
+--- plume-concentration occurrences (context) ---
+      3 plume-concentration-01KTRNPCV4NEN0RRQ3H0QMZQY6
+      3 plume_smoke_job0244
+
+--- all layer Name elements ---
+'WMS'
+'GRACE-2 M2 sample (CONUS basemap)'
+'plume-concentration-01KTRNPCV4NEN0RRQ3H0QMZQY6'
+'default'
+'plume_smoke_job0244'
+'default'
+'flood-depth-peak-01KTNCM0ADTS350GWJNGGX1BSP'
+'default'
+'flood-depth-peak-01KTN1PFQ3T83ZC1G7ZK8KXW6Y'
+'default'
+'flood-depth-job-0086-fix'
+'default'
+'flood-depth-job-0075-demo'
+'default'
+'flood-depth-peak-01KTJX71NKGDMXB9TN0DV75JWK'
+'default'
+'flood-depth-job-0074-demo'
+'default'
+'flood-depth-job-0070-demo'
+'default'
+'flood-depth-job-0069-demo'
+'default'
+'basemap-osm-conus'
+'default'

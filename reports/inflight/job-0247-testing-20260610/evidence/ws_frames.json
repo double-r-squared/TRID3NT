@@ -1,0 +1,152 @@
+[
+  {
+    "t_rel_ms": 1620,
+    "type": "session-state",
+    "tool_name": null,
+    "preview": "{\"type\":\"session-state\",\"id\":\"01KTRRM6S50V6DGNTRGC0A9542\",\"ts\":\"2026-06-10T12:37:58.693580Z\",\"session_id\":\"01KTRRM6RCANWAGDC8DC1ZQHCM\",\"payload\":{\"chat_history\":[],\"loaded_layers\":[],\"pipeline_history\":[],\"current_pipeline\":null,\"map_view\":null,\"status\":\"active\"}}"
+  },
+  {
+    "t_rel_ms": 1621,
+    "type": "case-list",
+    "tool_name": null,
+    "preview": "{\"type\":\"case-list\",\"id\":\"01KTRRM6S6KT2ECDQN1PE207XC\",\"ts\":\"2026-06-10T12:37:58.694138Z\",\"session_id\":\"01KTRRM6RCANWAGDC8DC1ZQHCM\",\"payload\":{\"envelope_type\":\"case-list\",\"cases\":[{\"schema_version\":\"v1\",\"case_id\":\"01KTNK6XS3MGEGX6RXRXAHDQ3W\",\"title\":\"Test 4.8\",\"created_at\":\"2026-06-09T07:05:37.315851Z\",\"updated_at\":\"2026-06-09T07:05:41.141267Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"loaded_layer_summaries\":[],\"qgs_project_uri\":null},{\"schema_version\":\"v1\",\"case_id\":\"01KTNMGENBETZYNRSHR4RBWRRD\",\"title\":\"Untitled Case\",\"created_at\":\"2026-06-09T07:28:18.092029Z\",\"updated_at\":\"2026-06-09T07:28:18.092029Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"loaded_layer_summaries\":[],\"qgs_project_uri\":null},{\"schema_version\":\"v1\",\"case_id\":\"01KTNVB9MND4ZDX9A2YPTAFTY0\",\"title\":\"Untitled Case\",\"created_at\":\"2026-06-09T09:27:49.141703Z\",\"updated_at\":\"2026-06-09T09:27:49.141703Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"loaded_layer_summaries\":[],\"qgs_project_uri\":null},{\"schema_version\":\"v1\",\"case_id\":\"01KTNVGJK7FDCRPRTTJSHWQGTK\",\"title\":\"Untitled Case\",\"created_at\":\"2026-06-09T09:30:42.151217Z\",\"updated_at\":\"2026-06-09T09:30:42.151217Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"loaded_layer_summaries\":[],\"qgs_project_uri\":null},{\"schema_version\":\"v1\",\"case_id\":\"01KTNVHSSWSJV9SZRXT4H9NCTH\",\"title\":\"Untitled Case\",\"created_at\":\"2026-06-09T09:31:22.300663Z\",\"updated_at\":\"2026-06-09T09:31:22.300663Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"lo"
+  },
+  {
+    "t_rel_ms": 2250,
+    "type": "session-state",
+    "tool_name": null,
+    "preview": "{\"type\":\"session-state\",\"id\":\"01KTRRM7943TP9HPQW2FKP51DH\",\"ts\":\"2026-06-10T12:37:59.204866Z\",\"session_id\":\"01KTRRM6RCANWAGDC8DC1ZQHCM\",\"payload\":{\"chat_history\":[],\"loaded_layers\":[],\"pipeline_history\":[],\"current_pipeline\":null,\"map_view\":null,\"status\":\"active\"}}"
+  },
+  {
+    "t_rel_ms": 2251,
+    "type": "case-list",
+    "tool_name": null,
+    "preview": "{\"type\":\"case-list\",\"id\":\"01KTRRM7975S84PADDPNJPTCPT\",\"ts\":\"2026-06-10T12:37:59.207725Z\",\"session_id\":\"01KTRRM6RCANWAGDC8DC1ZQHCM\",\"payload\":{\"envelope_type\":\"case-list\",\"cases\":[{\"schema_version\":\"v1\",\"case_id\":\"01KTNK6XS3MGEGX6RXRXAHDQ3W\",\"title\":\"Test 4.8\",\"created_at\":\"2026-06-09T07:05:37.315851Z\",\"updated_at\":\"2026-06-09T07:05:41.141267Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"loaded_layer_summaries\":[],\"qgs_project_uri\":null},{\"schema_version\":\"v1\",\"case_id\":\"01KTNMGENBETZYNRSHR4RBWRRD\",\"title\":\"Untitled Case\",\"created_at\":\"2026-06-09T07:28:18.092029Z\",\"updated_at\":\"2026-06-09T07:28:18.092029Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"loaded_layer_summaries\":[],\"qgs_project_uri\":null},{\"schema_version\":\"v1\",\"case_id\":\"01KTNVB9MND4ZDX9A2YPTAFTY0\",\"title\":\"Untitled Case\",\"created_at\":\"2026-06-09T09:27:49.141703Z\",\"updated_at\":\"2026-06-09T09:27:49.141703Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"loaded_layer_summaries\":[],\"qgs_project_uri\":null},{\"schema_version\":\"v1\",\"case_id\":\"01KTNVGJK7FDCRPRTTJSHWQGTK\",\"title\":\"Untitled Case\",\"created_at\":\"2026-06-09T09:30:42.151217Z\",\"updated_at\":\"2026-06-09T09:30:42.151217Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"loaded_layer_summaries\":[],\"qgs_project_uri\":null},{\"schema_version\":\"v1\",\"case_id\":\"01KTNVHSSWSJV9SZRXT4H9NCTH\",\"title\":\"Untitled Case\",\"created_at\":\"2026-06-09T09:31:22.300663Z\",\"updated_at\":\"2026-06-09T09:31:22.300663Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"lo"
+  },
+  {
+    "t_rel_ms": 7188,
+    "type": "case-open",
+    "tool_name": null,
+    "preview": "{\"type\":\"case-open\",\"id\":\"01KTRRMC6XM4ENJHHRMVX2SQFY\",\"ts\":\"2026-06-10T12:38:04.253250Z\",\"session_id\":\"01KTRRM6RCANWAGDC8DC1ZQHCM\",\"payload\":{\"envelope_type\":\"case-open\",\"session_state\":{\"schema_version\":\"v1\",\"case\":{\"schema_version\":\"v1\",\"case_id\":\"01KTRRMC6HYF3WPSXR64XS3N3R\",\"title\":\"Untitled Case\",\"created_at\":\"2026-06-10T12:38:04.242025Z\",\"updated_at\":\"2026-06-10T12:38:04.242025Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"loaded_layer_summaries\":[],\"qgs_project_uri\":null},\"chat_history\":[],\"loaded_layers\":[],\"pipeline_history\":[],\"current_pipeline\":null}}}"
+  },
+  {
+    "t_rel_ms": 7197,
+    "type": "case-list",
+    "tool_name": null,
+    "preview": "{\"type\":\"case-list\",\"id\":\"01KTRRMC6ZM019SNWHJ51BKZQZ\",\"ts\":\"2026-06-10T12:38:04.256017Z\",\"session_id\":\"01KTRRM6RCANWAGDC8DC1ZQHCM\",\"payload\":{\"envelope_type\":\"case-list\",\"cases\":[{\"schema_version\":\"v1\",\"case_id\":\"01KTNK6XS3MGEGX6RXRXAHDQ3W\",\"title\":\"Test 4.8\",\"created_at\":\"2026-06-09T07:05:37.315851Z\",\"updated_at\":\"2026-06-09T07:05:41.141267Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"loaded_layer_summaries\":[],\"qgs_project_uri\":null},{\"schema_version\":\"v1\",\"case_id\":\"01KTNMGENBETZYNRSHR4RBWRRD\",\"title\":\"Untitled Case\",\"created_at\":\"2026-06-09T07:28:18.092029Z\",\"updated_at\":\"2026-06-09T07:28:18.092029Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"loaded_layer_summaries\":[],\"qgs_project_uri\":null},{\"schema_version\":\"v1\",\"case_id\":\"01KTNVB9MND4ZDX9A2YPTAFTY0\",\"title\":\"Untitled Case\",\"created_at\":\"2026-06-09T09:27:49.141703Z\",\"updated_at\":\"2026-06-09T09:27:49.141703Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"loaded_layer_summaries\":[],\"qgs_project_uri\":null},{\"schema_version\":\"v1\",\"case_id\":\"01KTNVGJK7FDCRPRTTJSHWQGTK\",\"title\":\"Untitled Case\",\"created_at\":\"2026-06-09T09:30:42.151217Z\",\"updated_at\":\"2026-06-09T09:30:42.151217Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"loaded_layer_summaries\":[],\"qgs_project_uri\":null},{\"schema_version\":\"v1\",\"case_id\":\"01KTNVHSSWSJV9SZRXT4H9NCTH\",\"title\":\"Untitled Case\",\"created_at\":\"2026-06-09T09:31:22.300663Z\",\"updated_at\":\"2026-06-09T09:31:22.300663Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"lo"
+  },
+  {
+    "t_rel_ms": 8683,
+    "type": "case-open",
+    "tool_name": null,
+    "preview": "{\"type\":\"case-open\",\"id\":\"01KTRRMDNPWXCEZSW2RC9HRXYP\",\"ts\":\"2026-06-10T12:38:05.750572Z\",\"session_id\":\"01KTRRM6RCANWAGDC8DC1ZQHCM\",\"payload\":{\"envelope_type\":\"case-open\",\"session_state\":{\"schema_version\":\"v1\",\"case\":{\"schema_version\":\"v1\",\"case_id\":\"01KTRRMC6HYF3WPSXR64XS3N3R\",\"title\":\"Untitled Case\",\"created_at\":\"2026-06-10T12:38:04.242025Z\",\"updated_at\":\"2026-06-10T12:38:04.242025Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"loaded_layer_summaries\":[],\"qgs_project_uri\":null},\"chat_history\":[],\"loaded_layers\":[],\"pipeline_history\":[],\"current_pipeline\":null}}}"
+  },
+  {
+    "t_rel_ms": 11007,
+    "type": "SENT:user-message",
+    "preview": "{\"type\":\"user-message\",\"id\":\"01KTRRMFYEDF74A5V7Y3BKKCMM\",\"ts\":\"2026-06-10T12:38:08.078Z\",\"session_id\":\"01KTRRM6RCANWAGDC8DC1ZQHCM\",\"payload\":{\"text\":\"Model flood damage for Fort Myers using the existing flood layer.\",\"research_mode\":\"research\"}}"
+  },
+  {
+    "t_rel_ms": 11007,
+    "type": "pipeline-state",
+    "tool_name": [
+      "gemini_generate"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRRMFYF49NGVN97JGRQBN4J\",\"ts\":\"2026-06-10T12:38:08.079223Z\",\"session_id\":\"01KTRRM6RCANWAGDC8DC1ZQHCM\",\"payload\":{\"pipeline_id\":\"01KTRRMFYF49NGVN97JGRQBN4G\",\"steps\":[{\"step_id\":\"01KTRRMFYF49NGVN97JGRQBN4H\",\"name\":\"llm_generation\",\"tool_name\":\"gemini_generate\",\"state\":\"running\",\"started_at\":null,\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 21122,
+    "type": "agent-message-chunk",
+    "tool_name": null,
+    "preview": "{\"type\":\"agent-message-chunk\",\"id\":\"01KTRRMSTHMTYQ1CHQ3NM04EWJ\",\"ts\":\"2026-06-10T12:38:18.193843Z\",\"session_id\":\"01KTRRM6RCANWAGDC8DC1ZQHCM\",\"payload\":{\"message_id\":\"01KTRRMFYF49NGVN97JGRQBN4F\",\"delta\":\"I can model flood damage for Fort Mye"
+  },
+  {
+    "t_rel_ms": 21172,
+    "type": "agent-message-chunk",
+    "tool_name": null,
+    "preview": "{\"type\":\"agent-message-chunk\",\"id\":\"01KTRRMSV0MQMVH591RS24BH2Y\",\"ts\":\"2026-06-10T12:38:18.208884Z\",\"session_id\":\"01KTRRM6RCANWAGDC8DC1ZQHCM\",\"payload\":{\"message_id\":\"01KTRRMFYF49NGVN97JGRQBN4F\",\"delta\":\"ACE NSI structure inventory, or build"
+  },
+  {
+    "t_rel_ms": 21226,
+    "type": "agent-message-chunk",
+    "tool_name": null,
+    "preview": "{\"type\":\"agent-message-chunk\",\"id\":\"01KTRRMSXPCZ34P0TQ019SXZCT\",\"ts\":\"2026-06-10T12:38:18.294380Z\",\"session_id\":\"01KTRRM6RCANWAGDC8DC1ZQHCM\",\"payload\":{\"message_id\":\"01KTRRMFYF49NGVN97JGRQBN4F\",\"delta\":\"\",\"done\":true}}"
+  },
+  {
+    "t_rel_ms": 21226,
+    "type": "pipeline-state",
+    "tool_name": [
+      "gemini_generate"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRRMSXPCZ34P0TQ019SXZCV\",\"ts\":\"2026-06-10T12:38:18.294948Z\",\"session_id\":\"01KTRRM6RCANWAGDC8DC1ZQHCM\",\"payload\":{\"pipeline_id\":\"01KTRRMFYF49NGVN97JGRQBN4G\",\"steps\":[{\"step_id\":\"01KTRRMFYF49NGVN97JGRQBN4H\",\"name\":\"llm_generation\",\"tool_name\":\"gemini_generate\",\"state\":\"complete\",\"started_at\":null,\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 1039150,
+    "type": "case-open",
+    "tool_name": null,
+    "preview": "{\"type\":\"case-open\",\"id\":\"01KTRSKVZK0BDPXQAMN6MMXG9E\",\"ts\":\"2026-06-10T12:55:16.212067Z\",\"session_id\":\"01KTRRM6RCANWAGDC8DC1ZQHCM\",\"payload\":{\"envelope_type\":\"case-open\",\"session_state\":{\"schema_version\":\"v1\",\"case\":{\"schema_version\":\"v1\",\"case_id\":\"01KTRSKVZ8RH9N1XGNPNWYPCKT\",\"title\":\"Untitled Case\",\"created_at\":\"2026-06-10T12:55:16.200921Z\",\"updated_at\":\"2026-06-10T12:55:16.200921Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"loaded_layer_summaries\":[],\"qgs_project_uri\":null},\"chat_history\":[],\"loaded_layers\":[],\"pipeline_history\":[],\"current_pipeline\":null}}}"
+  },
+  {
+    "t_rel_ms": 1039158,
+    "type": "case-list",
+    "tool_name": null,
+    "preview": "{\"type\":\"case-list\",\"id\":\"01KTRSKVZP6VEM9EKFX5BES7GK\",\"ts\":\"2026-06-10T12:55:16.214830Z\",\"session_id\":\"01KTRRM6RCANWAGDC8DC1ZQHCM\",\"payload\":{\"envelope_type\":\"case-list\",\"cases\":[{\"schema_version\":\"v1\",\"case_id\":\"01KTNK6XS3MGEGX6RXRXAHDQ3W\",\"title\":\"Test 4.8\",\"created_at\":\"2026-06-09T07:05:37.315851Z\",\"updated_at\":\"2026-06-09T07:05:41.141267Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"loaded_layer_summaries\":[],\"qgs_project_uri\":null},{\"schema_version\":\"v1\",\"case_id\":\"01KTNMGENBETZYNRSHR4RBWRRD\",\"title\":\"Untitled Case\",\"created_at\":\"2026-06-09T07:28:18.092029Z\",\"updated_at\":\"2026-06-09T07:28:18.092029Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"loaded_layer_summaries\":[],\"qgs_project_uri\":null},{\"schema_version\":\"v1\",\"case_id\":\"01KTNVB9MND4ZDX9A2YPTAFTY0\",\"title\":\"Untitled Case\",\"created_at\":\"2026-06-09T09:27:49.141703Z\",\"updated_at\":\"2026-06-09T09:27:49.141703Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"loaded_layer_summaries\":[],\"qgs_project_uri\":null},{\"schema_version\":\"v1\",\"case_id\":\"01KTNVGJK7FDCRPRTTJSHWQGTK\",\"title\":\"Untitled Case\",\"created_at\":\"2026-06-09T09:30:42.151217Z\",\"updated_at\":\"2026-06-09T09:30:42.151217Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"loaded_layer_summaries\":[],\"qgs_project_uri\":null},{\"schema_version\":\"v1\",\"case_id\":\"01KTNVHSSWSJV9SZRXT4H9NCTH\",\"title\":\"Untitled Case\",\"created_at\":\"2026-06-09T09:31:22.300663Z\",\"updated_at\":\"2026-06-09T09:31:22.300663Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"lo"
+  },
+  {
+    "t_rel_ms": 1040673,
+    "type": "case-open",
+    "tool_name": null,
+    "preview": "{\"type\":\"case-open\",\"id\":\"01KTRSKXFB664858Y6X7E189R5\",\"ts\":\"2026-06-10T12:55:17.739882Z\",\"session_id\":\"01KTRRM6RCANWAGDC8DC1ZQHCM\",\"payload\":{\"envelope_type\":\"case-open\",\"session_state\":{\"schema_version\":\"v1\",\"case\":{\"schema_version\":\"v1\",\"case_id\":\"01KTRSKVZ8RH9N1XGNPNWYPCKT\",\"title\":\"Untitled Case\",\"created_at\":\"2026-06-10T12:55:16.200921Z\",\"updated_at\":\"2026-06-10T12:55:16.200921Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"loaded_layer_summaries\":[],\"qgs_project_uri\":null},\"chat_history\":[],\"loaded_layers\":[],\"pipeline_history\":[],\"current_pipeline\":null}}}"
+  },
+  {
+    "t_rel_ms": 1042994,
+    "type": "SENT:user-message",
+    "preview": "{\"type\":\"user-message\",\"id\":\"01KTRSKZR2WWCSGJK7D5DF8909\",\"ts\":\"2026-06-10T12:55:20.066Z\",\"session_id\":\"01KTRRM6RCANWAGDC8DC1ZQHCM\",\"payload\":{\"text\":\"Run a quick Python computation: compute the mean and max of the numpy array [1, 5, 9, 12] and print both.\",\"research_mode\":\"research\"}}"
+  },
+  {
+    "t_rel_ms": 1042995,
+    "type": "pipeline-state",
+    "tool_name": [
+      "gemini_generate"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRSKZR34MV7QFXMEMP43R7B\",\"ts\":\"2026-06-10T12:55:20.067102Z\",\"session_id\":\"01KTRRM6RCANWAGDC8DC1ZQHCM\",\"payload\":{\"pipeline_id\":\"01KTRSKZR34MV7QFXMEMP43R79\",\"steps\":[{\"step_id\":\"01KTRSKZR34MV7QFXMEMP43R7A\",\"name\":\"llm_generation\",\"tool_name\":\"gemini_generate\",\"state\":\"running\",\"started_at\":null,\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 1053831,
+    "type": "agent-message-chunk",
+    "tool_name": null,
+    "preview": "{\"type\":\"agent-message-chunk\",\"id\":\"01KTRSMAAP5489MRY2JWJ82T5G\",\"ts\":\"2026-06-10T12:55:30.902917Z\",\"session_id\":\"01KTRRM6RCANWAGDC8DC1ZQHCM\",\"payload\":{\"message_id\":\"01KTRSKZR34MV7QFXMEMP43R78\",\"delta\":\"Of course. I can model flood damage, "
+  },
+  {
+    "t_rel_ms": 1054753,
+    "type": "agent-message-chunk",
+    "tool_name": null,
+    "preview": "{\"type\":\"agent-message-chunk\",\"id\":\"01KTRSMB7HENCFSXSF2N9TJ0F0\",\"ts\":\"2026-06-10T12:55:31.825366Z\",\"session_id\":\"01KTRRM6RCANWAGDC8DC1ZQHCM\",\"payload\":{\"message_id\":\"01KTRSKZR34MV7QFXMEMP43R78\",\"delta\":\" use. Or, I can run a new flood scena"
+  },
+  {
+    "t_rel_ms": 1062844,
+    "type": "agent-message-chunk",
+    "tool_name": null,
+    "preview": "{\"type\":\"agent-message-chunk\",\"id\":\"01KTRSMK4C3VJV9P6KBWZHZ354\",\"ts\":\"2026-06-10T12:55:39.916803Z\",\"session_id\":\"01KTRRM6RCANWAGDC8DC1ZQHCM\",\"payload\":{\"message_id\":\"01KTRSKZR34MV7QFXMEMP43R78\",\"delta\":\"I am sorry, but I cannot fulfill both"
+  },
+  {
+    "t_rel_ms": 1063102,
+    "type": "agent-message-chunk",
+    "tool_name": null,
+    "preview": "{\"type\":\"agent-message-chunk\",\"id\":\"01KTRSMKCDA3N4S3YTX6B4R60K\",\"ts\":\"2026-06-10T12:55:40.173896Z\",\"session_id\":\"01KTRRM6RCANWAGDC8DC1ZQHCM\",\"payload\":{\"message_id\":\"01KTRSKZR34MV7QFXMEMP43R78\",\"delta\":\" to run Python code directly. Please "
+  },
+  {
+    "t_rel_ms": 1063152,
+    "type": "agent-message-chunk",
+    "tool_name": null,
+    "preview": "{\"type\":\"agent-message-chunk\",\"id\":\"01KTRSMKE07M6AVPZKP7JZPPS2\",\"ts\":\"2026-06-10T12:55:40.224128Z\",\"session_id\":\"01KTRRM6RCANWAGDC8DC1ZQHCM\",\"payload\":{\"message_id\":\"01KTRSKZR34MV7QFXMEMP43R78\",\"delta\":\"\",\"done\":true}}"
+  },
+  {
+    "t_rel_ms": 1063165,
+    "type": "pipeline-state",
+    "tool_name": [
+      "gemini_generate"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRSMKE07M6AVPZKP7JZPPS3\",\"ts\":\"2026-06-10T12:55:40.224682Z\",\"session_id\":\"01KTRRM6RCANWAGDC8DC1ZQHCM\",\"payload\":{\"pipeline_id\":\"01KTRSKZR34MV7QFXMEMP43R79\",\"steps\":[{\"step_id\":\"01KTRSKZR34MV7QFXMEMP43R7A\",\"name\":\"llm_generation\",\"tool_name\":\"gemini_generate\",\"state\":\"complete\",\"started_at\":null,\"completed_at\":null,\"progress_percent\":null}]}}"
+  }
+]
