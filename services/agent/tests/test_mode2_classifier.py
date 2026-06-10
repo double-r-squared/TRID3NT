@@ -6,7 +6,9 @@ Coverage:
     - ``.gov`` + JSON-LD → ``Mode2Candidate``, confidence ≥ 0.6.
     - ``.edu`` + data-download link → ``Mode2Candidate``, ``suggested_tool_kind == "fetcher"``.
     - 5 patterns → confidence cap at 0.95.
-    - ``append_audit_log`` writes a single JSONL line per call, append-only.
+    - job-0203 (M4): the JSONL audit writer is GONE (remove-don't-shim) —
+      Mode-2 audit routes through ``Persistence.append_audit`` at the
+      server call site (see ``test_mode2_audit_mcp.py``).
     - ``.mil`` + OpenAPI link → ``suggested_tool_kind == "endpoint"``.
     - Malformed page dict (missing url / non-dict) → ``None``.
     - Snippet truncates to ≤ 280 chars.
@@ -15,7 +17,6 @@ Coverage:
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
@@ -23,7 +24,6 @@ from grace2_agent.mode2_classifier import (
     MODE2_TLDS,
     Mode2Candidate,
     Mode2CandidateEnvelope,
-    append_audit_log,
     classify_for_mode2,
 )
 
@@ -136,42 +136,18 @@ def test_confidence_caps_at_0_95() -> None:
     assert candidate.confidence == pytest.approx(0.95)
 
 
-def test_audit_log_appends_jsonl_lines(tmp_path: Path) -> None:
-    """``append_audit_log`` writes one JSONL line per call, append-only.
+def test_jsonl_audit_writer_removed() -> None:
+    """job-0203 (M4) remove-don't-shim: the bespoke JSONL writer is gone.
 
-    Verifies:
-      - parent directory created lazily;
-      - each call appends (not overwrites) a single line;
-      - line is valid JSON carrying the candidate envelope contents.
+    Mode-2 audit events route through ``Persistence.append_audit`` (the
+    MongoDB MCP ``audit_log`` collection) at the server.py call site —
+    covered by ``test_mode2_audit_mcp.py``. A reappearing file writer
+    here means the migration regressed.
     """
-    log_path = tmp_path / "subdir" / "mode2_audit.log"
-    page1 = _page(
-        "https://data.example.gov/x",
-        content='<script type="application/ld+json">{"@type":"Dataset"}</script>',
-    )
-    page2 = _page(
-        "https://research.example.edu/y",
-        content='<a href="/data.csv">Download CSV</a>',
-    )
+    import grace2_agent.mode2_classifier as m2
 
-    c1 = classify_for_mode2(page1)
-    c2 = classify_for_mode2(page2)
-    assert c1 is not None and c2 is not None
-
-    append_audit_log(c1, session_id="sess-1", path=log_path)
-    append_audit_log(c2, session_id="sess-2", path=log_path)
-
-    contents = log_path.read_text(encoding="utf-8").splitlines()
-    assert len(contents) == 2
-    rec1 = json.loads(contents[0])
-    rec2 = json.loads(contents[1])
-    assert rec1["session_id"] == "sess-1"
-    assert rec1["candidate"]["domain"] == "data.example.gov"
-    assert rec1["candidate"]["domain_tld"] == "gov"
-    assert rec2["candidate"]["domain_tld"] == "edu"
-    assert rec2["candidate"]["suggested_tool_kind"] == "fetcher"
-    # Timestamp present + ISO-8601-ish.
-    assert "T" in rec1["ts"]
+    assert not hasattr(m2, "append_audit_log")
+    assert not hasattr(m2, "default_audit_log_path")
 
 
 def test_mil_with_openapi_link_suggests_endpoint() -> None:

@@ -36,11 +36,12 @@ overlap is surfaced as OQ-0101-MODE2-ENVELOPE-OVERLAP for orchestrator review.
 Audit log
 ~~~~~~~~~
 
-Every emitted candidate is written to ``~/.grace2/mode2_audit.log`` (1 JSONL
-line per emission), persistent across sessions so the user can later review
-"what did the classifier flag this week?" without scrolling back through chat.
-The audit-log path is overridable via ``GRACE2_MODE2_AUDIT_LOG`` for tests +
-ops. The directory is created lazily (parents=True) on first emission.
+Every emitted candidate is appended to the MongoDB MCP ``audit_log``
+collection (D.15) via ``Persistence.append_audit("mode2-candidate", ...)``
+at the server.py call site (job-0203 / Wave 4.11 M4) — persistent across
+sessions so the user can later review "what did the classifier flag this
+week?" without scrolling back through chat. The earlier bespoke JSONL file
+writer was removed (remove-don't-shim).
 
 Inputs / outputs
 ~~~~~~~~~~~~~~~~
@@ -76,11 +77,8 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlparse
 
@@ -91,8 +89,6 @@ __all__ = [
     "Mode2CandidateEnvelope",
     "MODE2_TLDS",
     "classify_for_mode2",
-    "append_audit_log",
-    "default_audit_log_path",
 ]
 
 logger = logging.getLogger("grace2_agent.mode2_classifier")
@@ -419,59 +415,13 @@ def classify_for_mode2(page_dict: dict[str, Any]) -> Mode2Candidate | None:
 
 
 # ---------------------------------------------------------------------------
-# Audit log.
+# Audit log — REMOVED (job-0203 / Wave 4.11 M4, remove-don't-shim).
+#
+# The bespoke JSONL file writer (``append_audit_log`` +
+# ``default_audit_log_path``, ``~/.grace2/mode2_audit.log``) was the last
+# CRUD path bypassing MongoDB MCP. Mode-2 candidate audit events now route
+# through ``Persistence.append_audit("mode2-candidate", ...)`` at the
+# server.py call site — the ``audit_log`` collection (D.15) is the single
+# audit stream. On a dev box the file-backed substrate lands them in
+# ``~/.grace2/dev_persistence/<db>/audit_log.json``.
 # ---------------------------------------------------------------------------
-
-
-def default_audit_log_path() -> Path:
-    """Return ``~/.grace2/mode2_audit.log`` (overridable via env var).
-
-    ``GRACE2_MODE2_AUDIT_LOG`` overrides for tests / ops. The parent directory
-    is NOT created here; ``append_audit_log`` creates it lazily on first write.
-    """
-    override = os.environ.get("GRACE2_MODE2_AUDIT_LOG")
-    if override:
-        return Path(override)
-    return Path(os.path.expanduser("~/.grace2/mode2_audit.log"))
-
-
-def append_audit_log(
-    candidate: Mode2Candidate,
-    *,
-    session_id: str | None = None,
-    path: Path | None = None,
-) -> None:
-    """Append a single JSONL line to the audit log for ``candidate``.
-
-    Persistent across sessions per the kickoff so a user reviewing "what did
-    the classifier flag this week?" has a record outside chat history. The
-    log is append-only; rotation is out-of-band (ops concern, not v0.1).
-
-    Args:
-        candidate: the candidate to record.
-        session_id: optional WebSocket session id so a later audit pass can
-            cross-reference the chat. Omitted when the call site doesn't have
-            a session id handy (e.g. unit tests).
-        path: override path for tests; defaults to ``default_audit_log_path()``.
-
-    The line shape::
-
-        {"ts": "<iso>", "session_id": "<id|null>", "candidate": {...}}
-
-    Best-effort: a write failure is logged but never raised — we will not let
-    an audit-log hiccup take down a perfectly good tool invocation.
-    """
-    target = path or default_audit_log_path()
-    try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        line = {
-            "ts": datetime.now(timezone.utc).isoformat(),
-            "session_id": session_id,
-            "candidate": Mode2CandidateEnvelope(candidate=candidate).to_wire_dict()[
-                "candidate"
-            ],
-        }
-        with target.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(line) + "\n")
-    except OSError as exc:  # pragma: no cover — surface as warning, not exception
-        logger.warning("mode2 audit-log write failed path=%s: %s", target, exc)

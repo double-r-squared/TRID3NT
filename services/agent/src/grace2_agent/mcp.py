@@ -30,8 +30,6 @@ import shutil
 from collections.abc import Mapping
 from typing import Any
 
-from google.cloud import secretmanager
-
 # SRV secret resource path — pinned by job-0014 PROJECT_STATE.
 SRV_SECRET_RESOURCE = (
     "projects/425352658356/secrets/mongodb-srv-dev/versions/latest"
@@ -40,6 +38,12 @@ SRV_SECRET_RESOURCE = (
 
 def fetch_srv_from_secret_manager(resource: str = SRV_SECRET_RESOURCE) -> str:
     """Return the MongoDB SRV string. Uses ADC for auth. Never logged."""
+    # Local import (job-0203 / M4): only the Secret Manager fetch needs the
+    # GCP SDK — a module-level import made ``MCPClient`` unusable on dev
+    # boxes without ``google-cloud-secret-manager`` installed. Same lazy
+    # pattern as ``persistence.Persistence.get_secret_value``.
+    from google.cloud import secretmanager  # production-only dependency
+
     client = secretmanager.SecretManagerServiceClient()
     response = client.access_secret_version(request={"name": resource})
     return response.payload.data.decode("utf-8")

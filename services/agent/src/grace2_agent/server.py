@@ -100,7 +100,6 @@ from .auth_handshake import (
 from .case_lifecycle import CaseLifecycleError, ensure_case_qgs
 from .mode2_classifier import (
     Mode2CandidateEnvelope,
-    append_audit_log,
     classify_for_mode2,
 )
 from .persistence import Persistence
@@ -262,11 +261,25 @@ async def init_persistence_from_env() -> Persistence | None:
         )
     if os.environ.get("GRACE2_MONGO_MCP_STDIO") == "1":
         from .mcp import MCPClient, fetch_srv_from_secret_manager
+        from .persistence import MCPSurfaceTranslator
+
+        # job-0203 (M4): MCPClient.start defaults MDB_MCP_READ_ONLY=true (a
+        # job-0015 hello-world safety). In read-only mode the server does not
+        # even EXPOSE insert/update tools — every Case/session/user write
+        # would fail. Persistence is the write path; FR-AS-8 confirmation
+        # policy is enforced at OUR layer (CONFIRMATION_TRIGGERS), not by
+        # crippling the MCP server. Explicit env still wins (setdefault).
+        os.environ.setdefault("MDB_MCP_READ_ONLY", "false")
 
         srv = fetch_srv_from_secret_manager()
         client = await MCPClient.start(srv)
         logger.info("MCP client started; binding Persistence singleton")
-        p = Persistence(client)
+        # job-0203 (M4): the live server's document surface is find/
+        # insert-many/update-many, with results EJSON-wrapped in untrusted-
+        # data tags. The translator adapts our logical surface (find-one/
+        # insert-one/update-one/find) at this single boundary — without it
+        # every CRUD call fails on first contact with production.
+        p = Persistence(MCPSurfaceTranslator(client))
         set_persistence(p)
         return p
     # job-0161: this method does NOT clear a pre-bound singleton. The agent
@@ -1066,6 +1079,7 @@ async def _handle_auth_token(
 
     result = await authenticate_token(tok, get_persistence())
     _bind_auth_result(state, result)
+    await _touch_session_record(state)  # D.6 heartbeat (job-0203 / M4)
     ack = build_auth_ack(result)
     await websocket.send(_new_envelope("auth-ack", state.session_id, ack))
     logger.info(
@@ -1097,6 +1111,34 @@ def _bind_auth_result(state: SessionState, result: AuthResult) -> None:
     state.allowed_tool_set.user_id = result.user.user_id
 
 
+async def _touch_session_record(
+    state: SessionState, *, case_id: str | None = None
+) -> None:
+    """D.6 session-record heartbeat (job-0203 / Wave 4.11 M4).
+
+    Upserts the agent's own ``sessions`` document: ``last_active_at`` +
+    ``expires_at`` advance (TTL driver per ``SESSIONS_TTL``), the active
+    Case lands in ``project_ids``. Fired on auth bind, Case open/create,
+    and every persisted chat turn — the session-record carveout (FR-AS-8)
+    means none of these touches is a confirmable write.
+
+    Best-effort like telemetry (M3) and chart persistence (job-0230): a
+    persistence hiccup is logged at WARNING and never reaches the caller.
+    """
+    p = get_persistence()
+    if p is None:
+        return
+    try:
+        await p.touch_session(
+            state.session_id,
+            case_id=case_id if case_id is not None else state.active_case_id,
+        )
+    except Exception:  # noqa: BLE001 — side effect, never bubble up
+        logger.warning(
+            "session-touch failed session=%s", state.session_id, exc_info=True
+        )
+
+
 async def _ensure_auth_handshake(
     websocket: ServerConnection,
     state: SessionState,
@@ -1113,6 +1155,7 @@ async def _ensure_auth_handshake(
         return
     result = await authenticate_token(None, get_persistence())
     _bind_auth_result(state, result)
+    await _touch_session_record(state)  # D.6 heartbeat (job-0203 / M4)
     ack = build_auth_ack(result)
     try:
         await websocket.send(_new_envelope("auth-ack", state.session_id, ack))
@@ -1172,6 +1215,7 @@ async def _emit_case_open(
     ``CaseOpenEnvelopePayload`` semantics.
     """
     state.active_case_id = case_id
+    await _touch_session_record(state, case_id=case_id)  # D.6 heartbeat (M4)
     p = get_persistence()
     if p is None:
         logger.warning(
@@ -1283,6 +1327,7 @@ async def _handle_case_command(
             )
             return
         state.active_case_id = new_case_id
+        await _touch_session_record(state, case_id=new_case_id)  # D.6 (M4)
         # Emit case-open with the empty session state for the fresh Case.
         payload = CaseOpenEnvelopePayload(
             session_state=await p.get_session_state(new_case_id)
@@ -1473,6 +1518,10 @@ async def _persist_chat_turn(
     )
     try:
         await p.append_chat_message(msg)
+        # Per-turn D.6 heartbeat (job-0203 / M4): the chat turn is the
+        # activity signal that keeps the session record's TTL fresh and
+        # the active Case registered in ``project_ids``.
+        await _touch_session_record(state)
         logger.debug(
             "chat-persist session=%s case=%s role=%s msg_id=%s pipeline_id=%s layers=%d",
             state.session_id,
@@ -2163,7 +2212,32 @@ async def _maybe_emit_mode2_candidate(
                 }
             )
         )
-        append_audit_log(candidate, session_id=state.session_id)
+        # job-0203 (M4): Mode-2 candidate audit routes through the MCP
+        # ``audit_log`` collection (D.15) — the bespoke JSONL file writer
+        # was deleted (remove-don't-shim). When Persistence is unbound
+        # (explicit CI path) the event is logged-and-dropped, same policy
+        # as telemetry (M3) and chart persistence (job-0230).
+        p_audit = get_persistence()
+        if p_audit is not None:
+            try:
+                await p_audit.append_audit(
+                    "mode2-candidate",
+                    {
+                        "session_id": state.session_id,
+                        "candidate": envelope.to_wire_dict()["candidate"],
+                    },
+                )
+            except Exception:  # noqa: BLE001 — audit is best-effort
+                logger.warning(
+                    "mode2 audit write failed session=%s",
+                    state.session_id,
+                    exc_info=True,
+                )
+        else:
+            logger.debug(
+                "mode2 audit skipped (no Persistence bound) session=%s",
+                state.session_id,
+            )
         logger.info(
             "mode2-candidate session=%s url=%s confidence=%.2f patterns=%s",
             state.session_id,
