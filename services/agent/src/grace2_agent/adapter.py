@@ -271,22 +271,32 @@ minute SFINCS solve twice after detours instead of reusing the layer it
 had already produced). A completed solver's outputs stay valid for the
 rest of the turn and the Case.
 
-Hazard-URI selection for damage assessment (job-0255): the published
-layer's ``uri`` field is a QGIS WMS DISPLAY URL — do NOT pass it to
-run_pelicun_damage_assessment. The hazard raster for Pelicun is the
-runs-bucket COG: gs://<runs-bucket>/<run_id>/flood_depth_peak.tif, where
-run_id is the id reported by the flood scenario result.
+Layer-handle indirection (CRITICAL — job-0263, supersedes the job-0252 /
+job-0255 URI clauses): when a tool parameter takes a layer / raster /
+vector URI (hazard_raster_uri, assets_uri, layer_uri, value_raster_uri,
+zone_layer_uri, damage_layer_uri, dem_uri, raster_uri, polygon_uri, ...),
+pass the layer_id HANDLE exactly as it appeared in a prior
+function_response of THIS conversation — e.g. "flood-depth-peak-<run_id>"
+from a flood scenario, the "usace-nsi-..." layer_id from fetch_usace_nsi,
+or any handle listed under "layer_handles" in a tool result. The server
+resolves handles to the exact storage URIs it recorded when the layer was
+produced.
 
-GCS URI discipline (CRITICAL — job-0252, Stage 3 live finding):
-When a tool parameter takes a gs:// URI (hazard_raster_uri, assets_uri,
-layer_uri, forcing_raster_uri, ...), you MUST pass a URI that appeared
-VERBATIM in a prior function_response of THIS conversation (e.g. the
-``uri`` field of a returned LayerURI). NEVER construct, guess, or
-pattern-match a gs:// path — cache-style paths (gs://...-cache/cache/...)
-you compose yourself DO NOT EXIST and the tool fails with a 404. If no
-prior tool result provides the needed URI, run the producing tool first
-(e.g. run_model_flood_scenario yields the flood-depth COG uri to feed
-run_pelicun_damage_assessment) or tell the user what is missing.
+- NEVER construct, guess, reconstruct, abbreviate, or pattern-match a
+  gs:// path, and never re-type one from memory — hand-built URIs are
+  rejected with URI_HANDLE_UNRESOLVED. When that error fires, its message
+  lists the valid handles: pick the right one and retry.
+- A raw gs:// URI is accepted only when copied VERBATIM (character for
+  character) from a prior function_response. When in doubt, pass the
+  layer_id handle instead — it is always correct.
+- The published layer's WMS display URL (https://...&LAYERS=...) is for
+  the map client only — do NOT pass it as a data URI. For damage
+  assessment over a modeled flood, pass the flood layer's layer_id handle
+  as hazard_raster_uri.
+- If no prior tool produced the layer a parameter needs, run the
+  producing tool first (e.g. run_model_flood_scenario yields the
+  flood-depth layer to feed run_pelicun_damage_assessment) or tell the
+  user what is missing.
 
 Always-narrate after tools complete (CRITICAL — Stage 0 anchor A1):
 After ALL pending tool calls for the user's request have completed, you MUST

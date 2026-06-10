@@ -366,8 +366,11 @@ def summarize_layer_statistics(
     count_features_above_threshold).
 
     Parameters:
-        layer_uri: gs:// URI or local path of the layer to summarize. Supports
-            raster (GeoTIFF / COG) and vector (GeoJSON, FlatGeobuf, GeoPackage).
+        layer_uri: the layer's ``layer_id`` HANDLE from a prior tool result
+            (PREFERRED — the server resolves handles to exact storage URIs;
+            never construct gs:// paths), or a gs:// URI copied verbatim.
+            Supports raster (GeoTIFF / COG) and vector (GeoJSON, FlatGeobuf,
+            GeoPackage).
 
     Returns:
         For raster:
@@ -463,7 +466,9 @@ def count_features_above_threshold(
     pixel-counting use compute_zonal_statistics with a threshold-based zone.
 
     Parameters:
-        layer_uri: gs:// URI or local path of a vector layer.
+        layer_uri: the layer's ``layer_id`` HANDLE from a prior tool result
+            (PREFERRED; never construct gs:// paths), or a verbatim gs:// URI
+            of a vector layer.
         property: name of the numeric attribute to threshold.
         threshold: minimum value (inclusive) to count. Features where
             property >= threshold are included.
@@ -574,12 +579,14 @@ def aggregate_property_within_zone(
     included in the aggregation. Requires geopandas.
 
     Parameters:
-        value_layer_uri: gs:// URI or local path of the vector layer whose
-            ``property`` attribute is aggregated (e.g. USACE NSI structure
-            inventory, Pelicun damage output, GBIF occurrences).
-        zone_layer_uri: gs:// URI or local path of a vector polygon layer
-            defining the zone(s) to aggregate within (e.g. county boundary,
-            WDPA protected area, FEMA flood zone polygon).
+        value_layer_uri: layer_id HANDLE from a prior tool result (PREFERRED;
+            never construct gs:// paths) or verbatim gs:// URI of the vector
+            layer whose ``property`` attribute is aggregated (e.g. USACE NSI
+            structure inventory, Pelicun damage output, GBIF occurrences).
+        zone_layer_uri: layer_id HANDLE (PREFERRED) or verbatim gs:// URI of
+            a vector polygon layer defining the zone(s) to aggregate within
+            (e.g. county boundary, WDPA protected area, FEMA flood zone
+            polygon).
         property: name of the numeric attribute in value_layer_uri to aggregate.
         agg: aggregation function — "sum" (default), "mean", or "max".
 

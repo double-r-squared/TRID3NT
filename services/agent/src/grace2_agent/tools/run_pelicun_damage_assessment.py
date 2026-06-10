@@ -1150,20 +1150,24 @@ def run_pelicun_damage_assessment(
           engine work).
 
     Parameters:
-        hazard_raster_uri: gs:// URI (or local path) to a single-band hazard
-            intensity raster. MUST be the EXACT ``uri`` value returned by a
-            prior tool call in THIS conversation — for floods, copy
-            ``run_model_flood_scenario``'s returned ``uri`` verbatim
-            (shaped ``gs://...-runs/<run_id>/flood_depth_peak.tif``).
-            NEVER construct, guess, or pattern-match a gs:// path (e.g.
-            cache-style ``gs://...-cache/cache/...`` paths) — invented
-            paths do not exist and the call fails with a 404. Raster CRS
+        hazard_raster_uri: the hazard layer's ``layer_id`` HANDLE from a
+            prior tool result (PREFERRED — job-0263 layer-handle
+            indirection; e.g. ``"flood-depth-peak-<run_id>"`` from
+            ``run_model_flood_scenario``). The server resolves the handle
+            to the exact storage URI it recorded for the layer. A raw
+            gs:// URI is accepted only when copied VERBATIM from a prior
+            function_response; NEVER construct, guess, or pattern-match a
+            gs:// path, and NEVER pass the WMS display URL
+            (``https://...&LAYERS=...``) — invented or display URLs are
+            rejected with ``URI_HANDLE_UNRESOLVED``. Raster CRS
             and the asset CRS are reconciled internally (assets are
             reprojected to the raster CRS for sampling). Raster ``units`` tag
             should be ``"meters"`` or ``"m"`` for HAZUS conversion; absent
             tag defaults to metres.
-        assets_uri: gs:// URI (or local path) to a FlatGeobuf of asset
-            features. Points (buildings, infrastructure) and polygons
+        assets_uri: the asset layer's ``layer_id`` HANDLE from a prior tool
+            result (PREFERRED — e.g. the ``usace-nsi-...`` layer_id returned
+            by ``fetch_usace_nsi``), or a verbatim gs:// URI to a FlatGeobuf
+            of asset features. Points (buildings, infrastructure) and polygons
             (parcels, building footprints) are both supported. Each feature
             MAY carry a ``component_type`` property matching the
             fragility-set vocabulary (e.g. ``"RES1"`` / ``"COM1"`` for

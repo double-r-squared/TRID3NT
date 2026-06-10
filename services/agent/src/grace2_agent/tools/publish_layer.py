@@ -81,6 +81,7 @@ from typing import Any
 
 from grace2_contracts.tool_registry import AtomicToolMetadata
 
+from ..uri_registry import observe_published_layer
 from . import register_tool
 
 __all__ = [
@@ -661,9 +662,12 @@ def publish_layer(
           shim is not invoked).
 
     Params:
-        layer_uri: ``gs://`` URI of the COG raster produced by
-            ``postprocess_flood``. Must be a COG TIFF readable by GDAL via
-            the ``/vsigs/`` virtual filesystem.
+        layer_uri: the producing tool's ``layer_id`` HANDLE (PREFERRED —
+            job-0263 layer-handle indirection: the server resolves it to the
+            exact ``gs://`` COG it recorded), or the ``gs://`` URI copied
+            VERBATIM from the producing tool's result. NEVER construct or
+            re-type a gs:// path from memory. Must resolve to a COG TIFF
+            readable by GDAL via the ``/vsigs/`` virtual filesystem.
         layer_id: QGIS layer name + WMS ``LAYERS=`` value for the published
             layer. Must be stable and unique within the ``.qgs`` project
             (e.g. ``"flood-depth-peak-<run_id>"``).
@@ -856,5 +860,13 @@ def publish_layer(
             retryable=False,
         )
 
-    # 8. Return the WMS URL.
+    # 8. job-0263: record BOTH faces of the published layer (validated gs://
+    #    COG + WMS display URL) in the session URI registry so downstream
+    #    *_uri params resolve via the layer_id handle. This is the seam that
+    #    captures composer-internal publishes (run_model_flood_scenario calls
+    #    this function directly; its envelope only carries the WMS URL).
+    #    No-op outside an active dispatch context (tests / direct calls).
+    observe_published_layer(layer_id, gcs_uri=layer_uri, wms_url=wms_url)
+
+    # 9. Return the WMS URL.
     return wms_url

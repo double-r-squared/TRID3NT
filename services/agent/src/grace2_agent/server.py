@@ -113,6 +113,11 @@ from .secrets_handler import (
 )
 from .telemetry import compute_args_hash, emit_tool_call_event
 from .tool_arg_normalizer import normalize_args
+from .uri_registry import (
+    activate_registry,
+    deactivate_registry,
+    get_uri_registry,
+)
 from .tools import TOOL_REGISTRY
 from .tools.chart_tools import is_chart_emission_result
 from .tools.code_exec_tool import (
@@ -1118,6 +1123,18 @@ async def _stream_gemini_reply(
                 summary = summarize_tool_result(
                     call.name, result, error=dispatch_error
                 )
+                # job-0263: surface the layer handles this dispatch registered
+                # so Gemini passes HANDLES (layer_id) — never raw gs:// paths —
+                # into downstream *_uri params. The server resolves handles to
+                # the exact URIs it recorded (uri_registry.py).
+                _new_handles = get_uri_registry(state.session_id).drain_announcements()
+                if _new_handles and dispatch_error is None:
+                    summary["layer_handles"] = _new_handles
+                    summary["layer_handles_note"] = (
+                        "Pass these handle strings (layer_id) for any *_uri "
+                        "tool parameter — the server resolves them to exact "
+                        "storage URIs. Do NOT construct or echo gs:// paths."
+                    )
                 logger.info(
                     "function-response queued session=%s iter=%d tool=%s summary_keys=%s",
                     state.session_id,
@@ -1469,6 +1486,13 @@ async def _sync_case_context(
     try:
         session_state = await p.get_session_state(current)
         state.emitter.reset_loaded_layers(session_state.loaded_layers)
+        # job-0263: seed the URI registry from the persisted Case layers so
+        # handle-indirection works for layers produced in PRIOR sessions of
+        # this Case (the LLM history was just cleared; the registry is the
+        # only place the layer_id → uri association survives).
+        get_uri_registry(state.session_id).seed_from_layers(
+            session_state.loaded_layers
+        )
         logger.info(
             "case-context-sync session=%s case=%s layers=%d",
             state.session_id,
@@ -2694,8 +2718,24 @@ async def _invoke_tool_via_emitter(
     # See ``tool_arg_normalizer.py``.
     params = normalize_args(tool_name, params, entry.fn)
 
+    # job-0263: layer-handle indirection — kill the LLM-URI-mangling class
+    # (5 live incidents: invented cache paths, WMS-URL-as-hazard, hash-tail
+    # hallucination x3, NSI layer_id-as-basename, runs/ prefix mangle).
+    # Every URI-consuming param resolves through the session-scoped registry:
+    # known handle → registered URI; exact known URI → pass; close mangle →
+    # substitute + WARNING; unknown managed-bucket path → typed retryable
+    # URI_HANDLE_UNRESOLVED listing the real handles so Gemini self-corrects
+    # without inventing. See uri_registry.py.
+    uri_registry = get_uri_registry(state.session_id)
+    params = uri_registry.resolve_params(tool_name, params)
+
     state.current_pipeline_id = state.emitter.start_pipeline()
     state.current_turn_pipeline_id = state.current_pipeline_id
+    # job-0263: bind the registry as the ambient observation sink for the
+    # lifetime of the invoke so composer-internal publishes (publish_layer
+    # called inside run_model_flood_scenario) register the gs:// COG ↔ WMS
+    # association even though the composer's envelope only carries the WMS URL.
+    _uri_reg_token = activate_registry(uri_registry)
     try:
         result = await state.emitter.emit_tool_call(
             name=entry.metadata.name,
@@ -2703,6 +2743,7 @@ async def _invoke_tool_via_emitter(
             invoke=lambda: entry.fn(**params),
         )
     finally:
+        deactivate_registry(_uri_reg_token)
         state.emitter.close_pipeline()
         state.current_pipeline_id = None
         # job-0259: persist the Case layer accumulator in the FINALLY block —
@@ -2721,6 +2762,11 @@ async def _invoke_tool_via_emitter(
                     "case-layer-persist (finally) failed case=%s",
                     state.active_case_id,
                 )
+
+    # job-0263: register every URI the result carries (LayerURI layer_id↔uri
+    # pairs + bare gs:// strings) so the NEXT tool call can resolve handles /
+    # detect mangles. Best-effort — registration never breaks the dispatch.
+    uri_registry.register_tool_result(tool_name, result)
 
     # Track layer emissions on the active turn so the next ``CaseChatMessage``
     # write captures them. ``publish_layer`` returns a WMS URL string; we use

@@ -1,0 +1,6 @@
+state: done
+job: job-0263-agent-20260610
+verdict: FIXED
+owner: agent (Fable-5 fix agent)
+updated: 2026-06-10
+note: layer-handle indirection landed — session-scoped URI registry (uri_registry.py) + dispatch-seam resolution (4 branches) + result registration + publish_layer ContextVar observation + Case-sync seeding + SYSTEM_PROMPT handle contract + consumer docstrings; 29 new tests incl. all 5 historical incident shapes with verbatim logged values; full sweep green (5 pre-existing failures owned by concurrent jobs, proven at HEAD); :8765 restart pending (orchestrator)
