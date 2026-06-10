@@ -590,3 +590,107 @@ def test_compute_hillshade_swiss_double_calls_gdaldem_twice(fake_storage):
     assert 315.0 in gdaldem_calls, "swiss_double primary pass (315°) not found"
     assert 135.0 in gdaldem_calls, "swiss_double secondary pass (135°) not found"
     assert "swiss_double" in result.layer_id
+
+
+# ---------------------------------------------------------------------------
+# job-0257 — CRS preservation (hillshade no-render root-cause #3)
+#
+# Live evidence (2026-06-10): the conda-env gdaldem invoked via bare
+# subprocess (no PROJ_LIB/PROJ_DATA) cannot find proj.db and silently writes
+# the output CRS as a degenerate LOCAL_CS/ENGCRS (epsg=None) instead of the
+# DEM's EPSG:5070. QGIS Server then cannot reproject the layer for WMS.
+# Fixes under test: (a) _gdaldem_subprocess_env wires <prefix>/share/proj,
+# (b) _ensure_output_crs_matches_dem re-stamps the DEM CRS when degraded.
+# ---------------------------------------------------------------------------
+
+
+def test_ensure_output_crs_stamps_degraded_output():
+    """A CRS-less gdaldem output gets the DEM's CRS stamped in place."""
+    from grace2_agent.tools.compute_hillshade import _ensure_output_crs_matches_dem
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        dem_path = os.path.join(tmpdir, "dem.tif")
+        out_path = os.path.join(tmpdir, "hs.tif")
+        _write_synthetic_dem(dem_path)
+
+        # Simulate the degraded output: same grid, crs=None.
+        data = np.full((32, 32), 128, dtype=np.uint8)
+        transform = from_bounds(0.0, 0.0, 320.0, 320.0, 32, 32)
+        profile = {
+            "driver": "GTiff",
+            "dtype": "uint8",
+            "width": 32,
+            "height": 32,
+            "count": 1,
+            "crs": None,
+            "transform": transform,
+        }
+        with rasterio.open(out_path, "w", **profile) as dst:
+            dst.write(data, 1)
+
+        _ensure_output_crs_matches_dem(dem_path, out_path)
+
+        with rasterio.open(out_path) as fixed:
+            assert fixed.crs is not None, "CRS stamp did not apply"
+            assert fixed.crs.to_epsg() == 5070, (
+                f"expected EPSG:5070 after stamp; got {fixed.crs}"
+            )
+
+
+def test_ensure_output_crs_noop_when_already_correct():
+    """When gdaldem preserved the CRS, the stamp is a no-op (no rewrite)."""
+    from grace2_agent.tools.compute_hillshade import _ensure_output_crs_matches_dem
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        dem_path = os.path.join(tmpdir, "dem.tif")
+        out_path = os.path.join(tmpdir, "hs.tif")
+        _write_synthetic_dem(dem_path)
+        _write_synthetic_dem(out_path)  # same CRS as DEM
+
+        before = os.path.getmtime(out_path)
+        _ensure_output_crs_matches_dem(dem_path, out_path)
+        with rasterio.open(out_path) as fixed:
+            assert fixed.crs.to_epsg() == 5070
+
+
+@_SKIP_GDALDEM
+def test_fetch_fn_output_preserves_dem_crs_without_proj_env():
+    """End-to-end _make_fetch_fn: output bytes carry the DEM's EPSG:5070 even
+    when the process env lacks PROJ_LIB/PROJ_DATA (the agent's situation).
+
+    This is the live failure mode: the demo-session cache artifacts read back
+    as LOCAL_CS["NAD83 / Conus Albers"] with epsg=None.
+    """
+    from grace2_agent.tools.compute_hillshade import _make_fetch_fn
+
+    # Strip PROJ vars so the subprocess depends entirely on the job-0257
+    # env-wiring (or the post-hoc stamp as fallback).
+    stripped = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("PROJ_LIB", "PROJ_DATA", "GDAL_DATA")
+    }
+    with tempfile.TemporaryDirectory() as tmpdir:
+        dem_path = os.path.join(tmpdir, "dem.tif")
+        _write_synthetic_dem(dem_path)
+
+        with patch.dict(os.environ, stripped, clear=True):
+            hs_bytes = _make_fetch_fn(
+                dem_uri=dem_path,  # local path branch — no GCS
+                style="standard",
+                algorithm="Horn",
+                azimuth=315.0,
+                altitude=45.0,
+                z_factor=1.0,
+                storage_client=None,
+            )
+
+        out_path = os.path.join(tmpdir, "hs_check.tif")
+        with open(out_path, "wb") as f:
+            f.write(hs_bytes)
+        with rasterio.open(out_path) as src:
+            assert src.crs is not None, "hillshade output lost its CRS entirely"
+            assert src.crs.to_epsg() == 5070, (
+                f"job-0257 regression: hillshade CRS degraded to {src.crs} "
+                f"(expected EPSG:5070 from the DEM)"
+            )

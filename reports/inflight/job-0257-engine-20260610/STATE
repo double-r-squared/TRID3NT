@@ -1,0 +1,4 @@
+state: needs-user-unblock
+owner: engine (Fable-5 fix agent)
+opened: 2026-06-10
+note: 4 root causes found; code fixes landed + live-proven; P0 canonical project 500s pending user IAM grant + service env update (evidence/USER_UNBLOCK.md)

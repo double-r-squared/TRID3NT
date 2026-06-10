@@ -155,6 +155,77 @@ def _conda_grace2_gdaldem() -> str | None:
     return candidate if os.path.isfile(candidate) else None
 
 
+def _gdaldem_subprocess_env(gdaldem_bin: str) -> dict[str, str]:
+    """Build the subprocess env for ``gdaldem``, wiring PROJ/GDAL data dirs.
+
+    job-0257 root-cause fix (hillshade broken CRS): when the conda-env
+    ``gdaldem`` binary is invoked via a bare ``subprocess.run`` (no conda
+    activation), ``PROJ_LIB``/``PROJ_DATA`` are unset, GDAL cannot find
+    ``proj.db``, and the output GeoTIFF's CRS silently degrades from the
+    DEM's projected CRS (e.g. EPSG:5070) to a degenerate
+    ``LOCAL_CS``/``ENGCRS`` with no EPSG code. QGIS Server then cannot
+    reproject the layer for WMS and the hillshade misrenders or vanishes.
+    Reproduced 2026-06-10: bare env → ``LOCAL_CS``; with
+    ``PROJ_LIB=<prefix>/share/proj`` → ``EPSG:5070``.
+
+    Derives ``<prefix>/share/proj`` + ``<prefix>/share/gdal`` from the
+    resolved binary path (``<prefix>/bin/gdaldem``) and sets
+    ``PROJ_LIB``/``PROJ_DATA``/``GDAL_DATA`` when the directories exist and
+    the variables are not already set (explicit user config wins).
+    """
+    env = os.environ.copy()
+    prefix = os.path.dirname(os.path.dirname(os.path.abspath(gdaldem_bin)))
+    proj_dir = os.path.join(prefix, "share", "proj")
+    gdal_dir = os.path.join(prefix, "share", "gdal")
+    if os.path.isdir(proj_dir):
+        env.setdefault("PROJ_LIB", proj_dir)
+        env.setdefault("PROJ_DATA", proj_dir)
+    if os.path.isdir(gdal_dir):
+        env.setdefault("GDAL_DATA", gdal_dir)
+    return env
+
+
+def _ensure_output_crs_matches_dem(dem_path: str, output_path: str) -> None:
+    """Stamp the DEM's CRS onto the gdaldem output if it degraded (job-0257).
+
+    Belt-and-suspenders for environments where the PROJ wiring above is not
+    enough (or a future gdal build regresses differently): the hillshade is
+    on the SAME grid as the input DEM by construction, so when the output's
+    CRS does not match the DEM's (typically a proj.db-less ``LOCAL_CS``
+    fallback), rewriting the CRS tag in place is always correct.
+
+    Never raises — a failed stamp logs a warning and leaves the file as
+    gdaldem wrote it (legacy behavior).
+    """
+    try:
+        import rasterio
+
+        with rasterio.open(dem_path) as src:
+            dem_crs = src.crs
+        if dem_crs is None:
+            return
+        with rasterio.open(output_path) as dst:
+            out_crs = dst.crs
+        if out_crs == dem_crs:
+            return
+        with rasterio.open(output_path, "r+") as dst:
+            dst.crs = dem_crs
+        logger.warning(
+            "compute_hillshade: output CRS degraded to %r (gdaldem ran without "
+            "proj.db?); re-stamped from DEM as %r (job-0257)",
+            str(out_crs),
+            str(dem_crs),
+        )
+    except Exception as exc:  # noqa: BLE001 — stamp is best-effort
+        logger.warning(
+            "compute_hillshade: CRS verification/stamp failed for %s (%s: %s) — "
+            "leaving gdaldem output unchanged",
+            output_path,
+            type(exc).__name__,
+            exc,
+        )
+
+
 # ---------------------------------------------------------------------------
 # GCS download helper
 # ---------------------------------------------------------------------------
@@ -194,7 +265,9 @@ def _download_dem_bytes(dem_uri: str, storage_client: object | None) -> bytes:
         if storage_client is None:
             from google.cloud import storage  # type: ignore[import-not-found]
 
-            storage_client = storage.Client()
+            storage_client = storage.Client(
+                project=os.environ.get("GOOGLE_CLOUD_PROJECT", "grace-2-hazard-prod")
+            )
         bucket_obj = storage_client.bucket(bucket_name)
         blob = bucket_obj.blob(blob_path)
         return blob.download_as_bytes()
@@ -275,6 +348,7 @@ def _run_gdaldem_hillshade(
             capture_output=True,
             check=False,
             timeout=300,  # 5-min ceiling; hillshade of any reasonable DEM is seconds
+            env=_gdaldem_subprocess_env(gdaldem),  # job-0257: PROJ/GDAL data dirs
         )
     except FileNotFoundError as exc:
         raise HillshadeComputeError(
@@ -427,6 +501,7 @@ def _make_fetch_fn(
                 blend_tmp = blend_f.name
             os.unlink(blend_tmp)
             _multiply_blend_hillshades(out_tmp, out_tmp_b, blend_tmp)
+            _ensure_output_crs_matches_dem(in_tmp, blend_tmp)  # job-0257
             with open(blend_tmp, "rb") as f:
                 return f.read()
 
@@ -461,6 +536,7 @@ def _make_fetch_fn(
                 algorithm=algorithm,
             )
 
+        _ensure_output_crs_matches_dem(in_tmp, out_tmp)  # job-0257
         with open(out_tmp, "rb") as f:
             return f.read()
 
@@ -478,7 +554,14 @@ def _make_fetch_fn(
 # ---------------------------------------------------------------------------
 
 
-@register_tool(_COMPUTE_HILLSHADE_METADATA)
+@register_tool(
+    _COMPUTE_HILLSHADE_METADATA,
+    # Annotations: readOnlyHint=True (reads input raster/vector; writes cache
+    # artifact only via the read-through shim), openWorldHint=False (all
+    # computation is local GDAL/numpy; no external API calls),
+    # destructiveHint=False, idempotentHint=True (deterministic transform;
+    # same inputs always produce the same output pixels).
+)
 def compute_hillshade(
     dem_uri: str,
     style: Literal["standard", "swiss_double", "multidirectional", "combined", "smooth"] = "standard",
@@ -497,15 +580,27 @@ def compute_hillshade(
 ) -> LayerURI:
     """Compute a hillshade raster from a DEM. Wraps ``gdaldem hillshade``.
 
-    Use this when: the agent needs cartographic terrain context — a flood layer,
-    habitat map, or any spatial overlay is easier to read when placed over a
-    hillshaded terrain base. Hillshade adds spatial depth that helps users
-    orient themselves and understand terrain influence on the analysis.
+    Applies GDAL's hillshade algorithm to a single-band elevation GeoTIFF and
+    returns a single-band uint8 intensity raster (0–255) in the same CRS and
+    grid. Five style presets control illumination direction, blending, and
+    gradient algorithm selection.
 
-    Do NOT use this for: slope or aspect analysis (use ``compute_slope`` /
-    ``compute_aspect``); quantitative elevation display (use
-    ``compute_colored_relief``); bathymetry or sub-aqueous terrain; animated
-    or time-varying terrain (output is static single-time).
+    When to use:
+        - Providing cartographic terrain context beneath a flood depth, habitat,
+          or hazard overlay so users can orient themselves spatially.
+        - Communicating terrain influence on analysis results (e.g. ridge/valley
+          drainage patterns under a flood scenario).
+        - Constructing a Swiss-style multiply-blend stack: grayscale
+          ``compute_colored_relief`` + hillshade → rich shaded-relief base.
+        - User explicitly requests a "hillshade", "terrain background", or
+          "shaded relief" layer.
+
+    When NOT to use:
+        - Slope or aspect analysis (use ``compute_slope`` / ``compute_aspect``).
+        - Quantitative elevation display or statistics (use
+          ``compute_colored_relief`` or ``compute_zonal_statistics``).
+        - Bathymetry or sub-aqueous terrain visualization.
+        - Animated or time-varying terrain (output is a static single-time raster).
 
     Style preset semantics:
         "standard": single hillshade, Horn algorithm, azimuth 315°, altitude
@@ -571,6 +666,19 @@ def compute_hillshade(
     the same ``(dem_uri, style, algorithm, azimuth, altitude, z_factor)``
     tuple return the cached hillshade without re-running gdaldem. TTL is
     30 days (DEM-derived outputs are stable over that window).
+
+    Cross-tool dependencies:
+        Upstream (consumes):
+        - ``fetch_dem`` — primary source of ``dem_uri``; the returned
+          ``LayerURI.uri`` (gs:// COG) is passed directly as ``dem_uri``.
+        Downstream (feeds):
+        - ``publish_layer`` — the returned ``LayerURI`` is passed as
+          ``layer_uri`` to publish the hillshade to QGIS Server WMS.
+        - ``compute_colored_relief`` — combine the two outputs for a
+          Swiss-style shaded-relief stack (colored DEM × hillshade multiply
+          blend).
+        - Any workflow composing a terrain-context base layer, such as
+          ``run_model_flood_habitat_scenario``.
 
     Raises:
         HillshadeComputeError: if gdaldem is unavailable, returns non-zero,

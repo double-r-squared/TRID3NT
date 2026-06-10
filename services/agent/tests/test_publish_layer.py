@@ -33,6 +33,8 @@ from grace2_agent.tools.publish_layer import (
     _build_wms_url,
     _gs_to_vsigs,
     _parse_qgs_key,
+    _validate_and_correct_layer_uri,
+    _verify_layer_in_qgs,
     publish_layer,
     set_jobs_client,
     set_qgis_server_url,
@@ -40,6 +42,7 @@ from grace2_agent.tools.publish_layer import (
     set_gcp_project,
     set_gcp_location,
     set_pyqgis_worker_job_name,
+    set_storage_client,
 )
 
 # Test 8 is imported here (job-0071 auto-dispatch shape guard).
@@ -88,6 +91,83 @@ def _make_jobs_client(execution: Any) -> MagicMock:
 
 
 # --------------------------------------------------------------------------- #
+# Fake GCS storage client (job-0257 — layer_uri validation + .qgs verification)
+# --------------------------------------------------------------------------- #
+
+
+class _FakeBlob:
+    def __init__(self, exists: bool, data: bytes = b"") -> None:
+        self._exists = exists
+        self._data = data
+
+    def exists(self) -> bool:
+        return self._exists
+
+    def download_as_bytes(self) -> bytes:
+        if not self._exists:
+            raise FileNotFoundError("blob does not exist")
+        return self._data
+
+
+class _FakeBucket:
+    def __init__(self, objects: dict[str, bytes]) -> None:
+        self._objects = objects
+
+    def blob(self, key: str) -> _FakeBlob:
+        if key in self._objects:
+            return _FakeBlob(True, self._objects[key])
+        return _FakeBlob(False)
+
+
+class _FakeBlobRef:
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+
+class _FakeStorageClient:
+    """Mimics the minimal google.cloud.storage.Client surface publish_layer uses.
+
+    ``objects`` maps ``bucket_name -> {object_key: bytes}``.
+    """
+
+    def __init__(self, objects: dict[str, dict[str, bytes]]) -> None:
+        self._objects = objects
+
+    def bucket(self, name: str) -> _FakeBucket:
+        return _FakeBucket(self._objects.get(name, {}))
+
+    def list_blobs(self, bucket_name: str, prefix: str | None = None) -> list[_FakeBlobRef]:
+        keys = self._objects.get(bucket_name, {})
+        return [
+            _FakeBlobRef(k) for k in sorted(keys) if prefix is None or k.startswith(prefix)
+        ]
+
+
+def _qgs_bytes_with_layers(*layer_ids: str) -> bytes:
+    """Minimal .qgs-shaped XML carrying <layername> entries."""
+    names = "".join(f"<layername>{lid}</layername>" for lid in layer_ids)
+    return f"<!DOCTYPE qgis><qgis>{names}</qgis>".encode("utf-8")
+
+
+def _default_fake_storage(
+    layer_key: str = "run-abc/flood_depth_peak.tif",
+    layer_bucket: str = "grace-2-hazard-prod-runs",
+    qgs_layers: tuple[str, ...] = ("flood-depth-peak-run-abc", "flood-depth-peak-run-xyz"),
+) -> _FakeStorageClient:
+    """Storage fixture where the layer object exists and the .qgs contains the layer."""
+    return _FakeStorageClient(
+        {
+            layer_bucket: {
+                layer_key: b"GTIFF",
+                "run-xyz/flood_depth_peak.tif": b"GTIFF",
+            },
+            "runs": {"run-abc/flood_depth_peak.tif": b"GTIFF"},
+            "test-qgs-bucket": {"grace2-sample.qgs": _qgs_bytes_with_layers(*qgs_layers)},
+        }
+    )
+
+
+# --------------------------------------------------------------------------- #
 # Test 1 — tool registration
 # --------------------------------------------------------------------------- #
 
@@ -123,6 +203,7 @@ def test_publish_layer_returns_wms_url() -> None:
     set_gcp_project("test-project")
     set_gcp_location("us-central1")
     set_pyqgis_worker_job_name("grace-2-pyqgis-worker")
+    set_storage_client(_default_fake_storage())
 
     try:
         result = publish_layer(
@@ -138,6 +219,7 @@ def test_publish_layer_returns_wms_url() -> None:
         set_gcp_project(None)
         set_gcp_location(None)
         set_pyqgis_worker_job_name(None)
+        set_storage_client(None)
 
     assert result == (
         "https://qgis.test.example.com/ogc/wms"
@@ -174,6 +256,7 @@ def test_publish_layer_raises_on_dispatch_failure() -> None:
     set_jobs_client(mock_client)
     set_default_qgs_uri("gs://test-qgs-bucket/grace2-sample.qgs")
     set_gcp_project("test-project")
+    set_storage_client(_default_fake_storage())
 
     try:
         with pytest.raises(PublishLayerError) as exc_info:
@@ -185,6 +268,7 @@ def test_publish_layer_raises_on_dispatch_failure() -> None:
         set_jobs_client(None)
         set_default_qgs_uri(None)
         set_gcp_project(None)
+        set_storage_client(None)
 
     assert exc_info.value.error_code == "WORKER_JOB_DISPATCH_FAILED"
     assert "quota exceeded" in str(exc_info.value)
@@ -203,6 +287,7 @@ def test_publish_layer_raises_on_worker_failure() -> None:
     set_jobs_client(mock_client)
     set_default_qgs_uri("gs://test-qgs-bucket/grace2-sample.qgs")
     set_gcp_project("test-project")
+    set_storage_client(_default_fake_storage())
 
     try:
         with pytest.raises(PublishLayerError) as exc_info:
@@ -214,6 +299,7 @@ def test_publish_layer_raises_on_worker_failure() -> None:
         set_jobs_client(None)
         set_default_qgs_uri(None)
         set_gcp_project(None)
+        set_storage_client(None)
 
     assert exc_info.value.error_code == "WORKER_JOB_FAILED"
 
@@ -312,6 +398,7 @@ def test_publish_layer_dispatch_uses_run_job_request_not_kwargs() -> None:
     set_gcp_project("test-project")
     set_gcp_location("us-central1")
     set_pyqgis_worker_job_name("grace-2-pyqgis-worker")
+    set_storage_client(_default_fake_storage())
 
     try:
         publish_layer(
@@ -326,6 +413,7 @@ def test_publish_layer_dispatch_uses_run_job_request_not_kwargs() -> None:
         set_gcp_project(None)
         set_gcp_location(None)
         set_pyqgis_worker_job_name(None)
+        set_storage_client(None)
 
     # Assert run_job was called exactly once.
     mock_client.run_job.assert_called_once()
@@ -374,4 +462,211 @@ def test_publish_layer_dispatch_uses_run_job_request_not_kwargs() -> None:
     )
     assert "RASTER_URI" in env_names, (
         f"job-0071: env overrides must include RASTER_URI; got {env_names}"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# job-0257 — hillshade no-render root-cause fixes
+#
+# Live evidence (2026-06-10 demo session, /tmp/agent_demo_ready.log):
+# compute_hillshade cached gs://...hillshade/090a4ff8d9a083f67c0b355caf40241a.tif
+# but Gemini called publish_layer with .../090a4ff8d9a083b28499252309d12999.tif
+# (hash tail hallucinated, 3/3 occurrences). The worker raised WorkerError
+# internally, returned a status=error envelope, and exited 0 — so publish_layer
+# saw CONDITION_SUCCEEDED and reported false success; the map stayed empty.
+# --------------------------------------------------------------------------- #
+
+_REAL_KEY = "cache/static-30d/hillshade/090a4ff8d9a083f67c0b355caf40241a.tif"
+_HALLUCINATED = (
+    "gs://grace-2-hazard-prod-cache/cache/static-30d/hillshade/"
+    "090a4ff8d9a083b28499252309d12999.tif"
+)
+
+
+def test_validate_layer_uri_passes_through_existing_object() -> None:
+    """An existing gs:// object validates unchanged (gs://-normalized)."""
+    fake = _FakeStorageClient({"grace-2-hazard-prod-cache": {_REAL_KEY: b"GTIFF"}})
+    set_storage_client(fake)
+    try:
+        uri = f"gs://grace-2-hazard-prod-cache/{_REAL_KEY}"
+        assert _validate_and_correct_layer_uri(uri) == uri
+        # /vsigs/ input normalizes to gs:// after validation.
+        assert (
+            _validate_and_correct_layer_uri(f"/vsigs/grace-2-hazard-prod-cache/{_REAL_KEY}")
+            == uri
+        )
+    finally:
+        set_storage_client(None)
+
+
+def test_validate_layer_uri_autocorrects_hallucinated_hash_tail() -> None:
+    """The exact URI Gemini hallucinated in the demo is corrected to the real key."""
+    fake = _FakeStorageClient(
+        {
+            "grace-2-hazard-prod-cache": {
+                _REAL_KEY: b"GTIFF",
+                # An unrelated hillshade key that shares no meaningful prefix.
+                "cache/static-30d/hillshade/4007d642cb157d11f5db275a50286ae5.tif": b"GTIFF",
+            }
+        }
+    )
+    set_storage_client(fake)
+    try:
+        corrected = _validate_and_correct_layer_uri(_HALLUCINATED)
+    finally:
+        set_storage_client(None)
+    assert corrected == f"gs://grace-2-hazard-prod-cache/{_REAL_KEY}", (
+        f"hallucinated hash tail must auto-correct to the real cache key; got {corrected}"
+    )
+
+
+def test_validate_layer_uri_raises_retryable_when_no_match() -> None:
+    """No unambiguous correction → LAYER_URI_NOT_FOUND, retryable, lists real objects."""
+    fake = _FakeStorageClient(
+        {
+            "grace-2-hazard-prod-cache": {
+                "cache/static-30d/hillshade/aaaa1111bbbb2222cccc3333dddd4444.tif": b"GTIFF",
+            }
+        }
+    )
+    set_storage_client(fake)
+    try:
+        with pytest.raises(PublishLayerError) as exc_info:
+            _validate_and_correct_layer_uri(_HALLUCINATED)
+    finally:
+        set_storage_client(None)
+    assert exc_info.value.error_code == "LAYER_URI_NOT_FOUND"
+    assert exc_info.value.retryable is True
+    # The message must surface the REAL object basenames as the correction hint.
+    assert "aaaa1111bbbb2222cccc3333dddd4444.tif" in str(exc_info.value)
+
+
+def test_validate_layer_uri_ambiguous_prefix_is_not_corrected() -> None:
+    """Two candidates with the same shared prefix → ambiguous → typed error."""
+    fake = _FakeStorageClient(
+        {
+            "b": {
+                "dir/090a4ff8d9a083aaaaaaaaaaaaaaaaaa.tif": b"x",
+                "dir/090a4ff8d9a083bbbbbbbbbbbbbbbbbb.tif": b"x",
+            }
+        }
+    )
+    set_storage_client(fake)
+    try:
+        with pytest.raises(PublishLayerError) as exc_info:
+            # Shares 14 chars with BOTH candidates equally → must not guess.
+            _validate_and_correct_layer_uri("gs://b/dir/090a4ff8d9a083cccccccccccccccccc.tif")
+    finally:
+        set_storage_client(None)
+    assert exc_info.value.error_code == "LAYER_URI_NOT_FOUND"
+
+
+def test_validate_layer_uri_fail_open_without_storage_client() -> None:
+    """No storage client (CI / no ADC) → legacy pass-through behavior."""
+    set_storage_client(None)
+    with patch(
+        "grace2_agent.tools.publish_layer._get_storage_client", return_value=None
+    ):
+        assert _validate_and_correct_layer_uri(_HALLUCINATED) == _HALLUCINATED
+
+
+def test_verify_layer_in_qgs_detects_missing_layer() -> None:
+    """.qgs without the layername → False; with it → True; no client → None."""
+    qgs = _qgs_bytes_with_layers("flood-depth-peak-x", "elevation-washington")
+    fake = _FakeStorageClient({"qgs-bucket": {"grace2-sample.qgs": qgs}})
+    set_storage_client(fake)
+    try:
+        assert _verify_layer_in_qgs("gs://qgs-bucket/grace2-sample.qgs", "chicago-hillshade") is False
+        assert _verify_layer_in_qgs("gs://qgs-bucket/grace2-sample.qgs", "elevation-washington") is True
+    finally:
+        set_storage_client(None)
+    with patch(
+        "grace2_agent.tools.publish_layer._get_storage_client", return_value=None
+    ):
+        assert _verify_layer_in_qgs("gs://qgs-bucket/grace2-sample.qgs", "x") is None
+
+
+def test_publish_layer_raises_when_worker_swallowed_error() -> None:
+    """Execution CONDITION_SUCCEEDED but layer absent from .qgs →
+    WORKER_PUBLISH_NOT_APPLIED (the silent-failure gap that caused the
+    hillshade no-render)."""
+    execution = _make_succeeded_execution()
+    mock_client = _make_jobs_client(execution)
+
+    # Layer object exists (validation passes) but the .qgs does NOT gain the
+    # layer (worker swallowed its error and exited 0).
+    fake = _FakeStorageClient(
+        {
+            "grace-2-hazard-prod-cache": {_REAL_KEY: b"GTIFF"},
+            "test-qgs-bucket": {
+                "grace2-sample.qgs": _qgs_bytes_with_layers("some-other-layer"),
+            },
+        }
+    )
+
+    set_jobs_client(mock_client)
+    set_default_qgs_uri("gs://test-qgs-bucket/grace2-sample.qgs")
+    set_gcp_project("test-project")
+    set_storage_client(fake)
+
+    try:
+        with pytest.raises(PublishLayerError) as exc_info:
+            publish_layer(
+                layer_uri=f"gs://grace-2-hazard-prod-cache/{_REAL_KEY}",
+                layer_id="chicago-hillshade",
+            )
+    finally:
+        set_jobs_client(None)
+        set_default_qgs_uri(None)
+        set_gcp_project(None)
+        set_storage_client(None)
+
+    assert exc_info.value.error_code == "WORKER_PUBLISH_NOT_APPLIED"
+    assert exc_info.value.retryable is False
+
+
+def test_publish_layer_end_to_end_with_hallucinated_uri_corrects_and_dispatches() -> None:
+    """Full tool path: hallucinated layer_uri → auto-corrected RASTER_URI in the
+    dispatched worker request → .qgs verification passes → WMS URL returned."""
+    if not _RUN_V2_AVAILABLE:
+        pytest.skip("google-cloud-run not installed; cannot inspect RunJobRequest")
+
+    execution = _make_succeeded_execution()
+    mock_client = _make_jobs_client(execution)
+
+    fake = _FakeStorageClient(
+        {
+            "grace-2-hazard-prod-cache": {_REAL_KEY: b"GTIFF"},
+            "test-qgs-bucket": {
+                "grace2-sample.qgs": _qgs_bytes_with_layers("chicago-hillshade"),
+            },
+        }
+    )
+
+    set_jobs_client(mock_client)
+    set_qgis_server_url("https://qgis.test.example.com/ogc/wms")
+    set_default_qgs_uri("gs://test-qgs-bucket/grace2-sample.qgs")
+    set_gcp_project("test-project")
+    set_storage_client(fake)
+
+    try:
+        result = publish_layer(
+            layer_uri=_HALLUCINATED,
+            layer_id="chicago-hillshade",
+            style_preset="grayscale",
+        )
+    finally:
+        set_jobs_client(None)
+        set_qgis_server_url(None)
+        set_default_qgs_uri(None)
+        set_gcp_project(None)
+        set_storage_client(None)
+
+    assert result.endswith("LAYERS=chicago-hillshade")
+
+    req = mock_client.run_job.call_args.kwargs["request"]
+    env = {e.name: e.value for e in req.overrides.container_overrides[0].env}
+    assert env["RASTER_URI"] == f"/vsigs/grace-2-hazard-prod-cache/{_REAL_KEY}", (
+        f"worker must receive the CORRECTED raster URI, not the hallucinated one; "
+        f"got {env['RASTER_URI']}"
     )

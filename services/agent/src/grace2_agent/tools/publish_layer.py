@@ -92,6 +92,7 @@ __all__ = [
     "set_default_qgs_uri",
     "set_pyqgis_worker_job_name",
     "set_qgis_server_url",
+    "set_storage_client",
     "DEFAULT_PROJECT_QGS_URI",
     "DEFAULT_PYQGIS_WORKER_JOB_NAME",
     "DEFAULT_QGIS_SERVER_URL",
@@ -136,7 +137,9 @@ class PublishLayerError(RuntimeError):
 
     The ``error_code`` attribute carries a SCREAMING_SNAKE_CASE code so the
     agent surface can render a useful failure narration and the pipeline strip
-    shows ``UPSTREAM_API_ERROR``.
+    shows ``UPSTREAM_API_ERROR``. ``retryable`` (job-0177 contract; harvested
+    by ``adapter._classify_error``) tells Gemini whether re-issuing the call
+    with corrected args can succeed.
 
     Codes:
     - ``JOBS_CLIENT_UNAVAILABLE`` — google-cloud-run not importable / ADC missing.
@@ -145,11 +148,21 @@ class PublishLayerError(RuntimeError):
     - ``WORKER_JOB_FAILED`` — execution reached FAILED terminal state.
     - ``WORKER_JOB_CANCELLED`` — execution was cancelled externally.
     - ``QGS_URI_PARSE_ERROR`` — malformed ``project_qgs_uri``.
+    - ``LAYER_URI_NOT_FOUND`` (job-0257, retryable) — ``layer_uri`` does not
+      exist in GCS and no unambiguous auto-correction was found. The message
+      lists the real objects under the same prefix so the LLM can retry with
+      the exact URI from the producing tool's function_response.
+    - ``WORKER_PUBLISH_NOT_APPLIED`` (job-0257) — the worker execution
+      completed (exit-0-on-error policy, NFR-R-1) but the layer is absent
+      from the ``.qgs`` — i.e. the worker envelope carried ``status=error``
+      (e.g. QgsRasterLayer failed to open the raster). Without this check the
+      tool reported false success and the map silently showed nothing.
     """
 
-    def __init__(self, error_code: str, message: str) -> None:
+    def __init__(self, error_code: str, message: str, *, retryable: bool = False) -> None:
         super().__init__(message)
         self.error_code = error_code
+        self.retryable = retryable
 
 
 # --------------------------------------------------------------------------- #
@@ -162,6 +175,45 @@ _GCP_LOCATION: str | None = None
 _DEFAULT_QGS_URI: str | None = None
 _PYQGIS_WORKER_JOB_NAME: str | None = None
 _QGIS_SERVER_URL: str | None = None
+_STORAGE_CLIENT: Any | None = None
+
+
+def set_storage_client(client: Any) -> None:
+    """Bind the GCS ``storage.Client`` used for layer_uri validation +
+    post-publish ``.qgs`` verification (job-0257).
+
+    Production callers leave this unset (an ADC default is built lazily);
+    tests inject a fake. ``None`` clears the binding.
+    """
+    global _STORAGE_CLIENT
+    _STORAGE_CLIENT = client
+
+
+def _get_storage_client() -> Any | None:
+    """Return the bound storage client, lazily building an ADC default.
+
+    Returns ``None`` (instead of raising) when google-cloud-storage is not
+    importable or ADC is missing — validation/verification then degrade to
+    no-ops (fail-open) so environments without GCS access keep the legacy
+    behavior.
+    """
+    global _STORAGE_CLIENT
+    if _STORAGE_CLIENT is not None:
+        return _STORAGE_CLIENT
+    try:
+        from google.cloud import storage  # type: ignore[import-not-found]
+
+        _STORAGE_CLIENT = storage.Client(
+            project=os.environ.get("GOOGLE_CLOUD_PROJECT", "grace-2-hazard-prod")
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "publish_layer: storage client unavailable (%s) — "
+            "layer_uri validation + .qgs verification skipped",
+            exc,
+        )
+        return None
+    return _STORAGE_CLIENT
 
 
 def set_jobs_client(client: Any) -> None:
@@ -324,6 +376,159 @@ def _gs_to_vsigs(gs_uri: str) -> str:
     return f"/vsigs/{rest}"
 
 
+def _split_object_uri(uri: str) -> tuple[str, str] | None:
+    """Split a ``gs://`` or ``/vsigs/`` URI into ``(bucket, key)``.
+
+    Returns ``None`` for local paths / unparseable shapes (validation then
+    passes through unchanged).
+    """
+    if uri.startswith("gs://"):
+        rest = uri[len("gs://"):]
+    elif uri.startswith("/vsigs/"):
+        rest = uri[len("/vsigs/"):]
+    else:
+        return None
+    slash = rest.find("/")
+    if slash <= 0 or slash == len(rest) - 1:
+        return None
+    return rest[:slash], rest[slash + 1:]
+
+
+#: Minimum shared-prefix length (characters of the object basename) required
+#: before a missing layer_uri is auto-corrected to an existing object. Cache
+#: keys are 32-hex digests; 8 shared leading chars (16^8 ≈ 4.3e9) is unique
+#: in practice while the observed hallucinations preserved 14+ chars.
+_URI_CORRECTION_MIN_PREFIX: int = 8
+
+
+def _lcp_len(a: str, b: str) -> int:
+    """Length of the longest common prefix of two strings."""
+    n = min(len(a), len(b))
+    i = 0
+    while i < n and a[i] == b[i]:
+        i += 1
+    return i
+
+
+def _validate_and_correct_layer_uri(layer_uri: str) -> str:
+    """Verify ``layer_uri`` exists in GCS; deterministically correct it if not.
+
+    job-0257 root-cause fix (hillshade no-render): Gemini reliably mangles the
+    tail of 32-hex cache keys when echoing a ``gs://`` URI from a previous
+    function_response into ``publish_layer`` args (observed 3/3 in the
+    2026-06-10 demo session: e.g. real ``090a4ff8d9a083f67c0b355caf40241a.tif``
+    requested as ``090a4ff8d9a083b28499252309d12999.tif``). The worker then
+    "succeeded" (exit-0-on-error policy) while publishing nothing.
+
+    Strategy:
+    1. If the object exists → return the (gs://-normalized) URI unchanged.
+    2. If missing → list the objects under the same directory prefix and find
+       the candidate whose basename shares the longest common prefix with the
+       requested basename. If that prefix is >= ``_URI_CORRECTION_MIN_PREFIX``
+       chars and the winner is unique, substitute it (logged at WARNING).
+    3. Otherwise raise ``PublishLayerError(LAYER_URI_NOT_FOUND, retryable=True)``
+       whose message lists the real objects so the LLM can retry with the
+       exact URI (job-0177 retry loop).
+
+    Fail-open: storage-client construction errors / transient GCS failures log
+    a warning and return the URI unchanged (legacy behavior) — the post-publish
+    ``.qgs`` verification is the second line of defense.
+    """
+    parsed = _split_object_uri(layer_uri)
+    if parsed is None:
+        return layer_uri  # local path / unparseable — let the worker decide
+    bucket_name, key = parsed
+    client = _get_storage_client()
+    if client is None:
+        return layer_uri
+
+    try:
+        if client.bucket(bucket_name).blob(key).exists():
+            return f"gs://{bucket_name}/{key}"
+
+        dir_prefix = key.rsplit("/", 1)[0] + "/" if "/" in key else ""
+        requested_base = key.rsplit("/", 1)[-1]
+        candidates = [
+            blob.name
+            for blob in client.list_blobs(bucket_name, prefix=dir_prefix)
+            if blob.name != dir_prefix
+        ][:256]
+
+        scored = sorted(
+            ((_lcp_len(name.rsplit("/", 1)[-1], requested_base), name) for name in candidates),
+            reverse=True,
+        )
+        if scored and scored[0][0] >= _URI_CORRECTION_MIN_PREFIX and (
+            len(scored) == 1 or scored[0][0] > scored[1][0]
+        ):
+            corrected = f"gs://{bucket_name}/{scored[0][1]}"
+            logger.warning(
+                "publish_layer: layer_uri %r does not exist in GCS — "
+                "auto-corrected to %r (%d-char shared basename prefix; "
+                "LLM-hallucinated URI tail, job-0257)",
+                layer_uri,
+                corrected,
+                scored[0][0],
+            )
+            return corrected
+
+        listing = ", ".join(sorted(n.rsplit("/", 1)[-1] for n in candidates)[:10]) or "<none>"
+        raise PublishLayerError(
+            "LAYER_URI_NOT_FOUND",
+            f"layer_uri {layer_uri!r} does not exist in GCS and no unambiguous "
+            f"correction was found. Objects under gs://{bucket_name}/{dir_prefix}: "
+            f"[{listing}]. Re-issue publish_layer with the EXACT `uri` value "
+            f"returned by the tool that produced the layer (copy it verbatim "
+            f"from that function_response).",
+            retryable=True,
+        )
+    except PublishLayerError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — fail-open on transient GCS errors
+        logger.warning(
+            "publish_layer: layer_uri validation errored (%s: %s) — "
+            "proceeding without validation",
+            type(exc).__name__,
+            exc,
+        )
+        return layer_uri
+
+
+def _verify_layer_in_qgs(qgs_uri: str, layer_id: str) -> bool | None:
+    """Check that ``layer_id`` is actually present in the published ``.qgs``.
+
+    job-0257: the PyQGIS worker exits 0 even when the publish failed (the
+    Pub/Sub envelope is the designed source of truth — NFR-R-1) and the agent
+    does not consume that envelope yet (OQ-62-PUBSUB-COMPLETION-POLL). Reading
+    the ``.qgs`` back and checking for ``<layername>{layer_id}</layername>``
+    closes the false-success gap without requiring a worker image rebuild.
+
+    Returns True/False on a successful check, ``None`` when verification is
+    unavailable (no storage client / non-gs URI / download error) — callers
+    treat ``None`` as "cannot verify" and do not fail the publish.
+    """
+    parsed = _split_object_uri(qgs_uri)
+    if parsed is None:
+        return None
+    client = _get_storage_client()
+    if client is None:
+        return None
+    try:
+        data = client.bucket(parsed[0]).blob(parsed[1]).download_as_bytes()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "publish_layer: post-publish .qgs verification download failed "
+            "(%s: %s) — skipping verification",
+            type(exc).__name__,
+            exc,
+        )
+        return None
+    from xml.sax.saxutils import escape
+
+    needle = f"<layername>{escape(layer_id)}</layername>".encode("utf-8")
+    return needle in data
+
+
 def _execution_state_name(execution: Any) -> str:
     """Return the execution state as a string (handles proto enum + dict mock)."""
     state = getattr(execution, "condition", None)
@@ -409,7 +614,19 @@ _PUBLISH_LAYER_METADATA = AtomicToolMetadata(
 )
 
 
-@register_tool(_PUBLISH_LAYER_METADATA)
+@register_tool(
+    _PUBLISH_LAYER_METADATA,
+    # Annotations: readOnlyHint=False (mutates the .qgs GCS project file),
+    # openWorldHint=False (intra-GCP Cloud Run Job + GCS only; no public API),
+    # destructiveHint=True (overwrites an existing layer entry in the shared
+    # .qgs project — the overwrite is potentially irreversible without a
+    # backup), idempotentHint=False (each call starts a new Cloud Run Job
+    # execution and unconditionally mutates the .qgs).
+    read_only_hint=False,
+    open_world_hint=False,
+    destructive_hint=True,
+    idempotent_hint=False,
+)
 def publish_layer(
     layer_uri: str,
     layer_id: str,
@@ -422,19 +639,26 @@ def publish_layer(
 ) -> str:
     """Publish a COG raster layer to QGIS Server via the PyQGIS worker.
 
-    Use this when: ``postprocess_flood`` has produced a flood-depth COG at a
-    ``gs://`` URI and the agent needs to make it renderable in MapLibre via
-    QGIS Server WMS. This tool invokes the ``grace-2-pyqgis-worker`` Cloud Run
-    Job to add the COG as a named layer in the canonical ``.qgs`` project,
-    writes the updated project back to GCS, and returns the WMS URL the client
-    can immediately render.
+    Dispatches the ``grace-2-pyqgis-worker`` Cloud Run Job to add a COG raster
+    at a ``gs://`` URI as a named layer in the canonical ``.qgs`` project. Polls
+    until the job completes and returns a WMS URL string the MapLibre client can
+    render immediately. Not cacheable (side-effect tool; mutates GCS project state).
 
-    Do NOT use this for:
-    - Rendering gs:// URIs directly (MapLibre cannot read GCS objects).
-    - Publishing vector layers (FlatGeobuf/GeoParquet) — a follow-up tool
-      handles those.
-    - Caching or re-fetching data (this is a side-effect tool; the cache shim
-      is not involved).
+    When to use:
+        - After ``postprocess_flood``, ``compute_hillshade``, ``compute_slope``,
+          ``compute_colored_relief``, ``compute_aspect``, or any other tool that
+          returns a ``LayerURI`` with a ``gs://`` COG, when the user needs the
+          layer displayed on the map.
+        - As the final step in any workflow that produces a raster output —
+          the COG is not visible until this tool runs.
+
+    When NOT to use:
+        - Rendering ``gs://`` URIs directly in MapLibre (not supported; use this
+          tool to go through QGIS Server WMS first).
+        - Publishing vector layers (FlatGeobuf/GeoParquet; a follow-up tool
+          handles vector publication).
+        - Caching or re-fetching data (this is a side-effect tool; the cache
+          shim is not invoked).
 
     Params:
         layer_uri: ``gs://`` URI of the COG raster produced by
@@ -482,10 +706,34 @@ def publish_layer(
     payload to GCS; Pub/Sub notification is the metadata layer. This tool
     does not write MongoDB directly (a follow-up job wires the
     ``RunDocument`` update for the published layer).
+
+    Cross-tool dependencies:
+        Upstream (consumes):
+        - ``postprocess_flood`` (via ``run_model_flood_scenario``) — flood-depth
+          COG ``LayerURI`` is the most common ``layer_uri`` input.
+        - ``compute_hillshade`` / ``compute_colored_relief`` / ``compute_slope`` /
+          ``compute_aspect`` / ``compute_impervious_surface`` — any tool that
+          returns a raster ``LayerURI`` with a ``gs://`` URI.
+        - ``clip_raster_to_polygon`` / ``clip_raster_to_bbox`` — clipped rasters
+          passed to this tool for display-extent-scoped publication.
+        Downstream (feeds):
+        - Web client MapLibre layer panel — the returned WMS URL is used
+          directly as a ``LayerURI.uri`` value for WMS tile rendering.
+        - ``run_model_flood_scenario`` / ``run_model_flood_habitat_scenario`` —
+          call this as the final step of the workflow chain.
     """
     # 1. Resolve the .qgs URI and extract the GCS key for MAP= param.
     effective_qgs_uri = _get_effective_qgs_uri(project_qgs_uri)
     qgs_key = _parse_qgs_key(effective_qgs_uri)
+
+    # 1b. job-0257: validate the layer_uri actually exists in GCS BEFORE
+    #     dispatching a 2-minute worker round-trip. Gemini hallucinates the
+    #     tail of 32-hex cache keys when copying URIs between turns; without
+    #     this gate the worker "succeeds" (exit-0-on-error) while publishing
+    #     nothing and the map silently stays empty. An unambiguous
+    #     prefix-match is auto-corrected; otherwise LAYER_URI_NOT_FOUND
+    #     (retryable) feeds the real object listing back to the LLM.
+    layer_uri = _validate_and_correct_layer_uri(layer_uri)
 
     # 2. Convert the gs:// layer_uri to /vsigs/ for GDAL (the worker's
     #    _append_raster_layer uses QgsRasterLayer with the "gdal" provider).
@@ -590,5 +838,23 @@ def publish_layer(
             f"for layer_id={layer_id!r}",
         )
 
-    # 7. Return the WMS URL.
+    # 7. job-0257: verify the layer actually landed in the .qgs. The worker
+    #    exits 0 even when the publish failed internally (its Pub/Sub envelope
+    #    carries status=error, but the agent does not consume it yet —
+    #    OQ-62-PUBSUB-COMPLETION-POLL), so CONDITION_SUCCEEDED alone proved
+    #    nothing. ``None`` means "cannot verify" (no storage access) — keep
+    #    the legacy trust-the-exit-code behavior in that case.
+    applied = _verify_layer_in_qgs(effective_qgs_uri, layer_id)
+    if applied is False:
+        raise PublishLayerError(
+            "WORKER_PUBLISH_NOT_APPLIED",
+            f"PyQGIS worker execution completed, but layer {layer_id!r} is NOT "
+            f"present in {effective_qgs_uri} — the worker swallowed an internal "
+            f"error (exit-0-on-error policy; most commonly QgsRasterLayer could "
+            f"not open raster_uri={raster_vsigs_uri!r}). The layer was NOT "
+            f"published; do not tell the user it is visible on the map.",
+            retryable=False,
+        )
+
+    # 8. Return the WMS URL.
     return wms_url
