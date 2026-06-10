@@ -231,6 +231,7 @@ PRIMARY_CATEGORY: dict[str, str] = {
     "run_model_flood_habitat_scenario": "hazard_modeling",
     "run_model_news_event_ingest": "hazard_modeling",
     "run_model_nws_flood_event_scenario": "hazard_modeling",
+    "run_model_groundwater_contamination_scenario": "hazard_modeling",
     "run_modflow_job": "hazard_modeling",
     "run_pelicun_damage_assessment": "hazard_modeling",
     "run_pelicun_with_buildings": "hazard_modeling",
@@ -339,6 +340,10 @@ SECONDARY_CATEGORIES: dict[str, tuple[str, ...]] = {
     # NWS event ingest spans hazard_modeling (it's the news-event composer)
     # AND news_events (it's the canonical entry point to that category).
     "run_model_news_event_ingest": ("news_events",),
+    # Case 2 groundwater composer spans hazard_modeling (it runs MODFLOW) AND
+    # news_events (it's driven by a spill news article — the canonical "model
+    # the spill from this article" entry point). job-0228.
+    "run_model_groundwater_contamination_scenario": ("news_events",),
     # Case 3 composer spans hazard_modeling (it runs SFINCS) AND
     # weather_atmosphere (it's driven by an active NWS flood warning + MRMS
     # observed precip — the canonical "model the live flood" entry point).
