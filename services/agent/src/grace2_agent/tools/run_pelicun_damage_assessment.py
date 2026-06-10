@@ -612,7 +612,9 @@ def _download_uri_to_local(uri: str, suffix: str, storage_client: Any | None = N
         if storage_client is None:
             from google.cloud import storage  # type: ignore[import-not-found]
 
-            storage_client = storage.Client()
+            storage_client = storage.Client(
+                project=os.environ.get("GOOGLE_CLOUD_PROJECT", "grace-2-hazard-prod")
+            )
         bucket_obj = storage_client.bucket(bucket_name)
         blob = bucket_obj.blob(blob_path)
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tf:
@@ -1029,7 +1031,21 @@ def _fetch_pelicun_damage_bytes(
 # ---------------------------------------------------------------------------
 
 
-@register_tool(_METADATA)
+@register_tool(
+    _METADATA,
+    # Annotations: readOnlyHint=False (writes a FlatGeobuf artifact to GCS
+    # and returns a LayerURI pointing at it — a new object is created per
+    # call), openWorldHint=False (all computation is local / intra-GCP; HAZUS
+    # curves are bundled in the package, no external API call),
+    # destructiveHint=False (writes a fresh output file under a run-keyed
+    # path; does not overwrite existing data), idempotentHint=False (Monte
+    # Carlo sampling with a PRNG seed means repeated calls with the same args
+    # may produce numerically different realizations unless the seed is fixed).
+    read_only_hint=False,
+    open_world_hint=False,
+    destructive_hint=False,
+    idempotent_hint=False,
+)
 def run_pelicun_damage_assessment(
     hazard_raster_uri: str,
     assets_uri: str,
@@ -1078,8 +1094,13 @@ def run_pelicun_damage_assessment(
 
     Parameters:
         hazard_raster_uri: gs:// URI (or local path) to a single-band hazard
-            intensity raster — e.g. flood depth in metres from
-            ``run_model_flood_scenario`` / ``postprocess_flood``. Raster CRS
+            intensity raster. MUST be the EXACT ``uri`` value returned by a
+            prior tool call in THIS conversation — for floods, copy
+            ``run_model_flood_scenario``'s returned ``uri`` verbatim
+            (shaped ``gs://...-runs/<run_id>/flood_depth_peak.tif``).
+            NEVER construct, guess, or pattern-match a gs:// path (e.g.
+            cache-style ``gs://...-cache/cache/...`` paths) — invented
+            paths do not exist and the call fails with a 404. Raster CRS
             and the asset CRS are reconciled internally (assets are
             reprojected to the raster CRS for sampling). Raster ``units`` tag
             should be ``"meters"`` or ``"m"`` for HAZUS conversion; absent
@@ -1136,19 +1157,31 @@ def run_pelicun_damage_assessment(
         ``units="damage_state"``, ``style_preset="pelicun_damage_state"``.
 
     Assets convention (``assets_uri``):
-        Preferred source — **building footprints / density grid** from
-        ``compute_building_density`` or ``fetch_buildings``.  A density grid
-        from ``compute_building_density`` produces one point-asset per 100 m
-        cell (or whatever ``cell_size_m`` was requested), so the output damage
-        choropleth shows spatially-varying damage aligned with where buildings
-        actually exist — not with administrative boundaries.
+        Preferred source (CONUS) — **USACE NSI structures** from
+        ``fetch_usace_nsi``.  NSI is the authoritative U.S. National
+        Structure Inventory (USACE-issued, used by FEMA / HAZUS).  Every
+        feature already carries the HAZUS occupancy class
+        (``component_type``) AND the per-structure replacement value
+        (``replacement_value`` = ``val_struct``), so the Pelicun loop runs
+        without the ``"RES1"`` default + class-default-USD fallback.  This
+        is the preferred Pelicun substrate inside the United States.  When
+        the bbox is outside CONUS / AK / HI, fall back to
+        ``compute_building_density``.
+
+        Fallback source — **building footprints / density grid** from
+        ``compute_building_density`` (Microsoft Global ML Buildings) for
+        international bboxes.  A density grid produces one point-asset per
+        100 m cell (or whatever ``cell_size_m`` was requested), so the
+        output damage choropleth shows spatially-varying damage aligned
+        with where buildings actually exist — not with administrative
+        boundaries.  Each cell defaults to ``component_type="RES1"``
+        because Microsoft Buildings carries no occupancy data.
 
         v0.1 cache-first preference: if ``compute_building_density`` has
         already been called for the same bbox (a cache hit exists in GCS),
         pass its returned ``LayerURI.uri`` directly as ``assets_uri``.  The
         tool reads the COG, samples every non-zero cell as an asset point, and
-        runs the Pelicun loop.  This is the **preferred pattern** for any flow
-        that has already computed building density.
+        runs the Pelicun loop.
 
         Fallback only — ``fetch_administrative_boundaries(level='place')``:
         CDP polygons (Census Designated Places) cover large administrative
@@ -1162,10 +1195,15 @@ def run_pelicun_damage_assessment(
         the "fetch building density → pass as assets" pattern in one call.
 
     LLM guidance:
-        - Preferred pattern: compute_building_density(bbox) → use the returned
-          URI as ``assets_uri`` here.  The resulting damage layer shows real
-          spatial structure (building density grid) rather than administrative
-          rectangles.
+        - Preferred CONUS pattern: ``fetch_usace_nsi(bbox)`` → use the
+          returned URI as ``assets_uri`` here.  Every structure carries the
+          real HAZUS ``component_type`` and ``replacement_value`` (USD), so
+          the damage layer reflects per-structure occupancy + replacement
+          cost rather than the RES1 + class-default fallback.
+        - International fallback: ``compute_building_density(bbox)`` → use
+          the returned URI as ``assets_uri`` here.  The resulting damage
+          layer shows real spatial structure (building density grid)
+          rather than administrative rectangles.
         - For quick composition: use the ``run_pelicun_with_buildings`` workflow
           wrapper — it handles the building-density fetch internally and
           returns the same ``LayerURI`` this tool returns.
@@ -1179,6 +1217,25 @@ def run_pelicun_damage_assessment(
     Cache: ``ttl_class="static-30d"``, ``source_class="pelicun_damage"``.
     The Monte-Carlo loop is seeded per-asset for byte-identical reproducibility
     across runs with the same inputs.
+
+    Cross-tool dependencies:
+        Upstream (consumes):
+        - ``run_model_flood_scenario`` / ``postprocess_flood`` — flood-depth
+          COG ``LayerURI.uri`` is the primary ``hazard_raster_uri`` input.
+        - ``fetch_usace_nsi`` — preferred CONUS ``assets_uri`` source; NSI
+          structures carry HAZUS ``component_type`` and ``replacement_value``
+          so no fallback defaults fire.
+        - ``compute_building_density`` — international ``assets_uri`` fallback;
+          the returned raster COG is sampled to generate per-cell asset points.
+        - ``fetch_administrative_boundaries`` — low-resolution fallback asset
+          layer (CDP polygons) when building data is unavailable.
+        Downstream (feeds):
+        - ``publish_layer`` — pass the returned FlatGeobuf ``LayerURI`` to
+          display the per-asset damage layer on the map.
+        - ``run_pelicun_with_buildings`` — convenience composer that calls this
+          after ``compute_building_density`` → ``density_cog_to_point_fgb``.
+        - Agent narration — extract ``ds_mean`` / ``repair_cost_mean`` from
+          the returned feature properties for headline numbers (Invariant 7).
 
     Raises:
         PelicunInputError: bad URI shape, ``fragility_set`` outside the
