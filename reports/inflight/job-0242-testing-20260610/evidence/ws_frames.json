@@ -1,0 +1,110 @@
+[
+  {
+    "t_rel_ms": 958,
+    "type": "session-state",
+    "tool_name": null,
+    "preview": "{\"type\":\"session-state\",\"id\":\"01KTRG7P1KKYYAYZA9XXXQZDXY\",\"ts\":\"2026-06-10T10:11:19.731230Z\",\"session_id\":\"01KTRG7P0RCZJNHWY2TR80DNCN\",\"payload\":{\"chat_history\":[],\"loaded_layers\":[],\"pipeline_history\":[],\"current_pipeline\":null,\"map_view\":null,\"status\":\"active\"}}"
+  },
+  {
+    "t_rel_ms": 1849,
+    "type": "session-state",
+    "tool_name": null,
+    "preview": "{\"type\":\"session-state\",\"id\":\"01KTRG7PVP83T00YSZ3NA0J0PK\",\"ts\":\"2026-06-10T10:11:20.566898Z\",\"session_id\":\"01KTRG7P0RCZJNHWY2TR80DNCN\",\"payload\":{\"chat_history\":[],\"loaded_layers\":[],\"pipeline_history\":[],\"current_pipeline\":null,\"map_view\":null,\"status\":\"active\"}}"
+  },
+  {
+    "t_rel_ms": 8791,
+    "type": "SENT:user-message",
+    "preview": "{\"type\":\"user-message\",\"id\":\"01KTRG7XP5HDMPVH06NNM7KA6F\",\"ts\":\"2026-06-10T10:11:27.557Z\",\"session_id\":\"01KTRG7P0RCZJNHWY2TR80DNCN\",\"payload\":{\"text\":\"Model the groundwater contamination from this spill:\\n\\ncontamination composer. The event, quantities, and quotes below are invented\\nfor end-to-end testing and do not describe any real incident.\\n\\nTanker Overturns Near Twin Falls, Spilling Industri"
+  },
+  {
+    "t_rel_ms": 8793,
+    "type": "pipeline-state",
+    "tool_name": [
+      "gemini_generate"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRG7XP60B37GWJY5SH89T7W\",\"ts\":\"2026-06-10T10:11:27.558484Z\",\"session_id\":\"01KTRG7P0RCZJNHWY2TR80DNCN\",\"payload\":{\"pipeline_id\":\"01KTRG7XP60B37GWJY5SH89T7T\",\"steps\":[{\"step_id\":\"01KTRG7XP60B37GWJY5SH89T7V\",\"name\":\"llm_generation\",\"tool_name\":\"gemini_generate\",\"state\":\"running\",\"started_at\":null,\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 96299,
+    "type": "pipeline-state",
+    "tool_name": [
+      "list_categories"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRGAK4ZYM5QE9BTAY9YPT4M\",\"ts\":\"2026-06-10T10:12:55.071202Z\",\"session_id\":\"01KTRG7P0RCZJNHWY2TR80DNCN\",\"payload\":{\"pipeline_id\":\"01KTRGAK4YHZVQ5B7VK2WG39FK\",\"steps\":[{\"step_id\":\"01KTRGAK4YHZVQ5B7VK2WG39FM\",\"name\":\"list_categories\",\"tool_name\":\"list_categories\",\"state\":\"pending\",\"started_at\":null,\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 96363,
+    "type": "pipeline-state",
+    "tool_name": [
+      "list_categories"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRGAK4ZYM5QE9BTAY9YPT4N\",\"ts\":\"2026-06-10T10:12:55.071819Z\",\"session_id\":\"01KTRG7P0RCZJNHWY2TR80DNCN\",\"payload\":{\"pipeline_id\":\"01KTRGAK4YHZVQ5B7VK2WG39FK\",\"steps\":[{\"step_id\":\"01KTRGAK4YHZVQ5B7VK2WG39FM\",\"name\":\"list_categories\",\"tool_name\":\"list_categories\",\"state\":\"running\",\"started_at\":\"2026-06-10T10:12:55.071635Z\",\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 96373,
+    "type": "pipeline-state",
+    "tool_name": [
+      "list_categories"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRGAK507S86T33DYB0MZGN7\",\"ts\":\"2026-06-10T10:12:55.072444Z\",\"session_id\":\"01KTRG7P0RCZJNHWY2TR80DNCN\",\"payload\":{\"pipeline_id\":\"01KTRGAK4YHZVQ5B7VK2WG39FK\",\"steps\":[{\"step_id\":\"01KTRGAK4YHZVQ5B7VK2WG39FM\",\"name\":\"list_categories\",\"tool_name\":\"list_categories\",\"state\":\"complete\",\"started_at\":\"2026-06-10T10:12:55.071635Z\",\"completed_at\":\"2026-06-10T10:12:55.072246Z\",\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 105152,
+    "type": "pipeline-state",
+    "tool_name": [
+      "list_tools_in_category"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRGAVSKAZWQFPY8DAER6NEJ\",\"ts\":\"2026-06-10T10:13:03.924162Z\",\"session_id\":\"01KTRG7P0RCZJNHWY2TR80DNCN\",\"payload\":{\"pipeline_id\":\"01KTRGAVSKAZWQFPY8DAER6NEG\",\"steps\":[{\"step_id\":\"01KTRGAVSKAZWQFPY8DAER6NEH\",\"name\":\"list_tools_in_category\",\"tool_name\":\"list_tools_in_category\",\"state\":\"pending\",\"started_at\":null,\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 105159,
+    "type": "pipeline-state",
+    "tool_name": [
+      "list_tools_in_category"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRGAVSM313RQMD8PP3WFXSZ\",\"ts\":\"2026-06-10T10:13:03.924827Z\",\"session_id\":\"01KTRG7P0RCZJNHWY2TR80DNCN\",\"payload\":{\"pipeline_id\":\"01KTRGAVSKAZWQFPY8DAER6NEG\",\"steps\":[{\"step_id\":\"01KTRGAVSKAZWQFPY8DAER6NEH\",\"name\":\"list_tools_in_category\",\"tool_name\":\"list_tools_in_category\",\"state\":\"running\",\"started_at\":\"2026-06-10T10:13:03.924624Z\",\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 105168,
+    "type": "pipeline-state",
+    "tool_name": [
+      "list_tools_in_category"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRGAVSNYD1PYCKZBWHBE89C\",\"ts\":\"2026-06-10T10:13:03.925551Z\",\"session_id\":\"01KTRG7P0RCZJNHWY2TR80DNCN\",\"payload\":{\"pipeline_id\":\"01KTRGAVSKAZWQFPY8DAER6NEG\",\"steps\":[{\"step_id\":\"01KTRGAVSKAZWQFPY8DAER6NEH\",\"name\":\"list_tools_in_category\",\"tool_name\":\"list_tools_in_category\",\"state\":\"failed\",\"started_at\":\"2026-06-10T10:13:03.924624Z\",\"completed_at\":\"2026-06-10T10:13:03.925336Z\",\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 111482,
+    "type": "pipeline-state",
+    "tool_name": [
+      "list_tools_in_category"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRGB1ZFAY2Y3FN84MZPWHBE\",\"ts\":\"2026-06-10T10:13:10.255938Z\",\"session_id\":\"01KTRG7P0RCZJNHWY2TR80DNCN\",\"payload\":{\"pipeline_id\":\"01KTRGB1ZFAY2Y3FN84MZPWHBC\",\"steps\":[{\"step_id\":\"01KTRGB1ZFAY2Y3FN84MZPWHBD\",\"name\":\"list_tools_in_category\",\"tool_name\":\"list_tools_in_category\",\"state\":\"pending\",\"started_at\":null,\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 111484,
+    "type": "pipeline-state",
+    "tool_name": [
+      "list_tools_in_category"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRGB1ZGKKDBHD87GYZJXVWP\",\"ts\":\"2026-06-10T10:13:10.256079Z\",\"session_id\":\"01KTRG7P0RCZJNHWY2TR80DNCN\",\"payload\":{\"pipeline_id\":\"01KTRGB1ZFAY2Y3FN84MZPWHBC\",\"steps\":[{\"step_id\":\"01KTRGB1ZFAY2Y3FN84MZPWHBD\",\"name\":\"list_tools_in_category\",\"tool_name\":\"list_tools_in_category\",\"state\":\"running\",\"started_at\":\"2026-06-10T10:13:10.256042Z\",\"completed_at\":null,\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 111485,
+    "type": "pipeline-state",
+    "tool_name": [
+      "list_tools_in_category"
+    ],
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRGB1ZGKKDBHD87GYZJXVWQ\",\"ts\":\"2026-06-10T10:13:10.256343Z\",\"session_id\":\"01KTRG7P0RCZJNHWY2TR80DNCN\",\"payload\":{\"pipeline_id\":\"01KTRGB1ZFAY2Y3FN84MZPWHBC\",\"steps\":[{\"step_id\":\"01KTRGB1ZFAY2Y3FN84MZPWHBD\",\"name\":\"list_tools_in_category\",\"tool_name\":\"list_tools_in_category\",\"state\":\"complete\",\"started_at\":\"2026-06-10T10:13:10.256042Z\",\"completed_at\":\"2026-06-10T10:13:10.256308Z\",\"progress_percent\":null}]}}"
+  },
+  {
+    "t_rel_ms": 164641,
+    "type": "tool-payload-warning",
+    "tool_name": "run_modflow_job",
+    "preview": "{\"type\":\"tool-payload-warning\",\"id\":\"01KTRGCNWKG8BY7MZK34Q5S5QX\",\"ts\":\"2026-06-10T10:14:03.411936Z\",\"session_id\":\"01KTRG7P0RCZJNHWY2TR80DNCN\",\"payload\":{\"envelope_type\":\"tool-payload-warning\",\"warning_id\":\"01KTRGCNWKG8BY7MZK34Q5S5QW\",\"tool_name\":\"run_modflow_job\",\"tool_args\":{\"contaminant\":\"trichloroethylene\",\"location_name\":\"Twin Falls, Idaho\",\"spill_location_latlon\":[42.5558542,-114.4700684],\"release_rate_kg_s\":3.0703895581333334,\"duration_days\":0.25,\"aquifer_k_ms\":0.0001,\"porosity\":0.3,\"total_mass_kg\":66320.41445568,\"scale\":\"12000.0 gallon\",\"clamps_applied\":[]},\"estimated_mb\":0.0,\"threshold_mb\":0.0,\"recommendation\":\"Demo aquifer parameterization (K=0.0001 m/s, porosity=0.3) — NOT site-specific hydrogeology. Confirm to run the MODFLOW groundwater-plume simulation for trichloroethylene near Twin Falls, Idaho.\",\"alternative_args\":null,\"options\":[\"proceed\",\"cancel\"],\"ttl_seconds\":300}}"
+  },
+  {
+    "t_rel_ms": 166493,
+    "type": "SENT:tool-payload-confirmation",
+    "preview": "{\"type\":\"tool-payload-confirmation\",\"id\":\"01KTRGCQPB9PNW3XXPXKV9CASE\",\"ts\":\"2026-06-10T10:14:05.259Z\",\"session_id\":\"01KTRG7P0RCZJNHWY2TR80DNCN\",\"payload\":{\"envelope_type\":\"tool-payload-confirmation\",\"warning_id\":\"01KTRGCNWKG8BY7MZK34Q5S5QW\",\"decision\":\"proceed\",\"revised_args\":null}}"
+  }
+]

@@ -1,0 +1,13 @@
+{
+  "stdout": "EGRESS_BLOCKED SandboxNetworkBlocked network egress to 'example.com' blocked by sandbox guard (allowlist: googleapis.com, google.internal, mongodb.net, localhost, 127.0.0.1, ::1)\n",
+  "stderr": "\nSandboxNetworkBlocked: network egress to 'example.com' blocked by sandbox guard (allowlist: googleapis.com, google.internal, mongodb.net, localhost, 127.0.0.1, ::1)\n",
+  "result": {
+    "kind": "none",
+    "value": null
+  },
+  "status": "blocked",
+  "error": "network egress to 'example.com' blocked by sandbox guard (allowlist: googleapis.com, google.internal, mongodb.net, localhost, 127.0.0.1, ::1)",
+  "stdout_truncated": false,
+  "stderr_truncated": false,
+  "wallclock_cap_seconds": 20
+}

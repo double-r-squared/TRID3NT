@@ -1,0 +1,158 @@
+{
+  "scenarios": {
+    "A": {
+      "prompt_chars": 2635,
+      "ordering": {
+        "gate_seen_rel_ms": 165751,
+        "modflow_dispatch_rel_ms": null,
+        "gate_before_dispatch": true
+      },
+      "confirmation_gate_present": true,
+      "gate_info": {
+        "full_text": "⚠Large response expectedrun_modflow_jobEstimated: 0.0 MBThreshold: 0 MBDemo aquifer parameterization (K=0.0001 m/s, porosity=0.3) — NOT site-specific hydrogeology. Confirm to run the MODFLOW groundwater-plume simulation for trichloroethylene near Twin Falls, Idaho.Proceed anywayCancel",
+        "tool": "run_modflow_job",
+        "recommendation": "Demo aquifer parameterization (K=0.0001 m/s, porosity=0.3) — NOT site-specific hydrogeology. Confirm to run the MODFLOW groundwater-plume simulation for trichloroethylene near Twin Falls, Idaho."
+      },
+      "plume": {
+        "materialized": false
+      },
+      "narration": {
+        "bubble_count": 0,
+        "scroll_text_tail": "Model the groundwater contamination from this spill:\n\ncontamination composer. The event, quantities, and quotes below are invented\nfor end-to-end testing and do not describe any real incident.\n\nTanker Overturns Near Twin Falls, Spilling Industrial Solvent Toward Aquifer\n\nTWIN FALLS, IDAHO — A tractor-trailer hauling industrial solvent overturned on a\nrural highway just south of Twin Falls, Idaho on March 14, 2026, releasing an\nestimated 12,000 gallons of trichloroethylene (TCE) into roadside soil before\nemergency crews could contain the leak. State environmental officials said the\nsolvent drained from a ruptured baffle over roughly six hours, soaking into\nground that sits directly above the Eastern Snake River Plain aquifer — one of\nthe most productive groundwater systems in the western United States.\n\nTrichloroethylene, a chlorinated degreasing solvent once common in\nmetal-finishing shops, is denser than water and notoriously mobile in\ngroundwater. Hydrogeologists with the Idaho Department of Water Resources warned\nthat even a partial infiltration of the 12,000-gallon load could establish a\nlong-lived contaminant plume migrating with the regional groundwater gradient.\n\n\"TCE doesn't break down quickly, and it sinks,\" said a department spokesperson.\n\"Once it reaches saturated sands and gravels, it can travel a long way from the\nrelease point. Our first job is to understand how far and how fast.\"\n\nThe driver was treated for minor injuries and released. No residents were\nreported hurt, though officials advised three nearby households on private wells\nto switch to bottled water as a precaution while monitoring wells are installed.\nCrews worked through the night to excavate the most heavily saturated soil, but\nstate officials cautioned that some fraction of the solvent had almost certainly\nreached the water table by the time containment berms were in place.\n\nThe Eastern Snake River Plain aquifer supplies irrigation water to hundreds of\nfarms across south-central Idaho and feeds the springs that discharge into the\nSnake River canyon near Twin Falls. A contaminant plume in this setting could\ntake years to characterize and far longer to remediate.\n\nFederal and state agencies opened a joint investigation into the cause of the\ncrash and the integrity of the tanker's containment system. A full delineation\nof the subsurface plume — its likely footprint and peak concentration — is\nexpected to take weeks of monitoring-well sampling and groundwater-transport\nmodeling. Officials said modeling the plume's probable extent is the immediate\npriority so that downgradient wells can be prioritized for sampling.completed: list_categoriescompleted: list_tools_in_category",
+        "mentions_idaho": true,
+        "mentions_concentration": true,
+        "mentions_area": true
+      },
+      "final_map": {
+        "center": {
+          "lng": -95.5,
+          "lat": 37
+        },
+        "zoom": 4,
+        "layer_ids": [
+          "qgis-basemap",
+          "osm-fallback-basemap"
+        ],
+        "in_idaho_bbox": false
+      },
+      "case_id": null
+    },
+    "B": {}
+  },
+  "fatal_error": "locator.click: Timeout 30000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('[data-testid=\"grace2-cases-new\"]')\u001b[22m\n\n    at newCase (/home/nate/Documents/GRACE-2/web/tools/stage3_reverify_job0242.mjs:254:16)\n    at main (/home/nate/Documents/GRACE-2/web/tools/stage3_reverify_job0242.mjs:553:11)",
+  "rate_limited": false,
+  "page_errors": [
+    "console.error: Failed to load resource: net::ERR_HTTP2_PING_FAILED",
+    "console.error: TypeError: Failed to fetch"
+  ],
+  "ws_frames": [
+    {
+      "t_rel_ms": 958,
+      "type": "session-state",
+      "tool_name": null,
+      "preview": "{\"type\":\"session-state\",\"id\":\"01KTRG7P1KKYYAYZA9XXXQZDXY\",\"ts\":\"2026-06-10T10:11:19.731230Z\",\"session_id\":\"01KTRG7P0RCZJNHWY2TR80DNCN\",\"payload\":{\"chat_history\":[],\"loaded_layers\":[],\"pipeline_history\":[],\"current_pipeline\":null,\"map_view\":null,\"status\":\"active\"}}"
+    },
+    {
+      "t_rel_ms": 1849,
+      "type": "session-state",
+      "tool_name": null,
+      "preview": "{\"type\":\"session-state\",\"id\":\"01KTRG7PVP83T00YSZ3NA0J0PK\",\"ts\":\"2026-06-10T10:11:20.566898Z\",\"session_id\":\"01KTRG7P0RCZJNHWY2TR80DNCN\",\"payload\":{\"chat_history\":[],\"loaded_layers\":[],\"pipeline_history\":[],\"current_pipeline\":null,\"map_view\":null,\"status\":\"active\"}}"
+    },
+    {
+      "t_rel_ms": 8791,
+      "type": "SENT:user-message",
+      "preview": "{\"type\":\"user-message\",\"id\":\"01KTRG7XP5HDMPVH06NNM7KA6F\",\"ts\":\"2026-06-10T10:11:27.557Z\",\"session_id\":\"01KTRG7P0RCZJNHWY2TR80DNCN\",\"payload\":{\"text\":\"Model the groundwater contamination from this spill:\\n\\ncontamination composer. The event, quantities, and quotes below are invented\\nfor end-to-end testing and do not describe any real incident.\\n\\nTanker Overturns Near Twin Falls, Spilling Industri"
+    },
+    {
+      "t_rel_ms": 8793,
+      "type": "pipeline-state",
+      "tool_name": [
+        "gemini_generate"
+      ],
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRG7XP60B37GWJY5SH89T7W\",\"ts\":\"2026-06-10T10:11:27.558484Z\",\"session_id\":\"01KTRG7P0RCZJNHWY2TR80DNCN\",\"payload\":{\"pipeline_id\":\"01KTRG7XP60B37GWJY5SH89T7T\",\"steps\":[{\"step_id\":\"01KTRG7XP60B37GWJY5SH89T7V\",\"name\":\"llm_generation\",\"tool_name\":\"gemini_generate\",\"state\":\"running\",\"started_at\":null,\"completed_at\":null,\"progress_percent\":null}]}}"
+    },
+    {
+      "t_rel_ms": 96299,
+      "type": "pipeline-state",
+      "tool_name": [
+        "list_categories"
+      ],
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRGAK4ZYM5QE9BTAY9YPT4M\",\"ts\":\"2026-06-10T10:12:55.071202Z\",\"session_id\":\"01KTRG7P0RCZJNHWY2TR80DNCN\",\"payload\":{\"pipeline_id\":\"01KTRGAK4YHZVQ5B7VK2WG39FK\",\"steps\":[{\"step_id\":\"01KTRGAK4YHZVQ5B7VK2WG39FM\",\"name\":\"list_categories\",\"tool_name\":\"list_categories\",\"state\":\"pending\",\"started_at\":null,\"completed_at\":null,\"progress_percent\":null}]}}"
+    },
+    {
+      "t_rel_ms": 96363,
+      "type": "pipeline-state",
+      "tool_name": [
+        "list_categories"
+      ],
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRGAK4ZYM5QE9BTAY9YPT4N\",\"ts\":\"2026-06-10T10:12:55.071819Z\",\"session_id\":\"01KTRG7P0RCZJNHWY2TR80DNCN\",\"payload\":{\"pipeline_id\":\"01KTRGAK4YHZVQ5B7VK2WG39FK\",\"steps\":[{\"step_id\":\"01KTRGAK4YHZVQ5B7VK2WG39FM\",\"name\":\"list_categories\",\"tool_name\":\"list_categories\",\"state\":\"running\",\"started_at\":\"2026-06-10T10:12:55.071635Z\",\"completed_at\":null,\"progress_percent\":null}]}}"
+    },
+    {
+      "t_rel_ms": 96373,
+      "type": "pipeline-state",
+      "tool_name": [
+        "list_categories"
+      ],
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRGAK507S86T33DYB0MZGN7\",\"ts\":\"2026-06-10T10:12:55.072444Z\",\"session_id\":\"01KTRG7P0RCZJNHWY2TR80DNCN\",\"payload\":{\"pipeline_id\":\"01KTRGAK4YHZVQ5B7VK2WG39FK\",\"steps\":[{\"step_id\":\"01KTRGAK4YHZVQ5B7VK2WG39FM\",\"name\":\"list_categories\",\"tool_name\":\"list_categories\",\"state\":\"complete\",\"started_at\":\"2026-06-10T10:12:55.071635Z\",\"completed_at\":\"2026-06-10T10:12:55.072246Z\",\"progress_percent\":null}]}}"
+    },
+    {
+      "t_rel_ms": 105152,
+      "type": "pipeline-state",
+      "tool_name": [
+        "list_tools_in_category"
+      ],
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRGAVSKAZWQFPY8DAER6NEJ\",\"ts\":\"2026-06-10T10:13:03.924162Z\",\"session_id\":\"01KTRG7P0RCZJNHWY2TR80DNCN\",\"payload\":{\"pipeline_id\":\"01KTRGAVSKAZWQFPY8DAER6NEG\",\"steps\":[{\"step_id\":\"01KTRGAVSKAZWQFPY8DAER6NEH\",\"name\":\"list_tools_in_category\",\"tool_name\":\"list_tools_in_category\",\"state\":\"pending\",\"started_at\":null,\"completed_at\":null,\"progress_percent\":null}]}}"
+    },
+    {
+      "t_rel_ms": 105159,
+      "type": "pipeline-state",
+      "tool_name": [
+        "list_tools_in_category"
+      ],
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRGAVSM313RQMD8PP3WFXSZ\",\"ts\":\"2026-06-10T10:13:03.924827Z\",\"session_id\":\"01KTRG7P0RCZJNHWY2TR80DNCN\",\"payload\":{\"pipeline_id\":\"01KTRGAVSKAZWQFPY8DAER6NEG\",\"steps\":[{\"step_id\":\"01KTRGAVSKAZWQFPY8DAER6NEH\",\"name\":\"list_tools_in_category\",\"tool_name\":\"list_tools_in_category\",\"state\":\"running\",\"started_at\":\"2026-06-10T10:13:03.924624Z\",\"completed_at\":null,\"progress_percent\":null}]}}"
+    },
+    {
+      "t_rel_ms": 105168,
+      "type": "pipeline-state",
+      "tool_name": [
+        "list_tools_in_category"
+      ],
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRGAVSNYD1PYCKZBWHBE89C\",\"ts\":\"2026-06-10T10:13:03.925551Z\",\"session_id\":\"01KTRG7P0RCZJNHWY2TR80DNCN\",\"payload\":{\"pipeline_id\":\"01KTRGAVSKAZWQFPY8DAER6NEG\",\"steps\":[{\"step_id\":\"01KTRGAVSKAZWQFPY8DAER6NEH\",\"name\":\"list_tools_in_category\",\"tool_name\":\"list_tools_in_category\",\"state\":\"failed\",\"started_at\":\"2026-06-10T10:13:03.924624Z\",\"completed_at\":\"2026-06-10T10:13:03.925336Z\",\"progress_percent\":null}]}}"
+    },
+    {
+      "t_rel_ms": 111482,
+      "type": "pipeline-state",
+      "tool_name": [
+        "list_tools_in_category"
+      ],
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRGB1ZFAY2Y3FN84MZPWHBE\",\"ts\":\"2026-06-10T10:13:10.255938Z\",\"session_id\":\"01KTRG7P0RCZJNHWY2TR80DNCN\",\"payload\":{\"pipeline_id\":\"01KTRGB1ZFAY2Y3FN84MZPWHBC\",\"steps\":[{\"step_id\":\"01KTRGB1ZFAY2Y3FN84MZPWHBD\",\"name\":\"list_tools_in_category\",\"tool_name\":\"list_tools_in_category\",\"state\":\"pending\",\"started_at\":null,\"completed_at\":null,\"progress_percent\":null}]}}"
+    },
+    {
+      "t_rel_ms": 111484,
+      "type": "pipeline-state",
+      "tool_name": [
+        "list_tools_in_category"
+      ],
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRGB1ZGKKDBHD87GYZJXVWP\",\"ts\":\"2026-06-10T10:13:10.256079Z\",\"session_id\":\"01KTRG7P0RCZJNHWY2TR80DNCN\",\"payload\":{\"pipeline_id\":\"01KTRGB1ZFAY2Y3FN84MZPWHBC\",\"steps\":[{\"step_id\":\"01KTRGB1ZFAY2Y3FN84MZPWHBD\",\"name\":\"list_tools_in_category\",\"tool_name\":\"list_tools_in_category\",\"state\":\"running\",\"started_at\":\"2026-06-10T10:13:10.256042Z\",\"completed_at\":null,\"progress_percent\":null}]}}"
+    },
+    {
+      "t_rel_ms": 111485,
+      "type": "pipeline-state",
+      "tool_name": [
+        "list_tools_in_category"
+      ],
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRGB1ZGKKDBHD87GYZJXVWQ\",\"ts\":\"2026-06-10T10:13:10.256343Z\",\"session_id\":\"01KTRG7P0RCZJNHWY2TR80DNCN\",\"payload\":{\"pipeline_id\":\"01KTRGB1ZFAY2Y3FN84MZPWHBC\",\"steps\":[{\"step_id\":\"01KTRGB1ZFAY2Y3FN84MZPWHBD\",\"name\":\"list_tools_in_category\",\"tool_name\":\"list_tools_in_category\",\"state\":\"complete\",\"started_at\":\"2026-06-10T10:13:10.256042Z\",\"completed_at\":\"2026-06-10T10:13:10.256308Z\",\"progress_percent\":null}]}}"
+    },
+    {
+      "t_rel_ms": 164641,
+      "type": "tool-payload-warning",
+      "tool_name": "run_modflow_job",
+      "preview": "{\"type\":\"tool-payload-warning\",\"id\":\"01KTRGCNWKG8BY7MZK34Q5S5QX\",\"ts\":\"2026-06-10T10:14:03.411936Z\",\"session_id\":\"01KTRG7P0RCZJNHWY2TR80DNCN\",\"payload\":{\"envelope_type\":\"tool-payload-warning\",\"warning_id\":\"01KTRGCNWKG8BY7MZK34Q5S5QW\",\"tool_name\":\"run_modflow_job\",\"tool_args\":{\"contaminant\":\"trichloroethylene\",\"location_name\":\"Twin Falls, Idaho\",\"spill_location_latlon\":[42.5558542,-114.4700684],\"release_rate_kg_s\":3.0703895581333334,\"duration_days\":0.25,\"aquifer_k_ms\":0.0001,\"porosity\":0.3,\"total_mass_kg\":66320.41445568,\"scale\":\"12000.0 gallon\",\"clamps_applied\":[]},\"estimated_mb\":0.0,\"threshold_mb\":0.0,\"recommendation\":\"Demo aquifer parameterization (K=0.0001 m/s, porosity=0.3) — NOT site-specific hydrogeology. Confirm to run the MODFLOW groundwater-plume simulation for trichloroethylene near Twin Falls, Idaho.\",\"alternative_args\":null,\"options\":[\"proceed\",\"cancel\"],\"ttl_seconds\":300}}"
+    },
+    {
+      "t_rel_ms": 166493,
+      "type": "SENT:tool-payload-confirmation",
+      "preview": "{\"type\":\"tool-payload-confirmation\",\"id\":\"01KTRGCQPB9PNW3XXPXKV9CASE\",\"ts\":\"2026-06-10T10:14:05.259Z\",\"session_id\":\"01KTRG7P0RCZJNHWY2TR80DNCN\",\"payload\":{\"envelope_type\":\"tool-payload-confirmation\",\"warning_id\":\"01KTRGCNWKG8BY7MZK34Q5S5QW\",\"decision\":\"proceed\",\"revised_args\":null}}"
+    }
+  ]
+}
