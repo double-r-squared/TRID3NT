@@ -58,15 +58,19 @@ Repo is a git repository on branch `main`, root-commit `6fd37e6`. Remote: `https
 > **Machine portability:** this repo is on GitHub; coordination state (`agents/`, `reports/`, `docs/`, `CLAUDE.md`) travels. Machine-local state (auth sessions, installed CLIs, conda env) does NOT — any new session must re-verify per the resume note above.
 
 - **Machine:** Debian 13 (trixie) on `Linux maturin 6.12.74+deb13+1-amd64`, x86_64. NOT the original Mac. Most paths in the job-0012/0013 kickoffs that assumed macOS/Homebrew need Linux adaptation (apt/per-user installs); jobs should adapt and surface the substitution in their report.
-- **Node v20.20.2 + npm 10.8.2** (web client dev ready). Note: original Mac had Node 24; v20 is the current Debian-stable Node and is fine for `react`/`vite`/`maplibre-gl` (v0.3 README mentions Node 24 — informational, not a hard requirement; revisit if a dep needs 22+).
-- **Docker 29.3.1** (container builds ready).
+- **Node v20.20.2 + npm 10.8.2 + npx present** (web client dev ready). Note: original Mac had Node 24; v20 is the current Debian-stable Node and is fine for `react`/`vite`/`maplibre-gl` (v0.3 README mentions Node 24 — informational, not a hard requirement; revisit if a dep needs 22+).
+- **Docker daemon socket NOT accessible to this user.** Do not attempt local `docker build` or `docker run`. Use Cloud Build for all container image builds (`gcloud builds submit`). This is a hard constraint for all infra jobs — reference `infra/modflow/cloudbuild.yaml` and `infra/python-sandbox/cloudbuild.yaml` for the pattern.
 - **Python 3.13.5** system; no venv yet. `packages/contracts/` is pydantic-v2 — needs `pip install -e packages/contracts && pip install pytest` in a fresh venv during job-0013 finish-and-verify.
-- **gcloud 571.0.0** installed at `~/tools/google-cloud-sdk/`, on PATH via `~/.bashrc`. User authed; ADC creds at `~/.config/gcloud/application_default_credentials.json`. **No GCP project created yet** — job-0014 creates the new dedicated project.
+- **gcloud IS installed at `/home/nate/tools/google-cloud-sdk/bin/`** (`export PATH=/home/nate/tools/google-cloud-sdk/bin:$PATH` before use in scripts). User authenticated as `natealmanza3@gmail.com`; ADC live at `~/.config/gcloud/application_default_credentials.json`; active project `grace-2-hazard-prod`. Sandboxed Bash shells cannot resolve `googleapis.com` — use `dangerouslyDisableSandbox:true` on any Bash call that hits GCP APIs. GCP project was created in job-0014.
 - **atlas CLI 1.55.0** installed at `~/tools/mongodb-atlas-cli_1.55.0_linux_x86_64/`, symlinked to `~/.local/bin/atlas`. User authed (user-account flow).
 - **OpenTofu 1.12.1** installed at `~/tools/tofu_1.12.1/`, symlinked to `~/.local/bin/tofu`.
 - **gh CLI** authenticated as `double-r-squared` (HTTPS, token in keyring).
-- **No `grace2` conda env on this machine** — that env (QGIS 3.40.3-Bratislava) was Mac-local for PyQGIS worker dev. Recreate when worker code lands (not blocking M1).
+- **mf6 6.5.0 binary verified runnable on host** — `mf6` at `/usr/local/bin/mf6` or equivalent; used by `services/workers/modflow/` unit tests and the local subprocess harness. Container image build uses Cloud Build.
+- **mongod 7.0.14 binary at `/tmp/mongod` (ephemeral — does NOT survive machine reboot).** Used for M4 local round-trip evidence (`evidence/m4_real_roundtrip.log` in job-0203). Not a persistent dev dependency; recreate if needed with the runbook in job-0203's evidence directory. Atlas Flex cluster `grace-2-dev` is the production target.
+- **No `grace2` conda env on this machine** — that env (QGIS 3.40.3-Bratislava) was Mac-local for PyQGIS worker dev. Recreate when worker code lands (not blocking current sprint-13/13.5 work).
 - **AWS / Ollama / `llama3.2:3b`** — historically referenced in v0.2; **no longer relevant** under SRS v0.3 (Decision E — GCP only; FR-AS-1 — Gemini 3 only).
+
+> **Updated:** 2026-06-10 by sprint-13-5-manifest-refresh job — corrected gcloud path, docker constraint, mf6 host binary, mongod ephemeral note, npx presence. Previous entry reflected sprint-03 state (no GCP project, gcloud not yet authed).
 
 ## Live cloud substrate (job-0014 landed)
 
