@@ -249,3 +249,41 @@ def test_code_exec_request_in_hot_set() -> None:
     from grace2_agent.categories import HOT_SET_TOOLS
 
     assert "code_exec_request" in HOT_SET_TOOLS
+
+
+@pytest.mark.asyncio
+async def test_flood_gate_emits_args_card_and_approve(monkeypatch) -> None:
+    """job-0256: run_model_flood_scenario is gated; the card carries the call
+    args (no extraction) and approve injects confirmed=True."""
+    from grace2_agent import server
+
+    ws = _FakeWS()
+    state = _FakeState()
+    params = {"location_query": "Fort Myers, Florida", "return_period_yr": 100}
+
+    async def _approve_soon() -> None:
+        for _ in range(200):
+            if server._PENDING_CONFIRMATIONS:
+                break
+            await asyncio.sleep(0.005)
+        wid = next(iter(server._PENDING_CONFIRMATIONS))
+        server._PENDING_CONFIRMATIONS[wid][1].set_result(
+            PayloadConfirmationEnvelopePayload(warning_id=wid, decision="proceed")
+        )
+
+    approver = asyncio.create_task(_approve_soon())
+    should_run, effective = await server._gate_on_solver_confirm(  # type: ignore[arg-type]
+        ws, state, "run_model_flood_scenario", params
+    )
+    await approver
+    assert should_run is True and effective["confirmed"] is True
+    card = next(e for e in ws.sent if e.get("type") == "tool-payload-warning")
+    assert card["payload"]["tool_args"]["location"] == "Fort Myers, Florida"
+    assert "SFINCS" in card["payload"]["recommendation"]
+
+
+def test_flood_solvers_in_confirm_set() -> None:
+    from grace2_agent import server
+
+    assert "run_model_flood_scenario" in server.SOLVER_CONFIRM_TOOLS
+    assert "run_model_flood_habitat_scenario" in server.SOLVER_CONFIRM_TOOLS

@@ -262,6 +262,11 @@ class SolverConfirmationCancelledError(RuntimeError):
 # composers join once they grow confirm-envelope builders (OQ-FIXWAVE-FLOOD-GATE).
 SOLVER_CONFIRM_TOOLS: set[str] = {
     "run_model_groundwater_contamination_scenario",
+    # job-0256: flood solvers gated too — a live sandbox-only session was
+    # observed running an unrequested SFINCS solve (~10-20 min). The card is
+    # built from the call args (location/return period/duration).
+    "run_model_flood_scenario",
+    "run_model_flood_habitat_scenario",
 }
 
 
@@ -2047,41 +2052,72 @@ async def _gate_on_solver_confirm(
     composer raises its own typed extraction error — the gate must not mask
     parameter problems behind a confusing confirm card.
     """
-    from .workflows.model_groundwater_contamination_scenario import (
-        _build_confirmation_envelope,
-        extract_spill_parameters,
-    )
-    from grace2_contracts.modflow_contracts import MODFLOWRunArgs
-
-    article_text = params.get("article_text")
-    if not isinstance(article_text, str) or not article_text.strip():
-        # source_url path or missing text: let the composer fetch/validate and
-        # surface its own typed error; gating happens on the derived params at
-        # the next dispatch once article_text is materialized by the composer.
-        # (v0.1: the live path always supplies article_text — see job-0235.)
-        return True, params
-
     try:
-        # extract_spill_parameters is synchronous (pure extraction + cached
-        # geocode); run it off the event loop so the WS heartbeat stays live.
-        derived = await asyncio.to_thread(
-            extract_spill_parameters, article_text, geocode=True
-        )
-        kwargs: dict[str, Any] = dict(
-            spill_location_latlon=derived["spill_location_latlon"],
-            contaminant=derived["contaminant"],
-            release_rate_kg_s=derived["release_rate_kg_s"],
-            duration_days=derived["duration_days"],
-        )
-        if params.get("aquifer_k_ms") is not None:
-            kwargs["aquifer_k_ms"] = float(params["aquifer_k_ms"])
-        if params.get("porosity") is not None:
-            kwargs["porosity"] = float(params["porosity"])
-        envelope = _build_confirmation_envelope(derived, MODFLOWRunArgs(**kwargs))
-    except Exception:  # noqa: BLE001 — never mask extraction errors with a gate
+        if tool_name == "run_model_groundwater_contamination_scenario":
+            from .workflows.model_groundwater_contamination_scenario import (
+                _build_confirmation_envelope,
+                extract_spill_parameters,
+            )
+            from grace2_contracts.modflow_contracts import MODFLOWRunArgs
+
+            article_text = params.get("article_text")
+            if not isinstance(article_text, str) or not article_text.strip():
+                # source_url path or missing text: let the composer surface
+                # its own typed error (v0.1 live path supplies article_text).
+                return True, params
+            # extract_spill_parameters is synchronous (pure extraction +
+            # cached geocode); off the event loop so the WS heartbeat lives.
+            derived = await asyncio.to_thread(
+                extract_spill_parameters, article_text, geocode=True
+            )
+            kwargs: dict[str, Any] = dict(
+                spill_location_latlon=derived["spill_location_latlon"],
+                contaminant=derived["contaminant"],
+                release_rate_kg_s=derived["release_rate_kg_s"],
+                duration_days=derived["duration_days"],
+            )
+            if params.get("aquifer_k_ms") is not None:
+                kwargs["aquifer_k_ms"] = float(params["aquifer_k_ms"])
+            if params.get("porosity") is not None:
+                kwargs["porosity"] = float(params["porosity"])
+            envelope = _build_confirmation_envelope(
+                derived, MODFLOWRunArgs(**kwargs)
+            )
+        elif tool_name in ("run_model_flood_scenario",
+                           "run_model_flood_habitat_scenario"):
+            # job-0256 (live finding: a flood solver ran in a sandbox-only
+            # session): a ~10-20 min SFINCS solve is a consequence — show
+            # the user what is about to run. Card built straight from the
+            # call args (no extraction needed).
+            from grace2_contracts.payload_warning import (
+                PayloadWarningEnvelopePayload,
+            )
+
+            where = params.get("location_query") or params.get("bbox") or "?"
+            envelope = PayloadWarningEnvelopePayload(
+                warning_id=new_ulid(),
+                tool_name=tool_name,
+                tool_args={
+                    "location": str(where),
+                    "return_period_yr": params.get("return_period_yr"),
+                    "duration_hr": params.get("duration_hr"),
+                    "forcing_raster_uri": params.get("forcing_raster_uri"),
+                    "compute_class": params.get("compute_class", "standard"),
+                },
+                estimated_mb=0.0,
+                threshold_mb=0.0,
+                recommendation=(
+                    f"Run a SFINCS flood simulation for {where} "
+                    "(cloud solve, typically 5-20 minutes). Confirm to start."
+                )[:512],
+                options=["proceed", "cancel"],
+            )
+        else:  # unknown gated tool: fail open to the tool's own validation
+            return True, params
+    except Exception:  # noqa: BLE001 — never mask param errors with a gate
         logger.warning(
             "solver-confirm gate could not build the confirm card for %s; "
-            "falling through so the composer raises its typed error",
+            "falling through so the tool raises its typed error",
             tool_name,
             exc_info=True,
         )

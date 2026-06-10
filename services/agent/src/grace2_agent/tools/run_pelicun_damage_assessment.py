@@ -592,6 +592,41 @@ def _download_uri_to_local(uri: str, suffix: str, storage_client: Any | None = N
     Raises:
         ``PelicunRuntimeError`` on download / read failure.
     """
+    if uri.startswith(("http://", "https://")) and "LAYERS=" in uri:
+        # job-0255 (OQ-0255-PELICUN-WMS-URI): the LLM copies the published
+        # layer's QGIS WMS GetMap URL verbatim — which IS the LayerURI.uri
+        # field per OQ-62 (the gs:// COG never appears in its context).
+        # Reverse-map the WMS layer id back to the runs-bucket COG:
+        # LAYERS=flood-depth-peak-<run_id>  ->  gs://<runs>/<run_id>/flood_depth_peak.tif
+        # LAYERS=plume-concentration-<run_id> -> .../plume_concentration_4326.tif
+        from urllib.parse import parse_qs, urlparse
+
+        layers = parse_qs(urlparse(uri).query).get("LAYERS", [])
+        runs_bucket = os.environ.get(
+            "GRACE2_RUNS_BUCKET", "grace-2-hazard-prod-runs"
+        )
+        for layer_id in layers:
+            for prefix, fname in (
+                ("flood-depth-peak-", "flood_depth_peak.tif"),
+                ("plume-concentration-", "plume_concentration_4326.tif"),
+            ):
+                if layer_id.startswith(prefix):
+                    run_id = layer_id[len(prefix):]
+                    mapped = f"gs://{runs_bucket}/{run_id}/{fname}"
+                    logger.warning(
+                        "hazard URI was a WMS GetMap URL; reverse-mapped "
+                        "LAYERS=%s -> %s (job-0255 guard)",
+                        layer_id,
+                        mapped,
+                    )
+                    return _download_uri_to_local(
+                        mapped, suffix, storage_client=storage_client
+                    )
+        raise PelicunRuntimeError(
+            f"hazard_raster_uri is a WMS URL with an unmapped layer id "
+            f"({uri!r}); pass the gs:// COG URI from the producing tool"
+        )
+
     if not uri.startswith("gs://"):
         if not os.path.exists(uri):
             raise PelicunRuntimeError(

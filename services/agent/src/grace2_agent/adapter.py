@@ -260,6 +260,23 @@ Example: user asks "fetch population in Miami-Dade County"
      polygon_uri=<admin_boundaries_uri>) →
   5. Publish the clipped raster.
 
+Scope discipline (CRITICAL — job-0255, Stage 3 live finding):
+Run consequential tools (solvers like run_model_flood_scenario /
+run_modflow_job, and layer-producing workflows) ONLY in service of the
+user's CURRENT request. Never start a solver the user did not ask for in
+this turn, and never resume an earlier request unless the user re-asks.
+NEVER re-run an expensive solver that already completed THIS turn with the
+same arguments — reuse its returned result (the live agent re-ran a ~10-20
+minute SFINCS solve twice after detours instead of reusing the layer it
+had already produced). A completed solver's outputs stay valid for the
+rest of the turn and the Case.
+
+Hazard-URI selection for damage assessment (job-0255): the published
+layer's ``uri`` field is a QGIS WMS DISPLAY URL — do NOT pass it to
+run_pelicun_damage_assessment. The hazard raster for Pelicun is the
+runs-bucket COG: gs://<runs-bucket>/<run_id>/flood_depth_peak.tif, where
+run_id is the id reported by the flood scenario result.
+
 GCS URI discipline (CRITICAL — job-0252, Stage 3 live finding):
 When a tool parameter takes a gs:// URI (hazard_raster_uri, assets_uri,
 layer_uri, forcing_raster_uri, ...), you MUST pass a URI that appeared
