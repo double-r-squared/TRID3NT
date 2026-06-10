@@ -39,6 +39,8 @@ import {
   envelope,
   newUlid,
 } from "./contracts";
+import type { ImpactEnvelope } from "./components/ImpactPanel";
+import type { ChartPayload } from "./components/ChartStack";
 import { getIdToken } from "./auth";
 // Wire-shape mirrors for the server's source-suggestion candidate envelopes.
 // Server-internal envelope_type names (`mode2-candidate`, etc.) are preserved
@@ -55,15 +57,19 @@ import {
 } from "./lib/source_suggestion_suppression";
 
 /**
- * Wire shape for the `auth-token` envelope (job-0123, sprint-12-mega Wave 2).
+ * TypeScript-side representation of the `auth-token` envelope payload
+ * (job-0123, sprint-12-mega Wave 2). Used internally in this file;
+ * NOT transmitted on the wire with these field names.
  *
- * The agent service consumes this after the connect handshake to bind the
- * Firebase `uid` → `UserDocument` (per SRS Appendix H.5). The payload is
- * intentionally narrow — Wave 2 schema (job-0122) will land the canonical
- * pydantic shape in `packages/contracts`; until then this mirrors what the
- * agent verifier reads:
- *   - `id_token`: Firebase ID JWT (1h lifetime)
- *   - `provider`: best-effort signal for telemetry (firebase | anonymous)
+ * The server's `AuthTokenEnvelope` (packages/contracts/auth.py) uses
+ * different field names:
+ *   - `id_token`  → wire name `token`
+ *   - `provider`  → wire name `anonymous` (bool)
+ *
+ * `maybeSendAuthToken` translates to the server's field names before
+ * serialising. This interface is kept separate so callers have a
+ * documented description of each field's meaning without exposing the
+ * wire mismatch to every consumer.
  *
  * H.5 names the connect-frame mechanism as a Wave 2 schema decision; we
  * implement the envelope-after-connect path because the WebSocket handshake
@@ -71,17 +77,16 @@ import {
  * headers). Surfaced as OQ-0123-AUTH-TOKEN-HANDSHAKE-VS-ENVELOPE.
  */
 export interface AuthTokenPayload {
+  /** Firebase ID JWT (1h lifetime). Empty string triggers anonymous fallback. */
   id_token: string;
+  /** Best-effort signal: "firebase" when a real token is present, "anonymous" otherwise. */
   provider: "firebase" | "anonymous";
   /**
    * job-0172 Part C — sticky anonymous user_id hint. When ``id_token`` is
    * empty (anonymous fallback) the agent consults this field; if it carries
    * a ULID matching an existing anonymous ``UserDocument``, the same User
    * is re-bound and the user's Cases stay reachable. Ignored entirely when
-   * ``id_token`` verifies (the JWT is the credential). The server-side
-   * shape on ``AuthTokenEnvelope`` uses the name ``token`` not ``id_token``
-   * because that is the pydantic field; the wire envelope translation in
-   * ``maybeSendAuthToken`` below converts.
+   * ``id_token`` verifies (the JWT is the credential).
    */
   anonymous_user_id?: string | null;
 }
@@ -140,6 +145,23 @@ export interface WsHandlers {
    * when session_state is null.
    */
   onCaseOpen?: (p: CaseOpenEnvelopePayload) => void;
+  /**
+   * Impact-envelope (Wave 4.11 P4 — SRS Appendix B.6c). Emitted by the agent
+   * after ``compute_impact_envelope`` completes. App.tsx wires this to
+   * ``setImpactEnvelope`` which surfaces the ImpactPanel slide-out. Optional
+   * so chat-only callers need no change. The envelope is also session-scoped
+   * (added to SESSION_SCOPED_TYPES) so the App.tsx GraceWs instance receives
+   * it even when the tool ran on Chat.tsx's WebSocket connection.
+   */
+  onImpactEnvelope?: (p: ImpactEnvelope) => void;
+  /**
+   * Chart-emission envelope (sprint-13, job-0231 — conversational analysis layer).
+   * Emitted by the agent after a chart-generation tool computes chart data and
+   * builds a Vega-Lite v5 spec. App.tsx accumulates these per-session in a
+   * ``charts`` state array; Case switch resets the array (replace-not-reconcile).
+   * Optional so chat-only callers need no change.
+   */
+  onChartEmission?: (p: ChartPayload) => void;
   /**
    * Auth-token retriever (job-0123). Optional — when absent we fall back to
    * `getIdToken()` from `./auth` directly. Injected by tests to avoid
@@ -275,6 +297,12 @@ const SESSION_SCOPED_TYPES = new Set<string>([
   "secrets-list",
   "mode2-candidate",
   "tool-payload-warning",
+  // Wave 4.11 P4: impact-envelope is session-scoped so App.tsx GraceWs sees it
+  // even when the tool ran on Chat.tsx's WebSocket connection.
+  "impact-envelope",
+  // sprint-13: chart-emission is session-scoped so App.tsx GraceWs sees it
+  // even when the chart-generation tool ran on Chat.tsx's WebSocket connection.
+  "chart-emission",
 ]);
 
 const SESSION_HUB: Map<string, Set<GraceWs>> = new Map();
@@ -716,6 +744,39 @@ export class GraceWs {
           );
         }
         break;
+      case "impact-envelope":
+        // Wave 4.11 P4: agent emits this after compute_impact_envelope
+        // completes. App.tsx wires onImpactEnvelope → setImpactEnvelope
+        // which surfaces the ImpactPanel slide-out. Payload is validated
+        // by presence of ``n_structures_total`` (the B.6c sentinel field);
+        // malformed payloads are silently dropped to avoid crashing the
+        // React tree.
+        if (this.handlers.onImpactEnvelope) {
+          const imp = payload as unknown as ImpactEnvelope;
+          if (imp && typeof imp.n_structures_total === "number") {
+            this.handlers.onImpactEnvelope(imp);
+          } else {
+            // eslint-disable-next-line no-console
+            console.warn("[ws] impact-envelope dropped: missing n_structures_total", payload);
+          }
+        }
+        break;
+      case "chart-emission":
+        // sprint-13 job-0231: chart-emission arrives after a chart-generation
+        // tool runs. App.tsx wires onChartEmission → setCharts to accumulate
+        // charts per session (Case switch resets). Malformed payloads (missing
+        // chart_id or vega_lite_spec) are dropped with a console.warn to avoid
+        // crashing the React tree.
+        if (this.handlers.onChartEmission) {
+          const c = payload as unknown as ChartPayload;
+          if (c && typeof c.chart_id === "string" && c.vega_lite_spec && typeof c.vega_lite_spec === "object") {
+            this.handlers.onChartEmission(c);
+          } else {
+            // eslint-disable-next-line no-console
+            console.warn("[ws] chart-emission dropped: missing chart_id or vega_lite_spec", payload);
+          }
+        }
+        break;
       case "auth-ack": {
         // job-0172 Part C — server's auth-ack confirms the resolved identity.
         // When ``is_anonymous=true`` we cache the assigned user_id so the
@@ -769,21 +830,31 @@ export class GraceWs {
     }
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return;
     // job-0172 Part C — always send the auth-token envelope (even with an
-    // empty ``id_token``) so the agent receives the sticky
-    // ``anonymous_user_id`` hint and re-binds the same anonymous User on
-    // reconnect. Previously we returned early when ``token`` was null and
-    // relied on the agent's implicit-anonymous fallback (which mints a
-    // FRESH user_id every connect — the bug this part fixes).
+    // empty token) so the agent receives the sticky ``anonymous_user_id``
+    // hint and re-binds the same anonymous User on reconnect. Previously
+    // we returned early when ``token`` was null and relied on the agent's
+    // implicit-anonymous fallback (which mints a FRESH user_id every
+    // connect — the bug this part fixes).
     const stickyHint = token ? null : readAnonymousUserId();
-    const payload: AuthTokenPayload = {
-      id_token: token ?? "",
-      provider: token ? "firebase" : "anonymous",
-      anonymous_user_id: stickyHint,
+    // Wire the payload using the server's AuthTokenEnvelope field names:
+    //   ``token``     — the Firebase ID JWT (server expects ``token``, not
+    //                   ``id_token``, per AuthTokenEnvelope in auth.py).
+    //   ``anonymous`` — bool hint that this is an anonymous path (server
+    //                   expects ``anonymous``, not ``provider``).
+    // The TypeScript-side AuthTokenPayload interface uses ``id_token`` /
+    // ``provider`` for readability, but those names must NOT appear on the
+    // wire because AuthTokenEnvelope has extra="forbid" and would reject them
+    // with AUTH_TOKEN_INVALID (the H.3 anonymous fallback still runs, but it
+    // produces a spurious error envelope on every connect — OQ-env-inv fix).
+    const wirePayload = {
+      token: token ?? "",
+      anonymous: !token,
+      anonymous_user_id: stickyHint ?? undefined,
     };
-    const env: Envelope<AuthTokenPayload> = envelope(
+    const env = envelope(
       "auth-token",
       this.sessionId,
-      payload,
+      wirePayload,
     );
     this.sendEnvelope(env);
   }

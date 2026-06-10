@@ -65,6 +65,23 @@ import { ChatInput, ChatInputState } from "./components/ChatInput";
 import { AgentMessage } from "./components/AgentMessage";
 import { UserBubble } from "./components/UserBubble";
 import { ScrollToBottom } from "./components/ScrollToBottom";
+import { ThinkingIndicator } from "./components/ThinkingIndicator";
+import { ChartStack, type ChartPayload } from "./components/ChartStack";
+import { ChartGallery } from "./components/ChartGallery";
+
+// wave-4-10 thinking-state — the agent emits the Gemini "thinking" phase as
+// a pipeline-state step keyed on this raw ``name`` (`llm_generation` per
+// agent/runtime/llm.py + Appendix D.6). The web side treats it as a
+// SPECIAL CASE per `feedback_thinking_state_ephemeral`: filtered out of the
+// interleaved tool-card stream and rendered as a separate ephemeral
+// indicator pinned to the bottom of the chat scroll. Other tools dispatch
+// through the normal interleaved path with their visual-state lifecycle.
+export const THINKING_STEP_NAME = "llm_generation";
+
+/** True iff this pipeline step is the Gemini "thinking" phase. */
+export function isThinkingStep(step: PipelineStepSummary): boolean {
+  return step.name === THINKING_STEP_NAME;
+}
 
 // job-0153 Part 4 — gap between input wrapper and the last chat message.
 // Scroll-area bottom padding = inputHeight + INPUT_GAP_PX.
@@ -338,6 +355,93 @@ export function forceMostRecentRunningToFailed(
   return { ...state, history: nextHistory, live: nextLive };
 }
 
+// --- Thinking-indicator active predicate (wave-4-10) -------------------- //
+//
+// The ephemeral "Thinking…" indicator is shown when the Gemini reasoning
+// phase is in flight AND no real content has arrived yet that would replace
+// it. Per memory `feedback_thinking_state_ephemeral`, the indicator
+// vanishes the moment ANY of:
+//
+//   (a) The first agent text chunk after this thinking turn streams in
+//       (a non-empty in-flight or finalized agent message renders the text
+//       bubble and the indicator's job is done).
+//   (b) The first non-thinking tool card lands (the agent decided to call
+//       a tool — the tool card itself is the "I am working" affordance).
+//   (c) The thinking pipeline-state transitions to a terminal state
+//       (complete / failed / cancelled). On success the indicator just
+//       disappears (no green confirmation card). On failure the error
+//       envelope path replaces it with the red failure surface.
+//
+// Active iff a Gemini "llm_generation" step exists in pending OR running
+// state across (live ∪ history) AND there is no non-thinking tool card and
+// no agent text bubble that came AFTER it was recorded in arrivalSeq.
+//
+// Implementation: we look at every merged step (history + live) for the
+// thinking step (mergeStepsByStepId already collapses the per-pipeline
+// reissue). If found in pending/running, we then check whether any
+// non-thinking tool step OR any agent text bubble was recorded with a
+// seq >= the thinking step's seq. If so → the indicator has been replaced
+// by the real content and should hide.
+//
+// On terminal thinking state, return false. On a fresh thinking that hasn't
+// been superseded by anything, return true.
+
+export function isThinkingActive(
+  messages: ChatMessage[],
+  history: PipelineStatePayload[],
+  live: PipelineStatePayload | null,
+  messageOrder: Map<string, number>,
+  stepOrder: Map<string, number>,
+): boolean {
+  // Find the most-recent thinking step across (history ∪ live). Use the
+  // merge result so the per-pipeline reissue collapses (matches the
+  // interleaved-stream filter — single source of truth for "current
+  // thinking step").
+  const merged = mergeStepsByStepId(history, live);
+  const thinking = merged.find(isThinkingStep);
+  if (!thinking) return false;
+  // Terminal thinking → indicator gone.
+  if (
+    thinking.state === "complete" ||
+    thinking.state === "failed" ||
+    thinking.state === "cancelled"
+  ) {
+    return false;
+  }
+  // Look up the thinking step's first-arrival seq. If we never recorded it
+  // (defensive — should not happen because recordPipelineStepSeqs records
+  // every step name|tool_name), treat as not-yet-superseded so we still
+  // show the indicator while a fresh thinking is in flight.
+  const thinkingKey = `${thinking.name}|${thinking.tool_name}`;
+  const thinkingSeq = stepOrder.get(thinkingKey) ?? Number.MAX_SAFE_INTEGER;
+
+  // Has any agent text bubble arrived at or after this thinking seq AND
+  // contains content? An empty bubble (no text yet, just allocated) does
+  // NOT count — the bubble must have at least one character of streamed
+  // delta. (The agent typically emits "I'm working on X…" BEFORE the
+  // llm_generation card, but on a fresh turn the bubble may be allocated
+  // with empty text first; only when text arrives does the indicator's
+  // job finish.)
+  for (const m of messages) {
+    if (m.role !== "agent") continue;
+    if (m.text.length === 0) continue;
+    const seq = messageOrder.get(m.id) ?? Number.MAX_SAFE_INTEGER;
+    if (seq >= thinkingSeq) return false;
+  }
+
+  // Has any NON-thinking tool card landed at or after this thinking seq?
+  // (A tool card is the "agent is doing real work" affordance — once one
+  // appears the abstract "thinking" cue is redundant.)
+  for (const step of merged) {
+    if (isThinkingStep(step)) continue;
+    const key = `${step.name}|${step.tool_name}`;
+    const seq = stepOrder.get(key) ?? Number.MAX_SAFE_INTEGER;
+    if (seq >= thinkingSeq) return false;
+  }
+
+  return true;
+}
+
 // Export for testing.
 export function shouldShowCancel(state: PipelineInlineState): boolean {
   // (a) pipeline-state: any step running?
@@ -383,6 +487,14 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
   const [researchMode] = useState<ResearchMode>("research"); // toggle UI lands M3
   const [lastError, setLastError] = useState<string | null>(null);
+
+  // sprint-13 job-0231: chart-emission state in Chat.
+  // Charts accumulate per session; Case switch resets to [] via the case-open handler.
+  // Gallery state for the full-viewport chart viewer.
+  const [charts, setCharts] = useState<ChartPayload[]>([]);
+  const [galleryOpen, setGalleryOpen] = useState<boolean>(false);
+  const [galleryCharts, setGalleryCharts] = useState<ChartPayload[]>([]);
+  const [galleryInitialIndex, setGalleryInitialIndex] = useState<number>(0);
 
   // job-0176 — arrival-order tracking for chronological interleave.
   // ``messageOrder`` is keyed on ``message_id`` (user_id for user lines);
@@ -485,6 +597,13 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
         // THIS Case will repopulate it.
         dispatchPipeline({ type: "case-open" });
         setLastError(null);
+        // sprint-13 job-0231: Case switch resets charts in Chat too
+        // (replace-not-reconcile applied client-side). Rehydration from
+        // session.charts is handled in App.tsx and arrives via
+        // onChartEmission fan-out on reconnect; we start from a clean
+        // slate so stale charts from the prior Case don't linger.
+        setCharts([]);
+        setGalleryOpen(false);
         bumpStreamTick((n) => n + 1);
       },
       onError: (p: ErrorPayload) => {
@@ -494,6 +613,17 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
         // Sender envelope shape does not currently include tool_name; pass
         // null and rely on the most-recent-running fallback.
         dispatchPipeline({ type: "error", payload: p, tool_name: null });
+      },
+      // sprint-13 job-0231: chart-emission routing in Chat's own GraceWs
+      // instance. Because chart-emission is in SESSION_SCOPED_TYPES, Chat
+      // receives it via the fan-out hub even when it was emitted on
+      // App.tsx's connection. De-dupe on chart_id so both hub-delivered and
+      // direct arrivals don't double-stack.
+      onChartEmission: (p: ChartPayload) => {
+        setCharts((prev) => {
+          if (prev.some((c) => c.chart_id === p.chart_id)) return prev;
+          return [...prev, p];
+        });
       },
     });
     wsRef.current = ws;
@@ -536,6 +666,50 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
     };
   }, []);
 
+  // sprint-13 job-0231: chart injection dev seam for Playwright snapshots.
+  // App.tsx owns the primary __grace2InjectChartEmission window seam.
+  // Chat.tsx subscribes to a parallel seam __grace2InjectChartEmissionChat
+  // so Playwright can directly inject into the Chat component's own chart
+  // state. In production only the real GraceWs onChartEmission handler is
+  // active; the window seam is guarded behind import.meta.env.DEV.
+  //
+  // The window seam approach is used instead of the SESSION_SCOPED_TYPES
+  // hub fan-out because the hub fan-out only works for real WebSocket
+  // messages — the window injection bypasses the WS layer entirely (which
+  // is the whole point for UI snapshot tests without a live agent).
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    // Subscribe to the shared window seam defined in App.tsx.
+    // App.tsx registers __grace2InjectChartEmission to call App's own
+    // setCharts. We ALSO need Chat's setCharts to be called. We achieve
+    // this by registering a SECOND seam __grace2InjectChartEmissionChat
+    // that Chat.tsx owns. Playwright scripts call both seams (or just the
+    // shared one via the multi-dispatch wrapper below).
+    //
+    // Alternatively: override __grace2InjectChartEmission in Chat to
+    // also drive Chat's local state. We do this carefully: wrap the
+    // existing App seam so both App and Chat state update together.
+    const prev = (window as unknown as Record<string, unknown>).__grace2InjectChartEmission as ((p: ChartPayload) => void) | undefined;
+    const combined = (p: ChartPayload) => {
+      // Drive Chat state first.
+      setCharts((prevCharts) => {
+        if (prevCharts.some((c) => c.chart_id === p.chart_id)) return prevCharts;
+        return [...prevCharts, p];
+      });
+      // Then call App's handler if it exists.
+      prev?.(p);
+    };
+    (window as unknown as Record<string, unknown>).__grace2InjectChartEmission = combined;
+    return () => {
+      // Restore App's original seam on cleanup.
+      if (typeof prev === "function") {
+        (window as unknown as Record<string, unknown>).__grace2InjectChartEmission = prev;
+      } else {
+        delete (window as unknown as Record<string, unknown>).__grace2InjectChartEmission;
+      }
+    };
+  }, []);
+
   // Auto-scroll on new content only when the user is already at the bottom.
   // This preserves the user's reading position when they've scrolled up to
   // read history while the stream is still landing new tokens.
@@ -543,7 +717,7 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
     if (scrollRef.current && atBottomRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [messages, pipeline]);
+  }, [messages, pipeline, charts]);
 
   // job-0153 Part 3 — scroll handler. Computes "near bottom" against the
   // current scroll position and toggles the arrow visibility + the
@@ -716,6 +890,11 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
         {/* seq. Tool steps reuse the (name|tool_name) collapse key so the */}
         {/* llm_generation reissue edge case (job-0166 Part 3) stays as a  */}
         {/* single transitioning card pinned to its original chat slot.    */}
+        {/* wave-4-10 — the Gemini "Thinking…" pseudo-step is filtered out  */}
+        {/* of this stream and rendered as the separate ephemeral          */}
+        {/* ThinkingIndicator at the BOTTOM of the scroll (below). It      */}
+        {/* vanishes the moment a real agent text bubble or non-thinking   */}
+        {/* tool card arrives.                                              */}
         <InterleavedChatStream
           messages={messages}
           history={pipeline.history}
@@ -723,6 +902,50 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
           messageOrder={messageOrderRef.current}
           stepOrder={stepOrderRef.current}
         />
+
+        {/* wave-4-10 ephemeral Thinking indicator — italic muted-gray     */}
+        {/* "Thinking…" with subtle opacity pulse. NO card chrome. Always  */}
+        {/* the last child of the scroll container so it visually pins to  */}
+        {/* the bottom regardless of when the llm_generation step arrived. */}
+        {/* Hides on first agent text chunk / first non-thinking tool /    */}
+        {/* terminal thinking state. See `feedback_thinking_state_ephemeral`. */}
+        <ThinkingIndicator
+          active={isThinkingActive(
+            messages,
+            pipeline.history,
+            pipeline.live,
+            messageOrderRef.current,
+            stepOrderRef.current,
+          )}
+        />
+
+        {/* sprint-13 job-0231: inline chart stacks. Charts group by
+            created_turn_id; singletons (null turn_id) render alone.
+            Stacks appear after the interleaved tool/message stream because
+            they arrive on a separate envelope type that doesn't carry
+            an arrivalSeq (chart-emission is not interleaved with
+            pipeline-state — it's a distinct session-scoped envelope that
+            arrives asynchronously). We render them as a trailing section
+            below the message stream. Each stack is independently clickable
+            to open the ChartGallery overlay. */}
+        {charts.length > 0 && (
+          <div
+            data-testid="chart-stack-section"
+            style={{ display: "flex", flexDirection: "column", gap: 12, paddingTop: 4 }}
+          >
+            {buildChartStacks(charts).map((stack) => (
+              <ChartStack
+                key={stack[0]!.chart_id}
+                charts={stack}
+                onOpenGallery={(stackCharts, idx) => {
+                  setGalleryCharts(stackCharts);
+                  setGalleryInitialIndex(idx);
+                  setGalleryOpen(true);
+                }}
+              />
+            ))}
+          </div>
+        )}
 
         {lastError && (
           <div
@@ -788,6 +1011,19 @@ export function Chat({ wsUrl, onClose }: ChatProps): JSX.Element {
           onHeightChange={handleInputHeightChange}
         />
       </div>
+
+      {/* sprint-13 job-0231: ChartGallery full-viewport overlay.
+          Rendered inside the Chat panel so it is scoped to this mount
+          (Chat is kept mounted across collapse). z-index 10_000 from
+          ChartGallery overlays the full viewport — intentional, as the
+          chart gallery is a primary focus surface. */}
+      {galleryOpen && galleryCharts.length > 0 && (
+        <ChartGallery
+          charts={galleryCharts}
+          initialIndex={galleryInitialIndex}
+          onClose={() => setGalleryOpen(false)}
+        />
+      )}
     </div>
   );
 }
@@ -964,8 +1200,16 @@ export function buildInterleavedStream(
   // (name|tool_name) collapse key. The collapse key matches what
   // recordPipelineStepSeqs records, so the rendered position is sticky
   // across pipeline_id reissues + state transitions.
+  //
+  // wave-4-10 thinking-state: the Gemini "llm_generation" step is special-
+  // cased — it does NOT interleave as a tool card. It renders as a separate
+  // ephemeral indicator pinned to the bottom of the chat scroll (no box, no
+  // green tint, vanishes on first agent text / first non-thinking tool /
+  // terminal success). See `feedback_thinking_state_ephemeral`. We filter
+  // it here so the interleaved stream contains only actionable tool cards.
   const mergedSteps = mergeStepsByStepId(history, live);
   for (const step of mergedSteps) {
+    if (isThinkingStep(step)) continue;
     const key = `${step.name}|${step.tool_name}`;
     const seq = stepOrder.get(key) ?? Number.MAX_SAFE_INTEGER;
     out.push({ kind: "tool", seq, stepKey: key, step });
@@ -1098,4 +1342,31 @@ function appendDelta(
   const next = prev.slice();
   next[idx] = updated;
   return next;
+}
+
+// --- Chart stack grouping (sprint-13 job-0231) ------------------------------ //
+//
+// Groups a flat list of ChartPayload items into stacks keyed on
+// ``created_turn_id``. Charts with the same non-null ``created_turn_id`` form
+// one stack. Charts with ``created_turn_id === null`` are each their own
+// singleton stack (they arrived independently, not as a batch). The grouping
+// order preserves the original arrival order of the first chart in each group.
+//
+// Exported for unit testing; not used outside Chat.tsx otherwise.
+
+export function buildChartStacks(charts: ChartPayload[]): ChartPayload[][] {
+  const order: string[] = [];         // insertion order of group keys
+  const groups = new Map<string, ChartPayload[]>();
+
+  for (const c of charts) {
+    // Singletons key on chart_id so each occupies its own slot.
+    const key = c.created_turn_id ?? `__singleton__${c.chart_id}`;
+    if (!groups.has(key)) {
+      order.push(key);
+      groups.set(key, []);
+    }
+    groups.get(key)!.push(c);
+  }
+
+  return order.map((k) => groups.get(k)!);
 }

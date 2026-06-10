@@ -25,6 +25,9 @@ import {
   PipelineInlineState,
   buildInterleavedStream,
   InterleavedEntry,
+  isThinkingActive,
+  isThinkingStep,
+  THINKING_STEP_NAME,
 } from "./Chat";
 import {
   ErrorPayload,
@@ -746,5 +749,308 @@ describe("buildInterleavedStream (job-0176 — chronological interleave)", () =>
     expect(stream).toHaveLength(2);
     expect(stream[0]!.kind).toBe("agent-message");
     expect(stream[1]!.kind).toBe("tool");
+  });
+
+  // --- wave-4-10 thinking-state filtering -------------------------------- //
+  //
+  // The Gemini "llm_generation" step is special-cased OUT of the interleaved
+  // stream — it renders as a separate ephemeral indicator (ThinkingIndicator)
+  // pinned to the bottom of the chat scroll, not as a tool card. Other tool
+  // dispatches continue to interleave as normal.
+
+  it("filters thinking-shaped steps (llm_generation) out of the interleaved stream", () => {
+    const messageOrder = new Map<string, number>([["user-0", 1]]);
+    const stepOrder = new Map<string, number>([
+      [`${THINKING_STEP_NAME}|gemini_generate`, 2],
+      ["fetch_dem|fetch_dem", 3],
+    ]);
+    const messages = [
+      { id: "user-0", role: "user" as const, text: "Hi", done: true },
+    ];
+    const snap: PipelineStatePayload = {
+      pipeline_id: "pipe-A",
+      steps: [
+        {
+          step_id: "step-llm",
+          name: THINKING_STEP_NAME,
+          tool_name: "gemini_generate",
+          state: "running",
+        },
+        {
+          step_id: "step-dem",
+          name: "fetch_dem",
+          tool_name: "fetch_dem",
+          state: "running",
+        },
+      ],
+    };
+    const stream = buildInterleavedStream(
+      messages,
+      [],
+      snap,
+      messageOrder,
+      stepOrder,
+    );
+    // user-message + fetch_dem tool card; the llm_generation card is filtered.
+    expect(stream.map((e: InterleavedEntry) => e.kind)).toEqual([
+      "user-message",
+      "tool",
+    ]);
+    const tool = stream[1]! as Extract<InterleavedEntry, { kind: "tool" }>;
+    expect(tool.step.name).toBe("fetch_dem");
+  });
+});
+
+// --- isThinkingActive predicate (wave-4-10) ----------------------------- //
+//
+// Drives the visibility of the ephemeral ThinkingIndicator pinned to the
+// bottom of the chat scroll. Per `feedback_thinking_state_ephemeral`:
+//   - Active when a Gemini llm_generation step exists in pending/running
+//     and no real content has superseded it (no agent text bubble, no
+//     non-thinking tool card recorded with seq >= thinking seq).
+//   - Inactive on terminal thinking state (complete / failed / cancelled).
+//   - Inactive when an agent text chunk arrives (the bubble replaces it).
+//   - Inactive when a non-thinking tool card lands (the tool card itself
+//     is the "agent is working" affordance).
+
+describe("isThinkingActive (wave-4-10 thinking-state)", () => {
+  it("isThinkingStep returns true for the llm_generation step name only", () => {
+    expect(
+      isThinkingStep({
+        step_id: "s1",
+        name: THINKING_STEP_NAME,
+        tool_name: "gemini_generate",
+        state: "running",
+      }),
+    ).toBe(true);
+    expect(
+      isThinkingStep({
+        step_id: "s2",
+        name: "fetch_dem",
+        tool_name: "fetch_dem",
+        state: "running",
+      }),
+    ).toBe(false);
+  });
+
+  it("returns false when no thinking step exists in history or live", () => {
+    expect(
+      isThinkingActive([], [], null, new Map(), new Map()),
+    ).toBe(false);
+  });
+
+  it("returns true when a running thinking step exists and nothing has superseded it", () => {
+    const stepOrder = new Map<string, number>([
+      [`${THINKING_STEP_NAME}|gemini_generate`, 1],
+    ]);
+    const live: PipelineStatePayload = {
+      pipeline_id: "pipe-A",
+      steps: [
+        {
+          step_id: "step-llm",
+          name: THINKING_STEP_NAME,
+          tool_name: "gemini_generate",
+          state: "running",
+        },
+      ],
+    };
+    expect(
+      isThinkingActive([], [], live, new Map(), stepOrder),
+    ).toBe(true);
+  });
+
+  it("returns true when a pending thinking step exists (not yet started)", () => {
+    const stepOrder = new Map<string, number>([
+      [`${THINKING_STEP_NAME}|gemini_generate`, 1],
+    ]);
+    const live: PipelineStatePayload = {
+      pipeline_id: "pipe-A",
+      steps: [
+        {
+          step_id: "step-llm",
+          name: THINKING_STEP_NAME,
+          tool_name: "gemini_generate",
+          state: "pending",
+        },
+      ],
+    };
+    expect(
+      isThinkingActive([], [], live, new Map(), stepOrder),
+    ).toBe(true);
+  });
+
+  it("returns false the moment the thinking step transitions to COMPLETE", () => {
+    const stepOrder = new Map<string, number>([
+      [`${THINKING_STEP_NAME}|gemini_generate`, 1],
+    ]);
+    const live: PipelineStatePayload = {
+      pipeline_id: "pipe-A",
+      steps: [
+        {
+          step_id: "step-llm",
+          name: THINKING_STEP_NAME,
+          tool_name: "gemini_generate",
+          state: "complete",
+        },
+      ],
+    };
+    expect(
+      isThinkingActive([], [], live, new Map(), stepOrder),
+    ).toBe(false);
+  });
+
+  it("returns false on terminal FAILED thinking state", () => {
+    const stepOrder = new Map<string, number>([
+      [`${THINKING_STEP_NAME}|gemini_generate`, 1],
+    ]);
+    const live: PipelineStatePayload = {
+      pipeline_id: "pipe-A",
+      steps: [
+        {
+          step_id: "step-llm",
+          name: THINKING_STEP_NAME,
+          tool_name: "gemini_generate",
+          state: "failed",
+        },
+      ],
+    };
+    expect(
+      isThinkingActive([], [], live, new Map(), stepOrder),
+    ).toBe(false);
+  });
+
+  it("returns false on terminal CANCELLED thinking state", () => {
+    const stepOrder = new Map<string, number>([
+      [`${THINKING_STEP_NAME}|gemini_generate`, 1],
+    ]);
+    const live: PipelineStatePayload = {
+      pipeline_id: "pipe-A",
+      steps: [
+        {
+          step_id: "step-llm",
+          name: THINKING_STEP_NAME,
+          tool_name: "gemini_generate",
+          state: "cancelled",
+        },
+      ],
+    };
+    expect(
+      isThinkingActive([], [], live, new Map(), stepOrder),
+    ).toBe(false);
+  });
+
+  it("returns false when an agent text bubble with content streams in after thinking", () => {
+    // Thinking arrives at seq=1; agent text bubble arrives at seq=2 with
+    // content — the bubble replaces the indicator.
+    const messageOrder = new Map<string, number>([["msg-1", 2]]);
+    const stepOrder = new Map<string, number>([
+      [`${THINKING_STEP_NAME}|gemini_generate`, 1],
+    ]);
+    const messages = [
+      {
+        id: "msg-1",
+        role: "agent" as const,
+        text: "I'm working on it.",
+        done: false,
+      },
+    ];
+    const live: PipelineStatePayload = {
+      pipeline_id: "pipe-A",
+      steps: [
+        {
+          step_id: "step-llm",
+          name: THINKING_STEP_NAME,
+          tool_name: "gemini_generate",
+          state: "running",
+        },
+      ],
+    };
+    expect(
+      isThinkingActive(messages, [], live, messageOrder, stepOrder),
+    ).toBe(false);
+  });
+
+  it("stays active when an EMPTY agent text bubble has been allocated but no content streamed yet", () => {
+    // Defensive: the bubble may exist in the messages list with an empty
+    // string (placeholder before deltas arrive). It does NOT replace the
+    // indicator until at least one character of text has streamed.
+    const messageOrder = new Map<string, number>([["msg-1", 2]]);
+    const stepOrder = new Map<string, number>([
+      [`${THINKING_STEP_NAME}|gemini_generate`, 1],
+    ]);
+    const messages = [
+      { id: "msg-1", role: "agent" as const, text: "", done: false },
+    ];
+    const live: PipelineStatePayload = {
+      pipeline_id: "pipe-A",
+      steps: [
+        {
+          step_id: "step-llm",
+          name: THINKING_STEP_NAME,
+          tool_name: "gemini_generate",
+          state: "running",
+        },
+      ],
+    };
+    expect(
+      isThinkingActive(messages, [], live, messageOrder, stepOrder),
+    ).toBe(true);
+  });
+
+  it("returns false when a non-thinking tool card lands after thinking", () => {
+    // Thinking arrives at seq=1; fetch_dem tool card arrives at seq=2 → the
+    // tool card is the "agent is doing real work" affordance, hide indicator.
+    const stepOrder = new Map<string, number>([
+      [`${THINKING_STEP_NAME}|gemini_generate`, 1],
+      ["fetch_dem|fetch_dem", 2],
+    ]);
+    const live: PipelineStatePayload = {
+      pipeline_id: "pipe-A",
+      steps: [
+        {
+          step_id: "step-llm",
+          name: THINKING_STEP_NAME,
+          tool_name: "gemini_generate",
+          state: "running",
+        },
+        {
+          step_id: "step-dem",
+          name: "fetch_dem",
+          tool_name: "fetch_dem",
+          state: "running",
+        },
+      ],
+    };
+    expect(
+      isThinkingActive([], [], live, new Map(), stepOrder),
+    ).toBe(false);
+  });
+
+  it("user-message bubble does NOT hide the indicator (only agent text counts)", () => {
+    // The user's message arrives BEFORE thinking — user-message at seq=1,
+    // thinking at seq=2. Even if it were at seq=3 the predicate ignores
+    // user-role messages: only agent text bubbles count as superseding
+    // content.
+    const messageOrder = new Map<string, number>([["user-0", 3]]);
+    const stepOrder = new Map<string, number>([
+      [`${THINKING_STEP_NAME}|gemini_generate`, 2],
+    ]);
+    const messages = [
+      { id: "user-0", role: "user" as const, text: "Q", done: true },
+    ];
+    const live: PipelineStatePayload = {
+      pipeline_id: "pipe-A",
+      steps: [
+        {
+          step_id: "step-llm",
+          name: THINKING_STEP_NAME,
+          tool_name: "gemini_generate",
+          state: "running",
+        },
+      ],
+    };
+    expect(
+      isThinkingActive(messages, [], live, messageOrder, stepOrder),
+    ).toBe(true);
   });
 });

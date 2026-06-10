@@ -46,6 +46,16 @@ import { CasesPanel } from "./components/CasesPanel";
 import { CaseView } from "./components/CaseView";
 import { SettingsPopup } from "./components/SettingsPopup";
 import { SecretsPopup } from "./components/SecretsPopup";
+import { ToolsCatalogPopup } from "./components/ToolsCatalogPopup";
+import {
+  RoutingQualityDashboard,
+  type RoutingDashboardSummary,
+} from "./components/RoutingQualityDashboard";
+import {
+  ImpactPanel,
+  type ImpactEnvelope,
+} from "./components/ImpactPanel";
+import type { ChartPayload } from "./components/ChartStack";
 import { BottomRowButtons } from "./components/BottomRowButtons";
 import { SaveGateModal } from "./components/SaveGateModal";
 import {
@@ -124,6 +134,22 @@ declare global {
     __grace2InjectCaseOpen?: (p: CaseOpenEnvelopePayload) => void;
     /** Dev seam for payload-warning (job-0140); wired by App.tsx GraceWs handler. */
     __grace2InjectPayloadWarning?: (p: PayloadWarningEnvelopePayload) => void;
+    /**
+     * Dev seam for ImpactEnvelope panel (Wave 4.11 P4). Tests + Playwright
+     * UI-driver pass a full ImpactEnvelope to surface the side panel.
+     */
+    __grace2InjectImpactEnvelope?: (p: ImpactEnvelope | null) => void;
+    /**
+     * Dev seam for chart-emission (sprint-13 job-0231). Playwright / tests
+     * inject a ChartPayload to surface the inline stacked preview + gallery
+     * without driving a live agent. Mirrors __grace2InjectImpactEnvelope.
+     */
+    __grace2InjectChartEmission?: (p: ChartPayload) => void;
+    /**
+     * Dev seam to reset charts (sprint-13 job-0231). Lets Playwright clear
+     * the accumulated chart list between test scenarios.
+     */
+    __grace2ClearCharts?: () => void;
   }
 }
 
@@ -236,6 +262,47 @@ export function App(): JSX.Element {
   // Settings + Secrets popup visibility (job-0143).
   const [settingsOpen, setSettingsOpen] = useState<boolean>(false);
   const [secretsOpen, setSecretsOpen] = useState<boolean>(false);
+  // Wave 4.10 C1: tools-catalog popup visibility.
+  const [toolsCatalogOpen, setToolsCatalogOpen] = useState<boolean>(false);
+  // Wave 4.11 M7: routing-quality dashboard visibility.
+  const [routingDashOpen, setRoutingDashOpen] = useState<boolean>(false);
+  // Wave 4.11 M7: optional inject seam for Playwright snapshots. When the
+  // window-attached fixture is present we mount the dashboard with the
+  // pre-fetched summary so the visual smoke test renders without driving a
+  // live agent. Production code never touches this — guarded behind a
+  // global flag set only in the dev-tools harness.
+  const [routingDashInjected, setRoutingDashInjected] =
+    useState<RoutingDashboardSummary | null>(null);
+  useEffect(() => {
+    interface InjectWindow {
+      __grace2InjectTelemetryFixture?: RoutingDashboardSummary;
+    }
+    const w = window as unknown as InjectWindow;
+    if (w.__grace2InjectTelemetryFixture) {
+      setRoutingDashInjected(w.__grace2InjectTelemetryFixture);
+      setRoutingDashOpen(true);
+    }
+  }, []);
+  // Wave 4.11 P4: ImpactEnvelope side panel. Populated when a
+  // ``compute_impact_envelope`` tool result arrives carrying
+  // ``raw_envelope.n_structures_total`` (the ImpactEnvelope shape from B.6c).
+  const [impactEnvelope, setImpactEnvelope] = useState<ImpactEnvelope | null>(
+    null,
+  );
+
+  // sprint-13 job-0231: chart-emission accumulates per session in App.tsx's
+  // GraceWs connection so the session-scoped hub fan-out reaches Chat.tsx.
+  // Charts are actually rendered in Chat.tsx; App.tsx only holds the state
+  // for reset-on-Case-switch (replace-not-reconcile) and the dev seam.
+  const [charts, setCharts] = useState<ChartPayload[]>([]);
+
+  const handleChartEmission = useCallback((p: ChartPayload) => {
+    setCharts((prev) => {
+      // De-duplicate on chart_id so re-emits from the same tool don't stack.
+      if (prev.some((c) => c.chart_id === p.chart_id)) return prev;
+      return [...prev, p];
+    });
+  }, []);
 
   // job-0137 Cases UX shell + job-0143 save-gate wiring.
   const sendCaseCommand = useCallback(
@@ -424,6 +491,10 @@ export function App(): JSX.Element {
       onCaseList: (p: CaseListEnvelopePayload) => useCases_onCaseList(p),
       onCaseOpen: (p: CaseOpenEnvelopePayload) => useCases_onCaseOpen(p),
       onError: () => { /* Chat owns rendering */ },
+      // Wave 4.11 P4: surface ImpactPanel when agent emits impact-envelope.
+      onImpactEnvelope: (p) => setImpactEnvelope(p),
+      // sprint-13 job-0231: accumulate chart-emission payloads per session.
+      onChartEmission: (p) => handleChartEmission(p),
     });
     wsRef.current = ws;
     ws.connect();
@@ -431,10 +502,15 @@ export function App(): JSX.Element {
       wsRef.current = null;
       ws.close();
     };
-  }, [bus, fanoutSourceSuggestion, useCases_onCaseList, useCases_onCaseOpen]);
+  }, [bus, fanoutSourceSuggestion, useCases_onCaseList, useCases_onCaseOpen, handleChartEmission]);
 
   // job-0137: Case rehydration replay.
   useEffect(() => {
+    // sprint-13 job-0231: Case switch resets charts (replace-not-reconcile
+    // client-side rule). Charts for the new Case replay via
+    // activeSession.charts below; on null (no active Case) we clear.
+    setCharts([]);
+
     if (activeSession === null) {
       bus.pushSessionState({
         loaded_layers: [],
@@ -459,6 +535,16 @@ export function App(): JSX.Element {
         args: { bbox },
       } as unknown as MapCommandPayload);
     }
+    // Rehydrate charts from session. ``activeSession.charts`` is the
+    // append-only array persisted via SessionChartRecord (sprint-13 schema).
+    // When the field is absent (older sessions) or empty, charts stays [].
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const sessionCharts = (activeSession as any).charts as ChartPayload[] | undefined;
+    if (Array.isArray(sessionCharts) && sessionCharts.length > 0) {
+      setCharts(sessionCharts.filter(
+        (c) => c && typeof c.chart_id === "string" && c.vega_lite_spec,
+      ));
+    }
   }, [activeSession, bus]);
 
   // Lift layers from session-state.
@@ -480,6 +566,18 @@ export function App(): JSX.Element {
     window.__grace2InjectCaseOpen = (p) => useCases_onCaseOpen(p);
     window.__grace2InjectPayloadWarning = (p) =>
       setPayloadWarnings((prev) => [p, ...prev]);
+    window.__grace2InjectImpactEnvelope = (p) => setImpactEnvelope(p);
+    // sprint-13 job-0231: chart injection seam for Playwright snapshots.
+    // App.tsx owns the window seam; Chat.tsx receives the fan-out via
+    // its own GraceWs onChartEmission handler (SESSION_SCOPED_TYPES hub).
+    window.__grace2InjectChartEmission = (p) => handleChartEmission(p);
+    window.__grace2ClearCharts = () => {
+      // App.tsx chart state is the authoritative reset source. Charts in
+      // Chat.tsx are reset separately via its own case-open handler.
+      setCharts([]);
+    };
+    // Expose the current chart count for Playwright introspection.
+    (window as unknown as Record<string, unknown>).__grace2ChartCount = () => charts.length;
     return () => {
       delete window.__grace2InjectSessionState;
       delete window.__grace2InjectMapCommand;
@@ -488,8 +586,11 @@ export function App(): JSX.Element {
       delete window.__grace2InjectCaseList;
       delete window.__grace2InjectCaseOpen;
       delete window.__grace2InjectPayloadWarning;
+      delete window.__grace2InjectImpactEnvelope;
+      delete window.__grace2InjectChartEmission;
+      delete window.__grace2ClearCharts;
     };
-  }, [bus, fanoutSourceSuggestion, useCases_onCaseList, useCases_onCaseOpen]);
+  }, [bus, fanoutSourceSuggestion, useCases_onCaseList, useCases_onCaseOpen, handleChartEmission]);
 
   // job-0125: bridge SecretsPanel callbacks to the active GraceWs.
   function handleSecretAdd(payload: {
@@ -824,6 +925,40 @@ export function App(): JSX.Element {
             setSettingsOpen(false);
           }}
           onClose={() => setSettingsOpen(false)}
+          onOpenToolsCatalog={() => {
+            setSettingsOpen(false);
+            setToolsCatalogOpen(true);
+          }}
+          onOpenRoutingDashboard={() => {
+            setSettingsOpen(false);
+            setRoutingDashOpen(true);
+          }}
+        />
+      )}
+
+      {/* Wave 4.10 C1: Tools catalog popup (full-screen overlay). */}
+      {toolsCatalogOpen && (
+        <ToolsCatalogPopup onClose={() => setToolsCatalogOpen(false)} />
+      )}
+
+      {/* Wave 4.11 M7: Routing-quality dashboard (full-screen overlay). */}
+      {routingDashOpen && (
+        <RoutingQualityDashboard
+          onClose={() => {
+            setRoutingDashOpen(false);
+            setRoutingDashInjected(null);
+          }}
+          initialSummary={routingDashInjected}
+        />
+      )}
+
+      {/* Wave 4.11 P4: ImpactEnvelope side panel. Surfaces whenever a
+          compute_impact_envelope tool result has populated impactEnvelope. */}
+      {impactEnvelope && (
+        <ImpactPanel
+          envelope={impactEnvelope}
+          caseName={activeCase?.title ?? null}
+          onClose={() => setImpactEnvelope(null)}
         />
       )}
 
