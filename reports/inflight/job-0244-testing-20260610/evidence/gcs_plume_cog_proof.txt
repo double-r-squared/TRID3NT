@@ -1,0 +1,17 @@
+GCS plume COG existence proof — job-0244 Scenario A
+Verified via agent venv google.cloud.storage client, project grace-2-hazard-prod, 2026-06-10.
+
+$ storage.Client(project='grace-2-hazard-prod').list_blobs('grace-2-hazard-prod-runs', prefix='01KTRKZ1Q82R5HGPGH0QFZ96AC/')
+01KTRKZ1Q82R5HGPGH0QFZ96AC/plume_concentration_4326.tif  2856 bytes  application/octet-stream
+count: 1
+
+This is the EPSG:4326 plume concentration COG produced by the local mf6 solve + postprocess_modflow,
+uploaded via fsspec/gcsfs. run_id=01KTRKZ1Q82R5HGPGH0QFZ96AC.
+max_concentration_mgl=2946.32, plume_area_km2=0.0125 (agent log lines 130-134).
+
+CONCLUSION: MODFLOW -> COG -> GCS upload pipeline is fully proven end-to-end.
+The leg that FAILS is publish_layer's PyQGIS-worker WMS-registration dispatch, which lazy-imports
+google.cloud.run_v2 to run the pyqgis-worker Cloud Run Job. google-cloud-run is NOT installed in the
+agent venv (not declared in services/agent/pyproject.toml; absent from the google.cloud namespace),
+so the COG is never registered as a WMS layer on QGIS Server and cannot render on the MapLibre map.
+This is an environment/packaging gap, DISTINCT from the job-0243 confirmation-registry fix (proven OK).

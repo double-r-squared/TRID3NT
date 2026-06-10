@@ -1,0 +1,25 @@
+[
+  {
+    "t_rel_ms": 1055,
+    "type": "session-state",
+    "tool_name": null,
+    "preview": "{\"type\":\"session-state\",\"id\":\"01KTRMGNP93XSQVF2Y270QET61\",\"ts\":\"2026-06-10T11:26:08.585224Z\",\"session_id\":\"01KTRMGNNFHT2GD042DVP6ZDC6\",\"payload\":{\"chat_history\":[],\"loaded_layers\":[],\"pipeline_history\":[],\"current_pipeline\":null,\"map_view\":null,\"status\":\"active\"}}"
+  },
+  {
+    "t_rel_ms": 1758,
+    "type": "session-state",
+    "tool_name": null,
+    "preview": "{\"type\":\"session-state\",\"id\":\"01KTRMGPBFSDJFENXBYW8K5KMT\",\"ts\":\"2026-06-10T11:26:09.263992Z\",\"session_id\":\"01KTRMGNNFHT2GD042DVP6ZDC6\",\"payload\":{\"chat_history\":[],\"loaded_layers\":[],\"pipeline_history\":[],\"current_pipeline\":null,\"map_view\":null,\"status\":\"active\"}}"
+  },
+  {
+    "t_rel_ms": 8906,
+    "type": "SENT:user-message",
+    "preview": "{\"type\":\"user-message\",\"id\":\"01KTRMGXBHA92CJXBZTX01AG36\",\"ts\":\"2026-06-10T11:26:16.433Z\",\"session_id\":\"01KTRMGNNFHT2GD042DVP6ZDC6\",\"payload\":{\"text\":\"Model flood damage for Fort Myers, Florida. Run a flood scenario there if no flood layer exists yet, then run a Pelicun damage assessment on it.\",\"research_mode\":\"research\"}}"
+  },
+  {
+    "t_rel_ms": 8906,
+    "type": "pipeline-state",
+    "tool_name": null,
+    "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTRMGXBJW96J2RRT042D3A07\",\"ts\":\"2026-06-10T11:26:16.434113Z\",\"session_id\":\"01KTRMGNNFHT2GD042DVP6ZDC6\",\"payload\":{\"pipeline_id\":\"01KTRMGXBJW96J2RRT042D3A05\",\"steps\":[{\"step_id\":\"01KTRMGXBJW96J2RRT042D3A06\",\"name\":\"llm_generation\",\"tool_name\":\"gemini_generate\",\"state\":\"running\",\"started_at\":null,\"completed_at\":null,\"progress_percent\":null}]}}"
+  }
+]
