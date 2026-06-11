@@ -1480,6 +1480,15 @@
       "kind": "engineering",
       "workflow_id": "agent af6ce128143b297b7",
       "subagent_tokens": 138424
+    },
+    {
+      "job_id": "job-0250-firebase-auth-20260611",
+      "sprint": 13.5,
+      "description": "Opus infra runner: Firebase/Identity Platform provisioning via GA google provider only (4 auth resources + Firestore rules + count-guarded Google IdP); validate green; plan google-side clean; UNBLOCK 0250-A..G.",
+      "model": "opus",
+      "kind": "engineering",
+      "workflow_id": "agent a5c92e5d0e439c06b",
+      "subagent_tokens": 118863
     }
   ],
   "totals_by_sprint": {
@@ -1491,7 +1500,7 @@
     "11": 999540,
     "12": 27545642,
     "13": 14388888,
-    "13.5": 587417
+    "13.5": 706280
   },
   "historical_context": {
     "note": "Captured for accountability \u2014 NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
