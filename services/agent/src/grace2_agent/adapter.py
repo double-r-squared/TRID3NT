@@ -1353,6 +1353,22 @@ async def stream_events_with_contents(
         PipelineEmitter, and pipe ``cached_content_token_count`` into the
         tool-call telemetry record.
     """
+    # sprint-14-aws (job-0286): model-provider switch. When MODEL_PROVIDER=bedrock,
+    # delegate to the Bedrock Converse adapter — it converts the genai contents +
+    # tool declarations at the boundary and yields the SAME StreamEvent union, so
+    # the server.py dispatch loop, validator, emitter, and UI are untouched.
+    # cached_content_name is a Gemini-only fast-path and does not apply here.
+    from .bedrock_adapter import model_provider, stream_bedrock
+
+    if model_provider() == "bedrock":
+        async for _ev in stream_bedrock(
+            contents=contents,
+            tool_declarations=tool_declarations,
+            system_prompt=system_prompt,
+        ):
+            yield _ev
+        return
+
     loop = asyncio.get_running_loop()
 
     # Build the tool list for the config. SKIPPED when a cache is supplied —

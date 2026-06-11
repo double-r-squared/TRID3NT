@@ -13,6 +13,10 @@ authors = [{ name = "GRACE-2 agent specialist" }]
 
 # Pin upper bounds loosely; ADK + genai SDK evolve fast — verify with `pip show`.
 dependencies = [
+    # sprint-14-aws (job-0286): AWS Bedrock Converse provider for the agent
+    # loop (MODEL_PROVIDER=bedrock). google-genai stays until the GCP->AWS
+    # migration completes and the Vertex path is retired.
+    "boto3>=1.40,<2",
     "google-adk>=2.2,<3",
     "google-genai>=2.8,<3",
     "google-cloud-secret-manager>=2.20,<3",
