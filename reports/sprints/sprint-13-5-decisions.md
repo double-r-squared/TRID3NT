@@ -26,3 +26,24 @@ during sprint-13 (mcp.py PDEATHSIG; job-0265 Cloud Logging transport) →
 blocked production mutations and console-only steps (Blaze attach, OAuth
 consent screen) accumulate in reports/inflight/sprint-13-5-USER_UNBLOCK.md
 for the user's return — jobs document-and-continue, never spin.
+
+## Decision 10 (2026-06-11, post panel-job-0252) — canonical owner identity
+
+**Call: the canonical owner identity for Cases/sessions/secrets is the
+INTERNAL `users._id` ULID** (what `_resolve_or_provision_user` mints), NOT
+the raw Firebase token uid. The Firebase uid lives only in
+`users.firebase_uid` and is resolved to the internal ULID at every trust
+boundary.
+
+**Why:** (a) SRS H.2:42 / H.5:124 already specify the internal ULID — the
+manifest's job-0252 line "sets user_id = uid from the verified token"
+contradicted the SRS and loses; (b) anonymous/dev/migration identities
+(sticky-anon ULIDs, `MIGRATION_ANON_UID`) have no Firebase uid, so the ULID
+is the only identity that covers every mode; (c) the agent's
+create→store→list chain already ships this way, panel-verified
+self-consistent and leak-free (88 tests).
+
+**Consequence:** job-0251's `mint_signed_url` must resolve the verified
+Firebase uid → internal `users._id` via a users-collection lookup before the
+`case_owned_by` check (fail-closed 403 when no users doc exists). Routed to
+job-0251b. Manifest correction noted in sprint-13-5-manifest.md.

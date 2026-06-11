@@ -355,3 +355,18 @@ Note: the large token budget is dominated by adversarial verify panels (9 × ~20
 - OQ-0203-FIND-PAGINATION: cursor pagination for chat histories beyond 1000 documents
 - Tool card expand output (V-chevron showing raw function_response) — per `feedback_tool_card_expand_output`
 - Synthetic close-out design — per `feedback_synthetic_close_out_design`
+
+---
+
+## Correction (orchestrator, 2026-06-11 — does not rewrite frozen scopes above)
+
+The job-0252 scope line "sets `user_id = uid` from the verified token"
+contradicts SRS H.2/H.5, which define the owner value as the **internal
+`users._id` ULID** (Firebase uid stored separately in `users.firebase_uid`).
+The SRS is authoritative; job-0252 shipped SRS-conformant. The panel-job-0252
+contract lens caught the consequence: job-0251's `mint_signed_url` compared
+`case_doc.user_id` against the Firebase token uid and would 403 every
+legitimate owner. Reconciliation = sprint-13-5-decisions.md Decision 10;
+fix = job-0251b (infra). The job-0252 contract-lens question "does user_id
+match Firebase UID?" is superseded by "does user_id match the internal
+users._id ULID resolved from the verified token?".

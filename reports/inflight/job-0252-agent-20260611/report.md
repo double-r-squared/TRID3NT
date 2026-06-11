@@ -42,3 +42,16 @@ auth.py (new), server.py, persistence.py, test_auth_required_gate.py (new), + 5 
 - R2: No secrets migration ships (kickoff scoped only a CASE migration). Pre-Auth orphan secrets become invisible after the leak removal; live secrets stamp user_id via _upsert_with_user so are fine. Flag for panel.
 - R3: Migration count parsing best-effort vs real mongodb-mcp-server text/EJSON blob; success criterion is "no orphans on next run" (documented). MCPSurfaceTranslator passes update-many through (only intercepts update-one).
 - R4 (headline): AUTH_REQUIRED default "false" MUST flip to "true" in prod via Cloud Run env at job-0257, else prod ships open.
+
+---
+
+## Adversarial panel verdict (orchestrator, 2026-06-11, wf_cba0b225-134, 387,469 tok)
+
+**PASS 3/4 — job-0252 DONE.**
+
+- **correctness CONFIRM** — 11 fresh adversarial tests + 24 job tests (35 total) green under `AUTH_REQUIRED=true`; no unauthenticated path reaches a bound session or dispatch (gate rejects BEFORE `_bind_auth_result`; exceptions fail-closed); migration idempotent against the REAL FileMCPClient; live agent pid 3799395 provably unaffected.
+- **regression CONFIRM** — full suite re-run 4354 passed with EXACTLY the 5 allowed pre-existing failures; dev no-env neutrality proven on the real handler functions; all 9 reconciled tests strengthened (negative isolation added), not weakened.
+- **contract REFUTED (major)** — the cross-JOB seam breaks at the VALUE layer: this job stamps `user_id` = the **internal `users._id` ULID** (`_resolve_or_provision_user` → `new_ulid()`; Firebase uid lives separately in `user.firebase_uid`), which is **SRS H.2/H.5-conformant**; but job-0251's `mint_signed_url` compares `case_doc.user_id == Firebase token uid` (`claims.uid/sub`). They never match → every legitimate owner's mint 403s once the signed-URL chain is wired. The manifest line "sets user_id = uid from the verified token" contradicts SRS H.2 — the SRS is authoritative; the manifest line was wrong. The agent-internal create→store→list chain is self-consistent and leak-free (reproduced). **Fix routed to job-0251b (infra)** — resolve verified Firebase uid → internal users._id via users-collection lookup inside the function; this job's code is the spec-correct side of the seam and stands.
+- **live-verify CONFIRM (minor)** — real-wire 4401+AUTH_FAILED on forged token and on non-auth first envelope (throwaway agents, zero orphans, dev agent + tailnet untouched, +66min uptime). Minor pre-existing finding: under `AUTH_REQUIRED=true`, `authenticate_token()` persists an ephemeral anonymous UserDocument BEFORE the gate rejects → junk user rows under hostile load. Ordering fix routed to **job-0252b**.
+
+Panel cost logged to cost_tracking.json (`panel-job-0252`).
