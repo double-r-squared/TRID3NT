@@ -1,0 +1,233 @@
+[0m[1mgoogle_project.grace2: Refreshing state... [id=projects/grace-2-hazard-prod][0m
+[0m[1mgoogle_project_service.enabled["cloudresourcemanager.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/cloudresourcemanager.googleapis.com][0m
+[0m[1mgoogle_project_service.enabled["iamcredentials.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/iamcredentials.googleapis.com][0m
+[0m[1mgoogle_project_service.enabled["serviceusage.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/serviceusage.googleapis.com][0m
+[0m[1mgoogle_project_service.enabled["secretmanager.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/secretmanager.googleapis.com][0m
+[0m[1mgoogle_project_service.enabled["logging.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/logging.googleapis.com][0m
+[0m[1mgoogle_project_service.enabled["monitoring.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/monitoring.googleapis.com][0m
+[0m[1mgoogle_project_service.enabled["storage.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/storage.googleapis.com][0m
+[0m[1mgoogle_project_service.enabled["artifactregistry.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/artifactregistry.googleapis.com][0m
+[0m[1mgoogle_project_service.enabled["workflows.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/workflows.googleapis.com][0m
+[0m[1mgoogle_project_service.enabled["run.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/run.googleapis.com][0m
+[0m[1mgoogle_project_service.enabled["aiplatform.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/aiplatform.googleapis.com][0m
+[0m[1mgoogle_project_service.enabled["iam.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/iam.googleapis.com][0m
+[0m[1mgoogle_project_service.enabled["cloudbuild.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/cloudbuild.googleapis.com][0m
+[0m[1mgoogle_project_service.enabled["pubsub.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/pubsub.googleapis.com][0m
+[0m[1mgoogle_secret_manager_secret.mongodb_srv: Refreshing state... [id=projects/grace-2-hazard-prod/secrets/mongodb-srv-dev][0m
+[0m[1mgoogle_storage_bucket.runs: Refreshing state... [id=grace-2-hazard-prod-runs][0m
+[0m[1mgoogle_service_account.agent_runtime: Refreshing state... [id=projects/grace-2-hazard-prod/serviceAccounts/agent-runtime@grace-2-hazard-prod.iam.gserviceaccount.com][0m
+[0m[1mgoogle_storage_bucket.cog: Refreshing state... [id=grace-2-hazard-prod-cog][0m
+[0m[1mgoogle_storage_bucket.fgb: Refreshing state... [id=grace-2-hazard-prod-fgb][0m
+[0m[1mgoogle_storage_bucket.artifacts: Refreshing state... [id=grace-2-hazard-prod-artifacts][0m
+
+OpenTofu used the selected providers to generate the following execution
+plan. Resource actions are indicated with the following symbols:
+  [32m+[0m create[0m
+
+OpenTofu will perform the following actions:
+
+[1m  # google_cloud_run_v2_service_iam_member.signed_url_agent_invoker[0m will be created
+[0m  [32m+[0m[0m resource "google_cloud_run_v2_service_iam_member" "signed_url_agent_invoker" {
+      [32m+[0m[0m etag     = (known after apply)
+      [32m+[0m[0m id       = (known after apply)
+      [32m+[0m[0m location = "us-central1"
+      [32m+[0m[0m member   = "serviceAccount:agent-runtime@grace-2-hazard-prod.iam.gserviceaccount.com"
+      [32m+[0m[0m name     = "grace-2-mint-signed-url"
+      [32m+[0m[0m project  = "grace-2-hazard-prod"
+      [32m+[0m[0m role     = "roles/run.invoker"
+    }
+
+[1m  # google_cloudfunctions2_function.mint_signed_url[0m will be created
+[0m  [32m+[0m[0m resource "google_cloudfunctions2_function" "mint_signed_url" {
+      [32m+[0m[0m effective_labels = {
+          [32m+[0m[0m "component"                  = "signed-urls"
+          [32m+[0m[0m "env"                        = "dev"
+          [32m+[0m[0m "goog-terraform-provisioned" = "true"
+          [32m+[0m[0m "project"                    = "grace-2"
+          [32m+[0m[0m "sprint"                     = "13-5"
+        }
+      [32m+[0m[0m environment      = (known after apply)
+      [32m+[0m[0m id               = (known after apply)
+      [32m+[0m[0m labels           = {
+          [32m+[0m[0m "component" = "signed-urls"
+          [32m+[0m[0m "env"       = "dev"
+          [32m+[0m[0m "project"   = "grace-2"
+          [32m+[0m[0m "sprint"    = "13-5"
+        }
+      [32m+[0m[0m location         = "us-central1"
+      [32m+[0m[0m name             = "grace-2-mint-signed-url"
+      [32m+[0m[0m project          = "grace-2-hazard-prod"
+      [32m+[0m[0m state            = (known after apply)
+      [32m+[0m[0m terraform_labels = {
+          [32m+[0m[0m "component"                  = "signed-urls"
+          [32m+[0m[0m "env"                        = "dev"
+          [32m+[0m[0m "goog-terraform-provisioned" = "true"
+          [32m+[0m[0m "project"                    = "grace-2"
+          [32m+[0m[0m "sprint"                     = "13-5"
+        }
+      [32m+[0m[0m update_time      = (known after apply)
+      [32m+[0m[0m url              = (known after apply)
+
+      [32m+[0m[0m build_config {
+          [32m+[0m[0m build                 = (known after apply)
+          [32m+[0m[0m docker_repository     = (known after apply)
+          [32m+[0m[0m entry_point           = "handle_request"
+          [32m+[0m[0m environment_variables = (known after apply)
+          [32m+[0m[0m runtime               = "python312"
+          [32m+[0m[0m service_account       = (known after apply)
+
+          [32m+[0m[0m automatic_update_policy (known after apply)
+
+          [32m+[0m[0m source {
+              [32m+[0m[0m storage_source {
+                  [32m+[0m[0m bucket     = "grace-2-hazard-prod-artifacts"
+                  [32m+[0m[0m generation = (known after apply)
+                  [32m+[0m[0m object     = "signed-urls/source-PLACEHOLDER.zip"
+                }
+            }
+        }
+
+      [32m+[0m[0m service_config {
+          [32m+[0m[0m all_traffic_on_latest_revision   = true
+          [32m+[0m[0m available_cpu                    = (known after apply)
+          [32m+[0m[0m available_memory                 = "256Mi"
+          [32m+[0m[0m environment_variables            = {
+              [32m+[0m[0m "GRACE2_MONGO_DB"           = "grace2_dev"
+              [32m+[0m[0m "GRACE2_MONGO_SRV_SECRET"   = "projects/grace-2-hazard-prod/secrets/mongodb-srv-dev/versions/latest"
+              [32m+[0m[0m "GRACE2_SIGNED_URL_BUCKETS" = "grace-2-hazard-prod-runs,grace-2-hazard-prod-cog,grace-2-hazard-prod-fgb"
+              [32m+[0m[0m "GRACE2_SIGNER_SA_EMAIL"    = "signed-url-minter@grace-2-hazard-prod.iam.gserviceaccount.com"
+            }
+          [32m+[0m[0m gcf_uri                          = (known after apply)
+          [32m+[0m[0m ingress_settings                 = "ALLOW_ALL"
+          [32m+[0m[0m max_instance_count               = 10
+          [32m+[0m[0m max_instance_request_concurrency = (known after apply)
+          [32m+[0m[0m min_instance_count               = 0
+          [32m+[0m[0m service                          = (known after apply)
+          [32m+[0m[0m service_account_email            = "signed-url-minter@grace-2-hazard-prod.iam.gserviceaccount.com"
+          [32m+[0m[0m timeout_seconds                  = 30
+          [32m+[0m[0m uri                              = (known after apply)
+        }
+    }
+
+[1m  # google_project_service.enabled["firebase.googleapis.com"][0m will be created
+[0m  [32m+[0m[0m resource "google_project_service" "enabled" {
+      [32m+[0m[0m disable_on_destroy = false
+      [32m+[0m[0m id                 = (known after apply)
+      [32m+[0m[0m project            = "grace-2-hazard-prod"
+      [32m+[0m[0m service            = "firebase.googleapis.com"
+    }
+
+[1m  # google_project_service.enabled["firebaserules.googleapis.com"][0m will be created
+[0m  [32m+[0m[0m resource "google_project_service" "enabled" {
+      [32m+[0m[0m disable_on_destroy = false
+      [32m+[0m[0m id                 = (known after apply)
+      [32m+[0m[0m project            = "grace-2-hazard-prod"
+      [32m+[0m[0m service            = "firebaserules.googleapis.com"
+    }
+
+[1m  # google_project_service.enabled["firestore.googleapis.com"][0m will be created
+[0m  [32m+[0m[0m resource "google_project_service" "enabled" {
+      [32m+[0m[0m disable_on_destroy = false
+      [32m+[0m[0m id                 = (known after apply)
+      [32m+[0m[0m project            = "grace-2-hazard-prod"
+      [32m+[0m[0m service            = "firestore.googleapis.com"
+    }
+
+[1m  # google_project_service.enabled["identitytoolkit.googleapis.com"][0m will be created
+[0m  [32m+[0m[0m resource "google_project_service" "enabled" {
+      [32m+[0m[0m disable_on_destroy = false
+      [32m+[0m[0m id                 = (known after apply)
+      [32m+[0m[0m project            = "grace-2-hazard-prod"
+      [32m+[0m[0m service            = "identitytoolkit.googleapis.com"
+    }
+
+[1m  # google_project_service.signed_url_functions[0m will be created
+[0m  [32m+[0m[0m resource "google_project_service" "signed_url_functions" {
+      [32m+[0m[0m disable_on_destroy = false
+      [32m+[0m[0m id                 = (known after apply)
+      [32m+[0m[0m project            = "grace-2-hazard-prod"
+      [32m+[0m[0m service            = "cloudfunctions.googleapis.com"
+    }
+
+[1m  # google_secret_manager_secret_iam_member.signed_url_minter_srv_accessor[0m will be created
+[0m  [32m+[0m[0m resource "google_secret_manager_secret_iam_member" "signed_url_minter_srv_accessor" {
+      [32m+[0m[0m etag      = (known after apply)
+      [32m+[0m[0m id        = (known after apply)
+      [32m+[0m[0m member    = "serviceAccount:signed-url-minter@grace-2-hazard-prod.iam.gserviceaccount.com"
+      [32m+[0m[0m project   = "grace-2-hazard-prod"
+      [32m+[0m[0m role      = "roles/secretmanager.secretAccessor"
+      [32m+[0m[0m secret_id = "mongodb-srv-dev"
+    }
+
+[1m  # google_service_account.signed_url_minter[0m will be created
+[0m  [32m+[0m[0m resource "google_service_account" "signed_url_minter" {
+      [32m+[0m[0m account_id   = "signed-url-minter"
+      [32m+[0m[0m description  = "Cloud Functions gen2 identity for the signed-URL minter (job-0251). secretAccessor on the Atlas SRV secret; objectViewer (READ-ONLY) on the layer buckets; tokenCreator on ITSELF (V4 signBlob). No write role; no project-wide storage role; no key minted."
+      [32m+[0m[0m disabled     = false
+      [32m+[0m[0m display_name = "GRACE-2 signed-URL minting Cloud Function runtime"
+      [32m+[0m[0m email        = "signed-url-minter@grace-2-hazard-prod.iam.gserviceaccount.com"
+      [32m+[0m[0m id           = (known after apply)
+      [32m+[0m[0m member       = "serviceAccount:signed-url-minter@grace-2-hazard-prod.iam.gserviceaccount.com"
+      [32m+[0m[0m name         = (known after apply)
+      [32m+[0m[0m project      = "grace-2-hazard-prod"
+      [32m+[0m[0m unique_id    = (known after apply)
+    }
+
+[1m  # google_service_account_iam_member.signed_url_minter_signer_token_creator[0m will be created
+[0m  [32m+[0m[0m resource "google_service_account_iam_member" "signed_url_minter_signer_token_creator" {
+      [32m+[0m[0m etag               = (known after apply)
+      [32m+[0m[0m id                 = (known after apply)
+      [32m+[0m[0m member             = "serviceAccount:signed-url-minter@grace-2-hazard-prod.iam.gserviceaccount.com"
+      [32m+[0m[0m role               = "roles/iam.serviceAccountTokenCreator"
+      [32m+[0m[0m service_account_id = (known after apply)
+    }
+
+[1m  # google_storage_bucket_iam_member.signed_url_minter_cog_viewer[0m will be created
+[0m  [32m+[0m[0m resource "google_storage_bucket_iam_member" "signed_url_minter_cog_viewer" {
+      [32m+[0m[0m bucket = "grace-2-hazard-prod-cog"
+      [32m+[0m[0m etag   = (known after apply)
+      [32m+[0m[0m id     = (known after apply)
+      [32m+[0m[0m member = "serviceAccount:signed-url-minter@grace-2-hazard-prod.iam.gserviceaccount.com"
+      [32m+[0m[0m role   = "roles/storage.objectViewer"
+    }
+
+[1m  # google_storage_bucket_iam_member.signed_url_minter_fgb_viewer[0m will be created
+[0m  [32m+[0m[0m resource "google_storage_bucket_iam_member" "signed_url_minter_fgb_viewer" {
+      [32m+[0m[0m bucket = "grace-2-hazard-prod-fgb"
+      [32m+[0m[0m etag   = (known after apply)
+      [32m+[0m[0m id     = (known after apply)
+      [32m+[0m[0m member = "serviceAccount:signed-url-minter@grace-2-hazard-prod.iam.gserviceaccount.com"
+      [32m+[0m[0m role   = "roles/storage.objectViewer"
+    }
+
+[1m  # google_storage_bucket_iam_member.signed_url_minter_runs_viewer[0m will be created
+[0m  [32m+[0m[0m resource "google_storage_bucket_iam_member" "signed_url_minter_runs_viewer" {
+      [32m+[0m[0m bucket = "grace-2-hazard-prod-runs"
+      [32m+[0m[0m etag   = (known after apply)
+      [32m+[0m[0m id     = (known after apply)
+      [32m+[0m[0m member = "serviceAccount:signed-url-minter@grace-2-hazard-prod.iam.gserviceaccount.com"
+      [32m+[0m[0m role   = "roles/storage.objectViewer"
+    }
+
+[1mPlan:[0m 13 to add, 0 to change, 0 to destroy.
+[0m
+Changes to Outputs:
+  [32m+[0m[0m signed_url_function_url    = (known after apply)
+  [32m+[0m[0m signed_url_minter_sa_email = "signed-url-minter@grace-2-hazard-prod.iam.gserviceaccount.com"
+[33m╷[0m[0m
+[33m│[0m [0m[1m[33mWarning: [0m[0m[1mResource targeting is in effect[0m
+[33m│[0m [0m
+[33m│[0m [0m[0mYou are creating a plan with either the -target option or the -exclude
+[33m│[0m [0moption, which means that the result of this plan may not represent all of
+[33m│[0m [0mthe changes requested by the current configuration.
+[33m│[0m [0m
+[33m│[0m [0mThe -target and -exclude options are not for routine use, and are provided
+[33m│[0m [0monly for exceptional situations such as recovering from errors or mistakes,
+[33m│[0m [0mor when OpenTofu specifically suggests to use it as part of an error
+[33m│[0m [0mmessage.
+[33m╵[0m[0m
+[90m
+─────────────────────────────────────────────────────────────────────────────[0m
+
+Note: You didn't use the -out option to save this plan, so OpenTofu can't
+guarantee to take exactly these actions if you run "tofu apply" now.

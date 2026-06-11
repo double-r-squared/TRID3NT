@@ -1,0 +1,13 @@
+# Dev/test dependencies for the signed-URL function — job-0251.
+#
+# Intentionally EMPTY of cloud SDKs: the unit tests (test_mint_signed_url.py)
+# are pure-Python and inject fakes through main._DEPS, so they need only pytest,
+# which already ships in services/agent/.venv. Run them with:
+#
+#   services/agent/.venv/bin/python -m pytest infra/signed_urls/test_mint_signed_url.py
+#
+# Do NOT add the runtime cloud SDKs here — the whole point of the _DEPS seam is
+# that the suite verifies the auth/ownership/clamp logic without GCP/Firebase
+# installed (and without touching the agent venv).
+
+pytest>=7
