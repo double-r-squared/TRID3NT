@@ -107,3 +107,9 @@ On the gate-ON empty-token path the short-circuit returns BEFORE the `_try_reuse
 - **Live E2E evidence:** the gate-ordering property is exercised against the REAL `_handle_auth_token` / `_ensure_auth_handshake` server functions and the REAL `MockMCPClient` (records every MCP call) + real `Persistence.upsert_user` shape — `test_gate_on_forged_token_writes_no_user_row` asserts the users store is empty and no write call fired on the rejected path; `test_gate_off_..._persists_user` asserts the row IS written when the gate is off. The running dev agent (pid 3799395, `AUTH_REQUIRED` unset) was NOT restarted or disturbed — read-only `pgrep` only; its gate-OFF anonymous behavior is unchanged on its next restart by construction (additive `if gate_on:` arms).
 - **No Gemini/Vertex calls.** The Firebase verify path is mocked via `set_verify_hook`; persistence is the in-memory `MockMCPClient`.
 - **Results: pass.**
+
+---
+
+## Re-panel verdict (orchestrator, 2026-06-11, wf_8fa82d48-ffe, shared with job-0251b)
+
+**PASS 4/4 — job-0252b DONE.** Live-verify drove a real gate-ON throwaway agent through 7 hostile connections: zero files on disk (not even an empty users.json) — the prior panel's junk-row observation is now impossible; gate-OFF anonymous connect provisions exactly 1 row (live-demo pin intact). Gate-OFF byte-identity confirmed additively (hunk audit: three if-guards before verbatim original lines) and behaviorally. Fresh probes: 9/9 zero-MCP-call assertions on all three failure paths against a real counting FileMCPClient.

@@ -83,3 +83,9 @@ contracts `CaseSummary.user_id` + write-path persistence + the job-0252
 migration. Scheduled as job-0252b (after the in-flight job-0252 lands, per
 the frozen-kickoff convention), then the contract lens re-runs. Also queued:
 the correctness lens's OverflowError nit in clamp_ttl.
+
+---
+
+## REFUTED state CLEARED (orchestrator, 2026-06-11)
+
+The blocking refute (ownership field never written) was cured by job-0252's owner stamping; the successor value-layer refute (Firebase uid vs internal ULID — panel-job-0252 contract lens) was cured by job-0251b's resolution chain. Re-panel wf_8fa82d48-ffe PASS 4/4 with pre-fix reproductions proving both cures. job-0251 → DONE per Decision 10. Live deploy verification remains gated on USER_UNBLOCK items 0251-A..D (re-zip addendum applies).

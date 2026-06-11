@@ -1543,6 +1543,42 @@
       "kind": "verification",
       "workflow_id": "wf_cba0b225-134",
       "subagent_tokens": 387469
+    },
+    {
+      "job_id": "job-0252b-gate-hygiene-20260611",
+      "sprint": 13.5,
+      "description": "Opus agent runner: authenticate_token gate-aware short-circuit (gate-ON rejections = zero users-collection reads/writes via _anonymous_result_no_persist; gate-OFF byte-identical additive guards) + stale secrets_handler comment; +5 tests, suite 4359; commit 80f326c.",
+      "model": "opus",
+      "kind": "engineering",
+      "workflow_id": "agent a6ad44de4136b7260",
+      "subagent_tokens": 96150
+    },
+    {
+      "job_id": "job-0251b-mint-identity-20260611",
+      "sprint": 13.5,
+      "description": "Fable infra runner (critical-bug routing): mint_signed_url resolves verified Firebase uid → internal users._id ULID (fail-closed 403/503, no raw-uid fall-through; sentinel unmintable by construction); clamp_ttl OverflowError; tests 55→78 green; tofu validate green; USER_UNBLOCK 0251-A/D addendum. OQ-1 normalization-order nuance, OQ-2 users.firebase_uid unindexed (per-mint scan, fine at M0). Commit beb10e5.",
+      "model": "fable",
+      "kind": "engineering",
+      "workflow_id": "agent a3127b1054328a5f5",
+      "subagent_tokens": 134551
+    },
+    {
+      "job_id": "job-0253-web-auth-20260611",
+      "sprint": 13.5,
+      "description": "Opus web runner: useAuth + AuthGuard three-mode matrix (disabled passthrough pixel-identical / Google-only sign-in per Decision 6 / signed-in + sign-out on guard) + 4401 no-reconnect-storm with one forceRefresh retry; vitest 686→706; tsc clean; live evidence screenshots. OQs: sign-out placement (SettingsPopup dirty), Chat-instance onAuthExpired wiring. Commit 1672da0.",
+      "model": "opus",
+      "kind": "engineering",
+      "workflow_id": "agent a8ba61f6348e18c08",
+      "subagent_tokens": 172387
+    },
+    {
+      "job_id": "repanel-0251b-0252b",
+      "sprint": 13.5,
+      "description": "4-lens Fable adversarial re-panel: PASS 4/4 — both prior refutes proven cured with pre-fix reproductions (old code minted under the forged-internal-ULID attack AND 403'd the true owner; fixed code inverts both). 42+31+9+18 fresh probe assertions; gate-ON hostile connections leave zero files on disk; suite 4359 exact; signed_urls 78 with zero weakened assertions. job-0251 REFUTED cleared → DONE.",
+      "model": "fable",
+      "kind": "verification",
+      "workflow_id": "wf_8fa82d48-ffe",
+      "subagent_tokens": 490315
     }
   ],
   "totals_by_sprint": {
@@ -1554,7 +1590,7 @@
     "11": 999540,
     "12": 27545642,
     "13": 14388888,
-    "13.5": 2078482
+    "13.5": 2971885
   },
   "historical_context": {
     "note": "Captured for accountability \u2014 NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",

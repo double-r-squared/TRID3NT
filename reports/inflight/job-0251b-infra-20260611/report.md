@@ -245,3 +245,14 @@ No Gemini/Vertex calls. No agent restart; no file outside
 USER_UNBLOCK addendum. No service-account keys (signBlob path untouched). No
 deployment. `git add` scoped to the six files named above; commit message
 `job-0251b: ...` + Fable co-author trailer.
+
+---
+
+## Re-panel verdict (orchestrator, 2026-06-11, wf_8fa82d48-ffe, 490,315 tok, 4 Fable lenses)
+
+**PASS 4/4 — job-0251b DONE; job-0251's REFUTED state CLEARED (both prior refutes cured).**
+- correctness CONFIRM: 42 fresh adversarial probes green; the exact panel-refuted attack (forged token uid == stored internal ULID) MINTED on pre-fix code, 403s now; clamp_ttl overflow cured (pre-fix OverflowError reproduced).
+- contract CONFIRM (minor): full create→store→list→mint chain rebuilt with real agent writers feeding raw stored docs into the mint function — 31/31 assertions; true owner mints, second user/no-doc/lookup-error all fail closed; pre-fix code reproduces the refute ("true owner 403s").
+- regression CONFIRM: agent suite 4359 + exactly the 5 allowed failures; signed_urls 55→78 with ZERO removed assertions (hunk audit); tofu validate green.
+- live-verify CONFIRM: 18/18 HTTP-layer assertions with agent-produced doc shapes.
+- Carried nits (non-blocking): case-doc fetch errors surface 500 not 503 (asymmetric with users lookup, fails closed); resolve_internal_user_id falsy-`_id` fallback (OQ-1); users.firebase_uid unindexed (OQ-2 — fold into job-0257 deploy or schema follow-up).
