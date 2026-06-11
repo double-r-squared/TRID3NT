@@ -1615,6 +1615,15 @@
       "kind": "engineering",
       "workflow_id": "agent a12ce7b744dcc9d55",
       "subagent_tokens": 193974
+    },
+    {
+      "job_id": "job-0254-emission-seam-20260611",
+      "sprint": 13.5,
+      "description": "Opus agent runner (rescoped per Decision 11): publish-failure drop-and-narrate (raw-gs:// leak closed, retry-loop truthful); layer_uri_emit.py seam on both real emission sites (only 2 exist of ~70 construction sites) with raster-gs:// guardrail (inline-GeoJSON vectors untouched) + dormant SIGNED_URLS scaffold; byte-identity proven. Suite 4414 + sanctioned 5; 2 silently-masked tests honestly fixed. OQs: LayerURI renderable marker (schema, post-13.5), PlumeLayerURI path outside seam. Commit 31332cd.",
+      "model": "opus",
+      "kind": "engineering",
+      "workflow_id": "agent ab636c87886e27c7a",
+      "subagent_tokens": 155528
     }
   ],
   "totals_by_sprint": {
@@ -1626,7 +1635,7 @@
     "11": 999540,
     "12": 27545642,
     "13": 14388888,
-    "13.5": 3925837
+    "13.5": 4081365
   },
   "historical_context": {
     "note": "Captured for accountability \u2014 NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
