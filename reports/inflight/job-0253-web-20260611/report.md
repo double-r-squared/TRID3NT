@@ -84,3 +84,15 @@ The auth-token envelope on connect is unchanged (verified still green) — `mayb
   - `evidence/A_disabled_passthrough.png` — running dev server: app shell renders; `grace2-auth-guard-{signin,signout,pending}` all absent. Load-bearing pass-through proven live.
   - `evidence/B_enabled_signin.png` — ephemeral configured vite (:5191, dummy Firebase env): Google-only sign-in surface, app shell hidden, no anonymous CTA. Ephemeral server torn down; port 5173 confirmed still serving 200.
 - **Results:** **pass**.
+
+---
+
+## Adversarial panel verdict (orchestrator, 2026-06-11, wf_e8bb1bb3-6d9, 500,706 tok, 4 Opus lenses)
+
+**PASS 4/4 — job-0253 DONE.** All stated deliverables re-proven with fresh adversarial tests (12 new probes under verify/): disabled mode byte-identical (multi-node innerHTML diff), anonymous cannot pass the guard (Decision 6), 4401 retry bounded at exactly ONE forceRefresh, latches reset per-connection (no cross-connection leak), useAuth unsubscribes cleanly. Live: real browser against the running :5173 (zero guard DOM), own vite with dummy Firebase env (sign-in surface, children ABSENT not hidden), and the pair-level wire proof against a real gate-ON agent.
+
+**Two MAJOR latent gaps found by the panel (CONFIRM verdicts — deliverables implemented as specced; gaps routed to job-0253b):**
+1. **Re-sign-in WS wedge** — handleAuthFailure's give-up branch (ws.ts:1032-1035) is terminal: no reconnect is ever scheduled, and neither App's ws effect deps nor onAuthChanged re-trigger connect(). Post-wedge re-sign-in renders children over a dead socket until full page reload. Prod-only (dev never engages the gate).
+2. **session-resume races ahead of auth-token** — ws.ts:679 sends session-resume synchronously on open; auth-token follows after an awaited getIdToken (ws.ts:684/947/981). The agent gate rejects the FIRST non-auth-token frame (server.py:4047-4063 → _ensure_auth_handshake → 4401). Under AUTH_REQUIRED a signed-in user's valid token is never read — every prod connection rejects. Invisible in dev; blocks Stage-3 prod E2E if unfixed.
+
+Minor: report's tsc claim inaccurate (AuthGuard.test.tsx adds 6 mock-typing errors; 33 total vs 27 baseline; zero in production files; vitest unaffected).

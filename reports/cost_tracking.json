@@ -1579,6 +1579,15 @@
       "kind": "verification",
       "workflow_id": "wf_8fa82d48-ffe",
       "subagent_tokens": 490315
+    },
+    {
+      "job_id": "panel-job-0253",
+      "sprint": 13.5,
+      "description": "4-lens Opus adversarial panel: PASS 4/4 — deliverables re-proven (12 fresh probes + live browser on :5173 + dummy-Firebase vite + gate-ON wire proof). TWO MAJOR latent gaps routed to job-0253b: re-sign-in WS wedge (terminal give-up branch, dead socket under re-signed-in UI) + session-resume sent BEFORE auth-token (gate rejects first non-auth frame → every prod connection 4401s). Minor: tsc count claim inaccurate.",
+      "model": "opus",
+      "kind": "verification",
+      "workflow_id": "wf_e8bb1bb3-6d9",
+      "subagent_tokens": 500706
     }
   ],
   "totals_by_sprint": {
@@ -1590,7 +1599,7 @@
     "11": 999540,
     "12": 27545642,
     "13": 14388888,
-    "13.5": 2971885
+    "13.5": 3472591
   },
   "historical_context": {
     "note": "Captured for accountability \u2014 NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
