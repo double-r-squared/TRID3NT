@@ -63,3 +63,30 @@ button {
   min-height: 44px;
   min-width: 44px;
 }
+
+/* job-0280 — sleekness pass: inside the mobile drawer the rail panels lay
+ * INTO the drawer surface instead of floating as desktop cards. The drawer
+ * already provides the background, border, and 12px padding; the nested
+ * CasesPanel / CaseView chrome (own border + own background + fixed desktop
+ * width) rendered as a box-within-a-box with double borders and mismatched
+ * gutters.
+ *
+ * Scope: `.grace2-mobile-touch` is applied ONLY by MobileDrawer.tsx, which
+ * mounts ONLY below the 768px breakpoint — desktop stays pixel-identical.
+ * `!important` is required here (unlike the min-* rules above) because these
+ * components declare background/border/width as INLINE styles, which always
+ * beat stylesheet rules otherwise. Visual only — zero behavior change.
+ */
+.grace2-mobile-touch [data-testid="grace2-cases-panel"] {
+  width: auto !important;
+  background: transparent !important;
+  border: none !important;
+  padding: 0 !important;
+}
+.grace2-mobile-touch [data-testid="grace2-case-view"] {
+  width: auto !important;
+}
+.grace2-mobile-touch [data-testid="grace2-case-view-breadcrumb"] {
+  border: none !important;
+  background: rgba(255, 255, 255, 0.05) !important;
+}

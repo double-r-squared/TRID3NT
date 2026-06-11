@@ -71,8 +71,11 @@ const TERMINAL_STATES: ReadonlySet<PipelineStepState> = new Set([
  *
  * Returns 0 and does not tick for non-running steps (the caller renders the
  * authoritative ``duration_ms`` instead). SSR-safe: ``Date.now`` only.
+ *
+ * Exported (job-0280) so the mobile collapsed-sheet active-tool strip shows
+ * the SAME elapsed value as the card — one timer implementation, no fork.
  */
-function useRunningElapsedMs(step: PipelineStepSummary): number {
+export function useRunningElapsedMs(step: PipelineStepSummary): number {
   const isRunning = step.state === "running";
   // Resolve the anchor (epoch ms) once per running span. started_at is an
   // ISO-8601 string with a literal Z; Date.parse handles it. NaN (unparseable)
@@ -111,8 +114,9 @@ function useRunningElapsedMs(step: PipelineStepSummary): number {
 }
 
 // --- Reduced-motion detection (SSR-safe) --------------------------------- //
+// Exported (job-0280) for the collapsed-sheet strip's spinner fallback.
 
-function prefersReducedMotion(): boolean {
+export function prefersReducedMotion(): boolean {
   if (typeof window === "undefined" || !window.matchMedia) return false;
   try {
     return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -175,8 +179,9 @@ function cardVisual(state: PipelineStepState): CardVisual {
 // 14px circular spinner. Pure SVG so it inherits color via `currentColor` and
 // no PNG/font dependency. Animation is a 1s linear rotation; falls back to a
 // static dot under `prefers-reduced-motion`.
+// Exported (job-0280) so the collapsed-sheet strip reuses the exact spinner.
 
-function Spinner({ reduced }: { reduced: boolean }): JSX.Element {
+export function Spinner({ reduced }: { reduced: boolean }): JSX.Element {
   if (reduced) {
     return (
       <span

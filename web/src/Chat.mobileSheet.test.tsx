@@ -16,9 +16,16 @@ import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 import { useState } from "react";
 import {
   MOBILE_SHEET_EXPANDED_HEIGHT,
+  SheetActiveToolStrip,
   SheetToggleHandle,
+  findRunningToolStep,
   mobileSheetContainerStyle,
 } from "./Chat";
+import type {
+  PipelineStatePayload,
+  PipelineStepState,
+  PipelineStepSummary,
+} from "./contracts";
 
 afterEach(() => cleanup());
 
@@ -59,6 +66,22 @@ describe("SheetToggleHandle", () => {
     expect(handle).toHaveAttribute("aria-label", "Expand chat");
     expect(handle.style.minHeight).toBe("44px");
     expect(handle.style.width).toBe("100%");
+  });
+
+  it("job-0280: the chevron arrow is GONE — the bar is the single affordance", () => {
+    for (const expanded of [false, true]) {
+      const { unmount } = render(
+        <SheetToggleHandle expanded={expanded} onToggle={vi.fn()} />,
+      );
+      const handle = screen.getByTestId("grace2-chat-sheet-toggle");
+      // No chevron glyph in either direction…
+      expect(handle.textContent ?? "").not.toMatch(/[⌃⌄]/);
+      // …exactly one child: the handle bar.
+      expect(handle.children.length).toBe(1);
+      // The whole handle area stays tappable at the HIG minimum.
+      expect(handle.style.minHeight).toBe("44px");
+      unmount();
+    }
   });
 
   it("flips label + aria when expanded", () => {
@@ -131,5 +154,177 @@ describe("bottom-sheet toggle cycle (Chat wiring shape)", () => {
     expect(screen.getByTestId("sheet-scroll").style.display).toBe("none");
     // Still mounted — content was hidden, not destroyed.
     expect(screen.getByTestId("sheet-scroll")).toBeTruthy();
+  });
+});
+
+// --- Collapsed-sheet active-tool strip (job-0280) -------------------------- //
+
+function step(
+  over: Partial<PipelineStepSummary> & { state: PipelineStepState },
+): PipelineStepSummary {
+  return {
+    step_id: over.step_id ?? "step-1",
+    name: over.name ?? "fetch_3dep_dem",
+    tool_name: over.tool_name ?? "fetch_3dep_dem",
+    ...over,
+  };
+}
+
+function snap(
+  pipelineId: string,
+  steps: PipelineStepSummary[],
+): PipelineStatePayload {
+  return { pipeline_id: pipelineId, steps };
+}
+
+/** stepOrder map keyed the way Chat records seqs: `${name}|${tool_name}`. */
+function orderOf(entries: Array<[PipelineStepSummary, number]>): Map<string, number> {
+  const m = new Map<string, number>();
+  for (const [s, seq] of entries) m.set(`${s.name}|${s.tool_name}`, seq);
+  return m;
+}
+
+describe("findRunningToolStep", () => {
+  it("returns null with no pipeline content at all", () => {
+    expect(findRunningToolStep([], null, new Map())).toBeNull();
+  });
+
+  it("returns null when every step is terminal (strip hides)", () => {
+    const done = step({ step_id: "a", state: "complete" });
+    const failed = step({
+      step_id: "b",
+      name: "compute_slope",
+      tool_name: "compute_slope",
+      state: "failed",
+    });
+    expect(
+      findRunningToolStep(
+        [snap("p1", [done, failed])],
+        null,
+        orderOf([[done, 1], [failed, 2]]),
+      ),
+    ).toBeNull();
+  });
+
+  it("returns the running step from the live snapshot", () => {
+    const running = step({ state: "running" });
+    expect(
+      findRunningToolStep([], snap("p1", [running]), orderOf([[running, 1]])),
+    ).toEqual(running);
+  });
+
+  it("excludes the llm_generation thinking pseudo-step", () => {
+    const thinking = step({
+      step_id: "t",
+      name: "llm_generation",
+      tool_name: "llm_generation",
+      state: "running",
+    });
+    expect(
+      findRunningToolStep([], snap("p1", [thinking]), orderOf([[thinking, 1]])),
+    ).toBeNull();
+  });
+
+  it("prefers the MOST-RECENT running step by arrival seq", () => {
+    const older = step({ step_id: "a", state: "running" });
+    const newer = step({
+      step_id: "b",
+      name: "publish_layer",
+      tool_name: "publish_layer",
+      state: "running",
+    });
+    const found = findRunningToolStep(
+      [snap("p1", [older])],
+      snap("p2", [newer]),
+      orderOf([[older, 1], [newer, 2]]),
+    );
+    expect(found?.step_id).toBe("b");
+  });
+
+  it("collapses pipeline_id reissues to the latest state (merged view-model)", () => {
+    // Same (name|tool_name) running in history then complete in live —
+    // mergeStepsByStepId keeps only the terminal card → strip hides.
+    const runningOld = step({ step_id: "a", state: "running" });
+    const completeNew = step({ step_id: "b", state: "complete" });
+    expect(
+      findRunningToolStep(
+        [snap("p1", [runningOld])],
+        snap("p2", [completeNew]),
+        orderOf([[runningOld, 1]]),
+      ),
+    ).toBeNull();
+  });
+});
+
+describe("SheetActiveToolStrip", () => {
+  it("renders the humanized label, a m:ss timer, and a spinner", () => {
+    const started = new Date(Date.now() - 65_000).toISOString();
+    render(
+      <SheetActiveToolStrip
+        step={step({ state: "running", started_at: started })}
+        onExpand={vi.fn()}
+      />,
+    );
+    const strip = screen.getByTestId("grace2-sheet-tool-strip");
+    expect(strip).toBeTruthy();
+    expect(
+      screen.getByTestId("grace2-sheet-tool-strip-label").textContent,
+    ).toBe("fetch_3dep_dem"); // unknown names pass through the humanizer
+    // Anchored on started_at (~65s ago) → a ticking 1:0x, never 0:00.
+    expect(
+      screen.getByTestId("grace2-sheet-tool-strip-timer").textContent,
+    ).toMatch(/^1:0\d$/);
+    expect(screen.getByTestId("pipeline-card-indicator")).toBeTruthy();
+  });
+
+  it("tap expands the sheet (fires onExpand)", () => {
+    const onExpand = vi.fn();
+    render(
+      <SheetActiveToolStrip
+        step={step({ state: "running" })}
+        onExpand={onExpand}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("grace2-sheet-tool-strip"));
+    expect(onExpand).toHaveBeenCalledTimes(1);
+  });
+
+  it("Chat wiring shape: strip renders while a step runs, hides when terminal", () => {
+    // Mirrors Chat.tsx: strip mounts IFF findRunningToolStep is non-null on
+    // the collapsed sheet's pipeline view-model.
+    function StripHarness({
+      live,
+      order,
+    }: {
+      live: PipelineStatePayload | null;
+      order: Map<string, number>;
+    }): JSX.Element {
+      const running = findRunningToolStep([], live, order);
+      return (
+        <div>
+          {running && (
+            <SheetActiveToolStrip step={running} onExpand={() => undefined} />
+          )}
+          <textarea data-testid="composer" />
+        </div>
+      );
+    }
+    const running = step({ state: "running" });
+    const order = orderOf([[running, 1]]);
+    const { rerender } = render(
+      <StripHarness live={snap("p1", [running])} order={order} />,
+    );
+    expect(screen.getByTestId("grace2-sheet-tool-strip")).toBeTruthy();
+
+    // Same logical step transitions to complete → strip disappears.
+    rerender(
+      <StripHarness
+        live={snap("p1", [step({ state: "complete", duration_ms: 4200 })])}
+        order={order}
+      />,
+    );
+    expect(screen.queryByTestId("grace2-sheet-tool-strip")).toBeNull();
+    // Composer (the strip's anchor) is untouched either way.
+    expect(screen.getByTestId("composer")).toBeTruthy();
   });
 });

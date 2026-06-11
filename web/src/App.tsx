@@ -71,6 +71,7 @@ import {
 } from "./auth";
 import { GraceWs } from "./ws";
 import { SourceCandidatePayload } from "./lib/source_suggestion_suppression";
+import { extractLastZoomTo } from "./lib/case_zoom";
 import { useCases } from "./hooks/useCases";
 import { useIsMobile } from "./hooks/useIsMobile";
 import { useSaveGate } from "./hooks/useSaveGate";
@@ -576,6 +577,17 @@ export function App(): JSX.Element {
         command: "zoom-to",
         args: { bbox },
       } as unknown as MapCommandPayload);
+    } else {
+      // job-0280 — Case-open snap-to-location. `CaseSummary.bbox` is null in
+      // practice today, so fall back to replaying the LAST `zoom-to` the
+      // Case's persisted turns emitted (CaseChatMessage.map_command_emissions
+      // in the rehydrated chat_history) through the SAME bus → Map.tsx
+      // fitBounds path. No zoom-to anywhere in history → leave the camera
+      // alone (root/new Cases unchanged).
+      const replay = extractLastZoomTo(activeSession.chat_history);
+      if (replay) {
+        bus.pushMapCommand(replay as unknown as MapCommandPayload);
+      }
     }
     // Rehydrate charts from session. ``activeSession.charts`` is the
     // append-only array persisted via SessionChartRecord (sprint-13 schema).

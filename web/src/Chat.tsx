@@ -86,7 +86,14 @@ import {
   ResearchMode,
   SessionStatePayload,
 } from "./contracts";
-import { PipelineCard } from "./components/PipelineCard";
+import {
+  PipelineCard,
+  Spinner,
+  formatDuration,
+  humanizeStepName,
+  prefersReducedMotion,
+  useRunningElapsedMs,
+} from "./components/PipelineCard";
 import { ChatInput, ChatInputState } from "./components/ChatInput";
 import { AgentMessage } from "./components/AgentMessage";
 import { UserBubble } from "./components/UserBubble";
@@ -894,8 +901,10 @@ export interface SheetToggleHandleProps {
   onToggle: () => void;
 }
 
-/** Full-width drag-handle / chevron row that toggles the sheet. 44px tall —
- * Apple HIG minimum touch target. */
+/** Full-width drag-handle row that toggles the sheet. 44px tall — Apple HIG
+ * minimum touch target. job-0280: the handle bar is the SINGLE affordance —
+ * the redundant chevron arrow under it is gone (user feedback); the whole
+ * handle area stays tappable with the same aria labels. */
 export function SheetToggleHandle({
   expanded,
   onToggle,
@@ -917,8 +926,7 @@ export function SheetToggleHandle({
         flexDirection: "column",
         alignItems: "center",
         justifyContent: "center",
-        gap: 4,
-        padding: "8px 0 4px",
+        padding: 0,
         color: "#888",
         fontFamily: "inherit",
       }}
@@ -933,9 +941,120 @@ export function SheetToggleHandle({
           background: "#555",
         }}
       />
-      <span aria-hidden="true" style={{ fontSize: 12, lineHeight: 1 }}>
-        {expanded ? "⌄" : "⌃"}
+    </button>
+  );
+}
+
+// --- Collapsed-sheet active-tool strip (job-0280) ------------------------- //
+//
+// When the mobile sheet is COLLAPSED and a tool is RUNNING in the visible
+// stream, a slim live-status strip renders directly ABOVE the composer: the
+// running tool's humanized label + elapsed timer — the SAME data the inline
+// PipelineCard shows, read from the SAME merged pipeline view-model
+// (mergeStepsByStepId over history ∪ live) and the SAME timer hook
+// (useRunningElapsedMs) — no forked pipeline logic. It disappears when no
+// step is running; tapping it expands the sheet. Desktop never renders it
+// (the strip is gated on the `mobile` prop + collapsed state in Chat).
+
+/**
+ * The most-recent RUNNING tool step across (history ∪ live), or null.
+ *
+ * "Most recent" = highest first-arrival seq in `stepOrder` (the job-0176
+ * interleave ordering the cards themselves render by). The Gemini
+ * `llm_generation` thinking pseudo-step is excluded — the strip is an
+ * active-TOOL indicator; thinking has its own ephemeral surface
+ * (`feedback_thinking_state_ephemeral`) inside the expanded scroll.
+ * Pure helper, exported for unit tests.
+ */
+export function findRunningToolStep(
+  history: PipelineStatePayload[],
+  live: PipelineStatePayload | null,
+  stepOrder: Map<string, number>,
+): PipelineStepSummary | null {
+  const merged = mergeStepsByStepId(history, live);
+  let best: PipelineStepSummary | null = null;
+  let bestSeq = -1;
+  for (const step of merged) {
+    if (isThinkingStep(step)) continue;
+    if (step.state !== "running") continue;
+    const seq =
+      stepOrder.get(`${step.name}|${step.tool_name}`) ??
+      Number.MAX_SAFE_INTEGER;
+    if (seq >= bestSeq) {
+      best = step;
+      bestSeq = seq;
+    }
+  }
+  return best;
+}
+
+export interface SheetActiveToolStripProps {
+  /** The running step to surface (caller resolves via findRunningToolStep). */
+  step: PipelineStepSummary;
+  /** Tap target — expands the sheet so the user sees the full card. */
+  onExpand: () => void;
+}
+
+/** Slim live-status strip for the collapsed mobile sheet. Reuses the
+ * PipelineCard's humanized label, spinner, and running-elapsed timer. */
+export function SheetActiveToolStrip({
+  step,
+  onExpand,
+}: SheetActiveToolStripProps): JSX.Element {
+  const reduced = prefersReducedMotion();
+  const elapsedMs = useRunningElapsedMs(step);
+  const label = humanizeStepName(step.name);
+  return (
+    <button
+      data-testid="grace2-sheet-tool-strip"
+      aria-label={`${label} — running. Expand chat`}
+      onClick={onExpand}
+      style={{
+        flex: "0 0 auto",
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        margin: "0 10px 8px",
+        padding: "8px 12px",
+        minHeight: 36,
+        background: "rgba(255,255,255,0.08)",
+        border: "none",
+        borderRadius: 10,
+        color: "#eee",
+        fontSize: 12,
+        lineHeight: "1.4",
+        fontFamily: "ui-monospace, 'Cascadia Code', 'Fira Code', monospace",
+        cursor: "pointer",
+        textAlign: "left",
+      }}
+    >
+      <span
+        data-testid="grace2-sheet-tool-strip-label"
+        style={{
+          flex: 1,
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+        }}
+        title={label}
+      >
+        {label}
       </span>
+      <span
+        data-testid="grace2-sheet-tool-strip-timer"
+        aria-hidden="true"
+        style={{
+          fontVariantNumeric: "tabular-nums",
+          fontSize: 11,
+          color: "rgba(255,255,255,0.55)",
+          flexShrink: 0,
+          minWidth: 30,
+          textAlign: "right",
+        }}
+      >
+        {formatDuration(elapsedMs)}
+      </span>
+      <Spinner reduced={reduced} />
     </button>
   );
 }
@@ -1331,6 +1450,17 @@ export function Chat({
 
   const showCancel = shouldShowCancel(pipeline);
   const liveSteps = pipeline.live?.steps ?? [];
+  // job-0280 — collapsed-sheet active-tool strip: resolved from the SAME
+  // merged pipeline view-model the inline cards render (no forked logic).
+  // Null whenever the sheet is expanded / desktop / nothing running.
+  const collapsedRunningStep: PipelineStepSummary | null =
+    mobile && !sheetExpanded
+      ? findRunningToolStep(
+          pipeline.history,
+          pipeline.live,
+          visible.stepOrder,
+        )
+      : null;
   // Merged send/stop control: in-flight whenever the cancel predicate fires
   // (any running step in the live pipeline, OR a non-null
   // session-state.current_pipeline). Returns to idle on terminal /
@@ -1609,6 +1739,17 @@ export function Chat({
           />
         </div>
       </div>
+
+      {/* ---- Collapsed-sheet active-tool strip (job-0280) ----                  */}
+      {/* Mobile + collapsed + a tool running: slim live-status strip directly    */}
+      {/* above the composer (humanized label + elapsed timer, same data as the   */}
+      {/* PipelineCard). Tap = expand the sheet. Gone when nothing is running.    */}
+      {collapsedRunningStep && (
+        <SheetActiveToolStrip
+          step={collapsedRunningStep}
+          onExpand={() => setSheetExpanded(true)}
+        />
+      )}
 
       {/* ---- Overlay input wrapper (job-0144 + job-0153) ----                    */}
       {/* Floats at the bottom of the chat panel; the scroll above has matching   */}
