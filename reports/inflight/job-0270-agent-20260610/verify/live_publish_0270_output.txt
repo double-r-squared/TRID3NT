@@ -1,0 +1,6 @@
+INFERRED_STYLE_PRESET=''
+INFO grace2_agent.tools.publish_layer publish_layer layer_id=colored-relief-boulder-verify-0270 raster_uri=/vsigs/grace-2-hazard-prod-cache/cache/static-30d/colored_relief/27d5f864b3d5e9ceae84e8f89f2dfa55.tif qgs_uri=gs://grace-2-hazard-prod-qgs/grace2-sample.qgs style= wms_url=https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=colored-relief-boulder-verify-0270
+INFO grace2_agent.tools.publish_layer publish_layer: dispatching Cloud Run Job projects/grace-2-hazard-prod/locations/us-central1/jobs/grace-2-pyqgis-worker env_overrides={'WORKER_OP': 'publish-raster', 'QGS_URI': 'gs://grace-2-hazard-prod-qgs/grace2-sample.qgs', 'RASTER_URI': '/vsigs/grace-2-hazard-prod-cache/cache/static-30d/colored_relief/27d5f864b3d5e9ceae84e8f89f2dfa55.tif', 'RASTER_LAYER_ID': 'colored-relief-boulder-verify-0270', 'STYLE_PRESET_NAME': ''}
+INFO grace2_agent.tools.publish_layer publish_layer: execution completed state=CONDITION_SUCCEEDED layer_id=colored-relief-boulder-verify-0270 wms_url=https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=colored-relief-boulder-verify-0270
+WMS_URL=https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=colored-relief-boulder-verify-0270
+EXIT=0

@@ -1,0 +1,40 @@
+job-0270 adversarial verification — WMS GetMap pixel statistics (512x512 unless noted)
+acceptance thresholds: >10 distinct RGBA, >20% non-transparent, >=3 hue bins
+
+FAIL getmap_verify_0270.png
+     NEW layer colored-relief-boulder-verify-0270 (no preset, multibandcolor) — THE DECISIVE TILE
+     distinct_rgba=1  nontransparent=0/262144 (0.0%)  hue_bins=0
+FAIL getmap_lonlat_order.png
+     same layer, BBOX in lon,lat order (axis-order control)
+     distinct_rgba=1  nontransparent=0/262144 (0.0%)  hue_bins=0
+FAIL getmap_3857.png
+     same layer, EPSG:3857 (CRS control)
+     distinct_rgba=1  nontransparent=0/262144 (0.0%)  hue_bins=0
+FAIL getmap_reload_0270b.png
+     colored-relief-boulder-verify-0270b after warm-process project reload
+     distinct_rgba=1  nontransparent=0/262144 (0.0%)  hue_bins=0
+FAIL getmap_reload_0270.png
+     verify-0270 after warm-process project reload
+     distinct_rgba=1  nontransparent=0/262144 (0.0%)  hue_bins=0
+FAIL getmap_reload_colorado.png
+     colorado after warm-process project reload
+     distinct_rgba=1  nontransparent=0/262144 (0.0%)  hue_bins=0
+FAIL getmap_old_broken_layer.png
+     NEGATIVE CONTROL: old colored-relief-boulder-colorado (flood ramp)
+     distinct_rgba=1  nontransparent=0/262144 (0.0%)  hue_bins=0
+PASS getmap_flood_control.png
+     POSITIVE CONTROL: flood-depth-job-0086-fix (runs bucket)
+     distinct_rgba=11585  nontransparent=181576/262144 (69.3%)  hue_bins=3
+FAIL getmap_seattle_relief_control.png
+     POSITIVE CONTROL: colored-relief-terrain-73400 (cache bucket, RGBA relief, flood-ramp preset!)
+     distinct_rgba=291  nontransparent=170985/262144 (65.2%)  hue_bins=2
+PASS getmap_elevation_washington.png
+     POSITIVE CONTROL: elevation-washington (cache bucket DEM)
+     distinct_rgba=5851  nontransparent=183421/262144 (70.0%)  hue_bins=3
+
+VERDICT: the decisive tile is 100% transparent (1 distinct RGBA, 0 hues).
+Root cause is NOT the style preset and NOT publish discipline: QGIS Server marks
+every layer pointing at /vsigs/.../colored_relief/27d5f864...tif 'not valid' at
+project load (server log 02:28:40Z lists all three Boulder layers), while the same
+server process renders a structurally identical RGBA relief from the same bucket
+directory (colored-relief-terrain-73400, 65.2% pixels).

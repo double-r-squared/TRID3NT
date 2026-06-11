@@ -1,0 +1,419 @@
+........................................................................ [  1%]
+........................................................................ [  3%]
+........................................................................ [  4%]
+........................................................................ [  6%]
+........................................................................ [  8%]
+........................................................................ [  9%]
+..................................s.........s........................... [ 11%]
+.......................ss.......ssss.................................... [ 13%]
+...............s..............................................F......... [ 14%]
+..F......F.........................................................s.... [ 16%]
+...............sss.......................ss.......................s..... [ 18%]
+.................................s.......................s.............. [ 19%]
+.................s..............s.......................ss.............. [ 21%]
+s............................s.......................s.................. [ 22%]
+..................s.........................s........................... [ 24%]
+.s.............s........................s.......................s....... [ 26%]
+................ss......................................s............... [ 27%]
+.................ss..........................s..............s........... [ 29%]
+.............ss.............................s.......................s... [ 31%]
+..........................................s.....................ss...... [ 32%]
+...............s..................................ss.................... [ 34%]
+.................ss.....................s................s.............. [ 36%]
+...............s.........................s.....................s........ [ 37%]
+..........................ss.................s.......................... [ 39%]
+...........s............................................................ [ 40%]
+........................................................................ [ 42%]
+........................................................................ [ 44%]
+........................................................................ [ 45%]
+........................................................................ [ 47%]
+........................................................................ [ 49%]
+........................................................................ [ 50%]
+........................................................................ [ 52%]
+........................................................................ [ 54%]
+........................................................................ [ 55%]
+........................................................................ [ 57%]
+........................................................................ [ 59%]
+........................................................................ [ 60%]
+........................................................................ [ 62%]
+........................................................................ [ 63%]
+........................................................................ [ 65%]
+........................................................................ [ 67%]
+........................................................................ [ 68%]
+........................................................................ [ 70%]
+........................................................................ [ 72%]
+........................................................................ [ 73%]
+........................................................................ [ 75%]
+........................................................................ [ 77%]
+........................................................................ [ 78%]
+................................................................x....... [ 80%]
+................................................................s....... [ 81%]
+........................................................................ [ 83%]
+...................................FF................................... [ 85%]
+........................................................................ [ 86%]
+.................s..............................................sssss... [ 88%]
+........................................................................ [ 90%]
+...................................................s.................... [ 91%]
+...........................s............................................ [ 93%]
+........................................................................ [ 95%]
+........................................................................ [ 96%]
+........................................................................ [ 98%]
+.....................................s................s............s.... [ 99%]
+s                                                                        [100%]
+=================================== FAILURES ===================================
+______________ test_fetch_landcover_docstring_records_access_tier ______________
+
+    def test_fetch_landcover_docstring_records_access_tier():
+        """§F.1.1 docstring discipline: tier name MUST appear in the docstring.
+    
+        Live verification (2026-06-07) found NLCD is **Tier 2 (OGC service —
+        MRLC WMS)**, NOT the Tier 3 the kickoff inferred. Either tier label
+        must be present (we want to enforce *some* tier is named, not which one
+        — the deviation is captured as OQ-39-NLCD-TIER-DEVIATION).
+        """
+        doc = fetch_landcover.__doc__ or ""
+>       assert "Access pattern:" in doc, "docstring must name the access tier per §F.1.1"
+E       AssertionError: docstring must name the access tier per §F.1.1
+E       assert 'Access pattern:' in "Fetch landcover classification raster (NLCD or ESA WorldCover) for a bbox.\n\n    **What it does:** Downloads an NLCD...ing's roughness), QGIS Server\n      WMS rendering, ``extract_landcover_class``, ``compute_impervious_surface``.\n    "
+
+tests/test_data_fetch.py:572: AssertionError
+______________ test_fetch_river_geometry_docstring_records_tier_4 ______________
+
+    def test_fetch_river_geometry_docstring_records_tier_4():
+        """§F.1.1 docstring discipline: Tier 4 (region download + local clip)."""
+        doc = fetch_river_geometry.__doc__ or ""
+>       assert "Access pattern:" in doc
+E       AssertionError: assert 'Access pattern:' in 'Fetch river and stream flowline geometry for a bbox from NHDPlus HR (USGS).\n\n    **What it does:** Downloads the US...ld_sfincs_model`` (river-burning DEM step),\n      ``delineate_watershed``, stream-network display in map panel.\n    '
+
+tests/test_data_fetch.py:870: AssertionError
+__________ test_lookup_precip_return_period_docstring_records_tier_3 ___________
+
+    def test_lookup_precip_return_period_docstring_records_tier_3():
+        """§F.1.1 docstring discipline: Tier 3 (direct HTTPS point query)."""
+        doc = lookup_precip_return_period.__doc__ or ""
+>       assert "Access pattern:" in doc
+E       AssertionError: assert 'Access pattern:' in 'Look up a precipitation return-period depth at a point via NOAA Atlas 14 PFDS.\n\n    **What it does:** Issues a poin...ears,\n    duration_label)`` — snapping ensures callers within the same 30 arc-second\n    cell dedup (FR-DC-4).\n    '
+
+tests/test_data_fetch.py:977: AssertionError
+_______________ test_run_model_flood_scenario_returns_layer_uri ________________
+
+    @pytest.mark.asyncio
+    async def test_run_model_flood_scenario_returns_layer_uri() -> None:
+        """``run_model_flood_scenario`` returns ``LayerURI`` (not a dict) on success.
+    
+        Guards the layer-emission contract pin introduced by job-0060:
+        ``docs/decisions/layer-emission-contract.md`` (ADOPTED 2026-06-07).
+        The PipelineEmitter gate ``isinstance(result, LayerURI)`` at
+        ``pipeline_emitter.py:517`` only fires when the tool returns a
+        ``LayerURI`` instance — a dict return misses it entirely.
+        """
+        run_id = new_ulid()
+        handle = _make_handle(run_id=run_id)
+    
+        landcover_result = {
+            "layer": _mock_layer_uri("landcover"),
+            "nlcd_vintage_year": 2021,
+            "dataset": "nlcd_2021",
+            "source": "mrlc-wms",
+        }
+        precip_result = {
+            "precip_inches": 12.1,
+            "units": "inches",
+            "location": [26.6, -81.9],
+            "return_period_years": 100,
+            "duration_hours": 24.0,
+            "vintage_volume": "NOAA Atlas 14 Volume 9 Version 2",
+            "project_area": "Southeastern States",
+            "source": "noaa-atlas14-pfds",
+        }
+        model_setup = ModelSetup(
+            setup_id=new_ulid(),
+            solver="sfincs",
+            setup_uri="gs://test-cache/cache/static-30d/sfincs_setup/test/manifest.json",
+            grid_resolution_m=30.0,
+            bbox=(-81.92, 26.55, -81.80, 26.68),
+            parameters={"nlcd_vintage_year": 2021},
+            created_at=datetime.now(timezone.utc),
+        )
+        run_result_ok = RunResult(
+            run_id=run_id,
+            handle_id=handle.handle_id,
+            status="complete",
+            output_uri=f"gs://grace-2-hazard-prod-runs/{run_id}/",
+            started_at=datetime.now(timezone.utc),
+            completed_at=datetime.now(timezone.utc),
+            duration_seconds=120.0,
+        )
+        flood_layer = LayerURI(
+            layer_id=f"flood-depth-peak-{run_id}",
+            name="Flood Depth (peak)",
+            layer_type="raster",
+            uri=f"gs://grace-2-hazard-prod-runs/{run_id}/flood_depth_peak.tif",
+            style_preset="continuous_flood_depth",
+            role="primary",
+            units="meters",
+        )
+        depth_metrics = {
+            "max_depth_m": 2.4,
+            "mean_depth_m": 0.6,
+            "p95_depth_m": 1.9,
+            "flooded_cell_count": 12_345,
+            "crs": "EPSG:3857",
+            "units": "meters",
+        }
+    
+        async def _wfc(handle):  # noqa: ANN001
+            return run_result_ok
+    
+        with (
+            patch("grace2_agent.workflows.model_flood_scenario.fetch_dem", return_value=_mock_layer_uri("dem")),
+            patch("grace2_agent.workflows.model_flood_scenario.fetch_landcover", return_value=landcover_result),
+            patch("grace2_agent.workflows.model_flood_scenario.fetch_river_geometry", return_value=_mock_layer_uri("rivers")),
+            patch("grace2_agent.workflows.model_flood_scenario.lookup_precip_return_period", return_value=precip_result),
+            patch("grace2_agent.workflows.model_flood_scenario.build_sfincs_model", return_value=model_setup),
+            patch("grace2_agent.workflows.model_flood_scenario.run_solver", return_value=handle),
+            patch("grace2_agent.workflows.model_flood_scenario.wait_for_completion", side_effect=_wfc),
+            patch(
+                "grace2_agent.workflows.model_flood_scenario.postprocess_flood",
+                return_value=([flood_layer], depth_metrics),
+            ),
+        ):
+            result = await run_model_flood_scenario(
+                bbox=(-81.92, 26.55, -81.80, 26.68),
+                return_period_yr=100,
+                duration_hr=24,
+                compute_class="medium",
+            )
+    
+        # The critical assertion: LayerURI (not dict) so PipelineEmitter fires.
+        assert isinstance(result, LayerURI), (
+            f"job-0060 layer-emission contract: run_model_flood_scenario must return "
+            f"LayerURI on success (not {type(result).__name__!r}). The PipelineEmitter "
+            f"gate at pipeline_emitter.py:517 only fires add_loaded_layer when "
+            f"isinstance(result, LayerURI) is True. See "
+            f"docs/decisions/layer-emission-contract.md (ADOPTED 2026-06-07)."
+        )
+        # After job-0062, publish_layer substitutes the WMS URL into LayerURI.uri;
+        # the gs:// URI is no longer returned directly (see test 28 for the same
+        # assertion with an explicit WMS URL mock — test corrected by job-0071).
+>       assert result.uri.startswith("https://"), (
+            f"job-0062: run_model_flood_scenario must return a WMS URL in LayerURI.uri "
+            f"(publish_layer substitutes the WMS URL); got {result.uri!r}"
+        )
+E       AssertionError: job-0062: run_model_flood_scenario must return a WMS URL in LayerURI.uri (publish_layer substitutes the WMS URL); got 'gs://grace-2-hazard-prod-runs/01KTT850A5M8KW44V6SCGS9VR1/flood_depth_peak.tif'
+E       assert False
+E        +  where False = <built-in method startswith of str object at 0x7f4f45ff6f30>('https://')
+E        +    where <built-in method startswith of str object at 0x7f4f45ff6f30> = 'gs://grace-2-hazard-prod-runs/01KTT850A5M8KW44V6SCGS9VR1/flood_depth_peak.tif'.startswith
+E        +      where 'gs://grace-2-hazard-prod-runs/01KTT850A5M8KW44V6SCGS9VR1/flood_depth_peak.tif' = LayerURI(layer_id='flood-depth-peak-01KTT850A5M8KW44V6SCGS9VR1', name='Flood Depth (peak)', layer_type='raster', uri='...yle_preset='continuous_flood_depth', temporal=None, role='primary', units='meters', bbox=(-81.92, 26.55, -81.8, 26.68)).uri
+
+tests/test_model_flood_scenario.py:1845: AssertionError
+------------------------------ Captured log call -------------------------------
+WARNING  grace2_agent.workflows.model_flood_scenario:model_flood_scenario.py:811 publish_layer failed for layer_id=flood-depth-peak-01KTT850A5M8KW44V6SCGS9VR1 error_code=LAYER_URI_NOT_FOUND (layer_uri 'gs://grace-2-hazard-prod-runs/01KTT850A5M8KW44V6SCGS9VR1/flood_depth_peak.tif' does not exist in GCS and no unambiguous correction was found. Objects under gs://grace-2-hazard-prod-runs/01KTT850A5M8KW44V6SCGS9VR1/: [<none>]. Re-issue publish_layer with the EXACT `uri` value returned by the tool that produced the layer (copy it verbatim from that function_response).) — falling back to gs:// uri; WMS rendering will fail until OQ-62-WORKER-SA-RUNS-BUCKET-GRANT is resolved
+__________ test_run_model_flood_scenario_triggers_loaded_layers_emit ___________
+
+    @pytest.mark.asyncio
+    async def test_run_model_flood_scenario_triggers_loaded_layers_emit() -> None:
+        """``add_loaded_layer`` is called and ``loaded_layers`` is populated on success.
+    
+        Verifies the full emission chain mandated by the layer-emission contract
+        (``docs/decisions/layer-emission-contract.md``, ADOPTED 2026-06-07):
+    
+            run_model_flood_scenario → LayerURI
+                → PipelineEmitter.emit_tool_call isinstance gate (pipeline_emitter.py:517)
+                → add_loaded_layer (pipeline_emitter.py:413)
+                → session-state envelope with non-empty loaded_layers
+    
+        The test mocks ``PipelineEmitter.add_loaded_layer`` directly and asserts
+        it is called exactly once with the COG LayerURI.  It then asserts that
+        the emitter's ``_loaded_layers`` list would be non-empty with the correct
+        URI (simulating what ``emit_session_state`` would serialise).
+        """
+        import json as _json
+    
+        from grace2_agent.pipeline_emitter import PipelineEmitter
+    
+        run_id = new_ulid()
+        handle = _make_handle(run_id=run_id)
+    
+        landcover_result = {
+            "layer": _mock_layer_uri("landcover"),
+            "nlcd_vintage_year": 2021,
+            "dataset": "nlcd_2021",
+            "source": "mrlc-wms",
+        }
+        precip_result = {
+            "precip_inches": 12.1,
+            "units": "inches",
+            "location": [26.6, -81.9],
+            "return_period_years": 100,
+            "duration_hours": 24.0,
+            "vintage_volume": "NOAA Atlas 14 Volume 9 Version 2",
+            "project_area": "Southeastern States",
+            "source": "noaa-atlas14-pfds",
+        }
+        model_setup = ModelSetup(
+            setup_id=new_ulid(),
+            solver="sfincs",
+            setup_uri="gs://test-cache/cache/static-30d/sfincs_setup/test/manifest.json",
+            grid_resolution_m=30.0,
+            bbox=(-81.92, 26.55, -81.80, 26.68),
+            parameters={"nlcd_vintage_year": 2021},
+            created_at=datetime.now(timezone.utc),
+        )
+        run_result_ok = RunResult(
+            run_id=run_id,
+            handle_id=handle.handle_id,
+            status="complete",
+            output_uri=f"gs://grace-2-hazard-prod-runs/{run_id}/",
+            started_at=datetime.now(timezone.utc),
+            completed_at=datetime.now(timezone.utc),
+            duration_seconds=120.0,
+        )
+        expected_cog_uri = f"gs://grace-2-hazard-prod-runs/{run_id}/flood_depth_peak.tif"
+        flood_layer = LayerURI(
+            layer_id=f"flood-depth-peak-{run_id}",
+            name="Flood Depth (peak)",
+            layer_type="raster",
+            uri=expected_cog_uri,
+            style_preset="continuous_flood_depth",
+            role="primary",
+            units="meters",
+        )
+        depth_metrics = {
+            "max_depth_m": 2.4,
+            "mean_depth_m": 0.6,
+            "p95_depth_m": 1.9,
+            "flooded_cell_count": 12_345,
+            "crs": "EPSG:3857",
+            "units": "meters",
+        }
+    
+        async def _wfc(handle):  # noqa: ANN001
+            return run_result_ok
+    
+        # Build a minimal PipelineEmitter with a capturing sink.
+        # The sink receives JSON-serialised Envelope strings (as server.py does).
+        captured_frames: list[dict[str, Any]] = []
+        test_session_id = new_ulid()
+    
+        async def _sink(json_str: str) -> None:
+            captured_frames.append(_json.loads(json_str))
+    
+        emitter = PipelineEmitter(session_id=test_session_id, sink=_sink)
+    
+        # Spy on add_loaded_layer — capture calls while still executing the real
+        # implementation so _loaded_layers is actually populated.
+        add_loaded_layer_calls: list[LayerURI] = []
+        original_add_loaded_layer = emitter.add_loaded_layer
+    
+        async def _spy_add_loaded_layer(layer: LayerURI) -> None:
+            add_loaded_layer_calls.append(layer)
+            await original_add_loaded_layer(layer)
+    
+        emitter.add_loaded_layer = _spy_add_loaded_layer  # type: ignore[method-assign]
+    
+        with (
+            patch("grace2_agent.workflows.model_flood_scenario.fetch_dem", return_value=_mock_layer_uri("dem")),
+            patch("grace2_agent.workflows.model_flood_scenario.fetch_landcover", return_value=landcover_result),
+            patch("grace2_agent.workflows.model_flood_scenario.fetch_river_geometry", return_value=_mock_layer_uri("rivers")),
+            patch("grace2_agent.workflows.model_flood_scenario.lookup_precip_return_period", return_value=precip_result),
+            patch("grace2_agent.workflows.model_flood_scenario.build_sfincs_model", return_value=model_setup),
+            patch("grace2_agent.workflows.model_flood_scenario.run_solver", return_value=handle),
+            patch("grace2_agent.workflows.model_flood_scenario.wait_for_completion", side_effect=_wfc),
+            patch(
+                "grace2_agent.workflows.model_flood_scenario.postprocess_flood",
+                return_value=([flood_layer], depth_metrics),
+            ),
+        ):
+            result = await emitter.emit_tool_call(
+                name="M5 flood scenario",
+                tool_name="run_model_flood_scenario",
+                invoke=lambda: run_model_flood_scenario(
+                    bbox=(-81.92, 26.55, -81.80, 26.68),
+                    return_period_yr=100,
+                    duration_hr=24,
+                    compute_class="medium",
+                ),
+            )
+    
+        # 1. add_loaded_layer must have been called exactly once.
+        assert len(add_loaded_layer_calls) == 1, (
+            f"job-0060: add_loaded_layer must be called once on success; "
+            f"called {len(add_loaded_layer_calls)} time(s). "
+            f"The emit_tool_call gate at pipeline_emitter.py:517 fires only when "
+            f"isinstance(result, LayerURI) is True."
+        )
+        # After job-0062, publish_layer substitutes the WMS URL into LayerURI.uri.
+        # Assert the URI is a WMS URL (not gs://) — corrected by job-0071.
+>       assert add_loaded_layer_calls[0].uri.startswith("https://"), (
+            f"add_loaded_layer called with wrong URI (expected WMS URL after job-0062): "
+            f"{add_loaded_layer_calls[0].uri!r}"
+        )
+E       AssertionError: add_loaded_layer called with wrong URI (expected WMS URL after job-0062): 'gs://grace-2-hazard-prod-runs/01KTT850MEEW4EW6FJRV44KGAF/flood_depth_peak.tif'
+E       assert False
+E        +  where False = <built-in method startswith of str object at 0x7f4f14cba630>('https://')
+E        +    where <built-in method startswith of str object at 0x7f4f14cba630> = 'gs://grace-2-hazard-prod-runs/01KTT850MEEW4EW6FJRV44KGAF/flood_depth_peak.tif'.startswith
+E        +      where 'gs://grace-2-hazard-prod-runs/01KTT850MEEW4EW6FJRV44KGAF/flood_depth_peak.tif' = LayerURI(layer_id='flood-depth-peak-01KTT850MEEW4EW6FJRV44KGAF', name='Flood Depth (peak)', layer_type='raster', uri='...yle_preset='continuous_flood_depth', temporal=None, role='primary', units='meters', bbox=(-81.92, 26.55, -81.8, 26.68)).uri
+
+tests/test_model_flood_scenario.py:2000: AssertionError
+------------------------------ Captured log call -------------------------------
+WARNING  grace2_agent.workflows.model_flood_scenario:model_flood_scenario.py:811 publish_layer failed for layer_id=flood-depth-peak-01KTT850MEEW4EW6FJRV44KGAF error_code=LAYER_URI_NOT_FOUND (layer_uri 'gs://grace-2-hazard-prod-runs/01KTT850MEEW4EW6FJRV44KGAF/flood_depth_peak.tif' does not exist in GCS and no unambiguous correction was found. Objects under gs://grace-2-hazard-prod-runs/01KTT850MEEW4EW6FJRV44KGAF/: [<none>]. Re-issue publish_layer with the EXACT `uri` value returned by the tool that produced the layer (copy it verbatim from that function_response).) — falling back to gs:// uri; WMS rendering will fail until OQ-62-WORKER-SA-RUNS-BUCKET-GRANT is resolved
+=============================== warnings summary ===============================
+tests/test_analytical_qa.py::TestAggregatePropertyWithinZone::test_sum_aggregation
+tests/test_analytical_qa.py::TestAggregatePropertyWithinZone::test_mean_aggregation
+tests/test_analytical_qa.py::TestAggregatePropertyWithinZone::test_max_aggregation
+tests/test_analytical_qa.py::TestAggregatePropertyWithinZone::test_no_features_in_zone_returns_zero_sum
+tests/test_analytical_qa.py::TestAggregatePropertyWithinZone::test_provenance_fields
+  /home/nate/Documents/GRACE-2/services/agent/src/grace2_agent/tools/analytical_qa.py:675: UserWarning: Geometry is in a geographic CRS. Results from 'centroid' are likely incorrect. Use 'GeoSeries.to_crs()' to re-project geometries to a projected CRS before this operation.
+  
+    value_centroids["geometry"] = value_gdf.geometry.centroid
+
+tests/test_fetch_iucn_red_list_range.py::test_mocked_happy_path_emits_one_feature_flatgeobuf
+  /home/nate/Documents/GRACE-2/services/agent/.venv/lib/python3.12/site-packages/pandas/core/flags.py:53: RuntimeWarning: coroutine 'test_secret_ref_awaitable_result_raises.<locals>.WrappingPersistence.get_secret_value.<locals>._inner' was never awaited
+    self._obj = weakref.ref(obj)
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_postprocess_pelicun.py: 10 warnings
+  /home/nate/Documents/GRACE-2/services/agent/src/grace2_agent/tools/postprocess_pelicun.py:635: UserWarning: Geometry is in a geographic CRS. Results from 'centroid' are likely incorrect. Use 'GeoSeries.to_crs()' to re-project geometries to a projected CRS before this operation.
+  
+    centroids = damaged_gdf.geometry.centroid
+
+tests/test_run_modflow.py::test_run_modflow_job_local_end_to_end
+  /home/nate/Documents/GRACE-2/services/agent/.venv/lib/python3.12/site-packages/gcsfs/extended_gcsfs.py:12: DeprecationWarning: google.cloud.storage._experimental.asyncio.async_appendable_object_writer has been moved to google.cloud.storage.asyncio.async_appendable_object_writer. Please update your imports.
+    from google.cloud.storage._experimental.asyncio.async_appendable_object_writer import (
+
+tests/test_run_modflow.py::test_run_modflow_job_local_end_to_end
+  /home/nate/Documents/GRACE-2/services/agent/.venv/lib/python3.12/site-packages/gcsfs/extended_gcsfs.py:15: DeprecationWarning: google.cloud.storage._experimental.asyncio.async_grpc_client has been moved to google.cloud.storage.asyncio.async_grpc_client. Please update your imports.
+    from google.cloud.storage._experimental.asyncio.async_grpc_client import AsyncGrpcClient
+
+tests/test_run_modflow.py::test_run_modflow_job_local_end_to_end
+  /home/nate/Documents/GRACE-2/services/agent/.venv/lib/python3.12/site-packages/gcsfs/extended_gcsfs.py:16: DeprecationWarning: google.cloud.storage._experimental.asyncio.async_multi_range_downloader has been moved to google.cloud.storage.asyncio.async_multi_range_downloader. Please update your imports.
+    from google.cloud.storage._experimental.asyncio.async_multi_range_downloader import (
+
+tests/test_run_pelicun_damage_assessment.py::test_geographic_correctness_higher_depth_higher_damage
+tests/test_run_pelicun_damage_assessment.py::test_component_types_filter_restricts_assets
+tests/test_run_pelicun_damage_assessment.py::test_deterministic_output_byte_identical_across_runs
+tests/test_run_pelicun_damage_assessment.py::test_deterministic_output_byte_identical_across_runs
+tests/test_run_pelicun_damage_assessment.py::test_no_assets_in_hazard_raises_typed_error
+tests/test_run_pelicun_damage_assessment.py::test_registered_tool_returns_layer_uri_with_correct_shape
+tests/workflows/test_pelicun_damage_with_buildings.py::test_mocked_buildings_plus_flood_expected_damage_point_count
+tests/workflows/test_pelicun_damage_with_buildings.py::test_each_damage_point_carries_ds_mean_in_0_4
+  /home/nate/Documents/GRACE-2/services/agent/src/grace2_agent/tools/run_pelicun_damage_assessment.py:796: UserWarning: Geometry is in a geographic CRS. Results from 'centroid' are likely incorrect. Use 'GeoSeries.to_crs()' to re-project geometries to a projected CRS before this operation.
+  
+    return gdf.geometry.centroid
+
+tests/test_tools_registry.py::test_register_with_adk_appends_each_tool_to_agent_tools
+tests/test_tools_registry.py::test_register_with_adk_appends_each_tool_to_agent_tools
+tests/test_tools_registry.py::test_register_with_adk_appends_each_tool_to_agent_tools
+tests/test_tools_registry.py::test_register_with_adk_appends_each_tool_to_agent_tools
+  <frozen abc>:106: DeprecationWarning: BaseAgentConfig is deprecated and will be removed in future versions.
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_data_fetch.py::test_fetch_landcover_docstring_records_access_tier
+FAILED tests/test_data_fetch.py::test_fetch_river_geometry_docstring_records_tier_4
+FAILED tests/test_data_fetch.py::test_lookup_precip_return_period_docstring_records_tier_3
+FAILED tests/test_model_flood_scenario.py::test_run_model_flood_scenario_returns_layer_uri
+FAILED tests/test_model_flood_scenario.py::test_run_model_flood_scenario_triggers_loaded_layers_emit
+5 failed, 4315 passed, 72 skipped, 1 xfailed, 31 warnings in 292.91s (0:04:52)
