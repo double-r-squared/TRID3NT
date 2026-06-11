@@ -77,8 +77,30 @@ const CARTO_DARK_ATTRIBUTION =
 const DEFAULT_WMS_URL =
   "https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs";
 
-const WMS_BASE_URL: string =
-  (import.meta.env.VITE_GRACE2_WMS_URL as string | undefined) ?? DEFAULT_WMS_URL;
+// job-0255 (sprint-13.5): env-gated QGIS proxy base. When VITE_QGIS_PROXY_BASE
+// is set (prod), every QGIS Server WMS URL is rewritten so its
+// scheme+host+path is replaced by the agent's /qgis-proxy endpoint and the
+// original WMS query string is preserved. The agent proxy (which holds the
+// only invoker grant on the now-private QGIS Server) forwards + streams the
+// tile, stripping user credentials. ABSENT (dev/today) → returns the URL
+// byte-identical, so behavior is unchanged. Example:
+//   VITE_QGIS_PROXY_BASE = "https://agent.example/qgis-proxy"
+//   https://qgis.run.app/ogc/wms?MAP=x&LAYERS=y
+//     → https://agent.example/qgis-proxy?MAP=x&LAYERS=y
+const QGIS_PROXY_BASE: string | undefined =
+  (import.meta.env.VITE_QGIS_PROXY_BASE as string | undefined) || undefined;
+
+export function applyQgisProxy(wmsUrl: string): string {
+  if (!QGIS_PROXY_BASE) return wmsUrl; // dev/today: byte-identical passthrough.
+  const qIdx = wmsUrl.indexOf("?");
+  const query = qIdx >= 0 ? wmsUrl.slice(qIdx + 1) : "";
+  const base = QGIS_PROXY_BASE.replace(/[?&]+$/, "");
+  return query ? `${base}?${query}` : base;
+}
+
+const WMS_BASE_URL: string = applyQgisProxy(
+  (import.meta.env.VITE_GRACE2_WMS_URL as string | undefined) ?? DEFAULT_WMS_URL,
+);
 
 // MapLibre injects {bbox-epsg-3857} into the tile URL with the tile's
 // bounding box in EPSG:3857 (the default Web Mercator projection). QGIS
@@ -252,6 +274,9 @@ const STYLE_PRESET_TO_WMS_LAYERS: Record<string, string> = {
  *   3. Add the per-tile WMS GetMap params MapLibre's raster source needs.
  */
 export function buildWmsTileUrl(wmsUrl: string, stylePreset?: string | null): string {
+  // job-0255: route overlay WMS URLs through the agent proxy when
+  // VITE_QGIS_PROXY_BASE is set (no-op otherwise — byte-identical).
+  wmsUrl = applyQgisProxy(wmsUrl);
   const sep = wmsUrl.includes("?") ? "&" : "?";
   let layersParam = "";
   // The upstream URL may already contain LAYERS=. If it doesn't, attempt to

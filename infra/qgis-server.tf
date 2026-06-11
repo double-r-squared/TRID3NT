@@ -20,12 +20,15 @@
 #     starves it, this becomes `min=1` then.
 #   - Request-rate autoscaling (FR-QS-1) — Cloud Run's default autoscaler.
 #   - `--cpu=2 --memory=2Gi` baseline; bumped only with a latency NFR.
-#   - Public ingress (`INGRESS_TRAFFIC_ALL`): GetCapabilities + tile GET must
-#     reach the browser; auth gating is the agent's contract (Tier B reaches
-#     the client only via QGIS Server or agent GeoJSON).
-#   - `allUsers: roles/run.invoker` binding makes the WMS public-readable.
-#     This is the SRS-intended posture (Tier B served via QGIS Server,
-#     Invariant 4/5). The buckets stay private; QGIS Server is the only path.
+#   - Public ingress (`INGRESS_TRAFFIC_ALL`): the service is reachable on the
+#     internet, but invocation is GATED by IAM (job-0255 invoker-only flip).
+#     ingress=ALL + invoker-only is the standard Cloud Run private-service
+#     posture: TCP reaches the front door, IAM rejects un-authed callers (403).
+#   - Invoker binding (job-0255): roles/run.invoker is granted ONLY to the
+#     agent-runtime SA — NOT allUsers. Tier B reaches the browser via the
+#     agent's /qgis-proxy (which holds the invoker grant and attaches an OIDC
+#     token), so a direct unauthenticated WMS GET to this URL returns 403.
+#     The buckets stay private; QGIS Server is still the only render path.
 #   - Stateless and replaceable (NFR-R-4): no volumes, no sticky sessions,
 #     `.qgs` lives in GCS, no per-instance disk writes.
 #
@@ -311,15 +314,43 @@ resource "google_cloud_run_v2_service" "qgis_server" {
   ]
 }
 
-# --- Public-invoker binding (Tier B served via QGIS Server, Invariant 4/5) ----
-# Allows unauthenticated GETs against /ogc/* — this is the SRS posture: the
-# QGIS Server is the only path Tier B reaches the browser, so the WMS surface
-# must be publicly reachable. The buckets behind it remain private (PAP).
+# --- Invoker binding: agent-runtime ONLY (job-0255, sprint-13.5 Stage 2) -------
+# WAS: `allUsers` → roles/run.invoker (public WMS — the M3-era posture).
+# NOW: invoker-only. The agent service's runtime SA is the SINGLE principal
+# granted roles/run.invoker on QGIS Server. Tier B still reaches the browser
+# only through QGIS Server (Invariant 4/5), but the hop is now
+#   browser → agent /qgis-proxy (attaches OIDC) → QGIS Server
+# instead of the browser hitting QGIS Server directly. The agent proxy
+# (services/workers/qgis_proxy.py, mounted on the agent's :8766 HTTP listener)
+# strips ALL inbound user credentials before forwarding, so QGIS Server never
+# sees a user identity (no UID leak — manifest job-0255 correctness lens).
+#
+# Why a single binding, not allUsers + agent SA: the whole point of the flip
+# is that a DIRECT unauthenticated WMS request to the QGIS Cloud Run URL now
+# returns 403 (manifest correctness lens). Keeping allUsers would defeat that.
+#
+# SEQUENCING (loud): applying this binding flips dev rendering OFF until the
+# proxy path is live end-to-end — the dev demo currently RENDERS via the
+# public QGIS URL. The user must apply ONLY after the proxy is verified
+# (USER_UNBLOCK 0255-A/B). `tofu apply` is a USER step (never an agent step).
+#
+# Other accessors inventoried (none need a grant here):
+#   - The PyQGIS worker (job-0021 Cloud Run JOB) and SFINCS/MODFLOW jobs write
+#     `.qgs`/layer data to GCS via their own runtime SAs; they do NOT invoke
+#     the QGIS Server SERVICE (rendering ≠ writing — Invariant 4). No binding.
+#   - The qgis-server runtime SA (google_service_account.qgis_server) is the
+#     service's OWN identity (used for /vsigs/ + the /mnt/qgs gcsfuse mount via
+#     bucket-scoped objectViewer); it is the callee, not a caller. No binding.
+#   - The web client never calls QGIS Server directly post-flip — it calls the
+#     agent proxy, which holds the only invoker grant. No human/SA binding.
+#
+# TODO(job-0257): prod agent service deploy threads QGIS_SERVER_URL +
+# QGIS_PROXY_ENABLED=true so the proxy path serves prod tiles.
 
-resource "google_cloud_run_v2_service_iam_member" "qgis_server_public_invoker" {
+resource "google_cloud_run_v2_service_iam_member" "qgis_server_agent_invoker" {
   project  = google_project.grace2.project_id
   location = google_cloud_run_v2_service.qgis_server.location
   name     = google_cloud_run_v2_service.qgis_server.name
   role     = "roles/run.invoker"
-  member   = "allUsers"
+  member   = "serviceAccount:${google_service_account.agent_runtime.email}"
 }

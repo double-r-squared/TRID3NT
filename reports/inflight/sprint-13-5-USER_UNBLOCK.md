@@ -203,3 +203,67 @@ consequences:
   owned by that user's INTERNAL ULID (`users._id`), not the Firebase uid; do
   NOT use a `MIGRATION_ANON_UID`-owned (pre-auth migrated) case — those are
   unmintable by design. `body.user_id` stays the FIREBASE uid as shown above.
+
+---
+
+## job-0255 — QGIS Server invoker-only flip + agent WMS proxy (infra)
+
+Tofu code is complete; `tofu validate` is **green** and `tofu plan` shows the
+IAM binding change cleanly — `allUsers` invoker DESTROYED, agent-runtime SA
+invoker CREATED, the QGIS service updated **in-place** (NOT replaced). Evidence:
+`reports/inflight/job-0255-infra-20260611/evidence/{tofu_validate.txt,tofu_plan_iam_only.txt}`.
+The agent `/qgis-proxy` path is wired + tested + LIVE-proven (one real GetMap
+tile streamed through it from the dev QGIS URL — `evidence/proxied_tile.png`),
+env-gated OFF by default (`QGIS_PROXY_ENABLED=false`).
+
+> ⚠️ **LOUD SEQUENCING WARNING — applying 0255-A BREAKS dev rendering until the
+> proxy path is live.** The dev demo currently RENDERS via the public QGIS URL.
+> Applying the invoker-only flip makes a DIRECT browser → QGIS WMS request
+> return **403**, so the map goes blank UNTIL the agent proxy path is serving
+> tiles end-to-end (agent deployed with `QGIS_PROXY_ENABLED=true` +
+> `QGIS_SERVER_URL` set, and the web build pointed at the proxy via
+> `VITE_QGIS_PROXY_BASE` — that prod wiring lands in job-0257/job-0256).
+> **Apply ONLY after the proxy path is verified end-to-end in the target
+> environment.** For the LOCAL dev demo, do NOT apply yet — it would blank the
+> live tailnet demo (web :5173 → public QGIS). The flip is a prod-hardening
+> step; sequence it with the prod deploy jobs.
+
+### 0255-A — Apply the invoker-only flip (production mutation; USER step)
+Re-establish auth first (see 0250-A), then:
+```bash
+cd /home/nate/Documents/GRACE-2/infra
+tofu plan   # confirm: qgis_server_public_invoker DESTROYED, qgis_server_agent_invoker CREATED,
+            # qgis_server service "updated in-place" (NEVER "must be replaced").
+            # (Unrelated drift: 4 google_project_service.enabled[firebase*] adds are
+            #  job-0250's queued auth APIs — apply those with 0250-B, not blocking here.)
+tofu apply -target=google_cloud_run_v2_service_iam_member.qgis_server_public_invoker \
+           -target=google_cloud_run_v2_service_iam_member.qgis_server_agent_invoker
+# (the -target keeps the apply to JUST the IAM flip; drop -target to apply the
+#  full config once 0250's auth APIs are intended to land too.)
+```
+**Rollback one-liner** (re-grant public access — restores today's dev rendering):
+```bash
+gcloud run services add-iam-policy-binding grace-2-qgis-server \
+  --region=us-central1 --project=grace-2-hazard-prod \
+  --member=allUsers --role=roles/run.invoker
+# (then revert infra/qgis-server.tf to the allUsers binding + `tofu apply` to re-sync state,
+#  OR re-import: the agent-runtime binding stays harmlessly in place alongside allUsers.)
+```
+Context: `tofu apply` and any production IAM mutation are USER-only steps
+(classifier-denied for agents; CLAUDE.md machine-state rule).
+
+### 0255-B — Verify the flip took (direct QGIS URL → 403)
+```bash
+# After 0255-A: a DIRECT unauthenticated WMS request must now be REJECTED.
+curl -s -o /dev/null -w "direct QGIS GetCapabilities -> HTTP %{http_code}\n" \
+  "https://grace-2-qgis-server-425352658356.us-central1.run.app/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&SERVICE=WMS&REQUEST=GetCapabilities"
+# EXPECT: HTTP 403  (was 200 while allUsers was bound).
+
+# And the AGENT-fronted path (once the agent is deployed with QGIS_PROXY_ENABLED=true)
+# must still return a 200 PNG tile:
+curl -s -o /tmp/proxied.png -w "proxy GetMap -> HTTP %{http_code} bytes=%{size_download} type=%{content_type}\n" \
+  "https://<agent-prod-host>/qgis-proxy?MAP=/mnt/qgs/grace2-sample.qgs&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&LAYERS=basemap-osm-conus&CRS=EPSG:3857&FORMAT=image/png&BBOX=-10000000,3000000,-9000000,4000000&WIDTH=256&HEIGHT=256&STYLES="
+# EXPECT: HTTP 200, content-type image/png, bytes > 1000.
+```
+Context: 0255-B is the proof the lockdown is effective AND the proxy path is
+the working replacement. Run it immediately after 0255-A.
