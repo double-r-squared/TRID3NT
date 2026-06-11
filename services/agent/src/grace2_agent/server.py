@@ -96,6 +96,12 @@ from .adapter import (
     summarize_tool_result,
 )
 from .gemini_cache import get_or_create_cache
+from .auth import (
+    AUTH_CLOSE_CODE,
+    AUTH_FAILED_ERROR_CODE,
+    MIGRATION_ANON_UID,
+    auth_required,
+)
 from .auth_handshake import (
     AuthResult,
     authenticate_token,
@@ -445,6 +451,33 @@ async def init_persistence_from_env() -> Persistence | None:
         "Persistence singleton remains unbound"
     )
     return None
+
+
+async def _run_preauth_case_migration() -> None:
+    """One-time idempotent pre-Auth case migration (job-0252, OQ-0115).
+
+    Calls ``Persistence.migrate_preauth_cases(MIGRATION_ANON_UID)`` if a
+    Persistence singleton is bound. Cases written before the Auth track had
+    no ``user_id`` field and used to leak to every signed-in user via a
+    ``$exists:false`` clause (now removed). This stamps them with the
+    synthetic owner so each Case is visible only to its owner.
+
+    Idempotent: the migration's filter is ``{"user_id": {"$exists": False}}``,
+    so a second startup matches nothing. Best-effort: a failure is logged at
+    WARNING and never aborts server startup (mirrors the Persistence-init and
+    session-touch postures).
+    """
+    p = get_persistence()
+    if p is None:
+        logger.info(
+            "pre-Auth case migration skipped: no Persistence singleton bound"
+        )
+        return
+    try:
+        n = await p.migrate_preauth_cases(MIGRATION_ANON_UID)
+        logger.info("pre-Auth case migration complete: %s case(s) stamped", n)
+    except Exception:  # noqa: BLE001 — startup must not abort on migration
+        logger.warning("pre-Auth case migration failed (continuing)", exc_info=True)
 
 
 # job-0259: session-scoped active-Case registry. The web client mounts TWO
@@ -1404,11 +1437,49 @@ async def _handle_session_resume(
 # --------------------------------------------------------------------------- #
 
 
+async def _reject_unauthenticated(
+    websocket: ServerConnection,
+    state: SessionState,
+    *,
+    reason: str,
+) -> None:
+    """Reject an unauthenticated connection under the ``AUTH_REQUIRED`` gate.
+
+    job-0252 (sprint-13.5 Decision #6): production REQUIRES sign-in. When the
+    gate is engaged and no valid Firebase ID token resolves, we must NOT fall
+    through to the anonymous path. Per SRS Appendix A.5 step 2 we emit an A.6
+    ``AUTH_FAILED`` error envelope and close the socket with code ``4401``.
+
+    Best-effort: a socket that is already closing may raise on send/close; we
+    swallow so the handler loop can terminate cleanly.
+    """
+    logger.info(
+        "AUTH_REQUIRED gate: rejecting unauthenticated connection "
+        "session=%s reason=%s (close %d)",
+        state.session_id,
+        reason,
+        AUTH_CLOSE_CODE,
+    )
+    try:
+        await _send_error(
+            websocket,
+            state.session_id,
+            AUTH_FAILED_ERROR_CODE,
+            f"authentication required: {reason}",
+        )
+    except Exception:  # noqa: BLE001 — socket may already be down
+        pass
+    try:
+        await websocket.close(code=AUTH_CLOSE_CODE, reason="unauthorized")
+    except Exception:  # noqa: BLE001 — close is best-effort
+        pass
+
+
 async def _handle_auth_token(
     websocket: ServerConnection,
     state: SessionState,
     payload_dict: dict,
-) -> None:
+) -> bool:
     """Process the client's ``auth-token`` envelope and emit ``auth-ack``.
 
     Per Appendix H.5 (job-0122 scope):
@@ -1419,6 +1490,12 @@ async def _handle_auth_token(
     3. Bind the resolved ``user_id`` + tier + anonymous-flag into the
        SessionState — every subsequent envelope is scoped to this user.
     4. Emit ``auth-ack`` so the client knows its session identity.
+
+    job-0252 (sprint-13.5): under the ``AUTH_REQUIRED`` gate, an unverified
+    token (or no token) resolves to an anonymous result — which we REJECT
+    instead of binding (remove-don't-shim from the prod path). Returns
+    ``True`` when the connection may proceed, ``False`` when the caller must
+    stop processing (the connection was rejected + closed).
     """
     tok: AuthTokenEnvelope | None
     try:
@@ -1431,10 +1508,22 @@ async def _handle_auth_token(
             f"auth-token validation failed: {ve.errors()[0]['msg']}",
         )
         # Even on validation failure we run the anonymous fallback so the
-        # connection is still usable (per H.3).
+        # connection is still usable (per H.3) — UNLESS the AUTH_REQUIRED
+        # gate is engaged, in which case the result is rejected below.
         tok = None
 
     result = await authenticate_token(tok, get_persistence())
+
+    # job-0252 AUTH_REQUIRED gate: when sign-in is mandatory, an anonymous
+    # result means verification did not produce a real Firebase identity —
+    # reject (A.5 close 4401 + A.6 AUTH_FAILED). No anonymous fallback on the
+    # required path. Dev (gate off) preserves the Wave 2 behavior verbatim.
+    if result.is_anonymous and auth_required():
+        await _reject_unauthenticated(
+            websocket, state, reason="no valid Firebase ID token"
+        )
+        return False
+
     _bind_auth_result(state, result)
     await _touch_session_record(state)  # D.6 heartbeat (job-0203 / M4)
     ack = build_auth_ack(result)
@@ -1447,6 +1536,7 @@ async def _handle_auth_token(
         result.tier,
         result.firebase_uid,
     )
+    return True
 
 
 def _bind_auth_result(state: SessionState, result: AuthResult) -> None:
@@ -1499,7 +1589,7 @@ async def _touch_session_record(
 async def _ensure_auth_handshake(
     websocket: ServerConnection,
     state: SessionState,
-) -> None:
+) -> bool:
     """Synchronous fallback: if the handshake hasn't run, run it as anonymous.
 
     Called when a non-``auth-token`` envelope arrives before the handshake
@@ -1507,9 +1597,23 @@ async def _ensure_auth_handshake(
     envelope raced ahead). Mirrors the 5-second timeout path from H.3 —
     instead of waiting 5 seconds we trip the anonymous fallback inline so
     the user is bound before their first real interaction.
+
+    job-0252 (sprint-13.5): under the ``AUTH_REQUIRED`` gate, a client that
+    speaks a non-``auth-token`` envelope first (i.e. never sent a valid
+    Firebase ID token) is REJECTED — there is no implicit anonymous bind on
+    the required path. Returns ``True`` when the connection may proceed,
+    ``False`` when the caller must stop (the connection was rejected +
+    closed).
     """
     if state.auth_handshake_complete:
-        return
+        return True
+    if auth_required():
+        await _reject_unauthenticated(
+            websocket,
+            state,
+            reason="auth-token envelope required before any other message",
+        )
+        return False
     result = await authenticate_token(None, get_persistence())
     _bind_auth_result(state, result)
     await _touch_session_record(state)  # D.6 heartbeat (job-0203 / M4)
@@ -1523,6 +1627,7 @@ async def _ensure_auth_handshake(
         state.session_id,
         result.user.user_id,
     )
+    return True
 
 
 # --------------------------------------------------------------------------- #
@@ -1537,24 +1642,32 @@ async def _emit_case_list(websocket: ServerConnection, state: SessionState) -> N
     skip. If the listing call fails we log + skip; the case-list is a
     derivable view, so failing it should not break the chat path.
 
-    Auth-stub note: ``list_cases_for_user`` currently passes the session_id
-    as the user_id placeholder. The Auth/Users track will replace this with
-    the resolved Firebase UID; the persistence layer's filter is already
-    backward-compatible (``$or`` includes ``user_id: {$exists: False}``).
+    job-0252 (OQ-0115-CASE-USER-LINK): the list is now scoped by
+    ``state.authenticated_user_id`` (the resolved Firebase UID, or the
+    sticky-anonymous ULID in dev), matching the owner stamped onto Cases at
+    creation (``upsert_case(owner_user_id=...)``). The old ``$exists:false``
+    leak clause is gone, so a Case is visible only to its owner. We fall back
+    to ``session_id`` only when the handshake hasn't bound a user yet — the
+    same ``authenticated_user_id or session_id`` posture as the secrets /
+    chat-persist paths.
     """
     p = get_persistence()
     if p is None:
         logger.debug("case-list: Persistence unbound; skipping emit")
         return
+    user_id = state.authenticated_user_id or state.session_id
     try:
-        cases = await p.list_cases_for_user(state.session_id)
+        cases = await p.list_cases_for_user(user_id)
     except Exception:  # noqa: BLE001 — best-effort
         logger.exception("case-list: list_cases_for_user failed")
         return
     payload = CaseListEnvelopePayload(cases=cases)
     await websocket.send(_new_envelope("case-list", state.session_id, payload))
     logger.info(
-        "case-list emitted session=%s count=%d", state.session_id, len(cases)
+        "case-list emitted session=%s user=%s count=%d",
+        state.session_id,
+        user_id,
+        len(cases),
     )
 
 
@@ -1756,7 +1869,12 @@ async def _handle_case_command(
             status="active",
         )
         try:
-            await p.upsert_case(case)
+            # job-0252 (OQ-0115-CASE-USER-LINK): stamp the creator as owner so
+            # the Case is visible to them via list_cases_for_user (the
+            # $exists:false leak clause is gone). authenticated_user_id is set
+            # by the auth handshake (real Firebase UID or the sticky-anonymous
+            # ULID in dev); None only on the M1 unbound-Persistence path.
+            await p.upsert_case(case, owner_user_id=state.authenticated_user_id)
         except Exception as exc:  # noqa: BLE001
             logger.exception("case-command(create) upsert failed: %s", exc)
             await _send_error(
@@ -2052,7 +2170,9 @@ async def _auto_create_case_from_root(
         status="active",
     )
     try:
-        await p.upsert_case(case)
+        # job-0252 (OQ-0115-CASE-USER-LINK): stamp the creator as owner so the
+        # auto-created Case is visible to them via list_cases_for_user.
+        await p.upsert_case(case, owner_user_id=state.authenticated_user_id)
     except Exception:  # noqa: BLE001 — fall back to the stateless path
         logger.exception(
             "auto-create-case upsert failed session=%s", state.session_id
@@ -3925,13 +4045,22 @@ def _make_handler(settings: GeminiSettings):
                     # fallback inline so the SessionState.authenticated_user_id
                     # is bound before any user-scoped action runs.
                     if msg_type == "auth-token":
-                        await _handle_auth_token(websocket, state, payload_dict)
+                        ok = await _handle_auth_token(
+                            websocket, state, payload_dict
+                        )
+                        # job-0252 AUTH_REQUIRED gate: a rejected handshake
+                        # has already closed the socket; stop the loop.
+                        if not ok:
+                            return
                         continue
                     # Implicit anonymous fallback when any other envelope
                     # arrives before the handshake — keeps the legacy
-                    # no-auth-token clients working.
+                    # no-auth-token clients working. Under the AUTH_REQUIRED
+                    # gate this REJECTS instead (job-0252).
                     if not state.auth_handshake_complete:
-                        await _ensure_auth_handshake(websocket, state)
+                        ok = await _ensure_auth_handshake(websocket, state)
+                        if not ok:
+                            return
 
                     if msg_type == "session-resume":
                         SessionResumePayload.model_validate(payload_dict)
@@ -4202,6 +4331,13 @@ async def run_server(host: str = "127.0.0.1", port: int | None = None) -> None:
         await init_persistence_from_env()
     except Exception as exc:  # noqa: BLE001 — startup must not abort on MCP issues
         logger.warning("Persistence init failed (continuing without MCP): %s", exc)
+    # job-0252 (sprint-13.5, OQ-0115-CASE-USER-LINK): one-time idempotent
+    # migration — stamp every pre-Auth Case (no ``user_id``) with the
+    # MIGRATION_ANON_UID sentinel so those Cases belong to one synthetic
+    # owner instead of leaking to every signed-in user. Idempotent: a second
+    # run matches nothing. Best-effort: a migration hiccup must not abort
+    # server startup (the same posture as the Persistence init above).
+    await _run_preauth_case_migration()
     handler = _make_handler(settings)
 
     # Wave 4.10 C1: best-effort mount of the catalog HTTP listener.

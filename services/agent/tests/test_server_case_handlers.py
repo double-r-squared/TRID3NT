@@ -123,6 +123,10 @@ def test_case_create_emits_case_open_and_case_list(_persistence_bound: Persisten
     ``case-open`` (empty session_state) then ``case-list`` updated."""
     ws = MockWebSocket()
     state = _fresh_state()
+    # job-0252 (OQ-0115): the handshake binds authenticated_user_id before any
+    # case-command runs; the create path stamps it as the Case owner and
+    # _emit_case_list scopes the listing by it. Simulate the bound user.
+    state.authenticated_user_id = new_ulid()
     cmd = CaseCommandEnvelopePayload(
         command="create", args={"title": "My new flood case"}
     )
@@ -180,10 +184,16 @@ def test_case_rename_updates_title_and_refreshes_case_list(
     _persistence_bound: Persistence,
 ) -> None:
     """``case-command(rename)`` updates ``title`` and re-emits case-list."""
+    # job-0252 (OQ-0115): seed the Case owned by the user the state lists as,
+    # so it survives the now owner-scoped _emit_case_list (the $exists:false
+    # leak clause is gone). Rename preserves the owner (the $set body has no
+    # user_id key, so an already-stamped owner is never cleared).
+    owner = new_ulid()
     case = _fresh_case_summary()
-    asyncio.run(_persistence_bound.upsert_case(case))
+    asyncio.run(_persistence_bound.upsert_case(case, owner_user_id=owner))
     ws = MockWebSocket()
     state = _fresh_state()
+    state.authenticated_user_id = owner
     cmd = CaseCommandEnvelopePayload(
         command="rename",
         case_id=case.case_id,

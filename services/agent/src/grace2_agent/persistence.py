@@ -383,14 +383,34 @@ class Persistence:
             normalized["case_id"] = doc["_id"]
         return CaseSummary.model_validate(normalized)
 
-    async def upsert_case(self, case: CaseSummary) -> CaseSummary:
+    async def upsert_case(
+        self, case: CaseSummary, *, owner_user_id: str | None = None
+    ) -> CaseSummary:
         """Insert or update a Case. Returns the persisted ``CaseSummary``.
 
         Uses MCP ``update-one`` with ``upsert=True`` so a fresh Case lands and
         an existing one is overwritten in a single round-trip.
+
+        job-0252 (sprint-13.5, OQ-0115-CASE-USER-LINK): when ``owner_user_id``
+        is provided, it is stamped onto the document's ``user_id`` field so the
+        Case belongs to its creator. ``CaseSummary`` itself carries no owner
+        field (it is a UI denormalization), so ownership lives only at the
+        storage layer — the read path (``_doc_to_case_summary``) deliberately
+        drops it. Without this, every newly-created Case would lack a
+        ``user_id`` and become invisible to ``list_cases_for_user`` now that
+        the ``$exists:false`` leak clause is gone. ``owner_user_id=None``
+        (the legacy / dev call shape) writes no owner — those Cases are then
+        swept by the one-time ``migrate_preauth_cases`` startup step.
+
+        The owner is written under ``$set``, so re-upserting an existing Case
+        with a fresh ``owner_user_id`` updates it; passing ``None`` never
+        clears an already-stamped owner (the ``user_id`` key is simply absent
+        from the ``$set``).
         """
         body = case.model_dump(mode="json")
         body["_id"] = case.case_id  # MongoDB primary key (FR-MP-5)
+        if owner_user_id:
+            body["user_id"] = owner_user_id
         await self._mcp.call_tool(
             "update-one",
             {
@@ -402,6 +422,60 @@ class Persistence:
             },
         )
         return case
+
+    async def migrate_preauth_cases(self, anon_uid: str) -> int:
+        """One-time, idempotent: stamp pre-Auth Cases with ``anon_uid``.
+
+        OQ-0115-CASE-USER-LINK (job-0252, sprint-13.5): Cases written before
+        the Auth track carry no ``user_id`` field. The old
+        ``{"user_id": {"$exists": False}}`` clause in ``list_cases_for_user``
+        leaked every such Case to every signed-in user. This migration
+        assigns ``user_id = anon_uid`` (the ``MIGRATION_ANON_UID`` sentinel)
+        to every Case that lacks a ``user_id``, so a pre-Auth Case belongs to
+        one synthetic owner instead of leaking.
+
+        **Idempotent** by construction: the filter is
+        ``{"user_id": {"$exists": False}}``, so a second run matches nothing
+        (every Case now has a ``user_id``). Re-running is a safe no-op.
+
+        **Non-corrupting**: a single ``$set`` of one field via the logical
+        ``update-one`` surface (translated to ``update-many`` by the
+        :class:`MCPSurfaceTranslator` so ALL matching orphans are stamped in
+        one round-trip — ``update-one`` semantics would only touch one doc).
+        No other field is read, written, or removed; sessions and chat
+        histories are untouched (this method only ever writes the ``projects``
+        collection).
+
+        Returns the modified count when the backend reports one, else ``0``.
+        Best-effort on count parsing — the migration's success is the absence
+        of orphans on the next run, not the returned integer.
+        """
+        raw = await self._mcp.call_tool(
+            "update-many",
+            {
+                "database": self._db,
+                "collection": CASES_COLLECTION,
+                "filter": {"user_id": {"$exists": False}},
+                "update": {"$set": {"user_id": anon_uid}},
+            },
+        )
+        # Best-effort: surface the modified count for the startup log. The
+        # real server returns a text/EJSON blob; the mock/file backends return
+        # a plain dict. Tolerate every shape.
+        modified = 0
+        payload = _unwrap_mcp_result(raw) if isinstance(raw, dict) else raw
+        if isinstance(payload, dict):
+            for k in ("modifiedCount", "modified_count", "nModified"):
+                v = payload.get(k)
+                if isinstance(v, int):
+                    modified = v
+                    break
+        logger.info(
+            "pre-Auth case migration: stamped %s orphan case(s) with user_id=%s",
+            modified,
+            anon_uid,
+        )
+        return modified
 
     async def list_cases_for_user(self, user_id: str) -> list[CaseSummary]:
         """List the user's LIVE Cases (``status="active"`` only).
@@ -420,9 +494,14 @@ class Persistence:
         definition: ``CaseSummary.status`` defaults to ``"active"``); the
         Python guard is the belt-and-suspenders for MCP backends whose filter
         dialect quietly ignores the operator.
+
+        job-0252 (sprint-13.5, OQ-0115-CASE-USER-LINK): the
+        ``{"user_id": {"$exists": False}}`` backward-compat clause is GONE.
+        It used to leak every pre-Auth Case (no ``user_id``) to every
+        signed-in user. The one-time startup migration
+        (``migrate_preauth_cases``) now stamps those orphan Cases with
+        ``MIGRATION_ANON_UID``, so a Case is visible only to its owner.
         """
-        # Backward-compat: include records that pre-date the Auth track (no
-        # user_id field at all) so the Wave 1.5 stub returns a useful list.
         raw = await self._mcp.call_tool(
             "find",
             {
@@ -432,7 +511,6 @@ class Persistence:
                     "$or": [
                         {"user_id": user_id},
                         {"owner_user_id": user_id},
-                        {"user_id": {"$exists": False}},
                     ],
                     # job-0267: tombstones never reach the wire.
                     "status": {"$nin": ["deleted", "archived"]},
@@ -829,13 +907,14 @@ class Persistence:
         filt: dict[str, Any] = {"is_active": True}
         if case_id is not None:
             filt["case_id"] = case_id
-        # user_id linking is a forward-compat field once Auth lands; the
-        # secrets collection schema in §F.3 already anticipates it.
+        # user_id linking is enforced once Auth lands. job-0252
+        # (sprint-13.5): the ``{"user_id": {"$exists": False}}`` backward-
+        # compat clause is GONE — it leaked pre-Auth secret records to every
+        # user. A secret record belongs only to its owner.
         if user_id:
             filt["$or"] = [
                 {"user_id": user_id},
                 {"owner_user_id": user_id},
-                {"user_id": {"$exists": False}},  # backward-compat to pre-Auth records
             ]
         raw = await self._mcp.call_tool(
             "find",
@@ -1277,6 +1356,27 @@ class FileMCPClient:
                 self._atomic_write(path, store)
                 return {"matchedCount": matched, "modifiedCount": modified}
 
+        if name == "update-many":
+            # job-0252 (sprint-13.5): the pre-Auth case migration uses the
+            # real-server ``update-many`` surface directly (the translator
+            # passes it through). On the dev/file substrate there is no
+            # translator, so we honor it here: apply the update to EVERY
+            # matching doc. No upsert (the migration never upserts).
+            async with lock:
+                store = self._read_store(path)
+                filt = args.get("filter", {})
+                update = args.get("update", {})
+                matched = 0
+                modified = 0
+                for doc in store.values():
+                    if self._matches(doc, filt):
+                        self._apply_update(doc, update, inserting=False)
+                        matched += 1
+                        modified += 1
+                if modified:
+                    self._atomic_write(path, store)
+                return {"matchedCount": matched, "modifiedCount": modified}
+
         if name == "find-one":
             async with lock:
                 store = self._read_store(path)
@@ -1303,7 +1403,7 @@ class FileMCPClient:
 
         raise NotImplementedError(
             f"FileMCPClient: unsupported MCP tool {name!r} "
-            f"(supports insert-one / update-one / find-one / find)"
+            f"(supports insert-one / update-one / update-many / find-one / find)"
         )
 
 

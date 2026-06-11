@@ -368,8 +368,11 @@ async def test_deleted_and_archived_cases_excluded_server_side(
     shelf = CaseSummary(
         case_id=new_ulid(), title="shelf", created_at=now_utc(), updated_at=now_utc()
     )
+    # job-0252 (OQ-0115): Cases are owner-scoped (the $exists:false leak clause
+    # is gone). Stamp the owner so the owner-scoped listing returns them; the
+    # status filter is what this test actually exercises.
     for c in (live, ghost, shelf):
-        await file_persistence.upsert_case(c)
+        await file_persistence.upsert_case(c, owner_user_id="anyone")
     await file_persistence.delete_case(ghost.case_id)
     await file_persistence.archive_case(shelf.case_id)
 
@@ -385,11 +388,14 @@ async def test_emitted_case_list_envelope_excludes_tombstones(
     """The actual ``case-list`` wire emission carries no deleted/archived Case."""
     ws = FakeWS()
     state = server.SessionState(session_id=new_ulid())
+    # job-0252 (OQ-0115): bind the owner so the create stamps it and the
+    # owner-scoped _emit_case_list lists by it.
+    state.authenticated_user_id = new_ulid()
     case_id = await _create_case(ws, state)
     ghost = CaseSummary(
         case_id=new_ulid(), title="ghost", created_at=now_utc(), updated_at=now_utc()
     )
-    await file_persistence.upsert_case(ghost)
+    await file_persistence.upsert_case(ghost, owner_user_id=state.authenticated_user_id)
     await file_persistence.delete_case(ghost.case_id)
 
     ws.sent.clear()
@@ -407,6 +413,9 @@ async def test_pre_status_case_docs_stay_listed(file_persistence) -> None:
     """Backward-compat: docs that pre-date the status field are live."""
     legacy_id = new_ulid()
     # Write a raw doc with NO status key at all (pre-CaseStatus record).
+    # job-0252 (OQ-0115): the doc carries a user_id so it survives the now
+    # owner-scoped listing — this test exercises pre-*status*-field
+    # backward-compat, not the (now removed) pre-Auth owner leak.
     await file_persistence._mcp.call_tool(
         "insert-one",
         {
@@ -417,6 +426,7 @@ async def test_pre_status_case_docs_stay_listed(file_persistence) -> None:
                 "schema_version": "v1",
                 "case_id": legacy_id,
                 "title": "legacy",
+                "user_id": "anyone",
                 "created_at": now_utc().isoformat().replace("+00:00", "Z"),
                 "updated_at": now_utc().isoformat().replace("+00:00", "Z"),
             },

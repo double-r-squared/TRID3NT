@@ -234,21 +234,36 @@ def test_upsert_case_then_get_round_trip() -> None:
 
 
 def test_list_cases_for_user() -> None:
-    """Two Cases inserted; list returns both."""
+    """Two Cases owned by a user are listed; a third owned by someone else is not.
+
+    job-0252 (OQ-0115-CASE-USER-LINK): the ``$exists:false`` backward-compat
+    leak clause is GONE. Cases are now owner-scoped — a Case is visible only
+    to the user stamped as its owner at creation
+    (``upsert_case(owner_user_id=...)``).
+    """
     mock = MockMCPClient()
     p = Persistence(mock)
+    owner = new_ulid()
+    other = new_ulid()
     case_a = _fresh_case_summary()
     case_b = _fresh_case_summary()
+    case_other = _fresh_case_summary()
 
-    asyncio.run(p.upsert_case(case_a))
-    asyncio.run(p.upsert_case(case_b))
+    asyncio.run(p.upsert_case(case_a, owner_user_id=owner))
+    asyncio.run(p.upsert_case(case_b, owner_user_id=owner))
+    asyncio.run(p.upsert_case(case_other, owner_user_id=other))
 
-    # With no user_id linkage on the documents (Auth-stub), list_cases_for_user
-    # uses an $or filter that matches "no user_id field present" — both land.
-    cases = asyncio.run(p.list_cases_for_user(new_ulid()))
+    cases = asyncio.run(p.list_cases_for_user(owner))
     case_ids = {c.case_id for c in cases}
     assert case_a.case_id in case_ids
     assert case_b.case_id in case_ids
+    # The other user's Case is NOT visible (leak clause gone).
+    assert case_other.case_id not in case_ids
+
+    # A user who owns nothing sees nothing — owner-less / foreign Cases no
+    # longer leak.
+    none_cases = asyncio.run(p.list_cases_for_user(new_ulid()))
+    assert none_cases == []
 
 
 def test_archive_case_sets_status() -> None:
@@ -347,7 +362,14 @@ def test_user_lookup_returns_none_when_missing() -> None:
 
 
 def test_list_secrets_filters_active_only() -> None:
-    """An ``is_active=False`` record is excluded from the listing."""
+    """An ``is_active=False`` record is excluded from the listing.
+
+    job-0252 (OQ-0115-CASE-USER-LINK): the ``$exists:false`` backward-compat
+    leak clause is GONE from ``list_secrets_refs`` too — a secret record is
+    owner-scoped. The live write path (``secrets_handler._upsert_with_user``)
+    stamps ``user_id`` after the schema-shaped upsert; we mirror that here by
+    setting ``user_id`` on the stored doc so the owner-scoped listing matches.
+    """
     mock = MockMCPClient()
     p = Persistence(mock)
 
@@ -361,6 +383,18 @@ def test_list_secrets_filters_active_only() -> None:
 
     asyncio.run(p.upsert_secret_ref(s1))
     asyncio.run(p.upsert_secret_ref(s2))
+    # Stamp the owner the way secrets_handler._upsert_with_user does at runtime.
+    for sec in (s1, s2):
+        asyncio.run(
+            mock.call_tool(
+                "update-one",
+                {
+                    "collection": "secrets",
+                    "filter": {"_id": sec.secret_id},
+                    "update": {"$set": {"user_id": user_id}},
+                },
+            )
+        )
 
     listed = asyncio.run(p.list_secrets_refs(user_id, case_id=case_id))
     listed_ids = {s.secret_id for s in listed}

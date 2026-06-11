@@ -108,17 +108,25 @@ def test_file_mcp_round_trip_case(tmp_path: Path) -> None:
 
 
 def test_file_mcp_list_cases(tmp_path: Path) -> None:
-    """Multiple Cases inserted; list_cases_for_user returns them all."""
+    """Multiple owned Cases are listed for their owner; others are excluded.
+
+    job-0252 (OQ-0115-CASE-USER-LINK): the ``$exists:false`` leak clause is
+    gone — Cases are owner-scoped on the file substrate too.
+    """
     p = Persistence(FileMCPClient(base_dir=tmp_path))
+    owner = new_ulid()
     case_a = _fresh_case("Case A")
     case_b = _fresh_case("Case B")
-    asyncio.run(p.upsert_case(case_a))
-    asyncio.run(p.upsert_case(case_b))
+    asyncio.run(p.upsert_case(case_a, owner_user_id=owner))
+    asyncio.run(p.upsert_case(case_b, owner_user_id=owner))
 
-    cases = asyncio.run(p.list_cases_for_user(new_ulid()))
+    cases = asyncio.run(p.list_cases_for_user(owner))
     titles = {c.title for c in cases}
     assert "Case A" in titles
     assert "Case B" in titles
+
+    # A different user sees none of them (no leak).
+    assert asyncio.run(p.list_cases_for_user(new_ulid())) == []
 
 
 def test_file_mcp_rename_case(tmp_path: Path) -> None:

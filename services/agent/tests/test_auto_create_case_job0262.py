@@ -138,6 +138,10 @@ def test_root_prompt_emits_case_open_then_case_list(
     the web hub fans case-open to App.tsx so the UI leaves the Cases root."""
     ws = MockWebSocket()
     state = _fresh_state()
+    # job-0252 (OQ-0115): the handshake binds authenticated_user_id before the
+    # turn; the auto-create path stamps it as the Case owner and the owner-
+    # scoped _emit_case_list lists by it. Simulate the bound user.
+    state.authenticated_user_id = new_ulid()
     asyncio.run(_prepare_user_turn(ws, state, PROMPT))
 
     types = [env["type"] for env in ws.sent]
