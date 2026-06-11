@@ -51,6 +51,31 @@ export interface UseSaveGateReturn {
  *   <CasesPanel onCreate={saveGate.gateAction(createCase, "Create a new Case")} />
  *   {saveGate.isOpen && <SaveGateModal {...saveGate} />}
  */
+// job-0276: once the user chooses "Continue anyway" the choice sticks for
+// the browser session. Pre-fix the gate re-armed on EVERY anonymous
+// create/rename/archive/delete — live-reproduced trap: the delete flow
+// stacked the gate ON TOP of the delete ConfirmationDialog, and an
+// unnoticed gate silently ate the next click (including Case rows — the
+// user's "can't get back into the Case"). The disclaimer's job is done
+// after one informed acknowledgement.
+const ACCEPTED_KEY = "grace2-save-gate-accepted";
+
+function gateAccepted(): boolean {
+  try {
+    return sessionStorage.getItem(ACCEPTED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function rememberAccepted(): void {
+  try {
+    sessionStorage.setItem(ACCEPTED_KEY, "1");
+  } catch {
+    // storage unavailable — fall back to per-action gating
+  }
+}
+
 export function useSaveGate(opts: UseSaveGateOptions): UseSaveGateReturn {
   const { isSignedIn, onSignInRequest } = opts;
   const [pendingAction, setPendingAction] = useState<(() => void) | null>(null);
@@ -59,11 +84,11 @@ export function useSaveGate(opts: UseSaveGateOptions): UseSaveGateReturn {
   const gateAction = useCallback(
     (action: () => void, kind: string = "Save your work") =>
       () => {
-        if (isSignedIn) {
+        if (isSignedIn || gateAccepted()) {
           action();
           return;
         }
-        // Anonymous user — defer the action behind the gate.
+        // Anonymous user, first gated action — defer behind the gate.
         setPendingAction(() => action);
         setPendingKind(kind);
       },
@@ -76,6 +101,7 @@ export function useSaveGate(opts: UseSaveGateOptions): UseSaveGateReturn {
   }, []);
 
   const confirmContinue = useCallback(() => {
+    rememberAccepted(); // job-0276: never re-trap this session
     const a = pendingAction;
     setPendingAction(null);
     setPendingKind(null);

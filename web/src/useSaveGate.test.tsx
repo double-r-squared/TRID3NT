@@ -11,7 +11,12 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { useSaveGate } from "./hooks/useSaveGate";
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  // job-0276: the gate remembers "Continue anyway" in sessionStorage for
+  // the browser session — clear it so each test starts un-accepted.
+  sessionStorage.clear();
+});
 
 describe("useSaveGate", () => {
   it("runs the action immediately when signed in", () => {
@@ -68,5 +73,36 @@ describe("useSaveGate", () => {
     act(() => result.current.dismiss());
     expect(action).not.toHaveBeenCalled();
     expect(result.current.isOpen).toBe(false);
+  });
+});
+
+describe("useSaveGate one-time acceptance (job-0276)", () => {
+  it("after Continue anyway, later gated actions run without the modal", () => {
+    const action1 = vi.fn();
+    const action2 = vi.fn();
+    const { result } = renderHook(() =>
+      useSaveGate({ isSignedIn: false, onSignInRequest: vi.fn() }),
+    );
+    act(() => result.current.gateAction(action1, "Create a new Case")());
+    expect(result.current.isOpen).toBe(true);
+    act(() => result.current.confirmContinue());
+    expect(action1).toHaveBeenCalledTimes(1);
+
+    // Second gated action: no modal, runs immediately (no re-trap).
+    act(() => result.current.gateAction(action2, "Rename Case")());
+    expect(result.current.isOpen).toBe(false);
+    expect(action2).toHaveBeenCalledTimes(1);
+  });
+
+  it("dismiss does NOT remember acceptance — the gate re-arms", () => {
+    const action = vi.fn();
+    const { result } = renderHook(() =>
+      useSaveGate({ isSignedIn: false, onSignInRequest: vi.fn() }),
+    );
+    act(() => result.current.gateAction(action, "Create a new Case")());
+    act(() => result.current.dismiss());
+    expect(action).not.toHaveBeenCalled();
+    act(() => result.current.gateAction(action, "Create a new Case")());
+    expect(result.current.isOpen).toBe(true);
   });
 });

@@ -364,14 +364,16 @@ export function App(): JSX.Element {
     },
     [saveGate, archiveCase],
   );
+  // job-0276: delete is NOT save-gated. It already has its own
+  // ConfirmationDialog, and stacking the "Sign in to save" gate on top of
+  // the delete confirm was live-reproduced as a click-eating modal trap
+  // ("can't get back into the Case"). Deleting work is also not a
+  // save-upsell moment.
   const onDeleteGated = useCallback(
     (caseId: string) => {
-      saveGate.gateAction(
-        () => deleteCase(caseId),
-        "Delete Case",
-      )();
+      deleteCase(caseId);
     },
-    [saveGate, deleteCase],
+    [deleteCase],
   );
 
   // currentCaseId for the SecretsPopup scope.
