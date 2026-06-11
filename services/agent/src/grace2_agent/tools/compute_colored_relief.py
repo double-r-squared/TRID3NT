@@ -255,6 +255,62 @@ def _write_ramp_file(ramp: str, path: str) -> None:
         fh.writelines(lines)
 
 
+def _write_normalized_ramp_file(
+    ramp: str, path: str, dem_min: float, dem_max: float
+) -> None:
+    """Write ``ramp`` rescaled to the DEM's actual elevation span (job-0273b).
+
+    The preset ramps span a canonical 0–9000 m domain. An inland scene like
+    Boulder (~1600–2800 m) lands entirely in one band of that domain, so the
+    relief renders as a near-uniform brown sheet (user-observed). Rescaling
+    the non-negative anchor elevations linearly onto ``[dem_min, dem_max]``
+    stretches the full green→brown→white progression across the scene's own
+    span. Negative anchors (ocean blues) clamp to ``dem_min`` so coastal
+    scenes keep water at the ramp's bottom color; ``nv`` passes through.
+    Deterministic for a given DEM (stats derive from the input), so the
+    cache contract is unchanged. Falls back to the canonical ramp when the
+    span is degenerate (flat tile).
+    """
+    if ramp not in _RAMPS:
+        raise ColoredReliefError(
+            f"unknown ramp={ramp!r}; allowed: {sorted(_VALID_RAMPS)}"
+        )
+    span = dem_max - dem_min
+    if not (span > 1.0):  # degenerate / flat — canonical ramp is fine
+        _write_ramp_file(ramp, path)
+        return
+    positives = [e[0] for e in _RAMPS[ramp] if isinstance(e[0], (int, float)) and e[0] >= 0]
+    domain_max = max(positives) if positives else 9000.0
+    lines: list[str] = []
+    for entry in _RAMPS[ramp]:
+        elev, r, g, b = entry
+        if elev == "nv":
+            scaled: float | str = "nv"
+        elif elev < 0:
+            scaled = dem_min
+        else:
+            scaled = dem_min + (elev / domain_max) * span
+        lines.append(f"{scaled} {r} {g} {b}\n")
+    with open(path, "w") as fh:
+        fh.writelines(lines)
+
+
+def _dem_min_max(local_path: str) -> tuple[float, float] | None:
+    """Read the DEM's (min, max) elevation; None on any failure (fallback)."""
+    try:
+        import numpy as np
+        import rasterio
+
+        with rasterio.open(local_path) as ds:
+            band = ds.read(1, masked=True)
+            if band.mask.all():
+                return None
+            return float(np.min(band)), float(np.max(band))
+    except Exception:  # noqa: BLE001 — stats are an enhancement, never fatal
+        logger.warning("DEM min/max read failed; using canonical ramp", exc_info=True)
+        return None
+
+
 # ---------------------------------------------------------------------------
 # AtomicToolMetadata — registered once at import time.
 # ---------------------------------------------------------------------------
@@ -291,19 +347,26 @@ def _run_colored_relief(dem_uri: str, ramp: str) -> bytes:
     out_file: str | None = None
 
     try:
-        # Write ramp to a named temp file — gdaldem needs a real path.
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".txt", delete=False, prefix="grace2_ramp_"
-        ) as rf:
-            ramp_file = rf.name
-        _write_ramp_file(ramp, ramp_file)
-
         # job-0269: stage gs:// DEMs to a local temp file (agent-process ADC)
         # instead of /vsigs/ — the gdaldem subprocess has no guaranteed GCS
         # auth. Local paths (tests / dev) pass straight through.
         gdal_dem_path = _download_dem_to_local(dem_uri)
         if gdal_dem_path != dem_uri:
             dem_local = gdal_dem_path  # mark for cleanup in finally
+
+        # Write ramp to a named temp file — gdaldem needs a real path.
+        # job-0273b: rescale the ramp anchors onto the DEM's actual span so
+        # inland scenes use the full color progression (Boulder rendered as
+        # one near-uniform brown band of the canonical 0-9000m ramp).
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False, prefix="grace2_ramp_"
+        ) as rf:
+            ramp_file = rf.name
+        stats = _dem_min_max(gdal_dem_path)
+        if stats is not None:
+            _write_normalized_ramp_file(ramp, ramp_file, stats[0], stats[1])
+        else:
+            _write_ramp_file(ramp, ramp_file)
 
         # Output temp file for gdaldem.
         with tempfile.NamedTemporaryFile(suffix=".tif", delete=False) as out_f:
