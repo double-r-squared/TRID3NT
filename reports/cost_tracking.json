@@ -1588,6 +1588,15 @@
       "kind": "verification",
       "workflow_id": "wf_e8bb1bb3-6d9",
       "subagent_tokens": 500706
+    },
+    {
+      "job_id": "scout-job-0254-design",
+      "sprint": 13.5,
+      "description": "Opus read-only design scout: full LayerURI/URL surface inventory (9 surfaces, file:line) — NO browser surface fetches GCS today (rasters=QGIS WMS→0255 proxy; vectors=inline GeoJSON; charts inline); mint_signed_url has no live consumer; only client-reaching gs:// is the publish-failure degraded path. Mint-caller analysis: web-client mints (Arch A) is the only design respecting Decision F + the verified function contract, when a direct-fetch feature arrives. Drove Decision 11 (Reading X rescope: 0254 → ~60-80K agent cleanup).",
+      "model": "opus",
+      "kind": "research",
+      "workflow_id": "agent a2dde9a45c278f90a",
+      "subagent_tokens": 107965
     }
   ],
   "totals_by_sprint": {
@@ -1599,7 +1608,7 @@
     "11": 999540,
     "12": 27545642,
     "13": 14388888,
-    "13.5": 3472591
+    "13.5": 3580556
   },
   "historical_context": {
     "note": "Captured for accountability \u2014 NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",

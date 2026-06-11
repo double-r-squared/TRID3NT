@@ -370,3 +370,16 @@ legitimate owner. Reconciliation = sprint-13-5-decisions.md Decision 10;
 fix = job-0251b (infra). The job-0252 contract-lens question "does user_id
 match Firebase UID?" is superseded by "does user_id match the internal
 users._id ULID resolved from the verified token?".
+
+## Correction 2 (orchestrator, 2026-06-11 — job-0254/0257/0259 signed-URL scope)
+
+The job-0254 scope block assumes the browser fetches GCS objects directly;
+the design scout (job-0254 scout, 2026-06-11) proved no such surface exists
+(rasters = QGIS WMS via job-0255's proxy; vectors = inline GeoJSON per
+job-0175; charts inline; impact URIs text-only). Per Decision 11
+(sprint-13-5-decisions.md): job-0254 rescopes to the agent cleanup slice
+(degraded-path gs:// leak + layer_uri_emit.py seam + dormant SIGNED_URLS
+scaffold); job-0257 deploys with SIGNED_URLS absent/false; job-0259 step 4
+asserts proxy-routed rasters + direct-QGIS 403 instead of X-Goog-Signature.
+mint_signed_url remains deployed-and-dormant (verified by the 0251b
+re-panel) for a future direct-fetch feature.

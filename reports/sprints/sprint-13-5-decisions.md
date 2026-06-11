@@ -47,3 +47,34 @@ self-consistent and leak-free (88 tests).
 Firebase uid → internal `users._id` via a users-collection lookup before the
 `case_owned_by` check (fail-closed 403 when no users doc exists). Routed to
 job-0251b. Manifest correction noted in sprint-13-5-manifest.md.
+
+## Decision 11 (2026-06-11, post job-0254 design scout) — signed-URL emission rescoped (Reading X)
+
+**Call: job-0254 rescopes from "sign every LayerURI" (~200K + panels) to the
+agent-side cleanup slice (~60-80K).** The scout's read-only inventory (107K
+Opus, file:line for every claim) proved the manifest's premise wrong: NO
+browser-facing surface fetches a GCS object today. Rasters load via QGIS WMS
+run.app URLs (job-0255's invoker-only + proxy is the actual lockdown — and
+`mint_signed_url` structurally cannot sign a WMS URL, `parse_layer_uri`
+rejects non-gs://); vectors are inline GeoJSON (job-0175); charts embed data
+inline; ImpactPanel shows gs:// as text only. The single client-reaching raw
+gs:// is the publish-failure degraded path (model_flood_scenario.py:810-819)
+— and it never renders.
+
+**Rescoped job-0254 (agent):** (a) close the degraded-path gs:// leak (never
+emit raw gs:// in LayerURI.uri — drop or mark non-renderable); (b) introduce
+`layer_uri_emit.py` as the single emission seam + `SIGNED_URLS` env scaffold
+(default false, documented DORMANT); (c) tests. Dispatch held until job-0255
+lands (server.py contention).
+
+**Consequences:** `mint_signed_url` + job-0251b's verified contract stay as
+dormant, panel-verified infrastructure — the natural consumer is a future
+direct-fetch feature (signed-COG rendering or signed large-vector delivery
+past the inline ceiling; web-client mints per the scout's Architecture A —
+the only design that respects Decision F wire isolation AND the verified
+function contract; needs CORS + browser invoker IAM when that day comes).
+job-0257's manifest env line `SIGNED_URLS=true` is CORRECTED to: flag absent/
+false in prod until a direct-fetch feature exists. Sprint acceptance step 4
+(job-0259 "network tab shows X-Goog-Signature") is CORRECTED to: raster
+requests flow through the agent's /qgis-proxy (0255) and the direct QGIS URL
+403s; no signed-URL assertion until the feature exists.
