@@ -42,6 +42,7 @@ from pydantic import ValidationError
 from websockets.asyncio.server import ServerConnection, serve
 
 from grace2_contracts import new_ulid, now_utc
+from grace2_contracts.execution import LayerURI
 from grace2_contracts.case import (
     CaseChatMessage,
     CaseCommandEnvelopePayload,
@@ -3025,6 +3026,33 @@ async def _invoke_tool_via_emitter(
         lid = params.get("layer_id")
         if isinstance(lid, str) and lid:
             state.current_turn_layer_ids.append(lid)
+            # job-0272: the MISSING LINK between an atomic publish and the
+            # map. ``emit_tool_call`` only feeds ``add_loaded_layer`` (and
+            # thus the ``session-state`` envelope the web renders WMS layers
+            # from) when a tool RETURNS a typed LayerURI — composers do, but
+            # the atomic ``publish_layer`` returns a bare WMS string, so an
+            # LLM-driven fetch→compute→publish chain published server-side
+            # while the map stayed empty (live x3: hillshade Wave 4.8,
+            # Seattle + Boulder reliefs 2026-06-10). Wrap the WMS URL in a
+            # LayerURI here so the existing emission/persistence machinery
+            # announces the layer exactly as composer layers are announced.
+            if isinstance(result, str) and result.startswith("http"):
+                try:
+                    await state.emitter.add_loaded_layer(
+                        LayerURI(
+                            layer_id=lid,
+                            name=lid,
+                            layer_type="raster",
+                            uri=result,
+                            style_preset=params.get("style_preset") or "",
+                        )
+                    )
+                except Exception:  # noqa: BLE001 — emission is best-effort
+                    logger.exception(
+                        "publish_layer loaded-layer emission failed "
+                        "layer_id=%s",
+                        lid,
+                    )
 
     # job-0172 Part B / job-0259: per-Case layer persistence now happens in
     # the ``finally`` block above so it ALSO fires when the tool (or its
