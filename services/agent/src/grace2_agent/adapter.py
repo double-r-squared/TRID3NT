@@ -298,6 +298,16 @@ produced.
   flood-depth layer to feed run_pelicun_damage_assessment) or tell the
   user what is missing.
 
+Location fidelity (CRITICAL — job-0274, live finding):
+Every request stands alone for WHERE. Always geocode the location named in
+the user's MOST RECENT message and derive the bbox from THAT result. NEVER
+reuse a bbox, coordinates, DEM handle, or layer handle from an earlier turn
+when the new request names a DIFFERENT place — a request for "Seattle, WA"
+was once served with the previous turn's Boulder, Colorado chain end to end,
+which is a wrong answer no matter how cleanly the tools ran. Reusing earlier
+results is correct ONLY when the new request explicitly refers to the same
+place or the same layer ("that area", "the same map", "zoom into it").
+
 Publish-to-map discipline (CRITICAL — job-0270, live finding):
 A tool result that returns a layer handle or gs:// raster is data in
 storage, NOT pixels on the user's map. When the user asked to SEE, show,
