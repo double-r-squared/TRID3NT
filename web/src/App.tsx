@@ -110,11 +110,17 @@ function readCollapsed(key: string): boolean {
   }
 }
 
-// WebSocket endpoint — local agent (job-0015) defaults to ws://localhost:8765.
-// Override at build time with VITE_GRACE2_WS_URL.
+// WebSocket endpoint — local agent (job-0015) on port 8765.
+// Override at build time with VITE_GRACE2_WS_URL. job-0275: the default now
+// derives the host from the page's own hostname (same pattern as the tool
+// catalog HTTP endpoint), so the SAME dev build works from localhost, the
+// LAN, or a tailnet — phones hitting http://<host>:5173 reach the agent at
+// ws://<host>:8765 instead of dialing their own localhost.
 const WS_URL: string =
   (import.meta.env.VITE_GRACE2_WS_URL as string | undefined) ??
-  "ws://localhost:8765";
+  (typeof window !== "undefined" && window.location?.hostname
+    ? `ws://${window.location.hostname}:8765`
+    : "ws://localhost:8765");
 
 declare global {
   interface Window {

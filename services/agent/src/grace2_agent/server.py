@@ -4140,6 +4140,10 @@ async def run_server(host: str = "127.0.0.1", port: int | None = None) -> None:
     """
     if port is None:
         port = int(os.environ.get("GRACE2_AGENT_PORT", "8765"))
+    # job-0275: bind host override so the dev agent is reachable from the
+    # LAN / tailnet (phone demos). Default stays loopback-only; opt in via
+    # GRACE2_AGENT_HOST=0.0.0.0. The real public surface is sprint-13.5.
+    host = os.environ.get("GRACE2_AGENT_HOST", host)
     settings = load_settings()
     logger.info(
         "starting agent server host=%s port=%d model=%s project=%s location=%s",
