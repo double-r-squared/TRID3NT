@@ -187,3 +187,19 @@ URL="$(gcloud functions call grace-2-mint-signed-url --region=us-central1 --gen2
   --data '{"layer_uri":"gs://grace-2-hazard-prod-runs/<real-object>","user_id":"<uid>","case_id":"<case>","ttl_seconds":900}')"
 # fetch immediately -> 200; wait > 900s -> the signed URL returns 403 (expired)
 ```
+
+### 0251-A/D addendum (job-0251b — owner-identity resolution, 2026-06-11)
+The function now resolves the verified Firebase uid → the internal
+`users._id` ULID via a `users`-collection lookup BEFORE the ownership check
+(Decision 10, sprint-13-5-decisions.md). No env/IAM/resource changes (same
+SRV secret, same database, one extra single-document read), but two runbook
+consequences:
+- **0251-A:** if a source zip was built before job-0251b landed, re-zip —
+  the deployed `main.py` must be the job-0251b version or every owner mint
+  403s (the exact panel-refuted bug).
+- **0251-D preconditions** (else the mint legitimately 403s and the deploy
+  only LOOKS broken): the `<uid>` test user must have connected to the agent
+  at least once (so `users` carries `{firebase_uid: <uid>}`); `<case>` must be
+  owned by that user's INTERNAL ULID (`users._id`), not the Firebase uid; do
+  NOT use a `MIGRATION_ANON_UID`-owned (pre-auth migrated) case — those are
+  unmintable by design. `body.user_id` stays the FIREBASE uid as shown above.
