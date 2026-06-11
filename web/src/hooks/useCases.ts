@@ -145,6 +145,21 @@ export function useCases(opts: UseCasesOptions): UseCasesReturn {
 
   const onCaseOpen = useCallback((payload: CaseOpenEnvelopePayload) => {
     const session = payload.session_state ?? null;
+    // job-0273: optimistically upsert the opened Case into the rail list.
+    // The auto-create flow emits case-open BEFORE the refreshed case-list
+    // (observed live: 27ms apart). With a non-empty rail, the tombstone
+    // guard below saw activeCaseId pointing at a Case that was not yet in
+    // `cases` and bounced the user back to root — while Chat's adoption had
+    // already cleared the root stream, leaving a fully EMPTY chat for the
+    // whole turn. The envelope carries the full CaseSummary; the case-list
+    // frame that follows canonicalizes.
+    if (session) {
+      setCases((prev) =>
+        prev.some((c) => c.case_id === session.case.case_id)
+          ? prev
+          : [...prev, session.case],
+      );
+    }
     setActiveSession(session);
     setActiveCaseId(session?.case.case_id ?? null);
     settle();

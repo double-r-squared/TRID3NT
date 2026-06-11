@@ -1,0 +1,178 @@
+{
+  "layerAnnounced": "colored-relief-boulder-colorado",
+  "publishDone": true,
+  "turnTerminal": false,
+  "rateLimited": false,
+  "wsFrames": [
+    {
+      "t_rel_ms": 689,
+      "type": "connected",
+      "preview": "{\"type\":\"connected\"}"
+    },
+    {
+      "t_rel_ms": 1245,
+      "type": "auth-ack",
+      "preview": "{\"type\":\"auth-ack\",\"id\":\"01KTTDE24N9J6WFB9W4BSJC5VT\",\"ts\":\"2026-06-11T04:00:51.861639Z\",\"session_id\":\"01KTTDE23T5P4V25BQVBP680R9\",\"payload\":{\"user_id\":\"01KTTDE248B99DJSC7TNX40TNZ\",\"firebase_uid\":null,\"is_anonymous\":true,\"tier\":\"free\"}}"
+    },
+    {
+      "t_rel_ms": 1245,
+      "type": "session-state",
+      "preview": "{\"type\":\"session-state\",\"id\":\"01KTTDE24N9J6WFB9W4BSJC5VV\",\"ts\":\"2026-06-11T04:00:51.861827Z\",\"session_id\":\"01KTTDE23T5P4V25BQVBP680R9\",\"payload\":{\"chat_history\":[],\"loaded_layers\":[],\"pipeline_history\":[],\"current_pipeline\":null,\"map_view\":null,\"status\":\"active\"}}"
+    },
+    {
+      "t_rel_ms": 1246,
+      "type": "case-list",
+      "preview": "{\"type\":\"case-list\",\"id\":\"01KTTDE24PJV1EQ1FKSYSDM58K\",\"ts\":\"2026-06-11T04:00:51.862105Z\",\"session_id\":\"01KTTDE23T5P4V25BQVBP680R9\",\"payload\":{\"envelope_type\":\"case-list\",\"cases\":[{\"schema_version\":\"v1\",\"case_id\":\"01KTTC2RJ6HQA9T4MZ74A0ZC2G\",\"title\":\"Compute Colored Relief Map Boulder Colorado\",\"created_at\":\"2026-06-11T03:37:13.030959Z\",\"updated_at\":\"2026-06-11T03:37:50.841939Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[\"dem--105.3015-39.9569-10m\",\"colored-relief-terrain-14986\"],\"loaded_layer_summaries\":[{\"layer_id\":\"dem--105.3015-39.9569-10m\",\"layer_type\":\"raster\",\"name\":\"USGS 3DEP DEM (10m)\",\"opacity\":null,\"role\":\"input\",\"style_preset\":\"continuous_dem\",\"temporal\":"
+    },
+    {
+      "t_rel_ms": 1507,
+      "type": "auth-ack",
+      "preview": "{\"type\":\"auth-ack\",\"id\":\"01KTTDE250DMWYK16EMW2BP97W\",\"ts\":\"2026-06-11T04:00:51.872754Z\",\"session_id\":\"01KTTDE23T5P4V25BQVBP680R9\",\"payload\":{\"user_id\":\"01KTTDE24PJV1EQ1FKSYSDM58M\",\"firebase_uid\":null,\"is_anonymous\":true,\"tier\":\"free\"}}"
+    },
+    {
+      "t_rel_ms": 1991,
+      "type": "auth-ack",
+      "preview": "{\"type\":\"auth-ack\",\"id\":\"01KTTDE2QH71MB9V7RW11F22PM\",\"ts\":\"2026-06-11T04:00:52.465237Z\",\"session_id\":\"01KTTDE23T5P4V25BQVBP680R9\",\"payload\":{\"user_id\":\"01KTTDE2P6SX5C93YK6XX353T6\",\"firebase_uid\":null,\"is_anonymous\":true,\"tier\":\"free\"}}"
+    },
+    {
+      "t_rel_ms": 2095,
+      "type": "session-state",
+      "preview": "{\"type\":\"session-state\",\"id\":\"01KTTDE2QJSENT4E5HWRQ5336P\",\"ts\":\"2026-06-11T04:00:52.466255Z\",\"session_id\":\"01KTTDE23T5P4V25BQVBP680R9\",\"payload\":{\"chat_history\":[],\"loaded_layers\":[],\"pipeline_history\":[],\"current_pipeline\":null,\"map_view\":null,\"status\":\"active\"}}"
+    },
+    {
+      "t_rel_ms": 2096,
+      "type": "case-list",
+      "preview": "{\"type\":\"case-list\",\"id\":\"01KTTDE2QKDTN04B7Y7G4AAXT7\",\"ts\":\"2026-06-11T04:00:52.467990Z\",\"session_id\":\"01KTTDE23T5P4V25BQVBP680R9\",\"payload\":{\"envelope_type\":\"case-list\",\"cases\":[{\"schema_version\":\"v1\",\"case_id\":\"01KTTC2RJ6HQA9T4MZ74A0ZC2G\",\"title\":\"Compute Colored Relief Map Boulder Colorado\",\"created_at\":\"2026-06-11T03:37:13.030959Z\",\"updated_at\":\"2026-06-11T03:37:50.841939Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[\"dem--105.3015-39.9569-10m\",\"colored-relief-terrain-14986\"],\"loaded_layer_summaries\":[{\"layer_id\":\"dem--105.3015-39.9569-10m\",\"layer_type\":\"raster\",\"name\":\"USGS 3DEP DEM (10m)\",\"opacity\":null,\"role\":\"input\",\"style_preset\":\"continuous_dem\",\"temporal\":"
+    },
+    {
+      "t_rel_ms": 2096,
+      "type": "auth-ack",
+      "preview": "{\"type\":\"auth-ack\",\"id\":\"01KTTDE2R6PTR63Y3TS4QD4S3P\",\"ts\":\"2026-06-11T04:00:52.486385Z\",\"session_id\":\"01KTTDE23T5P4V25BQVBP680R9\",\"payload\":{\"user_id\":\"01KTTDE24PJV1EQ1FKSYSDM58M\",\"firebase_uid\":null,\"is_anonymous\":true,\"tier\":\"free\"}}"
+    },
+    {
+      "t_rel_ms": 5133,
+      "type": "case-open",
+      "preview": "{\"type\":\"case-open\",\"id\":\"01KTTDE5Y2J7PWFVNVM84S7E4E\",\"ts\":\"2026-06-11T04:00:55.746751Z\",\"session_id\":\"01KTTDE23T5P4V25BQVBP680R9\",\"payload\":{\"envelope_type\":\"case-open\",\"session_state\":{\"schema_version\":\"v1\",\"case\":{\"schema_version\":\"v1\",\"case_id\":\"01KTTDE5X6MYQW4N6RAN1ZP6ZP\",\"title\":\"Compute Colored Relief Map Boulder Colorado\",\"created_at\":\"2026-06-11T04:00:55.718767Z\",\"updated_at\":\"2026-06-11T04:00:55.718767Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[],\"loaded_layer_summaries\":[],\"qgs_project_uri\":null},\"chat_history\":[{\"schema_version\":\"v1\",\"message_id\":\"01KTTDE5XKXHKC15PZRSG5E4HV\",\"case_id\":\"01KTTDE5X6MYQW4N6RAN1ZP6ZP\",\"role\":\"user\",\"content\":\"Compute a colo"
+    },
+    {
+      "t_rel_ms": 5160,
+      "type": "case-list",
+      "preview": "{\"type\":\"case-list\",\"id\":\"01KTTDE5Y433JPPPRTBRAMC6G9\",\"ts\":\"2026-06-11T04:00:55.748584Z\",\"session_id\":\"01KTTDE23T5P4V25BQVBP680R9\",\"payload\":{\"envelope_type\":\"case-list\",\"cases\":[{\"schema_version\":\"v1\",\"case_id\":\"01KTTC2RJ6HQA9T4MZ74A0ZC2G\",\"title\":\"Compute Colored Relief Map Boulder Colorado\",\"created_at\":\"2026-06-11T03:37:13.030959Z\",\"updated_at\":\"2026-06-11T03:37:50.841939Z\",\"status\":\"active\",\"bbox\":null,\"primary_hazard\":null,\"layer_summary\":[\"dem--105.3015-39.9569-10m\",\"colored-relief-terrain-14986\"],\"loaded_layer_summaries\":[{\"layer_id\":\"dem--105.3015-39.9569-10m\",\"layer_type\":\"raster\",\"name\":\"USGS 3DEP DEM (10m)\",\"opacity\":null,\"role\":\"input\",\"style_preset\":\"continuous_dem\",\"temporal\":"
+    },
+    {
+      "t_rel_ms": 5213,
+      "type": "pipeline-state",
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTTDE5Y565HK3192XM77EGDY\",\"ts\":\"2026-06-11T04:00:55.749897Z\",\"session_id\":\"01KTTDE23T5P4V25BQVBP680R9\",\"payload\":{\"pipeline_id\":\"01KTTDE5Y565HK3192XM77EGDW\",\"steps\":[{\"step_id\":\"01KTTDE5Y565HK3192XM77EGDX\",\"name\":\"llm_generation\",\"tool_name\":\"gemini_generate\",\"state\":\"running\",\"started_at\":null,\"completed_at\":null,\"progress_percent\":null,\"duration_ms\":null}]}}"
+    },
+    {
+      "t_rel_ms": 23520,
+      "type": "cache-status",
+      "preview": "{\"type\": \"cache-status\", \"session_id\": \"01KTTDE23T5P4V25BQVBP680R9\", \"payload\": {\"cache_hit\": true, \"cached_tokens\": 92286, \"total_tokens\": 93379, \"prompt_tokens\": 92295, \"candidates_tokens\": 7, \"cache_name\": \"projects/425352658356/locations/us-central1/cachedContents/691193519351529472\"}}"
+    },
+    {
+      "t_rel_ms": 23521,
+      "type": "pipeline-state",
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTTDEQWP6G0C3VWJGT4MRKM0\",\"ts\":\"2026-06-11T04:01:14.134770Z\",\"session_id\":\"01KTTDE23T5P4V25BQVBP680R9\",\"payload\":{\"pipeline_id\":\"01KTTDEQWP6G0C3VWJGT4MRKKY\",\"steps\":[{\"step_id\":\"01KTTDEQWP6G0C3VWJGT4MRKKZ\",\"name\":\"geocode_location\",\"tool_name\":\"geocode_location\",\"state\":\"pending\",\"started_at\":null,\"completed_at\":null,\"progress_percent\":null,\"duration_ms\":null}]}}"
+    },
+    {
+      "t_rel_ms": 23522,
+      "type": "pipeline-state",
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTTDEQWQ9VYW2YRJR6Q91J70\",\"ts\":\"2026-06-11T04:01:14.135425Z\",\"session_id\":\"01KTTDE23T5P4V25BQVBP680R9\",\"payload\":{\"pipeline_id\":\"01KTTDEQWP6G0C3VWJGT4MRKKY\",\"steps\":[{\"step_id\":\"01KTTDEQWP6G0C3VWJGT4MRKKZ\",\"name\":\"geocode_location\",\"tool_name\":\"geocode_location\",\"state\":\"running\",\"started_at\":\"2026-06-11T04:01:14.135186Z\",\"completed_at\":null,\"progress_percent\":null,\"duration_ms\":null}]}}"
+    },
+    {
+      "t_rel_ms": 25585,
+      "type": "pipeline-state",
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTTDESPAYGQ315EAQ99QD1WX\",\"ts\":\"2026-06-11T04:01:15.978374Z\",\"session_id\":\"01KTTDE23T5P4V25BQVBP680R9\",\"payload\":{\"pipeline_id\":\"01KTTDEQWP6G0C3VWJGT4MRKKY\",\"steps\":[{\"step_id\":\"01KTTDEQWP6G0C3VWJGT4MRKKZ\",\"name\":\"geocode_location\",\"tool_name\":\"geocode_location\",\"state\":\"complete\",\"started_at\":\"2026-06-11T04:01:14.135186Z\",\"completed_at\":\"2026-06-11T04:01:15.978079Z\",\"progress_percent\":null,\"duration_ms\":1843}]}}"
+    },
+    {
+      "t_rel_ms": 25585,
+      "type": "map-command",
+      "preview": "{\"type\":\"map-command\",\"id\":\"01KTTDESPV74T6R7ZS7GF43006\",\"ts\":\"2026-06-11T04:01:15.995135Z\",\"session_id\":\"01KTTDE23T5P4V25BQVBP680R9\",\"payload\":{\"command\":\"zoom-to\",\"args\":{\"bbox\":[-105.3014509,39.9569362,-105.1780988,40.0944658]}}}"
+    },
+    {
+      "t_rel_ms": 29623,
+      "type": "cache-status",
+      "preview": "{\"type\": \"cache-status\", \"session_id\": \"01KTTDE23T5P4V25BQVBP680R9\", \"payload\": {\"cache_hit\": true, \"cached_tokens\": 92286, \"total_tokens\": 92544, \"prompt_tokens\": 92350, \"candidates_tokens\": 8, \"cache_name\": \"projects/425352658356/locations/us-central1/cachedContents/691193519351529472\"}}"
+    },
+    {
+      "t_rel_ms": 29698,
+      "type": "pipeline-state",
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTTDEXMK70HB4K69CRJ2MRN9\",\"ts\":\"2026-06-11T04:01:20.019700Z\",\"session_id\":\"01KTTDE23T5P4V25BQVBP680R9\",\"payload\":{\"pipeline_id\":\"01KTTDEXMK70HB4K69CRJ2MRN7\",\"steps\":[{\"step_id\":\"01KTTDEXMK70HB4K69CRJ2MRN8\",\"name\":\"fetch_dem\",\"tool_name\":\"fetch_dem\",\"state\":\"pending\",\"started_at\":null,\"completed_at\":null,\"progress_percent\":null,\"duration_ms\":null}]}}"
+    },
+    {
+      "t_rel_ms": 29698,
+      "type": "pipeline-state",
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTTDEXMMRS3HNQHR22BZ3W0X\",\"ts\":\"2026-06-11T04:01:20.020280Z\",\"session_id\":\"01KTTDE23T5P4V25BQVBP680R9\",\"payload\":{\"pipeline_id\":\"01KTTDEXMK70HB4K69CRJ2MRN7\",\"steps\":[{\"step_id\":\"01KTTDEXMK70HB4K69CRJ2MRN8\",\"name\":\"fetch_dem\",\"tool_name\":\"fetch_dem\",\"state\":\"running\",\"started_at\":\"2026-06-11T04:01:20.020100Z\",\"completed_at\":null,\"progress_percent\":null,\"duration_ms\":null}]}}"
+    },
+    {
+      "t_rel_ms": 32535,
+      "type": "session-state",
+      "preview": "{\"type\":\"session-state\",\"id\":\"01KTTDF0PBHDJ1GSYW4G5BPPQZ\",\"ts\":\"2026-06-11T04:01:23.147614Z\",\"session_id\":\"01KTTDE23T5P4V25BQVBP680R9\",\"payload\":{\"chat_history\":[],\"loaded_layers\":[{\"layer_id\":\"dem--105.3015-39.9569-10m\",\"name\":\"USGS 3DEP DEM (10m)\",\"layer_type\":\"raster\",\"uri\":\"gs://grace-2-hazard-prod-cache/cache/static-30d/dem/bba3a5d3b59cff008f05b41969f39648.tif\",\"style_preset\":\"continuous_dem\",\"visible\":true,\"role\":\"input\",\"temporal\":false,\"wms_url\":null,\"opacity\":null,\"z_index\":null}],\"pipeline_history\":[{\"pipeline_id\":\"01KTTDEQWP6G0C3VWJGT4MRKKY\",\"started_at\":\"2026-06-11T04:01:14.134447Z\",\"completed_at\":\"2026-06-11T04:01:15.979043Z\",\"final_state\":\"complete\",\"steps\":[{\"step_id\":\"01KTTDE"
+    },
+    {
+      "t_rel_ms": 32764,
+      "type": "pipeline-state",
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTTDF0PCM1CB2A6KSCXSHPVZ\",\"ts\":\"2026-06-11T04:01:23.148502Z\",\"session_id\":\"01KTTDE23T5P4V25BQVBP680R9\",\"payload\":{\"pipeline_id\":\"01KTTDEXMK70HB4K69CRJ2MRN7\",\"steps\":[{\"step_id\":\"01KTTDEXMK70HB4K69CRJ2MRN8\",\"name\":\"fetch_dem\",\"tool_name\":\"fetch_dem\",\"state\":\"complete\",\"started_at\":\"2026-06-11T04:01:20.020100Z\",\"completed_at\":\"2026-06-11T04:01:23.148270Z\",\"progress_percent\":null,\"duration_ms\":3128}]}}"
+    },
+    {
+      "t_rel_ms": 38265,
+      "type": "cache-status",
+      "preview": "{\"type\": \"cache-status\", \"session_id\": \"01KTTDE23T5P4V25BQVBP680R9\", \"payload\": {\"cache_hit\": true, \"cached_tokens\": 92286, \"total_tokens\": 92871, \"prompt_tokens\": 92652, \"candidates_tokens\": 62, \"cache_name\": \"projects/425352658356/locations/us-central1/cachedContents/691193519351529472\"}}"
+    },
+    {
+      "t_rel_ms": 38266,
+      "type": "pipeline-state",
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTTDF69HR2EHQZ20AHZPWPDR\",\"ts\":\"2026-06-11T04:01:28.881265Z\",\"session_id\":\"01KTTDE23T5P4V25BQVBP680R9\",\"payload\":{\"pipeline_id\":\"01KTTDF69GN6PY0SA69VZ72QKK\",\"steps\":[{\"step_id\":\"01KTTDF69GN6PY0SA69VZ72QKM\",\"name\":\"compute_colored_relief\",\"tool_name\":\"compute_colored_relief\",\"state\":\"pending\",\"started_at\":null,\"completed_at\":null,\"progress_percent\":null,\"duration_ms\":null}]}}"
+    },
+    {
+      "t_rel_ms": 38268,
+      "type": "pipeline-state",
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTTDF69HR2EHQZ20AHZPWPDS\",\"ts\":\"2026-06-11T04:01:28.881918Z\",\"session_id\":\"01KTTDE23T5P4V25BQVBP680R9\",\"payload\":{\"pipeline_id\":\"01KTTDF69GN6PY0SA69VZ72QKK\",\"steps\":[{\"step_id\":\"01KTTDF69GN6PY0SA69VZ72QKM\",\"name\":\"compute_colored_relief\",\"tool_name\":\"compute_colored_relief\",\"state\":\"running\",\"started_at\":\"2026-06-11T04:01:28.881727Z\",\"completed_at\":null,\"progress_percent\":null,\"duration_ms\":null}]}}"
+    },
+    {
+      "t_rel_ms": 39884,
+      "type": "session-state",
+      "preview": "{\"type\":\"session-state\",\"id\":\"01KTTDF7VZG8WF8RPEQ415WBEQ\",\"ts\":\"2026-06-11T04:01:30.495333Z\",\"session_id\":\"01KTTDE23T5P4V25BQVBP680R9\",\"payload\":{\"chat_history\":[],\"loaded_layers\":[{\"layer_id\":\"dem--105.3015-39.9569-10m\",\"name\":\"USGS 3DEP DEM (10m)\",\"layer_type\":\"raster\",\"uri\":\"gs://grace-2-hazard-prod-cache/cache/static-30d/dem/bba3a5d3b59cff008f05b41969f39648.tif\",\"style_preset\":\"continuous_dem\",\"visible\":true,\"role\":\"input\",\"temporal\":false,\"wms_url\":null,\"opacity\":null,\"z_index\":null},{\"layer_id\":\"colored-relief-terrain-03273\",\"name\":\"Colored Relief — Terrain\",\"layer_type\":\"raster\",\"uri\":\"gs://grace-2-hazard-prod-cache/cache/static-30d/colored_relief/27d5f864b3d5e9ceae84e8f89f2dfa55.tif\""
+    },
+    {
+      "t_rel_ms": 40082,
+      "type": "pipeline-state",
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTTDF7W0N6PS2VR43XXN7W6B\",\"ts\":\"2026-06-11T04:01:30.496158Z\",\"session_id\":\"01KTTDE23T5P4V25BQVBP680R9\",\"payload\":{\"pipeline_id\":\"01KTTDF69GN6PY0SA69VZ72QKK\",\"steps\":[{\"step_id\":\"01KTTDF69GN6PY0SA69VZ72QKM\",\"name\":\"compute_colored_relief\",\"tool_name\":\"compute_colored_relief\",\"state\":\"complete\",\"started_at\":\"2026-06-11T04:01:28.881727Z\",\"completed_at\":\"2026-06-11T04:01:30.495929Z\",\"progress_percent\":null,\"duration_ms\":1614}]}}"
+    },
+    {
+      "t_rel_ms": 43282,
+      "type": "cache-status",
+      "preview": "{\"type\": \"cache-status\", \"session_id\": \"01KTTDE23T5P4V25BQVBP680R9\", \"payload\": {\"cache_hit\": true, \"cached_tokens\": 92286, \"total_tokens\": 93213, \"prompt_tokens\": 92977, \"candidates_tokens\": 73, \"cache_name\": \"projects/425352658356/locations/us-central1/cachedContents/691193519351529472\"}}"
+    },
+    {
+      "t_rel_ms": 43284,
+      "type": "pipeline-state",
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTTDFB6BGP79R927ENRAHGCF\",\"ts\":\"2026-06-11T04:01:33.899458Z\",\"session_id\":\"01KTTDE23T5P4V25BQVBP680R9\",\"payload\":{\"pipeline_id\":\"01KTTDFB6BGP79R927ENRAHGCD\",\"steps\":[{\"step_id\":\"01KTTDFB6BGP79R927ENRAHGCE\",\"name\":\"publish_layer\",\"tool_name\":\"publish_layer\",\"state\":\"pending\",\"started_at\":null,\"completed_at\":null,\"progress_percent\":null,\"duration_ms\":null}]}}"
+    },
+    {
+      "t_rel_ms": 43286,
+      "type": "pipeline-state",
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTTDFB6CGME9D84AKQ3VSZ9V\",\"ts\":\"2026-06-11T04:01:33.900055Z\",\"session_id\":\"01KTTDE23T5P4V25BQVBP680R9\",\"payload\":{\"pipeline_id\":\"01KTTDFB6BGP79R927ENRAHGCD\",\"steps\":[{\"step_id\":\"01KTTDFB6BGP79R927ENRAHGCE\",\"name\":\"publish_layer\",\"tool_name\":\"publish_layer\",\"state\":\"running\",\"started_at\":\"2026-06-11T04:01:33.899871Z\",\"completed_at\":null,\"progress_percent\":null,\"duration_ms\":null}]}}"
+    },
+    {
+      "t_rel_ms": 126434,
+      "type": "pipeline-state",
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTTDHWCRW508P6M48TZ01X5Y\",\"ts\":\"2026-06-11T04:02:57.048648Z\",\"session_id\":\"01KTTDE23T5P4V25BQVBP680R9\",\"payload\":{\"pipeline_id\":\"01KTTDFB6BGP79R927ENRAHGCD\",\"steps\":[{\"step_id\":\"01KTTDFB6BGP79R927ENRAHGCE\",\"name\":\"publish_layer\",\"tool_name\":\"publish_layer\",\"state\":\"complete\",\"started_at\":\"2026-06-11T04:01:33.899871Z\",\"completed_at\":\"2026-06-11T04:02:57.048314Z\",\"progress_percent\":null,\"duration_ms\":83148}]}}"
+    },
+    {
+      "t_rel_ms": 126457,
+      "type": "session-state",
+      "preview": "{\"type\":\"session-state\",\"id\":\"01KTTDHWDDPD2ZSQEWG9Y2T81K\",\"ts\":\"2026-06-11T04:02:57.069281Z\",\"session_id\":\"01KTTDE23T5P4V25BQVBP680R9\",\"payload\":{\"chat_history\":[],\"loaded_layers\":[{\"layer_id\":\"dem--105.3015-39.9569-10m\",\"name\":\"USGS 3DEP DEM (10m)\",\"layer_type\":\"raster\",\"uri\":\"gs://grace-2-hazard-prod-cache/cache/static-30d/dem/bba3a5d3b59cff008f05b41969f39648.tif\",\"style_preset\":\"continuous_dem\",\"visible\":true,\"role\":\"input\",\"temporal\":false,\"wms_url\":null,\"opacity\":null,\"z_index\":null},{\"layer_id\":\"colored-relief-terrain-03273\",\"name\":\"Colored Relief — Terrain\",\"layer_type\":\"raster\",\"uri\":\"gs://grace-2-hazard-prod-cache/cache/static-30d/colored_relief/27d5f864b3d5e9ceae84e8f89f2dfa55.tif\""
+    },
+    {
+      "t_rel_ms": 128783,
+      "type": "cache-status",
+      "preview": "{\"type\": \"cache-status\", \"session_id\": \"01KTTDE23T5P4V25BQVBP680R9\", \"payload\": {\"cache_hit\": true, \"cached_tokens\": 92286, \"total_tokens\": 94892, \"prompt_tokens\": 94870, \"candidates_tokens\": 22, \"cache_name\": \"projects/425352658356/locations/us-central1/cachedContents/691193519351529472\"}}"
+    },
+    {
+      "t_rel_ms": 128786,
+      "type": "pipeline-state",
+      "preview": "{\"type\":\"pipeline-state\",\"id\":\"01KTTDHYP7XV90KJP0SRKMV280\",\"ts\":\"2026-06-11T04:02:59.399826Z\",\"session_id\":\"01KTTDE23T5P4V25BQVBP680R9\",\"payload\":{\"pipeline_id\":\"01KTTDE5Y565HK3192XM77EGDW\",\"steps\":[{\"step_id\":\"01KTTDE5Y565HK3192XM77EGDX\",\"name\":\"llm_generation\",\"tool_name\":\"gemini_generate\",\"state\":\"complete\",\"started_at\":null,\"completed_at\":null,\"progress_percent\":null,\"duration_ms\":null}]}}"
+    }
+  ]
+}
