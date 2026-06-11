@@ -42,6 +42,7 @@ import {
   clearAnonymousAccepted,
   readAnonymousAccepted,
 } from "./components/AuthGate";
+import { AuthGuard } from "./components/AuthGuard";
 import { CasesPanel } from "./components/CasesPanel";
 import { CaseView } from "./components/CaseView";
 import { SettingsPopup } from "./components/SettingsPopup";
@@ -223,10 +224,17 @@ export function App(): JSX.Element {
   // Auth state (job-0123, sprint-12-mega Wave 2).
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [authResolved, setAuthResolved] = useState<boolean>(false);
+  // job-0253 (sprint-13.5) — auth-expired latch from ws.ts (close 4401 /
+  // AUTH_FAILED, after the one-shot forceRefresh retry failed). Drops a
+  // signed-in user to the AuthGuard sign-in surface. Cleared whenever a fresh
+  // signed-in user arrives (re-sign-in succeeded).
+  const [authExpired, setAuthExpired] = useState<boolean>(false);
   useEffect(() => {
     const unsub = onAuthChanged((u) => {
       setAuthUser(u);
       setAuthResolved(true);
+      // A real (non-anonymous) sign-in clears any prior auth-expired state.
+      if (u && !u.isAnonymous) setAuthExpired(false);
     });
     return unsub;
   }, []);
@@ -540,6 +548,11 @@ export function App(): JSX.Element {
       onCaseList: (p: CaseListEnvelopePayload) => useCases_onCaseList(p),
       onCaseOpen: (p: CaseOpenEnvelopePayload) => useCases_onCaseOpen(p),
       onError: () => { /* Chat owns rendering */ },
+      // job-0253 (sprint-13.5): the agent's prod auth gate rejected us
+      // (4401 / AUTH_FAILED) and the one-shot token refresh also failed.
+      // Drop to the AuthGuard sign-in surface. No-op when Firebase is
+      // disabled (the gate never engages in dev/tailnet mode).
+      onAuthExpired: () => setAuthExpired(true),
       // Wave 4.11 P4: surface ImpactPanel when agent emits impact-envelope.
       onImpactEnvelope: (p) => setImpactEnvelope(p),
       // sprint-13 job-0231: accumulate chart-emission payloads per session.
@@ -670,12 +683,17 @@ export function App(): JSX.Element {
   const showLayersHamburger = leftCollapsed;
   const showChatHamburger = rightCollapsed;
 
-  // job-0138: AuthGate full-screen gating.
+  // job-0138: AuthGate full-screen gating (the anonymous-accept gate). job-0253
+  // wraps it in AuthGuard: when Firebase is DISABLED (dev/tailnet — every
+  // current session), AuthGuard is a transparent pass-through and this renders
+  // exactly as before. When Firebase is ENABLED + signed-out (production),
+  // AuthGuard renders its own Google-only sign-in surface and the anonymous
+  // gate below is never reached (Decision 6 — no anonymous in prod).
   if (!appShouldRender) {
     return (
-      <AuthGate
-        onAnonymousAccept={handleAnonymousAccept}
-      />
+      <AuthGuard authExpired={authExpired}>
+        <AuthGate onAnonymousAccept={handleAnonymousAccept} />
+      </AuthGuard>
     );
   }
 
@@ -690,7 +708,12 @@ export function App(): JSX.Element {
     (t) => t.caseId === activeCaseId,
   );
 
+  // job-0253 — AuthGuard wraps the app shell. DISABLED (dev/tailnet) ⇒
+  // transparent pass-through, pixel-identical render. ENABLED + signed-in ⇒
+  // children render + a minimal "Sign out" affordance. ENABLED + expired ⇒
+  // back to the sign-in surface.
   return (
+    <AuthGuard authExpired={authExpired}>
     <div
       data-testid="grace2-app-shell"
       style={{
@@ -1197,5 +1220,6 @@ export function App(): JSX.Element {
         />
       )}
     </div>
+    </AuthGuard>
   );
 }

@@ -192,7 +192,28 @@ export interface WsHandlers {
    * drive auth-aware UI without a separate round-trip.
    */
   onAuthAck?: (p: AuthAckPayload) => void;
+  /**
+   * job-0253 (sprint-13.5) — auth-expired handler. Fires when the agent's
+   * production auth gate rejects the connection: WebSocket close code 4401
+   * (A.5) and/or an `error` envelope carrying `AUTH_FAILED` (A.6). When it
+   * fires, ws.ts has ALREADY suppressed the reconnect loop — an invalid or
+   * expired token would otherwise hammer the gate on every backoff tick.
+   * One `getIdToken(forceRefresh)` retry is attempted internally first; this
+   * handler fires only after that retry also fails (or there is no token to
+   * refresh). App.tsx maps it to the AuthGuard's sign-in surface. Optional so
+   * existing/anonymous-mode callers need no change.
+   */
+  onAuthExpired?: (p: ErrorPayload | null) => void;
 }
+
+// job-0253 — A.5 auth-failure close code. The agent's production gate
+// (`AUTH_REQUIRED=true`) sends an `AUTH_FAILED` error envelope then closes the
+// socket with this code (see services/agent/src/grace2_agent/auth.py
+// `AUTH_CLOSE_CODE=4401`). A 4401 means "your credential was rejected" — NOT a
+// transient network drop — so reconnecting is wrong: an invalid token would
+// re-trip the gate on every backoff tick. We treat it as a terminal,
+// user-actionable state (re-sign-in), not a reconnectable one.
+export const AUTH_FAILED_CLOSE_CODE = 4401;
 
 const SESSION_KEY = "grace2.session_id";
 // job-0172 Part C — sticky anonymous user_id. The server's H.3 anonymous
@@ -374,6 +395,14 @@ export class GraceWs {
   private readonly maxBackoffMs = 5000;
   private reconnectTimer: number | null = null;
   private closedByUser = false;
+  // job-0253 — set true once the agent's auth gate rejects us (4401 /
+  // AUTH_FAILED). While true, the close handler does NOT schedule a reconnect:
+  // a rejected credential is terminal until the user re-authenticates. Cleared
+  // on the next explicit `connect()` (e.g. after a fresh sign-in).
+  private authFailed = false;
+  // job-0253 — guard so the one-shot forceRefresh retry runs at most once per
+  // connect attempt and we don't loop refresh→reject→refresh.
+  private authRefreshAttempted = false;
 
   constructor(url: string, handlers: WsHandlers) {
     this.url = url;
@@ -392,6 +421,10 @@ export class GraceWs {
 
   connect(): void {
     this.closedByUser = false;
+    // job-0253 — a fresh connect() is the post-sign-in entry point; clear the
+    // auth-failure latch so the new credential gets a clean attempt.
+    this.authFailed = false;
+    this.authRefreshAttempted = false;
     this.openSocket("connecting");
   }
 
@@ -651,13 +684,25 @@ export class GraceWs {
       void this.maybeSendAuthToken();
     });
     ws.addEventListener("message", (ev) => this.handleMessage(ev.data));
-    ws.addEventListener("close", () => {
+    ws.addEventListener("close", (ev) => {
       this.socket = null;
       if (this.closedByUser) return;
+      // job-0253 — the agent's auth gate closes with code 4401 (A.5) when the
+      // credential is rejected. Do NOT reconnect: an invalid/expired token
+      // would re-trip the gate on every backoff tick (a reconnect storm
+      // against the gate). Instead try one fresh-token retry, then surface
+      // auth-expired. `CloseEvent.code` is read defensively — some test
+      // harnesses dispatch a bare Event with no `code`.
+      const code = (ev as CloseEvent | undefined)?.code;
+      if (code === AUTH_FAILED_CLOSE_CODE || this.authFailed) {
+        void this.handleAuthFailure(null);
+        return;
+      }
       this.scheduleReconnect();
     });
     ws.addEventListener("error", () => {
-      // close will follow; let close handler schedule the reconnect.
+      // close will follow; let close handler schedule the reconnect (or, on a
+      // 4401, the close handler routes to handleAuthFailure instead).
     });
   }
 
@@ -719,9 +764,21 @@ export class GraceWs {
           caseId,
         );
         break;
-      case "error":
-        this.handlers.onError(payload as unknown as ErrorPayload, caseId);
+      case "error": {
+        const errPayload = payload as unknown as ErrorPayload;
+        // job-0253 — the agent's production auth gate emits an `AUTH_FAILED`
+        // error envelope IMMEDIATELY BEFORE closing the socket with 4401. Latch
+        // it here so the close handler routes to handleAuthFailure (no
+        // reconnect) even on harnesses where the close event lacks a `code`.
+        // The latch alone does not surface auth-expired — handleAuthFailure
+        // (driven by the close, or by this same branch when the socket is
+        // already gone) owns the one-shot refresh + the onAuthExpired callback.
+        if (errPayload && errPayload.error_code === "AUTH_FAILED") {
+          this.authFailed = true;
+        }
+        this.handlers.onError(errPayload, caseId);
         break;
+      }
       case "map-command":
         // OQ-0068-MAPCMD-WS: production routing for map-command envelopes (job-0072).
         // Callers that own a LayerPanelBus pass `onMapCommand: (p) => bus.pushMapCommand(p)`.
@@ -922,6 +979,60 @@ export class GraceWs {
       wirePayload,
     );
     this.sendEnvelope(env);
+  }
+
+  /**
+   * job-0253 — handle an auth-gate rejection (4401 / AUTH_FAILED) WITHOUT
+   * entering the reconnect loop.
+   *
+   * Sequence:
+   *   1. Latch `authFailed` so any stray close events don't reconnect.
+   *   2. Cancel any pending reconnect timer (defence in depth).
+   *   3. ONE-SHOT: force-refresh the Firebase ID token. A token can be rejected
+   *      simply because it expired (1h lifetime) while a still-valid Firebase
+   *      session can mint a fresh one. If a NEW (non-empty) token comes back,
+   *      reconnect exactly once with it — the kickoff's "one forceRefresh retry
+   *      is acceptable before giving up". The retry guard (`authRefreshAttempted`)
+   *      ensures we never loop refresh→reject→refresh.
+   *   4. If there is no fresh token (Firebase disabled, signed out, or refresh
+   *      failed), surface `auth-expired`: emit `disconnected` status and call
+   *      `onAuthExpired`. App.tsx maps that to the sign-in surface.
+   */
+  private async handleAuthFailure(err: ErrorPayload | null): Promise<void> {
+    this.authFailed = true;
+    if (this.reconnectTimer !== null) {
+      window.clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+
+    if (!this.authRefreshAttempted) {
+      this.authRefreshAttempted = true;
+      const getter = this.handlers.idTokenGetter ?? ((): Promise<string | null> => getIdToken(true));
+      let fresh: string | null = null;
+      try {
+        // When a custom getter is injected (tests / non-default), call it with
+        // no args; the default getter above already forces a refresh.
+        fresh = await getter();
+      } catch {
+        fresh = null;
+      }
+      if (fresh) {
+        // A fresh credential — give the gate exactly one more chance. We clear
+        // the failure latch and re-open; `authRefreshAttempted` stays true so a
+        // second rejection falls straight through to the surface step below.
+        this.authFailed = false;
+        this.handlers.onStatus("reconnecting");
+        this.openSocket("connecting");
+        return;
+      }
+    }
+
+    // No fresh token (or the refreshed token was also rejected): give up the
+    // socket and hand control to the UI for re-authentication.
+    this.handlers.onStatus("disconnected");
+    if (this.handlers.onAuthExpired) {
+      this.handlers.onAuthExpired(err);
+    }
   }
 
   private scheduleReconnect(): void {
