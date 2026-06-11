@@ -1525,6 +1525,15 @@
       "kind": "engineering",
       "workflow_id": "agent a8da576d3f9c6cec1",
       "subagent_tokens": 203389
+    },
+    {
+      "job_id": "job-0252-auth-hardening-20260611",
+      "sprint": 13.5,
+      "description": "Opus auth hardening (529-salvage resume): AUTH_REQUIRED gate (default false + TODO job-0257), pre-Auth case migration, owner stamping on both create sites, leak clause removed; salvage fixed 3 ship-breaking gaps from the dead runner; +24 tests, suite 4354.",
+      "model": "opus",
+      "kind": "engineering",
+      "workflow_id": "agents ac82d813e9c2bbccb (died 529, 3072 tok) + a4a66afcbd7c3a1c9",
+      "subagent_tokens": 140908
     }
   ],
   "totals_by_sprint": {
@@ -1536,7 +1545,7 @@
     "11": 999540,
     "12": 27545642,
     "13": 14388888,
-    "13.5": 1550105
+    "13.5": 1691013
   },
   "historical_context": {
     "note": "Captured for accountability \u2014 NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
