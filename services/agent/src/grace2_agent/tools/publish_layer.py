@@ -79,6 +79,7 @@ import os
 import time
 from typing import Any
 
+from grace2_contracts import new_ulid
 from grace2_contracts.tool_registry import AtomicToolMetadata
 
 from ..uri_registry import observe_published_layer
@@ -390,6 +391,49 @@ def _infer_style_preset(layer_uri: str, layer_id: str) -> str:
     if tokens & _TERRAIN_STYLE_TOKENS:
         return ""
     return "continuous_flood_depth"
+
+
+def _copy_to_durable_publish_uri(layer_uri: str, layer_id: str) -> str:
+    """Server-side copy to ``gs://<publish-bucket>/published/<layer_id>-<ulid>.tif``.
+
+    job-0282 — see the call-site comment. The publish bucket defaults to the
+    COG bucket (the QGIS Server SA already holds objectViewer there) and is
+    overridable via ``GRACE2_PUBLISH_BUCKET``. Local paths pass through;
+    any failure logs a WARNING and returns the source path unchanged so a
+    missing grant degrades to today's behavior instead of breaking publish.
+    """
+    if not layer_uri.startswith("gs://"):
+        return layer_uri
+    rest = layer_uri[len("gs://"):]
+    if "/" not in rest:
+        return layer_uri
+    src_bucket, src_key = rest.split("/", 1)
+    dest_bucket = os.environ.get(
+        "GRACE2_PUBLISH_BUCKET", "grace-2-hazard-prod-cog"
+    )
+    ext = os.path.splitext(src_key)[1] or ".tif"
+    dest_key = f"published/{layer_id}-{new_ulid()}{ext}"
+    try:
+        from google.cloud import storage  # type: ignore[import-not-found]
+
+        client = storage.Client(project=_get_gcp_project())
+        src_blob = client.bucket(src_bucket).blob(src_key)
+        client.bucket(src_bucket).copy_blob(
+            src_blob, client.bucket(dest_bucket), dest_key
+        )
+        durable = f"gs://{dest_bucket}/{dest_key}"
+        logger.info(
+            "publish_layer durable copy %s -> %s", layer_uri, durable
+        )
+        return durable
+    except Exception:  # noqa: BLE001 — degrade to the source path
+        logger.warning(
+            "publish_layer durable copy failed for %s — serving the source "
+            "path directly (TTL-eviction / path-reuse risks apply)",
+            layer_uri,
+            exc_info=True,
+        )
+        return layer_uri
 
 
 def _gs_to_vsigs(gs_uri: str) -> str:
@@ -786,9 +830,20 @@ def publish_layer(
     if style_preset is None or style_preset == "auto":
         style_preset = _infer_style_preset(layer_uri, layer_id)
 
-    # 2. Convert the gs:// layer_uri to /vsigs/ for GDAL (the worker's
+    # 1d. job-0282: copy the source to a DURABLE, never-reused publish path.
+    #     Published layers must not reference 30-day-TTL cache objects — TTL
+    #     eviction (or an operator purge) breaks the layer, and because cache
+    #     keys are content-addressed, regeneration reuses the SAME path,
+    #     re-poisoning warm QGIS Server processes that negative-cached the
+    #     missing file (live: the Seattle relief, 2026-06-11). A fresh
+    #     ULID-suffixed object per publish makes the served path immutable
+    #     for the layer's lifetime. Falls back to the source path when the
+    #     copy fails (old behavior — never blocks a publish).
+    publish_uri = _copy_to_durable_publish_uri(layer_uri, layer_id)
+
+    # 2. Convert the gs:// publish path to /vsigs/ for GDAL (the worker's
     #    _append_raster_layer uses QgsRasterLayer with the "gdal" provider).
-    raster_vsigs_uri = _gs_to_vsigs(layer_uri)
+    raster_vsigs_uri = _gs_to_vsigs(publish_uri)
 
     # 3. Build the WMS URL now (deterministic from inputs; needed for return).
     wms_url = _build_wms_url(qgs_key, layer_id)
