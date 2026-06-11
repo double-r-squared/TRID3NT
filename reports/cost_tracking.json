@@ -1453,6 +1453,15 @@
       "kind": "engineering",
       "workflow_id": "agent aa623dda9040e3c90",
       "subagent_tokens": 200312
+    },
+    {
+      "job_id": "job-0283-desktop-sleekness-20260611",
+      "sprint": 13.5,
+      "description": "Desktop sleekness Fable agent: hairline design family across rail/chat/pills/modals, both themes, mobile byte-identical (PIL proof); caught+fixed backdrop-filter containing-block bug; vitest 642 (+4 pins).",
+      "model": "fable-1m",
+      "kind": "engineering",
+      "workflow_id": "agent a626929970ddaffb3",
+      "subagent_tokens": 202804
     }
   ],
   "totals_by_sprint": {
@@ -1464,7 +1473,7 @@
     "11": 999540,
     "12": 27545642,
     "13": 14388888,
-    "13.5": 175296
+    "13.5": 378100
   },
   "historical_context": {
     "note": "Captured for accountability \u2014 NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
