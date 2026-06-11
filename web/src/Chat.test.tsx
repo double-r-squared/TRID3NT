@@ -28,6 +28,7 @@ import {
   isThinkingActive,
   isThinkingStep,
   THINKING_STEP_NAME,
+  desktopChatContainerStyle,
 } from "./Chat";
 import {
   ErrorPayload,
@@ -1052,5 +1053,36 @@ describe("isThinkingActive (wave-4-10 thinking-state)", () => {
     expect(
       isThinkingActive(messages, [], live, messageOrder, stepOrder),
     ).toBe(true);
+  });
+});
+
+// --- desktopChatContainerStyle (job-0283 — desktop sleekness pass) -------- //
+//
+// Chat cannot mount in happy-dom (WebSocket), so the desktop container style
+// is exported as a constant — same pattern as mobileSheetContainerStyle.
+// Pins: (a) the surface joined the job-0264 LayerPanel family (12px radius,
+// hairline border, gradient, soft shadow); (b) position/size are UNCHANGED
+// (right 16 / top 16 / bottom 16 / width 380) — visual only, zero layout
+// change.
+
+describe("desktopChatContainerStyle (job-0283)", () => {
+  it("joins the panel surface family (radius 12 + hairline border + gradient)", () => {
+    expect(desktopChatContainerStyle.borderRadius).toBe(12);
+    expect(
+      String(desktopChatContainerStyle.border).replace(/\s/g, ""),
+    ).toContain("rgba(255,255,255,0.06)");
+    expect(String(desktopChatContainerStyle.background)).toContain(
+      "linear-gradient",
+    );
+    expect(String(desktopChatContainerStyle.boxShadow)).toContain("rgba(0,0,0");
+  });
+
+  it("keeps the pre-0283 geometry — position and width unchanged", () => {
+    expect(desktopChatContainerStyle.position).toBe("absolute");
+    expect(desktopChatContainerStyle.right).toBe(16);
+    expect(desktopChatContainerStyle.top).toBe(16);
+    expect(desktopChatContainerStyle.bottom).toBe(16);
+    expect(desktopChatContainerStyle.width).toBe(380);
+    expect(desktopChatContainerStyle.overflow).toBe("hidden");
   });
 });

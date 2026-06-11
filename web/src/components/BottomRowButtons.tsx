@@ -35,7 +35,10 @@ const inlineRowStyle: React.CSSProperties = {
     "-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif",
 };
 
-const pillStyle: React.CSSProperties = {
+// job-0280 drawer-footer rendering — kept byte-identical for the "inline"
+// (mobile) variant: job-0280's mobile surfaces are the reference, not the
+// target, of the job-0283 desktop sleekness pass.
+const inlinePillStyle: React.CSSProperties = {
   background: "rgba(20,20,25,0.85)",
   border: "1px solid #444",
   borderRadius: 14,
@@ -49,11 +52,33 @@ const pillStyle: React.CSSProperties = {
   fontFamily: "inherit",
 };
 
+// job-0283 — desktop sleekness: the floating pills join the rail's surface
+// family (hairline border, full-pill radius, blur) and step up to the 12px
+// meta type size for legibility. Visual only; same controls, ids, handlers.
+const floatingPillStyle: React.CSSProperties = {
+  background: "rgba(18,19,24,0.92)",
+  border: "1px solid rgba(255,255,255,0.08)",
+  borderRadius: 999,
+  boxShadow: "0 2px 12px rgba(0,0,0,0.35)",
+  backdropFilter: "blur(6px)",
+  WebkitBackdropFilter: "blur(6px)",
+  color: "#cfd4db",
+  padding: "6px 14px",
+  fontSize: 12,
+  cursor: "pointer",
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 6,
+  fontFamily: "inherit",
+};
+
 export function BottomRowButtons({
   onOpenSettings,
   onOpenSecrets,
   variant = "floating",
 }: BottomRowButtonsProps): JSX.Element {
+  const pillStyle =
+    variant === "inline" ? inlinePillStyle : floatingPillStyle;
   return (
     <div
       data-testid="grace2-bottom-row-buttons"

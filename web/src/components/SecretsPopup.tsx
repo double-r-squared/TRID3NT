@@ -39,7 +39,8 @@ const overlayStyle: React.CSSProperties = {
 
 const cardStyle: React.CSSProperties = {
   background: "rgba(20,22,30,0.98)",
-  border: "1px solid #444",
+  // job-0283 — hairline border joins the modal family (was solid #444).
+  border: "1px solid rgba(255,255,255,0.10)",
   borderRadius: 12,
   // Width matches SettingsPopup for visual parity.
   width: "min(480px, 92vw)",
@@ -70,7 +71,7 @@ const closeBtnStyle: React.CSSProperties = {
   cursor: "pointer",
   width: 28,
   height: 28,
-  borderRadius: 6,
+  borderRadius: 8,
   display: "flex",
   alignItems: "center",
   justifyContent: "center",

@@ -68,4 +68,31 @@ describe("BottomRowButtons", () => {
     expect(screen.getByTestId("grace2-bottom-row-settings")).toBeTruthy();
     expect(screen.getByTestId("grace2-bottom-row-secrets")).toBeTruthy();
   });
+
+  // job-0283 — desktop sleekness pass: the floating pills moved to the
+  // panel surface family; the inline (mobile drawer footer) pills keep the
+  // job-0280 reference rendering byte-identical.
+  it("floating variant pills use the desktop family (full-pill radius + hairline border)", () => {
+    render(
+      <BottomRowButtons onOpenSettings={vi.fn()} onOpenSecrets={vi.fn()} />,
+    );
+    const pill = screen.getByTestId("grace2-bottom-row-settings");
+    expect(pill.style.borderRadius).toBe("999px");
+    expect(pill.style.border.replace(/\s/g, "")).toContain(
+      "rgba(255,255,255,0.08)",
+    );
+  });
+
+  it("inline variant pills keep the job-0280 mobile rendering (radius 14, #444 border)", () => {
+    render(
+      <BottomRowButtons
+        onOpenSettings={vi.fn()}
+        onOpenSecrets={vi.fn()}
+        variant="inline"
+      />,
+    );
+    const pill = screen.getByTestId("grace2-bottom-row-settings");
+    expect(pill.style.borderRadius).toBe("14px");
+    expect(pill.style.border).toContain("#444");
+  });
 });

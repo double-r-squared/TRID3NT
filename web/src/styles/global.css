@@ -90,3 +90,79 @@ button {
   border: none !important;
   background: rgba(255, 255, 255, 0.05) !important;
 }
+
+/* job-0283 — DESKTOP sleekness pass (the job-0280 mobile pass, extended to
+ * the desktop left rail). `.grace2-desktop-rail` is applied ONLY by the two
+ * desktop left-rail wrappers in App.tsx (cases-list mode + case-view mode),
+ * which mount ONLY when !isMobile — the mobile drawer renders pixel-identical
+ * to job-0280 (its CasesPanel/CaseView ride inside `.grace2-mobile-touch`,
+ * never inside this scope).
+ *
+ * Design language = the job-0264 LayerPanel polish, now applied to the rest
+ * of the rail so the two desktop panels read as ONE family: gradient
+ * surface, hairline rgba borders (no more solid #333 boxes-within-boxes),
+ * 12px panel radius / 8px row radius, soft shadow, backdrop blur.
+ *
+ * `!important` is required — these components declare their chrome as INLINE
+ * styles (which beat stylesheets otherwise); same documented trade-off as
+ * the `.grace2-mobile-touch` block above. Visual only — zero behavior
+ * change, no control moved or removed, all data-testids untouched.
+ */
+.grace2-desktop-rail [data-testid="grace2-cases-panel"] {
+  width: 280px !important; /* match CaseView/LayerPanel column — no width jump on Case open */
+  background: linear-gradient(
+    180deg,
+    rgba(26, 27, 33, 0.96) 0%,
+    rgba(18, 19, 24, 0.96) 100%
+  ) !important;
+  border: 1px solid rgba(255, 255, 255, 0.06) !important;
+  border-radius: 12px !important;
+  padding: 12px !important;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  /* NO backdrop-filter here: a non-none backdrop-filter makes this panel
+   * the containing block for position:fixed descendants, which would trap
+   * the delete ConfirmationDialog (a CasesPanel child) inside the 280px
+   * column instead of centering it on the viewport (caught in the job-0283
+   * after-screenshot pass). The 0.96-alpha gradient hides blur anyway. */
+}
+.grace2-desktop-rail [data-testid="grace2-cases-new"] {
+  border-radius: 8px !important;
+}
+.grace2-desktop-rail [data-testid="grace2-cases-empty"] {
+  background: rgba(255, 255, 255, 0.03) !important;
+  border: 1px dashed rgba(255, 255, 255, 0.16) !important;
+  border-radius: 8px !important;
+}
+.grace2-desktop-rail [data-testid="grace2-case-row"] {
+  background: rgba(255, 255, 255, 0.03) !important;
+  border: 1px solid rgba(255, 255, 255, 0.06) !important;
+  border-radius: 8px !important;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+.grace2-desktop-rail [data-testid="grace2-case-row"]:hover {
+  background: rgba(255, 255, 255, 0.06) !important;
+}
+.grace2-desktop-rail [data-testid="grace2-case-row"][data-active="true"] {
+  background: rgba(59, 130, 246, 0.16) !important;
+  border-color: rgba(59, 130, 246, 0.55) !important;
+}
+.grace2-desktop-rail [data-testid="grace2-case-row-hazard"] {
+  border-color: rgba(59, 130, 246, 0.45) !important;
+}
+.grace2-desktop-rail [data-testid="grace2-case-view-breadcrumb"] {
+  background: linear-gradient(
+    180deg,
+    rgba(26, 27, 33, 0.96) 0%,
+    rgba(18, 19, 24, 0.96) 100%
+  ) !important;
+  border: 1px solid rgba(255, 255, 255, 0.06) !important;
+  border-radius: 10px !important;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+.grace2-desktop-rail [data-testid="grace2-case-view-empty-layers"] {
+  background: rgba(18, 19, 24, 0.92) !important;
+  border: 1px dashed rgba(255, 255, 255, 0.16) !important;
+  border-radius: 10px !important;
+}

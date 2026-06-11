@@ -67,10 +67,15 @@ export function LayerLegend({ layers }: LayerLegendProps): JSX.Element | null {
         transform: "translateX(-50%)",
         width: 320,
         padding: "8px 12px 10px",
-        background: "rgba(15,15,20,0.72)",
-        backdropFilter: "blur(4px)",
-        WebkitBackdropFilter: "blur(4px)",
-        borderRadius: 8,
+        // job-0283 — joins the panel surface family: hairline border + 10px
+        // radius + 6px blur (was a border-less 8px/4px card). Form-factor
+        // shared by design — the legend is not a job-0280 drawer/sheet
+        // surface, so the family alignment applies on mobile too.
+        background: "rgba(17,18,23,0.78)",
+        backdropFilter: "blur(6px)",
+        WebkitBackdropFilter: "blur(6px)",
+        border: "1px solid rgba(255,255,255,0.06)",
+        borderRadius: 10,
         boxShadow: "0 2px 12px rgba(0,0,0,0.45)",
         fontFamily: "system-ui, sans-serif",
         color: "#eee",

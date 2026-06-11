@@ -29,7 +29,8 @@ const overlayStyle: React.CSSProperties = {
 
 const cardStyle: React.CSSProperties = {
   background: "rgba(20,22,30,0.98)",
-  border: "1px solid #444",
+  // job-0283 — hairline border joins the modal family (was solid #444).
+  border: "1px solid rgba(255,255,255,0.10)",
   borderRadius: 12,
   padding: "22px 24px",
   width: "min(420px, 92vw)",
@@ -60,8 +61,9 @@ const rowStyle: React.CSSProperties = {
 };
 
 const buttonBase: React.CSSProperties = {
-  border: "1px solid #555",
-  borderRadius: 6,
+  // job-0283 — hairline border + 8px radius (modal-family buttons).
+  border: "1px solid rgba(255,255,255,0.14)",
+  borderRadius: 8,
   padding: "7px 14px",
   fontSize: 13,
   fontFamily: "inherit",

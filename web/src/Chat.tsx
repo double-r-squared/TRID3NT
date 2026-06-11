@@ -896,6 +896,35 @@ export function mobileSheetContainerStyle(
   };
 }
 
+/** Desktop right-panel container (job-0283 sleekness pass). Surface family =
+ * the job-0264 LayerPanel polish: gradient surface, hairline border, 12px
+ * radius, soft shadow, backdrop blur — so the chat panel and the left rail
+ * read as one family. Exported for unit tests (Chat itself cannot mount in
+ * happy-dom — it opens a WebSocket — same pattern as
+ * mobileSheetContainerStyle above). Visual only; position/size unchanged. */
+export const desktopChatContainerStyle: React.CSSProperties = {
+  position: "absolute",
+  right: 16,
+  top: 16,
+  bottom: 16,
+  width: 380,
+  background:
+    "linear-gradient(180deg, rgba(26,27,33,0.96) 0%, rgba(18,19,24,0.96) 100%)",
+  color: "#eee",
+  borderRadius: 12,
+  border: "1px solid rgba(255,255,255,0.06)",
+  boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
+  // NO backdropFilter: it would make this panel the containing block for
+  // position:fixed descendants — ChartGallery (mounted inside Chat) must
+  // overlay the full viewport, not the 380px column. The 0.96-alpha
+  // gradient hides blur anyway (caught in the job-0283 screenshot pass).
+  display: "flex",
+  flexDirection: "column",
+  fontFamily: "system-ui, sans-serif",
+  fontSize: 13,
+  overflow: "hidden",
+};
+
 export interface SheetToggleHandleProps {
   expanded: boolean;
   onToggle: () => void;
@@ -1468,27 +1497,12 @@ export function Chat({
   const inputState: ChatInputState = showCancel ? "in-flight" : "idle";
   const inputDisabled = status !== "connected";
 
-  // job-0278 — desktop panel vs mobile bottom sheet. The desktop branch is
-  // byte-for-byte the pre-mobile style; every mobile divergence is behind
-  // the `mobile` prop.
+  // job-0278 — desktop panel vs mobile bottom sheet. Every mobile divergence
+  // is behind the `mobile` prop; the desktop style lives in the exported
+  // desktopChatContainerStyle below (job-0283).
   const containerStyle: React.CSSProperties = mobile
     ? mobileSheetContainerStyle(sheetExpanded)
-    : {
-        position: "absolute",
-        right: 16,
-        top: 16,
-        bottom: 16,
-        width: 380,
-        background: "rgba(20,20,25,0.92)",
-        color: "#eee",
-        borderRadius: 8,
-        boxShadow: "0 4px 24px rgba(0,0,0,0.4)",
-        display: "flex",
-        flexDirection: "column",
-        fontFamily: "system-ui, sans-serif",
-        fontSize: 13,
-        overflow: "hidden",
-      };
+    : desktopChatContainerStyle;
 
   return (
     <div
@@ -1507,8 +1521,13 @@ export function Chat({
       )}
       <header
         style={{
-          padding: "10px 12px",
-          borderBottom: "1px solid #333",
+          // job-0283 — desktop gets the family hairline divider + LayerPanel
+          // header padding; the mobile sheet keeps its job-0278/0280
+          // rendering byte-identical (mobile surfaces are the reference).
+          padding: mobile ? "10px 12px" : "12px 14px",
+          borderBottom: mobile
+            ? "1px solid #333"
+            : "1px solid rgba(255,255,255,0.06)",
           // job-0278 — collapsed mobile sheet shows only handle + composer;
           // the header (and scroll area below) hide but stay mounted.
           display: mobile && !sheetExpanded ? "none" : "flex",

@@ -101,10 +101,12 @@ const sectionLabelStyle: React.CSSProperties = {
   marginBottom: 4,
 };
 
+// job-0283 — form controls join the modal family: hairline borders + 8px
+// radius (was #555 / 4px). Visual only.
 const inputStyle: React.CSSProperties = {
   background: "rgba(40,40,50,0.9)",
-  border: "1px solid #555",
-  borderRadius: 4,
+  border: "1px solid rgba(255,255,255,0.14)",
+  borderRadius: 8,
   color: "#ddd",
   padding: "4px 6px",
   fontSize: 12,
@@ -116,8 +118,8 @@ const inputStyle: React.CSSProperties = {
 
 const buttonStyle: React.CSSProperties = {
   background: "rgba(40,40,50,0.9)",
-  border: "1px solid #555",
-  borderRadius: 4,
+  border: "1px solid rgba(255,255,255,0.14)",
+  borderRadius: 8,
   color: "#ddd",
   padding: "4px 8px",
   cursor: "pointer",
@@ -139,7 +141,8 @@ const secretRowStyle: React.CSSProperties = {
   alignItems: "center",
   gap: 8,
   padding: "6px 4px",
-  borderBottom: "1px solid #333",
+  // job-0283 — hairline divider (was #333), matching the modal family.
+  borderBottom: "1px solid rgba(255,255,255,0.08)",
 };
 
 const emptyStateStyle: React.CSSProperties = {

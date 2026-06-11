@@ -46,7 +46,8 @@ const overlayStyle: React.CSSProperties = {
 
 const cardStyle: React.CSSProperties = {
   background: "rgba(20,22,30,0.98)",
-  border: "1px solid #444",
+  // job-0283 — hairline border joins the modal family (was solid #444).
+  border: "1px solid rgba(255,255,255,0.10)",
   borderRadius: 12,
   width: "min(480px, 92vw)",
   maxHeight: "85vh",
@@ -68,7 +69,7 @@ const closeBtnStyle: React.CSSProperties = {
   cursor: "pointer",
   width: 28,
   height: 28,
-  borderRadius: 6,
+  borderRadius: 8,
   display: "flex",
   alignItems: "center",
   justifyContent: "center",
@@ -82,7 +83,8 @@ const headerStyle: React.CSSProperties = {
 };
 
 const sectionStyle: React.CSSProperties = {
-  borderTop: "1px solid #333",
+  // job-0283 — hairline section divider (was #333), modal family.
+  borderTop: "1px solid rgba(255,255,255,0.08)",
   paddingTop: 14,
   marginTop: 16,
 };
@@ -108,8 +110,9 @@ const valueStyle: React.CSSProperties = {
 
 const buttonStyle: React.CSSProperties = {
   background: "rgba(40,42,52,0.9)",
-  border: "1px solid #555",
-  borderRadius: 6,
+  // job-0283 — hairline border + 8px radius (modal-family buttons).
+  border: "1px solid rgba(255,255,255,0.14)",
+  borderRadius: 8,
   color: "#ddd",
   padding: "5px 12px",
   fontSize: 12,

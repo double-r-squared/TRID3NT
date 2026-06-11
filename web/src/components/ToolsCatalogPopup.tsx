@@ -99,7 +99,8 @@ const overlayStyle: React.CSSProperties = {
 
 const cardStyle: React.CSSProperties = {
   background: "rgba(20,22,30,0.98)",
-  border: "1px solid #444",
+  // job-0283 — hairline border joins the modal family (was solid #444).
+  border: "1px solid rgba(255,255,255,0.10)",
   borderRadius: 12,
   width: "min(820px, 96vw)",
   maxHeight: "90vh",
@@ -138,7 +139,7 @@ const closeBtnStyle: React.CSSProperties = {
   cursor: "pointer",
   width: 28,
   height: 28,
-  borderRadius: 6,
+  borderRadius: 8,
   display: "flex",
   alignItems: "center",
   justifyContent: "center",
@@ -147,8 +148,9 @@ const closeBtnStyle: React.CSSProperties = {
 const searchInputStyle: React.CSSProperties = {
   width: "100%",
   background: "rgba(15,15,20,0.85)",
-  border: "1px solid #444",
-  borderRadius: 6,
+  // job-0283 — hairline border + 8px radius (modal-family form controls).
+  border: "1px solid rgba(255,255,255,0.12)",
+  borderRadius: 8,
   color: "#e8eaf0",
   padding: "8px 12px",
   fontSize: 13,
@@ -169,7 +171,8 @@ const categoryChipBase: React.CSSProperties = {
   background: "rgba(30,32,42,0.9)",
   borderWidth: 1,
   borderStyle: "solid",
-  borderColor: "#3a3d49",
+  // job-0283 — hairline (was #3a3d49); the active #3b82f6 state is unchanged.
+  borderColor: "rgba(255,255,255,0.10)",
   borderRadius: 8,
   padding: "8px 10px",
   cursor: "pointer",
@@ -194,14 +197,15 @@ const listScrollStyle: React.CSSProperties = {
   overflowY: "auto",
   flex: 1,
   minHeight: 0,
-  borderTop: "1px solid #333",
+  // job-0283 — hairline dividers (were #333 / #2a2d35), modal family.
+  borderTop: "1px solid rgba(255,255,255,0.08)",
   paddingTop: 10,
   paddingRight: 4,
 };
 
 const toolRowStyle: React.CSSProperties = {
   padding: "10px 8px 12px",
-  borderBottom: "1px solid #2a2d35",
+  borderBottom: "1px solid rgba(255,255,255,0.06)",
 };
 
 const toolNameStyle: React.CSSProperties = {

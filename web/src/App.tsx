@@ -167,12 +167,18 @@ declare global {
 
 // Shared hamburger button style (job-0068). Same-side-as-panel per user direction.
 // z-index 30 so it renders above panels (z=20) and legend (z=10).
+// job-0283 — desktop sleekness: hairline border + 10px radius + blur so the
+// hamburgers sit in the same surface family as the rail panels/pills.
+// Desktop-only (mobile uses MobileDrawerButton).
 const hamburgerBtnStyle: React.CSSProperties = {
   position: "absolute",
-  background: "rgba(20,20,25,0.85)",
-  border: "1px solid #444",
-  borderRadius: 6,
-  color: "#ccc",
+  background: "rgba(18,19,24,0.92)",
+  border: "1px solid rgba(255,255,255,0.08)",
+  borderRadius: 10,
+  boxShadow: "0 2px 12px rgba(0,0,0,0.35)",
+  backdropFilter: "blur(6px)",
+  WebkitBackdropFilter: "blur(6px)",
+  color: "#cfd4db",
   width: 40,
   height: 40,
   padding: 0,
@@ -731,6 +737,10 @@ export function App(): JSX.Element {
         <div
           data-testid="grace2-left-rail"
           data-mode="cases-list"
+          /* job-0283 — scopes the desktop sleekness CSS (global.css) to the
+             desktop rail only; the mobile drawer renders these components
+             without this class and stays pixel-identical to job-0280. */
+          className="grace2-desktop-rail"
           style={{
             position: "absolute",
             top: 12,
@@ -758,6 +768,8 @@ export function App(): JSX.Element {
           <div
             data-testid="grace2-left-rail"
             data-mode="case-view"
+            /* job-0283 — same desktop-only sleekness scope as cases-list mode. */
+            className="grace2-desktop-rail"
             style={{
               position: "absolute",
               top: 12,

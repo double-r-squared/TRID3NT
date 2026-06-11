@@ -81,8 +81,10 @@ export function ConfirmationDialog({
         onClick={(e) => e.stopPropagation()}
         style={{
           background: "rgba(25,25,30,0.98)",
-          border: "1px solid #444",
-          borderRadius: 8,
+          // job-0283 — hairline border + 12px radius (modal family; was
+          // #444 / 8px). Visual only.
+          border: "1px solid rgba(255,255,255,0.10)",
+          borderRadius: 12,
           padding: 20,
           width: 360,
           maxWidth: "90vw",
@@ -144,7 +146,8 @@ function btnStyle(color: string): React.CSSProperties {
     background: color,
     color: "#000",
     border: "none",
-    borderRadius: 4,
+    // job-0283 — 8px radius (modal-family buttons; was 4px).
+    borderRadius: 8,
     padding: "6px 14px",
     fontSize: 12,
     fontWeight: 600,
