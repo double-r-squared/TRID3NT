@@ -15,3 +15,17 @@ immediately per quota discipline. Re-run queued (single cache-hit turn).
 **Side finding fixed in-loop:** MobileDrawer lacked Escape dismissal
 (the overlay-convention audit gap that wedged scenario A's script);
 added + drawer tests 6/6.
+
+## Close-out (2026-06-11)
+
+**Scenario B (location fidelity) — PASS via organic user evidence:** the
+user's own prompt "Compute color relief for Seattle Washington" (after a
+Tampa flood in the same session) geocoded Seattle and published
+`seattle-colored-relief` (agent log 00:34). The synthetic re-run was
+superseded.
+
+**Hillshade ("the shadow") — PASS, Gemini-free:** compute_hillshade on the
+cached Boulder DEM through the real registry (COG output via job-0271) +
+publish (no-preset styling via job-0269b) → WMS GetMap 200 in 9.0s,
+512x512, 255 gray levels, 100% opaque. /tmp/hillshade_verify.png delivered.
+Layer: hillshade-boulder-verify-0279.
