@@ -193,3 +193,22 @@ def normalize_args(
 
 ---
 
+
+### I.7 Post-hoc allowed-set validation — hallucination guard, not a gate (v0.3.23, job-0270)
+
+Under the Wave 4.10 CachedContent design the full tool catalog is cached in
+Gemini's context and the allowed-set filter is enforced post-hoc in harness
+code (`categories.validate_function_call`). Live evidence (terrain turns,
+2026-06-10) showed the original reject-everything-outside-the-hot-set
+behavior cost 2–4 recovery iterations per turn on REAL registered tools and
+contributed to turns terminating before `publish_layer` ran.
+
+**Contract (v0.3.23):** when a `function_call` names a tool that exists in
+the live registry but is outside the session's allowed set, the validator
+AUTO-WIDENS the set with that name (logged at WARNING — the hot-set-miss
+telemetry signal) and dispatch proceeds. A name NOT in the registry still
+raises `OUT_OF_ALLOWED_SET` — the validator's purpose is the hallucination
+guard. Safety boundaries are unchanged and downstream of validation: the
+solver-confirm gate, the code-exec gate, the payload-warning gate, and the
+per-tool circuit breaker (which is checked BEFORE validation and is not
+revived by auto-widen).

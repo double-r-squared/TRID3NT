@@ -84,10 +84,10 @@ QGIS Server (Cloud Run) renders the same `.qgs` projects and QML styles that QGI
 Project file mutations (adding layers, changing styles, configuring temporal properties) are performed by short-lived PyQGIS worker jobs (Cloud Run Jobs). The agent invokes these as tools; they read the `.qgs` from GCS, mutate it, write back.
 
 **Decision D: GeoAgent (opengeos) is a reference, not a dependency**
-Patterns and ideas from the opengeos/GeoAgent project — tool registration discipline, docstring conventions, confirmation hook approach — inform the design. No code is copied or vendored. ADK is a different framework and its patterns govern.
+Patterns and ideas from the opengeos/GeoAgent project — tool registration discipline, docstring conventions, confirmation hook approach — inform the design. No code is copied or vendored. The generation loop is raw google-genai SDK (not ADK), and the tool-registration conventions are project-defined; ADK is a transitive dependency only with zero direct callers in the agent service (see Decision E and FR-AS-1).
 
 **Decision E: Google Cloud throughout**
-All infrastructure runs on Google Cloud: Agent Builder/ADK for the agent, Cloud Run for QGIS Server and worker jobs, Cloud Workflows for multi-step orchestration, GCS for artifacts. MongoDB Atlas runs as a managed service alongside (multi-cloud-deployable, in practice deployed in a GCP region adjacent to the agent).
+All infrastructure runs on Google Cloud: raw google-genai SDK (Gemini 2.5/3) for the agent generation loop — ADK is a transitive dependency only; `register_with_adk` has zero callers and the generation loop is `client.models.generate_content_stream` per `adapter.py` (FR-AS-1) — Cloud Run for QGIS Server and worker jobs, Cloud Workflows for multi-step orchestration, GCS for artifacts. MongoDB Atlas runs as a managed service alongside (multi-cloud-deployable, in practice deployed in a GCP region adjacent to the agent).
 
 **Decision F: MongoDB Atlas as the durable knowledge layer**
 News articles, extracted event metadata, model run catalog, and embeddings for semantic search all live in MongoDB Atlas. Atlas Vector Search enables "find historical events similar to this one" as an agent capability. The agent accesses MongoDB via MongoDB's MCP server.
@@ -138,13 +138,13 @@ Every atomic tool that hits an external public API (USGS 3DEP / NWIS / earthquak
              ▼                             ▼
 ┌─────────────────────────────────┐  ┌──────────────────────────┐
 │  Agent Service                  │  │   QGIS Server            │
-│  (Cloud Run, Agent Builder/ADK) │  │   (Cloud Run)            │
+│  (Cloud Run, raw google-genai)  │  │   (Cloud Run)            │
 │  ┌───────────────────────────┐  │  │   - Renders .qgs proj    │
 │  │ Gemini 3                  │  │  │   - Serves WMS/WMTS/WFS  │
 │  └───────────────────────────┘  │  │   - QML styles           │
 │  ┌───────────────────────────┐  │  │   - WMS-T temporal       │
 │  │ Tool registry             │  │  └─────────────┬────────────┘
-│  │  - native ADK tools       │  │                │
+│  │  - registered tools       │  │                │
 │  │  - MongoDB MCP tools      │  │                │ reads
 │  │  - hazard modeling tools  │  │                ▼
 │  └──────┬────────────────────┘  │       ┌──────────────┐
@@ -808,6 +808,8 @@ Implementation refinement is deferred to its target sprint; the contract above p
 
 **v0.3.22 amendment (sprint-12-mega Wave 1, job-0099).** The Case-persistence envelopes that back FR-MP-6 are locked in `packages/contracts/src/grace2_contracts/case.py`: `CaseSummary` (the left-rail entity, denormalized from `projects`), `CaseChatMessage` (a persisted single chat exchange carrying per-turn `layer_emissions` + `map_command_emissions` so rehydration can replay the layer-binding sequence deterministically — Invariant 1), `CaseSessionState` (the rehydration envelope returned on Case open), and the Appendix A.4/A.3 lifecycle envelopes `case-list` (server → client left-rail list), `case-open` (server → client rehydrate), and `case-command` (client → server `create` / `select` / `rename` / `archive` / `delete`, with a closed-enum command discriminator mirroring the `map-command` one-umbrella-type pattern). All envelopes are pydantic v2 `GraceModel` subclasses, carry `schema_version: "v1"`, carry no cost field (Invariant 9), and route cancellation through the existing A.3 `cancel` message (Invariant 8 — no `case-command` cancellation variant). The `case_id` is the `projects._id` ULID 1:1; FR-MP-5 nomenclature stays canonical in storage. Wave 2 Case UX work (agent + web) consumes this envelope shape as the gating contract.
 
+**v0.3.23 amendment (sprint-13 demo-hardening, jobs 0269/0277).** Two FR-MP-6 contract changes from live multi-Case testing. **(1) `deselect` joins the `case-command` closed enum** (`create` / `select` / `deselect` / `rename` / `archive` / `delete`): the client emits it when the user navigates OUT of a Case to the Cases root; the server clears the session-scoped active-Case binding and the connection's LLM context. Without it the binding silently kept pointing at the last-opened Case, so root prompts skipped auto-create and dispatched into the stale Case. `deselect` carries no `case_id` and returns no envelope. **(2) Stream-scoped turn concurrency + owning-Case envelope routing**: a new `user-message` cancels only an in-flight turn belonging to the SAME stream (Case, or root); turns in other Cases keep running. Every turn pins its Case at dispatch — persistence (chat rows, tool cards, layer attribution, per-Case `.qgs` routing, charts) targets the pin, never the live active-Case binding, and every envelope the turn emits carries the pin as `Envelope.case_id` (Appendix A.1 v0.3.23) so the client routes live streams to the owning Case. Cancellation semantics: the A.3 `cancel` message targets the visible stream's turn, falling back to any live turn.
+
 ### 3.8 Cloud Execution (FR-CE)
 
 **FR-CE-1: Solver containerization**
@@ -1093,6 +1095,7 @@ Milestones M4, M5, M6, M7, M8 can be parallelized to a meaningful degree given m
 | 0.3.13 | 2026-06-05 | Introduced impact post-processing as a forward-looking second tool class alongside engines (all additions explicitly deferred post-M5 so in-flight sprint-03 work is not disturbed). **New Decision N**: engines emit `AssessmentEnvelope`, post-processors consume one and emit an `ImpactEnvelope`. Pelicun (NHERI SimCenter, FEMA P-58 / HAZUS via the bundled Damage and Loss Model Library) is the first member. **§2.3**: post-processing tool-class contract added next to the engine common contract; new "Post-processing tool classes" table with one Pelicun row. **FR-CE-5/6/7**: Pelicun runs as a Cloud Run Job orchestrated by Cloud Workflows with an `AssessmentEnvelope` precondition enforced via MongoDB lookup and 30-second cancellation conformance (FR-AS-6 / NFR-R-3). **FR-TA-1**: return-type widened to `AssessmentEnvelope` or `ImpactEnvelope`; new impact-post-processing workflow group with `run_pelicun_impact`. **FR-AS-7 / FR-AS-8**: extended to source narrative numbers from `ImpactEnvelope` and to confirmation-gate any impact post-processing execution. **Appendix B.6c / B.6d**: full `ImpactEnvelope` Pydantic shape (sibling type with its own `envelope_type: Literal["impact"]`; `AssessmentEnvelope.envelope_type` is unchanged), supporting types, and a worked Hurricane Ian Pelicun example. B.7 design-rationale bullets extended to acknowledge the impact case. **Appendix D.3**: `RunDocument.run_type` literal extended with `"impact"`; comment clarified that "modeled"/"discovered" mirror `AssessmentEnvelope.envelope_type` and "impact" mirrors `ImpactEnvelope.envelope_type`. **FR-MP-5**: new Impact runs row co-located in the `runs` collection. **Milestones**: new M5.5 ("Impact post-processing (Pelicun) v0") inserted after M5, parallelizes with M6/M7. **OQ-8**: fragility/consequence-curve sourcing (HAZUS vs FEMA P-58 vs bundled vs user-supplied). |
 | 0.3.14 | 2026-06-05 | Added openTELEMAC-MASCARET as a forward-looking multi-solver hydrodynamic engine (all additions explicitly deferred post-MVP / v0.2+ so in-flight M1 / sprint-03 work is not disturbed; same discipline as the 0.3.13 Pelicun amendment). **§2.3**: one new row in the Deferred engines table for the TELEMAC-MASCARET suite — Solver column lists openTELEMAC-MASCARET (TELEMAC-2D/3D, TOMAWAC, ARTEMIS, GAIA, MASCARET) on one line matching the cadence of surrounding rows; Likely mode is **Python shim** (HermesPy for Selafin I/O grace-2-side; consortium `telemac2d.py` / `telemac3d.py` / `tomawac.py` driver scripts invoked from the workflow), conforming to the §2.3 Engine selection principle which defines only Plugin-backed or Python shim modes; Target v0.3. Containerization and MPI-binary packaging are FR-CE-1 execution details, not an integration mode, and live in the M11 milestone description (mirroring how SFINCS is 'Python shim via HydroMT' in the v0.1 catalog despite running in a Cloud Run Job). **§2.3 substantial-new-tooling paragraph**: clarifying sentence added — mesh-based shallow-water suites with mature Python driver tooling and out-of-process invocation (TELEMAC-MASCARET) are roadmap-included and distinct from the OpenFOAM-class indefinitely-deferred set; '3D ocean simulation' in that paragraph refers to full 3D Navier–Stokes coastal CFD, not TELEMAC-3D's RANS shallow-water 3D mode. **FR-TA-1**: new forward-looking TELEMAC modeling-workflow group appended after `model_news_event` (i.e. inside the `envelope_type: "modeled"` subsection, preserving envelope_type grouping modeled → discovered → impact) with `run_coastal_storm_surge_telemac` (TELEMAC-2D unstructured-mesh higher-fidelity complement to SFINCS), `run_coupled_surge_wave` (TELEMAC-2D + TOMAWAC), `run_river_hydraulics_mascaret` (1D Saint-Venant), `run_sediment_transport_gaia` (GAIA on a prior TELEMAC `solver_run_id`); engine common contract preserved (workflow + atomic-tool registration only, no engine-core changes). **Milestones**: new M11 ("TELEMAC-MASCARET engine v0 (coastal / river hydrodynamics)") inserted after M5.5 to cluster the two forward-looking engine/post-processor rows together (mirrors the M5.5 half-step convention) — M10 (Polish and v0.1 release; dependency 'all above') remains the last row of the v0.1 milestone block; M11 is a parallel-track v0.3 deliverable depending on M5/M6/M7; deliverable includes container packaging (simvia/opentelemac base image, MPI-enabled binaries) under FR-CE-1/2/3, mesh-toolchain selection per OQ-9, one end-to-end TELEMAC workflow on a real event, hazard subtype registration deferred to a follow-up Appendix B.4 amendment when the workflows actually land. **OQ-9**: mesh-generation toolchain selection (GMSH vs OceanMesh2D vs BlueKenue vs in-suite Telemac preprocessors), mirroring OQ-8's named-alternatives shape. **License posture**: TELEMAC is GPL v3 (main modules) + LGPL v3 (BIEF); GRACE-2 stays MIT (NFR-L) because the integration is out-of-process — TELEMAC binaries inside a separate Docker image, invoked as a separate Cloud Run Job, communicating only via GCS file artifacts and Cloud Workflows step transitions, with no grace-2 source linked against TELEMAC or BIEF. **Known follow-ups (not in this amendment)**: when TELEMAC workflows actually land, Appendix B.4 hazard subtypes will gain entries like `coastal_storm_surge_telemac` / `coupled_surge_wave_telemac` / `river_1d_mascaret` / `sediment_gaia`; FR-HEP-7 storm-surge forcing reconstruction will need a solver-agnostic phrasing or a TELEMAC sibling entry; the §5 Out-of-Scope row referencing '3D ocean simulation' is consistent with the §2.3 clarification (TELEMAC excluded from that row by construction). |
 | 0.3.21 | 2026-06-07 | Forward-looking **FR-MP-6 Case UX** amendment (per user direction 2026-06-07 — "Add this to the SRS and we can discuss refining the idea when we get to it"). "Case" is the user-facing name for a `projects` document (FR-MP-5). Pins the binding UX flow: (a) **landing** = two-pane shell, Cases list left + Chat right; left panel hidden until first Case exists; both panels collapsible for max-map view. (b) **Case creation** = first agent prompt in a session outside any Case implicitly creates a `projects` document and binds the session. (c) **In-Case state** = left panel switches from Cases list to Case detail (loaded layers list with visibility/opacity/order per the layer-emission-contract decision); "back to Cases" nav element exposed. (d) **Persistence** = layer-producing workflow outputs save into the Case's `layer_summary` (sprint-09's `publish_layer` tool persists at exit); chat history persists into the bound `sessions` document. (e) **Resume** = re-opening a Case rehydrates chat + re-registers layers + restores agent context. (f) **Out-of-Case context** = navigating back to Cases list resets chat to a fresh agent context with no prior conversation memory; UI clearly reflects the context change. Implementation refinement deferred to the target sprint; the contract above pins intent only. UI label "Case" ↔ schema name "Project" (FR-MP-5 nomenclature stays canonical). No schema change in this amendment; consumers of FR-MP-6 will propose D.x amendments at implementation time. |
+| 0.3.23 | 2026-06-11 | Sprint-13 demo-hardening contract amendments (landed at user direction 2026-06-11, jobs 0268/0269/0270/0277 — every change live-driven and user-confirmed before landing). **A.1 Envelope**: optional `case_id` field tagging agent → client envelopes with the Case that owns the emitting turn; clients route tagged streaming envelopes to the owning Case's stream, untagged fall back to submit-time routing (job-0277). **FR-MP-6 v0.3.23 amendment**: `deselect` joins the `case-command` closed enum (client navigated out of a Case to the Cases root; server clears the session-scoped active-Case binding — without it root prompts dispatched into the stale Case); stream-scoped turn concurrency documented — a new `user-message` cancels only a same-stream turn, and turns pin their Case at dispatch for both persistence targeting and envelope tagging (jobs 0268/0269). **New §I.7**: post-hoc allowed-set validation is a hallucination guard, not a gate — registered-but-outside-hot-set tools auto-widen with a WARNING (the hot-set-miss telemetry signal); unregistered names still raise `OUT_OF_ALLOWED_SET`; solver-confirm / code-exec / payload-warning gates and the circuit breaker are unchanged and downstream of validation (job-0270). |
 | 0.3.22 | 2026-06-08 | New **Appendix I: LLM Tool Harness Conventions** (per user direction 2026-06-08 — "we can now tighten the harness"). Codifies five conventions binding from sprint-12-mega Wave 4.7 forward (job-0164 engine sweep + job-0165 this appendix) for every `@register_tool`-registered atomic tool (FR-TA-2) and workflow exposure (FR-TA-1). **§I.1 Param naming**: full unabbreviated English words (`return_period_years`, `duration_hours`); the two v0.1 abbreviation suffixes `_yr` / `_hr` retain bounded backward-compat aliases (`return_period_yr` / `duration_hr` as `int \| None = None`, normalized at top of body) until v0.2; new tools ship with full-word names from the first commit. **§I.2 `**_extra_ignored` absorb policy**: every registered function ends with `**_extra_ignored: Any` so frontier-LLM-invented kwargs (`run_name`, `scenario_id`, `description`, `mode`, …) do not raise `TypeError`; absorb is *input*-side noise tolerance — `extra="forbid"` on schema models (Appendices A–D) unchanged; Invariants 1 / 7 / 10 preserved. **§I.3 Docstring discipline**: dedicated `Examples:` doctest block at end of every tool docstring; no inline `key="value"` substrings in prose `Use this when:` / `Do NOT use this for:` / `Params:` sections (Gemini-3 re-emits inline-prose key=value substrings as call arguments — empirically observed root cause of `forcing=` / `rainfall_event=` failures). Extends FR-AS-3 / FR-TA-3 docstring discipline (does not amend either FR). **§I.4 Normalization layer**: NEW `services/agent/src/grace2_agent/tool_arg_normalizer.py` (sibling job-0164 in code) with `normalize_args(tool_name, raw_args) → (normalized, dropped_unknowns)`; wired into `server.py:_invoke_tool_via_emitter` before `entry.fn(**params)`; performs alias map (tool-name-keyed) + bounded fuzzy match (camelCase→snake_case, edit distance ≤ 1, single-candidate only) + per-tool string-form parser (e.g. `forcing="atlas14_100yr"` → `return_period_years=100`; reference impl in `run_model_flood_scenario` body) + drop-and-log unknown keys. Never raises on unknown kwargs; never silently fabricates values; per-tool counters emitted to structured logs. **§I.5 Per-tool tests**: cross-cutting parametrized conformance test (every registered tool accepts invented kwargs without `TypeError`; docstring conforms to §I.3 sectioning; signature ends with `**_extra_ignored`) + property-based fuzz on the normalizer with 0–5 random unknown keys per call. Owned by `testing`; CI-gating on PRs touching `services/agent/src/grace2_agent/{tools,workflows}/*.py` or the normalizer. **§I.6 Decision F (harness conventions) — adopted 2026-06-08**: records the adoption with empirical-signal rationale (strict signature binding was the #1 pre-application-logic failure across ~57 atomic tools in sprint-12-mega) and alternatives considered (strict + re-prompt; pydantic-model-per-tool; normalizer without `**_extra_ignored`). Forward path pins v0.2 alias retirement (`_yr`/`_hr` aliases removed; full-word names sole accepted form). **Cross-references**: §2.1 Decision F (harness conventions row — appendix I is the body); FR-AS-3 + FR-TA-3 extended by §I.3; Invariants 1 / 7 / 10 preserved verbatim; AGENTS.md pre-MVP "no legacy support" honored (the §I.1 alias is the only bounded backward-compat layer); engine sweep job-0164 is the implementation companion; this appendix is the conventions surface. **Files touched**: NEW `docs/srs/I-llm-tool-harness.md`; `docs/srs/INDEX.md` Appendix I row added; `Makefile` `SRS_PARTS` list extended. No schema changes (Appendices A–D unchanged); no FR amendments (FR-AS-3 / FR-TA-3 extended-not-amended via the convention layer). |
 | 0.3.20 | 2026-06-07 | Focused housekeeping pass — reconciles 3 critical carry-forwards before sprint-08 catalog work begins (deferred items remain for a later pass). **§F.1 WorldPop prose alignment** (OQ-37-*): live ecosystem delivered neither STAC nor 100m product (WorldPop Hub STAC returns 404; 4 GB 100m server returns HTTP 200 not 206 for Range so /vsicurl/ windowed reads fail) — prose now correctly states Tier 4 region-download with 50 MB 1km Aggregated COG per country via direct REST; vintage default `worldpop_2020`; units **people-per-1km-cell** semantics clarified for downstream zonal-stats consumers (OQ-37-WORLDPOP-COG-CRS-AND-UNITS). **§F.1 NLCD prose alignment** (OQ-39-NLCD-TIER-DEVIATION + OQ-42-NLCD-WMS-PALETTE-ENCODING + OQ-44 fix): NLCD via MRLC is **Tier 2 OGC WCS 1.0.0 GetCoverage for canonical class integers** (model inputs), not Tier 3 direct HTTPS as v0.3.16 implied. WMS GetMap returns palette-encoded indices (silent-wrong-answer mode caught live by Invariant 7 gate in job-0042) — WMS retained as the visualization-only path; WCS is the canonical-bytes path. **§3.9 FR-DC-1 bucket layout clarification** (OQ-INFRA-31-FR-DC-1): per-TTL-class prefix nesting (`cache/<ttl-class>/<source-class>/<hash>.<ext>`) per job-0031 live substrate is the actual on-disk layout — scales past GCS 100-rule cap that per-source rules would burn through. Appendix B worked-example paths kept as aliases; cache shim normalizes. **§3.9 FR-DC-5 live-no-cache lifecycle clarification** (OQ-INFRA-31-LIVE-NO-CACHE-LIFECYCLE-NOOP): the `cache/live-no-cache/` lifecycle rule is intentionally a no-op (GCS rejects `daysSinceCustomTime=0`); acceptable because FR-DC-6 enumerates these tools as uncacheable-by-construction; rule exists as defense-in-depth, not load-bearing enforcement. **Deferred to a later pass** (intentionally NOT bundled here to keep this amendment focused): OQ-W-26 TTL-literal naming reconciliation; OQ-33-GEOCODED-LOCATION-CONTRACT-PROMOTION (sprint-08 schema scope); OQ-35-WIRE-PAYLOAD-ERROR-FIELDS-VISIBILITY; OQ-36-CACHE-REGRESSION-FAKE-FIDELITY; OQ-41-COMPUTE-CLASS-NAMING (sprint-08 schema scope); OQ-42-* + OQ-43-* + OQ-44-MANNING-MAPPING-CSV-COMMENT-WMS-REF (smaller code-side fixes). Sprint-08 catalog seed (job-0046) reads this updated prose for canonical "how to use" metadata. |
 | 0.3.19 | 2026-06-07 | New §3.10 Failure Recovery (FR-FR) — deny/retry/chat gate substrate + max-turns cap + explicit deferrals for the larger subsystem buildouts. Per user direction 2026-06-07 ("keep amendments short so we aren't detoured too much; defer larger sub system buildouts that are nice to have until we have a working demo"). **Status note** documents what v0.1 already has (Invariant 8 cancel chain at 850 ms verified job-0041; hard solver timeouts; fail-fast typed upstream errors per FR-AS-11 + FR-DC-3; Invariant 7 validation gates fail-closed — verified LIVE in production job-0042 NLCD palette case). **FR-FR-1**: deny/retry/chat recovery-choice envelope substrate — when atomic tool fails with a recoverable error class, agent surfaces a 3-button modal (mirrors §F.3 popup discipline — out of band of chat envelope per Decision F): Deny (record decision, mark failed, narrate honestly), Retry (re-attempt; cache shim discipline still applies), Chat (focused single-line input becomes user-message payload to nudge agent). NEW Appendix A envelopes `recovery-choice` + `recovery-choice-response` (schema lands at next schema sprint slot). **FR-FR-2**: per-error-code routing table classifies failures into transient-upstream (gate), recoverable-with-context (gate, chat path high-value), substrate-integrity / FAIL CLOSED (no gate — LULC_MAPPING_MISMATCH, SCHEMA_VALIDATION_FAILED, IAM_PERMISSION_DENIED, etc.; honest narration only), user-initiated (no gate), cost/budget (no gate, halt session). **FR-FR-3**: agent-side `MAX_TURNS_PER_SESSION` cap — cheap insurance against runaway LLM tool-call chains, TENTATIVE default 25 (OQ-FR-1); single config line in services/agent main.py + new `session-state.status="max_turns_reached"` enum value. **Targeted landing: sprint-08 small task.** **FR-FR-4** (DEFERRED): per-session token budget — internal accounting fails closed before Vertex AI tokens run away; separate from Invariant 9 no-cost-theater discipline (which forbids surfacing dollar estimates). Out of v0.1. **FR-FR-5** (DEFERRED INDEFINITELY): multi-agent pre-verifier — planner / executor / verifier subsystem that catches "faceplant" failures before user involvement; mitigates the bulk of the failure modes the deny/retry/chat gate exists for. Slot at M6+ post-MVP or whenever production review surfaces it as the bottleneck. Per user direction: "we will implement multi agent system that will hopefully mitigate this faceplant type of problem before the user needs to get involved we should slot a minimal version and then later add the multi agent/user guided workflow." **FR-FR-6** (DEFERRED): scientific output verification (cross-check flood depth against historical observations / FEMA NFHL overlays / USGS gauge records during modeled event); post-M5 milestone-level work given research-grade nature. **6 OQ-FR-* surfaced**, none v0.1-blocking. v0.3.17+ housekeeping carry-forward pile NOT bundled — explicit user direction to keep this amendment short. Sprint-07 close pass remains the planned housekeeping landing point. |
@@ -1117,6 +1120,7 @@ All messages share a common envelope. JSON-encoded over a single WebSocket conne
   id: string,           // ULID, unique per message
   ts: string,           // ISO 8601 UTC timestamp when sent
   session_id: string,   // current session ULID
+  case_id?: string,     // v0.3.23: the Case that OWNS the emitting turn (agent → client; absent/null = untagged)
   payload: object       // type-specific fields
 }
 ```
@@ -1127,6 +1131,7 @@ All messages share a common envelope. JSON-encoded over a single WebSocket conne
 - `ts` is ISO 8601 with `Z` suffix (UTC)
 - `session_id` is required on every message; absent or mismatched session IDs cause the connection to close with an auth error
 - `payload` is always an object, even when empty (`{}`)
+- **v0.3.23 (job-0277):** `case_id` is OPTIONAL and tags agent → client envelopes with the Case that owns the emitting turn (the server pins the Case at dispatch and stamps every envelope the turn produces — streaming chunks, `pipeline-state`, `session-state`, charts, code-exec, errors). With per-Case chat streams and stream-scoped turn concurrency (FR-MP-6 v0.3.23 note), the client MUST route tagged envelopes to the owning Case's stream; untagged envelopes (`null`/absent — Case-lifecycle messages, root-dispatched turns, older builds) fall back to submit-time routing. Clients never send `case_id` at the envelope level; client → agent Case context rides in typed payloads (`case-command`).
 
 ### A.2 Encoding and transport
 
@@ -2232,6 +2237,152 @@ class DistributionStats(BaseModel):
 ```
 
 `tool_name` is currently a `Literal["pelicun"]`; it widens as new post-processors are added (e.g., regional resilience indices, business-interruption tools).
+
+---
+
+### B.6c.1 ImpactEnvelope — Pelicun Post-Processor Output Contract (Wave 4.11 / sprint-12)
+
+> **Status: implemented.** This section supersedes the forward-looking stub in B.6c with the concrete, implemented contract shipped in Wave 4.11 P1. The schema in `packages/contracts/src/grace2_contracts/impact_envelope.py` is the authoritative source; this section is the prose specification and amendment record.
+
+#### Purpose
+
+`ImpactEnvelope` is the typed aggregate produced by `postprocess_pelicun` by collapsing the per-feature damage FlatGeobuf returned by `run_pelicun_damage_assessment` into portfolio-level statistics: total and damaged structure counts, expected and P95 financial loss, displaced population, per-occupancy-class breakdowns, and provenance pointers back to the upstream hazard and damage layers.
+
+Every numeric field is a deterministic aggregate; no LLM-generated numbers appear (Invariant 1 / Decision N). The agent narrates directly from these fields — `n_structures_damaged`, `expected_loss_usd`, `population_displaced` — without inventing values.
+
+#### Schema reference
+
+`packages/contracts/src/grace2_contracts/impact_envelope.py` — `ImpactEnvelope` and `OccupancyClassImpact` classes.
+
+#### Required fields
+
+| Field | Type | Constraint | Description |
+|---|---|---|---|
+| `schema_version` | `Literal["v1"]` | = `"v1"` | Schema version sentinel. |
+| `n_structures_total` | `int` | `≥ 0` | All asset features in the damage layer. |
+| `n_structures_damaged` | `int` | `≥ 0` | Assets with `ds_mean ≥ 1.0` (DS1+). |
+| `n_structures_destroyed` | `int` | `≥ 0` | Assets with `ds_mean ≥ 3.5` (DS4-dominant). |
+| `damage_state_distribution` | `dict[DamageStateKey, int]` | keys: DS0_none…DS4_complete | Modal DS counts; values sum to `n_structures_total`. |
+| `total_replacement_value_usd` | `float` | `≥ 0.0` | Sum of `replacement_value` for all assets. |
+| `damaged_replacement_value_usd` | `float` | `≥ 0.0` | Sum of `replacement_value` for DS1+ assets. |
+| `expected_loss_usd` | `float` | `≥ 0.0` | Sum of `repair_cost_mean` across all assets. |
+| `loss_percentile_95_usd` | `float` | `≥ 0.0` | Sum of `repair_cost_p95` (HAZUS-MH portfolio P95 approximation). |
+| `impact_area_km2` | `float` | `≥ 0.0` | Convex-hull area of DS1+ asset centroids (km²). |
+| `bbox` | `BBox` | EPSG:4326 | Full damage layer extent: `[minLon, minLat, maxLon, maxLat]`. |
+| `by_occupancy_class` | `dict[str, OccupancyClassImpact]` | | Per-HAZUS-class breakdown; only classes present in the layer. |
+| `pelicun_run_id` | `ULIDStr` | | ULID for this `postprocess_pelicun` run (cache-stable). |
+| `damage_layer_uri` | `str` | non-empty | `gs://` URI of the FlatGeobuf aggregated. |
+| `structure_inventory_source` | `StructureInventorySource` | Literal | `"USACE_NSI"`, `"MS_BUILDINGS"`, or `"USER_SUPPLIED"`. |
+| `flood_layer_uri` | `str` | non-empty | `gs://` URI of the source hazard raster. |
+| `fragility_set` | `str` | non-empty | Fragility set used, e.g. `"hazus_flood_v6"`. |
+| `realization_count` | `int` | `> 0` | Monte-Carlo realization count from upstream run. |
+| `generated_at` | `UTCDatetime` | UTC, `Z` suffix | Timestamp when `postprocess_pelicun` produced this envelope. |
+
+**Optional population fields** (None when `structure_inventory_source != "USACE_NSI"`):
+
+| Field | Type | Description |
+|---|---|---|
+| `population_total` | `int | None` | AM residential population (NSI `pop2amu65+pop2amo65`) across all assets. |
+| `population_displaced` | `int | None` | Population in DS2+ assets (`loss_ratio_mean ≥ 0.20`). |
+| `population_at_high_risk` | `int | None` | Population in DS3+ assets (`ds_mean ≥ 2.5`). |
+
+#### OccupancyClassImpact fields
+
+Each entry in `by_occupancy_class` (keyed by HAZUS occupancy code, e.g. `"RES1"`, `"COM1"`):
+
+| Field | Type | Constraint | Description |
+|---|---|---|---|
+| `n_structures` | `int` | `≥ 0` | Total structures of this class. |
+| `n_damaged` | `int` | `≥ 0` | DS1+ count. |
+| `n_destroyed` | `int` | `≥ 0` | DS4-dominant count. |
+| `expected_loss_usd` | `float` | `≥ 0.0` | Sum of `repair_cost_mean` for this class. |
+| `loss_percentile_95_usd` | `float` | `≥ 0.0` | Sum of `repair_cost_p95` for this class. |
+| `population` | `int | None` | `≥ 0` | AM population for this class (NSI); None if not available. |
+| `population_displaced` | `int | None` | `≥ 0` | Displaced population for this class; None if not available. |
+
+#### Provenance fields
+
+- **`pelicun_run_id`** — ULID seeded from the input FlatGeobuf content hash + bbox. Stable: identical inputs always produce the same `pelicun_run_id`, enabling cache deduplication.
+- **`damage_layer_uri`** — the `LayerURI.uri` (gs:// FlatGeobuf URI) returned by `run_pelicun_damage_assessment`. Every damage and loss claim is traceable to this layer.
+- **`flood_layer_uri`** — the `hazard_raster_uri` passed to `run_pelicun_damage_assessment`. Binds the impact numbers to the specific hazard footprint that drove them.
+- **`structure_inventory_source`** — typed Literal; determines whether population fields are populated.
+- **`fragility_set`** — carried forward from the upstream call; the claim `"expected loss via HAZUS Flood v6.1"` cites this field (Decision M citation discipline).
+
+#### Consumer guidance
+
+- **Emitted by**: `postprocess_pelicun` (Wave 4.11 P2 atomic tool, sprint-12).
+- **Consumed by**:
+  - Agent narration: cite `n_structures_damaged`, `expected_loss_usd`, `population_displaced`, `by_occupancy_class["RES1"].n_damaged` etc. All cite-safe; no LLM-invented numbers.
+  - Case summary panel (UI): headline stats block (total damage, loss, displaced population).
+  - MongoDB `runs` collection: stored alongside the parent `AssessmentEnvelope` as a sub-document.
+- **Wire form**: `ImpactEnvelope.model_dump(mode="json")` — same canonical pattern as all `GraceModel` subclasses.
+
+#### Example payload (Hurricane Ian, Fort Myers — USACE NSI substrate)
+
+Derived from the `run_pelicun_damage_assessment` run over Fort Myers CDP polygons using the job-0086 Y-flip-fixed flood COG. Values are illustrative.
+
+```json
+{
+  "schema_version": "v1",
+  "n_structures_total": 847,
+  "n_structures_damaged": 432,
+  "n_structures_destroyed": 44,
+  "damage_state_distribution": {
+    "DS0_none": 415,
+    "DS1_slight": 183,
+    "DS2_moderate": 142,
+    "DS3_extensive": 63,
+    "DS4_complete": 44
+  },
+  "total_replacement_value_usd": 211750000.0,
+  "damaged_replacement_value_usd": 108000000.0,
+  "expected_loss_usd": 29245000.0,
+  "loss_percentile_95_usd": 51840000.0,
+  "population_total": 11200,
+  "population_displaced": 4980,
+  "population_at_high_risk": 1870,
+  "impact_area_km2": 8.4,
+  "bbox": [-82.10, 26.40, -81.60, 26.90],
+  "by_occupancy_class": {
+    "RES1": {
+      "n_structures": 612,
+      "n_damaged": 318,
+      "n_destroyed": 32,
+      "expected_loss_usd": 20140000.0,
+      "loss_percentile_95_usd": 35600000.0,
+      "population": 9840,
+      "population_displaced": 4210
+    },
+    "COM1": {
+      "n_structures": 143,
+      "n_damaged": 87,
+      "n_destroyed": 10,
+      "expected_loss_usd": 7400000.0,
+      "loss_percentile_95_usd": 13200000.0,
+      "population": 820,
+      "population_displaced": 560
+    },
+    "IND1": {
+      "n_structures": 92,
+      "n_damaged": 27,
+      "n_destroyed": 2,
+      "expected_loss_usd": 1705000.0,
+      "loss_percentile_95_usd": 3040000.0,
+      "population": 540,
+      "population_displaced": 210
+    }
+  },
+  "pelicun_run_id": "01JZABC123DEF456GHI78901JK",
+  "damage_layer_uri": "gs://grace-2-cache/pelicun_damage/01KTJX71-hash.fgb",
+  "structure_inventory_source": "USACE_NSI",
+  "flood_layer_uri": "gs://grace-2-hazard-prod-runs/01KTJX71NKGDMXB9TN0DV75JWK/flood_depth_peak_0086.tif",
+  "fragility_set": "hazus_flood_v6",
+  "realization_count": 100,
+  "generated_at": "2026-06-09T14:35:22Z"
+}
+```
+
+---
 
 ### B.6d Example: Hurricane Ian Pelicun ImpactEnvelope (forward-looking — not in M1 / not in sprint-03)
 
@@ -4005,3 +4156,22 @@ def normalize_args(
 
 ---
 
+
+### I.7 Post-hoc allowed-set validation — hallucination guard, not a gate (v0.3.23, job-0270)
+
+Under the Wave 4.10 CachedContent design the full tool catalog is cached in
+Gemini's context and the allowed-set filter is enforced post-hoc in harness
+code (`categories.validate_function_call`). Live evidence (terrain turns,
+2026-06-10) showed the original reject-everything-outside-the-hot-set
+behavior cost 2–4 recovery iterations per turn on REAL registered tools and
+contributed to turns terminating before `publish_layer` ran.
+
+**Contract (v0.3.23):** when a `function_call` names a tool that exists in
+the live registry but is outside the session's allowed set, the validator
+AUTO-WIDENS the set with that name (logged at WARNING — the hot-set-miss
+telemetry signal) and dispatch proceeds. A name NOT in the registry still
+raises `OUT_OF_ALLOWED_SET` — the validator's purpose is the hallucination
+guard. Safety boundaries are unchanged and downstream of validation: the
+solver-confirm gate, the code-exec gate, the payload-warning gate, and the
+per-tool circuit breaker (which is checked BEFORE validation and is not
+revived by auto-widen).

@@ -12,6 +12,7 @@ All messages share a common envelope. JSON-encoded over a single WebSocket conne
   id: string,           // ULID, unique per message
   ts: string,           // ISO 8601 UTC timestamp when sent
   session_id: string,   // current session ULID
+  case_id?: string,     // v0.3.23: the Case that OWNS the emitting turn (agent → client; absent/null = untagged)
   payload: object       // type-specific fields
 }
 ```
@@ -22,6 +23,7 @@ All messages share a common envelope. JSON-encoded over a single WebSocket conne
 - `ts` is ISO 8601 with `Z` suffix (UTC)
 - `session_id` is required on every message; absent or mismatched session IDs cause the connection to close with an auth error
 - `payload` is always an object, even when empty (`{}`)
+- **v0.3.23 (job-0277):** `case_id` is OPTIONAL and tags agent → client envelopes with the Case that owns the emitting turn (the server pins the Case at dispatch and stamps every envelope the turn produces — streaming chunks, `pipeline-state`, `session-state`, charts, code-exec, errors). With per-Case chat streams and stream-scoped turn concurrency (FR-MP-6 v0.3.23 note), the client MUST route tagged envelopes to the owning Case's stream; untagged envelopes (`null`/absent — Case-lifecycle messages, root-dispatched turns, older builds) fall back to submit-time routing. Clients never send `case_id` at the envelope level; client → agent Case context rides in typed payloads (`case-command`).
 
 ### A.2 Encoding and transport
 
