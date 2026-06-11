@@ -120,6 +120,14 @@ class Envelope(GraceModel, Generic[PayloadT]):
     id: ULIDStr = Field(default_factory=new_ulid)
     ts: UTCDatetime = Field(default_factory=now_utc)
     session_id: ULIDStr
+    # job-0277 (proposed A.1 amendment): the Case that OWNS the turn this
+    # envelope belongs to, when one is bound. With per-Case chat streams and
+    # stream-scoped turn concurrency (job-0269), the client must route live
+    # streaming envelopes to the OWNING Case's stream — "the stream the user
+    # last messaged" misattributes a still-running turn's cards/narration the
+    # moment the user switches Cases. None = no Case context (root turns,
+    # lifecycle envelopes) — clients fall back to submit-time routing.
+    case_id: ULIDStr | None = None
     payload: PayloadT
 
 

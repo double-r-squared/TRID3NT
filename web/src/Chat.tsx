@@ -600,11 +600,24 @@ export function routeUserMessage(
   s.lastError = null;
 }
 
+/** job-0277: resolve the stream that owns an arriving envelope. The agent
+ * now stamps `Envelope.case_id` with the turn's pinned Case, so a
+ * still-running turn's chunks/cards land in THEIR Case's stream even after
+ * the user switches Cases and submit-time routing (`targetKey`) moved on.
+ * Untagged envelopes (older builds, root-dispatched turns) keep the
+ * submit-time fallback. */
+function owningKey(cs: ChatStreams, caseId?: string | null): string {
+  return typeof caseId === "string" && caseId.length > 0
+    ? caseId
+    : cs.targetKey;
+}
+
 export function routeAgentChunk(
   cs: ChatStreams,
   p: AgentMessageChunkPayload,
+  caseId?: string | null,
 ): void {
-  const s = getStream(cs, cs.targetKey);
+  const s = getStream(cs, owningKey(cs, caseId));
   recordMessageSeqIn(s, p.message_id);
   s.messages = appendDelta(s.messages, p);
 }
@@ -612,8 +625,9 @@ export function routeAgentChunk(
 export function routePipelineState(
   cs: ChatStreams,
   p: PipelineStatePayload,
+  caseId?: string | null,
 ): void {
-  const s = getStream(cs, cs.targetKey);
+  const s = getStream(cs, owningKey(cs, caseId));
   recordPipelineStepSeqsIn(s, p);
   s.pipeline = pipelineReducer(s.pipeline, {
     type: "pipeline-state",
@@ -624,16 +638,21 @@ export function routePipelineState(
 export function routeSessionState(
   cs: ChatStreams,
   p: SessionStatePayload,
+  caseId?: string | null,
 ): void {
-  const s = getStream(cs, cs.targetKey);
+  const s = getStream(cs, owningKey(cs, caseId));
   s.pipeline = pipelineReducer(s.pipeline, {
     type: "session-state",
     payload: p,
   });
 }
 
-export function routeError(cs: ChatStreams, p: ErrorPayload): void {
-  const s = getStream(cs, cs.targetKey);
+export function routeError(
+  cs: ChatStreams,
+  p: ErrorPayload,
+  caseId?: string | null,
+): void {
+  const s = getStream(cs, owningKey(cs, caseId));
   s.lastError = `${p.error_code}: ${p.message}`;
   // job-0166 Part 1 — force the most-recent running step to failed so the
   // rainbow animation terminates and the user sees a RED card (in the
@@ -645,8 +664,12 @@ export function routeError(cs: ChatStreams, p: ErrorPayload): void {
   });
 }
 
-export function routeChartEmission(cs: ChatStreams, p: ChartPayload): void {
-  const s = getStream(cs, cs.targetKey);
+export function routeChartEmission(
+  cs: ChatStreams,
+  p: ChartPayload,
+  caseId?: string | null,
+): void {
+  const s = getStream(cs, owningKey(cs, caseId));
   // De-dupe on chart_id so hub-delivered + direct arrivals don't double-stack.
   if (s.charts.some((c) => c.chart_id === p.chart_id)) return;
   s.charts = [...s.charts, p];
@@ -655,8 +678,9 @@ export function routeChartEmission(cs: ChatStreams, p: ChartPayload): void {
 export function routeCodeExecRequest(
   cs: ChatStreams,
   p: CodeExecRequestPayload,
+  caseId?: string | null,
 ): void {
-  const s = getStream(cs, cs.targetKey);
+  const s = getStream(cs, owningKey(cs, caseId));
   if (s.sandboxRequests.some((r) => r.code_exec_id === p.code_exec_id)) return;
   if (!s.sandboxSeqs.has(p.code_exec_id)) {
     s.arrivalSeq += 1;
@@ -668,6 +692,7 @@ export function routeCodeExecRequest(
 export function routeCodeExecResult(
   cs: ChatStreams,
   p: CodeExecResultPayload,
+  caseId?: string | null,
 ): void {
   // Route to whichever stream holds the matching REQUEST card — the user
   // may have submitted in another Case since the request arrived, moving
@@ -679,7 +704,7 @@ export function routeCodeExecResult(
       break;
     }
   }
-  const s = owner ?? getStream(cs, cs.targetKey);
+  const s = owner ?? getStream(cs, owningKey(cs, caseId));
   const next = new Map(s.sandboxResults);
   next.set(p.code_exec_id, p);
   s.sandboxResults = next;
@@ -920,16 +945,19 @@ export function Chat({
     // non-visible Case buffer silently into that Case's stream.
     const ws = new GraceWs(wsUrl, {
       onStatus: (s) => setStatus(s),
-      onAgentChunk: (p: AgentMessageChunkPayload) => {
-        routeAgentChunk(streamsRef.current, p);
+      // job-0277: every streaming handler receives the envelope-level
+      // case_id (the agent's turn pin) and routes to the OWNING stream;
+      // untagged envelopes fall back to submit-time targetKey routing.
+      onAgentChunk: (p: AgentMessageChunkPayload, caseId?: string | null) => {
+        routeAgentChunk(streamsRef.current, p, caseId);
         bump();
       },
-      onPipelineState: (p: PipelineStatePayload) => {
-        routePipelineState(streamsRef.current, p);
+      onPipelineState: (p: PipelineStatePayload, caseId?: string | null) => {
+        routePipelineState(streamsRef.current, p, caseId);
         bump();
       },
-      onSessionState: (p: SessionStatePayload) => {
-        routeSessionState(streamsRef.current, p);
+      onSessionState: (p: SessionStatePayload, caseId?: string | null) => {
+        routeSessionState(streamsRef.current, p, caseId);
         bump();
       },
       // job-0266 (supersedes the job-0172 flush-and-rehydrate): case-open
@@ -940,24 +968,30 @@ export function Chat({
         routeCaseOpen(streamsRef.current, p);
         bump();
       },
-      onError: (p: ErrorPayload) => {
-        routeError(streamsRef.current, p);
+      onError: (p: ErrorPayload, caseId?: string | null) => {
+        routeError(streamsRef.current, p, caseId);
         bump();
       },
       // sprint-13 job-0231: chart-emission is in SESSION_SCOPED_TYPES, so
       // Chat receives it via the fan-out hub even when it was emitted on
       // App.tsx's connection. routeChartEmission de-dupes on chart_id.
-      onChartEmission: (p: ChartPayload) => {
-        routeChartEmission(streamsRef.current, p);
+      onChartEmission: (p: ChartPayload, caseId?: string | null) => {
+        routeChartEmission(streamsRef.current, p, caseId);
         bump();
       },
       // sprint-13 job-0234: code-exec gate cards, now per-Case.
-      onCodeExecRequest: (p: CodeExecRequestPayload) => {
-        routeCodeExecRequest(streamsRef.current, p);
+      onCodeExecRequest: (
+        p: CodeExecRequestPayload,
+        caseId?: string | null,
+      ) => {
+        routeCodeExecRequest(streamsRef.current, p, caseId);
         bump();
       },
-      onCodeExecResult: (p: CodeExecResultPayload) => {
-        routeCodeExecResult(streamsRef.current, p);
+      onCodeExecResult: (
+        p: CodeExecResultPayload,
+        caseId?: string | null,
+      ) => {
+        routeCodeExecResult(streamsRef.current, p, caseId);
         bump();
       },
     });

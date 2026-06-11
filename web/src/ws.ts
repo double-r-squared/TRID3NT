@@ -106,10 +106,10 @@ export type ConnectionStatus =
 
 export interface WsHandlers {
   onStatus: (s: ConnectionStatus) => void;
-  onAgentChunk: (p: AgentMessageChunkPayload) => void;
-  onPipelineState: (p: PipelineStatePayload) => void;
-  onSessionState: (p: SessionStatePayload) => void;
-  onError: (p: ErrorPayload) => void;
+  onAgentChunk: (p: AgentMessageChunkPayload, caseId?: string | null) => void;
+  onPipelineState: (p: PipelineStatePayload, caseId?: string | null) => void;
+  onSessionState: (p: SessionStatePayload, caseId?: string | null) => void;
+  onError: (p: ErrorPayload, caseId?: string | null) => void;
   // OQ-0068-MAPCMD-WS: production routing for map-command envelopes (job-0072).
   // Optional so existing callers (App.tsx, Chat.tsx) need no change; callers that
   // own a LayerPanelBus should pass `onMapCommand: (p) => bus.pushMapCommand(p)`.
@@ -162,7 +162,7 @@ export interface WsHandlers {
    * ``charts`` state array; Case switch resets the array (replace-not-reconcile).
    * Optional so chat-only callers need no change.
    */
-  onChartEmission?: (p: ChartPayload) => void;
+  onChartEmission?: (p: ChartPayload, caseId?: string | null) => void;
   /**
    * Code-exec-request envelope (sprint-13 job-0234). Emitted by the agent
    * BEFORE dispatching the sandbox so the user can approve/deny. Chat.tsx
@@ -170,13 +170,13 @@ export interface WsHandlers {
    * the code_exec_id as the warning_id. Optional so existing callers need
    * no change.
    */
-  onCodeExecRequest?: (p: CodeExecRequestPayload) => void;
+  onCodeExecRequest?: (p: CodeExecRequestPayload, caseId?: string | null) => void;
   /**
    * Code-exec-result envelope (sprint-13 job-0234). Emitted by the agent
    * AFTER the sandbox returns. Chat.tsx updates the matching SandboxCard
    * (keyed on code_exec_id) to RESULT state. Optional.
    */
-  onCodeExecResult?: (p: CodeExecResultPayload) => void;
+  onCodeExecResult?: (p: CodeExecResultPayload, caseId?: string | null) => void;
   /**
    * Auth-token retriever (job-0123). Optional — when absent we fall back to
    * `getIdToken()` from `./auth` directly. Injected by tests to avoid
@@ -347,12 +347,13 @@ function hubBroadcast(
   sessionId: string,
   envType: string,
   payload: unknown,
+  caseId: string | null = null,
 ): void {
   const set = SESSION_HUB.get(sessionId);
   if (!set) return;
   for (const peer of set) {
     if (peer === fromWs) continue;
-    peer.deliverFannedOut(envType, payload);
+    peer.deliverFannedOut(envType, payload, caseId);
   }
 }
 
@@ -420,8 +421,12 @@ export class GraceWs {
    * fan-out as a natively-received envelope so subscribers can't tell the
    * difference, which is the whole point.
    */
-  deliverFannedOut(envType: string, payload: unknown): void {
-    this.dispatchEnvelope(envType, payload);
+  deliverFannedOut(
+    envType: string,
+    payload: unknown,
+    caseId: string | null = null,
+  ): void {
+    this.dispatchEnvelope(envType, payload, caseId);
   }
 
   sendUserMessage(text: string, researchMode: ResearchMode = "research"): void {
@@ -668,6 +673,12 @@ export class GraceWs {
     const env = parsed as { type?: unknown; payload?: unknown };
     if (typeof env.type !== "string" || typeof env.payload !== "object") return;
     const payload = env.payload as Record<string, unknown>;
+    // job-0277: envelope-level Case tag (the agent's turn pin). Streaming
+    // handlers route tagged envelopes to the OWNING Case's stream.
+    const envCaseId =
+      typeof (parsed as { case_id?: unknown }).case_id === "string"
+        ? ((parsed as { case_id: string }).case_id)
+        : null;
     // job-0159: fan out session-scoped envelope types to sibling GraceWs
     // instances bound to the same session_id BEFORE dispatching locally.
     // Order doesn't matter for correctness (both deliveries are synchronous
@@ -675,9 +686,9 @@ export class GraceWs {
     // arrival close in time to the local arrival, which is friendlier to
     // any UI ordering assumptions downstream.
     if (SESSION_SCOPED_TYPES.has(env.type)) {
-      hubBroadcast(this, this.sessionId, env.type, payload);
+      hubBroadcast(this, this.sessionId, env.type, payload, envCaseId);
     }
-    this.dispatchEnvelope(env.type, payload);
+    this.dispatchEnvelope(env.type, payload, envCaseId);
   }
 
   /**
@@ -685,25 +696,31 @@ export class GraceWs {
    * `handleMessage` so the job-0159 hub fan-out can deliver an envelope
    * received by a sibling instance through the same routing logic.
    */
-  private dispatchEnvelope(envType: string, rawPayload: unknown): void {
+  private dispatchEnvelope(
+    envType: string,
+    rawPayload: unknown,
+    caseId: string | null = null,
+  ): void {
     if (!rawPayload || typeof rawPayload !== "object") return;
     const payload = rawPayload as Record<string, unknown>;
     switch (envType) {
       case "agent-message-chunk":
-        this.handlers.onAgentChunk(payload as unknown as AgentMessageChunkPayload);
+        this.handlers.onAgentChunk(payload as unknown as AgentMessageChunkPayload, caseId);
         break;
       case "pipeline-state":
         this.handlers.onPipelineState(
           payload as unknown as PipelineStatePayload,
+          caseId,
         );
         break;
       case "session-state":
         this.handlers.onSessionState(
           payload as unknown as SessionStatePayload,
+          caseId,
         );
         break;
       case "error":
-        this.handlers.onError(payload as unknown as ErrorPayload);
+        this.handlers.onError(payload as unknown as ErrorPayload, caseId);
         break;
       case "map-command":
         // OQ-0068-MAPCMD-WS: production routing for map-command envelopes (job-0072).

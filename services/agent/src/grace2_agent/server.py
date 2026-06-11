@@ -108,7 +108,11 @@ from .mode2_classifier import (
     classify_for_mode2,
 )
 from .persistence import Persistence
-from .pipeline_emitter import PipelineEmitter
+from .pipeline_emitter import (
+    PipelineEmitter,
+    bind_turn_case,
+    current_turn_case,
+)
 from .secrets_handler import (
     SecretError,
     handle_secret_add,
@@ -655,8 +659,18 @@ class SessionState:
 
 
 def _new_envelope(message_type: str, session_id: str, payload: Any) -> str:
-    """Construct + validate an Envelope and return its JSON wire form."""
-    env = Envelope(type=message_type, session_id=session_id, payload=payload)
+    """Construct + validate an Envelope and return its JSON wire form.
+
+    job-0277: stamps ``case_id`` from the turn's ContextVar binding (set by
+    the dispatch wrappers) so the web routes live envelopes to the OWNING
+    Case's stream. None outside a turn — lifecycle envelopes are untagged.
+    """
+    env = Envelope(
+        type=message_type,
+        session_id=session_id,
+        case_id=current_turn_case(),
+        payload=payload,
+    )
     return env.model_dump_json()
 
 
@@ -3543,6 +3557,10 @@ async def _dispatch_gemini_and_persist(
     # below must land in the Case that OWNED this turn even when the user
     # switched Cases (or a newer turn re-pinned the binding) mid-stream.
     turn_case_id = _turn_case_id(state)
+    # job-0277: bind the owning Case into the per-task ContextVar so EVERY
+    # envelope this turn emits (chunks, pipeline-state, session-state, …)
+    # carries Envelope.case_id and the web routes it to the right stream.
+    bind_turn_case(turn_case_id)
     # job-0269: per-turn object capture. A concurrent turn (or a case
     # switch) re-points both SessionState fields mid-stream — this wrapper
     # must gauge completion against THIS turn's history list, and join the
@@ -3611,6 +3629,7 @@ async def _dispatch_tool_and_persist(
     """
     # job-0268: entry-time Case capture — see _dispatch_gemini_and_persist.
     turn_case_id = _turn_case_id(state)
+    bind_turn_case(turn_case_id)  # job-0277: envelope tagging
     try:
         try:
             await _invoke_tool_via_emitter(

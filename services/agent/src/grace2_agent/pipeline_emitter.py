@@ -85,7 +85,37 @@ __all__ = [
     "PipelineEmitter",
     "EmissionSink",
     "current_emitter",
+    "bind_turn_case",
+    "current_turn_case",
 ]
+
+
+# --------------------------------------------------------------------------- #
+# Per-turn Case binding for envelope tagging (job-0277)
+# --------------------------------------------------------------------------- #
+#
+# The dispatch wrappers (server._dispatch_gemini_and_persist /
+# _dispatch_tool_and_persist) bind the turn's pinned Case into this
+# ContextVar at task entry. EVERY envelope constructed inside the turn —
+# server._new_envelope AND PipelineEmitter._send — reads it and stamps
+# ``Envelope.case_id`` (proposed A.1 amendment), so the web client routes
+# live streaming envelopes to the OWNING Case's stream even when the user
+# has switched Cases and a concurrent turn re-pointed submit-time routing.
+# A ContextVar is per-task: concurrent turns (job-0269) cannot cross-tag.
+
+_TURN_CASE: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "grace2_turn_case", default=None
+)
+
+
+def bind_turn_case(case_id: str | None) -> contextvars.Token:
+    """Bind the turn's owning Case for envelope tagging; returns the token."""
+    return _TURN_CASE.set(case_id)
+
+
+def current_turn_case() -> str | None:
+    """The Case bound to the current task's turn, or None outside a turn."""
+    return _TURN_CASE.get()
 
 
 # --------------------------------------------------------------------------- #
@@ -923,7 +953,12 @@ class PipelineEmitter:
 
     async def _send(self, message_type: str, payload: Any) -> None:
         env = Envelope(
-            type=message_type, session_id=self.session_id, payload=payload
+            type=message_type,
+            session_id=self.session_id,
+            # job-0277: stamp the owning Case so the web routes this to the
+            # right stream even after a mid-turn Case switch.
+            case_id=current_turn_case(),
+            payload=payload,
         )
         await self._sink(env.model_dump_json())
         logger.debug(
