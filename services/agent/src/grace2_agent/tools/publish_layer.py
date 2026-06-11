@@ -417,6 +417,48 @@ def _copy_to_durable_publish_uri(layer_uri: str, layer_id: str) -> str:
         from google.cloud import storage  # type: ignore[import-not-found]
 
         client = storage.Client(project=_get_gcp_project())
+
+        # job-0282b guard: the WORKER must be able to READ the destination —
+        # a durable copy it can't open fails the whole publish (live:
+        # Seattle hillshade, worker lacked objectViewer on the cog bucket).
+        # When the grant is verifiably missing, skip the copy and serve the
+        # source path (pre-0282 behavior). If the IAM check itself fails
+        # (the agent identity can't read bucket policy — typical in prod
+        # where infra provisions both), proceed with the copy.
+        worker_sa = os.environ.get(
+            "GRACE2_PYQGIS_WORKER_SA",
+            "grace-2-pyqgis-worker@grace-2-hazard-prod.iam.gserviceaccount.com",
+        )
+        try:
+            policy = client.bucket(dest_bucket).get_iam_policy(
+                requested_policy_version=3
+            )
+            readable = {
+                "roles/storage.objectViewer",
+                "roles/storage.objectAdmin",
+                "roles/storage.admin",
+                "roles/storage.legacyObjectReader",
+            }
+            member = f"serviceAccount:{worker_sa}"
+            can_read = any(
+                b.get("role") in readable and member in set(b.get("members", []))
+                for b in policy.bindings
+            )
+            if not can_read:
+                logger.warning(
+                    "publish_layer durable copy SKIPPED — worker SA %s has "
+                    "no read role on gs://%s; serving the source path. "
+                    "Grant objectViewer to enable durable publish paths.",
+                    worker_sa,
+                    dest_bucket,
+                )
+                return layer_uri
+        except Exception:  # noqa: BLE001 — policy unreadable → assume granted
+            logger.debug(
+                "durable-copy IAM pre-check unavailable; proceeding",
+                exc_info=True,
+            )
+
         src_blob = client.bucket(src_bucket).blob(src_key)
         client.bucket(src_bucket).copy_blob(
             src_blob, client.bucket(dest_bucket), dest_key
