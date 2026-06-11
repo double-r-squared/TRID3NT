@@ -206,7 +206,12 @@ export function useCases(opts: UseCasesOptions): UseCasesReturn {
   const clearActive = useCallback(() => {
     setActiveCaseId(null);
     setActiveSession(null);
-  }, []);
+    // job-0269: tell the SERVER the client left the Case. Without this the
+    // session-scoped active Case kept pointing at the last-opened Case, so
+    // prompts from the root view skipped auto-create and dispatched into the
+    // stale Case (live 2026-06-10: terrain prompt landed in the flood Case).
+    sendCaseCommand("deselect", null, {});
+  }, [sendCaseCommand]);
 
   // If the active Case was archived/deleted, clear local active state so the
   // map / chat reset cleanly. (case-list frame is the source of truth.) We

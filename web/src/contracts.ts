@@ -446,7 +446,13 @@ export interface CaseOpenEnvelopePayload {
   session_state: CaseSessionState | null;
 }
 
-export type CaseCommand = "create" | "select" | "rename" | "archive" | "delete";
+export type CaseCommand =
+  | "create"
+  | "select"
+  | "deselect" // job-0269: client navigated out of the Case to the Cases root
+  | "rename"
+  | "archive"
+  | "delete";
 
 export interface CaseCommandEnvelopePayload {
   envelope_type?: "case-command";

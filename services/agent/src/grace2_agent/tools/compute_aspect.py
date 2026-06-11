@@ -52,6 +52,11 @@ from grace2_contracts.tool_registry import AtomicToolMetadata
 from . import register_tool
 from .cache import CACHE_BUCKET, read_through
 
+# job-0269: the job-0257 PROJ/GDAL data-dir env fix (without it, conda-env
+# gdaldem silently degrades the output CRS to LOCAL_CS — same failure class
+# hillshade hit live; aspect was never wired).
+from .compute_hillshade import _gdaldem_subprocess_env
+
 __all__ = [
     "compute_aspect",
     "AspectComputeError",
@@ -178,7 +183,9 @@ def _download_dem_bytes(dem_uri: str, storage_client: object | None) -> bytes:
         if storage_client is None:
             from google.cloud import storage  # type: ignore[import-not-found]
 
-            storage_client = storage.Client()
+            storage_client = storage.Client(
+                project=os.environ.get("GOOGLE_CLOUD_PROJECT", "grace-2-hazard-prod")
+            )
         bucket_obj = storage_client.bucket(bucket_name)
         blob = bucket_obj.blob(blob_path)
         return blob.download_as_bytes()
@@ -235,6 +242,7 @@ def _run_gdaldem_aspect(
             capture_output=True,
             check=False,
             timeout=300,  # 5-min ceiling; aspect of any reasonable DEM completes in seconds
+            env=_gdaldem_subprocess_env(gdaldem),  # job-0257 PROJ/GDAL dirs
         )
     except FileNotFoundError as exc:
         raise AspectComputeError(
@@ -266,7 +274,14 @@ def _run_gdaldem_aspect(
 # ---------------------------------------------------------------------------
 
 
-@register_tool(_COMPUTE_ASPECT_METADATA)
+@register_tool(
+    _COMPUTE_ASPECT_METADATA,
+    # Annotations: readOnlyHint=True (reads input raster/vector; writes cache
+    # artifact only via the read-through shim), openWorldHint=False (all
+    # computation is local GDAL/numpy; no external API calls),
+    # destructiveHint=False, idempotentHint=True (deterministic transform;
+    # same inputs always produce the same output pixels).
+)
 def compute_aspect(
     dem_uri: str,
     algorithm: Literal["Horn", "ZevenbergenThorne"] = "Horn",
@@ -280,16 +295,23 @@ def compute_aspect(
 ) -> LayerURI:
     """Compute terrain aspect (face direction) from a DEM. Wraps ``gdaldem aspect``.
 
-    Use this when: the agent needs to analyze or visualize which compass
-    direction a terrain surface faces — for solar exposure modeling, fire/wind
-    direction analysis, landslide aspect preferences, or any workflow that asks
-    "which way do slopes face?" Aspect is expressed as a compass bearing
-    0–360° (0=North, 90=East, 180=South, 270=West); flat areas output 0 (with
-    default ``zero_for_flat=True``) or -9999.
+    Applies GDAL's aspect algorithm to a single-band elevation GeoTIFF and returns a
+    Float32 raster of compass bearing (0–360°, North=0, East=90) in the same CRS and
+    grid. Flat areas are labelled 0 (default) or -9999. Cached for 30 days.
 
-    Do NOT use this for: terrain steepness (use ``compute_slope``); hillshading
-    (use ``compute_hillshade``); color-relief elevation visualization (use
-    ``compute_colored_relief``); bathymetry / sub-aqueous terrain.
+    When to use:
+        - Solar exposure modeling: south-facing slopes receive more direct insolation.
+        - Wildfire behavior: fire/wind direction correlates with slope aspect.
+        - Landslide or ecological habitat preference analysis requiring aspect.
+        - Any workflow asking "which way do slopes face?" for a study area.
+        - Input to ``compute_zonal_statistics`` to aggregate aspect by zone.
+
+    When NOT to use:
+        - Terrain steepness analysis (use ``compute_slope``).
+        - Hillshade / terrain shadow visualization (use ``compute_hillshade``).
+        - Colored elevation basemap (use ``compute_colored_relief``).
+        - Bathymetry or sub-aqueous terrain.
+        - Dynamic or time-varying aspect (output is a static single-time raster).
 
     Params:
         dem_uri: ``gs://`` URI of a DEM GeoTIFF (typically from ``fetch_dem``).
@@ -319,6 +341,18 @@ def compute_aspect(
     the same ``(dem_uri, algorithm, zero_for_flat)`` triple return the cached
     aspect raster without re-running gdaldem. TTL is 30 days (DEM-derived
     outputs are stable over that window).
+
+    Cross-tool dependencies:
+        Upstream (consumes):
+        - ``fetch_dem`` — primary source of ``dem_uri``; pass ``LayerURI.uri``
+          (gs:// COG) directly as ``dem_uri``.
+        Downstream (feeds):
+        - ``compute_zonal_statistics`` — pass the returned ``LayerURI`` as
+          ``value_raster_uri`` to aggregate aspect distribution by zone.
+        - ``publish_layer`` — pass the returned ``LayerURI`` as ``layer_uri``
+          to display the aspect raster on the map.
+        - ``clip_raster_to_polygon`` / ``clip_raster_to_bbox`` — trim the
+          aspect layer to a study-area boundary before analysis.
 
     Raises:
         AspectComputeError: if gdaldem is unavailable, returns non-zero, or

@@ -281,7 +281,14 @@ class CaseOpenEnvelopePayload(GraceModel):
 # Closed enum: Case lifecycle commands. The set is closed at v0.1 — a new
 # command is an SRS amendment (FR-MP-6) not a silent open-enum, because the
 # server-side dispatch table needs to enumerate handlers.
-CaseCommand = Literal["create", "select", "rename", "archive", "delete"]
+# job-0269 (proposed FR-MP-6/A.3 amendment): ``deselect`` — the client
+# navigated OUT of the active Case to the Cases root. Carries no case_id.
+# Without it the session-scoped active Case silently kept pointing at the
+# last-opened Case, so root prompts skipped auto-create and dispatched into
+# the stale Case.
+CaseCommand = Literal[
+    "create", "select", "deselect", "rename", "archive", "delete"
+]
 
 
 class CaseCommandEnvelopePayload(GraceModel):
@@ -289,10 +296,11 @@ class CaseCommandEnvelopePayload(GraceModel):
 
     Fields:
 
-    - ``command`` — one of ``create`` / ``select`` / ``rename`` / ``archive``
-      / ``delete`` (closed enum).
+    - ``command`` — one of ``create`` / ``select`` / ``deselect`` / ``rename``
+      / ``archive`` / ``delete`` (closed enum).
     - ``case_id`` — required for every command except ``create`` (the server
-      generates the ULID on create and replies with a ``case-open``).
+      generates the ULID on create and replies with a ``case-open``) and
+      ``deselect`` (which clears the active-Case binding; no target).
     - ``args`` — command-specific args dict. For ``rename`` it carries
       ``{"title": "<new title>"}``; for ``create`` it MAY carry an initial
       ``{"title": "..."}`` hint. The server validates the args dict against

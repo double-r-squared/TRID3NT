@@ -50,6 +50,11 @@ from grace2_contracts.tool_registry import AtomicToolMetadata
 from . import register_tool
 from .cache import CACHE_BUCKET, read_through
 
+# job-0269: the job-0257 PROJ/GDAL data-dir env fix (without it, conda-env
+# gdaldem silently degrades the output CRS to LOCAL_CS — same failure class
+# hillshade hit live; slope was never wired).
+from .compute_hillshade import _gdaldem_subprocess_env
+
 __all__ = [
     "compute_slope",
     "SlopeComputeError",
@@ -176,7 +181,9 @@ def _download_dem_bytes(dem_uri: str, storage_client: object | None) -> bytes:
         if storage_client is None:
             from google.cloud import storage  # type: ignore[import-not-found]
 
-            storage_client = storage.Client()
+            storage_client = storage.Client(
+                project=os.environ.get("GOOGLE_CLOUD_PROJECT", "grace-2-hazard-prod")
+            )
         bucket_obj = storage_client.bucket(bucket_name)
         blob = bucket_obj.blob(blob_path)
         return blob.download_as_bytes()
@@ -231,6 +238,7 @@ def _run_gdaldem_slope(
             capture_output=True,
             check=False,
             timeout=300,  # 5-min ceiling; slope of any reasonable DEM completes in seconds
+            env=_gdaldem_subprocess_env(gdaldem),  # job-0257 PROJ/GDAL dirs
         )
     except FileNotFoundError as exc:
         raise SlopeComputeError(
@@ -262,7 +270,14 @@ def _run_gdaldem_slope(
 # ---------------------------------------------------------------------------
 
 
-@register_tool(_COMPUTE_SLOPE_METADATA)
+@register_tool(
+    _COMPUTE_SLOPE_METADATA,
+    # Annotations: readOnlyHint=True (reads input raster/vector; writes cache
+    # artifact only via the read-through shim), openWorldHint=False (all
+    # computation is local GDAL/numpy; no external API calls),
+    # destructiveHint=False, idempotentHint=True (deterministic transform;
+    # same inputs always produce the same output pixels).
+)
 def compute_slope(
     dem_uri: str,
     output_unit: Literal["degrees", "percent"] = "degrees",
@@ -276,14 +291,24 @@ def compute_slope(
 ) -> LayerURI:
     """Compute terrain slope from a DEM. Wraps ``gdaldem slope``.
 
-    Use this when: the agent needs to visualize or analyze terrain steepness
-    — for landslide susceptibility, urban planning, evacuation routing,
-    engineering site assessment, or as contextual terrain reference. Slope is
-    a fundamental DEM derivative used in most hazard workflows.
+    Applies GDAL's slope algorithm to a single-band elevation GeoTIFF and returns
+    a Float32 raster of slope angle (degrees) or percent grade, in the same CRS
+    and grid as the input. Cached for 30 days (static-30d TTL class).
 
-    Do NOT use this for: hillshading (use ``compute_hillshade``); color-relief
-    elevation visualization (use ``compute_colored_relief``); bathymetry /
-    sub-aqueous terrain; real-time dynamic slope that changes with time.
+    When to use:
+        - Landslide susceptibility, mass-movement hazard, or erosion risk mapping.
+        - Urban planning, evacuation routing, or accessibility analysis requiring
+          terrain steepness.
+        - Engineering site assessment or road-grade / construction percent-slope.
+        - Input to ``compute_zonal_statistics`` to aggregate slope by zone (e.g.
+          mean slope per watershed or flood-depth zone).
+
+    When NOT to use:
+        - Hillshade / terrain shading visualization (use ``compute_hillshade``).
+        - Colored elevation basemap (use ``compute_colored_relief``).
+        - Aspect / flow-direction analysis (use ``compute_aspect``).
+        - Bathymetry or sub-aqueous terrain.
+        - Dynamic or time-varying slope (output is a static single-time raster).
 
     Params:
         dem_uri: ``gs://`` URI of a DEM GeoTIFF (typically from ``fetch_dem``).
@@ -314,6 +339,18 @@ def compute_slope(
     the same ``(dem_uri, output_unit, algorithm)`` triple return the cached
     slope raster without re-running gdaldem. TTL is 30 days (DEM-derived
     outputs are stable over that window).
+
+    Cross-tool dependencies:
+        Upstream (consumes):
+        - ``fetch_dem`` — primary source of ``dem_uri``; pass ``LayerURI.uri``
+          (gs:// COG) directly as ``dem_uri``.
+        Downstream (feeds):
+        - ``compute_zonal_statistics`` — pass the returned ``LayerURI`` as
+          ``value_raster_uri`` to aggregate slope values by zone.
+        - ``publish_layer`` — pass the returned ``LayerURI`` as ``layer_uri``
+          to display the slope raster on the map.
+        - ``clip_raster_to_polygon`` / ``clip_raster_to_bbox`` — trim the
+          slope layer to a study-area boundary before further analysis.
 
     Raises:
         SlopeComputeError: if gdaldem is unavailable, returns non-zero, or

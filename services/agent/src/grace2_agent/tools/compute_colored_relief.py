@@ -37,6 +37,13 @@ from grace2_contracts.tool_registry import AtomicToolMetadata
 from . import register_tool
 from .cache import read_through
 
+# job-0269: single source for the binary resolution + PROJ/GDAL data-dir env
+# (the job-0257 CRS fix). compute_colored_relief shipped with a bare
+# ``"gdaldem"`` argv — FileNotFoundError in any env where gdaldem is not on
+# PATH (live failure 2026-06-10, Boulder colored relief) — and no PROJ env,
+# which silently degrades the output CRS to LOCAL_CS exactly as hillshade did.
+from .compute_hillshade import _gdaldem_subprocess_env
+
 __all__ = ["compute_colored_relief"]
 
 logger = logging.getLogger("grace2_agent.tools.compute_colored_relief")
@@ -56,6 +63,85 @@ class ColoredReliefError(RuntimeError):
 
     error_code: str = "COLORED_RELIEF_ERROR"
     retryable: bool = False
+
+
+# --------------------------------------------------------------------------- #
+# gdaldem binary resolution (job-0269 — mirrors compute_slope/_aspect)
+# --------------------------------------------------------------------------- #
+
+_GDALDEM_BIN: str | None = None
+
+
+def _get_gdaldem_bin() -> str:
+    """Resolve the ``gdaldem`` binary path, with env-var override support.
+
+    Checks ``GRACE2_GDALDEM_BIN`` first, then PATH (via ``shutil.which``),
+    then the known conda-env path from the dev environment. Raises
+    ``ColoredReliefError`` if not found.
+    """
+    global _GDALDEM_BIN
+    if _GDALDEM_BIN is not None:
+        return _GDALDEM_BIN
+
+    import shutil
+
+    candidate = (
+        os.environ.get("GRACE2_GDALDEM_BIN")
+        or shutil.which("gdaldem")
+        or _conda_grace2_gdaldem()
+    )
+    if candidate is None or not os.path.isfile(candidate):
+        raise ColoredReliefError(
+            "gdaldem binary not found on PATH; set GRACE2_GDALDEM_BIN "
+            "or install gdal-bin / activate the grace2 conda env."
+        )
+    _GDALDEM_BIN = candidate
+    return _GDALDEM_BIN
+
+
+def _conda_grace2_gdaldem() -> str | None:
+    """Return the grace2 conda-env gdaldem path if it exists."""
+    candidate = os.path.expanduser("~/miniforge3/envs/grace2/bin/gdaldem")
+    return candidate if os.path.isfile(candidate) else None
+
+
+def _download_dem_to_local(dem_uri: str) -> str:
+    """Stage a ``gs://`` DEM to a local temp file; pass local paths through.
+
+    job-0269: replaces the ``/vsigs/`` input path — the subprocess gdaldem
+    has no guaranteed GCS auth context, while the agent process holds ADC.
+    Mirrors the compute_slope/_aspect staging pattern. Caller owns cleanup
+    of the returned temp file (only when it differs from ``dem_uri``).
+    """
+    if not dem_uri.startswith("gs://"):
+        return dem_uri
+    rest = dem_uri[len("gs://"):]
+    slash = rest.find("/")
+    if slash == -1:
+        raise ColoredReliefError(
+            f"Malformed gs:// URI (no object key): {dem_uri!r}"
+        )
+    bucket_name, blob_path = rest[:slash], rest[slash + 1:]
+    try:
+        from google.cloud import storage  # type: ignore[import-not-found]
+
+        client = storage.Client(
+            project=os.environ.get("GOOGLE_CLOUD_PROJECT", "grace-2-hazard-prod")
+        )
+        with tempfile.NamedTemporaryFile(
+            suffix=".tif", delete=False, prefix="grace2_relief_dem_"
+        ) as f:
+            local_path = f.name
+        client.bucket(bucket_name).blob(blob_path).download_to_filename(
+            local_path
+        )
+        return local_path
+    except ColoredReliefError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise ColoredReliefError(
+            f"GCS download failed for {dem_uri!r}: {exc}"
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -211,15 +297,12 @@ def _run_colored_relief(dem_uri: str, ramp: str) -> bytes:
             ramp_file = rf.name
         _write_ramp_file(ramp, ramp_file)
 
-        # Determine the local DEM path: if the DEM is already accessible via
-        # /vsigs/ we can pass it directly to gdaldem; for the test-env we may
-        # have a local path. Prefer vsigs if the URI starts with gs://.
-        if dem_uri.startswith("gs://"):
-            # Use GDAL's /vsigs/ virtual filesystem driver so gdaldem reads
-            # directly from GCS without a separate download step.
-            gdal_dem_path = "/vsigs/" + dem_uri[len("gs://"):]
-        else:
-            gdal_dem_path = dem_uri
+        # job-0269: stage gs:// DEMs to a local temp file (agent-process ADC)
+        # instead of /vsigs/ — the gdaldem subprocess has no guaranteed GCS
+        # auth. Local paths (tests / dev) pass straight through.
+        gdal_dem_path = _download_dem_to_local(dem_uri)
+        if gdal_dem_path != dem_uri:
+            dem_local = gdal_dem_path  # mark for cleanup in finally
 
         # Output temp file for gdaldem.
         with tempfile.NamedTemporaryFile(suffix=".tif", delete=False) as out_f:
@@ -228,8 +311,9 @@ def _run_colored_relief(dem_uri: str, ramp: str) -> bytes:
         # Build gdaldem command.
         # -alpha: add an alpha channel so no-data pixels are transparent.
         # -compute_edges: avoids edge artefacts (no black border).
+        gdaldem_bin = _get_gdaldem_bin()
         cmd = [
-            "gdaldem",
+            gdaldem_bin,
             "color-relief",
             gdal_dem_path,
             ramp_file,
@@ -239,12 +323,13 @@ def _run_colored_relief(dem_uri: str, ramp: str) -> bytes:
             "-of", "GTiff",
         ]
 
-        logger.debug("gdaldem command: %s", " ".join(cmd))
+        logger.info("compute_colored_relief: running %s", " ".join(cmd))
         result = subprocess.run(
             cmd,
             capture_output=True,
             timeout=180,
             check=False,
+            env=_gdaldem_subprocess_env(gdaldem_bin),  # job-0257 PROJ/GDAL dirs
         )
         if result.returncode != 0:
             stderr_txt = result.stderr.decode("utf-8", errors="replace").strip()
@@ -276,7 +361,14 @@ def _run_colored_relief(dem_uri: str, ramp: str) -> bytes:
 # ---------------------------------------------------------------------------
 
 
-@register_tool(_COMPUTE_COLORED_RELIEF_METADATA)
+@register_tool(
+    _COMPUTE_COLORED_RELIEF_METADATA,
+    # Annotations: readOnlyHint=True (reads input raster/vector; writes cache
+    # artifact only via the read-through shim), openWorldHint=False (all
+    # computation is local GDAL/numpy; no external API calls),
+    # destructiveHint=False, idempotentHint=True (deterministic transform;
+    # same inputs always produce the same output pixels).
+)
 def compute_colored_relief(
     dem_uri: str,
     ramp: Literal["terrain", "elevation_blue_green", "grayscale", "viridis"] = "terrain",
@@ -286,16 +378,25 @@ def compute_colored_relief(
 ) -> LayerURI:
     """Color-tint a DEM by elevation using ``gdaldem color-relief``.
 
-    Use this when: the agent needs a colored elevation visualization of a DEM
-    for display as a basemap layer, either alone or as part of a Swiss-style
-    terrain stack (colorramp + hillshade multiply blend + flood overlay). The
-    result is a 3-band (RGB) or 4-band (RGBA) GeoTIFF cached in the project
-    bucket; it is suitable as a raster basemap layer in QGIS Server.
+    Applies a named color ramp to a single-band elevation GeoTIFF and returns a
+    3-band (RGB) Cloud-Optimized GeoTIFF. Four presets (terrain, elevation_blue_green,
+    grayscale, viridis) cover the common terrain visualization needs. Result is cached
+    for 30 days and suitable as a QGIS Server WMS basemap layer.
 
-    Do NOT use this for: slope or hillshade visualization (use
-    ``compute_hillshade``); computing quantitative elevation statistics (use
-    ``summarize_layer_in_bbox``); creating animated layers (the output is a
-    static single-time raster).
+    When to use:
+        - Producing a colored elevation basemap for display beneath flood, habitat,
+          or hazard overlays.
+        - Building a Swiss-style shaded-relief stack: grayscale colored relief +
+          ``compute_hillshade`` output → multiply-blended cartographic base.
+        - User asks for "colored elevation", "terrain colormap", or "elevation
+          visualization".
+        - Coastal or sea-level scenarios requiring the elevation-blue-green ramp.
+
+    When NOT to use:
+        - Hillshade or shadow visualization (use ``compute_hillshade``).
+        - Slope or aspect analysis (use ``compute_slope`` / ``compute_aspect``).
+        - Computing quantitative elevation statistics (use ``compute_zonal_statistics``).
+        - Animated or time-varying elevation (output is a static single-time raster).
 
     Ramp presets:
         "terrain": natural-earth green → brown → white (low → high). Default.
@@ -336,6 +437,16 @@ def compute_colored_relief(
     SHA-256 of ``{dem_uri, ramp, ttl_vintage}``; the 30-day TTL matches the
     DEM's own cache class since the colorramp output is fully determined by
     the DEM + ramp choice.
+
+    Cross-tool dependencies:
+        Upstream (consumes):
+        - ``fetch_dem`` — primary source of ``dem_uri``; pass ``LayerURI.uri``
+          (gs:// COG) directly as ``dem_uri``.
+        Downstream (feeds):
+        - ``publish_layer`` — pass the returned ``LayerURI`` as ``layer_uri``
+          to register the colored relief with QGIS Server WMS.
+        - ``compute_hillshade`` — combine for a Swiss-style shaded-relief
+          stack (grayscale colored relief × hillshade multiply blend).
     """
     if ramp not in _VALID_RAMPS:
         raise ColoredReliefError(

@@ -31,6 +31,7 @@ OQ-1 (Cloud Run WS vs Agent Engine) — see report's Open Questions section.
 from __future__ import annotations
 
 import asyncio
+import weakref
 import logging
 import os
 from dataclasses import dataclass, field
@@ -459,6 +460,21 @@ _SESSION_ACTIVE_CASE_CAP = 4096
 #: because ``None`` is a legitimate "no active Case" binding.
 _CASE_SYNC_NEVER = "__case-context-never-synced__"
 
+#: job-0269: stream key for turns dispatched with no active Case (mirrors the
+#: web client's ROOT_STREAM_KEY in Chat.tsx).
+_ROOT_STREAM_KEY = "__root__"
+
+#: job-0269: per-task narration-list registry. ``_stream_gemini_reply``
+#: registers its turn's narration list under the running asyncio task (in the
+#: synchronous prefix, so crash/cancel still leaves the entry) and
+#: ``_dispatch_gemini_and_persist`` pops it in its finally — the wrapper then
+#: joins THIS turn's list even when a concurrent turn has re-pointed
+#: ``state.current_turn_narration``. Weak keys: an entry whose task was never
+#: popped (direct stream callers) vanishes with the task, no leak.
+_TURN_NARRATION_BY_TASK: "weakref.WeakKeyDictionary[asyncio.Task, list[str]]" = (
+    weakref.WeakKeyDictionary()
+)
+
 
 def _set_session_active_case(session_id: str, case_id: str | None) -> None:
     """Bind ``case_id`` as the active Case for every connection of ``session_id``."""
@@ -487,7 +503,19 @@ class SessionState:
     chat_history: list[dict] = field(default_factory=list)
     current_pipeline_id: str | None = None
     current_pipeline_steps: list[PipelineStep] = field(default_factory=list)
-    inflight_task: asyncio.Task | None = None
+    # job-0269: in-flight turns keyed by STREAM (case_id, or _ROOT_STREAM_KEY
+    # for the Cases root). The M1 single-slot policy cancelled ANY running
+    # turn on a new user-message — live 2026-06-10 that killed a cloud SFINCS
+    # solve when the user asked a terrain question from the root. Now only a
+    # re-prompt in the SAME stream replaces (cancels) that stream's turn;
+    # turns in other Cases keep running. Their persistence follows the
+    # job-0268 turn pin and their Gemini context is the per-turn captured
+    # history list (see _stream_gemini_reply), so a concurrent turn cannot
+    # re-aim either. KNOWN v0.1 LIMIT (display only): the web routes live
+    # streaming envelopes to the last-submitted stream, so a still-running
+    # turn's late envelopes may PAINT in the newer stream until envelope
+    # case-tagging lands (13.5) — the persisted replay is always correct.
+    inflight_tasks: dict[str, asyncio.Task] = field(default_factory=dict)
     emitter: PipelineEmitter | None = None
     # FR-FR-3 (job-0048): per-session turn counter.  Increments on every
     # user-message dispatch (Gemini stream or /invoke directive). When
@@ -862,7 +890,19 @@ async def _stream_gemini_reply(
     # job-0267: fresh narration accumulator for this stream. One stream ==
     # one ``message_id`` bubble on the wire == one persisted ``role="agent"``
     # CaseChatMessage at turn close (``_dispatch_gemini_and_persist``).
+    # job-0269: capture BOTH per-turn lists as locals in the coroutine's
+    # synchronous prefix (before any await). With per-Case turn concurrency
+    # a newer turn (or a case-open/deselect) re-points the SessionState
+    # fields mid-stream — this turn must keep appending to ITS OWN lists.
+    # The narration list is also registered under the running task so the
+    # dispatch wrapper's finally joins THIS turn's list (never the live
+    # field) — even on crash/cancel, since registration precedes any await.
     state.current_turn_narration = []
+    turn_narration = state.current_turn_narration
+    turn_history = state.chat_history
+    _reg_task = asyncio.current_task()
+    if _reg_task is not None:
+        _TURN_NARRATION_BY_TASK[_reg_task] = turn_narration
 
     # Emit a one-step "thinking" pipeline snapshot so the client has a
     # cancellable handle. The loop driver keeps this single outer step; each
@@ -917,7 +957,9 @@ async def _stream_gemini_reply(
             pass
 
     # Seed the multi-turn contents list with chat history + this user_text.
-    contents = build_contents_from_history(user_text, state.chat_history)
+    # job-0269: the entry-captured list — a mid-stream case switch rebinds
+    # ``state.chat_history`` to the new Case's list, never mutates this one.
+    contents = build_contents_from_history(user_text, turn_history)
 
     # Wave 4.11 M6: refresh the dynamic hot set once per user-message dispatch
     # so the allowed set is primed with the user's most-dispatched tools before
@@ -969,7 +1011,8 @@ async def _stream_gemini_reply(
                     turn_text_parts.append(event.delta)
                     # job-0267: accumulate across ALL iterations — the turn
                     # close persists the full narration for Case replay.
-                    state.current_turn_narration.append(event.delta)
+                    # job-0269: entry-captured list, never the live field.
+                    turn_narration.append(event.delta)
 
                 elif isinstance(event, FunctionCallEvent):
                     logger.info(
@@ -1258,7 +1301,10 @@ async def _stream_gemini_reply(
                 PipelineStatePayload(pipeline_id=pipeline_id, steps=[thinking_step]),
             )
         )
-        state.chat_history.append({"role": "user", "text": user_text})
+        # job-0269: append to the entry-captured list — after a mid-stream
+        # case switch this turn's text must not leak into the NEW Case's
+        # LLM context (the carryover class, 74fc0d6).
+        turn_history.append({"role": "user", "text": user_text})
         # job-0260: name an Untitled Case from its first prompt + refresh
         # the left rail so accumulated demo Cases are distinguishable.
         if await _maybe_autoname_case(state, user_text):
@@ -1499,7 +1545,9 @@ async def _sync_case_context(
     state.case_context_synced_to = current
     # Replace-not-reconcile (job-0245, applied cross-connection): this
     # connection's LLM context belongs to whatever Case it was last driving.
-    state.chat_history.clear()
+    # job-0269: REBIND, never clear() — an in-flight turn holds the old list
+    # (captured at its stream entry) and must keep its own context intact.
+    state.chat_history = []
     state.turn_count = 1  # count the in-flight turn that triggered the sync
     _ensure_emitter(websocket, state)
     if state.emitter is None:  # pragma: no cover — _ensure_emitter always binds
@@ -1564,7 +1612,8 @@ async def _emit_case_open(
     # feeding the old turns to Gemini. Clean slate per Case (the Wave 4.8 A.7
     # replace-not-reconcile rule, applied server-side); the visible chat
     # replay comes from the persisted Case history, not this list.
-    state.chat_history.clear()
+    # job-0269: REBIND, never clear() — see _sync_case_context.
+    state.chat_history = []
     state.turn_count = 0
     await _touch_session_record(state, case_id=case_id)  # D.6 heartbeat (M4)
     p = get_persistence()
@@ -1681,7 +1730,8 @@ async def _handle_case_command(
         # job-0259: see _emit_case_open — this connection is now synced.
         state.case_context_synced_to = new_case_id
         # job-0245: fresh Case = fresh LLM context (see _emit_case_open note).
-        state.chat_history.clear()
+        # job-0269: REBIND, never clear() — see _sync_case_context.
+        state.chat_history = []
         state.turn_count = 0
         await _touch_session_record(state, case_id=new_case_id)  # D.6 (M4)
         # Emit case-open with the empty session state for the fresh Case.
@@ -1717,6 +1767,31 @@ async def _handle_case_command(
             )
             return
         await _emit_case_open(websocket, state, cmd.case_id)
+        return
+
+    if command == "deselect":
+        # job-0269: the client navigated OUT of the active Case to the Cases
+        # root. Without this command the session-scoped active Case silently
+        # kept pointing at the last-opened Case: prompts sent from the root
+        # view skipped auto-create and dispatched INTO the stale Case (live
+        # 2026-06-10: a terrain prompt landed in the flood Case), and
+        # re-selecting that same Case looked like a no-op. Clears the binding
+        # + this connection's LLM context so the next root prompt auto-creates
+        # a fresh Case (job-0262). Does NOT touch any in-flight turn — its
+        # persistence follows the job-0268 turn pin, not this binding.
+        prev = state.active_case_id
+        state.active_case_id = None
+        state.case_context_synced_to = None
+        # job-0269: REBIND, never clear() — see _sync_case_context.
+        state.chat_history = []
+        state.turn_count = 0
+        if state.emitter is not None:
+            state.emitter.reset_loaded_layers([])
+        logger.info(
+            "case-command deselect session=%s prev_case=%s",
+            state.session_id,
+            prev,
+        )
         return
 
     if command == "rename":
@@ -3427,11 +3502,18 @@ async def _dispatch_gemini_and_persist(
     ``content=""`` markers, which the web replay (rightly) rendered as
     nothing — user-verified: only their own messages survived a Case reopen.
     """
-    pre_chat_len = len(state.chat_history)
     # job-0268: capture the turn's Case at task entry — the finally-persist
     # below must land in the Case that OWNED this turn even when the user
     # switched Cases (or a newer turn re-pinned the binding) mid-stream.
     turn_case_id = _turn_case_id(state)
+    # job-0269: per-turn object capture. A concurrent turn (or a case
+    # switch) re-points both SessionState fields mid-stream — this wrapper
+    # must gauge completion against THIS turn's history list, and join the
+    # narration list THIS turn's stream registered under the running task
+    # (mocked streams in tests don't register; the field fallback preserves
+    # their job-0267 contract).
+    turn_history = state.chat_history
+    pre_chat_len = len(turn_history)
     try:
         await _stream_gemini_reply(
             websocket, state, settings, user_text, research_mode
@@ -3439,11 +3521,19 @@ async def _dispatch_gemini_and_persist(
     finally:
         # job-0267: join the per-turn narration accumulator. Persist when
         # the agent actually said something OR the stream completed cleanly
-        # (``state.chat_history`` grew at the terminal-frame append) — the
+        # (the turn's history grew at the terminal-frame append) — the
         # latter preserves the pre-existing "turn happened" marker for
         # narration-less turns, so the replay row count stays faithful.
-        narration = "".join(state.current_turn_narration).strip()
-        stream_completed = len(state.chat_history) > pre_chat_len
+        _own_task = asyncio.current_task()
+        turn_narration = (
+            _TURN_NARRATION_BY_TASK.pop(_own_task, None)
+            if _own_task is not None
+            else None
+        )
+        if turn_narration is None:
+            turn_narration = state.current_turn_narration
+        narration = "".join(turn_narration).strip()
+        stream_completed = len(turn_history) > pre_chat_len
         if turn_case_id and (narration or stream_completed):
             await _persist_chat_turn(
                 state,
@@ -3781,13 +3871,14 @@ def _make_handler(settings: GeminiSettings):
                         ):
                             await _handle_max_turns_reached(websocket, state)
                             continue
-                        # Cancel any in-flight generation for this session
-                        # before starting a new one (simple M1 policy).
-                        if state.inflight_task and not state.inflight_task.done():
-                            state.inflight_task.cancel()
                         # job-0121: reset per-turn layer accumulator before
                         # the dispatch so the CaseChatMessage write captures
-                        # only this turn's emissions.
+                        # only this turn's emissions. (job-0269 KNOWN LIMIT:
+                        # these two slots are still session-shared — a turn
+                        # running concurrently in ANOTHER Case may interleave
+                        # layer-id/pipeline-id attribution on the closing
+                        # agent row. Case targeting itself is safe via the
+                        # job-0268 pin; full per-turn context is 13.5 scope.)
                         state.current_turn_layer_ids = []
                         state.current_turn_pipeline_id = None
                         # job-0259 + job-0121 + job-0262 pre-dispatch
@@ -3804,6 +3895,27 @@ def _make_handler(settings: GeminiSettings):
                         directive = await _prepare_user_turn(
                             websocket, state, um.text
                         )
+                        # job-0269: stream-scoped cancellation replaces the
+                        # M1 "cancel anything running" policy. Only a
+                        # re-prompt in the SAME stream (Case, or root)
+                        # replaces that stream's in-flight turn; turns in
+                        # other Cases keep running (live 2026-06-10: a root
+                        # terrain prompt cancelled a cloud SFINCS solve).
+                        # The key comes from the job-0268 turn pin set by
+                        # _prepare_user_turn (auto-created Cases get a fresh
+                        # ULID, so they never collide with a running turn).
+                        turn_key = (
+                            state.current_turn_case_id or _ROOT_STREAM_KEY
+                        )
+                        prior = state.inflight_tasks.get(turn_key)
+                        if prior is not None and not prior.done():
+                            prior.cancel()
+                        for _done_key in [
+                            k
+                            for k, t in state.inflight_tasks.items()
+                            if t.done()
+                        ]:
+                            state.inflight_tasks.pop(_done_key, None)
                         if directive is not None:
                             tool_name, params = directive
                             task = asyncio.create_task(
@@ -3821,7 +3933,7 @@ def _make_handler(settings: GeminiSettings):
                                     um.research_mode,
                                 )
                             )
-                        state.inflight_task = task
+                        state.inflight_tasks[turn_key] = task
 
                     elif msg_type == "case-command":
                         # job-0121 (FR-MP-6): Case lifecycle dispatch. The
@@ -3869,14 +3981,30 @@ def _make_handler(settings: GeminiSettings):
                     elif msg_type == "cancel":
                         CancelPayload.model_validate(payload_dict)
                         logger.info("cancel session=%s", state.session_id)
-                        if state.inflight_task and not state.inflight_task.done():
-                            state.inflight_task.cancel()
+                        # job-0269: target the VISIBLE stream's turn (the
+                        # stop button lives in the active Case's composer);
+                        # fall back to any live turn so the pre-0269
+                        # "cancel cancels the run" contract still holds
+                        # when the binding moved.
+                        cancel_key = (
+                            state.active_case_id or _ROOT_STREAM_KEY
+                        )
+                        cancel_task = state.inflight_tasks.get(cancel_key)
+                        if cancel_task is None or cancel_task.done():
+                            live = [
+                                t
+                                for t in state.inflight_tasks.values()
+                                if not t.done()
+                            ]
+                            cancel_task = live[-1] if live else None
+                        if cancel_task is not None and not cancel_task.done():
+                            cancel_task.cancel()
                             # Wait briefly so the cancel completes deterministically
                             # within NFR-R-3 (30s budget). The pipeline-state
                             # cancelled frame is emitted from inside the task's
                             # CancelledError branch.
                             try:
-                                await asyncio.wait_for(state.inflight_task, timeout=5.0)
+                                await asyncio.wait_for(cancel_task, timeout=5.0)
                             except (asyncio.CancelledError, asyncio.TimeoutError):
                                 pass
 
@@ -3949,8 +4077,10 @@ def _make_handler(settings: GeminiSettings):
         except Exception:
             logger.exception("connection handler crashed")
         finally:
-            if state and state.inflight_task and not state.inflight_task.done():
-                state.inflight_task.cancel()
+            if state:
+                for _t in state.inflight_tasks.values():
+                    if not _t.done():
+                        _t.cancel()
 
     return handler
 
