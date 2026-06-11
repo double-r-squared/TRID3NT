@@ -975,7 +975,14 @@ async def _stream_gemini_reply(
         )
     )
 
-    client = build_client(settings)
+    # sprint-14-aws (job-0287): under Bedrock there is no Vertex client to build —
+    # build_client() requires GCP ADC, which run-local and the AWS deploy do not
+    # have. stream_events_with_contents' bedrock branch ignores ``client``.
+    # Provider resolved once here and reused by the cache guard below.
+    from .bedrock_adapter import model_provider as _model_provider
+
+    _provider = _model_provider()
+    client = None if _provider == "bedrock" else build_client(settings)
     first_token_logged = False
     started_at = asyncio.get_running_loop().time()
 
@@ -987,7 +994,11 @@ async def _stream_gemini_reply(
     # ``name``. A creation failure (None return) drops us back to the
     # non-cached path automatically — the multi-turn loop is otherwise
     # unchanged. See ``gemini_cache.get_or_create_cache``.
-    if state.gemini_cache_name is None:
+    if _provider == "bedrock":
+        # Bedrock uses its own cachePoint prompt caching (job-0288); the Gemini
+        # CachedContent fast-path is skipped entirely under MODEL_PROVIDER=bedrock.
+        state.gemini_cache_name = None
+    elif state.gemini_cache_name is None:
         try:
             state.gemini_cache_name = await get_or_create_cache(
                 client, state.session_id

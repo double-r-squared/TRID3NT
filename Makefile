@@ -27,12 +27,15 @@ RUN    = $(CONDA) run -n $(ENV)
 
 GCP_PROJECT_ID ?= grace-2-hazard-prod
 GCP_REGION     ?= us-central1
+# sprint-14-aws: AWS / Bedrock defaults for run-local-agent + the AWS migration.
+AWS_REGION       ?= us-west-2
+BEDROCK_MODEL_ID ?= us.anthropic.claude-sonnet-4-6
 STATE_BUCKET   ?= grace-2-tfstate-$(GCP_PROJECT_ID)
 ATLAS_PROJECT_ID ?= 6a234700a0e1295958d10cf9
 
 .DEFAULT_GOAL := help
 
-.PHONY: help run-agent run-web test test-m2 test-m3 test-m4 test-m5 test-all \
+.PHONY: help run-agent run-local-agent run-web test test-m2 test-m3 test-m4 test-m5 test-all \
         playwright-install screenshot ui-tour \
         tofu-init tofu-plan tofu-apply tofu-bootstrap \
         atlas-allowlist-me secret-srv-show \
@@ -107,6 +110,28 @@ run-agent:
 	GOOGLE_GENAI_USE_VERTEXAI=True \
 	GOOGLE_CLOUD_PROJECT=$(GCP_PROJECT_ID) \
 	GOOGLE_CLOUD_LOCATION=$(GCP_REGION) \
+	$(AGENT_VENV)/bin/grace2-agent
+
+# sprint-14-aws (job-0287): run the agent fully LOCAL on AWS Bedrock — no GCP
+# credentials, no MongoDB, no Vertex. The model runs on Bedrock (Claude Sonnet
+# 4.6 by default; override BEDROCK_MODEL_ID); Cases persist to the local file
+# store (GRACE2_DEV_PERSISTENCE=1, dir ./.grace2-local); auth stays anonymous
+# (AUTH_REQUIRED unset). Needs AWS creds in the standard chain (~/.aws or env)
+# with Bedrock model access. Raster (QGIS WMS) rendering still points at the
+# cloud QGIS Server until job-0290; data fetches, chat, and vector layers work
+# fully offline-of-GCP. Pair with `make run-web` in a second terminal.
+run-local-agent:
+	@if [ ! -x $(AGENT_VENV)/bin/grace2-agent ]; then \
+	  echo "agent venv missing or stale. Bootstrap:"; \
+	  echo "  virtualenv -p python3 $(AGENT_VENV)"; \
+	  echo "  $(AGENT_VENV)/bin/pip install -e packages/contracts -e services/agent"; \
+	  exit 1; \
+	fi
+	MODEL_PROVIDER=bedrock \
+	AWS_REGION=$(AWS_REGION) \
+	BEDROCK_MODEL_ID=$(BEDROCK_MODEL_ID) \
+	GRACE2_DEV_PERSISTENCE=1 \
+	GRACE2_DEV_PERSISTENCE_DIR=$(CURDIR)/.grace2-local \
 	$(AGENT_VENV)/bin/grace2-agent
 
 # Web client (job-0016). React + Vite + MapLibre. Installs dependencies the
