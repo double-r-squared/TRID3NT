@@ -42,7 +42,8 @@ from .cache import read_through
 # ``"gdaldem"`` argv — FileNotFoundError in any env where gdaldem is not on
 # PATH (live failure 2026-06-10, Boulder colored relief) — and no PROJ env,
 # which silently degrades the output CRS to LOCAL_CS exactly as hillshade did.
-from .compute_hillshade import _gdaldem_subprocess_env
+# job-0271: + COG conversion (flat gdaldem GTiffs render too slowly via WMS).
+from .compute_hillshade import _gdaldem_subprocess_env, _translate_to_cog
 
 __all__ = ["compute_colored_relief"]
 
@@ -337,8 +338,11 @@ def _run_colored_relief(dem_uri: str, ramp: str) -> bytes:
                 f"gdaldem color-relief failed (rc={result.returncode}): {stderr_txt}"
             )
 
-        with open(out_file, "rb") as f:
-            return f.read()
+        # job-0271: serve a real COG (tiled + overviews). The flat
+        # strip-organized gdaldem output rendered slower than the 60s WMS
+        # gateway limit over /vsigs/ and triggered the cold-load layer
+        # poisoning the job-0270 verifier isolated.
+        return _translate_to_cog(out_file, gdaldem_bin)
 
     except ColoredReliefError:
         raise

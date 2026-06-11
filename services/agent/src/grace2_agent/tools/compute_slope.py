@@ -53,7 +53,8 @@ from .cache import CACHE_BUCKET, read_through
 # job-0269: the job-0257 PROJ/GDAL data-dir env fix (without it, conda-env
 # gdaldem silently degrades the output CRS to LOCAL_CS — same failure class
 # hillshade hit live; slope was never wired).
-from .compute_hillshade import _gdaldem_subprocess_env
+# job-0271: + COG conversion (flat gdaldem GTiffs render too slowly via WMS).
+from .compute_hillshade import _gdaldem_subprocess_env, _translate_to_cog
 
 __all__ = [
     "compute_slope",
@@ -380,9 +381,8 @@ def compute_slope(
             # 3. Run gdaldem slope.
             _run_gdaldem_slope(in_tmp, out_tmp, output_unit, algorithm)
 
-            # 4. Read the output bytes.
-            with open(out_tmp, "rb") as f:
-                return f.read()
+            # 4. job-0271: return real COG bytes — see _translate_to_cog.
+            return _translate_to_cog(out_tmp, _get_gdaldem_bin())
         finally:
             for path in (in_tmp, out_tmp):
                 if path is not None:

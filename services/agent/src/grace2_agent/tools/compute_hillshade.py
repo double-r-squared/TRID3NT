@@ -185,6 +185,58 @@ def _gdaldem_subprocess_env(gdaldem_bin: str) -> dict[str, str]:
     return env
 
 
+def _translate_to_cog(input_path: str, gdaldem_bin: str) -> bytes:
+    """Convert a flat GTiff to Cloud-Optimized GeoTIFF bytes (job-0271).
+
+    ``gdaldem`` writes strip-organized GTiffs with no tiling and no
+    overviews. QGIS Server rendering one over ``/vsigs/`` issues a range
+    request per strip (1788 strips for a city-scale relief) — slow enough
+    to trip cold-load open timeouts (the layer-poison class the job-0270
+    verifier isolated) and the 60 s WMS gateway limit. The GDAL COG driver
+    tiles + builds overviews in one pass; flood products already go
+    through an equivalent step in ``postprocess_flood``, which is why they
+    always rendered. Falls back to the flat bytes when ``gdal_translate``
+    is unavailable or fails (old behavior, never raises).
+    """
+    gdal_translate = os.path.join(
+        os.path.dirname(os.path.abspath(gdaldem_bin)), "gdal_translate"
+    )
+    if not os.path.isfile(gdal_translate):
+        with open(input_path, "rb") as f:
+            return f.read()
+    with tempfile.NamedTemporaryFile(suffix=".tif", delete=False) as out:
+        cog_path = out.name
+    try:
+        result = subprocess.run(
+            [
+                gdal_translate,
+                "-of", "COG",
+                "-co", "COMPRESS=DEFLATE",
+                input_path,
+                cog_path,
+            ],
+            capture_output=True,
+            timeout=300,
+            check=False,
+            env=_gdaldem_subprocess_env(gdaldem_bin),
+        )
+        if result.returncode != 0:
+            logger.warning(
+                "COG translate failed rc=%s — returning flat GTiff bytes: %s",
+                result.returncode,
+                result.stderr.decode("utf-8", errors="replace")[:200],
+            )
+            with open(input_path, "rb") as f:
+                return f.read()
+        with open(cog_path, "rb") as f:
+            return f.read()
+    finally:
+        try:
+            os.unlink(cog_path)
+        except OSError:
+            pass
+
+
 def _ensure_output_crs_matches_dem(dem_path: str, output_path: str) -> None:
     """Stamp the DEM's CRS onto the gdaldem output if it degraded (job-0257).
 
@@ -502,8 +554,8 @@ def _make_fetch_fn(
             os.unlink(blend_tmp)
             _multiply_blend_hillshades(out_tmp, out_tmp_b, blend_tmp)
             _ensure_output_crs_matches_dem(in_tmp, blend_tmp)  # job-0257
-            with open(blend_tmp, "rb") as f:
-                return f.read()
+            # job-0271: serve a real COG — see _translate_to_cog.
+            return _translate_to_cog(blend_tmp, _get_gdaldem_bin())
 
         elif style == "multidirectional":
             _run_gdaldem_hillshade(
@@ -537,8 +589,8 @@ def _make_fetch_fn(
             )
 
         _ensure_output_crs_matches_dem(in_tmp, out_tmp)  # job-0257
-        with open(out_tmp, "rb") as f:
-            return f.read()
+        # job-0271: serve a real COG (tiled + overviews) — see _translate_to_cog.
+        return _translate_to_cog(out_tmp, _get_gdaldem_bin())
 
     finally:
         for path in (in_tmp, out_tmp, out_tmp_b, blend_tmp):
