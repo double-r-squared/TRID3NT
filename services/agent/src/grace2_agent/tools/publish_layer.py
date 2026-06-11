@@ -361,6 +361,37 @@ def _build_wms_url(qgs_key: str, layer_id: str) -> str:
     return f"{base}?MAP={map_param}&LAYERS={layer_id}"
 
 
+#: job-0269b: token vocabulary marking TERRAIN-family rasters. These are
+#: RGBA (colored relief) or single-band grayscale/Float32 (hillshade, slope,
+#: aspect, raw DEM) products — QGIS DEFAULT rendering visualizes them
+#: correctly, while the flood-depth pseudocolor ramp clamps them to a
+#: uniform/transparent tile (live 2026-06-10 "can't see the overlay").
+#: Token-boundary matching (not substring) so e.g. a layer_id like
+#: ``"demo-flood"`` does NOT match ``dem``.
+_TERRAIN_STYLE_TOKENS = frozenset(
+    {"dem", "relief", "hillshade", "slope", "aspect", "terrain", "elevation"}
+)
+
+
+def _infer_style_preset(layer_uri: str, layer_id: str) -> str:
+    """Family-aware default style preset (job-0269b).
+
+    Returns ``""`` (no preset → QGIS default rendering) for terrain-family
+    rasters, else ``"continuous_flood_depth"`` — the pre-0269b default, so
+    flood/plume publishes that relied on it are unchanged. Tokenizes BOTH
+    the resolved URI and the layer_id on non-alphanumerics and matches
+    whole tokens against ``_TERRAIN_STYLE_TOKENS``.
+    """
+    import re as _re
+
+    tokens = set(
+        _re.split(r"[^a-z0-9]+", f"{layer_uri} {layer_id}".lower())
+    )
+    if tokens & _TERRAIN_STYLE_TOKENS:
+        return ""
+    return "continuous_flood_depth"
+
+
 def _gs_to_vsigs(gs_uri: str) -> str:
     """Convert a ``gs://<bucket>/<key>`` URI to a GDAL ``/vsigs/`` path.
 
@@ -631,7 +662,7 @@ _PUBLISH_LAYER_METADATA = AtomicToolMetadata(
 def publish_layer(
     layer_uri: str,
     layer_id: str,
-    style_preset: str = "continuous_flood_depth",
+    style_preset: str | None = None,
     project_qgs_uri: str | None = None,
     case_id: str | None = None,
     # job-0164: absorb LLM-invented kwargs (centralized at server.py via
@@ -671,8 +702,12 @@ def publish_layer(
         layer_id: QGIS layer name + WMS ``LAYERS=`` value for the published
             layer. Must be stable and unique within the ``.qgs`` project
             (e.g. ``"flood-depth-peak-<run_id>"``).
-        style_preset: filename stem of the QML preset to apply. Default:
-            ``"continuous_flood_depth"`` (0–3.5 m Blues ramp for hmax COGs).
+        style_preset: filename stem of the QML preset to apply, or omit for
+            AUTO selection (recommended): flood/plume depth COGs get the
+            ``"continuous_flood_depth"`` Blues ramp; terrain products
+            (colored relief, hillshade, slope, aspect, raw DEM) get QGIS
+            default rendering, which is correct for RGBA/grayscale rasters
+            — the flood ramp painted them invisible.
         project_qgs_uri: ``gs://`` URI of the ``.qgs`` project to mutate.
             Defaults to ``gs://grace-2-hazard-prod-qgs/grace2-sample.qgs``
             (the v0.1 canonical project). The FR-MP-6 Case UX will eventually
@@ -738,6 +773,18 @@ def publish_layer(
     #     prefix-match is auto-corrected; otherwise LAYER_URI_NOT_FOUND
     #     (retryable) feeds the real object listing back to the LLM.
     layer_uri = _validate_and_correct_layer_uri(layer_uri)
+
+    # 1c. job-0269b: AUTO style selection. Hardcoding the flood-depth ramp on
+    #     every raster painted terrain products invisible — live 2026-06-10:
+    #     a colored relief published CONDITION_SUCCEEDED but WMS served a
+    #     uniform/transparent tile because the depth pseudocolor clamped the
+    #     RGBA bands. Composers pass their preset explicitly; un-presetted
+    #     publishes (the LLM path) get a family-aware default, and terrain
+    #     families get NO preset — QGIS default multiband-RGBA/singleband-
+    #     gray rendering is the correct visualization for them (the worker
+    #     treats a missing QML as non-fatal by design).
+    if style_preset is None or style_preset == "auto":
+        style_preset = _infer_style_preset(layer_uri, layer_id)
 
     # 2. Convert the gs:// layer_uri to /vsigs/ for GDAL (the worker's
     #    _append_raster_layer uses QgsRasterLayer with the "gdal" provider).
