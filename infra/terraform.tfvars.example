@@ -23,3 +23,11 @@ atlas_db_username       = "grace2-worker"
 # Developer machine's public IPv4 (/32). Refresh with:
 #   curl -4 -s https://ifconfig.me
 dev_ip_cidr = "0.0.0.0/32"
+
+# --- Firebase / Identity Platform Google sign-in (sprint-13.5 / job-0250) ---
+# OAuth 2.0 web client created in the GCP console (OAuth consent screen flow —
+# console-only, see reports/inflight/sprint-13-5-USER_UNBLOCK.md). Leave EMPTY
+# until the user creates the client; email/password sign-in works without it
+# and the Google IdP resource is skipped while these are blank.
+google_oauth_client_id     = ""
+google_oauth_client_secret = ""

@@ -34,9 +34,19 @@ locals {
     "logging.googleapis.com",
     "monitoring.googleapis.com",
     # sprint-04 / job-0018 additions:
-    "pubsub.googleapis.com",       # FR-QS-6 step 5 worker-events topic.
-    "cloudbuild.googleapis.com",   # Cloud Build path for QGIS Server image
-                                   # (avoids local docker sudo on dev box).
+    "pubsub.googleapis.com",     # FR-QS-6 step 5 worker-events topic.
+    "cloudbuild.googleapis.com", # Cloud Build path for QGIS Server image
+    # (avoids local docker sudo on dev box).
+    # sprint-13.5 / job-0250 additions (production auth substrate):
+    # Identity Platform (Firebase Auth backend) — sign-in providers + ID tokens.
+    "identitytoolkit.googleapis.com",
+    # Firebase management surface (project enrollment / web-app registration are
+    # console/google-beta — see infra/firebase/README.md).
+    "firebase.googleapis.com",
+    # Native Firestore (custom-claims / tier store; SRS §F.1 tier gating).
+    "firestore.googleapis.com",
+    # Firestore security-rules ruleset + release.
+    "firebaserules.googleapis.com",
   ]
 }
 

@@ -1,0 +1,52 @@
+job-0250 tofu plan — FIREBASE/AUTH SUMMARY (extracted from tofu_plan.txt)
+Run: 2026-06-11; tofu 1.12.1; provider google 6.50.0
+Plan exit: 1 — but ONLY due to mongodbatlas provider 401 (no Atlas API
+keys in this shell env; pre-existing, unrelated to job-0250). The google
+provider authenticated via ADC and rendered all job-0250 resources.
+============================================================================
+
+--- New auth resources to be created ---
+504:  # google_project_service.enabled["firebase.googleapis.com"] will be created
+512:  # google_project_service.enabled["firebaserules.googleapis.com"] will be created
+520:  # google_project_service.enabled["firestore.googleapis.com"] will be created
+528:  # google_project_service.enabled["identitytoolkit.googleapis.com"] will be created
+785:  # module.firebase.google_firebaserules_release.auth will be created
+796:  # module.firebase.google_firebaserules_ruleset.auth will be created
+878:  # module.firebase.google_firestore_database.auth will be created
+900:  # module.firebase.google_identity_platform_config.auth will be created
+
+--- Identity Platform sign-in posture (anonymous MUST be false) ---
+248:                      + value = "googleapis.com,google.internal,mongodb.net,localhost,127.0.0.1,::1"
+902:      + authorized_domains = [
+903:          + "localhost",
+904:          + "grace-2-hazard-prod.web.app",
+905:          + "grace-2-hazard-prod.firebaseapp.com",
+916:              + disabled_user_deletion = false
+917:              + disabled_user_signup   = false
+929:              + enabled = false
+933:              + enabled           = true
+934:              + password_required = true
+944:  + firebase_anonymous_enabled             = false
+945:  + firebase_authorized_domains            = [
+946:      + "localhost",
+947:      + "grace-2-hazard-prod.web.app",
+948:      + "grace-2-hazard-prod.firebaseapp.com",
+952:  + firebase_google_idp_enabled            = false
+
+--- Firestore database posture ---
+884:      + delete_protection_state           = "DELETE_PROTECTION_ENABLED"
+885:      + deletion_policy                   = "ABANDON"
+890:      + location_id                       = "nam5"
+891:      + name                              = "(default)"
+892:      + point_in_time_recovery_enablement = "POINT_IN_TIME_RECOVERY_ENABLED"
+894:      + type                              = "FIRESTORE_NATIVE"
+950:  + firebase_firestore_database_name       = "(default)"
+
+--- Output values ---
+944:  + firebase_anonymous_enabled             = false
+945:  + firebase_authorized_domains            = [
+950:  + firebase_firestore_database_name       = "(default)"
+951:  + firebase_firestore_rules_release_name  = "cloud.firestore"
+952:  + firebase_google_idp_enabled            = false
+
+--- Plan tally ---

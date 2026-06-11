@@ -1,0 +1,1005 @@
+random_password.worker_pw: Refreshing state... [id=none]
+mongodbatlas_project_ip_access_list.dev_ip: Refreshing state... [id=ZW50cnk=:NjcuMTYwLjk4LjUxLzMy-cHJvamVjdF9pZA==:NmEyMzQ3MDBhMGUxMjk1OTU4ZDEwY2Y5]
+mongodbatlas_flex_cluster.dev: Refreshing state... [id=6a234a45e40bf4c4a1177833]
+mongodbatlas_database_user.worker: Refreshing state... [id=YXV0aF9kYXRhYmFzZV9uYW1l:YWRtaW4=-cHJvamVjdF9pZA==:NmEyMzQ3MDBhMGUxMjk1OTU4ZDEwY2Y5-dXNlcm5hbWU=:Z3JhY2UyLXdvcmtlcg==]
+google_project.grace2: Refreshing state... [id=projects/grace-2-hazard-prod]
+google_project_service.enabled["iam.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/iam.googleapis.com]
+google_project_service.enabled["monitoring.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/monitoring.googleapis.com]
+google_project_service.enabled["aiplatform.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/aiplatform.googleapis.com]
+google_project_service.enabled["iamcredentials.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/iamcredentials.googleapis.com]
+google_project_service.enabled["storage.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/storage.googleapis.com]
+google_project_service.enabled["workflows.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/workflows.googleapis.com]
+google_project_service.enabled["cloudbuild.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/cloudbuild.googleapis.com]
+google_project_service.enabled["secretmanager.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/secretmanager.googleapis.com]
+google_project_service.enabled["artifactregistry.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/artifactregistry.googleapis.com]
+google_project_service.enabled["logging.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/logging.googleapis.com]
+google_project_service.enabled["run.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/run.googleapis.com]
+google_project_service.enabled["serviceusage.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/serviceusage.googleapis.com]
+google_project_service.enabled["pubsub.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/pubsub.googleapis.com]
+google_project_service.enabled["cloudresourcemanager.googleapis.com"]: Refreshing state... [id=grace-2-hazard-prod/cloudresourcemanager.googleapis.com]
+google_service_account.sfincs_runtime: Refreshing state... [id=projects/grace-2-hazard-prod/serviceAccounts/sfincs-runtime@grace-2-hazard-prod.iam.gserviceaccount.com]
+google_storage_bucket.qgs: Refreshing state... [id=grace-2-hazard-prod-qgs]
+google_service_account.workflow_invoker_sfincs: Refreshing state... [id=projects/grace-2-hazard-prod/serviceAccounts/workflow-invoker-sfincs@grace-2-hazard-prod.iam.gserviceaccount.com]
+google_storage_bucket.runs: Refreshing state... [id=grace-2-hazard-prod-runs]
+google_storage_bucket.fgb: Refreshing state... [id=grace-2-hazard-prod-fgb]
+google_artifact_registry_repository.containers: Refreshing state... [id=projects/grace-2-hazard-prod/locations/us-central1/repositories/grace-2-containers]
+google_storage_bucket.cog: Refreshing state... [id=grace-2-hazard-prod-cog]
+google_storage_bucket.artifacts: Refreshing state... [id=grace-2-hazard-prod-artifacts]
+google_storage_bucket.cache: Refreshing state... [id=grace-2-hazard-prod-cache]
+google_secret_manager_secret.mongodb_srv: Refreshing state... [id=projects/grace-2-hazard-prod/secrets/mongodb-srv-dev]
+google_service_account.pyqgis_worker: Refreshing state... [id=projects/grace-2-hazard-prod/serviceAccounts/pyqgis-worker-runtime@grace-2-hazard-prod.iam.gserviceaccount.com]
+google_service_account.qgis_server: Refreshing state... [id=projects/grace-2-hazard-prod/serviceAccounts/grace-2-qgis-server@grace-2-hazard-prod.iam.gserviceaccount.com]
+google_service_account.agent_runtime: Refreshing state... [id=projects/grace-2-hazard-prod/serviceAccounts/agent-runtime@grace-2-hazard-prod.iam.gserviceaccount.com]
+google_pubsub_topic.worker_events: Refreshing state... [id=projects/grace-2-hazard-prod/topics/grace-2-worker-events]
+google_project_iam_member.workflow_invoker_log_writer: Refreshing state... [id=grace-2-hazard-prod/roles/logging.logWriter/serviceAccount:workflow-invoker-sfincs@grace-2-hazard-prod.iam.gserviceaccount.com]
+google_storage_bucket_iam_member.workflow_invoker_runs_viewer: Refreshing state... [id=b/grace-2-hazard-prod-runs/roles/storage.objectViewer/serviceAccount:workflow-invoker-sfincs@grace-2-hazard-prod.iam.gserviceaccount.com]
+google_project_iam_member.workflow_invoker_run_viewer: Refreshing state... [id=grace-2-hazard-prod/roles/run.viewer/serviceAccount:workflow-invoker-sfincs@grace-2-hazard-prod.iam.gserviceaccount.com]
+google_service_account_iam_member.workflow_invoker_actas_sfincs_runtime: Refreshing state... [id=projects/grace-2-hazard-prod/serviceAccounts/sfincs-runtime@grace-2-hazard-prod.iam.gserviceaccount.com/roles/iam.serviceAccountUser/serviceAccount:workflow-invoker-sfincs@grace-2-hazard-prod.iam.gserviceaccount.com]
+google_storage_bucket_iam_member.sfincs_runtime_runs_admin: Refreshing state... [id=b/grace-2-hazard-prod-runs/roles/storage.objectAdmin/serviceAccount:sfincs-runtime@grace-2-hazard-prod.iam.gserviceaccount.com]
+google_storage_bucket_iam_member.sfincs_runtime_cache_viewer: Refreshing state... [id=b/grace-2-hazard-prod-cache/roles/storage.objectViewer/serviceAccount:sfincs-runtime@grace-2-hazard-prod.iam.gserviceaccount.com]
+google_storage_bucket_iam_member.sfincs_runtime_qgs_viewer: Refreshing state... [id=b/grace-2-hazard-prod-qgs/roles/storage.objectViewer/serviceAccount:sfincs-runtime@grace-2-hazard-prod.iam.gserviceaccount.com]
+google_storage_bucket_iam_member.qgs_server_fgb_viewer: Refreshing state... [id=b/grace-2-hazard-prod-fgb/roles/storage.objectViewer/serviceAccount:grace-2-qgis-server@grace-2-hazard-prod.iam.gserviceaccount.com]
+google_storage_bucket_iam_member.qgis_server_runs_viewer: Refreshing state... [id=b/grace-2-hazard-prod-runs/roles/storage.objectViewer/serviceAccount:grace-2-qgis-server@grace-2-hazard-prod.iam.gserviceaccount.com]
+google_storage_bucket_iam_member.qgs_server_qgs_viewer: Refreshing state... [id=b/grace-2-hazard-prod-qgs/roles/storage.objectViewer/serviceAccount:grace-2-qgis-server@grace-2-hazard-prod.iam.gserviceaccount.com]
+google_storage_bucket_iam_member.qgs_server_cog_viewer: Refreshing state... [id=b/grace-2-hazard-prod-cog/roles/storage.objectViewer/serviceAccount:grace-2-qgis-server@grace-2-hazard-prod.iam.gserviceaccount.com]
+google_storage_bucket_iam_member.pyqgis_worker_qgs_admin: Refreshing state... [id=b/grace-2-hazard-prod-qgs/roles/storage.objectAdmin/serviceAccount:pyqgis-worker-runtime@grace-2-hazard-prod.iam.gserviceaccount.com]
+google_storage_bucket_iam_member.pyqgis_worker_cache_admin: Refreshing state... [id=b/grace-2-hazard-prod-cache/roles/storage.objectAdmin/serviceAccount:pyqgis-worker-runtime@grace-2-hazard-prod.iam.gserviceaccount.com]
+google_storage_bucket_iam_member.pyqgis_worker_runs_viewer: Refreshing state... [id=b/grace-2-hazard-prod-runs/roles/storage.objectViewer/serviceAccount:pyqgis-worker-runtime@grace-2-hazard-prod.iam.gserviceaccount.com]
+google_pubsub_topic_iam_member.pyqgis_worker_publisher: Refreshing state... [id=projects/grace-2-hazard-prod/topics/grace-2-worker-events/roles/pubsub.publisher/serviceAccount:pyqgis-worker-runtime@grace-2-hazard-prod.iam.gserviceaccount.com]
+google_project_iam_member.agent_runtime_secret_accessor: Refreshing state... [id=grace-2-hazard-prod/roles/secretmanager.secretAccessor/serviceAccount:agent-runtime@grace-2-hazard-prod.iam.gserviceaccount.com]
+google_storage_bucket_iam_member.agent_runtime_cache_admin: Refreshing state... [id=b/grace-2-hazard-prod-cache/roles/storage.objectAdmin/serviceAccount:agent-runtime@grace-2-hazard-prod.iam.gserviceaccount.com]
+google_cloud_run_v2_service.qgis_server: Refreshing state... [id=projects/grace-2-hazard-prod/locations/us-central1/services/grace-2-qgis-server]
+google_cloud_run_v2_job.sfincs_solver: Refreshing state... [id=projects/grace-2-hazard-prod/locations/us-central1/jobs/grace-2-sfincs-solver]
+google_cloud_run_v2_job.pyqgis_worker: Refreshing state... [id=projects/grace-2-hazard-prod/locations/us-central1/jobs/grace-2-pyqgis-worker]
+google_cloud_run_v2_service_iam_member.qgis_server_public_invoker: Refreshing state... [id=projects/grace-2-hazard-prod/locations/us-central1/services/grace-2-qgis-server/roles/run.invoker/allUsers]
+google_cloud_run_v2_job_iam_member.workflow_invoker_runs_job_developer: Refreshing state... [id=projects/grace-2-hazard-prod/locations/us-central1/jobs/grace-2-sfincs-solver/roles/run.developer/serviceAccount:workflow-invoker-sfincs@grace-2-hazard-prod.iam.gserviceaccount.com]
+google_cloud_run_v2_job_iam_member.workflow_invoker_runs_job: Refreshing state... [id=projects/grace-2-hazard-prod/locations/us-central1/jobs/grace-2-sfincs-solver/roles/run.invoker/serviceAccount:workflow-invoker-sfincs@grace-2-hazard-prod.iam.gserviceaccount.com]
+google_workflows_workflow.sfincs_orchestrator: Refreshing state... [id=projects/grace-2-hazard-prod/locations/us-central1/workflows/grace-2-sfincs-orchestrator]
+
+OpenTofu used the selected providers to generate the following execution
+plan. Resource actions are indicated with the following symbols:
+  + create
+  ~ update in-place (current -> planned)
+
+OpenTofu planned the following actions, but then encountered a problem:
+
+  # google_cloud_run_v2_job.modflow_solver will be created
+  + resource "google_cloud_run_v2_job" "modflow_solver" {
+      + conditions               = (known after apply)
+      + create_time              = (known after apply)
+      + creator                  = (known after apply)
+      + delete_time              = (known after apply)
+      + deletion_protection      = true
+      + effective_annotations    = (known after apply)
+      + effective_labels         = {
+          + "component"                  = "modflow-solver"
+          + "env"                        = "dev"
+          + "goog-terraform-provisioned" = "true"
+          + "project"                    = "grace-2"
+          + "sprint"                     = "13"
+        }
+      + etag                     = (known after apply)
+      + execution_count          = (known after apply)
+      + expire_time              = (known after apply)
+      + generation               = (known after apply)
+      + id                       = (known after apply)
+      + labels                   = {
+          + "component" = "modflow-solver"
+          + "env"       = "dev"
+          + "project"   = "grace-2"
+          + "sprint"    = "13"
+        }
+      + last_modifier            = (known after apply)
+      + latest_created_execution = (known after apply)
+      + launch_stage             = (known after apply)
+      + location                 = "us-central1"
+      + name                     = "grace-2-modflow-solver"
+      + observed_generation      = (known after apply)
+      + project                  = "grace-2-hazard-prod"
+      + reconciling              = (known after apply)
+      + terminal_condition       = (known after apply)
+      + terraform_labels         = {
+          + "component"                  = "modflow-solver"
+          + "env"                        = "dev"
+          + "goog-terraform-provisioned" = "true"
+          + "project"                    = "grace-2"
+          + "sprint"                     = "13"
+        }
+      + uid                      = (known after apply)
+      + update_time              = (known after apply)
+
+      + template {
+          + labels      = {
+              + "component" = "modflow-solver"
+              + "env"       = "dev"
+              + "project"   = "grace-2"
+              + "sprint"    = "13"
+            }
+          + parallelism = 1
+          + task_count  = 1
+
+          + template {
+              + execution_environment = (known after apply)
+              + max_retries           = 1
+              + service_account       = "modflow-runtime@grace-2-hazard-prod.iam.gserviceaccount.com"
+              + timeout               = "7200s"
+
+              + containers {
+                  + image = "us-central1-docker.pkg.dev/grace-2-hazard-prod/grace-2-containers/grace-2-modflow-solver@sha256:0b075e1b05dd2be0fb0adc5690f896231e7de89aa66ce16a9291c93ba95908ed"
+
+                  + env {
+                      + name  = "GCP_PROJECT"
+                      + value = "grace-2-hazard-prod"
+                    }
+                  + env {
+                      + name  = "GOOGLE_CLOUD_PROJECT"
+                      + value = "grace-2-hazard-prod"
+                    }
+                  + env {
+                      + name  = "GRACE2_CACHE_BUCKET"
+                      + value = "grace-2-hazard-prod-cache"
+                    }
+                  + env {
+                      + name = "GRACE2_MANIFEST_URI"
+                    }
+                  + env {
+                      + name  = "GRACE2_RUNS_BUCKET"
+                      + value = "grace-2-hazard-prod-runs"
+                    }
+                  + env {
+                      + name = "GRACE2_RUN_ID"
+                    }
+
+                  + resources {
+                      + limits = {
+                          + "cpu"    = "4"
+                          + "memory" = "8Gi"
+                        }
+                    }
+
+                  + startup_probe (known after apply)
+                }
+            }
+        }
+    }
+
+  # google_cloud_run_v2_job.python_sandbox will be created
+  + resource "google_cloud_run_v2_job" "python_sandbox" {
+      + conditions               = (known after apply)
+      + create_time              = (known after apply)
+      + creator                  = (known after apply)
+      + delete_time              = (known after apply)
+      + deletion_protection      = true
+      + effective_annotations    = (known after apply)
+      + effective_labels         = {
+          + "component"                  = "python-sandbox"
+          + "env"                        = "dev"
+          + "goog-terraform-provisioned" = "true"
+          + "project"                    = "grace-2"
+          + "sprint"                     = "13"
+        }
+      + etag                     = (known after apply)
+      + execution_count          = (known after apply)
+      + expire_time              = (known after apply)
+      + generation               = (known after apply)
+      + id                       = (known after apply)
+      + labels                   = {
+          + "component" = "python-sandbox"
+          + "env"       = "dev"
+          + "project"   = "grace-2"
+          + "sprint"    = "13"
+        }
+      + last_modifier            = (known after apply)
+      + latest_created_execution = (known after apply)
+      + launch_stage             = (known after apply)
+      + location                 = "us-central1"
+      + name                     = "grace-2-python-sandbox"
+      + observed_generation      = (known after apply)
+      + project                  = "grace-2-hazard-prod"
+      + reconciling              = (known after apply)
+      + terminal_condition       = (known after apply)
+      + terraform_labels         = {
+          + "component"                  = "python-sandbox"
+          + "env"                        = "dev"
+          + "goog-terraform-provisioned" = "true"
+          + "project"                    = "grace-2"
+          + "sprint"                     = "13"
+        }
+      + uid                      = (known after apply)
+      + update_time              = (known after apply)
+
+      + template {
+          + labels      = {
+              + "component" = "python-sandbox"
+              + "env"       = "dev"
+              + "project"   = "grace-2"
+              + "sprint"    = "13"
+            }
+          + parallelism = 1
+          + task_count  = 1
+
+          + template {
+              + execution_environment = (known after apply)
+              + max_retries           = 1
+              + service_account       = "python-sandbox-runtime@grace-2-hazard-prod.iam.gserviceaccount.com"
+              + timeout               = "60s"
+
+              + containers {
+                  + image = "us-central1-docker.pkg.dev/grace-2-hazard-prod/grace-2-containers/grace-2-python-sandbox@sha256:0ad156ac4ca33af6e109c797b76564044a5873a0484e460e884e9b2e7b7fc056"
+
+                  + env {
+                      + name  = "GCP_PROJECT"
+                      + value = "grace-2-hazard-prod"
+                    }
+                  + env {
+                      + name  = "GOOGLE_CLOUD_PROJECT"
+                      + value = "grace-2-hazard-prod"
+                    }
+                  + env {
+                      + name  = "GRACE2_CACHE_BUCKET"
+                      + value = "grace-2-hazard-prod-cache"
+                    }
+                  + env {
+                      + name  = "GRACE2_RUNS_BUCKET"
+                      + value = "grace-2-hazard-prod-runs"
+                    }
+                  + env {
+                      + name  = "GRACE2_SANDBOX_NET_ALLOW"
+                      + value = "googleapis.com,google.internal,mongodb.net,localhost,127.0.0.1,::1"
+                    }
+                  + env {
+                      + name = "GRACE2_SANDBOX_PAYLOAD_URI"
+                    }
+                  + env {
+                      + name  = "GRACE2_SANDBOX_TIMEOUT"
+                      + value = "60"
+                    }
+
+                  + resources {
+                      + limits = {
+                          + "cpu"    = "1"
+                          + "memory" = "2Gi"
+                        }
+                    }
+
+                  + startup_probe (known after apply)
+                }
+
+              + vpc_access {
+                  + connector = (known after apply)
+                  + egress    = "ALL_TRAFFIC"
+                }
+            }
+        }
+    }
+
+  # google_cloud_run_v2_job.sfincs_solver will be updated in-place
+  ~ resource "google_cloud_run_v2_job" "sfincs_solver" {
+      - client                   = "gcloud" -> null
+      - client_version           = "571.0.0" -> null
+        id                       = "projects/grace-2-hazard-prod/locations/us-central1/jobs/grace-2-sfincs-solver"
+        name                     = "grace-2-sfincs-solver"
+        # (22 unchanged attributes hidden)
+
+        # (1 unchanged block hidden)
+    }
+
+  # google_cloud_run_v2_job_iam_member.agent_invokes_sandbox will be created
+  + resource "google_cloud_run_v2_job_iam_member" "agent_invokes_sandbox" {
+      + etag     = (known after apply)
+      + id       = (known after apply)
+      + location = "us-central1"
+      + member   = "serviceAccount:agent-runtime@grace-2-hazard-prod.iam.gserviceaccount.com"
+      + name     = "grace-2-python-sandbox"
+      + project  = "grace-2-hazard-prod"
+      + role     = "roles/run.invoker"
+    }
+
+  # google_cloud_run_v2_job_iam_member.agent_invokes_sandbox_developer will be created
+  + resource "google_cloud_run_v2_job_iam_member" "agent_invokes_sandbox_developer" {
+      + etag     = (known after apply)
+      + id       = (known after apply)
+      + location = "us-central1"
+      + member   = "serviceAccount:agent-runtime@grace-2-hazard-prod.iam.gserviceaccount.com"
+      + name     = "grace-2-python-sandbox"
+      + project  = "grace-2-hazard-prod"
+      + role     = "roles/run.developer"
+    }
+
+  # google_cloud_run_v2_job_iam_member.workflow_invoker_modflow_runs_job will be created
+  + resource "google_cloud_run_v2_job_iam_member" "workflow_invoker_modflow_runs_job" {
+      + etag     = (known after apply)
+      + id       = (known after apply)
+      + location = "us-central1"
+      + member   = "serviceAccount:workflow-invoker-modflow@grace-2-hazard-prod.iam.gserviceaccount.com"
+      + name     = "grace-2-modflow-solver"
+      + project  = "grace-2-hazard-prod"
+      + role     = "roles/run.invoker"
+    }
+
+  # google_cloud_run_v2_job_iam_member.workflow_invoker_modflow_runs_job_developer will be created
+  + resource "google_cloud_run_v2_job_iam_member" "workflow_invoker_modflow_runs_job_developer" {
+      + etag     = (known after apply)
+      + id       = (known after apply)
+      + location = "us-central1"
+      + member   = "serviceAccount:workflow-invoker-modflow@grace-2-hazard-prod.iam.gserviceaccount.com"
+      + name     = "grace-2-modflow-solver"
+      + project  = "grace-2-hazard-prod"
+      + role     = "roles/run.developer"
+    }
+
+  # google_cloud_run_v2_service.qgis_server will be updated in-place
+  ~ resource "google_cloud_run_v2_service" "qgis_server" {
+      - client                  = "gcloud" -> null
+      - client_version          = "571.0.0" -> null
+        id                      = "projects/grace-2-hazard-prod/locations/us-central1/services/grace-2-qgis-server"
+        name                    = "grace-2-qgis-server"
+        # (28 unchanged attributes hidden)
+
+      ~ template {
+            # (7 unchanged attributes hidden)
+
+          ~ containers {
+                # (5 unchanged attributes hidden)
+
+              - env {
+                  - name  = "GDAL_DISABLE_READDIR_ON_OPEN" -> null
+                  - value = "EMPTY_DIR" -> null
+                }
+              - env {
+                  - name  = "QGIS_SERVER_IGNORE_BAD_LAYERS" -> null
+                  - value = "1" -> null
+                }
+
+                # (17 unchanged blocks hidden)
+            }
+
+          ~ scaling {
+              ~ min_instance_count = 1 -> 0
+                # (1 unchanged attribute hidden)
+            }
+
+            # (1 unchanged block hidden)
+        }
+
+        # (2 unchanged blocks hidden)
+    }
+
+  # google_compute_firewall.sandbox_allow_atlas_egress will be created
+  + resource "google_compute_firewall" "sandbox_allow_atlas_egress" {
+      + creation_timestamp = (known after apply)
+      + description        = "ALLOW egress to the MongoDB Atlas cluster endpoint CIDR (var.sandbox_atlas_cidr) on the SRV port range. User MUST set the real Atlas CIDR before apply (job-0232). Can be dropped for a GCS-only posture — see report Open Questions."
+      + destination_ranges = [
+          + "203.0.113.0/32",
+        ]
+      + direction          = "EGRESS"
+      + enable_logging     = (known after apply)
+      + id                 = (known after apply)
+      + name               = "grace-2-sandbox-allow-atlas"
+      + network            = "grace-2-sandbox-net"
+      + priority           = 1000
+      + project            = "grace-2-hazard-prod"
+      + self_link          = (known after apply)
+
+      + allow {
+          + ports    = [
+              + "27015-27017",
+            ]
+          + protocol = "tcp"
+        }
+    }
+
+  # google_compute_firewall.sandbox_allow_gcs_egress will be created
+  + resource "google_compute_firewall" "sandbox_allow_gcs_egress" {
+      + creation_timestamp = (known after apply)
+      + description        = "ALLOW egress to restricted.googleapis.com (199.36.153.4/30) on 443 — GCS-only Private Google Access. Reaches Cloud Storage without an internet route (job-0232)."
+      + destination_ranges = [
+          + "199.36.153.4/30",
+        ]
+      + direction          = "EGRESS"
+      + enable_logging     = (known after apply)
+      + id                 = (known after apply)
+      + name               = "grace-2-sandbox-allow-gcs"
+      + network            = "grace-2-sandbox-net"
+      + priority           = 1000
+      + project            = "grace-2-hazard-prod"
+      + self_link          = (known after apply)
+
+      + allow {
+          + ports    = [
+              + "443",
+            ]
+          + protocol = "tcp"
+        }
+    }
+
+  # google_compute_firewall.sandbox_deny_all_egress will be created
+  + resource "google_compute_firewall" "sandbox_deny_all_egress" {
+      + creation_timestamp = (known after apply)
+      + description        = "DENY all egress from the sandbox network by default. The ALLOW rules (GCS PGA + Atlas) at higher precedence carve out the only sanctioned destinations (job-0232)."
+      + destination_ranges = [
+          + "0.0.0.0/0",
+        ]
+      + direction          = "EGRESS"
+      + enable_logging     = (known after apply)
+      + id                 = (known after apply)
+      + name               = "grace-2-sandbox-deny-egress"
+      + network            = "grace-2-sandbox-net"
+      + priority           = 65534
+      + project            = "grace-2-hazard-prod"
+      + self_link          = (known after apply)
+
+      + deny {
+          + ports    = []
+          + protocol = "all"
+        }
+    }
+
+  # google_compute_network.sandbox will be created
+  + resource "google_compute_network" "sandbox" {
+      + auto_create_subnetworks                   = false
+      + bgp_always_compare_med                    = (known after apply)
+      + bgp_best_path_selection_mode              = (known after apply)
+      + bgp_inter_region_cost                     = (known after apply)
+      + delete_default_routes_on_create           = false
+      + description                               = "Isolated VPC for the Python sandbox Cloud Run Job. Egress firewall allows ONLY restricted.googleapis.com (GCS) + the Atlas endpoint; everything else is denied (job-0232)."
+      + gateway_ipv4                              = (known after apply)
+      + id                                        = (known after apply)
+      + internal_ipv6_range                       = (known after apply)
+      + mtu                                       = (known after apply)
+      + name                                      = "grace-2-sandbox-net"
+      + network_firewall_policy_enforcement_order = "AFTER_CLASSIC_FIREWALL"
+      + network_id                                = (known after apply)
+      + numeric_id                                = (known after apply)
+      + project                                   = "grace-2-hazard-prod"
+      + routing_mode                              = (known after apply)
+      + self_link                                 = (known after apply)
+    }
+
+  # google_compute_subnetwork.sandbox will be created
+  + resource "google_compute_subnetwork" "sandbox" {
+      + creation_timestamp         = (known after apply)
+      + enable_flow_logs           = (known after apply)
+      + external_ipv6_prefix       = (known after apply)
+      + fingerprint                = (known after apply)
+      + gateway_address            = (known after apply)
+      + id                         = (known after apply)
+      + internal_ipv6_prefix       = (known after apply)
+      + ip_cidr_range              = "10.180.0.0/24"
+      + ipv6_cidr_range            = (known after apply)
+      + ipv6_gce_endpoint          = (known after apply)
+      + name                       = "grace-2-sandbox-subnet"
+      + network                    = (known after apply)
+      + private_ip_google_access   = true
+      + private_ipv6_google_access = (known after apply)
+      + project                    = "grace-2-hazard-prod"
+      + purpose                    = (known after apply)
+      + region                     = "us-central1"
+      + self_link                  = (known after apply)
+      + stack_type                 = (known after apply)
+      + state                      = (known after apply)
+      + subnetwork_id              = (known after apply)
+
+      + secondary_ip_range (known after apply)
+    }
+
+  # google_project_iam_member.workflow_invoker_modflow_log_writer will be created
+  + resource "google_project_iam_member" "workflow_invoker_modflow_log_writer" {
+      + etag    = (known after apply)
+      + id      = (known after apply)
+      + member  = "serviceAccount:workflow-invoker-modflow@grace-2-hazard-prod.iam.gserviceaccount.com"
+      + project = "grace-2-hazard-prod"
+      + role    = "roles/logging.logWriter"
+    }
+
+  # google_project_iam_member.workflow_invoker_modflow_run_viewer will be created
+  + resource "google_project_iam_member" "workflow_invoker_modflow_run_viewer" {
+      + etag    = (known after apply)
+      + id      = (known after apply)
+      + member  = "serviceAccount:workflow-invoker-modflow@grace-2-hazard-prod.iam.gserviceaccount.com"
+      + project = "grace-2-hazard-prod"
+      + role    = "roles/run.viewer"
+    }
+
+  # google_project_service.enabled["firebase.googleapis.com"] will be created
+  + resource "google_project_service" "enabled" {
+      + disable_on_destroy = false
+      + id                 = (known after apply)
+      + project            = "grace-2-hazard-prod"
+      + service            = "firebase.googleapis.com"
+    }
+
+  # google_project_service.enabled["firebaserules.googleapis.com"] will be created
+  + resource "google_project_service" "enabled" {
+      + disable_on_destroy = false
+      + id                 = (known after apply)
+      + project            = "grace-2-hazard-prod"
+      + service            = "firebaserules.googleapis.com"
+    }
+
+  # google_project_service.enabled["firestore.googleapis.com"] will be created
+  + resource "google_project_service" "enabled" {
+      + disable_on_destroy = false
+      + id                 = (known after apply)
+      + project            = "grace-2-hazard-prod"
+      + service            = "firestore.googleapis.com"
+    }
+
+  # google_project_service.enabled["identitytoolkit.googleapis.com"] will be created
+  + resource "google_project_service" "enabled" {
+      + disable_on_destroy = false
+      + id                 = (known after apply)
+      + project            = "grace-2-hazard-prod"
+      + service            = "identitytoolkit.googleapis.com"
+    }
+
+  # google_project_service.sandbox_compute will be created
+  + resource "google_project_service" "sandbox_compute" {
+      + disable_on_destroy = false
+      + id                 = (known after apply)
+      + project            = "grace-2-hazard-prod"
+      + service            = "compute.googleapis.com"
+    }
+
+  # google_project_service.sandbox_vpcaccess will be created
+  + resource "google_project_service" "sandbox_vpcaccess" {
+      + disable_on_destroy = false
+      + id                 = (known after apply)
+      + project            = "grace-2-hazard-prod"
+      + service            = "vpcaccess.googleapis.com"
+    }
+
+  # google_service_account.modflow_runtime will be created
+  + resource "google_service_account" "modflow_runtime" {
+      + account_id   = "modflow-runtime"
+      + description  = "Cloud Run Job identity for the MODFLOW 6 solver. objectViewer on -cache; objectAdmin on -runs. No -qgs grant (MODFLOW does not touch the QGIS project store). No project-wide roles."
+      + disabled     = false
+      + display_name = "GRACE-2 MODFLOW 6 solver Cloud Run Job runtime"
+      + email        = "modflow-runtime@grace-2-hazard-prod.iam.gserviceaccount.com"
+      + id           = (known after apply)
+      + member       = "serviceAccount:modflow-runtime@grace-2-hazard-prod.iam.gserviceaccount.com"
+      + name         = (known after apply)
+      + project      = "grace-2-hazard-prod"
+      + unique_id    = (known after apply)
+    }
+
+  # google_service_account.python_sandbox_runtime will be created
+  + resource "google_service_account" "python_sandbox_runtime" {
+      + account_id   = "python-sandbox-runtime"
+      + description  = "Cloud Run Job identity for the Python sandbox. objectViewer (READ-ONLY) on -cache + -runs; NO write role anywhere; no project-wide roles. The sandbox reads layers + returns a result envelope; it never writes."
+      + disabled     = false
+      + display_name = "GRACE-2 Python sandbox Cloud Run Job runtime"
+      + email        = "python-sandbox-runtime@grace-2-hazard-prod.iam.gserviceaccount.com"
+      + id           = (known after apply)
+      + member       = "serviceAccount:python-sandbox-runtime@grace-2-hazard-prod.iam.gserviceaccount.com"
+      + name         = (known after apply)
+      + project      = "grace-2-hazard-prod"
+      + unique_id    = (known after apply)
+    }
+
+  # google_service_account.workflow_invoker_modflow will be created
+  + resource "google_service_account" "workflow_invoker_modflow" {
+      + account_id   = "workflow-invoker-modflow"
+      + description  = "Identity the grace-2-modflow-orchestrator workflow runs under. Can invoke the modflow-solver Job + read runs bucket. No other roles."
+      + disabled     = false
+      + display_name = "GRACE-2 MODFLOW Cloud Workflows execution identity"
+      + email        = "workflow-invoker-modflow@grace-2-hazard-prod.iam.gserviceaccount.com"
+      + id           = (known after apply)
+      + member       = "serviceAccount:workflow-invoker-modflow@grace-2-hazard-prod.iam.gserviceaccount.com"
+      + name         = (known after apply)
+      + project      = "grace-2-hazard-prod"
+      + unique_id    = (known after apply)
+    }
+
+  # google_service_account_iam_member.agent_actas_python_sandbox_runtime will be created
+  + resource "google_service_account_iam_member" "agent_actas_python_sandbox_runtime" {
+      + etag               = (known after apply)
+      + id                 = (known after apply)
+      + member             = "serviceAccount:agent-runtime@grace-2-hazard-prod.iam.gserviceaccount.com"
+      + role               = "roles/iam.serviceAccountUser"
+      + service_account_id = (known after apply)
+    }
+
+  # google_service_account_iam_member.workflow_invoker_actas_modflow_runtime will be created
+  + resource "google_service_account_iam_member" "workflow_invoker_actas_modflow_runtime" {
+      + etag               = (known after apply)
+      + id                 = (known after apply)
+      + member             = "serviceAccount:workflow-invoker-modflow@grace-2-hazard-prod.iam.gserviceaccount.com"
+      + role               = "roles/iam.serviceAccountUser"
+      + service_account_id = (known after apply)
+    }
+
+  # google_storage_bucket_iam_member.modflow_runtime_cache_viewer will be created
+  + resource "google_storage_bucket_iam_member" "modflow_runtime_cache_viewer" {
+      + bucket = "grace-2-hazard-prod-cache"
+      + etag   = (known after apply)
+      + id     = (known after apply)
+      + member = "serviceAccount:modflow-runtime@grace-2-hazard-prod.iam.gserviceaccount.com"
+      + role   = "roles/storage.objectViewer"
+    }
+
+  # google_storage_bucket_iam_member.modflow_runtime_runs_admin will be created
+  + resource "google_storage_bucket_iam_member" "modflow_runtime_runs_admin" {
+      + bucket = "grace-2-hazard-prod-runs"
+      + etag   = (known after apply)
+      + id     = (known after apply)
+      + member = "serviceAccount:modflow-runtime@grace-2-hazard-prod.iam.gserviceaccount.com"
+      + role   = "roles/storage.objectAdmin"
+    }
+
+  # google_storage_bucket_iam_member.python_sandbox_cache_viewer will be created
+  + resource "google_storage_bucket_iam_member" "python_sandbox_cache_viewer" {
+      + bucket = "grace-2-hazard-prod-cache"
+      + etag   = (known after apply)
+      + id     = (known after apply)
+      + member = "serviceAccount:python-sandbox-runtime@grace-2-hazard-prod.iam.gserviceaccount.com"
+      + role   = "roles/storage.objectViewer"
+    }
+
+  # google_storage_bucket_iam_member.python_sandbox_runs_viewer will be created
+  + resource "google_storage_bucket_iam_member" "python_sandbox_runs_viewer" {
+      + bucket = "grace-2-hazard-prod-runs"
+      + etag   = (known after apply)
+      + id     = (known after apply)
+      + member = "serviceAccount:python-sandbox-runtime@grace-2-hazard-prod.iam.gserviceaccount.com"
+      + role   = "roles/storage.objectViewer"
+    }
+
+  # google_storage_bucket_iam_member.workflow_invoker_modflow_runs_viewer will be created
+  + resource "google_storage_bucket_iam_member" "workflow_invoker_modflow_runs_viewer" {
+      + bucket = "grace-2-hazard-prod-runs"
+      + etag   = (known after apply)
+      + id     = (known after apply)
+      + member = "serviceAccount:workflow-invoker-modflow@grace-2-hazard-prod.iam.gserviceaccount.com"
+      + role   = "roles/storage.objectViewer"
+    }
+
+  # google_vpc_access_connector.sandbox will be created
+  + resource "google_vpc_access_connector" "sandbox" {
+      + connected_projects = (known after apply)
+      + id                 = (known after apply)
+      + ip_cidr_range      = "10.180.1.0/28"
+      + machine_type       = "e2-micro"
+      + max_instances      = 3
+      + max_throughput     = (known after apply)
+      + min_instances      = 2
+      + min_throughput     = (known after apply)
+      + name               = "grace-2-sandbox-vpc"
+      + network            = "grace-2-sandbox-net"
+      + project            = "grace-2-hazard-prod"
+      + region             = "us-central1"
+      + self_link          = (known after apply)
+      + state              = (known after apply)
+    }
+
+  # google_workflows_workflow.modflow_orchestrator will be created
+  + resource "google_workflows_workflow" "modflow_orchestrator" {
+      + create_time         = (known after apply)
+      + deletion_protection = true
+      + description         = "FR-CE-2 orchestration for the MODFLOW 6 solver Cloud Run Job. Invoked by agent.run_modflow_job (job-0227); cancellation propagates to the running Job execution (Invariant 8)."
+      + effective_labels    = {
+          + "component"                  = "modflow-solver"
+          + "env"                        = "dev"
+          + "goog-terraform-provisioned" = "true"
+          + "project"                    = "grace-2"
+          + "sprint"                     = "13"
+        }
+      + id                  = (known after apply)
+      + labels              = {
+          + "component" = "modflow-solver"
+          + "env"       = "dev"
+          + "project"   = "grace-2"
+          + "sprint"    = "13"
+        }
+      + name                = "grace-2-modflow-orchestrator"
+      + name_prefix         = (known after apply)
+      + project             = "grace-2-hazard-prod"
+      + region              = "us-central1"
+      + revision_id         = (known after apply)
+      + service_account     = (known after apply)
+      + source_contents     = <<-EOT
+            # GRACE-2 MODFLOW orchestrator (sprint-13 / MOD-1 / FR-CE-2 / job-0220).
+            #
+            # Inputs (passed as the executions.create `argument` JSON):
+            #   {
+            #     "run_id":       "<run identifier>",
+            #     "manifest_uri": "gs://<bucket>/modflow/<run_id>/manifest.json"
+            #   }
+            #
+            # Output: parsed completion.json the entrypoint wrote to the runs bucket
+            # (carries the MODFLOW-specific `converged` + `model_crs` fields).
+            
+            main:
+              params: [args]
+              steps:
+                - validate:
+                    switch:
+                      - condition: '${not("run_id" in args)}'
+                        raise: "INVALID_INPUT: run_id is required"
+                      - condition: '${not("manifest_uri" in args)}'
+                        raise: "INVALID_INPUT: manifest_uri is required"
+                - invoke_mf6_job:
+                    try:
+                      call: googleapis.run.v2.projects.locations.jobs.run
+                      args:
+                        name: "projects/grace-2-hazard-prod/locations/us-central1/jobs/grace-2-modflow-solver"
+                        connector_params:
+                          timeout: 8400
+                        body:
+                          overrides:
+                            containerOverrides:
+                              - env:
+                                  - name: GRACE2_RUN_ID
+                                    value: '${args.run_id}'
+                                  - name: GRACE2_MANIFEST_URI
+                                    value: '${args.manifest_uri}'
+                      result: job_execution
+                    except:
+                      as: e
+                      steps:
+                        - log_job_error:
+                            call: sys.log
+                            args:
+                              data: '${e}'
+                              severity: "ERROR"
+                        - return_job_error:
+                            return:
+                              run_id: '${args.run_id}'
+                              status: "error"
+                              error: '${"modflow job execution failed: " + json.encode_to_string(e)}'
+                - read_completion:
+                    try:
+                      call: googleapis.storage.v1.objects.get
+                      args:
+                        bucket: "grace-2-hazard-prod-runs"
+                        object: '${args.run_id + "/completion.json"}'
+                        alt: "media"
+                      result: completion
+                    except:
+                      as: e
+                      steps:
+                        - log_completion_error:
+                            call: sys.log
+                            args:
+                              data: '${e}'
+                              severity: "ERROR"
+                        - return_missing_completion:
+                            return:
+                              run_id: '${args.run_id}'
+                              status: "error"
+                              error: "completion.json missing; entrypoint did not finalize"
+                - return_completion:
+                    return: '${completion}'
+        EOT
+      + state               = (known after apply)
+      + terraform_labels    = {
+          + "component"                  = "modflow-solver"
+          + "env"                        = "dev"
+          + "goog-terraform-provisioned" = "true"
+          + "project"                    = "grace-2"
+          + "sprint"                     = "13"
+        }
+      + update_time         = (known after apply)
+    }
+
+  # module.firebase.google_firebaserules_release.auth will be created
+  + resource "google_firebaserules_release" "auth" {
+      + create_time  = (known after apply)
+      + disabled     = (known after apply)
+      + id           = (known after apply)
+      + name         = "cloud.firestore"
+      + project      = "grace-2-hazard-prod"
+      + ruleset_name = (known after apply)
+      + update_time  = (known after apply)
+    }
+
+  # module.firebase.google_firebaserules_ruleset.auth will be created
+  + resource "google_firebaserules_ruleset" "auth" {
+      + create_time = (known after apply)
+      + id          = (known after apply)
+      + metadata    = (known after apply)
+      + name        = (known after apply)
+      + project     = "grace-2-hazard-prod"
+
+      + source {
+          + files {
+              + content = <<-EOT
+                    rules_version = '2';
+                    
+                    // GRACE-2 production Firestore security rules — job-0250 (sprint-13.5 Stage 1).
+                    //
+                    // Policy (SRS §F.1; manifest job-0250 scope):
+                    //   - DEFAULT DENY: anything not explicitly matched below is denied for all
+                    //     reads and writes. Firestore rules are deny-by-default already; the
+                    //     trailing catch-all match makes the posture explicit and audit-visible.
+                    //   - Per-UID namespace isolation: a signed-in user may read/write ONLY
+                    //     documents under their own UID namespace. No cross-user access.
+                    //   - Server-side enforcement: these rules are evaluated by Firestore on every
+                    //     request regardless of client code. A forged client cannot bypass them.
+                    //
+                    // IMPORTANT: GRACE-2's *primary* persistence is MongoDB Atlas via the MCP
+                    // surface (Cases/sessions/users/audit_log) — see
+                    // feedback_mongodb_mcp_canonical_persistence. Firestore here is the
+                    // IDENTITY / TIER-GATING store (custom claims { tier }, per-user case_ids
+                    // index), NOT the Case data store. These rules lock down that identity surface.
+                    
+                    service cloud.firestore {
+                      match /databases/{database}/documents {
+                    
+                        // --- Helper predicates -------------------------------------------------
+                        function isSignedIn() {
+                          return request.auth != null;
+                        }
+                    
+                        function isOwner(uid) {
+                          return isSignedIn() && request.auth.uid == uid;
+                        }
+                    
+                        // --- /users/{uid}/** : per-UID namespace ------------------------------
+                        // A user may read and write ONLY their own user document and any
+                        // subcollection beneath it. tier/case_ids profile data lives here.
+                        match /users/{uid} {
+                          allow read, write: if isOwner(uid);
+                    
+                          // Any nested subcollection (e.g. /users/{uid}/preferences/...) inherits
+                          // the same owner-only rule.
+                          match /{document=**} {
+                            allow read, write: if isOwner(uid);
+                          }
+                        }
+                    
+                        // --- /cases/{caseId} : owned-by-user_id -------------------------------
+                        // A case document carries a user_id field (Firebase UID). A user may read
+                        // it only if they own it; on create, the new document's user_id must equal
+                        // their own UID (prevents writing cases owned by someone else).
+                        //
+                        // NOTE: canonical Case data is in MongoDB; this rule covers any Firestore
+                        // case index/mirror, keeping the per-UID invariant uniform across stores.
+                        match /cases/{caseId} {
+                          allow read, update, delete: if isSignedIn()
+                            && resource.data.user_id == request.auth.uid;
+                          allow create: if isSignedIn()
+                            && request.resource.data.user_id == request.auth.uid;
+                        }
+                    
+                        // --- DEFAULT DENY (explicit catch-all) --------------------------------
+                        // Everything not matched above is denied for all operations.
+                        match /{document=**} {
+                          allow read, write: if false;
+                        }
+                      }
+                    }
+                EOT
+              + name    = "firestore.rules"
+            }
+        }
+    }
+
+  # module.firebase.google_firestore_database.auth will be created
+  + resource "google_firestore_database" "auth" {
+      + app_engine_integration_mode       = (known after apply)
+      + concurrency_mode                  = (known after apply)
+      + create_time                       = (known after apply)
+      + database_edition                  = (known after apply)
+      + delete_protection_state           = "DELETE_PROTECTION_ENABLED"
+      + deletion_policy                   = "ABANDON"
+      + earliest_version_time             = (known after apply)
+      + etag                              = (known after apply)
+      + id                                = (known after apply)
+      + key_prefix                        = (known after apply)
+      + location_id                       = "nam5"
+      + name                              = "(default)"
+      + point_in_time_recovery_enablement = "POINT_IN_TIME_RECOVERY_ENABLED"
+      + project                           = "grace-2-hazard-prod"
+      + type                              = "FIRESTORE_NATIVE"
+      + uid                               = (known after apply)
+      + update_time                       = (known after apply)
+      + version_retention_period          = (known after apply)
+    }
+
+  # module.firebase.google_identity_platform_config.auth will be created
+  + resource "google_identity_platform_config" "auth" {
+      + authorized_domains = [
+          + "localhost",
+          + "grace-2-hazard-prod.web.app",
+          + "grace-2-hazard-prod.firebaseapp.com",
+        ]
+      + id                 = (known after apply)
+      + name               = (known after apply)
+      + project            = "grace-2-hazard-prod"
+
+      + client {
+          + api_key            = (sensitive value)
+          + firebase_subdomain = (known after apply)
+
+          + permissions {
+              + disabled_user_deletion = false
+              + disabled_user_signup   = false
+            }
+        }
+
+      + mfa (known after apply)
+
+      + monitoring (known after apply)
+
+      + sign_in {
+          + hash_config = (known after apply)
+
+          + anonymous {
+              + enabled = false
+            }
+
+          + email {
+              + enabled           = true
+              + password_required = true
+            }
+        }
+
+      + sms_region_config (known after apply)
+    }
+
+Plan: 35 to add, 2 to change, 0 to destroy.
+
+Changes to Outputs:
+  + firebase_anonymous_enabled             = false
+  + firebase_authorized_domains            = [
+      + "localhost",
+      + "grace-2-hazard-prod.web.app",
+      + "grace-2-hazard-prod.firebaseapp.com",
+    ]
+  + firebase_firestore_database_name       = "(default)"
+  + firebase_firestore_rules_release_name  = "cloud.firestore"
+  + firebase_google_idp_enabled            = false
+  + firebase_identity_platform_config_name = (known after apply)
+╷
+│ Warning: either Atlas Programmatic API Keys or AWS Secrets Manager attributes must be set
+│ 
+│   with provider["registry.opentofu.org/mongodb/mongodbatlas"],
+│   on providers.tf line 19, in provider "mongodbatlas":
+│   19: provider "mongodbatlas" {
+│ 
+│ (and one more similar warning elsewhere)
+╵
+╷
+│ Warning: error in configuring the provider.
+│ 
+│   with provider["registry.opentofu.org/mongodb/mongodbatlas"],
+│   on providers.tf line 19, in provider "mongodbatlas":
+│   19: provider "mongodbatlas" {
+│ 
+│ either Atlas Programmatic API Keys or AWS Secrets Manager attributes must
+│ be set
+╵
+╷
+│ Error: error reading flex cluster (6a234700a0e1295958d10cf9): grace-2-dev
+│ 
+│   with mongodbatlas_flex_cluster.dev,
+│   on atlas.tf line 37, in resource "mongodbatlas_flex_cluster" "dev":
+│   37: resource "mongodbatlas_flex_cluster" "dev" {
+│ 
+│ https://cloud.mongodb.com/api/atlas/v2/groups/6a234700a0e1295958d10cf9/flexClusters/grace-2-dev
+│ GET: HTTP 401 Unauthorized (Error code: "") Detail: You are not authorized
+│ for this resource. Reason: Unauthorized. Params: [], BadRequestDetail: 
+╵
+╷
+│ Error: error getting project ip access list information
+│ 
+│   with mongodbatlas_project_ip_access_list.dev_ip,
+│   on atlas.tf line 61, in resource "mongodbatlas_project_ip_access_list" "dev_ip":
+│   61: resource "mongodbatlas_project_ip_access_list" "dev_ip" {
+│ 
+│ https://cloud.mongodb.com/api/atlas/v2/groups/6a234700a0e1295958d10cf9/accessList/67.160.98.51%2F32
+│ GET: HTTP 401 Unauthorized (Error code: "") Detail: You are not authorized
+│ for this resource. Reason: Unauthorized. Params: [], BadRequestDetail: 
+╵
+╷
+│ Error: error getting database user information
+│ 
+│   with mongodbatlas_database_user.worker,
+│   on atlas.tf line 79, in resource "mongodbatlas_database_user" "worker":
+│   79: resource "mongodbatlas_database_user" "worker" {
+│ 
+│ https://cloud.mongodb.com/api/atlas/v2/groups/6a234700a0e1295958d10cf9/databaseUsers/admin/grace2-worker
+│ GET: HTTP 401 Unauthorized (Error code: "") Detail: You are not authorized
+│ for this resource. Reason: Unauthorized. Params: [], BadRequestDetail: 
+╵

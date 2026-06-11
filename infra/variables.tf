@@ -73,3 +73,27 @@ variable "dev_ip_cidr" {
   description = "Developer machine's public IPv4 as a /32 (Atlas access list entry)."
   type        = string
 }
+
+# --- Firebase / Identity Platform auth (sprint-13.5 / job-0250) ------------
+#
+# Google OAuth web-client credentials for the Google sign-in IdP. Created in
+# the GCP console via the OAuth consent screen flow (console-only — see
+# reports/inflight/sprint-13-5-USER_UNBLOCK.md). Values live ONLY in the
+# gitignored terraform.tfvars (or shell env TF_VAR_google_oauth_client_id /
+# _secret); NEVER committed (NFR-S-2/S-3). When empty, the Google IdP resource
+# is skipped (count=0) and email/password sign-in still works — so the plan is
+# green pre-credential.
+
+variable "google_oauth_client_id" {
+  description = "OAuth 2.0 web client ID for Google sign-in (console-created; gitignored). Empty = skip the Google IdP resource."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "google_oauth_client_secret" {
+  description = "OAuth 2.0 web client secret for Google sign-in (console-created; gitignored). Empty = skip the Google IdP resource."
+  type        = string
+  default     = ""
+  sensitive   = true
+}

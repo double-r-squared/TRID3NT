@@ -1,0 +1,65 @@
+rules_version = '2';
+
+// GRACE-2 production Firestore security rules — job-0250 (sprint-13.5 Stage 1).
+//
+// Policy (SRS §F.1; manifest job-0250 scope):
+//   - DEFAULT DENY: anything not explicitly matched below is denied for all
+//     reads and writes. Firestore rules are deny-by-default already; the
+//     trailing catch-all match makes the posture explicit and audit-visible.
+//   - Per-UID namespace isolation: a signed-in user may read/write ONLY
+//     documents under their own UID namespace. No cross-user access.
+//   - Server-side enforcement: these rules are evaluated by Firestore on every
+//     request regardless of client code. A forged client cannot bypass them.
+//
+// IMPORTANT: GRACE-2's *primary* persistence is MongoDB Atlas via the MCP
+// surface (Cases/sessions/users/audit_log) — see
+// feedback_mongodb_mcp_canonical_persistence. Firestore here is the
+// IDENTITY / TIER-GATING store (custom claims { tier }, per-user case_ids
+// index), NOT the Case data store. These rules lock down that identity surface.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // --- Helper predicates -------------------------------------------------
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    // --- /users/{uid}/** : per-UID namespace ------------------------------
+    // A user may read and write ONLY their own user document and any
+    // subcollection beneath it. tier/case_ids profile data lives here.
+    match /users/{uid} {
+      allow read, write: if isOwner(uid);
+
+      // Any nested subcollection (e.g. /users/{uid}/preferences/...) inherits
+      // the same owner-only rule.
+      match /{document=**} {
+        allow read, write: if isOwner(uid);
+      }
+    }
+
+    // --- /cases/{caseId} : owned-by-user_id -------------------------------
+    // A case document carries a user_id field (Firebase UID). A user may read
+    // it only if they own it; on create, the new document's user_id must equal
+    // their own UID (prevents writing cases owned by someone else).
+    //
+    // NOTE: canonical Case data is in MongoDB; this rule covers any Firestore
+    // case index/mirror, keeping the per-UID invariant uniform across stores.
+    match /cases/{caseId} {
+      allow read, update, delete: if isSignedIn()
+        && resource.data.user_id == request.auth.uid;
+      allow create: if isSignedIn()
+        && request.resource.data.user_id == request.auth.uid;
+    }
+
+    // --- DEFAULT DENY (explicit catch-all) --------------------------------
+    // Everything not matched above is denied for all operations.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

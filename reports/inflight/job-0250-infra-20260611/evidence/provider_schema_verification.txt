@@ -1,0 +1,14 @@
+Provider: hashicorp/google 6.50.0 (locked) — job-0250 resource availability
+====================================================================
+
+USED BY job-0250 (must be present in GA provider):
+  PRESENT  google_identity_platform_config
+  PRESENT  google_identity_platform_default_supported_idp_config
+  PRESENT  google_firestore_database
+  PRESENT  google_firebaserules_ruleset
+  PRESENT  google_firebaserules_release
+
+DELIBERATELY NOT USED (google-beta only -> console/later-job):
+  absent (beta-only, as expected) : google_firebase_project
+  absent (beta-only, as expected) : google_firebase_web_app
+  absent (beta-only, as expected) : google_firebase_hosting_site
