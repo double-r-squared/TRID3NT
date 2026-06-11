@@ -1435,6 +1435,15 @@
       "kind": "engineering",
       "workflow_id": "agents afc79a6744ec3e647 + a803e6de845067073",
       "subagent_tokens": 397002
+    },
+    {
+      "job_id": "job-0278-mobile-ui-20260611",
+      "sprint": 13,
+      "description": "Mobile-friendly UI (user-directed Fable agent, purely web): useIsMobile hook + slide-in Cases drawer + chat bottom sheet + touch targets + mobile screenshots; vitest 616 (+26).",
+      "model": "fable-1m",
+      "kind": "engineering",
+      "workflow_id": "agent a61ee22ca6b803019",
+      "subagent_tokens": 208959
     }
   ],
   "totals_by_sprint": {
@@ -1445,7 +1454,7 @@
     "10": 1540974,
     "11": 999540,
     "12": 27545642,
-    "13": 13979617,
+    "13": 14188576,
     "13.5": 175296
   },
   "historical_context": {
