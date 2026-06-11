@@ -1516,6 +1516,15 @@
       "kind": "verification",
       "workflow_id": "wf_85f54b3f-b37",
       "subagent_tokens": 274766
+    },
+    {
+      "job_id": "job-0284-mobile-map-centric-20260611",
+      "sprint": 13.5,
+      "description": "Fable mobile map-centric pass: floating translucent drawer cards (invisible backdrop), translucent chat sheet (0.58/0.68 alpha), single Cases back affordance, pill/sheet collision fix; desktop byte-identical (PIL zero-pixel proof); vitest 686.",
+      "model": "fable-1m",
+      "kind": "engineering",
+      "workflow_id": "agent a8da576d3f9c6cec1",
+      "subagent_tokens": 203389
     }
   ],
   "totals_by_sprint": {
@@ -1527,7 +1536,7 @@
     "11": 999540,
     "12": 27545642,
     "13": 14388888,
-    "13.5": 1346716
+    "13.5": 1550105
   },
   "historical_context": {
     "note": "Captured for accountability \u2014 NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
