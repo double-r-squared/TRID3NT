@@ -554,6 +554,10 @@ class SessionState:
     # can re-bind layers via the same emission sequence.
     current_turn_layer_ids: list[str] = field(default_factory=list)
     current_turn_pipeline_id: str | None = None
+    # job-0281: per-turn zoom-to accumulator — persisted into the closing
+    # agent row's ``map_command_emissions`` so Case reopen can snap the
+    # camera back (job-0280 web replays the LAST persisted zoom-to).
+    current_turn_map_commands: list[dict] = field(default_factory=list)
     # job-0267: per-turn narration accumulator. ``_stream_gemini_reply``
     # resets it at stream start and appends every ``TextDeltaEvent`` delta
     # (across ALL loop iterations — they share one ``message_id`` bubble on
@@ -1141,6 +1145,18 @@ async def _stream_gemini_reply(
                         try:
                             await state.emitter.emit_map_command(
                                 "zoom-to", {"bbox": list(result["bbox"])}
+                            )
+                            # job-0281: accumulate the turn's zoom-to so the
+                            # closing CaseChatMessage persists it in
+                            # ``map_command_emissions`` — the Case-reopen
+                            # snap-to-location (job-0280 web) replays the
+                            # LAST persisted zoom-to. Field existed since
+                            # job-0099 but never had a writer.
+                            state.current_turn_map_commands.append(
+                                {
+                                    "command": "zoom-to",
+                                    "args": {"bbox": list(result["bbox"])},
+                                }
                             )
                         except Exception:  # noqa: BLE001 — UX nicety only
                             logger.debug("geocode zoom-to emit failed", exc_info=True)
@@ -2215,6 +2231,15 @@ async def _persist_chat_turn(
             list(state.current_turn_layer_ids)
             if layer_emissions is None
             else list(layer_emissions)
+        ),
+        # job-0281: persist the turn's zoom-to emissions (geocode snap) on
+        # rows that snapshot the accumulator (agent/user rows) — the
+        # Case-reopen snap-to-location replays the LAST one (job-0280 web).
+        # Tool rows pass layer_emissions=[] and get [] here too.
+        map_command_emissions=(
+            list(state.current_turn_map_commands)
+            if layer_emissions is None
+            else []
         ),
         created_at=now_utc(),
     )
@@ -3937,6 +3962,7 @@ def _make_handler(settings: GeminiSettings):
                         # job-0268 pin; full per-turn context is 13.5 scope.)
                         state.current_turn_layer_ids = []
                         state.current_turn_pipeline_id = None
+                        state.current_turn_map_commands = []
                         # job-0259 + job-0121 + job-0262 pre-dispatch
                         # sequence (see ``_prepare_user_turn``): sibling-
                         # connection Case sync, AUTO-CREATE Case for a

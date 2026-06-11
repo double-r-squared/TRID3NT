@@ -283,3 +283,33 @@ async def test_auto_created_case_receives_full_stream(
     assert [m.role for m in rows] == ["user", "tool", "agent"]
     assert rows[0].content == "model the flood in fort myers"
     assert rows[2].content == "Working. Done."
+
+
+# --------------------------------------------------------------------------- #
+# job-0281: the turn's zoom-to emissions persist on accumulator-snapshot rows
+# (Case-reopen snap-to-location replays the LAST one — job-0280 web).
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_map_command_emissions_persist_on_agent_row(
+    file_persistence,
+) -> None:
+    ws = FakeWS()
+    state = server.SessionState(session_id=new_ulid())
+    case = await _create_case(ws, state, "Snap Case")
+    state.current_turn_map_commands = [
+        {"command": "zoom-to", "args": {"bbox": [-105.3, 39.9, -105.1, 40.1]}}
+    ]
+    await server._persist_chat_turn(state, role="agent", content="done")
+    # Tool rows snapshot NOTHING (mirrors layer_emissions=[]).
+    await server._persist_chat_turn(
+        state, role="tool", content="{}", layer_emissions=[]
+    )
+    chat = (await file_persistence.get_session_state(case)).chat_history
+    agent_rows = [m for m in chat if m.role == "agent"]
+    tool_rows = [m for m in chat if m.role == "tool"]
+    assert agent_rows[0].map_command_emissions == [
+        {"command": "zoom-to", "args": {"bbox": [-105.3, 39.9, -105.1, 40.1]}}
+    ]
+    assert tool_rows[0].map_command_emissions == []
