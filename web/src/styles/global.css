@@ -40,3 +40,26 @@ button {
   font-size: inherit;
   color: inherit;
 }
+
+/* job-0278 — mobile drawer touch targets (>=44px, Apple HIG minimum).
+ *
+ * `.grace2-mobile-touch` is applied ONLY by MobileDrawer.tsx, which mounts
+ * ONLY below the 768px breakpoint (useIsMobile guard in App.tsx) — desktop
+ * rendering is pixel-identical. min-width/min-height clamp the inline
+ * width/height the components declare (a min-* stylesheet rule always wins
+ * over an inline height, no !important needed).
+ *
+ * Deliberately scoped to the Case-row / breadcrumb / pill controls.
+ * LayerPanel's 16-22px drag-handle / eye / slider cluster is EXCLUDED:
+ * bumping those would break the 288px row layout (kickoff: "bump hit area
+ * on mobile only if trivial" — it is not trivial there).
+ */
+.grace2-mobile-touch [data-testid="grace2-case-row"] button,
+.grace2-mobile-touch [data-testid="grace2-cases-new"],
+.grace2-mobile-touch [data-testid="grace2-case-view-back"],
+.grace2-mobile-touch [data-testid="grace2-case-view-cases-link"],
+.grace2-mobile-touch [data-testid="grace2-bottom-row-settings"],
+.grace2-mobile-touch [data-testid="grace2-bottom-row-secrets"] {
+  min-height: 44px;
+  min-width: 44px;
+}

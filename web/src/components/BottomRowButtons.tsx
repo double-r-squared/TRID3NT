@@ -7,6 +7,12 @@
 export interface BottomRowButtonsProps {
   onOpenSettings: () => void;
   onOpenSecrets: () => void;
+  /**
+   * job-0278 — "floating" (default) is the desktop absolute bottom-left
+   * placement, unchanged. "inline" renders the same pills in normal flow so
+   * the mobile drawer can fold them into its footer.
+   */
+  variant?: "floating" | "inline";
 }
 
 const rowStyle: React.CSSProperties = {
@@ -17,6 +23,14 @@ const rowStyle: React.CSSProperties = {
   flexDirection: "row",
   gap: 6,
   zIndex: 20,
+  fontFamily:
+    "-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif",
+};
+
+const inlineRowStyle: React.CSSProperties = {
+  display: "flex",
+  flexDirection: "row",
+  gap: 6,
   fontFamily:
     "-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif",
 };
@@ -38,9 +52,14 @@ const pillStyle: React.CSSProperties = {
 export function BottomRowButtons({
   onOpenSettings,
   onOpenSecrets,
+  variant = "floating",
 }: BottomRowButtonsProps): JSX.Element {
   return (
-    <div data-testid="grace2-bottom-row-buttons" style={rowStyle}>
+    <div
+      data-testid="grace2-bottom-row-buttons"
+      data-variant={variant}
+      style={variant === "inline" ? inlineRowStyle : rowStyle}
+    >
       <button
         data-testid="grace2-bottom-row-settings"
         onClick={onOpenSettings}

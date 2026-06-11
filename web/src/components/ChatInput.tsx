@@ -76,6 +76,13 @@ export interface ChatInputProps {
    * so the floating input never clips messages.
    */
   onHeightChange?: (heightPx: number) => void;
+  /**
+   * job-0278 — textarea font size in px (default 14, the historical desktop
+   * value). The mobile bottom sheet passes 16: iOS Safari auto-zooms the
+   * page when focusing an input whose font-size is < 16px, which would
+   * wreck the fixed-shell layout on phones. Desktop callers omit it.
+   */
+  fontSizePx?: number;
 }
 
 const MIN_HEIGHT_PX = 48;
@@ -139,6 +146,7 @@ export function ChatInput({
   placeholder = "Reply to GRACE-2",
   maxVh = DEFAULT_MAX_VH,
   onHeightChange,
+  fontSizePx = 14,
 }: ChatInputProps): JSX.Element {
   const [draft, setDraft] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -276,7 +284,7 @@ export function ChatInput({
           border: "none",
           outline: "none",
           fontFamily: "inherit",
-          fontSize: 14,
+          fontSize: fontSizePx,
           lineHeight: 1.4,
           padding: "6px 2px",
         }}

@@ -42,4 +42,30 @@ describe("BottomRowButtons", () => {
     fireEvent.click(screen.getByTestId("grace2-bottom-row-secrets"));
     expect(onOpenSecrets).toHaveBeenCalledTimes(1);
   });
+
+  // job-0278 — mobile drawer footer variant.
+  it("defaults to the floating (absolute bottom-left) variant", () => {
+    render(
+      <BottomRowButtons onOpenSettings={vi.fn()} onOpenSecrets={vi.fn()} />,
+    );
+    const row = screen.getByTestId("grace2-bottom-row-buttons");
+    expect(row).toHaveAttribute("data-variant", "floating");
+    expect(row.style.position).toBe("absolute");
+  });
+
+  it("inline variant renders in normal flow (mobile drawer footer)", () => {
+    render(
+      <BottomRowButtons
+        onOpenSettings={vi.fn()}
+        onOpenSecrets={vi.fn()}
+        variant="inline"
+      />,
+    );
+    const row = screen.getByTestId("grace2-bottom-row-buttons");
+    expect(row).toHaveAttribute("data-variant", "inline");
+    expect(row.style.position).toBe("");
+    // Both pills still present + wired.
+    expect(screen.getByTestId("grace2-bottom-row-settings")).toBeTruthy();
+    expect(screen.getByTestId("grace2-bottom-row-secrets")).toBeTruthy();
+  });
 });

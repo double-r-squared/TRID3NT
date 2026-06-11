@@ -72,7 +72,12 @@ import {
 import { GraceWs } from "./ws";
 import { SourceCandidatePayload } from "./lib/source_suggestion_suppression";
 import { useCases } from "./hooks/useCases";
+import { useIsMobile } from "./hooks/useIsMobile";
 import { useSaveGate } from "./hooks/useSaveGate";
+import {
+  MobileDrawer,
+  MobileDrawerButton,
+} from "./components/MobileDrawer";
 import {
   CaseListEnvelopePayload,
   CaseOpenEnvelopePayload,
@@ -182,6 +187,14 @@ const hamburgerBtnStyle: React.CSSProperties = {
 
 export function App(): JSX.Element {
   const bus = useMemo(() => createLayerPanelBus(), []);
+
+  // job-0278 — mobile layout (<768px). EVERY mobile divergence below is
+  // guarded by this flag so desktop renders pixel-identical to before.
+  const isMobile = useIsMobile();
+  // Mobile-only: slide-in drawer (replaces the desktop left rail). Hidden
+  // by default; deliberately NOT persisted to localStorage — the drawer is
+  // an overlay, and the desktop collapse keys keep their own semantics.
+  const [mobileDrawerOpen, setMobileDrawerOpen] = useState<boolean>(false);
 
   // Collapse toggles — initialised from localStorage so reloads remember
   // the user's preference.
@@ -674,13 +687,35 @@ export function App(): JSX.Element {
         theme={theme}
       />
 
-      {/* LayerLegend — bottom-center absolute; z-index 10. */}
-      <LayerLegend layers={layers} />
+      {/* LayerLegend — bottom-center absolute; z-index 10. job-0278: on
+          mobile it rides in a zero-height offset wrapper so it clears the
+          bottom-sheet composer (~126px collapsed); the expanded sheet
+          (z=32) simply covers it. */}
+      {isMobile ? (
+        <div
+          data-testid="grace2-mobile-legend-offset"
+          style={{
+            position: "absolute",
+            left: 0,
+            right: 0,
+            bottom: 116,
+            height: 0,
+            pointerEvents: "none",
+            zIndex: 10,
+          }}
+        >
+          <LayerLegend layers={layers} />
+        </div>
+      ) : (
+        <LayerLegend layers={layers} />
+      )}
 
       {/* Left rail (job-0143):
             - No active Case → CasesPanel only (list view).
-            - Active Case → CaseView (breadcrumb + LayerPanel children). */}
-      {!leftCollapsed && activeCaseId === null && (
+            - Active Case → CaseView (breadcrumb + LayerPanel children).
+          job-0278: desktop only — on mobile the SAME content rides in the
+          slide-in MobileDrawer below. */}
+      {!isMobile && !leftCollapsed && activeCaseId === null && (
         <div
           data-testid="grace2-left-rail"
           data-mode="cases-list"
@@ -703,7 +738,7 @@ export function App(): JSX.Element {
           />
         </div>
       )}
-      {!leftCollapsed && activeCaseId !== null && (
+      {!isMobile && !leftCollapsed && activeCaseId !== null && (
         <>
           {/* Breadcrumb at the canonical top-left position. z-index 22 so
               it sits ABOVE the LayerPanel wrapper (z=20) — the panel is
@@ -793,8 +828,10 @@ export function App(): JSX.Element {
       )}
 
       {/* job-0143: Bottom-row Settings + Secrets pills. Hidden when the
-          left rail is collapsed (they belong to the rail). */}
-      {!leftCollapsed && (
+          left rail is collapsed (they belong to the rail). job-0278: on
+          mobile they fold into the drawer footer instead — the floating
+          pills would collide with the bottom-sheet composer. */}
+      {!isMobile && !leftCollapsed && (
         <BottomRowButtons
           onOpenSettings={() => setSettingsOpen(true)}
           onOpenSecrets={() => setSecretsOpen(true)}
@@ -807,9 +844,12 @@ export function App(): JSX.Element {
       {/* Visually hidden via display:none + aria-hidden when collapsed.        */}
       <div
         data-testid="grace2-chat-mount"
-        aria-hidden={rightCollapsed}
+        aria-hidden={rightCollapsed && !isMobile}
         style={{
-          display: rightCollapsed ? "none" : "contents",
+          // job-0278 — on mobile the chat is always present as the bottom
+          // sheet (its own collapsed state IS the minimized form); the
+          // desktop right-collapse toggle doesn't apply.
+          display: rightCollapsed && !isMobile ? "none" : "contents",
         }}
       >
         {/* job-0266 — activeCaseId selects Chat's visible per-Case stream:
@@ -819,11 +859,12 @@ export function App(): JSX.Element {
           wsUrl={WS_URL}
           onClose={collapseRight}
           activeCaseId={activeCaseId}
+          mobile={isMobile}
         />
       </div>
 
-      {/* Layers hamburger — top-LEFT. */}
-      {showLayersHamburger && (
+      {/* Layers hamburger — top-LEFT. (Desktop; mobile uses the drawer ☰.) */}
+      {!isMobile && showLayersHamburger && (
         <button
           data-testid="grace2-layers-hamburger"
           aria-label="Show layers"
@@ -836,8 +877,9 @@ export function App(): JSX.Element {
         </button>
       )}
 
-      {/* Chat hamburger — top-RIGHT. */}
-      {showChatHamburger && (
+      {/* Chat hamburger — top-RIGHT. (Desktop only — the mobile sheet is
+          always mounted with its own toggle handle.) */}
+      {!isMobile && showChatHamburger && (
         <button
           data-testid="grace2-chat-hamburger"
           aria-label="Show chat"
@@ -849,6 +891,94 @@ export function App(): JSX.Element {
         </button>
       )}
 
+      {/* job-0278 — mobile ☰ opener (top-left, 44px touch target). Hidden
+          while the drawer is open (the drawer overlays it anyway). */}
+      {isMobile && !mobileDrawerOpen && (
+        <MobileDrawerButton
+          open={mobileDrawerOpen}
+          onClick={() => setMobileDrawerOpen(true)}
+        />
+      )}
+
+      {/* job-0278 — mobile slide-in drawer. Hosts the SAME left-rail
+          content as desktop (CasesPanel at root; CaseView + LayerPanel
+          inside a Case) plus the Settings/Secrets pills in its footer.
+          Tapping a Case row or the backdrop closes it. */}
+      {isMobile && (
+        <MobileDrawer
+          open={mobileDrawerOpen}
+          onClose={() => setMobileDrawerOpen(false)}
+        >
+          {activeCaseId === null ? (
+            <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
+              <CasesPanel
+                cases={cases}
+                activeCaseId={activeCaseId}
+                onCreate={onCreateGated}
+                onSelect={(caseId) => {
+                  selectCase(caseId);
+                  setMobileDrawerOpen(false);
+                }}
+                onRename={onRenameGated}
+                onArchive={onArchiveGated}
+                onDelete={onDeleteGated}
+              />
+            </div>
+          ) : (
+            <>
+              <CaseView
+                caseTitle={activeCase?.title ?? "Case"}
+                onBack={handleCaseBack}
+              />
+              {layers.length === 0 ? (
+                <div
+                  data-testid="grace2-case-view-empty-layers"
+                  style={{
+                    background: "rgba(15,15,20,0.92)",
+                    border: "1px dashed #444",
+                    borderRadius: 8,
+                    padding: 12,
+                    color: "#999",
+                    fontSize: 12,
+                    textAlign: "center",
+                    lineHeight: 1.4,
+                    boxSizing: "border-box",
+                  }}
+                >
+                  No layers loaded yet. Ask the assistant to add data.
+                </div>
+              ) : (
+                <div style={{ position: "relative", flex: 1, minHeight: 0 }}>
+                  {/* LayerPanel positions itself absolutely (left:16 /
+                      top:16 / bottom:16 / width:288) relative to this
+                      wrapper — it fills the drawer column. */}
+                  <LayerPanel
+                    subscribeSessionState={bus.subscribeSessionState}
+                    subscribeMapCommand={bus.subscribeMapCommand}
+                    initialLayers={layers}
+                    onClose={() => setMobileDrawerOpen(false)}
+                    onMapCommand={bus.pushMapCommand}
+                  />
+                </div>
+              )}
+            </>
+          )}
+          <div style={{ flex: "0 0 auto", paddingTop: 8 }}>
+            <BottomRowButtons
+              variant="inline"
+              onOpenSettings={() => {
+                setMobileDrawerOpen(false);
+                setSettingsOpen(true);
+              }}
+              onOpenSecrets={() => {
+                setMobileDrawerOpen(false);
+                setSecretsOpen(true);
+              }}
+            />
+          </div>
+        </MobileDrawer>
+      )}
+
       {/* Upgrade toast (job-0138 kickoff item 6). Renders below the chat
           hamburger so it doesn't collide with adjacent UI. */}
       {upgradeToast && (
@@ -858,7 +988,10 @@ export function App(): JSX.Element {
           style={{
             position: "absolute",
             top: 56,
-            right: rightCollapsed ? 60 : 380,
+            // job-0278 — mobile: anchored near the right edge (the desktop
+            // offsets assume the 380px side panel / hamburger, which don't
+            // exist on phones and would push the toast off a 390px screen).
+            right: isMobile ? 12 : rightCollapsed ? 60 : 380,
             background: "rgba(20,40,60,0.95)",
             border: "1px solid #3b82f6",
             borderRadius: 6,
@@ -900,9 +1033,13 @@ export function App(): JSX.Element {
         data-testid="inline-chat-card-stack"
         style={{
           position: "absolute",
-          right: rightCollapsed ? 16 : 32,
-          top: rightCollapsed ? 64 : 70,
-          width: 340,
+          // job-0278 — mobile: full-width column with 12px gutters (the
+          // desktop 340px column anchored to the chat panel would clip on
+          // a 390px screen).
+          right: isMobile ? 12 : rightCollapsed ? 16 : 32,
+          left: isMobile ? 12 : undefined,
+          top: isMobile ? 64 : rightCollapsed ? 64 : 70,
+          width: isMobile ? undefined : 340,
           display: "flex",
           flexDirection: "column",
           gap: 8,

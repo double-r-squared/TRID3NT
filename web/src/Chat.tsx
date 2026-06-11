@@ -840,6 +840,106 @@ export function replayStreamFromChatHistory(
   }
 }
 
+// --- Mobile bottom sheet (job-0278) --------------------------------------- //
+//
+// On mobile (<768px, App passes mobile={true} from useIsMobile) the chat
+// panel becomes a BOTTOM SHEET pinned to the bottom edge:
+//
+//   - collapsed: just the drag-handle row + the composer, full width;
+//   - expanded:  ~70% viewport height with the full conversation scroll.
+//
+// PRESENTATION ONLY — the per-Case stream routing (job-0266/0277) is
+// untouched: the same StreamState map, the same envelope handlers, the same
+// scroll/auto-scroll machinery render inside the sheet. The conversation
+// scroll area stays MOUNTED while collapsed (display:none) so stream state,
+// scroll position, and auto-scroll behavior survive toggling.
+//
+// Helpers are exported for unit tests (Chat itself cannot mount in
+// happy-dom — it opens a WebSocket — same pure-helper pattern as
+// pipelineReducer / buildInterleavedStream).
+
+/** Sheet height when expanded, as a CSS length. */
+export const MOBILE_SHEET_EXPANDED_HEIGHT = "70vh";
+
+/** Container style for the mobile bottom sheet (replaces the desktop
+ * right-side panel style below the breakpoint). */
+export function mobileSheetContainerStyle(
+  expanded: boolean,
+): React.CSSProperties {
+  return {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: expanded ? MOBILE_SHEET_EXPANDED_HEIGHT : "auto",
+    background: "rgba(20,20,25,0.96)",
+    color: "#eee",
+    borderRadius: "14px 14px 0 0",
+    border: "1px solid #333",
+    borderBottom: "none",
+    boxShadow: "0 -4px 24px rgba(0,0,0,0.45)",
+    display: "flex",
+    flexDirection: "column",
+    fontFamily: "system-ui, sans-serif",
+    fontSize: 13,
+    overflow: "hidden",
+    // Above panels (z=20) + legend (z=10) + hamburgers (z=30); below the
+    // mobile drawer backdrop (z=40) and inline gate cards (z=50).
+    zIndex: 32,
+  };
+}
+
+export interface SheetToggleHandleProps {
+  expanded: boolean;
+  onToggle: () => void;
+}
+
+/** Full-width drag-handle / chevron row that toggles the sheet. 44px tall —
+ * Apple HIG minimum touch target. */
+export function SheetToggleHandle({
+  expanded,
+  onToggle,
+}: SheetToggleHandleProps): JSX.Element {
+  return (
+    <button
+      data-testid="grace2-chat-sheet-toggle"
+      aria-label={expanded ? "Collapse chat" : "Expand chat"}
+      aria-expanded={expanded}
+      onClick={onToggle}
+      style={{
+        flex: "0 0 auto",
+        minHeight: 44,
+        width: "100%",
+        background: "none",
+        border: "none",
+        cursor: "pointer",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 4,
+        padding: "8px 0 4px",
+        color: "#888",
+        fontFamily: "inherit",
+      }}
+    >
+      <span
+        aria-hidden="true"
+        style={{
+          display: "block",
+          width: 40,
+          height: 4,
+          borderRadius: 2,
+          background: "#555",
+        }}
+      />
+      <span aria-hidden="true" style={{ fontSize: 12, lineHeight: 1 }}>
+        {expanded ? "⌄" : "⌃"}
+      </span>
+    </button>
+  );
+}
+
 // --- Props --------------------------------------------------------------- //
 
 export interface ChatProps {
@@ -852,6 +952,12 @@ export interface ChatProps {
    * swaps the entire stream, navigating to root shows the clean root view.
    */
   activeCaseId?: string | null;
+  /**
+   * job-0278 — mobile presentation flag (App wires useIsMobile). When true
+   * the panel renders as the bottom sheet described above. Default false:
+   * the desktop right-side panel, pixel-identical to before.
+   */
+  mobile?: boolean;
 }
 
 // --- Connection status display ------------------------------------------- //
@@ -876,7 +982,11 @@ export function Chat({
   wsUrl,
   onClose,
   activeCaseId = null,
+  mobile = false,
 }: ChatProps): JSX.Element {
+  // job-0278 — mobile bottom-sheet expansion. Collapsed (composer only) by
+  // default; presentation-only state, lives and dies with the Chat mount.
+  const [sheetExpanded, setSheetExpanded] = useState<boolean>(false);
   // job-0266 — PER-CASE CHAT STREAMS. All conversational state (messages,
   // tool cards, charts, sandbox cards, errors, arrival-order maps) lives in
   // per-Case StreamState entries inside a ref-held ChatStreams map; React
@@ -1198,6 +1308,9 @@ export function Chat({
 
   function submit(text: string): void {
     if (!text || !wsRef.current) return;
+    // job-0278 — submitting from the collapsed mobile sheet expands it so
+    // the user sees the response stream in (presentation only).
+    if (mobile && !sheetExpanded) setSheetExpanded(true);
     // job-0266 — the user bubble lands in the VISIBLE stream, which also
     // takes ownership of the turn's streaming envelopes (targetKey).
     routeUserMessage(streamsRef.current, visibleKey, text);
@@ -1225,11 +1338,12 @@ export function Chat({
   const inputState: ChatInputState = showCancel ? "in-flight" : "idle";
   const inputDisabled = status !== "connected";
 
-  return (
-    <div
-      data-testid="grace2-chat"
-      data-stream-key={visibleKey}
-      style={{
+  // job-0278 — desktop panel vs mobile bottom sheet. The desktop branch is
+  // byte-for-byte the pre-mobile style; every mobile divergence is behind
+  // the `mobile` prop.
+  const containerStyle: React.CSSProperties = mobile
+    ? mobileSheetContainerStyle(sheetExpanded)
+    : {
         position: "absolute",
         right: 16,
         top: 16,
@@ -1244,13 +1358,30 @@ export function Chat({
         fontFamily: "system-ui, sans-serif",
         fontSize: 13,
         overflow: "hidden",
-      }}
+      };
+
+  return (
+    <div
+      data-testid="grace2-chat"
+      data-stream-key={visibleKey}
+      data-sheet-state={mobile ? (sheetExpanded ? "expanded" : "collapsed") : undefined}
+      style={containerStyle}
     >
+      {/* job-0278 — mobile drag-handle / chevron toggle, first child so it
+          reads as the sheet's grab area. Desktop renders nothing here. */}
+      {mobile && (
+        <SheetToggleHandle
+          expanded={sheetExpanded}
+          onToggle={() => setSheetExpanded((v) => !v)}
+        />
+      )}
       <header
         style={{
           padding: "10px 12px",
           borderBottom: "1px solid #333",
-          display: "flex",
+          // job-0278 — collapsed mobile sheet shows only handle + composer;
+          // the header (and scroll area below) hide but stay mounted.
+          display: mobile && !sheetExpanded ? "none" : "flex",
           alignItems: "center",
           gap: 8,
         }}
@@ -1280,7 +1411,7 @@ export function Chat({
           />
           {STATUS_LABEL[status]}
         </span>
-        {onClose && (
+        {onClose && !mobile && (
           <button
             data-testid="grace2-chat-close"
             aria-label="Collapse chat panel"
@@ -1322,8 +1453,14 @@ export function Chat({
         style={{
           flex: 1,
           overflowY: "auto",
-          padding: `12px 12px ${inputHeightPx + INPUT_GAP_PX}px 12px`,
-          display: "flex",
+          // job-0278 — on mobile the composer is in normal flow below the
+          // scroll area (not a floating overlay), so the overlay-clearing
+          // bottom padding isn't needed. Collapsed sheet hides the scroll
+          // area entirely (stays mounted — stream + scroll state survive).
+          padding: mobile
+            ? "4px 12px 12px 12px"
+            : `12px 12px ${inputHeightPx + INPUT_GAP_PX}px 12px`,
+          display: mobile && !sheetExpanded ? "none" : "flex",
           flexDirection: "column",
           gap: 10,
         }}
@@ -1457,7 +1594,9 @@ export function Chat({
           left: 0,
           right: 0,
           bottom: inputHeightPx + INPUT_GAP_PX + 8,
-          display: "flex",
+          // job-0278 — hidden while the mobile sheet is collapsed (the
+          // scroll area it serves is hidden too).
+          display: mobile && !sheetExpanded ? "none" : "flex",
           justifyContent: "center",
           pointerEvents: "none",
           zIndex: 2,
@@ -1477,14 +1616,26 @@ export function Chat({
       {/* are never hidden behind it, even when the textarea grows multi-line.    */}
       <div
         data-testid="chat-input-overlay"
-        style={{
-          position: "absolute",
-          left: 12,
-          right: 12,
-          bottom: 12,
-          pointerEvents: "auto",
-          zIndex: 3,
-        }}
+        style={
+          mobile
+            ? {
+                // job-0278 — in normal flow on mobile so the collapsed
+                // sheet's height is handle + composer. safe-area inset
+                // clears the iOS home indicator.
+                flex: "0 0 auto",
+                padding: "0 10px calc(10px + env(safe-area-inset-bottom)) 10px",
+                pointerEvents: "auto",
+                zIndex: 3,
+              }
+            : {
+                position: "absolute",
+                left: 12,
+                right: 12,
+                bottom: 12,
+                pointerEvents: "auto",
+                zIndex: 3,
+              }
+        }
       >
         {/* job-0266 — keyed by the visible stream so navigating between
             Cases / root remounts the composer with an empty draft ("clean
@@ -1496,6 +1647,9 @@ export function Chat({
           onCancel={cancel}
           disabled={inputDisabled}
           onHeightChange={handleInputHeightChange}
+          /* job-0278 — 16px on mobile prevents the iOS focus auto-zoom;
+             desktop keeps the historical 14px default. */
+          fontSizePx={mobile ? 16 : 14}
         />
       </div>
 
