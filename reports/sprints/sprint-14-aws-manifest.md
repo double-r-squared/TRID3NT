@@ -30,7 +30,7 @@ Region: **us-west-2**. Account: 226996537797.
 ## Staged jobs
 
 - **job-0286 (agent) — Bedrock Converse adapter** ✅ LANDED. `bedrock_adapter.py` converts the genai content/tool structures at the boundary, yields the same `StreamEvent` union; `MODEL_PROVIDER=bedrock` switch in `adapter.stream_events_with_contents`; boto3 dep. Live smoke: 85/85 tools convert; Claude Sonnet 4.6 streamed a correct `fetch_administrative_boundaries` tool call with parsed args + usage.
-- **job-0287 (agent) — server.py provider integration + run-local mode**: `GeminiSettings`→provider-neutral settings; client build skipped for bedrock; `MODEL_PROVIDER`/`AWS_REGION` env; a `make run-local` that boots agent (bedrock) + web + file persistence + anonymous auth, no cloud render dependency.
+- **job-0287 (agent) — server.py provider integration + run-local mode** ✅ LANDED + live-proven. The two per-turn Vertex touchpoints (`build_client`, Gemini CachedContent) skip under `MODEL_PROVIDER=bedrock`; `make run-local-agent` boots agent on Bedrock + file persistence + anonymous auth with zero GCP creds. Proof: real subprocess with all GOOGLE_* stripped drove a full turn — Claude chose `geocode_location → fetch_administrative_boundaries` (multi-step), streamed narration, auto-created a Case, persisted to file store. Raster QGIS render still cloud-bound until job-0290.
 - **job-0288 (agent) — Bedrock prompt caching** (cachePoint) to restore the cache-discount economics the Gemini CachedContent path had.
 - **job-0289 (infra) — S3 storage swap**: 4 buckets + a `storage` abstraction (gs:// → s3://) behind the existing cache/publish seams; CloudFront for the web.
 - **job-0290 (infra) — ECS Fargate for agent WS + QGIS Server** (ALB, WebSocket).
