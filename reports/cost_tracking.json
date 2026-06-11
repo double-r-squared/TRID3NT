@@ -1606,6 +1606,15 @@
       "kind": "engineering",
       "workflow_id": "agent ae5fdd117f7d47221",
       "subagent_tokens": 151307
+    },
+    {
+      "job_id": "job-0255-qgis-lockdown-proxy-20260611",
+      "sprint": 13.5,
+      "description": "Opus infra runner: invoker-only IAM flip planned (in-place, agent-SA invoker + allUsers destroyed; NOT applied — UNBLOCK 0255-A/B with sequencing warning); streaming /qgis-proxy in tool_catalog_http.py (credential-strip by construction, bounded queue O(64KiB), no-open-proxy, OIDC in prod / graceful dev); QGIS_PROXY_ENABLED + VITE_QGIS_PROXY_BASE dual gates default-off; Map.tsx 27-line helper. Proxy tests 28; agent suite 4387+5-known; live tile proof through proxy (79KB PNG). OQs: module path deviation (venv import), tool_catalog_http.py pre-existing untracked drift now staged. Commit d2c2d56.",
+      "model": "opus",
+      "kind": "engineering",
+      "workflow_id": "agent a12ce7b744dcc9d55",
+      "subagent_tokens": 193974
     }
   ],
   "totals_by_sprint": {
@@ -1617,7 +1626,7 @@
     "11": 999540,
     "12": 27545642,
     "13": 14388888,
-    "13.5": 3731863
+    "13.5": 3925837
   },
   "historical_context": {
     "note": "Captured for accountability \u2014 NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
