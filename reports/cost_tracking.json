@@ -1399,6 +1399,42 @@
       "kind": "close",
       "workflow_id": "local",
       "subagent_tokens": 0
+    },
+    {
+      "job_id": "demo-bug-batch-fable5-20260610",
+      "sprint": 13,
+      "description": "Fable-5 batch (3 bugs + verify): hillshade had FOUR stacked defects (hash-tail hallucination + publish false-success + gdaldem CRS + cache-bucket IAM P0 that downed the whole map); layer controls were never wired (M3 stubs); case rehydration two-socket split-brain. All fixed; P0 = user IAM one-liner.",
+      "model": "fable",
+      "kind": "engineering",
+      "workflow_id": "wf_e71c8d43-a81",
+      "subagent_tokens": 1003207
+    },
+    {
+      "job_id": "demo-continuation-batch2-20260610",
+      "sprint": 13,
+      "description": "Batch #2 (5 jobs + 3 Fable verifies, all DONE/CONFIRM): NWS state filter (root cause = validator AGAIN rejecting correct first call), auto-create Case from root, layer-handle URI registry (kills the URI-mangling class), LayerPanel polish + tool timers, sandbox Cloud Logging transport (13.5 prereq).",
+      "model": "fable+opus",
+      "kind": "engineering",
+      "workflow_id": "wf_b70c6490-6b0",
+      "subagent_tokens": 1370088
+    },
+    {
+      "job_id": "demo-batch3-case-streams-20260610",
+      "sprint": 13,
+      "description": "Batch #3 (2 jobs + verify, Fable-1M inheritance): per-Case chat streams (577 vitest; root-clean composer, stream swap, owning-case envelope routing, deleted-case rail filter, fixed chart rehydration) + full-stream persistence (ToolCardRecord contract, narration+tool cards replay interleaved, server-side deleted/archived filter).",
+      "model": "fable-1m",
+      "kind": "engineering",
+      "workflow_id": "wf_7e9451dd-345",
+      "subagent_tokens": 755903
+    },
+    {
+      "job_id": "job-0270-terrain-render-chain-20260610",
+      "sprint": 13,
+      "description": "Demo-hardening Fable pair (user-directed dispatch): fix agent (validator auto-widen for real registry tools + publish-to-map SYSTEM_PROMPT discipline + layer_handles_note, 163,422 tok) + adversarial verifier (gate-attack tests CONFIRM, live Gemini-free publish->WMS pixel proof REFUTED rendering -- found HIGH server-side /vsigs/ path-poisoning root cause, 233,580 tok).",
+      "model": "fable-1m",
+      "kind": "engineering",
+      "workflow_id": "agents afc79a6744ec3e647 + a803e6de845067073",
+      "subagent_tokens": 397002
     }
   ],
   "totals_by_sprint": {
@@ -1409,7 +1445,7 @@
     "10": 1540974,
     "11": 999540,
     "12": 27545642,
-    "13": 10453417,
+    "13": 13979617,
     "13.5": 175296
   },
   "historical_context": {
