@@ -353,6 +353,10 @@ export function CasesPanel({
       }}
     >
       <div
+        // job-0284 — testid only so the mobile drawer scope (global.css) can
+        // give this header its own floating-card surface; desktop rendering
+        // is untouched (attribute carries no style).
+        data-testid="grace2-cases-header"
         style={{
           display: "flex",
           alignItems: "center",

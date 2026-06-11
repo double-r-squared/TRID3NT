@@ -63,6 +63,40 @@ describe("MobileDrawer", () => {
     expect(drawer).toHaveAttribute("role", "dialog");
   });
 
+  // job-0284 — map-centric pass: the drawer has NO panel surface (children
+  // float as their own translucent cards over the map) and the backdrop is
+  // an INVISIBLE full-screen hit area (no dim — the map stays visible).
+  it("job-0284: transparent backdrop + surfaceless panel (components float)", () => {
+    render(
+      <MobileDrawer open={true} onClose={vi.fn()}>
+        <span />
+      </MobileDrawer>,
+    );
+    const backdrop = screen.getByTestId("grace2-mobile-drawer-backdrop");
+    expect(backdrop.style.background).toBe("transparent");
+    const drawer = screen.getByTestId("grace2-mobile-drawer");
+    expect(drawer.style.background).toBe("transparent");
+    expect(drawer.style.border).toBe("");
+    expect(drawer.style.boxShadow).toBe("");
+  });
+
+  it("job-0284: NO backdrop-filter — the drawer hosts position:fixed children (ConfirmationDialog)", () => {
+    // A non-none backdrop-filter would make the drawer the containing block
+    // for position:fixed descendants, trapping CasesPanel's delete
+    // ConfirmationDialog inside the 320px column instead of centering it on
+    // the viewport (job-0283 hazard). Translucency must stay rgba/alpha-only.
+    render(
+      <MobileDrawer open={true} onClose={vi.fn()}>
+        <span />
+      </MobileDrawer>,
+    );
+    const drawer = screen.getByTestId("grace2-mobile-drawer");
+    expect(drawer.style.backdropFilter || "").toBe("");
+    expect(drawer.style.filter || "").toBe("");
+    expect(drawer.style.transform || "").toBe("");
+    expect(drawer.style.willChange || "").toBe("");
+  });
+
   it("backdrop tap calls onClose; taps inside the panel do not", () => {
     const onClose = vi.fn();
     render(

@@ -70,8 +70,7 @@ describe("BottomRowButtons", () => {
   });
 
   // job-0283 — desktop sleekness pass: the floating pills moved to the
-  // panel surface family; the inline (mobile drawer footer) pills keep the
-  // job-0280 reference rendering byte-identical.
+  // panel surface family.
   it("floating variant pills use the desktop family (full-pill radius + hairline border)", () => {
     render(
       <BottomRowButtons onOpenSettings={vi.fn()} onOpenSecrets={vi.fn()} />,
@@ -83,7 +82,11 @@ describe("BottomRowButtons", () => {
     );
   });
 
-  it("inline variant pills keep the job-0280 mobile rendering (radius 14, #444 border)", () => {
+  // job-0284 — mobile map-centric pass: the inline (drawer footer) pills
+  // float directly over the map (drawer surface is transparent now), so
+  // they joined the translucent hairline-card family. Deliberate update of
+  // the job-0280 pin (radius 14 / #444) — this job IS the mobile pass.
+  it("inline variant pills float as translucent hairline cards (job-0284)", () => {
     render(
       <BottomRowButtons
         onOpenSettings={vi.fn()}
@@ -92,7 +95,13 @@ describe("BottomRowButtons", () => {
       />,
     );
     const pill = screen.getByTestId("grace2-bottom-row-settings");
-    expect(pill.style.borderRadius).toBe("14px");
-    expect(pill.style.border).toContain("#444");
+    expect(pill.style.borderRadius).toBe("999px");
+    expect(pill.style.border.replace(/\s/g, "")).toContain(
+      "rgba(255,255,255,0.10)",
+    );
+    // Translucent (alpha < 1) so the map reads through.
+    expect(pill.style.background.replace(/\s/g, "")).toContain(
+      "rgba(18,19,24,0.85)",
+    );
   });
 });

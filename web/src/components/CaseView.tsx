@@ -16,6 +16,13 @@ export interface CaseViewProps {
   caseTitle: string;
   /** Called when the user clicks the breadcrumb back-arrow. */
   onBack: () => void;
+  /**
+   * job-0284 — mobile presentation flag (the drawer passes true; the desktop
+   * rail never sets it, so desktop renders byte-identical). On mobile the
+   * "Cases" breadcrumb link IS the back affordance — the ← arrow button is
+   * NOT rendered, leaving exactly ONE way back, labeled "Cases".
+   */
+  mobile?: boolean;
   /** Rendered below the breadcrumb — typically <LayerPanel> bound to the Case session. */
   children?: React.ReactNode;
 }
@@ -79,6 +86,7 @@ const titleStyle: React.CSSProperties = {
 export function CaseView({
   caseTitle,
   onBack,
+  mobile = false,
   children,
 }: CaseViewProps): JSX.Element {
   // Esc-to-back so the user can navigate without grabbing the mouse.
@@ -112,15 +120,20 @@ export function CaseView({
         role="navigation"
         aria-label="Case navigation"
       >
-        <button
-          data-testid="grace2-case-view-back"
-          onClick={onBack}
-          style={backBtnStyle}
-          aria-label="Back to Cases"
-          title="Back to Cases"
-        >
-          ←
-        </button>
+        {/* job-0284 — mobile drops the ← arrow: the "Cases" link below is
+            the SINGLE back affordance (user: "cases should be the back
+            button, no need for another one"). Desktop keeps both. */}
+        {!mobile && (
+          <button
+            data-testid="grace2-case-view-back"
+            onClick={onBack}
+            style={backBtnStyle}
+            aria-label="Back to Cases"
+            title="Back to Cases"
+          >
+            ←
+          </button>
+        )}
         <button
           data-testid="grace2-case-view-cases-link"
           onClick={onBack}

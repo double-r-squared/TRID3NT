@@ -52,9 +52,45 @@ describe("mobileSheetContainerStyle", () => {
 
   it("rounds only the TOP corners (sheet idiom) and layers above panels", () => {
     const s = mobileSheetContainerStyle(false);
-    expect(s.borderRadius).toBe("14px 14px 0 0");
+    // job-0284 — 12px joins the design-family panel radius (was 14).
+    expect(s.borderRadius).toBe("12px 12px 0 0");
     // Above panels (20) + hamburgers (30); below drawer backdrop (40).
     expect(s.zIndex).toBe(32);
+  });
+
+  // job-0284 — translucent-surface pins: the sheet must let the map read
+  // through in BOTH states (map-centric app), with the hairline family
+  // border. Alpha stays inside the 0.55–0.7 legibility window.
+  it("job-0284: translucent family gradient in both states (map reads through)", () => {
+    for (const expanded of [false, true]) {
+      const s = mobileSheetContainerStyle(expanded);
+      const bg = String(s.background);
+      expect(bg).toContain("linear-gradient");
+      const alphas = [...bg.matchAll(/rgba\(\d+,\d+,\d+,(0\.\d+)\)/g)].map(
+        (m) => Number(m[1]),
+      );
+      expect(alphas.length).toBeGreaterThan(0);
+      for (const a of alphas) {
+        expect(a).toBeGreaterThanOrEqual(0.55);
+        expect(a).toBeLessThanOrEqual(0.7);
+      }
+      expect(s.border).toBe("1px solid rgba(255,255,255,0.10)");
+      expect(s.borderBottom).toBe("none");
+    }
+  });
+
+  it("job-0284: NO backdrop-filter — the sheet hosts position:fixed children (ChartGallery)", () => {
+    // A non-none backdrop-filter would make the sheet the containing block
+    // for position:fixed descendants, trapping ChartGallery inside the
+    // sheet instead of overlaying the viewport (job-0283 hazard).
+    for (const expanded of [false, true]) {
+      const s = mobileSheetContainerStyle(expanded) as Record<string, unknown>;
+      expect(s.backdropFilter).toBeUndefined();
+      expect(s.WebkitBackdropFilter).toBeUndefined();
+      expect(s.filter).toBeUndefined();
+      expect(s.transform).toBeUndefined();
+      expect(s.willChange).toBeUndefined();
+    }
   });
 });
 

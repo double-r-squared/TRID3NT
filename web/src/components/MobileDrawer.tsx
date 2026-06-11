@@ -8,10 +8,18 @@
 // (CasesPanel at root, CaseView + LayerPanel inside a Case) plus the
 // Settings/Secrets pills folded into its footer.
 //
+// job-0284 — map-centric pass: the drawer LOST its solid panel surface. The
+// container is now a transparent layout column and the backdrop is an
+// INVISIBLE full-screen tap-to-close hit area — the Case rows / breadcrumb /
+// LayerPanel float as individual translucent hairline cards directly over
+// the map (per-card backgrounds via the `.grace2-mobile-touch` scope in
+// global.css). The map is the app; the chrome floats on it.
+//
 // Mounted ONLY when useIsMobile() is true — desktop rendering is untouched.
 //
 // The `grace2-mobile-touch` class scopes the global.css touch-target bump
-// (min 44px on Case-row / breadcrumb / pill buttons) to this surface.
+// (min 44px on Case-row / breadcrumb / pill buttons) AND the job-0284
+// floating-card surfaces to this drawer.
 
 import { useEffect } from "react";
 
@@ -43,10 +51,16 @@ export function MobileDrawerButton({
         left: 12,
         width: 44,
         height: 44,
-        background: "rgba(20,20,25,0.85)",
-        border: "1px solid #444",
-        borderRadius: 8,
-        color: "#ccc",
+        // job-0284 — joins the hairline surface family (desktop hamburger
+        // chrome, job-0283). Leaf surface: hosts no fixed descendants, so
+        // backdrop blur is safe here (and ONLY on leaves like this).
+        background: "rgba(18,19,24,0.92)",
+        border: "1px solid rgba(255,255,255,0.08)",
+        borderRadius: 10,
+        boxShadow: "0 2px 12px rgba(0,0,0,0.35)",
+        backdropFilter: "blur(6px)",
+        WebkitBackdropFilter: "blur(6px)",
+        color: "#cfd4db",
         padding: 0,
         cursor: "pointer",
         display: "flex",
@@ -71,9 +85,10 @@ export interface MobileDrawerProps {
 
 /**
  * The drawer surface itself. Returns null when closed (nothing in the DOM —
- * the map stays full-screen underneath). When open: dimmed backdrop over
- * the whole viewport (tap = close) + a full-height panel from the left
- * edge, width min(320px, 85vw).
+ * the map stays full-screen underneath). When open: an INVISIBLE full-screen
+ * backdrop hit area (tap = close; job-0284 dropped the dim so the map stays
+ * fully visible) + a transparent full-height layout column from the left
+ * edge, width min(320px, 85vw), whose children float as individual cards.
  */
 export function MobileDrawer({
   open,
@@ -103,7 +118,9 @@ export function MobileDrawer({
         style={{
           position: "absolute",
           inset: 0,
-          background: "rgba(0,0,0,0.45)",
+          // job-0284 — invisible hit area: tap-to-close works exactly as
+          // before, but the map is no longer dimmed (map-centric pass).
+          background: "transparent",
           zIndex: 40,
         }}
       />
@@ -119,14 +136,29 @@ export function MobileDrawer({
           left: 0,
           bottom: 0,
           width: "min(320px, 85vw)",
-          background: "rgba(15,15,20,0.97)",
-          borderRight: "1px solid #333",
-          boxShadow: "4px 0 24px rgba(0,0,0,0.5)",
+          // job-0284 — NO panel surface: transparent layout column; the
+          // children (Case rows, breadcrumb, LayerPanel, pills) carry their
+          // own translucent hairline-card backgrounds (global.css
+          // `.grace2-mobile-touch` scope) and float over the map.
+          //
+          // NO backdrop-filter here, EVER: a non-none backdrop-filter would
+          // make this drawer the containing block for position:fixed
+          // descendants — CasesPanel mounts ConfirmationDialog (delete
+          // confirm, position:fixed) inside this subtree, and it must center
+          // on the VIEWPORT, not inside the 320px column (hazard documented
+          // by job-0283 at its two removal sites). Translucency comes from
+          // the children's rgba/alpha backgrounds only.
+          background: "transparent",
           zIndex: 41,
           display: "flex",
           flexDirection: "column",
           gap: 8,
           padding: 12,
+          // job-0284 — clear the collapsed bottom sheet (~126px incl. its
+          // safe-area pad): with the backdrop no longer dimming, the sheet
+          // stays visible under the open drawer, and the drawer's footer
+          // pills must float ABOVE it instead of overlapping the composer.
+          paddingBottom: "calc(138px + env(safe-area-inset-bottom))",
           boxSizing: "border-box",
           overflow: "hidden",
         }}

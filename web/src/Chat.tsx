@@ -869,22 +869,35 @@ export function replayStreamFromChatHistory(
 export const MOBILE_SHEET_EXPANDED_HEIGHT = "70vh";
 
 /** Container style for the mobile bottom sheet (replaces the desktop
- * right-side panel style below the breakpoint). */
+ * right-side panel style below the breakpoint).
+ *
+ * job-0284 — map-centric pass: the sheet is TRANSLUCENT in both states so
+ * the map reads through it ("this is a map centric app"). Surface = the
+ * job-0283 hairline family gradient, alpha-tuned per state: 0.58 collapsed
+ * (mostly the opaque composer card anyway) / 0.68 expanded (enough scrim
+ * for #eee message text over a light basemap — ~5.9:1 contrast).
+ *
+ * NO backdrop-filter here, EVER: a non-none backdrop-filter would make the
+ * sheet the containing block for position:fixed descendants — ChartGallery
+ * mounts INSIDE this container and must overlay the full viewport, not the
+ * sheet (hazard documented by job-0283 at its two removal sites).
+ * Translucency is rgba/alpha ONLY. */
 export function mobileSheetContainerStyle(
   expanded: boolean,
 ): React.CSSProperties {
+  const alpha = expanded ? 0.68 : 0.58;
   return {
     position: "absolute",
     left: 0,
     right: 0,
     bottom: 0,
     height: expanded ? MOBILE_SHEET_EXPANDED_HEIGHT : "auto",
-    background: "rgba(20,20,25,0.96)",
+    background: `linear-gradient(180deg, rgba(26,27,33,${alpha}) 0%, rgba(18,19,24,${alpha}) 100%)`,
     color: "#eee",
-    borderRadius: "14px 14px 0 0",
-    border: "1px solid #333",
+    borderRadius: "12px 12px 0 0",
+    border: "1px solid rgba(255,255,255,0.10)",
     borderBottom: "none",
-    boxShadow: "0 -4px 24px rgba(0,0,0,0.45)",
+    boxShadow: "0 -4px 24px rgba(0,0,0,0.35)",
     display: "flex",
     flexDirection: "column",
     fontFamily: "system-ui, sans-serif",
@@ -967,7 +980,9 @@ export function SheetToggleHandle({
           width: 40,
           height: 4,
           borderRadius: 2,
-          background: "#555",
+          // job-0284 — alpha-white so the bar reads on the translucent
+          // sheet over any basemap (was solid #555 on the opaque sheet).
+          background: "rgba(255,255,255,0.35)",
         }}
       />
     </button>
@@ -1046,9 +1061,11 @@ export function SheetActiveToolStrip({
         margin: "0 10px 8px",
         padding: "8px 12px",
         minHeight: 36,
-        background: "rgba(255,255,255,0.08)",
-        border: "none",
-        borderRadius: 10,
+        // job-0284 — its own translucent hairline card: the sheet behind it
+        // is now see-through, so the strip carries its own scrim.
+        background: "rgba(18,19,24,0.72)",
+        border: "1px solid rgba(255,255,255,0.10)",
+        borderRadius: 8,
         color: "#eee",
         fontSize: 12,
         lineHeight: "1.4",
@@ -1522,11 +1539,12 @@ export function Chat({
       <header
         style={{
           // job-0283 — desktop gets the family hairline divider + LayerPanel
-          // header padding; the mobile sheet keeps its job-0278/0280
-          // rendering byte-identical (mobile surfaces are the reference).
+          // header padding. job-0284 — the mobile divider joins the hairline
+          // family too (#333 read as a solid slab line on the now-translucent
+          // sheet).
           padding: mobile ? "10px 12px" : "12px 14px",
           borderBottom: mobile
-            ? "1px solid #333"
+            ? "1px solid rgba(255,255,255,0.08)"
             : "1px solid rgba(255,255,255,0.06)",
           // job-0278 — collapsed mobile sheet shows only handle + composer;
           // the header (and scroll area below) hide but stay mounted.

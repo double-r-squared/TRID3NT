@@ -44,4 +44,23 @@ describe("CaseView", () => {
     );
     expect(screen.getByTestId("grace2-test-child")).toBeTruthy();
   });
+
+  // job-0284 — mobile single back affordance: the "Cases" breadcrumb link
+  // IS the back button; the ← arrow is NOT rendered ("cases should be the
+  // back button, no need for another one").
+  it("mobile: exactly ONE back affordance — the Cases link (no ← arrow)", () => {
+    const onBack = vi.fn();
+    render(<CaseView caseTitle="Test" onBack={onBack} mobile />);
+    expect(screen.queryByTestId("grace2-case-view-back")).toBeNull();
+    const casesLink = screen.getByTestId("grace2-case-view-cases-link");
+    expect(casesLink.textContent).toBe("Cases");
+    fireEvent.click(casesLink);
+    expect(onBack).toHaveBeenCalledTimes(1);
+  });
+
+  it("desktop (default) keeps BOTH the ← arrow and the Cases link", () => {
+    render(<CaseView caseTitle="Test" onBack={vi.fn()} />);
+    expect(screen.getByTestId("grace2-case-view-back")).toBeTruthy();
+    expect(screen.getByTestId("grace2-case-view-cases-link")).toBeTruthy();
+  });
 });

@@ -35,20 +35,22 @@ const inlineRowStyle: React.CSSProperties = {
     "-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif",
 };
 
-// job-0280 drawer-footer rendering — kept byte-identical for the "inline"
-// (mobile) variant: job-0280's mobile surfaces are the reference, not the
-// target, of the job-0283 desktop sleekness pass.
+// job-0284 — the inline (mobile drawer footer) pills float directly over the
+// map now that the drawer surface is transparent: translucent hairline-card
+// family (matches the floating desktop pills minus the blur — kept
+// rgba/alpha-only like the rest of the mobile pass).
 const inlinePillStyle: React.CSSProperties = {
-  background: "rgba(20,20,25,0.85)",
-  border: "1px solid #444",
-  borderRadius: 14,
-  color: "#ddd",
-  padding: "5px 12px",
-  fontSize: 11,
+  background: "rgba(18,19,24,0.85)",
+  border: "1px solid rgba(255,255,255,0.10)",
+  borderRadius: 999,
+  boxShadow: "0 2px 12px rgba(0,0,0,0.25)",
+  color: "#cfd4db",
+  padding: "6px 14px",
+  fontSize: 12,
   cursor: "pointer",
   display: "inline-flex",
   alignItems: "center",
-  gap: 5,
+  gap: 6,
   fontFamily: "inherit",
 };
 

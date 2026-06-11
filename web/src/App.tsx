@@ -950,19 +950,24 @@ export function App(): JSX.Element {
             </div>
           ) : (
             <>
+              {/* job-0284 — mobile: the "Cases" breadcrumb link is the
+                  SINGLE back affordance (no ← arrow). */}
               <CaseView
                 caseTitle={activeCase?.title ?? "Case"}
                 onBack={handleCaseBack}
+                mobile
               />
               {layers.length === 0 ? (
                 <div
                   data-testid="grace2-case-view-empty-layers"
                   style={{
-                    background: "rgba(15,15,20,0.92)",
-                    border: "1px dashed #444",
-                    borderRadius: 8,
+                    // job-0284 — floats as a translucent hairline card over
+                    // the map (the drawer panel surface is gone).
+                    background: "rgba(18,19,24,0.72)",
+                    border: "1px dashed rgba(255,255,255,0.18)",
+                    borderRadius: 10,
                     padding: 12,
-                    color: "#999",
+                    color: "#a8b0bb",
                     fontSize: 12,
                     textAlign: "center",
                     lineHeight: 1.4,
