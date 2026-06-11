@@ -13,6 +13,8 @@
 // The `grace2-mobile-touch` class scopes the global.css touch-target bump
 // (min 44px on Case-row / breadcrumb / pill buttons) to this surface.
 
+import { useEffect } from "react";
+
 export interface MobileDrawerButtonProps {
   onClick: () => void;
   /** Mirrors drawer visibility for aria-expanded. */
@@ -78,6 +80,19 @@ export function MobileDrawer({
   onClose,
   children,
 }: MobileDrawerProps): JSX.Element | null {
+  // job-0279: Escape dismisses, matching every other overlay's convention
+  // (SaveGateModal, popups) — an open drawer is a click shield over the
+  // sheet/composer, so a keyboard escape hatch matters on desktop-sized
+  // mobile emulation and tablets with keyboards.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+
   if (!open) return null;
   return (
     <>
