@@ -1444,6 +1444,15 @@
       "kind": "engineering",
       "workflow_id": "agent a61ee22ca6b803019",
       "subagent_tokens": 208959
+    },
+    {
+      "job_id": "job-0280-ui-sleekness-20260611",
+      "sprint": 13,
+      "description": "UI sleekness Fable agent (user-directed): Case-open snap-to-location replay + collapsed-sheet running-tool strip + chevron removal + drawer polish; vitest 638 (+22). Found the map_command_emissions no-writer gap (fixed orchestrator-direct as job-0281).",
+      "model": "fable-1m",
+      "kind": "engineering",
+      "workflow_id": "agent aa623dda9040e3c90",
+      "subagent_tokens": 200312
     }
   ],
   "totals_by_sprint": {
@@ -1454,7 +1463,7 @@
     "10": 1540974,
     "11": 999540,
     "12": 27545642,
-    "13": 14188576,
+    "13": 14388888,
     "13.5": 175296
   },
   "historical_context": {
