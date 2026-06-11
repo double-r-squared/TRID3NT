@@ -1462,6 +1462,15 @@
       "kind": "engineering",
       "workflow_id": "agent a626929970ddaffb3",
       "subagent_tokens": 202804
+    },
+    {
+      "job_id": "job-0241-prereq-verify-20260611",
+      "sprint": 13.5,
+      "description": "Sonnet prereq verification: MCP sidecar lifecycle PRESENT (setsid/PDEATHSIG/killpg) + sandbox Cloud Logging readback PRESENT; added 7 missing lifecycle tests; full suite 4330 green.",
+      "model": "sonnet",
+      "kind": "engineering",
+      "workflow_id": "agent a923ddae1ba442dfb",
+      "subagent_tokens": 70893
     }
   ],
   "totals_by_sprint": {
@@ -1473,7 +1482,7 @@
     "11": 999540,
     "12": 27545642,
     "13": 14388888,
-    "13.5": 378100
+    "13.5": 448993
   },
   "historical_context": {
     "note": "Captured for accountability \u2014 NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
