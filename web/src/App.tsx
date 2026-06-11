@@ -229,12 +229,34 @@ export function App(): JSX.Element {
   // signed-in user to the AuthGuard sign-in surface. Cleared whenever a fresh
   // signed-in user arrives (re-sign-in succeeded).
   const [authExpired, setAuthExpired] = useState<boolean>(false);
+  // job-0253b — re-sign-in reconnect epoch. handleAuthFailure's give-up branch
+  // (ws.ts:1032-1035) leaves BOTH GraceWs sockets terminally dead (no
+  // reconnect is scheduled — correct; we must not hammer the gate). Nothing
+  // reconnects them later on its own: the App ws effect's deps are otherwise
+  // stable and Chat keys on [wsUrl, bump]. So after a successful re-sign-in the
+  // guard would render children over dead sockets until a full page reload.
+  // We bump `authEpoch` exactly when a fresh non-anonymous user lands WHILE we
+  // were auth-expired; `authEpoch` is threaded into both ws effects' deps, so
+  // each effect tears its dead socket down (cleanup → ws.close()) and opens a
+  // fresh one (new GraceWs + connect(), which resets the auth latches at
+  // ws.ts:424-427) — exactly once per recovery, never in disabled/dev mode
+  // (Firebase disabled → onAuthChanged only ever fires null → authExpired is
+  // never set → this branch is unreachable, so authEpoch stays 0 forever).
+  const [authEpoch, setAuthEpoch] = useState<number>(0);
+  const authExpiredRef = useRef<boolean>(false);
+  authExpiredRef.current = authExpired;
   useEffect(() => {
     const unsub = onAuthChanged((u) => {
       setAuthUser(u);
       setAuthResolved(true);
-      // A real (non-anonymous) sign-in clears any prior auth-expired state.
-      if (u && !u.isAnonymous) setAuthExpired(false);
+      // A real (non-anonymous) sign-in clears any prior auth-expired state and,
+      // if we WERE auth-expired (the dead-socket wedge), bumps authEpoch so
+      // both ws effects reconnect. The ref read avoids re-subscribing on every
+      // authExpired flip.
+      if (u && !u.isAnonymous) {
+        if (authExpiredRef.current) setAuthEpoch((n) => n + 1);
+        setAuthExpired(false);
+      }
     });
     return unsub;
   }, []);
@@ -564,7 +586,11 @@ export function App(): JSX.Element {
       wsRef.current = null;
       ws.close();
     };
-  }, [bus, fanoutSourceSuggestion, useCases_onCaseList, useCases_onCaseOpen, handleChartEmission, handlePayloadWarning]);
+    // job-0253b — authEpoch is bumped on a recovered re-sign-in (see the
+    // onAuthChanged effect above); re-running this effect closes the dead
+    // post-4401 socket and opens a fresh one. In disabled/dev mode authEpoch
+    // never changes, so this effect runs exactly once as before.
+  }, [bus, fanoutSourceSuggestion, useCases_onCaseList, useCases_onCaseOpen, handleChartEmission, handlePayloadWarning, authEpoch]);
 
   // job-0137: Case rehydration replay.
   useEffect(() => {
@@ -907,6 +933,7 @@ export function App(): JSX.Element {
           onClose={collapseRight}
           activeCaseId={activeCaseId}
           mobile={isMobile}
+          authEpoch={authEpoch}
         />
       </div>
 

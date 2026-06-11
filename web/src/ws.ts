@@ -670,18 +670,36 @@ export class GraceWs {
     ws.addEventListener("open", () => {
       this.backoffMs = 500;
       this.handlers.onStatus("connected");
-      // Resume the session (envelope carries the persisted id; payload empty).
-      const resume: Envelope<SessionResumePayload> = envelope(
-        "session-resume",
-        this.sessionId,
-        {} as SessionResumePayload,
-      );
-      this.sendEnvelope(resume);
-      // Send the Firebase ID token if available (job-0123, SRS Appendix H.5).
-      // If no token (Firebase disabled, signed-out, or fetch fails), we skip
-      // the auth-token envelope and let the agent fall back to anonymous —
-      // kickoff §4: "skip and let server fall back to anonymous."
-      void this.maybeSendAuthToken();
+      // job-0253b — `auth-token` MUST be the FIRST envelope on every
+      // connection. The agent's AUTH_REQUIRED gate (server.py:4047-4063)
+      // dispatches in arrival order and rejects the FIRST non-auth-token frame
+      // before the handshake completes (4401 "auth-token envelope required
+      // before any other message"). Previously `session-resume` was sent
+      // synchronously here while `auth-token` followed only after an awaited
+      // `getIdToken()` — so under the gate a signed-in user's valid token was
+      // never read and every prod connection 4401'd.
+      //
+      // `maybeSendAuthToken()` ALWAYS emits the auth-token envelope (even with
+      // an empty token — job-0172 Part C sticky-anon hint), so awaiting it
+      // before `session-resume` is a pure ordering change: dev/anonymous stays
+      // byte-equivalent at the protocol level (auth-token, then session-resume,
+      // same as the post-fix prod order). `maybeSendAuthToken` swallows any
+      // `getIdToken()` failure internally (timeout/throw → empty-token send),
+      // so a token-fetch failure can NEVER wedge this open handler — the
+      // `session-resume` below still runs after the await settles.
+      void (async (): Promise<void> => {
+        await this.maybeSendAuthToken();
+        // The socket may have closed (or been re-opened) while awaiting the
+        // token; sendEnvelope no-ops unless THIS socket is still OPEN.
+        if (this.socket !== ws || ws.readyState !== WebSocket.OPEN) return;
+        // Resume the session (envelope carries the persisted id; payload empty).
+        const resume: Envelope<SessionResumePayload> = envelope(
+          "session-resume",
+          this.sessionId,
+          {} as SessionResumePayload,
+        );
+        this.sendEnvelope(resume);
+      })();
     });
     ws.addEventListener("message", (ev) => this.handleMessage(ev.data));
     ws.addEventListener("close", (ev) => {

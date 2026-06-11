@@ -23,8 +23,8 @@ import type { AuthUser } from "../auth";
 //    user so tests can flip auth state and re-render the guard. ──
 let currentUser: AuthUser | null = null;
 let authSubscriber: ((u: AuthUser | null) => void) | null = null;
-const signInWithGoogleMock = vi.fn<[], Promise<AuthUser | null>>();
-const signOutMock = vi.fn<[], Promise<void>>();
+const signInWithGoogleMock = vi.fn<() => Promise<AuthUser | null>>();
+const signOutMock = vi.fn<() => Promise<void>>();
 
 vi.mock("../auth", () => ({
   // useAuth reads status synchronously after each onAuthChanged callback.

@@ -1123,6 +1123,16 @@ export interface ChatProps {
    * the desktop right-side panel, pixel-identical to before.
    */
   mobile?: boolean;
+  /**
+   * job-0253b — re-sign-in reconnect epoch. App bumps this exactly once when a
+   * fresh non-anonymous user recovers from the post-4401 auth-expired wedge
+   * (closes OQ-0253-CHAT-WS-4401). Threading it into the ws effect's deps makes
+   * Chat's own GraceWs instance tear its dead socket down and reconnect, so
+   * Chat participates in the recovery alongside App's instance. Default 0;
+   * never changes in disabled/dev mode (Firebase off → no authExpired → no
+   * bump), so the effect runs exactly once as before.
+   */
+  authEpoch?: number;
 }
 
 // --- Connection status display ------------------------------------------- //
@@ -1148,6 +1158,7 @@ export function Chat({
   onClose,
   activeCaseId = null,
   mobile = false,
+  authEpoch = 0,
 }: ChatProps): JSX.Element {
   // job-0278 — mobile bottom-sheet expansion. Collapsed (composer only) by
   // default; presentation-only state, lives and dies with the Chat mount.
@@ -1273,7 +1284,10 @@ export function Chat({
     wsRef.current = ws;
     ws.connect();
     return () => ws.close();
-  }, [wsUrl, bump]);
+    // job-0253b — authEpoch bumps on a recovered re-sign-in so Chat's GraceWs
+    // closes its dead post-4401 socket and reconnects (OQ-0253-CHAT-WS-4401).
+    // Constant in disabled/dev mode → this effect still runs exactly once.
+  }, [wsUrl, bump, authEpoch]);
 
   // Dev-only seam: expose pipeline-state injection so the browser console /
   // Playwright scripts can drive the inline cards without a live agent.
