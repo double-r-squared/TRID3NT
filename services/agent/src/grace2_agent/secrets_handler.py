@@ -411,10 +411,13 @@ async def _upsert_with_user(
     """
     # First: the schema-shaped upsert (vault-ref-only, no key value).
     await persistence.upsert_secret_ref(record)
-    # Second: stamp the user_id by re-issuing an update-one. Best-effort:
-    # if this fails the record is still queryable via the
-    # ``user_id: {$exists: False}`` backward-compat branch of the list
-    # filter, so we don't raise — we log and continue.
+    # Second: stamp the user_id by re-issuing an update-one. Best-effort: if
+    # this stamp fails the record is persisted but UNOWNED, so the owner-scoped
+    # ``list_secrets_refs`` filter (job-0252 removed the ``$exists:false``
+    # backward-compat clause that used to surface unowned rows to every user)
+    # will not surface it. We log and continue rather than raise — losing
+    # visibility of one secret-ref is preferable to failing the whole add; the
+    # next add for the same secret_id re-stamps it.
     try:
         await persistence._mcp.call_tool(  # noqa: SLF001 — intentional
             "update-one",

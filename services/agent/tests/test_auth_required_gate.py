@@ -496,3 +496,246 @@ async def test_server_run_migration_wrapper_best_effort() -> None:
     assert mock._store[CASES_COLLECTION][orphan.case_id]["user_id"] == MIGRATION_ANON_UID
 
     set_persistence(None)
+
+
+# --------------------------------------------------------------------------- #
+# 5. Gate-ordering hygiene (job-0252b): the AUTH_REQUIRED-rejected path must
+#    NOT provision/persist an ephemeral anonymous users row BEFORE the gate
+#    rejects the socket — zero collection writes on the rejected path.
+# --------------------------------------------------------------------------- #
+
+from grace2_agent.persistence import USERS_COLLECTION  # noqa: E402
+
+#: MCP tool verbs that mutate a collection (anything that is NOT a pure read).
+_WRITE_VERBS = frozenset(
+    {"insert-one", "insert-many", "update-one", "update-many", "delete-one", "delete-many"}
+)
+
+
+def _write_calls(mock: "MockMCPClient") -> list[tuple[str, dict]]:
+    """Every call that mutates a collection (any non-read verb)."""
+    return [(n, a) for (n, a) in mock.calls if n in _WRITE_VERBS]
+
+
+def _users_calls(mock: "MockMCPClient") -> list[tuple[str, dict]]:
+    """Every call (read OR write) that touches the ``users`` collection."""
+    return [(n, a) for (n, a) in mock.calls if a.get("collection") == USERS_COLLECTION]
+
+
+@pytest.mark.asyncio
+async def test_gate_on_forged_token_writes_no_user_row(_clear_env) -> None:
+    """AUTH_REQUIRED=true + forged token → 4401 AND zero users-collection writes.
+
+    The minor live-verify finding from the job-0252 panel: ``authenticate_token``
+    used to provision (and persist) an ephemeral anonymous ``UserDocument`` on
+    every failure path BEFORE the server gate inspected ``is_anonymous`` and
+    rejected — junk-row growth under hostile load. The rejection must now
+    short-circuit BEFORE any provisioning: no write to ANY collection, and no
+    ``users`` access at all on the rejected path.
+    """
+    from grace2_agent.server import (
+        SessionState,
+        _handle_auth_token,
+        set_persistence,
+    )
+
+    mock = MockMCPClient()
+    set_persistence(Persistence(mock))
+    set_verify_hook(lambda token: None)  # forged/expired: verification fails
+    _clear_env.setenv(AUTH_REQUIRED_ENV, "true")
+
+    state = SessionState(session_id=new_ulid())
+    ws = _FakeWS()
+    ok = await _handle_auth_token(
+        ws,  # type: ignore[arg-type]
+        state,
+        {"token": "forged.jwt.value", "anonymous": False},
+    )
+
+    # Rejection still happens (A.5 4401 + A.6 AUTH_FAILED), exactly as before.
+    assert ok is False
+    assert state.authenticated_user_id is None
+    assert ws.closed_with is not None and ws.closed_with[0] == AUTH_CLOSE_CODE == 4401
+    assert any(
+        e["type"] == "error" and e["payload"]["error_code"] == AUTH_FAILED_ERROR_CODE
+        for e in ws.sent
+    )
+    # The hygiene property: NO write touched any collection, and the users
+    # collection was never accessed (no provisioning read OR write).
+    assert _write_calls(mock) == [], f"unexpected collection writes: {_write_calls(mock)}"
+    assert _users_calls(mock) == [], f"unexpected users access: {_users_calls(mock)}"
+    # The users store stays empty (the panel's on-disk junk-row check).
+    assert mock._store.get(USERS_COLLECTION, {}) == {}
+
+    set_persistence(None)
+
+
+@pytest.mark.asyncio
+async def test_gate_on_no_token_envelope_writes_no_user_row(_clear_env) -> None:
+    """AUTH_REQUIRED=true + non-auth first envelope → 4401 AND zero users writes.
+
+    ``_ensure_auth_handshake`` already checks ``auth_required()`` before
+    calling ``authenticate_token``, so this path never provisioned. This pins
+    that property so a future refactor can't reintroduce the write.
+    """
+    from grace2_agent.server import (
+        SessionState,
+        _ensure_auth_handshake,
+        set_persistence,
+    )
+
+    mock = MockMCPClient()
+    set_persistence(Persistence(mock))
+    _clear_env.setenv(AUTH_REQUIRED_ENV, "true")
+
+    state = SessionState(session_id=new_ulid())
+    ws = _FakeWS()
+    ok = await _ensure_auth_handshake(ws, state)  # type: ignore[arg-type]
+
+    assert ok is False
+    assert state.authenticated_user_id is None
+    assert ws.closed_with is not None and ws.closed_with[0] == 4401
+    assert _write_calls(mock) == [], f"unexpected collection writes: {_write_calls(mock)}"
+    assert _users_calls(mock) == [], f"unexpected users access: {_users_calls(mock)}"
+    assert mock._store.get(USERS_COLLECTION, {}) == {}
+
+    set_persistence(None)
+
+
+@pytest.mark.asyncio
+async def test_gate_on_forged_token_with_anon_hint_does_not_read_or_write(
+    _clear_env,
+) -> None:
+    """AUTH_REQUIRED=true + empty token carrying an anonymous_user_id hint →
+    rejected WITHOUT the sticky-reuse read or any write.
+
+    Even the sticky-anonymous REUSE lookup (``get_user_by_id``, a users-
+    collection ``find-one``) must be skipped on the gated path — the result is
+    destined for rejection, so there is nothing to rebind.
+    """
+    from grace2_agent.server import (
+        SessionState,
+        _handle_auth_token,
+        set_persistence,
+    )
+
+    mock = MockMCPClient()
+    p = Persistence(mock)
+    set_persistence(p)
+    _clear_env.setenv(AUTH_REQUIRED_ENV, "true")
+
+    # Seed a real anonymous user row that the hint WOULD reuse if read.
+    from grace2_contracts.user import User
+
+    seeded = User(
+        user_id=new_ulid(),
+        firebase_uid=None,
+        email=None,
+        display_name=None,
+        created_at=now_utc(),
+        is_active=True,
+        prefs={},
+        is_anonymous=True,
+    )
+    await p.upsert_user(seeded)
+    calls_after_seed = len(mock.calls)
+
+    state = SessionState(session_id=new_ulid())
+    ws = _FakeWS()
+    ok = await _handle_auth_token(
+        ws,  # type: ignore[arg-type]
+        state,
+        {"token": "", "anonymous_user_id": seeded.user_id},
+    )
+
+    assert ok is False
+    assert state.authenticated_user_id is None
+    assert ws.closed_with is not None and ws.closed_with[0] == 4401
+    # NOTHING happened on the MCP after the seed: no reuse read, no write.
+    assert mock.calls[calls_after_seed:] == [], (
+        f"unexpected MCP traffic on rejected path: {mock.calls[calls_after_seed:]}"
+    )
+
+    set_persistence(None)
+
+
+@pytest.mark.asyncio
+async def test_gate_off_forged_token_provisions_and_persists_user(_clear_env) -> None:
+    """REGRESSION PIN — gate OFF: a forged token still provisions AND PERSISTS
+    an anonymous users row, byte-identical to pre-job-0252b behavior.
+
+    This is the property that protects the live demo agent (which has no
+    AUTH_REQUIRED set): the gate-OFF path must keep writing the anonymous user.
+    """
+    from grace2_agent.server import (
+        SessionState,
+        _handle_auth_token,
+        set_persistence,
+    )
+
+    mock = MockMCPClient()
+    set_persistence(Persistence(mock))
+    set_verify_hook(lambda token: None)  # forged
+    # AUTH_REQUIRED unset → default "false".
+
+    state = SessionState(session_id=new_ulid())
+    ws = _FakeWS()
+    ok = await _handle_auth_token(
+        ws,  # type: ignore[arg-type]
+        state,
+        {"token": "forged.jwt.value", "anonymous": False},
+    )
+
+    assert ok is True  # proceeds
+    assert state.is_anonymous is True
+    assert state.authenticated_user_id is not None
+    # The anonymous user WAS persisted to the users collection (the regression
+    # the no-persist short-circuit must NOT touch when the gate is off).
+    users_writes = [
+        (n, a) for (n, a) in _write_calls(mock) if a.get("collection") == USERS_COLLECTION
+    ]
+    assert users_writes, "gate-off forged token must still persist an anonymous user"
+    persisted = mock._store.get(USERS_COLLECTION, {})
+    assert state.authenticated_user_id in persisted
+    assert persisted[state.authenticated_user_id]["is_anonymous"] is True
+
+    set_persistence(None)
+
+
+@pytest.mark.asyncio
+async def test_gate_on_valid_token_provisions_real_user(_clear_env) -> None:
+    """AUTH_REQUIRED=true + VALID token → the REAL (non-anonymous) user is
+    provisioned/bound and persisted — the gate short-circuit only suppresses
+    the ANONYMOUS write, never the real-identity provision.
+    """
+    from grace2_agent.server import (
+        SessionState,
+        _handle_auth_token,
+        set_persistence,
+    )
+
+    mock = MockMCPClient()
+    set_persistence(Persistence(mock))
+    fixed_uid = "fb-real-uid-0252b"
+    set_verify_hook(lambda token: {"uid": fixed_uid, "email": "owner@example.com"})
+    _clear_env.setenv(AUTH_REQUIRED_ENV, "true")
+
+    state = SessionState(session_id=new_ulid())
+    ws = _FakeWS()
+    ok = await _handle_auth_token(
+        ws,  # type: ignore[arg-type]
+        state,
+        {"token": "eyJ.real.jwt", "anonymous": False},
+    )
+
+    assert ok is True
+    assert state.is_anonymous is False
+    assert state.firebase_uid == fixed_uid
+    assert ws.closed_with is None
+    # A real user row was provisioned (first-login auto-provision) + persisted.
+    persisted = mock._store.get(USERS_COLLECTION, {})
+    assert state.authenticated_user_id in persisted
+    assert persisted[state.authenticated_user_id]["firebase_uid"] == fixed_uid
+    assert persisted[state.authenticated_user_id]["is_anonymous"] is False
+
+    set_persistence(None)

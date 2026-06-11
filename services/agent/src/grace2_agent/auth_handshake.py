@@ -205,10 +205,36 @@ async def authenticate_token(
 
     Always returns an ``AuthResult`` — verification failure is a path, not
     an exception.
+
+    **job-0252b — gate-ordering hygiene.** When the ``AUTH_REQUIRED`` gate
+    is engaged (``grace2_agent.auth.auth_required()``), every anonymous
+    *resolution* on this function's failure paths returns an **unprovisioned**
+    anonymous ``AuthResult`` — NO write to the users collection (and no
+    sticky-reuse read). The server gate (``server._handle_auth_token`` /
+    ``_ensure_auth_handshake``) inspects ``result.is_anonymous`` and rejects
+    the socket (A.5 4401 + A.6 ``AUTH_FAILED``) WITHOUT ever persisting a
+    junk anonymous row. Provisioning a row only to reject the connection a
+    moment later is unbounded junk-row growth + write amplification under
+    hostile/bot load. When the gate is OFF (dev/demo), behavior is byte-
+    identical to before this change: anonymous provisioning, sticky-anon
+    reuse, and the auth-ack all run exactly as the Wave 2 handshake did.
     """
+    # When the production sign-in gate is engaged, an anonymous resolution is
+    # destined for rejection by the server gate — so do NOT provision/persist
+    # (or even read for sticky-reuse). We hand back an unprovisioned anonymous
+    # AuthResult; the server reads is_anonymous and closes 4401. Read at call
+    # time per ``auth.auth_required`` so dev (no env) is untouched.
+    from .auth import auth_required  # local import: avoid an import cycle.
+
+    gate_on = auth_required()
+
     # 1. Anonymous fallback: no envelope, empty token, or no firebase_admin.
     token_str = (token_envelope.token if token_envelope else "").strip()
     if not token_str:
+        # Gate ON: short-circuit BEFORE the sticky-reuse read and BEFORE any
+        # provisioning write — zero collection access on the rejected path.
+        if gate_on:
+            return await _anonymous_result_no_persist()
         anon_hint = (
             token_envelope.anonymous_user_id if token_envelope else None
         )
@@ -230,12 +256,16 @@ async def authenticate_token(
     claims = _verify_id_token_hook(token_str)
     if not claims:
         logger.info("auth-token verification failed; falling back to anonymous")
+        if gate_on:
+            return await _anonymous_result_no_persist()
         return await _provision_anonymous_user(persistence)
 
     firebase_uid = claims.get("uid")
     if not firebase_uid:
         # JWT decoded but uid missing — treat as anonymous.
         logger.warning("verified claims missing 'uid' field; anonymous fallback")
+        if gate_on:
+            return await _anonymous_result_no_persist()
         return await _provision_anonymous_user(persistence)
 
     # H.4 tier resolution. Default "free" when no claim is present.
@@ -303,6 +333,27 @@ async def _provision_anonymous_user(persistence: Persistence | None) -> AuthResu
         is_anonymous=True,
         tier="free",
     )
+
+
+async def _anonymous_result_no_persist() -> AuthResult:
+    """Build an anonymous ``AuthResult`` WITHOUT touching any collection.
+
+    job-0252b: the ``AUTH_REQUIRED`` gate-rejected path. The server inspects
+    ``is_anonymous`` and closes the socket (A.5 4401 + A.6 ``AUTH_FAILED``)
+    immediately — there is no point provisioning a users row that is never
+    bound to a session, and doing so amplifies writes / grows junk rows under
+    hostile connection load. So the ephemeral User stays purely in-memory: a
+    fresh ULID, ``firebase_uid=None``, never persisted.
+
+    This is exactly ``_provision_anonymous_user(None)`` (the unbound-
+    persistence branch), but expressed as its own intent-named helper so the
+    "no write on the rejected path" property is explicit at the call sites
+    and cannot regress to passing a live ``persistence`` by accident.
+
+    The function is ``async`` to keep the call sites uniform with
+    ``_provision_anonymous_user`` even though it never awaits.
+    """
+    return await _provision_anonymous_user(None)
 
 
 async def _try_reuse_anonymous_user(
