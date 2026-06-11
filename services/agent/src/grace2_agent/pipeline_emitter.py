@@ -77,6 +77,8 @@ from grace2_contracts.ws import (
     SessionStatePayload,
 )
 
+from .layer_uri_emit import emit_layer_uri
+
 __all__ = [
     "ErrorCodeRegistry",
     "EMITTER_ERROR_CODES",
@@ -848,8 +850,16 @@ class PipelineEmitter:
                 self.last_tool_step = self._to_summary(step_id)  # job-0267
                 raise
             # Honor LayerURI return shape — append to loaded_layers + emit session-state.
+            # job-0254: route through the single emission seam first. The seam
+            # drops (returns None) a renderable raster carrying a raw gs:// uri
+            # (the publish-failure degraded path) so it never paints a broken
+            # layer row; vector inline-GeoJSON LayerURIs (job-0175) and WMS-URL
+            # rasters pass untouched. The tool result is unaffected — a dropped
+            # layer is still narrated honestly and the retry loop can act.
             if isinstance(result, LayerURI):
-                await self.add_loaded_layer(result)
+                emit_layer = emit_layer_uri(result)
+                if emit_layer is not None:
+                    await self.add_loaded_layer(emit_layer)
             await self.mark_complete(step_id)
             self.last_tool_step = self._to_summary(step_id)  # job-0267
             return result

@@ -266,6 +266,15 @@ async def test_workflow_happy_path_returns_flood_envelope() -> None:
     async def _wfc(handle):  # noqa: ANN001 — mock
         return run_result_ok
 
+    # job-0254: the happy path means publish_layer SUCCEEDS (returns a WMS URL).
+    # Previously this test left publish_layer unpatched and relied on the old
+    # gs:// fallback masking the test-env GCS publish failure — but that
+    # fallback was the leak this job closes. Patch publish to a WMS URL so the
+    # primary layer legitimately lands (the genuine happy path).
+    wms_url = (
+        "https://qgis.test.example.com/ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs"
+        f"&LAYERS=flood-depth-peak-{run_id}"
+    )
     with (
         patch("grace2_agent.workflows.model_flood_scenario.fetch_dem", return_value=_mock_layer_uri("dem")),
         patch("grace2_agent.workflows.model_flood_scenario.fetch_landcover", return_value=landcover_result),
@@ -277,6 +286,10 @@ async def test_workflow_happy_path_returns_flood_envelope() -> None:
         patch(
             "grace2_agent.workflows.model_flood_scenario.postprocess_flood",
             return_value=([flood_layer], depth_metrics),
+        ),
+        patch(
+            "grace2_agent.workflows.model_flood_scenario.publish_layer",
+            return_value=wms_url,
         ),
     ):
         envelope = await model_flood_scenario(
@@ -298,6 +311,8 @@ async def test_workflow_happy_path_returns_flood_envelope() -> None:
     assert len(envelope.layers) == 1
     assert envelope.layers[0].style_preset == "continuous_flood_depth"
     assert envelope.layers[0].role == "primary"
+    # job-0254: the landed layer carries the renderable WMS URL (not gs://).
+    assert envelope.layers[0].uri == wms_url
     assert envelope.forcing is not None
     assert envelope.forcing.forcing_type == "pluvial_synthetic"
     assert envelope.solver_run_ids == [run_id]
@@ -2457,19 +2472,25 @@ async def test_model_flood_scenario_layer_uri_carries_wms_url() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Test 27 — publish_layer failure falls back to gs:// (non-fatal)
+# Test 27 — publish_layer failure DROPS the layer (job-0254 §1, Decision 11)
 # --------------------------------------------------------------------------- #
 
 
 @pytest.mark.asyncio
-async def test_model_flood_scenario_publish_layer_failure_falls_back_to_gs() -> None:
-    """When ``publish_layer`` raises ``PublishLayerError``, fall back to gs:// uri.
+async def test_model_flood_scenario_publish_layer_failure_drops_layer() -> None:
+    """When ``publish_layer`` raises ``PublishLayerError``, the primary
+    flood-depth layer is DROPPED — NOT fallen back to its raw gs:// uri
+    (job-0254 §1, Decision 11).
 
-    The publish_layer step is non-fatal: if the worker execution fails
-    (e.g. OQ-62-WORKER-SA-RUNS-BUCKET-GRANT is not yet landed), the workflow
-    logs the error and falls back to the gs:// URI so the envelope is still
-    usable. The client will show the layer in the LayerPanel but WMS rendering
-    will fail at the MapLibre tile-fetch step until the grant lands.
+    A raw gs:// uri never renders (MapLibre cannot fetch gs://); emitting it
+    only paints a broken layer row. The publish step stays non-fatal: the
+    envelope is still a SUCCESS envelope carrying the depth metrics and
+    provenance (so narration is truthful and the job-0177 retry-on-failure
+    loop can act), but it carries ZERO renderable layers — the gs:// COG is
+    kept off the map.
+
+    (Supersedes the prior "falls back to gs://" contract, which codified the
+    leak this job closes.)
     """
     from grace2_agent.tools.publish_layer import PublishLayerError
 
@@ -2554,19 +2575,116 @@ async def test_model_flood_scenario_publish_layer_failure_falls_back_to_gs() -> 
 
     # Envelope is still built (not a failed envelope) — publish_layer failure is non-fatal.
     assert isinstance(envelope, AssessmentEnvelope)
-    assert len(envelope.layers) == 1
-    primary_layer = envelope.layers[0]
-    # Falls back to the gs:// uri (the original postprocess_flood output).
-    assert primary_layer.uri == cog_uri, (
-        f"publish_layer failure must fall back to gs:// uri; "
-        f"got {primary_layer.uri!r}"
+    # job-0254 §1: the primary raster is DROPPED (not gs://-fallback). No
+    # renderable layer reaches the client; the broken gs:// row is gone.
+    assert len(envelope.layers) == 0, (
+        f"publish_layer failure must DROP the primary raster, not fall back to "
+        f"its gs:// uri; envelope still carries {len(envelope.layers)} layer(s): "
+        f"{[lyr.uri for lyr in envelope.layers]}"
     )
-    # The envelope is still a success envelope (not failed).
+    # Crucially, the dropped layer's raw gs:// uri must NOT appear anywhere in
+    # the emitted layers (the leak is closed).
+    assert not any(lyr.uri == cog_uri for lyr in envelope.layers)
+    # The envelope is still a success envelope (not failed) — metrics survive,
+    # so narration stays truthful and the retry loop has a real result to act on.
     assert envelope.flood is not None
     assert not envelope.flood.metrics.solver_version.startswith("failed:"), (
         "publish_layer failure must NOT produce a failed envelope; "
-        "it should produce a success envelope with the gs:// fallback uri"
+        "it remains a success envelope whose metrics survive — only the "
+        "non-renderable gs:// layer is dropped"
     )
+    assert envelope.flood.metrics.max_depth_m == 2.4  # metrics intact
+
+
+@pytest.mark.asyncio
+async def test_wrapper_publish_failure_returns_truthful_dict_not_layer_uri() -> None:
+    """job-0254 §1 wrapper contract: when publish fails and the envelope ends
+    up with zero layers, the LLM-facing ``run_model_flood_scenario`` wrapper
+    returns the envelope DICT (not a ``LayerURI``).
+
+    Consequences (the retry contract, job-0177):
+      * No ``LayerURI`` return → the ``emit_tool_call`` isinstance gate never
+        fires ``add_loaded_layer`` → no renderable raw gs:// reaches the client.
+      * The dict carries the depth metrics + provenance so the agent narrates
+        the publish failure honestly and can retry.
+    """
+    from grace2_agent.tools.publish_layer import PublishLayerError
+
+    run_id = new_ulid()
+    handle = _make_handle(run_id=run_id)
+    landcover_result = {
+        "layer": _mock_layer_uri("landcover"),
+        "nlcd_vintage_year": 2021,
+        "dataset": "nlcd_2021",
+        "source": "mrlc-wms",
+    }
+    precip_result = {
+        "precip_inches": 12.1, "units": "inches", "location": [26.6, -81.9],
+        "return_period_years": 100, "duration_hours": 24.0,
+        "vintage_volume": "NOAA Atlas 14 Volume 9 Version 2",
+        "project_area": "Southeastern States", "source": "noaa-atlas14-pfds",
+    }
+    model_setup = ModelSetup(
+        setup_id=new_ulid(), solver="sfincs",
+        setup_uri="gs://test-cache/cache/static-30d/sfincs_setup/test/manifest.json",
+        grid_resolution_m=30.0, bbox=(-81.92, 26.55, -81.80, 26.68),
+        parameters={"nlcd_vintage_year": 2021}, created_at=datetime.now(timezone.utc),
+    )
+    run_result_ok = RunResult(
+        run_id=run_id, handle_id=handle.handle_id, status="complete",
+        output_uri=f"gs://grace-2-hazard-prod-runs/{run_id}/",
+        started_at=datetime.now(timezone.utc),
+        completed_at=datetime.now(timezone.utc), duration_seconds=120.0,
+    )
+    cog_uri = f"gs://grace-2-hazard-prod-runs/{run_id}/flood_depth_peak.tif"
+    flood_layer = LayerURI(
+        layer_id=f"flood-depth-peak-{run_id}", name="Flood Depth (peak)",
+        layer_type="raster", uri=cog_uri,
+        style_preset="continuous_flood_depth", role="primary", units="meters",
+    )
+    depth_metrics = {
+        "max_depth_m": 2.4, "mean_depth_m": 0.6, "p95_depth_m": 1.9,
+        "flooded_cell_count": 12_345, "crs": "EPSG:32617", "units": "meters",
+    }
+
+    async def _wfc(handle):  # noqa: ANN001
+        return run_result_ok
+
+    with (
+        patch("grace2_agent.workflows.model_flood_scenario.fetch_dem", return_value=_mock_layer_uri("dem")),
+        patch("grace2_agent.workflows.model_flood_scenario.fetch_landcover", return_value=landcover_result),
+        patch("grace2_agent.workflows.model_flood_scenario.fetch_river_geometry", return_value=_mock_layer_uri("rivers")),
+        patch("grace2_agent.workflows.model_flood_scenario.lookup_precip_return_period", return_value=precip_result),
+        patch("grace2_agent.workflows.model_flood_scenario.build_sfincs_model", return_value=model_setup),
+        patch("grace2_agent.workflows.model_flood_scenario.run_solver", return_value=handle),
+        patch("grace2_agent.workflows.model_flood_scenario.wait_for_completion", side_effect=_wfc),
+        patch(
+            "grace2_agent.workflows.model_flood_scenario.postprocess_flood",
+            return_value=([flood_layer], depth_metrics),
+        ),
+        patch(
+            "grace2_agent.workflows.model_flood_scenario.publish_layer",
+            side_effect=PublishLayerError(
+                "WORKER_JOB_FAILED",
+                "pyqgis worker execution reached FAILED state (no runs bucket grant)",
+            ),
+        ),
+    ):
+        result = await run_model_flood_scenario(
+            bbox=(-81.92, 26.55, -81.80, 26.68),
+        )
+
+    # No LayerURI → no add_loaded_layer → no renderable gs:// reaches the client.
+    assert not isinstance(result, LayerURI), (
+        f"publish failure must NOT yield a LayerURI (would leak gs://); "
+        f"got {type(result).__name__}"
+    )
+    assert isinstance(result, dict)
+    # The dict is the serialized envelope: metrics present, no layers, hazard flood.
+    assert result.get("hazard_type") == "flood"
+    assert result.get("layers") == []
+    # The raw gs:// COG uri must not appear anywhere in the LLM-visible result.
+    assert cog_uri not in json.dumps(result)
 
 
 # --------------------------------------------------------------------------- #

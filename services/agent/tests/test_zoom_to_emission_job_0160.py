@@ -293,6 +293,19 @@ async def test_run_model_flood_scenario_wrapper_includes_bbox_in_layer_uri() -> 
             "grace2_agent.workflows.model_flood_scenario.postprocess_flood",
             return_value=([flood_layer], depth_metrics),
         ),
+        # job-0254: the happy path requires publish_layer to SUCCEED (return a
+        # WMS URL). Previously this test left it unpatched and leaned on the old
+        # gs:// fallback to produce a LayerURI — that fallback is the leak this
+        # job closes (publish failure now DROPS the layer). Patch to a WMS URL
+        # so the wrapper legitimately returns a renderable LayerURI carrying bbox.
+        patch(
+            "grace2_agent.workflows.model_flood_scenario.publish_layer",
+            return_value=(
+                "https://qgis.test.example.com/ogc/wms"
+                "?MAP=/mnt/qgs/grace2-sample.qgs"
+                f"&LAYERS=flood-depth-peak-{handle.run_id}"
+            ),
+        ),
     ):
         result = await run_model_flood_scenario(bbox=_ft_myers_bbox())
 

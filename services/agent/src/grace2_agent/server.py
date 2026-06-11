@@ -109,6 +109,7 @@ from .auth_handshake import (
     get_auth_token_timeout_s,
 )
 from .case_lifecycle import CaseLifecycleError, ensure_case_qgs
+from .layer_uri_emit import emit_layer_uri
 from .mode2_classifier import (
     Mode2CandidateEnvelope,
     classify_for_mode2,
@@ -3197,7 +3198,11 @@ async def _invoke_tool_via_emitter(
             # announces the layer exactly as composer layers are announced.
             if isinstance(result, str) and result.startswith("http"):
                 try:
-                    await state.emitter.add_loaded_layer(
+                    # job-0254: route through the single emission seam. The WMS
+                    # URL here is always http(s) (guarded above), so the seam
+                    # passes it through; the seam exists so this site can never
+                    # regress into emitting a renderable raw gs:// raster.
+                    _emit_layer = emit_layer_uri(
                         LayerURI(
                             layer_id=lid,
                             name=lid,
@@ -3206,6 +3211,8 @@ async def _invoke_tool_via_emitter(
                             style_preset=params.get("style_preset") or "",
                         )
                     )
+                    if _emit_layer is not None:
+                        await state.emitter.add_loaded_layer(_emit_layer)
                 except Exception:  # noqa: BLE001 — emission is best-effort
                     logger.exception(
                         "publish_layer loaded-layer emission failed "

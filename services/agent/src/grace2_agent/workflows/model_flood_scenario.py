@@ -771,9 +771,14 @@ async def model_flood_scenario(
     # the client gets a renderable URL directly (layer-emission-contract.md, 2026-06-07).
     #
     # Non-fatal: if publish_layer fails (e.g. OQ-62-WORKER-SA-RUNS-BUCKET-GRANT
-    # is not yet landed), we log the error and fall back to the gs:// uri so the
-    # rest of the envelope is still usable. The client will show the layer in the
-    # LayerPanel but WMS rendering will fail at the MapLibre tile-fetch step.
+    # is not yet landed), we DROP the primary raster layer from the emitted set
+    # rather than fall back to the raw gs:// uri (job-0254 §1, Decision 11). A
+    # gs:// uri never renders — MapLibre cannot fetch it; emitting it only paints
+    # a dead, broken layer row in the LayerPanel. Dropping it keeps the map
+    # honest while the rest of the envelope (metrics, provenance, narration)
+    # stays intact, so the LLM narrates the publish failure truthfully and the
+    # job-0177 retry-on-failure loop can act. The layer_uri_emit seam enforces
+    # this same rule at the emission boundary as a belt-and-suspenders invariant.
     published_layers: list[LayerURI] = []
     for lyr in layers:
         if lyr.role == "primary" and lyr.layer_type == "raster" and lyr.uri.startswith("gs://"):
@@ -810,13 +815,18 @@ async def model_flood_scenario(
             except PublishLayerError as exc:
                 logger.warning(
                     "publish_layer failed for layer_id=%s error_code=%s (%s) — "
-                    "falling back to gs:// uri; WMS rendering will fail until "
-                    "OQ-62-WORKER-SA-RUNS-BUCKET-GRANT is resolved",
+                    "DROPPING the primary flood-depth layer from the emitted set "
+                    "(job-0254 §1): a raw gs:// uri never renders in MapLibre, so "
+                    "we do NOT fall back to it. The envelope's metrics/provenance "
+                    "remain intact and the failure is narrated honestly; the "
+                    "retry-on-failure loop (job-0177) can re-attempt publish.",
                     layer_id_for_wms,
                     exc.error_code,
                     exc,
                 )
-                published_layers.append(lyr)
+                # Intentionally do NOT append `lyr` — the gs:// uri stays off the
+                # map. (OQ-62-WORKER-SA-RUNS-BUCKET-GRANT resolution restores the
+                # success path; until then the depth metrics still surface.)
         else:
             published_layers.append(lyr)
 

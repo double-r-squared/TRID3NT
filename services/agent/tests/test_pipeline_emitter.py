@@ -244,8 +244,22 @@ async def test_emit_tool_call_layer_uri_return_funnels_to_loaded_layers(
 ) -> None:
     """End-to-end: a tool that returns a ``LayerURI`` from inside
     ``emit_tool_call`` causes a ``session-state`` envelope to be emitted
-    BEFORE the final ``pipeline-state(complete)``."""
-    layer = _make_layer("gs://b/dem.tif", layer_id="dem_1")
+    BEFORE the final ``pipeline-state(complete)``.
+
+    job-0254: ``emit_tool_call`` now routes the returned ``LayerURI`` through
+    the ``layer_uri_emit`` seam before ``add_loaded_layer``. A renderable
+    raster carries a WMS ``http(s)`` URL (post-publish, the realistic shape),
+    which the seam passes through — so the funnel still fires. (The
+    raster-with-raw-``gs://`` drop path is covered by
+    ``test_emit_tool_call_drops_raster_gs_uri`` below and in
+    ``test_layer_uri_emit.py``.)"""
+    layer = LayerURI(
+        layer_id="dem_1",
+        name="Demo DEM",
+        layer_type="raster",
+        uri="https://qgis.run.app/wms?LAYERS=dem_1",
+        style_preset="dem-default",
+    )
 
     def fake_tool() -> LayerURI:
         return layer
@@ -263,6 +277,37 @@ async def test_emit_tool_call_layer_uri_return_funnels_to_loaded_layers(
         "pipeline-state",  # running
         "session-state",  # add_loaded_layer side-effect
         "pipeline-state",  # complete
+    ]
+
+
+@pytest.mark.asyncio
+async def test_emit_tool_call_drops_raster_gs_uri(
+    emitter: PipelineEmitter, sink: _CapturingSink
+) -> None:
+    """job-0254 §1+§2 integration: a tool that returns a renderable raster
+    ``LayerURI`` with a raw ``gs://`` uri (the publish-failure degraded path)
+    is DROPPED by the ``layer_uri_emit`` seam — NO ``session-state`` is
+    emitted (no broken layer row), the step still completes, and the tool
+    result is returned UNCHANGED so narration/retry can act on it."""
+    leaked = _make_layer("gs://b/flood_depth_peak.tif", layer_id="flood_1")
+
+    def fake_tool() -> LayerURI:
+        return leaked
+
+    result = await emitter.emit_tool_call(
+        name="Flood scenario", tool_name="run_model_flood_scenario", invoke=fake_tool
+    )
+    # The LLM-visible tool result is unchanged (retry contract preserved).
+    assert result is leaked
+    # No layer reached the accumulator; no session-state was emitted.
+    assert emitter.loaded_layers == []
+    assert not any(f["type"] == "session-state" for f in sink.frames)
+    # The step still completes cleanly (the drop is not a tool failure).
+    types = [f["type"] for f in sink.frames]
+    assert types == [
+        "pipeline-state",  # pending
+        "pipeline-state",  # running
+        "pipeline-state",  # complete (no session-state in between)
     ]
 
 
@@ -672,3 +717,88 @@ async def test_emit_tool_call_stamps_duration_end_to_end(
     assert last["state"] == "complete"
     assert last["duration_ms"] is not None
     assert last["duration_ms"] >= 0
+
+
+# --------------------------------------------------------------------------- #
+# job-0254 §3 — byte-identical emission when SIGNED_URLS is absent
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_emit_byte_identical_with_seam_for_passing_layers(
+    session_id: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """For a PASSING layer (WMS raster), routing through the seam in
+    ``emit_tool_call`` produces a ``session-state`` payload byte-identical to
+    calling ``add_loaded_layer`` directly (pre-seam path). SIGNED_URLS absent
+    must be a true no-op on the wire."""
+    monkeypatch.delenv("SIGNED_URLS", raising=False)
+
+    layer = LayerURI(
+        layer_id="dem_1",
+        name="Demo DEM",
+        layer_type="raster",
+        uri="https://qgis.run.app/wms?LAYERS=dem_1",
+        style_preset="dem-default",
+    )
+
+    # Path A: seam-routed (through emit_tool_call's isinstance gate).
+    sink_seam = _CapturingSink()
+    em_seam = PipelineEmitter(session_id=session_id, sink=sink_seam)
+    await em_seam.emit_tool_call(
+        name="Fetch DEM", tool_name="fetch_dem", invoke=lambda: layer
+    )
+    seam_session = [f for f in sink_seam.frames if f["type"] == "session-state"]
+    assert seam_session, "seam path emitted no session-state"
+    seam_loaded = seam_session[-1]["payload"]["loaded_layers"]
+
+    # Path B: direct add_loaded_layer (bypasses the seam entirely).
+    sink_direct = _CapturingSink()
+    em_direct = PipelineEmitter(session_id=session_id, sink=sink_direct)
+    await em_direct.add_loaded_layer(layer)
+    direct_session = [
+        f for f in sink_direct.frames if f["type"] == "session-state"
+    ]
+    direct_loaded = direct_session[-1]["payload"]["loaded_layers"]
+
+    # The loaded_layers wire dicts are byte-identical (seam is a no-op for a
+    # passing layer when SIGNED_URLS is absent).
+    assert seam_loaded == direct_loaded
+    assert seam_loaded[0]["uri"] == "https://qgis.run.app/wms?LAYERS=dem_1"
+
+
+@pytest.mark.asyncio
+async def test_emit_byte_identical_under_signed_urls_true(
+    session_id: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SIGNED_URLS=true is dormant: the emitted ``session-state.loaded_layers``
+    payload is identical to SIGNED_URLS absent (only a WARNING is logged)."""
+    layer = LayerURI(
+        layer_id="dem_2",
+        name="Demo DEM 2",
+        layer_type="raster",
+        uri="https://qgis.run.app/wms?LAYERS=dem_2",
+        style_preset="dem-default",
+    )
+
+    monkeypatch.delenv("SIGNED_URLS", raising=False)
+    sink_absent = _CapturingSink()
+    em_absent = PipelineEmitter(session_id=session_id, sink=sink_absent)
+    await em_absent.emit_tool_call(
+        name="Fetch DEM", tool_name="fetch_dem", invoke=lambda: layer
+    )
+    absent_loaded = [
+        f for f in sink_absent.frames if f["type"] == "session-state"
+    ][-1]["payload"]["loaded_layers"]
+
+    monkeypatch.setenv("SIGNED_URLS", "true")
+    sink_true = _CapturingSink()
+    em_true = PipelineEmitter(session_id=session_id, sink=sink_true)
+    await em_true.emit_tool_call(
+        name="Fetch DEM", tool_name="fetch_dem", invoke=lambda: layer
+    )
+    true_loaded = [
+        f for f in sink_true.frames if f["type"] == "session-state"
+    ][-1]["payload"]["loaded_layers"]
+
+    assert absent_loaded == true_loaded
