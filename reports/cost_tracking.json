@@ -1597,6 +1597,15 @@
       "kind": "research",
       "workflow_id": "agent a2dde9a45c278f90a",
       "subagent_tokens": 107965
+    },
+    {
+      "job_id": "job-0253b-auth-wire-order-20260611",
+      "sprint": 13.5,
+      "description": "Opus web runner: auth-token strictly first frame (open handler awaits maybeSendAuthToken, chained resume with socket guard — pure reorder, dev byte-identical); authEpoch re-sign-in reconnect for BOTH GraceWs instances (closes OQ-0253-CHAT-WS-4401, dev can't engage); 6 tsc errors cleared. vitest 710→718; stash-proof load-bearing tests. Commit 74de10b.",
+      "model": "opus",
+      "kind": "engineering",
+      "workflow_id": "agent ae5fdd117f7d47221",
+      "subagent_tokens": 151307
     }
   ],
   "totals_by_sprint": {
@@ -1608,7 +1617,7 @@
     "11": 999540,
     "12": 27545642,
     "13": 14388888,
-    "13.5": 3580556
+    "13.5": 3731863
   },
   "historical_context": {
     "note": "Captured for accountability \u2014 NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
