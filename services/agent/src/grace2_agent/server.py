@@ -1201,10 +1201,19 @@ async def _stream_gemini_reply(
                 _new_handles = get_uri_registry(state.session_id).drain_announcements()
                 if _new_handles and dispatch_error is None:
                     summary["layer_handles"] = _new_handles
+                    # job-0270: the note must make the publish step explicit —
+                    # a computed/fetched layer is invisible until publish_layer
+                    # adds it to the QGIS project (live finding: Gemini ended
+                    # the colored-relief turn without publishing).
                     summary["layer_handles_note"] = (
-                        "Pass these handle strings (layer_id) for any *_uri "
-                        "tool parameter — the server resolves them to exact "
-                        "storage URIs. Do NOT construct or echo gs:// paths."
+                        "A layer is NOT visible on the user's map until "
+                        "publish_layer(layer_uri=<handle>, "
+                        "layer_id=<descriptive-id>) has run for it — if the "
+                        "user asked to see this layer, call publish_layer "
+                        "with the handle before finishing. Pass these handle "
+                        "strings (layer_id) for any *_uri tool parameter — "
+                        "the server resolves them to exact storage URIs. Do "
+                        "NOT construct or echo gs:// paths."
                     )
                 logger.info(
                     "function-response queued session=%s iter=%d tool=%s summary_keys=%s",

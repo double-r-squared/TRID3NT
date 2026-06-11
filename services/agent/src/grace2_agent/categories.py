@@ -9,13 +9,17 @@ This module implements the Wave 4.10 CachedContent Option A architecture from
   "allowed set" enforcement happens **in our code, not in Gemini's request**.
 
 - Every Gemini-emitted ``function_call`` is validated against the current turn's
-  per-session ``AllowedToolSet`` BEFORE dispatch. If the call name is not in
-  the allowed set, ``validate_function_call`` raises ``OutOfAllowedSetError``
-  — a typed exception with ``error_code='OUT_OF_ALLOWED_SET'`` and
-  ``retryable=False``. ``summarize_tool_result`` in ``adapter.py`` then renders
-  this as the canonical Wave 4.9 ``{status: error, error_code, retryable,
-  message}`` envelope, which Gemini reads on its next turn and retries (per
-  Wave 4.9 retry-on-failure).
+  per-session ``AllowedToolSet`` BEFORE dispatch. If the call name IS a real
+  registered tool (present in ``TOOL_REGISTRY``) but outside the allowed set,
+  the validator AUTO-WIDENS the set with that name and lets the dispatch
+  proceed (job-0270 — Gemini saw the full catalog via CachedContent, so a
+  registry-valid call is correct routing, not a hallucination). Only names
+  that do NOT exist in the registry raise ``OutOfAllowedSetError`` — a typed
+  exception with ``error_code='OUT_OF_ALLOWED_SET'`` and ``retryable=False``.
+  ``summarize_tool_result`` in ``adapter.py`` then renders this as the
+  canonical Wave 4.9 ``{status: error, error_code, retryable, message}``
+  envelope, which Gemini reads on its next turn and retries (per Wave 4.9
+  retry-on-failure).
 
 Twelve categories (from ``project_generic_endpoint_architecture.md``):
 
@@ -46,6 +50,7 @@ discover_dataset).
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field
 from typing import Iterable
@@ -53,6 +58,8 @@ from typing import Iterable
 from grace2_contracts.tool_registry import AtomicToolMetadata
 
 from .tools import register_tool
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "CATEGORIES",
@@ -433,17 +440,19 @@ class UnknownCategoryError(ValueError):
 
 
 class OutOfAllowedSetError(RuntimeError):
-    """Raised when Gemini emits a ``function_call`` for a tool that is not in
-    the current turn's allowed set.
+    """Raised when Gemini emits a ``function_call`` for a name that is not in
+    the current turn's allowed set AND not a registered tool.
 
     Per the Wave 4.10 CachedContent Option A architecture: every Gemini
     function_call is validated against the per-session ``AllowedToolSet``
-    BEFORE dispatch. If the tool is not allowed, this typed exception is
-    raised; ``summarize_tool_result`` (adapter.py) then renders it as the
-    canonical Wave 4.9 structured error envelope with
+    BEFORE dispatch. Since job-0270, a registry-valid name outside the
+    allowed set auto-widens the set instead of raising — this exception is
+    now the HALLUCINATION GUARD: it fires only for names that exist nowhere
+    in ``TOOL_REGISTRY``. ``summarize_tool_result`` (adapter.py) renders it
+    as the canonical Wave 4.9 structured error envelope with
     ``error_code='OUT_OF_ALLOWED_SET'`` and ``retryable=False``. Gemini
     reads the envelope on its next turn and retries — typically by calling
-    ``list_tools_in_category`` to widen the allowed set first.
+    ``list_tools_in_category`` / ``discover_dataset`` to find a real tool.
     """
 
     error_code: str = "OUT_OF_ALLOWED_SET"
@@ -644,7 +653,7 @@ def tools_for_category(category_id: str) -> tuple[str, ...]:
 
 
 def validate_function_call(call_name: str, allowed: AllowedToolSet) -> None:
-    """Raise ``OutOfAllowedSetError`` if ``call_name`` is not in the allowed set.
+    """Validate a Gemini ``function_call`` name; raise only for non-tools.
 
     Per Wave 4.10 CachedContent Option A: every Gemini-emitted ``function_call``
     must be validated against the current turn's allowed set BEFORE we hand
@@ -652,12 +661,38 @@ def validate_function_call(call_name: str, allowed: AllowedToolSet) -> None:
     allowed set widens monotonically through the session as the LLM opens
     categories (``list_tools_in_category``) or dispatches tools.
 
-    Returns ``None`` on success. The caller (server.py) catches the typed
-    exception and routes it through ``summarize_tool_result(error=...)`` so
-    Gemini sees a structured envelope and can retry.
+    job-0270 (auto-widen for REAL tools): when ``call_name`` IS a registered
+    tool (in the live ``TOOL_REGISTRY``) but outside the current allowed set,
+    do NOT raise — Gemini saw the full catalog via CachedContent, so a
+    registry-valid call is a correct routing decision, not a hallucination.
+    The set auto-widens with that name (same monotonic explicit-tools growth
+    path used by category pre-warm) and the dispatch proceeds; a WARNING log
+    records the widening. Live evidence (job-0247, job-0261, agent_demo7/8):
+    rejecting registry-valid first calls to ``compute_colored_relief`` /
+    ``compute_hillshade`` / ``publish_layer`` burned 2-4 detour iterations
+    per turn while Gemini guessed category names, and once left a computed
+    raster unpublished (invisible to the user).
+
+    Names NOT in the registry still raise ``OutOfAllowedSetError`` exactly as
+    before — that is the hallucination guard, unweakened. The caller
+    (server.py) catches the typed exception and routes it through
+    ``summarize_tool_result(error=...)`` so Gemini sees a structured envelope
+    and can retry.
+
+    Returns ``None`` on success.
     """
     snapshot = allowed.as_frozenset()
     if call_name in snapshot:
+        return
+    # Import locally to avoid a circular import at module-load time (same
+    # seam ``_list_tools_in_category_impl`` uses for category listings).
+    from .tools import TOOL_REGISTRY
+
+    if call_name in TOOL_REGISTRY:
+        allowed.add_tools((call_name,))
+        logger.warning(
+            "allowed-set auto-widen tool=%s (was outside hot set)", call_name
+        )
         return
     raise OutOfAllowedSetError(call_name, hot_set=HOT_SET_TOOLS)
 
