@@ -76,3 +76,10 @@ web-app registration for the client SDK config object.
    (job-0252 token-minting path), not declared in Tofu — Identity Platform has
    no Terraform surface for claim schemas. The Firestore rules here are the
    enforcement half; minting is job-0252.
+
+## Panel verdict (4-lens Opus, refute-by-default): PASS 4/4 CONFIRM
+Minor doc-grade finding (contract lens): tier-gating citations should read SRS
+§H.4 (not §F.1 — that's data-source tiering), and the manifest's
+`{case_ids: string[]}` JWT claim is manifest-invented — Case ownership is
+enforced via the Mongo user link per §H.2, not a claim. Code is correct;
+citations to be corrected in the manifest by the orchestrator.

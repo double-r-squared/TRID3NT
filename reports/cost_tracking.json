@@ -1489,6 +1489,33 @@
       "kind": "engineering",
       "workflow_id": "agent a5c92e5d0e439c06b",
       "subagent_tokens": 118863
+    },
+    {
+      "job_id": "job-0285-landing-privacy-20260611",
+      "sprint": 13.5,
+      "description": "Fable landing+privacy: hero page (Gemini-forward, real product shots, code-split) + privacy policy + session-passthrough entry routing; vitest 680 (+38).",
+      "model": "fable-1m",
+      "kind": "engineering",
+      "workflow_id": "agent a2d91fb30346e33cb",
+      "subagent_tokens": 109378
+    },
+    {
+      "job_id": "panel-job-0250",
+      "sprint": 13.5,
+      "description": "4-lens Opus adversarial panel: PASS 4/4 (minor: SRS citation H.4-vs-F.1; case_ids claim manifest-invented).",
+      "model": "opus",
+      "kind": "verification",
+      "workflow_id": "wf_7d7acc3f-ad9",
+      "subagent_tokens": 256292
+    },
+    {
+      "job_id": "panel-job-0251",
+      "sprint": 13.5,
+      "description": "4-lens Opus adversarial panel: 2/4 REFUTED \u2014 BLOCKING find: ownership field never written by upsert_case (CaseSummary has no user_id; extra=forbid) \u2192 endpoint would 403 every owner. Fix scheduled job-0252b.",
+      "model": "opus",
+      "kind": "verification",
+      "workflow_id": "wf_85f54b3f-b37",
+      "subagent_tokens": 274766
     }
   ],
   "totals_by_sprint": {
@@ -1500,7 +1527,7 @@
     "11": 999540,
     "12": 27545642,
     "13": 14388888,
-    "13.5": 706280
+    "13.5": 1346716
   },
   "historical_context": {
     "note": "Captured for accountability \u2014 NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",

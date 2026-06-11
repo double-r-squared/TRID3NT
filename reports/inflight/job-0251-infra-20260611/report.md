@@ -73,3 +73,13 @@ role; no Gemini; no key. Invoker-gated (run.invoker to agent-runtime SA + var me
   expiry is GCS-native V4; the clamped TTL the function sets IS unit-tested.
 - service_config[0].uri exposed as output signed_url_function_url for job-0254.
 - No edits outside infra/signed_urls/, infra/signed_urls.tf, reports/. No Gemini/Vertex. git add scoped.
+
+## Panel verdict (4-lens Opus): 2/4 — REFUTED (blocking, contract lens)
+The ownership check (`user_id`/`owner_user_id` on case docs) matches the READ
+filter but NOT the WRITE path: `upsert_case` persists `CaseSummary`, which has
+NO user field (extra="forbid") — so against today's documents the function
+403s EVERY legitimate owner. Root fix is the case-ownership FIELD itself:
+contracts `CaseSummary.user_id` + write-path persistence + the job-0252
+migration. Scheduled as job-0252b (after the in-flight job-0252 lands, per
+the frozen-kickoff convention), then the contract lens re-runs. Also queued:
+the correctness lens's OverflowError nit in clamp_ttl.
