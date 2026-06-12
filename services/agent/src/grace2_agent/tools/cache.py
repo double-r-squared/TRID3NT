@@ -43,6 +43,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
@@ -310,48 +311,73 @@ def read_through(
 
     # Lazy import so test environments that don't have google-cloud-storage
     # (or have it stubbed) don't pay the import cost at module load.
-    if storage_client is None:
-        from google.cloud import storage  # type: ignore[import-not-found]
+    # sprint-14-aws (job-0288c): the object-store cache is BEST-EFFORT. On AWS /
+    # run-local there are no GCP credentials, so ``storage.Client()`` raises
+    # DefaultCredentialsError (and any read/write may fail on transient I/O).
+    # Degrade gracefully: treat a storage failure as a cache miss, fetch fresh
+    # from the source API, and return the data UNcached (uri stays the computed
+    # gs:// string so callers' ``assert result.uri is not None`` still holds).
+    # The Gemini/GCP happy path is unchanged. Full GCS->S3 swap is job-0289.
+    try:
+        if storage_client is None:
+            from google.cloud import storage  # type: ignore[import-not-found]
 
-        storage_client = storage.Client()
-    bucket_obj = storage_client.bucket(bucket)
-    blob = bucket_obj.blob(path)
+            storage_client = storage.Client(
+                project=os.environ.get("GOOGLE_CLOUD_PROJECT", "grace-2-hazard-prod")
+            )
+        bucket_obj = storage_client.bucket(bucket)
+        blob = bucket_obj.blob(path)
 
-    if not force_refresh and blob.exists():
-        # Presence == valid per FR-DC-5: the lifecycle policy evicts based
-        # on customTime, so anything still present is within its TTL window.
-        data = blob.download_as_bytes()
-        logger.info(
-            "read_through hit tool=%s key=%s bytes=%d",
+        if not force_refresh and blob.exists():
+            # Presence == valid per FR-DC-5: the lifecycle policy evicts based
+            # on customTime, so anything still present is within its TTL window.
+            data = blob.download_as_bytes()
+            logger.info(
+                "read_through hit tool=%s key=%s bytes=%d",
+                metadata.name,
+                key,
+                len(data),
+            )
+            return ReadThroughResult(uri=uri, data=data, hit=True)
+    except Exception as exc:  # noqa: BLE001 — object store unavailable -> degrade
+        logger.warning(
+            "read_through cache degraded (object store unavailable) tool=%s: %s; "
+            "fetching fresh, uncached",
             metadata.name,
-            key,
-            len(data),
+            exc,
         )
-        return ReadThroughResult(uri=uri, data=data, hit=True)
+        return ReadThroughResult(uri=uri, data=fetch_fn(), hit=False)
 
     # Miss (or forced refresh). Invoke the fetcher; on failure re-raise so
     # the agent's FR-AS-11 surface decides next steps. Do NOT write a
     # sentinel — a sentinel would poison future reads.
     data = fetch_fn()
 
-    fetched_at = now or datetime.now(timezone.utc)
-    blob.custom_time = fetched_at  # google.cloud.storage requires datetime, not str (OQ-33-CACHE-CUSTOMTIME-TYPE-BUG)
-    blob.cache_control = _ttl_to_cache_control(metadata.ttl_class)
-    # Best-effort content-type for HTTP-style consumers; the lifecycle
-    # policy doesn't care, but downstream readers might.
-    content_type = {
-        "json": "application/json",
-        "tif": "image/tiff",
-        "fgb": "application/octet-stream",
-        "nc": "application/x-netcdf",
-        "grib2": "application/x-grib2",
-    }.get(ext.lstrip("."), "application/octet-stream")
-    blob.upload_from_string(data, content_type=content_type)
-    logger.info(
-        "read_through miss-write tool=%s key=%s bytes=%d customTime=%s",
-        metadata.name,
-        key,
-        len(data),
-        fetched_at.isoformat(),
-    )
+    try:
+        fetched_at = now or datetime.now(timezone.utc)
+        blob.custom_time = fetched_at  # google.cloud.storage requires datetime, not str (OQ-33-CACHE-CUSTOMTIME-TYPE-BUG)
+        blob.cache_control = _ttl_to_cache_control(metadata.ttl_class)
+        # Best-effort content-type for HTTP-style consumers; the lifecycle
+        # policy doesn't care, but downstream readers might.
+        content_type = {
+            "json": "application/json",
+            "tif": "image/tiff",
+            "fgb": "application/octet-stream",
+            "nc": "application/x-netcdf",
+            "grib2": "application/x-grib2",
+        }.get(ext.lstrip("."), "application/octet-stream")
+        blob.upload_from_string(data, content_type=content_type)
+        logger.info(
+            "read_through miss-write tool=%s key=%s bytes=%d customTime=%s",
+            metadata.name,
+            key,
+            len(data),
+            fetched_at.isoformat(),
+        )
+    except Exception as exc:  # noqa: BLE001 — write is best-effort
+        logger.warning(
+            "read_through cache write degraded tool=%s: %s; returning uncached",
+            metadata.name,
+            exc,
+        )
     return ReadThroughResult(uri=uri, data=data, hit=False)
