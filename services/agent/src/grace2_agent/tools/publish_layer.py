@@ -847,6 +847,26 @@ def publish_layer(
         - ``run_model_flood_scenario`` / ``run_model_flood_habitat_scenario`` —
           call this as the final step of the workflow chain.
     """
+    # sprint-14-aws (job-0291b): on the AWS deployment there is no QGIS
+    # Server / PyQGIS worker yet (job-0290), and every GCS touch below would
+    # crash with DefaultCredentialsError — which the LLM then narrates as a
+    # scary GCP-credentials lecture (observed live: Fort Myers probe). Under
+    # the s3 storage backend, fail FAST and HONESTLY with a typed, terminal
+    # error so the model tells the user the layer can't be displayed yet and
+    # where the artifact lives, instead of dispensing gcloud advice.
+    from .cache import storage_scheme
+
+    if storage_scheme() == "s3":
+        raise PublishLayerError(
+            "RASTER_PUBLISH_UNAVAILABLE",
+            "Map tile publishing for raster layers is not yet available on "
+            f"this AWS deployment (tile server pending). The raster artifact "
+            f"is stored at {layer_uri!r} and any computed metrics remain valid "
+            "— tell the user the numbers stand but the raster overlay cannot "
+            "be displayed yet. Do not retry.",
+            retryable=False,
+        )
+
     # 1. Resolve the .qgs URI and extract the GCS key for MAP= param.
     effective_qgs_uri = _get_effective_qgs_uri(project_qgs_uri)
     qgs_key = _parse_qgs_key(effective_qgs_uri)
