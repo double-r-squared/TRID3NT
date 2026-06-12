@@ -151,6 +151,10 @@ def _get_source_crs(raster_uri: str) -> Any:
 
 def _download_raster_bytes(raster_uri: str, storage_client: Any | None) -> bytes:
     """Download raster bytes from a ``gs://`` URI or read from a local file."""
+    # sprint-14-aws (job-0290b): s3:// staging via the shared boto3 reader.
+    if raster_uri.startswith("s3://"):
+        from .cache import read_object_bytes_s3
+        return read_object_bytes_s3(raster_uri)
     if not raster_uri.startswith("gs://"):
         if not os.path.isfile(raster_uri):
             raise ClipRasterPolygonError(
@@ -183,7 +187,9 @@ def _download_raster_bytes(raster_uri: str, storage_client: Any | None) -> bytes
         if storage_client is None:
             from google.cloud import storage  # type: ignore[import-not-found]
 
-            storage_client = storage.Client()
+            storage_client = storage.Client(
+                project=os.environ.get("GOOGLE_CLOUD_PROJECT", "grace-2-hazard-prod")
+            )
         bucket_obj = storage_client.bucket(bucket_name)
         blob = bucket_obj.blob(blob_path)
         return blob.download_as_bytes()
@@ -202,6 +208,12 @@ def _download_polygon_bytes(polygon_uri: str, storage_client: Any | None) -> tup
         ``.geojson``) used so geopandas/pyogrio picks the right driver when
         reading from the materialized temp file.
     """
+    # sprint-14-aws (job-0290b): s3:// staging via the shared boto3 reader.
+    if polygon_uri.startswith("s3://"):
+        from .cache import read_object_bytes_s3
+        _name = polygon_uri.rstrip("/").rsplit("/", 1)[-1]
+        _suffix = ("." + _name.rsplit(".", 1)[-1]) if "." in _name else ".fgb"
+        return read_object_bytes_s3(polygon_uri), _suffix
     if not polygon_uri.startswith("gs://"):
         if not os.path.isfile(polygon_uri):
             raise ClipRasterPolygonError(
@@ -236,7 +248,9 @@ def _download_polygon_bytes(polygon_uri: str, storage_client: Any | None) -> tup
         if storage_client is None:
             from google.cloud import storage  # type: ignore[import-not-found]
 
-            storage_client = storage.Client()
+            storage_client = storage.Client(
+                project=os.environ.get("GOOGLE_CLOUD_PROJECT", "grace-2-hazard-prod")
+            )
         bucket_obj = storage_client.bucket(bucket_name)
         blob = bucket_obj.blob(blob_path)
         data = blob.download_as_bytes()
@@ -465,7 +479,14 @@ def _mask_and_write(
 # ---------------------------------------------------------------------------
 
 
-@register_tool(_METADATA)
+@register_tool(
+    _METADATA,
+    # Annotations: readOnlyHint=True (reads input raster/vector; writes cache
+    # artifact only via the read-through shim), openWorldHint=False (all
+    # computation is local GDAL/numpy; no external API calls),
+    # destructiveHint=False, idempotentHint=True (deterministic transform;
+    # same inputs always produce the same output pixels).
+)
 def clip_raster_to_polygon(
     raster_uri: str,
     polygon_uri: str,
@@ -478,31 +499,28 @@ def clip_raster_to_polygon(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Clip a raster to an arbitrary polygon (vs ``clip_raster_to_bbox`` which only does bbox rectangles).
+    """Clip a raster to an arbitrary polygon (vs ``clip_raster_to_bbox`` which only does rectangles).
 
-    Enabler for the "in [place]" geographic-clipping pattern (per
-    feedback-geographic-clipping-pattern memory rule). Composes with
-    ``fetch_administrative_boundaries`` and other polygon sources::
+    Uses ``rasterio.mask.mask(crop=True)`` to mask a raster to one or more
+    polygon features, with optional attribute-based feature selection and
+    automatic CRS reprojection of the polygon to the raster CRS. Returns a
+    new ``LayerURI`` for the masked raster, cached for 30 days.
 
-        boundaries = fetch_administrative_boundaries(level='state', bbox=...)
-        masked = clip_raster_to_polygon(
-            precip_uri,
-            boundaries.uri,
-            feature_filter={"property": "NAME", "value": "Washington"},
-        )
+    When to use:
+        - User asks for analysis "in [named place]" (state, county, watershed,
+          protected area, parcel) and the place is a non-rectangular polygon.
+        - Masking a flood, slope, or DEM raster to a WDPA protected-area boundary
+          or TIGER county outline before aggregation.
+        - Preparing a raster zone input for ``compute_zonal_statistics`` by
+          restricting to an exact administrative or ecological boundary.
+        - Case 1 flood-habitat workflow: clip flood-depth COG to WDPA polygons.
 
-    Use this when: a user asks for analysis "in [named place]" (state, county,
-    watershed, protected area, parcel, custom AOI), AND that place is a
-    non-rectangular polygon. Use after fetching the raster (e.g. ``fetch_dem``)
-    and the polygon (e.g. ``fetch_administrative_boundaries``,
-    ``fetch_wdpa_protected_areas``) to mask the raster to the named region's
-    exact outline. Composes naturally before ``compute_zonal_statistics`` to
-    aggregate the masked pixels.
-
-    Do NOT use this for: rectangular bbox clips (use ``clip_raster_to_bbox`` —
-    faster, no shapefile read needed); vector-to-vector clips (use
-    ``qgis_process`` clip algorithm); reprojection-only operations (use
-    ``clip_raster_to_bbox`` with target_crs).
+    When NOT to use:
+        - Rectangular bbox clips (use ``clip_raster_to_bbox`` — faster, no vector read).
+        - Vector-to-vector clips (use ``clip_vector_to_polygon``).
+        - Reprojection without spatial masking (use ``clip_raster_to_bbox`` with
+          ``target_crs``).
+        - Clipping based on complex attribute logic (pre-filter the vector first).
 
     Params:
         raster_uri: source raster URI — ``gs://`` GCS path or absolute local
@@ -541,6 +559,22 @@ def clip_raster_to_polygon(
     FR-CE-8: Results are routed through ``read_through`` so repeat calls with
     the same parameters return the cached clip without re-running rasterio.mask.
     TTL is 30 days.
+
+    Cross-tool dependencies:
+        Upstream (consumes):
+        - ``fetch_dem`` / ``fetch_landcover`` / ``compute_slope`` / ``compute_hillshade`` /
+          ``compute_colored_relief`` / ``compute_impervious_surface`` — supply the
+          ``raster_uri`` input.
+        - ``fetch_administrative_boundaries`` / ``fetch_wdpa_protected_areas`` —
+          supply the ``polygon_uri`` mask input.
+        - Flood-depth COG from ``postprocess_flood`` (via ``run_model_flood_scenario``)
+          — primary raster input for Case 1 flood-habitat analysis.
+        Downstream (feeds):
+        - ``compute_zonal_statistics`` — pass the clipped ``LayerURI`` as
+          ``value_raster_uri`` to aggregate within the polygon boundary.
+        - ``run_model_flood_habitat_scenario`` — calls this internally to clip
+          flood and species-layer rasters to WDPA polygon extents.
+        - ``publish_layer`` — publish the clipped raster to QGIS Server.
 
     Raises:
         ClipRasterPolygonError: with one of the documented error codes if

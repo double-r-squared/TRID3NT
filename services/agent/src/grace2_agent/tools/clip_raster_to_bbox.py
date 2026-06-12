@@ -215,6 +215,10 @@ def _download_raster_bytes(raster_uri: str, storage_client: object | None) -> by
     Raises:
         ClipRasterError: on any failure so callers get a typed error.
     """
+    # sprint-14-aws (job-0290b): s3:// staging via the shared boto3 reader.
+    if raster_uri.startswith("s3://"):
+        from .cache import read_object_bytes_s3
+        return read_object_bytes_s3(raster_uri)
     if not raster_uri.startswith("gs://"):
         # Local path — read directly (test / dev convenience).
         if not os.path.isfile(raster_uri):
@@ -247,7 +251,9 @@ def _download_raster_bytes(raster_uri: str, storage_client: object | None) -> by
         if storage_client is None:
             from google.cloud import storage  # type: ignore[import-not-found]
 
-            storage_client = storage.Client()
+            storage_client = storage.Client(
+                project=os.environ.get("GOOGLE_CLOUD_PROJECT", "grace-2-hazard-prod")
+            )
         bucket_obj = storage_client.bucket(bucket_name)
         blob = bucket_obj.blob(blob_path)
         return blob.download_as_bytes()
@@ -453,7 +459,14 @@ def _round_bbox(bbox: tuple[float, float, float, float]) -> tuple[float, float, 
 # ---------------------------------------------------------------------------
 
 
-@register_tool(_CLIP_RASTER_METADATA)
+@register_tool(
+    _CLIP_RASTER_METADATA,
+    # Annotations: readOnlyHint=True (reads input raster/vector; writes cache
+    # artifact only via the read-through shim), openWorldHint=False (all
+    # computation is local GDAL/numpy; no external API calls),
+    # destructiveHint=False, idempotentHint=True (deterministic transform;
+    # same inputs always produce the same output pixels).
+)
 def clip_raster_to_bbox(
     raster_uri: str,
     bbox: tuple[float, float, float, float],
@@ -468,24 +481,25 @@ def clip_raster_to_bbox(
 ) -> LayerURI:
     """Clip a raster to a bounding box, optionally reprojecting.
 
-    Wraps ``gdal_translate -projwin`` (if bbox_crs matches raster CRS and no
-    reprojection is needed) OR ``gdalwarp -te -te_srs [-t_srs]`` (when
-    reprojection is required or CRS differs). Returns a new LayerURI pointing
-    at the clipped raster in the FR-DC cache.
+    Wraps ``gdal_translate -projwin`` (fast path, same CRS) or ``gdalwarp -te
+    -te_srs`` (reprojection path) to trim a GCS-hosted raster to a bounding box.
+    Returns a new ``LayerURI`` pointing at the clipped raster in the FR-DC cache.
+    Cached for 30 days.
 
-    Use this when: a fetched raster is larger than the case bbox and needs to
-    be trimmed before further analysis — e.g., a national-scale DEM clipped to
-    a county or city case extent, or a global wind field clipped to a storm's
-    bounding box before slope or hillshade computation. This is typically the
-    first step after ``fetch_dem`` or any other raster fetch when the fetch
-    area is coarser than the analysis area.
+    When to use:
+        - A fetched raster is larger than the analysis area (national DEM clipped
+          to city/county extent, global wind field clipped to storm bbox).
+        - Before passing a large raster to ``compute_slope``, ``compute_hillshade``,
+          ``compute_colored_relief``, or ``compute_zonal_statistics`` to reduce
+          compute and transfer cost.
+        - When you need both clipping and CRS reprojection in a single operation.
 
-    Do NOT use this for: vector clipping (use a MongoDB spatial query or
-    ``qgis_process`` with a clip algorithm); cloud-masked satellite composites
-    that require band math before spatial subset; reprojecting without clipping
-    (use gdalwarp directly via qgis_process); anything requiring per-pixel
-    statistics over the full raster (clip first, then pass to
-    ``compute_zonal_statistics``).
+    When NOT to use:
+        - Vector clipping (use ``clip_vector_to_polygon``).
+        - Clipping to an irregular polygon boundary (use ``clip_raster_to_polygon``).
+        - Reprojection without spatial clipping (use a dedicated gdalwarp call).
+        - Per-pixel statistics over the full raster (clip first, then pass to
+          ``compute_zonal_statistics``).
 
     Params:
         raster_uri: source raster URI — ``gs://`` GCS path or absolute local
@@ -514,6 +528,19 @@ def clip_raster_to_bbox(
     FR-CE-8: Results are routed through ``read_through`` so repeat calls with
     the same ``(raster_uri, bbox, bbox_crs, target_crs)`` quadruple return the
     cached clip without re-running GDAL. TTL is 30 days.
+
+    Cross-tool dependencies:
+        Upstream (consumes):
+        - ``fetch_dem`` / ``fetch_landcover`` / ``compute_slope`` /
+          ``compute_hillshade`` / ``compute_colored_relief`` /
+          ``compute_impervious_surface`` — any of these produce a
+          ``LayerURI`` suitable as ``raster_uri``.
+        Downstream (feeds):
+        - ``compute_zonal_statistics`` — pass the clipped ``LayerURI`` as
+          ``value_raster_uri`` or ``zone_input_uri`` for cheaper aggregation.
+        - ``compute_slope`` / ``compute_hillshade`` / ``compute_colored_relief`` —
+          process only the clipped area.
+        - ``publish_layer`` — clip to display extent before publishing.
 
     Raises:
         ClipRasterError: if GDAL binaries are unavailable, return non-zero,

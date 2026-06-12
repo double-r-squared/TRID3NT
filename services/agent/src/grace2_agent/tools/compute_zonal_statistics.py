@@ -204,6 +204,10 @@ def _download_uri_bytes(uri: str, storage_client: object | None) -> bytes:
     ``storage_client`` is injected by tests; production callers pass None and
     the function builds an ADC-authenticated client lazily.
     """
+    # sprint-14-aws (job-0290b): s3:// staging via the shared boto3 reader.
+    if uri.startswith("s3://"):
+        from .cache import read_object_bytes_s3
+        return read_object_bytes_s3(uri)
     if not uri.startswith("gs://"):
         try:
             with open(uri, "rb") as f:
@@ -228,7 +232,9 @@ def _download_uri_bytes(uri: str, storage_client: object | None) -> bytes:
         if storage_client is None:
             from google.cloud import storage  # type: ignore[import-not-found]
 
-            storage_client = storage.Client()
+            storage_client = storage.Client(
+                project=os.environ.get("GOOGLE_CLOUD_PROJECT", "grace-2-hazard-prod")
+            )
         bucket_obj = storage_client.bucket(bucket_name)
         blob = bucket_obj.blob(blob_path)
         return blob.download_as_bytes()
@@ -618,7 +624,14 @@ def _derive_cache_key(
 # ---------------------------------------------------------------------------
 
 
-@register_tool(_COMPUTE_ZONAL_STATS_METADATA)
+@register_tool(
+    _COMPUTE_ZONAL_STATS_METADATA,
+    # Annotations: readOnlyHint=True (reads input raster/vector; writes cache
+    # artifact only via the read-through shim), openWorldHint=False (all
+    # computation is local GDAL/numpy; no external API calls),
+    # destructiveHint=False, idempotentHint=True (deterministic transform;
+    # same inputs always produce the same output pixels).
+)
 def compute_zonal_statistics(
     value_raster_uri: str,
     zone_input_uri: str,
@@ -701,6 +714,24 @@ def compute_zonal_statistics(
 
     FR-CE-8: Results are cached via read_through. TTL is dynamic-1h because
     both rasters are external and may update within a session.
+
+    Cross-tool dependencies:
+        Upstream (consumes):
+        - ``fetch_dem`` / ``compute_slope`` / ``compute_aspect`` / ``compute_hillshade`` /
+          ``compute_colored_relief`` / ``compute_impervious_surface`` — any of these
+          produce a ``LayerURI`` suitable as ``value_raster_uri``.
+        - ``postprocess_flood`` (via ``run_model_flood_scenario``) — flood-depth
+          COG ``LayerURI`` is a primary ``value_raster_uri`` for exposure analysis.
+        - ``fetch_wdpa_protected_areas`` / ``fetch_gbif_occurrences`` /
+          ``fetch_administrative_boundaries`` — supply the ``zone_input_uri``
+          polygon layer for per-protected-area or per-admin-unit aggregation.
+        - ``clip_raster_to_polygon`` / ``clip_raster_to_bbox`` — trim inputs to a
+          study area before passing to this tool.
+        Downstream (feeds):
+        - ``run_model_flood_habitat_scenario`` — calls this to compute flood
+          impact metrics within WDPA protected-area polygons.
+        - Agent narration and ``AssessmentEnvelope`` ``impact_metrics`` fields
+          consume the returned ``aggregate`` dict for headline numbers.
 
     Raises:
         ZonalStatisticsError: with a typed error_code if raster/vector reading
@@ -793,6 +824,15 @@ def _materialize_uri(
     If the URI is already a local path (does not start with ``gs://``), return
     it directly without copying. Otherwise download to a temp file.
     """
+    # sprint-14-aws (job-0290b): s3:// staging — download to a temp file.
+    if uri.startswith("s3://"):
+        import tempfile as _tf
+        from .cache import read_object_bytes_s3
+        _name = uri.rstrip("/").rsplit("/", 1)[-1] or "object.bin"
+        _sfx = ("." + _name.rsplit(".", 1)[-1]) if "." in _name else ".bin"
+        with _tf.NamedTemporaryFile(suffix=_sfx, delete=False, prefix="grace2_zonal_") as _f:
+            _f.write(read_object_bytes_s3(uri))
+            return _f.name
     if not uri.startswith("gs://"):
         # Local path — use directly (test / dev convenience).
         return uri

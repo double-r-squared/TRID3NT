@@ -156,6 +156,10 @@ def _download_dem_bytes(dem_uri: str, storage_client: object | None) -> bytes:
 
     Raises ``SlopeComputeError`` on any failure so callers get a typed error.
     """
+    # sprint-14-aws (job-0290b): s3:// staging via the shared boto3 reader.
+    if dem_uri.startswith("s3://"):
+        from .cache import read_object_bytes_s3
+        return read_object_bytes_s3(dem_uri)
     if not dem_uri.startswith("gs://"):
         # Local path — read directly (test / dev convenience).
         try:

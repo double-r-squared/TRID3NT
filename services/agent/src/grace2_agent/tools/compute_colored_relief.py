@@ -114,6 +114,14 @@ def _download_dem_to_local(dem_uri: str) -> str:
     Mirrors the compute_slope/_aspect staging pattern. Caller owns cleanup
     of the returned temp file (only when it differs from ``dem_uri``).
     """
+    # sprint-14-aws (job-0290b): s3:// staging — download to a local temp file.
+    if dem_uri.startswith("s3://"):
+        from .cache import read_object_bytes_s3
+        with tempfile.NamedTemporaryFile(
+            suffix=".tif", delete=False, prefix="grace2_relief_dem_"
+        ) as f:
+            f.write(read_object_bytes_s3(dem_uri))
+            return f.name
     if not dem_uri.startswith("gs://"):
         return dem_uri
     rest = dem_uri[len("gs://"):]

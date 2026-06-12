@@ -141,6 +141,10 @@ def _download_raster_bytes(uri: str, storage_client: object | None) -> bytes:
     Raises ``ImperviousSurfaceError`` on any failure so callers get a typed
     error.
     """
+    # sprint-14-aws (job-0290b): s3:// staging via the shared boto3 reader.
+    if uri.startswith("s3://"):
+        from .cache import read_object_bytes_s3
+        return read_object_bytes_s3(uri)
     if not uri.startswith("gs://"):
         # Local path — read directly (test / dev convenience).
         try:
@@ -167,7 +171,9 @@ def _download_raster_bytes(uri: str, storage_client: object | None) -> bytes:
         if storage_client is None:
             from google.cloud import storage  # type: ignore[import-not-found]
 
-            storage_client = storage.Client()
+            storage_client = storage.Client(
+                project=os.environ.get("GOOGLE_CLOUD_PROJECT", "grace-2-hazard-prod")
+            )
         bucket_obj = storage_client.bucket(bucket_name)
         blob = bucket_obj.blob(blob_path)
         return blob.download_as_bytes()
@@ -457,7 +463,14 @@ def _compute_impervious_bytes(
 # ---------------------------------------------------------------------------
 
 
-@register_tool(_IMPERVIOUS_METADATA)
+@register_tool(
+    _IMPERVIOUS_METADATA,
+    # Annotations: readOnlyHint=True (reads input raster/vector; writes cache
+    # artifact only via the read-through shim), openWorldHint=False (all
+    # computation is local GDAL/numpy; no external API calls),
+    # destructiveHint=False, idempotentHint=True (deterministic transform;
+    # same inputs always produce the same output pixels).
+)
 def compute_impervious_surface(
     landcover_uri: str,
     bbox: tuple[float, float, float, float] | None = None,
@@ -470,24 +483,26 @@ def compute_impervious_surface(
 ) -> LayerURI:
     """NLCD impervious-surface fraction computation.
 
-    Reads NLCD impervious-surface raster (separate USGS product from NLCD
-    landcover). OR if given NLCD landcover, derives impervious surface from
-    developed-class membership (21=Open Space 0%, 22=Low 30%, 23=Medium 60%,
-    24=High 90%). Returns float32 raster of impervious fraction 0.0-1.0.
+    Reads an NLCD landcover or NLCD Impervious Surface raster and returns a
+    Float32 COG of impervious fraction (0.0–1.0) in the same CRS and grid.
+    Path is auto-selected: NLCD Impervious Surface product (0-100 int) is
+    scaled by 1/100; NLCD landcover applies a dev-class mapping (21→0.0,
+    22→0.3, 23→0.6, 24→0.9). Cached for 30 days.
 
-    Use this when: the agent needs an impervious-surface fraction layer for
-    urban hydrology, runoff modeling, SFINCS infiltration setup, urban heat
-    island analysis, or a quick percent-developed visualization. Accepts
-    either the NLCD landcover product (canonical class codes) — in which case
-    the dev-class density mapping is applied — or the separate NLCD Impervious
-    Surface product (integer 0-100 percent) — in which case values are scaled
-    by 1/100. The path is auto-selected by filename heuristic + raster tags.
+    When to use:
+        - Urban hydrology or runoff analysis requiring impervious fraction.
+        - SFINCS infiltration parameter setup (impervious fraction → Manning's
+          roughness or infiltration capacity zones).
+        - Urban heat island or stormwater capacity analysis.
+        - Quick percent-developed visualization for a study area.
+        - Input to ``compute_zonal_statistics`` to aggregate imperviousness
+          by administrative zone or flood-depth threshold.
 
-    Do NOT use this for: per-building impervious-area calculation (use
-    ``fetch_buildings`` + a geometry-based metric); time-varying impervious
-    change detection (this is a snapshot); non-CONUS coverage (NLCD is L48
-    only — ESA WorldCover does not encode impervious fraction the same way);
-    Pelicun-style damage modeling (this is an input layer, not a postprocess).
+    When NOT to use:
+        - Per-building impervious area (use ``fetch_buildings`` + geometry metrics).
+        - Time-varying impervious change detection (snapshot only).
+        - Non-CONUS coverage (NLCD covers CONUS L48 only).
+        - Pelicun-style damage assessment (this is an input layer, not a postprocess).
 
     Params:
         landcover_uri: a ``gs://`` URI (or local path) of either an NLCD
@@ -522,6 +537,20 @@ def compute_impervious_surface(
     the same ``(landcover_uri, bbox)`` pair return the cached impervious
     raster without re-running the computation. TTL is 30 days (input is
     static-30d, output is a deterministic function of the input).
+
+    Cross-tool dependencies:
+        Upstream (consumes):
+        - ``fetch_landcover`` — primary source of ``landcover_uri``; pass
+          the returned ``LayerURI.uri`` (gs:// COG) directly. The NLCD
+          landcover product triggers the dev-class mapping path.
+        Downstream (feeds):
+        - ``compute_zonal_statistics`` — pass the returned ``LayerURI`` as
+          ``value_raster_uri`` to aggregate impervious fraction by zone.
+        - ``build_sfincs_model`` (via ``run_model_flood_scenario``) — impervious
+          fraction can substitute for / supplement the landcover input for
+          Manning's infiltration parameterization.
+        - ``publish_layer`` — pass the returned ``LayerURI`` to display the
+          impervious-surface layer on the map.
 
     Raises:
         ImperviousSurfaceError: if the input cannot be read, the bbox does not
