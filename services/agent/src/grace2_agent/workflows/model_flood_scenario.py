@@ -243,6 +243,27 @@ def _bbox_area_km2(bbox: tuple[float, float, float, float]) -> float:
     return abs(dlat_km * dlon_km)
 
 
+def _default_runs_prefix(run_id: str) -> str:
+    """Scheme-aware fallback runs prefix when ``RunResult.output_uri`` is None.
+
+    job-0291 (sprint-14-aws): under ``GRACE2_STORAGE_BACKEND=s3`` the prefix
+    is ``s3://$GRACE2_RUNS_BUCKET/<run_id>/`` (no GCP-named default on AWS —
+    when the env is unset we keep the legacy gs:// literal so the failure
+    surfaces as the familiar RUN_OUTPUT_READ_FAILED rather than a silent
+    write to a wrong bucket). The default (gcs) branch is byte-identical to
+    the pre-job-0291 literal.
+    """
+    import os
+
+    from ..tools.cache import storage_scheme
+
+    if storage_scheme() == "s3":
+        bucket = (os.environ.get("GRACE2_RUNS_BUCKET") or "").strip()
+        if bucket:
+            return f"s3://{bucket}/{run_id}/"
+    return f"gs://grace-2-hazard-prod-runs/{run_id}/"
+
+
 # --------------------------------------------------------------------------- #
 # job-0225 v2 — real-precip forcing branch (area-mean netamt)
 # --------------------------------------------------------------------------- #
@@ -744,7 +765,7 @@ async def model_flood_scenario(
     # --- Step 8: postprocess_flood ---
     try:
         layers, depth_metrics = postprocess_flood(
-            run_result.output_uri or f"gs://grace-2-hazard-prod-runs/{run_result.run_id}/",
+            run_result.output_uri or _default_runs_prefix(run_result.run_id),
             run_id=run_result.run_id,
         )
     except PostprocessError as exc:
@@ -781,7 +802,16 @@ async def model_flood_scenario(
     # this same rule at the emission boundary as a belt-and-suspenders invariant.
     published_layers: list[LayerURI] = []
     for lyr in layers:
-        if lyr.role == "primary" and lyr.layer_type == "raster" and lyr.uri.startswith("gs://"):
+        # job-0291: s3:// COGs (AWS local-docker backend) take the same
+        # publish-or-honest-drop gate as gs:// — a raw object-store URI never
+        # renders in MapLibre (job-0254 §1), so it must never reach the map.
+        # On AWS publish_layer fails until job-0290 lands QGIS-on-AWS; the
+        # layer is dropped and the metrics/narration stay honest.
+        if (
+            lyr.role == "primary"
+            and lyr.layer_type == "raster"
+            and (lyr.uri.startswith("gs://") or lyr.uri.startswith("s3://"))
+        ):
             layer_id_for_wms = f"flood-depth-peak-{run_result.run_id}"
             try:
                 wms_url = publish_layer(

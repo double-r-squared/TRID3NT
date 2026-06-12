@@ -91,16 +91,71 @@ Run id generation: the agent service generates a ULID per ``run_solver``
 call. The same id flows into the workflow execution argument
 (``run_id``) and is used to compose the runs-bucket completion path
 (``gs://<runs_bucket>/<run_id>/completion.json``).
+
+Solver backend seam (job-0291, sprint-14-aws)
+---------------------------------------------
+
+``GRACE2_SOLVER_BACKEND`` selects the dispatch substrate at call time:
+
+- ``gcp-workflows`` (default) — today's behavior verbatim: Cloud Workflows
+  ``create_execution`` → Cloud Run Job (``services/workers/sfincs/
+  entrypoint.py``) → completion.json in the GCS runs bucket. Byte-identical
+  to the pre-job-0291 path.
+- ``local-docker`` — the AWS EC2 path. The GCS-IN → sfincs → GCS-OUT
+  envelope the GCP container implements moves INTO the agent (testable
+  Python), and the container is the PLAIN upstream ``deltares/sfincs-cpu``
+  binary image run via ``docker run`` on the same instance:
+
+      run_solver: mint run_id → download the setup manifest from S3 (boto3)
+        → stage every ``inputs[]`` object into ``$GRACE2_RUNS_DIR/<run_id>/``
+        (manifest field name stays the legacy ``gs_uri``; the VALUE is
+        resolved by scheme — s3:// via boto3, gs:// via google-cloud-storage)
+        → launch ``docker run --rm --name <run_id> -v <rundir>:/data -w /data
+        $GRACE2_SFINCS_IMAGE [sfincs_args]`` DETACHED (Popen — mirrors the
+        non-blocking Cloud Workflows submit) → return ExecutionHandle
+        immediately (``workflow_name="local-docker"``,
+        ``workflows_execution_id="local-docker:<run_id>"`` — the container
+        name IS the run_id, which is the Invariant-8 cancellation seam).
+
+      supervisor (daemon thread): waits on the docker process, expands the
+        manifest's ``outputs[]`` globs in the rundir, uploads outputs +
+        sfincs.stdout/sfincs.stderr to ``s3://$GRACE2_RUNS_BUCKET/<run_id>/``
+        (boto3), and ALWAYS writes ``completion.json`` (exact entrypoint.py
+        schema: run_id/status/exit_code/sfincs_stdout_uri/sfincs_stderr_uri/
+        output_uris/started_at/finished_at/error) — even on crash
+        (status="error") or cancel (status="cancelled").
+
+      wait_for_completion: dispatches on ``handle.workflow_name`` — local
+        handles poll the completion.json object on S3 (same cadence/timeout/
+        progress-ramp semantics as the Workflows poll) and build the
+        RunResult with ``output_uri = s3://<runs_bucket>/<run_id>/``.
+
+      cancel chain: ``asyncio.CancelledError`` in the poll sleep → mark the
+        run cancelled + ``docker kill <run_id>`` (≤30 s, Invariant-8) → the
+        supervisor wakes on process exit and writes the status="cancelled"
+        completion.json → re-raise.
+
+  ``GRACE2_RUNS_BUCKET`` has NO default under local-docker (we never
+  silently write to a GCP-named bucket from AWS); a missing value raises
+  ``SolverDispatchError``. boto3 is used for ALL S3 I/O (s3fs falls back to
+  anonymous credentials on the EC2 instance role — job-0289 lesson).
+
+  Production scale-up to AWS Batch is a later job; it slots in as a third
+  ``GRACE2_SOLVER_BACKEND`` value behind the same dispatch seam.
 """
 
 from __future__ import annotations
 
 import asyncio
+import glob as _glob
 import json
 import logging
 import os
+import subprocess
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable
 
 from grace2_contracts import new_ulid
@@ -118,6 +173,11 @@ __all__ = [
     "set_emitter_binding",
     "set_runs_bucket",
     "set_storage_client",
+    "set_s3_client",
+    "solver_backend",
+    "SOLVER_BACKEND_GCP_WORKFLOWS",
+    "SOLVER_BACKEND_LOCAL_DOCKER",
+    "LOCAL_DOCKER_WORKFLOW_NAME",
     "SOLVER_WORKFLOW_REGISTRY",
     "EmitterBinding",
     "NFR_P_4_TARGET_SECONDS",
@@ -160,6 +220,51 @@ PROGRESS_TERMINAL: int = 100
 SOLVER_WORKFLOW_REGISTRY: dict[str, str] = {
     "sfincs": "grace-2-sfincs-orchestrator",
 }
+
+
+# --- Solver backend seam (job-0291, sprint-14-aws) --- #
+
+#: Default backend — Cloud Workflows dispatch, byte-identical pre-job-0291.
+SOLVER_BACKEND_GCP_WORKFLOWS: str = "gcp-workflows"
+
+#: AWS EC2 backend — plain upstream ``deltares/sfincs-cpu`` via ``docker run``
+#: on the same instance; staging/upload envelope lives in this module.
+SOLVER_BACKEND_LOCAL_DOCKER: str = "local-docker"
+
+#: ``ExecutionHandle.workflow_name`` sentinel for local-docker handles —
+#: ``wait_for_completion`` dispatches on it (the handle pins its backend so
+#: env churn between submit and wait cannot mis-route the poll).
+LOCAL_DOCKER_WORKFLOW_NAME: str = "local-docker"
+
+#: ``ExecutionHandle.workflow_location`` for local-docker handles.
+LOCAL_DOCKER_WORKFLOW_LOCATION: str = "local"
+
+#: Default rundir root under local-docker (env ``GRACE2_RUNS_DIR``).
+DEFAULT_LOCAL_RUNS_DIR: str = "/opt/grace2/runs"
+
+#: Default SFINCS image under local-docker (env ``GRACE2_SFINCS_IMAGE``).
+DEFAULT_SFINCS_IMAGE: str = "deltares/sfincs-cpu:latest"
+
+#: Budget for the ``docker kill`` subprocess on cancel — comfortably inside
+#: the ≤30 s Invariant-8 / NFR-R-3 envelope.
+DOCKER_KILL_TIMEOUT_S: float = 25.0
+
+
+def solver_backend() -> str:
+    """Return the active solver backend (job-0291 dispatch seam).
+
+    ``GRACE2_SOLVER_BACKEND=local-docker`` → ``"local-docker"``; anything
+    else (unset, ``gcp-workflows``, typos) → ``"gcp-workflows"`` so the
+    default path stays byte-identical. Read at call time so an AWS deploy /
+    test env injection takes effect without re-import (mirrors
+    ``cache.storage_scheme``).
+    """
+    b = (os.environ.get("GRACE2_SOLVER_BACKEND") or "").strip().lower()
+    return (
+        SOLVER_BACKEND_LOCAL_DOCKER
+        if b == SOLVER_BACKEND_LOCAL_DOCKER
+        else SOLVER_BACKEND_GCP_WORKFLOWS
+    )
 
 
 #: Map the kickoff-named compute classes (small/medium/large) onto the
@@ -223,6 +328,7 @@ _WORKFLOWS_CLIENT: Any | None = None
 _EMITTER_BINDING: EmitterBinding | None = None
 _RUNS_BUCKET: str | None = None
 _STORAGE_CLIENT: Any | None = None
+_S3_CLIENT: Any | None = None
 
 
 def set_workflows_client(client: Any) -> None:
@@ -259,6 +365,23 @@ def set_storage_client(client: Any) -> None:
     _STORAGE_CLIENT = client
 
 
+def set_s3_client(client: Any) -> None:
+    """Bind the boto3 S3 client used for ALL local-docker S3 I/O (job-0291).
+
+    Production wiring leaves this ``None`` (the lazy default builds
+    ``boto3.client("s3", region_name=$AWS_REGION)``, which resolves the EC2
+    instance-role credentials via IMDS — the job-0289 boto3-not-s3fs lesson).
+    Tests inject a tmpdir-backed fake exposing ``get_object`` /
+    ``put_object``. ``None`` restores the lazy default.
+
+    The deck-assembly (``sfincs_builder``) and run-output
+    (``postprocess_flood``) S3 paths share this seam so one injection covers
+    the whole staged-manifest → solve → postprocess chain.
+    """
+    global _S3_CLIENT
+    _S3_CLIENT = client
+
+
 def _get_workflows_client() -> Any:
     """Return the bound ExecutionsClient or lazily construct an ADC default.
 
@@ -291,7 +414,28 @@ def _get_storage_client() -> Any:
             f"google-cloud-storage not importable: {exc}; "
             "agent service startup should call set_storage_client(...)."
         ) from exc
-    return storage.Client()
+    return storage.Client(
+        project=os.environ.get("GOOGLE_CLOUD_PROJECT", "grace-2-hazard-prod")
+    )
+
+
+def _get_s3_client() -> Any:
+    """Return the bound S3 client or lazily construct the boto3 default.
+
+    boto3 (NOT s3fs) for all S3 I/O — s3fs falls back to anonymous
+    credentials on the EC2 instance role (job-0289). Lazy import so
+    GCP-only / CI environments never pay for boto3 at module load.
+    """
+    if _S3_CLIENT is not None:
+        return _S3_CLIENT
+    try:
+        import boto3  # type: ignore[import-not-found]
+    except Exception as exc:  # noqa: BLE001
+        raise SolverDispatchError(
+            f"boto3 not importable: {exc}; the local-docker solver backend "
+            "requires boto3 for S3 staging/upload (job-0291)."
+        ) from exc
+    return boto3.client("s3", region_name=os.environ.get("AWS_REGION", "us-west-2"))
 
 
 def _get_runs_bucket() -> str:
@@ -302,6 +446,26 @@ def _get_runs_bucket() -> str:
     return os.environ.get("GRACE2_RUNS_BUCKET", "grace-2-hazard-prod-runs")
 
 
+def _get_local_runs_bucket() -> str:
+    """Runs bucket under local-docker — NO default to a GCP bucket name.
+
+    ``set_runs_bucket`` override wins (test seam); otherwise
+    ``GRACE2_RUNS_BUCKET`` must be set explicitly (on AWS the orchestrator
+    provisions e.g. ``grace2-hazard-runs-226996537797``). A silent fallback
+    to the GCP-named default would make every local run upload to a bucket
+    that does not exist on AWS — fail loudly instead.
+    """
+    if _RUNS_BUCKET is not None:
+        return _RUNS_BUCKET
+    bucket = (os.environ.get("GRACE2_RUNS_BUCKET") or "").strip()
+    if not bucket:
+        raise SolverDispatchError(
+            "GRACE2_RUNS_BUCKET must be set when GRACE2_SOLVER_BACKEND="
+            "local-docker (no GCP-named default on AWS; job-0291)."
+        )
+    return bucket
+
+
 def _gcp_project() -> str:
     """Return the GCP project id (env-driven; mirrors the substrate)."""
     return os.environ.get("GRACE2_GCP_PROJECT", "grace-2-hazard-prod")
@@ -310,6 +474,607 @@ def _gcp_project() -> str:
 def _gcp_location() -> str:
     """Return the GCP region for the workflows execution (env-driven)."""
     return os.environ.get("GRACE2_GCP_LOCATION", "us-central1")
+
+
+# --------------------------------------------------------------------------- #
+# local-docker backend (job-0291, sprint-14-aws)
+#
+# The GCS-IN → sfincs → GCS-OUT envelope from
+# ``services/workers/sfincs/entrypoint.py`` ported into the agent: staging,
+# detached ``docker run`` of the plain upstream image, a supervisor thread
+# that uploads outputs and ALWAYS writes the entrypoint-schema
+# completion.json, S3 completion polling, and the docker-kill cancel chain.
+# --------------------------------------------------------------------------- #
+
+
+def _utc_now_iso() -> str:
+    """ISO8601-Z timestamp matching the entrypoint's ``_utc_now`` format."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _split_object_uri(uri: str) -> tuple[str, str, str]:
+    """Split ``s3://bucket/key`` / ``gs://bucket/key`` → (scheme, bucket, key).
+
+    Raises ``SolverDispatchError`` on malformed or unsupported URIs.
+    """
+    for scheme in ("s3", "gs"):
+        prefix = f"{scheme}://"
+        if uri.startswith(prefix):
+            bucket, _, key = uri[len(prefix):].partition("/")
+            if not bucket or not key:
+                raise SolverDispatchError(f"malformed {scheme}:// URI: {uri!r}")
+            return scheme, bucket, key
+    raise SolverDispatchError(
+        f"unsupported object URI scheme: {uri!r} (expected s3:// or gs://)"
+    )
+
+
+def _read_object_bytes(uri: str) -> bytes:
+    """Read one object's bytes, resolved BY SCHEME (job-0291 kickoff):
+    ``s3://`` via boto3, ``gs://`` via google-cloud-storage (legacy),
+    ``file://`` / local path via the filesystem (the sfincs_builder
+    local-manifest fallback)."""
+    if uri.startswith("file://"):
+        return Path(uri[len("file://"):]).read_bytes()
+    if not (uri.startswith("s3://") or uri.startswith("gs://")):
+        return Path(uri).read_bytes()
+    scheme, bucket, key = _split_object_uri(uri)
+    if scheme == "s3":
+        resp = _get_s3_client().get_object(Bucket=bucket, Key=key)
+        return resp["Body"].read()
+    return _get_storage_client().bucket(bucket).blob(key).download_as_bytes()
+
+
+def _download_object(uri: str, dest: Path) -> None:
+    """Download one staged input to ``dest``, resolved by scheme.
+
+    The manifest's input entries keep the LEGACY field name ``gs_uri`` but
+    the VALUE may be ``s3://`` (the job-0289 storage backend) or ``gs://``
+    — we dispatch on the URI scheme, never the field name.
+    """
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if uri.startswith("file://") or not (
+        uri.startswith("s3://") or uri.startswith("gs://")
+    ):
+        src = Path(uri[len("file://"):] if uri.startswith("file://") else uri)
+        dest.write_bytes(src.read_bytes())
+        return
+    scheme, bucket, key = _split_object_uri(uri)
+    logger.info("local-docker staging %s -> %s", uri, dest)
+    if scheme == "s3":
+        resp = _get_s3_client().get_object(Bucket=bucket, Key=key)
+        import shutil
+
+        with dest.open("wb") as fh:
+            shutil.copyfileobj(resp["Body"], fh)
+        return
+    _get_storage_client().bucket(bucket).blob(key).download_to_filename(str(dest))
+
+
+def _upload_file_s3(s3: Any, src: Path, bucket: str, key: str) -> str:
+    """Upload ``src`` to ``s3://bucket/key`` via boto3; return the s3:// URI."""
+    with src.open("rb") as fh:
+        s3.put_object(Bucket=bucket, Key=key, Body=fh)
+    return f"s3://{bucket}/{key}"
+
+
+@dataclass
+class _LocalRun:
+    """In-process registry entry for one local-docker solver run."""
+
+    run_id: str
+    rundir: Path
+    runs_bucket: str
+    proc: subprocess.Popen
+    output_patterns: list[str]
+    started_at: str  # ISO8601-Z, entrypoint format
+    stdout_path: Path
+    stderr_path: Path
+    cancel_requested: threading.Event = field(default_factory=threading.Event)
+    supervisor: threading.Thread | None = None
+
+
+#: run_id → live local run. In-process only: ``run_solver`` and the cancel
+#: chain are co-located in the agent process (the deployed topology). The
+#: supervisor pops its entry when the completion.json is written.
+_LOCAL_RUNS: dict[str, _LocalRun] = {}
+
+
+def _expand_local_outputs(patterns: list[str], rundir: Path) -> list[Path]:
+    """Glob-expand the manifest ``outputs[]`` in the rundir — mirrors the
+    entrypoint's ``_expand_outputs`` (files only, de-duplicated, sorted)."""
+    seen: set[Path] = set()
+    for pat in patterns:
+        for hit in _glob.glob(str(rundir / pat)):
+            p = Path(hit)
+            if p.is_file():
+                seen.add(p.resolve())
+    return sorted(seen)
+
+
+def _write_local_completion(
+    s3: Any,
+    *,
+    runs_bucket: str,
+    run_id: str,
+    status: str,
+    exit_code: int,
+    output_uris: list[str],
+    stdout_uri: str | None,
+    stderr_uri: str | None,
+    started_at: str,
+    error: str | None,
+) -> None:
+    """Write ``s3://<runs_bucket>/<run_id>/completion.json`` — EXACT
+    entrypoint.py schema (the ``wait_for_completion`` terminal signal)."""
+    payload = {
+        "run_id": run_id,
+        "status": status,
+        "exit_code": exit_code,
+        "sfincs_stdout_uri": stdout_uri,
+        "sfincs_stderr_uri": stderr_uri,
+        "output_uris": output_uris,
+        "started_at": started_at,
+        "finished_at": _utc_now_iso(),
+        "error": error,
+    }
+    s3.put_object(
+        Bucket=runs_bucket,
+        Key=f"{run_id}/completion.json",
+        Body=json.dumps(payload, indent=2).encode("utf-8"),
+        ContentType="application/json",
+    )
+    logger.info(
+        "local-docker wrote completion -> s3://%s/%s/completion.json (status=%s)",
+        runs_bucket,
+        run_id,
+        status,
+    )
+
+
+def _supervise_local_run(run: _LocalRun) -> None:
+    """Supervisor body (daemon thread): wait on the docker process, upload
+    stdout/stderr + glob-expanded outputs to the S3 runs prefix, and ALWAYS
+    write completion.json — even on crash (status="error") or cancel
+    (status="cancelled"). Mirrors the entrypoint's best-effort discipline:
+    no upload failure may prevent the terminal completion write."""
+    status = "error"
+    exit_code = 1
+    error_msg: str | None = None
+    output_uris: list[str] = []
+    stdout_uri: str | None = None
+    stderr_uri: str | None = None
+
+    try:
+        exit_code = run.proc.wait()
+        if run.cancel_requested.is_set():
+            status = "cancelled"
+            error_msg = "run cancelled (docker kill via Invariant-8 cancel chain)"
+        elif exit_code == 0:
+            status = "ok"
+        else:
+            status = "error"
+            error_msg = f"sfincs exited with non-zero code {exit_code}"
+    except Exception as exc:  # noqa: BLE001 — defensive: wait() itself failed
+        logger.exception("local-docker supervisor wait failed run_id=%s", run.run_id)
+        status = "error"
+        error_msg = f"{type(exc).__name__}: {exc}"
+
+    try:
+        s3 = _get_s3_client()
+    except Exception as exc:  # noqa: BLE001 — no client ⇒ nothing more we can do
+        logger.error(
+            "local-docker supervisor could not build S3 client run_id=%s: %s "
+            "— completion.json NOT written (poller will time out)",
+            run.run_id,
+            exc,
+        )
+        _LOCAL_RUNS.pop(run.run_id, None)
+        return
+
+    # Always upload stdout/stderr (entrypoint parity — evidence even on error).
+    try:
+        if run.stdout_path.exists():
+            stdout_uri = _upload_file_s3(
+                s3, run.stdout_path, run.runs_bucket, f"{run.run_id}/sfincs.stdout"
+            )
+        if run.stderr_path.exists():
+            stderr_uri = _upload_file_s3(
+                s3, run.stderr_path, run.runs_bucket, f"{run.run_id}/sfincs.stderr"
+            )
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        logger.warning(
+            "local-docker stdout/stderr upload failed run_id=%s: %s", run.run_id, exc
+        )
+
+    try:
+        for path in _expand_local_outputs(run.output_patterns, run.rundir):
+            rel = path.relative_to(run.rundir).as_posix()
+            uri = _upload_file_s3(s3, path, run.runs_bucket, f"{run.run_id}/{rel}")
+            output_uris.append(uri)
+    except Exception as exc:  # noqa: BLE001 — reflect, but still write completion
+        logger.exception(
+            "local-docker output upload failed run_id=%s: %s", run.run_id, exc
+        )
+        if status == "ok":
+            status = "error"
+            error_msg = f"output upload to s3://{run.runs_bucket}/{run.run_id}/ failed: {exc}"
+
+    try:
+        _write_local_completion(
+            s3,
+            runs_bucket=run.runs_bucket,
+            run_id=run.run_id,
+            status=status,
+            exit_code=exit_code,
+            output_uris=output_uris,
+            stdout_uri=stdout_uri,
+            stderr_uri=stderr_uri,
+            started_at=run.started_at,
+            error=error_msg,
+        )
+    except Exception:  # noqa: BLE001 — terminal-signal write failed; log loudly
+        logger.exception(
+            "local-docker completion.json write FAILED run_id=%s — "
+            "wait_for_completion will hit its timeout",
+            run.run_id,
+        )
+    finally:
+        _LOCAL_RUNS.pop(run.run_id, None)
+
+
+def _run_solver_local_docker(
+    solver: str, model_setup_uri: str, compute_class: str
+) -> ExecutionHandle:
+    """``run_solver`` body under ``GRACE2_SOLVER_BACKEND=local-docker``.
+
+    Non-blocking — mirrors the Cloud Workflows submit semantics: stage, launch
+    the container detached, hand the supervisor to a daemon thread, return the
+    ``ExecutionHandle`` immediately.
+    """
+    if not (
+        model_setup_uri.startswith("s3://")
+        or model_setup_uri.startswith("gs://")
+        or model_setup_uri.startswith("file://")
+    ):
+        raise SolverDispatchError(
+            f"model_setup_uri must be an s3:// / gs:// / file:// URI under "
+            f"the local-docker backend; got {model_setup_uri!r}"
+        )
+    schema_compute_class = _COMPUTE_CLASS_ALIAS.get(compute_class)
+    if schema_compute_class is None:
+        raise SolverDispatchError(
+            f"compute_class {compute_class!r} not recognized; allowed: "
+            f"{sorted(_COMPUTE_CLASS_ALIAS)}"
+        )
+    runs_bucket = _get_local_runs_bucket()  # fail fast on missing env
+
+    run_id = new_ulid()
+    submitted_at = datetime.now(timezone.utc)
+    rundir = (
+        Path(os.environ.get("GRACE2_RUNS_DIR") or DEFAULT_LOCAL_RUNS_DIR) / run_id
+    )
+    rundir.mkdir(parents=True, exist_ok=True)
+
+    # --- Manifest read + input staging (the entrypoint's download phase) ---
+    try:
+        manifest = json.loads(_read_object_bytes(model_setup_uri))
+    except SolverDispatchError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise SolverDispatchError(
+            f"local-docker manifest read failed {model_setup_uri}: {exc}"
+        ) from exc
+    if not isinstance(manifest, dict):
+        raise SolverDispatchError(
+            f"manifest at {model_setup_uri} must be a JSON object"
+        )
+    inputs = manifest.get("inputs", []) or []
+    sfincs_args = [str(a) for a in (manifest.get("sfincs_args", []) or [])]
+    output_patterns = [str(p) for p in (manifest.get("outputs", []) or [])]
+
+    rundir_resolved = rundir.resolve()
+    for item in inputs:
+        try:
+            input_uri = item["gs_uri"]  # legacy field NAME; value resolved by scheme
+            dest_rel = item["dest"]
+        except (TypeError, KeyError) as exc:
+            raise SolverDispatchError(
+                f"manifest input entry malformed (need gs_uri + dest): {item!r}"
+            ) from exc
+        dest = rundir / dest_rel
+        # Host-side path-traversal guard (the GCP entrypoint runs sandboxed in
+        # its container; here we stage on the instance filesystem).
+        if rundir_resolved not in dest.resolve().parents:
+            raise SolverDispatchError(
+                f"manifest input dest escapes the rundir: {dest_rel!r}"
+            )
+        try:
+            _download_object(input_uri, dest)
+        except SolverDispatchError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise SolverDispatchError(
+                f"local-docker input staging failed {input_uri} -> {dest}: {exc}"
+            ) from exc
+
+    # --- Detached docker launch (container name == run_id: the cancel seam) ---
+    image = os.environ.get("GRACE2_SFINCS_IMAGE") or DEFAULT_SFINCS_IMAGE
+    stdout_path = rundir / "sfincs.stdout"
+    stderr_path = rundir / "sfincs.stderr"
+    cmd = [
+        "docker",
+        "run",
+        "--rm",
+        "--name",
+        run_id,
+        "-v",
+        f"{rundir}:/data",
+        "-w",
+        "/data",
+        image,
+        *sfincs_args,
+    ]
+    logger.info("local-docker exec: %s", " ".join(cmd))
+    try:
+        with stdout_path.open("wb") as out, stderr_path.open("wb") as err:
+            proc = subprocess.Popen(  # noqa: S603 — argv list, no shell
+                cmd,
+                stdout=out,
+                stderr=err,
+                cwd=str(rundir),
+                start_new_session=True,  # detach from the agent's signal group
+            )
+    except Exception as exc:  # noqa: BLE001 — docker binary missing, etc.
+        raise SolverDispatchError(
+            f"local-docker launch failed ({' '.join(cmd[:6])} ...): {exc}"
+        ) from exc
+
+    run = _LocalRun(
+        run_id=run_id,
+        rundir=rundir,
+        runs_bucket=runs_bucket,
+        proc=proc,
+        output_patterns=output_patterns,
+        started_at=_utc_now_iso(),
+        stdout_path=stdout_path,
+        stderr_path=stderr_path,
+    )
+    _LOCAL_RUNS[run_id] = run
+    supervisor = threading.Thread(
+        target=_supervise_local_run,
+        args=(run,),
+        name=f"sfincs-local-supervisor-{run_id}",
+        daemon=True,
+    )
+    run.supervisor = supervisor
+    supervisor.start()
+
+    handle = ExecutionHandle(
+        handle_id=new_ulid(),
+        run_id=run_id,
+        solver=solver,
+        compute_class=schema_compute_class,  # type: ignore[arg-type]
+        workflows_execution_id=f"{LOCAL_DOCKER_WORKFLOW_NAME}:{run_id}",
+        workflow_name=LOCAL_DOCKER_WORKFLOW_NAME,
+        workflow_location=LOCAL_DOCKER_WORKFLOW_LOCATION,
+        submitted_at=submitted_at,
+    )
+    logger.info(
+        "local-docker submitted run_id=%s handle_id=%s image=%s inputs=%d",
+        run_id,
+        handle.handle_id,
+        image,
+        len(inputs),
+    )
+    return handle
+
+
+def _docker_kill(run_id: str) -> None:
+    """Best-effort ``docker kill <run_id>`` (container name == run_id)."""
+    try:
+        proc = subprocess.run(  # noqa: S603 — argv list, no shell
+            ["docker", "kill", run_id],
+            capture_output=True,
+            timeout=DOCKER_KILL_TIMEOUT_S,
+            check=False,
+        )
+        logger.info(
+            "docker kill %s rc=%d stderr=%s",
+            run_id,
+            proc.returncode,
+            proc.stderr.decode(errors="replace").strip()[:200],
+        )
+    except Exception as exc:  # noqa: BLE001 — cancel chain still propagates
+        logger.warning("docker kill %s raised %s", run_id, exc)
+
+
+def _request_local_cancel(run_id: str) -> None:
+    """Invariant-8 local cancel: flag the run cancelled, then kill the
+    container. The supervisor wakes on process exit and writes the
+    status="cancelled" completion.json — terminal within ≤30 s."""
+    run = _LOCAL_RUNS.get(run_id)
+    if run is not None:
+        run.cancel_requested.set()
+    else:
+        logger.warning(
+            "local cancel for unknown run_id=%s (no in-process supervisor); "
+            "issuing docker kill only",
+            run_id,
+        )
+    _docker_kill(run_id)
+
+
+def _try_get_completion_s3(runs_bucket: str, run_id: str) -> dict[str, Any] | None:
+    """Poll ``s3://<runs_bucket>/<run_id>/completion.json`` once.
+
+    Returns the parsed manifest, ``None`` when the object is not there yet
+    (or on a transient read error — the timeout catches persistent faults,
+    mirroring the Workflows-poll resilience). Malformed JSON raises
+    ``SolverDispatchError`` (S3 PUTs are atomic, so a parse failure is real
+    corruption, not a partial write).
+    """
+    s3 = _get_s3_client()
+    try:
+        resp = s3.get_object(Bucket=runs_bucket, Key=f"{run_id}/completion.json")
+        data = resp["Body"].read()
+    except Exception as exc:  # noqa: BLE001
+        code = ""
+        response = getattr(exc, "response", None)
+        if isinstance(response, dict):
+            code = str(response.get("Error", {}).get("Code", ""))
+        if code in ("NoSuchKey", "404", "NoSuchBucket"):
+            return None
+        logger.warning(
+            "local-docker completion poll degraded s3://%s/%s/completion.json: %s; "
+            "will retry next poll",
+            runs_bucket,
+            run_id,
+            exc,
+        )
+        return None
+    try:
+        manifest = json.loads(data)
+    except Exception as exc:  # noqa: BLE001
+        raise SolverDispatchError(
+            f"completion manifest s3://{runs_bucket}/{run_id}/completion.json "
+            f"is not valid JSON: {exc}"
+        ) from exc
+    if not isinstance(manifest, dict):
+        raise SolverDispatchError(
+            f"completion manifest s3://{runs_bucket}/{run_id}/completion.json "
+            "is not a JSON object"
+        )
+    return manifest
+
+
+def _build_local_run_result(
+    handle: ExecutionHandle, manifest: dict[str, Any], runs_bucket: str
+) -> RunResult:
+    """Map a local-docker completion manifest onto a ``RunResult``.
+
+    ``status="ok"`` → ``complete`` with ``output_uri = s3://<runs_bucket>/
+    <run_id>/`` (the runs PREFIX, kickoff-pinned — ``postprocess_flood``
+    resolves ``sfincs_map.nc`` inside it); ``"cancelled"`` → ``cancelled``;
+    anything else → ``failed`` with the manifest's structured error.
+    """
+    manifest_status = str(manifest.get("status", "")).lower()
+    started_at = _to_utc(manifest.get("started_at"))
+    completed_at = _to_utc(manifest.get("finished_at")) or datetime.now(timezone.utc)
+
+    if manifest_status == "ok":
+        return RunResult(
+            run_id=handle.run_id,
+            handle_id=handle.handle_id,
+            status="complete",
+            output_uri=f"s3://{runs_bucket}/{handle.run_id}/",
+            started_at=started_at,
+            completed_at=completed_at,
+            duration_seconds=_duration(started_at, completed_at),
+        )
+    if manifest_status == "cancelled":
+        return RunResult(
+            run_id=handle.run_id,
+            handle_id=handle.handle_id,
+            status="cancelled",
+            output_uri=None,
+            started_at=started_at,
+            completed_at=completed_at,
+            duration_seconds=_duration(started_at, completed_at),
+            cancellation_reason=str(
+                manifest.get("error") or "local-docker run cancelled"
+            ),
+        )
+    return RunResult(
+        run_id=handle.run_id,
+        handle_id=handle.handle_id,
+        status="failed",
+        output_uri=None,
+        started_at=started_at,
+        completed_at=completed_at,
+        duration_seconds=_duration(started_at, completed_at),
+        error_code=_solver_error_code(manifest),
+        error_message=str(manifest.get("error") or "solver reported failure"),
+    )
+
+
+async def _wait_for_completion_local(
+    handle: ExecutionHandle, poll_interval_s: int, timeout_s: int
+) -> RunResult:
+    """``wait_for_completion`` body for local-docker handles: poll the
+    completion.json object on S3 with the same cadence/timeout/progress-ramp
+    semantics as the Cloud Workflows poll (job-0291)."""
+    runs_bucket = _get_local_runs_bucket()
+    deadline = handle.submitted_at.timestamp() + float(timeout_s)
+    loop = asyncio.get_running_loop()
+
+    logger.info(
+        "wait_for_completion(local-docker) handle_id=%s run_id=%s "
+        "poll_interval=%ds timeout=%ds",
+        handle.handle_id,
+        handle.run_id,
+        poll_interval_s,
+        timeout_s,
+    )
+
+    try:
+        while True:
+            manifest = await loop.run_in_executor(
+                None, _try_get_completion_s3, runs_bucket, handle.run_id
+            )
+            now = datetime.now(timezone.utc)
+
+            if manifest is not None:
+                if str(manifest.get("status", "")).lower() == "ok":
+                    await _emit_progress(PROGRESS_TERMINAL)
+                else:
+                    await _emit_progress(
+                        _progress_percent(handle.submitted_at, now)
+                    )
+                return _build_local_run_result(handle, manifest, runs_bucket)
+
+            await _emit_progress(_progress_percent(handle.submitted_at, now))
+
+            if now.timestamp() >= deadline:
+                logger.warning(
+                    "wait_for_completion(local-docker) timed out handle_id=%s "
+                    "after %ds; killing container %s",
+                    handle.handle_id,
+                    timeout_s,
+                    handle.run_id,
+                )
+                # Timeout ≠ user cancel: kill WITHOUT the cancelled flag so the
+                # supervisor records status="error" (mirrors the GCP path's
+                # best-effort cancel + SOLVER_TIMEOUT result).
+                await loop.run_in_executor(None, _docker_kill, handle.run_id)
+                return RunResult(
+                    run_id=handle.run_id,
+                    handle_id=handle.handle_id,
+                    status="failed",
+                    output_uri=None,
+                    started_at=None,
+                    completed_at=now,
+                    duration_seconds=None,
+                    error_code="SOLVER_TIMEOUT",
+                    error_message=(
+                        f"wait_for_completion exceeded {timeout_s}s budget while "
+                        f"polling s3://{runs_bucket}/{handle.run_id}/completion.json"
+                    ),
+                )
+
+            await asyncio.sleep(poll_interval_s)
+
+    except asyncio.CancelledError:
+        # Invariant 8: docker kill + cancelled completion within ≤30 s, then
+        # re-raise so emit_tool_call's mark_cancelled branch fires.
+        logger.info(
+            "wait_for_completion(local-docker) CANCELLED handle_id=%s; "
+            "issuing docker kill %s",
+            handle.handle_id,
+            handle.run_id,
+        )
+        _request_local_cancel(handle.run_id)
+        raise
 
 
 # --------------------------------------------------------------------------- #
@@ -325,7 +1090,19 @@ _RUN_SOLVER_METADATA = AtomicToolMetadata(
 )
 
 
-@register_tool(_RUN_SOLVER_METADATA)
+@register_tool(
+    _RUN_SOLVER_METADATA,
+    # Annotations: readOnlyHint=False (submits a Cloud Workflows execution
+    # that ultimately writes output artifacts to the runs bucket),
+    # openWorldHint=False (intra-GCP Cloud Workflows + Cloud Run only),
+    # destructiveHint=False (writes go to a new runs/ prefix; no existing
+    # state overwritten), idempotentHint=False (each call creates a new
+    # Workflow execution with a distinct run_id).
+    read_only_hint=False,
+    open_world_hint=False,
+    destructive_hint=False,
+    idempotent_hint=False,
+)
 def run_solver(
     solver: str,
     model_setup_uri: str,
@@ -354,11 +1131,14 @@ def run_solver(
         solver: lowercase solver identifier. v0.1 supports ``"sfincs"``
             only; other values raise ``SolverNotRegisteredError`` per
             the kickoff's lazy-per-milestone deploy strategy.
-        model_setup_uri: ``gs://...`` URI of the manifest the worker
-            entrypoint will read (the job-0040 manifest schema:
-            ``{"inputs":[...], "sfincs_args":[...], "outputs":[...]}``).
-            Engine job-0042's ``model_flood_scenario`` workflow composes
-            this from the M4 atomic-tool substrate.
+        model_setup_uri: URI of the manifest the solver envelope will read
+            (the job-0040 manifest schema: ``{"inputs":[...],
+            "sfincs_args":[...], "outputs":[...]}``). ``gs://`` under the
+            default gcp-workflows backend; ``s3://`` under
+            ``GRACE2_SOLVER_BACKEND=local-docker`` (job-0291 — input URIs
+            inside the manifest are resolved by scheme). Engine job-0042's
+            ``model_flood_scenario`` workflow composes this from the M4
+            atomic-tool substrate.
         compute_class: FR-CE-3 compute class. Currently a tag carried on
             the handle for provenance; the deployed Cloud Run Job (job-
             0040) is fixed at 4 vCPU / 4 GiB (the FR-CE-3 ``medium``
@@ -400,7 +1180,21 @@ def run_solver(
             "per sprint-07 strategy — TELEMAC / MODFLOW / HEC-HMS land in "
             "their respective milestones)."
         )
-    if not isinstance(model_setup_uri, str) or not model_setup_uri.startswith("gs://"):
+    if not isinstance(model_setup_uri, str) or not model_setup_uri:
+        raise SolverDispatchError(
+            f"model_setup_uri must be a non-empty string; got {model_setup_uri!r}"
+        )
+
+    # --- job-0291 backend seam: local-docker dispatch (AWS EC2). The default
+    # gcp-workflows path below is byte-identical to pre-job-0291 behavior. ---
+    if solver_backend() == SOLVER_BACKEND_LOCAL_DOCKER:
+        return _run_solver_local_docker(
+            solver=solver,
+            model_setup_uri=model_setup_uri,
+            compute_class=compute_class,
+        )
+
+    if not model_setup_uri.startswith("gs://"):
         raise SolverDispatchError(
             f"model_setup_uri must be a gs:// URI; got {model_setup_uri!r}"
         )
@@ -583,7 +1377,20 @@ async def _cancel_workflow_execution(name: str) -> None:
         )
 
 
-@register_tool(_WAIT_FOR_COMPLETION_METADATA)
+@register_tool(
+    _WAIT_FOR_COMPLETION_METADATA,
+    # Annotations: readOnlyHint=False (emits pipeline-state progress envelopes
+    # as a side effect on every poll tick — stateful even though it does not
+    # write GCS directly), openWorldHint=False (polls intra-GCP Cloud Workflows
+    # execution status; no public external API), destructiveHint=False (reads
+    # completion.json from runs bucket; does not overwrite anything),
+    # idempotentHint=False (each call emits progress events; cancellation path
+    # calls cancel_execution on the live workflow).
+    read_only_hint=False,
+    open_world_hint=False,
+    destructive_hint=False,
+    idempotent_hint=False,
+)
 async def wait_for_completion(
     handle: ExecutionHandle,
     poll_interval_s: int = DEFAULT_POLL_INTERVAL_S,
@@ -642,6 +1449,13 @@ async def wait_for_completion(
         raise SolverDispatchError(
             f"timeout_s must be positive; got {timeout_s!r}"
         )
+
+    # --- job-0291 backend seam: a local-docker handle pins its backend (the
+    # handle's workflow_name, not the env, decides — env churn between submit
+    # and wait cannot mis-route the poll). GCP handles take the Cloud
+    # Workflows poll below, byte-identical to pre-job-0291 behavior. ---
+    if handle.workflow_name == LOCAL_DOCKER_WORKFLOW_NAME:
+        return await _wait_for_completion_local(handle, poll_interval_s, timeout_s)
 
     client = _get_workflows_client()
     name = handle.workflows_execution_id

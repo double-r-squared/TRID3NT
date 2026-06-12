@@ -472,8 +472,13 @@ def _stage_gcs_local(uri: str) -> str:
 
     Local paths pass through unchanged. Downloads are content-keyed under
     a process-stable cache dir and reused across builds in the same host.
+
+    job-0291 (sprint-14-aws): ``s3://`` URIs stage via **boto3** through the
+    solver module's shared S3 client seam (``tools.solver.set_s3_client`` —
+    boto3 NOT s3fs, the job-0289 instance-role lesson). Same content-keyed
+    cache layout as the gs:// path.
     """
-    if not uri.startswith("gs://"):
+    if not (uri.startswith("gs://") or uri.startswith("s3://")):
         if uri.startswith("file://"):
             return uri[len("file://"):]
         return uri
@@ -488,14 +493,24 @@ def _stage_gcs_local(uri: str) -> str:
     if local.exists() and local.stat().st_size > 0:
         return str(local)
 
-    from google.cloud import storage  # ADC — same client the cache shim uses
-
-    bucket_name, _, blob_name = uri[len("gs://"):].partition("/")
-    client = storage.Client(
-        project=os.environ.get("GOOGLE_CLOUD_PROJECT", "grace-2-hazard-prod")
-    )
     tmp = local.with_suffix(local.suffix + ".part")
-    client.bucket(bucket_name).blob(blob_name).download_to_filename(str(tmp))
+    if uri.startswith("s3://"):
+        from ..tools.solver import _get_s3_client
+
+        bucket_name, _, obj_key = uri[len("s3://"):].partition("/")
+        resp = _get_s3_client().get_object(Bucket=bucket_name, Key=obj_key)
+        import shutil as _shutil
+
+        with tmp.open("wb") as fh:
+            _shutil.copyfileobj(resp["Body"], fh)
+    else:
+        from google.cloud import storage  # ADC — same client the cache shim uses
+
+        bucket_name, _, blob_name = uri[len("gs://"):].partition("/")
+        client = storage.Client(
+            project=os.environ.get("GOOGLE_CLOUD_PROJECT", "grace-2-hazard-prod")
+        )
+        client.bucket(bucket_name).blob(blob_name).download_to_filename(str(tmp))
     os.replace(tmp, local)
     logger.info("staged %s -> %s (%d bytes)", uri, local, local.stat().st_size)
     return str(local)
@@ -513,18 +528,25 @@ def _to_vsigs(uri: str) -> str:
     converted ``/vsigs/`` paths are idempotent. Anything else is treated
     as a local path (the caller's resolver layer is the gate).
 
+    job-0291 (sprint-14-aws): ``s3://`` URIs map to GDAL's native ``/vsis3/``
+    virtual filesystem (libcurl-backed; resolves the EC2 instance-role
+    credentials via IMDS — the same auth path boto3 uses).
+
     Args:
-        uri: ``gs://...`` GCS URI, ``/vsigs/...`` GDAL virtual path, or
-            local filesystem path (with or without ``file://`` prefix).
+        uri: ``gs://...`` GCS URI, ``s3://...`` S3 URI, ``/vsigs/...`` /
+            ``/vsis3/...`` GDAL virtual path, or local filesystem path
+            (with or without ``file://`` prefix).
 
     Returns:
         The GDAL-readable string GDAL drivers (rasterio, HydroMT's
-        rioxarray, the gdal CLI) can open without invoking ``gcsfs``.
+        rioxarray, the gdal CLI) can open without invoking ``gcsfs``/``s3fs``.
     """
-    if uri.startswith("/vsigs/"):
+    if uri.startswith("/vsigs/") or uri.startswith("/vsis3/"):
         return uri
     if uri.startswith("gs://"):
         return "/vsigs/" + uri[len("gs://"):]
+    if uri.startswith("s3://"):
+        return "/vsis3/" + uri[len("s3://"):]
     if uri.startswith("file://"):
         return uri[len("file://"):]
     return uri
@@ -701,7 +723,7 @@ def _write_hydromt_reclass_table_csv(
 
 
 def _default_setup_uri(bbox: tuple[float, float, float, float]) -> str:
-    """Compose a default gs:// URI for the SFINCS setup manifest JSON file.
+    """Compose a default object-store URI for the SFINCS setup manifest JSON.
 
     Returns the URI of the manifest FILE (not the directory), per the worker
     contract in ``services/workers/sfincs/entrypoint.py``:
@@ -711,18 +733,28 @@ def _default_setup_uri(bbox: tuple[float, float, float, float]) -> str:
         ``json.loads(text)``. Passing a trailing-slash directory URI hits a
         ``404 No such object`` because GCS has no object at that path.
 
-    The directory prefix ``gs://{bucket}/cache/static-30d/sfincs_setup/{id}/``
+    The directory prefix ``{scheme}://{bucket}/cache/static-30d/sfincs_setup/{id}/``
     is implicit — deck files land there; the manifest URI is that prefix +
     ``manifest.json``.
+
+    job-0291 (sprint-14-aws): the scheme follows ``cache.storage_scheme()``
+    (``GRACE2_STORAGE_BACKEND=s3`` → ``s3://``, default ``gs://`` unchanged)
+    so the manifest's input URIs match the scheme the local-docker staging
+    resolves them by.
 
     Lives under the cache bucket's ``static-30d/sfincs_setup/`` source-class
     prefix (a new dispatch class for staged decks). Per-deck uniqueness is
     enforced via a ULID; HydroMT-determinism would let us cache by content
     hash but the v0.1 smoke skips that.
     """
+    from ..tools.cache import storage_scheme
+
     cache_bucket = os.environ.get("GRACE2_CACHE_BUCKET", "grace-2-hazard-prod-cache")
     setup_id = new_ulid()
-    return f"gs://{cache_bucket}/cache/static-30d/sfincs_setup/{setup_id}/manifest.json"
+    return (
+        f"{storage_scheme()}://{cache_bucket}/cache/static-30d/sfincs_setup/"
+        f"{setup_id}/manifest.json"
+    )
 
 
 def _generate_hydromt_yaml_config(
@@ -1205,26 +1237,65 @@ def build_sfincs_model(
             manifest_uri,
         )
 
-        # Upload staged deck + manifest to GCS via fsspec[gcs]. Best-effort:
-        # fall back to a local URI if GCS unavailable (smoke run still
-        # produces a typed ModelSetup the workflow can hand to run_solver,
-        # which will surface its own dispatch error if the URI isn't gs://).
+        # Upload staged deck + manifest to the object store. Best-effort:
+        # fall back to a local URI if the store is unavailable (smoke run
+        # still produces a typed ModelSetup the workflow can hand to
+        # run_solver, which will surface its own dispatch error if the URI
+        # isn't reachable).
+        #
+        # job-0291 (sprint-14-aws): scheme-aware. ``s3://`` manifests upload
+        # via **boto3** (the job-0289 lesson — s3fs falls back to anonymous
+        # on the EC2 instance role; boto3 resolves IMDS credentials). The
+        # gs:// branch is byte-identical to the pre-job-0291 fsspec[gcs]
+        # path. Both branches preserve the ``deck/`` sub-prefix layout the
+        # manifest's input URIs cite.
         final_setup_uri = manifest_uri
         try:
-            import fsspec  # type: ignore[import-not-found]
+            if manifest_uri.startswith("s3://"):
+                from ..tools.solver import _get_s3_client
 
-            fs = fsspec.filesystem("gcs")
-            # fsspec.upload(src_dir, dest_prefix, recursive=True) uploads
-            # src_dir as a child of dest_prefix, so deck files land at
-            # deck_base_uri/deck/<relative_path>.
-            fs.upload(str(deck_dir), deck_base_uri, recursive=True)
-            logger.info("uploaded SFINCS deck to %s (under deck/ prefix)", deck_base_uri)
-            # Upload manifest.json alongside the deck directory.
-            fs.upload(str(manifest_local), manifest_uri)
-            logger.info("uploaded manifest.json to %s", manifest_uri)
+                s3 = _get_s3_client()
+                s3_bucket, _, manifest_key = (
+                    manifest_uri[len("s3://"):].partition("/")
+                )
+                # Deck files land under <deck_base_key>/deck/<rel> — same
+                # layout the fsspec recursive upload produces on GCS.
+                deck_base_key = manifest_key[: -len("manifest.json")]
+                for deck_file in deck_files:
+                    rel = deck_file.relative_to(deck_dir).as_posix()
+                    with deck_file.open("rb") as fh:
+                        s3.put_object(
+                            Bucket=s3_bucket,
+                            Key=f"{deck_base_key}deck/{rel}",
+                            Body=fh,
+                        )
+                logger.info(
+                    "uploaded SFINCS deck to %s (under deck/ prefix, boto3)",
+                    deck_base_uri,
+                )
+                with manifest_local.open("rb") as fh:
+                    s3.put_object(
+                        Bucket=s3_bucket,
+                        Key=manifest_key,
+                        Body=fh,
+                        ContentType="application/json",
+                    )
+                logger.info("uploaded manifest.json to %s (boto3)", manifest_uri)
+            else:
+                import fsspec  # type: ignore[import-not-found]
+
+                fs = fsspec.filesystem("gcs")
+                # fsspec.upload(src_dir, dest_prefix, recursive=True) uploads
+                # src_dir as a child of dest_prefix, so deck files land at
+                # deck_base_uri/deck/<relative_path>.
+                fs.upload(str(deck_dir), deck_base_uri, recursive=True)
+                logger.info("uploaded SFINCS deck to %s (under deck/ prefix)", deck_base_uri)
+                # Upload manifest.json alongside the deck directory.
+                fs.upload(str(manifest_local), manifest_uri)
+                logger.info("uploaded manifest.json to %s", manifest_uri)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "fsspec gcs upload failed (%s); using local manifest URI",
+                "deck/manifest upload failed (%s); using local manifest URI",
                 exc,
             )
             final_setup_uri = f"file://{manifest_local}"

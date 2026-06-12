@@ -110,12 +110,41 @@ class PostprocessError(RuntimeError):
 
 
 def _resolve_run_output_to_local(run_outputs_uri: str) -> Path:
-    """Download (if gs://) or resolve (if local) the run output to a local NetCDF.
+    """Download (if gs:// / s3://) or resolve (if local) the run output to a
+    local NetCDF.
 
     HydroMT-SFINCS standard output is ``sfincs_map.nc``; if ``run_outputs_uri``
     points at a directory or prefix we look for that filename inside it. If it
     points at a single file we use that.
+
+    job-0291 (sprint-14-aws): ``s3://`` run outputs (the local-docker solver
+    backend's runs prefix) download via **boto3** through the solver module's
+    shared S3 client seam — boto3 NOT s3fs (job-0289 instance-role lesson).
     """
+    if run_outputs_uri.startswith("s3://"):
+        from ..tools.solver import _get_s3_client
+
+        tmpdir = Path(tempfile.mkdtemp(prefix="sfincs-output-"))
+        local_target = tmpdir / "sfincs_map.nc"
+        source = (
+            run_outputs_uri
+            if run_outputs_uri.endswith(".nc")
+            else run_outputs_uri.rstrip("/") + "/sfincs_map.nc"
+        )
+        bucket_name, _, obj_key = source[len("s3://"):].partition("/")
+        try:
+            import shutil as _shutil
+
+            resp = _get_s3_client().get_object(Bucket=bucket_name, Key=obj_key)
+            with local_target.open("wb") as fh:
+                _shutil.copyfileobj(resp["Body"], fh)
+        except Exception as exc:  # noqa: BLE001
+            raise PostprocessError(
+                "RUN_OUTPUT_READ_FAILED",
+                message=f"could not fetch run output {source}: {exc}",
+                details={"run_outputs_uri": run_outputs_uri},
+            ) from exc
+        return local_target
     if run_outputs_uri.startswith("gs://"):
         try:
             # job-0250 (OQ-0250-POSTPROCESS-FSSPEC-NOOPCALLBACK): download via
@@ -470,7 +499,50 @@ def _extract_peak_depth_geotiff(netcdf_path: Path) -> tuple[Path, dict[str, Any]
 def _upload_cog_to_runs_bucket(
     local_cog: Path, run_id: str, runs_bucket: str | None = None
 ) -> str:
-    """Upload the staged COG to ``gs://<runs_bucket>/<run_id>/flood_depth_peak.tif``."""
+    """Upload the staged COG to
+    ``{scheme}://<runs_bucket>/<run_id>/flood_depth_peak.tif``.
+
+    job-0291 (sprint-14-aws): scheme-aware per ``cache.storage_scheme()``.
+    Under ``s3`` the upload goes via **boto3** (job-0289 lesson) and the
+    runs bucket MUST come from ``GRACE2_RUNS_BUCKET`` / the explicit
+    ``runs_bucket`` arg — there is no GCP-named default on AWS. The default
+    (``gs``) branch is byte-identical to the pre-job-0291 fsspec[gcs] path.
+    """
+    from ..tools.cache import storage_scheme
+
+    scheme = storage_scheme()
+    if scheme == "s3":
+        bucket = runs_bucket or (os.environ.get("GRACE2_RUNS_BUCKET") or "").strip()
+        if not bucket:
+            raise PostprocessError(
+                "COG_UPLOAD_FAILED",
+                message=(
+                    "GRACE2_RUNS_BUCKET must be set under "
+                    "GRACE2_STORAGE_BACKEND=s3 (no GCP-named default on AWS; "
+                    "job-0291)"
+                ),
+                details={"local_cog": str(local_cog)},
+            )
+        dest = f"s3://{bucket}/{run_id}/flood_depth_peak.tif"
+        try:
+            from ..tools.solver import _get_s3_client
+
+            with local_cog.open("rb") as fh:
+                _get_s3_client().put_object(
+                    Bucket=bucket,
+                    Key=f"{run_id}/flood_depth_peak.tif",
+                    Body=fh,
+                    ContentType="image/tiff",
+                )
+        except Exception as exc:  # noqa: BLE001
+            raise PostprocessError(
+                "COG_UPLOAD_FAILED",
+                message=f"upload of {local_cog} to {dest} failed: {exc}",
+                details={"local_cog": str(local_cog), "dest": dest},
+            ) from exc
+        logger.info("uploaded flood-depth COG to %s (boto3)", dest)
+        return dest
+
     bucket = runs_bucket or os.environ.get("GRACE2_RUNS_BUCKET", RUNS_BUCKET_DEFAULT)
     dest = f"gs://{bucket}/{run_id}/flood_depth_peak.tif"
     try:
