@@ -205,7 +205,12 @@ def _open_source(landcover_uri: str) -> Any:
     that window reads stream just the bytes for the requested window — important
     for nationwide NLCD COGs.
     """
-    if landcover_uri.startswith("gs://"):
+    # sprint-14-aws (job-0293b): s3:// window-reads via GDAL /vsis3/ —
+    # mirrors the /vsigs/ style; the EC2 instance-role creds resolve through
+    # GDAL's AWS credential chain.
+    if landcover_uri.startswith("s3://"):
+        path = "/vsis3/" + landcover_uri[len("s3://"):]
+    elif landcover_uri.startswith("gs://"):
         path = "/vsigs/" + landcover_uri[len("gs://"):]
     else:
         path = landcover_uri

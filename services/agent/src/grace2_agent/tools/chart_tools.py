@@ -202,6 +202,19 @@ _DAMAGE_DIST_META = AtomicToolMetadata(
 
 def _download_uri_bytes(uri: str, storage_client: object | None) -> bytes:
     """Download bytes from a gs:// URI or read a local path."""
+    # sprint-14-aws (job-0293b): s3:// staging via the shared boto3 reader
+    # (NOT s3fs — instance-role lesson, job-0289).
+    if uri.startswith("s3://"):
+        from .cache import read_object_bytes_s3
+
+        try:
+            return read_object_bytes_s3(uri)
+        except Exception as exc:  # noqa: BLE001
+            raise ChartToolError(
+                "DOWNLOAD_FAILED",
+                f"S3 download failed for {uri!r}: {exc}",
+                retryable=True,
+            ) from exc
     if not uri.startswith("gs://"):
         try:
             with open(uri, "rb") as f:
@@ -237,6 +250,15 @@ def _download_uri_bytes(uri: str, storage_client: object | None) -> bytes:
 
 def _materialize_uri(uri: str, tmpdir: str, label: str, storage_client: object | None) -> str:
     """Return a local file path for the given URI (downloads gs:// to tmpdir)."""
+    # sprint-14-aws (job-0293b): s3:// URIs must be materialized too — the
+    # s3 branch in _download_uri_bytes stages them via the shared reader.
+    if uri.startswith("s3://"):
+        name = uri.rstrip("/").rsplit("/", 1)[-1] or f"{label}.bin"
+        local_path = os.path.join(tmpdir, f"{label}_{name}")
+        data = _download_uri_bytes(uri, storage_client)
+        with open(local_path, "wb") as f:
+            f.write(data)
+        return local_path
     if not uri.startswith("gs://"):
         return uri
     name = uri.rstrip("/").rsplit("/", 1)[-1] or f"{label}.bin"

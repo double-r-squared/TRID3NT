@@ -605,6 +605,12 @@ def _download_uri_to_local(uri: str, suffix: str, storage_client: Any | None = N
         runs_bucket = os.environ.get(
             "GRACE2_RUNS_BUCKET", "grace-2-hazard-prod-runs"
         )
+        # sprint-14-aws (job-0293b): the reverse-mapped runs-bucket COG lives
+        # under the deploy's object-store scheme (gs:// on GCP — unchanged —
+        # s3:// on AWS where GRACE2_STORAGE_BACKEND=s3).
+        from .cache import storage_scheme
+
+        _scheme = storage_scheme()
         for layer_id in layers:
             for prefix, fname in (
                 ("flood-depth-peak-", "flood_depth_peak.tif"),
@@ -612,7 +618,7 @@ def _download_uri_to_local(uri: str, suffix: str, storage_client: Any | None = N
             ):
                 if layer_id.startswith(prefix):
                     run_id = layer_id[len(prefix):]
-                    mapped = f"gs://{runs_bucket}/{run_id}/{fname}"
+                    mapped = f"{_scheme}://{runs_bucket}/{run_id}/{fname}"
                     logger.warning(
                         "hazard URI was a WMS GetMap URL; reverse-mapped "
                         "LAYERS=%s -> %s (job-0255 guard)",
@@ -626,6 +632,39 @@ def _download_uri_to_local(uri: str, suffix: str, storage_client: Any | None = N
             f"hazard_raster_uri is a WMS URL with an unmapped layer id "
             f"({uri!r}); pass the gs:// COG URI from the producing tool"
         )
+
+    # sprint-14-aws (job-0293b): s3:// staging via the shared boto3 reader
+    # (NOT s3fs — instance-role lesson, job-0289). Mirrors the gs:// branch:
+    # stage to a NamedTemporaryFile the caller unlinks, with the same
+    # job-0253 last-two-segment retry for LLM path-mangled URIs.
+    if uri.startswith("s3://"):
+        from .cache import read_object_bytes_s3
+
+        try:
+            try:
+                data = read_object_bytes_s3(uri)
+            except Exception as first_exc:  # noqa: BLE001
+                bucket_name, _, obj_key = uri[len("s3://"):].partition("/")
+                parts = obj_key.split("/")
+                if len(parts) > 2:
+                    repaired = "/".join(parts[-2:])
+                    logger.warning(
+                        "s3:// download failed for %r; retrying suffix-repaired "
+                        "path s3://%s/%s (LLM path-mangle guard, job-0253)",
+                        uri,
+                        bucket_name,
+                        repaired,
+                    )
+                    data = read_object_bytes_s3(f"s3://{bucket_name}/{repaired}")
+                else:
+                    raise first_exc
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tf:
+                tf.write(data)
+                return tf.name
+        except Exception as exc:  # noqa: BLE001
+            raise PelicunRuntimeError(
+                f"S3 download failed for {uri!r}: {exc}"
+            ) from exc
 
     if not uri.startswith("gs://"):
         if not os.path.exists(uri):
@@ -1054,8 +1093,10 @@ def _fetch_pelicun_damage_bytes(
 
     hazard_local: str | None = None
     assets_local: str | None = None
-    hazard_was_remote = hazard_raster_uri.startswith("gs://")
-    assets_was_remote = assets_uri.startswith("gs://")
+    # sprint-14-aws (job-0293b): s3:// staging also lands in a temp file the
+    # finally-block must unlink — remote means either object-store scheme.
+    hazard_was_remote = hazard_raster_uri.startswith(("gs://", "s3://"))
+    assets_was_remote = assets_uri.startswith(("gs://", "s3://"))
 
     try:
         hazard_local = _download_uri_to_local(hazard_raster_uri, ".tif")

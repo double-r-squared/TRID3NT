@@ -182,7 +182,14 @@ def _get_source_crs(raster_uri: str) -> object:
     try:
         import rasterio  # type: ignore[import-not-found]
 
-        if raster_uri.startswith("gs://"):
+        # sprint-14-aws (job-0293b): s3:// header-read via GDAL /vsis3/ —
+        # mirrors the /vsigs/ style; the EC2 instance-role creds resolve
+        # through GDAL's AWS credential chain.
+        if raster_uri.startswith("s3://"):
+            vsis3_path = "/vsis3/" + raster_uri[len("s3://"):]
+            with rasterio.open(vsis3_path) as src:
+                return src.crs
+        elif raster_uri.startswith("gs://"):
             vsigs_path = "/vsigs/" + raster_uri[len("gs://"):]
             with rasterio.open(vsigs_path) as src:
                 return src.crs

@@ -127,6 +127,25 @@ def _resolve_layer_to_local_path(
     the path unchanged. Raises ``ClipVectorError`` on any failure with the given
     ``not_found_code`` for unknown URIs and ``DOWNLOAD_FAILED`` for GCS errors.
     """
+    # sprint-14-aws (job-0293b): s3:// staging via the shared boto3 reader
+    # (NOT s3fs — instance-role lesson, job-0289). Same return shape:
+    # (temp path, is_temp=True); caller owns cleanup.
+    if uri.startswith("s3://"):
+        from .cache import read_object_bytes_s3
+
+        try:
+            data = read_object_bytes_s3(uri)
+        except Exception as exc:  # noqa: BLE001
+            raise ClipVectorError(
+                "DOWNLOAD_FAILED",
+                f"S3 download failed for {uri!r}: {exc}",
+            ) from exc
+        with tempfile.NamedTemporaryFile(
+            suffix=suffix, delete=False, prefix="grace2_clipvec_"
+        ) as tmp:
+            tmp.write(data)
+            return tmp.name, True
+
     if uri.startswith("gs://"):
         # GCS path → download to a temp file so geopandas/pyogrio can open it.
         rest = uri[len("gs://"):]
