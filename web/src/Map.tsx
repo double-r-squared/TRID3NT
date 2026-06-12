@@ -274,6 +274,12 @@ const STYLE_PRESET_TO_WMS_LAYERS: Record<string, string> = {
  *   3. Add the per-tile WMS GetMap params MapLibre's raster source needs.
  */
 export function buildWmsTileUrl(wmsUrl: string, stylePreset?: string | null): string {
+  // sprint-14-aws (job-0290): the AWS agent publishes rasters as ready XYZ
+  // tile TEMPLATES (TiTiler — contains {z}/{x}/{y}). Pass them through
+  // untouched: appending WMS params to an XYZ template would 400 every tile.
+  if (wmsUrl.includes("{z}")) {
+    return wmsUrl;
+  }
   // job-0255: route overlay WMS URLs through the agent proxy when
   // VITE_QGIS_PROXY_BASE is set (no-op otherwise — byte-identical).
   wmsUrl = applyQgisProxy(wmsUrl);

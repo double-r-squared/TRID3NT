@@ -847,25 +847,54 @@ def publish_layer(
         - ``run_model_flood_scenario`` / ``run_model_flood_habitat_scenario`` —
           call this as the final step of the workflow chain.
     """
-    # sprint-14-aws (job-0291b): on the AWS deployment there is no QGIS
-    # Server / PyQGIS worker yet (job-0290), and every GCS touch below would
-    # crash with DefaultCredentialsError — which the LLM then narrates as a
-    # scary GCP-credentials lecture (observed live: Fort Myers probe). Under
-    # the s3 storage backend, fail FAST and HONESTLY with a typed, terminal
-    # error so the model tells the user the layer can't be displayed yet and
-    # where the artifact lives, instead of dispensing gcloud advice.
+    # sprint-14-aws (job-0290): on the AWS deployment rasters publish through
+    # TiTiler (a COG XYZ tile server reading s3:// directly) instead of the
+    # QGIS Server / PyQGIS worker chain. We return a ready XYZ tile TEMPLATE
+    # ({z}/{x}/{y}) — Map.tsx passes template URLs through untouched. The COG
+    # itself is the published artifact; no .qgs mutation, no worker round-trip.
+    # When the tile server is not configured, fail FAST and HONESTLY (typed,
+    # terminal) instead of crashing into GCS DefaultCredentialsError below.
     from .cache import storage_scheme
 
     if storage_scheme() == "s3":
-        raise PublishLayerError(
-            "RASTER_PUBLISH_UNAVAILABLE",
-            "Map tile publishing for raster layers is not yet available on "
-            f"this AWS deployment (tile server pending). The raster artifact "
-            f"is stored at {layer_uri!r} and any computed metrics remain valid "
-            "— tell the user the numbers stand but the raster overlay cannot "
-            "be displayed yet. Do not retry.",
-            retryable=False,
+        tile_base = os.environ.get("GRACE2_TILE_SERVER_BASE", "").rstrip("/")
+        if not tile_base:
+            raise PublishLayerError(
+                "RASTER_PUBLISH_UNAVAILABLE",
+                "Map tile publishing for raster layers is not configured on "
+                f"this AWS deployment (set GRACE2_TILE_SERVER_BASE). The raster "
+                f"artifact is stored at {layer_uri!r} and any computed metrics "
+                "remain valid — tell the user the numbers stand but the raster "
+                "overlay cannot be displayed yet. Do not retry.",
+                retryable=False,
+            )
+        if not layer_uri.startswith("s3://"):
+            raise PublishLayerError(
+                "LAYER_URI_NOT_FOUND",
+                f"layer_uri {layer_uri!r} is not an s3:// COG on this AWS "
+                "deployment. Pass the producing tool's layer handle or its "
+                "s3:// URI verbatim.",
+                retryable=True,
+            )
+        from urllib.parse import quote
+
+        # Style → TiTiler render params. Flood depths get the blue ramp over
+        # a 0-3 m rescale; terrain products (hillshade byte / relief RGBA)
+        # render natively without params.
+        style_params = ""
+        if (style_preset or "") == "continuous_flood_depth":
+            style_params = "&rescale=0,3&colormap_name=ylgnbu"
+        template = (
+            f"{tile_base}/cog/tiles/WebMercatorQuad/{{z}}/{{x}}/{{y}}.png"
+            f"?url={quote(layer_uri, safe='')}{style_params}"
         )
+        logger.info(
+            "publish_layer (titiler) layer_id=%s uri=%s template=%s",
+            layer_id,
+            layer_uri,
+            template,
+        )
+        return template
 
     # 1. Resolve the .qgs URI and extract the GCS key for MAP= param.
     effective_qgs_uri = _get_effective_qgs_uri(project_qgs_uri)
