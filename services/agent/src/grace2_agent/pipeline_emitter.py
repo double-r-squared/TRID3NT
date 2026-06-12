@@ -341,9 +341,19 @@ async def _read_vector_uri_as_geojson(uri: str) -> dict[str, Any] | None:
 
     def _read_and_parse() -> dict[str, Any] | None:
         try:
-            import fsspec  # type: ignore[import-not-found]
-            with fsspec.open(uri, "rb") as f:
-                data = f.read()
+            if uri.startswith("s3://"):
+                # sprint-14-aws (job-0289): boto3 resolves the EC2 instance role
+                # (s3fs falls back to anonymous here). gs:// + local go via fsspec.
+                import boto3
+                rest = uri[len("s3://"):]
+                b, _, k = rest.partition("/")
+                data = boto3.client(
+                    "s3", region_name=os.environ.get("AWS_REGION", "us-west-2")
+                ).get_object(Bucket=b, Key=k)["Body"].read()
+            else:
+                import fsspec  # type: ignore[import-not-found]
+                with fsspec.open(uri, "rb") as f:
+                    data = f.read()
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "_read_vector_uri_as_geojson: object read failed uri=%s: %s", uri, exc,

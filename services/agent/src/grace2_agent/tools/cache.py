@@ -231,30 +231,48 @@ def _obj_uri(bucket: str, path: str) -> str:
     return f"{storage_scheme()}://{bucket}/{path}"
 
 
-def _read_through_fsspec(
-    uri: str, fetch_fn: Any, force_refresh: bool, metadata: Any, key: str
+def _split_s3_uri(uri: str) -> tuple[str, str]:
+    rest = uri[len("s3://"):]
+    bucket, _, obj_key = rest.partition("/")
+    return bucket, obj_key
+
+
+def _read_through_s3(
+    uri: str, fetch_fn: Any, force_refresh: bool, metadata: Any, key: str, ext: str
 ) -> "ReadThroughResult":
-    """Backend-agnostic read-through via fsspec (s3:// on AWS, scheme-dispatched).
+    """S3 read-through via **boto3** (sprint-14-aws job-0289).
 
-    Mirrors the GCS path's best-effort semantics (job-0288c): a storage failure
-    degrades to fetch-fresh-uncached. No customTime metadata (S3 TTL eviction is
-    a bucket lifecycle rule, not a per-object property)."""
-    import fsspec  # local import; only the s3 path pays the cost
+    boto3 reliably resolves the EC2 instance-role credentials via IMDS; s3fs/
+    aiobotocore fell back to anonymous here ("No AWSAccessKey was presented").
+    Best-effort like the GCS path (job-0288c): any storage failure degrades to
+    fetch-fresh-uncached. S3 TTL eviction is a bucket lifecycle rule, so no
+    per-object customTime is written."""
+    import boto3
+    from botocore.exceptions import ClientError
 
-    fs, _ = fsspec.core.url_to_fs(uri)
-    try:
-        if not force_refresh and fs.exists(uri):
-            with fs.open(uri, "rb") as f:
-                data = f.read()
+    bucket, obj_key = _split_s3_uri(uri)
+    s3 = boto3.client("s3", region_name=os.environ.get("AWS_REGION", "us-west-2"))
+    if not force_refresh:
+        try:
+            resp = s3.get_object(Bucket=bucket, Key=obj_key)
+            data = resp["Body"].read()
             logger.info("read_through hit (s3) tool=%s key=%s bytes=%d", metadata.name, key, len(data))
             return ReadThroughResult(uri=uri, data=data, hit=True)
-    except Exception as exc:  # noqa: BLE001 — object store unavailable -> degrade
-        logger.warning("read_through s3 read degraded tool=%s: %s; fetching fresh", metadata.name, exc)
-        return ReadThroughResult(uri=uri, data=fetch_fn(), hit=False)
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code", "")
+            if code not in ("NoSuchKey", "404", "NoSuchBucket"):
+                logger.warning("read_through s3 read degraded tool=%s: %s", metadata.name, exc)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("read_through s3 read degraded tool=%s: %s", metadata.name, exc)
+
     data = fetch_fn()
+    content_type = {
+        "json": "application/json", "geojson": "application/json",
+        "tif": "image/tiff", "fgb": "application/octet-stream",
+        "nc": "application/x-netcdf", "grib2": "application/x-grib2",
+    }.get(ext.lstrip("."), "application/octet-stream")
     try:
-        with fs.open(uri, "wb") as f:
-            f.write(data)
+        s3.put_object(Bucket=bucket, Key=obj_key, Body=data, ContentType=content_type)
         logger.info("read_through miss-write (s3) tool=%s key=%s bytes=%d", metadata.name, key, len(data))
     except Exception as exc:  # noqa: BLE001 — write is best-effort
         logger.warning("read_through s3 write degraded tool=%s: %s; returning uncached", metadata.name, exc)
@@ -357,7 +375,7 @@ def read_through(
     # sprint-14-aws (job-0289): on AWS the cache lives in S3. Route the whole
     # read-through through fsspec (s3fs) and skip the GCS-specific path below.
     if storage_scheme() == "s3" and storage_client is None:
-        return _read_through_fsspec(uri, fetch_fn, force_refresh, metadata, key)
+        return _read_through_s3(uri, fetch_fn, force_refresh, metadata, key, ext)
 
     # Lazy import so test environments that don't have google-cloud-storage
     # (or have it stubbed) don't pay the import cost at module load.
