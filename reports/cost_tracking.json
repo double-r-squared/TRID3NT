@@ -1538,7 +1538,7 @@
     {
       "job_id": "panel-job-0252",
       "sprint": 13.5,
-      "description": "4-lens Opus adversarial panel: PASS 3/4 (correctness+regression+live-verify CONFIRM; contract REFUTED major: case docs store internal users._id ULID but 0251 mint compares Firebase token uid → every owner mint 403s once wired; SRS H.2 says ULID, manifest line was wrong). Minor: gate provisions anon user row before rejecting. Shapes job-0251b/0252b.",
+      "description": "4-lens Opus adversarial panel: PASS 3/4 (correctness+regression+live-verify CONFIRM; contract REFUTED major: case docs store internal users._id ULID but 0251 mint compares Firebase token uid \u2192 every owner mint 403s once wired; SRS H.2 says ULID, manifest line was wrong). Minor: gate provisions anon user row before rejecting. Shapes job-0251b/0252b.",
       "model": "opus",
       "kind": "verification",
       "workflow_id": "wf_cba0b225-134",
@@ -1556,7 +1556,7 @@
     {
       "job_id": "job-0251b-mint-identity-20260611",
       "sprint": 13.5,
-      "description": "Fable infra runner (critical-bug routing): mint_signed_url resolves verified Firebase uid → internal users._id ULID (fail-closed 403/503, no raw-uid fall-through; sentinel unmintable by construction); clamp_ttl OverflowError; tests 55→78 green; tofu validate green; USER_UNBLOCK 0251-A/D addendum. OQ-1 normalization-order nuance, OQ-2 users.firebase_uid unindexed (per-mint scan, fine at M0). Commit beb10e5.",
+      "description": "Fable infra runner (critical-bug routing): mint_signed_url resolves verified Firebase uid \u2192 internal users._id ULID (fail-closed 403/503, no raw-uid fall-through; sentinel unmintable by construction); clamp_ttl OverflowError; tests 55\u219278 green; tofu validate green; USER_UNBLOCK 0251-A/D addendum. OQ-1 normalization-order nuance, OQ-2 users.firebase_uid unindexed (per-mint scan, fine at M0). Commit beb10e5.",
       "model": "fable",
       "kind": "engineering",
       "workflow_id": "agent a3127b1054328a5f5",
@@ -1565,7 +1565,7 @@
     {
       "job_id": "job-0253-web-auth-20260611",
       "sprint": 13.5,
-      "description": "Opus web runner: useAuth + AuthGuard three-mode matrix (disabled passthrough pixel-identical / Google-only sign-in per Decision 6 / signed-in + sign-out on guard) + 4401 no-reconnect-storm with one forceRefresh retry; vitest 686→706; tsc clean; live evidence screenshots. OQs: sign-out placement (SettingsPopup dirty), Chat-instance onAuthExpired wiring. Commit 1672da0.",
+      "description": "Opus web runner: useAuth + AuthGuard three-mode matrix (disabled passthrough pixel-identical / Google-only sign-in per Decision 6 / signed-in + sign-out on guard) + 4401 no-reconnect-storm with one forceRefresh retry; vitest 686\u2192706; tsc clean; live evidence screenshots. OQs: sign-out placement (SettingsPopup dirty), Chat-instance onAuthExpired wiring. Commit 1672da0.",
       "model": "opus",
       "kind": "engineering",
       "workflow_id": "agent a8ba61f6348e18c08",
@@ -1574,7 +1574,7 @@
     {
       "job_id": "repanel-0251b-0252b",
       "sprint": 13.5,
-      "description": "4-lens Fable adversarial re-panel: PASS 4/4 — both prior refutes proven cured with pre-fix reproductions (old code minted under the forged-internal-ULID attack AND 403'd the true owner; fixed code inverts both). 42+31+9+18 fresh probe assertions; gate-ON hostile connections leave zero files on disk; suite 4359 exact; signed_urls 78 with zero weakened assertions. job-0251 REFUTED cleared → DONE.",
+      "description": "4-lens Fable adversarial re-panel: PASS 4/4 \u2014 both prior refutes proven cured with pre-fix reproductions (old code minted under the forged-internal-ULID attack AND 403'd the true owner; fixed code inverts both). 42+31+9+18 fresh probe assertions; gate-ON hostile connections leave zero files on disk; suite 4359 exact; signed_urls 78 with zero weakened assertions. job-0251 REFUTED cleared \u2192 DONE.",
       "model": "fable",
       "kind": "verification",
       "workflow_id": "wf_8fa82d48-ffe",
@@ -1583,7 +1583,7 @@
     {
       "job_id": "panel-job-0253",
       "sprint": 13.5,
-      "description": "4-lens Opus adversarial panel: PASS 4/4 — deliverables re-proven (12 fresh probes + live browser on :5173 + dummy-Firebase vite + gate-ON wire proof). TWO MAJOR latent gaps routed to job-0253b: re-sign-in WS wedge (terminal give-up branch, dead socket under re-signed-in UI) + session-resume sent BEFORE auth-token (gate rejects first non-auth frame → every prod connection 4401s). Minor: tsc count claim inaccurate.",
+      "description": "4-lens Opus adversarial panel: PASS 4/4 \u2014 deliverables re-proven (12 fresh probes + live browser on :5173 + dummy-Firebase vite + gate-ON wire proof). TWO MAJOR latent gaps routed to job-0253b: re-sign-in WS wedge (terminal give-up branch, dead socket under re-signed-in UI) + session-resume sent BEFORE auth-token (gate rejects first non-auth frame \u2192 every prod connection 4401s). Minor: tsc count claim inaccurate.",
       "model": "opus",
       "kind": "verification",
       "workflow_id": "wf_e8bb1bb3-6d9",
@@ -1592,7 +1592,7 @@
     {
       "job_id": "scout-job-0254-design",
       "sprint": 13.5,
-      "description": "Opus read-only design scout: full LayerURI/URL surface inventory (9 surfaces, file:line) — NO browser surface fetches GCS today (rasters=QGIS WMS→0255 proxy; vectors=inline GeoJSON; charts inline); mint_signed_url has no live consumer; only client-reaching gs:// is the publish-failure degraded path. Mint-caller analysis: web-client mints (Arch A) is the only design respecting Decision F + the verified function contract, when a direct-fetch feature arrives. Drove Decision 11 (Reading X rescope: 0254 → ~60-80K agent cleanup).",
+      "description": "Opus read-only design scout: full LayerURI/URL surface inventory (9 surfaces, file:line) \u2014 NO browser surface fetches GCS today (rasters=QGIS WMS\u21920255 proxy; vectors=inline GeoJSON; charts inline); mint_signed_url has no live consumer; only client-reaching gs:// is the publish-failure degraded path. Mint-caller analysis: web-client mints (Arch A) is the only design respecting Decision F + the verified function contract, when a direct-fetch feature arrives. Drove Decision 11 (Reading X rescope: 0254 \u2192 ~60-80K agent cleanup).",
       "model": "opus",
       "kind": "research",
       "workflow_id": "agent a2dde9a45c278f90a",
@@ -1601,7 +1601,7 @@
     {
       "job_id": "job-0253b-auth-wire-order-20260611",
       "sprint": 13.5,
-      "description": "Opus web runner: auth-token strictly first frame (open handler awaits maybeSendAuthToken, chained resume with socket guard — pure reorder, dev byte-identical); authEpoch re-sign-in reconnect for BOTH GraceWs instances (closes OQ-0253-CHAT-WS-4401, dev can't engage); 6 tsc errors cleared. vitest 710→718; stash-proof load-bearing tests. Commit 74de10b.",
+      "description": "Opus web runner: auth-token strictly first frame (open handler awaits maybeSendAuthToken, chained resume with socket guard \u2014 pure reorder, dev byte-identical); authEpoch re-sign-in reconnect for BOTH GraceWs instances (closes OQ-0253-CHAT-WS-4401, dev can't engage); 6 tsc errors cleared. vitest 710\u2192718; stash-proof load-bearing tests. Commit 74de10b.",
       "model": "opus",
       "kind": "engineering",
       "workflow_id": "agent ae5fdd117f7d47221",
@@ -1610,7 +1610,7 @@
     {
       "job_id": "job-0255-qgis-lockdown-proxy-20260611",
       "sprint": 13.5,
-      "description": "Opus infra runner: invoker-only IAM flip planned (in-place, agent-SA invoker + allUsers destroyed; NOT applied — UNBLOCK 0255-A/B with sequencing warning); streaming /qgis-proxy in tool_catalog_http.py (credential-strip by construction, bounded queue O(64KiB), no-open-proxy, OIDC in prod / graceful dev); QGIS_PROXY_ENABLED + VITE_QGIS_PROXY_BASE dual gates default-off; Map.tsx 27-line helper. Proxy tests 28; agent suite 4387+5-known; live tile proof through proxy (79KB PNG). OQs: module path deviation (venv import), tool_catalog_http.py pre-existing untracked drift now staged. Commit d2c2d56.",
+      "description": "Opus infra runner: invoker-only IAM flip planned (in-place, agent-SA invoker + allUsers destroyed; NOT applied \u2014 UNBLOCK 0255-A/B with sequencing warning); streaming /qgis-proxy in tool_catalog_http.py (credential-strip by construction, bounded queue O(64KiB), no-open-proxy, OIDC in prod / graceful dev); QGIS_PROXY_ENABLED + VITE_QGIS_PROXY_BASE dual gates default-off; Map.tsx 27-line helper. Proxy tests 28; agent suite 4387+5-known; live tile proof through proxy (79KB PNG). OQs: module path deviation (venv import), tool_catalog_http.py pre-existing untracked drift now staged. Commit d2c2d56.",
       "model": "opus",
       "kind": "engineering",
       "workflow_id": "agent a12ce7b744dcc9d55",
@@ -1624,6 +1624,42 @@
       "kind": "engineering",
       "workflow_id": "agent ab636c87886e27c7a",
       "subagent_tokens": 155528
+    },
+    {
+      "job_id": "job-0291-sfincs-aws-20260612",
+      "sprint": 14,
+      "description": "Fable engine: SFINCS local-docker solver backend + S3 runs envelope (commit 10a8a00); live Fort Myers + user Tampa sims completed on AWS.",
+      "model": "fable",
+      "kind": "engineering",
+      "workflow_id": "agent ab5e3eb93c7d8239c",
+      "subagent_tokens": 256365
+    },
+    {
+      "job_id": "job-0292b-modflow-aws-20260612",
+      "sprint": 14,
+      "description": "Fable engine: MODFLOW local-exec backend (LocalSolverSpec generalization) + plume TiTiler publish (commit 00befd5); live groundwater sim completed on AWS.",
+      "model": "fable",
+      "kind": "engineering",
+      "workflow_id": "agent a4a237900f8ae7c99",
+      "subagent_tokens": 307524
+    },
+    {
+      "job_id": "sweep-aws-tools-20260612",
+      "sprint": 14,
+      "description": "Opus read-only sweep: 15 tool families via /invoke on the live AWS agent \u2014 12 PASS, 3 diagnosed (pelicun gs-only, clip CRS gap, buildings upstream).",
+      "model": "opus",
+      "kind": "verification",
+      "workflow_id": "agent a666a4e088d920f99",
+      "subagent_tokens": 97177
+    },
+    {
+      "job_id": "job-0293b-s3-port-complete-20260612",
+      "sprint": 14,
+      "description": "Fable engine: complete S3 port \u2014 pelicun x2, clips, vector clip, extract_landcover, analytical_qa, chart_tools (commit bcacfd0, +18 tests); orchestrator follow-up 0293c replaced /vsis3/ with boto3 stage-then-open.",
+      "model": "fable",
+      "kind": "engineering",
+      "workflow_id": "agent a10f754331078f973",
+      "subagent_tokens": 163437
     }
   ],
   "totals_by_sprint": {
@@ -1635,7 +1671,8 @@
     "11": 999540,
     "12": 27545642,
     "13": 14388888,
-    "13.5": 4081365
+    "13.5": 4081365,
+    "14": 824503
   },
   "historical_context": {
     "note": "Captured for accountability \u2014 NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
