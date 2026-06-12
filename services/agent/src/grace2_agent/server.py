@@ -3224,6 +3224,18 @@ async def _invoke_tool_via_emitter(
                     )
                     if _emit_layer is not None:
                         await state.emitter.add_loaded_layer(_emit_layer)
+                        # sprint-14-aws (job-0290c): re-persist AFTER this add.
+                        # The dispatch's finally-persist above ran BEFORE this
+                        # wrap-site emission, so the published tile layer only
+                        # lived in memory — a Case switch + reopen rehydrated
+                        # WITHOUT it (observed live: flood Case kept its layer
+                        # because composers add inside the dispatch; hillshade
+                        # chains lost theirs because publish_layer is the LAST
+                        # tool call and nothing persisted afterwards).
+                        if turn_case_id:
+                            await _persist_case_loaded_layers(
+                                state, case_id=turn_case_id
+                            )
                 except Exception:  # noqa: BLE001 — emission is best-effort
                     logger.exception(
                         "publish_layer loaded-layer emission failed "

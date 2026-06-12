@@ -129,13 +129,20 @@ def emit_layer_uri(layer: LayerURI) -> LayerURI | None:
     # fetch gs://; this is the publish-failure degraded-path leak (§1) turned
     # into an invariant. Vectors carrying gs:// are the inline-GeoJSON path
     # (job-0175) and pass untouched.
-    if layer.layer_type == "raster" and uri.startswith("gs://"):
+    if layer.layer_type == "raster" and (
+        uri.startswith("gs://") or uri.startswith("s3://")
+    ):
+        # sprint-14-aws (job-0290c): s3:// joined the drop class — on AWS every
+        # fetch/compute raster carries an s3:// uri, which MapLibre can no more
+        # fetch than gs://. Letting them through painted dead layer rows AND
+        # persisted unrenderable entries into the Case doc (observed live:
+        # hillshade Case reopen rendered nothing — the only renderable entry
+        # is the publish_layer tile TEMPLATE, http(s)).
         logger.warning(
-            "layer_uri_emit: DROPPING renderable raster LayerURI with raw gs:// "
-            "uri (MapLibre cannot fetch gs://; never reaches the map). "
-            "layer_id=%s uri=%s. This is the publish-failure degraded path — the "
-            "tool result stays truthful so the retry-on-failure loop can act. "
-            "(job-0254 guardrail; see Decision 11.)",
+            "layer_uri_emit: DROPPING renderable raster LayerURI with raw "
+            "object-store uri (MapLibre cannot fetch it; never reaches the "
+            "map). layer_id=%s uri=%s. The renderable form is the published "
+            "tile/WMS URL. (job-0254 guardrail; see Decision 11.)",
             layer.layer_id,
             uri,
         )
