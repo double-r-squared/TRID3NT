@@ -363,7 +363,12 @@ def read_through(
     Returns:
         ``ReadThroughResult(uri, data, hit)``.
     """
-    bucket = bucket or os.environ.get("GRACE2_CACHE_BUCKET") or CACHE_BUCKET
+    # sprint-14-aws (job-0290b): the env override WINS over caller-supplied
+    # buckets — several tools pass the legacy CACHE_BUCKET constant explicitly,
+    # which on AWS named a nonexistent GCP bucket and silently degraded every
+    # cache write (observed live: hillshade COG upload). Tests run with the
+    # env unset, so explicit-bucket test fixtures are unaffected.
+    bucket = os.environ.get("GRACE2_CACHE_BUCKET") or bucket or CACHE_BUCKET
     source_id = source_id or (metadata.source_class or metadata.name)
 
     # FR-DC-6 short-circuit: uncacheable tools never touch the bucket.
