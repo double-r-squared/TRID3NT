@@ -60,6 +60,37 @@ Cancellation (Invariant 8): the cloud path returns an ``ExecutionHandle`` whose
 ``workflows_execution_id`` ``wait_for_completion`` (tools/solver.py) cancels on
 the WS ``cancel`` chain. The local path is a foreground subprocess — cancel
 terminates the process group.
+
+AWS local backend (job-0292b, sprint-14-aws)
+--------------------------------------------
+
+``GRACE2_SOLVER_BACKEND=local-docker`` (the job-0291 seam) routes MODFLOW
+through the solver module's shared local machinery instead of Cloud Workflows:
+
+  * ``build_and_stage_modflow_deck`` becomes scheme-aware: under
+    ``GRACE2_STORAGE_BACKEND=s3`` the deck + manifest upload to
+    ``s3://$GRACE2_CACHE_BUCKET/modflow/<run_id>/`` via **boto3** (the
+    job-0289 s3fs-anonymous lesson; shared ``tools.solver`` S3 client seam).
+    The manifest keeps the LEGACY ``gs_uri`` field NAME with ``s3://`` VALUES
+    — staging resolves by scheme (job-0291 convention). The default ``gs://``
+    fsspec path is byte-identical.
+  * ``submit_modflow_run`` dispatches to ``tools.solver.launch_local_solver``
+    with a MODFLOW ``LocalSolverSpec``: stage the deck back down from S3 into
+    ``$GRACE2_RUNS_DIR/<run_id>/``, launch the **mf6 binary directly**
+    (``exec_kind="exec"`` — no public MODFLOW image exists; the instance
+    carries the same SHA-pinned USGS 6.5.0 static binary the GCP Dockerfile
+    installs, resolved via ``$GRACE2_MF6_BIN``), supervisor uploads outputs +
+    the EXACT ``services/workers/modflow/entrypoint.py`` completion.json
+    (``converged`` / ``model_crs`` / ``mf6_stdout_uri`` / ``mf6_stderr_uri``)
+    to ``s3://$GRACE2_RUNS_BUCKET/<run_id>/``. The spec's ``classify_exit``
+    reproduces the entrypoint's mfsim.lst convergence guard verbatim.
+  * The SFINCS-shared ``wait_for_completion`` polls the S3 completion object
+    (the handle's ``workflow_name="local-exec"`` pins the backend); cancel =
+    process-group kill ≤30 s (Invariant 8).
+
+``GRACE2_MODFLOW_LOCAL`` (the foreground dev seam) is independent and must
+stay UNSET on the AWS deployment — the backend seam, not local mode, owns the
+AWS path.
 """
 
 from __future__ import annotations
@@ -515,7 +546,14 @@ def build_and_stage_modflow_deck(
         f"**/{GWT_UCN_FILENAME}",
         "**/*.lst",
     ]
-    deck_base_uri = f"gs://{_cache_bucket()}/modflow/{rid}/"
+    # job-0292b: scheme-aware deck prefix. ``cache.storage_scheme()`` returns
+    # ``"gs"`` by default (byte-identical pre-job-0292b URI) and ``"s3"``
+    # under GRACE2_STORAGE_BACKEND=s3 — the manifest's input VALUES then carry
+    # s3:// so the local-backend staging resolves them by scheme (the field
+    # NAME stays the legacy ``gs_uri``, job-0291 convention).
+    from ..tools.cache import storage_scheme
+
+    deck_base_uri = f"{storage_scheme()}://{_cache_bucket()}/modflow/{rid}/"
     manifest_uri = deck_base_uri + "manifest.json"
     manifest, manifest_inputs = _compose_manifest(
         deck_base_uri, dest_rel, model_crs, output_globs
@@ -523,26 +561,61 @@ def build_and_stage_modflow_deck(
     manifest_local = deck_dir / "manifest.json"
     manifest_local.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
-    # --- 4. Stage to GCS (cloud path) ---------------------------------------
+    # --- 4. Stage to the object store (cloud / AWS-local-backend path) ------
     if stage_to_gcs and not is_local_mode():
-        try:
-            import fsspec  # type: ignore[import-not-found]
+        if deck_base_uri.startswith("s3://"):
+            # job-0292b: boto3 (NOT fsspec/s3fs — the job-0289 anonymous-
+            # credentials lesson) through the solver module's shared S3
+            # client seam, mirroring sfincs_builder's deck upload.
+            try:
+                from ..tools.solver import _get_s3_client
 
-            fs = fsspec.filesystem("gcs")
-            for rel in dest_rel:
-                fs.put(str(deck_dir / rel), deck_base_uri + rel)
-            fs.put(str(manifest_local), manifest_uri)
-            logger.info(
-                "staged MODFLOW deck (%d files) + manifest to %s",
-                len(dest_rel),
-                deck_base_uri,
-            )
-        except Exception as exc:  # noqa: BLE001
-            raise MODFLOWWorkflowError(
-                "MODFLOW_DECK_STAGE_FAILED",
-                message=f"GCS upload of deck/manifest failed: {exc}",
-                details={"run_id": rid, "deck_base_uri": deck_base_uri},
-            ) from exc
+                s3 = _get_s3_client()
+                bucket, _, base_key = (
+                    deck_base_uri[len("s3://"):].rstrip("/").partition("/")
+                )
+                for rel in dest_rel:
+                    with (deck_dir / rel).open("rb") as fh:
+                        s3.put_object(
+                            Bucket=bucket, Key=f"{base_key}/{rel}", Body=fh
+                        )
+                with manifest_local.open("rb") as fh:
+                    s3.put_object(
+                        Bucket=bucket,
+                        Key=f"{base_key}/manifest.json",
+                        Body=fh,
+                        ContentType="application/json",
+                    )
+                logger.info(
+                    "staged MODFLOW deck (%d files) + manifest to %s (boto3)",
+                    len(dest_rel),
+                    deck_base_uri,
+                )
+            except Exception as exc:  # noqa: BLE001
+                raise MODFLOWWorkflowError(
+                    "MODFLOW_DECK_STAGE_FAILED",
+                    message=f"S3 upload of deck/manifest failed: {exc}",
+                    details={"run_id": rid, "deck_base_uri": deck_base_uri},
+                ) from exc
+        else:
+            try:
+                import fsspec  # type: ignore[import-not-found]
+
+                fs = fsspec.filesystem("gcs")
+                for rel in dest_rel:
+                    fs.put(str(deck_dir / rel), deck_base_uri + rel)
+                fs.put(str(manifest_local), manifest_uri)
+                logger.info(
+                    "staged MODFLOW deck (%d files) + manifest to %s",
+                    len(dest_rel),
+                    deck_base_uri,
+                )
+            except Exception as exc:  # noqa: BLE001
+                raise MODFLOWWorkflowError(
+                    "MODFLOW_DECK_STAGE_FAILED",
+                    message=f"GCS upload of deck/manifest failed: {exc}",
+                    details={"run_id": rid, "deck_base_uri": deck_base_uri},
+                ) from exc
 
     return DeckStaging(
         run_id=rid,
@@ -582,6 +655,57 @@ def _get_workflows_client() -> Any:
     return ExecutionsClient()
 
 
+def _modflow_local_spec(staging: DeckStaging) -> Any:
+    """Build the MODFLOW ``LocalSolverSpec`` for the shared local backend.
+
+    job-0292b solver-binary decision: **image-less local-exec** — there is no
+    maintained public MODFLOW docker image (the GCP Dockerfile itself builds
+    from python:3.11-slim + the SHA-pinned USGS 6.5.0 static binary), so the
+    simplest contract-preserving path runs the same pinned ``mf6`` binary
+    directly on the instance (``$GRACE2_MF6_BIN``, the existing env
+    convention). ``classify_exit`` reproduces the MODFLOW entrypoint's
+    exit-code resolution verbatim (list file authoritative — design doc § 8)
+    and supplies the entrypoint-schema ``converged`` + ``model_crs``
+    completion fields.
+    """
+    from ..tools.solver import LOCAL_EXEC_WORKFLOW_NAME, LocalSolverSpec
+
+    def build_argv(run_id: str, rundir: Path, args: list[str]) -> list[str]:
+        return [_mf6_binary(), *args]
+
+    def classify_exit(
+        rundir: Path, exit_code: int
+    ) -> tuple[str, int, str | None, dict[str, Any]]:
+        converged, conv_note = _check_convergence(rundir)
+        if exit_code != 0:
+            status: str = "error"
+            error: str | None = f"mf6 exited with non-zero code {exit_code}"
+        elif not converged:
+            status, exit_code = "error", 2
+            error = conv_note or "solver_diverged"
+        else:
+            status, exit_code, error = "ok", 0, None
+        return (
+            status,
+            exit_code,
+            error,
+            {"converged": converged, "model_crs": staging.model_crs},
+        )
+
+    return LocalSolverSpec(
+        solver="modflow",
+        workflow_name=LOCAL_EXEC_WORKFLOW_NAME,
+        args_key="mf6_args",
+        build_argv=build_argv,
+        stdout_name="mf6.stdout",
+        stderr_name="mf6.stderr",
+        stdout_uri_field="mf6_stdout_uri",
+        stderr_uri_field="mf6_stderr_uri",
+        exec_kind="exec",
+        classify_exit=classify_exit,
+    )
+
+
 def submit_modflow_run(
     staging: DeckStaging,
     *,
@@ -595,10 +719,42 @@ def submit_modflow_run(
     ``ExecutionHandle`` whose ``workflows_execution_id`` is the Invariant-8
     cancellation seam ``wait_for_completion`` operates on.
 
+    job-0292b: under ``GRACE2_SOLVER_BACKEND=local-docker`` (the job-0291 AWS
+    seam) the submit routes through ``tools.solver.launch_local_solver`` with
+    the MODFLOW local-exec spec instead — the staged deck is downloaded from
+    S3 into ``$GRACE2_RUNS_DIR/<run_id>/``, the ``mf6`` binary runs detached,
+    and the supervisor writes the MODFLOW-entrypoint-schema completion.json
+    to ``s3://$GRACE2_RUNS_BUCKET/<run_id>/``. The handle's
+    ``workflow_name="local-exec"`` pins the backend for
+    ``wait_for_completion``. The default Cloud Workflows path below is
+    byte-identical to pre-job-0292b behavior.
+
     Raises:
         MODFLOWWorkflowError("MODFLOW_DISPATCH_FAILED"): the create_execution
-            call failed or returned no resource name.
+            call (or the local-backend staging/launch) failed.
     """
+    from ..tools.solver import (
+        SOLVER_BACKEND_LOCAL_DOCKER,
+        SolverDispatchError,
+        launch_local_solver,
+        solver_backend,
+    )
+
+    if solver_backend() == SOLVER_BACKEND_LOCAL_DOCKER:
+        try:
+            return launch_local_solver(
+                _modflow_local_spec(staging),
+                staging.manifest_uri,
+                run_id=staging.run_id,
+                compute_class=compute_class,
+            )
+        except SolverDispatchError as exc:
+            raise MODFLOWWorkflowError(
+                "MODFLOW_DISPATCH_FAILED",
+                message=f"local MODFLOW dispatch failed: {exc}",
+                details={"run_id": staging.run_id},
+            ) from exc
+
     project = _gcp_project()
     location = _gcp_location()
     parent = (

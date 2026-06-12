@@ -879,11 +879,17 @@ def publish_layer(
         from urllib.parse import quote
 
         # Style → TiTiler render params. Flood depths get the blue ramp over
-        # a 0-3 m rescale; terrain products (hillshade byte / relief RGBA)
-        # render natively without params.
+        # a 0-3 m rescale; plume concentrations (job-0292b) get a red ramp
+        # over a 0-10 mg/L rescale (sub-floor cells are NaN-masked in the COG
+        # so clean ground stays transparent; range is the demo-aquifer band —
+        # OQ-292B-PLUME-RESCALE for a metrics-driven dynamic rescale);
+        # terrain products (hillshade byte / relief RGBA) render natively
+        # without params.
         style_params = ""
         if (style_preset or "") == "continuous_flood_depth":
             style_params = "&rescale=0,3&colormap_name=ylgnbu"
+        elif (style_preset or "") == "continuous_plume_concentration":
+            style_params = "&rescale=0,10&colormap_name=reds"
         template = (
             f"{tile_base}/cog/tiles/WebMercatorQuad/{{z}}/{{x}}/{{y}}.png"
             f"?url={quote(layer_uri, safe='')}{style_params}"

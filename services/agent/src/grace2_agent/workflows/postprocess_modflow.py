@@ -142,12 +142,39 @@ def compute_plume_metrics(
 
 
 def _resolve_ucn_path(run_outputs_uri: str) -> Path:
-    """Locate ``gwt_model.ucn`` from a local dir / file:// / gs:// run output.
+    """Locate ``gwt_model.ucn`` from a local dir / file:// / gs:// / s3:// run
+    output.
 
     Local (``file://`` or a bare path): search the dir tree for the UCN file.
-    gs:// : fetch via fsspec into a temp dir (mirrors postprocess_flood). The
+    gs:// : fetch via fsspec into a temp dir (mirrors postprocess_flood).
+    s3:// (job-0292b — the local-backend runs prefix): fetch via **boto3**
+    through the solver module's shared S3 client seam (job-0289 lesson). The
     local-mode live-evidence path always passes a local dir.
     """
+    if run_outputs_uri.startswith("s3://"):
+        from ..tools.solver import _get_s3_client
+
+        tmpdir = Path(tempfile.mkdtemp(prefix="modflow-output-"))
+        local_target = tmpdir / GWT_UCN_FILENAME
+        source = (
+            run_outputs_uri
+            if run_outputs_uri.endswith(".ucn")
+            else run_outputs_uri.rstrip("/") + f"/{GWT_UCN_FILENAME}"
+        )
+        bucket_name, _, obj_key = source[len("s3://"):].partition("/")
+        try:
+            import shutil as _shutil
+
+            resp = _get_s3_client().get_object(Bucket=bucket_name, Key=obj_key)
+            with local_target.open("wb") as fh:
+                _shutil.copyfileobj(resp["Body"], fh)
+        except Exception as exc:  # noqa: BLE001
+            raise PostprocessMODFLOWError(
+                "PLUME_OUTPUT_READ_FAILED",
+                message=f"could not fetch UCN from {source}: {exc}",
+                details={"run_outputs_uri": run_outputs_uri},
+            ) from exc
+        return local_target
     if run_outputs_uri.startswith("gs://"):
         try:
             import fsspec  # type: ignore[import-not-found]
@@ -400,11 +427,54 @@ def _cog_bbox_4326(cog_path: Path) -> tuple[float, float, float, float] | None:
 
 
 def _upload_cog(local_cog: Path, run_id: str, runs_bucket: str | None) -> str:
-    """Upload the EPSG:4326 plume COG to the runs bucket; return its gs:// URI.
+    """Upload the EPSG:4326 plume COG to the runs bucket; return its object URI.
+
+    job-0292b (sprint-14-aws): scheme-aware per ``cache.storage_scheme()``.
+    Under ``s3`` the upload goes via **boto3** (job-0289 lesson) and FAILS
+    TYPED on a missing ``GRACE2_RUNS_BUCKET`` or an upload error — on the AWS
+    deployment a silent ``file://`` fallback is exactly the debug-invisible
+    no-render failure job-0241 burned on, so we surface it honestly instead
+    (mirrors ``postprocess_flood._upload_cog_to_runs_bucket``). The default
+    ``gs`` branch keeps its best-effort file:// fallback byte-identical (the
+    offline-dev / local-mode path depends on it).
 
     In local mode (no GCS), the upload is skipped and the local ``file://`` URI
     is returned so the live-evidence path completes without cloud access.
     """
+    from ..tools.cache import storage_scheme
+
+    if storage_scheme() == "s3":
+        bucket = runs_bucket or (os.environ.get("GRACE2_RUNS_BUCKET") or "").strip()
+        if not bucket:
+            raise PostprocessMODFLOWError(
+                "PLUME_COG_UPLOAD_FAILED",
+                message=(
+                    "GRACE2_RUNS_BUCKET must be set under "
+                    "GRACE2_STORAGE_BACKEND=s3 (no GCP-named default on AWS; "
+                    "job-0292b)"
+                ),
+                details={"local_cog": str(local_cog)},
+            )
+        dest = f"s3://{bucket}/{run_id}/plume_concentration_4326.tif"
+        try:
+            from ..tools.solver import _get_s3_client
+
+            with local_cog.open("rb") as fh:
+                _get_s3_client().put_object(
+                    Bucket=bucket,
+                    Key=f"{run_id}/plume_concentration_4326.tif",
+                    Body=fh,
+                    ContentType="image/tiff",
+                )
+        except Exception as exc:  # noqa: BLE001
+            raise PostprocessMODFLOWError(
+                "PLUME_COG_UPLOAD_FAILED",
+                message=f"upload of {local_cog} to {dest} failed: {exc}",
+                details={"local_cog": str(local_cog), "dest": dest},
+            ) from exc
+        logger.info("uploaded plume COG to %s (boto3)", dest)
+        return dest
+
     bucket = runs_bucket or os.environ.get("GRACE2_RUNS_BUCKET", RUNS_BUCKET_DEFAULT)
     dest = f"gs://{bucket}/{run_id}/plume_concentration_4326.tif"
     try:
@@ -446,21 +516,26 @@ def _upload_cog(local_cog: Path, run_id: str, runs_bucket: str | None) -> str:
 
 
 def _dispatch_publish_layer(cog_uri: str, layer_id: str) -> str | None:
-    """Publish the plume COG to QGIS Server WMS; return the WMS URL or None.
+    """Publish the plume COG; return the WMS URL / tile template or None.
 
     Non-fatal: a publish failure (worker SA grant, GCS read) falls back to the
     COG URI so the rest of the envelope is usable. Skips publish entirely for
-    non-gs:// URIs (local mode has nothing for QGIS Server to read).
+    non-object-store URIs (local mode has nothing for a tile server to read).
+
+    job-0292b: ``s3://`` COGs pass through too — on the AWS deployment
+    ``publish_layer`` returns a TiTiler XYZ tile TEMPLATE for them (the
+    job-0290 ``GRACE2_TILE_SERVER_BASE`` path), which closes the job-0254
+    PlumeLayerURI rendering gap on AWS the same way flood-depth COGs publish.
     """
-    if not cog_uri.startswith("gs://"):
-        # job-0241: loud, not silent — a non-gs:// URI here means the GCS
+    if not (cog_uri.startswith("gs://") or cog_uri.startswith("s3://")):
+        # job-0241: loud, not silent — a non-object-store URI here means the
         # upload fell back (stale venv / auth / network) and the plume will
         # NOT appear on the map. The Case 2 live gate (job-0235) burned on
         # exactly this as a debug-invisible skip.
         logger.warning(
-            "publish_layer SKIPPED for %s: COG URI is not gs:// (%s); the "
-            "plume will NOT render as a map layer. Check fsspec[gcs] is "
-            "installed and the GCS upload succeeded.",
+            "publish_layer SKIPPED for %s: COG URI is not gs:// or s3:// (%s); "
+            "the plume will NOT render as a map layer. Check the object-store "
+            "upload succeeded.",
             layer_id,
             cog_uri,
         )

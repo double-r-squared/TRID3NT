@@ -142,6 +142,34 @@ Solver backend seam (job-0291, sprint-14-aws)
 
   Production scale-up to AWS Batch is a later job; it slots in as a third
   ``GRACE2_SOLVER_BACKEND`` value behind the same dispatch seam.
+
+Generalized local backend (job-0292b, sprint-14-aws)
+----------------------------------------------------
+
+job-0292b extends the job-0291 machinery to MODFLOW without forking it. The
+staging → detached launch → supervisor → completion.json → S3-poll envelope is
+solver-agnostic; the solver-specific knobs are bundled into a
+``LocalSolverSpec`` (manifest argv key, launch argv builder, stdout/stderr
+artifact names, completion-manifest field names, an optional post-exit
+classifier for solver-specific status resolution, and the cancel kind):
+
+- SFINCS keeps the job-0291 ``docker run`` path verbatim
+  (``_run_solver_local_docker`` builds the SFINCS spec; the completion.json
+  is byte-identical to ``services/workers/sfincs/entrypoint.py``).
+- MODFLOW (``workflows/run_modflow.py``) launches the **mf6 binary directly**
+  (``exec_kind="exec"`` — no public MODFLOW image exists; the instance gets
+  the same SHA-pinned USGS 6.5.0 static binary the GCP Dockerfile installs).
+  Its spec's ``classify_exit`` reproduces the MODFLOW entrypoint's
+  list-file convergence guard, and the completion.json carries the EXACT
+  ``services/workers/modflow/entrypoint.py`` key set (``mf6_stdout_uri`` /
+  ``mf6_stderr_uri`` / ``converged`` / ``model_crs``).
+
+Cancel kinds: ``"docker"`` → ``docker kill <run_id>`` (container name ==
+run_id, job-0291); ``"exec"`` → ``os.killpg`` on the detached process group
+(``start_new_session=True`` makes pgid == pid). Both terminal ≤30 s
+(Invariant 8). ``wait_for_completion`` dispatches on the handle's
+``workflow_name`` ∈ {``local-docker``, ``local-exec``} — the poll loop is
+shared.
 """
 
 from __future__ import annotations
@@ -151,6 +179,7 @@ import glob as _glob
 import json
 import logging
 import os
+import signal
 import subprocess
 import threading
 from dataclasses import dataclass, field
@@ -178,6 +207,9 @@ __all__ = [
     "SOLVER_BACKEND_GCP_WORKFLOWS",
     "SOLVER_BACKEND_LOCAL_DOCKER",
     "LOCAL_DOCKER_WORKFLOW_NAME",
+    "LOCAL_EXEC_WORKFLOW_NAME",
+    "LocalSolverSpec",
+    "launch_local_solver",
     "SOLVER_WORKFLOW_REGISTRY",
     "EmitterBinding",
     "NFR_P_4_TARGET_SECONDS",
@@ -235,6 +267,19 @@ SOLVER_BACKEND_LOCAL_DOCKER: str = "local-docker"
 #: ``wait_for_completion`` dispatches on it (the handle pins its backend so
 #: env churn between submit and wait cannot mis-route the poll).
 LOCAL_DOCKER_WORKFLOW_NAME: str = "local-docker"
+
+#: ``ExecutionHandle.workflow_name`` sentinel for image-less local runs that
+#: exec a solver binary directly (job-0292b — MODFLOW's mf6 has no public
+#: image; the USGS static binary runs on the instance). Same poll loop as
+#: local-docker; the cancel chain kills the detached process group instead
+#: of a container.
+LOCAL_EXEC_WORKFLOW_NAME: str = "local-exec"
+
+#: The two local workflow_name sentinels ``wait_for_completion`` accepts.
+_LOCAL_WORKFLOW_NAMES: tuple[str, str] = (
+    LOCAL_DOCKER_WORKFLOW_NAME,
+    LOCAL_EXEC_WORKFLOW_NAME,
+)
 
 #: ``ExecutionHandle.workflow_location`` for local-docker handles.
 LOCAL_DOCKER_WORKFLOW_LOCATION: str = "local"
@@ -558,9 +603,90 @@ def _upload_file_s3(s3: Any, src: Path, bucket: str, key: str) -> str:
     return f"s3://{bucket}/{key}"
 
 
+@dataclass(frozen=True)
+class LocalSolverSpec:
+    """Solver-specific knobs for the shared local backend (job-0292b).
+
+    The job-0291 staging → detached launch → supervisor → completion.json
+    envelope is solver-agnostic; this spec carries everything that is not:
+
+    Fields:
+        solver: lowercase solver identifier carried on the handle (and used in
+            the generic non-zero-exit error message — ``"sfincs exited with
+            non-zero code N"`` stays byte-identical for SFINCS).
+        workflow_name: the ``ExecutionHandle.workflow_name`` sentinel —
+            ``"local-docker"`` (container launch) or ``"local-exec"``
+            (direct binary launch). ``wait_for_completion`` accepts both.
+        args_key: the manifest key carrying the solver argv tail
+            (``"sfincs_args"`` / ``"mf6_args"`` — worker-entrypoint parity).
+        build_argv: ``(run_id, rundir, manifest_args) -> argv`` — the full
+            launch command. SFINCS builds the ``docker run --rm --name
+            <run_id> ...`` line; MODFLOW returns ``[mf6, *args]``.
+        stdout_name / stderr_name: the rundir artifact filenames (and the
+            runs-prefix upload keys) — ``sfincs.stdout`` / ``mf6.stdout`` etc.
+        stdout_uri_field / stderr_uri_field: the completion.json field names
+            (``sfincs_stdout_uri`` vs ``mf6_stdout_uri`` — exact entrypoint
+            schemas).
+        exec_kind: ``"docker"`` → cancel via ``docker kill <run_id>``;
+            ``"exec"`` → cancel via ``os.killpg`` on the detached group.
+        classify_exit: optional ``(rundir, exit_code) -> (status, exit_code,
+            error, extra_completion_fields)`` post-exit hook for
+            solver-specific status resolution (MODFLOW's mfsim.lst
+            convergence guard + the ``converged``/``model_crs`` completion
+            fields). ``None`` → the plain exit-code rule (SFINCS). A user
+            cancel overrides whatever the classifier returned.
+    """
+
+    solver: str
+    workflow_name: str
+    args_key: str
+    build_argv: Callable[[str, Path, list[str]], list[str]]
+    stdout_name: str
+    stderr_name: str
+    stdout_uri_field: str
+    stderr_uri_field: str
+    exec_kind: str = "docker"
+    classify_exit: (
+        Callable[[Path, int], tuple[str, int, str | None, dict[str, Any]]] | None
+    ) = None
+
+
+def _sfincs_local_spec() -> LocalSolverSpec:
+    """The job-0291 SFINCS local-docker spec — behavior verbatim."""
+    image = os.environ.get("GRACE2_SFINCS_IMAGE") or DEFAULT_SFINCS_IMAGE
+
+    def build_argv(run_id: str, rundir: Path, args: list[str]) -> list[str]:
+        return [
+            "docker",
+            "run",
+            "--rm",
+            "--name",
+            run_id,
+            "-v",
+            f"{rundir}:/data",
+            "-w",
+            "/data",
+            image,
+            *args,
+        ]
+
+    return LocalSolverSpec(
+        solver="sfincs",
+        workflow_name=LOCAL_DOCKER_WORKFLOW_NAME,
+        args_key="sfincs_args",
+        build_argv=build_argv,
+        stdout_name="sfincs.stdout",
+        stderr_name="sfincs.stderr",
+        stdout_uri_field="sfincs_stdout_uri",
+        stderr_uri_field="sfincs_stderr_uri",
+        exec_kind="docker",
+        classify_exit=None,
+    )
+
+
 @dataclass
 class _LocalRun:
-    """In-process registry entry for one local-docker solver run."""
+    """In-process registry entry for one local-backend solver run."""
 
     run_id: str
     rundir: Path
@@ -570,6 +696,7 @@ class _LocalRun:
     started_at: str  # ISO8601-Z, entrypoint format
     stdout_path: Path
     stderr_path: Path
+    spec: LocalSolverSpec
     cancel_requested: threading.Event = field(default_factory=threading.Event)
     supervisor: threading.Thread | None = None
 
@@ -582,10 +709,13 @@ _LOCAL_RUNS: dict[str, _LocalRun] = {}
 
 def _expand_local_outputs(patterns: list[str], rundir: Path) -> list[Path]:
     """Glob-expand the manifest ``outputs[]`` in the rundir — mirrors the
-    entrypoint's ``_expand_outputs`` (files only, de-duplicated, sorted)."""
+    entrypoints' ``_expand_outputs`` (files only, de-duplicated, sorted).
+    ``recursive=True`` so ``**`` patterns behave like the SFINCS/MODFLOW
+    worker entrypoints (job-0292b — the MODFLOW manifest carries
+    ``**/gwt_model.ucn`` / ``**/*.lst`` belt-and-suspenders nets)."""
     seen: set[Path] = set()
     for pat in patterns:
-        for hit in _glob.glob(str(rundir / pat)):
+        for hit in _glob.glob(str(rundir / pat), recursive=True):
             p = Path(hit)
             if p.is_file():
                 seen.add(p.resolve())
@@ -604,15 +734,26 @@ def _write_local_completion(
     stderr_uri: str | None,
     started_at: str,
     error: str | None,
+    stdout_uri_field: str = "sfincs_stdout_uri",
+    stderr_uri_field: str = "sfincs_stderr_uri",
+    extra: dict[str, Any] | None = None,
 ) -> None:
     """Write ``s3://<runs_bucket>/<run_id>/completion.json`` — EXACT
-    entrypoint.py schema (the ``wait_for_completion`` terminal signal)."""
+    worker-entrypoint schema (the ``wait_for_completion`` terminal signal).
+
+    job-0292b: the stdout/stderr field names + an ``extra`` field dict are
+    spec-driven so the MODFLOW completion carries ``mf6_stdout_uri`` /
+    ``mf6_stderr_uri`` / ``converged`` / ``model_crs`` exactly like
+    ``services/workers/modflow/entrypoint.py``; the SFINCS defaults are
+    byte-identical to job-0291.
+    """
     payload = {
         "run_id": run_id,
         "status": status,
         "exit_code": exit_code,
-        "sfincs_stdout_uri": stdout_uri,
-        "sfincs_stderr_uri": stderr_uri,
+        **(extra or {}),
+        stdout_uri_field: stdout_uri,
+        stderr_uri_field: stderr_uri,
         "output_uris": output_uris,
         "started_at": started_at,
         "finished_at": _utc_now_iso(),
@@ -633,10 +774,10 @@ def _write_local_completion(
 
 
 def _supervise_local_run(run: _LocalRun) -> None:
-    """Supervisor body (daemon thread): wait on the docker process, upload
+    """Supervisor body (daemon thread): wait on the solver process, upload
     stdout/stderr + glob-expanded outputs to the S3 runs prefix, and ALWAYS
     write completion.json — even on crash (status="error") or cancel
-    (status="cancelled"). Mirrors the entrypoint's best-effort discipline:
+    (status="cancelled"). Mirrors the entrypoints' best-effort discipline:
     no upload failure may prevent the terminal completion write."""
     status = "error"
     exit_code = 1
@@ -644,17 +785,38 @@ def _supervise_local_run(run: _LocalRun) -> None:
     output_uris: list[str] = []
     stdout_uri: str | None = None
     stderr_uri: str | None = None
+    completion_extra: dict[str, Any] = {}
 
     try:
         exit_code = run.proc.wait()
-        if run.cancel_requested.is_set():
-            status = "cancelled"
-            error_msg = "run cancelled (docker kill via Invariant-8 cancel chain)"
+        # Solver-specific post-exit classification first (job-0292b — the
+        # MODFLOW spec's mfsim.lst convergence guard); the plain exit-code
+        # rule otherwise (SFINCS, byte-identical to job-0291). A user cancel
+        # overrides either verdict below.
+        if run.spec.classify_exit is not None:
+            try:
+                status, exit_code, error_msg, completion_extra = (
+                    run.spec.classify_exit(run.rundir, exit_code)
+                )
+            except Exception as exc:  # noqa: BLE001 — classifier must not kill the write
+                logger.exception(
+                    "local classify_exit failed run_id=%s", run.run_id
+                )
+                status = "error"
+                error_msg = f"classify_exit raised {type(exc).__name__}: {exc}"
         elif exit_code == 0:
             status = "ok"
+            error_msg = None
         else:
             status = "error"
-            error_msg = f"sfincs exited with non-zero code {exit_code}"
+            error_msg = f"{run.spec.solver} exited with non-zero code {exit_code}"
+        if run.cancel_requested.is_set():
+            status = "cancelled"
+            error_msg = (
+                "run cancelled (docker kill via Invariant-8 cancel chain)"
+                if run.spec.exec_kind == "docker"
+                else "run cancelled (process-group kill via Invariant-8 cancel chain)"
+            )
     except Exception as exc:  # noqa: BLE001 — defensive: wait() itself failed
         logger.exception("local-docker supervisor wait failed run_id=%s", run.run_id)
         status = "error"
@@ -676,11 +838,17 @@ def _supervise_local_run(run: _LocalRun) -> None:
     try:
         if run.stdout_path.exists():
             stdout_uri = _upload_file_s3(
-                s3, run.stdout_path, run.runs_bucket, f"{run.run_id}/sfincs.stdout"
+                s3,
+                run.stdout_path,
+                run.runs_bucket,
+                f"{run.run_id}/{run.spec.stdout_name}",
             )
         if run.stderr_path.exists():
             stderr_uri = _upload_file_s3(
-                s3, run.stderr_path, run.runs_bucket, f"{run.run_id}/sfincs.stderr"
+                s3,
+                run.stderr_path,
+                run.runs_bucket,
+                f"{run.run_id}/{run.spec.stderr_name}",
             )
     except Exception as exc:  # noqa: BLE001 — best-effort
         logger.warning(
@@ -712,6 +880,9 @@ def _supervise_local_run(run: _LocalRun) -> None:
             stderr_uri=stderr_uri,
             started_at=run.started_at,
             error=error_msg,
+            stdout_uri_field=run.spec.stdout_uri_field,
+            stderr_uri_field=run.spec.stderr_uri_field,
+            extra=completion_extra,
         )
     except Exception:  # noqa: BLE001 — terminal-signal write failed; log loudly
         logger.exception(
@@ -723,14 +894,29 @@ def _supervise_local_run(run: _LocalRun) -> None:
         _LOCAL_RUNS.pop(run.run_id, None)
 
 
-def _run_solver_local_docker(
-    solver: str, model_setup_uri: str, compute_class: str
+def launch_local_solver(
+    spec: LocalSolverSpec,
+    model_setup_uri: str,
+    *,
+    run_id: str | None = None,
+    compute_class: str = "medium",
 ) -> ExecutionHandle:
-    """``run_solver`` body under ``GRACE2_SOLVER_BACKEND=local-docker``.
+    """Generic local-backend launcher (job-0291 envelope, job-0292b spec seam).
 
-    Non-blocking — mirrors the Cloud Workflows submit semantics: stage, launch
-    the container detached, hand the supervisor to a daemon thread, return the
-    ``ExecutionHandle`` immediately.
+    Non-blocking — mirrors the Cloud Workflows submit semantics: stage the
+    manifest's inputs from the object store, launch the solver detached
+    (``spec.build_argv`` — a ``docker run`` line or a direct binary), hand the
+    supervisor to a daemon thread, return the ``ExecutionHandle`` immediately.
+
+    Args:
+        spec: the solver-specific knobs (see ``LocalSolverSpec``).
+        model_setup_uri: ``s3://`` / ``gs://`` / ``file://`` URI of the
+            worker-contract manifest; input URIs inside resolve by scheme.
+        run_id: optional pre-minted run id (the MODFLOW deck is staged under
+            ``modflow/<run_id>/`` BEFORE submit, so its run_id must flow
+            through — GCP parity with the ``{run_id, manifest_uri}`` workflow
+            argument). Minted fresh when ``None`` (the SFINCS path).
+        compute_class: FR-CE-3 class, alias-mapped onto the schema literal.
     """
     if not (
         model_setup_uri.startswith("s3://")
@@ -749,7 +935,7 @@ def _run_solver_local_docker(
         )
     runs_bucket = _get_local_runs_bucket()  # fail fast on missing env
 
-    run_id = new_ulid()
+    run_id = run_id or new_ulid()
     submitted_at = datetime.now(timezone.utc)
     rundir = (
         Path(os.environ.get("GRACE2_RUNS_DIR") or DEFAULT_LOCAL_RUNS_DIR) / run_id
@@ -770,7 +956,7 @@ def _run_solver_local_docker(
             f"manifest at {model_setup_uri} must be a JSON object"
         )
     inputs = manifest.get("inputs", []) or []
-    sfincs_args = [str(a) for a in (manifest.get("sfincs_args", []) or [])]
+    solver_args = [str(a) for a in (manifest.get(spec.args_key, []) or [])]
     output_patterns = [str(p) for p in (manifest.get("outputs", []) or [])]
 
     rundir_resolved = rundir.resolve()
@@ -798,24 +984,13 @@ def _run_solver_local_docker(
                 f"local-docker input staging failed {input_uri} -> {dest}: {exc}"
             ) from exc
 
-    # --- Detached docker launch (container name == run_id: the cancel seam) ---
-    image = os.environ.get("GRACE2_SFINCS_IMAGE") or DEFAULT_SFINCS_IMAGE
-    stdout_path = rundir / "sfincs.stdout"
-    stderr_path = rundir / "sfincs.stderr"
-    cmd = [
-        "docker",
-        "run",
-        "--rm",
-        "--name",
-        run_id,
-        "-v",
-        f"{rundir}:/data",
-        "-w",
-        "/data",
-        image,
-        *sfincs_args,
-    ]
-    logger.info("local-docker exec: %s", " ".join(cmd))
+    # --- Detached launch (docker: container name == run_id is the cancel
+    # seam; exec: the detached process group is — start_new_session=True
+    # makes pgid == pid for os.killpg) ---
+    stdout_path = rundir / spec.stdout_name
+    stderr_path = rundir / spec.stderr_name
+    cmd = spec.build_argv(run_id, rundir, solver_args)
+    logger.info("local-%s exec: %s", spec.exec_kind, " ".join(cmd))
     try:
         with stdout_path.open("wb") as out, stderr_path.open("wb") as err:
             proc = subprocess.Popen(  # noqa: S603 — argv list, no shell
@@ -825,9 +1000,9 @@ def _run_solver_local_docker(
                 cwd=str(rundir),
                 start_new_session=True,  # detach from the agent's signal group
             )
-    except Exception as exc:  # noqa: BLE001 — docker binary missing, etc.
+    except Exception as exc:  # noqa: BLE001 — docker/solver binary missing, etc.
         raise SolverDispatchError(
-            f"local-docker launch failed ({' '.join(cmd[:6])} ...): {exc}"
+            f"local-{spec.exec_kind} launch failed ({' '.join(cmd[:6])} ...): {exc}"
         ) from exc
 
     run = _LocalRun(
@@ -839,12 +1014,13 @@ def _run_solver_local_docker(
         started_at=_utc_now_iso(),
         stdout_path=stdout_path,
         stderr_path=stderr_path,
+        spec=spec,
     )
     _LOCAL_RUNS[run_id] = run
     supervisor = threading.Thread(
         target=_supervise_local_run,
         args=(run,),
-        name=f"sfincs-local-supervisor-{run_id}",
+        name=f"{spec.solver}-local-supervisor-{run_id}",
         daemon=True,
     )
     run.supervisor = supervisor
@@ -853,21 +1029,34 @@ def _run_solver_local_docker(
     handle = ExecutionHandle(
         handle_id=new_ulid(),
         run_id=run_id,
-        solver=solver,
+        solver=spec.solver,
         compute_class=schema_compute_class,  # type: ignore[arg-type]
-        workflows_execution_id=f"{LOCAL_DOCKER_WORKFLOW_NAME}:{run_id}",
-        workflow_name=LOCAL_DOCKER_WORKFLOW_NAME,
+        workflows_execution_id=f"{spec.workflow_name}:{run_id}",
+        workflow_name=spec.workflow_name,
         workflow_location=LOCAL_DOCKER_WORKFLOW_LOCATION,
         submitted_at=submitted_at,
     )
     logger.info(
-        "local-docker submitted run_id=%s handle_id=%s image=%s inputs=%d",
+        "local-%s submitted run_id=%s handle_id=%s argv0=%s inputs=%d",
+        spec.exec_kind,
         run_id,
         handle.handle_id,
-        image,
+        cmd[0] if cmd else "?",
         len(inputs),
     )
     return handle
+
+
+def _run_solver_local_docker(
+    solver: str, model_setup_uri: str, compute_class: str
+) -> ExecutionHandle:
+    """``run_solver`` body under ``GRACE2_SOLVER_BACKEND=local-docker`` — the
+    job-0291 SFINCS docker path, now a thin spec over the shared launcher."""
+    return launch_local_solver(
+        _sfincs_local_spec(),
+        model_setup_uri,
+        compute_class=compute_class,
+    )
 
 
 def _docker_kill(run_id: str) -> None:
@@ -889,20 +1078,48 @@ def _docker_kill(run_id: str) -> None:
         logger.warning("docker kill %s raised %s", run_id, exc)
 
 
-def _request_local_cancel(run_id: str) -> None:
-    """Invariant-8 local cancel: flag the run cancelled, then kill the
-    container. The supervisor wakes on process exit and writes the
-    status="cancelled" completion.json — terminal within ≤30 s."""
+def _killpg_local_run(run: _LocalRun) -> None:
+    """Best-effort SIGKILL to the detached process group of an exec-kind run
+    (``start_new_session=True`` at launch makes pgid == pid). job-0292b."""
+    try:
+        os.killpg(run.proc.pid, signal.SIGKILL)
+        logger.info("killpg(%d) issued for run_id=%s", run.proc.pid, run.run_id)
+    except ProcessLookupError:
+        logger.info(
+            "killpg for run_id=%s: process group already gone", run.run_id
+        )
+    except Exception as exc:  # noqa: BLE001 — cancel chain still propagates
+        logger.warning("killpg for run_id=%s raised %s", run.run_id, exc)
+
+
+def _kill_local_run(run_id: str) -> None:
+    """Kind-aware best-effort kill (job-0292b): exec-kind runs get a
+    process-group SIGKILL; docker-kind (and unknown — e.g. after an agent
+    restart, where ``docker kill`` against the container name is the only
+    remaining lever) get ``docker kill <run_id>``."""
     run = _LOCAL_RUNS.get(run_id)
-    if run is not None:
-        run.cancel_requested.set()
-    else:
+    if run is not None and run.spec.exec_kind == "exec":
+        _killpg_local_run(run)
+        return
+    if run is None:
         logger.warning(
-            "local cancel for unknown run_id=%s (no in-process supervisor); "
-            "issuing docker kill only",
+            "local kill for unknown run_id=%s (no in-process supervisor); "
+            "issuing docker kill only — an exec-kind run cannot be reached "
+            "after an agent restart (OQ-291-LOCAL-CANCEL-CROSS-PROCESS)",
             run_id,
         )
     _docker_kill(run_id)
+
+
+def _request_local_cancel(run_id: str) -> None:
+    """Invariant-8 local cancel: flag the run cancelled, then kill the
+    container / process group (kind-aware, job-0292b). The supervisor wakes
+    on process exit and writes the status="cancelled" completion.json —
+    terminal within ≤30 s."""
+    run = _LOCAL_RUNS.get(run_id)
+    if run is not None:
+        run.cancel_requested.set()
+    _kill_local_run(run_id)
 
 
 def _try_get_completion_s3(runs_bucket: str, run_id: str) -> dict[str, Any] | None:
@@ -1045,8 +1262,9 @@ async def _wait_for_completion_local(
                 )
                 # Timeout ≠ user cancel: kill WITHOUT the cancelled flag so the
                 # supervisor records status="error" (mirrors the GCP path's
-                # best-effort cancel + SOLVER_TIMEOUT result).
-                await loop.run_in_executor(None, _docker_kill, handle.run_id)
+                # best-effort cancel + SOLVER_TIMEOUT result). Kind-aware
+                # (job-0292b): docker kill or process-group kill.
+                await loop.run_in_executor(None, _kill_local_run, handle.run_id)
                 return RunResult(
                     run_id=handle.run_id,
                     handle_id=handle.handle_id,
@@ -1450,11 +1668,12 @@ async def wait_for_completion(
             f"timeout_s must be positive; got {timeout_s!r}"
         )
 
-    # --- job-0291 backend seam: a local-docker handle pins its backend (the
+    # --- job-0291 backend seam: a local handle pins its backend (the
     # handle's workflow_name, not the env, decides — env churn between submit
-    # and wait cannot mis-route the poll). GCP handles take the Cloud
-    # Workflows poll below, byte-identical to pre-job-0291 behavior. ---
-    if handle.workflow_name == LOCAL_DOCKER_WORKFLOW_NAME:
+    # and wait cannot mis-route the poll). ``local-exec`` (job-0292b, MODFLOW
+    # direct-binary) shares the same S3 completion poll. GCP handles take the
+    # Cloud Workflows poll below, byte-identical to pre-job-0291 behavior. ---
+    if handle.workflow_name in _LOCAL_WORKFLOW_NAMES:
         return await _wait_for_completion_local(handle, poll_interval_s, timeout_s)
 
     client = _get_workflows_client()
