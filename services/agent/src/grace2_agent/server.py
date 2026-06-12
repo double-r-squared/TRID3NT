@@ -1727,6 +1727,13 @@ async def _sync_case_context(
     try:
         session_state = await p.get_session_state(current)
         state.emitter.reset_loaded_layers(session_state.loaded_layers)
+        # sprint-14-aws (job-0290d): repopulate the inline-GeoJSON side-table
+        # so this connection's next session-state emission carries renderable
+        # vectors (mirrors the case-open path; best-effort).
+        try:
+            await state.emitter.reinline_vector_layers()
+        except Exception:  # noqa: BLE001
+            logger.warning("case-context-sync vector re-inline failed")
         # job-0263: seed the URI registry from the persisted Case layers so
         # handle-indirection works for layers produced in PRIOR sessions of
         # this Case (the LLM history was just cleared; the registry is the
@@ -1816,6 +1823,20 @@ async def _emit_case_open(
     _ensure_emitter(websocket, state)
     if state.emitter is not None:
         state.emitter.reset_loaded_layers(session_state.loaded_layers)
+        # sprint-14-aws (job-0290d): persisted VECTOR layers carry no inline
+        # GeoJSON (the side-table is in-memory only), so the case-open payload
+        # above rehydrated entries the browser cannot render (it never fetches
+        # object-store uris directly — job-0175). Re-inline from the artifact
+        # and emit one follow-up session-state through the proven merge path;
+        # the client lifts layers from session-state, so vectors repaint.
+        try:
+            _reinlined = await state.emitter.reinline_vector_layers()
+            if _reinlined:
+                await state.emitter.emit_session_state()
+        except Exception:  # noqa: BLE001 — rehydration is best-effort
+            logger.exception(
+                "case-open vector re-inline failed case=%s", case_id
+            )
 
     logger.info(
         "case-open session=%s case=%s chat=%d layers=%d",

@@ -539,6 +539,43 @@ class PipelineEmitter:
             k: v for k, v in self._inline_geojson_by_layer_id.items() if k in active_ids
         }
 
+    async def reinline_vector_layers(self) -> int:
+        """Rebuild ``_inline_geojson_by_layer_id`` for persisted vector layers.
+
+        sprint-14-aws (job-0290d): the inline-GeoJSON side-table is in-memory
+        only — a Case reopen seeds ``_loaded_layers`` from the persisted
+        snapshot via ``reset_loaded_layers`` but the inline payloads are gone,
+        so the browser (which never fetches gs://"/s3:// directly, job-0175)
+        rehydrates vector layers it cannot render. Re-read each vector layer's
+        object-store artifact and repopulate the side-table; the caller emits
+        a fresh ``session-state`` so the wire carries ``inline_geojson`` again.
+
+        Best-effort per layer (a missing/corrupt artifact skips that layer,
+        never raises). Returns the number of layers re-inlined.
+        """
+        count = 0
+        for layer in self._loaded_layers:
+            if layer.layer_type != "vector":
+                continue
+            if layer.layer_id in self._inline_geojson_by_layer_id:
+                continue
+            uri = layer.uri or ""
+            if not uri:
+                continue
+            try:
+                geojson_obj = await _read_vector_uri_as_geojson(uri)
+            except Exception:  # noqa: BLE001 — per-layer best-effort
+                logger.warning(
+                    "reinline_vector_layers: read failed layer_id=%s uri=%s",
+                    layer.layer_id,
+                    uri,
+                )
+                continue
+            if geojson_obj is not None:
+                self._inline_geojson_by_layer_id[layer.layer_id] = geojson_obj
+                count += 1
+        return count
+
     def current_snapshot(self) -> PipelineSnapshot | None:
         """Return the current ``PipelineSnapshot`` (D.6 persistence shape) or
         ``None`` if no pipeline is running. Used by ``session-state`` emission
