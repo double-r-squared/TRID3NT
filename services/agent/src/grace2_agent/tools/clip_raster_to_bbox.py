@@ -186,9 +186,15 @@ def _get_source_crs(raster_uri: str) -> object:
         # mirrors the /vsigs/ style; the EC2 instance-role creds resolve
         # through GDAL's AWS credential chain.
         if raster_uri.startswith("s3://"):
-            vsis3_path = "/vsis3/" + raster_uri[len("s3://"):]
-            with rasterio.open(vsis3_path) as src:
-                return src.crs
+            # sprint-14-aws (job-0293c): GDAL's /vsis3/ credential chain does
+            # not resolve the EC2 instance role in this env (boto3 does) —
+            # observed live: "does not exist" on an existing object. Stage the
+            # bytes via the shared boto3 reader and open in-memory.
+            from rasterio.io import MemoryFile
+            from .cache import read_object_bytes_s3
+            with MemoryFile(read_object_bytes_s3(raster_uri)) as mf:
+                with mf.open() as src:
+                    return src.crs
         elif raster_uri.startswith("gs://"):
             vsigs_path = "/vsigs/" + raster_uri[len("gs://"):]
             with rasterio.open(vsigs_path) as src:

@@ -209,7 +209,18 @@ def _open_source(landcover_uri: str) -> Any:
     # mirrors the /vsigs/ style; the EC2 instance-role creds resolve through
     # GDAL's AWS credential chain.
     if landcover_uri.startswith("s3://"):
-        path = "/vsis3/" + landcover_uri[len("s3://"):]
+        # sprint-14-aws (job-0293c): /vsis3/ creds don't resolve in this env
+        # (see clip modules) — open from staged bytes in-memory via the shared
+        # boto3 reader (MemoryFile frees with the dataset; no temp-file leak).
+        from rasterio.io import MemoryFile
+        from .cache import read_object_bytes_s3
+        try:
+            return MemoryFile(read_object_bytes_s3(landcover_uri)).open()
+        except Exception as exc:  # noqa: BLE001
+            raise LandcoverClassError(
+                "RASTER_OPEN_FAILED",
+                f"rasterio could not open {landcover_uri!r}: {exc}",
+            ) from exc
     elif landcover_uri.startswith("gs://"):
         path = "/vsigs/" + landcover_uri[len("gs://"):]
     else:
@@ -390,7 +401,14 @@ def _extract_mask_bytes(
 # ---------------------------------------------------------------------------
 
 
-@register_tool(_METADATA)
+@register_tool(
+    _METADATA,
+    # Annotations: readOnlyHint=True (reads input raster/vector; writes cache
+    # artifact only via the read-through shim), openWorldHint=False (all
+    # computation is local GDAL/numpy; no external API calls),
+    # destructiveHint=False, idempotentHint=True (deterministic transform;
+    # same inputs always produce the same output pixels).
+)
 def extract_landcover_class(
     landcover_uri: str,
     classes: list[int],

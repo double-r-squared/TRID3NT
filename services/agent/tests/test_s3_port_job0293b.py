@@ -332,40 +332,6 @@ def test_postprocess_pelicun_tool_unlinks_s3_staged_file(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_clip_raster_to_bbox_get_source_crs_s3_uses_vsis3(monkeypatch):
-    import rasterio
-
-    from grace2_agent.tools.clip_raster_to_bbox import _get_source_crs
-
-    opened: list[str] = []
-
-    def fake_open(path, *args, **kwargs):
-        opened.append(path)
-        return _FakeRasterioDataset("EPSG:32613")
-
-    monkeypatch.setattr(rasterio, "open", fake_open)
-    crs = _get_source_crs("s3://bkt/dem/boulder.tif")
-    assert crs == "EPSG:32613"
-    assert opened == ["/vsis3/bkt/dem/boulder.tif"]
-
-
-def test_clip_raster_to_polygon_get_source_crs_s3_uses_vsis3(monkeypatch):
-    import rasterio
-
-    from grace2_agent.tools.clip_raster_to_polygon import _get_source_crs
-
-    opened: list[str] = []
-
-    def fake_open(path, *args, **kwargs):
-        opened.append(path)
-        return _FakeRasterioDataset("EPSG:5070")
-
-    monkeypatch.setattr(rasterio, "open", fake_open)
-    crs = _get_source_crs("s3://bkt/nlcd/conus.tif")
-    assert crs == "EPSG:5070"
-    assert opened == ["/vsis3/bkt/nlcd/conus.tif"]
-
-
 def test_clip_raster_get_source_crs_gs_branch_unchanged(monkeypatch):
     """gs:// must still route through /vsigs/ (byte-identical GCP path)."""
     import rasterio
@@ -430,23 +396,6 @@ def test_clip_vector_resolve_s3_failure_raises_typed_error(monkeypatch):
 # ---------------------------------------------------------------------------
 # 6. extract_landcover_class
 # ---------------------------------------------------------------------------
-
-
-def test_extract_landcover_open_source_s3_uses_vsis3(monkeypatch):
-    import rasterio
-
-    from grace2_agent.tools.extract_landcover_class import _open_source
-
-    opened: list[str] = []
-
-    def fake_open(path, *args, **kwargs):
-        opened.append(path)
-        return _FakeRasterioDataset("EPSG:5070")
-
-    monkeypatch.setattr(rasterio, "open", fake_open)
-    ds = _open_source("s3://bkt/nlcd_2021.tif")
-    assert ds.crs == "EPSG:5070"
-    assert opened == ["/vsis3/bkt/nlcd_2021.tif"]
 
 
 def test_extract_landcover_open_source_gs_branch_unchanged(monkeypatch):
@@ -529,3 +478,58 @@ def test_chart_tools_download_and_materialize_s3(monkeypatch):
         _download_uri_bytes("s3://bkt/damage.fgb", None)
     assert ei.value.error_code == "DOWNLOAD_FAILED"
     assert ei.value.retryable is True
+
+def _tiny_tif_bytes(crs="EPSG:32613"):
+    import numpy as np
+    import rasterio
+    from rasterio.io import MemoryFile
+    from rasterio.transform import from_origin
+    with MemoryFile() as mf:
+        with mf.open(driver="GTiff", height=4, width=4, count=1, dtype="uint8",
+                     crs=crs, transform=from_origin(0, 4, 1, 1)) as ds:
+            ds.write(np.zeros((1, 4, 4), dtype="uint8"))
+        return mf.read()
+
+
+def test_clip_raster_to_bbox_get_source_crs_s3_stages_via_boto3(monkeypatch):
+    # job-0293c: /vsis3/ creds don't resolve on the EC2 role in this env —
+    # the s3 branch must stage bytes via the shared boto3 reader.
+    from grace2_agent.tools import cache as cache_mod
+    from grace2_agent.tools.clip_raster_to_bbox import _get_source_crs
+
+    calls: list[str] = []
+    data = _tiny_tif_bytes()
+
+    def fake_read(uri):
+        calls.append(uri)
+        return data
+
+    monkeypatch.setattr(cache_mod, "read_object_bytes_s3", fake_read)
+    crs = _get_source_crs("s3://bkt/dem/boulder.tif")
+    assert str(crs) == "EPSG:32613"
+    assert calls == ["s3://bkt/dem/boulder.tif"]
+
+
+def test_clip_raster_to_polygon_get_source_crs_s3_stages_via_boto3(monkeypatch):
+    from grace2_agent.tools import cache as cache_mod
+    from grace2_agent.tools.clip_raster_to_polygon import _get_source_crs
+
+    calls: list[str] = []
+    data = _tiny_tif_bytes()
+    monkeypatch.setattr(cache_mod, "read_object_bytes_s3", lambda u: (calls.append(u), data)[1])
+    crs = _get_source_crs("s3://bkt/dem/x.tif")
+    assert str(crs) == "EPSG:32613"
+    assert calls == ["s3://bkt/dem/x.tif"]
+
+
+def test_extract_landcover_open_source_s3_stages_via_boto3(monkeypatch):
+    import os
+    from grace2_agent.tools import cache as cache_mod
+    from grace2_agent.tools import extract_landcover_class as elc
+
+    calls: list[str] = []
+    data = _tiny_tif_bytes()
+    monkeypatch.setattr(cache_mod, "read_object_bytes_s3", lambda u: (calls.append(u), data)[1])
+    with elc._open_source("s3://bkt/nlcd/x.tif") as src:
+        assert str(src.crs) == "EPSG:32613"
+    assert calls == ["s3://bkt/nlcd/x.tif"]
