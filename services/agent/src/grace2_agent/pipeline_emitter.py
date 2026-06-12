@@ -329,32 +329,24 @@ async def _read_vector_uri_as_geojson(uri: str) -> dict[str, Any] | None:
     Runs in a thread pool so the synchronous GCS + pyogrio call doesn't
     block the asyncio loop.
     """
-    if not uri.startswith("gs://"):
-        logger.warning("_read_vector_uri_as_geojson: non-gs URI not supported: %s", uri)
-        return None
-    parsed = _parse_gs_uri(uri)
-    if parsed is None:
-        logger.warning("_read_vector_uri_as_geojson: malformed uri: %s", uri)
-        return None
-    bucket_name, key = parsed
+    # sprint-14-aws (job-0289): read via fsspec so the vector artifact resolves
+    # for gs:// (gcsfs), s3:// (s3fs, AWS), or a local path — scheme-dispatched.
+    if "://" in uri:
+        key = uri.split("://", 1)[1].split("/", 1)[-1]
+    else:
+        key = uri
     ext = key.rsplit(".", 1)[-1].lower() if "." in key else ""
 
     loop = asyncio.get_running_loop()
 
     def _read_and_parse() -> dict[str, Any] | None:
         try:
-            from google.cloud import storage  # type: ignore[import-not-found]
-        except ImportError as exc:
-            logger.warning("_read_vector_uri_as_geojson: google-cloud-storage missing: %s", exc)
-            return None
-        try:
-            client = storage.Client(project=os.environ.get("GOOGLE_CLOUD_PROJECT", "grace-2-hazard-prod"))
-            blob = client.bucket(bucket_name).blob(key)
-            data = blob.download_as_bytes()
+            import fsspec  # type: ignore[import-not-found]
+            with fsspec.open(uri, "rb") as f:
+                data = f.read()
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "_read_vector_uri_as_geojson: GCS download failed bucket=%s key=%s: %s",
-                bucket_name, key, exc,
+                "_read_vector_uri_as_geojson: object read failed uri=%s: %s", uri, exc,
             )
             return None
         if ext == "fgb":

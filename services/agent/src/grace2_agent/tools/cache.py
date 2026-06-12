@@ -216,6 +216,51 @@ def _gs_uri(bucket: str, path: str) -> str:
     return f"gs://{bucket}/{path}"
 
 
+def storage_scheme() -> str:
+    """Object-store scheme for cache artifacts (sprint-14-aws job-0289).
+
+    ``GRACE2_STORAGE_BACKEND`` = ``s3``/``aws`` -> ``s3``; anything else
+    (default) -> ``gs``. Read at call time so an AWS deploy / run-local env
+    injection takes effect without re-import.
+    """
+    b = (os.environ.get("GRACE2_STORAGE_BACKEND") or "gcs").strip().lower()
+    return "s3" if b in {"s3", "aws"} else "gs"
+
+
+def _obj_uri(bucket: str, path: str) -> str:
+    return f"{storage_scheme()}://{bucket}/{path}"
+
+
+def _read_through_fsspec(
+    uri: str, fetch_fn: Any, force_refresh: bool, metadata: Any, key: str
+) -> "ReadThroughResult":
+    """Backend-agnostic read-through via fsspec (s3:// on AWS, scheme-dispatched).
+
+    Mirrors the GCS path's best-effort semantics (job-0288c): a storage failure
+    degrades to fetch-fresh-uncached. No customTime metadata (S3 TTL eviction is
+    a bucket lifecycle rule, not a per-object property)."""
+    import fsspec  # local import; only the s3 path pays the cost
+
+    fs, _ = fsspec.core.url_to_fs(uri)
+    try:
+        if not force_refresh and fs.exists(uri):
+            with fs.open(uri, "rb") as f:
+                data = f.read()
+            logger.info("read_through hit (s3) tool=%s key=%s bytes=%d", metadata.name, key, len(data))
+            return ReadThroughResult(uri=uri, data=data, hit=True)
+    except Exception as exc:  # noqa: BLE001 — object store unavailable -> degrade
+        logger.warning("read_through s3 read degraded tool=%s: %s; fetching fresh", metadata.name, exc)
+        return ReadThroughResult(uri=uri, data=fetch_fn(), hit=False)
+    data = fetch_fn()
+    try:
+        with fs.open(uri, "wb") as f:
+            f.write(data)
+        logger.info("read_through miss-write (s3) tool=%s key=%s bytes=%d", metadata.name, key, len(data))
+    except Exception as exc:  # noqa: BLE001 — write is best-effort
+        logger.warning("read_through s3 write degraded tool=%s: %s; returning uncached", metadata.name, exc)
+    return ReadThroughResult(uri=uri, data=data, hit=False)
+
+
 def _ttl_to_cache_control(ttl_class: TTLClass) -> str:
     """Object-level Cache-Control header reflecting the TTL class.
 
@@ -286,7 +331,7 @@ def read_through(
     Returns:
         ``ReadThroughResult(uri, data, hit)``.
     """
-    bucket = bucket or CACHE_BUCKET
+    bucket = bucket or os.environ.get("GRACE2_CACHE_BUCKET") or CACHE_BUCKET
     source_id = source_id or (metadata.source_class or metadata.name)
 
     # FR-DC-6 short-circuit: uncacheable tools never touch the bucket.
@@ -307,7 +352,12 @@ def read_through(
 
     key = compute_cache_key(source_id, params, metadata.ttl_class, now=now)
     path = cache_path(metadata.source_class, metadata.ttl_class, key, ext)
-    uri = _gs_uri(bucket, path)
+    uri = _obj_uri(bucket, path)
+
+    # sprint-14-aws (job-0289): on AWS the cache lives in S3. Route the whole
+    # read-through through fsspec (s3fs) and skip the GCS-specific path below.
+    if storage_scheme() == "s3" and storage_client is None:
+        return _read_through_fsspec(uri, fetch_fn, force_refresh, metadata, key)
 
     # Lazy import so test environments that don't have google-cloud-storage
     # (or have it stubbed) don't pay the import cost at module load.
