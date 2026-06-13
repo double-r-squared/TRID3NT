@@ -661,8 +661,34 @@ class Persistence:
         # refresh (new WS, new emitter) shows an empty LayerPanel even
         # though the layers are still published on the per-Case ``.qgs``.
         loaded_layers = list(case.loaded_layer_summaries)
+        # job-0294b (sprint-14-aws): hydrate persisted charts so a Case re-open
+        # replays them WITHOUT a re-run. job-0230 ``$push``es SessionChartRecords
+        # onto the ``sessions`` doc (keyed by case_id == sessions._id) but the
+        # read side was never wired. Pull the array, unwrap each record's
+        # ``payload`` (the ChartEmissionPayload the client rehydrates), in
+        # emitted_at order. Best-effort: a missing/odd doc yields no charts.
+        charts: list[dict] = []
+        try:
+            sraw = await self._mcp.call_tool(
+                "find-one",
+                {
+                    "database": self._db,
+                    "collection": SESSIONS_COLLECTION,
+                    "filter": {"_id": case_id},
+                },
+            )
+            sdoc = _unwrap_mcp_result(sraw)
+            if isinstance(sdoc, dict) and isinstance(sdoc.get("charts"), list):
+                records = [r for r in sdoc["charts"] if isinstance(r, dict)]
+                records.sort(key=lambda r: r.get("emitted_at") or "")
+                for r in records:
+                    payload = r.get("payload")
+                    if isinstance(payload, dict):
+                        charts.append(payload)
+        except Exception:  # noqa: BLE001 — chart replay is best-effort
+            logger.warning("get_session_state: chart hydration failed case=%s", case_id)
         return CaseSessionState(
-            case=case, chat_history=chat, loaded_layers=loaded_layers,
+            case=case, chat_history=chat, loaded_layers=loaded_layers, charts=charts,
         )
 
     # ----- Session records (D.6 ``sessions`` collection) ------------------- #

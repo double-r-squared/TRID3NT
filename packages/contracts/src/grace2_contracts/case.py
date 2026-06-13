@@ -238,6 +238,13 @@ class CaseSessionState(GraceModel):
     loaded_layers: list[dict] = Field(default_factory=list)  # ProjectLayerSummary[]
     pipeline_history: list[dict] = Field(default_factory=list)  # PipelineSnapshot[]
     current_pipeline: dict | None = None  # PipelineSnapshot | None
+    # job-0294b (sprint-14-aws): the persisted chart replay set. job-0230
+    # ``$push``es SessionChartRecords onto the sessions doc, but the read side
+    # was never wired — a re-opened Case dropped its charts. Each entry here is
+    # a ``ChartEmissionPayload`` dict (the record's ``.payload``, emitted-at
+    # order); the client rehydrates ChartStack/ChartGallery from it (App.tsx
+    # ``activeSession.charts``). Empty for Cases that emitted no charts.
+    charts: list[dict] = Field(default_factory=list)  # ChartEmissionPayload[]
 
 
 # --------------------------------------------------------------------------- #
