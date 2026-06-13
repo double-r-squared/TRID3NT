@@ -1,9 +1,14 @@
-// GRACE-2 web — ChartStack (sprint-13, conversational analysis layer, job-0231).
+// GRACE-2 web — ChartStack (sprint-13, conversational analysis layer, job-0231;
+// job-0294 full-chat-width redesign).
 //
 // Renders a group of chart-emission payloads that share the same ``created_turn_id``
-// as an inline stacked preview in the chat scroll. Layout:
+// as an inline preview in the chat scroll. Layout (job-0294):
 //
-//   - Top chart is fully visible (~200×150 px, Vega-Lite via vega-embed).
+//   - The visible top chart spans the ENTIRE chat column width (the parent's
+//     content box) and renders legibly inline via Vega-Lite (vega-embed).
+//   - The Vega chart RE-FITS to whatever width the container currently has — a
+//     ResizeObserver re-embeds on container resize (so the desktop chat-expand
+//     toggle in item C, or a window resize, reflows the chart cleanly).
 //   - Additional charts in the same stack appear as offset card "shadows" behind
 //     the visible one (4 px offset each), giving a tangible "N charts here" cue.
 //   - When the stack has more than 3 charts total, a "+N more" badge appears in the
@@ -17,9 +22,10 @@
 // ``created_turn_id``; this component receives an already-grouped array and renders
 // it. It does NOT perform grouping itself (single-responsibility).
 //
-// Vega-embed note: we let the library render into a ref'd div. On ``created_turn_id``
-// or ``charts`` change we re-embed. This is idiomatic for vega-embed in React — the
-// library is not React-native, so we use the DOM seam cleanly.
+// Vega-embed note: we let the library render into a ref'd div. We re-embed on
+// ``created_turn_id`` / ``charts`` change AND on a width change observed via
+// ResizeObserver. This is idiomatic for vega-embed in React — the library is
+// not React-native, so we use the DOM seam cleanly.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Result as VegaEmbedResult } from "vega-embed";
@@ -50,9 +56,14 @@ export interface ChartStackProps {
 const MAX_SHADOW_CARDS = 2;
 /** Pixel offset between stacked shadow cards. */
 const SHADOW_OFFSET_PX = 4;
-/** Top-card chart area dimensions. */
-const CHART_WIDTH = 200;
-const CHART_HEIGHT = 150;
+/** Chart drawing height (px). Width is fluid — it tracks the chat column. */
+const CHART_HEIGHT = 220;
+/** Horizontal padding inside the top card (left + right), used to size the embed. */
+const CARD_PAD_X = 12;
+/** Fallback width when the container hasn't been measured yet (SSR / first paint). */
+const FALLBACK_WIDTH = 320;
+/** Vega internal padding. */
+const VEGA_PADDING = 4;
 
 // ---------------------------------------------------------------------------
 // Styles
@@ -60,9 +71,9 @@ const CHART_HEIGHT = 150;
 
 const containerStyle: React.CSSProperties = {
   position: "relative",
-  // Height is the chart + header + caption + padding, PLUS shadow card offsets
-  // so they peek out below and to the right.
-  display: "inline-block",
+  // job-0294 — full chat-column width (was inline-block ~200px).
+  display: "block",
+  width: "100%",
   cursor: "pointer",
 };
 
@@ -73,8 +84,10 @@ function shadowStyle(index: number): React.CSSProperties {
     position: "absolute",
     top: offset,
     left: offset,
-    width: CHART_WIDTH + 16, // same as top card
-    height: CHART_HEIGHT + 40, // header + caption area
+    right: -offset,
+    // job-0294 — shadows span the full width too, peeking out behind the top
+    // card by the offset on each side. Bottom is anchored so they hug the card.
+    height: "100%",
     background: "rgba(30,32,42,0.75)",
     border: "1px solid #3a3d49",
     borderRadius: 8,
@@ -88,33 +101,28 @@ const topCardStyle: React.CSSProperties = {
   background: "rgba(20,22,30,0.96)",
   border: "1px solid #444",
   borderRadius: 8,
-  padding: "8px 8px 6px",
+  padding: `8px ${CARD_PAD_X}px 6px`,
   boxShadow: "0 4px 16px rgba(0,0,0,0.35)",
   zIndex: 1,
-  width: CHART_WIDTH + 16, // inner chart + 2×8 padding
+  width: "100%",
   boxSizing: "border-box",
 };
 
 const titleStyle: React.CSSProperties = {
-  fontSize: 11,
+  fontSize: 12,
   fontWeight: 600,
   color: "#dde5f5",
-  marginBottom: 4,
+  marginBottom: 6,
   whiteSpace: "nowrap",
   overflow: "hidden",
   textOverflow: "ellipsis",
-  maxWidth: CHART_WIDTH,
 };
 
 const captionStyle: React.CSSProperties = {
-  fontSize: 10,
+  fontSize: 11,
   color: "#9aa0ad",
-  marginTop: 4,
-  lineHeight: 1.3,
-  maxWidth: CHART_WIDTH,
-  overflow: "hidden",
-  textOverflow: "ellipsis",
-  whiteSpace: "nowrap",
+  marginTop: 6,
+  lineHeight: 1.35,
 };
 
 const badgeStyle: React.CSSProperties = {
@@ -132,7 +140,7 @@ const badgeStyle: React.CSSProperties = {
 };
 
 const chartAreaStyle: React.CSSProperties = {
-  width: CHART_WIDTH,
+  width: "100%",
   height: CHART_HEIGHT,
   overflow: "hidden",
   borderRadius: 4,
@@ -148,18 +156,20 @@ async function embedChart(
   el: HTMLElement,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   spec: Record<string, any>,
+  width: number,
 ): Promise<VegaEmbedResult> {
   const { default: embed } = await import("vega-embed");
   return embed(el, spec as Parameters<typeof embed>[1], {
     actions: false,
     renderer: "svg",
-    width: CHART_WIDTH - 8,
-    height: CHART_HEIGHT - 8,
-    padding: 4,
+    // job-0294 — fluid width: the chart re-fits to the measured container.
+    width: Math.max(80, width - VEGA_PADDING * 2),
+    height: CHART_HEIGHT - VEGA_PADDING * 2,
+    padding: VEGA_PADDING,
     config: {
       background: "transparent",
       axis: { labelColor: "#9aa0ad", titleColor: "#9aa0ad", gridColor: "#2a2d35" },
-      title: { color: "#dde5f5", fontSize: 11 },
+      title: { color: "#dde5f5", fontSize: 12 },
       legend: { labelColor: "#9aa0ad", titleColor: "#9aa0ad" },
       view: { stroke: "transparent" },
     },
@@ -170,10 +180,32 @@ export function ChartStack({ charts, onOpenGallery }: ChartStackProps): JSX.Elem
   const chartAreaRef = useRef<HTMLDivElement | null>(null);
   const vegaResultRef = useRef<VegaEmbedResult | null>(null);
   const [embedError, setEmbedError] = useState<string | null>(null);
+  // job-0294 — the live measured drawing width (container content box). Drives
+  // a re-embed when the chat column widens/narrows (item C toggle, resize).
+  const [embedWidth, setEmbedWidth] = useState<number>(FALLBACK_WIDTH);
 
   const topChart = charts[0];
 
-  // Embed or re-embed whenever the top spec changes.
+  // Observe the chart-area width and debounce-set embedWidth. The
+  // ResizeObserver callback fires on the chat-expand toggle, window resize, and
+  // first layout. happy-dom (vitest) lacks ResizeObserver, so we guard for it.
+  useEffect(() => {
+    const el = chartAreaRef.current;
+    if (!el) return;
+    // Seed from the current layout immediately.
+    if (el.clientWidth > 0) setEmbedWidth(el.clientWidth);
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const w = entry.contentRect.width;
+        if (w > 0) setEmbedWidth((prev) => (Math.abs(prev - w) > 1 ? w : prev));
+      }
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // Embed or re-embed whenever the top spec OR the measured width changes.
   useEffect(() => {
     if (!chartAreaRef.current || !topChart) return;
     let cancelled = false;
@@ -187,7 +219,11 @@ export function ChartStack({ charts, onOpenGallery }: ChartStackProps): JSX.Elem
       }
       if (!chartAreaRef.current || cancelled) return;
       try {
-        const result = await embedChart(chartAreaRef.current, topChart.vega_lite_spec);
+        const result = await embedChart(
+          chartAreaRef.current,
+          topChart.vega_lite_spec,
+          embedWidth,
+        );
         if (!cancelled) {
           vegaResultRef.current = result;
         } else {
@@ -203,7 +239,8 @@ export function ChartStack({ charts, onOpenGallery }: ChartStackProps): JSX.Elem
     return () => {
       cancelled = true;
     };
-  }, [topChart?.chart_id, topChart?.vega_lite_spec]); // re-embed only when the top chart actually changes
+    // re-embed when the top chart changes OR the container width changes.
+  }, [topChart?.chart_id, topChart?.vega_lite_spec, embedWidth]);
 
   // Finalize on unmount.
   useEffect(() => {
@@ -227,20 +264,12 @@ export function ChartStack({ charts, onOpenGallery }: ChartStackProps): JSX.Elem
   const hiddenCount = charts.length - (MAX_SHADOW_CARDS + 1);
   const showBadge = hiddenCount > 0;
 
-  // Total horizontal/vertical space occupied by the shadow cards.
-  const shadowSpread = shadowCount * SHADOW_OFFSET_PX;
-
   return (
     <div
       data-testid="chart-stack"
       data-chart-count={charts.length}
       data-top-chart-id={topChart.chart_id}
-      style={{
-        ...containerStyle,
-        // Expand outer container to accommodate shadow cards.
-        paddingRight: shadowSpread,
-        paddingBottom: shadowSpread,
-      }}
+      style={containerStyle}
       onClick={handleClick}
       role="button"
       aria-label={`Chart: ${topChart.title}${charts.length > 1 ? ` (+${charts.length - 1} more)` : ""}. Click to open gallery.`}
@@ -280,8 +309,8 @@ export function ChartStack({ charts, onOpenGallery }: ChartStackProps): JSX.Elem
             <div
               style={{
                 color: "#f9c1c1",
-                fontSize: 10,
-                padding: 4,
+                fontSize: 11,
+                padding: 6,
                 lineHeight: 1.4,
               }}
             >

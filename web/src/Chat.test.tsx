@@ -16,7 +16,7 @@
 // This follows the same pattern as App.test.tsx (App mounts WebSocket +
 // WebGL, which happy-dom can't run; logic extracted into pure helpers).
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
 import {
   shouldShowCancel,
   mergeStepsByStepId,
@@ -29,6 +29,8 @@ import {
   isThinkingStep,
   THINKING_STEP_NAME,
   desktopChatContainerStyle,
+  readChatExpanded,
+  writeChatExpanded,
 } from "./Chat";
 import {
   ErrorPayload,
@@ -1056,33 +1058,70 @@ describe("isThinkingActive (wave-4-10 thinking-state)", () => {
   });
 });
 
-// --- desktopChatContainerStyle (job-0283 — desktop sleekness pass) -------- //
+// --- desktopChatContainerStyle (job-0283 — desktop sleekness pass;          //
+//     job-0294 — width toggle) -------------------------------------------- //
 //
-// Chat cannot mount in happy-dom (WebSocket), so the desktop container style
-// is exported as a constant — same pattern as mobileSheetContainerStyle.
+// Chat cannot mount in happy-dom (WebSocket), so the desktop container style is
+// exported as a factory — same pattern as mobileSheetContainerStyle.
 // Pins: (a) the surface joined the job-0264 LayerPanel family (12px radius,
-// hairline border, gradient, soft shadow); (b) position/size are UNCHANGED
-// (right 16 / top 16 / bottom 16 / width 380) — visual only, zero layout
-// change.
+// hairline border, gradient, soft shadow); (b) the COLLAPSED geometry is the
+// historical default (right/top/bottom 16, ~380px column); (c) job-0294 the
+// EXPANDED variant widens the column.
 
-describe("desktopChatContainerStyle (job-0283)", () => {
+describe("desktopChatContainerStyle (job-0283 + job-0294)", () => {
   it("joins the panel surface family (radius 12 + hairline border + gradient)", () => {
-    expect(desktopChatContainerStyle.borderRadius).toBe(12);
-    expect(
-      String(desktopChatContainerStyle.border).replace(/\s/g, ""),
-    ).toContain("rgba(255,255,255,0.06)");
-    expect(String(desktopChatContainerStyle.background)).toContain(
-      "linear-gradient",
+    const s = desktopChatContainerStyle(false);
+    expect(s.borderRadius).toBe(12);
+    expect(String(s.border).replace(/\s/g, "")).toContain(
+      "rgba(255,255,255,0.06)",
     );
-    expect(String(desktopChatContainerStyle.boxShadow)).toContain("rgba(0,0,0");
+    expect(String(s.background)).toContain("linear-gradient");
+    expect(String(s.boxShadow)).toContain("rgba(0,0,0");
   });
 
-  it("keeps the pre-0283 geometry — position and width unchanged", () => {
-    expect(desktopChatContainerStyle.position).toBe("absolute");
-    expect(desktopChatContainerStyle.right).toBe(16);
-    expect(desktopChatContainerStyle.top).toBe(16);
-    expect(desktopChatContainerStyle.bottom).toBe(16);
-    expect(desktopChatContainerStyle.width).toBe(380);
-    expect(desktopChatContainerStyle.overflow).toBe("hidden");
+  it("keeps the pre-0283 geometry when collapsed — position + default width", () => {
+    const s = desktopChatContainerStyle(false);
+    expect(s.position).toBe("absolute");
+    expect(s.right).toBe(16);
+    expect(s.top).toBe(16);
+    expect(s.bottom).toBe(16);
+    expect(String(s.width)).toContain("380px");
+    expect(s.overflow).toBe("hidden");
+  });
+
+  it("defaults to the collapsed (default-width) variant when called with no arg", () => {
+    expect(String(desktopChatContainerStyle().width)).toContain("380px");
+  });
+
+  it("widens the column when expanded (job-0294)", () => {
+    const s = desktopChatContainerStyle(true);
+    expect(String(s.width)).toContain("560px");
+    // Position/anchoring is unchanged — only the width grows.
+    expect(s.right).toBe(16);
+    expect(s.position).toBe("absolute");
+  });
+});
+
+// --- chat-expanded persistence (job-0294) -------------------------------- //
+
+describe("readChatExpanded / writeChatExpanded (job-0294)", () => {
+  afterEach(() => {
+    try { localStorage.clear(); } catch { /* ignore */ }
+  });
+
+  it("defaults to false when nothing is persisted", () => {
+    expect(readChatExpanded()).toBe(false);
+  });
+
+  it("round-trips true through localStorage", () => {
+    writeChatExpanded(true);
+    expect(localStorage.getItem("grace2.chatExpanded")).toBe("true");
+    expect(readChatExpanded()).toBe(true);
+  });
+
+  it("round-trips false through localStorage", () => {
+    writeChatExpanded(true);
+    writeChatExpanded(false);
+    expect(readChatExpanded()).toBe(false);
   });
 });

@@ -127,6 +127,33 @@ const DEFAULT_INPUT_HEIGHT_PX = 68;
 // many pixels above the bottom of the scroll container.
 const SCROLL_BOTTOM_THRESHOLD_PX = 50;
 
+// job-0294 — desktop chat-panel width. The user can widen the chat into a
+// roomier reading column via the header toggle; the preference persists to
+// localStorage (mirrors App.tsx's panel-collapse flags). Mobile is unaffected
+// (the bottom sheet has its own width = full viewport).
+const CHAT_WIDTH_DEFAULT_PX = 380;
+const CHAT_WIDTH_EXPANDED_PX = 560;
+const LS_CHAT_EXPANDED = "grace2.chatExpanded";
+
+/** Read the persisted desktop chat-expanded preference. Defaults to false
+ * (the historical 380px column). localStorage failures degrade to false. */
+export function readChatExpanded(): boolean {
+  try {
+    return localStorage.getItem(LS_CHAT_EXPANDED) === "true";
+  } catch {
+    return false;
+  }
+}
+
+/** Persist the desktop chat-expanded preference. Non-fatal on failure. */
+export function writeChatExpanded(expanded: boolean): void {
+  try {
+    localStorage.setItem(LS_CHAT_EXPANDED, expanded ? "true" : "false");
+  } catch {
+    /* non-fatal */
+  }
+}
+
 // --- Chat message shape -------------------------------------------------- //
 
 export interface ChatMessage {
@@ -914,29 +941,41 @@ export function mobileSheetContainerStyle(
  * radius, soft shadow, backdrop blur — so the chat panel and the left rail
  * read as one family. Exported for unit tests (Chat itself cannot mount in
  * happy-dom — it opens a WebSocket — same pattern as
- * mobileSheetContainerStyle above). Visual only; position/size unchanged. */
-export const desktopChatContainerStyle: React.CSSProperties = {
-  position: "absolute",
-  right: 16,
-  top: 16,
-  bottom: 16,
-  width: 380,
-  background:
-    "linear-gradient(180deg, rgba(26,27,33,0.96) 0%, rgba(18,19,24,0.96) 100%)",
-  color: "#eee",
-  borderRadius: 12,
-  border: "1px solid rgba(255,255,255,0.06)",
-  boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
-  // NO backdropFilter: it would make this panel the containing block for
-  // position:fixed descendants — ChartGallery (mounted inside Chat) must
-  // overlay the full viewport, not the 380px column. The 0.96-alpha
-  // gradient hides blur anyway (caught in the job-0283 screenshot pass).
-  display: "flex",
-  flexDirection: "column",
-  fontFamily: "system-ui, sans-serif",
-  fontSize: 13,
-  overflow: "hidden",
-};
+ * mobileSheetContainerStyle above).
+ *
+ * job-0294 — ``expanded`` widens the column from the default 380px to a roomier
+ * ~560px reading column (so full-width inline charts and long narration read
+ * better). The width is clamped to the viewport (``min(width, 92vw)``) so the
+ * expanded column never overflows a narrow desktop window. Position unchanged. */
+export function desktopChatContainerStyle(
+  expanded = false,
+): React.CSSProperties {
+  const widthPx = expanded ? CHAT_WIDTH_EXPANDED_PX : CHAT_WIDTH_DEFAULT_PX;
+  return {
+    position: "absolute",
+    right: 16,
+    top: 16,
+    bottom: 16,
+    width: `min(${widthPx}px, 92vw)`,
+    background:
+      "linear-gradient(180deg, rgba(26,27,33,0.96) 0%, rgba(18,19,24,0.96) 100%)",
+    color: "#eee",
+    borderRadius: 12,
+    border: "1px solid rgba(255,255,255,0.06)",
+    boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
+    // NO backdropFilter: it would make this panel the containing block for
+    // position:fixed descendants — ChartGallery (mounted inside Chat) must
+    // overlay the full viewport, not the column. The 0.96-alpha gradient hides
+    // blur anyway (caught in the job-0283 screenshot pass).
+    display: "flex",
+    flexDirection: "column",
+    fontFamily: "system-ui, sans-serif",
+    fontSize: 13,
+    overflow: "hidden",
+    // job-0294 — width transitions smoothly when the user toggles expand.
+    transition: "width 180ms ease-in-out",
+  };
+}
 
 export interface SheetToggleHandleProps {
   expanded: boolean;
@@ -1047,7 +1086,9 @@ export function SheetActiveToolStrip({
 }: SheetActiveToolStripProps): JSX.Element {
   const reduced = prefersReducedMotion();
   const elapsedMs = useRunningElapsedMs(step);
-  const label = humanizeStepName(step.name);
+  // The collapsed-sheet strip only ever shows a RUNNING tool, so the
+  // present-tense running label is correct (job-0294 state-aware labels).
+  const label = humanizeStepName(step.name, step.state);
   return (
     <button
       data-testid="grace2-sheet-tool-strip"
@@ -1163,6 +1204,20 @@ export function Chat({
   // job-0278 — mobile bottom-sheet expansion. Collapsed (composer only) by
   // default; presentation-only state, lives and dies with the Chat mount.
   const [sheetExpanded, setSheetExpanded] = useState<boolean>(false);
+  // job-0294 — desktop chat-panel WIDTH expansion (distinct from the mobile
+  // sheet height). Persisted to localStorage so reloads remember it. Read lazily
+  // so SSR / first paint don't touch localStorage before hydration. Mobile
+  // ignores this entirely (the sheet is full-viewport width).
+  const [chatExpanded, setChatExpanded] = useState<boolean>(() =>
+    mobile ? false : readChatExpanded(),
+  );
+  const toggleChatExpanded = useCallback(() => {
+    setChatExpanded((prev) => {
+      const next = !prev;
+      writeChatExpanded(next);
+      return next;
+    });
+  }, []);
   // job-0266 — PER-CASE CHAT STREAMS. All conversational state (messages,
   // tool cards, charts, sandbox cards, errors, arrival-order maps) lives in
   // per-Case StreamState entries inside a ref-held ChatStreams map; React
@@ -1530,10 +1585,11 @@ export function Chat({
 
   // job-0278 — desktop panel vs mobile bottom sheet. Every mobile divergence
   // is behind the `mobile` prop; the desktop style lives in the exported
-  // desktopChatContainerStyle below (job-0283).
+  // desktopChatContainerStyle below (job-0283). job-0294 — the desktop column
+  // widens when chatExpanded is on.
   const containerStyle: React.CSSProperties = mobile
     ? mobileSheetContainerStyle(sheetExpanded)
-    : desktopChatContainerStyle;
+    : desktopChatContainerStyle(chatExpanded);
 
   return (
     <div
@@ -1592,6 +1648,35 @@ export function Chat({
           />
           {STATUS_LABEL[status]}
         </span>
+        {/* job-0294 — desktop-only chat-width expand/collapse toggle. Mobile
+            (the bottom sheet is already full width) never renders it. The
+            preference persists via writeChatExpanded. */}
+        {!mobile && (
+          <button
+            data-testid="grace2-chat-width-toggle"
+            data-expanded={chatExpanded ? "true" : "false"}
+            aria-label={chatExpanded ? "Narrow chat panel" : "Widen chat panel"}
+            aria-pressed={chatExpanded}
+            title={chatExpanded ? "Narrow chat panel" : "Widen chat panel"}
+            onClick={toggleChatExpanded}
+            style={{
+              background: "none",
+              border: "none",
+              color: "#888",
+              cursor: "pointer",
+              fontSize: 15,
+              lineHeight: 1,
+              padding: "0 4px",
+              display: "flex",
+              alignItems: "center",
+              fontFamily: "system-ui, sans-serif",
+            }}
+          >
+            {/* Expanded → "contract" glyph (⇥|); collapsed → "expand" (⇤|).
+                Double-headed horizontal arrows read as a WIDTH control. */}
+            {chatExpanded ? "⇥" : "⇤"}
+          </button>
+        )}
         {onClose && !mobile && (
           <button
             data-testid="grace2-chat-close"

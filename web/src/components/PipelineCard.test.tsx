@@ -40,7 +40,7 @@ function makeStep(
 // --- Name rendering ------------------------------------------------------- //
 
 describe("PipelineCard — name rendering", () => {
-  it("renders the step name for every state", () => {
+  it("renders a humanized step name for every state (never raw snake_case)", () => {
     const states: PipelineStepSummary["state"][] = [
       "pending",
       "running",
@@ -52,8 +52,12 @@ describe("PipelineCard — name rendering", () => {
       const { unmount } = render(
         <PipelineCard step={makeStep({ state, name: `op_${state}` })} />,
       );
-      expect(screen.getByTestId("pipeline-card-name")).toHaveTextContent(
-        `op_${state}`,
+      // job-0294: unmapped names Title-Case (with a trailing "…" while
+      // active); the raw snake_case is NEVER shown.
+      const label = screen.getByTestId("pipeline-card-name");
+      expect(label.textContent).not.toContain(`op_${state}`);
+      expect(label.textContent).toContain(
+        `Op ${state.charAt(0).toUpperCase()}${state.slice(1)}`,
       );
       unmount();
     }
@@ -82,7 +86,11 @@ describe("PipelineCard — job-0162 visual states", () => {
     }
   });
 
-  it("does NOT render legacy glyphs ✓ ✗ ⊘ or '…' in any state", () => {
+  it("does NOT render legacy terminal-status glyphs ✓ ✗ ⊘ in any state", () => {
+    // job-0294: the legacy "…" standalone running-indicator glyph is gone, but
+    // a trailing ellipsis inside a present-tense humanized verb ("Fetching
+    // DEM…") is intentional UI vocabulary — only the three terminal-status
+    // glyphs remain banned.
     const allStates: PipelineStepSummary["state"][] = [
       "pending",
       "running",
@@ -95,7 +103,7 @@ describe("PipelineCard — job-0162 visual states", () => {
         <PipelineCard step={makeStep({ state })} />,
       );
       const text = container.textContent ?? "";
-      expect(text).not.toMatch(/✓|✗|⊘|…/);
+      expect(text).not.toMatch(/✓|✗|⊘/);
       unmount();
     }
   });
@@ -249,8 +257,8 @@ describe("PipelineCard — multiple cards", () => {
 
 // --- Humanized step names (job-0173 Part 1) ----------------------------- //
 
-describe("PipelineCard — humanized step labels", () => {
-  it("renders 'llm_generation' as 'Thinking…' for the user", () => {
+describe("PipelineCard — humanized step labels (job-0173 + job-0294)", () => {
+  it("renders 'llm_generation' as 'Thinking…' while running", () => {
     render(<PipelineCard step={makeStep({ state: "running", name: "llm_generation" })} />);
     const label = screen.getByTestId("pipeline-card-name");
     expect(label).toHaveTextContent("Thinking…");
@@ -258,14 +266,45 @@ describe("PipelineCard — humanized step labels", () => {
   });
 
   it("uses the humanized label as the tooltip title too (no internal term leaks)", () => {
-    render(<PipelineCard step={makeStep({ state: "complete", name: "llm_generation" })} />);
+    render(<PipelineCard step={makeStep({ state: "running", name: "llm_generation" })} />);
     const label = screen.getByTestId("pipeline-card-name");
     expect(label.getAttribute("title")).toBe("Thinking…");
   });
 
-  it("preserves engineer-named tool labels (passthrough for unknown names)", () => {
+  it("shows the present-tense RUNNING label for a known tool", () => {
+    render(<PipelineCard step={makeStep({ state: "running", name: "fetch_dem" })} />);
+    const label = screen.getByTestId("pipeline-card-name");
+    expect(label).toHaveTextContent("Fetching DEM…");
+    expect(label.textContent).not.toContain("fetch_dem");
+  });
+
+  it("shows the terminal COMPLETE label for a known tool", () => {
     render(<PipelineCard step={makeStep({ state: "complete", name: "fetch_dem" })} />);
-    expect(screen.getByTestId("pipeline-card-name")).toHaveTextContent("fetch_dem");
+    expect(screen.getByTestId("pipeline-card-name")).toHaveTextContent("Loaded DEM");
+  });
+
+  it("uses the running label for pending / failed / cancelled (verb describes the attempt)", () => {
+    for (const state of ["pending", "failed", "cancelled"] as const) {
+      const { unmount } = render(
+        <PipelineCard step={makeStep({ state, name: "run_model_flood_scenario" })} />,
+      );
+      expect(screen.getByTestId("pipeline-card-name")).toHaveTextContent(
+        "Modeling flood [SFINCS]…",
+      );
+      unmount();
+    }
+  });
+
+  it("NEVER renders raw snake_case for an unmapped tool — Title-Case fallback", () => {
+    render(<PipelineCard step={makeStep({ state: "running", name: "fetch_river_widths" })} />);
+    const label = screen.getByTestId("pipeline-card-name");
+    expect(label).toHaveTextContent("Fetch River Widths…");
+    expect(label.textContent).not.toContain("fetch_river_widths");
+  });
+
+  it("unmapped tool COMPLETE drops the trailing ellipsis", () => {
+    render(<PipelineCard step={makeStep({ state: "complete", name: "fetch_river_widths" })} />);
+    expect(screen.getByTestId("pipeline-card-name")).toHaveTextContent("Fetch River Widths");
   });
 });
 

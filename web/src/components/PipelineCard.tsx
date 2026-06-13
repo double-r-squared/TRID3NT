@@ -240,20 +240,329 @@ export function Spinner({ reduced }: { reduced: boolean }): JSX.Element {
 
 // --- Humanized step label ------------------------------------------------ //
 //
-// Memory spec `feedback_pipeline_card_humanized_labels` (job-0173 Part 1):
-// the agent emits the Gemini-reasoning step as the internal token
-// `llm_generation`. The user-facing surface should read `Thinking…` instead —
-// "no internal terms in user-facing surfaces" (codified web-lesson #3 from
-// job-0086 et al.). The mapping is keyed on the verbatim emitted `step.name`;
-// unknown names pass through unchanged so engineer-named tools continue to
-// render their own labels.
+// Memory spec `feedback_pipeline_card_humanized_labels` + job-0294: every tool
+// dispatch the agent emits (the verbatim `step.name`) gets a PLAIN-LANGUAGE
+// label so the chat never shows raw snake_case (`fetch_dem`,
+// `compute_hillshade`, …). "No internal terms in user-facing surfaces"
+// (codified web-lesson #3 from job-0086 et al.).
+//
+// Labels are STATE-AWARE: a present-tense RUNNING form ("Fetching DEM…") and a
+// terminal COMPLETE form ("Loaded DEM"). Pending uses the running form (the
+// user reads "about to fetch"); failed / cancelled also use the running form
+// (the verb describes the attempted action — the red/yellow tint + the error
+// chip already carry the outcome, so "Modeling flood [SFINCS]" reads better
+// than "Flood modeled" on a card that visibly failed).
+//
+// `state` is OPTIONAL: omitting it (or passing a non-complete state) yields the
+// running/active phrasing, which keeps the single-arg call shape working for
+// any caller that doesn't thread state. Unmapped tools fall back to a graceful
+// Title-Case rendering of the raw name ("fetch_x" → "Fetch X"), NEVER the raw
+// snake_case, and a trailing "…" while active.
 
-const HUMANIZED_STEP_NAMES: Record<string, string> = {
-  llm_generation: "Thinking…",
+interface HumanizedLabel {
+  /** Present-tense, shown while pending / running / failed / cancelled. */
+  running: string;
+  /** Terminal phrasing, shown on a completed step. */
+  complete: string;
+}
+
+// Keyed on the verbatim emitted `step.name` (tool registry names + the
+// synthetic `llm_generation` reasoning step + the `run_model_*` / `run_solver`
+// / `wait_for_completion` engine step names). Covers the full live tool set.
+const HUMANIZED_STEP_NAMES: Record<string, HumanizedLabel> = {
+  // Reasoning step (synthetic, not a registered tool).
+  llm_generation: { running: "Thinking…", complete: "Thought through it" },
+
+  // --- Geocoding / boundaries ------------------------------------------- //
+  geocode_location: { running: "Locating place…", complete: "Located place" },
+  fetch_administrative_boundaries: {
+    running: "Fetching admin boundaries…",
+    complete: "Loaded admin boundaries",
+  },
+
+  // --- Terrain / elevation ---------------------------------------------- //
+  fetch_dem: { running: "Fetching DEM…", complete: "Loaded DEM" },
+  fetch_3dep_extra: {
+    running: "Fetching 3DEP elevation…",
+    complete: "Loaded 3DEP elevation",
+  },
+  compute_hillshade: { running: "Computing hillshade…", complete: "Hillshade ready" },
+  compute_slope: { running: "Computing slope…", complete: "Slope ready" },
+  compute_aspect: { running: "Computing aspect…", complete: "Aspect ready" },
+  compute_colored_relief: {
+    running: "Computing colored relief…",
+    complete: "Colored relief ready",
+  },
+
+  // --- Land cover / surfaces -------------------------------------------- //
+  fetch_landcover: { running: "Fetching land cover…", complete: "Loaded land cover" },
+  extract_landcover_class: {
+    running: "Extracting land-cover class…",
+    complete: "Land-cover class extracted",
+  },
+  compute_impervious_surface: {
+    running: "Computing impervious surface…",
+    complete: "Impervious surface ready",
+  },
+  fetch_landfire_fuels: { running: "Fetching LANDFIRE fuels…", complete: "Loaded LANDFIRE fuels" },
+  fetch_usfs_canopy_fuels: { running: "Fetching canopy fuels…", complete: "Loaded canopy fuels" },
+
+  // --- Population / buildings / infrastructure -------------------------- //
+  fetch_population: { running: "Fetching population…", complete: "Loaded population" },
+  fetch_hrsl_population: {
+    running: "Fetching HRSL population…",
+    complete: "Loaded HRSL population",
+  },
+  fetch_buildings: { running: "Fetching buildings…", complete: "Loaded buildings" },
+  compute_building_density: {
+    running: "Computing building density…",
+    complete: "Building density ready",
+  },
+  fetch_roads_osm: { running: "Fetching roads…", complete: "Loaded roads" },
+  fetch_usace_nsi: {
+    running: "Fetching structure inventory…",
+    complete: "Loaded structure inventory",
+  },
+  fetch_usace_dams: { running: "Fetching dams…", complete: "Loaded dams" },
+  fetch_usace_levees: { running: "Fetching levees…", complete: "Loaded levees" },
+
+  // --- Flood / hydrology data ------------------------------------------- //
+  fetch_fema_nfhl_zones: {
+    running: "Fetching FEMA flood zones…",
+    complete: "Loaded FEMA flood zones",
+  },
+  fetch_river_geometry: { running: "Fetching river geometry…", complete: "Loaded river geometry" },
+  fetch_nhdplus_nldi_navigate: {
+    running: "Tracing the river network…",
+    complete: "River network traced",
+  },
+  fetch_noaa_nwm_streamflow: {
+    running: "Fetching streamflow…",
+    complete: "Loaded streamflow",
+  },
+  fetch_cama_flood_discharge: {
+    running: "Fetching flood discharge…",
+    complete: "Loaded flood discharge",
+  },
+  fetch_gcn250_curve_numbers: {
+    running: "Fetching curve numbers…",
+    complete: "Loaded curve numbers",
+  },
+  lookup_precip_return_period: {
+    running: "Looking up precip return period…",
+    complete: "Precip return period ready",
+  },
+  fetch_mrms_qpe: { running: "Fetching MRMS precip…", complete: "Loaded MRMS precip" },
+
+  // --- Weather / atmosphere --------------------------------------------- //
+  fetch_nws_alerts_conus: {
+    running: "Fetching weather alerts…",
+    complete: "Loaded weather alerts",
+  },
+  fetch_nws_event: { running: "Fetching the weather event…", complete: "Loaded weather event" },
+  fetch_hrrr_forecast: { running: "Fetching HRRR forecast…", complete: "Loaded HRRR forecast" },
+  fetch_hrrr_smoke: { running: "Fetching HRRR smoke…", complete: "Loaded HRRR smoke" },
+  fetch_era5_reanalysis: {
+    running: "Fetching ERA5 reanalysis…",
+    complete: "Loaded ERA5 reanalysis",
+  },
+  fetch_gridmet: { running: "Fetching gridMET…", complete: "Loaded gridMET" },
+  fetch_asos_metar: { running: "Fetching station weather…", complete: "Loaded station weather" },
+  fetch_raws_weather: { running: "Fetching RAWS weather…", complete: "Loaded RAWS weather" },
+  fetch_nexrad_reflectivity: {
+    running: "Fetching radar reflectivity…",
+    complete: "Loaded radar reflectivity",
+  },
+  fetch_goes_satellite: { running: "Fetching GOES imagery…", complete: "Loaded GOES imagery" },
+
+  // --- Coastal / tides -------------------------------------------------- //
+  fetch_noaa_coops_tides: { running: "Fetching tide data…", complete: "Loaded tide data" },
+  fetch_gtsm_tide_surge: { running: "Fetching tide & surge…", complete: "Loaded tide & surge" },
+  fetch_noaa_slr_scenarios: {
+    running: "Fetching sea-level-rise scenarios…",
+    complete: "Loaded sea-level-rise scenarios",
+  },
+
+  // --- Soils ------------------------------------------------------------- //
+  fetch_statsgo_soils: { running: "Fetching soils…", complete: "Loaded soils" },
+
+  // --- Fire -------------------------------------------------------------- //
+  fetch_firms_active_fire: { running: "Fetching active fires…", complete: "Loaded active fires" },
+  fetch_nifc_fire_perimeters: {
+    running: "Fetching fire perimeters…",
+    complete: "Loaded fire perimeters",
+  },
+  fetch_mtbs_burn_severity: {
+    running: "Fetching burn severity…",
+    complete: "Loaded burn severity",
+  },
+
+  // --- Storm history ----------------------------------------------------- //
+  fetch_storm_events_db: { running: "Fetching storm events…", complete: "Loaded storm events" },
+
+  // --- Biodiversity / conservation -------------------------------------- //
+  fetch_gbif_occurrences: {
+    running: "Fetching species occurrences…",
+    complete: "Loaded species occurrences",
+  },
+  fetch_inaturalist_observations: {
+    running: "Fetching iNaturalist observations…",
+    complete: "Loaded iNaturalist observations",
+  },
+  fetch_ebird_observations: {
+    running: "Fetching eBird observations…",
+    complete: "Loaded eBird observations",
+  },
+  fetch_iucn_red_list_range: {
+    running: "Fetching IUCN ranges…",
+    complete: "Loaded IUCN ranges",
+  },
+  fetch_wdpa_protected_areas: {
+    running: "Fetching protected areas…",
+    complete: "Loaded protected areas",
+  },
+  fetch_movebank_tracks: {
+    running: "Fetching animal tracks…",
+    complete: "Loaded animal tracks",
+  },
+
+  // --- Clipping / extent ------------------------------------------------- //
+  clip_raster_to_bbox: { running: "Clipping raster to extent…", complete: "Raster clipped" },
+  clip_raster_to_polygon: {
+    running: "Clipping raster to boundary…",
+    complete: "Raster clipped",
+  },
+  clip_vector_to_polygon: {
+    running: "Clipping vectors to boundary…",
+    complete: "Vectors clipped",
+  },
+
+  // --- Analysis / statistics -------------------------------------------- //
+  compute_zonal_statistics: {
+    running: "Computing zonal statistics…",
+    complete: "Zonal statistics ready",
+  },
+  summarize_layer_statistics: {
+    running: "Summarizing layer statistics…",
+    complete: "Layer statistics ready",
+  },
+  aggregate_property_within_zone: {
+    running: "Aggregating within zone…",
+    complete: "Zone aggregation ready",
+  },
+  count_features_above_threshold: {
+    running: "Counting features…",
+    complete: "Feature count ready",
+  },
+  aggregate_claims_across_sources: {
+    running: "Aggregating across sources…",
+    complete: "Sources aggregated",
+  },
+
+  // --- Charts ------------------------------------------------------------ //
+  generate_histogram: { running: "Building histogram…", complete: "Histogram ready" },
+  generate_time_series: { running: "Building time series…", complete: "Time series ready" },
+  generate_damage_distribution: {
+    running: "Building damage distribution…",
+    complete: "Damage distribution ready",
+  },
+  generate_choropleth_legend: {
+    running: "Building map legend…",
+    complete: "Map legend ready",
+  },
+
+  // --- Discovery / catalog ---------------------------------------------- //
+  discover_dataset: { running: "Discovering datasets…", complete: "Datasets discovered" },
+  catalog_search: { running: "Searching the catalog…", complete: "Catalog searched" },
+  catalog_fetch: { running: "Fetching from catalog…", complete: "Loaded from catalog" },
+  web_fetch: { running: "Fetching from the web…", complete: "Fetched from the web" },
+
+  // --- QGIS / data plumbing --------------------------------------------- //
+  publish_layer: { running: "Publishing layer…", complete: "Layer published" },
+  estimate_payload_mb: { running: "Estimating payload size…", complete: "Payload size estimated" },
+  qgis_process: { running: "Running QGIS process…", complete: "QGIS process done" },
+  describe_qgis_algorithm: {
+    running: "Describing the algorithm…",
+    complete: "Algorithm described",
+  },
+  list_qgis_algorithms: {
+    running: "Listing algorithms…",
+    complete: "Algorithms listed",
+  },
+  mongo_query: { running: "Querying the database…", complete: "Database queried" },
+  code_exec_request: { running: "Running analysis code…", complete: "Analysis code done" },
+
+  // --- Engines / solvers ------------------------------------------------- //
+  run_model_flood_scenario: {
+    running: "Modeling flood [SFINCS]…",
+    complete: "Flood modeled",
+  },
+  run_model_flood_habitat_scenario: {
+    running: "Modeling flood + habitat…",
+    complete: "Flood + habitat modeled",
+  },
+  run_model_nws_flood_event_scenario: {
+    running: "Modeling NWS flood event…",
+    complete: "NWS flood event modeled",
+  },
+  run_model_groundwater_contamination_scenario: {
+    running: "Modeling groundwater plume…",
+    complete: "Groundwater plume modeled",
+  },
+  run_model_news_event_ingest: {
+    running: "Ingesting the event…",
+    complete: "Event ingested",
+  },
+  run_modflow_job: {
+    running: "Modeling groundwater [MODFLOW]…",
+    complete: "Groundwater modeled",
+  },
+  run_pelicun_damage_assessment: {
+    running: "Building damage estimate…",
+    complete: "Damage estimate ready",
+  },
+  postprocess_pelicun: {
+    running: "Post-processing damage…",
+    complete: "Damage post-processed",
+  },
+  run_solver: { running: "Running the solver…", complete: "Solver finished" },
+  wait_for_completion: { running: "Waiting for the job…", complete: "Job finished" },
 };
 
-export function humanizeStepName(rawName: string): string {
-  return HUMANIZED_STEP_NAMES[rawName] ?? rawName;
+/**
+ * Title-case a raw snake_case tool name as a graceful fallback for any tool
+ * not in the map: `fetch_river_widths` → `Fetch River Widths`. NEVER returns
+ * the raw snake_case. A trailing "…" is appended by the caller when active.
+ */
+function titleCaseToolName(rawName: string): string {
+  const words = rawName
+    .split(/[_\s]+/)
+    .filter((w) => w.length > 0)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1));
+  // Empty / all-separator names degrade to the raw string rather than "".
+  return words.length > 0 ? words.join(" ") : rawName;
+}
+
+/**
+ * Resolve the user-facing label for a step.
+ *
+ * @param rawName the verbatim emitted `step.name`.
+ * @param state   optional lifecycle state; `complete` selects the terminal
+ *                phrasing, everything else (incl. omitted) selects the
+ *                active/present-tense phrasing.
+ */
+export function humanizeStepName(
+  rawName: string,
+  state?: PipelineStepState,
+): string {
+  const mapped = HUMANIZED_STEP_NAMES[rawName];
+  if (mapped) {
+    return state === "complete" ? mapped.complete : mapped.running;
+  }
+  // Graceful fallback: Title-Case, with a trailing "…" while active so it
+  // reads as an in-progress action rather than a static noun.
+  const titled = titleCaseToolName(rawName);
+  return state === "complete" ? titled : `${titled}…`;
 }
 
 // --- Card ----------------------------------------------------------------- //
@@ -346,9 +655,9 @@ export function PipelineCard({ step }: PipelineCardProps): JSX.Element {
           whiteSpace: "nowrap",
           ...labelStyle,
         }}
-        title={humanizeStepName(step.name)}
+        title={humanizeStepName(step.name, step.state)}
       >
-        {humanizeStepName(step.name)}
+        {humanizeStepName(step.name, step.state)}
       </span>
       {timerText !== null && (
         <span

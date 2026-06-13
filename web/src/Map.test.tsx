@@ -330,6 +330,32 @@ describe("MapView — map-command zoom-to handler (job-0068 change 5 client side
     expect((opts as { duration: number }).duration).toBe(1200);
   });
 
+  it("ALSO draws the analysis-extent rectangle from the same zoom-to bbox (job-0294)", () => {
+    const mapCmdBus = makeMapCmdBus();
+    render(
+      <MapView
+        subscribeMapCommand={mapCmdBus.subscribe as MapCommandSubscribeFunc}
+      />,
+    );
+
+    act(() => {
+      mapCmdBus.push({
+        command: "zoom-to",
+        args: { bbox: [-81.91, 26.55, -81.75, 26.69] },
+      });
+    });
+
+    const m = lastMapMock!;
+    // The extent source + fill + line layers are added alongside fitBounds.
+    const addedSourceIds = m.addSource.mock.calls.map((c) => c[0]);
+    expect(addedSourceIds).toContain("grace2-analysis-extent");
+    const addedLayerIds = m.addLayer.mock.calls.map(
+      (c) => (c[0] as { id: string }).id,
+    );
+    expect(addedLayerIds).toContain("grace2-analysis-extent-fill");
+    expect(addedLayerIds).toContain("grace2-analysis-extent-line");
+  });
+
   it("warns (not throws) for unrecognised map-commands", () => {
     const mapCmdBus = makeMapCmdBus();
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -1167,6 +1193,7 @@ import {
   applyLayerVisibility,
   applyLayerOrder,
   layerGroupMemberIds,
+  drawAnalysisExtent,
 } from "./Map";
 import { fireEvent, screen } from "@testing-library/react";
 import { LayerPanel, createLayerPanelBus } from "./LayerPanel";
@@ -1246,6 +1273,85 @@ describe("layer-control helpers (job-0258)", () => {
     applyLayerOrder(m, ["a", "b"]);
     // moveLayer(id) pulls to top — so b's group moves first, a last.
     expect(m.moveLayer.mock.calls.map((c) => c[0])).toEqual(["b", "b-outline", "a"]);
+  });
+});
+
+// --- analysis-extent rectangle (job-0294) -------------------------------- //
+
+/** Fake map that tracks geojson source add + setData and layer adds. */
+function makeExtentMap() {
+  const sources = new Map<string, { setData: ReturnType<typeof vi.fn> }>();
+  return {
+    sources,
+    getSource: vi.fn((id: string) => sources.get(id)),
+    addSource: vi.fn((id: string) => {
+      sources.set(id, { setData: vi.fn() });
+    }),
+    addLayer: vi.fn(),
+  } as unknown as import("maplibre-gl").Map & {
+    sources: Map<string, { setData: ReturnType<typeof vi.fn> }>;
+    getSource: ReturnType<typeof vi.fn>;
+    addSource: ReturnType<typeof vi.fn>;
+    addLayer: ReturnType<typeof vi.fn>;
+  };
+}
+
+describe("drawAnalysisExtent (job-0294)", () => {
+  const BBOX: [number, number, number, number] = [-105.3, 39.95, -105.2, 40.05];
+
+  it("adds the geojson source + a fill layer + a dashed line layer on first call", () => {
+    const m = makeExtentMap();
+    drawAnalysisExtent(m, BBOX);
+    expect(m.addSource).toHaveBeenCalledOnce();
+    expect(m.addSource.mock.calls[0]![0]).toBe("grace2-analysis-extent");
+    const layerIds = m.addLayer.mock.calls.map((c) => (c[0] as { id: string }).id);
+    expect(layerIds).toEqual([
+      "grace2-analysis-extent-fill",
+      "grace2-analysis-extent-line",
+    ]);
+    // The outline is a dashed accent line.
+    const lineSpec = m.addLayer.mock.calls[1]![0] as {
+      type: string;
+      paint: Record<string, unknown>;
+    };
+    expect(lineSpec.type).toBe("line");
+    expect(lineSpec.paint["line-dasharray"]).toEqual([3, 2]);
+  });
+
+  it("builds a closed polygon ring from the bbox corners (no computed numbers)", () => {
+    const m = makeExtentMap();
+    drawAnalysisExtent(m, BBOX);
+    const sourceSpec = m.addSource.mock.calls[0]![1] as {
+      data: { geometry: { coordinates: number[][][] } };
+    };
+    const ring = sourceSpec.data.geometry.coordinates[0]!;
+    const [minLon, minLat, maxLon, maxLat] = BBOX;
+    expect(ring).toEqual([
+      [minLon, minLat],
+      [maxLon, minLat],
+      [maxLon, maxLat],
+      [minLon, maxLat],
+      [minLon, minLat],
+    ]);
+  });
+
+  it("REPLACES on a second bbox via setData (one extent at a time, v0.1)", () => {
+    const m = makeExtentMap();
+    drawAnalysisExtent(m, BBOX);
+    expect(m.addSource).toHaveBeenCalledOnce();
+    expect(m.addLayer).toHaveBeenCalledTimes(2);
+
+    const NEXT: [number, number, number, number] = [-122.5, 37.7, -122.3, 37.85];
+    drawAnalysisExtent(m, NEXT);
+    // No second source / layer adds — the existing source's data is swapped.
+    expect(m.addSource).toHaveBeenCalledOnce();
+    expect(m.addLayer).toHaveBeenCalledTimes(2);
+    const src = m.sources.get("grace2-analysis-extent")!;
+    expect(src.setData).toHaveBeenCalledOnce();
+    const swapped = src.setData.mock.calls[0]![0] as {
+      geometry: { coordinates: number[][][] };
+    };
+    expect(swapped.geometry.coordinates[0]![0]).toEqual([NEXT[0], NEXT[1]]);
   });
 });
 

@@ -303,9 +303,12 @@ describe("SheetActiveToolStrip", () => {
     );
     const strip = screen.getByTestId("grace2-sheet-tool-strip");
     expect(strip).toBeTruthy();
+    // job-0294 — an unmapped tool name title-cases (never raw snake_case);
+    // the strip only shows running tools, so the present-tense "…" suffix
+    // applies.
     expect(
       screen.getByTestId("grace2-sheet-tool-strip-label").textContent,
-    ).toBe("fetch_3dep_dem"); // unknown names pass through the humanizer
+    ).toBe("Fetch 3dep Dem…");
     // Anchored on started_at (~65s ago) → a ticking 1:0x, never 0:00.
     expect(
       screen.getByTestId("grace2-sheet-tool-strip-timer").textContent,

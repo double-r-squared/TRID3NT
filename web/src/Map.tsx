@@ -35,7 +35,7 @@ import { useEffect, useRef } from "react";
 import maplibregl, { Map as MapLibreMap, StyleSpecification } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import type { MapCommandPayload, SessionStatePayload } from "./contracts";
-import type { FeatureCollection } from "geojson";
+import type { FeatureCollection, Feature, Polygon } from "geojson";
 import {
   fetchVectorAsGeoJson,
   vectorResultFromInlineGeoJson,
@@ -315,6 +315,17 @@ const BASEMAP_LAYER_ID = "qgis-basemap";
 const BASEMAP_SOURCE_ID = "qgis-wms";
 const DARK_BASEMAP_LAYER_ID = "carto-dark-basemap";
 const DARK_BASEMAP_SOURCE_ID = "carto-dark";
+
+// job-0294 — "analysis extent" rectangle. When the agent emits a `zoom-to`
+// map-command with a bbox, we ALSO outline that extent as a styled rectangle so
+// the user sees exactly what area is being measured. A SINGLE extent rectangle
+// (replace-on-new-bbox) is the v0.1 contract — the source is the same
+// map-command the camera consumes, so persisted-case reopen (App.tsx replays
+// the last zoom-to through the bus) redraws it for free. Thin dashed accent
+// stroke, faint fill.
+const ANALYSIS_EXTENT_SOURCE_ID = "grace2-analysis-extent";
+const ANALYSIS_EXTENT_FILL_LAYER_ID = "grace2-analysis-extent-fill";
+const ANALYSIS_EXTENT_LINE_LAYER_ID = "grace2-analysis-extent-line";
 
 /**
  * Async vector-layer registration (job-0139). Fetches the layer's GeoJSON
@@ -777,6 +788,69 @@ export function applyLayerOrder(m: MapLibreMap, layerIdsTopFirst: string[]): voi
   }
 }
 
+/**
+ * job-0294 — draw (or replace) the single "analysis extent" rectangle for a
+ * bbox `[minLon, minLat, maxLon, maxLat]`. Idempotent: the first call adds the
+ * GeoJSON source + a faint fill layer + a dashed accent outline; subsequent
+ * calls call `setData` so the extent REPLACES (one extent at a time, v0.1).
+ *
+ * The bbox comes from the same `zoom-to` map-command the camera consumes, so no
+ * agent change is needed; case-reopen replays the last zoom-to (App.tsx) and
+ * redraws the rectangle for free. Pure rendering — no numbers are computed
+ * (Invariant 1): the geometry is built verbatim from the received bbox corners.
+ */
+export function drawAnalysisExtent(
+  m: MapLibreMap,
+  bbox: [number, number, number, number],
+): void {
+  const [minLon, minLat, maxLon, maxLat] = bbox;
+  const ring: [number, number][] = [
+    [minLon, minLat],
+    [maxLon, minLat],
+    [maxLon, maxLat],
+    [minLon, maxLat],
+    [minLon, minLat],
+  ];
+  const data: Feature<Polygon> = {
+    type: "Feature",
+    properties: {},
+    geometry: { type: "Polygon", coordinates: [ring] },
+  };
+
+  const existing = m.getSource(ANALYSIS_EXTENT_SOURCE_ID) as
+    | maplibregl.GeoJSONSource
+    | undefined;
+  if (existing) {
+    // Replace-on-new-bbox: just swap the data; layers persist.
+    existing.setData(data);
+    return;
+  }
+
+  m.addSource(ANALYSIS_EXTENT_SOURCE_ID, { type: "geojson", data });
+  // Faint fill so the extent reads as a region without obscuring what's inside.
+  m.addLayer({
+    id: ANALYSIS_EXTENT_FILL_LAYER_ID,
+    type: "fill",
+    source: ANALYSIS_EXTENT_SOURCE_ID,
+    paint: {
+      "fill-color": "#4D96FF",
+      "fill-opacity": 0.06,
+    },
+  });
+  // Thin dashed accent outline — the primary "here's the measured extent" cue.
+  m.addLayer({
+    id: ANALYSIS_EXTENT_LINE_LAYER_ID,
+    type: "line",
+    source: ANALYSIS_EXTENT_SOURCE_ID,
+    paint: {
+      "line-color": "#4D96FF",
+      "line-width": 1.5,
+      "line-dasharray": [3, 2],
+      "line-opacity": 0.9,
+    },
+  });
+}
+
 export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "light" }: MapViewProps = {}): JSX.Element {
   const container = useRef<HTMLDivElement | null>(null);
   const map = useRef<MapLibreMap | null>(null);
@@ -1112,11 +1186,31 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       if (payload.command === "zoom-to") {
         const { bbox } = (payload as ZoomToCommand).args;
         if (bbox && bbox.length === 4) {
-          const [minLon, minLat, maxLon, maxLat] = bbox as [number, number, number, number];
+          const corners = bbox as [number, number, number, number];
+          const [minLon, minLat, maxLon, maxLat] = corners;
           m.fitBounds(
             [[minLon, minLat], [maxLon, maxLat]],
             { padding: 40, duration: 1200 },
           );
+          // job-0294 — ALSO outline the extent as a styled rectangle so the
+          // user sees exactly what area is being measured. The fitBounds above
+          // is camera-only; this draws the bbox on the map. If the style isn't
+          // loaded yet (case-reopen replay can race the first style load),
+          // defer to the next idle — drawAnalysisExtent is idempotent
+          // (replace-on-new-bbox) so an extra deferred call is harmless.
+          const drawExtent = (): void => {
+            if (!map.current) return;
+            if (!map.current.isStyleLoaded()) {
+              map.current.once("idle", drawExtent);
+              return;
+            }
+            try {
+              drawAnalysisExtent(map.current, corners);
+            } catch {
+              // Mid style-mutation race; the next zoom-to (or reopen) redraws.
+            }
+          };
+          drawExtent();
         }
       } else if (payload.command === "set-layer-opacity") {
         const opacity = Math.max(0, Math.min(1, payload.opacity));
