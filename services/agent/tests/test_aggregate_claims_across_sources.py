@@ -243,12 +243,38 @@ def test_bad_sources_shape_raises() -> None:
         aggregate_claims_across_sources("not a list", ["date"])  # type: ignore[arg-type]
 
 
-def test_missing_required_key_raises() -> None:
-    with pytest.raises(ClaimAggInputError, match="missing required key"):
+def test_missing_text_key_raises() -> None:
+    # ``text`` is the only genuinely-required source key (claims are extracted
+    # from it). Omitting it still raises.
+    with pytest.raises(ClaimAggInputError, match="missing required key 'text'"):
         aggregate_claims_across_sources(
-            [{"url": "https://x", "text": "x"}],  # missing fetched_at
+            [{"url": "https://x", "fetched_at": "2026-06-08T00:00:00Z"}],
             ["date"],
         )
+
+
+def test_missing_fetched_at_and_url_are_defaulted() -> None:
+    # job-0295: ``fetched_at`` (un-knowable by the LLM) and ``url`` (provenance)
+    # default rather than raise, so a direct agent call with just ``text``
+    # succeeds. Previously this raised "missing required key 'fetched_at'".
+    result = aggregate_claims_across_sources(
+        [{"text": "Flooding reported in Longview, Texas on June 8 2026."}],
+        ["location"],
+    )
+    assert isinstance(result, dict)
+    assert "claims" in result
+
+
+def test_source_id_used_as_url_fallback() -> None:
+    # When ``url`` is absent the aggregator falls back to ``source_id`` for
+    # provenance (the shape Claude emitted in the live news run).
+    result = aggregate_claims_across_sources(
+        [{"source_id": "nws_alerts_TX", "source_type": "nws_alert",
+          "text": "Flash Flood Warning active in Texas."}],
+        ["location"],
+    )
+    assert isinstance(result, dict)
+    assert "claims" in result
 
 
 def test_unknown_target_raises() -> None:

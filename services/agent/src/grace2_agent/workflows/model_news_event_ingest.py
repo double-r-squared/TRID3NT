@@ -427,6 +427,41 @@ def _validate_sources(sources: Any) -> list[dict[str, Any]]:
             raise EventIngestInputError(
                 f"sources[{i}] must be a dict; got {type(item).__name__}"
             )
+        # job-0295: the LLM naturally emits richer, type-specific source dicts
+        # (e.g. storm_event as ``{type, year, state, event_types}``, url as
+        # ``{type, url}``) rather than the canonical ``{type, identifier}``.
+        # Synthesize ``identifier`` from those keys so the natural shape works
+        # without a re-prompt. Identifier semantics (see _fetch_*_source):
+        #   url         → the URL string
+        #   nws_alert   → 2-letter state code or 5-digit county FIPS
+        #   storm_event → "YYYY" or "YYYY:STATE"
+        s_type = item.get("type")
+        if s_type == "url":
+            # _fetch_url_source uses ``identifier`` AS the URL to fetch. The LLM
+            # sometimes supplies a real URL under ``url`` but a non-URL label
+            # under ``identifier`` (e.g. "nws-api-tx-alerts"). Prefer the real
+            # URL so the fetch targets a valid scheme.
+            url_val = item.get("url") or item.get("link") or item.get("href")
+            ident = item.get("identifier")
+            ident_is_url = isinstance(ident, str) and ident.lower().startswith(
+                ("http://", "https://")
+            )
+            if url_val and not ident_is_url:
+                item["identifier"] = str(url_val)
+        elif "identifier" not in item and isinstance(s_type, str):
+            if s_type == "nws_alert":
+                synth = item.get("area") or item.get("state") or item.get("fips")
+            elif s_type == "storm_event":
+                year = item.get("year")
+                state = item.get("state")
+                if year is not None:
+                    synth = f"{year}:{state}" if state else f"{year}"
+                else:
+                    synth = state
+            else:
+                synth = None
+            if synth is not None:
+                item["identifier"] = str(synth)
         for key in ("type", "identifier"):
             if key not in item:
                 raise EventIngestInputError(
@@ -683,22 +718,35 @@ async def run_model_news_event_ingest(
 ) -> dict[str, Any]:
     """Ingest news / alert sources and derive event parameters for user review.
 
-    Use this when: the agent has a Case 2 ingest intent grounded in one or more
-    sources about a real-world event (a news article URL, an NWS active-alerts
-    area code, a NOAA Storm Events DB year+state identifier) and needs derived
-    event parameters (location, scale, contaminant, date, casualties) for the
-    user to review BEFORE any downstream solver runs. The workflow composes
-    the per-source fetch chain → claim aggregation → geocode and returns an
-    ``EventIngestResult`` with derived params + provenance + a deterministic
-    presentation_text for the review modal. Downstream modeling (e.g.
-    sprint-13 MODFLOW for a spill plume) consumes this envelope only after
-    the user approves.
+    Three-step composition chain (all deterministic Python, zero LLM calls):
+    1. Per-source fetch dispatch:
+       - "url" sources → ``web_fetch(url, extract="main_text")``
+       - "nws_alert" sources → ``fetch_nws_event(area=identifier)``
+       - "storm_event" sources → ``fetch_storm_events_db(year, state)``
+    2. ``aggregate_claims_across_sources(sources, claim_targets)`` — derives
+       best-supported values for location, scale, contaminant, date,
+       casualties with source-agreement confidence scoring.
+    3. ``geocode_location(derived_location_value)`` — converts the aggregated
+       location claim to a bbox for the review modal.
+    Returns an ``EventIngestResult`` with typed ``derived_params`` +
+    ``provenance`` + deterministic ``presentation_text``. STOPS here —
+    review-gated by design (Invariant 9); downstream solvers run only after
+    user approval.
 
-    Do NOT use this for: dispatching a downstream solver (this workflow STOPS
-    before any solver runs — review-gated by design); modeling a flood that
-    has no news/alert sources (use ``run_model_flood_scenario`` directly with
-    a bbox / location_query); summarising a single page's contents (use
-    ``web_fetch`` directly).
+    When to use:
+        - Case 2 intent: agent has one or more sources about a real-world
+          event (news article URLs, NWS alert area codes, Storm Events DB
+          identifiers) and needs derived event parameters for user review
+          before any solver dispatches.
+        - Any prompt mentioning "incident report", "news article about", "NWS
+          alert", "storm event database" followed by a decision to model it.
+
+    When NOT to use:
+        - Dispatching a downstream solver (this workflow stops before any
+          solver — review-gated by Invariant 9 design).
+        - Flood modeling without news/alert sources (use ``run_model_flood_scenario``
+          directly with bbox / location_query).
+        - Summarizing a single page (use ``web_fetch`` directly).
 
     Params:
         sources: list of dicts each ``{"type": "url" | "nws_alert" |
@@ -728,6 +776,22 @@ async def run_model_news_event_ingest(
     FR-DC-6: This wrapper declares ``cacheable=False`` +
     ``ttl_class="live-no-cache"`` + ``source_class="workflow_dispatch"`` —
     the same shape as job-0042's ``run_model_flood_scenario``.
+
+    Cross-tool dependencies:
+        Upstream (step chain):
+        - ``web_fetch(url)`` — called for each "url" source in ``sources``.
+        - ``fetch_nws_event(area)`` — called for each "nws_alert" source.
+        - ``fetch_storm_events_db(year, state)`` — called for each
+          "storm_event" source.
+        - ``aggregate_claims_across_sources(sources, claim_targets)`` — step 2;
+          derives typed event parameter values with confidence scores.
+        - ``geocode_location(location_value)`` — step 3; converts location
+          claim to a bbox.
+        Downstream (feeds):
+        - Sprint-13 MODFLOW / spill-plume solver — the returned
+          ``EventIngestResult`` is the review envelope the user approves;
+          the approved derived params (location bbox, scale, contaminant)
+          become inputs to the next solver dispatch.
     """
     result = await model_news_event_ingest(
         sources=sources,

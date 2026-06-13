@@ -46,6 +46,7 @@ from grace2_agent.workflows.model_news_event_ingest import (
     _claim_targets_for_event_type,
     _compose_presentation_text,
     _source_authority_tier,
+    _validate_sources,
     model_news_event_ingest,
     run_model_news_event_ingest,
 )
@@ -390,6 +391,69 @@ async def test_invalid_event_type_raises() -> None:
         )
     assert "lightning" in str(excinfo.value)
     assert all(et in str(excinfo.value) for et in SUPPORTED_EVENT_TYPES)
+
+
+# --------------------------------------------------------------------------- #
+# job-0295 — identifier synthesis from natural LLM source-dict shapes
+# --------------------------------------------------------------------------- #
+
+
+def test_identifier_synthesized_for_storm_event_year_state() -> None:
+    """LLM emits ``{type, year, state, ...}`` (no identifier) → synthesize
+    ``"YYYY:STATE"`` so the natural shape validates without a re-prompt."""
+    out = _validate_sources(
+        [{"type": "storm_event", "year": 2025, "state": "TX",
+          "event_types": ["Flash Flood"], "description": "TX 2025 floods"}]
+    )
+    assert out[0]["identifier"] == "2025:TX"
+
+
+def test_identifier_synthesized_for_storm_event_year_only() -> None:
+    out = _validate_sources([{"type": "storm_event", "year": 2025}])
+    assert out[0]["identifier"] == "2025"
+
+
+def test_identifier_synthesized_for_url_source() -> None:
+    out = _validate_sources(
+        [{"type": "url", "url": "https://example.com/a", "extract": "main_text"}]
+    )
+    assert out[0]["identifier"] == "https://example.com/a"
+
+
+def test_identifier_synthesized_for_nws_alert_state() -> None:
+    out = _validate_sources([{"type": "nws_alert", "state": "FL"}])
+    assert out[0]["identifier"] == "FL"
+
+
+def test_url_source_prefers_real_url_over_label_identifier() -> None:
+    # job-0295: the url fetch path uses ``identifier`` AS the URL. When the LLM
+    # supplies a real ``url`` but a non-URL ``identifier`` label, prefer the
+    # real URL so the fetch has a valid scheme.
+    out = _validate_sources(
+        [{"type": "url", "url": "https://api.weather.gov/alerts/active?area=TX",
+          "identifier": "nws-api-tx-flood-alerts"}]
+    )
+    assert out[0]["identifier"] == "https://api.weather.gov/alerts/active?area=TX"
+
+
+def test_url_source_keeps_url_identifier_when_already_a_url() -> None:
+    out = _validate_sources(
+        [{"type": "url", "identifier": "https://example.com/article"}]
+    )
+    assert out[0]["identifier"] == "https://example.com/article"
+
+
+def test_explicit_identifier_is_preserved() -> None:
+    out = _validate_sources(
+        [{"type": "storm_event", "identifier": "2022:CA", "year": 9999}]
+    )
+    assert out[0]["identifier"] == "2022:CA"
+
+
+def test_unsynthesizable_source_still_raises() -> None:
+    # storm_event with neither identifier nor year/state can't be synthesized.
+    with pytest.raises(EventIngestInputError, match="missing required key 'identifier'"):
+        _validate_sources([{"type": "storm_event", "description": "vague"}])
 
 
 # --------------------------------------------------------------------------- #

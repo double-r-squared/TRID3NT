@@ -544,11 +544,19 @@ def _validate_sources(sources: Any) -> list[dict[str, Any]]:
             raise ClaimAggInputError(
                 f"sources[{i}] must be a dict; got {type(item).__name__}"
             )
+        # job-0295: ``url`` and ``fetched_at`` are provenance metadata the LLM
+        # cannot always supply (it doesn't know the fetch timestamp, and may
+        # only have the source text). Default them so a direct agent call with
+        # ``{text, ...}`` succeeds — only ``text`` (the substance claims are
+        # extracted from) is genuinely required. The composer already stamps
+        # its own ``fetched_at`` sentinel, so this only affects direct callers.
+        item.setdefault("url", item.get("source_id") or "")
+        item.setdefault("fetched_at", "1970-01-01T00:00:00Z")
+        if "text" not in item:
+            raise ClaimAggInputError(
+                f"sources[{i}] missing required key 'text'; got keys {list(item.keys())}"
+            )
         for key in ("url", "text", "fetched_at"):
-            if key not in item:
-                raise ClaimAggInputError(
-                    f"sources[{i}] missing required key {key!r}; got keys {list(item.keys())}"
-                )
             if not isinstance(item[key], str):
                 raise ClaimAggInputError(
                     f"sources[{i}][{key!r}] must be a string; got {type(item[key]).__name__}"
@@ -597,7 +605,13 @@ _EXTRACTORS = {
 }
 
 
-@register_tool(_AGG_METADATA)
+@register_tool(
+    _AGG_METADATA,
+    # Annotations: readOnlyHint=True (pure in-memory computation; no GCS or DB
+    # writes), openWorldHint=False (processes caller-supplied source texts;
+    # no external API calls in this tool body), destructiveHint=False,
+    # idempotentHint=True (deterministic regex extraction; same inputs → same output).
+)
 def aggregate_claims_across_sources(
     sources: list[dict[str, Any]],
     claim_targets: list[str],
@@ -608,19 +622,28 @@ def aggregate_claims_across_sources(
 ) -> dict[str, Any]:
     """Cross-source claim aggregation for FR-HEP news/event ingest.
 
-    Use this when: the agent has fetched multiple texts about the same event
-    (news articles via ``web_fetch``/``fetch_news_article``, agency pages, or
-    similar) and needs a single best-supported value per claim target
-    (location, scale, contaminant, date, casualties) with a per-claim
-    confidence + provenance. The output feeds ``EventMetadata``/``ClaimSet``
-    construction downstream and the FR-HEP-7 "ask the user" gate when no
-    target reaches confidence.
+    Runs deterministic regex extractors over a list of pre-fetched text sources
+    and returns a per-claim best-supported value with confidence score and
+    provenance URLs. Confidence is source-agreement-based: 1 source → 0.5;
+    N >= 2 sources → min(0.99, 0.80 + 0.05*(N-2)). Not cached (computed fresh
+    from the caller-supplied sources list on every invocation).
 
-    Do NOT use this for: numeric model outputs (those carry their own
-    ``ClaimSet`` from the engine, never narrated through this surface);
-    extracting from a single source (just call the per-target regex helpers
-    directly; this tool's value is cross-source agreement); reverse-geocoding
-    a place name to a bbox (that's a separate ``geocode_event_location`` step).
+    When to use:
+        - After fetching multiple texts about the same real-world event (news
+          articles via ``web_fetch``, NWS alerts, NOAA Storm Events DB) and
+          needing a single best-supported value per claim target.
+        - Building the ``derived_params`` dict in the Case 2 event-ingest
+          workflow (``run_model_news_event_ingest`` calls this after the
+          per-source fetch chain).
+        - Triggering the FR-HEP-7 "ask the user" gate when no claim target
+          reaches the ``confidence_threshold``.
+
+    When NOT to use:
+        - Numeric model outputs (those carry their own typed fields from the
+          engine, never routed through this surface).
+        - Single-source extraction (the multi-source agreement scoring adds no
+          value; call the per-target regex helpers directly).
+        - Reverse-geocoding a place name to a bbox (use ``geocode_location``).
 
     Params:
         sources: list of dicts, each ``{"url": str, "text": str, "fetched_at": str}``.
@@ -690,6 +713,20 @@ def aggregate_claims_across_sources(
         - OQ-93-NEEDS-LLM-EXTRACTION — "location" + "contaminant" deterministic
           extraction misses the long tail; sprint-13 upgrades to LLM-routed
           via the agent's Gemini access.
+
+    Cross-tool dependencies:
+        Upstream (consumes):
+        - ``web_fetch`` — each element of ``sources`` is typically a dict from
+          ``web_fetch`` output (``url``, ``content`` → renamed ``text``,
+          ``fetched_at``).
+        - ``fetch_nws_event`` / ``fetch_storm_events_db`` — other upstream
+          source types normalized to the ``{url, text, fetched_at}`` shape.
+        Downstream (feeds):
+        - ``run_model_news_event_ingest`` — calls this after the per-source
+          fetch chain; the returned ``claims`` dict populates ``derived_params``
+          in the ``EventIngestResult``.
+        - ``geocode_location`` — the ``claims["location"]["value"]`` string is
+          passed to ``geocode_location`` to derive the event bbox.
     """
     _validate_sources(sources)
     _validate_targets(claim_targets)
