@@ -868,6 +868,21 @@ def publish_layer(
                 "overlay cannot be displayed yet. Do not retry.",
                 retryable=False,
             )
+        # sprint-14-aws (job-0294c): IDEMPOTENT republish. A composer (e.g. the
+        # groundwater plume / flood postprocess) often publishes the layer
+        # itself, recording the layer handle -> the TiTiler tile TEMPLATE. When
+        # the LLM then calls publish_layer again on that handle, the server has
+        # already resolved it to the http(s) tile URL — that's "already
+        # published", NOT an error. Return it as-is so the emission wrap-site
+        # announces the layer to the map (live: groundwater plume showed metrics
+        # but a red Publishing-layer card + no overlay because this raised).
+        if layer_uri.startswith(("http://", "https://")) and "/cog/tiles/" in layer_uri:
+            logger.info(
+                "publish_layer (titiler) idempotent — already-published tile "
+                "template layer_id=%s",
+                layer_id,
+            )
+            return layer_uri
         if not layer_uri.startswith("s3://"):
             raise PublishLayerError(
                 "LAYER_URI_NOT_FOUND",
