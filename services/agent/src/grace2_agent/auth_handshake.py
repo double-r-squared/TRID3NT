@@ -1,35 +1,61 @@
-"""Firebase Auth verification + Persistence wiring for WS connect (job-0122).
+"""AWS Cognito ID-token verification + Persistence wiring for WS connect.
 
-Implements the agent-side of the H.5 session-validation handshake:
+Implements the agent-side of the H.5 session-validation handshake. The
+GCP→AWS migration swapped the identity provider from Firebase / GCP Identity
+Platform to AWS Cognito (email/password via the Hosted UI OIDC code flow).
+The handshake *orchestration* is unchanged because it was always provider-
+agnostic at the seam: this module produces a claims dict keyed on ``uid``,
+``authenticate_token`` reads ``claims["uid"]`` and stores it as
+``User.firebase_uid`` (a provider-agnostic IdP-sub carrier, NOT renamed to
+avoid a zero-benefit migration of the file-backed user store), and the
+canonical owner identity remains the internal ULID minted by ``new_ulid``
+(Decision 10). The Cognito ``sub`` slots in exactly where the Firebase ``uid``
+went.
 
 1. On WebSocket connect, the client sends an ``auth-token`` envelope carrying
-   its Firebase ID token (Appendix H.5).
-2. This module verifies the token via the Firebase Admin SDK
-   (``firebase_admin.auth.verify_id_token``), resolves the Firebase ``uid`` to
-   the corresponding ``UserDocument._id`` via the FR-MP-1 Persistence
-   interface, and auto-provisions the user record on first authenticated
-   connect (H.5 step 3).
-3. If verification fails OR no token arrives within 5 seconds, this module
-   provisions an **ephemeral anonymous user** (H.3 anonymous-fallback path)
-   — anonymous users have a stable ``UserDocument._id`` ULID, no
+   its Cognito **ID token** (Appendix H.5). The web client sends the ID token
+   (not the access token) — only the ID token carries ``email`` / ``name``
+   and ``token_use == "id"``.
+2. This module verifies the token against the Cognito user pool's public JWKS
+   (``cognito_verify``): RS256 signature against the matching ``kid``, plus
+   ``iss`` / ``aud`` (the app client id) / ``token_use == "id"`` / ``exp``
+   claim validation. On success it resolves the Cognito ``sub`` to the
+   corresponding ``User`` via the FR-MP-1 Persistence interface, auto-
+   provisioning on first authenticated connect (H.5 step 3).
+3. If verification fails OR no token arrives within the handshake window, this
+   module provisions an **ephemeral anonymous user** (H.3 anonymous-fallback
+   path) — anonymous users have a stable ``user_id`` ULID, no
    ``firebase_uid``, and ``is_active=True``. Cases they create flow through
    the normal ``owner_user_id`` ownership rule (H.2).
+
+The verifier is **gated behind ``GRACE2_COGNITO_USER_POOL_ID``**: when the
+pool id is unset (every current dev/demo session — AUTH_REQUIRED is OFF by
+default), the verifier returns ``None`` for every token, mirroring the old
+"Firebase not initialized" path → anonymous fallback. This keeps the live
+demo unaffected until the orchestrator injects the Cognito env + flips
+``AUTH_REQUIRED``.
 
 The module is **transport-agnostic** — it does not touch the WebSocket
 itself; ``server.py`` reads / writes envelopes and calls the functions here
 for the verification + provisioning logic. This keeps the handshake testable
 without standing up a real socket and makes mocking trivial.
 
-Firebase Admin SDK initialization happens once at agent startup (``main.py``
-via ``init_firebase_admin``). Re-initialization is idempotent —
-``firebase_admin.initialize_app`` raises ``ValueError`` on second call, which
-we swallow so test contexts can call ``init_firebase_admin`` repeatedly.
+JWKS prefetch happens once at agent startup (``main.py`` via
+``init_firebase_admin`` — name retained for the call site; it now drives the
+Cognito init). It is best-effort + log-only — the JWKS is a public HTTPS
+endpoint (no creds), and a cold-start network hiccup just drops the first
+connect to anonymous (with the gate OFF this is invisible; the cached JWKS
+warms on the next verify).
 
 Invariants this module is responsible for:
 
 - **Decision F (wire isolation).** The raw token never persists. It is
-  consumed by ``verify_id_token`` and discarded; only ``firebase_uid`` /
+  consumed by ``cognito_verify`` and discarded; only ``firebase_uid`` /
   ``user_id`` / ``tier`` survive past this module.
+- **Decision 10 (canonical id).** The owner id is the internal ULID minted by
+  ``new_ulid``; the Cognito ``sub`` is only a lookup key stored on
+  ``User.firebase_uid``. Under the gate there is NO raw-sub fall-through —
+  the sub is always resolved to a ``User`` via Persistence.
 - **Invariant 9 (no cost theater).** No cost / quota / spend surfaces.
 - **MCP canonical persistence (job-0115).** All ``UserDocument`` CRUD goes
   through ``Persistence.get_user_by_firebase_uid`` /
@@ -38,7 +64,7 @@ Invariants this module is responsible for:
 SRS references:
 
 - Appendix H.5 — session validation (this is the agent-side implementation).
-- Appendix H.3 — anonymous fallback (5-second token-arrival timeout).
+- Appendix H.3 — anonymous fallback (token-arrival timeout).
 - Appendix H.4 — tier claim resolution (``free`` default).
 - FR-AS-5 — WebSocket server speaks Appendix A (the handshake is now part of
   A.5 Connection Lifecycle).
@@ -48,6 +74,8 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
+import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
@@ -65,74 +93,244 @@ DEFAULT_AUTH_TOKEN_TIMEOUT_S: float = float(
     os.environ.get("GRACE2_AUTH_TOKEN_TIMEOUT_S", "5.0")
 )
 
-#: Firebase Admin SDK init flag — flips True after a successful initialize_app.
-_FIREBASE_INITIALIZED: bool = False
+# --------------------------------------------------------------------------- #
+# Cognito configuration — read at call time so the orchestrator can inject the
+# env via the EC2 deploy without re-import, and so dev (no env) stays anonymous.
+# --------------------------------------------------------------------------- #
+
+#: Env: the Cognito user pool id, e.g. ``us-west-2_AbCdEf123``. UNSET ⇒ the
+#: verifier returns None for every token (anonymous fallback; live demo
+#: unaffected). This is the master gate for Cognito verification.
+COGNITO_POOL_ENV = "GRACE2_COGNITO_USER_POOL_ID"
+#: Env: the SPA app client id — Cognito ID tokens carry this in ``aud``.
+COGNITO_CLIENT_ENV = "GRACE2_COGNITO_CLIENT_ID"
+#: Env: region for the JWKS / issuer URL. Falls back to AWS_REGION, then
+#: us-west-2 (the migration's home region per bedrock_adapter.py).
+COGNITO_REGION_ENV = "GRACE2_AWS_REGION"
+
+#: Clock-skew leeway (seconds) for ``exp`` / ``nbf`` / ``iat`` validation.
+_JWT_LEEWAY_S = 60
+
+#: HTTPS timeout (seconds) for the public JWKS fetch.
+_JWKS_FETCH_TIMEOUT_S = 5.0
+
+
+def _cognito_region() -> str:
+    """Resolve the Cognito region (call-time env read)."""
+    return (
+        os.environ.get(COGNITO_REGION_ENV)
+        or os.environ.get("AWS_REGION")
+        or "us-west-2"
+    )
+
+
+def _cognito_issuer(region: str, pool_id: str) -> str:
+    """Build the canonical Cognito issuer URL (also the JWKS base)."""
+    return f"https://cognito-idp.{region}.amazonaws.com/{pool_id}"
+
+
+# --------------------------------------------------------------------------- #
+# JWKS cache — module-level, keyed by issuer. Public endpoint, no creds.
+# --------------------------------------------------------------------------- #
+
+#: Maps issuer URL → {kid: jwk_dict}. Populated lazily on first verify (or
+#: prefetched at startup). A single re-fetch absorbs key rotation when an
+#: unknown ``kid`` is seen.
+_jwks_cache: dict[str, dict[str, dict[str, Any]]] = {}
+_jwks_lock = threading.Lock()
+
+
+def _fetch_jwks(issuer: str) -> dict[str, dict[str, Any]]:
+    """Fetch + parse the pool JWKS into a ``{kid: jwk}`` map.
+
+    Public HTTPS endpoint — no AWS creds required. Raises on network / parse
+    failure; callers treat any exception as "verification not possible" →
+    anonymous fallback.
+    """
+    import requests  # local import: keep module import cheap + dep optional
+
+    url = f"{issuer}/.well-known/jwks.json"
+    resp = requests.get(url, timeout=_JWKS_FETCH_TIMEOUT_S)
+    resp.raise_for_status()
+    keys = resp.json().get("keys", [])
+    return {k["kid"]: k for k in keys if "kid" in k}
+
+
+def _get_jwk(issuer: str, kid: str, *, allow_refetch: bool = True) -> dict[str, Any] | None:
+    """Return the JWK for ``kid`` from the cache, refetching once on a miss.
+
+    The single re-fetch on an unknown ``kid`` absorbs Cognito key rotation
+    without hammering the endpoint on every bad token.
+    """
+    with _jwks_lock:
+        cached = _jwks_cache.get(issuer)
+    if cached is not None and kid in cached:
+        return cached[kid]
+    if not allow_refetch:
+        return cached.get(kid) if cached else None
+    # Cache miss (cold or rotated key) — fetch once.
+    try:
+        fresh = _fetch_jwks(issuer)
+    except Exception as exc:  # noqa: BLE001 — network/parse failure is normal
+        logger.info("JWKS fetch failed for %s: %s", issuer, type(exc).__name__)
+        return cached.get(kid) if cached else None
+    with _jwks_lock:
+        _jwks_cache[issuer] = fresh
+    return fresh.get(kid)
 
 
 def init_firebase_admin() -> bool:
-    """Initialize the Firebase Admin SDK using GCP ADC.
+    """Initialize Cognito verification (JWKS prefetch). Name kept for caller.
 
-    Returns True if Firebase Admin is available + initialized, False otherwise.
+    Returns True if a Cognito user pool is configured AND its JWKS prefetch
+    succeeded, False otherwise (no pool configured, or the prefetch failed).
+    The return value is informational only — the agent serves regardless, and
+    the verifier lazily (re)fetches the JWKS on the first real verify.
 
-    Idempotent: the second call is a no-op. If ``firebase_admin`` is not
-    installed (e.g. CI without the dep), this returns False without raising —
-    the handshake then falls through to the anonymous-fallback path for every
-    connect.
-
-    Per Appendix H.1 + Decision E, GRACE-2 uses GCP Application Default
-    Credentials — no separate service-account JSON in v0.1.
+    Best-effort + log-only: there is no GCP ADC dependency anymore, so the
+    agent boots on EC2 with no Google creds. When ``GRACE2_COGNITO_USER_POOL_ID``
+    is unset (dev/demo default), this is a no-op returning False and every
+    connect falls through to the anonymous path (H.3) — exactly the old
+    "firebase_admin not installed" posture.
     """
-    global _FIREBASE_INITIALIZED
-    if _FIREBASE_INITIALIZED:
-        return True
-    try:
-        import firebase_admin
-        from firebase_admin import credentials
-
-        # ADC: firebase_admin picks up GOOGLE_APPLICATION_CREDENTIALS env, or
-        # the gcloud ADC file, or the Cloud Run service-account identity.
-        try:
-            firebase_admin.initialize_app(credentials.ApplicationDefault())
-        except ValueError as exc:
-            # Already initialized (test context, double-import); treat as
-            # success.
-            if "already exists" in str(exc).lower() or "default app" in str(exc).lower():
-                logger.debug("firebase_admin already initialized; skipping")
-            else:
-                raise
-        _FIREBASE_INITIALIZED = True
-        logger.info("firebase_admin initialized via ADC")
-        return True
-    except ImportError:
+    pool_id = os.environ.get(COGNITO_POOL_ENV, "").strip()
+    if not pool_id:
         logger.info(
-            "firebase_admin not installed; anonymous-fallback only "
-            "(install with: pip install firebase-admin)"
+            "Cognito user pool not configured (%s unset); anonymous-fallback "
+            "only (set %s to enable token verification)",
+            COGNITO_POOL_ENV,
+            COGNITO_POOL_ENV,
         )
         return False
+    region = _cognito_region()
+    issuer = _cognito_issuer(region, pool_id)
+    try:
+        jwks = _fetch_jwks(issuer)
     except Exception as exc:  # noqa: BLE001 — startup must not abort
-        logger.warning("firebase_admin init failed (%s); anonymous-fallback only", exc)
+        logger.warning(
+            "Cognito JWKS prefetch failed for %s (%s); will retry lazily on "
+            "first verify",
+            issuer,
+            exc,
+        )
         return False
+    with _jwks_lock:
+        _jwks_cache[issuer] = jwks
+    logger.info(
+        "Cognito verification initialized: issuer=%s keys=%d", issuer, len(jwks)
+    )
+    return True
+
+
+def cognito_verify(token: str) -> dict[str, Any] | None:
+    """Verify a Cognito ID token against the pool JWKS.
+
+    Returns a claims dict keyed on ``uid`` (the Cognito ``sub``) on success,
+    ``None`` on any failure. ``None`` is a normal path (anonymous fallback),
+    logged at INFO.
+
+    Verification steps (fail-closed — any failure returns ``None``):
+    1. ``GRACE2_COGNITO_USER_POOL_ID`` must be set (else None → anonymous).
+    2. Decode the JWT header; fetch the matching JWK by ``kid`` (single
+       re-fetch on a cache miss for key rotation).
+    3. Verify the RS256 signature + ``exp`` (with leeway) against the JWK,
+       requiring ``aud`` == the app client id and ``iss`` == the pool issuer.
+    4. Require ``token_use == "id"`` (reject access tokens — they carry no
+       email/name and a different audience claim).
+
+    On success returns::
+
+        {"uid": sub, "email": ..., "name": ..., "tier": ...}
+
+    so ``authenticate_token`` (which reads ``claims["uid"]`` / email / name)
+    and the ``User.firebase_uid`` lookup stay byte-identical to the Firebase
+    era — the Cognito ``sub`` becomes the stored ``firebase_uid`` lookup key.
+    """
+    pool_id = os.environ.get(COGNITO_POOL_ENV, "").strip()
+    if not pool_id:
+        # Master gate: no pool configured → anonymous fallback. Mirrors the old
+        # "_FIREBASE_INITIALIZED is False" early-return.
+        return None
+    client_id = os.environ.get(COGNITO_CLIENT_ENV, "").strip()
+    region = _cognito_region()
+    issuer = _cognito_issuer(region, pool_id)
+
+    try:
+        import jwt  # PyJWT[crypto] — installed in the agent venv
+        from jwt.algorithms import RSAAlgorithm
+
+        # 2. Header → kid. ``get_unverified_header`` does NOT validate the
+        #    signature; we use it only to select the right public key.
+        header = jwt.get_unverified_header(token)
+        kid = header.get("kid")
+        if not kid:
+            logger.info("Cognito verify: token header missing 'kid'")
+            return None
+        jwk = _get_jwk(issuer, kid)
+        if jwk is None:
+            logger.info("Cognito verify: no JWK for kid=%s (issuer=%s)", kid, issuer)
+            return None
+
+        public_key = RSAAlgorithm.from_jwk(jwk)
+
+        # 3. Verify signature + iss + exp. We validate ``aud`` ourselves below
+        #    only when a client id is configured, so a misconfigured (empty)
+        #    client id fails closed rather than silently accepting any aud.
+        decode_kwargs: dict[str, Any] = dict(
+            algorithms=["RS256"],
+            issuer=issuer,
+            leeway=_JWT_LEEWAY_S,
+            options={
+                "require": ["exp", "iss", "sub"],
+                "verify_aud": False,  # validated explicitly below
+            },
+        )
+        claims = jwt.decode(token, public_key, **decode_kwargs)
+    except Exception as exc:  # noqa: BLE001 — verification failure is normal
+        logger.info("Cognito verify failed: %s", type(exc).__name__)
+        return None
+
+    # 4. token_use must be 'id' — reject access tokens.
+    if claims.get("token_use") != "id":
+        logger.info(
+            "Cognito verify: token_use=%r (expected 'id'); rejecting",
+            claims.get("token_use"),
+        )
+        return None
+
+    # aud must equal the configured app client id. Fail closed when the client
+    # id is unset (misconfiguration) rather than accept any audience.
+    if not client_id or claims.get("aud") != client_id:
+        logger.info(
+            "Cognito verify: aud mismatch (token aud=%r, expected configured "
+            "client id)",
+            claims.get("aud"),
+        )
+        return None
+
+    sub = claims.get("sub")
+    if not sub:
+        logger.info("Cognito verify: claims missing 'sub'; rejecting")
+        return None
+
+    return {
+        "uid": sub,
+        "email": claims.get("email"),
+        "name": claims.get("name") or claims.get("cognito:username"),
+        "tier": claims.get("custom:tier", "free"),
+    }
 
 
 def _verify_id_token_sync(token: str) -> dict[str, Any] | None:
-    """Call ``firebase_admin.auth.verify_id_token`` defensively.
+    """Default production verifier — delegates to ``cognito_verify``.
 
-    Returns the decoded claims dict on success, ``None`` on any failure
-    (invalid / expired / revoked token, or firebase_admin not installed).
-    Logs the failure reason at ``INFO`` — verification failures are an
-    expected path (anonymous fallback), not an error.
+    Kept as a distinct name so ``set_verify_hook(None)`` restores the real
+    Cognito verifier (the 11 handshake tests inject lambdas returning
+    ``{"uid": ...}`` and restore this default between tests). Returns the
+    decoded claims dict on success, ``None`` on any failure (invalid /
+    expired / wrong-aud token, or no pool configured).
     """
-    if not _FIREBASE_INITIALIZED:
-        return None
-    try:
-        from firebase_admin import auth as fb_auth
-
-        # check_revoked=True per Appendix H.5 — also catches account-deletion
-        # tombstoning.
-        return fb_auth.verify_id_token(token, check_revoked=True)
-    except Exception as exc:  # noqa: BLE001 — verification failure is normal
-        logger.info("verify_id_token failed: %s", type(exc).__name__)
-        return None
+    return cognito_verify(token)
 
 
 # --------------------------------------------------------------------------- #
@@ -228,7 +426,7 @@ async def authenticate_token(
 
     gate_on = auth_required()
 
-    # 1. Anonymous fallback: no envelope, empty token, or no firebase_admin.
+    # 1. Anonymous fallback: no envelope, empty token, or no Cognito pool.
     token_str = (token_envelope.token if token_envelope else "").strip()
     if not token_str:
         # Gate ON: short-circuit BEFORE the sticky-reuse read and BEFORE any
@@ -494,9 +692,13 @@ def get_auth_token_timeout_s(default: float | None = None) -> float:
 
 __all__ = [
     "AuthResult",
+    "COGNITO_CLIENT_ENV",
+    "COGNITO_POOL_ENV",
+    "COGNITO_REGION_ENV",
     "DEFAULT_AUTH_TOKEN_TIMEOUT_S",
     "authenticate_token",
     "build_auth_ack",
+    "cognito_verify",
     "get_auth_token_timeout_s",
     "init_firebase_admin",
     "set_verify_hook",

@@ -23,7 +23,7 @@ import type { AuthUser } from "../auth";
 //    user so tests can flip auth state and re-render the guard. ──
 let currentUser: AuthUser | null = null;
 let authSubscriber: ((u: AuthUser | null) => void) | null = null;
-const signInWithGoogleMock = vi.fn<() => Promise<AuthUser | null>>();
+const signInMock = vi.fn<() => Promise<void>>();
 const signOutMock = vi.fn<() => Promise<void>>();
 
 vi.mock("../auth", () => ({
@@ -38,7 +38,10 @@ vi.mock("../auth", () => ({
       authSubscriber = null;
     };
   },
-  signInWithGoogle: () => signInWithGoogleMock(),
+  // GCP→AWS: Cognito Hosted UI redirect (email/password). useAuth now reads
+  // the generic `signIn`. The redirect navigates away; tests just assert the
+  // intent fired.
+  signIn: () => signInMock(),
   signOut: () => signOutMock(),
 }));
 
@@ -78,8 +81,8 @@ beforeEach(() => {
   currentUser = null;
   authSubscriber = null;
   mockConfigured = false;
-  signInWithGoogleMock.mockReset();
-  signInWithGoogleMock.mockResolvedValue(GOOGLE_USER);
+  signInMock.mockReset();
+  signInMock.mockResolvedValue(undefined);
   signOutMock.mockReset();
   signOutMock.mockResolvedValue(undefined);
 });
@@ -132,7 +135,7 @@ describe("AuthGuard — MODE 1: Firebase disabled (pass-through)", () => {
 // ──────────────────────── MODE 2: enabled + signed-out ──────────────────── //
 
 describe("AuthGuard — MODE 2: Firebase enabled + signed-out (sign-in surface)", () => {
-  it("renders the minimal Google sign-in surface; children NOT rendered", () => {
+  it("renders the minimal Cognito sign-in surface; children NOT rendered", () => {
     mockConfigured = true;
     currentUser = null;
     render(<AuthGuard forceConfigured={true}>{CHILD}</AuthGuard>);
@@ -140,7 +143,9 @@ describe("AuthGuard — MODE 2: Firebase enabled + signed-out (sign-in surface)"
     expect(screen.getByTestId("grace2-auth-guard-wordmark")).toHaveTextContent(
       "GRACE-2",
     );
-    expect(screen.getByTestId("grace2-auth-guard-google")).toBeInTheDocument();
+    const signInBtn = screen.getByTestId("grace2-auth-guard-signin-btn");
+    expect(signInBtn).toBeInTheDocument();
+    expect(signInBtn).toHaveTextContent(/sign in/i);
     expect(screen.getByTestId("grace2-auth-guard-privacy")).toHaveAttribute(
       "href",
       "/privacy",
@@ -165,12 +170,12 @@ describe("AuthGuard — MODE 2: Firebase enabled + signed-out (sign-in surface)"
     expect(screen.queryByTestId("app-children")).toBeNull();
   });
 
-  it("clicking 'Sign in with Google' invokes the auth signInWithGoogle helper", () => {
+  it("clicking 'Sign in / Sign up' invokes the auth signIn helper (Hosted UI redirect)", () => {
     mockConfigured = true;
     currentUser = null;
     render(<AuthGuard forceConfigured={true}>{CHILD}</AuthGuard>);
-    fireEvent.click(screen.getByTestId("grace2-auth-guard-google"));
-    expect(signInWithGoogleMock).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByTestId("grace2-auth-guard-signin-btn"));
+    expect(signInMock).toHaveBeenCalledOnce();
   });
 
   it("a successful sign-in flips the surface to children (auth-state change)", () => {

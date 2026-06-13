@@ -26,6 +26,7 @@
 // because the tool list benefits from horizontal room.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { catalogUrl as catalogUrlFromBase } from "../lib/public_base";
 
 // ---------------------------------------------------------------------------
 // Wire types (mirror the agent's /api/tool-catalog response shape).
@@ -313,19 +314,15 @@ export function deriveBadges(t: ToolCatalogTool): BadgeSpec[] {
   return badges;
 }
 
-/** Compute the FetchCatalogUrl, honouring a build-time override. */
+/** Compute the FetchCatalogUrl, honouring build-time overrides.
+ *
+ * Delegates to the canonical URL-derivation seam (lib/public_base.ts). That
+ * preserves the prior precedence exactly — explicit VITE_GRACE2_HTTP_URL wins,
+ * then the sprint-14-aws VITE_GRACE2_PUBLIC_BASE single-origin seam, then the
+ * byte-identical window-derived <proto>//<host>:8766 default — while letting a
+ * CloudFront/HTTPS deploy collapse the catalog onto https://<domain>. */
 function defaultCatalogUrl(): string {
-  const override = (import.meta.env.VITE_GRACE2_HTTP_URL as string | undefined) ?? null;
-  if (override) {
-    return override.replace(/\/+$/, "") + "/api/tool-catalog";
-  }
-  // Default: derive from window.location (same host, port 8766) so the dev
-  // server and a deployed build both work without explicit config.
-  if (typeof window !== "undefined") {
-    const { protocol, hostname } = window.location;
-    return `${protocol}//${hostname}:8766/api/tool-catalog`;
-  }
-  return "http://localhost:8766/api/tool-catalog";
+  return catalogUrlFromBase();
 }
 
 // ---------------------------------------------------------------------------

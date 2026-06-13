@@ -47,6 +47,7 @@ interface MapMock {
   getStyle: ReturnType<typeof vi.fn>;
   _addedLayers: Set<string>;
   _addedSources: Set<string>;
+  _sourceSetData: Map<string, ReturnType<typeof vi.fn>>;
   // job-0152: captures constructor options to assert attributionControl: false
   _constructorOptions: Record<string, unknown>;
 }
@@ -64,8 +65,14 @@ vi.mock("maplibre-gl", () => {
     _addedLayers = new Set<string>(["qgis-basemap", "osm-fallback-basemap"]);
     _addedSources = new Set<string>(["qgis-wms", "osm-fallback"]);
 
+    // Per-source setData stubs so the analysis-extent replace branch
+    // (getSource(...).setData) behaves like a real GeoJSONSource. Raster
+    // sources never call setData, so a default no-op stub is harmless there.
+    _sourceSetData = new Map<string, ReturnType<typeof vi.fn>>();
+
     addSource = vi.fn((id: string, _def: unknown) => {
       this._addedSources.add(id);
+      this._sourceSetData.set(id, vi.fn());
     });
     addLayer = vi.fn((def: { id: string }, _beforeId?: string) => {
       this._addedLayers.add(def.id);
@@ -88,7 +95,11 @@ vi.mock("maplibre-gl", () => {
     isStyleLoaded = vi.fn().mockReturnValue(true);
     // getLayer / getSource consult the internal tracking sets.
     getLayer = vi.fn((id: string) => (this._addedLayers.has(id) ? { id } : null));
-    getSource = vi.fn((id: string) => (this._addedSources.has(id) ? { type: "raster" } : null));
+    getSource = vi.fn((id: string) =>
+      this._addedSources.has(id)
+        ? { type: "geojson", setData: this._sourceSetData.get(id) ?? vi.fn() }
+        : null,
+    );
     remove = vi.fn();
     // Event handlers — applyLatest attaches `once("idle", ...)` after every
     // session-state push; the mock just no-ops (synchronous apply path is
@@ -354,6 +365,218 @@ describe("MapView — map-command zoom-to handler (job-0068 change 5 client side
     );
     expect(addedLayerIds).toContain("grace2-analysis-extent-fill");
     expect(addedLayerIds).toContain("grace2-analysis-extent-line");
+  });
+
+  // --- AWS-migration hardening regression tests (bbox track) ------------- //
+  // These cover the real live failure mode the prior mocks hid: the dashed
+  // rectangle was wired but silently never rendered because a throw from
+  // drawAnalysisExtent was swallowed by a bare `catch {}`. The fix re-schedules
+  // the draw on the next idle (bounded) and re-asserts on moveend after the
+  // camera flight. Driven through the map-command path (not by calling
+  // drawAnalysisExtent directly) so the handler itself is exercised.
+
+  it("re-schedules the extent draw on once('idle') when drawAnalysisExtent throws (no silent swallow)", () => {
+    const mapCmdBus = makeMapCmdBus();
+    render(
+      <MapView
+        subscribeMapCommand={mapCmdBus.subscribe as MapCommandSubscribeFunc}
+      />,
+    );
+    const m = lastMapMock!;
+
+    // Make the FIRST addLayer throw (the live mid-style-mutation race). The
+    // throw must NOT be swallowed permanently — the handler must arm a retry.
+    m.addLayer.mockImplementationOnce(() => {
+      throw new Error("Style is not done loading");
+    });
+
+    act(() => {
+      mapCmdBus.push({
+        command: "zoom-to",
+        args: { bbox: [-105.3, 39.95, -105.2, 40.05] },
+      });
+    });
+
+    // A once('idle', ...) retry must have been armed (the old code swallowed
+    // and armed nothing). moveend is also armed; assert idle specifically.
+    const idleRetry = m.once.mock.calls.find(
+      (c) => (c as MockCallArgs)[0] === "idle",
+    ) as MockCallArgs | undefined;
+    expect(idleRetry).toBeDefined();
+
+    // On the retry, addLayer no longer throws — the extent layers land.
+    m.addLayer.mockClear();
+    act(() => {
+      (idleRetry![1] as () => void)();
+    });
+    const retriedLayerIds = m.addLayer.mock.calls.map(
+      (c) => (c[0] as { id: string }).id,
+    );
+    expect(retriedLayerIds).toContain("grace2-analysis-extent-fill");
+    expect(retriedLayerIds).toContain("grace2-analysis-extent-line");
+  });
+
+  it("re-asserts the extent on the moveend after the camera flight settles", () => {
+    const mapCmdBus = makeMapCmdBus();
+    render(
+      <MapView
+        subscribeMapCommand={mapCmdBus.subscribe as MapCommandSubscribeFunc}
+      />,
+    );
+    const m = lastMapMock!;
+
+    act(() => {
+      mapCmdBus.push({
+        command: "zoom-to",
+        args: { bbox: [-81.91, 26.55, -81.75, 26.69] },
+      });
+    });
+
+    // A moveend redraw must be armed (covers the source-add churn during the
+    // 1200ms fitBounds animation).
+    const moveend = m.once.mock.calls.find(
+      (c) => (c as MockCallArgs)[0] === "moveend",
+    ) as MockCallArgs | undefined;
+    expect(moveend).toBeDefined();
+
+    // Running it is idempotent: the source already exists so it setData-replaces
+    // and re-asserts (heals) any missing layers — never double-adds the source.
+    m.addSource.mockClear();
+    act(() => {
+      (moveend![1] as () => void)();
+    });
+    expect(
+      m.addSource.mock.calls.filter(
+        (c) => (c as MockCallArgs)[0] === "grace2-analysis-extent",
+      ).length,
+    ).toBe(0);
+    // The extent source + both layers are present after the flight.
+    expect(m._addedSources.has("grace2-analysis-extent")).toBe(true);
+    expect(m._addedLayers.has("grace2-analysis-extent-fill")).toBe(true);
+    expect(m._addedLayers.has("grace2-analysis-extent-line")).toBe(true);
+  });
+
+  it("defers the extent draw to once('idle') when the style is not yet loaded (case-reopen replay race)", () => {
+    const mapCmdBus = makeMapCmdBus();
+    render(
+      <MapView
+        subscribeMapCommand={mapCmdBus.subscribe as MapCommandSubscribeFunc}
+      />,
+    );
+    const m = lastMapMock!;
+    // Style not loaded when the zoom-to arrives (replay before first load).
+    m.isStyleLoaded.mockReturnValue(false);
+
+    act(() => {
+      mapCmdBus.push({
+        command: "zoom-to",
+        args: { bbox: [-105.3, 39.95, -105.2, 40.05] },
+      });
+    });
+
+    // Nothing drawn synchronously; an idle deferral is armed.
+    const addedSourceIds = m.addSource.mock.calls.map((c) => c[0]);
+    expect(addedSourceIds).not.toContain("grace2-analysis-extent");
+    const idleDefer = m.once.mock.calls.find(
+      (c) => (c as MockCallArgs)[0] === "idle",
+    ) as MockCallArgs | undefined;
+    expect(idleDefer).toBeDefined();
+
+    // Style finishes loading; the deferred draw lands the extent.
+    m.isStyleLoaded.mockReturnValue(true);
+    act(() => {
+      (idleDefer![1] as () => void)();
+    });
+    expect(
+      m.addSource.mock.calls.map((c) => c[0]),
+    ).toContain("grace2-analysis-extent");
+    const layerIds = m.addLayer.mock.calls.map(
+      (c) => (c[0] as { id: string }).id,
+    );
+    expect(layerIds).toContain("grace2-analysis-extent-fill");
+    expect(layerIds).toContain("grace2-analysis-extent-line");
+  });
+
+  it("REPLACES the extent (setData, no second source add) on a second zoom-to with a new bbox", () => {
+    const mapCmdBus = makeMapCmdBus();
+    render(
+      <MapView
+        subscribeMapCommand={mapCmdBus.subscribe as MapCommandSubscribeFunc}
+      />,
+    );
+    const m = lastMapMock!;
+
+    act(() => {
+      mapCmdBus.push({
+        command: "zoom-to",
+        args: { bbox: [-81.91, 26.55, -81.75, 26.69] },
+      });
+    });
+    // First zoom-to added the source once.
+    expect(
+      m.addSource.mock.calls.filter(
+        (c) => (c as MockCallArgs)[0] === "grace2-analysis-extent",
+      ).length,
+    ).toBe(1);
+
+    m.addSource.mockClear();
+    const setData = m._sourceSetData.get("grace2-analysis-extent")!;
+
+    act(() => {
+      mapCmdBus.push({
+        command: "zoom-to",
+        args: { bbox: [-122.5, 37.7, -122.3, 37.85] },
+      });
+    });
+
+    // No second source add — the existing source's data is swapped (one extent
+    // at a time, v0.1). setData carries the NEW bbox's first corner.
+    expect(
+      m.addSource.mock.calls.filter(
+        (c) => (c as MockCallArgs)[0] === "grace2-analysis-extent",
+      ).length,
+    ).toBe(0);
+    expect(setData).toHaveBeenCalled();
+    const swapped = setData.mock.calls[setData.mock.calls.length - 1]![0] as {
+      geometry: { coordinates: number[][][] };
+    };
+    expect(swapped.geometry.coordinates[0]![0]).toEqual([-122.5, 37.7]);
+  });
+
+  it("self-heals a half-built extent: re-adds a missing line layer when the source already exists", () => {
+    const mapCmdBus = makeMapCmdBus();
+    render(
+      <MapView
+        subscribeMapCommand={mapCmdBus.subscribe as MapCommandSubscribeFunc}
+      />,
+    );
+    const m = lastMapMock!;
+
+    act(() => {
+      mapCmdBus.push({
+        command: "zoom-to",
+        args: { bbox: [-81.91, 26.55, -81.75, 26.69] },
+      });
+    });
+
+    // Simulate a half-built prior attempt: the source + fill survived but the
+    // line layer is gone (a throw between the two addLayer calls).
+    m._addedLayers.delete("grace2-analysis-extent-line");
+    m.addLayer.mockClear();
+
+    act(() => {
+      mapCmdBus.push({
+        command: "zoom-to",
+        args: { bbox: [-81.91, 26.55, -81.75, 26.69] },
+      });
+    });
+
+    // Only the MISSING line layer is re-added; the present fill is not re-added.
+    const reAdded = m.addLayer.mock.calls.map(
+      (c) => (c[0] as { id: string }).id,
+    );
+    expect(reAdded).toContain("grace2-analysis-extent-line");
+    expect(reAdded).not.toContain("grace2-analysis-extent-fill");
   });
 
   it("warns (not throws) for unrecognised map-commands", () => {
@@ -1278,19 +1501,28 @@ describe("layer-control helpers (job-0258)", () => {
 
 // --- analysis-extent rectangle (job-0294) -------------------------------- //
 
-/** Fake map that tracks geojson source add + setData and layer adds. */
+/** Fake map that tracks geojson source add + setData and layer adds.
+ *  AWS-migration hardening (bbox track): drawAnalysisExtent now existence-
+ *  guards each addLayer via getLayer, so the fake must track layers too. */
 function makeExtentMap() {
   const sources = new Map<string, { setData: ReturnType<typeof vi.fn> }>();
+  const layers = new Set<string>();
   return {
     sources,
+    layers,
     getSource: vi.fn((id: string) => sources.get(id)),
+    getLayer: vi.fn((id: string) => (layers.has(id) ? { id } : undefined)),
     addSource: vi.fn((id: string) => {
       sources.set(id, { setData: vi.fn() });
     }),
-    addLayer: vi.fn(),
+    addLayer: vi.fn((def: { id: string }) => {
+      layers.add(def.id);
+    }),
   } as unknown as import("maplibre-gl").Map & {
     sources: Map<string, { setData: ReturnType<typeof vi.fn> }>;
+    layers: Set<string>;
     getSource: ReturnType<typeof vi.fn>;
+    getLayer: ReturnType<typeof vi.fn>;
     addSource: ReturnType<typeof vi.fn>;
     addLayer: ReturnType<typeof vi.fn>;
   };
@@ -1352,6 +1584,34 @@ describe("drawAnalysisExtent (job-0294)", () => {
       geometry: { coordinates: number[][][] };
     };
     expect(swapped.geometry.coordinates[0]![0]).toEqual([NEXT[0], NEXT[1]]);
+  });
+
+  it("self-heals a half-built extent: source present but line layer missing → re-adds ONLY the line", () => {
+    const m = makeExtentMap();
+    drawAnalysisExtent(m, BBOX);
+    // Simulate a prior attempt that threw between the two addLayer calls: the
+    // source + fill survived, the dashed line did not. (The live failure mode
+    // the old early-return-on-source-exists could never recover from.)
+    m.layers.delete("grace2-analysis-extent-line");
+    m.addLayer.mockClear();
+
+    drawAnalysisExtent(m, BBOX);
+
+    // setData replaced the data; only the MISSING line layer was re-added.
+    const src = m.sources.get("grace2-analysis-extent")!;
+    expect(src.setData).toHaveBeenCalled();
+    const reAdded = m.addLayer.mock.calls.map((c) => (c[0] as { id: string }).id);
+    expect(reAdded).toEqual(["grace2-analysis-extent-line"]);
+  });
+
+  it("is idempotent when both layers already exist (no-op re-add, data swapped)", () => {
+    const m = makeExtentMap();
+    drawAnalysisExtent(m, BBOX);
+    m.addLayer.mockClear();
+    drawAnalysisExtent(m, BBOX);
+    // Source + both layers intact → no addLayer, just a setData replace.
+    expect(m.addLayer).not.toHaveBeenCalled();
+    expect(m.sources.get("grace2-analysis-extent")!.setData).toHaveBeenCalled();
   });
 });
 

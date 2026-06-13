@@ -7,19 +7,19 @@
 //
 // ┌──────────────────────── THREE-MODE MATRIX (load-bearing) ────────────────┐
 // │                                                                          │
-// │  Firebase DISABLED  (VITE_FIREBASE_PROJECT_ID absent)                    │
+// │  Cognito DISABLED  (VITE_COGNITO_* absent)                               │
 // │      → render `children` UNCHANGED. Pixel-identical to today. This is    │
 // │        the live tailnet demo path and EVERY dev session; it must not     │
 // │        change by a single pixel. The guard is a transparent pass-through.│
 // │                                                                          │
-// │  Firebase ENABLED + no signed-in user  (or auth expired — 4401)          │
-// │      → render the minimal sign-in surface: GRACE-2 wordmark, "Sign in    │
-// │        with Google", a /privacy link. NO "continue as anonymous" here —  │
-// │        Decision 6 (the auth.ts anonymous helper stays for dev/tests; it  │
-// │        is simply never surfaced in this prod gate).                      │
+// │  Cognito ENABLED + no signed-in user  (or auth expired — 4401)           │
+// │      → render the minimal sign-in surface: GRACE-2 wordmark, "Sign in /  │
+// │        Sign up" (Cognito Hosted UI, email/password), a /privacy link. NO │
+// │        "continue as anonymous" here — Decision 6 (the auth.ts anonymous  │
+// │        helper stays for dev/tests; it is simply never surfaced here).    │
 // │                                                                          │
-// │  Firebase ENABLED + signed-in user                                       │
-// │      → render `children`. The Firebase ID token flows to the agent over  │
+// │  Cognito ENABLED + signed-in user                                        │
+// │      → render `children`. The Cognito ID token flows to the agent over   │
 // │        the EXISTING ws.ts `auth-token` envelope path (unchanged here).   │
 // │                                                                          │
 // └──────────────────────────────────────────────────────────────────────────┘
@@ -173,26 +173,27 @@ export function AuthGuard({
   authExpired = false,
   forceConfigured,
 }: AuthGuardProps): JSX.Element {
-  const { user, resolved, signInWithGoogle, signOut } = useAuth();
+  const { user, resolved, signIn, signOut } = useAuth();
   const [busy, setBusy] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
   const configured =
     forceConfigured !== undefined ? forceConfigured : isFirebaseConfigured();
 
-  const handleGoogle = useCallback(async (): Promise<void> => {
+  const handleSignIn = useCallback(async (): Promise<void> => {
     setBusy(true);
     setError(null);
     try {
-      await signInWithGoogle();
-      // The useAuth subscription flips `user` non-null and the guard re-renders
-      // into `children`. Nothing else to do here.
+      // Redirects to the Cognito Hosted UI (email/password). The browser
+      // navigates away; on return the /callback handler in App.tsx exchanges
+      // the code and the useAuth subscription flips `user` non-null.
+      await signIn();
     } catch (e) {
       setError((e as Error).message || "Sign-in failed");
     } finally {
       setBusy(false);
     }
-  }, [signInWithGoogle]);
+  }, [signIn]);
 
   const handleSignOut = useCallback(async (): Promise<void> => {
     try {
@@ -246,17 +247,17 @@ export function AuthGuard({
           )}
 
           <button
-            data-testid="grace2-auth-guard-google"
+            data-testid="grace2-auth-guard-signin-btn"
             disabled={busy}
-            onClick={() => void handleGoogle()}
+            onClick={() => void handleSignIn()}
             style={{
               ...googleButtonStyle,
               opacity: busy ? 0.55 : 1,
               cursor: busy ? "not-allowed" : "pointer",
             }}
-            aria-label="Sign in with Google"
+            aria-label="Sign in or sign up"
           >
-            Sign in with Google
+            Sign in / Sign up
           </button>
 
           {error && (

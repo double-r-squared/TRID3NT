@@ -68,7 +68,8 @@ import {
   AuthUser,
   onAuthChanged,
   signOut as authSignOut,
-  signInWithGoogle,
+  signIn as authSignIn,
+  handleRedirectCallback,
 } from "./auth";
 import { GraceWs } from "./ws";
 import { SourceCandidatePayload } from "./lib/source_suggestion_suppression";
@@ -245,6 +246,36 @@ export function App(): JSX.Element {
   const [authEpoch, setAuthEpoch] = useState<number>(0);
   const authExpiredRef = useRef<boolean>(false);
   authExpiredRef.current = authExpired;
+
+  // GCP→AWS migration — Cognito Hosted UI OAuth /callback handler. On boot, if
+  // the URL carries a `?code=` (the authorization-code returned by the Hosted
+  // UI), exchange it for tokens via auth.ts, then strip the query so a reload
+  // doesn't re-trigger the exchange. onAuthChanged (below) flips authUser once
+  // the token set lands. No-op when there is no code / Cognito is disabled, so
+  // the dev/tailnet pass-through path is untouched.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    if (!params.has("code")) return;
+    void (async () => {
+      try {
+        await handleRedirectCallback();
+      } catch {
+        // Exchange failures drop to the sign-in surface on next render.
+      } finally {
+        // Strip ?code (+ ?state) from the URL regardless of outcome.
+        const url = new URL(window.location.href);
+        url.searchParams.delete("code");
+        url.searchParams.delete("state");
+        window.history.replaceState(
+          {},
+          document.title,
+          url.pathname + url.search + url.hash,
+        );
+      }
+    })();
+  }, []);
+
   useEffect(() => {
     const unsub = onAuthChanged((u) => {
       setAuthUser(u);
@@ -300,13 +331,15 @@ export function App(): JSX.Element {
     setAnonymousAccepted(false);
   }, []);
 
-  // Sign-in handler routed through Settings + SaveGate.
+  // Sign-in handler routed through Settings + SaveGate. Redirects to the
+  // Cognito Hosted UI (email/password); the browser navigates away and the
+  // /callback effect below completes the round-trip on return.
   const handleSignInRequest = useCallback(() => {
     void (async () => {
       try {
-        await signInWithGoogle();
+        await authSignIn();
       } catch {
-        // Sign-in errors surface via Firebase's own UI; nothing to do.
+        // Sign-in errors surface on the gate surface; nothing to do here.
       }
     })();
   }, []);

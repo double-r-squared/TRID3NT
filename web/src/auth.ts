@@ -1,71 +1,134 @@
-// GRACE-2 web — Firebase Auth client (job-0123, sprint-12-mega Wave 2).
+// GRACE-2 web — AWS Cognito Auth client (GCP→AWS migration).
 //
-// Implements Appendix H of the SRS (Firebase Authentication as the GRACE-2
-// identity provider; Decision P). The client surface is intentionally narrow:
-//   - lazy initialization (no Firebase init unless `VITE_FIREBASE_PROJECT_ID`
-//     is set, so the existing dev path still boots against a local ws agent
-//     with no Firebase project provisioned)
-//   - sign-in helpers for Google (popup) and anonymous flows (H.3 landing UX)
-//   - sign-out helper
-//   - ID-token retrieval for the WebSocket connect handshake (H.5)
-//   - subscribe-to-auth-state-changes shim so React can rerender without
-//     leaking Firebase types beyond this module
+// Replaces the Firebase client with an AWS Cognito Hosted UI OIDC
+// authorization-code-flow (with PKCE) client behind the SAME exported surface
+// the rest of the app already consumes:
+//   - isFirebaseConfigured()  — kept as the name so AuthGuard / AuthGate /
+//                                useAuth need no rename. Now reports whether the
+//                                Cognito Hosted UI is configured.
+//   - authStatus()            — synchronous init-status read.
+//   - initAuth()              — restores any persisted session (no network).
+//   - onAuthChanged(cb)       — fires the current AuthUser | null.
+//   - getIdToken(forceRefresh)— returns the stored Cognito ID token (refreshing
+//                                via the refresh_token grant when near expiry).
+//   - signIn()                — redirects to the Hosted UI authorize endpoint
+//                                (email/password sign-up + confirm + sign-in).
+//   - signInWithGoogle()      — alias of signIn() so existing imports keep
+//                                building; the Hosted UI is email/password.
+//   - signOut()               — redirects to the Hosted UI /logout.
+//   - handleRedirectCallback()— exchanges the ?code= for tokens on /callback.
+//   - __setAuthForTesting()   — unit-test seam (kept; takes an AuthUser | null).
+//   - AuthUser shape          — unchanged, so AuthGuard/useAuth/ws.ts stay aligned.
 //
-// This module never persists user records — that's the agent's job (FR-MP-1
-// `Persistence.upsert_user`). The web client is a credential-issuing client
-// only, per Invariant 1 (web consumes; no client-side number generation).
+// Decision F (wire isolation) is preserved: only the ID token (a JWT) crosses
+// to the agent on the ws auth-token frame; the refresh token never leaves the
+// browser. The agent verifies the ID token against the Cognito JWKS.
 //
-// Anonymous flow note (H.3): `signInAnonymously` issues a stable Firebase
-// `uid` + ID token without credentials. The kickoff describes this as
-// "skip and let server fall back to anonymous" — that's slightly different
-// from H.3's "always sign in as anonymous on first visit." We implement BOTH
-// paths: the UI offers a "Continue as anonymous" button (explicit user
-// choice; matches kickoff #3), AND if no auth state is present after a
-// short window, ws.ts treats it as anonymous-mode (skip auth-token; matches
-// kickoff #4). H.3's "auto-anonymous-on-first-visit" is a Wave 2+ UX
-// refinement surfaced as OQ-0123-AUTO-ANON-DEFAULT.
+// Disabled mode: when VITE_COGNITO_USER_POOL_ID / VITE_COGNITO_CLIENT_ID /
+// VITE_COGNITO_DOMAIN are not all set, isFirebaseConfigured() returns false and
+// the app is in anonymous-only / pass-through mode (the load-bearing dev /
+// tailnet path) — byte-identical to the old Firebase-disabled posture. This is
+// the default so the live demo is unaffected until the orchestrator injects the
+// VITE_COGNITO_* env and rebuilds.
 
-import type { Auth, User as FirebaseUser } from "firebase/auth";
-
-/** Minimal user-facing identity shape exposed to React. Decoupled from Firebase's `User` so the rest of the app stays library-agnostic. */
+/** Minimal user-facing identity shape exposed to React. Decoupled from the IdP so the rest of the app stays library-agnostic. */
 export interface AuthUser {
-  /** Firebase uid; stable across token refreshes and anonymous→authenticated upgrade. */
+  /** IdP subject (Cognito `sub`); stable across token refreshes. Stored as the agent's lookup key. */
   uid: string;
-  /** Display name (Google: real name; anonymous: null). */
+  /** Display name (Cognito `name` claim; null when absent). */
   displayName: string | null;
-  /** Email (Google: real email; anonymous: null). */
+  /** Email (Cognito `email` claim; null when absent). */
   email: string | null;
-  /** Photo URL (Google: profile picture; anonymous: null). */
+  /** Photo URL — Cognito email/password has none; always null. Kept for shape parity. */
   photoURL: string | null;
-  /** True for anonymous-sign-in sessions. H.3 anonymous Cases own `owner_user_id = uid` just like authenticated. */
+  /** True for anonymous sessions. Cognito Hosted UI sign-in is always non-anonymous. */
   isAnonymous: boolean;
 }
 
-/** Connection status of the Firebase Auth subsystem. */
+/** Connection status of the auth subsystem. */
 export type AuthInitStatus =
-  | "disabled" // VITE_FIREBASE_PROJECT_ID absent — local dev / anonymous-only mode
+  | "disabled" // VITE_COGNITO_* absent — local dev / anonymous-only mode
   | "initializing"
   | "ready"
   | "failed";
 
-/** Test seam: a fake Firebase Auth object can be injected before `initAuth()` is called. */
-let injectedAuth: Auth | null = null;
-/** Test seam: prevents the real Firebase SDK from being imported in unit tests. */
-export function __setAuthForTesting(fake: Auth | null): void {
-  injectedAuth = fake;
-  cachedAuth = fake;
-  cachedInitStatus = fake ? "ready" : "disabled";
+// --------------------------------------------------------------------------- //
+// Configuration (Vite env). All three must be set to enable Cognito.
+// --------------------------------------------------------------------------- //
+
+interface CognitoConfig {
+  poolId: string;
+  clientId: string;
+  /** Hosted UI domain, e.g. `grace2-auth.auth.us-west-2.amazoncognito.com`. */
+  domain: string;
+  region: string;
+  /** Redirect URI registered as a Hosted UI callback URL. */
+  redirectUri: string;
 }
 
-let cachedAuth: Auth | null = null;
-let cachedInitStatus: AuthInitStatus = "disabled";
-let initPromise: Promise<Auth | null> | null = null;
+function readConfig(): CognitoConfig {
+  const env = import.meta.env;
+  const region = ((env.VITE_COGNITO_REGION as string | undefined) ?? "us-west-2") || "us-west-2";
+  let redirectUri = (env.VITE_COGNITO_REDIRECT_URI as string | undefined) ?? "";
+  if (!redirectUri && typeof window !== "undefined" && window.location?.origin) {
+    // Default the redirect to the app origin root so a sensible value exists
+    // when the env var is omitted (must still match a registered callback URL).
+    redirectUri = `${window.location.origin}/`;
+  }
+  return {
+    poolId: ((env.VITE_COGNITO_USER_POOL_ID as string | undefined) ?? "") as string,
+    clientId: ((env.VITE_COGNITO_CLIENT_ID as string | undefined) ?? "") as string,
+    domain: ((env.VITE_COGNITO_DOMAIN as string | undefined) ?? "") as string,
+    region,
+    redirectUri,
+  };
+}
 
-/** Are the required Vite env vars set so Firebase can be initialised? */
+/**
+ * Are the required Vite env vars set so Cognito Hosted UI can be used?
+ *
+ * Name retained from the Firebase era so AuthGuard / AuthGate / useAuth call
+ * sites need no rename. Returns true only when pool id + client id + domain are
+ * all present; absence ⇒ disabled / anonymous-only mode (pass-through).
+ */
 export function isFirebaseConfigured(): boolean {
-  const projectId = (import.meta.env.VITE_FIREBASE_PROJECT_ID ?? "") as string;
-  const apiKey = (import.meta.env.VITE_FIREBASE_API_KEY ?? "") as string;
-  return projectId.length > 0 && apiKey.length > 0;
+  const c = readConfig();
+  return c.poolId.length > 0 && c.clientId.length > 0 && c.domain.length > 0;
+}
+
+// --------------------------------------------------------------------------- //
+// In-memory + sessionStorage token store (survives reload within the tab).
+// --------------------------------------------------------------------------- //
+
+interface TokenSet {
+  idToken: string;
+  accessToken: string | null;
+  refreshToken: string | null;
+  /** Epoch ms when the ID token expires (from the `exp` claim). */
+  expiresAt: number;
+}
+
+const SS_TOKENS = "grace2_cognito_tokens";
+const SS_PKCE_VERIFIER = "grace2_cognito_pkce_verifier";
+
+let injectedUser: AuthUser | null = null;
+let injectedActive = false;
+
+let cachedTokens: TokenSet | null = null;
+let cachedUser: AuthUser | null = null;
+let cachedInitStatus: AuthInitStatus = "disabled";
+let initialized = false;
+
+const subscribers = new Set<(u: AuthUser | null) => void>();
+
+/** Test seam: inject a fake signed-in user (or null) without a real Cognito pool. */
+export function __setAuthForTesting(user: AuthUser | null): void {
+  injectedUser = user;
+  injectedActive = true;
+  cachedUser = user;
+  cachedInitStatus = user ? "ready" : "disabled";
+  initialized = true;
+  for (const cb of subscribers) cb(user);
 }
 
 /** Current init status (synchronous read). */
@@ -73,160 +136,377 @@ export function authStatus(): AuthInitStatus {
   return cachedInitStatus;
 }
 
+// --------------------------------------------------------------------------- //
+// JWT helpers (no signature verification — the agent does that against JWKS).
+// --------------------------------------------------------------------------- //
+
+function base64UrlDecode(input: string): string {
+  const pad = input.length % 4 === 0 ? "" : "=".repeat(4 - (input.length % 4));
+  const b64 = (input + pad).replace(/-/g, "+").replace(/_/g, "/");
+  if (typeof atob === "function") return atob(b64);
+  // Node / SSR fallback.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (globalThis as any).Buffer.from(b64, "base64").toString("binary");
+}
+
+function decodeJwtClaims(token: string): Record<string, unknown> | null {
+  try {
+    const parts = token.split(".");
+    const payload = parts[1];
+    if (!payload) return null;
+    const json = decodeURIComponent(
+      Array.prototype.map
+        .call(base64UrlDecode(payload), (c: string) => {
+          return "%" + ("00" + c.charCodeAt(0).toString(16)).slice(-2);
+        })
+        .join(""),
+    );
+    return JSON.parse(json) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function userFromIdToken(idToken: string): AuthUser | null {
+  const claims = decodeJwtClaims(idToken);
+  if (!claims || typeof claims.sub !== "string") return null;
+  return {
+    uid: claims.sub,
+    displayName: (claims.name as string | undefined) ?? null,
+    email: (claims.email as string | undefined) ?? null,
+    photoURL: null,
+    isAnonymous: false,
+  };
+}
+
+function expiresAtFromIdToken(idToken: string): number {
+  const claims = decodeJwtClaims(idToken);
+  const exp = claims && typeof claims.exp === "number" ? claims.exp : 0;
+  return exp * 1000;
+}
+
+// --------------------------------------------------------------------------- //
+// Token persistence.
+// --------------------------------------------------------------------------- //
+
+function loadTokens(): TokenSet | null {
+  try {
+    const raw = sessionStorage.getItem(SS_TOKENS);
+    if (!raw) return null;
+    const t = JSON.parse(raw) as TokenSet;
+    if (!t.idToken) return null;
+    return t;
+  } catch {
+    return null;
+  }
+}
+
+function storeTokens(t: TokenSet | null): void {
+  cachedTokens = t;
+  try {
+    if (t) sessionStorage.setItem(SS_TOKENS, JSON.stringify(t));
+    else sessionStorage.removeItem(SS_TOKENS);
+  } catch {
+    // sessionStorage unavailable (private mode) — proceed in-memory only.
+  }
+}
+
+function setSession(t: TokenSet | null): void {
+  storeTokens(t);
+  cachedUser = t ? userFromIdToken(t.idToken) : null;
+  for (const cb of subscribers) cb(cachedUser);
+}
+
+// --------------------------------------------------------------------------- //
+// PKCE helpers.
+// --------------------------------------------------------------------------- //
+
+function randomString(bytes = 48): string {
+  const arr = new Uint8Array(bytes);
+  crypto.getRandomValues(arr);
+  let s = "";
+  for (const b of arr) s += String.fromCharCode(b);
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+async function sha256Base64Url(input: string): Promise<string> {
+  const data = new TextEncoder().encode(input);
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  let s = "";
+  const view = new Uint8Array(digest);
+  for (const b of view) s += String.fromCharCode(b);
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+// --------------------------------------------------------------------------- //
+// Public surface.
+// --------------------------------------------------------------------------- //
+
 /**
- * Initialise Firebase Auth lazily.
+ * Initialise the auth subsystem. No network: it restores any token set
+ * persisted in sessionStorage (so a reload keeps the signed-in session), or
+ * reports "disabled" when Cognito env vars are absent.
  *
- * Returns the `Auth` instance on success, `null` on `disabled` (env vars
- * absent — anonymous-only mode). Throws only on configured-but-failed init;
- * callers should let that bubble to the React error boundary.
- *
- * Idempotent: repeated calls return the cached promise.
+ * Idempotent.
  */
-export async function initAuth(): Promise<Auth | null> {
-  if (cachedAuth) return cachedAuth;
-  if (injectedAuth) return injectedAuth;
-  if (initPromise) return initPromise;
+export async function initAuth(): Promise<void> {
+  if (injectedActive) return;
+  if (initialized) return;
+  initialized = true;
 
   if (!isFirebaseConfigured()) {
     cachedInitStatus = "disabled";
-    return null;
+    cachedTokens = null;
+    cachedUser = null;
+    return;
   }
 
   cachedInitStatus = "initializing";
-  initPromise = (async () => {
-    try {
-      const { initializeApp, getApps } = await import("firebase/app");
-      const { getAuth } = await import("firebase/auth");
-      const config = {
-        apiKey: import.meta.env.VITE_FIREBASE_API_KEY as string,
-        authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN as string,
-        projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID as string,
-        appId: (import.meta.env.VITE_FIREBASE_APP_ID ?? "") as string,
-        messagingSenderId: (import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID ??
-          "") as string,
-      };
-      const app = getApps().length > 0 ? getApps()[0] : initializeApp(config);
-      const auth = getAuth(app);
-      cachedAuth = auth;
-      cachedInitStatus = "ready";
-      return auth;
-    } catch (err) {
-      cachedInitStatus = "failed";
-      // eslint-disable-next-line no-console
-      console.error("[auth] Firebase init failed:", err);
-      throw err;
+  const t = loadTokens();
+  if (t && t.expiresAt > Date.now()) {
+    cachedTokens = t;
+    cachedUser = userFromIdToken(t.idToken);
+  } else if (t && t.refreshToken) {
+    // Persisted token expired but we hold a refresh token — try to refresh.
+    const refreshed = await refreshTokens(t.refreshToken).catch(() => null);
+    if (refreshed) {
+      cachedTokens = refreshed;
+      cachedUser = userFromIdToken(refreshed.idToken);
+    } else {
+      storeTokens(null);
+      cachedUser = null;
     }
-  })();
-  return initPromise;
-}
-
-/** Map the Firebase `User` object onto the library-agnostic `AuthUser` shape. */
-function adaptUser(u: FirebaseUser | null): AuthUser | null {
-  if (!u) return null;
-  return {
-    uid: u.uid,
-    displayName: u.displayName,
-    email: u.email,
-    photoURL: u.photoURL,
-    isAnonymous: u.isAnonymous,
-  };
+  } else {
+    cachedTokens = null;
+    cachedUser = null;
+  }
+  cachedInitStatus = "ready";
 }
 
 /**
- * Subscribe to Firebase Auth state changes.
+ * Subscribe to auth-state changes. Fires once with the current user (or null)
+ * after init, then on every sign-in / sign-out / refresh. Returns an
+ * unsubscribe function.
  *
- * Returns an unsubscribe function. If Firebase is `disabled` (env vars
- * absent), the callback is invoked once with `null` and no further updates
- * are delivered — anonymous-only mode is a stable "always signed-out" state
- * from the auth subsystem's view; the ws.ts anonymous fallback handles the
- * "session proceeds anyway" half.
+ * In disabled mode (env vars absent) it fires once with null and stays a
+ * stable signed-out snapshot — anonymous-only mode, exactly as before.
  */
 export function onAuthChanged(cb: (u: AuthUser | null) => void): () => void {
-  let unsubInner: (() => void) | null = null;
+  subscribers.add(cb);
   let cancelled = false;
-  initAuth()
-    .then(async (auth) => {
-      if (cancelled || !auth) {
-        if (!cancelled) cb(null);
-        return;
-      }
-      const { onAuthStateChanged } = await import("firebase/auth");
-      unsubInner = onAuthStateChanged(auth, (u) => {
-        if (!cancelled) cb(adaptUser(u));
-      });
-    })
-    .catch(() => {
-      if (!cancelled) cb(null);
+  if (injectedActive) {
+    cb(injectedUser);
+  } else {
+    void initAuth().then(() => {
+      if (!cancelled) cb(cachedUser);
     });
+  }
   return () => {
     cancelled = true;
-    if (unsubInner) unsubInner();
+    subscribers.delete(cb);
   };
 }
 
 /**
- * Retrieve the current user's Firebase ID token (JWT) for the WebSocket
- * handshake (H.5). Returns `null` if the user is not signed in OR Firebase
- * is disabled — ws.ts handles both as "anonymous fallback: skip auth-token,
- * let server fall back to anonymous" per kickoff #4.
+ * Retrieve the current user's Cognito **ID token** (JWT) for the WebSocket
+ * handshake (H.5). Returns null when signed out OR Cognito is disabled — ws.ts
+ * handles both as "anonymous fallback: skip auth-token".
  *
- * `forceRefresh: false` is the default; pass `true` to force a fresh JWT
- * (e.g. after the agent emitted an AUTH_TOKEN_EXPIRED close — Wave 2+).
+ * If `forceRefresh` is true OR the token is near expiry and we hold a refresh
+ * token, mints a fresh ID token via the refresh_token grant. This satisfies
+ * the ws.ts handleAuthFailure one-shot forceRefresh retry.
  */
 export async function getIdToken(forceRefresh = false): Promise<string | null> {
-  const auth = await initAuth();
-  if (!auth) return null;
-  const user = auth.currentUser;
-  if (!user) return null;
-  try {
-    return await user.getIdToken(forceRefresh);
-  } catch (err) {
-    // eslint-disable-next-line no-console
-    console.warn("[auth] getIdToken failed:", err);
-    return null;
+  if (injectedActive) {
+    // Tests: synthesize a stable fake JWT-ish token from the injected user, or
+    // null when signed out. ws.ts only needs a non-empty string here.
+    return injectedUser ? `test-id-token:${injectedUser.uid}` : null;
   }
-}
-
-/** Sign in with Google (popup). Returns the adapted user on success. */
-export async function signInWithGoogle(): Promise<AuthUser | null> {
-  const auth = await initAuth();
-  if (!auth) {
-    throw new Error(
-      "Firebase not configured (set VITE_FIREBASE_* env vars to enable Google sign-in)",
-    );
+  await initAuth();
+  const t = cachedTokens;
+  if (!t) return null;
+  const nearExpiry = t.expiresAt - Date.now() < 60_000; // refresh within 1 min
+  if ((forceRefresh || nearExpiry) && t.refreshToken) {
+    const refreshed = await refreshTokens(t.refreshToken).catch(() => null);
+    if (refreshed) {
+      setSession(refreshed);
+      return refreshed.idToken;
+    }
+    // Refresh failed — if the current token is still live, keep using it;
+    // otherwise treat as signed out.
+    if (t.expiresAt <= Date.now()) {
+      setSession(null);
+      return null;
+    }
   }
-  const { GoogleAuthProvider, signInWithPopup } = await import("firebase/auth");
-  const provider = new GoogleAuthProvider();
-  const cred = await signInWithPopup(auth, provider);
-  return adaptUser(cred.user);
+  return t.idToken;
 }
 
 /**
- * Sign in anonymously. Firebase issues a stable `uid` + ID token.
+ * Begin sign-in: redirect to the Cognito Hosted UI authorize endpoint
+ * (email/password sign-up + confirm + sign-in). Uses the OIDC authorization
+ * code flow with PKCE (the SPA app client is public / no secret).
  *
- * Per H.3, anonymous users can own Cases. Per kickoff #4, the anonymous-flow
- * acceptance test uses this path to verify the round-trip without sending an
- * auth-token. We DO sign in anonymously here (which gets an ID token), and
- * ws.ts decides whether to send it on the connect handshake based on the
- * surfaced kickoff semantics (current behaviour: send if available, skip
- * gracefully if not).
+ * Throws when Cognito is not configured.
  */
-export async function signInAnonymous(): Promise<AuthUser | null> {
-  const auth = await initAuth();
-  if (!auth) {
-    // Anonymous-only mode (no Firebase project). ws.ts will skip the
-    // auth-token frame; the server's anonymous fallback handles the session.
-    return null;
+export async function signIn(): Promise<void> {
+  const c = readConfig();
+  if (!isFirebaseConfigured()) {
+    throw new Error(
+      "Cognito not configured (set VITE_COGNITO_USER_POOL_ID / VITE_COGNITO_CLIENT_ID / VITE_COGNITO_DOMAIN)",
+    );
   }
-  const { signInAnonymously } = await import("firebase/auth");
-  const cred = await signInAnonymously(auth);
-  return adaptUser(cred.user);
+  const verifier = randomString(48);
+  try {
+    sessionStorage.setItem(SS_PKCE_VERIFIER, verifier);
+  } catch {
+    // sessionStorage unavailable — PKCE cannot survive the redirect; sign-in
+    // will fail on callback, which surfaces as an auth error (acceptable).
+  }
+  const challenge = await sha256Base64Url(verifier);
+  const params = new URLSearchParams({
+    client_id: c.clientId,
+    response_type: "code",
+    scope: "openid email profile",
+    redirect_uri: c.redirectUri,
+    code_challenge_method: "S256",
+    code_challenge: challenge,
+  });
+  window.location.assign(`https://${c.domain}/oauth2/authorize?${params.toString()}`);
 }
 
-/** Sign out the current user. No-op when Firebase is disabled. */
+/** Alias for `signIn` so existing `signInWithGoogle` imports keep building. */
+export async function signInWithGoogle(): Promise<AuthUser | null> {
+  await signIn();
+  return null; // the redirect navigates away; the user resolves on /callback.
+}
+
+/**
+ * Exchange the Hosted UI `?code=` for tokens on the OAuth /callback. Call from
+ * App.tsx boot when `?code=` is present in the URL. Stores the token set,
+ * flips `onAuthChanged` to the signed-in user, and returns the AuthUser.
+ *
+ * No-op (returns null) when there is no code, Cognito is disabled, or the PKCE
+ * verifier is missing.
+ */
+export async function handleRedirectCallback(): Promise<AuthUser | null> {
+  if (!isFirebaseConfigured()) return null;
+  const url = new URL(window.location.href);
+  const code = url.searchParams.get("code");
+  if (!code) return null;
+
+  const c = readConfig();
+  let verifier = "";
+  try {
+    verifier = sessionStorage.getItem(SS_PKCE_VERIFIER) ?? "";
+  } catch {
+    verifier = "";
+  }
+  if (!verifier) {
+    // No PKCE verifier (e.g. opened the callback in a fresh tab) — cannot
+    // complete the exchange. Strip the code and bail to the sign-in surface.
+    return null;
+  }
+
+  const body = new URLSearchParams({
+    grant_type: "authorization_code",
+    client_id: c.clientId,
+    code,
+    redirect_uri: c.redirectUri,
+    code_verifier: verifier,
+  });
+  try {
+    const resp = await fetch(`https://${c.domain}/oauth2/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: body.toString(),
+    });
+    if (!resp.ok) {
+      // eslint-disable-next-line no-console
+      console.warn("[auth] token exchange failed:", resp.status);
+      return null;
+    }
+    const data = (await resp.json()) as {
+      id_token?: string;
+      access_token?: string;
+      refresh_token?: string;
+    };
+    if (!data.id_token) return null;
+    const tokens: TokenSet = {
+      idToken: data.id_token,
+      accessToken: data.access_token ?? null,
+      refreshToken: data.refresh_token ?? null,
+      expiresAt: expiresAtFromIdToken(data.id_token),
+    };
+    try {
+      sessionStorage.removeItem(SS_PKCE_VERIFIER);
+    } catch {
+      // ignore
+    }
+    initialized = true;
+    cachedInitStatus = "ready";
+    setSession(tokens);
+    return cachedUser;
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn("[auth] token exchange error:", err);
+    return null;
+  }
+}
+
+/** Mint a fresh token set via the refresh_token grant. Returns null on failure. */
+async function refreshTokens(refreshToken: string): Promise<TokenSet | null> {
+  const c = readConfig();
+  const body = new URLSearchParams({
+    grant_type: "refresh_token",
+    client_id: c.clientId,
+    refresh_token: refreshToken,
+  });
+  const resp = await fetch(`https://${c.domain}/oauth2/token`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: body.toString(),
+  });
+  if (!resp.ok) return null;
+  const data = (await resp.json()) as { id_token?: string; access_token?: string };
+  if (!data.id_token) return null;
+  // Cognito does not return a new refresh_token on refresh — reuse the old one.
+  return {
+    idToken: data.id_token,
+    accessToken: data.access_token ?? null,
+    refreshToken,
+    expiresAt: expiresAtFromIdToken(data.id_token),
+  };
+}
+
+/**
+ * Sign out. Clears the local token set and (when configured) redirects to the
+ * Cognito Hosted UI /logout endpoint so the IdP session is also cleared.
+ * No-op clear when Cognito is disabled.
+ */
 export async function signOut(): Promise<void> {
-  const auth = await initAuth();
-  if (!auth) return;
-  const { signOut: fbSignOut } = await import("firebase/auth");
-  await fbSignOut(auth);
+  if (injectedActive) {
+    injectedUser = null;
+    cachedUser = null;
+    for (const cb of subscribers) cb(null);
+    return;
+  }
+  setSession(null);
+  if (!isFirebaseConfigured()) return;
+  const c = readConfig();
+  const params = new URLSearchParams({
+    client_id: c.clientId,
+    logout_uri: c.redirectUri,
+  });
+  window.location.assign(`https://${c.domain}/logout?${params.toString()}`);
+}
+
+/**
+ * Anonymous sign-in. Cognito has no client-side anonymous identity (the agent
+ * provides the H.3 anonymous fallback when no auth-token is sent), so this is a
+ * no-op returning null — ws.ts skips the auth-token frame and the server's
+ * anonymous fallback handles the session. Kept for import compatibility.
+ */
+export async function signInAnonymous(): Promise<AuthUser | null> {
+  return null;
 }

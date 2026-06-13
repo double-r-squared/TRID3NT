@@ -369,17 +369,21 @@ def run(argv: list[str] | None = None) -> int:
     # ``GRACE2_MONGO_MCP_STDIO=1`` and this is a no-op.
     _maybe_bind_dev_persistence()
 
-    # job-0122 Wave 2: initialize Firebase Admin SDK via GCP ADC for the WS
-    # connect handshake (Appendix H.5). Best-effort — if firebase_admin is
-    # not installed or ADC is unavailable, the connect handshake transparently
-    # falls through to the anonymous-fallback path (Appendix H.3) and the
-    # agent service still serves.
+    # GCP→AWS migration: initialize AWS Cognito ID-token verification (JWKS
+    # prefetch) for the WS connect handshake (Appendix H.5). The function name
+    # ``init_firebase_admin`` is retained at this call site to minimize the
+    # migration blast radius; it now drives the Cognito init (no GCP ADC). It
+    # is best-effort + log-only — when no Cognito pool is configured
+    # (GRACE2_COGNITO_USER_POOL_ID unset, the dev/demo default) or the public
+    # JWKS prefetch hiccups, the connect handshake transparently falls through
+    # to the anonymous-fallback path (Appendix H.3) and the agent still serves.
     from .auth_handshake import init_firebase_admin
 
-    fb_ready = init_firebase_admin()
+    cognito_ready = init_firebase_admin()
     logger.info(
-        "firebase_admin init: ready=%s (anonymous-fallback path always available)",
-        fb_ready,
+        "cognito verification init: ready=%s (anonymous-fallback path always "
+        "available)",
+        cognito_ready,
     )
 
     if startup_only:

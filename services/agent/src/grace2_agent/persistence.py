@@ -1466,16 +1466,85 @@ def make_file_persistence(base_dir: _Path | None = None) -> Persistence:
     return Persistence(FileMCPClient(base_dir=base_dir))
 
 
+# --------------------------------------------------------------------------- #
+# Backend selection (sprint-14-aws — additive, default 'file')
+# --------------------------------------------------------------------------- #
+#
+# The AWS migration adds a DynamoDB backend (``dynamo_backend.DynamoMCPClient``)
+# behind this same ``MCPClientProtocol`` seam. Selection is a NEW env
+# ``GRACE2_PERSISTENCE_BACKEND`` (values: ``file`` | ``dynamodb``), default
+# ``file`` so the CURRENT AWS-live runtime (file-backed) is UNCHANGED until the
+# orchestrator flips the env on the EC2 agent service. This block is purely
+# additive: it does not alter ``Persistence`` / ``FileMCPClient`` /
+# ``MCPSurfaceTranslator`` semantics, and the actual selection CALL lives in
+# ``main._maybe_bind_dev_persistence`` / ``server.init_persistence_from_env``
+# (NOT this file — see the job's crossTrackChanges).
+
+#: Env that selects the persistence backend. Re-exported from dynamo_backend so
+#: there is a single name; mirrored here for callers that only import
+#: persistence. Default keeps current (file) behavior.
+PERSISTENCE_BACKEND_ENV = "GRACE2_PERSISTENCE_BACKEND"
+PERSISTENCE_BACKEND_FILE = "file"
+PERSISTENCE_BACKEND_DYNAMODB = "dynamodb"
+
+
+def resolve_persistence_backend() -> str:
+    """Resolve the configured persistence backend name.
+
+    Returns ``"dynamodb"`` only when ``GRACE2_PERSISTENCE_BACKEND`` is set to
+    ``dynamodb`` (case-insensitive); every other value — including unset —
+    resolves to ``"file"`` so the demo stays file-backed by default.
+    """
+    raw = (_os_for_file.environ.get(PERSISTENCE_BACKEND_ENV) or "").strip().lower()
+    if raw == PERSISTENCE_BACKEND_DYNAMODB:
+        return PERSISTENCE_BACKEND_DYNAMODB
+    return PERSISTENCE_BACKEND_FILE
+
+
+def make_dynamo_persistence(
+    *, table_prefix: str | None = None, resource: Any = None
+) -> Persistence:
+    """Construct a ``Persistence`` backed by the DynamoDB MCP shim.
+
+    Thin re-export of ``dynamo_backend.make_dynamo_persistence`` (imported
+    lazily so the file/Mongo paths never import boto3-resource machinery).
+    """
+    from .dynamo_backend import make_dynamo_persistence as _make
+
+    return _make(table_prefix=table_prefix, resource=resource)
+
+
+def make_persistence_for_backend(
+    *, base_dir: _Path | None = None
+) -> Persistence:
+    """Build the ``Persistence`` for the env-selected backend.
+
+    Default (``file``) returns ``make_file_persistence``; ``dynamodb`` returns
+    the DynamoDB-backed ``Persistence``. The selection CALL sites
+    (``main._maybe_bind_dev_persistence`` / ``server.init_persistence_from_env``)
+    use this so the env is honored consistently across both binding paths.
+    """
+    if resolve_persistence_backend() == PERSISTENCE_BACKEND_DYNAMODB:
+        return make_dynamo_persistence()
+    return make_file_persistence(base_dir=base_dir)
+
+
 __all__ = [
     "Persistence",
     "MCPClientProtocol",
     "MCPSurfaceTranslator",
     "FileMCPClient",
     "make_file_persistence",
+    "make_dynamo_persistence",
+    "make_persistence_for_backend",
+    "resolve_persistence_backend",
     "is_dev_persistence_enabled",
     "DEFAULT_DATABASE",
     "DEV_PERSISTENCE_DIR_ENV",
     "DEV_PERSISTENCE_ENABLED_ENV",
+    "PERSISTENCE_BACKEND_ENV",
+    "PERSISTENCE_BACKEND_FILE",
+    "PERSISTENCE_BACKEND_DYNAMODB",
     "CASES_COLLECTION",
     "CHAT_COLLECTION",
     "SESSIONS_COLLECTION",

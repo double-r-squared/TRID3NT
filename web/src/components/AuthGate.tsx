@@ -26,13 +26,13 @@
 // it owns) so production behavior matches the kickoff.
 
 import { useState } from "react";
-import { signInWithGoogle, isFirebaseConfigured } from "../auth";
+import { signIn as authSignIn, isFirebaseConfigured } from "../auth";
 
 /** localStorage flag set when the user explicitly chose "Continue without saving". */
 export const ANONYMOUS_ACCEPTED_KEY = "grace2_anonymous_accepted";
 
 export interface AuthGateProps {
-  /** Called when the user clicks "Sign in with Google". Defaults to `signInWithGoogle` from auth.ts. */
+  /** Called when the user clicks "Sign in". Defaults to the Cognito Hosted UI `signIn` from auth.ts. */
   onGoogleSignIn?: () => Promise<unknown>;
   /**
    * Called after the anonymous flag is written to localStorage. Lets App.tsx
@@ -192,10 +192,11 @@ export function AuthGate({
     setBusy(true);
     setError(null);
     try {
-      const fn = onGoogleSignIn ?? signInWithGoogle;
+      const fn = onGoogleSignIn ?? authSignIn;
       await fn();
-      // The Firebase auth state subscription in App.tsx will fire and flip
-      // `appShouldRender` to true; we don't need to do anything else here.
+      // The Cognito Hosted UI redirect navigates away; on return the App.tsx
+      // /callback handler exchanges the code and the auth-state subscription
+      // flips `appShouldRender` to true. Nothing else to do here.
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -235,14 +236,14 @@ export function AuthGate({
             opacity: busy || !firebaseConfigured ? 0.55 : 1,
             cursor: busy || !firebaseConfigured ? "not-allowed" : "pointer",
           }}
-          aria-label="Sign in with Google"
+          aria-label="Sign in or sign up"
           title={
             firebaseConfigured
-              ? "Sign in with Google"
-              : "Google sign-in requires VITE_FIREBASE_* env vars"
+              ? "Sign in / Sign up"
+              : "Sign-in requires VITE_COGNITO_* env vars"
           }
         >
-          Sign in with Google
+          Sign in / Sign up
         </button>
 
         <button
@@ -266,7 +267,7 @@ export function AuthGate({
             data-testid="grace2-auth-gate-config-note"
             style={{ ...errorStyle, color: "#aab0bc" }}
           >
-            Google sign-in disabled — set VITE_FIREBASE_* env vars to enable.
+            Sign-in disabled — set VITE_COGNITO_* env vars to enable.
           </span>
         )}
 

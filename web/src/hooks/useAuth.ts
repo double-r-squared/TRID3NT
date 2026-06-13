@@ -1,25 +1,24 @@
-// GRACE-2 web — useAuth hook (job-0253, sprint-13.5 Stage 1).
+// GRACE-2 web — useAuth hook (GCP→AWS migration; was job-0253 Firebase).
 //
-// A thin React adapter over `../auth` (the Wave 2 / job-0123 Firebase client
-// surface). It exists so components can render auth-aware UI without importing
-// `firebase/auth` types or calling `onAuthChanged` plumbing by hand.
+// A thin React adapter over `../auth` (now the AWS Cognito Hosted UI OIDC
+// client). It exists so components can render auth-aware UI without importing
+// IdP types or calling `onAuthChanged` plumbing by hand.
 //
 // What it exposes:
 //   - `user`     — the library-agnostic `AuthUser | null` (re-rendered on every
-//                  Firebase auth-state change).
+//                  auth-state change).
 //   - `status`   — the `AuthInitStatus` ("disabled" | "initializing" | "ready"
-//                  | "failed"). "disabled" means VITE_FIREBASE_PROJECT_ID is
+//                  | "failed"). "disabled" means the VITE_COGNITO_* env vars are
 //                  absent — the load-bearing dev/tailnet path.
 //   - `resolved` — false until the first auth-state callback has fired, so the
-//                  guard can avoid a sign-in flash before Firebase reports the
-//                  signed-in user on a configured project.
-//   - `signInWithGoogle` / `signOut` — pass-throughs to `../auth`, stable
-//                  references.
+//                  guard can avoid a sign-in flash before the persisted session
+//                  is restored on a configured deployment.
+//   - `signIn` / `signOut` — pass-throughs to `../auth`, stable references.
+//                  `signIn` redirects to the Cognito Hosted UI (email/password).
 //
 // Invariant note (web Domain Discipline): this hook renders identity and emits
-// sign-in/out intent only. It computes no user-facing numbers and holds no
-// Firebase objects beyond the `AuthUser` projection that `auth.ts` already
-// produces. No Firebase types leak across this boundary.
+// sign-in/out intent only. It computes no user-facing numbers and holds no IdP
+// objects beyond the `AuthUser` projection that `auth.ts` already produces.
 
 import { useCallback, useEffect, useState } from "react";
 import {
@@ -27,26 +26,30 @@ import {
   type AuthUser,
   authStatus,
   onAuthChanged,
-  signInWithGoogle as authSignInWithGoogle,
+  signIn as authSignIn,
   signOut as authSignOut,
 } from "../auth";
 
-/** Reactive auth snapshot + intent emitters. No Firebase types cross this seam. */
+/** Reactive auth snapshot + intent emitters. No IdP types cross this seam. */
 export interface UseAuthResult {
-  /** Current signed-in identity, or null when signed out / Firebase disabled. */
+  /** Current signed-in identity, or null when signed out / Cognito disabled. */
   user: AuthUser | null;
-  /** Firebase Auth subsystem status. "disabled" ⇒ env vars absent (dev/tailnet). */
+  /** Auth subsystem status. "disabled" ⇒ env vars absent (dev/tailnet). */
   status: AuthInitStatus;
   /**
    * False until the first `onAuthChanged` callback fires. On a configured
-   * project this prevents a sign-in flash before Firebase restores the
-   * persisted session; in "disabled" mode it flips true on the synchronous
-   * `cb(null)` the auth subsystem delivers immediately.
+   * deployment this prevents a sign-in flash before the persisted session is
+   * restored; in "disabled" mode it flips true on the synchronous `cb(null)`
+   * the auth subsystem delivers immediately.
    */
   resolved: boolean;
-  /** Begin the Google popup sign-in flow. Throws when Firebase is disabled. */
-  signInWithGoogle: () => Promise<AuthUser | null>;
-  /** Sign the current user out. No-op when Firebase is disabled. */
+  /**
+   * Begin the Cognito Hosted UI sign-in flow (email/password). Redirects the
+   * browser to the Hosted UI authorize endpoint. Throws when Cognito is
+   * disabled.
+   */
+  signIn: () => Promise<void>;
+  /** Sign the current user out. Redirects to Hosted UI /logout when enabled. */
   signOut: () => Promise<void>;
 }
 
@@ -79,8 +82,8 @@ export function useAuth(): UseAuthResult {
     return unsub;
   }, []);
 
-  const signInWithGoogle = useCallback(() => authSignInWithGoogle(), []);
+  const signIn = useCallback(() => authSignIn(), []);
   const signOut = useCallback(() => authSignOut(), []);
 
-  return { user, status, resolved, signInWithGoogle, signOut };
+  return { user, status, resolved, signIn, signOut };
 }

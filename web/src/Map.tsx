@@ -817,38 +817,52 @@ export function drawAnalysisExtent(
     geometry: { type: "Polygon", coordinates: [ring] },
   };
 
+  // AWS-migration hardening (bbox track): make this idempotent AND
+  // partial-state tolerant. A prior call that threw mid-mutation (the live
+  // failure mode — addSource succeeded but an addLayer threw, or the camera
+  // animation churned the style between the two addLayer calls) can leave the
+  // source present but one/both layers missing. The old code early-returned
+  // the moment the source existed, so a half-built extent never self-healed
+  // and the dashed rectangle was permanently absent. Now: (1) swap data on the
+  // existing source, then (2) re-add ANY missing layer; on a clean first call
+  // both source and layers are added. Each add is existence-guarded so a
+  // duplicate-id throw cannot abort the function.
   const existing = m.getSource(ANALYSIS_EXTENT_SOURCE_ID) as
     | maplibregl.GeoJSONSource
     | undefined;
   if (existing) {
-    // Replace-on-new-bbox: just swap the data; layers persist.
+    // Replace-on-new-bbox: swap the data; layers (re-)asserted below.
     existing.setData(data);
-    return;
+  } else {
+    m.addSource(ANALYSIS_EXTENT_SOURCE_ID, { type: "geojson", data });
   }
 
-  m.addSource(ANALYSIS_EXTENT_SOURCE_ID, { type: "geojson", data });
   // Faint fill so the extent reads as a region without obscuring what's inside.
-  m.addLayer({
-    id: ANALYSIS_EXTENT_FILL_LAYER_ID,
-    type: "fill",
-    source: ANALYSIS_EXTENT_SOURCE_ID,
-    paint: {
-      "fill-color": "#4D96FF",
-      "fill-opacity": 0.06,
-    },
-  });
+  if (!m.getLayer(ANALYSIS_EXTENT_FILL_LAYER_ID)) {
+    m.addLayer({
+      id: ANALYSIS_EXTENT_FILL_LAYER_ID,
+      type: "fill",
+      source: ANALYSIS_EXTENT_SOURCE_ID,
+      paint: {
+        "fill-color": "#4D96FF",
+        "fill-opacity": 0.06,
+      },
+    });
+  }
   // Thin dashed accent outline — the primary "here's the measured extent" cue.
-  m.addLayer({
-    id: ANALYSIS_EXTENT_LINE_LAYER_ID,
-    type: "line",
-    source: ANALYSIS_EXTENT_SOURCE_ID,
-    paint: {
-      "line-color": "#4D96FF",
-      "line-width": 1.5,
-      "line-dasharray": [3, 2],
-      "line-opacity": 0.9,
-    },
-  });
+  if (!m.getLayer(ANALYSIS_EXTENT_LINE_LAYER_ID)) {
+    m.addLayer({
+      id: ANALYSIS_EXTENT_LINE_LAYER_ID,
+      type: "line",
+      source: ANALYSIS_EXTENT_SOURCE_ID,
+      paint: {
+        "line-color": "#4D96FF",
+        "line-width": 1.5,
+        "line-dasharray": [3, 2],
+        "line-opacity": 0.9,
+      },
+    });
+  }
 }
 
 export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "light" }: MapViewProps = {}): JSX.Element {
@@ -871,6 +885,15 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
   // "Cleanup on remove: when a layer is removed... remove both source and
   // layer cleanly").
   const vectorFetchGen = useRef<Map<string, number>>(new Map());
+  // AWS-migration hardening (bbox track): the last zoom-to bbox corners. The
+  // analysis-extent rectangle and the camera move share one handler; if a
+  // style (re)load happens AFTER the rectangle was drawn (theme setStyle,
+  // per-Case MapView remount replay) the rectangle's source/layers are gone
+  // with the old style. Remembering the corners lets a follow-up redraw
+  // re-assert the rectangle without needing the bus to re-deliver the
+  // command. Null until the first zoom-to. Kept inside this track's
+  // ownership (no LayerPanel bus replay buffer — see crossTrackChanges).
+  const lastZoomToCorners = useRef<[number, number, number, number] | null>(null);
   // ROOT-CAUSE FIX (job-0076 diagnosis): the prior implementation read
   // `payload.loaded_layers` synchronously in the subscriber and bailed if
   // `m.isStyleLoaded()` was false — so when session-state arrived BEFORE the
@@ -1161,6 +1184,22 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
           );
         }
       }
+
+      // AWS-migration hardening (bbox track): a theme swap mutates the style;
+      // if the analysis-extent rectangle was ever drawn, re-assert it so a
+      // future setStyle-based theme path (or any style churn that dropped it)
+      // self-heals. drawAnalysisExtent is idempotent + missing-layer-healing,
+      // so this is a no-op when the extent is already intact.
+      if (lastZoomToCorners.current) {
+        try {
+          drawAnalysisExtent(currentMap, lastZoomToCorners.current);
+        } catch (err) {
+          if (import.meta.env.DEV) {
+            // eslint-disable-next-line no-console
+            console.warn("[MapView] extent redraw on theme change threw:", err);
+          }
+        }
+      }
     };
 
     applyTheme();
@@ -1188,16 +1227,42 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
         if (bbox && bbox.length === 4) {
           const corners = bbox as [number, number, number, number];
           const [minLon, minLat, maxLon, maxLat] = corners;
+          // Respect prefers-reduced-motion: a 1200ms camera flight is motion.
+          // When the user has asked for reduced motion, jump (duration 0) so
+          // there is no animation — the moveend below still fires synchronously
+          // enough that the extent redraw lands without an animated sweep.
+          const prefersReducedMotion =
+            typeof window !== "undefined" &&
+            typeof window.matchMedia === "function" &&
+            window.matchMedia("(prefers-reduced-motion: reduce)").matches;
           m.fitBounds(
             [[minLon, minLat], [maxLon, maxLat]],
-            { padding: 40, duration: 1200 },
+            { padding: 40, duration: prefersReducedMotion ? 0 : 1200 },
           );
+          // Remember the last extent corners so a late style (re)load (theme
+          // setStyle, case-reopen remount) can re-assert the rectangle. Stays
+          // inside this track's ownership (a ref, not the cross-track bus
+          // replay buffer — see crossTrackChanges).
+          lastZoomToCorners.current = corners;
           // job-0294 — ALSO outline the extent as a styled rectangle so the
           // user sees exactly what area is being measured. The fitBounds above
-          // is camera-only; this draws the bbox on the map. If the style isn't
-          // loaded yet (case-reopen replay can race the first style load),
-          // defer to the next idle — drawAnalysisExtent is idempotent
-          // (replace-on-new-bbox) so an extra deferred call is harmless.
+          // is camera-only; this draws the bbox on the map.
+          //
+          // AWS-migration root-cause fix (bbox track): the prior code wrapped
+          // drawAnalysisExtent in a bare `catch {}` that SILENTLY SWALLOWED any
+          // throw — so a transient MapLibre "style not done loading" /
+          // source-not-ready / mid-camera-animation style-churn throw dropped
+          // the rectangle forever (camera moved, no rectangle: the live
+          // symptom). Now a throw RE-SCHEDULES the draw on the next idle, with
+          // a small bounded retry counter so a persistently-broken style (dead
+          // basemap WMS post-migration) can't loop unbounded. We also defer
+          // while the style is not loaded (case-reopen replay can race the
+          // first style load) AND re-assert AFTER the camera flight settles
+          // (moveend) to cover the window where the raster/vector source add
+          // churns the style mid-animation. drawAnalysisExtent is idempotent
+          // and self-healing, so every extra invocation is harmless.
+          let retries = 0;
+          const MAX_RETRIES = 3;
           const drawExtent = (): void => {
             if (!map.current) return;
             if (!map.current.isStyleLoaded()) {
@@ -1206,11 +1271,30 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
             }
             try {
               drawAnalysisExtent(map.current, corners);
-            } catch {
-              // Mid style-mutation race; the next zoom-to (or reopen) redraws.
+            } catch (err) {
+              // Mid style-mutation race; re-schedule rather than drop. Bounded
+              // so a permanently-broken style cannot loop forever.
+              if (import.meta.env.DEV) {
+                // eslint-disable-next-line no-console
+                console.warn(
+                  `[MapView] drawAnalysisExtent threw (retry ${retries + 1}/${MAX_RETRIES}):`,
+                  err,
+                );
+              }
+              if (retries < MAX_RETRIES && map.current) {
+                retries += 1;
+                map.current.once("idle", drawExtent);
+              }
             }
           };
           drawExtent();
+          // Re-assert AFTER the camera flight settles. The agent emits
+          // session-state (raster/vector source add) BEFORE this zoom-to, but
+          // the animated fitBounds keeps mutating the style for ~1200ms; a
+          // redraw on moveend lands the dashed outline once the style is quiet.
+          // Idempotent: drawAnalysisExtent setData-replaces + heals missing
+          // layers, so this never double-adds.
+          m.once("moveend", drawExtent);
         }
       } else if (payload.command === "set-layer-opacity") {
         const opacity = Math.max(0, Math.min(1, payload.opacity));
