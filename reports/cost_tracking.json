@@ -1660,6 +1660,15 @@
       "kind": "engineering",
       "workflow_id": "agent a10f754331078f973",
       "subagent_tokens": 163437
+    },
+    {
+      "job_id": "job-0296-aws-finish-line-wf-20260613",
+      "sprint": 14,
+      "description": "aws-finish-line workflow (21 agents, recon->implement->4-lens adversarial verify): Cognito email/password auth (3/4 pass, blocker=HTTPS-callback gated on CloudFront), DynamoDB persistence backend (4/4), CloudFront/HTTPS web URL seam + publish_layer titiler-base tests (4/4), bbox analysis-extent rectangle fix (1/1). All off-by-default; produced exact AWS provisioning runbooks.",
+      "model": "opus",
+      "kind": "workflow",
+      "workflow_id": "wf_8613faec-ab2",
+      "subagent_tokens": 2085782
     }
   ],
   "totals_by_sprint": {
