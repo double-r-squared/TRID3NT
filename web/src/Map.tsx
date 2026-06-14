@@ -36,6 +36,7 @@ import maplibregl, { Map as MapLibreMap, StyleSpecification } from "maplibre-gl"
 import "maplibre-gl/dist/maplibre-gl.css";
 import type { MapCommandPayload, SessionStatePayload } from "./contracts";
 import type { FeatureCollection, Feature, Polygon } from "geojson";
+import { publicTileBase } from "./lib/public_base";
 import {
   fetchVectorAsGeoJson,
   vectorResultFromInlineGeoJson,
@@ -278,6 +279,13 @@ export function buildWmsTileUrl(wmsUrl: string, stylePreset?: string | null): st
   // tile TEMPLATES (TiTiler — contains {z}/{x}/{y}). Pass them through
   // untouched: appending WMS params to an XYZ template would 400 every tile.
   if (wmsUrl.includes("{z}")) {
+    // sprint-14-aws (job-0296): on the HTTPS CloudFront edge, rewrite a legacy
+    // http://<ip>:8080 TiTiler origin (baked into pre-cutover layer URIs) to the
+    // public base so persisted tiles aren't mixed-content-blocked. CloudFront's
+    // /cog/* behavior routes to TiTiler. No-op when VITE_GRACE2_PUBLIC_BASE is
+    // unset (publicTileBase()===null) — byte-identical to the http-site path.
+    const base = publicTileBase();
+    if (base) return wmsUrl.replace(/^https?:\/\/[^/]+:8080/, base);
     return wmsUrl;
   }
   // job-0255: route overlay WMS URLs through the agent proxy when

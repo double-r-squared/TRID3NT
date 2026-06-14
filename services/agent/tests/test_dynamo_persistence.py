@@ -615,3 +615,21 @@ def test_make_persistence_for_backend_dynamodb_builds_dynamo(monkeypatch):
         or "us-west-2"
     )
     assert captured["region"] == expected_region
+
+
+def test_ddb_item_strips_none_gsi_key_preserves_other_none():
+    """job-0296: an anonymous user has firebase_uid=None (a GSI key on 'users').
+    DynamoDB rejects a NULL-typed GSI key attribute, so _ddb_item must omit it,
+    while preserving non-key None values for $exists parity with the file backend."""
+    from grace2_agent.dynamo_backend import _ddb_item
+
+    item = _ddb_item(
+        {"_id": "u1", "firebase_uid": None, "tier": "anon", "display_name": None},
+        "users",
+    )
+    assert "firebase_uid" not in item       # GSI key None -> stripped
+    assert item["_id"] == "u1"
+    assert item["display_name"] is None      # non-key None -> preserved (parity)
+    # cases: null user_id / owner_user_id GSI keys also stripped
+    case_item = _ddb_item({"_id": "c1", "user_id": None, "owner_user_id": None}, "cases")
+    assert "user_id" not in case_item and "owner_user_id" not in case_item

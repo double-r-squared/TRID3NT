@@ -154,6 +154,35 @@ def _to_ddb(value: Any) -> Any:
     return value
 
 
+def _ddb_item(doc: Any, alias: str | None = None) -> Any:
+    """Build a put_item Item, dropping ``None`` KEY/GSI-KEY attributes.
+
+    DynamoDB rejects an item that carries a table/GSI KEY attribute typed NULL
+    (e.g. an anonymous user whose ``firebase_uid`` is None, or a case with a
+    null ``user_id``/``owner_user_id`` GSI key). Omitting such an attribute is
+    the idiomatic representation — it reads back as None via ``.get()`` and the
+    item simply isn't projected into that GSI.
+
+    Only the table key (pk/sk) and GSI key attributes for ``alias`` are stripped
+    when None — every other None is preserved so ``$exists`` query semantics stay
+    byte-identical to the file/Mongo backend (which keeps null fields present).
+    """
+    converted = _to_ddb(doc)
+    if not isinstance(converted, dict):
+        return converted
+    key_attrs = set()
+    if alias is not None:
+        key_attrs.add(_pk_attr(alias))
+        sk = _sk_attr(alias)
+        if sk:
+            key_attrs.add(sk)
+        key_attrs.update(_TABLE_GSIS.get(alias, {}).keys())
+    return {
+        k: v for k, v in converted.items()
+        if not (v is None and k in key_attrs)
+    }
+
+
 def _from_ddb(value: Any) -> Any:
     """Recursively coerce a DynamoDB-resource value back to JSON-shaped form."""
     if isinstance(value, Decimal):
@@ -445,7 +474,7 @@ class DynamoMCPClient:
             doc_id = doc.get("_id")
             if doc_id is None:
                 raise ValueError("DynamoMCPClient insert-one: document missing '_id'")
-            table.put_item(Item=_to_ddb(doc))
+            table.put_item(Item=_ddb_item(doc, alias))
             return {"insertedId": doc_id}
 
         if name == "update-one":
@@ -531,12 +560,12 @@ class DynamoMCPClient:
             if existing is not None:
                 doc = _from_ddb(existing)
                 self._apply_update(doc, update, inserting=False)
-                table.put_item(Item=_to_ddb(doc))
+                table.put_item(Item=_ddb_item(doc, alias))
                 return {"matchedCount": 1, "modifiedCount": 1}
             if upsert:
                 fresh: dict[str, Any] = {"_id": target_id}
                 self._apply_update(fresh, update, inserting=True)
-                table.put_item(Item=_to_ddb(fresh))
+                table.put_item(Item=_ddb_item(fresh, alias))
                 return {"matchedCount": 1, "modifiedCount": 1}
             return {"matchedCount": 0, "modifiedCount": 0}
 
@@ -549,7 +578,7 @@ class DynamoMCPClient:
             if not self._matches(doc, filt):
                 continue
             self._apply_update(doc, update, inserting=False)
-            table.put_item(Item=_to_ddb(doc))
+            table.put_item(Item=_ddb_item(doc, alias))
             matched += 1
             modified += 1
             if not many:

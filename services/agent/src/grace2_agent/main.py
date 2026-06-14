@@ -275,7 +275,8 @@ def _maybe_bind_dev_persistence() -> None:
     """
     from .persistence import (
         is_dev_persistence_enabled,
-        make_file_persistence,
+        make_persistence_for_backend,
+        resolve_persistence_backend,
         _default_dev_persistence_dir,
     )
     from .server import get_persistence, set_persistence
@@ -288,13 +289,16 @@ def _maybe_bind_dev_persistence() -> None:
         log.info("dev Persistence: singleton already bound; skipping")
         return
     try:
-        p = make_file_persistence()
+        p = make_persistence_for_backend()
         set_persistence(p)
+        backend = resolve_persistence_backend()
         log.info(
-            "dev Persistence bound at %s (file-backed; "
-            "set GRACE2_DEV_PERSISTENCE=0 to disable or "
-            "GRACE2_MONGO_MCP_STDIO=1 for live MCP)",
-            _default_dev_persistence_dir(),
+            "dev Persistence bound (backend=%s; %s). "
+            "GRACE2_PERSISTENCE_BACKEND=dynamodb for DynamoDB, "
+            "GRACE2_DEV_PERSISTENCE=0 to disable, "
+            "GRACE2_MONGO_MCP_STDIO=1 for live MCP.",
+            backend,
+            _default_dev_persistence_dir() if backend == "file" else "DynamoDB tables",
         )
     except Exception as exc:  # noqa: BLE001 — startup must not abort on dev-fallback
         log.warning("dev Persistence bind failed: %s", exc)
