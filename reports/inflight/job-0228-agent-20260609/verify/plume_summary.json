@@ -1,0 +1,73 @@
+{
+  "summary": {
+    "location_name": "Twin Falls, Idaho",
+    "contaminant": "trichloroethylene",
+    "plume_area_km2": 0.0125,
+    "max_concentration_mgl": 2946.320923981195,
+    "release_rate_kg_s": 3.0703895581333334,
+    "duration_days": 0.25,
+    "demo_aquifer_caveat": "Aquifer K=0.0001 m/s, porosity=0.3 are demo defaults, not site-specific hydrogeology."
+  },
+  "plume_layer": {
+    "layer_id": "plume-concentration-01KTQSPFHGE7G7Y7GYNJ6EBEDA",
+    "name": "Contaminant Plume (peak concentration)",
+    "layer_type": "raster",
+    "uri": "file:///tmp/tmpkvibyvvs_4326.tif",
+    "style_preset": "continuous_plume_concentration",
+    "temporal": null,
+    "role": "primary",
+    "units": "mg/L",
+    "bbox": [
+      -114.48259971618373,
+      42.54654839083979,
+      -114.45766135442905,
+      42.56511951129541
+    ],
+    "max_concentration_mgl": 2946.320923981195,
+    "plume_area_km2": 0.0125
+  },
+  "confirmation_envelope": {
+    "envelope_type": "tool-payload-warning",
+    "warning_id": "01KTQSPFHG1Q2K8496RR27V51K",
+    "tool_name": "run_modflow_job",
+    "tool_args": {
+      "contaminant": "trichloroethylene",
+      "location_name": "Twin Falls, Idaho",
+      "spill_location_latlon": [
+        42.5558542,
+        -114.4700684
+      ],
+      "release_rate_kg_s": 3.0703895581333334,
+      "duration_days": 0.25,
+      "aquifer_k_ms": 0.0001,
+      "porosity": 0.3,
+      "total_mass_kg": 66320.41445568,
+      "scale": "12000.0 gallon",
+      "clamps_applied": []
+    },
+    "estimated_mb": 0.0,
+    "threshold_mb": 0.0,
+    "recommendation": "Demo aquifer parameterization (K=0.0001 m/s, porosity=0.3) \u2014 NOT site-specific hydrogeology. Confirm to run the MODFLOW groundwater-plume simulation for trichloroethylene near Twin Falls, Idaho.",
+    "alternative_args": null,
+    "options": [
+      "proceed",
+      "cancel"
+    ],
+    "ttl_seconds": 300
+  },
+  "raster_inspection": {
+    "cog_path": "/tmp/tmpkvibyvvs_4326.tif",
+    "valid_cells": 4,
+    "max": 1276.306884765625,
+    "min": 0.17393411695957184,
+    "argmax_lonlat": [
+      -114.46959993186479,
+      42.5558339510676
+    ],
+    "spill_lonlat": [
+      -114.4700684,
+      42.5558542
+    ],
+    "argmax_to_source_km": 0.0520485158310307
+  }
+}

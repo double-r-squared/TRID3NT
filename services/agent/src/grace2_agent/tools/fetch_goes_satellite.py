@@ -664,7 +664,13 @@ def _fetch_goes_bytes(
 # ---------------------------------------------------------------------------
 
 
-@register_tool(_METADATA)
+@register_tool(
+    _METADATA,
+    # Annotations: readOnlyHint=True (read-only; no state mutation),
+    # openWorldHint=True (calls external public API endpoint),
+    # destructiveHint=False, idempotentHint=True (cache shim deduplicates).
+    open_world_hint=True,
+)
 def fetch_goes_satellite(
     bbox: tuple[float, float, float, float],
     band: str = "visible",
@@ -673,59 +679,69 @@ def fetch_goes_satellite(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """GOES-16/17/18/19 satellite imagery fetcher for cloud distribution.
+    """GOES-16/17/18/19 ABI satellite imagery via NOAA Big-Data Program S3.
 
-    Use this when: the agent needs current-conditions cloud / IR / water-vapor
-    imagery from the NOAA GOES-R geostationary series, typically as background
-    context for a current-storm narration or a near-real-time weather check.
-    Wraps the public NOAA Big-Data Program S3 buckets (no auth required).
-    The CONUS sector is updated every 5 minutes.
+    **What it does:** Fetches the most-recent ABI L2 Multi-Channel Cloud and
+    Moisture Imagery (MCMIPC) product from the public NOAA Big-Data Program S3
+    buckets, reprojects the requested band to EPSG:4326 over the requested bbox,
+    and writes a COG to the 1-hour dynamic cache. Three bands: visible
+    reflectance, IR window brightness temperature, and water-vapor brightness
+    temperature. The CONUS sector refreshes every 5 minutes.
 
-    Do NOT use this for: full-disk imagery (the CONUS-sectorized MCMIPC
-    product is the only one this tool serves — full disk is ~50MB per band
-    and would blow the 1-hour cache budget); historical climatology
-    (this fetches the most-recent observation only; for a fixed valid-time,
-    a future ``valid_time`` parameter is in scope for v0.2); precipitation
-    radar (use ``fetch_nexrad_reflectivity``); cloud-property products
-    (this returns calibrated CMI reflectance / brightness-temperature, not
-    derived cloud-top-pressure or cloud-mask classes).
+    **When to use:**
+    - User asks to "show satellite imagery", "show cloud cover", or "show the
+      storm on satellite" for any CONUS or near-CONUS location.
+    - Current-conditions weather context for a hurricane or severe-weather
+      narration — visible band shows cloud structure; IR window shows storm
+      tops; water vapor shows upper-level moisture.
+    - Near-real-time storm monitoring alongside NEXRAD radar overlays.
+    - Any map view that benefits from a live geostationary background to
+      orient the user relative to current cloud/storm structure.
 
-    Params:
-        bbox: ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326.
-            **REQUIRED** — passing ``None`` raises ``GOESBboxRequiredError``
-            (full disk/sector downloads are too large for the dynamic-1h
-            cache budget). Should fall within the CONUS sector
-            (~ -153°W to -52°W, 14°N to 57°N) for non-empty results.
-        band: one of ``"visible"`` (ABI band 2, 0.64 µm reflectance),
-            ``"ir_window"`` (ABI band 13, 10.35 µm brightness temperature),
-            ``"water_vapor"`` (ABI band 8, 6.19 µm brightness temperature).
-            Default ``"visible"``.
-        satellite: one of ``"goes-16"`` / ``"goes-17"`` / ``"goes-18"`` /
-            ``"goes-19"``. Default ``"goes-16"`` (operational East coverage).
-            Use ``"goes-18"`` for West coast / Pacific coverage.
+    **When NOT to use:**
+    - DO NOT use for precipitation data — GOES CMI bands are radiometric
+      measurements (reflectance / brightness temperature), not rainfall;
+      use ``fetch_mrms_qpe`` for gauge-corrected rain accumulation.
+    - DO NOT use when the bbox is outside the CONUS sector (~-153 W to -52 W,
+      14 N to 57 N) — the MCMIPC product is CONUS-only; full-disk imagery is
+      not served by this tool.
+    - DO NOT use for historical replay at a specific valid time — this tool
+      always fetches the most-recent observation; a future ``valid_time``
+      param is in scope for v0.2.
+    - DO NOT use for precipitation-radar products — use
+      ``fetch_nexrad_reflectivity`` for that.
 
-    Returns:
-        A ``LayerURI`` pointing at a Cloud-Optimized GeoTIFF in the cache
-        bucket: ``gs://grace-2-hazard-prod-cache/cache/dynamic-1h/goes_satellite/<key>.tif``,
-        containing the requested band reprojected to EPSG:4326 and clipped
-        to ``bbox``. ``layer_type="raster"``, ``role="context"``,
-        ``units="reflectance"`` for visible band or ``"K"`` for IR/WV.
+    **Parameters:**
+    - ``bbox`` (tuple[float, float, float, float]): ``(min_lon, min_lat,
+      max_lon, max_lat)`` in EPSG:4326. Required (full-disk download is
+      ~50 MB per band; bbox is mandatory). Example for Tampa Bay:
+      ``(-83.0, 27.0, -81.5, 28.5)``.
+    - ``band`` (str, default ``"visible"``): ``"visible"`` (ABI band 2,
+      0.64 µm, reflectance 0-1.5), ``"ir_window"`` (ABI band 13, 10.35 µm,
+      brightness temperature in K), ``"water_vapor"`` (ABI band 8, 6.19 µm,
+      brightness temperature in K).
+    - ``satellite`` (str, default ``"goes-16"``): ``"goes-16"`` (GOES-East,
+      operational for eastern CONUS), ``"goes-17"`` (historical west),
+      ``"goes-18"`` (GOES-West, operational for western CONUS / Pacific),
+      ``"goes-19"`` (new GOES-East replacement, 2025+).
 
-    Raises:
-        ``GOESBboxRequiredError`` (code ``BBOX_REQUIRED``): ``bbox`` is None.
-        ``GOESInputError`` (code ``GOES_INPUT_INVALID``): unknown band /
-            satellite, malformed bbox.
-        ``GOESUpstreamError`` (code ``GOES_UPSTREAM_ERROR``, retryable): S3
-            listing or netCDF download/parse failed.
-        ``GOESEmptyError`` (code ``GOES_EMPTY``, not retryable): bbox outside
-            the CONUS sector / behind the disk limb.
+    **Returns:** A ``LayerURI`` pointing at a float32 COG in the cache bucket
+    (``gs://grace-2-hazard-prod-cache/cache/dynamic-1h/goes_satellite/<key>.tif``).
+    ``layer_type="raster"``, ``role="context"``. ``units="reflectance"`` for
+    visible, ``"K"`` for IR/WV. EPSG:4326, ~0.02 degree (~2 km) resolution.
 
-    FR-CE-8: Routed through ``read_through`` so identical ``(bbox, band,
-    satellite, valid_time_rounded_15min)`` calls within the same hour reuse
-    the cached COG. Cache key includes the 15-minute-rounded valid time so a
-    fresh observation triggers a fresh fetch (the dynamic-1h TTL bucket adds
-    the hour boundary on top of that). FR-DC-2 ``dynamic-1h`` class —
-    geostationary imagery is a live data source.
+    **Cross-tool dependencies:**
+    - Pairs with ``fetch_nexrad_reflectivity`` for combined radar + satellite
+      overlays during storm narrations.
+    - Typically requested alongside ``fetch_nws_alerts_conus`` for real-time
+      storm context.
+    - Pairs with ``fetch_mrms_qpe`` when the user wants both cloud context
+      and precipitation accumulation.
+
+    FR-CE-8: ``read_through`` with ``ttl_class="dynamic-1h"``; cache key is
+    SHA-256 over ``(bbox-6dp, band, satellite, valid_time_rounded_15min)`` so
+    a fresh observation within the same hour can trigger a fresh fetch while
+    repeated queries hit the cache.
     """
     _validate_bbox(bbox)
     if band not in _BAND_TO_VARIABLE:

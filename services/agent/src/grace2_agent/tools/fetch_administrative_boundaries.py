@@ -573,7 +573,13 @@ def _fetch_admin_boundaries_bytes(
 # ---------------------------------------------------------------------------
 
 
-@register_tool(_METADATA)
+@register_tool(
+    _METADATA,
+    # Annotations: readOnlyHint=True (read-only; no state mutation),
+    # openWorldHint=True (calls external public API endpoint),
+    # destructiveHint=False, idempotentHint=True (cache shim deduplicates).
+    open_world_hint=True,
+)
 def fetch_administrative_boundaries(
     level: Literal["state", "county", "place", "zcta"],
     bbox: tuple[float, float, float, float],
@@ -581,44 +587,49 @@ def fetch_administrative_boundaries(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Fetch US Census TIGER/Line administrative-boundary polygons.
+    """Fetch US Census TIGER/Line 2024 administrative-boundary polygons clipped to a bbox.
 
-    Use this when: the agent needs administrative unit polygons for spatial
-    context, overlay analysis, or display alongside hazard layers. For example:
-    county boundaries for a flood impact summary, state outlines for a regional
-    overview, city/place polygons for jurisdictional scope, or ZIP-code
-    tabulation areas for demographic aggregation. All levels are Tier-1 free
-    (no API key required).
+    **What it does:** Downloads the TIGER/Line 2024 shapefile for the requested
+    administrative level from ``census.gov``, clips it to the requested bbox
+    via geopandas, and returns a FlatGeobuf vector layer. Cached ``static-30d``
+    (boundaries change at most once per census year). Four levels supported:
+    state, county, place (cities/CDPs), and ZIP Code Tabulation Areas (zcta).
 
-    Do NOT use this for: parcel-level boundaries (those are county assessor
-    data — not included here); congressional or voting districts (different
-    TIGER layers, not in scope for M4); international boundaries (TIGER is
-    US-only; use a Natural Earth source for global coverage); point lookups
-    (use ``geocode_location`` for address/place name resolution).
+    **When to use:**
+    - Agent needs administrative outlines for spatial context alongside a
+      hazard layer (e.g. county boundaries over a flood inundation surface).
+    - Workflow must aggregate or label results by jurisdiction — state, county,
+      city, or ZIP code.
+    - User asks for a geographic boundary before calling
+      ``clip_raster_to_polygon`` or ``compute_zonal_statistics``.
+    - ``geocode_location`` returned a bbox but the workflow needs the actual
+      polygon for precise clipping.
 
-    level:
-        "state":  50 US states + DC + territories. ~9.5 MB nationwide ZIP.
-        "county": 3000+ US counties. ~80 MB nationwide ZIP.
-        "place":  Cities, towns, and Census Designated Places (CDPs). Per-state
-                  ZIPs (~5-10 MB each); only states intersecting bbox downloaded.
-        "zcta":   ZIP Code Tabulation Areas. ~504 MB nationwide ZIP —
-                  first-fetch latency is high; subsequent calls hit the 30-day
-                  cache and are fast.
+    **When NOT to use:**
+    - Parcel-level or cadastral boundaries (county assessor data; not in scope).
+    - Congressional or voting districts (different TIGER layers, not added).
+    - International administrative boundaries (TIGER is US + territories only).
+    - Simple place-name → bbox resolution (use ``geocode_location`` instead).
 
-    Params:
-        level: one of "state", "county", "place", "zcta".
-        bbox: ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326.
+    **Parameters:**
+    - ``level`` (str): one of ``"state"`` (50 + DC + territories), ``"county"``
+      (3000+ counties), ``"place"`` (cities/CDPs; per-state ZIPs; only states
+      intersecting bbox are fetched), or ``"zcta"`` (ZIP Code Tabulation Areas;
+      ~504 MB download — subsequent calls hit 30-day cache).
+    - ``bbox`` (tuple): ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326.
+      Example: ``(-82.2, 26.3, -81.5, 26.8)`` for Lee County FL.
 
-    Returns:
-        A ``LayerURI`` pointing at a FlatGeobuf in the cache bucket:
-        ``gs://grace-2-hazard-prod-cache/cache/static-30d/admin_boundaries/<key>.fgb``
-        containing the polygons clipped to the requested bbox.
-        ``layer_type="vector"``, ``role="context"``.
+    **Returns:**
+    ``LayerURI(layer_type="vector", role="context", units=None)`` pointing at a
+    FlatGeobuf with TIGER standard fields (GEOID, NAME, STATEFP, etc.) clipped
+    to the requested bbox.
 
-    FR-CE-8: Routed through ``read_through`` so identical ``(level, bbox)``
-    calls reuse the cached FlatGeobuf. Cache key includes
-    ``(level, bbox-rounded-to-6dp, year="2024")`` so a future year upgrade
-    (year parameter extension) is a cache-key change, not a silent staleness.
+    **Cross-tool dependencies:**
+    - Upstream of: ``clip_raster_to_polygon``, ``compute_zonal_statistics``,
+      overlay display.
+    - Pairs with: ``geocode_location`` (resolve name → bbox first), then
+      ``fetch_administrative_boundaries`` for the actual polygon.
+    - Feeds into: jurisdictional labeling in any flood/wildfire impact summary.
     """
     if level not in _VALID_LEVELS:
         raise AdminBoundaryLevelError(

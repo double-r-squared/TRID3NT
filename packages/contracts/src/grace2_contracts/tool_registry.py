@@ -154,6 +154,64 @@ class AtomicToolMetadata(GraceModel):
         ),
     )
 
+    # --- Wave 4.10 MCP annotation hints (job-B12) --- #
+    #
+    # MCP-emerging-standard annotation fields for downstream consumers
+    # (MCP exposure, parallelization decisions, lethal-trifecta auditing).
+    # All four default to the safest / most-conservative value so existing
+    # call sites are backward-compatible; individual tools opt in by passing
+    # the keyword at registration or via model_copy(update=...).
+
+    read_only_hint: bool = Field(
+        default=True,
+        description=(
+            "MCP annotation: readOnlyHint. True when the tool has no side "
+            "effects and does not mutate any external state (GCS, QGIS project, "
+            "MongoDB, Cloud Run). Defaults to True — the safe assumption for "
+            "fetchers and compute tools. Set to False for publish_layer, "
+            "run_solver, qgis_process, run_pelicun_damage_assessment, and any "
+            "other tool that writes."
+        ),
+    )
+
+    open_world_hint: bool = Field(
+        default=False,
+        description=(
+            "MCP annotation: openWorldHint. True when the tool issues calls to "
+            "external APIs or public data endpoints outside the GRACE-2 GCP "
+            "project boundary. Defaults to False — compute, clip, and intra-GCP "
+            "tools opt out. All fetch_* tools and web_fetch are True; "
+            "catalog_search/catalog_fetch are True because they ultimately hit "
+            "Tier-2/3 external endpoints."
+        ),
+    )
+
+    destructive_hint: bool = Field(
+        default=False,
+        description=(
+            "MCP annotation: destructiveHint. True when the tool can overwrite "
+            "or permanently alter existing state in a way that is difficult to "
+            "reverse (e.g. mutating the canonical .qgs project via publish_layer). "
+            "Defaults to False. Distinguished from read_only_hint=False: a tool "
+            "may be non-readonly (it writes) without being destructive (the write "
+            "is additive / ephemeral). publish_layer is the only current True case "
+            "because it overwrites a layer entry in the shared .qgs project."
+        ),
+    )
+
+    idempotent_hint: bool = Field(
+        default=True,
+        description=(
+            "MCP annotation: idempotentHint. True when calling the tool multiple "
+            "times with the same arguments produces the same result without "
+            "additional side effects. Defaults to True — fetchers with the cache "
+            "shim satisfy this property. Set to False for tools that emit pipeline "
+            "state (wait_for_completion), dispatch Cloud Run jobs (run_solver, "
+            "qgis_process), write GCS artifacts (run_pelicun_damage_assessment, "
+            "publish_layer), or interact with stateful systems in non-idempotent ways."
+        ),
+    )
+
     @model_validator(mode="after")
     def _validate_cacheable_consistency(self) -> AtomicToolMetadata:
         """Enforce the FR-DC-6 cross-field consistency rule."""

@@ -1,0 +1,244 @@
+{
+  "timestamp": "2026-06-09T11:12:33.350697+00:00",
+  "anchors_run": [
+    "A1_geocode_simple",
+    "A2_existing_endpoint_chain",
+    "A3_new_endpoint_not_yet_registered",
+    "A4_composite_workflow",
+    "A5_geographic_clip"
+  ],
+  "scores": [
+    {
+      "prompt_id": "A1_geocode_simple",
+      "routing_dimension": "single-tool-trivial",
+      "first_tool_correct": true,
+      "full_sequence_correct": true,
+      "observed_first_tool": "geocode_location",
+      "expected_first_tool_any_of": [
+        "geocode_location"
+      ],
+      "observed_full_chain": [
+        "geocode_location"
+      ],
+      "expected_chain_contains": [
+        "geocode_location"
+      ],
+      "missing_from_chain": [],
+      "extras_in_chain": [],
+      "duration_seconds": 88.3,
+      "had_error_envelope": true,
+      "n_error_envelopes": 2,
+      "pipeline_terminal": true,
+      "agent_terminal": false
+    },
+    {
+      "prompt_id": "A2_existing_endpoint_chain",
+      "routing_dimension": "named-existing-endpoint",
+      "first_tool_correct": true,
+      "full_sequence_correct": false,
+      "observed_first_tool": "geocode_location",
+      "expected_first_tool_any_of": [
+        "fetch_wdpa_protected_areas",
+        "geocode_location"
+      ],
+      "observed_full_chain": [
+        "geocode_location"
+      ],
+      "expected_chain_contains": [
+        "fetch_wdpa_protected_areas"
+      ],
+      "missing_from_chain": [
+        "fetch_wdpa_protected_areas"
+      ],
+      "extras_in_chain": [
+        "geocode_location"
+      ],
+      "duration_seconds": 82.65,
+      "had_error_envelope": true,
+      "n_error_envelopes": 2,
+      "pipeline_terminal": true,
+      "agent_terminal": false
+    },
+    {
+      "prompt_id": "A3_new_endpoint_not_yet_registered",
+      "routing_dimension": "A3-new-endpoint",
+      "first_tool_correct": false,
+      "full_sequence_correct": false,
+      "observed_first_tool": null,
+      "expected_first_tool_any_of": [
+        "fetch_hrrr",
+        "fetch_hrrr_forecast"
+      ],
+      "observed_full_chain": [],
+      "expected_chain_contains": [
+        "fetch_hrrr_forecast"
+      ],
+      "missing_from_chain": [
+        "fetch_hrrr_forecast"
+      ],
+      "extras_in_chain": [],
+      "duration_seconds": 33.99,
+      "had_error_envelope": true,
+      "n_error_envelopes": 2,
+      "pipeline_terminal": true,
+      "agent_terminal": true
+    },
+    {
+      "prompt_id": "A4_composite_workflow",
+      "routing_dimension": "composite-workflow",
+      "first_tool_correct": true,
+      "full_sequence_correct": false,
+      "observed_first_tool": "run_model_flood_scenario",
+      "expected_first_tool_any_of": [
+        "geocode_location",
+        "model_flood_scenario",
+        "run_model_flood_scenario"
+      ],
+      "observed_full_chain": [
+        "run_model_flood_scenario"
+      ],
+      "expected_chain_contains": [
+        "geocode_location"
+      ],
+      "missing_from_chain": [
+        "geocode_location"
+      ],
+      "extras_in_chain": [
+        "run_model_flood_scenario"
+      ],
+      "duration_seconds": 130.28,
+      "had_error_envelope": true,
+      "n_error_envelopes": 2,
+      "pipeline_terminal": false,
+      "agent_terminal": false
+    },
+    {
+      "prompt_id": "A5_geographic_clip",
+      "routing_dimension": "geographic-clipping-pattern",
+      "first_tool_correct": false,
+      "full_sequence_correct": false,
+      "observed_first_tool": null,
+      "expected_first_tool_any_of": [
+        "fetch_administrative_boundaries",
+        "fetch_roads_osm",
+        "geocode_location"
+      ],
+      "observed_full_chain": [],
+      "expected_chain_contains": [
+        "fetch_administrative_boundaries",
+        "fetch_roads_osm"
+      ],
+      "missing_from_chain": [
+        "fetch_administrative_boundaries",
+        "fetch_roads_osm"
+      ],
+      "extras_in_chain": [],
+      "duration_seconds": 0.0,
+      "had_error_envelope": true,
+      "n_error_envelopes": 1,
+      "pipeline_terminal": false,
+      "agent_terminal": false
+    }
+  ],
+  "aggregate": {
+    "first_tool_correctness_pct": 60.0,
+    "full_sequence_correctness_pct": 20.0,
+    "per_dimension_breakdown": {
+      "single-tool-trivial": {
+        "total": 1,
+        "first_tool_correct": 1,
+        "full_sequence_correct": 1,
+        "anchor_ids": [
+          "A1_geocode_simple"
+        ]
+      },
+      "named-existing-endpoint": {
+        "total": 1,
+        "first_tool_correct": 1,
+        "full_sequence_correct": 0,
+        "anchor_ids": [
+          "A2_existing_endpoint_chain"
+        ]
+      },
+      "A3-new-endpoint": {
+        "total": 1,
+        "first_tool_correct": 0,
+        "full_sequence_correct": 0,
+        "anchor_ids": [
+          "A3_new_endpoint_not_yet_registered"
+        ]
+      },
+      "composite-workflow": {
+        "total": 1,
+        "first_tool_correct": 1,
+        "full_sequence_correct": 0,
+        "anchor_ids": [
+          "A4_composite_workflow"
+        ]
+      },
+      "geographic-clipping-pattern": {
+        "total": 1,
+        "first_tool_correct": 0,
+        "full_sequence_correct": 0,
+        "anchor_ids": [
+          "A5_geographic_clip"
+        ]
+      }
+    },
+    "n_anchors": 5
+  },
+  "agent_version": "e2c8748545baa99949e35d7a874dc957e23a395f",
+  "pipeline_emitter_observations": [
+    {
+      "prompt_id": "A1_geocode_simple",
+      "full_chain": [
+        "geocode_location"
+      ],
+      "ws_frame_count": 12,
+      "pipeline_terminal": true,
+      "agent_terminal": false,
+      "n_error_envelopes": 2,
+      "agent_final_text_head": ""
+    },
+    {
+      "prompt_id": "A2_existing_endpoint_chain",
+      "full_chain": [
+        "geocode_location"
+      ],
+      "ws_frame_count": 12,
+      "pipeline_terminal": true,
+      "agent_terminal": false,
+      "n_error_envelopes": 2,
+      "agent_final_text_head": ""
+    },
+    {
+      "prompt_id": "A3_new_endpoint_not_yet_registered",
+      "full_chain": [],
+      "ws_frame_count": 13,
+      "pipeline_terminal": true,
+      "agent_terminal": true,
+      "n_error_envelopes": 2,
+      "agent_final_text_head": "I am sorry, I cannot fulfill this request. The `fetch_hrrr_forecast` tool does not exist. I can fetch other weather-related data, such as precipitation, radar, and NWS alerts."
+    },
+    {
+      "prompt_id": "A4_composite_workflow",
+      "full_chain": [
+        "run_model_flood_scenario"
+      ],
+      "ws_frame_count": 12,
+      "pipeline_terminal": false,
+      "agent_terminal": false,
+      "n_error_envelopes": 2,
+      "agent_final_text_head": ""
+    },
+    {
+      "prompt_id": "A5_geographic_clip",
+      "full_chain": [],
+      "ws_frame_count": 0,
+      "pipeline_terminal": false,
+      "agent_terminal": false,
+      "n_error_envelopes": 1,
+      "agent_final_text_head": ""
+    }
+  ]
+}

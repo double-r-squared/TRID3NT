@@ -12,10 +12,10 @@ QGIS Server (Cloud Run) renders the same `.qgs` projects and QML styles that QGI
 Project file mutations (adding layers, changing styles, configuring temporal properties) are performed by short-lived PyQGIS worker jobs (Cloud Run Jobs). The agent invokes these as tools; they read the `.qgs` from GCS, mutate it, write back.
 
 **Decision D: GeoAgent (opengeos) is a reference, not a dependency**
-Patterns and ideas from the opengeos/GeoAgent project — tool registration discipline, docstring conventions, confirmation hook approach — inform the design. No code is copied or vendored. ADK is a different framework and its patterns govern.
+Patterns and ideas from the opengeos/GeoAgent project — tool registration discipline, docstring conventions, confirmation hook approach — inform the design. No code is copied or vendored. The generation loop is raw google-genai SDK (not ADK), and the tool-registration conventions are project-defined; ADK is a transitive dependency only with zero direct callers in the agent service (see Decision E and FR-AS-1).
 
 **Decision E: Google Cloud throughout**
-All infrastructure runs on Google Cloud: Agent Builder/ADK for the agent, Cloud Run for QGIS Server and worker jobs, Cloud Workflows for multi-step orchestration, GCS for artifacts. MongoDB Atlas runs as a managed service alongside (multi-cloud-deployable, in practice deployed in a GCP region adjacent to the agent).
+All infrastructure runs on Google Cloud: raw google-genai SDK (Gemini 2.5/3) for the agent generation loop — ADK is a transitive dependency only; `register_with_adk` has zero callers and the generation loop is `client.models.generate_content_stream` per `adapter.py` (FR-AS-1) — Cloud Run for QGIS Server and worker jobs, Cloud Workflows for multi-step orchestration, GCS for artifacts. MongoDB Atlas runs as a managed service alongside (multi-cloud-deployable, in practice deployed in a GCP region adjacent to the agent).
 
 **Decision F: MongoDB Atlas as the durable knowledge layer**
 News articles, extracted event metadata, model run catalog, and embeddings for semantic search all live in MongoDB Atlas. Atlas Vector Search enables "find historical events similar to this one" as an agent capability. The agent accesses MongoDB via MongoDB's MCP server.
@@ -66,13 +66,13 @@ Every atomic tool that hits an external public API (USGS 3DEP / NWIS / earthquak
              ▼                             ▼
 ┌─────────────────────────────────┐  ┌──────────────────────────┐
 │  Agent Service                  │  │   QGIS Server            │
-│  (Cloud Run, Agent Builder/ADK) │  │   (Cloud Run)            │
+│  (Cloud Run, raw google-genai)  │  │   (Cloud Run)            │
 │  ┌───────────────────────────┐  │  │   - Renders .qgs proj    │
 │  │ Gemini 3                  │  │  │   - Serves WMS/WMTS/WFS  │
 │  └───────────────────────────┘  │  │   - QML styles           │
 │  ┌───────────────────────────┐  │  │   - WMS-T temporal       │
 │  │ Tool registry             │  │  └─────────────┬────────────┘
-│  │  - native ADK tools       │  │                │
+│  │  - registered tools       │  │                │
 │  │  - MongoDB MCP tools      │  │                │ reads
 │  │  - hazard modeling tools  │  │                ▼
 │  └──────┬────────────────────┘  │       ┌──────────────┐

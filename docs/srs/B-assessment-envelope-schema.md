@@ -481,6 +481,152 @@ class DistributionStats(BaseModel):
 
 `tool_name` is currently a `Literal["pelicun"]`; it widens as new post-processors are added (e.g., regional resilience indices, business-interruption tools).
 
+---
+
+### B.6c.1 ImpactEnvelope — Pelicun Post-Processor Output Contract (Wave 4.11 / sprint-12)
+
+> **Status: implemented.** This section supersedes the forward-looking stub in B.6c with the concrete, implemented contract shipped in Wave 4.11 P1. The schema in `packages/contracts/src/grace2_contracts/impact_envelope.py` is the authoritative source; this section is the prose specification and amendment record.
+
+#### Purpose
+
+`ImpactEnvelope` is the typed aggregate produced by `postprocess_pelicun` by collapsing the per-feature damage FlatGeobuf returned by `run_pelicun_damage_assessment` into portfolio-level statistics: total and damaged structure counts, expected and P95 financial loss, displaced population, per-occupancy-class breakdowns, and provenance pointers back to the upstream hazard and damage layers.
+
+Every numeric field is a deterministic aggregate; no LLM-generated numbers appear (Invariant 1 / Decision N). The agent narrates directly from these fields — `n_structures_damaged`, `expected_loss_usd`, `population_displaced` — without inventing values.
+
+#### Schema reference
+
+`packages/contracts/src/grace2_contracts/impact_envelope.py` — `ImpactEnvelope` and `OccupancyClassImpact` classes.
+
+#### Required fields
+
+| Field | Type | Constraint | Description |
+|---|---|---|---|
+| `schema_version` | `Literal["v1"]` | = `"v1"` | Schema version sentinel. |
+| `n_structures_total` | `int` | `≥ 0` | All asset features in the damage layer. |
+| `n_structures_damaged` | `int` | `≥ 0` | Assets with `ds_mean ≥ 1.0` (DS1+). |
+| `n_structures_destroyed` | `int` | `≥ 0` | Assets with `ds_mean ≥ 3.5` (DS4-dominant). |
+| `damage_state_distribution` | `dict[DamageStateKey, int]` | keys: DS0_none…DS4_complete | Modal DS counts; values sum to `n_structures_total`. |
+| `total_replacement_value_usd` | `float` | `≥ 0.0` | Sum of `replacement_value` for all assets. |
+| `damaged_replacement_value_usd` | `float` | `≥ 0.0` | Sum of `replacement_value` for DS1+ assets. |
+| `expected_loss_usd` | `float` | `≥ 0.0` | Sum of `repair_cost_mean` across all assets. |
+| `loss_percentile_95_usd` | `float` | `≥ 0.0` | Sum of `repair_cost_p95` (HAZUS-MH portfolio P95 approximation). |
+| `impact_area_km2` | `float` | `≥ 0.0` | Convex-hull area of DS1+ asset centroids (km²). |
+| `bbox` | `BBox` | EPSG:4326 | Full damage layer extent: `[minLon, minLat, maxLon, maxLat]`. |
+| `by_occupancy_class` | `dict[str, OccupancyClassImpact]` | | Per-HAZUS-class breakdown; only classes present in the layer. |
+| `pelicun_run_id` | `ULIDStr` | | ULID for this `postprocess_pelicun` run (cache-stable). |
+| `damage_layer_uri` | `str` | non-empty | `gs://` URI of the FlatGeobuf aggregated. |
+| `structure_inventory_source` | `StructureInventorySource` | Literal | `"USACE_NSI"`, `"MS_BUILDINGS"`, or `"USER_SUPPLIED"`. |
+| `flood_layer_uri` | `str` | non-empty | `gs://` URI of the source hazard raster. |
+| `fragility_set` | `str` | non-empty | Fragility set used, e.g. `"hazus_flood_v6"`. |
+| `realization_count` | `int` | `> 0` | Monte-Carlo realization count from upstream run. |
+| `generated_at` | `UTCDatetime` | UTC, `Z` suffix | Timestamp when `postprocess_pelicun` produced this envelope. |
+
+**Optional population fields** (None when `structure_inventory_source != "USACE_NSI"`):
+
+| Field | Type | Description |
+|---|---|---|
+| `population_total` | `int | None` | AM residential population (NSI `pop2amu65+pop2amo65`) across all assets. |
+| `population_displaced` | `int | None` | Population in DS2+ assets (`loss_ratio_mean ≥ 0.20`). |
+| `population_at_high_risk` | `int | None` | Population in DS3+ assets (`ds_mean ≥ 2.5`). |
+
+#### OccupancyClassImpact fields
+
+Each entry in `by_occupancy_class` (keyed by HAZUS occupancy code, e.g. `"RES1"`, `"COM1"`):
+
+| Field | Type | Constraint | Description |
+|---|---|---|---|
+| `n_structures` | `int` | `≥ 0` | Total structures of this class. |
+| `n_damaged` | `int` | `≥ 0` | DS1+ count. |
+| `n_destroyed` | `int` | `≥ 0` | DS4-dominant count. |
+| `expected_loss_usd` | `float` | `≥ 0.0` | Sum of `repair_cost_mean` for this class. |
+| `loss_percentile_95_usd` | `float` | `≥ 0.0` | Sum of `repair_cost_p95` for this class. |
+| `population` | `int | None` | `≥ 0` | AM population for this class (NSI); None if not available. |
+| `population_displaced` | `int | None` | `≥ 0` | Displaced population for this class; None if not available. |
+
+#### Provenance fields
+
+- **`pelicun_run_id`** — ULID seeded from the input FlatGeobuf content hash + bbox. Stable: identical inputs always produce the same `pelicun_run_id`, enabling cache deduplication.
+- **`damage_layer_uri`** — the `LayerURI.uri` (gs:// FlatGeobuf URI) returned by `run_pelicun_damage_assessment`. Every damage and loss claim is traceable to this layer.
+- **`flood_layer_uri`** — the `hazard_raster_uri` passed to `run_pelicun_damage_assessment`. Binds the impact numbers to the specific hazard footprint that drove them.
+- **`structure_inventory_source`** — typed Literal; determines whether population fields are populated.
+- **`fragility_set`** — carried forward from the upstream call; the claim `"expected loss via HAZUS Flood v6.1"` cites this field (Decision M citation discipline).
+
+#### Consumer guidance
+
+- **Emitted by**: `postprocess_pelicun` (Wave 4.11 P2 atomic tool, sprint-12).
+- **Consumed by**:
+  - Agent narration: cite `n_structures_damaged`, `expected_loss_usd`, `population_displaced`, `by_occupancy_class["RES1"].n_damaged` etc. All cite-safe; no LLM-invented numbers.
+  - Case summary panel (UI): headline stats block (total damage, loss, displaced population).
+  - MongoDB `runs` collection: stored alongside the parent `AssessmentEnvelope` as a sub-document.
+- **Wire form**: `ImpactEnvelope.model_dump(mode="json")` — same canonical pattern as all `GraceModel` subclasses.
+
+#### Example payload (Hurricane Ian, Fort Myers — USACE NSI substrate)
+
+Derived from the `run_pelicun_damage_assessment` run over Fort Myers CDP polygons using the job-0086 Y-flip-fixed flood COG. Values are illustrative.
+
+```json
+{
+  "schema_version": "v1",
+  "n_structures_total": 847,
+  "n_structures_damaged": 432,
+  "n_structures_destroyed": 44,
+  "damage_state_distribution": {
+    "DS0_none": 415,
+    "DS1_slight": 183,
+    "DS2_moderate": 142,
+    "DS3_extensive": 63,
+    "DS4_complete": 44
+  },
+  "total_replacement_value_usd": 211750000.0,
+  "damaged_replacement_value_usd": 108000000.0,
+  "expected_loss_usd": 29245000.0,
+  "loss_percentile_95_usd": 51840000.0,
+  "population_total": 11200,
+  "population_displaced": 4980,
+  "population_at_high_risk": 1870,
+  "impact_area_km2": 8.4,
+  "bbox": [-82.10, 26.40, -81.60, 26.90],
+  "by_occupancy_class": {
+    "RES1": {
+      "n_structures": 612,
+      "n_damaged": 318,
+      "n_destroyed": 32,
+      "expected_loss_usd": 20140000.0,
+      "loss_percentile_95_usd": 35600000.0,
+      "population": 9840,
+      "population_displaced": 4210
+    },
+    "COM1": {
+      "n_structures": 143,
+      "n_damaged": 87,
+      "n_destroyed": 10,
+      "expected_loss_usd": 7400000.0,
+      "loss_percentile_95_usd": 13200000.0,
+      "population": 820,
+      "population_displaced": 560
+    },
+    "IND1": {
+      "n_structures": 92,
+      "n_damaged": 27,
+      "n_destroyed": 2,
+      "expected_loss_usd": 1705000.0,
+      "loss_percentile_95_usd": 3040000.0,
+      "population": 540,
+      "population_displaced": 210
+    }
+  },
+  "pelicun_run_id": "01JZABC123DEF456GHI78901JK",
+  "damage_layer_uri": "gs://grace-2-cache/pelicun_damage/01KTJX71-hash.fgb",
+  "structure_inventory_source": "USACE_NSI",
+  "flood_layer_uri": "gs://grace-2-hazard-prod-runs/01KTJX71NKGDMXB9TN0DV75JWK/flood_depth_peak_0086.tif",
+  "fragility_set": "hazus_flood_v6",
+  "realization_count": 100,
+  "generated_at": "2026-06-09T14:35:22Z"
+}
+```
+
+---
+
 ### B.6d Example: Hurricane Ian Pelicun ImpactEnvelope (forward-looking — not in M1 / not in sprint-03)
 
 Derived from the modeled flood envelope in B.6 (Hurricane Ian storm surge over Fort Myers). Note `envelope_type: "impact"`, `parent_envelope_id` pointing at the source `AssessmentEnvelope`, `hazard_type: "flood"` inherited from the parent, and `fragility_source: "hazus_fl"` for HAZUS Flood v6.1.

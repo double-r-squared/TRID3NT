@@ -790,6 +790,10 @@ def _fetch_cama_bytes(
     _METADATA,
     supports_global_query=False,
     payload_mb_estimator_name="estimate_payload_mb",
+    # Annotations: readOnlyHint=True (read-only; no state mutation),
+    # openWorldHint=True (calls external public API endpoint),
+    # destructiveHint=False, idempotentHint=True (cache shim deduplicates).
+    open_world_hint=True,
 )
 def fetch_cama_flood_discharge(
     bbox: tuple[float, float, float, float],
@@ -803,65 +807,76 @@ def fetch_cama_flood_discharge(
 ) -> LayerURI:
     """CaMa-Flood global river discharge Tier-2 fetcher (compound-flood fluvial forcing).
 
-    Use this when: the agent needs gridded river discharge as fluvial-boundary
-    forcing for a compound-flood model run outside the US gauge network (NWIS),
-    or for global flood-risk substrate where USGS streamflow does not cover —
-    e.g. setting up SFINCS / GeoFLOOD river boundaries in the Mekong, Amazon,
-    Niger, or any non-CONUS basin. CaMa-Flood is research-validated as the
-    canonical fluvial forcing for compound flood modeling (Eilander et al.,
-    2023, "Modeling compound flood risk across scales" — Hydrology & Earth
-    System Sciences).
+    **What it does:** Downloads a yearly CaMa-Flood v4 NetCDF from the Yamazaki
+    Lab (U.Tokyo) distribution, subsets to the requested bbox and date window,
+    time-averages the discharge variable (``rivout``, m^3/s), and writes
+    a CRS-tagged Cloud-Optimized GeoTIFF (EPSG:4326, float32, nodata=NaN) at the
+    model's native 0.1° (~10 km) resolution. Normalises longitudes 0–360° to
+    -180–180° and sorts latitude ascending before clipping (geographic-correctness
+    gate per job-0086). v4.0.1 is the default; v4.20 and v4.30 also supported.
 
-    Do NOT use this for: local point-discharge time series (use
-    ``fetch_streamflow`` / USGS NWIS instead, which is gauge-derived and
-    instantaneous), real-time / forecast discharge (CaMa-Flood public
-    outputs are reanalysis-style historical), high-resolution (sub-10km)
-    rivers — for that use ``fetch_river_geometry`` + a routing model on
-    sub-grid hydrography. Wildfire / non-hydrological hazards.
+    **When to use:**
 
-    Wraps the U.Tokyo Yamazaki Lab CaMa-Flood NetCDF distribution. Returns
-    a CRS-tagged COG carrying the time-mean of discharge across the date
-    range, clipped to the requested bbox.
+    - Fluvial boundary forcing for SFINCS / GeoFLOOD compound-flood runs in
+      non-CONUS basins — Mekong, Amazon, Niger, Ganges-Brahmaputra, etc.
+      Example: bbox ``(88.0, 21.0, 93.0, 27.0)`` for the Bangladesh delta,
+      ``start_date="2017-08-01"``, ``end_date="2017-08-31"``.
+    - Global flood-risk substrate where USGS NWIS streamflow gauges do not
+      cover (research-validated: Eilander et al. 2023, HESS).
+    - Multi-year discharge climatology for flood-frequency analysis outside CONUS.
 
-    KNOWN MIGRATION (OQ-0133-CAMA-DATA-SOURCE-MIGRATION): the kickoff names
-    a no-auth U.Tokyo Hydra URL that as of 2026-02-12 returns an HTML
-    redirect to https://global-hydrodynamics.github.io/. The new
-    distribution is gated (Google-Form + Dropbox password). To enable
-    the live path, set ``GRACE2_CAMA_FLOOD_BASE_URL`` (or pass
-    ``base_url=...``) to a mirror that serves netCDFs. Without a mirror
-    configured, the tool raises ``CaMaFloodUnreachableError`` with the
-    migration note.
+    **When NOT to use:**
 
-    Params:
-        bbox: ``(west, south, east, north)`` in EPSG:4326 (WGS84 decimal
-            degrees). supports_global_query=False — global is ~500 MB/day;
-            composers wanting global call this in tiles.
-        start_date: ISO YYYY-MM-DD; inclusive.
-        end_date: ISO YYYY-MM-DD; inclusive. Hard cap 366 days from start.
-        version: CaMa-Flood release tag (default ``"v4.0.1"``; allowed
-            ``{"v4.0.1", "v4.20", "v4.30"}``).
-        base_url: optional explicit base URL override. Use when a mirror is
-            available (see migration note). When omitted, falls back to
-            ``GRACE2_CAMA_FLOOD_BASE_URL`` then the kickoff-documented
-            legacy URL.
+    - CONUS point-discharge time series — use ``fetch_noaa_nwm_streamflow`` or
+      USGS NWIS (gauge-derived, instantaneous, sub-10km rivers).
+    - Real-time or forecast discharge — CaMa-Flood public outputs are historical
+      reanalysis (no live feed available).
+    - Sub-10km river networks — for finer hydrography use ``fetch_river_geometry``
+      + a routing model on NHDPlus sub-grid channels.
 
-    Returns:
-        A ``LayerURI`` pointing at a COG in the cache bucket:
-        ``gs://grace-2-hazard-prod-cache/cache/static-30d/cama_flood/<key>.tif``
-        carrying the time-mean of discharge across the date range, clipped
-        to the requested bbox. ``layer_type="raster"``, ``role="primary"``,
-        ``units="m^3/s"``.
+    **KNOWN MIGRATION (OQ-0133-CAMA-DATA-SOURCE-MIGRATION):** The kickoff names
+    a no-auth U.Tokyo Hydra URL that as of 2026-02-12 returns an HTML redirect
+    to https://global-hydrodynamics.github.io/. New distribution is gated
+    (Google-Form + Dropbox password). Set ``GRACE2_CAMA_FLOOD_BASE_URL`` or pass
+    ``base_url=...`` to a mirror serving netCDFs. Without a mirror configured,
+    the tool raises ``CaMaFloodUnreachableError`` with the migration note.
 
-    Raises:
-        ``CaMaFloodInputError``: bad bbox / dates / version (retryable=False).
-        ``CaMaFloodUnreachableError``: legacy URL migration page detected,
-            no mirror configured (retryable=False).
-        ``CaMaFloodEmptyError``: bbox falls outside CaMa-Flood coverage.
-        ``CaMaFloodUpstreamError``: network / 5xx (retryable=True).
+    **Parameters:**
 
-    FR-CE-8: Routed through ``read_through`` with ``ttl_class="static-30d"``
-    so identical ``(bbox, start_date, end_date, version)`` calls reuse the
-    cached COG.
+    - ``bbox``: ``(west, south, east, north)`` EPSG:4326. Required;
+      ``supports_global_query=False`` — global is ~500 MB/day; tile if needed.
+    - ``start_date``: ISO YYYY-MM-DD inclusive. Reasonable range: 1979–present.
+    - ``end_date``: ISO YYYY-MM-DD inclusive. Hard cap 366 days from start.
+    - ``version``: CaMa-Flood release string; allowed ``{"v4.0.1", "v4.20",
+      "v4.30"}``; default ``"v4.0.1"``.
+    - ``base_url``: optional mirror base URL. Falls back to
+      ``GRACE2_CAMA_FLOOD_BASE_URL`` env var, then the legacy Tokyo path.
+
+    **Returns:**
+
+    ``LayerURI`` pointing at ``gs://grace-2-hazard-prod-cache/cache/static-30d/cama_flood/<key>.tif``.
+    COG, float32, EPSG:4326, nodata=NaN, units m^3/s. Single band:
+    time-mean discharge across the date range. GeoTIFF tags: ``units``,
+    ``source="CaMa-Flood_v4"``, ``version``, ``variable="discharge"``.
+    ``layer_type="raster"``, ``role="primary"``, ``units="m^3/s"``.
+
+    Raises: ``CaMaFloodInputError`` (bad params, retryable=False),
+    ``CaMaFloodUnreachableError`` (legacy URL migration, retryable=False),
+    ``CaMaFloodEmptyError`` (no finite pixels in bbox),
+    ``CaMaFloodUpstreamError`` (network / 5xx, retryable=True).
+
+    **Cross-tool dependencies:**
+
+    - Pair with: ``fetch_gtsm_tide_surge`` (coastal boundary) and
+      ``fetch_era5_reanalysis`` (atmospheric forcing) for a complete SFINCS
+      compound-flood forcing stack outside CONUS.
+    - Consumed by: ``build_sfincs_model`` (river inflow boundary) and
+      ``model_compound_flood_global`` (compound-flood composer, Wave 2+).
+    - For CONUS rivers, ``fetch_noaa_nwm_streamflow`` is preferred (gauged,
+      higher resolution); this tool activates when NWM coverage ends.
+
+    FR-CE-8: ``read_through`` with ``ttl_class="static-30d"``; cache key =
+    SHA-256 of ``(bbox-6dp, start_date, end_date, version)``.
     """
     # ---- Input validation ----
     _validate_bbox(bbox)

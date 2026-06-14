@@ -1,0 +1,61 @@
+{
+  "url": "http://127.0.0.1:5192/app",
+  "ws_events": [
+    {
+      "kind": "created",
+      "url": "ws://127.0.0.1:5192/",
+      "ts": 1781211439174
+    },
+    {
+      "kind": "created",
+      "url": "ws://127.0.0.1:8907/",
+      "ts": 1781211440534
+    },
+    {
+      "kind": "created",
+      "url": "ws://127.0.0.1:8907/",
+      "ts": 1781211440534
+    },
+    {
+      "kind": "closed",
+      "ts": 1781211440568
+    }
+  ],
+  "client_sent_frames_in_order": [
+    {
+      "type": "auth-token",
+      "ts": 1781211440572,
+      "len": 169
+    },
+    {
+      "type": "session-resume",
+      "ts": 1781211440572,
+      "len": 146
+    }
+  ],
+  "server_received_frames_in_order": [
+    {
+      "type": "connected",
+      "ts": 1781211439222
+    },
+    {
+      "type": "auth-ack",
+      "ts": 1781211440573
+    },
+    {
+      "type": "session-state",
+      "ts": 1781211440573
+    },
+    {
+      "type": "case-list",
+      "ts": 1781211440574
+    }
+  ],
+  "first_client_frame": "auth-token",
+  "console_tail": [
+    "[debug] [vite] connecting...",
+    "[debug] [vite] connected.",
+    "[info] %cDownload the React DevTools for a better development experience: https://reactjs.org/link/react-devtools font-weight:bold",
+    "[warning] WebSocket connection to 'ws://127.0.0.1:8907/' failed: WebSocket is closed before the connection is established."
+  ]
+}

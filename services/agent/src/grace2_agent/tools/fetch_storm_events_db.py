@@ -405,7 +405,13 @@ def _fetch_storm_events_bytes(
 # ---------------------------------------------------------------------------
 
 
-@register_tool(_METADATA)
+@register_tool(
+    _METADATA,
+    # Annotations: readOnlyHint=True (read-only; no state mutation),
+    # openWorldHint=True (calls external public API endpoint),
+    # destructiveHint=False, idempotentHint=True (cache shim deduplicates).
+    open_world_hint=True,
+)
 def fetch_storm_events_db(
     year: int,
     state: str | None = None,
@@ -414,46 +420,56 @@ def fetch_storm_events_db(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Fetch NOAA Storm Events Database events as a point FlatGeobuf.
+    """Fetch historical NOAA Storm Events Database records as a FlatGeobuf point layer.
 
-    Use this when: the agent needs historical storm-event points for spatial
-    overlay, narrative context, or comparison against modeled hazards. For
-    example: "what storm events affected Florida in 2022?" or "where did
-    hurricanes touch down in 2022?" The NOAA Storm Events Database is the
-    authoritative US event catalog covering tornadoes, hurricanes, hail,
-    flooding, winter storms, and 40+ other event categories (1950-present;
-    Tier-1 free, no API key).
+    **What it does:** Downloads the annual NOAA Storm Events DB gzip CSV for a
+    given year from NCEI (``ncei.noaa.gov``), filters by state and/or event
+    type, geocodes each row at ``BEGIN_LAT``/``BEGIN_LON``, and writes a
+    FlatGeobuf Point layer. The DB is the authoritative US storm-event catalog
+    covering 40+ categories (tornado, hurricane, hail, flood, winter storm, …)
+    from 1950 to present. Tier-1 free, no API key. Cached ``static-30d``.
 
-    Do NOT use this for: real-time / current storm tracking (use
-    ``fetch_hurricane_track`` for NHC ATCF, or ``fetch_nws_event`` for active
-    NWS alerts); detailed damage assessment beyond episode narratives (the
-    DB carries summary damage strings, not parcel-level loss data); meteorology
-    outside the US (Storm Events is US + territories only).
+    **When to use:**
+    - Agent needs historical storm-event locations for spatial context — e.g.
+      "what flood events affected Lee County FL in 2022?"
+    - Workflow requires comparing past event locations against a modeled hazard
+      footprint or a current NWS alert.
+    - User asks for storm frequency, damage summaries, or narrative context for
+      a specific year and region.
+    - Providing historical baseline to accompany a real-time ``fetch_nws_event``
+      or ``fetch_nws_alerts_conus`` result.
 
-    Params:
-        year: integer year in [1950, 2100]. Earlier years are sparse;
-            modern coverage is comprehensive from ~1996 onward.
-        state: optional ISO 2-letter US state code (e.g. ``"FL"``,
-            ``"TX"``). When omitted, all states/territories are returned.
-        event_types: optional list of NOAA event type names to filter on
-            (case-insensitive). Examples: ``["Hurricane"]``,
-            ``["Tornado", "Hail"]``, ``["Flash Flood"]``. When omitted, all
-            event types are returned.
+    **When NOT to use:**
+    - Real-time or current storm tracking (use ``fetch_nws_event`` for active
+      NWS alerts; NHC ATCF tracks are not in scope for v0.1).
+    - Parcel-level damage loss data (the DB carries summary strings only; use
+      Pelicun post-processor for modeled loss).
+    - Non-US meteorology (Storm Events is US + territories only).
+    - Sub-annual temporal resolution (the DB records are per-event, not
+      gridded time series; use MRMS or NWP output for gridded precipitation).
 
-    Returns:
-        A ``LayerURI`` pointing at a FlatGeobuf in the cache bucket:
-        ``gs://grace-2-hazard-prod-cache/cache/static-30d/storm_events/<key>.fgb``
-        with point geometry (one feature per event, located at
-        ``BEGIN_LAT``/``BEGIN_LON``) in EPSG:4326. Properties include
-        ``EVENT_ID``, ``EVENT_TYPE``, ``STATE``, ``BEGIN_DATE_TIME``,
-        ``END_DATE_TIME``, ``INJURIES_DIRECT``, ``DAMAGE_PROPERTY``,
-        ``EPISODE_NARRATIVE``. ``layer_type="vector"``, ``role="context"``,
-        ``units=None``.
+    **Parameters:**
+    - ``year`` (int): calendar year in range [1950, 2100]. Coverage is sparse
+      before ~1996 and comprehensive from that year onward. Example: ``2022``.
+    - ``state`` (str or None): ISO 2-letter US state code (``"FL"``, ``"TX"``).
+      ``None`` returns all states/territories. Case-insensitive.
+    - ``event_types`` (list[str] or None): list of NOAA event-type name strings,
+      case-insensitive (e.g. ``["Hurricane", "Flash Flood"]``, ``["Tornado"]``).
+      ``None`` returns all categories.
 
-    FR-CE-8: Routed through ``read_through`` so identical
-    ``(year, state, event_types)`` calls reuse the cached FlatGeobuf.
-    Cache key is the SHA-256 of canonical-json ``(year, state.upper(),
-    event_types sorted+upper)``.
+    **Returns:**
+    ``LayerURI(layer_type="vector", role="context", units=None)`` pointing at a
+    FlatGeobuf with fields: ``EVENT_ID``, ``EVENT_TYPE``, ``STATE``,
+    ``BEGIN_DATE_TIME``, ``END_DATE_TIME``, ``INJURIES_DIRECT``,
+    ``DAMAGE_PROPERTY``, ``EPISODE_NARRATIVE``. One point per event at
+    ``BEGIN_LAT``/``BEGIN_LON``, EPSG:4326.
+
+    **Cross-tool dependencies:**
+    - Pairs with: ``fetch_nws_event`` / ``fetch_nws_alerts_conus`` (historical
+      baseline alongside current active alerts).
+    - Upstream of: ``compute_zonal_statistics`` (count events inside a polygon),
+      narrative hazard-impact summaries.
+    - Complements: ``fetch_dem``, ``fetch_river_geometry`` for flood context.
     """
     _validate_inputs(year, state, event_types)
 

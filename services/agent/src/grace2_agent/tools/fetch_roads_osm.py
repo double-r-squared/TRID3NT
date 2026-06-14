@@ -493,7 +493,13 @@ def _fetch_osm_roads_bytes(
 # ---------------------------------------------------------------------------
 
 
-@register_tool(_METADATA)
+@register_tool(
+    _METADATA,
+    # Annotations: readOnlyHint=True (read-only; no state mutation),
+    # openWorldHint=True (calls external public API endpoint),
+    # destructiveHint=False, idempotentHint=True (cache shim deduplicates).
+    open_world_hint=True,
+)
 def fetch_roads_osm(
     bbox: tuple[float, float, float, float],
     road_classes: list[str] | None = None,
@@ -501,61 +507,63 @@ def fetch_roads_osm(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """OpenStreetMap roads fetcher via Overpass API.
+    """OpenStreetMap road LineStrings via Overpass API.
 
-    Use this when: the agent needs road LineStrings (carriageway centrelines)
-    for a geographic area — context layer for a flood-impact map, transport
-    network for evacuation routing, road-network input for accessibility
-    analysis, or simply "show me the roads on this map". Tier-1 free, no API
-    key required.
+    **What it does:** Queries the OpenStreetMap Overpass API for
+    ``highway``-tagged way features inside the requested bbox, serializes
+    the matching road LineStrings to FlatGeobuf, and caches the result for
+    30 days. Returns one LineString per road segment with attributes
+    ``osm_id``, ``name``, ``highway``, ``lanes``, and ``maxspeed``.
 
-    Do NOT use this for: parcel boundaries (use TIGER/Line via
-    ``fetch_administrative_boundaries``); rail / transit / pedestrian paths
-    (this tool deliberately scopes the ``highway`` tag set to road
-    carriageways — request ``cycleway`` / ``footway`` / ``rail`` from a
-    different tool); turn restrictions, signal phasing, lane-level routing
-    (Overpass does not carry that detail at this query shape); high-frequency
-    updates (the cache is 30 days — OSM updates are continuous but road
-    geometry changes slowly).
+    **When to use:**
+    - User asks to "show roads" or "overlay the road network" for any area.
+    - Flood-impact map needs road context to communicate which streets are
+      inundated ("which roads are under water?").
+    - Evacuation-routing or accessibility analysis needs a carriageway
+      network as a context or input layer.
+    - Any workflow step that needs named road-centreline vectors for CONUS
+      or international areas (OSM is global).
 
-    Queries the OpenStreetMap Overpass API
-    (https://overpass-api.de/api/interpreter) for ``highway``-tagged way
-    features in the bbox. ``road_classes`` filters the OSM ``highway`` tag
-    value — default is the major + arterial set
-    (``motorway``, ``trunk``, ``primary``, ``secondary``, ``tertiary``,
-    plus the ``_link`` ramp variants). Pass a narrower or broader list to
-    customize.
+    **When NOT to use:**
+    - DO NOT use for parcel or lot boundaries — use
+      ``fetch_administrative_boundaries`` (TIGER/Line) for those.
+    - DO NOT use for pedestrian paths, bicycle routes, or rail lines —
+      those OSM tags (``footway``, ``cycleway``, ``railway``) are excluded
+      from this tool's valid ``road_classes`` set by design.
+    - DO NOT use when turn-by-turn routing, signal phasing, or lane-level
+      topology is needed; Overpass returns simplified LineStrings, not a
+      routable graph with all OSM topology tags.
+    - DO NOT use for highly dynamic road changes — the 30-day cache means
+      road geometry is refreshed at most once per month.
 
-    Params:
-        bbox: ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326.
-        road_classes: list of OSM ``highway`` tag values to include.
-            ``None`` (the default) uses the major-plus-arterial-plus-link
-            tier. Valid values: ``motorway``, ``trunk``, ``primary``,
-            ``secondary``, ``tertiary``, ``unclassified``, ``residential``,
-            ``service``, ``motorway_link``, ``trunk_link``, ``primary_link``,
-            ``secondary_link``, ``tertiary_link``, ``living_street``,
-            ``pedestrian``, ``road``.
+    **Parameters:**
+    - ``bbox`` (tuple[float, float, float, float]): ``(min_lon, min_lat,
+      max_lon, max_lat)`` in EPSG:4326. Required. Example for Fort Myers:
+      ``(-82.0, 26.4, -81.7, 26.7)``.
+    - ``road_classes`` (list[str] | None, default None): OSM ``highway``
+      tag values to include. ``None`` returns the default major-plus-arterial
+      set: ``motorway``, ``trunk``, ``primary``, ``secondary``, ``tertiary``,
+      plus ``_link`` ramp variants. Pass a narrower list (e.g.
+      ``["motorway", "trunk"]``) for interstates-only, or add
+      ``["residential"]`` for local streets.
 
-    Returns:
-        A ``LayerURI`` pointing at a FlatGeobuf in the cache bucket:
-        ``gs://grace-2-hazard-prod-cache/cache/static-30d/osm_roads/<key>.fgb``
-        containing one ``LineString`` feature per road segment with
-        properties: ``osm_id``, ``name``, ``highway``, ``lanes``,
-        ``maxspeed``. ``layer_type="vector"``, ``role="context"``,
-        ``units=None``.
+    **Returns:** A ``LayerURI`` pointing at a FlatGeobuf in the cache bucket
+    (``gs://grace-2-hazard-prod-cache/cache/static-30d/osm_roads/<key>.fgb``).
+    ``layer_type="vector"``, ``role="context"``, ``units=None``. Properties
+    per feature: ``osm_id`` (int), ``name`` (str | None), ``highway``
+    (str), ``lanes`` (str | None), ``maxspeed`` (str | None).
 
-    FR-CE-8: routed through ``read_through`` so identical
-    ``(bbox, road_classes)`` calls reuse the cached FlatGeobuf within the
-    30-day TTL window. The cache key is a SHA-256 over
-    ``(bbox_6dp, road_classes_sorted)`` — caller-supplied class ordering does
-    not affect the key.
+    **Cross-tool dependencies:**
+    - Typically layered over ``fetch_dem`` or flood-output rasters as a
+      context overlay.
+    - Pairs with ``compute_zonal_statistics`` or intersection tools to
+      quantify road-length under flood inundation.
+    - Overpass inserts a 1 s polite delay before each network request to
+      respect rate limits; cache hits skip this delay.
 
-    Typed errors (FR-AS-11):
-        - ``OSMInputError`` (``retryable=False``): bad bbox, unknown highway
-          tag value, empty road_classes list.
-        - ``OSMUpstreamError`` (``retryable=True``): Overpass network/HTTP
-          5xx/rate-limit/timeout/parse failure (HTTP 4xx other than 429 is
-          ``retryable=False``).
+    FR-CE-8: ``read_through`` with ``ttl_class="static-30d"``; cache key
+    is SHA-256 over ``(bbox-6dp, road_classes_sorted)`` so caller-supplied
+    ordering does not affect the key.
     """
     # 1. Input validation.
     _validate_bbox(bbox)

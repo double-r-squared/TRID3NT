@@ -575,18 +575,34 @@ async def run_model_flood_habitat_scenario(
 ) -> dict[str, Any]:
     """Run the Case 1 (flood + habitat) composer end-to-end.
 
-    Use this when: the agent has a Case 1 intent — combine flood modeling with
-    species occurrence data and protected-area overlays over a single bounding
-    box (e.g. "Show me Florida panther and Roseate spoonbill occurrences in
-    Big Cypress National Preserve, plus a 100-year flood scenario"). Produces
-    a flood-depth raster, per-species occurrence vector layers, a WDPA
-    protected-area vector layer, a zonal-statistics impact summary, and a
-    narration-ready summary string in a single typed return.
+    Six-step composition chain over a single bounding box (all deterministic
+    Python, zero LLM calls inside):
+    1. ``fetch_wdpa_protected_areas(bbox, designation_filter)`` — WDPA polygon
+       layer for the bbox.
+    2. Per-species: ``fetch_gbif_occurrences(bbox, taxon_key)`` — one
+       FlatGeobuf ``LayerURI`` per species in ``species_keys``.
+    3. ``run_model_flood_scenario(bbox, return_period_yr)`` — SFINCS flood
+       depth COG (9-step sub-chain; see that tool's docstring).
+    4. ``compute_zonal_statistics(flood_depth_cog, wdpa_polygons)`` — flood
+       impact metrics within each WDPA polygon.
+    5. Optional: ``clip_raster_to_polygon(flood_cog, place_clip_polygon_uri)``
+       — clips the flood layer to a named place polygon when provided.
+    6. Optional: per-layer ``clip_vector_to_polygon(species_layer_uri,
+       place_clip_polygon_uri)`` — clips each species layer to the same polygon.
 
-    Do NOT use this for: a flood-only scenario (use ``run_model_flood_scenario``);
-    a species-only query (use ``fetch_gbif_occurrences`` directly); a non-flood
-    hazard (other hazard composers land in their own milestones); custom
-    multi-tool plans not covered by Case 1 (compose atomic tools manually).
+    When to use:
+        - Case 1 intent: combine flood modeling with species occurrence data
+          and protected-area overlays over a single bbox (e.g. "Show me Florida
+          panther occurrences in Big Cypress, plus a 100-year flood").
+        - User wants a flood-depth layer, per-species occurrences, WDPA
+          boundaries, impact summary, and narration text in one call.
+
+    When NOT to use:
+        - Flood-only scenario (use ``run_model_flood_scenario`` directly).
+        - Species-only query (use ``fetch_gbif_occurrences`` directly).
+        - Non-flood hazard composers (other milestones).
+        - Custom multi-tool plans not covered by Case 1 (compose atomics
+          manually).
 
     Params:
         bbox: ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326. The
@@ -626,6 +642,21 @@ async def run_model_flood_habitat_scenario(
     composer itself runs through cacheable atomic tools, so identical inputs
     still benefit from per-tool cache hits even though the composer itself
     is uncached.
+
+    Cross-tool dependencies:
+        Upstream (step chain):
+        - ``fetch_wdpa_protected_areas`` → step 1
+        - ``fetch_gbif_occurrences`` (per species) → step 2
+        - ``run_model_flood_scenario`` → step 3 (itself a 9-step chain)
+        - ``compute_zonal_statistics`` (flood × WDPA) → step 4
+        - ``clip_raster_to_polygon`` (optional, flood + place polygon) → step 5
+        - ``clip_vector_to_polygon`` (optional, per species + place polygon)
+          → step 6
+        Downstream (feeds):
+        - Agent ``CaseOneResult`` narration — the returned ``impact_metrics``
+          ``aggregate`` dict supplies headline numbers (Invariant 7).
+        - ``publish_layer`` — each returned ``LayerURI`` in ``flood_layer_uri``
+          / ``species_layers`` / ``wdpa_layer_uri`` can be published separately.
     """
     result = await model_flood_habitat_scenario(
         bbox=bbox,

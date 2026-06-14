@@ -284,7 +284,12 @@ def _fetch_3dep_dem_bytes(
     return data
 
 
-@register_tool(_FETCH_DEM_METADATA)
+@register_tool(
+    _FETCH_DEM_METADATA,
+    # Annotations: readOnlyHint=True, openWorldHint=True (USGS 3DEP py3dep),
+    # destructiveHint=False, idempotentHint=True (cache shim deduplicates).
+    open_world_hint=True,
+)
 def fetch_dem(
     bbox: tuple[float, float, float, float],
     resolution_m: int = 10,
@@ -292,34 +297,52 @@ def fetch_dem(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Fetch a digital elevation model (DEM) for a bbox from USGS 3DEP.
+    """Fetch a digital elevation model (DEM) for a bounding box from USGS 3DEP.
 
-    Use this when: the agent needs ground elevation for terrain analysis,
-    flood-depth computation, watershed delineation, or visualization of a
-    CONUS-bounded area. 3DEP covers the United States at native 10m and 30m
-    resolutions; pick 10 unless the bbox is very large.
+    **What it does:** Downloads a Cloud-Optimized GeoTIFF of ground elevation
+    from the USGS 3D Elevation Program (3DEP) via the ``py3dep`` library and
+    writes it to the 30-day cache. Returns a ``LayerURI`` pointing at the
+    cached COG so downstream SFINCS/HydroMT setup and terrain analysis tools
+    can consume it without re-fetching.
 
-    Do NOT use this for: global coverage (3DEP is CONUS-only; future work may
-    add Copernicus DEM as a global fallback); bathymetry (3DEP is land-only —
-    a future ``fetch_bathymetry`` will route to NOAA NCEI); on-the-fly
-    elevation lookups for single points (use ``py3dep.elevation_bycoords``
-    via a follow-up tool if needed).
+    **When to use:**
+    - Any flood workflow step that needs terrain elevation: SFINCS model
+      domain setup, watershed delineation, slope/hillshade computation.
+    - User asks "show me the terrain elevation for [area]" or "what does the
+      ground look like here?" — render with the ``continuous_dem`` QML preset.
+    - ``build_sfincs_model`` requires a DEM for the SFINCS grid; this tool
+      supplies it.
+    - Pre-processing step before ``compute_slope``, ``compute_hillshade``,
+      ``compute_aspect``, or ``compute_zonal_statistics``.
 
-    Params:
-        bbox: ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326.
-        resolution_m: target DEM grid spacing in meters; 10 or 30 is fastest
-            on 3DEP's static tile tree. Defaults to 10.
+    **When NOT to use:**
+    - Coverage outside the continental US — 3DEP is CONUS-only; a future
+      ``fetch_dem(source="copernicus")`` will handle global queries.
+    - Bathymetry (below-water elevation) — 3DEP is land-only; use a future
+      ``fetch_bathymetry`` routed to NOAA NCEI.
+    - Single-point elevation lookups — the tool fetches a raster window;
+      for a point query use a future ``point_elevation`` tool.
+    - Bboxes larger than 10,000 km² — the tool raises ``BboxInvalidError``
+      at that threshold; use a tiled workflow for very large domains.
 
-    Returns:
-        A ``LayerURI`` pointing at a Cloud-Optimized GeoTIFF in the cache
-        bucket. The DEM is reprojected by ``py3dep`` to EPSG:5070 (its
-        default analysis CRS); the units are meters above NAVD88. The URI is
-        ``gs://grace-2-hazard-prod-cache/cache/static-30d/dem/<key>.tif``.
+    **Parameters:**
+    - ``bbox`` (tuple[float,float,float,float]): ``(min_lon, min_lat, max_lon,
+      max_lat)`` in EPSG:4326. Max area 10,000 km².
+    - ``resolution_m`` (int, default 10): DEM grid spacing in meters.
+      10 m or 30 m are fastest on 3DEP's tile tree; other values interpolate.
 
-    FR-CE-8: The fetch is routed through ``read_through`` so identical
-    quantized-bbox + resolution calls reuse the cached COG (FR-DC-3/4); a
-    miss writes the COG with ``customTime`` set so the 30-day eviction
-    policy runs from the fetch time.
+    **Returns:**
+    A ``LayerURI`` pointing at a Cloud-Optimized GeoTIFF in the cache bucket
+    (``gs://grace-2-hazard-prod-cache/cache/static-30d/dem/<key>.tif``).
+    CRS: EPSG:5070 (py3dep default); units: meters above NAVD88.
+    Fields consumed downstream: ``uri`` → by ``build_sfincs_model`` and QGIS
+    Server WMS; ``style_preset="continuous_dem"`` → map rendering.
+
+    **Cross-tool dependencies:**
+    - Downstream: ``build_sfincs_model``, ``compute_slope``,
+      ``compute_hillshade``, ``compute_aspect``, ``compute_colored_relief``,
+      ``compute_zonal_statistics``.
+    - Typically called after: ``geocode_location`` supplies the bbox.
     """
     quantized = round_bbox_to_resolution(bbox, resolution_m)
     if _bbox_area_km2(quantized) > 10_000.0:
@@ -471,7 +494,12 @@ def _fetch_msft_buildings_bytes(
     return asset_resp.content
 
 
-@register_tool(_FETCH_BUILDINGS_METADATA)
+@register_tool(
+    _FETCH_BUILDINGS_METADATA,
+    # Annotations: readOnlyHint=True, openWorldHint=True (MS Open Maps buildings),
+    # destructiveHint=False, idempotentHint=True (cache shim deduplicates).
+    open_world_hint=True,
+)
 def fetch_buildings(
     bbox: tuple[float, float, float, float],
     source: str = "msft",
@@ -904,7 +932,12 @@ def _state_fips_for_lonlat(lon: float, lat: float) -> str | None:
     return None
 
 
-@register_tool(_FETCH_POPULATION_METADATA)
+@register_tool(
+    _FETCH_POPULATION_METADATA,
+    # Annotations: readOnlyHint=True, openWorldHint=True (WorldPop/GCS public bucket),
+    # destructiveHint=False, idempotentHint=True (cache shim deduplicates).
+    open_world_hint=True,
+)
 def fetch_population(
     bbox: tuple[float, float, float, float],
     dataset: str = "worldpop_2020",
@@ -1104,28 +1137,65 @@ def _fetch_nominatim_geocode_bytes(query: str) -> bytes:
     return json.dumps(structured).encode("utf-8")
 
 
-@register_tool(_GEOCODE_LOCATION_METADATA)
+@register_tool(
+    _GEOCODE_LOCATION_METADATA,
+    # Annotations: readOnlyHint=True, openWorldHint=True (OSM Nominatim API),
+    # destructiveHint=False, idempotentHint=True (cache shim deduplicates).
+    open_world_hint=True,
+)
 def geocode_location(query: str, **_extra_ignored: Any) -> dict[str, Any]:
-    """Forward-geocode a place name to a bbox + canonical name (Nominatim).
+    """Translate a free-text place name into a bbox and canonical name via OpenStreetMap Nominatim.
 
-    Use this when: the agent receives a free-text location reference
-    ("Fort Myers, FL", "Tampa Bay", "Hurricane Ian landfall site") and
-    needs a bbox + canonical name to drive other fetch tools. The result
-    bbox feeds directly into ``fetch_dem`` / ``fetch_buildings`` /
-    ``fetch_population``.
+    **What it does:** Forward-geocodes a human-readable location string to a
+    WGS84 bounding box, centroid latitude/longitude, and canonical place name
+    using the OpenStreetMap Nominatim REST API. The result is cached for one
+    hour (``dynamic-1h``), so repeated references to the same place within a
+    session are free.
 
-    Do NOT use this for: reverse geocoding (point → name — different
-    Nominatim endpoint); routing / distance queries (Nominatim doesn't);
-    high-precision parcel-level lookups (Nominatim is street-level at best).
+    **When to use:**
+    - User asks to "model flooding in Fort Myers, FL" or "show wildfires near
+      Los Angeles" — convert the place name to a bbox before calling spatial
+      fetch tools.
+    - The agent needs to translate a textual event location from the Hazard
+      Event Pipeline (``EventMetadata.location_name``) into a usable bbox.
+    - Any workflow step that starts from a city, county, neighborhood, or
+      named geographic feature rather than coordinates.
 
-    Params:
-        query: free-text location reference (e.g. ``"Fort Myers, FL"``).
+    **When NOT to use:**
+    - Reverse geocoding (coordinates → place name) — Nominatim has a separate
+      ``/reverse`` endpoint; use ``web_fetch`` or a future dedicated tool.
+    - Routing or turn-by-turn distance queries — Nominatim does not support
+      them; use a routing API.
+    - High-precision parcel-level address resolution — Nominatim is
+      street-address level at best; use a dedicated geocoding provider for
+      sub-parcel accuracy.
+    - Queries where bbox coverage matters: the returned bbox reflects OSM's
+      administrative boundary for the named place, which can be very large for
+      counties or states; narrow it before passing to ``fetch_dem`` or similar
+      large-download tools.
 
-    Returns:
-        A dict with keys ``name`` (canonical display name), ``bbox``
-        (``[min_lon, min_lat, max_lon, max_lat]``), ``latitude``,
-        ``longitude``, ``source`` (``"nominatim"``), and provenance fields
-        ``osm_type`` / ``osm_id`` / ``place_id``.
+    **Parameters:**
+    - ``query`` (str): Free-text place name or description.
+      Examples: ``"Fort Myers, FL"``, ``"Lee County Florida"``,
+      ``"Gulf of Mexico"``. Must be non-empty.
+
+    **Returns:**
+    A plain dict with keys:
+    - ``name`` (str): canonical OSM display name.
+    - ``bbox`` (list[float]): ``[min_lon, min_lat, max_lon, max_lat]`` in
+      EPSG:4326 — feeds directly into ``fetch_dem``, ``fetch_buildings``,
+      ``fetch_population``, ``fetch_landcover``, etc.
+    - ``latitude`` / ``longitude`` (float): centroid of the matched feature.
+    - ``source`` (str): ``"nominatim"``.
+    - ``osm_type``, ``osm_id``, ``place_id`` (str / int): OSM provenance fields.
+
+    **Cross-tool dependencies:**
+    - Upstream of: ``fetch_dem``, ``fetch_buildings``, ``fetch_population``,
+      ``fetch_landcover``, ``fetch_river_geometry``,
+      ``fetch_administrative_boundaries``, ``fetch_nws_event``,
+      ``fetch_firms_active_fire``, and most other bbox-based fetchers.
+    - Called internally by ``model_flood_scenario`` workflow to resolve a
+      user-supplied location string before fetching DEM/landcover.
 
     FR-CE-8: The fetch is routed through ``read_through`` so two identical
     queries within the same hourly window reuse the cached response. The
@@ -1422,7 +1492,12 @@ def _round_bbox_to_30m_nlcd(
     return round_bbox_to_resolution(bbox, 30)
 
 
-@register_tool(_FETCH_LANDCOVER_METADATA)
+@register_tool(
+    _FETCH_LANDCOVER_METADATA,
+    # Annotations: readOnlyHint=True, openWorldHint=True (NLCD WMS + USGS 3DEP),
+    # destructiveHint=False, idempotentHint=True (cache shim deduplicates).
+    open_world_hint=True,
+)
 def fetch_landcover(
     bbox: tuple[float, float, float, float],
     dataset: str = "nlcd_2021",
@@ -1430,87 +1505,57 @@ def fetch_landcover(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> dict[str, Any]:
-    """Fetch landcover (NLCD or ESA WorldCover) for a bbox; returns dict with vintage sidecar.
+    """Fetch landcover classification raster (NLCD or ESA WorldCover) for a bbox.
 
-    Use this when: the agent needs landcover classification for a CONUS bbox —
-    for Manning's roughness reclassification in SFINCS setup (job-0042
-    ``build_sfincs_model``), exposure analysis by land-use class, or
-    visualization with the categorical_landcover QML preset. Default vintage
-    is NLCD 2021; older CONUS vintages (2019, 2016, …) available via the
-    ``dataset`` parameter.
+    **What it does:** Downloads an NLCD or ESA WorldCover landcover GeoTIFF
+    clipped to the requested bbox via the MRLC WCS 1.0.0 GeoServer endpoint.
+    Returns a dict containing a ``LayerURI`` plus a ``nlcd_vintage_year``
+    sidecar field that downstream SFINCS setup uses to validate Manning's
+    roughness mappings before HydroMT invocation (Invariant 7 — no silent
+    wrong answers).
 
-    Do NOT use this for: global coverage (NLCD is CONUS L48 only; ESA
-    WorldCover opt-in is forward-looking — see Open Questions); on-the-fly
-    landcover at single points (this returns a clipped raster, not a per-
-    point classification); Alaska / Hawaii / Puerto Rico (separate MRLC
-    layers; not in v0.1 substrate).
+    **When to use:**
+    - ``build_sfincs_model`` requires landcover for Manning's roughness
+      assignment — this is the canonical supply tool.
+    - User asks "what land cover exists in this area?" for a CONUS location.
+    - Exposure analysis: intersect a hazard footprint with impervious-surface
+      or developed-land classes.
+    - Visualization using the ``categorical_landcover`` QML style preset.
 
-    Access pattern: **Tier 2 (OGC service — MRLC WCS 1.0.0 GeoServer)** per
-    §F.1.1. Two rounds of live verification:
+    **When NOT to use:**
+    - Coverage outside CONUS L48 — NLCD covers only the 48 contiguous US
+      states; Alaska, Hawaii, and Puerto Rico have separate MRLC layers not
+      in the v0.1 substrate.
+    - Global landcover — pass ``dataset="esa_worldcover_2021"`` to opt into
+      the ESA WorldCover branch, but that branch currently raises
+      ``UpstreamAPIError`` (forward-looking, OQ-39-ESA-WORLDCOVER-SUBSTRATE).
+    - Single-point landcover classification — this tool returns a raster;
+      use ``extract_landcover_class`` for point lookups once it lands.
+    - Bboxes larger than 10,000 km² — the MRLC WCS server rejects oversized
+      requests; the tool raises ``BboxInvalidError`` at that threshold.
 
-    - Round 1 (job-0039, 2026-06-07): MRLC's direct file mirror at
-      ``s3-us-west-2.amazonaws.com/mrlc/Annual_NLCD_LndCov_<YEAR>_CU_C1V0.tif``
-      is a 42-byte placeholder stub, not a real COG. The substrate landed
-      against MRLC WMS GetMap with ``format=image/geotiff`` — Tier 2 byte-
-      materialized through the GeoServer at ``www.mrlc.gov/geoserver/
-      mrlc_display/wms``. (See OQ-39-NLCD-TIER-DEVIATION.)
-    - Round 2 (job-0044, 2026-06-07 — palette-encoding hotfix): job-0042's
-      NLCD validation gate (Invariant 7) fired on the WMS GetMap GeoTIFF —
-      the band values were palette indices (1, 3, 4, …, 21) NOT canonical
-      NLCD class integers (11, 21, …, 95), so the Manning's mapping CSV
-      lookup couldn't proceed. Live-probed the WCS endpoint
-      ``www.mrlc.gov/geoserver/mrlc_display/wcs`` (which had become available
-      since Round 1's timeout); WCS 1.0.0 GetCoverage with ``FORMAT=GeoTIFF``
-      returns canonical NLCD class integers directly. Path B (WCS) chosen
-      over Path A (client-side palette decode via the GeoTIFF ColorTable)
-      because canonical bytes from the server are robust to MRLC palette
-      reorders. (See OQ-42-NLCD-WMS-PALETTE-ENCODING closure.)
+    **Parameters:**
+    - ``bbox`` (tuple[float,float,float,float]): ``(min_lon, min_lat, max_lon,
+      max_lat)`` in EPSG:4326. Max area 10,000 km².
+    - ``dataset`` (str, default ``"nlcd_2021"``): NLCD vintage string
+      (``"nlcd_2021"``, ``"nlcd_2019"``, ``"nlcd_2016"``, etc.) or
+      ``"esa_worldcover_2021"`` (forward-looking). Valid NLCD years:
+      2001, 2004, 2006, 2008, 2011, 2013, 2016, 2019, 2021.
 
-    The fetcher materializes WCS GetCoverage bytes and writes through the
-    FR-DC-3 cache so the bbox-quantized cache key dedups across callers.
+    **Returns:**
+    A dict with keys:
+    - ``layer`` (LayerURI): COG at
+      ``gs://grace-2-hazard-prod-cache/cache/static-30d/landcover/<key>.tif``;
+      ``style_preset="categorical_landcover"``, ``units="nlcd_class_code"``.
+    - ``nlcd_vintage_year`` (int): vintage year consumed by
+      ``build_sfincs_model`` to validate the Manning's mapping CSV.
+    - ``dataset`` (str): echo of the input dataset string for provenance.
+    - ``source`` (str): ``"mrlc-wcs"`` for NLCD.
 
-    Params:
-        bbox: ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326.
-        dataset: ``"nlcd_2021"`` (default, Tier-1 default per §F.1 within the
-            CONUS NLCD product family), ``"nlcd_2019"``, ``"nlcd_2016"`` …
-            (other CONUS L48 vintages listed in MRLC GeoServer); or
-            ``"esa_worldcover_2021"`` (opt-in, forward-looking — currently
-            raises ``UpstreamAPIError`` until the Planetary Computer STAC
-            branch lands).
-
-    Returns:
-        A dict with the following keys:
-
-        - ``layer``: a ``LayerURI`` pointing at a Cloud-Optimized GeoTIFF in
-          the cache bucket (``gs://grace-2-hazard-prod-cache/cache/static-30d/landcover/<key>.tif``);
-          ``layer_type="raster"``, ``style_preset="categorical_landcover"``,
-          ``role="input"``, ``units="nlcd_class_code"``.
-        - ``nlcd_vintage_year``: the vintage year as an integer (e.g. 2021).
-          **This is the sidecar field per OQ-4 §4 (Immediate, job-0039)**:
-          ``build_sfincs_model`` consumes it to validate the Manning's
-          mapping CSV covers the vintage's class encoding before invoking
-          HydroMT's roughness component. Skipping this validation would
-          surface the silent-wrong-answer failure mode HydroMT exhibits for
-          unmatched landcover classes (Invariant 7 mitigation).
-        - ``dataset``: the verbatim dataset string passed in (e.g.
-          ``"nlcd_2021"``) for downstream provenance.
-        - ``source``: the upstream provider tag (``"mrlc-wms"`` for NLCD;
-          ``"esa-worldcover-stac"`` for the forward-looking ESA branch).
-
-        The dict return shape is structurally identical to
-        ``lookup_precip_return_period`` (also no contract) and
-        ``geocode_location`` (also no contract). Surface as
-        OQ-39-LANDCOVER-RETURN-SHAPE-CONTRACT-PROMOTION for the eventual
-        schema follow-up.
-
-    FR-CE-8: The fetch is routed through ``read_through`` so identical
-    quantized-bbox + dataset calls reuse the cached GeoTIFF (FR-DC-3/4); a
-    miss writes the GeoTIFF with ``customTime`` set so the 30-day eviction
-    policy runs from the fetch time.
-
-    Per-source quantization (acceptance criterion 3): bbox is snapped to the
-    NLCD 30 m native grid via ``round_bbox_to_resolution(bbox, 30)`` before
-    the cache key is computed.
+    **Cross-tool dependencies:**
+    - Upstream: ``geocode_location`` for bbox derivation.
+    - Downstream: ``build_sfincs_model`` (Manning's roughness), QGIS Server
+      WMS rendering, ``extract_landcover_class``, ``compute_impervious_surface``.
     """
     if not isinstance(dataset, str) or not dataset:
         raise BboxInvalidError(
@@ -1841,7 +1886,12 @@ def _fetch_nhdplushr_geometry_bytes(
                 pass
 
 
-@register_tool(_FETCH_RIVER_GEOMETRY_METADATA)
+@register_tool(
+    _FETCH_RIVER_GEOMETRY_METADATA,
+    # Annotations: readOnlyHint=True, openWorldHint=True (USGS NHDPlus HR),
+    # destructiveHint=False, idempotentHint=True (cache shim deduplicates).
+    open_world_hint=True,
+)
 def fetch_river_geometry(
     bbox: tuple[float, float, float, float],
     source: str = "nhdplus_hr",
@@ -1849,52 +1899,54 @@ def fetch_river_geometry(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Fetch river / stream geometry for a bbox from NHDPlus HR (USGS).
+    """Fetch river and stream flowline geometry for a bbox from NHDPlus HR (USGS).
 
-    Use this when: the agent needs flowline geometry for SFINCS / HydroMT
-    river-burning into the DEM hydro-conditioning step, for fluvial flood
-    workflows, for stream-network visualization, or for watershed-boundary
-    feature extraction. NHDPlus HR is the highest-resolution USGS hydrography
-    product (1:24,000) and covers CONUS + Alaska.
+    **What it does:** Downloads the USGS NHDPlus High Resolution NHDFlowline
+    feature class for the HUC4 watershed region containing the bbox, clips
+    it to the bbox extent, and returns a FlatGeobuf. Access pattern is
+    Tier 4 (region download + local clip): the full HUC4 GDB (~144 MB for
+    South Florida) is fetched on a cache miss and the 30-day cache absorbs
+    repeat calls.
 
-    Do NOT use this for: real-time streamflow values (use ``fetch_streamflow``
-    against NWIS); flow-direction / accumulation grids (separate product —
-    derive from the DEM in HydroMT); coastal shorelines (use the appropriate
-    NOAA / USGS coastal vector product when it lands).
+    **When to use:**
+    - ``build_sfincs_model`` needs river flowlines for DEM hydro-conditioning
+      (HydroMT's ``setup_rivers_from_dem`` step burns channel geometry).
+    - Fluvial flood workflow requires channel network for boundary-condition
+      placement (upstream inflow nodes, downstream outlets).
+    - User asks to visualize stream networks or watershed drainage patterns.
+    - Watershed delineation: ``delineate_watershed`` tool consumes the
+      NHDFlowline outlet point to route upstream.
 
-    Access pattern: **Tier 4 (region download + local clip)** per §F.1.1.
-    NHDPlus HR is published as HUC4-scoped FileGDB zip files; the v0.1
-    substrate downloads the full HUC4 GDB (~144 MB for HUC4 0309 South
-    Florida) on every cache miss, extracts the NHDFlowline feature class,
-    clips by bbox, and writes a FlatGeobuf. The two-stage region cache
-    optimization (cache the HUC4 GDB separately under
-    ``cache/static-30d/river_geometry/_regions/``) is captured as
-    OQ-39-NHDPLUSHR-TWO-STAGE-CACHE.
+    **When NOT to use:**
+    - Real-time streamflow measurements — use ``fetch_streamflow`` (NWIS
+      USGS gauges) for discharge time series.
+    - Flow-direction / accumulation grids — derive from the DEM inside
+      HydroMT; NHDPlus HR publishes those separately.
+    - Bboxes outside the v0.1 HUC4 envelope table (see
+      OQ-39-NHDPLUSHR-HUC4-ROUTING-HEURISTIC): the tool raises
+      ``UpstreamAPIError`` if the bbox center falls outside the hardcoded
+      heuristic envelopes. Currently covers South Florida, Gulf Coast Texas,
+      Louisiana, Hudson NY, Cape Fear NC, Los Angeles CA.
+    - Areas larger than 5,000 km² — the tool enforces a guardrail to prevent
+      multi-HUC4 stitching (not in scope for v0.1).
 
-    Params:
-        bbox: ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326.
-        source: ``"nhdplus_hr"`` (default; NHDPlus High Resolution via USGS).
-            Future sources (NHDPlus V2 medium-resolution, MERIT-Hydro global)
-            are reserved as opt-in branches and currently raise
-            ``UpstreamAPIError``.
+    **Parameters:**
+    - ``bbox`` (tuple[float,float,float,float]): ``(min_lon, min_lat, max_lon,
+      max_lat)`` in EPSG:4326. Max area 5,000 km².
+    - ``source`` (str, default ``"nhdplus_hr"``): hydrography source.
+      ``"nhdplus_hr"`` is the only v0.1 supported value; others raise
+      ``BboxInvalidError``.
 
-    Returns:
-        A ``LayerURI`` pointing at a FlatGeobuf of NHDFlowline features
-        clipped to the bbox in the cache bucket. The URI is
-        ``gs://grace-2-hazard-prod-cache/cache/static-30d/river_geometry/<key>.fgb``;
-        ``layer_type="vector"``, ``style_preset="continuous_dem"`` (placeholder
-        until a hydrography preset lands), ``role="input"``.
+    **Returns:**
+    A ``LayerURI`` pointing at a FlatGeobuf of NHDFlowline features in the
+    cache bucket (``gs://grace-2-hazard-prod-cache/cache/static-30d/river_geometry/<key>.fgb``).
+    ``layer_type="vector"``, ``role="input"``. The cache key encodes the HUC4
+    region code so two callers in the same region dedup to the same artifact.
 
-    FR-CE-8: The fetch is routed through ``read_through`` so identical
-    quantized-bbox + source calls reuse the cached FlatGeobuf (FR-DC-3/4).
-
-    Per-source quantization (acceptance criterion 3): the cache key
-    deliberately encodes the HUC4 region code so two clips inside the same
-    HUC4 with overlapping bboxes share a region context, while disjoint
-    HUC4s (e.g. South Florida 0309 vs South Coast California 1807) never
-    collide on a single cache key. The bbox itself is also snapped to a
-    10 m grid (NHDPlus HR is vector but 10 m is plenty for dedup boundary
-    stability at the bbox-edge level).
+    **Cross-tool dependencies:**
+    - Upstream: ``geocode_location`` for bbox derivation.
+    - Downstream: ``build_sfincs_model`` (river-burning DEM step),
+      ``delineate_watershed``, stream-network display in map panel.
     """
     if source != "nhdplus_hr":
         # Reserved future sources (NHDPlus V2, MERIT-Hydro) — not in v0.1.
@@ -2136,7 +2188,12 @@ def _pick_duration_label(duration_hours: float) -> str:
     )
 
 
-@register_tool(_LOOKUP_PRECIP_RETURN_PERIOD_METADATA)
+@register_tool(
+    _LOOKUP_PRECIP_RETURN_PERIOD_METADATA,
+    # Annotations: readOnlyHint=True, openWorldHint=True (NOAA PFDS API),
+    # destructiveHint=False, idempotentHint=True (cache shim deduplicates).
+    open_world_hint=True,
+)
 def lookup_precip_return_period(
     location: tuple[float, float],
     return_period_years: int,
@@ -2147,64 +2204,73 @@ def lookup_precip_return_period(
 ) -> dict[str, Any]:
     """Look up a precipitation return-period depth at a point via NOAA Atlas 14 PFDS.
 
-    Use this when: the agent needs a design-storm precipitation depth for
-    a pluvial flood scenario, an SFINCS forcing reconstruction
-    (``run_pluvial_flood`` workflow), or to characterize a published storm
-    by its return-period equivalence. Atlas 14 publishes precipitation
-    frequency estimates for the contiguous United States (broken into
-    several volumes by region) plus Puerto Rico / US Virgin Islands.
+    **What it does:** Issues a point query to the NOAA Hydrometeorological Design
+    Studies Center (HDSC) Precipitation Frequency Data Server (PFDS) at
+    ``hdsc.nws.noaa.gov/cgi-bin/hdsc/new/fe_text_mean.csv``, parses the returned
+    duration × ARI matrix, and returns the requested depth in inches. Input
+    coordinates are snapped to Atlas 14's 1/120° (~30 arc-second) grid before
+    the cache key is computed (FR-DC-4 dedup). This is a point query, not a
+    raster — it returns a scalar dict, not a ``LayerURI``. Tier-1 free, no
+    API key, CONUS + Puerto Rico / US Virgin Islands only.
 
-    Do NOT use this for: observed precipitation totals (use NWIS / MRMS QPE
-    / NEXRAD for measurements); future-climate projections (Atlas 14 is
-    based on historical records — Atlas 15, in development, will integrate
-    nonstationarity); locations outside the contiguous US (Atlas 14's
-    OCONUS coverage is partial; Alaska, Hawaii, and Pacific Islands are not
-    in the v0.1 substrate).
+    **When to use:**
 
-    Access pattern: **Tier 3 (direct HTTPS, point-query, CSV response)** per
-    §F.1.1. The kickoff inferred Tier 3 and live verification (2026-06-07)
-    confirmed: ``hdsc.nws.noaa.gov/cgi-bin/hdsc/new/fe_text_mean.csv`` accepts
-    ``lat``, ``lon``, ``data=depth``, ``units=english``, ``series=pds`` query
-    parameters and returns a 1.5-KB CSV with a duration × ARI matrix and a
-    ``NOAA Atlas 14 Volume <N> Version <V>`` provenance line. Live tier
-    matches kickoff tier.
+    - Design-storm precipitation depth for an SFINCS pluvial-flood scenario
+      ("what is the 100-year, 24-hour rainfall for Miami?"). Example:
+      ``location=(25.77, -80.19)``, ``return_period_years=100``,
+      ``duration_hours=24.0``.
+    - Characterising a published historical storm by its return-period equivalence
+      ("Harvey's 48-hour total at Houston — what ARI?"). Run the tool for
+      multiple ARIs and compare.
+    - Providing IDF (intensity-duration-frequency) input for a rainfall-runoff
+      model (SCS CN, Green-Ampt).
 
-    Params:
-        location: ``(lat, lon)`` in decimal degrees, EPSG:4326. Atlas 14's
-            native source grid is 1/120 degree (~ 30 arc-seconds); the
-            fetcher quantizes to that grid before the cache key is computed.
-        return_period_years: ARI (Average Recurrence Interval) in years.
-            Atlas 14 publishes ARIs in ``{1, 2, 5, 10, 25, 50, 100, 200,
-            500, 1000}``; values outside this set raise
-            ``BboxInvalidError``.
-        duration_hours: Storm duration in hours. Atlas 14 publishes
-            durations from 5 minutes (5/60 hours) to 60 days (1440 hours);
-            values outside the published row set raise ``BboxInvalidError``.
+    **When NOT to use:**
 
-    Returns:
-        A dict with the following keys:
+    - Observed precipitation totals — use ``fetch_mrms_qpe`` (gauge-corrected
+      radar accumulation) or NWIS / NEXRAD for measurements.
+    - Future-climate design storms — Atlas 14 is based on historical records
+      (Atlas 15, in development, will integrate non-stationarity).
+    - Locations outside CONUS / PR / USVI — Atlas 14 OCONUS coverage is partial;
+      Alaska, Hawaii, and Pacific Islands are not in the v0.1 substrate.
+    - Spatial rasters of return-period precipitation — Atlas 14 PFDS is a point
+      service; for a spatial map use a pre-computed gridded Atlas 14 dataset.
 
-        - ``precip_inches``: the precipitation depth in inches (float).
-        - ``units``: ``"inches"`` (Atlas 14 default; ``units=metric`` opt-in
-          is forward-looking).
-        - ``location``: ``[lat, lon]`` of the *quantized* point (not the
-          input), so the caller can see the snap.
-        - ``return_period_years``: the ARI used (echo).
-        - ``duration_hours``: the duration used (echo).
-        - ``vintage_volume``: the Atlas 14 volume + version provenance string
-          (e.g. ``"NOAA Atlas 14 Volume 9 Version 2"``).
-        - ``project_area``: the Atlas 14 project area name (e.g.
-          ``"Southeastern States"``).
-        - ``source``: ``"noaa-atlas14-pfds"``.
+    **Parameters:**
 
-    FR-CE-8: The fetch is routed through ``read_through`` so identical
-    quantized-(lat, lon) + ARI + duration calls reuse the cached PFDS CSV
-    (FR-DC-3/4). The cache key encodes the quantized location, ARI, and
-    duration; a miss writes the CSV body.
+    - ``location``: ``(lat, lon)`` decimal degrees EPSG:4326. Note: lat first,
+      lon second (opposite of the ``bbox`` convention). Example: ``(29.76, -95.37)``
+      for Houston.
+    - ``return_period_years``: ARI in years; Atlas 14 publishes
+      ``{1, 2, 5, 10, 25, 50, 100, 200, 500, 1000}``; values outside this set
+      raise ``BboxInvalidError``.
+    - ``duration_hours``: storm duration in hours; Atlas 14 publishes durations
+      from 5 min (5/60 h) to 60 days (1440 h); unsupported durations raise
+      ``BboxInvalidError``.
 
-    Per-source quantization (acceptance criterion 3): the location is
-    snapped to Atlas 14's 1/120-degree native source grid before the cache
-    key is computed (so callers within the same Atlas 14 grid cell dedup).
+    **Returns:**
+
+    A ``dict`` with keys: ``precip_inches`` (float, precipitation depth in
+    inches), ``units`` (``"inches"``), ``location`` ([lat, lon] of the snapped
+    Atlas 14 grid point), ``return_period_years`` (ARI echo), ``duration_hours``
+    (duration echo), ``vintage_volume`` (e.g. ``"NOAA Atlas 14 Volume 9 Version
+    2"``), ``project_area`` (e.g. ``"Southeastern States"``),
+    ``source`` (``"noaa-atlas14-pfds"``).
+
+    **Cross-tool dependencies:**
+
+    - Consumed by: ``build_sfincs_model`` to construct a synthetic design-storm
+      hyetograph; ``run_pluvial_flood`` workflow (uses the returned depth to
+      drive the SFINCS rainfall input file).
+    - Compare with: ``fetch_mrms_qpe`` for observed accumulations vs Atlas 14
+      design depths; the ratio gives the storm's return-period rank.
+    - Pair with: ``fetch_gcn250_curve_numbers`` or NLCD-derived CNs when
+      converting depth → runoff volume via SCS CN method.
+
+    FR-CE-8: Routed through ``read_through`` with ``ttl_class="static-30d"``;
+    cache key = SHA-256 of ``(lat-quantized, lon-quantized, return_period_years,
+    duration_label)`` — snapping ensures callers within the same 30 arc-second
+    cell dedup (FR-DC-4).
     """
     if not isinstance(location, (tuple, list)) or len(location) != 2:
         raise BboxInvalidError(

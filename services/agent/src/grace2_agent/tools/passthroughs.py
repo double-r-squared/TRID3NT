@@ -86,7 +86,14 @@ def set_worker_submitter(submitter: Any) -> None:
         ttl_class="live-no-cache",
         source_class=None,
         cacheable=False,
-    )
+    ),
+    # Annotations: readOnlyHint=True (DB read, no mutation), openWorldHint=False
+    # (intra-GCP MongoDB Atlas via MCP sidecar), destructiveHint=False,
+    # idempotentHint=True (same query → same result set).
+    read_only_hint=True,
+    open_world_hint=False,
+    destructive_hint=False,
+    idempotent_hint=True,
 )
 def mongo_query(
     collection: str,
@@ -163,7 +170,16 @@ def mongo_query(
         ttl_class="live-no-cache",
         source_class=None,
         cacheable=False,
-    )
+    ),
+    # Annotations: readOnlyHint=False (dispatches Cloud Run Job → writes runs/
+    # bucket), openWorldHint=False (intra-GCP Cloud Run only),
+    # destructiveHint=False (outputs land in a new run dir; existing state
+    # is not overwritten), idempotentHint=False (each dispatch starts a new
+    # execution with a new run_id).
+    read_only_hint=False,
+    open_world_hint=False,
+    destructive_hint=False,
+    idempotent_hint=False,
 )
 def qgis_process(
     algorithm: str,

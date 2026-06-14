@@ -1,0 +1,25 @@
+MODFLOW 6.5.0 GWF+GWT end-to-end run — concentration summary
+============================================================
+scenario: benzene spill, Fort Myers area (26.64, -81.87)
+release_rate: 0.01 kg/s  duration: 30 days  K: 1e-4 m/s  porosity: 0.3
+model CRS: EPSG:32617
+grid: 40 x 40 @ 50.0 m  (1600 cells, 1 layer)
+spill cell (row,col): (20,20)
+mf6 exit code: 0
+convergence-failure flagged: False
+
+final concentration (t=31.0 d):
+  min: -5.28779e-20  max: 1122.34  (g/m^3 == mg/L)
+  finite: True
+  non-zero cells (>1e-9 mg/L): 35 / 1600
+  peak cell (row,col): (20,20)  [source at (20,20)]
+  manhattan peak->source: 0 cells
+
+mass dissolved in domain (final): 2.592e+04 kg
+total mass released (rate x duration): 2.592e+04 kg
+fraction retained in domain: 1.000 (<1 -> mass advects out east boundary)
+
+concentration along spill row 20 (mg/L, west->east):
+     0.0     0.0     0.0     0.0     0.0     0.0     0.0     0.0     0.0     0.0  1122.3     0.1     0.0     0.0    -0.0    -0.0    -0.0    -0.0    -0.0    -0.0
+
+ALL ASSERTIONS PASSED

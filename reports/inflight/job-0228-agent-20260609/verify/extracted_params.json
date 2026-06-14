@@ -1,0 +1,18 @@
+{
+  "contaminant": "trichloroethylene",
+  "contaminant_density_kg_l": 1.46,
+  "location_name": "Twin Falls, Idaho",
+  "spill_location_latlon": [
+    42.5558542,
+    -114.4700684
+  ],
+  "scale_value": 12000.0,
+  "scale_unit": "gallon",
+  "total_mass_kg": 66320.41445568,
+  "duration_days": 0.25,
+  "duration_days_raw": 0.25,
+  "release_rate_kg_s": 3.0703895581333334,
+  "release_rate_kg_s_raw": 3.0703895581333334,
+  "clamps_applied": [],
+  "extraction_notes": []
+}

@@ -1,0 +1,98 @@
+{
+  "1_weather_alerts_conus": {
+    "prompt": "Show me active weather alerts across the United States. Use fetch_nws_alerts_conus. Don't ask follow-up questions, just dispatch the tool.",
+    "map_state": {
+      "layers": [
+        {
+          "id": "qgis-basemap",
+          "type": "raster",
+          "source": "qgis-wms"
+        },
+        {
+          "id": "osm-fallback-basemap",
+          "type": "raster",
+          "source": "osm-fallback"
+        },
+        {
+          "id": "nws-conus-actual-all",
+          "type": "fill",
+          "source": "nws-conus-actual-all"
+        },
+        {
+          "id": "nws-conus-actual-all-outline",
+          "type": "line",
+          "source": "nws-conus-actual-all"
+        }
+      ],
+      "sources": [
+        "qgis-wms",
+        "osm-fallback",
+        "nws-conus-actual-all"
+      ]
+    }
+  },
+  "2_protected_areas_big_cypress": {
+    "prompt": "Show me protected areas in Big Cypress National Preserve, Florida. Use fetch_wdpa_protected_areas. Don't ask follow-up questions, just dispatch the tool.",
+    "map_state": {
+      "layers": [
+        {
+          "id": "qgis-basemap",
+          "type": "raster",
+          "source": "qgis-wms"
+        },
+        {
+          "id": "osm-fallback-basemap",
+          "type": "raster",
+          "source": "osm-fallback"
+        },
+        {
+          "id": "nws-conus-actual-all",
+          "type": "fill",
+          "source": "nws-conus-actual-all"
+        },
+        {
+          "id": "nws-conus-actual-all-outline",
+          "type": "line",
+          "source": "nws-conus-actual-all"
+        }
+      ],
+      "sources": [
+        "qgis-wms",
+        "osm-fallback",
+        "nws-conus-actual-all"
+      ]
+    }
+  },
+  "3_roads_fort_myers": {
+    "prompt": "Show me roads near Fort Myers, Florida using fetch_roads_osm with a 5 km radius. Don't ask follow-up questions, just dispatch the tool.",
+    "map_state": {
+      "layers": [
+        {
+          "id": "qgis-basemap",
+          "type": "raster",
+          "source": "qgis-wms"
+        },
+        {
+          "id": "osm-fallback-basemap",
+          "type": "raster",
+          "source": "osm-fallback"
+        },
+        {
+          "id": "nws-conus-actual-all",
+          "type": "fill",
+          "source": "nws-conus-actual-all"
+        },
+        {
+          "id": "nws-conus-actual-all-outline",
+          "type": "line",
+          "source": "nws-conus-actual-all"
+        }
+      ],
+      "sources": [
+        "qgis-wms",
+        "osm-fallback",
+        "nws-conus-actual-all"
+      ]
+    }
+  }
+}

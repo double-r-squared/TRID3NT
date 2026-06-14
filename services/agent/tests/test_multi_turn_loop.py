@@ -87,7 +87,14 @@ def test_summarize_tool_result_error_path():
 
 
 def test_summarize_tool_result_none():
-    """None result (TOOL_NOT_FOUND, payload-warning skip) is encoded."""
+    """None result falls back to {status: "no_result"}.
+
+    B-rev: TOOL_NOT_FOUND and PAYLOAD_WARNING_CANCELLED now raise typed
+    exceptions, not return None. ``no_result`` is still the contract for
+    tool callables that legitimately return None (e.g. side-effect-only
+    tools). The fallback is retained — it no longer represents routing
+    failures.
+    """
     summary = summarize_tool_result("publish_layer", None)
     assert summary["status"] == "no_result"
 
@@ -249,26 +256,39 @@ class _FakeSocket:
 
 @pytest.mark.asyncio
 async def test_stream_gemini_reply_multi_turn_loop():
-    """Two function_calls in sequence + final narrative → all dispatched.
+    """Proper recovery flow: geocode → list_tools_in_category → wdpa → narrative.
 
     Scenario mirrors the kickoff: "Show me protected areas in Fort Myers".
-    Turn 1: Gemini calls ``geocode_location``.
-    Turn 2: Sees the geocode result, calls ``fetch_wdpa_protected_areas``.
-    Turn 3: Sees the wdpa result, emits a narrative text and stops.
+    This test exercises the Option-A (Wave 4.10) recovery flow where Gemini
+    must first call ``list_tools_in_category`` to open the conservation_ecology
+    category before ``fetch_wdpa_protected_areas`` is reachable.
+
+    Turn 1: Gemini calls ``geocode_location`` (always in HOT_SET).
+    Turn 2: Gemini calls ``list_tools_in_category("conservation_ecology")``
+            — opens the category and adds fetch_wdpa_protected_areas to the
+            allowed set.
+    Turn 3: Gemini calls ``fetch_wdpa_protected_areas`` with the bbox from
+            the geocode result — now reachable because the category is open.
+    Turn 4: Gemini emits a final narrative text and stops.
     """
     from grace2_agent import server as agent_server
     from grace2_agent.server import SessionState
 
-    # Three pre-canned Gemini turns.  Each turn returns one chunk.
+    # Four pre-canned Gemini turns.  Each turn returns one chunk.
     turn1_chunk = _make_fake_chunk_with_function_call(
         "geocode_location", {"query": "Fort Myers, FL"}, "call-geo"
     )
     turn2_chunk = _make_fake_chunk_with_function_call(
+        "list_tools_in_category",
+        {"category_id": "conservation_ecology"},
+        "call-list",
+    )
+    turn3_chunk = _make_fake_chunk_with_function_call(
         "fetch_wdpa_protected_areas",
         {"bbox": [-82.0, 26.5, -81.7, 26.8]},
         "call-wdpa",
     )
-    turn3_chunk = _make_fake_chunk_with_text(
+    turn4_chunk = _make_fake_chunk_with_text(
         "Found 2 protected areas in Fort Myers — listing them now."
     )
 
@@ -276,6 +296,7 @@ async def test_stream_gemini_reply_multi_turn_loop():
         iter([turn1_chunk]),
         iter([turn2_chunk]),
         iter([turn3_chunk]),
+        iter([turn4_chunk]),
     ])
 
     fake_client = MagicMock()
@@ -284,8 +305,8 @@ async def test_stream_gemini_reply_multi_turn_loop():
     )
 
     # Capture all contents lists passed to generate_content_stream across
-    # the three turns — this is how we verify the loop appends function_call
-    # + function_response between turns.
+    # the four turns — this verifies the loop appends function_call +
+    # function_response between turns.
     contents_per_turn: list[list[Any]] = []
 
     def _capture_and_stream(**kwargs):
@@ -317,6 +338,15 @@ async def test_stream_gemini_reply_multi_turn_loop():
                 "bbox": [-82.0, 26.5, -81.7, 26.8],
                 "precision_class": "precise",
             }
+        if name == "list_tools_in_category":
+            # Return the canonical shape so the server-side open_category
+            # logic fires (server.py:731 checks result.get("category_id")).
+            return {
+                "category_id": args.get("category_id", "conservation_ecology"),
+                "tools": [
+                    {"name": "fetch_wdpa_protected_areas", "description_snippet": "Fetch WDPA areas."},
+                ],
+            }
         if name == "fetch_wdpa_protected_areas":
             return {
                 "layer_id": "wdpa-fort-myers",
@@ -341,24 +371,25 @@ async def test_stream_gemini_reply_multi_turn_loop():
             sock, state, settings, "Show me protected areas in Fort Myers", "research"
         )
 
-    # Both tools were dispatched in the correct order.
+    # All three tools were dispatched in the correct order.
     assert [name for (name, _) in dispatch_log] == [
         "geocode_location",
+        "list_tools_in_category",
         "fetch_wdpa_protected_areas",
     ], f"unexpected dispatch order: {dispatch_log}"
 
-    # The second tool received the bbox Gemini synthesized from the first
-    # tool's response — proving the function_response was fed back through.
-    assert dispatch_log[1][1].get("bbox") == [-82.0, 26.5, -81.7, 26.8]
+    # The wdpa call received the bbox Gemini synthesized from the geocode
+    # result — proving the function_response was fed back through.
+    assert dispatch_log[2][1].get("bbox") == [-82.0, 26.5, -81.7, 26.8]
 
-    # Three Gemini calls happened (one per turn).
-    assert len(contents_per_turn) == 3
+    # Four Gemini calls happened (one per turn).
+    assert len(contents_per_turn) == 4
 
     # Turn 1 contents: only the user message.
     turn1_roles = [r for (r, _parts) in contents_per_turn[0]]
     assert turn1_roles == ["user"]
 
-    # Turn 2 contents: user + (model function_call) + (function_response).
+    # Turn 2 contents: user + (model function_call for geocode) + (function_response).
     turn2_kinds = [
         kind
         for (_role, parts) in contents_per_turn[1]
@@ -371,16 +402,29 @@ async def test_stream_gemini_reply_multi_turn_loop():
         f"turn 2 missing function_response in contents: {contents_per_turn[1]}"
     )
 
-    # Turn 3 contents: user + two (call+response) pairs.
+    # Turn 3 contents: user + geocode pair + list_tools pair.
     turn3_call_names = [
         name
         for (_role, parts) in contents_per_turn[2]
         for (kind, name) in parts
         if kind == "function_call"
     ]
-    assert turn3_call_names == ["geocode_location", "fetch_wdpa_protected_areas"], (
+    assert turn3_call_names == ["geocode_location", "list_tools_in_category"], (
         f"turn 3 function_call sequence wrong: {turn3_call_names}"
     )
+
+    # Turn 4 contents: user + all three call+response pairs.
+    turn4_call_names = [
+        name
+        for (_role, parts) in contents_per_turn[3]
+        for (kind, name) in parts
+        if kind == "function_call"
+    ]
+    assert turn4_call_names == [
+        "geocode_location",
+        "list_tools_in_category",
+        "fetch_wdpa_protected_areas",
+    ], f"turn 4 function_call sequence wrong: {turn4_call_names}"
 
     # The terminal narrative text reached the wire as an agent-message-chunk.
     narrative_chunks = [

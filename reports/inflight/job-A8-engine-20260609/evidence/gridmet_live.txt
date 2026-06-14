@@ -1,0 +1,11 @@
+# gridMET live test — Riverside County, CA — fm100
+# bbox: (-117.5, 33.5, -116.5, 34.5)
+# dates: 2024-09-15 -> 2024-09-17
+# result.uri: gs://grace-2-hazard-prod-cache/cache/static-30d/gridmet/2a762d3bc98fc955e6fce2271eaa8919.tif
+# COG size: 3911 bytes
+# raster shape: (24, 24)
+# finite pixels: 576
+# min: 4.9667 %
+# max: 18.6333 %
+# mean: 10.5768 %
+# bounds: BoundingBox(left=-117.4958333, bottom=33.50416666666668, right=-116.4958333, top=34.50416666666667)

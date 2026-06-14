@@ -1,0 +1,143 @@
+
+[A] resolver near-misses must resolve to None
+  PASS  resolve_state_code('Texa') is None
+  PASS  resolve_state_code('Texass') is None
+  PASS  resolve_state_code('Texass') is None
+  PASS  resolve_state_code('TXX') is None
+  PASS  resolve_state_code('T X') is None
+  PASS  resolve_state_code('Tex') is None
+  PASS  resolve_state_code('tejas') is None
+  PASS  resolve_state_code('Mexico') is None
+  PASS  resolve_state_code('Canada') is None
+  PASS  resolve_state_code('England') is None
+  PASS  resolve_state_code('Austin') is None
+  PASS  resolve_state_code('Austin, TX') is None
+  PASS  resolve_state_code('Dallas') is None
+  PASS  resolve_state_code('Travis County') is None
+  PASS  resolve_state_code('Houston TX') is None
+  PASS  resolve_state_code('US') is None
+  PASS  resolve_state_code('USA') is None
+  PASS  resolve_state_code('CONUS') is None
+  PASS  resolve_state_code('United States') is None
+  PASS  resolve_state_code('America') is None
+  PASS  resolve_state_code('Washington state') is None
+  PASS  resolve_state_code('Téxas') is None
+  PASS  resolve_state_code('TX&status=test') is None
+  PASS  resolve_state_code('TX;DROP') is None
+  PASS  resolve_state_code('TX%20OK') is None
+  PASS  resolve_state_code('TX,OK') is None
+  PASS  resolve_state_code('tx.') is None
+  PASS  resolve_state_code('TX.') is None
+  PASS  resolve_state_code('12071') is None
+  PASS  resolve_state_code('XK') is None
+  PASS  resolve_state_code('ZZ') is None
+  PASS  resolve_state_code('UK') is None
+  PASS  resolve_state_code('new mexico city') is None
+  PASS  resolve_state_code(None) is None (no raise)
+  PASS  resolve_state_code(42) is None (no raise)
+  PASS  resolve_state_code(('TX',)) is None
+
+[B] forms that MUST resolve
+  PASS  resolve_state_code('TX') == 'TX' (got 'TX')
+  PASS  resolve_state_code('tx') == 'TX' (got 'TX')
+  PASS  resolve_state_code(' tx ') == 'TX' (got 'TX')
+  PASS  resolve_state_code('tX') == 'TX' (got 'TX')
+  PASS  resolve_state_code('Texas') == 'TX' (got 'TX')
+  PASS  resolve_state_code('texas') == 'TX' (got 'TX')
+  PASS  resolve_state_code('TEXAS') == 'TX' (got 'TX')
+  PASS  resolve_state_code('  texas  ') == 'TX' (got 'TX')
+  PASS  resolve_state_code('state of texas') == 'TX' (got 'TX')
+  PASS  resolve_state_code('State of Texas') == 'TX' (got 'TX')
+  PASS  resolve_state_code('the state of texas') == 'TX' (got 'TX')
+  PASS  resolve_state_code('The State Of Texas') == 'TX' (got 'TX')
+  PASS  resolve_state_code('new   mexico') == 'NM' (got 'NM')
+  PASS  resolve_state_code('New Mexico') == 'NM' (got 'NM')
+  PASS  resolve_state_code('district of columbia') == 'DC' (got 'DC')
+  PASS  resolve_state_code('washington dc') == 'DC' (got 'DC')
+  PASS  resolve_state_code('washington d.c.') == 'DC' (got 'DC')
+  PASS  resolve_state_code('washington') == 'WA' (got 'WA')
+  PASS  resolve_state_code('Puerto Rico') == 'PR' (got 'PR')
+  PASS  resolve_state_code('puerto rico') == 'PR' (got 'PR')
+  PASS  resolve_state_code('GM') == 'GM' (got 'GM')
+  PASS  resolve_state_code('la') == 'LA' (got 'LA')
+  PASS  resolve_state_code('in') == 'IN' (got 'IN')
+  PASS  resolve_state_code('or') == 'OR' (got 'OR')
+  PASS  resolve_state_code('me') == 'ME' (got 'ME')
+  PASS  resolve_state_code('tx\n') == 'TX' (got 'TX')
+  PASS  resolve_state_code('\tTexas\t') == 'TX' (got 'TX')
+  PASS  state_display_name("TX") == "Texas"
+  PASS  marine zone echoes code
+  PASS  every name-mapped code is a valid NWS area code
+  PASS  all NWS area codes are exactly [A-Z]{2} (URL-safe by construction)
+
+[C] URL construction + injection cannot reach the URL builder
+  PASS  unscoped URL byte-identical to pre-fix form
+  PASS  scoped URL is ?area=TX&status=actual
+  PASS  _resolve_area_or_raise('TX&status=test') raises NWSConusInputError
+  PASS  _resolve_area_or_raise('Austin') raises NWSConusInputError
+  PASS  _resolve_area_or_raise('CONUS') raises NWSConusInputError
+  PASS  _resolve_area_or_raise('Texa') raises NWSConusInputError
+  PASS  _resolve_area_or_raise('12071') raises NWSConusInputError
+  PASS  _resolve_area_or_raise('Téxas') raises NWSConusInputError
+  PASS  _resolve_area_or_raise(True) raises (non-str)
+  PASS  _resolve_area_or_raise(5) raises (non-str)
+  PASS  _resolve_area_or_raise(1.5) raises (non-str)
+  PASS  _resolve_area_or_raise(['TX']) raises (non-str)
+  PASS  _resolve_area_or_raise({'a': 1}) raises (non-str)
+  PASS  _resolve_area_or_raise(('TX',)) raises (non-str)
+  PASS  None -> unscoped (documented)
+  PASS  '' -> unscoped (documented)
+  PASS  '   ' -> unscoped
+  NOTE  whitespace-only area silently falls back to NATIONWIDE sweep (documented as empty==None; an LLM passing '  ' would re-spill — improbable input, fail-open edge)
+  PASS  fetch_nws_event _canonicalize_area("Texas") -> state TX
+  PASS  "state of texas" -> state TX
+  PASS  FIPS path untouched
+  PASS  bbox -> point fallback untouched
+  PASS  _canonicalize_area('Texa') raises NWSInputError
+  PASS  _canonicalize_area('Austin') raises NWSInputError
+  PASS  _canonicalize_area('Mexico') raises NWSInputError
+  PASS  _canonicalize_area('TX&x=1') raises NWSInputError
+
+[D] cache-key separation / convergence / no session component
+  PASS  TX/tx/Texas/'state of texas' -> ONE key
+  PASS  TX key != FL key
+  PASS  TX key != CONUS key
+  PASS  FL key != CONUS key
+  PASS  OK key collides with nothing
+  NOTE  cache key = sha256(source||params||hour-vintage)[:32]; no session_id in the key — cross-session sharing of identical queries is BY DESIGN (FR-DC-3) and cannot leak: artifact content is purely param-determined
+
+[E] validator seam — the exact live-demo failure must be dead
+  PASS  fetch_nws_event in HOT_SET_TOOLS
+  PASS  fetch_nws_alerts_conus in HOT_SET_TOOLS
+  PASS  HOT_SET_TOOLS == 10 (got 10)
+  PASS  fresh-session validate_function_call('fetch_nws_event') passes
+  PASS  validator still rejects non-hot-set tools (control)
+
+[F] Gemini declaration seam — area must be declared
+  PASS  fetch_nws_alerts_conus declared
+  PASS  area in declared params (got ['area', 'event_types', 'status'])
+  PASS  description teaches area usage
+  PASS  fetch_nws_event declared
+  PASS  fetch_nws_event description teaches full state names
+
+[G] normalizer seam — aliases land on area; collision probes
+  PASS  conus alias state -> area
+  PASS  conus alias state_code -> area
+  PASS  conus alias state_name -> area
+  PASS  conus alias location -> area
+  PASS  conus alias region -> area
+  PASS  event alias state -> area
+  PASS  event alias fips -> area
+  PASS  event alias county_fips -> area
+  PASS  event alias location -> area
+  PASS  camelCase stateCode -> area
+  NOTE  alias-ordering collision: {state:'Florida', area:'TX'} -> {'area': 'Florida'} (first-key wins, not canonical-wins; both values still STATE-SCOPED so no nationwide spill — mislabeled state at worst)
+  NOTE  residual leak path: {area_code:'TX'} -> {'area_code': 'TX'}; 'area_code'/'us_state' are not aliased and **_extra_ignored absorbs them silently -> unscoped CONUS sweep. Mitigated by the declaration (Gemini sees 'area') but not closed.
+
+======================================================================
+FAILURES: 0
+NOTES (non-blocking): 4
+  - whitespace-only area silently falls back to NATIONWIDE sweep (documented as empty==None; an LLM passing '  ' would re-spill — improbable input, fail-open edge)
+  - cache key = sha256(source||params||hour-vintage)[:32]; no session_id in the key — cross-session sharing of identical queries is BY DESIGN (FR-DC-3) and cannot leak: artifact content is purely param-determined
+  - alias-ordering collision: {state:'Florida', area:'TX'} -> {'area': 'Florida'} (first-key wins, not canonical-wins; both values still STATE-SCOPED so no nationwide spill — mislabeled state at worst)
+  - residual leak path: {area_code:'TX'} -> {'area_code': 'TX'}; 'area_code'/'us_state' are not aliased and **_extra_ignored absorbs them silently -> unscoped CONUS sweep. Mitigated by the declaration (Gemini sees 'area') but not closed.

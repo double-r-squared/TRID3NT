@@ -536,7 +536,13 @@ def _parse_outputs_block(lines: list[str]) -> list[QGISAlgorithmOutput]:
 # ---------------------------------------------------------------------------
 
 
-@register_tool(_LIST_METADATA)
+@register_tool(
+    _LIST_METADATA,
+    # Annotations: readOnlyHint=True (queries QGIS Server capabilities; no
+    # state mutation), openWorldHint=False (calls intra-GCP QGIS Server WMS
+    # GetCapabilities; not an external public API), destructiveHint=False,
+    # idempotentHint=True (same capabilities response for same server state).
+)
 def list_qgis_algorithms(
     category_filter: str | None = None,
     search_terms: str | None = None,
@@ -640,7 +646,13 @@ def _filter_and_rank_summaries(
     return sorted(summaries, key=lambda s: (s["provider"], s["algorithm_id"]))
 
 
-@register_tool(_DESCRIBE_METADATA)
+@register_tool(
+    _DESCRIBE_METADATA,
+    # Annotations: readOnlyHint=True (queries QGIS Server algorithm details;
+    # no state mutation), openWorldHint=False (intra-GCP QGIS Server only),
+    # destructiveHint=False, idempotentHint=True (deterministic algorithm
+    # description for same algorithm id on same server).
+)
 def describe_qgis_algorithm(algorithm_id: str, **_extra_ignored: Any) -> QGISAlgorithmDescription:
     """Describe a single QGIS Processing algorithm's signature.
 

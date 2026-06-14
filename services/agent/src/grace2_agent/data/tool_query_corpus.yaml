@@ -1,0 +1,649 @@
+# tool_query_corpus.yaml
+# Synthetic example-query corpus for GRACE-2 Wave 4.10 discover_dataset retrieval substrate.
+# Each key is an @register_tool function name; values are realistic user-prompt-style queries
+# that should route to that tool. 5-10 specific queries per tool, with synonym coverage,
+# regional variants, and adjacent-intent routing.
+# Generated: job-B4 (Wave 4.10 discover_dataset retrieval substrate)
+
+# ---------------------------------------------------------------------------
+# Terrain / Elevation
+# ---------------------------------------------------------------------------
+
+fetch_dem:
+  - "show me elevation data for the Grand Canyon"
+  - "I need a DEM around Yellowstone National Park"
+  - "give me topography raster for the Rocky Mountains"
+  - "what does the terrain look like near Fort Myers, Florida"
+  - "fetch elevation around the Houston Ship Channel for flood modeling"
+  - "I need a digital elevation model clipped to Lee County, FL"
+  - "pull the terrain grid for this watershed before I run the solver"
+  - "show me the ground elevation surface over New Orleans"
+
+fetch_3dep_extra:
+  - "I want 3-meter resolution elevation for downtown Seattle"
+  - "give me 1 m LiDAR DEM for the Caldor Fire scar"
+  - "fetch the highest-res elevation available for San Francisco Bay"
+  - "I need 1/9 arc-second elevation tiles for the Los Angeles basin"
+  - "pull 30-meter 3DEP DEM for Alaska — the standard tool only goes to 10m"
+  - "get me 5-meter elevation for the Kenai Peninsula, AK"
+  - "fetch sub-meter terrain for the Oroville Dam spillway area"
+
+compute_hillshade:
+  - "make the terrain shaded so I can see the ridgelines"
+  - "add a hillshade background behind the flood layer"
+  - "I want a shaded relief map of the Cascade Range"
+  - "render the terrain with sunlight from the northwest"
+  - "show me a 3D-looking terrain base for this volcanic area"
+  - "compute hillshade for the DEM I just fetched over the Sierra Nevada"
+  - "the map looks flat — add terrain shading"
+
+compute_slope:
+  - "show me the slope map for this watershed"
+  - "I need terrain steepness for landslide susceptibility analysis"
+  - "calculate the gradient of the hillside in this burn scar"
+  - "which areas around the dam are the steepest?"
+  - "give me a slope raster over the Camp Fire footprint for debris-flow risk"
+  - "map terrain steepness near the mudslide area in Montecito"
+  - "I want slope percentage for the proposed solar farm site"
+
+compute_aspect:
+  - "which direction do the slopes face in this study area?"
+  - "compute terrain aspect over the wildfire perimeter"
+  - "show me north-facing vs south-facing slopes in the burn area"
+  - "what aspect is most exposed to the wind in this canyon?"
+  - "I need slope face direction for a solar irradiance analysis"
+  - "calculate terrain aspect so I can see where snow will accumulate"
+
+compute_colored_relief:
+  - "color the elevation raster by altitude"
+  - "give me a hypsometric tint DEM for this mountain range"
+  - "I want a rainbow-colored elevation map of Glacier National Park"
+  - "render the DEM with a standard elevation color ramp"
+  - "add a colored elevation basemap for the Appalachian Mountains"
+  - "shade the terrain by height like a classic topo map"
+
+# ---------------------------------------------------------------------------
+# Land Use / Land Cover
+# ---------------------------------------------------------------------------
+
+fetch_landcover:
+  - "show me land use data for South Florida"
+  - "I need NLCD landcover for the Houston area"
+  - "fetch land classification raster for this watershed before SFINCS setup"
+  - "what is the land cover around the Everglades?"
+  - "give me land-use categories for the Sacramento Valley"
+  - "I want a landcover map for the wildland-urban interface near Chico, CA"
+  - "show me the vegetation map for this Texas coastal plain"
+  - "I need landcover to compute Manning's roughness for the SFINCS model"
+
+extract_landcover_class:
+  - "extract just the wetland pixels from the NLCD raster"
+  - "show me only urban/developed areas in this landcover layer"
+  - "give me a binary mask of forest in the fire study area"
+  - "isolate cropland cells from this landcover grid"
+  - "I want just the open-water class from this NLCD dataset"
+  - "create a mask of low-intensity development from the landcover"
+  - "pull out the shrubland pixels for rangeland fuel analysis"
+
+compute_impervious_surface:
+  - "how much of this watershed is paved or developed?"
+  - "compute impervious surface fraction for the Miami metro area"
+  - "show me runoff potential from impervious cover in Houston"
+  - "I need impervious surface percentage for SFINCS infiltration setup"
+  - "what fraction of the Dallas urban core is impervious?"
+  - "map the developed / sealed surface for this coastal city"
+  - "calculate percent-paved for each cell in this flood-risk zone"
+
+# ---------------------------------------------------------------------------
+# Population / Buildings
+# ---------------------------------------------------------------------------
+
+fetch_population:
+  - "how many people live in this flood zone?"
+  - "show me population density for the Tampa Bay area"
+  - "I need a population raster for exposure analysis near New Orleans"
+  - "fetch WorldPop population data for the Houston Ship Channel area"
+  - "what is the population at risk in this storm surge footprint?"
+  - "give me population counts for evacuation zone A in Lee County"
+  - "I want gridded population for a Caribbean island scenario"
+
+fetch_hrsl_population:
+  - "I need 30-meter population density for the Miami metro"
+  - "give me high-resolution population grid for Manila Bay"
+  - "fetch HRSL population for this Bangladesh flood plain"
+  - "I want Meta HRSL data for coastal Bangladesh at 30m resolution"
+  - "how dense is the population in this African coastal city at 30m?"
+  - "I need the highest-resolution open population dataset for Jakarta"
+
+fetch_buildings:
+  - "show me building footprints in Lee County, Florida"
+  - "I need building polygons for damage assessment after the hurricane"
+  - "fetch Microsoft building footprints for the Houston flooding area"
+  - "give me structures in the flood inundation zone"
+  - "what buildings are in the projected storm surge footprint?"
+  - "I want all the building outlines in this zip code for exposure modeling"
+
+compute_building_density:
+  - "show me where buildings are most concentrated in this city"
+  - "give me a building density raster for urban exposure analysis"
+  - "how dense is the built environment in this flood zone?"
+  - "visualize urban form for this coastal metro area"
+  - "I need buildings per square kilometer for this watershed"
+  - "compute structure density over the wildland-urban interface"
+
+fetch_usace_nsi:
+  - "I need the National Structure Inventory for flood loss estimation"
+  - "give me HAZUS occupancy and replacement values for buildings in this bbox"
+  - "fetch NSI data so Pelicun can compute structural losses"
+  - "I want per-structure replacement cost for all buildings in this flood zone"
+  - "show me the USACE structure inventory for New Orleans"
+  - "I need foundation heights and FIRM flood zones for these structures"
+  - "pull NSI data for the Fort Myers area for damage assessment"
+  - "what are the structure values at risk in this 100-year floodplain?"
+
+# ---------------------------------------------------------------------------
+# Rivers / Hydrology
+# ---------------------------------------------------------------------------
+
+fetch_river_geometry:
+  - "show me the rivers and streams in this watershed"
+  - "I need NHDPlus flowlines for SFINCS river burning"
+  - "fetch the stream network for the Caloosahatchee River basin"
+  - "give me the hydrography layer for this Florida coastal plain"
+  - "I want the river centerlines for HydroMT hydro-conditioning"
+  - "show me all the waterways in this county"
+  - "pull NHDPlus high-res flowlines for the Sacramento Delta"
+
+fetch_noaa_nwm_streamflow:
+  - "what are current river discharge rates along the Mississippi?"
+  - "show me NWM streamflow for the Caloosahatchee right now"
+  - "how high is the river flowing in this watershed?"
+  - "I need real-time discharge for SFINCS fluvial boundary forcing"
+  - "fetch streamflow forecast for all rivers in this bbox"
+  - "show me the National Water Model output for this flood event"
+  - "what is the current streamflow in cubic meters per second for this basin?"
+  - "I need upstream hydrograph for the compound flood model"
+
+fetch_nhdplus_nldi_navigate:
+  - "trace the river network upstream from this gauge"
+  - "show me all tributaries feeding into this confluence"
+  - "navigate downstream from this dam to the coast"
+  - "I want all the connected flowlines upstream of this flood sensor"
+  - "trace water flow downstream from this point for 50 kilometers"
+  - "give me the full upstream tributary network from this location"
+  - "find every river segment between this gauge and the bay"
+
+fetch_cama_flood_discharge:
+  - "I need global river discharge for SFINCS setup in Bangladesh"
+  - "fetch CaMa-Flood fluvial forcing for the Mekong Delta scenario"
+  - "give me gridded discharge for the Amazon basin flood model"
+  - "I need non-CONUS river flow for compound flood setup in Southeast Asia"
+  - "fetch global fluvial boundary conditions for the Niger River delta"
+  - "I want CaMa-Flood discharge for the compound flood research workflow"
+
+lookup_precip_return_period:
+  - "what is the 100-year rainfall depth at this location?"
+  - "give me Atlas 14 precipitation frequency estimates for Houston"
+  - "what is the 24-hour 10-year storm depth for Fort Myers?"
+  - "I need design-storm precipitation for a pluvial flood scenario"
+  - "what return period is this rainfall event in Charlotte, NC?"
+  - "fetch NOAA Atlas 14 PFDS for this watershed centroid"
+  - "I want the 2-year, 10-year, and 100-year 1-hour storm depths for Tampa"
+
+fetch_statsgo_soils:
+  - "give me soil K-factor for this watershed for erosion modeling"
+  - "I need soil erodibility data over the Camp Fire footprint"
+  - "fetch STATSGO soil properties for debris-flow susceptibility analysis"
+  - "what is the soil thickness in this post-fire area?"
+  - "I need hydrologic soil group data for runoff curve numbers"
+  - "show me soil erodibility raster for the western US wildfire area"
+
+fetch_gcn250_curve_numbers:
+  - "I need SCS curve numbers for a SFINCS model outside the US"
+  - "fetch global infiltration parameters for this South Asian flood scenario"
+  - "give me GCN250 curve numbers for the Bangladesh coastal plain"
+  - "I need antecedent moisture conditions for this tropical storm setup"
+  - "pull curve numbers for the HydroMT pluvial flood workflow in Africa"
+  - "fetch global runoff CNs for compound flood modeling in the Nile delta"
+
+# ---------------------------------------------------------------------------
+# Hazard: Floods / Storm Surge / Sea Level
+# ---------------------------------------------------------------------------
+
+fetch_fema_nfhl_zones:
+  - "show me the FEMA flood map for Lee County"
+  - "what is the 100-year floodplain near downtown Houston?"
+  - "I want the Special Flood Hazard Area polygons for this zip code"
+  - "give me NFIP flood insurance rate zones for this property"
+  - "show me the regulatory floodplain boundaries in New Orleans"
+  - "are there Zone AE or VE flood zones in this coastal area?"
+  - "I need the FIRM zones for flood insurance underwriting in Miami"
+  - "show me the Base Flood Elevation lines for this river corridor"
+
+fetch_noaa_coops_tides:
+  - "show me tide gauge readings at Fort Myers for Hurricane Ian"
+  - "what were the water levels at Key West during the storm?"
+  - "I need hourly tide observations for SFINCS coastal boundary forcing"
+  - "fetch CO-OPS water level data for the Gulf Coast during this surge event"
+  - "give me observed tidal elevations at all stations near Tampa Bay"
+  - "I need storm surge water levels from NOAA gauges for this date range"
+  - "fetch tidal predictions for the Charleston, SC harbor"
+
+fetch_gtsm_tide_surge:
+  - "I need coastal boundary forcing for a compound flood model outside the US"
+  - "fetch GTSM surge for the Bay of Bengal tropical cyclone scenario"
+  - "give me tide and surge time series for this non-CONUS coastal bbox"
+  - "I need Deltares GTSM data for the SFINCS model in the Philippines"
+  - "fetch global storm surge for this Indian Ocean cyclone"
+  - "give me coastal water levels from GTSM for the Bangladesh flood setup"
+  - "I need compound flood boundary conditions for a Mediterranean coast scenario"
+
+fetch_noaa_slr_scenarios:
+  - "show me areas that will flood if sea level rises 2 feet"
+  - "I want the NOAA sea-level-rise inundation map for this coastal city"
+  - "give me the 1m and 3m SLR scenario polygons for South Florida"
+  - "what neighborhoods flood under a 6-foot sea-level-rise scenario?"
+  - "show me coastal inundation at 1, 2, 4, and 6 feet of SLR near Miami"
+  - "I need the NOAA SLR viewer data for planning-level analysis in Charleston"
+  - "compare 0.5-foot and 3-foot sea-level-rise footprints for this coastline"
+
+fetch_mrms_qpe:
+  - "how much rain fell over Houston during this storm event?"
+  - "show me radar-derived precipitation accumulation for this flood event"
+  - "I need gauge-corrected rainfall totals for SFINCS pluvial forcing"
+  - "fetch MRMS QPE for the 48-hour window around Hurricane Ian landfall"
+  - "give me gridded precipitation accumulation over the Midwest flooding"
+  - "what was the total rainfall in this watershed over the last 24 hours?"
+  - "I need MRMS precipitation for post-event rainfall-runoff analysis"
+
+fetch_hrrr_forecast:
+  - "show me the wind forecast for the Gulf Coast over the next 6 hours"
+  - "what is the 2-meter temperature forecast for the Dallas area?"
+  - "I need HRRR wind speed for wildfire spread modeling"
+  - "fetch short-range precipitation forecast for the Houston area"
+  - "give me NOAA HRRR surface wind at forecast hour 12 for Florida"
+  - "I need 10-meter wind for a storm surge model boundary setup"
+  - "fetch HRRR surface pressure forecast for this hurricane approach"
+  - "what does the wind look like over the next 18 hours in this basin?"
+
+# ---------------------------------------------------------------------------
+# Hazard: Wildfires / Fire Weather
+# ---------------------------------------------------------------------------
+
+fetch_firms_active_fire:
+  - "show me active fire hotspots in California right now"
+  - "where are the satellite fire detections in Oregon today?"
+  - "I need NASA FIRMS fire points for this wildfire event"
+  - "show me thermal anomaly detections around the active wildfire perimeter"
+  - "give me active fire locations with Fire Radiative Power in this bbox"
+  - "are there any active fires near this forest community today?"
+  - "fetch satellite fire detections for the last 7 days over western US"
+
+fetch_nifc_fire_perimeters:
+  - "show me the active wildfire perimeters in California"
+  - "what is the current size and containment of all active megafires?"
+  - "give me the live fire boundary for the Park Fire in Northern California"
+  - "I need the current NIFC fire polygon for this incident"
+  - "show me every active wildfire in the western US right now"
+  - "fetch the WFIGS fire perimeter for this incident by name"
+  - "what percent contained is the biggest fire in New Mexico?"
+
+fetch_mtbs_burn_severity:
+  - "show me historic wildfire burn scars in this area"
+  - "I need MTBS burn severity for post-fire debris-flow analysis"
+  - "give me the burn severity map for the Camp Fire footprint"
+  - "what fires burned through this watershed in the last 10 years?"
+  - "fetch MTBS polygons for all wildfires in Southern California since 2000"
+  - "I need burn severity to assess post-fire habitat degradation"
+  - "show me the burn scar extent and severity for the Dixie Fire"
+
+fetch_landfire_fuels:
+  - "I need LANDFIRE fuel models for wildfire spread simulation"
+  - "fetch LANDFIRE Scott and Burgan 40 fuel model for this area"
+  - "give me surface fuel model raster for FARSITE input"
+  - "I need the fuel moisture content inputs for FlamMap over this bbox"
+  - "fetch LANDFIRE existing vegetation type for fire risk context"
+  - "show me the fire-fuel conditions for this WUI community"
+  - "I need LANDFIRE LF2022 fuels for this ELMFIRE domain"
+
+fetch_usfs_canopy_fuels:
+  - "I need canopy bulk density for crown fire transition modeling"
+  - "give me canopy base height for FlamMap input in this forest"
+  - "fetch CBH and CBD for the Sierra Nevada wildfire scenario"
+  - "I need crown fuel inputs for FARSITE over this California forest"
+  - "what is the canopy base height in this old-growth forest area?"
+  - "fetch LANDFIRE canopy bulk density for the Rocky Mountain scenario"
+
+fetch_hrrr_smoke:
+  - "show me smoke forecast for Northern California wildfires"
+  - "where is the wildfire smoke traveling over the next 12 hours?"
+  - "I need HRRR-Smoke aerosol optical depth for this region"
+  - "fetch smoke column mass density forecast for the Pacific Northwest"
+  - "show me air quality forecast for the Sacramento Valley during fire season"
+  - "I need PM2.5 smoke forecast for this wildfire event"
+  - "give me near-surface smoke concentration over this evacuated area"
+
+fetch_gridmet:
+  - "what is the fuel moisture index for this fire-prone area?"
+  - "give me fire-danger weather for the past week in this watershed"
+  - "I need daily temperature and humidity for drought analysis in the West"
+  - "fetch 100-hour fuel moisture for this historic fire date"
+  - "show me the dead fuel moisture raster for this California study area"
+  - "I need historical gridded wind speed for this fire weather analysis"
+  - "fetch energy release component for the western US fire season"
+  - "give me 1000-hour fuel moisture for the fire spread model"
+
+# ---------------------------------------------------------------------------
+# Weather Observations / Atmospheric
+# ---------------------------------------------------------------------------
+
+fetch_asos_metar:
+  - "what were the wind speeds at the Fort Myers airport during Hurricane Ian?"
+  - "show me surface weather observations from stations near the flood event"
+  - "I need METAR data from airports around Tampa Bay yesterday"
+  - "fetch ASOS temperature and wind readings during this hurricane landfall"
+  - "give me surface weather station data for the 24 hours before this storm"
+  - "what was the wind direction and gusts at the Nashville airport on that date?"
+  - "show me pressure, temperature, and visibility at weather stations in this area"
+
+fetch_raws_weather:
+  - "show me fire-weather station data near the active wildfire"
+  - "what were the wind speed and relative humidity at RAWS stations during the Caldor Fire?"
+  - "I need fire-weather observations from remote stations in this forest"
+  - "fetch RAWS data from stations near the WUI community evacuation zone"
+  - "give me temperature and RH readings from fire stations in this national forest"
+  - "what were the weather conditions at the RAWS station nearest the ignition point?"
+  - "I need sub-hourly fire weather observations for this time window"
+
+fetch_nexrad_reflectivity:
+  - "show me the current radar for the storm approaching Tampa"
+  - "put the NEXRAD radar on the map for this hurricane event"
+  - "I want live radar reflectivity over the Houston flooding area"
+  - "display current US radar mosaic on the map"
+  - "show me the thunderstorm radar signature for the Midwest squall line"
+  - "overlay live NEXRAD radar on the map for situational awareness"
+
+fetch_goes_satellite:
+  - "show me the current satellite image of the hurricane"
+  - "I want GOES-16 infrared imagery for the storm approaching the Gulf Coast"
+  - "display the current cloud cover over the wildfire area"
+  - "show me GOES satellite for near-real-time weather context"
+  - "I need current CONUS cloud imagery for the tropical cyclone"
+  - "overlay GOES water vapor channel on the map for synoptic context"
+  - "show me the satellite view of the storm right now"
+
+fetch_era5_reanalysis:
+  - "I need global wind forcing for a SFINCS storm surge model outside the US"
+  - "fetch ERA5 surface wind for the Bay of Bengal cyclone event"
+  - "give me ERA5 total precipitation for this non-CONUS flood scenario"
+  - "I need reanalysis pressure and wind data for the compound flood substrate"
+  - "fetch ERA5 significant wave height for the Mediterranean storm surge"
+  - "give me Copernicus reanalysis data for the global fire weather case"
+  - "I need ERA5 10m wind components for compound flood model forcing"
+  - "fetch ERA5 surface runoff for this tropical cyclone study area"
+
+# ---------------------------------------------------------------------------
+# NWS Alerts
+# ---------------------------------------------------------------------------
+
+fetch_nws_event:
+  - "show me active weather alerts in Florida right now"
+  - "what NWS warnings are in effect for Harris County, TX?"
+  - "are there any flood warnings active in South Carolina?"
+  - "show me current hurricane warnings for the Gulf Coast"
+  - "what weather advisories affect this zip code right now?"
+  - "show me active tornado watches and warnings in Oklahoma"
+
+fetch_nws_alerts_conus:
+  - "show me ALL active NWS alerts across the entire US"
+  - "give me a national weather alert map for today"
+  - "what are the most severe weather warnings anywhere in the country right now?"
+  - "show me every hurricane and tropical storm warning in America"
+  - "I want a CONUS-wide view of all active severe weather watches"
+  - "show me the full nationwide NWS alert picture for this storm system"
+
+fetch_storm_events_db:
+  - "what storms hit Florida in 2017?"
+  - "show me historical tornado touchdowns in Oklahoma since 2000"
+  - "give me NOAA Storm Events records for Hurricane Ian"
+  - "what flooding events occurred in Harris County, TX over the last 10 years?"
+  - "I need historical hail events for this insurance analysis"
+  - "show me past hurricane landfalls in North Carolina"
+  - "what is the historical storm event record for this watershed?"
+
+# ---------------------------------------------------------------------------
+# Infrastructure / Critical Assets
+# ---------------------------------------------------------------------------
+
+fetch_usace_levees:
+  - "show me the levees protecting New Orleans"
+  - "what levee systems are in this flood zone?"
+  - "give me the USACE National Levee Database features for the Sacramento Delta"
+  - "I need leveed-area polygons for compound flood infrastructure context"
+  - "show me levee embankments in this floodplain"
+  - "are there federally inspected levees in this risk area?"
+  - "fetch NLD levee routes for the Mississippi River corridor"
+
+fetch_usace_dams:
+  - "what dams are upstream of this flood-vulnerable community?"
+  - "show me all high-hazard dams in California"
+  - "give me the National Inventory of Dams for this watershed"
+  - "I need dam height, storage, and hazard classification for this region"
+  - "which dams in this state have a poor condition assessment?"
+  - "show me dams with deficient emergency action plans in this basin"
+  - "fetch NID dam inventory for the Oroville area"
+
+fetch_roads_osm:
+  - "show me the roads in this flood impact area"
+  - "give me road network for evacuation routing context"
+  - "I need carriageway centerlines for this county"
+  - "overlay roads on the flood inundation map"
+  - "show me transportation infrastructure in this hurricane impact zone"
+  - "fetch OSM roads for the wildfire evacuation corridor"
+  - "I need road network for accessibility analysis after the flood"
+
+# ---------------------------------------------------------------------------
+# Administrative Boundaries
+# ---------------------------------------------------------------------------
+
+fetch_administrative_boundaries:
+  - "show me county boundaries for South Florida"
+  - "I need state outline polygons for this regional overview"
+  - "give me Census TIGER county lines for the Houston area"
+  - "show me city boundaries for the Tampa–St. Petersburg metro"
+  - "I want ZIP code tabulation area polygons for demographic aggregation"
+  - "fetch the state boundary so I can clip this flood layer to Florida"
+  - "give me US Census tract boundaries for this urban area"
+
+geocode_location:
+  - "find the bounding box for Fort Myers, Florida"
+  - "geocode Hurricane Ian's landfall location"
+  - "I need the coordinates for the Sacramento–San Joaquin Delta"
+  - "where is New Orleans — give me the bbox"
+  - "find the extent of Harris County, Texas"
+  - "geocode Tampa Bay area so I can fetch data there"
+  - "I need the bbox for the Everglades National Park"
+
+clip_raster_to_bbox:
+  - "clip this DEM to the county boundary I fetched"
+  - "I need to trim this national-scale precipitation raster to my study area"
+  - "crop the population raster to this flood inundation extent"
+  - "clip the landcover grid down to just this watershed bbox"
+  - "trim this large-area DEM to the Fort Myers case extent"
+  - "cut this HRRR wind raster to my storm domain"
+
+clip_raster_to_polygon:
+  - "clip this flood-depth raster to the state of Florida polygon"
+  - "I need the DEM clipped to the watershed boundary, not a rectangle"
+  - "mask the precipitation raster to Lee County's exact boundary"
+  - "clip the population grid inside the FEMA flood zone polygon"
+  - "I want LANDFIRE fuels data clipped to this fire management unit boundary"
+  - "clip the NLCD raster to the national park boundary polygon"
+
+clip_vector_to_polygon:
+  - "clip these GBIF occurrence points to the Florida state boundary"
+  - "I need to trim nationwide NWS alerts to just this state polygon"
+  - "clip the building footprints to the flood zone polygon"
+  - "filter these national dam points down to those inside this watershed"
+  - "clip the road network to the hurricane impact zone polygon"
+
+# ---------------------------------------------------------------------------
+# Conservation / Biodiversity
+# ---------------------------------------------------------------------------
+
+fetch_wdpa_protected_areas:
+  - "show me protected areas in South Florida"
+  - "give me National Wildlife Refuge polygons near the Everglades"
+  - "I need WDPA conservation areas for this habitat analysis"
+  - "show me national parks and protected lands in this study area"
+  - "overlay protected area boundaries on the flood risk map"
+  - "what fraction of this flood footprint is inside a protected area?"
+  - "give me Marine Protected Area polygons for this coastal zone"
+  - "I need IUCN-category protected lands for this conservation assessment"
+
+fetch_gbif_occurrences:
+  - "show me Florida panther sightings in this area"
+  - "give me species occurrence records for biodiversity analysis in this bbox"
+  - "I need GBIF observation points to overlay on the flood risk surface"
+  - "where have Florida manatees been reported near Fort Myers?"
+  - "show me bird species occurrence records in this national park"
+  - "fetch GBIF data for endemic plant species in this fire-affected region"
+  - "I want species observation points for this conservation baseline"
+
+fetch_inaturalist_observations:
+  - "where are the recent manatee sightings along this coast?"
+  - "show me iNaturalist observations of American alligators in South Florida"
+  - "I need citizen-science species sightings for this habitat area"
+  - "give me recent monarch butterfly observations along this flyway"
+  - "show me wildlife observations near the wildfire perimeter"
+  - "what species have been spotted in this recently flooded wetland?"
+  - "I need research-grade iNaturalist records for this conservation layer"
+
+fetch_ebird_observations:
+  - "what birds have been seen in this wetland in the last 30 days?"
+  - "show me recent waterfowl sightings in this flooded refuge"
+  - "give me eBird observations of Bewick's Wren over this wildfire footprint"
+  - "I need recent bird sightings for this avian biodiversity analysis"
+  - "fetch bird observation data for the Everglades National Park"
+  - "what raptors were spotted near this fire perimeter recently?"
+  - "I want eBird data to assess habitat quality in this post-flood area"
+
+fetch_iucn_red_list_range:
+  - "what is the IUCN conservation status of the Florida panther?"
+  - "show me the Red List range for the West Indian manatee"
+  - "give me IUCN threat category and habitat info for this endangered species"
+  - "I need IUCN Red List data for the species at risk in this flood zone"
+  - "fetch conservation status and range for the loggerhead sea turtle"
+  - "what is the Red List category for this critically endangered mammal?"
+
+fetch_movebank_tracks:
+  - "show me migration tracks for sandhill cranes over this wildfire area"
+  - "give me sea turtle telemetry paths near this storm surge zone"
+  - "I need animal movement trajectories for this wildlife corridor analysis"
+  - "show me Movebank tracks for whooping cranes crossing this region"
+  - "fetch GPS tracks for this mammal species over the flood footprint"
+  - "I want elephant movement paths layered over this flood-risk surface"
+  - "show me bird migration corridors through this proposed wind-farm area"
+
+# ---------------------------------------------------------------------------
+# Damage Assessment
+# ---------------------------------------------------------------------------
+
+run_pelicun_damage_assessment:
+  - "run a damage assessment for buildings in this flood zone"
+  - "compute structural losses from this flood scenario using fragility curves"
+  - "I need Pelicun flood damage estimates for the Fort Myers housing stock"
+  - "assess how many structures reach the DS3 damage state under this surge"
+  - "give me repair cost statistics for this hurricane damage scenario"
+  - "run a loss estimation for residential buildings in this 100-year flood footprint"
+  - "I want building damage probability curves for this storm surge event"
+  - "compute expected damage and 95% confidence intervals for this flood depth raster"
+
+compute_zonal_statistics:
+  - "how many people are in the projected flood inundation zone?"
+  - "what is the total building replacement value exposed to this storm surge?"
+  - "compute mean flood depth within each census tract"
+  - "how much forest area burned in each county in this fire?"
+  - "I need average wind speed within the damage footprint polygon"
+  - "sum population at risk within each flood zone category"
+  - "calculate the area of wetlands inside this fire perimeter"
+  - "what fraction of developed land is in the flood zone?"
+
+# ---------------------------------------------------------------------------
+# Catalog / Discovery
+# ---------------------------------------------------------------------------
+
+catalog_search:
+  - "what public hazard datasets are available for flood risk?"
+  - "find a curated data source for wildfire risk mapping"
+  - "search the catalog for FEMA or USGS flood data"
+  - "what vetted sources do you have for sea-level rise inundation?"
+  - "find publicly available datasets for wind hazard analysis"
+  - "what hazard catalog entries cover earthquake shaking?"
+
+catalog_fetch:
+  - "fetch that USFS Wildfire Hazard Potential dataset from the catalog"
+  - "download the FEMA National Risk Index layer I found in the catalog"
+  - "pull the NOAA Sea Level Rise Viewer entry we discovered"
+  - "retrieve the USGS National Seismic Hazard Map from the catalog"
+  - "get the NOAA SLOSH storm surge layer I found in the catalog search"
+
+# ---------------------------------------------------------------------------
+# Infrastructure / Modeling Utilities
+# ---------------------------------------------------------------------------
+
+publish_layer:
+  - "publish this flood depth raster so I can see it on the map"
+  - "add this COG layer to QGIS Server so MapLibre can render it"
+  - "make this flood output visible on the map"
+  - "I need to register this raster with the WMS server"
+  - "publish the postprocessed flood layer to the project"
+
+run_solver:
+  - "run the SFINCS flood model now that the setup is ready"
+  - "submit the solver job to Cloud Workflows"
+  - "kick off the flood simulation — the model is staged"
+  - "execute the solver with the HydroMT model setup"
+  - "start the flood simulation on Cloud Run and give me the execution handle"
+
+wait_for_completion:
+  - "wait for the SFINCS run to finish and get the result"
+  - "poll the solver execution until it completes"
+  - "block until the flood model run is done"
+  - "monitor the simulation and return the run result"
+  - "check when the solver finishes and return the output URI"
+
+qgis_process:
+  - "run the QGIS watershed delineation algorithm on this DEM"
+  - "submit a GRASS hydrology process on the worker"
+  - "execute the QGIS fill sinks algorithm for hydrological conditioning"
+  - "run a SAGA terrain analysis on this elevation raster"
+  - "use the QGIS buffer algorithm to create a 500m zone around these points"
+
+fetch_ogc_layer:
+  - "fetch the NLCD landcover via WCS from the MRLC service"
+  - "retrieve this WMS layer from the catalog Tier-2 entry"
+  - "pull data from this OGC WFS endpoint for the flood catalog"
+  - "access this ArcGIS REST FeatureService for the hazard layer"
+  - "fetch this WMTS layer from the national catalog entry"
+
+web_fetch:
+  - "read the content of this USGS report page"
+  - "fetch the news article at this URL about the flood event"
+  - "pull the metadata from this research paper abstract page"
+  - "check what's on this government flood-zone data portal page"
+  - "read the text body of this NWS forecast discussion page"
+
+fetch_nws_event:
+  - "are there any flood warnings active in Lee County right now?"
+  - "show me NWS severe weather alerts for the state of Florida"
+  - "what hurricane warnings are currently in effect for the Gulf Coast?"
+  - "give me active NWS alerts for Harris County, TX"
+  - "show me winter storm warnings in Colorado today"
+
+mongo_query:
+  - "what runs have we done for the Hurricane Ian session?"
+  - "show me all events stored in the Atlas database for this case"
+  - "query the sessions collection for this user's history"
+  - "look up the run document for this solver execution"
+  - "what articles are stored in the hazard event corpus for this storm?"

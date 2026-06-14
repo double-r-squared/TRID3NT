@@ -347,7 +347,13 @@ _WEB_FETCH_METADATA = AtomicToolMetadata(
 )
 
 
-@register_tool(_WEB_FETCH_METADATA)
+@register_tool(
+    _WEB_FETCH_METADATA,
+    # Annotations: readOnlyHint=True (HTTP GET only; no state mutation),
+    # openWorldHint=True (fetches arbitrary public URLs; fully open-world),
+    # destructiveHint=False, idempotentHint=True (cache shim + TTL deduplicates).
+    open_world_hint=True,
+)
 def web_fetch(
     url: str,
     extract: Literal["full_html", "main_text", "json", "metadata"] = "main_text",
@@ -359,22 +365,29 @@ def web_fetch(
 ) -> dict[str, Any]:
     """Generic web-page ingest with content extraction modes.
 
-    Use this when: the agent needs to read the content of an arbitrary web
-    page or small JSON API endpoint — fetching the body of a news article,
-    confirming a page's subject before deeper extraction, pulling a research
-    paper's abstract, parsing a small public-data JSON response that does NOT
-    have a dedicated fetcher tool. Prefer ``extract="main_text"`` for news /
-    article bodies; ``extract="metadata"`` is the cheapest mode (one
-    round-trip, body parsed only for ``<meta>`` tags) and is ideal as a
-    pre-fetch to confirm a page's subject before pulling its body.
+    Fetches an http/https URL with configurable extraction: stripped article
+    text, full HTML, JSON body, or metadata-only. Results are cached for 1 hour.
+    Returns a structured dict with the extracted content, HTTP status, and
+    provenance fields consumed by downstream claim aggregation.
 
-    Do NOT use this for: large file downloads (no streaming surface — use a
-    dedicated fetcher); pages requiring JavaScript rendering (the response is
-    the server-rendered HTML only; SPA shells with empty bodies will return
-    empty text); authenticated endpoints (no credential injection); anything
-    a domain-specific atomic tool already covers (``fetch_dem``,
-    ``fetch_landcover``, ``geocode_location``, ``fetch_administrative_boundaries``
-    are always preferred over a raw ``web_fetch`` call to the same upstream).
+    When to use:
+        - Fetching the body of a news article or incident report URL for Case 2
+          event ingest (``run_model_news_event_ingest`` calls this via the
+          registry for "url" sources).
+        - Confirming a page's subject before deeper extraction (use
+          ``extract="metadata"`` — cheapest mode, reads only ``<meta>`` tags).
+        - Pulling a small public-data JSON API response that has no dedicated
+          fetcher tool.
+        - Research or citation checks for a specific URL.
+
+    When NOT to use:
+        - Large file downloads (no streaming surface — use a dedicated fetcher).
+        - Pages requiring JavaScript rendering (server-rendered HTML only; SPA
+          shells with empty bodies will return empty ``content``).
+        - Authenticated endpoints (no credential injection).
+        - Anything a domain-specific atomic tool already covers (``fetch_dem``,
+          ``fetch_landcover``, ``geocode_location``, ``fetch_administrative_boundaries``
+          are always preferred over a raw ``web_fetch`` call to the same upstream).
 
     Params:
         url: the absolute http/https URL to fetch. Schemes other than http/https
@@ -424,6 +437,16 @@ def web_fetch(
     Robots.txt: NOT honored in v0.1 (acceptable for research). Surfaced as
     OQ-0092-WEB-FETCH-ROBOTS for sprint-13 revisit — a future version reads
     and respects ``robots.txt`` per host before fetching.
+
+    Cross-tool dependencies:
+        Upstream (consumes):
+        - No tool dependencies — takes a raw URL from the agent or user.
+        Downstream (feeds):
+        - ``aggregate_claims_across_sources`` — the returned dict (with ``url``,
+          ``content``, ``fetched_at``) is passed as an element of the ``sources``
+          list for cross-source claim extraction.
+        - ``run_model_news_event_ingest`` — calls this via the tool registry for
+          each "url"-type source in the ``sources`` input list.
     """
     if extract not in _ALLOWED_EXTRACT_MODES:
         raise WebFetchInputError(

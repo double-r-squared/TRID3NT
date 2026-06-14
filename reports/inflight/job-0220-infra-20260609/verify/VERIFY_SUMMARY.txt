@@ -1,0 +1,31 @@
+LIVE-VERIFY re-run — job-0220 (MODFLOW 6 container + Cloud Run Job + Workflows)
+Reviewer: adversarial LIVE-VERIFY lens. All paths re-executed from scratch.
+
+[REPRODUCED PASS] mf6 download + SHA-256
+  curl -fL canonical MODFLOW-USGS URL -> HTTP 200 (redirected to release-assets.githubusercontent.com)
+  zip size = 140404992 bytes
+  SHA-256 = 0fac00211c42b7a74c7266abbe50776a6215ea8409c8ce887e5decd4a9335940  (MATCHES Dockerfile pin)
+  mf6 --version = "mf6: 6.5.0 05/23/2024"
+  Dockerfile extraction paths mf6.5.0_linux/bin/{mf6,libmf6.so} correct.
+
+[REPRODUCED PASS] fresh flopy GWF model + mf6 run (NOT runner's fixtures)
+  Built independent 10x10 single-layer steady-state GWF deck via flopy 3.10.0.
+  mf6 -> "Normal termination of simulation."
+  head shape (1,10,10), min=2.0 max=8.0, all_finite=True, vrf.hds=852 bytes.
+  Physics correct: middle-row profile 8.0,7.333,6.667,...,2.0 = analytical linear gradient.
+
+[REPRODUCED PASS] entrypoint.main() e2e vs fake in-memory GCS + real mf6 + REAL runner fixtures
+  exit 0; completion.json status=ok exit_code=0 converged=true model_crs=EPSG:26915
+  smoke.hds=852 bytes uploaded; output_uris include smoke.hds + mfsim.lst.
+  Convergence guard branches: converged->(True,None); divergent->(False,'solver_diverged'); absent->(False,...).
+
+[REPRODUCED PASS] tofu validate (cached providers)
+  tofu validate -> "Success! The configuration is valid." exit 0
+  tofu fmt -check modflow.tf -> exit 0
+  NOTE: tofu init -backend=false hit a transient registry timeout THIS run; providers already
+        cached (hashicorp/google 6.50.0) from runner's init, so validate ran clean.
+
+[CONFIRMED] ownership: gwt_adapter.py committed by job-0221 (b042f1b), NOT job-0220 (75f57ff). Correct.
+[CONFIRMED] image digest is honest placeholder sha256:0000... (deviation #5) — apply pull-fails until real digest pinned. Documented.
+
+[BLOCKED-ENV, correctly not refuted] docker build + Cloud Run deploy: no docker daemon, no gcloud. Documented in report.md.

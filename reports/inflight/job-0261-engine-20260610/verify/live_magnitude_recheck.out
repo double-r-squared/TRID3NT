@@ -1,0 +1,6 @@
+area=TX features: 8
+  features with ZERO TX UGC (leakage): 0  []
+  features whose UGC also spans non-TX zones (multi-state alerts): 1
+unscoped CONUS features: 306
+  TX-relevant subset of CONUS sweep: 8
+  would-have-rendered-outside-TX: 298

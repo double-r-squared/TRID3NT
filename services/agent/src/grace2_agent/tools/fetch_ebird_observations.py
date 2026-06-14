@@ -787,7 +787,14 @@ def _fetch_ebird_bytes(
 # ---------------------------------------------------------------------------
 
 
-@register_tool(_METADATA, supports_global_query=False)
+@register_tool(
+    _METADATA,
+    supports_global_query=False,
+    # Annotations: readOnlyHint=True (read-only; no state mutation),
+    # openWorldHint=True (calls Cornell Lab eBird API external endpoint),
+    # destructiveHint=False, idempotentHint=True (cache shim deduplicates).
+    open_world_hint=True,
+)
 def fetch_ebird_observations(
     species_code: str,
     bbox: tuple[float, float, float, float],

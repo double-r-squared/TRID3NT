@@ -487,7 +487,13 @@ def _fetch_gcn250_bytes(
 # ---------------------------------------------------------------------------
 
 
-@register_tool(_METADATA)
+@register_tool(
+    _METADATA,
+    # Annotations: readOnlyHint=True (read-only; no state mutation),
+    # openWorldHint=True (calls external public API endpoint),
+    # destructiveHint=False, idempotentHint=True (cache shim deduplicates).
+    open_world_hint=True,
+)
 def fetch_gcn250_curve_numbers(
     bbox: tuple[float, float, float, float],
     antecedent_moisture: Literal["dry", "average", "wet"] = "average",
@@ -495,67 +501,68 @@ def fetch_gcn250_curve_numbers(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Fetch GCN250 global SCS curve-number raster for infiltration / runoff modeling.
+    """GCN250 global SCS curve-number raster for infiltration and runoff modeling.
 
-    Use this when: the agent needs SCS curve numbers (CN) as the infiltration
-    substrate for a SFINCS pluvial-flood scenario, when building a HydroMT
-    workflow for any non-CONUS region where NLCD-derived CNs are unavailable,
-    or when running AMC (antecedent moisture condition) sensitivity tests —
-    e.g. dry vs wet 5-day antecedents over the same storm. GCN250 is a global
-    ~250 m grid derived from MODIS land-cover + SoilGrids HSG, research-
-    validated by Eilander et al. NHESS 2023 for compound-flood modeling.
-    Tier-1 free — no API key, no auth, no rate limit; the GeoTIFFs are hosted
-    on Figshare.
+    **What it does:** Fetches the GCN250 global ~250 m SCS curve-number dataset
+    (Jaafar et al. 2019, Figshare DOI 10.6084/m9.figshare.7756202) for the
+    requested bbox and antecedent moisture condition. Opens the global GeoTIFF
+    via GDAL ``/vsicurl/`` byte-range HTTP, windows-reads the requested area,
+    and writes a CRS-tagged GeoTIFF to the 30-day cache. Integer pixel values
+    0-100 represent the SCS curve number; nodata = 255.
 
-    Do NOT use this for: high-resolution US CONUS work (Tier-1 NLCD-derived
-    CNs are higher resolution at ~30 m — see ``compute_impervious_surface`` +
-    ``extract_landcover_class`` for the NLCD pipeline); single-event runoff
-    coefficients (CN is a depth-loss method, not a runoff coefficient — use
-    the rational method tools for that, when added); per-storm Manning's
-    estimation (CN governs infiltration, not surface roughness — use
-    ``fetch_landcover`` + a roughness lookup for that).
+    **When to use:**
+    - Building a SFINCS or HydroMT pluvial-flood scenario for any non-CONUS
+      area where NLCD-derived curve numbers are unavailable — GCN250 covers
+      global land surface (84 N to 57 S).
+    - AMC sensitivity analysis: run the same storm under ``"dry"``,
+      ``"average"``, and ``"wet"`` antecedent conditions to bracket the
+      infiltration-loss range.
+    - User asks for SCS infiltration inputs, curve numbers, or runoff
+      potential outside the continental US.
+    - Research-validated for compound-flood modeling per Eilander et al.
+      (NHESS 2023); the standard global substrate for SFINCS HydroMT workflows.
 
-    Params:
-        bbox: ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326.
-            **Required** — the global GCN250 mosaic is ~620 MB per AMC; an
-            unbounded query would be prohibitive (``supports_global_query=False``).
-            Refuses bboxes that intersect zero coverage (Antarctica /
-            > 84° N).
-        antecedent_moisture: SCS antecedent moisture condition. One of:
+    **When NOT to use:**
+    - DO NOT use for CONUS work when NLCD is available — NLCD-derived curve
+      numbers at ~30 m resolve urban heterogeneity far better than GCN250's
+      250 m grid; use ``compute_impervious_surface`` + ``extract_landcover_class``
+      for the NLCD pipeline.
+    - DO NOT use as a runoff coefficient — CN is an SCS depth-loss method;
+      the rational method uses ``C``, not CN. These are different empirical
+      relationships.
+    - DO NOT use to infer Manning's roughness — CN governs infiltration loss
+      only; surface roughness requires ``fetch_landcover`` + a roughness
+      lookup table.
+    - DO NOT use for Antarctica or above 84 N (GCN250 does not cover those).
 
-            - ``"dry"``     → AMC-I   (dry 5-day antecedent; CN reduced ~10-20)
-            - ``"average"`` → AMC-II  (default; headline CN value)
-            - ``"wet"``     → AMC-III (wet 5-day antecedent; CN raised ~10-15)
+    **Parameters:**
+    - ``bbox`` (tuple[float, float, float, float]): ``(min_lon, min_lat,
+      max_lon, max_lat)`` in EPSG:4326. Required (``supports_global_query=False``
+      — the global mosaic is ~620 MB per AMC). Example for Bangladesh delta:
+      ``(88.0, 21.0, 91.0, 24.0)``.
+    - ``antecedent_moisture`` (str, default ``"average"``): SCS AMC condition.
+      ``"dry"`` = AMC-I (5-day antecedent below 1.4 in growing season;
+      CN reduced ~10-20); ``"average"`` = AMC-II (design CN, default);
+      ``"wet"`` = AMC-III (5-day antecedent above 2.1 in growing season;
+      CN raised ~10-15).
 
-            Defaults to ``"average"`` (AMC-II). Surface-loss methods generally
-            cite AMC-II as the "design" CN unless a 5-day antecedent forecast
-            is available.
+    **Returns:** A ``LayerURI`` pointing at a GeoTIFF in the cache bucket
+    (``gs://grace-2-hazard-prod-cache/cache/static-30d/gcn250_curve_numbers/<key>.tif``).
+    ``layer_type="raster"``, ``role="primary"``, ``units="curve_number"``.
+    EPSG:4326, int16 (0-100), nodata = 255, ~250 m pixel size. Downstream
+    SFINCS workflows should reproject to a metric CRS before ingestion.
 
-    Returns:
-        A ``LayerURI`` pointing at a GeoTIFF in the cache bucket:
-        ``gs://grace-2-hazard-prod-cache/cache/static-30d/gcn250_curve_numbers/<key>.tif``.
+    **Cross-tool dependencies:**
+    - Upstream: ``geocode_location`` for bbox from a place name.
+    - Downstream: ``build_sfincs_model`` (HydroMT infiltration input),
+      pluvial-flood scenario composers.
+    - CONUS alternative: ``compute_impervious_surface`` + ``extract_landcover_class``
+      for higher-resolution NLCD-based curve numbers.
+    - Pairs with: ``fetch_era5_reanalysis`` (precipitation forcing) and
+      ``fetch_dem`` (terrain) for the full SFINCS forcing stack.
 
-        - ``layer_type="raster"``, ``role="primary"``, ``units="curve_number"``.
-        - EPSG:4326, int16 (0-100), nodata = 255 (or -1 if the source nodata
-          can't be represented in int16).
-        - Pixel size ~250 m at the equator (geographic projection — see SRS
-          §3.4 CRS hygiene; SFINCS preprocessing should reproject into a
-          metric CRS via ``reproject_layer``).
-
-    Raises:
-        ``GCN250BboxRequiredError``: ``bbox`` was None.
-        ``GCN250InputError``: bbox malformed / unknown antecedent_moisture.
-        ``GCN250EmptyError``: bbox outside coverage or all-nodata.
-        ``GCN250UpstreamError``: Figshare / vsicurl / rasterio I/O failed.
-
-    FR-CE-8 / FR-DC-3: routed through ``read_through`` so identical
-    ``(bbox, antecedent_moisture)`` calls reuse the cached GeoTIFF. Cache key
-    includes the bbox quantized to 6 decimal places.
-
-    See ``OQ-0113-FIGSHARE-VS-ZENODO`` (the kickoff cited a Zenodo URL
-    pattern that does not host GCN250; the actual host is Figshare DOI
-    10.6084/m9.figshare.7756202) and ``OQ-0113-METADATA-FIELD``
-    (``supports_global_query`` is advertised when the schema field lands).
+    FR-CE-8 / FR-DC-3: ``read_through`` with ``ttl_class="static-30d"``; cache
+    key is SHA-256 over ``(bbox-6dp, antecedent_moisture)``.
     """
     _validate_bbox(bbox)
     # Type-narrow after validation.

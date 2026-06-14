@@ -693,7 +693,14 @@ def _fetch_building_density_bytes(
 # ---------------------------------------------------------------------------
 
 
-@register_tool(_METADATA)
+@register_tool(
+    _METADATA,
+    # Annotations: readOnlyHint=True (reads input raster/vector; writes cache
+    # artifact only via the read-through shim), openWorldHint=False (all
+    # computation is local GDAL/numpy; no external API calls),
+    # destructiveHint=False, idempotentHint=True (deterministic transform;
+    # same inputs always produce the same output pixels).
+)
 def compute_building_density(
     bbox: tuple[float, float, float, float],
     cell_size_m: float = 100.0,
@@ -702,66 +709,65 @@ def compute_building_density(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Microsoft Global ML Building Footprints density raster.
+    """Building density raster from Microsoft Global ML Building Footprints.
 
-    Use this when: the agent needs a continuous spatial density layer of
-    building locations to visualize urban form, normalize exposure metrics
-    by built-area, or feed downstream impact computations that require
-    "buildings per cell" rather than vector footprints. Tier-1 free
-    (no API key); the underlying Microsoft dataset covers >200 country /
-    region entries globally and is refreshed by Microsoft on an irregular
-    cadence (most recent ~2026-02-03).
+    **What it does:** Fetches building footprints from Microsoft's Global ML
+    Building Footprints dataset (Bing zoom-9 quadkey tiles), rasterizes building
+    centroids onto a regular EPSG:3857 grid at the requested cell size, and
+    returns a float32 count-per-cell COG via the 30-day cache. Cell values equal
+    the count of building centroids whose centroid falls inside each cell.
 
-    Do NOT use this for: parcel-level lookups (use the buildings vector
-    fetcher when individual polygon attributes matter); land-use
-    classification (this is a building-only signal, not a categorical
-    landcover layer); population density (use the WorldPop fetcher —
-    buildings ≠ residents); precise count totals within an administrative
-    polygon (use a vector fetch + zonal-statistics pipeline; this tool
-    emits a regular grid sum that can drift by ~1 cell at the bbox edges).
+    **When to use:**
+    - User asks for "building density", "urban density", or "how developed is
+      this area?" as a raster visualization.
+    - Exposure analysis needs a spatial density signal (buildings per unit area)
+      to normalize hazard layers (e.g. "buildings per cell under flood
+      inundation").
+    - Downstream impact computation (Pelicun, loss curves) requires a
+      rasterized count of structures rather than individual vector footprints.
+    - Any flood-impact or wildfire-exposure map that needs built-area context
+      over a large area where vector footprints would be too numerous.
 
-    Params:
-        bbox: ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326.
-            Web-Mercator-valid latitude range applies ([-85.05, 85.05]).
-        cell_size_m: target cell size in metres on the EPSG:3857 grid.
-            Default 100 m. Smaller cells (≤25 m) yield mostly-zero rasters
-            outside dense urban cores; larger cells (≥500 m) smooth across
-            block-level structure. Note: Web Mercator distorts pixel ground
-            footprints by ~1.13x at 28°N to ~1.41x at 45°N — at temperate
-            US latitudes the cell footprint on the ground is up to ~40 %
-            larger than ``cell_size_m`` square. The cache key includes
-            ``cell_size_m`` so different cell-size requests do not collide.
-        source: data source identifier. v0.1 supports only
-            ``"ms_footprints"`` (Microsoft Global ML Building Footprints).
-            Future sources (OSM, country-specific cadastres) gated on
-            OQ-96-MULTI-SOURCE.
+    **When NOT to use:**
+    - DO NOT use when individual footprint polygons, building heights, or
+      parcel-level attributes are needed — use ``fetch_buildings`` for the
+      vector footprint path instead.
+    - DO NOT use as a proxy for population density — buildings per cell is
+      not residents per cell; use ``fetch_hrsl_population`` or
+      ``fetch_population`` for resident counts.
+    - DO NOT use for precise administrative-polygon counts — the raster grid
+      can drift by ~1 cell at bbox edges; use a vector + zonal-statistics
+      pipeline (``fetch_buildings`` + ``compute_zonal_statistics``) for
+      authoritative totals.
 
-    Returns:
-        A ``LayerURI`` pointing at a float32, single-band, LZW-compressed,
-        tiled GeoTIFF in the cache bucket:
-        ``gs://grace-2-hazard-prod-cache/cache/static-30d/building_density/<key>.tif``.
-        Cell values = count of building centroids per cell.
-        ``layer_type="raster"``, ``role="context"``, ``units=None`` (the
-        units are encoded in the GeoTIFF tag ``units="buildings_per_cell"``
-        for tooling that needs the semantic; the SRS LayerURI.units field is
-        reserved for hazard-metric layers like flood depth in metres).
+    **Parameters:**
+    - ``bbox`` (tuple[float, float, float, float]): ``(min_lon, min_lat,
+      max_lon, max_lat)`` in EPSG:4326. Web-Mercator valid range [-85.05,
+      85.05] latitude. Example for Cape Coral FL: ``(-81.9, 26.5, -81.8, 26.6)``.
+    - ``cell_size_m`` (float, default 100.0): grid cell size in metres on
+      EPSG:3857. Suggested range 25-500 m; sub-25 m produces mostly-empty
+      rasters outside dense city cores. Note: EPSG:3857 distorts ground
+      footprint by 1.13x at 28 N to 1.41x at 45 N.
+    - ``source`` (str, default ``"ms_footprints"``): v0.1 supports only
+      ``"ms_footprints"`` (Microsoft Global ML Building Footprints, >200
+      country/region entries, latest vintage ~2026-02-03).
 
-    Geographic correctness (codified job-0086 lesson):
-        Density values are highest where Microsoft has detected buildings
-        and zero elsewhere. A pixel over open water, ocean, or unmapped
-        country will read 0; pixels over Fort Myers / Cape Coral neighbourhoods
-        read tens of buildings per cell at the 100 m default. The acceptance
-        tests assert this asymmetry rather than just byte round-trip.
+    **Returns:** A ``LayerURI`` pointing at a float32, LZW-compressed,
+    tiled GeoTIFF in the cache bucket
+    (``gs://grace-2-hazard-prod-cache/cache/static-30d/building_density/<key>.tif``).
+    ``layer_type="raster"``, ``role="context"``, ``units=None`` (semantic
+    is ``"buildings_per_cell"`` encoded in the GeoTIFF ``units`` tag).
+    Output CRS: EPSG:3857.
 
-    FR-CE-8: routed through ``read_through`` so identical
-    ``(bbox-rounded-6dp, cell_size_m, source)`` calls reuse the cached COG.
+    **Cross-tool dependencies:**
+    - Alternative: ``fetch_buildings`` for individual vector footprints;
+      ``fetch_hrsl_population`` for resident count.
+    - Downstream: ``compute_zonal_statistics`` can aggregate this raster over
+      an admin polygon; Pelicun exposure pipelines consume the count raster.
+    - Typically requested after ``geocode_location`` to establish the bbox.
 
-    OQs surfaced:
-        - OQ-96-INTL-COVERAGE: for bboxes that fall outside Microsoft's
-          detected-buildings coverage the tool currently emits an all-zero
-          raster (legitimate — coverage gap signal). A future enhancement
-          might augment with OSM building density via a second source row
-          here.
+    FR-CE-8: ``read_through`` with ``ttl_class="static-30d"``; cache key is
+    SHA-256 over ``(bbox-rounded-6dp, cell_size_m, source)``.
     """
     if not isinstance(bbox, (tuple, list)):
         raise BuildingDensityInputError(

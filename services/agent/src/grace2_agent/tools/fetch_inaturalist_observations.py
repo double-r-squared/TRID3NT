@@ -542,7 +542,13 @@ def _fetch_inat_bytes(
 # ---------------------------------------------------------------------------
 
 
-@register_tool(_METADATA)
+@register_tool(
+    _METADATA,
+    # Annotations: readOnlyHint=True (read-only; no state mutation),
+    # openWorldHint=True (calls external public API endpoint),
+    # destructiveHint=False, idempotentHint=True (cache shim deduplicates).
+    open_world_hint=True,
+)
 def fetch_inaturalist_observations(
     taxon_id: int | str,
     bbox: tuple[float, float, float, float],
@@ -553,63 +559,53 @@ def fetch_inaturalist_observations(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """iNaturalist Tier-1 citizen-science observation point fetcher.
+    """Fetch iNaturalist citizen-science observation points for a taxon over a bbox.
 
-    Use this when: the agent needs vetted, citizen-science species occurrence
-    points for a taxon over a geographic area — e.g. recent manatee sightings
-    in the Gulf of Mexico, American alligator distribution in South Florida,
-    monarch butterfly observations along a flyway, or any conservation /
-    species-distribution context layer. Tier-1 free, no API key required.
+    **What it does:** Pages through ``api.inaturalist.org/v1/observations`` for
+    a given taxon and bounding box, optionally restricted by quality grade and
+    observation-date lookback window. Returns a FlatGeobuf Point layer with
+    species name, observation date, observer login, and photo URL per feature.
+    Accepts taxon as an integer ID or a scientific/common name (resolved via
+    ``/v1/taxa``). No API key required. Cached ``static-30d``.
 
-    Do NOT use this for: complete species-distribution modeling (use GBIF for
-    that — broader source pool incl. museum specimens); status assessments
-    (use IUCN Red List); protected-area lookups (use WDPA); time-series flux
-    measurements (these are point sightings, not telemetry). Also not
-    appropriate for legally-sensitive taxa where exact locations are obscured
-    by iNat policy — observations of threatened species return automatically
-    obfuscated coordinates and may not match field truth.
+    **When to use:**
+    - Agent needs recent, community-vetted species sightings for a study area
+      (e.g. manatee distribution in coastal Florida over the last 30 days).
+    - Conservation analysis requires observations with photo evidence and
+      observer metadata (iNat provides more detail than GBIF for recent sightings).
+    - ``days_back`` filter enables near-real-time species-response monitoring
+      after a disturbance event (e.g. "bird sightings in the week after the fire").
 
-    Wraps the iNaturalist API v1 (https://api.inaturalist.org/v1/observations).
-    ``quality_grade='research'`` (the default) returns only community-vetted
-    observations. Bbox is WGS84. Returns FlatGeobuf points with
-    species/date/observer/photo properties.
+    **When NOT to use:**
+    - Complete species distribution modeling requiring museum specimens or eDNA
+      records (use ``fetch_gbif_occurrences`` for broader source pool).
+    - Threatened-species taxa with location-obfuscated coordinates (iNat policy
+      randomly offsets exact locations; returned points may not match field truth).
+    - Species status assessments (use IUCN Red List).
+    - Protected-area boundaries (use ``fetch_wdpa_protected_areas``).
 
-    Params:
-        taxon_id: integer iNat taxon ID (e.g. 43616 for *Trichechus manatus*,
-            West Indian manatee), or a string name (scientific or common, e.g.
-            "American alligator" or "Trichechus manatus") which is resolved
-            via ``/v1/taxa`` to its ID before the observations query.
-        bbox: ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326.
-        quality_grade: one of ``"research"`` (default; community-vetted),
-            ``"needs_id"`` (awaiting identification), ``"casual"`` (any
-            observation), or ``"any"`` (no filter).
-        days_back: optional observed-date filter; restricts to observations
-            from the last ``days_back`` days (inclusive). ``None`` means no
-            date filter (all-time).
-        max_records: per-call hard cap on returned features. Defaults to
-            5000. iNat pagination is 200/page; the tool walks pages until the
-            upstream ``total_results`` is exhausted OR this cap is reached.
+    **Parameters:**
+    - ``taxon_id`` (int or str): integer iNat taxon ID (e.g. ``43616`` for West
+      Indian manatee) OR scientific/common name string resolved via ``/v1/taxa``.
+    - ``bbox`` (tuple): ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326.
+      Example: ``(-87.5, 24.5, -80.0, 27.5)`` for Florida coastal waters.
+    - ``quality_grade`` (str): ``"research"`` (default; community-vetted),
+      ``"needs_id"``, ``"casual"``, or ``"any"``.
+    - ``days_back`` (int or None): restrict to last N days from today. ``None``
+      returns all-time observations. Valid positive integers only.
+    - ``max_records`` (int): per-call cap; default 5000.
 
-    Returns:
-        A ``LayerURI`` pointing at a FlatGeobuf in the cache bucket:
-        ``gs://grace-2-hazard-prod-cache/cache/static-30d/inaturalist/<key>.fgb``
-        containing one ``Point`` feature per observation with the audit.md
-        property schema (``id``, ``observed_on``, ``user_login``,
-        ``photo_url``, ``species_guess``, ``place_guess``).
-        ``layer_type="vector"``, ``role="context"``, ``units=None``.
+    **Returns:**
+    ``LayerURI(layer_type="vector", role="context", units=None)`` pointing at a
+    FlatGeobuf with fields: ``id`` (int), ``observed_on`` (str), ``user_login``
+    (str), ``photo_url`` (str), ``species_guess`` (str), ``place_guess`` (str).
 
-    FR-CE-8: routed through ``read_through`` so identical calls reuse the
-    cached FlatGeobuf within the 30-day TTL window. The cache key is a SHA-256
-    over ``(resolved_taxon_id_int, bbox_6dp, quality_grade, days_back,
-    max_records)`` — name resolution happens *before* the key is computed so
-    "American alligator" and the integer ID for the same taxon collapse onto
-    the same cache entry.
-
-    Typed errors (FR-AS-11):
-        - ``INatInputError`` (``retryable=False``): bad bbox, unknown taxon
-          name, invalid quality_grade.
-        - ``INatUpstreamError`` (``retryable=True``): network/HTTP/parse
-          failure against the iNat API.
+    **Cross-tool dependencies:**
+    - Related: ``fetch_gbif_occurrences`` (broader multi-source occurrence data).
+    - Pairs with: ``fetch_wdpa_protected_areas`` (inside/outside protected area),
+      ``fetch_mtbs_burn_severity`` (post-fire species presence).
+    - Name resolution uses ``/v1/taxa`` internally; same taxon_id integer and
+      name string collapse to the same cache entry.
     """
     # 1. Input validation.
     _validate_bbox(bbox)

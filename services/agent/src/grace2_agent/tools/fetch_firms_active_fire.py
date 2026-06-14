@@ -431,7 +431,13 @@ def _fetch_firms_active_fire_bytes(
 # ---------------------------------------------------------------------------
 
 
-@register_tool(_METADATA)
+@register_tool(
+    _METADATA,
+    # Annotations: readOnlyHint=True (read-only; no state mutation),
+    # openWorldHint=True (calls external public API endpoint),
+    # destructiveHint=False, idempotentHint=True (cache shim deduplicates).
+    open_world_hint=True,
+)
 def fetch_firms_active_fire(
     bbox: tuple[float, float, float, float],
     days_back: int = 1,
@@ -442,52 +448,58 @@ def fetch_firms_active_fire(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """NASA FIRMS active fire / thermal anomaly detections.
+    """Fetch NASA FIRMS satellite active-fire detections for a bbox and recent day window.
 
-    Use this when: the agent needs satellite-detected active fire / thermal
-    anomaly points for the last 1-10 days over a bounded region — e.g. a
-    wildfire situational-awareness layer for a California or Australian bbox,
-    a "where are the active fires right now" discovery overlay, or as the
-    forcing-discovery input to a wildfire workflow's spread-model setup. The
-    output is a FlatGeobuf Point layer with brightness, FRP, and confidence
-    properties.
+    **What it does:** Calls the NASA FIRMS Web Service AREA API
+    (``firms.modaps.eosdis.nasa.gov/api/area/csv``) to retrieve satellite
+    thermal-anomaly / active-fire pixel detections for the last 1–10 days over
+    a bounded geographic region. Parses the CSV response into a FlatGeobuf
+    Point layer with brightness, FRP (Fire Radiative Power), scan, track,
+    acquisition time, satellite, instrument, confidence, and day/night fields.
+    Cached ``dynamic-1h``. Requires a free NASA FIRMS MAP_KEY
+    (``GRACE2_FIRMS_MAP_KEY`` env var). Does not support global queries
+    (``supports_global_query=False``).
 
-    Do NOT use this for: historical fire-perimeter polygons (use a historical
-    fire perimeter source like NIFC FireSeasonHistory — not currently in
-    GRACE-2's catalog); fuel-load or fuel-moisture inputs (LANDFIRE — separate
-    tool); fire forecasts (FIRMS is detection-only, not forecast); global
-    point-cloud queries (FIRMS requires a bbox — ``supports_global_query=False``).
+    **When to use:**
+    - Wildfire situational-awareness: "show active fires in California right now".
+    - Near-real-time fire forcing discovery for a wildfire workflow setup.
+    - Smoke-source identification overlaid on an air-quality or population layer.
+    - Multi-sensor comparison (VIIRS vs MODIS detection density) over a study
+      area.
 
-    Params:
-        bbox: ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326. FIRMS
-            requires a bbox; global queries are not supported by the AREA API.
-        days_back: 1-10 days back from "today" (FIRMS-side definition of
-            "today"). Default 1. Higher values return more detections at the
-            cost of cache-key splay.
-        source: one of ``"VIIRS_SNPP_NRT"`` (default, Suomi NPP, 375m),
-            ``"VIIRS_NOAA20_NRT"`` (NOAA-20 / JPSS-1, 375m), ``"MODIS_NRT"``
-            (Terra/Aqua, 1km). VIIRS_SNPP_NRT is the recommended default —
-            lowest-resolution detections + longest-running sensor record.
+    **When NOT to use:**
+    - Historical fire perimeters or burned-area polygons (use
+      ``fetch_nifc_fire_perimeters`` for current season or
+      ``fetch_mtbs_burn_severity`` for 1984-present archives).
+    - Fuel-load / fuel-moisture inputs (LANDFIRE — separate tool, not yet in
+      catalog).
+    - Fire spread or behavior forecasts (FIRMS is detection-only, not forecast).
+    - Global queries without a bbox (FIRMS AREA API requires a bbox).
 
-    Returns:
-        A ``LayerURI`` pointing at a FlatGeobuf in the cache bucket:
-        ``gs://grace-2-hazard-prod-cache/cache/dynamic-1h/firms_active_fire/<key>.fgb``
-        containing the active-fire detections clipped to the requested bbox.
-        ``layer_type="vector"``, ``role="primary"``, ``style_preset=
-        "firms_active_fire"``.
+    **Parameters:**
+    - ``bbox`` (tuple): ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326.
+      Required; global queries rejected. Example: ``(-124.0, 32.5, -114.0, 42.0)``
+      for California.
+    - ``days_back`` (int): 1–10 days back from FIRMS "today". Default 1. Higher
+      values accumulate more detections; note FIRMS upstream rejects >5 as of
+      2026-06-08 (surfaces as ``FirmsUpstreamError`` — see OQ-0108-DAYS-RANGE).
+    - ``source`` (str): ``"VIIRS_SNPP_NRT"`` (default; Suomi NPP, 375m),
+      ``"VIIRS_NOAA20_NRT"`` (NOAA-20, 375m), or ``"MODIS_NRT"``
+      (Terra/Aqua, 1km).
 
-    Auth: requires NASA FIRMS MAP_KEY (free; register at
-    https://firms.modaps.eosdis.nasa.gov/api/map_key/). Set
-    ``GRACE2_FIRMS_MAP_KEY=<key>`` in the agent service env. The literal
-    ``"demo"`` fallback is recognised as a sentinel and surfaces as a typed
-    ``FirmsAuthError`` rather than a silent zero-feature return (rate-limited
-    demo path is not actually accessible upstream as of 2026-06-08 — see
-    OQ-0108-MAP-KEY-AUTH).
+    **Returns:**
+    ``LayerURI(layer_type="vector", role="primary", units=None)`` pointing at a
+    FlatGeobuf with fields: ``brightness``, ``scan``, ``track``, ``acq_date``,
+    ``acq_time``, ``satellite``, ``instrument``, ``confidence``, ``version``,
+    ``bright_t31``, ``frp``, ``daynight``. Cached ``dynamic-1h``.
 
-    FR-CE-8 / FR-DC-3/4: routed through ``read_through`` so identical
-    ``(source, bbox-rounded-4dp, days_back, key-fingerprint)`` calls reuse
-    the cached FlatGeobuf. ``ttl_class="dynamic-1h"`` so active-fire data
-    refreshes hourly. ``supports_global_query=False`` — FIRMS requires a bbox.
+    **Cross-tool dependencies:**
+    - Upstream of: wildfire spread-model workflow setups, smoke/population
+      impact overlays.
+    - Pairs with: ``fetch_nifc_fire_perimeters`` (current perimeters around FIRMS
+      detections), ``fetch_mtbs_burn_severity`` (historical context).
+    - Auth dependency: set ``GRACE2_FIRMS_MAP_KEY`` env var (register free at
+      ``firms.modaps.eosdis.nasa.gov/api/map_key/``).
     """
     # 1. Validate arguments (typed errors, not crashes — invariant: FR-AS-11).
     if source not in _VALID_SOURCES:

@@ -361,29 +361,33 @@ async def run_pelicun_with_buildings(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Fetch building footprints density grid → run Pelicun damage assessment.
+    """Fetch building density grid then run Pelicun flood-damage assessment.
 
-    Wraps the "buildings as assets" pattern so the agent does not have to
-    call ``compute_building_density`` explicitly and then pass its result to
-    ``run_pelicun_damage_assessment``.  The resulting damage layer shows
-    spatially-varying damage over the real built-area grid rather than over
-    administrative polygons.
+    Two-step composition: ``compute_building_density(bbox, cell_size_m)`` →
+    ``density_cog_to_point_fgb`` (COG-to-point conversion) →
+    ``run_pelicun_damage_assessment(hazard_raster_uri, assets_uri=<points_fgb>)``.
+    The resulting damage layer shows spatially-varying damage over the actual
+    built-area grid rather than administrative polygons. Not cached at the
+    workflow level (each underlying step is individually cached).
 
-    Use this when:
-        - The user asks for a building-level or spatially-distributed damage
-          assessment over a flood hazard raster.
-        - The user wants to see "which buildings are damaged" or "damage
-          distributed across the flood zone" rather than a CDP-aggregated result.
-        - A prior workflow (e.g. ``run_model_flood_scenario``) has already
-          produced a flood depth COG and you need to pair it with buildings.
+    When to use:
+        - User asks for a building-level or spatially-distributed damage
+          assessment over a flood hazard raster for an international bbox
+          or when USACE NSI structures are not available.
+        - User wants to see "which buildings are damaged" or "damage
+          distributed across the flood zone" — not a CDP administrative aggregate.
+        - A prior ``run_model_flood_scenario`` has produced a flood depth COG
+          and the user wants to pair it with a building-density asset layer.
 
-    Do NOT use this for:
+    When NOT to use:
         - Plain hazard exposure counts (use ``compute_zonal_statistics`` —
-          faster when you only need "how many assets are in the flood zone").
-        - Cases where you already have a custom asset layer (pass it directly
-          to ``run_pelicun_damage_assessment`` instead).
-        - Non-flood hazards (``fragility_set="fema_hazus_eq_2020"`` is
-          registered but the seismic-engine integration is not wired in v0.1).
+          cheaper when you only need "how many assets are in the flood zone").
+        - Cases with a custom asset layer already in hand (pass it directly to
+          ``run_pelicun_damage_assessment(assets_uri=...)`` instead).
+        - CONUS bboxes where ``fetch_usace_nsi`` is available — NSI carries
+          real HAZUS occupancy class + per-structure replacement value. Prefer
+          ``run_pelicun_damage_assessment(assets_uri=<NSI URI>)`` for CONUS.
+        - Non-flood hazards (``fema_hazus_eq_2020`` is not wired in v0.1).
 
     Parameters:
         hazard_raster_uri: gs:// URI (or local path) to a single-band flood
@@ -434,6 +438,20 @@ async def run_pelicun_with_buildings(
         This workflow wrapper itself: ``cacheable=False`` (the wrapper
         coordinates two cached atomic tools; it does not add its own cache
         layer).
+
+    Cross-tool dependencies:
+        Step 1 — ``compute_building_density(bbox, cell_size_m)`` — fetches
+        Microsoft Global ML Buildings density COG for the bbox at the
+        requested cell resolution. Returns a raster ``LayerURI``.
+        Step 2 — ``density_cog_to_point_fgb(density_uri)`` — converts the
+        density COG to a FlatGeobuf of point assets (one point per non-zero
+        cell), each with a default ``component_type="RES1"`` and a class-
+        default ``replacement_value``.
+        Step 3 — ``run_pelicun_damage_assessment(hazard_raster_uri,
+        assets_uri=<points_fgb>)`` — runs the full Pelicun Monte-Carlo
+        loop and returns a FlatGeobuf damage-property ``LayerURI``.
+        Final output — ``publish_layer`` (optional follow-on, not called
+        here): pass the returned ``LayerURI`` to display on the map.
 
     Raises:
         PelicunWithBuildingsError: wraps any ``BuildingDensityError`` or

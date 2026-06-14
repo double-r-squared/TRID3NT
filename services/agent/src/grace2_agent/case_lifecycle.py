@@ -330,7 +330,7 @@ def default_gcs_copy(template_uri: str, target_uri: str) -> str:
     src_bucket, src_key = _parse(template_uri)
     dst_bucket, dst_key = _parse(target_uri)
 
-    client = storage.Client()
+    client = storage.Client(project=os.environ.get("GOOGLE_CLOUD_PROJECT", "grace-2-hazard-prod"))
     src_blob = client.bucket(src_bucket).blob(src_key)
     dst_bucket_ref = client.bucket(dst_bucket)
     client.bucket(src_bucket).copy_blob(src_blob, dst_bucket_ref, new_name=dst_key)

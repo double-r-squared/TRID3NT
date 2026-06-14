@@ -30,6 +30,20 @@ export interface SettingsPopupProps {
   onSignInRequest: () => void;
   /** Close handler. App.tsx clears local visible state. */
   onClose: () => void;
+  /**
+   * Wave 4.10 C1: optional "View tools catalog" hook. When provided, a
+   * link is surfaced under a "Tools" section that opens the ToolsCatalogPopup
+   * (mounted by App.tsx). Kept optional so the existing test fixtures that
+   * pre-date Wave 4.10 don't need to plumb the prop.
+   */
+  onOpenToolsCatalog?: () => void;
+  /**
+   * Wave 4.11 M7: optional "Routing quality" hook. When provided, a link
+   * under the Tools section opens the RoutingQualityDashboard (mounted by
+   * App.tsx). Surfaces aggregated tool-routing telemetry over the last 30
+   * sessions. Kept optional for backwards-compat with older fixtures.
+   */
+  onOpenRoutingDashboard?: () => void;
 }
 
 const overlayStyle: React.CSSProperties = {
@@ -155,6 +169,8 @@ export function SettingsPopup({
   onSignOut,
   onSignInRequest,
   onClose,
+  onOpenToolsCatalog,
+  onOpenRoutingDashboard,
 }: SettingsPopupProps): JSX.Element {
   // Esc-to-close (memory rule "Cancellation is first-class").
   useEffect(() => {
@@ -249,6 +265,40 @@ export function SettingsPopup({
             </button>
           </div>
         </div>
+
+        {/* Tools section (Wave 4.10 C1 + Wave 4.11 M7) — only when at least
+            one tools-area hook is wired. */}
+        {(onOpenToolsCatalog || onOpenRoutingDashboard) && (
+          <div style={sectionStyle}>
+            <div style={sectionTitleStyle}>Tools</div>
+            {onOpenToolsCatalog && (
+              <div style={valueStyle}>
+                <span>Browse the agent's tool catalog</span>
+                <button
+                  data-testid="grace2-settings-open-tools-catalog"
+                  onClick={onOpenToolsCatalog}
+                  style={buttonStyle}
+                  aria-label="View all tools"
+                >
+                  View all tools
+                </button>
+              </div>
+            )}
+            {onOpenRoutingDashboard && (
+              <div style={{ ...valueStyle, marginTop: 10 }}>
+                <span>Inspect tool-routing telemetry</span>
+                <button
+                  data-testid="grace2-settings-open-routing-dashboard"
+                  onClick={onOpenRoutingDashboard}
+                  style={buttonStyle}
+                  aria-label="Routing quality"
+                >
+                  Routing quality
+                </button>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* About section */}
         <div style={sectionStyle}>

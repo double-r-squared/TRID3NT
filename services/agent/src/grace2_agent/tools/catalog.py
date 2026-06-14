@@ -298,7 +298,14 @@ def _bbox_overlaps_world(
     return True
 
 
-@register_tool(_CATALOG_SEARCH_METADATA)
+@register_tool(
+    _CATALOG_SEARCH_METADATA,
+    # Annotations: readOnlyHint=True (read-only; no state mutation),
+    # openWorldHint=True (in-memory catalog lookup, but catalog_fetch ultimately
+    # dispatches to Tier-2/3 external APIs; search step itself is intra-process),
+    # destructiveHint=False, idempotentHint=True (cache shim deduplicates).
+    open_world_hint=True,
+)
 def catalog_search(
     topic: str,
     location: tuple[float, float, float, float] | None = None,
@@ -654,7 +661,14 @@ def _tier4_region_fetch(
     )
 
 
-@register_tool(_CATALOG_FETCH_METADATA)
+@register_tool(
+    _CATALOG_FETCH_METADATA,
+    # Annotations: readOnlyHint=True (dispatches to external API but does not
+    # mutate GRACE-2 state; writes to read-through cache only),
+    # openWorldHint=True (Tier-2 OGC services, Tier-3 HTTPS external endpoints),
+    # destructiveHint=False, idempotentHint=True (cache shim deduplicates).
+    open_world_hint=True,
+)
 def catalog_fetch(entry_id: str, params: dict[str, Any] | None = None, **_extra_ignored: Any) -> dict[str, Any]:
     """Fetch bytes for a vetted catalog entry by its stable id (§F.1.2 Mode 1).
 

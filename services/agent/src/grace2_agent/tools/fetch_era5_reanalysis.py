@@ -820,6 +820,10 @@ def _fetch_era5_bytes(
     _METADATA,
     supports_global_query=True,
     payload_mb_estimator_name="estimate_payload_mb",
+    # Annotations: readOnlyHint=True (read-only; no state mutation),
+    # openWorldHint=True (calls Copernicus CDS external API for ERA5 reanalysis),
+    # destructiveHint=False, idempotentHint=True (cache shim deduplicates).
+    open_world_hint=True,
 )
 def fetch_era5_reanalysis(
     bbox: tuple[float, float, float, float],
@@ -832,82 +836,72 @@ def fetch_era5_reanalysis(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Copernicus ERA5 reanalysis Tier-2 fetcher (single-level hourly).
+    """Copernicus ERA5 global reanalysis Tier-2 fetcher (single-level hourly).
 
-    Use this when: the agent needs a globally-consistent meteorological /
-    oceanographic reanalysis variable as gridded raster — e.g. wind forcing
-    to drive SFINCS storm surge boundaries outside the US gauge network,
-    total precipitation as a global substitute for MRMS in non-CONUS basins,
-    significant wave height for the compound-flood literature's compound
-    hazard substrate, or surface runoff for global hydrological setup.
-    Wraps the Copernicus Climate Data Store (CDS) ``cdsapi`` client and
-    returns a CRS-tagged COG carrying the time-mean of the requested
-    variable across the date range, clipped to the requested bbox. ERA5 is
-    research-validated as the global compound-flood substrate (NHESS 2023,
-    Bates et al.) — the canonical choice when an agency-instrumented
-    fetcher (NHC ATCF, NWS, CO-OPS, MRMS) doesn't cover the area.
+    **What it does:** Retrieves an ERA5 hourly reanalysis variable for a bbox
+    and date range via the Copernicus Climate Data Store (CDS) ``cdsapi``
+    client, converts the returned NetCDF into a CRS-tagged COG (time-mean
+    over the requested window), and routes the result through the 30-day cache.
+    Supported variables: 10 m U/V wind components, 2 m temperature, total
+    precipitation, surface runoff, and significant wave height.
 
-    Do NOT use this for: real-time / live forecast data — ERA5 reanalysis
-    is historical only (latest data lags 5 days for ERA5T preliminary,
-    3 months for finalised ERA5). Use NWS Alerts / GOES / NEXRAD / MRMS
-    for live CONUS-side; ECMWF AIFS / IFS for global forecast (different
-    tool). Sub-hourly timesteps — ERA5 is hourly; for ten-minute or
-    one-minute timesteps use IMERG / GPM. CONUS-side high-resolution
-    precipitation — use ``fetch_mrms_qpe`` instead (1 km gauge-corrected
-    vs ERA5's 27 km). Vector data (use the appropriate fetcher per
-    domain).
+    **When to use:**
+    - Building global or non-CONUS compound-flood forcing: ERA5 winds, precip,
+      or wave height as SFINCS storm-surge / pluvial boundary conditions where
+      agency instrumentation (CO-OPS, MRMS, ATCF) does not reach.
+    - Any post-event analysis that needs a globally consistent atmospheric
+      reanalysis over a historical period (1940 to ~3 months ago).
+    - User asks for historical wind fields, precipitation totals, or sea-state
+      data outside the CONUS gauge network.
+    - Compound-flood substrate following Bates et al. (NHESS 2023): ERA5 is
+      the research-validated global atmospheric forcing for that workflow.
 
-    ERA5 requires a free Copernicus CDS API key (registration at
-    ``https://cds.climate.copernicus.eu/user/register``, then "API key"
-    on your user profile). The tool resolves the key in this order:
-    (1) explicit ``api_key=`` kwarg, (2) ``secret_ref=`` per-Case secret
-    via ``Persistence.get_secret_value`` (production path),
-    (3) ``GRACE2_COPERNICUS_CDS_API_KEY`` env var, (4) fallback to the
-    cdsapi library's own ``~/.cdsapirc`` discovery. If none of the four
-    paths resolve a key, raises ``ERA5MissingKeyError`` BEFORE any
-    network call — the agent surface uses this to route a "needs a key"
-    message via the secrets panel.
+    **When NOT to use:**
+    - DO NOT use for real-time / forecast data — ERA5 lags by 5 days (ERA5T
+      preliminary) or 3 months (finalised); use ``fetch_hrrr_forecast`` or
+      ``fetch_goes_satellite`` for live/near-real-time queries.
+    - DO NOT use for CONUS precipitation when MRMS is available — MRMS QPE is
+      1 km gauge-corrected vs ERA5's 27 km; use ``fetch_mrms_qpe`` instead.
+    - DO NOT use for sub-hourly timesteps; ERA5 is hourly minimum.
+    - Requires a Copernicus CDS API key (free registration at
+      https://cds.climate.copernicus.eu/user/register); raises
+      ``ERA5MissingKeyError`` without one.
 
-    CDS jobs are queued server-side; the cdsapi client polls until the
-    job completes. We wrap the retrieve call in a 5-minute wall-clock
-    timeout; a stuck queue surfaces as ``ERA5UpstreamError`` (retryable).
+    **Parameters:**
+    - ``bbox`` (tuple[float, float, float, float]): ``(west, south, east,
+      north)`` in EPSG:4326. ``supports_global_query=True`` — global bbox
+      ``(-180, -90, 180, 90)`` is valid but expensive. Example for Gulf
+      Coast: ``(-100.0, 20.0, -80.0, 35.0)``.
+    - ``variable`` (str): one of ``"10m_u_component_of_wind"``,
+      ``"10m_v_component_of_wind"``, ``"2m_temperature"``,
+      ``"total_precipitation"``, ``"runoff"``,
+      ``"significant_height_of_combined_wind_waves_and_swell"``.
+    - ``start_date`` (str): ISO YYYY-MM-DD inclusive. ERA5 coverage: 1940-01-01
+      to ~3 months ago (finalised) or 5 days ago (ERA5T preliminary).
+    - ``end_date`` (str): ISO YYYY-MM-DD inclusive. Hard cap 366 days from start.
+    - ``api_key`` (str | None): explicit CDS key; overrides all other resolution
+      paths. Resolved priority: kwarg → ``secret_ref`` → env var
+      ``GRACE2_COPERNICUS_CDS_API_KEY`` → ``~/.cdsapirc``.
+    - ``secret_ref`` (Any | None): per-Case ``SecretRecord`` for production.
 
-    Params:
-        bbox: ``(west, south, east, north)`` in EPSG:4326 (WGS84 decimal
-            degrees). Passing the global bbox ``(-180,-90,180,90)`` is a
-            legitimate (but expensive) call — this tool declares
-            ``supports_global_query=True``.
-        variable: one of: ``"10m_u_component_of_wind"``,
-            ``"10m_v_component_of_wind"``, ``"2m_temperature"``,
-            ``"total_precipitation"``, ``"runoff"``,
-            ``"significant_height_of_combined_wind_waves_and_swell"``.
-        start_date: ISO YYYY-MM-DD; inclusive.
-        end_date: ISO YYYY-MM-DD; inclusive. Hard cap 366 days from start.
-        api_key: optional explicit CDS API key.
-        secret_ref: optional ``SecretRecord`` (from per-Case secrets panel),
-            resolved via ``Persistence.get_secret_value`` at invocation time.
+    **Returns:** A ``LayerURI`` pointing at a float32 COG in the cache bucket
+    (``gs://grace-2-hazard-prod-cache/cache/static-30d/era5/<key>.tif``)
+    carrying the time-mean of the requested variable, clipped to bbox.
+    ``layer_type="raster"``, ``role="primary"``. Units: ``"m s-1"`` for
+    wind, ``"K"`` for temperature, ``"m"`` for precipitation / runoff /
+    wave height. EPSG:4326, 0.25° native (~27 km).
 
-    Returns:
-        A ``LayerURI`` pointing at a COG in the cache bucket:
-        ``gs://grace-2-hazard-prod-cache/cache/static-30d/era5/<key>.tif``
-        carrying the time-mean of the requested variable across the date
-        range, clipped to the requested bbox. ``layer_type="raster"``,
-        ``role="primary"``, ``units`` per the variable
-        (``"m s-1"`` for wind, ``"K"`` for temperature, ``"m"`` for precip
-        / runoff / wave height).
+    **Cross-tool dependencies:**
+    - Upstream: ``geocode_location`` supplies bbox from a place name.
+    - Downstream: ``build_sfincs_model`` consumes wind/precip COGs as forcing;
+      ``fetch_gtsm_tide_surge`` pairs for the coastal boundary condition.
+    - Alternative: ``fetch_mrms_qpe`` (CONUS, 1 km, gauge-corrected, no key),
+      ``fetch_hrrr_forecast`` (CONUS, 3 km, forecast, no key).
 
-    Raises:
-        ``ERA5MissingKeyError``: no API key resolved (any of the 4 paths).
-        ``ERA5AuthError``: CDS rejected the key.
-        ``ERA5InputError``: bad bbox / variable / dates.
-        ``ERA5EmptyError``: bbox falls outside the variable's coverage.
-        ``ERA5UpstreamError``: CDS retrieve timed out or failed (retryable).
-
-    FR-CE-8: Routed through ``read_through`` with ``ttl_class="static-30d"``
-    so identical ``(variable, bbox, start_date, end_date)`` calls reuse
-    the cached COG. The cache key intentionally does NOT include the
-    api_key — the underlying ERA5 grid does not vary by caller (FR-DC-4
-    dedup).
+    FR-CE-8: ``read_through`` with ``ttl_class="static-30d"``; cache key
+    is ``(variable, bbox-rounded-6dp, start_date, end_date)`` — api_key
+    excluded so the same ERA5 grid is shared across callers (FR-DC-4 dedup).
+    CDS jobs are queued server-side; wrapped in a 5-minute wall-clock timeout.
     """
     # ---- Input validation ----
     _validate_bbox(bbox)

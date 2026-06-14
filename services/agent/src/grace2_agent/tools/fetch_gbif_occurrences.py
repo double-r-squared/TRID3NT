@@ -540,7 +540,13 @@ def _fetch_gbif_bytes(
 # ---------------------------------------------------------------------------
 
 
-@register_tool(_METADATA)
+@register_tool(
+    _METADATA,
+    # Annotations: readOnlyHint=True (read-only; no state mutation),
+    # openWorldHint=True (calls external public API endpoint),
+    # destructiveHint=False, idempotentHint=True (cache shim deduplicates).
+    open_world_hint=True,
+)
 def fetch_gbif_occurrences(
     species_key: int | str,
     bbox: tuple[float, float, float, float],
@@ -550,55 +556,55 @@ def fetch_gbif_occurrences(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """GBIF Tier-1 species occurrence point fetcher.
+    """Fetch GBIF species occurrence points for a taxon over a bbox.
 
-    Use this when: the agent needs species observation points for ecological
-    analysis or display — e.g. mapping Florida panther sightings over a flood
-    risk surface, overlaying bird occurrences on a wildfire footprint, or
-    summarizing biodiversity within a protected area. Returns one FlatGeobuf
-    point feature per GBIF occurrence record that has decimal coordinates and
-    falls inside the requested bbox.
+    **What it does:** Queries the GBIF Occurrence Search API
+    (``api.gbif.org/v1/occurrence/search``) for all georeferenced occurrences of
+    a species (or higher taxon) within the requested bbox, paginates up to
+    ``max_records``, and serializes the result as a FlatGeobuf Point layer.
+    Accepts either a numeric GBIF ``taxonKey`` (fast path) or a scientific name
+    string (resolved via ``species/match`` before cache-key computation). No API
+    key required. Cached ``static-30d``.
 
-    Do NOT use this for: protected-area POLYGONS (use a WDPA fetcher for those),
-    iNaturalist-only research-grade observations (use ``fetch_inaturalist_observations``;
-    GBIF *includes* iNaturalist research-grade as one of many sources but does
-    not let you filter to it cleanly), historical-range polygons or species
-    distribution models (out of scope; use Maxent or a published SDM raster
-    instead), or live tracking data (Movebank/Argos — different tool).
+    **When to use:**
+    - Agent needs species occurrence points for ecological or biodiversity
+      analysis — e.g. mapping Florida panther sightings over a flood risk layer.
+    - Workflow requires a broad multi-source occurrence dataset (GBIF aggregates
+      museum specimens, citizen science, eDNA, and research datasets globally).
+    - Year-range filter needed to study pre/post-disturbance species presence.
 
-    Wraps the GBIF Occurrence Search API
-    (``https://api.gbif.org/v1/occurrence/search``). Accepts species either as
-    a GBIF ``taxonKey`` (int — fast path) OR a scientific name (str — extra
-    call to ``species/match`` to resolve). Bbox in WGS84 (west, south, east,
-    north). Year range filter is inclusive on both ends. The output FlatGeobuf
-    has the schema documented in the module docstring (``gbifID``, ``species``,
-    ``eventDate``, ``coordinateUncertaintyInMeters``, ``basisOfRecord``) and is
-    written in EPSG:4326.
+    **When NOT to use:**
+    - Protected-area polygon boundaries (use ``fetch_wdpa_protected_areas``).
+    - iNaturalist-only research-grade observations with photo/observer detail
+      (use ``fetch_inaturalist_observations``; GBIF includes iNat data but
+      cannot be filtered to that source cleanly here).
+    - Historical species range polygons or SDM outputs (use Maxent or a
+      published raster SDM).
+    - Live animal tracking (Movebank/Argos telemetry — different tool).
 
-    Pagination caps at ``max_records`` (default 5000, hard cap 100_000). The
-    GBIF API itself caps offset at 100_000 per query — for larger pulls split
-    by bbox subdivision (out of scope for this tool).
+    **Parameters:**
+    - ``species_key`` (int or str): GBIF ``taxonKey`` integer (e.g. ``7193927``
+      for Florida panther *Puma concolor coryi*) OR a scientific name string
+      resolved via ``species/match``.
+    - ``bbox`` (tuple): ``(west, south, east, north)`` in EPSG:4326. Example:
+      ``(-82.5, 25.0, -80.0, 27.0)`` for South Florida.
+    - ``year_range`` (tuple or None): ``(start_year, end_year)`` inclusive; valid
+      range 1500–2100. ``None`` returns all years.
+    - ``max_records`` (int): cap on returned features; default 5000, hard cap
+      100 000.
 
-    Params:
-        species_key: GBIF ``taxonKey`` (int — preferred) OR scientific name
-            (str — resolved via ``species/match``). Example: ``7193927`` is
-            ``Puma concolor coryi`` (Florida panther).
-        bbox: ``(west, south, east, north)`` in EPSG:4326 (WGS84 decimal degrees).
-        year_range: optional ``(start_year, end_year)`` inclusive filter on
-            ``eventDate.year``. When ``None`` no year filter is applied.
-        max_records: cap on records returned (default 5000). Hard cap 100_000.
+    **Returns:**
+    ``LayerURI(layer_type="vector", role="context", units=None)`` pointing at a
+    FlatGeobuf with fields: ``gbifID`` (int), ``species`` (str), ``eventDate``
+    (str), ``coordinateUncertaintyInMeters`` (float), ``basisOfRecord`` (str).
+    Points are coordinate-validated and hard-clipped to the requested bbox.
 
-    Returns:
-        A ``LayerURI`` pointing at a FlatGeobuf in the cache bucket:
-        ``gs://grace-2-hazard-prod-cache/cache/static-30d/gbif/<key>.fgb``
-        containing the occurrence points clipped to the requested bbox.
-        ``layer_type="vector"``, ``role="context"``, ``units=None``.
-
-    FR-CE-8: Routed through ``read_through`` so identical
-    ``(taxonKey, bbox, year_range, max_records)`` calls reuse the cached
-    FlatGeobuf. Cache key uses the *resolved* taxonKey, so two callers using
-    ``species_key="Puma concolor coryi"`` and ``species_key=7193927`` for the
-    same bbox hit the same cache entry.
+    **Cross-tool dependencies:**
+    - Pairs with: ``fetch_wdpa_protected_areas`` (inside/outside protected area
+      analysis), ``fetch_nifc_fire_perimeters`` or ``fetch_mtbs_burn_severity``
+      (post-fire species presence).
+    - Related: ``fetch_inaturalist_observations`` for citizen-science-only subset
+      with photo/observer metadata.
     """
     # ---- Input validation ----
     _validate_bbox(bbox)

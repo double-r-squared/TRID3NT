@@ -1,0 +1,59 @@
+{
+  "url": "http://127.0.0.1:5193/app",
+  "ws_events": [
+    {
+      "kind": "created",
+      "url": "ws://127.0.0.1:5193/",
+      "ts": 1781211530617
+    },
+    {
+      "kind": "created",
+      "url": "ws://127.0.0.1:8905/",
+      "ts": 1781211531859
+    },
+    {
+      "kind": "created",
+      "url": "ws://127.0.0.1:8905/",
+      "ts": 1781211531859
+    },
+    {
+      "kind": "closed",
+      "ts": 1781211531862
+    },
+    {
+      "kind": "closed",
+      "ts": 1781211531871
+    }
+  ],
+  "client_sent_frames_in_order": [
+    {
+      "type": "session-resume",
+      "ts": 1781211531869,
+      "len": 146
+    },
+    {
+      "type": "auth-token",
+      "ts": 1781211531869,
+      "len": 169
+    }
+  ],
+  "server_received_frames_in_order": [
+    {
+      "type": "connected",
+      "ts": 1781211530644
+    },
+    {
+      "type": "error",
+      "ts": 1781211531870,
+      "error_code": "AUTH_FAILED",
+      "message": "authentication required: auth-token envelope required before any other message"
+    }
+  ],
+  "first_client_frame": "session-resume",
+  "console_tail": [
+    "[debug] [vite] connecting...",
+    "[debug] [vite] connected.",
+    "[info] %cDownload the React DevTools for a better development experience: https://reactjs.org/link/react-devtools font-weight:bold",
+    "[warning] WebSocket connection to 'ws://127.0.0.1:8905/' failed: WebSocket is closed before the connection is established."
+  ]
+}

@@ -260,3 +260,6 @@ tests/m3/artifacts/screenshots-*/
 tests/m3/artifacts/*.png
 !tests/m3/artifacts/chromium-initial.png
 !tests/m3/artifacts/firefox-initial.png
+
+# job-0298 housekeeping: loose secret + dead firebase config (public repo)
+.nutshell-api-key

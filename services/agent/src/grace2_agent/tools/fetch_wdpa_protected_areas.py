@@ -442,7 +442,13 @@ def _fetch_wdpa_bytes(
 # ---------------------------------------------------------------------------
 
 
-@register_tool(_METADATA)
+@register_tool(
+    _METADATA,
+    # Annotations: readOnlyHint=True (read-only; no state mutation),
+    # openWorldHint=True (calls external public API endpoint),
+    # destructiveHint=False, idempotentHint=True (cache shim deduplicates).
+    open_world_hint=True,
+)
 def fetch_wdpa_protected_areas(
     bbox: tuple[float, float, float, float],
     designation_filter: list[str] | None = None,
@@ -450,40 +456,51 @@ def fetch_wdpa_protected_areas(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Fetch WDPA (World Database on Protected Areas) polygons clipped to a bbox.
+    """Fetch World Database on Protected Areas (WDPA) polygons clipped to a bbox.
 
-    Use this when: the agent needs protected-area boundaries for a study area
-    — for example overlaying National Parks / National Wildlife Refuges /
-    Marine Protected Areas on a hazard map, computing the fraction of a flood
-    footprint that intersects protected lands, or filtering biodiversity
-    queries to inside-vs-outside protected status. Returns FlatGeobuf
-    polygons in EPSG:4326 with WDPA metadata fields (NAME, DESIG_ENG,
-    IUCN_CAT, STATUS, STATUS_YR, ISO3, WDPAID).
+    **What it does:** Queries the UNEP-WCMC WDPA ArcGIS REST FeatureServer
+    (``services5.arcgis.com/Mj0hjvkNtV7NRhA7``) with a spatial envelope filter,
+    paginates all matching protected-area polygons into a FlatGeobuf, and
+    optionally filters by designation type client-side. Global coverage,
+    monthly WDPA releases, cached ``static-30d``. No API key required.
 
-    Do NOT use this for: parcel-level land ownership (WDPA is conservation
-    designations, not cadastral); private conservation easements not
-    registered with UNEP-WCMC; tribal lands (use a TIGER ``aiannh`` layer or
-    a BIA dataset instead); point-in-polygon lookups for a single coordinate
-    (fetch the bbox once, then test against the FlatGeobuf locally).
+    **When to use:**
+    - Agent needs protected-area boundaries for a study area — e.g. overlay
+      National Parks or National Wildlife Refuges on a flood risk surface.
+    - Workflow must compute the fraction of a hazard footprint that intersects
+      protected lands (conservation-impact analysis).
+    - User asks about biodiversity context inside vs outside protected status.
+    - Filtering ``fetch_gbif_occurrences`` or ``fetch_inaturalist_observations``
+      results by protected/unprotected designation.
 
-    Params:
-        bbox: ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326.
-        designation_filter: optional list of ``DESIG_ENG`` strings to keep
-            (e.g. ``["National Park", "National Wildlife Refuge"]``). Exact
-            match against the WDPA designation field; None or empty list
-            returns all designations. Filtering is client-side after the
-            spatial query (WDPA mirror nodes disagree on server-side
-            ``where=`` results).
+    **When NOT to use:**
+    - Parcel-level land ownership or cadastral boundaries (WDPA covers
+      conservation designations only; use county assessor data for parcels).
+    - Private conservation easements not registered with UNEP-WCMC.
+    - Tribal lands (use TIGER AIANNH or a BIA dataset).
+    - Single-point inside/outside test (fetch the bbox once, test locally).
 
-    Returns:
-        A ``LayerURI`` pointing at a FlatGeobuf in the cache bucket:
-        ``gs://grace-2-hazard-prod-cache/cache/static-30d/wdpa/<key>.fgb``
-        containing the polygons clipped to the requested bbox.
-        ``layer_type="vector"``, ``role="context"``, ``units=None``.
+    **Parameters:**
+    - ``bbox`` (tuple): ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326.
+      Example: ``(-82.0, 25.0, -80.0, 26.5)`` for Everglades region.
+    - ``designation_filter`` (list[str] or None): exact-match list of
+      ``desig_eng`` strings to retain, e.g.
+      ``["National Park", "National Wildlife Refuge"]``. ``None`` returns all
+      designations. Filter is applied client-side after spatial fetch.
 
-    FR-CE-8: Routed through ``read_through`` so identical
-    ``(bbox, designation_filter)`` calls reuse the cached FlatGeobuf. Cache
-    key is SHA-256 of (bbox-rounded-6dp, designation_filter sorted tuple).
+    **Returns:**
+    ``LayerURI(layer_type="vector", role="context", units=None)`` pointing at a
+    FlatGeobuf with fields: ``name_eng``, ``desig_eng``, ``iucn_cat``,
+    ``status``, ``status_yr``, ``site_id``. Empty bbox over open water returns
+    a valid 0-feature FlatGeobuf (not an error).
+
+    **Cross-tool dependencies:**
+    - Pairs with: ``fetch_gbif_occurrences``, ``fetch_inaturalist_observations``
+      (conservation layer context).
+    - Upstream of: ``compute_zonal_statistics`` for inside/outside protected
+      area summaries.
+    - Complemented by: ``fetch_administrative_boundaries`` for jurisdictional
+      boundary overlay.
     """
     _validate_bbox(bbox)
 

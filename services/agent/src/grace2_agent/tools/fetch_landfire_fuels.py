@@ -474,7 +474,13 @@ def _is_all_nodata(tiff_bytes: bytes) -> bool:
 # ---------------------------------------------------------------------------
 
 
-@register_tool(_METADATA)
+@register_tool(
+    _METADATA,
+    # Annotations: readOnlyHint=True (read-only; no state mutation),
+    # openWorldHint=True (calls external public API endpoint),
+    # destructiveHint=False, idempotentHint=True (cache shim deduplicates).
+    open_world_hint=True,
+)
 def fetch_landfire_fuels(
     bbox: tuple[float, float, float, float],
     layer: Literal["fbfm40", "fbfm13", "cbh", "cbd"] = "fbfm40",
@@ -482,60 +488,68 @@ def fetch_landfire_fuels(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Fetch LANDFIRE fuels & vegetation raster for a CONUS bbox.
+    """Fetch LANDFIRE fuels and vegetation raster for a CONUS bounding box.
 
-    Use this when: the agent needs a 30 m fuel-model or canopy raster as
-    input to a wildfire-spread engine (FlamMap, FARSITE, FSim, ELMFIRE) or
-    to display ground-fuel context for a wildfire-risk narrative. LANDFIRE
-    is the USDA / USGS canonical source for nationwide wildfire-modelling
-    inputs; the 2022 vintage is the most recent stable release at time of
-    authoring. Tier-1 free (no API key required).
+    **What it does:** Downloads a 30 m raster from the LANDFIRE LF2022 CONUS
+    ImageServer (USDA Forest Service + USGS), clips it server-side to the
+    requested bbox, and returns a CRS-tagged GeoTIFF via the 30-day cache.
+    Four layers are available: Scott and Burgan 40 surface fuel models
+    (``fbfm40``), Anderson 13 fuel models (``fbfm13``), canopy base height
+    (``cbh``), and canopy bulk density (``cbd``).
 
-    Do NOT use this for:
-        - Live fire-perimeter overlays (LANDFIRE is a static fuels grid —
-          use a NIFC/IRWIN active-fire feed for live perimeters).
-        - Burn-severity products (those live under LANDFIRE Disturbance
-          services, a separate atomic-tool surface; not covered here).
-        - Quantitative climate / weather forcing (LANDFIRE is fuels-only —
-          weather forcing comes from MRMS / HRRR / RAWS).
-        - Non-CONUS coverage at v0.1: AK / HI / PRVI LANDFIRE mosaics
-          exist but bbox-driven regional dispatch is parked as a follow-up
-          (``OQ-0111-LANDFIRE-REGION-DISPATCH``).
+    **When to use:**
+    - User asks for wildfire fuel conditions, fuel maps, or fire-behavior
+      inputs for a specific area ("show me the fuel models near Flagstaff").
+    - Building a wildfire spread model run with FlamMap, FARSITE, FSim, or
+      ELMFIRE — those engines require LANDFIRE fuel rasters as primary inputs.
+    - Displaying ground-fuel context or canopy structure as a visualization
+      layer in a wildfire-risk narrative.
+    - Any workflow step that needs the USDA / USGS canonical nationwide
+      wildfire-modelling substrate at 30 m resolution.
 
-    Params:
-        bbox: ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326.
-            Required (``supports_global_query=False``); CONUS-only at v0.1.
-        layer: one of
-            ``"fbfm40"``: Scott & Burgan 40 fire-behavior fuel models
-                (default; the standard FlamMap fuel grid; integer class
-                codes 91-204 + nodata);
-            ``"fbfm13"``: Anderson 13 fire-behavior fuel models (legacy
-                simpler classification; codes 1-13 + 91/92/98/99);
-            ``"cbh"``: canopy base height in metres x 10 (scaled int);
-            ``"cbd"``: canopy bulk density in kg/m^3 x 100 (scaled int).
+    **When NOT to use:**
+    - DO NOT use for live fire perimeters — LANDFIRE is a static fuels grid;
+      use ``fetch_nifc_fire_perimeters`` or ``fetch_firms_active_fire`` for
+      active and recent burn extents.
+    - DO NOT use for burn-severity products — LANDFIRE Disturbance services
+      carry post-fire severity rasters; they are a separate tool surface not
+      covered here.
+    - DO NOT use for weather / climate forcing — LANDFIRE is fuels-only;
+      use ``fetch_mrms_qpe``, ``fetch_hrrr_forecast``, or
+      ``fetch_raws_weather`` for meteorological inputs.
+    - DO NOT use outside CONUS at v0.1 — AK/HI/PRVI LANDFIRE mosaics exist
+      but regional dispatch is deferred (``OQ-0111-LANDFIRE-REGION-DISPATCH``).
 
-    Returns:
-        A ``LayerURI`` pointing at a GeoTIFF in the cache bucket:
-        ``gs://grace-2-hazard-prod-cache/cache/static-30d/landfire_fuels/<key>.tif``
-        containing the LANDFIRE 2022 ``layer`` clipped (server-side) to the
-        requested bbox. ``layer_type="raster"``, ``role="primary"``,
-        ``units`` populated for the continuous canopy layers (m * 10 /
-        kg/m^3 * 100), ``None`` for the categorical fuel-model layers.
+    **Parameters:**
+    - ``bbox`` (tuple[float, float, float, float]): ``(min_lon, min_lat,
+      max_lon, max_lat)`` in EPSG:4326. Required; CONUS-only.
+      Example: ``(-112.0, 34.5, -111.0, 35.5)`` (north-central Arizona).
+    - ``layer`` (str, default ``"fbfm40"``): one of ``"fbfm40"`` (Scott and
+      Burgan 40; integer codes 101-204 + 91/92/93/98/99 special classes),
+      ``"fbfm13"`` (Anderson 13; codes 1-13 + specials), ``"cbh"`` (canopy
+      base height, m x 10 scaled int), ``"cbd"`` (canopy bulk density,
+      kg/m^3 x 100 scaled int).
 
-    Raises:
-        ``LandfireFuelsLayerError``: ``layer`` not in fbfm40/fbfm13/cbh/cbd.
-        ``LandfireFuelsBboxError``: bbox malformed / non-finite / out of
-            range / degenerate.
-        ``LandfireFuelsUpstreamError``: LANDFIRE ImageServer download or
-            parsing failed (network, HTTP non-200, JSON-error envelope,
-            non-TIFF body).
-        ``LandfireFuelsEmptyError``: bbox returned all-nodata raster
-            (open ocean, off-shelf bbox outside CONUS LANDFIRE coverage).
+    **Returns:** A ``LayerURI`` pointing at a GeoTIFF in the cache bucket
+    (``gs://grace-2-hazard-prod-cache/cache/static-30d/landfire_fuels/<key>.tif``).
+    ``layer_type="raster"``, ``role="primary"``. ``units`` is populated for
+    continuous canopy layers (``"m * 10"`` / ``"kg/m^3 * 100"``), ``None``
+    for categorical fuel-model layers. EPSG:4326, 30 m native resolution,
+    LANDFIRE 2022 vintage.
+
+    **Cross-tool dependencies:**
+    - Feeds: FlamMap / FARSITE / FSim wildfire spread workflows (deferred),
+      any engine step that needs fuel category codes per pixel.
+    - Pairs with: ``fetch_raws_weather`` or ``fetch_hrrr_forecast`` for the
+      meteorological forcing stack; ``fetch_dem`` for terrain-slope inputs.
+    - Provides ``fbfm40`` / ``fbfm13`` via ``role="primary"`` so QGIS Server
+      renders with the ``categorical_landcover`` style preset; canopy layers
+      use ``continuous_dem`` ramp.
 
     FR-CE-8: Routed through ``read_through`` so identical ``(bbox, layer)``
     calls reuse the cached GeoTIFF. Cache key includes ``(layer,
-    bbox-rounded-to-6dp, year="2022")`` so a future year upgrade
-    (e.g. LF2023) is a cache-key change, not a silent staleness
+    bbox-rounded-to-6dp, year="2022")`` so a future year upgrade (e.g.
+    LF2023) is a cache-key change, not a silent staleness
     (``OQ-0111-LANDFIRE-YEAR-AUTO-ADVANCE``).
     """
     # Defensive validations on the registered surface.

@@ -162,7 +162,9 @@ def _resolve_layer_to_local_path(
             if storage_client is None:
                 from google.cloud import storage  # type: ignore[import-not-found]
 
-                storage_client = storage.Client()
+                storage_client = storage.Client(
+                    project=os.environ.get("GOOGLE_CLOUD_PROJECT", "grace-2-hazard-prod")
+                )
             bucket_obj = storage_client.bucket(bucket_name)
             blob = bucket_obj.blob(blob_path)
             data = blob.download_as_bytes()
@@ -437,7 +439,14 @@ def _clip_vector_locally(
 # ---------------------------------------------------------------------------
 
 
-@register_tool(_CLIP_VECTOR_METADATA)
+@register_tool(
+    _CLIP_VECTOR_METADATA,
+    # Annotations: readOnlyHint=True (reads input raster/vector; writes cache
+    # artifact only via the read-through shim), openWorldHint=False (all
+    # computation is local GDAL/numpy; no external API calls),
+    # destructiveHint=False, idempotentHint=True (deterministic transform;
+    # same inputs always produce the same output pixels).
+)
 def clip_vector_to_polygon(
     vector_uri: str,
     polygon_uri: str,
@@ -452,27 +461,26 @@ def clip_vector_to_polygon(
 ) -> LayerURI:
     """Clip a vector (points / lines / polygons) to an arbitrary polygon mask.
 
-    Sibling to ``clip_raster_to_polygon`` (job-0106). The "in [place]"
-    geographic-clipping pattern for vector layers — e.g. clip nationwide GBIF
-    species-occurrence points to a TIGER state polygon, or clip CONUS-wide NWS
-    weather alerts to a county polygon.
+    Uses geopandas spatial predicates (``intersects`` for partial, ``within``
+    for strict containment) to filter a vector dataset to features inside a
+    polygon mask. Supports attribute-based polygon selection and automatic CRS
+    reprojection. Returns a FlatGeobuf ``LayerURI``, cached for 30 days.
 
-    Use this when: the agent has fetched a vector layer (points, lines, or
-    polygons) over a region larger than the area of interest and needs to trim
-    it to the analysis polygon — for example, nationwide GBIF panther
-    occurrences clipped to the Florida state polygon for a Case-1 species
-    overlay; OSM roads clipped to a city polygon; NWS active alerts clipped
-    to a state polygon. Polygon source is typically the output of
-    ``fetch_administrative_boundaries``, ``fetch_wdpa_protected_areas``, or any
-    other vector layer whose features define the mask.
+    When to use:
+        - Trimming a nationwide or regional vector layer to a named place ("in
+          [state/county/protected area]") — e.g. GBIF occurrences clipped to
+          the Florida state polygon for a Case-1 species overlay.
+        - Preparing vector overlays (species occurrences, NWS alerts, OSM roads)
+          scoped to the analysis area before display or statistics.
+        - Case 1 flood-habitat workflow: clip GBIF species-point layers to
+          WDPA protected-area boundaries.
 
-    Do NOT use this for: clipping rasters (use ``clip_raster_to_polygon`` —
-    job-0106 — for that); bbox clipping when no arbitrary polygon is needed
-    (use ``clip_raster_to_bbox`` for rasters; for vectors a bbox clip can be
-    expressed by passing a 4-corner polygon FlatGeobuf); spatial joins that
-    enrich vector attributes from the polygon source (use ``qgis_process``
-    sjoin algorithms); converting vector geometries to a new CRS
-    (``qgis_process`` reproject).
+    When NOT to use:
+        - Clipping rasters to polygons (use ``clip_raster_to_polygon``).
+        - Simple bbox clips (use ``clip_raster_to_bbox`` for rasters; for vectors
+          pass a 4-corner polygon FlatGeobuf).
+        - Spatial joins that enrich vector attributes (use ``qgis_process`` sjoin).
+        - CRS reprojection without spatial filtering (use ``qgis_process`` reproject).
 
     Params:
         vector_uri: source vector URI — ``gs://`` GCS path or absolute local
@@ -514,6 +522,19 @@ def clip_vector_to_polygon(
     ``(vector_uri, polygon_uri, feature_filter, keep_partial)`` calls reuse the
     cached FlatGeobuf. TTL is 30 days (static-30d) — vector + polygon sources
     are themselves static-30d cached layers.
+
+    Cross-tool dependencies:
+        Upstream (consumes):
+        - ``fetch_gbif_occurrences`` / ``fetch_wdpa_protected_areas`` /
+          ``fetch_administrative_boundaries`` / ``fetch_nws_event`` — supply
+          ``vector_uri`` (the layer to be clipped).
+        - ``fetch_administrative_boundaries`` / ``fetch_wdpa_protected_areas`` —
+          also supply ``polygon_uri`` (the clip mask).
+        Downstream (feeds):
+        - ``publish_layer`` — publish the clipped vector FlatGeobuf to QGIS
+          Server WMS for display on the map.
+        - ``run_model_flood_habitat_scenario`` — calls this to clip species
+          occurrence layers to WDPA boundary extents for Case 1.
 
     Raises:
         ClipVectorError: with a typed ``error_code`` when any layer is

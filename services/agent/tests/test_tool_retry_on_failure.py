@@ -352,9 +352,21 @@ async def test_stream_gemini_reply_retry_after_recoverable_failure():
 
 @pytest.mark.asyncio
 async def test_stream_gemini_reply_failed_retry_caps_at_max_iterations():
-    """A tool that always raises + a Gemini that always retries → cap-stop."""
+    """A tool that always raises + a Gemini that always retries → loop stops.
+
+    With the circuit breaker (job-B8, Wave 4.10) wired into the loop, the
+    real ``_invoke_tool_via_emitter`` mock is called at most
+    ``circuit_breaker.threshold`` times (default 3) before the breaker trips
+    and subsequent calls are short-circuited.  The outer loop still terminates
+    — either the breaker trips first, or ``MAX_TURN_ITERATIONS`` is hit —
+    whichever comes first.
+
+    The invariant this test guards: dispatches to the *actual tool* are
+    bounded (the breaker caps them at threshold); the loop does not run forever.
+    """
     from grace2_agent import server as agent_server
     from grace2_agent.server import SessionState
+    from grace2_agent.circuit_breaker import ToolCircuitBreaker
 
     def _always_retry():
         i = 0
@@ -387,11 +399,16 @@ async def test_stream_gemini_reply_failed_retry_caps_at_max_iterations():
             sock, state, settings, "x", "research"
         )
 
-    # Cap reached: exactly MAX_TURN_ITERATIONS dispatches happened, no more.
-    assert dispatch_count["n"] == MAX_TURN_ITERATIONS, (
-        f"runaway retry not capped: {dispatch_count['n']} dispatches "
-        f"vs cap {MAX_TURN_ITERATIONS}"
+    # The circuit breaker caps real dispatches at its threshold (default 3);
+    # additional Gemini turns that keep calling fetch_dem are short-circuited.
+    # Importantly: the loop must terminate (no infinite loop).
+    threshold = state.circuit_breaker.threshold
+    assert dispatch_count["n"] <= threshold, (
+        f"Dispatches exceeded circuit-breaker threshold: "
+        f"{dispatch_count['n']} dispatches vs threshold {threshold}. "
+        "This indicates the breaker did not trip correctly."
     )
+    assert dispatch_count["n"] > 0, "Expected at least one dispatch before breaker trip"
 
 
 # ---------------------------------------------------------------------------
