@@ -139,7 +139,6 @@ dependencies = [
     # and auto-provisions on first connect. Anonymous fallback when no token
     # arrives within 5s (H.3). Per Decision E + H.1 v0.1 uses GCP Application
     # Default Credentials — no separate service-account JSON.
-    "firebase-admin>=6.5,<8",
     # job-0120 Wave 2: Pelicun (NHERI SimCenter) is the fragility-curve runtime
     # for ``run_pelicun_damage_assessment`` (post-M5 Decision N). v0.1 wires
     # only the bundled HAZUS v6.1 flood loss-function library
