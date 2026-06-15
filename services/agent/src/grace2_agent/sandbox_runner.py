@@ -50,6 +50,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -58,6 +60,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+
+from . import sandbox_hardening
 
 LOG = logging.getLogger("grace2.agent.sandbox_runner")
 
@@ -159,7 +163,25 @@ SANDBOX_LOG_POLL_INTERVAL_SECONDS = float(
 
 
 def _is_local_mode() -> bool:
-    return os.environ.get("GRACE2_SANDBOX_LOCAL", "").strip() in ("1", "true", "TRUE", "yes")
+    """True when the sandbox dispatches via the local-subprocess path.
+
+    Explicit opt-in: ``GRACE2_SANDBOX_LOCAL`` ∈ {1,true,yes}.
+
+    AWS default (sprint-14-aws): the Cloud Run + Cloud Logging cloud path is dead
+    on the EC2 stack (no Cloud Run, no Cloud Logging), so when the storage backend
+    is S3/AWS (``GRACE2_STORAGE_BACKEND`` ∈ {s3,aws}) we DEFAULT to the local path
+    unless it is explicitly disabled (``GRACE2_SANDBOX_LOCAL=0``). On GCP
+    (default/unset backend) the cloud path remains the default — no regression.
+
+    Read at call time so a deploy / test env injection takes effect."""
+    raw = os.environ.get("GRACE2_SANDBOX_LOCAL", "").strip().lower()
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    if raw in ("0", "false", "no", "off"):
+        return False
+    # Unset: on the AWS storage backend the cloud path is dead — default local.
+    backend = (os.environ.get("GRACE2_STORAGE_BACKEND") or "").strip().lower()
+    return backend in ("s3", "aws")
 
 
 def _repo_root() -> Path:
@@ -219,6 +241,35 @@ class SandboxExecutionHandle:
 # --------------------------------------------------------------------------- #
 
 
+def _hard_kill(proc: subprocess.Popen, *, group: bool) -> None:
+    """Hard-kill a timed-out child (process-group-wide when it is a group leader).
+
+    When the child was launched with the resource-limit ``preexec_fn`` it called
+    ``os.setsid``, so it leads its own process group; ``os.killpg(pgid, SIGKILL)``
+    then reaps double-forked / detached descendants that a bare ``proc.kill()``
+    (single PID) would leave running — closing the recon's "outer hard-kill is not
+    process-group-wide" hole. Falls back to ``proc.kill()`` if killpg is
+    unavailable or the group is already gone."""
+    if group and hasattr(os, "killpg"):
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            return
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    try:
+        proc.kill()
+    except (ProcessLookupError, OSError):
+        pass
+
+
+def _cleanup_workdir(workdir: str) -> None:
+    """Best-effort recursive removal of the per-run scratch dir."""
+    try:
+        shutil.rmtree(workdir, ignore_errors=True)
+    except OSError:
+        pass
+
+
 def run_sandbox_local(
     python_code: str,
     layer_refs: dict[str, str] | None = None,
@@ -246,37 +297,84 @@ def run_sandbox_local(
 
     payload = {"python_code": python_code, "layer_refs": layer_refs or {}}
 
-    # Write the payload to a temp file the child reads via --payload-file.
-    with tempfile.NamedTemporaryFile(
-        "w", suffix=".json", prefix="grace2_sandbox_", delete=False, encoding="utf-8"
-    ) as fh:
+    # Per-run scratch dir: holds the payload file and serves as the child's cwd
+    # (and, under the jail, the only writable bind besides /tmp). A private dir
+    # per run keeps one Case's payload out of another's reach.
+    workdir = tempfile.mkdtemp(prefix="grace2_sandbox_")
+    payload_path = os.path.join(workdir, "payload.json")
+    with open(payload_path, "w", encoding="utf-8") as fh:
         json.dump(payload, fh)
-        payload_path = fh.name
 
-    # Child env: pin the executor's own cap to `cap` so the in-process alarm
-    # matches the outer timeout's intent. Keep the rest of the env (PATH, venv,
-    # PYTHONPATH) so the child resolves the same interpreter deps as the agent.
-    child_env = dict(os.environ)
-    child_env["GRACE2_SANDBOX_TIMEOUT"] = str(cap)
-    child_env.setdefault("MPLBACKEND", "Agg")
+    hardened = sandbox_hardening.hardening_enabled()
+
     # Run the executor as a script by path — its __main__ guard calls main().
-    cmd = [sys.executable, str(executor), "--payload-file", payload_path]
+    base_cmd = [sys.executable, str(executor), "--payload-file", payload_path]
 
-    LOG.info("sandbox local run: %s (cap=%ds)", " ".join(cmd), cap)
+    # Child env. HARDENED (default, the AWS posture): an ALLOWLISTED, credential-
+    # scrubbed env — NO AWS_*/GOOGLE_*/token vars, AWS_EC2_METADATA_DISABLED=true
+    # (Invariant 5). UNHARDENED (opt-out for a controlled local debug): the legacy
+    # full-env copy. Either way pin the executor's cap so its in-process alarm
+    # matches the outer timeout's intent.
+    jailed = False
+    popen_cwd: str | None = workdir
+    if hardened:
+        child_env = sandbox_hardening.build_child_env(dict(os.environ), cap_seconds=cap)
+        # Fail-loud if a future allowlist edit re-admits a credential var.
+        sandbox_hardening.assert_env_scrubbed(child_env)
+
+        # Layer B: wrap in the bubblewrap namespace jail (fresh netns w/ NO
+        # interfaces => IMDS + all egress kernel-unreachable; read-only host fs;
+        # private tmpfs) when enabled+present. Degrades to the un-jailed cmd in
+        # auto-mode if bwrap is absent; raises JailUnavailable if
+        # GRACE2_SANDBOX_BWRAP=1 demanded it.
+        cmd, popen_env, jailed = sandbox_hardening.build_jailed_cmd(
+            base_cmd,
+            child_env,
+            executor_path=str(executor),
+            payload_path=payload_path,
+            workdir=workdir,
+        )
+        preexec_fn = sandbox_hardening.preexec_resource_limits(jailed=jailed)
+        if jailed:
+            # bwrap sets --chdir + --clearenv/--setenv; cwd/env are jail-owned.
+            # We still pass popen_env to Popen so the bwrap process itself runs
+            # with the scrubbed env (it cannot leak what it does not hold).
+            popen_cwd = None
+    else:
+        child_env = dict(os.environ)
+        child_env["GRACE2_SANDBOX_TIMEOUT"] = str(cap)
+        child_env.setdefault("MPLBACKEND", "Agg")
+        cmd = base_cmd
+        popen_env = child_env
+        preexec_fn = None
+
+    LOG.info(
+        "sandbox local run: cap=%ds hardened=%s jailed=%s exe=%s",
+        cap,
+        hardened,
+        jailed,
+        executor,
+    )
     proc = subprocess.Popen(  # noqa: S603 — fixed cmd, no shell
         cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        env=child_env,
+        env=popen_env,
+        cwd=popen_cwd,
         text=True,
+        # preexec_fn sets a new session/process-group + rlimits in the child so
+        # the outer hard-kill can killpg the WHOLE group (double-fork survivors
+        # included). On non-POSIX it is None (Popen ignores it).
+        preexec_fn=preexec_fn,
     )
     outer_timeout = cap + SUBPROCESS_GRACE_SECONDS
     try:
         out, err = proc.communicate(timeout=outer_timeout)
     except subprocess.TimeoutExpired:
-        # In-process alarm was defeated; hard-kill the child and synthesize a
-        # timeout envelope. This is the wallclock backstop the kickoff requires.
-        proc.kill()
+        # In-process alarm was defeated; hard-kill the child (process-group-wide
+        # when we made it a group leader) and synthesize a timeout envelope. This
+        # is the wallclock backstop the kickoff requires.
+        _hard_kill(proc, group=(preexec_fn is not None))
         try:
             out, err = proc.communicate(timeout=5)
         except subprocess.TimeoutExpired:
@@ -293,10 +391,7 @@ def run_sandbox_local(
             "wallclock_cap_seconds": cap,
         }
     finally:
-        try:
-            os.unlink(payload_path)
-        except OSError:
-            pass
+        _cleanup_workdir(workdir)
 
     # The executor prints exactly one JSON envelope line on stdout. We do NOT
     # blind-slice ``out`` to MAX_ENVELOPE_BYTES (job-0233 FINDING 2): a raw byte

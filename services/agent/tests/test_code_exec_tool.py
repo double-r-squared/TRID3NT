@@ -349,3 +349,21 @@ def test_build_payload_derives_truncated_from_result_marker() -> None:
     payload = build_code_exec_result_payload("01J0000000000000000000CXEC", env)
     assert payload.truncated is True
     assert payload.status == "ok"
+
+
+def test_dispatch_strips_llm_supplied_confirmed_for_code_exec() -> None:
+    """Invariant 9 (job-0301): the dispatch site STRIPS a model-supplied
+    confirmed/code_exec_id for code_exec_request BEFORE gating, so a model that
+    passes confirmed=True cannot self-approve and skip the user gate. The prior
+    `and not params.get("confirmed")` condition allowed exactly that bypass
+    (the params are not underscore-hidden from the model's tool schema)."""
+    import inspect
+
+    import grace2_agent.server as server_mod
+
+    src = inspect.getsource(server_mod._invoke_tool_via_emitter)
+    assert 'if tool_name == "code_exec_request":' in src
+    assert 'params.pop("confirmed", None)' in src
+    assert 'params.pop("code_exec_id", None)' in src
+    # The bypass-prone guard must be gone.
+    assert 'code_exec_request" and not params.get("confirmed")' not in src

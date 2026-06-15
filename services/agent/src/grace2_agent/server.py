@@ -3101,7 +3101,18 @@ async def _invoke_tool_via_emitter(
     # re-gated — but a LLM-issued call never carries it, so the gate is mandatory
     # on the LLM path. Fail-closed: cancel / timeout raises a typed, non-retryable
     # error so Gemini narrates the decline and does not re-run the same snippet.
-    if tool_name == "code_exec_request" and not params.get("confirmed"):
+    # Invariant 9 (job-0301): STRIP the model-supplied confirmed/code_exec_id
+    # BEFORE gating — the gate is server-owned, exactly like the solver gate below.
+    # The prior `and not params.get("confirmed")` condition let a model that passed
+    # confirmed=True SKIP the gate and self-approve code execution (those params are
+    # NOT underscore-hidden from its tool schema, so it could supply them). Popping
+    # makes the user-confirmation gate MANDATORY on every model-issued code_exec
+    # call; only an explicit user "proceed" inside _gate_on_code_exec re-injects
+    # confirmed + the minted code_exec_id. (Trusted programmatic callers/tests that
+    # must bypass invoke the tool function directly, not via this server gate.)
+    if tool_name == "code_exec_request":
+        params.pop("confirmed", None)
+        params.pop("code_exec_id", None)
         should_run, params = await _gate_on_code_exec(websocket, state, params)
         if not should_run:
             raise CodeExecConfirmationCancelledError(
