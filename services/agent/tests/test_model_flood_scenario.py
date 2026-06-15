@@ -1838,6 +1838,20 @@ async def test_run_model_flood_scenario_returns_layer_uri() -> None:
             "grace2_agent.workflows.model_flood_scenario.postprocess_flood",
             return_value=([flood_layer], depth_metrics),
         ),
+        # sprint-14-aws: publish_layer must succeed for the workflow to return a
+        # LayerURI. Mock it to a renderable tile URL (the AWS TiTiler form) — the
+        # gs:// fixture uri is the publish INPUT, which this mock replaces. Without
+        # this patch the real publish runs, the gs:// object doesn't exist, and the
+        # layer is dropped (returns the dict envelope), failing the contract below.
+        patch(
+            "grace2_agent.workflows.model_flood_scenario.publish_layer",
+            return_value=(
+                "https://d125yfbyjrpbre.cloudfront.net/cog/tiles/WebMercatorQuad/"
+                "{z}/{x}/{y}.png?url=s3://grace2-hazard-runs/"
+                + run_id
+                + "/flood_depth_peak.tif&rescale=0,3"
+            ),
+        ),
     ):
         result = await run_model_flood_scenario(
             bbox=(-81.92, 26.55, -81.80, 26.68),
@@ -1990,6 +2004,15 @@ async def test_run_model_flood_scenario_triggers_loaded_layers_emit() -> None:
         patch(
             "grace2_agent.workflows.model_flood_scenario.postprocess_flood",
             return_value=([flood_layer], depth_metrics),
+        ),
+        # sprint-14-aws: publish_layer must succeed so the workflow returns a
+        # LayerURI and the emitter fires add_loaded_layer (the assertion below).
+        patch(
+            "grace2_agent.workflows.model_flood_scenario.publish_layer",
+            return_value=(
+                "https://d125yfbyjrpbre.cloudfront.net/cog/tiles/WebMercatorQuad/"
+                "{z}/{x}/{y}.png?url=s3://grace2-hazard-runs/flood_depth_peak.tif&rescale=0,3"
+            ),
         ),
     ):
         result = await emitter.emit_tool_call(

@@ -1507,6 +1507,9 @@ def fetch_landcover(
 ) -> dict[str, Any]:
     """Fetch landcover classification raster (NLCD or ESA WorldCover) for a bbox.
 
+    Access pattern: Tier 2 (OGC service — MRLC WCS/WMS endpoint per §F.1.1; live
+    verification 2026-06-07 found NLCD is Tier 2, see OQ-39-NLCD-TIER-DEVIATION).
+
     **What it does:** Downloads an NLCD or ESA WorldCover landcover GeoTIFF
     clipped to the requested bbox via the MRLC WCS 1.0.0 GeoServer endpoint.
     Returns a dict containing a ``LayerURI`` plus a ``nlcd_vintage_year``
@@ -1903,7 +1906,7 @@ def fetch_river_geometry(
 
     **What it does:** Downloads the USGS NHDPlus High Resolution NHDFlowline
     feature class for the HUC4 watershed region containing the bbox, clips
-    it to the bbox extent, and returns a FlatGeobuf. Access pattern is
+    it to the bbox extent, and returns a FlatGeobuf. Access pattern:
     Tier 4 (region download + local clip): the full HUC4 GDB (~144 MB for
     South Florida) is fetched on a cache miss and the 30-day cache absorbs
     repeat calls.
@@ -2203,6 +2206,8 @@ def lookup_precip_return_period(
     **_extra_ignored: Any,
 ) -> dict[str, Any]:
     """Look up a precipitation return-period depth at a point via NOAA Atlas 14 PFDS.
+
+    Access pattern: Tier 3 (direct HTTPS point query to the NOAA PFDS endpoint).
 
     **What it does:** Issues a point query to the NOAA Hydrometeorological Design
     Studies Center (HDSC) Precipitation Frequency Data Server (PFDS) at
