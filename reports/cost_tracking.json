@@ -1669,6 +1669,33 @@
       "kind": "workflow",
       "workflow_id": "wf_8613faec-ab2",
       "subagent_tokens": 2085782
+    },
+    {
+      "job_id": "job-0300-pelicun-m55-finish",
+      "sprint": 15,
+      "description": "Track A: Pelicun M5.5 finish \u2014 recon+gap-close+4-lens verify (3/4); Invariant-7 hardening (NaN ds_mean typed error; default-replacement-value count); S3-staging test coverage; fragility provenance threading.",
+      "model": "opus",
+      "kind": "workflow",
+      "workflow_id": "wf_92f2fcaa-fed",
+      "subagent_tokens": 627496
+    },
+    {
+      "job_id": "job-0301-sandbox-aws-replatform",
+      "sprint": 15,
+      "description": "Track B: AWS-isolated Python sandbox \u2014 recon+implement+4-lens verify; closed Invariant-9 gate self-approval + Invariant-5 fail-closed bwrap default; bubblewrap netns jail + env scrub + rlimits + killpg.",
+      "model": "opus",
+      "kind": "workflow",
+      "workflow_id": "wf_85ce36c2-6e0",
+      "subagent_tokens": 775819
+    },
+    {
+      "job_id": "job-0302-case3-idaho-flood-finish",
+      "sprint": 15,
+      "description": "Track C: Case 3 NWS->MRMS->SFINCS \u2014 recon+implement+4-lens verify (4/4); S3-ported two /vsis3/ raster reads (forcing read + NLCD validation gate) to boto3 stage-then-open.",
+      "model": "opus",
+      "kind": "workflow",
+      "workflow_id": "wf_d0ca97a4-fda",
+      "subagent_tokens": 467453
     }
   ],
   "totals_by_sprint": {
