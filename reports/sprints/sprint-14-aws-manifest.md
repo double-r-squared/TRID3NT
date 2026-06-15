@@ -44,3 +44,20 @@ Region: **us-west-2**. Account: 226996537797.
 - **job-0296 (infra) — GCP teardown** (FINAL, user-gated: needs gcloud auth; enumerated destroy + data export first).
 
 Each infra job is adversarial-verify gated per the standing rule.
+
+---
+
+## CLOSED — 2026-06-15 (functionally complete)
+
+The GCP→AWS migration is **done and live** (canonical URL `https://d125yfbyjrpbre.cloudfront.net/app`). Implementation diverged from the aspirational table above toward a **pragmatic, working stack** — that divergence is intentional, not incomplete:
+
+- **Agent compute:** EC2 `i-0251879a278df797f` + systemd (NOT ECS Fargate/ALB). The single box runs the Bedrock agent + SFINCS (docker) + MODFLOW (local-exec) + TiTiler. ECS/Batch/Step-Functions remain *deferred architectural upgrades* (scale/HA), not blockers.
+- **Solvers:** local-docker (SFINCS) + local-exec (MODFLOW) on the instance (NOT AWS Batch + Step Functions).
+- **Raster render:** TiTiler COG tiles (NOT QGIS Server on ECS).
+- **Persistence:** DynamoDB (`grace2_*`); 406 docs migrated. File backend kept for run-local.
+- **Auth:** Cognito, mandatory sign-in (Hosted UI). Firebase removed.
+- **CDN/HTTPS:** CloudFront single-origin edge (S3 web + EC2 ws/tiles/catalog).
+- **Cache discount (job-0288 Bedrock prompt caching):** deferred (not load-bearing for v0.1).
+- **Presigned URLs (job-0294) / Secrets Manager / OpenTofu-AWS:** deferred (no current consumer on the EC2 stack).
+
+Jobs as-built: 0286 Bedrock adapter, 0287 run-local, 0288b EC2, 0288c+0289 S3, 0290* DEM/render fixes, 0293* S3 port, 0294* humanize/charts/publish-idempotency, 0295 news-ingest, 0296 finish-line workflow (auth/DB/CDN/bbox code), 0297 DynamoDB+CloudFront cutover, 0298 housekeeping (checkpoint commit + dead-dep removal + green suite), 0299 Cognito mandatory auth. **Remaining (user-gated): GCP teardown** (`gcloud projects delete grace-2-hazard-prod`).

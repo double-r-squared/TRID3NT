@@ -1,5 +1,35 @@
 # Project State
 
+> ⚠️ **The header below + most sections are HISTORICAL (frozen ~sprint-05, 2026-06-06).**
+> The single-paragraph CURRENT TRUTH block immediately under this banner supersedes them.
+> The detailed historical sections are retained for context but are NOT current.
+
+---
+
+## CURRENT TRUTH (2026-06-15)
+
+**The product is fully migrated GCP → AWS and live on HTTPS.** Canonical URL:
+**`https://d125yfbyjrpbre.cloudfront.net/app`** (CloudFront `E2L74AS56MVZ87`; the old
+`http://…s3-website…/app` S3 URL still serves the same bundle).
+
+- **Agent:** AWS Bedrock (`us.anthropic.claude-sonnet-4-6`) — NOT Gemini/Vertex. Runs on EC2
+  `i-0251879a278df797f` (us-west-2) under systemd; editable install at
+  `/opt/grace2/services/agent/src/grace2_agent`; deploy = SSM file-swap + restart (see
+  memory `project_aws_deploy_facts`). SFINCS (docker) + MODFLOW (local-exec) run on the box;
+  TiTiler serves raster tiles; vector via inline GeoJSON.
+- **Web:** static S3 site behind CloudFront (HTTPS/WSS single-origin: `/ws`→8765, `/cog`+`/tiles`→8080, `/api`→8766).
+- **Persistence:** DynamoDB (`grace2_*` tables, `GRACE2_PERSISTENCE_BACKEND=dynamodb`); 406 docs migrated from the file store. File backend retained for run-local. **MongoDB dropped.**
+- **Auth:** Amazon Cognito (pool `us-west-2_mIpKrr727`), **MANDATORY sign-in** (Hosted UI, email/password); agent verifies JWTs via JWKS. Firebase fully removed. Demo login: `grace2-demo@example.com` / `Grace2Demo2026`.
+- **Verified live (no Bedrock):** boot, WSS handshake, saved-case rehydrate from DynamoDB, raster tile over HTTPS, full sign-in round-trip. Suites: agent 4525 pass / 0 fail, web 756/756.
+- **Sprints:** the planned roadmap (sprint-11→13.5) plus the **sprint-14-aws** migration are done. The AWS migration used a pragmatic **EC2+systemd+DynamoDB+CloudFront** stack rather than the manifest's aspirational ECS/Batch/Step-Functions (deferred architectural upgrades, not blockers).
+- **OPEN:** (1) **GCP teardown** — user runs `gcloud projects delete grace-2-hazard-prod` (stops residual Vertex billing; gcloud not installed locally). (2) Demo-readiness live pass (flood/groundwater/news/charts/bbox on the HTTPS URL) + Devpost rewrite to AWS/Bedrock. (3) Next feature sprint: sprint-13 roadmap remainder (Case 3 Idaho flood, Python sandbox, analytical Q&A tools) or Pelicun M5.5 — **user's product call**.
+
+See `reports/PROJECT_LOG.md` (tail) + memories `project_aws_deploy_facts` / `project_aws_finish_line_cutover` for detail.
+
+---
+
+## Historical header (frozen ~sprint-05 — superseded by CURRENT TRUTH above)
+
 **Last updated:** 2026-06-06 (sprint-05 / M3 — jobs 0025, 0027 approved; 0029 CORS fix in flight)
 **Current sprint:** sprint-05 (active) — M3 Web client skeleton. Stage A ✅: job-0025 (QGIS Server WMS basemap + LayerPanel drag-and-drop) + job-0027 (Playwright + AFK loop operational). NEW mid-sprint: job-0029 infra (CORS fix on QGIS Server — blocks tile rendering until landed). Stage B queued: job-0026 (PipelineStrip onto 0025's App.tsx shell). Stage C queued: job-0028 (M3 acceptance). LayerPanel + interaction surface verified live via Playwright; basemap tiles pending CORS fix.
 
