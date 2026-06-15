@@ -109,6 +109,54 @@ function ImpactEnvelopeShell(): JSX.Element {
 }
 
 // ---------------------------------------------------------------------------
+// Case-switch reset shell — mirrors App.tsx's activeSession effect, which
+// resets ImpactEnvelope to null whenever the active Case changes
+// (replace-not-reconcile, M5.5). The `activeCaseId` prop stands in for
+// App.tsx's `activeSession`; flipping it must clear any surfaced panel.
+// ---------------------------------------------------------------------------
+
+function CaseSwitchShell({
+  activeCaseId,
+}: {
+  activeCaseId: string | null;
+}): JSX.Element {
+  const [impactEnvelope, setImpactEnvelope] =
+    useState<ImpactEnvelope | null>(null);
+
+  useEffect(() => {
+    (window as unknown as {
+      __grace2InjectImpactEnvelope?: (p: ImpactEnvelope | null) => void
+    }).__grace2InjectImpactEnvelope = (p) => setImpactEnvelope(p);
+    return () => {
+      delete (window as unknown as {
+        __grace2InjectImpactEnvelope?: unknown
+      }).__grace2InjectImpactEnvelope;
+    };
+  }, []);
+
+  // Mirrors App.tsx's Case rehydration effect: on activeSession change the
+  // ImpactPanel is reset (the new Case re-populates it via a fresh emission).
+  useEffect(() => {
+    setImpactEnvelope(null);
+  }, [activeCaseId]);
+
+  return (
+    <div data-testid="case-shell">
+      <span
+        data-testid="impact-envelope-present"
+        data-value={impactEnvelope ? "true" : "false"}
+      />
+      {impactEnvelope && (
+        <ImpactPanel
+          envelope={impactEnvelope}
+          onClose={() => setImpactEnvelope(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -186,6 +234,36 @@ describe("App — impactEnvelope state → ImpactPanel mount (Wave 4.11 P4)", ()
     // Timestamp should reference the fixture's generated_at.
     const ts = screen.getByTestId("grace2-impact-panel-timestamp");
     expect(ts.textContent).toContain("2026-06-09");
+
+    cleanup();
+  });
+
+  // M5.5: the panel must NOT bleed across Cases. Switching the active Case
+  // clears any surfaced ImpactPanel (replace-not-reconcile, mirrors App.tsx's
+  // activeSession rehydration effect adding setImpactEnvelope(null)).
+  it("ImpactPanel is cleared on Case switch (does not bleed across Cases)", () => {
+    const { rerender } = render(<CaseSwitchShell activeCaseId="case-A" />);
+
+    // Surface a panel while Case A is active.
+    act(() => {
+      const seam = (window as unknown as {
+        __grace2InjectImpactEnvelope?: (p: ImpactEnvelope | null) => void
+      }).__grace2InjectImpactEnvelope;
+      seam?.(FIXTURE_ENVELOPE);
+    });
+    expect(screen.getByTestId("grace2-impact-panel")).toBeTruthy();
+    expect(
+      screen.getByTestId("impact-envelope-present").dataset.value,
+    ).toBe("true");
+
+    // Switch to Case B — the previous Case's panel must disappear.
+    act(() => {
+      rerender(<CaseSwitchShell activeCaseId="case-B" />);
+    });
+    expect(screen.queryByTestId("grace2-impact-panel")).toBeNull();
+    expect(
+      screen.getByTestId("impact-envelope-present").dataset.value,
+    ).toBe("false");
 
     cleanup();
   });

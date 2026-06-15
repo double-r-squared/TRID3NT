@@ -937,6 +937,7 @@ def _assess_assets(
             repair_means: list[float] = []
             repair_p95s: list[float] = []
             repair_replacements: list[float] = []
+            replacement_value_defaulted: list[bool] = []
             depth_samples: list[float] = []
             curve_ids: list[str] = []
             component_used: list[str] = []
@@ -956,14 +957,24 @@ def _assess_assets(
                 component_used.append(ctype)
                 curve_ids.append(curve.curve_id)
 
-                # Determine replacement value.
+                # Determine replacement value. Invariant 7 (job-0300): record when
+                # we fall back to a HAZUS class default (NSI lacked a usable
+                # val_struct) so the envelope can surface how many loss figures
+                # rest on defaults rather than measured per-asset values.
                 rv = asset.get("replacement_value")
-                if rv is None or not isinstance(rv, (int, float)) or not math.isfinite(rv) or rv <= 0:
+                rv_defaulted = (
+                    rv is None
+                    or not isinstance(rv, (int, float))
+                    or not math.isfinite(rv)
+                    or rv <= 0
+                )
+                if rv_defaulted:
                     rv = _REPLACEMENT_VALUE_DEFAULTS_USD.get(
                         ctype, _REPLACEMENT_VALUE_FALLBACK_USD
                     )
                 rv = float(rv)
                 repair_replacements.append(rv)
+                replacement_value_defaulted.append(bool(rv_defaulted))
 
                 # Sample hazard at centroid (positional lookup against the
                 # parallel reset-index centroid series).
@@ -1039,6 +1050,7 @@ def _assess_assets(
     gdf["repair_cost_mean"] = repair_means
     gdf["repair_cost_p95"] = repair_p95s
     gdf["replacement_value"] = repair_replacements
+    gdf["replacement_value_defaulted"] = replacement_value_defaulted
 
     return gdf
 

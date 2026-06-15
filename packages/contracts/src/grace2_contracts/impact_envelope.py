@@ -20,9 +20,13 @@ cite without inventing any** (Invariant 1 / Decision N).
 
 - *Emitted by*: ``postprocess_pelicun`` (Wave 4.11 P2 atomic tool, sprint-12).
 - *Consumed by*: agent narration (``impact.n_structures_damaged``,
-  ``impact.expected_loss_usd`` etc. are cite-safe); Case summary panel (UI);
-  MongoDB ``runs`` collection (stored alongside the parent
-  ``AssessmentEnvelope``).
+  ``impact.expected_loss_usd`` etc. are cite-safe); the Case summary panel
+  (``ImpactPanel`` — surfaced live via the ``impact-envelope`` WS frame).
+  NOTE (sprint-14-aws / M5.5): the envelope is emitted live to the panel but
+  is NOT currently persisted — there is no DynamoDB write of the raw envelope,
+  so on a Case reload the panel is empty until the agent re-emits. Persisting
+  the envelope alongside the parent run record is tracked as a follow-up;
+  this contract makes no persistence guarantee today.
 - *Provenance*: every numeric claim is traceable to ``pelicun_run_id`` (the
   ULID of the ``run_pelicun_damage_assessment`` call), ``damage_layer_uri``
   (the FlatGeobuf that was aggregated), and ``flood_layer_uri`` (the source
@@ -339,6 +343,19 @@ class ImpactEnvelope(GraceModel):
         description=(
             "Number of Monte-Carlo realizations used per asset in the upstream "
             "run_pelicun_damage_assessment call."
+        ),
+    )
+    n_assets_default_replacement_value: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Invariant 7 transparency: count of assessed structures whose loss "
+            "figure rests on a HAZUS class-default replacement value (the source "
+            "inventory lacked a usable per-asset replacement value, or the "
+            "MS-buildings inventory which is default-by-design) rather than a "
+            "measured value. Lets a consumer judge how much of expected_loss_usd "
+            "is default-based. 0 means every loss used a measured replacement value "
+            "(or the upstream layer predates this field)."
         ),
     )
     generated_at: UTCDatetime = Field(

@@ -479,6 +479,188 @@ def test_input_error_on_empty_damage_layer_uri() -> None:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# 17. S3 staging branch — exercises _download_uri_to_local s3:// path end to
+#     end (boto3 reader monkeypatched, tempfile staging, geopandas read,
+#     was_remote cleanup) with NO live AWS. Closes the sprint-14-aws gap where
+#     the s3:// staging branch had zero coverage.
+# ---------------------------------------------------------------------------
+
+
+def _fgb_bytes_for(rows: list[dict]) -> bytes:
+    """Serialize a synthetic damage GeoDataFrame to FlatGeobuf bytes."""
+    import os
+    import tempfile
+
+    gdf = _make_gdf(rows)
+    with tempfile.NamedTemporaryFile(suffix=".fgb", delete=False) as tf:
+        path = tf.name
+    try:
+        gdf.to_file(path, driver="FlatGeobuf")
+        with open(path, "rb") as fh:
+            return fh.read()
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+def test_postprocess_pelicun_s3_staging_branch(monkeypatch, tmp_path) -> None:
+    """``postprocess_pelicun(s3://...)`` stages via boto3 reader → valid envelope.
+
+    Monkeypatches ``cache.read_object_bytes_s3`` to return fixture FGB bytes so
+    the s3:// branch of ``_download_uri_to_local`` runs (tempfile staging +
+    geopandas read + was_remote unlink) without any live AWS. Also asserts the
+    staged temp file is cleaned up (the ``finally`` unlink for remote inputs).
+    """
+    import grace2_agent.tools.cache as cache_mod
+
+    rows = [
+        _base_row(ctype="RES1", ds_mean=1.5, loss_ratio_mean=0.10,
+                  repair_cost_mean=25_000.0, repair_cost_p95=40_000.0,
+                  replacement_value=250_000.0,
+                  pop2amu65=3.0, pop2amo65=2.0),
+        _base_row(ctype="COM1", ds_mean=3.6, loss_ratio_mean=0.55,
+                  repair_cost_mean=770_000.0, repair_cost_p95=900_000.0,
+                  replacement_value=1_400_000.0,
+                  pop2amu65=1.0, pop2amo65=4.0),
+    ]
+    fgb_bytes = _fgb_bytes_for(rows)
+
+    s3_uri = "s3://grace2-bucket/cache/static-30d/pelicun_damage/abc.fgb"
+
+    calls: list[str] = []
+
+    def _fake_read(uri: str) -> bytes:
+        calls.append(uri)
+        return fgb_bytes
+
+    # Patch the symbol the tool imports lazily from .cache.
+    monkeypatch.setattr(cache_mod, "read_object_bytes_s3", _fake_read)
+
+    # Track temp files created so we can assert cleanup of the staged input.
+    import tempfile as _tempfile
+
+    created: list[str] = []
+    real_ntf = _tempfile.NamedTemporaryFile
+
+    def _tracking_ntf(*args, **kwargs):  # noqa: ANN002, ANN003
+        tf = real_ntf(*args, **kwargs)
+        created.append(tf.name)
+        return tf
+
+    monkeypatch.setattr(_tempfile, "NamedTemporaryFile", _tracking_ntf)
+
+    env = asyncio.run(
+        postprocess_pelicun(damage_layer_uri=s3_uri, flood_layer_uri=_FLOOD_URI)
+    )
+
+    # The boto3 reader was invoked with the s3:// URI.
+    assert calls == [s3_uri]
+
+    # Envelope is well-formed and reflects the fixture rows.
+    assert env["n_structures_total"] == 2
+    assert env["n_structures_damaged"] == 2
+    assert env["n_structures_destroyed"] == 1
+    assert env["structure_inventory_source"] == "USACE_NSI"
+    # population_total = (3+2) + (1+4) = 10.
+    assert env["population_total"] == 10
+    assert env["damage_layer_uri"] == s3_uri
+    assert env["flood_layer_uri"] == _FLOOD_URI
+
+    # The staged temp file (remote input) was unlinked by the finally block.
+    import os
+    staged = [p for p in created if p.endswith(".fgb")]
+    assert staged, "expected a staged .fgb temp file"
+    for p in staged:
+        assert not os.path.exists(p), f"staged temp file not cleaned up: {p}"
+
+
+def test_postprocess_pelicun_s3_download_failure_wraps_io_error(monkeypatch) -> None:
+    """A boto3 reader failure on the s3:// branch surfaces as PelicunPostprocessIOError."""
+    import grace2_agent.tools.cache as cache_mod
+    from grace2_agent.tools.postprocess_pelicun import PelicunPostprocessIOError
+
+    def _boom(uri: str) -> bytes:
+        raise RuntimeError("no creds")
+
+    monkeypatch.setattr(cache_mod, "read_object_bytes_s3", _boom)
+
+    with pytest.raises(PelicunPostprocessIOError) as excinfo:
+        asyncio.run(
+            postprocess_pelicun(
+                damage_layer_uri="s3://b/k.fgb", flood_layer_uri=_FLOOD_URI
+            )
+        )
+    assert excinfo.value.error_code == "POSTPROCESS_PELICUN_IO"
+    assert excinfo.value.retryable is True
+
+
+# ---------------------------------------------------------------------------
+# 18. Provenance threading — fragility_set / realization_count overrides are
+#     reflected in the envelope (M5.5 Invariant-7 fix), and default to the
+#     back-compatible constants when omitted.
+# ---------------------------------------------------------------------------
+
+
+def test_provenance_overrides_thread_into_envelope() -> None:
+    """Passing fragility_set / realization_count overrides the envelope provenance."""
+    rows = [
+        _base_row(ds_mean=1.5, loss_ratio_mean=0.10, repair_cost_mean=25_000.0,
+                  repair_cost_p95=40_000.0),
+    ]
+    env = _aggregate_gdf(
+        _make_gdf(rows),
+        damage_layer_uri=_DAMAGE_URI,
+        flood_layer_uri=_FLOOD_URI,
+        fragility_set="hazus_flood_v7_custom",
+        realization_count=250,
+    )
+    assert env.fragility_set == "hazus_flood_v7_custom"
+    assert env.realization_count == 250
+
+
+def test_provenance_defaults_when_overrides_omitted() -> None:
+    """When overrides are omitted, the back-compatible defaults still hold."""
+    rows = [
+        _base_row(ds_mean=1.5, loss_ratio_mean=0.10, repair_cost_mean=25_000.0,
+                  repair_cost_p95=40_000.0),
+    ]
+    env = _aggregate_gdf(
+        _make_gdf(rows),
+        damage_layer_uri=_DAMAGE_URI,
+        flood_layer_uri=_FLOOD_URI,
+    )
+    assert env.fragility_set == "hazus_flood_v6"
+    assert env.realization_count == 100
+
+
+def test_postprocess_pelicun_threads_fragility_override(monkeypatch) -> None:
+    """The public surface forwards fragility_set / realization_count into the envelope."""
+    import grace2_agent.tools.cache as cache_mod
+
+    rows = [
+        _base_row(ds_mean=1.5, loss_ratio_mean=0.10, repair_cost_mean=25_000.0,
+                  repair_cost_p95=40_000.0),
+    ]
+    fgb_bytes = _fgb_bytes_for(rows)
+    monkeypatch.setattr(
+        cache_mod, "read_object_bytes_s3", lambda uri: fgb_bytes
+    )
+
+    env = asyncio.run(
+        postprocess_pelicun(
+            damage_layer_uri="s3://b/k.fgb",
+            flood_layer_uri=_FLOOD_URI,
+            fragility_set="hazus_flood_v7_custom",
+            realization_count=42,
+        )
+    )
+    assert env["fragility_set"] == "hazus_flood_v7_custom"
+    assert env["realization_count"] == 42
+
+
 def test_smoke_synthetic_small_case_validates_envelope() -> None:
     """5-row mixed-DS synthetic case produces a fully-valid ImpactEnvelope."""
     rows = [
@@ -528,3 +710,37 @@ def test_smoke_synthetic_small_case_validates_envelope() -> None:
     assert dumped["flood_layer_uri"] == _FLOOD_URI
     assert dumped["fragility_set"] == "hazus_flood_v6"
     assert dumped["realization_count"] == 100
+
+
+# ---------------------------------------------------------------------------
+# job-0300 — Invariant 7 hardening (non-finite ds_mean + default-RV transparency)
+# ---------------------------------------------------------------------------
+
+
+def test_nonfinite_ds_mean_raises_schema_error() -> None:
+    """A NaN ds_mean (malformed/foreign FGB) must fail honestly with a typed
+    schema error, not an IndexError or a fabricated DS bin (Invariant 7)."""
+    from grace2_agent.tools.postprocess_pelicun import PelicunPostprocessSchemaError
+
+    gdf = _make_gdf([_base_row(ds_mean=1.0), _base_row(ds_mean=float("nan"))])
+    with pytest.raises(PelicunPostprocessSchemaError, match="non-finite"):
+        _aggregate_gdf(gdf, damage_layer_uri=_DAMAGE_URI, flood_layer_uri=_FLOOD_URI)
+
+
+def test_default_replacement_value_count_surfaced() -> None:
+    """Assets whose loss rests on a HAZUS class-default replacement value are
+    counted on the envelope so the loss basis is transparent (Invariant 7)."""
+    rows = [
+        {**_base_row(ds_mean=1.0), "replacement_value_defaulted": True},
+        {**_base_row(ds_mean=2.0), "replacement_value_defaulted": False},
+        {**_base_row(ds_mean=0.0), "replacement_value_defaulted": True},
+    ]
+    env = _aggregate_gdf(_make_gdf(rows), damage_layer_uri=_DAMAGE_URI, flood_layer_uri=_FLOOD_URI)
+    assert env.n_assets_default_replacement_value == 2
+
+
+def test_default_replacement_value_count_zero_when_column_absent() -> None:
+    """A legacy/foreign FGB lacking the column yields an honest 0, not a crash."""
+    gdf = _make_gdf([_base_row(ds_mean=1.0), _base_row(ds_mean=2.0)])
+    env = _aggregate_gdf(gdf, damage_layer_uri=_DAMAGE_URI, flood_layer_uri=_FLOOD_URI)
+    assert env.n_assets_default_replacement_value == 0

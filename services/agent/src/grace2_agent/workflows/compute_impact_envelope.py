@@ -452,9 +452,15 @@ async def compute_impact_envelope(
         flood_layer_uri,
     )
     try:
+        # M5.5 provenance threading: pass the fragility set actually used in
+        # the upstream Pelicun step so the envelope's provenance reflects the
+        # run that happened (rather than postprocess_pelicun's hardcoded
+        # default). realization_count is not exposed on this composer's surface
+        # today, so it is left to the postprocess default (100).
         envelope = await postprocess_pelicun(
             damage_layer_uri=damage_uri,
             flood_layer_uri=flood_layer_uri,
+            fragility_set=fragility,
         )
     except PelicunPostprocessError as exc:
         raise ComputeImpactEnvelopePostprocessError(

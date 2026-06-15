@@ -265,6 +265,9 @@ async def test_chains_geocode_then_inventory_then_pelicun_then_postprocess() -> 
     pp_kwargs = postprocess_mock.await_args.kwargs
     assert pp_kwargs["damage_layer_uri"] == _DAMAGE_URI
     assert pp_kwargs["flood_layer_uri"] == _FLOOD_URI
+    # M5.5 provenance threading: the composer forwards the fragility set it
+    # actually ran upstream so the envelope provenance is not a constant.
+    assert pp_kwargs["fragility_set"] == "hazus_flood_v6"
 
     # Result shape.
     assert set(result.keys()) == {
@@ -290,6 +293,57 @@ async def test_chains_geocode_then_inventory_then_pelicun_then_postprocess() -> 
     assert "generated_at" in prov
 
     assert result["raw_envelope"] is envelope_dict
+
+
+# --------------------------------------------------------------------------- #
+# Test 3b — custom fragility set threads through to postprocess (M5.5).
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_custom_fragility_set_threads_to_postprocess() -> None:
+    """A non-default fragility_set reaches Pelicun AND postprocess provenance."""
+    nsi_layer = _mock_layer_uri(_NSI_URI)
+    damage_layer = _mock_layer_uri(_DAMAGE_URI)
+    envelope_dict = _mock_envelope_dict()
+
+    nsi_mock = MagicMock(return_value=nsi_layer)
+    pelicun_mock = MagicMock(return_value=damage_layer)
+    postprocess_mock = AsyncMock(return_value=envelope_dict)
+
+    nsi_orig = TOOL_REGISTRY["fetch_usace_nsi"]
+    pelicun_orig = TOOL_REGISTRY["run_pelicun_damage_assessment"]
+    fake_nsi = type(nsi_orig)(metadata=nsi_orig.metadata, fn=nsi_mock, module=nsi_orig.module)
+    fake_pelicun = type(pelicun_orig)(
+        metadata=pelicun_orig.metadata, fn=pelicun_mock, module=pelicun_orig.module
+    )
+
+    with (
+        patch.dict(
+            TOOL_REGISTRY,
+            {
+                "fetch_usace_nsi": fake_nsi,
+                "run_pelicun_damage_assessment": fake_pelicun,
+            },
+        ),
+        patch(
+            "grace2_agent.workflows.compute_impact_envelope.postprocess_pelicun",
+            new=postprocess_mock,
+        ),
+    ):
+        await compute_impact_envelope(
+            flood_layer_uri=_FLOOD_URI,
+            bbox=_FT_MYERS_BBOX,
+            fragility_set="hazus_flood_v7_custom",
+        )
+
+    # Pelicun ran with the custom set.
+    assert pelicun_mock.call_args.kwargs["fragility_set"] == "hazus_flood_v7_custom"
+    # postprocess received the same set for provenance.
+    assert (
+        postprocess_mock.await_args.kwargs["fragility_set"]
+        == "hazus_flood_v7_custom"
+    )
 
 
 # --------------------------------------------------------------------------- #

@@ -631,6 +631,11 @@ export function App(): JSX.Element {
     // client-side rule). Charts for the new Case replay via
     // activeSession.charts below; on null (no active Case) we clear.
     setCharts([]);
+    // M5.5: the ImpactPanel is per-Case ephemeral state. Without this reset
+    // the slide-out from the previous Case bled into the next Case on switch
+    // (same client-side replace-not-reconcile gap as charts). It re-populates
+    // when the new Case's agent emits a fresh impact-envelope.
+    setImpactEnvelope(null);
 
     if (activeSession === null) {
       bus.pushSessionState({

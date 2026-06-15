@@ -326,7 +326,19 @@ def _damage_state_distribution(
     contract dict is always full-shape).  Asserts the bin counts sum equals
     the total feature count — this is the design § 2.1 closure check.
     """
-    modal = np.round(np.asarray(ds_mean, dtype=np.float64)).clip(0, 4).astype(int)
+    arr = np.asarray(ds_mean, dtype=np.float64)
+    # Invariant 7 (job-0300): a non-finite ds_mean (NaN/inf — only possible from a
+    # malformed/foreign damage FGB) would survive .clip() and become INT64_MIN under
+    # .astype(int), then index out of _DS_LABELS with a raw IndexError. Refuse to
+    # fabricate a damage-state distribution from bad input — fail honestly instead.
+    if arr.size and not np.all(np.isfinite(arr)):
+        n_bad = int(np.count_nonzero(~np.isfinite(arr)))
+        raise PelicunPostprocessSchemaError(
+            f"{n_bad} of {arr.size} ds_mean values are non-finite (NaN/inf); refusing "
+            "to fabricate a damage-state distribution from a malformed damage layer "
+            "(Invariant 7). Re-run the Pelicun assessment to regenerate ds_mean."
+        )
+    modal = np.round(arr).clip(0, 4).astype(int)
     counts = {label: 0 for label in _DS_LABELS}
     if len(modal) > 0:
         unique, freq = np.unique(modal, return_counts=True)
@@ -561,6 +573,18 @@ def _aggregate_gdf(
         damage_layer_uri, flood_layer_uri
     )
 
+    # Invariant 7 (job-0300): count assets whose loss figure rests on a HAZUS
+    # class-default replacement value (NSI lacked a usable val_struct, or the
+    # MS-buildings path which is default-by-design) so the envelope surfaces how
+    # much of expected_loss_usd is default-based rather than measured. Column
+    # absent on legacy/foreign FGBs -> 0 (an honest "not tracked").
+    if "replacement_value_defaulted" in getattr(gdf, "columns", []):
+        n_default_rv = int(
+            np.asarray(gdf["replacement_value_defaulted"]).astype(bool).sum()
+        )
+    else:
+        n_default_rv = 0
+
     envelope = ImpactEnvelope(
         n_structures_total=n_total,
         n_structures_damaged=n_damaged,
@@ -582,6 +606,7 @@ def _aggregate_gdf(
         flood_layer_uri=flood_layer_uri or "n/a",
         fragility_set=fragility_set,
         realization_count=realization_count,
+        n_assets_default_replacement_value=n_default_rv,
         generated_at=datetime.now(timezone.utc),
     )
     return envelope
@@ -679,6 +704,14 @@ def _damaged_centroids(
 async def postprocess_pelicun(
     damage_layer_uri: str,
     flood_layer_uri: str | None = None,
+    # sprint-14-aws (M5.5): provenance threading. When the composer knows the
+    # fragility set / realization count it actually ran upstream, it passes
+    # them through so the envelope's provenance reflects the run that happened
+    # rather than the hardcoded defaults. Default to None -> _aggregate_gdf's
+    # back-compatible constants (hazus_flood_v6 / 100) so existing callers and
+    # the LLM-facing surface are unchanged.
+    fragility_set: str | None = None,
+    realization_count: int | None = None,
     # job-0164: absorb LLM-invented kwargs (Tool argument normalizer ratchet).
     **_extra_ignored: Any,
 ) -> dict[str, Any]:
@@ -705,6 +738,12 @@ async def postprocess_pelicun(
         flood_layer_uri: gs:// URI (or local path) to the hazard raster that
             was the upstream ``hazard_raster_uri``. Optional — carried forward
             for provenance only.
+        fragility_set: the fragility set actually used in the upstream Pelicun
+            run (e.g. ``"hazus_flood_v6"``). Optional — when omitted the
+            envelope reports the back-compatible default. The composer threads
+            the real value so the envelope provenance reflects the run.
+        realization_count: the Monte-Carlo realization count actually used
+            upstream. Optional — defaults to the back-compatible 100.
 
     Returns:
         A dict (``ImpactEnvelope.model_dump(mode="json")``) carrying:
@@ -770,10 +809,19 @@ async def postprocess_pelicun(
                 f"geopandas failed to read FlatGeobuf {damage_uri!r}: {exc}"
             ) from exc
 
+        # sprint-14-aws (M5.5): forward the run-provenance overrides only when
+        # the caller actually supplied them; otherwise _aggregate_gdf's
+        # back-compatible defaults (hazus_flood_v6 / 100) apply unchanged.
+        agg_kwargs: dict[str, Any] = {}
+        if fragility_set is not None:
+            agg_kwargs["fragility_set"] = fragility_set
+        if realization_count is not None:
+            agg_kwargs["realization_count"] = realization_count
         envelope = _aggregate_gdf(
             gdf,
             damage_layer_uri=damage_uri,
             flood_layer_uri=flood_uri,
+            **agg_kwargs,
         )
     finally:
         if was_remote and local_path:
