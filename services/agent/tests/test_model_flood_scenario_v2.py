@@ -511,3 +511,123 @@ async def test_raster_path_unreadable_raster_returns_failed_envelope() -> None:
     assert envelope.flood is not None
     # The PrecipForcingError code is threaded into solver_version.
     assert "PRECIP_RASTER_READ_FAILED" in envelope.flood.metrics.solver_version
+
+
+# --------------------------------------------------------------------------- #
+# sprint-14-aws (Track C / Case 3) — s3:// forcing-raster read via boto3
+# stage-then-open. GDAL's /vsis3/ does NOT resolve the EC2 instance-role creds
+# in this env (job-0293c lesson); the s3:// branch of
+# compute_precip_area_mean_mm_per_hr must fetch bytes via
+# cache.read_object_bytes_s3 then open them in a rasterio MemoryFile. These
+# tests monkeypatch the boto3 reader to return a synthetic local COG's bytes so
+# the s3 code path is exercised WITHOUT any cloud call.
+# --------------------------------------------------------------------------- #
+
+
+def test_s3_forcing_read_computes_area_mean_via_boto3() -> None:
+    """s3:// forcing raster → bytes staged via boto3 reader → same area-mean.
+
+    Asserts the s3 branch produces a magnitude byte-identical to the local-file
+    path for the same raster content (the synthetic-raster expectation reused
+    from ``test_area_mean_from_synthetic_raster``), proving the boto3
+    stage-then-open seam preserves the netamt computation.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        # Uniform 48.0 mm over 24 hr → 2.0 mm/hr (mirror the local-file test).
+        uniform = np.full((10, 10), 48.0, dtype="float32")
+        p_uniform = _write_precip_raster(tmp / "uniform.tif", uniform)
+        raster_bytes = p_uniform.read_bytes()
+
+        # The s3 branch imports read_object_bytes_s3 from grace2_agent.tools.cache
+        # at call time; patch it there so it returns our synthetic COG bytes and
+        # asserts it received the s3:// URI verbatim.
+        def _fake_read_object_bytes_s3(uri: str) -> bytes:
+            assert uri == "s3://test-cache/cache/mrms/precip.tif"
+            return raster_bytes
+
+        with patch(
+            "grace2_agent.tools.cache.read_object_bytes_s3",
+            side_effect=_fake_read_object_bytes_s3,
+        ) as mock_s3:
+            mag, mean_mm = compute_precip_area_mean_mm_per_hr(
+                "s3://test-cache/cache/mrms/precip.tif",
+                _BBOX,
+                accumulation_hours=24.0,
+            )
+        mock_s3.assert_called_once()
+        assert mean_mm == pytest.approx(48.0)
+        assert mag == pytest.approx(2.0)
+
+
+def test_s3_forcing_read_empty_raster_raises_precip_forcing_error() -> None:
+    """s3:// raster with no valid cells → PRECIP_RASTER_EMPTY (Invariant 7).
+
+    The honest-failure path must survive the boto3 stage-then-open seam: the
+    bytes are read fine, but the all-nodata mask collapses to size 0 → typed
+    PrecipForcingError, NOT a fabricated rain rate.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        all_nodata = np.full((6, 6), -9999.0, dtype="float32")
+        p = _write_precip_raster(tmp / "empty.tif", all_nodata, nodata=-9999.0)
+        raster_bytes = p.read_bytes()
+
+        with patch(
+            "grace2_agent.tools.cache.read_object_bytes_s3",
+            return_value=raster_bytes,
+        ):
+            with pytest.raises(PrecipForcingError) as excinfo:
+                compute_precip_area_mean_mm_per_hr(
+                    "s3://test-cache/cache/mrms/empty.tif",
+                    _BBOX,
+                    accumulation_hours=24.0,
+                )
+        assert excinfo.value.error_code == "PRECIP_RASTER_EMPTY"
+
+
+def test_s3_forcing_read_boto3_failure_raises_read_failed() -> None:
+    """A boto3 ClientError on the s3:// stage surfaces as PRECIP_RASTER_READ_FAILED.
+
+    Threads through the failed-envelope path downstream (same as the unreadable
+    local-file test) rather than crashing the workflow.
+    """
+    with patch(
+        "grace2_agent.tools.cache.read_object_bytes_s3",
+        side_effect=RuntimeError("boto3 get_object failed: AccessDenied"),
+    ):
+        with pytest.raises(PrecipForcingError) as excinfo:
+            compute_precip_area_mean_mm_per_hr(
+                "s3://test-cache/cache/mrms/precip.tif",
+                _BBOX,
+                accumulation_hours=24.0,
+            )
+    assert excinfo.value.error_code == "PRECIP_RASTER_READ_FAILED"
+
+
+def test_gs_forcing_read_path_unchanged_does_not_call_boto3() -> None:
+    """Regression: gs:// (and local) forcing reads must NOT touch the boto3 seam.
+
+    The s3 branch is gated on the ``s3://`` prefix; a gs:// URI stays on the
+    _to_vsigs/rasterio path. We assert read_object_bytes_s3 is never called and
+    that _to_vsigs IS used to build the read path for the gs:// URI.
+    """
+    gs_uri = "gs://test-cache/cache/mrms/precip.tif"
+    with (
+        patch(
+            "grace2_agent.tools.cache.read_object_bytes_s3",
+            side_effect=AssertionError("boto3 reader must not be called for gs://"),
+        ),
+        patch(
+            "grace2_agent.workflows.model_flood_scenario._to_vsigs",
+            return_value="/vsigs/test-cache/cache/mrms/precip.tif",
+        ) as mock_to_vsigs,
+        patch("rasterio.open", side_effect=RuntimeError("vsigs open stubbed")),
+    ):
+        with pytest.raises(PrecipForcingError) as excinfo:
+            compute_precip_area_mean_mm_per_hr(
+                gs_uri, _BBOX, accumulation_hours=24.0
+            )
+        # Failure is the stubbed rasterio.open (proves the gs:// branch was taken).
+        assert excinfo.value.error_code == "PRECIP_RASTER_READ_FAILED"
+        mock_to_vsigs.assert_called_once_with(gs_uri)

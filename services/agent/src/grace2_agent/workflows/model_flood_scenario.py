@@ -349,13 +349,31 @@ def compute_precip_area_mean_mm_per_hr(
             f"rasterio/numpy not available for precip area-mean: {exc}",
         ) from exc
 
-    # GCS URIs → /vsigs/ for rasterio's GDAL backend (job-0170 — keeps the
-    # fragile gcsfs path out of the read). Local/file:// paths pass through.
-    read_path = _to_vsigs(forcing_raster_uri)
+    # Scheme dispatch for the forcing-raster read:
+    #   s3://  — boto3 stage-then-open (sprint-14-aws / job-0293c). GDAL's
+    #            /vsis3/ credential chain does NOT resolve the EC2 instance role
+    #            in this env (boto3 does) — observed live: "does not exist" on an
+    #            existing object. Stage the bytes via the shared boto3 reader and
+    #            open in-memory (MemoryFile frees with the dataset; no temp-file
+    #            leak — mirrors extract_landcover_class._open_source). The MRMS
+    #            COG is bbox-clipped/small, so a whole-file fetch is safe.
+    #   gs:// / /vsigs/ / file:// / local — keep the GDAL /vsigs/ path (job-0170
+    #            — keeps the fragile gcsfs path out of the read; local pass-through).
     try:
-        with rasterio.open(read_path) as src:
-            arr = src.read(1).astype("float64")
-            nodata = src.nodata
+        if forcing_raster_uri.startswith("s3://"):
+            from rasterio.io import MemoryFile  # type: ignore[import-not-found]
+
+            from ..tools.cache import read_object_bytes_s3
+
+            with MemoryFile(read_object_bytes_s3(forcing_raster_uri)) as mf:
+                with mf.open() as src:
+                    arr = src.read(1).astype("float64")
+                    nodata = src.nodata
+        else:
+            read_path = _to_vsigs(forcing_raster_uri)
+            with rasterio.open(read_path) as src:
+                arr = src.read(1).astype("float64")
+                nodata = src.nodata
     except Exception as exc:  # noqa: BLE001
         raise PrecipForcingError(
             "PRECIP_RASTER_READ_FAILED",

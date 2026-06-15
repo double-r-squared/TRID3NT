@@ -529,8 +529,17 @@ def _to_vsigs(uri: str) -> str:
     as a local path (the caller's resolver layer is the gate).
 
     job-0291 (sprint-14-aws): ``s3://`` URIs map to GDAL's native ``/vsis3/``
-    virtual filesystem (libcurl-backed; resolves the EC2 instance-role
-    credentials via IMDS — the same auth path boto3 uses).
+    virtual filesystem string. WARNING (job-0293c live observation): GDAL's
+    ``/vsis3/`` credential chain does NOT resolve the EC2 instance role in this
+    environment — it falls back to anonymous and reports "does not exist" /
+    AccessDenied on an existing private object. boto3 DOES resolve the instance
+    role. Therefore any caller that intends to ``rasterio.open`` an ``s3://``
+    object MUST NOT route it through this function; it must stage the bytes via
+    ``cache.read_object_bytes_s3`` and open them from a ``rasterio.io.MemoryFile``
+    (see ``model_flood_scenario.compute_precip_area_mean_mm_per_hr`` and
+    ``_extract_unique_nlcd_classes`` below, plus the clip / landcover tools).
+    The ``s3://`` → ``/vsis3/`` mapping is retained only for non-rasterio string
+    consumers; it is NOT a working read path on this instance.
 
     Args:
         uri: ``gs://...`` GCS URI, ``s3://...`` S3 URI, ``/vsigs/...`` /
@@ -638,21 +647,40 @@ def _extract_unique_nlcd_classes(landcover_uri: str) -> set[int]:
             details={"landcover_uri": landcover_uri},
         ) from exc
 
-    # GCS URIs need to be rewritten to the /vsigs/ form for rasterio's
-    # GDAL backend. ``_to_vsigs`` handles ``gs://`` + ``file://`` + local
-    # paths uniformly (job-0170 — kills the gcsfs path that segfaulted
-    # inside the cyfunction destructor under HydroMT).
-    read_path = _to_vsigs(landcover_uri)
-
+    # Scheme dispatch for the NLCD validation-gate read:
+    #   s3://  — boto3 stage-then-open (sprint-14-aws / job-0293c). GDAL's
+    #            /vsis3/ credential chain does NOT resolve the EC2 instance role
+    #            in this env (boto3 does) — observed live: "does not exist" on an
+    #            existing object. Stage the bytes via the shared boto3 reader and
+    #            open in-memory (mirrors extract_landcover_class._open_source).
+    #            This gate runs on EVERY model_flood_scenario call, so it must be
+    #            AWS-correct for Case 1 / Case 3 / plain flood to reach the solver.
+    #   gs:// / /vsigs/ / file:// / local — keep the GDAL /vsigs/ path (job-0170
+    #            — kills the gcsfs path that segfaulted inside the cyfunction
+    #            destructor under HydroMT) with the transient-HTTP retry wrapper.
+    read_path = landcover_uri  # echoed into the error envelope below
     try:
-        # ``_rasterio_open_with_retry`` wraps transient ``/vsigs/`` HTTP
-        # failures in exponential backoff; programming errors escape.
-        src = _rasterio_open_with_retry(read_path)
-        try:
-            arr = src.read(1)
-            nodata = src.nodata
-        finally:
-            src.close()
+        if landcover_uri.startswith("s3://"):
+            from rasterio.io import MemoryFile  # type: ignore[import-not-found]
+
+            from ..tools.cache import read_object_bytes_s3
+
+            src = MemoryFile(read_object_bytes_s3(landcover_uri)).open()
+            try:
+                arr = src.read(1)
+                nodata = src.nodata
+            finally:
+                src.close()
+        else:
+            # ``_rasterio_open_with_retry`` wraps transient ``/vsigs/`` HTTP
+            # failures in exponential backoff; programming errors escape.
+            read_path = _to_vsigs(landcover_uri)
+            src = _rasterio_open_with_retry(read_path)
+            try:
+                arr = src.read(1)
+                nodata = src.nodata
+            finally:
+                src.close()
     except Exception as exc:  # noqa: BLE001
         raise SFINCSSetupError(
             "LANDCOVER_READ_FAILED",

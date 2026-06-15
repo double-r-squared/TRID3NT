@@ -3398,3 +3398,126 @@ def test_rasterio_open_with_retry_exhausts_attempts_and_reraises() -> None:
                 "/vsigs/bucket/key.tif", max_attempts=2
             )
     assert fake_open.call_count == 2
+
+
+# --------------------------------------------------------------------------- #
+# sprint-14-aws (Track C / Case 3) — NLCD validation-gate s3:// read.
+# _extract_unique_nlcd_classes is reached on EVERY model_flood_scenario call
+# (OQ-4 headline gate). Under GRACE2_STORAGE_BACKEND=s3 the landcover_uri is
+# s3://, and GDAL's /vsis3/ creds don't resolve the EC2 instance role
+# (job-0293c) — so the s3 branch must boto3 stage-then-open. These tests
+# monkeypatch the boto3 reader to return a synthetic local NLCD COG's bytes.
+# --------------------------------------------------------------------------- #
+
+
+def _write_nlcd_raster(path: Path, classes: "list[list[int]]") -> Path:
+    """Write a single-band uint8 NLCD-style GeoTIFF with the given class grid."""
+    import numpy as np
+    import rasterio
+    from rasterio.transform import from_bounds
+
+    arr = np.array(classes, dtype="uint8")
+    height, width = arr.shape
+    bbox = (-116.30, 43.55, -116.10, 43.70)  # Idaho (Case 3 geography)
+    transform = from_bounds(bbox[0], bbox[1], bbox[2], bbox[3], width, height)
+    profile = {
+        "driver": "GTiff",
+        "dtype": "uint8",
+        "count": 1,
+        "height": height,
+        "width": width,
+        "crs": "EPSG:4326",
+        "transform": transform,
+        "nodata": 255,
+    }
+    with rasterio.open(path, "w", **profile) as dst:
+        dst.write(arr, 1)
+    return path
+
+
+def test_nlcd_gate_s3_read_extracts_classes_via_boto3() -> None:
+    """s3:// landcover → bytes staged via boto3 reader → unique classes extracted.
+
+    Proves the NLCD validation-gate read survives the boto3 stage-then-open seam
+    on AWS (the gate that runs before the flood solver on every call). The
+    nodata sentinel (255) is excluded just like the local/gs:// path.
+    """
+    from grace2_agent.workflows import sfincs_builder
+
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        # Classes 11 (water), 41 (forest), 81 (pasture) + 255 nodata sentinel.
+        p = _write_nlcd_raster(
+            tmp / "nlcd.tif",
+            [[11, 41, 81], [11, 255, 81], [41, 41, 11]],
+        )
+        raster_bytes = p.read_bytes()
+
+        def _fake_read_object_bytes_s3(uri: str) -> bytes:
+            assert uri == "s3://test-cache/cache/landcover/nlcd.tif"
+            return raster_bytes
+
+        with patch(
+            "grace2_agent.tools.cache.read_object_bytes_s3",
+            side_effect=_fake_read_object_bytes_s3,
+        ) as mock_s3:
+            classes = sfincs_builder._extract_unique_nlcd_classes(
+                "s3://test-cache/cache/landcover/nlcd.tif"
+            )
+        mock_s3.assert_called_once()
+        # 255 (nodata) excluded; the three real classes present.
+        assert classes == {11, 41, 81}
+
+
+def test_nlcd_gate_s3_read_boto3_failure_raises_landcover_read_failed() -> None:
+    """A boto3 failure on the s3:// NLCD stage → typed LANDCOVER_READ_FAILED.
+
+    Mirrors the local/gs:// failure wrapping so the failed-envelope path still
+    threads the typed error (no uncaught crash before the solver).
+    """
+    from grace2_agent.workflows import sfincs_builder
+
+    with patch(
+        "grace2_agent.tools.cache.read_object_bytes_s3",
+        side_effect=RuntimeError("boto3 get_object failed: AccessDenied"),
+    ):
+        with pytest.raises(SFINCSSetupError) as excinfo:
+            sfincs_builder._extract_unique_nlcd_classes(
+                "s3://test-cache/cache/landcover/nlcd.tif"
+            )
+    assert excinfo.value.error_code == "LANDCOVER_READ_FAILED"
+    assert excinfo.value.details["landcover_uri"] == (
+        "s3://test-cache/cache/landcover/nlcd.tif"
+    )
+
+
+def test_nlcd_gate_gs_read_unchanged_does_not_call_boto3() -> None:
+    """Regression: gs:// (and local) NLCD reads must NOT touch the boto3 seam.
+
+    The s3 branch is gated on the ``s3://`` prefix; a gs:// URI stays on the
+    _to_vsigs/_rasterio_open_with_retry path. Assert read_object_bytes_s3 is
+    never called and _to_vsigs is used for the gs:// path.
+    """
+    from grace2_agent.workflows import sfincs_builder
+
+    gs_uri = "gs://test-cache/cache/landcover/nlcd.tif"
+    with (
+        patch(
+            "grace2_agent.tools.cache.read_object_bytes_s3",
+            side_effect=AssertionError("boto3 reader must not be called for gs://"),
+        ),
+        patch.object(
+            sfincs_builder,
+            "_to_vsigs",
+            return_value="/vsigs/test-cache/cache/landcover/nlcd.tif",
+        ) as mock_to_vsigs,
+        patch.object(
+            sfincs_builder,
+            "_rasterio_open_with_retry",
+            side_effect=RuntimeError("vsigs open stubbed"),
+        ),
+    ):
+        with pytest.raises(SFINCSSetupError) as excinfo:
+            sfincs_builder._extract_unique_nlcd_classes(gs_uri)
+        assert excinfo.value.error_code == "LANDCOVER_READ_FAILED"
+        mock_to_vsigs.assert_called_once_with(gs_uri)
