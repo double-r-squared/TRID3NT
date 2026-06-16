@@ -880,6 +880,199 @@ def build_contents_from_history(
     return contents
 
 
+# Default cap on the number of persisted chat rows rehydrated into the live
+# Gemini context on a Case reopen (F17 / ux-batch-1 J8). A long-running Case
+# can accumulate hundreds of user/agent/tool rows; replaying all of them every
+# reopen turn would blow the context window (and the per-turn cost). We keep
+# the MOST RECENT rows (the tail carries the relevant recent state — what the
+# user just did and what is on the map now). The injected layers-present note
+# (built separately) is the durable anchor for older work, so dropping the head
+# of a long transcript does not lose "what layers already exist".
+REHYDRATE_HISTORY_CAP = 40
+
+
+def _summarize_tool_row_for_history(content: str, tool_card: Any) -> str:
+    """Collapse a persisted ``role="tool"`` row into one model-side text line.
+
+    F17: the persisted store keeps tool turns as a ``ToolCardRecord`` (typed
+    ``tool_card`` + a JSON-string mirror in ``content``); the full-fidelity
+    function_call / function_response Parts are NOT persisted, so we cannot
+    rebuild a real tool turn. A short text transcript line is enough to stop
+    recompute — the model only needs to know the tool already ran and how it
+    came out. Shape: ``[tool <name> completed]`` / ``[tool <name> failed]``.
+
+    Falls back to parsing ``content`` (the JSON mirror) when the typed
+    ``tool_card`` is absent (pre-job-0267 / non-contract consumers).
+    """
+    name: str | None = None
+    state: str | None = None
+    # Prefer the typed record (duck-typed: ToolCardRecord or a dict).
+    if tool_card is not None:
+        name = getattr(tool_card, "tool_name", None)
+        state = getattr(tool_card, "state", None)
+        if name is None and isinstance(tool_card, dict):
+            name = tool_card.get("tool_name")
+            state = tool_card.get("state")
+    if name is None and content:
+        try:
+            import json as _json
+
+            parsed = _json.loads(content)
+            if isinstance(parsed, dict):
+                name = parsed.get("tool_name")
+                state = parsed.get("state")
+        except Exception:  # noqa: BLE001 — content may not be JSON
+            pass
+    if not name:
+        return ""
+    outcome = "failed" if state == "failed" else "completed"
+    return f"[tool {name} {outcome}]"
+
+
+def _format_aoi_bbox_line(case_bbox: Any) -> str | None:
+    """Format the Case AOI bbox as a single durable instruction line (F17/F20).
+
+    ``case_bbox`` is the Case's persisted ``[lon_min, lat_min, lon_max,
+    lat_max]`` (``CaseSummary.bbox``). Returns ``None`` for missing / malformed
+    bboxes. This line is the AOI ANCHOR that must survive history capping —
+    long Cases drop the head user turn that named the place, so without an
+    explicit bbox a follow-up that fetches fresh data (e.g. a DEM for a
+    hillshade) loses the extent and re-geocodes / mis-scopes (panel-flagged).
+    """
+    if not isinstance(case_bbox, (list, tuple)) or len(case_bbox) != 4:
+        return None
+    try:
+        b = [float(x) for x in case_bbox]
+    except (TypeError, ValueError):
+        return None
+    return (
+        f"Case AOI bbox [lon_min, lat_min, lon_max, lat_max] = "
+        f"[{b[0]}, {b[1]}, {b[2]}, {b[3]}]. REUSE this exact extent for any "
+        "follow-up data fetch or clip in this Case — do NOT re-derive or "
+        "re-geocode the area."
+    )
+
+
+def build_layers_present_note(
+    loaded_layers: list[dict] | None,
+    case_bbox: Any = None,
+) -> str | None:
+    """Build the compact "Case state" model turn (F17): layers + AOI bbox.
+
+    ``loaded_layers`` is the persisted ``CaseSessionState.loaded_layers`` —
+    a list of ``ProjectLayerSummary`` ``model_dump(mode="json")`` dicts. We
+    surface only ``layer_id`` / ``name`` / ``layer_type`` per entry so the
+    model knows what is already on the map and reuses the existing layers and
+    handles instead of recomputing them. ``case_bbox`` (``CaseSummary.bbox``)
+    is appended as a durable AOI anchor so the extent survives history capping
+    (F20: follow-ups reuse the original AOI). Returns ``None`` only when there
+    is neither a layer nor a usable bbox. Kept deliberately short.
+    """
+    lines: list[str] = []
+    for layer in loaded_layers or []:
+        if not isinstance(layer, dict):
+            continue
+        layer_id = layer.get("layer_id") or "?"
+        name = layer.get("name") or layer_id
+        layer_type = layer.get("layer_type") or "?"
+        lines.append(f"- {name} (id={layer_id}, {layer_type})")
+    bbox_line = _format_aoi_bbox_line(case_bbox)
+    if not lines and not bbox_line:
+        return None
+    segments: list[str] = []
+    if lines:
+        segments.append(
+            "These layers are ALREADY produced and on the map for this Case. "
+            "Reuse them (and their handles) — do NOT recompute them:\n"
+            + "\n".join(lines)
+        )
+    if bbox_line:
+        segments.append(bbox_line)
+    return "[Case state] " + "\n".join(segments)
+
+
+def rehydrate_history_from_case(
+    chat_messages: list[Any] | None,
+    loaded_layers: list[dict] | None = None,
+    *,
+    cap: int = REHYDRATE_HISTORY_CAP,
+    case_bbox: Any = None,
+) -> tuple[list[dict], int]:
+    """Convert a Case's persisted chat into the ``chat_history`` dict shape (F17).
+
+    On a Case reopen the server resets ``state.chat_history = []`` (the
+    job-0245 cross-case clean-slate). Without rehydration the model has no
+    memory of prior work and recomputes (e.g. a follow-up hillshade ask in the
+    Fort Myers flood Case re-runs the whole flood). This converts the PERSISTED
+    PER-CASE messages — the same data that drives the visible chat replay —
+    into the lightweight TEXT-turn dict shape ``build_contents_from_history``
+    consumes, so the live LLM regains that memory.
+
+    Args:
+        chat_messages: ordered ``CaseChatMessage`` list (oldest-first) for THIS
+            Case. Each has ``role`` in {user, agent, system, tool}, a ``content``
+            string, and (for tool rows) a ``tool_card``. Duck-typed so a dict
+            shape also works.
+        loaded_layers: the Case's persisted ``loaded_layers`` (used to build the
+            layers-present note appended as the LAST history turn).
+        cap: bound on the number of REPLAYED rows (tail-kept). Defaults to
+            ``REHYDRATE_HISTORY_CAP``.
+
+    Returns:
+        ``(history, dropped)`` where ``history`` is the dict list ready for
+        ``build_contents_from_history`` (role/text turns; tool rows collapsed
+        to a model-side text line; layers-present note appended last as a
+        ``model`` turn) and ``dropped`` is how many head rows were elided by
+        the cap (for the caller to log).
+
+    Guardrail (job-0245): this function ONLY ever sees ONE Case's persisted
+    messages (the caller passes ``session_state.chat_history`` for the opened
+    ``case_id``). The persisted store is keyed by Case, so this is inherently
+    case-correct and cannot reintroduce the in-memory cross-case leak.
+    """
+    rows = list(chat_messages or [])
+    dropped = 0
+    if cap >= 0 and len(rows) > cap:
+        dropped = len(rows) - cap
+        rows = rows[-cap:]
+
+    history: list[dict] = []
+    for msg in rows:
+        role = getattr(msg, "role", None)
+        content = getattr(msg, "content", None)
+        tool_card = getattr(msg, "tool_card", None)
+        if role is None and isinstance(msg, dict):
+            role = msg.get("role")
+            content = msg.get("content")
+            tool_card = msg.get("tool_card")
+        content = content or ""
+        if role == "tool":
+            line = _summarize_tool_row_for_history(content, tool_card)
+            if line:
+                # Tool transcript reads as model-side narration of what ran.
+                history.append({"role": "model", "text": line})
+            continue
+        if role == "user":
+            if content.strip():
+                history.append({"role": "user", "text": content})
+            continue
+        if role in ("agent", "assistant", "model", "system"):
+            if content.strip():
+                # ``agent`` collapses to ``model`` inside
+                # build_contents_from_history; ``system`` has no native Gemini
+                # role, so fold it to model-side context text (safer for
+                # routing than re-injecting it as a fresh ``user`` instruction).
+                history.append({"role": "agent", "text": content})
+            continue
+        # Unknown role: skip rather than guess.
+
+    note = build_layers_present_note(loaded_layers, case_bbox=case_bbox)
+    if note:
+        history.append({"role": "model", "text": note})
+
+    return history, dropped
+
+
 def encode_parts_blob(parts: list[genai_types.Part]) -> bytes:
     """Encode a list of ``Part`` to the ``parts_blob`` wire shape (job-B10).
 

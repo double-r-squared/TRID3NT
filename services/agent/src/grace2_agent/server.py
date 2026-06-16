@@ -48,6 +48,7 @@ from grace2_contracts.case import (
     CaseCommandEnvelopePayload,
     CaseListEnvelopePayload,
     CaseOpenEnvelopePayload,
+    CaseSessionState,
     CaseSummary,
     ToolCardRecord,
 )
@@ -90,6 +91,8 @@ from .adapter import (
     build_function_response_content,
     build_tool_declarations,
     load_settings,
+    rehydrate_history_from_case,
+    REHYDRATE_HISTORY_CAP,
     stream_events,  # noqa: F401 — retained for tests / direct text-only callers
     stream_events_with_contents,
     stream_reply,  # noqa: F401 — retained for any callers that use it directly
@@ -1683,6 +1686,61 @@ async def _emit_case_list(websocket: ServerConnection, state: SessionState) -> N
     )
 
 
+def _rehydrate_case_history(
+    state: SessionState,
+    session_state: CaseSessionState,
+    case_id: str,
+) -> None:
+    """Refill ``state.chat_history`` from a Case's PERSISTED messages (F17).
+
+    Called right after the ``state.chat_history = []`` reset in both
+    ``_emit_case_open`` and ``_sync_case_context``. Converts the per-Case
+    persisted ``CaseChatMessage`` list (oldest-first) into the lightweight
+    TEXT-turn dict shape ``build_contents_from_history`` consumes, appends a
+    compact "layers already present" model turn (built from
+    ``session_state.loaded_layers``), and bounds the replay to the last
+    ``REHYDRATE_HISTORY_CAP`` rows so a long Case cannot blow the context
+    window. Best-effort: any failure leaves the (empty) reset history intact
+    rather than breaking the Case open / turn.
+
+    Guardrail (job-0245): ``session_state`` belongs to exactly ONE
+    ``case_id`` (the persisted store is keyed by Case). Switching Cases loads
+    THAT Case's ``session_state``, so this cannot reintroduce the in-memory
+    cross-case leak job-0245 fixed.
+    """
+    try:
+        # F20 / panel-fix: pass the Case AOI bbox so the layers-present note
+        # carries the exact extent. It survives history capping, so a long
+        # Case whose head turn (which named the place) was dropped can still
+        # reuse the original AOI for follow-up fetch/clip instead of
+        # re-geocoding / mis-scoping.
+        case_bbox = getattr(getattr(session_state, "case", None), "bbox", None)
+        history, dropped = rehydrate_history_from_case(
+            session_state.chat_history,
+            session_state.loaded_layers,
+            case_bbox=case_bbox,
+        )
+        # job-0269: REBIND, never extend the entry-captured list — assigning a
+        # fresh object keeps an in-flight turn's captured history untouched.
+        state.chat_history = history
+        if dropped:
+            logger.info(
+                "case-history-rehydrate session=%s case=%s dropped_head=%d "
+                "kept=%d (cap=%d)",
+                state.session_id,
+                case_id,
+                dropped,
+                len(history),
+                REHYDRATE_HISTORY_CAP,
+            )
+    except Exception:  # noqa: BLE001 — rehydration is best-effort
+        logger.exception(
+            "case-history-rehydrate failed session=%s case=%s",
+            state.session_id,
+            case_id,
+        )
+
+
 async def _sync_case_context(
     websocket: ServerConnection, state: SessionState
 ) -> None:
@@ -1741,11 +1799,20 @@ async def _sync_case_context(
         get_uri_registry(state.session_id).seed_from_layers(
             session_state.loaded_layers
         )
+        # F17 (ux-batch-1 J8): rehydrate this connection's LLM context from the
+        # SAME persisted per-Case store. The ``state.chat_history = []`` above
+        # is the job-0259/0245 cross-connection clean-slate; refilling it from
+        # ``current``'s persisted messages (already fetched into
+        # ``session_state``; do NOT re-fetch) lets a sibling-connection /
+        # reconnect turn see prior work and stop recomputing. Per-Case store
+        # ⇒ case-correct; switching Cases loads THAT Case's history.
+        _rehydrate_case_history(state, session_state, current)
         logger.info(
-            "case-context-sync session=%s case=%s layers=%d",
+            "case-context-sync session=%s case=%s layers=%d rehydrated=%d",
             state.session_id,
             current,
             len(session_state.loaded_layers),
+            len(state.chat_history),
         )
     except Exception:  # noqa: BLE001 — best-effort, never break the turn
         logger.exception(
@@ -1838,12 +1905,23 @@ async def _emit_case_open(
                 "case-open vector re-inline failed case=%s", case_id
             )
 
+    # F17 (ux-batch-1 J8): rehydrate the LLM conversation from THIS Case's
+    # persisted messages so a follow-up turn in a reopened Case sees prior
+    # work and stops recomputing (e.g. a hillshade ask in the Fort Myers flood
+    # Case no longer re-runs the whole flood). The ``state.chat_history = []``
+    # reset above is the job-0245 cross-case clean-slate; we refill it from the
+    # PER-CASE persisted store (``session_state`` — already loaded; do NOT
+    # re-fetch). The store is keyed by Case, so this is inherently case-correct
+    # and cannot reintroduce the job-0245 in-memory cross-case leak.
+    _rehydrate_case_history(state, session_state, case_id)
+
     logger.info(
-        "case-open session=%s case=%s chat=%d layers=%d",
+        "case-open session=%s case=%s chat=%d layers=%d rehydrated=%d",
         state.session_id,
         case_id,
         len(session_state.chat_history),
         len(session_state.loaded_layers),
+        len(state.chat_history),
     )
 
 
