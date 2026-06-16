@@ -1376,7 +1376,12 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
           const MAX_RETRIES = 3;
           const drawExtent = (): void => {
             if (!map.current) return;
-            if (!map.current.isStyleLoaded()) {
+            // INCIDENT FIX 2026-06-16: gate the AOI draw on the mapStyleReady
+            // LATCH, not raw isStyleLoaded() — a hung raster tile keeps
+            // isStyleLoaded() false forever and would stall the bounding-box
+            // draw indefinitely (the "no bounding box" symptom). Once the style
+            // has loaded once, draw regardless of stuck tiles.
+            if (!mapStyleReady(map.current)) {
               map.current.once("idle", drawExtent);
               return;
             }
