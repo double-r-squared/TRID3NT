@@ -1376,6 +1376,12 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
           const MAX_RETRIES = 3;
           const drawExtent = (): void => {
             if (!map.current) return;
+            // INCIDENT FIX 2026-06-16: a Case-exit clear-analysis-extent sets
+            // lastZoomToCorners=null. If a redraw was already queued (the
+            // moveend/idle re-assert below), it must NOT re-add the rectangle
+            // after the clear — otherwise the AOI box persists after leaving the
+            // Case (user-reported). Bail when the corners were cleared.
+            if (lastZoomToCorners.current === null) return;
             // INCIDENT FIX 2026-06-16: gate the AOI draw on the mapStyleReady
             // LATCH, not raw isStyleLoaded() — a hung raster tile keeps
             // isStyleLoaded() false forever and would stall the bounding-box
@@ -1418,7 +1424,12 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
         // the remembered corners FIRST so a late style (re)load can't re-assert
         // the rectangle via the moveend/idle redraw path, then remove it.
         lastZoomToCorners.current = null;
-        if (m.isStyleLoaded()) {
+        // INCIDENT FIX 2026-06-16: gate on mapStyleReady, not raw
+        // isStyleLoaded(). A hung tile (or a mid-flight camera animation) kept
+        // isStyleLoaded() false, so the clear deferred forever and the AOI
+        // rectangle PERSISTED after leaving a Case (user-reported). Once the
+        // style has loaded once, removeLayer/removeSource are safe — clear now.
+        if (mapStyleReady(m)) {
           try {
             clearAnalysisExtent(m);
           } catch {
