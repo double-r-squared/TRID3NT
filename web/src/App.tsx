@@ -662,6 +662,12 @@ export function App(): JSX.Element {
       bus.pushMapCommand({
         command: "clear-analysis-extent",
       } as unknown as MapCommandPayload);
+      // ux-batch-1 (F-CASES-CLEAR-ALL): also snap the camera back to the
+      // default CONUS view so leaving a Case visibly resets the map (the empty
+      // session-state above clears the data layers; this resets the camera).
+      bus.pushMapCommand({
+        command: "reset-view",
+      } as unknown as MapCommandPayload);
       return;
     }
     bus.pushSessionState({

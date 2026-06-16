@@ -235,10 +235,17 @@ interface ZoomToCommand {
 interface ClearAnalysisExtentCommand {
   command: "clear-analysis-extent";
 }
+// ux-batch-1 (F-CASES-CLEAR-ALL): snap the camera back to the default CONUS
+// view. Emitted by App.tsx on Case EXIT (to the Cases root) so leaving a Case
+// visibly resets the map (camera-only — no extent rectangle, unlike zoom-to).
+interface ResetViewCommand {
+  command: "reset-view";
+}
 type WireMapCommand =
   | MapCommandPayload
   | ZoomToCommand
-  | ClearAnalysisExtentCommand;
+  | ClearAnalysisExtentCommand
+  | ResetViewCommand;
 
 // subscribeMapCommand accepts a callback that can handle the wider WireMapCommand.
 // The bus pushes MapCommandPayload values which satisfy WireMapCommand at runtime.
@@ -1423,6 +1430,20 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
             }
           });
         }
+      } else if (payload.command === "reset-view") {
+        // ux-batch-1 (F-CASES-CLEAR-ALL): leaving a Case snaps the camera back
+        // to the default CONUS view so the user clearly sees they are no longer
+        // in a Case. Camera-only — the extent rectangle is cleared separately
+        // by the clear-analysis-extent command App also emits on exit.
+        const prefersReducedMotion =
+          typeof window !== "undefined" &&
+          typeof window.matchMedia === "function" &&
+          window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+        m.flyTo({
+          center: CONUS_VIEW.center,
+          zoom: CONUS_VIEW.zoom,
+          duration: prefersReducedMotion ? 0 : 800,
+        });
       } else if (payload.command === "set-layer-opacity") {
         const opacity = Math.max(0, Math.min(1, payload.opacity));
         applyLayerOpacity(
