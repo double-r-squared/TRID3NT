@@ -67,6 +67,18 @@ const CARTO_DARK_TILE_TEMPLATE = "https://a.basemaps.cartocdn.com/dark_all/{z}/{
 const CARTO_DARK_ATTRIBUTION =
   '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors © <a href="https://carto.com/attributions" target="_blank" rel="noopener noreferrer">CARTO</a>';
 
+// LIGHT-theme basemap — CartoDB Positron raster (CC-BY, no API key, CDN).
+// ux-batch-1 GCP-DECOUPLE FIX (2026-06-16): the light basemap previously
+// pointed at the GCP Cloud Run QGIS Server (DEFAULT_WMS_URL below), a lingering
+// GCP dependency missed in the AWS migration — and that server is private
+// (invoker-only) so the prod site got 403s and the map never settled, which
+// stalled every deferred layer/extent draw (the "layers in panel but not on
+// map / waits to go light->dark" incident). Positron mirrors the dark CartoDB
+// basemap (raster, one-source-one-layer), needs no GCP and no QGIS Server, and
+// keeps both themes working until QGIS Server is re-hosted on AWS (sprint-16).
+const CARTO_LIGHT_TILE_TEMPLATE = "https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png";
+const CARTO_LIGHT_ATTRIBUTION = CARTO_DARK_ATTRIBUTION;
+
 // QGIS Server WMS endpoint. Overridable via VITE_GRACE2_WMS_URL at build/dev
 // start. Default = deployed M2 substrate (job-0018 + job-0024).
 //
@@ -124,13 +136,23 @@ const CONUS_VIEW = {
 const STYLE: StyleSpecification = {
   version: 8,
   sources: {
-    // Active: QGIS Server WMS proxying OSM raster tiles. Authoritative
-    // Tier B rendering path (Invariant 4).
+    // LIGHT basemap. ux-batch-1 GCP-decouple (2026-06-16): was the GCP QGIS
+    // Server WMS (now private/unreachable from prod → dead map). Swapped to
+    // CartoDB Positron (CDN, no GCP, no QGIS Server). Source id kept as
+    // "qgis-wms" so the theme-swap / beforeId logic below is unchanged; it now
+    // serves CartoDB Positron tiles. (Re-point at QGIS Server once it is on AWS
+    // — sprint-16 — via VITE_GRACE2_WMS_URL.)
     "qgis-wms": {
       type: "raster",
-      tiles: [WMS_TILE_TEMPLATE],
+      tiles: [
+        (import.meta.env.VITE_GRACE2_WMS_URL as string | undefined)
+          ? WMS_TILE_TEMPLATE
+          : CARTO_LIGHT_TILE_TEMPLATE,
+      ],
       tileSize: 256,
-      attribution: QGIS_WMS_ATTRIBUTION,
+      attribution: (import.meta.env.VITE_GRACE2_WMS_URL as string | undefined)
+        ? QGIS_WMS_ATTRIBUTION
+        : CARTO_LIGHT_ATTRIBUTION,
       maxzoom: 19,
     },
     // Inactive fallback: OSM direct. FR-DT-1 Tier A swappability proof —

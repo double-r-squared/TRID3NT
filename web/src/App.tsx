@@ -687,14 +687,16 @@ export function App(): JSX.Element {
       const replay = extractLastZoomTo(activeSession.chat_history);
       if (replay) {
         bus.pushMapCommand(replay as unknown as MapCommandPayload);
-      } else if ((activeSession.loaded_layers?.length ?? 0) === 0) {
-        // ux-batch-1 (F14 + F28 fix): clear a left-over extent ONLY when this
-        // Case is genuinely empty — no bbox, no replayable zoom-to, AND no
-        // loaded layers. A Case that HAS layers (e.g. Fort Myers post-flood)
-        // is NOT cleared even when no zoom-to replays, so its AOI rectangle is
-        // never wiped on open (the F28 regression: the over-broad clear removed
-        // a legitimate AOI when the zoom-to replay didn't resolve). Case-EXIT
-        // (activeSession === null) still always clears — that is the F14 case.
+      } else {
+        // ux-batch-1 (F14): this Case has no AOI of its own (no bbox, no
+        // zoom-to replay). ALWAYS clear any extent left over from the
+        // previously viewed Case so switching into a no-AOI Case doesn't
+        // inherit a stale rectangle (the Fort-Myers-bbox-shows-in-Chehalis
+        // bleed). A Case WITH an AOI replaces the extent via the zoom-to above.
+        // (The earlier F28 "skip clear when the Case has layers" was a wrong
+        // band-aid: the bleed was actually the dead-basemap stall swallowing
+        // the clear command, fixed by the CartoDB basemap swap — so the
+        // unconditional clear is correct and bleed-free again.)
         bus.pushMapCommand({
           command: "clear-analysis-extent",
         } as unknown as MapCommandPayload);
