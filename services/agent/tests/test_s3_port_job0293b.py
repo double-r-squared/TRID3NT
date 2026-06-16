@@ -410,7 +410,11 @@ def test_extract_landcover_open_source_gs_branch_unchanged(monkeypatch):
         return _FakeRasterioDataset("EPSG:5070")
 
     monkeypatch.setattr(rasterio, "open", fake_open)
-    _open_source("gs://bkt/nlcd_2021.tif")
+    # job-0305: _open_source is now a context manager (keeps the s3 MemoryFile
+    # alive for the dataset's lifetime). The gs:// branch still rewrites to
+    # /vsigs/ and opens lazily on __enter__.
+    with _open_source("gs://bkt/nlcd_2021.tif") as src:
+        assert src is not None
     assert opened == ["/vsigs/bkt/nlcd_2021.tif"]
 
 

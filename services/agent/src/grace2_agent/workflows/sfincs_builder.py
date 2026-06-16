@@ -665,12 +665,21 @@ def _extract_unique_nlcd_classes(landcover_uri: str) -> set[int]:
 
             from ..tools.cache import read_object_bytes_s3
 
-            src = MemoryFile(read_object_bytes_s3(landcover_uri)).open()
-            try:
-                arr = src.read(1)
-                nodata = src.nodata
-            finally:
-                src.close()
+            # job-0305: keep the MemoryFile ALIVE for the dataset's whole
+            # lifetime. The prior ``MemoryFile(...).open()`` orphaned the
+            # MemoryFile temporary — Python could GC it (freeing its /vsimem/
+            # buffer) DURING ``src.read(1)``, so the read returned the valid
+            # NLCD classes (11-95) from the still-mapped portion PLUS
+            # uninitialized garbage bytes (a continuous 96-254 spread). Live
+            # 2026-06-16: the OQ-4 §4 NLCD validation gate saw ~159 spurious
+            # classes and failed the Fort Myers flood NON-deterministically
+            # (GC-timing-dependent — clean when run standalone, dirty under the
+            # live server's memory pressure). The nested ``with`` pins the
+            # MemoryFile until after the read completes.
+            with MemoryFile(read_object_bytes_s3(landcover_uri)) as _mf:
+                with _mf.open() as src:
+                    arr = src.read(1)
+                    nodata = src.nodata
         else:
             # ``_rasterio_open_with_retry`` wraps transient ``/vsigs/`` HTTP
             # failures in exponential backoff; programming errors escape.

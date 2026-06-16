@@ -65,6 +65,7 @@ and is reserved for a future-vintage opt-in.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import math
 import os
@@ -198,40 +199,59 @@ def _round_bbox(
 # ---------------------------------------------------------------------------
 
 
+@contextlib.contextmanager
 def _open_source(landcover_uri: str) -> Any:
-    """Open the landcover raster with rasterio for read.
+    """Open the landcover raster with rasterio for read (context manager).
 
     For ``gs://`` URIs we go through the GDAL ``/vsigs/`` virtual filesystem so
     that window reads stream just the bytes for the requested window — important
     for nationwide NLCD COGs.
+
+    job-0305: this is a CONTEXT MANAGER (was a plain return-the-dataset
+    function). For the s3:// in-memory path the prior code did
+    ``MemoryFile(...).open()`` and returned the dataset, ORPHANING the
+    MemoryFile — Python could GC it (freeing the /vsimem/ buffer) mid-read, so
+    reads returned valid pixels PLUS uninitialized garbage. Yielding the
+    dataset from inside a nested ``with MemoryFile(...)`` pins the buffer for
+    the dataset's whole lifetime (the same bug + fix as the NLCD validation
+    gate in sfincs_builder). The sole caller already uses ``with``.
     """
-    # sprint-14-aws (job-0293b): s3:// window-reads via GDAL /vsis3/ —
-    # mirrors the /vsigs/ style; the EC2 instance-role creds resolve through
-    # GDAL's AWS credential chain.
+    # sprint-14-aws (job-0293b): s3:// reads via boto3 stage-then-open —
+    # GDAL's /vsis3/ creds don't resolve the EC2 instance role in this env
+    # (see clip modules), so we open from staged bytes in-memory. NOTE: only
+    # the OPEN is wrapped in the RASTER_OPEN_FAILED try; ``yield src`` (the
+    # caller's block) runs in a separate try/finally so a downstream error is
+    # never mis-attributed to the open, and the MemoryFile is always closed.
     if landcover_uri.startswith("s3://"):
-        # sprint-14-aws (job-0293c): /vsis3/ creds don't resolve in this env
-        # (see clip modules) — open from staged bytes in-memory via the shared
-        # boto3 reader (MemoryFile frees with the dataset; no temp-file leak).
         from rasterio.io import MemoryFile
         from .cache import read_object_bytes_s3
         try:
-            return MemoryFile(read_object_bytes_s3(landcover_uri)).open()
+            mf = MemoryFile(read_object_bytes_s3(landcover_uri))
+            dataset = mf.open()
         except Exception as exc:  # noqa: BLE001
             raise LandcoverClassError(
                 "RASTER_OPEN_FAILED",
                 f"rasterio could not open {landcover_uri!r}: {exc}",
             ) from exc
+        # ``with mf`` pins the /vsimem/ buffer; ``dataset`` closes on exit. The
+        # yield is OUTSIDE the open's try/except so a caller-side error is never
+        # mis-attributed to the open.
+        with mf, dataset as src:
+            yield src
+        return
     elif landcover_uri.startswith("gs://"):
         path = "/vsigs/" + landcover_uri[len("gs://"):]
     else:
         path = landcover_uri
     try:
-        return rasterio.open(path)
+        dataset = rasterio.open(path)
     except Exception as exc:  # noqa: BLE001
         raise LandcoverClassError(
             "RASTER_OPEN_FAILED",
             f"rasterio could not open {landcover_uri!r}: {exc}",
         ) from exc
+    with dataset as src:
+        yield src
 
 
 # ---------------------------------------------------------------------------
