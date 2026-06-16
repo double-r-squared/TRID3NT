@@ -915,6 +915,16 @@ def publish_layer(
             layer_uri,
             template,
         )
+        # job-0304: register BOTH faces of the published layer in the session
+        # URI registry — the s3:// COG (consumable DATA uri) + the TiTiler tile
+        # TEMPLATE (display face). The GCS path does this at step 8 below, but
+        # the AWS branch returned EARLY (here) and never reached it, so the
+        # ``flood-depth-peak-<id>`` handle minted by run_model_flood_scenario
+        # had NO data URI registered. Downstream Pelicun then resolved the
+        # handle to nothing → "local path does not exist" (live 2026-06-16).
+        # ``observe_published_layer`` routes the template to the wms/display
+        # face (job-0304 ``_is_tile_template``) so it never displaces the COG.
+        observe_published_layer(layer_id, gcs_uri=layer_uri, wms_url=template)
         return template
 
     # 1. Resolve the .qgs URI and extract the GCS key for MAP= param.

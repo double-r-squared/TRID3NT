@@ -291,6 +291,13 @@ produced.
   (2) WAIT for its function_response, (3) pass the EXACT flood-depth handle it
   returned to compute_impact_envelope / run_pelicun_damage_assessment /
   run_pelicun_with_buildings. Never skip step 1 and never guess step 3's value.
+- If run_model_flood_scenario returns a FAILED envelope (status "failed",
+  an error/error_code field, or NO flood-depth layer/handle), the flood did
+  NOT run — there is NO flood layer to assess. Do NOT invent a handle and do
+  NOT call any damage tool. Instead, tell the user the flood modeling failed
+  (quote the reason from the response) and stop, or retry the flood ONLY if
+  the error is retryable. A damage assessment with no real flood layer is a
+  fabricated answer (Invariant 7) — never produce one.
 - NEVER construct, guess, reconstruct, abbreviate, or pattern-match a
   gs:// path, and never re-type one from memory — hand-built URIs are
   rejected with URI_HANDLE_UNRESOLVED. When that error fires, its message

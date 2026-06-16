@@ -52,6 +52,7 @@ from typing import Any
 logger = logging.getLogger("grace2_agent.tool_arg_normalizer")
 
 __all__ = [
+    "coerce_bbox_value",
     "normalize_args",
     "parse_forcing_string",
     "snake_case",
@@ -496,6 +497,46 @@ def snake_case(name: str) -> str:
     return _CAMEL_RE.sub("_", name).lower()
 
 
+def coerce_bbox_value(value: Any) -> list[float] | None:
+    """Parse an LLM-emitted bbox into ``[min_lon, min_lat, max_lon, max_lat]``.
+
+    Gemini frequently stuffs the bbox into a STRING — ``"[-81.9, 26.5, -81.7,
+    26.6]"``, ``"-81.9,26.5,-81.7,26.6"``, ``"(-81.9 26.5 -81.7 26.6)"`` — even
+    when the tool's Python signature wants a list of 4 floats. Several tools
+    (``compute_impact_envelope``, ``compute_building_density``, …) then reject
+    it with ``len(bbox) != 4`` (a string's char length) or a ``not a tuple/list``
+    type error. Live 2026-06-16: ``compute_impact_envelope`` failed 3× on a
+    string bbox, tripping the circuit breaker and blocking the ImpactPanel.
+
+    Accepts: a 4-element list/tuple (coerced to floats), or a string holding 4
+    comma/space-separated numbers with optional surrounding brackets/parens.
+    Returns ``None`` when the value is not a recognizable 4-number bbox (caller
+    leaves the original value untouched so the tool's own validator speaks).
+    """
+    if isinstance(value, (list, tuple)):
+        if len(value) != 4:
+            return None
+        try:
+            return [float(v) for v in value]
+        except (TypeError, ValueError):
+            return None
+    if not isinstance(value, str):
+        return None
+    s = value.strip()
+    # Strip one layer of surrounding brackets/parens, then split on commas
+    # and/or whitespace. ``re.split`` on ``[,\s]+`` handles "a,b,c,d",
+    # "a, b, c, d", and "a b c d" uniformly.
+    if s[:1] in "[(" and s[-1:] in "])":
+        s = s[1:-1]
+    parts = [p for p in re.split(r"[,\s]+", s.strip()) if p]
+    if len(parts) != 4:
+        return None
+    try:
+        return [float(p) for p in parts]
+    except ValueError:
+        return None
+
+
 def parse_forcing_string(s: str) -> dict[str, int]:
     """Parse a free-text design-storm string into ``{return_period_years, duration_hours}``.
 
@@ -685,6 +726,27 @@ def normalize_args(
                     parsed_val,
                 )
                 out[parsed_key] = parsed_val
+
+    # Step 4b: bbox value coercion. The LLM routinely emits ``bbox`` as a
+    # STRING ("[-81.9, 26.5, -81.7, 26.6]" / "-81.9,26.5,...") even when the
+    # tool wants a list of 4 floats; tools then reject it (``len(bbox) != 4``
+    # on the char count, or a type error). Coerce in place when the tool
+    # accepts ``bbox`` and the value is a recognizable 4-number bbox; leave it
+    # untouched otherwise so the tool's own validator surfaces a clear error.
+    if "bbox" in accepted and "bbox" in out and not (
+        isinstance(out["bbox"], (list, tuple))
+        and len(out["bbox"]) == 4
+        and all(isinstance(v, (int, float)) for v in out["bbox"])
+    ):
+        coerced = coerce_bbox_value(out["bbox"])
+        if coerced is not None:
+            logger.info(
+                "tool_arg_normalizer[%s]: coerced bbox %r -> %s",
+                tool_name,
+                out["bbox"],
+                coerced,
+            )
+            out["bbox"] = coerced
 
     # Logging tail.
     if dropped_silent:

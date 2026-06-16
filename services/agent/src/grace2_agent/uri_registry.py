@@ -214,6 +214,30 @@ def _looks_like_wms(value: str) -> bool:
     return "service=wms" in lowered or "layers=" in lowered or "/wms" in lowered
 
 
+def _is_tile_template(value: str) -> bool:
+    """A TiTiler / XYZ tile-template URL — a DISPLAY face, not a data URI.
+
+    The AWS backend publishes rasters as TiTiler tile templates
+    (``https://<cf>/cog/tiles/WebMercatorQuad/{z}/{x}/{y}.png?url=s3%3A%2F%2F…``)
+    rather than QGIS-Server WMS URLs. Like a WMS URL, the template is the
+    renderable face — it carries ``{z}/{x}/{y}`` placeholders and cannot be
+    opened by an analytical tool (Pelicun, zonal stats). It must route to the
+    ``wms_url`` slot so it never displaces the registered ``s3://`` COG that
+    downstream ``*_uri`` params resolve to (job-0304: live Pelicun read the
+    template instead of the COG and failed). ``_looks_like_wms`` misses it
+    (no ``service=wms`` / ``/wms`` / ``layers=``), hence this companion.
+    """
+    if not value.startswith(("http://", "https://")):
+        return False
+    lowered = value.lower()
+    return "/cog/tiles/" in lowered or "{z}/{x}/{y}" in lowered
+
+
+def _is_render_face(value: str) -> bool:
+    """True when ``value`` is a renderable display URL (WMS or tile template)."""
+    return _looks_like_wms(value) or _is_tile_template(value)
+
+
 def _wms_layer_id(value: str) -> str | None:
     """Extract the ``LAYERS=`` value from a WMS-style URL (case-insensitive)."""
     try:
@@ -304,10 +328,11 @@ class SessionUriRegistry:
             self._records[handle] = rec
             self._evict_if_needed()
         if uri:
-            if _looks_like_wms(uri):
-                # A WMS display URL landed in the ``uri`` slot (the flood
-                # composer substitutes it per the layer-emission contract) —
-                # keep it on the wms face; never displace a real data URI.
+            if _is_render_face(uri):
+                # A renderable display URL (QGIS WMS *or* a TiTiler tile
+                # template) landed in the ``uri`` slot (the flood composer
+                # substitutes it per the layer-emission contract) — keep it on
+                # the wms face; never displace a real data URI.
                 rec.wms_url = rec.wms_url or uri
                 self._uri_to_handle.setdefault(uri, handle)
             else:
