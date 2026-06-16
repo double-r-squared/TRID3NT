@@ -251,8 +251,31 @@ def _fetch_3dep_dem_bytes(
     except Exception as exc:  # noqa: BLE001
         raise UpstreamAPIError(f"py3dep / rioxarray unavailable: {exc}") from exc
 
+    # job-0306: py3dep reads the USGS 3DEP seamless DEM from the PUBLIC bucket
+    # ``prd-tnm.s3.amazonaws.com`` via GDAL ``/vsicurl/``. On the AWS box the
+    # instance-role AWS creds are in the environment, so GDAL tried to SIGN the
+    # request (and to readdir-list the bucket) — both fail on a public,
+    # no-ListBucket bucket, surfacing as "…USGS_Seamless_DEM_1.vrt does not
+    # exist in the file system" even though the VRT is reachable (curl 200).
+    # Cold DEM fetches for EVERY novel bbox failed (live Case 3, 2026-06-16);
+    # only previously-cached DEMs worked. Scope AWS_NO_SIGN_REQUEST +
+    # readdir/extension hints to THIS read via ``rasterio.Env`` so the agent's
+    # PRIVATE-bucket access (signed instance-role boto3/GDAL) is unaffected.
     try:
-        dem = py3dep.get_dem(bbox, resolution=resolution_m)
+        import rasterio  # type: ignore[import-not-found]
+        _dem_env = rasterio.Env(
+            AWS_NO_SIGN_REQUEST="YES",
+            GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR",
+            CPL_VSIL_CURL_ALLOWED_EXTENSIONS=".vrt,.tif,.tiff",
+            VSI_CACHE=True,
+        )
+    except Exception:  # noqa: BLE001 — rasterio always present where py3dep is
+        import contextlib
+        _dem_env = contextlib.nullcontext()
+
+    try:
+        with _dem_env:
+            dem = py3dep.get_dem(bbox, resolution=resolution_m)
     except Exception as exc:  # noqa: BLE001 — re-raise as typed error
         raise UpstreamAPIError(
             f"py3dep.get_dem failed for bbox={bbox} resolution={resolution_m}: {exc}"
