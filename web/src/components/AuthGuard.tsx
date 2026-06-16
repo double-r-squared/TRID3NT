@@ -147,21 +147,6 @@ const privacyLinkStyle: React.CSSProperties = {
   fontFamily: SANS,
 };
 
-const signOutAffordanceStyle: React.CSSProperties = {
-  position: "fixed",
-  top: 8,
-  right: 8,
-  zIndex: 10_001,
-  background: "rgba(20,22,30,0.82)",
-  border: "1px solid #2a3240",
-  borderRadius: 6,
-  color: "#c8ccd6",
-  fontSize: 11,
-  fontFamily: SANS,
-  padding: "4px 9px",
-  cursor: "pointer",
-};
-
 /**
  * Gate the app behind Firebase Auth per the three-mode matrix above.
  *
@@ -173,7 +158,7 @@ export function AuthGuard({
   authExpired = false,
   forceConfigured,
 }: AuthGuardProps): JSX.Element {
-  const { user, resolved, signIn, signOut } = useAuth();
+  const { user, resolved, signIn } = useAuth();
   const [busy, setBusy] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -194,14 +179,6 @@ export function AuthGuard({
       setBusy(false);
     }
   }, [signIn]);
-
-  const handleSignOut = useCallback(async (): Promise<void> => {
-    try {
-      await signOut();
-    } catch {
-      // non-fatal — sign-out failures drop us to the gate on next render anyway.
-    }
-  }, [signOut]);
 
   // ── MODE 1: Firebase disabled. Transparent pass-through (load-bearing). ──
   // No wrapper element, no extra DOM — the children render exactly as if the
@@ -279,22 +256,10 @@ export function AuthGuard({
   }
 
   // ── MODE 3: enabled + signed-in. Render the app. ──
-  // The sign-out affordance lives here (NOT in the dirty SettingsPopup.tsx, per
-  // the kickoff) — a small fixed control in the top-right that drops the user
-  // back to the sign-in surface. Only mounted when Firebase is enabled, so the
-  // disabled dev/tailnet path never sees it.
-  return (
-    <>
-      {children}
-      <button
-        data-testid="grace2-auth-guard-signout"
-        onClick={() => void handleSignOut()}
-        style={signOutAffordanceStyle}
-        aria-label="Sign out"
-        title={user?.email ? `Signed in as ${user.email} — sign out` : "Sign out"}
-      >
-        Sign out
-      </button>
-    </>
-  );
+  // ux-batch-1 (F12): the sign-out control now lives ONLY in the Settings page
+  // (SettingsPopup.tsx, wired to App.tsx handleSignOut). The previous fixed
+  // top-right affordance has been removed so there is a single, discoverable
+  // place to sign out. The guard is now a transparent pass-through once
+  // signed-in — no extra DOM.
+  return <>{children}</>;
 }

@@ -216,23 +216,14 @@ describe("AuthGuard — MODE 3: Firebase enabled + signed-in (children + sign-ou
     expect(screen.queryByTestId("grace2-auth-guard-signin")).toBeNull();
   });
 
-  it("renders the Sign-out affordance alongside the children", () => {
+  it("renders NO sign-out affordance in the guard (ux-batch-1 F12: Sign out lives in Settings)", () => {
+    // The fixed top-right sign-out control was removed; sign-out now lives only
+    // in the Settings page (SettingsPopup.tsx, wired to App.tsx handleSignOut).
+    // MODE 3 is a transparent pass-through once signed-in.
     mockConfigured = true;
     currentUser = GOOGLE_USER;
     render(<AuthGuard forceConfigured={true}>{CHILD}</AuthGuard>);
-    const signOutBtn = screen.getByTestId("grace2-auth-guard-signout");
-    expect(signOutBtn).toBeInTheDocument();
-    expect(signOutBtn).toHaveAttribute(
-      "title",
-      expect.stringContaining("test@example.com"),
-    );
-  });
-
-  it("clicking Sign out invokes the auth signOut helper", () => {
-    mockConfigured = true;
-    currentUser = GOOGLE_USER;
-    render(<AuthGuard forceConfigured={true}>{CHILD}</AuthGuard>);
-    fireEvent.click(screen.getByTestId("grace2-auth-guard-signout"));
-    expect(signOutMock).toHaveBeenCalledOnce();
+    expect(screen.queryByTestId("grace2-auth-guard-signout")).toBeNull();
+    expect(screen.getByTestId("app-children")).toBeInTheDocument();
   });
 });
