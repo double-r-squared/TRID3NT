@@ -368,6 +368,36 @@ const ANALYSIS_EXTENT_FILL_LAYER_ID = "grace2-analysis-extent-fill";
 const ANALYSIS_EXTENT_LINE_LAYER_ID = "grace2-analysis-extent-line";
 
 /**
+ * INCIDENT FIX 2026-06-16 — hung-tile resilience. The reconcile + layer-add
+ * paths gated on ``map.isStyleLoaded()``, which maplibre-gl returns false while
+ * ANY source cache is still loading. A single HUNG raster source (e.g. a
+ * vector .fgb wrongly published behind TiTiler's /cog raster face — its tiles
+ * never resolve) made ``isStyleLoaded()`` false PERMANENTLY, which froze the
+ * whole reconcile loop: NO overlays painted, removals didn't run, the AOI
+ * never drew (the "layers in panel, blank map, hit-or-miss" incident).
+ *
+ * Fix: latch readiness once the style spec has loaded a single time. After the
+ * first ``isStyleLoaded()===true`` (or the map's ``load`` event), addSource /
+ * addLayer are safe regardless of whether some tiles are still loading or hung,
+ * so we stop gating on the tile-sensitive ``isStyleLoaded()`` and use the latch
+ * instead. The latch lives on the map instance so both the MapView effect and
+ * the module-level ``addVectorLayer`` (which only receives ``m``) can read it.
+ */
+type ReadyMap = MapLibreMap & { __grace2StyleReady?: boolean };
+export function mapStyleReady(m: MapLibreMap): boolean {
+  const rm = m as ReadyMap;
+  try {
+    if (m.isStyleLoaded()) {
+      rm.__grace2StyleReady = true;
+      return true;
+    }
+  } catch {
+    return false;
+  }
+  return rm.__grace2StyleReady === true;
+}
+
+/**
  * Async vector-layer registration (job-0139). Fetches the layer's GeoJSON
  * (or FlatGeobuf-converted-to-GeoJSON), adds a `geojson` source, and adds an
  * appropriate paint layer based on geometry kind. Generation-guarded so a
@@ -474,12 +504,14 @@ export async function addVectorLayer(
   }
   // If the map has been torn down (e.g. component unmount during fetch),
   // there's nothing to add to. The MapLibre instance throws on calls after
-  // remove(); _loaded is the cheapest reliable check.
-  // (We use a duck-typed property; tests can mock it as needed.)
-  // If isStyleLoaded throws, we treat it as unavailable.
+  // remove(). INCIDENT FIX 2026-06-16: gate on mapStyleReady (a one-time latch)
+  // NOT raw isStyleLoaded() — a hung sibling raster tile keeps isStyleLoaded()
+  // false forever and would block this vector add (which renders from inline
+  // GeoJSON and does not even need tiles) indefinitely. Once the style has
+  // loaded once, proceed.
   let styleLoaded = false;
   try {
-    styleLoaded = m.isStyleLoaded() ?? false;
+    styleLoaded = mapStyleReady(m);
   } catch {
     return;
   }
@@ -999,6 +1031,12 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
     // attribution terms.
     map.current = m;
     activeMap = m;
+    // INCIDENT FIX 2026-06-16: latch style-readiness on the first `load` so a
+    // later hung tile (which flips isStyleLoaded() back to false) can never
+    // re-block layer adds/removals. See mapStyleReady().
+    m.once("load", () => {
+      (m as ReadyMap).__grace2StyleReady = true;
+    });
 
     // Dev-only seam: expose the live MapLibre instance so the Playwright
     // diagnostic driver (reports/inflight/job-0076-*/evidence/) can introspect
@@ -1047,7 +1085,13 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       // the deferral actually converge; applyLatest is idempotent
       // (replace-not-reconcile diff against addedSourceIds), so extra idle
       // invocations are harmless.
-      if (!m.isStyleLoaded()) {
+      // INCIDENT FIX 2026-06-16: gate on the mapStyleReady LATCH, not raw
+      // isStyleLoaded(). A hung raster tile (vector-as-raster) keeps
+      // isStyleLoaded() false forever — the old gate then deferred this whole
+      // reconcile (adds AND removals AND the AOI) indefinitely, so the map
+      // froze. Once the style has loaded once, proceed regardless of stuck
+      // tiles; addSource/addLayer/removeLayer are all safe.
+      if (!mapStyleReady(m)) {
         m.once("idle", applyLatest);
         return;
       }

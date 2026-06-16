@@ -891,6 +891,28 @@ def publish_layer(
                 "s3:// URI verbatim.",
                 retryable=True,
             )
+        # INCIDENT FIX 2026-06-16: publish_layer is RASTER-ONLY (see module
+        # docstring) but was being handed VECTOR artifacts (e.g. the roads
+        # .fgb), then unconditionally wrapped them in a TiTiler /cog RASTER tile
+        # template. TiTiler cannot read a FlatGeobuf as a raster — the tile
+        # requests HANG forever, which makes MapLibre's map.isStyleLoaded()
+        # return false PERMANENTLY and freezes the whole map's reconcile loop,
+        # so NO overlays paint (the "layers in panel, blank map, hit-or-miss"
+        # incident). Vector layers are already on the map via their producing
+        # tool's inline GeoJSON, so this raster publish is both wrong and
+        # actively harmful. Reject it with a typed terminal error so the agent
+        # narrates honestly and never mints a hanging raster face for a vector.
+        _vector_exts = (".fgb", ".geojson", ".json", ".geoparquet", ".parquet", ".gpkg", ".shp")
+        if layer_uri.lower().rstrip("/").endswith(_vector_exts):
+            raise PublishLayerError(
+                "PUBLISH_LAYER_VECTOR_NOT_RASTER",
+                f"layer_uri {layer_uri!r} is a VECTOR artifact; publish_layer "
+                "only publishes raster COGs. Vector layers are already shown on "
+                "the map by their producing fetch tool (inline GeoJSON) — do NOT "
+                "re-publish them here. Publishing a vector through the raster "
+                "tile path produces hanging tiles that freeze the map.",
+                retryable=False,
+            )
         from urllib.parse import quote
 
         # Style → TiTiler render params. Flood depths get the blue ramp over
