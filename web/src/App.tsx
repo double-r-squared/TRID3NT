@@ -687,11 +687,14 @@ export function App(): JSX.Element {
       const replay = extractLastZoomTo(activeSession.chat_history);
       if (replay) {
         bus.pushMapCommand(replay as unknown as MapCommandPayload);
-      } else {
-        // ux-batch-1 (F14): this Case has no AOI of its own (no bbox, no
-        // zoom-to in history). Clear any extent left over from the previously
-        // viewed Case so switching into a no-AOI Case doesn't inherit a stale
-        // rectangle. (A Case WITH an AOI replaces the extent via zoom-to.)
+      } else if ((activeSession.loaded_layers?.length ?? 0) === 0) {
+        // ux-batch-1 (F14 + F28 fix): clear a left-over extent ONLY when this
+        // Case is genuinely empty — no bbox, no replayable zoom-to, AND no
+        // loaded layers. A Case that HAS layers (e.g. Fort Myers post-flood)
+        // is NOT cleared even when no zoom-to replays, so its AOI rectangle is
+        // never wiped on open (the F28 regression: the over-broad clear removed
+        // a legitimate AOI when the zoom-to replay didn't resolve). Case-EXIT
+        // (activeSession === null) still always clears — that is the F14 case.
         bus.pushMapCommand({
           command: "clear-analysis-extent",
         } as unknown as MapCommandPayload);
