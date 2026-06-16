@@ -266,8 +266,14 @@ async def compute_impact_envelope(
             ``bbox = (-81.92, 26.55, -81.80, 26.68)``.
 
     params:
-        flood_layer_uri: gs:// URI (or local path) of the flood depth COG.
-            Required. Must be a non-empty string.
+        flood_layer_uri: the flood depth layer to assess. This MUST be the EXACT
+            LayerURI value (copied verbatim) that a ``run_model_flood_scenario`` /
+            ``run_model_nws_flood_event_scenario`` call returned EARLIER IN THIS
+            CONVERSATION. NEVER invent, construct, or guess this value (e.g. a
+            ``flood-depth-peak-<id>`` string you did not receive) — a fabricated id
+            does not exist and the call will fail. If no flood scenario has been run
+            yet, call ``run_model_flood_scenario`` FIRST, wait for its result, then
+            pass that result's layer URI here. Required; non-empty string.
         bbox: ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326. When
             ``None``, ``location_query`` is geocoded.
         location_query: free-text place name (geocoded via Nominatim).

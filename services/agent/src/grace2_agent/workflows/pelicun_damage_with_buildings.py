@@ -237,9 +237,13 @@ async def pelicun_damage_with_buildings(
     the real building-density grid, not administrative polygon boundaries.
 
     Args:
-        hazard_raster_uri: gs:// URI (or local path) to a single-band flood
-            depth COG in metres (from ``run_model_flood_scenario`` /
-            ``postprocess_flood``).
+        hazard_raster_uri: single-band flood-depth COG in metres. This MUST be the
+            EXACT LayerURI value (copied verbatim) returned by a prior
+            ``run_model_flood_scenario`` / ``run_model_nws_flood_event_scenario`` call
+            EARLIER IN THIS CONVERSATION. NEVER invent or construct it (a
+            ``flood-depth-peak-<id>`` you did not receive will fail). If no flood has
+            been modeled yet, run ``run_model_flood_scenario`` FIRST and pass its
+            result here.
         bbox: ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326 defining
             the area to fetch building density for.  Should overlap the
             hazard raster extent.
@@ -390,9 +394,13 @@ async def run_pelicun_with_buildings(
         - Non-flood hazards (``fema_hazus_eq_2020`` is not wired in v0.1).
 
     Parameters:
-        hazard_raster_uri: gs:// URI (or local path) to a single-band flood
-            depth COG in metres (from ``run_model_flood_scenario`` /
-            ``postprocess_flood``).  Raster CRS and asset CRS are reconciled
+        hazard_raster_uri: single-band flood-depth COG in metres. This MUST be the
+            EXACT LayerURI value (copied verbatim) returned by a prior
+            ``run_model_flood_scenario`` / ``run_model_nws_flood_event_scenario`` call
+            EARLIER IN THIS CONVERSATION. NEVER invent or construct it (a
+            ``flood-depth-peak-<id>`` you did not receive will fail). If no flood has
+            been modeled yet, run ``run_model_flood_scenario`` FIRST and pass its
+            result here.  Raster CRS and asset CRS are reconciled
             internally.
         bbox: ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326 defining
             the area to fetch building density for.  Should overlap the

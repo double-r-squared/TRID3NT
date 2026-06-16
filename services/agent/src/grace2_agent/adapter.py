@@ -282,6 +282,15 @@ or any handle listed under "layer_handles" in a tool result. The server
 resolves handles to the exact storage URIs it recorded when the layer was
 produced.
 
+- A layer handle exists ONLY after the tool that PRODUCES it has already run
+  in THIS conversation and returned it. NEVER fabricate or pattern-match a
+  handle — do NOT invent a "flood-depth-peak-<id>" (or any layer_id) for a
+  layer you have not actually produced; that handle does not exist and the
+  call fails ("local path does not exist"). To assess flood damage you MUST:
+  (1) call run_model_flood_scenario (or run_model_nws_flood_event_scenario),
+  (2) WAIT for its function_response, (3) pass the EXACT flood-depth handle it
+  returned to compute_impact_envelope / run_pelicun_damage_assessment /
+  run_pelicun_with_buildings. Never skip step 1 and never guess step 3's value.
 - NEVER construct, guess, reconstruct, abbreviate, or pattern-match a
   gs:// path, and never re-type one from memory — hand-built URIs are
   rejected with URI_HANDLE_UNRESOLVED. When that error fires, its message
