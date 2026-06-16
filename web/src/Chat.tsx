@@ -148,6 +148,14 @@ const DEFAULT_INPUT_HEIGHT_PX = 68;
 // many pixels above the bottom of the scroll container.
 const SCROLL_BOTTOM_THRESHOLD_PX = 50;
 
+// Build version shown in the chat header so the user can see at a glance which
+// deploy their tab is running (replaces the old "M1 stub" placeholder). Baked
+// at build time from VITE_BUILD_SHA (set in the deploy command to the git short
+// SHA); falls back to "dev" for local runs. If the header still reads "M1 stub"
+// the tab is on a pre-this-change cached bundle and needs a hard refresh.
+const BUILD_VERSION: string =
+  (import.meta.env.VITE_BUILD_SHA as string | undefined) || "dev";
+
 // ux-batch-1 J1 (F10) — desktop chat-panel width is now USER-DRAGGABLE. The
 // user grabs the panel's left border and drags it left/right to size the
 // reading column to taste; the chosen width persists to localStorage. This
@@ -1744,7 +1752,13 @@ export function Chat({
         }}
       >
         <strong style={{ fontSize: 14 }}>GRACE-2</strong>
-        <span style={{ color: "#888", fontSize: 11 }}>M1 stub</span>
+        <span
+          data-testid="grace2-build-version"
+          title="build version — tells you which deploy this tab is running"
+          style={{ color: "#888", fontSize: 11 }}
+        >
+          {BUILD_VERSION}
+        </span>
         <span style={{ flex: 1 }} />
         <span
           data-testid="connection-status"
