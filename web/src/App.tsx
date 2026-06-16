@@ -1209,18 +1209,10 @@ export function App(): JSX.Element {
             pointerEvents: "auto",
           }}
         >
-          {/* Payload-warning gates (job-0127 → restyled job-0145). Newest
-              first so a fresh gate is always at the top of the stack.
-              job-0266: filtered to the visible Case's warnings only. */}
-          {visiblePayloadWarnings.map(({ warning: w }) => (
-            <PayloadWarningInline
-              key={w.warning_id}
-              warning={w}
-              onDecide={(decision, revised) =>
-                handlePayloadWarningDecide(w.warning_id, decision, revised)
-              }
-            />
-          ))}
+          {/* ux-batch-1 J7 (F16): payload-warning gates moved OUT of this
+              scrolling top-right stack into the pinned opaque banner "hat"
+              below (grace2-payload-warning-banner). Source suggestions stay
+              here. */}
           {/* Source-suggestion inline card (job-0145, replaces Mode2OfferModal).
               Listens for candidate envelopes from the server; UI text never
               references the server-internal envelope name. Returns null when
@@ -1231,6 +1223,58 @@ export function App(): JSX.Element {
           />
         </div>
       </div>
+
+      {/* ux-batch-1 J7 (F16) — payload-warning BANNER "hat". The gate is
+          pinned as an opaque banner over the TOP of the chat column (not in
+          the scroll, so it can never scroll out of view), aligned to the chat
+          width, and disappears the moment the user answers it. Mounted at App
+          level because the warning arrives on App's GraceWs. Desktop: hugs the
+          chat panel (right:16, width = chatWidth). Mobile / chat collapsed:
+          falls back to a top, near-full-width banner so it's never lost. */}
+      {visiblePayloadWarnings.length > 0 && (
+        <div
+          data-testid="grace2-payload-warning-banner"
+          style={{
+            position: "absolute",
+            top: isMobile ? 12 : 16,
+            right: isMobile ? 12 : 16,
+            left: isMobile ? 12 : undefined,
+            width: isMobile
+              ? undefined
+              : rightCollapsed
+                ? 360
+                : `min(${chatWidth}px, 92vw)`,
+            display: "flex",
+            flexDirection: "column",
+            gap: 8,
+            zIndex: 60,
+            // Opaque so it reads as a solid banner, not a see-through overlay
+            // (F16: "should also not be transparent").
+            background: "#15171f",
+            border: "1px solid rgba(255,255,255,0.10)",
+            borderRadius: 12,
+            boxShadow: "0 8px 32px rgba(0,0,0,0.55)",
+            padding: 8,
+            pointerEvents: "auto",
+            // Bound the banner height if many gates stack; rare, but keep it
+            // from overrunning the viewport.
+            maxHeight: "calc(100vh - 32px)",
+            overflowY: "auto",
+          }}
+        >
+          {/* Newest first so a fresh gate sits at the top of the banner.
+              job-0266: filtered to the visible Case's warnings only. */}
+          {visiblePayloadWarnings.map(({ warning: w }) => (
+            <PayloadWarningInline
+              key={w.warning_id}
+              warning={w}
+              onDecide={(decision, revised) =>
+                handlePayloadWarningDecide(w.warning_id, decision, revised)
+              }
+            />
+          ))}
+        </div>
+      )}
       {/* Legacy data-testid hook (job-0127 → job-0145): keep the
           `payload-warning-stack` test id reachable so existing App / e2e
           tests continue to find the column. Mounted only when at least one
