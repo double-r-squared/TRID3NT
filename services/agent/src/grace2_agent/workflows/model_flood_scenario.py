@@ -570,14 +570,34 @@ async def model_flood_scenario(
                 accessed_at=datetime.now(timezone.utc),
             )
         )
-        river_layer = fetch_river_geometry(resolved_bbox, source="nhdplus_hr")
-        data_sources.append(
-            DataSource(
-                name="NHDPlus HR (USGS)",
-                uri=river_layer.uri,
-                accessed_at=datetime.now(timezone.utc),
+        # job-0307: river geometry is BEST-EFFORT for the v0.1 pluvial deck.
+        # ``build_sfincs_model`` does NOT emit ``setup_river_inflow`` for v0.1
+        # pluvial (job-0055) — ``river_geometry_uri`` is accepted but unused, and
+        # documented as ``may be None``. So a river-fetch failure must NOT kill an
+        # otherwise-valid pluvial flood. Live Case 3 (2026-06-16): Victoria, TX
+        # failed with "could not route bbox … to a HUC4 region" (the OQ-39 v0.1
+        # HUC4 heuristic only covers a few demo areas), needlessly aborting a
+        # flood that needs no river inflow. Degrade to None + narrate; re-enable
+        # the hard dependency when v0.2 river-inflow (real ATCF surge) lands.
+        river_layer: LayerURI | None
+        try:
+            river_layer = fetch_river_geometry(resolved_bbox, source="nhdplus_hr")
+            data_sources.append(
+                DataSource(
+                    name="NHDPlus HR (USGS)",
+                    uri=river_layer.uri,
+                    accessed_at=datetime.now(timezone.utc),
+                )
             )
-        )
+        except Exception as exc:  # noqa: BLE001 — river is optional for pluvial
+            logger.warning(
+                "model_flood_scenario: fetch_river_geometry failed for bbox=%s "
+                "(%s) — proceeding WITHOUT river geometry (pluvial deck does not "
+                "use river inflow; job-0055/job-0307).",
+                resolved_bbox,
+                exc,
+            )
+            river_layer = None
         if forcing_raster_uri is not None:
             # --- job-0225 v2: OBSERVED-precip forcing branch (Case 3) ---
             # Compute the AREA-MEAN accumulated precip over the model domain
@@ -699,7 +719,10 @@ async def model_flood_scenario(
         model_setup = build_sfincs_model(
             dem_uri=dem_layer.uri,
             landcover_uri=landcover_layer.uri,
-            river_geometry_uri=river_layer.uri,
+            # job-0307: None when the best-effort river fetch failed (pluvial
+            # deck ignores it; build_sfincs_model documents river_geometry_uri
+            # as "may be None").
+            river_geometry_uri=river_layer.uri if river_layer is not None else None,
             forcing=forcing_spec,
             bbox=resolved_bbox,
             options=options,
