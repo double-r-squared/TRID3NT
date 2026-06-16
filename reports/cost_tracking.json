@@ -1696,6 +1696,27 @@
       "kind": "workflow",
       "workflow_id": "wf_d0ca97a4-fda",
       "subagent_tokens": 467453
+    },
+    {
+      "job_id": "ux-batch-1-modflow-preverify",
+      "sprint": "ux-batch-1",
+      "description": "Background Sonnet agent: deterministically verified the MODFLOW groundwater-contamination chain on AWS EC2 (run_modflow_job TCE spill near Tucson -> mf6 solve -> plume COG -> TiTiler publish). VERDICT GREEN, 13.4s wall-clock. Produced a verified demo prompt for NATE.",
+      "model": "sonnet",
+      "subagent_tokens": 78084
+    },
+    {
+      "job_id": "ux-batch-1-J8-impl",
+      "sprint": "ux-batch-1",
+      "description": "Opus background agent: implement F17 per-Case LLM-history rehydration (adapter.rehydrate_history_from_case + build_layers_present_note + server wiring) + 15 tests incl cross-case isolation.",
+      "model": "opus",
+      "subagent_tokens": 86480
+    },
+    {
+      "job_id": "ux-batch-1-J8-adversarial-verify",
+      "sprint": "ux-batch-1",
+      "description": "4-lens Opus adversarial-verify Workflow on J8 (correctness/regression-job0245/contract/routing-recompute), refute-by-default. 3/4 safe; caught the long-Case AOI-drop major defect (F20) which was then fixed.",
+      "model": "opus",
+      "subagent_tokens": 329782
     }
   ],
   "totals_by_sprint": {
@@ -1708,7 +1729,8 @@
     "12": 27545642,
     "13": 14388888,
     "13.5": 4081365,
-    "14": 824503
+    "14": 824503,
+    "ux-batch-1": 494346
   },
   "historical_context": {
     "note": "Captured for accountability \u2014 NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
