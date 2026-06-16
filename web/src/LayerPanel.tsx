@@ -79,11 +79,31 @@ function sortTopFirst(layers: ProjectLayerSummary[]): ProjectLayerSummary[] {
   return [...layers].sort((a, b) => b.z_index - a.z_index);
 }
 
+/**
+ * ux-batch-1 J3 (F22) — collapse duplicate layer_ids, keeping the LAST
+ * occurrence (a republish of the same layer_id appends the newer version).
+ * Without this, an undeduped loaded_layers list (e.g. from a recompute that
+ * re-published the same layer_id) rendered TWO rows sharing one React key —
+ * a key collision that made their opacity sliders move together ("connected
+ * sliders"). Order is preserved by last-seen position so the subsequent
+ * sortTopFirst is stable. Exported for unit testing.
+ */
+export function dedupeByLayerId(
+  layers: ProjectLayerSummary[],
+): ProjectLayerSummary[] {
+  const byId = new Map<string, ProjectLayerSummary>();
+  for (const l of layers) byId.set(l.layer_id, l); // last write wins
+  return Array.from(byId.values());
+}
+
 function reducer(state: LayerPanelState, action: LayerPanelAction): LayerPanelState {
   switch (action.type) {
     case "session-state": {
       const incoming = action.payload.loaded_layers ?? [];
-      return { layers: sortTopFirst(incoming) };
+      // F22: dedupe by layer_id BEFORE sorting so a duplicate-id republish
+      // can never render two rows with the same React key (the connected-
+      // sliders bug).
+      return { layers: sortTopFirst(dedupeByLayerId(incoming)) };
     }
     case "map-command": {
       const cmd = action.payload;
@@ -331,7 +351,7 @@ export function LayerPanel({
   mobile = false,
 }: LayerPanelProps): JSX.Element | null {
   const initial = useMemo<LayerPanelState>(
-    () => ({ layers: sortTopFirst(initialLayers ?? []) }),
+    () => ({ layers: sortTopFirst(dedupeByLayerId(initialLayers ?? [])) }),
     // intentionally only on mount; initialLayers is a seed, not a reactive source.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
@@ -649,6 +669,16 @@ function SortableRow({
   const showOpacity = hovered || isDragging;
   const kind = layerKind(layer);
   const dimmed = !layer.visible;
+  // ux-batch-1 J3 (F8) — a layer with undefined/NaN opacity left the range
+  // input uncontrolled, so the browser parked the thumb at its default CENTRE
+  // (0.5) while the label still read 0% (value↔position mismatch the user
+  // reported). Resolve to a finite [0,1] value once, defaulting to fully
+  // opaque, and feed it to BOTH the slider value and the % label so they
+  // always agree. A real 0 (transparent) is preserved.
+  const safeOpacity =
+    typeof layer.opacity === "number" && Number.isFinite(layer.opacity)
+      ? clamp01(layer.opacity)
+      : 1;
 
   const style: React.CSSProperties = {
     transform: CSS.Transform.toString(transform),
@@ -793,7 +823,7 @@ function SortableRow({
           min={0}
           max={1}
           step={0.01}
-          value={layer.opacity}
+          value={safeOpacity}
           onChange={(e) =>
             onOpacityChange(layer.layer_id, Number(e.target.value))
           }
@@ -819,7 +849,7 @@ function SortableRow({
             fontVariantNumeric: "tabular-nums",
           }}
         >
-          {(layer.opacity * 100).toFixed(0)}%
+          {(safeOpacity * 100).toFixed(0)}%
         </span>
       </div>
     </div>

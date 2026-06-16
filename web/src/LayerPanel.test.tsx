@@ -15,6 +15,7 @@ import {
   clampLayersWidth,
   readLayersWidth,
   writeLayersWidth,
+  dedupeByLayerId,
 } from "./LayerPanel";
 import { ProjectLayerSummary, SessionStatePayload } from "./contracts";
 
@@ -77,6 +78,46 @@ describe("LayerPanel — width helpers + resize handle (ux-batch-1 J1 F11)", () 
     render(<LayerPanel initialLayers={[makeLayer("a")]} width={420} />);
     const panel = screen.getByTestId("grace2-layer-panel");
     expect(panel.style.width).toBe("420px");
+  });
+});
+
+describe("LayerPanel — duplicate-layer dedupe + opacity (ux-batch-1 J3 F22/F8)", () => {
+  it("dedupeByLayerId collapses same layer_id (last wins), keeps distinct", () => {
+    const a1 = makeLayer("flood", 1);
+    const a2 = { ...makeLayer("flood", 2), name: "Flood (newer)" };
+    const b = makeLayer("roads", 1);
+    const out = dedupeByLayerId([a1, a2, b]);
+    expect(out).toHaveLength(2);
+    const flood = out.find((l) => l.layer_id === "flood");
+    expect(flood?.name).toBe("Flood (newer)"); // last write wins
+  });
+
+  it("renders ONE row when session-state carries a duplicate layer_id (no connected sliders)", () => {
+    const bus = createLayerPanelBus();
+    render(<LayerPanel subscribeSessionState={bus.subscribeSessionState} />);
+    act(() => {
+      bus.pushSessionState(
+        sessionStateWith([makeLayer("flood"), makeLayer("flood")]),
+      );
+    });
+    // Two same-id layers collapse to a single row -> a single opacity slider.
+    expect(screen.getAllByTestId("layer-opacity")).toHaveLength(1);
+  });
+
+  it("a layer with undefined opacity shows 100% (not 0%) with the thumb at full", () => {
+    const noOpacity = { ...makeLayer("a"), opacity: undefined as unknown as number };
+    render(<LayerPanel initialLayers={[noOpacity]} />);
+    const slider = screen.getByTestId("layer-opacity") as HTMLInputElement;
+    expect(slider.value).toBe("1");
+    expect(screen.getByText("100%")).toBeInTheDocument();
+  });
+
+  it("a real 0 opacity is preserved (0%, thumb at far left)", () => {
+    const transparent = { ...makeLayer("a"), opacity: 0 };
+    render(<LayerPanel initialLayers={[transparent]} />);
+    const slider = screen.getByTestId("layer-opacity") as HTMLInputElement;
+    expect(slider.value).toBe("0");
+    expect(screen.getByText("0%")).toBeInTheDocument();
   });
 });
 
