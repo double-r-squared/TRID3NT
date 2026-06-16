@@ -33,7 +33,7 @@
 // because: (a) actively maintained, (b) full keyboard a11y out of the box
 // (the extra up/down buttons are belt+suspenders), (c) zero global state.
 
-import { useEffect, useMemo, useReducer, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import {
   DndContext,
   closestCenter,
@@ -249,6 +249,43 @@ function hexToRgba(hex: string, alpha: number): string {
 export type SessionStateSubscriber = (p: SessionStatePayload) => void;
 export type MapCommandSubscriber = (p: MapCommandPayload) => void;
 
+// ux-batch-1 J1 (F11) — the Layers panel is user-resizable: grab its right
+// border and drag to size it (the panel is left-anchored at 16, so it grows
+// rightward). Width persists to localStorage. Mirrors the chat-width model.
+const LAYERS_WIDTH_DEFAULT_PX = 288;
+const LAYERS_WIDTH_MIN_PX = 240;
+const LAYERS_WIDTH_MAX_PX = 560;
+const LS_LAYERS_WIDTH = "grace2.layersWidthPx";
+
+/** Clamp a desired layers-panel width to [min, max]; non-finite → default. */
+export function clampLayersWidth(px: number): number {
+  if (!Number.isFinite(px)) return LAYERS_WIDTH_DEFAULT_PX;
+  return Math.max(
+    LAYERS_WIDTH_MIN_PX,
+    Math.min(LAYERS_WIDTH_MAX_PX, Math.round(px)),
+  );
+}
+
+/** Read the persisted layers-panel width (px); default ~288 on unset/garbage. */
+export function readLayersWidth(): number {
+  try {
+    const raw = localStorage.getItem(LS_LAYERS_WIDTH);
+    if (raw === null) return LAYERS_WIDTH_DEFAULT_PX;
+    return clampLayersWidth(Number(raw));
+  } catch {
+    return LAYERS_WIDTH_DEFAULT_PX;
+  }
+}
+
+/** Persist the layers-panel width (px). Non-fatal on failure. */
+export function writeLayersWidth(px: number): void {
+  try {
+    localStorage.setItem(LS_LAYERS_WIDTH, String(clampLayersWidth(px)));
+  } catch {
+    /* non-fatal */
+  }
+}
+
 export interface LayerPanelProps {
   initialLayers?: ProjectLayerSummary[];
   subscribeSessionState?: (cb: SessionStateSubscriber) => () => void;
@@ -266,6 +303,20 @@ export interface LayerPanelProps {
    * change, so the echo is a no-op re-set of identical values).
    */
   onMapCommand?: (cmd: MapCommandPayload) => void;
+  /**
+   * ux-batch-1 J1 (F11) — optional controlled width (px). When provided it
+   * seeds/mirrors the internal width; when omitted the panel reads/persists its
+   * own width via localStorage.
+   */
+  width?: number;
+  /** Fired with the new px width when the user drags the right border. */
+  onWidthChange?: (widthPx: number) => void;
+  /**
+   * ux-batch-1 J1 — mobile drawer mode: the panel fills the drawer column at
+   * the fixed default width and renders no resize handle (drag-sizing is a
+   * desktop affordance only). Default false (desktop, draggable).
+   */
+  mobile?: boolean;
 }
 
 export function LayerPanel({
@@ -275,6 +326,9 @@ export function LayerPanel({
   onLayersChange,
   onClose,
   onMapCommand,
+  width,
+  onWidthChange,
+  mobile = false,
 }: LayerPanelProps): JSX.Element | null {
   const initial = useMemo<LayerPanelState>(
     () => ({ layers: sortTopFirst(initialLayers ?? []) }),
@@ -283,6 +337,52 @@ export function LayerPanel({
     [],
   );
   const [state, dispatch] = useReducer(reducer, initial);
+
+  // ux-batch-1 J1 (F11) — user-draggable panel width.
+  const [panelWidth, setPanelWidth] = useState<number>(() =>
+    width ?? readLayersWidth(),
+  );
+  useEffect(() => {
+    if (typeof width === "number") setPanelWidth(clampLayersWidth(width));
+  }, [width]);
+  const panelWidthRef = useRef<number>(panelWidth);
+  panelWidthRef.current = panelWidth;
+  // The panel is left-anchored at 16, so width = pointerX - 16; clamped.
+  const beginWidthDrag = useCallback(
+    (e: React.PointerEvent): void => {
+      e.preventDefault();
+      const onMove = (ev: PointerEvent): void => {
+        const next = clampLayersWidth(ev.clientX - 16);
+        panelWidthRef.current = next;
+        setPanelWidth(next);
+        onWidthChange?.(next);
+      };
+      const onUp = (): void => {
+        writeLayersWidth(panelWidthRef.current);
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        document.body.style.userSelect = "";
+        document.body.style.cursor = "";
+      };
+      document.body.style.userSelect = "none";
+      document.body.style.cursor = "ew-resize";
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+    },
+    [onWidthChange],
+  );
+  const nudgeWidth = useCallback(
+    (deltaPx: number): void => {
+      setPanelWidth((prev) => {
+        const next = clampLayersWidth(prev + deltaPx);
+        panelWidthRef.current = next;
+        writeLayersWidth(next);
+        onWidthChange?.(next);
+        return next;
+      });
+    },
+    [onWidthChange],
+  );
 
   useEffect(() => {
     const unsubs: Array<() => void> = [];
@@ -358,7 +458,8 @@ export function LayerPanel({
         left: 16,
         top: 16,
         bottom: 16,
-        width: 288,
+        // Desktop: user-dragged width. Mobile drawer: fixed default (no drag).
+        width: mobile ? LAYERS_WIDTH_DEFAULT_PX : clampLayersWidth(panelWidth),
         // Subtle gradient + hairline border + soft shadow for a sleeker,
         // more modern panel than the flat slab (job-0264 polish).
         background:
@@ -377,6 +478,33 @@ export function LayerPanel({
         overflow: "hidden",
       }}
     >
+      {/* ux-batch-1 J1 (F11) — right-border resize grab strip. The panel is
+          left-anchored, so dragging this rightward widens it. role=separator +
+          arrow-key nudge for keyboard a11y. Desktop only. */}
+      {!mobile && (
+      <div
+        data-testid="grace2-layer-panel-resize-handle"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize layers panel (drag, or use arrow keys)"
+        tabIndex={0}
+        onPointerDown={beginWidthDrag}
+        onKeyDown={(e) => {
+          if (e.key === "ArrowRight") { e.preventDefault(); nudgeWidth(24); }
+          else if (e.key === "ArrowLeft") { e.preventDefault(); nudgeWidth(-24); }
+        }}
+        style={{
+          position: "absolute",
+          right: 0,
+          top: 0,
+          bottom: 0,
+          width: 6,
+          cursor: "ew-resize",
+          zIndex: 6,
+          touchAction: "none",
+        }}
+      />
+      )}
       <header
         style={{
           padding: "12px 14px",

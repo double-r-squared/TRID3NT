@@ -29,8 +29,9 @@ import {
   isThinkingStep,
   THINKING_STEP_NAME,
   desktopChatContainerStyle,
-  readChatExpanded,
-  writeChatExpanded,
+  readChatWidth,
+  writeChatWidth,
+  clampChatWidth,
 } from "./Chat";
 import {
   ErrorPayload,
@@ -1068,9 +1069,9 @@ describe("isThinkingActive (wave-4-10 thinking-state)", () => {
 // historical default (right/top/bottom 16, ~380px column); (c) job-0294 the
 // EXPANDED variant widens the column.
 
-describe("desktopChatContainerStyle (job-0283 + job-0294)", () => {
+describe("desktopChatContainerStyle (job-0283 + ux-batch-1 J1 drag-resize)", () => {
   it("joins the panel surface family (radius 12 + hairline border + gradient)", () => {
-    const s = desktopChatContainerStyle(false);
+    const s = desktopChatContainerStyle();
     expect(s.borderRadius).toBe(12);
     expect(String(s.border).replace(/\s/g, "")).toContain(
       "rgba(255,255,255,0.06)",
@@ -1079,49 +1080,62 @@ describe("desktopChatContainerStyle (job-0283 + job-0294)", () => {
     expect(String(s.boxShadow)).toContain("rgba(0,0,0");
   });
 
-  it("keeps the pre-0283 geometry when collapsed — position + default width", () => {
-    const s = desktopChatContainerStyle(false);
+  it("keeps the historical geometry + default width when called with no arg", () => {
+    const s = desktopChatContainerStyle();
     expect(s.position).toBe("absolute");
     expect(s.right).toBe(16);
     expect(s.top).toBe(16);
     expect(s.bottom).toBe(16);
-    expect(String(s.width)).toContain("380px");
+    expect(String(s.width)).toContain("384px");
     expect(s.overflow).toBe("hidden");
   });
 
-  it("defaults to the collapsed (default-width) variant when called with no arg", () => {
-    expect(String(desktopChatContainerStyle().width)).toContain("380px");
-  });
-
-  it("widens the column when expanded (job-0294)", () => {
-    const s = desktopChatContainerStyle(true);
-    expect(String(s.width)).toContain("560px");
-    // Position/anchoring is unchanged — only the width grows.
+  it("reflects the user-dragged width (px) in the column width", () => {
+    const s = desktopChatContainerStyle(500);
+    expect(String(s.width)).toContain("500px");
+    // Anchoring unchanged — only the width grows.
     expect(s.right).toBe(16);
     expect(s.position).toBe("absolute");
   });
+
+  it("clamps an out-of-band width to [min, max] before applying", () => {
+    expect(String(desktopChatContainerStyle(80).width)).toContain("320px");
+    expect(String(desktopChatContainerStyle(5000).width)).toContain("760px");
+  });
 });
 
-// --- chat-expanded persistence (job-0294) -------------------------------- //
+// --- chat-width persistence (ux-batch-1 J1 drag-resize) ------------------ //
 
-describe("readChatExpanded / writeChatExpanded (job-0294)", () => {
+describe("readChatWidth / writeChatWidth / clampChatWidth (ux-batch-1 J1)", () => {
   afterEach(() => {
     try { localStorage.clear(); } catch { /* ignore */ }
   });
 
-  it("defaults to false when nothing is persisted", () => {
-    expect(readChatExpanded()).toBe(false);
+  it("clampChatWidth clamps to the [320, 760] band and rounds", () => {
+    expect(clampChatWidth(80)).toBe(320);
+    expect(clampChatWidth(5000)).toBe(760);
+    expect(clampChatWidth(450.6)).toBe(451);
   });
 
-  it("round-trips true through localStorage", () => {
-    writeChatExpanded(true);
-    expect(localStorage.getItem("grace2.chatExpanded")).toBe("true");
-    expect(readChatExpanded()).toBe(true);
+  it("clampChatWidth falls back to the default on non-finite input", () => {
+    // Number.isFinite(NaN) and Number.isFinite(Infinity) are both false, so
+    // both degrade to the default rather than clamping to a boundary.
+    expect(clampChatWidth(Number.NaN)).toBe(384);
+    expect(clampChatWidth(Infinity)).toBe(384);
   });
 
-  it("round-trips false through localStorage", () => {
-    writeChatExpanded(true);
-    writeChatExpanded(false);
-    expect(readChatExpanded()).toBe(false);
+  it("readChatWidth defaults to ~384 when nothing is persisted", () => {
+    expect(readChatWidth()).toBe(384);
+  });
+
+  it("round-trips a clamped width through localStorage", () => {
+    writeChatWidth(500);
+    expect(localStorage.getItem("grace2.chatWidthPx")).toBe("500");
+    expect(readChatWidth()).toBe(500);
+  });
+
+  it("persists clamped (out-of-band writes are stored at the boundary)", () => {
+    writeChatWidth(99999);
+    expect(readChatWidth()).toBe(760);
   });
 });

@@ -6,9 +6,16 @@
 //   3. LayerPanel shows/hides dynamically as layers go 0 → 1 → 0.
 //   4. onLayersChange callback fires with the correct layer list.
 
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, act } from "@testing-library/react";
-import { LayerPanel, createLayerPanelBus, layerKind } from "./LayerPanel";
+import {
+  LayerPanel,
+  createLayerPanelBus,
+  layerKind,
+  clampLayersWidth,
+  readLayersWidth,
+  writeLayersWidth,
+} from "./LayerPanel";
 import { ProjectLayerSummary, SessionStatePayload } from "./contracts";
 
 // dnd-kit requires pointer events which happy-dom supports but the PointerSensor
@@ -30,6 +37,48 @@ function makeLayer(id: string, z_index = 1): ProjectLayerSummary {
 function sessionStateWith(layers: ProjectLayerSummary[]): SessionStatePayload {
   return { loaded_layers: layers };
 }
+
+describe("LayerPanel — width helpers + resize handle (ux-batch-1 J1 F11)", () => {
+  afterEach(() => {
+    try { localStorage.clear(); } catch { /* ignore */ }
+  });
+
+  it("clampLayersWidth clamps to [240, 560]; non-finite → default 288", () => {
+    expect(clampLayersWidth(100)).toBe(240);
+    expect(clampLayersWidth(9999)).toBe(560);
+    expect(clampLayersWidth(Number.NaN)).toBe(288);
+    expect(clampLayersWidth(300.4)).toBe(300);
+  });
+
+  it("readLayersWidth defaults to 288; writeLayersWidth round-trips clamped", () => {
+    expect(readLayersWidth()).toBe(288);
+    writeLayersWidth(400);
+    expect(localStorage.getItem("grace2.layersWidthPx")).toBe("400");
+    expect(readLayersWidth()).toBe(400);
+    writeLayersWidth(99999);
+    expect(readLayersWidth()).toBe(560);
+  });
+
+  it("renders the resize handle on desktop", () => {
+    render(<LayerPanel initialLayers={[makeLayer("a")]} />);
+    expect(
+      screen.getByTestId("grace2-layer-panel-resize-handle"),
+    ).toBeInTheDocument();
+  });
+
+  it("renders NO resize handle in mobile drawer mode", () => {
+    render(<LayerPanel initialLayers={[makeLayer("a")]} mobile />);
+    expect(
+      screen.queryByTestId("grace2-layer-panel-resize-handle"),
+    ).toBeNull();
+  });
+
+  it("applies a controlled width to the panel", () => {
+    render(<LayerPanel initialLayers={[makeLayer("a")]} width={420} />);
+    const panel = screen.getByTestId("grace2-layer-panel");
+    expect(panel.style.width).toBe("420px");
+  });
+});
 
 describe("LayerPanel — hide-when-empty (tweak 2)", () => {
   it("renders null (panel hidden) when loaded_layers is empty", () => {

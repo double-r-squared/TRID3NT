@@ -127,28 +127,41 @@ const DEFAULT_INPUT_HEIGHT_PX = 68;
 // many pixels above the bottom of the scroll container.
 const SCROLL_BOTTOM_THRESHOLD_PX = 50;
 
-// job-0294 — desktop chat-panel width. The user can widen the chat into a
-// roomier reading column via the header toggle; the preference persists to
-// localStorage (mirrors App.tsx's panel-collapse flags). Mobile is unaffected
-// (the bottom sheet has its own width = full viewport).
-const CHAT_WIDTH_DEFAULT_PX = 380;
-const CHAT_WIDTH_EXPANDED_PX = 560;
-const LS_CHAT_EXPANDED = "grace2.chatExpanded";
+// ux-batch-1 J1 (F10) — desktop chat-panel width is now USER-DRAGGABLE. The
+// user grabs the panel's left border and drags it left/right to size the
+// reading column to taste; the chosen width persists to localStorage. This
+// replaces the prior two-state large/normal toggle (which was the only sizing
+// the chat offered). Mobile is unaffected (the bottom sheet is full viewport).
+const CHAT_WIDTH_DEFAULT_PX = 384;
+const CHAT_WIDTH_MIN_PX = 320;
+// Upper bound — never let the column eat the whole map. Clamped further to the
+// viewport at apply time (drag handler) so a narrow window can't be overrun.
+const CHAT_WIDTH_MAX_PX = 760;
+const LS_CHAT_WIDTH = "grace2.chatWidthPx";
 
-/** Read the persisted desktop chat-expanded preference. Defaults to false
- * (the historical 380px column). localStorage failures degrade to false. */
-export function readChatExpanded(): boolean {
+/** Clamp a desired chat width to the allowed [min, max] band. NaN/non-finite
+ * inputs fall back to the default. Pure — also used by App.tsx's mirror. */
+export function clampChatWidth(px: number): number {
+  if (!Number.isFinite(px)) return CHAT_WIDTH_DEFAULT_PX;
+  return Math.max(CHAT_WIDTH_MIN_PX, Math.min(CHAT_WIDTH_MAX_PX, Math.round(px)));
+}
+
+/** Read the persisted desktop chat width (px). Defaults to the historical
+ * ~380px column. localStorage failures / unset / garbage degrade to default. */
+export function readChatWidth(): number {
   try {
-    return localStorage.getItem(LS_CHAT_EXPANDED) === "true";
+    const raw = localStorage.getItem(LS_CHAT_WIDTH);
+    if (raw === null) return CHAT_WIDTH_DEFAULT_PX;
+    return clampChatWidth(Number(raw));
   } catch {
-    return false;
+    return CHAT_WIDTH_DEFAULT_PX;
   }
 }
 
-/** Persist the desktop chat-expanded preference. Non-fatal on failure. */
-export function writeChatExpanded(expanded: boolean): void {
+/** Persist the desktop chat width (px). Non-fatal on failure. */
+export function writeChatWidth(px: number): void {
   try {
-    localStorage.setItem(LS_CHAT_EXPANDED, expanded ? "true" : "false");
+    localStorage.setItem(LS_CHAT_WIDTH, String(clampChatWidth(px)));
   } catch {
     /* non-fatal */
   }
@@ -943,20 +956,18 @@ export function mobileSheetContainerStyle(
  * happy-dom — it opens a WebSocket — same pattern as
  * mobileSheetContainerStyle above).
  *
- * job-0294 — ``expanded`` widens the column from the default 380px to a roomier
- * ~560px reading column (so full-width inline charts and long narration read
- * better). The width is clamped to the viewport (``min(width, 92vw)``) so the
- * expanded column never overflows a narrow desktop window. Position unchanged. */
+ * ux-batch-1 J1 — ``widthPx`` is the user's dragged column width. The width is
+ * still clamped to the viewport (``min(width, 92vw)``) so a wide column can
+ * never overrun a narrow desktop window. Position unchanged. */
 export function desktopChatContainerStyle(
-  expanded = false,
+  widthPx: number = CHAT_WIDTH_DEFAULT_PX,
 ): React.CSSProperties {
-  const widthPx = expanded ? CHAT_WIDTH_EXPANDED_PX : CHAT_WIDTH_DEFAULT_PX;
   return {
     position: "absolute",
     right: 16,
     top: 16,
     bottom: 16,
-    width: `min(${widthPx}px, 92vw)`,
+    width: `min(${clampChatWidth(widthPx)}px, 92vw)`,
     background:
       "linear-gradient(180deg, rgba(26,27,33,0.96) 0%, rgba(18,19,24,0.96) 100%)",
     color: "#eee",
@@ -972,8 +983,8 @@ export function desktopChatContainerStyle(
     fontFamily: "system-ui, sans-serif",
     fontSize: 13,
     overflow: "hidden",
-    // job-0294 — width transitions smoothly when the user toggles expand.
-    transition: "width 180ms ease-in-out",
+    // ux-batch-1 J1 — no width transition: the column tracks the drag pointer
+    // 1:1 (a transition would make the handle feel laggy/rubbery during a drag).
   };
 }
 
@@ -1174,6 +1185,19 @@ export interface ChatProps {
    * bump), so the effect runs exactly once as before.
    */
   authEpoch?: number;
+  /**
+   * ux-batch-1 J1 (F10) — optional controlled desktop chat width (px). App
+   * lifts the width so dependent absolute-positioned chrome (inline-card stack,
+   * payload-warning banner) can track the column edge. When provided it seeds
+   * and mirrors the internal width; when omitted Chat reads/persists its own
+   * width via localStorage. Ignored on mobile.
+   */
+  width?: number;
+  /**
+   * ux-batch-1 J1 — fired (with the new px width) whenever the user drags the
+   * resize handle or nudges it with the keyboard, so App can mirror it.
+   */
+  onWidthChange?: (widthPx: number) => void;
 }
 
 // --- Connection status display ------------------------------------------- //
@@ -1200,24 +1224,70 @@ export function Chat({
   activeCaseId = null,
   mobile = false,
   authEpoch = 0,
+  width,
+  onWidthChange,
 }: ChatProps): JSX.Element {
   // job-0278 — mobile bottom-sheet expansion. Collapsed (composer only) by
   // default; presentation-only state, lives and dies with the Chat mount.
   const [sheetExpanded, setSheetExpanded] = useState<boolean>(false);
-  // job-0294 — desktop chat-panel WIDTH expansion (distinct from the mobile
-  // sheet height). Persisted to localStorage so reloads remember it. Read lazily
-  // so SSR / first paint don't touch localStorage before hydration. Mobile
-  // ignores this entirely (the sheet is full-viewport width).
-  const [chatExpanded, setChatExpanded] = useState<boolean>(() =>
-    mobile ? false : readChatExpanded(),
+  // ux-batch-1 J1 (F10) — desktop chat-panel WIDTH is user-draggable (distinct
+  // from the mobile sheet height). Persisted to localStorage so reloads
+  // remember it. Read lazily so SSR / first paint don't touch localStorage
+  // before hydration. Mobile ignores this entirely (full-viewport sheet).
+  const [chatWidth, setChatWidth] = useState<number>(() =>
+    mobile ? CHAT_WIDTH_DEFAULT_PX : (width ?? readChatWidth()),
   );
-  const toggleChatExpanded = useCallback(() => {
-    setChatExpanded((prev) => {
-      const next = !prev;
-      writeChatExpanded(next);
-      return next;
-    });
-  }, []);
+  // Mirror an externally-controlled width (App lifts it for dependent offsets +
+  // the payload-warning banner). Skipped on mobile.
+  useEffect(() => {
+    if (!mobile && typeof width === "number") {
+      setChatWidth(clampChatWidth(width));
+    }
+  }, [width, mobile]);
+  // Latest width during a drag — onPointerUp persists from here so we don't
+  // hammer localStorage on every pointermove.
+  const chatWidthRef = useRef<number>(chatWidth);
+  chatWidthRef.current = chatWidth;
+  // Begin a left-border drag. The panel is anchored right:16, so the column
+  // width is (viewportRight - 16) - pointerX; clamped to the allowed band.
+  const beginWidthDrag = useCallback(
+    (e: React.PointerEvent): void => {
+      if (mobile) return;
+      e.preventDefault();
+      const onMove = (ev: PointerEvent): void => {
+        const next = clampChatWidth(window.innerWidth - 16 - ev.clientX);
+        chatWidthRef.current = next;
+        setChatWidth(next);
+        onWidthChange?.(next);
+      };
+      const onUp = (): void => {
+        writeChatWidth(chatWidthRef.current);
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        document.body.style.userSelect = "";
+        document.body.style.cursor = "";
+      };
+      document.body.style.userSelect = "none";
+      document.body.style.cursor = "ew-resize";
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+    },
+    [mobile, onWidthChange],
+  );
+  // Keyboard a11y for the resize separator: arrows nudge the width in 24px
+  // steps (wider = ArrowLeft, since the panel grows leftward).
+  const nudgeWidth = useCallback(
+    (deltaPx: number): void => {
+      setChatWidth((prev) => {
+        const next = clampChatWidth(prev + deltaPx);
+        chatWidthRef.current = next;
+        writeChatWidth(next);
+        onWidthChange?.(next);
+        return next;
+      });
+    },
+    [onWidthChange],
+  );
   // job-0266 — PER-CASE CHAT STREAMS. All conversational state (messages,
   // tool cards, charts, sandbox cards, errors, arrival-order maps) lives in
   // per-Case StreamState entries inside a ref-held ChatStreams map; React
@@ -1585,11 +1655,11 @@ export function Chat({
 
   // job-0278 — desktop panel vs mobile bottom sheet. Every mobile divergence
   // is behind the `mobile` prop; the desktop style lives in the exported
-  // desktopChatContainerStyle below (job-0283). job-0294 — the desktop column
-  // widens when chatExpanded is on.
+  // desktopChatContainerStyle below (job-0283). ux-batch-1 J1 — the desktop
+  // column width is the user-dragged chatWidth (px).
   const containerStyle: React.CSSProperties = mobile
     ? mobileSheetContainerStyle(sheetExpanded)
-    : desktopChatContainerStyle(chatExpanded);
+    : desktopChatContainerStyle(chatWidth);
 
   return (
     <div
@@ -1598,6 +1668,35 @@ export function Chat({
       data-sheet-state={mobile ? (sheetExpanded ? "expanded" : "collapsed") : undefined}
       style={containerStyle}
     >
+      {/* ux-batch-1 J1 (F10) — desktop left-border resize grab strip. Anchored
+          at the panel's left edge; dragging it sizes the column (the panel is
+          right-anchored, so dragging left widens). role=separator + arrow-key
+          nudge for keyboard a11y. Mobile (full-width sheet) renders nothing. */}
+      {!mobile && (
+        <div
+          data-testid="grace2-chat-resize-handle"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize chat panel (drag, or use arrow keys)"
+          tabIndex={0}
+          onPointerDown={beginWidthDrag}
+          onKeyDown={(e) => {
+            // Panel grows leftward, so ArrowLeft = wider, ArrowRight = narrower.
+            if (e.key === "ArrowLeft") { e.preventDefault(); nudgeWidth(24); }
+            else if (e.key === "ArrowRight") { e.preventDefault(); nudgeWidth(-24); }
+          }}
+          style={{
+            position: "absolute",
+            left: 0,
+            top: 0,
+            bottom: 0,
+            width: 6,
+            cursor: "ew-resize",
+            zIndex: 6,
+            touchAction: "none",
+          }}
+        />
+      )}
       {/* job-0278 — mobile drag-handle / chevron toggle, first child so it
           reads as the sheet's grab area. Desktop renders nothing here. */}
       {mobile && (
@@ -1648,35 +1747,9 @@ export function Chat({
           />
           {STATUS_LABEL[status]}
         </span>
-        {/* job-0294 — desktop-only chat-width expand/collapse toggle. Mobile
-            (the bottom sheet is already full width) never renders it. The
-            preference persists via writeChatExpanded. */}
-        {!mobile && (
-          <button
-            data-testid="grace2-chat-width-toggle"
-            data-expanded={chatExpanded ? "true" : "false"}
-            aria-label={chatExpanded ? "Narrow chat panel" : "Widen chat panel"}
-            aria-pressed={chatExpanded}
-            title={chatExpanded ? "Narrow chat panel" : "Widen chat panel"}
-            onClick={toggleChatExpanded}
-            style={{
-              background: "none",
-              border: "none",
-              color: "#888",
-              cursor: "pointer",
-              fontSize: 15,
-              lineHeight: 1,
-              padding: "0 4px",
-              display: "flex",
-              alignItems: "center",
-              fontFamily: "system-ui, sans-serif",
-            }}
-          >
-            {/* Expanded → "contract" glyph (⇥|); collapsed → "expand" (⇤|).
-                Double-headed horizontal arrows read as a WIDTH control. */}
-            {chatExpanded ? "⇥" : "⇤"}
-          </button>
-        )}
+        {/* ux-batch-1 J1 — the large/normal width TOGGLE was removed in favour
+            of a drag-to-resize left border (the grace2-chat-resize-handle
+            below). Width now persists as a continuous px value. */}
         {onClose && !mobile && (
           <button
             data-testid="grace2-chat-close"

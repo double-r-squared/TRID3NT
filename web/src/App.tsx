@@ -34,8 +34,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MapView, type MapCommandSubscribeFunc, type MapTheme } from "./Map";
-import { Chat } from "./Chat";
-import { LayerPanel, createLayerPanelBus } from "./LayerPanel";
+import { Chat, readChatWidth } from "./Chat";
+import { LayerPanel, createLayerPanelBus, readLayersWidth } from "./LayerPanel";
 import { LayerLegend } from "./components/LayerLegend";
 import {
   AuthGate,
@@ -213,6 +213,15 @@ export function App(): JSX.Element {
   const [rightCollapsed, setRightCollapsed] = useState<boolean>(() =>
     readCollapsed(LS_RIGHT_COLLAPSED),
   );
+  // ux-batch-1 J1 (F10) — App mirrors the user-dragged chat width so dependent
+  // chrome (and the F16 payload-warning banner) can track the chat column edge.
+  // Chat owns persistence; App seeds from the same localStorage value and
+  // updates via Chat's onWidthChange. Initial read matches Chat's own init.
+  const [chatWidth, setChatWidth] = useState<number>(() => readChatWidth());
+  // ux-batch-1 J1 (F11) — App mirrors the user-dragged Layers-panel width so
+  // the desktop pointer-events wrapper can grow with the panel (else clicks on
+  // a widened panel fall through to the map). LayerPanel owns persistence.
+  const [layersWidth, setLayersWidth] = useState<number>(() => readLayersWidth());
 
   // Layers lifted here from session-state so:
   //   (a) LayerLegend can read the list
@@ -934,7 +943,10 @@ export function App(): JSX.Element {
                   left: 0,
                   top: 0,
                   bottom: 0,
-                  width: 280 + 16 + 16, // left:16 offset + 280 panel + 16 right padding
+                  // ux-batch-1 J1 (F11): track the dragged panel width so the
+                  // click target (incl. the right-edge resize handle) always
+                  // covers the panel. left:16 offset + panel + 16 right pad.
+                  width: layersWidth + 16 + 16,
                 }}
               >
                 <LayerPanel
@@ -942,6 +954,8 @@ export function App(): JSX.Element {
                   subscribeMapCommand={bus.subscribeMapCommand}
                   initialLayers={layers}
                   onClose={collapseLeft}
+                  width={layersWidth}
+                  onWidthChange={setLayersWidth}
                   /* job-0258: user layer-control intents (opacity slider /
                      visibility checkbox / drag-reorder) flow through the bus
                      so MapView applies them to the live MapLibre instance.
@@ -988,6 +1002,8 @@ export function App(): JSX.Element {
           activeCaseId={activeCaseId}
           mobile={isMobile}
           authEpoch={authEpoch}
+          width={chatWidth}
+          onWidthChange={setChatWidth}
         />
       </div>
 
@@ -1091,6 +1107,7 @@ export function App(): JSX.Element {
                     initialLayers={layers}
                     onClose={() => setMobileDrawerOpen(false)}
                     onMapCommand={bus.pushMapCommand}
+                    mobile
                   />
                 </div>
               )}
