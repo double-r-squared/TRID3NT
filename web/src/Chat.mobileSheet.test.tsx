@@ -20,6 +20,7 @@ import {
   SheetToggleHandle,
   findRunningToolStep,
   mobileSheetContainerStyle,
+  stepInterleaveKey,
 } from "./Chat";
 import type {
   PipelineStatePayload,
@@ -213,10 +214,12 @@ function snap(
   return { pipeline_id: pipelineId, steps };
 }
 
-/** stepOrder map keyed the way Chat records seqs: `${name}|${tool_name}`. */
+/** stepOrder map keyed the way Chat records seqs (ux-batch-1 J9):
+ *  stepInterleaveKey — step_id for tool steps, `llm_generation|<tool>` for the
+ *  thinking pseudo-step. */
 function orderOf(entries: Array<[PipelineStepSummary, number]>): Map<string, number> {
   const m = new Map<string, number>();
-  for (const [s, seq] of entries) m.set(`${s.name}|${s.tool_name}`, seq);
+  for (const [s, seq] of entries) m.set(stepInterleaveKey(s), seq);
   return m;
 }
 
@@ -277,18 +280,35 @@ describe("findRunningToolStep", () => {
     expect(found?.step_id).toBe("b");
   });
 
-  it("collapses pipeline_id reissues to the latest state (merged view-model)", () => {
-    // Same (name|tool_name) running in history then complete in live —
-    // mergeStepsByStepId keeps only the terminal card → strip hides.
-    const runningOld = step({ step_id: "a", state: "running" });
-    const completeNew = step({ step_id: "b", state: "complete" });
+  it("collapses a SINGLE invocation's running→complete by step_id (pass-1)", () => {
+    // One tool invocation has ONE step_id (pipeline_emitter.add_step); its
+    // running snapshot archives to history and the complete arrives in live
+    // under the SAME step_id. mergeStepsByStepId pass-1 keeps only the terminal
+    // card → no running step → strip hides.
+    const running = step({ step_id: "a", state: "running" });
+    const complete = step({ step_id: "a", state: "complete" });
     expect(
       findRunningToolStep(
-        [snap("p1", [runningOld])],
-        snap("p2", [completeNew]),
-        orderOf([[runningOld, 1]]),
+        [snap("p1", [running])],
+        snap("p2", [complete]),
+        orderOf([[running, 1]]),
       ),
     ).toBeNull();
+  });
+
+  it("does NOT collapse two DISTINCT step_ids of the same tool — surfaces the running one (J9/F18)", () => {
+    // ux-batch-1 J9: two step_ids = two invocations = two cards. The old
+    // cross-step_id (name|tool_name) collapse hid a genuinely-running second
+    // invocation behind a completed first one (the F18 ordering bug). A
+    // still-running distinct step_id must now be surfaced.
+    const runningA = step({ step_id: "a", state: "running" });
+    const completeB = step({ step_id: "b", state: "complete" });
+    const found = findRunningToolStep(
+      [snap("p1", [runningA])],
+      snap("p2", [completeB]),
+      orderOf([[runningA, 1], [completeB, 2]]),
+    );
+    expect(found?.step_id).toBe("a");
   });
 });
 

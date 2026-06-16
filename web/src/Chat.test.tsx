@@ -553,7 +553,8 @@ describe("buildInterleavedStream (job-0176 — chronological interleave)", () =>
       ["msg-pre", 2],
       ["msg-post", 4],
     ]);
-    const stepOrder = new Map<string, number>([["geocode_location|geocode_location", 3]]);
+    // ux-batch-1 J9: stepOrder now keys tool steps by step_id (stepInterleaveKey).
+    const stepOrder = new Map<string, number>([["step-geo", 3]]);
     const messages = [
       { id: "user-0", role: "user" as const, text: "Show me Fort Myers", done: true },
       { id: "msg-pre", role: "agent" as const, text: "I'm locating...", done: true },
@@ -590,7 +591,7 @@ describe("buildInterleavedStream (job-0176 — chronological interleave)", () =>
     // User has scrolled and an agent message arrived (seq=1); then a tool
     // dispatches (seq=2) → tool card should land AFTER the agent bubble.
     const messageOrder = new Map<string, number>([["msg-1", 1]]);
-    const stepOrder = new Map<string, number>([["fetch_dem|fetch_dem", 2]]);
+    const stepOrder = new Map<string, number>([["step-dem", 2]]);
     const messages = [
       { id: "msg-1", role: "agent" as const, text: "Working...", done: false },
     ];
@@ -626,7 +627,7 @@ describe("buildInterleavedStream (job-0176 — chronological interleave)", () =>
       ["msg-1", 1],
       ["msg-2", 3],
     ]);
-    const stepOrder = new Map<string, number>([["fetch_dem|fetch_dem", 2]]);
+    const stepOrder = new Map<string, number>([["step-dem", 2]]);
     const messages = [
       { id: "msg-1", role: "agent" as const, text: "Pre", done: true },
       { id: "msg-2", role: "agent" as const, text: "Post", done: true },
@@ -681,8 +682,8 @@ describe("buildInterleavedStream (job-0176 — chronological interleave)", () =>
       ["msg-3", 6],
     ]);
     const stepOrder = new Map<string, number>([
-      ["geocode_location|geocode_location", 3],
-      ["fetch_wdpa_protected_areas|fetch_wdpa_protected_areas", 5],
+      ["step-geo", 3],
+      ["step-wdpa", 5],
     ]);
     const messages = [
       { id: "user-0", role: "user" as const, text: "Q", done: true },
@@ -766,7 +767,7 @@ describe("buildInterleavedStream (job-0176 — chronological interleave)", () =>
     const messageOrder = new Map<string, number>([["user-0", 1]]);
     const stepOrder = new Map<string, number>([
       [`${THINKING_STEP_NAME}|gemini_generate`, 2],
-      ["fetch_dem|fetch_dem", 3],
+      ["step-dem", 3],
     ]);
     const messages = [
       { id: "user-0", role: "user" as const, text: "Hi", done: true },
@@ -802,6 +803,67 @@ describe("buildInterleavedStream (job-0176 — chronological interleave)", () =>
     ]);
     const tool = stream[1]! as Extract<InterleavedEntry, { kind: "tool" }>;
     expect(tool.step.name).toBe("fetch_dem");
+  });
+
+  it("F18: re-running the SAME tool in a later turn is a NEW card AFTER the new prompt", () => {
+    // Turn 1: user(seq1) -> fetch_roads_osm step-r1 (seq2).
+    // Turn 2: user(seq3) -> fetch_roads_osm step-r2 (seq4) — SAME name/tool, a
+    // fresh step_id (pipeline_emitter mints a new ULID per invocation). The
+    // turn-2 card must render AFTER the turn-2 prompt, NOT collapse into the
+    // turn-1 slot (the "card shows up behind the last prompt" bug).
+    const messageOrder = new Map<string, number>([
+      ["user-0", 1],
+      ["user-1", 3],
+    ]);
+    const stepOrder = new Map<string, number>([
+      ["step-r1", 2],
+      ["step-r2", 4],
+    ]);
+    const messages = [
+      { id: "user-0", role: "user" as const, text: "roads", done: true },
+      { id: "user-1", role: "user" as const, text: "roads again", done: true },
+    ];
+    const turn1: PipelineStatePayload = {
+      pipeline_id: "p1",
+      steps: [
+        {
+          step_id: "step-r1",
+          name: "fetch_roads_osm",
+          tool_name: "fetch_roads_osm",
+          state: "complete",
+        },
+      ],
+    };
+    const turn2: PipelineStatePayload = {
+      pipeline_id: "p2",
+      steps: [
+        {
+          step_id: "step-r2",
+          name: "fetch_roads_osm",
+          tool_name: "fetch_roads_osm",
+          state: "complete",
+        },
+      ],
+    };
+    const stream = buildInterleavedStream(
+      messages,
+      [turn1, turn2],
+      null,
+      messageOrder,
+      stepOrder,
+    );
+    // Two DISTINCT tool cards (not collapsed), in true chronological order.
+    expect(stream.map((e: InterleavedEntry) => e.kind)).toEqual([
+      "user-message",
+      "tool",
+      "user-message",
+      "tool",
+    ]);
+    expect(stream.map((e: InterleavedEntry) => e.seq)).toEqual([1, 2, 3, 4]);
+    const toolIds = stream
+      .filter((e): e is Extract<InterleavedEntry, { kind: "tool" }> => e.kind === "tool")
+      .map((e) => e.step.step_id);
+    expect(toolIds).toEqual(["step-r1", "step-r2"]);
   });
 });
 

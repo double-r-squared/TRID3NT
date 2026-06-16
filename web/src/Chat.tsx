@@ -117,6 +117,27 @@ export function isThinkingStep(step: PipelineStepSummary): boolean {
   return step.name === THINKING_STEP_NAME;
 }
 
+/**
+ * ux-batch-1 J9 (F18) — the stream-ordering + merge identity for a pipeline
+ * step. Tool steps key by their UNIQUE step_id (a fresh ULID per invocation —
+ * pipeline_emitter.add_step), so re-running the SAME tool in a LATER turn is a
+ * NEW card with a NEW first-arrival seq that renders AFTER that turn's prompt,
+ * instead of collapsing into (and inheriting the position of) the earlier
+ * run's card. (That cross-turn collapse was the "new tool card shows up behind
+ * the last prompt / old card reused" bug.)
+ *
+ * The ``llm_generation`` thinking pseudo-step is the ONE step the agent
+ * reissues with fresh step_ids mid-turn (a new pipeline_id per generation), so
+ * it keys by a STABLE name so all its reissues collapse to a single
+ * transitioning indicator at one position. Thinking is filtered out of the
+ * interleaved tool stream anyway; this only governs its ordering seq.
+ */
+export function stepInterleaveKey(step: PipelineStepSummary): string {
+  return isThinkingStep(step)
+    ? `${THINKING_STEP_NAME}|${step.tool_name}`
+    : step.step_id;
+}
+
 // job-0153 Part 4 — gap between input wrapper and the last chat message.
 // Scroll-area bottom padding = inputHeight + INPUT_GAP_PX.
 const INPUT_GAP_PX = 16;
@@ -486,7 +507,7 @@ export function isThinkingActive(
   // (defensive — should not happen because recordPipelineStepSeqs records
   // every step name|tool_name), treat as not-yet-superseded so we still
   // show the indicator while a fresh thinking is in flight.
-  const thinkingKey = `${thinking.name}|${thinking.tool_name}`;
+  const thinkingKey = stepInterleaveKey(thinking);
   const thinkingSeq = stepOrder.get(thinkingKey) ?? Number.MAX_SAFE_INTEGER;
 
   // Has any agent text bubble arrived at or after this thinking seq AND
@@ -508,7 +529,7 @@ export function isThinkingActive(
   // appears the abstract "thinking" cue is redundant.)
   for (const step of merged) {
     if (isThinkingStep(step)) continue;
-    const key = `${step.name}|${step.tool_name}`;
+    const key = stepInterleaveKey(step);
     const seq = stepOrder.get(key) ?? Number.MAX_SAFE_INTEGER;
     if (seq >= thinkingSeq) return false;
   }
@@ -623,7 +644,7 @@ function recordPipelineStepSeqsIn(
   p: PipelineStatePayload,
 ): void {
   for (const step of p.steps ?? []) {
-    const key = `${step.name}|${step.tool_name}`;
+    const key = stepInterleaveKey(step);
     if (!s.stepOrder.has(key)) {
       s.arrivalSeq += 1;
       s.stepOrder.set(key, s.arrivalSeq);
@@ -1072,7 +1093,7 @@ export function findRunningToolStep(
     if (isThinkingStep(step)) continue;
     if (step.state !== "running") continue;
     const seq =
-      stepOrder.get(`${step.name}|${step.tool_name}`) ??
+      stepOrder.get(stepInterleaveKey(step)) ??
       Number.MAX_SAFE_INTEGER;
     if (seq >= bestSeq) {
       best = step;
@@ -2080,21 +2101,29 @@ export function mergeStepsByStepId(
   // First-pass result, in original encounter order.
   const merged = orderedIds.map((id) => latest.get(id)!);
 
-  // Second-pass: collapse by (name|tool_name) — preserves the most-recently
-  // encountered card for each pair; preserves first-encounter ORDER of
-  // that pair (so the llm_generation card stays at its original position
-  // when its step_id is reissued mid-stream).
-  const byKey = new Map<string, number>(); // key → index in result
+  // Second-pass: collapse by (name|tool_name) — but ONLY for the
+  // llm_generation thinking pseudo-step, which the agent reissues with a fresh
+  // step_id per pipeline_id and which must stay ONE transitioning indicator at
+  // its original position. ux-batch-1 J9 (F18): regular TOOL steps are NOT
+  // collapsed here — each unique step_id is its own card, so re-running the
+  // same tool in a later turn renders as a NEW card (it used to collapse into
+  // the earlier run's position, the "card shows up behind the last prompt"
+  // bug). Pass-1 (step_id) already collapses a single tool's within-turn
+  // running→complete reissues, so non-thinking steps never duplicate here.
+  const byThinkingKey = new Map<string, number>(); // thinking key → result idx
   const result: PipelineStepSummary[] = [];
   for (const s of merged) {
-    const key = `${s.name}|${s.tool_name}`;
-    const prevIdx = byKey.get(key);
+    if (!isThinkingStep(s)) {
+      result.push(s);
+      continue;
+    }
+    const key = `thinking|${s.tool_name}`;
+    const prevIdx = byThinkingKey.get(key);
     if (prevIdx === undefined) {
-      byKey.set(key, result.length);
+      byThinkingKey.set(key, result.length);
       result.push(s);
     } else {
-      // Same logical step encountered again with a different step_id —
-      // replace in place so the latest state wins at the existing position.
+      // Latest thinking state wins at the original position.
       result[prevIdx] = s;
     }
   }
@@ -2154,9 +2183,11 @@ export type InterleavedEntry =
   | {
       kind: "tool";
       seq: number;
-      // step_key (``name|tool_name``) is the React key; matches what we
-      // record in stepOrder so the row is stable across pipeline_id
-      // reissues (job-0166 Part 3).
+      // stepKey is stepInterleaveKey(step): the unique step_id for tool steps
+      // (so a re-run in a later turn is its own card) and a stable
+      // ``thinking|<tool>`` key for the llm_generation pseudo-step. Matches what
+      // recordPipelineStepSeqs records so the row's position is stable across a
+      // single step's pipeline_id reissues + state transitions (ux-batch-1 J9).
       stepKey: string;
       step: PipelineStepSummary;
     };
@@ -2201,7 +2232,7 @@ export function buildInterleavedStream(
   const mergedSteps = mergeStepsByStepId(history, live);
   for (const step of mergedSteps) {
     if (isThinkingStep(step)) continue;
-    const key = `${step.name}|${step.tool_name}`;
+    const key = stepInterleaveKey(step);
     const seq = stepOrder.get(key) ?? Number.MAX_SAFE_INTEGER;
     out.push({ kind: "tool", seq, stepKey: key, step });
   }
