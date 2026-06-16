@@ -645,6 +645,14 @@ export function App(): JSX.Element {
         current_pipeline: null,
         map_view: null,
       });
+      // ux-batch-1 (F14): exiting a Case must reset client map state, not just
+      // the panels. The analysis-extent (AOI) rectangle is drawn directly on
+      // the map by Map.tsx and is NOT part of loaded_layers, so clearing
+      // session-state above does not remove it. Emit an explicit clear so the
+      // prior Case's AOI outline does not linger on the root/new-case map.
+      bus.pushMapCommand({
+        command: "clear-analysis-extent",
+      } as unknown as MapCommandPayload);
       return;
     }
     bus.pushSessionState({
@@ -670,6 +678,14 @@ export function App(): JSX.Element {
       const replay = extractLastZoomTo(activeSession.chat_history);
       if (replay) {
         bus.pushMapCommand(replay as unknown as MapCommandPayload);
+      } else {
+        // ux-batch-1 (F14): this Case has no AOI of its own (no bbox, no
+        // zoom-to in history). Clear any extent left over from the previously
+        // viewed Case so switching into a no-AOI Case doesn't inherit a stale
+        // rectangle. (A Case WITH an AOI replaces the extent via zoom-to.)
+        bus.pushMapCommand({
+          command: "clear-analysis-extent",
+        } as unknown as MapCommandPayload);
       }
     }
     // Rehydrate charts from session. ``activeSession.charts`` is the

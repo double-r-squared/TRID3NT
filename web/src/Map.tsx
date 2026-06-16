@@ -206,7 +206,17 @@ interface ZoomToCommand {
   command: "zoom-to";
   args: { bbox: number[] };
 }
-type WireMapCommand = MapCommandPayload | ZoomToCommand;
+// job-0294 follow-on (ux-batch-1 F14): clear the analysis-extent rectangle.
+// Emitted by App.tsx on Case exit (activeSession → null) and on opening a Case
+// that has no bbox / no zoom-to history, so a prior Case's AOI outline does not
+// linger on the map. No args — it removes the single extent source + layers.
+interface ClearAnalysisExtentCommand {
+  command: "clear-analysis-extent";
+}
+type WireMapCommand =
+  | MapCommandPayload
+  | ZoomToCommand
+  | ClearAnalysisExtentCommand;
 
 // subscribeMapCommand accepts a callback that can handle the wider WireMapCommand.
 // The bus pushes MapCommandPayload values which satisfy WireMapCommand at runtime.
@@ -873,6 +883,26 @@ export function drawAnalysisExtent(
   }
 }
 
+/**
+ * ux-batch-1 (F14) — remove the analysis-extent rectangle (fill + outline +
+ * source). Inverse of drawAnalysisExtent. Idempotent and partial-state
+ * tolerant: each removal is existence-guarded so a half-built extent (source
+ * present, a layer missing) still clears cleanly and a missing extent is a
+ * no-op. Layers must be removed before their source (MapLibre rejects removing
+ * a source still referenced by a layer).
+ */
+export function clearAnalysisExtent(m: MapLibreMap): void {
+  if (m.getLayer(ANALYSIS_EXTENT_FILL_LAYER_ID)) {
+    m.removeLayer(ANALYSIS_EXTENT_FILL_LAYER_ID);
+  }
+  if (m.getLayer(ANALYSIS_EXTENT_LINE_LAYER_ID)) {
+    m.removeLayer(ANALYSIS_EXTENT_LINE_LAYER_ID);
+  }
+  if (m.getSource(ANALYSIS_EXTENT_SOURCE_ID)) {
+    m.removeSource(ANALYSIS_EXTENT_SOURCE_ID);
+  }
+}
+
 export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "light" }: MapViewProps = {}): JSX.Element {
   const container = useRef<HTMLDivElement | null>(null);
   const map = useRef<MapLibreMap | null>(null);
@@ -1303,6 +1333,29 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
           // Idempotent: drawAnalysisExtent setData-replaces + heals missing
           // layers, so this never double-adds.
           m.once("moveend", drawExtent);
+        }
+      } else if (payload.command === "clear-analysis-extent") {
+        // ux-batch-1 (F14): Case exit (or opening a Case with no AOI) must not
+        // leave the prior Case's analysis-extent rectangle on the map. Forget
+        // the remembered corners FIRST so a late style (re)load can't re-assert
+        // the rectangle via the moveend/idle redraw path, then remove it.
+        lastZoomToCorners.current = null;
+        if (m.isStyleLoaded()) {
+          try {
+            clearAnalysisExtent(m);
+          } catch {
+            // Mid style-mutation race; the extent is removed best-effort. A
+            // missing/half-built extent is harmless and self-heals on next draw.
+          }
+        } else {
+          m.once("idle", () => {
+            if (!map.current) return;
+            try {
+              clearAnalysisExtent(map.current);
+            } catch {
+              /* best-effort — see above */
+            }
+          });
         }
       } else if (payload.command === "set-layer-opacity") {
         const opacity = Math.max(0, Math.min(1, payload.opacity));

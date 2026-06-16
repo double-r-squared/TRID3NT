@@ -367,6 +367,39 @@ describe("MapView — map-command zoom-to handler (job-0068 change 5 client side
     expect(addedLayerIds).toContain("grace2-analysis-extent-line");
   });
 
+  it("clears the analysis-extent rectangle on a clear-analysis-extent command (ux-batch-1 F14)", () => {
+    const mapCmdBus = makeMapCmdBus();
+    render(
+      <MapView
+        subscribeMapCommand={mapCmdBus.subscribe as MapCommandSubscribeFunc}
+      />,
+    );
+    const m = lastMapMock!;
+
+    // Draw an extent first (via zoom-to), then clear it.
+    act(() => {
+      mapCmdBus.push({
+        command: "zoom-to",
+        args: { bbox: [-81.91, 26.55, -81.75, 26.69] },
+      });
+    });
+    expect(
+      m.addSource.mock.calls.map((c) => c[0]),
+    ).toContain("grace2-analysis-extent");
+
+    act(() => {
+      mapCmdBus.push({ command: "clear-analysis-extent" } as never);
+    });
+
+    // Both extent layers + the source are removed.
+    const removedLayerIds = m.removeLayer.mock.calls.map((c) => c[0]);
+    expect(removedLayerIds).toContain("grace2-analysis-extent-fill");
+    expect(removedLayerIds).toContain("grace2-analysis-extent-line");
+    expect(m.removeSource.mock.calls.map((c) => c[0])).toContain(
+      "grace2-analysis-extent",
+    );
+  });
+
   // --- AWS-migration hardening regression tests (bbox track) ------------- //
   // These cover the real live failure mode the prior mocks hid: the dashed
   // rectangle was wired but silently never rendered because a throw from
@@ -1417,6 +1450,7 @@ import {
   applyLayerOrder,
   layerGroupMemberIds,
   drawAnalysisExtent,
+  clearAnalysisExtent,
 } from "./Map";
 import { fireEvent, screen } from "@testing-library/react";
 import { LayerPanel, createLayerPanelBus } from "./LayerPanel";
@@ -1518,6 +1552,12 @@ function makeExtentMap() {
     addLayer: vi.fn((def: { id: string }) => {
       layers.add(def.id);
     }),
+    removeLayer: vi.fn((id: string) => {
+      layers.delete(id);
+    }),
+    removeSource: vi.fn((id: string) => {
+      sources.delete(id);
+    }),
   } as unknown as import("maplibre-gl").Map & {
     sources: Map<string, { setData: ReturnType<typeof vi.fn> }>;
     layers: Set<string>;
@@ -1525,6 +1565,8 @@ function makeExtentMap() {
     getLayer: ReturnType<typeof vi.fn>;
     addSource: ReturnType<typeof vi.fn>;
     addLayer: ReturnType<typeof vi.fn>;
+    removeLayer: ReturnType<typeof vi.fn>;
+    removeSource: ReturnType<typeof vi.fn>;
   };
 }
 
@@ -1612,6 +1654,67 @@ describe("drawAnalysisExtent (job-0294)", () => {
     // Source + both layers intact → no addLayer, just a setData replace.
     expect(m.addLayer).not.toHaveBeenCalled();
     expect(m.sources.get("grace2-analysis-extent")!.setData).toHaveBeenCalled();
+  });
+});
+
+describe("clearAnalysisExtent (ux-batch-1 F14)", () => {
+  const BBOX: [number, number, number, number] = [-105.3, 39.95, -105.2, 40.05];
+
+  it("removes both layers then the source (inverse of drawAnalysisExtent)", () => {
+    const m = makeExtentMap();
+    drawAnalysisExtent(m, BBOX);
+    expect(m.layers.has("grace2-analysis-extent-fill")).toBe(true);
+    expect(m.layers.has("grace2-analysis-extent-line")).toBe(true);
+    expect(m.sources.has("grace2-analysis-extent")).toBe(true);
+
+    clearAnalysisExtent(m);
+
+    expect(m.removeLayer).toHaveBeenCalledWith("grace2-analysis-extent-fill");
+    expect(m.removeLayer).toHaveBeenCalledWith("grace2-analysis-extent-line");
+    expect(m.removeSource).toHaveBeenCalledWith("grace2-analysis-extent");
+    expect(m.layers.size).toBe(0);
+    expect(m.sources.size).toBe(0);
+  });
+
+  it("removes layers BEFORE the source (MapLibre rejects removing a referenced source)", () => {
+    const m = makeExtentMap();
+    drawAnalysisExtent(m, BBOX);
+    const order: string[] = [];
+    m.removeLayer.mockImplementation((id: string) => {
+      order.push(`layer:${id}`);
+      m.layers.delete(id);
+    });
+    m.removeSource.mockImplementation((id: string) => {
+      order.push(`source:${id}`);
+      m.sources.delete(id);
+    });
+
+    clearAnalysisExtent(m);
+
+    expect(order[order.length - 1]).toBe("source:grace2-analysis-extent");
+    expect(order.slice(0, 2).every((s) => s.startsWith("layer:"))).toBe(true);
+  });
+
+  it("is a no-op when no extent exists (idempotent, partial-state tolerant)", () => {
+    const m = makeExtentMap();
+    clearAnalysisExtent(m);
+    expect(m.removeLayer).not.toHaveBeenCalled();
+    expect(m.removeSource).not.toHaveBeenCalled();
+  });
+
+  it("clears a half-built extent: source present, line layer missing", () => {
+    const m = makeExtentMap();
+    drawAnalysisExtent(m, BBOX);
+    m.layers.delete("grace2-analysis-extent-line"); // simulate partial build
+    m.removeLayer.mockClear();
+
+    clearAnalysisExtent(m);
+
+    // Only the present fill layer is removed; the missing line is skipped; the
+    // source is still removed.
+    expect(m.removeLayer).toHaveBeenCalledWith("grace2-analysis-extent-fill");
+    expect(m.removeLayer).not.toHaveBeenCalledWith("grace2-analysis-extent-line");
+    expect(m.removeSource).toHaveBeenCalledWith("grace2-analysis-extent");
   });
 });
 
