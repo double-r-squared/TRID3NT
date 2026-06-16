@@ -210,9 +210,38 @@ def _default_qgis_process_submitter():
     import subprocess
     import time
 
-    qgis_bin = os.environ.get("GRACE2_QGIS_PROCESS_BIN") or shutil.which(
-        "qgis_process"
-    )
+    # job-0308 (sprint-16, Decision Q): on the AWS EC2 box QGIS lives ONLY
+    # inside the grace2-qgis container (no qgis_process on PATH). Prefer a
+    # docker-backed submitter when an image is configured (GRACE2_QGIS_DOCKER_
+    # IMAGE) OR when no local qgis_process exists but docker + the image are
+    # available. Same (args, timeout_s) -> dict contract; list/describe pass
+    # file-free args so a plain `docker run` suffices. (qgis_process RUN with
+    # data I/O uses the separate stage-then-mount path — job-0308 follow-up.)
+    _image = os.environ.get("GRACE2_QGIS_DOCKER_IMAGE")
+    _local_bin = os.environ.get("GRACE2_QGIS_PROCESS_BIN") or shutil.which("qgis_process")
+    if _image or (_local_bin is None and shutil.which("docker")):
+        _image = _image or "grace2-qgis:ltr"
+
+        def _submit_docker(args: list[str], timeout_s: int) -> dict[str, object]:
+            cmd = [
+                "docker", "run", "--rm", "-e", "QT_QPA_PLATFORM=offscreen",
+                _image, "qgis_process", *args,
+            ]
+            start = time.monotonic()
+            proc = subprocess.run(
+                cmd, capture_output=True, timeout=timeout_s, check=False
+            )
+            return {
+                "stdout": proc.stdout.decode("utf-8", errors="replace"),
+                "stderr": proc.stderr.decode("utf-8", errors="replace"),
+                "returncode": proc.returncode,
+                "duration_s": time.monotonic() - start,
+                "qgis_bin": f"docker:{_image}",
+            }
+
+        return _submit_docker
+
+    qgis_bin = _local_bin
     if qgis_bin is None:
         # Last-resort hint for the user's conda env on this Debian box (per
         # PROJECT_STATE env-facts). Production agent image will bake the
