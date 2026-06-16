@@ -359,6 +359,13 @@ card complete and then nothing, which is a broken interaction.
 Ending the turn without narration after a successful tool dispatch is the
 same severity of error as ending after only a precursor tool in the
 named-tool follow-on case — do not do it.
+
+Output style (CRITICAL):
+NEVER use emojis in your narration or any text you emit. No emoji, no
+decorative unicode pictographs, no emoticons — not in headers, not in lists,
+not as status markers. Use plain words ("done", "failed", "warning") instead
+of symbols. This is a hard formatting rule for this workbench: keep all output
+clean, professional, sans-emoji prose.
 """
 
 
