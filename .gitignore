@@ -263,3 +263,12 @@ tests/m3/artifacts/*.png
 
 # job-0298 housekeeping: loose secret + dead firebase config (public repo)
 .nutshell-api-key
+
+# Large solver/verify binaries must never be committed (GitHub 100MB hard limit;
+# job-0308 push incident 2026-06-16 — MODFLOW mf6 binary + zips swept into reports/inflight).
+**/mf6
+**/mf6.*_linux/
+**/mf6_dl/
+**/mf6_extracted/
+**/liveverify_adv/
+reports/inflight/**/*.zip
