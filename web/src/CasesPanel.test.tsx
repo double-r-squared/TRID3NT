@@ -575,6 +575,116 @@ describe("CasesPanel", () => {
     });
   });
 
+  // --- job-0330 mobile portrait clip fix ------------------------------- //
+  // The mobile-drawer column is min(320px,85vw) with overflow:hidden. The bug:
+  // a fixed-width / shrink-wrapped panel let a long Case title (whiteSpace:
+  // nowrap, flex:1) expand the row past the column width, pushing the kebab
+  // under the clip in PORTRAIT (landscape's wider 85vw masked it). The fix
+  // makes the title ellipsis-truncate (flex:1 + min-width:0) and pins the kebab
+  // (flex-shrink:0) so it is always visible inside the row.
+  describe("job-0330 — row never clips the kebab (mobile portrait)", () => {
+    const LONG_TITLE_CASE: CaseSummary = {
+      ...CASE_FORT_MYERS,
+      case_id: "01ABCDEFGHJKMNPQRSTVWX00AA",
+      title:
+        "Hurricane Ian catastrophic storm-surge inundation across Lee County and the barrier islands",
+    };
+
+    function renderRow(c: CaseSummary = LONG_TITLE_CASE) {
+      render(
+        <CasesPanel
+          cases={[c]}
+          activeCaseId={null}
+          onCreate={vi.fn()}
+          onSelect={vi.fn()}
+          onRename={vi.fn()}
+          onArchive={vi.fn()}
+          onDelete={vi.fn()}
+        />,
+      );
+    }
+
+    it("the title ellipsis-truncates (flex:1 + min-width:0, not nowrap overflow)", () => {
+      renderRow();
+      const title = screen.getByTestId("grace2-case-row-title");
+      // flex:1 lets it grow/shrink; min-width:0 is the load-bearing bit — a
+      // flex item defaults to min-width:auto and refuses to shrink below its
+      // content width, which defeats the ellipsis and pushes the kebab out.
+      expect(title.style.minWidth).toBe("0");
+      expect(title.style.flex).toMatch(/^1\b/);
+      expect(title.style.overflow).toBe("hidden");
+      expect(title.style.textOverflow).toBe("ellipsis");
+      expect(title.style.whiteSpace).toBe("nowrap");
+    });
+
+    it("the row header is width-capped (100% + min-width:0) so it can't overflow the column", () => {
+      renderRow();
+      // The header is the flex container holding [title | kebab]. It must be
+      // capped at the row width with min-width:0 so the title's ellipsis
+      // engages instead of the row growing past the drawer's overflow:hidden.
+      const title = screen.getByTestId("grace2-case-row-title");
+      const header = title.parentElement as HTMLElement;
+      expect(header.style.display).toBe("flex");
+      expect(header.style.width).toBe("100%");
+      expect(header.style.minWidth).toBe("0");
+    });
+
+    it("the kebab wrapper is flex-shrink:0 (pinned, never pushed off the clip)", () => {
+      renderRow();
+      const kebab = screen.getByTestId("grace2-case-row-menu-button");
+      const wrapper = kebab.parentElement as HTMLElement;
+      expect(wrapper.style.flexShrink).toBe("0");
+      // It still anchors its popover (position:relative) under the button.
+      expect(wrapper.style.position).toBe("relative");
+    });
+
+    it("the kebab stays in the DOM and openable even with a very long title", () => {
+      renderRow();
+      // The kebab is present (not clipped out of existence) and still opens its
+      // menu — the actual user-facing guarantee.
+      const kebab = screen.getByTestId("grace2-case-row-menu-button");
+      expect(kebab).toBeTruthy();
+      fireEvent.click(kebab);
+      expect(screen.getByTestId("grace2-case-row-menu")).toBeTruthy();
+    });
+  });
+
+  // job-0330 — inside the mobile drawer the CasesPanel must fill the column
+  // (full width), NOT shrink-wrap. A `fit-content` hugger let the row expand to
+  // the (nowrap) title's intrinsic width and clip the kebab. We assert the
+  // panel renders at the drawer column's full width here.
+  describe("job-0330 — CasesPanel fills the mobile drawer column", () => {
+    it("the panel gets the mobile-touch scope (width override) inside the drawer", () => {
+      render(
+        <MobileDrawer open={true} onClose={vi.fn()}>
+          {/* mirror App.tsx's full-width hugger (NOT fit-content) */}
+          <div style={{ width: "100%", pointerEvents: "auto" }}>
+            <CasesPanel
+              cases={[CASE_FORT_MYERS]}
+              activeCaseId={null}
+              onCreate={vi.fn()}
+              onSelect={vi.fn()}
+              onRename={vi.fn()}
+              onArchive={vi.fn()}
+              onDelete={vi.fn()}
+            />
+          </div>
+        </MobileDrawer>,
+      );
+      const panel = screen.getByTestId("grace2-cases-panel");
+      const hugger = panel.parentElement as HTMLElement;
+      // The hugger must be full-width (the global.css mobile-touch rule then
+      // expands the panel via width:auto !important). A fit-content hugger here
+      // is the regression we are guarding against.
+      expect(hugger.style.width).toBe("100%");
+      // The drawer applies the touch scope whose CSS sets width:auto on the
+      // panel — assert the panel rides inside that scope.
+      const drawer = screen.getByTestId("grace2-mobile-drawer");
+      expect(drawer.className).toContain("grace2-mobile-touch");
+      expect(drawer.contains(panel)).toBe(true);
+    });
+  });
+
   it("the +New Case button is icon-only (no text label) but keeps its aria-label", () => {
     render(
       <CasesPanel

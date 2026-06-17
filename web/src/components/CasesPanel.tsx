@@ -200,6 +200,13 @@ function CaseRow({
           display: "flex",
           alignItems: "center",
           gap: 6,
+          // job-0330 — the row header must never overflow its column: cap it at
+          // the row width and let the title (flex:1, min-width:0) ellipsis-
+          // truncate so the kebab (flex-shrink:0) is always visible. Without
+          // this, a long title pushed the kebab past the mobile drawer column's
+          // overflow:hidden clip in portrait.
+          minWidth: 0,
+          width: "100%",
         }}
       >
         {editing ? (
@@ -236,6 +243,11 @@ function CaseRow({
             data-testid="grace2-case-row-title"
             style={{
               flex: 1,
+              // job-0330 — a flex item defaults to min-width:auto, which refuses
+              // to shrink below its intrinsic content width and so defeats the
+              // ellipsis (the title would instead push the kebab out of the
+              // clip). min-width:0 lets it shrink and the ellipsis engage.
+              minWidth: 0,
               fontSize: 13,
               color: "#eee",
               overflow: "hidden",
@@ -265,7 +277,15 @@ function CaseRow({
           // F57 — single kebab overflow button → popover menu.
           <div
             ref={menuWrapRef}
-            style={{ position: "relative", display: "inline-flex" }}
+            // job-0330 — the kebab must never shrink or be pushed off the row's
+            // right edge (the bug: a long title clipped it under the mobile
+            // drawer's overflow:hidden in portrait). flex-shrink:0 pins it; the
+            // title (flex:1, min-width:0) absorbs all the slack via ellipsis.
+            style={{
+              position: "relative",
+              display: "inline-flex",
+              flexShrink: 0,
+            }}
             onClick={(e) => e.stopPropagation()}
           >
             <button
@@ -400,6 +420,10 @@ const iconBtnStyle: React.CSSProperties = {
   padding: 2,
   width: 22,
   height: 22,
+  // job-0330 — icon buttons (kebab, rename-commit) must hold their declared
+  // size and never shrink, so the title's ellipsis (not the control) absorbs a
+  // narrow row. Mirrors the flex-shrink:0 on the kebab wrapper.
+  flexShrink: 0,
   borderRadius: 4,
   display: "inline-flex",
   alignItems: "center",
