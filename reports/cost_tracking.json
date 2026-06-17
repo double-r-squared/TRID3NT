@@ -1948,6 +1948,13 @@
       "description": "Tool-accuracy panel (4 metrics: success/result-usability/routing-accuracy/p50-p95 + fold solve-telemetry) + LIVE big-sim readout. 2 file-disjoint tracks (all-agent, all-web) x impl + 3-lens verify (8 agents).",
       "model": "opus",
       "subagent_tokens": 1208444
+    },
+    {
+      "job_id": "job-0369/0370",
+      "sprint": "ux-batch-1",
+      "description": "Bedrock prompt-caching restore (job-0369, orchestrator-direct) + in-chat model selector w/ per-model telemetry + provider tint + per-model cachePoint gating (job-0370, 1 Sonnet build agent). COST-DISCIPLINE: single Sonnet agent (no fan-out) per the bill-shock recalibration.",
+      "model": "sonnet",
+      "subagent_tokens": 144545
     }
   ],
   "totals_by_sprint": {
@@ -1961,7 +1968,7 @@
     "13": 14388888,
     "13.5": 4081365,
     "14": 824503,
-    "ux-batch-1": 11543747
+    "ux-batch-1": 11688292
   },
   "historical_context": {
     "note": "Captured for accountability — NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
