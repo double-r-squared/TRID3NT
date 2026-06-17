@@ -29,9 +29,18 @@ import {
   isThinkingStep,
   THINKING_STEP_NAME,
   desktopChatContainerStyle,
+  mobileSheetContainerStyle,
   readChatWidth,
   writeChatWidth,
   clampChatWidth,
+  readChatOpacity,
+  writeChatOpacity,
+  clampChatOpacityTier,
+  chatOpacityAlphas,
+  CHAT_OPACITY_DEFAULT,
+  CHAT_OPACITY_TIERS,
+  LS_CHAT_OPACITY,
+  type ChatOpacityTier,
 } from "./Chat";
 import {
   ErrorPayload,
@@ -1199,5 +1208,143 @@ describe("readChatWidth / writeChatWidth / clampChatWidth (ux-batch-1 J1)", () =
   it("persists clamped (out-of-band writes are stored at the boundary)", () => {
     writeChatWidth(99999);
     expect(readChatWidth()).toBe(760);
+  });
+});
+
+// --- chat-opacity tier (F56, job-0322 — shared key owner) ---------------- //
+//
+// Chat.tsx OWNS the per-user chat-opacity persist key + tier model;
+// SettingsPopup (Group D) IMPORTS readChatOpacity / writeChatOpacity. These
+// tests pin: the tier model + default MEDIUM, the read/write round-trip
+// (single per-user key, NOT per-case), clampChatOpacityTier's junk handling,
+// and that the resolved alpha reflects the tier in BOTH container styles.
+
+describe("chat-opacity tier model (F56)", () => {
+  afterEach(() => {
+    try { localStorage.clear(); } catch { /* ignore */ }
+  });
+
+  it("exposes exactly the three tiers low|medium|high, default MEDIUM", () => {
+    expect(CHAT_OPACITY_TIERS).toEqual(["low", "medium", "high"]);
+    expect(CHAT_OPACITY_DEFAULT).toBe("medium");
+  });
+
+  it("clampChatOpacityTier passes valid tiers and defaults junk to MEDIUM", () => {
+    expect(clampChatOpacityTier("low")).toBe("low");
+    expect(clampChatOpacityTier("medium")).toBe("medium");
+    expect(clampChatOpacityTier("high")).toBe("high");
+    expect(clampChatOpacityTier(null)).toBe("medium");
+    expect(clampChatOpacityTier(undefined)).toBe("medium");
+    expect(clampChatOpacityTier("HIGH")).toBe("medium");
+    expect(clampChatOpacityTier(0.5)).toBe("medium");
+    expect(clampChatOpacityTier("0.99")).toBe("medium");
+  });
+
+  it("chatOpacityAlphas bands are ordered low < medium < high per surface", () => {
+    const surfaces: Array<keyof ReturnType<typeof chatOpacityAlphas>> = [
+      "desktop",
+      "mobileCollapsed",
+      "mobileExpanded",
+    ];
+    for (const surface of surfaces) {
+      const lo = chatOpacityAlphas("low")[surface];
+      const md = chatOpacityAlphas("medium")[surface];
+      const hi = chatOpacityAlphas("high")[surface];
+      expect(lo).toBeLessThan(md);
+      expect(md).toBeLessThan(hi);
+      // All alphas are valid [0, 1].
+      for (const a of [lo, md, hi]) {
+        expect(a).toBeGreaterThan(0);
+        expect(a).toBeLessThanOrEqual(1);
+      }
+    }
+  });
+
+  it("MEDIUM (default) is MORE opaque/frosted than the pre-F56 alphas", () => {
+    const med = chatOpacityAlphas("medium");
+    // Old fixed alphas: desktop 0.96, mobile collapsed 0.58, expanded 0.68.
+    expect(med.desktop).toBeGreaterThan(0.96);
+    expect(med.mobileCollapsed).toBeGreaterThan(0.58);
+    expect(med.mobileExpanded).toBeGreaterThan(0.68);
+  });
+
+  it("mobile bands stay BELOW desktop (sheet keeps map-reads-through)", () => {
+    for (const tier of CHAT_OPACITY_TIERS) {
+      const b = chatOpacityAlphas(tier);
+      expect(b.mobileCollapsed).toBeLessThanOrEqual(b.desktop);
+      expect(b.mobileExpanded).toBeLessThanOrEqual(b.desktop);
+      // Collapsed is the most see-through of the two sheet states.
+      expect(b.mobileCollapsed).toBeLessThan(b.mobileExpanded);
+    }
+  });
+});
+
+describe("readChatOpacity / writeChatOpacity (F56 per-user persistence)", () => {
+  afterEach(() => {
+    try { localStorage.clear(); } catch { /* ignore */ }
+  });
+
+  it("the persist key is the single shared per-user key (not per-case)", () => {
+    expect(LS_CHAT_OPACITY).toBe("grace2.chatOpacityTier");
+  });
+
+  it("defaults to MEDIUM when nothing is persisted", () => {
+    expect(readChatOpacity()).toBe("medium");
+  });
+
+  it("round-trips every tier through the shared key", () => {
+    for (const tier of CHAT_OPACITY_TIERS) {
+      writeChatOpacity(tier);
+      expect(localStorage.getItem(LS_CHAT_OPACITY)).toBe(tier);
+      expect(readChatOpacity()).toBe(tier);
+    }
+  });
+
+  it("normalizes an out-of-range write to MEDIUM before persisting", () => {
+    writeChatOpacity("nonsense" as unknown as ChatOpacityTier);
+    expect(readChatOpacity()).toBe("medium");
+  });
+
+  it("garbage already in storage degrades to MEDIUM on read", () => {
+    localStorage.setItem(LS_CHAT_OPACITY, "0.42");
+    expect(readChatOpacity()).toBe("medium");
+  });
+});
+
+describe("opacity tier → container-style alpha (F56 applied to both surfaces)", () => {
+  function alphasIn(bg: string): number[] {
+    return [...bg.matchAll(/rgba\(\d+,\d+,\d+,(0?\.\d+|1)\)/g)].map((m) =>
+      Number(m[1]),
+    );
+  }
+
+  it("desktop background alpha reflects the tier", () => {
+    for (const tier of CHAT_OPACITY_TIERS) {
+      const s = desktopChatContainerStyle(384, tier);
+      const want = chatOpacityAlphas(tier).desktop;
+      for (const a of alphasIn(String(s.background))) {
+        expect(a).toBe(want);
+      }
+    }
+  });
+
+  it("desktop defaults to the MEDIUM band when no tier is passed", () => {
+    const s = desktopChatContainerStyle(384);
+    for (const a of alphasIn(String(s.background))) {
+      expect(a).toBe(chatOpacityAlphas("medium").desktop);
+    }
+  });
+
+  it("mobile collapsed/expanded background alpha reflects the tier + state", () => {
+    for (const tier of CHAT_OPACITY_TIERS) {
+      const collapsed = mobileSheetContainerStyle(false, 70, tier);
+      const expanded = mobileSheetContainerStyle(true, 70, tier);
+      for (const a of alphasIn(String(collapsed.background))) {
+        expect(a).toBe(chatOpacityAlphas(tier).mobileCollapsed);
+      }
+      for (const a of alphasIn(String(expanded.background))) {
+        expect(a).toBe(chatOpacityAlphas(tier).mobileExpanded);
+      }
+    }
   });
 });

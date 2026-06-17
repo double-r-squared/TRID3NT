@@ -449,6 +449,71 @@ export class GraceWs {
   }
 
   /**
+   * job-0322 F31 — re-request the session-state on the LIVE socket.
+   *
+   * Mobile browsers tear down the WebSocket when the tab is backgrounded;
+   * on resume the socket is often still nominally OPEN but the client's
+   * in-memory layers were never re-pulled, so the map looks empty until a
+   * Case reopen. This sends a fresh `session-resume` envelope (mirroring the
+   * private send inside `openSocket`'s open handler) so the server re-emits
+   * the authoritative `session-state` and the Map reconciles the layers back
+   * via replace-not-reconcile (Appendix A.7).
+   *
+   * No-op unless THIS socket is currently OPEN — a closed/closing socket is
+   * the `reconnect()` path's responsibility, not this one. Idempotent:
+   * calling it when already connected just costs one harmless `session-resume`
+   * round-trip.
+   */
+  requestSessionState(): void {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return;
+    const resume: Envelope<SessionResumePayload> = envelope(
+      "session-resume",
+      this.sessionId,
+      {} as SessionResumePayload,
+    );
+    this.sendEnvelope(resume);
+  }
+
+  /**
+   * job-0322 F31 — revive a dropped socket without disturbing the session.
+   *
+   * If the socket is closed or closing (or null — never connected / torn
+   * down on background), run the existing `connect()` path so `openSocket`
+   * re-opens against the same `session_id`; its open handler re-sends
+   * `auth-token` then `session-resume`, so the layers come back on resume.
+   *
+   * When the socket is already OPEN (or still CONNECTING) this is a no-op —
+   * we must not tear down a healthy connection. App.tsx pairs this with
+   * `requestSessionState()` so the common case (resume while still connected)
+   * re-pulls state via the live socket and the dead-socket case revives it.
+   *
+   * Note: `connect()` already clears the auth-failure latch and resets the
+   * refresh guard; we do NOT touch the SESSION_HUB registration (it persists
+   * for the lifetime of this instance and is only dropped in `close()`).
+   */
+  reconnect(): void {
+    const stale = this.socket;
+    const rs = stale?.readyState;
+    if (rs === WebSocket.OPEN || rs === WebSocket.CONNECTING) return;
+    // A socket in CLOSING state still has a pending `close` event. We drop our
+    // reference and ask it to finish closing; its late close event is rendered
+    // harmless by the close handler's identity guard (it only mutates instance
+    // state when `this.socket` is still itself or null — so it can't null out
+    // the FRESH socket `connect()` is about to install). We do NOT call the
+    // full `close()` here: that sets `closedByUser` and unregisters from the
+    // SESSION_HUB, which would permanently break fan-out for this instance.
+    if (stale) {
+      try {
+        stale.close();
+      } catch {
+        // ignore — already closed/closing
+      }
+      this.socket = null;
+    }
+    this.connect();
+  }
+
+  /**
    * job-0159: deliver a session-scoped envelope that originated on a
    * SIBLING `GraceWs` instance for the same `session_id`. Called by the
    * fan-out hub; never invoked directly. Routes through the same handler
@@ -731,6 +796,14 @@ export class GraceWs {
     });
     ws.addEventListener("message", (ev) => this.handleMessage(ev.data));
     ws.addEventListener("close", (ev) => {
+      // job-0322 F31 — identity guard. `reconnect()` may detach a CLOSING
+      // socket and open a fresh one before the stale socket's `close` event
+      // fires; without this guard the late close would null out the NEW
+      // socket (`this.socket`) and schedule a spurious reconnect. Only the
+      // close of the socket THIS handler was registered for may mutate
+      // instance state. (`this.socket` is already the new socket — or null —
+      // in the detach case, so simply bail.)
+      if (this.socket !== null && this.socket !== ws) return;
       this.socket = null;
       if (this.closedByUser) return;
       // job-0253 — the agent's auth gate closes with code 4401 (A.5) when the

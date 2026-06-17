@@ -672,3 +672,194 @@ describe("GraceWs — sendDeleteLayer (job-0325 F53)", () => {
     expect(() => ws.sendDeleteLayer("any-layer-id")).not.toThrow();
   });
 });
+
+// ---------------------------------------------------------------------------
+// job-0322 F31 (resume-repaint): requestSessionState() re-sends a
+// `session-resume` envelope on the LIVE socket (no-op unless OPEN) so the
+// server re-emits authoritative session-state; reconnect() revives a
+// closed/closing socket (no-op when already OPEN/CONNECTING). App.tsx pairs
+// them on `visibilitychange → visible` so mobile background→resume repaints
+// the layers without a Case reopen.
+// ---------------------------------------------------------------------------
+
+// happy-dom does NOT populate `window.__webSockets` in this harness (the
+// existing socket-driving tests above gracefully no-op when `lastOpenedSocket()`
+// returns null). For F31 we need real coverage of the readyState guards, so we
+// reach the instance's private `socket` field directly — `connect()` assigns it
+// synchronously inside `openSocket` (the happy-dom WebSocket constructor returns
+// immediately in CONNECTING). This is a test-only structural access, mirroring
+// how the existing suite mutates `readyState` on a grabbed socket.
+
+/** Read the GraceWs instance's private current socket (test-only access). */
+function instanceSocket(ws: GraceWs): WebSocket | null {
+  return (ws as unknown as { socket: WebSocket | null }).socket;
+}
+
+/** Force a stable readyState getter on a socket (happy-dom socket is mutable). */
+function forceReadyState(socket: WebSocket, state: number): void {
+  Object.defineProperty(socket, "readyState", {
+    configurable: true,
+    get: () => state,
+  });
+}
+
+describe("GraceWs — requestSessionState (job-0322 F31)", () => {
+  beforeEach(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (window as any).__webSockets = [];
+    __test_resetSessionHub();
+  });
+
+  it("sends a session-resume envelope when the socket is OPEN", () => {
+    const ws = new GraceWs("ws://localhost:8765", makeHandlers());
+    ws.connect();
+    const socket = instanceSocket(ws);
+    expect(socket).not.toBeNull();
+    forceReadyState(socket!, 1); // WebSocket.OPEN
+    const sendSpy = vi.spyOn(socket!, "send").mockImplementation(() => undefined);
+
+    ws.requestSessionState();
+
+    expect(sendSpy).toHaveBeenCalledOnce();
+    const wire = JSON.parse(sendSpy.mock.calls[0][0] as string) as {
+      type: string;
+      session_id: string;
+      payload: unknown;
+    };
+    expect(wire.type).toBe("session-resume");
+    expect(wire.session_id).toBe(ws.session);
+
+    ws.close();
+  });
+
+  it("no-ops (no send, no throw) when the socket is NOT open", () => {
+    const ws = new GraceWs("ws://localhost:8765", makeHandlers());
+    ws.connect();
+    const socket = instanceSocket(ws);
+    expect(socket).not.toBeNull();
+    forceReadyState(socket!, 3); // WebSocket.CLOSED — guard must short-circuit
+    const sendSpy = vi.spyOn(socket!, "send").mockImplementation(() => undefined);
+
+    expect(() => ws.requestSessionState()).not.toThrow();
+    expect(sendSpy).not.toHaveBeenCalled();
+
+    ws.close();
+  });
+
+  it("no-ops (no throw) when never connected (null socket)", () => {
+    const ws = new GraceWs("ws://localhost:8765", makeHandlers());
+    expect(instanceSocket(ws)).toBeNull();
+    expect(() => ws.requestSessionState()).not.toThrow();
+  });
+});
+
+describe("GraceWs — reconnect (job-0322 F31)", () => {
+  beforeEach(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (window as any).__webSockets = [];
+    __test_resetSessionHub();
+  });
+
+  it("revives a CLOSED socket by opening a fresh connection", () => {
+    const onStatus = vi.fn();
+    const ws = new GraceWs("ws://localhost:8765", makeHandlers({ onStatus }));
+    ws.connect();
+    const first = instanceSocket(ws);
+    expect(first).not.toBeNull();
+    // Simulate the socket having dropped (mobile background tear-down): drive
+    // it to CLOSED then fire the close event so the instance nulls its socket.
+    forceReadyState(first!, 3); // WebSocket.CLOSED
+    first!.dispatchEvent(new CloseEvent("close", { code: 1006 }));
+    // The close handler nulled the instance socket and scheduled a reconnect;
+    // ignore the backoff timer — we're testing the explicit reconnect() path.
+    onStatus.mockClear();
+
+    ws.reconnect();
+
+    // A fresh socket was opened (distinct object) and connect() ran.
+    const revived = instanceSocket(ws);
+    expect(revived).not.toBeNull();
+    expect(revived).not.toBe(first);
+    expect(onStatus).toHaveBeenCalledWith("connecting");
+
+    ws.close();
+  });
+
+  it("no-ops when the socket is already OPEN (does not tear down a healthy connection)", () => {
+    const onStatus = vi.fn();
+    const ws = new GraceWs("ws://localhost:8765", makeHandlers({ onStatus }));
+    ws.connect();
+    const socket = instanceSocket(ws);
+    expect(socket).not.toBeNull();
+    forceReadyState(socket!, 1); // WebSocket.OPEN
+    const closeSpy = vi.spyOn(socket!, "close").mockImplementation(() => undefined);
+    onStatus.mockClear();
+
+    ws.reconnect();
+
+    // Same socket object retained; not closed; no fresh "connecting" status.
+    expect(instanceSocket(ws)).toBe(socket);
+    expect(closeSpy).not.toHaveBeenCalled();
+    expect(onStatus).not.toHaveBeenCalledWith("connecting");
+
+    ws.close();
+  });
+
+  it("no-ops when the socket is still CONNECTING", () => {
+    const onStatus = vi.fn();
+    const ws = new GraceWs("ws://localhost:8765", makeHandlers({ onStatus }));
+    ws.connect();
+    const socket = instanceSocket(ws);
+    expect(socket).not.toBeNull();
+    forceReadyState(socket!, 0); // WebSocket.CONNECTING
+    onStatus.mockClear();
+
+    ws.reconnect();
+
+    expect(instanceSocket(ws)).toBe(socket);
+    expect(onStatus).not.toHaveBeenCalledWith("connecting");
+
+    ws.close();
+  });
+
+  it("a late close from a detached stale socket does NOT clobber the revived socket", () => {
+    // The identity-guard regression: reconnect() detaches a CLOSING socket and
+    // opens a fresh one; the stale socket's late close event must NOT null out
+    // the new socket. After the revive + stale close, requestSessionState()
+    // must still send on the (mocked-OPEN) fresh socket.
+    const ws = new GraceWs("ws://localhost:8765", makeHandlers());
+    ws.connect();
+    const stale = instanceSocket(ws);
+    expect(stale).not.toBeNull();
+    forceReadyState(stale!, 2); // WebSocket.CLOSING — reconnect detaches + reopens
+
+    ws.reconnect();
+    const fresh = instanceSocket(ws);
+    expect(fresh).not.toBeNull();
+    expect(fresh).not.toBe(stale);
+
+    // Now the stale socket finally fires its close — the identity guard must
+    // keep `this.socket` pointing at `fresh` (not null it out).
+    stale!.dispatchEvent(new CloseEvent("close", { code: 1006 }));
+    expect(instanceSocket(ws)).toBe(fresh);
+
+    // Prove the fresh socket is still the instance's live socket by sending.
+    forceReadyState(fresh!, 1); // WebSocket.OPEN
+    const sendSpy = vi.spyOn(fresh!, "send").mockImplementation(() => undefined);
+    ws.requestSessionState();
+    expect(sendSpy).toHaveBeenCalledOnce();
+
+    ws.close();
+  });
+
+  it("revives from a null socket (never connected) → drives connect() (onStatus connecting)", () => {
+    const onStatus = vi.fn();
+    const ws = new GraceWs("ws://localhost:8765", makeHandlers({ onStatus }));
+    // Never connect — socket is null. reconnect() must take the revive path.
+    expect(instanceSocket(ws)).toBeNull();
+    expect(() => ws.reconnect()).not.toThrow();
+    expect(onStatus).toHaveBeenCalledWith("connecting");
+    expect(instanceSocket(ws)).not.toBeNull();
+    ws.close();
+  });
+});

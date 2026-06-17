@@ -10,11 +10,49 @@
 //   6. Click on backdrop closes the popup; click on card does NOT close.
 //   7. Esc keypress closes the popup.
 
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 import { SettingsPopup } from "./components/SettingsPopup";
+// job-0322 F56 — round-trip access to the SHARED chat-opacity helpers.
+// Chat.tsx (Group B) OWNS these; importing them here lets the tests assert the
+// real persisted tier rather than poking a hard-coded localStorage key, so the
+// test stays correct even if Group B renames the underlying key.
+import { readChatOpacity, writeChatOpacity } from "./Chat";
+
+// job-0322 F56 — mock Chat.tsx with a localStorage-backed fake implementing the
+// AGREED per-user opacity contract (tiers low|medium|high, default "medium").
+// This decouples SettingsPopup's wiring test from Group B's landing order:
+// SettingsPopup imports readChatOpacity/writeChatOpacity from "../Chat", and we
+// verify it (a) initialises from the persisted tier, (b) defaults to "medium",
+// and (c) writes the chosen tier back through the shared helper. The full
+// tier→alpha application lives in Chat.tsx and is exercised by Chat's own tests.
+vi.mock("./Chat", () => {
+  const LS_KEY = "grace2.chatOpacityTier";
+  const TIERS = ["low", "medium", "high"] as const;
+  type Tier = (typeof TIERS)[number];
+  return {
+    readChatOpacity(): Tier {
+      try {
+        const raw = localStorage.getItem(LS_KEY);
+        return (TIERS as readonly string[]).includes(raw ?? "")
+          ? (raw as Tier)
+          : "medium";
+      } catch {
+        return "medium";
+      }
+    },
+    writeChatOpacity(tier: Tier): void {
+      try {
+        localStorage.setItem(LS_KEY, tier);
+      } catch {
+        /* non-fatal */
+      }
+    },
+  };
+});
 
 afterEach(() => cleanup());
+beforeEach(() => localStorage.clear());
 
 const defaultProps = {
   userEmail: "user@example.com",
@@ -196,6 +234,91 @@ describe("SettingsPopup", () => {
         />,
       );
       expect(screen.queryByTestId("grace2-settings-api-keys")).toBeNull();
+    });
+  });
+
+  // job-0322 F56 — Chat opacity control (Settings side: renders + writes the
+  // shared per-user tier; Chat.tsx owns reading & applying the alpha).
+  describe("Chat opacity control (F56)", () => {
+    it("renders a 3-state segmented control inside Appearance", () => {
+      render(<SettingsPopup {...defaultProps} />);
+      expect(screen.getByTestId("grace2-settings-chat-opacity")).toBeTruthy();
+      expect(screen.getByTestId("grace2-settings-chat-opacity-low")).toBeTruthy();
+      expect(
+        screen.getByTestId("grace2-settings-chat-opacity-medium"),
+      ).toBeTruthy();
+      expect(screen.getByTestId("grace2-settings-chat-opacity-high")).toBeTruthy();
+      // Labelled "Chat opacity" so it reads cleanly next to Theme.
+      expect(screen.getByText("Chat opacity")).toBeTruthy();
+    });
+
+    it("defaults to MEDIUM when nothing is persisted", () => {
+      // localStorage is cleared by beforeEach — the control falls back to the
+      // documented MEDIUM default (more opaque/frosted than the legacy alphas).
+      render(<SettingsPopup {...defaultProps} />);
+      const medium = screen.getByTestId("grace2-settings-chat-opacity-medium");
+      expect(medium.getAttribute("aria-checked")).toBe("true");
+      expect(
+        screen
+          .getByTestId("grace2-settings-chat-opacity-low")
+          .getAttribute("aria-checked"),
+      ).toBe("false");
+      expect(
+        screen
+          .getByTestId("grace2-settings-chat-opacity-high")
+          .getAttribute("aria-checked"),
+      ).toBe("false");
+    });
+
+    it("initialises from the persisted tier (not the default)", () => {
+      // A previously-saved "high" tier must drive the initial active segment.
+      writeChatOpacity("high");
+      render(<SettingsPopup {...defaultProps} />);
+      expect(
+        screen
+          .getByTestId("grace2-settings-chat-opacity-high")
+          .getAttribute("aria-checked"),
+      ).toBe("true");
+      expect(
+        screen
+          .getByTestId("grace2-settings-chat-opacity-medium")
+          .getAttribute("aria-checked"),
+      ).toBe("false");
+    });
+
+    it("persists the chosen tier through the shared helper (round-trip)", () => {
+      render(<SettingsPopup {...defaultProps} />);
+      // Choose LOW.
+      fireEvent.click(screen.getByTestId("grace2-settings-chat-opacity-low"));
+      expect(readChatOpacity()).toBe("low");
+      expect(
+        screen
+          .getByTestId("grace2-settings-chat-opacity-low")
+          .getAttribute("aria-checked"),
+      ).toBe("true");
+      // Switch to HIGH — the shared key updates again.
+      fireEvent.click(screen.getByTestId("grace2-settings-chat-opacity-high"));
+      expect(readChatOpacity()).toBe("high");
+      expect(
+        screen
+          .getByTestId("grace2-settings-chat-opacity-high")
+          .getAttribute("aria-checked"),
+      ).toBe("true");
+      // And the previously-active LOW is now deselected.
+      expect(
+        screen
+          .getByTestId("grace2-settings-chat-opacity-low")
+          .getAttribute("aria-checked"),
+      ).toBe("false");
+    });
+
+    it("exposes the control as a radiogroup of radios for a11y", () => {
+      render(<SettingsPopup {...defaultProps} />);
+      const group = screen.getByTestId("grace2-settings-chat-opacity");
+      expect(group.getAttribute("role")).toBe("radiogroup");
+      const radios = screen.getAllByRole("radio");
+      // Exactly the three opacity tiers.
+      expect(radios.length).toBe(3);
     });
   });
 });

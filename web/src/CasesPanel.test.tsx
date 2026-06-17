@@ -43,6 +43,7 @@ import {
   formatBbox,
 } from "./components/CasesPanel";
 import { ConfirmationDialog } from "./components/ConfirmationDialog";
+import { MobileDrawer } from "./components/MobileDrawer";
 import { useCases } from "./hooks/useCases";
 import type {
   CaseListEnvelopePayload,
@@ -307,6 +308,92 @@ describe("CasesPanel", () => {
     expect(ids).not.toContain(CASE_DELETED.case_id);
     expect(ids).toContain(CASE_FORT_MYERS.case_id);
     expect(ids).toContain(CASE_NORCAL_FIRE.case_id);
+  });
+
+  // job-0322 F52 — CasesPanel is mounted as a child of MobileDrawer on mobile.
+  // The drawer's tap-to-dismiss guard (e.target === e.currentTarget on the
+  // column) must NOT swallow Case-row selection or the delete dialog: those
+  // events have e.target on a CasesPanel descendant, so they reach their own
+  // handlers and the drawer stays open until App explicitly closes it.
+  describe("inside MobileDrawer (F52 tap-dismiss coexistence)", () => {
+    it("selecting a row still calls onSelect (drawer onClose NOT triggered)", () => {
+      const onSelect = vi.fn();
+      const onClose = vi.fn();
+      render(
+        <MobileDrawer open={true} onClose={onClose}>
+          <CasesPanel
+            cases={[CASE_FORT_MYERS, CASE_NORCAL_FIRE]}
+            activeCaseId={null}
+            onCreate={vi.fn()}
+            onSelect={onSelect}
+            onRename={vi.fn()}
+            onArchive={vi.fn()}
+            onDelete={vi.fn()}
+          />
+        </MobileDrawer>,
+      );
+      const rows = screen.getAllByTestId("grace2-case-row");
+      const norcalRow = rows.find(
+        (r) => r.getAttribute("data-case-id") === CASE_NORCAL_FIRE.case_id,
+      )!;
+      fireEvent.click(norcalRow);
+      expect(onSelect).toHaveBeenCalledWith(CASE_NORCAL_FIRE.case_id);
+      // The drawer's column guard must NOT have fired onClose for a row tap.
+      expect(onClose).not.toHaveBeenCalled();
+    });
+
+    it("opening + confirming the delete dialog still works inside the drawer", () => {
+      const onDelete = vi.fn();
+      const onClose = vi.fn();
+      render(
+        <MobileDrawer open={true} onClose={onClose}>
+          <CasesPanel
+            cases={[CASE_FORT_MYERS]}
+            activeCaseId={null}
+            onCreate={vi.fn()}
+            onSelect={vi.fn()}
+            onRename={vi.fn()}
+            onArchive={vi.fn()}
+            onDelete={onDelete}
+          />
+        </MobileDrawer>,
+      );
+      // Open the dialog — the delete button bubbles to the column but its
+      // e.target is the button, so the drawer does not close.
+      fireEvent.click(screen.getByTestId("grace2-case-row-delete"));
+      expect(screen.getByTestId("grace2-case-delete-dialog")).toBeTruthy();
+      expect(onClose).not.toHaveBeenCalled();
+      // The dialog's own fixed backdrop cancel path must still work: clicking
+      // the dialog BODY stops propagation, then Confirm fires onDelete.
+      fireEvent.click(screen.getByTestId("grace2-case-delete-dialog"));
+      expect(onClose).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByTestId("grace2-case-delete-dialog-confirm"));
+      expect(onDelete).toHaveBeenCalledWith(CASE_FORT_MYERS.case_id);
+      expect(onClose).not.toHaveBeenCalled();
+    });
+
+    it("a tap on the drawer gutter (outside CasesPanel) DOES close the drawer", () => {
+      const onSelect = vi.fn();
+      const onClose = vi.fn();
+      render(
+        <MobileDrawer open={true} onClose={onClose}>
+          <CasesPanel
+            cases={[CASE_FORT_MYERS]}
+            activeCaseId={null}
+            onCreate={vi.fn()}
+            onSelect={onSelect}
+            onRename={vi.fn()}
+            onArchive={vi.fn()}
+            onDelete={vi.fn()}
+          />
+        </MobileDrawer>,
+      );
+      // Direct tap on the drawer column (the gutter around the panel) — the
+      // guard matches (target === currentTarget) and onClose fires.
+      fireEvent.click(screen.getByTestId("grace2-mobile-drawer"));
+      expect(onClose).toHaveBeenCalledTimes(1);
+      expect(onSelect).not.toHaveBeenCalled();
+    });
   });
 
   it("sorts the rail most-recently-updated first (job-0266)", () => {

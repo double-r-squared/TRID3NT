@@ -16,7 +16,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 
 // --- Minimal test harness ------------------------------------------------ //
 // Mirrors the collapse logic in App.tsx without importing WebSocket/WebGL deps.
@@ -707,5 +707,231 @@ describe("Map pan unlock — LayerPanel wrap pointer-events confined to column (
     // everywhere to the right of the panel column.
     expect(s.left).toBe("0px");
     expect(s.right).toBe("");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// job-0322 F53-COMPLETE (Group A wiring half): App.tsx must pass a non-null
+// onDeleteLayer to BOTH <LayerPanel> mount sites (desktop case-view + mobile
+// drawer) so the per-row delete control reaches the server via
+// wsRef.current.sendDeleteLayer. Pre-fix the prop was never wired, so the
+// server never heard the delete and the layer resurrected on the next
+// session-state.
+//
+// We can't mount the real App (WebSocket/WebGL), so we mirror the EXACT App.tsx
+// wiring — `onDeleteLayer={(id) => wsRef.current?.sendDeleteLayer(id)}` — with a
+// mocked GraceWs in a useRef and a fake LayerPanel whose delete row invokes the
+// passed-in onDeleteLayer (mirroring LayerPanel.tsx's `onDeleteLayer?.(layerId)`
+// call). This pins that BOTH mounts receive a working callback that reaches the
+// socket method.
+// ---------------------------------------------------------------------------
+
+interface FakeLayerPanelProps {
+  testid: string;
+  onDeleteLayer?: (id: string) => void;
+}
+
+/** Fake LayerPanel: mirrors only the delete-row → onDeleteLayer call path. */
+function FakeLayerPanel({ testid, onDeleteLayer }: FakeLayerPanelProps): JSX.Element {
+  return (
+    <div data-testid={testid}>
+      <button
+        data-testid={`${testid}-delete-row`}
+        // mirrors LayerPanel.tsx: `onDeleteLayer?.(layerId)`
+        onClick={() => onDeleteLayer?.("flood-depth-peak-01TEST")}
+      >
+        Delete layer
+      </button>
+      {/* Marker the test reads to assert the prop is a non-null function. */}
+      <span data-testid={`${testid}-has-ondelete`}>
+        {typeof onDeleteLayer === "function" ? "yes" : "no"}
+      </span>
+    </div>
+  );
+}
+
+/** Minimal GraceWs surface the F53 wiring touches. */
+interface FakeWs {
+  sendDeleteLayer: (id: string) => void;
+}
+
+/**
+ * Mirrors the two App.tsx LayerPanel mounts. `wsRef` holds the (mocked)
+ * GraceWs exactly as App.tsx's `wsRef = useRef<GraceWs | null>` does; both
+ * mounts wire `onDeleteLayer={(id) => wsRef.current?.sendDeleteLayer(id)}`,
+ * byte-for-byte the production wiring.
+ */
+function DeleteWiringShell({ ws }: { ws: FakeWs | null }): JSX.Element {
+  const wsRef = useRef<FakeWs | null>(ws);
+  wsRef.current = ws;
+  return (
+    <div>
+      {/* desktop case-view mount (App.tsx ~947) */}
+      <FakeLayerPanel
+        testid="desktop-layer-panel"
+        onDeleteLayer={(id) => wsRef.current?.sendDeleteLayer(id)}
+      />
+      {/* mobile drawer mount (App.tsx ~1140) */}
+      <FakeLayerPanel
+        testid="mobile-layer-panel"
+        onDeleteLayer={(id) => wsRef.current?.sendDeleteLayer(id)}
+      />
+    </div>
+  );
+}
+
+describe("App F53 wiring — onDeleteLayer reaches GraceWs.sendDeleteLayer (job-0322)", () => {
+  it("desktop LayerPanel mount receives a non-null onDeleteLayer", () => {
+    const ws: FakeWs = { sendDeleteLayer: vi.fn() };
+    render(<DeleteWiringShell ws={ws} />);
+    expect(screen.getByTestId("desktop-layer-panel-has-ondelete")).toHaveTextContent("yes");
+  });
+
+  it("mobile LayerPanel mount receives a non-null onDeleteLayer", () => {
+    const ws: FakeWs = { sendDeleteLayer: vi.fn() };
+    render(<DeleteWiringShell ws={ws} />);
+    expect(screen.getByTestId("mobile-layer-panel-has-ondelete")).toHaveTextContent("yes");
+  });
+
+  it("deleting from the DESKTOP row reaches sendDeleteLayer with the layer_id", () => {
+    const sendDeleteLayer = vi.fn();
+    render(<DeleteWiringShell ws={{ sendDeleteLayer }} />);
+    act(() => {
+      fireEvent.click(screen.getByTestId("desktop-layer-panel-delete-row"));
+    });
+    expect(sendDeleteLayer).toHaveBeenCalledOnce();
+    expect(sendDeleteLayer).toHaveBeenCalledWith("flood-depth-peak-01TEST");
+  });
+
+  it("deleting from the MOBILE row reaches sendDeleteLayer with the layer_id", () => {
+    const sendDeleteLayer = vi.fn();
+    render(<DeleteWiringShell ws={{ sendDeleteLayer }} />);
+    act(() => {
+      fireEvent.click(screen.getByTestId("mobile-layer-panel-delete-row"));
+    });
+    expect(sendDeleteLayer).toHaveBeenCalledOnce();
+    expect(sendDeleteLayer).toHaveBeenCalledWith("flood-depth-peak-01TEST");
+  });
+
+  it("delete is a no-op (no throw) when wsRef.current is null", () => {
+    render(<DeleteWiringShell ws={null} />);
+    // The optional-chain `wsRef.current?.sendDeleteLayer(id)` must not throw.
+    expect(() => {
+      act(() => {
+        fireEvent.click(screen.getByTestId("desktop-layer-panel-delete-row"));
+      });
+    }).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// job-0322 F31 (resume-repaint): App.tsx registers a `visibilitychange`
+// listener; on `visible` it calls wsRef.current?.reconnect() (revive a dropped
+// socket) then wsRef.current?.requestSessionState() (re-pull session-state so
+// the Map reconciles layers back). The listener is cleaned up on unmount and
+// guards for a null wsRef.
+//
+// We mirror the EXACT effect in a shell with a mocked GraceWs (reconnect +
+// requestSessionState as spies) and drive the real document visibilitychange
+// event.
+// ---------------------------------------------------------------------------
+
+interface FakeResumeWs {
+  reconnect: () => void;
+  requestSessionState: () => void;
+}
+
+/** Mirror of the App.tsx F31 visibilitychange effect (byte-for-byte order). */
+function ResumeShell({ ws }: { ws: FakeResumeWs | null }): JSX.Element {
+  const wsRef = useRef<FakeResumeWs | null>(ws);
+  wsRef.current = ws;
+  useEffect(() => {
+    const onVisibility = (): void => {
+      if (document.visibilityState !== "visible") return;
+      const sock = wsRef.current;
+      if (!sock) return;
+      sock.reconnect();
+      sock.requestSessionState();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, []);
+  return <div data-testid="resume-shell" />;
+}
+
+/** Force document.visibilityState then fire the event happy-dom dispatches. */
+function setVisibility(state: DocumentVisibilityState): void {
+  Object.defineProperty(document, "visibilityState", {
+    configurable: true,
+    get: () => state,
+  });
+  document.dispatchEvent(new Event("visibilitychange"));
+}
+
+describe("App F31 resume-repaint — visibilitychange drives reconnect + re-request (job-0322)", () => {
+  afterEach(() => {
+    // Restore a sane default so later suites aren't affected.
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => "visible",
+    });
+  });
+
+  it("visible → reconnect() then requestSessionState() both fire", () => {
+    const reconnect = vi.fn();
+    const requestSessionState = vi.fn();
+    render(<ResumeShell ws={{ reconnect, requestSessionState }} />);
+    act(() => {
+      setVisibility("visible");
+    });
+    expect(reconnect).toHaveBeenCalledOnce();
+    expect(requestSessionState).toHaveBeenCalledOnce();
+  });
+
+  it("reconnect() is invoked BEFORE requestSessionState() (revive then re-pull)", () => {
+    const order: string[] = [];
+    const ws: FakeResumeWs = {
+      reconnect: vi.fn(() => order.push("reconnect")),
+      requestSessionState: vi.fn(() => order.push("request")),
+    };
+    render(<ResumeShell ws={ws} />);
+    act(() => {
+      setVisibility("visible");
+    });
+    expect(order).toEqual(["reconnect", "request"]);
+  });
+
+  it("hidden → neither reconnect nor requestSessionState fires", () => {
+    const reconnect = vi.fn();
+    const requestSessionState = vi.fn();
+    render(<ResumeShell ws={{ reconnect, requestSessionState }} />);
+    act(() => {
+      setVisibility("hidden");
+    });
+    expect(reconnect).not.toHaveBeenCalled();
+    expect(requestSessionState).not.toHaveBeenCalled();
+  });
+
+  it("null wsRef → visible event is a harmless no-op (no throw)", () => {
+    render(<ResumeShell ws={null} />);
+    expect(() => {
+      act(() => {
+        setVisibility("visible");
+      });
+    }).not.toThrow();
+  });
+
+  it("listener is removed on unmount (no call after unmount)", () => {
+    const reconnect = vi.fn();
+    const requestSessionState = vi.fn();
+    const { unmount } = render(<ResumeShell ws={{ reconnect, requestSessionState }} />);
+    unmount();
+    act(() => {
+      setVisibility("visible");
+    });
+    expect(reconnect).not.toHaveBeenCalled();
+    expect(requestSessionState).not.toHaveBeenCalled();
   });
 });

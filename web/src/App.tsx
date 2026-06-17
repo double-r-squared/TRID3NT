@@ -635,6 +635,37 @@ export function App(): JSX.Element {
     // never changes, so this effect runs exactly once as before.
   }, [bus, fanoutSourceSuggestion, useCases_onCaseList, useCases_onCaseOpen, handleChartEmission, handlePayloadWarning, authEpoch]);
 
+  // job-0322 F31 — resume-repaint. Mobile browsers tear down (or silently
+  // wedge) the WebSocket when the tab is backgrounded; on return the in-memory
+  // layers were never re-pulled, so the map looks empty until a Case reopen.
+  // On `visibilitychange → visible` we (1) revive a dropped socket via
+  // reconnect() (no-op when still OPEN/CONNECTING) then (2) re-request the
+  // authoritative session-state via requestSessionState() (no-op unless OPEN)
+  // so the Map reconciles the layers back through replace-not-reconcile.
+  //
+  // Both calls are idempotent: resume while still connected costs exactly one
+  // harmless `session-resume` round-trip and leaves the socket untouched. The
+  // wsRef null-guard covers the brief window between unmount and re-mount.
+  useEffect(() => {
+    const onVisibility = (): void => {
+      if (document.visibilityState !== "visible") return;
+      const ws = wsRef.current;
+      if (!ws) return;
+      // Revive first (dead socket), then pull state (live socket). When the
+      // socket was merely backgrounded-but-open, reconnect() no-ops and
+      // requestSessionState() does the repaint; when it was torn down,
+      // reconnect() re-opens and its open handler re-sends session-resume,
+      // so the immediate requestSessionState() (which no-ops on the not-yet-
+      // OPEN socket) is harmlessly redundant.
+      ws.reconnect();
+      ws.requestSessionState();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, []);
+
   // job-0137: Case rehydration replay.
   useEffect(() => {
     // sprint-13 job-0231: Case switch resets charts (replace-not-reconcile
@@ -956,6 +987,16 @@ export function App(): JSX.Element {
                      so MapView applies them to the live MapLibre instance.
                      Without this the panel controls were dead in the demo. */
                   onMapCommand={bus.pushMapCommand}
+                  /* job-0322 F53 — end-to-end delete. The LayerPanel delete
+                     control (job-0325) optimistically removes the row, but the
+                     layer resurrected on the next session-state because this
+                     prop was never wired: the client never told the server.
+                     sendDeleteLayer emits the `layer-delete` envelope; the
+                     server persists the post-deletion list and echoes a fresh
+                     session-state (sans the layer) which onSessionState →
+                     bus.pushSessionState reconciles into the Map via
+                     replace-not-reconcile — so the layer stays gone. */
+                  onDeleteLayer={(id) => wsRef.current?.sendDeleteLayer(id)}
                 />
               </div>
             </div>
@@ -1143,6 +1184,11 @@ export function App(): JSX.Element {
                     initialLayers={layers}
                     onClose={() => setMobileDrawerOpen(false)}
                     onMapCommand={bus.pushMapCommand}
+                    /* job-0322 F53 — end-to-end delete on the mobile drawer
+                       mount too (swipe-right-to-delete in Group C drives this
+                       same callback). See the desktop mount above for the
+                       full data-flow rationale. */
+                    onDeleteLayer={(id) => wsRef.current?.sendDeleteLayer(id)}
                     mobile
                   />
                 </div>

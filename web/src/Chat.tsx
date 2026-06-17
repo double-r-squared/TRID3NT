@@ -196,6 +196,150 @@ export function writeChatWidth(px: number): void {
   }
 }
 
+// --- Chat opacity (F56, job-0322) ---------------------------------------- //
+//
+// The chat surface translucency is now a USER preference (a Settings control,
+// not a per-Case setting) so the user can dial how much of the map reads
+// through the chat panel. Chat.tsx OWNS the shared persist key + the tier
+// model; Group D's SettingsPopup IMPORTS readChatOpacity / writeChatOpacity
+// and calls them — keep these exports stable + side-effect-free.
+//
+// PER-USER persistence (one localStorage key, NOT keyed by case_id). Three
+// tiers map to per-surface alpha bands. The historical (pre-F56) alphas were
+// ~0.96 desktop / ~0.58 mobile-collapsed / ~0.68 mobile-expanded; user
+// feedback wanted the DEFAULT (medium) MORE opaque / frosted than that, so
+// the medium band sits ABOVE the old values:
+//
+//   ┌────────┬──────────┬──────────────────┬────────────────┐
+//   │ tier   │ desktop  │ mobile collapsed │ mobile expanded│
+//   ├────────┼──────────┼──────────────────┼────────────────┤
+//   │ low    │ 0.80     │ 0.55             │ 0.62           │  (most see-through)
+//   │ medium │ 0.99     │ 0.78             │ 0.86           │  ← DEFAULT (frosted)
+//   │ high   │ 1.00     │ 0.94             │ 0.97           │  (most opaque)
+//   └────────┴──────────┴──────────────────┴────────────────┘
+//
+// "low" preserves the map-centric translucent feel; "medium" (default) is a
+// frosted scrim the user reads comfortably over any basemap; "high" is a
+// near-solid panel. Mobile alphas stay BELOW desktop so the bottom sheet
+// keeps the see-through character even at "high".
+export type ChatOpacityTier = "low" | "medium" | "high";
+
+export const CHAT_OPACITY_TIERS: ChatOpacityTier[] = ["low", "medium", "high"];
+
+/** Default opacity tier — MEDIUM (frosted), per F56. */
+export const CHAT_OPACITY_DEFAULT: ChatOpacityTier = "medium";
+
+/** Shared persist key. SettingsPopup writes via writeChatOpacity, Chat reads
+ * via readChatOpacity — both go through this single per-user key. */
+export const LS_CHAT_OPACITY = "grace2.chatOpacityTier";
+
+/** Per-surface alpha bands per tier. The three surfaces the chat paints:
+ *  desktop right-panel gradient, mobile bottom-sheet COLLAPSED gradient,
+ *  mobile bottom-sheet EXPANDED gradient. Documented mapping table above. */
+export interface ChatOpacityAlphas {
+  desktop: number;
+  mobileCollapsed: number;
+  mobileExpanded: number;
+}
+
+const CHAT_OPACITY_BANDS: Record<ChatOpacityTier, ChatOpacityAlphas> = {
+  low: { desktop: 0.8, mobileCollapsed: 0.55, mobileExpanded: 0.62 },
+  medium: { desktop: 0.99, mobileCollapsed: 0.78, mobileExpanded: 0.86 },
+  high: { desktop: 1.0, mobileCollapsed: 0.94, mobileExpanded: 0.97 },
+};
+
+/** Normalize an arbitrary value to a valid tier; junk/unset → MEDIUM. Pure. */
+export function clampChatOpacityTier(value: unknown): ChatOpacityTier {
+  return value === "low" || value === "medium" || value === "high"
+    ? value
+    : CHAT_OPACITY_DEFAULT;
+}
+
+/** Resolve a tier to its per-surface alpha band. Pure; exported for tests. */
+export function chatOpacityAlphas(tier: ChatOpacityTier): ChatOpacityAlphas {
+  return CHAT_OPACITY_BANDS[clampChatOpacityTier(tier)];
+}
+
+/** Read the persisted chat-opacity tier (per-user). Unset / garbage /
+ * localStorage failure → MEDIUM. Side-effect-free. */
+export function readChatOpacity(): ChatOpacityTier {
+  try {
+    return clampChatOpacityTier(localStorage.getItem(LS_CHAT_OPACITY));
+  } catch {
+    return CHAT_OPACITY_DEFAULT;
+  }
+}
+
+/** Persist the chat-opacity tier (per-user). Non-fatal on failure. An
+ * out-of-range value is normalized to MEDIUM before writing. */
+export function writeChatOpacity(tier: ChatOpacityTier): void {
+  try {
+    localStorage.setItem(LS_CHAT_OPACITY, clampChatOpacityTier(tier));
+  } catch {
+    /* non-fatal */
+  }
+}
+
+// --- Mobile sheet height (F44, job-0322) --------------------------------- //
+//
+// The mobile bottom-sheet's EXPANDED height is now user-DRAGGABLE: the user
+// grabs the handle and drags vertically to size the sheet, persisted to
+// localStorage. This mirrors the desktop drag-to-resize width model
+// (clampChatWidth / readChatWidth / writeChatWidth) but for the sheet's
+// height, expressed as a fraction of the viewport (vh) so it tracks across
+// device rotations / different screens. The handle ALSO still tap-to-folds —
+// drag vs tap is distinguished by a movement threshold (see
+// isSheetDragGesture) so a clean tap collapses the sheet as before.
+const SHEET_HEIGHT_DEFAULT_VH = 70; // historical MOBILE_SHEET_EXPANDED_HEIGHT
+const SHEET_HEIGHT_MIN_VH = 30; // never smaller than ~a few cards + composer
+const SHEET_HEIGHT_MAX_VH = 92; // leave a sliver of map above the sheet
+const LS_SHEET_HEIGHT = "grace2.chatSheetHeightVh";
+
+/** Clamp a desired sheet height (vh) to the allowed [min, max] band. NaN /
+ * non-finite inputs fall back to the default. Pure — exported for tests. */
+export function clampSheetHeight(vh: number): number {
+  if (!Number.isFinite(vh)) return SHEET_HEIGHT_DEFAULT_VH;
+  return Math.max(
+    SHEET_HEIGHT_MIN_VH,
+    Math.min(SHEET_HEIGHT_MAX_VH, Math.round(vh)),
+  );
+}
+
+/** Read the persisted mobile sheet height (vh). Unset / garbage /
+ * localStorage failure → the historical 70vh default. */
+export function readSheetHeight(): number {
+  try {
+    const raw = localStorage.getItem(LS_SHEET_HEIGHT);
+    if (raw === null) return SHEET_HEIGHT_DEFAULT_VH;
+    return clampSheetHeight(Number(raw));
+  } catch {
+    return SHEET_HEIGHT_DEFAULT_VH;
+  }
+}
+
+/** Persist the mobile sheet height (vh). Non-fatal on failure. */
+export function writeSheetHeight(vh: number): void {
+  try {
+    localStorage.setItem(LS_SHEET_HEIGHT, String(clampSheetHeight(vh)));
+  } catch {
+    /* non-fatal */
+  }
+}
+
+// F44 — distinguish a vertical DRAG (resize) from a TAP (collapse toggle) on
+// the sheet handle by the pointer's total travel. A movement at or beyond this
+// many CSS pixels in EITHER axis is treated as a drag (it resized the sheet);
+// anything smaller is a tap (it toggles collapse). Keeps tap-to-fold working
+// without a separate chevron.
+export const SHEET_DRAG_THRESHOLD_PX = 6;
+
+/** True iff a pointer gesture that travelled (dx, dy) px counts as a DRAG
+ * (vs a tap). Uses the max-axis travel so a mostly-vertical resize and a
+ * mostly-horizontal stray both register. Pure — exported for tests. */
+export function isSheetDragGesture(dx: number, dy: number): boolean {
+  return Math.max(Math.abs(dx), Math.abs(dy)) >= SHEET_DRAG_THRESHOLD_PX;
+}
+
 // --- Chat message shape -------------------------------------------------- //
 
 export interface ChatMessage {
@@ -950,17 +1094,29 @@ export const MOBILE_SHEET_EXPANDED_HEIGHT = "70vh";
  * sheet the containing block for position:fixed descendants — ChartGallery
  * mounts INSIDE this container and must overlay the full viewport, not the
  * sheet (hazard documented by job-0283 at its two removal sites).
- * Translucency is rgba/alpha ONLY. */
+ * Translucency is rgba/alpha ONLY.
+ *
+ * F44 (job-0322) — ``heightVh`` is the user's dragged sheet height (in vh).
+ * Defaults to the historical 70vh. Ignored while collapsed (the sheet hugs
+ * its content height — handle + composer). Clamped to the allowed band.
+ *
+ * F56 (job-0322) — ``opacityTier`` selects the per-surface translucency
+ * band (low / medium / high). Default MEDIUM = a frosted scrim (more opaque
+ * than the pre-F56 0.58/0.68 alphas). Mobile bands stay below desktop so the
+ * sheet keeps its map-reads-through character. */
 export function mobileSheetContainerStyle(
   expanded: boolean,
+  heightVh: number = SHEET_HEIGHT_DEFAULT_VH,
+  opacityTier: ChatOpacityTier = CHAT_OPACITY_DEFAULT,
 ): React.CSSProperties {
-  const alpha = expanded ? 0.68 : 0.58;
+  const bands = chatOpacityAlphas(opacityTier);
+  const alpha = expanded ? bands.mobileExpanded : bands.mobileCollapsed;
   return {
     position: "absolute",
     left: 0,
     right: 0,
     bottom: 0,
-    height: expanded ? MOBILE_SHEET_EXPANDED_HEIGHT : "auto",
+    height: expanded ? `${clampSheetHeight(heightVh)}vh` : "auto",
     background: `linear-gradient(180deg, rgba(26,27,33,${alpha}) 0%, rgba(18,19,24,${alpha}) 100%)`,
     color: "#eee",
     borderRadius: "12px 12px 0 0",
@@ -987,18 +1143,24 @@ export function mobileSheetContainerStyle(
  *
  * ux-batch-1 J1 — ``widthPx`` is the user's dragged column width. The width is
  * still clamped to the viewport (``min(width, 92vw)``) so a wide column can
- * never overrun a narrow desktop window. Position unchanged. */
+ * never overrun a narrow desktop window. Position unchanged.
+ *
+ * F56 (job-0322) — ``opacityTier`` selects the desktop translucency band
+ * (low / medium / high). Default MEDIUM = 0.99 alpha, slightly MORE opaque
+ * than the pre-F56 fixed 0.96. "high" pins it fully opaque (1.0); "low"
+ * (0.8) lets the map read through the column. */
 export function desktopChatContainerStyle(
   widthPx: number = CHAT_WIDTH_DEFAULT_PX,
+  opacityTier: ChatOpacityTier = CHAT_OPACITY_DEFAULT,
 ): React.CSSProperties {
+  const alpha = chatOpacityAlphas(opacityTier).desktop;
   return {
     position: "absolute",
     right: 16,
     top: 16,
     bottom: 16,
     width: `min(${clampChatWidth(widthPx)}px, 92vw)`,
-    background:
-      "linear-gradient(180deg, rgba(26,27,33,0.96) 0%, rgba(18,19,24,0.96) 100%)",
+    background: `linear-gradient(180deg, rgba(26,27,33,${alpha}) 0%, rgba(18,19,24,${alpha}) 100%)`,
     color: "#eee",
     borderRadius: 12,
     border: "1px solid rgba(255,255,255,0.06)",
@@ -1020,22 +1182,125 @@ export function desktopChatContainerStyle(
 export interface SheetToggleHandleProps {
   expanded: boolean;
   onToggle: () => void;
+  /**
+   * F44 (job-0322) — fired DURING a vertical drag of the handle with the
+   * desired new sheet height (vh). The handle measures the pointer's
+   * absolute Y against the viewport (sheet is bottom-anchored, so a higher
+   * pointer = taller sheet) and reports the clamped vh. Optional: when
+   * omitted the handle is tap-only (the legacy behaviour). The caller
+   * applies it to the expanded sheet height.
+   */
+  onResize?: (heightVh: number) => void;
+  /** F44 — fired once when a drag GESTURE ends (pointer up) with the final
+   * height (vh) so the caller can persist it. Not fired for a pure tap. */
+  onResizeEnd?: (heightVh: number) => void;
 }
 
-/** Full-width drag-handle row that toggles the sheet. 44px tall — Apple HIG
- * minimum touch target. job-0280: the handle bar is the SINGLE affordance —
- * the redundant chevron arrow under it is gone (user feedback); the whole
- * handle area stays tappable with the same aria labels. */
+/** Full-width drag-handle row. F44 (job-0322): the handle is now BOTH a
+ * tap-to-fold toggle AND a vertical drag-to-resize grip. A pointer gesture
+ * that travels < SHEET_DRAG_THRESHOLD_PX is a TAP (toggles collapse, the
+ * legacy behaviour); a larger vertical travel RESIZES the sheet (onResize /
+ * onResizeEnd report the clamped vh, derived from the pointer's distance
+ * above the viewport bottom). `touchAction:'none'` on the grip lets the
+ * browser hand us the raw vertical pan instead of scrolling the page.
+ *
+ * 44px tall — Apple HIG minimum touch target. job-0280: the handle bar is
+ * the SINGLE affordance — the redundant chevron arrow under it is gone; the
+ * whole handle area stays tappable with the same aria labels. */
 export function SheetToggleHandle({
   expanded,
   onToggle,
+  onResize,
+  onResizeEnd,
 }: SheetToggleHandleProps): JSX.Element {
+  // Drag bookkeeping for the active gesture. dragged flips true the moment
+  // the pointer crosses the movement threshold; if it never flips, pointer-up
+  // is a TAP and toggles. lastVh holds the latest clamped height so
+  // onResizeEnd can persist it.
+  const gesture = useRef<{
+    startX: number;
+    startY: number;
+    dragged: boolean;
+    lastVh: number;
+    pointerId: number;
+  } | null>(null);
+
+  // F44 — pointer Y → sheet height (vh). The sheet is bottom-anchored, so the
+  // visible height is (viewportBottom - pointerY); convert to vh and clamp.
+  const heightVhForPointer = useCallback((clientY: number): number => {
+    const vph = window.innerHeight || 1;
+    const px = Math.max(0, vph - clientY);
+    return clampSheetHeight((px / vph) * 100);
+  }, []);
+
+  const onPointerDown = useCallback(
+    (e: React.PointerEvent<HTMLButtonElement>): void => {
+      // Only left-button / touch / pen initiate a gesture.
+      if (e.button !== undefined && e.button > 0) return;
+      gesture.current = {
+        startX: e.clientX,
+        startY: e.clientY,
+        dragged: false,
+        lastVh: heightVhForPointer(e.clientY),
+        pointerId: e.pointerId,
+      };
+      try {
+        e.currentTarget.setPointerCapture(e.pointerId);
+      } catch {
+        /* setPointerCapture unsupported (happy-dom) — non-fatal */
+      }
+    },
+    [heightVhForPointer],
+  );
+
+  const onPointerMove = useCallback(
+    (e: React.PointerEvent<HTMLButtonElement>): void => {
+      const g = gesture.current;
+      if (!g || g.pointerId !== e.pointerId) return;
+      const dx = e.clientX - g.startX;
+      const dy = e.clientY - g.startY;
+      if (!g.dragged && isSheetDragGesture(dx, dy)) {
+        g.dragged = true;
+      }
+      if (g.dragged) {
+        const vh = heightVhForPointer(e.clientY);
+        g.lastVh = vh;
+        onResize?.(vh);
+      }
+    },
+    [heightVhForPointer, onResize],
+  );
+
+  const endGesture = useCallback(
+    (e: React.PointerEvent<HTMLButtonElement>): void => {
+      const g = gesture.current;
+      if (!g || g.pointerId !== e.pointerId) return;
+      gesture.current = null;
+      try {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      } catch {
+        /* non-fatal */
+      }
+      if (g.dragged) {
+        // A drag resized the sheet — persist, do NOT toggle.
+        onResizeEnd?.(g.lastVh);
+      } else {
+        // A tap (no threshold-crossing travel) toggles collapse.
+        onToggle();
+      }
+    },
+    [onResizeEnd, onToggle],
+  );
+
   return (
     <button
       data-testid="grace2-chat-sheet-toggle"
       aria-label={expanded ? "Collapse chat" : "Expand chat"}
       aria-expanded={expanded}
-      onClick={onToggle}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={endGesture}
+      onPointerCancel={endGesture}
       style={{
         flex: "0 0 auto",
         minHeight: 44,
@@ -1050,6 +1315,9 @@ export function SheetToggleHandle({
         padding: 0,
         color: "#888",
         fontFamily: "inherit",
+        // F44 — let us own the vertical pan (drag-to-resize) instead of the
+        // browser scrolling the page under the gesture.
+        touchAction: "none",
       }}
     >
       <span
@@ -1279,6 +1547,31 @@ export function Chat({
   // job-0278 — mobile bottom-sheet expansion. Collapsed (composer only) by
   // default; presentation-only state, lives and dies with the Chat mount.
   const [sheetExpanded, setSheetExpanded] = useState<boolean>(false);
+  // F44 (job-0322) — user-draggable EXPANDED sheet height (vh). Persisted to
+  // localStorage (per-user). Read lazily so first paint doesn't touch
+  // localStorage before hydration. Mobile-only; desktop ignores it. The
+  // handle drag updates this live; onResizeEnd persists it.
+  const [sheetHeightVh, setSheetHeightVh] = useState<number>(() =>
+    mobile ? readSheetHeight() : SHEET_HEIGHT_DEFAULT_VH,
+  );
+  // Latest height during a drag — onResizeEnd persists from here so we don't
+  // hammer localStorage on every pointermove.
+  const sheetHeightRef = useRef<number>(sheetHeightVh);
+  sheetHeightRef.current = sheetHeightVh;
+  const handleSheetResize = useCallback((vh: number): void => {
+    sheetHeightRef.current = vh;
+    setSheetHeightVh(vh);
+  }, []);
+  const handleSheetResizeEnd = useCallback((vh: number): void => {
+    sheetHeightRef.current = vh;
+    setSheetHeightVh(vh);
+    writeSheetHeight(vh);
+  }, []);
+  // F56 (job-0322) — per-user chat-opacity tier. Read lazily from localStorage
+  // (the shared key Chat.tsx owns; SettingsPopup writes it). Default MEDIUM.
+  // Re-read on every Chat (re)mount; a Settings change re-mounts via App's
+  // remount key or the user reloads — within a session the tier is stable.
+  const [opacityTier] = useState<ChatOpacityTier>(() => readChatOpacity());
   // ux-batch-1 J1 (F10) — desktop chat-panel WIDTH is user-draggable (distinct
   // from the mobile sheet height). Persisted to localStorage so reloads
   // remember it. Read lazily so SSR / first paint don't touch localStorage
@@ -1707,8 +2000,8 @@ export function Chat({
   // desktopChatContainerStyle below (job-0283). ux-batch-1 J1 — the desktop
   // column width is the user-dragged chatWidth (px).
   const containerStyle: React.CSSProperties = mobile
-    ? mobileSheetContainerStyle(sheetExpanded)
-    : desktopChatContainerStyle(chatWidth);
+    ? mobileSheetContainerStyle(sheetExpanded, sheetHeightVh, opacityTier)
+    : desktopChatContainerStyle(chatWidth, opacityTier);
 
   return (
     <div
@@ -1752,9 +2045,15 @@ export function Chat({
         <SheetToggleHandle
           expanded={sheetExpanded}
           onToggle={() => setSheetExpanded((v) => !v)}
+          // F44 — drag the handle to resize the EXPANDED sheet. A resize
+          // gesture only makes sense while expanded; when collapsed a small
+          // tap still toggles open (drag-vs-tap threshold inside the handle).
+          onResize={sheetExpanded ? handleSheetResize : undefined}
+          onResizeEnd={sheetExpanded ? handleSheetResizeEnd : undefined}
         />
       )}
       <header
+        data-testid="grace2-chat-header"
         style={{
           // job-0283 — desktop gets the family hairline divider + LayerPanel
           // header padding. job-0284 — the mobile divider joins the hairline
@@ -1764,9 +2063,14 @@ export function Chat({
           borderBottom: mobile
             ? "1px solid rgba(255,255,255,0.08)"
             : "1px solid rgba(255,255,255,0.06)",
-          // job-0278 — collapsed mobile sheet shows only handle + composer;
-          // the header (and scroll area below) hide but stay mounted.
-          display: mobile && !sheetExpanded ? "none" : "flex",
+          // F45 (job-0322) — the connection-status signifier + 'GRACE-2'
+          // label + version label live on the MOBILE chat header row, laid
+          // out horizontally (flex), and they READ in the COLLAPSED state
+          // too (that's where the user glances at the connection state).
+          // The header is no longer hidden while collapsed; only the desktop
+          // path keeps its prior always-flex. (The handle sits above this
+          // header; the composer below — handle → header → scroll → composer.)
+          display: "flex",
           alignItems: "center",
           gap: 8,
         }}

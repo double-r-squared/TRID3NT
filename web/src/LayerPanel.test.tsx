@@ -19,6 +19,7 @@ import {
   applyVisibilityOverrides,
   readLayerVisibilityOverrides,
   writeLayerVisibilityOverride,
+  isHorizontalSwipeRight,
 } from "./LayerPanel";
 import { ProjectLayerSummary, SessionStatePayload } from "./contracts";
 
@@ -443,15 +444,17 @@ describe("LayerPanel — eye toggle + name + empty state (job-0264)", () => {
   });
 });
 
-// --- F53 (job-0325): per-layer delete control --------------------------- //
+// --- F53 (job-0325 + job-0322): per-layer delete, now confirm-gated ------ //
 //
-// A per-row trash control sends the `layer-delete` envelope via
-// `onDeleteLayer` (App.tsx -> ws.sendDeleteLayer) AND optimistically removes
-// the row locally + emits a `remove-layer` map-command so the overlay drops
-// instantly. The authoritative session-state echo (sans the layer) then
-// confirms it.
+// A per-row trash control (and, on mobile, a swipe-RIGHT gesture) OPENS a
+// ConfirmationDialog. Only on confirm does the destructive path run: it sends
+// the `layer-delete` envelope via `onDeleteLayer` (App.tsx -> ws.sendDeleteLayer)
+// AND optimistically removes the row locally + emits a `remove-layer`
+// map-command so the overlay drops instantly. Cancel leaves everything intact.
 
-describe("LayerPanel — per-layer delete (job-0325 F53)", () => {
+const DELETE_DIALOG = "grace2-layer-delete-dialog";
+
+describe("LayerPanel — per-layer delete control + confirm gating (job-0325 F53 / job-0322 F53-COMPLETE)", () => {
   afterEach(() => {
     try { localStorage.clear(); } catch { /* ignore */ }
   });
@@ -463,21 +466,28 @@ describe("LayerPanel — per-layer delete (job-0325 F53)", () => {
     expect(screen.getAllByTestId("layer-delete")).toHaveLength(2);
   });
 
-  it("clicking delete calls onDeleteLayer with the layer_id", () => {
+  it("clicking the trash control opens the confirm dialog WITHOUT deleting yet", () => {
     const onDeleteLayer = vi.fn<(id: string) => void>();
+    const onMapCommand = vi.fn<(cmd: MapCommandPayload) => void>();
     render(
       <LayerPanel
         initialLayers={[makeLayer("flood-demo")]}
         onDeleteLayer={onDeleteLayer}
+        onMapCommand={onMapCommand}
       />,
     );
     fireEvent.click(screen.getByTestId("layer-delete"));
-    expect(onDeleteLayer).toHaveBeenCalledWith("flood-demo");
+
+    // Dialog appears; nothing destructive has fired yet, row still present.
+    expect(screen.getByTestId(DELETE_DIALOG)).toBeInTheDocument();
+    expect(onDeleteLayer).not.toHaveBeenCalled();
+    expect(onMapCommand).not.toHaveBeenCalled();
+    expect(screen.getByTestId("layer-row")).toBeInTheDocument();
   });
 
-  it("delete optimistically removes the row AND emits a remove-layer map-command", () => {
+  it("confirm fires onDeleteLayer, emits remove-layer, and removes the row", () => {
     const onMapCommand = vi.fn<(cmd: MapCommandPayload) => void>();
-    const onDeleteLayer = vi.fn();
+    const onDeleteLayer = vi.fn<(id: string) => void>();
     render(
       <LayerPanel
         initialLayers={[makeLayer("keep", 2), makeLayer("gone", 1)]}
@@ -485,36 +495,184 @@ describe("LayerPanel — per-layer delete (job-0325 F53)", () => {
         onDeleteLayer={onDeleteLayer}
       />,
     );
-    // Two rows initially.
     expect(screen.getAllByTestId("layer-row")).toHaveLength(2);
 
-    // Click the delete control on the "gone" row.
+    // Open the dialog from the "gone" row's trash control.
     const goneRow = screen
       .getAllByTestId("layer-row")
       .find((r) => r.getAttribute("data-layer-id") === "gone")!;
-    const delBtn = goneRow.querySelector('[data-testid="layer-delete"]')!;
-    fireEvent.click(delBtn);
+    fireEvent.click(goneRow.querySelector('[data-testid="layer-delete"]')!);
 
-    // Row removed optimistically (local reducer), and the remove-layer command
-    // emitted so MapView drops the overlay immediately.
+    // Still two rows while the dialog is open (no optimistic removal yet).
+    expect(screen.getAllByTestId("layer-row")).toHaveLength(2);
+
+    // Confirm.
+    fireEvent.click(screen.getByTestId(`${DELETE_DIALOG}-confirm`));
+
+    expect(onDeleteLayer).toHaveBeenCalledWith("gone");
+    expect(onMapCommand).toHaveBeenCalledWith({
+      command: "remove-layer",
+      layer_id: "gone",
+    });
+    // Optimistic local removal: only "keep" survives, dialog closed.
     expect(screen.getAllByTestId("layer-row")).toHaveLength(1);
     expect(screen.getAllByTestId("layer-row")[0]).toHaveAttribute(
       "data-layer-id",
       "keep",
     );
-    expect(onMapCommand).toHaveBeenCalledWith({
-      command: "remove-layer",
-      layer_id: "gone",
-    });
+    expect(screen.queryByTestId(DELETE_DIALOG)).toBeNull();
   });
 
-  it("delete is safe without onDeleteLayer wired (no throw)", () => {
+  it("cancel closes the dialog with NO delete and the layer stays", () => {
+    const onMapCommand = vi.fn<(cmd: MapCommandPayload) => void>();
+    const onDeleteLayer = vi.fn<(id: string) => void>();
+    render(
+      <LayerPanel
+        initialLayers={[makeLayer("flood-demo")]}
+        onMapCommand={onMapCommand}
+        onDeleteLayer={onDeleteLayer}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("layer-delete"));
+    fireEvent.click(screen.getByTestId(`${DELETE_DIALOG}-cancel`));
+
+    expect(onDeleteLayer).not.toHaveBeenCalled();
+    expect(onMapCommand).not.toHaveBeenCalled();
+    expect(screen.queryByTestId(DELETE_DIALOG)).toBeNull();
+    expect(screen.getByTestId("layer-row")).toBeInTheDocument();
+  });
+
+  it("the dialog uses a distinct testId + names the layer in its copy", () => {
+    render(
+      <LayerPanel
+        initialLayers={[makeStyledLayer("a", { name: "Storm Surge Depth" })]}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("layer-delete"));
+    expect(screen.getByTestId(DELETE_DIALOG)).toBeInTheDocument();
+    expect(
+      screen.getByTestId(`${DELETE_DIALOG}-message`),
+    ).toHaveTextContent("Storm Surge Depth");
+    expect(
+      screen.getByTestId(`${DELETE_DIALOG}-confirm`),
+    ).toHaveTextContent("Delete");
+  });
+
+  it("desktop trash → dialog → confirm calls onDeleteLayer (end-to-end gating)", () => {
+    const onDeleteLayer = vi.fn<(id: string) => void>();
+    render(
+      <LayerPanel
+        initialLayers={[makeLayer("flood-demo")]}
+        onDeleteLayer={onDeleteLayer}
+      />,
+    );
+    // Default (no mobile prop) = desktop. Trash control is present + routed.
+    fireEvent.click(screen.getByTestId("layer-delete"));
+    expect(onDeleteLayer).not.toHaveBeenCalled(); // gated
+    fireEvent.click(screen.getByTestId(`${DELETE_DIALOG}-confirm`));
+    expect(onDeleteLayer).toHaveBeenCalledWith("flood-demo");
+  });
+
+  it("confirm is safe without onDeleteLayer wired (no throw, row still vanishes)", () => {
     render(<LayerPanel initialLayers={[makeLayer("a")]} />);
+    fireEvent.click(screen.getByTestId("layer-delete"));
     expect(() => {
-      fireEvent.click(screen.getByTestId("layer-delete"));
+      fireEvent.click(screen.getByTestId(`${DELETE_DIALOG}-confirm`));
     }).not.toThrow();
     // The row still vanishes locally even with no server round-trip wired.
     expect(screen.queryByTestId("layer-row")).toBeNull();
+  });
+});
+
+// --- F53-COMPLETE (job-0322): horizontal swipe-right predicate ----------- //
+//
+// The mobile swipe-right-to-delete gesture must NOT fight the @dnd-kit vertical
+// drag-to-reorder. `isHorizontalSwipeRight(dx, dy)` is the pure discriminator:
+// rightward (dx > 0), past the threshold, and horizontally DOMINANT (|dx| > |dy|).
+
+describe("isHorizontalSwipeRight predicate (job-0322 F53-COMPLETE)", () => {
+  it("true for a clear rightward, horizontally-dominant swipe", () => {
+    expect(isHorizontalSwipeRight(80, 5)).toBe(true);
+    expect(isHorizontalSwipeRight(60, -10)).toBe(true);
+  });
+
+  it("false for a vertical-dominant drag (reorder territory) even if past threshold", () => {
+    expect(isHorizontalSwipeRight(60, 70)).toBe(false); // |dy| >= |dx|
+    expect(isHorizontalSwipeRight(60, 60)).toBe(false); // tie → vertical wins
+  });
+
+  it("false for a leftward swipe (only RIGHT deletes)", () => {
+    expect(isHorizontalSwipeRight(-80, 2)).toBe(false);
+  });
+
+  it("false when below the horizontal threshold", () => {
+    expect(isHorizontalSwipeRight(20, 2)).toBe(false);
+    expect(isHorizontalSwipeRight(55, 0, 56)).toBe(false); // just under custom thr
+    expect(isHorizontalSwipeRight(56, 0, 56)).toBe(true); // exactly at threshold
+  });
+
+  it("false for non-finite inputs", () => {
+    expect(isHorizontalSwipeRight(Number.NaN, 0)).toBe(false);
+    expect(isHorizontalSwipeRight(80, Number.POSITIVE_INFINITY)).toBe(false);
+  });
+});
+
+// --- F53-COMPLETE (job-0322): mobile swipe-right opens the dialog -------- //
+//
+// On the `mobile` prop, a horizontal-dominant swipe-right on a row opens the
+// same confirm dialog as the trash control; a mostly-vertical drag does NOT.
+
+describe("LayerPanel — mobile swipe-right-to-delete (job-0322 F53-COMPLETE)", () => {
+  afterEach(() => {
+    try { localStorage.clear(); } catch { /* ignore */ }
+  });
+
+  function swipeRow(row: Element, dx: number, dy: number): void {
+    fireEvent.pointerDown(row, { clientX: 100, clientY: 100 });
+    fireEvent.pointerMove(row, { clientX: 100 + dx, clientY: 100 + dy });
+    fireEvent.pointerUp(row, { clientX: 100 + dx, clientY: 100 + dy });
+  }
+
+  it("a horizontal-dominant swipe-right opens the confirm dialog (mobile)", () => {
+    const onDeleteLayer = vi.fn<(id: string) => void>();
+    render(
+      <LayerPanel
+        initialLayers={[makeLayer("flood-demo")]}
+        onDeleteLayer={onDeleteLayer}
+        mobile
+      />,
+    );
+    swipeRow(screen.getByTestId("layer-row"), 90, 8);
+    // Dialog opened (gated) — no immediate delete.
+    expect(screen.getByTestId(DELETE_DIALOG)).toBeInTheDocument();
+    expect(onDeleteLayer).not.toHaveBeenCalled();
+    // Confirm runs the delete.
+    fireEvent.click(screen.getByTestId(`${DELETE_DIALOG}-confirm`));
+    expect(onDeleteLayer).toHaveBeenCalledWith("flood-demo");
+  });
+
+  it("a vertical-dominant drag does NOT open the dialog (left to dnd-kit reorder)", () => {
+    render(
+      <LayerPanel initialLayers={[makeLayer("flood-demo")]} mobile />,
+    );
+    swipeRow(screen.getByTestId("layer-row"), 10, 90); // mostly vertical
+    expect(screen.queryByTestId(DELETE_DIALOG)).toBeNull();
+  });
+
+  it("a leftward swipe does NOT open the dialog", () => {
+    render(
+      <LayerPanel initialLayers={[makeLayer("flood-demo")]} mobile />,
+    );
+    swipeRow(screen.getByTestId("layer-row"), -90, 5);
+    expect(screen.queryByTestId(DELETE_DIALOG)).toBeNull();
+  });
+
+  it("swipe is INERT on desktop (no mobile prop) — gesture ignored", () => {
+    render(
+      <LayerPanel initialLayers={[makeLayer("flood-demo")]} />,
+    );
+    swipeRow(screen.getByTestId("layer-row"), 90, 5);
+    expect(screen.queryByTestId(DELETE_DIALOG)).toBeNull();
   });
 });
 

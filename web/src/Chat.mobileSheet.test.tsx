@@ -16,11 +16,16 @@ import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 import { useState } from "react";
 import {
   MOBILE_SHEET_EXPANDED_HEIGHT,
+  SHEET_DRAG_THRESHOLD_PX,
   SheetActiveToolStrip,
   SheetToggleHandle,
+  clampSheetHeight,
   findRunningToolStep,
+  isSheetDragGesture,
   mobileSheetContainerStyle,
+  readSheetHeight,
   stepInterleaveKey,
+  writeSheetHeight,
 } from "./Chat";
 import type {
   PipelineStatePayload,
@@ -29,6 +34,21 @@ import type {
 } from "./contracts";
 
 afterEach(() => cleanup());
+
+// F44 — a TAP is a pointerdown + pointerup at the SAME spot (no
+// threshold-crossing travel). The handle distinguishes it from a drag.
+function tap(el: Element): void {
+  fireEvent.pointerDown(el, { clientX: 100, clientY: 500, pointerId: 1 });
+  fireEvent.pointerUp(el, { clientX: 100, clientY: 500, pointerId: 1 });
+}
+
+// F44 — a vertical DRAG: pointerdown, a move past the threshold, pointerup.
+// clientY decreasing = pointer moving UP = taller sheet (bottom-anchored).
+function dragVertical(el: Element, fromY: number, toY: number): void {
+  fireEvent.pointerDown(el, { clientX: 100, clientY: fromY, pointerId: 1 });
+  fireEvent.pointerMove(el, { clientX: 100, clientY: toY, pointerId: 1 });
+  fireEvent.pointerUp(el, { clientX: 100, clientY: toY, pointerId: 1 });
+}
 
 describe("mobileSheetContainerStyle", () => {
   it("pins the sheet to the bottom edge, full width", () => {
@@ -59,24 +79,34 @@ describe("mobileSheetContainerStyle", () => {
     expect(s.zIndex).toBe(32);
   });
 
-  // job-0284 — translucent-surface pins: the sheet must let the map read
-  // through in BOTH states (map-centric app), with the hairline family
-  // border. Alpha stays inside the 0.55–0.7 legibility window.
-  it("job-0284: translucent family gradient in both states (map reads through)", () => {
+  // job-0284 / F56 — translucent-surface pins: the sheet keeps a
+  // linear-gradient surface with the hairline family border in both states.
+  // F56 made the alpha a per-user opacity tier; the LOW tier preserves the
+  // original map-reads-through legibility window (0.55–0.7).
+  it("job-0284: translucent family gradient + hairline border in both states", () => {
     for (const expanded of [false, true]) {
       const s = mobileSheetContainerStyle(expanded);
       const bg = String(s.background);
       expect(bg).toContain("linear-gradient");
-      const alphas = [...bg.matchAll(/rgba\(\d+,\d+,\d+,(0\.\d+)\)/g)].map(
+      const alphas = [...bg.matchAll(/rgba\(\d+,\d+,\d+,(0?\.\d+|1)\)/g)].map(
         (m) => Number(m[1]),
       );
       expect(alphas.length).toBeGreaterThan(0);
+      expect(s.border).toBe("1px solid rgba(255,255,255,0.10)");
+      expect(s.borderBottom).toBe("none");
+    }
+  });
+
+  it("F56: LOW opacity tier keeps the map-reads-through window (0.55–0.7)", () => {
+    for (const expanded of [false, true]) {
+      const s = mobileSheetContainerStyle(expanded, 70, "low");
+      const alphas = [
+        ...String(s.background).matchAll(/rgba\(\d+,\d+,\d+,(0?\.\d+|1)\)/g),
+      ].map((m) => Number(m[1]));
       for (const a of alphas) {
         expect(a).toBeGreaterThanOrEqual(0.55);
         expect(a).toBeLessThanOrEqual(0.7);
       }
-      expect(s.border).toBe("1px solid rgba(255,255,255,0.10)");
-      expect(s.borderBottom).toBe("none");
     }
   });
 
@@ -128,10 +158,182 @@ describe("SheetToggleHandle", () => {
     expect(handle).toHaveAttribute("aria-label", "Collapse chat");
   });
 
-  it("fires onToggle on click", () => {
+  it("fires onToggle on a TAP (pointer down+up with no travel)", () => {
     const onToggle = vi.fn();
     render(<SheetToggleHandle expanded={false} onToggle={onToggle} />);
-    fireEvent.click(screen.getByTestId("grace2-chat-sheet-toggle"));
+    tap(screen.getByTestId("grace2-chat-sheet-toggle"));
+    expect(onToggle).toHaveBeenCalledTimes(1);
+  });
+});
+
+// --- F44 (job-0322): drag-to-resize + tap-to-fold on the sheet handle ----- //
+
+describe("clampSheetHeight (F44)", () => {
+  it("clamps to the [30, 92] vh band and rounds", () => {
+    expect(clampSheetHeight(10)).toBe(30);
+    expect(clampSheetHeight(999)).toBe(92);
+    expect(clampSheetHeight(55.4)).toBe(55);
+    expect(clampSheetHeight(55.6)).toBe(56);
+  });
+
+  it("passes through an in-band value untouched", () => {
+    expect(clampSheetHeight(70)).toBe(70);
+    expect(clampSheetHeight(30)).toBe(30);
+    expect(clampSheetHeight(92)).toBe(92);
+  });
+
+  it("falls back to the 70vh default on non-finite input", () => {
+    expect(clampSheetHeight(Number.NaN)).toBe(70);
+    expect(clampSheetHeight(Infinity)).toBe(70);
+    expect(clampSheetHeight(-Infinity)).toBe(70);
+  });
+});
+
+describe("readSheetHeight / writeSheetHeight (F44)", () => {
+  afterEach(() => {
+    try {
+      localStorage.clear();
+    } catch {
+      /* ignore */
+    }
+  });
+
+  it("defaults to 70vh when nothing is persisted", () => {
+    expect(readSheetHeight()).toBe(70);
+  });
+
+  it("round-trips a clamped height through localStorage", () => {
+    writeSheetHeight(55);
+    expect(localStorage.getItem("grace2.chatSheetHeightVh")).toBe("55");
+    expect(readSheetHeight()).toBe(55);
+  });
+
+  it("persists clamped (out-of-band writes stored at the boundary)", () => {
+    writeSheetHeight(9999);
+    expect(readSheetHeight()).toBe(92);
+    writeSheetHeight(1);
+    expect(readSheetHeight()).toBe(30);
+  });
+
+  it("garbage in storage degrades to the default", () => {
+    localStorage.setItem("grace2.chatSheetHeightVh", "not-a-number");
+    expect(readSheetHeight()).toBe(70);
+  });
+});
+
+describe("isSheetDragGesture (F44 — tap-vs-drag threshold)", () => {
+  it("a sub-threshold gesture in EITHER axis is a TAP (not a drag)", () => {
+    expect(isSheetDragGesture(0, 0)).toBe(false);
+    expect(isSheetDragGesture(SHEET_DRAG_THRESHOLD_PX - 1, 0)).toBe(false);
+    expect(isSheetDragGesture(0, SHEET_DRAG_THRESHOLD_PX - 1)).toBe(false);
+    expect(isSheetDragGesture(-2, 3)).toBe(false);
+  });
+
+  it("a gesture at/over the threshold in either axis is a DRAG", () => {
+    expect(isSheetDragGesture(0, SHEET_DRAG_THRESHOLD_PX)).toBe(true);
+    expect(isSheetDragGesture(SHEET_DRAG_THRESHOLD_PX, 0)).toBe(true);
+    expect(isSheetDragGesture(0, -SHEET_DRAG_THRESHOLD_PX)).toBe(true);
+    expect(isSheetDragGesture(100, 100)).toBe(true);
+  });
+});
+
+describe("SheetToggleHandle — drag-to-resize vs tap-to-fold (F44)", () => {
+  // happy-dom reports window.innerHeight (defaults to 768) so the vh math is
+  // deterministic: height = (innerHeight - clientY) / innerHeight * 100.
+  const VPH = window.innerHeight || 768;
+
+  it("a clean TAP toggles (onToggle) and never resizes", () => {
+    const onToggle = vi.fn();
+    const onResize = vi.fn();
+    const onResizeEnd = vi.fn();
+    render(
+      <SheetToggleHandle
+        expanded={true}
+        onToggle={onToggle}
+        onResize={onResize}
+        onResizeEnd={onResizeEnd}
+      />,
+    );
+    tap(screen.getByTestId("grace2-chat-sheet-toggle"));
+    expect(onToggle).toHaveBeenCalledTimes(1);
+    expect(onResize).not.toHaveBeenCalled();
+    expect(onResizeEnd).not.toHaveBeenCalled();
+  });
+
+  it("a vertical DRAG resizes (onResize + onResizeEnd) and never toggles", () => {
+    const onToggle = vi.fn();
+    const onResize = vi.fn();
+    const onResizeEnd = vi.fn();
+    render(
+      <SheetToggleHandle
+        expanded={true}
+        onToggle={onToggle}
+        onResize={onResize}
+        onResizeEnd={onResizeEnd}
+      />,
+    );
+    // Pointer down low (short sheet), drag UP to a high Y (tall sheet).
+    const targetY = Math.round(VPH * 0.2); // 80% of the viewport tall
+    dragVertical(
+      screen.getByTestId("grace2-chat-sheet-toggle"),
+      Math.round(VPH * 0.5),
+      targetY,
+    );
+    expect(onToggle).not.toHaveBeenCalled();
+    expect(onResize).toHaveBeenCalled();
+    expect(onResizeEnd).toHaveBeenCalledTimes(1);
+    // The reported height is the clamped vh of the final pointer position.
+    const expectedVh = clampSheetHeight(((VPH - targetY) / VPH) * 100);
+    expect(onResizeEnd).toHaveBeenLastCalledWith(expectedVh);
+  });
+
+  it("a higher pointer (smaller clientY) → a TALLER sheet (bottom-anchored)", () => {
+    const onResize = vi.fn();
+    render(
+      <SheetToggleHandle
+        expanded={true}
+        onToggle={vi.fn()}
+        onResize={onResize}
+        onResizeEnd={vi.fn()}
+      />,
+    );
+    const handle = screen.getByTestId("grace2-chat-sheet-toggle");
+    fireEvent.pointerDown(handle, {
+      clientX: 100,
+      clientY: Math.round(VPH * 0.6),
+      pointerId: 1,
+    });
+    fireEvent.pointerMove(handle, {
+      clientX: 100,
+      clientY: Math.round(VPH * 0.5),
+      pointerId: 1,
+    });
+    fireEvent.pointerMove(handle, {
+      clientX: 100,
+      clientY: Math.round(VPH * 0.2),
+      pointerId: 1,
+    });
+    fireEvent.pointerUp(handle, {
+      clientX: 100,
+      clientY: Math.round(VPH * 0.2),
+      pointerId: 1,
+    });
+    const calls = onResize.mock.calls.map((c) => c[0] as number);
+    // Monotonically taller as the pointer rises.
+    expect(calls[calls.length - 1]).toBeGreaterThan(calls[0]!);
+  });
+
+  it("touchAction:'none' on the grip so the browser yields the vertical pan", () => {
+    render(<SheetToggleHandle expanded={true} onToggle={vi.fn()} />);
+    expect(
+      screen.getByTestId("grace2-chat-sheet-toggle").style.touchAction,
+    ).toBe("none");
+  });
+
+  it("tap still folds when no resize callbacks are wired (collapsed handle)", () => {
+    const onToggle = vi.fn();
+    render(<SheetToggleHandle expanded={false} onToggle={onToggle} />);
+    tap(screen.getByTestId("grace2-chat-sheet-toggle"));
     expect(onToggle).toHaveBeenCalledTimes(1);
   });
 });
@@ -176,14 +378,14 @@ describe("bottom-sheet toggle cycle (Chat wiring shape)", () => {
 
   it("handle expands to 70vh and reveals the conversation; second tap collapses", () => {
     render(<SheetHarness />);
-    fireEvent.click(screen.getByTestId("grace2-chat-sheet-toggle"));
+    tap(screen.getByTestId("grace2-chat-sheet-toggle"));
     expect(screen.getByTestId("sheet")).toHaveAttribute(
       "data-sheet-state",
       "expanded",
     );
     expect(screen.getByTestId("sheet").style.height).toBe("70vh");
     expect(screen.getByTestId("sheet-scroll").style.display).toBe("flex");
-    fireEvent.click(screen.getByTestId("grace2-chat-sheet-toggle"));
+    tap(screen.getByTestId("grace2-chat-sheet-toggle"));
     expect(screen.getByTestId("sheet")).toHaveAttribute(
       "data-sheet-state",
       "collapsed",
@@ -191,6 +393,47 @@ describe("bottom-sheet toggle cycle (Chat wiring shape)", () => {
     expect(screen.getByTestId("sheet-scroll").style.display).toBe("none");
     // Still mounted — content was hidden, not destroyed.
     expect(screen.getByTestId("sheet-scroll")).toBeTruthy();
+  });
+});
+
+describe("drag-resize → container height (F44 Chat wiring shape)", () => {
+  // Mirrors how Chat.tsx threads the handle's drag callbacks into the
+  // expanded-sheet height: a state vh, applied to mobileSheetContainerStyle,
+  // updated live by onResize. Starts EXPANDED so the resize callbacks are
+  // wired (Chat only wires them while expanded).
+  function ResizeHarness(): JSX.Element {
+    const [heightVh, setHeightVh] = useState(70);
+    return (
+      <div
+        data-testid="sheet"
+        style={mobileSheetContainerStyle(true, heightVh, "medium")}
+      >
+        <SheetToggleHandle
+          expanded={true}
+          onToggle={() => undefined}
+          onResize={(vh) => setHeightVh(vh)}
+          onResizeEnd={(vh) => setHeightVh(vh)}
+        />
+      </div>
+    );
+  }
+
+  it("dragging the handle changes the expanded sheet height", () => {
+    const VPH = window.innerHeight || 768;
+    render(<ResizeHarness />);
+    expect(screen.getByTestId("sheet").style.height).toBe("70vh");
+    // Drag UP to ~85% of the viewport.
+    const targetY = Math.round(VPH * 0.15);
+    dragVertical(
+      screen.getByTestId("grace2-chat-sheet-toggle"),
+      Math.round(VPH * 0.5),
+      targetY,
+    );
+    const expectedVh = clampSheetHeight(((VPH - targetY) / VPH) * 100);
+    expect(screen.getByTestId("sheet").style.height).toBe(`${expectedVh}vh`);
+    // It moved (and stayed in band).
+    expect(expectedVh).toBeGreaterThan(70);
+    expect(expectedVh).toBeLessThanOrEqual(92);
   });
 });
 

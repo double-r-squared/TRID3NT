@@ -12,10 +12,21 @@
 // Render pattern matches AuthGate / Mode2OfferModal: full-viewport dim
 // backdrop, centred card, Esc / click-backdrop / X to dismiss.
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import type { MapTheme } from "../Map";
 import { SecretsPanel } from "./SecretsPanel";
 import type { ProviderID, SecretRecord } from "../contracts";
+// job-0322 F56 — chat-opacity control. The SHARED localStorage key + the tier
+// type + the read/write helpers are OWNED by Chat.tsx (Group B), which also
+// applies the resulting alpha to both the desktop chat container and the
+// mobile bottom-sheet. Settings only WRITES the per-user tier here; importing
+// the helpers (rather than re-declaring the key) keeps the persistence
+// contract single-sourced — same pattern as readChatWidth / writeChatWidth.
+import {
+  readChatOpacity,
+  writeChatOpacity,
+  type ChatOpacityTier,
+} from "../Chat";
 
 export interface SettingsPopupProps {
   /** Email of the signed-in user, or null if anonymous. */
@@ -179,6 +190,42 @@ const ctaStyle: React.CSSProperties = {
   fontFamily: "inherit",
 };
 
+// job-0322 F56 — the ordered tier set + their human labels for the chat-opacity
+// segmented control. The tier→alpha mapping itself lives in Chat.tsx (Group B);
+// Settings only chooses WHICH tier is active. "Medium" is the default and is
+// deliberately MORE opaque/frosted than the historical alphas.
+const OPACITY_TIERS: readonly ChatOpacityTier[] = ["low", "medium", "high"];
+const OPACITY_TIER_LABELS: Record<ChatOpacityTier, string> = {
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+};
+
+const segmentStyle: React.CSSProperties = {
+  display: "inline-flex",
+  // job-0283 modal-family hairline border + 8px radius, matching buttonStyle.
+  border: "1px solid rgba(255,255,255,0.14)",
+  borderRadius: 8,
+  overflow: "hidden",
+};
+
+const segmentBtnBase: React.CSSProperties = {
+  background: "rgba(40,42,52,0.9)",
+  border: "none",
+  color: "#aab0bd",
+  padding: "5px 12px",
+  fontSize: 12,
+  cursor: "pointer",
+  fontFamily: "inherit",
+};
+
+const segmentBtnActive: React.CSSProperties = {
+  ...segmentBtnBase,
+  background: "#3b82f6",
+  color: "#fff",
+  fontWeight: 600,
+};
+
 /** Build version label. Falls back to "dev" when VITE_BUILD_SHA isn't set. */
 function buildSha(): string {
   const v = (import.meta.env.VITE_BUILD_SHA as string | undefined) ?? "";
@@ -202,6 +249,19 @@ export function SettingsPopup({
   onSecretAdd,
   onSecretRevoke,
 }: SettingsPopupProps): JSX.Element {
+  // job-0322 F56 — chat-opacity tier. Initialised from the persisted per-user
+  // value (default "medium"); changing it writes through to the SHARED key so
+  // Chat.tsx re-reads the new alpha on its next render. Per-USER, NOT per-case
+  // — no caseId is threaded in here by design.
+  const [opacityTier, setOpacityTier] = useState<ChatOpacityTier>(() =>
+    readChatOpacity(),
+  );
+
+  function onSelectOpacity(tier: ChatOpacityTier): void {
+    setOpacityTier(tier);
+    writeChatOpacity(tier);
+  }
+
   // Esc-to-close (memory rule "Cancellation is first-class").
   useEffect(() => {
     function onKey(e: KeyboardEvent): void {
@@ -293,6 +353,35 @@ export function SettingsPopup({
             >
               {theme === "dark" ? "Dark" : "Light"}
             </button>
+          </div>
+          {/* job-0322 F56 — Chat opacity. Discrete 3-state segmented toggle
+              (low / medium / high) mapping cleanly onto Chat.tsx's documented
+              alpha bands — deliberately NOT a free-form slider. */}
+          <div style={{ ...valueStyle, marginTop: 10 }}>
+            <span id="grace2-settings-opacity-label">Chat opacity</span>
+            <div
+              data-testid="grace2-settings-chat-opacity"
+              role="radiogroup"
+              aria-labelledby="grace2-settings-opacity-label"
+              style={segmentStyle}
+            >
+              {OPACITY_TIERS.map((tier) => {
+                const active = opacityTier === tier;
+                return (
+                  <button
+                    key={tier}
+                    data-testid={`grace2-settings-chat-opacity-${tier}`}
+                    role="radio"
+                    aria-checked={active}
+                    aria-label={`Chat opacity ${OPACITY_TIER_LABELS[tier]}`}
+                    onClick={() => onSelectOpacity(tier)}
+                    style={active ? segmentBtnActive : segmentBtnBase}
+                  >
+                    {OPACITY_TIER_LABELS[tier]}
+                  </button>
+                );
+              })}
+            </div>
           </div>
         </div>
 

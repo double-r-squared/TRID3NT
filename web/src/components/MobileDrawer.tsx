@@ -130,6 +130,22 @@ export function MobileDrawer({
         className="grace2-mobile-touch"
         role="dialog"
         aria-label="Cases and layers"
+        // job-0322 F52 — tap-to-dismiss fix. The transparent 320px column
+        // sits ABOVE the z=40 backdrop, so gutter taps (inside the column but
+        // outside a floating card) used to land on this column — which had no
+        // close handler — and the drawer stayed open. Attach onClose here but
+        // guard with `e.target === e.currentTarget`: only taps that land
+        // DIRECTLY on this column element (the empty gutter between/around the
+        // floating cards) close. Taps that bubble up from an interactive child
+        // (a Case row, a rename/archive/delete button, the ConfirmationDialog
+        // and its own fixed backdrop) have e.target set to that descendant, so
+        // they DON'T match and the drawer stays open — letting the child's own
+        // handler run (onSelect, onDelete, the dialog's onCancel, etc.). No
+        // stopPropagation needed on the children, and the fixed-position
+        // ConfirmationDialog (a descendant in this subtree) keeps working.
+        onClick={(e) => {
+          if (e.target === e.currentTarget) onClose();
+        }}
         style={{
           position: "absolute",
           top: 0,
