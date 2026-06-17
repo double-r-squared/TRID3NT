@@ -76,8 +76,24 @@ button {
  * components declare background/border/width as INLINE styles, which always
  * beat stylesheet rules otherwise. Visual only — zero behavior change.
  */
+/* job-0337 — the Cases panel must be a FIXED width on mobile, == the
+ * LayerPanel mobile width (288px, LAYERS_WIDTH_DEFAULT_PX), NOT `width:auto`.
+ *
+ * `width:auto` (job-0280) let the panel size to its content inside the
+ * `min(320px,85vw)` drawer column, so a long Case title (whiteSpace:nowrap)
+ * widened the whole panel — it both varied with viewport AND clipped under the
+ * column's overflow:hidden ("dynamically sized + cuts off", the user report).
+ *
+ * Pin it to 288px (`box-sizing:border-box` keeps the 10px CasesPanel padding
+ * inside that 288, matching the LayerPanel column). `max-width:100%` is a guard
+ * for sub-376px viewports where the column collapses to 85vw < 288 — the panel
+ * can SHRINK to fit the column there (never clip) but can NEVER GROW past 288
+ * or size to content. The Case-row title's flex:1 + min-width:0 ellipsis then
+ * absorbs any overflow and the kebab (flex-shrink:0) stays visible. */
 .grace2-mobile-touch [data-testid="grace2-cases-panel"] {
-  width: auto !important;
+  width: 288px !important;
+  max-width: 100% !important;
+  box-sizing: border-box !important;
   background: transparent !important;
   border: none !important;
   padding: 0 !important;

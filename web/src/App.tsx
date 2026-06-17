@@ -1157,14 +1157,15 @@ export function App(): JSX.Element {
                 pointerEvents: "none",
               }}
             >
-              {/* job-0330 — mobile cases-row clip fix. The hugger MUST be
-                  full-width (NOT `fit-content`): a shrink-wrap wrapper lets the
-                  Case-row title (whiteSpace:nowrap, flex:1) expand to its
-                  intrinsic width, widening the row past the drawer column's
-                  min(320px,85vw); the column's overflow:hidden then clips the
-                  kebab in portrait (landscape's wider 85vw masked it). With a
-                  full-width column the title's flex:1 + min-width:0 ellipsis
-                  engages and the kebab stays inside the clip. */}
+              {/* job-0337 — the hugger stays full-width so it never shrink-
+                  wraps to a long Case title's intrinsic width (the job-0330
+                  clip hazard). The CasesPanel inside is now a FIXED 288px
+                  (max-width:100% guards sub-288 columns) — it neither grows
+                  with content nor varies with viewport — so the row title's
+                  flex:1 + min-width:0 ellipsis engages and the kebab
+                  (flex-shrink:0) stays inside the column's overflow:hidden
+                  clip. (The mobile fixed width is set in global.css
+                  `.grace2-mobile-touch [data-testid="grace2-cases-panel"]`.) */}
               <div style={{ width: "100%", pointerEvents: "auto" }}>
                 <CasesPanel
                   cases={cases}

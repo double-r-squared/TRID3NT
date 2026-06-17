@@ -507,7 +507,16 @@ export function CasesPanel({
         border: "1px solid #333",
         borderRadius: 8,
         padding: 10,
-        width: 260,
+        // job-0337 — fixed width: never content/viewport-driven. The desktop
+        // left-rail override (global.css .grace2-desktop-rail) and the mobile
+        // drawer override (global.css .grace2-mobile-touch) both pin this to a
+        // FIXED width (280 desktop / 288 mobile == the LayerPanel column) so
+        // the panel reads as part of one rail family and never grows with a
+        // long Case title. box-sizing:border-box keeps the 10px padding inside
+        // the declared width on every surface.
+        width: 288,
+        maxWidth: "100%",
+        boxSizing: "border-box",
         color: "#eee",
         fontSize: 12,
         fontFamily:
@@ -531,7 +540,14 @@ export function CasesPanel({
           marginBottom: 4,
         }}
       >
-        <strong style={{ fontSize: 13, color: "#ddd" }}>Cases</strong>
+        <strong
+          data-testid="grace2-cases-header-label"
+          // job-0337 — the section title reads as a heading, not body text.
+          // Bumped 13 → 18 (was easily lost above the list); stays bold.
+          style={{ fontSize: 18, fontWeight: 700, color: "#ddd" }}
+        >
+          Cases
+        </strong>
         <button
           data-testid="grace2-cases-new"
           aria-label="Create a new Case"

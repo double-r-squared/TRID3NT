@@ -673,15 +673,96 @@ describe("CasesPanel", () => {
       );
       const panel = screen.getByTestId("grace2-cases-panel");
       const hugger = panel.parentElement as HTMLElement;
-      // The hugger must be full-width (the global.css mobile-touch rule then
-      // expands the panel via width:auto !important). A fit-content hugger here
-      // is the regression we are guarding against.
+      // The hugger must be full-width (NOT fit-content): a shrink-wrap hugger
+      // would let a long (nowrap) Case title widen the row past the column.
+      // job-0337: the panel itself is now a FIXED 288px (global.css
+      // .grace2-mobile-touch override) rather than width:auto — see the
+      // job-0337 describe block below for the fixed-width contract.
       expect(hugger.style.width).toBe("100%");
-      // The drawer applies the touch scope whose CSS sets width:auto on the
-      // panel — assert the panel rides inside that scope.
+      // The drawer applies the touch scope whose CSS pins the panel width —
+      // assert the panel rides inside that scope.
       const drawer = screen.getByTestId("grace2-mobile-drawer");
       expect(drawer.className).toContain("grace2-mobile-touch");
       expect(drawer.contains(panel)).toBe(true);
+    });
+  });
+
+  // --- job-0337 — fixed Cases-panel width (== LayerPanel) + larger header --
+  // job-0335 set the panel root to width:100% but global.css still forced
+  // width:auto !important inside the mobile drawer, so the panel sized to
+  // content / varied with viewport (the "dynamically sized + cuts off" report).
+  // The fix pins the panel to a FIXED 288px (== LAYERS_WIDTH_DEFAULT_PX, the
+  // LayerPanel mobile column width) on every surface so it never grows with a
+  // long title nor varies with the viewport; box-sizing:border-box + max-width
+  // keep it inside narrow drawer columns. The "Cases" header is also enlarged
+  // so it reads as a section title.
+  describe("job-0337 — fixed width + larger header", () => {
+    const LONG_TITLE_CASE: CaseSummary = {
+      ...CASE_FORT_MYERS,
+      title:
+        "Hurricane Ian catastrophic storm-surge inundation across Lee County and the barrier islands and the gulf shoreline",
+    };
+
+    function renderPanel(c: CaseSummary = CASE_FORT_MYERS) {
+      render(
+        <CasesPanel
+          cases={[c]}
+          activeCaseId={null}
+          onCreate={vi.fn()}
+          onSelect={vi.fn()}
+          onRename={vi.fn()}
+          onArchive={vi.fn()}
+          onDelete={vi.fn()}
+        />,
+      );
+    }
+
+    it("the panel root declares a FIXED 288px width (== LayerPanel column), box-sized", () => {
+      // The inline root width is the fixed, non-content/non-viewport-driven
+      // base. (The desktop-rail override pins it to 280 to match CaseView; the
+      // mobile-touch override pins it to 288 — both via global.css !important —
+      // but the inline base is what guarantees it is never `auto`/fit-content
+      // when no scope class is present.)
+      renderPanel();
+      const panel = screen.getByTestId("grace2-cases-panel");
+      expect(panel.style.width).toBe("288px");
+      expect(panel.style.maxWidth).toBe("100%");
+      expect(panel.style.boxSizing).toBe("border-box");
+    });
+
+    it("the fixed width does NOT grow with a very long Case title", () => {
+      // Same fixed 288px regardless of title length — the panel must never
+      // shrink-wrap or expand to content. The long title is absorbed by the
+      // row title's ellipsis (asserted in the job-0330 block above).
+      renderPanel(LONG_TITLE_CASE);
+      const panel = screen.getByTestId("grace2-cases-panel");
+      expect(panel.style.width).toBe("288px");
+    });
+
+    it("the 'Cases' header label uses a larger, bold section-title font", () => {
+      renderPanel();
+      const header = screen.getByTestId("grace2-cases-header-label");
+      expect(header.textContent).toBe("Cases");
+      // Larger than the previous 13px body size so it reads as a heading.
+      expect(parseInt(header.style.fontSize, 10)).toBeGreaterThanOrEqual(17);
+      // Still bold.
+      expect(header.style.fontWeight).toBe("700");
+    });
+
+    it("a long title still ellipsis-truncates within the fixed-width panel", () => {
+      // Re-assert the title contract holds alongside the fixed width (so a
+      // future width change can't silently drop the ellipsis path).
+      renderPanel(LONG_TITLE_CASE);
+      const title = screen.getByTestId("grace2-case-row-title");
+      expect(title.style.minWidth).toBe("0");
+      expect(title.style.flex).toMatch(/^1\b/);
+      expect(title.style.overflow).toBe("hidden");
+      expect(title.style.textOverflow).toBe("ellipsis");
+      expect(title.style.whiteSpace).toBe("nowrap");
+      // And the kebab is still pinned (flex-shrink:0) → never pushed out.
+      const kebab = screen.getByTestId("grace2-case-row-menu-button");
+      const wrapper = kebab.parentElement as HTMLElement;
+      expect(wrapper.style.flexShrink).toBe("0");
     });
   });
 
