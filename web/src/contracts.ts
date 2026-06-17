@@ -51,6 +51,8 @@ export type ResearchMode = "research" | "deep_research";
 export interface UserMessagePayload {
   text: string;
   research_mode?: ResearchMode; // default "research" (FR-WC-15 toggle carrier; A1 amendment)
+  /** In-chat model selector — Bedrock model id (NATE 2026-06-17). Null → server keeps its current selection. */
+  model_id?: string | null;
 }
 
 export interface CancelPayload {

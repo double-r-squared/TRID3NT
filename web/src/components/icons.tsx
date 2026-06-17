@@ -58,6 +58,7 @@ import {
   Mountains,
   DiamondsFour,
   Hexagon,
+  Brain,
 } from '@phosphor-icons/react';
 
 /** Shared public API for every wrapped icon in this module. */
@@ -139,3 +140,4 @@ export const IconGrid = makeIcon(GridFour, 'IconGrid');
 export const IconTerrain = makeIcon(Mountains, 'IconTerrain');
 export const IconWorkspaces = makeIcon(DiamondsFour, 'IconWorkspaces');
 export const IconSandbox = makeIcon(Hexagon, 'IconSandbox');
+export const IconModel = makeIcon(Brain, 'IconModel');

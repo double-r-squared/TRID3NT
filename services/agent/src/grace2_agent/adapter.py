@@ -2137,6 +2137,7 @@ async def stream_events_with_contents(
     tool_declarations: list[genai_types.FunctionDeclaration] | None = None,
     system_prompt: str | None = None,
     cached_content_name: str | None = None,
+    bedrock_model: str | None = None,
 ) -> AsyncIterator[StreamEvent]:
     """Stream one Gemini turn from a fully-built ``contents`` list (job-0169).
 
@@ -2182,6 +2183,7 @@ async def stream_events_with_contents(
             contents=contents,
             tool_declarations=tool_declarations,
             system_prompt=system_prompt,
+            model=bedrock_model,
         ):
             yield _ev
         return

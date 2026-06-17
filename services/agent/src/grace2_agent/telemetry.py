@@ -152,6 +152,7 @@ async def _write_to_mongo(
     cached_content_token_count: int | None,
     result_usable: bool | None = None,
     routed_ok: bool | None = None,
+    model_id: str | None = None,
 ) -> None:
     """Emit one tool-call telemetry record to MongoDB via the MCP Persistence.
 
@@ -196,6 +197,7 @@ async def _write_to_mongo(
             cached_content_token_count=cached_content_token_count,
             result_usable=result_usable,
             routed_ok=routed_ok,
+            model_id=model_id,
         )
 
         body = doc.model_dump(mode="json", by_alias=True)
@@ -230,6 +232,7 @@ async def emit_tool_call_event(
     cached_content_token_count: int | None = None,
     result_usable: bool | None = None,
     routed_ok: bool | None = None,
+    model_id: str | None = None,
 ) -> None:
     """Emit one tool-call telemetry record (non-blocking).
 
@@ -316,6 +319,7 @@ async def emit_tool_call_event(
                 cached_content_token_count=cached_content_token_count,
                 result_usable=result_usable,
                 routed_ok=routed_ok,
+                model_id=model_id,
             )
         )
         return
@@ -334,6 +338,7 @@ async def emit_tool_call_event(
         "cached_content_token_count": cached_content_token_count,
         "result_usable": result_usable,
         "routed_ok": routed_ok,
+        "model_id": model_id,
     }
     path = _get_telemetry_path()
     # Fire-and-forget: the event loop schedules the write; we do not await it.

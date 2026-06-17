@@ -627,10 +627,18 @@ export class GraceWs {
     this.dispatchEnvelope(envType, payload, caseId);
   }
 
-  sendUserMessage(text: string, researchMode: ResearchMode = "research"): void {
+  sendUserMessage(
+    text: string,
+    researchMode: ResearchMode = "research",
+    modelId: string | null = null,
+  ): void {
     const payload: UserMessagePayload = {
       text,
       research_mode: researchMode,
+      // Only include model_id when the caller explicitly passes one — null
+      // means "use server's current selection" (omit the field entirely so
+      // older server builds that don't know the field still parse cleanly).
+      ...(modelId != null ? { model_id: modelId } : {}),
     };
     const env: Envelope<UserMessagePayload> = envelope(
       "user-message",

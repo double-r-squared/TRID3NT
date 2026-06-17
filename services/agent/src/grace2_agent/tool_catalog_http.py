@@ -341,6 +341,9 @@ def _normalize_record(rec: dict[str, Any]) -> dict[str, Any]:
     out["routed_ok"] = rec.get("routed_ok")
     # Timestamp: prefer the Mongo field name; fall back to the file form.
     out["called_at_utc"] = rec.get("called_at_utc") or rec.get("ts") or ""
+    # In-chat model selector dimension (NATE 2026-06-17). None when the record
+    # predates the feature; _aggregate_records buckets it as "unknown".
+    out["model_id"] = rec.get("model_id")
     return out
 
 
@@ -375,6 +378,7 @@ def _empty_summary() -> dict[str, Any]:
         "dispatches_by_source": {}, # {llm: int, workflow: int, manual: int}
         "error_rate_by_tool": [],   # [{name, error_rate, error_count, total}]
         "top_routing_chains": [],   # [{chain: [a, b], count}]
+        "by_model": [],             # [{model_id, count, success_rate, ...}]
         "solve_telemetry": _empty_solve_telemetry(),
         "source": "empty",
     }
@@ -488,6 +492,13 @@ def _aggregate_records(records: list[dict[str, Any]]) -> dict[str, Any]:
     by_tool_usable: dict[str, list[bool | None]] = {}
     by_tool_routed: dict[str, list[bool | None]] = {}
     by_source_count: dict[str, int] = {}
+    # Per-model aggregation (in-chat model selector dimension).
+    by_model_count: dict[str, int] = {}
+    by_model_errors: dict[str, int] = {}
+    by_model_latency_sum: dict[str, float] = {}
+    by_model_latencies: dict[str, list[float]] = {}
+    by_model_usable: dict[str, list[bool | None]] = {}
+    by_model_routed: dict[str, list[bool | None]] = {}
     total_errors = 0
     total_latency = 0.0
     all_latencies: list[float] = []
@@ -525,6 +536,17 @@ def _aggregate_records(records: list[dict[str, Any]]) -> dict[str, Any]:
             cache_total += 1
             if isinstance(cct, (int, float)) and cct > 0:
                 cache_hit_count += 1
+        # Per-model accumulation (in-chat model selector dimension).
+        # Null/missing model_id is bucketed as "unknown" so legacy records
+        # still surface in the by_model section.
+        mid = r.get("model_id") or "unknown"
+        by_model_count[mid] = by_model_count.get(mid, 0) + 1
+        by_model_latency_sum[mid] = by_model_latency_sum.get(mid, 0.0) + lat
+        by_model_latencies.setdefault(mid, []).append(lat)
+        if not r["result_ok"]:
+            by_model_errors[mid] = by_model_errors.get(mid, 0) + 1
+        by_model_usable.setdefault(mid, []).append(usable)
+        by_model_routed.setdefault(mid, []).append(routed)
 
     by_tool_sorted: list[dict[str, Any]] = []
     error_rate_by_tool: list[dict[str, Any]] = []
@@ -593,6 +615,36 @@ def _aggregate_records(records: list[dict[str, Any]]) -> dict[str, Any]:
     usability_rate_overall = _rate_over_bools(all_usable)
     routing_rate_overall = _rate_over_bools(all_routed)
 
+    # Per-model breakdown (in-chat model selector, NATE 2026-06-17).
+    # Shape: list of {model_id, count, success_rate, result_usability_rate,
+    #                 routing_accuracy_rate, latency_p50_ms, latency_p95_ms}
+    # Sorted descending by count; "unknown" last.
+    by_model_sorted: list[dict[str, Any]] = []
+    for mid, cnt in sorted(
+        by_model_count.items(),
+        key=lambda kv: (kv[0] == "unknown", -kv[1], kv[0]),
+    ):
+        m_errs = by_model_errors.get(mid, 0)
+        m_rate = (m_errs / cnt) if cnt else 0.0
+        m_lats = by_model_latencies.get(mid, [])
+        m_usability = _rate_over_bools(by_model_usable.get(mid, []))
+        m_routing = _rate_over_bools(by_model_routed.get(mid, []))
+        by_model_sorted.append(
+            {
+                "model_id": mid,
+                "count": cnt,
+                "success_rate": round(1.0 - m_rate, 4),
+                "result_usability_rate": (
+                    round(m_usability, 4) if m_usability is not None else None
+                ),
+                "routing_accuracy_rate": (
+                    round(m_routing, 4) if m_routing is not None else None
+                ),
+                "latency_p50_ms": round(_percentile(m_lats, 0.50), 2),
+                "latency_p95_ms": round(_percentile(m_lats, 0.95), 2),
+            }
+        )
+
     return {
         "total_dispatches": total,
         "session_count": session_count,
@@ -617,6 +669,10 @@ def _aggregate_records(records: list[dict[str, Any]]) -> dict[str, Any]:
         "dispatches_by_source": by_source_count,
         "error_rate_by_tool": error_rate_by_tool,
         "top_routing_chains": chains_out,
+        # Model dimension (in-chat model selector, NATE 2026-06-17).
+        # The accuracy panel UI can compare success_rate / usability / routing
+        # across model choices without a UI redesign in this job.
+        "by_model": by_model_sorted,
         # solve_telemetry is folded in by build_telemetry_summary (it reads its
         # own JSONL/collection sink); seed the empty section so _aggregate_records
         # called standalone still emits the full contract shape.

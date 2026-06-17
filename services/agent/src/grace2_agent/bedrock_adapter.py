@@ -52,6 +52,68 @@ logger = logging.getLogger("grace2_agent.bedrock_adapter")
 # the inference-profile id required for on-demand throughput on Claude 4.x.
 BEDROCK_DEFAULT_MODEL = "us.anthropic.claude-sonnet-4-6"
 
+# ---------------------------------------------------------------------------
+# Model registry — single source of truth for selectable Bedrock models.
+#
+# ``supportsPromptCache=True`` means cachePoint markers are safe to include
+# in the Converse request.  Any model that does NOT support the cachePoint
+# extension (e.g. DeepSeek-R1) MUST be listed here with False — sending
+# cachePoint to an unsupporting model causes a Bedrock validation error.
+# ---------------------------------------------------------------------------
+
+#: Metadata for one selectable agent model.  Only the fields the server
+#: needs at dispatch time (id + cache capability); the richer set (label,
+#: accentColor, provider) lives on the web side in ``modelRegistry.ts``.
+SELECTABLE_MODELS: list[dict[str, Any]] = [
+    {
+        "id": "us.anthropic.claude-sonnet-4-6",
+        "label": "Claude Sonnet 4.6",
+        "provider": "Anthropic",
+        "supportsPromptCache": True,
+    },
+    {
+        "id": "us.anthropic.claude-haiku-4-5",
+        "label": "Claude Haiku 4.5",
+        "provider": "Anthropic",
+        "supportsPromptCache": True,
+    },
+    {
+        "id": "us.amazon.nova-lite-v1:0",
+        "label": "Amazon Nova Lite",
+        "provider": "Amazon",
+        "supportsPromptCache": True,
+    },
+    {
+        "id": "us.amazon.nova-pro-v1:0",
+        "label": "Amazon Nova Pro",
+        "provider": "Amazon",
+        "supportsPromptCache": True,
+    },
+    {
+        "id": "us.deepseek.r1-v1:0",
+        "label": "DeepSeek-R1",
+        "provider": "DeepSeek",
+        "supportsPromptCache": False,
+    },
+]
+
+#: Fast-lookup set of model ids that do NOT support cachePoint.  Any model id
+#: NOT listed here is assumed to support cachePoint (safe default for new
+#: Anthropic / Amazon models).  DeepSeek-R1 is the only current exception.
+MODELS_WITHOUT_CACHE_SUPPORT: frozenset[str] = frozenset(
+    m["id"] for m in SELECTABLE_MODELS if not m["supportsPromptCache"]
+)
+
+
+def model_supports_cache(model_id: str) -> bool:
+    """Return True when ``model_id`` is known to support Bedrock cachePoint.
+
+    Conservative default: an UNKNOWN model id is assumed to support cachePoint
+    (all current Anthropic + Amazon Nova models do). Only models explicitly
+    listed in ``MODELS_WITHOUT_CACHE_SUPPORT`` are excluded.
+    """
+    return model_id not in MODELS_WITHOUT_CACHE_SUPPORT
+
 # Match the Gemini per-request config (adapter.py:GenerateContentConfig).
 _DEFAULT_TEMPERATURE = 0.7
 _DEFAULT_MAX_TOKENS = 8192
@@ -93,12 +155,23 @@ def _build_converse_kwargs(
 ) -> dict[str, Any]:
     """Build the boto3 ``converse_stream`` kwargs (pure — unit-testable).
 
-    Inserts Bedrock ``cachePoint`` markers (when enabled) at the END of the
-    system block AND the tool list. Caching is PREFIX-based: for Anthropic models
-    the cacheable prefix order is tools -> system -> messages, so the tool-catalog
-    cachePoint caches the large static 94-tool block independently, and the system
-    cachePoint additionally caches the system prefix when it is stable. A miss is
-    a normal uncached call (no correctness risk).
+    Inserts Bedrock ``cachePoint`` markers (when enabled AND supported by the
+    model) at the END of the system block AND the tool list.  Caching is
+    PREFIX-based: for Anthropic models the cacheable prefix order is
+    tools -> system -> messages, so the tool-catalog cachePoint caches the
+    large static 94-tool block independently, and the system cachePoint
+    additionally caches the system prefix when it is stable.  A miss is a
+    normal uncached call (no correctness risk).
+
+    cachePoint GATING (prod-critical): cachePoint is only safe for models that
+    support it.  ``DeepSeek-R1`` (``us.deepseek.r1-v1:0``) does NOT support
+    cachePoint — Bedrock returns a validation error if cachePoint blocks are
+    included in a request to that model.  The gate is a two-condition AND:
+
+        ``_prompt_cache_enabled()``    — global env off-switch (ops safety valve)
+        ``model_supports_cache(id)``   — per-model capability check
+
+    Both must be True for any cachePoint block to be added.
     """
     model_id = model or bedrock_model_id()
     _system_unused, messages = contents_to_bedrock_messages(contents)
@@ -106,7 +179,8 @@ def _build_converse_kwargs(
         [{"text": system_prompt}] if system_prompt else []
     )
     tools = tool_declarations_to_bedrock_tools(tool_declarations)
-    cache = _prompt_cache_enabled()
+    # Two-condition cache gate: global env switch AND per-model capability.
+    cache = _prompt_cache_enabled() and model_supports_cache(model_id)
 
     if system_blocks and cache:
         system_blocks = [*system_blocks, {"cachePoint": {"type": "default"}}]

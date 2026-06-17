@@ -173,6 +173,12 @@ class UserMessagePayload(GraceModel):
 
     text: str
     research_mode: ResearchMode = "research"  # Appendix A amendment (FR-WC-15)
+    # In-chat model selector (NATE 2026-06-17): optional Bedrock model id
+    # chosen by the user before submitting.  ``None`` means "use the server
+    # default" (``BEDROCK_MODEL_ID`` env / ``bedrock_adapter.bedrock_model_id()``).
+    # The client sends this on every user-message so the agent can hot-swap the
+    # model between turns without a session restart.
+    model_id: str | None = None
 
 
 class CancelPayload(GraceModel):

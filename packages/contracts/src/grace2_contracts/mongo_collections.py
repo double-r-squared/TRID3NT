@@ -216,6 +216,13 @@ class ToolCallTelemetryDocument(DocModel):
     # --- Cache observability ---
     cached_content_token_count: int | None = None  # from Gemini UsageMetadata
 
+    # --- Model dimension (in-chat model selector, NATE 2026-06-17) ---
+    #: The Bedrock model id that served this call (e.g.
+    #: ``"us.anthropic.claude-sonnet-4-6"``).  ``None`` for legacy records
+    #: written before this field was added, and for non-Bedrock providers.
+    #: Used by the routing-quality dashboard ``by_model`` breakdown.
+    model_id: str | None = None
+
 
 class DescriptionAuditDocument(DocModel):
     """``description_audit``: one record per tool-description variant.

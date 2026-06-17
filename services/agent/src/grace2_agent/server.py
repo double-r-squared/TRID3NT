@@ -1052,6 +1052,13 @@ class SessionState:
     # would re-trip the auth error and re-prompt forever. Reset at the start of
     # every ``_stream_gemini_reply`` turn (the prompt is a per-request decision).
     credential_prompted_tools: set[str] = field(default_factory=set)
+    # In-chat model selector (NATE 2026-06-17): the Bedrock model id chosen by
+    # the user for the CURRENT turn.  Updated on every ``user-message`` that
+    # carries a non-None ``model_id``; persists across turns so consecutive
+    # messages without a ``model_id`` inherit the last-chosen model.  ``None``
+    # means "use the server default" (``bedrock_adapter.bedrock_model_id()``).
+    # Only consulted when MODEL_PROVIDER=bedrock; ignored on the Vertex path.
+    selected_model: str | None = None
 
     # ------------------------------------------------------------------ #
     # job-0259: active-Case context — session-scoped, NOT per-connection.
@@ -1284,6 +1291,7 @@ async def _stream_gemini_reply(
     settings: GeminiSettings,
     user_text: str,
     research_mode: str,
+    bedrock_model: str | None = None,
 ) -> None:
     """Stream one user-message reply with multi-turn tool dispatch (job-0169).
 
@@ -1458,6 +1466,7 @@ async def _stream_gemini_reply(
                 tool_declarations=tool_decls,
                 system_prompt=SYSTEM_PROMPT,
                 cached_content_name=state.gemini_cache_name,
+                bedrock_model=bedrock_model,
             ):
                 if not first_token_logged:
                     first_token_logged = True
@@ -1808,6 +1817,7 @@ async def _stream_gemini_reply(
                     error_code=_tel_error_code,
                     cached_content_token_count=_tel_cached_tokens,
                     result_usable=_tel_result_usable,
+                    model_id=bedrock_model,
                 )
                 # job-B10: pass the thought_signature harvested off the
                 # function_call Part through to the replayed model turn.
@@ -5458,6 +5468,7 @@ async def _dispatch_gemini_and_persist(
     settings: GeminiSettings,
     user_text: str,
     research_mode: str,
+    bedrock_model: str | None = None,
 ) -> None:
     """Stream Gemini reply, then persist the agent's reply to the active Case.
 
@@ -5492,7 +5503,8 @@ async def _dispatch_gemini_and_persist(
     pre_chat_len = len(turn_history)
     try:
         await _stream_gemini_reply(
-            websocket, state, settings, user_text, research_mode
+            websocket, state, settings, user_text, research_mode,
+            bedrock_model=bedrock_model,
         )
     finally:
         # job-0267 / job-0315: close out the turn's narration persistence.
@@ -6156,6 +6168,13 @@ def _make_handler(settings: GeminiSettings):
                         # (Requirement 2). Harmless when no live turns exist.
                         _ensure_emitter(websocket, state)
                         _rebind_live_turns(state.session_id, state.emitter)
+                        # In-chat model selector: hot-swap the model per turn.
+                        # A non-None model_id in the message overrides the
+                        # session default; None means "keep whatever was last
+                        # chosen" (or the env default if never set).
+                        if um.model_id is not None:
+                            state.selected_model = um.model_id
+                        _turn_bedrock_model = state.selected_model
                         if directive is not None:
                             tool_name, params = directive
                             task = asyncio.create_task(
@@ -6171,6 +6190,7 @@ def _make_handler(settings: GeminiSettings):
                                     settings,
                                     um.text,
                                     um.research_mode,
+                                    bedrock_model=_turn_bedrock_model,
                                 )
                             )
                         state.inflight_tasks[turn_key] = task

@@ -1,4 +1,4 @@
-// GRACE-2 web — ChatInput component tests (job-0144).
+// GRACE-2 web — ChatInput component tests (job-0144 + NATE 2026-06-17 model selector).
 //
 // Verifies the merged send/stop button + dynamic textarea + wrapper styling
 // per the job-0144 kickoff acceptance checklist:
@@ -11,6 +11,14 @@
 //   - Cmd+Enter / Ctrl+Enter submits; Enter alone inserts newline
 //   - Drop shadow + rounded corner styles applied (style assertions)
 //
+// Model selector additions (NATE 2026-06-17):
+//   - Left button row (attach/mic/mode/model) renders
+//   - Model button renders with data-testid="chat-input-model"
+//   - Clicking model button opens the model popover
+//   - Selecting a model closes the popover + updates the active label
+//   - onSubmit receives (text, modelId) — modelId is a non-empty Bedrock id string
+//   - Provider accent tint appears on wrapper border
+//
 // We test ChatInput directly rather than through Chat (Chat opens a real
 // WebSocket which happy-dom can't run; the existing Chat.test.tsx exercises
 // the pipelineReducer/shouldShowCancel logic with the same pattern).
@@ -18,6 +26,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { ChatInput } from "./components/ChatInput";
+import { DEFAULT_MODEL_ID } from "./lib/modelRegistry";
 
 function renderIdle(overrides: Partial<Parameters<typeof ChatInput>[0]> = {}) {
   const onSubmit = vi.fn();
@@ -74,12 +83,15 @@ describe("ChatInput — idle state glyph + button enablement", () => {
 });
 
 describe("ChatInput — submit semantics", () => {
-  it("clicking the up-arrow with text invokes onSubmit and clears the draft", () => {
+  it("clicking the up-arrow with text invokes onSubmit(text, modelId) and clears the draft", () => {
     const { onSubmit } = renderIdle();
     const ta = screen.getByTestId("chat-input") as HTMLTextAreaElement;
     fireEvent.change(ta, { target: { value: "model the flood" } });
     fireEvent.click(screen.getByTestId("chat-input-action"));
-    expect(onSubmit).toHaveBeenCalledWith("model the flood");
+    // onSubmit receives (text, modelId) — modelId is a non-empty Bedrock id.
+    expect(onSubmit).toHaveBeenCalledWith("model the flood", expect.any(String));
+    const calledModelId: string = onSubmit.mock.calls[0]?.[1] as string;
+    expect(calledModelId.length).toBeGreaterThan(0);
     // Component clears the textarea on submit.
     expect((screen.getByTestId("chat-input") as HTMLTextAreaElement).value).toBe(
       "",
@@ -96,7 +108,7 @@ describe("ChatInput — submit semantics", () => {
     expect(onSubmit).not.toHaveBeenCalled();
     // Plain Enter — should submit.
     fireEvent.keyDown(ta, { key: "Enter" });
-    expect(onSubmit).toHaveBeenCalledWith("Hurricane Ian Fort Myers");
+    expect(onSubmit).toHaveBeenCalledWith("Hurricane Ian Fort Myers", expect.any(String));
   });
 
   it("Cmd+Enter (metaKey) also submits", () => {
@@ -105,7 +117,7 @@ describe("ChatInput — submit semantics", () => {
     const ta = screen.getByTestId("chat-input") as HTMLTextAreaElement;
     fireEvent.change(ta, { target: { value: "go" } });
     fireEvent.keyDown(ta, { key: "Enter", metaKey: true });
-    expect(onSubmit).toHaveBeenCalledWith("go");
+    expect(onSubmit).toHaveBeenCalledWith("go", expect.any(String));
   });
 
   it("Ctrl+Enter also submits", () => {
@@ -113,7 +125,7 @@ describe("ChatInput — submit semantics", () => {
     const ta = screen.getByTestId("chat-input") as HTMLTextAreaElement;
     fireEvent.change(ta, { target: { value: "go" } });
     fireEvent.keyDown(ta, { key: "Enter", ctrlKey: true });
-    expect(onSubmit).toHaveBeenCalledWith("go");
+    expect(onSubmit).toHaveBeenCalledWith("go", expect.any(String));
   });
 
   it("empty input + Enter does NOT submit", () => {
@@ -150,6 +162,15 @@ describe("ChatInput — submit semantics", () => {
     // on the textarea should NOT submit a second message.
     fireEvent.keyDown(ta, { key: "Enter" });
     expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("onSubmit default model id matches the DEFAULT_MODEL_ID constant", () => {
+    const { onSubmit } = renderIdle();
+    const ta = screen.getByTestId("chat-input") as HTMLTextAreaElement;
+    fireEvent.change(ta, { target: { value: "test" } });
+    fireEvent.keyDown(ta, { key: "Enter" });
+    // When no model has been explicitly changed, the default model id is used.
+    expect(onSubmit).toHaveBeenCalledWith("test", DEFAULT_MODEL_ID);
   });
 });
 
@@ -258,6 +279,28 @@ describe("ChatInput — wrapper presentation", () => {
     const ta = screen.getByTestId("chat-input") as HTMLTextAreaElement;
     expect(ta.style.maxHeight).toBe("30vh");
   });
+
+  it("wrapper border carries a provider accent tint (not plain white)", () => {
+    renderIdle();
+    const wrapper = screen.getByTestId("chat-input-wrapper");
+    // The default model is Claude Sonnet 4.6 (Anthropic, accent #c2603c).
+    // The border should reference the accent color hex, not plain rgba white.
+    const border = wrapper.style.border;
+    expect(border).toMatch(/#[0-9a-fA-F]{6}/);
+    // Must NOT be pure gray/white.
+    const hex = border.match(/#([0-9a-fA-F]{6})/)?.[1]?.toLowerCase() ?? "";
+    expect(hex).not.toBe("ffffff");
+    expect(hex).not.toBe("000000");
+  });
+
+  it("wrapper exposes data-model-id attribute with the active model id", () => {
+    renderIdle();
+    const wrapper = screen.getByTestId("chat-input-wrapper");
+    const modelId = wrapper.getAttribute("data-model-id");
+    expect(typeof modelId).toBe("string");
+    expect((modelId ?? "").length).toBeGreaterThan(0);
+    expect(modelId).toBe(DEFAULT_MODEL_ID);
+  });
 });
 
 describe("ChatInput — multi-line growth", () => {
@@ -289,5 +332,55 @@ describe("ChatInput — disabled prop (WS down)", () => {
     fireEvent.change(ta, { target: { value: "queued" } });
     const btn = screen.getByTestId("chat-input-action") as HTMLButtonElement;
     expect(btn.disabled).toBe(true);
+  });
+});
+
+describe("ChatInput — left button row (NATE 2026-06-17 model selector)", () => {
+  it("renders the left button row with attach, mic, mode, and model buttons", () => {
+    renderIdle();
+    expect(screen.getByTestId("chat-input-left-row")).toBeTruthy();
+    expect(screen.getByTestId("chat-input-attach")).toBeTruthy();
+    expect(screen.getByTestId("chat-input-mic")).toBeTruthy();
+    expect(screen.getByTestId("chat-input-mode")).toBeTruthy();
+    expect(screen.getByTestId("chat-input-model")).toBeTruthy();
+  });
+
+  it("attach, mic, and mode stubs are disabled", () => {
+    renderIdle();
+    expect((screen.getByTestId("chat-input-attach") as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByTestId("chat-input-mic") as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByTestId("chat-input-mode") as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("model button is NOT disabled and clicking it opens the popover", () => {
+    renderIdle();
+    const modelBtn = screen.getByTestId("chat-input-model") as HTMLButtonElement;
+    expect(modelBtn.disabled).toBe(false);
+    // Popover is not yet visible.
+    expect(screen.queryByTestId("model-popover")).toBeNull();
+    fireEvent.click(modelBtn);
+    // After click, popover renders.
+    expect(screen.getByTestId("model-popover")).toBeTruthy();
+  });
+
+  it("clicking a model option in the popover closes the popover", () => {
+    renderIdle();
+    fireEvent.click(screen.getByTestId("chat-input-model"));
+    expect(screen.getByTestId("model-popover")).toBeTruthy();
+    // Click the second option (Claude Haiku 4.5).
+    fireEvent.click(screen.getByTestId("model-option-us.anthropic.claude-haiku-4-5"));
+    expect(screen.queryByTestId("model-popover")).toBeNull();
+  });
+
+  it("after selecting a different model, onSubmit carries the new model id", () => {
+    const { onSubmit } = renderIdle();
+    // Open popover and select DeepSeek-R1.
+    fireEvent.click(screen.getByTestId("chat-input-model"));
+    fireEvent.click(screen.getByTestId("model-option-us.deepseek.r1-v1:0"));
+    // Submit a message.
+    const ta = screen.getByTestId("chat-input") as HTMLTextAreaElement;
+    fireEvent.change(ta, { target: { value: "use deepseek" } });
+    fireEvent.keyDown(ta, { key: "Enter" });
+    expect(onSubmit).toHaveBeenCalledWith("use deepseek", "us.deepseek.r1-v1:0");
   });
 });

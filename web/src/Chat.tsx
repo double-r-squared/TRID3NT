@@ -3088,7 +3088,7 @@ export function Chat({
     };
   }, [handleRegionPick]);
 
-  function submit(text: string): void {
+  function submit(text: string, modelId?: string): void {
     if (!text || !wsRef.current) return;
     // job-0278 — submitting from the collapsed mobile sheet expands it so
     // the user sees the response stream in (presentation only).
@@ -3097,7 +3097,9 @@ export function Chat({
     // takes ownership of the turn's streaming envelopes (targetKey).
     routeUserMessage(streamsRef.current, visibleKey, text);
     bump();
-    wsRef.current.sendUserMessage(text, researchMode);
+    // NATE 2026-06-17 — include the selected Bedrock model id on every turn
+    // so the agent can hot-swap between turns without a reconnect.
+    wsRef.current.sendUserMessage(text, researchMode, modelId ?? null);
   }
 
   function cancel(): void {

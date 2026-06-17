@@ -4,10 +4,22 @@
 // rounded input wrapper containing:
 //   1. A dynamic textarea that auto-expands as the user types
 //      (min ~1 line / ~48px, max ~40vh — then scrolls internally).
-//   2. A single square button anchored bottom-right of the wrapper:
+//   2. A LEFT button row of auxiliary controls (below the textarea):
+//        - Paperclip (attach) — disabled stub; title "coming soon"
+//        - Microphone (voice) — disabled stub; title "coming soon"
+//        - Mode toggle       — disabled stub; title "coming soon"
+//        - Model selector    — Brain icon; opens an inline popover to swap the
+//                             active Bedrock model between turns
+//   3. A single square button anchored bottom-right of the wrapper:
 //        - idle  : up-arrow (↑) on a blue ground, disabled when empty
 //        - busy  : stop-square (■) on a grey ground, click emits cancel
 //        - returns to idle when the pipeline completes/cancels
+//
+// Model selector details (NATE 2026-06-17):
+//   - The selected model id is persisted to localStorage via modelRegistry.ts.
+//   - The chat wrapper border is tinted to the active provider's accent color.
+//   - `onSubmit` receives the selected model id alongside the text so the
+//     caller (Chat.tsx) can include `model_id` on the user-message envelope.
 //
 // Submission semantics (FR-WC-7, updated job-0153):
 //   - Enter alone        → submit (clear text, send).
@@ -44,6 +56,19 @@ import {
   useState,
 } from "react";
 
+import {
+  IconPaperclip,
+  IconMic,
+  IconModel,
+} from "./icons";
+import {
+  SELECTABLE_MODELS,
+  getModelById,
+  loadPersistedModelId,
+  persistModelId,
+  type ModelEntry,
+} from "../lib/modelRegistry";
+
 export type ChatInputState = "idle" | "in-flight";
 
 export interface ChatInputProps {
@@ -52,8 +77,10 @@ export interface ChatInputProps {
   /**
    * Called when the user submits text in idle state (Cmd/Ctrl+Enter or
    * up-arrow click). The component clears its own draft on submit.
+   * `modelId` carries the currently-selected Bedrock model id so the caller
+   * can include it on the `user-message` envelope.
    */
-  onSubmit: (text: string) => void;
+  onSubmit: (text: string, modelId: string) => void;
   /**
    * Called when the user clicks the stop-square in in-flight state.
    * Wired to GraceWs.sendCancel by Chat.tsx.
@@ -138,6 +165,202 @@ function ActionGlyph({ state }: { state: ChatInputState }): JSX.Element {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Model selector popover
+// ---------------------------------------------------------------------------
+
+interface ModelPopoverProps {
+  anchorRef: React.RefObject<HTMLButtonElement>;
+  selectedId: string;
+  onSelect: (model: ModelEntry) => void;
+  onClose: () => void;
+}
+
+function ModelPopover({
+  anchorRef,
+  selectedId,
+  onSelect,
+  onClose,
+}: ModelPopoverProps): JSX.Element {
+  const popoverRef = useRef<HTMLDivElement | null>(null);
+
+  // Close on click-outside.
+  useEffect(() => {
+    function handlePointerDown(e: PointerEvent): void {
+      const target = e.target as Node | null;
+      if (!target) return;
+      if (popoverRef.current?.contains(target)) return;
+      if (anchorRef.current?.contains(target)) return;
+      onClose();
+    }
+    document.addEventListener("pointerdown", handlePointerDown, { capture: true });
+    return () => document.removeEventListener("pointerdown", handlePointerDown, { capture: true });
+  }, [anchorRef, onClose]);
+
+  // Close on Escape.
+  useEffect(() => {
+    function handleKey(e: globalThis.KeyboardEvent): void {
+      if (e.key === "Escape") onClose();
+    }
+    document.addEventListener("keydown", handleKey);
+    return () => document.removeEventListener("keydown", handleKey);
+  }, [onClose]);
+
+  // Group models by provider for display.
+  const grouped = SELECTABLE_MODELS.reduce<Record<string, ModelEntry[]>>((acc, m) => {
+    const list = acc[m.provider] ?? [];
+    list.push(m);
+    acc[m.provider] = list;
+    return acc;
+  }, {});
+
+  const popoverStyle: CSSProperties = {
+    position: "absolute",
+    bottom: "calc(100% + 8px)",
+    left: 0,
+    zIndex: 2000,
+    background: "#1e1e26",
+    border: "1px solid rgba(255,255,255,0.1)",
+    borderRadius: 10,
+    padding: "6px 0",
+    minWidth: 240,
+    boxShadow: "0 8px 24px rgba(0,0,0,0.5)",
+  };
+
+  return (
+    <div
+      ref={popoverRef}
+      data-testid="model-popover"
+      role="listbox"
+      aria-label="Select model"
+      style={popoverStyle}
+    >
+      {Object.entries(grouped).map(([provider, models]) => (
+        <div key={provider}>
+          <div
+            style={{
+              padding: "4px 14px 2px",
+              fontSize: 10,
+              fontWeight: 600,
+              letterSpacing: "0.08em",
+              textTransform: "uppercase",
+              color: "rgba(255,255,255,0.35)",
+              userSelect: "none",
+            }}
+          >
+            {provider}
+          </div>
+          {models.map((m) => {
+            const isSelected = m.id === selectedId;
+            return (
+              <button
+                key={m.id}
+                role="option"
+                aria-selected={isSelected}
+                data-testid={`model-option-${m.id}`}
+                onClick={() => { onSelect(m); onClose(); }}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 8,
+                  width: "100%",
+                  padding: "6px 14px",
+                  background: isSelected ? "rgba(255,255,255,0.05)" : "transparent",
+                  border: "none",
+                  cursor: "pointer",
+                  color: isSelected ? "#fff" : "rgba(255,255,255,0.7)",
+                  fontSize: 13,
+                  textAlign: "left",
+                  transition: "background 100ms ease",
+                }}
+                onMouseEnter={(e) => {
+                  (e.currentTarget as HTMLButtonElement).style.background = "rgba(255,255,255,0.07)";
+                }}
+                onMouseLeave={(e) => {
+                  (e.currentTarget as HTMLButtonElement).style.background =
+                    isSelected ? "rgba(255,255,255,0.05)" : "transparent";
+                }}
+              >
+                <span>{m.label}</span>
+                {isSelected && (
+                  <span
+                    style={{
+                      width: 6,
+                      height: 6,
+                      borderRadius: "50%",
+                      background: m.accentColor,
+                      flexShrink: 0,
+                    }}
+                  />
+                )}
+              </button>
+            );
+          })}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Small icon button used for left-row stubs and the model selector trigger.
+// ---------------------------------------------------------------------------
+interface IconButtonProps {
+  onClick?: () => void;
+  disabled?: boolean;
+  title: string;
+  "data-testid"?: string;
+  children: React.ReactNode;
+  active?: boolean;
+  accentColor?: string;
+}
+
+function LeftIconButton({
+  onClick,
+  disabled,
+  title,
+  "data-testid": testId,
+  children,
+  active = false,
+  accentColor,
+}: IconButtonProps): JSX.Element {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      aria-label={title}
+      data-testid={testId}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        width: 28,
+        height: 28,
+        borderRadius: 6,
+        border: "none",
+        padding: 0,
+        background: active ? "rgba(255,255,255,0.08)" : "transparent",
+        color: active && accentColor
+          ? accentColor
+          : disabled
+          ? "rgba(255,255,255,0.2)"
+          : "rgba(255,255,255,0.5)",
+        cursor: disabled ? "default" : "pointer",
+        transition: "background 120ms ease, color 120ms ease",
+        flexShrink: 0,
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Main component
+// ---------------------------------------------------------------------------
+
 export function ChatInput({
   state,
   onSubmit,
@@ -149,6 +372,14 @@ export function ChatInput({
   fontSizePx = 14,
 }: ChatInputProps): JSX.Element {
   const [draft, setDraft] = useState("");
+
+  // Model selection — load from localStorage on mount.
+  const [selectedModel, setSelectedModel] = useState<ModelEntry>(() =>
+    getModelById(loadPersistedModelId()),
+  );
+  const [popoverOpen, setPopoverOpen] = useState(false);
+  const modelButtonRef = useRef<HTMLButtonElement | null>(null);
+
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
 
@@ -186,11 +417,16 @@ export function ChatInput({
     return undefined;
   }, [state]);
 
+  function handleModelSelect(model: ModelEntry): void {
+    setSelectedModel(model);
+    persistModelId(model.id);
+  }
+
   function handleSubmit(): void {
     const text = draft.trim();
     if (!text) return;
     if (state !== "idle" || disabled) return;
-    onSubmit(text);
+    onSubmit(text, selectedModel.id);
     setDraft("");
     // Reset textarea height immediately on clear so the wrapper doesn't
     // briefly retain the prior expanded height.
@@ -246,16 +482,22 @@ export function ChatInput({
           opacity: buttonDisabled ? 0.45 : 1,
         };
 
+  // The wrapper border is tinted to the active model's provider accent color.
+  // Use a low-opacity tint at rest and a higher-opacity tint on focus (via
+  // CSS variable approach with inline style). The provider tint also provides
+  // ambient "which model is active" signal at a glance.
+  const accentColor = selectedModel.accentColor;
   const wrapperStyle: CSSProperties = {
     display: "flex",
-    alignItems: "flex-end",
-    gap: 8,
+    flexDirection: "column",
+    gap: 0,
     background: "#1a1a20",
-    border: "1px solid rgba(255,255,255,0.06)",
+    border: `1.5px solid ${accentColor}55`,
     borderRadius: 14,
     boxShadow: "0 2px 12px rgba(0,0,0,0.35)",
-    padding: "10px 10px 10px 14px",
+    padding: "10px 10px 8px 14px",
     transition: "box-shadow 160ms ease, border-color 160ms ease",
+    position: "relative",
   };
 
   return (
@@ -263,8 +505,21 @@ export function ChatInput({
       ref={wrapperRef}
       data-testid="chat-input-wrapper"
       data-state={state}
+      data-model-id={selectedModel.id}
       style={wrapperStyle}
     >
+      {/* Model popover (rendered inside wrapper so it participates in the
+          stacking context; positioned absolute relative to wrapper) */}
+      {popoverOpen && (
+        <ModelPopover
+          anchorRef={modelButtonRef as React.RefObject<HTMLButtonElement>}
+          selectedId={selectedModel.id}
+          onSelect={handleModelSelect}
+          onClose={() => setPopoverOpen(false)}
+        />
+      )}
+
+      {/* Textarea (full width) — all controls live on the bottom row below */}
       <textarea
         ref={textareaRef}
         data-testid="chat-input"
@@ -275,7 +530,8 @@ export function ChatInput({
         disabled={disabled}
         rows={1}
         style={{
-          flex: 1,
+          width: "100%",
+          boxSizing: "border-box",
           minHeight: MIN_HEIGHT_PX,
           maxHeight: `${maxVh}vh`,
           resize: "none",
@@ -289,30 +545,135 @@ export function ChatInput({
           padding: "6px 2px",
         }}
       />
-      <button
-        data-testid="chat-input-action"
-        data-action-state={state}
-        aria-label={state === "in-flight" ? "Stop response" : "Send message"}
-        onClick={onButtonClick}
-        disabled={buttonDisabled}
+
+      {/* Left button row: stubs + model selector */}
+      <div
+        data-testid="chat-input-left-row"
         style={{
-          flex: "0 0 auto",
-          width: 32,
-          height: 32,
-          borderRadius: 8,
-          border: "none",
-          color: "#fff",
           display: "flex",
           alignItems: "center",
-          justifyContent: "center",
-          padding: 0,
-          transition:
-            "background 180ms ease, opacity 180ms ease, transform 120ms ease",
-          ...buttonStyle,
+          gap: 2,
+          marginTop: 4,
         }}
       >
-        <ActionGlyph state={state} />
-      </button>
+        {/* Attach — disabled stub */}
+        <LeftIconButton
+          disabled
+          title="Attach file (coming soon)"
+          data-testid="chat-input-attach"
+        >
+          <IconPaperclip size={15} />
+        </LeftIconButton>
+
+        {/* Voice — disabled stub */}
+        <LeftIconButton
+          disabled
+          title="Voice input (coming soon)"
+          data-testid="chat-input-mic"
+        >
+          <IconMic size={15} />
+        </LeftIconButton>
+
+        {/* Mode toggle — disabled stub */}
+        <LeftIconButton
+          disabled
+          title="Research mode toggle (coming soon)"
+          data-testid="chat-input-mode"
+        >
+          {/* A small "M" label so the stub looks intentional without a dedicated icon */}
+          <span
+            aria-hidden="true"
+            style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.03em" }}
+          >
+            Mode
+          </span>
+        </LeftIconButton>
+
+        {/* Subtle divider */}
+        <span
+          aria-hidden="true"
+          style={{
+            width: 1,
+            height: 14,
+            background: "rgba(255,255,255,0.1)",
+            margin: "0 4px",
+            flexShrink: 0,
+          }}
+        />
+
+        {/* Model selector trigger — we need the button's ref for popover
+            positioning, so render the button directly here rather than
+            through LeftIconButton (which is not a forwardRef component). */}
+        <button
+          ref={modelButtonRef}
+          onClick={() => setPopoverOpen((o) => !o)}
+          title={`Model: ${selectedModel.label}`}
+          aria-label={`Model: ${selectedModel.label}`}
+          data-testid="chat-input-model"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 28,
+            height: 28,
+            borderRadius: 6,
+            border: "none",
+            padding: 0,
+            background: popoverOpen ? "rgba(255,255,255,0.08)" : "transparent",
+            color: popoverOpen ? accentColor : "rgba(255,255,255,0.5)",
+            cursor: "pointer",
+            transition: "background 120ms ease, color 120ms ease",
+            flexShrink: 0,
+          }}
+        >
+          <IconModel size={15} />
+        </button>
+
+        {/* Active model label (dim, right of the icon) */}
+        <span
+          style={{
+            fontSize: 11,
+            color: accentColor,
+            opacity: 0.75,
+            fontWeight: 500,
+            letterSpacing: "0.01em",
+            userSelect: "none",
+            pointerEvents: "none",
+          }}
+        >
+          {selectedModel.label}
+        </span>
+
+        {/* Spacer pushes the send button to the right edge so the left
+            controls sit INLINE with send (Claude-Code composer), NATE 2026-06-17. */}
+        <div style={{ flex: 1 }} />
+
+        {/* Send / stop — inline on the controls row, right-aligned. */}
+        <button
+          data-testid="chat-input-action"
+          data-action-state={state}
+          aria-label={state === "in-flight" ? "Stop response" : "Send message"}
+          onClick={onButtonClick}
+          disabled={buttonDisabled}
+          style={{
+            flex: "0 0 auto",
+            width: 32,
+            height: 32,
+            borderRadius: 8,
+            border: "none",
+            color: "#fff",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 0,
+            transition:
+              "background 180ms ease, opacity 180ms ease, transform 120ms ease",
+            ...buttonStyle,
+          }}
+        >
+          <ActionGlyph state={state} />
+        </button>
+      </div>
     </div>
   );
 }
