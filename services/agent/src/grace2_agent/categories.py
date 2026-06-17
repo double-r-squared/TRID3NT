@@ -141,7 +141,8 @@ CATEGORIES: tuple[CategorySpec, ...] = (
         description=(
             "Digital elevation models and terrain-derivative rasters: DEMs "
             "(3DEP standard + extra resolutions), hillshade, slope, aspect, "
-            "colored-relief renderings."
+            "colored-relief renderings, and elevation contour lines "
+            "(topographic isolines)."
         ),
     ),
     CategorySpec(
@@ -276,6 +277,7 @@ PRIMARY_CATEGORY: dict[str, str] = {
     "compute_aspect": "terrain_elevation",
     "compute_colored_relief": "terrain_elevation",
     "compute_blended_composite": "terrain_elevation",
+    "compute_contours": "terrain_elevation",
     # ---- 5. land_cover_development ----------------------------------------
     "fetch_landcover": "land_cover_development",
     "extract_landcover_class": "land_cover_development",
