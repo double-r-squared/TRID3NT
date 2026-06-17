@@ -576,14 +576,16 @@ describe("PayloadWarningInline component (job-0140)", () => {
     expect(onDecide).toHaveBeenCalledWith("narrow_scope", w.alternative_args);
   });
 
-  it("after a decision, buttons are disabled and 'Sent' footer appears", () => {
+  it("after a decision, folds to a compact amber summary (buttons gone)", () => {
     const w = makeWarning();
     render(<PayloadWarningInline warning={w} onDecide={vi.fn()} />);
     act(() => {
       fireEvent.click(screen.getByTestId("payload-warning-button-proceed"));
     });
-    expect(screen.getByTestId("payload-warning-button-proceed")).toBeDisabled();
-    expect(screen.getByTestId("payload-warning-sent")).toHaveTextContent("Sent:");
+    // job-0352: the answered warning folds to a compact amber card.
+    expect(screen.queryByTestId("payload-warning-button-proceed")).toBeNull();
+    expect(screen.getByTestId("payload-warning-inline").getAttribute("data-resolved")).toBe("proceed");
+    expect(screen.getByTestId("payload-warning-sent")).toHaveTextContent("Large response");
   });
 });
 

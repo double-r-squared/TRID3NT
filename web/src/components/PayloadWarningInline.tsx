@@ -32,11 +32,39 @@ import {
   PayloadWarningOption,
 } from "../contracts";
 import { InlineChatCard, InlineChatCardAction } from "./InlineChatCard";
+import { IconWarning, IconChevronDown, IconChevronRight } from "./icons";
 
 const OPTION_LABEL: Record<PayloadWarningOption, string> = {
   proceed: "Proceed anyway",
   cancel: "Cancel",
   narrow_scope: "Narrow scope",
+};
+
+// Resolved (answered) warning folds to a compact AMBER card — distinct from the
+// green success/credential folds because a payload warning serves a different
+// purpose (caution, not success). job-0352. Body-under-title: the read-only
+// detail stacks BELOW the title row on expand (flexDirection column).
+const compactWarnStyle: React.CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  alignItems: "stretch",
+  gap: 6,
+  fontSize: 12,
+  lineHeight: 1.4,
+  padding: "8px 10px",
+  borderRadius: 6,
+  background: "rgba(234,179,8,0.18)", // amber/warning tint (InlineChatCard warning accent #eab308)
+  boxShadow: "0 1px 3px rgba(0,0,0,0.25)",
+  color: "#e5e7eb",
+  fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
+  width: "100%",
+  boxSizing: "border-box",
+};
+
+const RESOLVED_SUMMARY: Record<PayloadConfirmationDecision, string> = {
+  proceed: "Large response — proceeding anyway",
+  cancel: "Large response — cancelled",
+  narrow_scope: "Large response — narrowed scope",
 };
 
 export interface PayloadWarningInlineProps {
@@ -82,6 +110,9 @@ export function PayloadWarningInline({
     ),
   );
   const [jsonError, setJsonError] = useState<string | null>(null);
+  // Folded-card re-expand toggle (mirrors CredentialCard): a resolved warning
+  // folds to the compact amber summary; the chevron reveals the read-only detail.
+  const [expanded, setExpanded] = useState<boolean>(false);
 
   const overHardCap = useMemo(
     () => !warning.options.includes("proceed"),
@@ -155,6 +186,97 @@ export function PayloadWarningInline({
       testId: `payload-warning-button-${opt}`,
     };
   });
+
+  // Resolved -> compact AMBER fold (body under title). Distinct color from the
+  // green success/credential folds because a warning is a different purpose.
+  if (sent !== null) {
+    return (
+      <div
+        data-testid="payload-warning-inline"
+        data-variant="warning"
+        data-resolved={sent}
+        role="status"
+        aria-label={`Large response warning ${sent}`}
+        style={compactWarnStyle}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 8, width: "100%" }}>
+          <span
+            aria-hidden="true"
+            style={{ display: "inline-flex", alignItems: "center", flexShrink: 0 }}
+          >
+            <IconWarning size={13} color="#eab308" />
+          </span>
+          <span
+            data-testid="payload-warning-sent"
+            style={{
+              flex: 1,
+              minWidth: 0,
+              color: "#eab308",
+              fontWeight: 600,
+              fontSize: 12,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+            title={RESOLVED_SUMMARY[sent]}
+          >
+            {RESOLVED_SUMMARY[sent]}
+          </span>
+          <button
+            type="button"
+            data-testid="payload-warning-expand"
+            aria-label={expanded ? "Collapse details" : "Show details"}
+            aria-expanded={expanded}
+            onClick={() => setExpanded((v) => !v)}
+            style={{
+              background: "transparent",
+              border: "none",
+              padding: 2,
+              margin: 0,
+              cursor: "pointer",
+              display: "inline-flex",
+              alignItems: "center",
+              color: "#9ca3af",
+              flexShrink: 0,
+            }}
+          >
+            {expanded ? (
+              <IconChevronDown size={13} color="#9ca3af" />
+            ) : (
+              <IconChevronRight size={13} color="#9ca3af" />
+            )}
+          </button>
+        </div>
+        {expanded && (
+          <div
+            data-testid="payload-warning-detail"
+            style={{
+              width: "100%",
+              marginTop: 6,
+              paddingTop: 6,
+              borderTop: "1px solid rgba(255,255,255,0.08)",
+              color: "#d1d5db",
+              fontSize: 11,
+              lineHeight: 1.5,
+              display: "flex",
+              flexDirection: "column",
+              gap: 4,
+            }}
+          >
+            <div style={{ wordBreak: "break-word" }}>
+              <strong style={{ color: "#e5e7eb" }}>{warning.tool_name}</strong>{" "}
+              projected{" "}
+              <strong style={{ color: "#e5e7eb" }}>
+                {warning.estimated_mb.toFixed(1)} MB
+              </strong>{" "}
+              (threshold {warning.threshold_mb.toFixed(0)} MB).
+            </div>
+            <div style={{ color: "#9ca3af" }}>{warning.recommendation}</div>
+          </div>
+        )}
+      </div>
+    );
+  }
 
   // Body: metrics row + recommendation + (optional) clarifier
   const body = (

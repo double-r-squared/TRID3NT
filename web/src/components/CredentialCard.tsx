@@ -124,8 +124,13 @@ const cardStyle: React.CSSProperties = {
 function compactCardStyle(resolved: "saved" | "declined"): React.CSSProperties {
   return {
     display: "flex",
-    alignItems: "center",
-    gap: 8,
+    // Column so the expanded detail (body) stacks UNDERNEATH the title row
+    // instead of beside it. The title row is its own inner flex-row (icon +
+    // summary + chevron); the read-only detail flows below it on expand.
+    // job-0352 — body-under-title is the standard for expandable cards.
+    flexDirection: "column",
+    alignItems: "stretch",
+    gap: 6,
     fontSize: 12,
     lineHeight: 1.4,
     padding: "8px 10px",

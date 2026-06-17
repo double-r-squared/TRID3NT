@@ -175,14 +175,31 @@ describe("PayloadWarningInline — hard cap", () => {
   });
 });
 
-describe("PayloadWarningInline — post-decision state", () => {
-  it("disables all buttons after a decision is sent", () => {
+describe("PayloadWarningInline — post-decision fold (job-0352)", () => {
+  it("folds to a compact AMBER card after a decision (buttons gone, amber tint)", () => {
     render(<PayloadWarningInline warning={makeWarning()} onDecide={vi.fn()} />);
     fireEvent.click(screen.getByTestId("payload-warning-button-proceed"));
-    const proceedBtn = screen.getByTestId(
-      "payload-warning-button-proceed",
-    ) as HTMLButtonElement;
-    expect(proceedBtn.disabled).toBe(true);
+    // Folds: the action buttons are replaced by the compact summary.
+    expect(screen.queryByTestId("payload-warning-button-proceed")).toBeNull();
+    const card = screen.getByTestId("payload-warning-inline");
+    expect(card.getAttribute("data-resolved")).toBe("proceed");
+    expect(screen.getByTestId("payload-warning-sent")).toHaveTextContent(
+      "Large response",
+    );
+    // Amber/warning tint (rgba(234,179,8,…)) — NOT the green success fold.
+    expect(card.style.background).toContain("234, 179, 8");
+  });
+
+  it("chevron reveals the read-only detail BELOW the title (body-under-title)", () => {
+    render(<PayloadWarningInline warning={makeWarning()} onDecide={vi.fn()} />);
+    fireEvent.click(screen.getByTestId("payload-warning-button-proceed"));
+    expect(screen.queryByTestId("payload-warning-detail")).toBeNull();
+    fireEvent.click(screen.getByTestId("payload-warning-expand"));
+    const detail = screen.getByTestId("payload-warning-detail");
+    expect(detail).toBeTruthy();
+    // The compact card stacks title-row then detail vertically (column).
+    const card = screen.getByTestId("payload-warning-inline");
+    expect(card.style.flexDirection).toBe("column");
   });
 });
 
