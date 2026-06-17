@@ -1,0 +1,16 @@
+job: job-0326
+title: Colored shaded land cover — landcover cache-version bump + agent steer to use NLCD-as-base + narration conciseness
+owner: agent
+state: IN_PROGRESS_WORKFLOW
+priority: P1
+opened: 2026-06-16
+root_cause: land cover x hillshade bake still renders grey/wrong-color for two compounding reasons. (1) CACHE: Chattanooga land cover was cached BEFORE deploy #3's palette-preservation fix (job-0324) -> the read-through cache (static-30d, 13 landcover + 5 blended objects) serves the stale PALETTE-LESS COG -> blending it = grey. (2) AGENT BEHAVIOR: after seeing grey, the agent substitutes compute_colored_relief (elevation/terrain colors) for the NLCD land cover, so output is terrain colors not NLCD class colors; its compute_blended_composite description never told it the blend now applies the base's EMBEDDED palette, so it thinks NLCD is colorless. Also: narration was long + repetitive across retries (user: "more concise and less repetitive").
+fix: (a) data_fetch.py — bump the LANDCOVER cache version/key salt so post-deploy-#3 fetches MISS the stale palette-less COG and regenerate the colored (palette-preserving) COG. ONLY the landcover cache key, not global. (Avoids the blocked recursive cache wipe.) (b) compute_blended_composite.py — strengthen the tool description: the BASE may be a paletted/categorical raster (e.g. NLCD land cover); the tool applies its EMBEDDED color table, so you get the class colors. Pass the land cover handle DIRECTLY as the base; do NOT pre-colorize or substitute colored_relief. (c) adapter.py SYSTEM_PROMPT — for shaded/baked land cover, pass NLCD land cover as the blend base (palette-aware); colored_relief is elevation colors, NOT land-cover classes. PLUS narration conciseness: be concise, do not re-explain the same thing across retries, no verbose step-by-step recap every turn.
+acceptance: unit test (landcover cache key changed -> miss on the old key); description + prompt assertions. Verify: cache-bump-correct (only landcover, regenerates) + agent-steer + conciseness, refute-by-default.
+file_ownership: data_fetch.py + compute_blended_composite.py + adapter.py. Disjoint from everything (web batch deployed).
+next: review -> commit -> deploy #4 (agent) -> user re-runs "bake NLCD land cover into hillshade" on a FRESH case (so the agent's grey-history bias does not persist) -> colored NLCD-class shaded land cover.
+
+DEPLOYED 2026-06-16 (SSM cmd 33007d6b-bf0a-4f99-ad4a-2413b66f1826, NATE-authorized restart). Markers verified live (_LANDCOVER_CACHE_VERSION=2 + adapter blend-base steer); grace2-agent active, clean startup, 90 tools registered, STDERR empty.
+
+LIVE-VERIFIED by NATE 2026-06-16: Chattanooga baked hillshade + land cover rendered PERFECTLY (colored NLCD classes shaded by terrain). job-0326 DONE. Closes the grey-landcover saga (0316 -> 0319 -> 0323 -> 0324 -> 0326).
+state: DONE

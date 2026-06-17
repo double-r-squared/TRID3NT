@@ -1,0 +1,21 @@
+job: job-0329
+title: All-Opus web batch — Phosphor icon pack + F29/F31/F52/F44/F45/F53/F57/F58 + final emoji->icon sweep
+owner: web
+state: IN_PROGRESS_WORKFLOW
+priority: P1
+opened: 2026-06-16
+supersedes: job-0327 + job-0328 (both died on 529 API overload, nothing landed)
+model_policy: ALL agents Opus 4.8 (NATE directive "use opus for everything"; agent() model omitted -> inherits the Opus 4.8 1M session model). See feedback-cost-discipline-model-routing override.
+icon_pack: Phosphor (@phosphor-icons/react) — NATE picked. SF Symbols are Apple-platform-license-only, cannot ship on web; Phosphor = closest SF aesthetic (multi-weight, rounded).
+structure (multi-phase, gated):
+  - Phase 0 Foundation (1 Opus, serial): add @phosphor-icons/react + web/src/components/icons.tsx shared module (single source of truth for every UI icon).
+  - Phase 1 Build (4 Opus impl, parallel file-disjoint) -> each verified (4 Opus verify, refute-by-default, BEHAVIOR-focused):
+    - A shell {App.tsx, ws.ts, MobileDrawer.tsx}: F29 (remove drawer-footer Settings pill 1198-1209; top-right gear is sole mobile entry) + F31 (ws.ts forceReconnect, unconditional close+reopen; call on visibilitychange->visible — iOS zombie-socket fix) + F52 (pointer-events:none on drawer column+wrappers, auto on cards -> non-component taps fall through to z=40 backdrop) + glyph swaps.
+    - B chat {Chat.tsx}: F44 (mobile sheet ACTUALLY drag-resizes; touch-action) + F45 (drag tab: GRACE-2+hash LEFT, connection RIGHT) + glyph swaps.
+    - C layers {LayerPanel.tsx, ConfirmationDialog.tsx}: F53 (drop mobile swipe gesture, icon-only delete; portal ConfirmationDialog to document.body = true full-screen) + glyph swaps.
+    - D cases {CasesPanel.tsx}: F57 (3 inline buttons -> single kebab overflow menu Rename/Archive/Delete) + F58 (+ New Case -> plus icon only) + glyph swaps.
+  - Phase 2 Sweep (1 DEDICATED Opus, serial): repo-wide final UI pass — replace EVERY remaining rendered glyph across all web files with the icon module; preserve data chars (degrees, attribution (c)); assert zero raw UI glyphs remain.
+  - Phase 3 Sweep-verify (1 Opus): tsc + vitest green, grep proves zero UI glyphs, consistency.
+defensive: every agent() null-guarded (job-0328 crashed on impl.diff on null); 529 deaths -> resume via resumeFromRunId (cached phases skip).
+acceptance: gate = all 4 groups verify pass + sweep verify pass + foundation ok. Commit passing groups -> ONE web deploy (vite + s3 + CloudFront), NATE-authorized. NATE live-tests on mobile.
+SRS: propose Appendix I / FR-WC amendment — no-emoji-in-UI + icon-pack policy (NATE lands).

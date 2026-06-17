@@ -1,0 +1,20 @@
+job: job-0330
+title: Chat composer redesign + Claude-Code-style tool-permission MODES (Normal/Strict/Auto) + paperclip/mic stubs
+owner: web (+ agent for gating backend, + schema for approval envelopes)
+state: QUEUED (starts AFTER job-0329 commits — file overlap: Chat.tsx, ws.ts; reuses job-0329 Phosphor icon module)
+priority: P1
+opened: 2026-06-16
+source: NATE 2026-06-16 — "move the text form up a tad... stub a file drop button (paperclip) and a mic icon so it's paperclip mic then send... far left we have modes... popup slides up from bottom... normal (default) / strict (gates every tool use) / auto (says yes to all tools). like Claude Code's modes."
+scope:
+  WEB (ChatInput.tsx + Chat.tsx):
+    - Move the text input form up slightly.
+    - Left of Send, in order: paperclip (file-drop) icon, mic icon, then Send. Paperclip + mic are STUBS (render + disabled/no-op for v0.1; wire later). Use IconPaperclip / IconMic / IconSend from the job-0329 icon module.
+    - FAR-LEFT mode chip showing the current mode; tap -> a sheet SLIDES UP FROM THE BOTTOM with three selectable modes: Normal (default), Strict, Auto, each with a one-line description. Persist the selected mode (per-user or per-case? default per-case conversation, like Claude Code per-session — CONFIRM if needed). Pattern after Claude Code's mode picker.
+    - Send the active mode to the agent (ws.ts: include mode on user-message, or a dedicated set-mode envelope).
+  AGENT (adapter.py / main loop) + SCHEMA (approval envelopes):
+    - Normal: current behavior (tools run; payload-size/time gates as today).
+    - Strict: PAUSE before EVERY tool call -> emit a tool-approval-request envelope -> wait for tool-approval-response (approve/deny) -> proceed or skip. REUSE the existing payload-warning pause/resume machinery (Wave 2 agent main-loop pause), generalized to all tools. Denied -> feed back as function_response so the agent narrates/retries honestly (ties to [[feedback_tool_retry_on_failure]]).
+    - Auto: auto-approve all tools (skip the per-tool gate) BUT keep the existing size/time safety gates (>25MB payload warning etc. still prompt) per NATE "size and time only user input is still needed for specific stuff" ([[feedback_large_payload_chat_warning]]).
+  SCHEMA: tool-approval-request / tool-approval-response envelopes (+ mode field on user-message or a set-mode envelope). Propose SRS Appendix D/F amendment (NATE lands).
+execution: all-Opus (per directive). Workflow design (web + agent + schema groups) -> impl -> behavior-focused refute-by-default verify. NO live (NATE tests). Bundles into the next web+agent deploy, NATE-authorized.
+notes: confirm with NATE whether strict/auto persist per-user or per-case before final wiring; default per-case (conversation-scoped, Claude-Code-like).

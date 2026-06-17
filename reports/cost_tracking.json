@@ -1801,6 +1801,13 @@
       "description": "web follow-on: F53 delete end-to-end + mobile swipe/confirm + F31 resume + F44/F45 chat + F52 cases-dismiss + F56 opacity. design+5impl+5verify, 5/5.",
       "model": "opus",
       "subagent_tokens": 1019222
+    },
+    {
+      "job_id": "job-0326",
+      "sprint": "ux-batch-1",
+      "description": "colored shaded land cover: landcover cache-version bump + agent steer (NLCD-as-base, no colored_relief) + narration conciseness. fix+2verify 2/2.",
+      "model": "opus",
+      "subagent_tokens": 256470
     }
   ],
   "totals_by_sprint": {
@@ -1814,7 +1821,7 @@
     "13": 14388888,
     "13.5": 4081365,
     "14": 824503,
-    "ux-batch-1": 6680208
+    "ux-batch-1": 6936678
   },
   "historical_context": {
     "note": "Captured for accountability — NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",

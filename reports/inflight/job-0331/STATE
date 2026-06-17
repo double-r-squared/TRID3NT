@@ -1,0 +1,13 @@
+job: job-0331
+title: fetch_buildings — OSM Overpass footprints as reliable primary + MS fallback + honest typed error
+owner: engine/agent
+state: IN_PROGRESS_WORKFLOW (task w15lv1u15)
+priority: P1 (live blocker — NATE's "show me building footprints" failed UPSTREAM_API_ERROR)
+opened: 2026-06-16
+model_policy: all-Opus (standing directive)
+root_cause: fetch_buildings(source="msft") queries PC ms-buildings STAC -> returns ONE whole-country item whose only asset is abfs:// GeoParquet (account bingmlbuildings); code does requests.get() on the abfs:// URL -> never works. source="osm" was NotImplementedError -> no footprint fallback (only NSI points). OSM Overpass verified working (578 polygons / Chattanooga block). See [[project_building_footprints_source]].
+scope (data_fetch.py only — DISJOINT from web jobs, runs parallel with job-0329b):
+  - implement _fetch_osm_buildings_bytes (Overpass way["building"]+relation["building"] -> Polygons/MultiPolygons -> FGB, clip to bbox; reuse fetch_roads_osm pattern).
+  - wire source="osm"; default flip to "osm"; fallback osm<->msft -> honest typed error (fallback norm); cache key on source used; NSI untouched.
+  - unit tests + pytest + registry import check.
+acceptance: gate = verify pass (footprints come back as polygons via OSM + honest fallback). Then commit (agent). Agent REDEPLOY required after -> ping NATE for the grace2-agent restart (gated). Feeds F50 (footprints colored by Pelicun damage).

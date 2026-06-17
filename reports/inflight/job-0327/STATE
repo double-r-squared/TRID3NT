@@ -1,0 +1,10 @@
+job: job-0327
+title: F29 finish — move mobile Settings trigger to TOP-RIGHT (job-0321 left it in the left panel)
+owner: web
+state: IN_PROGRESS_WORKFLOW
+priority: P1 (user-reported: "settings button is still in the left panel")
+opened: 2026-06-16
+root_cause: job-0321 F29 did only HALF — API keys ARE bundled inside Settings (BottomRowButtons retired the standalone Secrets pill; SettingsPopup embeds SecretsPanel), BUT the Settings TRIGGER is still BottomRowButtons (rowStyle position:absolute left:12 bottom:12 desktop; variant="inline" in the mobile drawer footer). On mobile that = buried in the left drawer. The job-0321 verify checked keys-bundling, missed the top-right placement.
+fix: on MOBILE render a TOP-RIGHT Settings (gear) trigger reachable from the map view (not in the drawer footer); open the same SettingsPopup (API keys inside, unchanged). Remove/suppress the Settings pill from the mobile drawer footer so there is ONE mobile entry (top-right). Desktop bottom-left floating pill UNCHANGED. Files: App.tsx (mount top-right mobile Settings button + gate the mobile BottomRowButtons Settings) + BottomRowButtons.tsx if a prop is needed. NOT a stale bundle — confirmed in committed code.
+acceptance: vitest — on mobile a top-right Settings trigger renders + opens Settings; the mobile drawer footer no longer shows the Settings pill; desktop unchanged; API keys still inside Settings. Verify EXPLICITLY checks the top-right placement (the gap the prior verify missed), refute-by-default.
+execution: small workflow implement + verify. NO live (user tests). Web deploy (rebuild + s3 + CloudFront) after gate, user-authorized.
