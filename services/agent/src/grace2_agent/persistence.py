@@ -1027,28 +1027,41 @@ class Persistence:
         secret_ref: "SecretRecord",
         *,
         secret_manager_client=None,
+        ssm_client=None,
     ) -> str:
-        """Read the live key value from GCP Secret Manager (job-0124).
+        """Read the live key value from the vault backend (job-0124 + AWS fix).
 
-        Called by Tier-2 fetchers (eBird / OpenWeatherMap / etc.) at
+        Called by Tier-2 fetchers (FIRMS / eBird / ERA5 / etc.) at
         tool-invocation time to materialize the raw key for the outbound
-        HTTP request. The handler never logs the returned value.
+        HTTP request — including the credential-card RETRY path. The caller
+        never logs the returned value.
+
+        Backend routing is by the ``vault_ref`` *scheme* (not the env), so a
+        key written under one backend still resolves even if the env later
+        flips — the env only chooses the WRITE backend:
+
+        - ``aws-ssm://<param-name>`` → AWS SSM ``get_parameter`` with
+          ``WithDecryption=True`` (KMS-decrypted SecureString). This is the
+          AWS-stack path (the prod EC2 box has no GCP ADC — the GCP path was
+          the demo blocker NATE hit 2026-06-17).
+        - ``gcp-sm://…`` or a bare ``projects/…/versions/…`` resource name →
+          GCP Secret Manager ``access_secret_version`` (the default path).
 
         Fail-closed semantics:
 
         - If the record's ``is_active`` flag is ``False`` (soft-revoked),
-          we raise ``SecretRevokedError`` BEFORE touching Secret Manager
-          so a revoked secret never resurrects via stale cache.
-        - If the Secret Manager fetch raises (missing version, permission
-          denied, etc.) we surface the original exception — Tier-2
-          fetchers wrap this in a tool-level error envelope.
+          we raise ``SecretRevokedError`` BEFORE touching any vault so a
+          revoked secret never resurrects via stale cache.
+        - If the vault fetch raises (missing version, permission denied,
+          etc.) we surface the original exception — Tier-2 fetchers wrap
+          this in a tool-level error envelope.
 
         Args:
-            secret_ref: the persisted ``SecretRecord`` (vault-ref only —
-                we read ``secret_ref.vault_ref`` to construct the GCP
-                ``access_secret_version`` request name).
-            secret_manager_client: optional pre-constructed client (tests
+            secret_ref: the persisted ``SecretRecord`` (vault-ref only).
+            secret_manager_client: optional pre-constructed GCP client (tests
                 pass a mock; production lazy-constructs a live client).
+            ssm_client: optional pre-constructed AWS SSM client (tests pass a
+                mock; production lazy-constructs a live boto3 client).
 
         Returns:
             The raw key value as a string. **Caller MUST NOT log this.**
@@ -1058,7 +1071,12 @@ class Persistence:
         """
         # Local import — avoids a circular dependency between persistence
         # and secrets_handler (which imports Persistence).
-        from .secrets_handler import SecretRevokedError
+        from .secrets_handler import (
+            AWS_SSM_VAULT_SCHEME,
+            GCP_SM_VAULT_SCHEME,
+            SecretRevokedError,
+            _default_ssm_client,
+        )
 
         if not secret_ref.is_active:
             raise SecretRevokedError(
@@ -1066,12 +1084,31 @@ class Persistence:
                 f"(provider={secret_ref.provider})"
             )
 
-        # The stored vault_ref is the resource name (no scheme prefix).
-        # Tolerate the legacy ``gcp-sm://`` shape used in some test
-        # fixtures by stripping it before the SDK call.
-        name = secret_ref.vault_ref
-        if name.startswith("gcp-sm://"):
-            name = name[len("gcp-sm://") :]
+        ref = secret_ref.vault_ref
+
+        # AWS SSM Parameter Store SecureString path (AWS prod stack).
+        if ref.startswith(AWS_SSM_VAULT_SCHEME):
+            param_name = ref[len(AWS_SSM_VAULT_SCHEME) :]
+            client = ssm_client or _default_ssm_client()
+            response = client.get_parameter(
+                Name=param_name, WithDecryption=True
+            )
+            # boto3 returns {"Parameter": {"Value": "...", ...}}; mock clients
+            # used in tests return the same shape.
+            param = response.get("Parameter") if isinstance(response, dict) else None
+            value = param.get("Value") if isinstance(param, dict) else None
+            if value is None:
+                raise RuntimeError(
+                    "SSM get_parameter returned no Parameter.Value"
+                )
+            return str(value)
+
+        # GCP Secret Manager path (default). The stored vault_ref is the
+        # resource name (no scheme prefix); tolerate the legacy ``gcp-sm://``
+        # shape by stripping it before the SDK call.
+        name = ref
+        if name.startswith(GCP_SM_VAULT_SCHEME):
+            name = name[len(GCP_SM_VAULT_SCHEME) :]
 
         client = secret_manager_client
         if client is None:

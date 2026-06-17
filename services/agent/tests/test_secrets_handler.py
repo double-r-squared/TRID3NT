@@ -118,6 +118,44 @@ class MockSecretManagerClient:
         return _FakeSecretVersion(name=name, payload=_FakeSecretPayload(data))
 
 
+class MockSSMClient:
+    """Drop-in replacement for ``boto3.client("ssm")``.
+
+    Implements ``put_parameter``, ``get_parameter`` (with ``WithDecryption``),
+    and ``delete_parameter`` — the exact three calls the AWS secret backend
+    uses. Records every call so tests can assert routing + KMS encryption.
+    """
+
+    def __init__(self) -> None:
+        # param-name -> {"Value": str, "Type": str, "KeyId": str | None}
+        self._store: dict[str, dict] = {}
+        self.calls: list[tuple[str, dict]] = []
+
+    def put_parameter(self, **kwargs):  # noqa: ANN003
+        self.calls.append(("put_parameter", dict(kwargs)))
+        name = kwargs["Name"]
+        if name in self._store and not kwargs.get("Overwrite", False):
+            raise RuntimeError(f"mock: parameter {name!r} already exists")
+        self._store[name] = {
+            "Value": kwargs["Value"],
+            "Type": kwargs.get("Type"),
+            "KeyId": kwargs.get("KeyId"),
+        }
+        return {"Version": 1, "Tier": "Standard"}
+
+    def get_parameter(self, **kwargs):  # noqa: ANN003
+        self.calls.append(("get_parameter", dict(kwargs)))
+        name = kwargs["Name"]
+        if name not in self._store:
+            raise RuntimeError(f"mock: parameter {name!r} not found")
+        return {"Parameter": {"Name": name, "Value": self._store[name]["Value"]}}
+
+    def delete_parameter(self, **kwargs):  # noqa: ANN003
+        self.calls.append(("delete_parameter", dict(kwargs)))
+        self._store.pop(kwargs["Name"], None)
+        return {}
+
+
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
@@ -409,6 +447,177 @@ def test_secret_add_empty_key_value_fail_closed() -> None:
             )
         )
     assert not sm.calls
+
+
+# --------------------------------------------------------------------------- #
+# AWS SSM Parameter Store backend (NATE 2026-06-17 demo blocker fix)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def _aws_backend(monkeypatch):
+    """Select the AWS secret backend for the duration of a test."""
+    monkeypatch.setenv("GRACE2_STORAGE_BACKEND", "aws")
+    yield
+
+
+def test_aws_secret_add_writes_to_ssm_securestring(_aws_backend) -> None:
+    """On the AWS backend, secret-add writes a KMS-encrypted SecureString."""
+    p, mcp, _ = _make_persistence_and_secret_mgr()
+    ssm = MockSSMClient()
+    user_id = new_ulid()
+    envelope = _env_add(provider="ebird", key="ebird-aws-key-xyz")
+
+    record = _run(
+        handle_secret_add(
+            envelope, user_id=user_id, persistence=p, ssm_client=ssm,
+        )
+    )
+
+    # vault_ref is the aws-ssm:// scheme pointing under /grace2/secrets/<user>.
+    assert record.vault_ref.startswith("aws-ssm:///grace2/secrets/")
+    assert user_id in record.vault_ref
+    assert "ebird" in record.vault_ref
+
+    # SSM put_parameter was called as a SecureString (KMS-encrypted at rest).
+    puts = [a for n, a in ssm.calls if n == "put_parameter"]
+    assert len(puts) == 1
+    assert puts[0]["Type"] == "SecureString"
+    assert puts[0]["Value"] == "ebird-aws-key-xyz"
+    assert puts[0]["Name"].startswith("/grace2/secrets/")
+
+    # MongoDB SecretRecord persisted (vault-ref only — Decision F backstop).
+    secrets_calls = [
+        a for n, a in mcp.calls
+        if a.get("collection") == SECRETS_COLLECTION
+        and n == "update-one" and a.get("upsert") is True
+    ]
+    assert secrets_calls
+
+
+def test_aws_get_secret_value_round_trips_via_ssm(_aws_backend) -> None:
+    """Round-trip: add to SSM, then read it back with WithDecryption=True."""
+    p, _, _ = _make_persistence_and_secret_mgr()
+    ssm = MockSSMClient()
+    user_id = new_ulid()
+    envelope = _env_add(key="aws-round-trip-value")
+
+    record = _run(
+        handle_secret_add(
+            envelope, user_id=user_id, persistence=p, ssm_client=ssm,
+        )
+    )
+    fetched = _run(p.get_secret_value(record, ssm_client=ssm))
+    assert fetched == "aws-round-trip-value"
+
+    # The read decrypted the SecureString.
+    gets = [a for n, a in ssm.calls if n == "get_parameter"]
+    assert gets and gets[-1]["WithDecryption"] is True
+
+
+def test_aws_get_secret_value_raises_on_revoked(_aws_backend) -> None:
+    """A revoked AWS-backed record raises before touching SSM."""
+    p, _, _ = _make_persistence_and_secret_mgr()
+    ssm = MockSSMClient()
+    user_id = new_ulid()
+    record = _run(
+        handle_secret_add(
+            _env_add(key="aws-will-revoke"), user_id=user_id,
+            persistence=p, ssm_client=ssm,
+        )
+    )
+    revoked = record.model_copy(update={"is_active": False})
+    # Fresh SSM client to prove we never call get_parameter.
+    ssm2 = MockSSMClient()
+    with pytest.raises(SecretRevokedError):
+        _run(p.get_secret_value(revoked, ssm_client=ssm2))
+    assert not ssm2.calls
+
+
+def test_aws_backend_never_logs_key(_aws_backend, caplog) -> None:
+    """Decision F leak check on the AWS path: raw key never appears in logs."""
+    p, _, _ = _make_persistence_and_secret_mgr()
+    ssm = MockSSMClient()
+    sentinel = "AWS-LEAK-SENTINEL-KEY-55512"
+    with caplog.at_level("DEBUG", logger="grace2_agent.secrets_handler"):
+        _run(
+            handle_secret_add(
+                _env_add(key=sentinel), user_id=new_ulid(),
+                persistence=p, ssm_client=ssm,
+            )
+        )
+    full_log = "\n".join(r.getMessage() for r in caplog.records)
+    assert sentinel not in full_log
+
+
+def test_aws_backend_honors_custom_kms_key(_aws_backend, monkeypatch) -> None:
+    """A configured CMK is passed to put_parameter as KeyId."""
+    monkeypatch.setenv("GRACE2_SECRETS_KMS_KEY_ID", "alias/grace2-secrets")
+    p, _, _ = _make_persistence_and_secret_mgr()
+    ssm = MockSSMClient()
+    _run(
+        handle_secret_add(
+            _env_add(key="cmk-key"), user_id=new_ulid(),
+            persistence=p, ssm_client=ssm,
+        )
+    )
+    put = next(a for n, a in ssm.calls if n == "put_parameter")
+    assert put["KeyId"] == "alias/grace2-secrets"
+
+
+def test_backend_selection_honors_storage_backend(monkeypatch) -> None:
+    """Selection helper routes AWS for {s3,aws}; GCP (False) otherwise/unset."""
+    from grace2_agent.secrets_handler import _aws_secret_backend_selected
+
+    monkeypatch.delenv("GRACE2_STORAGE_BACKEND", raising=False)
+    assert _aws_secret_backend_selected() is False  # unset => GCP default
+    for v in ("aws", "s3", "AWS", "S3", " aws "):
+        monkeypatch.setenv("GRACE2_STORAGE_BACKEND", v)
+        assert _aws_secret_backend_selected() is True
+    for v in ("gcp", "", "gcs", "local"):
+        monkeypatch.setenv("GRACE2_STORAGE_BACKEND", v)
+        assert _aws_secret_backend_selected() is False
+
+
+def test_gcp_path_unchanged_when_backend_unset(monkeypatch) -> None:
+    """With no GRACE2_STORAGE_BACKEND, secret-add still uses GCP Secret Manager."""
+    monkeypatch.delenv("GRACE2_STORAGE_BACKEND", raising=False)
+    p, _, sm = _make_persistence_and_secret_mgr()
+    # If the AWS branch were taken with no ssm_client it would lazy-import boto3
+    # and fail to find a real param store; passing a GCP mock proves GCP routing.
+    record = _run(
+        handle_secret_add(
+            _env_add(key="gcp-default-key"), user_id=new_ulid(),
+            persistence=p, secret_manager_client=sm, gcp_project="gcp-proj",
+        )
+    )
+    assert record.vault_ref.startswith("projects/gcp-proj/secrets/")
+    assert record.vault_ref.endswith("/versions/latest")
+    sm_methods = [c[0] for c in sm.calls]
+    assert "create_secret" in sm_methods and "add_secret_version" in sm_methods
+    # Round-trip read also stays on the GCP path.
+    assert _run(p.get_secret_value(record, secret_manager_client=sm)) == (
+        "gcp-default-key"
+    )
+
+
+def test_read_routes_by_vault_ref_scheme_not_env(monkeypatch) -> None:
+    """A key written under AWS still resolves even if the env later flips.
+
+    Reads route on the vault_ref scheme, not GRACE2_STORAGE_BACKEND.
+    """
+    monkeypatch.setenv("GRACE2_STORAGE_BACKEND", "aws")
+    p, _, _ = _make_persistence_and_secret_mgr()
+    ssm = MockSSMClient()
+    record = _run(
+        handle_secret_add(
+            _env_add(key="scheme-routed"), user_id=new_ulid(),
+            persistence=p, ssm_client=ssm,
+        )
+    )
+    # Flip the env to GCP — the aws-ssm:// ref must STILL read from SSM.
+    monkeypatch.delenv("GRACE2_STORAGE_BACKEND", raising=False)
+    assert _run(p.get_secret_value(record, ssm_client=ssm)) == "scheme-routed"
 
 
 # --------------------------------------------------------------------------- #
