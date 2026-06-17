@@ -120,6 +120,8 @@ RESOLVABLE_URI_PARAMS: frozenset[str] = frozenset(
         "vector_uri",
         "polygon_uri",
         "dem_uri",
+        "base_layer_uri",  # job-0319: compute_blended_composite base raster
+        "overlay_layer_uri",  # job-0319: compute_blended_composite overlay raster
         "landcover_uri",
         "hazard_uri",
         "model_setup_uri",
