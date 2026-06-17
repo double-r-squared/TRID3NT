@@ -53,13 +53,26 @@ export interface PayloadWarningInlineProps {
     decision: PayloadConfirmationDecision,
     revised: Record<string, unknown> | null,
   ) => void;
+  /**
+   * FIX 2 (NATE 2026-06-17) — externally-recorded resolution. When the warning
+   * is an in-chat interleaved card (Chat's per-Case stream), the answered
+   * decision is held in the stream's payloadResolved map so the card stays
+   * "answered" (actions disabled, "Sent:" footer) across a remount — e.g. the
+   * user switches Cases and returns. Seeds the internal `sent` state. Undefined
+   * / null = unanswered (the legacy local-only behaviour).
+   */
+  resolved?: PayloadConfirmationDecision | null;
 }
 
 export function PayloadWarningInline({
   warning,
   onDecide,
+  resolved = null,
 }: PayloadWarningInlineProps): JSX.Element {
-  const [sent, setSent] = useState<PayloadConfirmationDecision | null>(null);
+  // Seed from the externally-recorded resolution (FIX 2 in-chat card) so a
+  // remount keeps the card answered; falls back to local-only state for the
+  // legacy caller that doesn't pass `resolved`.
+  const [sent, setSent] = useState<PayloadConfirmationDecision | null>(resolved);
   const [showClarifier, setShowClarifier] = useState(false);
   const [editedJson, setEditedJson] = useState<string>(() =>
     JSON.stringify(

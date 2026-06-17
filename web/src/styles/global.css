@@ -198,7 +198,14 @@ button {
  * change, no control moved or removed, all data-testids untouched.
  */
 .grace2-desktop-rail [data-testid="grace2-cases-panel"] {
-  width: 280px !important; /* match CaseView/LayerPanel column — no width jump on Case open */
+  /* job-0343 (FIX 1): width parity with the Layers panel. The Layers panel's
+   * desktop default is LAYERS_WIDTH_DEFAULT_PX = 288px (LayerPanel.tsx); the
+   * Cases panel was pinned to 280px here, so the two rails read as slightly
+   * different widths and a long Case title clipped 8px sooner than the layer
+   * rows. Pin to the SAME 288px so the two panels are one rail family; the
+   * Case-row title's flex:1 + min-width:0 ellipsis (CasesPanel.tsx) then
+   * absorbs any overflow within that width. */
+  width: 288px !important; /* == LAYERS_WIDTH_DEFAULT_PX (LayerPanel.tsx) */
   background: linear-gradient(
     180deg,
     rgba(26, 27, 33, 0.96) 0%,

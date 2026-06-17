@@ -32,7 +32,10 @@ const wrapStyle: React.CSSProperties = {
   display: "flex",
   flexDirection: "column",
   gap: 8,
-  width: 280,
+  // 288 == LAYERS_WIDTH_DEFAULT_PX and the cases-list panel width — keeps the
+  // desktop left rail the same width across cases-list <-> opened-case <->
+  // Layers, so it does not visibly jump on Case open/close (job-0348).
+  width: 288,
   fontFamily:
     "-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif",
 };

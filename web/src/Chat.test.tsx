@@ -48,6 +48,7 @@ import {
   PipelineStatePayload,
   PipelineStepSummary,
   CredentialRequestPayload,
+  PayloadWarningEnvelopePayload,
 } from "./contracts";
 
 // --- shouldShowCancel predicate ------------------------------------------ //
@@ -976,6 +977,112 @@ describe("buildInterleavedStream (job-0176 — chronological interleave)", () =>
     ];
     const stream = buildInterleavedStream(messages, [], null, messageOrder, new Map());
     expect(stream.every((e: InterleavedEntry) => e.kind !== "credential")).toBe(true);
+  });
+
+  // --- payload-warning cards interleave inline (FIX 2, NATE 2026-06-17) --- //
+  //
+  // A large-payload tool dispatch paused with a tool-payload-warning; the card
+  // must land at its first-arrival seq BETWEEN the narration that came before
+  // it and the narration that resumes after the user answers — never break out
+  // to a separate banner "hat" above the chat.
+
+  function payloadWarn(
+    warningId: string,
+    overrides: Partial<PayloadWarningEnvelopePayload> = {},
+  ): PayloadWarningEnvelopePayload {
+    return {
+      envelope_type: "tool-payload-warning",
+      warning_id: warningId,
+      tool_name: "fetch_buildings",
+      tool_args: {},
+      estimated_mb: 42.5,
+      threshold_mb: 25,
+      recommendation: "Narrow the bbox.",
+      options: ["proceed", "narrow_scope", "cancel"],
+      ...overrides,
+    };
+  }
+
+  it("interleaves a payload-warning card at its arrival seq between narration bubbles", () => {
+    // 1. user prompt; 2. agent "this is large…"; 3. payload-warning card;
+    // 4. agent narration resumes AFTER the card.
+    const messageOrder = new Map<string, number>([
+      ["user-0", 1],
+      ["msg-pre", 2],
+      ["msg-post", 4],
+    ]);
+    const messages = [
+      { id: "user-0", role: "user" as const, text: "fetch everything", done: true },
+      { id: "msg-pre", role: "agent" as const, text: "That's a large area.", done: true },
+      { id: "msg-post", role: "agent" as const, text: "Proceeding.", done: true },
+    ];
+    const payloadSeqs = new Map<string, number>([["W1", 3]]);
+    const stream = buildInterleavedStream(
+      messages,
+      [],
+      null,
+      messageOrder,
+      new Map(),
+      [],
+      new Map(),
+      new Map(),
+      [payloadWarn("W1")],
+      payloadSeqs,
+      new Map(),
+    );
+    expect(stream.map((e: InterleavedEntry) => e.kind)).toEqual([
+      "user-message",
+      "agent-message",
+      "payload-warning",
+      "agent-message",
+    ]);
+    expect(stream.map((e: InterleavedEntry) => e.seq)).toEqual([1, 2, 3, 4]);
+    const w = stream[2]! as Extract<InterleavedEntry, { kind: "payload-warning" }>;
+    expect(w.warningId).toBe("W1");
+    expect(w.warning.estimated_mb).toBe(42.5);
+    expect(w.resolved).toBeNull();
+  });
+
+  it("threads the resolved decision onto the payload-warning entry (folds in place)", () => {
+    // Card arrives at seq=2; once answered it stays at slot 2 (does NOT jump to
+    // the end) — the agent's follow-up at seq=3 still renders after it.
+    const messageOrder = new Map<string, number>([
+      ["msg-pre", 1],
+      ["msg-post", 3],
+    ]);
+    const messages = [
+      { id: "msg-pre", role: "agent" as const, text: "Large.", done: true },
+      { id: "msg-post", role: "agent" as const, text: "Done.", done: true },
+    ];
+    const stream = buildInterleavedStream(
+      messages,
+      [],
+      null,
+      messageOrder,
+      new Map(),
+      [],
+      new Map(),
+      new Map(),
+      [payloadWarn("W1")],
+      new Map<string, number>([["W1", 2]]),
+      new Map([["W1", "proceed" as const]]),
+    );
+    expect(stream.map((e: InterleavedEntry) => e.kind)).toEqual([
+      "agent-message",
+      "payload-warning",
+      "agent-message",
+    ]);
+    const w = stream[1]! as Extract<InterleavedEntry, { kind: "payload-warning" }>;
+    expect(w.resolved).toBe("proceed");
+  });
+
+  it("omitting the payload-warning args keeps the legacy stream shape (no warning rows)", () => {
+    const messageOrder = new Map<string, number>([["m1", 1]]);
+    const messages = [
+      { id: "m1", role: "agent" as const, text: "hi", done: true },
+    ];
+    const stream = buildInterleavedStream(messages, [], null, messageOrder, new Map());
+    expect(stream.every((e: InterleavedEntry) => e.kind !== "payload-warning")).toBe(true);
   });
 });
 

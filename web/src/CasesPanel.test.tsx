@@ -719,15 +719,27 @@ describe("CasesPanel", () => {
 
     it("the panel root declares a FIXED 288px width (== LayerPanel column), box-sized", () => {
       // The inline root width is the fixed, non-content/non-viewport-driven
-      // base. (The desktop-rail override pins it to 280 to match CaseView; the
-      // mobile-touch override pins it to 288 — both via global.css !important —
-      // but the inline base is what guarantees it is never `auto`/fit-content
-      // when no scope class is present.)
+      // base. FIX 1 (NATE 2026-06-17): the desktop-rail override AND the
+      // mobile-touch override now BOTH pin it to 288px — the LayerPanel
+      // LAYERS_WIDTH_DEFAULT_PX — so the Cases panel reads as the same width as
+      // the Layers panel on every surface (was 280 desktop, an 8px mismatch
+      // that clipped a long title sooner). The inline base is what guarantees
+      // it is never `auto`/fit-content when no scope class is present.
       renderPanel();
       const panel = screen.getByTestId("grace2-cases-panel");
       expect(panel.style.width).toBe("288px");
       expect(panel.style.maxWidth).toBe("100%");
       expect(panel.style.boxSizing).toBe("border-box");
+    });
+
+    it("FIX 1 — the inline base width matches the Layers panel default (parity)", () => {
+      // The Layers panel's desktop default is LAYERS_WIDTH_DEFAULT_PX = 288px
+      // (LayerPanel.tsx). The Cases panel inline base must be the SAME literal
+      // so the two rails are one width family (the global.css desktop-rail +
+      // mobile-touch overrides were aligned to 288 to match).
+      renderPanel();
+      const panel = screen.getByTestId("grace2-cases-panel");
+      expect(panel.style.width).toBe("288px"); // == LAYERS_WIDTH_DEFAULT_PX
     });
 
     it("the fixed width does NOT grow with a very long Case title", () => {

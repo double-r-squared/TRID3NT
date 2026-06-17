@@ -25,6 +25,7 @@ import {
   stringifyPropertyValue,
   type SessionStateSubscriber,
 } from "./Map";
+import { resolvePopupPlacement } from "./components/FeaturePopup";
 
 // --- MapLibre mock with real event registration + queryRenderedFeatures ---- //
 
@@ -386,5 +387,49 @@ describe("feature-inspect pure helpers", () => {
     const data = buildFeaturePopupData(null, { x: 0, y: 0 }, { layerName: "layer-x" });
     expect(data.title).toBe("layer-x");
     expect(data.attributes).toEqual([]);
+  });
+});
+
+// --- FIX 3 (F86): popup anchored at the tap/click point on BOTH surfaces --- //
+//
+// "the popup should be where I tapped." resolvePopupPlacement must anchor near
+// the click point on desktop AND mobile (the prior mobile behaviour pinned to
+// the canvas bottom-center, detaching it from the tap), clamped into the canvas
+// so it can never run off an edge.
+
+describe("resolvePopupPlacement — anchored at the tap point (FIX 3 / F86)", () => {
+  const canvas = { width: 1000, height: 800 };
+
+  it("desktop: anchors near the click point (upper-right offset)", () => {
+    const { left, top } = resolvePopupPlacement({ x: 400, y: 300 }, canvas, false);
+    // upper-right of the point: left ~= x + offset, top ~= y - offset.
+    expect(left).toBeGreaterThan(400);
+    expect(left).toBeLessThan(500);
+    expect(top).toBeLessThan(300);
+    expect(top).toBeGreaterThan(250);
+  });
+
+  it("mobile: ALSO anchors near the tap point — NOT pinned bottom-center", () => {
+    const { left, top, width } = resolvePopupPlacement({ x: 200, y: 250 }, canvas, true);
+    // left tracks the tap x (was (1000-280)/2 = 360 under the old bottom-center
+    // rule); top tracks the tap y (was h - EST - 96 = 484 under the old rule).
+    expect(left).toBeGreaterThan(200);
+    expect(left).toBeLessThan(280);
+    expect(top).toBeLessThan(250);
+    // mobile card is the wider touch width.
+    expect(width).toBe(280);
+  });
+
+  it("clamps a near-edge tap fully into the canvas (both surfaces)", () => {
+    // Tap near the bottom-right corner: the card must not run off either edge.
+    const m = resolvePopupPlacement({ x: 990, y: 790 }, canvas, true);
+    expect(m.left).toBeGreaterThanOrEqual(0);
+    expect(m.left + m.width).toBeLessThanOrEqual(canvas.width);
+    expect(m.top).toBeGreaterThanOrEqual(0);
+
+    const d = resolvePopupPlacement({ x: 990, y: 790 }, canvas, false);
+    expect(d.left).toBeGreaterThanOrEqual(0);
+    expect(d.left + d.width).toBeLessThanOrEqual(canvas.width);
+    expect(d.top).toBeGreaterThanOrEqual(0);
   });
 });

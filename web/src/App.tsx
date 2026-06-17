@@ -61,7 +61,9 @@ import {
   SourceSuggestionAction,
   SourceSuggestionInline,
 } from "./components/SourceSuggestionInline";
-import { PayloadWarningInline } from "./components/PayloadWarningInline";
+// FIX 2 (NATE 2026-06-17): the large-payload warning moved into Chat's per-Case
+// interleaved stream (in-chat card), so App no longer imports / renders
+// PayloadWarningInline. See Chat.tsx routePayloadWarning + InterleavedChatStream.
 import {
   AuthUser,
   onAuthChanged,
@@ -84,7 +86,8 @@ import {
   CaseListEnvelopePayload,
   CaseOpenEnvelopePayload,
   MapCommandPayload,
-  PayloadConfirmationDecision,
+  // PayloadWarningEnvelopePayload retained for the dev-only window seam typing
+  // (FIX 2: the warning is rendered by Chat now, not App).
   PayloadWarningEnvelopePayload,
   PipelineStatePayload,
   ProjectLayerSummary,
@@ -473,43 +476,11 @@ export function App(): JSX.Element {
   // currentCaseId for the embedded SecretsPanel scope (inside Settings).
   const currentCaseId: string | null = activeCaseId;
 
-  // job-0127: payload-warning gates.
-  //
-  // job-0266 — confirmations are keyed by Case: each warning is tagged with
-  // the Case that was active when it arrived (null = root), and only the
-  // warnings belonging to the CURRENTLY visible Case render. A warning for
-  // a non-visible Case buffers until the user returns to that Case — it is
-  // never painted into another Case's view.
-  const [payloadWarnings, setPayloadWarnings] = useState<
-    Array<{ warning: PayloadWarningEnvelopePayload; caseId: string | null }>
-  >([]);
-  // Latest activeCaseId for the once-bound WS handler closures. Assigned
-  // during render so a warning arriving any time after a Case switch tags
-  // with the up-to-date Case.
-  const activeCaseIdRef = useRef<string | null>(null);
-  activeCaseIdRef.current = activeCaseId;
-  const handlePayloadWarning = useCallback(
-    (p: PayloadWarningEnvelopePayload) => {
-      setPayloadWarnings((prev) => [
-        { warning: p, caseId: activeCaseIdRef.current },
-        ...prev,
-      ]);
-    },
-    [],
-  );
-  const handlePayloadWarningDecide = useCallback(
-    (
-      warningId: string,
-      decision: PayloadConfirmationDecision,
-      revised: Record<string, unknown> | null,
-    ) => {
-      wsRef.current?.sendPayloadConfirmation(warningId, decision, revised);
-      setPayloadWarnings((prev) =>
-        prev.filter((t) => t.warning.warning_id !== warningId),
-      );
-    },
-    [],
-  );
+  // FIX 2 (NATE 2026-06-17): the payload-warning gate moved OUT of App into
+  // Chat's per-Case interleaved stream (an in-chat card, not a banner "hat").
+  // App no longer accumulates / renders / answers the warning — Chat owns the
+  // whole flow (route + render + sendPayloadConfirmation) because tool-payload-
+  // warning is session-scoped and reaches Chat's GraceWs directly.
 
   // job-0126 (renamed job-0145): source-suggestion candidate fan-out. Server
   // wire envelope_type is still `mode2-candidate` (internal); UI translates.
@@ -609,8 +580,8 @@ export function App(): JSX.Element {
       onMapCommand: (p) => bus.pushMapCommand(p),
       onSecretsList: (p) => setSecrets(p.secrets ?? []),
       onMode2Candidate: (p) => fanoutSourceSuggestion(p),
-      // job-0266 — tags the warning with the Case active at arrival.
-      onPayloadWarning: (p) => handlePayloadWarning(p),
+      // FIX 2 — payload-warning is handled by Chat's GraceWs now (in-chat card),
+      // not App. No onPayloadWarning handler here.
       onCaseList: (p: CaseListEnvelopePayload) => useCases_onCaseList(p),
       onCaseOpen: (p: CaseOpenEnvelopePayload) => useCases_onCaseOpen(p),
       onError: () => { /* Chat owns rendering */ },
@@ -634,7 +605,7 @@ export function App(): JSX.Element {
     // onAuthChanged effect above); re-running this effect closes the dead
     // post-4401 socket and opens a fresh one. In disabled/dev mode authEpoch
     // never changes, so this effect runs exactly once as before.
-  }, [bus, fanoutSourceSuggestion, useCases_onCaseList, useCases_onCaseOpen, handleChartEmission, handlePayloadWarning, authEpoch]);
+  }, [bus, fanoutSourceSuggestion, useCases_onCaseList, useCases_onCaseOpen, handleChartEmission, authEpoch]);
 
   // job-0322 F31 — resume-repaint (iOS zombie-socket fix). Mobile browsers
   // tear down (or silently wedge) the WebSocket when the tab is backgrounded;
@@ -780,7 +751,6 @@ export function App(): JSX.Element {
     window.__grace2InjectSourceSuggestion = (p) => fanoutSourceSuggestion(p);
     window.__grace2InjectCaseList = (p) => useCases_onCaseList(p);
     window.__grace2InjectCaseOpen = (p) => useCases_onCaseOpen(p);
-    window.__grace2InjectPayloadWarning = (p) => handlePayloadWarning(p);
     window.__grace2InjectImpactEnvelope = (p) => setImpactEnvelope(p);
     // sprint-13 job-0231: chart injection seam for Playwright snapshots.
     // App.tsx owns the window seam; Chat.tsx receives the fan-out via
@@ -800,12 +770,11 @@ export function App(): JSX.Element {
       delete window.__grace2InjectSourceSuggestion;
       delete window.__grace2InjectCaseList;
       delete window.__grace2InjectCaseOpen;
-      delete window.__grace2InjectPayloadWarning;
       delete window.__grace2InjectImpactEnvelope;
       delete window.__grace2InjectChartEmission;
       delete window.__grace2ClearCharts;
     };
-  }, [bus, fanoutSourceSuggestion, useCases_onCaseList, useCases_onCaseOpen, handleChartEmission, handlePayloadWarning]);
+  }, [bus, fanoutSourceSuggestion, useCases_onCaseList, useCases_onCaseOpen, handleChartEmission]);
 
   // job-0125: bridge SecretsPanel callbacks to the active GraceWs.
   function handleSecretAdd(payload: {
@@ -845,11 +814,8 @@ export function App(): JSX.Element {
     ? cases.find((c) => c.case_id === activeCaseId) ?? null
     : null;
 
-  // job-0266 — only the warnings belonging to the visible Case (or the
-  // root, for warnings tagged null) render; the rest buffer per-Case.
-  const visiblePayloadWarnings = payloadWarnings.filter(
-    (t) => t.caseId === activeCaseId,
-  );
+  // FIX 2 — payload-warning gates render in Chat's per-Case stream now (no
+  // App-level filtering / banner). See Chat.tsx routePayloadWarning.
 
   // job-0253 — AuthGuard wraps the app shell. DISABLED (dev/tailnet) ⇒
   // transparent pass-through, pixel-identical render. ENABLED + signed-in ⇒
@@ -1347,10 +1313,9 @@ export function App(): JSX.Element {
             pointerEvents: "auto",
           }}
         >
-          {/* ux-batch-1 J7 (F16): payload-warning gates moved OUT of this
-              scrolling top-right stack into the pinned opaque banner "hat"
-              below (grace2-payload-warning-banner). Source suggestions stay
-              here. */}
+          {/* FIX 2 (NATE 2026-06-17): payload-warning gates are no longer here
+              NOR in any App-level banner — they render as in-chat cards in
+              Chat's per-Case stream (Chat.tsx). Source suggestions stay here. */}
           {/* Source-suggestion inline card (job-0145, replaces Mode2OfferModal).
               Listens for candidate envelopes from the server; UI text never
               references the server-internal envelope name. Returns null when
@@ -1362,68 +1327,13 @@ export function App(): JSX.Element {
         </div>
       </div>
 
-      {/* ux-batch-1 J7 (F16) — payload-warning BANNER "hat". The gate is
-          pinned as an opaque banner over the TOP of the chat column (not in
-          the scroll, so it can never scroll out of view), aligned to the chat
-          width, and disappears the moment the user answers it. Mounted at App
-          level because the warning arrives on App's GraceWs. Desktop: hugs the
-          chat panel (right:16, width = chatWidth). Mobile / chat collapsed:
-          falls back to a top, near-full-width banner so it's never lost. */}
-      {visiblePayloadWarnings.length > 0 && (
-        <div
-          data-testid="grace2-payload-warning-banner"
-          style={{
-            position: "absolute",
-            top: isMobile ? 12 : 16,
-            right: isMobile ? 12 : 16,
-            left: isMobile ? 12 : undefined,
-            width: isMobile
-              ? undefined
-              : rightCollapsed
-                ? 360
-                : `min(${chatWidth}px, 92vw)`,
-            display: "flex",
-            flexDirection: "column",
-            gap: 8,
-            zIndex: 60,
-            // Opaque so it reads as a solid banner, not a see-through overlay
-            // (F16: "should also not be transparent").
-            background: "#15171f",
-            border: "1px solid rgba(255,255,255,0.10)",
-            borderRadius: 12,
-            boxShadow: "0 8px 32px rgba(0,0,0,0.55)",
-            padding: 8,
-            pointerEvents: "auto",
-            // Bound the banner height if many gates stack; rare, but keep it
-            // from overrunning the viewport.
-            maxHeight: "calc(100vh - 32px)",
-            overflowY: "auto",
-          }}
-        >
-          {/* Newest first so a fresh gate sits at the top of the banner.
-              job-0266: filtered to the visible Case's warnings only. */}
-          {visiblePayloadWarnings.map(({ warning: w }) => (
-            <PayloadWarningInline
-              key={w.warning_id}
-              warning={w}
-              onDecide={(decision, revised) =>
-                handlePayloadWarningDecide(w.warning_id, decision, revised)
-              }
-            />
-          ))}
-        </div>
-      )}
-      {/* Legacy data-testid hook (job-0127 → job-0145): keep the
-          `payload-warning-stack` test id reachable so existing App / e2e
-          tests continue to find the column. Mounted only when at least one
-          warning is active, mirroring the prior conditional-render. */}
-      {visiblePayloadWarnings.length > 0 && (
-        <span
-          data-testid="payload-warning-stack"
-          aria-hidden="true"
-          style={{ display: "none" }}
-        />
-      )}
+      {/* FIX 2 (NATE 2026-06-17) — the large-payload warning BANNER "hat" is
+          GONE. The warning is now an IN-CHAT card interleaved in the per-Case
+          chat scroll (Chat.tsx kind:"payload-warning", PayloadWarningInline),
+          matching the credential / tool / sandbox card family. tool-payload-
+          warning is session-scoped (ws.ts SESSION_SCOPED_TYPES) so Chat's own
+          GraceWs receives it via the fan-out hub; App no longer renders or
+          tracks it. */}
 
       {/* job-0143: Settings popup (full-screen overlay). */}
       {settingsOpen && (

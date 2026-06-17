@@ -2011,9 +2011,12 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
           bottom edge; null = LayerLegend's own bottom-center fallback. */}
       <LayerLegend layers={legendLayers} anchor={resolvedAnchor} />
 
-      {/* F74b — feature-click/tap-to-inspect popup. Shown when a click/tap hits
-          a rendered vector feature; positioned at the point (desktop) or
-          bottom-center (mobile) so it never clips off a small screen. */}
+      {/* F74b / F86 (FIX 3) — feature-click/tap-to-inspect popup. Shown when a
+          click/tap hits a rendered vector feature; ANCHORED AT THE TAP/CLICK
+          POINT on BOTH desktop and mobile (clamped into the canvas so it never
+          clips off a small screen). It PERSISTS until the user taps elsewhere
+          (a no-hit click dismisses it), taps another feature (it moves to that
+          point), or hits the X / Esc. */}
       {featurePopup ? (
         <FeaturePopup
           data={featurePopup}

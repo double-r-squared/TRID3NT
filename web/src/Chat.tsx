@@ -81,6 +81,8 @@ import {
   CaseSessionState,
   CredentialRequestPayload,
   ErrorPayload,
+  PayloadConfirmationDecision,
+  PayloadWarningEnvelopePayload,
   PipelineSnapshot,
   PipelineStatePayload,
   PipelineStepSummary,
@@ -105,6 +107,7 @@ import { ChartStack, type ChartPayload } from "./components/ChartStack";
 import { ChartGallery } from "./components/ChartGallery";
 import { SandboxCard, type CodeExecRequestPayload, type CodeExecResultPayload, type SandboxCardDecision } from "./components/SandboxCard";
 import { CredentialCard } from "./components/CredentialCard";
+import { PayloadWarningInline } from "./components/PayloadWarningInline";
 
 // wave-4-10 thinking-state — the agent emits the Gemini "thinking" phase as
 // a pipeline-state step keyed on this raw ``name`` (`llm_generation` per
@@ -787,6 +790,16 @@ export interface StreamState {
   credentialResolved: Map<string, "saved" | "declined">;
   /** First-arrival seq per credential request_id (chronological interleave). */
   credentialSeqs: Map<string, number>;
+  // Large-payload warning cards (FIX 2, NATE 2026-06-17). The agent's payload
+  // estimator projected a response over the warning threshold (>25 MB) and
+  // paused the tool; the user answers Proceed / Cancel (/ Narrow scope) inline.
+  // Mirrors the credential-card family exactly: the warning is an in-chat card
+  // interleaved at its arrival position, NOT a separate banner "hat".
+  payloadWarnings: PayloadWarningEnvelopePayload[];
+  /** Resolved decision per warning_id once the user answers (Proceed/Cancel/…). */
+  payloadResolved: Map<string, PayloadConfirmationDecision>;
+  /** First-arrival seq per warning_id (chronological interleave). */
+  payloadSeqs: Map<string, number>;
   /** Monotonic arrival counter for this stream (job-0176 interleave). */
   arrivalSeq: number;
   messageOrder: Map<string, number>;
@@ -806,6 +819,9 @@ export function emptyStreamState(): StreamState {
     credentialRequests: [],
     credentialResolved: new Map(),
     credentialSeqs: new Map(),
+    payloadWarnings: [],
+    payloadResolved: new Map(),
+    payloadSeqs: new Map(),
     arrivalSeq: 0,
     messageOrder: new Map(),
     stepOrder: new Map(),
@@ -1041,6 +1057,47 @@ export function recordCredentialResolved(
   const next = new Map(s.credentialResolved);
   next.set(requestId, resolved);
   s.credentialResolved = next;
+}
+
+/**
+ * FIX 2 (NATE 2026-06-17) — route a `tool-payload-warning` envelope into the
+ * OWNING stream so it renders as an IN-CHAT card interleaved at its arrival
+ * position (NOT the old App-level banner "hat"). Mirrors routeCredentialRequest
+ * exactly: tool-payload-warning is session-scoped (ws.ts SESSION_SCOPED_TYPES)
+ * so it fans out to Chat's GraceWs even when the paused tool ran on App.tsx's
+ * connection. De-duped on warning_id so a duplicate fan-out emit doesn't stack
+ * a second card.
+ */
+export function routePayloadWarning(
+  cs: ChatStreams,
+  p: PayloadWarningEnvelopePayload,
+  caseId?: string | null,
+): void {
+  const s = getStream(cs, owningKey(cs, caseId));
+  if (s.payloadWarnings.some((w) => w.warning_id === p.warning_id)) return;
+  if (!s.payloadSeqs.has(p.warning_id)) {
+    s.arrivalSeq += 1;
+    s.payloadSeqs.set(p.warning_id, s.arrivalSeq);
+  }
+  s.payloadWarnings = [...s.payloadWarnings, p];
+}
+
+/**
+ * Record the user's resolution of a payload-warning card against the stream the
+ * card lives in. The decision (proceed / cancel / narrow_scope) is sent to the
+ * agent via GraceWs.sendPayloadConfirmation by the caller; this only marks the
+ * card resolved so it disables its actions + reads as answered in place.
+ */
+export function recordPayloadResolved(
+  cs: ChatStreams,
+  key: string,
+  warningId: string,
+  decision: PayloadConfirmationDecision,
+): void {
+  const s = getStream(cs, key);
+  const next = new Map(s.payloadResolved);
+  next.set(warningId, decision);
+  s.payloadResolved = next;
 }
 
 /** Extract persisted charts from a case-open session (sprint-13 schema —
@@ -2415,6 +2472,16 @@ export function Chat({
         routeCredentialRequest(streamsRef.current, p);
         bump();
       },
+      // FIX 2 (NATE 2026-06-17): the large-payload warning is now an IN-CHAT
+      // card, not the App-level banner "hat". tool-payload-warning is
+      // session-scoped (ws.ts SESSION_SCOPED_TYPES) so Chat's GraceWs receives
+      // it via the fan-out hub even when the paused tool ran on App.tsx's
+      // connection. We render an inline PayloadWarningInline in the owning
+      // stream, interleaved at its arrival position.
+      onPayloadWarning: (p: PayloadWarningEnvelopePayload) => {
+        routePayloadWarning(streamsRef.current, p);
+        bump();
+      },
     });
     wsRef.current = ws;
     ws.connect();
@@ -2573,6 +2640,24 @@ export function Chat({
     };
   }, [bump]);
 
+  // FIX 2 (NATE 2026-06-17): dev-only seam for tool-payload-warning injection so
+  // Playwright UI snapshots / unit harnesses can render the in-chat
+  // PayloadWarningInline card without a live large-payload dispatch. Same routed
+  // path as the real envelope. Guarded behind import.meta.env.DEV so it's
+  // stripped from production.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    (window as unknown as Record<string, unknown>).__grace2InjectPayloadWarningChat =
+      (p: PayloadWarningEnvelopePayload) => {
+        routePayloadWarning(streamsRef.current, p);
+        bump();
+      };
+    return () => {
+      delete (window as unknown as Record<string, unknown>)
+        .__grace2InjectPayloadWarningChat;
+    };
+  }, [bump]);
+
   // Auto-scroll on new content only when the user is already at the bottom.
   // This preserves the user's reading position when they've scrolled up to
   // read history while the stream is still landing new tokens.
@@ -2595,6 +2680,8 @@ export function Chat({
     visible.sandboxResults,
     visible.credentialRequests,
     visible.credentialResolved,
+    visible.payloadWarnings,
+    visible.payloadResolved,
   ]);
 
   // job-0153 Part 3 — scroll handler. Computes "near bottom" against the
@@ -2697,6 +2784,27 @@ export function Chat({
     });
   }
 
+  // FIX 2 (NATE 2026-06-17) — large-payload warning resolution. The card now
+  // lives IN the chat stream (not the App banner "hat"); the accept/cancel
+  // wiring to the agent is unchanged — sendPayloadConfirmation echoes the
+  // warning_id + decision (+ revised args for narrow_scope) back so the agent
+  // resumes / cancels / re-dispatches the paused tool. We record the decision
+  // against the VISIBLE stream so the card folds to its answered state in place.
+  function handlePayloadDecide(
+    warning: PayloadWarningEnvelopePayload,
+    decision: PayloadConfirmationDecision,
+    revised: Record<string, unknown> | null,
+  ): void {
+    recordPayloadResolved(
+      streamsRef.current,
+      visibleKey,
+      warning.warning_id,
+      decision,
+    );
+    bump();
+    wsRef.current?.sendPayloadConfirmation(warning.warning_id, decision, revised);
+  }
+
   function submit(text: string): void {
     if (!text || !wsRef.current) return;
     // job-0278 — submitting from the collapsed mobile sheet expands it so
@@ -2719,6 +2827,7 @@ export function Chat({
   const charts = visible.charts;
   const sandboxRequests = visible.sandboxRequests;
   const credentialRequests = visible.credentialRequests;
+  const payloadWarnings = visible.payloadWarnings;
   const lastError = visible.lastError;
 
   const showCancel = shouldShowCancel(pipeline);
@@ -2955,6 +3064,10 @@ export function Chat({
           credentialResolved={visible.credentialResolved}
           onCredentialSave={handleCredentialSave}
           onCredentialDecline={handleCredentialDecline}
+          payloadWarnings={payloadWarnings}
+          payloadSeqs={visible.payloadSeqs}
+          payloadResolved={visible.payloadResolved}
+          onPayloadDecide={handlePayloadDecide}
         />
 
         {/* wave-4-10 ephemeral Thinking indicator — italic muted-gray     */}
@@ -3316,6 +3429,23 @@ export type InterleavedEntry =
       requestId: string;
       request: CredentialRequestPayload;
       resolved: "saved" | "declined" | null;
+    }
+  | {
+      // FIX 2 (NATE 2026-06-17): a large-payload warning INTERLEAVED into the
+      // chat scroll at its first-arrival seq — exactly like a tool/credential
+      // card. It renders the PayloadWarningInline card (Proceed / Cancel /
+      // Narrow scope per the agent's options; Cancel rightmost) at its natural
+      // chat slot so the narration that follows the user's answer flows AFTER
+      // it. Replaces the old App-level banner "hat". The >250MB hard-block
+      // (no "proceed" option) is preserved by PayloadWarningInline itself
+      // (overHardCap → no Proceed button). Carries the warning + its resolution;
+      // the onDecide callback is supplied by InterleavedChatStream (kept off
+      // this pure view-model so buildInterleavedStream stays pure).
+      kind: "payload-warning";
+      seq: number;
+      warningId: string;
+      warning: PayloadWarningEnvelopePayload;
+      resolved: PayloadConfirmationDecision | null;
     };
 
 export function buildInterleavedStream(
@@ -3330,6 +3460,12 @@ export function buildInterleavedStream(
   credentialRequests: CredentialRequestPayload[] = [],
   credentialSeqs: Map<string, number> = new Map(),
   credentialResolved: Map<string, "saved" | "declined"> = new Map(),
+  // FIX 2 — optional large-payload warning inputs so warning cards interleave
+  // at their first-arrival seq too. Defaulted so existing callers / tests keep
+  // working unchanged.
+  payloadWarnings: PayloadWarningEnvelopePayload[] = [],
+  payloadSeqs: Map<string, number> = new Map(),
+  payloadResolved: Map<string, PayloadConfirmationDecision> = new Map(),
 ): InterleavedEntry[] {
   const out: InterleavedEntry[] = [];
   // Messages — seq comes from messageOrder; absent → fall back to a large
@@ -3382,6 +3518,19 @@ export function buildInterleavedStream(
       resolved: credentialResolved.get(cReq.request_id) ?? null,
     });
   }
+  // Large-payload warnings (FIX 2) — seq from payloadSeqs (first-arrival), so
+  // the card lands at its natural chat slot between the narration that preceded
+  // the paused tool and the narration that resumes after the user answers.
+  for (const w of payloadWarnings) {
+    const seq = payloadSeqs.get(w.warning_id) ?? Number.MAX_SAFE_INTEGER;
+    out.push({
+      kind: "payload-warning",
+      seq,
+      warningId: w.warning_id,
+      warning: w,
+      resolved: payloadResolved.get(w.warning_id) ?? null,
+    });
+  }
   // Stable sort by seq; ties broken by insertion order (preserved by the
   // standard ``Array.prototype.sort`` in V8/spidermonkey/JSC since
   // ES2019). Insertion order here is: messages first then tools, so a
@@ -3409,6 +3558,18 @@ interface InterleavedChatStreamProps {
   credentialResolved: Map<string, "saved" | "declined">;
   onCredentialSave: (req: CredentialRequestPayload, keyValue: string) => void;
   onCredentialDecline: (req: CredentialRequestPayload) => void;
+  // FIX 2 (NATE 2026-06-17): large-payload warnings interleave INLINE in this
+  // stream at their first-arrival seq, exactly like tool / credential cards.
+  // The onDecide callback is component-bound (WS side effect lives in Chat) so
+  // it rides on the props rather than the pure stream view-model.
+  payloadWarnings: PayloadWarningEnvelopePayload[];
+  payloadSeqs: Map<string, number>;
+  payloadResolved: Map<string, PayloadConfirmationDecision>;
+  onPayloadDecide: (
+    warning: PayloadWarningEnvelopePayload,
+    decision: PayloadConfirmationDecision,
+    revised: Record<string, unknown> | null,
+  ) => void;
 }
 
 function InterleavedChatStream({
@@ -3422,6 +3583,10 @@ function InterleavedChatStream({
   credentialResolved,
   onCredentialSave,
   onCredentialDecline,
+  payloadWarnings,
+  payloadSeqs,
+  payloadResolved,
+  onPayloadDecide,
 }: InterleavedChatStreamProps): JSX.Element | null {
   const stream = buildInterleavedStream(
     messages,
@@ -3432,6 +3597,9 @@ function InterleavedChatStream({
     credentialRequests,
     credentialSeqs,
     credentialResolved,
+    payloadWarnings,
+    payloadSeqs,
+    payloadResolved,
   );
   if (stream.length === 0) return null;
   return (
@@ -3467,6 +3635,24 @@ function InterleavedChatStream({
               resolved={entry.resolved}
               onSave={(keyValue) => onCredentialSave(entry.request, keyValue)}
               onDecline={() => onCredentialDecline(entry.request)}
+            />
+          );
+        }
+        if (entry.kind === "payload-warning") {
+          // FIX 2 — the large-payload warning renders inline in the chat
+          // scroll (Proceed / Cancel / Narrow scope; Cancel rightmost per the
+          // existing button-order convention). The >250MB hard-block (no
+          // "proceed" option) is preserved by PayloadWarningInline (overHardCap
+          // hides Proceed). `resolved` keeps the card answered across a remount
+          // (Case switch + return).
+          return (
+            <PayloadWarningInline
+              key={entry.warningId}
+              warning={entry.warning}
+              resolved={entry.resolved}
+              onDecide={(decision, revised) =>
+                onPayloadDecide(entry.warning, decision, revised)
+              }
             />
           );
         }

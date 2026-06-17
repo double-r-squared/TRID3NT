@@ -51,7 +51,11 @@ export interface FeaturePopupProps {
   data: FeaturePopupData;
   /** Width/height of the map canvas (for off-screen clamping). */
   canvasSize: { width: number; height: number };
-  /** Mobile viewport → center the card instead of anchoring to the point. */
+  /**
+   * Mobile viewport. FIX 3 (F86): the card is anchored at the tap point on BOTH
+   * surfaces now — this only widens the card slightly for touch
+   * (CARD_WIDTH_MOBILE) and is otherwise no longer a positioning switch.
+   */
   isMobile: boolean;
   /** Dismiss (X tap / Esc). Tap-elsewhere dismissal is wired in Map.tsx. */
   onClose: () => void;
@@ -67,10 +71,15 @@ const EST_CARD_HEIGHT = 220; // rough height used only for vertical clamping.
 
 /**
  * Resolve the absolute {left, top} for the card.
- *   - Mobile: pin near the bottom-center of the canvas so it never clips off a
- *     narrow screen and never sits under the user's finger.
- *   - Desktop: anchor just to the upper-right of the clicked point, then clamp
- *     into the canvas so it can't run off any edge.
+ *
+ * FIX 3 (F86, NATE 2026-06-17): the popup is ANCHORED AT THE TAP/CLICK POINT on
+ * BOTH mobile and desktop ("the popup should be where I tapped"). The earlier
+ * behaviour pinned the mobile card to the bottom-center of the canvas, which
+ * detached it from where the user touched. We now place it just to the
+ * upper-right of the point on every surface, then CLAMP it fully into the
+ * canvas so it can never run off an edge (the clamp is what kept the
+ * bottom-center fallback "safe" — here it does the same job at the point).
+ *
  * Pure — exported so the placement math is unit-testable without rendering.
  */
 export function resolvePopupPlacement(
@@ -82,15 +91,9 @@ export function resolvePopupPlacement(
   const w = canvasSize.width || width + EDGE_GAP * 2;
   const h = canvasSize.height || EST_CARD_HEIGHT + EDGE_GAP * 2;
 
-  if (isMobile) {
-    // Centered horizontally; pinned toward the bottom but above the very edge
-    // (and above where most bottom sheets/composers live).
-    const left = Math.max(EDGE_GAP, (w - width) / 2);
-    const top = Math.max(EDGE_GAP, h - EST_CARD_HEIGHT - 96);
-    return { left, top, width };
-  }
-
-  // Desktop: place to the upper-right of the point, then clamp into the canvas.
+  // Place to the upper-right of the point, then clamp into the canvas. On a
+  // narrow (mobile) viewport the wider card + the edge clamp keep it on-screen
+  // exactly the way the desktop card already did — but now it stays at the tap.
   let left = point.x + POINT_OFFSET;
   let top = point.y - POINT_OFFSET;
   if (left + width + EDGE_GAP > w) {
