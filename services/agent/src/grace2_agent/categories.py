@@ -129,7 +129,8 @@ CATEGORIES: tuple[CategorySpec, ...] = (
         id="hydrology",
         name="Hydrology",
         description=(
-            "Surface-water datasets: NOAA NWM streamflow, NHDPlus/NLDI "
+            "Surface-water datasets: USGS NWIS gauge stations (real observed "
+            "discharge/stage), NOAA NWM modeled streamflow, NHDPlus/NLDI "
             "navigation, river geometry, CaMa-Flood discharge, GCN250 curve "
             "numbers, STATSGO soils, precipitation return-period lookups."
         ),
@@ -259,6 +260,7 @@ PRIMARY_CATEGORY: dict[str, str] = {
     "fetch_raws_weather": "weather_atmosphere",
     "fetch_gridmet": "weather_atmosphere",
     # ---- 3. hydrology -----------------------------------------------------
+    "fetch_usgs_nwis_gauges": "hydrology",
     "fetch_noaa_nwm_streamflow": "hydrology",
     "fetch_nhdplus_nldi_navigate": "hydrology",
     "fetch_river_geometry": "hydrology",
