@@ -1185,6 +1185,227 @@ describe("MapView — vector layer rendering (job-0139)", () => {
     expect(m.removeSource).toHaveBeenCalledWith("panther");
   });
 
+  // --- F84 — Case-switch / Case-exit must drop POLYGON (WDPA) vectors ------- //
+  //
+  // ROOT-CAUSE REGRESSION: a polygon vector (e.g. WDPA protected areas) is
+  // painted by registerVectorOnMap as TWO MapLibre layers per geojson source —
+  // `${id}` (fill) + `${id}-outline` (line). The pre-F84 reconcile removed only
+  // `${id}` then called removeSource(id), which THROWS in real MapLibre because
+  // `${id}-outline` still references the source; the uncaught throw aborted the
+  // whole removal loop and the polygon persisted across Cases (the bug). The fix
+  // removes EVERY group member before the source.
+
+  it("F84: removes BOTH the fill AND the -outline sublayer (+source) when a polygon vector drops from session-state", async () => {
+    const fc = {
+      type: "FeatureCollection",
+      features: [
+        {
+          type: "Feature",
+          geometry: {
+            type: "Polygon",
+            coordinates: [[[-81.0, 26.0], [-81.1, 26.0], [-81.1, 26.1], [-81.0, 26.1], [-81.0, 26.0]]],
+          },
+          properties: { name_eng: "Big Cypress National Preserve", desig_eng: "National Preserve" },
+        },
+      ],
+    };
+    vi.spyOn(global, "fetch").mockResolvedValue(makeFetchResponse(fc));
+
+    const sessionBus = makeSessionBus();
+    render(<MapView subscribeSessionState={sessionBus.subscribe as (cb: SessionStateSubscriber) => () => void} />);
+
+    act(() => {
+      sessionBus.push({
+        loaded_layers: [
+          makeWireVectorLayer("wdpa-big-cypress", "https://ex.com/wdpa.geojson", { style_preset: "wdpa_polygon" }),
+        ],
+      });
+    });
+    await new Promise((r) => setTimeout(r, 0));
+
+    const m = lastMapMock!;
+    // Both group members are on the map: the fill (`id`) AND the line (`id-outline`).
+    expect(m._addedLayers.has("wdpa-big-cypress")).toBe(true);
+    expect(m._addedLayers.has("wdpa-big-cypress-outline")).toBe(true);
+
+    // Case switch / exit: the WDPA layer is no longer in the new set.
+    act(() => {
+      sessionBus.push({ loaded_layers: [] });
+    });
+
+    // EVERY group member is removed (not just the fill) so the source can go.
+    expect(m.removeLayer).toHaveBeenCalledWith("wdpa-big-cypress");
+    expect(m.removeLayer).toHaveBeenCalledWith("wdpa-big-cypress-outline");
+    expect(m.removeSource).toHaveBeenCalledWith("wdpa-big-cypress");
+    // Nothing belonging to the layer is left painted on the map.
+    expect(m._addedLayers.has("wdpa-big-cypress")).toBe(false);
+    expect(m._addedLayers.has("wdpa-big-cypress-outline")).toBe(false);
+    expect(m._addedSources.has("wdpa-big-cypress")).toBe(false);
+  });
+
+  it("F84: removeLayer(outline) runs BEFORE removeSource (real MapLibre rejects removing a referenced source)", async () => {
+    const fc = {
+      type: "FeatureCollection",
+      features: [
+        {
+          type: "Feature",
+          geometry: {
+            type: "Polygon",
+            coordinates: [[[-81.0, 26.0], [-81.1, 26.0], [-81.1, 26.1], [-81.0, 26.1], [-81.0, 26.0]]],
+          },
+          properties: { name_eng: "Reserve" },
+        },
+      ],
+    };
+    vi.spyOn(global, "fetch").mockResolvedValue(makeFetchResponse(fc));
+
+    const sessionBus = makeSessionBus();
+    render(<MapView subscribeSessionState={sessionBus.subscribe as (cb: SessionStateSubscriber) => () => void} />);
+
+    act(() => {
+      sessionBus.push({
+        loaded_layers: [makeWireVectorLayer("wdpa", "https://ex.com/wdpa.geojson", { style_preset: "wdpa_polygon" })],
+      });
+    });
+    await new Promise((r) => setTimeout(r, 0));
+
+    const m = lastMapMock!;
+    // Make removeSource model real MapLibre: throw if any layer of this source
+    // still exists. With the fix, both layers are removed first, so this never
+    // throws; pre-fix the outline lingered and this would throw → abort.
+    const order: string[] = [];
+    m.removeLayer.mockImplementation((id: string) => {
+      order.push(`layer:${id}`);
+      m._addedLayers.delete(id);
+    });
+    m.removeSource.mockImplementation((id: string) => {
+      // A real source remove fails while ANY layer of the group still exists.
+      if (m._addedLayers.has(id) || m._addedLayers.has(`${id}-outline`)) {
+        throw new Error("Source can't be removed while layer is using it");
+      }
+      order.push(`source:${id}`);
+      m._addedSources.delete(id);
+    });
+
+    act(() => {
+      sessionBus.push({ loaded_layers: [] });
+    });
+
+    // Both layers removed, THEN the source — and the source removal succeeded
+    // (it appears in `order`), proving no throw aborted the loop.
+    expect(order).toContain("layer:wdpa");
+    expect(order).toContain("layer:wdpa-outline");
+    expect(order).toContain("source:wdpa");
+    expect(order.indexOf("source:wdpa")).toBeGreaterThan(order.indexOf("layer:wdpa-outline"));
+    expect(m._addedSources.has("wdpa")).toBe(false);
+  });
+
+  it("F84: an EMPTY loaded_layers set removes ALL overlays — raster AND polygon vector (fresh slate)", async () => {
+    const fc = {
+      type: "FeatureCollection",
+      features: [
+        {
+          type: "Feature",
+          geometry: {
+            type: "Polygon",
+            coordinates: [[[-81.0, 26.0], [-81.1, 26.0], [-81.1, 26.1], [-81.0, 26.1], [-81.0, 26.0]]],
+          },
+          properties: { name_eng: "Reserve" },
+        },
+      ],
+    };
+    vi.spyOn(global, "fetch").mockResolvedValue(makeFetchResponse(fc));
+
+    const sessionBus = makeSessionBus();
+    render(<MapView subscribeSessionState={sessionBus.subscribe as (cb: SessionStateSubscriber) => () => void} />);
+
+    act(() => {
+      sessionBus.push({
+        loaded_layers: [
+          { layer_id: "flood-demo", name: "Flood depth", layer_type: "raster", uri: "https://qgis.example.com/wms?LAYERS=flood-demo", visible: true },
+          makeWireVectorLayer("wdpa", "https://ex.com/wdpa.geojson", { style_preset: "wdpa_polygon" }),
+        ],
+      });
+    });
+    await new Promise((r) => setTimeout(r, 0));
+
+    const m = lastMapMock!;
+    expect(m._addedLayers.has("flood-demo")).toBe(true);
+    expect(m._addedLayers.has("wdpa")).toBe(true);
+    expect(m._addedLayers.has("wdpa-outline")).toBe(true);
+
+    // Exiting to Cases root pushes loaded_layers:[] (App.tsx null-branch).
+    act(() => {
+      sessionBus.push({ loaded_layers: [] });
+    });
+
+    // The raster overlay AND every vector group member + source are gone. The
+    // basemap layers (qgis-basemap / osm-fallback-basemap) are NOT tracked in
+    // addedSourceIds, so they remain — the map keeps its basemap, just no data.
+    expect(m._addedLayers.has("flood-demo")).toBe(false);
+    expect(m._addedSources.has("flood-demo")).toBe(false);
+    expect(m._addedLayers.has("wdpa")).toBe(false);
+    expect(m._addedLayers.has("wdpa-outline")).toBe(false);
+    expect(m._addedSources.has("wdpa")).toBe(false);
+    // Basemap survives the fresh slate.
+    expect(m._addedLayers.has("qgis-basemap")).toBe(true);
+  });
+
+  it("F84: switching Cases removes the previous Case's polygon vector while adding the new Case's layer", async () => {
+    const polyFc = {
+      type: "FeatureCollection",
+      features: [
+        {
+          type: "Feature",
+          geometry: {
+            type: "Polygon",
+            coordinates: [[[-81.0, 26.0], [-81.1, 26.0], [-81.1, 26.1], [-81.0, 26.1], [-81.0, 26.0]]],
+          },
+          properties: { name_eng: "Old Case Reserve" },
+        },
+      ],
+    };
+    const ptFc = {
+      type: "FeatureCollection",
+      features: [{ type: "Feature", geometry: { type: "Point", coordinates: [-100, 40] }, properties: {} }],
+    };
+    vi.spyOn(global, "fetch")
+      .mockResolvedValueOnce(makeFetchResponse(polyFc))
+      .mockResolvedValueOnce(makeFetchResponse(ptFc));
+
+    const sessionBus = makeSessionBus();
+    render(<MapView subscribeSessionState={sessionBus.subscribe as (cb: SessionStateSubscriber) => () => void} />);
+
+    // Case A: a WDPA polygon vector.
+    act(() => {
+      sessionBus.push({
+        loaded_layers: [makeWireVectorLayer("wdpa-old", "https://ex.com/old.geojson", { style_preset: "wdpa_polygon" })],
+      });
+    });
+    await new Promise((r) => setTimeout(r, 0));
+
+    const m = lastMapMock!;
+    expect(m._addedLayers.has("wdpa-old")).toBe(true);
+    expect(m._addedLayers.has("wdpa-old-outline")).toBe(true);
+
+    // Switch to Case B (replace-not-reconcile): a different vector, no wdpa-old.
+    act(() => {
+      sessionBus.push({
+        loaded_layers: [makeWireVectorLayer("species-new", "https://ex.com/new.geojson")],
+      });
+    });
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Old Case's polygon (fill + outline + source) is gone; new Case's layer in.
+    expect(m.removeLayer).toHaveBeenCalledWith("wdpa-old");
+    expect(m.removeLayer).toHaveBeenCalledWith("wdpa-old-outline");
+    expect(m.removeSource).toHaveBeenCalledWith("wdpa-old");
+    expect(m._addedLayers.has("wdpa-old")).toBe(false);
+    expect(m._addedLayers.has("wdpa-old-outline")).toBe(false);
+    expect(m._addedSources.has("wdpa-old")).toBe(false);
+    expect(m._addedLayers.has("species-new")).toBe(true);
+  });
+
   it("does not break existing raster path when a session-state push has both raster and vector layers", async () => {
     const fc = {
       type: "FeatureCollection",

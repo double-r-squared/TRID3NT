@@ -984,3 +984,137 @@ describe("App F31 resume-repaint — visibilitychange (job-0322)", () => {
     expect(ws.forceReconnect).not.toHaveBeenCalled();
   });
 });
+
+// --- F84 — Case-exit fresh slate (AOI cleared + layers emptied) ---------- //
+//
+// The full App mounts Chat (WebSocket) + MapView (WebGL), which cannot run in
+// happy-dom, so — per the CollapseShell / AppShell convention above — we mirror
+// App.tsx's `activeSession` case-rehydration effect (App.tsx:681-764) in a
+// minimal harness over a mock bus and assert the emission CONTRACT:
+//
+//   - Exiting to the Cases root (activeSession -> null) pushes an EMPTY
+//     session-state (loaded_layers:[]) so Map.tsx removes ALL overlays (raster
+//     AND vector — the F84 Map.tsx fix), AND a `clear-analysis-extent` command
+//     so the prior Case's AOI rectangle does not linger (fresh slate), AND a
+//     `reset-view` so the camera snaps back to CONUS.
+//   - Opening a Case WITH a bbox pushes the Case's layers AND a `zoom-to`
+//     command carrying that bbox so the new/auto-gen Case shows its bounding
+//     box via the existing zoom-to/extent path.
+//
+// This pins the App side of F84 (the Map.tsx side — vector removal on an empty
+// set — is covered by Map.test.tsx).
+
+interface MockBusCommand {
+  command: string;
+  args?: { bbox?: number[] };
+}
+interface MockBusSession {
+  loaded_layers: Array<{ layer_id: string }>;
+}
+
+/** Records every session-state + map-command the harness pushes, in order. */
+function makeRecordingBus() {
+  const sessionPushes: MockBusSession[] = [];
+  const commandPushes: MockBusCommand[] = [];
+  return {
+    sessionPushes,
+    commandPushes,
+    pushSessionState: (p: MockBusSession) => sessionPushes.push(p),
+    pushMapCommand: (p: MockBusCommand) => commandPushes.push(p),
+  };
+}
+
+type HarnessSession = {
+  loaded_layers: Array<{ layer_id: string }>;
+  case: { bbox: number[] | null };
+  chat_history: unknown[];
+} | null;
+
+/**
+ * Mirror of App.tsx's activeSession effect (the F84-relevant branches only:
+ * empty-session clear on exit, and bbox→zoom-to on open). Charts/Impact resets
+ * and the chat-history zoom-to replay fallback are intentionally omitted — they
+ * are unrelated to the F84 fresh-slate contract under test.
+ */
+function CaseExitShell({
+  bus,
+  activeSession,
+}: {
+  bus: ReturnType<typeof makeRecordingBus>;
+  activeSession: HarnessSession;
+}): JSX.Element {
+  useEffect(() => {
+    if (activeSession === null) {
+      // Exit to Cases root: empty layers + clear AOI + reset camera.
+      bus.pushSessionState({ loaded_layers: [] });
+      bus.pushMapCommand({ command: "clear-analysis-extent" });
+      bus.pushMapCommand({ command: "reset-view" });
+      return;
+    }
+    bus.pushSessionState({ loaded_layers: activeSession.loaded_layers });
+    const bbox = activeSession.case.bbox;
+    if (bbox && bbox.length === 4) {
+      bus.pushMapCommand({ command: "zoom-to", args: { bbox } });
+    } else {
+      bus.pushMapCommand({ command: "clear-analysis-extent" });
+    }
+  }, [activeSession, bus]);
+  return <div data-testid="case-exit-shell" />;
+}
+
+describe("App — Case-exit fresh slate contract (F84)", () => {
+  it("exiting to Cases (activeSession → null) pushes empty layers + clears the AOI + resets the view", () => {
+    const bus = makeRecordingBus();
+    render(<CaseExitShell bus={bus} activeSession={null} />);
+
+    // Empty session-state → Map.tsx removes ALL overlays (raster + vector).
+    expect(bus.sessionPushes).toHaveLength(1);
+    expect(bus.sessionPushes[0]!.loaded_layers).toEqual([]);
+    // The AOI rectangle (not part of loaded_layers) is explicitly cleared.
+    const cmds = bus.commandPushes.map((c) => c.command);
+    expect(cmds).toContain("clear-analysis-extent");
+    // Camera snaps back to CONUS.
+    expect(cmds).toContain("reset-view");
+    // No lingering AOI: no zoom-to is emitted on exit.
+    expect(cmds).not.toContain("zoom-to");
+  });
+
+  it("opening a Case WITH a bbox shows its bounding box via zoom-to (no clear)", () => {
+    const bus = makeRecordingBus();
+    render(
+      <CaseExitShell
+        bus={bus}
+        activeSession={{
+          loaded_layers: [{ layer_id: "wdpa-new-case" }],
+          case: { bbox: [-122.5, 37.7, -122.3, 37.85] },
+          chat_history: [],
+        }}
+      />,
+    );
+
+    // The new Case's layers are pushed (replace-not-reconcile drops the old).
+    expect(bus.sessionPushes[0]!.loaded_layers).toEqual([{ layer_id: "wdpa-new-case" }]);
+    // The Case's bbox is shown via the existing zoom-to/extent path.
+    const zoom = bus.commandPushes.find((c) => c.command === "zoom-to");
+    expect(zoom).toBeDefined();
+    expect(zoom!.args!.bbox).toEqual([-122.5, 37.7, -122.3, 37.85]);
+    // A Case WITH an AOI does NOT clear — the zoom-to replaces the extent.
+    expect(bus.commandPushes.map((c) => c.command)).not.toContain("clear-analysis-extent");
+  });
+
+  it("opening a Case with NO bbox clears any stale AOI from the prior Case", () => {
+    const bus = makeRecordingBus();
+    render(
+      <CaseExitShell
+        bus={bus}
+        activeSession={{
+          loaded_layers: [],
+          case: { bbox: null },
+          chat_history: [],
+        }}
+      />,
+    );
+    expect(bus.commandPushes.map((c) => c.command)).toContain("clear-analysis-extent");
+    expect(bus.commandPushes.map((c) => c.command)).not.toContain("zoom-to");
+  });
+});

@@ -1348,10 +1348,47 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       const currentIds = new Set(currentLayers.map((l) => l.layer_id));
 
       // Remove layers that are gone (replace-not-reconcile).
+      //
+      // F84 ROOT-CAUSE FIX: a session-state replace (Case switch / Case exit
+      // with loaded_layers:[]) MUST drop EVERY currently-rendered overlay whose
+      // layer_id is not in the new set — raster AND inline-GeoJSON vector. The
+      // prior code only removed the single MapLibre layer named `id` plus its
+      // source. That is correct for rasters (one MapLibre layer per source) but
+      // WRONG for vectors: `registerVectorOnMap` adds SEVERAL MapLibre layers
+      // per geojson source —
+      //     polygon:      `${id}` (fill) + `${id}-outline` (line)
+      //     dense point:  `${id}-clusters` + `${id}-cluster-count` + `${id}`
+      // so removing only `${id}` left e.g. the `${id}-outline` layer still
+      // referencing the source. MapLibre then THROWS on removeSource(id)
+      // ("Source can't be removed while layer is using it"), and because that
+      // throw was uncaught it aborted the whole removal loop — so WDPA-style
+      // polygon vectors persisted across Case switches / Case exit (the bug).
+      //
+      // Fix: remove EVERY member of the layer group (via layerGroupMemberIds,
+      // the same bottom-to-top member list registerVectorOnMap built) BEFORE
+      // removing the source, each guarded so one bad call can't abort the loop.
+      // An empty currentIds (loaded_layers:[]) => every tracked overlay is gone
+      // => all overlays removed (fresh slate). Basemap layers are never tracked
+      // in addedSourceIds, so they are untouched.
       for (const id of addedSourceIds.current) {
         if (!currentIds.has(id)) {
-          if (m.getLayer(id)) m.removeLayer(id);
-          if (m.getSource(id)) m.removeSource(id);
+          // Remove all MapLibre paint layers belonging to this logical layer
+          // (fill + outline, or cluster + cluster-count + points, or the lone
+          // raster/point/line layer) so the source is no longer referenced.
+          for (const member of layerGroupMemberIds(m, id)) {
+            try {
+              m.removeLayer(member);
+            } catch {
+              // Mid-removal race / already gone — keep going so a single bad
+              // member can't leave the rest (or the source) behind.
+            }
+          }
+          try {
+            if (m.getSource(id)) m.removeSource(id);
+          } catch {
+            // Source still referenced (a member we couldn't remove) or already
+            // gone — best-effort; the next reconcile re-attempts.
+          }
           addedSourceIds.current.delete(id);
           // job-0139: tear down vector bookkeeping too. Bump fetch generation
           // so any in-flight fetch for this layer_id resolves into a no-op.

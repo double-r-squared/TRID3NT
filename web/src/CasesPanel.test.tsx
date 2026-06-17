@@ -766,6 +766,109 @@ describe("CasesPanel", () => {
     });
   });
 
+  // --- F83 — shorter rows: timestamp inline on the title row ----------- //
+  // The "x hr ago" updated_at timestamp moved from the lower meta row UP to the
+  // title row (right-aligned, just before the kebab). Removing it from the meta
+  // row + trimming the row padding/gap makes each row shorter so more Cases fit.
+  describe("F83 — inline timestamp on the title row (shorter rows)", () => {
+    function renderRow(c: CaseSummary = CASE_FORT_MYERS) {
+      render(
+        <CasesPanel
+          cases={[c]}
+          activeCaseId={null}
+          onCreate={vi.fn()}
+          onSelect={vi.fn()}
+          onRename={vi.fn()}
+          onArchive={vi.fn()}
+          onDelete={vi.fn()}
+        />,
+      );
+    }
+
+    it("renders exactly one updated-at timestamp per row", () => {
+      renderRow();
+      const stamps = screen.getAllByTestId("grace2-case-row-updated");
+      expect(stamps).toHaveLength(1);
+      // It still shows the relative-time text (formatRelative output).
+      expect(stamps[0]!.textContent).toBeTruthy();
+    });
+
+    it("the timestamp lives on the TITLE row (same flex container as the title + kebab)", () => {
+      renderRow();
+      const stamp = screen.getByTestId("grace2-case-row-updated");
+      const title = screen.getByTestId("grace2-case-row-title");
+      const kebab = screen.getByTestId("grace2-case-row-menu-button");
+      // Title row = the title's parent flex container. The timestamp must be a
+      // direct child of that SAME container (was previously on the meta row).
+      const titleRow = title.parentElement as HTMLElement;
+      expect(stamp.parentElement).toBe(titleRow);
+      // The kebab wrapper is also in the title row — confirms all three
+      // (title | timestamp | kebab) share one row.
+      const kebabWrapper = kebab.parentElement as HTMLElement;
+      expect(kebabWrapper.parentElement).toBe(titleRow);
+    });
+
+    it("the timestamp is NOT on the meta row (hazard + bbox strip)", () => {
+      renderRow();
+      const stamp = screen.getByTestId("grace2-case-row-updated");
+      const hazard = screen.getByTestId("grace2-case-row-hazard");
+      const metaRow = hazard.parentElement as HTMLElement;
+      // The hazard/bbox meta row must no longer carry the timestamp.
+      expect(metaRow.contains(stamp)).toBe(false);
+    });
+
+    it("the inline timestamp is shrink-pinned + nowrap (never collapses the title's ellipsis)", () => {
+      renderRow();
+      const stamp = screen.getByTestId("grace2-case-row-updated");
+      // flex-shrink:0 keeps it from collapsing; the title (flex:1, min-width:0)
+      // absorbs slack via ellipsis so a long title can't push the timestamp out.
+      expect(stamp.style.flexShrink).toBe("0");
+      expect(stamp.style.whiteSpace).toBe("nowrap");
+    });
+
+    it("the row uses tightened vertical padding + gap (shorter rows)", () => {
+      renderRow();
+      const row = screen.getByTestId("grace2-case-row");
+      // F83 trimmed padding 8 → 6px vertical and the column gap 4 → 2px so each
+      // row is shorter and more Cases fit in the list.
+      // padding shorthand "6px 8px" → top/bottom padding is 6px.
+      expect(row.style.paddingTop).toBe("6px");
+      expect(row.style.paddingBottom).toBe("6px");
+      expect(parseInt(row.style.gap, 10)).toBeLessThanOrEqual(2);
+    });
+
+    it("the long title still ellipsis-truncates with the inline timestamp present", () => {
+      const LONG: CaseSummary = {
+        ...CASE_FORT_MYERS,
+        title:
+          "Hurricane Ian catastrophic storm-surge inundation across Lee County and the barrier islands",
+      };
+      renderRow(LONG);
+      const title = screen.getByTestId("grace2-case-row-title");
+      expect(title.style.minWidth).toBe("0");
+      expect(title.style.flex).toMatch(/^1\b/);
+      expect(title.style.overflow).toBe("hidden");
+      expect(title.style.textOverflow).toBe("ellipsis");
+      expect(title.style.whiteSpace).toBe("nowrap");
+      // Timestamp still present and the kebab still openable.
+      expect(screen.getByTestId("grace2-case-row-updated")).toBeTruthy();
+      const kebab = screen.getByTestId("grace2-case-row-menu-button");
+      fireEvent.click(kebab);
+      expect(screen.getByTestId("grace2-case-row-menu")).toBeTruthy();
+    });
+
+    it("renaming hides the inline timestamp (edit mode owns the title row)", () => {
+      renderRow();
+      // Enter rename mode via the kebab → Rename.
+      fireEvent.click(screen.getByTestId("grace2-case-row-menu-button"));
+      fireEvent.click(screen.getByTestId("grace2-case-row-menu-rename"));
+      // The input replaces the title; the timestamp yields the row to the
+      // single commit affordance while editing.
+      expect(screen.getByTestId("grace2-case-row-rename-input")).toBeTruthy();
+      expect(screen.queryByTestId("grace2-case-row-updated")).toBeNull();
+    });
+  });
+
   it("the +New Case button is icon-only (no text label) but keeps its aria-label", () => {
     render(
       <CasesPanel

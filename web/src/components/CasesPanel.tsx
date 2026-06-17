@@ -182,10 +182,14 @@ function CaseRow({
         background: active ? "rgba(59,130,246,0.15)" : "rgba(20,20,25,0.65)",
         border: active ? "1px solid #3b82f6" : "1px solid #333",
         borderRadius: 6,
-        padding: 8,
+        // F83 — shorter rows so more Cases fit: trim vertical padding (8 → 6)
+        // and the title↔meta gap (4 → 2). The "x hr ago" timestamp moved up to
+        // the title row (right-aligned, before the kebab), so the lower meta row
+        // no longer needs to reserve its own line of height for it.
+        padding: "6px 8px",
         display: "flex",
         flexDirection: "column",
-        gap: 4,
+        gap: 2,
         cursor: editing ? "default" : "pointer",
       }}
       onClick={() => {
@@ -257,6 +261,23 @@ function CaseRow({
           >
             {c.title}
           </strong>
+        )}
+        {!editing && (
+          // F83 — the "x hr ago" timestamp now lives INLINE on the title row,
+          // right-aligned just before the kebab (was on the lower meta row,
+          // which forced each row taller). flex-shrink:0 so it never collapses;
+          // the title (flex:1, min-width:0) absorbs all slack via its ellipsis.
+          <span
+            data-testid="grace2-case-row-updated"
+            style={{
+              flexShrink: 0,
+              fontSize: 10,
+              color: "#999",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {formatRelative(c.updated_at)}
+          </span>
         )}
         {editing ? (
           // While renaming, the inline-edit mode owns the row — a single
@@ -400,12 +421,6 @@ function CaseRow({
             {bboxStr}
           </span>
         )}
-        <span
-          data-testid="grace2-case-row-updated"
-          style={{ marginLeft: "auto" }}
-        >
-          {formatRelative(c.updated_at)}
-        </span>
       </div>
     </div>
   );
