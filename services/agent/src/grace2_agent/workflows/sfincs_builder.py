@@ -794,6 +794,152 @@ def _default_setup_uri(bbox: tuple[float, float, float, float]) -> str:
     )
 
 
+# --------------------------------------------------------------------------- #
+# Domain-adaptive active-cell mask bounds (job-0318)
+# --------------------------------------------------------------------------- #
+
+
+#: Elevation buffer (metres) added on each side of the observed DEM range when
+#: composing the ``setup_mask_active`` ``zmin``/``zmax`` window. A few metres of
+#: slack keeps DEM cells exactly at the min/max from being knife-edge excluded
+#: (HydroMT compares against the elevation window inclusively, but float
+#: round-trips through the projected grid can nudge a boundary cell out).
+_MASK_ELEV_BUFFER_M: float = 5.0
+
+#: Fallback active-cell mask bounds used when the DEM elevation range cannot be
+#: read (missing file, unreadable bytes, all-nodata). These are deliberately
+#: VERY wide so they NEVER exclude real land — a flood deck with an empty active
+#: mask is the silent-wrong-answer this job exists to kill (Invariant 7). They
+#: are NOT the old broken (-10, 10) window: -1000 m brackets the deepest
+#: bathymetry / below-sea-level basins (Death Valley ~-86 m, Dead Sea ~-430 m),
+#: and +9000 m brackets the highest terrain on Earth (Everest ~8849 m), so the
+#: whole AOI stays active regardless of elevation.
+_MASK_FALLBACK_ZMIN: float = -1000.0
+_MASK_FALLBACK_ZMAX: float = 9000.0
+
+
+def _compute_active_mask_bounds(dem_read_path: str) -> tuple[float, float, bool]:
+    """Compute domain-adaptive ``setup_mask_active`` ``zmin``/``zmax`` (metres).
+
+    job-0318 (CONFIRMED BUG): the active-cell mask was previously hardcoded to
+    ``zmin: -10.0`` / ``zmax: 10.0`` — an *elevation window* in metres. Only
+    DEM cells whose elevation fell inside ``[-10, 10]`` became ACTIVE. For any
+    inland / elevated terrain (Asheville sits at ~650 m) every cell exceeds
+    ``zmax=10``, so ``hydromt_sfincs.setup_mask_active`` logs "No active cells
+    found", the SFINCS domain is empty, the solver returns zero inundation, and
+    Pelicun then fails ``PELICUN_NO_ASSETS_IN_HAZARD``. The flood model has
+    only ever worked for near-sea-level / coastal AOIs.
+
+    The fix reads the staged DEM's ACTUAL elevation min/max (rasterio, masking
+    nodata) and returns a window that BRACKETS the full terrain with a small
+    buffer::
+
+        zmin = floor(dem_min) - buffer
+        zmax = ceil(dem_max)  + buffer
+
+    so every land cell in the AOI is active regardless of absolute elevation.
+
+    Coastal behaviour stays valid: a Fort-Myers-type DEM spanning roughly
+    ``-5 .. +20`` m yields ``zmin ≈ -10`` / ``zmax ≈ +25`` — a non-empty active
+    mask covering both the wet (below-zero topobathy) and dry cells.
+
+    Failure policy (Invariant 7 — never silently re-introduce the broken
+    window): if the DEM range cannot be read for ANY reason (file absent,
+    rasterio/numpy missing, unreadable bytes, all-nodata), fall back to
+    ``(_MASK_FALLBACK_ZMIN, _MASK_FALLBACK_ZMAX)`` — a window wide enough to
+    never exclude land — and flag it so the caller can annotate the deck.
+
+    Args:
+        dem_read_path: a LOCAL filesystem path (or GDAL-readable string) to the
+            DEM/topobathy raster. ``build_sfincs_model`` stages ``gs://`` /
+            ``s3://`` DEMs to a real local file via ``_stage_gcs_local`` BEFORE
+            this runs, so the common path is a plain local GeoTIFF.
+
+    Returns:
+        ``(zmin, zmax, adaptive)`` — ``adaptive`` is ``True`` when the bounds
+        were derived from the DEM's real elevation range, ``False`` when the
+        wide fallback was used.
+    """
+    import math
+
+    try:
+        import numpy as np  # type: ignore[import-not-found]
+        import rasterio  # type: ignore[import-not-found]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "setup_mask_active: numpy/rasterio unavailable for DEM range read "
+            "(%s); using wide fallback bounds (%.1f, %.1f) to keep the active "
+            "mask non-empty",
+            exc,
+            _MASK_FALLBACK_ZMIN,
+            _MASK_FALLBACK_ZMAX,
+        )
+        return _MASK_FALLBACK_ZMIN, _MASK_FALLBACK_ZMAX, False
+
+    try:
+        with rasterio.open(dem_read_path) as src:
+            arr = src.read(1, masked=True)
+            nodata = src.nodata
+        # ``masked=True`` already masks the dataset nodata; also defensively mask
+        # the common GeoTIFF sentinels + non-finite values so a stray -9999 or
+        # NaN can't pull ``zmin`` to absurd depths (which would still bracket
+        # land, but pollutes provenance / SFINCS thinks the domain is far deeper
+        # than it is).
+        data = np.ma.masked_invalid(arr)
+        sentinels = [-9999.0, -32768.0, 3.4028234663852886e38]
+        if nodata is not None:
+            sentinels.append(float(nodata))
+        for s in sentinels:
+            data = np.ma.masked_equal(data, s)
+        if data.count() == 0:
+            logger.warning(
+                "setup_mask_active: DEM %s has no valid (non-nodata) cells; "
+                "using wide fallback bounds (%.1f, %.1f)",
+                dem_read_path,
+                _MASK_FALLBACK_ZMIN,
+                _MASK_FALLBACK_ZMAX,
+            )
+            return _MASK_FALLBACK_ZMIN, _MASK_FALLBACK_ZMAX, False
+        dem_min = float(data.min())
+        dem_max = float(data.max())
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "setup_mask_active: could not read DEM elevation range from %s "
+            "(%s); using wide fallback bounds (%.1f, %.1f) to keep the active "
+            "mask non-empty (NOT the broken -10/10 window)",
+            dem_read_path,
+            exc,
+            _MASK_FALLBACK_ZMIN,
+            _MASK_FALLBACK_ZMAX,
+        )
+        return _MASK_FALLBACK_ZMIN, _MASK_FALLBACK_ZMAX, False
+
+    if not (math.isfinite(dem_min) and math.isfinite(dem_max)):
+        logger.warning(
+            "setup_mask_active: DEM %s yielded non-finite range "
+            "(min=%r max=%r); using wide fallback bounds (%.1f, %.1f)",
+            dem_read_path,
+            dem_min,
+            dem_max,
+            _MASK_FALLBACK_ZMIN,
+            _MASK_FALLBACK_ZMAX,
+        )
+        return _MASK_FALLBACK_ZMIN, _MASK_FALLBACK_ZMAX, False
+
+    zmin = math.floor(dem_min) - _MASK_ELEV_BUFFER_M
+    zmax = math.ceil(dem_max) + _MASK_ELEV_BUFFER_M
+    logger.info(
+        "setup_mask_active: DEM elevation range [%.3f, %.3f] m -> adaptive "
+        "active-cell window zmin=%.1f zmax=%.1f (buffer=%.1f m)",
+        dem_min,
+        dem_max,
+        zmin,
+        zmax,
+        _MASK_ELEV_BUFFER_M,
+    )
+    return zmin, zmax, True
+
+
 def _generate_hydromt_yaml_config(
     *,
     bbox: tuple[float, float, float, float],
@@ -898,9 +1044,25 @@ def _generate_hydromt_yaml_config(
     landcover_read_path = _stage_gcs_local(landcover_local_path)
     components.append("setup_dep:")
     components.append(f"  datasets_dep: [{{ elevtn: '{dem_read_path}' }}]")
+    # job-0318: DOMAIN-ADAPTIVE active-cell mask. ``setup_mask_active``'s
+    # zmin/zmax is an ELEVATION WINDOW (metres) — only cells whose DEM
+    # elevation falls inside it become ACTIVE. The previous HARDCODED
+    # ``zmin: -10 / zmax: 10`` only ever worked for near-sea-level / coastal
+    # AOIs; any inland or elevated terrain (Asheville ~650 m) had every cell
+    # above zmax=10 -> hydromt_sfincs "No active cells found" -> empty domain
+    # -> zero inundation -> Pelicun PELICUN_NO_ASSETS_IN_HAZARD. We now read
+    # the staged DEM's real elevation range and bracket the full terrain with
+    # a small buffer so the whole AOI is active at any elevation. The DEM was
+    # staged to a local file by ``_stage_gcs_local`` above, so the read is
+    # local. If the range can't be read we fall back to a VERY wide window
+    # (never the broken -10/10) — see ``_compute_active_mask_bounds``.
+    mask_zmin, mask_zmax, _mask_adaptive = _compute_active_mask_bounds(dem_read_path)
     components.append("setup_mask_active:")
-    components.append("  zmin: -10.0")
-    components.append("  zmax: 10.0")
+    components.append(
+        f"  zmin: {mask_zmin}"
+        + ("" if _mask_adaptive else "  # wide fallback (DEM range unreadable)")
+    )
+    components.append(f"  zmax: {mask_zmax}")
     components.append("setup_manning_roughness:")
     components.append(
         f"  datasets_rgh: [{{ lulc: '{landcover_read_path}', "
