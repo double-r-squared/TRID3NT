@@ -50,7 +50,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && pip3 install --no-cache-dir \
         "google-cloud-storage>=2.18,<4" \
-    && python3 -c "from google.cloud import storage; print('google-cloud-storage import OK')"
+        "boto3>=1.34,<2" \
+    && python3 -c "from google.cloud import storage; import boto3; print('storage SDKs import OK (gcs + boto3)')"
 
 # COPY the entrypoint into a stable runtime path. Build context is the repo
 # root (see infra/sfincs/cloudbuild.yaml); paths below are relative to repo
