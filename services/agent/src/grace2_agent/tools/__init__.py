@@ -273,6 +273,7 @@ from . import extract_landcover_class  # noqa: E402,F401 — job-0094: registers
 from . import compute_impervious_surface  # noqa: E402,F401 — job-0095: registers compute_impervious_surface
 from . import compute_building_density  # noqa: E402,F401 — job-0096: registers compute_building_density
 from . import fetch_roads_osm  # noqa: E402,F401 — job-0097: registers fetch_roads_osm
+from . import fetch_field_boundaries  # noqa: E402,F401 — NATE 2026-06-17: registers fetch_field_boundaries (agricultural field-boundary vectors from Fields of The World / fiboa published GeoParquet on Source Cooperative; CRS-aware bbox pushdown over HTTP range requests; inline-GeoJSON vector like roads/WDPA; FIELDS_NO_COVERAGE outside benchmark regions; on-demand global inference is a future tool)
 from . import run_pelicun_damage_assessment  # noqa: E402,F401 — job-0098: registers run_pelicun_damage_assessment (Wave 1 stub; Wave 2 composer is job-0106)
 from . import postprocess_pelicun  # noqa: E402,F401 — Wave 4.11 P2: registers postprocess_pelicun (aggregates Pelicun per-asset FGB → ImpactEnvelope)
 from ..workflows import compute_impact_envelope as _compute_impact_envelope_workflow  # noqa: E402,F401 — Wave 4.11 P3: registers compute_impact_envelope (composes NSI/MS → Pelicun → postprocess into one envelope tool)

@@ -149,7 +149,8 @@ CATEGORIES: tuple[CategorySpec, ...] = (
         description=(
             "Land-cover classification and the built environment: NLCD "
             "landcover, building footprints, building density, impervious "
-            "surface, HRSL population, OSM roads, USACE NSI structure "
+            "surface, HRSL population, OSM roads, agricultural field "
+            "boundaries (Fields of The World / fiboa), USACE NSI structure "
             "inventory."
         ),
     ),
@@ -282,6 +283,7 @@ PRIMARY_CATEGORY: dict[str, str] = {
     "fetch_hrsl_population": "land_cover_development",
     "fetch_population": "land_cover_development",
     "fetch_roads_osm": "land_cover_development",
+    "fetch_field_boundaries": "land_cover_development",
     "fetch_usace_nsi": "land_cover_development",
     # ---- 6. conservation_ecology ------------------------------------------
     "fetch_gbif_occurrences": "conservation_ecology",

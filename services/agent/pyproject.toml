@@ -180,6 +180,14 @@ dependencies = [
     # for vector reading + spatial join. geopandas pulls in shapely + pyogrio (GDAL-backed
     # vector I/O); pyogrio replaces fiona as the default driver in geopandas >= 1.0.
     "geopandas>=1.0,<2",
+    # NATE 2026-06-17 (fetch_field_boundaries): GeoParquet 1.1 row-group bbox
+    # pushdown over HTTP range requests against the Fields of The World / fiboa
+    # GeoParquet on Source Cooperative. geopandas.read_parquet(bbox=...) needs
+    # the pyarrow backend to prune row groups via the covering bbox column — the
+    # country files are 4-5 GB, so pruning (not whole-file download) is the only
+    # viable path. pyproj (transitive via geopandas) reprojects the WGS84 query
+    # bbox into each file's native CRS (US-USDA is Albers/meters).
+    "pyarrow>=16",
     # Consumed verbatim from packages/contracts/ (editable install via make run-agent).
     "grace2-contracts>=0.1,<0.2",
 ]
