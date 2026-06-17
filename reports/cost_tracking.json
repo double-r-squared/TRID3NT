@@ -1843,6 +1843,69 @@
       "description": "SFINCS silent-failure fix: Atlas-2 Western-US precip fallback (Atlas-14 has no Pacific NW coverage) + model-run honesty floor (modeled envelope w/ empty layers never reads status=ok; covers pre-solver/dispatched-then-failed/publish-drop) + telemetry flag. diagnose(live EC2)+synth+fix+verify, round-2 closed honesty-floor holes.",
       "model": "opus",
       "subagent_tokens": 1153342
+    },
+    {
+      "job_id": "job-0351",
+      "sprint": "ux-batch-1",
+      "description": "SFINCS solve-lifecycle safe tier (terminal card on cancel/fail + emitter-sink resilience).",
+      "model": "opus",
+      "subagent_tokens": 874166
+    },
+    {
+      "job_id": "job-0353",
+      "sprint": "ux-batch-1",
+      "description": "fetch_usgs_nwis_gauges (real USGS NWIS gauge stations).",
+      "model": "opus",
+      "subagent_tokens": 431383
+    },
+    {
+      "job_id": "job-0354",
+      "sprint": "ux-batch-1",
+      "description": "region-disambiguation picker (both-synced card + county choropleth on state-snap).",
+      "model": "opus",
+      "subagent_tokens": 768840
+    },
+    {
+      "job_id": "job-0355",
+      "sprint": "ux-batch-1",
+      "description": "SFINCS solve survives WS disconnect (detach from connection lifecycle).",
+      "model": "opus",
+      "subagent_tokens": 420353
+    },
+    {
+      "job_id": "job-0356",
+      "sprint": "ux-batch-1",
+      "description": "per-Case layer durability (layers stay rendered across reconnect; server replays active Case).",
+      "model": "opus",
+      "subagent_tokens": 574709
+    },
+    {
+      "job_id": "job-0357",
+      "sprint": "ux-batch-1",
+      "description": "map-glued overlays (whole-feature highlight, map-pinned/zoom-scaled popup, bbox-width legend).",
+      "model": "opus",
+      "subagent_tokens": 415531
+    },
+    {
+      "job_id": "job-0358",
+      "sprint": "ux-batch-1",
+      "description": "compute_contours tool (gdal_contour DEM->vector contour lines).",
+      "model": "opus",
+      "subagent_tokens": 414719
+    },
+    {
+      "job_id": "design-5min-autoscale",
+      "sprint": "ux-batch-1",
+      "description": "read-only design pass: SFINCS per-job AWS Batch autoscale + adaptive grid plan.",
+      "model": "opus",
+      "subagent_tokens": 397880
+    },
+    {
+      "job_id": "design-catalog-discovery",
+      "sprint": "ux-batch-1",
+      "description": "read-only design: fold catalog entries into discover_dataset (STAC+ArcGIS unwired-source discovery). NOTE: NEAR-RUNAWAY \u2014 one investigation agent looped, ~1.01M tokens / 939 tool uses / ~2h before failing StructuredOutput; plan synthesized from 3 of 4 investigations.",
+      "model": "opus",
+      "subagent_tokens": 1013656
     }
   ],
   "totals_by_sprint": {
