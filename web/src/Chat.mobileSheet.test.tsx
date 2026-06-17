@@ -18,17 +18,33 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   MOBILE_SHEET_EXPANDED_HEIGHT,
+  MobileSheetHeaderRow,
+  SANDBOX_PULSE_ANIMATION,
+  SANDBOX_PULSE_KEYFRAMES_ID,
+  SHEET_BOTTOM_EXTRA_PX,
+  SHEET_BOTTOM_OFFSET_CSS,
   SHEET_DRAG_THRESHOLD_PX,
+  SheetActiveSandboxStrip,
+  SheetActiveStripStack,
   SheetActiveToolStrip,
   SheetToggleHandle,
+  buildActiveStripStack,
   clampSheetHeight,
+  findRunningSandboxes,
   findRunningToolStep,
+  isSandboxRunning,
   isSheetDragGesture,
   mobileSheetContainerStyle,
   readSheetHeight,
   stepInterleaveKey,
   writeSheetHeight,
+  type ActiveStripItem,
 } from "./Chat";
+import type {
+  CodeExecRequestPayload,
+  CodeExecResultPayload,
+  SandboxCardDecision,
+} from "./components/SandboxCard";
 import type {
   PipelineStatePayload,
   PipelineStepState,
@@ -118,7 +134,10 @@ describe("mobileSheetContainerStyle", () => {
       expect(s.position).toBe("absolute");
       expect(s.left).toBe(0);
       expect(s.right).toBe(0);
-      expect(s.bottom).toBe(0);
+      // F61 (job-0330) — the sheet now floats UP off the bottom edge by the
+      // device safe-area inset + a few extra px (so it clears the iPhone's
+      // curved corners / home indicator). It is no longer pinned at bottom:0.
+      expect(s.bottom).toBe(SHEET_BOTTOM_OFFSET_CSS);
       expect(s.display).toBe("flex");
       expect(s.flexDirection).toBe("column");
     }
@@ -1024,5 +1043,445 @@ describe("Chat.tsx header layout (F45, job-0325)", () => {
     expect(leftIdx).toBeGreaterThan(-1);
     expect(statusIdx).toBeGreaterThan(-1);
     expect(leftIdx).toBeLessThan(statusIdx);
+  });
+});
+
+// --- F61 (job-0330): bottom safe-area clearance --------------------------- //
+//
+// F61 — the mobile sheet floats UP off the bottom edge by the device safe-area
+// inset + a few extra px so it clears the iPhone's naturally-curved corners /
+// home indicator. The vh height band (drag-resize clamp) is unaffected.
+
+describe("mobileSheetContainerStyle — F61 bottom safe-area clearance", () => {
+  it("the container's bottom offset is the safe-area inset + extra px", () => {
+    expect(SHEET_BOTTOM_OFFSET_CSS).toBe(
+      `calc(env(safe-area-inset-bottom) + ${SHEET_BOTTOM_EXTRA_PX}px)`,
+    );
+    expect(SHEET_BOTTOM_EXTRA_PX).toBeGreaterThan(0);
+  });
+
+  it("applies the safe-area bottom offset in BOTH collapsed + expanded states", () => {
+    for (const expanded of [false, true]) {
+      const s = mobileSheetContainerStyle(expanded);
+      expect(s.bottom).toBe(SHEET_BOTTOM_OFFSET_CSS);
+      // The lift must reference env(safe-area-inset-bottom) so it tracks the
+      // device's home-indicator inset (0 on non-notched screens).
+      expect(String(s.bottom)).toContain("env(safe-area-inset-bottom)");
+    }
+  });
+
+  it("F61 does NOT change the vh height band (drag-resize clamp intact)", () => {
+    // The bottom OFFSET is a fixed-px lift; the expanded HEIGHT still tracks
+    // the clamped vh exactly as before, so clampSheetHeight stays authoritative.
+    expect(mobileSheetContainerStyle(true, 55).height).toBe("55vh");
+    expect(mobileSheetContainerStyle(true, 999).height).toBe("92vh"); // clamped
+    expect(mobileSheetContainerStyle(true, 1).height).toBe("30vh"); // clamped
+    expect(mobileSheetContainerStyle(false).height).toBe("auto");
+  });
+
+  it("the composer overlay does NOT double-count env(safe-area-inset-bottom)", () => {
+    // The CONTAINER now owns the safe-area lift (F61). The mobile composer
+    // padding must therefore be a plain constant — counting env() in both the
+    // container offset AND the composer padding would push the sheet up twice.
+    // Source-guard: the mobile composer-overlay branch uses a constant bottom
+    // padding (no env() in the composer's own padding string).
+    expect(CHAT_SRC).toContain('padding: "0 10px 12px 10px"');
+  });
+});
+
+// --- F45 refined / F45b (job-0330): three-zone handle row ----------------- //
+//
+// F45 REFINED — the handle row is ONE line with THREE zones: LEFT (GRACE-2 +
+// version), CENTER (the grabber rectangle), RIGHT (connection status).
+// F45b — labels appear ONLY when expanded; collapsed shows JUST the grabber at
+// the TOP (no labels), with the active-strip stack filling the middle when
+// tools/sandbox are in use.
+
+describe("MobileSheetHeaderRow — F45 refined three-zone layout (EXPANDED)", () => {
+  it("renders LEFT (grace+version), CENTER grabber, RIGHT status in one row", () => {
+    render(
+      <MobileSheetHeaderRow
+        expanded={true}
+        status="connected"
+        onToggle={vi.fn()}
+        activeStrips={[]}
+        onExpandFromStrip={vi.fn()}
+      />,
+    );
+    // LEFT zone — grace + version.
+    const left = screen.getByTestId("grace2-chat-tab-left");
+    expect(left.textContent).toContain("GRACE-2");
+    expect(screen.getByTestId("grace2-build-version")).toBeTruthy();
+    // CENTER zone — the grabber rectangle (the drag handle).
+    expect(screen.getByTestId("grace2-sheet-grabber-zone")).toBeTruthy();
+    expect(screen.getByTestId("grace2-chat-sheet-toggle")).toBeTruthy();
+    // RIGHT zone — connection status.
+    expect(screen.getByTestId("connection-status").textContent).toContain(
+      "connected",
+    );
+    // The row marks itself expanded.
+    expect(screen.getByTestId("grace2-sheet-header-row")).toHaveAttribute(
+      "data-sheet-row-state",
+      "expanded",
+    );
+  });
+
+  it("orders the three zones LEFT → CENTER(grabber) → RIGHT in the DOM", () => {
+    render(
+      <MobileSheetHeaderRow
+        expanded={true}
+        status="connected"
+        onToggle={vi.fn()}
+        activeStrips={[]}
+        onExpandFromStrip={vi.fn()}
+      />,
+    );
+    const row = screen.getByTestId("grace2-sheet-header-row");
+    const ids = Array.from(row.children).map((c) => c.getAttribute("data-testid"));
+    expect(ids).toEqual([
+      "grace2-chat-tab-left",
+      "grace2-sheet-grabber-zone",
+      "connection-status",
+    ]);
+  });
+
+  it("the grabber stays the F44 drag affordance (tap toggles)", () => {
+    const onToggle = vi.fn();
+    render(
+      <MobileSheetHeaderRow
+        expanded={true}
+        status="connected"
+        onToggle={onToggle}
+        onResize={vi.fn()}
+        onResizeEnd={vi.fn()}
+        activeStrips={[]}
+        onExpandFromStrip={vi.fn()}
+      />,
+    );
+    tap(screen.getByTestId("grace2-chat-sheet-toggle"));
+    expect(onToggle).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("MobileSheetHeaderRow — F45b collapsed (labels hidden)", () => {
+  it("collapsed shows JUST the grabber — NO grace/version/connection labels", () => {
+    render(
+      <MobileSheetHeaderRow
+        expanded={false}
+        status="connected"
+        onToggle={vi.fn()}
+        activeStrips={[]}
+        onExpandFromStrip={vi.fn()}
+      />,
+    );
+    // The grabber rectangle is present at the top…
+    expect(screen.getByTestId("grace2-chat-sheet-toggle")).toBeTruthy();
+    // …but NONE of the labeled three-zone chrome is rendered.
+    expect(screen.queryByTestId("grace2-chat-tab-left")).toBeNull();
+    expect(screen.queryByTestId("grace2-build-version")).toBeNull();
+    expect(screen.queryByTestId("connection-status")).toBeNull();
+    expect(screen.getByTestId("grace2-sheet-header-row")).toHaveAttribute(
+      "data-sheet-row-state",
+      "collapsed",
+    );
+  });
+
+  it("collapsed + NO active strips → the strip area is absent", () => {
+    render(
+      <MobileSheetHeaderRow
+        expanded={false}
+        status="connected"
+        onToggle={vi.fn()}
+        activeStrips={[]}
+        onExpandFromStrip={vi.fn()}
+      />,
+    );
+    expect(screen.queryByTestId("grace2-sheet-collapsed-strips")).toBeNull();
+  });
+
+  it("collapsed + active strips → the strip stack fills the middle (below the grabber)", () => {
+    const items: ActiveStripItem[] = [
+      { kind: "tool", seq: 1, step: step({ state: "running" }) },
+    ];
+    render(
+      <MobileSheetHeaderRow
+        expanded={false}
+        status="connected"
+        onToggle={vi.fn()}
+        activeStrips={items}
+        onExpandFromStrip={vi.fn()}
+      />,
+    );
+    // Grabber at top + the strip stack as the middle fill.
+    expect(screen.getByTestId("grace2-chat-sheet-toggle")).toBeTruthy();
+    expect(screen.getByTestId("grace2-sheet-collapsed-strips")).toBeTruthy();
+    expect(screen.getByTestId("grace2-sheet-tool-strip")).toBeTruthy();
+    // Still no labels while collapsed.
+    expect(screen.queryByTestId("grace2-chat-tab-left")).toBeNull();
+    expect(screen.queryByTestId("connection-status")).toBeNull();
+  });
+});
+
+// --- F66 (job-0330): collapsed-mobile sandbox strip ----------------------- //
+//
+// F66 — a Python-sandbox (code_exec) card shows in the active-strip area the
+// SAME WAY tool usage does (SheetActiveToolStrip) but with a PULSATING-BLUE
+// animation instead of the rainbow gradient. Multiple active strips STACK.
+
+function req(over: Partial<CodeExecRequestPayload> = {}): CodeExecRequestPayload {
+  return {
+    envelope_type: "code-exec-request",
+    code_exec_id: over.code_exec_id ?? "ce-1",
+    python_code: over.python_code ?? "print(1)",
+    layer_refs: over.layer_refs ?? {},
+    rationale: over.rationale ?? null,
+  };
+}
+
+function result(
+  codeExecId: string,
+): CodeExecResultPayload {
+  return {
+    envelope_type: "code-exec-result",
+    code_exec_id: codeExecId,
+    status: "ok",
+    stdout_tail: "",
+    stderr_tail: "",
+    result: null,
+    truncated: false,
+    duration_s: 1,
+  };
+}
+
+describe("isSandboxRunning (F66)", () => {
+  it("running = decided proceed AND no result yet", () => {
+    const r = req({ code_exec_id: "a" });
+    const decisions = new Map<string, SandboxCardDecision>([["a", "proceed"]]);
+    expect(isSandboxRunning(r, new Map(), decisions)).toBe(true);
+  });
+
+  it("NOT running once a result lands", () => {
+    const r = req({ code_exec_id: "a" });
+    const decisions = new Map<string, SandboxCardDecision>([["a", "proceed"]]);
+    const results = new Map([["a", result("a")]]);
+    expect(isSandboxRunning(r, results, decisions)).toBe(false);
+  });
+
+  it("NOT running while un-decided (pending gate) or cancelled", () => {
+    const r = req({ code_exec_id: "a" });
+    expect(isSandboxRunning(r, new Map(), new Map())).toBe(false);
+    const cancelled = new Map<string, SandboxCardDecision>([["a", "cancel"]]);
+    expect(isSandboxRunning(r, new Map(), cancelled)).toBe(false);
+  });
+});
+
+describe("findRunningSandboxes (F66)", () => {
+  it("returns only running sandboxes, ordered by arrival seq", () => {
+    const a = req({ code_exec_id: "a" });
+    const b = req({ code_exec_id: "b" });
+    const c = req({ code_exec_id: "c" });
+    const decisions = new Map<string, SandboxCardDecision>([
+      ["a", "proceed"],
+      ["b", "proceed"],
+      ["c", "cancel"], // cancelled → excluded
+    ]);
+    const results = new Map([["a", result("a")]]); // a done → excluded
+    const seqs = new Map([["a", 1], ["b", 2], ["c", 3]]);
+    const found = findRunningSandboxes([a, b, c], results, decisions, seqs);
+    expect(found.map((r) => r.code_exec_id)).toEqual(["b"]);
+  });
+
+  it("orders multiple running sandboxes oldest-first", () => {
+    const a = req({ code_exec_id: "a" });
+    const b = req({ code_exec_id: "b" });
+    const decisions = new Map<string, SandboxCardDecision>([
+      ["a", "proceed"],
+      ["b", "proceed"],
+    ]);
+    const seqs = new Map([["a", 5], ["b", 2]]);
+    const found = findRunningSandboxes([a, b], new Map(), decisions, seqs);
+    expect(found.map((r) => r.code_exec_id)).toEqual(["b", "a"]);
+  });
+});
+
+describe("buildActiveStripStack (F66 — tools + sandboxes interleave)", () => {
+  it("interleaves running tools and running sandboxes by arrival seq", () => {
+    const toolStep = step({ step_id: "t1", state: "running" });
+    const sandbox = req({ code_exec_id: "s1" });
+    const stepOrder = orderOf([[toolStep, 2]]);
+    const decisions = new Map<string, SandboxCardDecision>([["s1", "proceed"]]);
+    const sandboxSeqs = new Map([["s1", 1]]);
+    const stack = buildActiveStripStack(
+      [],
+      snap("p1", [toolStep]),
+      stepOrder,
+      [sandbox],
+      new Map(),
+      decisions,
+      sandboxSeqs,
+    );
+    // Sandbox seq 1 < tool seq 2 → sandbox first.
+    expect(stack.map((i) => i.kind)).toEqual(["sandbox", "tool"]);
+  });
+
+  it("excludes terminal tools, thinking, and non-running sandboxes", () => {
+    const done = step({ step_id: "t1", state: "complete" });
+    const thinking = step({
+      step_id: "tk",
+      name: "llm_generation",
+      tool_name: "llm_generation",
+      state: "running",
+    });
+    const sandbox = req({ code_exec_id: "s1" });
+    const stack = buildActiveStripStack(
+      [snap("p0", [done, thinking])],
+      null,
+      orderOf([[done, 1], [thinking, 2]]),
+      [sandbox],
+      new Map(),
+      new Map(), // sandbox un-decided → excluded
+      new Map([["s1", 3]]),
+    );
+    expect(stack).toEqual([]);
+  });
+
+  it("STACKS more than one active item (multiple strips, not just one)", () => {
+    const toolA = step({ step_id: "tA", state: "running" });
+    const toolB = step({
+      step_id: "tB",
+      name: "publish_layer",
+      tool_name: "publish_layer",
+      state: "running",
+    });
+    const sandbox = req({ code_exec_id: "s1" });
+    const decisions = new Map<string, SandboxCardDecision>([["s1", "proceed"]]);
+    const stack = buildActiveStripStack(
+      [],
+      snap("p1", [toolA, toolB]),
+      orderOf([[toolA, 1], [toolB, 2]]),
+      [sandbox],
+      new Map(),
+      decisions,
+      new Map([["s1", 3]]),
+    );
+    expect(stack.length).toBe(3);
+    expect(stack.map((i) => i.kind)).toEqual(["tool", "tool", "sandbox"]);
+  });
+});
+
+describe("SheetActiveSandboxStrip — F66 pulsating-blue", () => {
+  it("renders a sandbox strip with the running label + pulse dot + icon", () => {
+    render(
+      <SheetActiveSandboxStrip request={req()} onExpand={vi.fn()} />,
+    );
+    const strip = screen.getByTestId("grace2-sheet-sandbox-strip");
+    expect(strip).toBeTruthy();
+    expect(strip).toHaveAttribute("data-code-exec-id", "ce-1");
+    expect(
+      screen.getByTestId("grace2-sheet-sandbox-strip-label").textContent,
+    ).toBe("Running Python sandbox");
+    expect(screen.getByTestId("grace2-sheet-sandbox-strip-pulse")).toBeTruthy();
+  });
+
+  it("applies the PULSATING-BLUE animation (NOT the rainbow gradient)", () => {
+    const restore = mockReducedMotion(false);
+    try {
+      render(
+        <SheetActiveSandboxStrip request={req()} onExpand={vi.fn()} />,
+      );
+      const labelEl = screen.getByTestId(
+        "grace2-sheet-sandbox-strip-label",
+      ) as HTMLElement;
+      // Pulsating-blue keyframe — distinct from the rainbow hue-cycle.
+      expect(labelEl.style.animation).toBe(SANDBOX_PULSE_ANIMATION);
+      expect(labelEl.style.animation).toContain("grace2-pulse-blue");
+      // Blue text, NOT the rainbow gradient (no background-clip:text).
+      expect(labelEl.style.color).toBe("#a5b4fc");
+      expect(labelEl.style.backgroundImage).toBe("");
+      // The pulse dot breathes too.
+      const dot = screen.getByTestId(
+        "grace2-sheet-sandbox-strip-pulse",
+      ) as HTMLElement;
+      expect(dot.style.animation).toBe(SANDBOX_PULSE_ANIMATION);
+    } finally {
+      restore();
+    }
+  });
+
+  it("respects prefers-reduced-motion → holds steady (no animation)", () => {
+    const restore = mockReducedMotion(true);
+    try {
+      render(
+        <SheetActiveSandboxStrip request={req()} onExpand={vi.fn()} />,
+      );
+      const labelEl = screen.getByTestId(
+        "grace2-sheet-sandbox-strip-label",
+      ) as HTMLElement;
+      expect(labelEl.style.animation).toBe("");
+      const dot = screen.getByTestId(
+        "grace2-sheet-sandbox-strip-pulse",
+      ) as HTMLElement;
+      expect(dot.style.animation).toBe("");
+      // Still blue (steady), just not pulsing.
+      expect(labelEl.style.color).toBe("#a5b4fc");
+    } finally {
+      restore();
+    }
+  });
+
+  it("injects the distinct grace2-pulse-blue keyframe (separate from the rainbow)", () => {
+    // The injector runs on module import; the keyframe <style> is in the head.
+    const styleEl = document.getElementById(SANDBOX_PULSE_KEYFRAMES_ID);
+    expect(styleEl).toBeTruthy();
+    expect(styleEl!.textContent).toContain("@keyframes grace2-pulse-blue");
+    // It is NOT the rainbow hue-cycle keyframe.
+    expect(styleEl!.textContent).not.toContain("grace2-hue-cycle");
+  });
+
+  it("tap expands the sheet (fires onExpand)", () => {
+    const onExpand = vi.fn();
+    render(
+      <SheetActiveSandboxStrip request={req()} onExpand={onExpand} />,
+    );
+    fireEvent.click(screen.getByTestId("grace2-sheet-sandbox-strip"));
+    expect(onExpand).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("SheetActiveStripStack — F66 stacking", () => {
+  it("renders nothing for an empty stack", () => {
+    const { container } = render(
+      <SheetActiveStripStack items={[]} onExpand={vi.fn()} />,
+    );
+    expect(container.firstChild).toBeNull();
+  });
+
+  it("renders a STACK of tool + sandbox strips (multiple at once)", () => {
+    const items: ActiveStripItem[] = [
+      { kind: "tool", seq: 1, step: step({ step_id: "t1", state: "running" }) },
+      { kind: "sandbox", seq: 2, request: req({ code_exec_id: "s1" }) },
+      { kind: "tool", seq: 3, step: step({ step_id: "t2", name: "publish_layer", tool_name: "publish_layer", state: "running" }) },
+    ];
+    render(<SheetActiveStripStack items={items} onExpand={vi.fn()} />);
+    expect(screen.getByTestId("grace2-sheet-strip-stack")).toBeTruthy();
+    // Two tool strips + one sandbox strip = three strips stacked.
+    expect(screen.getAllByTestId("grace2-sheet-tool-strip").length).toBe(2);
+    expect(screen.getAllByTestId("grace2-sheet-sandbox-strip").length).toBe(1);
+  });
+
+  it("a sandbox strip in the stack uses the pulsating-blue variant", () => {
+    const restore = mockReducedMotion(false);
+    try {
+      const items: ActiveStripItem[] = [
+        { kind: "sandbox", seq: 1, request: req({ code_exec_id: "s1" }) },
+      ];
+      render(<SheetActiveStripStack items={items} onExpand={vi.fn()} />);
+      const labelEl = screen.getByTestId(
+        "grace2-sheet-sandbox-strip-label",
+      ) as HTMLElement;
+      expect(labelEl.style.animation).toBe(SANDBOX_PULSE_ANIMATION);
+    } finally {
+      restore();
+    }
   });
 });

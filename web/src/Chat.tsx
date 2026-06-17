@@ -95,7 +95,7 @@ import {
   useRunningElapsedMs,
 } from "./components/PipelineCard";
 import { ChatInput, ChatInputState } from "./components/ChatInput";
-import { IconChevronRight } from "./components/icons";
+import { IconChevronRight, IconSandbox } from "./components/icons";
 import { AgentMessage } from "./components/AgentMessage";
 import { UserBubble } from "./components/UserBubble";
 import { ScrollToBottom } from "./components/ScrollToBottom";
@@ -280,6 +280,25 @@ export function writeChatOpacity(tier: ChatOpacityTier): void {
     /* non-fatal */
   }
 }
+
+// --- Mobile sheet bottom clearance (F61, job-0330) ----------------------- //
+//
+// F61 — the sheet must clear the iPhone's naturally-curved corners + home
+// indicator. We lift the WHOLE sheet container off the bottom edge by the
+// device's safe-area inset PLUS a few extra px so the rounded composer never
+// kisses the curved glass / gets clipped by the home-indicator pill. This is
+// applied as the container's bottom OFFSET (so the sheet floats up) AND the
+// composer keeps its own inner safe-area padding (belt-and-suspenders for the
+// keyboard accessory). The drag-resize clamp (clampSheetHeight, vh-based) is
+// unaffected — the offset is a fixed pixel lift, not part of the height band.
+export const SHEET_BOTTOM_EXTRA_PX = 10;
+
+/** F61 — the sheet container's bottom offset: the device safe-area inset plus
+ * a few extra px so the sheet floats clear of the curved corners / home
+ * indicator. Used as `bottom` on the mobile container. A CSS `calc()` string
+ * so it resolves on-device (env() is 0 on non-notched screens, degrading to a
+ * small constant lift). Exported for unit tests. */
+export const SHEET_BOTTOM_OFFSET_CSS = `calc(env(safe-area-inset-bottom) + ${SHEET_BOTTOM_EXTRA_PX}px)`;
 
 // --- Mobile sheet height (F44, job-0322) --------------------------------- //
 //
@@ -1116,7 +1135,13 @@ export function mobileSheetContainerStyle(
     position: "absolute",
     left: 0,
     right: 0,
-    bottom: 0,
+    // F61 (job-0330) — float the sheet up off the bottom edge by the device
+    // safe-area inset + a few extra px so it clears the iPhone's curved
+    // corners / home indicator. env() is 0 on non-notched screens, so this
+    // degrades to a small constant lift. The vh height band (clampSheetHeight)
+    // is unaffected by this fixed-px offset, so the drag-resize clamp stays
+    // intact.
+    bottom: SHEET_BOTTOM_OFFSET_CSS,
     height: expanded ? `${clampSheetHeight(heightVh)}vh` : "auto",
     background: `linear-gradient(180deg, rgba(26,27,33,${alpha}) 0%, rgba(18,19,24,${alpha}) 100%)`,
     color: "#eee",
@@ -1583,6 +1608,415 @@ export function SheetActiveToolStrip({
       </span>
       <Spinner reduced={reduced} />
     </button>
+  );
+}
+
+// --- Collapsed-sheet sandbox strip (F66, job-0330) ------------------------ //
+//
+// F66 — when the mobile sheet is COLLAPSED and a Python sandbox (code_exec)
+// is RUNNING in the visible stream, a strip surfaces it in the active-strip
+// area the SAME WAY a tool does (SheetActiveToolStrip) — BUT with a
+// PULSATING-BLUE animation instead of the F42 rainbow gradient, so the user
+// can tell at a glance "this is the sandbox running, not a regular tool". The
+// strips STACK: if more than one tool/sandbox is active, we render the full
+// stack (newest at the bottom, chronological). Reuses the existing
+// active-tool-strip plumbing (findRunningToolStep / SheetActiveToolStrip) and
+// adds the sandbox variant alongside it.
+//
+// "Running sandbox" mirrors SandboxCard's own state machine: the user has
+// approved the gate (decided === "proceed") AND no result has landed yet.
+// Pending (un-decided) and cancelled / completed sandboxes do NOT show a strip
+// (they're not actively burning compute).
+
+// The pulsating-blue keyframe is NOT one of PipelineCard's two global
+// keyframes (grace2-hue-cycle / grace2-spin), so we inject our own on first
+// use. Idempotent + SSR-safe, same pattern as PipelineCard.ensureKeyframes().
+export const SANDBOX_PULSE_KEYFRAMES_ID = "grace2-sandbox-pulse-keyframes";
+export const SANDBOX_PULSE_ANIMATION = "grace2-pulse-blue 1.6s ease-in-out infinite";
+
+function ensureSandboxPulseKeyframe(): void {
+  if (typeof document === "undefined") return;
+  if (document.getElementById(SANDBOX_PULSE_KEYFRAMES_ID)) return;
+  const style = document.createElement("style");
+  style.id = SANDBOX_PULSE_KEYFRAMES_ID;
+  // A distinct keyframe from the rainbow hue-cycle: a calm opacity + glow
+  // breathe in blue. prefers-reduced-motion is honoured per-render (the strip
+  // holds steady), so the keyframe itself stays unconditional.
+  style.textContent = `
+@keyframes grace2-pulse-blue {
+  0%, 100% { opacity: 0.55; }
+  50%      { opacity: 1; }
+}
+`;
+  document.head.appendChild(style);
+}
+// Inject on module import so the strip's first render is already animated.
+ensureSandboxPulseKeyframe();
+
+/** True iff this sandbox request is in the RUNNING state — the user approved
+ * the gate (decided === "proceed") and no result has arrived yet. Mirrors
+ * SandboxCard's own `isRunning` derivation. Pure; exported for unit tests. */
+export function isSandboxRunning(
+  req: CodeExecRequestPayload,
+  results: Map<string, CodeExecResultPayload>,
+  decisions: Map<string, SandboxCardDecision>,
+): boolean {
+  return (
+    decisions.get(req.code_exec_id) === "proceed" &&
+    !results.has(req.code_exec_id)
+  );
+}
+
+/** All RUNNING sandbox requests in the visible stream, ordered by first-arrival
+ * seq (oldest first — same chronological order the strips stack in). Pure;
+ * exported for unit tests. */
+export function findRunningSandboxes(
+  requests: CodeExecRequestPayload[],
+  results: Map<string, CodeExecResultPayload>,
+  decisions: Map<string, SandboxCardDecision>,
+  sandboxSeqs: Map<string, number>,
+): CodeExecRequestPayload[] {
+  return requests
+    .filter((r) => isSandboxRunning(r, results, decisions))
+    .sort((a, b) => {
+      const sa = sandboxSeqs.get(a.code_exec_id) ?? Number.MAX_SAFE_INTEGER;
+      const sb = sandboxSeqs.get(b.code_exec_id) ?? Number.MAX_SAFE_INTEGER;
+      return sa - sb;
+    });
+}
+
+// One entry in the collapsed-sheet active-strip STACK. Either a running tool
+// step (rainbow) or a running sandbox (pulsating-blue). Carries its arrival
+// seq so the stack renders in chronological order across BOTH kinds.
+export type ActiveStripItem =
+  | { kind: "tool"; seq: number; step: PipelineStepSummary }
+  | { kind: "sandbox"; seq: number; request: CodeExecRequestPayload };
+
+/**
+ * F66 — build the full STACK of active strips for the collapsed mobile sheet:
+ * every RUNNING tool step AND every RUNNING sandbox, interleaved by
+ * first-arrival seq (chronological). When more than one is active the caller
+ * renders them all (a stack), not just the most recent. Pure; exported for
+ * unit tests.
+ *
+ * Tools come from the merged pipeline view-model (the SAME source the inline
+ * cards + SheetActiveToolStrip use); sandboxes from the per-stream sandbox
+ * state maps (the SAME source SandboxCard uses). Thinking is excluded (it has
+ * its own ephemeral surface).
+ */
+export function buildActiveStripStack(
+  history: PipelineStatePayload[],
+  live: PipelineStatePayload | null,
+  stepOrder: Map<string, number>,
+  sandboxRequests: CodeExecRequestPayload[],
+  sandboxResults: Map<string, CodeExecResultPayload>,
+  sandboxDecisions: Map<string, SandboxCardDecision>,
+  sandboxSeqs: Map<string, number>,
+): ActiveStripItem[] {
+  const out: ActiveStripItem[] = [];
+  for (const step of mergeStepsByStepId(history, live)) {
+    if (isThinkingStep(step)) continue;
+    if (step.state !== "running") continue;
+    const seq =
+      stepOrder.get(stepInterleaveKey(step)) ?? Number.MAX_SAFE_INTEGER;
+    out.push({ kind: "tool", seq, step });
+  }
+  for (const req of findRunningSandboxes(
+    sandboxRequests,
+    sandboxResults,
+    sandboxDecisions,
+    sandboxSeqs,
+  )) {
+    const seq = sandboxSeqs.get(req.code_exec_id) ?? Number.MAX_SAFE_INTEGER;
+    out.push({ kind: "sandbox", seq, request: req });
+  }
+  out.sort((a, b) => a.seq - b.seq);
+  return out;
+}
+
+export interface SheetActiveSandboxStripProps {
+  /** The running sandbox request to surface. */
+  request: CodeExecRequestPayload;
+  /** Tap target — expands the sheet so the user sees the full SandboxCard. */
+  onExpand: () => void;
+}
+
+/** Slim live-status strip for a RUNNING Python sandbox on the collapsed mobile
+ * sheet (F66). Structurally identical to SheetActiveToolStrip (so they stack
+ * uniformly) but styled with a PULSATING-BLUE animation instead of the F42
+ * rainbow — a distinct cue that this is the sandbox, not a regular tool. Honors
+ * prefers-reduced-motion: holds steady (full opacity, no pulse). */
+export function SheetActiveSandboxStrip({
+  request,
+  onExpand,
+}: SheetActiveSandboxStripProps): JSX.Element {
+  const reduced = prefersReducedMotion();
+  const label = "Running Python sandbox";
+  // F66 — pulsating-blue: a calm opacity breathe on the label (distinct from
+  // the rainbow hue-cycle). prefers-reduced-motion → hold steady.
+  const labelStyle: React.CSSProperties = reduced
+    ? { color: "#a5b4fc" }
+    : { color: "#a5b4fc", animation: SANDBOX_PULSE_ANIMATION };
+  return (
+    <button
+      data-testid="grace2-sheet-sandbox-strip"
+      data-code-exec-id={request.code_exec_id}
+      aria-label={`${label} — running. Expand chat`}
+      onClick={onExpand}
+      style={{
+        flex: "0 0 auto",
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        margin: "0 10px 8px",
+        padding: "8px 12px",
+        minHeight: 36,
+        // F66 — its own translucent BLUE-tinted hairline card so it reads as
+        // the sandbox variant (vs the neutral tool strip), over the
+        // see-through sheet on any basemap.
+        background: "rgba(30,33,68,0.72)",
+        border: "1px solid rgba(99,102,241,0.45)",
+        borderRadius: 8,
+        color: "#e5e7eb",
+        fontSize: 12,
+        lineHeight: "1.4",
+        fontFamily: "ui-monospace, 'Cascadia Code', 'Fira Code', monospace",
+        cursor: "pointer",
+        textAlign: "left",
+      }}
+    >
+      <span
+        aria-hidden="true"
+        style={{ color: "#818cf8", display: "inline-flex", flexShrink: 0 }}
+      >
+        <IconSandbox size={14} weight="bold" />
+      </span>
+      <span
+        data-testid="grace2-sheet-sandbox-strip-label"
+        style={{
+          flex: 1,
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+          ...labelStyle,
+        }}
+        title={label}
+      >
+        {label}
+      </span>
+      <span
+        data-testid="grace2-sheet-sandbox-strip-pulse"
+        aria-hidden="true"
+        style={{
+          width: 8,
+          height: 8,
+          borderRadius: 4,
+          background: "#6366f1",
+          flexShrink: 0,
+          // The pulse dot breathes too (steady when reduced motion).
+          animation: reduced ? undefined : SANDBOX_PULSE_ANIMATION,
+        }}
+      />
+    </button>
+  );
+}
+
+/** F45b / F66 — render the FULL stack of active strips (tools + sandboxes) for
+ * the collapsed mobile sheet. Used both above the composer AND, in the
+ * collapsed handle row, as the middle fill. Empty stack → renders nothing. */
+export function SheetActiveStripStack({
+  items,
+  onExpand,
+}: {
+  items: ActiveStripItem[];
+  onExpand: () => void;
+}): JSX.Element | null {
+  if (items.length === 0) return null;
+  return (
+    <div
+      data-testid="grace2-sheet-strip-stack"
+      style={{
+        flex: 1,
+        minWidth: 0,
+        display: "flex",
+        flexDirection: "column",
+        gap: 6,
+      }}
+    >
+      {items.map((item) =>
+        item.kind === "tool" ? (
+          <SheetActiveToolStrip
+            key={`tool-${item.step.step_id}`}
+            step={item.step}
+            onExpand={onExpand}
+          />
+        ) : (
+          <SheetActiveSandboxStrip
+            key={`sandbox-${item.request.code_exec_id}`}
+            request={item.request}
+            onExpand={onExpand}
+          />
+        ),
+      )}
+    </div>
+  );
+}
+
+// --- Mobile sheet header row (F45 refined / F45b, job-0330) --------------- //
+//
+// F45 REFINED — the mobile sheet HANDLE row is ONE line with THREE zones:
+//   LEFT  = (GRACE-2 + build version)
+//   CENTER= the grabber rectangle (the F44 drag handle / tap-to-fold)
+//   RIGHT = (connection status)
+// Visual:  (grace + version)   < grabber rectangle >   (● status)
+//
+// F45b — collapsed vs expanded:
+//   - EXPANDED  → the full labeled three-zone row (labels LEFT, grabber
+//     CENTER, status RIGHT).
+//   - COLLAPSED → JUST the plain grabber rectangle snapped to the TOP of the
+//     sheet (NO grace/version/connection labels).
+//   - COLLAPSED + tools/sandbox active → the active-strip STACK fills the
+//     area in between (the middle) instead of the labels (F66).
+//
+// The grabber (SheetToggleHandle) is unchanged — it stays the drag affordance,
+// so F44 drag-to-resize + tap-to-fold keep working exactly as before. This row
+// only arranges it among the surrounding label/strip zones.
+
+export interface MobileSheetHeaderRowProps {
+  expanded: boolean;
+  status: ConnectionStatus;
+  /** F44 — grabber callbacks, threaded straight to SheetToggleHandle. */
+  onToggle: () => void;
+  onResize?: (heightVh: number) => void;
+  onResizeEnd?: (heightVh: number) => void;
+  /** F66 — active-strip stack (running tools + sandboxes). Rendered as the
+   * middle fill ONLY while collapsed; ignored while expanded (the expanded
+   * scroll shows the full inline cards). */
+  activeStrips: ActiveStripItem[];
+  /** Tap target for the active strips — expands the sheet. */
+  onExpandFromStrip: () => void;
+}
+
+export function MobileSheetHeaderRow({
+  expanded,
+  status,
+  onToggle,
+  onResize,
+  onResizeEnd,
+  activeStrips,
+  onExpandFromStrip,
+}: MobileSheetHeaderRowProps): JSX.Element {
+  // The grabber: the SINGLE drag affordance. When EXPANDED it sits in the
+  // CENTER zone (flex:1) between the label zones; when COLLAPSED it spans the
+  // full width at the TOP. Either way it's the same SheetToggleHandle, so the
+  // F44 gesture engine (native touch + pointer) is untouched.
+  const grabber = (
+    <SheetToggleHandle
+      expanded={expanded}
+      onToggle={onToggle}
+      onResize={onResize}
+      onResizeEnd={onResizeEnd}
+    />
+  );
+
+  if (expanded) {
+    // F45 refined — the labeled three-zone row. LEFT labels, CENTER grabber,
+    // RIGHT status. The two label zones flex-basis 0 / flex:1 so the grabber
+    // stays visually centered regardless of label widths.
+    return (
+      <div
+        data-testid="grace2-sheet-header-row"
+        data-sheet-row-state="expanded"
+        style={{
+          flex: "0 0 auto",
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          padding: "6px 12px 8px",
+          borderBottom: "1px solid rgba(255,255,255,0.08)",
+        }}
+      >
+        {/* LEFT zone — product label + build version (F45). */}
+        <span
+          data-testid="grace2-chat-tab-left"
+          style={{
+            flex: 1,
+            minWidth: 0,
+            display: "inline-flex",
+            alignItems: "baseline",
+            gap: 8,
+          }}
+        >
+          <strong style={{ fontSize: 14 }}>GRACE-2</strong>
+          <span
+            data-testid="grace2-build-version"
+            title="build version — tells you which deploy this tab is running"
+            style={{ color: "#888", fontSize: 11 }}
+          >
+            {BUILD_VERSION}
+          </span>
+        </span>
+        {/* CENTER zone — the grabber rectangle (drag handle). */}
+        <div
+          data-testid="grace2-sheet-grabber-zone"
+          style={{ flex: "0 0 auto", display: "flex", width: 56 }}
+        >
+          {grabber}
+        </div>
+        {/* RIGHT zone — connection status (F45). */}
+        <span
+          data-testid="connection-status"
+          title={`WebSocket ${STATUS_LABEL[status]}`}
+          style={{
+            flex: 1,
+            minWidth: 0,
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "flex-end",
+            gap: 6,
+            fontSize: 11,
+            color: STATUS_COLOR[status],
+            marginLeft: "auto",
+          }}
+        >
+          <span
+            style={{
+              width: 8,
+              height: 8,
+              borderRadius: 4,
+              background: STATUS_COLOR[status],
+              display: "inline-block",
+              flexShrink: 0,
+            }}
+          />
+          {STATUS_LABEL[status]}
+        </span>
+      </div>
+    );
+  }
+
+  // COLLAPSED (F45b) — JUST the grabber at the TOP (no labels). When tools /
+  // sandbox are active, the strip stack fills the middle area BELOW the
+  // grabber (instead of the labels). No grace/version/connection chrome here.
+  return (
+    <div
+      data-testid="grace2-sheet-header-row"
+      data-sheet-row-state="collapsed"
+      style={{ flex: "0 0 auto", display: "flex", flexDirection: "column" }}
+    >
+      {grabber}
+      {activeStrips.length > 0 && (
+        <div
+          data-testid="grace2-sheet-collapsed-strips"
+          style={{ display: "flex", flexDirection: "column" }}
+        >
+          <SheetActiveStripStack
+            items={activeStrips}
+            onExpand={onExpandFromStrip}
+          />
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -2089,17 +2523,25 @@ export function Chat({
 
   const showCancel = shouldShowCancel(pipeline);
   const liveSteps = pipeline.live?.steps ?? [];
-  // job-0280 — collapsed-sheet active-tool strip: resolved from the SAME
-  // merged pipeline view-model the inline cards render (no forked logic).
-  // Null whenever the sheet is expanded / desktop / nothing running.
-  const collapsedRunningStep: PipelineStepSummary | null =
+  // job-0280 / F66 (job-0330) — collapsed-sheet active-strip STACK: every
+  // RUNNING tool step (rainbow) AND every RUNNING sandbox (pulsating-blue),
+  // interleaved by first-arrival seq. Resolved from the SAME merged pipeline
+  // view-model the inline cards render + the SAME sandbox state maps the
+  // SandboxCard reads (no forked logic). Empty whenever the sheet is
+  // expanded / desktop / nothing running. F45b: this fills the middle of the
+  // COLLAPSED handle row.
+  const collapsedActiveStrips: ActiveStripItem[] =
     mobile && !sheetExpanded
-      ? findRunningToolStep(
+      ? buildActiveStripStack(
           pipeline.history,
           pipeline.live,
           visible.stepOrder,
+          visible.sandboxRequests,
+          visible.sandboxResults,
+          visible.sandboxDecisions,
+          visible.sandboxSeqs,
         )
-      : null;
+      : [];
   // Merged send/stop control: in-flight whenever the cancel predicate fires
   // (any running step in the live pipeline, OR a non-null
   // session-state.current_pipeline). Returns to idle on terminal /
@@ -2151,115 +2593,114 @@ export function Chat({
           }}
         />
       )}
-      {/* job-0278 — mobile drag-handle / chevron toggle, first child so it
-          reads as the sheet's grab area. Desktop renders nothing here. */}
+      {/* F45 refined / F45b (job-0330) — MOBILE three-zone handle row.
+          EXPANDED → (GRACE-2 + version) LEFT, grabber CENTER, status RIGHT.
+          COLLAPSED → just the grabber at the TOP (no labels); when tools /
+          sandbox are running, the active-strip stack fills the middle.
+          The grabber stays the F44 drag affordance. Desktop renders the
+          classic <header> below instead. */}
       {mobile && (
-        <SheetToggleHandle
+        <MobileSheetHeaderRow
           expanded={sheetExpanded}
+          status={status}
           onToggle={() => setSheetExpanded((v) => !v)}
           // F44 — drag the handle to resize the EXPANDED sheet. A resize
           // gesture only makes sense while expanded; when collapsed a small
           // tap still toggles open (drag-vs-tap threshold inside the handle).
           onResize={sheetExpanded ? handleSheetResize : undefined}
           onResizeEnd={sheetExpanded ? handleSheetResizeEnd : undefined}
+          activeStrips={collapsedActiveStrips}
+          onExpandFromStrip={() => setSheetExpanded(true)}
         />
       )}
-      <header
-        data-testid="grace2-chat-header"
-        style={{
-          // job-0283 — desktop gets the family hairline divider + LayerPanel
-          // header padding. job-0284 — the mobile divider joins the hairline
-          // family too (#333 read as a solid slab line on the now-translucent
-          // sheet).
-          padding: mobile ? "10px 12px" : "12px 14px",
-          borderBottom: mobile
-            ? "1px solid rgba(255,255,255,0.08)"
-            : "1px solid rgba(255,255,255,0.06)",
-          // F45 (job-0322 / job-0325) — the "drag tab" row directly under the
-          // grab handle: 'GRACE-2' + the version/build hash sit on the LEFT
-          // (grouped in grace2-chat-tab-left), the connection-status indicator
-          // on the RIGHT (pushed there by the flex:1 spacer between the two
-          // groups). They READ in the COLLAPSED state too (that's where the
-          // user glances at the connection state); the header is no longer
-          // hidden while collapsed. Layout order on mobile:
-          //   handle → [GRACE-2  version] ─── spacer ─── [● status] → composer
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-        }}
-      >
-        {/* F45 LEFT group — product label + build version. */}
-        <span
-          data-testid="grace2-chat-tab-left"
-          style={{ display: "inline-flex", alignItems: "baseline", gap: 8 }}
-        >
-          <strong style={{ fontSize: 14 }}>GRACE-2</strong>
-          <span
-            data-testid="grace2-build-version"
-            title="build version — tells you which deploy this tab is running"
-            style={{ color: "#888", fontSize: 11 }}
-          >
-            {BUILD_VERSION}
-          </span>
-        </span>
-        {/* Spacer — pushes the connection status to the RIGHT edge (F45). */}
-        <span style={{ flex: 1 }} />
-        {/* F45 RIGHT group — connection-status indicator. */}
-        <span
-          data-testid="connection-status"
-          title={`WebSocket ${STATUS_LABEL[status]}`}
+      {/* DESKTOP header — classic F45 row: 'GRACE-2' + version LEFT, the
+          connection status RIGHT, the collapse control at the far right.
+          (Mobile uses MobileSheetHeaderRow above instead.) */}
+      {!mobile && (
+        <header
+          data-testid="grace2-chat-header"
           style={{
-            display: "inline-flex",
+            // job-0283 — desktop family hairline divider + LayerPanel header
+            // padding.
+            padding: "12px 14px",
+            borderBottom: "1px solid rgba(255,255,255,0.06)",
+            // F45 — 'GRACE-2' + version on the LEFT (grace2-chat-tab-left),
+            // connection status pushed RIGHT by the flex:1 spacer.
+            display: "flex",
             alignItems: "center",
-            gap: 6,
-            fontSize: 11,
-            color: STATUS_COLOR[status],
-            marginLeft: "auto",
+            gap: 8,
           }}
         >
+          {/* F45 LEFT group — product label + build version. */}
           <span
+            data-testid="grace2-chat-tab-left"
+            style={{ display: "inline-flex", alignItems: "baseline", gap: 8 }}
+          >
+            <strong style={{ fontSize: 14 }}>GRACE-2</strong>
+            <span
+              data-testid="grace2-build-version"
+              title="build version — tells you which deploy this tab is running"
+              style={{ color: "#888", fontSize: 11 }}
+            >
+              {BUILD_VERSION}
+            </span>
+          </span>
+          {/* Spacer — pushes the connection status to the RIGHT edge (F45). */}
+          <span style={{ flex: 1 }} />
+          {/* F45 RIGHT group — connection-status indicator. */}
+          <span
+            data-testid="connection-status"
+            title={`WebSocket ${STATUS_LABEL[status]}`}
             style={{
-              width: 8,
-              height: 8,
-              borderRadius: 4,
-              background: STATUS_COLOR[status],
-              display: "inline-block",
-            }}
-          />
-          {STATUS_LABEL[status]}
-        </span>
-        {/* ux-batch-1 J1 — the large/normal width TOGGLE was removed in favour
-            of a drag-to-resize left border (the grace2-chat-resize-handle
-            below). Width now persists as a continuous px value. */}
-        {onClose && !mobile && (
-          <button
-            data-testid="grace2-chat-close"
-            aria-label="Collapse chat panel"
-            title="Collapse chat panel"
-            onClick={onClose}
-            style={{
-              background: "none",
-              border: "none",
-              color: "#888",
-              cursor: "pointer",
-              lineHeight: 1,
-              padding: "0 4px",
-              display: "flex",
+              display: "inline-flex",
               alignItems: "center",
-              fontFamily: "system-ui, sans-serif",
+              gap: 6,
+              fontSize: 11,
+              color: STATUS_COLOR[status],
+              marginLeft: "auto",
             }}
           >
-            {/* job-0162: chevron-right ("collapse panel" idiom) replaces ×    */}
-            {/* ("close" idiom) — collapsing must NEVER imply destruction of    */}
-            {/* the chat history. The persistence is implemented in App.tsx by */}
-            {/* keeping <Chat /> mounted across collapse so its message state  */}
-            {/* survives. job-0325: raw '›' glyph → IconChevronRight (icon     */}
-            {/* module is the single source of truth for glyphs; NO raw        */}
-            {/* unicode in the UI per project policy).                          */}
-            <IconChevronRight size={18} title="Collapse chat panel" />
-          </button>
-        )}
-      </header>
+            <span
+              style={{
+                width: 8,
+                height: 8,
+                borderRadius: 4,
+                background: STATUS_COLOR[status],
+                display: "inline-block",
+              }}
+            />
+            {STATUS_LABEL[status]}
+          </span>
+          {/* ux-batch-1 J1 — the large/normal width TOGGLE was removed in
+              favour of a drag-to-resize left border (the
+              grace2-chat-resize-handle above). */}
+          {onClose && (
+            <button
+              data-testid="grace2-chat-close"
+              aria-label="Collapse chat panel"
+              title="Collapse chat panel"
+              onClick={onClose}
+              style={{
+                background: "none",
+                border: "none",
+                color: "#888",
+                cursor: "pointer",
+                lineHeight: 1,
+                padding: "0 4px",
+                display: "flex",
+                alignItems: "center",
+                fontFamily: "system-ui, sans-serif",
+              }}
+            >
+              {/* job-0162: chevron-right ("collapse panel" idiom) replaces ×  */}
+              {/* ("close" idiom) — collapsing must NEVER imply destruction of  */}
+              {/* the chat history. job-0325: raw '›' glyph → IconChevronRight  */}
+              {/* (icon module is the single source of truth for glyphs).       */}
+              <IconChevronRight size={18} title="Collapse chat panel" />
+            </button>
+          )}
+        </header>
+      )}
 
       {/* ---- Scrollable conversation area ----                                   */}
       {/* job-0153 Part 4: bottom-padding tracks the actual measured input        */}
@@ -2430,16 +2871,11 @@ export function Chat({
         </div>
       </div>
 
-      {/* ---- Collapsed-sheet active-tool strip (job-0280) ----                  */}
-      {/* Mobile + collapsed + a tool running: slim live-status strip directly    */}
-      {/* above the composer (humanized label + elapsed timer, same data as the   */}
-      {/* PipelineCard). Tap = expand the sheet. Gone when nothing is running.    */}
-      {collapsedRunningStep && (
-        <SheetActiveToolStrip
-          step={collapsedRunningStep}
-          onExpand={() => setSheetExpanded(true)}
-        />
-      )}
+      {/* F45b / F66 (job-0330) — the collapsed-sheet active-strip STACK now
+          renders INSIDE the collapsed handle row (MobileSheetHeaderRow above)
+          as the middle fill, not in a separate slab above the composer. This
+          keeps the collapsed sheet = grabber (top) + strips (middle) +
+          composer (bottom). */}
 
       {/* ---- Overlay input wrapper (job-0144 + job-0153) ----                    */}
       {/* Floats at the bottom of the chat panel; the scroll above has matching   */}
@@ -2451,10 +2887,14 @@ export function Chat({
           mobile
             ? {
                 // job-0278 — in normal flow on mobile so the collapsed
-                // sheet's height is handle + composer. safe-area inset
-                // clears the iOS home indicator.
+                // sheet's height is handle + composer. F61 (job-0330): the
+                // sheet CONTAINER now floats up by the safe-area inset
+                // (SHEET_BOTTOM_OFFSET_CSS), so the composer only needs its
+                // own constant bottom padding here — no double-counted
+                // env(safe-area-inset-bottom). A small extra keeps the
+                // textarea off the rounded sheet edge.
                 flex: "0 0 auto",
-                padding: "0 10px calc(10px + env(safe-area-inset-bottom)) 10px",
+                padding: "0 10px 12px 10px",
                 pointerEvents: "auto",
                 zIndex: 3,
               }
