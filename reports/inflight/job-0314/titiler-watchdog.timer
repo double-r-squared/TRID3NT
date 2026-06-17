@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the TiTiler wedge watchdog every 2 minutes (job-0314)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target

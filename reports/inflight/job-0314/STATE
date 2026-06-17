@@ -1,0 +1,13 @@
+job: job-0314
+title: TiTiler render-resilience fix (layer-publishes-but-never-paints blocker)
+owner: infra
+state: DONE
+priority: P0
+opened: 2026-06-16
+closed: 2026-06-16
+root_cause: titiler.service wedged on :8080 (service up, all tile requests time out; both uvicorn workers blocked on hung GDAL /vsis3 reads, no timeout/recycle/watchdog)
+fix: restart (immediate) + hardened unit (GDAL_HTTP_TIMEOUT=30 family, workers 2->4) + titiler-watchdog.timer (2-min auto-recovery)
+verified: local tile 200/0.32s, CloudFront tile 200/0.05s, GDAL_HTTP_TIMEOUT=30 in running env, watchdog timer active + dry-run clean
+deployed: prod (EC2 i-0251879a278df797f), user-authorized 2026-06-16
+memory: project_titiler_wedge_render_blocker.md
+followups: chat-interleave (server.py message_id-per-turn); roads/inline-geojson re-check post-fix

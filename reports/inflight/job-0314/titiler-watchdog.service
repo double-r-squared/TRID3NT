@@ -1,0 +1,8 @@
+[Unit]
+Description=TiTiler wedge watchdog (job-0314) — restart titiler if the tile path stops responding
+After=titiler.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/titiler/watchdog.sh
+User=root
