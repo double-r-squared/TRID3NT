@@ -61,7 +61,9 @@ function lastOpenedSocket(): WebSocket | null {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const sockets = (window as any).__webSockets as WebSocket[] | undefined;
   if (!sockets || sockets.length === 0) return null;
-  return sockets[sockets.length - 1];
+  // The length guard above proves this index is populated; the
+  // non-null assertion satisfies noUncheckedIndexedAccess.
+  return sockets[sockets.length - 1]!;
 }
 
 /**
@@ -81,7 +83,7 @@ describe("GraceWs — map-command routing (job-0072, OQ-0068-MAPCMD-WS)", () => 
   });
 
   it("dispatches map-command envelope to onMapCommand handler", () => {
-    const onMapCommand = vi.fn<[MapCommandPayload], void>();
+    const onMapCommand = vi.fn<(p: MapCommandPayload) => void>();
     const handlers = makeHandlers({ onMapCommand });
 
     const ws = new GraceWs("ws://localhost:8765", handlers);
@@ -105,7 +107,10 @@ describe("GraceWs — map-command routing (job-0072, OQ-0068-MAPCMD-WS)", () => 
     injectMessage(socket, makeEnvelope("map-command", payload));
 
     expect(onMapCommand).toHaveBeenCalledOnce();
-    const received = onMapCommand.mock.calls[0][0] as { command: string; args: unknown };
+    const received = onMapCommand.mock.calls[0]![0] as unknown as {
+      command: string;
+      args: unknown;
+    };
     expect(received.command).toBe("zoom-to");
 
     ws.close();
@@ -207,7 +212,7 @@ describe("GraceWs — job-0159 session-scoped fan-out hub", () => {
       app.close();
       return;
     }
-    const chatSocket = sockets[sockets.length - 2];
+    const chatSocket = sockets[sockets.length - 2]!;
     // Simulate the server delivering the post-tool session-state on Chat's
     // wire ONLY (the per-ServerConnection emitter behaviour).
     const sessionPayload = {
@@ -230,10 +235,10 @@ describe("GraceWs — job-0159 session-scoped fan-out hub", () => {
     expect(chatOnSessionState).toHaveBeenCalledOnce();
     // App sees the envelope via the fan-out hub — this is the job-0159 fix.
     expect(appOnSessionState).toHaveBeenCalledOnce();
-    const appReceived = appOnSessionState.mock.calls[0][0] as {
+    const appReceived = appOnSessionState.mock.calls[0]![0] as {
       loaded_layers: Array<{ layer_id: string }>;
     };
-    expect(appReceived.loaded_layers[0].layer_id).toBe(
+    expect(appReceived.loaded_layers[0]!.layer_id).toBe(
       "flood-depth-peak-01TEST",
     );
 
@@ -261,7 +266,7 @@ describe("GraceWs — job-0159 session-scoped fan-out hub", () => {
       app.close();
       return;
     }
-    const chatSocket = sockets[sockets.length - 2];
+    const chatSocket = sockets[sockets.length - 2]!;
     injectMessage(
       chatSocket,
       makeEnvelope("map-command", {
@@ -299,7 +304,7 @@ describe("GraceWs — job-0159 session-scoped fan-out hub", () => {
       app.close();
       return;
     }
-    const chatSocket = sockets[sockets.length - 2];
+    const chatSocket = sockets[sockets.length - 2]!;
     injectMessage(
       chatSocket,
       makeEnvelope("agent-message-chunk", {
@@ -384,7 +389,7 @@ describe("GraceWs — impact-envelope routing (Wave 4.11 P4)", () => {
   });
 
   it("routes well-formed impact-envelope to onImpactEnvelope handler", () => {
-    const onImpactEnvelope = vi.fn<[ImpactEnvelope], void>();
+    const onImpactEnvelope = vi.fn<(p: ImpactEnvelope) => void>();
     const handlers = makeHandlers({ onImpactEnvelope });
     const ws = new GraceWs("ws://localhost:8765", handlers);
     ws.connect();
@@ -396,7 +401,7 @@ describe("GraceWs — impact-envelope routing (Wave 4.11 P4)", () => {
     injectMessage(socket, makeEnvelope("impact-envelope", payload));
 
     expect(onImpactEnvelope).toHaveBeenCalledOnce();
-    const received = onImpactEnvelope.mock.calls[0][0];
+    const received = onImpactEnvelope.mock.calls[0]![0];
     expect(received.n_structures_total).toBe(4_210);
     expect(received.n_structures_damaged).toBe(1_850);
     expect(received.pelicun_run_id).toBe("01HWZP8Q5RTXYV23BKJD4M56CE");
@@ -415,7 +420,7 @@ describe("GraceWs — impact-envelope routing (Wave 4.11 P4)", () => {
     if (!socket) { ws.close(); return; }
 
     // Malformed: n_structures_total removed.
-    const badPayload = makeImpactPayload() as Record<string, unknown>;
+    const badPayload = makeImpactPayload() as unknown as Record<string, unknown>;
     delete badPayload.n_structures_total;
 
     expect(() => {
@@ -443,8 +448,8 @@ describe("GraceWs — impact-envelope routing (Wave 4.11 P4)", () => {
   });
 
   it("fans impact-envelope out to sibling GraceWs instances (session-scoped)", () => {
-    const chatOnImpact = vi.fn<[ImpactEnvelope], void>();
-    const appOnImpact = vi.fn<[ImpactEnvelope], void>();
+    const chatOnImpact = vi.fn<(p: ImpactEnvelope) => void>();
+    const appOnImpact = vi.fn<(p: ImpactEnvelope) => void>();
 
     const chat = new GraceWs("ws://localhost:8765", makeHandlers({
       onImpactEnvelope: chatOnImpact,
@@ -463,13 +468,13 @@ describe("GraceWs — impact-envelope routing (Wave 4.11 P4)", () => {
       return;
     }
     // Deliver on Chat's socket only (mirrors the per-ServerConnection emitter).
-    const chatSocket = sockets[sockets.length - 2];
+    const chatSocket = sockets[sockets.length - 2]!;
     injectMessage(chatSocket, makeEnvelope("impact-envelope", makeImpactPayload()));
 
     // Chat receives natively; App receives via fan-out hub.
     expect(chatOnImpact).toHaveBeenCalledOnce();
     expect(appOnImpact).toHaveBeenCalledOnce();
-    expect(appOnImpact.mock.calls[0][0].expected_loss_usd).toBe(312_000_000);
+    expect(appOnImpact.mock.calls[0]![0].expected_loss_usd).toBe(312_000_000);
 
     chat.close();
     app.close();
@@ -522,7 +527,7 @@ describe("GraceWs — chart-emission routing (sprint-13 job-0231)", () => {
     injectMessage(socket, makeEnvelope("chart-emission", makeChartPayload()));
 
     expect(onChartEmission).toHaveBeenCalledOnce();
-    const received = onChartEmission.mock.calls[0][0] as Record<string, unknown>;
+    const received = onChartEmission.mock.calls[0]![0] as Record<string, unknown>;
     expect(received.chart_id).toBe("01KTQPZ9ESAY9R17FS8BTVE0YK");
     expect(received.title).toBe("Histogram — value");
 
@@ -606,12 +611,12 @@ describe("GraceWs — chart-emission routing (sprint-13 job-0231)", () => {
     if (!sockets || sockets.length < 2) {
       chat.close(); app.close(); return;
     }
-    const chatSocket = sockets[sockets.length - 2];
+    const chatSocket = sockets[sockets.length - 2]!;
     injectMessage(chatSocket!, makeEnvelope("chart-emission", makeChartPayload()));
 
     expect(chatOnChart).toHaveBeenCalledOnce();
     expect(appOnChart).toHaveBeenCalledOnce();
-    const appReceived = appOnChart.mock.calls[0][0] as Record<string, unknown>;
+    const appReceived = appOnChart.mock.calls[0]![0] as Record<string, unknown>;
     expect(appReceived.chart_id).toBe("01KTQPZ9ESAY9R17FS8BTVE0YK");
 
     chat.close();
@@ -653,7 +658,7 @@ describe("GraceWs — sendDeleteLayer (job-0325 F53)", () => {
     ws.sendDeleteLayer("flood-depth-peak-01TEST");
 
     expect(sendSpy).toHaveBeenCalledOnce();
-    const wire = JSON.parse(sendSpy.mock.calls[0][0] as string) as {
+    const wire = JSON.parse(sendSpy.mock.calls[0]![0] as string) as {
       type: string;
       session_id: string;
       payload: { envelope_type?: string; layer_id?: string };
@@ -721,7 +726,7 @@ describe("GraceWs — requestSessionState (job-0322 F31)", () => {
     ws.requestSessionState();
 
     expect(sendSpy).toHaveBeenCalledOnce();
-    const wire = JSON.parse(sendSpy.mock.calls[0][0] as string) as {
+    const wire = JSON.parse(sendSpy.mock.calls[0]![0] as string) as {
       type: string;
       session_id: string;
       payload: unknown;
@@ -861,5 +866,123 @@ describe("GraceWs — reconnect (job-0322 F31)", () => {
     expect(onStatus).toHaveBeenCalledWith("connecting");
     expect(instanceSocket(ws)).not.toBeNull();
     ws.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// job-0322 F31 (iOS zombie-socket): forceReconnect() UNCONDITIONALLY tears the
+// current socket down and re-opens — even when readyState is OPEN. This is the
+// fix for the case reconnect() can't handle: iOS Safari leaves a backgrounded
+// socket nominally OPEN while the connection is dead, so reconnect() (which
+// early-returns on OPEN) would no-op and the layers never repaint. App.tsx
+// calls forceReconnect() on the mobile visibilitychange→visible path.
+// ---------------------------------------------------------------------------
+
+describe("GraceWs — forceReconnect (job-0322 F31 zombie-socket)", () => {
+  beforeEach(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (window as any).__webSockets = [];
+    __test_resetSessionHub();
+  });
+
+  it("tears down an OPEN socket and re-opens a fresh one (the zombie-socket case)", () => {
+    const onStatus = vi.fn();
+    const ws = new GraceWs("ws://localhost:8765", makeHandlers({ onStatus }));
+    ws.connect();
+    const stale = instanceSocket(ws);
+    expect(stale).not.toBeNull();
+    // The zombie socket: readyState reports OPEN even though it's dead. This is
+    // EXACTLY the case reconnect() refuses to act on (its OPEN early-return).
+    forceReadyState(stale!, 1); // WebSocket.OPEN
+    const closeSpy = vi.spyOn(stale!, "close").mockImplementation(() => undefined);
+    onStatus.mockClear();
+
+    ws.forceReconnect();
+
+    // The stale (OPEN) socket WAS closed (unlike reconnect, which no-ops here).
+    expect(closeSpy).toHaveBeenCalledOnce();
+    // A distinct fresh socket replaced it, and connect() ran (onStatus connecting).
+    const revived = instanceSocket(ws);
+    expect(revived).not.toBeNull();
+    expect(revived).not.toBe(stale);
+    expect(onStatus).toHaveBeenCalledWith("connecting");
+
+    ws.close();
+  });
+
+  it("also revives a CLOSED socket (re-opens a fresh connection)", () => {
+    const onStatus = vi.fn();
+    const ws = new GraceWs("ws://localhost:8765", makeHandlers({ onStatus }));
+    ws.connect();
+    const first = instanceSocket(ws);
+    expect(first).not.toBeNull();
+    forceReadyState(first!, 3); // WebSocket.CLOSED
+    onStatus.mockClear();
+
+    ws.forceReconnect();
+
+    const revived = instanceSocket(ws);
+    expect(revived).not.toBeNull();
+    expect(revived).not.toBe(first);
+    expect(onStatus).toHaveBeenCalledWith("connecting");
+
+    ws.close();
+  });
+
+  it("no-ops (no throw) when never connected (null socket) and still opens fresh", () => {
+    const onStatus = vi.fn();
+    const ws = new GraceWs("ws://localhost:8765", makeHandlers({ onStatus }));
+    expect(instanceSocket(ws)).toBeNull();
+    expect(() => ws.forceReconnect()).not.toThrow();
+    expect(onStatus).toHaveBeenCalledWith("connecting");
+    expect(instanceSocket(ws)).not.toBeNull();
+    ws.close();
+  });
+
+  it("a late close from the detached stale socket does NOT clobber the fresh socket", () => {
+    // forceReconnect detaches the stale socket BEFORE closing it; the stale
+    // socket's late close event must hit the open handler's identity guard and
+    // leave the fresh socket intact (same invariant reconnect() relies on).
+    const ws = new GraceWs("ws://localhost:8765", makeHandlers());
+    ws.connect();
+    const stale = instanceSocket(ws);
+    expect(stale).not.toBeNull();
+    forceReadyState(stale!, 1); // WebSocket.OPEN — the zombie case
+
+    ws.forceReconnect();
+    const fresh = instanceSocket(ws);
+    expect(fresh).not.toBeNull();
+    expect(fresh).not.toBe(stale);
+
+    // The detached stale socket finally fires its close — must NOT null the fresh.
+    stale!.dispatchEvent(new CloseEvent("close", { code: 1006 }));
+    expect(instanceSocket(ws)).toBe(fresh);
+
+    // Fresh socket is still live: a send goes through.
+    forceReadyState(fresh!, 1); // WebSocket.OPEN
+    const sendSpy = vi.spyOn(fresh!, "send").mockImplementation(() => undefined);
+    ws.requestSessionState();
+    expect(sendSpy).toHaveBeenCalledOnce();
+
+    ws.close();
+  });
+
+  it("keeps the SESSION_HUB registration (does NOT unregister like close())", () => {
+    // forceReconnect must NOT call the full close() — that would unregister from
+    // the fan-out hub and permanently break cross-instance session-state
+    // delivery for this instance.
+    const ws = new GraceWs("ws://localhost:8765", makeHandlers());
+    expect(__test_sessionHubSize(ws.session)).toBe(1);
+    ws.connect();
+    const socket = instanceSocket(ws);
+    forceReadyState(socket!, 1); // OPEN
+
+    ws.forceReconnect();
+
+    // Still registered after the unconditional teardown + re-open.
+    expect(__test_sessionHubSize(ws.session)).toBe(1);
+
+    ws.close();
+    expect(__test_sessionHubSize(ws.session)).toBe(0);
   });
 });

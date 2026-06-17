@@ -19,7 +19,6 @@ import {
   applyVisibilityOverrides,
   readLayerVisibilityOverrides,
   writeLayerVisibilityOverride,
-  isHorizontalSwipeRight,
 } from "./LayerPanel";
 import { ProjectLayerSummary, SessionStatePayload } from "./contracts";
 
@@ -241,6 +240,54 @@ describe("LayerPanel — no nudge buttons (job-0173 Part 4)", () => {
     render(<LayerPanel initialLayers={[makeLayer("a")]} />);
     expect(screen.getByTestId("layer-visibility")).toBeInTheDocument();
     expect(screen.getByTestId("layer-opacity")).toBeInTheDocument();
+  });
+});
+
+// --- F53 (job-0326): raw glyphs replaced by shared Phosphor icons -------- //
+//
+// The close (×), trash, and eye glyphs are now rendered via the shared icon
+// module (IconClose / IconDelete / IconEye / IconEyeOff) — never hardcoded
+// unicode. These assert the raw close glyph is gone and the controls render an
+// <svg> (Phosphor) rather than a literal character.
+
+describe("LayerPanel — icons come from the shared module (job-0326 F53)", () => {
+  it("the close button renders an svg icon, not a raw × glyph", () => {
+    render(
+      <LayerPanel initialLayers={[makeLayer("a")]} onClose={() => {}} />,
+    );
+    const closeBtn = screen.getByTestId("grace2-layer-panel-close");
+    expect(closeBtn.textContent ?? "").not.toContain("×");
+    expect(closeBtn.querySelector("svg")).not.toBeNull();
+  });
+
+  it("the delete control renders an svg icon (IconDelete)", () => {
+    render(<LayerPanel initialLayers={[makeLayer("a")]} />);
+    const del = screen.getByTestId("layer-delete");
+    expect(del.querySelector("svg")).not.toBeNull();
+  });
+
+  it("the visibility toggle renders an eye svg icon for both states", () => {
+    const visible = render(
+      <LayerPanel initialLayers={[{ ...makeLayer("a"), visible: true }]} />,
+    );
+    // visible -> IconEye svg present beside the (visually hidden) checkbox.
+    expect(
+      screen.getByTestId("layer-visibility").parentElement?.querySelector("svg"),
+    ).not.toBeNull();
+    visible.unmount();
+
+    render(<LayerPanel initialLayers={[{ ...makeLayer("b"), visible: false }]} />);
+    // hidden -> IconEyeOff svg present.
+    expect(
+      screen.getByTestId("layer-visibility").parentElement?.querySelector("svg"),
+    ).not.toBeNull();
+  });
+
+  it("no raw × glyph appears anywhere in the rendered panel", () => {
+    const { container } = render(
+      <LayerPanel initialLayers={[makeLayer("a")]} onClose={() => {}} />,
+    );
+    expect(container.textContent ?? "").not.toContain("×");
   });
 });
 
@@ -584,45 +631,15 @@ describe("LayerPanel — per-layer delete control + confirm gating (job-0325 F53
   });
 });
 
-// --- F53-COMPLETE (job-0322): horizontal swipe-right predicate ----------- //
+// --- F53 (job-0326): mobile swipe-right-to-delete gesture REMOVED -------- //
 //
-// The mobile swipe-right-to-delete gesture must NOT fight the @dnd-kit vertical
-// drag-to-reorder. `isHorizontalSwipeRight(dx, dy)` is the pure discriminator:
-// rightward (dx > 0), past the threshold, and horizontally DOMINANT (|dx| > |dy|).
+// NATE reversed the earlier swipe-to-delete call: the gesture is dropped
+// ENTIRELY. The per-row trash control is now the SOLE delete affordance on BOTH
+// desktop and mobile. These regression tests assert the swipe gesture no longer
+// exists — a horizontal-dominant swipe-right on a row must NOT open the dialog,
+// on mobile OR desktop. (A pointer drag is now purely dnd-kit reorder territory.)
 
-describe("isHorizontalSwipeRight predicate (job-0322 F53-COMPLETE)", () => {
-  it("true for a clear rightward, horizontally-dominant swipe", () => {
-    expect(isHorizontalSwipeRight(80, 5)).toBe(true);
-    expect(isHorizontalSwipeRight(60, -10)).toBe(true);
-  });
-
-  it("false for a vertical-dominant drag (reorder territory) even if past threshold", () => {
-    expect(isHorizontalSwipeRight(60, 70)).toBe(false); // |dy| >= |dx|
-    expect(isHorizontalSwipeRight(60, 60)).toBe(false); // tie → vertical wins
-  });
-
-  it("false for a leftward swipe (only RIGHT deletes)", () => {
-    expect(isHorizontalSwipeRight(-80, 2)).toBe(false);
-  });
-
-  it("false when below the horizontal threshold", () => {
-    expect(isHorizontalSwipeRight(20, 2)).toBe(false);
-    expect(isHorizontalSwipeRight(55, 0, 56)).toBe(false); // just under custom thr
-    expect(isHorizontalSwipeRight(56, 0, 56)).toBe(true); // exactly at threshold
-  });
-
-  it("false for non-finite inputs", () => {
-    expect(isHorizontalSwipeRight(Number.NaN, 0)).toBe(false);
-    expect(isHorizontalSwipeRight(80, Number.POSITIVE_INFINITY)).toBe(false);
-  });
-});
-
-// --- F53-COMPLETE (job-0322): mobile swipe-right opens the dialog -------- //
-//
-// On the `mobile` prop, a horizontal-dominant swipe-right on a row opens the
-// same confirm dialog as the trash control; a mostly-vertical drag does NOT.
-
-describe("LayerPanel — mobile swipe-right-to-delete (job-0322 F53-COMPLETE)", () => {
+describe("LayerPanel — swipe-to-delete gesture removed (job-0326 F53)", () => {
   afterEach(() => {
     try { localStorage.clear(); } catch { /* ignore */ }
   });
@@ -633,7 +650,12 @@ describe("LayerPanel — mobile swipe-right-to-delete (job-0322 F53-COMPLETE)", 
     fireEvent.pointerUp(row, { clientX: 100 + dx, clientY: 100 + dy });
   }
 
-  it("a horizontal-dominant swipe-right opens the confirm dialog (mobile)", () => {
+  it("the swipe predicate export is gone from the module", async () => {
+    const mod = (await import("./LayerPanel")) as Record<string, unknown>;
+    expect(mod.isHorizontalSwipeRight).toBeUndefined();
+  });
+
+  it("a horizontal-dominant swipe-right does NOT open the dialog (mobile)", () => {
     const onDeleteLayer = vi.fn<(id: string) => void>();
     render(
       <LayerPanel
@@ -643,36 +665,70 @@ describe("LayerPanel — mobile swipe-right-to-delete (job-0322 F53-COMPLETE)", 
       />,
     );
     swipeRow(screen.getByTestId("layer-row"), 90, 8);
-    // Dialog opened (gated) — no immediate delete.
-    expect(screen.getByTestId(DELETE_DIALOG)).toBeInTheDocument();
+    expect(screen.queryByTestId(DELETE_DIALOG)).toBeNull();
     expect(onDeleteLayer).not.toHaveBeenCalled();
-    // Confirm runs the delete.
+  });
+
+  it("a swipe-right does NOT open the dialog on desktop either", () => {
+    render(<LayerPanel initialLayers={[makeLayer("flood-demo")]} />);
+    swipeRow(screen.getByTestId("layer-row"), 90, 5);
+    expect(screen.queryByTestId(DELETE_DIALOG)).toBeNull();
+  });
+
+  it("the explicit trash control is still the delete path AFTER a swipe (mobile)", () => {
+    const onDeleteLayer = vi.fn<(id: string) => void>();
+    render(
+      <LayerPanel
+        initialLayers={[makeLayer("flood-demo")]}
+        onDeleteLayer={onDeleteLayer}
+        mobile
+      />,
+    );
+    // The swipe is inert...
+    swipeRow(screen.getByTestId("layer-row"), 90, 8);
+    expect(screen.queryByTestId(DELETE_DIALOG)).toBeNull();
+    // ...but the trash icon still opens the dialog -> confirm deletes.
+    fireEvent.click(screen.getByTestId("layer-delete"));
+    expect(screen.getByTestId(DELETE_DIALOG)).toBeInTheDocument();
     fireEvent.click(screen.getByTestId(`${DELETE_DIALOG}-confirm`));
     expect(onDeleteLayer).toHaveBeenCalledWith("flood-demo");
   });
 
-  it("a vertical-dominant drag does NOT open the dialog (left to dnd-kit reorder)", () => {
-    render(
-      <LayerPanel initialLayers={[makeLayer("flood-demo")]} mobile />,
-    );
-    swipeRow(screen.getByTestId("layer-row"), 10, 90); // mostly vertical
-    expect(screen.queryByTestId(DELETE_DIALOG)).toBeNull();
+  it("the delete (trash) control is present on mobile rows too", () => {
+    render(<LayerPanel initialLayers={[makeLayer("a"), makeLayer("b", 2)]} mobile />);
+    expect(screen.getAllByTestId("layer-delete")).toHaveLength(2);
+  });
+});
+
+// --- F53 (job-0326): ConfirmationDialog portals to document.body --------- //
+//
+// The dialog is portaled to document.body via ReactDOM.createPortal so it always
+// renders as a true full-screen overlay regardless of the LayerPanel's
+// (absolutely-positioned, backdrop-filtered) stacking context.
+
+describe("LayerPanel — delete dialog portals to document.body (job-0326 F53)", () => {
+  afterEach(() => {
+    try { localStorage.clear(); } catch { /* ignore */ }
   });
 
-  it("a leftward swipe does NOT open the dialog", () => {
-    render(
-      <LayerPanel initialLayers={[makeLayer("flood-demo")]} mobile />,
-    );
-    swipeRow(screen.getByTestId("layer-row"), -90, 5);
-    expect(screen.queryByTestId(DELETE_DIALOG)).toBeNull();
+  it("renders the dialog as a direct descendant of document.body (not inside the panel)", () => {
+    render(<LayerPanel initialLayers={[makeLayer("flood-demo")]} />);
+    fireEvent.click(screen.getByTestId("layer-delete"));
+
+    const backdrop = screen.getByTestId(`${DELETE_DIALOG}-backdrop`);
+    // Portaled: the backdrop is NOT contained within the layer panel <aside>.
+    const panel = screen.getByTestId("grace2-layer-panel");
+    expect(panel.contains(backdrop)).toBe(false);
+    // It lives under document.body directly (the portal target).
+    expect(document.body.contains(backdrop)).toBe(true);
+    expect(backdrop.parentElement).toBe(document.body);
   });
 
-  it("swipe is INERT on desktop (no mobile prop) — gesture ignored", () => {
-    render(
-      <LayerPanel initialLayers={[makeLayer("flood-demo")]} />,
-    );
-    swipeRow(screen.getByTestId("layer-row"), 90, 5);
-    expect(screen.queryByTestId(DELETE_DIALOG)).toBeNull();
+  it("the portaled backdrop is a fixed, full-viewport overlay", () => {
+    render(<LayerPanel initialLayers={[makeLayer("flood-demo")]} />);
+    fireEvent.click(screen.getByTestId("layer-delete"));
+    const backdrop = screen.getByTestId(`${DELETE_DIALOG}-backdrop`);
+    expect(backdrop).toHaveStyle({ position: "fixed" });
   });
 });
 

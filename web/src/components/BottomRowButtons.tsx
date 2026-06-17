@@ -4,10 +4,12 @@
 // Settings opens a full-screen popup (handled in App.tsx). Styled as a
 // subtle rounded pill, dark-theme aware.
 //
-// job-0321 F29: the standalone [🔑 Secrets] pill is RETIRED — API-key
+// job-0321 F29: the standalone [Secrets] pill is RETIRED — API-key
 // management now lives INSIDE the Settings popup (SettingsPopup's embedded
 // SecretsPanel). The `onOpenSecrets` prop is kept OPTIONAL for backwards
 // compatibility, but the Secrets pill only renders when it is supplied.
+
+import { IconSettings, IconKey } from "./icons";
 
 export interface BottomRowButtonsProps {
   onOpenSettings: () => void;
@@ -102,7 +104,7 @@ export function BottomRowButtons({
         style={pillStyle}
         aria-label="Open settings"
       >
-        <span aria-hidden="true">⚙</span>
+        <IconSettings size={14} />
         <span>Settings</span>
       </button>
       {/* job-0321 F29 — the standalone Secrets pill is retired (API keys now
@@ -115,7 +117,7 @@ export function BottomRowButtons({
           style={pillStyle}
           aria-label="Open API keys"
         >
-          <span aria-hidden="true">🔑</span>
+          <IconKey size={14} />
           <span>Secrets</span>
         </button>
       )}

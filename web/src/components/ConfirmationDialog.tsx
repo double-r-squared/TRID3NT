@@ -12,8 +12,19 @@
 //
 // Invariant 9 (no cost theater): no cost / quota / quote field on the dialog.
 // Pure user-facing confirmation surface.
+//
+// F53 (job-0326): the dialog is PORTALED to document.body via
+// ReactDOM.createPortal so it always renders as a true full-screen overlay
+// regardless of the ancestor's stacking context. Previously it rendered inline
+// inside its caller (e.g. the absolutely-positioned, backdrop-filtered
+// LayerPanel <aside>), so `position: fixed` + `inset: 0` was resolved against
+// that transformed/filtered ancestor's containing block rather than the
+// viewport — the "full-screen" overlay was clipped to the panel. Portaling to
+// body hoists it out of every local stacking context (this also hardens the
+// Cases delete dialog, which shares this component).
 
 import { useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 
 export interface ConfirmationDialogProps {
   /** Title rendered at the top of the modal. Short — e.g. "Delete Case?". */
@@ -59,7 +70,7 @@ export function ConfirmationDialog({
     return () => window.removeEventListener("keydown", onKey);
   }, [onConfirm, onCancel]);
 
-  return (
+  return createPortal(
     <div
       data-testid={`${testId}-backdrop`}
       onClick={onCancel}
@@ -137,7 +148,8 @@ export function ConfirmationDialog({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

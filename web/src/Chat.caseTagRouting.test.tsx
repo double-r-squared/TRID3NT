@@ -16,9 +16,10 @@ import {
 } from "./Chat";
 import type {
   AgentMessageChunkPayload,
-  ChartPayload,
   PipelineStatePayload,
 } from "./contracts";
+// ChartPayload is defined alongside the chart UI, not in contracts.ts.
+import type { ChartPayload } from "./components/ChartStack";
 
 const chunk = (id: string, delta: string): AgentMessageChunkPayload =>
   ({ message_id: id, delta, done: false }) as AgentMessageChunkPayload;

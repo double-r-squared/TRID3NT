@@ -79,6 +79,7 @@ import {
   MobileDrawer,
   MobileDrawerButton,
 } from "./components/MobileDrawer";
+import { IconMenu, IconSettings } from "./components/icons";
 import {
   CaseListEnvelopePayload,
   CaseOpenEnvelopePayload,
@@ -635,28 +636,38 @@ export function App(): JSX.Element {
     // never changes, so this effect runs exactly once as before.
   }, [bus, fanoutSourceSuggestion, useCases_onCaseList, useCases_onCaseOpen, handleChartEmission, handlePayloadWarning, authEpoch]);
 
-  // job-0322 F31 — resume-repaint. Mobile browsers tear down (or silently
-  // wedge) the WebSocket when the tab is backgrounded; on return the in-memory
-  // layers were never re-pulled, so the map looks empty until a Case reopen.
-  // On `visibilitychange → visible` we (1) revive a dropped socket via
-  // reconnect() (no-op when still OPEN/CONNECTING) then (2) re-request the
-  // authoritative session-state via requestSessionState() (no-op unless OPEN)
-  // so the Map reconciles the layers back through replace-not-reconcile.
+  // job-0322 F31 — resume-repaint (iOS zombie-socket fix). Mobile browsers
+  // tear down (or silently wedge) the WebSocket when the tab is backgrounded;
+  // on return the in-memory layers were never re-pulled, so the map looks empty
+  // until a Case reopen.
   //
-  // Both calls are idempotent: resume while still connected costs exactly one
-  // harmless `session-resume` round-trip and leaves the socket untouched. The
-  // wsRef null-guard covers the brief window between unmount and re-mount.
+  // On `visibilitychange → visible`:
+  //   - MOBILE: iOS Safari leaves the socket nominally `OPEN` while the
+  //     underlying connection is dead, so the lighter reconnect() path no-ops
+  //     and requestSessionState() sends `session-resume` into a dead socket
+  //     (the server never re-emits session-state). We call forceReconnect()
+  //     which UNCONDITIONALLY tears the socket down and re-opens; the fresh
+  //     open handler re-sends auth-token + session-resume, so the layers
+  //     reconcile back through replace-not-reconcile (Appendix A.7). No
+  //     separate requestSessionState() — the open handler resumes for us.
+  //   - DESKTOP: the socket reliably fires `close` when it actually drops, so
+  //     the cheaper reconnect() (revive only if dropped) + requestSessionState()
+  //     (re-pull on the live socket) is enough and avoids needlessly dropping a
+  //     healthy connection. Both are idempotent.
+  //
+  // The wsRef null-guard covers the brief window between unmount and re-mount.
   useEffect(() => {
     const onVisibility = (): void => {
       if (document.visibilityState !== "visible") return;
       const ws = wsRef.current;
       if (!ws) return;
-      // Revive first (dead socket), then pull state (live socket). When the
-      // socket was merely backgrounded-but-open, reconnect() no-ops and
-      // requestSessionState() does the repaint; when it was torn down,
-      // reconnect() re-opens and its open handler re-sends session-resume,
-      // so the immediate requestSessionState() (which no-ops on the not-yet-
-      // OPEN socket) is harmlessly redundant.
+      if (isMobile) {
+        // Zombie-socket-safe: unconditionally re-open. The fresh open handler
+        // re-sends session-resume itself, so no separate requestSessionState().
+        ws.forceReconnect();
+        return;
+      }
+      // Desktop: revive first (dead socket), then pull state (live socket).
       ws.reconnect();
       ws.requestSessionState();
     };
@@ -664,7 +675,7 @@ export function App(): JSX.Element {
     return () => {
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, []);
+  }, [isMobile]);
 
   // job-0137: Case rehydration replay.
   useEffect(() => {
@@ -1054,7 +1065,8 @@ export function App(): JSX.Element {
           onClick={expandLeft}
           style={{ ...hamburgerBtnStyle, left: 12 }}
         >
-          ☰
+          {/* job-0322 F52 — icon-module glyph (no raw unicode ☰). */}
+          <IconMenu size={18} />
         </button>
       )}
 
@@ -1068,7 +1080,8 @@ export function App(): JSX.Element {
           onClick={expandRight}
           style={{ ...hamburgerBtnStyle, right: 12 }}
         >
-          ☰
+          {/* job-0322 F52 — icon-module glyph (no raw unicode ☰). */}
+          <IconMenu size={18} />
         </button>
       )}
 
@@ -1110,14 +1123,14 @@ export function App(): JSX.Element {
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            fontSize: 20,
             lineHeight: 1,
             zIndex: 36,
             fontFamily:
               "-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif",
           }}
         >
-          <span aria-hidden="true">⚙</span>
+          {/* job-0322 F29 — icon-module gear (no raw unicode ⚙). */}
+          <IconSettings size={20} />
         </button>
       )}
 
@@ -1131,29 +1144,49 @@ export function App(): JSX.Element {
           onClose={() => setMobileDrawerOpen(false)}
         >
           {activeCaseId === null ? (
-            <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
-              <CasesPanel
-                cases={cases}
-                activeCaseId={activeCaseId}
-                onCreate={onCreateGated}
-                onSelect={(caseId) => {
-                  selectCase(caseId);
-                  setMobileDrawerOpen(false);
-                }}
-                onRename={onRenameGated}
-                onArchive={onArchiveGated}
-                onDelete={onDeleteGated}
-              />
+            // job-0322 F52 (v2) — the layout wrapper is click-transparent so
+            // empty/gutter taps fall through to the drawer backdrop (close);
+            // the inner wrapper hugs the CasesPanel card and re-enables
+            // hit-testing (`pointerEvents: "auto"`) so the card (and the
+            // fixed ConfirmationDialog it mounts) still receive taps.
+            <div
+              style={{
+                flex: 1,
+                minHeight: 0,
+                overflowY: "auto",
+                pointerEvents: "none",
+              }}
+            >
+              <div style={{ width: "fit-content", pointerEvents: "auto" }}>
+                <CasesPanel
+                  cases={cases}
+                  activeCaseId={activeCaseId}
+                  onCreate={onCreateGated}
+                  onSelect={(caseId) => {
+                    selectCase(caseId);
+                    setMobileDrawerOpen(false);
+                  }}
+                  onRename={onRenameGated}
+                  onArchive={onArchiveGated}
+                  onDelete={onDeleteGated}
+                />
+              </div>
             </div>
           ) : (
             <>
               {/* job-0284 — mobile: the "Cases" breadcrumb link is the
-                  SINGLE back affordance (no ← arrow). */}
-              <CaseView
-                caseTitle={activeCase?.title ?? "Case"}
-                onBack={handleCaseBack}
-                mobile
-              />
+                  SINGLE back affordance (no ← arrow).
+                  job-0322 F52 (v2) — wrap in a `pointerEvents: "auto"` hugger
+                  so the breadcrumb card stays tappable even though the drawer
+                  column above is click-transparent (gutter taps fall through to
+                  the backdrop = close). */}
+              <div style={{ width: "fit-content", pointerEvents: "auto" }}>
+                <CaseView
+                  caseTitle={activeCase?.title ?? "Case"}
+                  onBack={handleCaseBack}
+                  mobile
+                />
+              </div>
               {layers.length === 0 ? (
                 <div
                   data-testid="grace2-case-view-empty-layers"
@@ -1169,15 +1202,36 @@ export function App(): JSX.Element {
                     textAlign: "center",
                     lineHeight: 1.4,
                     boxSizing: "border-box",
+                    // job-0322 F52 (v2) — this card is an actual component, so
+                    // it re-enables hit-testing above the click-transparent
+                    // drawer column. (It has no interactive controls today, but
+                    // keeping it `auto` matches the spec and is forward-safe.)
+                    pointerEvents: "auto",
                   }}
                 >
                   No layers loaded yet. Ask the assistant to add data.
                 </div>
               ) : (
-                <div style={{ position: "relative", flex: 1, minHeight: 0 }}>
+                <div
+                  style={{
+                    position: "relative",
+                    flex: 1,
+                    minHeight: 0,
+                    // job-0322 F52 (v2) — the LayerPanel layout wrapper is
+                    // click-transparent so gutter taps around the panel fall
+                    // through to the backdrop (close). LayerPanel itself
+                    // re-enables hit-testing via the `auto` wrapper below.
+                    pointerEvents: "none",
+                  }}
+                >
                   {/* LayerPanel positions itself absolutely (left:16 /
                       top:16 / bottom:16 / width:288) relative to this
-                      wrapper — it fills the drawer column. */}
+                      wrapper — it fills the drawer column.
+                      job-0322 F52 (v2) — `pointerEvents: "auto"` wrapper
+                      restores hit-testing for the absolutely-positioned panel
+                      (pointer-events inherits down the DOM tree regardless of
+                      layout position). */}
+                  <div style={{ pointerEvents: "auto" }}>
                   <LayerPanel
                     subscribeSessionState={bus.subscribeSessionState}
                     subscribeMapCommand={bus.subscribeMapCommand}
@@ -1191,22 +1245,16 @@ export function App(): JSX.Element {
                     onDeleteLayer={(id) => wsRef.current?.sendDeleteLayer(id)}
                     mobile
                   />
+                  </div>
                 </div>
               )}
             </>
           )}
-          {/* job-0321 F29 — drawer footer keeps only the Settings pill; API
-              keys are now reached via Settings (and via the mobile top-right
-              Settings button). The standalone Secrets pill is retired. */}
-          <div style={{ flex: "0 0 auto", paddingTop: 8 }}>
-            <BottomRowButtons
-              variant="inline"
-              onOpenSettings={() => {
-                setMobileDrawerOpen(false);
-                setSettingsOpen(true);
-              }}
-            />
-          </div>
+          {/* job-0322 F29 — the drawer-footer Settings pill is REMOVED. The
+              mobile-only top-right gear button (grace2-mobile-settings-button,
+              above) is now the SOLE mobile Settings entry; API keys still live
+              inside the SettingsPopup it opens. The desktop bottom-left
+              BottomRowButtons pill is unchanged. */}
         </MobileDrawer>
       )}
 

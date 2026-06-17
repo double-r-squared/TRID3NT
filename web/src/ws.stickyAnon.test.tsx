@@ -49,7 +49,9 @@ function lastOpenedSocket(): WebSocket | null {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const sockets = (window as any).__webSockets as WebSocket[] | undefined;
   if (!sockets || sockets.length === 0) return null;
-  return sockets[sockets.length - 1];
+  // The length guard above proves this index is populated; the
+  // non-null assertion satisfies noUncheckedIndexedAccess.
+  return sockets[sockets.length - 1]!;
 }
 
 function injectMessage(ws: WebSocket, raw: string): void {
@@ -112,7 +114,7 @@ describe("sticky anonymous user_id (job-0172 Part C)", () => {
   });
 
   it("forwards auth-ack to the onAuthAck handler when provided", () => {
-    const onAuthAck = vi.fn<[AuthAckPayload], void>();
+    const onAuthAck = vi.fn<(p: AuthAckPayload) => void>();
     const handlers = makeHandlers({ onAuthAck });
     const ws = new GraceWs("ws://localhost:8765", handlers);
     ws.connect();

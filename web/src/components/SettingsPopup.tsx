@@ -13,6 +13,7 @@
 // backdrop, centred card, Esc / click-backdrop / X to dismiss.
 
 import { useEffect, useState } from "react";
+import { IconClose } from "./icons";
 import type { MapTheme } from "../Map";
 import { SecretsPanel } from "./SecretsPanel";
 import type { ProviderID, SecretRecord } from "../contracts";
@@ -291,7 +292,7 @@ export function SettingsPopup({
           onClick={onClose}
           style={closeBtnStyle}
         >
-          ✕
+          <IconClose size={18} />
         </button>
         <h2 style={headerStyle}>Settings</h2>
 

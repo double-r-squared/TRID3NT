@@ -29,6 +29,7 @@
 // header button. Esc / backdrop / X to dismiss.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { IconClose, IconChevronRight } from "./icons";
 
 // ---------------------------------------------------------------------------
 // Wire types — mirror /api/telemetry/summary response shape.
@@ -449,7 +450,7 @@ export function RoutingQualityDashboard({
           onClick={onClose}
           style={closeBtnStyle}
         >
-          ✕
+          <IconClose size={18} />
         </button>
 
         <div style={headerRowStyle}>
@@ -704,9 +705,22 @@ export function RoutingQualityDashboard({
                           fontFamily:
                             "'JetBrains Mono', 'Fira Code', monospace",
                           color: "#dfe5f0",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 2,
                         }}
                       >
-                        {c.chain.join(" → ")}
+                        {c.chain.map((step, si) => (
+                          <span
+                            key={`step-${si}`}
+                            style={{ display: "inline-flex", alignItems: "center", gap: 2 }}
+                          >
+                            {si > 0 && (
+                              <IconChevronRight size={11} color="#9aa0ad" />
+                            )}
+                            <span>{step}</span>
+                          </span>
+                        ))}
                       </code>
                       <span style={{ color: "#9aa0ad" }}>× {c.count}</span>
                     </span>

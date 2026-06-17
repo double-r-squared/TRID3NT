@@ -22,6 +22,7 @@
 // floating-card surfaces to this drawer.
 
 import { useEffect } from "react";
+import { IconMenu } from "./icons";
 
 export interface MobileDrawerButtonProps {
   onClick: () => void;
@@ -66,12 +67,12 @@ export function MobileDrawerButton({
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        fontSize: 20,
         zIndex: 30,
         lineHeight: 1,
       }}
     >
-      ☰
+      {/* job-0322 F52 — icon-module glyph (no raw unicode ☰). */}
+      <IconMenu size={20} />
     </button>
   );
 }
@@ -130,22 +131,21 @@ export function MobileDrawer({
         className="grace2-mobile-touch"
         role="dialog"
         aria-label="Cases and layers"
-        // job-0322 F52 — tap-to-dismiss fix. The transparent 320px column
-        // sits ABOVE the z=40 backdrop, so gutter taps (inside the column but
-        // outside a floating card) used to land on this column — which had no
-        // close handler — and the drawer stayed open. Attach onClose here but
-        // guard with `e.target === e.currentTarget`: only taps that land
-        // DIRECTLY on this column element (the empty gutter between/around the
-        // floating cards) close. Taps that bubble up from an interactive child
-        // (a Case row, a rename/archive/delete button, the ConfirmationDialog
-        // and its own fixed backdrop) have e.target set to that descendant, so
-        // they DON'T match and the drawer stays open — letting the child's own
-        // handler run (onSelect, onDelete, the dialog's onCancel, etc.). No
-        // stopPropagation needed on the children, and the fixed-position
-        // ConfirmationDialog (a descendant in this subtree) keeps working.
-        onClick={(e) => {
-          if (e.target === e.currentTarget) onClose();
-        }}
+        // job-0322 F52 (v2) — tap-anywhere-outside-a-component dismiss. The
+        // earlier `e.target === e.currentTarget` guard only closed on a tap
+        // that landed DIRECTLY on this bare column element; taps that landed on
+        // the App.tsx layout wrappers (the flex:1 cases wrapper / the
+        // position:relative LayerPanel wrapper) or any card subtree set
+        // e.target to a descendant and so never closed. The new approach is
+        // pointer-events based: this transparent column is `pointerEvents:
+        // "none"` so every tap on its empty/gutter space passes THROUGH to the
+        // full-screen invisible backdrop below (z=40, onClick=onClose) and
+        // closes the drawer. The ACTUAL interactive cards re-enable hit-testing
+        // with `pointerEvents: "auto"` (CasesPanel / CaseView / LayerPanel /
+        // empty-layers card, wired from App.tsx), so taps on real components
+        // still work and the fixed-position ConfirmationDialog (a descendant in
+        // an `auto` subtree) keeps receiving events. No onClick on the column
+        // itself anymore — the backdrop owns close.
         style={{
           position: "absolute",
           top: 0,
@@ -166,6 +166,11 @@ export function MobileDrawer({
           // the children's rgba/alpha backgrounds only.
           background: "transparent",
           zIndex: 41,
+          // job-0322 F52 (v2) — the column itself is click-transparent so empty
+          // gutter taps fall through to the z=40 backdrop (tap-to-close). The
+          // floating cards re-enable hit-testing via `pointerEvents: "auto"`
+          // (set by App.tsx on each interactive card / their wrappers).
+          pointerEvents: "none",
           display: "flex",
           flexDirection: "column",
           gap: 8,

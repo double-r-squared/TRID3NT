@@ -312,12 +312,15 @@ describe("SecretsPanel — revoke", () => {
 describe("Tier2UnlockBadge — color flips with unlocked prop", () => {
   afterEach(() => cleanup());
 
-  it("renders GREEN with check glyph when unlocked", () => {
+  it("renders GREEN with check icon when unlocked", () => {
     render(<Tier2UnlockBadge provider="ebird" unlocked={true} />);
     const badge = screen.getByTestId("grace2-tier2-badge-ebird");
     expect(badge).toHaveAttribute("data-unlocked", "true");
     expect(badge.textContent ?? "").toMatch(/eBird/);
-    expect(badge.textContent ?? "").toMatch(/✓/);
+    // The check is now rendered via the shared icon module (IconCheck), so it
+    // is an inline <svg>, not a raw '✓' unicode glyph.
+    expect(badge.querySelector("svg")).not.toBeNull();
+    expect(badge.textContent ?? "").not.toMatch(/✓/);
   });
 
   it("renders GRAY with 'key required' text when locked", () => {

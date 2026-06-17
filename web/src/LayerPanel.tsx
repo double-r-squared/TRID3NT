@@ -57,6 +57,13 @@ import {
   SessionStatePayload,
 } from "./contracts";
 import { ConfirmationDialog } from "./components/ConfirmationDialog";
+import {
+  IconClose,
+  IconDelete,
+  IconDragHandle,
+  IconEye,
+  IconEyeOff,
+} from "./components/icons";
 
 // --- Reducer + state shape --------------------------------------------- //
 //
@@ -385,28 +392,15 @@ export function applyVisibilityOverrides(
   });
 }
 
-// --- F53-COMPLETE (job-0322): mobile swipe-right-to-delete predicate ----- //
+// --- F53 (job-0326): mobile swipe-right-to-delete gesture REMOVED ------- //
 //
-// On MOBILE a row can be swiped horizontally to the RIGHT to request deletion.
-// This MUST NOT fight the @dnd-kit vertical drag-to-reorder (PointerSensor with
-// activationConstraint.distance:4 — see `sensors` below). The discriminator:
-// the gesture only counts as a delete-swipe when it is horizontal-DOMINANT and
-// to the RIGHT — i.e. dx exceeds a threshold AND |dx| strictly dominates |dy|.
-// A mostly-vertical drag (|dy| >= |dx|) is left entirely to dnd-kit; a swipe to
-// the LEFT (dx < 0) is ignored. Pure + exported so the discrimination logic is
-// unit-tested without a real PointerEvent.
-const SWIPE_RIGHT_DELETE_THRESHOLD_PX = 56;
-
-export function isHorizontalSwipeRight(
-  dx: number,
-  dy: number,
-  threshold: number = SWIPE_RIGHT_DELETE_THRESHOLD_PX,
-): boolean {
-  if (!Number.isFinite(dx) || !Number.isFinite(dy)) return false;
-  // Right-directed (dx > 0), past the threshold, and horizontally dominant so
-  // the vertical reorder drag wins any ambiguous / diagonal gesture.
-  return dx >= threshold && Math.abs(dx) > Math.abs(dy);
-}
+// An earlier iteration (job-0322) added a mobile swipe-RIGHT-to-delete gesture
+// alongside the per-row trash control. NATE reversed that call: the swipe
+// gesture is dropped ENTIRELY (swipeStartRef / swipeDx state, the touch/pointer
+// swipe handlers, the visual swipe nudge, and the isHorizontalSwipeRight
+// predicate are all gone). The EXPLICIT trash (delete) icon control on each row
+// is now the sole delete affordance on BOTH desktop and mobile. It still opens
+// the ConfirmationDialog (setPendingDeleteId path); only confirm deletes.
 
 export interface LayerPanelProps {
   initialLayers?: ProjectLayerSummary[];
@@ -592,11 +586,11 @@ export function LayerPanel({
     console.debug("[LayerPanel] opacity intent:", { layerId, opacity: clamped });
   }
 
-  // F53-COMPLETE (job-0322): delete is now gated behind a ConfirmationDialog
-  // ("Confirmation before consequence" Memory invariant — matches CasesPanel's
-  // delete UX). `pendingDeleteId` holds the layer awaiting confirmation; both
-  // the per-row trash button AND the mobile swipe-right gesture set it (open the
-  // dialog). The actual destructive path only runs on confirm.
+  // F53 (job-0326): delete is gated behind a ConfirmationDialog ("Confirmation
+  // before consequence" Memory invariant — matches CasesPanel's delete UX).
+  // `pendingDeleteId` holds the layer awaiting confirmation; the per-row trash
+  // button (the sole delete affordance, desktop + mobile) sets it to open the
+  // dialog. The actual destructive path only runs on confirm.
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
 
   // The layer object behind the pending delete (for the dialog's name in copy).
@@ -605,7 +599,7 @@ export function LayerPanel({
     [state.layers, pendingDeleteId],
   );
 
-  /** Open the confirm dialog for a layer (trash button or mobile swipe-right). */
+  /** Open the confirm dialog for a layer (trash button — desktop + mobile). */
   const requestDelete = useCallback((layerId: string): void => {
     setPendingDeleteId(layerId);
   }, []);
@@ -732,7 +726,6 @@ export function LayerPanel({
               border: "none",
               color: "#8a929e",
               cursor: "pointer",
-              fontSize: 18,
               lineHeight: 1,
               padding: "0 2px",
               display: "flex",
@@ -742,7 +735,7 @@ export function LayerPanel({
             onMouseEnter={(e) => (e.currentTarget.style.color = "#e8e8ec")}
             onMouseLeave={(e) => (e.currentTarget.style.color = "#8a929e")}
           >
-            ×
+            <IconClose size={16} />
           </button>
         )}
       </header>
@@ -782,7 +775,6 @@ export function LayerPanel({
               <SortableRow
                 key={layer.layer_id}
                 layer={layer}
-                mobile={mobile}
                 onVisibilityToggle={onVisibilityToggle}
                 onOpacityChange={onOpacityChange}
                 onRequestDelete={requestDelete}
@@ -791,10 +783,12 @@ export function LayerPanel({
           </SortableContext>
         </DndContext>
       </div>
-      {/* F53-COMPLETE (job-0322): confirm-before-delete. Both the desktop trash
-          control and the mobile swipe-right gesture open this dialog; the
-          destructive path runs only on confirm. Distinct testId so tests +
-          screen readers don't collide with the Cases delete dialog. */}
+      {/* F53 (job-0326): confirm-before-delete. The per-row trash control (the
+          sole delete affordance, desktop + mobile) opens this dialog; the
+          destructive path runs only on confirm. The dialog itself portals to
+          document.body (ConfirmationDialog) so it overlays full-screen above
+          this absolutely-positioned, backdrop-filtered panel. Distinct testId
+          so tests + screen readers don't collide with the Cases delete dialog. */}
       {pendingDeleteLayer && (
         <ConfirmationDialog
           testId="grace2-layer-delete-dialog"
@@ -814,64 +808,14 @@ export function LayerPanel({
 
 interface SortableRowProps {
   layer: ProjectLayerSummary;
-  /** Mobile drawer mode — enables the swipe-right-to-delete gesture. */
-  mobile: boolean;
   onVisibilityToggle: (layerId: string, visible: boolean) => void;
   onOpacityChange: (layerId: string, opacity: number) => void;
-  /** Open the delete-confirm dialog for this row (trash button OR swipe-right). */
+  /** Open the delete-confirm dialog for this row (the trash control). */
   onRequestDelete: (layerId: string) => void;
-}
-
-// Trash glyph — inline SVG so it inherits currentColor and needs no asset.
-// 13px to sit neatly inline beside the kind chip. F53 (job-0325).
-function TrashIcon(): JSX.Element {
-  return (
-    <svg
-      viewBox="0 0 16 16"
-      width="14"
-      height="14"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.4"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-      style={{ display: "block" }}
-    >
-      <path d="M2.5 4h11" />
-      <path d="M6 4V2.8c0-.4.3-.8.8-.8h2.4c.5 0 .8.4.8.8V4" />
-      <path d="M3.8 4l.6 9c0 .6.5 1 1 1h5.2c.5 0 1-.4 1-1l.6-9" />
-      <path d="M6.5 7v4M9.5 7v4" />
-    </svg>
-  );
-}
-
-// Eye glyph — open (visible) / slashed (hidden). Inline SVG so it inherits
-// currentColor and needs no asset. 14px to sit neatly inline.
-function EyeIcon({ visible }: { visible: boolean }): JSX.Element {
-  return (
-    <svg
-      viewBox="0 0 16 16"
-      width="15"
-      height="15"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.4"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-      style={{ display: "block" }}
-    >
-      <path d="M1 8s2.5-4.5 7-4.5S15 8 15 8s-2.5 4.5-7 4.5S1 8 1 8z" />
-      <circle cx="8" cy="8" r="2" />
-      {!visible && <line x1="2.5" y1="2.5" x2="13.5" y2="13.5" />}
-    </svg>
-  );
 }
 
 function SortableRow({
   layer,
-  mobile,
   onVisibilityToggle,
   onOpacityChange,
   onRequestDelete,
@@ -879,53 +823,6 @@ function SortableRow({
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id: layer.layer_id });
 
-  // F53-COMPLETE (job-0322): MOBILE swipe-RIGHT-to-delete. Tracked on the row
-  // wrapper (NOT the drag handle), and only on the `mobile` prop. The @dnd-kit
-  // PointerSensor (distance:4) owns VERTICAL drag-to-reorder; this detector only
-  // fires the delete-confirm when the gesture is horizontal-DOMINANT to the
-  // right (isHorizontalSwipeRight). We never call preventDefault/stopPropagation
-  // on the moves, so an ambiguous gesture can still become a vertical reorder —
-  // the dominance test means only a clearly-horizontal swipe wins.
-  const swipeStartRef = useRef<{ x: number; y: number } | null>(null);
-  // Visual nudge: translate the row rightward as the user swipes (mobile only).
-  const [swipeDx, setSwipeDx] = useState(0);
-
-  const onRowPointerDown = useCallback(
-    (e: React.PointerEvent): void => {
-      if (!mobile) return;
-      swipeStartRef.current = { x: e.clientX, y: e.clientY };
-    },
-    [mobile],
-  );
-  const onRowPointerMove = useCallback(
-    (e: React.PointerEvent): void => {
-      if (!mobile) return;
-      const start = swipeStartRef.current;
-      if (!start) return;
-      const dx = e.clientX - start.x;
-      const dy = e.clientY - start.y;
-      // Only show the rightward nudge while the gesture is horizontal-dominant
-      // and to the right; otherwise leave the row at rest so a vertical reorder
-      // drag looks untouched.
-      setSwipeDx(dx > 0 && Math.abs(dx) > Math.abs(dy) ? dx : 0);
-    },
-    [mobile],
-  );
-  const endSwipe = useCallback(
-    (e: React.PointerEvent): void => {
-      if (!mobile) return;
-      const start = swipeStartRef.current;
-      swipeStartRef.current = null;
-      setSwipeDx(0);
-      if (!start) return;
-      const dx = e.clientX - start.x;
-      const dy = e.clientY - start.y;
-      if (isHorizontalSwipeRight(dx, dy)) {
-        onRequestDelete(layer.layer_id);
-      }
-    },
-    [mobile, onRequestDelete, layer.layer_id],
-  );
   // Hover (or active drag) reveals the compact opacity slider — keeps the
   // resting row clean while controls stay one gesture away. The row also
   // stays "expanded" while the pointer is over it.
@@ -944,20 +841,14 @@ function SortableRow({
       ? clamp01(layer.opacity)
       : 1;
 
-  // While the user is actively swiping a row rightward (mobile), nudge it with a
-  // CSS translate on top of any dnd-kit transform. dnd-kit's transform is null
-  // for a non-dragged row, so during a swipe we just translateX(swipeDx).
-  const dndTransform = CSS.Transform.toString(transform);
-  const swipeTransform = swipeDx > 0 ? `translateX(${swipeDx}px)` : "";
-  const combinedTransform =
-    [dndTransform, swipeTransform].filter(Boolean).join(" ") || undefined;
+  // dnd-kit's transform drives the row's position during a vertical reorder
+  // drag; null for a row at rest.
+  const dndTransform = CSS.Transform.toString(transform) || undefined;
 
   const style: React.CSSProperties = {
-    transform: combinedTransform,
+    transform: dndTransform,
     transition:
-      swipeDx > 0
-        ? "none"
-        : transition ?? "background 140ms ease, border-color 140ms ease, transform 160ms ease",
+      transition ?? "background 140ms ease, border-color 140ms ease, transform 160ms ease",
     background: isDragging
       ? "rgba(70,110,170,0.28)"
       : hovered
@@ -983,14 +874,6 @@ function SortableRow({
       data-layer-id={layer.layer_id}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      // F53-COMPLETE (job-0322): mobile swipe-right-to-delete. No-op on desktop
-      // (guarded by the `mobile` prop inside each handler). The handlers do NOT
-      // stopPropagation, so the dnd-kit listeners on the drag handle still own
-      // vertical reorder; the horizontal-dominance test keeps the two distinct.
-      onPointerDown={onRowPointerDown}
-      onPointerMove={onRowPointerMove}
-      onPointerUp={endSwipe}
-      onPointerCancel={endSwipe}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
         <button
@@ -1014,11 +897,11 @@ function SortableRow({
           }}
           data-testid="layer-drag-handle"
         >
-          ⠿
+          <IconDragHandle size={14} />
         </button>
         {/* Eye toggle. The checkbox input is visually hidden (overlaid) so the
             existing data-testid + a11y contract are preserved while the
-            user sees the polished eye glyph. */}
+            user sees the shared Phosphor eye icon (IconEye / IconEyeOff). */}
         <label
           style={{
             position: "relative",
@@ -1048,7 +931,7 @@ function SortableRow({
               cursor: "pointer",
             }}
           />
-          <EyeIcon visible={layer.visible} />
+          {layer.visible ? <IconEye size={15} /> : <IconEyeOff size={15} />}
         </label>
         <span
           style={{
@@ -1085,13 +968,12 @@ function SortableRow({
         >
           {kind.label}
         </span>
-        {/* F53 (job-0325): per-row delete control. Revealed on hover (like the
-            opacity row) to keep the resting row clean. `onPointerDown`
-            stopPropagation guards against the dnd-kit PointerSensor treating a
-            delete press as the start of a drag (and against the row's own
-            swipe-detector starting from the trash press). F53-COMPLETE
-            (job-0322): now OPENS the confirm dialog (onRequestDelete) rather
-            than deleting immediately. */}
+        {/* F53 (job-0326): per-row delete control — the SOLE delete affordance
+            on BOTH desktop and mobile (the mobile swipe gesture was dropped).
+            Revealed on hover (like the opacity row) to keep the resting row
+            clean. `onPointerDown` stopPropagation guards against the dnd-kit
+            PointerSensor treating a delete press as the start of a drag. Clicking
+            OPENS the confirm dialog (onRequestDelete); only confirm deletes. */}
         <button
           aria-label={`delete layer ${layer.name}`}
           title="Delete layer"
@@ -1125,7 +1007,7 @@ function SortableRow({
             e.currentTarget.style.background = "transparent";
           }}
         >
-          <TrashIcon />
+          <IconDelete size={14} />
         </button>
       </div>
       {/* Opacity row: collapses to 0-height when not hovered for a clean

@@ -38,6 +38,7 @@
 // live in the parent (Chat.tsx).
 
 import { useState } from "react";
+import { IconSandbox, IconWarning, IconChevronRight, IconArrowRight } from "./icons";
 
 // ---------------------------------------------------------------------------
 // Wire shapes (mirrors sandbox_contracts.py — hand-mirrored, no codegen).
@@ -346,8 +347,8 @@ export function SandboxCard({
     >
       {/* Header */}
       <div style={HEADER_STYLE}>
-        <span aria-hidden="true" style={{ color: "#6366f1", fontSize: 14, lineHeight: 1.2, flexShrink: 0 }}>
-          ⬡
+        <span aria-hidden="true" style={{ color: "#6366f1", lineHeight: 1.2, flexShrink: 0, display: "inline-flex" }}>
+          <IconSandbox size={14} weight="bold" />
         </span>
         <strong
           data-testid="sandbox-card-title"
@@ -427,7 +428,9 @@ export function SandboxCard({
           {Object.entries(request.layer_refs).map(([varName, uri]) => (
             <div key={varName} style={{ display: "flex", gap: 6, fontSize: 11 }}>
               <span style={{ fontFamily: MONO_FONT, color: "#93c5fd" }}>{varName}</span>
-              <span style={{ color: "#4b5563" }}>→</span>
+              <span style={{ color: "#4b5563", display: "inline-flex", alignItems: "center" }}>
+                <IconArrowRight size={11} />
+              </span>
               <span style={{ color: "#6b7280", wordBreak: "break-all" }}>{uri}</span>
             </div>
           ))}
@@ -474,9 +477,13 @@ export function SandboxCard({
                 padding: "3px 8px",
                 fontSize: 11,
                 color: "#eab308",
+                display: "flex",
+                alignItems: "center",
+                gap: 5,
               }}
             >
-              ⚠ Output was truncated — some data may be missing.
+              <IconWarning size={12} />
+              Output was truncated — some data may be missing.
             </div>
           )}
 
@@ -693,8 +700,8 @@ function CollapsibleSection({
         }}
         aria-expanded={open}
       >
-        <span aria-hidden="true" style={{ fontSize: 10, transition: "transform 0.15s", transform: open ? "rotate(90deg)" : "none" }}>
-          ▶
+        <span aria-hidden="true" style={{ display: "inline-flex", transition: "transform 0.15s", transform: open ? "rotate(90deg)" : "none" }}>
+          <IconChevronRight size={12} />
         </span>
         {label}
         <span style={{ color: "#4b5563" }}>({content.length} chars)</span>

@@ -205,12 +205,48 @@ export function AgentMessage({ text, done }: AgentMessageProps): JSX.Element {
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={COMPONENTS}>
         {text}
       </ReactMarkdown>
-      {!done && (
-        <span data-testid="agent-cursor" style={{ color: "#888" }}>
-          {" "}
-          ▌
-        </span>
-      )}
+      {!done && <TypingCaret />}
     </div>
+  );
+}
+
+// CSS-drawn blinking caret for the streaming state. This is NOT a unicode
+// glyph and NOT an icon — it's a thin solid block drawn with a styled <span>
+// (background + width/height) that blinks via a keyframe animation. We respect
+// prefers-reduced-motion by holding the caret steady (no blink) for users who
+// have requested reduced motion.
+const CARET_BLINK_CSS = `
+@keyframes grace2-caret-blink {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+.grace2-agent-caret {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: #888;
+  border-radius: 1px;
+  animation: grace2-caret-blink 1s step-end infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .grace2-agent-caret {
+    animation: none;
+    opacity: 1;
+  }
+}
+`;
+
+function TypingCaret(): JSX.Element {
+  return (
+    <>
+      <style>{CARET_BLINK_CSS}</style>
+      <span
+        data-testid="agent-cursor"
+        className="grace2-agent-caret"
+        aria-hidden="true"
+      />
+    </>
   );
 }

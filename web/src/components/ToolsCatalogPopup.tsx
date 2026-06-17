@@ -27,6 +27,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { catalogUrl as catalogUrlFromBase } from "../lib/public_base";
+import { IconClose, IconGlobe } from "./icons";
 
 // ---------------------------------------------------------------------------
 // Wire types (mirror the agent's /api/tool-catalog response shape).
@@ -457,7 +458,7 @@ export function ToolsCatalogPopup({
           onClick={onClose}
           style={closeBtnStyle}
         >
-          ✕
+          <IconClose size={18} />
         </button>
 
         <h2 style={headerStyle}>
@@ -644,9 +645,13 @@ export function ToolsCatalogPopup({
                           border: t.supports_global_query
                             ? "1px solid #4f8a52"
                             : "1px solid #555",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 3,
                         }}
                       >
-                        {t.supports_global_query ? "🌐 global ok" : "🌐̸ scoped"}
+                        <IconGlobe size={11} />
+                        {t.supports_global_query ? "global ok" : "scoped"}
                       </span>
                     </div>
 

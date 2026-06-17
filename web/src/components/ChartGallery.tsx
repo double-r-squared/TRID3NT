@@ -21,6 +21,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Result as VegaEmbedResult } from "vega-embed";
 import type { ChartPayload } from "./ChartStack";
+import { IconClose, IconChevronLeft, IconChevronRight } from "./icons";
 
 export interface ChartGalleryProps {
   /** All charts to browse (typically the full session chart list). */
@@ -364,7 +365,7 @@ export function ChartGallery({
           onClick={onClose}
           style={{ ...closeBtnStyle, position: "absolute", top: 12, right: 12 }}
         >
-          ✕
+          <IconClose size={18} />
         </button>
         <div style={headerRowStyle}>
           <h2
@@ -412,7 +413,8 @@ export function ChartGallery({
             disabled={!canPrev}
             style={canPrev ? navBtnStyle : navBtnDisabledStyle}
           >
-            ‹ Prev
+            <IconChevronLeft size={14} />
+            Prev
           </button>
 
           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
@@ -447,7 +449,8 @@ export function ChartGallery({
             disabled={!canNext}
             style={canNext ? navBtnStyle : navBtnDisabledStyle}
           >
-            Next ›
+            Next
+            <IconChevronRight size={14} />
           </button>
         </div>
       </div>

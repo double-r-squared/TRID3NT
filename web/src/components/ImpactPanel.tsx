@@ -44,6 +44,7 @@
 //   - Close button keyboard-focusable; Esc dismisses.
 
 import { useCallback, useEffect, useState } from "react";
+import { IconClose } from "./icons";
 
 // ---------------------------------------------------------------------------
 // ImpactEnvelope wire shape (mirrors B.6c — kept narrow / forward-compatible).
@@ -577,7 +578,7 @@ export function ImpactPanel({
             onClick={onClose}
             style={closeBtnStyle}
           >
-            ✕
+            <IconClose size={18} />
           </button>
         </header>
 

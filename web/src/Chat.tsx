@@ -95,6 +95,7 @@ import {
   useRunningElapsedMs,
 } from "./components/PipelineCard";
 import { ChatInput, ChatInputState } from "./components/ChatInput";
+import { IconChevronRight } from "./components/icons";
 import { AgentMessage } from "./components/AgentMessage";
 import { UserBubble } from "./components/UserBubble";
 import { ScrollToBottom } from "./components/ScrollToBottom";
@@ -1196,13 +1197,31 @@ export interface SheetToggleHandleProps {
   onResizeEnd?: (heightVh: number) => void;
 }
 
-/** Full-width drag-handle row. F44 (job-0322): the handle is now BOTH a
- * tap-to-fold toggle AND a vertical drag-to-resize grip. A pointer gesture
- * that travels < SHEET_DRAG_THRESHOLD_PX is a TAP (toggles collapse, the
- * legacy behaviour); a larger vertical travel RESIZES the sheet (onResize /
- * onResizeEnd report the clamped vh, derived from the pointer's distance
- * above the viewport bottom). `touchAction:'none'` on the grip lets the
- * browser hand us the raw vertical pan instead of scrolling the page.
+/** Full-width drag-handle row. F44 (job-0322; job-0325 real-iOS fix): the
+ * handle is BOTH a tap-to-fold toggle AND a vertical drag-to-resize grip. A
+ * gesture that travels < SHEET_DRAG_THRESHOLD_PX is a TAP (toggles collapse,
+ * the legacy behaviour); a larger vertical travel RESIZES the sheet (onResize
+ * / onResizeEnd report the clamped vh, derived from the pointer's distance
+ * above the viewport bottom).
+ *
+ * WHY THE PRIOR (pointer-only) FIX FAILED ON REAL iOS (job-0325):
+ *   React 18 attaches its `touchstart`/`touchmove` delegation listeners as
+ *   PASSIVE at the document root, so a `preventDefault()` inside a React
+ *   `onTouchMove` is silently ignored — iOS Safari keeps scrolling the page /
+ *   bouncing rubber-band under the finger and the height never updates. And
+ *   `touch-action:none` alone is honoured inconsistently by older iOS Safari
+ *   on a `<button>`; Safari's Pointer Events on a button can also drop the
+ *   continuous `pointermove` stream mid-drag. So the sheet "wasn't draggable".
+ *
+ *   THE FIX: attach NATIVE, NON-PASSIVE `touchstart`/`touchmove`/`touchend`/
+ *   `touchcancel` listeners directly on the handle DOM node (via a ref +
+ *   addEventListener({ passive:false })) and `preventDefault()` inside
+ *   touchmove. That guarantees iOS hands us the raw vertical pan and the
+ *   height tracks the finger LIVE. The React Pointer handlers stay for
+ *   desktop / Android / pen (and the vitest suite, which fires pointer
+ *   events). A shared gesture engine drives both paths; an `activeInput`
+ *   guard stops the synthetic pointer events iOS also fires from
+ *   double-driving the same physical drag.
  *
  * 44px tall — Apple HIG minimum touch target. job-0280: the handle bar is
  * the SINGLE affordance — the redundant chevron arrow under it is gone; the
@@ -1213,74 +1232,78 @@ export function SheetToggleHandle({
   onResize,
   onResizeEnd,
 }: SheetToggleHandleProps): JSX.Element {
-  // Drag bookkeeping for the active gesture. dragged flips true the moment
-  // the pointer crosses the movement threshold; if it never flips, pointer-up
-  // is a TAP and toggles. lastVh holds the latest clamped height so
-  // onResizeEnd can persist it.
+  // The handle DOM node — native non-passive touch listeners attach here so we
+  // can preventDefault() the vertical pan (React's passive listeners can't).
+  const handleRef = useRef<HTMLButtonElement | null>(null);
+
+  // Drag bookkeeping for the active gesture. `dragged` flips true the moment
+  // the gesture crosses the movement threshold; if it never flips, gesture-end
+  // is a TAP and toggles. `lastVh` holds the latest clamped height so
+  // onResizeEnd can persist it. `input` records which event family OWNS the
+  // gesture so iOS — which fires BOTH touch and synthetic pointer events for
+  // one finger — can't double-drive it (the first family to fire down wins;
+  // the other family's events are ignored until the gesture ends).
   const gesture = useRef<{
     startX: number;
     startY: number;
     dragged: boolean;
     lastVh: number;
-    pointerId: number;
+    input: "pointer" | "touch";
   } | null>(null);
 
   // F44 — pointer Y → sheet height (vh). The sheet is bottom-anchored, so the
-  // visible height is (viewportBottom - pointerY); convert to vh and clamp.
+  // visible height is (viewportBottom - clientY); convert to vh and clamp.
   const heightVhForPointer = useCallback((clientY: number): number => {
     const vph = window.innerHeight || 1;
     const px = Math.max(0, vph - clientY);
     return clampSheetHeight((px / vph) * 100);
   }, []);
 
-  const onPointerDown = useCallback(
-    (e: React.PointerEvent<HTMLButtonElement>): void => {
-      // Only left-button / touch / pen initiate a gesture.
-      if (e.button !== undefined && e.button > 0) return;
+  // --- Shared gesture engine (pointer + native touch both call these) ----- //
+
+  // Begin a gesture. `input` is the event family; a gesture already owned by a
+  // different family is left alone (iOS dual-fires touch + pointer).
+  const beginGesture = useCallback(
+    (input: "pointer" | "touch", clientX: number, clientY: number): void => {
+      if (gesture.current && gesture.current.input !== input) return;
       gesture.current = {
-        startX: e.clientX,
-        startY: e.clientY,
+        startX: clientX,
+        startY: clientY,
         dragged: false,
-        lastVh: heightVhForPointer(e.clientY),
-        pointerId: e.pointerId,
+        lastVh: heightVhForPointer(clientY),
+        input,
       };
-      try {
-        e.currentTarget.setPointerCapture(e.pointerId);
-      } catch {
-        /* setPointerCapture unsupported (happy-dom) — non-fatal */
-      }
     },
     [heightVhForPointer],
   );
 
-  const onPointerMove = useCallback(
-    (e: React.PointerEvent<HTMLButtonElement>): void => {
+  // Advance a gesture. Returns true once the gesture has crossed the drag
+  // threshold (caller uses it to know whether to preventDefault the scroll).
+  const moveGesture = useCallback(
+    (input: "pointer" | "touch", clientX: number, clientY: number): boolean => {
       const g = gesture.current;
-      if (!g || g.pointerId !== e.pointerId) return;
-      const dx = e.clientX - g.startX;
-      const dy = e.clientY - g.startY;
+      if (!g || g.input !== input) return false;
+      const dx = clientX - g.startX;
+      const dy = clientY - g.startY;
       if (!g.dragged && isSheetDragGesture(dx, dy)) {
         g.dragged = true;
       }
       if (g.dragged) {
-        const vh = heightVhForPointer(e.clientY);
+        const vh = heightVhForPointer(clientY);
         g.lastVh = vh;
         onResize?.(vh);
       }
+      return g.dragged;
     },
     [heightVhForPointer, onResize],
   );
 
-  const endGesture = useCallback(
-    (e: React.PointerEvent<HTMLButtonElement>): void => {
+  // End a gesture: a drag persists (onResizeEnd), a tap toggles (onToggle).
+  const finishGesture = useCallback(
+    (input: "pointer" | "touch"): void => {
       const g = gesture.current;
-      if (!g || g.pointerId !== e.pointerId) return;
+      if (!g || g.input !== input) return;
       gesture.current = null;
-      try {
-        e.currentTarget.releasePointerCapture(e.pointerId);
-      } catch {
-        /* non-fatal */
-      }
       if (g.dragged) {
         // A drag resized the sheet — persist, do NOT toggle.
         onResizeEnd?.(g.lastVh);
@@ -1292,8 +1315,89 @@ export function SheetToggleHandle({
     [onResizeEnd, onToggle],
   );
 
+  // --- React Pointer path (desktop / Android / pen + vitest) -------------- //
+
+  const onPointerDown = useCallback(
+    (e: React.PointerEvent<HTMLButtonElement>): void => {
+      // Only left-button / touch / pen initiate a gesture.
+      if (e.button !== undefined && e.button > 0) return;
+      // If a NATIVE touch gesture is already in flight (iOS), ignore the
+      // synthetic pointer twin so we don't double-drive the same finger.
+      if (gesture.current && gesture.current.input === "touch") return;
+      beginGesture("pointer", e.clientX, e.clientY);
+      try {
+        e.currentTarget.setPointerCapture(e.pointerId);
+      } catch {
+        /* setPointerCapture unsupported (happy-dom) — non-fatal */
+      }
+    },
+    [beginGesture],
+  );
+
+  const onPointerMove = useCallback(
+    (e: React.PointerEvent<HTMLButtonElement>): void => {
+      moveGesture("pointer", e.clientX, e.clientY);
+    },
+    [moveGesture],
+  );
+
+  const endGesture = useCallback(
+    (e: React.PointerEvent<HTMLButtonElement>): void => {
+      try {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      } catch {
+        /* non-fatal */
+      }
+      finishGesture("pointer");
+    },
+    [finishGesture],
+  );
+
+  // --- Native NON-PASSIVE touch path (the real-iOS fix, job-0325) --------- //
+  //
+  // Attached imperatively so we can pass { passive:false } and preventDefault
+  // the vertical pan inside touchmove — the ONLY way to stop iOS Safari from
+  // scrolling / rubber-banding the page under a drag started on the handle.
+  // React's JSX onTouch* handlers can't do this (its root listeners are
+  // passive). Re-binds when the engine callbacks change so the latest
+  // onResize/onToggle closures are used.
+  useEffect(() => {
+    const el = handleRef.current;
+    if (!el) return;
+
+    const onTouchStart = (e: TouchEvent): void => {
+      if (e.touches.length !== 1) return; // ignore multi-touch / pinch
+      const t = e.touches[0]!;
+      beginGesture("touch", t.clientX, t.clientY);
+    };
+    const onTouchMove = (e: TouchEvent): void => {
+      const t = e.touches[0];
+      if (!t) return;
+      const dragging = moveGesture("touch", t.clientX, t.clientY);
+      // Once this is a real drag, OWN the gesture: stop the page from
+      // scrolling / bouncing under the finger so the sheet tracks it live.
+      if (dragging && e.cancelable) e.preventDefault();
+    };
+    const onTouchEnd = (): void => {
+      finishGesture("touch");
+    };
+
+    // passive:false is REQUIRED for preventDefault to take effect on iOS.
+    el.addEventListener("touchstart", onTouchStart, { passive: false });
+    el.addEventListener("touchmove", onTouchMove, { passive: false });
+    el.addEventListener("touchend", onTouchEnd, { passive: false });
+    el.addEventListener("touchcancel", onTouchEnd, { passive: false });
+    return () => {
+      el.removeEventListener("touchstart", onTouchStart);
+      el.removeEventListener("touchmove", onTouchMove);
+      el.removeEventListener("touchend", onTouchEnd);
+      el.removeEventListener("touchcancel", onTouchEnd);
+    };
+  }, [beginGesture, moveGesture, finishGesture]);
+
   return (
     <button
+      ref={handleRef}
       data-testid="grace2-chat-sheet-toggle"
       aria-label={expanded ? "Collapse chat" : "Expand chat"}
       aria-expanded={expanded}
@@ -1316,9 +1420,17 @@ export function SheetToggleHandle({
         color: "#888",
         fontFamily: "inherit",
         // F44 — let us own the vertical pan (drag-to-resize) instead of the
-        // browser scrolling the page under the gesture.
+        // browser scrolling the page under the gesture. `touch-action:none`
+        // is the hint; the NATIVE non-passive touchmove preventDefault
+        // (attached above) is the belt to this suspenders — together they
+        // stop iOS Safari from scrolling / rubber-banding under the drag.
         touchAction: "none",
-      }}
+        WebkitUserSelect: "none",
+        userSelect: "none",
+        // iOS Safari: kill the grey tap-flash + callout on the grab handle.
+        WebkitTapHighlightColor: "transparent",
+        WebkitTouchCallout: "none",
+      } as React.CSSProperties}
     >
       <span
         aria-hidden="true"
@@ -2063,27 +2175,36 @@ export function Chat({
           borderBottom: mobile
             ? "1px solid rgba(255,255,255,0.08)"
             : "1px solid rgba(255,255,255,0.06)",
-          // F45 (job-0322) — the connection-status signifier + 'GRACE-2'
-          // label + version label live on the MOBILE chat header row, laid
-          // out horizontally (flex), and they READ in the COLLAPSED state
-          // too (that's where the user glances at the connection state).
-          // The header is no longer hidden while collapsed; only the desktop
-          // path keeps its prior always-flex. (The handle sits above this
-          // header; the composer below — handle → header → scroll → composer.)
+          // F45 (job-0322 / job-0325) — the "drag tab" row directly under the
+          // grab handle: 'GRACE-2' + the version/build hash sit on the LEFT
+          // (grouped in grace2-chat-tab-left), the connection-status indicator
+          // on the RIGHT (pushed there by the flex:1 spacer between the two
+          // groups). They READ in the COLLAPSED state too (that's where the
+          // user glances at the connection state); the header is no longer
+          // hidden while collapsed. Layout order on mobile:
+          //   handle → [GRACE-2  version] ─── spacer ─── [● status] → composer
           display: "flex",
           alignItems: "center",
           gap: 8,
         }}
       >
-        <strong style={{ fontSize: 14 }}>GRACE-2</strong>
+        {/* F45 LEFT group — product label + build version. */}
         <span
-          data-testid="grace2-build-version"
-          title="build version — tells you which deploy this tab is running"
-          style={{ color: "#888", fontSize: 11 }}
+          data-testid="grace2-chat-tab-left"
+          style={{ display: "inline-flex", alignItems: "baseline", gap: 8 }}
         >
-          {BUILD_VERSION}
+          <strong style={{ fontSize: 14 }}>GRACE-2</strong>
+          <span
+            data-testid="grace2-build-version"
+            title="build version — tells you which deploy this tab is running"
+            style={{ color: "#888", fontSize: 11 }}
+          >
+            {BUILD_VERSION}
+          </span>
         </span>
+        {/* Spacer — pushes the connection status to the RIGHT edge (F45). */}
         <span style={{ flex: 1 }} />
+        {/* F45 RIGHT group — connection-status indicator. */}
         <span
           data-testid="connection-status"
           title={`WebSocket ${STATUS_LABEL[status]}`}
@@ -2093,6 +2214,7 @@ export function Chat({
             gap: 6,
             fontSize: 11,
             color: STATUS_COLOR[status],
+            marginLeft: "auto",
           }}
         >
           <span
@@ -2120,21 +2242,21 @@ export function Chat({
               border: "none",
               color: "#888",
               cursor: "pointer",
-              fontSize: 18,
               lineHeight: 1,
               padding: "0 4px",
               display: "flex",
               alignItems: "center",
               fontFamily: "system-ui, sans-serif",
-              fontWeight: 600,
             }}
           >
             {/* job-0162: chevron-right ("collapse panel" idiom) replaces ×    */}
             {/* ("close" idiom) — collapsing must NEVER imply destruction of    */}
             {/* the chat history. The persistence is implemented in App.tsx by */}
             {/* keeping <Chat /> mounted across collapse so its message state  */}
-            {/* survives.                                                       */}
-            ›
+            {/* survives. job-0325: raw '›' glyph → IconChevronRight (icon     */}
+            {/* module is the single source of truth for glyphs; NO raw        */}
+            {/* unicode in the UI per project policy).                          */}
+            <IconChevronRight size={18} title="Collapse chat panel" />
           </button>
         )}
       </header>

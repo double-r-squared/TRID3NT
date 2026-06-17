@@ -12,8 +12,10 @@
 //     visibility via display, content kept mounted).
 
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, fireEvent, cleanup } from "@testing-library/react";
+import { render, screen, fireEvent, cleanup, act } from "@testing-library/react";
 import { useState } from "react";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import {
   MOBILE_SHEET_EXPANDED_HEIGHT,
   SHEET_DRAG_THRESHOLD_PX,
@@ -48,6 +50,65 @@ function dragVertical(el: Element, fromY: number, toY: number): void {
   fireEvent.pointerDown(el, { clientX: 100, clientY: fromY, pointerId: 1 });
   fireEvent.pointerMove(el, { clientX: 100, clientY: toY, pointerId: 1 });
   fireEvent.pointerUp(el, { clientX: 100, clientY: toY, pointerId: 1 });
+}
+
+// --- job-0325 — NATIVE non-passive touch dispatch (the real-iOS path) ------ //
+//
+// The real-iOS fix attaches native touchstart/touchmove/touchend listeners
+// with { passive:false } directly on the handle DOM node so it can
+// preventDefault() the vertical pan (React's JSX onTouch* handlers can't —
+// React's root touch listeners are passive). These helpers dispatch genuine
+// TouchEvents (happy-dom supports the constructor + a touches init) carrying a
+// preventDefault SPY so a test can assert the gesture OWNS the scroll.
+
+interface DispatchedTouch {
+  event: Event;
+  preventDefault: ReturnType<typeof vi.fn>;
+}
+
+/** Build + dispatch a native TouchEvent with a single touch point at (x, y).
+ * `cancelable` defaults true (iOS touchmove is cancelable until the gesture is
+ * recognised as a scroll). Returns the preventDefault spy so callers can
+ * assert whether the handler claimed the gesture. */
+function dispatchTouch(
+  el: Element,
+  type: "touchstart" | "touchmove" | "touchend" | "touchcancel",
+  x: number,
+  y: number,
+  cancelable = true,
+): DispatchedTouch {
+  const touches =
+    type === "touchend" || type === "touchcancel"
+      ? []
+      : [{ clientX: x, clientY: y, identifier: 1, target: el }];
+  // happy-dom's TouchEvent accepts { touches } in its init dict.
+  const event = new TouchEvent(type, {
+    bubbles: true,
+    cancelable,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    touches: touches as any,
+  });
+  const preventDefault = vi.fn();
+  // Override preventDefault with a spy that still flips defaultPrevented.
+  Object.defineProperty(event, "preventDefault", {
+    configurable: true,
+    value: preventDefault,
+  });
+  el.dispatchEvent(event);
+  return { event, preventDefault };
+}
+
+/** A native-touch vertical DRAG: touchstart, a move past the threshold,
+ * touchend. Returns the preventDefault spy from the threshold-crossing move. */
+function touchDragVertical(
+  el: Element,
+  fromY: number,
+  toY: number,
+): ReturnType<typeof vi.fn> {
+  dispatchTouch(el, "touchstart", 100, fromY);
+  const moved = dispatchTouch(el, "touchmove", 100, toY);
+  dispatchTouch(el, "touchend", 100, toY);
+  return moved.preventDefault;
 }
 
 describe("mobileSheetContainerStyle", () => {
@@ -335,6 +396,190 @@ describe("SheetToggleHandle — drag-to-resize vs tap-to-fold (F44)", () => {
     render(<SheetToggleHandle expanded={false} onToggle={onToggle} />);
     tap(screen.getByTestId("grace2-chat-sheet-toggle"));
     expect(onToggle).toHaveBeenCalledTimes(1);
+  });
+});
+
+// --- job-0325 — NATIVE non-passive touch path (the REAL-iOS drag fix) ------ //
+//
+// The prior fix passed the pointer-event tests above but FAILED on real iOS
+// because React's touch listeners are passive: preventDefault() was ignored,
+// Safari scrolled the page, and the sheet never resized. The fix attaches
+// NATIVE non-passive touch listeners on the handle. These tests drive that
+// genuine DOM touch path (NOT React synthetic events) and assert the handler
+// (a) resizes live, (b) preventDefaults the scroll once it is a real drag,
+// (c) does NOT preventDefault a sub-threshold touch (so small scrolls aren't
+// stolen), and (d) toggles on a clean tap.
+
+describe("SheetToggleHandle — native touch drag (job-0325 real-iOS fix)", () => {
+  const VPH = window.innerHeight || 768;
+
+  it("a native-touch vertical DRAG resizes (onResize + onResizeEnd), never toggles", () => {
+    const onToggle = vi.fn();
+    const onResize = vi.fn();
+    const onResizeEnd = vi.fn();
+    render(
+      <SheetToggleHandle
+        expanded={true}
+        onToggle={onToggle}
+        onResize={onResize}
+        onResizeEnd={onResizeEnd}
+      />,
+    );
+    const targetY = Math.round(VPH * 0.2);
+    touchDragVertical(
+      screen.getByTestId("grace2-chat-sheet-toggle"),
+      Math.round(VPH * 0.5),
+      targetY,
+    );
+    expect(onToggle).not.toHaveBeenCalled();
+    expect(onResize).toHaveBeenCalled();
+    expect(onResizeEnd).toHaveBeenCalledTimes(1);
+    const expectedVh = clampSheetHeight(((VPH - targetY) / VPH) * 100);
+    expect(onResizeEnd).toHaveBeenLastCalledWith(expectedVh);
+  });
+
+  it("preventDefault()s the touchmove ONCE the drag crosses the threshold (owns the scroll)", () => {
+    const onResize = vi.fn();
+    render(
+      <SheetToggleHandle
+        expanded={true}
+        onToggle={vi.fn()}
+        onResize={onResize}
+        onResizeEnd={vi.fn()}
+      />,
+    );
+    // This is the crux of the iOS bug: without preventDefault the page scrolls
+    // and the sheet doesn't move. The drag crosses the threshold, so the
+    // handler MUST claim the gesture.
+    const pd = touchDragVertical(
+      screen.getByTestId("grace2-chat-sheet-toggle"),
+      Math.round(VPH * 0.5),
+      Math.round(VPH * 0.2),
+    );
+    expect(pd).toHaveBeenCalled();
+  });
+
+  it("does NOT preventDefault a SUB-threshold touchmove (small moves still scroll)", () => {
+    const onResize = vi.fn();
+    const el = (() => {
+      render(
+        <SheetToggleHandle
+          expanded={true}
+          onToggle={vi.fn()}
+          onResize={onResize}
+          onResizeEnd={vi.fn()}
+        />,
+      );
+      return screen.getByTestId("grace2-chat-sheet-toggle");
+    })();
+    dispatchTouch(el, "touchstart", 100, 500);
+    // Move LESS than the drag threshold — must NOT be treated as a drag.
+    const moved = dispatchTouch(
+      el,
+      "touchmove",
+      100,
+      500 - (SHEET_DRAG_THRESHOLD_PX - 1),
+    );
+    dispatchTouch(el, "touchend", 100, 500 - (SHEET_DRAG_THRESHOLD_PX - 1));
+    expect(moved.preventDefault).not.toHaveBeenCalled();
+    expect(onResize).not.toHaveBeenCalled();
+  });
+
+  it("a native-touch TAP (no travel) toggles and never resizes", () => {
+    const onToggle = vi.fn();
+    const onResize = vi.fn();
+    const onResizeEnd = vi.fn();
+    render(
+      <SheetToggleHandle
+        expanded={true}
+        onToggle={onToggle}
+        onResize={onResize}
+        onResizeEnd={onResizeEnd}
+      />,
+    );
+    const el = screen.getByTestId("grace2-chat-sheet-toggle");
+    dispatchTouch(el, "touchstart", 100, 500);
+    dispatchTouch(el, "touchend", 100, 500);
+    expect(onToggle).toHaveBeenCalledTimes(1);
+    expect(onResize).not.toHaveBeenCalled();
+    expect(onResizeEnd).not.toHaveBeenCalled();
+  });
+
+  it("a native-touch drag UPDATES the container height live (Chat wiring shape)", () => {
+    function ResizeHarness(): JSX.Element {
+      const [heightVh, setHeightVh] = useState(70);
+      return (
+        <div
+          data-testid="sheet"
+          style={mobileSheetContainerStyle(true, heightVh, "medium")}
+        >
+          <SheetToggleHandle
+            expanded={true}
+            onToggle={() => undefined}
+            onResize={(vh) => setHeightVh(vh)}
+            onResizeEnd={(vh) => setHeightVh(vh)}
+          />
+        </div>
+      );
+    }
+    render(<ResizeHarness />);
+    expect(screen.getByTestId("sheet").style.height).toBe("70vh");
+    const targetY = Math.round(VPH * 0.12);
+    // Native (non-React) events drive setState OUTSIDE React's event batching,
+    // so wrap the dispatch in act() to flush the re-render before asserting.
+    act(() => {
+      touchDragVertical(
+        screen.getByTestId("grace2-chat-sheet-toggle"),
+        Math.round(VPH * 0.5),
+        targetY,
+      );
+    });
+    const expectedVh = clampSheetHeight(((VPH - targetY) / VPH) * 100);
+    expect(screen.getByTestId("sheet").style.height).toBe(`${expectedVh}vh`);
+    expect(expectedVh).toBeGreaterThan(70);
+  });
+
+  it("iOS dual-fire: a native touch gesture in flight is NOT double-driven by the synthetic pointer twin", () => {
+    // iOS fires BOTH touch and (synthetic) pointer events for one finger. The
+    // gesture engine's `input` guard makes the first family to start own the
+    // gesture; the other family's events must be inert until it ends.
+    const onResize = vi.fn();
+    const onResizeEnd = vi.fn();
+    const onToggle = vi.fn();
+    render(
+      <SheetToggleHandle
+        expanded={true}
+        onToggle={onToggle}
+        onResize={onResize}
+        onResizeEnd={onResizeEnd}
+      />,
+    );
+    const el = screen.getByTestId("grace2-chat-sheet-toggle");
+    // Touch starts the gesture…
+    dispatchTouch(el, "touchstart", 100, Math.round(VPH * 0.5));
+    // …a synthetic pointerUp twin arrives — it must NOT end/toggle the
+    // touch-owned gesture.
+    fireEvent.pointerUp(el, {
+      clientX: 100,
+      clientY: Math.round(VPH * 0.5),
+      pointerId: 1,
+    });
+    expect(onToggle).not.toHaveBeenCalled();
+    expect(onResizeEnd).not.toHaveBeenCalled();
+    // The real touchend still finishes it (a clean tap → toggle).
+    dispatchTouch(el, "touchend", 100, Math.round(VPH * 0.5));
+    expect(onToggle).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("SheetToggleHandle — iOS touch ergonomics (job-0325)", () => {
+  it("sets the iOS tap-flash + callout + user-select guards on the grip", () => {
+    render(<SheetToggleHandle expanded={true} onToggle={vi.fn()} />);
+    const handle = screen.getByTestId("grace2-chat-sheet-toggle");
+    // touch-action:none is the primary signal; the user-select + tap-highlight
+    // guards round out the iOS grab-handle feel.
+    expect(handle.style.touchAction).toBe("none");
+    expect(handle.style.userSelect).toBe("none");
   });
 });
 
@@ -710,5 +955,74 @@ describe("SheetActiveToolStrip — F42 rainbow running animation", () => {
     } finally {
       restore();
     }
+  });
+});
+
+// --- F45 + glyph policy (job-0325) — static source guards ------------------ //
+//
+// The chat header + desktop close-button live in the full <Chat> component,
+// which cannot mount in happy-dom (it opens a WebSocket). So — per the
+// established pure-helper / source-guard pattern — these pin the relevant
+// SOURCE invariants so a regression is caught by the suite:
+//   F45: 'GRACE-2' + build version on the LEFT of the tab/handle row, the
+//        connection status on the RIGHT;
+//   glyph policy: the raw '›' collapse glyph is replaced by IconChevronRight
+//        from the icon module (no raw unicode glyphs rendered in the UI).
+
+// vitest runs with cwd = the web package root, so resolve from there.
+const CHAT_SRC = readFileSync(resolve("src/Chat.tsx"), "utf8");
+
+describe("Chat.tsx glyph policy (job-0325)", () => {
+  it("imports IconChevronRight from the shared icon module", () => {
+    expect(CHAT_SRC).toMatch(
+      /import\s*\{[^}]*IconChevronRight[^}]*\}\s*from\s*["']\.\/components\/icons["']/,
+    );
+  });
+
+  it("renders the collapse control with <IconChevronRight/> (not a raw glyph)", () => {
+    expect(CHAT_SRC).toContain("<IconChevronRight");
+    // The raw chevron glyph that IconChevronRight replaces must be gone from
+    // any JSX text node. (It may appear only inside a comment describing the
+    // replacement; we assert it is not used as a rendered child `>›<`.)
+    expect(CHAT_SRC).not.toMatch(/>\s*›\s*</);
+  });
+
+  it("renders NO emoji or raw decorative unicode as a JSX text child", () => {
+    // Forbidden rendered glyphs: chevrons / arrows / check / cross / spinner
+    // marks that should always come from the icon module instead.
+    const forbidden = ["›", "‹", "✓", "✗", "✕", "×", "⟳"];
+    for (const g of forbidden) {
+      // As a rendered JSX child: `>GLYPH<`.
+      const asChild = new RegExp(`>\\s*${g}\\s*<`);
+      expect(CHAT_SRC).not.toMatch(asChild);
+    }
+  });
+});
+
+describe("Chat.tsx header layout (F45, job-0325)", () => {
+  it("groups 'GRACE-2' + build version into the LEFT tab group", () => {
+    // The LEFT group wraps the strong label + version testid.
+    expect(CHAT_SRC).toContain('data-testid="grace2-chat-tab-left"');
+    expect(CHAT_SRC).toMatch(/grace2-chat-tab-left[\s\S]*?GRACE-2/);
+    expect(CHAT_SRC).toMatch(
+      /grace2-chat-tab-left[\s\S]*?grace2-build-version/,
+    );
+  });
+
+  it("pushes the connection status to the RIGHT (spacer + marginLeft:auto)", () => {
+    // A flex:1 spacer separates the LEFT group from the RIGHT status, and the
+    // status itself carries marginLeft:auto so it pins to the right edge.
+    expect(CHAT_SRC).toMatch(/flex:\s*1/);
+    expect(CHAT_SRC).toMatch(
+      /connection-status[\s\S]*?marginLeft:\s*["']auto["']/,
+    );
+  });
+
+  it("LEFT group precedes the connection status in source (left-before-right)", () => {
+    const leftIdx = CHAT_SRC.indexOf('data-testid="grace2-chat-tab-left"');
+    const statusIdx = CHAT_SRC.indexOf('data-testid="connection-status"');
+    expect(leftIdx).toBeGreaterThan(-1);
+    expect(statusIdx).toBeGreaterThan(-1);
+    expect(leftIdx).toBeLessThan(statusIdx);
   });
 });

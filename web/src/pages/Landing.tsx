@@ -13,6 +13,18 @@
 // prefers-reduced-motion in landing.css).
 
 import { useEffect } from "react";
+import type { FC } from "react";
+import {
+  IconChat,
+  IconWaves,
+  IconGrid,
+  IconTerrain,
+  IconWorkspaces,
+  IconSparkle,
+  IconArrowRight,
+  IconChevronRight,
+} from "../components/icons";
+import type { IconProps } from "../components/icons";
 import "./landing.css";
 
 export interface LandingProps {
@@ -26,38 +38,38 @@ export interface LandingProps {
 }
 
 interface Feature {
-  icon: string;
+  icon: FC<IconProps>;
   title: string;
   body: string;
 }
 
 const FEATURES: Feature[] = [
   {
-    icon: "◈",
+    icon: IconChat,
     title: "Conversational flood modeling",
     body:
       "“Model a 100-year flood for Fort Myers” is a sentence, not a workflow. The agent geocodes, fetches elevation, runs the solver, and publishes the layer — narrating every step.",
   },
   {
-    icon: "≋",
+    icon: IconWaves,
     title: "Real physics solvers",
     body:
       "SFINCS coastal & pluvial flooding and MODFLOW groundwater run as real cloud jobs behind the conversation — actual numerical engines, not illustrations.",
   },
   {
-    icon: "▦",
+    icon: IconGrid,
     title: "Damage analytics",
     body:
       "Pelicun damage and loss assessment over USACE National Structure Inventory data — tens of thousands of structures evaluated against a flood field in one ask.",
   },
   {
-    icon: "▲",
+    icon: IconTerrain,
     title: "Terrain, weather & wildlife",
     body:
       "Colored relief, hillshade, slope and aspect; live NWS alerts and radar; ERA5 reanalysis; GBIF and eBird occurrences — fetched, clipped, and styled onto the map.",
   },
   {
-    icon: "❖",
+    icon: IconWorkspaces,
     title: "Per-Case workspaces",
     body:
       "Every Case is its own conversation thread — chat, tool history, layers, and artifacts persist together and replay when you come back.",
@@ -106,7 +118,7 @@ export function Landing({ hasSession = false }: LandingProps): JSX.Element {
           <div className="lp-hero-copy">
             <span className="lp-badge">
               <span className="lp-badge-spark" aria-hidden="true">
-                ✦
+                <IconSparkle size={13} weight="fill" />
               </span>
               Powered by Google Gemini
             </span>
@@ -130,7 +142,7 @@ export function Landing({ hasSession = false }: LandingProps): JSX.Element {
               >
                 {hasSession ? "Resume session" : "Launch GRACE-2"}
                 <span className="lp-cta-arrow" aria-hidden="true">
-                  →
+                  <IconArrowRight size={16} />
                 </span>
               </a>
               <a className="lp-cta-ghost" href="#features">
@@ -143,7 +155,7 @@ export function Landing({ hasSession = false }: LandingProps): JSX.Element {
                   <code className="lp-chip">{chip}</code>
                   {i < PIPELINE_CHIPS.length - 1 && (
                     <span className="lp-chip-arrow" aria-hidden="true">
-                      ›
+                      <IconChevronRight size={12} />
                     </span>
                   )}
                 </span>
@@ -209,7 +221,7 @@ export function Landing({ hasSession = false }: LandingProps): JSX.Element {
                 data-testid="grace2-landing-feature"
               >
                 <span className="lp-card-icon" aria-hidden="true">
-                  {f.icon}
+                  <f.icon size={28} />
                 </span>
                 <h3>{f.title}</h3>
                 <p>{f.body}</p>
@@ -223,7 +235,7 @@ export function Landing({ hasSession = false }: LandingProps): JSX.Element {
           <div className="lp-gemini-copy">
             <span className="lp-badge">
               <span className="lp-badge-spark" aria-hidden="true">
-                ✦
+                <IconSparkle size={13} weight="fill" />
               </span>
               Google Gemini, doing the work
             </span>
@@ -306,7 +318,7 @@ export function Landing({ hasSession = false }: LandingProps): JSX.Element {
           <a className="lp-cta" href="/app">
             {hasSession ? "Resume session" : "Launch GRACE-2"}
             <span className="lp-cta-arrow" aria-hidden="true">
-              →
+              <IconArrowRight size={16} />
             </span>
           </a>
         </section>

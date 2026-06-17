@@ -25,6 +25,9 @@
 // `role="alert"` (danger); consumers may override via the `role` prop.
 
 import { CSSProperties, ReactNode } from "react";
+import { IconWarning, IconInfo, IconCheck } from "./icons";
+import type { IconProps } from "./icons";
+import type { FC } from "react";
 
 // --- Variant config ------------------------------------------------------ //
 
@@ -41,11 +44,13 @@ const VARIANT_ACCENT: Record<InlineChatCardVariant, string> = {
   success: "#10b981", // green
 };
 
-const VARIANT_GLYPH: Record<InlineChatCardVariant, string> = {
-  warning: "⚠",
-  danger: "⚠",
-  info: "ⓘ",
-  success: "✓",
+// The leading glyph for each variant now comes from the shared icon module
+// (Phosphor) rather than a raw unicode character, per the project UI policy.
+const VARIANT_ICON: Record<InlineChatCardVariant, FC<IconProps>> = {
+  warning: IconWarning,
+  danger: IconWarning,
+  info: IconInfo,
+  success: IconCheck,
 };
 
 const VARIANT_ROLE: Record<InlineChatCardVariant, "status" | "alert"> = {
@@ -91,10 +96,11 @@ export interface InlineChatCardProps {
   /** Action buttons rendered in a row beneath the body. */
   actions?: InlineChatCardAction[];
   /**
-   * Optional override for the leading glyph (defaults to the variant glyph).
-   * Pass an empty string to suppress the icon entirely.
+   * Optional override for the leading icon (defaults to the variant icon from
+   * the shared icon module). May be any ReactNode (e.g. a custom icon element)
+   * or a string. Pass an empty string to suppress the icon entirely.
    */
-  icon?: string;
+  icon?: ReactNode;
   /** Optional footer ReactNode (e.g. "Sent: proceed"). */
   footer?: ReactNode;
   /** Stable test id for the outer card element. */
@@ -182,8 +188,16 @@ export function InlineChatCard({
   extraAttrs,
 }: InlineChatCardProps): JSX.Element {
   const accent = VARIANT_ACCENT[variant];
-  const glyph = icon !== undefined ? icon : VARIANT_GLYPH[variant];
   const ariaRole = role ?? VARIANT_ROLE[variant];
+
+  // Icon resolution:
+  //   - icon === ""        → suppress the icon entirely
+  //   - icon provided      → render the consumer-supplied node/string
+  //   - icon === undefined → default to the variant icon from the icon module
+  const VariantIcon = VARIANT_ICON[variant];
+  const showIcon = icon !== "";
+  const iconContent: ReactNode =
+    icon !== undefined ? icon : <VariantIcon size={14} color={accent} />;
 
   return (
     <div
@@ -221,7 +235,7 @@ export function InlineChatCard({
           gap: 8,
         }}
       >
-        {glyph !== "" && (
+        {showIcon && (
           <span
             data-testid={`${testId ?? "inline-chat-card"}-icon`}
             aria-hidden="true"
@@ -231,9 +245,11 @@ export function InlineChatCard({
               lineHeight: 1.2,
               flexShrink: 0,
               marginTop: 1,
+              display: "inline-flex",
+              alignItems: "center",
             }}
           >
-            {glyph}
+            {iconContent}
           </span>
         )}
         <strong

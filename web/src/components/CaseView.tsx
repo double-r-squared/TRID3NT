@@ -10,6 +10,7 @@
 // CasesPanel is hidden in this mode (no scrolled list underneath).
 
 import { useEffect, useState } from "react";
+import { IconArrowLeft } from "./icons";
 
 export interface CaseViewProps {
   /** Title of the active Case (displayed in the breadcrumb). */
@@ -127,11 +128,11 @@ export function CaseView({
           <button
             data-testid="grace2-case-view-back"
             onClick={onBack}
-            style={backBtnStyle}
+            style={{ ...backBtnStyle, display: "flex", alignItems: "center" }}
             aria-label="Back to Cases"
             title="Back to Cases"
           >
-            ←
+            <IconArrowLeft size={16} />
           </button>
         )}
         <button

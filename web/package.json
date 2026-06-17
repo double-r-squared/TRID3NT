@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "GRACE-2 web client (React + MapLibre GL JS) \u2014 M1 stub: CONUS map + chat round-trip against the local Appendix-A WebSocket agent.",
+  "description": "GRACE-2 web client (React + MapLibre GL JS) — M1 stub: CONUS map + chat round-trip against the local Appendix-A WebSocket agent.",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "tsc --noEmit && vite build",
@@ -15,6 +15,7 @@
     "@dnd-kit/core": "^6.3.1",
     "@dnd-kit/sortable": "^8.0.0",
     "@dnd-kit/utilities": "^3.2.2",
+    "@phosphor-icons/react": "^2.1.10",
     "flatgeobuf": "^4.4.0",
     "maplibre-gl": "4.7.1",
     "react": "18.3.1",

@@ -514,6 +514,49 @@ export class GraceWs {
   }
 
   /**
+   * job-0322 F31 — UNCONDITIONALLY revive the socket (iOS zombie-socket fix).
+   *
+   * The bug: after the mobile browser is backgrounded and brought back, the
+   * WebSocket's `readyState` can stay `OPEN` even though the underlying
+   * connection is dead (iOS Safari freezes the socket without firing a
+   * `close`). `reconnect()` early-returns on an OPEN socket, and
+   * `requestSessionState()` then sends `session-resume` into that dead socket —
+   * so the server never re-emits `session-state` and the map's layers stay
+   * gone until a manual Case reopen.
+   *
+   * The fix: tear down the CURRENT socket no matter what its `readyState` is
+   * (OPEN included), drop the reference, then `connect()`. The fresh open
+   * handler re-sends `auth-token` then `session-resume`, so the server
+   * re-emits the authoritative `session-state` and the layers reconcile back
+   * via replace-not-reconcile (Appendix A.7).
+   *
+   * This mirrors `reconnect()`'s careful teardown (detach + ask the stale
+   * socket to close; its late `close` event is rendered harmless by the
+   * open handler's identity guard, which only mutates instance state for the
+   * socket THIS handler was registered for) but DROPS the OPEN/CONNECTING
+   * early-return. We do NOT call the full `close()`: that sets
+   * `closedByUser` and unregisters from the SESSION_HUB, which would
+   * permanently break fan-out for this instance. `connect()` already clears
+   * the auth-failure latch and resets the refresh guard.
+   */
+  forceReconnect(): void {
+    const stale = this.socket;
+    // Detach BEFORE closing so the stale socket's `close` event (which may fire
+    // synchronously or later) sees `this.socket !== stale` and bails via the
+    // open handler's identity guard — it can't null out the fresh socket
+    // `connect()` is about to install or schedule a spurious reconnect.
+    this.socket = null;
+    if (stale) {
+      try {
+        stale.close();
+      } catch {
+        // ignore — already closed/closing/never-opened
+      }
+    }
+    this.connect();
+  }
+
+  /**
    * job-0159: deliver a session-scoped envelope that originated on a
    * SIBLING `GraceWs` instance for the same `session_id`. Called by the
    * fan-out hub; never invoked directly. Routes through the same handler

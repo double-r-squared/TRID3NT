@@ -12,6 +12,7 @@
 // ('eBird (key required)') that's GREEN when a key exists, GRAY when not."
 
 import { ProviderID } from "../contracts";
+import { IconCheck } from "./icons";
 
 // Tier-2 providers that surface a "key required" badge in chat. The set is
 // closed at v0.1 — broadening it requires the corresponding §F.3 amendment.
@@ -60,7 +61,7 @@ const lockedStyle: React.CSSProperties = {
 
 /**
  * Tier2UnlockBadge — a pill rendering "{provider} (key required)" in gray
- * or "{provider} ✓" in green depending on whether a key exists.
+ * or "{provider}" with a check icon in green depending on whether a key exists.
  */
 export function Tier2UnlockBadge({
   provider,
@@ -68,19 +69,30 @@ export function Tier2UnlockBadge({
 }: Tier2UnlockBadgeProps): JSX.Element | null {
   const label = TIER2_BADGE_LABEL[provider];
   if (!label) return null; // not a Tier-2 surfaced provider; render nothing
-  const text = unlocked ? `${label} ✓` : `${label} (key required)`;
   return (
     <span
       data-testid={`grace2-tier2-badge-${provider}`}
       data-unlocked={unlocked ? "true" : "false"}
-      style={unlocked ? unlockedStyle : lockedStyle}
+      style={{
+        ...(unlocked ? unlockedStyle : lockedStyle),
+        ...(unlocked
+          ? { display: "inline-flex", alignItems: "center", gap: 3 }
+          : {}),
+      }}
       title={
         unlocked
           ? `${label} key is registered`
           : `${label} needs an API key — add one in the secrets panel`
       }
     >
-      {text}
+      {unlocked ? (
+        <>
+          {label}
+          <IconCheck size={11} weight="bold" />
+        </>
+      ) : (
+        `${label} (key required)`
+      )}
     </span>
   );
 }

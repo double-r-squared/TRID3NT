@@ -202,7 +202,7 @@ describe("CasesPanel", () => {
     expect(onSelect).toHaveBeenCalledWith(CASE_NORCAL_FIRE.case_id);
   });
 
-  it("inline rename via pencil → Enter calls onRename with new title", () => {
+  it("inline rename via kebab → Rename → Enter calls onRename with new title", () => {
     const onRename = vi.fn();
     render(
       <CasesPanel
@@ -215,7 +215,8 @@ describe("CasesPanel", () => {
         onDelete={vi.fn()}
       />,
     );
-    fireEvent.click(screen.getByTestId("grace2-case-row-rename"));
+    fireEvent.click(screen.getByTestId("grace2-case-row-menu-button"));
+    fireEvent.click(screen.getByTestId("grace2-case-row-menu-rename"));
     const input = screen.getByTestId(
       "grace2-case-row-rename-input",
     ) as HTMLInputElement;
@@ -227,7 +228,30 @@ describe("CasesPanel", () => {
     );
   });
 
-  it("archive button calls onArchive with the row's case_id", () => {
+  it("inline rename commit via the check button calls onRename", () => {
+    const onRename = vi.fn();
+    render(
+      <CasesPanel
+        cases={[CASE_FORT_MYERS]}
+        activeCaseId={null}
+        onCreate={vi.fn()}
+        onSelect={vi.fn()}
+        onRename={onRename}
+        onArchive={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("grace2-case-row-menu-button"));
+    fireEvent.click(screen.getByTestId("grace2-case-row-menu-rename"));
+    const input = screen.getByTestId(
+      "grace2-case-row-rename-input",
+    ) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "Lee County" } });
+    fireEvent.click(screen.getByTestId("grace2-case-row-rename-commit"));
+    expect(onRename).toHaveBeenCalledWith(CASE_FORT_MYERS.case_id, "Lee County");
+  });
+
+  it("kebab → Archive calls onArchive with the row's case_id", () => {
     const onArchive = vi.fn();
     render(
       <CasesPanel
@@ -240,11 +264,12 @@ describe("CasesPanel", () => {
         onDelete={vi.fn()}
       />,
     );
-    fireEvent.click(screen.getByTestId("grace2-case-row-archive"));
+    fireEvent.click(screen.getByTestId("grace2-case-row-menu-button"));
+    fireEvent.click(screen.getByTestId("grace2-case-row-menu-archive"));
     expect(onArchive).toHaveBeenCalledWith(CASE_FORT_MYERS.case_id);
   });
 
-  it("delete button opens the confirmation dialog; Cancel does NOT fire onDelete", () => {
+  it("kebab → Delete opens the confirmation dialog; Cancel does NOT fire onDelete", () => {
     const onDelete = vi.fn();
     render(
       <CasesPanel
@@ -258,13 +283,14 @@ describe("CasesPanel", () => {
       />,
     );
     expect(screen.queryByTestId("grace2-case-delete-dialog")).toBeNull();
-    fireEvent.click(screen.getByTestId("grace2-case-row-delete"));
+    fireEvent.click(screen.getByTestId("grace2-case-row-menu-button"));
+    fireEvent.click(screen.getByTestId("grace2-case-row-menu-delete"));
     expect(screen.getByTestId("grace2-case-delete-dialog")).toBeTruthy();
     fireEvent.click(screen.getByTestId("grace2-case-delete-dialog-cancel"));
     expect(onDelete).not.toHaveBeenCalled();
   });
 
-  it("delete confirmation Confirm calls onDelete with the row's case_id", () => {
+  it("kebab → Delete → Confirm calls onDelete with the row's case_id", () => {
     const onDelete = vi.fn();
     render(
       <CasesPanel
@@ -277,7 +303,8 @@ describe("CasesPanel", () => {
         onDelete={onDelete}
       />,
     );
-    fireEvent.click(screen.getByTestId("grace2-case-row-delete"));
+    fireEvent.click(screen.getByTestId("grace2-case-row-menu-button"));
+    fireEvent.click(screen.getByTestId("grace2-case-row-menu-delete"));
     fireEvent.click(screen.getByTestId("grace2-case-delete-dialog-confirm"));
     expect(onDelete).toHaveBeenCalledWith(CASE_FORT_MYERS.case_id);
   });
@@ -358,9 +385,11 @@ describe("CasesPanel", () => {
           />
         </MobileDrawer>,
       );
-      // Open the dialog — the delete button bubbles to the column but its
-      // e.target is the button, so the drawer does not close.
-      fireEvent.click(screen.getByTestId("grace2-case-row-delete"));
+      // Open the dialog via the kebab menu — the menu interaction bubbles to
+      // the column but its e.target is a CasesPanel descendant, so the drawer
+      // does not close.
+      fireEvent.click(screen.getByTestId("grace2-case-row-menu-button"));
+      fireEvent.click(screen.getByTestId("grace2-case-row-menu-delete"));
       expect(screen.getByTestId("grace2-case-delete-dialog")).toBeTruthy();
       expect(onClose).not.toHaveBeenCalled();
       // The dialog's own fixed backdrop cancel path must still work: clicking
@@ -372,7 +401,15 @@ describe("CasesPanel", () => {
       expect(onClose).not.toHaveBeenCalled();
     });
 
-    it("a tap on the drawer gutter (outside CasesPanel) DOES close the drawer", () => {
+    it("a tap on the backdrop DOES close the drawer (backdrop owns close)", () => {
+      // job-0329 — the F52 model changed: the old `target === currentTarget`
+      // guard on the drawer COLUMN was replaced by the pointer-events
+      // fall-through design. The transparent column is `pointerEvents: "none"`,
+      // so empty-gutter taps pass THROUGH to the full-screen invisible backdrop
+      // (z=40, onClick=onClose) which now owns dismiss. (We assert on the
+      // backdrop directly because happy-dom does NOT honor `pointer-events:
+      // none` for synthetic clicks, so a click dispatched at the column would
+      // not realistically fall through in jsdom/happy-dom.)
       const onSelect = vi.fn();
       const onClose = vi.fn();
       render(
@@ -388,11 +425,57 @@ describe("CasesPanel", () => {
           />
         </MobileDrawer>,
       );
-      // Direct tap on the drawer column (the gutter around the panel) — the
-      // guard matches (target === currentTarget) and onClose fires.
-      fireEvent.click(screen.getByTestId("grace2-mobile-drawer"));
+
+      // The backdrop is the close affordance now — clicking it fires onClose
+      // and never touches CasesPanel handlers.
+      fireEvent.click(screen.getByTestId("grace2-mobile-drawer-backdrop"));
       expect(onClose).toHaveBeenCalledTimes(1);
       expect(onSelect).not.toHaveBeenCalled();
+    });
+
+    it("encodes the pointer-events fall-through design (column none, backdrop owns onClick)", () => {
+      // The NEW model relies on a specific pointer-events layout: the column is
+      // click-transparent (so gutter taps reach the backdrop) and carries NO
+      // onClick of its own; the backdrop is the only element with the close
+      // handler. We assert that contract structurally so a regression that
+      // re-adds an onClick to the column (or makes it `pointer-events: auto`)
+      // is caught even though happy-dom can't simulate the fall-through.
+      const onClose = vi.fn();
+      render(
+        <MobileDrawer open={true} onClose={onClose}>
+          <CasesPanel
+            cases={[CASE_FORT_MYERS]}
+            activeCaseId={null}
+            onCreate={vi.fn()}
+            onSelect={vi.fn()}
+            onRename={vi.fn()}
+            onArchive={vi.fn()}
+            onDelete={vi.fn()}
+          />
+        </MobileDrawer>,
+      );
+
+      const column = screen.getByTestId("grace2-mobile-drawer");
+      const backdrop = screen.getByTestId("grace2-mobile-drawer-backdrop");
+
+      // The column is click-transparent (pointer-events: none) so gutter taps
+      // fall through to the backdrop. The backdrop sits BELOW the column on the
+      // z-axis (z=40 vs z=41), which is only reachable because the column does
+      // not intercept the click — encode both halves of that contract.
+      expect(column.style.pointerEvents).toBe("none");
+      expect(Number(backdrop.style.zIndex)).toBeLessThan(
+        Number(column.style.zIndex),
+      );
+
+      // The column carries NO onClick of its own — a click dispatched directly
+      // on it must NOT close the drawer (regression guard against re-adding the
+      // old `target === currentTarget` column handler).
+      fireEvent.click(column);
+      expect(onClose).not.toHaveBeenCalled();
+
+      // The backdrop is the sole close owner.
+      fireEvent.click(backdrop);
+      expect(onClose).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -412,6 +495,103 @@ describe("CasesPanel", () => {
     // Fort Myers (updated 2026-06-08) above NorCal (updated 2026-06-07).
     expect(rows[0]!.getAttribute("data-case-id")).toBe(CASE_FORT_MYERS.case_id);
     expect(rows[1]!.getAttribute("data-case-id")).toBe(CASE_NORCAL_FIRE.case_id);
+  });
+
+  // --- F57 kebab overflow menu ---------------------------------------- //
+  describe("F57 kebab overflow menu", () => {
+    function renderOneRow(overrides: Partial<Record<string, () => void>> = {}) {
+      const handlers = {
+        onCreate: vi.fn(),
+        onSelect: vi.fn(),
+        onRename: vi.fn(),
+        onArchive: vi.fn(),
+        onDelete: vi.fn(),
+        ...overrides,
+      };
+      render(
+        <CasesPanel
+          cases={[CASE_FORT_MYERS]}
+          activeCaseId={null}
+          {...(handlers as Required<typeof handlers>)}
+        />,
+      );
+      return handlers;
+    }
+
+    it("the kebab button opens the menu with Rename / Archive / Delete items", () => {
+      renderOneRow();
+      // Menu is closed initially.
+      expect(screen.queryByTestId("grace2-case-row-menu")).toBeNull();
+      const kebab = screen.getByTestId("grace2-case-row-menu-button");
+      expect(kebab.getAttribute("aria-haspopup")).toBe("menu");
+      expect(kebab.getAttribute("aria-expanded")).toBe("false");
+      fireEvent.click(kebab);
+      const menu = screen.getByTestId("grace2-case-row-menu");
+      expect(menu.getAttribute("role")).toBe("menu");
+      expect(kebab.getAttribute("aria-expanded")).toBe("true");
+      expect(screen.getByTestId("grace2-case-row-menu-rename")).toBeTruthy();
+      expect(screen.getByTestId("grace2-case-row-menu-archive")).toBeTruthy();
+      expect(screen.getByTestId("grace2-case-row-menu-delete")).toBeTruthy();
+      // All three items expose the proper menuitem role.
+      expect(
+        screen
+          .getByTestId("grace2-case-row-menu-delete")
+          .getAttribute("role"),
+      ).toBe("menuitem");
+    });
+
+    it("opening / using the kebab does NOT select the row (stopPropagation)", () => {
+      const onSelect = vi.fn();
+      renderOneRow({ onSelect });
+      fireEvent.click(screen.getByTestId("grace2-case-row-menu-button"));
+      expect(onSelect).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByTestId("grace2-case-row-menu-archive"));
+      // Archive ran, but the row was never selected.
+      expect(onSelect).not.toHaveBeenCalled();
+    });
+
+    it("clicking outside the menu closes it (outside-click)", () => {
+      renderOneRow();
+      fireEvent.click(screen.getByTestId("grace2-case-row-menu-button"));
+      expect(screen.getByTestId("grace2-case-row-menu")).toBeTruthy();
+      // pointerdown on the panel region (outside the menu wrapper) dismisses.
+      fireEvent.pointerDown(screen.getByTestId("grace2-cases-panel"));
+      expect(screen.queryByTestId("grace2-case-row-menu")).toBeNull();
+    });
+
+    it("pressing Esc closes the menu", () => {
+      renderOneRow();
+      fireEvent.click(screen.getByTestId("grace2-case-row-menu-button"));
+      expect(screen.getByTestId("grace2-case-row-menu")).toBeTruthy();
+      fireEvent.keyDown(window, { key: "Escape" });
+      expect(screen.queryByTestId("grace2-case-row-menu")).toBeNull();
+    });
+
+    it("selecting a menu item closes the menu", () => {
+      renderOneRow();
+      fireEvent.click(screen.getByTestId("grace2-case-row-menu-button"));
+      fireEvent.click(screen.getByTestId("grace2-case-row-menu-archive"));
+      expect(screen.queryByTestId("grace2-case-row-menu")).toBeNull();
+    });
+  });
+
+  it("the +New Case button is icon-only (no text label) but keeps its aria-label", () => {
+    render(
+      <CasesPanel
+        cases={[]}
+        activeCaseId={null}
+        onCreate={vi.fn()}
+        onSelect={vi.fn()}
+        onRename={vi.fn()}
+        onArchive={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    );
+    const newBtn = screen.getByTestId("grace2-cases-new");
+    expect(newBtn.getAttribute("aria-label")).toBe("Create a new Case");
+    // No visible text content — the plus icon is the only child (an SVG).
+    expect(newBtn.textContent).toBe("");
+    expect(newBtn.querySelector("svg")).not.toBeNull();
   });
 });
 

@@ -20,7 +20,6 @@
 import { describe, it, expect } from "vitest";
 import {
   ROOT_STREAM_KEY,
-  ChatStreams,
   createChatStreams,
   emptyStreamState,
   getStream,

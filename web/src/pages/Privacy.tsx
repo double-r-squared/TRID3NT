@@ -9,6 +9,7 @@
 // AI); no sale of personal data.
 
 import { useEffect } from "react";
+import { IconArrowLeft } from "../components/icons";
 import "./privacy.css";
 
 const EFFECTIVE_DATE = "June 11, 2026";
@@ -164,7 +165,10 @@ export function Privacy(): JSX.Element {
       </main>
 
       <footer className="pp-footer">
-        <a href="/">← Back to GRACE-2</a>
+        <a href="/" style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+          <IconArrowLeft size={14} />
+          Back to GRACE-2
+        </a>
         <span>© 2026 GRACE-2 · Built on Google Gemini · Cloud Run · QGIS</span>
       </footer>
     </div>

@@ -825,24 +825,34 @@ describe("App F53 wiring — onDeleteLayer reaches GraceWs.sendDeleteLayer (job-
 });
 
 // ---------------------------------------------------------------------------
-// job-0322 F31 (resume-repaint): App.tsx registers a `visibilitychange`
-// listener; on `visible` it calls wsRef.current?.reconnect() (revive a dropped
-// socket) then wsRef.current?.requestSessionState() (re-pull session-state so
-// the Map reconciles layers back). The listener is cleaned up on unmount and
-// guards for a null wsRef.
+// job-0322 F31 (resume-repaint, iOS zombie-socket): App.tsx registers a
+// `visibilitychange` listener; on `visible` it branches on isMobile:
+//   - MOBILE: wsRef.current?.forceReconnect() — UNCONDITIONALLY tears the
+//     (possibly zombie-OPEN) socket down and re-opens; the fresh open handler
+//     re-sends session-resume, so NO separate requestSessionState() call.
+//   - DESKTOP: wsRef.current?.reconnect() (revive a dropped socket) then
+//     wsRef.current?.requestSessionState() (re-pull session-state).
+// The listener is cleaned up on unmount and guards for a null wsRef.
 //
-// We mirror the EXACT effect in a shell with a mocked GraceWs (reconnect +
-// requestSessionState as spies) and drive the real document visibilitychange
-// event.
+// We mirror the EXACT effect (including the isMobile branch) in a shell with a
+// mocked GraceWs (forceReconnect / reconnect / requestSessionState as spies)
+// and drive the real document visibilitychange event.
 // ---------------------------------------------------------------------------
 
 interface FakeResumeWs {
+  forceReconnect: () => void;
   reconnect: () => void;
   requestSessionState: () => void;
 }
 
 /** Mirror of the App.tsx F31 visibilitychange effect (byte-for-byte order). */
-function ResumeShell({ ws }: { ws: FakeResumeWs | null }): JSX.Element {
+function ResumeShell({
+  ws,
+  isMobile,
+}: {
+  ws: FakeResumeWs | null;
+  isMobile: boolean;
+}): JSX.Element {
   const wsRef = useRef<FakeResumeWs | null>(ws);
   wsRef.current = ws;
   useEffect(() => {
@@ -850,6 +860,10 @@ function ResumeShell({ ws }: { ws: FakeResumeWs | null }): JSX.Element {
       if (document.visibilityState !== "visible") return;
       const sock = wsRef.current;
       if (!sock) return;
+      if (isMobile) {
+        sock.forceReconnect();
+        return;
+      }
       sock.reconnect();
       sock.requestSessionState();
     };
@@ -857,7 +871,7 @@ function ResumeShell({ ws }: { ws: FakeResumeWs | null }): JSX.Element {
     return () => {
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, []);
+  }, [isMobile]);
   return <div data-testid="resume-shell" />;
 }
 
@@ -870,7 +884,15 @@ function setVisibility(state: DocumentVisibilityState): void {
   document.dispatchEvent(new Event("visibilitychange"));
 }
 
-describe("App F31 resume-repaint — visibilitychange drives reconnect + re-request (job-0322)", () => {
+function makeResumeWs(): FakeResumeWs {
+  return {
+    forceReconnect: vi.fn(),
+    reconnect: vi.fn(),
+    requestSessionState: vi.fn(),
+  };
+}
+
+describe("App F31 resume-repaint — visibilitychange (job-0322)", () => {
   afterEach(() => {
     // Restore a sane default so later suites aren't affected.
     Object.defineProperty(document, "visibilityState", {
@@ -879,43 +901,70 @@ describe("App F31 resume-repaint — visibilitychange drives reconnect + re-requ
     });
   });
 
-  it("visible → reconnect() then requestSessionState() both fire", () => {
-    const reconnect = vi.fn();
-    const requestSessionState = vi.fn();
-    render(<ResumeShell ws={{ reconnect, requestSessionState }} />);
+  it("DESKTOP visible → reconnect() then requestSessionState() (NOT forceReconnect)", () => {
+    const ws = makeResumeWs();
+    render(<ResumeShell ws={ws} isMobile={false} />);
     act(() => {
       setVisibility("visible");
     });
-    expect(reconnect).toHaveBeenCalledOnce();
-    expect(requestSessionState).toHaveBeenCalledOnce();
+    expect(ws.reconnect).toHaveBeenCalledOnce();
+    expect(ws.requestSessionState).toHaveBeenCalledOnce();
+    expect(ws.forceReconnect).not.toHaveBeenCalled();
   });
 
-  it("reconnect() is invoked BEFORE requestSessionState() (revive then re-pull)", () => {
+  it("DESKTOP reconnect() runs BEFORE requestSessionState() (revive then re-pull)", () => {
     const order: string[] = [];
     const ws: FakeResumeWs = {
+      forceReconnect: vi.fn(() => order.push("force")),
       reconnect: vi.fn(() => order.push("reconnect")),
       requestSessionState: vi.fn(() => order.push("request")),
     };
-    render(<ResumeShell ws={ws} />);
+    render(<ResumeShell ws={ws} isMobile={false} />);
     act(() => {
       setVisibility("visible");
     });
     expect(order).toEqual(["reconnect", "request"]);
   });
 
-  it("hidden → neither reconnect nor requestSessionState fires", () => {
-    const reconnect = vi.fn();
-    const requestSessionState = vi.fn();
-    render(<ResumeShell ws={{ reconnect, requestSessionState }} />);
+  it("MOBILE visible → forceReconnect() ONLY (zombie-socket: no reconnect / no requestSessionState)", () => {
+    const ws = makeResumeWs();
+    render(<ResumeShell ws={ws} isMobile={true} />);
+    act(() => {
+      setVisibility("visible");
+    });
+    expect(ws.forceReconnect).toHaveBeenCalledOnce();
+    expect(ws.reconnect).not.toHaveBeenCalled();
+    expect(ws.requestSessionState).not.toHaveBeenCalled();
+  });
+
+  it("hidden → nothing fires (mobile or desktop)", () => {
+    const desktop = makeResumeWs();
+    const { unmount } = render(<ResumeShell ws={desktop} isMobile={false} />);
     act(() => {
       setVisibility("hidden");
     });
-    expect(reconnect).not.toHaveBeenCalled();
-    expect(requestSessionState).not.toHaveBeenCalled();
+    expect(desktop.reconnect).not.toHaveBeenCalled();
+    expect(desktop.requestSessionState).not.toHaveBeenCalled();
+    expect(desktop.forceReconnect).not.toHaveBeenCalled();
+    unmount();
+
+    const mobile = makeResumeWs();
+    render(<ResumeShell ws={mobile} isMobile={true} />);
+    act(() => {
+      setVisibility("hidden");
+    });
+    expect(mobile.forceReconnect).not.toHaveBeenCalled();
   });
 
-  it("null wsRef → visible event is a harmless no-op (no throw)", () => {
-    render(<ResumeShell ws={null} />);
+  it("null wsRef → visible event is a harmless no-op (no throw, mobile + desktop)", () => {
+    const { unmount } = render(<ResumeShell ws={null} isMobile={true} />);
+    expect(() => {
+      act(() => {
+        setVisibility("visible");
+      });
+    }).not.toThrow();
+    unmount();
+    render(<ResumeShell ws={null} isMobile={false} />);
     expect(() => {
       act(() => {
         setVisibility("visible");
@@ -924,14 +973,14 @@ describe("App F31 resume-repaint — visibilitychange drives reconnect + re-requ
   });
 
   it("listener is removed on unmount (no call after unmount)", () => {
-    const reconnect = vi.fn();
-    const requestSessionState = vi.fn();
-    const { unmount } = render(<ResumeShell ws={{ reconnect, requestSessionState }} />);
+    const ws = makeResumeWs();
+    const { unmount } = render(<ResumeShell ws={ws} isMobile={false} />);
     unmount();
     act(() => {
       setVisibility("visible");
     });
-    expect(reconnect).not.toHaveBeenCalled();
-    expect(requestSessionState).not.toHaveBeenCalled();
+    expect(ws.reconnect).not.toHaveBeenCalled();
+    expect(ws.requestSessionState).not.toHaveBeenCalled();
+    expect(ws.forceReconnect).not.toHaveBeenCalled();
   });
 });

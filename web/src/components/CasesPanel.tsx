@@ -28,6 +28,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { CaseSummary } from "../contracts";
 import { ConfirmationDialog } from "./ConfirmationDialog";
+import {
+  IconKebab,
+  IconRename,
+  IconArchive,
+  IconDelete,
+  IconCheck,
+  IconBbox,
+  IconAdd,
+} from "./icons";
 
 export interface CasesPanelProps {
   /** Left-rail list from the useCases hook. */
@@ -101,7 +110,11 @@ function CaseRow({
 }: CaseRowProps): JSX.Element {
   const [editing, setEditing] = useState(false);
   const [draftTitle, setDraftTitle] = useState(c.title);
+  const [menuOpen, setMenuOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const menuWrapRef = useRef<HTMLDivElement | null>(null);
+  const kebabRef = useRef<HTMLButtonElement | null>(null);
+  const firstMenuItemRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
     if (!editing) setDraftTitle(c.title);
@@ -110,6 +123,35 @@ function CaseRow({
   useEffect(() => {
     if (editing) inputRef.current?.focus();
   }, [editing]);
+
+  // F57 — overflow menu: close on outside-click and Esc; move focus to the
+  // first item when the menu opens (keyboard accessibility). The pointerdown
+  // listener fires before click so a tap outside dismisses without also
+  // selecting/deselecting the row.
+  useEffect(() => {
+    if (!menuOpen) return;
+    firstMenuItemRef.current?.focus();
+    function onPointerDown(ev: PointerEvent): void {
+      if (!menuWrapRef.current) return;
+      if (!menuWrapRef.current.contains(ev.target as Node)) {
+        setMenuOpen(false);
+      }
+    }
+    function onKey(ev: KeyboardEvent): void {
+      if (ev.key === "Escape") {
+        ev.preventDefault();
+        ev.stopPropagation();
+        setMenuOpen(false);
+        kebabRef.current?.focus();
+      }
+    }
+    window.addEventListener("pointerdown", onPointerDown, true);
+    window.addEventListener("keydown", onKey, true);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown, true);
+      window.removeEventListener("keydown", onKey, true);
+    };
+  }, [menuOpen]);
 
   function startEdit(): void {
     setDraftTitle(c.title);
@@ -204,43 +246,100 @@ function CaseRow({
             {c.title}
           </strong>
         )}
-        <button
-          data-testid="grace2-case-row-rename"
-          aria-label={`Rename ${c.title}`}
-          title="Rename"
-          onClick={(e) => {
-            e.stopPropagation();
-            if (editing) commitEdit();
-            else startEdit();
-          }}
-          style={iconBtnStyle}
-        >
-          {editing ? "✓" : "✎"}
-        </button>
-        <button
-          data-testid="grace2-case-row-archive"
-          aria-label={`Archive ${c.title}`}
-          title="Archive"
-          onClick={(e) => {
-            e.stopPropagation();
-            onArchive();
-          }}
-          style={iconBtnStyle}
-        >
-          ⟲
-        </button>
-        <button
-          data-testid="grace2-case-row-delete"
-          aria-label={`Delete ${c.title}`}
-          title="Delete"
-          onClick={(e) => {
-            e.stopPropagation();
-            onRequestDelete();
-          }}
-          style={{ ...iconBtnStyle, color: "#f88" }}
-        >
-          ✕
-        </button>
+        {editing ? (
+          // While renaming, the inline-edit mode owns the row — a single
+          // commit affordance replaces the overflow menu.
+          <button
+            data-testid="grace2-case-row-rename-commit"
+            aria-label={`Save name for ${c.title}`}
+            title="Save"
+            onClick={(e) => {
+              e.stopPropagation();
+              commitEdit();
+            }}
+            style={iconBtnStyle}
+          >
+            <IconCheck size={14} />
+          </button>
+        ) : (
+          // F57 — single kebab overflow button → popover menu.
+          <div
+            ref={menuWrapRef}
+            style={{ position: "relative", display: "inline-flex" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              ref={kebabRef}
+              data-testid="grace2-case-row-menu-button"
+              aria-label={`Actions for ${c.title}`}
+              title="Actions"
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+              onClick={(e) => {
+                e.stopPropagation();
+                setMenuOpen((v) => !v);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "ArrowDown" && !menuOpen) {
+                  e.preventDefault();
+                  setMenuOpen(true);
+                }
+              }}
+              style={iconBtnStyle}
+            >
+              <IconKebab size={16} />
+            </button>
+            {menuOpen && (
+              <div
+                data-testid="grace2-case-row-menu"
+                role="menu"
+                aria-label={`Actions for ${c.title}`}
+                style={menuStyle}
+              >
+                <button
+                  ref={firstMenuItemRef}
+                  data-testid="grace2-case-row-menu-rename"
+                  role="menuitem"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setMenuOpen(false);
+                    startEdit();
+                  }}
+                  style={menuItemStyle()}
+                >
+                  <IconRename size={14} />
+                  <span>Rename</span>
+                </button>
+                <button
+                  data-testid="grace2-case-row-menu-archive"
+                  role="menuitem"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setMenuOpen(false);
+                    onArchive();
+                  }}
+                  style={menuItemStyle()}
+                >
+                  <IconArchive size={14} />
+                  <span>Archive</span>
+                </button>
+                <button
+                  data-testid="grace2-case-row-menu-delete"
+                  role="menuitem"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setMenuOpen(false);
+                    onRequestDelete();
+                  }}
+                  style={menuItemStyle("#f87171")}
+                >
+                  <IconDelete size={14} />
+                  <span>Delete</span>
+                </button>
+              </div>
+            )}
+          </div>
+        )}
       </div>
       <div
         style={{
@@ -270,9 +369,15 @@ function CaseRow({
           <span
             data-testid="grace2-case-row-bbox"
             title={`bbox: ${(c.bbox ?? []).join(", ")}`}
-            style={{ fontFamily: "monospace" }}
+            style={{
+              fontFamily: "monospace",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 3,
+            }}
           >
-            ▭ {bboxStr}
+            <IconBbox size={11} />
+            {bboxStr}
           </span>
         )}
         <span
@@ -302,6 +407,44 @@ const iconBtnStyle: React.CSSProperties = {
   // job-0166 — buttons need explicit fontFamily so they don't fall back to UA serif.
   fontFamily: "inherit",
 };
+
+// F57 — popover menu surface anchored to the kebab button. Right-aligned so it
+// doesn't spill past the row's right edge; high z-index so it floats above
+// neighbouring rows.
+const menuStyle: React.CSSProperties = {
+  position: "absolute",
+  top: "calc(100% + 4px)",
+  right: 0,
+  minWidth: 132,
+  background: "rgba(28,28,34,0.98)",
+  border: "1px solid rgba(255,255,255,0.12)",
+  borderRadius: 8,
+  padding: 4,
+  display: "flex",
+  flexDirection: "column",
+  gap: 2,
+  boxShadow: "0 6px 20px rgba(0,0,0,0.55)",
+  zIndex: 50,
+};
+
+function menuItemStyle(color = "#ddd"): React.CSSProperties {
+  return {
+    background: "transparent",
+    border: "none",
+    color,
+    cursor: "pointer",
+    fontSize: 12,
+    textAlign: "left",
+    padding: "6px 8px",
+    borderRadius: 5,
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    width: "100%",
+    // job-0166 — buttons need explicit fontFamily.
+    fontFamily: "inherit",
+  };
+}
 
 // --- CasesPanel --------------------------------------------------------- //
 
@@ -368,21 +511,25 @@ export function CasesPanel({
         <button
           data-testid="grace2-cases-new"
           aria-label="Create a new Case"
+          title="Create a new Case"
           onClick={onCreate}
           style={{
             background: "#3b82f6",
             color: "#fff",
             border: "none",
-            borderRadius: 4,
-            padding: "4px 10px",
-            fontSize: 12,
-            fontWeight: 600,
+            borderRadius: 6,
+            // F58 — icon-only; comfortable >=40px touch target.
+            width: 40,
+            height: 40,
             cursor: "pointer",
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
             // job-0166 — buttons need explicit fontFamily.
             fontFamily: "inherit",
           }}
         >
-          + New Case
+          <IconAdd size={20} weight="bold" />
         </button>
       </div>
 

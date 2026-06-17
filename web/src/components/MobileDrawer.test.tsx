@@ -4,7 +4,10 @@
 //   - closed → NOTHING in the DOM (map stays unobstructed);
 //   - open → backdrop + panel + children render;
 //   - backdrop tap closes; clicks inside the panel do NOT close;
-//   - touch-target class + a11y wiring on the ☰ opener (44px, aria-expanded).
+//   - touch-target class + a11y wiring on the menu opener (44px, aria-expanded);
+//   - F52 (v2): the drawer column is `pointerEvents: "none"` so gutter taps
+//     fall through to the backdrop (close); the opener renders the icon-module
+//     menu glyph (no raw unicode).
 //
 // The drawer is a pure presentational shell — App.tsx owns the open state —
 // so a small stateful harness exercises the full open → close cycle the way
@@ -33,6 +36,15 @@ describe("MobileDrawerButton", () => {
     render(<MobileDrawerButton open={false} onClick={onClick} />);
     fireEvent.click(screen.getByTestId("grace2-mobile-drawer-button"));
     expect(onClick).toHaveBeenCalledTimes(1);
+  });
+
+  // job-0322 F52 — no raw unicode glyph; the opener renders the icon-module
+  // IconMenu (a Phosphor svg), per the project's no-glyph UI policy.
+  it("renders the icon-module menu glyph (svg), not a raw unicode ☰", () => {
+    render(<MobileDrawerButton open={false} onClick={vi.fn()} />);
+    const btn = screen.getByTestId("grace2-mobile-drawer-button");
+    expect(btn.querySelector("svg")).toBeTruthy();
+    expect(btn.textContent ?? "").not.toContain("☰"); // ☰
   });
 });
 
@@ -110,43 +122,64 @@ describe("MobileDrawer", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  // job-0322 F52 — the transparent 320px column sits ABOVE the z=40 backdrop,
-  // so gutter taps (inside the column, outside a floating card) used to land
-  // on the column, which had no close handler, and the drawer stayed open.
-  // The column now closes when tapped DIRECTLY (e.target === e.currentTarget).
-  it("F52: a tap on the drawer-column gutter calls onClose", () => {
+  // job-0322 F52 (v2) — the tap-to-dismiss fix is now pointer-events based,
+  // not an onClick guard. The transparent 320px column is `pointerEvents:
+  // "none"` so every tap on its empty/gutter space passes THROUGH to the z=40
+  // backdrop (onClick=onClose). The column itself has NO onClick handler.
+  it("F52: the drawer column is pointerEvents:none (gutter taps fall through to backdrop)", () => {
+    render(
+      <MobileDrawer open={true} onClose={vi.fn()}>
+        <button data-testid="inner-button">inner</button>
+      </MobileDrawer>,
+    );
+    const drawer = screen.getByTestId("grace2-mobile-drawer");
+    // The column is click-transparent — pointer events pass through to the
+    // backdrop below, which owns the close.
+    expect(drawer.style.pointerEvents).toBe("none");
+  });
+
+  it("F52: the backdrop still owns close (tap-anywhere-outside dismiss)", () => {
+    // With the column click-transparent, the full-screen backdrop is the single
+    // close surface — every gutter tap reaches it.
     const onClose = vi.fn();
     render(
       <MobileDrawer open={true} onClose={onClose}>
         <button data-testid="inner-button">inner</button>
       </MobileDrawer>,
     );
-    // A direct tap on the column itself (the empty gutter) — target IS the
-    // column element, so the guard matches and onClose fires.
-    fireEvent.click(screen.getByTestId("grace2-mobile-drawer"));
+    fireEvent.click(screen.getByTestId("grace2-mobile-drawer-backdrop"));
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it("F52: a tap on a child interactive card does NOT call onClose by itself", () => {
+  it("F52: the column carries no onClick close handler (a direct tap is inert)", () => {
+    // Regression guard against the old `e.target === e.currentTarget` model:
+    // the column must NOT close on its own click anymore (the backdrop does).
+    // In jsdom pointer-events does not suppress dispatch, so a direct click on
+    // the column is the strongest available proof the handler is gone.
+    const onClose = vi.fn();
+    render(
+      <MobileDrawer open={true} onClose={onClose}>
+        <button data-testid="inner-button">inner</button>
+      </MobileDrawer>,
+    );
+    fireEvent.click(screen.getByTestId("grace2-mobile-drawer"));
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("F52: a nested interactive child's own handler still runs (cards stay tappable)", () => {
+    // App.tsx re-enables hit-testing on each real card with `pointerEvents:
+    // "auto"`; the drawer must not swallow or hijack those taps.
     const onClose = vi.fn();
     const onInner = vi.fn();
     render(
       <MobileDrawer open={true} onClose={onClose}>
-        {/* A floating card surface with a nested interactive element, the way
-            CasesPanel mounts its Case rows / row buttons inside the column. */}
-        <div data-testid="floating-card">
+        <div data-testid="floating-card" style={{ pointerEvents: "auto" }}>
           <button data-testid="card-button" onClick={onInner}>
             select
           </button>
         </div>
       </MobileDrawer>,
     );
-    // Tap the card surface (a child of the column) — e.target is the card,
-    // not the column, so the guard rejects it and the drawer stays open.
-    fireEvent.click(screen.getByTestId("floating-card"));
-    expect(onClose).not.toHaveBeenCalled();
-    // Tap the nested button — its click bubbles to the column, but e.target is
-    // the button, so onClose still does not fire; the inner handler runs.
     fireEvent.click(screen.getByTestId("card-button"));
     expect(onInner).toHaveBeenCalledTimes(1);
     expect(onClose).not.toHaveBeenCalled();
