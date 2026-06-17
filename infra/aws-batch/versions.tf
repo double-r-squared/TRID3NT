@@ -22,4 +22,13 @@ terraform {
       version = "~> 5.0"
     }
   }
+
+  # Remote state in the existing runs bucket so the state is durable and
+  # NATE can manage this module from any machine (not stranded on the
+  # operator's laptop). No DynamoDB lock table — single-operator for now.
+  backend "s3" {
+    bucket = "grace2-hazard-runs-226996537797"
+    key    = "tofu-state/aws-batch.tfstate"
+    region = "us-west-2"
+  }
 }

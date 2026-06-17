@@ -80,7 +80,7 @@ resource "aws_ecr_repository" "sfincs" {
   # Retain cost and security metadata across image rebuilds. The lifecycle
   # policy below caps stored image count to 10.
   tags = {
-    description = "SFINCS solver worker image (services/workers/sfincs/Dockerfile)"
+    description = "SFINCS solver worker image - services/workers/sfincs/Dockerfile"
   }
 }
 
@@ -322,7 +322,7 @@ resource "aws_iam_role_policy" "agent_batch" {
 
 resource "aws_security_group" "batch" {
   name        = "grace2-batch-sg"
-  description = "GRACE-2 Batch compute instances — egress-only."
+  description = "GRACE-2 Batch compute instances - egress-only."
   vpc_id      = data.aws_vpc.main.id
 
   egress {
