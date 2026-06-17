@@ -209,6 +209,27 @@ def test_system_prompt_dont_fetch_all_never_means_shrink_bbox() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 2026-06-17 — arg-error self-correct (Oklahoma-tornado bug)
+# ---------------------------------------------------------------------------
+
+
+def test_system_prompt_steers_self_correct_on_arg_error() -> None:
+    """On an ARG/VALIDATION error the agent must SELF-CORRECT and retry — never
+    tell the user to wait. This is the steer half of the Oklahoma-tornado fix."""
+    flat = " ".join(SYSTEM_PROMPT.split())
+    assert "SELF-CORRECT" in flat
+    assert "do not tell the user to wait" in flat
+
+
+def test_system_prompt_says_full_state_name_accepted() -> None:
+    """State-keyed tools now accept a full US state name, not only ISO codes —
+    the agent must know it can pass 'Oklahoma' (not just 'OK')."""
+    flat = " ".join(SYSTEM_PROMPT.split())
+    assert "full US state name is accepted" in flat
+    assert "Oklahoma" in flat
+
+
+# ---------------------------------------------------------------------------
 # Groundwater spill routing — parameterized vs. news-article
 # ---------------------------------------------------------------------------
 

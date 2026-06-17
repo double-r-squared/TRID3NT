@@ -264,6 +264,86 @@ def test_circuit_breaker_is_per_session():
 
 
 # ---------------------------------------------------------------------------
+# Oklahoma-tornado bug (2026-06-17): arg errors through the full server path
+# must NOT trip the breaker — so the model can self-correct and retry.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_arg_errors_through_server_do_not_trip_breaker():
+    """Many CLIENT/arg failures via _invoke_tool_via_emitter leave the breaker CLOSED.
+
+    Repro of the live bug: the model fired a burst of fetch_storm_events_db
+    calls with a bad state arg (each raising a *ArgError with retryable=False).
+    Before the fix those tripped the breaker in 3 calls and the cooldown then
+    BLOCKED the corrected-args retry. After the fix the breaker stays closed
+    and the corrected call's success path is reachable.
+    """
+    from grace2_agent import server as agent_server
+
+    class _ArgError(RuntimeError):
+        error_code = "STORM_EVENTS_ARG_INVALID"
+        retryable = False  # deterministic client/arg fault
+
+    invoke_count = {"n": 0}
+
+    # The model keeps trying the same tool with a bad arg; on the LAST turn it
+    # would succeed (corrected args) — proving the breaker never blocked it.
+    N_BAD = 6
+
+    def _gemini_stream(**kw):
+        invoke_count_so_far = invoke_count["n"]
+        if invoke_count_so_far < N_BAD + 1:
+            return iter([
+                _make_fake_chunk_with_function_call(
+                    "fetch_storm_events_db",
+                    {"year": 2013, "state": "Oklahoma"},
+                    f"call-{invoke_count_so_far}",
+                )
+            ])
+        return iter([_make_fake_chunk_with_text("Done — added the tornado layer.")])
+
+    fake_client = MagicMock()
+    fake_client.models.generate_content_stream.side_effect = lambda **kw: _gemini_stream(**kw)
+
+    async def _invoke_stub(_ws, _state, name, args):
+        invoke_count["n"] += 1
+        # First N_BAD calls raise an arg error; the (N_BAD+1)th succeeds.
+        if invoke_count["n"] <= N_BAD:
+            raise _ArgError(f"unrecognized US state {args.get('state')!r}")
+        return {"layer_id": "storm-events-2013-ok", "uri": "gs://x/ok.fgb"}
+
+    state = SessionState(session_id=new_ulid())
+    # Default threshold (3) — well below N_BAD, so the OLD behaviour would have
+    # tripped after 3 arg errors and blocked everything after.
+    state.circuit_breaker = ToolCircuitBreaker(threshold=3, cooldown_s=3600.0)
+    settings = GeminiSettings(
+        model="gemini-2.5-pro", project="t", location="us-central1", use_vertex=True
+    )
+    sock = _FakeSocket()
+
+    with patch.object(agent_server, "build_client", return_value=fake_client), \
+         patch.object(agent_server, "_invoke_tool_via_emitter", side_effect=_invoke_stub), \
+         patch.object(agent_server, "build_tool_declarations", return_value=[]):
+        await agent_server._stream_gemini_reply(
+            sock, state, settings,
+            "show me historical tornado touchdowns in Oklahoma since 2000",
+            "research",
+        )
+
+    # The breaker must NEVER have tripped despite N_BAD > threshold arg errors.
+    assert state.circuit_breaker.is_tripped("fetch_storm_events_db") is False
+    assert state.circuit_breaker._consecutive_failures.get(
+        "fetch_storm_events_db", 0
+    ) == 0, "arg errors must not load the trip counter"
+    # The corrected call (N_BAD+1) was reached — the breaker never blocked it.
+    assert invoke_count["n"] >= N_BAD + 1, (
+        f"corrected retry was blocked; only {invoke_count['n']} invocations "
+        f"(expected at least {N_BAD + 1})"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Test: CircuitBreakerError is not counted as a new failure
 # ---------------------------------------------------------------------------
 

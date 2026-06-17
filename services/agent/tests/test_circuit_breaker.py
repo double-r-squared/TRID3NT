@@ -22,9 +22,29 @@ import pytest
 from grace2_agent.circuit_breaker import (
     CircuitBreakerError,
     ToolCircuitBreaker,
+    is_client_arg_error,
     _DEFAULT_COOLDOWN_S,
     _DEFAULT_THRESHOLD,
 )
+
+
+# ---------------------------------------------------------------------------
+# Synthetic upstream / client-arg error classes (mirror real tool exceptions).
+# ---------------------------------------------------------------------------
+
+
+class _FakeUpstreamError(RuntimeError):
+    """Transient upstream fault — retryable=True (like *UpstreamError)."""
+
+    error_code = "FAKE_UPSTREAM_ERROR"
+    retryable = True
+
+
+class _FakeArgError(RuntimeError):
+    """Deterministic client/arg fault — retryable=False (like *ArgError)."""
+
+    error_code = "FAKE_ARG_INVALID"
+    retryable = False
 
 
 # ---------------------------------------------------------------------------
@@ -279,3 +299,105 @@ def test_multiple_tools_are_independent():
     assert cb.is_tripped("fetch_wdpa") is False
     cb.record_failure("fetch_wdpa")
     assert cb.is_tripped("fetch_wdpa") is False  # only 1 failure, threshold=2
+
+
+# ---------------------------------------------------------------------------
+# Test 9: failure classification (LIVE BUG 2026-06-17 — Oklahoma-tornado).
+#
+# The breaker must trip ONLY on UPSTREAM/transient faults, NEVER on a
+# deterministic CLIENT/argument error — otherwise a burst of bad-arg calls
+# trips the breaker and the cooldown then BLOCKS the corrected-args retry.
+# ---------------------------------------------------------------------------
+
+
+def test_is_client_arg_error_classification():
+    """is_client_arg_error: arg/validation errors True, upstream/transient False."""
+    # Typed retryable=False → client/arg error.
+    assert is_client_arg_error(_FakeArgError("bad state")) is True
+    # Typed retryable=True → upstream/transient.
+    assert is_client_arg_error(_FakeUpstreamError("503")) is False
+    # Untyped programmer/arg-shape errors → client/arg.
+    assert is_client_arg_error(ValueError("nope")) is True
+    assert is_client_arg_error(TypeError("nope")) is True
+    assert is_client_arg_error(KeyError("nope")) is True
+    assert is_client_arg_error(AttributeError("nope")) is True
+    # Untyped transient-ish → upstream (counts).
+    assert is_client_arg_error(TimeoutError("slow")) is False
+    assert is_client_arg_error(ConnectionError("reset")) is False
+    assert is_client_arg_error(RuntimeError("???")) is False
+    # No error → not a client error.
+    assert is_client_arg_error(None) is False
+
+
+def test_breaker_does_not_trip_on_client_arg_errors():
+    """N consecutive CLIENT/arg errors leave the breaker CLOSED.
+
+    This is the Oklahoma-tornado bug fix: a model passing a bad arg
+    (e.g. "Oklahoma" before the validator was relaxed) must NOT trip the
+    breaker — the model can self-correct and retry, and a tripped breaker
+    would block that corrected retry for the whole cooldown.
+    """
+    cb = ToolCircuitBreaker(threshold=3, cooldown_s=60.0)
+    # Fire WAY more than the threshold of arg errors.
+    for _ in range(10):
+        cb.record_failure("fetch_storm_events_db", _FakeArgError("bad state"))
+    assert cb.is_tripped("fetch_storm_events_db") is False
+    # The counter must not have advanced at all.
+    assert cb._consecutive_failures.get("fetch_storm_events_db", 0) == 0
+
+
+def test_breaker_does_not_trip_on_untyped_value_error():
+    """Untyped ValueError (arg-shape) also does not count toward a trip."""
+    cb = ToolCircuitBreaker(threshold=2, cooldown_s=60.0)
+    for _ in range(5):
+        cb.record_failure("some_tool", ValueError("bad arg"))
+    assert cb.is_tripped("some_tool") is False
+
+
+def test_breaker_trips_on_upstream_errors():
+    """N consecutive UPSTREAM/transient faults DO trip the breaker."""
+    cb = ToolCircuitBreaker(threshold=3, cooldown_s=60.0)
+    for _ in range(3):
+        cb.record_failure("fetch_stac", _FakeUpstreamError("503 from STAC"))
+    assert cb.is_tripped("fetch_stac") is True
+
+
+def test_breaker_trips_on_untyped_runtime_and_timeout():
+    """Untyped RuntimeError / TimeoutError count as upstream and trip."""
+    cb = ToolCircuitBreaker(threshold=2, cooldown_s=60.0)
+    cb.record_failure("tool_a", RuntimeError("opaque upstream failure"))
+    cb.record_failure("tool_a", TimeoutError("read timed out"))
+    assert cb.is_tripped("tool_a") is True
+
+
+def test_arg_errors_do_not_block_subsequent_upstream_trip():
+    """Arg errors don't poison the counter — a later real upstream loop still trips.
+
+    Models the exact Oklahoma scenario: a burst of bad-arg failures, then the
+    tool is corrected and a genuine upstream outage occurs. The breaker must
+    still be able to trip on the real upstream failures (it was never blocked
+    by the arg errors), AND the arg errors must not have pre-loaded the counter.
+    """
+    cb = ToolCircuitBreaker(threshold=3, cooldown_s=60.0)
+    # 5 arg errors — no effect.
+    for _ in range(5):
+        cb.record_failure("fetch_storm_events_db", _FakeArgError("Oklahoma"))
+    assert cb.is_tripped("fetch_storm_events_db") is False
+    assert cb._consecutive_failures.get("fetch_storm_events_db", 0) == 0
+
+    # Now 2 real upstream failures — still below threshold (3), because the
+    # arg errors did NOT pre-load the counter.
+    cb.record_failure("fetch_storm_events_db", _FakeUpstreamError("503"))
+    cb.record_failure("fetch_storm_events_db", _FakeUpstreamError("503"))
+    assert cb.is_tripped("fetch_storm_events_db") is False
+    # Third real upstream failure trips it.
+    cb.record_failure("fetch_storm_events_db", _FakeUpstreamError("503"))
+    assert cb.is_tripped("fetch_storm_events_db") is True
+
+
+def test_record_failure_no_error_arg_counts_legacy_behaviour():
+    """record_failure() with no exception still counts (conservative default)."""
+    cb = ToolCircuitBreaker(threshold=2, cooldown_s=60.0)
+    cb.record_failure("legacy_tool")  # no error arg
+    cb.record_failure("legacy_tool")
+    assert cb.is_tripped("legacy_tool") is True

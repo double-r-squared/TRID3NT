@@ -2,9 +2,22 @@
 
 Defends the multi-turn agent loop against unstable upstreams (STAC, ERDDAP,
 THREDDS, ArcGIS Hub, etc.) that enter a repeated-failure mode.  When a single
-tool fails 3 consecutive times (configurable via ``GRACE2_CIRCUIT_THRESHOLD``)
-the breaker trips: subsequent calls to that tool are short-circuited for a 60s
-cooldown period (configurable via ``GRACE2_CIRCUIT_COOLDOWN_S``).
+tool fails 3 consecutive times **on a transient/upstream fault** (configurable
+via ``GRACE2_CIRCUIT_THRESHOLD``) the breaker trips: subsequent calls to that
+tool are short-circuited for a 60s cooldown period (configurable via
+``GRACE2_CIRCUIT_COOLDOWN_S``).
+
+CRITICAL (job 2026-06-17 — Oklahoma-tornado bug): the breaker counts ONLY
+upstream/transient failures (``UpstreamAPIError``, timeouts, connection
+errors, 5xx) toward the trip threshold.  Deterministic CLIENT/argument errors
+(the ``*ArgError`` classes, ``BboxInvalidError``, ``ValueError``/``TypeError``
+arg-shape errors — anything carrying ``retryable=False`` that is a model-side
+fault) do NOT increment the counter.  A bad-arg failure is the model's fault:
+it will fail identically every time, AND the model can self-correct the
+argument and retry — so it must NEVER trip a breaker that would then BLOCK the
+corrected retry.  Before this fix, ~24 parallel per-year storm-events calls
+with a full state name ("Oklahoma") tripped the breaker in 3 calls and the
+60s cooldown blocked the corrected-args retry.
 
 Wire points (server.py):
     - ``SessionState.circuit_breaker: ToolCircuitBreaker``
@@ -118,6 +131,52 @@ class CircuitBreakerError(RuntimeError):
 
 
 # ---------------------------------------------------------------------------
+# Failure classification — only upstream/transient faults count toward a trip.
+# ---------------------------------------------------------------------------
+
+
+def is_client_arg_error(error: BaseException | None) -> bool:
+    """Return True if ``error`` is a deterministic CLIENT/argument error.
+
+    A client/arg error is a model-side fault: the same args will fail
+    identically every time, and the model can self-correct and retry.  Such
+    errors must NOT count toward the circuit-breaker trip threshold — otherwise
+    a burst of bad-arg calls would trip the breaker and the cooldown would then
+    block the corrected-args retry (the Oklahoma-tornado bug, 2026-06-17).
+
+    Conversely, UPSTREAM/transient faults (timeouts, connection errors, 5xx,
+    ``UpstreamAPIError``) ARE the breaker's purpose and DO count.
+
+    Classification (mirrors ``adapter._classify_error`` so the breaker and the
+    function_response carry the same retry signal):
+
+    1. Honour the typed-tool exception's ``retryable`` class attribute when
+       present: ``retryable is False`` → client/arg error (skip the counter);
+       ``retryable is True`` → upstream/transient (count it).  Every
+       ``*ArgError`` / ``BboxInvalidError`` declares ``retryable=False``;
+       every ``*UpstreamError`` declares ``retryable=True``.
+    2. Untyped exceptions: ``ValueError`` / ``TypeError`` / ``KeyError`` /
+       ``AttributeError`` are programmer/arg-shape errors → client/arg.
+    3. Everything else (timeouts, ``ConnectionError``/``OSError``, bare
+       ``RuntimeError``) → treat as upstream/transient (count it) so a genuine
+       repeated-upstream-failure loop still trips the breaker.
+
+    ``None`` (no error) is not a client error — returns False.
+    """
+    if error is None:
+        return False
+    # 1. Typed-tool retry signal is authoritative.
+    retry_attr = getattr(error, "retryable", None)
+    if isinstance(retry_attr, bool):
+        return retry_attr is False
+    # 2. Untyped programmer/arg-shape errors are client errors.
+    if isinstance(error, (ValueError, TypeError, KeyError, AttributeError)):
+        return True
+    # 3. Default: transient/upstream — counts toward the trip threshold.
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Per-session breaker state
 # ---------------------------------------------------------------------------
 
@@ -176,14 +235,37 @@ class ToolCircuitBreaker:
         remaining = deadline - time.monotonic()
         return max(0.0, remaining)
 
-    def record_failure(self, tool_name: str) -> None:
+    def record_failure(
+        self, tool_name: str, error: BaseException | None = None
+    ) -> None:
         """Increment the consecutive-failure counter; trip the breaker if threshold hit.
 
-        Call this after any failure in ``_invoke_tool_via_emitter`` (ANY
-        exception, not just retryable ones — even a single ``TOOL_NOT_FOUND``
-        increments the counter because repeated misuse indicates a model-side
-        loop that we want to break).
+        Call this after a failure in ``_invoke_tool_via_emitter``, passing the
+        exception that was raised so the breaker can classify it.
+
+        Only UPSTREAM/transient faults count toward the trip threshold.  A
+        deterministic CLIENT/argument error (``*ArgError``, ``BboxInvalidError``,
+        ``ValueError``/``TypeError`` arg-shape errors — anything for which
+        ``is_client_arg_error`` returns True) is SKIPPED: it is a model-side
+        fault that will fail identically and that the model can self-correct,
+        so it must NOT trip a breaker that would then block the corrected-args
+        retry (the Oklahoma-tornado bug, 2026-06-17).
+
+        ``error=None`` (legacy call sites / unclassifiable failures) counts as a
+        failure — the conservative default preserves the original
+        repeated-failure-loop protection.
         """
+        if is_client_arg_error(error):
+            # Model-side / deterministic arg fault — does NOT count toward a
+            # trip.  Log at debug for telemetry but leave the counter alone so a
+            # corrected-args retry is never blocked.
+            logger.debug(
+                "circuit-breaker: tool=%r failure is a client/arg error "
+                "(%s); NOT counting toward trip threshold",
+                tool_name,
+                type(error).__name__ if error is not None else "None",
+            )
+            return
         if self.is_tripped(tool_name):
             # Already open; don't double-reset the clock.
             return

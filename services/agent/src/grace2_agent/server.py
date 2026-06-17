@@ -1348,13 +1348,17 @@ async def _stream_gemini_reply(
                         call.name,
                         exc,
                     )
-                    # job-B8: record failure for ANY exception (not just
-                    # upstream errors) — repeated dispatch failures for the
-                    # same tool indicate a runaway loop we want to break.
-                    # CircuitBreakerError is excluded: it means the breaker
-                    # already fired and we must not increment again.
+                    # job-B8 + 2026-06-17 fix: record failure, passing the
+                    # exception so the breaker counts ONLY upstream/transient
+                    # faults toward the trip threshold. Deterministic CLIENT/arg
+                    # errors (*ArgError, BboxInvalidError, ValueError/TypeError
+                    # arg-shape errors) are model-side faults the model can
+                    # self-correct and retry — they must NOT trip a breaker that
+                    # would then BLOCK the corrected-args retry (Oklahoma-tornado
+                    # bug). CircuitBreakerError is excluded entirely: it means
+                    # the breaker already fired and we must not increment again.
                     if not isinstance(exc, CircuitBreakerError):
-                        state.circuit_breaker.record_failure(call.name)
+                        state.circuit_breaker.record_failure(call.name, exc)
                     dispatch_error = exc
                 _tool_latency_ms = (asyncio.get_running_loop().time() - _tool_start) * 1000.0
 

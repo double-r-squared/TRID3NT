@@ -126,7 +126,15 @@ def _validate_inputs(
     state: str | None,
     event_types: list[str] | None,
 ) -> None:
-    """Validate year/state/event_types or raise ``StormEventsArgError``."""
+    """Validate year/state/event_types or raise ``StormEventsArgError``.
+
+    ``state`` accepts EITHER an ISO 2-letter code (``"OK"``) OR a full US state
+    name (``"Oklahoma"``), case-insensitive — the LLM routinely passes the
+    word the user typed. Both forms are recognized against the NOAA state
+    catalog; only a genuinely-unrecognized state is rejected. The query path
+    (``_parse_filter_and_serialize``) is already tolerant of both, so we
+    validate-only here and let it normalize.
+    """
     if not isinstance(year, int):
         raise StormEventsArgError(f"year must be int, got {type(year).__name__}")
     # NOAA Storm Events DB coverage begins 1950.
@@ -135,9 +143,17 @@ def _validate_inputs(
             f"year={year} out of NOAA Storm Events DB range [1950, 2100]"
         )
     if state is not None:
-        if not isinstance(state, str) or len(state) != 2:
+        if not isinstance(state, str) or not state.strip():
             raise StormEventsArgError(
-                f"state must be ISO 2-letter code (e.g. 'FL'), got {state!r}"
+                f"state must be a non-empty US state name or ISO 2-letter "
+                f"code (e.g. 'Oklahoma' or 'OK'), got {state!r}"
+            )
+        token = state.strip().upper()
+        # Accept an ISO 2-letter code (key) or a full state name (value).
+        if token not in _ISO_TO_STATE_NAME and token not in _STATE_NAME_TO_ISO:
+            raise StormEventsArgError(
+                f"unrecognized US state {state!r}; expected a state name "
+                f"(e.g. 'Oklahoma') or ISO 2-letter code (e.g. 'OK')"
             )
     if event_types is not None:
         if not isinstance(event_types, list) or not all(
@@ -282,14 +298,11 @@ def _parse_filter_and_serialize(
             f"got {sorted(df.columns)[:10]}..."
         )
 
-    # State filter — NOAA writes full state name; we accept ISO 2-letter.
+    # State filter — NOAA writes the full state name; we accept either an ISO
+    # 2-letter code ("OK") or a full name ("Oklahoma"), normalized here.
     if state is not None:
-        state_name = _ISO_TO_STATE_NAME.get(state.upper())
-        if state_name is None:
-            # Fallback: match against STATE column directly (handles user
-            # passing e.g. "FLORIDA" though we documented ISO 2-letter).
-            state_name = state.upper()
-        df = df[df["STATE"].str.upper() == state_name.upper()].copy()
+        state_name = _normalize_state(state)
+        df = df[df["STATE"].str.upper() == state_name].copy()
 
     # Event-type filter (case-insensitive).
     if event_types is not None and len(event_types) > 0:
@@ -379,6 +392,34 @@ _ISO_TO_STATE_NAME: dict[str, str] = {
     "MP": "NORTHERN MARIANA ISLANDS",
 }
 
+# Reverse map: full state name (uppercase) → ISO 2-letter code. Lets callers
+# pass the spoken-language name ("Oklahoma") which the LLM almost always does;
+# we normalize to the canonical form for the filter + cache key.
+_STATE_NAME_TO_ISO: dict[str, str] = {
+    name: iso for iso, name in _ISO_TO_STATE_NAME.items()
+}
+
+
+def _normalize_state(state: str | None) -> str | None:
+    """Normalize a state arg to its NOAA full-name spelling (uppercase).
+
+    Accepts an ISO 2-letter code (``"OK"``) or a full state name
+    (``"Oklahoma"``), case-insensitive. Returns the NOAA STATE-column spelling
+    (e.g. ``"OKLAHOMA"``). ``None`` passes through. An unrecognized token is
+    returned upper-cased unchanged (the query filter then matches the raw
+    STATE column directly) — ``_validate_inputs`` is the gate that rejects
+    genuinely-bad states before we get here.
+    """
+    if state is None:
+        return None
+    token = state.strip().upper()
+    if token in _ISO_TO_STATE_NAME:
+        return _ISO_TO_STATE_NAME[token]
+    if token in _STATE_NAME_TO_ISO:
+        # Already a full name; uppercase canonical NOAA spelling.
+        return token
+    return token
+
 
 # ---------------------------------------------------------------------------
 # Fetch function — builds the bytes callable for read_through.
@@ -451,8 +492,9 @@ def fetch_storm_events_db(
     **Parameters:**
     - ``year`` (int): calendar year in range [1950, 2100]. Coverage is sparse
       before ~1996 and comprehensive from that year onward. Example: ``2022``.
-    - ``state`` (str or None): ISO 2-letter US state code (``"FL"``, ``"TX"``).
-      ``None`` returns all states/territories. Case-insensitive.
+    - ``state`` (str or None): US state — either a full name (``"Oklahoma"``,
+      ``"Florida"``) OR an ISO 2-letter code (``"OK"``, ``"FL"``).
+      Case-insensitive; ``None`` returns all states/territories.
     - ``event_types`` (list[str] or None): list of NOAA event-type name strings,
       case-insensitive (e.g. ``["Hurricane", "Flash Flood"]``, ``["Tornado"]``).
       ``None`` returns all categories.
@@ -473,8 +515,10 @@ def fetch_storm_events_db(
     """
     _validate_inputs(year, state, event_types)
 
-    # Normalize for cache-key stability: state upper, event_types sorted-upper.
-    state_norm = state.upper() if state else None
+    # Normalize for cache-key stability: collapse "OK"/"Oklahoma"/"oklahoma"
+    # to one canonical NOAA full-name spelling so they share a cache entry;
+    # event_types sorted-upper.
+    state_norm = _normalize_state(state)
     event_types_norm = (
         sorted({e.upper() for e in event_types}) if event_types else None
     )

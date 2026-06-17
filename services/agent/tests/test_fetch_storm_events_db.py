@@ -37,7 +37,9 @@ from grace2_agent.tools.fetch_storm_events_db import (
     StormEventsEmptyError,
     StormEventsError,
     StormEventsUpstreamError,
+    _normalize_state,
     _resolve_csv_url,
+    _validate_inputs,
     _parse_filter_and_serialize,
     fetch_storm_events_db,
 )
@@ -193,10 +195,17 @@ def test_invalid_year_raises_typed_error():
 
 
 def test_invalid_state_raises_typed_error():
-    with pytest.raises(StormEventsArgError, match="state"):
-        fetch_storm_events_db(year=2022, state="Florida")  # not 2-letter
+    # An empty / whitespace-only state is rejected (no state to filter by).
     with pytest.raises(StormEventsArgError, match="state"):
         fetch_storm_events_db(year=2022, state="")  # empty
+    with pytest.raises(StormEventsArgError, match="state"):
+        fetch_storm_events_db(year=2022, state="   ")  # whitespace-only
+    # A genuinely-unrecognized state is rejected.
+    with pytest.raises(StormEventsArgError, match="unrecognized"):
+        fetch_storm_events_db(year=2022, state="Atlantis")
+    # A non-string state is rejected.
+    with pytest.raises(StormEventsArgError, match="state"):
+        fetch_storm_events_db(year=2022, state=42)  # type: ignore[arg-type]
 
 
 def test_invalid_event_types_raises_typed_error():
@@ -215,6 +224,117 @@ def test_arg_errors_are_not_retryable():
         assert exc.retryable is False
     else:
         pytest.fail("Expected StormEventsArgError")
+
+
+# ---------------------------------------------------------------------------
+# Full-state-name acceptance (LIVE BUG 2026-06-17 — "Oklahoma" hard-rejected).
+# ---------------------------------------------------------------------------
+
+
+def test_validate_accepts_full_state_name_and_iso_code():
+    """_validate_inputs accepts 'Oklahoma', 'oklahoma', and 'OK' — none raise.
+
+    The Oklahoma-tornado bug: the validator HARD-REJECTED any state that was
+    not exactly 2 chars, so the word the user typed ("Oklahoma") raised
+    StormEventsArgError even though the query path already tolerated full
+    names. All three forms must now validate cleanly.
+    """
+    for ok in ("Oklahoma", "oklahoma", "OKLAHOMA", "OK", "ok"):
+        # Must NOT raise.
+        _validate_inputs(year=2020, state=ok, event_types=["Tornado"])
+
+
+def test_validate_still_rejects_unknown_state():
+    """A genuinely-unrecognized state still raises StormEventsArgError."""
+    with pytest.raises(StormEventsArgError, match="unrecognized"):
+        _validate_inputs(year=2020, state="Narnia", event_types=None)
+
+
+def test_normalize_state_maps_iso_and_full_name_to_noaa_spelling():
+    """_normalize_state collapses ISO code + full name + case to one spelling."""
+    assert _normalize_state("OK") == "OKLAHOMA"
+    assert _normalize_state("ok") == "OKLAHOMA"
+    assert _normalize_state("Oklahoma") == "OKLAHOMA"
+    assert _normalize_state("oklahoma") == "OKLAHOMA"
+    assert _normalize_state("FL") == "FLORIDA"
+    assert _normalize_state("Florida") == "FLORIDA"
+    assert _normalize_state(None) is None
+
+
+def test_full_state_name_filters_same_as_iso_code():
+    """state='Oklahoma' and state='OK' both filter to the OK rows identically."""
+    # Build a synthetic CSV with Oklahoma + Texas rows.
+    rows = [_CSV_HEADER]
+    eid = 2000
+    for i in range(7):  # 7 Oklahoma tornadoes
+        rows.append(
+            f"{eid},Tornado,OKLAHOMA,20-MAY-13 14:00:00,20-MAY-13 14:40:00,"
+            f"{35.3 + i * 0.02:.4f},{-97.5 - i * 0.02:.4f},"
+            f"0,1000000,\"Tornado near Moore\""
+        )
+        eid += 1
+    for i in range(4):  # 4 Texas hail (noise)
+        rows.append(
+            f"{eid},Hail,TEXAS,05-MAY-13 16:00:00,05-MAY-13 16:15:00,"
+            f"{31.0 + i * 0.05:.4f},{-98.0 - i * 0.05:.4f},"
+            f"0,2500,\"Quarter-size hail\""
+        )
+        eid += 1
+    csv_text = "\n".join(rows) + "\n"
+    gz_bytes = _csv_to_gzip_bytes(csv_text)
+
+    import geopandas as gpd  # type: ignore[import-not-found]
+
+    def _count(state_arg: str) -> int:
+        fgb = _parse_filter_and_serialize(
+            gz_bytes, state=state_arg, event_types=["Tornado"]
+        )
+        with tempfile.NamedTemporaryFile(suffix=".fgb", delete=False) as f:
+            f.write(fgb)
+            path = f.name
+        try:
+            gdf = gpd.read_file(path, engine="pyogrio")
+            assert (gdf["STATE"].str.upper() == "OKLAHOMA").all()
+            return len(gdf)
+        finally:
+            os.unlink(path)
+
+    n_full = _count("Oklahoma")
+    n_iso = _count("OK")
+    n_lower = _count("oklahoma")
+    assert n_full == n_iso == n_lower == 7
+
+
+def test_full_name_and_iso_share_cache_key():
+    """state='Oklahoma' and state='OK' resolve to the SAME cache entry.
+
+    Both normalize to NOAA's 'OKLAHOMA' spelling, so the second call (whatever
+    spelling) hits the cache the first call populated.
+    """
+    fake_gcs = FakeStorageClient()
+    fetch_count = {"n": 0}
+    fake_fgb = b"fgb" + b"\x00" * 32 + b"_FAKE_OK"
+
+    def fake_fetch() -> bytes:
+        fetch_count["n"] += 1
+        return fake_fgb
+
+    with patch(
+        "grace2_agent.tools.fetch_storm_events_db._fetch_storm_events_bytes",
+        side_effect=lambda y, s, e: fake_fetch(),
+    ), patch(
+        "grace2_agent.tools.fetch_storm_events_db.read_through",
+        side_effect=_make_read_through_injector(fake_gcs),
+    ):
+        r1 = fetch_storm_events_db(
+            year=2013, state="Oklahoma", event_types=["Tornado"]
+        )
+        r2 = fetch_storm_events_db(
+            year=2013, state="OK", event_types=["Tornado"]
+        )
+
+    assert fetch_count["n"] == 1, "full-name + ISO must share one cache key"
+    assert r1.uri == r2.uri
 
 
 # ---------------------------------------------------------------------------
