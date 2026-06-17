@@ -272,6 +272,7 @@ PRIMARY_CATEGORY: dict[str, str] = {
     "compute_slope": "terrain_elevation",
     "compute_aspect": "terrain_elevation",
     "compute_colored_relief": "terrain_elevation",
+    "compute_blended_composite": "terrain_elevation",
     # ---- 5. land_cover_development ----------------------------------------
     "fetch_landcover": "land_cover_development",
     "extract_landcover_class": "land_cover_development",
