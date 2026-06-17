@@ -1604,6 +1604,19 @@ def _extract_us_state(query: str) -> str | None:
             if hit is not None:
                 return hit
 
+    # NOTE: an earlier F71 attempt added a "(2c)" step that scanned for a full
+    # state NAME at ANY interior position (to catch "the Florida Panhandle").
+    # It was REVERTED — the any-position scan turned the wrong-state sanity
+    # guard into a source of WRONG answers: "Kansas City, MO" -> Kansas,
+    # "the Washington Monument" -> Washington (snapping a DC AOI to WA state),
+    # "the Mississippi River delta near New Orleans" -> Mississippi. The named
+    # vernacular cases ("South Florida", "Southern California", "Central Texas")
+    # already resolve via (2)/(2b) tail-matching, so the interior scan added
+    # real risk for negligible gain. A constrained interior match (head/tail
+    # only, feature-noun exclusion, yielding to the City,ST idiom) can be a
+    # future safe enhancement; the bare retry-loop steer in adapter.py is the
+    # other half of the F71 fix.
+
     # (3) explicit 2-letter USPS abbreviation with word-boundary guards.
     # The dangerous bare words: in (IN), or (OR), ok (OK), hi (HI), me (ME),
     # de (DE)? "de" rare. We require these to appear in the comma idiom.

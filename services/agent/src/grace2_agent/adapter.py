@@ -374,6 +374,28 @@ which is a wrong answer no matter how cleanly the tools ran. Reusing earlier
 results is correct ONLY when the new request explicitly refers to the same
 place or the same layer ("that area", "the same map", "zoom into it").
 
+Geocode loop guard — NEVER re-issue the SAME geocode (CRITICAL — job F71,
+NATE 2026-06-17): geocode_location is deterministic for a given query string.
+If you already called geocode_location with a query THIS turn, do NOT call it
+again with the IDENTICAL query — the answer will not change and you will burn
+the turn looping. A vernacular sub-state region ("South Florida", "Southern
+California", "Central Texas", "the Florida Panhandle") does not have a precise
+OSM feature, so geocode_location may either (a) land far from the named region
+(e.g. "South Florida" once resolved to KANSAS) or (b) snap to the full state
+and return source="state-bbox-fallback" with a fallback_reason. In BOTH cases
+the tool has ALREADY done the best it can:
+  - If the result carries source="state-bbox-fallback" (or a fallback_reason),
+    that IS the answer for a vague region — USE the returned (state) bbox and
+    narrate the fallback_reason honestly ("no precise match for 'South Florida';
+    using the full state of Florida — refine for a smaller area"). Do NOT
+    re-geocode hoping for a tighter box.
+  - If the returned centroid clearly lands in the WRONG place for the named
+    region and there was NO snap, do NOT re-issue the same query. Either narrow
+    the query ONCE with a more specific phrasing the user implied (a named
+    city/county inside the region), fall back to the snapped region/state bbox,
+    or ask the user to name a more specific area. Never repeat an identical
+    failing geocode_location call.
+
 Fit / zoom / resize the view to a layer (CRITICAL — you CAN drive the map):
 To fit, zoom, or "resize the box to encompass all the <features>" (buildings,
 points, polygons, the whole layer extent) — call compute_layer_bounds with the

@@ -757,6 +757,15 @@ def _bind_geocode_cache(monkeypatch):
         ("central Texas", "Texas"),
         ("upstate New York", "New York"),
         ("greater metro Los Angeles California", "California"),
+        # F71: vernacular sub-state regions whose TAIL (after qualifier strip)
+        # is a full state name resolve via steps (2)/(2b) — NATE's headline
+        # "South Florida" case. (Interior-position matches like "the Florida
+        # Panhandle" were intentionally NOT added — see the reverted (2c) note
+        # in _extract_us_state; the any-position scan regressed "Kansas City, MO"
+        # and "the Washington Monument".)
+        ("Southern California", "California"),
+        ("Central Texas", "Texas"),
+        ("South Florida", "Florida"),
         # Full-name match BEFORE directional strip would eat the prefix.
         ("west virginia", "West Virginia"),
         ("north carolina", "North Carolina"),
@@ -803,6 +812,12 @@ def test_extract_us_state_detects(query, expected):
         # leading-qualifier strip ("the or" -> "or").
         "the or",
         "near or",
+        # F71 sliding-window guard: a bare dangerous 2-letter word sitting in an
+        # INTERIOR position (not head/tail) must STILL NOT leak a state — the
+        # full-name scanner matches FULL state names only, never abbreviations.
+        "fly in a plane",     # interior "in" must NOT match Indiana
+        "this or that thing",  # interior "or" must NOT match Oregon
+        "park me here please",  # interior "me" must NOT match Maine
     ],
 )
 def test_extract_us_state_rejects(query):
@@ -972,6 +987,87 @@ def test_geocode_south_florida_wrong_state_snaps_to_florida(monkeypatch):
     fl = data_fetch._US_STATE_BBOX["Florida"]
     assert fl[0] <= result["longitude"] <= fl[2]
     assert fl[1] <= result["latitude"] <= fl[3]
+
+
+def test_geocode_capitalized_south_florida_snaps_to_florida_centroid(monkeypatch):
+    """F71 headline: 'South Florida' -> KANSAS hit -> snap; centroid inside FL.
+
+    NATE 2026-06-17 confirmed geocode_location('South Florida') resolved to
+    Kansas every time (no comma; the bare-word guard skipped comma-less tokens).
+    The fix extracts the full state NAME 'Florida' from the comma-less phrase,
+    the Kansas centroid fails the in-state sanity check, and the result snaps to
+    the Florida bbox via the state-bbox-fallback. We mock Nominatim to return a
+    Kansas hit and assert the snapped bbox's centroid lands inside Florida.
+    """
+    import json as _json
+
+    kansas_hit = {
+        "name": "Some Place, Kansas, United States",
+        "latitude": 38.5,
+        "longitude": -98.0,
+        "bbox": [-98.1, 38.4, -97.9, 38.6],
+        "source": "nominatim",
+        "query": "South Florida",
+        "osm_type": "node",
+        "osm_id": 4242,
+        "place_id": 5353,
+    }
+    monkeypatch.setattr(
+        data_fetch,
+        "_fetch_nominatim_geocode_bytes",
+        lambda query: _json.dumps(kansas_hit).encode("utf-8"),
+    )
+    _bind_geocode_cache(monkeypatch)
+    # Force the offline-table path so the bbox/centroid are deterministic.
+    monkeypatch.setattr(
+        data_fetch.requests,
+        "get",
+        lambda *a, **kw: (_ for _ in ()).throw(
+            data_fetch.requests.RequestException("offline")
+        ),
+    )
+
+    result = geocode_location("South Florida")
+
+    # The snap fired with the contracted source + an honest fallback note.
+    assert result["source"] == "state-bbox-fallback"
+    assert "fallback_reason" in result
+    assert "Florida" in result["fallback_reason"]
+
+    # The returned bbox's CENTROID is inside the Florida envelope (the whole
+    # point of F71 — it is NOT in Kansas).
+    min_lon, min_lat, max_lon, max_lat = result["bbox"]
+    cx = 0.5 * (min_lon + max_lon)
+    cy = 0.5 * (min_lat + max_lat)
+    fl = data_fetch._US_STATE_BBOX["Florida"]
+    assert fl[0] <= cx <= fl[2]
+    assert fl[1] <= cy <= fl[3]
+    # And the reported centroid lat/lon (used to snap the map) is also in FL.
+    assert fl[0] <= result["longitude"] <= fl[2]
+    assert fl[1] <= result["latitude"] <= fl[3]
+
+
+def test_geocode_bare_dangerous_word_does_not_snap_to_state(monkeypatch):
+    """F71 guard: a bare 'in'/'or' query never resolves to a state (no snap).
+
+    'in' must NOT leak to Indiana and 'or' must NOT leak to Oregon — so when the
+    primary geocode of such a token fails, the genuine UpstreamAPIError must
+    propagate (no state detected -> no silent snap).
+    """
+
+    def _boom(query):
+        raise UpstreamAPIError(f"Nominatim returned no results for {query!r}")
+
+    monkeypatch.setattr(data_fetch, "_fetch_nominatim_geocode_bytes", _boom)
+    _bind_geocode_cache(monkeypatch)
+
+    # No state is detected for these bare dangerous words, so the failure is
+    # NOT swallowed by a state-snap.
+    assert data_fetch._extract_us_state("in") is None
+    assert data_fetch._extract_us_state("or") is None
+    for q in ("in", "or"):
+        with pytest.raises(UpstreamAPIError):
+            geocode_location(q)
 
 
 def test_geocode_wrong_state_prefers_live_osm_state_boundary(monkeypatch):
