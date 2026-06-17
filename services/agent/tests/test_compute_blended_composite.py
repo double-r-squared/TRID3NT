@@ -81,6 +81,70 @@ def _write_gray_overlay(path: str, size: int = 600) -> np.ndarray:
     return gray.astype(np.float32)
 
 
+# A tiny NLCD-like palette: index → (R, G, B). These are the colors the
+# composite MUST carry through (not a flat gray), the job-0323 fix.
+_NLCD_PALETTE = {
+    11: (71, 107, 160),    # open water — blue
+    41: (104, 171, 95),    # deciduous forest — green
+    81: (220, 217, 57),    # pasture/hay — yellow
+    24: (171, 0, 0),       # developed high intensity — red
+}
+
+
+def _write_palette_base(
+    path: str, size: int = 600
+) -> tuple[np.ndarray, dict[int, tuple[int, int, int]]]:
+    """Write a single-band palette-INDEX COG with an EMBEDDED color table.
+
+    Mirrors the NLCD land-cover base the agent commonly blends: a uint8 raster
+    of class *indices* whose RGB colors live ONLY in an embedded GDAL color
+    table (``dst.write_colormap``) — there is no explicit per-pixel RGB. Returns
+    ``(index_array (H, W), palette {index: (r, g, b)})``.
+    """
+    rng = np.random.default_rng(101)
+    classes = np.array(sorted(_NLCD_PALETTE.keys()), dtype=np.uint8)
+    idx = rng.choice(classes, size=(size, size)).astype(np.uint8)
+    transform = from_bounds(0.0, 0.0, size * 10.0, size * 10.0, size, size)
+    profile = {
+        "driver": "GTiff",
+        "dtype": "uint8",
+        "width": size,
+        "height": size,
+        "count": 1,
+        "crs": "EPSG:5070",
+        "transform": transform,
+    }
+    # GDAL colormap wants {index: (r, g, b, a)}; make every class opaque.
+    colormap = {i: (r, g, b, 255) for i, (r, g, b) in _NLCD_PALETTE.items()}
+    with rasterio.open(path, "w", **profile) as dst:
+        dst.write(idx, 1)
+        dst.write_colormap(1, colormap)
+    return idx, dict(_NLCD_PALETTE)
+
+
+def _write_gray_base(path: str, size: int = 600) -> np.ndarray:
+    """Write a single-band grayscale base with NO color table; return (H, W).
+
+    This is a true-grayscale single-band base (e.g. a hillshade used AS the
+    base). It must keep the historical R=G=B grayscale-broadcast behavior.
+    """
+    rng = np.random.default_rng(202)
+    gray = rng.integers(20, 235, size=(size, size), dtype=np.uint8)
+    transform = from_bounds(0.0, 0.0, size * 10.0, size * 10.0, size, size)
+    profile = {
+        "driver": "GTiff",
+        "dtype": "uint8",
+        "width": size,
+        "height": size,
+        "count": 1,
+        "crs": "EPSG:5070",
+        "transform": transform,
+    }
+    with rasterio.open(path, "w", **profile) as dst:
+        dst.write(gray, 1)
+    return gray.astype(np.float32)
+
+
 # ---------------------------------------------------------------------------
 # Fake GCS scaffolding for cache-shim isolation
 # ---------------------------------------------------------------------------
@@ -211,6 +275,127 @@ def test_compute_blended_composite_multiply_math(fake_storage):
             assert abs(got - expected) <= 1.0, (
                 f"band {band} pixel ({r},{c}): got {got}, expected ~{expected:.2f} "
                 f"(base={base_rgb[band, r, c]}, gray={overlay_gray[r, c]})"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Test 3b — palette-INDEX base (embedded color table) keeps palette colors
+# ---------------------------------------------------------------------------
+
+
+def test_compute_blended_composite_palette_base_keeps_palette_colors(fake_storage):
+    """job-0323: a single-band base with an EMBEDDED color table colorizes.
+
+    The NLCD land-cover base is a single-band palette-INDEX raster whose colors
+    live ONLY in an embedded GDAL color table. The composite MUST carry the real
+    palette color (modulated by the overlay), NOT a flat gray broadcast.
+
+    Asserts, per sampled pixel: the output RGB equals
+        palette_rgb[index] * (overlay_gray / 255)
+    AND that the three channels are NOT all-equal (i.e. it is a real color, not
+    gray) wherever the palette entry is itself non-gray.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        base_path = os.path.join(tmpdir, "nlcd_landcover.tif")
+        overlay_path = os.path.join(tmpdir, "hillshade.tif")
+        idx, palette = _write_palette_base(base_path, size=600)
+        overlay_gray = _write_gray_overlay(overlay_path, size=600)
+
+        result = compute_blended_composite(
+            base_layer_uri=base_path,
+            overlay_layer_uri=overlay_path,
+            blend_mode="multiply",
+            overlay_opacity=1.0,
+            _storage_client=fake_storage,
+            _bucket="test-bucket",
+        )
+
+        assert result.uri is not None and result.uri.endswith(".tif")
+        (cog_bytes,) = list(fake_storage.store.values())
+        out_path = os.path.join(tmpdir, "out.tif")
+        with open(out_path, "wb") as f:
+            f.write(cog_bytes)
+
+        with rasterio.open(out_path) as src:
+            assert (src.height, src.width) == idx.shape
+            assert src.count == 4
+            out_rgb = src.read([1, 2, 3]).astype(np.float32)
+
+        # Check several interior pixels: the output must match the PALETTE color
+        # times the overlay multiply factor — proving colorization (not gray).
+        non_gray_checks = 0
+        for (r, c) in ((100, 100), (200, 311), (333, 50), (480, 510), (12, 590)):
+            class_idx = int(idx[r, c])
+            pr, pg, pb = palette[class_idx]
+            factor = overlay_gray[r, c] / 255.0
+            for band, pal_val in enumerate((pr, pg, pb)):
+                expected = pal_val * factor
+                got = out_rgb[band, r, c]
+                assert abs(got - expected) <= 1.0, (
+                    f"pixel ({r},{c}) band {band}: got {got}, expected "
+                    f"~{expected:.2f} (palette idx={class_idx} "
+                    f"rgb=({pr},{pg},{pb}), gray={overlay_gray[r, c]})"
+                )
+            # The palette colors are deliberately non-gray; the multiply factor
+            # is a single scalar per pixel, so a non-gray palette stays non-gray.
+            if not (pr == pg == pb):
+                rr, gg, bb = (out_rgb[0, r, c], out_rgb[1, r, c], out_rgb[2, r, c])
+                assert not (rr == gg == bb), (
+                    f"pixel ({r},{c}) came out GRAY ({rr},{gg},{bb}) — palette "
+                    f"colorization failed (idx={class_idx} rgb=({pr},{pg},{pb}))"
+                )
+                non_gray_checks += 1
+        assert non_gray_checks >= 1, "no non-gray palette pixel was exercised"
+
+
+# ---------------------------------------------------------------------------
+# Test 3c — single-band base with NO color table still broadcasts grayscale
+# ---------------------------------------------------------------------------
+
+
+def test_compute_blended_composite_grayscale_base_no_colormap_stays_gray(fake_storage):
+    """A single-band base with NO embedded color table keeps R=G=B grayscale.
+
+    This is the true-grayscale base path (e.g. a hillshade used AS the base):
+    no colormap → the historical grayscale-broadcast behavior must be preserved.
+    Asserts the three output channels are equal per pixel and equal the
+    grayscale base value times the overlay multiply factor.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        base_path = os.path.join(tmpdir, "gray_base.tif")
+        overlay_path = os.path.join(tmpdir, "overlay.tif")
+        gray_base = _write_gray_base(base_path, size=600)
+        overlay_gray = _write_gray_overlay(overlay_path, size=600)
+
+        result = compute_blended_composite(
+            base_layer_uri=base_path,
+            overlay_layer_uri=overlay_path,
+            blend_mode="multiply",
+            overlay_opacity=1.0,
+            _storage_client=fake_storage,
+            _bucket="test-bucket",
+        )
+
+        (cog_bytes,) = list(fake_storage.store.values())
+        out_path = os.path.join(tmpdir, "out.tif")
+        with open(out_path, "wb") as f:
+            f.write(cog_bytes)
+
+        with rasterio.open(out_path) as src:
+            assert src.count == 4
+            out_rgb = src.read([1, 2, 3]).astype(np.float32)
+
+        for (r, c) in ((150, 150), (200, 311), (400, 90)):
+            rr, gg, bb = (out_rgb[0, r, c], out_rgb[1, r, c], out_rgb[2, r, c])
+            # Grayscale broadcast: all three channels identical (lossless COG).
+            assert abs(rr - gg) <= 1.0 and abs(gg - bb) <= 1.0, (
+                f"pixel ({r},{c}) not gray: ({rr},{gg},{bb}) — single-band base "
+                f"with no colormap must stay R=G=B"
+            )
+            expected = gray_base[r, c] * (overlay_gray[r, c] / 255.0)
+            assert abs(rr - expected) <= 1.0, (
+                f"pixel ({r},{c}): got {rr}, expected ~{expected:.2f} "
+                f"(base={gray_base[r, c]}, gray={overlay_gray[r, c]})"
             )
 
 

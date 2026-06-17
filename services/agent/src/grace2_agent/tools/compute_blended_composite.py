@@ -45,7 +45,11 @@ Supported ``blend_mode`` values:
 IMPLEMENTATION FLOW (cache miss)
 --------------------------------
 1. Resolve + stage both layer URIs to local COGs (gs:// / s3:// / local path).
-2. Read the BASE with rasterio → RGB(A) uint8 (broadcast single-band to RGB).
+2. Read the BASE with rasterio → RGB(A) uint8. A single-band base that carries
+   an embedded GDAL color table (e.g. the NLCD land-cover palette-index COG) is
+   colorized through that table (index → palette RGBA) so the composite keeps
+   the real land-cover hues; a single-band base with NO color table (a true
+   grayscale base such as a hillshade) is broadcast to grayscale (R=G=B).
 3. Read + **align the OVERLAY to the BASE grid** (reproject/resample to the
    base CRS + transform + shape, nodata-safe) → grayscale.
 4. Apply the per-pixel blend (numpy), honoring ``overlay_opacity``.
@@ -207,13 +211,43 @@ def _stage_uri_to_local(
 # ---------------------------------------------------------------------------
 
 
+def _colormap_to_lut(colormap: dict):
+    """Build a (256, 4) uint8 index→RGBA lookup table from a GDAL color table.
+
+    ``colormap`` is the ``{index: (r, g, b, a)}`` dict rasterio returns from
+    ``dataset.colormap(band)``. Entries are clamped to the [0, 255] index range
+    (GDAL palette index rasters are uint8); any index the table does not cover
+    defaults to opaque black (rgb=0, a=255) so it still paints rather than
+    silently vanishing. Returns the LUT array.
+    """
+    import numpy as np
+
+    lut = np.zeros((256, 4), dtype=np.uint8)
+    lut[:, 3] = 255  # default fully-opaque for uncovered indices
+    for idx, entry in colormap.items():
+        if not (0 <= idx <= 255):
+            continue
+        # GDAL color-table entries are (R, G, B) or (R, G, B, A); pad alpha.
+        r = entry[0] if len(entry) > 0 else 0
+        g = entry[1] if len(entry) > 1 else 0
+        b = entry[2] if len(entry) > 2 else 0
+        a = entry[3] if len(entry) > 3 else 255
+        lut[idx] = (r, g, b, a)
+    return lut
+
+
 def _read_base_rgb(base_path: str):
     """Read the base raster as an (3, H, W) uint8 RGB array + a valid-mask.
 
-    A single-band base is broadcast to RGB (grayscale → R=G=B). 2/4-band
-    inputs use the first 3 bands as RGB; a 4th band (if present) is treated as
-    alpha for the valid-mask. Returns ``(rgb, valid_mask, profile)`` where
-    ``valid_mask`` is a bool (H, W) array — True == paint, False == transparent.
+    A single-band base with an **embedded GDAL color table** (e.g. the NLCD
+    land-cover palette-index COG) is colorized through that table — each index
+    is mapped to its palette RGB(A) so the composite carries the real land-cover
+    colors (job-0323 fix). A single-band base with NO color table is broadcast
+    to grayscale (R=G=B) — the historical behavior for true-grayscale bases such
+    as a hillshade used as the base. 3/4-band inputs use the first 3 bands as
+    RGB; a 4th band (if present) is treated as alpha for the valid-mask. Returns
+    ``(rgb, valid_mask, profile)`` where ``valid_mask`` is a bool (H, W) array —
+    True == paint, False == transparent.
     """
     import numpy as np
     import rasterio
@@ -222,13 +256,36 @@ def _read_base_rgb(base_path: str):
         profile = src.profile.copy()
         count = src.count
         nodata = src.nodata
+        palette_alpha = None  # (H, W) palette-derived alpha, if colorized
         if count >= 3:
             rgb = src.read([1, 2, 3]).astype(np.float32)
         else:
-            band = src.read(1).astype(np.float32)
-            rgb = np.stack([band, band, band], axis=0)
-        # Valid-mask: prefer an explicit alpha band, then dataset mask, then
-        # the nodata value, defaulting to all-valid.
+            band = src.read(1)
+            # job-0323: a single-band base may be a palette-INDEX raster whose
+            # colors live in an embedded GDAL color table (e.g. NLCD land
+            # cover). Colorize through that table so the blend keeps the real
+            # palette hues instead of a flat grayscale broadcast. Fall back to
+            # the grayscale broadcast only when there is no color table (a true
+            # grayscale base like a hillshade).
+            colormap = None
+            try:
+                colormap = src.colormap(1)
+            except (ValueError, KeyError):
+                colormap = None  # no embedded color table → grayscale base
+            except Exception:  # noqa: BLE001 — any read failure → grayscale
+                colormap = None
+            if colormap:
+                lut = _colormap_to_lut(colormap)
+                idx = band.astype(np.intp) & 0xFF  # clamp to LUT range [0,255]
+                mapped = lut[idx]  # (H, W, 4) uint8 RGBA
+                rgb = np.transpose(mapped[:, :, :3], (2, 0, 1)).astype(np.float32)
+                palette_alpha = mapped[:, :, 3]
+            else:
+                fband = band.astype(np.float32)
+                rgb = np.stack([fband, fband, fband], axis=0)
+        # Valid-mask: prefer an explicit alpha band, then a palette alpha
+        # (transparent palette entries), then the dataset mask, then the nodata
+        # value, defaulting to all-valid.
         if count >= 4:
             alpha = src.read(4)
             valid = alpha > 0
@@ -238,7 +295,12 @@ def _read_base_rgb(base_path: str):
             except Exception:  # noqa: BLE001 — fall back to nodata compare
                 valid = np.ones(rgb.shape[1:], dtype=bool)
             if nodata is not None:
-                valid &= rgb[0] != float(nodata)
+                src_band = src.read(1)
+                valid &= src_band != nodata
+            if palette_alpha is not None:
+                # Palette entries with alpha==0 (e.g. NLCD index 0 / no-data)
+                # are transparent in the composite too.
+                valid &= palette_alpha > 0
     rgb = np.clip(rgb, 0.0, 255.0)
     return rgb, valid, profile
 
