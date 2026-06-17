@@ -83,16 +83,25 @@ SELECTABLE_MODELS: list[dict[str, Any]] = [
         "supportsPromptCache": True,
     },
     {
+        # Access enabled + verified 2026-06-17. Anthropic -> cachePoint OK.
+        "id": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+        "label": "Claude Haiku 4.5",
+        "provider": "Anthropic",
+        "supportsPromptCache": True,
+    },
+    {
+        # Nova/DeepSeek reject cachePoint — supportsPromptCache False; the
+        # Anthropic-only model_supports_cache() gate enforces this server-side.
         "id": "us.amazon.nova-pro-v1:0",
         "label": "Amazon Nova Pro",
         "provider": "Amazon",
-        "supportsPromptCache": True,
+        "supportsPromptCache": False,
     },
     {
         "id": "us.amazon.nova-lite-v1:0",
         "label": "Amazon Nova Lite",
         "provider": "Amazon",
-        "supportsPromptCache": True,
+        "supportsPromptCache": False,
     },
 ]
 

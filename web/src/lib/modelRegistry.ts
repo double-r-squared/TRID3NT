@@ -64,14 +64,15 @@ export const SELECTABLE_MODELS: ModelEntry[] = [
     accentColor: "#b8860b",
     supportsPromptCache: false,
   },
-  // Enable Bedrock model access for Claude Haiku 4.5, then uncomment:
-  // {
-  //   id: "us.anthropic.claude-haiku-4-5-20251001-v1:0",
-  //   label: "Claude Haiku 4.5",
-  //   provider: "Anthropic",
-  //   accentColor: "#c2603c",
-  //   supportsPromptCache: true,
-  // },
+  {
+    // Access enabled + verified working 2026-06-17. Anthropic -> cachePoint OK.
+    // The strongest cheap + agentic Anthropic option.
+    id: "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+    label: "Claude Haiku 4.5",
+    provider: "Anthropic",
+    accentColor: "#c2603c",
+    supportsPromptCache: true,
+  },
 ];
 
 // SELECTABLE_MODELS is always non-empty (5 entries defined above).
