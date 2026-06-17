@@ -63,4 +63,30 @@ describe("CaseView", () => {
     expect(screen.getByTestId("grace2-case-view-back")).toBeTruthy();
     expect(screen.getByTestId("grace2-case-view-cases-link")).toBeTruthy();
   });
+
+  // job-0350 — a long case title must TRUNCATE with an ellipsis, not hard-clip.
+  // The flexbox-ellipsis gotcha: text-overflow:ellipsis only engages on a flex
+  // child when min-width:0 lets it shrink below content size. Lock both the
+  // title span styles AND the container's overflow guard.
+  it("long case title truncates with ellipsis (flex min-width:0 set)", () => {
+    render(
+      <CaseView
+        caseTitle="NWS Severe Weather Alerts State Florida and surrounding counties"
+        onBack={vi.fn()}
+        mobile
+      />,
+    );
+    const title = screen.getByTestId("grace2-case-view-title");
+    expect(title.style.overflow).toBe("hidden");
+    expect(title.style.textOverflow).toBe("ellipsis");
+    expect(title.style.whiteSpace).toBe("nowrap");
+    // THE fix — without min-width:0 the flex child won't shrink and ellipsis
+    // never engages (the reported breadcrumb cutoff).
+    expect(title.style.minWidth).toBe("0");
+    // full title preserved as a hover tooltip even when visually truncated.
+    expect(title.getAttribute("title")).toContain("Florida");
+    const crumb = screen.getByTestId("grace2-case-view-breadcrumb");
+    expect(crumb.style.overflow).toBe("hidden");
+    expect(crumb.style.minWidth).toBe("0");
+  });
 });

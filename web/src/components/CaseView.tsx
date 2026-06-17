@@ -50,6 +50,10 @@ const breadcrumbStyle: React.CSSProperties = {
   gap: 6,
   color: "#ddd",
   fontSize: 12,
+  // Bound the row to its parent so a long case title can't push the card
+  // wider than the rail / mobile sheet; the title span ellipsizes within it.
+  minWidth: 0,
+  overflow: "hidden",
 };
 
 const backBtnStyle: React.CSSProperties = {
@@ -85,6 +89,11 @@ const titleStyle: React.CSSProperties = {
   textOverflow: "ellipsis",
   whiteSpace: "nowrap",
   flex: 1,
+  // REQUIRED for text-overflow:ellipsis on a flex child — without it the flex
+  // item's default min-width:auto refuses to shrink below content size, so a
+  // long case title overflows the card and hard-clips with NO ellipsis
+  // (the exact cutoff bug in the breadcrumb header). job-0350.
+  minWidth: 0,
 };
 
 export function CaseView({
