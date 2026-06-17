@@ -17,6 +17,12 @@ import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 import { CredentialCard } from "./CredentialCard";
 import { CredentialRequestPayload } from "../contracts";
 
+// 7 / 12 amended (NATE 2026-06-17 fold redesign): once resolved, the WHOLE card
+// folds into a COMPACT one-line tool-card-style summary ("<provider> key saved"
+// / "<provider> credential declined") — the form, message, and signup link all
+// collapse away (so the prompt can't be re-submitted), and a chevron re-expands
+// the read-only detail. The compact card is marked data-variant="compact".
+
 const BASE_REQUEST: CredentialRequestPayload = {
   envelope_type: "credential-request",
   request_id: "01J0000000000000000000REQ1",
@@ -188,7 +194,7 @@ describe("CredentialCard", () => {
     expect(onDecline).toHaveBeenCalledTimes(1);
   });
 
-  it("collapses to a 'saved' footer once resolved (form hidden)", () => {
+  it("folds to a compact 'key saved' summary once resolved (form + message + signup gone)", () => {
     render(
       <CredentialCard
         request={BASE_REQUEST}
@@ -197,17 +203,32 @@ describe("CredentialCard", () => {
         onDecline={() => {}}
       />,
     );
+    // Compact summary line carries the provider label + "key saved".
+    const resolved = screen.getByTestId(
+      `credential-card-resolved-${BASE_REQUEST.request_id}`,
+    );
+    expect(resolved.textContent).toContain("eBird");
+    expect(resolved.textContent).toContain("key saved");
+    // The whole card is the compact variant.
     expect(
-      screen.getByTestId(`credential-card-resolved-${BASE_REQUEST.request_id}`)
-        .textContent,
-    ).toContain("Key saved");
+      screen
+        .getByTestId(`credential-card-${BASE_REQUEST.request_id}`)
+        .getAttribute("data-variant"),
+    ).toBe("compact");
     // The entry form is gone so the prompt can't be re-submitted.
     expect(
       screen.queryByTestId(`credential-card-form-${BASE_REQUEST.request_id}`),
     ).toBeNull();
+    // The full message + signup link folded away too (compact, not full).
+    expect(
+      screen.queryByTestId(`credential-card-message-${BASE_REQUEST.request_id}`),
+    ).toBeNull();
+    expect(
+      screen.queryByTestId(`credential-card-signup-${BASE_REQUEST.request_id}`),
+    ).toBeNull();
   });
 
-  it("collapses to a 'Skipped.' footer once declined", () => {
+  it("folds to a compact 'declined' summary once declined", () => {
     render(
       <CredentialCard
         request={BASE_REQUEST}
@@ -216,10 +237,43 @@ describe("CredentialCard", () => {
         onDecline={() => {}}
       />,
     );
+    const resolved = screen.getByTestId(
+      `credential-card-resolved-${BASE_REQUEST.request_id}`,
+    );
+    expect(resolved.textContent).toContain("declined");
     expect(
-      screen.getByTestId(`credential-card-resolved-${BASE_REQUEST.request_id}`)
-        .textContent,
-    ).toContain("Skipped");
+      screen
+        .getByTestId(`credential-card-${BASE_REQUEST.request_id}`)
+        .getAttribute("data-variant"),
+    ).toBe("compact");
+    expect(
+      screen.queryByTestId(`credential-card-form-${BASE_REQUEST.request_id}`),
+    ).toBeNull();
+  });
+
+  it("re-expands the read-only detail via the chevron on a folded card", () => {
+    render(
+      <CredentialCard
+        request={BASE_REQUEST}
+        resolved="saved"
+        onSave={() => {}}
+        onDecline={() => {}}
+      />,
+    );
+    // Detail is folded away by default.
+    expect(
+      screen.queryByTestId(`credential-card-detail-${BASE_REQUEST.request_id}`),
+    ).toBeNull();
+    // Chevron reveals the read-only detail (message + key name) — but never the
+    // form (a resolved prompt can't be re-submitted).
+    fireEvent.click(
+      screen.getByTestId(`credential-card-expand-${BASE_REQUEST.request_id}`),
+    );
+    const detail = screen.getByTestId(
+      `credential-card-detail-${BASE_REQUEST.request_id}`,
+    );
+    expect(detail.textContent).toContain(BASE_REQUEST.message);
+    expect(detail.textContent).toContain(BASE_REQUEST.secret_key_name);
     expect(
       screen.queryByTestId(`credential-card-form-${BASE_REQUEST.request_id}`),
     ).toBeNull();

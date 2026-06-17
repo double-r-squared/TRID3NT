@@ -31,12 +31,30 @@
 // callbacks. All WebSocket side effects (secret-add, credential-provided) live
 // in the consumer (Chat.tsx).
 //
+// Inline-card family (NATE 2026-06-17 live test): the card sits INLINE in the
+// chat scroll in arrival order, exactly like the PipelineCard tool cards (the
+// consumer interleaves it by first-arrival seq). It has two visual modes:
+//   - PENDING  → the full form (provider header + message + signup link + key
+//                field + Save / Not now). Blue accent reads "action-needed".
+//   - RESOLVED → it FOLDS into a COMPACT one-line summary card matching the
+//                PipelineCard terminal chrome (green-tinted "saved" / muted
+//                "declined", a leading state icon, a chevron to re-expand). The
+//                agent's subsequent narration then resumes AFTER it in the
+//                stream. Folding mirrors how a finished tool card collapses so
+//                the credential card reads as part of the same card system.
+//
 // No raw glyphs / emoji — every icon comes from the shared icons module per
 // the project UI policy.
 
 import { useState } from "react";
 import { CredentialRequestPayload } from "../contracts";
-import { IconKey, IconArrowRight, IconCheck } from "./icons";
+import {
+  IconKey,
+  IconArrowRight,
+  IconCheck,
+  IconChevronDown,
+  IconChevronRight,
+} from "./icons";
 
 // --- Props --------------------------------------------------------------- //
 
@@ -44,9 +62,13 @@ export interface CredentialCardProps {
   /** The originating credential-request envelope. */
   request: CredentialRequestPayload;
   /**
-   * Resolved state of this prompt. When set, the card collapses to a terminal
-   * footer ("Key saved — retrying." / "Skipped.") and the form is disabled so
-   * a resolved prompt cannot be re-submitted. `null`/undefined = still active.
+   * Resolved state of this prompt. When set, the WHOLE card folds into a
+   * compact one-line summary ("NASA FIRMS key saved" / "credential declined")
+   * matching the PipelineCard terminal chrome — the form + signup link + agent
+   * message all collapse away so a resolved prompt cannot be re-submitted and
+   * the subsequent narration resumes after it. A chevron re-expands the full
+   * card (read-only — the form stays gone once resolved).
+   * `null`/undefined = still active (full form shown).
    */
   resolved?: "saved" | "declined" | null;
   /**
@@ -72,6 +94,13 @@ export interface CredentialCardProps {
 
 const ACCENT = "#3b82f6"; // blue — matches InlineChatCard "info" variant
 
+// Terminal tints mirror PipelineCard.cardVisual() so the folded credential card
+// reads as the SAME inline-card family as a finished tool card.
+const SAVED_TINT = "rgba(40, 200, 100, 0.18)"; // PipelineCard "complete" green
+const SAVED_TEXT = "#10b981";
+const DECLINED_TINT = "rgba(255,255,255,0.06)"; // muted neutral (skipped)
+const DECLINED_TEXT = "#9ca3af";
+
 const cardStyle: React.CSSProperties = {
   background: "rgba(28,28,34,0.92)",
   border: "1px solid rgba(255,255,255,0.07)",
@@ -89,6 +118,27 @@ const cardStyle: React.CSSProperties = {
   width: "100%",
   boxSizing: "border-box",
 };
+
+// Compact (folded) card — one-line summary chrome matching a terminal
+// PipelineCard (tinted background, no left accent, soft shadow, single row).
+function compactCardStyle(resolved: "saved" | "declined"): React.CSSProperties {
+  return {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    fontSize: 12,
+    lineHeight: 1.4,
+    padding: "8px 10px",
+    borderRadius: 6,
+    background: resolved === "saved" ? SAVED_TINT : DECLINED_TINT,
+    boxShadow: "0 1px 3px rgba(0,0,0,0.25)",
+    color: "#e5e7eb",
+    fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
+    width: "100%",
+    boxSizing: "border-box",
+    transition: "background-color 200ms ease-in-out",
+  };
+}
 
 const inputStyle: React.CSSProperties = {
   background: "rgba(40,40,50,0.9)",
@@ -160,6 +210,9 @@ export function CredentialCard({
   onDecline,
 }: CredentialCardProps): JSX.Element {
   const [keyValue, setKeyValue] = useState<string>("");
+  // Folded-card re-expand toggle. A resolved card folds to the compact summary
+  // by default; the chevron reveals the original (read-only) detail below it.
+  const [expanded, setExpanded] = useState<boolean>(false);
   const isResolved = resolved === "saved" || resolved === "declined";
   const inputId = `credential-key-${request.request_id}`;
 
@@ -174,6 +227,113 @@ export function CredentialCard({
     setKeyValue("");
   }
 
+  // --- Folded (resolved) compact card ------------------------------------ //
+  //
+  // Once the user saves / declines, the WHOLE card collapses to a single
+  // tool-card-style line: a state icon, a one-line summary, and a chevron to
+  // re-expand the (read-only) detail. The form + signup link + agent message
+  // are gone — the prompt cannot be re-submitted and the subsequent narration
+  // resumes after this compact card in the stream.
+  if (isResolved) {
+    const saved = resolved === "saved";
+    const summary = saved
+      ? `${request.provider_label} key saved`
+      : `${request.provider_label} credential declined`;
+    const summaryColor = saved ? SAVED_TEXT : DECLINED_TEXT;
+    return (
+      <div
+        data-testid={`credential-card-${request.request_id}`}
+        data-provider={request.provider_id}
+        data-resolved={resolved}
+        data-variant="compact"
+        role="region"
+        aria-label={`${request.provider_label} API key ${summary}`}
+        style={compactCardStyle(resolved)}
+      >
+        <div
+          data-testid={`credential-card-resolved-${request.request_id}`}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            width: "100%",
+          }}
+        >
+          <span
+            aria-hidden="true"
+            style={{ display: "inline-flex", alignItems: "center", flexShrink: 0 }}
+          >
+            {saved ? (
+              <IconCheck size={13} color={SAVED_TEXT} />
+            ) : (
+              <IconKey size={13} color={DECLINED_TEXT} />
+            )}
+          </span>
+          <span
+            style={{
+              flex: 1,
+              color: summaryColor,
+              fontWeight: 600,
+              fontSize: 12,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+            title={summary}
+          >
+            {summary}
+          </span>
+          {/* Chevron re-expands the original detail (read-only). */}
+          <button
+            type="button"
+            data-testid={`credential-card-expand-${request.request_id}`}
+            aria-label={expanded ? "Collapse details" : "Show details"}
+            aria-expanded={expanded}
+            onClick={() => setExpanded((v) => !v)}
+            style={{
+              background: "transparent",
+              border: "none",
+              padding: 2,
+              margin: 0,
+              cursor: "pointer",
+              display: "inline-flex",
+              alignItems: "center",
+              color: "#9ca3af",
+              flexShrink: 0,
+            }}
+          >
+            {expanded ? (
+              <IconChevronDown size={13} color="#9ca3af" />
+            ) : (
+              <IconChevronRight size={13} color="#9ca3af" />
+            )}
+          </button>
+        </div>
+        {expanded && (
+          <div
+            data-testid={`credential-card-detail-${request.request_id}`}
+            style={{
+              width: "100%",
+              marginTop: 6,
+              paddingTop: 6,
+              borderTop: "1px solid rgba(255,255,255,0.08)",
+              color: "#d1d5db",
+              fontSize: 11,
+              lineHeight: 1.5,
+              display: "flex",
+              flexDirection: "column",
+              gap: 4,
+            }}
+          >
+            <div style={{ wordBreak: "break-word" }}>{request.message}</div>
+            <div style={{ color: "#9ca3af" }}>Key name: {request.secret_key_name}</div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // --- Active (pending) full form ---------------------------------------- //
   return (
     <div
       data-testid={`credential-card-${request.request_id}`}
@@ -237,89 +397,66 @@ export function CredentialCard({
         </a>
       )}
 
-      {/* Key-entry form + actions, OR a terminal footer once resolved. */}
-      {isResolved ? (
+      {/* Key-entry form + actions. (Resolved prompts fold into the compact
+          card above via the early return — the form is never reachable once
+          saved / declined, so it can't be re-submitted.) */}
+      <form
+        data-testid={`credential-card-form-${request.request_id}`}
+        onSubmit={handleSubmit}
+        autoComplete="off"
+        style={{ display: "flex", flexDirection: "column", gap: 8 }}
+      >
+        <label htmlFor={inputId} style={{ fontSize: 11, color: "#aaa" }}>
+          {request.secret_key_name}
+        </label>
+        <input
+          id={inputId}
+          data-testid={`credential-card-input-${request.request_id}`}
+          // Security: type=password suppresses shoulder-surfing;
+          // autocomplete=new-password keeps managers from filling the
+          // wrong saved credential.
+          type="password"
+          autoComplete="new-password"
+          value={keyValue}
+          onChange={(e) => setKeyValue(e.target.value)}
+          placeholder={`Paste your ${request.provider_label} API key`}
+          maxLength={2048}
+          style={inputStyle}
+        />
+        {/* Action row: Save (primary) + Not now (muted). Wraps on narrow
+            viewports so the card stays mobile-friendly. */}
         <div
-          data-testid={`credential-card-resolved-${request.request_id}`}
           style={{
-            color: resolved === "saved" ? "#10b981" : "#6b7280",
-            fontSize: 11,
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 5,
+            display: "flex",
+            gap: 6,
+            flexWrap: "wrap",
+            marginTop: 2,
           }}
         >
-          {resolved === "saved" ? (
-            <>
-              <IconCheck size={12} color="#10b981" />
-              Key saved — retrying.
-            </>
-          ) : (
-            "Skipped."
-          )}
+          <button
+            type="submit"
+            data-testid={`credential-card-save-${request.request_id}`}
+            aria-label={`Save ${request.provider_label} API key`}
+            disabled={keyValue.trim().length === 0}
+            style={btnStyle("primary", keyValue.trim().length === 0)}
+          >
+            <IconCheck
+              size={12}
+              color={keyValue.trim().length === 0 ? "#555" : "#0b0b0e"}
+            />
+            Save
+          </button>
+          <button
+            type="button"
+            data-testid={`credential-card-decline-${request.request_id}`}
+            aria-label="Skip this credential"
+            onClick={onDecline}
+            style={btnStyle("muted", false)}
+          >
+            Not now
+          </button>
         </div>
-      ) : (
-        <form
-          data-testid={`credential-card-form-${request.request_id}`}
-          onSubmit={handleSubmit}
-          autoComplete="off"
-          style={{ display: "flex", flexDirection: "column", gap: 8 }}
-        >
-          <label
-            htmlFor={inputId}
-            style={{ fontSize: 11, color: "#aaa" }}
-          >
-            {request.secret_key_name}
-          </label>
-          <input
-            id={inputId}
-            data-testid={`credential-card-input-${request.request_id}`}
-            // Security: type=password suppresses shoulder-surfing;
-            // autocomplete=new-password keeps managers from filling the
-            // wrong saved credential.
-            type="password"
-            autoComplete="new-password"
-            value={keyValue}
-            onChange={(e) => setKeyValue(e.target.value)}
-            placeholder={`Paste your ${request.provider_label} API key`}
-            maxLength={2048}
-            style={inputStyle}
-          />
-          {/* Action row: Save (primary) + Not now (muted). Wraps on narrow
-              viewports so the card stays mobile-friendly. */}
-          <div
-            style={{
-              display: "flex",
-              gap: 6,
-              flexWrap: "wrap",
-              marginTop: 2,
-            }}
-          >
-            <button
-              type="submit"
-              data-testid={`credential-card-save-${request.request_id}`}
-              aria-label={`Save ${request.provider_label} API key`}
-              disabled={keyValue.trim().length === 0}
-              style={btnStyle("primary", keyValue.trim().length === 0)}
-            >
-              <IconCheck
-                size={12}
-                color={keyValue.trim().length === 0 ? "#555" : "#0b0b0e"}
-              />
-              Save
-            </button>
-            <button
-              type="button"
-              data-testid={`credential-card-decline-${request.request_id}`}
-              aria-label="Skip this credential"
-              onClick={onDecline}
-              style={btnStyle("muted", false)}
-            >
-              Not now
-            </button>
-          </div>
-        </form>
-      )}
+      </form>
     </div>
   );
 }

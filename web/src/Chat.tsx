@@ -2950,6 +2950,11 @@ export function Chat({
           live={pipeline.live}
           messageOrder={visible.messageOrder}
           stepOrder={visible.stepOrder}
+          credentialRequests={credentialRequests}
+          credentialSeqs={visible.credentialSeqs}
+          credentialResolved={visible.credentialResolved}
+          onCredentialSave={handleCredentialSave}
+          onCredentialDecline={handleCredentialDecline}
         />
 
         {/* wave-4-10 ephemeral Thinking indicator — italic muted-gray     */}
@@ -3028,37 +3033,11 @@ export function Chat({
           );
         })()}
 
-        {/* SRS §F.3 amendment: just-in-time credential prompts. A keyed tool
-            paused on a missing/invalid API key; the inline CredentialCard
-            lets the user fetch + paste the key (saved via the existing
-            secret-add path) then signals the agent to retry. Sorted by
-            first-arrival seq so they interleave chronologically with the rest
-            of the stream. */}
-        {credentialRequests.length > 0 && (() => {
-          const sorted = [...credentialRequests].sort((a, b) => {
-            const sa =
-              visible.credentialSeqs.get(a.request_id) ?? Number.MAX_SAFE_INTEGER;
-            const sb =
-              visible.credentialSeqs.get(b.request_id) ?? Number.MAX_SAFE_INTEGER;
-            return sa - sb;
-          });
-          return (
-            <div
-              data-testid="credential-cards-section"
-              style={{ display: "flex", flexDirection: "column", gap: 10 }}
-            >
-              {sorted.map((req) => (
-                <CredentialCard
-                  key={req.request_id}
-                  request={req}
-                  resolved={visible.credentialResolved.get(req.request_id) ?? null}
-                  onSave={(keyValue) => handleCredentialSave(req, keyValue)}
-                  onDecline={() => handleCredentialDecline(req)}
-                />
-              ))}
-            </div>
-          );
-        })()}
+        {/* SRS §F.3 amendment (NATE 2026-06-17): credential prompts no longer
+            render here as a trailing section. They now INTERLEAVE inline in the
+            InterleavedChatStream above (kind: "credential"), sorted by
+            first-arrival seq alongside chat bubbles + tool cards, so the card
+            sits at its natural chat slot and the narration resumes after it. */}
 
         {lastError && (
           <div
@@ -3322,6 +3301,21 @@ export type InterleavedEntry =
       // single step's pipeline_id reissues + state transitions (ux-batch-1 J9).
       stepKey: string;
       step: PipelineStepSummary;
+    }
+  | {
+      // SRS §F.3 amendment (NATE 2026-06-17): a just-in-time credential prompt
+      // INTERLEAVED into the chat scroll at its first-arrival seq — exactly
+      // like a tool card. It renders the full key-entry form while pending and
+      // folds to a compact tool-card-style summary once resolved, so the
+      // agent's subsequent narration flows AFTER it (no break-out, no
+      // bottom-of-scroll detachment). Carries the request + resolution; the
+      // onSave / onDecline callbacks are supplied by InterleavedChatStream
+      // (kept off this pure view-model so buildInterleavedStream stays pure).
+      kind: "credential";
+      seq: number;
+      requestId: string;
+      request: CredentialRequestPayload;
+      resolved: "saved" | "declined" | null;
     };
 
 export function buildInterleavedStream(
@@ -3330,6 +3324,12 @@ export function buildInterleavedStream(
   live: PipelineStatePayload | null,
   messageOrder: Map<string, number>,
   stepOrder: Map<string, number>,
+  // SRS §F.3 — optional credential inputs so credential prompts interleave at
+  // their first-arrival seq alongside messages + tool cards. Defaulted so
+  // existing callers / tests that don't pass them keep working unchanged.
+  credentialRequests: CredentialRequestPayload[] = [],
+  credentialSeqs: Map<string, number> = new Map(),
+  credentialResolved: Map<string, "saved" | "declined"> = new Map(),
 ): InterleavedEntry[] {
   const out: InterleavedEntry[] = [];
   // Messages — seq comes from messageOrder; absent → fall back to a large
@@ -3368,6 +3368,20 @@ export function buildInterleavedStream(
     const seq = stepOrder.get(key) ?? Number.MAX_SAFE_INTEGER;
     out.push({ kind: "tool", seq, stepKey: key, step });
   }
+  // Credential prompts (SRS §F.3) — seq from credentialSeqs (first-arrival),
+  // so the card lands at its natural chat slot between the narration that
+  // preceded it and the narration that resumes after it (NATE 2026-06-17).
+  for (const cReq of credentialRequests) {
+    const seq =
+      credentialSeqs.get(cReq.request_id) ?? Number.MAX_SAFE_INTEGER;
+    out.push({
+      kind: "credential",
+      seq,
+      requestId: cReq.request_id,
+      request: cReq,
+      resolved: credentialResolved.get(cReq.request_id) ?? null,
+    });
+  }
   // Stable sort by seq; ties broken by insertion order (preserved by the
   // standard ``Array.prototype.sort`` in V8/spidermonkey/JSC since
   // ES2019). Insertion order here is: messages first then tools, so a
@@ -3386,6 +3400,15 @@ interface InterleavedChatStreamProps {
   live: PipelineStatePayload | null;
   messageOrder: Map<string, number>;
   stepOrder: Map<string, number>;
+  // SRS §F.3 amendment (NATE 2026-06-17): credential prompts interleave INLINE
+  // in this stream at their first-arrival seq, exactly like tool cards. The
+  // callbacks are component-bound (WS side effects live in Chat) so they ride
+  // on the props rather than the pure stream view-model.
+  credentialRequests: CredentialRequestPayload[];
+  credentialSeqs: Map<string, number>;
+  credentialResolved: Map<string, "saved" | "declined">;
+  onCredentialSave: (req: CredentialRequestPayload, keyValue: string) => void;
+  onCredentialDecline: (req: CredentialRequestPayload) => void;
 }
 
 function InterleavedChatStream({
@@ -3394,6 +3417,11 @@ function InterleavedChatStream({
   live,
   messageOrder,
   stepOrder,
+  credentialRequests,
+  credentialSeqs,
+  credentialResolved,
+  onCredentialSave,
+  onCredentialDecline,
 }: InterleavedChatStreamProps): JSX.Element | null {
   const stream = buildInterleavedStream(
     messages,
@@ -3401,6 +3429,9 @@ function InterleavedChatStream({
     live,
     messageOrder,
     stepOrder,
+    credentialRequests,
+    credentialSeqs,
+    credentialResolved,
   );
   if (stream.length === 0) return null;
   return (
@@ -3425,6 +3456,17 @@ function InterleavedChatStream({
               key={entry.id}
               text={entry.text}
               done={entry.done}
+            />
+          );
+        }
+        if (entry.kind === "credential") {
+          return (
+            <CredentialCard
+              key={entry.requestId}
+              request={entry.request}
+              resolved={entry.resolved}
+              onSave={(keyValue) => onCredentialSave(entry.request, keyValue)}
+              onDecline={() => onCredentialDecline(entry.request)}
             />
           );
         }

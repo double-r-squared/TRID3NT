@@ -47,6 +47,7 @@ import {
   ErrorPayload,
   PipelineStatePayload,
   PipelineStepSummary,
+  CredentialRequestPayload,
 } from "./contracts";
 
 // --- shouldShowCancel predicate ------------------------------------------ //
@@ -874,6 +875,107 @@ describe("buildInterleavedStream (job-0176 — chronological interleave)", () =>
       .filter((e): e is Extract<InterleavedEntry, { kind: "tool" }> => e.kind === "tool")
       .map((e) => e.step.step_id);
     expect(toolIds).toEqual(["step-r1", "step-r2"]);
+  });
+
+  // --- credential prompts interleave inline (NATE 2026-06-17) ------------ //
+  //
+  // A keyed tool paused on a missing API key emits a credential-request; the
+  // card must land at its first-arrival seq BETWEEN the narration that came
+  // before it and the narration that resumes after it — never break out to
+  // the bottom of the scroll.
+
+  function credReq(
+    requestId: string,
+    overrides: Partial<CredentialRequestPayload> = {},
+  ): CredentialRequestPayload {
+    return {
+      envelope_type: "credential-request",
+      request_id: requestId,
+      provider_id: "ebird",
+      provider_label: "eBird",
+      signup_url: "https://ebird.org/api/keygen",
+      secret_key_name: "EBIRD_API_KEY",
+      message: "eBird needs an API key.",
+      tool_name: "fetch_ebird_observations",
+      ...overrides,
+    };
+  }
+
+  it("interleaves a credential card at its arrival seq between narration bubbles", () => {
+    // 1. user prompt; 2. agent "I need a key…"; 3. credential card;
+    // 4. agent narration resumes AFTER the card.
+    const messageOrder = new Map<string, number>([
+      ["user-0", 1],
+      ["msg-pre", 2],
+      ["msg-post", 4],
+    ]);
+    const messages = [
+      { id: "user-0", role: "user" as const, text: "bird sightings", done: true },
+      { id: "msg-pre", role: "agent" as const, text: "I need an eBird key.", done: true },
+      { id: "msg-post", role: "agent" as const, text: "Thanks — retrying.", done: true },
+    ];
+    const credentialSeqs = new Map<string, number>([["REQ1", 3]]);
+    const stream = buildInterleavedStream(
+      messages,
+      [],
+      null,
+      messageOrder,
+      new Map(),
+      [credReq("REQ1")],
+      credentialSeqs,
+      new Map(),
+    );
+    expect(stream.map((e: InterleavedEntry) => e.kind)).toEqual([
+      "user-message",
+      "agent-message",
+      "credential",
+      "agent-message",
+    ]);
+    expect(stream.map((e: InterleavedEntry) => e.seq)).toEqual([1, 2, 3, 4]);
+    // The card carries the request + its (unresolved) state.
+    const cred = stream[2]! as Extract<InterleavedEntry, { kind: "credential" }>;
+    expect(cred.requestId).toBe("REQ1");
+    expect(cred.request.provider_label).toBe("eBird");
+    expect(cred.resolved).toBeNull();
+  });
+
+  it("threads the resolved state onto the credential entry (folds in place, no reorder)", () => {
+    // Card arrives at seq=2; once resolved it stays at slot 2 (does NOT jump
+    // to the end) — the agent's follow-up at seq=3 still renders after it.
+    const messageOrder = new Map<string, number>([
+      ["msg-pre", 1],
+      ["msg-post", 3],
+    ]);
+    const messages = [
+      { id: "msg-pre", role: "agent" as const, text: "Need a key.", done: true },
+      { id: "msg-post", role: "agent" as const, text: "Got it.", done: true },
+    ];
+    const stream = buildInterleavedStream(
+      messages,
+      [],
+      null,
+      messageOrder,
+      new Map(),
+      [credReq("REQ1")],
+      new Map<string, number>([["REQ1", 2]]),
+      new Map<string, "saved" | "declined">([["REQ1", "saved"]]),
+    );
+    expect(stream.map((e: InterleavedEntry) => e.kind)).toEqual([
+      "agent-message",
+      "credential",
+      "agent-message",
+    ]);
+    const cred = stream[1]! as Extract<InterleavedEntry, { kind: "credential" }>;
+    expect(cred.resolved).toBe("saved");
+  });
+
+  it("omitting the credential args keeps the legacy stream shape (no credential rows)", () => {
+    const messageOrder = new Map<string, number>([["m1", 1]]);
+    const messages = [
+      { id: "m1", role: "agent" as const, text: "hi", done: true },
+    ];
+    const stream = buildInterleavedStream(messages, [], null, messageOrder, new Map());
+    expect(stream.every((e: InterleavedEntry) => e.kind !== "credential")).toBe(true);
   });
 });
 
