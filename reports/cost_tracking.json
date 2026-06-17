@@ -1906,6 +1906,20 @@
       "description": "read-only design: fold catalog entries into discover_dataset (STAC+ArcGIS unwired-source discovery). NOTE: NEAR-RUNAWAY \u2014 one investigation agent looped, ~1.01M tokens / 939 tool uses / ~2h before failing StructuredOutput; plan synthesized from 3 of 4 investigations.",
       "model": "opus",
       "subagent_tokens": 1013656
+    },
+    {
+      "job_id": "job-0359",
+      "sprint": "ux-batch-1",
+      "description": "build + 3-lens adversarial verify: SFINCS per-job adaptive-grid autoscale + solve telemetry + AWS Batch solver seam. (subagent_tokens is an ESTIMATE \u2014 exact counts lost across context compaction; impl agent + correctness/regression/contract verifiers.)",
+      "model": "opus",
+      "subagent_tokens": 720000
+    },
+    {
+      "job_id": "job-0360",
+      "sprint": "ux-batch-1",
+      "description": "supports_global_query scope audit \u2014 flip fetch_nws_alerts_conus + fetch_nexrad_reflectivity to True; pin the 10-tool global-capable set in test_tools_registry. (subagent_tokens ESTIMATE \u2014 lost across compaction.)",
+      "model": "opus",
+      "subagent_tokens": 260000
     }
   ],
   "totals_by_sprint": {
@@ -1919,7 +1933,7 @@
     "13": 14388888,
     "13.5": 4081365,
     "14": 824503,
-    "ux-batch-1": 6936678
+    "ux-batch-1": 7916678
   },
   "historical_context": {
     "note": "Captured for accountability \u2014 NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
