@@ -102,26 +102,20 @@ SELECTABLE_MODELS: list[dict[str, Any]] = [
 #: reach ConverseStream and throw a ValidationException.
 SELECTABLE_MODEL_IDS: frozenset[str] = frozenset(m["id"] for m in SELECTABLE_MODELS)
 
-#: Model ids that do NOT support cachePoint.  Kept EXPLICIT (not derived from
-#: SELECTABLE_MODELS) so the guard still holds if such a model is reachable via
-#: the ``BEDROCK_MODEL_ID`` env even though it is not in the picker.  Any id NOT
-#: listed here is assumed to support cachePoint (all current Anthropic + Nova
-#: models do).  DeepSeek-R1 is the current exception.
-MODELS_WITHOUT_CACHE_SUPPORT: frozenset[str] = frozenset(
-    {
-        "us.deepseek.r1-v1:0",
-    }
-)
-
-
 def model_supports_cache(model_id: str) -> bool:
-    """Return True when ``model_id`` is known to support Bedrock cachePoint.
+    """Return True only when ``model_id`` is an Anthropic Claude model.
 
-    Conservative default: an UNKNOWN model id is assumed to support cachePoint
-    (all current Anthropic + Amazon Nova models do). Only models explicitly
-    listed in ``MODELS_WITHOUT_CACHE_SUPPORT`` are excluded.
+    On Bedrock the ``cachePoint`` block is an ANTHROPIC-family feature. Amazon
+    Nova and DeepSeek-R1 REJECT a request that carries cachePoint in the system
+    block or toolConfig — proven live by NATE's "extraneous key [cachePoint] is
+    not permitted, #/toolConfig/tools/93" error when he selected Nova Pro. So
+    this is an ALLOWLIST (Anthropic only), NOT the earlier "unknown -> assume
+    supported" default that wrongly enabled cachePoint for Nova and broke every
+    non-Sonnet model. Match on provider substring so future Claude profile ids
+    (haiku-4-5, opus, etc.) are covered without an edit.
     """
-    return model_id not in MODELS_WITHOUT_CACHE_SUPPORT
+    mid = model_id.lower()
+    return "anthropic" in mid or "claude" in mid
 
 
 def resolve_selected_model(requested: str | None) -> tuple[str | None, str | None]:

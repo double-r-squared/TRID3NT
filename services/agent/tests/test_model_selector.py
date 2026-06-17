@@ -1,9 +1,10 @@
 """Tests for the in-chat model selector feature (NATE 2026-06-17).
 
 Covers:
-  1. ``model_supports_cache`` helper — False for DeepSeek-R1, True for Claude/Nova.
+  1. ``model_supports_cache`` helper — Anthropic-only allowlist (True for Claude,
+     False for Nova / DeepSeek-R1 / any non-Anthropic id).
   2. ``_build_converse_kwargs`` per-model cachePoint gate:
-       - DeepSeek-R1 → NO cachePoint even when env is ON.
+       - DeepSeek-R1 AND Nova → NO cachePoint even when env is ON.
        - Claude Sonnet 4.6 → cachePoint present when env is ON.
        - Env=OFF → no cachePoint regardless of model.
   3. ``emit_tool_call_event`` persists ``model_id`` in the local JSONL file.
@@ -67,23 +68,30 @@ def test_model_supports_cache_true_for_claude_haiku():
     assert ba.model_supports_cache("us.anthropic.claude-haiku-4-5") is True
 
 
-def test_model_supports_cache_true_for_nova_lite():
-    assert ba.model_supports_cache("us.amazon.nova-lite-v1:0") is True
+def test_model_supports_cache_false_for_nova_lite():
+    # cachePoint is an Anthropic-family feature; Nova REJECTS it (live error:
+    # "extraneous key [cachePoint] is not permitted"). Allowlist semantics.
+    assert ba.model_supports_cache("us.amazon.nova-lite-v1:0") is False
 
 
-def test_model_supports_cache_true_for_nova_pro():
-    assert ba.model_supports_cache("us.amazon.nova-pro-v1:0") is True
+def test_model_supports_cache_false_for_nova_pro():
+    assert ba.model_supports_cache("us.amazon.nova-pro-v1:0") is False
 
 
 def test_model_supports_cache_false_for_deepseek():
     assert ba.model_supports_cache("us.deepseek.r1-v1:0") is False
 
 
-def test_model_supports_cache_true_for_unknown_model():
-    # Unknown model ids default to "supports cache" (safest assumption — a
-    # real Bedrock 400 will surface if the assumption is wrong; the opposite
-    # would silently disable caching for any new Anthropic/Amazon model).
-    assert ba.model_supports_cache("us.some.future-model-v1:0") is True
+def test_model_supports_cache_false_for_unknown_model():
+    # Allowlist: an UNKNOWN (non-Anthropic) model id defaults to NO cache. The
+    # earlier "unknown -> assume supported" default wrongly enabled cachePoint
+    # for Nova and broke every non-Sonnet model — flipped to Anthropic-only.
+    assert ba.model_supports_cache("us.some.future-model-v1:0") is False
+
+
+def test_model_supports_cache_true_for_future_claude_profile():
+    # Provider substring match covers future Claude profile ids without an edit.
+    assert ba.model_supports_cache("us.anthropic.claude-opus-4-8") is True
 
 
 # ---------------------------------------------------------------------------
@@ -111,13 +119,19 @@ def test_claude_has_cachepoint_when_env_on(monkeypatch):
     assert _has_cache_point(kw["toolConfig"]["tools"])
 
 
-def test_nova_has_cachepoint_when_env_on(monkeypatch):
-    """Amazon Nova Pro must produce cachePoints when BEDROCK_PROMPT_CACHE is ON."""
-    monkeypatch.delenv("BEDROCK_PROMPT_CACHE", raising=False)
+def test_nova_no_cachepoint_even_when_env_on(monkeypatch):
+    """Amazon Nova Pro must produce NO cachePoint regardless of the env flag.
+
+    Regression for NATE's live error: selecting Nova Pro threw
+    "Malformed input request: #/toolConfig/tools/93: extraneous key
+    [cachePoint] is not permitted". Nova rejects cachePoint, so it must never
+    be added for a Nova request even with BEDROCK_PROMPT_CACHE ON.
+    """
+    monkeypatch.delenv("BEDROCK_PROMPT_CACHE", raising=False)  # env default = ON
     kw = ba._build_converse_kwargs([], _tools(), _SYS, "us.amazon.nova-pro-v1:0")
 
-    assert _has_cache_point(kw["system"])
-    assert _has_cache_point(kw["toolConfig"]["tools"])
+    assert not _has_cache_point(kw["system"])
+    assert not _has_cache_point(kw["toolConfig"]["tools"])
 
 
 def test_claude_no_cachepoint_when_env_off(monkeypatch):
