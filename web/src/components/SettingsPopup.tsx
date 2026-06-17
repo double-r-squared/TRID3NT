@@ -14,6 +14,8 @@
 
 import { useEffect } from "react";
 import type { MapTheme } from "../Map";
+import { SecretsPanel } from "./SecretsPanel";
+import type { ProviderID, SecretRecord } from "../contracts";
 
 export interface SettingsPopupProps {
   /** Email of the signed-in user, or null if anonymous. */
@@ -44,6 +46,30 @@ export interface SettingsPopupProps {
    * sessions. Kept optional for backwards-compat with older fixtures.
    */
   onOpenRoutingDashboard?: () => void;
+  /**
+   * job-0321 F29: optional embedded API-Keys section. When `onSecretAdd` is
+   * supplied, Settings renders the SecretsPanel inline under an "API Keys"
+   * section header — bundling key management INSIDE Settings so it is
+   * reachable on mobile (where Settings now lives top-right). Kept OPTIONAL
+   * so pre-existing SettingsPopup.test.tsx fixtures that don't plumb these
+   * still render (the section is guarded on `onSecretAdd && ...`).
+   *
+   * Shape mirrors SecretsPopup's props exactly so App.tsx can pass the same
+   * `secrets` / `currentCaseId` / `handleSecretAdd` / `handleSecretRevoke`
+   * wires it previously fed to the standalone SecretsPopup.
+   */
+  secrets?: SecretRecord[];
+  /** Active case id for the embedded SecretsPanel scope (null = user-wide). */
+  caseId?: string | null;
+  /** Emits the `secret-add` envelope (App wraps it on the WS). */
+  onSecretAdd?: (payload: {
+    provider: ProviderID;
+    case_id: string | null;
+    label: string | null;
+    key_value: string;
+  }) => void;
+  /** Emits the `secret-revoke` envelope for the given secret id. */
+  onSecretRevoke?: (secretId: string) => void;
 }
 
 const overlayStyle: React.CSSProperties = {
@@ -171,6 +197,10 @@ export function SettingsPopup({
   onClose,
   onOpenToolsCatalog,
   onOpenRoutingDashboard,
+  secrets,
+  caseId,
+  onSecretAdd,
+  onSecretRevoke,
 }: SettingsPopupProps): JSX.Element {
   // Esc-to-close (memory rule "Cancellation is first-class").
   useEffect(() => {
@@ -297,6 +327,23 @@ export function SettingsPopup({
                 </button>
               </div>
             )}
+          </div>
+        )}
+
+        {/* API Keys section (job-0321 F29) — bundles the per-Case Tier-2
+            key-entry surface INSIDE Settings so it is reachable from the
+            mobile top-right Settings entry (the standalone SecretsPopup is
+            retired). Guarded on `onSecretAdd` so legacy fixtures that don't
+            plumb the secrets props render unchanged. */}
+        {onSecretAdd && onSecretRevoke && (
+          <div style={sectionStyle} data-testid="grace2-settings-api-keys">
+            <div style={sectionTitleStyle}>API Keys</div>
+            <SecretsPanel
+              secrets={secrets ?? []}
+              caseId={caseId ?? null}
+              onSecretAdd={onSecretAdd}
+              onSecretRevoke={onSecretRevoke}
+            />
           </div>
         )}
 

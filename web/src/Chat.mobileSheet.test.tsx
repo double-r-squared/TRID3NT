@@ -387,3 +387,85 @@ describe("SheetActiveToolStrip", () => {
     expect(screen.getByTestId("composer")).toBeTruthy();
   });
 });
+
+// --- F42 (job-0321): collapsed-sheet strip rainbow running animation ------- //
+//
+// The strip only ever shows a RUNNING tool, so its label always gets the SAME
+// animated rainbow-gradient treatment the inline PipelineCard uses for running
+// steps — UNLESS the user prefers reduced motion, in which case it falls back
+// to the solid label color, exactly like PipelineCard.
+
+/** Force `prefers-reduced-motion: reduce` to the given value for the duration
+ *  of a render. Restores the original matchMedia afterwards. */
+function mockReducedMotion(reduce: boolean): () => void {
+  const original = window.matchMedia;
+  window.matchMedia = ((query: string) => ({
+    matches: query.includes("prefers-reduced-motion") ? reduce : false,
+    media: query,
+    onchange: null,
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  })) as unknown as typeof window.matchMedia;
+  return () => {
+    window.matchMedia = original;
+  };
+}
+
+describe("SheetActiveToolStrip — F42 rainbow running animation", () => {
+  it("applies the animated rainbow gradient to the label when motion is allowed", () => {
+    const restore = mockReducedMotion(false);
+    try {
+      render(
+        <SheetActiveToolStrip
+          step={step({ state: "running" })}
+          onExpand={vi.fn()}
+        />,
+      );
+      const labelEl = screen.getByTestId(
+        "grace2-sheet-tool-strip-label",
+      ) as HTMLElement;
+      // SAME gradient treatment PipelineCard uses for running steps.
+      expect(labelEl.style.backgroundImage).toBe(
+        "linear-gradient(90deg, #FF6B6B, #FFD93D, #6BCB77, #4D96FF, #B266FF, #FF6B6B)",
+      );
+      expect(labelEl.style.backgroundSize).toBe("300% 100%");
+      expect(labelEl.style.animation).toBe("grace2-hue-cycle 3s linear infinite");
+      // background-clip:text technique — text is painted by the gradient.
+      // (The vendor-prefixed -webkit-text-fill-color:transparent twin is set
+      // in the component for Safari; happy-dom's CSSOM doesn't reflect that
+      // unknown vendor property, so we assert the standard color:transparent.)
+      expect(labelEl.style.color).toBe("transparent");
+      expect(labelEl.style.backgroundClip).toBe("text");
+      // Layout style is preserved (single-line ellipsis truncation).
+      expect(labelEl.style.whiteSpace).toBe("nowrap");
+      expect(labelEl.style.textOverflow).toBe("ellipsis");
+    } finally {
+      restore();
+    }
+  });
+
+  it("falls back to a solid color with NO animation when reduced motion is preferred", () => {
+    const restore = mockReducedMotion(true);
+    try {
+      render(
+        <SheetActiveToolStrip
+          step={step({ state: "running" })}
+          onExpand={vi.fn()}
+        />,
+      );
+      const labelEl = screen.getByTestId(
+        "grace2-sheet-tool-strip-label",
+      ) as HTMLElement;
+      expect(labelEl.style.color).toBe("#eee");
+      expect(labelEl.style.animation).toBe("");
+      expect(labelEl.style.backgroundImage).toBe("");
+      // Layout style still intact.
+      expect(labelEl.style.whiteSpace).toBe("nowrap");
+    } finally {
+      restore();
+    }
+  });
+});

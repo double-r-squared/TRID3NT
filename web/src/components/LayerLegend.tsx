@@ -27,6 +27,17 @@ import { getStylePreset, StylePreset } from "../lib/style-presets";
 export interface LayerLegendProps {
   /** Ordered layer list, top-of-stack first (same order as LayerPanel). */
   layers: ProjectLayerSummary[];
+  /**
+   * job-0321 (F43) — optional screen-space anchor. When provided, the legend
+   * positions itself at this {left, top} (absolute, with a translateX(-50%) so
+   * `left` is the CENTER x), so it can hang off the bottom edge of the AOI
+   * bounding box on the map and read as the depth-key for that AOI. The owner
+   * (Map.tsx) projects the bbox bottom-edge midpoint each move/zoom/render.
+   *
+   * When `anchor` is null/undefined the legend keeps its previous bottom-center
+   * placement (AOI-less Cases, or the bbox is off-screen) so it never vanishes.
+   */
+  anchor?: { left: number; top: number } | null;
 }
 
 /**
@@ -40,7 +51,7 @@ function buildGradient(preset: StylePreset): string {
   return `linear-gradient(to right, ${parts})`;
 }
 
-export function LayerLegend({ layers }: LayerLegendProps): JSX.Element | null {
+export function LayerLegend({ layers, anchor }: LayerLegendProps): JSX.Element | null {
   // Find the topmost continuous-raster layer with a known preset.
   // "topmost" = first in the top-of-stack-first list (highest z_index).
   const targetLayer = layers.find(
@@ -57,14 +68,29 @@ export function LayerLegend({ layers }: LayerLegendProps): JSX.Element | null {
 
   const gradient = buildGradient(preset);
 
+  // job-0321 (F43) — anchored vs fallback placement. When an `anchor` is given
+  // (Map.tsx projected the AOI bbox bottom-edge midpoint), position the legend
+  // at that screen point with translateX(-50%) so it hangs centered under the
+  // box's bottom edge. Otherwise keep the original bottom-center placement so
+  // AOI-less Cases (or an off-screen bbox) never lose the legend.
+  const placement: React.CSSProperties = anchor
+    ? {
+        left: anchor.left,
+        top: anchor.top,
+        transform: "translateX(-50%)",
+      }
+    : {
+        bottom: 24,
+        left: "50%",
+        transform: "translateX(-50%)",
+      };
+
   return (
     <div
       data-testid="grace2-layer-legend"
       style={{
         position: "absolute",
-        bottom: 24,
-        left: "50%",
-        transform: "translateX(-50%)",
+        ...placement,
         width: 320,
         padding: "8px 12px 10px",
         // job-0283 — joins the panel surface family: hairline border + 10px

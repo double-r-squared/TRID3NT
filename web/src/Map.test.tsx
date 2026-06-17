@@ -43,7 +43,11 @@ interface MapMock {
   isStyleLoaded: ReturnType<typeof vi.fn>;
   remove: ReturnType<typeof vi.fn>;
   on: ReturnType<typeof vi.fn>;
+  off: ReturnType<typeof vi.fn>;
   once: ReturnType<typeof vi.fn>;
+  // job-0321 (F43) — legend-anchor projection.
+  project: ReturnType<typeof vi.fn>;
+  getCanvas: ReturnType<typeof vi.fn>;
   getStyle: ReturnType<typeof vi.fn>;
   _addedLayers: Set<string>;
   _addedSources: Set<string>;
@@ -105,7 +109,17 @@ vi.mock("maplibre-gl", () => {
     // session-state push; the mock just no-ops (synchronous apply path is
     // what tests verify).
     on = vi.fn();
+    off = vi.fn();
     once = vi.fn();
+    // job-0321 (F43) — the legend-anchor projection effect calls project() to
+    // map bbox corners to screen space and getCanvas() to read the viewport
+    // size for the off-screen test. Deterministic stubs so the anchor lands
+    // on-screen for the tests that exercise it.
+    project = vi.fn((lngLat: [number, number]) => ({
+      x: (lngLat[0] + 180) * 2, // arbitrary but monotonic; keeps anchor on-screen
+      y: (90 - lngLat[1]) * 2,
+    }));
+    getCanvas = vi.fn(() => ({ clientWidth: 1024, clientHeight: 768 }));
     // getStyle is used by the theme-swap effect to find existing layers.
     getStyle = vi.fn(() => ({
       layers: Array.from(this._addedLayers).map((id) => ({ id })),
@@ -357,13 +371,15 @@ describe("MapView — map-command zoom-to handler (job-0068 change 5 client side
     });
 
     const m = lastMapMock!;
-    // The extent source + fill + line layers are added alongside fitBounds.
+    // job-0321 (F40) — OUTLINE-ONLY: the extent source + the dashed line layer
+    // are added alongside fitBounds. The translucent fill layer is NO LONGER
+    // added (it tinted the layers beneath the AOI).
     const addedSourceIds = m.addSource.mock.calls.map((c) => c[0]);
     expect(addedSourceIds).toContain("grace2-analysis-extent");
     const addedLayerIds = m.addLayer.mock.calls.map(
       (c) => (c[0] as { id: string }).id,
     );
-    expect(addedLayerIds).toContain("grace2-analysis-extent-fill");
+    expect(addedLayerIds).not.toContain("grace2-analysis-extent-fill");
     expect(addedLayerIds).toContain("grace2-analysis-extent-line");
   });
 
@@ -391,9 +407,11 @@ describe("MapView — map-command zoom-to handler (job-0068 change 5 client side
       mapCmdBus.push({ command: "clear-analysis-extent" } as never);
     });
 
-    // Both extent layers + the source are removed.
+    // job-0321 (F40) — OUTLINE-ONLY: only the dashed line layer + the source are
+    // removed now (the fill is never added, so the clear's existence-guarded
+    // fill removal is a no-op — the guard stays for stale-style cleanup).
     const removedLayerIds = m.removeLayer.mock.calls.map((c) => c[0]);
-    expect(removedLayerIds).toContain("grace2-analysis-extent-fill");
+    expect(removedLayerIds).not.toContain("grace2-analysis-extent-fill");
     expect(removedLayerIds).toContain("grace2-analysis-extent-line");
     expect(m.removeSource.mock.calls.map((c) => c[0])).toContain(
       "grace2-analysis-extent",
@@ -437,7 +455,8 @@ describe("MapView — map-command zoom-to handler (job-0068 change 5 client side
     ) as MockCallArgs | undefined;
     expect(idleRetry).toBeDefined();
 
-    // On the retry, addLayer no longer throws — the extent layers land.
+    // On the retry, addLayer no longer throws — the dashed outline lands.
+    // job-0321 (F40) — OUTLINE-ONLY: only the line layer is (re-)added.
     m.addLayer.mockClear();
     act(() => {
       (idleRetry![1] as () => void)();
@@ -445,7 +464,7 @@ describe("MapView — map-command zoom-to handler (job-0068 change 5 client side
     const retriedLayerIds = m.addLayer.mock.calls.map(
       (c) => (c[0] as { id: string }).id,
     );
-    expect(retriedLayerIds).toContain("grace2-analysis-extent-fill");
+    expect(retriedLayerIds).not.toContain("grace2-analysis-extent-fill");
     expect(retriedLayerIds).toContain("grace2-analysis-extent-line");
   });
 
@@ -483,9 +502,10 @@ describe("MapView — map-command zoom-to handler (job-0068 change 5 client side
         (c) => (c as MockCallArgs)[0] === "grace2-analysis-extent",
       ).length,
     ).toBe(0);
-    // The extent source + both layers are present after the flight.
+    // The extent source + the dashed outline are present after the flight.
+    // job-0321 (F40) — OUTLINE-ONLY: the fill layer is never added.
     expect(m._addedSources.has("grace2-analysis-extent")).toBe(true);
-    expect(m._addedLayers.has("grace2-analysis-extent-fill")).toBe(true);
+    expect(m._addedLayers.has("grace2-analysis-extent-fill")).toBe(false);
     expect(m._addedLayers.has("grace2-analysis-extent-line")).toBe(true);
   });
 
@@ -526,7 +546,8 @@ describe("MapView — map-command zoom-to handler (job-0068 change 5 client side
     const layerIds = m.addLayer.mock.calls.map(
       (c) => (c[0] as { id: string }).id,
     );
-    expect(layerIds).toContain("grace2-analysis-extent-fill");
+    // job-0321 (F40) — OUTLINE-ONLY: dashed line lands, no fill.
+    expect(layerIds).not.toContain("grace2-analysis-extent-fill");
     expect(layerIds).toContain("grace2-analysis-extent-line");
   });
 
@@ -1451,6 +1472,7 @@ import {
   layerGroupMemberIds,
   drawAnalysisExtent,
   clearAnalysisExtent,
+  computeBboxBottomAnchor,
 } from "./Map";
 import { fireEvent, screen } from "@testing-library/react";
 import { LayerPanel, createLayerPanelBus } from "./LayerPanel";
@@ -1573,18 +1595,17 @@ function makeExtentMap() {
 describe("drawAnalysisExtent (job-0294)", () => {
   const BBOX: [number, number, number, number] = [-105.3, 39.95, -105.2, 40.05];
 
-  it("adds the geojson source + a fill layer + a dashed line layer on first call", () => {
+  it("adds the geojson source + a dashed line layer ONLY (no fill) on first call (job-0321 F40)", () => {
     const m = makeExtentMap();
     drawAnalysisExtent(m, BBOX);
     expect(m.addSource).toHaveBeenCalledOnce();
     expect(m.addSource.mock.calls[0]![0]).toBe("grace2-analysis-extent");
+    // job-0321 (F40) — OUTLINE-ONLY: the translucent fill layer is NOT added;
+    // only the dashed outline. (The fill tinted everything beneath the AOI.)
     const layerIds = m.addLayer.mock.calls.map((c) => (c[0] as { id: string }).id);
-    expect(layerIds).toEqual([
-      "grace2-analysis-extent-fill",
-      "grace2-analysis-extent-line",
-    ]);
+    expect(layerIds).toEqual(["grace2-analysis-extent-line"]);
     // The outline is a dashed accent line.
-    const lineSpec = m.addLayer.mock.calls[1]![0] as {
+    const lineSpec = m.addLayer.mock.calls[0]![0] as {
       type: string;
       paint: Record<string, unknown>;
     };
@@ -1613,13 +1634,14 @@ describe("drawAnalysisExtent (job-0294)", () => {
     const m = makeExtentMap();
     drawAnalysisExtent(m, BBOX);
     expect(m.addSource).toHaveBeenCalledOnce();
-    expect(m.addLayer).toHaveBeenCalledTimes(2);
+    // job-0321 (F40) — OUTLINE-ONLY: a single (line) layer is added now.
+    expect(m.addLayer).toHaveBeenCalledTimes(1);
 
     const NEXT: [number, number, number, number] = [-122.5, 37.7, -122.3, 37.85];
     drawAnalysisExtent(m, NEXT);
     // No second source / layer adds — the existing source's data is swapped.
     expect(m.addSource).toHaveBeenCalledOnce();
-    expect(m.addLayer).toHaveBeenCalledTimes(2);
+    expect(m.addLayer).toHaveBeenCalledTimes(1);
     const src = m.sources.get("grace2-analysis-extent")!;
     expect(src.setData).toHaveBeenCalledOnce();
     const swapped = src.setData.mock.calls[0]![0] as {
@@ -1628,30 +1650,40 @@ describe("drawAnalysisExtent (job-0294)", () => {
     expect(swapped.geometry.coordinates[0]![0]).toEqual([NEXT[0], NEXT[1]]);
   });
 
-  it("self-heals a half-built extent: source present but line layer missing → re-adds ONLY the line", () => {
+  it("self-heals a half-built extent: source present but line layer missing → re-adds the line", () => {
     const m = makeExtentMap();
     drawAnalysisExtent(m, BBOX);
-    // Simulate a prior attempt that threw between the two addLayer calls: the
-    // source + fill survived, the dashed line did not. (The live failure mode
-    // the old early-return-on-source-exists could never recover from.)
+    // Simulate a prior attempt that threw mid-mutation: the source survived but
+    // the dashed line layer did not. (The live failure mode the old
+    // early-return-on-source-exists could never recover from.) job-0321 (F40):
+    // only the line layer exists in the outline-only world, so deleting it is
+    // the half-built case.
     m.layers.delete("grace2-analysis-extent-line");
     m.addLayer.mockClear();
 
     drawAnalysisExtent(m, BBOX);
 
-    // setData replaced the data; only the MISSING line layer was re-added.
+    // setData replaced the data; the MISSING line layer was re-added.
     const src = m.sources.get("grace2-analysis-extent")!;
     expect(src.setData).toHaveBeenCalled();
     const reAdded = m.addLayer.mock.calls.map((c) => (c[0] as { id: string }).id);
     expect(reAdded).toEqual(["grace2-analysis-extent-line"]);
   });
 
-  it("is idempotent when both layers already exist (no-op re-add, data swapped)", () => {
+  it("never adds the translucent fill layer (job-0321 F40 outline-only)", () => {
+    const m = makeExtentMap();
+    drawAnalysisExtent(m, BBOX);
+    const layerIds = m.addLayer.mock.calls.map((c) => (c[0] as { id: string }).id);
+    expect(layerIds).not.toContain("grace2-analysis-extent-fill");
+    expect(m.layers.has("grace2-analysis-extent-fill")).toBe(false);
+  });
+
+  it("is idempotent when the line layer already exists (no-op re-add, data swapped)", () => {
     const m = makeExtentMap();
     drawAnalysisExtent(m, BBOX);
     m.addLayer.mockClear();
     drawAnalysisExtent(m, BBOX);
-    // Source + both layers intact → no addLayer, just a setData replace.
+    // Source + line layer intact → no addLayer, just a setData replace.
     expect(m.addLayer).not.toHaveBeenCalled();
     expect(m.sources.get("grace2-analysis-extent")!.setData).toHaveBeenCalled();
   });
@@ -1660,20 +1692,37 @@ describe("drawAnalysisExtent (job-0294)", () => {
 describe("clearAnalysisExtent (ux-batch-1 F14)", () => {
   const BBOX: [number, number, number, number] = [-105.3, 39.95, -105.2, 40.05];
 
-  it("removes both layers then the source (inverse of drawAnalysisExtent)", () => {
+  it("removes the line layer then the source (inverse of drawAnalysisExtent)", () => {
     const m = makeExtentMap();
     drawAnalysisExtent(m, BBOX);
-    expect(m.layers.has("grace2-analysis-extent-fill")).toBe(true);
+    // job-0321 (F40) — OUTLINE-ONLY: the fill is never drawn; only the line.
+    expect(m.layers.has("grace2-analysis-extent-fill")).toBe(false);
     expect(m.layers.has("grace2-analysis-extent-line")).toBe(true);
     expect(m.sources.has("grace2-analysis-extent")).toBe(true);
+
+    clearAnalysisExtent(m);
+
+    // The fill removal guard stays (stale-style cleanup) but is a no-op here.
+    expect(m.removeLayer).not.toHaveBeenCalledWith("grace2-analysis-extent-fill");
+    expect(m.removeLayer).toHaveBeenCalledWith("grace2-analysis-extent-line");
+    expect(m.removeSource).toHaveBeenCalledWith("grace2-analysis-extent");
+    expect(m.layers.size).toBe(0);
+    expect(m.sources.size).toBe(0);
+  });
+
+  it("still tears down a STALE fill left over from a previous (filled) style (guard kept)", () => {
+    // job-0321 (F40) — the fill LAYER ID constant + the clearAnalysisExtent
+    // removal guard are KEPT so a fill drawn by an older app version (before the
+    // outline-only switch) lingering in a persisted/restyled map still clears.
+    const m = makeExtentMap();
+    drawAnalysisExtent(m, BBOX); // adds source + line only
+    m.layers.add("grace2-analysis-extent-fill"); // simulate a stale fill
 
     clearAnalysisExtent(m);
 
     expect(m.removeLayer).toHaveBeenCalledWith("grace2-analysis-extent-fill");
     expect(m.removeLayer).toHaveBeenCalledWith("grace2-analysis-extent-line");
     expect(m.removeSource).toHaveBeenCalledWith("grace2-analysis-extent");
-    expect(m.layers.size).toBe(0);
-    expect(m.sources.size).toBe(0);
   });
 
   it("removes layers BEFORE the source (MapLibre rejects removing a referenced source)", () => {
@@ -1692,7 +1741,7 @@ describe("clearAnalysisExtent (ux-batch-1 F14)", () => {
     clearAnalysisExtent(m);
 
     expect(order[order.length - 1]).toBe("source:grace2-analysis-extent");
-    expect(order.slice(0, 2).every((s) => s.startsWith("layer:"))).toBe(true);
+    expect(order.slice(0, -1).every((s) => s.startsWith("layer:"))).toBe(true);
   });
 
   it("is a no-op when no extent exists (idempotent, partial-state tolerant)", () => {
@@ -1702,7 +1751,7 @@ describe("clearAnalysisExtent (ux-batch-1 F14)", () => {
     expect(m.removeSource).not.toHaveBeenCalled();
   });
 
-  it("clears a half-built extent: source present, line layer missing", () => {
+  it("clears a half-built extent: source present, line layer missing (job-0321 F40)", () => {
     const m = makeExtentMap();
     drawAnalysisExtent(m, BBOX);
     m.layers.delete("grace2-analysis-extent-line"); // simulate partial build
@@ -1710,11 +1759,197 @@ describe("clearAnalysisExtent (ux-batch-1 F14)", () => {
 
     clearAnalysisExtent(m);
 
-    // Only the present fill layer is removed; the missing line is skipped; the
-    // source is still removed.
-    expect(m.removeLayer).toHaveBeenCalledWith("grace2-analysis-extent-fill");
+    // Outline-only: no fill was ever drawn and the line is gone, so neither
+    // layer-removal fires; the source is still removed (partial-state tolerant).
+    expect(m.removeLayer).not.toHaveBeenCalledWith("grace2-analysis-extent-fill");
     expect(m.removeLayer).not.toHaveBeenCalledWith("grace2-analysis-extent-line");
     expect(m.removeSource).toHaveBeenCalledWith("grace2-analysis-extent");
+  });
+});
+
+// --- job-0321 (F43) — legend bbox anchor projection --------------------- //
+
+describe("computeBboxBottomAnchor (job-0321 F43)", () => {
+  const BBOX: [number, number, number, number] = [-100, 30, -90, 40];
+
+  /** Map stub exposing project() + getCanvas() for the anchor helper. */
+  function makeProjectMap(opts?: {
+    project?: (ll: [number, number]) => { x: number; y: number };
+    canvas?: { clientWidth: number; clientHeight: number } | null;
+  }) {
+    const project =
+      opts?.project ??
+      ((ll: [number, number]) => ({ x: (ll[0] + 180) * 4, y: (90 - ll[1]) * 4 }));
+    const canvas =
+      opts && "canvas" in opts ? opts.canvas : { clientWidth: 1000, clientHeight: 800 };
+    return {
+      project: vi.fn(project),
+      getCanvas: vi.fn(() => canvas),
+    } as unknown as import("maplibre-gl").Map;
+  }
+
+  it("returns the bottom-edge MIDPOINT x and the LOWER (max-y) of the two bottom corners", () => {
+    // bl = project([minLon, minLat]) ; br = project([maxLon, minLat]).
+    // With the default linear stub both corners share the same y (minLat),
+    // so top = that y and left = midpoint of the two x's.
+    const m = makeProjectMap();
+    const anchor = computeBboxBottomAnchor(m, BBOX);
+    const bl = { x: (-100 + 180) * 4, y: (90 - 30) * 4 }; // 320, 240
+    const br = { x: (-90 + 180) * 4, y: (90 - 30) * 4 }; // 360, 240
+    expect(anchor).toEqual({ left: (bl.x + br.x) / 2, top: Math.max(bl.y, br.y) });
+  });
+
+  it("anchors at the LOWER corner when the two bottom corners project to different y (skew)", () => {
+    const m = makeProjectMap({
+      project: (ll) =>
+        ll[0] === -100 ? { x: 100, y: 500 } : { x: 200, y: 560 },
+    });
+    const anchor = computeBboxBottomAnchor(m, BBOX);
+    expect(anchor).toEqual({ left: 150, top: 560 });
+  });
+
+  it("returns null when the projected midpoint is OFF-SCREEN (legend falls back)", () => {
+    // Canvas is 1000×800; force the midpoint x beyond the right edge.
+    const m = makeProjectMap({
+      project: () => ({ x: 5000, y: 400 }),
+      canvas: { clientWidth: 1000, clientHeight: 800 },
+    });
+    expect(computeBboxBottomAnchor(m, BBOX)).toBeNull();
+  });
+
+  it("returns null when the projected midpoint is ABOVE the top edge (off-screen)", () => {
+    const m = makeProjectMap({
+      project: () => ({ x: 400, y: -50 }),
+      canvas: { clientWidth: 1000, clientHeight: 800 },
+    });
+    expect(computeBboxBottomAnchor(m, BBOX)).toBeNull();
+  });
+
+  it("still returns an anchor when the canvas size is unknown (no off-screen test)", () => {
+    const m = makeProjectMap({
+      project: () => ({ x: 9999, y: 9999 }),
+      canvas: null,
+    });
+    // No canvas → cannot run the off-screen test → returns the raw anchor.
+    expect(computeBboxBottomAnchor(m, BBOX)).toEqual({ left: 9999, top: 9999 });
+  });
+
+  it("returns null (never throws) when project() throws", () => {
+    const m = {
+      project: vi.fn(() => {
+        throw new Error("map removed");
+      }),
+      getCanvas: vi.fn(() => null),
+    } as unknown as import("maplibre-gl").Map;
+    expect(computeBboxBottomAnchor(m, BBOX)).toBeNull();
+  });
+});
+
+describe("MapView — legend lives inside the map container (job-0321 F43)", () => {
+  beforeEach(() => {
+    lastMapMock = null;
+  });
+
+  it("renders the legend INSIDE the grace2-map container when a raster layer with a known preset loads", () => {
+    const sessionBus = makeSessionBus();
+    const { getByTestId } = render(
+      <MapView
+        subscribeSessionState={
+          sessionBus.subscribe as (cb: SessionStateSubscriber) => () => void
+        }
+      />,
+    );
+
+    act(() => {
+      sessionBus.push({
+        loaded_layers: [
+          {
+            layer_id: "flood-1",
+            name: "Max flood depth",
+            layer_type: "raster",
+            uri: "https://qgis.example.com/wms?LAYERS=flood-1",
+            visible: true,
+            style_preset: "continuous_flood_depth",
+          },
+        ],
+      });
+    });
+
+    const mapEl = getByTestId("grace2-map");
+    const legend = getByTestId("grace2-layer-legend");
+    // The legend is a DESCENDANT of the map container (so it can anchor to the
+    // AOI box) — previously it lived in App.tsx as a map sibling.
+    expect(mapEl.contains(legend)).toBe(true);
+  });
+
+  it("hides the legend when no loaded layer has a known preset", () => {
+    const sessionBus = makeSessionBus();
+    const { queryByTestId } = render(
+      <MapView
+        subscribeSessionState={
+          sessionBus.subscribe as (cb: SessionStateSubscriber) => () => void
+        }
+      />,
+    );
+
+    act(() => {
+      sessionBus.push({
+        loaded_layers: [
+          {
+            layer_id: "pts-1",
+            name: "Observations",
+            layer_type: "vector",
+            uri: "https://example.com/pts.geojson",
+            visible: true,
+          },
+        ],
+      });
+    });
+
+    expect(queryByTestId("grace2-layer-legend")).toBeNull();
+  });
+
+  it("orders legend layers top-of-stack-first (z_index desc) so the topmost preset wins", () => {
+    const sessionBus = makeSessionBus();
+    const { getByTestId } = render(
+      <MapView
+        subscribeSessionState={
+          sessionBus.subscribe as (cb: SessionStateSubscriber) => () => void
+        }
+      />,
+    );
+
+    act(() => {
+      sessionBus.push({
+        loaded_layers: [
+          // Emitted bottom-first; the higher z_index (top) carries the preset
+          // the legend must pick. With z_index-desc ordering the legend renders.
+          {
+            layer_id: "bottom",
+            name: "Bottom",
+            layer_type: "raster",
+            uri: "https://qgis.example.com/wms?LAYERS=bottom",
+            visible: true,
+            style_preset: null,
+            z_index: 1,
+          },
+          {
+            layer_id: "top",
+            name: "Top flood",
+            layer_type: "raster",
+            uri: "https://qgis.example.com/wms?LAYERS=top",
+            visible: true,
+            style_preset: "continuous_flood_depth",
+            z_index: 2,
+          },
+        ] as never,
+      });
+    });
+
+    // The topmost (z_index 2) layer has the preset → legend shows its title.
+    expect(getByTestId("layer-legend-title")).toHaveTextContent(
+      "Max flood depth (m)",
+    );
   });
 });
 

@@ -12,9 +12,9 @@
 //   |                                                           |
 //   |   ...                                                     |
 //   |                                                           |
-//   |   [⚙ Settings] [🔑 Secrets]   ← bottom-row pills          |
+//   |   [⚙ Settings]   ← bottom-row pill (Secrets now inside it)|
 //   |                       Map (full bleed)                    |
-//   |                                       [LayerLegend] (BC)  |
+//   |              [LayerLegend anchored to AOI bbox] (Map.tsx) |
 //   +-----------------------------------------------------------+
 //
 // Restructure from job-0137 / Wave 3:
@@ -36,7 +36,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MapView, type MapCommandSubscribeFunc, type MapTheme } from "./Map";
 import { Chat, readChatWidth } from "./Chat";
 import { LayerPanel, createLayerPanelBus, readLayersWidth } from "./LayerPanel";
-import { LayerLegend } from "./components/LayerLegend";
 import {
   AuthGate,
   clearAnonymousAccepted,
@@ -46,7 +45,6 @@ import { AuthGuard } from "./components/AuthGuard";
 import { CasesPanel } from "./components/CasesPanel";
 import { CaseView } from "./components/CaseView";
 import { SettingsPopup } from "./components/SettingsPopup";
-import { SecretsPopup } from "./components/SecretsPopup";
 import { ToolsCatalogPopup } from "./components/ToolsCatalogPopup";
 import {
   RoutingQualityDashboard,
@@ -223,9 +221,10 @@ export function App(): JSX.Element {
   // a widened panel fall through to the map). LayerPanel owns persistence.
   const [layersWidth, setLayersWidth] = useState<number>(() => readLayersWidth());
 
-  // Layers lifted here from session-state so:
-  //   (a) LayerLegend can read the list
-  //   (b) we can gate the left panel conditional mount on layers.length > 0
+  // Layers lifted here from session-state so we can gate the left panel
+  // conditional mount on layers.length > 0 and feed the LayerPanel. (job-0321
+  // F43: the legend itself no longer reads this list at App level — it renders
+  // inside Map.tsx anchored to the AOI bounding box.)
   const [layers, setLayers] = useState<ProjectLayerSummary[]>([]);
 
   // Map theme (job-0076).
@@ -357,9 +356,11 @@ export function App(): JSX.Element {
   const [secrets, setSecrets] = useState<SecretRecord[]>([]);
   const wsRef = useRef<GraceWs | null>(null);
 
-  // Settings + Secrets popup visibility (job-0143).
+  // Settings popup visibility (job-0143). job-0321 F29 — the standalone
+  // Secrets popup is retired; API-key management now lives INSIDE Settings
+  // (SettingsPopup's embedded SecretsPanel), so there is no separate
+  // `secretsOpen` state any more.
   const [settingsOpen, setSettingsOpen] = useState<boolean>(false);
-  const [secretsOpen, setSecretsOpen] = useState<boolean>(false);
   // Wave 4.10 C1: tools-catalog popup visibility.
   const [toolsCatalogOpen, setToolsCatalogOpen] = useState<boolean>(false);
   // Wave 4.11 M7: routing-quality dashboard visibility.
@@ -468,7 +469,7 @@ export function App(): JSX.Element {
     [deleteCase],
   );
 
-  // currentCaseId for the SecretsPopup scope.
+  // currentCaseId for the embedded SecretsPanel scope (inside Settings).
   const currentCaseId: string | null = activeCaseId;
 
   // job-0127: payload-warning gates.
@@ -828,28 +829,11 @@ export function App(): JSX.Element {
         theme={theme}
       />
 
-      {/* LayerLegend — bottom-center absolute; z-index 10. job-0278: on
-          mobile it rides in a zero-height offset wrapper so it clears the
-          bottom-sheet composer (~126px collapsed); the expanded sheet
-          (z=32) simply covers it. */}
-      {isMobile ? (
-        <div
-          data-testid="grace2-mobile-legend-offset"
-          style={{
-            position: "absolute",
-            left: 0,
-            right: 0,
-            bottom: 116,
-            height: 0,
-            pointerEvents: "none",
-            zIndex: 10,
-          }}
-        >
-          <LayerLegend layers={layers} />
-        </div>
-      ) : (
-        <LayerLegend layers={layers} />
-      )}
+      {/* job-0321 F43 — the layer legend/colorbar is no longer an App-level
+          floating element. It now renders INSIDE Map.tsx, anchored to the
+          bottom edge of the AOI bounding box (Group A owns that placement) so
+          it reads as the key for that AOI. The App-level <LayerLegend> render
+          (and its mobile-offset wrapper) is removed here. */}
 
       {/* Left rail (job-0143):
             - No active Case → CasesPanel only (list view).
@@ -979,14 +963,15 @@ export function App(): JSX.Element {
         </>
       )}
 
-      {/* job-0143: Bottom-row Settings + Secrets pills. Hidden when the
-          left rail is collapsed (they belong to the rail). job-0278: on
-          mobile they fold into the drawer footer instead — the floating
-          pills would collide with the bottom-sheet composer. */}
+      {/* job-0143: Bottom-row Settings pill. Hidden when the left rail is
+          collapsed (it belongs to the rail). job-0278: on mobile it folds
+          into the drawer footer instead — the floating pill would collide
+          with the bottom-sheet composer.
+          job-0321 F29 — the standalone Secrets pill is retired (API keys now
+          live inside Settings), so `onOpenSecrets` is no longer wired. */}
       {!isMobile && !leftCollapsed && (
         <BottomRowButtons
           onOpenSettings={() => setSettingsOpen(true)}
-          onOpenSecrets={() => setSecretsOpen(true)}
         />
       )}
 
@@ -1053,6 +1038,46 @@ export function App(): JSX.Element {
           open={mobileDrawerOpen}
           onClick={() => setMobileDrawerOpen(true)}
         />
+      )}
+
+      {/* job-0321 F29 — mobile-only top-right Settings entry. On mobile the
+          only prior Settings reach was buried in the drawer footer; this puts
+          a ⚙ button at the top-right so Settings (and, bundled inside it, the
+          API-key entry) is reachable from anywhere. Desktop is unaffected
+          (Settings stays on the bottom-row pill).
+          z-index 36 sits above the upgrade toast (35) but below the
+          payload-warning banner "hat" (60) and the Settings overlay itself
+          (9500), and clears the toast which anchors at top:56. */}
+      {isMobile && (
+        <button
+          data-testid="grace2-mobile-settings-button"
+          aria-label="Open settings"
+          onClick={() => setSettingsOpen(true)}
+          style={{
+            position: "absolute",
+            top: 12,
+            right: 12,
+            width: 44,
+            height: 44,
+            padding: 0,
+            background: "rgba(18,19,24,0.85)",
+            border: "1px solid rgba(255,255,255,0.10)",
+            borderRadius: 12,
+            boxShadow: "0 2px 12px rgba(0,0,0,0.25)",
+            color: "#cfd4db",
+            cursor: "pointer",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            fontSize: 20,
+            lineHeight: 1,
+            zIndex: 36,
+            fontFamily:
+              "-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif",
+          }}
+        >
+          <span aria-hidden="true">⚙</span>
+        </button>
       )}
 
       {/* job-0278 — mobile slide-in drawer. Hosts the SAME left-rail
@@ -1124,16 +1149,15 @@ export function App(): JSX.Element {
               )}
             </>
           )}
+          {/* job-0321 F29 — drawer footer keeps only the Settings pill; API
+              keys are now reached via Settings (and via the mobile top-right
+              Settings button). The standalone Secrets pill is retired. */}
           <div style={{ flex: "0 0 auto", paddingTop: 8 }}>
             <BottomRowButtons
               variant="inline"
               onOpenSettings={() => {
                 setMobileDrawerOpen(false);
                 setSettingsOpen(true);
-              }}
-              onOpenSecrets={() => {
-                setMobileDrawerOpen(false);
-                setSecretsOpen(true);
               }}
             />
           </div>
@@ -1322,6 +1346,14 @@ export function App(): JSX.Element {
             setSettingsOpen(false);
             setRoutingDashOpen(true);
           }}
+          /* job-0321 F29 — bundle the per-Case API-key entry INSIDE Settings.
+             These are the SAME wires that previously fed the standalone
+             SecretsPopup; SettingsPopup renders SecretsPanel inline under its
+             "API Keys" section. */
+          secrets={secrets}
+          caseId={currentCaseId}
+          onSecretAdd={handleSecretAdd}
+          onSecretRevoke={handleSecretRevoke}
         />
       )}
 
@@ -1351,16 +1383,10 @@ export function App(): JSX.Element {
         />
       )}
 
-      {/* job-0143: Secrets popup (full-screen overlay). */}
-      {secretsOpen && (
-        <SecretsPopup
-          secrets={secrets}
-          caseId={currentCaseId}
-          onSecretAdd={handleSecretAdd}
-          onSecretRevoke={handleSecretRevoke}
-          onClose={() => setSecretsOpen(false)}
-        />
-      )}
+      {/* job-0321 F29 — the standalone Secrets popup is retired. API-key
+          management now lives inside the Settings popup above (SettingsPopup's
+          embedded SecretsPanel), wired with the same secrets/case/add/revoke
+          props. */}
 
       {/* job-0143: SaveGateModal — appears only when an anonymous user
           attempts a save-triggering action. */}

@@ -109,4 +109,58 @@ describe("LayerLegend", () => {
     // bottom has a known preset → legend renders
     expect(screen.getByTestId("grace2-layer-legend")).toBeInTheDocument();
   });
+
+  // --- job-0321 (F43) — anchored vs bottom-center placement -------------- //
+
+  it("positions at the bottom-center FALLBACK when no anchor is provided", () => {
+    render(<LayerLegend layers={[makeLayer()]} />);
+    const el = screen.getByTestId("grace2-layer-legend");
+    // Fallback: bottom:24 + left:50% + translateX(-50%); no top.
+    expect(el.style.bottom).toBe("24px");
+    expect(el.style.left).toBe("50%");
+    expect(el.style.transform).toBe("translateX(-50%)");
+    expect(el.style.top).toBe("");
+  });
+
+  it("positions at the bottom-center FALLBACK when anchor is null", () => {
+    render(<LayerLegend layers={[makeLayer()]} anchor={null} />);
+    const el = screen.getByTestId("grace2-layer-legend");
+    expect(el.style.bottom).toBe("24px");
+    expect(el.style.left).toBe("50%");
+    expect(el.style.top).toBe("");
+  });
+
+  it("ANCHORS to the AOI box (left/top, translateX(-50%)) when an anchor is provided", () => {
+    render(
+      <LayerLegend layers={[makeLayer()]} anchor={{ left: 412, top: 300 }} />,
+    );
+    const el = screen.getByTestId("grace2-layer-legend");
+    // Anchored: left/top from the anchor, translateX(-50%) so left is center x.
+    expect(el.style.left).toBe("412px");
+    expect(el.style.top).toBe("300px");
+    expect(el.style.transform).toBe("translateX(-50%)");
+    // The bottom-center fallback rule is dropped when anchored.
+    expect(el.style.bottom).toBe("");
+  });
+
+  it("still renders the colorbar testids when anchored (data-testids preserved)", () => {
+    render(
+      <LayerLegend layers={[makeLayer()]} anchor={{ left: 100, top: 200 }} />,
+    );
+    expect(screen.getByTestId("grace2-layer-legend")).toBeInTheDocument();
+    expect(screen.getByTestId("layer-legend-bar")).toBeInTheDocument();
+    expect(screen.getByTestId("layer-legend-title")).toHaveTextContent(
+      "Max flood depth (m)",
+    );
+  });
+
+  it("an anchor does not override the hide-when-no-preset behavior", () => {
+    const { container } = render(
+      <LayerLegend
+        layers={[makeLayer({ style_preset: null })]}
+        anchor={{ left: 100, top: 200 }}
+      />,
+    );
+    expect(container.firstChild).toBeNull();
+  });
 });

@@ -31,12 +31,14 @@
 // The client renders, it never computes — every number on the map is a
 // MapLibre-internal coordinate (Invariant 1 preserved trivially).
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import maplibregl, { Map as MapLibreMap, StyleSpecification } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
-import type { MapCommandPayload, SessionStatePayload } from "./contracts";
+import type { MapCommandPayload, SessionStatePayload, ProjectLayerSummary } from "./contracts";
 import type { FeatureCollection, Feature, Polygon } from "geojson";
 import { publicTileBase } from "./lib/public_base";
+import { LayerLegend } from "./components/LayerLegend";
+import { useIsMobile } from "./hooks/useIsMobile";
 import {
   fetchVectorAsGeoJson,
   vectorResultFromInlineGeoJson,
@@ -916,18 +918,14 @@ export function drawAnalysisExtent(
     m.addSource(ANALYSIS_EXTENT_SOURCE_ID, { type: "geojson", data });
   }
 
-  // Faint fill so the extent reads as a region without obscuring what's inside.
-  if (!m.getLayer(ANALYSIS_EXTENT_FILL_LAYER_ID)) {
-    m.addLayer({
-      id: ANALYSIS_EXTENT_FILL_LAYER_ID,
-      type: "fill",
-      source: ANALYSIS_EXTENT_SOURCE_ID,
-      paint: {
-        "fill-color": "#4D96FF",
-        "fill-opacity": 0.06,
-      },
-    });
-  }
+  // job-0321 (F40) — OUTLINE-ONLY AOI. The AOI rectangle previously painted a
+  // translucent fill (#4D96FF @ 0.06) over the whole extent, which tinted every
+  // layer rendered beneath it (the user-reported "blue wash over my layers").
+  // We now draw the dashed outline ONLY — no fill layer is added. The fill
+  // LAYER ID constant + the clearAnalysisExtent() removal guard are KEPT intact
+  // so a stale fill left over from a previous app version / partial style still
+  // gets torn down cleanly (idempotent, partial-state tolerant).
+  //
   // Thin dashed accent outline — the primary "here's the measured extent" cue.
   if (!m.getLayer(ANALYSIS_EXTENT_LINE_LAYER_ID)) {
     m.addLayer({
@@ -962,6 +960,56 @@ export function clearAnalysisExtent(m: MapLibreMap): void {
   if (m.getSource(ANALYSIS_EXTENT_SOURCE_ID)) {
     m.removeSource(ANALYSIS_EXTENT_SOURCE_ID);
   }
+}
+
+// job-0321 (F43) — legend anchor geometry. The legend (depth-key / colorbar)
+// hangs off the BOTTOM EDGE of the AOI bounding box so it reads as the key for
+// that AOI. This pure helper projects the two bottom corners of the bbox to
+// screen space and returns the bottom-edge MIDPOINT (anchor x) at the LOWEST
+// (max-y) of the two projected corners (anchor y) — the bbox can be slightly
+// rotated on screen by the Web-Mercator projection at the poles, so we take the
+// lower of the two so the legend always clears the box.
+//
+// Returns null when the bbox is off-screen (the midpoint falls outside the map
+// canvas), so the caller can fall back to the bottom-center placement and the
+// legend never disappears. Pure — every number comes from MapLibre's project()
+// (Invariant 1: the client renders, it never computes geography).
+export interface LegendAnchor {
+  left: number;
+  top: number;
+}
+export function computeBboxBottomAnchor(
+  m: MapLibreMap,
+  bbox: [number, number, number, number],
+): LegendAnchor | null {
+  // Only the bottom edge ([minLat]) is needed — maxLat is intentionally unused.
+  const [minLon, minLat, maxLon] = bbox;
+  let bl: { x: number; y: number };
+  let br: { x: number; y: number };
+  try {
+    bl = m.project([minLon, minLat]);
+    br = m.project([maxLon, minLat]);
+  } catch {
+    return null;
+  }
+  const left = (bl.x + br.x) / 2;
+  // Anchor at the lower of the two projected bottom corners so the legend
+  // clears the box edge regardless of slight projection skew.
+  const top = Math.max(bl.y, br.y);
+
+  // Off-screen test: if the anchor midpoint is outside the visible canvas,
+  // signal the caller to fall back to bottom-center (legend never vanishes).
+  let size: { x: number; y: number } | null = null;
+  try {
+    const c = m.getCanvas();
+    if (c) size = { x: c.clientWidth, y: c.clientHeight };
+  } catch {
+    size = null;
+  }
+  if (size) {
+    if (left < 0 || left > size.x || top < 0 || top > size.y) return null;
+  }
+  return { left, top };
 }
 
 export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "light" }: MapViewProps = {}): JSX.Element {
@@ -1010,6 +1058,24 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
   // the latest payload, so multiple in-flight events collapse to the
   // most-recent state (still replace-not-reconcile per A.7).
   const latestSessionState = useRef<SessionStatePayload | null>(null);
+
+  // job-0321 (F43) — the legend (depth-key / colorbar) now lives INSIDE the map
+  // container so it can anchor to the AOI bounding box. Three pieces of state:
+  //   1. legendLayers — the ordered ProjectLayerSummary list the legend needs,
+  //      sourced from this component's own session-state subscription (App.tsx
+  //      no longer mounts the legend, so it passes nothing). Ordered top-of-
+  //      stack-first (z_index desc) to match LayerPanel + LayerLegend's
+  //      `layers.find(...)` "topmost wins" contract.
+  //   2. aoiBbox — the current AOI bbox corners (mirrors lastZoomToCorners into
+  //      state so a re-render projects it). Null = no AOI → bottom-center.
+  //   3. legendAnchor — the projected {left, top} bottom-edge midpoint of the
+  //      AOI box, recomputed on map move/zoom/render (rAF-throttled). Null when
+  //      there is no AOI or the box is off-screen → legend falls back to the
+  //      previous bottom-center placement so it never disappears.
+  const [legendLayers, setLegendLayers] = useState<ProjectLayerSummary[]>([]);
+  const [aoiBbox, setAoiBbox] = useState<[number, number, number, number] | null>(null);
+  const [legendAnchor, setLegendAnchor] = useState<LegendAnchor | null>(null);
+  const isMobile = useIsMobile();
 
   useEffect(() => {
     if (!container.current || map.current) return;
@@ -1203,6 +1269,25 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
 
     const unsub = subscribeSessionState((payload) => {
       latestSessionState.current = payload;
+
+      // job-0321 (F43) — capture the ordered layer list the legend needs from
+      // THIS component's own subscription (App.tsx no longer owns the legend).
+      // Order top-of-stack-first (z_index DESCENDING) to match LayerPanel and
+      // LayerLegend's `layers.find(...)` "topmost wins" contract. The wire
+      // payload carries z_index when present; when it's absent on every layer
+      // (older snapshots) the sort is stable and preserves emission order,
+      // which is already roughly top-of-stack-last → we reverse in that case so
+      // the most-recently-added (topmost) layer is first. We detect "no usable
+      // z_index" as: every layer's z_index is undefined.
+      const raw = (payload.loaded_layers ?? []) as ProjectLayerSummary[];
+      const anyZ = raw.some(
+        (l) => typeof (l as { z_index?: unknown }).z_index === "number",
+      );
+      const ordered = anyZ
+        ? [...raw].sort((a, b) => (b.z_index ?? 0) - (a.z_index ?? 0))
+        : [...raw].reverse();
+      setLegendLayers(ordered);
+
       const m = map.current;
       if (!m) return;
       if (m.isStyleLoaded()) {
@@ -1355,6 +1440,11 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
           // inside this track's ownership (a ref, not the cross-track bus
           // replay buffer — see crossTrackChanges).
           lastZoomToCorners.current = corners;
+          // job-0321 (F43) — mirror the corners into state so the legend can
+          // re-project against the AOI box (the legend hangs off its bottom
+          // edge). The projection effect recomputes legendAnchor whenever aoiBbox
+          // or the camera changes.
+          setAoiBbox(corners);
           // job-0294 — ALSO outline the extent as a styled rectangle so the
           // user sees exactly what area is being measured. The fitBounds above
           // is camera-only; this draws the bbox on the map.
@@ -1424,6 +1514,9 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
         // the remembered corners FIRST so a late style (re)load can't re-assert
         // the rectangle via the moveend/idle redraw path, then remove it.
         lastZoomToCorners.current = null;
+        // job-0321 (F43) — drop the AOI bbox so the legend falls back to its
+        // bottom-center placement (no AOI to anchor to anymore).
+        setAoiBbox(null);
         // INCIDENT FIX 2026-06-16: gate on mapStyleReady, not raw
         // isStyleLoaded(). A hung tile (or a mid-flight camera animation) kept
         // isStyleLoaded() false, so the clear deferred forever and the AOI
@@ -1451,6 +1544,10 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
         // to the default CONUS view so the user clearly sees they are no longer
         // in a Case. Camera-only — the extent rectangle is cleared separately
         // by the clear-analysis-extent command App also emits on exit.
+        // job-0321 (F43) — also drop the AOI bbox so the legend stops trying to
+        // anchor to a box that is no longer on screen (belt + suspenders with
+        // the clear-analysis-extent command).
+        setAoiBbox(null);
         const prefersReducedMotion =
           typeof window !== "undefined" &&
           typeof window.matchMedia === "function" &&
@@ -1480,11 +1577,106 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
     });
   }, [subscribeMapCommand]);
 
+  // job-0321 (F43) — keep the legend anchored to the AOI box's bottom edge as
+  // the camera moves. Re-project the bbox bottom-edge midpoint on every map
+  // `move` / `zoom` / `render` (render fires throughout the fitBounds flight),
+  // throttled to one update per animation frame so a 60fps pan doesn't thrash
+  // setState. When aoiBbox is null (AOI-less Case / after Case-exit) the anchor
+  // is cleared so the legend reverts to bottom-center. Listeners are cleaned up
+  // on unmount / when aoiBbox changes.
+  useEffect(() => {
+    const m = map.current;
+    if (!m) return undefined;
+
+    if (!aoiBbox) {
+      setLegendAnchor(null);
+      return undefined;
+    }
+
+    let rafId: number | null = null;
+    let disposed = false;
+    const recompute = () => {
+      rafId = null;
+      if (disposed) return;
+      const cur = map.current;
+      if (!cur) return;
+      setLegendAnchor(computeBboxBottomAnchor(cur, aoiBbox));
+    };
+    const schedule = () => {
+      if (rafId != null) return; // already queued this frame
+      if (typeof requestAnimationFrame === "function") {
+        rafId = requestAnimationFrame(recompute);
+      } else {
+        // SSR / test environments without rAF — compute synchronously.
+        recompute();
+      }
+    };
+
+    // Initial projection + on every camera change.
+    schedule();
+    m.on("move", schedule);
+    m.on("zoom", schedule);
+    m.on("render", schedule);
+
+    return () => {
+      disposed = true;
+      if (rafId != null && typeof cancelAnimationFrame === "function") {
+        cancelAnimationFrame(rafId);
+      }
+      try {
+        m.off("move", schedule);
+        m.off("zoom", schedule);
+        m.off("render", schedule);
+      } catch {
+        /* map may already be torn down */
+      }
+    };
+  }, [aoiBbox]);
+
+  // job-0321 (F43) — resolve the legend placement.
+  //   - aoiBbox + on-screen anchor → hang off the box's bottom edge, nudged
+  //     down a small gap so it clears the dashed outline. On mobile the box can
+  //     sit behind the collapsed bottom sheet, so we add the same ~116px sheet
+  //     clearance App used for the old bottom-center mobile legend — but only as
+  //     a floor: if the anchored position is already higher than that, keep it.
+  //   - no anchor (AOI-less / off-screen / no map yet) → null, and LayerLegend
+  //     falls back to its own bottom-center placement.
+  const LEGEND_GAP_PX = 10; // small gap below the bbox bottom edge.
+  const MOBILE_SHEET_CLEARANCE_PX = 116; // matches the prior App mobile offset.
+  let resolvedAnchor: LegendAnchor | null = null;
+  if (legendAnchor) {
+    let top = legendAnchor.top + LEGEND_GAP_PX;
+    if (isMobile) {
+      // Keep the legend above the collapsed bottom sheet. We can only clamp in
+      // screen space relative to the container; the container fills the map, so
+      // its height is the canvas height. Use the projected-canvas height if we
+      // can read it, else leave the anchored top as-is.
+      const cur = map.current;
+      let canvasH: number | null = null;
+      try {
+        const c = cur?.getCanvas();
+        if (c) canvasH = c.clientHeight;
+      } catch {
+        canvasH = null;
+      }
+      if (canvasH != null) {
+        const maxTop = canvasH - MOBILE_SHEET_CLEARANCE_PX;
+        if (top > maxTop) top = Math.max(0, maxTop);
+      }
+    }
+    resolvedAnchor = { left: legendAnchor.left, top };
+  }
+
   return (
     <div
       ref={container}
       data-testid="grace2-map"
       style={{ position: "absolute", inset: 0 }}
-    />
+    >
+      {/* job-0321 (F43) — the legend now lives INSIDE the map container so it
+          can anchor to the AOI box. `anchor` non-null = hang off the box's
+          bottom edge; null = LayerLegend's own bottom-center fallback. */}
+      <LayerLegend layers={legendLayers} anchor={resolvedAnchor} />
+    </div>
   );
 }

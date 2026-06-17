@@ -1,12 +1,21 @@
 // GRACE-2 web — BottomRowButtons (job-0143, sprint-12-mega Wave 4).
 //
-// The [⚙ Settings] [🔑 Secrets] button row that sits underneath the
-// left-rail panel. Each button opens a full-screen popup (handled in
-// App.tsx). Styled as subtle rounded pills, dark-theme aware.
+// The [⚙ Settings] button row that sits underneath the left-rail panel.
+// Settings opens a full-screen popup (handled in App.tsx). Styled as a
+// subtle rounded pill, dark-theme aware.
+//
+// job-0321 F29: the standalone [🔑 Secrets] pill is RETIRED — API-key
+// management now lives INSIDE the Settings popup (SettingsPopup's embedded
+// SecretsPanel). The `onOpenSecrets` prop is kept OPTIONAL for backwards
+// compatibility, but the Secrets pill only renders when it is supplied.
 
 export interface BottomRowButtonsProps {
   onOpenSettings: () => void;
-  onOpenSecrets: () => void;
+  /**
+   * job-0321 F29 — OPTIONAL now. Secrets moved inside Settings, so callers
+   * no longer wire this. When omitted, the Secrets pill is not rendered.
+   */
+  onOpenSecrets?: () => void;
   /**
    * job-0278 — "floating" (default) is the desktop absolute bottom-left
    * placement, unchanged. "inline" renders the same pills in normal flow so
@@ -96,15 +105,20 @@ export function BottomRowButtons({
         <span aria-hidden="true">⚙</span>
         <span>Settings</span>
       </button>
-      <button
-        data-testid="grace2-bottom-row-secrets"
-        onClick={onOpenSecrets}
-        style={pillStyle}
-        aria-label="Open API keys"
-      >
-        <span aria-hidden="true">🔑</span>
-        <span>Secrets</span>
-      </button>
+      {/* job-0321 F29 — the standalone Secrets pill is retired (API keys now
+          live inside Settings). Rendered ONLY for legacy callers that still
+          pass `onOpenSecrets`; new callers omit it. */}
+      {onOpenSecrets && (
+        <button
+          data-testid="grace2-bottom-row-secrets"
+          onClick={onOpenSecrets}
+          style={pillStyle}
+          aria-label="Open API keys"
+        >
+          <span aria-hidden="true">🔑</span>
+          <span>Secrets</span>
+        </button>
+      )}
     </div>
   );
 }

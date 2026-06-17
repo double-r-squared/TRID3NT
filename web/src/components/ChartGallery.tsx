@@ -37,6 +37,16 @@ export interface ChartGalleryProps {
 
 const CHART_GALLERY_WIDTH = 600;
 const CHART_GALLERY_HEIGHT = 400;
+/**
+ * F51 (iOS Safari blank-chart fix): the popup card can mount with a container that
+ * has a committed width of 0 on the first paint (the flex card has not laid out yet),
+ * and embedding vega into a 0-size box builds an empty/invalid scenegraph
+ * ("undefined is not an object (evaluating 'l.marktype')"). We defer the embed via
+ * rAF until the container reports a real width, but cap the wait so an environment
+ * that can never measure (jsdom/happy-dom: clientWidth always 0) still embeds rather
+ * than skipping the chart forever.
+ */
+const MAX_ZERO_WIDTH_RETRIES = 3;
 
 // ---------------------------------------------------------------------------
 // Styles — mirrors RoutingQualityDashboard dark modal conventions
@@ -104,6 +114,9 @@ const closeBtnStyle: React.CSSProperties = {
 
 const chartAreaStyle: React.CSSProperties = {
   width: "100%",
+  // F51 — belt-and-suspenders explicit pixel floor so the embed container is never
+  // a true 0-width box before the flex card lays out on iOS Safari.
+  minWidth: CHART_GALLERY_WIDTH,
   height: CHART_GALLERY_HEIGHT,
   borderRadius: 6,
   background: "rgba(12,14,20,0.8)",
@@ -225,14 +238,22 @@ export function ChartGallery({
   }, [onClose, charts.length]);
 
   // Embed (or re-embed) when the current chart changes.
+  //
+  // F51 — iOS Safari blank-chart guard: do not run vega-embed until the popup card
+  // has actually laid out (clientWidth > 0). On iOS the first paint can report
+  // clientWidth 0 for the embed area before the flex card resolves its width, and
+  // embedding then yields an empty scenegraph + the "undefined is not an object
+  // (evaluating 'l.marktype')" crash. We defer via rAF until a real width arrives,
+  // but cap the wait so an unmeasurable env (jsdom/happy-dom) still embeds.
   useEffect(() => {
     if (!chartAreaRef.current || !currentChart) return;
     let cancelled = false;
+    let rafId: number | null = null;
     setEmbedError(null);
     setSaveError(null);
 
-    void (async () => {
-      // Finalize previous embed.
+    const doEmbed = async (): Promise<void> => {
+      // Finalize previous embed (no double-embed / flicker on re-run).
       if (vegaResultRef.current) {
         try { vegaResultRef.current.finalize(); } catch { /* ignore */ }
         vegaResultRef.current = null;
@@ -250,10 +271,28 @@ export function ChartGallery({
           setEmbedError(err instanceof Error ? err.message : "chart render error");
         }
       }
-    })();
+    };
+
+    // Wait for the card to have a committed width before embedding. Defer up to
+    // MAX_ZERO_WIDTH_RETRIES frames, then embed regardless (the explicit
+    // CHART_GALLERY_WIDTH passed to embed + chartAreaStyle.minWidth keep it sane).
+    const waitForLayoutThenEmbed = (retries: number): void => {
+      if (cancelled || !chartAreaRef.current) return;
+      const laidOut = chartAreaRef.current.clientWidth > 0;
+      if (laidOut || retries >= MAX_ZERO_WIDTH_RETRIES || typeof requestAnimationFrame !== "function") {
+        void doEmbed();
+        return;
+      }
+      rafId = requestAnimationFrame(() => waitForLayoutThenEmbed(retries + 1));
+    };
+
+    waitForLayoutThenEmbed(0);
 
     return () => {
       cancelled = true;
+      if (rafId !== null && typeof cancelAnimationFrame === "function") {
+        cancelAnimationFrame(rafId);
+      }
     };
   }, [currentChart?.chart_id, currentChart?.vega_lite_spec]);
 

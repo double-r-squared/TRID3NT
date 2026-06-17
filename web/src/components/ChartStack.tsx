@@ -64,6 +64,17 @@ const CARD_PAD_X = 12;
 const FALLBACK_WIDTH = 320;
 /** Vega internal padding. */
 const VEGA_PADDING = 4;
+/**
+ * F51 (iOS Safari blank-chart fix): the embed effect must not run vega-embed into
+ * a container that has a *committed* width of 0 — on iOS the first paint can report
+ * `clientWidth === 0` before the inline card lays out, and embedding into a 0-size
+ * box builds an empty/invalid scenegraph ("undefined is not an object (evaluating
+ * 'l.marktype')"). We instead defer via rAF, letting the ResizeObserver deliver a
+ * real width. But measurement can be permanently impossible (jsdom/happy-dom report
+ * clientWidth 0 and never fire layout) — so after this many rAF retries we stop
+ * waiting and embed at FALLBACK_WIDTH rather than skipping the chart forever.
+ */
+const MAX_ZERO_WIDTH_RETRIES = 3;
 
 // ---------------------------------------------------------------------------
 // Styles
@@ -141,6 +152,9 @@ const badgeStyle: React.CSSProperties = {
 
 const chartAreaStyle: React.CSSProperties = {
   width: "100%",
+  // F51 — belt-and-suspenders: a hard pixel floor so the container is never a
+  // true 0-width box at embed time on iOS, even before the flex row lays out.
+  minWidth: 80,
   height: CHART_HEIGHT,
   overflow: "hidden",
   borderRadius: 4,
@@ -182,7 +196,10 @@ export function ChartStack({ charts, onOpenGallery }: ChartStackProps): JSX.Elem
   const [embedError, setEmbedError] = useState<string | null>(null);
   // job-0294 — the live measured drawing width (container content box). Drives
   // a re-embed when the chat column widens/narrows (item C toggle, resize).
-  const [embedWidth, setEmbedWidth] = useState<number>(FALLBACK_WIDTH);
+  // F51 — seeded to 0 (UNMEASURED), not FALLBACK_WIDTH: a non-zero seed would mask
+  // an unlaid-out container on iOS and embed into a 0-size box. The embed effect
+  // treats 0 as "defer until a real width arrives (ResizeObserver / rAF)".
+  const [embedWidth, setEmbedWidth] = useState<number>(0);
 
   const topChart = charts[0];
 
@@ -206,13 +223,22 @@ export function ChartStack({ charts, onOpenGallery }: ChartStackProps): JSX.Elem
   }, []);
 
   // Embed or re-embed whenever the top spec OR the measured width changes.
+  //
+  // F51 — iOS Safari blank-chart guard: never embed into a container whose
+  // *committed* width is 0. On iOS the first paint can report clientWidth 0 before
+  // the inline card lays out; embedding then yields an empty scenegraph and the
+  // "undefined is not an object (evaluating 'l.marktype')" crash. We defer via rAF
+  // and let the ResizeObserver deliver a real width — but cap the wait so a
+  // genuinely unmeasurable environment (jsdom/happy-dom) still embeds (at
+  // FALLBACK_WIDTH) rather than skipping the chart forever.
   useEffect(() => {
     if (!chartAreaRef.current || !topChart) return;
     let cancelled = false;
+    let rafId: number | null = null;
     setEmbedError(null);
 
-    // Finalize the previous embed before starting a new one.
-    void (async () => {
+    const doEmbed = async (drawWidth: number): Promise<void> => {
+      // Finalize the previous embed before starting a new one (no double-embed).
       if (vegaResultRef.current) {
         try { vegaResultRef.current.finalize(); } catch { /* ignore */ }
         vegaResultRef.current = null;
@@ -222,7 +248,7 @@ export function ChartStack({ charts, onOpenGallery }: ChartStackProps): JSX.Elem
         const result = await embedChart(
           chartAreaRef.current,
           topChart.vega_lite_spec,
-          embedWidth,
+          drawWidth,
         );
         if (!cancelled) {
           vegaResultRef.current = result;
@@ -231,13 +257,42 @@ export function ChartStack({ charts, onOpenGallery }: ChartStackProps): JSX.Elem
         }
       } catch (err) {
         if (!cancelled) {
+          // Keep a non-zero min-size (see chartAreaStyle.minWidth) so the error
+          // text below is visible even when the embed itself failed.
           setEmbedError(err instanceof Error ? err.message : "chart render error");
         }
       }
-    })();
+    };
+
+    // Resolve the drawing width: prefer the live committed clientWidth, fall back
+    // to the observed embedWidth state. If BOTH are 0 (container not laid out yet),
+    // defer for up to MAX_ZERO_WIDTH_RETRIES animation frames before giving up and
+    // using FALLBACK_WIDTH so the chart is never permanently skipped.
+    const resolveAndEmbed = (retries: number): void => {
+      if (cancelled || !chartAreaRef.current) return;
+      const live = chartAreaRef.current.clientWidth;
+      const measured = live > 0 ? live : embedWidth > 0 ? embedWidth : 0;
+      if (measured > 0) {
+        void doEmbed(measured);
+        return;
+      }
+      // Container has no committed width yet.
+      if (retries < MAX_ZERO_WIDTH_RETRIES && typeof requestAnimationFrame === "function") {
+        rafId = requestAnimationFrame(() => resolveAndEmbed(retries + 1));
+        return;
+      }
+      // Measurement impossible (or exhausted) — embed at the fallback width so the
+      // chart still renders rather than staying blank.
+      void doEmbed(FALLBACK_WIDTH);
+    };
+
+    resolveAndEmbed(0);
 
     return () => {
       cancelled = true;
+      if (rafId !== null && typeof cancelAnimationFrame === "function") {
+        cancelAnimationFrame(rafId);
+      }
     };
     // re-embed when the top chart changes OR the container width changes.
   }, [topChart?.chart_id, topChart?.vega_lite_spec, embedWidth]);

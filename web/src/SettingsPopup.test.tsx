@@ -99,4 +99,103 @@ describe("SettingsPopup", () => {
     render(<SettingsPopup {...defaultProps} />);
     expect(screen.getByTestId("grace2-settings-build-sha").textContent).toBeTruthy();
   });
+
+  // job-0321 F29 — API-key entry bundled inside Settings.
+  describe("embedded API Keys section (F29)", () => {
+    it("does NOT render the API Keys section when secrets props are absent", () => {
+      // Legacy fixtures (defaultProps) don't plumb the secrets props — the
+      // section must stay hidden so they render unchanged.
+      render(<SettingsPopup {...defaultProps} />);
+      expect(screen.queryByTestId("grace2-settings-api-keys")).toBeNull();
+      expect(screen.queryByTestId("grace2-secrets-panel")).toBeNull();
+    });
+
+    it("renders the embedded SecretsPanel under an 'API Keys' header when wired", () => {
+      render(
+        <SettingsPopup
+          {...defaultProps}
+          secrets={[]}
+          caseId={null}
+          onSecretAdd={vi.fn()}
+          onSecretRevoke={vi.fn()}
+        />,
+      );
+      expect(screen.getByTestId("grace2-settings-api-keys")).toBeTruthy();
+      expect(screen.getByText("API Keys")).toBeTruthy();
+      // The SecretsPanel itself is rendered inline (its own data-testid).
+      expect(screen.getByTestId("grace2-secrets-panel")).toBeTruthy();
+    });
+
+    it("passes secrets + caseId through to the embedded SecretsPanel", () => {
+      const secrets = [
+        {
+          secret_id: "s1",
+          provider: "ebird" as const,
+          label: "my-ebird-key",
+          is_active: true,
+          last_used_at: null,
+          vault_ref: "vault://abc",
+          case_id: "case-7",
+          added_at: "2026-01-01T00:00:00Z",
+        },
+      ];
+      render(
+        <SettingsPopup
+          {...defaultProps}
+          secrets={secrets}
+          caseId="case-7"
+          onSecretAdd={vi.fn()}
+          onSecretRevoke={vi.fn()}
+        />,
+      );
+      // The active secret row surfaces inside the embedded panel.
+      expect(screen.getByTestId("grace2-secret-row-s1")).toBeTruthy();
+      // The "This Case" scope radio is enabled because a caseId is present.
+      const caseRadio = screen.getByTestId(
+        "grace2-secret-scope-case",
+      ) as HTMLInputElement;
+      expect(caseRadio.disabled).toBe(false);
+    });
+
+    it("forwards add/revoke callbacks from the embedded panel", () => {
+      const onSecretRevoke = vi.fn();
+      const secrets = [
+        {
+          secret_id: "s2",
+          provider: "nws" as const,
+          label: null,
+          is_active: true,
+          last_used_at: null,
+          vault_ref: "vault://def",
+          case_id: null,
+          added_at: "2026-01-01T00:00:00Z",
+        },
+      ];
+      render(
+        <SettingsPopup
+          {...defaultProps}
+          secrets={secrets}
+          caseId={null}
+          onSecretAdd={vi.fn()}
+          onSecretRevoke={onSecretRevoke}
+        />,
+      );
+      fireEvent.click(screen.getByTestId("grace2-secret-revoke-s2"));
+      expect(onSecretRevoke).toHaveBeenCalledWith("s2");
+    });
+
+    it("only requires onSecretAdd AND onSecretRevoke together to show the section", () => {
+      // onSecretAdd alone (no revoke) should not render the section — both
+      // wires are required so the embedded panel is fully functional.
+      render(
+        <SettingsPopup
+          {...defaultProps}
+          secrets={[]}
+          caseId={null}
+          onSecretAdd={vi.fn()}
+        />,
+      );
+      expect(screen.queryByTestId("grace2-settings-api-keys")).toBeNull();
+    });
+  });
 });

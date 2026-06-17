@@ -1129,6 +1129,25 @@ export function SheetActiveToolStrip({
   // The collapsed-sheet strip only ever shows a RUNNING tool, so the
   // present-tense running label is correct (job-0294 state-aware labels).
   const label = humanizeStepName(step.name, step.state);
+  // F42 (job-0321) — the strip only ever surfaces a RUNNING tool, so the
+  // label always gets the SAME animated rainbow-gradient treatment the inline
+  // PipelineCard uses for running steps (background-clip:text technique). When
+  // the user prefers reduced motion we fall back to the solid label color,
+  // exactly like PipelineCard. The `grace2-hue-cycle` keyframe is injected
+  // globally by PipelineCard's `ensureKeyframes()` side effect (runs on this
+  // module's import of './components/PipelineCard'), so no keyframe work here.
+  const labelStyle: React.CSSProperties = reduced
+    ? { color: "#eee" }
+    : {
+        backgroundImage:
+          "linear-gradient(90deg, #FF6B6B, #FFD93D, #6BCB77, #4D96FF, #B266FF, #FF6B6B)",
+        backgroundSize: "300% 100%",
+        WebkitBackgroundClip: "text",
+        backgroundClip: "text",
+        WebkitTextFillColor: "transparent",
+        color: "transparent",
+        animation: "grace2-hue-cycle 3s linear infinite",
+      };
   return (
     <button
       data-testid="grace2-sheet-tool-strip"
@@ -1162,6 +1181,7 @@ export function SheetActiveToolStrip({
           overflow: "hidden",
           textOverflow: "ellipsis",
           whiteSpace: "nowrap",
+          ...labelStyle,
         }}
         title={label}
       >

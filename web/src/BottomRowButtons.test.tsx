@@ -1,4 +1,10 @@
 // GRACE-2 web — BottomRowButtons tests (job-0143, sprint-12-mega Wave 4).
+//
+// job-0321 F29 — the standalone [🔑 Secrets] pill is retired: API-key
+// management now lives INSIDE the Settings popup. `onOpenSecrets` is now
+// OPTIONAL; the Secrets pill renders ONLY when a caller still supplies it.
+// These tests cover both: the new default (Settings-only) and the legacy
+// path (Secrets pill still rendered when `onOpenSecrets` is passed).
 
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/react";
@@ -7,31 +13,23 @@ import { BottomRowButtons } from "./components/BottomRowButtons";
 afterEach(() => cleanup());
 
 describe("BottomRowButtons", () => {
-  it("renders Settings + Secrets buttons", () => {
-    render(
-      <BottomRowButtons
-        onOpenSettings={vi.fn()}
-        onOpenSecrets={vi.fn()}
-      />,
-    );
+  it("renders the Settings button (no Secrets pill by default)", () => {
+    render(<BottomRowButtons onOpenSettings={vi.fn()} />);
     expect(screen.getByTestId("grace2-bottom-row-buttons")).toBeTruthy();
     expect(screen.getByTestId("grace2-bottom-row-settings")).toBeTruthy();
-    expect(screen.getByTestId("grace2-bottom-row-secrets")).toBeTruthy();
+    // job-0321 F29 — Secrets pill is gone unless onOpenSecrets is supplied.
+    expect(screen.queryByTestId("grace2-bottom-row-secrets")).toBeNull();
   });
 
   it("Settings button invokes onOpenSettings", () => {
     const onOpenSettings = vi.fn();
-    render(
-      <BottomRowButtons
-        onOpenSettings={onOpenSettings}
-        onOpenSecrets={vi.fn()}
-      />,
-    );
+    render(<BottomRowButtons onOpenSettings={onOpenSettings} />);
     fireEvent.click(screen.getByTestId("grace2-bottom-row-settings"));
     expect(onOpenSettings).toHaveBeenCalledTimes(1);
   });
 
-  it("Secrets button invokes onOpenSecrets", () => {
+  // job-0321 F29 — legacy callers that still pass onOpenSecrets keep the pill.
+  it("renders the Secrets pill ONLY when onOpenSecrets is supplied", () => {
     const onOpenSecrets = vi.fn();
     render(
       <BottomRowButtons
@@ -39,15 +37,15 @@ describe("BottomRowButtons", () => {
         onOpenSecrets={onOpenSecrets}
       />,
     );
-    fireEvent.click(screen.getByTestId("grace2-bottom-row-secrets"));
+    const secrets = screen.getByTestId("grace2-bottom-row-secrets");
+    expect(secrets).toBeTruthy();
+    fireEvent.click(secrets);
     expect(onOpenSecrets).toHaveBeenCalledTimes(1);
   });
 
   // job-0278 — mobile drawer footer variant.
   it("defaults to the floating (absolute bottom-left) variant", () => {
-    render(
-      <BottomRowButtons onOpenSettings={vi.fn()} onOpenSecrets={vi.fn()} />,
-    );
+    render(<BottomRowButtons onOpenSettings={vi.fn()} />);
     const row = screen.getByTestId("grace2-bottom-row-buttons");
     expect(row).toHaveAttribute("data-variant", "floating");
     expect(row.style.position).toBe("absolute");
@@ -55,26 +53,19 @@ describe("BottomRowButtons", () => {
 
   it("inline variant renders in normal flow (mobile drawer footer)", () => {
     render(
-      <BottomRowButtons
-        onOpenSettings={vi.fn()}
-        onOpenSecrets={vi.fn()}
-        variant="inline"
-      />,
+      <BottomRowButtons onOpenSettings={vi.fn()} variant="inline" />,
     );
     const row = screen.getByTestId("grace2-bottom-row-buttons");
     expect(row).toHaveAttribute("data-variant", "inline");
     expect(row.style.position).toBe("");
-    // Both pills still present + wired.
+    // Settings pill still present + wired.
     expect(screen.getByTestId("grace2-bottom-row-settings")).toBeTruthy();
-    expect(screen.getByTestId("grace2-bottom-row-secrets")).toBeTruthy();
   });
 
   // job-0283 — desktop sleekness pass: the floating pills moved to the
   // panel surface family.
   it("floating variant pills use the desktop family (full-pill radius + hairline border)", () => {
-    render(
-      <BottomRowButtons onOpenSettings={vi.fn()} onOpenSecrets={vi.fn()} />,
-    );
+    render(<BottomRowButtons onOpenSettings={vi.fn()} />);
     const pill = screen.getByTestId("grace2-bottom-row-settings");
     expect(pill.style.borderRadius).toBe("999px");
     expect(pill.style.border.replace(/\s/g, "")).toContain(
@@ -88,11 +79,7 @@ describe("BottomRowButtons", () => {
   // the job-0280 pin (radius 14 / #444) — this job IS the mobile pass.
   it("inline variant pills float as translucent hairline cards (job-0284)", () => {
     render(
-      <BottomRowButtons
-        onOpenSettings={vi.fn()}
-        onOpenSecrets={vi.fn()}
-        variant="inline"
-      />,
+      <BottomRowButtons onOpenSettings={vi.fn()} variant="inline" />,
     );
     const pill = screen.getByTestId("grace2-bottom-row-settings");
     expect(pill.style.borderRadius).toBe("999px");

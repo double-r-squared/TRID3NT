@@ -84,8 +84,10 @@ export interface SecretsPanelProps {
 // --- Styles -------------------------------------------------------------- //
 
 // panelStyle carries only typography/color — no card chrome (background,
-// border, borderRadius, width, maxHeight). SecretsPopup is the sole card
-// surface; the panel content lays out flat inside it.
+// border, borderRadius, width, maxHeight). The enclosing surface (job-0321
+// F29: the Settings popup's "API Keys" section; formerly the standalone
+// SecretsPopup) is the sole card surface; the panel content lays out flat
+// inside it.
 const panelStyle: React.CSSProperties = {
   color: "#ccc",
   fontSize: 13,
