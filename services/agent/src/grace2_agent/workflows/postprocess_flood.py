@@ -603,8 +603,15 @@ def postprocess_flood(
             pass
 
     layer = LayerURI(
+        # job (flood-duplicate-layer fix): a clear human-readable name —
+        # "Peak flood depth" — so the LayerPanel row matches the
+        # white->blue->green ``continuous_flood_depth`` styling. The
+        # style_preset MUST stay set (FLOOD_DEPTH_STYLE_PRESET); a layer that
+        # reaches publish_layer / the map with NO preset falls through to the
+        # raw COG and TiTiler renders it in matplotlib viridis (the redundant
+        # unstyled-duplicate symptom).
         layer_id=f"flood-depth-peak-{run_id}",
-        name="Flood Depth (peak)",
+        name="Peak flood depth",
         layer_type="raster",
         uri=cog_uri,
         style_preset=FLOOD_DEPTH_STYLE_PRESET,

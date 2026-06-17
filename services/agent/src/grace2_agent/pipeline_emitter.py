@@ -1138,17 +1138,18 @@ class PipelineEmitter:
                 await self.mark_failed(step_id, error_code=code, error_message=message)
                 self.last_tool_step = self._to_summary(step_id)  # job-0267
                 raise
-            # Honor LayerURI return shape — append to loaded_layers + emit session-state.
-            # job-0254: route through the single emission seam first. The seam
-            # drops (returns None) a renderable raster carrying a raw gs:// uri
-            # (the publish-failure degraded path) so it never paints a broken
-            # layer row; vector inline-GeoJSON LayerURIs (job-0175) and WMS-URL
-            # rasters pass untouched. The tool result is unaffected — a dropped
-            # layer is still narrated honestly and the retry loop can act.
-            if isinstance(result, LayerURI):
-                emit_layer = emit_layer_uri(result)
-                if emit_layer is not None:
-                    await self.add_loaded_layer(emit_layer)
+            # TERMINAL FRAME FIRST (stuck-running-card fix): emit the terminal
+            # pipeline-state frame (complete / failed / cancelled) BEFORE the
+            # LayerURI's session-state emission. Previously add_loaded_layer ran
+            # first and emitted a session-state snapshot that captured the step
+            # while it was STILL "running"; that snapshot could arrive at/after
+            # the terminal frame, leaving the tool card stuck "Computing
+            # hillshade..." (running) forever for every compute_*/LayerURI tool.
+            # The terminal classification depends only on the tool RESULT, not
+            # on the layer being added, so we can safely flip the card first and
+            # have add_loaded_layer's session-state snapshot reflect the
+            # terminal state.
+            #
             # job (terminal-pipeline-card hardening): a tool can FAIL or be
             # CANCELLED yet still RETURN (the solver poll path — a docker-killed
             # / timed-out run returns a RunResult or a failed AssessmentEnvelope
@@ -1176,6 +1177,20 @@ class PipelineEmitter:
             else:
                 await self.mark_complete(step_id)
             self.last_tool_step = self._to_summary(step_id)  # job-0267
+            # Honor LayerURI return shape — append to loaded_layers + emit
+            # session-state. This runs AFTER the terminal frame above so the
+            # session-state snapshot captures the step as complete/failed, never
+            # "running" (the stuck-card bug). job-0254: route through the single
+            # emission seam first. The seam drops (returns None) a renderable
+            # raster carrying a raw gs:// uri (the publish-failure degraded path)
+            # so it never paints a broken layer row; vector inline-GeoJSON
+            # LayerURIs (job-0175) and WMS-URL rasters pass untouched. The tool
+            # result is unaffected — a dropped layer is still narrated honestly
+            # and the retry loop can act.
+            if isinstance(result, LayerURI):
+                emit_layer = emit_layer_uri(result)
+                if emit_layer is not None:
+                    await self.add_loaded_layer(emit_layer)
             return result
         finally:
             _CURRENT_EMITTER.reset(token)

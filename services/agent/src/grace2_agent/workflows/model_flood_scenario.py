@@ -91,7 +91,11 @@ from ..tools.data_fetch import (
 )
 from ..tools.publish_layer import PublishLayerError, publish_layer
 from ..tools.solver import run_solver, wait_for_completion
-from .postprocess_flood import PostprocessError, postprocess_flood
+from .postprocess_flood import (
+    FLOOD_DEPTH_STYLE_PRESET,
+    PostprocessError,
+    postprocess_flood,
+)
 from .sfincs_builder import (
     BuildOptions,
     ForcingSpec,
@@ -1204,7 +1208,14 @@ async def model_flood_scenario(
                         name=lyr.name,
                         layer_type=lyr.layer_type,
                         uri=wms_url,
-                        style_preset=lyr.style_preset,
+                        # job (flood-duplicate-layer fix): the published layer
+                        # is the ONE styled (white->blue->green) peak-depth
+                        # layer the user sees. Carry the canonical preset
+                        # unconditionally — never emit a styleless flood-depth
+                        # raster (a styleless COG falls through to TiTiler's
+                        # default matplotlib viridis, the redundant unstyled
+                        # duplicate this workflow must never produce).
+                        style_preset=lyr.style_preset or FLOOD_DEPTH_STYLE_PRESET,
                         temporal=lyr.temporal,
                         role=lyr.role,
                         units=lyr.units,

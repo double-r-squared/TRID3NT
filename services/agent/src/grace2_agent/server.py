@@ -1890,6 +1890,67 @@ async def _stream_gemini_reply(
                 is_terminal=True,
             )
             current_message_id = None
+        else:
+            # BUG 3 (missing closing narration): the turn exited with NO open
+            # segment on the wire. Two distinct shapes land here:
+            #
+            #   (a) Some narration segment WAS already streamed+finalized this
+            #       turn (``segments_done > 0``) — the client already received
+            #       the closing summary on those segments' done=True frames; the
+            #       only thing the tool-terminal shape lacks is the layer/zoom
+            #       accumulator marker, which the wrapper's finally writes. Emit
+            #       NOTHING here (re-streaming ``turn_narration`` would DOUBLE
+            #       the text on the wire AND duplicate the chat rows).
+            #
+            #   (b) NO segment was ever streamed (``segments_done == 0``) yet the
+            #       turn accumulated real narration text across iterations (e.g.
+            #       a long solve completes and Gemini's ONLY narration arrived in
+            #       a generation round that ALSO carried the terminating tool
+            #       call, then the next round ended the turn tool-only — so every
+            #       boundary finalize cleared its buffer and the de-facto closing
+            #       summary never reached the wire as its own terminal segment).
+            #       The live symptom NATE reported: "after a long tool/solve
+            #       completes, the agent sends NO closing summary" + the client
+            #       spinner never stops (no terminal done=True agent frame).
+            #
+            # Recovery for (b): open ONE fresh terminal segment, replay the full
+            # accumulated ``turn_narration`` as chunks, then finalize it
+            # terminal (done=True wire frame + persisted ``role="agent"`` row
+            # that also snapshots the layer/zoom accumulator). Honesty floor: we
+            # replay EXACTLY what Gemini accumulated — error narration stays
+            # error narration; we NEVER synthesize a success summary. Guarded so
+            # an empty-narration turn emits NO bubble (no job-0315 regression).
+            _seg_done = 0
+            _cur_task = asyncio.current_task()
+            if _cur_task is not None:
+                _seg_done = _TURN_SEGMENTS_PERSISTED_BY_TASK.get(_cur_task, 0)
+            _closing = "".join(turn_narration).strip()
+            if _seg_done == 0 and _closing:
+                recovered_id = new_ulid()
+                # Stream the recovered narration so the live client renders the
+                # closing bubble (one message_id == one bubble). Each chunk
+                # carries done=False; the terminal done=True comes from
+                # ``_finalize_segment`` below.
+                await websocket.send(
+                    _new_envelope(
+                        "agent-message-chunk",
+                        state.session_id,
+                        AgentMessageChunkPayload(
+                            message_id=recovered_id, delta=_closing, done=False
+                        ),
+                    )
+                )
+                # Persist + close via the SAME terminal-segment path so the
+                # closing row carries the turn's layer/zoom accumulator exactly
+                # like a normal text-terminal turn. ``_finalize_segment`` joins
+                # its buffer arg, so feed the recovered text in as the buffer.
+                await _finalize_segment(
+                    websocket,
+                    state,
+                    recovered_id,
+                    [_closing],
+                    is_terminal=True,
+                )
 
         # Complete the outer pipeline snapshot (LLM generation phase).
         thinking_step = PipelineStep(
@@ -1949,6 +2010,31 @@ async def _stream_gemini_reply(
             f"Model generation failed: {exc}",
             retryable=True,
         )
+        # BUG 4b (terminal failure lost on reconnect): the error envelope above
+        # marks the in-memory pipeline failed on THIS live socket, but a WS
+        # reconnect / Case-reopen replays from ``chat_history`` — where nothing
+        # records this terminal failure, so any tool card the user last saw
+        # spinning replays as ``running`` forever. Persist a ``role="tool"``
+        # FAILED tool-card row (mirroring the existing tool-card shape) so the
+        # session-resume replay renders the failed card and the user knows the
+        # turn STOPPED. Honesty floor: this writes a FAILURE — never a success.
+        #
+        # EXCEPTION: a ``RuntimeError`` whose ``__cause__`` is ``StopIteration``
+        # is the PEP-479 async-generator-exhaustion artifact — the model stream
+        # generator ran dry / closed, NOT a genuine model failure. (The real
+        # ``stream_events_with_contents`` returns cleanly via StopAsyncIteration
+        # and never surfaces this; it is exclusively the shape a finite mocked
+        # stream produces when the loop requests one more round than it staged.)
+        # Persisting a failed tool card here would inject a phantom failure row
+        # into an otherwise-clean tool-terminal turn (regressing job-0315's
+        # tool-terminal accumulator + no-phantom invariants), so we skip it.
+        if not isinstance(exc.__cause__, StopIteration):
+            await _persist_terminal_failure_card(
+                state,
+                error_code="LLM_UNAVAILABLE",
+                message=f"Model generation failed: {exc}",
+                case_id=_turn_case_id(state),
+            )
 
 
 async def _handle_session_resume(
@@ -3315,6 +3401,104 @@ async def _persist_tool_card(
             state.session_id,
             case_id if case_id is not None else _turn_case_id(state),
             tool_name,
+        )
+
+
+async def _persist_terminal_failure_card(
+    state: SessionState,
+    *,
+    error_code: str,
+    message: str,
+    case_id: str | None = None,
+) -> None:
+    """BUG 4b: persist a ``role="tool"`` FAILED tool-card row for a terminal
+    turn failure that did NOT flow through ``_invoke_tool_via_emitter``'s
+    own failed-card persist.
+
+    Root cause this fixes: when a turn ends in a terminal FAILURE on the
+    model-generation path (the ``LLM_UNAVAILABLE`` / ``_send_error`` branch in
+    ``_stream_gemini_reply``), the error envelope marks the in-memory pipeline
+    failed on the live wire, but NOTHING is persisted to ``chat_history``. So a
+    WS reconnect / Case-reopen replays the last tool card still in its
+    ``running`` state forever (the web replay reads ``tool_card.state`` and a
+    persisted ``failed`` row renders correctly — it just never got written).
+    NATE hard requirement: a terminal solve/tool FAILURE must SURFACE so the
+    user knows it stopped, even across a socket cycle.
+
+    Fix: write the SAME ``role="tool"`` ``CaseChatMessage`` + ``ToolCardRecord``
+    shape ``_persist_tool_card`` produces, with ``state="failed"``. The
+    ``ToolCardRecord`` contract (case.py) has no error_code/message fields, so
+    the A.6 ``error_code`` + human message ride in the row ``content`` (a JSON
+    twin, exactly like the complete-card content) and the ``label`` so the
+    web replay surfaces the failure reason. Honesty floor: this writes ONLY on
+    a real terminal failure — it never fabricates a success.
+
+    Prefers the emitter's authoritative ``last_tool_step`` for the failing
+    tool's identity + timing (so the persisted failed card matches the live
+    card the user last saw spinning); falls back to a synthetic
+    ``llm_generation`` card when no tool step is available (a pure model-stream
+    failure with no in-flight tool). Best-effort, never raises.
+    """
+    import json
+
+    try:
+        target_case = case_id if case_id is not None else _turn_case_id(state)
+        if not target_case:
+            return
+        emitter_step = (
+            state.emitter.last_tool_step if state.emitter is not None else None
+        )
+        # Identify the failing operation: the last live tool step (the solve /
+        # tool the user saw running) when present, else the model-generation
+        # step. ``duration_ms`` / ``started_at`` mirror the live card so the
+        # replayed failed card lands where the running one was.
+        if emitter_step is not None and emitter_step.tool_name:
+            tool_name = emitter_step.tool_name
+            label = emitter_step.name or emitter_step.tool_name
+            started_at = emitter_step.started_at or now_utc()
+            duration_ms = emitter_step.duration_ms
+        else:
+            tool_name = "gemini_generate"
+            label = "llm_generation"
+            started_at = now_utc()
+            duration_ms = 0
+        record = ToolCardRecord(
+            tool_name=tool_name,
+            state="failed",
+            started_at=started_at,
+            duration_ms=duration_ms,
+            # Surface the failure reason in the human-facing label so the
+            # replayed card explains WHY it failed.
+            label=f"{label} — {error_code}",
+        )
+        # The JSON-twin content carries the typed record PLUS the error_code +
+        # message (the record contract cannot hold them) so non-contract
+        # replay consumers still see the failure reason.
+        content_payload = json.loads(record.model_dump_json())
+        content_payload["error_code"] = error_code
+        content_payload["message"] = message
+        await _persist_chat_turn(
+            state,
+            role="tool",
+            content=json.dumps(content_payload),
+            pipeline_id=state.current_turn_pipeline_id,
+            tool_card=record,
+            layer_emissions=[],
+            case_id=target_case,
+        )
+        logger.info(
+            "terminal-failure card persisted session=%s case=%s tool=%s code=%s",
+            state.session_id,
+            target_case,
+            tool_name,
+            error_code,
+        )
+    except Exception:  # noqa: BLE001 — replay material, never the happy path
+        logger.exception(
+            "terminal-failure card persist failed session=%s case=%s code=%s",
+            state.session_id,
+            case_id if case_id is not None else _turn_case_id(state),
+            error_code,
         )
 
 

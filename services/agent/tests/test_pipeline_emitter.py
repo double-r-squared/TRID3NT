@@ -243,16 +243,21 @@ async def test_emit_tool_call_layer_uri_return_funnels_to_loaded_layers(
     emitter: PipelineEmitter, sink: _CapturingSink
 ) -> None:
     """End-to-end: a tool that returns a ``LayerURI`` from inside
-    ``emit_tool_call`` causes a ``session-state`` envelope to be emitted
-    BEFORE the final ``pipeline-state(complete)``.
+    ``emit_tool_call`` causes a ``session-state`` envelope to be emitted.
 
-    job-0254: ``emit_tool_call`` now routes the returned ``LayerURI`` through
-    the ``layer_uri_emit`` seam before ``add_loaded_layer``. A renderable
-    raster carries a WMS ``http(s)`` URL (post-publish, the realistic shape),
-    which the seam passes through — so the funnel still fires. (The
-    raster-with-raw-``gs://`` drop path is covered by
-    ``test_emit_tool_call_drops_raster_gs_uri`` below and in
-    ``test_layer_uri_emit.py``.)"""
+    STUCK-RUNNING-CARD FIX: the terminal ``pipeline-state(complete)`` frame is
+    now emitted BEFORE the ``session-state`` side-effect of
+    ``add_loaded_layer``. Previously add_loaded_layer ran first and its
+    session-state snapshot captured the step while STILL "running" — that
+    snapshot could land at/after the terminal frame and leave the tool card
+    stuck "running" forever.
+
+    job-0254: ``emit_tool_call`` routes the returned ``LayerURI`` through the
+    ``layer_uri_emit`` seam before ``add_loaded_layer``. A renderable raster
+    carries a WMS ``http(s)`` URL (post-publish, the realistic shape), which the
+    seam passes through — so the funnel still fires. (The raster-with-raw-
+    ``gs://`` drop path is covered by ``test_emit_tool_call_drops_raster_gs_uri``
+    below and in ``test_layer_uri_emit.py``.)"""
     layer = LayerURI(
         layer_id="dem_1",
         name="Demo DEM",
@@ -269,15 +274,78 @@ async def test_emit_tool_call_layer_uri_return_funnels_to_loaded_layers(
     )
     assert result is layer
     assert any(f["type"] == "session-state" for f in sink.frames)
-    # Frame ordering: pending, running, session-state (after add_loaded_layer),
-    # complete.
+    # Frame ordering: pending, running, complete (terminal frame FIRST),
+    # then session-state (add_loaded_layer side-effect).
     types = [f["type"] for f in sink.frames]
     assert types == [
         "pipeline-state",  # pending
         "pipeline-state",  # running
+        "pipeline-state",  # complete (terminal frame emitted BEFORE the layer)
         "session-state",  # add_loaded_layer side-effect
-        "pipeline-state",  # complete
     ]
+
+
+@pytest.mark.asyncio
+async def test_emit_tool_call_layer_uri_terminal_frame_before_session_state(
+    emitter: PipelineEmitter, sink: _CapturingSink
+) -> None:
+    """STUCK-RUNNING-CARD REGRESSION GUARD (compute_hillshade et al.).
+
+    For a ``compute_*`` tool that returns a renderable raster ``LayerURI``, the
+    terminal ``pipeline-state`` frame with ``state="complete"`` MUST be emitted
+    BEFORE the ``session-state`` frame that ``add_loaded_layer`` produces, and
+    the FINAL emitted pipeline-state for the step MUST be ``"complete"`` (never
+    left at ``"running"``). This is the bug NATE hit: the hillshade layer
+    renders but the card stays stuck "Computing hillshade..." forever because a
+    running-snapshot session-state arrived after the terminal frame.
+    """
+    # compute_hillshade publishes a WMS-URL raster (post-publish shape) so the
+    # layer_uri_emit seam passes it through to add_loaded_layer.
+    layer = LayerURI(
+        layer_id="hillshade_1",
+        name="Hillshade",
+        layer_type="raster",
+        uri="https://qgis.run.app/wms?LAYERS=hillshade_1",
+        style_preset="hillshade",
+    )
+
+    def compute_hillshade() -> LayerURI:
+        return layer
+
+    result = await emitter.emit_tool_call(
+        name="Computing hillshade", tool_name="compute_hillshade",
+        invoke=compute_hillshade,
+    )
+    assert result is layer
+
+    # The terminal complete frame is emitted strictly BEFORE the session-state.
+    types = [f["type"] for f in sink.frames]
+    complete_idx = next(
+        i for i, f in enumerate(sink.frames)
+        if f["type"] == "pipeline-state"
+        and f["payload"]["steps"][-1]["state"] == "complete"
+    )
+    session_idx = types.index("session-state")
+    assert complete_idx < session_idx, (
+        f"terminal complete frame (idx {complete_idx}) must precede the "
+        f"session-state frame (idx {session_idx}); ordering={types}"
+    )
+
+    # The FINAL pipeline-state for the step is "complete" — never stuck running.
+    last_pipeline = _pipeline_frames(sink)[-1]
+    assert last_pipeline["payload"]["steps"][-1]["state"] == "complete"
+
+    # Belt-and-suspenders: the session-state snapshot itself captures the step
+    # as terminal (complete), not "running" — that running-snapshot is the exact
+    # frame that used to clobber the card back to running.
+    last_session = _session_frames(sink)[-1]
+    current = last_session["payload"]["current_pipeline"]
+    assert current is not None
+    assert current["steps"][-1]["state"] == "complete"
+
+    # The layer still reached the accumulator (render path intact).
+    assert len(emitter.loaded_layers) == 1
+    assert emitter.loaded_layers[0].layer_id == "hillshade_1"
 
 
 @pytest.mark.asyncio
