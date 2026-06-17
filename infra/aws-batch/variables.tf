@@ -73,5 +73,5 @@ variable "instance_types" {
     ["c7i.2xlarge", "c7i.4xlarge", "c7i.8xlarge"]. x86_64 only — the SFINCS
     binary in deltares/sfincs-cpu is compiled for amd64.
   EOT
-  default = ["optimal"]
+  default     = ["optimal"]
 }

@@ -241,9 +241,9 @@ resource "aws_iam_role_policy" "job_task_s3" {
         Resource = "${data.aws_s3_bucket.runs.arn}/*"
       },
       {
-        Sid    = "RunsBucketList"
-        Effect = "Allow"
-        Action = "s3:ListBucket"
+        Sid      = "RunsBucketList"
+        Effect   = "Allow"
+        Action   = "s3:ListBucket"
         Resource = data.aws_s3_bucket.runs.arn
       }
     ]
@@ -370,7 +370,7 @@ resource "aws_batch_compute_environment" "sfincs_spot" {
   service_role = aws_iam_role.batch_service.arn
 
   compute_resources {
-    type               = "SPOT"
+    type                = "SPOT"
     allocation_strategy = "SPOT_CAPACITY_OPTIMIZED"
 
     # Scale-to-zero: min=0 means no standing capacity; Batch spins instances up
@@ -478,21 +478,21 @@ resource "aws_batch_job_definition" "sfincs" {
     #   large:    16 vCPU / 32768 MiB
     #   xlarge:   32 vCPU / 65536 MiB
     resourceRequirements = [
-      { type = "VCPU",   value = "8" },
+      { type = "VCPU", value = "8" },
       { type = "MEMORY", value = "16384" },
     ]
 
-    jobRoleArn      = aws_iam_role.job_task.arn
+    jobRoleArn       = aws_iam_role.job_task.arn
     executionRoleArn = aws_iam_role.job_task.arn
 
     # Baked environment — the agent also passes these via containerOverrides for
     # belt-and-suspenders parity with the services/workers/sfincs/entrypoint.py
     # env-var fallback path.
     environment = [
-      { name = "GRACE2_OBJECT_STORE",  value = "s3" },
-      { name = "GRACE2_RUNS_BUCKET",   value = var.runs_bucket },
-      { name = "PYTHONUNBUFFERED",     value = "1" },
-      { name = "AWS_REGION",           value = var.region },
+      { name = "GRACE2_OBJECT_STORE", value = "s3" },
+      { name = "GRACE2_RUNS_BUCKET", value = var.runs_bucket },
+      { name = "PYTHONUNBUFFERED", value = "1" },
+      { name = "AWS_REGION", value = var.region },
     ]
 
     # Placeholder command — overridden per-job by the agent's containerOverrides
