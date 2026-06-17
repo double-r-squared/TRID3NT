@@ -1917,9 +1917,30 @@
     {
       "job_id": "job-0360",
       "sprint": "ux-batch-1",
-      "description": "supports_global_query scope audit \u2014 flip fetch_nws_alerts_conus + fetch_nexrad_reflectivity to True; pin the 10-tool global-capable set in test_tools_registry. (subagent_tokens ESTIMATE \u2014 lost across compaction.)",
+      "description": "supports_global_query scope audit \u2014 flip fetch_nws_alerts_conus + fetch_nexrad_reflectivity to True; pin the 10-tool global-capable set in test_tools_registry. (Real count from the workflow usage report.)",
       "model": "opus",
-      "subagent_tokens": 260000
+      "subagent_tokens": 240486
+    },
+    {
+      "job_id": "job-0361/0362/0363",
+      "sprint": "ux-batch-1",
+      "description": "Wave A (ux-batch-2): 3 file-disjoint live-test bug fixes \u2014 F88 NWS alert zone->polygon resolution, F71 geocoder regional+no-retry-loop, F94 dense-vector simplify/cap/coord-trim+MVT scaffold \u2014 each impl + 3-lens adversarial verify (12 agents).",
+      "model": "opus",
+      "subagent_tokens": 1161098
+    },
+    {
+      "job_id": "job-0364/0365/0366",
+      "sprint": "ux-batch-1",
+      "description": "Wave B (ux-batch-2): duplicate-layer fix \u2014 F96 fetch reuse (helper+steer) + F97 unique layer_id mint + Map dedup + job-0366 deterministic server-side reuse wiring \u2014 2 tracks x impl + 3-lens verify (8 agents).",
+      "model": "opus",
+      "subagent_tokens": 781959
+    },
+    {
+      "job_id": "job-0308-scoping",
+      "sprint": "ux-batch-1",
+      "description": "Read-only scoping/design pass for the QGIS Server + Processing worker on AWS (4 Explore investigations + 1 synthesis); produced the architecture + 7-phase plan + NATE authorize-list. No code.",
+      "model": "opus",
+      "subagent_tokens": 495082
     }
   ],
   "totals_by_sprint": {
@@ -1933,7 +1954,7 @@
     "13": 14388888,
     "13.5": 4081365,
     "14": 824503,
-    "ux-batch-1": 7916678
+    "ux-batch-1": 10335303
   },
   "historical_context": {
     "note": "Captured for accountability \u2014 NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
