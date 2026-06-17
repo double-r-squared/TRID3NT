@@ -201,21 +201,28 @@ def test_layers_present_note_lists_layers() -> None:
     ])
     assert note is not None
     assert "ALREADY produced" in note
-    assert "do NOT recompute" in note
-    # job-0325 (F54): the per-layer line now also surfaces the reusable
-    # handle (== layer_id) and the underlying uri so the model can pass the
-    # artifact straight into a tool instead of re-fetching/recomputing it.
+    # job-0326: the note now forbids re-RUN as well as re-fetch/recompute and
+    # tags each layer RESULT[...] / INPUT so the model recognizes an existing
+    # simulation output and never re-launches the solver that made it.
+    assert "do NOT re-run, re-fetch, or recompute" in note
+    # job-0325 (F54) + job-0326: the per-layer line surfaces the reusable handle
+    # (== layer_id), the underlying uri, AND the role label. A flood-depth layer
+    # classifies as a RESULT of the flood-depth family; landcover is an INPUT.
     assert (
-        "Flood depth (Ian) (id=flood-depth-01HX, raster, "
+        "Flood depth (Ian) (id=flood-depth-01HX, RESULT[flood-depth], raster, "
         "handle=flood-depth-01HX, uri=gs://bucket/flood-depth-01HX.tif)"
     ) in note
+    # The fixture marks every layer role="primary", so a non-scenario layer
+    # still reads as a RESULT (role-based fallback); a scenario-family layer_id
+    # would read RESULT[<family>] (covered by the flood-depth line above).
     assert (
-        "Protected areas (id=wdpa-fm, vector, handle=wdpa-fm, "
+        "Protected areas (id=wdpa-fm, RESULT, vector, handle=wdpa-fm, "
         "uri=gs://bucket/wdpa-fm.tif)"
     ) in note
-    # The firm reuse / no-refetch instruction is appended.
-    assert "Reuse the existing handle/uri above" in note
+    # The firm reuse / no-refetch / no-rerun instruction is appended.
+    assert "REUSE these" in note
     assert "Do NOT re-fetch or recompute a layer" in note
+    assert "FORBIDDEN" in note
 
 
 def test_layers_present_note_none_when_empty() -> None:
@@ -329,7 +336,7 @@ def test_case_open_injects_layers_present_note(
     assert note_turn["role"] == "model"
     assert "flood-depth-01HX" in note_turn["text"]
     assert "hillshade-01HY" in note_turn["text"]
-    assert "do NOT recompute" in note_turn["text"]
+    assert "do NOT re-run, re-fetch, or recompute" in note_turn["text"]
     # F20 / panel-fix: the Case AOI bbox (from session_state.case.bbox) flows
     # all the way through _emit_case_open into the note.
     assert "Case AOI bbox" in note_turn["text"]

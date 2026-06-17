@@ -136,6 +136,11 @@ from .uri_registry import (
     deactivate_registry,
     get_uri_registry,
 )
+from .scenario_reuse import (
+    get_scenario_index,
+    scenario_signature,
+    scenario_type_for_tool,
+)
 from .tools import TOOL_REGISTRY
 from .tools.chart_tools import is_chart_emission_result
 from .tools.code_exec_tool import (
@@ -2533,6 +2538,50 @@ def _turn_case_id(state: SessionState) -> str | None:
     return state.current_turn_case_id or state.active_case_id
 
 
+def _turn_case_bbox(state: SessionState) -> Any:
+    """The current turn's Case AOI bbox (job-0326), or None.
+
+    Used by the expensive-simulation reuse guard as the AOI anchor when a
+    persistence-seeded result has no recorded bbox: a bbox-keyed re-run in a
+    single-result Case whose request bbox equals the Case AOI is a clear match.
+    """
+    p = get_persistence()
+    case_id = _turn_case_id(state)
+    if p is None or not case_id:
+        return None
+    try:
+        # Cheap synchronous read of the already-cached active case summary.
+        case = getattr(state, "active_case", None)
+        bbox = getattr(case, "bbox", None) if case is not None else None
+        return bbox
+    except Exception:  # noqa: BLE001 — best-effort
+        return None
+
+
+@dataclass
+class _ReuseEntry:
+    """A drop-in ``RegisteredTool``-shaped shim for the reuse short-circuit
+    (job-0326).
+
+    Carries the real tool's ``metadata`` (so the tool card / telemetry label is
+    unchanged) but a ``fn`` that returns the EXISTING layer instead of launching
+    the solver. ``_invoke_tool_via_emitter`` swaps the registry entry for this so
+    the SAME ``emit_tool_call`` LayerURI gate fires with the reused layer.
+    """
+
+    metadata: Any
+    layer: LayerURI
+
+    @property
+    def fn(self) -> Any:
+        layer = self.layer
+
+        def _return_existing(**_ignored: Any) -> LayerURI:
+            return layer
+
+        return _return_existing
+
+
 async def _finalize_segment(
     websocket: ServerConnection,
     state: SessionState,
@@ -3391,17 +3440,6 @@ async def _invoke_tool_via_emitter(
                 params.get("code_exec_id", "unknown")
             )
 
-    # Confirmation-before-consequence for solver composers (job-0241,
-    # Invariant 9 / FR-AS-8). The LLM-supplied ``confirmed`` is STRIPPED first
-    # — the gate is server-owned; only an explicit user "proceed" injects it.
-    if tool_name in SOLVER_CONFIRM_TOOLS:
-        params.pop("confirmed", None)
-        should_run, params = await _gate_on_solver_confirm(
-            websocket, state, tool_name, params
-        )
-        if not should_run:
-            raise SolverConfirmationCancelledError(tool_name)
-
     # job-0164: centralized kwarg sweep. Gemini routinely invents kwargs that
     # don't exist on our tools (``run_name``, ``scenario_id``,
     # ``return_period_years`` when the tool accepts ``return_period_yr``, etc.).
@@ -3410,8 +3448,87 @@ async def _invoke_tool_via_emitter(
     # ``durationHours`` ↔ ``duration_hours``), parses string-form forcing specs
     # (``forcing="atlas14_100yr"`` → ``return_period_years=100``), absorbs
     # silent-drop convenience kwargs, and logs+drops the rest — never raises.
-    # See ``tool_arg_normalizer.py``.
+    # See ``tool_arg_normalizer.py``. job-0326: run this BEFORE the solver-confirm
+    # gate AND the reuse guard so both see canonicalized (_yr/_hr) param names.
     params = normalize_args(tool_name, params, entry.fn)
+
+    # job-0326: DETERMINISTIC expensive-simulation reuse guard (NATE 2026-06-16).
+    # The F54 prompt steer ("reuse the existing layer; do NOT re-run") was being
+    # IGNORED by the live model, so the agent re-ran ~10-20-minute SFINCS/MODFLOW
+    # solves whose output layer was ALREADY on the map. This guard is the HARD
+    # backstop: before launching an expensive solver composer, it checks the
+    # session's already-produced results (the per-Case loaded_layers + the
+    # in-session scenario index) for a CLEAR match (same scenario family + same
+    # AOI + same key params). On a clear match it SHORT-CIRCUITS — returning the
+    # EXISTING layer instead of launching the solver — and tags a "reusing
+    # existing result (not re-running)" note for the model. CONSERVATIVE by
+    # construction: any ambiguity falls through to RUN (see scenario_reuse.py).
+    # ``force_rerun``/``rerun``/``force`` truthy kwargs are the explicit-re-run
+    # escape hatch (user asked to re-run) — stripped before the real dispatch.
+    _reuse_note: str | None = None
+    if scenario_type_for_tool(tool_name) is not None:
+        _force_rerun = any(
+            bool(params.get(k))
+            for k in ("force_rerun", "rerun", "re_run", "force")
+        )
+        # These are guard-control kwargs, never real tool params — strip them so
+        # the downstream tool body never sees an unexpected kwarg.
+        for _k in ("force_rerun", "rerun", "re_run", "force"):
+            params.pop(_k, None)
+        if not _force_rerun:
+            scenario_index = get_scenario_index(state.session_id)
+            # Seed the index from this Case's durable loaded_layers so reuse
+            # survives a reconnect / sibling connection (the in-memory index may
+            # be cold while the layer persists on the Case).
+            try:
+                if state.emitter is not None:
+                    scenario_index.seed_from_loaded_layers(
+                        state.emitter.loaded_layers
+                    )
+            except Exception:  # noqa: BLE001 — seeding is best-effort
+                logger.debug("scenario_reuse seed failed", exc_info=True)
+            request_sig = scenario_signature(tool_name, params)
+            case_bbox = _turn_case_bbox(state)
+            reuse = scenario_index.find_reuse(request_sig, case_bbox=case_bbox)
+            if reuse is not None:
+                logger.info(
+                    "scenario_reuse[%s]: SHORT-CIRCUIT %s -> reusing layer_id=%s "
+                    "(not re-running solver)",
+                    state.session_id, tool_name, reuse.layer_id,
+                )
+                _reuse_note = (
+                    f"Reusing the existing {reuse.scenario_type} result already "
+                    f"on the map (layer '{reuse.name}', handle={reuse.layer_id}) "
+                    "for this AOI and parameters — the simulation was NOT re-run. "
+                    "Narrate from this existing layer; do not launch the solver "
+                    "again unless the user changes the area or parameters or "
+                    "explicitly asks to re-run."
+                )
+                _reused_layer = LayerURI(
+                    layer_id=reuse.layer_id,
+                    name=reuse.name,
+                    layer_type=reuse.layer_type,  # type: ignore[arg-type]
+                    uri=reuse.uri,
+                    style_preset="",
+                    bbox=reuse.bbox,
+                )
+                # Replace the dispatch with a synchronous return of the existing
+                # layer so the SAME emission / card / persistence machinery
+                # (emit_tool_call's LayerURI gate) fires with the reused layer.
+                entry = _ReuseEntry(entry.metadata, _reused_layer)
+
+    # Confirmation-before-consequence for solver composers (job-0241,
+    # Invariant 9 / FR-AS-8). The LLM-supplied ``confirmed`` is STRIPPED first
+    # — the gate is server-owned; only an explicit user "proceed" injects it.
+    # job-0326: SKIPPED on a reuse short-circuit (``_ReuseEntry``) — there is no
+    # solver to confirm; we are handing back an already-produced layer.
+    if tool_name in SOLVER_CONFIRM_TOOLS and not isinstance(entry, _ReuseEntry):
+        params.pop("confirmed", None)
+        should_run, params = await _gate_on_solver_confirm(
+            websocket, state, tool_name, params
+        )
+        if not should_run:
+            raise SolverConfirmationCancelledError(tool_name)
 
     # job-0263: layer-handle indirection — kill the LLM-URI-mangling class
     # (5 live incidents: invented cache paths, WMS-URL-as-hazard, hash-tail
@@ -3493,6 +3610,50 @@ async def _invoke_tool_via_emitter(
     # pairs + bare gs:// strings) so the NEXT tool call can resolve handles /
     # detect mangles. Best-effort — registration never breaks the dispatch.
     uri_registry.register_tool_result(tool_name, result)
+
+    # job-0326: record a FRESHLY-PRODUCED expensive-scenario result into the
+    # session reuse index so a later identical request short-circuits instead of
+    # re-running the solver. Skip when this dispatch WAS the short-circuit (the
+    # _ReuseEntry path) — the layer is already indexed. Only index a real
+    # success (a LayerURI return), never a failure dict. Best-effort.
+    if (
+        not isinstance(entry, _ReuseEntry)
+        and scenario_type_for_tool(tool_name) is not None
+        and isinstance(result, LayerURI)
+    ):
+        try:
+            get_scenario_index(state.session_id).record_result(
+                scenario_signature(tool_name, params),
+                layer_id=result.layer_id,
+                name=result.name,
+                layer_type=result.layer_type,
+                uri=result.uri,
+                bbox=result.bbox,
+            )
+        except Exception:  # noqa: BLE001 — indexing must never break dispatch
+            logger.debug("scenario_reuse record failed", exc_info=True)
+
+    # job-0326: when this dispatch was a reuse short-circuit, the emitter has
+    # ALREADY re-loaded the existing layer onto the map (the emit_tool_call
+    # LayerURI gate fired with the reused LayerURI). What's left is to give
+    # Gemini an UNAMBIGUOUS function_response that says "this is the EXISTING
+    # result, the simulation was NOT re-run" so it narrates honestly and does not
+    # try again. Return a compact dict (summarize_tool_result handles dicts) that
+    # carries both the reuse flag/note and the reused layer's identity. This
+    # REPLACES the bare LayerURI return on the short-circuit path; the map update
+    # already happened, so nothing renderable is lost.
+    if _reuse_note is not None and isinstance(result, LayerURI):
+        logger.info("scenario_reuse note=%s", _reuse_note)
+        return {
+            "status": "reused_existing",
+            "reused": True,
+            "note": _reuse_note,
+            "layer_id": result.layer_id,
+            "name": result.name,
+            "layer_type": result.layer_type,
+            "uri": result.uri,
+            "handle": result.layer_id,
+        }
 
     # Track layer emissions on the active turn so the next ``CaseChatMessage``
     # write captures them. ``publish_layer`` returns a WMS URL string; we use

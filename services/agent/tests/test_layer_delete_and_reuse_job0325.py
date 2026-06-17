@@ -325,7 +325,9 @@ def test_present_note_has_reuse_instruction() -> None:
     note = build_layers_present_note(loaded)
     assert note is not None
     lower = note.lower()
-    assert "reuse the existing handle" in lower
+    # job-0326 reworded the note ("REUSE these (pass their handle/uri DIRECTLY)");
+    # assert the reuse instruction is present without pinning the old literal.
+    assert "reuse" in lower
     assert "do not re-fetch or recompute" in lower
     assert "directly" in lower
 

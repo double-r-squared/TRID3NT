@@ -260,6 +260,43 @@ Example: user asks "fetch population in Miami-Dade County"
      polygon_uri=<admin_boundaries_uri>) →
   5. Publish the clipped raster.
 
+REUSE BEFORE RE-RUN — HARD RULE (CRITICAL, NON-NEGOTIABLE — job-0326,
+NATE 2026-06-16, supersedes every softer reuse clause below):
+Before you call ANY expensive simulation (run_model_flood_scenario,
+run_model_nws_flood_event_scenario, run_modflow_job,
+run_model_groundwater_contamination_scenario, run_pelicun_*), ANY fetch_*,
+or ANY compute_*, you MUST FIRST check the "[Case state]" note for the
+layers ALREADY produced and on the map for this Case. If a layer or result
+that ALREADY ANSWERS the user's request is present, you MUST REUSE it — pass
+its existing handle/uri DIRECTLY to the next step and narrate from it. DO NOT
+re-fetch, re-compute, or re-run.
+
+Re-running an expensive simulation whose output layer is ALREADY loaded is
+FORBIDDEN. A flood-depth RESULT already on the map for this AOI means the
+flood already ran — DO NOT call run_model_flood_scenario again; reuse that
+flood-depth handle (e.g. for a Pelicun damage assessment). A plume RESULT
+already on the map means the MODFLOW run already completed — DO NOT call
+run_modflow_job again. The same applies to fetched layers (a landcover /
+water-mask / DEM for this AOI already present → reuse it, never re-fetch) and
+to computed layers (a hillshade / slope / zonal-stats result already present →
+reuse it, never re-compute).
+
+The ONLY times you may re-run / re-fetch / re-compute are:
+  (a) the user EXPLICITLY asks to re-run, refresh, or recompute it, OR
+  (b) the user CHANGES a parameter that changes the answer — a different area
+      (AOI / bbox / location), a different return period or duration for a
+      flood, a different contaminant / release rate / duration for a plume.
+If neither (a) nor (b) holds and a matching result is already present, REUSE
+IT. When in genuine doubt about whether an existing layer answers the request,
+prefer reusing what is already there over launching a multi-minute solve.
+
+This rule exists because the live agent IGNORED the softer steer below and
+re-ran ~10-20-minute SFINCS / MODFLOW solves whose output layers were already
+on the map — wasting minutes and money. A server-side guard now ALSO
+short-circuits an obviously-redundant expensive re-run and returns the
+existing layer with a "reused_existing" / "not re-run" note: when you see that
+note, narrate from the existing layer; do not attempt the run again.
+
 Scope discipline (CRITICAL — job-0255, Stage 3 live finding):
 Run consequential tools (solvers like run_model_flood_scenario /
 run_modflow_job, and layer-producing workflows) ONLY in service of the
@@ -988,6 +1025,22 @@ def _summarize_tool_row_for_history(content: str, tool_card: Any) -> str:
     return f"[tool {name} {outcome}]"
 
 
+def _format_layer_bbox(bbox: Any) -> str | None:
+    """Compact ``[lon_min, lat_min, lon_max, lat_max]`` for a layer line (job-0326).
+
+    Returns a short rounded string for a valid 4-tuple bbox, else ``None`` (most
+    persisted ``ProjectLayerSummary`` rows carry no bbox, so the line simply
+    omits it). The rounding keeps the [Case state] note compact.
+    """
+    if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+        return None
+    try:
+        b = [round(float(x), 4) for x in bbox]
+    except (TypeError, ValueError):
+        return None
+    return f"[{b[0]}, {b[1]}, {b[2]}, {b[3]}]"
+
+
 def _format_aoi_bbox_line(case_bbox: Any) -> str | None:
     """Format the Case AOI bbox as a single durable instruction line (F17/F20).
 
@@ -1031,6 +1084,17 @@ def build_layers_present_note(
     Returns ``None`` only when there is neither a layer nor a usable bbox.
     Kept deliberately short.
     """
+    # job-0326: enrich each line with enough IDENTITY that the model can
+    # recognize an existing RESULT (so it never re-runs the solver that made it):
+    #   - role: RESULT (a primary simulation / analysis output) vs INPUT
+    #     (a fetched / context layer used as a solver input);
+    #   - the producing scenario/family when recognizable from the layer_id
+    #     (flood-depth, plume, ...) so "a flood-depth RESULT for this AOI is
+    #     already here" and "the landcover/water-mask for this AOI is already
+    #     here" read unambiguously;
+    #   - name, layer_type, the reusable handle (== layer_id), and the uri.
+    from .scenario_reuse import layer_id_scenario_type  # local import: avoid cycle
+
     lines: list[str] = []
     for layer in loaded_layers or []:
         if not isinstance(layer, dict):
@@ -1041,18 +1105,27 @@ def build_layers_present_note(
         # F54: the layer_id IS the reusable handle (layer-handle indirection
         # block in the system prompt); surface it explicitly as ``handle=``
         # and append the underlying ``uri`` when present so the model can
-        # hand the existing artifact straight to a tool. Keep the line compact
-        # — drop the uri when absent rather than printing a placeholder.
+        # hand the existing artifact straight to a tool.
         uri = layer.get("uri")
-        if isinstance(uri, str) and uri:
-            lines.append(
-                f"- {name} (id={layer_id}, {layer_type}, "
-                f"handle={layer_id}, uri={uri})"
-            )
+        role_raw = layer.get("role")
+        scenario_type = layer_id_scenario_type(layer_id, name)
+        # An expensive-simulation output (recognized scenario family) OR a
+        # ``role="primary"`` layer is a RESULT; everything else is an INPUT /
+        # context layer. RESULT labelling is what stops the re-run.
+        if scenario_type is not None:
+            role_label = f"RESULT[{scenario_type}]"
+        elif role_raw == "primary":
+            role_label = "RESULT"
         else:
-            lines.append(
-                f"- {name} (id={layer_id}, {layer_type}, handle={layer_id})"
-            )
+            role_label = "INPUT"
+        parts = [f"id={layer_id}", role_label, layer_type, f"handle={layer_id}"]
+        bbox = layer.get("bbox")
+        bbox_str = _format_layer_bbox(bbox)
+        if bbox_str:
+            parts.append(f"bbox={bbox_str}")
+        if isinstance(uri, str) and uri:
+            parts.append(f"uri={uri}")
+        lines.append(f"- {name} (" + ", ".join(parts) + ")")
     bbox_line = _format_aoi_bbox_line(case_bbox)
     if not lines and not bbox_line:
         return None
@@ -1060,12 +1133,19 @@ def build_layers_present_note(
     if lines:
         segments.append(
             "These layers are ALREADY produced and on the map for this Case. "
-            "Reuse them (and their handles) — do NOT recompute them:\n"
+            "Lines tagged RESULT[...] are finished simulation / analysis OUTPUTS "
+            "(e.g. a flood-depth or plume RESULT for this AOI) — the work that "
+            "made them is DONE. Lines tagged INPUT are fetched / context layers. "
+            "REUSE these (pass their handle/uri DIRECTLY to the next tool) — do "
+            "NOT re-run, re-fetch, or recompute them:\n"
             + "\n".join(lines)
-            + "\nReuse the existing handle/uri above by passing it DIRECTLY "
-            "to any tool that needs this layer (e.g. as base/overlay/"
-            "raster_uri/layer handle). Do NOT re-fetch or recompute a layer "
-            "that is already listed here unless it is genuinely absent."
+            + "\nIf a RESULT already answers the user's request for this AOI and "
+            "parameters, narrate from it and pass its handle onward (e.g. an "
+            "existing flood-depth RESULT feeds a Pelicun damage assessment "
+            "directly). Re-running the expensive simulation that produced an "
+            "existing RESULT is FORBIDDEN unless the user changes the area / "
+            "parameters or explicitly asks to re-run. Do NOT re-fetch or "
+            "recompute a layer already listed here unless it is genuinely absent."
         )
     if bbox_line:
         segments.append(bbox_line)
