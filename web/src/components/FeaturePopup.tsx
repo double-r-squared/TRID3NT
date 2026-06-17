@@ -35,6 +35,13 @@ export interface PopupPoint {
   y: number;
 }
 
+/** Geographic anchor (lng/lat) of the tapped feature, so the popup can stay
+ *  glued to its MAP location across pans/zooms (FIX 2). */
+export interface PopupLngLat {
+  lng: number;
+  lat: number;
+}
+
 /** Fully-resolved popup content + placement, produced by Map.tsx. */
 export interface FeaturePopupData {
   /** Bold heading — the feature's best "name" (or a geometry-kind fallback). */
@@ -43,8 +50,26 @@ export interface FeaturePopupData {
   subtitle?: string;
   /** Ordered attribute rows (already humanized + stringified by the caller). */
   attributes: FeatureAttribute[];
-  /** Canvas-relative pixel point of the click/tap. */
+  /**
+   * Canvas-relative pixel point of the click/tap. FIX 2: this is now the
+   * CURRENT projected screen point of `lngLat`, refreshed by Map.tsx on every
+   * map move/zoom so the popup pans with the map. On the first paint it is the
+   * raw tap point.
+   */
   point: PopupPoint;
+  /**
+   * FIX 2: geographic anchor of the tapped feature. The popup is pinned to this
+   * MAP location — Map.tsx re-projects it to `point` on every map move/zoom so
+   * the card stays at the same spot ON the map (pans with it). Optional so older
+   * callers / fixtures that only set `point` still render (screen-anchored).
+   */
+  lngLat?: PopupLngLat;
+  /**
+   * FIX 3: the map zoom captured at tap time — the reference for the
+   * scale-with-zoom transform (scale = 2^(currentZoom - refZoom), clamped).
+   * Optional; absent → no scaling (scale 1).
+   */
+  refZoom?: number;
 }
 
 export interface FeaturePopupProps {
@@ -57,8 +82,43 @@ export interface FeaturePopupProps {
    * (CARD_WIDTH_MOBILE) and is otherwise no longer a positioning switch.
    */
   isMobile: boolean;
+  /**
+   * FIX 3 (NATE 2026-06-17): the CURRENT map zoom, so the card can scale like a
+   * map-drawn label (shrinks zoomed out, grows zoomed in) relative to
+   * `data.refZoom` captured at tap. Optional — absent → scale 1 (no scaling).
+   */
+  currentZoom?: number;
   /** Dismiss (X tap / Esc). Tap-elsewhere dismissal is wired in Map.tsx. */
   onClose: () => void;
+}
+
+// FIX 3 — scale clamp. NATE: "statically sized so we can zoom out and it gets
+// smaller." The card scales with the map: scale = 2^(currentZoom - refZoom),
+// clamped to a sane range so it never becomes illegible or huge. One zoom level
+// doubles/halves on-screen feature size, so 2^Δzoom keeps the card the same
+// MAP-relative size as the feature it labels.
+export const POPUP_MIN_SCALE = 0.5;
+export const POPUP_MAX_SCALE = 1.5;
+
+/**
+ * Pure, exported for unit testing. Returns the clamped CSS scale factor for the
+ * popup given the reference zoom (at tap) and the current map zoom. Returns 1
+ * when either zoom is missing (no scaling — the screen-anchored fallback).
+ */
+export function resolvePopupScale(
+  refZoom: number | undefined,
+  currentZoom: number | undefined,
+): number {
+  if (
+    typeof refZoom !== "number" ||
+    typeof currentZoom !== "number" ||
+    !Number.isFinite(refZoom) ||
+    !Number.isFinite(currentZoom)
+  ) {
+    return 1;
+  }
+  const raw = Math.pow(2, currentZoom - refZoom);
+  return Math.max(POPUP_MIN_SCALE, Math.min(POPUP_MAX_SCALE, raw));
 }
 
 // Card sizing. Kept narrow so it does not blanket a phone screen, and wide
@@ -112,6 +172,7 @@ export function FeaturePopup({
   data,
   canvasSize,
   isMobile,
+  currentZoom,
   onClose,
 }: FeaturePopupProps): JSX.Element {
   // Esc dismisses (desktop + bluetooth-keyboard mobile). Tap-elsewhere is wired
@@ -130,9 +191,13 @@ export function FeaturePopup({
     isMobile,
   );
 
+  // FIX 3 — scale the card to the map zoom so it reads like a map-drawn label.
+  const scale = resolvePopupScale(data.refZoom, currentZoom);
+
   return (
     <div
       data-testid="grace2-feature-popup"
+      data-popup-scale={scale}
       role="dialog"
       aria-label={data.title}
       // The popup must capture pointer events even though it sits over the map.
@@ -154,6 +219,11 @@ export function FeaturePopup({
         fontFamily: "system-ui, sans-serif",
         zIndex: 20, // above the legend (zIndex 10), below modals (>=2000).
         pointerEvents: "auto",
+        // FIX 3 — scale keyed to map zoom. transform-origin at the anchor (the
+        // tap point relative to the card's top-left = POINT_OFFSET, POINT_OFFSET)
+        // so the card grows/shrinks AROUND the feature, not its corner.
+        transform: scale !== 1 ? `scale(${scale})` : undefined,
+        transformOrigin: `${POINT_OFFSET}px ${POINT_OFFSET}px`,
       }}
       // Stop taps inside the card from bubbling to the map's tap-elsewhere
       // dismissal (Map.tsx listens on the document).

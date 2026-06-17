@@ -21,11 +21,24 @@ import { render, act, screen, fireEvent } from "@testing-library/react";
 import {
   MapView,
   buildFeaturePopupData,
+  buildHighlightGeoJson,
+  computeBboxScreenWidth,
   humanizePropertyKey,
   stringifyPropertyValue,
+  FEATURE_HIGHLIGHT_SOURCE_ID,
+  FEATURE_HIGHLIGHT_FILL_LAYER_ID,
+  FEATURE_HIGHLIGHT_LINE_LAYER_ID,
+  FEATURE_HIGHLIGHT_CIRCLE_LAYER_ID,
+  LEGEND_MIN_WIDTH_PX,
   type SessionStateSubscriber,
 } from "./Map";
-import { resolvePopupPlacement } from "./components/FeaturePopup";
+import {
+  FeaturePopup,
+  resolvePopupPlacement,
+  resolvePopupScale,
+  POPUP_MIN_SCALE,
+  POPUP_MAX_SCALE,
+} from "./components/FeaturePopup";
 
 // --- MapLibre mock with real event registration + queryRenderedFeatures ---- //
 
@@ -44,6 +57,7 @@ interface FeatureInspectMapMock {
   getSource: ReturnType<typeof vi.fn>;
   isStyleLoaded: ReturnType<typeof vi.fn>;
   queryRenderedFeatures: ReturnType<typeof vi.fn>;
+  getZoom: ReturnType<typeof vi.fn>;
   remove: ReturnType<typeof vi.fn>;
   on: (ev: string, h: Listener) => void;
   off: (ev: string, h: Listener) => void;
@@ -84,6 +98,7 @@ vi.mock("maplibre-gl", () => {
     );
     isStyleLoaded = vi.fn().mockReturnValue(true);
     queryRenderedFeatures = vi.fn(() => [] as unknown[]);
+    getZoom = vi.fn().mockReturnValue(8);
     remove = vi.fn();
     touchZoomRotate = { disableRotation: vi.fn() };
     keyboard = { disableRotation: vi.fn() };
@@ -326,6 +341,338 @@ describe("MapView — feature click/tap-to-inspect (F74b)", () => {
   });
 });
 
+// --- FIX 1 (NATE 2026-06-17): generic whole-feature highlight on tap -------- //
+//
+// Tapping a vector feature must ALSO highlight the ENTIRE tapped geometry,
+// generically (polygon / line / point), via a single dedicated highlight source
+// + fill/line/circle layers. The highlight source must receive the TAPPED
+// feature's geometry, and the highlight must be cleared when the popup closes.
+
+/** Read back the `data` (FeatureCollection) the highlight source was given,
+ *  preferring the latest setData() call, else the initial addSource() opts. */
+function readHighlightData(m: FeatureInspectMapMock): {
+  type: string;
+  features: Array<{ geometry: { type: string } }>;
+} | null {
+  // The highlight source is created via addSource(id, { type, data }); later
+  // taps swap via getSource(id).setData(data). Inspect the addSource opts.
+  const calls = (m.addSource as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+  for (let i = calls.length - 1; i >= 0; i--) {
+    const [id, opts] = calls[i] as [string, { data?: unknown } | undefined];
+    if (id === FEATURE_HIGHLIGHT_SOURCE_ID && opts && opts.data) {
+      return opts.data as ReturnType<typeof readHighlightData>;
+    }
+  }
+  return null;
+}
+
+describe("MapView — generic feature highlight on tap (FIX 1)", () => {
+  beforeEach(() => {
+    lastMapMock = null;
+  });
+
+  it("adds a highlight source + fill/line/circle layers and feeds it the tapped POLYGON geometry", async () => {
+    const m = await renderWithRenderedVectorLayer();
+    m.queryRenderedFeatures.mockReturnValue([
+      {
+        layer: { id: "wdpa-big-cypress", source: "wdpa-big-cypress" },
+        geometry: {
+          type: "Polygon",
+          coordinates: [[[-81, 26], [-81.1, 26], [-81.1, 26.1], [-81, 26.1], [-81, 26]]],
+        },
+        properties: { name_eng: "Big Cypress" },
+      },
+    ]);
+    act(() => {
+      m._emit("click", { point: { x: 400, y: 300 }, lngLat: { lng: -81.05, lat: 26.05 } });
+    });
+
+    // All three highlight paint layers exist (generic across geometries).
+    expect(m._addedLayers.has(FEATURE_HIGHLIGHT_FILL_LAYER_ID)).toBe(true);
+    expect(m._addedLayers.has(FEATURE_HIGHLIGHT_LINE_LAYER_ID)).toBe(true);
+    expect(m._addedLayers.has(FEATURE_HIGHLIGHT_CIRCLE_LAYER_ID)).toBe(true);
+    // The highlight source carries exactly the tapped polygon geometry.
+    const data = readHighlightData(m);
+    expect(data?.features).toHaveLength(1);
+    expect(data?.features[0]?.geometry.type).toBe("Polygon");
+  });
+
+  it("feeds the highlight source a tapped LINE geometry (roads / rivers)", async () => {
+    const m = await renderWithRenderedVectorLayer();
+    m.queryRenderedFeatures.mockReturnValue([
+      {
+        layer: { id: "wdpa-big-cypress", source: "wdpa-big-cypress" },
+        geometry: { type: "LineString", coordinates: [[-81, 26], [-81.1, 26.1]] },
+        properties: { name: "Tamiami Trail", highway: "primary" },
+      },
+    ]);
+    act(() => {
+      m._emit("click", { point: { x: 400, y: 300 }, lngLat: { lng: -81.05, lat: 26.05 } });
+    });
+    const data = readHighlightData(m);
+    expect(data?.features[0]?.geometry.type).toBe("LineString");
+    // The line highlight layer (used for line + polygon boundary) is present.
+    expect(m._addedLayers.has(FEATURE_HIGHLIGHT_LINE_LAYER_ID)).toBe(true);
+  });
+
+  it("feeds the highlight source a tapped POINT geometry (gauges / occurrences)", async () => {
+    const m = await renderWithRenderedVectorLayer();
+    m.queryRenderedFeatures.mockReturnValue([
+      {
+        layer: { id: "wdpa-big-cypress", source: "wdpa-big-cypress" },
+        geometry: { type: "Point", coordinates: [-81.05, 26.05] },
+        properties: { name: "Gauge 02290769" },
+      },
+    ]);
+    act(() => {
+      m._emit("click", { point: { x: 400, y: 300 }, lngLat: { lng: -81.05, lat: 26.05 } });
+    });
+    const data = readHighlightData(m);
+    expect(data?.features[0]?.geometry.type).toBe("Point");
+    // The circle highlight layer (enlarged ring) is present.
+    expect(m._addedLayers.has(FEATURE_HIGHLIGHT_CIRCLE_LAYER_ID)).toBe(true);
+  });
+
+  it("clears the highlight (removes layers + source) when the popup is closed via X", async () => {
+    const m = await renderWithRenderedVectorLayer();
+    m.queryRenderedFeatures.mockReturnValue([
+      {
+        layer: { id: "wdpa-big-cypress", source: "wdpa-big-cypress" },
+        geometry: { type: "Point", coordinates: [-81, 26] },
+        properties: { name: "X" },
+      },
+    ]);
+    act(() => {
+      m._emit("click", { point: { x: 400, y: 300 }, lngLat: { lng: -81, lat: 26 } });
+    });
+    expect(m._addedSources.has(FEATURE_HIGHLIGHT_SOURCE_ID)).toBe(true);
+
+    act(() => {
+      fireEvent.click(screen.getByTestId("feature-popup-close"));
+    });
+    // Highlight torn down: all three layers + the source removed.
+    expect(m._addedLayers.has(FEATURE_HIGHLIGHT_FILL_LAYER_ID)).toBe(false);
+    expect(m._addedLayers.has(FEATURE_HIGHLIGHT_LINE_LAYER_ID)).toBe(false);
+    expect(m._addedLayers.has(FEATURE_HIGHLIGHT_CIRCLE_LAYER_ID)).toBe(false);
+    expect(m._addedSources.has(FEATURE_HIGHLIGHT_SOURCE_ID)).toBe(false);
+  });
+});
+
+// --- FIX 2 (NATE 2026-06-17): popup PINNED TO THE MAP (re-projected on move) - //
+//
+// The popup carries the tapped feature's lng/lat and is re-projected to a screen
+// point on every map move/zoom, so it stays glued to the feature's MAP location.
+
+describe("MapView — popup pinned to the map (FIX 2)", () => {
+  // Deferred-flush rAF stub: store callbacks, return an id, flush on demand.
+  // This matches REAL rAF semantics (the callback runs AFTER schedule() returns
+  // and assigns its rafId) — a synchronous stub would run the callback before
+  // the rafId assignment and break the once-per-frame coalescing guard.
+  let rafQueue: FrameRequestCallback[] = [];
+  let rafSpy: ReturnType<typeof vi.spyOn> | null = null;
+  const flushRaf = (): void => {
+    const q = rafQueue;
+    rafQueue = [];
+    q.forEach((cb) => cb(0));
+  };
+
+  beforeEach(() => {
+    lastMapMock = null;
+    rafQueue = [];
+    rafSpy = vi
+      .spyOn(globalThis, "requestAnimationFrame")
+      .mockImplementation((cb: FrameRequestCallback) => {
+        rafQueue.push(cb);
+        return rafQueue.length as unknown as number;
+      });
+  });
+
+  it("re-projects the popup from its lngLat when the map pans (move)", async () => {
+    const m = await renderWithRenderedVectorLayer();
+    m.queryRenderedFeatures.mockReturnValue([
+      {
+        layer: { id: "wdpa-big-cypress", source: "wdpa-big-cypress" },
+        geometry: { type: "Point", coordinates: [-81, 26] },
+        properties: { name_eng: "Pinned Preserve" },
+      },
+    ]);
+    act(() => {
+      m._emit("click", { point: { x: 400, y: 300 }, lngLat: { lng: -81, lat: 26 } });
+    });
+    // Flush the initial projection scheduled when the popup-pin effect armed.
+    act(() => {
+      flushRaf();
+    });
+    expect(screen.getByTestId("grace2-feature-popup")).toBeTruthy();
+
+    // Now PAN the map. The popup-pin effect must re-project the popup's lngLat.
+    m.project.mockClear();
+    act(() => {
+      m._emit("move", {});
+      flushRaf();
+    });
+    // project() was called with the popup's geographic anchor → the screen point
+    // is derived FROM the lngLat (FIX 2), not frozen at the tap pixel.
+    const projectedWith = m.project.mock.calls.map((c) => c[0]);
+    expect(projectedWith).toContainEqual([-81, 26]);
+
+    rafSpy?.mockRestore();
+  });
+
+  it("does not re-project (no lngLat) for a hit without a geographic anchor", async () => {
+    const m = await renderWithRenderedVectorLayer();
+    m.queryRenderedFeatures.mockReturnValue([
+      {
+        layer: { id: "wdpa-big-cypress", source: "wdpa-big-cypress" },
+        geometry: { type: "Point", coordinates: [-81, 26] },
+        properties: { name_eng: "No Anchor" },
+      },
+    ]);
+    // Click WITHOUT lngLat → popup is screen-anchored (older-fixture path).
+    act(() => {
+      m._emit("click", { point: { x: 400, y: 300 } });
+    });
+    expect(screen.getByTestId("grace2-feature-popup")).toBeTruthy();
+    m.project.mockClear();
+    act(() => {
+      m._emit("move", {});
+      flushRaf();
+    });
+    // No geographic anchor → the popup-pin effect is inert (no re-projection).
+    expect(m.project).not.toHaveBeenCalled();
+
+    rafSpy?.mockRestore();
+  });
+});
+
+// --- FIX 1 pure helper: buildHighlightGeoJson ------------------------------ //
+
+describe("buildHighlightGeoJson (FIX 1)", () => {
+  it("wraps a polygon geometry in a single-feature FeatureCollection (cloned)", () => {
+    const geom = {
+      type: "Polygon" as const,
+      coordinates: [[[-81, 26], [-81.1, 26], [-81.1, 26.1], [-81, 26]]],
+    };
+    const fc = buildHighlightGeoJson(geom);
+    expect(fc.type).toBe("FeatureCollection");
+    expect(fc.features).toHaveLength(1);
+    expect(fc.features[0]?.geometry).toEqual(geom);
+    // Cloned, not the same reference (so a later setData can't mutate it).
+    expect(fc.features[0]?.geometry).not.toBe(geom);
+  });
+
+  it("wraps line + point geometries too (generic)", () => {
+    const line = buildHighlightGeoJson({
+      type: "LineString",
+      coordinates: [[0, 0], [1, 1]],
+    });
+    expect(line.features[0]?.geometry.type).toBe("LineString");
+    const pt = buildHighlightGeoJson({ type: "Point", coordinates: [0, 0] });
+    expect(pt.features[0]?.geometry.type).toBe("Point");
+  });
+
+  it("returns an EMPTY FeatureCollection for null/undefined geometry", () => {
+    expect(buildHighlightGeoJson(null).features).toHaveLength(0);
+    expect(buildHighlightGeoJson(undefined).features).toHaveLength(0);
+  });
+});
+
+// --- FIX 3 pure helper: resolvePopupScale ---------------------------------- //
+
+describe("resolvePopupScale (FIX 3 — popup scales with zoom, clamped)", () => {
+  it("is 1 at the reference zoom (no change)", () => {
+    expect(resolvePopupScale(12, 12)).toBe(1);
+  });
+
+  it("grows when zoomed IN past the reference (up to the max clamp)", () => {
+    // +1 zoom level → 2x, but clamped to POPUP_MAX_SCALE (1.5).
+    expect(resolvePopupScale(12, 13)).toBe(POPUP_MAX_SCALE);
+    // A small zoom-in stays below the clamp: 2^0.5 ≈ 1.414.
+    expect(resolvePopupScale(12, 12.5)).toBeCloseTo(Math.SQRT2, 3);
+    expect(resolvePopupScale(12, 12.5)).toBeLessThanOrEqual(POPUP_MAX_SCALE);
+  });
+
+  it("shrinks when zoomed OUT below the reference (down to the min clamp)", () => {
+    // -2 zoom levels → 0.25, but clamped to POPUP_MIN_SCALE (0.5).
+    expect(resolvePopupScale(12, 10)).toBe(POPUP_MIN_SCALE);
+    // A small zoom-out stays above the floor: 2^-0.5 ≈ 0.707.
+    expect(resolvePopupScale(12, 11.5)).toBeCloseTo(1 / Math.SQRT2, 3);
+    expect(resolvePopupScale(12, 11.5)).toBeGreaterThanOrEqual(POPUP_MIN_SCALE);
+  });
+
+  it("never exceeds the clamp range for extreme zoom deltas", () => {
+    expect(resolvePopupScale(0, 22)).toBe(POPUP_MAX_SCALE);
+    expect(resolvePopupScale(22, 0)).toBe(POPUP_MIN_SCALE);
+  });
+
+  it("returns 1 when either zoom is missing / non-finite", () => {
+    expect(resolvePopupScale(undefined, 12)).toBe(1);
+    expect(resolvePopupScale(12, undefined)).toBe(1);
+    expect(resolvePopupScale(NaN, 12)).toBe(1);
+  });
+});
+
+// --- FIX 4 pure helper: computeBboxScreenWidth ----------------------------- //
+//
+// The legend colorbar width is sized to the AOI bbox's on-screen east-west
+// extent (projected), clamped to [LEGEND_MIN_WIDTH_PX, viewport - margins].
+
+interface WidthProbeMap {
+  project: (ll: [number, number]) => { x: number; y: number };
+  getCanvas: () => { clientWidth: number; clientHeight: number };
+}
+
+function makeWidthProbeMap(opts: {
+  // projected x per lon (linear) so we control the on-screen east-west span.
+  pxPerLon: number;
+  canvasWidth: number;
+}): WidthProbeMap {
+  return {
+    project: (ll) => ({ x: ll[0] * opts.pxPerLon, y: 0 }),
+    getCanvas: () => ({ clientWidth: opts.canvasWidth, clientHeight: 600 }),
+  };
+}
+
+describe("computeBboxScreenWidth (FIX 4 — legend width sized to bbox on-screen)", () => {
+  const bbox: [number, number, number, number] = [0, 0, 10, 10];
+
+  it("derives the width from the projected east-west extent of the bbox", () => {
+    // 10 lon * 30 px/lon = 300 px on-screen extent; canvas is wide enough.
+    const m = makeWidthProbeMap({ pxPerLon: 30, canvasWidth: 1200 });
+    const w = computeBboxScreenWidth(m as unknown as Parameters<typeof computeBboxScreenWidth>[0], bbox);
+    expect(w).toBe(300);
+  });
+
+  it("clamps UP to the minimum when the bbox is small on screen (zoomed out)", () => {
+    // 10 lon * 5 px/lon = 50 px raw → below the 160px floor → clamped up.
+    const m = makeWidthProbeMap({ pxPerLon: 5, canvasWidth: 1200 });
+    const w = computeBboxScreenWidth(m as unknown as Parameters<typeof computeBboxScreenWidth>[0], bbox);
+    expect(w).toBe(LEGEND_MIN_WIDTH_PX);
+  });
+
+  it("clamps DOWN to viewport-minus-margins when the bbox overflows (zoomed in)", () => {
+    // 10 lon * 100 px/lon = 1000 px raw, but canvas is 500 wide → max = 500-48.
+    const m = makeWidthProbeMap({ pxPerLon: 100, canvasWidth: 500 });
+    const w = computeBboxScreenWidth(m as unknown as Parameters<typeof computeBboxScreenWidth>[0], bbox);
+    expect(w).toBe(500 - 24 * 2);
+  });
+
+  it("returns null when projection throws (off-screen / no map)", () => {
+    const throwingMap = {
+      project: () => {
+        throw new Error("no gl");
+      },
+      getCanvas: () => ({ clientWidth: 1200, clientHeight: 600 }),
+    };
+    expect(
+      computeBboxScreenWidth(
+        throwingMap as unknown as Parameters<typeof computeBboxScreenWidth>[0],
+        bbox,
+      ),
+    ).toBeNull();
+  });
+});
+
 // --- pure helper unit tests ---------------------------------------------- //
 
 describe("feature-inspect pure helpers", () => {
@@ -431,5 +778,61 @@ describe("resolvePopupPlacement — anchored at the tap point (FIX 3 / F86)", ()
     expect(d.left).toBeGreaterThanOrEqual(0);
     expect(d.left + d.width).toBeLessThanOrEqual(canvas.width);
     expect(d.top).toBeGreaterThanOrEqual(0);
+  });
+});
+
+// --- FIX 3 (NATE 2026-06-17): popup SCALES WITH ZOOM (component render) ----- //
+
+describe("FeaturePopup — scales with zoom (FIX 3)", () => {
+  const canvas = { width: 1000, height: 800 };
+  const baseData = {
+    title: "Scaled",
+    attributes: [],
+    point: { x: 400, y: 300 },
+    refZoom: 12,
+  };
+
+  it("applies a scale() transform + transform-origin at the anchor when zoomed", () => {
+    render(
+      <FeaturePopup
+        data={{ ...baseData }}
+        canvasSize={canvas}
+        isMobile={false}
+        currentZoom={11.5} // zoomed out a bit → 2^-0.5 ≈ 0.707
+        onClose={() => {}}
+      />,
+    );
+    const el = screen.getByTestId("grace2-feature-popup");
+    expect(el.getAttribute("data-popup-scale")).toBe(String(1 / Math.SQRT2));
+    expect(el.style.transform).toContain("scale(");
+    // transform-origin is at the anchor point (POINT_OFFSET = 14px) so it grows
+    // around the feature, not the card corner.
+    expect(el.style.transformOrigin).toBe("14px 14px");
+  });
+
+  it("clamps the scale to the [0.5, 1.5] range", () => {
+    const { rerender } = render(
+      <FeaturePopup data={{ ...baseData }} canvasSize={canvas} isMobile={false} currentZoom={20} onClose={() => {}} />,
+    );
+    expect(screen.getByTestId("grace2-feature-popup").getAttribute("data-popup-scale")).toBe("1.5");
+    rerender(
+      <FeaturePopup data={{ ...baseData }} canvasSize={canvas} isMobile={false} currentZoom={0} onClose={() => {}} />,
+    );
+    expect(screen.getByTestId("grace2-feature-popup").getAttribute("data-popup-scale")).toBe("0.5");
+  });
+
+  it("does not scale (scale 1, no transform) when refZoom / currentZoom is absent", () => {
+    render(
+      <FeaturePopup
+        data={{ title: "Unscaled", attributes: [], point: { x: 10, y: 10 } }}
+        canvasSize={canvas}
+        isMobile={false}
+        onClose={() => {}}
+      />,
+    );
+    const el = screen.getByTestId("grace2-feature-popup");
+    expect(el.getAttribute("data-popup-scale")).toBe("1");
+    // scale 1 → no transform applied.
+    expect(el.style.transform).toBe("");
   });
 });

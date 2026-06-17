@@ -38,6 +38,15 @@ export interface LayerLegendProps {
    * placement (AOI-less Cases, or the bbox is off-screen) so it never vanishes.
    */
   anchor?: { left: number; top: number } | null;
+  /**
+   * FIX 4 (NATE 2026-06-17) — optional colorbar WIDTH in px, sized by Map.tsx to
+   * the AOI bbox's ON-SCREEN east-west extent (already clamped to a sane
+   * min/max). When provided, the legend spans that width so the colorbar matches
+   * the box and SHRINKS as you zoom out. When null/undefined (no AOI bbox, or
+   * the bbox is off-screen) the legend keeps its static 320px width. This is the
+   * physical WIDTH only — it never changes the value range or labels.
+   */
+  barWidth?: number | null;
 }
 
 /**
@@ -51,7 +60,10 @@ function buildGradient(preset: StylePreset): string {
   return `linear-gradient(to right, ${parts})`;
 }
 
-export function LayerLegend({ layers, anchor }: LayerLegendProps): JSX.Element | null {
+// FIX 4 — static fallback width when there is no AOI bbox to size against.
+const STATIC_LEGEND_WIDTH = 320;
+
+export function LayerLegend({ layers, anchor, barWidth }: LayerLegendProps): JSX.Element | null {
   // Find the topmost continuous-raster layer with a known preset.
   // "topmost" = first in the top-of-stack-first list (highest z_index).
   const targetLayer = layers.find(
@@ -67,6 +79,14 @@ export function LayerLegend({ layers, anchor }: LayerLegendProps): JSX.Element |
   if (!preset) return null;
 
   const gradient = buildGradient(preset);
+
+  // FIX 4 — width sized to the AOI bbox on-screen extent when provided (already
+  // clamped by Map.tsx), else the static 320 fallback. Width only; the value
+  // range / tick labels are unchanged.
+  const legendWidth =
+    typeof barWidth === "number" && Number.isFinite(barWidth) && barWidth > 0
+      ? barWidth
+      : STATIC_LEGEND_WIDTH;
 
   // job-0321 (F43) — anchored vs fallback placement. When an `anchor` is given
   // (Map.tsx projected the AOI bbox bottom-edge midpoint), position the legend
@@ -91,7 +111,9 @@ export function LayerLegend({ layers, anchor }: LayerLegendProps): JSX.Element |
       style={{
         position: "absolute",
         ...placement,
-        width: 320,
+        // FIX 4 — width sized to the AOI bbox on-screen extent (clamped by
+        // Map.tsx), else the static 320 fallback.
+        width: legendWidth,
         padding: "8px 12px 10px",
         // job-0283 — joins the panel surface family: hairline border + 10px
         // radius + 6px blur (was a border-less 8px/4px card). Form-factor

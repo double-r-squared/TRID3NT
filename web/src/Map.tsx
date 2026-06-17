@@ -35,7 +35,7 @@ import { useEffect, useRef, useState } from "react";
 import maplibregl, { Map as MapLibreMap, StyleSpecification } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import type { MapCommandPayload, SessionStatePayload, ProjectLayerSummary, RegionCandidate } from "./contracts";
-import type { FeatureCollection, Feature, Polygon } from "geojson";
+import type { FeatureCollection, Feature, Polygon, Geometry } from "geojson";
 import { publicTileBase } from "./lib/public_base";
 import { regionChoiceBus, type RegionChoiceBusState } from "./lib/region_choice_bus";
 import { LayerLegend } from "./components/LayerLegend";
@@ -1147,6 +1147,156 @@ export function applyRegionChoiceHighlight(
   return nextIds;
 }
 
+// --- FIX 1 (NATE 2026-06-17) — generic whole-feature tap HIGHLIGHT --------- //
+//
+// Tapping a vector feature opens FeaturePopup but used to leave the feature
+// unmarked, so the user couldn't tell WHICH polygon/line/point they hit. We now
+// outline the ENTIRE tapped geometry, GENERICALLY across every vector overlay
+// type and geometry, with ONE dedicated highlight source + three paint layers:
+//   - a fill layer    → paints the interior of a tapped POLYGON
+//   - a line layer    → paints a thick stroke for a tapped LINE *and* the
+//                       boundary of a tapped polygon (MapLibre's line layer
+//                       renders polygon rings too), so one layer covers both
+//   - a circle layer  → paints an enlarged ring for a tapped POINT
+// MapLibre only paints the geometry kinds each layer type understands, so a
+// single highlight source carrying ONE feature lights up exactly the right
+// layer(s) regardless of geometry — no per-overlay-type branching.
+//
+// The highlight lives in MAP space (a geojson source), so it pans with the map
+// and scales with zoom for free (FIX 1 acceptance). It is cleared when the popup
+// closes (X / Esc / a no-hit tap) and REPLACED when another feature is tapped.
+//
+// Invariant 1: the highlight geometry is CLONED verbatim from the tapped
+// feature's own geometry — no geography is computed client-side.
+
+export const FEATURE_HIGHLIGHT_SOURCE_ID = "grace2-feature-highlight";
+export const FEATURE_HIGHLIGHT_FILL_LAYER_ID = "grace2-feature-highlight-fill";
+export const FEATURE_HIGHLIGHT_LINE_LAYER_ID = "grace2-feature-highlight-line";
+export const FEATURE_HIGHLIGHT_CIRCLE_LAYER_ID = "grace2-feature-highlight-circle";
+
+// A warm accent distinct from the blue AOI outline / region choropleth so the
+// highlight reads as "this is the thing you tapped".
+const HIGHLIGHT_ACCENT = "#facc15"; // amber-400
+
+/**
+ * Build a single-feature FeatureCollection from a tapped feature's geometry.
+ * The geometry is CLONED (structuredClone / JSON round-trip) so a later
+ * setData / source teardown can never mutate MapLibre's own feature objects.
+ * Returns an empty FeatureCollection when the geometry is absent (defensive —
+ * a hit with no geometry simply clears the highlight). Pure — exported for unit
+ * testing without a live map.
+ */
+export function buildHighlightGeoJson(
+  geometry: Geometry | null | undefined,
+): FeatureCollection {
+  if (!geometry) return { type: "FeatureCollection", features: [] };
+  let cloned: Geometry;
+  try {
+    cloned =
+      typeof structuredClone === "function"
+        ? (structuredClone(geometry) as Geometry)
+        : (JSON.parse(JSON.stringify(geometry)) as Geometry);
+  } catch {
+    return { type: "FeatureCollection", features: [] };
+  }
+  return {
+    type: "FeatureCollection",
+    features: [{ type: "Feature", properties: {}, geometry: cloned }],
+  };
+}
+
+/**
+ * Set (or replace) the generic feature highlight to the given geometry.
+ * Idempotent + partial-state tolerant (mirrors drawAnalysisExtent): the first
+ * call adds the source + the fill/line/circle paint layers; subsequent calls
+ * swap the data on the existing source and re-add any layer that went missing.
+ * The three layers are ALWAYS present so the SAME highlight source lights up the
+ * correct one(s) for whatever geometry it currently holds (polygon → fill+line,
+ * line → line, point → circle). Pure side-effect on the map (Invariant 4).
+ */
+export function setFeatureHighlight(
+  m: MapLibreMap,
+  geometry: Geometry | null | undefined,
+): void {
+  const data = buildHighlightGeoJson(geometry);
+  const existing = m.getSource(FEATURE_HIGHLIGHT_SOURCE_ID) as
+    | maplibregl.GeoJSONSource
+    | undefined;
+  if (existing) {
+    existing.setData(data);
+  } else {
+    m.addSource(FEATURE_HIGHLIGHT_SOURCE_ID, { type: "geojson", data });
+  }
+
+  // Polygon interior — a faint amber wash so the tapped polygon reads as filled.
+  if (!m.getLayer(FEATURE_HIGHLIGHT_FILL_LAYER_ID)) {
+    m.addLayer({
+      id: FEATURE_HIGHLIGHT_FILL_LAYER_ID,
+      type: "fill",
+      source: FEATURE_HIGHLIGHT_SOURCE_ID,
+      paint: {
+        "fill-color": HIGHLIGHT_ACCENT,
+        "fill-opacity": 0.25,
+      },
+    });
+  }
+  // Bold outline for polygons AND a thick stroke for lines (roads / rivers).
+  if (!m.getLayer(FEATURE_HIGHLIGHT_LINE_LAYER_ID)) {
+    m.addLayer({
+      id: FEATURE_HIGHLIGHT_LINE_LAYER_ID,
+      type: "line",
+      source: FEATURE_HIGHLIGHT_SOURCE_ID,
+      paint: {
+        "line-color": HIGHLIGHT_ACCENT,
+        "line-width": 4,
+        "line-opacity": 0.95,
+      },
+    });
+  }
+  // Enlarged ring for a tapped point.
+  if (!m.getLayer(FEATURE_HIGHLIGHT_CIRCLE_LAYER_ID)) {
+    m.addLayer({
+      id: FEATURE_HIGHLIGHT_CIRCLE_LAYER_ID,
+      type: "circle",
+      source: FEATURE_HIGHLIGHT_SOURCE_ID,
+      paint: {
+        "circle-radius": 10,
+        "circle-color": "rgba(0,0,0,0)", // ring only — don't blanket the point
+        "circle-stroke-color": HIGHLIGHT_ACCENT,
+        "circle-stroke-width": 3,
+        "circle-stroke-opacity": 0.95,
+      },
+    });
+  }
+}
+
+/**
+ * Remove the generic feature highlight (all three layers + source). Inverse of
+ * setFeatureHighlight; idempotent + partial-state tolerant. Layers removed
+ * before the source (MapLibre rejects removing a referenced source). Used when
+ * the popup is dismissed and on map teardown.
+ */
+export function clearFeatureHighlight(m: MapLibreMap): void {
+  for (const id of [
+    FEATURE_HIGHLIGHT_FILL_LAYER_ID,
+    FEATURE_HIGHLIGHT_LINE_LAYER_ID,
+    FEATURE_HIGHLIGHT_CIRCLE_LAYER_ID,
+  ]) {
+    try {
+      if (m.getLayer(id)) m.removeLayer(id);
+    } catch {
+      /* mid-removal race — best effort */
+    }
+  }
+  try {
+    if (m.getSource(FEATURE_HIGHLIGHT_SOURCE_ID)) {
+      m.removeSource(FEATURE_HIGHLIGHT_SOURCE_ID);
+    }
+  } catch {
+    /* still referenced / gone — next clear retries */
+  }
+}
+
 // job-0321 (F43) — legend anchor geometry. The legend (depth-key / colorbar)
 // hangs off the BOTTOM EDGE of the AOI bounding box so it reads as the key for
 // that AOI. This pure helper projects the two bottom corners of the bbox to
@@ -1195,6 +1345,51 @@ export function computeBboxBottomAnchor(
     if (left < 0 || left > size.x || top < 0 || top > size.y) return null;
   }
   return { left, top };
+}
+
+// --- FIX 4 (NATE 2026-06-17) — legend WIDTH sized to the AOI bbox on-screen -- //
+//
+// The colorbar was a static 320px. We now size its width to the AOI bbox's
+// ON-SCREEN east-west extent: project the bbox's two bottom corners and take the
+// horizontal pixel distance between them. That makes the colorbar SPAN the box
+// and SHRINK as you zoom out (the bbox gets smaller on screen), reading as the
+// physical key for that AOI. Clamped to a sane min (so it never becomes an
+// illegible sliver) and to the viewport width minus margins (so it never
+// overflows). Returns null when the bbox can't be projected (off-screen / no
+// canvas) so the caller falls back to the static 320 width. Pure — every number
+// comes from MapLibre's project() (Invariant 1: the client renders, never
+// computes geography).
+export const LEGEND_MIN_WIDTH_PX = 160;
+export const LEGEND_VIEWPORT_MARGIN_PX = 24; // px kept clear on each side.
+
+export function computeBboxScreenWidth(
+  m: MapLibreMap,
+  bbox: [number, number, number, number],
+): number | null {
+  // Width spans the bottom edge ([minLat]); the east-west corners are enough.
+  const [minLon, minLat, maxLon] = bbox;
+  let bl: { x: number; y: number };
+  let br: { x: number; y: number };
+  try {
+    bl = m.project([minLon, minLat]);
+    br = m.project([maxLon, minLat]);
+  } catch {
+    return null;
+  }
+  const raw = Math.abs(br.x - bl.x);
+  if (!Number.isFinite(raw) || raw <= 0) return null;
+
+  // Clamp: min so it stays legible; max so it can never overflow the viewport.
+  let maxWidth = Number.POSITIVE_INFINITY;
+  try {
+    const c = m.getCanvas();
+    if (c && c.clientWidth) maxWidth = c.clientWidth - LEGEND_VIEWPORT_MARGIN_PX * 2;
+  } catch {
+    maxWidth = Number.POSITIVE_INFINITY;
+  }
+  // Guard a degenerate (tiny) canvas so the max clamp can't drop below the min.
+  if (maxWidth < LEGEND_MIN_WIDTH_PX) maxWidth = LEGEND_MIN_WIDTH_PX;
+  return Math.max(LEGEND_MIN_WIDTH_PX, Math.min(raw, maxWidth));
 }
 
 // --- F74b feature-click/tap-to-inspect ---------------------------------- //
@@ -1423,6 +1618,10 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
   const [legendLayers, setLegendLayers] = useState<ProjectLayerSummary[]>([]);
   const [aoiBbox, setAoiBbox] = useState<[number, number, number, number] | null>(null);
   const [legendAnchor, setLegendAnchor] = useState<LegendAnchor | null>(null);
+  // FIX 4 (NATE 2026-06-17) — the AOI bbox's ON-SCREEN width in px, projected on
+  // each map move/zoom (same listeners as legendAnchor). Null when there is no
+  // AOI / the bbox is off-screen → LayerLegend uses its static 320 fallback.
+  const [legendBarWidth, setLegendBarWidth] = useState<number | null>(null);
   const isMobile = useIsMobile();
 
   // F74b feature-click/tap-to-inspect. `featurePopup` is the currently-shown
@@ -1435,6 +1634,10 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
     width: 0,
     height: 0,
   });
+  // FIX 3 (NATE 2026-06-17) — the live map zoom, tracked so the popup can scale
+  // with zoom (scale = 2^(zoom - refZoom), clamped). Updated on map move/zoom by
+  // the popup-pin effect below. Null until the first projection.
+  const [currentZoom, setCurrentZoom] = useState<number | null>(null);
 
   useEffect(() => {
     if (!container.current || map.current) return;
@@ -1577,6 +1780,16 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       // The ADD/update loop below always runs, so an additive snapshot still
       // registers any newly-rendered layer it carries.
       if (authoritativeReplace) {
+      // Fresh slate on Case switch / authoritative replace: clear any lingering
+      // feature highlight + inspect popup so they never carry across Cases
+      // (job-0357 must-fix). A bare reconnect is replace_layers===false and does
+      // NOT reach here, so durable layers (and a highlight) survive a reconnect.
+      try {
+        if (m.getSource(FEATURE_HIGHLIGHT_SOURCE_ID)) clearFeatureHighlight(m);
+      } catch {
+        /* highlight already gone — best-effort */
+      }
+      setFeaturePopup(null);
       for (const id of addedSourceIds.current) {
         if (!currentIds.has(id)) {
           // Remove all MapLibre paint layers belonging to this logical layer
@@ -2010,6 +2223,9 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
 
     if (!aoiBbox) {
       setLegendAnchor(null);
+      // FIX 4 — no AOI bbox → drop the projected width so the legend reverts to
+      // its static 320 fallback.
+      setLegendBarWidth(null);
       return undefined;
     }
 
@@ -2021,6 +2237,9 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       const cur = map.current;
       if (!cur) return;
       setLegendAnchor(computeBboxBottomAnchor(cur, aoiBbox));
+      // FIX 4 — project the bbox's on-screen east-west width on the SAME
+      // move/zoom listeners, so the colorbar spans the box + shrinks on zoom-out.
+      setLegendBarWidth(computeBboxScreenWidth(cur, aoiBbox));
     };
     const schedule = () => {
       if (rafId != null) return; // already queued this frame
@@ -2115,6 +2334,12 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       const layers = queryableLayerIds();
       if (layers.length === 0) {
         setFeaturePopup(null);
+        // FIX 1 — no vector layers → nothing to highlight; clear any stale one.
+        try {
+          if (m.getSource(FEATURE_HIGHLIGHT_SOURCE_ID)) clearFeatureHighlight(m);
+        } catch {
+          /* best effort */
+        }
         return;
       }
       let features: maplibregl.MapGeoJSONFeature[] = [];
@@ -2124,8 +2349,14 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
         features = [];
       }
       if (!features || features.length === 0) {
-        // Tap on empty map (or basemap/raster) dismisses any open popup.
+        // Tap on empty map (or basemap/raster) dismisses any open popup AND
+        // clears the highlight (FIX 1 — a no-hit tap replaces/clears it).
         setFeaturePopup(null);
+        try {
+          if (m.getSource(FEATURE_HIGHLIGHT_SOURCE_ID)) clearFeatureHighlight(m);
+        } catch {
+          /* best effort */
+        }
         return;
       }
       const hit = features[0]!;
@@ -2134,12 +2365,41 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
           ? ((hit as unknown as { layer: { source: string } }).layer.source as string)
           : undefined;
       const geomKind = sourceId ? vectorGeomKinds.current.get(sourceId) : undefined;
-      const data = buildFeaturePopupData(
-        (hit.properties ?? null) as Record<string, unknown> | null,
-        { x: e.point.x, y: e.point.y },
-        { layerName: sourceId, geomKindLabel: geomLabel(geomKind) },
-      );
+      // FIX 1 — highlight the ENTIRE tapped feature geometry. Generic across
+      // polygon/line/point: setFeatureHighlight feeds the cloned geometry into a
+      // single highlight source whose fill/line/circle layers paint whichever
+      // kind matches. Map-space, so it pans + scales with zoom for free. Replaces
+      // any prior highlight (a new tap = a new highlight).
+      try {
+        setFeatureHighlight(m, (hit.geometry ?? null) as Geometry | null);
+      } catch {
+        /* highlight is best-effort; the popup still opens */
+      }
+      // FIX 2 — capture the feature's geographic anchor so the popup stays glued
+      // to its MAP location across pans/zooms. FIX 3 — capture the zoom at tap as
+      // the scale reference. e.lngLat is MapLibre's geographic coordinate of the
+      // tap point (Invariant 1: received from MapLibre, not computed).
+      const lngLat =
+        e.lngLat && typeof e.lngLat.lng === "number" && typeof e.lngLat.lat === "number"
+          ? { lng: e.lngLat.lng, lat: e.lngLat.lat }
+          : undefined;
+      let refZoom: number | undefined;
+      try {
+        refZoom = m.getZoom();
+      } catch {
+        refZoom = undefined;
+      }
+      const data: FeaturePopupData = {
+        ...buildFeaturePopupData(
+          (hit.properties ?? null) as Record<string, unknown> | null,
+          { x: e.point.x, y: e.point.y },
+          { layerName: sourceId, geomKindLabel: geomLabel(geomKind) },
+        ),
+        lngLat,
+        refZoom,
+      };
       setMapCanvasSize(readCanvasSize());
+      if (typeof refZoom === "number") setCurrentZoom(refZoom);
       setFeaturePopup(data);
     };
 
@@ -2173,6 +2433,81 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       }
     };
   }, []);
+
+  // FIX 2 + FIX 3 (NATE 2026-06-17) — keep the popup PINNED TO THE MAP and
+  // TRACK ZOOM for the scale transform. While a popup with a geographic anchor
+  // (`lngLat`) is open, re-project that lng/lat to a screen point on every map
+  // `move` / `zoom` so the card stays glued to the feature's MAP location (pans
+  // with the map, same spot on the map), and mirror the live map zoom into
+  // `currentZoom` so the card scales like a map-drawn label. rAF-throttled so a
+  // 60fps pan doesn't thrash setState. Re-projection updates only `point` so the
+  // popup content / lngLat / refZoom are preserved. Re-armed whenever the popup
+  // identity (its lngLat) changes; torn down when the popup closes.
+  const popupLng = featurePopup?.lngLat?.lng;
+  const popupLat = featurePopup?.lngLat?.lat;
+  useEffect(() => {
+    const m = map.current;
+    if (!m) return undefined;
+    if (typeof popupLng !== "number" || typeof popupLat !== "number") {
+      return undefined; // no geographic anchor (older fixtures) → stays screen-anchored.
+    }
+
+    let rafId: number | null = null;
+    let disposed = false;
+    const recompute = () => {
+      rafId = null;
+      if (disposed) return;
+      const cur = map.current;
+      if (!cur) return;
+      let pt: { x: number; y: number };
+      try {
+        pt = cur.project([popupLng, popupLat]);
+      } catch {
+        return;
+      }
+      let z: number;
+      try {
+        z = cur.getZoom();
+      } catch {
+        z = currentZoom ?? 0;
+      }
+      setCurrentZoom(z);
+      // Update only `point` — keep the rest of the popup payload intact so the
+      // card re-renders glued to the feature's projected map location.
+      setFeaturePopup((prev) =>
+        prev ? { ...prev, point: { x: pt.x, y: pt.y } } : prev,
+      );
+    };
+    const schedule = () => {
+      if (rafId != null) return;
+      if (typeof requestAnimationFrame === "function") {
+        rafId = requestAnimationFrame(recompute);
+      } else {
+        recompute(); // SSR / test env without rAF → synchronous.
+      }
+    };
+
+    // Project once now (so the card lands on the anchor immediately), then on
+    // every camera change.
+    schedule();
+    m.on("move", schedule);
+    m.on("zoom", schedule);
+
+    return () => {
+      disposed = true;
+      if (rafId != null && typeof cancelAnimationFrame === "function") {
+        cancelAnimationFrame(rafId);
+      }
+      try {
+        m.off("move", schedule);
+        m.off("zoom", schedule);
+      } catch {
+        /* map may already be torn down */
+      }
+    };
+    // currentZoom is intentionally omitted — it's a fallback read, not a trigger.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [popupLng, popupLat]);
 
   // --- Region-disambiguation choropleth sync (state-bbox-fallback) -------- //
   //
@@ -2366,20 +2701,39 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       {/* job-0321 (F43) — the legend now lives INSIDE the map container so it
           can anchor to the AOI box. `anchor` non-null = hang off the box's
           bottom edge; null = LayerLegend's own bottom-center fallback. */}
-      <LayerLegend layers={legendLayers} anchor={resolvedAnchor} />
+      {/* job-0321 (F43) anchor + FIX 4 (barWidth) — the legend hangs off the AOI
+          box's bottom edge and is sized to the box's on-screen width. */}
+      <LayerLegend
+        layers={legendLayers}
+        anchor={resolvedAnchor}
+        barWidth={legendBarWidth}
+      />
 
-      {/* F74b / F86 (FIX 3) — feature-click/tap-to-inspect popup. Shown when a
-          click/tap hits a rendered vector feature; ANCHORED AT THE TAP/CLICK
-          POINT on BOTH desktop and mobile (clamped into the canvas so it never
-          clips off a small screen). It PERSISTS until the user taps elsewhere
-          (a no-hit click dismisses it), taps another feature (it moves to that
-          point), or hits the X / Esc. */}
+      {/* F74b / FIX 2 / FIX 3 — feature-click/tap-to-inspect popup. Shown when a
+          click/tap hits a rendered vector feature; PINNED TO THE FEATURE'S MAP
+          LOCATION (re-projected on pan/zoom so it pans with the map) and SCALED
+          with the map zoom (shrinks zoomed out, grows zoomed in; clamped). It
+          PERSISTS until the user taps elsewhere (a no-hit click dismisses it),
+          taps another feature (it moves there), or hits the X / Esc — and the
+          generic feature HIGHLIGHT (FIX 1) is cleared on any of those. */}
       {featurePopup ? (
         <FeaturePopup
           data={featurePopup}
           canvasSize={mapCanvasSize}
           isMobile={isMobile}
-          onClose={() => setFeaturePopup(null)}
+          currentZoom={currentZoom ?? undefined}
+          onClose={() => {
+            setFeaturePopup(null);
+            // FIX 1 — clear the highlight when the popup is dismissed (X / Esc).
+            const m = map.current;
+            if (m) {
+              try {
+                clearFeatureHighlight(m);
+              } catch {
+                /* best effort */
+              }
+            }
+          }}
         />
       ) : null}
     </div>

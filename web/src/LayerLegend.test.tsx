@@ -163,4 +163,39 @@ describe("LayerLegend", () => {
     );
     expect(container.firstChild).toBeNull();
   });
+
+  // --- FIX 4 (NATE 2026-06-17) — width sized to the AOI bbox on-screen ------ //
+
+  it("uses the static 320px width when no barWidth is provided", () => {
+    render(<LayerLegend layers={[makeLayer()]} />);
+    expect(screen.getByTestId("grace2-layer-legend").style.width).toBe("320px");
+  });
+
+  it("falls back to 320px when barWidth is null", () => {
+    render(<LayerLegend layers={[makeLayer()]} barWidth={null} />);
+    expect(screen.getByTestId("grace2-layer-legend").style.width).toBe("320px");
+  });
+
+  it("sizes the colorbar width to the provided barWidth (AOI on-screen extent)", () => {
+    render(
+      <LayerLegend
+        layers={[makeLayer()]}
+        anchor={{ left: 412, top: 300 }}
+        barWidth={248}
+      />,
+    );
+    expect(screen.getByTestId("grace2-layer-legend").style.width).toBe("248px");
+  });
+
+  it("ignores a non-positive barWidth and keeps the 320px fallback", () => {
+    render(<LayerLegend layers={[makeLayer()]} barWidth={0} />);
+    expect(screen.getByTestId("grace2-layer-legend").style.width).toBe("320px");
+  });
+
+  it("does not change the value range / tick labels when sized by barWidth", () => {
+    render(<LayerLegend layers={[makeLayer()]} barWidth={180} />);
+    // Width is the AOI on-screen extent, but the labels are the preset's range.
+    expect(screen.getByTestId("layer-legend-min-label")).toHaveTextContent("0 m");
+    expect(screen.getByTestId("layer-legend-max-label")).toHaveTextContent("3.5 m");
+  });
 });
