@@ -156,6 +156,113 @@ logger = logging.getLogger("grace2_agent.pipeline_emitter")
 
 
 # --------------------------------------------------------------------------- #
+# Terminal-on-RETURN detector (job — terminal-pipeline-card hardening)
+# --------------------------------------------------------------------------- #
+#
+# A tool/workflow can FAIL or be CANCELLED yet still RETURN a value rather than
+# raising — the solver poll path is the headline case. When the docker
+# container is killed (user cancel, transient WS blip, or SOLVER_TIMEOUT), the
+# supervisor writes a terminal completion.json and ``wait_for_completion``
+# RETURNS a ``RunResult`` with ``status != "complete"`` instead of raising. The
+# flood composer then returns a typed *failed* ``AssessmentEnvelope`` (via
+# ``_build_failed_envelope``) whose only honesty signal is the ``:FAILED:<CODE>``
+# infix on ``workflow_name`` (job-0327) — a NORMAL return. The MODFLOW tool
+# returns a raw ``{"status": "error", ...}`` dict on the same path.
+#
+# Without inspecting the RETURN value, ``emit_tool_call`` falls through to
+# ``mark_complete`` → a GREEN card on a dead solve (NATE's "silent green on a
+# cancelled/timed-out run" symptom). This detector recognises ALL THREE failed-
+# but-returned shapes so the wrapper can mark the card failed/cancelled instead.
+
+_FAILED_DICT_STATUSES = frozenset({"error", "failed", "cancelled"})
+
+
+def _classify_tool_return(result: Any) -> tuple[str, str, str] | None:
+    """Inspect a tool RETURN value for a non-success terminal outcome.
+
+    Returns ``None`` when the result is a healthy/success shape (the common
+    case → the wrapper marks the card complete unchanged). Otherwise returns
+    ``(terminal_state, error_code, error_message)`` where ``terminal_state`` is
+    ``"cancelled"`` or ``"failed"`` — so the wrapper can call ``mark_cancelled``
+    or ``mark_failed`` and the UI card reaches a visible terminal state instead
+    of spinning forever.
+
+    Recognised failed-but-RETURNED shapes (all key off STRUCTURE, never on a
+    raised exception):
+
+    1. ``RunResult`` (duck-typed: has ``status`` + ``run_id`` + ``handle_id``)
+       with ``status != "complete"`` — the solver poll returned a killed/timed-
+       out run. ``status == "cancelled"`` maps to the cancelled card.
+    2. A ``dict`` with ``status`` in {error, failed, cancelled} — the MODFLOW
+       tool's ``{"status": "error", "error_code": ..., "error_message": ...}``
+       shape (run_modflow_tool.py).
+    3. A failed ``AssessmentEnvelope`` (duck-typed via ``workflow_name``, or a
+       dict with that key) whose ``workflow_name`` carries the ``:FAILED:<CODE>``
+       honesty anchor (model_flood_scenario.py ``_build_failed_envelope``).
+
+    Deliberately conservative: ANY ambiguous / unrecognised shape returns
+    ``None`` (treated as success) so a healthy run is NEVER mislabelled failed.
+    """
+
+    def _from_workflow_name(wf: Any) -> tuple[str, str, str] | None:
+        if isinstance(wf, str) and ":FAILED:" in wf:
+            code = wf.split(":FAILED:", 1)[1].strip() or "MODEL_RUN_FAILED"
+            state = "cancelled" if code.upper() == "CANCELLED" else "failed"
+            return (state, code, f"workflow reported {code}")
+        return None
+
+    # --- Shape 1: RunResult (or any object with the same terminal fields) ---
+    status = getattr(result, "status", None)
+    if (
+        isinstance(status, str)
+        and not isinstance(result, dict)
+        and hasattr(result, "run_id")
+        and hasattr(result, "handle_id")
+    ):
+        if status == "complete":
+            return None
+        code = (
+            getattr(result, "error_code", None)
+            or (status.upper() if status else "SOLVER_FAILED")
+        )
+        message = (
+            getattr(result, "error_message", None)
+            or getattr(result, "cancellation_reason", None)
+            or f"solver run {status}"
+        )
+        terminal = "cancelled" if status == "cancelled" else "failed"
+        return (terminal, str(code), str(message))
+
+    # --- Shape 3 (object): failed AssessmentEnvelope (duck-typed) ----------
+    # Check BEFORE the generic dict branch so the envelope's ``:FAILED:`` infix
+    # is the authoritative signal (a failed envelope's ``status`` field, if any,
+    # is unrelated to the run outcome).
+    if not isinstance(result, dict):
+        wf_hit = _from_workflow_name(getattr(result, "workflow_name", None))
+        if wf_hit is not None:
+            return wf_hit
+
+    # --- Shapes 2 & 3 (dict) ----------------------------------------------
+    if isinstance(result, dict):
+        wf_hit = _from_workflow_name(result.get("workflow_name"))
+        if wf_hit is not None:
+            return wf_hit
+        dstatus = result.get("status")
+        if isinstance(dstatus, str) and dstatus.lower() in _FAILED_DICT_STATUSES:
+            code = result.get("error_code") or dstatus.upper()
+            message = (
+                result.get("error_message")
+                or result.get("message")
+                or result.get("error")
+                or f"tool reported {dstatus}"
+            )
+            terminal = "cancelled" if dstatus.lower() == "cancelled" else "failed"
+            return (terminal, str(code), str(message))
+
+    return None
+
+
+# --------------------------------------------------------------------------- #
 # Error-code registry (Appendix A.6 open set, SCREAMING_SNAKE_CASE)
 # --------------------------------------------------------------------------- #
 
@@ -674,6 +781,27 @@ class PipelineEmitter:
         step.progress_percent = self._coerce_progress(progress_percent)
         await self._emit_pipeline_state()
 
+    async def update_current_progress(self, progress_percent: int) -> None:
+        """Bump ``progress_percent`` on the CURRENTLY-running step; emit.
+
+        Convenience for workflow bodies that hold a ``current_emitter()`` handle
+        but NOT the ``step_id`` (the step is created inside ``emit_tool_call``).
+        Targets the most-recently-added step that is in ``running`` state; no-op
+        (best-effort) when no step is running — emitting pre-solver progress is a
+        UX nice-to-have, never a correctness gate. Used by
+        ``model_flood_scenario`` to keep the card from sitting silently during
+        the multi-second pre-solver fetcher chain + SFINCS build (so a stall is
+        VISIBLE and a hang is bounded by the per-phase timeout).
+        """
+        running = [
+            sid for sid in self._step_order if self._steps[sid].state == "running"
+        ]
+        if not running:
+            return
+        step = self._steps[running[-1]]
+        step.progress_percent = self._coerce_progress(progress_percent)
+        await self._emit_pipeline_state()
+
     async def mark_complete(self, step_id: str) -> None:
         """Flip ``step_id`` to ``complete``, stamp ``completed_at``, emit."""
         step = self._require_step(step_id)
@@ -899,7 +1027,32 @@ class PipelineEmitter:
                 emit_layer = emit_layer_uri(result)
                 if emit_layer is not None:
                     await self.add_loaded_layer(emit_layer)
-            await self.mark_complete(step_id)
+            # job (terminal-pipeline-card hardening): a tool can FAIL or be
+            # CANCELLED yet still RETURN (the solver poll path — a docker-killed
+            # / timed-out run returns a RunResult or a failed AssessmentEnvelope
+            # rather than raising). Inspect the return value: if it carries a
+            # non-success terminal outcome, flip the card to cancelled/failed
+            # instead of green. This kills NATE's "silent green on a cancelled
+            # solve" + "card spins forever then mislabels success" symptom for
+            # BOTH the flood envelope (:FAILED: anchor) and the MODFLOW dict.
+            terminal = _classify_tool_return(result)
+            if terminal is not None:
+                state, error_code, error_message = terminal
+                if state == "cancelled":
+                    await self.mark_cancelled(step_id)
+                else:
+                    await self.mark_failed(
+                        step_id,
+                        error_code=error_code,
+                        error_message=error_message,
+                    )
+                logger.info(
+                    "emit_tool_call: tool %r RETURNED a non-success terminal "
+                    "outcome state=%s code=%s; card marked %s (not complete)",
+                    tool_name, state, error_code, state,
+                )
+            else:
+                await self.mark_complete(step_id)
             self.last_tool_step = self._to_summary(step_id)  # job-0267
             return result
         finally:

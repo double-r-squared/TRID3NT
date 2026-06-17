@@ -62,6 +62,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Any
 
@@ -116,6 +117,47 @@ logger = logging.getLogger("grace2_agent.workflows.model_flood_scenario")
 # (smoke harness, integration test) still produces a valid envelope.
 _FALLBACK_PROJECT_ID = None
 _FALLBACK_SESSION_ID = None
+
+
+# --- Pre-solver phase timeouts (terminal-pipeline-card hardening) -----------
+# The fetcher chain (Steps 1-4) + ``build_sfincs_model`` (Step 5) run BEFORE
+# ``wait_for_completion``, which is the only phase that previously emitted
+# progress. If any pre-solver step hangs (a wedged data endpoint, a GDAL VSI
+# read with no overall timeout, a py3dep stall) the card sat ``running`` with
+# NO progress and NO timeout — indistinguishable from the spin-after-cancel
+# bug and consistent with NATE's "120 min, never finished" symptom. Each phase
+# is now wrapped in ``asyncio.wait_for`` (the sync calls go through
+# ``asyncio.to_thread`` so the timeout is enforceable) and bounded by a
+# GENEROUS budget — large enough that a healthy fetch/build never trips it, but
+# finite so a true hang surfaces as a typed ``*_TIMEOUT`` failed envelope
+# instead of an infinite await. Overridable via env for ops tuning.
+_FETCHER_PHASE_TIMEOUT_S = float(
+    os.environ.get("GRACE2_FLOOD_FETCHER_TIMEOUT_S", "900")  # 15 min
+)
+_BUILD_PHASE_TIMEOUT_S = float(
+    os.environ.get("GRACE2_FLOOD_BUILD_TIMEOUT_S", "900")  # 15 min
+)
+
+
+async def _emit_presolver_progress(
+    emitter: Any, progress_percent: int
+) -> None:
+    """Best-effort pre-solver progress bump on the current pipeline card.
+
+    Keeps the card from sitting SILENTLY during the multi-second pre-solver
+    chain. ``emitter`` is the ``current_emitter()`` handle (may be ``None``
+    outside a WS dispatch — direct call / smoke / unit test); failure is
+    swallowed because progress is a UX hint, never a correctness gate.
+    """
+    if emitter is None:
+        return
+    try:
+        await emitter.update_current_progress(progress_percent)
+    except Exception as exc:  # noqa: BLE001 — progress is non-fatal
+        logger.debug(
+            "model_flood_scenario: pre-solver progress emit failed (non-fatal): %s",
+            exc,
+        )
 
 
 class WorkflowError(RuntimeError):
@@ -570,7 +612,20 @@ async def model_flood_scenario(
     # pre-computed uniform netamt rate (None on the design-storm path).
     precip_inches: float | None = None
     precip_magnitude_mm_per_hr: float | None = None
-    try:
+    # Pre-solver progress (terminal-pipeline-card hardening): nudge the card so
+    # it is never SILENT during the multi-second fetcher chain.
+    await _emit_presolver_progress(emitter, 5)
+    # The fetcher chain + ForcingSummary build is SYNCHRONOUS, blocking I/O
+    # (HTTP fetches, GDAL VSI reads with no overall timeout). Run it off the
+    # event loop in a worker thread and bound it with ``asyncio.wait_for`` so a
+    # wedged endpoint surfaces as a typed PRESOLVER_TIMEOUT failed envelope
+    # instead of an INFINITE silent await (NATE's "120 min, never finished").
+    # The closure mutates ``data_sources`` / ``forcing_summary`` etc. via a
+    # results container; single worker thread, sequential, no concurrent reader.
+    _fetch_out: dict[str, Any] = {}
+
+    def _fetcher_chain() -> None:
+        nonlocal precip_inches, precip_magnitude_mm_per_hr, forcing_summary
         dem_layer = fetch_dem(resolved_bbox, resolution_m=int(grid_resolution_m))
         data_sources.append(
             DataSource(name="USGS 3DEP", uri=dem_layer.uri, accessed_at=datetime.now(timezone.utc))
@@ -692,6 +747,45 @@ async def model_flood_scenario(
                     "project_area": precip_result.get("project_area"),
                 },
             )
+        # Hand the downstream-needed locals back to the async frame.
+        _fetch_out["dem_layer"] = dem_layer
+        _fetch_out["landcover_layer"] = landcover_layer
+        _fetch_out["nlcd_vintage_year"] = nlcd_vintage_year
+        _fetch_out["river_layer"] = river_layer
+
+    try:
+        await asyncio.wait_for(
+            asyncio.to_thread(_fetcher_chain),
+            timeout=_FETCHER_PHASE_TIMEOUT_S,
+        )
+    except asyncio.CancelledError:
+        # Invariant 8: a true cancel propagates (mark_cancelled fires upstream).
+        raise
+    except asyncio.TimeoutError:
+        logger.warning(
+            "model_flood_scenario: fetcher chain exceeded %.0fs budget for "
+            "bbox=%s — returning PRESOLVER_TIMEOUT failed envelope (a hang is "
+            "now bounded + visible, not an infinite silent await).",
+            _FETCHER_PHASE_TIMEOUT_S,
+            resolved_bbox,
+        )
+        return _build_failed_envelope(
+            bbox=resolved_bbox,
+            project_id=proj_id,
+            session_id=sess_id,
+            error_code="PRESOLVER_TIMEOUT",
+            error_detail=(
+                f"data-fetch phase exceeded {_FETCHER_PHASE_TIMEOUT_S:.0f}s "
+                "(a data endpoint or terrain/landcover read stalled)"
+            ),
+            workflow_name=workflow_name,
+            data_sources=data_sources,
+            forcing=forcing_summary,
+            solver_run_ids=solver_run_ids,
+            return_period_years=return_period_yr,
+            duration_hours=float(duration_hr),
+            grid_resolution_m=grid_resolution_m,
+        )
     except Exception as exc:  # noqa: BLE001
         logger.exception("fetcher chain failed: %s", exc)
         return _build_failed_envelope(
@@ -708,6 +802,12 @@ async def model_flood_scenario(
             duration_hours=float(duration_hr),
             grid_resolution_m=grid_resolution_m,
         )
+
+    dem_layer = _fetch_out["dem_layer"]
+    landcover_layer = _fetch_out["landcover_layer"]
+    nlcd_vintage_year = _fetch_out["nlcd_vintage_year"]
+    river_layer = _fetch_out["river_layer"]
+    await _emit_presolver_progress(emitter, 25)
 
     # --- Step 5: build_sfincs_model with NLCD validation gate ---
     try:
@@ -731,17 +831,50 @@ async def model_flood_scenario(
             grid_resolution_m=grid_resolution_m,
             simulation_hours=float(duration_hr),
         )
-        model_setup = build_sfincs_model(
-            dem_uri=dem_layer.uri,
-            landcover_uri=landcover_layer.uri,
-            # job-0307: None when the best-effort river fetch failed (pluvial
-            # deck ignores it; build_sfincs_model documents river_geometry_uri
-            # as "may be None").
-            river_geometry_uri=river_layer.uri if river_layer is not None else None,
-            forcing=forcing_spec,
+        # ``build_sfincs_model`` is SYNCHRONOUS with no overall timeout
+        # (sfincs_builder GDAL VSI cache/timeout is per-read only). Run it off
+        # the loop + bound it so a wedged build surfaces as PRESOLVER_TIMEOUT
+        # rather than an infinite silent await.
+        model_setup = await asyncio.wait_for(
+            asyncio.to_thread(
+                build_sfincs_model,
+                dem_uri=dem_layer.uri,
+                landcover_uri=landcover_layer.uri,
+                # job-0307: None when the best-effort river fetch failed (pluvial
+                # deck ignores it; build_sfincs_model documents river_geometry_uri
+                # as "may be None").
+                river_geometry_uri=river_layer.uri if river_layer is not None else None,
+                forcing=forcing_spec,
+                bbox=resolved_bbox,
+                options=options,
+                nlcd_vintage_year=nlcd_vintage_year,
+            ),
+            timeout=_BUILD_PHASE_TIMEOUT_S,
+        )
+    except asyncio.CancelledError:
+        raise
+    except asyncio.TimeoutError:
+        logger.warning(
+            "model_flood_scenario: build_sfincs_model exceeded %.0fs budget for "
+            "bbox=%s — returning PRESOLVER_TIMEOUT failed envelope.",
+            _BUILD_PHASE_TIMEOUT_S,
+            resolved_bbox,
+        )
+        return _build_failed_envelope(
             bbox=resolved_bbox,
-            options=options,
-            nlcd_vintage_year=nlcd_vintage_year,
+            project_id=proj_id,
+            session_id=sess_id,
+            error_code="PRESOLVER_TIMEOUT",
+            error_detail=(
+                f"SFINCS model build exceeded {_BUILD_PHASE_TIMEOUT_S:.0f}s"
+            ),
+            workflow_name=workflow_name,
+            data_sources=data_sources,
+            forcing=forcing_summary,
+            solver_run_ids=solver_run_ids,
+            return_period_years=return_period_yr,
+            duration_hours=float(duration_hr),
+            grid_resolution_m=grid_resolution_m,
         )
     except SFINCSSetupError as exc:
         # The headline failure path — LULC_MAPPING_MISMATCH and friends
@@ -766,6 +899,11 @@ async def model_flood_scenario(
             duration_hours=float(duration_hr),
             grid_resolution_m=grid_resolution_m,
         )
+
+    # Pre-solver phases done — the long solve takes over progress emission from
+    # here (wait_for_completion drives the binding). Stamp the hand-off so the
+    # card shows clear forward motion into Step 7.
+    await _emit_presolver_progress(emitter, 40)
 
     # --- Step 6: run_solver (Invariant 9 confirmation seam owned by agent) ---
     try:

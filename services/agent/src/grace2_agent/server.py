@@ -3450,7 +3450,23 @@ def _ensure_emitter(websocket: ServerConnection, state: SessionState) -> None:
         return
 
     async def _sink(text: str) -> None:
-        await websocket.send(text)
+        # job (terminal-pipeline-card hardening / Gap 1): the WS may be mid-close
+        # when a terminal pipeline-state frame (mark_cancelled / mark_failed) is
+        # emitted on the cancel path — ``websocket.send`` then raises
+        # ConnectionClosed straight out of the emitter, swallowing the terminal
+        # frame AND letting the exception escape the cancel chain. Best-effort:
+        # swallow send failures so the card-state transition is always recorded
+        # server-side and the CancelledError propagates cleanly for any clients
+        # still attached. Mirrors the existing swallow at the outer-loop cancel
+        # emit (the gemini-cancel pipeline-state send).
+        try:
+            await websocket.send(text)
+        except Exception:  # noqa: BLE001 — socket may be closing on cancel/fail
+            logger.debug(
+                "emitter sink: websocket.send failed (socket closing?); "
+                "frame dropped best-effort (session=%s)",
+                state.session_id,
+            )
 
     state.emitter = PipelineEmitter(
         session_id=state.session_id,

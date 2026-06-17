@@ -802,3 +802,222 @@ async def test_emit_byte_identical_under_signed_urls_true(
     ][-1]["payload"]["loaded_layers"]
 
     assert absent_loaded == true_loaded
+
+
+# --------------------------------------------------------------------------- #
+# Terminal-on-RETURN (terminal-pipeline-card hardening) — a tool/workflow that
+# FAILS or is CANCELLED yet RETURNS (the solver poll path) must flip the card
+# to failed/cancelled, NOT green. Kills NATE's "silent green on a dead solve" +
+# "card spins forever then mislabels success" symptom.
+# --------------------------------------------------------------------------- #
+
+
+def _run_result(status: str, **kw: Any):
+    """Build a RunResult with the given terminal status (duck-typed shape)."""
+    from grace2_contracts.execution import RunResult
+
+    return RunResult(
+        run_id=new_ulid(),
+        handle_id=new_ulid(),
+        status=status,  # type: ignore[arg-type]
+        **kw,
+    )
+
+
+@pytest.mark.asyncio
+async def test_emit_tool_call_failed_runresult_marks_card_failed(
+    emitter: PipelineEmitter, sink: _CapturingSink
+) -> None:
+    """A tool that RETURNS a RunResult(status='failed') -> the card is FAILED
+    (red), never complete (green). The result is returned unchanged so the
+    LLM/retry loop can act."""
+    rr = _run_result("failed", error_code="SOLVER_FAILED", error_message="diverged")
+
+    result = await emitter.emit_tool_call(
+        name="Flood scenario", tool_name="run_model_flood_scenario", invoke=lambda: rr
+    )
+    assert result is rr
+    last = _pipeline_frames(sink)[-1]
+    step = last["payload"]["steps"][0]
+    assert step["state"] == "failed", step
+    # No 'complete' frame was ever emitted for this step.
+    states = [f["payload"]["steps"][0]["state"] for f in _pipeline_frames(sink)]
+    assert "complete" not in states, states
+
+
+@pytest.mark.asyncio
+async def test_emit_tool_call_timeout_runresult_marks_card_failed(
+    emitter: PipelineEmitter, sink: _CapturingSink
+) -> None:
+    """SOLVER_TIMEOUT RunResult (the wait_for_completion local-docker timeout
+    branch) RETURNS rather than raises -> card FAILED, carries the code."""
+    rr = _run_result(
+        "failed", error_code="SOLVER_TIMEOUT", error_message="exceeded budget"
+    )
+    await emitter.emit_tool_call(
+        name="Flood scenario", tool_name="run_model_flood_scenario", invoke=lambda: rr
+    )
+    last = _pipeline_frames(sink)[-1]
+    assert last["payload"]["steps"][0]["state"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_emit_tool_call_cancelled_runresult_marks_card_cancelled(
+    emitter: PipelineEmitter, sink: _CapturingSink
+) -> None:
+    """A RunResult(status='cancelled') (supervisor wrote a cancelled
+    completion.json, wait_for_completion RETURNED it) -> card CANCELLED
+    (yellow), distinct from failed per Invariant 8."""
+    rr = _run_result("cancelled", cancellation_reason="user stop")
+    await emitter.emit_tool_call(
+        name="Flood scenario", tool_name="run_model_flood_scenario", invoke=lambda: rr
+    )
+    last = _pipeline_frames(sink)[-1]
+    assert last["payload"]["steps"][0]["state"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_emit_tool_call_complete_runresult_marks_card_complete(
+    emitter: PipelineEmitter, sink: _CapturingSink
+) -> None:
+    """REGRESSION GUARD: a healthy RunResult(status='complete') still marks the
+    card complete (green). The detector must NEVER mislabel a good run."""
+    rr = _run_result("complete", output_uri="s3://bucket/run/out/")
+    await emitter.emit_tool_call(
+        name="Flood scenario", tool_name="run_model_flood_scenario", invoke=lambda: rr
+    )
+    last = _pipeline_frames(sink)[-1]
+    assert last["payload"]["steps"][0]["state"] == "complete"
+
+
+@pytest.mark.asyncio
+async def test_emit_tool_call_failed_envelope_dict_marks_card_failed(
+    emitter: PipelineEmitter, sink: _CapturingSink
+) -> None:
+    """The flood composer returns a typed failed AssessmentEnvelope whose
+    ``workflow_name`` carries the ``:FAILED:<CODE>`` honesty anchor. As a dict
+    (model_dump) it must flip the card to FAILED — the silent-green mislabel for
+    the flood path (Gap 2)."""
+    env_dict = {
+        "envelope_type": "modeled",
+        "hazard_type": "flood",
+        "workflow_name": "model_flood_scenario:FAILED:SOLVER_TIMEOUT",
+        "layers": [],
+    }
+    await emitter.emit_tool_call(
+        name="Flood scenario",
+        tool_name="run_model_flood_scenario",
+        invoke=lambda: env_dict,
+    )
+    last = _pipeline_frames(sink)[-1]
+    step = last["payload"]["steps"][0]
+    assert step["state"] == "failed", step
+
+
+@pytest.mark.asyncio
+async def test_emit_tool_call_cancelled_envelope_dict_marks_card_cancelled(
+    emitter: PipelineEmitter, sink: _CapturingSink
+) -> None:
+    """A failed flood envelope tagged :FAILED:CANCELLED maps to the CANCELLED
+    (yellow) card, not failed — honest cancel surfacing."""
+    env_dict = {
+        "envelope_type": "modeled",
+        "workflow_name": "model_flood_scenario:FAILED:CANCELLED",
+        "layers": [],
+    }
+    await emitter.emit_tool_call(
+        name="Flood scenario",
+        tool_name="run_model_flood_scenario",
+        invoke=lambda: env_dict,
+    )
+    last = _pipeline_frames(sink)[-1]
+    assert last["payload"]["steps"][0]["state"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_emit_tool_call_error_status_dict_marks_card_failed(
+    emitter: PipelineEmitter, sink: _CapturingSink
+) -> None:
+    """The MODFLOW tool returns a raw {'status': 'error', ...} dict on the
+    killed/timed-out solver path. It must flip the card to FAILED."""
+    err = {
+        "status": "error",
+        "error_code": "SOLVER_FAILED",
+        "error_message": "MODFLOW did not complete",
+    }
+    await emitter.emit_tool_call(
+        name="MODFLOW run", tool_name="run_modflow_job", invoke=lambda: err
+    )
+    last = _pipeline_frames(sink)[-1]
+    step = last["payload"]["steps"][0]
+    assert step["state"] == "failed", step
+
+
+@pytest.mark.asyncio
+async def test_emit_tool_call_ok_dict_marks_card_complete(
+    emitter: PipelineEmitter, sink: _CapturingSink
+) -> None:
+    """REGRESSION GUARD: a normal tool returning a dict WITHOUT a failure
+    status/anchor still completes (green). No false-positive failures."""
+    ok = {"status": "ok", "value": 42, "rows": [1, 2, 3]}
+    await emitter.emit_tool_call(
+        name="Zonal stats", tool_name="compute_zonal_statistics", invoke=lambda: ok
+    )
+    last = _pipeline_frames(sink)[-1]
+    assert last["payload"]["steps"][0]["state"] == "complete"
+
+
+@pytest.mark.asyncio
+async def test_emit_tool_call_plain_dict_no_status_marks_card_complete(
+    emitter: PipelineEmitter, sink: _CapturingSink
+) -> None:
+    """REGRESSION GUARD: a plain result dict with no ``status`` field at all is
+    treated as success (the conservative default)."""
+    res = {"count": 7, "table": [{"a": 1}]}
+    await emitter.emit_tool_call(
+        name="Aggregate", tool_name="aggregate_claims", invoke=lambda: res
+    )
+    last = _pipeline_frames(sink)[-1]
+    assert last["payload"]["steps"][0]["state"] == "complete"
+
+
+# Unit-level coverage of the classifier itself.
+
+
+def test_classify_tool_return_recognizes_all_failed_shapes() -> None:
+    from grace2_agent.pipeline_emitter import _classify_tool_return
+
+    # RunResult shapes.
+    assert _classify_tool_return(_run_result("failed", error_code="X"))[0] == "failed"
+    assert _classify_tool_return(_run_result("cancelled"))[0] == "cancelled"
+    assert _classify_tool_return(_run_result("complete")) is None
+    # Dict shapes.
+    assert _classify_tool_return({"status": "error"})[0] == "failed"
+    assert _classify_tool_return({"status": "cancelled"})[0] == "cancelled"
+    assert _classify_tool_return({"status": "ok"}) is None
+    # Failed-envelope dict via :FAILED: anchor.
+    fenv = {"workflow_name": "x:FAILED:SOLVER_FAILED", "layers": []}
+    cls = _classify_tool_return(fenv)
+    assert cls is not None and cls[0] == "failed" and cls[1] == "SOLVER_FAILED"
+    # Non-failure shapes -> None (conservative).
+    assert _classify_tool_return({"foo": "bar"}) is None
+    assert _classify_tool_return("a string") is None
+    assert _classify_tool_return(None) is None
+    assert _classify_tool_return(42) is None
+
+
+@pytest.mark.asyncio
+async def test_update_current_progress_targets_running_step(
+    emitter: PipelineEmitter, sink: _CapturingSink
+) -> None:
+    """``update_current_progress`` bumps the running step without a step_id;
+    no-op (no crash) when nothing is running."""
+    # No running step yet -> best-effort no-op (no frame, no raise).
+    await emitter.update_current_progress(10)
+    assert _pipeline_frames(sink) == []
+
+    step_id = await emitter.add_step(name="Build", tool_name="build_sfincs_model")
+    await emitter.mark_running(step_id)
+    await emitter.update_current_progress(33)
+    last = _pipeline_frames(sink)[-1]
+    assert last["payload"]["steps"][0]["progress_percent"] == 33

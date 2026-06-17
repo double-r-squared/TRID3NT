@@ -3521,3 +3521,94 @@ def test_nlcd_gate_gs_read_unchanged_does_not_call_boto3() -> None:
             sfincs_builder._extract_unique_nlcd_classes(gs_uri)
         assert excinfo.value.error_code == "LANDCOVER_READ_FAILED"
         mock_to_vsigs.assert_called_once_with(gs_uri)
+
+
+# --------------------------------------------------------------------------- #
+# Pre-solver phase timeouts (terminal-pipeline-card hardening)
+#
+# Before this fix the fetcher chain + build_sfincs_model could hang FOREVER
+# (a wedged data endpoint, a GDAL VSI read with no overall timeout) with the
+# card stuck 'running' and no progress — NATE's "120 min, never finished"
+# silent hang. Each pre-solver phase is now bounded; a hang surfaces as a typed
+# PRESOLVER_TIMEOUT failed envelope instead of an infinite await.
+# --------------------------------------------------------------------------- #
+
+import time as _time  # noqa: E402
+
+from grace2_agent.workflows import model_flood_scenario as _mfs  # noqa: E402
+
+
+@pytest.mark.asyncio
+async def test_fetcher_phase_timeout_returns_failed_envelope(monkeypatch) -> None:
+    """A wedged fetcher (blocks longer than the phase budget) surfaces as a
+    PRESOLVER_TIMEOUT failed envelope — NOT an infinite silent await."""
+    monkeypatch.setattr(_mfs, "_FETCHER_PHASE_TIMEOUT_S", 0.2)
+
+    def _hang_fetch_dem(*a, **k):  # noqa: ANN001, ANN002, ANN003
+        # Block well past the 0.2s budget (runs in the to_thread worker).
+        _time.sleep(3.0)
+        return _mock_layer_uri("dem")
+
+    with patch(
+        "grace2_agent.workflows.model_flood_scenario.fetch_dem",
+        side_effect=_hang_fetch_dem,
+    ):
+        envelope = await model_flood_scenario(
+            bbox=(-81.92, 26.55, -81.80, 26.68),
+            return_period_yr=100,
+            duration_hr=24,
+            compute_class="medium",
+        )
+
+    assert isinstance(envelope, AssessmentEnvelope)
+    assert envelope.envelope_type == "modeled"
+    # The :FAILED: anchor carries the timeout code so the card flips + narration
+    # is honest. (model_flood_scenario:FAILED:PRESOLVER_TIMEOUT)
+    assert ":FAILED:PRESOLVER_TIMEOUT" in envelope.workflow_name
+    assert envelope.layers == []
+    assert envelope.solver_run_ids == []
+
+
+@pytest.mark.asyncio
+async def test_build_phase_timeout_returns_failed_envelope(monkeypatch) -> None:
+    """A wedged build_sfincs_model surfaces as PRESOLVER_TIMEOUT (the fetcher
+    chain succeeds; the build hangs)."""
+    monkeypatch.setattr(_mfs, "_BUILD_PHASE_TIMEOUT_S", 0.2)
+
+    landcover_result = {
+        "layer": _mock_layer_uri("landcover"),
+        "nlcd_vintage_year": 2021,
+        "dataset": "nlcd_2021",
+        "source": "mrlc-wms",
+    }
+    precip_result = {
+        "precip_inches": 12.1,
+        "units": "inches",
+        "location": [26.6, -81.9],
+        "return_period_years": 100,
+        "duration_hours": 24.0,
+        "vintage_volume": "NOAA Atlas 14",
+        "project_area": "Southeastern States",
+        "source": "noaa-atlas14-pfds",
+    }
+
+    def _hang_build(*a, **k):  # noqa: ANN001, ANN002, ANN003
+        _time.sleep(3.0)
+
+    with (
+        patch("grace2_agent.workflows.model_flood_scenario.fetch_dem", return_value=_mock_layer_uri("dem")),
+        patch("grace2_agent.workflows.model_flood_scenario.fetch_landcover", return_value=landcover_result),
+        patch("grace2_agent.workflows.model_flood_scenario.fetch_river_geometry", return_value=_mock_layer_uri("rivers")),
+        patch("grace2_agent.workflows.model_flood_scenario.lookup_precip_return_period", return_value=precip_result),
+        patch("grace2_agent.workflows.model_flood_scenario.build_sfincs_model", side_effect=_hang_build),
+    ):
+        envelope = await model_flood_scenario(
+            bbox=(-81.92, 26.55, -81.80, 26.68),
+            return_period_yr=100,
+            duration_hr=24,
+            compute_class="medium",
+        )
+
+    assert isinstance(envelope, AssessmentEnvelope)
+    assert ":FAILED:PRESOLVER_TIMEOUT" in envelope.workflow_name
+    assert envelope.layers == []

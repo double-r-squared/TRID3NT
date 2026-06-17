@@ -209,7 +209,18 @@ async def test_persist_fires_even_when_post_invoke_emission_fails(
     file_persistence, fake_layer_tool
 ) -> None:
     """Round-3 plume scenario: tool succeeds, the WS dies before the
-    session-state emission. The layer MUST still persist (finally path)."""
+    session-state emission. The layer MUST still persist.
+
+    CONTRACT UPDATE (terminal-pipeline-card hardening, Fix 3 / Gap 1): the
+    emitter sink (server._ensure_emitter._sink) now SWALLOWS a mid-close
+    ``websocket.send`` failure best-effort instead of letting ConnectionClosed
+    escape. Previously a dying WS let the RuntimeError propagate out of the
+    dispatch (the layer persisted only via the ``finally`` path). Now the
+    dispatch COMPLETES cleanly — the terminal pipeline frame is never lost to a
+    closing socket, the CancelledError/terminal path is never derailed by a
+    send error, and the layer still persists. Both contracts guarantee
+    persistence; the new one additionally guarantees the dispatch does not raise
+    on a transient socket close."""
     session_id = new_ulid()
     ws_create = FakeWS()
     state = server.SessionState(session_id=session_id)
@@ -220,8 +231,10 @@ async def test_persist_fires_even_when_post_invoke_emission_fails(
     state.emitter = None
     server._ensure_emitter(dying, state)
 
-    with pytest.raises(RuntimeError, match="ConnectionClosed"):
-        await server._invoke_tool_via_emitter(dying, state, FAKE_TOOL, {})
+    # Fix 3: the swallowing sink means a dying WS no longer raises out of the
+    # dispatch. The tool result (a LayerURI) is returned normally.
+    result = await server._invoke_tool_via_emitter(dying, state, FAKE_TOOL, {})
+    assert isinstance(result, LayerURI)
 
     session_state = await file_persistence.get_session_state(case_id)
     assert len(session_state.loaded_layers) == 1, (
