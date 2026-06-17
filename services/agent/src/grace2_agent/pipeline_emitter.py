@@ -488,7 +488,52 @@ async def _read_vector_uri_as_geojson(uri: str) -> dict[str, Any] | None:
         )
         return None
 
-    return await loop.run_in_executor(None, _read_and_parse)
+    geojson_obj = await loop.run_in_executor(None, _read_and_parse)
+    # F94: a vector layer's FeatureCollection is the single thing that makes the
+    # client laggy when it carries thousands of footprints — this is the one
+    # choke point every inline vector flows through (``add_loaded_layer`` +
+    # ``reinline_vector_layers`` both call here), so the dense-vector decision
+    # lives here. Below the threshold the FC is returned unchanged; above it the
+    # FC is topology-preserving-simplified + capped so it is light to ship AND
+    # light for MapLibre to draw. The transform is best-effort + always renders;
+    # the per-layer density tag is recorded out-of-band in ``_density_meta_by_uri``
+    # so ``emit_session_state`` can stamp it on the wire layer honestly.
+    if isinstance(geojson_obj, dict) and geojson_obj.get("type") == "FeatureCollection":
+        try:
+            from .tools.vector_tiles import densify_if_needed
+
+            geojson_obj, _density_meta = densify_if_needed(geojson_obj, layer_id=uri)
+            if _density_meta is not None:
+                # Bound this module-global side-table so the always-on agent
+                # process never grows it without limit (F94 verifier: the
+                # per-emitter table is pruned on reset, but this URI-keyed one
+                # was not). FIFO-evict the oldest entry past the cap; dict
+                # preserves insertion order.
+                if uri in _LAST_DENSITY_META_BY_URI:
+                    del _LAST_DENSITY_META_BY_URI[uri]
+                _LAST_DENSITY_META_BY_URI[uri] = _density_meta
+                while len(_LAST_DENSITY_META_BY_URI) > _MAX_DENSITY_META_ENTRIES:
+                    _LAST_DENSITY_META_BY_URI.pop(
+                        next(iter(_LAST_DENSITY_META_BY_URI))
+                    )
+        except Exception as exc:  # noqa: BLE001 — never block a vector render
+            logger.warning(
+                "_read_vector_uri_as_geojson: densify failed uri=%s: %s", uri, exc,
+            )
+    return geojson_obj
+
+
+#: F94: side-table of the most-recent dense-vector ``DensifyMeta`` keyed by the
+#: vector artifact URI. ``_read_vector_uri_as_geojson`` is a module function (not
+#: a method), so it stashes the meta here; ``add_loaded_layer`` /
+#: ``reinline_vector_layers`` lift it into the per-emitter
+#: ``_density_meta_by_layer_id`` keyed by layer_id. Module scope is safe: the URI
+#: is content-addressed (cache key) so two concurrent sessions reading the same
+#: dense artifact compute identical meta. Bounded by ``_MAX_DENSITY_META_ENTRIES``
+#: (FIFO eviction at the write site) so it cannot grow unbounded over the
+#: lifetime of the always-on agent process.
+_MAX_DENSITY_META_ENTRIES: int = 256
+_LAST_DENSITY_META_BY_URI: dict[str, Any] = {}
 
 
 @dataclass
@@ -586,6 +631,14 @@ class PipelineEmitter:
         #: Preserves ``ProjectLayerSummary`` extra="forbid" strictness.
         self._inline_geojson_by_layer_id: dict[str, dict[str, Any]] = {}
 
+        #: F94: dense-vector density tag side-table, keyed by ``layer_id``.
+        #: When a vector layer crossed ``DENSE_VECTOR_THRESHOLD`` and was
+        #: simplified/capped, its ``DensifyMeta`` is stored here and merged into
+        #: ``emit_session_state`` as the additive ``vector_density`` field so the
+        #: client surfaces the degradation honestly. Cleared/pruned alongside the
+        #: inline side-table (same lifecycle).
+        self._density_meta_by_layer_id: dict[str, Any] = {}
+
         #: job-0267: terminal summary of the most recent ``emit_tool_call``
         #: step. Carries the AUTHORITATIVE job-0264 stamps (``started_at`` /
         #: ``duration_ms``) so the tool-card persistence hook in
@@ -649,6 +702,8 @@ class PipelineEmitter:
             self._loaded_layers = []
             # job-0175: flush inline side-table alongside loaded_layers.
             self._inline_geojson_by_layer_id.clear()
+            # F94: flush the dense-vector density tags too.
+            self._density_meta_by_layer_id.clear()
             return
         seeded: list[ProjectLayerSummary] = []
         for layer_dict in layers:
@@ -666,6 +721,10 @@ class PipelineEmitter:
         active_ids = {layer.layer_id for layer in seeded}
         self._inline_geojson_by_layer_id = {
             k: v for k, v in self._inline_geojson_by_layer_id.items() if k in active_ids
+        }
+        # F94: prune density tags to the still-loaded layers too.
+        self._density_meta_by_layer_id = {
+            k: v for k, v in self._density_meta_by_layer_id.items() if k in active_ids
         }
 
     async def reinline_vector_layers(self) -> int:
@@ -702,6 +761,12 @@ class PipelineEmitter:
                 continue
             if geojson_obj is not None:
                 self._inline_geojson_by_layer_id[layer.layer_id] = geojson_obj
+                # F94: lift any dense-vector density tag from the module-level
+                # stash (keyed by uri) into the per-emitter map (keyed by
+                # layer_id) so the wire layer is stamped on re-inline too.
+                _meta = _LAST_DENSITY_META_BY_URI.get(uri)
+                if _meta is not None:
+                    self._density_meta_by_layer_id[layer.layer_id] = _meta
                 count += 1
         return count
 
@@ -925,6 +990,14 @@ class PipelineEmitter:
                         "add_loaded_layer: inlined GeoJSON layer_id=%s features=%d",
                         layer.layer_id, feat_count,
                     )
+                    # F94: lift any dense-vector density tag (keyed by uri in the
+                    # module stash) into the per-emitter map (keyed by layer_id)
+                    # so the wire layer carries the honest simplified/capped tag.
+                    _meta = _LAST_DENSITY_META_BY_URI.get(layer.uri)
+                    if _meta is not None:
+                        self._density_meta_by_layer_id[layer.layer_id] = _meta
+                    else:
+                        self._density_meta_by_layer_id.pop(layer.layer_id, None)
         await self.emit_session_state()
         # Emit zoom-to map-command when the LayerURI carries a bbox (job-0068).
         if layer.bbox is not None:
@@ -950,6 +1023,15 @@ class PipelineEmitter:
             _inline = self._inline_geojson_by_layer_id.get(_layer.layer_id)
             if _inline is not None:
                 _d["inline_geojson"] = _inline
+            # F94: stamp the dense-vector density tag (additive, like
+            # inline_geojson) so the client can surface "simplified for
+            # performance" honestly. Best-effort; a malformed meta is skipped.
+            _meta = self._density_meta_by_layer_id.get(_layer.layer_id)
+            if _meta is not None:
+                try:
+                    _d.update(_meta.as_wire_tag())
+                except Exception:  # noqa: BLE001
+                    pass
             loaded_dump_with_inline.append(_d)
         payload = SessionStatePayload(
             chat_history=list(self._chat_history),

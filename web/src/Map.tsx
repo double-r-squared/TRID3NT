@@ -222,6 +222,28 @@ interface WireLayerSummary {
   // `services/agent/src/grace2_agent/pipeline_emitter.py:add_loaded_layer`).
   // Optional — older session-state snapshots predate this field.
   inline_geojson?: unknown;
+  // F94 — dense-vector handling. When the agent's tiled path is enabled it
+  // emits a client-reachable vector-tile URL ({z}/{x}/{y}.pbf MVT or a
+  // pmtiles:// URL) instead of inline GeoJSON, so MapLibre only draws what is
+  // in view. When present this takes precedence over `inline_geojson`.
+  vector_tile_url?: string;
+  // F94 — geometry family for the tiled source's paint layer (point/line/
+  // polygon). The tiled path has no features to classify client-side, so the
+  // agent declares the kind. Defaults to "polygon" (the footprint case).
+  vector_geom_kind?: string;
+  // F94 — vector source-layer name inside the MVT tiles (PMTiles builder uses
+  // "vector" by default). Required to address features in a vector source.
+  vector_source_layer?: string;
+  // F94 — honest density tag when a dense layer was simplified/capped on the
+  // inline fallback path. Additive (extra-tolerant): surfaced so the user knows
+  // the layer was reduced for performance; never a silent drop.
+  vector_density?: {
+    strategy: string;
+    original_feature_count: number;
+    emitted_feature_count: number;
+    simplified: boolean;
+    capped: boolean;
+  };
 }
 
 // Extended map-command discriminator: contracts.ts only mirrors the 5 layer-CRUD
@@ -753,6 +775,127 @@ function registerVectorOnMap(
   }
 
   geomKindRef.current.set(layer.layer_id, geomKind);
+}
+
+/**
+ * F94 — register a DENSE vector layer as a MapLibre VECTOR-TILE source + paint
+ * layer, so the browser fetches and draws ONLY the tiles in the current
+ * viewport instead of one giant inline GeoJSON FeatureCollection (the OSM
+ * building-footprint lag NATE reported). This is the agent's PREFERRED dense
+ * path; it activates when a wire layer carries `vector_tile_url`.
+ *
+ * The url is either a `{z}/{x}/{y}.pbf` MVT template (plain MapLibre `vector`
+ * source, no extra dependency) or a `pmtiles://...` URL (requires the pmtiles
+ * protocol to be registered with MapLibre — a follow-on once a serving face
+ * exists). Either way the source `type` is `vector`; only the `tiles`/`url`
+ * field differs. We reuse the SAME geometry-kind paint styling as the inline
+ * path (fill/line/circle) for visual consistency.
+ *
+ * Pure side-effect; the caller handles race-guards + style-ready gating
+ * (same contract as `registerVectorOnMap`).
+ */
+export function registerVectorTileLayer(
+  m: MapLibreMap,
+  layer: {
+    layer_id: string;
+    vector_tile_url: string;
+    vector_geom_kind?: string;
+    vector_source_layer?: string;
+    style_preset?: string | null;
+    opacity?: number;
+    visible?: boolean;
+  },
+  geomKindRef: { current: Map<string, VectorGeomKind> },
+): void {
+  const opacity = layer.opacity ?? 1;
+  const visible = layer.visible !== false;
+  const color = resolveVectorColor(layer.layer_id, layer.style_preset);
+  const geomKind = (
+    ["point", "line", "polygon"].includes(layer.vector_geom_kind ?? "")
+      ? layer.vector_geom_kind
+      : "polygon"
+  ) as VectorGeomKind;
+  const sourceLayer = layer.vector_source_layer || "vector";
+  const url = layer.vector_tile_url;
+
+  // pmtiles:// URLs are consumed via the pmtiles protocol's `url` field;
+  // {z}/{x}/{y} templates are a plain `tiles` array. MapLibre source type is
+  // `vector` in both cases.
+  const vectorSource: maplibregl.VectorSourceSpecification = url.startsWith(
+    "pmtiles://",
+  )
+    ? { type: "vector", url }
+    : { type: "vector", tiles: [url], minzoom: 0, maxzoom: 14 };
+  m.addSource(layer.layer_id, vectorSource);
+
+  if (geomKind === "point") {
+    m.addLayer({
+      id: layer.layer_id,
+      type: "circle",
+      source: layer.layer_id,
+      "source-layer": sourceLayer,
+      paint: {
+        "circle-radius": 5,
+        "circle-color": color,
+        "circle-stroke-color": "#ffffff",
+        "circle-stroke-width": 1,
+        "circle-opacity": opacity,
+        "circle-stroke-opacity": opacity,
+      },
+      layout: { visibility: visible ? "visible" : "none" },
+    } as unknown as Parameters<MapLibreMap["addLayer"]>[0]);
+  } else if (geomKind === "line") {
+    m.addLayer({
+      id: layer.layer_id,
+      type: "line",
+      source: layer.layer_id,
+      "source-layer": sourceLayer,
+      paint: {
+        "line-color": color,
+        "line-width": 2,
+        "line-opacity": opacity,
+      },
+      layout: { visibility: visible ? "visible" : "none" },
+    } as unknown as Parameters<MapLibreMap["addLayer"]>[0]);
+  } else {
+    const fillColor = isPelicunDamageLayer(layer.style_preset)
+      ? buildDsMeanExpression()
+      : color;
+    m.addLayer({
+      id: layer.layer_id,
+      type: "fill",
+      source: layer.layer_id,
+      "source-layer": sourceLayer,
+      paint: {
+        "fill-color": fillColor as string,
+        "fill-opacity": isPelicunDamageLayer(layer.style_preset)
+          ? opacity * 0.7
+          : opacity * POLYGON_FILL_OPACITY,
+        "fill-outline-color": color,
+      },
+      layout: { visibility: visible ? "visible" : "none" },
+    } as unknown as Parameters<MapLibreMap["addLayer"]>[0]);
+    m.addLayer({
+      id: `${layer.layer_id}-outline`,
+      type: "line",
+      source: layer.layer_id,
+      "source-layer": sourceLayer,
+      paint: {
+        "line-color": color,
+        "line-width": POLYGON_STROKE_WIDTH,
+        "line-opacity": opacity * 0.6,
+      },
+      layout: { visibility: visible ? "visible" : "none" },
+    } as unknown as Parameters<MapLibreMap["addLayer"]>[0]);
+  }
+
+  geomKindRef.current.set(layer.layer_id, geomKind);
+  if (import.meta.env.DEV) {
+    // eslint-disable-next-line no-console
+    console.log(
+      `[MapView] registerVectorTileLayer: ${layer.layer_id} kind=${geomKind} url=${url}`,
+    );
+  }
 }
 
 // --- Layer-control application helpers (job-0258) ----------------------- //
@@ -1845,7 +1988,37 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
         }
 
         // New layer — branch on layer_type.
-        if (layerType === "vector" || layerType === "geojson") {
+        if (
+          (layerType === "vector" || layerType === "geojson") &&
+          typeof layer.vector_tile_url === "string" &&
+          layer.vector_tile_url.length > 0
+        ) {
+          // F94: DENSE vector path. The agent published a vector-tile source
+          // (MVT / PMTiles) instead of inline GeoJSON, so MapLibre fetches +
+          // draws only the tiles in view. Synchronous register (no async
+          // fetch); guard on style-ready the same way the inline path does.
+          addedSourceIds.current.add(layer.layer_id);
+          let styleReady = false;
+          try {
+            styleReady = mapStyleReady(m);
+          } catch {
+            styleReady = false;
+          }
+          if (styleReady) {
+            registerVectorTileLayer(m, layer as unknown as Parameters<typeof registerVectorTileLayer>[1], vectorGeomKinds);
+          } else {
+            // Defer until the style settles (mirrors addVectorLayer's retry).
+            m.once("idle", () => {
+              if (!addedSourceIds.current.has(layer.layer_id)) return;
+              try {
+                if (!m.isStyleLoaded()) return;
+              } catch {
+                return;
+              }
+              registerVectorTileLayer(m, layer as unknown as Parameters<typeof registerVectorTileLayer>[1], vectorGeomKinds);
+            });
+          }
+        } else if (layerType === "vector" || layerType === "geojson") {
           // job-0139: vector layer path. Fetch GeoJSON/FlatGeobuf, add a
           // GeoJSON source, paint per geometry kind.
           //
