@@ -66,6 +66,11 @@ from grace2_contracts.secrets import (
     SecretRevokeEnvelopePayload,
     SecretsListEnvelopePayload,
 )
+from grace2_contracts.region_choice import (
+    RegionCandidate,
+    RegionChoiceProvidedEnvelopePayload,
+    RegionChoiceRequestEnvelopePayload,
+)
 from grace2_contracts.ws import (
     AgentMessageChunkPayload,
     CancelPayload,
@@ -424,6 +429,64 @@ def _resolve_pending_credential(
         return False
     fut.set_result(provided)
     _PENDING_CREDENTIALS.pop(provided.request_id, None)
+    return True
+
+
+# --------------------------------------------------------------------------- #
+# Session-scoped pending-REGION-CHOICE registry (region-disambiguation picker)
+# --------------------------------------------------------------------------- #
+#
+# Mirrors ``_PENDING_CREDENTIALS`` exactly, but for the region-choice flow: when
+# a ``geocode_location`` result comes back as a state-bbox-fallback snap, the
+# dispatch coroutine emits a ``region-choice-request`` envelope (whole-state
+# default + candidate counties) and pauses on a future keyed by the choice
+# ``request_id``. The inbound ``region-choice-provided`` handler (which may
+# arrive on a DIFFERENT WebSocket connection of the same session — StrictMode
+# double-mount / reconnect) resolves the future, and the paused dispatch either
+# narrows the geocode bbox to the picked region or keeps the whole-state bbox.
+# Fail-open: on timeout / no client the whole-state bbox (already the geocode
+# result) is used unchanged so the automated path never blocks. Tagged with the
+# owning session_id so a cross-session region-choice-provided is refused.
+_PENDING_REGION_CHOICES: dict[str, tuple[str, asyncio.Future]] = {}
+
+
+def _register_pending_region_choice(
+    session_id: str, request_id: str, fut: "asyncio.Future"
+) -> None:
+    _PENDING_REGION_CHOICES[request_id] = (session_id, fut)
+
+
+def _pop_pending_region_choice(request_id: str) -> None:
+    _PENDING_REGION_CHOICES.pop(request_id, None)
+
+
+def _resolve_pending_region_choice(
+    session_id: str, provided: "RegionChoiceProvidedEnvelopePayload"
+) -> bool:
+    """Complete the pending region-choice future for ``provided.request_id``.
+
+    Returns True when a live future was resolved. False when the request_id is
+    unknown/already-resolved, or when the answering session is not the owner
+    (refused loudly — mirrors ``_resolve_pending_credential``).
+    """
+    entry = _PENDING_REGION_CHOICES.get(provided.request_id)
+    if entry is None:
+        return False
+    owner_session, fut = entry
+    if owner_session != session_id:
+        logger.warning(
+            "region-choice-provided REFUSED: session=%s is not the owner "
+            "(owner=%s) for request_id=%s",
+            session_id,
+            owner_session,
+            provided.request_id,
+        )
+        return False
+    if fut.done():
+        _PENDING_REGION_CHOICES.pop(provided.request_id, None)
+        return False
+    fut.set_result(provided)
+    _PENDING_REGION_CHOICES.pop(provided.request_id, None)
     return True
 
 
@@ -1390,6 +1453,24 @@ async def _stream_gemini_reply(
                         and "n_structures_total" in result["raw_envelope"]
                     ):
                         await _maybe_emit_impact_envelope(websocket, state, result["raw_envelope"])
+                    # region-disambiguation picker: when geocode_location came
+                    # back as a state-bbox-fallback snap (job-0346), offer the
+                    # user a narrower sub-region (default: counties) ON TOP of
+                    # the whole-state default. PAUSES the turn awaiting the
+                    # region-choice-provided reply; on a "region" pick this
+                    # MUTATES ``result["bbox"]`` in place so the immediate
+                    # zoom-to below AND the function_response Gemini reads next
+                    # turn use the narrowed extent. Fail-open: headless client /
+                    # timeout / whole-state pick keeps the state bbox unchanged
+                    # (the honest, already-resolved automated answer). MUST run
+                    # BEFORE the zoom-to so the camera snaps to the final extent.
+                    if (
+                        call.name == "geocode_location"
+                        and isinstance(result, dict)
+                    ):
+                        await _maybe_handle_region_choice(
+                            websocket, state, result
+                        )
                     # job-0260 (demo UX): snap the map to a geocoded location
                     # IMMEDIATELY — the user should not wait for a downstream
                     # layer publish to see the map move. Best-effort.
@@ -3739,6 +3820,380 @@ def _build_credential_request_payload(
         return None
 
 
+# --------------------------------------------------------------------------- #
+# Region-disambiguation picker (state-bbox-fallback narrowing).
+# --------------------------------------------------------------------------- #
+#
+# job-0346 made ``geocode_location`` snap a vague/regional query ("south
+# Florida") to the WHOLE state bbox and stamp ``source="state-bbox-fallback"``
+# + an honest ``fallback_reason``. That state bbox stays the DEFAULT/automated
+# answer. ON TOP of it, when an interactive client is connected, surface a user
+# choice to NARROW to a sub-region (default: counties). This MIRRORS the
+# credential-request pause/resume seam above: emit a ``region-choice-request``,
+# pause the turn on a future keyed by the choice request_id, and on
+# ``region-choice-provided`` either narrow the geocode bbox (choice="region")
+# or keep the state bbox (choice="whole_state"). Fail-open: a headless client /
+# timeout keeps the state bbox unchanged, so the automated path never blocks.
+
+# Default candidate granularity. Counties ship at v0.1; structured as a module
+# constant so a light state-size/goal heuristic can override it per request.
+# TODO(region-choice): coarser ("state_region" groupings) / finer ("place" /
+# "zcta") levels are a follow-up — the RegionAdminLevel Literal + the TIGER
+# fetch plumbing in fetch_administrative_boundaries gate that expansion.
+_DEFAULT_REGION_ADMIN_LEVEL = "county"
+
+# How many candidate regions to surface at most. A large state (e.g. Texas =
+# 254 counties) would otherwise flood the in-chat card list + the map
+# choropleth; the cap keeps the picker legible. The whole-state default is
+# always available regardless, so a capped list never hides the honest answer.
+_MAX_REGION_CANDIDATES = 254
+
+
+def _region_admin_level_for(state_code: str, query: str) -> str:
+    """Choose the candidate admin granularity for ``state_code`` + ``query``.
+
+    DEFAULT is ``"county"`` for every state (the v0.1 shipping behaviour). This
+    is the single seam a future heuristic (or the agent) hooks to pick a
+    coarser/finer level by state size + query goal — kept as a function so the
+    policy lives in one place. Today it returns the county default unchanged;
+    the ``RegionAdminLevel`` Literal is closed to ``"county"`` so any other
+    return value would fail envelope validation (a deliberate guard until the
+    finer-level fetch plumbing lands).
+    """
+    return _DEFAULT_REGION_ADMIN_LEVEL
+
+
+def _build_region_candidates(
+    state_bbox: tuple[float, float, float, float],
+    admin_level: str,
+) -> list[RegionCandidate]:
+    """Build the candidate sub-regions for a snapped state via TIGER boundaries.
+
+    Fetches the administrative boundaries for ``admin_level`` (default
+    ``"county"``) clipped to the whole-state ``state_bbox`` through the EXISTING
+    ``fetch_administrative_boundaries`` fetch path, reads the resulting
+    FlatGeobuf back with geopandas, and emits one ``RegionCandidate`` per
+    feature: ``region_id`` from the TIGER GEOID, ``name`` from the feature
+    NAME(LSAD), ``bbox`` from the feature polygon's ``total_bounds``.
+
+    Best-effort: any failure (geopandas missing, TIGER download hiccup, empty
+    clip) returns an EMPTY list — the caller then offers only the whole-state
+    default (honest degrade, fallback norm). Never raises.
+
+    Calls ``_fetch_admin_boundaries_bytes`` directly (rather than the
+    cache-wrapped ``fetch_administrative_boundaries``) so the candidate build
+    is decoupled from the layer-publish path: we only need the geometry +
+    attributes in-process, not a published LayerURI. The TIGER download is
+    itself cached for the published-boundary path, so this does not add a new
+    uncached fetch in practice.
+    """
+    try:
+        import geopandas as gpd  # type: ignore[import-not-found]
+        from io import BytesIO
+
+        from .tools.fetch_administrative_boundaries import (
+            _fetch_admin_boundaries_bytes,
+        )
+    except ImportError:
+        logger.debug("region-choice: geopandas unavailable", exc_info=True)
+        return []
+
+    try:
+        fgb_bytes = _fetch_admin_boundaries_bytes(admin_level, tuple(state_bbox))
+    except Exception:  # noqa: BLE001 — boundary fetch is best-effort
+        logger.warning(
+            "region-choice: fetch_admin_boundaries failed level=%s bbox=%s; "
+            "offering whole-state default only",
+            admin_level,
+            state_bbox,
+            exc_info=True,
+        )
+        return []
+
+    try:
+        gdf = gpd.read_file(BytesIO(fgb_bytes), engine="pyogrio")
+    except Exception:  # noqa: BLE001 — parse is best-effort
+        logger.warning("region-choice: FlatGeobuf read failed", exc_info=True)
+        return []
+
+    candidates: list[RegionCandidate] = []
+    seen_ids: set[str] = set()
+    for _, row in gdf.iterrows():
+        geom = row.get("geometry")
+        if geom is None or geom.is_empty:
+            continue
+        geoid = (
+            row.get("GEOID")
+            or row.get("GEOIDFQ")
+            or row.get("COUNTYFP")
+            or ""
+        )
+        region_id = f"{admin_level}-{geoid}" if geoid else f"{admin_level}-{len(candidates)}"
+        if region_id in seen_ids:
+            continue
+        seen_ids.add(region_id)
+        name = (
+            row.get("NAMELSAD")
+            or row.get("NAME")
+            or region_id
+        )
+        minx, miny, maxx, maxy = (float(v) for v in geom.bounds)
+        try:
+            candidate = RegionCandidate(
+                region_id=str(region_id)[:120],
+                name=str(name)[:200],
+                bbox=(minx, miny, maxx, maxy),
+                admin_level=admin_level,  # type: ignore[arg-type]
+            )
+        except ValidationError:
+            # A degenerate / out-of-range polygon bbox — skip it rather than
+            # abort the whole set (one bad TIGER feature must not kill the pick).
+            continue
+        candidates.append(candidate)
+        if len(candidates) >= _MAX_REGION_CANDIDATES:
+            break
+
+    candidates.sort(key=lambda c: c.name)
+    logger.info(
+        "region-choice: built %d candidate region(s) level=%s",
+        len(candidates),
+        admin_level,
+    )
+    return candidates
+
+
+def _build_region_choice_request_payload(
+    *,
+    request_id: str,
+    geocode_result: dict,
+) -> "RegionChoiceRequestEnvelopePayload | None":
+    """Build a validated ``region-choice-request`` from a state-snap geocode dict.
+
+    Derives the state name + 2-letter code from the geocode result's ``name``
+    (``"<State>, United States"``), uses its ``bbox`` as the whole-state extent,
+    builds the candidate sub-regions (default: counties), and composes an honest
+    prompt that says the agent snapped to the whole state and is offering a
+    narrower pick (the fallback honesty floor).
+
+    Returns ``None`` when the state cannot be resolved or the result is not a
+    valid state-snap shape — the caller then leaves the state bbox unchanged.
+    """
+    from .tools.us_states import resolve_state_code, state_display_name
+
+    bbox = geocode_result.get("bbox")
+    if not (isinstance(bbox, (list, tuple)) and len(bbox) == 4):
+        return None
+    # The state-snap name is "<State>, United States"; strip the suffix to get
+    # the state name, then resolve the 2-letter code.
+    raw_name = str(geocode_result.get("name") or "")
+    state_name = raw_name.split(",")[0].strip()
+    state_code = resolve_state_code(state_name)
+    if state_code is None:
+        logger.info(
+            "region-choice: could not resolve state from name=%r; "
+            "keeping whole-state bbox",
+            raw_name,
+        )
+        return None
+    # Prefer the canonical display name for the resolved code.
+    state_name = state_display_name(state_code)
+
+    admin_level = _region_admin_level_for(
+        state_code, str(geocode_result.get("query") or "")
+    )
+    candidates = _build_region_candidates(tuple(bbox), admin_level)
+
+    # Honest prompt — name the snap + the offer (fallback norm). Prefer the
+    # geocode's own fallback_reason as the lead so the narration is consistent.
+    reason = str(geocode_result.get("fallback_reason") or "").strip()
+    level_word = "county" if admin_level == "county" else admin_level
+    if candidates:
+        offer = (
+            f" Pick a {level_word} below to narrow the area, or keep the whole "
+            f"state of {state_name}."
+        )
+    else:
+        offer = (
+            f" I could not load {level_word} boundaries right now, so I will "
+            f"use the whole state of {state_name} unless you refine the area."
+        )
+    lead = reason or (
+        f"No precise match for that location; I snapped to the whole state of "
+        f"{state_name}."
+    )
+    message = (lead + offer)[:1024]
+
+    try:
+        return RegionChoiceRequestEnvelopePayload(
+            request_id=request_id,
+            state_name=state_name,
+            state_code=state_code,
+            state_bbox=(float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])),
+            candidates=candidates,
+            message=message,
+        )
+    except ValidationError:
+        logger.warning(
+            "region-choice: request payload validation failed name=%r bbox=%s",
+            raw_name,
+            bbox,
+            exc_info=True,
+        )
+        return None
+
+
+async def _emit_region_choice_and_wait(
+    websocket: ServerConnection,
+    state: SessionState,
+    payload: "RegionChoiceRequestEnvelopePayload",
+) -> "RegionChoiceProvidedEnvelopePayload | None":
+    """Emit a ``region-choice-request`` and await ``region-choice-provided``.
+
+    Blocks on a future keyed by ``payload.request_id`` (registered in the
+    session-scoped ``_PENDING_REGION_CHOICES`` registry so a reply on a sibling
+    connection still resolves it). Returns the ``RegionChoiceProvidedEnvelopePayload``
+    on reply, or ``None`` on timeout (the gate gets the same read-decision TTL
+    as the credential / payload-warning / code-exec gates — fail-open to the
+    whole-state default so the turn is never hung).
+    """
+    loop = asyncio.get_running_loop()
+    fut: asyncio.Future = loop.create_future()
+    _register_pending_region_choice(state.session_id, payload.request_id, fut)
+
+    await websocket.send(
+        _new_envelope("region-choice-request", state.session_id, payload)
+    )
+    logger.info(
+        "region-choice-request emitted session=%s state=%s candidates=%d request_id=%s",
+        state.session_id,
+        payload.state_code,
+        len(payload.candidates),
+        payload.request_id,
+    )
+
+    try:
+        provided: RegionChoiceProvidedEnvelopePayload = await asyncio.wait_for(
+            fut, timeout=CODE_EXEC_CONFIRM_TIMEOUT_SECONDS
+        )
+    except asyncio.TimeoutError:
+        logger.info(
+            "region-choice-request timeout session=%s request_id=%s; "
+            "using whole-state default",
+            state.session_id,
+            payload.request_id,
+        )
+        return None
+    finally:
+        _pop_pending_region_choice(payload.request_id)
+
+    logger.info(
+        "region-choice-provided received session=%s request_id=%s choice=%s",
+        state.session_id,
+        payload.request_id,
+        provided.choice,
+    )
+    return provided
+
+
+async def _maybe_handle_region_choice(
+    websocket: ServerConnection,
+    state: SessionState,
+    geocode_result: dict,
+) -> None:
+    """If ``geocode_result`` is a state-snap, offer + apply a narrower region.
+
+    No-op unless the geocode came back as a state-bbox-fallback (job-0346
+    ``source == "state-bbox-fallback"``). When it did, this:
+
+    1. Builds the candidate sub-regions (default: counties of the state) and
+       emits a ``region-choice-request`` (whole-state default + candidates +
+       an honest prompt).
+    2. PAUSES the turn awaiting ``region-choice-provided`` (fail-open: a
+       headless client / timeout keeps the whole-state bbox).
+    3. On ``choice == "region"`` MUTATES ``geocode_result`` in place to the
+       picked region's bbox (re-resolved by ``selected_region_id`` against the
+       candidate set — authoritative over a client-sent bbox; falls back to
+       ``selected_bbox`` only when the id is unknown) and stamps narrowing
+       provenance so downstream tools + the function_response Gemini reads use
+       the narrowed extent. On ``choice == "whole_state"`` leaves the state
+       bbox unchanged.
+
+    Best-effort: any failure leaves the whole-state bbox intact (the honest
+    default) — the narrowing is a UX nicety layered ON TOP of an already-correct
+    result, so it must never break the turn. Never raises.
+    """
+    if geocode_result.get("source") != "state-bbox-fallback":
+        return
+    if state.emitter is None:
+        # No interactive surface bound; keep the whole-state default.
+        return
+    try:
+        request_id = new_ulid()
+        payload = _build_region_choice_request_payload(
+            request_id=request_id, geocode_result=geocode_result
+        )
+        if payload is None:
+            return
+        provided = await _emit_region_choice_and_wait(websocket, state, payload)
+        if provided is None or provided.choice == "whole_state":
+            # Declined / timed out / explicit whole-state — keep the state bbox.
+            geocode_result["region_choice"] = "whole_state"
+            return
+        # choice == "region": resolve the picked candidate. Prefer re-resolving
+        # by region_id against the candidate set (a tampered client bbox cannot
+        # redirect the workflow); fall back to the echoed bbox only if unknown.
+        chosen = None
+        if provided.selected_region_id:
+            chosen = next(
+                (
+                    c
+                    for c in payload.candidates
+                    if c.region_id == provided.selected_region_id
+                ),
+                None,
+            )
+        new_bbox: tuple[float, float, float, float] | None = None
+        chosen_name: str | None = None
+        if chosen is not None:
+            new_bbox = chosen.bbox
+            chosen_name = chosen.name
+        elif provided.selected_bbox is not None:
+            new_bbox = provided.selected_bbox
+        if new_bbox is None:
+            # The client said "region" but supplied neither a known id nor a
+            # bbox — keep the state default rather than guess.
+            geocode_result["region_choice"] = "whole_state"
+            return
+        # Mutate the geocode result IN PLACE so the immediate zoom-to AND the
+        # function_response Gemini reads (and any downstream bbox consumer) use
+        # the narrowed extent.
+        geocode_result["bbox"] = list(new_bbox)
+        # The result is no longer a whole-state snap — drop the fallback source
+        # so a downstream re-trigger does not re-offer the picker, and record
+        # honest provenance of the narrowing.
+        geocode_result["source"] = "region-choice-narrowed"
+        geocode_result["region_choice"] = "region"
+        geocode_result["selected_region_id"] = provided.selected_region_id
+        if chosen_name:
+            geocode_result["name"] = chosen_name
+            geocode_result["region_name"] = chosen_name
+        # Recompute a rough centroid for the narrowed bbox so map snaps + any
+        # centroid consumer stay consistent with the new extent.
+        geocode_result["longitude"] = (new_bbox[0] + new_bbox[2]) / 2.0
+        geocode_result["latitude"] = (new_bbox[1] + new_bbox[3]) / 2.0
+        logger.info(
+            "region-choice: narrowed to region_id=%s name=%r bbox=%s",
+            provided.selected_region_id,
+            chosen_name,
+            new_bbox,
+        )
+    except Exception:  # noqa: BLE001 — narrowing is a best-effort UX layer
+        logger.warning(
+            "region-choice handling failed; keeping whole-state bbox",
+            exc_info=True,
+        )
+
+
 async def _invoke_tool_via_emitter(
     websocket: ServerConnection,
     state: SessionState,
@@ -5496,6 +5951,45 @@ def _make_handler(settings: GeminiSettings):
                             state.session_id,
                             cp.request_id,
                             cp.provided,
+                        )
+
+                    elif msg_type == "region-choice-provided":
+                        # region-disambiguation picker: the user narrowed the
+                        # state-bbox-fallback geocode to a sub-region (or kept
+                        # the whole state). Resolve the paused dispatch
+                        # coroutine's future so it applies the picked bbox (or
+                        # keeps the state bbox). Mirrors credential-provided —
+                        # may arrive on a sibling connection of the session.
+                        try:
+                            rc = (
+                                RegionChoiceProvidedEnvelopePayload.model_validate(
+                                    payload_dict
+                                )
+                            )
+                        except ValidationError as ve:
+                            await _send_error(
+                                websocket,
+                                state.session_id,
+                                "TOOL_PARAMS_INVALID",
+                                f"region-choice-provided invalid: {ve.errors()[0]['msg']}",
+                            )
+                            continue
+                        if not _resolve_pending_region_choice(
+                            state.session_id, rc
+                        ):
+                            logger.warning(
+                                "region-choice-provided for unknown/closed "
+                                "request_id=%s session=%s",
+                                rc.request_id,
+                                state.session_id,
+                            )
+                            continue
+                        logger.info(
+                            "region-choice-provided accepted session=%s "
+                            "request_id=%s choice=%s",
+                            state.session_id,
+                            rc.request_id,
+                            rc.choice,
                         )
 
                     elif msg_type in (

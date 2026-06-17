@@ -86,9 +86,12 @@ import {
   PipelineSnapshot,
   PipelineStatePayload,
   PipelineStepSummary,
+  RegionCandidate,
+  RegionChoiceRequestPayload,
   ResearchMode,
   SessionStatePayload,
 } from "./contracts";
+import { regionChoiceBus } from "./lib/region_choice_bus";
 import {
   PipelineCard,
   Spinner,
@@ -107,6 +110,7 @@ import { ChartStack, type ChartPayload } from "./components/ChartStack";
 import { ChartGallery } from "./components/ChartGallery";
 import { SandboxCard, type CodeExecRequestPayload, type CodeExecResultPayload, type SandboxCardDecision } from "./components/SandboxCard";
 import { CredentialCard } from "./components/CredentialCard";
+import { RegionPickerCard } from "./components/RegionPickerCard";
 import { PayloadWarningInline } from "./components/PayloadWarningInline";
 
 // wave-4-10 thinking-state — the agent emits the Gemini "thinking" phase as
@@ -800,6 +804,17 @@ export interface StreamState {
   payloadResolved: Map<string, PayloadConfirmationDecision>;
   /** First-arrival seq per warning_id (chronological interleave). */
   payloadSeqs: Map<string, number>;
+  // Region-disambiguation picker cards (state-bbox-fallback narrowing). A
+  // `geocode_location` result snapped to a whole-state bbox and the agent is
+  // offering a narrower county pick; the user picks a region (in the card list
+  // OR on the synced map choropleth) or keeps the whole-state default. Mirrors
+  // the credential-card family exactly: the picker is an in-chat card
+  // interleaved at its arrival position.
+  regionChoices: RegionChoiceRequestPayload[];
+  /** Resolved choice + picked region per request_id once the user answers. */
+  regionResolved: Map<string, { choice: "region" | "whole_state"; regionId: string | null }>;
+  /** First-arrival seq per region-choice request_id (chronological interleave). */
+  regionSeqs: Map<string, number>;
   /** Monotonic arrival counter for this stream (job-0176 interleave). */
   arrivalSeq: number;
   messageOrder: Map<string, number>;
@@ -822,6 +837,9 @@ export function emptyStreamState(): StreamState {
     payloadWarnings: [],
     payloadResolved: new Map(),
     payloadSeqs: new Map(),
+    regionChoices: [],
+    regionResolved: new Map(),
+    regionSeqs: new Map(),
     arrivalSeq: 0,
     messageOrder: new Map(),
     stepOrder: new Map(),
@@ -1098,6 +1116,48 @@ export function recordPayloadResolved(
   const next = new Map(s.payloadResolved);
   next.set(warningId, decision);
   s.payloadResolved = next;
+}
+
+/**
+ * Route a `region-choice-request` envelope (state-bbox-fallback narrowing) into
+ * the OWNING stream — the Case whose geocode tool paused. region-choice-request
+ * is session-scoped (ws.ts SESSION_SCOPED_TYPES) so it fans out to Chat's
+ * GraceWs even when the paused geocode ran on App.tsx's connection. De-duped on
+ * request_id so a duplicate fan-out emit doesn't stack a second card. Mirrors
+ * routeCredentialRequest exactly.
+ */
+export function routeRegionChoice(
+  cs: ChatStreams,
+  p: RegionChoiceRequestPayload,
+  caseId?: string | null,
+): void {
+  const s = getStream(cs, owningKey(cs, caseId));
+  if (s.regionChoices.some((r) => r.request_id === p.request_id)) return;
+  if (!s.regionSeqs.has(p.request_id)) {
+    s.arrivalSeq += 1;
+    s.regionSeqs.set(p.request_id, s.arrivalSeq);
+  }
+  s.regionChoices = [...s.regionChoices, p];
+}
+
+/**
+ * Record the user's resolution of a region-choice prompt against the stream the
+ * card lives in. "region" = narrowed to a sub-region (regionId set);
+ * "whole_state" = kept the honest whole-state default (regionId null). The
+ * reply (region-choice-provided) is sent to the agent by the caller; this only
+ * marks the card resolved so it folds to its compact answered state in place.
+ */
+export function recordRegionResolved(
+  cs: ChatStreams,
+  key: string,
+  requestId: string,
+  choice: "region" | "whole_state",
+  regionId: string | null,
+): void {
+  const s = getStream(cs, key);
+  const next = new Map(s.regionResolved);
+  next.set(requestId, { choice, regionId });
+  s.regionResolved = next;
 }
 
 /** Extract persisted charts from a case-open session (sprint-13 schema —
@@ -2366,6 +2426,13 @@ export function Chat({
   const [galleryCharts, setGalleryCharts] = useState<ChartPayload[]>([]);
   const [galleryInitialIndex, setGalleryInitialIndex] = useState<number>(0);
 
+  // Region-disambiguation picker ↔ map choropleth sync. The bus is the shared
+  // hover/selection state between the in-chat candidate list (here) and the
+  // map county choropleth (Map.tsx). We mirror the bus-synced hovered/selected
+  // ids into React state so a MAP hover/tap re-renders the matching list row.
+  const [regionHoveredId, setRegionHoveredId] = useState<string | null>(null);
+  const [regionSelectedId, setRegionSelectedId] = useState<string | null>(null);
+
   const wsRef = useRef<GraceWs | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -2480,6 +2547,18 @@ export function Chat({
       // stream, interleaved at its arrival position.
       onPayloadWarning: (p: PayloadWarningEnvelopePayload) => {
         routePayloadWarning(streamsRef.current, p);
+        bump();
+      },
+      // Region-disambiguation request (state-bbox-fallback narrowing): a
+      // geocode snapped to a whole-state bbox and the agent is offering a
+      // narrower county pick. region-choice-request is session-scoped (ws.ts
+      // SESSION_SCOPED_TYPES) so Chat's GraceWs receives it via the fan-out hub
+      // even when the paused geocode ran on App.tsx's connection. We render the
+      // inline RegionPickerCard in the owning stream AND publish the request to
+      // the region-choice bus so Map.tsx paints the synced county choropleth.
+      onRegionChoiceRequest: (p: RegionChoiceRequestPayload) => {
+        routeRegionChoice(streamsRef.current, p);
+        regionChoiceBus.setRequest(p);
         bump();
       },
     });
@@ -2658,6 +2737,25 @@ export function Chat({
     };
   }, [bump]);
 
+  // Dev-only seam: inject a region-choice-request so Playwright UI snapshots /
+  // unit harnesses can render the RegionPickerCard + drive the synced map
+  // choropleth without a live state-bbox-fallback geocode. Same routed path as
+  // the real envelope (routes the card AND publishes to the region-choice bus).
+  // Guarded behind import.meta.env.DEV so it's stripped from production.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    (window as unknown as Record<string, unknown>).__grace2InjectRegionChoice =
+      (p: RegionChoiceRequestPayload) => {
+        routeRegionChoice(streamsRef.current, p);
+        regionChoiceBus.setRequest(p);
+        bump();
+      };
+    return () => {
+      delete (window as unknown as Record<string, unknown>)
+        .__grace2InjectRegionChoice;
+    };
+  }, [bump]);
+
   // Auto-scroll on new content only when the user is already at the bottom.
   // This preserves the user's reading position when they've scrolled up to
   // read history while the stream is still landing new tokens.
@@ -2682,6 +2780,8 @@ export function Chat({
     visible.credentialResolved,
     visible.payloadWarnings,
     visible.payloadResolved,
+    visible.regionChoices,
+    visible.regionResolved,
   ]);
 
   // job-0153 Part 3 — scroll handler. Computes "near bottom" against the
@@ -2804,6 +2904,92 @@ export function Chat({
     bump();
     wsRef.current?.sendPayloadConfirmation(warning.warning_id, decision, revised);
   }
+
+  // Region-disambiguation picker resolution (state-bbox-fallback narrowing).
+  //
+  // The card list AND the map county choropleth are synced through the
+  // region-choice bus. These handlers are the single reply path both surfaces
+  // funnel through (a card-row click and a map polygon tap both end up calling
+  // handleRegionPick), so the agent re-resolves by region_id exactly once per
+  // pick — no forked logic.
+
+  /** Relay a hover (card row OR map polygon) to the bus so both surfaces
+   * highlight in lockstep. */
+  const handleRegionHover = useCallback((regionId: string | null) => {
+    regionChoiceBus.setHovered(regionId);
+  }, []);
+
+  /** Resolve a region pick: record it (folds the card to compact), echo the
+   * selection to the bus, clear the active request (cleans up the choropleth),
+   * and send `region-choice-provided` (choice="region") echoing the request_id
+   * + the candidate's region_id + bbox. Used for BOTH a card-row click and a
+   * map polygon tap. */
+  const handleRegionPick = useCallback(
+    (req: RegionChoiceRequestPayload, candidate: RegionCandidate): void => {
+      recordRegionResolved(
+        streamsRef.current,
+        visibleKey,
+        req.request_id,
+        "region",
+        candidate.region_id,
+      );
+      bump();
+      regionChoiceBus.clearRequest(req.request_id);
+      wsRef.current?.sendRegionChoiceProvided({
+        request_id: req.request_id,
+        choice: "region",
+        selected_region_id: candidate.region_id,
+        selected_bbox: candidate.bbox,
+      });
+    },
+    [visibleKey, bump],
+  );
+
+  /** Keep the honest whole-state default: record it, clear the active request
+   * (cleans up the choropleth), and send `region-choice-provided`
+   * (choice="whole_state"). This IS the decline path (Invariant 8). */
+  const handleRegionWholeState = useCallback(
+    (req: RegionChoiceRequestPayload): void => {
+      recordRegionResolved(
+        streamsRef.current,
+        visibleKey,
+        req.request_id,
+        "whole_state",
+        null,
+      );
+      bump();
+      regionChoiceBus.clearRequest(req.request_id);
+      wsRef.current?.sendRegionChoiceProvided({
+        request_id: req.request_id,
+        choice: "whole_state",
+      });
+    },
+    [visibleKey, bump],
+  );
+
+  // Subscribe to the region-choice bus: mirror the synced hovered/selected ids
+  // into state (so a MAP hover/tap re-renders the matching card row), and relay
+  // a MAP TAP through the SAME reply path as a card-row click. The bus carries
+  // only ids; we resolve the id back to its candidate against the active
+  // request before sending the reply, so a stale tap (request already cleared /
+  // unknown id) is a safe no-op.
+  useEffect(() => {
+    const unsubState = regionChoiceBus.subscribe((st) => {
+      setRegionHoveredId(st.hoveredRegionId);
+      setRegionSelectedId(st.selectedRegionId);
+    });
+    const unsubPick = regionChoiceBus.subscribePick((regionId) => {
+      const req = regionChoiceBus.getState().request;
+      if (!req) return;
+      const candidate = req.candidates.find((c) => c.region_id === regionId);
+      if (!candidate) return;
+      handleRegionPick(req, candidate);
+    });
+    return () => {
+      unsubState();
+      unsubPick();
+    };
+  }, [handleRegionPick]);
 
   function submit(text: string): void {
     if (!text || !wsRef.current) return;
@@ -3068,6 +3254,14 @@ export function Chat({
           payloadSeqs={visible.payloadSeqs}
           payloadResolved={visible.payloadResolved}
           onPayloadDecide={handlePayloadDecide}
+          regionChoices={visible.regionChoices}
+          regionSeqs={visible.regionSeqs}
+          regionResolved={visible.regionResolved}
+          regionHoveredId={regionHoveredId}
+          regionSelectedId={regionSelectedId}
+          onRegionHover={handleRegionHover}
+          onRegionPick={handleRegionPick}
+          onRegionWholeState={handleRegionWholeState}
         />
 
         {/* wave-4-10 ephemeral Thinking indicator — italic muted-gray     */}
@@ -3446,6 +3640,23 @@ export type InterleavedEntry =
       warningId: string;
       warning: PayloadWarningEnvelopePayload;
       resolved: PayloadConfirmationDecision | null;
+    }
+  | {
+      // Region-disambiguation picker INTERLEAVED into the chat scroll at its
+      // first-arrival seq — exactly like a tool / credential / payload-warning
+      // card. It renders the RegionPickerCard (honest prompt + scrollable
+      // candidate-county list + "Use whole state" default) at its natural chat
+      // slot so the narration that follows the user's answer flows AFTER it.
+      // The candidate list is SYNCED with the map county choropleth via the
+      // region-choice bus (hover/select in either surface highlights the
+      // other). Carries the request + its resolution; the hover/pick/whole-state
+      // callbacks are supplied by InterleavedChatStream (kept off this pure
+      // view-model so buildInterleavedStream stays pure).
+      kind: "region-choice";
+      seq: number;
+      requestId: string;
+      request: RegionChoiceRequestPayload;
+      resolved: { choice: "region" | "whole_state"; regionId: string | null } | null;
     };
 
 export function buildInterleavedStream(
@@ -3466,6 +3677,14 @@ export function buildInterleavedStream(
   payloadWarnings: PayloadWarningEnvelopePayload[] = [],
   payloadSeqs: Map<string, number> = new Map(),
   payloadResolved: Map<string, PayloadConfirmationDecision> = new Map(),
+  // Region-disambiguation picker inputs so picker cards interleave at their
+  // first-arrival seq too. Defaulted so existing callers / tests keep working.
+  regionChoices: RegionChoiceRequestPayload[] = [],
+  regionSeqs: Map<string, number> = new Map(),
+  regionResolved: Map<
+    string,
+    { choice: "region" | "whole_state"; regionId: string | null }
+  > = new Map(),
 ): InterleavedEntry[] {
   const out: InterleavedEntry[] = [];
   // Messages — seq comes from messageOrder; absent → fall back to a large
@@ -3531,6 +3750,19 @@ export function buildInterleavedStream(
       resolved: payloadResolved.get(w.warning_id) ?? null,
     });
   }
+  // Region-disambiguation pickers — seq from regionSeqs (first-arrival), so the
+  // card lands at its natural chat slot between the narration that preceded the
+  // paused geocode and the narration that resumes after the user picks.
+  for (const rc of regionChoices) {
+    const seq = regionSeqs.get(rc.request_id) ?? Number.MAX_SAFE_INTEGER;
+    out.push({
+      kind: "region-choice",
+      seq,
+      requestId: rc.request_id,
+      request: rc,
+      resolved: regionResolved.get(rc.request_id) ?? null,
+    });
+  }
   // Stable sort by seq; ties broken by insertion order (preserved by the
   // standard ``Array.prototype.sort`` in V8/spidermonkey/JSC since
   // ES2019). Insertion order here is: messages first then tools, so a
@@ -3570,6 +3802,26 @@ interface InterleavedChatStreamProps {
     decision: PayloadConfirmationDecision,
     revised: Record<string, unknown> | null,
   ) => void;
+  // Region-disambiguation pickers interleave INLINE in this stream at their
+  // first-arrival seq, exactly like tool / credential / payload-warning cards.
+  // The candidate list is SYNCED with the map county choropleth via the
+  // region-choice bus; the bus-synced hover/selection ids ride on the props so
+  // a map hover highlights the matching list row. The callbacks are
+  // component-bound (WS + bus side effects live in Chat) so they ride on the
+  // props rather than the pure stream view-model.
+  regionChoices: RegionChoiceRequestPayload[];
+  regionSeqs: Map<string, number>;
+  regionResolved: Map<
+    string,
+    { choice: "region" | "whole_state"; regionId: string | null }
+  >;
+  /** Bus-synced hover id (card row OR map polygon). null = none. */
+  regionHoveredId: string | null;
+  /** Bus-synced pre-reply selection id (card row OR map polygon). null = none. */
+  regionSelectedId: string | null;
+  onRegionHover: (regionId: string | null) => void;
+  onRegionPick: (req: RegionChoiceRequestPayload, candidate: RegionCandidate) => void;
+  onRegionWholeState: (req: RegionChoiceRequestPayload) => void;
 }
 
 function InterleavedChatStream({
@@ -3587,6 +3839,14 @@ function InterleavedChatStream({
   payloadSeqs,
   payloadResolved,
   onPayloadDecide,
+  regionChoices,
+  regionSeqs,
+  regionResolved,
+  regionHoveredId,
+  regionSelectedId,
+  onRegionHover,
+  onRegionPick,
+  onRegionWholeState,
 }: InterleavedChatStreamProps): JSX.Element | null {
   const stream = buildInterleavedStream(
     messages,
@@ -3600,6 +3860,9 @@ function InterleavedChatStream({
     payloadWarnings,
     payloadSeqs,
     payloadResolved,
+    regionChoices,
+    regionSeqs,
+    regionResolved,
   );
   if (stream.length === 0) return null;
   return (
@@ -3653,6 +3916,29 @@ function InterleavedChatStream({
               onDecide={(decision, revised) =>
                 onPayloadDecide(entry.warning, decision, revised)
               }
+            />
+          );
+        }
+        if (entry.kind === "region-choice") {
+          // Region-disambiguation picker renders inline in the chat scroll. The
+          // candidate list is SYNCED with the map county choropleth via the
+          // region-choice bus: the bus-synced hover/selection ids highlight the
+          // matching list row (a MAP hover/tap reflects here), and hovering /
+          // picking a row reports back through onRegionHover / onRegionPick so
+          // the polygon highlights / commits in lockstep. `resolved` folds the
+          // card to its compact answered state across a remount (Case switch +
+          // return).
+          return (
+            <RegionPickerCard
+              key={entry.requestId}
+              request={entry.request}
+              resolved={entry.resolved?.choice ?? null}
+              resolvedRegionId={entry.resolved?.regionId ?? null}
+              hoveredRegionId={regionHoveredId}
+              selectedRegionId={regionSelectedId}
+              onHoverRegion={onRegionHover}
+              onPickRegion={(candidate) => onRegionPick(entry.request, candidate)}
+              onUseWholeState={() => onRegionWholeState(entry.request)}
             />
           );
         }

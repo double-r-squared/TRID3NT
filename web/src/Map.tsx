@@ -34,9 +34,10 @@
 import { useEffect, useRef, useState } from "react";
 import maplibregl, { Map as MapLibreMap, StyleSpecification } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
-import type { MapCommandPayload, SessionStatePayload, ProjectLayerSummary } from "./contracts";
+import type { MapCommandPayload, SessionStatePayload, ProjectLayerSummary, RegionCandidate } from "./contracts";
 import type { FeatureCollection, Feature, Polygon } from "geojson";
 import { publicTileBase } from "./lib/public_base";
+import { regionChoiceBus, type RegionChoiceBusState } from "./lib/region_choice_bus";
 import { LayerLegend } from "./components/LayerLegend";
 import { FeaturePopup, type FeaturePopupData, type FeatureAttribute } from "./components/FeaturePopup";
 import { useIsMobile } from "./hooks/useIsMobile";
@@ -961,6 +962,189 @@ export function clearAnalysisExtent(m: MapLibreMap): void {
   if (m.getSource(ANALYSIS_EXTENT_SOURCE_ID)) {
     m.removeSource(ANALYSIS_EXTENT_SOURCE_ID);
   }
+}
+
+// --- Region-disambiguation choropleth (state-bbox-fallback narrowing) ----- //
+//
+// When a `geocode_location` result snaps to a whole-state bbox, the agent
+// offers a narrower county pick (region-choice-request). The candidate counties
+// render as a tappable CHOROPLETH on the map, SYNCED with the in-chat
+// RegionPickerCard list via the region-choice bus: hovering/selecting a region
+// in either surface highlights its polygon, and tapping a polygon picks it
+// (same reply path as clicking the card row). Each candidate carries an
+// EPSG:4326 bbox (`RegionCandidate.bbox`); we draw one rectangle polygon per
+// candidate keyed by `region_id`. Invariant 1: the geometry is built verbatim
+// from the received candidate bboxes — no geography is computed.
+//
+// Reuses the same MapLibre GeoJSON fill+line vector pattern the analysis-extent
+// rectangle / vector layers use (Invariant 4: the client just registers
+// sources/layers). Per-feature highlight is driven by `feature-state`
+// (hovered / selected) set on the source so a hover repaints only the touched
+// polygon without re-issuing the whole FeatureCollection.
+
+export const REGION_CHOICE_SOURCE_ID = "grace2-region-choice";
+export const REGION_CHOICE_FILL_LAYER_ID = "grace2-region-choice-fill";
+export const REGION_CHOICE_LINE_LAYER_ID = "grace2-region-choice-line";
+
+const REGION_ACCENT = "#3b82f6"; // matches RegionPickerCard ACCENT (blue)
+
+/**
+ * Build the candidate county choropleth FeatureCollection from the request's
+ * candidates. One rectangle Polygon per candidate, keyed by `region_id` as the
+ * feature id (so `setFeatureState` can target it) AND in `properties.region_id`
+ * + `properties.name` (so a tap hit-test reads them back). Pure — exported for
+ * unit testing.
+ */
+export function buildRegionChoiceGeoJson(
+  candidates: RegionCandidate[],
+): FeatureCollection<Polygon> {
+  const features: Feature<Polygon>[] = candidates.map((c) => {
+    const [minLon, minLat, maxLon, maxLat] = c.bbox;
+    const ring: [number, number][] = [
+      [minLon, minLat],
+      [maxLon, minLat],
+      [maxLon, maxLat],
+      [minLon, maxLat],
+      [minLon, minLat],
+    ];
+    return {
+      type: "Feature",
+      id: c.region_id,
+      properties: { region_id: c.region_id, name: c.name },
+      geometry: { type: "Polygon", coordinates: [ring] },
+    };
+  });
+  return { type: "FeatureCollection", features };
+}
+
+/**
+ * Render (or update) the candidate county choropleth from a region-choice
+ * request. Idempotent + partial-state tolerant (mirrors drawAnalysisExtent):
+ * swaps the data on an existing source, re-adds any missing layer. The fill
+ * uses a feature-state-driven opacity ramp (selected > hovered > base) so the
+ * highlighted county pops without re-issuing the data; the line gives the
+ * county outline a crisp edge.
+ */
+export function drawRegionChoropleth(
+  m: MapLibreMap,
+  candidates: RegionCandidate[],
+): void {
+  const data = buildRegionChoiceGeoJson(candidates);
+  const existing = m.getSource(REGION_CHOICE_SOURCE_ID) as
+    | maplibregl.GeoJSONSource
+    | undefined;
+  if (existing) {
+    existing.setData(data);
+  } else {
+    m.addSource(REGION_CHOICE_SOURCE_ID, {
+      type: "geojson",
+      data,
+      // promoteId so the candidate's region_id is the canonical feature id
+      // feature-state targets (a GeoJSON source feature id must be set this way
+      // to be addressable by setFeatureState across data swaps).
+      promoteId: "region_id",
+    });
+  }
+
+  if (!m.getLayer(REGION_CHOICE_FILL_LAYER_ID)) {
+    m.addLayer({
+      id: REGION_CHOICE_FILL_LAYER_ID,
+      type: "fill",
+      source: REGION_CHOICE_SOURCE_ID,
+      paint: {
+        "fill-color": REGION_ACCENT,
+        // selected (0.42) > hovered (0.30) > base (0.12) — the highlighted
+        // county reads as the focus while the rest stay tappable hints.
+        "fill-opacity": [
+          "case",
+          ["boolean", ["feature-state", "selected"], false],
+          0.42,
+          ["boolean", ["feature-state", "hovered"], false],
+          0.3,
+          0.12,
+        ],
+      },
+    });
+  }
+  if (!m.getLayer(REGION_CHOICE_LINE_LAYER_ID)) {
+    m.addLayer({
+      id: REGION_CHOICE_LINE_LAYER_ID,
+      type: "line",
+      source: REGION_CHOICE_SOURCE_ID,
+      paint: {
+        "line-color": REGION_ACCENT,
+        "line-width": [
+          "case",
+          ["boolean", ["feature-state", "selected"], false],
+          2.5,
+          ["boolean", ["feature-state", "hovered"], false],
+          2,
+          1,
+        ],
+        "line-opacity": 0.9,
+      },
+    });
+  }
+}
+
+/**
+ * Remove the candidate county choropleth (fill + line + source). Inverse of
+ * drawRegionChoropleth. Idempotent + partial-state tolerant; layers removed
+ * before their source (MapLibre rejects removing a referenced source).
+ */
+export function clearRegionChoropleth(m: MapLibreMap): void {
+  if (m.getLayer(REGION_CHOICE_FILL_LAYER_ID)) {
+    m.removeLayer(REGION_CHOICE_FILL_LAYER_ID);
+  }
+  if (m.getLayer(REGION_CHOICE_LINE_LAYER_ID)) {
+    m.removeLayer(REGION_CHOICE_LINE_LAYER_ID);
+  }
+  if (m.getSource(REGION_CHOICE_SOURCE_ID)) {
+    m.removeSource(REGION_CHOICE_SOURCE_ID);
+  }
+}
+
+/**
+ * Apply the bus-synced hover + selection to the choropleth's feature-state.
+ * `prevIds` is the set of region_ids that currently carry a non-default state
+ * (so we can clear stale highlights without enumerating every candidate). Pure
+ * side effect on the map; returns the new set of region_ids carrying state for
+ * the next diff. No-op-safe when the source is absent (mid-teardown).
+ */
+export function applyRegionChoiceHighlight(
+  m: MapLibreMap,
+  hoveredId: string | null,
+  selectedId: string | null,
+  prevIds: Set<string>,
+): Set<string> {
+  if (!m.getSource(REGION_CHOICE_SOURCE_ID)) return new Set();
+  const nextIds = new Set<string>();
+  if (hoveredId) nextIds.add(hoveredId);
+  if (selectedId) nextIds.add(selectedId);
+  // Clear any region that was highlighted but no longer is.
+  for (const id of prevIds) {
+    if (nextIds.has(id)) continue;
+    try {
+      m.setFeatureState(
+        { source: REGION_CHOICE_SOURCE_ID, id },
+        { hovered: false, selected: false },
+      );
+    } catch {
+      /* feature gone mid-swap — ignore */
+    }
+  }
+  // Apply current state to the touched regions.
+  for (const id of nextIds) {
+    try {
+      m.setFeatureState(
+        { source: REGION_CHOICE_SOURCE_ID, id },
+        { hovered: hoveredId === id, selected: selectedId === id },
+      );
+    } catch {
+      /* feature gone mid-swap — ignore */
+    }
+  }
+  return nextIds;
 }
 
 // job-0321 (F43) — legend anchor geometry. The legend (depth-key / colorbar)
@@ -1962,6 +2146,155 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
         m.off("mousemove", onMouseMove);
       } catch {
         /* map may already be torn down */
+      }
+    };
+  }, []);
+
+  // --- Region-disambiguation choropleth sync (state-bbox-fallback) -------- //
+  //
+  // Subscribe to the region-choice bus so the candidate county choropleth stays
+  // in lockstep with the in-chat RegionPickerCard list:
+  //   - A new request draws the choropleth + zooms to the whole-state bbox so
+  //     the candidate counties are in view; a cleared request (the user
+  //     answered) tears it down. Replace-on-new-request (Appendix A.7).
+  //   - hovered/selected ids drive each polygon's feature-state highlight so a
+  //     CARD-ROW hover/click highlights the matching polygon.
+  //   - A polygon TAP (or hover) feeds the bus (pickRegion / setHovered) so the
+  //     map drives the card the same way the card drives the map — one reply
+  //     path (Chat owns the WebSocket; the bus relays the map tap to it).
+  //
+  // All MapLibre source/layer work is gated on style-readiness + existence
+  // guards (mirrors the analysis-extent + vector-layer paths). Invariant 4: the
+  // client only registers sources/layers; Invariant 1: geometry is verbatim
+  // from the received candidate bboxes.
+  useEffect(() => {
+    const highlightIds = { current: new Set<string>() };
+    let currentRequestId: string | null = null;
+
+    // Apply a bus snapshot to the map. Idempotent; safe to call before the
+    // style is ready (it re-arms on the next idle via the map "idle" handler
+    // registered below).
+    const apply = (st: RegionChoiceBusState): void => {
+      const m = map.current;
+      if (!m) return;
+      if (!mapStyleReady(m)) return;
+      const req = st.request;
+      if (!req) {
+        // Cleared — tear down the choropleth.
+        if (currentRequestId !== null) {
+          clearRegionChoropleth(m);
+          highlightIds.current = new Set();
+          currentRequestId = null;
+        }
+        return;
+      }
+      // New request (or first paint) — draw + frame the whole-state bbox so the
+      // candidate counties are visible.
+      if (currentRequestId !== req.request_id) {
+        drawRegionChoropleth(m, req.candidates);
+        currentRequestId = req.request_id;
+        highlightIds.current = new Set();
+        try {
+          const [minLon, minLat, maxLon, maxLat] = req.state_bbox;
+          m.fitBounds(
+            [
+              [minLon, minLat],
+              [maxLon, maxLat],
+            ],
+            { padding: 48, duration: 600, maxZoom: 8 },
+          );
+        } catch {
+          /* fitBounds can throw on a degenerate bbox — leave the camera */
+        }
+      } else {
+        // Same request — keep the data fresh (candidates are stable, but a
+        // re-emit is harmless) without re-framing the camera.
+        drawRegionChoropleth(m, req.candidates);
+      }
+      highlightIds.current = applyRegionChoiceHighlight(
+        m,
+        st.hoveredRegionId,
+        st.selectedRegionId,
+        highlightIds.current,
+      );
+    };
+
+    // The bus fires immediately on subscribe with the current state, so a Map
+    // mounting AFTER the request arrived paints the choropleth right away.
+    const unsub = regionChoiceBus.subscribe((st) => {
+      const m = map.current;
+      // Nothing to draw / tear down (no active request and none currently
+      // painted) → do not arm an idle deferral. This keeps the common no-pick
+      // case (the vast majority of sessions) from touching the map at all.
+      if (!st.request && currentRequestId === null) return;
+      if (m && !mapStyleReady(m)) {
+        // Defer until the style is ready; re-read the live bus state then so we
+        // don't paint a stale snapshot.
+        m.once("idle", () => apply(regionChoiceBus.getState()));
+        return;
+      }
+      apply(st);
+    });
+
+    // Map TAP on a candidate polygon → relay a pick to the bus (Chat sends the
+    // reply). A hover over a polygon highlights it via the bus too.
+    const m0 = map.current;
+    const onChoroplethClick = (e: maplibregl.MapMouseEvent): void => {
+      const m = map.current;
+      if (!m || !m.getLayer(REGION_CHOICE_FILL_LAYER_ID)) return;
+      let hits: maplibregl.MapGeoJSONFeature[] = [];
+      try {
+        hits = m.queryRenderedFeatures(e.point, {
+          layers: [REGION_CHOICE_FILL_LAYER_ID],
+        });
+      } catch {
+        hits = [];
+      }
+      const id = hits[0]?.properties?.region_id;
+      if (typeof id === "string") {
+        // Stop the generic feature-inspect click handler from also firing a
+        // popup for this tap (it's a pick, not an inspect).
+        if (typeof (e as { preventDefault?: () => void }).preventDefault === "function") {
+          (e as { preventDefault?: () => void }).preventDefault!();
+        }
+        regionChoiceBus.pickRegion(id);
+      }
+    };
+    const onChoroplethMove = (e: maplibregl.MapMouseEvent): void => {
+      const m = map.current;
+      if (!m || !m.getLayer(REGION_CHOICE_FILL_LAYER_ID)) return;
+      let hits: maplibregl.MapGeoJSONFeature[] = [];
+      try {
+        hits = m.queryRenderedFeatures(e.point, {
+          layers: [REGION_CHOICE_FILL_LAYER_ID],
+        });
+      } catch {
+        hits = [];
+      }
+      const id = hits[0]?.properties?.region_id;
+      regionChoiceBus.setHovered(typeof id === "string" ? id : null);
+      try {
+        m.getCanvas().style.cursor = typeof id === "string" ? "pointer" : "";
+      } catch {
+        /* canvas gone */
+      }
+    };
+    if (m0) {
+      m0.on("click", onChoroplethClick);
+      m0.on("mousemove", onChoroplethMove);
+    }
+
+    return () => {
+      unsub();
+      const m = map.current;
+      if (m) {
+        try {
+          m.off("click", onChoroplethClick);
+          m.off("mousemove", onChoroplethMove);
+          clearRegionChoropleth(m);
+        } catch {
+          /* map torn down */
+        }
       }
     };
   }, []);

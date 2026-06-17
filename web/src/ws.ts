@@ -32,6 +32,9 @@ import {
   PayloadWarningEnvelopePayload,
   PipelineStatePayload,
   ProviderID,
+  RegionBBox,
+  RegionChoiceProvidedPayload,
+  RegionChoiceRequestPayload,
   ResearchMode,
   SecretAddPayload,
   SecretRevokePayload,
@@ -132,6 +135,19 @@ export interface WsHandlers {
    * contract-only landing — this is the type seam both sides compile against.
    */
   onCredentialRequest?: (p: CredentialRequestPayload) => void;
+  /**
+   * Region-disambiguation request (state-bbox-fallback narrowing). Emitted when
+   * a `geocode_location` result snapped to a whole-state bbox and the agent is
+   * offering a narrower county pick. Optional so chat-only callers can ignore.
+   * Chat.tsx mounts the inline RegionPickerCard (+ publishes the request to the
+   * region-choice bus so Map.tsx paints the synced county choropleth) by
+   * subscribing here; the user's pick rides back via
+   * {@link GraceWs.sendRegionChoiceProvided}. region-choice-request is
+   * session-scoped (SESSION_SCOPED_TYPES) so it fans out to Chat's GraceWs even
+   * when the paused geocode tool ran on App.tsx's connection — mirrors the
+   * credential-request rationale exactly.
+   */
+  onRegionChoiceRequest?: (p: RegionChoiceRequestPayload) => void;
   /**
    * Tool payload-warning envelope (job-0127, sprint-12-mega Wave 2). Optional
    * so chat-only callers can ignore. Chat.tsx mounts the inline warning card
@@ -348,6 +364,12 @@ const SESSION_SCOPED_TYPES = new Set<string>([
   // App.tsx's connection. Fan it out so the prompt reaches the form regardless
   // of which socket the paused tool ran on. Mirrors the secrets-list rationale.
   "credential-request",
+  // region-choice-request is session-scoped for the SAME reason as
+  // credential-request: the geocode tool may dispatch on Chat.tsx's socket but
+  // the picker card + the map choropleth live across both Chat + App
+  // connections. Fan it out so the prompt reaches the picker regardless of
+  // which socket the paused geocode ran on.
+  "region-choice-request",
   "mode2-candidate",
   "tool-payload-warning",
   // Wave 4.11 P4: impact-envelope is session-scoped so App.tsx GraceWs sees it
@@ -692,6 +714,46 @@ export class GraceWs {
   }
 
   /**
+   * Emit a `region-choice-provided` envelope (state-bbox-fallback narrowing).
+   *
+   * Sent when the user answers a `region-choice-request` — either by tapping a
+   * candidate county (in the in-chat card list OR on the map choropleth, both
+   * synced) or by keeping the whole-state default. `request_id` echoes the
+   * pending request verbatim so the agent resumes the exact paused turn.
+   *
+   *   - choice="region": carries `selected_region_id` (the chosen candidate's
+   *     `region_id` the agent re-resolves authoritatively against its candidate
+   *     set) + `selected_bbox` (the candidate's bbox, echoed — a fallback the
+   *     agent prefers re-resolution by id over, so a tampered bbox cannot
+   *     redirect the workflow).
+   *   - choice="whole_state": carries neither (the honest already-resolved
+   *     whole-state bbox is kept — this IS the decline path, Invariant 8).
+   */
+  sendRegionChoiceProvided(args: {
+    request_id: string;
+    choice: "region" | "whole_state";
+    selected_region_id?: string | null;
+    selected_bbox?: RegionBBox | null;
+  }): void {
+    const isRegion = args.choice === "region";
+    const payload: RegionChoiceProvidedPayload = {
+      envelope_type: "region-choice-provided",
+      request_id: args.request_id,
+      choice: args.choice,
+      // Only carry the selection fields on a region pick; whole_state sends
+      // null for both (mirrors the pydantic defaults).
+      selected_region_id: isRegion ? args.selected_region_id ?? null : null,
+      selected_bbox: isRegion ? args.selected_bbox ?? null : null,
+    };
+    const env: Envelope<RegionChoiceProvidedPayload> = envelope(
+      "region-choice-provided",
+      this.sessionId,
+      payload,
+    );
+    this.sendEnvelope(env);
+  }
+
+  /**
    * Emit a `tool-payload-confirmation` envelope (job-0127, sprint-12-mega Wave 2).
    *
    * Returns the user's decision on the inline payload-warning card to the
@@ -1016,6 +1078,24 @@ export class GraceWs {
           this.handlers.onCredentialRequest(
             payload as unknown as CredentialRequestPayload,
           );
+        }
+        break;
+      case "region-choice-request":
+        // Region-disambiguation prompt (state-bbox-fallback narrowing). A
+        // geocode snapped to a whole-state bbox and the agent is offering a
+        // narrower county pick. Chat.tsx renders the inline RegionPickerCard +
+        // publishes to the region-choice bus so Map.tsx paints the synced
+        // choropleth. The user's pick rides back via sendRegionChoiceProvided.
+        // Malformed payloads (missing request_id) are dropped to avoid crashing
+        // the React tree. Optional handler so chat-only callers can ignore.
+        if (this.handlers.onRegionChoiceRequest) {
+          const rc = payload as unknown as RegionChoiceRequestPayload;
+          if (rc && typeof rc.request_id === "string") {
+            this.handlers.onRegionChoiceRequest(rc);
+          } else {
+            // eslint-disable-next-line no-console
+            console.warn("[ws] region-choice-request dropped: missing request_id", payload);
+          }
         }
         break;
       case "mode2-candidate":

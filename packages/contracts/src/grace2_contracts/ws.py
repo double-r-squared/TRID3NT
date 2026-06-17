@@ -945,6 +945,20 @@ from .sandbox_contracts import (  # noqa: E402
 
 AGENT_TO_CLIENT_PAYLOADS.update(SANDBOX_AGENT_TO_CLIENT_PAYLOADS)
 
+# region-disambiguation picker envelopes (state-bbox-fallback narrowing). The
+# request is agent->client (``region-choice-request``: snap to whole state +
+# offer narrower sub-regions); the reply is client->agent
+# (``region-choice-provided``: the user's pick). MIRRORS the credential-request
+# seam in secrets.py. See region_choice.py for the contracts; the agent
+# pause/resume seam lives in services/agent/src/grace2_agent/server.py.
+from .region_choice import (  # noqa: E402
+    REGION_CHOICE_AGENT_TO_CLIENT_PAYLOADS,
+    REGION_CHOICE_CLIENT_TO_AGENT_PAYLOADS,
+)
+
+CLIENT_TO_AGENT_PAYLOADS.update(REGION_CHOICE_CLIENT_TO_AGENT_PAYLOADS)
+AGENT_TO_CLIENT_PAYLOADS.update(REGION_CHOICE_AGENT_TO_CLIENT_PAYLOADS)
+
 ALL_PAYLOADS: dict[str, type[GraceModel]] = {
     **CLIENT_TO_AGENT_PAYLOADS,
     **AGENT_TO_CLIENT_PAYLOADS,

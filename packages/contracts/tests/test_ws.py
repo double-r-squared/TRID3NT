@@ -16,6 +16,11 @@ from pydantic import ValidationError
 from grace2_contracts import ws
 from grace2_contracts.chart_contracts import ChartEmissionPayload
 from grace2_contracts.common import GraceModel, new_ulid
+from grace2_contracts.region_choice import (
+    RegionCandidate,
+    RegionChoiceProvidedEnvelopePayload,
+    RegionChoiceRequestEnvelopePayload,
+)
 from grace2_contracts.sandbox_contracts import (
     CodeExecRequestPayload,
     CodeExecResultPayload,
@@ -559,6 +564,32 @@ def test_every_a3_a4_a4b_payload_round_trips(session_id: str) -> None:
             result={"kind": "json", "value": 42},
             truncated=False,
             duration_s=0.5,
+        ),
+        # region-disambiguation picker (state-bbox-fallback narrowing). Request
+        # is agent->client (whole-state default + candidate counties); provided
+        # is client->agent (the user's pick). Mirrors the credential flow.
+        "region-choice-request": lambda: RegionChoiceRequestEnvelopePayload(
+            request_id=new_ulid(),
+            state_name="Florida",
+            state_code="FL",
+            state_bbox=(-87.634896, 24.396308, -79.974306, 31.000888),
+            candidates=[
+                RegionCandidate(
+                    region_id="county-12071",
+                    name="Lee County",
+                    bbox=(-82.331, 26.317, -81.564, 26.795),
+                )
+            ],
+            message=(
+                "Snapped to the whole state of Florida; pick a county to "
+                "narrow the area."
+            ),
+        ),
+        "region-choice-provided": lambda: RegionChoiceProvidedEnvelopePayload(
+            request_id=new_ulid(),
+            choice="region",
+            selected_region_id="county-12071",
+            selected_bbox=(-82.331, 26.317, -81.564, 26.795),
         ),
     }
     # Every payload registered in ws.ALL_PAYLOADS must have a minimal factory

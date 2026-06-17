@@ -387,6 +387,74 @@ export interface CredentialProvidedPayload {
   provided?: boolean;        // true = key saved, retry; false = user declined (default true)
 }
 
+// --- Region-disambiguation picker (state-bbox-fallback narrowing) -------- //
+//
+// Mirrors packages/contracts/src/grace2_contracts/region_choice.py
+// (RegionChoiceRequestEnvelopePayload / RegionChoiceProvidedEnvelopePayload /
+// RegionCandidate). Field names + types match the pydantic schema VERBATIM.
+//
+// Flow (analogous to the credential-request pause/resume seam):
+//   1. A `geocode_location` result comes back as a state-snap
+//      (source == "state-bbox-fallback"): a vague/regional query ("south
+//      Florida") that had no precise OSM match snapped to the WHOLE state bbox.
+//      That whole-state bbox is the honest DEFAULT the headless path uses.
+//   2. The agent emits `region-choice-request` (server -> client): the
+//      whole-state bbox + the candidate sub-regions (default: counties) + an
+//      honest prompt naming that it snapped to the whole state and is OFFERING
+//      a narrower pick. The agent PAUSES the turn awaiting the reply (fail-open:
+//      a timeout / no client keeps the whole-state default).
+//   3. The client renders the candidates BOTH as an in-chat card LIST and as a
+//      tappable county CHOROPLETH on the map (both synced to the same
+//      request_id). Either affordance answers via `region-choice-provided`.
+//   4. The client emits `region-choice-provided` (client -> server) echoing the
+//      request_id: choice="region" + selected_region_id + selected_bbox for a
+//      narrowed pick, or choice="whole_state" to keep the default. The agent
+//      re-resolves authoritatively by selected_region_id against its candidate
+//      set (a tampered selected_bbox cannot redirect the workflow), falling
+//      back to selected_bbox only when the id is unknown.
+//
+// Invariant 9 (no cost theater): no cost / quota field. Invariant 8
+// (cancellation is first-class): no per-envelope timeout/cancel field — a
+// whole_state reply IS the decline path; a hard cancel rides the A.3 `cancel`.
+
+/** Closed Literal of admin granularities a candidate can be drawn at. `county`
+ * is the v0.1 shipping default; coarser/finer levels are an explicit amendment
+ * (each level has its own agent-side fetch plumbing). */
+export type RegionAdminLevel = "county";
+
+/** EPSG:4326 bbox tuple [minLon, minLat, maxLon, maxLat] (mirrors pydantic
+ * BBox). Reused alias so the region-choice types read against one bbox shape. */
+export type RegionBBox = [number, number, number, number];
+
+/** One selectable sub-region of the snapped state (mirrors RegionCandidate). */
+export interface RegionCandidate {
+  region_id: string;          // stable id (TIGER GEOID-derived); echoed verbatim on reply
+  name: string;               // human label, e.g. "Lee County"
+  bbox: RegionBBox;           // EPSG:4326 total bounds of the region polygon
+  admin_level: RegionAdminLevel; // "county" (default)
+}
+
+/** `region-choice-request` (A.4) — server -> client narrow-the-region prompt. */
+export interface RegionChoiceRequestPayload {
+  envelope_type?: "region-choice-request";
+  request_id: string;         // ULID; echoed back on region-choice-provided
+  state_name: string;         // detected state's full name, e.g. "Florida"
+  state_code: string;         // 2-letter state code, e.g. "FL"
+  state_bbox: RegionBBox;     // whole-state EPSG:4326 bbox (the use_whole_state extent)
+  candidates: RegionCandidate[]; // candidate sub-regions (may be empty → whole-state only)
+  default_action: "use_whole_state"; // closed Literal — the fail-open default
+  message: string;            // honest prompt: snapped to whole state, offering a narrower pick
+}
+
+/** `region-choice-provided` (A.3) — client -> server the user's region pick. */
+export interface RegionChoiceProvidedPayload {
+  envelope_type?: "region-choice-provided";
+  request_id: string;         // echoes the RegionChoiceRequestPayload this answers
+  choice: "region" | "whole_state"; // narrowed to a sub-region vs kept the whole-state default
+  selected_region_id?: string | null; // region_id of the chosen candidate when choice=="region"
+  selected_bbox?: RegionBBox | null;   // chosen region's bbox (echoed) when choice=="region"
+}
+
 // --- Case persistence envelopes (job-0137, sprint-12-mega Wave 3 — FR-MP-6) //
 //
 // Mirrors packages/contracts/src/grace2_contracts/case.py (the canonical
