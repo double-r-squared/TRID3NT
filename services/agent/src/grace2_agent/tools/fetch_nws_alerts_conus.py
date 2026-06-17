@@ -148,13 +148,14 @@ _PRESERVED_PROPERTIES = (
 # ---------------------------------------------------------------------------
 # AtomicToolMetadata — registered once at import time.
 #
-# NOTE on supports_global_query (kickoff): the Wave 1.5 schema amendment
-# (job-0114) is adding ``supports_global_query: bool = False`` to
-# AtomicToolMetadata. As of this job's authoring, that field does NOT exist
-# in grace2_contracts.tool_registry.AtomicToolMetadata yet — passing it would
-# raise pydantic ValidationError at import time and break the agent service.
-# Surfaced as OQ-0105-GLOBAL-QUERY-FIELD. Once job-0114 lands, a one-line
-# follow-up adds ``supports_global_query=True`` to this metadata literal.
+# supports_global_query=True (resolves OQ-0105-GLOBAL-QUERY-FIELD): the
+# natural use of this tool IS the unscoped nationwide sweep
+# (``/alerts/active``) — "show me current warnings across America". The
+# response is bounded (~500 active alerts, ~200KB) regardless of scope, so a
+# no-bbox global query is both meaningful and payload-safe. The optional
+# ``area`` param narrows to a single state when supplied; omitting it is the
+# CONUS-wide default, not an error. (Field landed via the Wave 1.5 schema
+# amendment, job-0114.)
 # ---------------------------------------------------------------------------
 
 _METADATA = AtomicToolMetadata(
@@ -162,6 +163,8 @@ _METADATA = AtomicToolMetadata(
     ttl_class="dynamic-1h",
     source_class="nws_alerts_conus",
     cacheable=True,
+    # CONUS-wide /alerts/active sweep is the primary use; bounded ~200KB payload.
+    supports_global_query=True,
 )
 
 

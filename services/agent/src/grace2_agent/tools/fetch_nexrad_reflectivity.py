@@ -131,15 +131,12 @@ _METADATA = AtomicToolMetadata(
     ttl_class="live-no-cache",
     source_class=None,
     cacheable=False,
+    # OQ-0102-METADATA-FIELDS resolved: the schema model now exposes this flag,
+    # so the long-parked intent is folded into the live metadata. bbox=None
+    # returns the CONUS-wide WMS GetMap URL; this tool transfers only a service
+    # URL (~0.1MB), never pixels, so a no-bbox global query is bounded + safe.
+    supports_global_query=True,
 )
-
-# Intended Wave 1.5 metadata (parked here until the schema model exposes them).
-# OQ-0102-METADATA-FIELDS: a follow-up schema job adds these and a single
-# AtomicToolMetadata constructor edit migrates them off this module-level dict.
-_INTENDED_METADATA_EXTENSIONS: dict[str, object] = {
-    "supports_global_query": True,      # bbox=None means full CONUS
-    "estimate_payload_mb": 0.1,         # service-URL only; no pixel transfer at tool-call time
-}
 
 
 # ---------------------------------------------------------------------------
