@@ -909,6 +909,373 @@ def test_garbage_area_raises_before_any_fetch():
     rt.assert_not_called()
 
 
+# ---------------------------------------------------------------------------
+# F88: zone-reference → polygon resolution.
+#
+# NWS alerts frequently carry NULL inline geometry and reference affected areas
+# by properties.affectedZones (NWS zone API URLs) and/or properties.geocode.UGC
+# codes. A NULL-geometry row draws nothing — the live FL test ("7 active alerts,
+# 0 polygons") was exactly this. The converter must resolve those zone refs to
+# real polygons before the FGB write so MapLibre actually draws them.
+# ---------------------------------------------------------------------------
+
+
+def _zone_polygon(lon_min: float, lat_min: float) -> dict:
+    """A synthetic NWS zone-API geometry (Polygon) centered near given coords."""
+    lon_max = lon_min + 0.4
+    lat_max = lat_min + 0.4
+    return {
+        "type": "Polygon",
+        "coordinates": [[
+            [lon_min, lat_min], [lon_max, lat_min],
+            [lon_max, lat_max], [lon_min, lat_max],
+            [lon_min, lat_min],
+        ]],
+    }
+
+
+def _zone_feature(ugc: str, lon_min: float, lat_min: float) -> dict:
+    """A synthetic NWS zone-API Feature (mirrors api.weather.gov/zones/...)."""
+    return {
+        "type": "Feature",
+        "geometry": _zone_polygon(lon_min, lat_min),
+        "properties": {"id": ugc, "type": "public"},
+    }
+
+
+def _null_geom_alert(
+    event: str,
+    affected_zones: list[str],
+    ugc: list[str],
+) -> dict:
+    """An NWS alert with NULL inline geometry + zone references (the F88 case)."""
+    return {
+        "type": "Feature",
+        "geometry": None,
+        "properties": {
+            "id": f"alert-{event}-zoneonly",
+            "event": event,
+            "headline": f"{event} (zone-referenced, no inline geometry)",
+            "description": f"{event} affecting referenced zones.",
+            "severity": "Severe",
+            "urgency": "Expected",
+            "certainty": "Likely",
+            "senderName": "NWS Test Office",
+            "areaDesc": "Referenced Zones",
+            "status": "Actual",
+            "affectedZones": affected_zones,
+            "geocode": {"UGC": ugc, "SAME": []},
+        },
+    }
+
+
+def test_ugc_to_zone_url_maps_zone_and_county_types():
+    """UGC 3rd char selects the NWS zone collection: Z→forecast, C→county."""
+    from grace2_agent.tools.fetch_nws_alerts_conus import _ugc_to_zone_url
+    assert _ugc_to_zone_url("LAZ091") == (
+        "https://api.weather.gov/zones/forecast/LAZ091"
+    )
+    assert _ugc_to_zone_url("ILC011") == (
+        "https://api.weather.gov/zones/county/ILC011"
+    )
+    # Case-insensitive.
+    assert _ugc_to_zone_url("laz091") == (
+        "https://api.weather.gov/zones/forecast/LAZ091"
+    )
+    # Unresolvable inputs → None (never a guessed URL).
+    assert _ugc_to_zone_url("LA") is None
+    assert _ugc_to_zone_url("LAX091") is None
+    assert _ugc_to_zone_url(123) is None  # type: ignore[arg-type]
+
+
+def test_zone_urls_for_feature_prefers_affected_zones_and_dedupes():
+    """affectedZones are primary; geocode.UGC is the fallback union; no dupes."""
+    from grace2_agent.tools.fetch_nws_alerts_conus import _zone_urls_for_feature
+    props = {
+        "affectedZones": ["https://api.weather.gov/zones/forecast/LAZ091"],
+        "geocode": {"UGC": ["LAZ091", "LAZ093", "ILC011"]},
+    }
+    urls = _zone_urls_for_feature(props)
+    # affectedZones first, then UGC-derived; LAZ091 must not appear twice.
+    assert urls == [
+        "https://api.weather.gov/zones/forecast/LAZ091",
+        "https://api.weather.gov/zones/forecast/LAZ093",
+        "https://api.weather.gov/zones/county/ILC011",
+    ]
+
+
+def test_zone_urls_for_feature_falls_back_to_ugc_when_no_affected_zones():
+    """No affectedZones → derive URLs purely from geocode.UGC (fallback norm)."""
+    from grace2_agent.tools.fetch_nws_alerts_conus import _zone_urls_for_feature
+    props = {"geocode": {"UGC": ["FLZ072", "FLC086"]}}
+    urls = _zone_urls_for_feature(props)
+    assert urls == [
+        "https://api.weather.gov/zones/forecast/FLZ072",
+        "https://api.weather.gov/zones/county/FLC086",
+    ]
+
+
+def _zone_http_mock(zone_geoms: dict[str, dict]):
+    """Build a fake httpx.Client whose .get returns the synthetic zone Feature
+    for each requested zone URL, recording call counts per URL.
+
+    ``zone_geoms`` maps zone-URL → geometry dict. Unknown URLs return 404.
+    """
+    calls: dict[str, int] = {}
+
+    class FakeResponse:
+        def __init__(self, body, status=200):
+            self._body = body
+            self.status_code = status
+            self.text = ""
+
+        def json(self):
+            return self._body
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def get(self, url, headers=None):
+            calls[url] = calls.get(url, 0) + 1
+            geom = zone_geoms.get(url)
+            if geom is None:
+                return FakeResponse({"detail": "not found"}, status=404)
+            return FakeResponse(
+                {"type": "Feature", "geometry": geom, "properties": {"id": url}}
+            )
+
+    return FakeClient, calls
+
+
+def test_resolve_zone_geometries_attaches_real_polygons():
+    """A NULL-geometry alert with affectedZones resolves to a drawable polygon."""
+    from grace2_agent.tools.fetch_nws_alerts_conus import _resolve_zone_geometries
+
+    z_url = "https://api.weather.gov/zones/forecast/FLZ072"
+    alert = _null_geom_alert(
+        "Coastal Flood Advisory", [z_url], ["FLZ072"],
+    )
+    collection = {"type": "FeatureCollection", "features": [alert]}
+
+    FakeClient, calls = _zone_http_mock({z_url: _zone_polygon(-80.2, 26.1)})
+    with patch(
+        "grace2_agent.tools.fetch_nws_alerts_conus.httpx.Client", FakeClient
+    ):
+        resolved = _resolve_zone_geometries(collection)
+
+    feats = resolved["features"]
+    assert len(feats) == 1
+    geom = feats[0]["geometry"]
+    assert geom is not None, "zone-referenced alert must gain real geometry"
+    assert geom["type"] in ("Polygon", "MultiPolygon")
+    # Property table preserved.
+    assert feats[0]["properties"]["event"] == "Coastal Flood Advisory"
+    assert calls[z_url] == 1
+
+
+def test_resolve_zone_geometries_unions_multiple_zones_to_multipolygon():
+    """Several affected zones → MultiPolygon union attached to the alert."""
+    from grace2_agent.tools.fetch_nws_alerts_conus import _resolve_zone_geometries
+
+    z1 = "https://api.weather.gov/zones/forecast/FLZ072"
+    z2 = "https://api.weather.gov/zones/forecast/FLZ073"
+    alert = _null_geom_alert(
+        "Flood Warning", [z1, z2], ["FLZ072", "FLZ073"],
+    )
+    collection = {"type": "FeatureCollection", "features": [alert]}
+
+    FakeClient, calls = _zone_http_mock({
+        z1: _zone_polygon(-80.2, 26.1),
+        z2: _zone_polygon(-80.6, 26.5),
+    })
+    with patch(
+        "grace2_agent.tools.fetch_nws_alerts_conus.httpx.Client", FakeClient
+    ):
+        resolved = _resolve_zone_geometries(collection)
+
+    geom = resolved["features"][0]["geometry"]
+    assert geom["type"] == "MultiPolygon"
+    assert len(geom["coordinates"]) == 2
+
+
+def test_resolve_zone_geometries_dedupes_shared_zone_across_alerts():
+    """Alerts share zones — each distinct zone URL is fetched exactly once."""
+    from grace2_agent.tools.fetch_nws_alerts_conus import _resolve_zone_geometries
+
+    shared = "https://api.weather.gov/zones/forecast/FLZ072"
+    a1 = _null_geom_alert("Flood Warning", [shared], ["FLZ072"])
+    a2 = _null_geom_alert("Coastal Flood Advisory", [shared], ["FLZ072"])
+    collection = {"type": "FeatureCollection", "features": [a1, a2]}
+
+    FakeClient, calls = _zone_http_mock({shared: _zone_polygon(-80.2, 26.1)})
+    with patch(
+        "grace2_agent.tools.fetch_nws_alerts_conus.httpx.Client", FakeClient
+    ):
+        resolved = _resolve_zone_geometries(collection)
+
+    # Both alerts got geometry; the shared zone was fetched only once.
+    assert all(f["geometry"] is not None for f in resolved["features"])
+    assert calls[shared] == 1
+
+
+def test_resolve_zone_geometries_keeps_inline_geometry_untouched():
+    """Features that already carry inline geometry are not re-fetched."""
+    from grace2_agent.tools.fetch_nws_alerts_conus import _resolve_zone_geometries
+
+    inline = _make_feature("Tornado Warning", "Extreme", -97.0, 35.0)
+    collection = {"type": "FeatureCollection", "features": [inline]}
+
+    FakeClient, calls = _zone_http_mock({})
+    with patch(
+        "grace2_agent.tools.fetch_nws_alerts_conus.httpx.Client", FakeClient
+    ):
+        resolved = _resolve_zone_geometries(collection)
+
+    # No HTTP at all — inline geometry alerts skip the zone client entirely.
+    assert calls == {}
+    assert resolved["features"][0]["geometry"]["type"] == "Polygon"
+
+
+def test_resolve_zone_geometries_unresolvable_keeps_null_never_fabricates():
+    """A zone that 404s: alert keeps its row + NULL geometry (no fabrication)."""
+    from grace2_agent.tools.fetch_nws_alerts_conus import _resolve_zone_geometries
+
+    bad = "https://api.weather.gov/zones/forecast/ZZZ999"
+    alert = _null_geom_alert("Special Weather Statement", [bad], ["ZZZ999"])
+    collection = {"type": "FeatureCollection", "features": [alert]}
+
+    # Empty mock → every zone URL 404s.
+    FakeClient, _calls = _zone_http_mock({})
+    with patch(
+        "grace2_agent.tools.fetch_nws_alerts_conus.httpx.Client", FakeClient
+    ):
+        resolved = _resolve_zone_geometries(collection)
+
+    feat = resolved["features"][0]
+    # Row preserved (property table intact) but geometry stays NULL — honest,
+    # never fabricated.
+    assert feat["geometry"] is None
+    assert feat["properties"]["event"] == "Special Weather Statement"
+
+
+def test_end_to_end_zone_referenced_alerts_become_drawable_fgb():
+    """F88 acceptance: a FeatureCollection of NULL-geometry zone-referenced
+    alerts converts to an FGB whose rows carry drawable (non-null) geometry.
+
+    This is the exact failure NATE saw live: '7 active alerts' that drew ZERO
+    polygons because every alert was zone-referenced with NULL inline geometry.
+    """
+    z072 = "https://api.weather.gov/zones/forecast/FLZ072"
+    z073 = "https://api.weather.gov/zones/forecast/FLZ073"
+    z086 = "https://api.weather.gov/zones/county/FLC086"
+
+    # Mix: one inline-geometry alert + three zone-referenced NULL-geom alerts.
+    inline = _make_feature("Tornado Warning", "Extreme", -81.0, 26.0)
+    a1 = _null_geom_alert("Coastal Flood Advisory", [z072], ["FLZ072"])
+    a2 = _null_geom_alert("Flood Warning", [z072, z073], ["FLZ072", "FLZ073"])
+    # No affectedZones — UGC fallback path.
+    a3 = _null_geom_alert("Heat Advisory", [], ["FLC086"])
+
+    geojson = {
+        "type": "FeatureCollection",
+        "features": [inline, a1, a2, a3],
+    }
+
+    FakeClient, calls = _zone_http_mock({
+        z072: _zone_polygon(-80.2, 26.1),
+        z073: _zone_polygon(-80.6, 26.5),
+        z086: _zone_polygon(-81.4, 27.0),
+    })
+    with patch(
+        "grace2_agent.tools.fetch_nws_alerts_conus.httpx.Client", FakeClient
+    ):
+        # _resolve_zone_geometries runs inside the converter pipeline; call it
+        # then feed the result to the FGB writer (same order as the tool body).
+        from grace2_agent.tools.fetch_nws_alerts_conus import (
+            _resolve_zone_geometries,
+        )
+        resolved = _resolve_zone_geometries(geojson)
+    fgb_bytes = _geojson_to_fgb(resolved)
+    assert len(fgb_bytes) > 0
+
+    # z072 is shared by a1 and a2 → fetched once.
+    assert calls[z072] == 1
+
+    import geopandas as gpd
+    with tempfile.NamedTemporaryFile(suffix=".fgb", delete=False) as f:
+        path = f.name
+        f.write(fgb_bytes)
+    try:
+        gdf = gpd.read_file(path, engine="pyogrio")
+        assert len(gdf) == 4
+        # CRITICAL F88 assertion: every row carries drawable geometry. Before
+        # the fix the three zone-referenced rows had NULL geometry and drew
+        # nothing.
+        drawable = gdf.geometry.notna() & ~gdf.geometry.is_empty
+        assert drawable.all(), (
+            f"Expected all 4 alerts to be drawable; got "
+            f"{int(drawable.sum())}/4. Zone resolution did not flow through."
+        )
+        events = set(gdf["event"].tolist())
+        assert "Coastal Flood Advisory" in events
+        assert "Heat Advisory" in events  # UGC-fallback alert
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+def test_full_fetch_pipeline_resolves_zones_via_bytes_path():
+    """_fetch_nws_alerts_conus_bytes resolves zone refs end-to-end.
+
+    Mocks the CONUS sweep (zone-referenced alerts) AND the per-zone GETs, then
+    asserts the produced FGB carries drawable geometry. Verifies the resolution
+    is wired into the real fetch path (not just callable in isolation).
+    """
+    z072 = "https://api.weather.gov/zones/forecast/FLZ072"
+    sweep = {
+        "type": "FeatureCollection",
+        "features": [
+            _null_geom_alert("Coastal Flood Advisory", [z072], ["FLZ072"]),
+        ],
+    }
+    FakeClient, _calls = _zone_http_mock({z072: _zone_polygon(-80.2, 26.1)})
+
+    with patch(
+        "grace2_agent.tools.fetch_nws_alerts_conus._fetch_nws_conus_geojson",
+        return_value=sweep,
+    ), patch(
+        "grace2_agent.tools.fetch_nws_alerts_conus.httpx.Client", FakeClient
+    ):
+        fgb_bytes = _fetch_nws_alerts_conus_bytes(
+            status="actual", event_types=None,
+        )
+
+    import geopandas as gpd
+    with tempfile.NamedTemporaryFile(suffix=".fgb", delete=False) as f:
+        path = f.name
+        f.write(fgb_bytes)
+    try:
+        gdf = gpd.read_file(path, engine="pyogrio")
+        assert len(gdf) == 1
+        assert gdf.geometry.notna().all(), (
+            "fetch pipeline must resolve zone refs to drawable geometry"
+        )
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
 @pytest.mark.skipif(
     not _LIVE_NWS_CONUS,
     reason="Set GRACE2_TEST_LIVE_NWS_CONUS=1 to run live NWS CONUS tests",
