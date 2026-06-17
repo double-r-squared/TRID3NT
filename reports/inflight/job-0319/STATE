@@ -1,0 +1,13 @@
+job: job-0319
+title: Server-side raster blend/bake tool (compute_blended_composite) — F37 realized
+owner: engine
+state: IN_PROGRESS_WORKFLOW
+priority: P1 (user asked twice; agent punts blend to client which can't do it)
+opened: 2026-06-16
+root_cause: no server-side blend tool exists. User asked to bake land cover x hillshade (and earlier gradient/relief x hillshade); agent computed the hillshade then told the user to "set multiply blend mode" client-side — MapLibre GL has NO per-layer multiply blend, so nothing bakes.
+fix: new tool compute_blended_composite(base_layer_uri, overlay_layer_uri, blend_mode="multiply", opacity=1.0). Reads both COGs (uri_registry handles), aligns overlay to base grid (resample, CRS-aware, nodata-safe), applies blend (multiply default; reuse compute_hillshade swiss_double multiply math), writes ONE composite RGB COG (tiled + overviews via _translate_to_cog, clipped to overlap), returns raster LayerURI -> publish -> single baked layer. @register_tool decorator (self-registers, no manual catalog edit). Catalog description steers agent to use it for bake/blend/combine/drape and to NEVER punt blending to the client.
+acceptance: unit test (blend two small rasters -> composite COG has overviews + correct dims + blended values); catalog/import smoke; agent can discover+call it. Verify: blend-correctness + integration/registration, refute-by-default.
+file_ownership: NEW tools/compute_blended_composite.py (+ test). Disjoint from job-0318 sfincs_builder + web batch.
+next: review -> commit -> deploy (bundle with job-0318 flood fix as deploy #2 agent) -> user bakes landcover x hillshade on Chattanooga.
+
+deploy: DEPLOYED to prod agent 2026-06-16 (deploy #2, active+clean, 86 tools). commits: 14a2b5c(0318) aced739+dd6fb89(0319). Awaiting user live-verify.

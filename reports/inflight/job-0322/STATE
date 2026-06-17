@@ -1,0 +1,18 @@
+job: job-0322
+title: Web follow-on — complete F53 delete + mobile chat/header/cases/resume/opacity
+owner: web
+state: IN_PROGRESS_WORKFLOW
+priority: P1
+opened: 2026-06-16
+scope:
+  - F53-completion: wire onDeleteLayer in App.tsx at BOTH LayerPanel mount sites (-> wsRef.sendDeleteLayer) so delete reaches the server end-to-end (job-0325 left this seam; verifier refuted delete-propagation on it). Confirm the server-echoed session-state authoritatively removes the layer (no resurrection). PLUS mobile swipe-RIGHT-to-delete gesture + confirm popup in LayerPanel (distinct from vertical drag-reorder); desktop keeps the delete control + confirm.
+  - F31: layers disappear on mobile browser background/resume -> on visibilitychange/resume reconnect (ws.ts) + re-request session-state + repaint (App.tsx). Map auto-reconciles.
+  - F44: grabbable mobile chat sheet edge (drag to resize height) + keep tap-fold. Chat.tsx.
+  - F45: move connection signifier + GRACE-2/version label onto the mobile chat header row. Chat.tsx.
+  - F52: Cases panel tap-to-dismiss anywhere outside cases components (dead backdrop today). CasesPanel/MobileDrawer.
+  - F56: chat opacity Settings control, PERSIST PER-USER (not per-case), default MEDIUM (more opaque/frosted than now), desktop + mobile. SettingsPopup (control) + Chat.tsx (apply to desktop+mobile container styles) + shared persist key.
+files: App.tsx, ws.ts (F31 + F53 wiring), Chat.tsx (F44/F45/F56-apply), SettingsPopup.tsx (F56 control), CasesPanel.tsx/MobileDrawer.tsx (F52), LayerPanel.tsx + ConfirmationDialog.tsx (F53 gesture+confirm). All committed/free post job-0321+0325.
+execution: Workflow design (file-disjoint groups, App.tsx single-owner) -> parallel implement + vitest -> verify (incl. end-to-end delete propagation), refute-by-default. NO live (user tests).
+deploy: bundles into the WEB deploy with job-0321 + job-0325-web. User authorization required.
+
+web-deploy: PUBLISHED 2026-06-16 (web batch: s3 sync + CloudFront invalidation ICI4SKCXZX9YLI66I6QRJWNUMB; header hash -> 77c1bcc). commits 040e2da/788c910/77c1bcc. Awaiting user hard-refresh + live-verify.

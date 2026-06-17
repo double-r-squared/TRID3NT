@@ -1,0 +1,13 @@
+job: job-0324
+title: Preserve GDAL color table through landcover clip + COG-translate (fix grey land cover REGRESSION)
+owner: engine
+state: IN_PROGRESS_WORKFLOW
+priority: P0 (regression — colored land cover broke in deploy #1; also blocks the blend colors)
+opened: 2026-06-16
+root_cause: CONFIRMED. NLCD land cover COG is single-band palette-INDEX with an EMBEDDED GDAL color table (TiTiler colorizes from it). job-0316's overviews/clip fix re-writes the COG via _rasterio_translate_to_cog (data_fetch.py:1477) which copies width/height/dtype/crs/transform/nodata but NOT the colormap -> palette stripped -> TiTiler renders single-band grey. Old Chattanooga (pre-deploy-#1, no re-translate) kept the palette -> colored; Asheville (post-deploy-#1) -> grey. Same gap in _clip_raster_bytes_to_bbox (data_fetch.py:1403) and publish_layer._build_cog_with_overviews (publish_layer.py:490).
+fix: read the source band colormap (rasterio src.colormap(1); ValueError if none) and write it onto the output (dst.write_colormap(1, cmap)) + set colorinterp=palette, in ALL three re-write paths (_rasterio_translate_to_cog, _clip_raster_bytes_to_bbox, publish_layer._build_cog_with_overviews). Preserve palette + overviews + bbox clip together. No-op for rasters without a colormap (DEM/hillshade/flood).
+acceptance: unit test — a synthetic paletted single-band COG through clip+translate retains its color table AND gains overviews AND is bbox-clipped; non-paletted rasters unchanged. Verify: colormap-preserved + overviews-still-present + no-regression (non-paletted), refute-by-default. Pairs with job-0323 (blend reads the palette).
+file_ownership: data_fetch.py + publish_layer.py. Disjoint from web batch (job-0321/0322) + compute_blended_composite (job-0323).
+next: review -> commit -> next agent deploy (with job-0323) -> user re-runs land cover (colored) + bakes land cover x hillshade (colored).
+
+deploy: DEPLOYED to prod agent 2026-06-16 (deploy #3, active+clean, 86 tools). commits 08fa41e/46431f0/788c910. Awaiting user live-verify.

@@ -1,0 +1,13 @@
+job: job-0323
+title: compute_blended_composite — apply embedded color table for paletted single-band base (fix grayscale blend)
+owner: engine
+state: IN_PROGRESS_WORKFLOW
+priority: P1
+opened: 2026-06-16
+root_cause: CONFIRMED. User blended land cover x hillshade on Chattanooga -> output GREYSCALE instead of colored-landcover-with-shadows. The land cover COG is a SINGLE-BAND NLCD palette-INDEX raster; its colors live in an EMBEDDED GDAL color table (TiTiler colorizes from it at display; the published tile has no explicit colormap). compute_blended_composite._read_base_rgb (compute_blended_composite.py ~L210-213) BROADCASTS a single-band base to grayscale (R=G=B) -> the palette colors never applied before the multiply -> grayscale shaded relief.
+fix: in _read_base_rgb, for a single-band base, read the embedded color table via rasterio ds.colormap(1); if present, map indices -> RGB(A) through the palette LUT (nodata-safe) BEFORE blending; if NO color table (true grayscale raster), keep the current grayscale broadcast. This makes ANY paletted COG (land cover, and future categorical layers) blend in real colors. Not a misprompt.
+acceptance: unit test — paletted single-band base (synthetic COG with an embedded colormap) x grayscale overlay -> output carries the PALETTE colors modulated by the overlay (sample pixel correct); a true-grayscale single-band base still broadcasts gray; existing RGB-base path unchanged. Verify: blend-color-correctness + no-regression (grayscale + RGB bases), refute-by-default.
+file_ownership: compute_blended_composite.py (+ its test). Disjoint from web batch (job-0321/0322) + everything else running.
+next: review -> commit -> deploy (next agent deploy) -> user re-bakes Chattanooga land cover x hillshade -> colored.
+
+deploy: DEPLOYED to prod agent 2026-06-16 (deploy #3, active+clean, 86 tools). commits 08fa41e/46431f0/788c910. Awaiting user live-verify.

@@ -1,0 +1,17 @@
+job: job-0325
+title: Layer lifecycle — delete layers + agent reuse-not-refetch + mobile eye persistence
+owner: agent+web
+state: IN_PROGRESS_WORKFLOW
+priority: P1
+opened: 2026-06-16
+scope:
+  - F53 delete layers: LayerPanel per-layer delete control -> WS delete command -> server removes from session loaded_layers + persists + emits session-state (map auto-removes via replace-not-reconcile). Agent loaded-layers awareness reflects the deletion.
+  - F54 reuse-not-refetch: strengthen build_layers_present_note (adapter.py) to carry each loaded layer's HANDLE/uri + a firm "reuse the handle, do NOT re-fetch/recompute unless absent" instruction, so e.g. blending already-loaded hillshade+landcover passes existing handles (user saw a wasteful re-pull).
+  - F55 mobile eye persistence: layer-visibility toggle must persist across panel collapse on mobile (verify desktop). LayerPanel.tsx.
+file_ownership (disjoint from running work): AGENT = server.py + adapter.py (build_layers_present_note); WEB = LayerPanel.tsx + ws.ts + contracts.ts. NOT Map.tsx (job-0321), NOT data_fetch/publish_layer (job-0324), NOT Chat/Settings/Legend/Chart (job-0321). Map needs no change (reconcile removes dropped layers).
+execution: Workflow design (delete-command contract + existing-infra check + ownership) -> implement (agent + web, file-disjoint) -> verify (delete-propagation + reuse-not-refetch + eye-persistence), refute-by-default. vitest for web, pytest for agent. NO live (user tests).
+next: review -> commit -> agent restart + web deploy (delete spans both); coordinate with deploy #3 (agent) + the web deploy.
+
+deploy: DEPLOYED to prod agent 2026-06-16 (deploy #3, active+clean, 86 tools). commits 08fa41e/46431f0/788c910. Awaiting user live-verify.
+
+web-deploy: PUBLISHED 2026-06-16 (web batch: s3 sync + CloudFront invalidation ICI4SKCXZX9YLI66I6QRJWNUMB; header hash -> 77c1bcc). commits 040e2da/788c910/77c1bcc. Awaiting user hard-refresh + live-verify.

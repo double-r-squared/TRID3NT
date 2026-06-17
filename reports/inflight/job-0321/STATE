@@ -1,0 +1,17 @@
+job: job-0321
+title: Web UI batch (user-prioritized 2026-06-16) — bundle the mobile/AOI/legend/settings/chart fixes
+owner: web
+state: IN_PROGRESS_WORKFLOW
+priority: P1 (user: "do these along with whatever fix you're doing now")
+opened: 2026-06-16
+scope:
+  - F40: AOI bounding box OUTLINE-ONLY (drop the fill). Map.tsx ANALYSIS_EXTENT_FILL_LAYER_ID -> remove/zero fill, keep ANALYSIS_EXTENT_LINE_LAYER_ID.
+  - F43/F13: depth-key/colorbar LEGEND attached to the BOUNDING BOX (bottom edge of AOI), NOT screen bottom, desktop + mobile. LayerLegend.tsx + positioning vs the AOI (Map.tsx/App.tsx).
+  - F42: mobile collapsed-chat active-tool strip gets the rainbow-gradient running animation (SheetActiveToolStrip in Chat.tsx, per feedback_pipeline_card_visual_states).
+  - F29: mobile Settings -> TOP-RIGHT + bundle API keys INSIDE Settings. SettingsPopup.tsx + SecretsPanel/SecretsPopup + App.tsx chrome placement.
+  - F51: mobile chart renders blank ("undefined is not an object (l.marktype)", iOS Safari). Valid vega_lite_spec; vega-embed render failure. ChartGallery.tsx + ChartStack.tsx (likely zero-size container at embed time / Safari quirk). Confirm desktop unaffected.
+execution: Workflow design (file-disjoint groups, App.tsx single-owner) -> parallel implement + vitest -> verify (review + vitest, refute-by-default). NO live testing (user live-tests on mobile per working agreement).
+deploy: WEB deploy (vite build + s3 sync + CloudFront invalidate) after gate -> bumps the header build hash from 93eee3e. User authorization required for prod deploy.
+deferred-to-next-web-pass: F31 (mobile resume-repaint), F44 (mobile chat drag-resize), F45 (mobile header reflow).
+
+web-deploy: PUBLISHED 2026-06-16 (web batch: s3 sync + CloudFront invalidation ICI4SKCXZX9YLI66I6QRJWNUMB; header hash -> 77c1bcc). commits 040e2da/788c910/77c1bcc. Awaiting user hard-refresh + live-verify.

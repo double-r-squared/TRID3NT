@@ -1,0 +1,18 @@
+job: job-0316
+title: Publishing-reliability batch (rivers full-bbox + overviews + vector false-card + landcover full-AOI + clip-to-bbox)
+owner: agent/engine
+state: IN_PROGRESS_WORKFLOW
+priority: P1
+opened: 2026-06-16
+scope (live-diagnosed 2026-06-16, Chattanooga):
+  - F30: fetch_river_geometry fails HUC4 routing for most CONUS; no full-bbox path; NLDI trace only draws seed-connected network. Fix: OSM waterway bbox primary + internal fallback NHDPlus-HR -> honest error; fills full bbox; clip to bbox.
+  - F32: agent calls publish_layer on vectors (roads/rivers) -> vector guard rejects -> false RED "Publishing layer failed" card on a SUCCESSFUL inline render. Fix: benign rejection (no failure card) + SYSTEM_PROMPT never-publish-vectors + remove NLDI docstring publish hint.
+  - F33: fetch_landcover (and any raster) publishes COG with NO overviews -> TiTiler 404s below-native tiles -> spotty/doesn't-fill-bbox zoomed out. Fix: emit COG via _translate_to_cog (overviews) + publish_layer enforces/auto-adds overviews.
+  - F34: agent used a SMALLER bbox than the case AOI for landcover (only city). Fix: SYSTEM_PROMPT use full case AOI bbox for every area layer; "don't fetch all" != shrink area.
+  - F39 (partial): clip overlays to bbox — vectors (roads/rivers) + landcover clipped to requested bbox.
+file_ownership (disjoint):
+  D=data_fetch.py (fetch_river_geometry, fetch_landcover); PUB=publish_layer.py; SYS=adapter.py SYSTEM_PROMPT; VEC=fetch_roads_osm.py + fetch_nhdplus_nldi_navigate.py
+execution: combined workflow with job-0317 (MODFLOW coercion). Verify gate refute-by-default.
+next: review diff -> full agent test suite -> commit -> bundle into agent deploy #1 with job-0315 -> ping user -> deploy -> live verify.
+
+deploy: DEPLOYED to prod agent 2026-06-16 (deploy #1, SSM restart, active+clean startup). Awaiting user live-verify. commits: 1f715cf (0315), ed26b62 (0316+0317).

@@ -1,0 +1,14 @@
+job: job-0318
+title: SFINCS active-cell mask — domain-adaptive elevation bounds (fix empty inland/elevated floods)
+owner: engine
+state: IN_PROGRESS_WORKFLOW
+priority: P0 (core flood capability — only coastal works today)
+opened: 2026-06-16
+root_cause: CONFIRMED via live log + code. sfincs_builder.py hardcodes setup_mask_active zmin=-10.0 zmax=10.0 (coastal/sea-level window). For inland/elevated terrain (Asheville ~650 m) EVERY cell is above zmax=10 -> hydromt logs "No active cells found" -> empty domain -> solver produces zero inundation -> Pelicun fails PELICUN_NO_ASSETS_IN_HAZARD. Precip forcing was applied fine (magnitude 6.63). The flood model has ONLY ever worked for near-sea-level areas (Fort Myers fit the window).
+fix: derive setup_mask_active zmin/zmax from the domain DEM's actual elevation range (read dep.tif min/max in sfincs_builder before composing the hydromt config; set zmin=floor(dem_min)-buffer, zmax=ceil(dem_max)+buffer) so the whole AOI terrain is active regardless of elevation. MUST NOT regress coastal domains (Fort Myers).
+acceptance: unit test (high-elevation DEM -> adaptive bounds include terrain; coastal DEM still valid) + LIVE re-verify: re-run Asheville 100-yr flood -> non-empty inundation + Pelicun runs. Also surface the DEM-coverage warning ("does not fully cover bbox") if relevant.
+file_ownership: sfincs_builder.py (disjoint from web batch + other engine items).
+execution: fix+verify workflow, refute-by-default; coastal-no-regression lens required.
+next: review -> commit -> deploy #2 (agent) -> user re-runs Asheville flood capstone.
+
+deploy: DEPLOYED to prod agent 2026-06-16 (deploy #2, active+clean, 86 tools). commits: 14a2b5c(0318) aced739+dd6fb89(0319). Awaiting user live-verify.

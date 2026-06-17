@@ -1,0 +1,13 @@
+job: job-0315
+title: Chat narration/tool-card interleave (server-side per-segment message_id)
+owner: agent
+state: DONE_COMMITTED_NOT_DEPLOYED
+priority: P1
+opened: 2026-06-16
+committed: 1f715cf (2026-06-16)
+fix: Part A per-segment message_id (interleave) + Part B persist each segment row (replay parity) + regression fix (accumulator-bearing closing marker row on tool-terminal turns so AOI camera-snap survives, job-0259/0280/0281).
+verify: 4-lens panel (3/4, contract-schema refuted) -> regression fix -> 2-lens re-verify 2/2 confirmed. Targeted suites 65 passed; full suite green except 1 pre-existing unrelated qgis_discovery failure.
+workflows: wjuj0cf33 (impl+verify, 639530 tok) + wnaxd4y0x (regression fix+re-verify, 250638 tok).
+next: bundle into agent deploy #1 with job-0316; ping user before agent restart (standing commitment); then user live-test interleave train.
+
+deploy: DEPLOYED to prod agent 2026-06-16 (deploy #1, SSM restart, active+clean startup). Awaiting user live-verify. commits: 1f715cf (0315), ed26b62 (0316+0317).

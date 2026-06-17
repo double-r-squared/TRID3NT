@@ -1,0 +1,14 @@
+job: job-0317
+title: MODFLOW spill_location_latlon string-coercion fix (run_modflow_job param-parse bug)
+owner: agent/engine
+state: IN_PROGRESS_WORKFLOW
+priority: P1 (blocks the MODFLOW contamination demo)
+opened: 2026-06-16
+root_cause: CONFIRMED via live log. Bedrock Claude passes spill_location_latlon as a STRING ('40.8088861,-96.7077751'), not an array. run_modflow_tool.py:173 does `tuple(float(v) for v in spill_location_latlon)` -> iterates the string's CHARACTERS -> float('.') raises "could not convert string to float: '.'" (MODFLOW_PARAMS_INVALID, non-retryable). Same class as job-0295 news-ingest coercion.
+secondary: agent reaches for run_model_groundwater_contamination_scenario (news-article path, needs volume units) BEFORE run_modflow_job for a parameterized spill -> wasted failed call.
+fix: coerce spill_location_latlon string forms ('lat,lon', 'lat, lon', '[lat,lon]', '(lat,lon)') -> [float,float] in tool_arg_normalizer.py (central) and/or defensively in run_modflow_tool.py before the float() loop + unit test. Steer of the news-vs-direct path is SYSTEM_PROMPT (owned by job-0316 SYS agent) — coordinate, keep MODFLOW agent OUT of adapter.py.
+file_ownership (disjoint from job-0316): MOD=tool_arg_normalizer.py + run_modflow_tool.py
+execution: combined workflow with job-0316. Verify gate.
+next: review -> test -> commit -> bundle into agent deploy #1 -> user re-runs the Lincoln NE benzene spill prompt.
+
+deploy: DEPLOYED to prod agent 2026-06-16 (deploy #1, SSM restart, active+clean startup). Awaiting user live-verify. commits: 1f715cf (0315), ed26b62 (0316+0317).
