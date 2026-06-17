@@ -149,6 +149,8 @@ from .uri_registry import (
     get_uri_registry,
 )
 from .scenario_reuse import (
+    fetched_kind_for_tool,
+    find_reusable_fetched_layer,
     get_scenario_index,
     scenario_signature,
     scenario_type_for_tool,
@@ -4658,6 +4660,59 @@ async def _invoke_tool_via_emitter(
                 # (emit_tool_call's LayerURI gate) fires with the reused layer.
                 entry = _ReuseEntry(entry.metadata, _reused_layer)
 
+    # F96: deterministic reuse backstop for FETCHERS (job-0366, mirrors the
+    # run_model_* scenario reuse above). job-0333 only guarded expensive
+    # SIMULATIONS; a fit/resize/re-show follow-up for an already-loaded FETCHED
+    # layer ("resize the bbox to encompass all protected areas" after WDPA is on
+    # the map) would re-fetch and mint a SECOND identical layer. When a same-kind
+    # loaded layer already ENCLOSES the requested AOI, short-circuit to it so the
+    # agent fits/narrates from the existing handle instead of re-fetching. The
+    # find_reusable_fetched_layer helper is pure/conservative (job-0364): any
+    # ambiguity (different kind, larger/unresolvable AOI) falls through to FETCH.
+    # ``force_refetch``/``refetch``/``force`` truthy kwargs are the explicit
+    # re-fetch escape hatch, stripped before the real dispatch.
+    if (
+        _reuse_note is None
+        and not isinstance(entry, _ReuseEntry)
+        and fetched_kind_for_tool(tool_name) is not None
+    ):
+        _force_refetch = any(
+            bool(params.get(k)) for k in ("force_refetch", "refetch", "force")
+        )
+        for _k in ("force_refetch", "refetch", "force"):
+            params.pop(_k, None)
+        if not _force_refetch and state.emitter is not None:
+            fetch_case_bbox = _turn_case_bbox(state)
+            fmatch = find_reusable_fetched_layer(
+                tool_name,
+                params,
+                state.emitter.loaded_layers,
+                case_bbox=fetch_case_bbox,
+            )
+            if fmatch is not None:
+                logger.info(
+                    "scenario_reuse[%s]: FETCH SHORT-CIRCUIT %s -> reusing "
+                    "layer_id=%s (not re-fetching)",
+                    state.session_id, tool_name, fmatch.layer_id,
+                )
+                _reuse_note = (
+                    f"Reusing the existing {fmatch.kind} layer already on the map "
+                    f"(layer '{fmatch.name}', handle={fmatch.layer_id}) for this "
+                    "AOI — the data was NOT re-fetched. For a fit / zoom / resize, "
+                    "call compute_layer_bounds on this handle; do not re-fetch "
+                    "unless the user asks for a different/larger area or an "
+                    "explicit refresh."
+                )
+                _reused_fetch_layer = LayerURI(
+                    layer_id=fmatch.layer_id,
+                    name=fmatch.name,
+                    layer_type=fmatch.layer_type,  # type: ignore[arg-type]
+                    uri=fmatch.uri,
+                    style_preset="",
+                    bbox=fmatch.bbox,
+                )
+                entry = _ReuseEntry(entry.metadata, _reused_fetch_layer)
+
     # Confirmation-before-consequence for solver composers (job-0241,
     # Invariant 9 / FR-AS-8). The LLM-supplied ``confirmed`` is STRIPPED first
     # — the gate is server-owned; only an explicit user "proceed" injects it.
@@ -4703,6 +4758,45 @@ async def _invoke_tool_via_emitter(
     _card_state: str | None = None
     _card_started_at = now_utc()
     _card_t0 = asyncio.get_running_loop().time()
+
+    # F97: mint a UNIQUE layer_id for every FRESHLY-fetched layer so two
+    # layers from the SAME source (e.g. two `fetch_wdpa_protected_areas`
+    # calls for the same bbox -> identical source-derived `wdpa-<lon>-<lat>`
+    # id) never collide. A collision made Map.tsx (which keys MapLibre
+    # sources by layer_id) skip the second add AND, on delete-by-id, tear
+    # down the shared source so BOTH layers vanished. We replace the tool's
+    # source-derived layer_id with a fresh ULID at the dispatch seam, BEFORE
+    # ``emit_tool_call`` hands the LayerURI to ``add_loaded_layer`` (so the
+    # emitted + persisted layer carries the unique id) and BEFORE the URI
+    # registry / scenario-reuse index record it (they read ``result.layer_id``
+    # AFTER this wrapper, so they pick up the minted id).
+    #
+    # Stability across reconnect/replay: minting happens only on a LIVE fetch.
+    # A Case reopen rehydrates persisted dicts via ``reset_loaded_layers`` —
+    # no tool re-runs, so the SAME instance keeps its minted id (per-Case
+    # durability holds). The scenario-reuse short-circuit (``_ReuseEntry``)
+    # is the deliberate exception: it hands back an ALREADY-loaded layer, so
+    # it must keep that layer's existing id (re-minting would orphan the live
+    # map layer + duplicate it). Hence we skip minting when ``entry`` is a
+    # ``_ReuseEntry``.
+    _mint_unique_layer_id = not isinstance(entry, _ReuseEntry)
+
+    def _invoke_with_unique_layer_id() -> Any:
+        out = entry.fn(**params)
+
+        def _restamp(value: Any) -> Any:
+            if _mint_unique_layer_id and isinstance(value, LayerURI):
+                return value.model_copy(update={"layer_id": new_ulid()})
+            return value
+
+        if asyncio.iscoroutine(out):
+
+            async def _await_and_restamp() -> Any:
+                return _restamp(await out)
+
+            return _await_and_restamp()
+        return _restamp(out)
+
     try:
         # job VAULT-READ: dispatch with a credential-request retry. The first
         # attempt runs the tool; if it raises a missing/invalid-credential
@@ -4717,7 +4811,7 @@ async def _invoke_tool_via_emitter(
             result = await state.emitter.emit_tool_call(
                 name=entry.metadata.name,
                 tool_name=tool_name,
-                invoke=lambda: entry.fn(**params),
+                invoke=_invoke_with_unique_layer_id,
             )
         except (asyncio.CancelledError, GeneratorExit):
             raise
@@ -4732,7 +4826,7 @@ async def _invoke_tool_via_emitter(
             result = await state.emitter.emit_tool_call(
                 name=entry.metadata.name,
                 tool_name=tool_name,
-                invoke=lambda: entry.fn(**params),
+                invoke=_invoke_with_unique_layer_id,
             )
         _card_state = "complete"
     except asyncio.CancelledError:

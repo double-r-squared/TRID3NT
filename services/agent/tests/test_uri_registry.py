@@ -572,7 +572,13 @@ def test_invoke_seam_unresolved_raises_typed_error(_dummy_uri_tool) -> None:
     async def run() -> None:
         ws = MockWebSocket()
         state = SessionState(session_id=new_ulid())
-        await _invoke_tool_via_emitter(ws, state, "produce_layer_t", {})
+        # F97: the dispatch mints a UNIQUE layer_id for the produced layer, so the
+        # registered handle the unresolved-error must list is that MINTED id (not
+        # the tool's source-derived NSI_LAYER_ID). Capture it from the result.
+        produced = await _invoke_tool_via_emitter(ws, state, "produce_layer_t", {})
+        assert isinstance(produced, LayerURI)
+        minted_handle = produced.layer_id
+        assert minted_handle != NSI_LAYER_ID  # the mint actually replaced the id
         with pytest.raises(UriResolutionError) as exc_info:
             await _invoke_tool_via_emitter(
                 ws,
@@ -588,7 +594,8 @@ def test_invoke_seam_unresolved_raises_typed_error(_dummy_uri_tool) -> None:
         assert summary["status"] == "error"
         assert summary["error_code"] == "URI_HANDLE_UNRESOLVED"
         assert summary["retryable"] is True
-        assert NSI_LAYER_ID in summary["message"]
+        # The error lists the session's known handle so the LLM self-corrects.
+        assert minted_handle in summary["message"]
 
     asyncio.run(run())
 

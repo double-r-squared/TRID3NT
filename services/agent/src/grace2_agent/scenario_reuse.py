@@ -59,7 +59,11 @@ __all__ = [
     "scenario_signature",
     "scenario_type_for_tool",
     "layer_id_scenario_type",
+    "fetched_layer_kind",
+    "fetched_kind_for_tool",
+    "find_reusable_fetched_layer",
     "bbox_equivalent",
+    "bbox_encloses",
     "get_scenario_index",
     "reset_scenario_indexes_for_tests",
 ]
@@ -97,6 +101,65 @@ _SCENARIO_LAYER_ID_MARKERS: dict[str, tuple[str, ...]] = {
 _BBOX_QUANT_DEG: float = 0.02
 
 
+# --------------------------------------------------------------------------- #
+# Fetched / context-layer kind (F96 — extend reuse to fetch_* tools)
+# --------------------------------------------------------------------------- #
+#
+# job-0333 covered REUSE for run_model_* (expensive SIMULATION) results. F96 (live,
+# NATE 2026-06-17, "South Florida protected areas" repeat): on a "resize the bbox
+# to encompass all protected areas" follow-up the agent RE-FETCHED WDPA — already
+# loaded — producing TWO identical choropleth layers. A fit / zoom / resize / show
+# follow-up must REUSE the already-loaded fetched layer (call compute_layer_bounds
+# on its handle), NEVER re-fetch.
+#
+# A fetched layer has no scenario_type (it is not a simulation RESULT), so the
+# reuse machinery needs a parallel notion of "kind" — the data FAMILY a fetch
+# produces (wdpa / landcover / dem / roads / buildings / admin / ...). Two loaded
+# layers of the same kind covering the same (or an enclosing) AOI are the SAME
+# data — a second fetch is redundant. Recognition is prefix/substring based on the
+# layer_id and name so the per-place suffix (``wdpa-{lon}-{lat}``) does not defeat
+# it. Kept CONSERVATIVE: an unrecognized fetched layer returns ``None`` (the model
+# falls back to the existing INPUT guidance), never a false reuse.
+
+#: A fetch_* tool name → the produced-layer KIND token. Used to recognize the
+#: fetch the model is about to repeat so the note can flag the already-loaded
+#: layer of the same kind as reusable. Aligned with each fetcher's ``source_class``
+#: and the ``layer_id`` prefix it mints. Only the common fetchers that produce a
+#: persistent map layer are listed — an absent tool simply gets no fetched-kind
+#: hint (CONSERVATIVE).
+_FETCH_TOOL_KIND: dict[str, str] = {
+    "fetch_wdpa_protected_areas": "wdpa",
+    "fetch_gbif_occurrences": "gbif",
+    "fetch_inaturalist_observations": "inaturalist",
+    "fetch_ebird_observations": "ebird",
+    "fetch_administrative_boundaries": "admin",
+    "fetch_roads_osm": "roads",
+    "fetch_river_geometry": "rivers",
+    "fetch_buildings": "buildings",
+    "fetch_landcover": "landcover",
+    "fetch_dem": "dem",
+    "fetch_hrsl_population": "population",
+    "fetch_population": "population",
+}
+
+#: ``layer_id`` / name markers that identify an already-loaded FETCHED layer of
+#: each kind. Substring based against the lowercased ``"layer_id name"`` haystack.
+#: Order matters only for disjoint kinds; the markers are chosen to be unambiguous.
+_FETCHED_KIND_MARKERS: dict[str, tuple[str, ...]] = {
+    "wdpa": ("wdpa", "protected area"),
+    "gbif": ("gbif",),
+    "inaturalist": ("inaturalist", "inat-"),
+    "ebird": ("ebird",),
+    "admin": ("admin-", "administrative boundar", "boundaries"),
+    "roads": ("osm-roads", "osm_roads", "-roads", " roads"),
+    "rivers": ("river", "waterway", "stream", "nhd"),
+    "buildings": ("building",),
+    "landcover": ("landcover", "land cover", "nlcd"),
+    "dem": ("-dem-", "dem-", "elevation", "srtm", "3dep"),
+    "population": ("hrsl", "worldpop", "population"),
+}
+
+
 def scenario_type_for_tool(tool_name: str) -> str | None:
     """Return the produced-layer scenario family for an expensive tool, else None."""
     return EXPENSIVE_SCENARIO_TOOLS.get(tool_name)
@@ -118,6 +181,35 @@ def layer_id_scenario_type(layer_id: str | None, name: str | None = None) -> str
         for marker in markers:
             if marker in hay:
                 return scenario_type
+    return None
+
+
+def fetched_kind_for_tool(tool_name: str) -> str | None:
+    """Return the produced-layer KIND for a fetch_* tool, else None (F96)."""
+    return _FETCH_TOOL_KIND.get(tool_name)
+
+
+def fetched_layer_kind(layer_id: str | None, name: str | None = None) -> str | None:
+    """Classify a loaded FETCHED / context layer (by id / name) into a kind (F96).
+
+    Returns the ``kind`` token (e.g. ``"wdpa"``, ``"landcover"``, ``"dem"``) when
+    the layer looks like the OUTPUT of a fetch_* tool, else ``None``. A layer that
+    classifies as a simulation RESULT (``layer_id_scenario_type``) is deliberately
+    NOT a fetched kind — results route through the scenario-reuse path. Used by the
+    enriched layers-present note to label a reusable fetched layer (so a fit /
+    resize / re-show follow-up reuses it rather than re-fetching).
+    """
+    # A simulation RESULT is not a fetched layer — keep the two taxonomies
+    # disjoint so the note never double-labels.
+    if layer_id_scenario_type(layer_id, name) is not None:
+        return None
+    hay = " ".join(str(x).lower() for x in (layer_id or "", name or "") if x)
+    if not hay:
+        return None
+    for kind, markers in _FETCHED_KIND_MARKERS.items():
+        for marker in markers:
+            if marker in hay:
+                return kind
     return None
 
 
@@ -165,6 +257,33 @@ def bbox_equivalent(
     qa = _quantize_bbox(_coerce_bbox(a), quant)
     qb = _quantize_bbox(_coerce_bbox(b), quant)
     return qa is not None and qa == qb
+
+
+def bbox_encloses(
+    outer: Any,
+    inner: Any,
+    quant: float = _BBOX_QUANT_DEG,
+) -> bool:
+    """True iff ``outer`` covers ``inner`` (within quantization tolerance) (F96).
+
+    Used by fetched-layer reuse: a requested AOI that is the SAME as, or CONTAINED
+    BY, an already-loaded layer's extent is answered by that existing layer — a
+    fit / resize to a tighter (or identical) box never needs a re-fetch. The
+    tolerance lets a near-equal box (geocoder jitter) still count as enclosed. A
+    request that pokes OUTSIDE the loaded extent is genuinely new data → no reuse.
+    """
+    o = _coerce_bbox(outer)
+    i = _coerce_bbox(inner)
+    if o is None or i is None:
+        return False
+    tol = quant if quant > 0 else 0.0
+    # outer = (min_lon, min_lat, max_lon, max_lat); inner must sit inside it.
+    return (
+        o[0] - tol <= i[0]
+        and o[1] - tol <= i[1]
+        and o[2] + tol >= i[2]
+        and o[3] + tol >= i[3]
+    )
 
 
 def _coerce_latlon(value: Any) -> tuple[float, float] | None:
@@ -508,6 +627,101 @@ def _layer_to_dict(layer: Any) -> dict | None:
             return layer.model_dump(mode="json")
         except Exception:  # noqa: BLE001 — non-pydantic duck
             return None
+    return None
+
+
+# --------------------------------------------------------------------------- #
+# Fetched-layer reuse match (F96)
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class FetchedLayerMatch:
+    """An already-loaded FETCHED layer that answers a repeat fetch request (F96).
+
+    Carries the reusable identity (``layer_id`` IS the handle per the layer-handle
+    indirection contract) so a fit / zoom / resize / re-show follow-up reuses it
+    (e.g. ``compute_layer_bounds(layer_uri=layer_id)``) instead of re-fetching and
+    rendering a duplicate.
+    """
+
+    kind: str
+    layer_id: str
+    name: str
+    layer_type: str
+    uri: str
+    bbox: tuple[float, float, float, float] | None
+
+
+def find_reusable_fetched_layer(
+    tool_name: str,
+    params: Any,
+    loaded_layers: Any,
+    *,
+    case_bbox: Any = None,
+) -> FetchedLayerMatch | None:
+    """Return an already-loaded fetched layer that ANSWERS a fetch request (F96).
+
+    CONSERVATIVE, pure, side-effect-free — safe on the dispatch hot path and the
+    note builder. Returns a match only on a CLEAR answer:
+
+      * the tool is a recognized fetcher (``fetched_kind_for_tool``), AND
+      * a loaded layer of the SAME kind is present, AND
+      * that layer's extent ENCLOSES the requested AOI (same box, or a fit /
+        resize to a tighter box) — the existing data already covers the request.
+
+    The requested AOI is the ``bbox`` param when present, else the Case AOI bbox
+    (a bare "fit to the protected areas" follow-up carries no bbox of its own — it
+    targets the layer already on the map). When neither is resolvable the AOI
+    cannot be compared without geocoding → no match → caller re-fetches (a false
+    re-fetch only costs a cache hit; a false reuse would hand back stale data).
+
+    A request whose bbox pokes OUTSIDE the loaded extent (a genuinely LARGER /
+    different area) is NOT answered by the existing layer → no match → re-fetch.
+    """
+    kind = fetched_kind_for_tool(tool_name)
+    if kind is None:
+        return None
+    if not isinstance(params, dict):
+        params = {}
+    req_bbox = _coerce_bbox(params.get("bbox"))
+    if req_bbox is None:
+        req_bbox = _coerce_bbox(case_bbox)
+    if req_bbox is None:
+        # No AOI we can compare without geocoding → conservative: re-fetch.
+        return None
+    # Newest-first so a refreshed layer wins on a tie.
+    for layer in reversed(list(loaded_layers or [])):
+        d = _layer_to_dict(layer)
+        if d is None:
+            continue
+        layer_id = d.get("layer_id")
+        if not isinstance(layer_id, str) or not layer_id:
+            continue
+        name = d.get("name") if isinstance(d.get("name"), str) else None
+        if fetched_layer_kind(layer_id, name) != kind:
+            continue
+        layer_bbox = _coerce_bbox(d.get("bbox"))
+        # When the loaded layer carries an extent, the request must sit inside it
+        # (same box or a tighter fit). When it has NO recorded bbox, fall back to
+        # the Case AOI: a same-kind layer in this Case answers a fit/resize to the
+        # Case AOI (the layer was fetched at the Case extent).
+        if layer_bbox is not None:
+            if not bbox_encloses(layer_bbox, req_bbox):
+                continue
+        else:
+            cbb = _coerce_bbox(case_bbox)
+            if cbb is None or not bbox_equivalent(cbb, req_bbox):
+                continue
+        uri = d.get("uri")
+        return FetchedLayerMatch(
+            kind=kind,
+            layer_id=layer_id,
+            name=name or layer_id,
+            layer_type=d.get("layer_type") or "vector",
+            uri=uri if isinstance(uri, str) else "",
+            bbox=layer_bbox,
+        )
     return None
 
 

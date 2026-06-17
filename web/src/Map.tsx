@@ -1874,7 +1874,22 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
         return;
       }
 
-      const currentLayers = payload.loaded_layers ?? [];
+      // F97: DEDUP by layer_id so one logical layer_id == exactly one entry.
+      // MapLibre sources are keyed by layer_id (addedSourceIds + addSource(id)),
+      // so two snapshot entries sharing a layer_id collide: the second add is
+      // skipped, yet both occupy ONE shared source — and a later delete-by-id
+      // tears that source down, making BOTH vanish (the F97 bug). The primary
+      // fix mints a unique layer_id per fetch server-side; this dedup is the
+      // client-side defense-in-depth so that IF a duplicate id ever reaches the
+      // reconcile, it never desyncs the source map. Keep the LAST occurrence
+      // (the freshest metadata — matches the server's append/replace-by-id
+      // merge order) while preserving overall order.
+      const rawLayers = payload.loaded_layers ?? [];
+      const dedupById = new Map<string, (typeof rawLayers)[number]>();
+      for (const l of rawLayers) {
+        dedupById.set(l.layer_id, l);
+      }
+      const currentLayers = Array.from(dedupById.values());
       const currentIds = new Set(currentLayers.map((l) => l.layer_id));
 
       // job-0357 (per-Case layer DURABILITY) — REMOVE only on an AUTHORITATIVE

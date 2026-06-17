@@ -153,12 +153,15 @@ async def test_split_brain_two_connections_layer_and_chat_persist(
     await server._persist_chat_turn(state_b, role="user", content="model the plume")
     result = await server._invoke_tool_via_emitter(ws_b, state_b, FAKE_TOOL, {})
     assert isinstance(result, LayerURI)
+    # F97: the dispatch mints a UNIQUE layer_id for the freshly-fetched layer,
+    # so the persisted id is the MINTED id (not the tool's source-derived one).
+    minted_id = result.layer_id
 
     # Rehydration read-back — the layer AND the chat turn must round-trip.
     session_state = await file_persistence.get_session_state(case_id)
     assert len(session_state.loaded_layers) == 1
-    assert session_state.loaded_layers[0]["layer_id"] == "L-plume-001"
-    assert session_state.case.layer_summary == ["L-plume-001"]
+    assert session_state.loaded_layers[0]["layer_id"] == minted_id
+    assert session_state.case.layer_summary == [minted_id]
     # job-0267: the tool dispatch now ALSO persists a replayable tool-card
     # row (role="tool"), interleaved after the user turn by created_at.
     assert len(session_state.chat_history) == 2
@@ -178,7 +181,11 @@ async def test_case_open_after_reconnect_rehydrates_layers(
     session_id = new_ulid()
     ws, state = FakeWS(), server.SessionState(session_id=session_id)
     case_id = await _create_case_via_command(ws, state)
-    await server._invoke_tool_via_emitter(ws, state, FAKE_TOOL, {})
+    published = await server._invoke_tool_via_emitter(ws, state, FAKE_TOOL, {})
+    assert isinstance(published, LayerURI)
+    # F97: the persisted/rehydrated id is the MINTED unique id, stable across
+    # the reconnect (no re-fetch on reopen — durability holds).
+    minted_id = published.layer_id
 
     # Fresh "browser" — new session, new connection, case-open select.
     ws2 = FakeWS()
@@ -186,7 +193,7 @@ async def test_case_open_after_reconnect_rehydrates_layers(
     await server._emit_case_open(ws2, state2, case_id)
     assert state2.emitter is not None
     seeded = state2.emitter.loaded_layers
-    assert [layer.layer_id for layer in seeded] == ["L-plume-001"]
+    assert [layer.layer_id for layer in seeded] == [minted_id]
 
 
 @pytest.mark.asyncio
@@ -280,11 +287,15 @@ async def test_merge_preserves_previously_persisted_layers(
     # the emitter starts empty (models a sync failure / legacy path).
     ws2 = FakeWS()
     state2 = server.SessionState(session_id=session_id)
-    await server._invoke_tool_via_emitter(ws2, state2, FAKE_TOOL, {})
+    published = await server._invoke_tool_via_emitter(ws2, state2, FAKE_TOOL, {})
+    assert isinstance(published, LayerURI)
+    # F97: the freshly-published layer carries a MINTED unique id; the merge must
+    # union it with the previously-persisted "L-prior-000" rather than clobber.
+    minted_id = published.layer_id
 
     session_state = await file_persistence.get_session_state(case_id)
     ids = sorted(d["layer_id"] for d in session_state.loaded_layers)
-    assert ids == ["L-plume-001", "L-prior-000"], (
+    assert ids == sorted([minted_id, "L-prior-000"]), (
         "merge-by-layer_id must union persisted + emitter layers, "
         f"got {ids}"
     )

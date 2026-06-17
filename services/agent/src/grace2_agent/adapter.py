@@ -407,6 +407,29 @@ total_bounds math — compute_layer_bounds is the dedicated, fast, deterministic
 path and it also moves the camera. The sandbox for bbox math is wrong: it's
 slow, gated, and the result never reaches the map.
 
+Fit / resize NEVER re-fetches an already-loaded layer (CRITICAL — F96,
+NATE 2026-06-17): when the user asks to FIT, ZOOM, RESIZE the box, or
+"encompass all the <features>" (all protected areas, all buildings, all points)
+for data that is ALREADY on the map, that is a VIEW change, NOT a data fetch.
+Call compute_layer_bounds on the EXISTING layer's handle (from the [Case state]
+note) — do NOT call the fetch_* tool again. Re-fetching a layer already present
+mints a SECOND identical layer (e.g. two identical WDPA choropleths stacked on
+the map). Check the [Case state] note FIRST: if a layer of the requested data
+kind is already listed for this AOI, reuse its handle. Only fetch fresh data
+when the user names a genuinely DIFFERENT or LARGER area than the loaded extent,
+a different source, or explicitly asks to refresh.
+
+NEVER hand-wave a real duplicate as a "display artifact" (CRITICAL — honesty
+floor, F97, NATE 2026-06-17): if two layers genuinely RENDERED on the map (e.g.
+because a fetch ran twice), that is a REAL duplicate — two actual layers — NOT
+"a display artifact from an earlier session", "a rendering glitch", "a leftover
+from a previous session", or any similar dismissal. Telling the user a real
+duplicate is just a cosmetic artifact is a FALSE statement, the same severity of
+error as fabricating a number (Invariant 7). When you see (or caused) a real
+duplicate, say so honestly — "two identical <kind> layers are on the map; I
+fetched it twice" — and OFFER to remove one (delete the redundant layer / keep a
+single copy). Do not pretend it is not really there.
+
 Full-AOI extent for every overlay (CRITICAL — never shrink the area):
 For ANY area or overlay layer (land cover, hillshade, colored relief, slope,
 aspect, roads, rivers, flood depth, plume, etc.), use the FULL Case AOI
@@ -1149,7 +1172,8 @@ def build_layers_present_note(
     #     already here" and "the landcover/water-mask for this AOI is already
     #     here" read unambiguously;
     #   - name, layer_type, the reusable handle (== layer_id), and the uri.
-    from .scenario_reuse import layer_id_scenario_type  # local import: avoid cycle
+    # local import: avoid cycle
+    from .scenario_reuse import fetched_layer_kind, layer_id_scenario_type
 
     lines: list[str] = []
     for layer in loaded_layers or []:
@@ -1167,13 +1191,18 @@ def build_layers_present_note(
         scenario_type = layer_id_scenario_type(layer_id, name)
         # An expensive-simulation output (recognized scenario family) OR a
         # ``role="primary"`` layer is a RESULT; everything else is an INPUT /
-        # context layer. RESULT labelling is what stops the re-run.
+        # context layer. RESULT labelling is what stops the re-run. F96: a
+        # recognized FETCHED layer (wdpa / landcover / dem / roads / ...) is an
+        # INPUT tagged with its KIND so a fit / resize / re-show follow-up
+        # reuses it (compute_layer_bounds on its handle) instead of re-fetching
+        # a duplicate.
         if scenario_type is not None:
             role_label = f"RESULT[{scenario_type}]"
         elif role_raw == "primary":
             role_label = "RESULT"
         else:
-            role_label = "INPUT"
+            fetched_kind = fetched_layer_kind(layer_id, name)
+            role_label = f"INPUT[{fetched_kind}]" if fetched_kind else "INPUT"
         parts = [f"id={layer_id}", role_label, layer_type, f"handle={layer_id}"]
         bbox = layer.get("bbox")
         bbox_str = _format_layer_bbox(bbox)
@@ -1191,7 +1220,9 @@ def build_layers_present_note(
             "These layers are ALREADY produced and on the map for this Case. "
             "Lines tagged RESULT[...] are finished simulation / analysis OUTPUTS "
             "(e.g. a flood-depth or plume RESULT for this AOI) — the work that "
-            "made them is DONE. Lines tagged INPUT are fetched / context layers. "
+            "made them is DONE. Lines tagged INPUT (or INPUT[<kind>], e.g. "
+            "INPUT[wdpa], INPUT[landcover], INPUT[dem]) are fetched / context "
+            "layers ALREADY on the map. "
             "REUSE these (pass their handle/uri DIRECTLY to the next tool) — do "
             "NOT re-run, re-fetch, or recompute them:\n"
             + "\n".join(lines)
@@ -1202,6 +1233,17 @@ def build_layers_present_note(
             "existing RESULT is FORBIDDEN unless the user changes the area / "
             "parameters or explicitly asks to re-run. Do NOT re-fetch or "
             "recompute a layer already listed here unless it is genuinely absent."
+            "\nFETCHED LAYER REUSE (F96 — HARD RULE): a fetched layer "
+            "(INPUT[<kind>]) for this AOI is ALREADY on the map. A follow-up to "
+            "FIT, ZOOM, RESIZE the box, or 'encompass all the <features>' for "
+            "that SAME data (e.g. 'resize the bbox to encompass all protected "
+            "areas' when an INPUT[wdpa] layer is already listed) is NOT a fetch — "
+            "call compute_layer_bounds on the EXISTING layer's handle to fit the "
+            "view. Re-calling the fetch_* tool produces a SECOND identical layer "
+            "(a real duplicate on the map), which is FORBIDDEN. Only re-fetch when "
+            "the user names a DIFFERENT area that pokes OUTSIDE the existing "
+            "extent, a different data source / kind, or explicitly asks to "
+            "refresh the data."
         )
     if bbox_line:
         segments.append(bbox_line)
