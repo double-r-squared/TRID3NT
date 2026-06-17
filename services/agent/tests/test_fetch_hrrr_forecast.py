@@ -35,6 +35,7 @@ from grace2_agent.tools.fetch_hrrr_forecast import (
     _validate_bbox,
     _validate_forecast_hour,
     _validate_variable,
+    _zarr_slice_to_geotiff_bytes,
     estimate_payload_mb,
     fetch_hrrr_forecast,
 )
@@ -132,14 +133,20 @@ def test_invalid_variable_raises_input_error():
 
 
 def test_known_variables_pass_validation():
-    """All four supported variables validate cleanly."""
+    """All supported variables (incl. derived wind speed) validate cleanly."""
     for v in (
         "2m_temperature",
+        "10m_wind_speed",
         "10m_u_wind",
         "10m_v_wind",
         "surface_precip_1hr",
     ):
         _validate_variable(v)
+
+
+def test_derived_wind_speed_variable_is_supported():
+    """The derived '10m_wind_speed' variable validates (semantic-gap fix)."""
+    _validate_variable("10m_wind_speed")
 
 
 def test_forecast_hour_below_zero_raises_input_error():
@@ -286,6 +293,205 @@ def test_estimate_payload_mb_bad_bbox_returns_default():
     """Malformed bbox arg returns the safe default rather than raising."""
     mb = estimate_payload_mb(bbox="not a bbox")  # type: ignore[arg-type]
     assert mb > 0.0
+
+
+# ---------------------------------------------------------------------------
+# Derived 10m_wind_speed magnitude (no network — monkeypatch the component open).
+# ---------------------------------------------------------------------------
+
+
+def _make_component_da(values):
+    """Build a tiny EPSG:4326 component DataArray for the wind-speed math tests."""
+    import numpy as np
+    import rioxarray  # noqa: F401 — registers .rio accessor
+    import xarray as xr
+
+    arr = np.asarray(values, dtype=np.float32)
+    ny, nx = arr.shape
+    da = xr.DataArray(
+        arr,
+        dims=("y", "x"),
+        coords={
+            "y": np.linspace(26.8, 26.4, ny),
+            "x": np.linspace(-82.0, -81.6, nx),
+        },
+    )
+    da = da.rio.write_crs("EPSG:4326")
+    da.rio.set_spatial_dims(x_dim="x", y_dim="y", inplace=True)
+    return da.compute()
+
+
+def _read_single_band(cog_bytes):
+    """Decode COG bytes to a (band1 array) using rasterio."""
+    import tempfile as _tmp
+
+    import rasterio
+
+    with _tmp.NamedTemporaryFile(suffix=".tif", delete=False) as tf:
+        tf.write(cog_bytes)
+        path = tf.name
+    try:
+        with rasterio.open(path) as ds:
+            return ds.read(1), ds.crs
+    finally:
+        os.unlink(path)
+
+
+def test_wind_speed_fetches_both_components_and_writes_magnitude(monkeypatch):
+    """variable='10m_wind_speed' opens BOTH UGRD+VGRD and writes sqrt(u^2+v^2)."""
+    import numpy as np
+
+    from grace2_agent.tools import fetch_hrrr_forecast as mod
+
+    u_vals = [[3.0, 0.0], [6.0, 5.0]]
+    v_vals = [[4.0, 0.0], [8.0, 12.0]]
+    requested: list[str] = []
+
+    def fake_open_component(cycle_date, cycle_hour, component_variable, forecast_hour, bbox):  # noqa: ANN001
+        requested.append(component_variable)
+        if component_variable == "10m_u_wind":
+            return _make_component_da(u_vals)
+        if component_variable == "10m_v_wind":
+            return _make_component_da(v_vals)
+        raise AssertionError(f"unexpected component {component_variable!r}")
+
+    monkeypatch.setattr(mod, "_open_component_4326", fake_open_component)
+
+    cog_bytes = _zarr_slice_to_geotiff_bytes(
+        cycle_date=_dt.date(2026, 6, 17),
+        cycle_hour=0,
+        variable="10m_wind_speed",
+        forecast_hour=1,
+        bbox=_FORT_MYERS_BBOX,
+    )
+
+    # Both components were opened — in order.
+    assert requested == ["10m_u_wind", "10m_v_wind"]
+
+    band, crs = _read_single_band(cog_bytes)
+    assert crs.to_epsg() == 4326
+    expected = np.hypot(np.asarray(u_vals, np.float32), np.asarray(v_vals, np.float32))
+    # Single band == elementwise magnitude.
+    np.testing.assert_allclose(band, expected, rtol=0, atol=1e-4)
+
+
+def test_wind_speed_preserves_nan_nodata(monkeypatch):
+    """NaN in either wind component propagates as NaN in the magnitude band."""
+    import numpy as np
+
+    from grace2_agent.tools import fetch_hrrr_forecast as mod
+
+    u_vals = [[3.0, np.nan], [6.0, 0.0]]
+    v_vals = [[4.0, 1.0], [np.nan, 0.0]]
+
+    def fake_open_component(cycle_date, cycle_hour, component_variable, forecast_hour, bbox):  # noqa: ANN001
+        return _make_component_da(
+            u_vals if component_variable == "10m_u_wind" else v_vals
+        )
+
+    monkeypatch.setattr(mod, "_open_component_4326", fake_open_component)
+
+    cog_bytes = _zarr_slice_to_geotiff_bytes(
+        cycle_date=_dt.date(2026, 6, 17),
+        cycle_hour=0,
+        variable="10m_wind_speed",
+        forecast_hour=1,
+        bbox=_FORT_MYERS_BBOX,
+    )
+    band, _crs = _read_single_band(cog_bytes)
+    # The two cells where either component is NaN must be NaN in the output.
+    assert np.isnan(band[0, 1])
+    assert np.isnan(band[1, 0])
+    # The finite cells equal sqrt(u^2+v^2).
+    assert band[0, 0] == pytest.approx(5.0, abs=1e-4)
+    assert band[1, 1] == pytest.approx(0.0, abs=1e-4)
+
+
+def test_plain_component_unchanged_single_open(monkeypatch):
+    """A plain component variable opens exactly ONE component and writes it verbatim."""
+    import numpy as np
+
+    from grace2_agent.tools import fetch_hrrr_forecast as mod
+
+    u_vals = [[3.0, 7.0], [6.0, 5.0]]
+    requested: list[str] = []
+
+    def fake_open_component(cycle_date, cycle_hour, component_variable, forecast_hour, bbox):  # noqa: ANN001
+        requested.append(component_variable)
+        return _make_component_da(u_vals)
+
+    monkeypatch.setattr(mod, "_open_component_4326", fake_open_component)
+
+    cog_bytes = _zarr_slice_to_geotiff_bytes(
+        cycle_date=_dt.date(2026, 6, 17),
+        cycle_hour=0,
+        variable="10m_u_wind",
+        forecast_hour=1,
+        bbox=_FORT_MYERS_BBOX,
+    )
+    # Only the single requested component opened — no derived combination.
+    assert requested == ["10m_u_wind"]
+    band, _crs = _read_single_band(cog_bytes)
+    np.testing.assert_allclose(band, np.asarray(u_vals, np.float32), rtol=0, atol=1e-4)
+
+
+def test_fetch_hrrr_wind_speed_layer_uri_preset_and_units(monkeypatch):
+    """The full tool stamps style_preset='wind_speed' + units='m s-1' for wind speed."""
+    from grace2_agent.tools import fetch_hrrr_forecast as mod
+    from grace2_agent.tools.cache import ReadThroughResult
+
+    captured: dict[str, bytes] = {}
+
+    # Skip S3 entirely: stub fsspec.filesystem + cycle resolution + the byte fetch.
+    import fsspec
+
+    monkeypatch.setattr(fsspec, "filesystem", lambda *a, **k: object())
+    monkeypatch.setattr(
+        mod, "_resolve_cycle", lambda **kw: (_dt.date(2026, 6, 17), 0)
+    )
+
+    def fake_read_through(metadata, params, ext, fetch_fn, **_kw):  # noqa: ANN001
+        captured["params"] = params
+        return ReadThroughResult(uri="gs://bucket/key.tif", data=b"", hit=False)
+
+    monkeypatch.setattr(mod, "read_through", fake_read_through)
+
+    result = fetch_hrrr_forecast(
+        bbox=_FORT_MYERS_BBOX,
+        variable="10m_wind_speed",
+        forecast_hour=1,
+    )
+    assert result.layer_type == "raster"
+    assert result.style_preset == "wind_speed"
+    assert result.units == "m s-1"
+    # The derived variable is its own cache key.
+    assert captured["params"]["variable"] == "10m_wind_speed"
+
+
+def test_fetch_hrrr_component_layer_uri_preset_and_units(monkeypatch):
+    """A plain component keeps its hrrr_<var> preset + m s-1 units (unchanged)."""
+    from grace2_agent.tools import fetch_hrrr_forecast as mod
+    from grace2_agent.tools.cache import ReadThroughResult
+
+    import fsspec
+
+    monkeypatch.setattr(fsspec, "filesystem", lambda *a, **k: object())
+    monkeypatch.setattr(
+        mod, "_resolve_cycle", lambda **kw: (_dt.date(2026, 6, 17), 0)
+    )
+    monkeypatch.setattr(
+        mod,
+        "read_through",
+        lambda **kw: ReadThroughResult(uri="gs://bucket/k.tif", data=b"", hit=False),
+    )
+
+    result = fetch_hrrr_forecast(
+        bbox=_FORT_MYERS_BBOX,
+        variable="10m_u_wind",
+        forecast_hour=1,
+    )
+    assert result.style_preset == "hrrr_10m_u_wind"
+    assert result.units == "m s-1"
 
 
 # ---------------------------------------------------------------------------

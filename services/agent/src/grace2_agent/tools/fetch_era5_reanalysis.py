@@ -14,6 +14,9 @@ Wave 2 lands this as a Tier-2 substrate fetcher; downstream composers
 (``model_compound_flood_global`` etc.) consume the LayerURI.
 
 Supported variables (single-level, hourly; ERA5 single-levels CDS dataset):
+    "10m_wind_speed"                 m s-1     DERIVED wind SPEED magnitude
+                                               sqrt(u^2 + v^2) @ 10m — the answer
+                                               to a generic "wind" request
     "10m_u_component_of_wind"        m s-1     wind east-component @ 10m
     "10m_v_component_of_wind"        m s-1     wind north-component @ 10m
     "2m_temperature"                 K         air temperature @ 2m
@@ -22,6 +25,14 @@ Supported variables (single-level, hourly; ERA5 single-levels CDS dataset):
     "runoff"                         m         surface runoff (native METRES)
     "significant_height_of_combined_wind_waves_and_swell"
                                      m         significant wave height
+
+``"10m_wind_speed"`` is a DERIVED raster variable: the tool issues TWO CDS
+retrievals (``10m_u_component_of_wind`` + ``10m_v_component_of_wind``) for the
+same bbox / date range, then writes the elementwise magnitude
+``sqrt(u^2 + v^2)`` (m s-1) as the single-band time-mean COG (NaN nodata
+preserved), stamping ``style_preset='wind_speed'`` so the publish registry
+renders it 0–25 m s-1 viridis. The signed U/V components remain available for
+direction-sensitive work.
 
 API surface (verified 2026-06-08):
 
@@ -181,8 +192,8 @@ _DEFAULT_CDS_URL = "https://cds.climate.copernicus.eu/api"
 # Per audit.md: poll up to 5 min for completion.
 _RETRIEVE_TIMEOUT_S = 300
 
-# Allowed single-level variable names — matches the audit.md kickoff list.
-_ALLOWED_VARIABLES: frozenset[str] = frozenset(
+# Real CDS single-level variable names (each maps to one CDS retrieve).
+_CDS_VARIABLES: frozenset[str] = frozenset(
     {
         "10m_u_component_of_wind",
         "10m_v_component_of_wind",
@@ -193,9 +204,22 @@ _ALLOWED_VARIABLES: frozenset[str] = frozenset(
     }
 )
 
+# Derived variable: wind SPEED magnitude sqrt(u^2 + v^2) over the 10 m
+# components. Not a CDS variable — the tool retrieves both components and
+# combines them into one raster band. The components it depends on, its units,
+# and its style preset are named here.
+_DERIVED_WIND_SPEED = "10m_wind_speed"
+_WIND_SPEED_COMPONENTS = ("10m_u_component_of_wind", "10m_v_component_of_wind")
+_WIND_SPEED_UNITS = "m s-1"
+_WIND_SPEED_STYLE_PRESET = "wind_speed"
+
+# Every variable the tool accepts (CDS-native + derived).
+_ALLOWED_VARIABLES: frozenset[str] = _CDS_VARIABLES | {_DERIVED_WIND_SPEED}
+
 # Native units per variable (used to tag the output COG and surface in
 # narration). ERA5 single-levels documentation.
 _VARIABLE_UNITS: dict[str, str] = {
+    "10m_wind_speed": _WIND_SPEED_UNITS,
     "10m_u_component_of_wind": "m s-1",
     "10m_v_component_of_wind": "m s-1",
     "2m_temperature": "K",
@@ -595,37 +619,25 @@ def _cds_retrieve_with_timeout(
 # ---------------------------------------------------------------------------
 
 
-def _netcdf_to_cog_bytes(
+def _netcdf_to_da(
     nc_path: str,
-    variable: str,
+    cds_variable: str,
     bbox: tuple[float, float, float, float],
-) -> bytes:
-    """Open the CDS-returned NetCDF, mean across timesteps, write a COG.
+) -> Any:
+    """Open one CDS NetCDF, time-mean to a single 2D band, clip to bbox.
 
-    Returns COG bytes (float32, EPSG:4326). The output has one band carrying
-    the time-mean of the requested variable across the date range.
-
-    Per audit.md, the kickoff returns "GeoTIFF" — we write COG which is a
-    GeoTIFF profile (and the canonical raster output across the rest of the
-    GRACE-2 atomic-tool set: HRSL, MTBS, LANDFIRE, NLCD).
-
-    Geographic-correctness gate (job-0086): we clip the output to the
-    requested bbox after reprojection (ERA5 ships on a 0.25° grid with
-    longitudes 0..360 OR -180..180 depending on the variable family; we
-    normalize to -180..180 with rioxarray before clipping).
+    Returns a 2D ``xarray.DataArray`` (EPSG:4326, in-memory values) for one
+    CDS-native variable. Factored out of ``_netcdf_to_cog_bytes`` so the derived
+    ``10m_wind_speed`` can build both component DataArrays on the same grid and
+    combine them before writing a single COG.
 
     Raises:
-        ``ERA5UpstreamError``: NetCDF open / xarray read / COG write failure.
+        ``ERA5UpstreamError``: NetCDF open / xarray read failure.
         ``ERA5EmptyError``: bbox falls outside the variable's coverage.
     """
-    try:
-        import numpy as np
-        import rioxarray  # noqa: F401 — registers .rio accessor on DataArrays
-        import xarray as xr
-    except ImportError as exc:
-        raise ERA5UpstreamError(
-            f"xarray / rioxarray / numpy not available: {exc}"
-        ) from exc
+    import numpy as np
+    import rioxarray  # noqa: F401 — registers .rio accessor on DataArrays
+    import xarray as xr
 
     try:
         ds = xr.open_dataset(nc_path, engine="netcdf4", chunks=None)
@@ -652,7 +664,7 @@ def _netcdf_to_cog_bytes(
         # Prefer the variable whose long_name attribute mentions the
         # requested ERA5 variable name; fall back to the first data_var.
         chosen = data_vars[0]
-        target_token = variable.replace("_", " ").lower()
+        target_token = cds_variable.replace("_", " ").lower()
         for v in data_vars:
             ln = ds[v].attrs.get("long_name", "").lower()
             if target_token in ln:
@@ -721,55 +733,9 @@ def _netcdf_to_cog_bytes(
                 f"bbox={bbox} produced no finite ERA5 pixels (all-NaN window)"
             )
 
-        # Write COG via rioxarray.
-        out_fd, out_path = tempfile.mkstemp(
-            suffix=".tif", prefix="grace2_era5_"
-        )
-        os.close(out_fd)
-        try:
-            da_out = da.astype("float32")
-            # Tag metadata.
-            da_out.attrs["units"] = _VARIABLE_UNITS.get(
-                variable, da.attrs.get("units", "")
-            )
-            da_out.attrs["source"] = "ERA5_reanalysis-era5-single-levels"
-            da_out.attrs["variable"] = variable
-            da_out.attrs["tool"] = "fetch_era5_reanalysis"
-            try:
-                da_out.rio.to_raster(
-                    out_path,
-                    driver="COG",
-                    dtype="float32",
-                    compress="DEFLATE",
-                    nodata=float("nan"),
-                )
-            except Exception:  # noqa: BLE001 — fall back to GTiff if COG fails
-                da_out.rio.to_raster(
-                    out_path,
-                    driver="GTiff",
-                    dtype="float32",
-                    compress="DEFLATE",
-                    nodata=float("nan"),
-                )
-
-            with open(out_path, "rb") as f:
-                cog_bytes = f.read()
-        finally:
-            try:
-                os.unlink(out_path)
-            except OSError:
-                pass
-
-        logger.info(
-            "fetch_era5_reanalysis: wrote %d-byte COG (variable=%s, "
-            "min=%.4f, max=%.4f, mean=%.4f)",
-            len(cog_bytes),
-            variable,
-            float(np.nanmin(arr)),
-            float(np.nanmax(arr)),
-            float(np.nanmean(arr)),
-        )
-        return cog_bytes
+        # Materialize values while the dataset is open so the caller can close
+        # ``ds`` and still operate on the returned DataArray.
+        return da.compute()
     finally:
         try:
             ds.close()
@@ -777,9 +743,167 @@ def _netcdf_to_cog_bytes(
             pass
 
 
+def _da_to_cog_bytes(da: Any, variable: str) -> bytes:
+    """Stamp metadata on ``da`` and write a float32 EPSG:4326 COG; return bytes.
+
+    Per audit.md, the kickoff returns "GeoTIFF" — we write COG which is a
+    GeoTIFF profile (and the canonical raster output across the rest of the
+    GRACE-2 atomic-tool set: HRSL, MTBS, LANDFIRE, NLCD).
+    """
+    import numpy as np
+
+    arr = np.asarray(da.values, dtype=np.float32)
+
+    out_fd, out_path = tempfile.mkstemp(suffix=".tif", prefix="grace2_era5_")
+    os.close(out_fd)
+    try:
+        da_out = da.astype("float32")
+        # Tag metadata.
+        da_out.attrs["units"] = _VARIABLE_UNITS.get(
+            variable, da.attrs.get("units", "")
+        )
+        da_out.attrs["source"] = "ERA5_reanalysis-era5-single-levels"
+        da_out.attrs["variable"] = variable
+        da_out.attrs["tool"] = "fetch_era5_reanalysis"
+        try:
+            da_out.rio.to_raster(
+                out_path,
+                driver="COG",
+                dtype="float32",
+                compress="DEFLATE",
+                nodata=float("nan"),
+            )
+        except Exception:  # noqa: BLE001 — fall back to GTiff if COG fails
+            da_out.rio.to_raster(
+                out_path,
+                driver="GTiff",
+                dtype="float32",
+                compress="DEFLATE",
+                nodata=float("nan"),
+            )
+
+        with open(out_path, "rb") as f:
+            cog_bytes = f.read()
+    finally:
+        try:
+            os.unlink(out_path)
+        except OSError:
+            pass
+
+    logger.info(
+        "fetch_era5_reanalysis: wrote %d-byte COG (variable=%s, "
+        "min=%.4f, max=%.4f, mean=%.4f)",
+        len(cog_bytes),
+        variable,
+        float(np.nanmin(arr)),
+        float(np.nanmax(arr)),
+        float(np.nanmean(arr)),
+    )
+    return cog_bytes
+
+
+def _netcdf_to_cog_bytes(
+    nc_path: str,
+    variable: str,
+    bbox: tuple[float, float, float, float],
+) -> bytes:
+    """Open the CDS-returned NetCDF, time-mean across timesteps, write a COG.
+
+    Returns COG bytes (float32, EPSG:4326). The output has one band carrying
+    the time-mean of the requested CDS-native variable across the date range.
+    (The derived ``10m_wind_speed`` is handled upstream in ``_fetch_era5_bytes``
+    via ``_combine_wind_components_to_cog_bytes`` since it spans two NetCDFs.)
+
+    Geographic-correctness gate (job-0086): we clip the output to the
+    requested bbox after reprojection (ERA5 ships on a 0.25° grid with
+    longitudes 0..360 OR -180..180 depending on the variable family; we
+    normalize to -180..180 with rioxarray before clipping).
+
+    Raises:
+        ``ERA5UpstreamError``: NetCDF open / xarray read / COG write failure.
+        ``ERA5EmptyError``: bbox falls outside the variable's coverage.
+    """
+    try:
+        import numpy as np  # noqa: F401 — used by helpers
+        import rioxarray  # noqa: F401 — registers .rio accessor on DataArrays
+        import xarray as xr  # noqa: F401
+    except ImportError as exc:
+        raise ERA5UpstreamError(
+            f"xarray / rioxarray / numpy not available: {exc}"
+        ) from exc
+
+    da = _netcdf_to_da(nc_path, variable, bbox)
+    return _da_to_cog_bytes(da, variable)
+
+
+def _combine_wind_components_to_cog_bytes(
+    u_nc_path: str,
+    v_nc_path: str,
+    bbox: tuple[float, float, float, float],
+) -> bytes:
+    """Combine the U + V wind-component NetCDFs into a wind-SPEED COG.
+
+    Reads both 10 m component NetCDFs, takes each one's time-mean clipped to
+    bbox, and writes the elementwise magnitude ``sqrt(u^2 + v^2)`` (m s-1) as a
+    single-band float32 COG with NaN nodata preserved.
+
+    Raises:
+        ``ERA5UpstreamError``: NetCDF open / read / COG write failure.
+        ``ERA5EmptyError``: bbox falls outside coverage (all-NaN window).
+    """
+    try:
+        import numpy as np
+        import rioxarray  # noqa: F401 — registers .rio accessor on DataArrays
+        import xarray as xr
+    except ImportError as exc:
+        raise ERA5UpstreamError(
+            f"xarray / rioxarray / numpy not available: {exc}"
+        ) from exc
+
+    u_var, v_var = _WIND_SPEED_COMPONENTS
+    da_u = _netcdf_to_da(u_nc_path, u_var, bbox)
+    da_v = _netcdf_to_da(v_nc_path, v_var, bbox)
+
+    # Magnitude = sqrt(u^2 + v^2). NaN in either component propagates as NaN
+    # (np.hypot preserves NaN), preserving the nodata mask. xarray aligns the
+    # two DataArrays on their (latitude, longitude) coords — they ride the
+    # identical ERA5 0.25° grid so alignment is a no-op.
+    speed = xr.apply_ufunc(np.hypot, da_u, da_v, keep_attrs=False)
+    speed = speed.astype("float32")
+    # apply_ufunc drops the rio CRS accessor state on some xarray versions;
+    # re-stamp CRS so to_raster writes a georeferenced COG.
+    speed = speed.rio.write_crs("EPSG:4326")
+
+    arr = np.asarray(speed.values, dtype=np.float32)
+    if not np.isfinite(arr).any():
+        raise ERA5EmptyError(
+            f"bbox={bbox} produced no finite ERA5 wind-speed pixels (all-NaN)"
+        )
+
+    return _da_to_cog_bytes(speed, _DERIVED_WIND_SPEED)
+
+
 # ---------------------------------------------------------------------------
 # Fetch function (passed to read_through).
 # ---------------------------------------------------------------------------
+
+
+def _retrieve_cds_variable_to_netcdf(
+    cds_variable: str,
+    bbox: tuple[float, float, float, float],
+    d0: _dt.date,
+    d1: _dt.date,
+    api_key: str | None,
+    out_path: str,
+) -> None:
+    """Build + run the CDS retrieve for one CDS-native variable into ``out_path``."""
+    request = _build_cds_request(cds_variable, bbox, d0, d1)
+    _cds_retrieve_with_timeout(
+        api_url=_DEFAULT_CDS_URL,
+        api_key=api_key,
+        request=request,
+        out_path=out_path,
+    )
 
 
 def _fetch_era5_bytes(
@@ -789,20 +913,35 @@ def _fetch_era5_bytes(
     d1: _dt.date,
     api_key: str | None,
 ) -> bytes:
-    """End-to-end: CDS retrieve → NetCDF → COG bytes."""
-    request = _build_cds_request(variable, bbox, d0, d1)
+    """End-to-end: CDS retrieve(s) → NetCDF(s) → COG bytes.
+
+    For a CDS-native variable this is one retrieve → one COG. For the derived
+    ``10m_wind_speed`` it issues TWO retrieves (the U + V 10 m components) and
+    writes the elementwise ``sqrt(u^2 + v^2)`` magnitude as one band.
+    """
+    if variable == _DERIVED_WIND_SPEED:
+        u_var, v_var = _WIND_SPEED_COMPONENTS
+        u_fd, u_path = tempfile.mkstemp(suffix=".nc", prefix="grace2_era5_cds_u_")
+        os.close(u_fd)
+        v_fd, v_path = tempfile.mkstemp(suffix=".nc", prefix="grace2_era5_cds_v_")
+        os.close(v_fd)
+        try:
+            _retrieve_cds_variable_to_netcdf(u_var, bbox, d0, d1, api_key, u_path)
+            _retrieve_cds_variable_to_netcdf(v_var, bbox, d0, d1, api_key, v_path)
+            return _combine_wind_components_to_cog_bytes(u_path, v_path, bbox)
+        finally:
+            for p in (u_path, v_path):
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
 
     nc_fd, nc_path = tempfile.mkstemp(
         suffix=".nc", prefix="grace2_era5_cds_"
     )
     os.close(nc_fd)
     try:
-        _cds_retrieve_with_timeout(
-            api_url=_DEFAULT_CDS_URL,
-            api_key=api_key,
-            request=request,
-            out_path=nc_path,
-        )
+        _retrieve_cds_variable_to_netcdf(variable, bbox, d0, d1, api_key, nc_path)
         return _netcdf_to_cog_bytes(nc_path, variable, bbox)
     finally:
         try:
@@ -846,6 +985,13 @@ def fetch_era5_reanalysis(
     precipitation, surface runoff, and significant wave height.
 
     **When to use:**
+    - A GENERIC historical wind request ("how windy was it", "wind speed over
+      the Gulf during the storm", "show me the wind") → use
+      ``variable="10m_wind_speed"``. This returns a SINGLE positive wind-speed
+      magnitude field (``sqrt(u^2 + v^2)``, m s-1) — the natural answer to "how
+      windy". Only reach for the lone signed ``10m_u_component_of_wind`` /
+      ``10m_v_component_of_wind`` when the user explicitly needs wind DIRECTION
+      or a vector component.
     - Building global or non-CONUS compound-flood forcing: ERA5 winds, precip,
       or wave height as SFINCS storm-surge / pluvial boundary conditions where
       agency instrumentation (CO-OPS, MRMS, ATCF) does not reach.
@@ -872,10 +1018,12 @@ def fetch_era5_reanalysis(
       north)`` in EPSG:4326. ``supports_global_query=True`` — global bbox
       ``(-180, -90, 180, 90)`` is valid but expensive. Example for Gulf
       Coast: ``(-100.0, 20.0, -80.0, 35.0)``.
-    - ``variable`` (str): one of ``"10m_u_component_of_wind"``,
-      ``"10m_v_component_of_wind"``, ``"2m_temperature"``,
-      ``"total_precipitation"``, ``"runoff"``,
-      ``"significant_height_of_combined_wind_waves_and_swell"``.
+    - ``variable`` (str): one of ``"10m_wind_speed"`` (DERIVED wind-speed
+      magnitude ``sqrt(u^2 + v^2)``, the answer to a generic "wind" request),
+      ``"10m_u_component_of_wind"``, ``"10m_v_component_of_wind"``,
+      ``"2m_temperature"``, ``"total_precipitation"``, ``"runoff"``,
+      ``"significant_height_of_combined_wind_waves_and_swell"``. For any
+      non-directional wind question pass ``"10m_wind_speed"``.
     - ``start_date`` (str): ISO YYYY-MM-DD inclusive. ERA5 coverage: 1940-01-01
       to ~3 months ago (finalised) or 5 days ago (ERA5T preliminary).
     - ``end_date`` (str): ISO YYYY-MM-DD inclusive. Hard cap 366 days from start.
@@ -938,6 +1086,15 @@ def fetch_era5_reanalysis(
         "fetch_era5_reanalysis is cacheable; uri must be set by read_through"
     )
 
+    # The derived wind-speed variable stamps the shared ``wind_speed`` preset
+    # (0–25 m s-1 viridis in the publish registry); CDS-native variables keep
+    # their per-variable preset name.
+    style_preset = (
+        _WIND_SPEED_STYLE_PRESET
+        if variable == _DERIVED_WIND_SPEED
+        else f"era5_{variable}"
+    )
+
     return LayerURI(
         layer_id=(
             f"era5-{variable.replace('_', '-')}-"
@@ -950,7 +1107,7 @@ def fetch_era5_reanalysis(
         ),
         layer_type="raster",
         uri=result.uri,
-        style_preset=f"era5_{variable}",
+        style_preset=style_preset,
         role="primary",
         units=_VARIABLE_UNITS.get(variable),
     )

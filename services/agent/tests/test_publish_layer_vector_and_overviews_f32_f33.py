@@ -253,9 +253,15 @@ def test_publish_layer_s3_auto_translates_no_overview_cog(
     flat_bytes = _flat_geotiff_bytes()
     written: dict[str, bytes] = {}
 
-    def _fake_read(uri: str) -> bytes:
-        assert uri == "s3://bucket/runs/flat.tif"
-        return flat_bytes
+    def _fake_read(uri: str) -> bytes | None:
+        # F33 reads the SOURCE for the overview check; F51's style resolver then
+        # re-reads the (post-translate) overview URI to probe the band/palette.
+        # Accept both: serve the flat bytes for the source, None for the new
+        # overview URI (resolver degrades to a safe default — this test asserts
+        # the URL routing, not the style suffix).
+        if uri == "s3://bucket/runs/flat.tif":
+            return flat_bytes
+        return None
 
     def _fake_write(uri: str, cog_bytes: bytes) -> str:
         # Simulate the s3 sibling write; assert the bytes carry overviews.

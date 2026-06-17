@@ -44,11 +44,22 @@ Supported variables (single-level surface; all available at every hour):
     Variable name             Group              S3 var  Units   Description
     ---------------------------------------------------------------------------
     "2m_temperature"          2m_above_ground    TMP     K       air temp @ 2 m
+    "10m_wind_speed"          10m_above_ground   UGRD+VGRD m s-1 wind SPEED @ 10 m
     "10m_u_wind"              10m_above_ground   UGRD    m s-1   east wind @ 10 m
     "10m_v_wind"              10m_above_ground   VGRD    m s-1   north wind @ 10 m
     "surface_precip_1hr"      surface            APCP_1hr_acc_fcst kg m-2  1-h accum precip
 
 (``kg m-2`` ≡ mm of liquid-water-equivalent precipitation.)
+
+``"10m_wind_speed"`` is a DERIVED variable: the fetcher pulls BOTH the
+UGRD (east) and VGRD (north) component slices for the same cycle / forecast
+hour / bbox and writes the elementwise magnitude
+``sqrt(u^2 + v^2)`` (m s-1) as the single-band COG (NaN nodata preserved).
+This is the natural answer to a generic "wind forecast" request — a single
+positive wind-speed magnitude field — versus the lone signed U/V components,
+which are only useful when direction matters. The derived variable carries
+its own cache key and stamps ``style_preset='wind_speed'`` so the publish
+registry renders it 0–25 m s-1 viridis.
 
 HRRR projection (constant across every cycle):
 
@@ -166,6 +177,22 @@ _VARIABLE_SPEC: dict[str, tuple[str, str, str]] = {
     "10m_v_wind": ("10m_above_ground", "VGRD", "m s-1"),
     "surface_precip_1hr": ("surface", "APCP_1hr_acc_fcst", "kg m-2"),
 }
+
+# Derived variable: wind SPEED magnitude = sqrt(u^2 + v^2) over the 10 m
+# UGRD/VGRD components. Not present in _VARIABLE_SPEC because it has no single
+# S3 array — the fetcher pulls both component slices and combines them. The
+# components it depends on are named here so the fetch path can resolve them.
+_DERIVED_WIND_SPEED = "10m_wind_speed"
+_WIND_SPEED_COMPONENTS = ("10m_u_wind", "10m_v_wind")
+_WIND_SPEED_UNITS = "m s-1"
+_WIND_SPEED_STYLE_PRESET = "wind_speed"
+
+# Every variable the tool accepts, derived ones included. Used by validation,
+# the catalog enum, and the LayerURI builder.
+_SUPPORTED_VARIABLES: tuple[str, ...] = (
+    *_VARIABLE_SPEC.keys(),
+    _DERIVED_WIND_SPEED,
+)
 
 # HRRR LCC projection string (NCEP/EMC standard).
 _HRRR_PROJ4 = (
@@ -301,10 +328,10 @@ def _validate_variable(variable: str) -> None:
         raise HRRRForecastInputError(
             f"variable must be a str; got {type(variable).__name__}"
         )
-    if variable not in _VARIABLE_SPEC:
+    if variable not in _SUPPORTED_VARIABLES:
         raise HRRRForecastInputError(
             f"unsupported HRRR variable {variable!r}; allowed: "
-            f"{sorted(_VARIABLE_SPEC)}"
+            f"{sorted(_SUPPORTED_VARIABLES)}"
         )
 
 
@@ -426,38 +453,33 @@ def _resolve_cycle(
 # ---------------------------------------------------------------------------
 
 
-def _zarr_slice_to_geotiff_bytes(
+def _open_component_4326(
     cycle_date: _dt.date,
     cycle_hour: int,
-    variable: str,
+    component_variable: str,
     forecast_hour: int,
     bbox: tuple[float, float, float, float],
-) -> bytes:
-    """Open the HRRR-Zarr slice, reproject to EPSG:4326, clip to bbox, write COG bytes.
+) -> Any:
+    """Open ONE plain HRRR-Zarr component, reproject to EPSG:4326, clip to bbox.
+
+    Returns the clipped ``xarray.DataArray`` (float32-valued, EPSG:4326) for the
+    requested single-array ``component_variable`` (one of the keys in
+    ``_VARIABLE_SPEC``). Factored out of ``_zarr_slice_to_geotiff_bytes`` so the
+    derived ``10m_wind_speed`` variable can open both wind components and combine
+    them on the same EPSG:4326 grid before writing a single COG.
 
     Raises:
-        ``HRRRForecastUpstreamError``: zarr open / xarray decode failure.
-        ``HRRRForecastEmptyError``: bbox produced no finite pixels after clip.
+        ``HRRRForecastUpstreamError``: zarr open / xarray decode / reproject failure.
+        ``HRRRForecastEmptyError``: bbox produced an empty window after clip.
     """
-    try:
-        import fsspec  # noqa: F401 — required for the get_mapper
-        import numpy as np
-        import rioxarray  # noqa: F401 — registers .rio accessor
-        import xarray as xr
-    except ImportError as exc:
-        raise HRRRForecastUpstreamError(
-            f"required deps not available (fsspec / xarray / rioxarray / numpy): {exc}"
-        ) from exc
+    import fsspec
+    import rioxarray  # noqa: F401 — registers .rio accessor
+    import xarray as xr
 
-    level, s3_var, _units = _VARIABLE_SPEC[variable]
-
-    outer_path, inner_path = _build_zarr_paths(
-        cycle_date, cycle_hour, level, s3_var
-    )
+    level, s3_var, _units = _VARIABLE_SPEC[component_variable]
+    outer_path, inner_path = _build_zarr_paths(cycle_date, cycle_hour, level, s3_var)
 
     try:
-        import fsspec
-
         outer_mapper = fsspec.get_mapper(outer_path, anon=True)
         inner_mapper = fsspec.get_mapper(inner_path, anon=True)
         ds_outer = xr.open_zarr(outer_mapper, consolidated=False)
@@ -526,67 +548,166 @@ def _zarr_slice_to_geotiff_bytes(
                 f"bbox={bbox} produced an empty HRRR window after clip"
             )
 
-        arr = np.asarray(da_clipped.values, dtype=np.float32)
-        if not np.isfinite(arr).any():
-            raise HRRRForecastEmptyError(
-                f"bbox={bbox} produced no finite HRRR pixels (all-NaN window)"
-            )
-
-        # Write COG.
-        out_fd, out_path = tempfile.mkstemp(suffix=".tif", prefix="grace2_hrrr_")
-        os.close(out_fd)
-        try:
-            da_out = da_clipped.astype("float32")
-            da_out.attrs["units"] = _VARIABLE_SPEC[variable][2]
-            da_out.attrs["source"] = "HRRR_hrrrzarr"
-            da_out.attrs["variable"] = variable
-            da_out.attrs["cycle"] = f"{cycle_date.isoformat()}T{cycle_hour:02d}:00Z"
-            da_out.attrs["forecast_hour"] = forecast_hour
-            da_out.attrs["tool"] = "fetch_hrrr_forecast"
-            try:
-                da_out.rio.to_raster(
-                    out_path,
-                    driver="COG",
-                    dtype="float32",
-                    compress="DEFLATE",
-                    nodata=float("nan"),
-                )
-            except Exception:  # noqa: BLE001 — fall back to GTiff if COG fails
-                da_out.rio.to_raster(
-                    out_path,
-                    driver="GTiff",
-                    dtype="float32",
-                    compress="DEFLATE",
-                    nodata=float("nan"),
-                )
-
-            with open(out_path, "rb") as f:
-                cog_bytes = f.read()
-        finally:
-            try:
-                os.unlink(out_path)
-            except OSError:
-                pass
-
-        logger.info(
-            "fetch_hrrr_forecast wrote %d-byte COG (variable=%s cycle=%s "
-            "F%03d shape=%s min=%.3f max=%.3f mean=%.3f)",
-            len(cog_bytes),
-            variable,
-            f"{cycle_date.strftime('%Y%m%d')}_{cycle_hour:02d}z",
-            forecast_hour,
-            tuple(arr.shape),
-            float(np.nanmin(arr)),
-            float(np.nanmax(arr)),
-            float(np.nanmean(arr)),
-        )
-        return cog_bytes
+        # Materialize values now while the zarr datasets are still open, so the
+        # caller can safely close ds_outer / ds_inner in the finally block.
+        return da_clipped.compute()
     finally:
         try:
             ds_outer.close()
             ds_inner.close()
         except Exception:  # noqa: BLE001
             pass
+
+
+def _write_da_to_cog_bytes(
+    da_out: Any,
+    *,
+    variable: str,
+    units: str,
+    cycle_date: _dt.date,
+    cycle_hour: int,
+    forecast_hour: int,
+    bbox: tuple[float, float, float, float],
+) -> bytes:
+    """Stamp metadata on ``da_out`` and write it as a float32 COG, returning bytes.
+
+    Raises ``HRRRForecastEmptyError`` if the array carries no finite pixels.
+    """
+    import numpy as np
+
+    arr = np.asarray(da_out.values, dtype=np.float32)
+    if not np.isfinite(arr).any():
+        raise HRRRForecastEmptyError(
+            f"bbox={bbox} produced no finite HRRR pixels (all-NaN window)"
+        )
+
+    out_fd, out_path = tempfile.mkstemp(suffix=".tif", prefix="grace2_hrrr_")
+    os.close(out_fd)
+    try:
+        da_out = da_out.astype("float32")
+        da_out.attrs["units"] = units
+        da_out.attrs["source"] = "HRRR_hrrrzarr"
+        da_out.attrs["variable"] = variable
+        da_out.attrs["cycle"] = f"{cycle_date.isoformat()}T{cycle_hour:02d}:00Z"
+        da_out.attrs["forecast_hour"] = forecast_hour
+        da_out.attrs["tool"] = "fetch_hrrr_forecast"
+        try:
+            da_out.rio.to_raster(
+                out_path,
+                driver="COG",
+                dtype="float32",
+                compress="DEFLATE",
+                nodata=float("nan"),
+            )
+        except Exception:  # noqa: BLE001 — fall back to GTiff if COG fails
+            da_out.rio.to_raster(
+                out_path,
+                driver="GTiff",
+                dtype="float32",
+                compress="DEFLATE",
+                nodata=float("nan"),
+            )
+
+        with open(out_path, "rb") as f:
+            cog_bytes = f.read()
+    finally:
+        try:
+            os.unlink(out_path)
+        except OSError:
+            pass
+
+    logger.info(
+        "fetch_hrrr_forecast wrote %d-byte COG (variable=%s cycle=%s "
+        "F%03d shape=%s min=%.3f max=%.3f mean=%.3f)",
+        len(cog_bytes),
+        variable,
+        f"{cycle_date.strftime('%Y%m%d')}_{cycle_hour:02d}z",
+        forecast_hour,
+        tuple(arr.shape),
+        float(np.nanmin(arr)),
+        float(np.nanmax(arr)),
+        float(np.nanmean(arr)),
+    )
+    return cog_bytes
+
+
+def _zarr_slice_to_geotiff_bytes(
+    cycle_date: _dt.date,
+    cycle_hour: int,
+    variable: str,
+    forecast_hour: int,
+    bbox: tuple[float, float, float, float],
+) -> bytes:
+    """Open the HRRR-Zarr slice(s), reproject to EPSG:4326, clip to bbox, write COG bytes.
+
+    For a plain single-array variable this opens one component and writes it
+    directly. For the derived ``10m_wind_speed`` it opens BOTH the UGRD and VGRD
+    component slices for the same cycle / forecast hour / bbox and writes the
+    elementwise magnitude ``sqrt(u^2 + v^2)`` (NaN preserved) as the single-band
+    float32 COG, units ``m s-1``.
+
+    Raises:
+        ``HRRRForecastUpstreamError``: zarr open / xarray decode failure.
+        ``HRRRForecastEmptyError``: bbox produced no finite pixels after clip.
+    """
+    try:
+        import fsspec  # noqa: F401 — required for the get_mapper
+        import numpy as np  # noqa: F401 — used by helpers
+        import rioxarray  # noqa: F401 — registers .rio accessor
+        import xarray as xr  # noqa: F401
+    except ImportError as exc:
+        raise HRRRForecastUpstreamError(
+            f"required deps not available (fsspec / xarray / rioxarray / numpy): {exc}"
+        ) from exc
+
+    if variable == _DERIVED_WIND_SPEED:
+        import numpy as np
+
+        u_var, v_var = _WIND_SPEED_COMPONENTS
+        da_u = _open_component_4326(
+            cycle_date, cycle_hour, u_var, forecast_hour, bbox
+        )
+        da_v = _open_component_4326(
+            cycle_date, cycle_hour, v_var, forecast_hour, bbox
+        )
+
+        # Align the two component grids defensively. Both ride the identical
+        # HRRR LCC grid and undergo the identical reproject + clip, so they are
+        # already coincident; xarray binary ops align on coords regardless.
+        # Magnitude = sqrt(u^2 + v^2). NaN in either component propagates as NaN
+        # (np.hypot preserves NaN), preserving the nodata mask.
+        speed = xr.apply_ufunc(np.hypot, da_u, da_v, keep_attrs=False)
+        speed = speed.astype("float32")
+        # apply_ufunc drops the rio CRS accessor state on some xarray versions;
+        # re-stamp CRS + spatial dims so to_raster writes a georeferenced COG.
+        speed.rio.write_crs("EPSG:4326", inplace=True)
+        try:
+            speed.rio.set_spatial_dims(x_dim="x", y_dim="y", inplace=True)
+        except Exception:  # noqa: BLE001 — dims already named x/y in most paths
+            pass
+
+        return _write_da_to_cog_bytes(
+            speed,
+            variable=variable,
+            units=_WIND_SPEED_UNITS,
+            cycle_date=cycle_date,
+            cycle_hour=cycle_hour,
+            forecast_hour=forecast_hour,
+            bbox=bbox,
+        )
+
+    da_clipped = _open_component_4326(
+        cycle_date, cycle_hour, variable, forecast_hour, bbox
+    )
+    return _write_da_to_cog_bytes(
+        da_clipped,
+        variable=variable,
+        units=_VARIABLE_SPEC[variable][2],
+        cycle_date=cycle_date,
+        cycle_hour=cycle_hour,
+        forecast_hour=forecast_hour,
+        bbox=bbox,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -651,6 +772,13 @@ def fetch_hrrr_forecast(
       ("what's the wind looking like in Tampa tomorrow morning?", "is rain
       coming through Denver this afternoon?", "show me HRRR temperature
       forecast for Chicago").
+    - A GENERIC wind request ("wind forecast", "how windy will it be",
+      "show me the wind", "wind speed over Houston") → use
+      ``variable="10m_wind_speed"``. This returns a SINGLE positive wind-speed
+      magnitude field (``sqrt(u^2 + v^2)``, m s-1) — the natural answer to "how
+      windy". Only reach for the lone signed ``10m_u_wind`` / ``10m_v_wind``
+      components when the user explicitly needs wind DIRECTION or a vector
+      component (e.g. onshore/offshore decomposition).
     - Driving a hazard model with near-real-time meteorological forcing on
       a US-side bbox: wind input to SFINCS or HEC-RAS storm surge, precip
       input to SFINCS pluvial, temperature for snow/fire-weather context.
@@ -683,10 +811,13 @@ def fetch_hrrr_forecast(
             degrees). Must intersect CONUS coverage (~lon -134..-60,
             lat 21..53). Example: ``(-82.4, 26.3, -81.6, 26.9)`` for the
             Fort Myers / Lee County area.
-        variable: one of ``"2m_temperature"`` (K), ``"10m_u_wind"`` (m s-1,
+        variable: one of ``"2m_temperature"`` (K), ``"10m_wind_speed"``
+            (m s-1, DERIVED wind-speed magnitude ``sqrt(u^2 + v^2)`` — the
+            answer to a generic "wind" request), ``"10m_u_wind"`` (m s-1,
             east component), ``"10m_v_wind"`` (m s-1, north component),
             ``"surface_precip_1hr"`` (kg m-2 = mm liquid-water equivalent,
-            1-h accumulation). Default ``"2m_temperature"``.
+            1-h accumulation). Default ``"2m_temperature"``. For any
+            non-directional wind question pass ``"10m_wind_speed"``.
         forecast_hour: integer forecast lead time in hours (1 = +1 h from
             cycle start). Range 1–18 for standard cycles, 1–48 for the
             extended 00/06/12/18z cycles. ``0`` is accepted and aliased to
@@ -772,7 +903,17 @@ def fetch_hrrr_forecast(
     # the right one to validate against.)
     _validate_forecast_hour(forecast_hour, target_cycle.hour)
 
-    level, s3_var, _units = _VARIABLE_SPEC[variable]
+    # Resolve the cycle against a concrete on-S3 component. The derived
+    # ``10m_wind_speed`` has no single S3 array, so probe its UGRD component
+    # (publishing is atomic per cycle — if UGRD is posted, VGRD is too).
+    if variable == _DERIVED_WIND_SPEED:
+        level, s3_var, _units = _VARIABLE_SPEC[_WIND_SPEED_COMPONENTS[0]]
+        result_units = _WIND_SPEED_UNITS
+        result_style_preset = _WIND_SPEED_STYLE_PRESET
+    else:
+        level, s3_var, _units = _VARIABLE_SPEC[variable]
+        result_units = _VARIABLE_SPEC[variable][2]
+        result_style_preset = f"hrrr_{variable}"
     cycle_date, cycle_hour = _resolve_cycle(
         fs=fs,
         target_cycle=target_cycle,
@@ -821,7 +962,7 @@ def fetch_hrrr_forecast(
         ),
         layer_type="raster",
         uri=result.uri,
-        style_preset=f"hrrr_{variable}",
+        style_preset=result_style_preset,
         role="primary",
-        units=_VARIABLE_SPEC[variable][2],
+        units=result_units,
     )

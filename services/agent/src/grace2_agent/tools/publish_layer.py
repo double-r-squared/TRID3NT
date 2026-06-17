@@ -395,6 +395,330 @@ def _infer_style_preset(layer_uri: str, layer_id: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# F51: TiTiler style resolver (AWS s3 branch)
+#
+# On the AWS deployment rasters publish through TiTiler, which reads the COG
+# directly and renders a single-band float32 raster as PER-TILE-AUTOSCALED
+# GRAYSCALE unless the tile request carries an explicit ``&rescale=<lo>,<hi>``
+# and ``&colormap_name=<name>``. Before F51 only ``continuous_flood_depth`` and
+# ``continuous_plume_concentration`` got params (a 2-entry if/elif) — every
+# OTHER continuous preset (precip / temperature / wind / drought / fuel
+# moisture / satellite) fell through to ``style_params=""`` and rendered
+# invisible / washed-out.
+#
+# ``_resolve_titiler_style_params`` is the single resolution point. CRITICAL
+# guards run FIRST so rasters that are ALREADY colorized are never corrupted by
+# a single-band rescale/colormap (the HIGH-severity terrain/RGBA regression a
+# rescale would otherwise introduce):
+#   - categorical / paletted COG (NLCD land cover) -> "" (embedded GDAL color
+#     table wins, job-0324);
+#   - RGB(A) / multiband COG (colored relief, blended landcover + hillshade
+#     composite — NATE's Toutle demo) -> "" (TiTiler renders the baked colors
+#     directly);
+#   - terrain-token preset/URI (continuous_dem / hillshade / slope / aspect /
+#     relief / terrain / elevation) -> "" (grayscale terrain auto-scales, RGBA
+#     terrain renders directly — exactly as it did pre-F51).
+# Only AFTER those passthroughs does it apply a typed preset->(rescale,colormap)
+# REGISTRY (exact key first, then sensible substring/prefix) to SINGLE-BAND
+# weather SCALARS, then a GENERIC band-stats percentile fallback for any
+# single-band continuous preset not in the registry, then a SAFE non-empty
+# default. Colormap names are LOWERCASE rio-tiler names (viridis, blues, ylgnbu,
+# reds, rdbu, rdylbu_r, ylgn, ylorrd, gray, gray_r, ...) — rio-tiler casing is
+# lowercase (NOT matplotlib), do not change.
+# --------------------------------------------------------------------------- #
+
+#: Exact preset / variable key -> (rescale "lo,hi", colormap_name). Physically
+#: correct band + colormap per family. KEEP flood/plume byte-for-byte.
+_TITILER_STYLE_REGISTRY: dict[str, tuple[str, str]] = {
+    # Hydrology (UNCHANGED — pre-F51 behavior pinned by tests).
+    "continuous_flood_depth": ("0,3", "ylgnbu"),
+    "continuous_plume_concentration": ("0,10", "reds"),
+    # Precipitation (mm).
+    "precipitation_mm": ("0,100", "blues"),
+    "gridmet_pr": ("0,100", "blues"),
+    "era5_total_precipitation": ("0,100", "blues"),
+    # Temperature (Kelvin) — exact members; *temperature* prefix catches more.
+    "hrrr_2m_temperature": ("250,320", "rdylbu_r"),
+    "gridmet_tmmx": ("250,320", "rdylbu_r"),
+    "gridmet_tmmn": ("250,320", "rdylbu_r"),
+    "era5_2m_temperature": ("250,320", "rdylbu_r"),
+    # Wind speed (derived scalar, m/s).
+    "wind_speed": ("0,25", "viridis"),
+    "hrrr_10m_wind_speed": ("0,25", "viridis"),
+    "gridmet_vs": ("0,25", "viridis"),
+    # Signed wind components (m/s) — diverging ramp centered on 0.
+    "hrrr_10m_u_wind": ("-25,25", "rdbu"),
+    "hrrr_10m_v_wind": ("-25,25", "rdbu"),
+    "era5_10m_u_wind": ("-25,25", "rdbu"),
+    "era5_10m_v_wind": ("-25,25", "rdbu"),
+    # Drought + fuel moisture.
+    "gridmet_pdsi": ("-6,6", "rdbu"),
+    "gridmet_fm100": ("0,40", "ylgn"),
+    "gridmet_fm1000": ("0,40", "ylgn"),
+    # GOES satellite — visible reflectance vs brightness-temperature bands.
+    "goes_visible": ("0,1", "gray"),
+    "goes_ir": ("180,330", "gray_r"),
+    "goes_wv": ("180,330", "gray_r"),
+}
+
+#: Safe non-empty default — never let a continuous raster fall through to an
+#: empty ``style_params`` (which gives stock per-tile grayscale autoscale).
+_TITILER_SAFE_DEFAULT = "&rescale=0,1&colormap_name=viridis"
+
+
+def _registry_style_params(preset: str) -> str | None:
+    """Return ``&rescale=..&colormap_name=..`` for a known preset, else ``None``.
+
+    Exact key first, then sensible substring/prefix matching so future variants
+    (e.g. ``era5_2m_temperature_max``, ``hrrr_2m_temperature_anomaly``) still
+    land in the right physical band. ``hrrr_smoke_*`` is intentionally EXCLUDED
+    here (its range is ~1e-9..1e-6) so it falls through to the band-stats
+    generic auto-rescale below.
+    """
+    key = (preset or "").lower()
+    if not key:
+        return None
+    # 1. Exact match.
+    hit = _TITILER_STYLE_REGISTRY.get(key)
+    if hit is not None:
+        rescale, cmap = hit
+        return f"&rescale={rescale}&colormap_name={cmap}"
+    # 2. hrrr_smoke_* -> generic band-stats fallback (tiny range).
+    if "smoke" in key:
+        return None
+    # 3. Family substring/prefix matching (order matters — most specific first).
+    #    (substring, (rescale, colormap))
+    family_rules: tuple[tuple[str, tuple[str, str]], ...] = (
+        # Signed wind components before generic "wind"/"temperature".
+        ("u_wind", ("-25,25", "rdbu")),
+        ("v_wind", ("-25,25", "rdbu")),
+        ("wind_speed", ("0,25", "viridis")),
+        ("temperature", ("250,320", "rdylbu_r")),
+        ("pdsi", ("-6,6", "rdbu")),
+        ("fm100", ("0,40", "ylgn")),
+        ("fm1000", ("0,40", "ylgn")),
+    )
+    for needle, (rescale, cmap) in family_rules:
+        if needle in key:
+            return f"&rescale={rescale}&colormap_name={cmap}"
+    # Precipitation family — PRECISE match, NOT a loose ``precip`` substring,
+    # so ``precipitable_water`` (and other ``precip*`` look-alikes) do NOT get
+    # the 0,100 mm precip ramp. Exact keys are already handled above; here we
+    # accept only a guarded prefix on the conventional precip variable names.
+    if (
+        key.endswith("_precip")
+        or key.endswith("_precipitation")
+        or key.endswith("precipitation_mm")
+        or key.endswith("_pr")
+        or "_precipitation_" in key
+    ):
+        return "&rescale=0,100&colormap_name=blues"
+    return None
+
+
+def _band1_percentile_rescale(raster_bytes: bytes | None) -> str | None:
+    """Compute ``&rescale=<p2>,<p98>&colormap_name=viridis`` from band-1 stats.
+
+    Reads band 1 from the in-hand COG bytes via a rasterio ``MemoryFile``,
+    masks nodata + non-finite values, and emits the 2nd/98th percentile rescale
+    with a perceptually-uniform ``viridis`` ramp. Returns ``None`` when the
+    bytes are missing, unreadable, or band 1 has NO finite values — callers
+    degrade to the SAFE default. Single-value / tiny-range bands are widened so
+    ``rescale`` is never a zero-width interval (which TiTiler rejects).
+    """
+    if not raster_bytes:
+        return None
+    try:
+        import numpy as np
+        import rasterio
+        from rasterio.io import MemoryFile
+    except Exception as exc:  # noqa: BLE001 — deps unavailable: safe-default
+        logger.debug("band-stats deps unavailable (%s: %s)", type(exc).__name__, exc)
+        return None
+    try:
+        with MemoryFile(raster_bytes) as mem, mem.open() as src:
+            band = src.read(1, masked=True)
+            arr = np.ma.filled(band.astype("float64"), np.nan)
+            finite = arr[np.isfinite(arr)]
+            if finite.size == 0:
+                return None
+            lo = float(np.percentile(finite, 2))
+            hi = float(np.percentile(finite, 98))
+    except Exception as exc:  # noqa: BLE001 — unreadable / not a raster
+        logger.debug(
+            "band-stats read failed (%s: %s)", type(exc).__name__, exc
+        )
+        return None
+    if not (lo == lo and hi == hi):  # NaN guard (paranoia)
+        return None
+    if hi <= lo:
+        # Single-value / zero-width: widen around the value so TiTiler accepts
+        # a non-degenerate range. Use a relative pad, with an absolute floor.
+        pad = max(abs(lo) * 0.01, 1e-6)
+        lo, hi = lo - pad, hi + pad
+    return f"&rescale={lo:g},{hi:g}&colormap_name=viridis"
+
+
+def _is_rgba_or_multiband(raster_bytes: bytes | None) -> bool:
+    """True if the COG is RGB(A)/multiband — TiTiler renders it DIRECTLY.
+
+    Reads the in-hand COG bytes via a rasterio ``MemoryFile`` and reports True
+    when band count >= 3 OR any band's color interpretation is one of
+    Red/Green/Blue/Alpha. Such rasters (colored relief, blended landcover +
+    hillshade composites) are already colorized: a single-band ``&rescale`` +
+    ``&colormap_name`` would corrupt them, so the resolver returns ``""`` (empty
+    style_params = TiTiler passthrough) for them, exactly as the pre-F51 path
+    did. Best-effort: returns False on any read failure so a real single-band
+    scalar still gets its rescale.
+    """
+    if not raster_bytes:
+        return False
+    try:
+        import rasterio
+        from rasterio.enums import ColorInterp
+        from rasterio.io import MemoryFile
+    except Exception as exc:  # noqa: BLE001 — deps unavailable: not RGBA
+        logger.debug("rgba probe deps unavailable (%s: %s)", type(exc).__name__, exc)
+        return False
+    try:
+        with MemoryFile(raster_bytes) as mem, mem.open() as src:
+            if src.count >= 3:
+                return True
+            rgba = {
+                ColorInterp.red,
+                ColorInterp.green,
+                ColorInterp.blue,
+                ColorInterp.alpha,
+            }
+            return any(ci in rgba for ci in src.colorinterp)
+    except Exception as exc:  # noqa: BLE001 — unreadable / not a raster
+        logger.debug("rgba probe read failed (%s: %s)", type(exc).__name__, exc)
+        return False
+
+
+def _is_terrain_token_preset(style_preset: str | None, layer_uri: str) -> bool:
+    """True if the preset / URI tokenizes to a TERRAIN-family token.
+
+    Reuses ``_TERRAIN_STYLE_TOKENS`` (dem, relief, hillshade, slope, aspect,
+    terrain, elevation). Tokenizes the ``style_preset`` AND ``layer_uri`` on
+    non-alphanumerics and matches whole tokens, so e.g. ``"continuous_dem"``
+    tokenizes to ``{continuous, dem}`` -> matches ``dem``. Terrain rasters
+    (grayscale hillshade/slope/aspect, RGBA colored relief) render correctly
+    with NO rescale (the pre-F51 behavior), so the resolver returns ``""`` for
+    them before trying the registry / band-stats.
+    """
+    import re as _re
+
+    tokens = set(
+        _re.split(r"[^a-z0-9]+", f"{style_preset or ''} {layer_uri or ''}".lower())
+    )
+    return bool(tokens & _TERRAIN_STYLE_TOKENS)
+
+
+def _resolve_titiler_style_params(
+    style_preset: str | None, layer_uri: str
+) -> str:
+    """Resolve TiTiler ``&rescale=..&colormap_name=..`` for the s3 publish path.
+
+    Resolution order (F51, hardened by the terrain/RGBA regression fix):
+
+    1. CATEGORICAL GUARD — if the COG carries an embedded band-1 GDAL color
+       table (NLCD land cover etc.), return ``""`` so TiTiler colorizes from the
+       EMBEDDED palette and is NEVER washed out by a rescale (job-0324).
+    2. RGBA / MULTIBAND PASSTHROUGH — if the COG is RGB(A) / >=3 bands (colored
+       relief, blended landcover + hillshade composite), return ``""``: TiTiler
+       renders the baked colors directly; a single-band rescale/colormap would
+       CORRUPT it. This covers NATE's Toutle landcover+hillshade composite
+       regardless of preset.
+    3. TERRAIN-TOKEN PASSTHROUGH — if the preset / URI tokenizes to a terrain
+       token (``continuous_dem`` -> ``dem``, hillshade / slope / aspect / relief
+       / terrain / elevation), return ``""``: grayscale terrain auto-scales and
+       RGBA terrain renders directly, exactly as it did pre-F51.
+    4. REGISTRY — a typed preset/variable -> (rescale, colormap) lookup (exact
+       key, then family substring/prefix). Flood + plume are pinned here
+       byte-for-byte; single-band weather scalars (precip / temperature / wind /
+       drought / fuel-moisture / satellite) get their physically-correct band.
+    5. GENERIC FALLBACK — for any single-band continuous preset NOT in the
+       registry (and for ``hrrr_smoke_*``), compute the band-1 2nd/98th
+       percentile rescale with a viridis ramp from the in-hand COG bytes.
+    6. SAFE DEFAULT — if the stats read fails for ANY reason, emit
+       ``&rescale=0,1&colormap_name=viridis``. NEVER returns empty for a
+       single-band continuous scalar raster.
+
+    The COG bytes are read ONCE here and reused for the categorical-palette
+    probe, the RGBA/multiband probe, and the percentile fallback (no double
+    download).
+    """
+    raster_bytes = _read_raster_bytes(layer_uri)
+
+    # 1. Categorical / paletted raster -> NO rescale (embedded palette wins).
+    if raster_bytes is not None:
+        try:
+            import rasterio
+            from rasterio.io import MemoryFile
+
+            with MemoryFile(raster_bytes) as mem, mem.open() as src:
+                if _read_band1_colormap(src) is not None:
+                    logger.info(
+                        "publish_layer (titiler) %s carries an embedded band-1 "
+                        "color table — leaving style_params empty so TiTiler "
+                        "colorizes from the palette (job-0324)",
+                        layer_uri,
+                    )
+                    return ""
+        except Exception as exc:  # noqa: BLE001 — palette probe is best-effort
+            logger.debug(
+                "palette probe skipped (%s: %s)", type(exc).__name__, exc
+            )
+
+    # 2. RGBA / multiband composite -> NO rescale (TiTiler renders directly).
+    #    Colored relief + blended landcover/hillshade composites are already
+    #    colorized; a single-band rescale/colormap would corrupt them. Pre-F51
+    #    these published with EMPTY style_params and rendered correctly.
+    if _is_rgba_or_multiband(raster_bytes):
+        logger.info(
+            "publish_layer (titiler) %s is RGB(A)/multiband — leaving "
+            "style_params empty so TiTiler renders the baked colors directly "
+            "(no single-band rescale/colormap)",
+            layer_uri,
+        )
+        return ""
+
+    # 3. Terrain-family preset/URI -> NO rescale. Grayscale hillshade/slope/
+    #    aspect auto-scales and RGBA colored relief renders directly, as it did
+    #    pre-F51. ``continuous_dem`` tokenizes to include ``dem`` -> matches.
+    if _is_terrain_token_preset(style_preset, layer_uri):
+        logger.info(
+            "publish_layer (titiler) preset=%r uri=%s is a TERRAIN-family raster "
+            "— leaving style_params empty (grayscale/RGBA terrain renders "
+            "correctly with no rescale)",
+            style_preset,
+            layer_uri,
+        )
+        return ""
+
+    # 4. Typed registry (exact + family). Flood/plume + single-band weather
+    #    scalars pinned here.
+    params = _registry_style_params(style_preset or "")
+    if params is not None:
+        return params
+
+    # 5. Generic band-stats percentile fallback (also hrrr_smoke_*).
+    params = _band1_percentile_rescale(raster_bytes)
+    if params is not None:
+        return params
+
+    # 6. Safe, NEVER-empty default.
+    logger.info(
+        "publish_layer (titiler) no registry/stats match for preset=%r uri=%s — "
+        "using safe default rescale",
+        style_preset,
+        layer_uri,
+    )
+    return _TITILER_SAFE_DEFAULT
+
+
+# --------------------------------------------------------------------------- #
 # F32: benign vector handling
 # --------------------------------------------------------------------------- #
 
@@ -1323,18 +1647,29 @@ def publish_layer(
 
         from urllib.parse import quote
 
-        # Style → TiTiler render params. Flood depths get the blue ramp over
-        # a 0-3 m rescale; plume concentrations (job-0292b) get a red ramp
-        # over a 0-10 mg/L rescale (sub-floor cells are NaN-masked in the COG
-        # so clean ground stays transparent; range is the demo-aquifer band —
-        # OQ-292B-PLUME-RESCALE for a metrics-driven dynamic rescale);
-        # terrain products (hillshade byte / relief RGBA) render natively
-        # without params.
-        style_params = ""
-        if (style_preset or "") == "continuous_flood_depth":
-            style_params = "&rescale=0,3&colormap_name=ylgnbu"
-        elif (style_preset or "") == "continuous_plume_concentration":
-            style_params = "&rescale=0,10&colormap_name=reds"
+        # F51: Style -> TiTiler render params. TiTiler renders a single-band
+        # float32 COG as PER-TILE grayscale autoscale unless the request carries
+        # an explicit &rescale + &colormap_name, so style_params must NEVER be
+        # empty for a continuous raster (the pre-F51 2-entry if/elif left every
+        # non-flood/non-plume preset washed out). _resolve_titiler_style_params
+        # is the single resolution point:
+        #   - flood depths keep the blue ramp over 0-3 m; plume concentrations
+        #     (job-0292b) keep the red ramp over 0-10 mg/L (byte-for-byte);
+        #   - precip / temperature / wind / drought / fuel-moisture / satellite
+        #     resolve to physically-correct registry bands;
+        #   - anything unknown gets a band-1 2nd/98th-percentile auto-rescale
+        #     (viridis) read from the COG bytes already in hand, with a SAFE
+        #     non-empty default if the stats read fails;
+        #   - CATEGORICAL guard: a COG with an embedded GDAL color table (NLCD
+        #     land cover) gets NO rescale so TiTiler colorizes from the palette
+        #     (job-0324) — never washed out.
+        # _infer_style_preset (the family-aware default used on the GCS path) is
+        # applied here too for the auto/None case so the s3 early-return path
+        # gets the same default selection.
+        effective_preset = style_preset
+        if effective_preset is None or effective_preset == "auto":
+            effective_preset = _infer_style_preset(layer_uri, layer_id)
+        style_params = _resolve_titiler_style_params(effective_preset, layer_uri)
         template = (
             f"{tile_base}/cog/tiles/WebMercatorQuad/{{z}}/{{x}}/{{y}}.png"
             f"?url={quote(layer_uri, safe='')}{style_params}"

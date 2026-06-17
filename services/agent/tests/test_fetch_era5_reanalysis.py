@@ -600,6 +600,252 @@ def test_layer_uri_shape_fields(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Derived 10m_wind_speed variable (mocked cdsapi: two retrieves combined).
+# ---------------------------------------------------------------------------
+
+
+def _write_constant_era5_netcdf(
+    out_path: str,
+    var_short: str,
+    bbox: tuple[float, float, float, float],
+    value,  # float or 2D array matching the grid
+    long_name: str,
+    n_hours: int = 3,
+) -> None:
+    """Write a tiny ERA5-shaped NetCDF with a known constant/grid value per cell.
+
+    Time-invariant so the tool's time-mean recovers ``value`` exactly. Lets the
+    wind-speed math assert sqrt(u^2+v^2) on a deterministic grid.
+    """
+    import numpy as np
+    import xarray as xr
+
+    west, south, east, north = bbox
+    lats = np.arange(north, south - 0.01, -0.25)
+    lons = np.arange(west, east + 0.01, 0.25)
+    times = np.array(
+        [np.datetime64(_dt.datetime(2024, 9, 26, h, 0), "ns") for h in range(n_hours)]
+    )
+
+    grid = np.broadcast_to(
+        np.asarray(value, dtype=np.float32), (len(lats), len(lons))
+    ).astype(np.float32)
+    arr = np.repeat(grid[None, :, :], len(times), axis=0)
+
+    da = xr.DataArray(
+        arr,
+        dims=("time", "latitude", "longitude"),
+        coords={"time": times, "latitude": lats, "longitude": lons},
+        name=var_short,
+        attrs={"long_name": long_name, "units": "m s-1"},
+    )
+    da.to_dataset().to_netcdf(out_path)
+
+
+def test_wind_speed_validates():
+    """The derived '10m_wind_speed' variable is on the allowed list."""
+    _validate_variable("10m_wind_speed")
+
+
+def test_wind_speed_issues_two_retrieves_and_writes_magnitude(monkeypatch):
+    """variable='10m_wind_speed' fetches BOTH components, writes sqrt(u^2+v^2)."""
+    import numpy as np
+
+    fake_gcs = FakeStorageClient()
+    seen: list[str] = []
+
+    # u = 3 everywhere, v = 4 everywhere -> speed = 5 everywhere.
+    def _retrieve(dataset: str, request: dict, out_path: str) -> None:
+        var = request["variable"]
+        seen.append(var)
+        if var == "10m_u_component_of_wind":
+            _write_constant_era5_netcdf(
+                out_path, "u10", _FORT_MYERS_BBOX, 3.0, "10m u component of wind"
+            )
+        elif var == "10m_v_component_of_wind":
+            _write_constant_era5_netcdf(
+                out_path, "v10", _FORT_MYERS_BBOX, 4.0, "10m v component of wind"
+            )
+        else:
+            raise AssertionError(f"unexpected CDS variable {var!r}")
+
+    _install_fake_cdsapi(monkeypatch, _retrieve)
+
+    with patch(
+        "grace2_agent.tools.fetch_era5_reanalysis.read_through",
+        side_effect=_make_read_through_injector(fake_gcs),
+    ):
+        result = fetch_era5_reanalysis(
+            bbox=_FORT_MYERS_BBOX,
+            variable="10m_wind_speed",
+            start_date="2024-09-26",
+            end_date="2024-09-26",
+            api_key="dummy",
+        )
+
+    # BOTH components retrieved, in order.
+    assert seen == ["10m_u_component_of_wind", "10m_v_component_of_wind"]
+
+    # LayerURI shape: derived preset + m s-1 units.
+    assert result.layer_type == "raster"
+    assert result.role == "primary"
+    assert result.units == "m s-1"
+    assert result.style_preset == "wind_speed"
+
+    # One cache artifact landed.
+    [(path, data)] = list(fake_gcs.store.items())
+    assert path.startswith("cache/static-30d/era5/")
+    assert path.endswith(".tif")
+
+    # Decode the single band and confirm sqrt(3^2 + 4^2) == 5 everywhere finite.
+    import rasterio
+
+    with tempfile.NamedTemporaryFile(suffix=".tif", delete=False) as tf:
+        tf.write(data)
+        tf_path = tf.name
+    try:
+        with rasterio.open(tf_path) as src:
+            assert src.count == 1
+            band = src.read(1)
+    finally:
+        os.unlink(tf_path)
+
+    finite = band[np.isfinite(band)]
+    assert finite.size > 0
+    np.testing.assert_allclose(finite, 5.0, rtol=0, atol=1e-3)
+
+
+def test_wind_speed_preserves_nan_nodata(monkeypatch):
+    """A NaN cell in either wind component yields NaN in the magnitude band."""
+    import numpy as np
+
+    fake_gcs = FakeStorageClient()
+
+    # Build a u-grid with a NaN in one cell; v all 4. The combined cell -> NaN.
+    def _retrieve(dataset: str, request: dict, out_path: str) -> None:
+        var = request["variable"]
+        if var == "10m_u_component_of_wind":
+            # Grid value 3 with a single NaN; broadcast handles scalar, so build
+            # an explicit 2D grid by reading bbox shape.
+            west, south, east, north = _FORT_MYERS_BBOX
+            ny = len(np.arange(north, south - 0.01, -0.25))
+            nx = len(np.arange(west, east + 0.01, 0.25))
+            grid = np.full((ny, nx), 3.0, dtype=np.float32)
+            grid[0, 0] = np.nan
+            _write_constant_era5_netcdf(
+                out_path, "u10", _FORT_MYERS_BBOX, grid, "10m u component of wind"
+            )
+        else:
+            _write_constant_era5_netcdf(
+                out_path, "v10", _FORT_MYERS_BBOX, 4.0, "10m v component of wind"
+            )
+
+    _install_fake_cdsapi(monkeypatch, _retrieve)
+
+    with patch(
+        "grace2_agent.tools.fetch_era5_reanalysis.read_through",
+        side_effect=_make_read_through_injector(fake_gcs),
+    ):
+        result = fetch_era5_reanalysis(
+            bbox=_FORT_MYERS_BBOX,
+            variable="10m_wind_speed",
+            start_date="2024-09-26",
+            end_date="2024-09-26",
+            api_key="dummy",
+        )
+
+    [(_path, data)] = list(fake_gcs.store.items())
+    import rasterio
+
+    with tempfile.NamedTemporaryFile(suffix=".tif", delete=False) as tf:
+        tf.write(data)
+        tf_path = tf.name
+    try:
+        with rasterio.open(tf_path) as src:
+            band = src.read(1)
+    finally:
+        os.unlink(tf_path)
+
+    # Exactly the one NaN component cell stays NaN (lat-sort flips row order, so
+    # don't assume an index); the rest are sqrt(9+16)=5.
+    assert int(np.isnan(band).sum()) == 1
+    finite = band[np.isfinite(band)]
+    assert finite.size == band.size - 1
+    np.testing.assert_allclose(finite, 5.0, rtol=0, atol=1e-3)
+    assert result.units == "m s-1"
+
+
+def test_wind_speed_distinct_cache_key_from_components(monkeypatch):
+    """10m_wind_speed has its own cache key, distinct from a lone component."""
+    fake_gcs = FakeStorageClient()
+
+    def _retrieve(dataset: str, request: dict, out_path: str) -> None:
+        var = request["variable"]
+        short = {
+            "10m_u_component_of_wind": "u10",
+            "10m_v_component_of_wind": "v10",
+        }[var]
+        _write_constant_era5_netcdf(
+            out_path, short, _FORT_MYERS_BBOX, 3.0, var.replace("_", " ")
+        )
+
+    _install_fake_cdsapi(monkeypatch, _retrieve)
+
+    with patch(
+        "grace2_agent.tools.fetch_era5_reanalysis.read_through",
+        side_effect=_make_read_through_injector(fake_gcs),
+    ):
+        r_speed = fetch_era5_reanalysis(
+            bbox=_FORT_MYERS_BBOX,
+            variable="10m_wind_speed",
+            start_date="2024-09-26",
+            end_date="2024-09-26",
+            api_key="dummy",
+        )
+        r_u = fetch_era5_reanalysis(
+            bbox=_FORT_MYERS_BBOX,
+            variable="10m_u_component_of_wind",
+            start_date="2024-09-26",
+            end_date="2024-09-26",
+            api_key="dummy",
+        )
+
+    assert r_speed.uri != r_u.uri
+    # Two distinct cache entries.
+    assert len(fake_gcs.store) == 2
+
+
+def test_component_variable_unchanged(monkeypatch):
+    """A lone 10m_u_component_of_wind still issues ONE retrieve, keeps its preset."""
+    fake_gcs = FakeStorageClient()
+    seen: list[str] = []
+
+    def _retrieve(dataset: str, request: dict, out_path: str) -> None:
+        seen.append(request["variable"])
+        _write_constant_era5_netcdf(
+            out_path, "u10", _FORT_MYERS_BBOX, 7.0, "10m u component of wind"
+        )
+
+    _install_fake_cdsapi(monkeypatch, _retrieve)
+
+    with patch(
+        "grace2_agent.tools.fetch_era5_reanalysis.read_through",
+        side_effect=_make_read_through_injector(fake_gcs),
+    ):
+        result = fetch_era5_reanalysis(
+            bbox=_FORT_MYERS_BBOX,
+            variable="10m_u_component_of_wind",
+            start_date="2024-09-26",
+            end_date="2024-09-26",
+            api_key="dummy",
+        )
+
+    assert seen == ["10m_u_component_of_wind"]
+    assert result.style_preset == "era5_10m_u_component_of_wind"
+    assert result.units == "m s-1"
+
+
+# ---------------------------------------------------------------------------
 # Live test — real CDS API call (env-gated).
 # ---------------------------------------------------------------------------
 

@@ -43,13 +43,24 @@ def _s3_backend(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GRACE2_STORAGE_BACKEND", "s3")
 
 
+# The S3_URI handle (``.../flood_depth_peak.tif``) infers the
+# ``continuous_flood_depth`` family in the F51 no-preset path, so the no-preset
+# template now carries the flood ramp suffix (style_params is NEVER empty for a
+# continuous raster). These base-derivation tests therefore assert on the
+# percent-encoded ``?url=`` PREFIX (the base-join contract) rather than an exact
+# tail. ``_read_raster_bytes`` for the fake S3_URI returns None here (the key
+# does not exist), so the palette probe + band-stats are skipped and the typed
+# flood registry entry is what resolves.
+_FLOOD_SUFFIX = "&rescale=0,3&colormap_name=ylgnbu"
+
+
 def test_http_ip_port_base_today(monkeypatch: pytest.MonkeyPatch) -> None:
     """Today's http IP:port base yields the legacy http tile template."""
     monkeypatch.setenv("GRACE2_TILE_SERVER_BASE", "http://54.185.114.233:8080")
     template = publish_layer(layer_uri=S3_URI, layer_id="flood-demo")
     assert template == (
         f"http://54.185.114.233:8080/cog/tiles/WebMercatorQuad/{{z}}/{{x}}/{{y}}.png"
-        f"?url={ENCODED}"
+        f"?url={ENCODED}{_FLOOD_SUFFIX}"
     )
     # No double slash where the base meets the /cog/ path.
     assert "8080//cog" not in template
@@ -66,7 +77,7 @@ def test_https_cloudfront_base_after_cutover(monkeypatch: pytest.MonkeyPatch) ->
     template = publish_layer(layer_uri=S3_URI, layer_id="flood-demo")
     assert template == (
         f"https://d123abc.cloudfront.net/cog/tiles/WebMercatorQuad/{{z}}/{{x}}/{{y}}.png"
-        f"?url={ENCODED}"
+        f"?url={ENCODED}{_FLOOD_SUFFIX}"
     )
     assert template.startswith("https://")
     assert "net//cog" not in template
@@ -82,7 +93,7 @@ def test_https_base_with_trailing_slash_is_tolerated(
     template = publish_layer(layer_uri=S3_URI, layer_id="flood-demo")
     assert template == (
         f"https://d123abc.cloudfront.net/cog/tiles/WebMercatorQuad/{{z}}/{{x}}/{{y}}.png"
-        f"?url={ENCODED}"
+        f"?url={ENCODED}{_FLOOD_SUFFIX}"
     )
     assert "net//cog" not in template
 
