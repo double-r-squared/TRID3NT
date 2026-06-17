@@ -1400,6 +1400,56 @@ _NLCD_WCS_COVERAGE_BY_YEAR: dict[int, str] = {
 }
 
 
+def _read_band1_colormap(src) -> dict | None:
+    """Return the band-1 palette color table (``{idx: (r,g,b,a)}``) or ``None``.
+
+    NLCD land cover ships a single-band palette-index COG with an EMBEDDED GDAL
+    color table; TiTiler colorizes from it. Every COG re-write (clip, COG
+    translate, overview enforcement) must carry that table forward or the layer
+    renders solid grey (job-0324 regression). rasterio raises ``ValueError``
+    when band 1 has no color table — that is the normal, expected case for
+    continuous rasters (DEM, hillshade, flood depth), and we return ``None`` so
+    the caller does NOT fabricate one.
+    """
+    try:
+        return src.colormap(1)
+    except ValueError:
+        # rasterio raises ValueError when band 1 has no color table — the
+        # normal case for continuous rasters (DEM/hillshade/flood depth).
+        return None
+    except Exception as exc:  # noqa: BLE001 — any other read failure: no-op
+        logger.debug("colormap read skipped (%s: %s)", type(exc).__name__, exc)
+        return None
+
+
+def _apply_band1_colormap(dst, cmap: dict | None, colorinterp=None) -> None:
+    """Write a preserved band-1 color table + palette colorinterp onto ``dst``.
+
+    No-op when ``cmap`` is ``None`` (non-paletted raster — we never fabricate a
+    color table). When a table is present, stamp it on band 1 and set band 1's
+    color interpretation to ``palette`` so downstream readers/TiTiler treat the
+    integer pixels as indices into the table.
+    """
+    if cmap is None:
+        return
+    try:
+        dst.write_colormap(1, cmap)
+        try:
+            from rasterio.enums import ColorInterp
+
+            interp = list(dst.colorinterp)
+            interp[0] = ColorInterp.palette
+            dst.colorinterp = tuple(interp)
+        except Exception:  # noqa: BLE001 — colorinterp set is best-effort
+            pass
+    except Exception as exc:  # noqa: BLE001 — colormap copy is best-effort
+        logger.warning(
+            "colormap preservation failed (%s: %s); output may render grey",
+            type(exc).__name__,
+            exc,
+        )
+
+
 def _clip_raster_bytes_to_bbox(
     tif_bytes: bytes, bbox: tuple[float, float, float, float]
 ) -> bytes:
@@ -1452,10 +1502,15 @@ def _clip_raster_bytes_to_bbox(
                 width=int(window.width),
                 transform=transform,
             )
+            # Preserve a band-1 palette color table (e.g. NLCD land cover) so
+            # the cropped output still colorizes. None when the source has no
+            # color table (DEM/hillshade/flood depth) — a pure no-op there.
+            cmap = _read_band1_colormap(src)
             with tempfile.NamedTemporaryFile(suffix=".tif", delete=False) as of:
                 out_tmp = of.name
             with rasterio.open(out_tmp, "w", **profile) as dst:
                 dst.write(data)
+                _apply_band1_colormap(dst, cmap)
         with open(out_tmp, "rb") as f:
             return f.read()
     except Exception as exc:  # noqa: BLE001 — clip is best-effort precision
@@ -1508,12 +1563,18 @@ def _rasterio_translate_to_cog(tif_bytes: bytes) -> bytes:
             if src.nodata is not None:
                 profile["nodata"] = src.nodata
             data = src.read()
+            # Preserve a band-1 palette color table (NLCD land cover) across the
+            # COG translate — TiTiler colorizes from this embedded table. None
+            # for non-paletted rasters (DEM/hillshade/flood depth): a no-op.
+            cmap = _read_band1_colormap(src)
+            colorinterp = src.colorinterp
             with tempfile.NamedTemporaryFile(suffix=".tif", delete=False) as of:
                 out_tmp = of.name
             with rasterio.open(
                 out_tmp, "w", OVERVIEW_RESAMPLING="NEAREST", **profile
             ) as dst:
                 dst.write(data)
+                _apply_band1_colormap(dst, cmap, colorinterp)
         with open(out_tmp, "rb") as f:
             return f.read()
     except Exception as exc:  # noqa: BLE001 — COG translate is best-effort

@@ -308,3 +308,118 @@ def test_publish_layer_s3_overview_cog_published_unchanged(
     )
     # Original s3 URI is what rides in ?url=.
     assert f"?url={quote('s3://bucket/runs/good.tif', safe='')}" in template
+
+
+# --------------------------------------------------------------------------- #
+# job-0324 — colormap preservation in the overview-enforcement re-write.
+#
+# NLCD land cover is a single-band palette-index COG with an EMBEDDED GDAL
+# color table; TiTiler colorizes from it. _build_cog_with_overviews's
+# re-translate MUST carry that table forward or the layer renders solid GREY.
+# Non-paletted rasters (DEM/hillshade/flood depth) must pass through with NO
+# fabricated colormap, and overviews must still build in both cases.
+# --------------------------------------------------------------------------- #
+
+
+_NLCD_COLORMAP = {
+    0: (0, 0, 0, 0),
+    11: (72, 109, 162, 255),
+    21: (222, 197, 197, 255),
+    41: (56, 129, 78, 255),
+    81: (220, 217, 57, 255),
+    90: (186, 217, 235, 255),
+    255: (0, 0, 0, 0),
+}
+
+
+def _paletted_geotiff_bytes(size: int = 1024) -> bytes:
+    """A flat single-band uint8 GeoTIFF WITH an embedded color table, no overviews."""
+    classes = np.array([11, 21, 41, 81, 90], dtype="uint8")
+    data = classes[np.random.randint(0, len(classes), size=(size, size))]
+    transform = rasterio.transform.from_origin(0, size, 1, 1)
+    with MemoryFile() as mem:
+        with mem.open(
+            driver="GTiff",
+            height=size,
+            width=size,
+            count=1,
+            dtype="uint8",
+            crs="EPSG:4326",
+            transform=transform,
+            nodata=255,
+        ) as dst:
+            dst.write(data, 1)
+            dst.write_colormap(1, _NLCD_COLORMAP)
+        return mem.read()
+
+
+def _colormap_of(raster_bytes: bytes):
+    with MemoryFile(raster_bytes) as mem, mem.open() as src:
+        try:
+            return src.colormap(1)
+        except ValueError:
+            return None
+
+
+def _colorinterp0_name(raster_bytes: bytes) -> str:
+    with MemoryFile(raster_bytes) as mem, mem.open() as src:
+        return src.colorinterp[0].name
+
+
+def _assert_colormap_round_trip_equal(src_bytes: bytes, out_bytes: bytes) -> None:
+    """Output band-1 table must equal the SOURCE's round-tripped table.
+
+    GDAL's GTiff palette writer normalizes alpha on write, so we compare the
+    output against the source's own ``colormap(1)`` (apples-to-apples) rather
+    than a hand-written RGBA dict. A mismatch = the re-write changed the table.
+    """
+    src_cmap = _colormap_of(src_bytes)
+    assert src_cmap is not None, "test fixture lost its colormap"
+    out_cmap = _colormap_of(out_bytes)
+    assert out_cmap is not None, "re-write dropped the colormap (job-0324)"
+    for idx in _NLCD_COLORMAP:
+        assert out_cmap.get(idx) == src_cmap.get(idx), (
+            idx,
+            out_cmap.get(idx),
+            src_cmap.get(idx),
+        )
+
+
+def test_build_cog_with_overviews_preserves_colormap() -> None:
+    """The F33 overview re-write keeps the embedded NLCD color table AND builds
+    overviews — the job-0324 grey-land-cover fix."""
+    flat = _paletted_geotiff_bytes()
+    assert _colormap_of(flat) is not None  # sanity: source has a table
+    assert _raster_has_overviews(flat) is False
+
+    cog = _build_cog_with_overviews(flat)
+    assert cog is not None
+
+    _assert_colormap_round_trip_equal(flat, cog)
+    # Overviews still present (F33 must not regress).
+    assert _raster_has_overviews(cog) is True
+    # Band marked palette so TiTiler treats pixels as indices.
+    assert _colorinterp0_name(cog) == "palette"
+
+
+def test_build_cog_with_overviews_rasterio_preserves_colormap() -> None:
+    """The pure-rasterio fallback path (no GDAL CLI) also preserves the table."""
+    from grace2_agent.tools.publish_layer import _build_cog_with_overviews_rasterio
+
+    flat = _paletted_geotiff_bytes()
+    cog = _build_cog_with_overviews_rasterio(flat)
+    assert cog is not None
+    _assert_colormap_round_trip_equal(flat, cog)
+    assert _raster_has_overviews(cog) is True
+
+
+def test_build_cog_with_overviews_no_colormap_unchanged() -> None:
+    """A continuous (DEM-like) raster gets overviews but NO fabricated colormap."""
+    flat = _flat_geotiff_bytes()
+    assert _colormap_of(flat) is None  # sanity: no table
+
+    cog = _build_cog_with_overviews(flat)
+    assert cog is not None
+    assert _colormap_of(cog) is None, "must NOT fabricate a colormap on non-paletted"
+    assert _raster_has_overviews(cog) is True
+    assert _colorinterp0_name(cog) != "palette"

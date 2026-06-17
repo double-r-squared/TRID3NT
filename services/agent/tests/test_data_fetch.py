@@ -968,6 +968,216 @@ def test_fetch_nlcd_landcover_bytes_output_has_overviews(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# job-0324 — colormap preservation across the COG re-write paths.
+#
+# REGRESSION: NLCD land cover is a single-band palette-index COG with an
+# EMBEDDED GDAL color table; TiTiler colorizes from it. job-0316's
+# overviews/clip re-writes dropped the table → land cover renders solid GREY.
+# Every re-write path (_clip_raster_bytes_to_bbox, _rasterio_translate_to_cog,
+# and the full _landcover_bytes_to_cog pipeline) must carry the table forward.
+# Continuous rasters (no color table) must pass through UNCHANGED — never
+# fabricate a colormap.
+# ---------------------------------------------------------------------------
+
+
+# A representative NLCD-style palette: a handful of class indices → RGBA.
+_NLCD_COLORMAP = {
+    0: (0, 0, 0, 0),
+    11: (72, 109, 162, 255),  # open water
+    21: (222, 197, 197, 255),  # developed, open space
+    41: (56, 129, 78, 255),  # deciduous forest
+    81: (220, 217, 57, 255),  # pasture/hay
+    90: (186, 217, 235, 255),  # woody wetlands
+    255: (0, 0, 0, 0),  # nodata
+}
+
+
+def _make_paletted_nlcd_geotiff_bytes(bbox, width=900, height=900, pad=False):
+    """Build a flat single-band uint8 GeoTIFF WITH an embedded color table.
+
+    Mirrors the real MRLC WCS NLCD product: strip-organized, NO overviews,
+    palette-index band carrying an embedded GDAL color table. ``pad`` overhangs
+    the bbox so the clip step has a fringe to trim.
+    """
+    import numpy as np
+    import rasterio
+    from rasterio.transform import from_bounds
+
+    src_bbox = bbox
+    if pad:
+        min_lon, min_lat, max_lon, max_lat = bbox
+        dx = (max_lon - min_lon) * 0.1
+        dy = (max_lat - min_lat) * 0.1
+        src_bbox = (min_lon - dx, min_lat - dy, max_lon + dx, max_lat + dy)
+
+    # Only use class indices that exist in the colormap.
+    classes = np.array([11, 21, 41, 81, 90], dtype="uint8")
+    data = classes[np.random.randint(0, len(classes), size=(height, width))]
+    transform = from_bounds(*src_bbox, width, height)
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(suffix=".tif", delete=False) as f:
+        path = f.name
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        width=width,
+        height=height,
+        count=1,
+        dtype="uint8",
+        crs="EPSG:4326",
+        transform=transform,
+        nodata=255,
+    ) as dst:
+        dst.write(data, 1)
+        dst.write_colormap(1, _NLCD_COLORMAP)
+    with open(path, "rb") as f:
+        out = f.read()
+    os.unlink(path)
+    return out
+
+
+def _colormap_of_bytes(tif_bytes):
+    """Return the band-1 colormap of a GeoTIFF (bytes) or ``None`` if absent."""
+    import tempfile
+
+    import rasterio
+
+    with tempfile.NamedTemporaryFile(suffix=".tif", delete=False) as f:
+        f.write(tif_bytes)
+        path = f.name
+    try:
+        with rasterio.open(path) as src:
+            try:
+                return src.colormap(1)
+            except ValueError:
+                return None
+    finally:
+        os.unlink(path)
+
+
+def _colorinterp0_of_bytes(tif_bytes):
+    """Return band-1 ColorInterp name of a GeoTIFF (bytes)."""
+    import tempfile
+
+    import rasterio
+
+    with tempfile.NamedTemporaryFile(suffix=".tif", delete=False) as f:
+        f.write(tif_bytes)
+        path = f.name
+    try:
+        with rasterio.open(path) as src:
+            return src.colorinterp[0].name
+    finally:
+        os.unlink(path)
+
+
+def _assert_colormap_round_trip_equal(src_bytes, out_bytes):
+    """Output band-1 color table must equal the SOURCE's round-tripped table.
+
+    Comparing against the source's own ``colormap(1)`` (not the pre-write dict)
+    is the apples-to-apples check: GDAL's GTiff palette writer normalizes the
+    alpha component on write (opaque entries come back with a=255), so the
+    contract is "the table survives the re-write intact", not "matches my
+    hand-written RGBA". A per-index mismatch here means the re-write CHANGED the
+    table (the grey-land-cover regression).
+    """
+    src_cmap = _colormap_of_bytes(src_bytes)
+    assert src_cmap is not None, "test fixture lost its colormap"
+    out_cmap = _colormap_of_bytes(out_bytes)
+    assert out_cmap is not None, "re-write dropped the colormap (job-0324 regression)"
+    for idx in _NLCD_COLORMAP:
+        assert out_cmap.get(idx) == src_cmap.get(idx), (
+            idx,
+            out_cmap.get(idx),
+            src_cmap.get(idx),
+        )
+
+
+def test_clip_raster_bytes_preserves_colormap():
+    """``_clip_raster_bytes_to_bbox`` carries the embedded color table forward."""
+    quantized = data_fetch.round_bbox_to_resolution(FORT_MYERS_BBOX, 30)
+    paletted = _make_paletted_nlcd_geotiff_bytes(quantized, pad=True)
+    assert _colormap_of_bytes(paletted) is not None  # sanity: source has one
+
+    clipped = data_fetch._clip_raster_bytes_to_bbox(paletted, quantized)
+    _assert_colormap_round_trip_equal(paletted, clipped)
+    # Band marked palette so TiTiler treats pixels as indices.
+    assert _colorinterp0_of_bytes(clipped) == "palette"
+
+
+def test_rasterio_translate_to_cog_preserves_colormap_and_overviews():
+    """``_rasterio_translate_to_cog`` keeps the colormap AND builds overviews."""
+    quantized = data_fetch.round_bbox_to_resolution(FORT_MYERS_BBOX, 30)
+    paletted = _make_paletted_nlcd_geotiff_bytes(quantized)
+    assert not data_fetch._has_overviews(paletted)
+
+    cog = data_fetch._rasterio_translate_to_cog(paletted)
+    assert isinstance(cog, bytes) and len(cog) > 0
+    # Colormap preserved (vs the source's round-tripped table).
+    _assert_colormap_round_trip_equal(paletted, cog)
+    # Overviews still present (the F33 fix must not regress either).
+    assert data_fetch._has_overviews(cog), "COG translate must keep overviews"
+
+
+def test_landcover_bytes_to_cog_preserves_colormap_overviews_and_clip():
+    """Full NLCD pipeline: colormap + overviews + exact-bbox clip TOGETHER."""
+    import rasterio
+    import tempfile
+
+    quantized = data_fetch.round_bbox_to_resolution(FORT_MYERS_BBOX, 30)
+    paletted = _make_paletted_nlcd_geotiff_bytes(quantized, pad=True)
+
+    cog = data_fetch._landcover_bytes_to_cog(paletted, quantized)
+    assert isinstance(cog, bytes) and len(cog) > 0
+
+    # (1) Colormap preserved end-to-end.
+    _assert_colormap_round_trip_equal(paletted, cog)
+
+    # (2) Overviews present.
+    assert data_fetch._has_overviews(cog)
+
+    # (3) Clipped to the requested bbox (~2 px slack at 30 m).
+    with tempfile.NamedTemporaryFile(suffix=".tif", delete=False) as f:
+        f.write(cog)
+        cog_path = f.name
+    try:
+        with rasterio.open(cog_path) as src:
+            b = src.bounds
+            tol = 0.0006
+            assert abs(b.left - quantized[0]) < tol
+            assert abs(b.bottom - quantized[1]) < tol
+            assert abs(b.right - quantized[2]) < tol
+            assert abs(b.top - quantized[3]) < tol
+    finally:
+        os.unlink(cog_path)
+
+
+def test_clip_raster_bytes_no_colormap_passes_through_unchanged():
+    """A continuous raster (NO color table) is NOT given a fabricated colormap."""
+    quantized = data_fetch.round_bbox_to_resolution(FORT_MYERS_BBOX, 30)
+    flat = _make_flat_nlcd_geotiff_bytes(quantized, pad=True)
+    assert _colormap_of_bytes(flat) is None  # sanity: no table to begin with
+
+    clipped = data_fetch._clip_raster_bytes_to_bbox(flat, quantized)
+    assert _colormap_of_bytes(clipped) is None, "must NOT fabricate a colormap"
+    # colorinterp must remain gray (not flipped to palette).
+    assert _colorinterp0_of_bytes(clipped) != "palette"
+
+
+def test_rasterio_translate_to_cog_no_colormap_passes_through_unchanged():
+    """COG translate of a non-paletted raster: overviews built, NO colormap added."""
+    quantized = data_fetch.round_bbox_to_resolution(FORT_MYERS_BBOX, 30)
+    flat = _make_flat_nlcd_geotiff_bytes(quantized)
+
+    cog = data_fetch._rasterio_translate_to_cog(flat)
+    assert isinstance(cog, bytes) and len(cog) > 0
+    assert _colormap_of_bytes(cog) is None, "must NOT fabricate a colormap on DEM-like"
+    assert data_fetch._has_overviews(cog), "overviews still build for non-paletted"
+
+
+# ---------------------------------------------------------------------------
 # job-0039 — fetch_river_geometry (NHDPlus HR HUC4 region download).
 # ---------------------------------------------------------------------------
 

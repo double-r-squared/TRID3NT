@@ -487,6 +487,54 @@ def _raster_has_overviews(raster_bytes: bytes) -> bool | None:
         return None
 
 
+def _read_band1_colormap(src) -> dict | None:
+    """Return the band-1 palette color table (``{idx: (r,g,b,a)}``) or ``None``.
+
+    NLCD land cover (and other categorical rasters) ship a single-band
+    palette-index COG with an EMBEDDED GDAL color table; TiTiler colorizes from
+    it. The F33 overview-enforcement re-write must carry that table forward or
+    the layer renders solid grey (job-0324). rasterio raises ``ValueError`` when
+    band 1 has no color table — the normal case for continuous rasters (DEM,
+    hillshade, flood depth) — and we return ``None`` so callers do NOT fabricate
+    one.
+    """
+    try:
+        return src.colormap(1)
+    except ValueError:
+        return None
+    except Exception as exc:  # noqa: BLE001 — any other read failure: no-op
+        logger.debug("colormap read skipped (%s: %s)", type(exc).__name__, exc)
+        return None
+
+
+def _apply_band1_colormap(dst, cmap: dict | None) -> None:
+    """Stamp a preserved band-1 color table + palette colorinterp onto ``dst``.
+
+    No-op when ``cmap`` is ``None`` (non-paletted raster — never fabricate a
+    color table). Otherwise writes the table on band 1 and marks band 1's color
+    interpretation ``palette`` so TiTiler treats the integer pixels as indices.
+    """
+    if cmap is None:
+        return
+    try:
+        dst.write_colormap(1, cmap)
+        try:
+            from rasterio.enums import ColorInterp
+
+            interp = list(dst.colorinterp)
+            interp[0] = ColorInterp.palette
+            dst.colorinterp = tuple(interp)
+        except Exception:  # noqa: BLE001 — colorinterp set is best-effort
+            pass
+    except Exception as exc:  # noqa: BLE001 — colormap copy is best-effort
+        logger.warning(
+            "publish_layer: colormap preservation failed (%s: %s); land-cover "
+            "output may render grey",
+            type(exc).__name__,
+            exc,
+        )
+
+
 def _build_cog_with_overviews(raster_bytes: bytes) -> bytes | None:
     """Translate flat raster bytes into a tiled COG WITH overviews (F33).
 
@@ -554,26 +602,38 @@ def _build_cog_with_overviews_rasterio(raster_bytes: bytes) -> bytes | None:
     import rasterio
     from rasterio.io import MemoryFile
 
-    # rio-cogeo is the cleanest path when installed.
-    try:
-        from rio_cogeo.cogeo import cog_translate
-        from rio_cogeo.profiles import cog_profiles
+    # Detect a band-1 palette color table up front. When present (NLCD land
+    # cover), SKIP the rio-cogeo path — its colormap forwarding is
+    # version-dependent — and fall through to the manual build below, which
+    # explicitly re-stamps the table (job-0324). Non-paletted rasters keep the
+    # rio-cogeo fast path unchanged.
+    with MemoryFile(raster_bytes) as probe_mem, probe_mem.open() as probe:
+        has_colormap = _read_band1_colormap(probe) is not None
 
-        with MemoryFile(raster_bytes) as src_mem, src_mem.open() as src:
-            dst_profile = cog_profiles.get("deflate")
-            with MemoryFile() as dst_mem:
-                cog_translate(
-                    src,
-                    dst_mem.name,
-                    dst_profile,
-                    in_memory=True,
-                    quiet=True,
-                )
-                out = dst_mem.read()
-        if _raster_has_overviews(out):
-            return out
-    except Exception:  # noqa: BLE001 — rio-cogeo absent / failed; manual below
-        logger.debug("rio-cogeo path unavailable; manual overview build", exc_info=True)
+    # rio-cogeo is the cleanest path when installed (and the source is not a
+    # palette raster whose color table we must guarantee).
+    if not has_colormap:
+        try:
+            from rio_cogeo.cogeo import cog_translate
+            from rio_cogeo.profiles import cog_profiles
+
+            with MemoryFile(raster_bytes) as src_mem, src_mem.open() as src:
+                dst_profile = cog_profiles.get("deflate")
+                with MemoryFile() as dst_mem:
+                    cog_translate(
+                        src,
+                        dst_mem.name,
+                        dst_profile,
+                        in_memory=True,
+                        quiet=True,
+                    )
+                    out = dst_mem.read()
+            if _raster_has_overviews(out):
+                return out
+        except Exception:  # noqa: BLE001 — rio-cogeo absent / failed; manual below
+            logger.debug(
+                "rio-cogeo path unavailable; manual overview build", exc_info=True
+            )
 
     # Manual: copy into a tiled GTiff then build overviews in place.
     from rasterio.enums import Resampling
@@ -582,13 +642,24 @@ def _build_cog_with_overviews_rasterio(raster_bytes: bytes) -> bytes | None:
         profile = src.profile.copy()
         profile.update(tiled=True, blockxsize=512, blockysize=512, compress="deflate")
         data = src.read()
+        # Preserve a band-1 palette color table (e.g. NLCD land cover) across
+        # the overview-enforcement re-write. None for non-paletted rasters
+        # (DEM/hillshade/flood depth) — a pure no-op there (job-0324).
+        cmap = _read_band1_colormap(src)
+        # Palette rasters must downsample by NEAREST, never average — averaging
+        # class indices produces meaningless in-between codes that map to wrong
+        # colors. Continuous rasters keep average.
+        overview_resampling = Resampling.nearest if cmap else Resampling.average
         with MemoryFile() as dst_mem:
             with dst_mem.open(**profile) as dst:
                 dst.write(data)
+                _apply_band1_colormap(dst, cmap)
                 factors = _overview_factors(src.width, src.height)
                 if factors:
-                    dst.build_overviews(factors, Resampling.average)
-                    dst.update_tags(ns="rio_overview", resampling="average")
+                    dst.build_overviews(factors, overview_resampling)
+                    dst.update_tags(
+                        ns="rio_overview", resampling=overview_resampling.name
+                    )
             out = dst_mem.read()
     return out if _raster_has_overviews(out) else None
 
