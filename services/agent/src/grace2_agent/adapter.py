@@ -374,6 +374,17 @@ which is a wrong answer no matter how cleanly the tools ran. Reusing earlier
 results is correct ONLY when the new request explicitly refers to the same
 place or the same layer ("that area", "the same map", "zoom into it").
 
+Fit / zoom / resize the view to a layer (CRITICAL — you CAN drive the map):
+To fit, zoom, or "resize the box to encompass all the <features>" (buildings,
+points, polygons, the whole layer extent) — call compute_layer_bounds with the
+layer's handle/uri. It computes the layer's EPSG:4326 extent AND emits a
+zoom-to map-command so the actual viewport fits all features. You CAN pan and
+zoom the user's map this way — NEVER claim you cannot move/pan/zoom the map.
+Do NOT use the Python sandbox (code_exec_request) for bounding-box / extent /
+total_bounds math — compute_layer_bounds is the dedicated, fast, deterministic
+path and it also moves the camera. The sandbox for bbox math is wrong: it's
+slow, gated, and the result never reaches the map.
+
 Full-AOI extent for every overlay (CRITICAL — never shrink the area):
 For ANY area or overlay layer (land cover, hillshade, colored relief, slope,
 aspect, roads, rivers, flood depth, plume, etc.), use the FULL Case AOI

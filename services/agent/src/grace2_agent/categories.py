@@ -314,6 +314,9 @@ PRIMARY_CATEGORY: dict[str, str] = {
     "clip_raster_to_polygon": "geographic_primitives",
     "clip_vector_to_polygon": "geographic_primitives",
     "compute_zonal_statistics": "geographic_primitives",
+    # NATE 2026-06-17: fast layer-extent + fit-the-map tool. Replaces the
+    # sandbox bbox-math anti-pattern and drives the zoom-to map-command.
+    "compute_layer_bounds": "geographic_primitives",
     "summarize_layer_statistics": "geographic_primitives",
     "count_features_above_threshold": "geographic_primitives",
     "aggregate_property_within_zone": "geographic_primitives",
@@ -410,6 +413,14 @@ HOT_SET_TOOLS: frozenset[str] = frozenset(
         # alerts rendered far beyond the named state. The state-scoped NWS
         # tool must be as reachable as its CONUS sibling.
         "fetch_nws_event",
+        # NATE 2026-06-17: fit/zoom/resize-to-encompass-all-features is a
+        # cross-cutting view action a user invokes at any point ("resize the box
+        # to encompass all the buildings"). It must be reachable WITHOUT a
+        # category-open round-trip — same rationale as code_exec_request above.
+        # Critically, this keeps the agent from falling back to the Python
+        # sandbox for bbox math when compute_layer_bounds isn't in the allowed
+        # set (the job-0247 / job-0261 failure mode).
+        "compute_layer_bounds",
     }
 )
 

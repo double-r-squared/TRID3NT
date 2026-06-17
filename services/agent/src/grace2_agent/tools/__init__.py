@@ -255,6 +255,7 @@ from . import compute_colored_relief  # noqa: E402,F401 — job-0080: registers 
 from . import compute_slope  # noqa: E402,F401 — job-0081: registers compute_slope
 from . import compute_aspect  # noqa: E402,F401 — job-0082: registers compute_aspect
 from . import compute_zonal_statistics  # noqa: E402,F401 — job-0083: registers compute_zonal_statistics
+from . import compute_layer_bounds  # noqa: E402,F401 — NATE 2026-06-17: registers compute_layer_bounds (fast layer-extent + fit-the-map; replaces sandbox bbox math + drives zoom-to)
 from . import clip_raster_to_bbox  # noqa: E402,F401 — job-0085: registers clip_raster_to_bbox
 from . import clip_raster_to_polygon  # noqa: E402,F401 — job-0106: registers clip_raster_to_polygon
 from . import fetch_administrative_boundaries  # noqa: E402,F401 — job-0084: registers fetch_administrative_boundaries

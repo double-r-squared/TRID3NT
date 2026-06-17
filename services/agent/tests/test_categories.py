@@ -226,22 +226,28 @@ def test_list_tools_in_category_is_registered() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_hot_set_has_ten_tools() -> None:
+def test_hot_set_has_eleven_tools() -> None:
     """Hot set: the original 8 (Wave 4.10 kickoff) + code_exec_request
     (job-0247 — cross-cutting capability, see OQ-0247-CODE-EXEC-NOT-IN-HOT-SET)
     + fetch_nws_event (job-0261 — validator rejected Gemini's correct
-    state-scoped NWS call; the CONUS fallback spilled alerts nationwide)."""
-    assert len(HOT_SET_TOOLS) == 10
+    state-scoped NWS call; the CONUS fallback spilled alerts nationwide)
+    + compute_layer_bounds (NATE 2026-06-17 — fit/zoom/resize-to-encompass-all
+    must be reachable without a category-open round-trip, else the agent falls
+    back to the Python sandbox for bbox math, same failure mode as job-0247)."""
+    assert len(HOT_SET_TOOLS) == 11
 
 
 def test_hot_set_contains_required_anchors() -> None:
     """The hot set must include the meta-tools + discover_dataset so the LLM
     can always reach more tools when the initial set isn't enough, plus
     code_exec_request (job-0247: the validator rejected Gemini's CORRECT
-    first-turn call and the agent narrated a false 'cannot run Python') and
+    first-turn call and the agent narrated a false 'cannot run Python'),
     fetch_nws_event (job-0261: same first-turn-rejection failure mode —
     Gemini fell back to the unscoped CONUS sweep for 'weather alerts in
-    texas' and rendered alerts in surrounding states)."""
+    texas' and rendered alerts in surrounding states), and
+    compute_layer_bounds (NATE 2026-06-17: fit/zoom/resize-the-view is a
+    cross-cutting action invoked at any point; keeping it always-reachable
+    stops the agent from reaching for the Python sandbox for bbox math)."""
     required = {
         "list_categories",
         "list_tools_in_category",
@@ -253,6 +259,7 @@ def test_hot_set_contains_required_anchors() -> None:
         "run_model_flood_scenario",
         "run_model_flood_habitat_scenario",
         "code_exec_request",
+        "compute_layer_bounds",
     }
     assert required == HOT_SET_TOOLS
 
