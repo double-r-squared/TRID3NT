@@ -52,14 +52,17 @@ export const SELECTABLE_MODELS: ModelEntry[] = [
     label: "Nova Pro",
     provider: "Amazon",
     accentColor: "#b8860b",
-    supportsPromptCache: true,
+    // Nova REJECTS Bedrock cachePoint ("extraneous key [cachePoint] is not
+    // permitted") — caching is Anthropic-only. The server gates this; the flag
+    // is kept truthful for any UI that reads it.
+    supportsPromptCache: false,
   },
   {
     id: "us.amazon.nova-lite-v1:0",
     label: "Nova Lite",
     provider: "Amazon",
     accentColor: "#b8860b",
-    supportsPromptCache: true,
+    supportsPromptCache: false,
   },
   // Enable Bedrock model access for Claude Haiku 4.5, then uncomment:
   // {
