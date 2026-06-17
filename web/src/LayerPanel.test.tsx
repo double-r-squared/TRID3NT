@@ -16,6 +16,9 @@ import {
   readLayersWidth,
   writeLayersWidth,
   dedupeByLayerId,
+  applyVisibilityOverrides,
+  readLayerVisibilityOverrides,
+  writeLayerVisibilityOverride,
 } from "./LayerPanel";
 import { ProjectLayerSummary, SessionStatePayload } from "./contracts";
 
@@ -437,5 +440,185 @@ describe("LayerPanel — eye toggle + name + empty state (job-0264)", () => {
     );
     // With a layer present the empty node must NOT show.
     expect(screen.queryByTestId("grace2-layer-panel-empty")).toBeNull();
+  });
+});
+
+// --- F53 (job-0325): per-layer delete control --------------------------- //
+//
+// A per-row trash control sends the `layer-delete` envelope via
+// `onDeleteLayer` (App.tsx -> ws.sendDeleteLayer) AND optimistically removes
+// the row locally + emits a `remove-layer` map-command so the overlay drops
+// instantly. The authoritative session-state echo (sans the layer) then
+// confirms it.
+
+describe("LayerPanel — per-layer delete (job-0325 F53)", () => {
+  afterEach(() => {
+    try { localStorage.clear(); } catch { /* ignore */ }
+  });
+
+  it("renders a delete control on every layer row", () => {
+    render(
+      <LayerPanel initialLayers={[makeLayer("a"), makeLayer("b", 2)]} />,
+    );
+    expect(screen.getAllByTestId("layer-delete")).toHaveLength(2);
+  });
+
+  it("clicking delete calls onDeleteLayer with the layer_id", () => {
+    const onDeleteLayer = vi.fn<(id: string) => void>();
+    render(
+      <LayerPanel
+        initialLayers={[makeLayer("flood-demo")]}
+        onDeleteLayer={onDeleteLayer}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("layer-delete"));
+    expect(onDeleteLayer).toHaveBeenCalledWith("flood-demo");
+  });
+
+  it("delete optimistically removes the row AND emits a remove-layer map-command", () => {
+    const onMapCommand = vi.fn<(cmd: MapCommandPayload) => void>();
+    const onDeleteLayer = vi.fn();
+    render(
+      <LayerPanel
+        initialLayers={[makeLayer("keep", 2), makeLayer("gone", 1)]}
+        onMapCommand={onMapCommand}
+        onDeleteLayer={onDeleteLayer}
+      />,
+    );
+    // Two rows initially.
+    expect(screen.getAllByTestId("layer-row")).toHaveLength(2);
+
+    // Click the delete control on the "gone" row.
+    const goneRow = screen
+      .getAllByTestId("layer-row")
+      .find((r) => r.getAttribute("data-layer-id") === "gone")!;
+    const delBtn = goneRow.querySelector('[data-testid="layer-delete"]')!;
+    fireEvent.click(delBtn);
+
+    // Row removed optimistically (local reducer), and the remove-layer command
+    // emitted so MapView drops the overlay immediately.
+    expect(screen.getAllByTestId("layer-row")).toHaveLength(1);
+    expect(screen.getAllByTestId("layer-row")[0]).toHaveAttribute(
+      "data-layer-id",
+      "keep",
+    );
+    expect(onMapCommand).toHaveBeenCalledWith({
+      command: "remove-layer",
+      layer_id: "gone",
+    });
+  });
+
+  it("delete is safe without onDeleteLayer wired (no throw)", () => {
+    render(<LayerPanel initialLayers={[makeLayer("a")]} />);
+    expect(() => {
+      fireEvent.click(screen.getByTestId("layer-delete"));
+    }).not.toThrow();
+    // The row still vanishes locally even with no server round-trip wired.
+    expect(screen.queryByTestId("layer-row")).toBeNull();
+  });
+});
+
+// --- F55 (job-0325): per-layer visibility persists across unmount ------- //
+//
+// On mobile the panel lives in a drawer that unmounts on collapse, discarding
+// the reducer's per-layer `visible`. The fix persists the user's toggle to
+// localStorage keyed by layer_id and re-applies it on every (re-)seed, so a
+// hidden layer stays hidden across unmount->remount. Desktop (never-toggled)
+// render is byte-identical because the override is purely additive.
+
+describe("LayerPanel — visibility override helpers (job-0325 F55)", () => {
+  afterEach(() => {
+    try { localStorage.clear(); } catch { /* ignore */ }
+  });
+
+  it("applyVisibilityOverrides returns the SAME list (server value verbatim) when no override exists", () => {
+    const layers = [makeLayer("a"), { ...makeLayer("b"), visible: true }];
+    const out = applyVisibilityOverrides(layers, {});
+    expect(out).toBe(layers); // identity — desktop resting render unchanged
+    expect(out.every((l) => l.visible)).toBe(true);
+  });
+
+  it("applyVisibilityOverrides overlays only the toggled layer_id", () => {
+    const layers = [
+      { ...makeLayer("a"), visible: true },
+      { ...makeLayer("b"), visible: true },
+    ];
+    const out = applyVisibilityOverrides(layers, { a: false });
+    expect(out.find((l) => l.layer_id === "a")?.visible).toBe(false);
+    expect(out.find((l) => l.layer_id === "b")?.visible).toBe(true);
+  });
+
+  it("write/read round-trips the override map", () => {
+    expect(readLayerVisibilityOverrides()).toEqual({});
+    writeLayerVisibilityOverride("a", false);
+    writeLayerVisibilityOverride("b", true);
+    expect(readLayerVisibilityOverrides()).toEqual({ a: false, b: true });
+  });
+
+  it("garbage in localStorage degrades to an empty override map", () => {
+    localStorage.setItem("grace2.layerVisibility", "{not-json");
+    expect(readLayerVisibilityOverrides()).toEqual({});
+    localStorage.setItem("grace2.layerVisibility", "[1,2,3]");
+    expect(readLayerVisibilityOverrides()).toEqual({});
+  });
+});
+
+describe("LayerPanel — visibility survives unmount/remount (job-0325 F55)", () => {
+  afterEach(() => {
+    try { localStorage.clear(); } catch { /* ignore */ }
+  });
+
+  it("a hidden layer stays hidden after unmount → remount (mobile collapse)", () => {
+    const layers = [{ ...makeLayer("flood"), visible: true }];
+
+    // First mount: user hides the layer.
+    const first = render(<LayerPanel initialLayers={layers} />);
+    let checkbox = screen.getByTestId("layer-visibility") as HTMLInputElement;
+    expect(checkbox.checked).toBe(true);
+    fireEvent.click(checkbox); // hide
+    expect((screen.getByTestId("layer-visibility") as HTMLInputElement).checked).toBe(false);
+
+    // Unmount (drawer collapse).
+    first.unmount();
+
+    // Remount with the SAME server-provided initialLayers (visible:true). The
+    // persisted override must re-hide it.
+    render(<LayerPanel initialLayers={layers} />);
+    checkbox = screen.getByTestId("layer-visibility") as HTMLInputElement;
+    expect(checkbox.checked).toBe(false);
+  });
+
+  it("remount via session-state (bus) also restores the hidden state", () => {
+    // Pre-seed the override as if the user had toggled in a prior mount.
+    writeLayerVisibilityOverride("flood", false);
+
+    const bus = createLayerPanelBus();
+    render(
+      <LayerPanel
+        initialLayers={[]}
+        subscribeSessionState={bus.subscribeSessionState}
+        subscribeMapCommand={bus.subscribeMapCommand}
+      />,
+    );
+    act(() => {
+      bus.pushSessionState(
+        sessionStateWith([{ ...makeLayer("flood"), visible: true }]),
+      );
+    });
+    const checkbox = screen.getByTestId("layer-visibility") as HTMLInputElement;
+    expect(checkbox.checked).toBe(false);
+  });
+
+  it("a never-toggled layer renders the server visible value verbatim (desktop unaffected)", () => {
+    // No override written; server says visible:false → render shows hidden,
+    // visible:true → shown. Proves the override does not interfere when absent.
+    const hidden = render(
+      <LayerPanel initialLayers={[{ ...makeLayer("x"), visible: false }]} />,
+    );
+    expect((screen.getByTestId("layer-visibility") as HTMLInputElement).checked).toBe(false);
+    hidden.unmount();
+
+    render(<LayerPanel initialLayers={[{ ...makeLayer("y"), visible: true }]} />);
+    expect((screen.getByTestId("layer-visibility") as HTMLInputElement).checked).toBe(true);
   });
 });

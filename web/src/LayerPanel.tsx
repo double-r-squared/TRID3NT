@@ -103,7 +103,15 @@ function reducer(state: LayerPanelState, action: LayerPanelAction): LayerPanelSt
       // F22: dedupe by layer_id BEFORE sorting so a duplicate-id republish
       // can never render two rows with the same React key (the connected-
       // sliders bug).
-      return { layers: sortTopFirst(dedupeByLayerId(incoming)) };
+      // F55 (job-0325): re-apply the user's persisted visibility overrides on
+      // top of the server `visible` so a layer the user hid stays hidden across
+      // a panel unmount->remount (mobile drawer collapse re-seeds from a fresh
+      // session-state). No override => server value verbatim.
+      return {
+        layers: sortTopFirst(
+          applyVisibilityOverrides(dedupeByLayerId(incoming)),
+        ),
+      };
     }
     case "map-command": {
       const cmd = action.payload;
@@ -306,6 +314,76 @@ export function writeLayersWidth(px: number): void {
   }
 }
 
+// --- F55 (job-0325): per-layer visibility persistence ------------------- //
+//
+// Root cause being fixed: on MOBILE the LayerPanel lives inside a MobileDrawer
+// that returns null when collapsed (MobileDrawer.tsx). Collapsing the drawer
+// UNMOUNTS the panel, discarding the useReducer state (each layer's `visible`).
+// Re-opening re-seeds from session-state where `visible` is the SERVER value
+// (always true from add_loaded_layer), so a layer the user had hidden snapped
+// back to visible. Desktop collapse also unmounts, so the fix must be
+// unmount-proof rather than relying on component lifetime.
+//
+// Fix: persist the user's explicit visibility toggles to localStorage keyed by
+// layer_id, and apply that override on top of the incoming server `visible`
+// whenever we (re-)seed the reducer. The override is PURELY ADDITIVE — it only
+// exists for a layer_id the user explicitly toggled. When no override exists
+// the server value is used verbatim, so a never-toggled layer (the desktop
+// resting case) renders byte-identically to before this change.
+const LS_LAYER_VISIBILITY = "grace2.layerVisibility";
+
+/** Read the full {layer_id: visible} override map; {} on unset/garbage. */
+export function readLayerVisibilityOverrides(): Record<string, boolean> {
+  try {
+    const raw = localStorage.getItem(LS_LAYER_VISIBILITY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const out: Record<string, boolean> = {};
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof v === "boolean") out[k] = v;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+/** Persist one layer's user-chosen visibility into the override map. Non-fatal. */
+export function writeLayerVisibilityOverride(layerId: string, visible: boolean): void {
+  try {
+    const map = readLayerVisibilityOverrides();
+    map[layerId] = visible;
+    localStorage.setItem(LS_LAYER_VISIBILITY, JSON.stringify(map));
+  } catch {
+    /* non-fatal */
+  }
+}
+
+/**
+ * Apply persisted visibility overrides on top of a server-provided layer list.
+ * For each layer: if the user explicitly toggled it before (an override key
+ * exists), use the stored value; otherwise keep the server `visible` verbatim.
+ * Pure (returns a new list) so it is safe to call inside a reducer / useMemo.
+ * Exported for unit testing.
+ */
+export function applyVisibilityOverrides(
+  layers: ProjectLayerSummary[],
+  overrides: Record<string, boolean> = readLayerVisibilityOverrides(),
+): ProjectLayerSummary[] {
+  if (Object.keys(overrides).length === 0) return layers;
+  return layers.map((l) => {
+    // Under noUncheckedIndexedAccess `overrides[id]` is `boolean | undefined`;
+    // the hasOwnProperty guard guarantees presence, so coerce to a strict
+    // boolean for the `visible` field.
+    const override = overrides[l.layer_id];
+    return Object.prototype.hasOwnProperty.call(overrides, l.layer_id) &&
+      typeof override === "boolean"
+      ? { ...l, visible: override }
+      : l;
+  });
+}
+
 export interface LayerPanelProps {
   initialLayers?: ProjectLayerSummary[];
   subscribeSessionState?: (cb: SessionStateSubscriber) => () => void;
@@ -323,6 +401,18 @@ export interface LayerPanelProps {
    * change, so the echo is a no-op re-set of identical values).
    */
   onMapCommand?: (cmd: MapCommandPayload) => void;
+  /**
+   * F53 (job-0325) — per-layer delete. Fired with the layer_id when the user
+   * clicks a row's delete (trash) control. App.tsx wires this to
+   * `wsRef.current.sendDeleteLayer(id)`, which emits the `layer-delete`
+   * envelope; the server removes the layer from the session's loaded_layers,
+   * persists authoritatively, and echoes a fresh session-state (which removes
+   * the map overlay via replace-not-reconcile). Optional so existing callers
+   * that haven't wired it yet don't break — without it the row still removes
+   * itself optimistically via the local remove-layer dispatch below, but the
+   * deletion would not survive a reload (no server round-trip).
+   */
+  onDeleteLayer?: (layerId: string) => void;
   /**
    * ux-batch-1 J1 (F11) — optional controlled width (px). When provided it
    * seeds/mirrors the internal width; when omitted the panel reads/persists its
@@ -346,12 +436,20 @@ export function LayerPanel({
   onLayersChange,
   onClose,
   onMapCommand,
+  onDeleteLayer,
   width,
   onWidthChange,
   mobile = false,
 }: LayerPanelProps): JSX.Element | null {
   const initial = useMemo<LayerPanelState>(
-    () => ({ layers: sortTopFirst(dedupeByLayerId(initialLayers ?? [])) }),
+    // F55 (job-0325): apply persisted visibility overrides at first mount too,
+    // so a remount (mobile drawer reopen) that seeds via initialLayers — not
+    // the bus — also restores the user's last visibility choice.
+    () => ({
+      layers: sortTopFirst(
+        applyVisibilityOverrides(dedupeByLayerId(initialLayers ?? [])),
+      ),
+    }),
     // intentionally only on mount; initialLayers is a seed, not a reactive source.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
@@ -451,6 +549,10 @@ export function LayerPanel({
 
   function onVisibilityToggle(layerId: string, visible: boolean): void {
     dispatch({ type: "local-visibility", layer_id: layerId, visible });
+    // F55 (job-0325): persist the explicit choice so it survives a panel
+    // unmount->remount (mobile drawer collapse). Reads back in
+    // applyVisibilityOverrides at the next seed.
+    writeLayerVisibilityOverride(layerId, visible);
     // job-0258: emit so MapView flips layout visibility on the live map.
     onMapCommand?.({ command: "set-layer-visibility", layer_id: layerId, visible });
     // eslint-disable-next-line no-console
@@ -464,6 +566,19 @@ export function LayerPanel({
     onMapCommand?.({ command: "set-layer-opacity", layer_id: layerId, opacity: clamped });
     // eslint-disable-next-line no-console
     console.debug("[LayerPanel] opacity intent:", { layerId, opacity: clamped });
+  }
+
+  function onDeleteRow(layerId: string): void {
+    // F53 (job-0325): optimistic local removal so the row disappears instantly
+    // without waiting for the server round-trip. The authoritative session-state
+    // echo (sans the deleted layer) then confirms it; the local map-command also
+    // tells MapView to drop the overlay immediately.
+    dispatch({ type: "map-command", payload: { command: "remove-layer", layer_id: layerId } });
+    onMapCommand?.({ command: "remove-layer", layer_id: layerId });
+    // Send the server-authoritative delete (persists + emits new session-state).
+    onDeleteLayer?.(layerId);
+    // eslint-disable-next-line no-console
+    console.debug("[LayerPanel] delete intent:", { layerId });
   }
 
   // Tweak 2 (job-0065): hide the panel entirely when no layers are loaded.
@@ -615,6 +730,7 @@ export function LayerPanel({
                 layer={layer}
                 onVisibilityToggle={onVisibilityToggle}
                 onOpacityChange={onOpacityChange}
+                onDeleteRow={onDeleteRow}
               />
             ))}
           </SortableContext>
@@ -630,6 +746,31 @@ interface SortableRowProps {
   layer: ProjectLayerSummary;
   onVisibilityToggle: (layerId: string, visible: boolean) => void;
   onOpacityChange: (layerId: string, opacity: number) => void;
+  onDeleteRow: (layerId: string) => void;
+}
+
+// Trash glyph — inline SVG so it inherits currentColor and needs no asset.
+// 13px to sit neatly inline beside the kind chip. F53 (job-0325).
+function TrashIcon(): JSX.Element {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      width="14"
+      height="14"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      style={{ display: "block" }}
+    >
+      <path d="M2.5 4h11" />
+      <path d="M6 4V2.8c0-.4.3-.8.8-.8h2.4c.5 0 .8.4.8.8V4" />
+      <path d="M3.8 4l.6 9c0 .6.5 1 1 1h5.2c.5 0 1-.4 1-1l.6-9" />
+      <path d="M6.5 7v4M9.5 7v4" />
+    </svg>
+  );
 }
 
 // Eye glyph — open (visible) / slashed (hidden). Inline SVG so it inherits
@@ -659,6 +800,7 @@ function SortableRow({
   layer,
   onVisibilityToggle,
   onOpacityChange,
+  onDeleteRow,
 }: SortableRowProps): JSX.Element {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id: layer.layer_id });
@@ -802,6 +944,45 @@ function SortableRow({
         >
           {kind.label}
         </span>
+        {/* F53 (job-0325): per-row delete control. Revealed on hover (like the
+            opacity row) to keep the resting row clean. `onPointerDown`
+            stopPropagation guards against the dnd-kit PointerSensor treating a
+            delete press as the start of a drag. */}
+        <button
+          aria-label={`delete layer ${layer.name}`}
+          title="Delete layer"
+          data-testid="layer-delete"
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            onDeleteRow(layer.layer_id);
+          }}
+          style={{
+            flexShrink: 0,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 22,
+            height: 22,
+            padding: 0,
+            background: "transparent",
+            border: "none",
+            borderRadius: 5,
+            color: hovered ? "#a8616b" : "transparent",
+            cursor: "pointer",
+            transition: "color 120ms ease, background 120ms ease",
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.color = "#ff5d6c";
+            e.currentTarget.style.background = "rgba(255,93,108,0.12)";
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.color = hovered ? "#a8616b" : "transparent";
+            e.currentTarget.style.background = "transparent";
+          }}
+        >
+          <TrashIcon />
+        </button>
       </div>
       {/* Opacity row: collapses to 0-height when not hovered for a clean
           resting state, expands smoothly on hover. Always mounted so the

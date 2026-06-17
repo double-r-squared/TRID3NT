@@ -496,6 +496,28 @@ export interface PayloadConfirmationEnvelopePayload {
   revised_args?: Record<string, unknown> | null;
 }
 
+// --- Layer-delete envelope (job-0325 F53) ------------------------------- //
+//
+// Client -> server: the user clicked the per-row delete control in the
+// LayerPanel. The server drops the layer from the session's loaded_layers,
+// persists the post-deletion list AUTHORITATIVELY (replace semantics, NOT the
+// union merge used for loaded-layer adds — a union would resurrect the deleted
+// layer on the next turn / Case reopen), and emits a fresh `session-state`
+// without the layer. Map.tsx then removes the overlay via replace-not-reconcile
+// (Appendix A.7), and the agent's loaded-layers awareness (build_layers_present_note)
+// stops listing it because it is gone from both the in-memory emitter and the
+// persisted summaries.
+//
+// This is a NEW direction from the inbound server->client `map-command`
+// `remove-layer` discriminant (RemoveLayerCommand above): `map-command` is
+// outbound-only today, so reusing that discriminant would overload the
+// direction semantics. A dedicated `layer-delete` envelope keeps client->server
+// intent distinct from the server->client map mutations.
+export interface LayerDeletePayload {
+  envelope_type?: "layer-delete";
+  layer_id: string;
+}
+
 // --- Outbound message constructors -------------------------------------- //
 
 /** Generate a fresh ULID-like 26-char Crockford base32 id.

@@ -202,8 +202,20 @@ def test_layers_present_note_lists_layers() -> None:
     assert note is not None
     assert "ALREADY produced" in note
     assert "do NOT recompute" in note
-    assert "Flood depth (Ian) (id=flood-depth-01HX, raster)" in note
-    assert "Protected areas (id=wdpa-fm, vector)" in note
+    # job-0325 (F54): the per-layer line now also surfaces the reusable
+    # handle (== layer_id) and the underlying uri so the model can pass the
+    # artifact straight into a tool instead of re-fetching/recomputing it.
+    assert (
+        "Flood depth (Ian) (id=flood-depth-01HX, raster, "
+        "handle=flood-depth-01HX, uri=gs://bucket/flood-depth-01HX.tif)"
+    ) in note
+    assert (
+        "Protected areas (id=wdpa-fm, vector, handle=wdpa-fm, "
+        "uri=gs://bucket/wdpa-fm.tif)"
+    ) in note
+    # The firm reuse / no-refetch instruction is appended.
+    assert "Reuse the existing handle/uri above" in note
+    assert "Do NOT re-fetch or recompute a layer" in note
 
 
 def test_layers_present_note_none_when_empty() -> None:

@@ -4409,6 +4409,156 @@ async def _handle_secret_revoke(
     await _emit_secrets_list(websocket, state)
 
 
+async def _delete_case_loaded_layer(
+    state: SessionState, layer_id: str, *, case_id: str | None = None
+) -> None:
+    """Persist a layer deletion AUTHORITATIVELY (replace, not union).
+
+    job-0325 (F53): the in-memory emitter has already dropped ``layer_id``
+    from its ``_loaded_layers``; this mirrors that onto the persisted
+    ``CaseSummary`` so the layer cannot RESURRECT on the next turn or on a
+    Case reopen.
+
+    Deliberately bypasses ``_persist_case_loaded_layers`` — that path UNIONs
+    the emitter view with ``case.loaded_layer_summaries`` (so a partial
+    emitter never clobbers the persisted set), which would re-add the deleted
+    layer from the persisted list. Here we want the opposite: REMOVE the
+    layer_id from both ``loaded_layer_summaries`` (full dicts) and
+    ``layer_summary`` (the layer_id[] projection) and write the result.
+
+    Best-effort: a Persistence failure is logged but never raised. The Case
+    lookup gates the write — a missing / tombstoned Case is silently skipped.
+
+    ``case_id`` pins the target Case explicitly; default resolves via
+    ``_turn_case_id`` (never the raw live ``active_case_id``).
+    """
+    target_case = case_id if case_id is not None else _turn_case_id(state)
+    p = get_persistence()
+    if p is None or not target_case:
+        return
+    try:
+        case = await p.get_case(target_case)
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "layer-delete-persist: get_case failed case=%s", target_case
+        )
+        return
+    if case is None:
+        logger.debug(
+            "layer-delete-persist: case=%s missing; skipping", target_case
+        )
+        return
+
+    surviving_summaries: list[dict] = [
+        dict(d)
+        for d in case.loaded_layer_summaries
+        if isinstance(d, dict) and d.get("layer_id") != layer_id
+    ]
+    surviving_ids: list[str] = [
+        d.get("layer_id")
+        for d in surviving_summaries
+        if isinstance(d.get("layer_id"), str)
+    ]
+
+    # Nothing referenced this layer_id in the persisted set — no write needed.
+    if (
+        case.loaded_layer_summaries == surviving_summaries
+        and case.layer_summary == surviving_ids
+    ):
+        return
+
+    updated = case.model_copy(
+        update={
+            "loaded_layer_summaries": surviving_summaries,
+            "layer_summary": surviving_ids,
+            "updated_at": now_utc(),
+        }
+    )
+    try:
+        await p.upsert_case(updated)
+        logger.debug(
+            "layer-delete-persist case=%s layer=%s remaining=%d",
+            target_case,
+            layer_id,
+            len(surviving_ids),
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "layer-delete-persist: upsert failed case=%s layer=%s",
+            target_case,
+            layer_id,
+        )
+
+
+async def _handle_layer_delete(
+    websocket: ServerConnection,
+    state: SessionState,
+    payload_dict: Any,
+) -> None:
+    """Process a ``layer-delete`` envelope (job-0325 F53).
+
+    Removes ``layer_id`` from the live emitter's ``loaded_layers``, emits a
+    refreshed ``session-state`` (Map.tsx replace-not-reconcile then drops the
+    overlay — no Map.tsx change), and persists the post-deletion list
+    authoritatively. The deletion propagates to the agent's loaded-layers
+    awareness because the layer is now absent from BOTH the emitter's
+    in-memory ``_loaded_layers`` (the mid-session ``build_layers_present_note``
+    source) and the persisted ``loaded_layer_summaries`` (the Case-reopen
+    note source).
+
+    The payload is loosely-shaped ``{layer_id: str}`` (read inline for
+    forward-compat). A malformed / empty ``layer_id`` surfaces a typed
+    ``TOOL_PARAMS_INVALID`` error.
+    """
+    layer_id: str | None = None
+    if isinstance(payload_dict, dict):
+        lid = payload_dict.get("layer_id")
+        if isinstance(lid, str) and lid:
+            layer_id = lid
+    if not layer_id:
+        await _send_error(
+            websocket,
+            state.session_id,
+            "TOOL_PARAMS_INVALID",
+            "layer-delete requires a non-empty string layer_id.",
+        )
+        return
+
+    # Pin the target Case the same way every persistence site does so a
+    # mid-turn Case switch never mis-aims the delete.
+    target_case = _turn_case_id(state)
+
+    _ensure_emitter(websocket, state)
+    if state.emitter is None:  # pragma: no cover — _ensure_emitter always binds
+        return
+
+    # Drop the layer from the live accumulator. reset_loaded_layers also
+    # prunes the inline-GeoJSON side-table to the surviving ids (job-0175).
+    survivors: list[dict] = [
+        layer.model_dump(mode="json")
+        for layer in state.emitter.loaded_layers
+        if layer.layer_id != layer_id
+    ]
+    state.emitter.reset_loaded_layers(survivors)
+
+    # Emit the refreshed session-state. Map.tsx removes the now-absent layer
+    # from MapLibre via replace-not-reconcile (Appendix A.7). session-state is
+    # session-scoped fan-out on the client, so every connection of this
+    # session converges on the new loaded_layers list.
+    await state.emitter.emit_session_state()
+
+    # Persist authoritatively (replace, not the union merge — see helper).
+    await _delete_case_loaded_layer(state, layer_id, case_id=target_case)
+
+    logger.info(
+        "layer-delete session=%s case=%s layer=%s survivors=%d",
+        state.session_id,
+        target_case,
+        layer_id,
+        len(survivors),
+    )
+
+
 def _make_handler(settings: GeminiSettings):
     """Build the per-connection coroutine, closing over the resolved settings."""
 
@@ -4577,6 +4727,23 @@ def _make_handler(settings: GeminiSettings):
                             payload_dict
                         )
                         await _handle_case_command(websocket, state, cmd)
+
+                    elif msg_type == "layer-delete":
+                        # job-0325 (F53): per-layer delete. The client sends
+                        # ``{layer_id}``; we drop it from the live emitter's
+                        # loaded_layers, emit a fresh session-state (Map.tsx
+                        # replace-not-reconcile removes the overlay), and
+                        # persist the post-deletion list AUTHORITATIVELY
+                        # (replace, NOT the union of _persist_case_loaded_layers
+                        # which would resurrect it). The deletion also leaves
+                        # the agent's loaded-layers awareness — both the
+                        # emitter's _loaded_layers (mid-session note source) and
+                        # the persisted loaded_layer_summaries (reopen note
+                        # source) — so build_layers_present_note stops listing
+                        # it. payload is loosely-shaped; read inline.
+                        await _handle_layer_delete(
+                            websocket, state, payload_dict
+                        )
 
                     elif msg_type == "secret-add":
                         # job-0124 (FR-AS-4 + §F.3): per-Case secret add.

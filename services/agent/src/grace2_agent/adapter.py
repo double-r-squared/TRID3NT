@@ -1000,12 +1000,16 @@ def build_layers_present_note(
 
     ``loaded_layers`` is the persisted ``CaseSessionState.loaded_layers`` —
     a list of ``ProjectLayerSummary`` ``model_dump(mode="json")`` dicts. We
-    surface only ``layer_id`` / ``name`` / ``layer_type`` per entry so the
-    model knows what is already on the map and reuses the existing layers and
-    handles instead of recomputing them. ``case_bbox`` (``CaseSummary.bbox``)
-    is appended as a durable AOI anchor so the extent survives history capping
-    (F20: follow-ups reuse the original AOI). Returns ``None`` only when there
-    is neither a layer nor a usable bbox. Kept deliberately short.
+    surface ``layer_id`` / ``name`` / ``layer_type`` per entry AND the
+    reusable ``handle`` (== the ``layer_id`` per the layer-handle indirection
+    contract) plus the underlying ``uri`` (``layer_uri``) so the model can
+    pass an already-produced layer STRAIGHT into a tool param (e.g.
+    ``compute_blended_composite`` base/overlay, or any ``*_uri`` input)
+    instead of re-fetching or recomputing it (F54). ``case_bbox``
+    (``CaseSummary.bbox``) is appended as a durable AOI anchor so the extent
+    survives history capping (F20: follow-ups reuse the original AOI).
+    Returns ``None`` only when there is neither a layer nor a usable bbox.
+    Kept deliberately short.
     """
     lines: list[str] = []
     for layer in loaded_layers or []:
@@ -1014,7 +1018,21 @@ def build_layers_present_note(
         layer_id = layer.get("layer_id") or "?"
         name = layer.get("name") or layer_id
         layer_type = layer.get("layer_type") or "?"
-        lines.append(f"- {name} (id={layer_id}, {layer_type})")
+        # F54: the layer_id IS the reusable handle (layer-handle indirection
+        # block in the system prompt); surface it explicitly as ``handle=``
+        # and append the underlying ``uri`` when present so the model can
+        # hand the existing artifact straight to a tool. Keep the line compact
+        # — drop the uri when absent rather than printing a placeholder.
+        uri = layer.get("uri")
+        if isinstance(uri, str) and uri:
+            lines.append(
+                f"- {name} (id={layer_id}, {layer_type}, "
+                f"handle={layer_id}, uri={uri})"
+            )
+        else:
+            lines.append(
+                f"- {name} (id={layer_id}, {layer_type}, handle={layer_id})"
+            )
     bbox_line = _format_aoi_bbox_line(case_bbox)
     if not lines and not bbox_line:
         return None
@@ -1024,6 +1042,10 @@ def build_layers_present_note(
             "These layers are ALREADY produced and on the map for this Case. "
             "Reuse them (and their handles) — do NOT recompute them:\n"
             + "\n".join(lines)
+            + "\nReuse the existing handle/uri above by passing it DIRECTLY "
+            "to any tool that needs this layer (e.g. as base/overlay/"
+            "raster_uri/layer handle). Do NOT re-fetch or recompute a layer "
+            "that is already listed here unless it is genuinely absent."
         )
     if bbox_line:
         segments.append(bbox_line)

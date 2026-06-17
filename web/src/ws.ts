@@ -23,6 +23,7 @@ import {
   CaseOpenEnvelopePayload,
   Envelope,
   ErrorPayload,
+  LayerDeletePayload,
   MapCommandPayload,
   PayloadConfirmationDecision,
   PayloadConfirmationEnvelopePayload,
@@ -629,6 +630,33 @@ export class GraceWs {
     };
     const env: Envelope<CaseCommandEnvelopePayload> = envelope(
       "case-command",
+      this.sessionId,
+      payload,
+    );
+    this.sendEnvelope(env);
+  }
+
+  /**
+   * Emit a `layer-delete` envelope (job-0325 F53).
+   *
+   * Sent when the user clicks the per-row delete control in the LayerPanel.
+   * The server removes the layer from the session's loaded_layers, persists
+   * the post-deletion list authoritatively (DynamoDB / Mongo-MCP — replace,
+   * NOT union), and emits a fresh `session-state` without the layer. The map
+   * removes the overlay automatically via replace-not-reconcile (Appendix A.7)
+   * and the agent's loaded-layers awareness reflects the deletion.
+   *
+   * `map-command` is server->client only, so this is a NEW client->server
+   * envelope rather than a reuse of the inbound `remove-layer` discriminant
+   * (which would overload the direction semantics).
+   */
+  sendDeleteLayer(layerId: string): void {
+    const payload: LayerDeletePayload = {
+      envelope_type: "layer-delete",
+      layer_id: layerId,
+    };
+    const env: Envelope<LayerDeletePayload> = envelope(
+      "layer-delete",
       this.sessionId,
       payload,
     );

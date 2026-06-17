@@ -618,3 +618,57 @@ describe("GraceWs — chart-emission routing (sprint-13 job-0231)", () => {
     app.close();
   });
 });
+
+// ---------------------------------------------------------------------------
+// F53 (job-0325): sendDeleteLayer emits the `layer-delete` client->server
+// envelope. `map-command` is server->client only, so the delete intent rides
+// a dedicated outbound envelope. The server removes the layer, persists, and
+// echoes a fresh session-state (which removes the map overlay via
+// replace-not-reconcile).
+// ---------------------------------------------------------------------------
+
+describe("GraceWs — sendDeleteLayer (job-0325 F53)", () => {
+  beforeEach(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (window as any).__webSockets = [];
+    __test_resetSessionHub();
+  });
+
+  it("sends a layer-delete envelope with the layer_id when the socket is open", () => {
+    const ws = new GraceWs("ws://localhost:8765", makeHandlers());
+    ws.connect();
+    const socket = lastOpenedSocket();
+    if (!socket) {
+      ws.close();
+      return;
+    }
+    // Drive the happy-dom socket to OPEN so sendEnvelope's readyState guard
+    // passes, then spy on the actual wire write.
+    Object.defineProperty(socket, "readyState", {
+      configurable: true,
+      get: () => 1, // WebSocket.OPEN
+    });
+    const sendSpy = vi.spyOn(socket, "send").mockImplementation(() => undefined);
+
+    ws.sendDeleteLayer("flood-depth-peak-01TEST");
+
+    expect(sendSpy).toHaveBeenCalledOnce();
+    const wire = JSON.parse(sendSpy.mock.calls[0][0] as string) as {
+      type: string;
+      session_id: string;
+      payload: { envelope_type?: string; layer_id?: string };
+    };
+    expect(wire.type).toBe("layer-delete");
+    expect(wire.session_id).toBe(ws.session);
+    expect(wire.payload.envelope_type).toBe("layer-delete");
+    expect(wire.payload.layer_id).toBe("flood-depth-peak-01TEST");
+
+    ws.close();
+  });
+
+  it("no-ops (no throw) when the socket is not open", () => {
+    const ws = new GraceWs("ws://localhost:8765", makeHandlers());
+    // Never connect — sendEnvelope's guard short-circuits on a null socket.
+    expect(() => ws.sendDeleteLayer("any-layer-id")).not.toThrow();
+  });
+});
