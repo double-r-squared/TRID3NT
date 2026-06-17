@@ -509,3 +509,308 @@ async def test_e2e_full_turn_replays_complete_stream(
     # created_at strictly non-decreasing — the web interleave key.
     stamps = [m.created_at for m in rows]
     assert stamps == sorted(stamps)
+
+
+# --------------------------------------------------------------------------- #
+# 7. job-0315 — narration SEGMENTS interleave with tool rows in creation order
+# --------------------------------------------------------------------------- #
+
+
+from grace2_agent.adapter import (  # noqa: E402 — grouped with the job-0315 test
+    FunctionCallEvent,
+    GeminiSettings,
+    TextDeltaEvent,
+)
+
+
+async def _drive_real_stream(ws, state, turn_events):
+    """Drive the REAL _stream_gemini_reply (via _dispatch_gemini_and_persist)
+    with a mocked ``stream_events_with_contents`` yielding ``turn_events`` —
+    a list of per-turn event lists. Uses the REAL ``_invoke_tool_via_emitter``
+    so tool-card rows persist mid-turn (the whole point of the interleave)."""
+    from unittest.mock import patch
+
+    from grace2_agent import server as agent_server
+
+    turns = iter(turn_events)
+
+    async def _fake_stream(*_args, **_kwargs):
+        for evt in next(turns):
+            yield evt
+
+    settings = GeminiSettings(
+        model="m", project="p", location="us-central1", use_vertex=True
+    )
+    with patch.object(agent_server, "build_client", return_value=object()), \
+         patch.object(agent_server, "build_tool_declarations", return_value=[]), \
+         patch.object(agent_server, "stream_events_with_contents", _fake_stream):
+        await agent_server._dispatch_gemini_and_persist(
+            ws, state, settings, "two segments two tools", "research"
+        )
+
+
+@pytest.mark.asyncio
+async def test_segment_rows_interleave_with_tool_rows(file_persistence) -> None:
+    """job-0315: text -> tool -> text -> tool -> text persists FIVE agent/tool
+    rows interleaved in creation order: [user, agent, tool, agent, tool, agent].
+    Only the LAST agent row carries the layer accumulator; segment rows carry []."""
+    # Two fresh registry tools, both allowed via record_explicit.
+    async def _t1() -> dict:
+        return {"status": "ok"}
+
+    async def _t2() -> dict:
+        return {"status": "ok"}
+
+    for nm, fn in (("job0315_tool_a", _t1), ("job0315_tool_b", _t2)):
+        meta = AtomicToolMetadata(name=nm, ttl_class="live-no-cache", cacheable=False)
+        agent_tools.TOOL_REGISTRY[nm] = RegisteredTool(metadata=meta, fn=fn, module=__name__)
+
+    try:
+        ws = FakeWS()
+        state = server.SessionState(session_id=new_ulid())
+        case_id = await _create_case(ws, state)
+        # Pin the turn's Case (mirrors _prepare_user_turn) and a layer the
+        # accumulator should attribute to the FINAL narration row only.
+        state.current_turn_case_id = case_id
+        state.current_turn_layer_ids = ["L-final"]
+        state.allowed_tool_set.add_tools(["job0315_tool_a", "job0315_tool_b"])
+        await server._persist_chat_turn(state, role="user", content="go")
+
+        # Round 1: text + call A. Round 2: text + call B. Round 3: text, no call.
+        turn_events = [
+            [TextDeltaEvent("Fetching A. "),
+             FunctionCallEvent(name="job0315_tool_a", args={}, call_id="c1")],
+            [TextDeltaEvent("Now fetching B. "),
+             FunctionCallEvent(name="job0315_tool_b", args={}, call_id="c2")],
+            [TextDeltaEvent("All done.")],
+        ]
+        await _drive_real_stream(ws, state, turn_events)
+
+        session_state = await file_persistence.get_session_state(case_id)
+        rows = session_state.chat_history
+        roles = [m.role for m in rows]
+        assert roles == ["user", "agent", "tool", "agent", "tool", "agent"], roles
+
+        # Each narration segment persisted ONLY its own contiguous run.
+        agent_rows = [m for m in rows if m.role == "agent"]
+        assert agent_rows[0].content == "Fetching A."
+        assert agent_rows[1].content == "Now fetching B."
+        assert agent_rows[2].content == "All done."
+
+        # Tool rows in dispatch order.
+        tool_rows = [m for m in rows if m.role == "tool"]
+        assert [t.tool_card.tool_name for t in tool_rows] == [
+            "job0315_tool_a", "job0315_tool_b"
+        ]
+
+        # ONLY the last (terminal) agent row carries the layer accumulator;
+        # the two non-terminal segment rows carry [].
+        assert agent_rows[0].layer_emissions == []
+        assert agent_rows[1].layer_emissions == []
+        assert agent_rows[2].layer_emissions == ["L-final"]
+
+        # created_at strictly non-decreasing — the web interleave key.
+        stamps = [m.created_at for m in rows]
+        assert stamps == sorted(stamps)
+    finally:
+        agent_tools.TOOL_REGISTRY.pop("job0315_tool_a", None)
+        agent_tools.TOOL_REGISTRY.pop("job0315_tool_b", None)
+
+
+@pytest.mark.asyncio
+async def test_narration_less_completed_turn_writes_single_marker(
+    file_persistence,
+) -> None:
+    """job-0315 edge: a completed turn with ZERO agent text + no tools still
+    writes exactly ONE marker agent row (content="") — replay row count is
+    unchanged from the pre-fix single-row contract."""
+    ws = FakeWS()
+    state = server.SessionState(session_id=new_ulid())
+    case_id = await _create_case(ws, state)
+    state.current_turn_case_id = case_id
+
+    # One turn, no text, no function calls -> clean terminal, zero segments.
+    turn_events = [[]]
+    await _drive_real_stream(ws, state, turn_events)
+
+    session_state = await file_persistence.get_session_state(case_id)
+    rows = session_state.chat_history
+    assert [m.role for m in rows] == ["agent"]
+    assert rows[0].content == ""
+
+
+@pytest.mark.asyncio
+async def test_text_only_turn_single_segment_row(file_persistence) -> None:
+    """job-0315 edge: a text-only turn (no tools) persists exactly ONE agent
+    row with the full narration — byte-identical to the pre-fix single-row."""
+    ws = FakeWS()
+    state = server.SessionState(session_id=new_ulid())
+    case_id = await _create_case(ws, state)
+    state.current_turn_case_id = case_id
+    state.current_turn_layer_ids = ["L-1"]
+
+    turn_events = [[TextDeltaEvent("Here "), TextDeltaEvent("is the answer.")]]
+    await _drive_real_stream(ws, state, turn_events)
+
+    session_state = await file_persistence.get_session_state(case_id)
+    rows = session_state.chat_history
+    assert [m.role for m in rows] == ["agent"]
+    assert rows[0].content == "Here is the answer."
+    # Terminal segment carries the accumulator (job-0259/0281).
+    assert rows[0].layer_emissions == ["L-1"]
+
+
+def _extract_last_zoom_to(rows):
+    """Python mirror of web ``extractLastZoomTo`` (case_zoom.ts): walk rows
+    newest-first, each row's ``map_command_emissions`` last-entry-first, and
+    return the first ``zoom-to`` carrying a bbox. This is exactly what the
+    Case-reopen camera snap (job-0280) runs over the rehydrated chat history,
+    so a green here proves the snap survives a tool-terminal turn."""
+    for msg in reversed(rows):
+        emissions = msg.map_command_emissions or []
+        for cmd in reversed(emissions):
+            if isinstance(cmd, dict) and cmd.get("command") == "zoom-to":
+                args = cmd.get("args") if isinstance(cmd.get("args"), dict) else {}
+                if isinstance(args.get("bbox"), list):
+                    return cmd
+    return None
+
+
+@pytest.mark.asyncio
+async def test_tool_terminal_turn_persists_zoom_to_accumulator(
+    file_persistence,
+) -> None:
+    """job-0315 CONTRACT REGRESSION (panel blocker): a turn whose FINAL
+    generation round ends in tool calls with NO trailing narration (the
+    COMMON flood/publish shape — e.g. ...-> publish_layer is the last call)
+    must STILL persist a chat row carrying the turn's zoom-to / layer
+    accumulator, so the web ``extractLastZoomTo(chat_history)`` snaps the
+    Case-reopen camera to the AOI (job-0259/0280/0281).
+
+    Pre-fix: the in-loop terminal finalize only fires when the turn ends in
+    narration (``current_message_id is not None``); a tool-terminal turn left
+    NO row carrying ``layer_emissions`` / ``map_command_emissions``, so the
+    snap found nothing and the camera never moved.
+    """
+
+    async def _publishish() -> dict:
+        return {"status": "ok"}
+
+    meta = AtomicToolMetadata(
+        name="job0315_pub", ttl_class="live-no-cache", cacheable=False
+    )
+    agent_tools.TOOL_REGISTRY["job0315_pub"] = RegisteredTool(
+        metadata=meta, fn=_publishish, module=__name__
+    )
+    try:
+        ws = FakeWS()
+        state = server.SessionState(session_id=new_ulid())
+        case_id = await _create_case(ws, state)
+        state.current_turn_case_id = case_id
+        state.allowed_tool_set.add_tools(["job0315_pub"])
+        await server._persist_chat_turn(state, role="user", content="flood it")
+
+        # The turn accumulated a geocode zoom-to (job-0281) + a published layer
+        # (job-0259) earlier; then its FINAL round emits text + a tool call and
+        # ENDS — no trailing narration after the tool round (current_message_id
+        # is None at close, so the in-loop terminal finalize does NOT fire).
+        zoom_bbox = [-82.0, 26.5, -81.7, 26.8]
+        state.current_turn_map_commands = [
+            {"command": "zoom-to", "args": {"bbox": list(zoom_bbox)}}
+        ]
+        state.current_turn_layer_ids = ["flood-depth-L1"]
+
+        turn_events = [
+            [
+                TextDeltaEvent("Publishing the flood layer. "),
+                FunctionCallEvent(name="job0315_pub", args={}, call_id="c1"),
+            ],
+            # Final round: a tool call with NO trailing text -> tool-terminal.
+            [FunctionCallEvent(name="job0315_pub", args={}, call_id="c2")],
+        ]
+        await _drive_real_stream(ws, state, turn_events)
+
+        session_state = await file_persistence.get_session_state(case_id)
+        rows = session_state.chat_history
+        roles = [m.role for m in rows]
+        # Interleave is intact: the one narration segment + two tool rows, plus
+        # the closing accumulator-bearing marker row. No re-bunching.
+        assert roles == ["user", "agent", "tool", "tool", "agent"], roles
+
+        # The first agent row is the real narration segment; it must NOT carry
+        # the accumulator (it is non-terminal) — no re-bunching regression.
+        narration_rows = [
+            m for m in rows if m.role == "agent" and m.content
+        ]
+        assert len(narration_rows) == 1
+        assert narration_rows[0].content == "Publishing the flood layer."
+        assert narration_rows[0].layer_emissions == []
+        assert narration_rows[0].map_command_emissions == []
+
+        # The closing marker row is empty text (no phantom bubble on replay)
+        # but CARRIES the layer + zoom-to accumulator (the whole fix).
+        marker = rows[-1]
+        assert marker.role == "agent"
+        assert marker.content == ""
+        assert marker.layer_emissions == ["flood-depth-L1"]
+        assert _extract_last_zoom_to(rows) == {
+            "command": "zoom-to",
+            "args": {"bbox": list(zoom_bbox)},
+        }
+
+        # created_at strictly non-decreasing — the web interleave key.
+        stamps = [m.created_at for m in rows]
+        assert stamps == sorted(stamps)
+    finally:
+        agent_tools.TOOL_REGISTRY.pop("job0315_pub", None)
+
+
+@pytest.mark.asyncio
+async def test_tool_terminal_turn_without_accumulator_writes_no_phantom(
+    file_persistence,
+) -> None:
+    """job-0315 guard: a tool-terminal turn that emitted NO zoom-to AND NO
+    layer accumulator AND no trailing narration must write NOTHING extra —
+    the contract fix must not resurrect phantom empty bubbles for turns that
+    carry no accumulator and no text."""
+
+    async def _noop() -> dict:
+        return {"status": "ok"}
+
+    meta = AtomicToolMetadata(
+        name="job0315_noop", ttl_class="live-no-cache", cacheable=False
+    )
+    agent_tools.TOOL_REGISTRY["job0315_noop"] = RegisteredTool(
+        metadata=meta, fn=_noop, module=__name__
+    )
+    try:
+        ws = FakeWS()
+        state = server.SessionState(session_id=new_ulid())
+        case_id = await _create_case(ws, state)
+        state.current_turn_case_id = case_id
+        state.allowed_tool_set.add_tools(["job0315_noop"])
+        await server._persist_chat_turn(state, role="user", content="just check")
+        # No accumulator populated this turn.
+        assert not state.current_turn_layer_ids
+        assert not state.current_turn_map_commands
+
+        turn_events = [
+            [
+                TextDeltaEvent("Checking. "),
+                FunctionCallEvent(name="job0315_noop", args={}, call_id="c1"),
+            ],
+            # Final round: tool call, no trailing narration, no accumulator.
+            [FunctionCallEvent(name="job0315_noop", args={}, call_id="c2")],
+        ]
+        await _drive_real_stream(ws, state, turn_events)
+
+        session_state = await file_persistence.get_session_state(case_id)
+        rows = session_state.chat_history
+        # user, the one narration segment, two tool rows — NO closing marker.
+        assert [m.role for m in rows] == ["user", "agent", "tool", "tool"], [
+            m.role for m in rows
+        ]
+        # No phantom empty agent bubble appended.
+        assert rows[-1].role == "tool"
+    finally:
+        agent_tools.TOOL_REGISTRY.pop("job0315_noop", None)

@@ -539,3 +539,287 @@ async def test_stream_gemini_reply_caps_runaway_loop():
     assert dispatch_count == MAX_TURN_ITERATIONS, (
         f"runaway not capped: {dispatch_count} dispatches vs cap {MAX_TURN_ITERATIONS}"
     )
+
+
+# ---------------------------------------------------------------------------
+# job-0315: live-wire narration-segment interleave (one bubble per contiguous
+# run of agent text between tool-call rounds).
+# ---------------------------------------------------------------------------
+
+
+def _make_fake_chunk_multi_call(calls):
+    """A single chunk carrying N function_call parts (multiple calls one round)."""
+    parts = []
+    for name, args, call_id in calls:
+        fn_call = MagicMock()
+        fn_call.name = name
+        fn_call.id = call_id
+        fn_call.args = args
+        p = MagicMock()
+        p.function_call = fn_call
+        p.text = None
+        parts.append(p)
+    fake_content = MagicMock()
+    fake_content.parts = parts
+    fake_candidate = MagicMock()
+    fake_candidate.content = fake_content
+    fake_chunk = MagicMock()
+    fake_chunk.candidates = [fake_candidate]
+    fake_chunk.text = None
+    return fake_chunk
+
+
+def _agent_chunks(sock):
+    """Decode every agent-message-chunk envelope in wire order."""
+    return [
+        json.loads(m) for m in sock.sent if "agent-message-chunk" in m
+    ]
+
+
+def _segment_ids_in_order(sock):
+    """The message_ids of agent-message-chunk frames, first-seen in wire order."""
+    seen: list[str] = []
+    for c in _agent_chunks(sock):
+        mid = c["payload"]["message_id"]
+        if mid not in seen:
+            seen.append(mid)
+    return seen
+
+
+@pytest.mark.asyncio
+async def test_stream_segments_interleave_distinct_message_ids():
+    """text -> tool -> text -> tool -> text emits THREE distinct bubble ids, each
+    non-terminal segment finalized (done=True) BEFORE its round's tool frames,
+    and no id ever receives an empty-only done=True without prior text."""
+    from grace2_agent import server as agent_server
+    from grace2_agent.server import SessionState
+
+    # Round 1: narrate then call geocode. Round 2: narrate then call publish.
+    # Round 3: narrate, no call (terminal).
+    turn1 = iter([
+        _make_fake_chunk_with_text("Fetching... "),
+        _make_fake_chunk_with_function_call(
+            "geocode_location", {"query": "Fort Myers, FL"}, "call-geo"
+        ),
+    ])
+    turn2 = iter([
+        _make_fake_chunk_with_text("Now publishing... "),
+        _make_fake_chunk_with_function_call(
+            "publish_layer", {"layer_uri": "h-1", "layer_id": "L"}, "call-pub"
+        ),
+    ])
+    turn3 = iter([_make_fake_chunk_with_text("Done.")])
+    turn_iter = iter([turn1, turn2, turn3])
+
+    fake_client = MagicMock()
+    fake_client.models.generate_content_stream.side_effect = lambda **_: next(turn_iter)
+
+    # Record the wire length at each dispatch moment so we can prove the tool
+    # dispatch lands BETWEEN the surrounding bubbles' frames (the emitter that
+    # would emit a real pipeline-state tool card is mocked out here, so we use
+    # the dispatch's wire position as the interleave witness).
+    dispatch_at_wire_len: list[int] = []
+
+    async def _fake_invoke(_ws, _state, name, args):
+        dispatch_at_wire_len.append(len(sock.sent))
+        if name == "geocode_location":
+            return {"bbox": [-82.0, 26.5, -81.7, 26.8]}
+        return {"ok": True}
+
+    sock = _FakeSocket()
+    state = SessionState(session_id=new_ulid())
+    settings = GeminiSettings(
+        model="gemini-2.5-pro", project="t", location="us-central1", use_vertex=True
+    )
+
+    with patch.object(agent_server, "build_client", return_value=fake_client), \
+         patch.object(agent_server, "_invoke_tool_via_emitter", side_effect=_fake_invoke), \
+         patch.object(agent_server, "build_tool_declarations", return_value=[]):
+        await agent_server._stream_gemini_reply(
+            sock, state, settings, "Show me Fort Myers protected areas", "research"
+        )
+
+    seg_ids = _segment_ids_in_order(sock)
+    assert len(seg_ids) == 3, f"expected 3 distinct bubble ids, got {seg_ids}"
+
+    # Each id received >=1 text delta BEFORE its done=True.
+    chunks = _agent_chunks(sock)
+    for mid in seg_ids:
+        frames = [c["payload"] for c in chunks if c["payload"]["message_id"] == mid]
+        text_frames = [f for f in frames if f.get("delta") and not f.get("done")]
+        done_frames = [f for f in frames if f.get("done")]
+        assert text_frames, f"segment {mid} had no text before done=True"
+        assert len(done_frames) == 1, f"segment {mid} done=True count != 1"
+
+    # Wire ordering: each NON-terminal segment's done=True precedes the
+    # following round's pipeline-state/tool frames. We assert the first two
+    # segments are finalized before the final 'Done.' segment opens, and the
+    # tool dispatch frames fall between consecutive bubbles. Concretely:
+    # the done=True of seg0 must appear in the wire BEFORE the first text
+    # delta of seg1, with a pipeline-state (tool card) frame in between.
+    wire = sock.sent
+
+    def _done_index(mid):
+        for i, m in enumerate(wire):
+            if "agent-message-chunk" not in m:
+                continue
+            p = json.loads(m)["payload"]
+            if p["message_id"] == mid and p.get("done"):
+                return i
+        return -1
+
+    def _first_text_index(mid):
+        for i, m in enumerate(wire):
+            if "agent-message-chunk" not in m:
+                continue
+            p = json.loads(m)["payload"]
+            if p["message_id"] == mid and p.get("delta") and not p.get("done"):
+                return i
+        return -1
+
+    # seg0 done < first tool dispatch < seg1 first text. The first dispatch
+    # (geocode) happened at wire length dispatch_at_wire_len[0]: every frame
+    # before that index was already on the wire, so the dispatch sits strictly
+    # AFTER seg0's done=True and strictly BEFORE seg1's first text.
+    seg0_done = _done_index(seg_ids[0])
+    seg1_text = _first_text_index(seg_ids[1])
+    assert 0 <= seg0_done < seg1_text, "seg0 not finalized before seg1 opened"
+    first_dispatch_pos = dispatch_at_wire_len[0]
+    assert seg0_done < first_dispatch_pos <= seg1_text, (
+        "tool dispatch did not interleave between seg0(done) and seg1(text)"
+    )
+    # And the LAST (terminal) segment carries a done=True too.
+    assert _done_index(seg_ids[2]) > seg1_text
+
+
+@pytest.mark.asyncio
+async def test_stream_no_leading_text_before_first_tool_no_empty_bubble():
+    """Round 1 = function_call ONLY (no text), round 2 = text. Exactly ONE
+    message_id appears across all agent frames (the tool round mints nothing),
+    and it carries exactly one done=True."""
+    from grace2_agent import server as agent_server
+    from grace2_agent.server import SessionState
+
+    turn1 = iter([
+        _make_fake_chunk_with_function_call(
+            "geocode_location", {"query": "x"}, "call-geo"
+        ),
+    ])
+    turn2 = iter([_make_fake_chunk_with_text("Here it is.")])
+    turn_iter = iter([turn1, turn2])
+
+    fake_client = MagicMock()
+    fake_client.models.generate_content_stream.side_effect = lambda **_: next(turn_iter)
+
+    async def _fake_invoke(_ws, _state, name, args):
+        return {"bbox": [0, 0, 1, 1]}
+
+    sock = _FakeSocket()
+    state = SessionState(session_id=new_ulid())
+    settings = GeminiSettings(
+        model="gemini-2.5-pro", project="t", location="us-central1", use_vertex=True
+    )
+
+    with patch.object(agent_server, "build_client", return_value=fake_client), \
+         patch.object(agent_server, "_invoke_tool_via_emitter", side_effect=_fake_invoke), \
+         patch.object(agent_server, "build_tool_declarations", return_value=[]):
+        await agent_server._stream_gemini_reply(
+            sock, state, settings, "x", "research"
+        )
+
+    seg_ids = _segment_ids_in_order(sock)
+    assert len(seg_ids) == 1, f"expected exactly 1 bubble, got {seg_ids}"
+    done_frames = [
+        c for c in _agent_chunks(sock) if c["payload"].get("done")
+    ]
+    assert len(done_frames) == 1
+    # No empty-only done=True for an id that never got text: the single id DID
+    # get text ("Here it is."), so this is correct by construction.
+    assert done_frames[0]["payload"]["message_id"] == seg_ids[0]
+
+
+@pytest.mark.asyncio
+async def test_stream_multiple_calls_one_round_single_finalize():
+    """Round 1 = text + TWO function_calls in ONE generation, round 2 = text.
+    Exactly TWO distinct bubbles (one contiguous run each), one done=True per
+    id, and BOTH tool dispatches occur between the two bubbles' frames."""
+    from grace2_agent import server as agent_server
+    from grace2_agent.server import SessionState
+
+    turn1 = iter([
+        _make_fake_chunk_with_text("Fetching both. "),
+        _make_fake_chunk_multi_call([
+            ("geocode_location", {"query": "a"}, "c1"),
+            ("geocode_location", {"query": "b"}, "c2"),
+        ]),
+    ])
+    turn2 = iter([_make_fake_chunk_with_text("Both done.")])
+    turn_iter = iter([turn1, turn2])
+
+    fake_client = MagicMock()
+    fake_client.models.generate_content_stream.side_effect = lambda **_: next(turn_iter)
+
+    dispatch_log: list[str] = []
+    dispatch_at_wire_len: list[int] = []
+
+    async def _fake_invoke(_ws, _state, name, args):
+        dispatch_log.append(name)
+        dispatch_at_wire_len.append(len(sock.sent))
+        return {"bbox": [0, 0, 1, 1]}
+
+    sock = _FakeSocket()
+    state = SessionState(session_id=new_ulid())
+    settings = GeminiSettings(
+        model="gemini-2.5-pro", project="t", location="us-central1", use_vertex=True
+    )
+
+    with patch.object(agent_server, "build_client", return_value=fake_client), \
+         patch.object(agent_server, "_invoke_tool_via_emitter", side_effect=_fake_invoke), \
+         patch.object(agent_server, "build_tool_declarations", return_value=[]):
+        await agent_server._stream_gemini_reply(
+            sock, state, settings, "x", "research"
+        )
+
+    # Both calls dispatched in the single round.
+    assert dispatch_log == ["geocode_location", "geocode_location"]
+
+    seg_ids = _segment_ids_in_order(sock)
+    assert len(seg_ids) == 2, f"expected 2 bubbles (one per run), got {seg_ids}"
+    chunks = _agent_chunks(sock)
+    for mid in seg_ids:
+        done_frames = [
+            c for c in chunks
+            if c["payload"]["message_id"] == mid and c["payload"].get("done")
+        ]
+        assert len(done_frames) == 1, f"segment {mid} done=True count != 1"
+
+    # Both pipeline-state(tool) dispatches fall between the two bubbles: after
+    # seg0's done=True and before seg1's first text.
+    wire = sock.sent
+
+    def _done_index(mid):
+        for i, m in enumerate(wire):
+            if "agent-message-chunk" not in m:
+                continue
+            p = json.loads(m)["payload"]
+            if p["message_id"] == mid and p.get("done"):
+                return i
+        return -1
+
+    def _first_text_index(mid):
+        for i, m in enumerate(wire):
+            if "agent-message-chunk" not in m:
+                continue
+            p = json.loads(m)["payload"]
+            if p["message_id"] == mid and p.get("delta") and not p.get("done"):
+                return i
+        return -1
+
+    seg0_done = _done_index(seg_ids[0])
+    seg1_text = _first_text_index(seg_ids[1])
+    assert 0 <= seg0_done < seg1_text
+    # Both dispatches happened after seg0's done=True and before seg1's text:
+    # the single finalize fired ONCE before the whole round dispatched.
+    assert all(
+        seg0_done < pos <= seg1_text for pos in dispatch_at_wire_len
+    ), "tool dispatches not interleaved between the two bubbles"

@@ -517,6 +517,45 @@ _TURN_NARRATION_BY_TASK: "weakref.WeakKeyDictionary[asyncio.Task, list[str]]" = 
     weakref.WeakKeyDictionary()
 )
 
+#: job-0315: per-task OPEN-segment registry. ``_stream_gemini_reply`` registers
+#: the list backing the CURRENTLY OPEN narration segment (the bubble that has
+#: received text but not yet been finalized). On each finalize the in-loop code
+#: ``.clear()``s this same list object (never rebinds it) so the wrapper always
+#: reads the live open buffer. ``_dispatch_gemini_and_persist`` pops it in its
+#: finally and persists the un-finalized remainder as the tail row — exactly the
+#: narration NO ``_finalize_segment`` ever wrote (crash/cancel mid-segment), so
+#: no narration is lost and finalized segments are never double-persisted.
+_TURN_OPEN_SEGMENT_BY_TASK: "weakref.WeakKeyDictionary[asyncio.Task, list[str]]" = (
+    weakref.WeakKeyDictionary()
+)
+
+#: job-0315: per-task count of narration SEGMENTS finalized+persisted this turn.
+#: ``_finalize_segment`` increments it only when it actually writes a non-empty
+#: ``role="agent"`` row. The wrapper's finally reads it to decide whether the
+#: legacy single marker row (narration-less completed turn / pre-fix one-row
+#: contract) still needs writing (segments_done == 0) or whether the per-segment
+#: rows already carried the narration (segments_done > 0 -> skip the marker).
+_TURN_SEGMENTS_PERSISTED_BY_TASK: "weakref.WeakKeyDictionary[asyncio.Task, int]" = (
+    weakref.WeakKeyDictionary()
+)
+
+#: job-0315 (contract fix): per-task flag set True ONLY when a row that
+#: snapshotted the turn's zoom-to/layer accumulator was actually persisted —
+#: i.e. the in-loop TERMINAL ``_finalize_segment`` wrote a non-empty
+#: ``role="agent"`` row (``is_terminal=True`` -> ``layer_emissions=None`` ->
+#: ``_persist_chat_turn`` snapshots ``current_turn_layer_ids`` +
+#: ``current_turn_map_commands``). The wrapper's finally reads it to decide
+#: whether a tool-terminal turn (final round ended in tool calls with NO
+#: trailing narration -> no terminal finalize fired -> accumulator orphaned)
+#: still needs a closing accumulator-bearing marker row so the Case-reopen
+#: zoom-snap (job-0280/0281 web ``extractLastZoomTo``) + job-0259 layer
+#: attribution survive. NOT set when the terminal segment was empty/whitespace
+#: (``_finalize_segment`` skips the row) — that turn's accumulator is likewise
+#: unwritten and the marker is needed.
+_TURN_TERMINAL_ACC_PERSISTED_BY_TASK: "weakref.WeakKeyDictionary[asyncio.Task, bool]" = (
+    weakref.WeakKeyDictionary()
+)
+
 
 def _set_session_active_case(session_id: str, case_id: str | None) -> None:
     """Bind ``case_id`` as the active Case for every connection of ``session_id``."""
@@ -939,7 +978,15 @@ async def _stream_gemini_reply(
         user_text[:80],
     )
 
-    message_id = new_ulid()
+    # job-0315: one bubble per CONTIGUOUS narration run. A fresh message_id is
+    # minted lazily the FIRST time text arrives in a segment (A2); finalized
+    # (done=True + per-segment persist) when the next function-call round is
+    # about to dispatch (A3); a brand-new segment opens for the next text after
+    # that round. ``None`` => no open segment (the "no leading text before the
+    # first tool call -> no empty bubble" edge falls out for free). Do NOT
+    # pre-mint — the first segment's id is minted on first text exactly like
+    # every later segment.
+    current_message_id: str | None = None
     pipeline_id = new_ulid()
     step_id = new_ulid()
     state.current_pipeline_id = pipeline_id
@@ -956,9 +1003,21 @@ async def _stream_gemini_reply(
     state.current_turn_narration = []
     turn_narration = state.current_turn_narration
     turn_history = state.chat_history
+    # job-0315: per-segment buffer for the CURRENTLY OPEN bubble only (reset by
+    # _finalize_segment via .clear() at each boundary — same list object stays
+    # registered). Captured in the synchronous prefix and registered under the
+    # running task so a crash/cancel mid-segment lets the wrapper's finally
+    # persist the un-finalized tail. Counter init at 0 so the wrapper's
+    # ``segments_done`` read is well-defined even on instant death.
+    _segment_buf: list[str] = []
     _reg_task = asyncio.current_task()
     if _reg_task is not None:
         _TURN_NARRATION_BY_TASK[_reg_task] = turn_narration
+        _TURN_OPEN_SEGMENT_BY_TASK[_reg_task] = _segment_buf
+        _TURN_SEGMENTS_PERSISTED_BY_TASK[_reg_task] = 0
+        # job-0315 contract fix: False until the terminal finalize actually
+        # snapshots the accumulator onto a persisted row (see registry doc).
+        _TURN_TERMINAL_ACC_PERSISTED_BY_TASK[_reg_task] = False
 
     # Emit a one-step "thinking" pipeline snapshot so the client has a
     # cancellable handle. The loop driver keeps this single outer step; each
@@ -1069,8 +1128,11 @@ async def _stream_gemini_reply(
                     )
 
                 if isinstance(event, TextDeltaEvent):
+                    # job-0315: open a NEW bubble on the first text of a segment.
+                    if current_message_id is None:
+                        current_message_id = new_ulid()
                     chunk = AgentMessageChunkPayload(
-                        message_id=message_id, delta=event.delta, done=False
+                        message_id=current_message_id, delta=event.delta, done=False
                     )
                     await websocket.send(
                         _new_envelope("agent-message-chunk", state.session_id, chunk)
@@ -1080,6 +1142,11 @@ async def _stream_gemini_reply(
                     # close persists the full narration for Case replay.
                     # job-0269: entry-captured list, never the live field.
                     turn_narration.append(event.delta)
+                    # job-0315: also feed the OPEN-segment buffer so the
+                    # boundary finalize (A3 / A4) persists exactly this run's
+                    # text, and a crash leaves the un-finalized tail for the
+                    # wrapper. Same registered list object — never rebound.
+                    _segment_buf.append(event.delta)
 
                 elif isinstance(event, FunctionCallEvent):
                     logger.info(
@@ -1130,6 +1197,22 @@ async def _stream_gemini_reply(
                     len(turn_text_parts),
                 )
                 break
+
+            # job-0315: a function-call round is about to dispatch — close the
+            # current narration bubble (if any text was emitted) BEFORE the
+            # tool cards for this round land on the wire / in the chat store, so
+            # the next run of text AFTER the tools opens a fresh bubble that
+            # interleaves AFTER them (its own message_id -> its own client
+            # arrivalSeq -> sorts between the surrounding tool stepOrder seqs).
+            # Fires ONCE per round, before ALL calls dispatch, so multiple
+            # function calls in one generation round close exactly one prior
+            # bubble (not one per call). ``_finalize_segment`` sends the
+            # done=True frame AND persists this segment's own role="agent" row.
+            if current_message_id is not None:
+                await _finalize_segment(
+                    websocket, state, current_message_id, _segment_buf
+                )
+                current_message_id = None  # next text opens a fresh segment
 
             # Otherwise: dispatch each call, then append the call + summarized
             # response back into contents so the next Gemini turn sees them.
@@ -1369,10 +1452,42 @@ async def _stream_gemini_reply(
                 state.session_id,
             )
             await _send_loop_exhausted(websocket, state.session_id)
+            # job-0315: the runaway loop ALWAYS exits with the last round in a
+            # tool dispatch (it never emits trailing narration), so
+            # ``current_message_id is None`` and the segment finalize below
+            # no-ops. The client still waits for a stream-closing done=True to
+            # stop spinning, so emit a standalone terminator with a fresh id —
+            # this preserves the pre-fix contract where the unconditional
+            # terminal frame closed the stream on the cap-hit path too. The
+            # web ``appendDelta`` renders this empty closing frame as a no-op
+            # bubble next to the loop_exhausted error card.
+            if current_message_id is None:
+                await websocket.send(
+                    _new_envelope(
+                        "agent-message-chunk",
+                        state.session_id,
+                        AgentMessageChunkPayload(
+                            message_id=new_ulid(), delta="", done=True
+                        ),
+                    )
+                )
 
-        # Terminal frame for the message stream.
-        terminal = AgentMessageChunkPayload(message_id=message_id, delta="", done=True)
-        await websocket.send(_new_envelope("agent-message-chunk", state.session_id, terminal))
+        # job-0315: terminal frame for the FINAL narration segment. Only fire
+        # if a segment is actually open (text was emitted after the last tool
+        # round). A turn whose final round ended in tool calls with NO trailing
+        # narration, or a turn with zero text, has ``current_message_id is None``
+        # — so no phantom empty bubble + no phantom empty agent row. This is the
+        # de-facto closing row, so ``is_terminal=True`` lets it snapshot the
+        # turn's layer/zoom accumulator (job-0259/0281 attribution).
+        if current_message_id is not None:
+            await _finalize_segment(
+                websocket,
+                state,
+                current_message_id,
+                _segment_buf,
+                is_terminal=True,
+            )
+            current_message_id = None
 
         # Complete the outer pipeline snapshot (LLM generation phase).
         thinking_step = PipelineStep(
@@ -1399,7 +1514,12 @@ async def _stream_gemini_reply(
             await _emit_case_list(websocket, state)
 
     except asyncio.CancelledError:
-        # Invariant 8 — distinct cancelled step state, not failed.
+        # Invariant 8 — distinct cancelled step state, not failed. job-0315: a
+        # partially-open narration segment's done=True is intentionally NOT
+        # sent here (a cancelled stream has no clean terminal). The job-0267
+        # ``current_turn_narration`` still holds the partial text and the
+        # dispatch wrapper's finally persists the un-finalized open-segment tail
+        # best-effort (one row), so no narration is lost.
         cancelled_step = PipelineStep(
             step_id=step_id,
             name="llm_generation",
@@ -2411,6 +2531,80 @@ def _turn_case_id(state: SessionState) -> str | None:
     in-flight writes at the newly selected Case (job-0267 verifier).
     """
     return state.current_turn_case_id or state.active_case_id
+
+
+async def _finalize_segment(
+    websocket: ServerConnection,
+    state: SessionState,
+    message_id: str,
+    segment_parts: list[str],
+    *,
+    is_terminal: bool = False,
+) -> None:
+    """job-0315: close ONE narration bubble + persist it as its own agent row.
+
+    Each contiguous run of agent text between tool-call rounds is a SEGMENT.
+    Closing a segment does two things at the boundary "agent text is about to
+    be interrupted by tool cards (or the turn is ending)":
+
+    (1) Send the terminal ``done=True`` ``agent-message-chunk`` for THIS
+        bubble's ``message_id`` so the live client marks the bubble complete
+        (web ``appendDelta`` sets ``done``). This MUST only fire for an id
+        that already received text — the caller guarantees that by only
+        calling here when ``current_message_id is not None``.
+    (2) Persist a ``role="agent"`` ``CaseChatMessage`` carrying ONLY this
+        segment's text, so the persisted row order interleaves with the
+        mid-turn tool rows (``_persist_tool_card``) and the replay
+        reconstructs the live interleaved train. An empty segment persists
+        NOTHING (no phantom bubble on replay; no row-count regression).
+
+    ``layer_emissions``: non-terminal segments pass ``[]`` so they do NOT each
+    duplicate the whole-turn ``current_turn_layer_ids`` / ``current_turn_map_commands``
+    accumulators. The TERMINAL segment (``is_terminal=True`` — the final
+    narration run of the turn) passes ``None`` so ``_persist_chat_turn``
+    snapshots the accumulators onto it, keeping job-0259 layer attribution +
+    job-0281 zoom-to on the de-facto closing row.
+
+    Best-effort persist (inherits ``_persist_chat_turn``'s swallow); the wire
+    ``done=True`` still fires even if persistence is unbound. Clears the
+    segment buffer and bumps the per-task finalized-count on a non-empty write.
+    """
+    text = "".join(segment_parts).strip()
+    # (1) wire terminal for this bubble — always fires (id has text).
+    await websocket.send(
+        _new_envelope(
+            "agent-message-chunk",
+            state.session_id,
+            AgentMessageChunkPayload(message_id=message_id, delta="", done=True),
+        )
+    )
+    # (2) per-segment persist — only when there is real text.
+    if text:
+        await _persist_chat_turn(
+            state,
+            role="agent",
+            content=text,
+            pipeline_id=state.current_turn_pipeline_id,
+            # Terminal segment owns the layer/zoom attribution; non-terminal
+            # segments carry none (the accumulator rides the last row only).
+            layer_emissions=None if is_terminal else [],
+            case_id=_turn_case_id(state),
+        )
+        _task = asyncio.current_task()
+        if _task is not None:
+            _TURN_SEGMENTS_PERSISTED_BY_TASK[_task] = (
+                _TURN_SEGMENTS_PERSISTED_BY_TASK.get(_task, 0) + 1
+            )
+            # job-0315 contract fix: a TERMINAL non-empty segment row just
+            # snapshotted the turn's zoom-to/layer accumulator
+            # (``layer_emissions=None`` above). Record that so the wrapper's
+            # finally does NOT also write a duplicate closing marker row — the
+            # marker is ONLY for the tool-terminal shape where this never fires.
+            if is_terminal:
+                _TURN_TERMINAL_ACC_PERSISTED_BY_TASK[_task] = True
+    # The open buffer is now closed: clear the SAME list object (do not rebind)
+    # so the task-registered open buffer the wrapper reads is always current.
+    segment_parts.clear()
 
 
 async def _persist_chat_turn(
@@ -3859,29 +4053,116 @@ async def _dispatch_gemini_and_persist(
             websocket, state, settings, user_text, research_mode
         )
     finally:
-        # job-0267: join the per-turn narration accumulator. Persist when
-        # the agent actually said something OR the stream completed cleanly
-        # (the turn's history grew at the terminal-frame append) — the
-        # latter preserves the pre-existing "turn happened" marker for
-        # narration-less turns, so the replay row count stays faithful.
+        # job-0267 / job-0315: close out the turn's narration persistence.
+        # With job-0315 each FINALIZED narration segment is already persisted
+        # in-loop by ``_finalize_segment`` (interleaved with the mid-turn tool
+        # rows). This wrapper must therefore NOT re-persist finalized segments —
+        # it only owns the un-finalized remainder + the legacy fallbacks:
+        #
+        #   * ``open_tail``     — text in a segment the stream NEVER finalized
+        #                         (crash/cancel mid-segment). Persist it as ONE
+        #                         agent row so no narration is lost; it is the
+        #                         de-facto terminal row, so layer_emissions=None
+        #                         lets it carry the layer/zoom accumulator.
+        #   * ``segments_done`` — count of finalized agent rows this turn. When
+        #                         it is 0 AND the stream completed cleanly with
+        #                         no open tail, write the legacy single marker
+        #                         row (content == joined narration, possibly "")
+        #                         — preserving the narration-LESS completed-turn
+        #                         row count and the pre-fix one-row contract.
+        #
+        # All three per-task registries are popped (mocked-stream tests that
+        # never registered fall back to the live field, preserving job-0267).
         _own_task = asyncio.current_task()
-        turn_narration = (
-            _TURN_NARRATION_BY_TASK.pop(_own_task, None)
-            if _own_task is not None
-            else None
-        )
+        if _own_task is not None:
+            turn_narration = _TURN_NARRATION_BY_TASK.pop(_own_task, None)
+            open_segment = _TURN_OPEN_SEGMENT_BY_TASK.pop(_own_task, None)
+            segments_done = _TURN_SEGMENTS_PERSISTED_BY_TASK.pop(_own_task, 0)
+            terminal_acc_persisted = _TURN_TERMINAL_ACC_PERSISTED_BY_TASK.pop(
+                _own_task, False
+            )
+        else:
+            turn_narration = None
+            open_segment = None
+            segments_done = 0
+            terminal_acc_persisted = False
         if turn_narration is None:
             turn_narration = state.current_turn_narration
         narration = "".join(turn_narration).strip()
+        open_tail = "".join(open_segment or []).strip()
         stream_completed = len(turn_history) > pre_chat_len
-        if turn_case_id and (narration or stream_completed):
-            await _persist_chat_turn(
-                state,
-                role="agent",
-                content=narration,
-                pipeline_id=state.current_turn_pipeline_id,
-                case_id=turn_case_id,
-            )
+        if turn_case_id:
+            if open_tail:
+                # Crash/cancel left an un-finalized open segment carrying text
+                # (its done=True never fired). Persist the tail so the partial
+                # narration survives; as the de-facto terminal row it also
+                # captures the turn's layer/zoom accumulator (layer_emissions
+                # default None). No double-persist: finalized segments already
+                # cleared their buffer, so this is ONLY the un-finalized text.
+                await _persist_chat_turn(
+                    state,
+                    role="agent",
+                    content=open_tail,
+                    pipeline_id=state.current_turn_pipeline_id,
+                    case_id=turn_case_id,
+                )
+            elif segments_done == 0 and (narration or stream_completed):
+                # No segment was finalized AND no open tail: either a clean
+                # narration-LESS completed turn (content="" marker — replay row
+                # count unchanged from pre-fix), or a mocked-stream test that
+                # populated only ``current_turn_narration`` (legacy one-row
+                # contract). Mirror the pre-job-0315 single-row write exactly.
+                await _persist_chat_turn(
+                    state,
+                    role="agent",
+                    content=narration,
+                    pipeline_id=state.current_turn_pipeline_id,
+                    case_id=turn_case_id,
+                )
+            elif (
+                not terminal_acc_persisted
+                and (state.current_turn_map_commands or state.current_turn_layer_ids)
+            ):
+                # job-0315 contract fix: segments_done > 0 (interleaved rows
+                # already persisted) and no open tail, BUT the turn's FINAL
+                # generation round ended in tool calls with NO trailing
+                # narration (the COMMON flood/publish turn shape — e.g. the
+                # last call is publish_layer, then the stream ends). In that
+                # shape the in-loop terminal finalize never fired
+                # (``current_message_id is None`` at turn close, so
+                # ``terminal_acc_persisted`` stayed False), and NONE of the
+                # persisted segment rows carried the turn's zoom-to/layer
+                # accumulator (each non-terminal segment passed
+                # ``layer_emissions=[]``). Pre-job-0315 the single closing
+                # role="agent" row carried ``layers=[...]`` + the zoom-to;
+                # without this row the web ``extractLastZoomTo(chat_history)``
+                # (case_zoom.ts) finds no zoom-to and a Case reopen does NOT
+                # snap the camera to the AOI — regressing job-0259 (layer
+                # attribution) + job-0280/0281 (zoom-snap). Restore the
+                # invariant: EVERY turn that emitted a zoom-to/layer must
+                # persist at least one chat row carrying it. We write an EMPTY
+                # marker row (content="" — the web renders no phantom bubble
+                # for blank agent text, exactly like the narration-LESS
+                # completed-turn marker) with ``layer_emissions=None`` so
+                # ``_persist_chat_turn`` SNAPSHOTS ``current_turn_layer_ids``
+                # into ``layer_emissions`` and ``current_turn_map_commands``
+                # into ``map_command_emissions``. ``terminal_acc_persisted``
+                # guards against a double-write when the turn DID end in
+                # narration (the terminal segment already carried it); the
+                # NON-EMPTY accumulator guard means an accumulator-less +
+                # text-less tool-terminal turn writes NOTHING (no phantom
+                # empty bubble).
+                await _persist_chat_turn(
+                    state,
+                    role="agent",
+                    content="",
+                    pipeline_id=state.current_turn_pipeline_id,
+                    case_id=turn_case_id,
+                )
+            # else: either the terminal segment already snapshotted the
+            # accumulator (segments_done > 0 ending in narration), or the turn
+            # emitted no zoom-to/layer accumulator at all -> every narration run
+            # was already persisted as its own interleaved row. Nothing to add.
 
 
 async def _dispatch_tool_and_persist(
