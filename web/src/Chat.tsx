@@ -234,6 +234,18 @@ export const CHAT_OPACITY_DEFAULT: ChatOpacityTier = "medium";
  * via readChatOpacity — both go through this single per-user key. */
 export const LS_CHAT_OPACITY = "grace2.chatOpacityTier";
 
+/**
+ * F56 reactivity bus (job-0322 fix) — a plain ``localStorage.setItem`` does
+ * NOT fire the ``storage`` event in the SAME tab (the spec only fires it in
+ * OTHER tabs/windows), so SettingsPopup writing the tier could never reach the
+ * mounted Chat live. ``writeChatOpacity`` therefore ALSO dispatches this custom
+ * window event after persisting; Chat subscribes (addEventListener) and
+ * re-reads + re-applies the alpha bands to BOTH the desktop container and the
+ * mobile bottom-sheet INSTANTLY — no reload, no remount. The event carries the
+ * new tier in ``detail`` so subscribers can update without re-reading
+ * localStorage, but Chat re-reads (single source of truth) regardless. */
+export const CHAT_OPACITY_CHANGED_EVENT = "grace2:chat-opacity-changed";
+
 /** Per-surface alpha bands per tier. The three surfaces the chat paints:
  *  desktop right-panel gradient, mobile bottom-sheet COLLAPSED gradient,
  *  mobile bottom-sheet EXPANDED gradient. Documented mapping table above. */
@@ -272,10 +284,27 @@ export function readChatOpacity(): ChatOpacityTier {
 }
 
 /** Persist the chat-opacity tier (per-user). Non-fatal on failure. An
- * out-of-range value is normalized to MEDIUM before writing. */
+ * out-of-range value is normalized to MEDIUM before writing. Also dispatches
+ * ``CHAT_OPACITY_CHANGED_EVENT`` on ``window`` so a mounted Chat in the SAME
+ * tab re-applies the new alpha LIVE (the ``storage`` event only fires in OTHER
+ * tabs, so it cannot drive same-tab reactivity — see the event doc above). */
 export function writeChatOpacity(tier: ChatOpacityTier): void {
+  const normalized = clampChatOpacityTier(tier);
   try {
-    localStorage.setItem(LS_CHAT_OPACITY, clampChatOpacityTier(tier));
+    localStorage.setItem(LS_CHAT_OPACITY, normalized);
+  } catch {
+    /* non-fatal */
+  }
+  // Notify same-tab subscribers (Chat). Guarded: window may be absent in SSR /
+  // non-DOM test contexts, and CustomEvent may be undefined in older runtimes.
+  try {
+    if (typeof window !== "undefined" && typeof CustomEvent === "function") {
+      window.dispatchEvent(
+        new CustomEvent<ChatOpacityTier>(CHAT_OPACITY_CHANGED_EVENT, {
+          detail: normalized,
+        }),
+      );
+    }
   } catch {
     /* non-fatal */
   }
@@ -2113,11 +2142,36 @@ export function Chat({
     setSheetHeightVh(vh);
     writeSheetHeight(vh);
   }, []);
-  // F56 (job-0322) — per-user chat-opacity tier. Read lazily from localStorage
-  // (the shared key Chat.tsx owns; SettingsPopup writes it). Default MEDIUM.
-  // Re-read on every Chat (re)mount; a Settings change re-mounts via App's
-  // remount key or the user reloads — within a session the tier is stable.
-  const [opacityTier] = useState<ChatOpacityTier>(() => readChatOpacity());
+  // F56 (job-0322; reactive fix) — per-user chat-opacity tier. Read lazily from
+  // localStorage (the shared key Chat.tsx owns; SettingsPopup writes it).
+  // Default MEDIUM. SAME-TAB REACTIVITY: SettingsPopup's writeChatOpacity
+  // dispatches CHAT_OPACITY_CHANGED_EVENT on window after persisting (a plain
+  // localStorage write does NOT fire the `storage` event in the same tab), so
+  // we subscribe to it here and re-read + re-apply the alpha bands LIVE to BOTH
+  // the desktop container and the mobile sheet — no reload, no remount. We also
+  // listen to the native `storage` event for the cross-tab case (a Settings
+  // change in another tab/window).
+  const [opacityTier, setOpacityTier] = useState<ChatOpacityTier>(() =>
+    readChatOpacity(),
+  );
+  useEffect(() => {
+    // Same-tab: custom event from writeChatOpacity. Re-read from the shared key
+    // (single source of truth) rather than trusting the event detail.
+    const onOpacityChanged = (): void => setOpacityTier(readChatOpacity());
+    // Cross-tab: the browser fires `storage` only in OTHER tabs. Ignore writes
+    // to unrelated keys so we don't thrash on every localStorage mutation.
+    const onStorage = (e: StorageEvent): void => {
+      if (e.key === null || e.key === LS_CHAT_OPACITY) {
+        setOpacityTier(readChatOpacity());
+      }
+    };
+    window.addEventListener(CHAT_OPACITY_CHANGED_EVENT, onOpacityChanged);
+    window.addEventListener("storage", onStorage);
+    return () => {
+      window.removeEventListener(CHAT_OPACITY_CHANGED_EVENT, onOpacityChanged);
+      window.removeEventListener("storage", onStorage);
+    };
+  }, []);
   // ux-batch-1 J1 (F10) — desktop chat-panel WIDTH is user-draggable (distinct
   // from the mobile sheet height). Persisted to localStorage so reloads
   // remember it. Read lazily so SSR / first paint don't touch localStorage

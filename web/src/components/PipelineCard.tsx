@@ -60,6 +60,27 @@ const TERMINAL_STATES: ReadonlySet<PipelineStepState> = new Set([
   "cancelled",
 ]);
 
+// --- Minimum running-state dwell (F70) ----------------------------------- //
+//
+// Fast-failing tools (and fast-succeeding ones) used to skip the running /
+// rainbow treatment entirely: a tool that errored in ~0s would emit
+// pending→failed (or running→failed in adjacent frames) and the card jumped
+// straight to the red terminal tint — the user "never saw it run", it "just
+// went straight to failing". That hid the fact that a tool actually executed.
+//
+// Fix: once a card has entered (or is about to skip past) the running phase,
+// hold the RUNNING visual treatment for at least MIN_RUNNING_DWELL_MS before
+// letting the card settle into its terminal (success/failure/cancelled) state.
+// The *logical* state (data-state, the authoritative timer, screen-reader
+// announcement) tracks `step.state` faithfully — only the VISUAL settle is
+// deferred — so nothing is fabricated and the failure-terminates-animation
+// behaviour still fires the moment the dwell elapses.
+//
+// 450ms is long enough that the rainbow gradient / spinner is unmistakably
+// perceived (>~300ms perceptual threshold for "I saw a thing happen") yet
+// short enough that it never feels like an artificial stall on a real error.
+export const MIN_RUNNING_DWELL_MS = 450;
+
 /**
  * The live elapsed-ms for a *running* step, ticking once per second.
  *
@@ -123,6 +144,83 @@ export function prefersReducedMotion(): boolean {
   } catch {
     return false;
   }
+}
+
+// --- Display-state dwell (F70) ------------------------------------------- //
+//
+// Maps the authoritative `step.state` to the state actually PAINTED, enforcing
+// the minimum running dwell described above. The card component instance
+// persists across a step's lifecycle (Chat.tsx keys cards by step_id), so this
+// hook reliably observes the pending→running→terminal progression on a single
+// instance.
+//
+// Behaviour:
+//   - pending / running           → painted verbatim (no defer).
+//   - terminal (complete/failed/   → if the running treatment has not yet been
+//     cancelled)                     visible for MIN_RUNNING_DWELL_MS, paint
+//                                     `running` until the remaining dwell
+//                                     elapses, THEN flip to the terminal state.
+//
+// The dwell clock starts when the card first leaves `pending` (whether it
+// passes through an explicit `running` snapshot or jumps straight to a terminal
+// one). A tool that fast-fails from pending therefore still flashes the running
+// treatment for the full dwell before turning red.
+//
+// SSR-safe (Date.now / window.setTimeout only). If a card mounts already in a
+// terminal state (e.g. history replay, or a completed step rehydrated on
+// reconnect), there is nothing to "show running" for retroactively, so it
+// paints terminal immediately — the dwell only guards the LIVE transition.
+
+export function useDisplayState(state: PipelineStepState): PipelineStepState {
+  // When the running treatment first became (or would have become) visible.
+  // null until the card leaves pending; set once and never moved earlier.
+  const runningSinceRef = useRef<number | null>(null);
+  // True only if this instance was born terminal — then we never feign running.
+  const mountedTerminalRef = useRef<boolean | null>(null);
+  if (mountedTerminalRef.current === null) {
+    mountedTerminalRef.current = TERMINAL_STATES.has(state);
+  }
+
+  const [displayState, setDisplayState] = useState<PipelineStepState>(state);
+
+  useEffect(() => {
+    // Record the moment we first see any non-pending state — that's when the
+    // running treatment starts (or would have started for a skip-straight fail).
+    if (state !== "pending" && runningSinceRef.current === null) {
+      runningSinceRef.current = Date.now();
+    }
+
+    // Non-terminal states paint verbatim, immediately.
+    if (!TERMINAL_STATES.has(state)) {
+      setDisplayState(state);
+      return;
+    }
+
+    // Born terminal (history / rehydrate): nothing ran live to show — settle now.
+    if (mountedTerminalRef.current) {
+      setDisplayState(state);
+      return;
+    }
+
+    const runningSince = runningSinceRef.current ?? Date.now();
+    const elapsed = Date.now() - runningSince;
+    const remaining = MIN_RUNNING_DWELL_MS - elapsed;
+
+    if (remaining <= 0) {
+      // Running treatment was already visible long enough — settle immediately.
+      setDisplayState(state);
+      return;
+    }
+
+    // Hold the running treatment for the remaining dwell, THEN flip to terminal.
+    // This is what makes the rainbow / spinner perceivable on a fast-fail and
+    // is the moment the failure-terminates-animation behaviour fires.
+    setDisplayState("running");
+    const id = window.setTimeout(() => setDisplayState(state), remaining);
+    return () => window.clearTimeout(id);
+  }, [state]);
+
+  return displayState;
 }
 
 // --- State → visual mapping ---------------------------------------------- //
@@ -572,10 +670,21 @@ export interface PipelineCardProps {
 }
 
 export function PipelineCard({ step }: PipelineCardProps): JSX.Element {
-  const visual = cardVisual(step.state);
   const reduced = prefersReducedMotion();
+
+  // F70: the VISUAL state may lag the logical state by up to a few hundred ms
+  // so the running / rainbow treatment is always perceivable, even when a tool
+  // fast-fails (or fast-succeeds) in ~0s. `displayState` drives every visual
+  // surface (tint, label phrasing, spinner, rainbow, error chip); the logical
+  // `step.state` still drives `data-state`, the authoritative timer value, and
+  // the screen-reader announcement so nothing user-truth is fabricated.
+  const displayState = useDisplayState(step.state);
+
+  const visual = cardVisual(displayState);
+  const displayIsRunning = displayState === "running";
+  const displayIsFailed = displayState === "failed";
+  // Logical flags (truth from the wire), used for the timer + a11y prefix.
   const isRunning = step.state === "running";
-  const isFailed = step.state === "failed";
   const isTerminal = TERMINAL_STATES.has(step.state);
 
   // job-0264 tool timer. While running: a cosmetic live (m:ss) ticker.
@@ -592,10 +701,16 @@ export function PipelineCard({ step }: PipelineCardProps): JSX.Element {
       ? formatDuration(liveElapsedMs)
       : null;
 
+  // Label phrasing follows the painted state: the terminal "complete" phrasing
+  // only appears once the card visually settles (so a fast-complete still reads
+  // its present-tense running verb during the dwell). All other states already
+  // use the running/active phrasing, so a failed/cancelled card is unaffected.
+  const labelText = humanizeStepName(step.name, displayState);
+
   // The label uses an animated rainbow gradient when running (unless the
   // user prefers reduced motion). Background-clip:text is the gradient
   // technique; the fallback is the visual.textColor.
-  const labelStyle: React.CSSProperties = isRunning && !reduced
+  const labelStyle: React.CSSProperties = displayIsRunning && !reduced
     ? {
         backgroundImage:
           "linear-gradient(90deg, #FF6B6B, #FFD93D, #6BCB77, #4D96FF, #B266FF, #FF6B6B)",
@@ -655,9 +770,9 @@ export function PipelineCard({ step }: PipelineCardProps): JSX.Element {
           whiteSpace: "nowrap",
           ...labelStyle,
         }}
-        title={humanizeStepName(step.name, step.state)}
+        title={labelText}
       >
-        {humanizeStepName(step.name, step.state)}
+        {labelText}
       </span>
       {timerText !== null && (
         <span
@@ -669,8 +784,11 @@ export function PipelineCard({ step }: PipelineCardProps): JSX.Element {
             fontSize: 11,
             // Running: dimmed so the rainbow label stays the focus. Terminal:
             // slightly brighter since the spinner is gone and this is the
-            // card's only right-side affordance.
-            color: isRunning ? "rgba(255,255,255,0.55)" : "rgba(255,255,255,0.7)",
+            // card's only right-side affordance. Keyed on the PAINTED state so
+            // it reads as "running" during the F70 dwell.
+            color: displayIsRunning
+              ? "rgba(255,255,255,0.55)"
+              : "rgba(255,255,255,0.7)",
             flexShrink: 0,
             // Lock min-width so the ticking digits don't jitter the layout.
             minWidth: 30,
@@ -680,8 +798,8 @@ export function PipelineCard({ step }: PipelineCardProps): JSX.Element {
           {timerText}
         </span>
       )}
-      {isRunning && <Spinner reduced={reduced} />}
-      {isFailed && (step.error_code || step.error_message) && (
+      {displayIsRunning && <Spinner reduced={reduced} />}
+      {displayIsFailed && (step.error_code || step.error_message) && (
         <span
           data-testid="pipeline-card-error"
           style={{ color: "#fca5a5", fontSize: 11, marginLeft: 4 }}

@@ -14,8 +14,31 @@
 
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, act } from "@testing-library/react";
-import { PipelineCard, formatDuration } from "./PipelineCard";
+import {
+  PipelineCard,
+  formatDuration,
+  MIN_RUNNING_DWELL_MS,
+} from "./PipelineCard";
 import { PipelineStepSummary } from "../contracts";
+
+/** Force `prefers-reduced-motion: reduce` to the given value. Returns a
+ *  restore fn. Mirrors the helper used in Chat.mobileSheet.test.tsx. */
+function mockReducedMotion(reduce: boolean): () => void {
+  const original = window.matchMedia;
+  window.matchMedia = ((query: string) => ({
+    matches: query.includes("prefers-reduced-motion") ? reduce : false,
+    media: query,
+    onchange: null,
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  })) as unknown as typeof window.matchMedia;
+  return () => {
+    window.matchMedia = original;
+  };
+}
 
 function makeStep(
   partial: Partial<PipelineStepSummary> & {
@@ -465,5 +488,247 @@ describe("PipelineCard — tool timer (job-0264)", () => {
     );
     expect(screen.getByTestId("pipeline-card-timer")).toBeInTheDocument();
     expect(screen.getByTestId("pipeline-card-indicator")).toBeInTheDocument();
+  });
+});
+
+// --- Minimum running-state dwell (F70) ----------------------------------- //
+//
+// A fast-failing tool used to jump straight to the red failed treatment — the
+// user "never saw it run". These tests pin that a LIVE pending→failed (or
+// running→failed) transition holds the perceivable running treatment for at
+// least MIN_RUNNING_DWELL_MS before the card settles to its terminal visual,
+// while the logical `data-state` always tells the truth.
+
+describe("PipelineCard — minimum running dwell (F70)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("MIN_RUNNING_DWELL_MS is a perceivable few-hundred ms", () => {
+    // Long enough to be seen, short enough not to feel like an artificial stall.
+    expect(MIN_RUNNING_DWELL_MS).toBeGreaterThanOrEqual(300);
+    expect(MIN_RUNNING_DWELL_MS).toBeLessThanOrEqual(1000);
+  });
+
+  it("a fast-fail (pending→failed) flashes the RUNNING treatment before settling red", () => {
+    vi.useFakeTimers();
+    const restore = mockReducedMotion(false);
+    try {
+      const { rerender } = render(
+        <PipelineCard step={makeStep({ step_id: "ff", state: "pending" })} />,
+      );
+
+      // The tool errors in ~0s: the very next snapshot is already terminal,
+      // skipping any explicit running envelope.
+      act(() => {
+        rerender(
+          <PipelineCard
+            step={makeStep({
+              step_id: "ff",
+              state: "failed",
+              error_code: "UPSTREAM_API_ERROR",
+              duration_ms: 0,
+            })}
+          />,
+        );
+      });
+
+      // During the dwell the card PAINTS running: spinner present, rainbow
+      // gradient on the label, no error chip yet.
+      expect(screen.getByTestId("pipeline-card-indicator")).toBeInTheDocument();
+      const name = screen.getByTestId("pipeline-card-name") as HTMLElement;
+      expect(name.style.backgroundImage).toContain("linear-gradient");
+      expect(screen.queryByTestId("pipeline-card-error")).toBeNull();
+
+      // ...but the LOGICAL state already reports the truth for e2e selectors.
+      expect(screen.getByTestId("pipeline-card")).toHaveAttribute(
+        "data-state",
+        "failed",
+      );
+
+      // After the dwell elapses the card settles to the failed treatment:
+      // spinner gone (animation terminated), red tint, error chip shown.
+      act(() => {
+        vi.advanceTimersByTime(MIN_RUNNING_DWELL_MS + 10);
+      });
+      expect(screen.queryByTestId("pipeline-card-indicator")).toBeNull();
+      const card = screen.getByTestId("pipeline-card") as HTMLElement;
+      expect(card.style.background).toContain("220, 60, 60");
+      expect(screen.getByTestId("pipeline-card-error")).toHaveTextContent(
+        "UPSTREAM_API_ERROR",
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  it("a fast-fail under prefers-reduced-motion still shows a clear running→failed visual (no rainbow)", () => {
+    vi.useFakeTimers();
+    const restore = mockReducedMotion(true);
+    try {
+      const { rerender } = render(
+        <PipelineCard step={makeStep({ step_id: "rm", state: "pending" })} />,
+      );
+      act(() => {
+        rerender(
+          <PipelineCard
+            step={makeStep({
+              step_id: "rm",
+              state: "failed",
+              error_code: "TOOL_TIMEOUT",
+              duration_ms: 0,
+            })}
+          />,
+        );
+      });
+
+      // Running treatment is perceivable: a STATIC dot indicator (not the
+      // rainbow gradient) — distinct from the failed state which has none.
+      const indicator = screen.getByTestId("pipeline-card-indicator");
+      expect(indicator.getAttribute("data-variant")).toBe("static-dot");
+      const name = screen.getByTestId("pipeline-card-name") as HTMLElement;
+      expect(name.style.backgroundImage).not.toContain("linear-gradient");
+
+      // Settles to failed once the dwell elapses (indicator gone, red tint).
+      act(() => {
+        vi.advanceTimersByTime(MIN_RUNNING_DWELL_MS + 10);
+      });
+      expect(screen.queryByTestId("pipeline-card-indicator")).toBeNull();
+      expect(
+        (screen.getByTestId("pipeline-card") as HTMLElement).style.background,
+      ).toContain("220, 60, 60");
+    } finally {
+      restore();
+    }
+  });
+
+  it("a running→failed transition holds the running treatment for the remaining dwell", () => {
+    vi.useFakeTimers();
+    const restore = mockReducedMotion(false);
+    try {
+      const { rerender } = render(
+        <PipelineCard
+          step={makeStep({
+            step_id: "rf",
+            state: "running",
+            started_at: "2026-06-10T12:00:00.000Z",
+          })}
+        />,
+      );
+      // Visible-running for only 100ms, then fails (< the dwell).
+      act(() => {
+        vi.advanceTimersByTime(100);
+      });
+      act(() => {
+        rerender(
+          <PipelineCard
+            step={makeStep({
+              step_id: "rf",
+              state: "failed",
+              error_code: "SOLVER_FAILED",
+              duration_ms: 100,
+            })}
+          />,
+        );
+      });
+      // Still painting running (the remaining dwell hasn't elapsed).
+      expect(screen.getByTestId("pipeline-card-indicator")).toBeInTheDocument();
+
+      // After the remaining dwell it settles to failed.
+      act(() => {
+        vi.advanceTimersByTime(MIN_RUNNING_DWELL_MS);
+      });
+      expect(screen.queryByTestId("pipeline-card-indicator")).toBeNull();
+      expect(screen.getByTestId("pipeline-card-error")).toHaveTextContent(
+        "SOLVER_FAILED",
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  it("a card that has ALREADY been running long enough settles immediately (no extra dwell)", () => {
+    vi.useFakeTimers();
+    const restore = mockReducedMotion(false);
+    try {
+      const { rerender } = render(
+        <PipelineCard
+          step={makeStep({
+            step_id: "slow",
+            state: "running",
+            started_at: "2026-06-10T12:00:00.000Z",
+          })}
+        />,
+      );
+      // Run well past the dwell, then complete.
+      act(() => {
+        vi.advanceTimersByTime(MIN_RUNNING_DWELL_MS + 5_000);
+      });
+      act(() => {
+        rerender(
+          <PipelineCard
+            step={makeStep({
+              step_id: "slow",
+              state: "complete",
+              duration_ms: 5_450,
+            })}
+          />,
+        );
+      });
+      // No artificial dwell — settles to complete right away (green tint, no
+      // spinner). The rainbow was already visible for seconds.
+      expect(screen.queryByTestId("pipeline-card-indicator")).toBeNull();
+      expect(
+        (screen.getByTestId("pipeline-card") as HTMLElement).style.background,
+      ).toContain("40, 200, 100");
+    } finally {
+      restore();
+    }
+  });
+
+  it("a card MOUNTED already-terminal (history replay) settles immediately — no feigned running", () => {
+    // Replayed / rehydrated steps did not run live in this session, so there is
+    // nothing to retroactively "show running" for: paint terminal at once.
+    render(
+      <PipelineCard
+        step={makeStep({
+          step_id: "replay",
+          state: "failed",
+          error_code: "DEM_SOURCE_UNAVAILABLE",
+          duration_ms: 0,
+        })}
+      />,
+    );
+    expect(screen.queryByTestId("pipeline-card-indicator")).toBeNull();
+    expect(
+      (screen.getByTestId("pipeline-card") as HTMLElement).style.background,
+    ).toContain("220, 60, 60");
+    expect(screen.getByTestId("pipeline-card-error")).toHaveTextContent(
+      "DEM_SOURCE_UNAVAILABLE",
+    );
+  });
+
+  it("the authoritative terminal duration_ms is shown immediately, even during the dwell", () => {
+    // The TIMER value tracks logical truth (job-0264) regardless of the visual
+    // dwell — only the running/failed treatment is deferred, never the number.
+    vi.useFakeTimers();
+    const { rerender } = render(
+      <PipelineCard step={makeStep({ step_id: "td", state: "pending" })} />,
+    );
+    act(() => {
+      rerender(
+        <PipelineCard
+          step={makeStep({
+            step_id: "td",
+            state: "failed",
+            duration_ms: 0,
+            error_code: "TOOL_PARAMS_INVALID",
+          })}
+        />,
+      );
+    });
+    const timer = screen.getByTestId("pipeline-card-timer");
+    expect(timer).toHaveTextContent("0:00");
+    expect(timer.getAttribute("data-authoritative")).toBe("true");
   });
 });

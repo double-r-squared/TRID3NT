@@ -38,6 +38,7 @@ import type { MapCommandPayload, SessionStatePayload, ProjectLayerSummary } from
 import type { FeatureCollection, Feature, Polygon } from "geojson";
 import { publicTileBase } from "./lib/public_base";
 import { LayerLegend } from "./components/LayerLegend";
+import { FeaturePopup, type FeaturePopupData, type FeatureAttribute } from "./components/FeaturePopup";
 import { useIsMobile } from "./hooks/useIsMobile";
 import {
   fetchVectorAsGeoJson,
@@ -1012,6 +1013,169 @@ export function computeBboxBottomAnchor(
   return { left, top };
 }
 
+// --- F74b feature-click/tap-to-inspect ---------------------------------- //
+//
+// The agent advertises "click polygons to see name / designation / IUCN", but
+// until this feature nothing in the web client hit-tested rendered features.
+// These helpers turn a hit feature's `properties` bag into popup-ready content.
+// All of it is pure (Invariant 1: we surface received values verbatim — no
+// geography is computed). The MapLibre wiring (queryRenderedFeatures, the
+// click/touch handlers, the cursor) lives inside MapView below.
+
+/**
+ * Property keys (lowercased) we treat as the feature's NAME, in priority order.
+ * Covers the WDPA live schema (`name_eng`), GBIF/iNat species fields, NWS
+ * alerts, admin boundaries, OSM, and the generic `name`/`title` fallbacks.
+ */
+const NAME_KEYS: readonly string[] = [
+  "name_eng",
+  "name",
+  "title",
+  "orig_name",
+  "site_name",
+  "scientificname",
+  "species",
+  "vernacularname",
+  "common_name",
+  "event",
+  "headline",
+  "namelsad",
+];
+
+/**
+ * Property keys (lowercased) we treat as the feature's DESIGNATION / TYPE, in
+ * priority order. WDPA designation is `desig_eng`; others fall back to generic
+ * type/category fields.
+ */
+const DESIGNATION_KEYS: readonly string[] = [
+  "desig_eng",
+  "designation",
+  "desig",
+  "type",
+  "category",
+  "feature_type",
+  "highway",
+  "landcover",
+];
+
+/** Property keys (lowercased) we treat as the IUCN category, in priority order. */
+const IUCN_KEYS: readonly string[] = ["iucn_cat", "iucn_category", "iucn"];
+
+/**
+ * Keys we DROP from the generic attribute list because they are either internal
+ * IDs / geometry noise or already surfaced as the title/subtitle/IUCN rows.
+ */
+const HIDDEN_ATTR_KEYS: ReadonlySet<string> = new Set([
+  "geometry",
+  "bbox",
+  "id",
+  "fid",
+  "objectid",
+  "shape_length",
+  "shape_area",
+  "shape__length",
+  "shape__area",
+]);
+
+/** Humanize a raw property key for display: `name_eng` → "Name Eng", `iucn_cat` → "Iucn Cat". */
+export function humanizePropertyKey(key: string): string {
+  const cleaned = key.replace(/[_-]+/g, " ").replace(/([a-z])([A-Z])/g, "$1 $2").trim();
+  if (!cleaned) return key;
+  return cleaned
+    .split(/\s+/)
+    .map((w) => (w.length <= 1 ? w.toUpperCase() : w.charAt(0).toUpperCase() + w.slice(1)))
+    .join(" ");
+}
+
+/** Coerce a property value to a compact display string, or null when not worth showing. */
+export function stringifyPropertyValue(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "string") {
+    const t = value.trim();
+    return t.length > 0 ? t : null;
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) return null;
+    // Trim long floats so coordinates / areas don't blow out the card.
+    return Number.isInteger(value) ? String(value) : String(Math.round(value * 1000) / 1000);
+  }
+  if (typeof value === "boolean") return value ? "Yes" : "No";
+  // Objects / arrays — JSON, but keep it short so the card stays compact.
+  try {
+    const s = JSON.stringify(value);
+    if (!s || s === "{}" || s === "[]") return null;
+    return s.length > 120 ? `${s.slice(0, 117)}…` : s;
+  } catch {
+    return null;
+  }
+}
+
+/** Find the first present, non-empty value among `keys` (case-insensitive). */
+function pickByKeys(
+  props: Record<string, unknown>,
+  lowerMap: Map<string, string>,
+  keys: readonly string[],
+): { key: string; value: string } | null {
+  for (const k of keys) {
+    const actual = lowerMap.get(k);
+    if (actual === undefined) continue;
+    const v = stringifyPropertyValue(props[actual]);
+    if (v !== null) return { key: actual, value: v };
+  }
+  return null;
+}
+
+/**
+ * Build the popup payload from a hit feature's properties + the originating
+ * layer name + the screen point. `geomKindLabel` is a fallback title when the
+ * feature has no name-like property (e.g. "Polygon"). Returns popup data with a
+ * title, optional subtitle (designation/type/layer), IUCN row first when
+ * present, then the remaining attributes (humanized, de-noised). Gracefully
+ * handles a null/empty properties bag.
+ */
+export function buildFeaturePopupData(
+  properties: Record<string, unknown> | null | undefined,
+  point: { x: number; y: number },
+  opts: { layerName?: string; geomKindLabel?: string } = {},
+): FeaturePopupData {
+  const props = properties ?? {};
+  // Case-insensitive lookup map: lowercased key → original key.
+  const lowerMap = new Map<string, string>();
+  for (const k of Object.keys(props)) lowerMap.set(k.toLowerCase(), k);
+
+  const nameHit = pickByKeys(props, lowerMap, NAME_KEYS);
+  const desigHit = pickByKeys(props, lowerMap, DESIGNATION_KEYS);
+  const iucnHit = pickByKeys(props, lowerMap, IUCN_KEYS);
+
+  const usedKeys = new Set<string>();
+  if (nameHit) usedKeys.add(nameHit.key.toLowerCase());
+  if (desigHit) usedKeys.add(desigHit.key.toLowerCase());
+  if (iucnHit) usedKeys.add(iucnHit.key.toLowerCase());
+
+  const title = nameHit?.value ?? opts.layerName ?? opts.geomKindLabel ?? "Feature";
+  // Subtitle prefers the designation; otherwise the layer name (when it wasn't
+  // already used as the title).
+  let subtitle: string | undefined;
+  if (desigHit) subtitle = desigHit.value;
+  else if (opts.layerName && opts.layerName !== title) subtitle = opts.layerName;
+
+  const attributes: FeatureAttribute[] = [];
+  // IUCN category leads the attribute list when present (advertised explicitly).
+  if (iucnHit) attributes.push({ label: "IUCN Category", value: iucnHit.value });
+
+  // Remaining properties — humanized, de-noised, in declaration order.
+  for (const key of Object.keys(props)) {
+    const lk = key.toLowerCase();
+    if (usedKeys.has(lk)) continue;
+    if (HIDDEN_ATTR_KEYS.has(lk)) continue;
+    const v = stringifyPropertyValue(props[key]);
+    if (v === null) continue;
+    attributes.push({ label: humanizePropertyKey(key), value: v });
+  }
+
+  return { title, subtitle, attributes, point };
+}
+
 export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "light" }: MapViewProps = {}): JSX.Element {
   const container = useRef<HTMLDivElement | null>(null);
   const map = useRef<MapLibreMap | null>(null);
@@ -1076,6 +1240,17 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
   const [aoiBbox, setAoiBbox] = useState<[number, number, number, number] | null>(null);
   const [legendAnchor, setLegendAnchor] = useState<LegendAnchor | null>(null);
   const isMobile = useIsMobile();
+
+  // F74b feature-click/tap-to-inspect. `featurePopup` is the currently-shown
+  // popup payload (null = none). `mapCanvasSize` mirrors the canvas dimensions
+  // so the popup can clamp itself on screen. The click/touch handler reads
+  // `vectorGeomKinds` (which tracks every rendered vector layer_id) to build the
+  // list of queryable layers, then queryRenderedFeatures hit-tests the point.
+  const [featurePopup, setFeaturePopup] = useState<FeaturePopupData | null>(null);
+  const [mapCanvasSize, setMapCanvasSize] = useState<{ width: number; height: number }>({
+    width: 0,
+    height: 0,
+  });
 
   useEffect(() => {
     if (!container.current || map.current) return;
@@ -1633,6 +1808,127 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
     };
   }, [aoiBbox]);
 
+  // F74b feature-click/tap-to-inspect. The agent advertises "click polygons to
+  // see name / designation / IUCN", so a click OR a tap on a rendered vector
+  // feature must surface its attributes. Mechanism:
+  //   - On `click` (fires for mouse AND for a tap on touch devices — MapLibre
+  //     synthesizes a click from a tap that did not pan), run
+  //     queryRenderedFeatures at the point restricted to the rendered vector
+  //     paint layers (tracked in vectorGeomKinds — every layer_id we painted as
+  //     a circle/line/fill). On a hit, open the popup at the point.
+  //   - Desktop hover: set the canvas cursor to "pointer" over a hittable
+  //     feature (mouseenter/mouseleave per layer) so users know it's clickable.
+  //   - Dismiss: tapping the empty map (no hit) closes any open popup; the X
+  //     button and Esc are handled inside FeaturePopup.
+  // queryRenderedFeatures is the MapLibre hit-test — Invariant 1 holds: every
+  // value shown comes from the feature's own properties, nothing is computed.
+  useEffect(() => {
+    const m = map.current;
+    if (!m) return undefined;
+
+    // Geometry-kind → human label for the no-name title fallback.
+    const geomLabel = (kind: VectorGeomKind | undefined): string => {
+      switch (kind) {
+        case "point":
+          return "Point";
+        case "line":
+          return "Line";
+        case "polygon":
+          return "Polygon";
+        default:
+          return "Feature";
+      }
+    };
+
+    // The set of MapLibre layer ids we hit-test: the main paint layer for every
+    // tracked vector layer_id that currently exists on the map. (Cluster
+    // sublayers / polygon outlines are intentionally excluded — the main paint
+    // layer carries the real per-feature properties.)
+    const queryableLayerIds = (): string[] => {
+      const ids: string[] = [];
+      for (const id of vectorGeomKinds.current.keys()) {
+        try {
+          if (m.getLayer(id)) ids.push(id);
+        } catch {
+          /* layer mid-removal — skip */
+        }
+      }
+      return ids;
+    };
+
+    const readCanvasSize = (): { width: number; height: number } => {
+      try {
+        const c = m.getCanvas();
+        if (c) return { width: c.clientWidth, height: c.clientHeight };
+      } catch {
+        /* fall through */
+      }
+      return { width: 0, height: 0 };
+    };
+
+    const onMapClick = (e: maplibregl.MapMouseEvent): void => {
+      const layers = queryableLayerIds();
+      if (layers.length === 0) {
+        setFeaturePopup(null);
+        return;
+      }
+      let features: maplibregl.MapGeoJSONFeature[] = [];
+      try {
+        features = m.queryRenderedFeatures(e.point, { layers });
+      } catch {
+        features = [];
+      }
+      if (!features || features.length === 0) {
+        // Tap on empty map (or basemap/raster) dismisses any open popup.
+        setFeaturePopup(null);
+        return;
+      }
+      const hit = features[0]!;
+      const sourceId =
+        typeof (hit as { layer?: { source?: unknown } }).layer?.source === "string"
+          ? ((hit as unknown as { layer: { source: string } }).layer.source as string)
+          : undefined;
+      const geomKind = sourceId ? vectorGeomKinds.current.get(sourceId) : undefined;
+      const data = buildFeaturePopupData(
+        (hit.properties ?? null) as Record<string, unknown> | null,
+        { x: e.point.x, y: e.point.y },
+        { layerName: sourceId, geomKindLabel: geomLabel(geomKind) },
+      );
+      setMapCanvasSize(readCanvasSize());
+      setFeaturePopup(data);
+    };
+
+    // Desktop cursor affordance — pointer over a hittable feature. We attach a
+    // single mousemove handler (cheap) instead of per-layer enter/leave so it
+    // keeps working as vector layers come and go without re-binding.
+    const onMouseMove = (e: maplibregl.MapMouseEvent): void => {
+      const layers = queryableLayerIds();
+      if (layers.length === 0) {
+        m.getCanvas().style.cursor = "";
+        return;
+      }
+      let features: maplibregl.MapGeoJSONFeature[] = [];
+      try {
+        features = m.queryRenderedFeatures(e.point, { layers });
+      } catch {
+        features = [];
+      }
+      m.getCanvas().style.cursor = features && features.length > 0 ? "pointer" : "";
+    };
+
+    m.on("click", onMapClick);
+    m.on("mousemove", onMouseMove);
+
+    return () => {
+      try {
+        m.off("click", onMapClick);
+        m.off("mousemove", onMouseMove);
+      } catch {
+        /* map may already be torn down */
+      }
+    };
+  }, []);
+
   // job-0321 (F43) — resolve the legend placement.
   //   - aoiBbox + on-screen anchor → hang off the box's bottom edge, nudged
   //     down a small gap so it clears the dashed outline. On mobile the box can
@@ -1677,6 +1973,18 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
           can anchor to the AOI box. `anchor` non-null = hang off the box's
           bottom edge; null = LayerLegend's own bottom-center fallback. */}
       <LayerLegend layers={legendLayers} anchor={resolvedAnchor} />
+
+      {/* F74b — feature-click/tap-to-inspect popup. Shown when a click/tap hits
+          a rendered vector feature; positioned at the point (desktop) or
+          bottom-center (mobile) so it never clips off a small screen. */}
+      {featurePopup ? (
+        <FeaturePopup
+          data={featurePopup}
+          canvasSize={mapCanvasSize}
+          isMobile={isMobile}
+          onClose={() => setFeaturePopup(null)}
+        />
+      ) : null}
     </div>
   );
 }

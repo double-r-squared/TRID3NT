@@ -40,6 +40,7 @@ import {
   CHAT_OPACITY_DEFAULT,
   CHAT_OPACITY_TIERS,
   LS_CHAT_OPACITY,
+  CHAT_OPACITY_CHANGED_EVENT,
   type ChatOpacityTier,
 } from "./Chat";
 import {
@@ -1345,6 +1346,139 @@ describe("opacity tier → container-style alpha (F56 applied to both surfaces)"
       for (const a of alphasIn(String(expanded.background))) {
         expect(a).toBe(chatOpacityAlphas(tier).mobileExpanded);
       }
+    }
+  });
+});
+
+// --- SAME-TAB REACTIVITY (F56 fix, job-0322) ----------------------------- //
+//
+// THE BUG: changing the opacity tier in Settings persisted but never
+// re-applied to the mounted chat container LIVE — the user reported "opacity
+// still doesn't work." ROOT CAUSE: a plain `localStorage.setItem` does NOT
+// fire the `storage` event in the SAME tab (the spec only fires it in OTHER
+// tabs), and Chat read the tier ONCE into useState with no setter / no
+// subscription. THE FIX: `writeChatOpacity` ALSO dispatches
+// CHAT_OPACITY_CHANGED_EVENT on `window`; Chat subscribes and re-reads +
+// re-applies the alphas to BOTH surfaces live.
+//
+// Chat itself can't mount in happy-dom (it opens a WebSocket), so we verify
+// the reactive CONTRACT the component depends on: writeChatOpacity dispatches
+// the event, and a subscriber re-reading via readChatOpacity sees the live
+// tier — which then flows into desktopChatContainerStyle / mobileSheet-
+// ContainerStyle (verified above). This is the same window-event + re-read
+// loop Chat's useEffect runs.
+describe("chat-opacity same-tab reactivity (F56 fix)", () => {
+  afterEach(() => {
+    try { localStorage.clear(); } catch { /* ignore */ }
+  });
+
+  it("exports a stable custom-event name for the reactivity bus", () => {
+    expect(CHAT_OPACITY_CHANGED_EVENT).toBe("grace2:chat-opacity-changed");
+  });
+
+  it("writeChatOpacity dispatches CHAT_OPACITY_CHANGED_EVENT on window", () => {
+    const seen: string[] = [];
+    const onChange = (): void => {
+      seen.push(readChatOpacity());
+    };
+    window.addEventListener(CHAT_OPACITY_CHANGED_EVENT, onChange);
+    try {
+      writeChatOpacity("low");
+      writeChatOpacity("high");
+    } finally {
+      window.removeEventListener(CHAT_OPACITY_CHANGED_EVENT, onChange);
+    }
+    // The subscriber fired once per write, each time re-reading the LIVE tier
+    // from the shared key (not the stale initial value).
+    expect(seen).toEqual(["low", "high"]);
+  });
+
+  it("the event carries the normalized tier in detail", () => {
+    let detail: ChatOpacityTier | null = null;
+    const onChange = (e: Event): void => {
+      detail = (e as CustomEvent<ChatOpacityTier>).detail;
+    };
+    window.addEventListener(CHAT_OPACITY_CHANGED_EVENT, onChange);
+    try {
+      // An out-of-range write is normalized to MEDIUM before both persist AND
+      // dispatch, so subscribers never see junk.
+      writeChatOpacity("nonsense" as unknown as ChatOpacityTier);
+    } finally {
+      window.removeEventListener(CHAT_OPACITY_CHANGED_EVENT, onChange);
+    }
+    expect(detail).toBe("medium");
+  });
+
+  it("toggling the tier updates the applied alpha LIVE on BOTH surfaces", () => {
+    // Mirror Chat's reactive state: a subscriber re-reads the tier on the
+    // event, and the container styles are recomputed from that live tier.
+    let tier: ChatOpacityTier = readChatOpacity(); // MEDIUM (nothing persisted)
+    const onChange = (): void => {
+      tier = readChatOpacity();
+    };
+    window.addEventListener(CHAT_OPACITY_CHANGED_EVENT, onChange);
+    try {
+      const alphasIn = (bg: string): number[] =>
+        [...bg.matchAll(/rgba\(\d+,\d+,\d+,(0?\.\d+|1)\)/g)].map((m) =>
+          Number(m[1]),
+        );
+
+      // Before any toggle — both surfaces paint the MEDIUM band.
+      expect(tier).toBe("medium");
+      for (const a of alphasIn(String(desktopChatContainerStyle(384, tier).background))) {
+        expect(a).toBe(chatOpacityAlphas("medium").desktop);
+      }
+
+      // User picks LOW in Settings → writeChatOpacity → event → live re-read.
+      writeChatOpacity("low");
+      expect(tier).toBe("low");
+      // Desktop surface re-applies the LOW alpha live.
+      for (const a of alphasIn(String(desktopChatContainerStyle(384, tier).background))) {
+        expect(a).toBe(chatOpacityAlphas("low").desktop);
+      }
+      // Mobile sheet (collapsed + expanded) re-applies the LOW alpha live.
+      for (const a of alphasIn(String(mobileSheetContainerStyle(false, 70, tier).background))) {
+        expect(a).toBe(chatOpacityAlphas("low").mobileCollapsed);
+      }
+      for (const a of alphasIn(String(mobileSheetContainerStyle(true, 70, tier).background))) {
+        expect(a).toBe(chatOpacityAlphas("low").mobileExpanded);
+      }
+
+      // User bumps to HIGH → both surfaces track again, no reload.
+      writeChatOpacity("high");
+      expect(tier).toBe("high");
+      for (const a of alphasIn(String(desktopChatContainerStyle(384, tier).background))) {
+        expect(a).toBe(chatOpacityAlphas("high").desktop);
+      }
+      for (const a of alphasIn(String(mobileSheetContainerStyle(true, 70, tier).background))) {
+        expect(a).toBe(chatOpacityAlphas("high").mobileExpanded);
+      }
+    } finally {
+      window.removeEventListener(CHAT_OPACITY_CHANGED_EVENT, onChange);
+    }
+  });
+
+  it("a cross-tab `storage` event for the shared key also re-reads the tier", () => {
+    // Chat additionally listens to the native `storage` event (fires in OTHER
+    // tabs). Simulate it: another tab persisted HIGH, then dispatched storage.
+    let tier: ChatOpacityTier = readChatOpacity();
+    const onStorage = (e: StorageEvent): void => {
+      if (e.key === null || e.key === LS_CHAT_OPACITY) tier = readChatOpacity();
+    };
+    window.addEventListener("storage", onStorage);
+    try {
+      localStorage.setItem(LS_CHAT_OPACITY, "high");
+      window.dispatchEvent(new StorageEvent("storage", { key: LS_CHAT_OPACITY }));
+      expect(tier).toBe("high");
+
+      // An unrelated key must NOT cause a re-read churn (tier stays put).
+      localStorage.setItem("grace2.somethingElse", "x");
+      window.dispatchEvent(
+        new StorageEvent("storage", { key: "grace2.somethingElse" }),
+      );
+      expect(tier).toBe("high");
+    } finally {
+      window.removeEventListener("storage", onStorage);
     }
   });
 });

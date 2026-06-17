@@ -26,24 +26,40 @@ import { readChatOpacity, writeChatOpacity } from "./Chat";
 // verify it (a) initialises from the persisted tier, (b) defaults to "medium",
 // and (c) writes the chosen tier back through the shared helper. The full
 // tier→alpha application lives in Chat.tsx and is exercised by Chat's own tests.
+// job-0322 F56 reactivity fix — the fake writeChatOpacity MUST mirror the real
+// one's same-tab reactivity contract: persist the tier AND dispatch
+// CHAT_OPACITY_CHANGED_EVENT on window (a plain localStorage write does not fire
+// `storage` in the same tab, so Chat can't react without this event). The
+// "dispatches on tier click" test below asserts SettingsPopup's onClick reaches
+// this dispatch path.
+const CHAT_OPACITY_CHANGED_EVENT = "grace2:chat-opacity-changed";
 vi.mock("./Chat", () => {
   const LS_KEY = "grace2.chatOpacityTier";
+  const EVT = "grace2:chat-opacity-changed";
   const TIERS = ["low", "medium", "high"] as const;
   type Tier = (typeof TIERS)[number];
+  const clamp = (t: unknown): Tier =>
+    (TIERS as readonly string[]).includes(t as string) ? (t as Tier) : "medium";
   return {
+    CHAT_OPACITY_CHANGED_EVENT: EVT,
     readChatOpacity(): Tier {
       try {
-        const raw = localStorage.getItem(LS_KEY);
-        return (TIERS as readonly string[]).includes(raw ?? "")
-          ? (raw as Tier)
-          : "medium";
+        return clamp(localStorage.getItem(LS_KEY));
       } catch {
         return "medium";
       }
     },
     writeChatOpacity(tier: Tier): void {
+      const normalized = clamp(tier);
       try {
-        localStorage.setItem(LS_KEY, tier);
+        localStorage.setItem(LS_KEY, normalized);
+      } catch {
+        /* non-fatal */
+      }
+      try {
+        window.dispatchEvent(
+          new CustomEvent(EVT, { detail: normalized }),
+        );
       } catch {
         /* non-fatal */
       }
@@ -319,6 +335,30 @@ describe("SettingsPopup", () => {
       const radios = screen.getAllByRole("radio");
       // Exactly the three opacity tiers.
       expect(radios.length).toBe(3);
+    });
+
+    // job-0322 F56 FIX — clicking a tier must reach the same-tab reactivity bus
+    // so a mounted Chat re-applies the alpha LIVE (no reload). SettingsPopup
+    // calls writeChatOpacity (mocked here to mirror the real dispatch), so a
+    // window listener for CHAT_OPACITY_CHANGED_EVENT must fire with the picked
+    // tier in detail. This is the Settings half of the reactive contract Chat's
+    // useEffect subscribes to.
+    it("dispatches the chat-opacity-changed event when a tier is clicked", () => {
+      const details: (string | null)[] = [];
+      const onChange = (e: Event): void => {
+        details.push((e as CustomEvent<string>).detail ?? null);
+      };
+      window.addEventListener(CHAT_OPACITY_CHANGED_EVENT, onChange);
+      try {
+        render(<SettingsPopup {...defaultProps} />);
+        fireEvent.click(screen.getByTestId("grace2-settings-chat-opacity-low"));
+        fireEvent.click(screen.getByTestId("grace2-settings-chat-opacity-high"));
+      } finally {
+        window.removeEventListener(CHAT_OPACITY_CHANGED_EVENT, onChange);
+      }
+      // One dispatch per click, each carrying the chosen tier — proving the
+      // live re-apply path is reachable from the Settings control.
+      expect(details).toEqual(["low", "high"]);
     });
   });
 });
