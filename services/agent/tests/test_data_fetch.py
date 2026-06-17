@@ -24,6 +24,7 @@ Coverage:
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 from typing import Any
 
@@ -853,6 +854,120 @@ def test_fetch_nlcd_landcover_bytes_surfaces_geoserver_exception(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# F33/F39 fix — fetch_landcover COG with overviews + exact-bbox clip.
+# ---------------------------------------------------------------------------
+
+
+def _make_flat_nlcd_geotiff_bytes(bbox, width=900, height=900, pad=False):
+    """Build a flat (no-overview) single-band uint8 GeoTIFF for ``bbox``.
+
+    Mimics the MRLC WCS GetCoverage output: strip-organized, NO overviews. If
+    ``pad`` is True the raster covers a bbox slightly LARGER than ``bbox`` so
+    the clip step has a fringe to trim (proves the exact-bbox clip works).
+    """
+    import numpy as np
+    import rasterio
+    from rasterio.transform import from_bounds
+
+    src_bbox = bbox
+    if pad:
+        min_lon, min_lat, max_lon, max_lat = bbox
+        dx = (max_lon - min_lon) * 0.1
+        dy = (max_lat - min_lat) * 0.1
+        src_bbox = (min_lon - dx, min_lat - dy, max_lon + dx, max_lat + dy)
+
+    data = (np.random.randint(11, 95, size=(height, width))).astype("uint8")
+    transform = from_bounds(*src_bbox, width, height)
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(suffix=".tif", delete=False) as f:
+        path = f.name
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        width=width,
+        height=height,
+        count=1,
+        dtype="uint8",
+        crs="EPSG:4326",
+        transform=transform,
+        nodata=255,
+    ) as dst:
+        dst.write(data, 1)
+    with open(path, "rb") as f:
+        out = f.read()
+    os.unlink(path)
+    return out
+
+
+def test_landcover_bytes_to_cog_adds_overviews_and_clips_bbox():
+    """The new COG helper emits overviews AND clips to the EXACT requested bbox."""
+    import rasterio
+
+    quantized = data_fetch.round_bbox_to_resolution(FORT_MYERS_BBOX, 30)
+    # Flat raster that OVERHANGS the bbox so the clip has something to trim.
+    flat = _make_flat_nlcd_geotiff_bytes(quantized, pad=True)
+
+    # Sanity: the flat input has NO overviews.
+    assert not data_fetch._has_overviews(flat)
+
+    cog = data_fetch._landcover_bytes_to_cog(flat, quantized)
+    assert isinstance(cog, bytes) and len(cog) > 0
+
+    # (1) Overviews present (the TiTiler zoomed-out-tile fix).
+    assert data_fetch._has_overviews(cog), "COG output must carry internal overviews"
+
+    # (2) Output extent clipped to the requested bbox (~1 px tolerance at 30 m).
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(suffix=".tif", delete=False) as f:
+        f.write(cog)
+        cog_path = f.name
+    try:
+        with rasterio.open(cog_path) as src:
+            b = src.bounds
+            # 30 m ~ 0.0003 deg; allow 2 px slack for pixel snapping.
+            tol = 0.0006
+            assert abs(b.left - quantized[0]) < tol, (b.left, quantized[0])
+            assert abs(b.bottom - quantized[1]) < tol, (b.bottom, quantized[1])
+            assert abs(b.right - quantized[2]) < tol, (b.right, quantized[2])
+            assert abs(b.top - quantized[3]) < tol, (b.top, quantized[3])
+            # Tiled (COG driver default 512x512), not strip-organized.
+            assert src.profile.get("blockxsize") is not None
+    finally:
+        os.unlink(cog_path)
+
+
+def test_fetch_nlcd_landcover_bytes_output_has_overviews(monkeypatch):
+    """End-to-end internal fetcher: NLCD bytes come back as a COG with overviews.
+
+    Mocks the OGC adapter so the WCS GeoTIFF is a flat (no-overview) raster,
+    then asserts the fetcher's returned bytes (what gets cached) carry
+    overviews — the F33/F39 spotty-render root-cause fix.
+    """
+    quantized = data_fetch.round_bbox_to_resolution(FORT_MYERS_BBOX, 30)
+    flat = _make_flat_nlcd_geotiff_bytes(quantized)
+    assert not data_fetch._has_overviews(flat)
+
+    class _FakeOGCResp:
+        content = flat
+        content_type = "image/tiff"
+
+    import grace2_agent.tools.ogc_adapter as ogc_mod
+
+    monkeypatch.setattr(
+        ogc_mod, "fetch_ogc_layer", lambda *a, **kw: _FakeOGCResp()
+    )
+
+    out = data_fetch._fetch_nlcd_landcover_bytes(FORT_MYERS_BBOX, 2021)
+    assert isinstance(out, bytes) and len(out) > 0
+    assert data_fetch._has_overviews(out), (
+        "cached NLCD bytes must be a COG with overviews (TiTiler zoom fix)"
+    )
+
+
+# ---------------------------------------------------------------------------
 # job-0039 — fetch_river_geometry (NHDPlus HR HUC4 region download).
 # ---------------------------------------------------------------------------
 
@@ -872,14 +987,21 @@ def test_fetch_river_geometry_docstring_records_tier_4():
 
 
 def test_fetch_river_geometry_happy_path_returns_layer_uri(monkeypatch):
-    """Mocked NHDPlus HR fetcher + mocked GCS → LayerURI with HUC4 code in layer_id."""
+    """OSM-primary fetcher (mocked) + mocked GCS → vector LayerURI on the .fgb path.
+
+    Job: OSM Overpass is the PRIMARY river-geometry source. The happy path
+    mocks the primary fetcher and asserts the LayerURI shape (vector / .fgb /
+    river_geometry cache prefix). layer_id is now provider-agnostic
+    (``rivers-<lon>-<lat>``), no longer HUC4-coded, because the source is
+    decided by the internal fallback chain at fetch time.
+    """
     fake_storage = FakeStorageClient()
     from grace2_agent.tools import cache as cache_mod
 
     monkeypatch.setattr(
         data_fetch,
-        "_fetch_nhdplushr_geometry_bytes",
-        lambda bbox, huc4: b"FAKE_FLATGEOBUF_BYTES",
+        "_fetch_osm_waterway_geometry_bytes",
+        lambda bbox: b"FAKE_FLATGEOBUF_BYTES",
     )
     monkeypatch.setattr(
         data_fetch,
@@ -895,26 +1017,25 @@ def test_fetch_river_geometry_happy_path_returns_layer_uri(monkeypatch):
         "gs://grace-2-hazard-prod-cache/cache/static-30d/river_geometry/"
     )
     assert layer.uri.endswith(".fgb")
-    # HUC4 ``0309`` covers Fort Myers — encoded in the layer_id per the
-    # Tier-4 cache-key-includes-HUC4 discipline.
-    assert "huc4-0309" in layer.layer_id
+    # Provider-agnostic layer_id; renders inline (NOT published via publish_layer).
+    assert layer.layer_id.startswith("rivers-")
+    assert layer.name == "Rivers & Streams"
 
 
-def test_fetch_river_geometry_cache_key_includes_huc4(monkeypatch):
-    """Two disjoint HUC4s with same nominal bbox shape must NOT collide on the cache key.
+def test_fetch_river_geometry_cache_key_distinct_per_bbox(monkeypatch):
+    """Two disjoint regions must NOT collide on the cache key.
 
-    Per the Tier-4 cache discipline (cache key includes the HUC4 region per
-    §F.1.1), Fort Myers (HUC4 0309) and the South Coast California (HUC4
-    1807) MUST produce different cache paths even if the bboxes are small
-    boxes inside each region.
+    The cache key is keyed on the quantized bbox (+ best-effort HUC4), so two
+    small boxes in different regions (Fort Myers vs LA basin) produce
+    different cache paths even though both flow through the OSM-primary chain.
     """
     fake_storage = FakeStorageClient()
     from grace2_agent.tools import cache as cache_mod
 
     monkeypatch.setattr(
         data_fetch,
-        "_fetch_nhdplushr_geometry_bytes",
-        lambda bbox, huc4: b"FAKE_FLATGEOBUF_BYTES",
+        "_fetch_osm_waterway_geometry_bytes",
+        lambda bbox: b"FAKE_FLATGEOBUF_BYTES",
     )
     monkeypatch.setattr(
         data_fetch,
@@ -925,12 +1046,10 @@ def test_fetch_river_geometry_cache_key_includes_huc4(monkeypatch):
     )
 
     fl_layer = fetch_river_geometry(FORT_MYERS_BBOX)
-    # CA south coast (HUC4 1807) — small bbox in the LA basin.
+    # CA south coast — small bbox in the LA basin.
     ca_bbox = (-118.4, 33.8, -118.2, 34.0)
     ca_layer = fetch_river_geometry(ca_bbox)
-    assert "huc4-0309" in fl_layer.layer_id
-    assert "huc4-1807" in ca_layer.layer_id
-    assert fl_layer.uri != ca_layer.uri, "different HUC4s must dedup on different keys"
+    assert fl_layer.uri != ca_layer.uri, "different bboxes must hit different cache keys"
 
 
 def test_fetch_river_geometry_rejects_unknown_source():
@@ -938,11 +1057,36 @@ def test_fetch_river_geometry_rejects_unknown_source():
         fetch_river_geometry(FORT_MYERS_BBOX, source="merit_hydro")
 
 
-def test_fetch_river_geometry_rejects_bbox_outside_huc4_envelope():
-    """A bbox center that doesn't match any v0.1 HUC4 envelope raises UpstreamAPIError."""
-    # Antarctic ocean — not in any HUC4 envelope.
-    with pytest.raises(UpstreamAPIError):
-        fetch_river_geometry((0.0, -70.0, 0.5, -69.5))
+def test_fetch_river_geometry_works_outside_huc4_envelope_via_osm(monkeypatch):
+    """A bbox outside every v0.1 HUC4 envelope still succeeds via OSM-primary.
+
+    Root-cause fix: previously a bbox center outside the hardcoded HUC4
+    envelopes dead-ended with "could not route bbox to a HUC4 region". Now OSM
+    Overpass is the primary path, so an out-of-HUC4 bbox returns a valid vector
+    LayerURI (the OSM fetcher is mocked here so no network is touched).
+    """
+    fake_storage = FakeStorageClient()
+    from grace2_agent.tools import cache as cache_mod
+
+    monkeypatch.setattr(
+        data_fetch,
+        "_fetch_osm_waterway_geometry_bytes",
+        lambda bbox: b"FAKE_FLATGEOBUF_BYTES",
+    )
+    monkeypatch.setattr(
+        data_fetch,
+        "read_through",
+        lambda *a, **kw: cache_mod.read_through(
+            *a, storage_client=fake_storage, now=PINNED_NOW, **kw
+        ),
+    )
+
+    # Kansas — a CONUS bbox not in any v0.1 HUC4 envelope (the old failure case).
+    kansas_bbox = (-97.4, 37.6, -97.2, 37.8)
+    assert data_fetch._huc4_for_bbox(kansas_bbox) is None
+    layer = fetch_river_geometry(kansas_bbox)
+    assert layer.layer_type == "vector"
+    assert layer.uri.endswith(".fgb")
 
 
 def test_fetch_river_geometry_rejects_oversized_bbox():
@@ -957,6 +1101,193 @@ def test_fetch_river_geometry_rejects_oversized_bbox():
     oversized_inside_huc4 = (-81.9, 25.5, -80.1, 27.0)
     with pytest.raises(BboxInvalidError):
         fetch_river_geometry(oversized_inside_huc4)
+
+
+# ---------------------------------------------------------------------------
+# F30 fix — fetch_river_geometry OSM Overpass PRIMARY path + fallback ordering.
+# ---------------------------------------------------------------------------
+
+
+# A small bbox over a couple of synthetic "rivers". KANSAS_BBOX is NOT in any
+# v0.1 HUC4 envelope — the exact case that used to dead-end.
+KANSAS_BBOX = (-97.4, 37.6, -97.2, 37.8)
+
+
+def _fake_overpass_waterway_payload(bbox):
+    """Build a fake Overpass JSON response with waterways spanning the bbox.
+
+    Two ways: one river crossing the bbox left-to-right (spans the full
+    width), one stream that extends OUTSIDE the bbox on the right edge so the
+    clip step has something to trim.
+    """
+    min_lon, min_lat, max_lon, max_lat = bbox
+    mid_lat = 0.5 * (min_lat + max_lat)
+    return {
+        "elements": [
+            {
+                "type": "way",
+                "id": 1001,
+                "tags": {"waterway": "river", "name": "Big River"},
+                # spans the full bbox width along mid-latitude
+                "geometry": [
+                    {"lat": mid_lat, "lon": min_lon},
+                    {"lat": mid_lat, "lon": 0.5 * (min_lon + max_lon)},
+                    {"lat": mid_lat, "lon": max_lon},
+                ],
+            },
+            {
+                "type": "way",
+                "id": 1002,
+                "tags": {"waterway": "stream", "name": "Edge Creek"},
+                # starts inside, extends well outside the right edge
+                "geometry": [
+                    {"lat": min_lat + 0.01, "lon": max_lon - 0.01},
+                    {"lat": min_lat + 0.01, "lon": max_lon + 0.5},
+                ],
+            },
+        ]
+    }
+
+
+def test_fetch_river_geometry_osm_returns_bbox_filling_geometry(monkeypatch):
+    """PRIMARY OSM path: waterways fill the whole bbox and are clipped to it.
+
+    Mocks the Overpass POST, runs the real FGB-serialization + clip path, then
+    decodes the FlatGeobuf and asserts (a) features are present, (b) the
+    union's x-extent spans most of the bbox width (fills the bbox, unlike the
+    NLDI seed-trace), and (c) NO geometry spills outside the requested bbox
+    (the clip trimmed the stream that ran off the right edge).
+    """
+    import geopandas as gpd
+    from shapely.geometry import box as shapely_box
+
+    captured = {}
+
+    def _fake_post(url, data=None, headers=None, timeout=None, **_kw):
+        captured["url"] = url
+        captured["ql"] = (data or {}).get("data")
+
+        class _Resp:
+            status_code = 200
+
+            def raise_for_status(self):
+                return None
+
+            def json(self_inner):
+                return _fake_overpass_waterway_payload(KANSAS_BBOX)
+
+        return _Resp()
+
+    monkeypatch.setattr(data_fetch.requests, "post", _fake_post)
+
+    quantized = data_fetch.round_bbox_to_resolution(KANSAS_BBOX, 10)
+    fgb_bytes = data_fetch._fetch_osm_waterway_geometry_bytes(quantized)
+    assert isinstance(fgb_bytes, bytes) and len(fgb_bytes) > 0
+
+    # The Overpass QL targets waterways, not highways, and uses (s,w,n,e).
+    assert "waterway" in captured["ql"]
+    assert "river|stream|canal" in captured["ql"]
+    assert captured["url"].endswith("/api/interpreter")
+
+    # Decode the FlatGeobuf and verify geometry fills + is clipped to the bbox.
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(suffix=".fgb", delete=False) as f:
+        f.write(fgb_bytes)
+        fgb_path = f.name
+    try:
+        gdf = gpd.read_file(fgb_path)
+    finally:
+        os.unlink(fgb_path)
+
+    assert len(gdf) >= 1, "OSM path must return at least one waterway feature"
+    minx, miny, maxx, maxy = gdf.total_bounds
+    bbox_w = quantized[2] - quantized[0]
+    # Fills the bbox: union x-extent spans most of the width (the NLDI seed
+    # trace would only cover a connected sub-network, not the full bbox).
+    assert (maxx - minx) >= 0.5 * bbox_w
+    # Clipped: nothing spills outside the requested bbox (small float epsilon).
+    eps = 1e-6
+    assert minx >= quantized[0] - eps
+    assert maxx <= quantized[2] + eps
+    assert miny >= quantized[1] - eps
+    assert maxy <= quantized[3] + eps
+
+
+def test_fetch_river_geometry_falls_back_to_nhdplus_when_osm_fails(monkeypatch):
+    """Fallback ordering: OSM primary fails → NHDPlus HR (when HUC4 resolves) is used."""
+    fake_storage = FakeStorageClient()
+    from grace2_agent.tools import cache as cache_mod
+
+    calls = []
+
+    def _osm_boom(bbox):
+        calls.append("osm")
+        raise UpstreamAPIError("simulated Overpass outage")
+
+    def _nhd_ok(bbox, huc4):
+        calls.append(("nhd", huc4))
+        return b"FAKE_NHDPLUS_FLATGEOBUF"
+
+    monkeypatch.setattr(data_fetch, "_fetch_osm_waterway_geometry_bytes", _osm_boom)
+    monkeypatch.setattr(data_fetch, "_fetch_nhdplushr_geometry_bytes", _nhd_ok)
+    monkeypatch.setattr(
+        data_fetch,
+        "read_through",
+        lambda *a, **kw: cache_mod.read_through(
+            *a, storage_client=fake_storage, now=PINNED_NOW, **kw
+        ),
+    )
+
+    # Fort Myers routes to HUC4 0309, so the NHDPlus fallback is available.
+    layer = fetch_river_geometry(FORT_MYERS_BBOX)
+    assert layer.layer_type == "vector"
+    assert layer.uri.endswith(".fgb")
+    # OSM was tried FIRST, then NHDPlus HR with the resolved HUC4.
+    assert calls[0] == "osm"
+    assert calls[1] == ("nhd", "0309")
+
+
+def test_fetch_river_geometry_typed_error_when_all_sources_fail(monkeypatch):
+    """Both OSM (primary) and NHDPlus HR (fallback) fail → typed UpstreamAPIError.
+
+    Data-source-fallback norm: never a silent dead-end or hallucinated success.
+    """
+    fake_storage = FakeStorageClient()
+    from grace2_agent.tools import cache as cache_mod
+
+    def _osm_boom(bbox):
+        raise UpstreamAPIError("simulated Overpass outage")
+
+    def _nhd_boom(bbox, huc4):
+        raise UpstreamAPIError("simulated NHDPlus 404")
+
+    monkeypatch.setattr(data_fetch, "_fetch_osm_waterway_geometry_bytes", _osm_boom)
+    monkeypatch.setattr(data_fetch, "_fetch_nhdplushr_geometry_bytes", _nhd_boom)
+    monkeypatch.setattr(
+        data_fetch,
+        "read_through",
+        lambda *a, **kw: cache_mod.read_through(
+            *a, storage_client=fake_storage, now=PINNED_NOW, **kw
+        ),
+    )
+
+    with pytest.raises(UpstreamAPIError):
+        fetch_river_geometry(FORT_MYERS_BBOX)
+
+
+def test_fetch_river_geometry_osm_only_when_no_huc4_and_osm_fails(monkeypatch):
+    """OSM fails AND no HUC4 fallback available → typed UpstreamAPIError (no dead-end)."""
+    def _osm_boom(bbox):
+        raise UpstreamAPIError("simulated Overpass outage")
+
+    monkeypatch.setattr(data_fetch, "_fetch_osm_waterway_geometry_bytes", _osm_boom)
+    # Kansas is outside every HUC4 envelope, so there is no NHDPlus fallback.
+    assert data_fetch._huc4_for_bbox(KANSAS_BBOX) is None
+    with pytest.raises(UpstreamAPIError):
+        data_fetch._fetch_river_geometry_bytes(
+            data_fetch.round_bbox_to_resolution(KANSAS_BBOX, 10), None
+        )
 
 
 # ---------------------------------------------------------------------------

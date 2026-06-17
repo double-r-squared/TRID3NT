@@ -13,10 +13,104 @@ from typing import Any
 import pytest
 
 from grace2_agent.tool_arg_normalizer import (
+    LatLonCoercionError,
+    coerce_latlon,
     normalize_args,
     parse_forcing_string,
     snake_case,
 )
+
+
+# --------------------------------------------------------------------------- #
+# coerce_latlon (job-0317) — Bedrock Claude passes spill_location_latlon as a
+# STRING, not a JSON array. The naive ``tuple(float(v) for v in value)``
+# iterated the string's characters -> float('.') crash. coerce_latlon accepts
+# every string form AND a real list, and raises a typed error only when the
+# value is genuinely not two numbers.
+# --------------------------------------------------------------------------- #
+
+
+def test_coerce_latlon_real_list_passthrough() -> None:
+    assert coerce_latlon([40.81, -96.71]) == [40.81, -96.71]
+
+
+def test_coerce_latlon_real_tuple_passthrough() -> None:
+    assert coerce_latlon((40.81, -96.71)) == [40.81, -96.71]
+
+
+def test_coerce_latlon_int_list_coerced_to_floats() -> None:
+    out = coerce_latlon([40, -96])
+    assert out == [40.0, -96.0]
+    assert all(isinstance(v, float) for v in out)
+
+
+def test_coerce_latlon_bare_comma_string() -> None:
+    # The exact live failure form: "40.8088861,-96.7077751".
+    assert coerce_latlon("40.8088861,-96.7077751") == [40.8088861, -96.7077751]
+
+
+def test_coerce_latlon_comma_space_string() -> None:
+    assert coerce_latlon("40.81, -96.71") == [40.81, -96.71]
+
+
+def test_coerce_latlon_bracketed_string() -> None:
+    assert coerce_latlon("[40.81, -96.71]") == [40.81, -96.71]
+
+
+def test_coerce_latlon_paren_string() -> None:
+    assert coerce_latlon("(40.81, -96.71)") == [40.81, -96.71]
+
+
+def test_coerce_latlon_whitespace_separated_string() -> None:
+    assert coerce_latlon("40.81 -96.71") == [40.81, -96.71]
+
+
+def test_coerce_latlon_bracketed_no_inner_space() -> None:
+    assert coerce_latlon("[40.81,-96.71]") == [40.81, -96.71]
+
+
+def test_coerce_latlon_surrounding_whitespace_stripped() -> None:
+    assert coerce_latlon("  40.81 , -96.71  ") == [40.81, -96.71]
+
+
+def test_coerce_latlon_negative_and_positive_order_preserved() -> None:
+    # Order is preserved verbatim (no reordering / range fixup here).
+    assert coerce_latlon("-96.71, 40.81") == [-96.71, 40.81]
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "not-a-coordinate",
+        "40.81",  # only one number
+        "40.81, -96.71, 12.0",  # three numbers
+        "[40.81]",  # bracketed single
+        "",  # empty
+        "   ",  # whitespace only
+        "lat,lon",  # non-numeric parts
+        "40.81,abc",  # one non-numeric part
+    ],
+)
+def test_coerce_latlon_bad_string_raises_typed_error(bad: str) -> None:
+    with pytest.raises(LatLonCoercionError):
+        coerce_latlon(bad)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        None,
+        [40.81],  # wrong element count
+        [40.81, -96.71, 12.0],  # three elements
+        [],  # empty list
+        ["lat", "lon"],  # non-numeric list elements
+        42,  # bare scalar
+        {"lat": 40.81, "lon": -96.71},  # dict
+    ],
+)
+def test_coerce_latlon_bad_nonstring_raises_typed_error(bad: Any) -> None:
+    with pytest.raises(LatLonCoercionError):
+        coerce_latlon(bad)
 
 
 # --------------------------------------------------------------------------- #

@@ -415,3 +415,132 @@ def test_run_modflow_job_rejects_incomplete_params() -> None:
     assert isinstance(result, dict)
     assert result["status"] == "error"
     assert result["error_code"] == "MODFLOW_PARAMS_INCOMPLETE"
+
+
+# --------------------------------------------------------------------------- #
+# job-0317: Bedrock Claude passes spill_location_latlon as a STRING, not a
+# JSON array. The previous ``tuple(float(v) for v in ...)`` iterated the
+# string's CHARACTERS -> float('.') -> MODFLOW_PARAMS_INVALID (non-retryable).
+# These tests prove the string forms now coerce, and a genuinely-bad value
+# still returns a clean typed error.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "latlon_str,expected_lat,expected_lon",
+    [
+        ("40.8088861,-96.7077751", 40.8088861, -96.7077751),  # the live form
+        ("40.81, -96.71", 40.81, -96.71),
+        ("[40.81, -96.71]", 40.81, -96.71),
+        ("(40.81, -96.71)", 40.81, -96.71),
+        ("40.81 -96.71", 40.81, -96.71),
+    ],
+)
+def test_run_modflow_job_coerces_string_latlon(
+    monkeypatch: Any,
+    latlon_str: str,
+    expected_lat: float,
+    expected_lon: float,
+) -> None:
+    """A STRING spill_location_latlon reaches the deck-build stage as (lat, lon).
+
+    mf6-independent: we stub ``build_and_stage_modflow_deck`` to capture the
+    coerced ``MODFLOWRunArgs`` and raise a sentinel, proving the string got
+    past the coercion (no character-iteration crash) and was parsed correctly.
+    """
+    import asyncio
+
+    import grace2_agent.tools.run_modflow_tool as rmt
+
+    captured: dict[str, Any] = {}
+
+    class _Sentinel(Exception):
+        pass
+
+    def _fake_build_and_stage(run_args: MODFLOWRunArgs) -> Any:
+        captured["run_args"] = run_args
+        raise _Sentinel("reached deck build")
+
+    monkeypatch.setattr(rmt, "build_and_stage_modflow_deck", _fake_build_and_stage)
+
+    result = asyncio.run(
+        rmt.run_modflow_job(
+            spill_location_latlon=latlon_str,
+            contaminant="benzene",
+            release_rate_kg_s=0.01,
+            duration_days=30.0,
+        )
+    )
+
+    # The string was coerced (NOT a MODFLOW_PARAMS_INVALID char-iteration crash):
+    # the run reached the deck-build stage where our sentinel fired and was
+    # caught by the defensive catch-all -> MODFLOW_INTERNAL_ERROR.
+    assert "run_args" in captured, "deck build was never reached — coercion failed"
+    run_args = captured["run_args"]
+    lat, lon = run_args.spill_location_latlon
+    assert lat == pytest.approx(expected_lat)
+    assert lon == pytest.approx(expected_lon)
+    assert isinstance(result, dict)
+    assert result["status"] == "error"
+    assert result["error_code"] == "MODFLOW_INTERNAL_ERROR"
+    assert result["error_code"] != "MODFLOW_PARAMS_INVALID"
+
+
+def test_run_modflow_job_accepts_real_list_latlon(monkeypatch: Any) -> None:
+    """A genuine 2-list still passes through coercion unchanged."""
+    import asyncio
+
+    import grace2_agent.tools.run_modflow_tool as rmt
+
+    captured: dict[str, Any] = {}
+
+    class _Sentinel(Exception):
+        pass
+
+    def _fake_build_and_stage(run_args: MODFLOWRunArgs) -> Any:
+        captured["run_args"] = run_args
+        raise _Sentinel("reached deck build")
+
+    monkeypatch.setattr(rmt, "build_and_stage_modflow_deck", _fake_build_and_stage)
+
+    asyncio.run(
+        rmt.run_modflow_job(
+            spill_location_latlon=[40.81, -96.71],
+            contaminant="benzene",
+            release_rate_kg_s=0.01,
+            duration_days=30.0,
+        )
+    )
+    lat, lon = captured["run_args"].spill_location_latlon
+    assert (lat, lon) == pytest.approx((40.81, -96.71))
+
+
+@pytest.mark.parametrize(
+    "bad_latlon",
+    [
+        "not-a-coordinate",
+        "40.81",  # only one number
+        "40.81, -96.71, 12.0",  # three numbers
+        "40.81,abc",  # one non-numeric part
+        [40.81],  # wrong element count
+        [40.81, -96.71, 12.0],  # three elements
+    ],
+)
+def test_run_modflow_job_rejects_bad_latlon_typed(bad_latlon: Any) -> None:
+    """A genuinely-bad latlon returns MODFLOW_PARAMS_INVALID (no exception)."""
+    import asyncio
+
+    from grace2_agent.tools.run_modflow_tool import run_modflow_job
+
+    result = asyncio.run(
+        run_modflow_job(
+            spill_location_latlon=bad_latlon,
+            contaminant="benzene",
+            release_rate_kg_s=0.01,
+            duration_days=30.0,
+        )
+    )
+    assert isinstance(result, dict)
+    assert result["status"] == "error"
+    assert result["error_code"] == "MODFLOW_PARAMS_INVALID"
+    assert "spill_location_latlon" in result["error_message"]

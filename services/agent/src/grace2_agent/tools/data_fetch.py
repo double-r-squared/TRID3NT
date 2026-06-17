@@ -1400,6 +1400,216 @@ _NLCD_WCS_COVERAGE_BY_YEAR: dict[int, str] = {
 }
 
 
+def _clip_raster_bytes_to_bbox(
+    tif_bytes: bytes, bbox: tuple[float, float, float, float]
+) -> bytes:
+    """Crop a GeoTIFF (bytes) to the EXACT requested bbox via rasterio windowing.
+
+    The MRLC WCS GetCoverage already returns the requested BBOX server-side,
+    but pixel snapping can leave a fringe row/column outside the AOI. This
+    reprojects the bbox into the raster's CRS, computes the pixel window, and
+    writes the cropped raster — guaranteeing the output extent matches the
+    requested bbox to within one pixel. Best-effort: returns the input bytes
+    unchanged on any failure (never raises — clipping is a precision nicety,
+    not a correctness gate).
+    """
+    in_tmp: str | None = None
+    out_tmp: str | None = None
+    try:
+        import rasterio  # type: ignore[import-not-found]
+        from rasterio.warp import transform_bounds  # type: ignore[import-not-found]
+        from rasterio.windows import from_bounds as window_from_bounds  # type: ignore[import-not-found]
+
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(suffix=".tif", delete=False) as f:
+            in_tmp = f.name
+            f.write(tif_bytes)
+
+        with rasterio.open(in_tmp) as src:
+            dst_crs = src.crs
+            # Reproject the WGS84 bbox into the raster CRS (no-op when already 4326).
+            if dst_crs is not None and dst_crs.to_epsg() != 4326:
+                left, bottom, right, top = transform_bounds(
+                    "EPSG:4326", dst_crs, *bbox, densify_pts=21
+                )
+            else:
+                left, bottom, right, top = bbox
+            window = window_from_bounds(
+                left, bottom, right, top, transform=src.transform
+            )
+            # Intersect with the raster's full window so we never read outside it.
+            full = rasterio.windows.Window(0, 0, src.width, src.height)
+            window = window.intersection(full).round_offsets().round_lengths()
+            if window.width < 1 or window.height < 1:
+                # Degenerate intersection — keep the original (don't blank it out).
+                return tif_bytes
+            data = src.read(window=window)
+            transform = src.window_transform(window)
+            profile = src.profile.copy()
+            profile.update(
+                height=int(window.height),
+                width=int(window.width),
+                transform=transform,
+            )
+            with tempfile.NamedTemporaryFile(suffix=".tif", delete=False) as of:
+                out_tmp = of.name
+            with rasterio.open(out_tmp, "w", **profile) as dst:
+                dst.write(data)
+        with open(out_tmp, "rb") as f:
+            return f.read()
+    except Exception as exc:  # noqa: BLE001 — clip is best-effort precision
+        logger.warning(
+            "fetch_landcover: bbox clip failed (%s: %s); returning unclipped raster",
+            type(exc).__name__,
+            exc,
+        )
+        return tif_bytes
+    finally:
+        for path in (in_tmp, out_tmp):
+            if path is not None:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+
+
+def _rasterio_translate_to_cog(tif_bytes: bytes) -> bytes:
+    """Translate GeoTIFF bytes to a tiled COG WITH overviews via the rasterio COG driver.
+
+    Used as the fallback when the GDAL CLI binaries that ``_translate_to_cog``
+    (compute_hillshade) shells out to are not on PATH (e.g. the agent .venv
+    without gdal-bin). The rasterio ``COG`` driver builds internal overviews
+    and 512x512 tiling automatically — the exact properties TiTiler needs to
+    avoid the zoomed-out 404s that made NLCD render spotty. Best-effort:
+    returns the input bytes unchanged on any failure.
+    """
+    in_tmp: str | None = None
+    out_tmp: str | None = None
+    try:
+        import rasterio  # type: ignore[import-not-found]
+
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(suffix=".tif", delete=False) as f:
+            in_tmp = f.name
+            f.write(tif_bytes)
+        with rasterio.open(in_tmp) as src:
+            profile = {
+                "driver": "COG",
+                "width": src.width,
+                "height": src.height,
+                "count": src.count,
+                "dtype": src.dtypes[0],
+                "crs": src.crs,
+                "transform": src.transform,
+                "compress": "DEFLATE",
+            }
+            if src.nodata is not None:
+                profile["nodata"] = src.nodata
+            data = src.read()
+            with tempfile.NamedTemporaryFile(suffix=".tif", delete=False) as of:
+                out_tmp = of.name
+            with rasterio.open(
+                out_tmp, "w", OVERVIEW_RESAMPLING="NEAREST", **profile
+            ) as dst:
+                dst.write(data)
+        with open(out_tmp, "rb") as f:
+            return f.read()
+    except Exception as exc:  # noqa: BLE001 — COG translate is best-effort
+        logger.warning(
+            "fetch_landcover: rasterio COG translate failed (%s: %s); returning "
+            "flat GeoTIFF bytes",
+            type(exc).__name__,
+            exc,
+        )
+        return tif_bytes
+    finally:
+        for path in (in_tmp, out_tmp):
+            if path is not None:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+
+
+def _landcover_bytes_to_cog(
+    tif_bytes: bytes, bbox: tuple[float, float, float, float]
+) -> bytes:
+    """Clip NLCD bytes to the exact bbox and emit a tiled COG WITH overviews.
+
+    job-0271-class fix for fetch_landcover: the MRLC WCS GetCoverage returns a
+    flat strip-organized GeoTIFF with NO overviews, so TiTiler 404s the
+    zoomed-out tiles and the layer renders spotty / never paints when panned
+    out. This routes the raster through ``_translate_to_cog`` (the
+    compute_hillshade COG translator that writes a tiled COG with overviews)
+    when the GDAL CLI is available, and falls back to the pure-rasterio COG
+    driver otherwise — so overviews are present in BOTH environments.
+
+    Also clips to the EXACT requested bbox first (precision nicety; the WCS
+    already honors BBOX server-side but pixel snapping can leave a fringe).
+    """
+    clipped = _clip_raster_bytes_to_bbox(tif_bytes, bbox)
+
+    # Prefer the assigned compute_hillshade COG translator (GDAL CLI path) so
+    # the COG profile matches every other raster product. Fall back to the
+    # pure-rasterio COG driver when the gdal binaries are not on PATH.
+    try:
+        from .compute_hillshade import _get_gdaldem_bin, _translate_to_cog
+
+        in_tmp: str | None = None
+        try:
+            import tempfile
+
+            with tempfile.NamedTemporaryFile(suffix=".tif", delete=False) as f:
+                in_tmp = f.name
+                f.write(clipped)
+            gdaldem_bin = _get_gdaldem_bin()  # raises if gdal CLI absent
+            cog = _translate_to_cog(in_tmp, gdaldem_bin)
+            # _translate_to_cog returns flat bytes when gdal_translate is missing
+            # even though gdaldem resolved; verify overviews landed, else fall
+            # through to the rasterio path below.
+            if _has_overviews(cog):
+                return cog
+        finally:
+            if in_tmp is not None:
+                try:
+                    os.unlink(in_tmp)
+                except OSError:
+                    pass
+    except Exception as exc:  # noqa: BLE001 — GDAL CLI not available / failed
+        logger.info(
+            "fetch_landcover: GDAL-CLI COG translate unavailable (%s); using "
+            "rasterio COG driver fallback",
+            exc,
+        )
+
+    return _rasterio_translate_to_cog(clipped)
+
+
+def _has_overviews(tif_bytes: bytes) -> bool:
+    """Return True iff the GeoTIFF bytes carry internal overviews on band 1."""
+    in_tmp: str | None = None
+    try:
+        import rasterio  # type: ignore[import-not-found]
+
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(suffix=".tif", delete=False) as f:
+            in_tmp = f.name
+            f.write(tif_bytes)
+        with rasterio.open(in_tmp) as src:
+            return len(src.overviews(1)) > 0
+    except Exception:  # noqa: BLE001
+        return False
+    finally:
+        if in_tmp is not None:
+            try:
+                os.unlink(in_tmp)
+            except OSError:
+                pass
+
+
 def _fetch_nlcd_landcover_bytes(
     bbox: tuple[float, float, float, float], vintage_year: int
 ) -> bytes:
@@ -1481,7 +1691,12 @@ def _fetch_nlcd_landcover_bytes(
             f"MRLC WCS returned unexpected content-type={ct!r} for coverage={coverage} "
             f"bbox={bbox}; body preview: {ogc_resp.content[:300]!r}"
         )
-    return ogc_resp.content
+
+    # job-0271-class fix (F33/F39): the MRLC WCS GetCoverage GeoTIFF is a flat
+    # strip-organized raster with NO overviews, so TiTiler 404s the zoomed-out
+    # tiles and NLCD renders spotty / vanishes when panned out. Clip to the
+    # exact bbox and re-emit a tiled COG WITH overviews before caching.
+    return _landcover_bytes_to_cog(ogc_resp.content, bbox)
 
 
 def _fetch_esa_worldcover_bytes(
@@ -1775,6 +1990,303 @@ def _huc4_for_bbox(bbox: tuple[float, float, float, float]) -> str | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# OSM Overpass waterway path — PRIMARY source for fetch_river_geometry.
+# ---------------------------------------------------------------------------
+#
+# Root-cause fix: the NHDPlus HR HUC4 routing heuristic only covers a handful
+# of CONUS demo envelopes, so most bboxes hit "could not route bbox to a HUC4
+# region" and the tool dead-ends (data-source-fallback norm violation). OSM
+# Overpass exposes a true per-bbox waterway query that fills the WHOLE bbox
+# (not just a seed-connected sub-network), is global, and serializes to the
+# same FlatGeobuf -> inline-GeoJSON render path the Wave 4.9 vector pipeline
+# already drives (``add_loaded_layer`` reads the .fgb, converts to GeoJSON).
+#
+# Overpass QL shape (mirrors fetch_roads_osm, but for waterways):
+#
+#     [out:json][timeout:60];
+#     (way["waterway"~"^(river|stream|canal)$"](s,w,n,e););
+#     out geom;
+#
+# Overpass returns the bbox corners as (south, west, north, east) — the
+# OPPOSITE corner-pair ordering from the caller's (min_lon, min_lat, max_lon,
+# max_lat). Same convention as the roads tool.
+
+#: Overpass interpreter endpoint (same public mirror fetch_roads_osm uses).
+_OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+
+#: HTTP timeout for the Overpass POST (Overpass is slow under load).
+_OVERPASS_HTTP_TIMEOUT = 120.0
+
+#: Overpass-side internal-query timeout (the ``[timeout:N]`` directive).
+_OVERPASS_QL_TIMEOUT = 60
+
+#: OSM ``waterway`` tag values treated as "rivers and streams" for this tool.
+#: ``river`` + ``stream`` + ``canal`` is the channel-carrying network most
+#: comparable to NHDFlowline; ``ditch``/``drain`` are excluded by default
+#: (they explode feature counts in agricultural/urban areas with little
+#: hydrologic-modeling value).
+_WATERWAY_CLASSES: tuple[str, ...] = ("river", "stream", "canal")
+
+
+def _build_overpass_waterway_ql(
+    bbox: tuple[float, float, float, float],
+    waterway_classes: tuple[str, ...],
+) -> str:
+    """Construct the Overpass QL payload for waterway ways inside ``bbox``.
+
+    Overpass expects the bbox corners as ``(south, west, north, east)``
+    (lat first) — the OPPOSITE ordering from the caller's
+    ``(min_lon, min_lat, max_lon, max_lat)``.
+    """
+    min_lon, min_lat, max_lon, max_lat = bbox
+    s, w, n, e = min_lat, min_lon, max_lat, max_lon
+    classes_pipe = "|".join(waterway_classes)
+    return (
+        f"[out:json][timeout:{_OVERPASS_QL_TIMEOUT}];"
+        f"(way[\"waterway\"~\"^({classes_pipe})$\"]({s},{w},{n},{e}););"
+        f"out geom;"
+    )
+
+
+def _post_overpass_waterways(ql: str) -> dict[str, Any]:
+    """POST ``ql`` to the Overpass interpreter; return the parsed JSON dict.
+
+    Raises ``UpstreamAPIError`` on network / HTTP / parse failure so the
+    caller can fall through to the NHDPlus HR fallback (data-source-fallback
+    norm) rather than dead-ending.
+    """
+    try:
+        resp = requests.post(
+            _OVERPASS_URL,
+            data={"data": ql},
+            headers={"User-Agent": _DEFAULT_USER_AGENT},
+            timeout=_OVERPASS_HTTP_TIMEOUT,
+        )
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        raise UpstreamAPIError(
+            f"Overpass waterway query failed (transport/HTTP): {exc}"
+        ) from exc
+    try:
+        return resp.json()
+    except ValueError as exc:
+        raise UpstreamAPIError(
+            f"Overpass returned non-JSON response for waterway query: {exc}"
+        ) from exc
+
+
+def _extract_overpass_waterway_records(
+    payload: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Project Overpass ``way`` elements to LineString records.
+
+    Each record carries ``coords`` (list of ``(lon, lat)`` tuples) plus the
+    ``osm_id``, ``name``, and ``waterway`` attributes. Ways with fewer than
+    two valid coordinates are dropped (a LineString needs >= 2 points).
+    """
+    elements = payload.get("elements") or []
+    if not isinstance(elements, list):
+        raise UpstreamAPIError(
+            f"Overpass 'elements' is not a list: {type(elements).__name__}"
+        )
+    records: list[dict[str, Any]] = []
+    for el in elements:
+        if not isinstance(el, dict) or el.get("type") != "way":
+            continue
+        geom = el.get("geometry") or []
+        if not isinstance(geom, list) or len(geom) < 2:
+            continue
+        coords: list[tuple[float, float]] = []
+        for pt in geom:
+            if not isinstance(pt, dict):
+                continue
+            lat_v = pt.get("lat")
+            lon_v = pt.get("lon")
+            if lat_v is None or lon_v is None:
+                continue
+            try:
+                lat = float(lat_v)
+                lon = float(lon_v)
+            except (TypeError, ValueError):
+                continue
+            if not (math.isfinite(lat) and math.isfinite(lon)):
+                continue
+            coords.append((lon, lat))
+        if len(coords) < 2:
+            continue
+        tags = el.get("tags") or {}
+        if not isinstance(tags, dict):
+            tags = {}
+        records.append(
+            {
+                "osm_id": el.get("id"),
+                "name": tags.get("name"),
+                "waterway": tags.get("waterway"),
+                "coords": coords,
+            }
+        )
+    return records
+
+
+def _waterway_records_to_clipped_fgb_bytes(
+    records: list[dict[str, Any]],
+    bbox: tuple[float, float, float, float],
+) -> bytes:
+    """Serialize waterway LineString records to bbox-clipped FlatGeobuf bytes.
+
+    Builds a GeoDataFrame of LineStrings (EPSG:4326), clips it to the exact
+    requested bbox so the layer fills the whole bbox without spilling outside
+    it, and writes FlatGeobuf bytes (the same `.fgb` -> inline-GeoJSON render
+    path Wave 4.9 drives via ``add_loaded_layer``). An empty record list still
+    produces a valid (empty) FlatGeobuf — never a sentinel (cache.py poison
+    contract).
+    """
+    try:
+        import geopandas as gpd  # type: ignore[import-not-found]
+        from shapely.geometry import LineString, box as shapely_box  # type: ignore[import-not-found]
+    except Exception as exc:  # noqa: BLE001
+        raise UpstreamAPIError(
+            f"geopandas / shapely unavailable for OSM waterway serialization: {exc}"
+        ) from exc
+
+    if records:
+        geometries = [LineString(r["coords"]) for r in records]
+        attrs = [
+            {
+                "osm_id": r.get("osm_id"),
+                "name": r.get("name"),
+                "waterway": r.get("waterway"),
+            }
+            for r in records
+        ]
+        gdf = gpd.GeoDataFrame(attrs, geometry=geometries, crs="EPSG:4326")
+        # Clip to the exact bbox so geometry doesn't spill outside the AOI.
+        try:
+            gdf = gdf.clip(shapely_box(*bbox))
+        except Exception as exc:  # noqa: BLE001 — clip is best-effort precision
+            logger.warning(
+                "OSM waterway clip failed; returning unclipped features: %s", exc
+            )
+    else:
+        import pandas as pd  # type: ignore[import-not-found]
+
+        empty_df = pd.DataFrame(
+            {
+                "osm_id": pd.Series(dtype="Int64"),
+                "name": pd.Series(dtype="object"),
+                "waterway": pd.Series(dtype="object"),
+            }
+        )
+        gdf = gpd.GeoDataFrame(
+            empty_df,
+            geometry=gpd.GeoSeries([], crs="EPSG:4326"),
+            crs="EPSG:4326",
+        )
+
+    out_tmp: str | None = None
+    try:
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(
+            suffix=".fgb", delete=False, prefix="grace2_osm_rivers_"
+        ) as f:
+            out_tmp = f.name
+        try:
+            gdf.to_file(out_tmp, driver="FlatGeobuf")
+        except Exception as exc:  # noqa: BLE001
+            raise UpstreamAPIError(
+                f"FlatGeobuf write failed for OSM waterways (bbox={bbox}): {exc}"
+            ) from exc
+        with open(out_tmp, "rb") as f:
+            return f.read()
+    finally:
+        if out_tmp is not None:
+            try:
+                os.unlink(out_tmp)
+            except OSError:
+                pass
+
+
+def _fetch_osm_waterway_geometry_bytes(
+    bbox: tuple[float, float, float, float],
+) -> bytes:
+    """PRIMARY river-geometry fetcher — OSM Overpass waterway query over the bbox.
+
+    Queries Overpass for ``waterway`` ways (river/stream/canal) inside the
+    bbox, projects each to a LineString, clips to the bbox, and returns
+    FlatGeobuf bytes. Fills the WHOLE bbox (true per-bbox query — not a
+    seed-connected sub-network like NLDI). Raises ``UpstreamAPIError`` on any
+    failure so ``fetch_river_geometry`` can fall through to NHDPlus HR.
+    """
+    _validate_bbox(bbox)
+    ql = _build_overpass_waterway_ql(bbox, _WATERWAY_CLASSES)
+    payload = _post_overpass_waterways(ql)
+    records = _extract_overpass_waterway_records(payload)
+    logger.info(
+        "fetch_river_geometry[osm]: extracted %d waterway(s) for bbox=%s classes=%s",
+        len(records),
+        bbox,
+        _WATERWAY_CLASSES,
+    )
+    return _waterway_records_to_clipped_fgb_bytes(records, bbox)
+
+
+def _fetch_river_geometry_bytes(
+    bbox: tuple[float, float, float, float],
+    huc4: str | None,
+) -> bytes:
+    """Internal fallback chain for river geometry (data-source-fallback norm).
+
+    Order:
+      1. PRIMARY — OSM Overpass waterway query over the bbox (global, true
+         per-bbox, fills the whole AOI). Empty-but-valid results are accepted
+         (no rivers in the bbox is a legitimate answer, not a failure).
+      2. FALLBACK — NHDPlus HR HUC4 region download + local clip, but only
+         when the bbox routed to a HUC4 region (``huc4`` is not None).
+      3. Typed honest error (``UpstreamAPIError``) if every path fails — never
+         a silent dead-end or a hallucinated success.
+
+    Returns FlatGeobuf bytes. The caller (``fetch_river_geometry``) routes
+    these through ``read_through`` so the 30-day cache absorbs repeat calls.
+    """
+    primary_exc: Exception | None = None
+    try:
+        return _fetch_osm_waterway_geometry_bytes(bbox)
+    except Exception as exc:  # noqa: BLE001 — fall through to NHDPlus HR
+        primary_exc = exc
+        logger.warning(
+            "fetch_river_geometry: OSM Overpass primary failed (%s: %s); "
+            "falling back to NHDPlus HR (huc4=%s)",
+            type(exc).__name__,
+            exc,
+            huc4,
+        )
+
+    if huc4 is not None:
+        try:
+            return _fetch_nhdplushr_geometry_bytes(bbox, huc4)
+        except Exception as exc:  # noqa: BLE001 — both paths failed
+            logger.warning(
+                "fetch_river_geometry: NHDPlus HR fallback also failed "
+                "(huc4=%s): %s: %s",
+                huc4,
+                type(exc).__name__,
+                exc,
+            )
+            raise UpstreamAPIError(
+                "fetch_river_geometry: both OSM Overpass (primary) and NHDPlus HR "
+                f"(fallback, huc4={huc4}) failed. OSM error: {primary_exc}. "
+                f"NHDPlus HR error: {exc}."
+            ) from exc
+
+    # OSM failed and there is no HUC4 fallback available.
+    raise UpstreamAPIError(
+        "fetch_river_geometry: OSM Overpass (primary) failed and no NHDPlus HR "
+        f"HUC4 fallback is available for this bbox. OSM error: {primary_exc}."
+    )
+
+
 def _fetch_nhdplushr_geometry_bytes(
     bbox: tuple[float, float, float, float], huc4: str
 ) -> bytes:
@@ -1925,14 +2437,23 @@ def fetch_river_geometry(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Fetch river and stream flowline geometry for a bbox from NHDPlus HR (USGS).
+    """Fetch river and stream flowline geometry for a bbox (OSM + NHDPlus HR).
 
-    **What it does:** Downloads the USGS NHDPlus High Resolution NHDFlowline
-    feature class for the HUC4 watershed region containing the bbox, clips
-    it to the bbox extent, and returns a FlatGeobuf. Access pattern:
-    Tier 4 (region download + local clip): the full HUC4 GDB (~144 MB for
-    South Florida) is fetched on a cache miss and the 30-day cache absorbs
-    repeat calls.
+    **What it does:** Returns river/stream/canal LineStrings that fill the
+    requested bbox, as a FlatGeobuf that renders inline on the map (Wave 4.9
+    vector path). Access pattern: Tier 2/Tier 4 with an internal fallback
+    chain (data-source-fallback norm):
+
+    1. PRIMARY — OSM Overpass ``waterway`` query over the bbox
+       (river/stream/canal). Global, true per-bbox: fills the WHOLE bbox, not
+       just a seed-connected sub-network. Clipped to the bbox.
+    2. FALLBACK — USGS NHDPlus High Resolution NHDFlowline (Tier 4 region
+       download + local clip), used when the bbox routes to one of the v0.1
+       HUC4 envelopes and OSM is unavailable.
+    3. Typed honest error if both fail — never a silent dead-end.
+
+    Both paths serialize to FlatGeobuf and clip to the requested bbox. The
+    30-day cache absorbs repeat calls.
 
     **When to use:**
     - ``build_sfincs_model`` needs river flowlines for DEM hydro-conditioning
@@ -1941,84 +2462,81 @@ def fetch_river_geometry(
       placement (upstream inflow nodes, downstream outlets).
     - User asks to visualize stream networks or watershed drainage patterns.
     - Watershed delineation: ``delineate_watershed`` tool consumes the
-      NHDFlowline outlet point to route upstream.
+      flowline outlet point to route upstream.
 
     **When NOT to use:**
     - Real-time streamflow measurements — use ``fetch_streamflow`` (NWIS
       USGS gauges) for discharge time series.
     - Flow-direction / accumulation grids — derive from the DEM inside
       HydroMT; NHDPlus HR publishes those separately.
-    - Bboxes outside the v0.1 HUC4 envelope table (see
-      OQ-39-NHDPLUSHR-HUC4-ROUTING-HEURISTIC): the tool raises
-      ``UpstreamAPIError`` if the bbox center falls outside the hardcoded
-      heuristic envelopes. Currently covers South Florida, Gulf Coast Texas,
-      Louisiana, Hudson NY, Cape Fear NC, Los Angeles CA.
-    - Areas larger than 5,000 km² — the tool enforces a guardrail to prevent
-      multi-HUC4 stitching (not in scope for v0.1).
+    - Areas larger than 5,000 km² — the tool enforces a guardrail to keep a
+      single fetch tractable (use a smaller bbox or a future tiled workflow).
 
     **Parameters:**
     - ``bbox`` (tuple[float,float,float,float]): ``(min_lon, min_lat, max_lon,
       max_lat)`` in EPSG:4326. Max area 5,000 km².
-    - ``source`` (str, default ``"nhdplus_hr"``): hydrography source.
-      ``"nhdplus_hr"`` is the only v0.1 supported value; others raise
-      ``BboxInvalidError``.
+    - ``source`` (str, default ``"nhdplus_hr"``): preferred hydrography
+      source label. ``"nhdplus_hr"`` and ``"osm"`` are accepted; the internal
+      fallback chain (OSM primary, NHDPlus HR fallback) runs regardless so the
+      tool stays reliable across all bboxes. Unsupported labels (e.g.
+      ``"merit_hydro"``) raise ``BboxInvalidError``.
 
     **Returns:**
-    A ``LayerURI`` pointing at a FlatGeobuf of NHDFlowline features in the
+    A ``LayerURI`` pointing at a FlatGeobuf of river/stream LineStrings in the
     cache bucket (``gs://grace-2-hazard-prod-cache/cache/static-30d/river_geometry/<key>.fgb``).
-    ``layer_type="vector"``, ``role="input"``. The cache key encodes the HUC4
-    region code so two callers in the same region dedup to the same artifact.
+    ``layer_type="vector"``, ``role="input"``. The FlatGeobuf renders inline
+    on the map via the Wave 4.9 GeoJSON path (``add_loaded_layer``) — it is
+    NOT published through ``publish_layer`` (that path is raster-only).
 
     **Cross-tool dependencies:**
     - Upstream: ``geocode_location`` for bbox derivation.
     - Downstream: ``build_sfincs_model`` (river-burning DEM step),
       ``delineate_watershed``, stream-network display in map panel.
     """
-    if source != "nhdplus_hr":
+    if source not in ("nhdplus_hr", "osm"):
         # Reserved future sources (NHDPlus V2, MERIT-Hydro) — not in v0.1.
         raise BboxInvalidError(
-            f"unsupported source={source!r}; allowed: 'nhdplus_hr' (Tier-4 HUC4 GDB)."
+            f"unsupported source={source!r}; allowed: 'nhdplus_hr' (Tier-4 HUC4 GDB) "
+            "or 'osm' (Overpass waterway). The internal fallback chain runs "
+            "OSM-primary regardless of which label you pass."
         )
 
     _validate_bbox(bbox)
     quantized = round_bbox_to_resolution(bbox, 10)
 
-    huc4 = _huc4_for_bbox(quantized)
-    if huc4 is None:
-        raise UpstreamAPIError(
-            f"could not route bbox={bbox} to a HUC4 region — bbox center is not "
-            "in any v0.1 envelope. NHDPlus HR needs a HUC4 to scope the download; "
-            "see OQ-39-NHDPLUSHR-HUC4-ROUTING-HEURISTIC for the WBD enrichment "
-            "follow-up that would resolve any CONUS bbox."
-        )
-
-    # Guardrail: NHDPlus HR HUC4 GDBs are ~100-200 MB each; refuse multi-HUC4
-    # bboxes here (the simpler heuristic does not stitch across HUC4 regions).
-    # 5,000 km^2 is well under typical single-HUC4 coverage; explicit bound.
+    # Guardrail: keep a single fetch tractable (OSM Overpass + NHDPlus HR HUC4
+    # GDBs are both heavy for huge bboxes). 5,000 km^2 explicit bound — matches
+    # the previous NHDPlus-only behavior.
     if _bbox_area_km2(quantized) > 5_000.0:
         raise BboxInvalidError(
             f"bbox area {_bbox_area_km2(quantized):.1f} km^2 exceeds 5000 km^2 "
-            "guardrail for fetch_river_geometry (multi-HUC4 stitching is out of "
-            "scope for v0.1 — use a smaller bbox or a future tiled workflow)."
+            "guardrail for fetch_river_geometry (use a smaller bbox or a future "
+            "tiled workflow)."
         )
 
-    # Cache key includes the HUC4 code per Tier-4 discipline so two callers
-    # in the same HUC4 dedup, while two callers in different HUC4s never collide.
+    # HUC4 routing is now BEST-EFFORT (fallback only) — a missing HUC4 no
+    # longer dead-ends the tool, because OSM Overpass is the primary path
+    # (root-cause fix for "could not route bbox to a HUC4 region").
+    huc4 = _huc4_for_bbox(quantized)
+
+    # Cache key is keyed on the quantized bbox (+ HUC4 when available, for
+    # backward-compatible dedup discipline). The fallback chain decides the
+    # actual provider; identical bboxes dedup to the same artifact.
     params = {
         "bbox": list(quantized),
-        "source": source,
+        "source": "river_geometry",  # provider-agnostic; chain decides at fetch time
         "huc4": huc4,
     }
     result = read_through(
         metadata=_FETCH_RIVER_GEOMETRY_METADATA,
         params=params,
         ext="fgb",
-        fetch_fn=lambda: _fetch_nhdplushr_geometry_bytes(quantized, huc4),
+        fetch_fn=lambda: _fetch_river_geometry_bytes(quantized, huc4),
     )
     assert result.uri is not None
     return LayerURI(
-        layer_id=f"rivers-{quantized[0]:.4f}-{quantized[1]:.4f}-huc4-{huc4}",
-        name=f"NHDPlus HR Flowlines (HUC4 {huc4})",
+        layer_id=f"rivers-{quantized[0]:.4f}-{quantized[1]:.4f}",
+        name="Rivers & Streams",
         layer_type="vector",
         uri=result.uri,
         style_preset="continuous_dem",  # placeholder — hydrography preset is a follow-up

@@ -29,8 +29,11 @@ from grace2_agent.tools import TOOL_REGISTRY
 from grace2_agent.tools.fetch_roads_osm import (
     _DEFAULT_ROAD_CLASSES,
     _build_overpass_ql,
+    _clip_record_to_bbox,
+    _clip_records_to_bbox,
     _extract_way_record,
     _extract_way_records,
+    _linestring_parts,
     _round_bbox_to_6dp,
     _validate_and_normalize_road_classes,
     OSMError,
@@ -260,6 +263,140 @@ def test_extract_way_records_filters_invalid_elements():
 
 
 # ---------------------------------------------------------------------------
+# Bbox-clip tests (F39 — roads must not spill outside the requested AOI).
+# ---------------------------------------------------------------------------
+
+
+def _coords_inside(coords, bbox, eps: float = 1e-9) -> bool:
+    """All (lon, lat) coords fall within bbox (inclusive, with float epsilon)."""
+    min_lon, min_lat, max_lon, max_lat = bbox
+    return all(
+        (min_lon - eps) <= lon <= (max_lon + eps)
+        and (min_lat - eps) <= lat <= (max_lat + eps)
+        for lon, lat in coords
+    )
+
+
+def test_clip_record_trims_geometry_extending_outside_bbox():
+    """A way that spills past the bbox is clipped to the bbox boundary."""
+    bbox = (-82.0, 26.5, -81.8, 26.7)
+    # Road runs from well WEST of the bbox into its interior.
+    rec = {
+        "osm_id": 1, "name": "I-75", "highway": "motorway",
+        "lanes": "4", "maxspeed": "70 mph",
+        "coords": [(-82.3, 26.6), (-81.9, 26.6)],
+    }
+    out = _clip_record_to_bbox(rec, bbox)
+    assert len(out) == 1
+    clipped = out[0]
+    # Attributes carried through unchanged.
+    assert clipped["osm_id"] == 1
+    assert clipped["name"] == "I-75"
+    assert clipped["highway"] == "motorway"
+    assert clipped["lanes"] == "4"
+    assert clipped["maxspeed"] == "70 mph"
+    # Geometry no longer extends west of the bbox's min_lon (-82.0).
+    assert _coords_inside(clipped["coords"], bbox)
+    lons = [lon for lon, _ in clipped["coords"]]
+    assert min(lons) >= -82.0 - 1e-9
+    # The western endpoint snapped to the bbox edge.
+    assert min(lons) == pytest.approx(-82.0)
+
+
+def test_clip_record_already_inside_is_unchanged():
+    """A way fully inside the bbox passes through with identical coords."""
+    bbox = (-82.0, 26.5, -81.8, 26.7)
+    coords = [(-81.95, 26.55), (-81.9, 26.6), (-81.85, 26.65)]
+    rec = {
+        "osm_id": 2, "name": "Local Rd", "highway": "primary",
+        "lanes": None, "maxspeed": None, "coords": coords,
+    }
+    out = _clip_record_to_bbox(rec, bbox)
+    assert len(out) == 1
+    assert _coords_inside(out[0]["coords"], bbox)
+    assert out[0]["coords"] == coords
+
+
+def test_clip_record_entirely_outside_is_dropped():
+    """A way fully outside the bbox contributes zero records."""
+    bbox = (-82.0, 26.5, -81.8, 26.7)
+    rec = {
+        "osm_id": 3, "name": "Far Away Rd", "highway": "motorway",
+        "lanes": None, "maxspeed": None,
+        "coords": [(-83.0, 26.6), (-82.5, 26.6)],
+    }
+    assert _clip_record_to_bbox(rec, bbox) == []
+
+
+def test_clip_record_crossing_boundary_twice_yields_two_segments():
+    """A way that exits and re-enters the bbox yields multiple in-AOI segments,
+    each carrying the source way's attributes."""
+    bbox = (-82.0, 26.5, -81.8, 26.7)
+    # Zig-zag: inside -> west(out) -> inside -> west(out) -> inside.
+    rec = {
+        "osm_id": 4, "name": "Zigzag Hwy", "highway": "trunk",
+        "lanes": "2", "maxspeed": None,
+        "coords": [
+            (-81.9, 26.65),   # inside
+            (-82.2, 26.65),   # out (west)
+            (-81.9, 26.60),   # inside
+            (-82.2, 26.60),   # out (west)
+            (-81.9, 26.55),   # inside
+        ],
+    }
+    out = _clip_record_to_bbox(rec, bbox)
+    assert len(out) >= 2, f"expected ≥2 clipped segments, got {len(out)}"
+    for seg in out:
+        assert seg["osm_id"] == 4
+        assert seg["name"] == "Zigzag Hwy"
+        assert seg["highway"] == "trunk"
+        assert _coords_inside(seg["coords"], bbox)
+        assert len(seg["coords"]) >= 2
+
+
+def test_clip_records_to_bbox_aggregates_and_filters():
+    """_clip_records_to_bbox clips each record; outside ways drop, inside stay."""
+    bbox = (-82.0, 26.5, -81.8, 26.7)
+    records = [
+        {"osm_id": 1, "name": "in", "highway": "primary",
+         "lanes": None, "maxspeed": None,
+         "coords": [(-81.95, 26.55), (-81.9, 26.6)]},          # fully inside
+        {"osm_id": 2, "name": "out", "highway": "primary",
+         "lanes": None, "maxspeed": None,
+         "coords": [(-83.0, 26.6), (-82.5, 26.6)]},            # fully outside
+        {"osm_id": 3, "name": "straddle", "highway": "primary",
+         "lanes": None, "maxspeed": None,
+         "coords": [(-82.3, 26.6), (-81.9, 26.6)]},            # straddling
+    ]
+    out = _clip_records_to_bbox(records, bbox)
+    ids = sorted({r["osm_id"] for r in out})
+    assert ids == [1, 3], f"outside way should drop; got ids={ids}"
+    for r in out:
+        assert _coords_inside(r["coords"], bbox)
+
+
+def test_linestring_parts_handles_empty_and_point():
+    """_linestring_parts returns [] for empty / point-degenerate clip results."""
+    from shapely import clip_by_rect
+    from shapely.geometry import LineString
+
+    bbox = (-82.0, 26.5, -81.8, 26.7)
+    # Line entirely outside → empty GeometryCollection.
+    empty = clip_by_rect(LineString([(-83.0, 26.6), (-82.5, 26.6)]), *bbox)
+    assert _linestring_parts(empty) == []
+    # None guard.
+    assert _linestring_parts(None) == []
+
+
+def test_clip_record_drops_degenerate_single_point_input():
+    """A record whose coords degenerate to <2 points yields no segment."""
+    bbox = (-82.0, 26.5, -81.8, 26.7)
+    rec = {"osm_id": 9, "name": None, "highway": "primary",
+           "lanes": None, "maxspeed": None, "coords": [(-81.9, 26.6)]}
+    assert _clip_record_to_bbox(rec, bbox) == []
+
+
+# ---------------------------------------------------------------------------
 # Mocked Overpass POST tests — 50 ways round-trip.
 # ---------------------------------------------------------------------------
 
@@ -315,6 +452,77 @@ def test_50_way_response_yields_50_features(monkeypatch):
         assert (gdf.geometry.geom_type == "LineString").all()
         assert "name" in gdf.columns
         assert "highway" in gdf.columns
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+def test_end_to_end_clips_spilling_roads_to_bbox(monkeypatch):
+    """E2E: Overpass returns ways spilling outside the bbox; the cached FGB
+    geometry is clipped so every vertex is strictly inside the requested bbox.
+    """
+    _fast_sleep(monkeypatch)
+    fake_gcs = FakeStorageClient()
+    bbox = _FORT_MYERS_BBOX  # (-82.0, 26.5, -81.8, 26.7)
+    ways = [
+        # Straddles the western edge (starts at -82.3, well outside).
+        _make_way(1, [(-82.3, 26.6), (-81.9, 26.6)], name="W spill", highway="motorway"),
+        # Fully inside.
+        _make_way(2, [(-81.95, 26.55), (-81.85, 26.65)], name="inside", highway="primary"),
+        # Fully outside (west) — should drop entirely.
+        _make_way(3, [(-83.0, 26.6), (-82.5, 26.6)], name="gone", highway="primary"),
+    ]
+    payload = _mock_overpass_payload(ways)
+
+    class FakeResponse:
+        status_code = 200
+        def raise_for_status(self) -> None: pass
+        def json(self): return payload
+
+    class FakeClient:
+        def __init__(self, *a, **kw): pass
+        def post(self, url, data=None): return FakeResponse()
+        def close(self): pass
+
+    with patch("grace2_agent.tools.fetch_roads_osm.httpx.Client", FakeClient), \
+         patch(
+             "grace2_agent.tools.fetch_roads_osm.read_through",
+             side_effect=_make_read_through_injector(fake_gcs),
+         ):
+        result = fetch_roads_osm(bbox=bbox, road_classes=["motorway", "primary"])
+
+    assert result.uri is not None
+
+    import geopandas as gpd
+    from shapely.geometry import box as shapely_box
+
+    fgb_bytes = next(iter(fake_gcs.store.values()))
+    with tempfile.NamedTemporaryFile(suffix=".fgb", delete=False) as tf:
+        path = tf.name
+        tf.write(fgb_bytes)
+    try:
+        gdf = gpd.read_file(path, engine="pyogrio")
+        # The fully-outside way (osm_id=3) is gone; 2 in-AOI ways survive.
+        assert len(gdf) >= 2
+        ids = set(int(v) for v in gdf["osm_id"].dropna().tolist())
+        assert 3 not in ids, "fully-outside way should be dropped"
+        assert {1, 2} <= ids
+
+        # STRICT geographic-correctness: NO geometry vertex spills outside bbox.
+        bbox_poly = shapely_box(*bbox)
+        eps = 1e-6
+        for idx, geom in gdf.geometry.items():
+            minx, miny, maxx, maxy = geom.bounds
+            assert minx >= bbox[0] - eps and miny >= bbox[1] - eps, (
+                f"feature {idx} bounds {geom.bounds} spill below bbox {bbox}"
+            )
+            assert maxx <= bbox[2] + eps and maxy <= bbox[3] + eps, (
+                f"feature {idx} bounds {geom.bounds} spill above bbox {bbox}"
+            )
+            # Geometry is contained within (or on the boundary of) the bbox.
+            assert geom.within(bbox_poly) or geom.intersects(bbox_poly.boundary)
     finally:
         try:
             os.unlink(path)
@@ -604,18 +812,26 @@ def test_live_fort_myers_returns_primary_and_motorway():
         gdf = gpd.read_file(path, engine="pyogrio")
         assert len(gdf) >= 1, "Expected at least 1 road feature"
 
-        # Geographic-correctness check (job-0086 lesson): every returned way
-        # MUST intersect the requested bbox. Overpass's ``out geom`` returns
-        # the FULL way geometry for any way with at least one node inside the
-        # bbox — so a feature's bounds may extend slightly outside, but the
-        # geometry itself must cross the bbox interior. This is the right
-        # contract to assert: "did we actually get roads in the AOI?", not
-        # "did the upstream perfectly clip on our behalf?".
+        # Geographic-correctness check (job-0086 + F39 job-0178): every
+        # returned way MUST fall STRICTLY inside the requested bbox. Overpass's
+        # ``out geom`` returns the FULL way geometry for any way with at least
+        # one node inside the bbox, so the tool now clips each LineString to
+        # the exact bbox before serializing. The right contract to assert is
+        # therefore the stronger one: "roads do not spill outside the AOI".
         bbox_poly = shapely_box(*bbox)
+        eps = 1e-6
         for idx, geom in gdf.geometry.items():
             assert geom.intersects(bbox_poly), (
                 f"feature {idx} ({gdf.iloc[idx].get('name')}) "
                 f"does not intersect bbox {bbox}"
+            )
+            minx, miny, maxx, maxy = geom.bounds
+            assert (
+                minx >= bbox[0] - eps and miny >= bbox[1] - eps
+                and maxx <= bbox[2] + eps and maxy <= bbox[3] + eps
+            ), (
+                f"feature {idx} ({gdf.iloc[idx].get('name')}) bounds "
+                f"{geom.bounds} spill outside bbox {bbox} — clip failed"
             )
 
         # Geographic-correctness check: the major routes through Fort Myers

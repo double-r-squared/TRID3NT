@@ -496,11 +496,16 @@ def fetch_nhdplus_nldi_navigate(
         ``nhdplus_comid`` (int) — the join key downstream tools (NWM,
         NWIS, NHDPlus VAA tables) consume.
 
+    Rendering: the returned flowlines are a VECTOR layer that renders
+    INLINE on the map automatically (the agent surface streams the FlatGeobuf
+    as GeoJSON). Do NOT call ``publish_layer`` on this layer — ``publish_layer``
+    is raster-only and publishing a vector trips the vector guard. Simply
+    return / surface the ``LayerURI`` and it paints on its own.
+
     Cross-tool dependencies (FR-TA-3):
         - Composes WITH: ``fetch_noaa_nwm_streamflow`` (join NWM discharge
           values to navigated reaches by COMID); ``fetch_streamflow``
-          (point NWIS gauges along the traversal); ``publish_layer``
-          (render the resulting flowlines via ``nhdplus_flowlines`` QML).
+          (point NWIS gauges along the traversal).
         - Composes ALONGSIDE: ``fetch_river_geometry`` (bulk NHDPlus
           HR fetch when bbox scope is wanted rather than network
           traversal); ``fetch_fema_nfhl_zones`` (intersect downstream

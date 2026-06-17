@@ -44,6 +44,7 @@ from grace2_contracts.modflow_contracts import MODFLOWRunArgs, PlumeLayerURI
 from grace2_contracts.tool_registry import AtomicToolMetadata
 
 from . import register_tool
+from ..tool_arg_normalizer import LatLonCoercionError, coerce_latlon
 from ..workflows.postprocess_modflow import (
     PostprocessMODFLOWError,
     postprocess_modflow,
@@ -169,10 +170,22 @@ async def run_modflow_job(
                 "release_rate_kg_s, and duration_days."
             ),
         }
+    # job-0317: Bedrock Claude passes spill_location_latlon as a STRING
+    # ("40.81,-96.71", "[40.81, -96.71]", "(40.81, -96.71)", "40.81 -96.71"),
+    # not a JSON array. The previous ``tuple(float(v) for v in ...)`` iterated
+    # the STRING'S CHARACTERS -> float('.') -> MODFLOW_PARAMS_INVALID. Coerce
+    # robustly here BEFORE the float loop so the direct solver path works.
     try:
-        loc = tuple(float(v) for v in spill_location_latlon)  # type: ignore[arg-type]
-        if len(loc) != 2:
-            raise ValueError("spill_location_latlon must be (lat, lon)")
+        loc = tuple(coerce_latlon(spill_location_latlon))  # -> (lat, lon)
+    except LatLonCoercionError as exc:
+        return {
+            "status": "error",
+            "error_code": "MODFLOW_PARAMS_INVALID",
+            "error_message": (
+                f"invalid spill_location_latlon (expected lat,lon): {exc}"
+            ),
+        }
+    try:
         kwargs: dict[str, Any] = dict(
             spill_location_latlon=loc,  # type: ignore[arg-type]
             contaminant=contaminant,

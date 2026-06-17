@@ -53,10 +53,21 @@ logger = logging.getLogger("grace2_agent.tool_arg_normalizer")
 
 __all__ = [
     "coerce_bbox_value",
+    "coerce_latlon",
     "normalize_args",
     "parse_forcing_string",
     "snake_case",
 ]
+
+
+class LatLonCoercionError(ValueError):
+    """Raised by :func:`coerce_latlon` when a value is genuinely not 2 numbers.
+
+    Distinct ``ValueError`` subtype so callers can catch *only* the
+    latlon-coercion failure and surface a clean typed error
+    (e.g. ``MODFLOW_PARAMS_INVALID``) instead of swallowing an unrelated
+    ``ValueError``.
+    """
 
 
 # --------------------------------------------------------------------------- #
@@ -535,6 +546,76 @@ def coerce_bbox_value(value: Any) -> list[float] | None:
         return [float(p) for p in parts]
     except ValueError:
         return None
+
+
+def coerce_latlon(value: Any) -> list[float]:
+    """Coerce an LLM-emitted lat/lon point into ``[lat, lon]`` (two floats).
+
+    Bedrock Claude (and other providers) routinely pass a coordinate *point*
+    parameter as a STRING rather than a JSON array — observed live (job-0317)
+    on ``run_modflow_job``'s ``spill_location_latlon``::
+
+        "40.8088861,-96.7077751"   "40.81, -96.71"
+        "[40.81, -96.71]"          "(40.81, -96.71)"
+        "40.81 -96.71"
+
+    The naive ``tuple(float(v) for v in value)`` iterates the STRING'S
+    CHARACTERS, so ``float('.')`` raises "could not convert string to float:
+    '.'" and the whole run dies as ``MODFLOW_PARAMS_INVALID`` (non-retryable).
+    Same coercion class as the job-0295 news-ingest fix.
+
+    Accepts ALL of:
+      * a real 2-element list/tuple of numbers (passed through as floats);
+      * ``"lat,lon"`` / ``"lat, lon"`` (comma, optional whitespace);
+      * ``"[lat, lon]"`` / ``"(lat, lon)"`` (one layer of brackets/parens);
+      * whitespace-separated ``"lat lon"``.
+
+    Returns ``[lat, lon]`` (floats). Order is preserved verbatim — this helper
+    does NOT reorder or range-check (the downstream contract owns lat/lon range
+    validation); it only guarantees two parsed floats.
+
+    Raises:
+        LatLonCoercionError: when ``value`` is genuinely not two numbers
+            (wrong element count, non-numeric parts, ``None``, etc.).
+    """
+    if value is None:
+        raise LatLonCoercionError("lat/lon is required (got None)")
+    # Real list/tuple path — pass through with float coercion.
+    if isinstance(value, (list, tuple)):
+        if len(value) != 2:
+            raise LatLonCoercionError(
+                f"lat/lon must have exactly 2 elements, got {len(value)}: {value!r}"
+            )
+        try:
+            return [float(v) for v in value]
+        except (TypeError, ValueError) as exc:
+            raise LatLonCoercionError(
+                f"lat/lon elements must be numbers: {value!r}"
+            ) from exc
+    # Reject other non-string scalars (int/float alone isn't a pair; dict; etc.)
+    if not isinstance(value, str):
+        raise LatLonCoercionError(
+            f"lat/lon must be a 2-list or 'lat,lon' string, got {type(value).__name__}"
+        )
+    s = value.strip()
+    if not s:
+        raise LatLonCoercionError("lat/lon string is empty")
+    # Strip one layer of surrounding brackets/parens.
+    if s[:1] in "[(" and s[-1:] in "])":
+        s = s[1:-1].strip()
+    # Split on commas and/or whitespace uniformly (handles "a,b", "a, b",
+    # "a b"). Drop empties so trailing separators don't create blank parts.
+    parts = [p for p in re.split(r"[,\s]+", s) if p]
+    if len(parts) != 2:
+        raise LatLonCoercionError(
+            f"lat/lon must parse to exactly 2 numbers, got {len(parts)}: {value!r}"
+        )
+    try:
+        return [float(p) for p in parts]
+    except ValueError as exc:
+        raise LatLonCoercionError(
+            f"lat/lon parts must be numbers: {value!r}"
+        ) from exc
 
 
 def parse_forcing_string(s: str) -> dict[str, int]:

@@ -76,6 +76,7 @@ from __future__ import annotations
 
 import logging
 import os
+import tempfile
 import time
 from typing import Any
 
@@ -391,6 +392,344 @@ def _infer_style_preset(layer_uri: str, layer_id: str) -> str:
     if tokens & _TERRAIN_STYLE_TOKENS:
         return ""
     return "continuous_flood_depth"
+
+
+# --------------------------------------------------------------------------- #
+# F32: benign vector handling
+# --------------------------------------------------------------------------- #
+
+#: Vector artifact extensions. ``publish_layer`` is RASTER-ONLY (see the module
+#: docstring + the Wave 4.9 inline-GeoJSON path). A vector reaching this tool is
+#: ALREADY on the map via its producing fetch tool (``add_loaded_layer`` inline
+#: GeoJSON), so a publish is unnecessary — and routing it through the raster tile
+#: path mints HANGING tiles that freeze the map. Token-tail matched against the
+#: resolved URI basename.
+_VECTOR_EXTS = (
+    ".fgb",
+    ".geojson",
+    ".json",
+    ".geoparquet",
+    ".parquet",
+    ".gpkg",
+    ".shp",
+)
+
+
+def _is_vector_uri(layer_uri: str) -> bool:
+    """True when ``layer_uri`` names a vector artifact (by extension)."""
+    return layer_uri.lower().rstrip("/").endswith(_VECTOR_EXTS)
+
+
+def _benign_vector_noop(layer_uri: str, layer_id: str) -> str:
+    """Return a calm, NON-ERROR signal for a vector handed to publish_layer (F32).
+
+    The agent keeps calling ``publish_layer`` on vector layers (roads/rivers)
+    that ALREADY rendered inline via their producing fetch tool's GeoJSON
+    (Wave 4.9 ``add_loaded_layer`` path). Pre-F32 this RAISED
+    ``PUBLISH_LAYER_VECTOR_NOT_RASTER`` → a scary red "Publishing layer… failed"
+    card on a layer the user can already see.
+
+    F32 turns that into a benign no-op: NO raise (so ``emit_tool_call``
+    ``mark_complete``s the step — green, not red), NO tile template, NO
+    ``observe_published_layer`` registration (so no hanging-tile face is minted).
+    The returned string is the function_response the LLM reads — a clear,
+    honest "already rendered inline; no publish needed" so it narrates calmly
+    and does not retry.
+    """
+    logger.info(
+        "publish_layer: benign vector no-op for layer_id=%s uri=%s — vector "
+        "already rendered inline (Wave 4.9 GeoJSON); no raster publish needed",
+        layer_id,
+        layer_uri,
+    )
+    return (
+        f"noop: layer_id={layer_id!r} is a VECTOR ({layer_uri!r}) and is already "
+        "rendered on the map inline by its producing fetch tool (GeoJSON). "
+        "publish_layer is raster-only; no publish was needed and none was "
+        "performed. Do NOT re-call publish_layer for this vector layer."
+    )
+
+
+# --------------------------------------------------------------------------- #
+# F33: overview enforcement (no-overview COGs render spotty / never paint)
+# --------------------------------------------------------------------------- #
+
+
+def _raster_has_overviews(raster_bytes: bytes) -> bool | None:
+    """True/False if the in-memory raster has internal overviews; None if unknown.
+
+    Reads the bytes through a rasterio ``MemoryFile`` and inspects
+    ``overviews(1)``. A non-empty list = overviews present. ``None`` is
+    returned when rasterio is unavailable or the open fails — callers treat
+    ``None`` as "cannot determine" and fail-open (publish as-is, legacy
+    behavior).
+    """
+    try:
+        import rasterio
+        from rasterio.io import MemoryFile
+    except Exception as exc:  # noqa: BLE001 — rasterio not installed
+        logger.warning(
+            "publish_layer: rasterio unavailable (%s) — cannot verify COG "
+            "overviews; publishing as-is",
+            exc,
+        )
+        return None
+    try:
+        with MemoryFile(raster_bytes) as mem, mem.open() as src:
+            return bool(src.overviews(1))
+    except Exception as exc:  # noqa: BLE001 — unreadable / not a raster
+        logger.warning(
+            "publish_layer: could not inspect raster overviews (%s: %s) — "
+            "publishing as-is",
+            type(exc).__name__,
+            exc,
+        )
+        return None
+
+
+def _build_cog_with_overviews(raster_bytes: bytes) -> bytes | None:
+    """Translate flat raster bytes into a tiled COG WITH overviews (F33).
+
+    Strategy:
+    1. PREFERRED — reuse ``compute_hillshade._translate_to_cog`` (the GDAL COG
+       driver path the kickoff mandates: tiled + overviews in one pass). It
+       resolves ``gdal_translate`` next to the ``gdaldem`` binary and falls
+       back to flat bytes when the binary is missing — so we verify the result
+       actually gained overviews before trusting it.
+    2. FALLBACK — rasterio (``rio-cogeo`` if present, else a manual
+       tiled-profile copy + ``build_overviews``) for environments without the
+       GDAL CLI on PATH.
+
+    Returns the new COG bytes, or ``None`` when no path could produce a real
+    overview-bearing COG (caller then fails-open and publishes the original).
+    """
+    # 1. GDAL CLI path (reuse, do not reimplement — kickoff mandate).
+    in_tmp: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".tif", delete=False) as in_f:
+            in_tmp = in_f.name
+            in_f.write(raster_bytes)
+        try:
+            from .compute_hillshade import _get_gdaldem_bin, _translate_to_cog
+
+            gdaldem_bin = _get_gdaldem_bin()  # raises if unavailable
+            cog_bytes = _translate_to_cog(in_tmp, gdaldem_bin)
+            # _translate_to_cog degrades to flat bytes when gdal_translate is
+            # absent — verify overviews actually landed before trusting it.
+            if _raster_has_overviews(cog_bytes):
+                return cog_bytes
+            logger.info(
+                "publish_layer: GDAL _translate_to_cog produced no overviews "
+                "(binary missing?) — trying rasterio fallback",
+            )
+        except Exception as exc:  # noqa: BLE001 — gdaldem unavailable / failed
+            logger.info(
+                "publish_layer: GDAL COG translate path unavailable (%s: %s) — "
+                "trying rasterio fallback",
+                type(exc).__name__,
+                exc,
+            )
+    finally:
+        if in_tmp is not None:
+            try:
+                os.unlink(in_tmp)
+            except OSError:
+                pass
+
+    # 2. rasterio fallback (rio-cogeo preferred; manual overview build else).
+    try:
+        return _build_cog_with_overviews_rasterio(raster_bytes)
+    except Exception as exc:  # noqa: BLE001 — fallback failed; fail-open upstream
+        logger.warning(
+            "publish_layer: rasterio COG/overview rebuild failed (%s: %s) — "
+            "publishing original (no-overview) raster as-is",
+            type(exc).__name__,
+            exc,
+        )
+        return None
+
+
+def _build_cog_with_overviews_rasterio(raster_bytes: bytes) -> bytes | None:
+    """rasterio-only COG+overview rebuild (no GDAL CLI required)."""
+    import rasterio
+    from rasterio.io import MemoryFile
+
+    # rio-cogeo is the cleanest path when installed.
+    try:
+        from rio_cogeo.cogeo import cog_translate
+        from rio_cogeo.profiles import cog_profiles
+
+        with MemoryFile(raster_bytes) as src_mem, src_mem.open() as src:
+            dst_profile = cog_profiles.get("deflate")
+            with MemoryFile() as dst_mem:
+                cog_translate(
+                    src,
+                    dst_mem.name,
+                    dst_profile,
+                    in_memory=True,
+                    quiet=True,
+                )
+                out = dst_mem.read()
+        if _raster_has_overviews(out):
+            return out
+    except Exception:  # noqa: BLE001 — rio-cogeo absent / failed; manual below
+        logger.debug("rio-cogeo path unavailable; manual overview build", exc_info=True)
+
+    # Manual: copy into a tiled GTiff then build overviews in place.
+    from rasterio.enums import Resampling
+
+    with MemoryFile(raster_bytes) as src_mem, src_mem.open() as src:
+        profile = src.profile.copy()
+        profile.update(tiled=True, blockxsize=512, blockysize=512, compress="deflate")
+        data = src.read()
+        with MemoryFile() as dst_mem:
+            with dst_mem.open(**profile) as dst:
+                dst.write(data)
+                factors = _overview_factors(src.width, src.height)
+                if factors:
+                    dst.build_overviews(factors, Resampling.average)
+                    dst.update_tags(ns="rio_overview", resampling="average")
+            out = dst_mem.read()
+    return out if _raster_has_overviews(out) else None
+
+
+def _overview_factors(width: int, height: int) -> list[int]:
+    """Power-of-two decimation factors down to a ~256px overview (F33)."""
+    factors: list[int] = []
+    factor = 2
+    while max(width, height) // factor >= 256:
+        factors.append(factor)
+        factor *= 2
+        if len(factors) >= 8:  # safety cap
+            break
+    return factors
+
+
+def _read_raster_bytes(layer_uri: str) -> bytes | None:
+    """Read raster bytes for a ``gs://`` / ``s3://`` / local URI (None on failure).
+
+    Used by the F33 overview check. Fail-open: any read error returns ``None``
+    so the publish proceeds with the original URI (legacy behavior).
+    """
+    try:
+        if layer_uri.startswith("s3://"):
+            from .cache import read_object_bytes_s3
+
+            return read_object_bytes_s3(layer_uri)
+        if layer_uri.startswith("gs://"):
+            parsed = _split_object_uri(layer_uri)
+            if parsed is None:
+                return None
+            client = _get_storage_client()
+            if client is None:
+                return None
+            return client.bucket(parsed[0]).blob(parsed[1]).download_as_bytes()
+        # local path (dev/test convenience)
+        with open(layer_uri, "rb") as f:
+            return f.read()
+    except Exception as exc:  # noqa: BLE001 — fail-open
+        logger.warning(
+            "publish_layer: could not read raster bytes for overview check "
+            "(%s: %s) — publishing as-is",
+            type(exc).__name__,
+            exc,
+        )
+        return None
+
+
+def _write_overview_cog(layer_uri: str, cog_bytes: bytes) -> str | None:
+    """Write the auto-translated COG alongside the source; return its URI (None on fail).
+
+    A fresh ULID-suffixed sibling object so the original (no-overview) COG is
+    never mutated in place and warm negative-caches don't poison the new path.
+    Fail-open: returns ``None`` on any write error (caller publishes original).
+    """
+    parsed = _split_object_uri(layer_uri) if layer_uri.startswith(("gs://", "s3://")) else None
+    try:
+        if layer_uri.startswith("s3://") and parsed is not None:
+            import boto3
+
+            bucket, key = parsed
+            dir_prefix = key.rsplit("/", 1)[0] + "/" if "/" in key else ""
+            new_key = f"{dir_prefix}overviews/{new_ulid()}.tif"
+            s3 = boto3.client(
+                "s3", region_name=os.environ.get("AWS_REGION", "us-west-2")
+            )
+            s3.put_object(
+                Bucket=bucket, Key=new_key, Body=cog_bytes, ContentType="image/tiff"
+            )
+            return f"s3://{bucket}/{new_key}"
+        if layer_uri.startswith("gs://") and parsed is not None:
+            client = _get_storage_client()
+            if client is None:
+                return None
+            bucket, key = parsed
+            dir_prefix = key.rsplit("/", 1)[0] + "/" if "/" in key else ""
+            new_key = f"{dir_prefix}overviews/{new_ulid()}.tif"
+            client.bucket(bucket).blob(new_key).upload_from_string(
+                cog_bytes, content_type="image/tiff"
+            )
+            return f"gs://{bucket}/{new_key}"
+        # local path: write a sibling file.
+        base, _ext = os.path.splitext(layer_uri)
+        new_path = f"{base}.ovr-{new_ulid()}.tif"
+        with open(new_path, "wb") as f:
+            f.write(cog_bytes)
+        return new_path
+    except Exception as exc:  # noqa: BLE001 — fail-open
+        logger.warning(
+            "publish_layer: could not write auto-translated overview COG "
+            "(%s: %s) — publishing original raster as-is",
+            type(exc).__name__,
+            exc,
+        )
+        return None
+
+
+def _ensure_raster_has_overviews(layer_uri: str) -> str:
+    """Guarantee the published raster is a COG WITH overviews (F33).
+
+    A no-overview COG renders SPOTTY (per-strip range requests time out cold;
+    QGIS Server / TiTiler can't downsample for low zooms), so before a raster's
+    tile template / WMS face is ever registered, validate the source COG has
+    overviews. When missing, auto-translate to a tiled+overview COG (reusing
+    ``compute_hillshade._translate_to_cog``, with a rasterio fallback), write it
+    to a fresh sibling object, log the auto-translate, and publish THAT instead.
+
+    Fail-open at every step: an unreadable raster, a missing rasterio, a failed
+    translate, or a failed write all degrade to returning ``layer_uri``
+    unchanged (legacy behavior — never blocks a publish).
+    """
+    raster_bytes = _read_raster_bytes(layer_uri)
+    if raster_bytes is None:
+        return layer_uri
+
+    has_ovr = _raster_has_overviews(raster_bytes)
+    if has_ovr is not False:
+        # True (overviews present) or None (cannot determine) → publish as-is.
+        return layer_uri
+
+    logger.warning(
+        "publish_layer: raster %s has NO overviews — a no-overview COG renders "
+        "spotty / times out cold; auto-translating to a tiled COG with "
+        "overviews before publishing (F33)",
+        layer_uri,
+    )
+    cog_bytes = _build_cog_with_overviews(raster_bytes)
+    if cog_bytes is None:
+        return layer_uri
+
+    new_uri = _write_overview_cog(layer_uri, cog_bytes)
+    if new_uri is None:
+        return layer_uri
+
+    logger.warning(
+        "publish_layer: F33 auto-translate complete — publishing overview COG "
+        "%s in place of no-overview source %s",
+        new_uri,
+        layer_uri,
+    )
+    return new_uri
 
 
 def _copy_to_durable_publish_uri(layer_uri: str, layer_id: str) -> str:
@@ -883,6 +1222,20 @@ def publish_layer(
                 layer_id,
             )
             return layer_uri
+        # F32 (2026-06-16): publish_layer is RASTER-ONLY (see module docstring)
+        # but is repeatedly handed VECTOR artifacts (roads/rivers .fgb/.geojson)
+        # that ALREADY rendered inline via their producing fetch tool's GeoJSON
+        # (Wave 4.9 ``add_loaded_layer`` path). Pre-F32 this RAISED a typed
+        # terminal error → a scary red "Publishing layer… failed" card on a
+        # layer the user can already see, AND TiTiler cannot read a FlatGeobuf
+        # as a raster so wrapping it in a /cog tile template mints HANGING tiles
+        # that freeze the map. F32: return a BENIGN, non-error result instead —
+        # no raise (the step completes GREEN), no tile template, no
+        # ``observe_published_layer`` registration (no hanging-tile face), and a
+        # calm function_response so the agent narrates honestly and never
+        # re-calls publish_layer for the vector.
+        if _is_vector_uri(layer_uri):
+            return _benign_vector_noop(layer_uri, layer_id)
         if not layer_uri.startswith("s3://"):
             raise PublishLayerError(
                 "LAYER_URI_NOT_FOUND",
@@ -891,28 +1244,12 @@ def publish_layer(
                 "s3:// URI verbatim.",
                 retryable=True,
             )
-        # INCIDENT FIX 2026-06-16: publish_layer is RASTER-ONLY (see module
-        # docstring) but was being handed VECTOR artifacts (e.g. the roads
-        # .fgb), then unconditionally wrapped them in a TiTiler /cog RASTER tile
-        # template. TiTiler cannot read a FlatGeobuf as a raster — the tile
-        # requests HANG forever, which makes MapLibre's map.isStyleLoaded()
-        # return false PERMANENTLY and freezes the whole map's reconcile loop,
-        # so NO overlays paint (the "layers in panel, blank map, hit-or-miss"
-        # incident). Vector layers are already on the map via their producing
-        # tool's inline GeoJSON, so this raster publish is both wrong and
-        # actively harmful. Reject it with a typed terminal error so the agent
-        # narrates honestly and never mints a hanging raster face for a vector.
-        _vector_exts = (".fgb", ".geojson", ".json", ".geoparquet", ".parquet", ".gpkg", ".shp")
-        if layer_uri.lower().rstrip("/").endswith(_vector_exts):
-            raise PublishLayerError(
-                "PUBLISH_LAYER_VECTOR_NOT_RASTER",
-                f"layer_uri {layer_uri!r} is a VECTOR artifact; publish_layer "
-                "only publishes raster COGs. Vector layers are already shown on "
-                "the map by their producing fetch tool (inline GeoJSON) — do NOT "
-                "re-publish them here. Publishing a vector through the raster "
-                "tile path produces hanging tiles that freeze the map.",
-                retryable=False,
-            )
+        # F33: a no-overview COG renders SPOTTY (per-strip range requests time
+        # out cold; TiTiler can't downsample for low zooms), so validate the COG
+        # has overviews and auto-translate to a tiled+overview COG before
+        # minting the tile template. Fail-open (publishes as-is) on any error.
+        layer_uri = _ensure_raster_has_overviews(layer_uri)
+
         from urllib.parse import quote
 
         # Style → TiTiler render params. Flood depths get the blue ramp over
@@ -949,6 +1286,13 @@ def publish_layer(
         observe_published_layer(layer_id, gcs_uri=layer_uri, wms_url=template)
         return template
 
+    # F32 (GCS path): vectors handed to the raster-only publish_layer are
+    # ALREADY rendered inline (Wave 4.9 GeoJSON) — return a benign no-op rather
+    # than dispatching a doomed worker round-trip that would surface a red card.
+    # Mirrors the s3 branch above so the calm signal is backend-independent.
+    if _is_vector_uri(layer_uri):
+        return _benign_vector_noop(layer_uri, layer_id)
+
     # 1. Resolve the .qgs URI and extract the GCS key for MAP= param.
     effective_qgs_uri = _get_effective_qgs_uri(project_qgs_uri)
     qgs_key = _parse_qgs_key(effective_qgs_uri)
@@ -984,6 +1328,16 @@ def publish_layer(
     #     for the layer's lifetime. Falls back to the source path when the
     #     copy fails (old behavior — never blocks a publish).
     publish_uri = _copy_to_durable_publish_uri(layer_uri, layer_id)
+
+    # 1e. F33: a no-overview COG renders SPOTTY over /vsigs/ (one range request
+    #     per strip, cold-load open timeouts) — the same failure class the
+    #     hillshade/relief saga isolated for FLAT GTiffs. Before the worker
+    #     registers the layer in the .qgs, validate the durable COG has
+    #     overviews; when missing, auto-translate to a tiled+overview COG
+    #     (reusing compute_hillshade._translate_to_cog, rasterio fallback),
+    #     write it alongside, and publish THAT. Fail-open at every step
+    #     (publishes the durable path unchanged on any error).
+    publish_uri = _ensure_raster_has_overviews(publish_uri)
 
     # 2. Convert the gs:// publish path to /vsigs/ for GDAL (the worker's
     #    _append_raster_layer uses QgsRasterLayer with the "gdal" provider).

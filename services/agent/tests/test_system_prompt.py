@@ -151,3 +151,91 @@ def test_system_prompt_still_routes_flood_modeling() -> None:
 def test_system_prompt_still_forbids_fabricated_numbers() -> None:
     """job-0154 anti-fabrication guard survives the amendment."""
     assert "Never fabricate numbers" in SYSTEM_PROMPT
+
+
+# ---------------------------------------------------------------------------
+# Wave 4.9 — vector layers must NOT be published via publish_layer
+# ---------------------------------------------------------------------------
+
+
+def test_system_prompt_has_vector_publish_prohibition_section() -> None:
+    """Prompt must carry the raster-only publish guidance (vector render path)."""
+    assert "publish_layer is for RASTER COGs ONLY" in SYSTEM_PROMPT
+
+
+def test_system_prompt_forbids_publishing_vectors() -> None:
+    """The load-bearing prohibition: never publish a vector layer."""
+    assert "NEVER call publish_layer on a VECTOR layer" in SYSTEM_PROMPT
+
+
+def test_system_prompt_names_vector_layer_kinds_and_extensions() -> None:
+    """Vector trigger vocabulary: layer kinds + file extensions the agent must
+    recognize as already-on-the-map vectors."""
+    flat = " ".join(SYSTEM_PROMPT.split())
+    for kind in ("roads", "rivers", "waterways", "administrative boundaries"):
+        assert kind in flat, f"vector layer kind {kind!r} missing — render guard weakens"
+    for ext in ("*.fgb", "*.geojson", "GeoParquet"):
+        assert ext in flat, f"vector extension {ext!r} missing — render guard weakens"
+
+
+def test_system_prompt_says_vectors_already_on_map() -> None:
+    """The reason half: vectors are shown by their producing fetch tool, so
+    publish_layer is a duplicate / error for them."""
+    assert "ALREADY shown on the map" in SYSTEM_PROMPT
+
+
+# ---------------------------------------------------------------------------
+# Full-AOI extent — never shrink the area/bbox
+# ---------------------------------------------------------------------------
+
+
+def test_system_prompt_has_full_aoi_extent_section() -> None:
+    """Prompt must carry the full-AOI-bbox-for-every-overlay guidance."""
+    assert "Full-AOI extent for every overlay" in SYSTEM_PROMPT
+
+
+def test_system_prompt_says_overlays_use_full_case_bbox() -> None:
+    """Every area/overlay layer uses the SAME Case AOI bbox."""
+    flat = " ".join(SYSTEM_PROMPT.split())
+    assert "use the FULL Case AOI bounding box" in flat
+    assert "the SAME bbox as the rest of the Case" in flat
+
+
+def test_system_prompt_dont_fetch_all_never_means_shrink_bbox() -> None:
+    """The load-bearing disambiguation: 'you don't need to fetch all' means
+    fetch fewer layers, NEVER shrink the area/bbox."""
+    flat = " ".join(SYSTEM_PROMPT.split())
+    assert "It NEVER means shrink the area or the bbox" in flat
+
+
+# ---------------------------------------------------------------------------
+# Groundwater spill routing — parameterized vs. news-article
+# ---------------------------------------------------------------------------
+
+
+def test_system_prompt_has_groundwater_spill_routing_section() -> None:
+    """Prompt must carry the parameterized-vs-article groundwater routing."""
+    assert "Groundwater spill routing" in SYSTEM_PROMPT
+
+
+def test_system_prompt_routes_parameterized_spill_to_run_modflow_job() -> None:
+    """A parameterized spill (location + contaminant + rate + duration) goes
+    DIRECTLY to run_modflow_job."""
+    flat = " ".join(SYSTEM_PROMPT.split())
+    assert "call run_modflow_job DIRECTLY" in flat
+    # spill_location_latlon passed as a 2-element [lat, lon] array.
+    assert "spill_location_latlon as a 2-element [lat, lon] array" in flat
+
+
+def test_system_prompt_keeps_article_path_off_parameterized_spill() -> None:
+    """The news-article path must NOT be used for parameterized spills; it needs
+    a volume in gallons/liters/barrels/tons."""
+    assert "Do NOT use\nrun_model_groundwater_contamination_scenario" in SYSTEM_PROMPT
+    flat = " ".join(SYSTEM_PROMPT.split())
+    assert "gallons / liters / barrels / tons" in flat
+
+
+def test_system_prompt_still_routes_modflow_groundwater() -> None:
+    """run_modflow_job + the article-ingest tool both remain named in the prompt."""
+    assert "run_modflow_job" in SYSTEM_PROMPT
+    assert "run_model_groundwater_contamination_scenario" in SYSTEM_PROMPT

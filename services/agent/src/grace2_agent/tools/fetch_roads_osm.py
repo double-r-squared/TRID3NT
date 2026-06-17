@@ -25,6 +25,17 @@ Overpass ``out geom`` node lists; the live verification asserts that returned
 roads actually fall **inside** the requested bbox (geographic-correctness
 check) — not merely that bytes round-trip.
 
+F39 (job-0178): Overpass ``out geom`` returns the FULL geometry of any way
+that has at least one node inside the bbox, so road LineStrings routinely
+spill *outside* the requested AOI. The extracted LineStrings are therefore
+clipped to the EXACT requested bbox (``shapely.clip_by_rect``) before
+FlatGeobuf serialization — a way that crosses the bbox boundary multiple
+times yields multiple in-AOI LineString segments, and a way that only
+touched the bbox at a node now contributes only its in-AOI portion. This
+keeps the rendered roads strictly inside the AOI (vector layers render
+inline via the Wave 4.9 GeoJSON path, so what we serialize is exactly what
+paints).
+
 Overpass QL shape:
 
     [out:json][timeout:60];
@@ -386,6 +397,110 @@ def _extract_way_records(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
+# Bbox clipping (F39 — job-0178).
+#
+# Overpass ``out geom`` returns the FULL geometry of every way that has at
+# least one node inside the requested bbox, so road LineStrings spill outside
+# the AOI. We clip each extracted LineString to the EXACT requested bbox so
+# nothing renders beyond the AOI. A way that crosses the bbox boundary several
+# times yields several in-AOI segments (clip returns a MultiLineString); each
+# part becomes its own record, preserving the way's attributes. A way that only
+# grazed the bbox at a node contributes only its in-AOI portion; a way that
+# falls entirely outside the bbox (impossible for ``out geom`` results in
+# practice, but defended here) contributes nothing.
+# ---------------------------------------------------------------------------
+
+
+def _linestring_parts(geom: Any) -> list[list[tuple[float, float]]]:
+    """Flatten a clip result into a list of LineString coord lists.
+
+    ``shapely.clip_by_rect`` can return a ``LineString``, a
+    ``MultiLineString``, an empty geometry, or a ``GeometryCollection`` (e.g.
+    when the clip degenerates to a point where the line only touches a bbox
+    corner). We keep only LineString parts with ≥ 2 distinct coordinates;
+    Point / empty parts are dropped (a road that touches the AOI at a single
+    point is not a road segment inside the AOI).
+    """
+    parts: list[list[tuple[float, float]]] = []
+    if geom is None or getattr(geom, "is_empty", True):
+        return parts
+    geom_type = geom.geom_type
+    if geom_type == "LineString":
+        candidates = [geom]
+    elif geom_type in ("MultiLineString", "GeometryCollection"):
+        candidates = list(geom.geoms)
+    else:
+        # Point / MultiPoint / Polygon — not a clipped road segment.
+        candidates = []
+    for part in candidates:
+        if getattr(part, "is_empty", True):
+            continue
+        if part.geom_type == "LineString":
+            coords = [(float(x), float(y)) for x, y in part.coords]
+            if len(coords) >= 2:
+                parts.append(coords)
+        elif part.geom_type in ("MultiLineString", "GeometryCollection"):
+            # Nested collection — recurse one level.
+            parts.extend(_linestring_parts(part))
+    return parts
+
+
+def _clip_record_to_bbox(
+    record: dict[str, Any],
+    bbox: tuple[float, float, float, float],
+) -> list[dict[str, Any]]:
+    """Clip one way record's LineString to ``bbox``; return 0..N clipped records.
+
+    The returned records carry the same attributes (``osm_id``, ``name``,
+    ``highway``, ``lanes``, ``maxspeed``) as the input but with ``coords``
+    replaced by an in-AOI segment. A way clipped into several disjoint
+    segments yields several records that all share the source way's
+    attributes.
+    """
+    from shapely import clip_by_rect  # type: ignore[import-not-found]
+    from shapely.geometry import LineString  # type: ignore[import-not-found]
+
+    coords = record.get("coords") or []
+    if len(coords) < 2:
+        return []
+    min_lon, min_lat, max_lon, max_lat = bbox
+    try:
+        clipped = clip_by_rect(
+            LineString(coords), min_lon, min_lat, max_lon, max_lat
+        )
+    except Exception as exc:  # noqa: BLE001 — defend against degenerate geom
+        logger.warning(
+            "fetch_roads_osm: clip failed for osm_id=%s (%s); dropping way",
+            record.get("osm_id"),
+            exc,
+        )
+        return []
+
+    out: list[dict[str, Any]] = []
+    for seg in _linestring_parts(clipped):
+        out.append({
+            "osm_id": record.get("osm_id"),
+            "name": record.get("name"),
+            "highway": record.get("highway"),
+            "lanes": record.get("lanes"),
+            "maxspeed": record.get("maxspeed"),
+            "coords": seg,
+        })
+    return out
+
+
+def _clip_records_to_bbox(
+    records: list[dict[str, Any]],
+    bbox: tuple[float, float, float, float],
+) -> list[dict[str, Any]]:
+    """Clip every way record to ``bbox`` so no road geometry spills outside."""
+    clipped: list[dict[str, Any]] = []
+    for rec in records:
+        clipped.extend(_clip_record_to_bbox(rec, bbox))
+    return clipped
+
+
+# ---------------------------------------------------------------------------
 # FlatGeobuf serialization.
 # ---------------------------------------------------------------------------
 
@@ -479,13 +594,19 @@ def _fetch_osm_roads_bytes(
     ql = _build_overpass_ql(bbox, road_classes)
     payload = _post_overpass(ql)
     records = _extract_way_records(payload)
+    # F39: Overpass ``out geom`` returns full way geometry for any way with a
+    # node inside the bbox; clip every LineString to the EXACT bbox so roads do
+    # not spill outside the AOI.
+    clipped = _clip_records_to_bbox(records, bbox)
     logger.info(
-        "fetch_roads_osm: extracted %d way(s) for bbox=%s classes=%s",
+        "fetch_roads_osm: extracted %d way(s), %d in-AOI segment(s) after "
+        "clip for bbox=%s classes=%s",
         len(records),
+        len(clipped),
         bbox,
         road_classes,
     )
-    return _records_to_flatgeobuf_bytes(records)
+    return _records_to_flatgeobuf_bytes(clipped)
 
 
 # ---------------------------------------------------------------------------
@@ -510,10 +631,14 @@ def fetch_roads_osm(
     """OpenStreetMap road LineStrings via Overpass API.
 
     **What it does:** Queries the OpenStreetMap Overpass API for
-    ``highway``-tagged way features inside the requested bbox, serializes
-    the matching road LineStrings to FlatGeobuf, and caches the result for
-    30 days. Returns one LineString per road segment with attributes
-    ``osm_id``, ``name``, ``highway``, ``lanes``, and ``maxspeed``.
+    ``highway``-tagged way features inside the requested bbox, clips the
+    matching road LineStrings to the EXACT requested bbox so no road spills
+    outside the AOI, serializes them to FlatGeobuf, and caches the result for
+    30 days. Returns one LineString per in-AOI road segment with attributes
+    ``osm_id``, ``name``, ``highway``, ``lanes``, and ``maxspeed`` (a road
+    that crosses the bbox boundary several times yields several segments that
+    share the source way's attributes). The resulting vector renders inline
+    on the map automatically — do NOT call ``publish_layer`` on it.
 
     **When to use:**
     - User asks to "show roads" or "overlay the road network" for any area.
