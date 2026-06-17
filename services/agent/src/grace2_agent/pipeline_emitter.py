@@ -596,6 +596,28 @@ class PipelineEmitter:
         self.last_tool_step: PipelineStepSummary | None = None
 
     # ------------------------------------------------------------------ #
+    # Sink rebinding (job-SOLVE-SURVIVE: WS-disconnect survival)
+    # ------------------------------------------------------------------ #
+
+    def rebind_sink(self, sink: EmissionSink) -> None:
+        """Swap the wire sink this emitter pushes frames to.
+
+        job-SOLVE-SURVIVE: a long-running solver turn (``run_model_flood_scenario``
+        -> ``wait_for_completion``) is driven by ONE ``PipelineEmitter`` instance
+        whose ``_sink`` closes over the WebSocket that LAUNCHED the turn. The web
+        client opens multiple sockets per session (StrictMode double-mount +
+        reconnect) — when the launching socket closes, its sink silently drops
+        every subsequent progress / terminal frame. When a NEW socket for the
+        SAME session connects, the integration site rebinds this emitter's sink
+        to the new socket's ``send`` so the still-running solve's progress and
+        its terminal ``session-state`` (the published flood layer) reach the
+        user on their live connection. The next ``emit_*`` call uses the new
+        sink; no buffered frames are replayed here (the terminal
+        ``session-state`` is a full A.7 snapshot, so the next emission alone
+        re-paints the complete view)."""
+        self._sink = sink
+
+    # ------------------------------------------------------------------ #
     # Snapshot accessors (read-only views; tests + integrations introspect)
     # ------------------------------------------------------------------ #
 

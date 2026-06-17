@@ -745,6 +745,156 @@ def _set_session_active_case(session_id: str, case_id: str | None) -> None:
     _SESSION_ACTIVE_CASE[session_id] = case_id
 
 
+# job-SOLVE-SURVIVE: module-level live-turn registry keyed by
+# ``(session_id, turn_key)`` — mirrors ``_SESSION_ACTIVE_CASE``'s session-scoped
+# discipline so an in-flight turn OUTLIVES the per-connection ``SessionState``.
+#
+# ROOT CAUSE this fixes: a SFINCS solve (``run_model_flood_scenario`` ->
+# ``wait_for_completion``, minutes long) was launched detached on the launching
+# connection and stored ONLY in that connection's ``SessionState.inflight_tasks``.
+# The web client opens MULTIPLE sockets per session (StrictMode double-mount +
+# reconnect); when the launching socket closed, the handler ``finally`` iterated
+# ``inflight_tasks`` and ``.cancel()``-ed EVERY not-done task — docker-killing the
+# solve ~7s in. By keying the running task here by ``session_id`` the task
+# survives the death of any one socket; the handler ``finally`` now only DROPS
+# this connection's references (and lets cheap turns finish) instead of
+# cancelling. ``wait_for_completion``'s own 1800s budget bounds a truly stuck
+# solve.
+#
+# Each entry carries the running ``asyncio.Task`` AND the ``PipelineEmitter`` the
+# task is driving (so a reconnecting socket can rebind the emitter's sink and
+# receive the live solve's progress + terminal frames — see ``_rebind_live_turns``).
+# A done-callback removes the entry on completion/cancellation (NO leak). Bounded
+# by session-count; the value is one task+emitter pair per live turn.
+@dataclass
+class _LiveTurn:
+    """An in-flight turn that has been detached from its launching connection.
+
+    ``task`` is the running ``asyncio.Task``; ``emitter`` is the
+    ``PipelineEmitter`` it drives (its ``_sink`` may point at a now-dead socket
+    until a reconnecting socket rebinds it via ``_rebind_live_turns``)."""
+
+    task: "asyncio.Task"
+    emitter: "PipelineEmitter | None"
+
+
+#: session_id -> {turn_key -> _LiveTurn}. Populated when a connection closes with
+#: a still-running turn (handler ``finally``); consulted by the cancel envelope
+#: (so the stop button still kills a detached solve) and by a reconnecting
+#: connection (so its emitter sink is rebound to the live turn).
+_SESSION_LIVE_TURNS: dict[str, dict[str, _LiveTurn]] = {}
+_SESSION_LIVE_TURNS_CAP = 4096
+
+
+def _register_live_turn(
+    session_id: str, turn_key: str, task: "asyncio.Task", emitter: "PipelineEmitter | None"
+) -> None:
+    """Detach ``task`` into the module-level live-turn registry.
+
+    Installs a done-callback that removes the entry on completion/cancellation
+    so a completed/cancelled task never lingers (Requirement 4: NO leak). Safe
+    to call more than once for the same task (the callback de-dups on identity).
+    """
+    if (
+        session_id not in _SESSION_LIVE_TURNS
+        and len(_SESSION_LIVE_TURNS) >= _SESSION_LIVE_TURNS_CAP
+    ):
+        # Evict the oldest session bucket whose turns are ALL done; if none are
+        # fully-done, evict the oldest regardless (bounded memory — a live solve
+        # is never silently dropped under normal session counts).
+        for sid in list(_SESSION_LIVE_TURNS):
+            if all(lt.task.done() for lt in _SESSION_LIVE_TURNS[sid].values()):
+                _SESSION_LIVE_TURNS.pop(sid, None)
+                break
+        else:
+            _SESSION_LIVE_TURNS.pop(next(iter(_SESSION_LIVE_TURNS)), None)
+    bucket = _SESSION_LIVE_TURNS.setdefault(session_id, {})
+    bucket[turn_key] = _LiveTurn(task=task, emitter=emitter)
+
+    def _drop(_t: "asyncio.Task") -> None:
+        b = _SESSION_LIVE_TURNS.get(session_id)
+        if b is None:
+            return
+        lt = b.get(turn_key)
+        # Only drop if THIS task still owns the slot (a same-stream supersede may
+        # have replaced it with a fresh task — don't evict the newer turn).
+        if lt is not None and lt.task is _t:
+            b.pop(turn_key, None)
+        if not b:
+            _SESSION_LIVE_TURNS.pop(session_id, None)
+
+    task.add_done_callback(_drop)
+
+
+def _rebind_live_turns(
+    session_id: str,
+    emitter: "PipelineEmitter | None",
+    *,
+    only_turn_key: str | None = None,
+) -> int:
+    """Rebind live turn(s) of ``session_id`` onto ``emitter``'s sink.
+
+    job-SOLVE-SURVIVE Requirement 2: when a NEW socket for the same session
+    connects, point the still-running turn's emitter at the new socket so its
+    progress + terminal frames reach the live connection. Returns the number of
+    turns rebound. No-op when no live turns exist or ``emitter`` is None.
+
+    The new connection's emitter IS the wire face (its ``_sink`` closes over the
+    live socket's ``send``). We swap the LIVE turn's emitter sink to that same
+    sink. Done/cancelled turns are skipped + pruned. Returns count for telemetry
+    + tests.
+
+    ``only_turn_key`` restricts the rebind to a single stream — used by the
+    case-open path so opening Case A only rebinds Case A's live solve onto the
+    new socket (a concurrent Case B solve keeps emitting through its own — soon
+    its OWN socket-resume / case-open rebinds it, or it lands fully-detached and
+    its layer rehydrates on the next case-open)."""
+    bucket = _SESSION_LIVE_TURNS.get(session_id)
+    if not bucket or emitter is None:
+        return 0
+    rebound = 0
+    for turn_key in list(bucket):
+        if only_turn_key is not None and turn_key != only_turn_key:
+            continue
+        lt = bucket.get(turn_key)
+        if lt is None:
+            continue
+        if lt.task.done():
+            bucket.pop(turn_key, None)
+            continue
+        if lt.emitter is not None and lt.emitter is not emitter:
+            lt.emitter.rebind_sink(emitter._sink)
+            rebound += 1
+    if not bucket:
+        _SESSION_LIVE_TURNS.pop(session_id, None)
+    return rebound
+
+
+def _find_live_turn(session_id: str, turn_key: str) -> "asyncio.Task | None":
+    """Return the live, not-done task for ``(session_id, turn_key)`` or None."""
+    bucket = _SESSION_LIVE_TURNS.get(session_id)
+    if not bucket:
+        return None
+    lt = bucket.get(turn_key)
+    if lt is not None and not lt.task.done():
+        return lt.task
+    return None
+
+
+def _any_live_turn(session_id: str) -> "asyncio.Task | None":
+    """Return any live (not-done) detached turn for ``session_id`` or None.
+
+    Cancel fallback: when the keyed lookup misses (the binding moved), the stop
+    button still needs to reach a detached solver turn."""
+    bucket = _SESSION_LIVE_TURNS.get(session_id)
+    if not bucket:
+        return None
+    for lt in bucket.values():
+        if not lt.task.done():
+            return lt.task
+    return None
+
+
 @dataclass
 class SessionState:
     """Per-session in-memory state. M1 keeps everything in-process; Mongo-backed
@@ -1789,6 +1939,19 @@ async def _handle_session_resume(
     Persistence is unbound the case-list emission is skipped and the M1
     in-memory path keeps working."""
     _ensure_emitter(websocket, state)
+    # job-SOLVE-SURVIVE Requirement 2: this is the canonical reconnect entry —
+    # a freshly-opened socket sends ``session-resume`` first. If a turn from a
+    # now-closed socket of this SAME session is still running (a live SFINCS
+    # solve detached on disconnect), rebind its emitter sink onto THIS socket so
+    # its remaining progress + terminal frames (the published flood layer) land
+    # on the user's live connection. No-op when there are no live turns.
+    rebound = _rebind_live_turns(state.session_id, state.emitter)
+    if rebound:
+        logger.info(
+            "session-resume rebound %d live turn(s) onto reconnect session=%s",
+            rebound,
+            state.session_id,
+        )
     await state.emitter.emit_session_state()
     await _emit_case_list(websocket, state)
 
@@ -2234,6 +2397,22 @@ async def _emit_case_open(
     # the next ``add_loaded_layer`` dedups against; without seeding, a
     # republish of an existing layer would be treated as a fresh append.
     _ensure_emitter(websocket, state)
+    # job-SOLVE-SURVIVE Requirement 2: opening THIS Case is the user returning
+    # to where a long solve was launched. If a turn keyed to this Case is still
+    # running (detached on a prior socket close), rebind its emitter sink onto
+    # the freshly-opened socket so the in-flight solve's progress + its terminal
+    # session-state (the published flood layer) reach the live connection.
+    # Keyed to ``case_id`` so a concurrent solve in another Case is untouched.
+    rebound = _rebind_live_turns(
+        state.session_id, state.emitter, only_turn_key=case_id
+    )
+    if rebound:
+        logger.info(
+            "case-open rebound %d live turn(s) onto reconnect session=%s case=%s",
+            rebound,
+            state.session_id,
+            case_id,
+        )
     if state.emitter is not None:
         state.emitter.reset_loaded_layers(session_state.loaded_layers)
         # sprint-14-aws (job-0290d): persisted VECTOR layers carry no inline
@@ -5757,7 +5936,15 @@ def _make_handler(settings: GeminiSettings):
                         turn_key = (
                             state.current_turn_case_id or _ROOT_STREAM_KEY
                         )
+                        # job-SOLVE-SURVIVE: a same-stream re-prompt SUPERSEDES
+                        # (cancels) the prior turn — even if that turn was
+                        # DETACHED to the module-level registry by a prior
+                        # socket close (Requirement 3: a new user-message in the
+                        # SAME stream may still supersede). Check this connection
+                        # first, then the session-scoped live-turn registry.
                         prior = state.inflight_tasks.get(turn_key)
+                        if prior is None or prior.done():
+                            prior = _find_live_turn(state.session_id, turn_key)
                         if prior is not None and not prior.done():
                             prior.cancel()
                         for _done_key in [
@@ -5766,6 +5953,14 @@ def _make_handler(settings: GeminiSettings):
                             if t.done()
                         ]:
                             state.inflight_tasks.pop(_done_key, None)
+                        # job-SOLVE-SURVIVE: a fresh socket may have detached a
+                        # prior, still-running turn for THIS session (e.g. a live
+                        # SFINCS solve launched on a now-closed socket). Rebind
+                        # the live turn(s) onto THIS connection's emitter so the
+                        # solve's progress + terminal frames reach the new socket
+                        # (Requirement 2). Harmless when no live turns exist.
+                        _ensure_emitter(websocket, state)
+                        _rebind_live_turns(state.session_id, state.emitter)
                         if directive is not None:
                             tool_name, params = directive
                             task = asyncio.create_task(
@@ -5784,6 +5979,17 @@ def _make_handler(settings: GeminiSettings):
                                 )
                             )
                         state.inflight_tasks[turn_key] = task
+                        # job-SOLVE-SURVIVE: register this turn in the module
+                        # registry NOW (not only on disconnect) so it is keyed by
+                        # (session_id, turn_key) with a self-removing done-callback
+                        # from the start. A subsequent socket close just drops the
+                        # per-connection ref; the running task is already durable.
+                        # The done-callback removes the entry on completion (NO
+                        # leak). The emitter recorded here is the wire face the
+                        # task drives; a reconnect rebinds its sink.
+                        _register_live_turn(
+                            state.session_id, turn_key, task, state.emitter
+                        )
 
                     elif msg_type == "case-command":
                         # job-0121 (FR-MP-6): Case lifecycle dispatch. The
@@ -5864,6 +6070,17 @@ def _make_handler(settings: GeminiSettings):
                                 if not t.done()
                             ]
                             cancel_task = live[-1] if live else None
+                        # job-SOLVE-SURVIVE: the targeted turn may have been
+                        # DETACHED to the module-level live-turn registry by a
+                        # prior socket close (the disconnect path stops
+                        # CANCELLING but the task keeps running). The explicit
+                        # stop button MUST still reach it (Requirement 3 — genuine
+                        # cancellation, incl. docker-kill, preserved). Try the
+                        # keyed entry, then any live detached turn for the session.
+                        if cancel_task is None or cancel_task.done():
+                            cancel_task = _find_live_turn(
+                                state.session_id, cancel_key
+                            ) or _any_live_turn(state.session_id)
                         if cancel_task is not None and not cancel_task.done():
                             cancel_task.cancel()
                             # Wait briefly so the cancel completes deterministically
@@ -6021,10 +6238,56 @@ def _make_handler(settings: GeminiSettings):
         except Exception:
             logger.exception("connection handler crashed")
         finally:
+            # job-SOLVE-SURVIVE (the #1 SFINCS blocker): a socket close must NOT
+            # kill an in-flight turn. ROOT CAUSE of "no successful SFINCS run
+            # since Fort Myers": this finally used to ``.cancel()`` EVERY not-done
+            # task on ``state.inflight_tasks`` — including a detached
+            # ``run_model_flood_scenario`` -> ``wait_for_completion`` (minutes
+            # long). The web client opens MULTIPLE sockets per session (StrictMode
+            # double-mount + reconnect), so a transient socket swap detonated this
+            # and docker-killed the solve ~7s in.
+            #
+            # New policy: DETACH, don't cancel. Each turn was already registered
+            # in the module-level ``_SESSION_LIVE_TURNS`` registry at spawn (keyed
+            # by (session_id, turn_key)) with a self-removing done-callback, so the
+            # running task survives the death of THIS connection — only the
+            # per-connection reference (and this connection's emitter sink) goes
+            # away. A reconnecting socket rebinds the live turn's emitter sink
+            # (Requirement 2) so the solve's progress + terminal frames (the
+            # published flood layer) reach the user; even a FULLY-disconnected
+            # solve still publishes + persists its layer to the Case (the dispatch
+            # path's add_loaded_layer + _persist_case_loaded_layers run regardless
+            # of whether a socket is attached) so it rehydrates on the next
+            # case-open. ``wait_for_completion``'s own 1800s budget bounds a stuck
+            # solve. Genuine cancellation (the stop button) + same-stream supersede
+            # still cancel — only the DISCONNECT path stops cancelling.
+            #
+            # NB: cheap LLM-only turns are simply left to finish (they're short);
+            # their done-callback removes them from the registry. We do NOT cancel
+            # them either — predicting which Gemini turn will dispatch the solver
+            # is impossible (Gemini decides mid-turn), and a short LLM turn
+            # finishing detached is harmless.
             if state:
-                for _t in state.inflight_tasks.values():
-                    if not _t.done():
-                        _t.cancel()
+                for _turn_key, _t in list(state.inflight_tasks.items()):
+                    if _t.done():
+                        continue
+                    # Ensure the durable registry holds it (it was registered at
+                    # spawn for user-message turns; re-assert for any path that
+                    # populated inflight_tasks without registering — defensive,
+                    # idempotent). The emitter is dropped to None on disconnect:
+                    # the live turn keeps using its OWN emitter (whose sink now
+                    # points at the dead socket and silently no-ops) until a
+                    # reconnect rebinds it.
+                    if _find_live_turn(state.session_id, _turn_key) is not _t:
+                        _register_live_turn(
+                            state.session_id, _turn_key, _t, state.emitter
+                        )
+                    logger.info(
+                        "connection closed with in-flight turn session=%s "
+                        "turn_key=%s: DETACHED (kept running), not cancelled",
+                        state.session_id,
+                        _turn_key,
+                    )
 
     return handler
 
