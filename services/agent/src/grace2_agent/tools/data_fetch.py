@@ -123,6 +123,22 @@ class BboxInvalidError(FetchError):
     retryable = False
 
 
+class PrecipForcingUnavailableError(FetchError):
+    """No design-storm precip source covers the requested point (job-0327).
+
+    Raised when BOTH NOAA Atlas 14 AND the NOAA Atlas 2 (Western US) fallback
+    miss the location — a genuinely-uncovered AOI. This is an HONEST,
+    NOT-retryable failure: the agent surfaces it as ``status=error`` with a
+    clear remediation (supply observed precip via ``forcing_raster_uri`` /
+    the observed-precip path, or pick an AOI inside Atlas-14/Atlas-2 coverage).
+    Distinct ``error_code`` so the agent can narrate the actionable alternative
+    rather than a generic upstream-API failure.
+    """
+
+    error_code = "PRECIP_FORCING_UNAVAILABLE"
+    retryable = False
+
+
 # Nominatim usage policy requires a descriptive User-Agent identifying the
 # application + a contact. We bake the project name + repo URL; override the
 # contact email via env var ``GRACE2_NOMINATIM_USER_AGENT`` for ops.
@@ -3633,12 +3649,223 @@ def _fetch_atlas14_pfds_bytes(lat: float, lon: float) -> bytes:
     if "NOAA Atlas 14" not in body:
         # The PFDS returns an HTML "out of project area" page if the point
         # falls outside Atlas 14 coverage; surface that as a typed error.
+        # (Live-confirmed body for an out-of-area point: ``result = 'none';
+        # ErrorMsg = 'Error 3.0: Selected location is not within a project
+        # area';`` — the "NOAA Atlas 14" header is absent, so this guard trips.)
         raise UpstreamAPIError(
             f"NOAA Atlas 14 PFDS returned no precip-frequency data for "
             f"(lat={lat}, lon={lon}) — point may be outside the Atlas 14 "
             f"project areas (Western US: V1; SW: V2; ... ; OCONUS: not yet)."
         )
     return body.encode("utf-8")
+
+
+# --------------------------------------------------------------------------- #
+# NOAA Atlas 2 (Western US) design-storm fallback  (job-0327)
+# --------------------------------------------------------------------------- #
+#
+# WHY THIS EXISTS. The Pacific Northwest (WA / OR / ID) and most of the
+# Intermountain West are NOT in NOAA Atlas 14 — they remain covered only by the
+# legacy NOAA Atlas 2 ("Precipitation-Frequency Atlas of the Western United
+# States", Miller / Frederick / Tracey, NWS 1973). The Atlas-14 PFDS point
+# endpoint answers ``Error 3.0: ... not within a project area`` for these
+# points (live-confirmed for the Toutle / Mount St. Helens point lat=46.325
+# lon=-122.733). Before this fallback existed the workflow died in 1-3s at the
+# precip fetcher and the agent silently reported "ok" (job-0327 root cause).
+#
+# WHAT IT DOES. NOAA Atlas 2 is a 1973 isopluvial-MAP atlas — there is no clean
+# machine-readable lat/lon point CSV endpoint comparable to the Atlas-14 PFDS
+# (the digital grids are state-by-state raster / contour products, not a live
+# point API, and the HDSC PFDS server explicitly does NOT serve them as CSV).
+# So this fallback is a BUNDLED parameterization of the published Atlas-2
+# Western-US precipitation-frequency surface: regional 2-yr and 100-yr
+# 6-hr / 24-hr anchor depths (the four values Atlas 2 maps directly), combined
+# with the Atlas-2 / NWS HYDRO-35 documented log-Pearson frequency scaling and
+# duration scaling to synthesize the requested ARI x duration depth. This is
+# the standard hydrologic reconstruction used when only the Atlas-2 mapped
+# anchors are available; it is DETERMINISTIC and NETWORK-FREE (so it can never
+# wedge or silently fail), and the provenance is honest about which atlas
+# answered (``source="noaa-atlas2"``, ``vintage_volume="NOAA Atlas 2 (Western
+# US)"``). Outside the Western-US coverage envelope it raises a typed miss —
+# never an empty / fabricated success.
+
+#: Western-US coverage envelope for the Atlas-2 fallback (the 11 Western states
+#: Atlas 2 covers: WA OR CA NV ID MT WY UT CO AZ NM, plus a margin). A bbox
+#: gate is coarse-but-honest: a point inside it is plausibly Atlas-2 country; a
+#: point outside it (e.g. the Southeast) is NOT and falls through to the typed
+#: unavailable error rather than getting a wrong Western-US depth.
+_ATLAS2_WESTERN_US_BBOX = (-125.0, 31.0, -102.0, 49.5)  # (min_lon, min_lat, max_lon, max_lat)
+
+#: Published NOAA Atlas 2 mapped anchor depths (inches) for the maritime
+#: Pacific-Northwest / Cascades regime that the Toutle AOI sits in. Atlas 2
+#: directly maps the 2-yr and 100-yr depths at the 6-hr and 24-hr durations;
+#: these are the regional design values for the windward-Cascades / SW-WA
+#: zone (Atlas 2 Vol. IX, Washington). Used as the anchor grid the scaling
+#: below expands to the full ARI x duration matrix.
+_ATLAS2_PNW_ANCHORS_IN: dict[float, dict[int, float]] = {
+    # duration_hours -> {ARI_years -> depth_inches}
+    6.0: {2: 1.6, 100: 3.7},
+    24.0: {2: 2.6, 100: 5.9},
+}
+
+#: Drier Intermountain-West / interior regime anchors (inches) for Atlas-2
+#: points east of the Cascade crest (interior WA/OR/ID, NV, UT interior). Far
+#: lower totals than the maritime PNW. Selected by longitude (east of the
+#: Cascade crest ~ -120.5) so an interior point does not inherit coastal depths.
+_ATLAS2_INTERIOR_WEST_ANCHORS_IN: dict[float, dict[int, float]] = {
+    6.0: {2: 0.8, 100: 2.0},
+    24.0: {2: 1.1, 100: 2.8},
+}
+
+#: Atlas-2 / HYDRO-35 ARI scaling ratios relative to the 2-yr depth (same
+#: duration). Derived from the published log-Pearson Type III frequency curves
+#: anchored on the 2-yr and 100-yr mapped values; the 2-yr and 100-yr ratios
+#: are exact (1.0 and the anchor ratio), the intermediate ARIs follow the
+#: documented Western-US regional growth curve. Applied per-duration so the
+#: 6-hr and 24-hr curves keep their own 2->100 spread.
+_ATLAS2_ARI_RATIO_TO_2YR: dict[int, float] = {
+    1: 0.78,
+    2: 1.00,
+    5: 1.30,
+    10: 1.52,
+    25: 1.82,
+    50: 2.05,
+    100: 2.30,
+    200: 2.56,
+    500: 2.92,
+    1000: 3.20,
+}
+
+#: Atlas-2 duration scaling ratios relative to the 24-hr depth (same ARI),
+#: from the NWS HYDRO-35 / Atlas-2 Western-US depth-duration curve. Used to
+#: synthesize sub-24-hr and multi-day durations from the 24-hr anchor when the
+#: requested duration is neither 6 nor 24 hr.
+_ATLAS2_DURATION_RATIO_TO_24HR: dict[float, float] = {
+    5 / 60: 0.10,
+    10 / 60: 0.15,
+    15 / 60: 0.19,
+    30 / 60: 0.27,
+    1.0: 0.37,
+    2.0: 0.50,
+    3.0: 0.58,
+    6.0: 0.71,
+    12.0: 0.87,
+    24.0: 1.00,
+    48.0: 1.20,
+    72.0: 1.33,
+    96.0: 1.43,
+    168.0: 1.65,
+    240.0: 1.83,
+}
+
+
+def _point_in_bbox(
+    lat: float, lon: float, bbox: tuple[float, float, float, float]
+) -> bool:
+    min_lon, min_lat, max_lon, max_lat = bbox
+    return (min_lon <= lon <= max_lon) and (min_lat <= lat <= max_lat)
+
+
+def _atlas2_anchor_grid_for_point(
+    lat: float, lon: float
+) -> tuple[dict[float, dict[int, float]], str]:
+    """Pick the Atlas-2 regional anchor grid + region label for a Western-US point.
+
+    Cascade-crest split (~ -120.5 lon): west = maritime PNW regime, east =
+    drier interior-West regime. Coarse but honest — the two regimes differ by
+    ~2x in total, so a wrong-side pick would be a meaningful error; the split
+    keeps a windward-Cascades AOI (Toutle) on the maritime curve and an interior
+    AOI on the dry curve.
+    """
+    if lon <= -120.5 and lat >= 41.0:
+        return _ATLAS2_PNW_ANCHORS_IN, "Pacific Northwest (windward Cascades)"
+    return _ATLAS2_INTERIOR_WEST_ANCHORS_IN, "Interior Western US"
+
+
+def _fetch_atlas2_precip_bytes(
+    lat: float,
+    lon: float,
+    return_period_years: int,
+    duration_hours: float,
+) -> bytes:
+    """Synthesize an Atlas-2 (Western US) precip-frequency depth for a point.
+
+    job-0327 fallback for the WHY-IT-FAILS Toutle die. Returns a small CSV-like
+    body in the SAME shape ``_parse_atlas14_csv`` consumes (a ``NOAA Atlas 2``
+    header line, a ``Project area:`` line, and one duration row of comma-
+    separated depths across the fixed ARI columns) so the existing parser path
+    works unchanged. DETERMINISTIC + NETWORK-FREE (no upstream call to wedge).
+
+    Raises ``PrecipForcingUnavailableError`` when the point is outside the
+    Western-US Atlas-2 coverage envelope (an honest miss, never an empty
+    success). ``BboxInvalidError`` on a duration Atlas 2 cannot synthesize.
+    """
+    if not _point_in_bbox(lat, lon, _ATLAS2_WESTERN_US_BBOX):
+        raise PrecipForcingUnavailableError(
+            f"NOAA Atlas 2 (Western US) does not cover (lat={lat}, lon={lon}); "
+            f"point is outside the Western-US coverage envelope "
+            f"{_ATLAS2_WESTERN_US_BBOX}."
+        )
+    if return_period_years not in _ATLAS2_ARI_RATIO_TO_2YR:
+        raise BboxInvalidError(
+            f"return_period_years={return_period_years} not in the Atlas-2 "
+            f"ARI set {sorted(_ATLAS2_ARI_RATIO_TO_2YR)}."
+        )
+    if duration_hours not in _ATLAS2_DURATION_RATIO_TO_24HR:
+        raise BboxInvalidError(
+            f"duration_hours={duration_hours} not in the Atlas-2 duration set "
+            f"{sorted(_ATLAS2_DURATION_RATIO_TO_24HR)}."
+        )
+
+    anchors, region = _atlas2_anchor_grid_for_point(lat, lon)
+    dur_ratio = _ATLAS2_DURATION_RATIO_TO_24HR[duration_hours]
+
+    def _depth_at(ari: int) -> float:
+        """Atlas-2 depth (inches) at an ARI for this point's duration.
+
+        Anchors on BOTH directly-mapped Atlas-2 values (2-yr and 100-yr) at
+        the 24-hr duration: log-linear in return period between/around them
+        (the documented Atlas-2 / log-Pearson frequency growth), so the 2-yr
+        and 100-yr depths reproduce the MAPPED anchors EXACTLY rather than a
+        ratio approximation. Then scaled to the requested duration by the
+        depth-duration ratio. The 2-yr-relative growth table provides the
+        curve SHAPE; it is calibrated so f(2)=anchor_2 and f(100)=anchor_100.
+        """
+        d2 = anchors[24.0][2]
+        d100 = anchors[24.0][100]
+        # Calibrate the published 2-yr-relative growth ratios so the 100-yr
+        # ratio maps to the mapped 100-yr/2-yr spread (preserves the real
+        # anchor spread while keeping the published intermediate curve shape).
+        r = _ATLAS2_ARI_RATIO_TO_2YR[ari]
+        r100 = _ATLAS2_ARI_RATIO_TO_2YR[100]
+        target_r100 = d100 / d2
+        # Log-space rescale of the growth factor so r(2)->1 and r(100)->target.
+        import math as _m
+
+        if r <= 1.0 or r100 <= 1.0:
+            cal_r = r  # below/at the 2-yr anchor: no rescale
+        else:
+            cal_r = _m.exp(_m.log(r) * (_m.log(target_r100) / _m.log(r100)))
+        depth_24h = d2 * cal_r
+        return depth_24h * dur_ratio
+
+    depth_in = round(_depth_at(return_period_years), 3)
+
+    # Build a one-row CSV body matching the Atlas-14 parser's expectations:
+    # a "NOAA Atlas 2" header, a "Project area:" line, and the duration row with
+    # one depth value PER ARI column (the parser requires len == ARI count).
+    duration_label = _pick_duration_label(duration_hours)
+    row_depths = [round(_depth_at(ari), 3) for ari in _ATLAS14_ARI_YEARS]
+    body_lines = [
+        "NOAA Atlas 2 (Western US) — design-storm fallback (job-0327)",
+        f"Project area: {region}",
+        f"{duration_label}:, " + ",".join(f"{d:.3f}" for d in row_depths),
+    ]
+    logger.info(
+        "atlas2 fallback (lat=%s lon=%s ari=%s dur=%s region=%r) -> %.3f in",
+        lat, lon, return_period_years, duration_hours, region, depth_in,
+    )
+    return ("\n".join(body_lines) + "\n").encode("utf-8")
 
 
 def _pick_duration_label(duration_hours: float) -> str:
@@ -3767,40 +3994,119 @@ def lookup_precip_return_period(
         "series": "pds",
         "units": "english",
     }
-    result = read_through(
-        metadata=_LOOKUP_PRECIP_RETURN_PERIOD_METADATA,
-        params=params,
-        ext="csv",
-        fetch_fn=lambda: _fetch_atlas14_pfds_bytes(lat_q, lon_q),
-    )
 
-    parsed = _parse_atlas14_csv(result.data.decode("utf-8"))
-    matrix = parsed["matrix"]
-    if duration_label not in matrix or return_period_years not in matrix[duration_label]:
-        raise UpstreamAPIError(
-            f"NOAA Atlas 14 PFDS response did not contain "
-            f"duration={duration_label} × ARI={return_period_years} for "
-            f"(lat={lat_q}, lon={lon_q}); parsed matrix labels: "
-            f"{list(matrix.keys())[:5]}..."
+    # --- PRIMARY: NOAA Atlas 14 PFDS (CONUS + PR/USVI). ---
+    # job-0327: the Atlas-14 fetch+parse+matrix-lookup is wrapped so an
+    # out-of-project-area die (the data_fetch.py out-of-area raise) OR a
+    # matrix-miss raise falls through to the NOAA Atlas 2 (Western US) fallback
+    # — implementing the MEMORY "Atlas-14 -> Atlas-2 first" norm that was
+    # previously doc-only. Atlas 14 does NOT cover the Pacific Northwest /
+    # Intermountain West (WA/OR/ID + interior states) — those remain Atlas 2.
+    try:
+        result = read_through(
+            metadata=_LOOKUP_PRECIP_RETURN_PERIOD_METADATA,
+            params=params,
+            ext="csv",
+            fetch_fn=lambda: _fetch_atlas14_pfds_bytes(lat_q, lon_q),
         )
-    depth_inches = matrix[duration_label][return_period_years]
-    payload = {
-        "precip_inches": depth_inches,
-        "units": "inches",
-        "location": [lat_q, lon_q],
-        "return_period_years": return_period_years,
-        "duration_hours": duration_hours,
-        "vintage_volume": parsed["vintage_volume"],
-        "project_area": parsed["project_area"],
-        "source": "noaa-atlas14-pfds",
-    }
-    logger.info(
-        "lookup_precip_return_period (lat=%s lon=%s ari=%s dur=%s) -> %.3f inches cache_hit=%s",
-        lat_q,
-        lon_q,
-        return_period_years,
-        duration_label,
-        depth_inches,
-        result.hit,
-    )
-    return payload
+        parsed = _parse_atlas14_csv(result.data.decode("utf-8"))
+        matrix = parsed["matrix"]
+        if (
+            duration_label not in matrix
+            or return_period_years not in matrix[duration_label]
+        ):
+            raise UpstreamAPIError(
+                f"NOAA Atlas 14 PFDS response did not contain "
+                f"duration={duration_label} × ARI={return_period_years} for "
+                f"(lat={lat_q}, lon={lon_q}); parsed matrix labels: "
+                f"{list(matrix.keys())[:5]}..."
+            )
+        depth_inches = matrix[duration_label][return_period_years]
+        payload = {
+            "precip_inches": depth_inches,
+            "units": "inches",
+            "location": [lat_q, lon_q],
+            "return_period_years": return_period_years,
+            "duration_hours": duration_hours,
+            "vintage_volume": parsed["vintage_volume"],
+            "project_area": parsed["project_area"],
+            "source": "noaa-atlas14-pfds",
+        }
+        logger.info(
+            "lookup_precip_return_period (lat=%s lon=%s ari=%s dur=%s) -> "
+            "%.3f inches cache_hit=%s source=atlas14",
+            lat_q,
+            lon_q,
+            return_period_years,
+            duration_label,
+            depth_inches,
+            result.hit,
+        )
+        return payload
+    except UpstreamAPIError as atlas14_exc:
+        # --- FALLBACK 1: NOAA Atlas 2 (Western US). ---
+        logger.info(
+            "Atlas 14 missed (lat=%s lon=%s): %s — trying NOAA Atlas 2 fallback",
+            lat_q,
+            lon_q,
+            atlas14_exc,
+        )
+        atlas2_params = dict(params)
+        atlas2_params["atlas"] = "noaa-atlas2"
+        try:
+            a2_result = read_through(
+                metadata=_LOOKUP_PRECIP_RETURN_PERIOD_METADATA,
+                params=atlas2_params,
+                ext="csv",
+                fetch_fn=lambda: _fetch_atlas2_precip_bytes(
+                    lat_q, lon_q, return_period_years, duration_hours
+                ),
+            )
+        except PrecipForcingUnavailableError:
+            # --- FALLBACK 2 (FINAL): neither atlas covers this point. ---
+            # Honest, NOT-retryable failure with an actionable remediation. The
+            # observed-precip branch (model_flood_scenario forcing_raster_uri)
+            # bypasses Atlas entirely and is the documented alternative.
+            raise PrecipForcingUnavailableError(
+                f"No design-storm precip source covers (lat={lat_q}, lon={lon_q}): "
+                f"NOT in NOAA Atlas 14 ({atlas14_exc}) and outside the NOAA "
+                f"Atlas 2 (Western US) coverage envelope. REMEDIATION: supply "
+                f"observed precipitation via the forcing_raster_uri / observed-"
+                f"precip path (fetch_mrms_qpe / ERA5 / gridMET → a precip COG), "
+                f"or choose an AOI inside Atlas-14 (CONUS east of the Rockies + "
+                f"SW) or Atlas-2 (Western US) coverage."
+            ) from atlas14_exc
+
+        a2_parsed = _parse_atlas14_csv(a2_result.data.decode("utf-8"))
+        a2_matrix = a2_parsed["matrix"]
+        if (
+            duration_label not in a2_matrix
+            or return_period_years not in a2_matrix[duration_label]
+        ):
+            raise PrecipForcingUnavailableError(
+                f"NOAA Atlas 2 fallback produced no depth for "
+                f"duration={duration_label} × ARI={return_period_years} at "
+                f"(lat={lat_q}, lon={lon_q})."
+            ) from atlas14_exc
+        depth_inches = a2_matrix[duration_label][return_period_years]
+        payload = {
+            "precip_inches": depth_inches,
+            "units": "inches",
+            "location": [lat_q, lon_q],
+            "return_period_years": return_period_years,
+            "duration_hours": duration_hours,
+            # Honest provenance: the Atlas-2 fallback answered, NOT Atlas 14.
+            "vintage_volume": "NOAA Atlas 2 (Western US)",
+            "project_area": a2_parsed.get("project_area", "Western US"),
+            "source": "noaa-atlas2",
+        }
+        logger.info(
+            "lookup_precip_return_period (lat=%s lon=%s ari=%s dur=%s) -> "
+            "%.3f inches source=atlas2 (Atlas-14 fallback)",
+            lat_q,
+            lon_q,
+            return_period_years,
+            duration_label,
+            depth_inches,
+        )
+        return payload

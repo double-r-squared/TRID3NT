@@ -1452,6 +1452,121 @@ def _summarize_chart_emission(tool_name: str, result: dict[str, Any]) -> dict[st
     }
 
 
+def _failed_modeled_envelope_error_code(result: dict[str, Any]) -> str:
+    """Extract the threaded failure code from a failed "modeled" envelope dict.
+
+    job-0327 (HONESTY FLOOR). A ``_build_failed_envelope`` exit threads its
+    error code into TWO seams so it survives ``_coerce_to_summary_value``'s
+    depth>=2 dict-collapse:
+
+    1. (B2, depth 0) ``workflow_name == "<name>:FAILED:<CODE>"`` — a top-level
+       string field, always visible in the summary.
+    2. (legacy, depth 2) ``flood.metrics.solver_version == "failed:<CODE>"`` —
+       and the equivalent ``seismic``/other-hazard ``metrics.solver_version``.
+
+    Prefer the depth-0 ``workflow_name`` seam (it is the one the LLM actually
+    sees post-coercion); fall back to the buried ``solver_version`` seam; else
+    ``"MODEL_RUN_PRODUCED_NO_LAYERS"``.
+    """
+    wf = result.get("workflow_name")
+    if isinstance(wf, str) and ":FAILED:" in wf:
+        code = wf.split(":FAILED:", 1)[1].strip()
+        if code:
+            return code
+    # Scan any hazard payload's metrics.solver_version for "failed:<CODE>".
+    # Flood is the headline path; be generic so a future "modeled" composer
+    # (seismic, plume, ...) with the same threading also resolves.
+    for payload in result.values():
+        if not isinstance(payload, dict):
+            continue
+        metrics = payload.get("metrics")
+        if not isinstance(metrics, dict):
+            continue
+        sv = metrics.get("solver_version")
+        if isinstance(sv, str) and sv.startswith("failed:"):
+            code = sv.split("failed:", 1)[1].strip()
+            if code:
+                return code
+    return "MODEL_RUN_PRODUCED_NO_LAYERS"
+
+
+def _modeled_envelope_is_failure_tagged(result: dict[str, Any]) -> bool:
+    """True if a "modeled" envelope carries an explicit failure marker.
+
+    job-0327 R2 (MUST-FIX 1/2a). Two seams mark a deterministically-failed
+    composer run, regardless of whether a ``solver_run_id`` was already
+    appended before the failure (SOLVER_FAILED/SOLVER_TIMEOUT append at
+    model_flood_scenario.py:777 BEFORE failing; POSTPROCESS_FAILED likewise):
+
+    1. (depth 0) ``workflow_name`` contains ``":FAILED:"`` — promoted by
+       ``_build_failed_envelope`` and surviving ``_coerce_to_summary_value``.
+    2. (depth 2) any hazard payload's ``metrics.solver_version`` starts with
+       ``"failed:"`` — the legacy threading seam.
+    """
+    wf = result.get("workflow_name")
+    if isinstance(wf, str) and ":FAILED:" in wf:
+        return True
+    for payload in result.values():
+        if not isinstance(payload, dict):
+            continue
+        metrics = payload.get("metrics")
+        if not isinstance(metrics, dict):
+            continue
+        sv = metrics.get("solver_version")
+        if isinstance(sv, str) and sv.startswith("failed:"):
+            return True
+    return False
+
+
+def _extract_flood_metrics_phrase(result: dict[str, Any]) -> str:
+    """Render whatever flood metrics exist into an honest narration fragment.
+
+    job-0327 R2 (MUST-FIX 2b). On a solve-succeeded-but-publish/render-dropped
+    run the LLM gets ``status="error"`` with ``error_code=NO_RENDERABLE_LAYER``
+    but the simulation DID produce real numbers — surface them so the agent can
+    still narrate the flood honestly ("flooded area X, max depth Y") even though
+    the result layer never reached the map. Degrade gracefully: emit only the
+    fields that are present; return ``""`` when none are.
+    """
+    metrics: dict[str, Any] | None = None
+    flood = result.get("flood")
+    if isinstance(flood, dict):
+        m = flood.get("metrics")
+        if isinstance(m, dict):
+            metrics = m
+    if metrics is None:
+        # Fall back to any hazard payload carrying a metrics dict.
+        for payload in result.values():
+            if isinstance(payload, dict) and isinstance(payload.get("metrics"), dict):
+                metrics = payload["metrics"]
+                break
+    if not metrics:
+        return ""
+
+    parts: list[str] = []
+
+    def _num(key: str) -> float | None:
+        val = metrics.get(key)
+        if isinstance(val, (int, float)) and not isinstance(val, bool):
+            return float(val)
+        return None
+
+    area = _num("flooded_area_km2")
+    if area is not None:
+        parts.append(f"flooded area {area:g} km^2")
+    max_d = _num("max_depth_m")
+    if max_d is not None:
+        parts.append(f"max depth {max_d:g} m")
+    mean_d = _num("mean_depth_m")
+    if mean_d is not None:
+        parts.append(f"mean depth {mean_d:g} m")
+    p95 = _num("p95_depth_m")
+    if p95 is not None:
+        parts.append(f"p95 depth {p95:g} m")
+
+    return ", ".join(parts)
+
+
 def summarize_tool_result(
     tool_name: str,
     result: Any,
@@ -1534,6 +1649,87 @@ def summarize_tool_result(
             "tool": tool_name,
             "status": "ok",
             "result": _coerce_to_summary_value(compact),
+        }
+
+    # job-0327 (HONESTY FLOOR): a "modeled" composer result MUST NOT be stamped
+    # status="ok" while carrying an EMPTY ``layers`` list — a modeled run with
+    # no renderable layer is exactly NATE's "no flood layer but said ok"
+    # symptom. This classifier lives at the single chokepoint every tool result
+    # passes through and keys off the STRUCTURE of the result (not on whether an
+    # exception was raised), so it is root-cause-agnostic.
+    #
+    # NET GUARANTEE (job-0327 R2): envelope_type=="modeled" AND empty layers ->
+    # NEVER status="ok". Two sub-cases:
+    #
+    #   (a) FAILURE-TAGGED — the depth-0 ``workflow_name`` carries ":FAILED:" OR
+    #       any payload's ``metrics.solver_version`` starts with "failed:". This
+    #       covers the _build_failed_envelope non-runs (precip-fetcher die,
+    #       SFINCS build gate, solver-dispatch failure) AND the dispatched-then-
+    #       failed exits (SOLVER_FAILED / SOLVER_TIMEOUT / POSTPROCESS_FAILED)
+    #       which append a solver_run_id BEFORE failing — so the R1 "no
+    #       solver_run_ids" gate let them slip through as ok. Surface
+    #       status="error" with the parsed code, REGARDLESS of solver_run_ids.
+    #
+    #   (b) NOT FAILURE-TAGGED — the solve COMPLETED (metrics present, no
+    #       ":FAILED:" tag) but the result layer was dropped at publish/render
+    #       (model_flood_scenario.py:864 AWS publish-drop path). Surface
+    #       status="error", error_code="NO_RENDERABLE_LAYER", and INCLUDE the
+    #       available flood metrics in the message so the agent can still
+    #       narrate the numbers honestly even though nothing reached the map.
+    #
+    # _coerce_to_summary_value collapses the depth-2 metrics dict to bare key
+    # names, so without this detector the LLM received {status:ok, layers:[],
+    # metrics:{dict keys=...}} and honestly narrated "done". Do NOT broaden to
+    # "observed"/"fetched" tools: those legitimately return non-layer data
+    # (scalars, tables, point queries). A modeled envelope WITH a non-empty
+    # layers list reads as status="ok" (success path unchanged).
+    if (
+        isinstance(result, dict)
+        and result.get("envelope_type") == "modeled"
+        and not result.get("layers")
+    ):
+        if _modeled_envelope_is_failure_tagged(result):
+            # Sub-case (a): an explicitly failure-tagged run (covers both the
+            # never-dispatched non-runs AND the dispatched-then-failed exits
+            # that already appended a solver_run_id).
+            code = _failed_modeled_envelope_error_code(result)
+            message = (
+                f"{tool_name} produced no layers and the model did NOT run "
+                f"successfully ({code})."
+            )
+            return {
+                "tool": tool_name,
+                "status": "error",
+                "error_code": code,
+                "message": message,
+                "retryable": False,
+                # Legacy alias — same string as ``message`` (matches the raised-
+                # exception error path above so downstream consumers are uniform).
+                "error": message,
+                "error_type": "FailedModelEnvelope",
+            }
+        # Sub-case (b): the solve completed (or at least produced metrics) but
+        # no renderable layer survived publish/render. Surface the numbers so
+        # the agent narrates honestly: real flood, just not on the map.
+        metrics_phrase = _extract_flood_metrics_phrase(result)
+        if metrics_phrase:
+            message = (
+                f"The simulation completed ({metrics_phrase}) but the result "
+                f"layer could not be published/rendered — it is not on the map."
+            )
+        else:
+            message = (
+                f"{tool_name} completed but produced no renderable layer — "
+                f"the result is not on the map."
+            )
+        return {
+            "tool": tool_name,
+            "status": "error",
+            "error_code": "NO_RENDERABLE_LAYER",
+            "message": message,
+            "retryable": False,
+            "error": message,
+            "error_type": "NoRenderableLayer",
         }
 
     if isinstance(result, dict):

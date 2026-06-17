@@ -1520,11 +1520,26 @@ async def _stream_gemini_reply(
                 # the write in ``asyncio.ensure_future`` so no await is needed
                 # here. A write failure is logged at WARNING by the module and
                 # NEVER raises (telemetry must not break the dispatch loop).
+                # job-0327 R2 (MUST-FIX 3): a workflow that swallowed its own
+                # exception and returned a failed/partial envelope raises NO
+                # ``dispatch_error`` — but ``summarize_tool_result`` stamps the
+                # function_response ``status="error"`` (honesty floor). Derive
+                # the telemetry success flag and error_code from that summary so
+                # a returned-failure is recorded as a FAILURE (with code) in
+                # telemetry/routing, not a silent success. A genuinely-raised
+                # exception (dispatch_error) still wins and keeps its own code.
                 _tel_error_code: str | None = None
+                _tel_success = dispatch_error is None
                 if dispatch_error is not None:
                     _tel_error_code = str(
                         getattr(dispatch_error, "error_code", None)
                         or type(dispatch_error).__name__.upper()
+                    )
+                elif isinstance(summary, dict) and summary.get("status") == "error":
+                    _tel_success = False
+                    _summary_code = summary.get("error_code")
+                    _tel_error_code = (
+                        str(_summary_code) if _summary_code is not None else None
                     )
                 # job-B6 (Wave 4.10): the adapter now surfaces
                 # ``UsageMetadataEvent`` at the end of each Gemini stream;
@@ -1542,7 +1557,7 @@ async def _stream_gemini_reply(
                     tool_name=call.name,
                     source="llm",
                     args_hash=compute_args_hash(call.args),
-                    success=dispatch_error is None,
+                    success=_tel_success,
                     latency_ms=_tool_latency_ms,
                     error_code=_tel_error_code,
                     cached_content_token_count=_tel_cached_tokens,

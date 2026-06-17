@@ -203,13 +203,28 @@ def _build_failed_envelope(
     pydantic validator doesn't reject the failed envelope.
     """
     now = datetime.now(timezone.utc)
+    # job-0327 (HONESTY FLOOR, B2): promote the error code onto the depth-0
+    # ``workflow_name`` string ("<name>:FAILED:<CODE>") so it survives the
+    # adapter's ``_coerce_to_summary_value`` depth>=2 dict-collapse (the
+    # ``flood.metrics.solver_version`` threading sits at depth 2 and is reduced
+    # to bare key names before the LLM sees it). This gives the adapter's
+    # failed-modeled-envelope classifier (summarize_tool_result, job-0327 B1) a
+    # depth-0 corroborating signal AND keeps the code human-legible in the
+    # function_response even if the classifier were ever bypassed. The
+    # ``:FAILED:`` infix is the parse anchor (``workflow_name`` never otherwise
+    # contains it). Guard against double-tagging when this envelope is re-built.
+    failed_workflow_name = (
+        workflow_name
+        if ":FAILED:" in workflow_name
+        else f"{workflow_name}:FAILED:{error_code}"
+    )
     return AssessmentEnvelope(
         envelope_id=new_ulid(),
         project_id=project_id,
         session_id=session_id,
         envelope_type="modeled",
         hazard_type="flood",
-        workflow_name=workflow_name,
+        workflow_name=failed_workflow_name,
         bbox=bbox,
         crs="EPSG:4326",
         forcing=forcing,
