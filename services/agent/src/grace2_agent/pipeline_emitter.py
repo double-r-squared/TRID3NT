@@ -75,6 +75,7 @@ from grace2_contracts.ws import (
     PipelineStatePayload,
     PipelineStep,
     SessionStatePayload,
+    SolveProgressPayload,
 )
 
 from .layer_uri_emit import emit_layer_uri
@@ -1051,6 +1052,23 @@ class PipelineEmitter:
         """
         payload = MapCommandPayload(command=command, args=args)  # type: ignore[arg-type]
         await self._send("map-command", payload)
+
+    async def emit_solve_progress(self, progress: dict) -> None:
+        """Emit a ``solve-progress`` envelope (live big-sim telemetry).
+
+        ``progress`` is the dict from ``telemetry.build_live_solve_progress``
+        (run_id / solver / grid_resolution_m / active_cell_count / vcpus /
+        elapsed_seconds / eta_seconds). The web track renders these inline on
+        the running tool/pipeline card so a multi-minute solve shows live
+        grid/cells/vCPU/elapsed/ETA rather than a silent spinner. Best-effort:
+        a malformed dict is logged + dropped (live telemetry is a UX hint, never
+        a correctness gate — mirrors ``update_current_progress``)."""
+        try:
+            payload = SolveProgressPayload(**progress)
+        except Exception as exc:  # noqa: BLE001 — never break the solve loop
+            logger.warning("emit_solve_progress: bad payload dropped: %s", exc)
+            return
+        await self._send("solve-progress", payload)
 
     # ------------------------------------------------------------------ #
     # Tool-call wrapper — the integration seam for server.py

@@ -1830,6 +1830,152 @@ def summarize_tool_result(
     return payload
 
 
+# --------------------------------------------------------------------------- #
+# result_usability classifier (tool-accuracy panel — NATE 2026-06-17)
+# --------------------------------------------------------------------------- #
+#
+# ``success`` (did the tool return without raising / without a failure-tagged
+# envelope) is NOT the same question as ``was the result USABLE`` — the headline
+# bug ([[project-render-chokepoint-and-honesty-floor]]): a layer-producing tool
+# can return status="ok" while carrying an EMPTY layers list (a modeled run that
+# produced no renderable layer, or a publish/render drop). That reads as a
+# SUCCESS in the per-tool count but is NOT a usable result. ``result_usable``
+# captures exactly that distinction so the tool-accuracy dashboard can separate
+# "the call worked" from "the call produced something the user can use".
+#
+# Returns:
+#   - ``False`` — a layer-producing tool whose result has NO renderable layer
+#     (or a modeled envelope with empty layers), EVEN when success=True. This is
+#     keyed off the SAME honesty-floor classifier ``summarize_tool_result`` uses
+#     (NO_RENDERABLE_LAYER / failure-tagged modeled envelope), so the two stay
+#     in lockstep at the single dispatch chokepoint.
+#   - ``True`` — a real renderable result (a LayerURI / non-empty layers list /
+#     a published WMS layer) OR a non-empty data payload from a layer/data tool.
+#   - ``None`` — the notion does not apply (meta / control-plane tools that never
+#     produce a layer or a data payload, e.g. confirmation / discovery / cancel
+#     helpers; also when the call itself errored — usability is undefined for a
+#     call that did not complete).
+#
+# Conservative by construction: anything we cannot positively classify as a
+# layer- or data-producing result returns ``None`` rather than guessing True.
+
+#: Result keys whose presence marks a layer-producing return. A non-empty value
+#: under any of these is a renderable artifact (LayerURI dict, gs://"/s3:// COG,
+#: WMS URL, or a layers list). Mirrors the *_uri vocabulary the adapter already
+#: tracks for handle-passing (see the module-level docstring).
+_LAYER_RESULT_KEYS = frozenset(
+    {
+        "layers",
+        "layer_uri",
+        "layer",
+        "published_layers",
+        "wms_url",
+        "result_layers",
+    }
+)
+
+
+def _result_has_renderable_layer(result: Any) -> bool | None:
+    """Return whether ``result`` carries a renderable layer artifact.
+
+    ``True`` — a LayerURI (duck-typed via ``layer_id`` + ``uri``) OR a dict with
+    a non-empty layer key (``layers`` list, ``layer_uri`` string, ...).
+    ``False`` — a dict that LOOKS like a layer-producer (``envelope_type`` set,
+    or a layer key present) but the layer slot is empty.
+    ``None`` — the result is not layer-shaped at all (the caller then decides
+    whether a data payload makes it usable, or whether usability is N/A).
+    """
+    # LayerURI / pydantic-or-dataclass return with the two defining attributes.
+    if not isinstance(result, (dict, str, bytes)) and result is not None:
+        if hasattr(result, "layer_id") and hasattr(result, "uri"):
+            return bool(getattr(result, "uri", None))
+    if not isinstance(result, dict):
+        return None
+    # A modeled assessment envelope: the layers list is the renderable slot.
+    if result.get("envelope_type") is not None:
+        return bool(result.get("layers"))
+    # Generic layer keys.
+    saw_layer_key = False
+    for key in _LAYER_RESULT_KEYS:
+        if key in result:
+            saw_layer_key = True
+            val = result.get(key)
+            if isinstance(val, (list, tuple, str)):
+                if val:
+                    return True
+            elif val:
+                return True
+    if saw_layer_key:
+        # A layer key was present but every one was empty/falsy.
+        return False
+    return None
+
+
+def classify_result_usable(
+    tool_name: str,
+    result: Any,
+    summary: dict[str, Any] | None,
+) -> bool | None:
+    """Classify whether a completed tool call produced a USABLE result.
+
+    Reuses the honesty-floor signal already stamped on ``summary`` by
+    ``summarize_tool_result`` so the two never diverge: a layer-producing tool
+    that summarised to ``status="error"`` with ``error_code="NO_RENDERABLE_LAYER"``
+    (or a failure-tagged modeled envelope) is NOT usable, regardless of the
+    raised-exception ``success`` flag.
+
+    See the module section comment above for the full True / False / None
+    contract. Never raises — a classification failure degrades to ``None``.
+    """
+    try:
+        # 1. The honesty floor already decided this is an empty-layer modeled
+        #    run (status=error + NO_RENDERABLE_LAYER). That is the canonical
+        #    "succeeded but unusable" case.
+        if isinstance(summary, dict):
+            if summary.get("error_code") == "NO_RENDERABLE_LAYER":
+                return False
+        # 2. A modeled envelope that was failure-tagged also has no usable
+        #    layer. summarize_tool_result surfaces these as status=error with a
+        #    parsed code, but key off the result STRUCTURE directly so this is
+        #    robust even if the summary shape changes.
+        if isinstance(result, dict) and result.get("envelope_type") == "modeled":
+            if not result.get("layers"):
+                return False
+            return True
+        # 3. Layer-shaped results: True iff a renderable layer survived.
+        layer_state = _result_has_renderable_layer(result)
+        if layer_state is not None:
+            return layer_state
+        # 4. None / no_result: the call produced nothing usable, but the notion
+        #    of "renderable layer" doesn't apply — treat as N/A (meta path).
+        if result is None:
+            return None
+        # 5. A non-empty data payload from a non-layer tool (point query,
+        #    table, scalar, count) IS a usable result. An empty dict / empty
+        #    string / empty collection is not. Anything else (a populated dict,
+        #    a number, a non-empty string) counts.
+        if isinstance(result, dict):
+            # Drop bookkeeping-only keys before judging emptiness so a dict that
+            # carries ONLY a status/tool marker is not mistaken for data.
+            data_keys = [
+                k
+                for k in result
+                if k not in {"status", "tool", "envelope_type"}
+            ]
+            # Real data -> usable (True). A dict carrying ONLY bookkeeping
+            # markers (a bare {"status":"ok"} control-plane return) has no data
+            # AND no notion of a "usable result" -> N/A (None), NOT unusable
+            # (False), so meta/confirm/discovery helpers don't drag the
+            # result_usability_rate down.
+            return bool(data_keys) or None
+        if isinstance(result, (list, tuple, set, str, bytes)):
+            return bool(result)
+        # A bare scalar (int/float/bool) return is a usable data result.
+        return True
+    except Exception:  # noqa: BLE001 — classification must never break dispatch
+        return None
+
+
 def build_function_call_content(
     name: str,
     args: dict[str, Any],
@@ -2223,6 +2369,7 @@ __all__ = [
     "stream_events_with_contents",
     "stream_reply",
     "summarize_tool_result",
+    "classify_result_usable",
     # B11 schema-normalisation helpers (exported for audit / test use)
     "_is_tuple_annotation",
     "_normalize_callable_for_gemini",

@@ -57,6 +57,7 @@ __all__ = [
     "PipelineStepState",
     "PipelineStep",
     "PipelineStatePayload",
+    "SolveProgressPayload",
     "MapCommandPayload",
     "ConfirmationRequestPayload",
     "SessionStateStatus",
@@ -345,6 +346,35 @@ class PipelineStatePayload(GraceModel):
 
     pipeline_id: ULIDStr
     steps: list[PipelineStep] = Field(default_factory=list)
+
+
+# solve-progress (live big-sim telemetry — tool-accuracy panel, NATE 2026-06-17)
+
+
+class SolveProgressPayload(GraceModel):
+    """``solve-progress`` (A.4 extension): LIVE big-sim telemetry tick.
+
+    Emitted by the agent during a long solver run (SFINCS / MODFLOW) so the web
+    client renders grid resolution / active-cell count / vCPU / elapsed / ETA
+    inline on the running tool/pipeline card — replacing a silent multi-minute
+    spinner with honest live progress. The web track owns the card rendering;
+    this payload is the shared wire contract.
+
+    Invariant 1 (Determinism boundary): every field is solver/perf-model
+    sourced, never an LLM estimate — ``elapsed_seconds`` is wall-clock and
+    ``eta_seconds`` comes from the autoscale ``estimated_solve_seconds`` (the
+    perf model) when available, else ``None`` (no fabricated ETA).
+    """
+
+    MESSAGE_TYPE: ClassVar[str] = "solve-progress"
+
+    run_id: str
+    solver: str
+    grid_resolution_m: float | None = None
+    active_cell_count: int | None = None
+    vcpus: int | None = None
+    elapsed_seconds: float = Field(ge=0)
+    eta_seconds: float | None = Field(default=None, ge=0)
 
 
 # map-command (A.4) ---------------------------------------------------------- #
@@ -906,6 +936,7 @@ AGENT_TO_CLIENT_PAYLOADS: dict[str, type[GraceModel]] = {
     ToolCallCompletePayload.MESSAGE_TYPE: ToolCallCompletePayload,
     ToolCallFailedPayload.MESSAGE_TYPE: ToolCallFailedPayload,
     PipelineStatePayload.MESSAGE_TYPE: PipelineStatePayload,
+    SolveProgressPayload.MESSAGE_TYPE: SolveProgressPayload,
     MapCommandPayload.MESSAGE_TYPE: MapCommandPayload,
     ConfirmationRequestPayload.MESSAGE_TYPE: ConfirmationRequestPayload,
     SessionStatePayload.MESSAGE_TYPE: SessionStatePayload,

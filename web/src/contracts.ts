@@ -654,6 +654,43 @@ export interface LayerDeletePayload {
   layer_id: string;
 }
 
+// --- Live big-sim solve-progress envelope (NATE 2026-06-17) -------------- //
+//
+// Server -> client enrichment for a RUNNING heavy-compute solver (SFINCS /
+// MODFLOW / Pelicun on the external per-job execution substrate — AWS Batch
+// big sims). It is emitted alongside the `pipeline-state` snapshots while the
+// solver burns wall-clock so the running tool / pipeline card can surface a
+// live readout ("Modeling flood · SFINCS · 100 m · ~46k cells · 8 vCPU ·
+// 1:12 · est ~70s") instead of an opaque spinner.
+//
+// The aggregation + emit side (telemetry summary's `solve_telemetry`, this
+// live envelope) is owned by the CONCURRENT AGENT TRACK; this is the type seam
+// the web side compiles against. It carries a `run_id` (the external job's id)
+// and the live progress numbers. `eta_seconds` is null when the backend can't
+// estimate one yet (cold start / unknown total). Web matches it to the
+// currently-running solver step and renders the readout in place, updating as
+// envelopes arrive and clearing when the step reaches a terminal state.
+//
+// Invariant 9 (no cost theater): the readout is a physical-progress + resource
+// surface (resolution / cell count / vCPU / wall-clock), never a dollar figure.
+export interface SolveProgressPayload {
+  envelope_type?: "solve-progress";
+  /** External execution job id (e.g. the AWS Batch run). */
+  run_id: string;
+  /** Solver family — e.g. "SFINCS", "MODFLOW", "Pelicun". Display + match key. */
+  solver: string;
+  /** Grid resolution in metres (e.g. 100). null when not yet known (pre-build). */
+  grid_resolution_m: number | null;
+  /** Active (computed) cell count — wet/active grid cells. null when not yet estimated. */
+  active_cell_count: number | null;
+  /** vCPUs allocated to the run. null when not yet known. */
+  vcpus: number | null;
+  /** Wall-clock seconds elapsed so far. */
+  elapsed_seconds: number;
+  /** Estimated seconds remaining; null when the backend cannot estimate yet. */
+  eta_seconds?: number | null;
+}
+
 // --- Outbound message constructors -------------------------------------- //
 
 /** Generate a fresh ULID-like 26-char Crockford base32 id.

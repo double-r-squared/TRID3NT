@@ -41,11 +41,48 @@ export interface RoutingDashboardToolRow {
   error_count: number;
   error_rate: number;
   avg_latency_ms: number;
+  // --- Tool-accuracy panel additions (SHARED WIRE CONTRACT, NATE 2026-06-17) //
+  // The agent track aggregates + emits these on each per_tool[] entry. All
+  // optional here so an older summary (or one without the new aggregation)
+  // renders without crashing — missing → undefined → rendered as "—" (for the
+  // null-able usability/routing metrics) or 0% (success, derived from errors).
+  /** 1 - error_rate. 0..1. */
+  success_rate?: number;
+  /** Fraction of dispatches whose RESULT was usable (0..1). null = not measured. */
+  result_usability_rate?: number | null;
+  /** Heuristic first-tool / sequence routing-accuracy (0..1). null = not measured. */
+  routing_accuracy_rate?: number | null;
+  /** Median per-dispatch latency (ms). */
+  latency_p50_ms?: number;
+  /** 95th-percentile per-dispatch latency (ms). */
+  latency_p95_ms?: number;
 }
 
 export interface RoutingDashboardChain {
   chain: string[];
   count: number;
+}
+
+// --- solve_telemetry section (SHARED WIRE CONTRACT, NATE 2026-06-17) ------- //
+//
+// Recent heavy-compute solves recorded by the agent's big-sim telemetry. Each
+// row is one external solver run (SFINCS / MODFLOW / Pelicun on the AWS Batch
+// substrate). Empty `recent` + zero percentiles when no solves have run.
+export interface SolveTelemetryRow {
+  run_id: string;
+  solver: string;
+  grid_resolution_m: number;
+  active_cell_count: number;
+  vcpus: number;
+  wall_clock_seconds: number;
+  backend: string;
+  aoi_km2: number;
+}
+
+export interface SolveTelemetrySection {
+  recent: SolveTelemetryRow[];
+  wall_clock_p50_s: number;
+  wall_clock_p95_s: number;
 }
 
 export interface RoutingDashboardSummary {
@@ -54,6 +91,19 @@ export interface RoutingDashboardSummary {
   error_rate_overall: number;
   cache_hit_rate: number;
   average_latency_ms: number;
+  // --- Top-level tool-accuracy metrics (SHARED WIRE CONTRACT) -------------- //
+  // All optional for backward compatibility with summaries emitted before the
+  // accuracy aggregation landed. Null usability/routing render as "—".
+  /** 1 - error_rate_overall. 0..1. */
+  success_rate?: number;
+  /** Overall fraction of dispatches whose result was usable (0..1). null = n/a. */
+  result_usability_rate?: number | null;
+  /** Overall heuristic routing accuracy (0..1). null = n/a. */
+  routing_accuracy_rate?: number | null;
+  /** Median per-dispatch latency across all tools (ms). */
+  latency_p50_ms?: number;
+  /** 95th-percentile per-dispatch latency across all tools (ms). */
+  latency_p95_ms?: number;
   dispatches_by_tool: RoutingDashboardToolRow[];
   dispatches_by_source: Record<string, number>;
   error_rate_by_tool: {
@@ -63,6 +113,8 @@ export interface RoutingDashboardSummary {
     total: number;
   }[];
   top_routing_chains: RoutingDashboardChain[];
+  /** Big-sim solve telemetry (NATE 2026-06-17). Absent on older summaries. */
+  solve_telemetry?: SolveTelemetrySection;
   /** Provenance — "mongo" | "file" | "empty" | "telemetry". */
   source: string;
 }
@@ -321,10 +373,47 @@ function formatPct(rate: number): string {
   return `${(rate * 100).toFixed(1)}%`;
 }
 
+/**
+ * Nullable-rate formatter for the accuracy metrics whose value can be genuinely
+ * "not measured" (result usability / routing accuracy). null / undefined / NaN
+ * render as an em-dash so the user can tell "0% measured" apart from "we have
+ * no signal yet" — NEVER fabricate a 0%.
+ */
+function formatNullablePct(rate: number | null | undefined): string {
+  if (rate === null || rate === undefined || !Number.isFinite(rate)) return "—";
+  return `${(rate * 100).toFixed(1)}%`;
+}
+
 function formatMs(ms: number): string {
   if (!Number.isFinite(ms)) return "0 ms";
   if (ms >= 1000) return `${(ms / 1000).toFixed(2)} s`;
   return `${Math.round(ms)} ms`;
+}
+
+/** Format wall-clock seconds as "Ss" or "M:SS" for the solve table. */
+function formatSeconds(s: number): string {
+  if (!Number.isFinite(s) || s <= 0) return "0s";
+  // Round the WHOLE value first so a fractional input near a minute boundary
+  // can't render "1:60" / "60s" (e.g. 119.6 -> "2:00", 59.6 -> "1:00").
+  const r = Math.round(s);
+  if (r < 60) return `${r}s`;
+  const minutes = Math.floor(r / 60);
+  const seconds = r % 60;
+  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+}
+
+/** Abbreviate a cell count for the solve table: 46123 → "46k", 1.25e6 → "1.3M". */
+function formatCells(cells: number): string {
+  const n = Math.max(0, Math.floor(cells ?? 0));
+  if (n >= 1_000_000) {
+    const m = n / 1_000_000;
+    return `${m >= 10 ? Math.round(m) : Number(m.toFixed(1))}M`;
+  }
+  if (n >= 1_000) {
+    const k = n / 1_000;
+    return `${k >= 10 ? Math.round(k) : Number(k.toFixed(1))}k`;
+  }
+  return `${n}`;
 }
 
 function formatCount(n: number): string {
@@ -587,6 +676,62 @@ export function RoutingQualityDashboard({
                   </div>
                   <div style={kpiHintStyle}>per dispatch</div>
                 </div>
+
+                {/* --- Tool-accuracy panel (NATE 2026-06-17) ----------------- */}
+                {/* Success rate. Falls back to 1 - error_rate_overall when the */}
+                {/* aggregation didn't supply it explicitly (derivable, not     */}
+                {/* fabricated). */}
+                <div
+                  data-testid="grace2-routing-dashboard-kpi-success-rate"
+                  style={kpiCardStyle}
+                >
+                  <div style={kpiLabelStyle}>Success rate</div>
+                  <div style={kpiValueStyle}>
+                    {formatPct(
+                      summary.success_rate ?? 1 - summary.error_rate_overall,
+                    )}
+                  </div>
+                  <div style={kpiHintStyle}>dispatches without error</div>
+                </div>
+                {/* Result usability — nullable: "—" when not measured. */}
+                <div
+                  data-testid="grace2-routing-dashboard-kpi-usability"
+                  style={kpiCardStyle}
+                >
+                  <div style={kpiLabelStyle}>Result usability</div>
+                  <div style={kpiValueStyle}>
+                    {formatNullablePct(summary.result_usability_rate)}
+                  </div>
+                  <div style={kpiHintStyle}>usable tool results</div>
+                </div>
+                {/* Routing accuracy — labelled a HEURISTIC; nullable → "—". */}
+                <div
+                  data-testid="grace2-routing-dashboard-kpi-routing-accuracy"
+                  style={kpiCardStyle}
+                >
+                  <div style={kpiLabelStyle}>Routing accuracy</div>
+                  <div style={kpiValueStyle}>
+                    {formatNullablePct(summary.routing_accuracy_rate)}
+                  </div>
+                  <div style={kpiHintStyle}>heuristic estimate</div>
+                </div>
+                {/* p50 / p95 latency — one card, both percentiles. */}
+                <div
+                  data-testid="grace2-routing-dashboard-kpi-latency-percentiles"
+                  style={kpiCardStyle}
+                >
+                  <div style={kpiLabelStyle}>Latency p50 / p95</div>
+                  <div style={kpiValueStyle}>
+                    <span data-testid="grace2-routing-dashboard-kpi-latency-p50">
+                      {formatMs(summary.latency_p50_ms ?? 0)}
+                    </span>
+                    <span style={{ color: "#6f7585", margin: "0 4px" }}>/</span>
+                    <span data-testid="grace2-routing-dashboard-kpi-latency-p95">
+                      {formatMs(summary.latency_p95_ms ?? 0)}
+                    </span>
+                  </div>
+                  <div style={kpiHintStyle}>median / 95th percentile</div>
+                </div>
               </div>
 
               {/* Bar chart — top 15 tools */}
@@ -631,12 +776,21 @@ export function RoutingQualityDashboard({
                   <tr>
                     <th style={thStyle}>Tool</th>
                     <th style={{ ...thStyle, textAlign: "right" }}>Count</th>
+                    <th style={{ ...thStyle, textAlign: "right" }}>Success</th>
                     <th style={{ ...thStyle, textAlign: "right" }}>
                       Error rate
                     </th>
                     <th style={{ ...thStyle, textAlign: "right" }}>
-                      Avg latency
+                      Usability
                     </th>
+                    <th
+                      style={{ ...thStyle, textAlign: "right" }}
+                      title="Heuristic routing-accuracy estimate"
+                    >
+                      Routing*
+                    </th>
+                    <th style={{ ...thStyle, textAlign: "right" }}>p50</th>
+                    <th style={{ ...thStyle, textAlign: "right" }}>p95</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -661,6 +815,12 @@ export function RoutingQualityDashboard({
                         {formatCount(t.count)}
                       </td>
                       <td
+                        data-testid="grace2-routing-dashboard-cell-success"
+                        style={{ ...tdStyle, textAlign: "right" }}
+                      >
+                        {formatPct(t.success_rate ?? 1 - t.error_rate)}
+                      </td>
+                      <td
                         style={{
                           ...tdStyle,
                           textAlign: "right",
@@ -670,13 +830,132 @@ export function RoutingQualityDashboard({
                       >
                         {formatPct(t.error_rate)}
                       </td>
+                      <td
+                        data-testid="grace2-routing-dashboard-cell-usability"
+                        style={{ ...tdStyle, textAlign: "right" }}
+                      >
+                        {formatNullablePct(t.result_usability_rate)}
+                      </td>
+                      <td
+                        data-testid="grace2-routing-dashboard-cell-routing"
+                        style={{ ...tdStyle, textAlign: "right" }}
+                      >
+                        {formatNullablePct(t.routing_accuracy_rate)}
+                      </td>
                       <td style={{ ...tdStyle, textAlign: "right" }}>
-                        {formatMs(t.avg_latency_ms)}
+                        {formatMs(t.latency_p50_ms ?? t.avg_latency_ms)}
+                      </td>
+                      <td style={{ ...tdStyle, textAlign: "right" }}>
+                        {formatMs(t.latency_p95_ms ?? t.avg_latency_ms)}
                       </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
+              <div
+                style={{
+                  ...kpiHintStyle,
+                  marginTop: 4,
+                }}
+              >
+                * Routing accuracy is a heuristic estimate. "—" = not measured.
+              </div>
+
+              {/* --- Big-sim solve telemetry (NATE 2026-06-17) ------------- */}
+              {/* Recent heavy-compute solves (SFINCS / MODFLOW / Pelicun on  */}
+              {/* the external per-job substrate) + wall-clock p50/p95. When   */}
+              {/* no solves have been recorded the section shows an honest     */}
+              {/* empty line rather than a zeroed table.                       */}
+              <div style={sectionHeadingStyle}>
+                Big-sim solves
+                {summary.solve_telemetry &&
+                summary.solve_telemetry.recent.length > 0 ? (
+                  <span
+                    data-testid="grace2-routing-dashboard-solve-percentiles"
+                    style={{ ...subtitleStyle, marginLeft: 8 }}
+                  >
+                    wall-clock p50 {formatSeconds(
+                      summary.solve_telemetry.wall_clock_p50_s,
+                    )}{" "}
+                    / p95 {formatSeconds(summary.solve_telemetry.wall_clock_p95_s)}
+                  </span>
+                ) : null}
+              </div>
+              {!summary.solve_telemetry ||
+              summary.solve_telemetry.recent.length === 0 ? (
+                <div
+                  data-testid="grace2-routing-dashboard-no-solves"
+                  style={{
+                    color: "#9aa0ad",
+                    fontSize: 11,
+                    fontStyle: "italic",
+                    padding: "4px 0 8px",
+                  }}
+                >
+                  No heavy-compute solves recorded yet.
+                </div>
+              ) : (
+                <table
+                  data-testid="grace2-routing-dashboard-solve-table"
+                  style={tableStyle}
+                >
+                  <thead>
+                    <tr>
+                      <th style={thStyle}>Solver</th>
+                      <th style={{ ...thStyle, textAlign: "right" }}>Res</th>
+                      <th style={{ ...thStyle, textAlign: "right" }}>Cells</th>
+                      <th style={{ ...thStyle, textAlign: "right" }}>vCPU</th>
+                      <th style={{ ...thStyle, textAlign: "right" }}>
+                        Wall-clock
+                      </th>
+                      <th style={{ ...thStyle, textAlign: "right" }}>AOI</th>
+                      <th style={thStyle}>Backend</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {summary.solve_telemetry.recent.map((r) => (
+                      <tr
+                        key={r.run_id}
+                        data-testid="grace2-routing-dashboard-solve-row"
+                        data-run-id={r.run_id}
+                      >
+                        <td
+                          style={{
+                            ...tdStyle,
+                            fontFamily:
+                              "'JetBrains Mono', 'Fira Code', monospace",
+                            fontSize: 11,
+                            color: "#dfe5f0",
+                          }}
+                        >
+                          {r.solver}
+                        </td>
+                        <td style={{ ...tdStyle, textAlign: "right" }}>
+                          {r.grid_resolution_m} m
+                        </td>
+                        <td style={{ ...tdStyle, textAlign: "right" }}>
+                          {formatCells(r.active_cell_count)}
+                        </td>
+                        <td style={{ ...tdStyle, textAlign: "right" }}>
+                          {formatCount(r.vcpus)}
+                        </td>
+                        <td style={{ ...tdStyle, textAlign: "right" }}>
+                          {formatSeconds(r.wall_clock_seconds)}
+                        </td>
+                        <td style={{ ...tdStyle, textAlign: "right" }}>
+                          {Number(r.aoi_km2 ?? 0).toLocaleString(undefined, {
+                            maximumFractionDigits: 1,
+                          })}{" "}
+                          km²
+                        </td>
+                        <td style={{ ...tdStyle, color: "#9aa0ad" }}>
+                          {r.backend}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
 
               {/* Recent chains */}
               <div style={sectionHeadingStyle}>Top routing chains</div>

@@ -90,6 +90,7 @@ import {
   RegionChoiceRequestPayload,
   ResearchMode,
   SessionStatePayload,
+  SolveProgressPayload,
 } from "./contracts";
 import { regionChoiceBus } from "./lib/region_choice_bus";
 import {
@@ -146,6 +147,70 @@ export function stepInterleaveKey(step: PipelineStepSummary): string {
   return isThinkingStep(step)
     ? `${THINKING_STEP_NAME}|${step.tool_name}`
     : step.step_id;
+}
+
+// --- Live big-sim solve-progress → step matching (NATE 2026-06-17) -------- //
+//
+// The `solve-progress` envelope carries a `run_id` + `solver` family, NOT a
+// `step_id`. To paint the readout on the right card we match a solve-progress
+// payload to the currently-RUNNING heavy-solver step. The set below is the
+// step `name` / `tool_name` vocabulary that maps to an external heavy solve
+// (SFINCS / MODFLOW / Pelicun on the AWS Batch substrate). Any other tool step
+// never carries a readout (matchSolveForStep returns null), so a fetch/clip
+// card stays clean.
+const SOLVER_STEP_NAMES: ReadonlySet<string> = new Set([
+  "run_model_flood_scenario",
+  "run_model_flood_habitat_scenario",
+  "run_model_nws_flood_event_scenario",
+  "run_model_groundwater_contamination_scenario",
+  "run_modflow_job",
+  "run_pelicun_damage_assessment",
+  "run_solver",
+  "wait_for_completion",
+]);
+
+/** True when the step is a heavy external solver that can carry a live readout. */
+export function isSolverStep(step: PipelineStepSummary): boolean {
+  return (
+    SOLVER_STEP_NAMES.has(step.name) || SOLVER_STEP_NAMES.has(step.tool_name)
+  );
+}
+
+/**
+ * Pick the live solve-progress payload to render on a step's card, or null.
+ *
+ * Only RUNNING solver steps get a readout. When the stream has tracked solve
+ * runs, we prefer a payload whose `solver` family is named in the step's
+ * humanized label vocabulary (so an SFINCS readout doesn't paint onto a
+ * concurrent MODFLOW card); absent a family match we fall back to the single
+ * tracked run (the common case — one heavy solve at a time). With multiple
+ * untyped runs and no family hint we decline rather than guess (return null).
+ */
+export function matchSolveForStep(
+  step: PipelineStepSummary,
+  solveProgress: Map<string, SolveProgressPayload> | undefined | null,
+): SolveProgressPayload | null {
+  if (!solveProgress || solveProgress.size === 0) return null;
+  if (step.state !== "running" || !isSolverStep(step)) return null;
+  const runs = [...solveProgress.values()];
+  // Family hint from the step name: SFINCS/flood, MODFLOW/groundwater, Pelicun.
+  const name = `${step.name} ${step.tool_name}`.toLowerCase();
+  const familyHints: Array<[string[], string[]]> = [
+    [["flood", "sfincs"], ["sfincs"]],
+    [["groundwater", "modflow"], ["modflow"]],
+    [["pelicun", "damage"], ["pelicun"]],
+  ];
+  for (const [stepKeywords, solverKeywords] of familyHints) {
+    if (stepKeywords.some((k) => name.includes(k))) {
+      const m = runs.find((r) =>
+        solverKeywords.some((sk) => r.solver.toLowerCase().includes(sk)),
+      );
+      if (m) return m;
+    }
+  }
+  // No family match: the single-run common case is unambiguous; otherwise
+  // decline rather than paint a possibly-wrong run onto this card.
+  return runs.length === 1 ? runs[0]! : null;
 }
 
 // job-0153 Part 4 — gap between input wrapper and the last chat message.
@@ -815,6 +880,14 @@ export interface StreamState {
   regionResolved: Map<string, { choice: "region" | "whole_state"; regionId: string | null }>;
   /** First-arrival seq per region-choice request_id (chronological interleave). */
   regionSeqs: Map<string, number>;
+  // Live big-sim solve-progress (NATE 2026-06-17), keyed by run_id. The agent
+  // streams `solve-progress` envelopes while a heavy solver burns wall-clock;
+  // the latest payload per run_id is matched to the currently-running solver
+  // step and rendered inline on its PipelineCard. Replace-in-place per run_id
+  // (each new envelope supersedes the prior for that run). Never cleared on
+  // completion explicitly — the readout only paints while the step is RUNNING,
+  // so a stale entry simply stops surfacing once the step settles.
+  solveProgress: Map<string, SolveProgressPayload>;
   /** Monotonic arrival counter for this stream (job-0176 interleave). */
   arrivalSeq: number;
   messageOrder: Map<string, number>;
@@ -840,6 +913,7 @@ export function emptyStreamState(): StreamState {
     regionChoices: [],
     regionResolved: new Map(),
     regionSeqs: new Map(),
+    solveProgress: new Map(),
     arrivalSeq: 0,
     messageOrder: new Map(),
     stepOrder: new Map(),
@@ -949,6 +1023,21 @@ export function routePipelineState(
     type: "pipeline-state",
     payload: p,
   });
+}
+
+/** NATE 2026-06-17 — live big-sim readout. Store the latest solve-progress for
+ * a run_id in the OWNING stream (replace-in-place per run). Rendered inline on
+ * the running solver step's PipelineCard via matchSolveForStep. A fresh Map is
+ * assigned so React's referential-equality bump sees the change. */
+export function routeSolveProgress(
+  cs: ChatStreams,
+  p: SolveProgressPayload,
+  caseId?: string | null,
+): void {
+  const s = getStream(cs, owningKey(cs, caseId));
+  const next = new Map(s.solveProgress);
+  next.set(p.run_id, p);
+  s.solveProgress = next;
 }
 
 export function routeSessionState(
@@ -2493,6 +2582,14 @@ export function Chat({
         routePipelineState(streamsRef.current, p, caseId);
         bump();
       },
+      // NATE 2026-06-17: live big-sim readout. solve-progress is session-scoped
+      // (ws.ts SESSION_SCOPED_TYPES) so Chat receives it via the fan-out hub
+      // even when the solver step ran on App.tsx's connection. We store it per
+      // run_id in the owning stream; the running solver card matches + renders.
+      onSolveProgress: (p: SolveProgressPayload, caseId?: string | null) => {
+        routeSolveProgress(streamsRef.current, p, caseId);
+        bump();
+      },
       onSessionState: (p: SessionStatePayload, caseId?: string | null) => {
         routeSessionState(streamsRef.current, p, caseId);
         bump();
@@ -3243,6 +3340,7 @@ export function Chat({
           messages={messages}
           history={pipeline.history}
           live={pipeline.live}
+          solveProgress={visible.solveProgress}
           messageOrder={visible.messageOrder}
           stepOrder={visible.stepOrder}
           credentialRequests={credentialRequests}
@@ -3779,6 +3877,9 @@ interface InterleavedChatStreamProps {
   messages: ChatMessage[];
   history: PipelineStatePayload[];
   live: PipelineStatePayload | null;
+  // NATE 2026-06-17: live big-sim solve-progress keyed by run_id. Threaded to
+  // each running solver step's PipelineCard via matchSolveForStep.
+  solveProgress: Map<string, SolveProgressPayload>;
   messageOrder: Map<string, number>;
   stepOrder: Map<string, number>;
   // SRS §F.3 amendment (NATE 2026-06-17): credential prompts interleave INLINE
@@ -3828,6 +3929,7 @@ function InterleavedChatStream({
   messages,
   history,
   live,
+  solveProgress,
   messageOrder,
   stepOrder,
   credentialRequests,
@@ -3942,8 +4044,16 @@ function InterleavedChatStream({
             />
           );
         }
-        // tool
-        return <PipelineCard key={entry.stepKey} step={entry.step} />;
+        // tool — NATE 2026-06-17: thread the matched live solve-progress so a
+        // running heavy-solver card surfaces its inline readout. Non-solver /
+        // non-running steps get null (no readout).
+        return (
+          <PipelineCard
+            key={entry.stepKey}
+            step={entry.step}
+            solve={matchSolveForStep(entry.step, solveProgress)}
+          />
+        );
       })}
     </div>
   );

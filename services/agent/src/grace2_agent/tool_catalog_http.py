@@ -333,9 +333,28 @@ def _normalize_record(rec: dict[str, Any]) -> dict[str, Any]:
     out["error_code"] = rec.get("error_code")
     out["retry_attempt"] = int(rec.get("retry_attempt") or 0)
     out["cached_content_token_count"] = rec.get("cached_content_token_count")
+    # Tool-accuracy panel (NATE 2026-06-17). ``result_usable`` is bool|None
+    # (None = the notion doesn't apply, e.g. a meta tool); ``routed_ok`` is
+    # bool|None and is the per-record carrier of the routing-quality heuristic.
+    # Both substrates use the same key names, so a plain get suffices.
+    out["result_usable"] = rec.get("result_usable")
+    out["routed_ok"] = rec.get("routed_ok")
     # Timestamp: prefer the Mongo field name; fall back to the file form.
     out["called_at_utc"] = rec.get("called_at_utc") or rec.get("ts") or ""
     return out
+
+
+def _empty_solve_telemetry() -> dict[str, Any]:
+    """Return the zero-state solve_telemetry section (no solves recorded yet).
+
+    Matches the WIRE CONTRACT: ``recent`` is an empty list and the percentiles
+    are zeros until at least one solve has been logged.
+    """
+    return {
+        "recent": [],
+        "wall_clock_p50_s": 0.0,
+        "wall_clock_p95_s": 0.0,
+    }
 
 
 def _empty_summary() -> dict[str, Any]:
@@ -346,12 +365,100 @@ def _empty_summary() -> dict[str, Any]:
         "error_rate_overall": 0.0,
         "cache_hit_rate": 0.0,
         "average_latency_ms": 0.0,
-        "dispatches_by_tool": [],   # [{name, count, error_rate, avg_latency_ms}]
+        # Tool-accuracy panel additions (WIRE CONTRACT, NATE 2026-06-17).
+        "success_rate": 0.0,
+        "result_usability_rate": None,
+        "routing_accuracy_rate": None,
+        "latency_p50_ms": 0.0,
+        "latency_p95_ms": 0.0,
+        "dispatches_by_tool": [],   # [{name, count, error_rate, avg_latency_ms, ...}]
         "dispatches_by_source": {}, # {llm: int, workflow: int, manual: int}
         "error_rate_by_tool": [],   # [{name, error_rate, error_count, total}]
         "top_routing_chains": [],   # [{chain: [a, b], count}]
+        "solve_telemetry": _empty_solve_telemetry(),
         "source": "empty",
     }
+
+
+def _percentile(values: list[float], q: float) -> float:
+    """Return the ``q``-th percentile (q in [0,1]) via linear interpolation.
+
+    Empty input yields ``0.0``. Uses the same "linear" method numpy defaults to
+    so the p50/p95 line up with any external numpy-based recompute. Pure-stdlib
+    (no numpy import — telemetry must stay light + always importable).
+    """
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    n = len(ordered)
+    if n == 1:
+        return float(ordered[0])
+    pos = q * (n - 1)
+    lo = int(pos)
+    hi = min(lo + 1, n - 1)
+    frac = pos - lo
+    return float(ordered[lo] + (ordered[hi] - ordered[lo]) * frac)
+
+
+def _rate_over_bools(values: list[bool | None]) -> float | None:
+    """Fraction of ``True`` among the non-``None`` entries.
+
+    Returns ``None`` when EVERY entry is ``None`` (the notion does not apply to
+    any record — e.g. result_usable for an all-meta-tool slice), so the wire
+    field is an honest null rather than a misleading ``0.0``. This is the
+    contract for ``result_usability_rate`` / ``routing_accuracy_rate``.
+    """
+    considered = [v for v in values if v is not None]
+    if not considered:
+        return None
+    trues = sum(1 for v in considered if v)
+    return trues / len(considered)
+
+
+def _derive_routed_ok(records: list[dict[str, Any]]) -> dict[int, bool]:
+    """Derive the routing-quality heuristic per record (id() -> routed_ok).
+
+    DEFENSIBLE HEURISTIC, NOT GROUND TRUTH (clearly labelled on the wire as
+    ``routing_accuracy_rate``): a tool call is "mis-routed" when it FAILED
+    (result_ok=False) and the SAME session's NEXT call (by timestamp) is a
+    DIFFERENT tool — i.e. the model abandoned this tool and reached for another
+    one for the same logical step. Such a call gets ``routed_ok=False``. Any
+    other completed call gets ``routed_ok=True``. We leverage ``retry_attempt``
+    too: a call with retry_attempt>0 that itself failed and was followed by a
+    different tool is the clearest mis-route signal, but the failed+superseded
+    rule already captures it.
+
+    A per-record value the writer ALREADY supplied (``routed_ok`` not None) wins
+    — this only fills the gap for records whose writer left it None (the current
+    emit path, where supersession is not yet observable). Keyed by ``id(rec)``
+    so two records with identical contents are scored independently.
+    """
+    out: dict[int, bool] = {}
+    sess_buckets: dict[str, list[dict[str, Any]]] = {}
+    for r in records:
+        sid = r.get("session_id") or ""
+        if not sid:
+            # No session context — cannot judge supersession; routed_ok stays
+            # absent (treated as None/unavailable downstream).
+            continue
+        sess_buckets.setdefault(sid, []).append(r)
+    for recs in sess_buckets.values():
+        recs_sorted = sorted(recs, key=lambda r: str(r.get("called_at_utc") or ""))
+        for i, rec in enumerate(recs_sorted):
+            preset = rec.get("routed_ok")
+            if preset is not None:
+                out[id(rec)] = bool(preset)
+                continue
+            tool = rec.get("tool_name") or ""
+            failed = not rec.get("result_ok", True)
+            superseded = False
+            if i + 1 < len(recs_sorted):
+                nxt = recs_sorted[i + 1]
+                ntool = nxt.get("tool_name") or ""
+                if ntool and tool and ntool != tool:
+                    superseded = True
+            out[id(rec)] = not (failed and superseded)
+    return out
 
 
 def _aggregate_records(records: list[dict[str, Any]]) -> dict[str, Any]:
@@ -368,26 +475,46 @@ def _aggregate_records(records: list[dict[str, Any]]) -> dict[str, Any]:
     sessions = {r["session_id"] for r in records if r["session_id"]}
     session_count = len(sessions)
 
+    # Routing-quality heuristic (per-record, id()-keyed). Derived here because
+    # supersession is a same-session ADJACENT-chain signal, not knowable at
+    # single-call emit time.
+    routed_ok_by_id = _derive_routed_ok(records)
+
     # Per-tool aggregation
     by_tool_count: dict[str, int] = {}
     by_tool_errors: dict[str, int] = {}
     by_tool_latency_sum: dict[str, float] = {}
+    by_tool_latencies: dict[str, list[float]] = {}
+    by_tool_usable: dict[str, list[bool | None]] = {}
+    by_tool_routed: dict[str, list[bool | None]] = {}
     by_source_count: dict[str, int] = {}
     total_errors = 0
     total_latency = 0.0
+    all_latencies: list[float] = []
+    all_usable: list[bool | None] = []
+    all_routed: list[bool | None] = []
     cache_hit_count = 0
     cache_total = 0
 
     for r in records:
         tool = r["tool_name"] or "unknown"
+        lat = float(r["latency_ms"])
         by_tool_count[tool] = by_tool_count.get(tool, 0) + 1
-        by_tool_latency_sum[tool] = (
-            by_tool_latency_sum.get(tool, 0.0) + float(r["latency_ms"])
-        )
+        by_tool_latency_sum[tool] = by_tool_latency_sum.get(tool, 0.0) + lat
+        by_tool_latencies.setdefault(tool, []).append(lat)
         if not r["result_ok"]:
             by_tool_errors[tool] = by_tool_errors.get(tool, 0) + 1
             total_errors += 1
-        total_latency += float(r["latency_ms"])
+        total_latency += lat
+        all_latencies.append(lat)
+        # result_usable (bool|None — meta tools contribute None).
+        usable = r.get("result_usable")
+        by_tool_usable.setdefault(tool, []).append(usable)
+        all_usable.append(usable)
+        # routed_ok (the derived heuristic; None when no session context).
+        routed = routed_ok_by_id.get(id(r))
+        by_tool_routed.setdefault(tool, []).append(routed)
+        all_routed.append(routed)
         src = r["source"] or "llm"
         by_source_count[src] = by_source_count.get(src, 0) + 1
         # Cache hit rate: presence of a non-zero cached_content_token_count
@@ -405,6 +532,9 @@ def _aggregate_records(records: list[dict[str, Any]]) -> dict[str, Any]:
         errs = by_tool_errors.get(tool, 0)
         avg_latency = by_tool_latency_sum.get(tool, 0.0) / cnt if cnt else 0.0
         rate = (errs / cnt) if cnt else 0.0
+        lats = by_tool_latencies.get(tool, [])
+        usability_rate = _rate_over_bools(by_tool_usable.get(tool, []))
+        routing_rate = _rate_over_bools(by_tool_routed.get(tool, []))
         by_tool_sorted.append(
             {
                 "name": tool,
@@ -412,6 +542,16 @@ def _aggregate_records(records: list[dict[str, Any]]) -> dict[str, Any]:
                 "error_count": errs,
                 "error_rate": round(rate, 4),
                 "avg_latency_ms": round(avg_latency, 2),
+                # Tool-accuracy panel additions (WIRE CONTRACT).
+                "success_rate": round(1.0 - rate, 4),
+                "result_usability_rate": (
+                    round(usability_rate, 4) if usability_rate is not None else None
+                ),
+                "routing_accuracy_rate": (
+                    round(routing_rate, 4) if routing_rate is not None else None
+                ),
+                "latency_p50_ms": round(_percentile(lats, 0.50), 2),
+                "latency_p95_ms": round(_percentile(lats, 0.95), 2),
             }
         )
         error_rate_by_tool.append(
@@ -449,6 +589,9 @@ def _aggregate_records(records: list[dict[str, Any]]) -> dict[str, Any]:
     error_rate_overall = (total_errors / total) if total else 0.0
     cache_hit_rate = (cache_hit_count / cache_total) if cache_total else 0.0
     avg_latency_ms = (total_latency / total) if total else 0.0
+    success_rate = (1.0 - error_rate_overall) if total else 0.0
+    usability_rate_overall = _rate_over_bools(all_usable)
+    routing_rate_overall = _rate_over_bools(all_routed)
 
     return {
         "total_dispatches": total,
@@ -456,11 +599,129 @@ def _aggregate_records(records: list[dict[str, Any]]) -> dict[str, Any]:
         "error_rate_overall": round(error_rate_overall, 4),
         "cache_hit_rate": round(cache_hit_rate, 4),
         "average_latency_ms": round(avg_latency_ms, 2),
+        # Tool-accuracy panel additions (WIRE CONTRACT, NATE 2026-06-17).
+        "success_rate": round(success_rate, 4),
+        "result_usability_rate": (
+            round(usability_rate_overall, 4)
+            if usability_rate_overall is not None
+            else None
+        ),
+        "routing_accuracy_rate": (
+            round(routing_rate_overall, 4)
+            if routing_rate_overall is not None
+            else None
+        ),
+        "latency_p50_ms": round(_percentile(all_latencies, 0.50), 2),
+        "latency_p95_ms": round(_percentile(all_latencies, 0.95), 2),
         "dispatches_by_tool": by_tool_sorted,
         "dispatches_by_source": by_source_count,
         "error_rate_by_tool": error_rate_by_tool,
         "top_routing_chains": chains_out,
+        # solve_telemetry is folded in by build_telemetry_summary (it reads its
+        # own JSONL/collection sink); seed the empty section so _aggregate_records
+        # called standalone still emits the full contract shape.
+        "solve_telemetry": _empty_solve_telemetry(),
         "source": "telemetry",
+    }
+
+
+# ---------------------------------------------------------------------------
+# solve_telemetry section (live big-sim panel — NATE 2026-06-17).
+#
+# The solve-telemetry record is written to the SAME file+structured-log dual
+# sink as before (telemetry.emit_solve_telemetry); we read its JSONL here to
+# fold per-solve metrics (grid resolution / active cells / vCPU / wall-clock /
+# backend / aoi) into /api/telemetry/summary. The lightest path consistent with
+# the existing file+mongo dual-sink: read the JSONL the solve writer already
+# maintains. No Mongo collection is required (none exists for solves), matching
+# the writer's own "JSONL + structured log, not MCP-routed" decision.
+# ---------------------------------------------------------------------------
+
+_DEFAULT_SOLVE_TELEMETRY_PATH = "/tmp/grace2_solve_telemetry.jsonl"
+
+#: How many recent solve records to surface in the ``recent`` array.
+_SOLVE_RECENT_CAP = 20
+
+
+def _get_solve_telemetry_path() -> Path:
+    """Resolve the solve-telemetry JSONL path (env override + default).
+
+    Mirrors ``telemetry._get_solve_telemetry_path`` so reader + writer agree.
+    """
+    return Path(
+        os.environ.get(
+            "GRACE2_SOLVE_TELEMETRY_PATH", _DEFAULT_SOLVE_TELEMETRY_PATH
+        )
+    )
+
+
+def _load_solve_records_from_file(path: Path) -> list[dict[str, Any]]:
+    """Read the solve-telemetry JSONL (newest-last as written).
+
+    Returns the parsed records in file order; missing/unreadable file yields an
+    empty list (the summary then carries the zero-state solve section).
+    """
+    if not path.exists():
+        return []
+    out: list[dict[str, Any]] = []
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(rec, dict):
+                    out.append(rec)
+    except OSError:
+        return []
+    return out
+
+
+def _aggregate_solve_telemetry(
+    records: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Build the ``solve_telemetry`` section from solve records.
+
+    Shape (WIRE CONTRACT): ``{recent: [{run_id, solver, grid_resolution_m,
+    active_cell_count, vcpus, wall_clock_seconds, backend, aoi_km2}],
+    wall_clock_p50_s, wall_clock_p95_s}``. ``recent`` is newest-first, capped at
+    ``_SOLVE_RECENT_CAP``. Percentiles are over every record that carries a
+    numeric ``wall_clock_seconds``. Empty input -> the zero-state section.
+    """
+    if not records:
+        return _empty_solve_telemetry()
+    # Newest-first by ts (ISO Z strings sort lexicographically).
+    ordered = sorted(
+        records, key=lambda r: str(r.get("ts") or ""), reverse=True
+    )
+    recent: list[dict[str, Any]] = []
+    for rec in ordered[:_SOLVE_RECENT_CAP]:
+        recent.append(
+            {
+                "run_id": rec.get("run_id"),
+                "solver": rec.get("solver"),
+                "grid_resolution_m": rec.get("grid_resolution_m"),
+                "active_cell_count": rec.get("active_cell_count"),
+                "vcpus": rec.get("vcpus"),
+                "wall_clock_seconds": rec.get("wall_clock_seconds"),
+                "backend": rec.get("backend"),
+                "aoi_km2": rec.get("aoi_km2"),
+            }
+        )
+    wall_clocks = [
+        float(rec["wall_clock_seconds"])
+        for rec in records
+        if isinstance(rec.get("wall_clock_seconds"), (int, float))
+        and not isinstance(rec.get("wall_clock_seconds"), bool)
+    ]
+    return {
+        "recent": recent,
+        "wall_clock_p50_s": round(_percentile(wall_clocks, 0.50), 2),
+        "wall_clock_p95_s": round(_percentile(wall_clocks, 0.95), 2),
     }
 
 
@@ -611,6 +872,18 @@ async def build_telemetry_summary(
 
     summary = _aggregate_records(records)
     summary["source"] = used_source
+
+    # Fold in the live big-sim solve_telemetry section (NATE 2026-06-17). Read
+    # from the solve-telemetry JSONL the solve writer maintains; best-effort so
+    # a missing/unreadable sink leaves the zero-state section _aggregate_records
+    # already seeded. Independent of the tool-call source above — solves are
+    # logged on their own sink.
+    try:
+        solve_records = _load_solve_records_from_file(_get_solve_telemetry_path())
+        summary["solve_telemetry"] = _aggregate_solve_telemetry(solve_records)
+    except Exception:  # noqa: BLE001 — never break the dashboard on solve read
+        logger.warning("telemetry summary: solve telemetry read failed", exc_info=True)
+        summary["solve_telemetry"] = _empty_solve_telemetry()
     return summary
 
 

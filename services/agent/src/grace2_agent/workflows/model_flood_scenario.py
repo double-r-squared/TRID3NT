@@ -160,6 +160,80 @@ async def _emit_presolver_progress(
         )
 
 
+#: Cadence (seconds) for the LIVE solve-progress envelope during the long solve.
+#: Independent of the solver poll cadence — this is a UX tick on the running
+#: card; conservative so a 10-20-min solve emits a steady (not chatty) stream.
+_LIVE_SOLVE_PROGRESS_INTERVAL_S = 10.0
+
+
+def _extract_solve_autoscale(model_setup: Any) -> dict[str, Any]:
+    """Pull the autoscale provenance (active cells / vCPU / est-solve) off the
+    built ``ModelSetup`` for the live solve-progress envelope + telemetry.
+
+    Mirrors ``_emit_flood_solve_telemetry``'s read of
+    ``model_setup.parameters['autoscale']`` so the live card and the
+    at-completion telemetry agree on cells/vCPU. Returns ``{}`` when absent.
+    """
+    params = getattr(model_setup, "parameters", {}) or {}
+    autoscale = params.get("autoscale") if isinstance(params, dict) else None
+    return autoscale if isinstance(autoscale, dict) else {}
+
+
+async def _drive_live_solve_progress(
+    *,
+    emitter: Any,
+    run_id: str,
+    solver: str,
+    grid_resolution_m: float | None,
+    active_cell_count: int | None,
+    vcpus: int | None,
+    eta_seconds: float | None,
+) -> None:
+    """Background loop: emit the LIVE solve-progress envelope every N seconds.
+
+    Runs alongside ``wait_for_completion`` so the running tool/pipeline card
+    shows grid/cells/vCPU/elapsed/ETA ticking during the long solve (rather than
+    a silent multi-minute spinner). ``elapsed_seconds`` is wall-clock from this
+    coroutine's start (Invariant 1: never an LLM estimate); ``eta_seconds`` is
+    the perf-model ``estimated_solve_seconds`` when available, else ``None``.
+
+    Best-effort + cancellation-safe: the caller cancels this task when the solve
+    returns; any emit failure is swallowed (live telemetry is a UX hint, never a
+    correctness gate). No-op when ``emitter`` is ``None`` (direct/smoke/test
+    call without a WS emitter)."""
+    if emitter is None:
+        return
+    from ..telemetry import build_live_solve_progress
+
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    try:
+        while True:
+            elapsed = max(0.0, loop.time() - started)
+            payload = build_live_solve_progress(
+                run_id=run_id,
+                solver=solver,
+                grid_resolution_m=grid_resolution_m,
+                active_cell_count=active_cell_count,
+                vcpus=vcpus,
+                elapsed_seconds=elapsed,
+                eta_seconds=eta_seconds,
+            )
+            try:
+                await emitter.emit_solve_progress(payload)
+            except Exception as exc:  # noqa: BLE001 — UX hint, never fatal
+                logger.debug(
+                    "model_flood_scenario: live solve-progress emit failed "
+                    "(non-fatal): %s",
+                    exc,
+                )
+            await asyncio.sleep(_LIVE_SOLVE_PROGRESS_INTERVAL_S)
+    except asyncio.CancelledError:
+        # Normal teardown when the solve completes — re-raise so the task
+        # finalizes cleanly.
+        raise
+
+
 class WorkflowError(RuntimeError):
     """Raised by the workflow when composition fails fatally (rare).
 
@@ -990,6 +1064,29 @@ async def model_flood_scenario(
         )
 
     # --- Step 7: wait_for_completion (Invariant 8 cancel chain propagates) ---
+    # LIVE big-sim telemetry (NATE 2026-06-17): drive a solve-progress envelope
+    # on the running card every few seconds for the duration of the solve so the
+    # user sees grid/cells/vCPU/elapsed/ETA tick rather than a silent spinner.
+    # The ETA comes from the perf model (autoscale estimated_solve_seconds) when
+    # available, else None (no fabricated ETA). The driver is a side task that we
+    # cancel as soon as the solve returns/raises — it never affects the outcome.
+    _autoscale = _extract_solve_autoscale(model_setup)
+    _live_active_cells = _autoscale.get("estimated_active_cells")
+    _live_vcpus = _autoscale.get("vcpus")
+    _live_eta = _autoscale.get("estimated_solve_seconds")
+    _progress_task = asyncio.ensure_future(
+        _drive_live_solve_progress(
+            emitter=emitter,
+            run_id=handle.run_id,
+            solver=getattr(handle, "solver", "sfincs") or "sfincs",
+            grid_resolution_m=grid_resolution_m,
+            active_cell_count=(
+                int(_live_active_cells) if _live_active_cells is not None else None
+            ),
+            vcpus=int(_live_vcpus) if _live_vcpus is not None else None,
+            eta_seconds=float(_live_eta) if _live_eta is not None else None,
+        )
+    )
     try:
         run_result: RunResult = await wait_for_completion(handle)
     except asyncio.CancelledError:
@@ -997,6 +1094,13 @@ async def model_flood_scenario(
         # propagate immediately so the WS handler emits pipeline-state(cancelled).
         logger.info("model_flood_scenario cancelled while awaiting solver")
         raise
+    finally:
+        # Tear down the live-progress driver (success, failure, OR cancel).
+        _progress_task.cancel()
+        try:
+            await _progress_task
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            pass
 
     # --- Solve-time telemetry (sprint-16 SFINCS per-job autoscale) ---
     # Accumulate real (active_cells, vCPU, wall_clock) data so the adaptive-grid

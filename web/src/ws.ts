@@ -41,6 +41,7 @@ import {
   SecretsListPayload,
   SessionResumePayload,
   SessionStatePayload,
+  SolveProgressPayload,
   UserMessagePayload,
   envelope,
   newUlid,
@@ -205,6 +206,17 @@ export interface WsHandlers {
    * (keyed on code_exec_id) to RESULT state. Optional.
    */
   onCodeExecResult?: (p: CodeExecResultPayload, caseId?: string | null) => void;
+  /**
+   * Live big-sim solve-progress envelope (NATE 2026-06-17). Emitted by the
+   * agent while a heavy-compute solver (SFINCS / MODFLOW / Pelicun on the
+   * external per-job execution substrate) burns wall-clock so the running
+   * tool / pipeline card can surface a live readout. `solve-progress` is
+   * session-scoped (SESSION_SCOPED_TYPES) so Chat's GraceWs receives it via
+   * the fan-out hub even when the solver step ran on App.tsx's connection.
+   * Malformed payloads (missing run_id) are dropped. Optional so chat-only
+   * callers can ignore.
+   */
+  onSolveProgress?: (p: SolveProgressPayload, caseId?: string | null) => void;
   /**
    * Auth-token retriever (job-0123). Optional — when absent we fall back to
    * `getIdToken()` from `./auth` directly. Injected by tests to avoid
@@ -382,6 +394,12 @@ const SESSION_SCOPED_TYPES = new Set<string>([
   // GraceWs sees them even when the tool ran on App.tsx's connection.
   "code-exec-request",
   "code-exec-result",
+  // NATE 2026-06-17: live big-sim solve-progress is session-scoped so Chat.tsx
+  // GraceWs sees it even when the solver step ran on App.tsx's connection —
+  // the running tool card lives in Chat's stream. Mirrors pipeline-state's
+  // rationale but pipeline-state is message-scoped (follows its user-message);
+  // solve-progress fans out because the card it enriches can be on either wire.
+  "solve-progress",
 ]);
 
 const SESSION_HUB: Map<string, Set<GraceWs>> = new Map();
@@ -1198,6 +1216,21 @@ export class GraceWs {
           } else {
             // eslint-disable-next-line no-console
             console.warn("[ws] code-exec-result dropped: missing code_exec_id or status", payload);
+          }
+        }
+        break;
+      case "solve-progress":
+        // NATE 2026-06-17: live big-sim readout. The agent emits this while a
+        // heavy solver burns wall-clock; Chat threads it onto the running
+        // solver step's PipelineCard. Malformed payloads (missing run_id) are
+        // dropped with a console.warn to avoid crashing the React tree.
+        if (this.handlers.onSolveProgress) {
+          const sp = payload as unknown as SolveProgressPayload;
+          if (sp && typeof sp.run_id === "string") {
+            this.handlers.onSolveProgress(sp, caseId);
+          } else {
+            // eslint-disable-next-line no-console
+            console.warn("[ws] solve-progress dropped: missing run_id", payload);
           }
         }
         break;

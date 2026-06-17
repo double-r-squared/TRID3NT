@@ -150,6 +150,8 @@ async def _write_to_mongo(
     error_code: str | None,
     retry_attempt: int,
     cached_content_token_count: int | None,
+    result_usable: bool | None = None,
+    routed_ok: bool | None = None,
 ) -> None:
     """Emit one tool-call telemetry record to MongoDB via the MCP Persistence.
 
@@ -192,6 +194,8 @@ async def _write_to_mongo(
             error_code=error_code,
             retry_attempt=retry_attempt,
             cached_content_token_count=cached_content_token_count,
+            result_usable=result_usable,
+            routed_ok=routed_ok,
         )
 
         body = doc.model_dump(mode="json", by_alias=True)
@@ -224,6 +228,8 @@ async def emit_tool_call_event(
     error_code: str | None = None,
     retry_attempt: int = 0,
     cached_content_token_count: int | None = None,
+    result_usable: bool | None = None,
+    routed_ok: bool | None = None,
 ) -> None:
     """Emit one tool-call telemetry record (non-blocking).
 
@@ -267,6 +273,19 @@ async def emit_tool_call_event(
             cached_content_token_count`` from the response that triggered
             this call.  ``None`` when the field is absent or the stream did
             not report usage metadata (e.g. mid-stream chunks).
+        result_usable: Whether the call produced a USABLE result, distinct
+            from ``success`` (tool-accuracy panel, NATE 2026-06-17). ``False``
+            for a layer-producing tool whose result carried no renderable
+            layer (the honesty-floor NO_RENDERABLE_LAYER case) even when
+            ``success=True``; ``True`` for a real renderable / non-empty data
+            result; ``None`` where the notion does not apply (meta tools).
+            Derived at the dispatch chokepoint by
+            ``adapter.classify_result_usable``.
+        routed_ok: Routing-quality heuristic (NOT ground truth). ``False``
+            when this call was immediately superseded within the same session
+            by a DIFFERENT tool for the same logical step (a mis-route the
+            model corrected); ``True`` when not superseded; ``None`` when the
+            signal is unavailable.
     """
     # Resolve the Persistence singleton via the module-level lazy wrapper.
     # That wrapper defers the import of server.py to avoid a circular import
@@ -295,6 +314,8 @@ async def emit_tool_call_event(
                 error_code=error_code,
                 retry_attempt=retry_attempt,
                 cached_content_token_count=cached_content_token_count,
+                result_usable=result_usable,
+                routed_ok=routed_ok,
             )
         )
         return
@@ -311,6 +332,8 @@ async def emit_tool_call_event(
         "error_code": error_code,
         "retry_attempt": retry_attempt,
         "cached_content_token_count": cached_content_token_count,
+        "result_usable": result_usable,
+        "routed_ok": routed_ok,
     }
     path = _get_telemetry_path()
     # Fire-and-forget: the event loop schedules the write; we do not await it.
@@ -454,9 +477,52 @@ def emit_solve_telemetry(
     return record
 
 
+def build_live_solve_progress(
+    *,
+    run_id: str,
+    solver: str,
+    grid_resolution_m: float | None,
+    active_cell_count: int | None,
+    vcpus: int | None,
+    elapsed_seconds: float,
+    eta_seconds: float | None = None,
+) -> dict:
+    """Build the LIVE big-sim progress payload (server -> web; pure, no I/O).
+
+    Shape (the SHARED WIRE CONTRACT, tool-accuracy panel NATE 2026-06-17)::
+
+        {run_id, solver, grid_resolution_m, active_cell_count, vcpus,
+         elapsed_seconds, eta_seconds|null}
+
+    Emitted on the running tool/pipeline card during a solve so the user sees
+    grid resolution / active-cell count / vCPU / elapsed / ETA tick on the live
+    card (rather than a silent multi-minute spinner). ``eta_seconds`` comes from
+    the perf model (the autoscale ``estimated_solve_seconds``) when available,
+    else ``None``. Reuses the job-0359 solve-telemetry field names so the live
+    envelope and the at-completion record speak the same vocabulary.
+
+    Split out (like ``build_solve_telemetry_record``) so the wire shape can be
+    asserted in tests without an emitter / websocket.
+    """
+    return {
+        "run_id": run_id,
+        "solver": solver,
+        "grid_resolution_m": (
+            float(grid_resolution_m) if grid_resolution_m is not None else None
+        ),
+        "active_cell_count": (
+            int(active_cell_count) if active_cell_count is not None else None
+        ),
+        "vcpus": int(vcpus) if vcpus is not None else None,
+        "elapsed_seconds": float(elapsed_seconds),
+        "eta_seconds": float(eta_seconds) if eta_seconds is not None else None,
+    }
+
+
 __all__ = [
     "emit_tool_call_event",
     "compute_args_hash",
     "emit_solve_telemetry",
     "build_solve_telemetry_record",
+    "build_live_solve_progress",
 ]

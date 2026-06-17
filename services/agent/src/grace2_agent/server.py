@@ -104,6 +104,7 @@ from .adapter import (
     stream_events_with_contents,
     stream_reply,  # noqa: F401 — retained for any callers that use it directly
     summarize_tool_result,
+    classify_result_usable,
 )
 from .gemini_cache import get_or_create_cache
 from .auth import (
@@ -1784,6 +1785,18 @@ async def _stream_gemini_reply(
                     if last_usage is not None
                     else None
                 )
+                # Tool-accuracy panel (NATE 2026-06-17): derive result_usable at
+                # the SAME chokepoint, reusing the honesty-floor signal already
+                # stamped on ``summary`` (NO_RENDERABLE_LAYER / failure-tagged
+                # modeled envelope). A layer-producing tool that returned
+                # status="ok" with an empty layers list is success=True but
+                # result_usable=False. ``routed_ok`` is left None here — the
+                # supersession heuristic is a same-session ADJACENT-chain signal
+                # only computable at aggregation time, so it is derived in
+                # tool_catalog_http._aggregate_records, not at emit time.
+                _tel_result_usable = classify_result_usable(
+                    call.name, result, summary
+                )
                 await emit_tool_call_event(
                     session_id=state.session_id,
                     ts=now_utc().isoformat(),
@@ -1794,6 +1807,7 @@ async def _stream_gemini_reply(
                     latency_ms=_tool_latency_ms,
                     error_code=_tel_error_code,
                     cached_content_token_count=_tel_cached_tokens,
+                    result_usable=_tel_result_usable,
                 )
                 # job-B10: pass the thought_signature harvested off the
                 # function_call Part through to the replayed model turn.

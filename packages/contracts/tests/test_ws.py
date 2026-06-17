@@ -591,6 +591,16 @@ def test_every_a3_a4_a4b_payload_round_trips(session_id: str) -> None:
             selected_region_id="county-12071",
             selected_bbox=(-82.331, 26.317, -81.564, 26.795),
         ),
+        # solve-progress — LIVE big-sim telemetry (tool-accuracy panel, 2026-06-17)
+        "solve-progress": lambda: ws.SolveProgressPayload(
+            run_id=new_ulid(),
+            solver="sfincs",
+            grid_resolution_m=30.0,
+            active_cell_count=100_000,
+            vcpus=8,
+            elapsed_seconds=42.5,
+            eta_seconds=300.0,
+        ),
     }
     # Every payload registered in ws.ALL_PAYLOADS must have a minimal factory
     # (i.e., the test covers the full inventory).

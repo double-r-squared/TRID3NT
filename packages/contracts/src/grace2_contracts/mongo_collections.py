@@ -195,6 +195,24 @@ class ToolCallTelemetryDocument(DocModel):
     error_code: str | None = None
     retry_attempt: int = 0        # 0 = first attempt; 1 = first retry; etc.
 
+    # --- Tool-accuracy panel (NATE 2026-06-17) ---
+    #: Whether the call produced a USABLE result, distinct from ``result_ok``
+    #: (which only says the call did not raise / was not failure-tagged). A
+    #: layer-producing tool that returned status="ok" while carrying an EMPTY
+    #: layers list is ``result_ok=True`` but ``result_usable=False`` (the
+    #: honesty-floor NO_RENDERABLE_LAYER case). ``None`` where the notion does
+    #: not apply (meta / control-plane tools that never produce a layer or data
+    #: payload). Derived at the dispatch chokepoint by
+    #: ``adapter.classify_result_usable``.
+    result_usable: bool | None = None
+    #: Routing-quality heuristic (NOT ground truth): ``False`` when this call
+    #: was IMMEDIATELY superseded within the same session by a DIFFERENT tool
+    #: for the same logical step (a retry/correction of a mis-route), ``True``
+    #: when it was not superseded, ``None`` when the signal is unavailable. A
+    #: defensible signal for "the model picked the right tool", clearly labelled
+    #: heuristic so the dashboard never claims certainty.
+    routed_ok: bool | None = None
+
     # --- Cache observability ---
     cached_content_token_count: int | None = None  # from Gemini UsageMetadata
 

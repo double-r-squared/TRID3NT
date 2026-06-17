@@ -29,7 +29,11 @@
 // + the merge-by-step_id dedupe and passes the current snapshot of each step.
 
 import { useEffect, useRef, useState } from "react";
-import { PipelineStepSummary, PipelineStepState } from "../contracts";
+import {
+  PipelineStepSummary,
+  PipelineStepState,
+  SolveProgressPayload,
+} from "../contracts";
 
 // --- Duration formatting + live ticker (job-0264) ------------------------ //
 //
@@ -59,6 +63,77 @@ const TERMINAL_STATES: ReadonlySet<PipelineStepState> = new Set([
   "failed",
   "cancelled",
 ]);
+
+// --- Live big-sim solve readout (NATE 2026-06-17) ------------------------ //
+//
+// While a heavy solver (SFINCS / MODFLOW / Pelicun on the external per-job
+// substrate) burns wall-clock, the agent streams `solve-progress` envelopes
+// (SolveProgressPayload) carrying the live grid resolution / active-cell count
+// / vCPU / elapsed / ETA. The running tool card surfaces a compact one-line
+// readout built from them so the user sees the sim is actually progressing
+// (not a frozen spinner). The readout updates in place as envelopes arrive and
+// clears the instant the step reaches a terminal state (the card stops passing
+// the `solve` prop — see Chat.tsx's matcher).
+//
+// Format (dot-separated): "SFINCS · 100 m · ~46k cells · 8 vCPU · 1:12 · est ~70s"
+//   - solver chip
+//   - grid resolution in metres
+//   - active cell count, human-abbreviated (k / M), prefixed "~"
+//   - vCPU allocation
+//   - elapsed wall-clock as m:ss (reuses formatDuration)
+//   - ETA ("est ~70s" / "est ~1:10") — OMITTED when eta_seconds is null/absent
+//     (no fabricated estimate; Invariant 9 — physical progress, not cost).
+
+/** Abbreviate a cell count: 46123 → "46k", 1_250_000 → "1.3M", 920 → "920". */
+export function formatCellCount(cells: number): string {
+  const n = Math.max(0, Math.floor(cells));
+  if (n >= 1_000_000) {
+    const m = n / 1_000_000;
+    return `${m >= 10 ? Math.round(m) : Number(m.toFixed(1))}M`;
+  }
+  if (n >= 1_000) {
+    const k = n / 1_000;
+    return `${k >= 10 ? Math.round(k) : Number(k.toFixed(1))}k`;
+  }
+  return `${n}`;
+}
+
+/**
+ * Format an ETA: short estimates read as plain seconds ("~70s") so a sub-
+ * couple-minutes ETA stays legible at a glance (matches the wire-contract
+ * example "est ~70s" for a 70s ETA); longer estimates roll into "~m:ss".
+ */
+function formatEta(seconds: number): string {
+  const s = Math.max(0, Math.round(seconds));
+  if (s < 90) return `~${s}s`;
+  return `~${formatDuration(s * 1000)}`;
+}
+
+/**
+ * Build the dot-separated live solve readout from a SolveProgressPayload.
+ * `eta_seconds` null/absent omits the ETA segment entirely (no fabrication).
+ * Exported so the collapsed-sheet active-tool strip + tests share one impl.
+ */
+export function formatSolveReadout(solve: SolveProgressPayload): string {
+  const parts: string[] = [solve.solver];
+  // grid / cells / vCPU are nullable (not yet known pre-build) — OMIT a segment
+  // when null rather than render "null m" / "~NaN cells" (no fabrication, same
+  // discipline as the ETA segment below).
+  if (solve.grid_resolution_m !== null && solve.grid_resolution_m !== undefined) {
+    parts.push(`${solve.grid_resolution_m} m`);
+  }
+  if (solve.active_cell_count !== null && solve.active_cell_count !== undefined) {
+    parts.push(`~${formatCellCount(solve.active_cell_count)} cells`);
+  }
+  if (solve.vcpus !== null && solve.vcpus !== undefined) {
+    parts.push(`${solve.vcpus} vCPU`);
+  }
+  parts.push(formatDuration(solve.elapsed_seconds * 1000));
+  if (solve.eta_seconds !== null && solve.eta_seconds !== undefined) {
+    parts.push(`est ${formatEta(solve.eta_seconds)}`);
+  }
+  return parts.join(" · ");
+}
 
 // --- Minimum running-state dwell (F70) ----------------------------------- //
 //
@@ -667,9 +742,19 @@ export function humanizeStepName(
 
 export interface PipelineCardProps {
   step: PipelineStepSummary;
+  /**
+   * Live big-sim solve readout (NATE 2026-06-17). When this step is a RUNNING
+   * heavy solver and a `solve-progress` envelope has arrived for it, the caller
+   * (Chat.tsx) threads the latest payload here and the card renders a compact
+   * inline readout ("SFINCS · 100 m · ~46k cells · 8 vCPU · 1:12 · est ~70s")
+   * under the label. The caller stops passing it once the step is terminal, so
+   * the readout clears on completion. Optional — absent for every non-solver
+   * tool card.
+   */
+  solve?: SolveProgressPayload | null;
 }
 
-export function PipelineCard({ step }: PipelineCardProps): JSX.Element {
+export function PipelineCard({ step, solve = null }: PipelineCardProps): JSX.Element {
   const reduced = prefersReducedMotion();
 
   // F70: the VISUAL state may lag the logical state by up to a few hundred ms
@@ -723,6 +808,11 @@ export function PipelineCard({ step }: PipelineCardProps): JSX.Element {
       }
     : { color: visual.textColor };
 
+  // Live big-sim readout: only while the card is PAINTED running (so a settled
+  // terminal card never carries a stale readout — clears on completion) and a
+  // solve-progress payload has actually arrived for this step.
+  const solveReadout = displayIsRunning && solve ? formatSolveReadout(solve) : null;
+
   return (
     <div
       data-testid="pipeline-card"
@@ -731,8 +821,8 @@ export function PipelineCard({ step }: PipelineCardProps): JSX.Element {
       aria-live="polite"
       style={{
         display: "flex",
-        alignItems: "center",
-        gap: 8,
+        flexDirection: "column",
+        gap: 4,
         fontSize: 12,
         lineHeight: "1.4",
         padding: "8px 10px",
@@ -745,68 +835,91 @@ export function PipelineCard({ step }: PipelineCardProps): JSX.Element {
         transition: "background-color 200ms ease-in-out",
       }}
     >
-      {/* Visually-hidden screen-reader state prefix. */}
-      <span
-        style={{
-          position: "absolute",
-          width: 1,
-          height: 1,
-          padding: 0,
-          margin: -1,
-          overflow: "hidden",
-          clip: "rect(0,0,0,0)",
-          whiteSpace: "nowrap",
-          border: 0,
-        }}
-      >
-        {visual.ariaPrefix}
-      </span>
-      <span
-        data-testid="pipeline-card-name"
-        style={{
-          flex: 1,
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap",
-          ...labelStyle,
-        }}
-        title={labelText}
-      >
-        {labelText}
-      </span>
-      {timerText !== null && (
+      {/* Main row: label + timer + spinner / error chip. */}
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        {/* Visually-hidden screen-reader state prefix. */}
         <span
-          data-testid="pipeline-card-timer"
-          data-authoritative={hasAuthoritativeDuration ? "true" : "false"}
-          aria-hidden="true"
           style={{
-            fontVariantNumeric: "tabular-nums",
-            fontSize: 11,
-            // Running: dimmed so the rainbow label stays the focus. Terminal:
-            // slightly brighter since the spinner is gone and this is the
-            // card's only right-side affordance. Keyed on the PAINTED state so
-            // it reads as "running" during the F70 dwell.
-            color: displayIsRunning
-              ? "rgba(255,255,255,0.55)"
-              : "rgba(255,255,255,0.7)",
-            flexShrink: 0,
-            // Lock min-width so the ticking digits don't jitter the layout.
-            minWidth: 30,
-            textAlign: "right",
+            position: "absolute",
+            width: 1,
+            height: 1,
+            padding: 0,
+            margin: -1,
+            overflow: "hidden",
+            clip: "rect(0,0,0,0)",
+            whiteSpace: "nowrap",
+            border: 0,
           }}
         >
-          {timerText}
+          {visual.ariaPrefix}
         </span>
-      )}
-      {displayIsRunning && <Spinner reduced={reduced} />}
-      {displayIsFailed && (step.error_code || step.error_message) && (
         <span
-          data-testid="pipeline-card-error"
-          style={{ color: "#fca5a5", fontSize: 11, marginLeft: 4 }}
-          title={step.error_message ?? undefined}
+          data-testid="pipeline-card-name"
+          style={{
+            flex: 1,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+            ...labelStyle,
+          }}
+          title={labelText}
         >
-          {step.error_code ?? "error"}
+          {labelText}
         </span>
+        {timerText !== null && (
+          <span
+            data-testid="pipeline-card-timer"
+            data-authoritative={hasAuthoritativeDuration ? "true" : "false"}
+            aria-hidden="true"
+            style={{
+              fontVariantNumeric: "tabular-nums",
+              fontSize: 11,
+              // Running: dimmed so the rainbow label stays the focus. Terminal:
+              // slightly brighter since the spinner is gone and this is the
+              // card's only right-side affordance. Keyed on the PAINTED state so
+              // it reads as "running" during the F70 dwell.
+              color: displayIsRunning
+                ? "rgba(255,255,255,0.55)"
+                : "rgba(255,255,255,0.7)",
+              flexShrink: 0,
+              // Lock min-width so the ticking digits don't jitter the layout.
+              minWidth: 30,
+              textAlign: "right",
+            }}
+          >
+            {timerText}
+          </span>
+        )}
+        {displayIsRunning && <Spinner reduced={reduced} />}
+        {displayIsFailed && (step.error_code || step.error_message) && (
+          <span
+            data-testid="pipeline-card-error"
+            style={{ color: "#fca5a5", fontSize: 11, marginLeft: 4 }}
+            title={step.error_message ?? undefined}
+          >
+            {step.error_code ?? "error"}
+          </span>
+        )}
+      </div>
+      {/* Live big-sim solve readout (NATE 2026-06-17) — second line, only while
+          running + a solve-progress payload has arrived for this step. */}
+      {solveReadout !== null && (
+        <div
+          data-testid="pipeline-card-solve"
+          data-run-id={solve?.run_id}
+          aria-live="polite"
+          style={{
+            fontSize: 11,
+            color: "rgba(255,255,255,0.66)",
+            fontVariantNumeric: "tabular-nums",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+          title={solveReadout}
+        >
+          {solveReadout}
+        </div>
       )}
     </div>
   );
