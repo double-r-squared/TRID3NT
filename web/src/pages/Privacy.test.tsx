@@ -39,7 +39,7 @@ describe("Privacy — required disclosures", () => {
 
   it("discloses the storage and processing parties", () => {
     render(<Privacy />);
-    expect(screen.getByText(/mongodb atlas/i)).toBeInTheDocument();
+    expect(screen.getByText(/amazon dynamodb/i)).toBeInTheDocument();
     expect(screen.getByText(/amazon s3/i)).toBeInTheDocument();
     expect(
       screen.getByText(/aws bedrock \(anthropic claude\)/i),

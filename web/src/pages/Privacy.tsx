@@ -102,7 +102,7 @@ export function Privacy(): JSX.Element {
           </p>
           <ul>
             <li>
-              <strong>MongoDB Atlas</strong> — stores chat history, Cases,
+              <strong>Amazon DynamoDB</strong> — stores chat history, Cases,
               session records, and audit logs.
             </li>
             <li>

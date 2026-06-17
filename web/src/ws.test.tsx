@@ -13,9 +13,11 @@
 // messages directly through MessageEvent injection rather than a real
 // WebSocket server.
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   GraceWs,
+  KEEPALIVE_INTERVAL_MS,
+  KEEPALIVE_PONG_TIMEOUT_MS,
   __test_resetSessionHub,
   __test_sessionHubSize,
   type WsHandlers,
@@ -984,5 +986,161 @@ describe("GraceWs — forceReconnect (job-0322 F31 zombie-socket)", () => {
 
     ws.close();
     expect(__test_sessionHubSize(ws.session)).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// BUG 4a (Wave 4.9) — application-level keepalive ping/pong.
+//
+// The agent WS dropped + reconnected every ~10-45s ("no close frame received or
+// sent" server-side) because an IDLE socket behind CloudFront was silently
+// idle-culled. GraceWs now sends a `session-resume` keepalive ping every
+// KEEPALIVE_INTERVAL_MS while OPEN; any inbound frame counts as proof-of-life
+// and clears the pong deadline; a missed pong within KEEPALIVE_PONG_TIMEOUT_MS
+// force-reconnects the (dead, possibly zombie-OPEN) socket.
+//
+// Uses FAKE TIMERS to drive the interval/timeout deterministically. The keepalive
+// is armed in the socket's `open` handler, so we dispatch a synthetic `open`
+// event on the instance socket (happy-dom does not auto-fire it in this harness;
+// the existing tests grab the socket synchronously and never rely on `open`).
+// ---------------------------------------------------------------------------
+
+describe("GraceWs — keepalive ping/pong (BUG 4a)", () => {
+  beforeEach(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (window as any).__webSockets = [];
+    __test_resetSessionHub();
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
+  /** connect() + force the socket OPEN + fire the `open` event so the keepalive
+   *  arms. Returns the live socket. */
+  function openSocketFor(ws: GraceWs): WebSocket {
+    ws.connect();
+    const socket = instanceSocket(ws);
+    expect(socket).not.toBeNull();
+    forceReadyState(socket!, 1); // WebSocket.OPEN
+    socket!.dispatchEvent(new Event("open"));
+    return socket!;
+  }
+
+  it("sends a session-resume ping on the keepalive interval while OPEN", () => {
+    const ws = new GraceWs("ws://localhost:8765", makeHandlers());
+    const socket = openSocketFor(ws);
+    const sendSpy = vi
+      .spyOn(socket, "send")
+      .mockImplementation(() => undefined);
+
+    // No ping before the interval elapses.
+    vi.advanceTimersByTime(KEEPALIVE_INTERVAL_MS - 1);
+    expect(sendSpy).not.toHaveBeenCalled();
+
+    // One ping at the interval boundary.
+    vi.advanceTimersByTime(1);
+    expect(sendSpy).toHaveBeenCalledTimes(1);
+    const wire = JSON.parse(sendSpy.mock.calls[0]![0] as string) as {
+      type: string;
+      session_id: string;
+    };
+    expect(wire.type).toBe("session-resume");
+    expect(wire.session_id).toBe(ws.session);
+
+    // The server answers the ping (pong) so the socket stays alive — otherwise
+    // the missed-pong path would force-reconnect before the next interval.
+    injectMessage(socket, makeEnvelope("session-state", { loaded_layers: [] }));
+
+    // A second ping one interval later (interval, not one-shot) on the SAME
+    // live socket.
+    vi.advanceTimersByTime(KEEPALIVE_INTERVAL_MS);
+    expect(sendSpy).toHaveBeenCalledTimes(2);
+    expect(instanceSocket(ws)).toBe(socket);
+
+    ws.close();
+  });
+
+  it("reconnects on a MISSED pong (no inbound activity within the timeout)", () => {
+    const ws = new GraceWs("ws://localhost:8765", makeHandlers());
+    const stale = openSocketFor(ws);
+    vi.spyOn(stale, "send").mockImplementation(() => undefined);
+    const closeSpy = vi
+      .spyOn(stale, "close")
+      .mockImplementation(() => undefined);
+
+    // Fire the ping; arm the pong deadline.
+    vi.advanceTimersByTime(KEEPALIVE_INTERVAL_MS);
+    // Still alive right up to the deadline.
+    vi.advanceTimersByTime(KEEPALIVE_PONG_TIMEOUT_MS - 1);
+    expect(closeSpy).not.toHaveBeenCalled();
+    expect(instanceSocket(ws)).toBe(stale);
+
+    // Deadline elapses with NO inbound frame → force-reconnect: the stale
+    // (zombie-OPEN) socket is torn down and a fresh one opened.
+    vi.advanceTimersByTime(1);
+    expect(closeSpy).toHaveBeenCalledTimes(1);
+    const fresh = instanceSocket(ws);
+    expect(fresh).not.toBeNull();
+    expect(fresh).not.toBe(stale);
+
+    ws.close();
+  });
+
+  it("does NOT reconnect when an inbound frame answers the ping (pong received)", () => {
+    const ws = new GraceWs("ws://localhost:8765", makeHandlers());
+    const socket = openSocketFor(ws);
+    vi.spyOn(socket, "send").mockImplementation(() => undefined);
+    const closeSpy = vi
+      .spyOn(socket, "close")
+      .mockImplementation(() => undefined);
+
+    // Fire the ping; arm the pong deadline.
+    vi.advanceTimersByTime(KEEPALIVE_INTERVAL_MS);
+
+    // The server's session-state reply (the "pong") arrives before the deadline.
+    injectMessage(socket, makeEnvelope("session-state", { loaded_layers: [] }));
+
+    // Let the would-be deadline pass: the socket is NOT torn down.
+    vi.advanceTimersByTime(KEEPALIVE_PONG_TIMEOUT_MS + 5);
+    expect(closeSpy).not.toHaveBeenCalled();
+    expect(instanceSocket(ws)).toBe(socket);
+
+    ws.close();
+  });
+
+  it("stops the keepalive after close() (no ping fires post-teardown)", () => {
+    const ws = new GraceWs("ws://localhost:8765", makeHandlers());
+    const socket = openSocketFor(ws);
+    const sendSpy = vi
+      .spyOn(socket, "send")
+      .mockImplementation(() => undefined);
+
+    ws.close();
+    sendSpy.mockClear();
+
+    // Advance well past several intervals — no ping should fire.
+    vi.advanceTimersByTime(KEEPALIVE_INTERVAL_MS * 3);
+    expect(sendSpy).not.toHaveBeenCalled();
+  });
+
+  it("stops the keepalive when the socket closes (close event tears down timers)", () => {
+    const ws = new GraceWs("ws://localhost:8765", makeHandlers());
+    const socket = openSocketFor(ws);
+    const sendSpy = vi
+      .spyOn(socket, "send")
+      .mockImplementation(() => undefined);
+
+    // The socket drops (server-side cull / network blip).
+    forceReadyState(socket, 3); // CLOSED
+    socket.dispatchEvent(new CloseEvent("close", { code: 1006 }));
+    // The close handler scheduled a backoff reconnect; ignore that and assert
+    // the OLD socket's keepalive ping no longer fires on it.
+    sendSpy.mockClear();
+    vi.advanceTimersByTime(KEEPALIVE_INTERVAL_MS * 2);
+    expect(sendSpy).not.toHaveBeenCalled();
+
+    ws.close();
   });
 });

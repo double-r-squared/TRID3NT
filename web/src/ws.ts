@@ -255,6 +255,29 @@ export interface WsHandlers {
 // user-actionable state (re-sign-in), not a reconnectable one.
 export const AUTH_FAILED_CLOSE_CODE = 4401;
 
+// BUG 4a (Wave 4.9) — application-level keepalive. The agent WS was observed
+// dropping + reconnecting every ~10-45s ("no close frame received or sent"
+// server-side) because an IDLE socket behind CloudFront (d125yfbyjrpbre
+// .cloudfront.net → EC2) is silently culled by the proxy's idle timeout. The
+// browser `WebSocket` API cannot send protocol-level ping frames, and the agent
+// server has NO custom `{type:"ping"}` handler — its dispatch loop replies to an
+// unknown message type with an `INTERNAL_ERROR` error envelope (server.py
+// `else: _send_error(... "unknown message type")`), which would spam the chat
+// error path and force-fail pipeline cards. So the keepalive ping is a
+// `session-resume` envelope: the server DOES handle it (re-emits an
+// authoritative `session-state`), it is idempotent (replace-not-reconcile makes
+// a repeat snapshot a no-op when the layer sets match — Appendix A.7), and the
+// `session-state` reply is a real proof-of-life we can treat as the "pong".
+//
+// Liveness model: every inbound frame (the resume reply OR ordinary traffic)
+// counts as activity and clears the pending pong deadline. We send a ping every
+// KEEPALIVE_INTERVAL_MS while OPEN; if NO inbound activity arrives within
+// KEEPALIVE_PONG_TIMEOUT_MS of a ping, the socket is treated as dead and force-
+// reconnected (this also covers the iOS zombie-socket case where readyState
+// stays OPEN on a dead connection). Timers are torn down on close/teardown.
+export const KEEPALIVE_INTERVAL_MS = 25_000;
+export const KEEPALIVE_PONG_TIMEOUT_MS = 10_000;
+
 const SESSION_KEY = "grace2.session_id";
 // job-0172 Part C — sticky anonymous user_id. The server's H.3 anonymous
 // fallback mints a fresh ULID on every connect; without a client-side cache,
@@ -460,6 +483,13 @@ export class GraceWs {
   // job-0253 — guard so the one-shot forceRefresh retry runs at most once per
   // connect attempt and we don't loop refresh→reject→refresh.
   private authRefreshAttempted = false;
+  // BUG 4a — keepalive timers. ``keepaliveTimer`` fires every
+  // KEEPALIVE_INTERVAL_MS while the socket is OPEN and sends a `session-resume`
+  // ping; ``pongDeadlineTimer`` is armed when a ping is sent and fires (=> force-
+  // reconnect) only if NO inbound frame arrives within KEEPALIVE_PONG_TIMEOUT_MS.
+  // Any inbound frame (the resume reply or ordinary traffic) clears the deadline.
+  private keepaliveTimer: number | null = null;
+  private pongDeadlineTimer: number | null = null;
 
   constructor(url: string, handlers: WsHandlers) {
     this.url = url;
@@ -476,6 +506,19 @@ export class GraceWs {
     return this.sessionId;
   }
 
+  /**
+   * BUG 4a — true iff the current socket reports OPEN. App.tsx's
+   * visibilitychange handler reads this to avoid tearing down an already-OPEN
+   * socket: a healthy connection takes the lighter `requestSessionState()`
+   * re-pull path; only a closed/closing/never-connected socket gets the
+   * `forceReconnect()` teardown. (A genuinely-dead socket that LIES about being
+   * OPEN — the iOS zombie — is now caught by the keepalive's missed-pong
+   * detector instead of an unconditional resume-time teardown.)
+   */
+  get isOpen(): boolean {
+    return this.socket?.readyState === WebSocket.OPEN;
+  }
+
   connect(): void {
     this.closedByUser = false;
     // job-0253 — a fresh connect() is the post-sign-in entry point; clear the
@@ -487,6 +530,8 @@ export class GraceWs {
 
   close(): void {
     this.closedByUser = true;
+    // BUG 4a — stop the keepalive ping/pong timers on explicit teardown.
+    this.stopKeepalive();
     if (this.reconnectTimer !== null) {
       window.clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -941,6 +986,10 @@ export class GraceWs {
     ws.addEventListener("open", () => {
       this.backoffMs = 500;
       this.handlers.onStatus("connected");
+      // BUG 4a — start the application-level keepalive now that the socket is
+      // OPEN. Re-armed fresh on every (re)open; torn down in the close handler
+      // + close()/teardown.
+      this.startKeepalive();
       // job-0253b — `auth-token` MUST be the FIRST envelope on every
       // connection. The agent's AUTH_REQUIRED gate (server.py:4047-4063)
       // dispatches in arrival order and rejects the FIRST non-auth-token frame
@@ -983,6 +1032,10 @@ export class GraceWs {
       // in the detach case, so simply bail.)
       if (this.socket !== null && this.socket !== ws) return;
       this.socket = null;
+      // BUG 4a — the live socket is gone; stop the keepalive so its ping timer
+      // can't fire against a dead socket or arm a spurious pong deadline. A
+      // fresh open re-arms it.
+      this.stopKeepalive();
       if (this.closedByUser) return;
       // job-0253 — the agent's auth gate closes with code 4401 (A.5) when the
       // credential is rejected. Do NOT reconnect: an invalid/expired token
@@ -1004,6 +1057,12 @@ export class GraceWs {
   }
 
   private handleMessage(raw: unknown): void {
+    // BUG 4a — ANY inbound frame is proof-of-life: clear the pending pong
+    // deadline so a healthy socket (the keepalive `session-state` reply OR
+    // ordinary agent traffic) is never force-reconnected. Done before the
+    // string/JSON guards below so even a non-string / unparseable frame still
+    // counts as the connection being alive.
+    this.noteInboundActivity();
     if (typeof raw !== "string") return;
     let parsed: unknown;
     try {
@@ -1375,6 +1434,78 @@ export class GraceWs {
     this.handlers.onStatus("disconnected");
     if (this.handlers.onAuthExpired) {
       this.handlers.onAuthExpired(err);
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // BUG 4a — application-level keepalive.
+  // -------------------------------------------------------------------------
+
+  /**
+   * Arm the keepalive interval for the CURRENT (just-opened) socket. Clears any
+   * prior timers first (idempotent — a stale interval from a previous socket
+   * must never run against the new one). Each tick sends a `session-resume`
+   * ping (see KEEPALIVE_INTERVAL_MS doc) and arms a pong deadline; an inbound
+   * frame before the deadline clears it (``noteInboundActivity``).
+   */
+  private startKeepalive(): void {
+    this.stopKeepalive();
+    this.keepaliveTimer = window.setInterval(() => {
+      this.sendKeepalivePing();
+    }, KEEPALIVE_INTERVAL_MS);
+  }
+
+  /** Clear both keepalive timers. Safe to call when neither is armed. */
+  private stopKeepalive(): void {
+    if (this.keepaliveTimer !== null) {
+      window.clearInterval(this.keepaliveTimer);
+      this.keepaliveTimer = null;
+    }
+    if (this.pongDeadlineTimer !== null) {
+      window.clearTimeout(this.pongDeadlineTimer);
+      this.pongDeadlineTimer = null;
+    }
+  }
+
+  /**
+   * Send one keepalive ping (a `session-resume` envelope — the server-supported
+   * proxy-warming frame) and arm the pong deadline. No-op when the socket is not
+   * OPEN (the close handler will have stopped the keepalive anyway). If a pong
+   * deadline is already pending we do NOT stack a second one — the prior one is
+   * still counting down and an inbound frame clears it.
+   */
+  private sendKeepalivePing(): void {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return;
+    const resume: Envelope<SessionResumePayload> = envelope(
+      "session-resume",
+      this.sessionId,
+      {} as SessionResumePayload,
+    );
+    this.sendEnvelope(resume);
+    if (this.pongDeadlineTimer === null) {
+      this.pongDeadlineTimer = window.setTimeout(() => {
+        this.pongDeadlineTimer = null;
+        // No inbound frame answered the ping within the timeout → the socket is
+        // dead (idle-culled by the proxy, or an iOS zombie that still reports
+        // OPEN). forceReconnect() tears it down unconditionally and re-opens; the
+        // fresh open handler re-sends auth-token + session-resume and re-arms the
+        // keepalive. closedByUser / authFailed are honoured by forceReconnect →
+        // connect()/openSocket downstream.
+        if (this.closedByUser || this.authFailed) return;
+        this.forceReconnect();
+      }, KEEPALIVE_PONG_TIMEOUT_MS);
+    }
+  }
+
+  /**
+   * Record that an inbound frame arrived: clear the pending pong deadline so a
+   * live socket is never force-reconnected. Called for EVERY inbound message
+   * (including the keepalive's own `session-state` reply).
+   */
+  private noteInboundActivity(): void {
+    if (this.pongDeadlineTimer !== null) {
+      window.clearTimeout(this.pongDeadlineTimer);
+      this.pongDeadlineTimer = null;
     }
   }
 

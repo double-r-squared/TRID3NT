@@ -336,7 +336,7 @@ export function Landing({ hasSession = false }: LandingProps): JSX.Element {
         </div>
         <p className="lp-footer-credit">
           Built on AWS Bedrock · Amazon EC2 · QGIS Server · MapLibre GL ·
-          MongoDB Atlas
+          Amazon DynamoDB
         </p>
         <p className="lp-footer-fine">
           © 2026 GRACE-2. Model outputs are research aids, not official

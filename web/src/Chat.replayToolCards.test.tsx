@@ -131,6 +131,48 @@ describe("replayStreamFromChatHistory (job-0267)", () => {
     expect(s.pipeline.history[0]!.steps![0]!.state).toBe("failed");
   });
 
+  // BUG 4b (Wave 4.9) — a persisted FAILED tool-card row must survive replay AND
+  // reach the rendered stream as a tool entry carrying state:"failed" (the input
+  // PipelineCard turns into the red terminal card). This pins the WHOLE pure
+  // replay→interleave path, not just the reducer snapshot.
+  it("a persisted FAILED tool card interleaves as a tool entry with state=failed (red card)", () => {
+    const s = emptyStreamState();
+    const history = fullStreamHistory();
+    history[1] = {
+      ...history[1]!,
+      content: '{"tool_name":"run_solver","state":"failed"}',
+      tool_card: {
+        tool_name: "run_solver",
+        state: "failed",
+        started_at: "2026-06-10T00:00:01Z",
+        duration_ms: 120,
+        label: "run_solver",
+      },
+    };
+    replayStreamFromChatHistory(s, history);
+
+    const stream = buildInterleavedStream(
+      s.messages,
+      s.pipeline.history,
+      s.pipeline.live,
+      s.messageOrder,
+      s.stepOrder,
+    );
+    // Order preserved: user → tool → agent.
+    expect(stream.map((e) => e.kind)).toEqual([
+      "user-message",
+      "tool",
+      "agent-message",
+    ]);
+    // The tool entry carries the FAILED state through to PipelineCard input.
+    const toolEntry = stream.find((e) => e.kind === "tool") as
+      | { kind: "tool"; step: { state: string; tool_name: string } }
+      | undefined;
+    expect(toolEntry).toBeDefined();
+    expect(toolEntry!.step.state).toBe("failed");
+    expect(toolEntry!.step.tool_name).toBe("run_solver");
+  });
+
   it("skips tool rows without the typed card and unknown roles (no crash)", () => {
     const s = emptyStreamState();
     const history = fullStreamHistory();

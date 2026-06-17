@@ -842,12 +842,18 @@ describe("App F53 wiring — onDeleteLayer reaches GraceWs.sendDeleteLayer (job-
 // ---------------------------------------------------------------------------
 
 interface FakeResumeWs {
+  // BUG 4a (Wave 4.9) — the handler now reads `isOpen` first to avoid tearing
+  // down an already-OPEN socket on resume (the cycling the fix targets). Default
+  // falsy when omitted (= not OPEN) so the pre-existing "dropped socket" tests
+  // keep exercising the forceReconnect / reconnect teardown paths.
+  isOpen?: boolean;
   forceReconnect: () => void;
   reconnect: () => void;
   requestSessionState: () => void;
 }
 
-/** Mirror of the App.tsx F31 visibilitychange effect (byte-for-byte order). */
+/** Mirror of the App.tsx visibilitychange effect (byte-for-byte order, incl.
+ *  the BUG 4a isOpen guard). */
 function ResumeShell({
   ws,
   isMobile,
@@ -862,6 +868,12 @@ function ResumeShell({
       if (document.visibilityState !== "visible") return;
       const sock = wsRef.current;
       if (!sock) return;
+      // BUG 4a — an already-OPEN socket only needs a state re-pull; do NOT tear
+      // it down (the keepalive owns the zombie case now).
+      if (sock.isOpen) {
+        sock.requestSessionState();
+        return;
+      }
       if (isMobile) {
         sock.forceReconnect();
         return;
@@ -984,6 +996,137 @@ describe("App F31 resume-repaint — visibilitychange (job-0322)", () => {
     expect(ws.reconnect).not.toHaveBeenCalled();
     expect(ws.requestSessionState).not.toHaveBeenCalled();
     expect(ws.forceReconnect).not.toHaveBeenCalled();
+  });
+
+  // BUG 4a (Wave 4.9) — an already-OPEN socket must NOT be torn down on resume
+  // (that churn was part of the ~10-45s WS cycling). It only gets a lighter
+  // state re-pull; the keepalive's missed-pong detector owns the zombie case.
+  it("MOBILE + socket OPEN → requestSessionState() ONLY (NO forceReconnect)", () => {
+    const ws = { ...makeResumeWs(), isOpen: true };
+    render(<ResumeShell ws={ws} isMobile={true} />);
+    act(() => {
+      setVisibility("visible");
+    });
+    expect(ws.requestSessionState).toHaveBeenCalledOnce();
+    expect(ws.forceReconnect).not.toHaveBeenCalled();
+    expect(ws.reconnect).not.toHaveBeenCalled();
+  });
+
+  it("DESKTOP + socket OPEN → requestSessionState() ONLY (NO reconnect teardown)", () => {
+    const ws = { ...makeResumeWs(), isOpen: true };
+    render(<ResumeShell ws={ws} isMobile={false} />);
+    act(() => {
+      setVisibility("visible");
+    });
+    expect(ws.requestSessionState).toHaveBeenCalledOnce();
+    expect(ws.reconnect).not.toHaveBeenCalled();
+    expect(ws.forceReconnect).not.toHaveBeenCalled();
+  });
+
+  it("MOBILE + socket NOT OPEN → forceReconnect() (dropped-socket revive)", () => {
+    const ws = { ...makeResumeWs(), isOpen: false };
+    render(<ResumeShell ws={ws} isMobile={true} />);
+    act(() => {
+      setVisibility("visible");
+    });
+    expect(ws.forceReconnect).toHaveBeenCalledOnce();
+    expect(ws.requestSessionState).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// BUG 4a (Wave 4.9) — GraceWs-creation effect STABILITY.
+//
+// App.tsx mounts the GraceWs in a useEffect keyed on
+// [bus, fanoutSourceSuggestion, useCases_onCaseList, useCases_onCaseOpen,
+//  handleChartEmission, authEpoch] — all STABLE references. An unrelated state
+// change (a re-render) must NOT re-run that effect (which would close + re-open
+// the socket = the cycling this fix targets). We mirror the effect's deps +
+// lifecycle in a shell with a mock GraceWs whose connect/close are spies, then
+// trigger an unrelated re-render and assert connect() ran exactly once.
+// ---------------------------------------------------------------------------
+
+interface FakeConnectWs {
+  connect: () => void;
+  close: () => void;
+}
+
+/**
+ * Mirror of App.tsx's GraceWs-creation effect lifecycle. The deps mimic the
+ * production array: a stable `bus` (useMemo) + stable callbacks (useCallback)
+ * + `authEpoch`. `bump` drives an UNRELATED re-render (mirrors a chat-width /
+ * theme / layers state change) — it is NOT in the effect deps, so the effect
+ * must not re-run.
+ */
+function ConnectStabilityShell({
+  factory,
+  authEpoch,
+}: {
+  factory: () => FakeConnectWs;
+  authEpoch: number;
+}): JSX.Element {
+  // Stable references, exactly like App.tsx (useMemo([]) / useCallback([])).
+  const bus = useRef({}).current;
+  const cbA = useRef(() => undefined).current;
+  const cbB = useRef(() => undefined).current;
+  const [bump, setBump] = useState(0);
+  useEffect(() => {
+    const ws = factory();
+    ws.connect();
+    return () => {
+      ws.close();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bus, cbA, cbB, authEpoch]);
+  return (
+    <button data-testid="bump" onClick={() => setBump((n) => n + 1)}>
+      {bump}
+    </button>
+  );
+}
+
+describe("App GraceWs creation effect stability (BUG 4a)", () => {
+  it("an UNRELATED re-render does NOT recreate the GraceWs (connect called once)", () => {
+    const connect = vi.fn();
+    const close = vi.fn();
+    const factory = vi.fn<() => FakeConnectWs>(() => ({ connect, close }));
+
+    render(<ConnectStabilityShell factory={factory} authEpoch={0} />);
+    expect(connect).toHaveBeenCalledTimes(1);
+
+    // Three unrelated re-renders (bump state changes — not an effect dep).
+    act(() => {
+      fireEvent.click(screen.getByTestId("bump"));
+    });
+    act(() => {
+      fireEvent.click(screen.getByTestId("bump"));
+    });
+    act(() => {
+      fireEvent.click(screen.getByTestId("bump"));
+    });
+
+    // The socket was created + connected EXACTLY ONCE; never closed/recreated.
+    expect(factory).toHaveBeenCalledTimes(1);
+    expect(connect).toHaveBeenCalledTimes(1);
+    expect(close).not.toHaveBeenCalled();
+  });
+
+  it("a change to a real effect dep (authEpoch) DOES recreate the socket (re-sign-in recovery)", () => {
+    const connect = vi.fn();
+    const close = vi.fn();
+    const factory = vi.fn<() => FakeConnectWs>(() => ({ connect, close }));
+
+    const { rerender } = render(
+      <ConnectStabilityShell factory={factory} authEpoch={0} />,
+    );
+    expect(connect).toHaveBeenCalledTimes(1);
+
+    // authEpoch bump (the only intended recreate trigger) tears the old socket
+    // down and opens a fresh one.
+    rerender(<ConnectStabilityShell factory={factory} authEpoch={1} />);
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(connect).toHaveBeenCalledTimes(2);
+    expect(factory).toHaveBeenCalledTimes(2);
   });
 });
 

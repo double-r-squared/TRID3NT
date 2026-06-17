@@ -632,6 +632,18 @@ export function App(): JSX.Element {
     // onAuthChanged effect above); re-running this effect closes the dead
     // post-4401 socket and opens a fresh one. In disabled/dev mode authEpoch
     // never changes, so this effect runs exactly once as before.
+    //
+    // BUG 4a (Wave 4.9) STABILITY CONTRACT — every dep here is a STABLE
+    // reference so an UNRELATED re-render does NOT tear down + re-open the
+    // GraceWs (which presented as the ~10-45s WS cycling). Specifically:
+    //   - bus: useMemo([], ...) — created once.
+    //   - fanoutSourceSuggestion / handleChartEmission: useCallback([], ...).
+    //   - useCases_onCaseList / useCases_onCaseOpen: useCallback([], ...) inside
+    //     useCases (verified stable in hooks/useCases.ts).
+    //   - authEpoch: a number that ONLY changes on a re-sign-in recovery.
+    // Do NOT add an unmemoized object/closure to this array — it would recreate
+    // the socket every render. (Tested in App.test.tsx "GraceWs creation effect
+    // stability".)
   }, [bus, fanoutSourceSuggestion, useCases_onCaseList, useCases_onCaseOpen, handleChartEmission, authEpoch]);
 
   // job-0322 F31 — resume-repaint (iOS zombie-socket fix). Mobile browsers
@@ -659,13 +671,30 @@ export function App(): JSX.Element {
       if (document.visibilityState !== "visible") return;
       const ws = wsRef.current;
       if (!ws) return;
+      // BUG 4a (Wave 4.9) — do NOT force-reconnect an already-OPEN socket. A
+      // healthy live connection only needs a state re-pull on resume; tearing
+      // it down churns the socket (the cycling this fix targets). Only a
+      // closed/closing/never-connected socket gets the teardown path:
+      //   - OPEN: lighter requestSessionState() — re-pull authoritative
+      //     session-state on the live socket (no teardown). The keepalive's
+      //     missed-pong detector now owns the iOS zombie case (a dead socket
+      //     that still reports OPEN) instead of an unconditional resume-time
+      //     teardown, so this is safe on mobile too.
+      //   - NOT OPEN (mobile background tear-down / desktop drop): revive it.
+      //     forceReconnect() (mobile) / reconnect() (desktop) re-opens; the
+      //     fresh open handler re-sends auth-token + session-resume, so the
+      //     layers reconcile back via replace-not-reconcile (Appendix A.7).
+      if (ws.isOpen) {
+        ws.requestSessionState();
+        return;
+      }
       if (isMobile) {
-        // Zombie-socket-safe: unconditionally re-open. The fresh open handler
-        // re-sends session-resume itself, so no separate requestSessionState().
+        // Not OPEN: unconditionally re-open. The fresh open handler re-sends
+        // session-resume itself, so no separate requestSessionState().
         ws.forceReconnect();
         return;
       }
-      // Desktop: revive first (dead socket), then pull state (live socket).
+      // Desktop, not OPEN: revive first (dead socket), then pull state.
       ws.reconnect();
       ws.requestSessionState();
     };
