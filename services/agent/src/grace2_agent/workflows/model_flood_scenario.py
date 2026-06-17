@@ -300,6 +300,51 @@ def _bbox_area_km2(bbox: tuple[float, float, float, float]) -> float:
     return abs(dlat_km * dlon_km)
 
 
+def _emit_flood_solve_telemetry(
+    *,
+    run_result: "RunResult",
+    handle: Any,
+    model_setup: Any,
+    bbox: tuple[float, float, float, float],
+    grid_resolution_m: float,
+) -> dict | None:
+    """Emit a solve-completion telemetry record (sprint-16 autoscale).
+
+    Pulls the autoscale provenance (estimated active cells, chosen resolution,
+    vCPU) off ``model_setup.parameters`` and the wall-clock from the
+    ``RunResult`` (``duration_seconds``), and folds in the backend
+    (``handle.workflow_name`` — ``local-docker`` / ``local-exec`` /
+    ``grace-2-sfincs-orchestrator``) + aoi_km2. Best-effort; returns the record
+    (or ``None`` on any failure) so the caller's try/except stays simple.
+    """
+    from ..telemetry import emit_solve_telemetry
+
+    params = getattr(model_setup, "parameters", {}) or {}
+    autoscale = params.get("autoscale") if isinstance(params, dict) else None
+    autoscale = autoscale if isinstance(autoscale, dict) else {}
+
+    active_cells = autoscale.get("estimated_active_cells")
+    vcpus = autoscale.get("vcpus")
+    est_solve_s = autoscale.get("estimated_solve_seconds")
+    coarsened = autoscale.get("coarsened")
+    # Prefer the actually-built resolution off the ModelSetup; fall back to the
+    # workflow's resolution variable.
+    built_res = getattr(model_setup, "grid_resolution_m", None) or grid_resolution_m
+
+    return emit_solve_telemetry(
+        run_id=run_result.run_id,
+        backend=str(getattr(handle, "workflow_name", "") or "unknown"),
+        active_cell_count=int(active_cells) if active_cells is not None else None,
+        grid_resolution_m=float(built_res) if built_res is not None else None,
+        vcpus=int(vcpus) if vcpus is not None else None,
+        wall_clock_seconds=run_result.duration_seconds,
+        aoi_km2=_bbox_area_km2(bbox),
+        solver=getattr(handle, "solver", "sfincs") or "sfincs",
+        estimated_solve_seconds=float(est_solve_s) if est_solve_s is not None else None,
+        coarsened=bool(coarsened) if coarsened is not None else None,
+    )
+
+
 def _default_runs_prefix(run_id: str) -> str:
     """Scheme-aware fallback runs prefix when ``RunResult.output_uri`` is None.
 
@@ -830,6 +875,11 @@ async def model_flood_scenario(
         options = BuildOptions(
             grid_resolution_m=grid_resolution_m,
             simulation_hours=float(duration_hr),
+            # sprint-16: feed the compute_class through so the adaptive-grid cap
+            # is sized against the right instance vCPU (the cap derives from the
+            # solve budget + vCPU via the perf model). build_sfincs_model snaps
+            # grid_resolution_m UP if the estimated active-cell count overruns.
+            compute_class=compute_class,
         )
         # ``build_sfincs_model`` is SYNCHRONOUS with no overall timeout
         # (sfincs_builder GDAL VSI cache/timeout is per-read only). Run it off
@@ -851,6 +901,15 @@ async def model_flood_scenario(
             ),
             timeout=_BUILD_PHASE_TIMEOUT_S,
         )
+        # build_sfincs_model may snap grid_resolution_m UP (coarsen) if the
+        # estimated active-cell count overruns the per-job cell cap. Refresh the
+        # workflow-local resolution from the ACTUALLY-BUILT value so downstream
+        # consumers — the solve-telemetry record (cells/resolution/vCPU/wall) and
+        # any envelope metrics — report the resolution the solver really ran at,
+        # not the pre-coarsen 30 m request.
+        _built_res = getattr(model_setup, "grid_resolution_m", None)
+        if _built_res:
+            grid_resolution_m = float(_built_res)
     except asyncio.CancelledError:
         raise
     except asyncio.TimeoutError:
@@ -938,6 +997,23 @@ async def model_flood_scenario(
         # propagate immediately so the WS handler emits pipeline-state(cancelled).
         logger.info("model_flood_scenario cancelled while awaiting solver")
         raise
+
+    # --- Solve-time telemetry (sprint-16 SFINCS per-job autoscale) ---
+    # Accumulate real (active_cells, vCPU, wall_clock) data so the adaptive-grid
+    # cell cap can be re-tuned from logged measurements. Emitted on the CURRENT
+    # path (every solve), for BOTH success and failure/timeout — a censored
+    # timeout is itself a data point about a too-big AOI. Best-effort; never
+    # breaks the solve loop.
+    try:
+        _emit_flood_solve_telemetry(
+            run_result=run_result,
+            handle=handle,
+            model_setup=model_setup,
+            bbox=resolved_bbox,
+            grid_resolution_m=grid_resolution_m,
+        )
+    except Exception as exc:  # noqa: BLE001 — telemetry must never break the solve
+        logger.warning("solve telemetry emission failed (non-fatal): %s", exc)
 
     if run_result.status != "complete":
         # SOLVER_FAILED, SOLVER_TIMEOUT, cancelled — surface as failed envelope.

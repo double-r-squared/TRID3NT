@@ -206,6 +206,10 @@ __all__ = [
     "solver_backend",
     "SOLVER_BACKEND_GCP_WORKFLOWS",
     "SOLVER_BACKEND_LOCAL_DOCKER",
+    "SOLVER_BACKEND_AWS_BATCH",
+    "AWS_BATCH_WORKFLOW_NAME",
+    "AWS_BATCH_COMPUTE_CLASS_SIZING",
+    "set_batch_client",
     "LOCAL_DOCKER_WORKFLOW_NAME",
     "LOCAL_EXEC_WORKFLOW_NAME",
     "LocalSolverSpec",
@@ -275,6 +279,52 @@ LOCAL_DOCKER_WORKFLOW_NAME: str = "local-docker"
 #: of a container.
 LOCAL_EXEC_WORKFLOW_NAME: str = "local-exec"
 
+# --- AWS Batch backend (sprint-16, SFINCS per-job autoscale) --- #
+#
+# Staged for cutover — INERT until NATE provisions the Batch compute env /
+# queue / job-def + flips the env (GRACE2_SOLVER_BACKEND=aws-batch +
+# GRACE2_AWS_BATCH_QUEUE + GRACE2_AWS_BATCH_JOB_DEF). It slots in as a third
+# GRACE2_SOLVER_BACKEND value behind the SAME dispatch seam: run_solver mints a
+# run_id and calls batch.submit_job; the Batch jobId is stashed in the handle's
+# workflows_execution_id (NO ExecutionHandle contract change — it is just a
+# string id field) and workflow_name=AWS_BATCH_WORKFLOW_NAME so
+# wait_for_completion routes to the Batch poll branch. The Batch container is
+# the SAME SFINCS image the local-docker path runs; it writes the SAME
+# completion.json to s3://<runs_bucket>/<run_id>/, so the completion poll +
+# RunResult build are reused verbatim (_try_get_completion_s3 +
+# _build_local_run_result). Every boto3 batch call is gated so missing env /
+# missing infra raises a clean typed SolverDispatchError, never a crash.
+
+#: AWS Batch backend — per-job autoscaled SFINCS solve on a Batch compute env.
+SOLVER_BACKEND_AWS_BATCH: str = "aws-batch"
+
+#: ``ExecutionHandle.workflow_name`` sentinel for AWS Batch handles —
+#: ``wait_for_completion`` dispatches on it (the handle pins its backend so env
+#: churn between submit and wait cannot mis-route the poll). The Batch jobId
+#: lives in ``workflows_execution_id``.
+AWS_BATCH_WORKFLOW_NAME: str = "aws-batch"
+
+def _aws_region() -> str:
+    """The AWS region for boto3 batch/S3 clients + the AWS Batch handle's
+    ``workflow_location`` (env ``AWS_REGION``, default ``us-west-2``)."""
+    return os.environ.get("AWS_REGION", "us-west-2")
+
+#: compute_class → {vcpus, mem (MiB), OMP_NUM_THREADS} sizing map (the kickoff
+#: instance buckets: 4/8/16/32 vCPU at ~2 GB/vCPU → 8/16/32/64 Gi; OMP threads
+#: == vCPU). Batch ``resourceRequirements`` take VCPU as a STRING count and
+#: MEMORY in MiB as a string. Aliased the same way ``_COMPUTE_CLASS_ALIAS``
+#: maps FR-CE-3 names onto the schema literal, so ``medium`` (== standard)
+#: resolves to the 8-vCPU bucket.
+AWS_BATCH_COMPUTE_CLASS_SIZING: dict[str, dict[str, int]] = {
+    "small": {"vcpus": 4, "mem_mib": 8192, "omp_threads": 4},
+    "standard": {"vcpus": 8, "mem_mib": 16384, "omp_threads": 8},
+    "large": {"vcpus": 16, "mem_mib": 32768, "omp_threads": 16},
+    "gpu": {"vcpus": 32, "mem_mib": 65536, "omp_threads": 32},
+}
+
+#: Default sizing when the compute_class is unknown — the 8-vCPU standard bucket.
+_AWS_BATCH_DEFAULT_SIZING: dict[str, int] = AWS_BATCH_COMPUTE_CLASS_SIZING["standard"]
+
 #: The two local workflow_name sentinels ``wait_for_completion`` accepts.
 _LOCAL_WORKFLOW_NAMES: tuple[str, str] = (
     LOCAL_DOCKER_WORKFLOW_NAME,
@@ -298,18 +348,20 @@ DOCKER_KILL_TIMEOUT_S: float = 25.0
 def solver_backend() -> str:
     """Return the active solver backend (job-0291 dispatch seam).
 
-    ``GRACE2_SOLVER_BACKEND=local-docker`` → ``"local-docker"``; anything
+    ``GRACE2_SOLVER_BACKEND=local-docker`` → ``"local-docker"``;
+    ``=aws-batch`` → ``"aws-batch"`` (sprint-16, exact match only); anything
     else (unset, ``gcp-workflows``, typos) → ``"gcp-workflows"`` so the
     default path stays byte-identical. Read at call time so an AWS deploy /
     test env injection takes effect without re-import (mirrors
-    ``cache.storage_scheme``).
+    ``cache.storage_scheme``). The aws-batch branch is additive — an unknown
+    value still falls through to the safe default.
     """
     b = (os.environ.get("GRACE2_SOLVER_BACKEND") or "").strip().lower()
-    return (
-        SOLVER_BACKEND_LOCAL_DOCKER
-        if b == SOLVER_BACKEND_LOCAL_DOCKER
-        else SOLVER_BACKEND_GCP_WORKFLOWS
-    )
+    if b == SOLVER_BACKEND_LOCAL_DOCKER:
+        return SOLVER_BACKEND_LOCAL_DOCKER
+    if b == SOLVER_BACKEND_AWS_BATCH:
+        return SOLVER_BACKEND_AWS_BATCH
+    return SOLVER_BACKEND_GCP_WORKFLOWS
 
 
 #: Map the kickoff-named compute classes (small/medium/large) onto the
@@ -374,6 +426,7 @@ _EMITTER_BINDING: EmitterBinding | None = None
 _RUNS_BUCKET: str | None = None
 _STORAGE_CLIENT: Any | None = None
 _S3_CLIENT: Any | None = None
+_BATCH_CLIENT: Any | None = None
 
 
 def set_workflows_client(client: Any) -> None:
@@ -425,6 +478,40 @@ def set_s3_client(client: Any) -> None:
     """
     global _S3_CLIENT
     _S3_CLIENT = client
+
+
+def set_batch_client(client: Any) -> None:
+    """Bind the boto3 AWS Batch client used by the aws-batch backend (sprint-16).
+
+    Production wiring leaves this ``None`` (the lazy default builds
+    ``boto3.client("batch", region_name=$AWS_REGION)``, resolving the agent
+    box's instance-role credentials via IMDS — same job-0289 boto3 lesson as
+    the S3 seam). Tests inject a fake exposing ``submit_job`` /
+    ``describe_jobs`` / ``terminate_job``. ``None`` restores the lazy default.
+    """
+    global _BATCH_CLIENT
+    _BATCH_CLIENT = client
+
+
+def _get_batch_client() -> Any:
+    """Return the bound Batch client or lazily construct the boto3 default.
+
+    Gated like the other lazy clients: a missing boto3 raises a clean typed
+    ``SolverDispatchError`` (the aws-batch backend stays inert rather than
+    crashing the agent) — see ``_run_solver_aws_batch`` for the full
+    env-presence gate.
+    """
+    if _BATCH_CLIENT is not None:
+        return _BATCH_CLIENT
+    try:
+        import boto3  # type: ignore[import-not-found]
+    except Exception as exc:  # noqa: BLE001
+        raise SolverDispatchError(
+            f"boto3 not importable: {exc}; the aws-batch solver backend "
+            "requires boto3 for batch.submit_job / describe_jobs / "
+            "terminate_job (sprint-16)."
+        ) from exc
+    return boto3.client("batch", region_name=_aws_region())
 
 
 def _get_workflows_client() -> Any:
@@ -1059,6 +1146,329 @@ def _run_solver_local_docker(
     )
 
 
+# --------------------------------------------------------------------------- #
+# aws-batch backend (sprint-16, SFINCS per-job autoscale) — staged, INERT
+# until NATE provisions the Batch compute env / queue / job-def + flips the env.
+# --------------------------------------------------------------------------- #
+
+
+def _aws_batch_sizing(compute_class: str) -> dict[str, int]:
+    """Resolve the {vcpus, mem_mib, omp_threads} bucket for ``compute_class``.
+
+    Aliases FR-CE-3 names onto the sizing keys exactly like
+    ``_COMPUTE_CLASS_ALIAS`` (``medium`` == ``standard`` → the 8-vCPU bucket);
+    unknown classes fall back to the standard bucket.
+    """
+    alias = _COMPUTE_CLASS_ALIAS.get((compute_class or "").strip().lower(), "standard")
+    return AWS_BATCH_COMPUTE_CLASS_SIZING.get(alias, _AWS_BATCH_DEFAULT_SIZING)
+
+
+def _run_solver_aws_batch(
+    solver: str, model_setup_uri: str, compute_class: str
+) -> ExecutionHandle:
+    """``run_solver`` body under ``GRACE2_SOLVER_BACKEND=aws-batch`` (sprint-16).
+
+    Mints a run_id and submits an AWS Batch job that runs the SAME SFINCS image
+    the local-docker path uses, pointed at the staged manifest. The Batch
+    container writes the SAME ``completion.json`` to
+    ``s3://<runs_bucket>/<run_id>/`` so ``wait_for_completion`` reuses the S3
+    completion poll. The Batch ``jobId`` is stashed in
+    ``ExecutionHandle.workflows_execution_id`` (NO contract change — it is a
+    plain string id field) and ``workflow_name=AWS_BATCH_WORKFLOW_NAME`` so the
+    wait branch routes correctly even if the env churns afterward.
+
+    Inert-until-provisioned gate: every prerequisite (runs bucket, job queue,
+    job definition, the boto3 batch client, the submit call itself) raises a
+    clean typed ``SolverDispatchError`` on absence/failure — the backend never
+    crashes the agent. NATE flips ``GRACE2_SOLVER_BACKEND=aws-batch`` +
+    ``GRACE2_AWS_BATCH_QUEUE`` + ``GRACE2_AWS_BATCH_JOB_DEF`` to activate it.
+    """
+    if not (
+        model_setup_uri.startswith("s3://")
+        or model_setup_uri.startswith("gs://")
+        or model_setup_uri.startswith("file://")
+    ):
+        raise SolverDispatchError(
+            f"model_setup_uri must be an s3:// / gs:// / file:// URI under the "
+            f"aws-batch backend; got {model_setup_uri!r}"
+        )
+    schema_compute_class = _COMPUTE_CLASS_ALIAS.get(compute_class)
+    if schema_compute_class is None:
+        raise SolverDispatchError(
+            f"compute_class {compute_class!r} not recognized; allowed: "
+            f"{sorted(_COMPUTE_CLASS_ALIAS)}"
+        )
+
+    runs_bucket = _get_local_runs_bucket()  # fail fast on missing GRACE2_RUNS_BUCKET
+
+    queue = (os.environ.get("GRACE2_AWS_BATCH_QUEUE") or "").strip()
+    job_def = (os.environ.get("GRACE2_AWS_BATCH_JOB_DEF") or "").strip()
+    if not queue:
+        raise SolverDispatchError(
+            "GRACE2_AWS_BATCH_QUEUE must be set when "
+            "GRACE2_SOLVER_BACKEND=aws-batch (the Batch job queue ARN/name — "
+            "NATE provisions it; the backend stays inert until then)."
+        )
+    if not job_def:
+        raise SolverDispatchError(
+            "GRACE2_AWS_BATCH_JOB_DEF must be set when "
+            "GRACE2_SOLVER_BACKEND=aws-batch (the Batch job definition ARN/name "
+            "— NATE provisions it; the backend stays inert until then)."
+        )
+
+    sizing = _aws_batch_sizing(compute_class)
+    run_id = new_ulid()
+    submitted_at = datetime.now(timezone.utc)
+
+    # The Batch container entrypoint is services/workers/sfincs/entrypoint.py
+    # (S3-capable after sprint-16's scheme generalization); it takes --run-id +
+    # --manifest-uri and reads/writes the runs bucket from env. We pass BOTH the
+    # CLI args and the env (the entrypoint accepts either; belt-and-suspenders).
+    container_overrides: dict[str, Any] = {
+        "command": [
+            "--run-id",
+            run_id,
+            "--manifest-uri",
+            model_setup_uri,
+        ],
+        "environment": [
+            {"name": "GRACE2_RUNS_BUCKET", "value": runs_bucket},
+            {"name": "GRACE2_RUN_ID", "value": run_id},
+            {"name": "GRACE2_MANIFEST_URI", "value": model_setup_uri},
+            {"name": "OMP_NUM_THREADS", "value": str(sizing["omp_threads"])},
+            # The Batch image runs the scheme-aware entrypoint (s3:// vs gs://);
+            # it selects the object-store backend from GRACE2_OBJECT_STORE. On
+            # AWS Batch the manifest + completion record live on S3, so pin it
+            # explicitly — without this the entrypoint would fall back to its
+            # default (GCS) and fail to read the s3:// manifest.
+            {"name": "GRACE2_OBJECT_STORE", "value": "s3"},
+        ],
+        "resourceRequirements": [
+            {"type": "VCPU", "value": str(sizing["vcpus"])},
+            {"type": "MEMORY", "value": str(sizing["mem_mib"])},
+        ],
+    }
+
+    logger.info(
+        "aws-batch submit_job solver=%s run_id=%s compute_class=%s "
+        "vcpus=%d mem_mib=%d queue=%s job_def=%s",
+        solver,
+        run_id,
+        compute_class,
+        sizing["vcpus"],
+        sizing["mem_mib"],
+        queue,
+        job_def,
+    )
+
+    client = _get_batch_client()
+    try:
+        resp = client.submit_job(
+            jobName=f"grace2-{solver}-{run_id}",
+            jobQueue=queue,
+            jobDefinition=job_def,
+            containerOverrides=container_overrides,
+        )
+    except SolverDispatchError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise SolverDispatchError(
+            f"AWS Batch submit_job failed (queue={queue} job_def={job_def}): {exc}"
+        ) from exc
+
+    job_id = (resp or {}).get("jobId") if isinstance(resp, dict) else getattr(resp, "jobId", None)
+    if not job_id:
+        raise SolverDispatchError(
+            f"AWS Batch submit_job returned no jobId: {resp!r}"
+        )
+
+    handle = ExecutionHandle(
+        handle_id=new_ulid(),
+        run_id=run_id,
+        solver=solver,
+        compute_class=schema_compute_class,  # type: ignore[arg-type]
+        workflows_execution_id=str(job_id),  # the Batch jobId — cancel/describe key
+        workflow_name=AWS_BATCH_WORKFLOW_NAME,
+        workflow_location=_aws_region(),
+        submitted_at=submitted_at,
+    )
+    logger.info(
+        "aws-batch submitted run_id=%s handle_id=%s jobId=%s",
+        run_id,
+        handle.handle_id,
+        job_id,
+    )
+    return handle
+
+
+def _batch_terminal_failure(job_id: str) -> str | None:
+    """Consult ``batch.describe_jobs`` for an EARLY terminal FAILED detection.
+
+    Returns a status-reason string when the Batch job is in a terminal FAILED
+    state (so ``wait_for_completion`` can fail fast instead of polling the S3
+    completion.json until timeout when the container never started — e.g.
+    image pull failure, no compute capacity). Returns ``None`` for any
+    non-terminal / SUCCEEDED state, or on any describe error (best-effort — the
+    S3 completion poll remains the primary terminal signal). Never raises.
+    """
+    try:
+        client = _get_batch_client()
+        resp = client.describe_jobs(jobs=[job_id])
+    except Exception as exc:  # noqa: BLE001 — describe is advisory only
+        logger.warning("aws-batch describe_jobs(%s) degraded: %s", job_id, exc)
+        return None
+    jobs = (resp or {}).get("jobs") if isinstance(resp, dict) else getattr(resp, "jobs", None)
+    if not jobs:
+        return None
+    job = jobs[0]
+    status = (job.get("status") if isinstance(job, dict) else getattr(job, "status", "")) or ""
+    if str(status).upper() != "FAILED":
+        return None
+    reason = (
+        job.get("statusReason") if isinstance(job, dict) else getattr(job, "statusReason", None)
+    )
+    return str(reason or "AWS Batch job FAILED")
+
+
+def _terminate_batch_job(job_id: str, reason: str) -> None:
+    """Best-effort ``batch.terminate_job(jobId, reason)`` (Invariant-8 cancel).
+
+    Logs + swallows exceptions; the underlying ``CancelledError`` propagates
+    from the caller regardless. The Batch container's SFINCS entrypoint catches
+    SIGTERM and writes a status="cancelled"/"error" completion.json on the way
+    out (entrypoint best-effort write); the poller picks it up."""
+    try:
+        client = _get_batch_client()
+        client.terminate_job(jobId=job_id, reason=reason)
+        logger.info("aws-batch terminate_job(%s) issued: %s", job_id, reason)
+    except Exception as exc:  # noqa: BLE001 — cancel chain still propagates
+        logger.warning(
+            "aws-batch terminate_job(%s) raised %s; cancel chain still propagates",
+            job_id,
+            exc,
+        )
+
+
+async def _wait_for_completion_aws_batch(
+    handle: ExecutionHandle, poll_interval_s: int, timeout_s: int
+) -> RunResult:
+    """``wait_for_completion`` body for aws-batch handles (sprint-16).
+
+    Polls the SAME completion.json on S3 as local-docker (reuse
+    ``_try_get_completion_s3`` + ``_build_local_run_result``) and, on each tick
+    that finds no completion yet, consults ``batch.describe_jobs(jobId)`` for an
+    early terminal FAILED detection so a job that never produced a completion
+    (image pull failure, capacity timeout) fails fast rather than waiting out
+    the full ``timeout_s``. Same cadence / progress-ramp semantics as the
+    local-docker poll. Cancel → ``batch.terminate_job`` + re-raise (Invariant 8).
+    """
+    runs_bucket = _get_local_runs_bucket()
+    job_id = handle.workflows_execution_id
+    deadline = handle.submitted_at.timestamp() + float(timeout_s)
+    loop = asyncio.get_running_loop()
+
+    logger.info(
+        "wait_for_completion(aws-batch) handle_id=%s run_id=%s jobId=%s "
+        "poll_interval=%ds timeout=%ds",
+        handle.handle_id,
+        handle.run_id,
+        job_id,
+        poll_interval_s,
+        timeout_s,
+    )
+
+    try:
+        while True:
+            manifest = await loop.run_in_executor(
+                None, _try_get_completion_s3, runs_bucket, handle.run_id
+            )
+            now = datetime.now(timezone.utc)
+
+            if manifest is not None:
+                if str(manifest.get("status", "")).lower() == "ok":
+                    await _emit_progress(PROGRESS_TERMINAL)
+                else:
+                    await _emit_progress(_progress_percent(handle.submitted_at, now))
+                return _build_local_run_result(handle, manifest, runs_bucket)
+
+            # No completion yet — consult Batch for an early terminal FAILED so
+            # we don't poll a dead job until timeout.
+            batch_failure = await loop.run_in_executor(
+                None, _batch_terminal_failure, job_id
+            )
+            if batch_failure is not None:
+                logger.warning(
+                    "wait_for_completion(aws-batch) early FAILED handle_id=%s "
+                    "jobId=%s: %s",
+                    handle.handle_id,
+                    job_id,
+                    batch_failure,
+                )
+                await _emit_progress(_progress_percent(handle.submitted_at, now))
+                return RunResult(
+                    run_id=handle.run_id,
+                    handle_id=handle.handle_id,
+                    status="failed",
+                    output_uri=None,
+                    started_at=None,
+                    completed_at=now,
+                    duration_seconds=None,
+                    error_code="SOLVER_DISPATCH_FAILED",
+                    error_message=(
+                        f"AWS Batch job {job_id} reported FAILED before writing "
+                        f"completion.json: {batch_failure}"
+                    ),
+                )
+
+            await _emit_progress(_progress_percent(handle.submitted_at, now))
+
+            if now.timestamp() >= deadline:
+                logger.warning(
+                    "wait_for_completion(aws-batch) timed out handle_id=%s "
+                    "after %ds; terminating job %s",
+                    handle.handle_id,
+                    timeout_s,
+                    job_id,
+                )
+                # Timeout ≠ user cancel: terminate WITHOUT implying a cancel
+                # verdict (the result is SOLVER_TIMEOUT, mirroring local-docker).
+                await loop.run_in_executor(
+                    None,
+                    _terminate_batch_job,
+                    job_id,
+                    "wait_for_completion timeout",
+                )
+                return RunResult(
+                    run_id=handle.run_id,
+                    handle_id=handle.handle_id,
+                    status="failed",
+                    output_uri=None,
+                    started_at=None,
+                    completed_at=now,
+                    duration_seconds=None,
+                    error_code="SOLVER_TIMEOUT",
+                    error_message=(
+                        f"wait_for_completion exceeded {timeout_s}s budget while "
+                        f"polling s3://{runs_bucket}/{handle.run_id}/completion.json "
+                        f"(Batch jobId={job_id})"
+                    ),
+                )
+
+            await asyncio.sleep(poll_interval_s)
+
+    except asyncio.CancelledError:
+        # Invariant 8: terminate the Batch job before re-raising so the cancel
+        # propagates to the container within the NFR-R-3 budget.
+        logger.info(
+            "wait_for_completion(aws-batch) CANCELLED handle_id=%s; "
+            "terminating job %s",
+            handle.handle_id,
+            job_id,
+        )
+        _terminate_batch_job(job_id, "user cancel (Invariant-8 cancel chain)")
+        raise
+
+
 def _docker_kill(run_id: str) -> None:
     """Best-effort ``docker kill <run_id>`` (container name == run_id)."""
     try:
@@ -1403,10 +1813,19 @@ def run_solver(
             f"model_setup_uri must be a non-empty string; got {model_setup_uri!r}"
         )
 
-    # --- job-0291 backend seam: local-docker dispatch (AWS EC2). The default
-    # gcp-workflows path below is byte-identical to pre-job-0291 behavior. ---
-    if solver_backend() == SOLVER_BACKEND_LOCAL_DOCKER:
+    # --- Backend seam (job-0291 local-docker + sprint-16 aws-batch). The
+    # default gcp-workflows path below is byte-identical to pre-job-0291. The
+    # handle each backend returns pins its own backend (workflow_name) so
+    # wait_for_completion routes correctly even if the env churns afterward. ---
+    backend = solver_backend()
+    if backend == SOLVER_BACKEND_LOCAL_DOCKER:
         return _run_solver_local_docker(
+            solver=solver,
+            model_setup_uri=model_setup_uri,
+            compute_class=compute_class,
+        )
+    if backend == SOLVER_BACKEND_AWS_BATCH:
+        return _run_solver_aws_batch(
             solver=solver,
             model_setup_uri=model_setup_uri,
             compute_class=compute_class,
@@ -1675,6 +2094,11 @@ async def wait_for_completion(
     # Cloud Workflows poll below, byte-identical to pre-job-0291 behavior. ---
     if handle.workflow_name in _LOCAL_WORKFLOW_NAMES:
         return await _wait_for_completion_local(handle, poll_interval_s, timeout_s)
+    # sprint-16: aws-batch handles poll the SAME S3 completion.json + consult
+    # batch.describe_jobs for early terminal FAILED detection; cancel/timeout
+    # call batch.terminate_job.
+    if handle.workflow_name == AWS_BATCH_WORKFLOW_NAME:
+        return await _wait_for_completion_aws_batch(handle, poll_interval_s, timeout_s)
 
     client = _get_workflows_client()
     name = handle.workflows_execution_id

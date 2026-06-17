@@ -63,7 +63,7 @@ import logging
 import os
 import tempfile
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -82,6 +82,21 @@ __all__ = [
     "validate_nlcd_vintage_against_mapping",
     "MANNING_MAPPING_PATH",
     "MANNING_MAPPING_VERSION",
+    # Adaptive grid autoscale (sprint-16 SFINCS per-job autoscale)
+    "GridAutoscaleResult",
+    "autoscale_grid_resolution",
+    "estimate_active_cells_at_resolution",
+    "estimate_solve_seconds",
+    "compute_cell_cap",
+    "resolve_solve_vcpus",
+    "SFINCS_RES_LADDER",
+    "SFINCS_SOLVE_BUDGET_S",
+    "SFINCS_OVERHEAD_FRACTION",
+    "SFINCS_PERF_P",
+    "SFINCS_PERF_A",
+    "SFINCS_THREAD_EXP",
+    "SFINCS_MIN_CELL_CAP",
+    "SFINCS_COMPUTE_CLASS_VCPUS",
 ]
 
 logger = logging.getLogger("grace2_agent.workflows.sfincs_builder")
@@ -271,12 +286,21 @@ class BuildOptions:
       OQ-42-MODEL-CRS-AUTO-UTM (TENTATIVE: EPSG:3857 for v0.1 smoke).
     - ``output_setup_uri`` — explicit override for the staged deck's gs:// URI.
       When ``None`` we derive one inside the cache bucket.
+    - ``compute_class`` — FR-CE-3 compute class the solve will run on; feeds the
+      autoscale cap sizing (vCPU → cell cap via the perf model). The workflow
+      passes the same class it hands ``run_solver``. Provenance only otherwise.
+    - ``autoscale_grid`` — when ``True`` (default), ``build_sfincs_model`` snaps
+      ``grid_resolution_m`` UP the resolution ladder so the estimated active-cell
+      count fits the solve budget (sprint-16). Set ``False`` to pin
+      ``grid_resolution_m`` verbatim (tests / explicit overrides).
     """
 
     grid_resolution_m: float = 30.0
     simulation_hours: float = 24.0
     crs: str = "EPSG:3857"
     output_setup_uri: str | None = None
+    compute_class: str = "medium"
+    autoscale_grid: bool = True
 
 
 # --------------------------------------------------------------------------- #
@@ -940,6 +964,448 @@ def _compute_active_mask_bounds(dem_read_path: str) -> tuple[float, float, bool]
     return zmin, zmax, True
 
 
+# --------------------------------------------------------------------------- #
+# Adaptive grid-resolution autoscale (sprint-16 — SFINCS per-job autoscale)
+#
+# The immediate win (applies on the CURRENT local-docker / gcp-workflows path,
+# NOT just AWS Batch): coarsen the SFINCS grid resolution for big AOIs so the
+# solve fits a configurable wall-clock budget. SFINCS solve cost scales roughly
+# super-linearly in the ACTIVE-cell count N (the cells inside the
+# ``setup_mask_active`` elevation window — NOT the raw bbox area; see job-0318).
+# We:
+#
+#   1. estimate the ACTIVE cell count at a candidate grid resolution from the
+#      staged DEM (count DEM cells whose elevation falls in the active window,
+#      scaled by (native_res / candidate_res)^2),
+#   2. snap ``grid_resolution_m`` UP a ladder (30 → 50 → 100 → 200 m) until the
+#      estimated active N is at or under a CELL CAP,
+#   3. derive that cap from a configurable SOLVE_BUDGET_S (default 600 s = 10
+#      min, with a configurable overhead reserve) and the chosen instance vCPU
+#      via the perf model fitted from LIVE anchors (Chehalis ~45k @ 8 vCPU =
+#      36 s; Chattanooga ~510k @ 8 vCPU censored >> 1800 s).
+#
+# Every coefficient is a module constant overridable by env so we re-tune from
+# logged ``solve-telemetry`` records as real (cells, vCPU, time) data lands. We
+# NEVER produce a degenerate/empty grid — resolution is clamped to the ladder's
+# coarsest rung and the cap floored so a single absurd AOI cannot drive the cap
+# to zero cells.
+# --------------------------------------------------------------------------- #
+
+
+def _env_float(name: str, default: float) -> float:
+    """Read an env override as a float; fall back (and warn) on a bad value."""
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "autoscale: env %s=%r not a float; using default %s", name, raw, default
+        )
+        return default
+
+
+def _env_resolution_ladder(default: tuple[float, ...]) -> tuple[float, ...]:
+    """Parse ``GRACE2_SFINCS_RES_LADDER`` (comma-separated metres) → sorted tuple.
+
+    Falls back to ``default`` on any parse failure / empty value. The ladder is
+    always returned sorted ascending + de-duplicated so the snap-up walk is
+    monotone; a degenerate ladder (empty after parse) falls back to the default.
+    """
+    raw = os.environ.get("GRACE2_SFINCS_RES_LADDER")
+    if raw is None or not raw.strip():
+        return default
+    try:
+        vals = sorted(
+            {float(p.strip()) for p in raw.split(",") if p.strip() and float(p.strip()) > 0}
+        )
+    except (TypeError, ValueError):
+        logger.warning(
+            "autoscale: env GRACE2_SFINCS_RES_LADDER=%r unparseable; using default %s",
+            raw,
+            default,
+        )
+        return default
+    return tuple(vals) if vals else default
+
+
+#: Wall-clock budget (seconds) we size the active-cell cap against. NATE's
+#: target is ~10 min/solve, configurable + MEASURE-then-tune. Env override:
+#: ``GRACE2_SFINCS_SOLVE_BUDGET_S``.
+SFINCS_SOLVE_BUDGET_S: float = _env_float("GRACE2_SFINCS_SOLVE_BUDGET_S", 600.0)
+
+#: Fraction of the budget reserved for non-solve overhead (container pull,
+#: input staging, output upload, postprocess). The cap is sized against the
+#: REMAINING ``(1 - overhead) * budget`` so a 10-min wall budget leaves the
+#: solver ~6.5 min of CPU at the default 0.35. Env:
+#: ``GRACE2_SFINCS_OVERHEAD_FRACTION``.
+SFINCS_OVERHEAD_FRACTION: float = _env_float("GRACE2_SFINCS_OVERHEAD_FRACTION", 0.35)
+
+#: Perf model T(N, vcpu) = PERF_A * N^PERF_P / (vcpu/8)^PERF_THREAD_EXP, fitted
+#: from LIVE anchors at 8 vCPU. The single Chehalis anchor (45k cells, 36 s)
+#: pins PERF_A given PERF_P; PERF_P >= 1.61 is a FLOOR (Chattanooga 510k was
+#: censored at the 1800 s timeout, so the true exponent is only bounded below —
+#: real p is likely 1.7-2.0). We adopt p=1.61 as the conservative-but-not-
+#: reckless default (a HIGHER p would coarsen MORE aggressively; a lower p is
+#: the dangerous direction, so the floor is the safe choice to ship). Re-tune
+#: from logged solve-telemetry. Env: ``GRACE2_SFINCS_PERF_P`` etc.
+#:
+#:   PERF_A solved from the Chehalis anchor: 36 = A * 45000^1.61
+#:     45000^1.61 = exp(1.61 * ln 45000) = exp(17.25) ≈ 3.10e7
+#:       →  A ≈ 36 / 3.10e7 ≈ 1.16e-6
+#:   (An earlier comment mis-stated 45000^1.61 ≈ 1.585e7, which yielded an
+#:   inflated A=2.27e-6 — that over-predicted solve time ~2x and coarsened the
+#:   grid more aggressively than the anchor warrants. 1.16e-6 is anchor-exact.)
+SFINCS_PERF_P: float = _env_float("GRACE2_SFINCS_PERF_P", 1.61)
+SFINCS_PERF_A: float = _env_float("GRACE2_SFINCS_PERF_A", 1.16e-6)
+
+#: Thread speedup exponent: speedup ≈ (vcpu / 8) ** THREAD_EXP (sub-linear —
+#: SFINCS does not scale perfectly with cores). Env: ``GRACE2_SFINCS_THREAD_EXP``.
+SFINCS_THREAD_EXP: float = _env_float("GRACE2_SFINCS_THREAD_EXP", 0.85)
+
+#: The reference vCPU count the anchors were measured at (the perf model
+#: normalises against this). Env: ``GRACE2_SFINCS_PERF_REF_VCPU``.
+SFINCS_PERF_REF_VCPU: float = _env_float("GRACE2_SFINCS_PERF_REF_VCPU", 8.0)
+
+#: Resolution ladder (metres) the autoscaler snaps UP through. 30 m is the
+#: NLCD-native NFR-P-4 baseline; 200 m is the coarsest rung we will ever solve
+#: at (a 200 m flood grid is coarse but still meaningful for a regional AOI,
+#: and is the floor against degenerate over-coarsening). Env:
+#: ``GRACE2_SFINCS_RES_LADDER`` (comma-separated).
+SFINCS_RES_LADDER: tuple[float, ...] = _env_resolution_ladder((30.0, 50.0, 100.0, 200.0))
+
+#: Hard floor on the active-cell cap. A pathological budget/perf combination
+#: could drive the computed cap toward zero; we never let it fall below this so
+#: a tiny AOI is never needlessly coarsened past the 30 m rung. (At 8 vCPU /
+#: 600 s / 0.35 overhead / p=1.61 the natural cap is ~250k cells, well above
+#: this floor — the floor only bites under hostile env overrides.)
+SFINCS_MIN_CELL_CAP: int = int(_env_float("GRACE2_SFINCS_MIN_CELL_CAP", 50_000))
+
+#: compute_class → vCPU count used to size the cap on the CURRENT path. The
+#: deployed agent EC2 box is 8 vCPU; ``run_solver(compute_class=...)`` is a
+#: provenance tag today (the AWS Batch adapter below maps it to real
+#: resourceRequirements). Env: ``GRACE2_SFINCS_SOLVE_VCPUS`` overrides the
+#: effective vCPU outright (so a bigger always-on box re-sizes the cap without
+#: a code change).
+SFINCS_COMPUTE_CLASS_VCPUS: dict[str, int] = {
+    "small": 4,
+    "medium": 8,
+    "standard": 8,
+    "large": 16,
+    "gpu": 32,
+}
+
+#: Default vCPU when the compute_class is unknown — the deployed 8-vCPU box.
+SFINCS_DEFAULT_VCPUS: int = 8
+
+
+def resolve_solve_vcpus(compute_class: str = "medium") -> int:
+    """Effective vCPU count the cap is sized against.
+
+    ``GRACE2_SFINCS_SOLVE_VCPUS`` (if set) wins outright — it lets a redeploy on
+    a bigger always-on box re-size the cap without a code change. Otherwise map
+    the FR-CE-3 ``compute_class`` through ``SFINCS_COMPUTE_CLASS_VCPUS`` (default
+    8 — the current EC2 box).
+    """
+    env_v = os.environ.get("GRACE2_SFINCS_SOLVE_VCPUS")
+    if env_v and env_v.strip():
+        try:
+            v = int(float(env_v))
+            if v > 0:
+                return v
+        except (TypeError, ValueError):
+            logger.warning(
+                "autoscale: env GRACE2_SFINCS_SOLVE_VCPUS=%r invalid; ignoring", env_v
+            )
+    return SFINCS_COMPUTE_CLASS_VCPUS.get(
+        (compute_class or "").strip().lower(), SFINCS_DEFAULT_VCPUS
+    )
+
+
+def estimate_solve_seconds(active_cells: int, vcpus: int) -> float:
+    """Estimate SFINCS wall-clock solve seconds for ``active_cells`` at ``vcpus``.
+
+    ``T(N, vcpu) = PERF_A * N^PERF_P / (vcpu / REF_VCPU) ** THREAD_EXP``. Fitted
+    from the LIVE 8-vCPU anchors (see ``SFINCS_PERF_*``). Returns 0.0 for a
+    non-positive cell count (a degenerate domain is caught elsewhere).
+    """
+    if active_cells <= 0:
+        return 0.0
+    speedup = (max(1, vcpus) / SFINCS_PERF_REF_VCPU) ** SFINCS_THREAD_EXP
+    speedup = max(speedup, 1e-6)
+    return (SFINCS_PERF_A * (float(active_cells) ** SFINCS_PERF_P)) / speedup
+
+
+def compute_cell_cap(vcpus: int) -> int:
+    """The max active-cell count that solves inside the budget at ``vcpus``.
+
+    Invert the perf model at the budget net of overhead::
+
+        N_cap = ( (1 - overhead) * budget * speedup / PERF_A ) ** (1 / PERF_P)
+
+    Floored at ``SFINCS_MIN_CELL_CAP`` so a hostile env override can never drive
+    the cap to a degenerate (near-zero) value. Logged so the chosen cap is
+    auditable against logged solve-telemetry.
+    """
+    budget = max(0.0, SFINCS_SOLVE_BUDGET_S)
+    overhead = min(max(SFINCS_OVERHEAD_FRACTION, 0.0), 0.95)
+    solve_budget = budget * (1.0 - overhead)
+    speedup = (max(1, vcpus) / SFINCS_PERF_REF_VCPU) ** SFINCS_THREAD_EXP
+    if SFINCS_PERF_A <= 0 or solve_budget <= 0:
+        cap = SFINCS_MIN_CELL_CAP
+    else:
+        cap = int((solve_budget * speedup / SFINCS_PERF_A) ** (1.0 / SFINCS_PERF_P))
+    cap = max(cap, SFINCS_MIN_CELL_CAP)
+    logger.info(
+        "autoscale: cell cap=%d (budget=%.0fs overhead=%.2f vcpus=%d p=%.3f a=%.3e)",
+        cap,
+        budget,
+        overhead,
+        vcpus,
+        SFINCS_PERF_P,
+        SFINCS_PERF_A,
+    )
+    return cap
+
+
+@dataclass(frozen=True)
+class GridAutoscaleResult:
+    """Outcome of ``autoscale_grid_resolution`` — the chosen resolution + why.
+
+    Carried onto ``ModelSetup.parameters`` for provenance and into the
+    solve-telemetry record so the cap can be re-tuned from logged data.
+    """
+
+    grid_resolution_m: float
+    estimated_active_cells: int
+    cell_cap: int
+    vcpus: int
+    base_resolution_m: float
+    estimated_active_cells_at_base: int
+    estimated_solve_seconds: float
+    coarsened: bool
+    reason: str
+
+
+def _estimate_active_cells_at_native(
+    dem_read_path: str,
+    zmin: float,
+    zmax: float,
+) -> tuple[int, float] | None:
+    """Count DEM cells inside the active elevation window + return native res (m).
+
+    Reads the staged (LOCAL) DEM, masks nodata, counts cells whose elevation is
+    within ``[zmin, zmax]`` (the ``setup_mask_active`` window — mirrors
+    job-0318's active-domain definition), and returns ``(active_count,
+    native_resolution_m)``. The native resolution is derived from the DEM
+    transform; if the DEM is geographic (degrees) we convert the pixel size to
+    metres at the DEM centre latitude (matching ``_bbox_area_km2``).
+
+    Returns ``None`` when the DEM cannot be read (caller falls back to a
+    bbox-area estimate so autoscale degrades gracefully — never crashes).
+    """
+    try:
+        import numpy as np  # type: ignore[import-not-found]
+        import rasterio  # type: ignore[import-not-found]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("autoscale: numpy/rasterio unavailable for cell estimate (%s)", exc)
+        return None
+
+    try:
+        with rasterio.open(dem_read_path) as src:
+            arr = src.read(1, masked=True)
+            nodata = src.nodata
+            transform = src.transform
+            crs = src.crs
+            # Pixel size in the DEM's own units.
+            px_w = abs(transform.a)
+            px_h = abs(transform.e)
+            # Approximate the DEM centre latitude for a degrees→metres convert.
+            centre_lat = src.bounds.bottom + 0.5 * (src.bounds.top - src.bounds.bottom)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("autoscale: could not read DEM %s for cell estimate (%s)", dem_read_path, exc)
+        return None
+
+    try:
+        import math
+
+        data = np.ma.masked_invalid(arr)
+        sentinels = [-9999.0, -32768.0, 3.4028234663852886e38]
+        if nodata is not None:
+            sentinels.append(float(nodata))
+        for s in sentinels:
+            data = np.ma.masked_equal(data, s)
+        if data.count() == 0:
+            logger.warning("autoscale: DEM %s has no valid cells for estimate", dem_read_path)
+            return None
+        in_window = (data >= zmin) & (data <= zmax)
+        # ``in_window`` is masked where data is masked; count only unmasked True.
+        active_native = int(np.ma.filled(in_window, False).sum())
+
+        # Native resolution in METRES. A geographic CRS (EPSG:4326) reports the
+        # pixel size in degrees; convert at the DEM centre latitude (km/deg ≈
+        # 111.32 * cos(lat) for lon, 111.32 for lat — use the geometric mean so
+        # a single scalar metre/pixel falls out, matching the square-cell model).
+        is_geographic = bool(getattr(crs, "is_geographic", False)) if crs is not None else (px_w < 1.0)
+        if is_geographic:
+            m_per_deg_lat = 111_320.0
+            m_per_deg_lon = 111_320.0 * max(0.01, math.cos(math.radians(centre_lat)))
+            native_res_m = math.sqrt((px_w * m_per_deg_lon) * (px_h * m_per_deg_lat))
+        else:
+            native_res_m = math.sqrt(px_w * px_h)
+        if not math.isfinite(native_res_m) or native_res_m <= 0:
+            logger.warning("autoscale: DEM %s native res non-finite (%r)", dem_read_path, native_res_m)
+            return None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("autoscale: cell estimate failed for %s (%s)", dem_read_path, exc)
+        return None
+
+    return active_native, native_res_m
+
+
+def estimate_active_cells_at_resolution(
+    active_native: int,
+    native_res_m: float,
+    target_res_m: float,
+) -> int:
+    """Scale a native-resolution active-cell count to ``target_res_m``.
+
+    The active AREA is invariant under regridding; the cell COUNT scales by
+    ``(native_res / target_res) ** 2``. Coarsening (target > native) shrinks the
+    count; refining grows it. Floored at 1 for a non-empty active domain so the
+    estimate never returns 0 for a real domain (which would falsely advertise a
+    free solve).
+    """
+    if active_native <= 0 or native_res_m <= 0 or target_res_m <= 0:
+        return 0
+    scaled = active_native * (native_res_m / target_res_m) ** 2
+    return max(1, int(round(scaled)))
+
+
+def autoscale_grid_resolution(
+    dem_read_path: str,
+    bbox: tuple[float, float, float, float],
+    *,
+    zmin: float,
+    zmax: float,
+    compute_class: str = "medium",
+    base_resolution_m: float = 30.0,
+) -> GridAutoscaleResult:
+    """Choose ``grid_resolution_m`` so the estimated solve fits the budget.
+
+    Walks ``SFINCS_RES_LADDER`` from the finest rung >= ``base_resolution_m``
+    upward, snapping UP until the estimated ACTIVE cell count is at or under
+    ``compute_cell_cap(vcpus)``. NEVER produces a degenerate grid: the walk
+    stops at the coarsest ladder rung even if the cap is still exceeded (a
+    huge AOI solves at 200 m, coarse but non-empty, rather than failing), and
+    the cell estimate is floored at 1 for a real domain.
+
+    DEM-read failure degrades gracefully to a bbox-area estimate (active ==
+    whole bbox) so autoscale never crashes the build; the reason string records
+    which path was taken.
+
+    Args:
+        dem_read_path: LOCAL staged DEM path (``_stage_gcs_local`` ran already).
+        bbox: WGS84 bbox — the fallback area source when the DEM is unreadable.
+        zmin/zmax: the ``setup_mask_active`` elevation window (job-0318) — the
+            same window the solve will actually mask to, so the estimate counts
+            the cells SFINCS will really solve, not the raw bbox.
+        compute_class: FR-CE-3 class → vCPU via ``resolve_solve_vcpus``.
+        base_resolution_m: the finest resolution to consider (NFR-P-4 30 m).
+
+    Returns:
+        ``GridAutoscaleResult`` with the chosen resolution + the estimate +
+        the cap + why. Always log-emitted at INFO (chosen res, est cells, reason).
+    """
+    vcpus = resolve_solve_vcpus(compute_class)
+    cap = compute_cell_cap(vcpus)
+
+    # Ladder rungs at or coarser than the base; always include the base itself
+    # so a base finer than every ladder rung still has a starting point.
+    ladder = sorted({base_resolution_m, *SFINCS_RES_LADDER})
+    ladder = [r for r in ladder if r >= base_resolution_m] or [base_resolution_m]
+
+    native = _estimate_active_cells_at_native(dem_read_path, zmin, zmax)
+    if native is not None:
+        active_native, native_res_m = native
+        estimate_source = "dem-active-window"
+    else:
+        # Fallback: assume the whole bbox is active at the base resolution.
+        # ``_bbox_area_km2`` matches the workflow helper; cells = area / res^2.
+        import math
+
+        min_lon, min_lat, max_lon, max_lat = bbox
+        mid_lat = 0.5 * (min_lat + max_lat)
+        dlat_km = (max_lat - min_lat) * 111.320
+        dlon_km = (max_lon - min_lon) * 111.320 * math.cos(math.radians(mid_lat))
+        area_m2 = abs(dlat_km * dlon_km) * 1_000_000.0
+        native_res_m = base_resolution_m
+        active_native = max(1, int(area_m2 / (base_resolution_m * base_resolution_m)))
+        estimate_source = "bbox-area-fallback"
+
+    est_at_base = estimate_active_cells_at_resolution(
+        active_native, native_res_m, base_resolution_m
+    )
+
+    chosen_res = ladder[0]
+    chosen_est = est_at_base
+    coarsened = False
+    for res in ladder:
+        est = estimate_active_cells_at_resolution(active_native, native_res_m, res)
+        chosen_res = res
+        chosen_est = est
+        coarsened = res > base_resolution_m
+        if est <= cap:
+            break
+    # ``chosen_res`` is now either the first rung under the cap, or (if none
+    # fit) the coarsest rung — never degenerate.
+
+    capped_out = chosen_est > cap  # coarsest rung still over cap (huge AOI)
+    est_solve_s = estimate_solve_seconds(chosen_est, vcpus)
+
+    if capped_out:
+        reason = (
+            f"AOI exceeds cap even at coarsest rung {chosen_res:.0f}m "
+            f"(est {chosen_est} > cap {cap}); clamped to coarsest rung "
+            f"(source={estimate_source})"
+        )
+    elif coarsened:
+        reason = (
+            f"coarsened {base_resolution_m:.0f}m→{chosen_res:.0f}m to fit cap "
+            f"{cap} (est {est_at_base}@base → {chosen_est}@chosen; "
+            f"source={estimate_source})"
+        )
+    else:
+        reason = (
+            f"base {base_resolution_m:.0f}m fits cap {cap} "
+            f"(est {chosen_est}; source={estimate_source})"
+        )
+
+    logger.info(
+        "autoscale: grid_resolution_m=%.0f estimated_active_cells=%d cap=%d "
+        "vcpus=%d est_solve=%.0fs reason=%s",
+        chosen_res,
+        chosen_est,
+        cap,
+        vcpus,
+        est_solve_s,
+        reason,
+    )
+
+    return GridAutoscaleResult(
+        grid_resolution_m=chosen_res,
+        estimated_active_cells=chosen_est,
+        cell_cap=cap,
+        vcpus=vcpus,
+        base_resolution_m=base_resolution_m,
+        estimated_active_cells_at_base=est_at_base,
+        estimated_solve_seconds=est_solve_s,
+        coarsened=coarsened,
+        reason=reason,
+    )
+
+
 def _generate_hydromt_yaml_config(
     *,
     bbox: tuple[float, float, float, float],
@@ -1289,6 +1755,43 @@ def build_sfincs_model(
             "thread the fetch_landcover sidecar through."
         )
 
+    # --- Step 2.5: adaptive grid autoscale (sprint-16 SFINCS per-job autoscale)
+    # Snap grid_resolution_m UP the ladder so the estimated ACTIVE-cell count
+    # (cells inside the setup_mask_active window — NOT raw bbox area, job-0318)
+    # fits the solve budget at the chosen instance vCPU. Runs on the CURRENT
+    # path (local-docker / gcp-workflows): on the 8-vCPU box this coarsens a
+    # Chattanooga-size AOI from 30 m to a rung that solves in ~10 min instead of
+    # an hour. Stage the DEM locally first (the autoscale reads its real
+    # elevation range + native resolution); the same staged path is reused by
+    # the YAML emitter below. Degrades gracefully (bbox-area fallback) if the
+    # DEM can't be read; NEVER produces a degenerate/empty grid.
+    autoscale_result: GridAutoscaleResult | None = None
+    if opts.autoscale_grid:
+        try:
+            dem_staged = _stage_gcs_local(dem_uri)
+            mask_zmin, mask_zmax, _adaptive = _compute_active_mask_bounds(dem_staged)
+            autoscale_result = autoscale_grid_resolution(
+                dem_staged,
+                bbox,
+                zmin=mask_zmin,
+                zmax=mask_zmax,
+                compute_class=opts.compute_class,
+                base_resolution_m=opts.grid_resolution_m,
+            )
+            if autoscale_result.grid_resolution_m != opts.grid_resolution_m:
+                opts = replace(
+                    opts, grid_resolution_m=autoscale_result.grid_resolution_m
+                )
+        except Exception as exc:  # noqa: BLE001 — autoscale must never break the build
+            # A failed autoscale falls back to the caller-provided resolution
+            # (NFR-P-4 30 m default) — the build proceeds, just without the cap.
+            logger.warning(
+                "autoscale: grid autoscale failed (%s); proceeding at "
+                "grid_resolution_m=%.1f",
+                exc,
+                opts.grid_resolution_m,
+            )
+
     # --- Step 3: invoke HydroMT-SFINCS ---
     # Lazy import so test environments without HydroMT installed can still
     # import this module and exercise the validation gate.
@@ -1516,6 +2019,28 @@ def build_sfincs_model(
             "forcing_type": forcing.forcing_type,
             "forcing_provenance": dict(forcing.provenance),
             "river_geometry_uri": river_geometry_uri,
+            # sprint-16 autoscale provenance — feeds the solve-telemetry record
+            # so the cap can be re-tuned from logged (cells, vCPU, time) data.
+            "compute_class": opts.compute_class,
+            "autoscale": (
+                {
+                    "grid_resolution_m": autoscale_result.grid_resolution_m,
+                    "estimated_active_cells": autoscale_result.estimated_active_cells,
+                    "estimated_active_cells_at_base": (
+                        autoscale_result.estimated_active_cells_at_base
+                    ),
+                    "cell_cap": autoscale_result.cell_cap,
+                    "vcpus": autoscale_result.vcpus,
+                    "base_resolution_m": autoscale_result.base_resolution_m,
+                    "estimated_solve_seconds": (
+                        autoscale_result.estimated_solve_seconds
+                    ),
+                    "coarsened": autoscale_result.coarsened,
+                    "reason": autoscale_result.reason,
+                }
+                if autoscale_result is not None
+                else None
+            ),
         },
         created_at=datetime.now(timezone.utc),
     )

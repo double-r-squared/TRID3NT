@@ -326,7 +326,137 @@ def compute_args_hash(args: dict | None) -> str:
     return _hash_args(args)
 
 
+# --------------------------------------------------------------------------- #
+# Solve-time telemetry (sprint-16 — SFINCS per-job autoscale)
+#
+# At solve completion we accumulate real (active_cells, vCPU, wall_clock) data
+# so the adaptive-grid cell cap can be re-tuned from logged measurements
+# (MEASURE-then-tune). Emitted to the SAME sink discipline as tool_call
+# telemetry: a structured logger line ALWAYS (so it lands in the agent log /
+# routing dashboard scrape even when the JSONL sink is unwritable) PLUS the
+# JSONL record. The record is intentionally NOT MCP-routed (no Mongo collection
+# contract exists for it yet; the local JSONL + structured log line is the
+# minimum the kickoff names — a Mongo collection can be added later without
+# changing call sites).
+# --------------------------------------------------------------------------- #
+
+_DEFAULT_SOLVE_TELEMETRY_PATH = "/tmp/grace2_solve_telemetry.jsonl"
+
+#: A dedicated structured logger so a routing-dashboard / log scrape can grep
+#: ``grace2_agent.solve_telemetry`` lines out of the agent log even when the
+#: JSONL file path is unwritable.
+solve_logger = logging.getLogger("grace2_agent.solve_telemetry")
+
+
+def _get_solve_telemetry_path() -> str:
+    """JSONL output path for solve telemetry (env-overridable)."""
+    return os.environ.get(
+        "GRACE2_SOLVE_TELEMETRY_PATH", _DEFAULT_SOLVE_TELEMETRY_PATH
+    )
+
+
+def build_solve_telemetry_record(
+    *,
+    run_id: str,
+    backend: str,
+    active_cell_count: int | None,
+    grid_resolution_m: float | None,
+    vcpus: int | None,
+    wall_clock_seconds: float | None,
+    aoi_km2: float | None,
+    solver: str = "sfincs",
+    estimated_solve_seconds: float | None = None,
+    coarsened: bool | None = None,
+    ts: str | None = None,
+) -> dict:
+    """Build the structured solve-telemetry record (pure — no I/O).
+
+    Split out so tests can assert the record SHAPE without touching the sink.
+    The required fields the kickoff names: ``active_cell_count``,
+    ``grid_resolution_m``, ``vcpus``, ``wall_clock_seconds``, ``backend``,
+    ``run_id``, ``aoi_km2``.
+    """
+    return {
+        "kind": "solve_telemetry",
+        "run_id": run_id,
+        "solver": solver,
+        "backend": backend,
+        "active_cell_count": active_cell_count,
+        "grid_resolution_m": grid_resolution_m,
+        "vcpus": vcpus,
+        "wall_clock_seconds": wall_clock_seconds,
+        "aoi_km2": aoi_km2,
+        "estimated_solve_seconds": estimated_solve_seconds,
+        "coarsened": coarsened,
+        "ts": ts
+        or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
+    }
+
+
+def emit_solve_telemetry(
+    *,
+    run_id: str,
+    backend: str,
+    active_cell_count: int | None,
+    grid_resolution_m: float | None,
+    vcpus: int | None,
+    wall_clock_seconds: float | None,
+    aoi_km2: float | None,
+    solver: str = "sfincs",
+    estimated_solve_seconds: float | None = None,
+    coarsened: bool | None = None,
+) -> dict:
+    """Emit one solve-completion telemetry record (structured log + JSONL).
+
+    Synchronous + best-effort: a structured INFO line is ALWAYS logged; the
+    JSONL append is wrapped so a sink failure never propagates into the solve
+    path. Returns the record (so the workflow can also fold it into provenance /
+    a test can assert it). Mirrors ``emit_tool_call_event``'s never-raise
+    contract — telemetry must never break the solve loop.
+    """
+    record = build_solve_telemetry_record(
+        run_id=run_id,
+        backend=backend,
+        active_cell_count=active_cell_count,
+        grid_resolution_m=grid_resolution_m,
+        vcpus=vcpus,
+        wall_clock_seconds=wall_clock_seconds,
+        aoi_km2=aoi_km2,
+        solver=solver,
+        estimated_solve_seconds=estimated_solve_seconds,
+        coarsened=coarsened,
+    )
+    # Always log the structured line (the durable, scrape-able signal).
+    solve_logger.info(
+        "solve_telemetry run_id=%s backend=%s solver=%s active_cells=%s "
+        "grid_res_m=%s vcpus=%s wall_clock_s=%s aoi_km2=%s est_solve_s=%s "
+        "coarsened=%s",
+        run_id,
+        backend,
+        solver,
+        active_cell_count,
+        grid_resolution_m,
+        vcpus,
+        wall_clock_seconds,
+        aoi_km2,
+        estimated_solve_seconds,
+        coarsened,
+    )
+    # Best-effort JSONL append (the accumulation sink for re-tuning the cap).
+    try:
+        path = _get_solve_telemetry_path()
+        with open(path, mode="a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, default=str) + "\n")
+    except Exception:  # noqa: BLE001 — telemetry must never break the solve loop
+        solve_logger.warning(
+            "solve_telemetry JSONL write failed run_id=%s", run_id, exc_info=True
+        )
+    return record
+
+
 __all__ = [
     "emit_tool_call_event",
     "compute_args_hash",
+    "emit_solve_telemetry",
+    "build_solve_telemetry_record",
 ]
