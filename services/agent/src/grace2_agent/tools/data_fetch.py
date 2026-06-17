@@ -16,8 +16,12 @@ Tools registered here:
 
 - ``fetch_dem(bbox, resolution_m=10)`` — USGS 3DEP via ``py3dep.get_dem`` →
   COG bytes → ``cache/static-30d/dem/<key>.tif``.
-- ``fetch_buildings(bbox, source="msft")`` — MS Open Maps Buildings (PMTiles/
-  FlatGeobuf served as quadkey tiles via MSFT's Open Data) → ``cache/static-30d/buildings/<key>.fgb``.
+- ``fetch_buildings(bbox, source="osm")`` — building footprint POLYGONS.
+  ``source="osm"`` (default, reliable primary) pulls OpenStreetMap building
+  ways + multipolygon relations via the Overpass API; ``source="msft"`` is a
+  best-effort fallback to MS Open Maps ML footprints. The tool tries the
+  requested source first and falls back to the other on UpstreamAPIError →
+  ``cache/static-30d/buildings/<key>.fgb`` (FlatGeobuf, source-agnostic shape).
 - ``fetch_population(bbox, dataset="worldpop_2020")`` — WorldPop 100m Unconstrained
   UN-adjusted gridded population (Tier-1 per Appendix F.1, no key required).
   Windowed read over the bbox via ``rasterio`` ``/vsicurl/`` from the WorldPop
@@ -59,6 +63,8 @@ import json
 import logging
 import math
 import os
+import tempfile
+import time
 from typing import Any
 
 import requests
@@ -394,7 +400,7 @@ def fetch_dem(
 
 
 # ---------------------------------------------------------------------------
-# fetch_buildings — Microsoft Building Footprints
+# fetch_buildings — OSM Overpass (reliable primary) + Microsoft (fallback)
 # ---------------------------------------------------------------------------
 
 
@@ -406,21 +412,360 @@ _FETCH_BUILDINGS_METADATA = AtomicToolMetadata(
 )
 
 
-# MS Open Maps publishes Global ML Building Footprints sharded by quadkey
-# under a public Azure Blob container. The official catalog index is at:
+# BEST-EFFORT FALLBACK source (``source="msft"``). MS Open Maps publishes
+# Global ML Building Footprints sharded by quadkey under a public Azure Blob
+# container. The official catalog index is at:
 #   https://minedbuildings.blob.core.windows.net/global-buildings/dataset-links.csv
 # Each row is (QuadKey, Location, Url) — the URL is a GZIP'd line-delimited
-# GeoJSON. For a bbox we'd find the intersecting quadkey(s), fetch + filter
-# + reformat to FlatGeobuf. The MS Open Maps STAC catalog (an alternative
-# entry point referenced in the kickoff) at planetarycomputer.microsoft.com
-# wraps this same data under a STAC API.
+# GeoJSON. The MS Open Maps STAC catalog (an alternative entry point referenced
+# in the kickoff) at planetarycomputer.microsoft.com wraps this same data under
+# a STAC API.
 #
-# For the M4 substrate this function is a thin wrapper: it accepts the bbox,
-# attempts a planetary-computer STAC item search, and returns the resulting
-# bytes (FlatGeobuf if the item provides one, otherwise GeoJSON serialized
-# as a single feature collection). When no items match (bbox outside ML
-# coverage), an ``UpstreamAPIError`` surfaces — engine downstream decides
-# whether to fall back to OSM via a future ``source="osm"`` branch.
+# KNOWN LIMITATION (job-0331): the Planetary Computer ``ms-buildings``
+# collection typically returns a single whole-country item whose only asset is
+# an ``abfs://`` (Azure Blob Filesystem) GeoParquet store — ``requests.get`` on
+# an ``abfs://`` URL cannot work, so this branch frequently fails to download.
+# It is retained as a best-effort fallback only; OSM Overpass (source="osm") is
+# the reliable primary. When the STAC search yields no items or no downloadable
+# asset, an ``UpstreamAPIError`` surfaces and ``fetch_buildings`` falls back to
+# OSM (or raises an honest both-failed error).
+
+
+# ---------------------------------------------------------------------------
+# OSM Overpass building-footprint fetcher (job-0331).
+#
+# ROOT CAUSE (live 2026-06-16): the ``source="msft"`` path queries the
+# Planetary Computer ``ms-buildings`` STAC collection, whose only asset is an
+# ``abfs://`` (Azure Blob Filesystem) GeoParquet store — ``requests.get`` on an
+# ``abfs://`` URL cannot work, so MS footprints NEVER download. The previous
+# ``source="osm"`` branch only raised ``NotImplementedError``, leaving the tool
+# with NO working footprint source.
+#
+# Fix: OSM Overpass is the reliable PRIMARY (verified: 578 building polygons for
+# one Chattanooga block). This fetcher mirrors ``fetch_roads_osm.py``'s Overpass
+# pattern (``out geom`` + geometry assembly + clip-to-bbox + FlatGeobuf write)
+# but assembles building POLYGONS (closed ways) and MULTIPOLYGONS (relations)
+# rather than road LineStrings. MS stays as a best-effort FALLBACK.
+# ---------------------------------------------------------------------------
+
+#: Overpass interpreter endpoint (same public endpoint as fetch_roads_osm).
+_OVERPASS_BUILDINGS_URL = "https://overpass-api.de/api/interpreter"
+
+#: External HTTP timeout for the Overpass POST — Overpass is slow under load.
+_OVERPASS_BUILDINGS_HTTP_TIMEOUT = 120.0
+
+#: Overpass-side query timeout (the ``[timeout:N]`` QL directive).
+_OVERPASS_BUILDINGS_QL_TIMEOUT = 90
+
+#: Polite delay before the Overpass request to respect rate limits (miss-path
+#: only; cache hits never reach this fetcher).
+_OVERPASS_BUILDINGS_POLITE_DELAY_S = 1.0
+
+
+def _build_overpass_buildings_ql(
+    bbox: tuple[float, float, float, float],
+) -> str:
+    """Construct the Overpass QL selecting building ways AND relations in ``bbox``.
+
+    Overpass expects bbox corners as ``(south, west, north, east)`` (lat first)
+    — the OPPOSITE corner ordering from the caller's ``(min_lon, min_lat,
+    max_lon, max_lat)``. ``out geom`` returns full node geometry inline (plus,
+    for relations, the geometry of every member way) so we can assemble
+    polygons without a second resolve pass.
+    """
+    min_lon, min_lat, max_lon, max_lat = bbox
+    s, w, n, e = min_lat, min_lon, max_lat, max_lon
+    return (
+        f"[out:json][timeout:{_OVERPASS_BUILDINGS_QL_TIMEOUT}];"
+        f"("
+        f"way[\"building\"]({s},{w},{n},{e});"
+        f"relation[\"building\"]({s},{w},{n},{e});"
+        f");"
+        f"out geom;"
+    )
+
+
+def _post_overpass_buildings(ql: str) -> dict[str, Any]:
+    """POST ``ql`` to the Overpass interpreter and return parsed JSON.
+
+    Raises ``UpstreamAPIError`` on network / HTTP / parse failure so the
+    ``read_through`` "re-raise on fetcher failure; no sentinel" contract holds.
+    Uses ``httpx`` to match ``fetch_roads_osm``'s transport; a polite 1 s sleep
+    fires BEFORE the request.
+    """
+    import httpx  # local import: keeps registry import light + mirrors roads tool
+
+    try:
+        time.sleep(_OVERPASS_BUILDINGS_POLITE_DELAY_S)
+        logger.info(
+            "fetch_buildings(osm): POST %s ql_bytes=%d",
+            _OVERPASS_BUILDINGS_URL,
+            len(ql),
+        )
+        with httpx.Client(
+            timeout=_OVERPASS_BUILDINGS_HTTP_TIMEOUT,
+            headers={"User-Agent": _DEFAULT_USER_AGENT},
+        ) as client:
+            resp = client.post(_OVERPASS_BUILDINGS_URL, data={"data": ql})
+            resp.raise_for_status()
+            return resp.json()
+    except httpx.HTTPStatusError as exc:
+        status = exc.response.status_code if exc.response is not None else None
+        raise UpstreamAPIError(
+            f"OSM Overpass buildings HTTP error status={status}: {exc}"
+        ) from exc
+    except httpx.HTTPError as exc:
+        raise UpstreamAPIError(
+            f"OSM Overpass buildings network/transport error: {exc}"
+        ) from exc
+    except ValueError as exc:
+        raise UpstreamAPIError(
+            f"OSM Overpass buildings returned non-JSON response: {exc}"
+        ) from exc
+
+
+def _ring_from_geom(geom: Any) -> list[tuple[float, float]]:
+    """Extract a ``(lon, lat)`` coordinate ring from an Overpass ``geometry`` list.
+
+    Drops malformed / non-finite points. Returns the raw ring (NOT forced
+    closed) — the caller decides whether ≥ 3 distinct vertices make a polygon.
+    """
+    ring: list[tuple[float, float]] = []
+    if not isinstance(geom, list):
+        return ring
+    for pt in geom:
+        if not isinstance(pt, dict):
+            continue
+        lat_v = pt.get("lat")
+        lon_v = pt.get("lon")
+        if lat_v is None or lon_v is None:
+            continue
+        try:
+            lat = float(lat_v)
+            lon = float(lon_v)
+        except (TypeError, ValueError):
+            continue
+        if not (math.isfinite(lat) and math.isfinite(lon)):
+            continue
+        ring.append((lon, lat))
+    return ring
+
+
+def _way_to_polygon(way: dict[str, Any]) -> Any | None:
+    """Assemble a closed-way Overpass element into a shapely ``Polygon``.
+
+    Returns ``None`` if the ring has fewer than 3 distinct vertices or the
+    resulting polygon is empty / invalid-and-unfixable.
+    """
+    from shapely.geometry import Polygon  # type: ignore[import-not-found]
+
+    ring = _ring_from_geom(way.get("geometry"))
+    # Need at least 3 distinct vertices for an areal ring. Overpass closed ways
+    # repeat the first node as the last; dedup the closure before counting.
+    distinct = list(dict.fromkeys(ring))
+    if len(distinct) < 3:
+        return None
+    try:
+        poly = Polygon(ring)
+    except Exception:  # noqa: BLE001 — degenerate ring
+        return None
+    if poly.is_empty:
+        return None
+    if not poly.is_valid:
+        poly = poly.buffer(0)  # standard self-intersection repair
+        if poly.is_empty or poly.geom_type not in ("Polygon", "MultiPolygon"):
+            return None
+    return poly
+
+
+def _relation_to_multipolygon(rel: dict[str, Any]) -> Any | None:
+    """Assemble an Overpass ``multipolygon`` relation into a (Multi)Polygon.
+
+    ``out geom`` returns each member way's geometry inline under
+    ``members[].geometry`` with ``role`` in ``{"outer", "inner"}``. We build
+    outer-ring polygons, subtract inner rings (holes), and union the result.
+    Returns ``None`` if no usable outer ring exists.
+    """
+    from shapely.geometry import Polygon  # type: ignore[import-not-found]
+    from shapely.ops import unary_union  # type: ignore[import-not-found]
+
+    members = rel.get("members") or []
+    if not isinstance(members, list):
+        return None
+    outers: list[Any] = []
+    inners: list[Any] = []
+    for member in members:
+        if not isinstance(member, dict) or member.get("type") != "way":
+            continue
+        ring = _ring_from_geom(member.get("geometry"))
+        distinct = list(dict.fromkeys(ring))
+        if len(distinct) < 3:
+            continue
+        try:
+            poly = Polygon(ring)
+        except Exception:  # noqa: BLE001
+            continue
+        if poly.is_empty:
+            continue
+        if not poly.is_valid:
+            poly = poly.buffer(0)
+            if poly.is_empty:
+                continue
+        role = member.get("role")
+        if role == "inner":
+            inners.append(poly)
+        else:
+            # Default unrolled members (role "" / "outer") are treated as outer.
+            outers.append(poly)
+    if not outers:
+        return None
+    outer_union = unary_union(outers)
+    if inners:
+        hole_union = unary_union(inners)
+        try:
+            outer_union = outer_union.difference(hole_union)
+        except Exception:  # noqa: BLE001 — keep solid footprint if hole-cut fails
+            pass
+    if outer_union.is_empty or outer_union.geom_type not in (
+        "Polygon",
+        "MultiPolygon",
+    ):
+        return None
+    return outer_union
+
+
+def _extract_building_features(
+    payload: dict[str, Any],
+) -> list[tuple[Any, dict[str, Any]]]:
+    """Walk Overpass ``elements`` → list of ``(geometry, attrs)`` for buildings.
+
+    Ways become ``Polygon``s; multipolygon relations become ``(Multi)Polygon``s.
+    Non-areal / malformed elements are skipped. Attributes carried per feature:
+    ``osm_id``, ``osm_type``, ``building`` (tag value), ``name``.
+    """
+    elements = payload.get("elements")
+    if not isinstance(elements, list):
+        raise UpstreamAPIError(
+            f"OSM Overpass buildings 'elements' is not a list: "
+            f"{type(elements).__name__}"
+        )
+    features: list[tuple[Any, dict[str, Any]]] = []
+    for el in elements:
+        if not isinstance(el, dict):
+            continue
+        el_type = el.get("type")
+        tags = el.get("tags") if isinstance(el.get("tags"), dict) else {}
+        if el_type == "way":
+            geom = _way_to_polygon(el)
+        elif el_type == "relation":
+            geom = _relation_to_multipolygon(el)
+        else:
+            geom = None
+        if geom is None:
+            continue
+        features.append(
+            (
+                geom,
+                {
+                    "osm_id": el.get("id"),
+                    "osm_type": el_type,
+                    "building": tags.get("building"),
+                    "name": tags.get("name"),
+                },
+            )
+        )
+    return features
+
+
+def _fetch_osm_buildings_bytes(
+    bbox: tuple[float, float, float, float],
+) -> bytes:
+    """Fetch OSM building footprints for ``bbox`` and return FlatGeobuf bytes.
+
+    Queries the OpenStreetMap Overpass API for ``building``-tagged ways AND
+    relations intersecting the bbox, assembles closed ways into ``Polygon``s
+    and multipolygon relations into ``(Multi)Polygon``s, clips every footprint
+    to the EXACT requested bbox (Overpass ``out geom`` returns full geometry of
+    any feature with a node inside the bbox, so footprints can spill outside),
+    and serializes the result to FlatGeobuf — the SAME output format the
+    ``msft`` branch produces, so the cache write + downstream consumers are
+    source-agnostic.
+
+    Raises ``UpstreamAPIError`` on Overpass failure OR when no building
+    footprints fall inside the bbox (honest typed empty per the data-source
+    fallback norm — the caller decides whether to fall back to ``msft``).
+    """
+    _validate_bbox(bbox)
+    try:
+        import geopandas as gpd  # type: ignore[import-not-found]
+        from shapely import box  # type: ignore[import-not-found]
+    except ImportError as exc:
+        raise UpstreamAPIError(
+            f"geopandas / shapely not available for OSM buildings: {exc}"
+        ) from exc
+
+    ql = _build_overpass_buildings_ql(bbox)
+    payload = _post_overpass_buildings(ql)
+    features = _extract_building_features(payload)
+
+    if not features:
+        raise UpstreamAPIError(
+            f"OSM Overpass returned no building footprints for bbox={bbox} "
+            f"(area may be unmapped — caller may fall back to source='msft')"
+        )
+
+    geometries = [geom for geom, _attrs in features]
+    attrs = [a for _g, a in features]
+    gdf = gpd.GeoDataFrame(attrs, geometry=geometries, crs="EPSG:4326")
+
+    # Clip to the EXACT requested bbox: Overpass ``out geom`` returns the full
+    # footprint of any building with a node inside the bbox, so a building on
+    # the AOI edge spills outside. Clipping keeps rendered footprints strictly
+    # inside the AOI (matches the fetch_roads_osm F39 clip discipline).
+    min_lon, min_lat, max_lon, max_lat = bbox
+    clip_box = box(min_lon, min_lat, max_lon, max_lat)
+    try:
+        gdf = gpd.clip(gdf, clip_box)
+    except Exception as exc:  # noqa: BLE001 — defend against degenerate geom
+        raise UpstreamAPIError(
+            f"OSM buildings clip-to-bbox failed for bbox={bbox}: {exc}"
+        ) from exc
+    # Drop anything the clip collapsed to empty / non-areal.
+    gdf = gdf[~gdf.geometry.is_empty & gdf.geometry.notna()]
+    gdf = gdf[gdf.geometry.geom_type.isin(["Polygon", "MultiPolygon"])]
+
+    if len(gdf) == 0:
+        raise UpstreamAPIError(
+            f"OSM Overpass building footprints all fell outside bbox={bbox} "
+            f"after clipping (caller may fall back to source='msft')"
+        )
+
+    logger.info(
+        "fetch_buildings(osm): %d building footprint(s) in-AOI for bbox=%s",
+        len(gdf),
+        bbox,
+    )
+
+    tmp_fgb: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            suffix=".fgb", delete=False, prefix="grace2_osm_buildings_"
+        ) as f:
+            tmp_fgb = f.name
+        try:
+            gdf.to_file(tmp_fgb, driver="FlatGeobuf", engine="pyogrio")
+        except Exception as exc:  # noqa: BLE001 — translate to typed error
+            raise UpstreamAPIError(
+                f"OSM buildings FlatGeobuf write failed: {exc}"
+            ) from exc
+        with open(tmp_fgb, "rb") as f:
+            return f.read()
+    finally:
+        if tmp_fgb is not None:
+            try:
+                os.unlink(tmp_fgb)
+            except OSError:
+                pass
 
 
 def _fetch_msft_buildings_bytes(
@@ -525,45 +870,63 @@ def _fetch_msft_buildings_bytes(
 )
 def fetch_buildings(
     bbox: tuple[float, float, float, float],
-    source: str = "msft",
+    source: str = "osm",
     # job-0164: absorb LLM-invented kwargs (centralized at server.py via
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> LayerURI:
-    """Fetch building footprints for a bbox.
+    """Fetch building footprints (polygons) for a bbox.
 
     Use this when: the agent needs building polygons for damage / exposure
-    estimation, risk scoring, or display of the built environment. Default
-    source ``"msft"`` uses Microsoft Open Maps ML-derived footprints (global
-    coverage; updated quarterly).
+    estimation, risk scoring, or display of the built environment.
+
+    Sources (data-source fallback norm — primary → fallback, never a silent
+    dead-end):
+        - ``"osm"`` (DEFAULT, RELIABLE PRIMARY): OpenStreetMap building
+          footprints via the Overpass API. Global, free, no API key. Returns
+          building ``Polygon``s (closed ways) and ``MultiPolygon``s
+          (multipolygon relations with holes), clipped to the exact bbox.
+          This is the dependable path — use it unless you have a specific
+          reason to prefer MS.
+        - ``"msft"`` (BEST-EFFORT FALLBACK): Microsoft Open Maps ML-derived
+          footprints via the Planetary Computer STAC catalog. Wider rural
+          coverage in some areas, but the public catalog often exposes only
+          ``abfs://`` GeoParquet stores that cannot be downloaded by-asset, so
+          this path frequently fails — treat it as best-effort only.
+
+    Robustness: whichever ``source`` you request is tried FIRST; if it raises
+    an ``UpstreamAPIError`` (upstream failure, no coverage, empty result), the
+    tool automatically FALLS BACK to the other source. If BOTH fail, an honest
+    ``UpstreamAPIError`` naming both attempts is raised — the agent never
+    receives a fabricated success. The cache key reflects the source actually
+    used, so the two sources never collide and a fallback result is cached
+    under its real source.
 
     Do NOT use this for: live address/parcel lookups (those need a different
-    cadastral source); 3D building heights (heights are a separate dataset
-    — see ``fetch_building_heights`` once it lands); querying buildings by
-    name or use class (filter post-fetch).
+    cadastral source); per-structure replacement cost / occupancy / HAZUS
+    attributes for loss modeling (use ``fetch_usace_nsi`` — the National
+    Structure Inventory point tool — instead); 3D building heights (heights
+    are a separate dataset); querying buildings by name or use class (filter
+    post-fetch).
 
     Params:
         bbox: ``(min_lon, min_lat, max_lon, max_lat)`` in EPSG:4326.
-        source: ``"msft"`` (default) or ``"osm"`` (future). The choice
-            affects the cache key, so two sources never collide.
+        source: ``"osm"`` (default, reliable primary) or ``"msft"``
+            (best-effort fallback). The requested source is tried first; the
+            tool falls back to the other on ``UpstreamAPIError``.
 
     Returns:
-        A ``LayerURI`` pointing at a FlatGeobuf (or GeoJSON if no
-        FlatGeobuf asset was available) in the cache bucket. The URI is
+        A ``LayerURI`` (``layer_type="vector"``) pointing at a FlatGeobuf in
+        the cache bucket:
         ``gs://grace-2-hazard-prod-cache/cache/static-30d/buildings/<key>.fgb``.
+        The ``name`` and ``layer_id`` reflect the source actually used.
 
     FR-CE-8: The fetch is routed through ``read_through`` so identical
     quantized-bbox + source calls reuse the cached artifact.
     """
     if source not in ("msft", "osm"):
         raise BboxInvalidError(
-            f"unsupported source={source!r}; allowed: 'msft', 'osm' (future)"
-        )
-    if source == "osm":
-        # OSM via Overpass routes through a future tool; not in M4 substrate.
-        raise UpstreamAPIError(
-            "fetch_buildings(source='osm') is not implemented yet; "
-            "use source='msft' (default) for M4 substrate."
+            f"unsupported source={source!r}; allowed: 'osm' (default), 'msft'"
         )
     # Quantize bbox to 10m: building footprint polygons are at sub-meter
     # precision but the bbox boundary is the cache-key driver, and a 10m
@@ -572,25 +935,56 @@ def fetch_buildings(
     if _bbox_area_km2(quantized) > 5_000.0:
         raise BboxInvalidError(
             f"bbox area {_bbox_area_km2(quantized):.1f} km^2 exceeds 5000 km^2 "
-            "guardrail for fetch_buildings (a single PMTiles asset will not "
-            "cover that; use a tiled workflow)."
+            "guardrail for fetch_buildings (a single source query will not "
+            "reliably cover that; use a tiled workflow)."
         )
-    params = {"bbox": list(quantized), "source": source}
-    result = read_through(
-        metadata=_FETCH_BUILDINGS_METADATA,
-        params=params,
-        ext="fgb",
-        fetch_fn=lambda: _fetch_msft_buildings_bytes(quantized),
-    )
-    assert result.uri is not None
-    return LayerURI(
-        layer_id=f"buildings-{quantized[0]:.4f}-{quantized[1]:.4f}-{source}",
-        name=f"Buildings ({source.upper()})",
-        layer_type="vector",
-        uri=result.uri,
-        style_preset="affected_buildings",
-        role="input",
-    )
+
+    # Per-source miss-path fetchers. Each goes through read_through under a
+    # cache key that reflects the source actually used, so a fallback result
+    # caches under its real source and never collides with the other source.
+    def _fetch_for_source(src: str) -> LayerURI:
+        params = {"bbox": list(quantized), "source": src}
+        if src == "osm":
+            fetch_fn = lambda: _fetch_osm_buildings_bytes(quantized)  # noqa: E731
+        else:
+            fetch_fn = lambda: _fetch_msft_buildings_bytes(quantized)  # noqa: E731
+        result = read_through(
+            metadata=_FETCH_BUILDINGS_METADATA,
+            params=params,
+            ext="fgb",
+            fetch_fn=fetch_fn,
+        )
+        assert result.uri is not None
+        return LayerURI(
+            layer_id=f"buildings-{quantized[0]:.4f}-{quantized[1]:.4f}-{src}",
+            name=f"Buildings ({src.upper()})",
+            layer_type="vector",
+            uri=result.uri,
+            style_preset="affected_buildings",
+            role="input",
+        )
+
+    # Data-source fallback norm: try requested source first; on upstream
+    # failure, fall back to the OTHER source; if both fail, raise an honest
+    # typed error naming both attempts (never a silent dead-end).
+    fallback = "msft" if source == "osm" else "osm"
+    try:
+        return _fetch_for_source(source)
+    except UpstreamAPIError as primary_exc:
+        logger.warning(
+            "fetch_buildings: source=%r failed (%s); falling back to %r",
+            source,
+            primary_exc,
+            fallback,
+        )
+        try:
+            return _fetch_for_source(fallback)
+        except UpstreamAPIError as fallback_exc:
+            raise UpstreamAPIError(
+                f"fetch_buildings failed for both sources: "
+                f"{source!r} -> {primary_exc}; "
+                f"{fallback!r} (fallback) -> {fallback_exc}"
+            ) from fallback_exc
 
 
 # ---------------------------------------------------------------------------

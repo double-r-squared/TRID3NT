@@ -281,13 +281,10 @@ def test_fetch_dem_upstream_failure_reraises(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_fetch_buildings_happy_path(monkeypatch):
-    fake_storage = FakeStorageClient()
+def _patch_read_through(monkeypatch, fake_storage):
+    """Route ``data_fetch.read_through`` through a FakeStorageClient + pinned now."""
     from grace2_agent.tools import cache as cache_mod
 
-    monkeypatch.setattr(
-        data_fetch, "_fetch_msft_buildings_bytes", lambda bbox: b"FAKE_FGB_BYTES"
-    )
     monkeypatch.setattr(
         data_fetch,
         "read_through",
@@ -296,13 +293,124 @@ def test_fetch_buildings_happy_path(monkeypatch):
         ),
     )
 
+
+def test_fetch_buildings_happy_path_msft(monkeypatch):
+    """Explicit source='msft' tries MS first; mocked bytes write through cache."""
+    fake_storage = FakeStorageClient()
+    monkeypatch.setattr(
+        data_fetch, "_fetch_msft_buildings_bytes", lambda bbox: b"FAKE_FGB_BYTES"
+    )
+    _patch_read_through(monkeypatch, fake_storage)
+
     layer = fetch_buildings(FORT_MYERS_BBOX, source="msft")
     assert layer.layer_type == "vector"
     assert layer.style_preset == "affected_buildings"
+    assert layer.name == "Buildings (MSFT)"
     assert layer.uri.startswith(
         "gs://grace-2-hazard-prod-cache/cache/static-30d/buildings/"
     )
     assert layer.uri.endswith(".fgb")
+
+
+def test_fetch_buildings_default_source_is_osm(monkeypatch):
+    """Default (no source kwarg) routes to OSM Overpass, NOT MS."""
+    fake_storage = FakeStorageClient()
+    osm_called: list[Any] = []
+
+    def fake_osm(bbox):
+        osm_called.append(bbox)
+        return b"FAKE_OSM_FGB"
+
+    def boom_msft(bbox):  # pragma: no cover — must not be reached on default
+        raise AssertionError("msft must not be called when default source is osm")
+
+    monkeypatch.setattr(data_fetch, "_fetch_osm_buildings_bytes", fake_osm)
+    monkeypatch.setattr(data_fetch, "_fetch_msft_buildings_bytes", boom_msft)
+    _patch_read_through(monkeypatch, fake_storage)
+
+    layer = fetch_buildings(FORT_MYERS_BBOX)
+    assert layer.layer_type == "vector"
+    assert layer.name == "Buildings (OSM)"
+    assert layer.uri.endswith(".fgb")
+    assert len(osm_called) == 1
+
+
+def test_fetch_buildings_osm_happy_path(monkeypatch):
+    """Explicit source='osm' invokes the OSM Overpass fetcher."""
+    fake_storage = FakeStorageClient()
+    monkeypatch.setattr(
+        data_fetch, "_fetch_osm_buildings_bytes", lambda bbox: b"FAKE_OSM_FGB"
+    )
+    _patch_read_through(monkeypatch, fake_storage)
+
+    layer = fetch_buildings(FORT_MYERS_BBOX, source="osm")
+    assert layer.name == "Buildings (OSM)"
+    assert layer.uri.endswith(".fgb")
+    # The OSM bytes landed in the cache under an osm-keyed path.
+    assert len(fake_storage.store) == 1
+    assert next(iter(fake_storage.store.values())) == b"FAKE_OSM_FGB"
+
+
+def test_fetch_buildings_falls_back_to_msft_when_osm_fails(monkeypatch):
+    """OSM upstream failure → automatic fallback to MS; result is the MS layer."""
+    fake_storage = FakeStorageClient()
+
+    def osm_boom(bbox):
+        raise UpstreamAPIError("Overpass unreachable")
+
+    monkeypatch.setattr(data_fetch, "_fetch_osm_buildings_bytes", osm_boom)
+    monkeypatch.setattr(
+        data_fetch, "_fetch_msft_buildings_bytes", lambda bbox: b"FAKE_MSFT_FGB"
+    )
+    _patch_read_through(monkeypatch, fake_storage)
+
+    layer = fetch_buildings(FORT_MYERS_BBOX, source="osm")
+    # Fell back to MS — the layer name + cache key reflect the source actually used.
+    assert layer.name == "Buildings (MSFT)"
+    assert "-msft" in layer.layer_id
+    assert next(iter(fake_storage.store.values())) == b"FAKE_MSFT_FGB"
+
+
+def test_fetch_buildings_falls_back_to_osm_when_msft_fails(monkeypatch):
+    """Requested source='msft' failing → fallback to OSM; result is the OSM layer."""
+    fake_storage = FakeStorageClient()
+
+    def msft_boom(bbox):
+        raise UpstreamAPIError("abfs:// asset cannot be downloaded")
+
+    monkeypatch.setattr(data_fetch, "_fetch_msft_buildings_bytes", msft_boom)
+    monkeypatch.setattr(
+        data_fetch, "_fetch_osm_buildings_bytes", lambda bbox: b"FAKE_OSM_FGB"
+    )
+    _patch_read_through(monkeypatch, fake_storage)
+
+    layer = fetch_buildings(FORT_MYERS_BBOX, source="msft")
+    assert layer.name == "Buildings (OSM)"
+    assert "-osm" in layer.layer_id
+    assert next(iter(fake_storage.store.values())) == b"FAKE_OSM_FGB"
+
+
+def test_fetch_buildings_both_sources_fail_raises_honest_error(monkeypatch):
+    """Both sources failing raises an UpstreamAPIError naming BOTH attempts; no sentinel."""
+    fake_storage = FakeStorageClient()
+
+    def osm_boom(bbox):
+        raise UpstreamAPIError("Overpass returned no footprints")
+
+    def msft_boom(bbox):
+        raise UpstreamAPIError("STAC asset is abfs:// only")
+
+    monkeypatch.setattr(data_fetch, "_fetch_osm_buildings_bytes", osm_boom)
+    monkeypatch.setattr(data_fetch, "_fetch_msft_buildings_bytes", msft_boom)
+    _patch_read_through(monkeypatch, fake_storage)
+
+    with pytest.raises(UpstreamAPIError) as excinfo:
+        fetch_buildings(FORT_MYERS_BBOX)  # default osm -> fallback msft
+    msg = str(excinfo.value)
+    assert "osm" in msg and "msft" in msg
+    assert "both sources" in msg.lower()
+    # No sentinel written to the cache on the all-failed path.
+    assert fake_storage.store == {}
 
 
 def test_fetch_buildings_rejects_unknown_source():
@@ -310,10 +418,127 @@ def test_fetch_buildings_rejects_unknown_source():
         fetch_buildings(FORT_MYERS_BBOX, source="usgs-nationalmap")
 
 
-def test_fetch_buildings_osm_branch_not_implemented():
-    """OSM branch is reserved; M4 substrate raises UpstreamAPIError."""
+def test_build_overpass_buildings_ql_selects_ways_and_relations():
+    """The Overpass QL selects building ways AND relations with (s,w,n,e) corners."""
+    ql = data_fetch._build_overpass_buildings_ql(FORT_MYERS_BBOX)
+    assert 'way["building"]' in ql
+    assert 'relation["building"]' in ql
+    assert "out geom;" in ql
+    # Fort Myers bbox = (-81.92, 26.55, -81.80, 26.68); Overpass wants
+    # (south, west, north, east) = (26.55, -81.92, 26.68, -81.80).
+    assert "(26.55,-81.92,26.68,-81.8)" in ql or "26.55,-81.92,26.68,-81.8" in ql
+
+
+def test_extract_building_features_assembles_polygons_and_relations():
+    """Closed ways -> Polygon; multipolygon relations -> (Multi)Polygon; junk dropped."""
+    pytest.importorskip("shapely")
+    payload = {
+        "elements": [
+            {
+                "type": "way",
+                "id": 111,
+                "tags": {"building": "yes", "name": "Block A"},
+                "geometry": [
+                    {"lat": 26.60, "lon": -81.85},
+                    {"lat": 26.60, "lon": -81.84},
+                    {"lat": 26.61, "lon": -81.84},
+                    {"lat": 26.61, "lon": -81.85},
+                    {"lat": 26.60, "lon": -81.85},
+                ],
+            },
+            {
+                "type": "relation",
+                "id": 222,
+                "tags": {"building": "commercial"},
+                "members": [
+                    {
+                        "type": "way",
+                        "role": "outer",
+                        "geometry": [
+                            {"lat": 26.62, "lon": -81.87},
+                            {"lat": 26.62, "lon": -81.86},
+                            {"lat": 26.63, "lon": -81.86},
+                            {"lat": 26.63, "lon": -81.87},
+                            {"lat": 26.62, "lon": -81.87},
+                        ],
+                    },
+                    {
+                        "type": "way",
+                        "role": "inner",
+                        "geometry": [
+                            {"lat": 26.625, "lon": -81.868},
+                            {"lat": 26.625, "lon": -81.862},
+                            {"lat": 26.628, "lon": -81.862},
+                            {"lat": 26.625, "lon": -81.868},
+                        ],
+                    },
+                ],
+            },
+            # A node element (not a building polygon) must be dropped.
+            {"type": "node", "id": 333, "lat": 26.6, "lon": -81.8},
+            # A degenerate way (2 points) must be dropped.
+            {
+                "type": "way",
+                "id": 444,
+                "tags": {"building": "yes"},
+                "geometry": [
+                    {"lat": 26.60, "lon": -81.85},
+                    {"lat": 26.60, "lon": -81.84},
+                ],
+            },
+        ]
+    }
+    features = data_fetch._extract_building_features(payload)
+    assert len(features) == 2
+    geom_types = {g.geom_type for g, _a in features}
+    assert geom_types <= {"Polygon", "MultiPolygon"}
+    ids = {a["osm_id"] for _g, a in features}
+    assert ids == {111, 222}
+
+
+def test_fetch_osm_buildings_bytes_empty_raises_upstream(monkeypatch):
+    """No building elements -> honest UpstreamAPIError (no silent dead-end)."""
+    pytest.importorskip("geopandas")
+    monkeypatch.setattr(
+        data_fetch, "_post_overpass_buildings", lambda ql: {"elements": []}
+    )
     with pytest.raises(UpstreamAPIError):
-        fetch_buildings(FORT_MYERS_BBOX, source="osm")
+        data_fetch._fetch_osm_buildings_bytes(FORT_MYERS_BBOX)
+
+
+def test_fetch_osm_buildings_bytes_writes_flatgeobuf(monkeypatch):
+    """A mocked Overpass payload assembles + clips + serializes to FlatGeobuf bytes."""
+    pytest.importorskip("geopandas")
+    pytest.importorskip("pyogrio")
+    payload = {
+        "elements": [
+            {
+                "type": "way",
+                "id": 555,
+                "tags": {"building": "yes"},
+                "geometry": [
+                    {"lat": 26.60, "lon": -81.85},
+                    {"lat": 26.60, "lon": -81.84},
+                    {"lat": 26.61, "lon": -81.84},
+                    {"lat": 26.61, "lon": -81.85},
+                    {"lat": 26.60, "lon": -81.85},
+                ],
+            }
+        ]
+    }
+    monkeypatch.setattr(
+        data_fetch, "_post_overpass_buildings", lambda ql: payload
+    )
+    raw = data_fetch._fetch_osm_buildings_bytes(FORT_MYERS_BBOX)
+    assert isinstance(raw, bytes) and len(raw) > 0
+    # Round-trip the FlatGeobuf to confirm a building polygon survived.
+    import io as _io
+
+    import geopandas as gpd  # type: ignore[import-not-found]
+
+    gdf = gpd.read_file(_io.BytesIO(raw))
+    assert len(gdf) == 1
+    assert gdf.geometry.iloc[0].geom_type in ("Polygon", "MultiPolygon")
 
 
 # ---------------------------------------------------------------------------
