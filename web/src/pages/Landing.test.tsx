@@ -1,10 +1,11 @@
 // GRACE-2 web — landing page content tests (job-0285).
 //
 // Pins the load-bearing content of the public landing page: the hero CTA
-// targets "/app" (the always-app route), the Gemini credit is present (the
-// user's headline requirement), the privacy-policy link exists (OAuth
-// consent screen prerequisite), and the Resume-session CTA variant renders
-// for returning visitors.
+// targets "/app" (the always-app route), the agent credit is present and names
+// the real platform (AWS Bedrock / Anthropic Claude — the product moved off
+// Google Gemini), the privacy-policy link exists (OAuth consent screen
+// prerequisite), and the Resume-session CTA variant renders for returning
+// visitors.
 
 import { describe, it, expect, afterEach } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
@@ -27,10 +28,10 @@ describe("Landing — hero", () => {
     expect(cta).toHaveTextContent(/resume session/i);
   });
 
-  it("highlights Google Gemini in the hero badge", () => {
+  it("highlights Anthropic Claude on AWS in the hero badge", () => {
     render(<Landing />);
     expect(
-      screen.getAllByText(/powered by google gemini/i).length,
+      screen.getAllByText(/powered by anthropic claude on aws/i).length,
     ).toBeGreaterThanOrEqual(1);
   });
 
@@ -61,10 +62,10 @@ describe("Landing — features band", () => {
   });
 });
 
-describe("Landing — Gemini band + footer", () => {
-  it("renders the Gemini agent section", () => {
+describe("Landing — agent band + footer", () => {
+  it("renders the Claude agent section", () => {
     render(<Landing />);
-    expect(screen.getByText(/the agent is gemini\./i)).toBeInTheDocument();
+    expect(screen.getByText(/the agent is claude\./i)).toBeInTheDocument();
     // Phrase appears in both the band paragraph and the bullet list.
     expect(
       screen.getAllByText(/native function calling/i).length,
@@ -77,10 +78,10 @@ describe("Landing — Gemini band + footer", () => {
     expect(link).toHaveAttribute("href", "/privacy");
   });
 
-  it("credits the stack (Gemini · Cloud Run · QGIS)", () => {
+  it("credits the stack (AWS Bedrock · Amazon EC2 · QGIS)", () => {
     render(<Landing />);
     expect(
-      screen.getByText(/google gemini · cloud run · qgis server/i),
+      screen.getByText(/aws bedrock · amazon ec2 · qgis server/i),
     ).toBeInTheDocument();
   });
 });

@@ -1,10 +1,10 @@
 // GRACE-2 web — privacy policy content tests (job-0285).
 //
-// This page is the public privacy-policy URL for the Google OAuth consent
-// screen, so the tests pin the disclosures that must not silently
-// disappear: effective date, the plain-language section set, the three
-// storage/processing parties (MongoDB Atlas / Google Cloud Storage /
-// Gemini via Vertex AI), the no-sale commitment, and the contact email.
+// This page is the public privacy-policy URL for the OAuth consent screen, so
+// the tests pin the disclosures that must not silently disappear: effective
+// date, the plain-language section set, the storage/processing parties
+// (MongoDB Atlas / Amazon S3 / AWS Bedrock — Anthropic Claude), the no-sale
+// commitment, and the contact email. The product runs on AWS, not Google.
 
 import { describe, it, expect, afterEach } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
@@ -40,9 +40,9 @@ describe("Privacy — required disclosures", () => {
   it("discloses the storage and processing parties", () => {
     render(<Privacy />);
     expect(screen.getByText(/mongodb atlas/i)).toBeInTheDocument();
-    expect(screen.getByText(/google cloud storage/i)).toBeInTheDocument();
+    expect(screen.getByText(/amazon s3/i)).toBeInTheDocument();
     expect(
-      screen.getByText(/google gemini api \(vertex ai\)/i),
+      screen.getByText(/aws bedrock \(anthropic claude\)/i),
     ).toBeInTheDocument();
   });
 

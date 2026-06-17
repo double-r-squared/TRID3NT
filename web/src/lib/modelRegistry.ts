@@ -28,26 +28,23 @@ export interface ModelEntry {
   supportsPromptCache: boolean;
 }
 
+// Only models PROVEN to work in account 226996537797/us-west-2 AND to support the
+// Converse toolConfig (function calling) the agent loop needs are listed here.
+// Probed live 2026-06-17:
+//   us.anthropic.claude-sonnet-4-6   OK + tool use            -> default
+//   us.amazon.nova-pro-v1:0          OK + tool use            -> cheap, capable
+//   us.amazon.nova-lite-v1:0         OK + tool use            -> cheapest
+//   us.anthropic.claude-haiku-4-5-*  valid id but ACCESS NOT ENABLED — enable in
+//       Bedrock console (Model access -> Claude Haiku 4.5) then uncomment below;
+//       it is the strongest cheap+agentic Anthropic option.
+//   us.deepseek.r1-v1:0              REJECTS toolConfig — cannot drive the agent
+//       loop on Bedrock; intentionally OMITTED (no broken option in the picker).
 export const SELECTABLE_MODELS: ModelEntry[] = [
   {
     id: "us.anthropic.claude-sonnet-4-6",
     label: "Claude Sonnet 4.6",
     provider: "Anthropic",
     accentColor: "#c2603c",
-    supportsPromptCache: true,
-  },
-  {
-    id: "us.anthropic.claude-haiku-4-5",
-    label: "Claude Haiku 4.5",
-    provider: "Anthropic",
-    accentColor: "#c2603c",
-    supportsPromptCache: true,
-  },
-  {
-    id: "us.amazon.nova-lite-v1:0",
-    label: "Nova Lite",
-    provider: "Amazon",
-    accentColor: "#b8860b",
     supportsPromptCache: true,
   },
   {
@@ -58,12 +55,20 @@ export const SELECTABLE_MODELS: ModelEntry[] = [
     supportsPromptCache: true,
   },
   {
-    id: "us.deepseek.r1-v1:0",
-    label: "DeepSeek-R1",
-    provider: "DeepSeek",
-    accentColor: "#5c7fa3",
-    supportsPromptCache: false,
+    id: "us.amazon.nova-lite-v1:0",
+    label: "Nova Lite",
+    provider: "Amazon",
+    accentColor: "#b8860b",
+    supportsPromptCache: true,
   },
+  // Enable Bedrock model access for Claude Haiku 4.5, then uncomment:
+  // {
+  //   id: "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+  //   label: "Claude Haiku 4.5",
+  //   provider: "Anthropic",
+  //   accentColor: "#c2603c",
+  //   supportsPromptCache: true,
+  // },
 ];
 
 // SELECTABLE_MODELS is always non-empty (5 entries defined above).
@@ -82,11 +87,19 @@ export function getModelById(id: string | null | undefined): ModelEntry {
   return SELECTABLE_MODELS.find((m) => m.id === id) ?? SELECTABLE_MODELS[0]!;
 }
 
-/** Load the persisted model id from localStorage; null when nothing stored. */
+/**
+ * Load the persisted model id from localStorage; null when nothing stored OR the
+ * stored id is no longer a selectable model. The validation matters: a previous
+ * session may have persisted an id we have since removed (e.g. the malformed
+ * `us.anthropic.claude-haiku-4-5` or DeepSeek-R1). Returning it verbatim would
+ * send Bedrock an invalid/unsupported model id and throw a ConverseStream
+ * ValidationException, so we drop unknown ids back to the default here.
+ */
 export function loadPersistedModelId(): string | null {
   try {
     const v = window.localStorage.getItem(MODEL_STORAGE_KEY);
-    return v ?? null;
+    if (!v) return null;
+    return SELECTABLE_MODELS.some((m) => m.id === v) ? v : null;
   } catch {
     return null;
   }

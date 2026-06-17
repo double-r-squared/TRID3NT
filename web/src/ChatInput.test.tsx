@@ -367,20 +367,20 @@ describe("ChatInput — left button row (NATE 2026-06-17 model selector)", () =>
     renderIdle();
     fireEvent.click(screen.getByTestId("chat-input-model"));
     expect(screen.getByTestId("model-popover")).toBeTruthy();
-    // Click the second option (Claude Haiku 4.5).
-    fireEvent.click(screen.getByTestId("model-option-us.anthropic.claude-haiku-4-5"));
+    // Click the second option (Nova Pro).
+    fireEvent.click(screen.getByTestId("model-option-us.amazon.nova-pro-v1:0"));
     expect(screen.queryByTestId("model-popover")).toBeNull();
   });
 
   it("after selecting a different model, onSubmit carries the new model id", () => {
     const { onSubmit } = renderIdle();
-    // Open popover and select DeepSeek-R1.
+    // Open popover and select Nova Lite (a proven tool-capable cheap model).
     fireEvent.click(screen.getByTestId("chat-input-model"));
-    fireEvent.click(screen.getByTestId("model-option-us.deepseek.r1-v1:0"));
+    fireEvent.click(screen.getByTestId("model-option-us.amazon.nova-lite-v1:0"));
     // Submit a message.
     const ta = screen.getByTestId("chat-input") as HTMLTextAreaElement;
-    fireEvent.change(ta, { target: { value: "use deepseek" } });
+    fireEvent.change(ta, { target: { value: "use nova lite" } });
     fireEvent.keyDown(ta, { key: "Enter" });
-    expect(onSubmit).toHaveBeenCalledWith("use deepseek", "us.deepseek.r1-v1:0");
+    expect(onSubmit).toHaveBeenCalledWith("use nova lite", "us.amazon.nova-lite-v1:0");
   });
 });

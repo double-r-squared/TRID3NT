@@ -1,12 +1,12 @@
 // GRACE-2 web — privacy policy page (job-0285).
 //
 // Served at "/privacy" (always — no session gating; see EntryRouter.tsx).
-// This page is the public privacy-policy URL for the Google OAuth consent
-// screen ahead of the sprint-13.5 production deploy, so the content must
-// stay honest and current: anonymous sessions today / Google sign-in
-// coming; chat + Case data in MongoDB Atlas; geospatial artifacts in
-// Google Cloud Storage; prompts processed by Google's Gemini API (Vertex
-// AI); no sale of personal data.
+// This page is the public privacy-policy URL for the OAuth consent screen, so
+// the content must stay honest and current: anonymous sessions today / Google
+// sign-in coming; chat + Case data in MongoDB Atlas; geospatial artifacts in
+// Amazon S3; prompts processed by AWS Bedrock (Anthropic Claude); no sale of
+// personal data. (The product moved off Google Gemini / GCP to AWS Bedrock —
+// keep this page accurate to where data actually flows.)
 
 import { useEffect } from "react";
 import { IconArrowLeft } from "../components/icons";
@@ -40,9 +40,10 @@ export function Privacy(): JSX.Element {
 
         <p className="pp-lede">
           GRACE-2 is an AI workbench for multi-hazard modeling: you chat with
-          a Gemini-powered agent that runs geospatial models and renders the
-          results on a map. This policy explains, in plain language, what
-          data the service handles when you use it and where that data lives.
+          an agent powered by Anthropic&rsquo;s Claude (via AWS Bedrock) that
+          runs geospatial models and renders the results on a map. This policy
+          explains, in plain language, what data the service handles when you
+          use it and where that data lives.
         </p>
 
         <section>
@@ -96,8 +97,8 @@ export function Privacy(): JSX.Element {
         <section>
           <h2>Storage &amp; third parties</h2>
           <p>
-            GRACE-2 runs on Google Cloud. Your data is processed and stored
-            by the following services, each under its own terms:
+            GRACE-2 runs on Amazon Web Services (AWS). Your data is processed
+            and stored by the following services, each under its own terms:
           </p>
           <ul>
             <li>
@@ -105,18 +106,18 @@ export function Privacy(): JSX.Element {
               session records, and audit logs.
             </li>
             <li>
-              <strong>Google Cloud Storage</strong> — stores generated
-              geospatial artifacts (rasters, vectors, model outputs).
+              <strong>Amazon S3</strong> — stores generated geospatial
+              artifacts (rasters, vectors, model outputs).
             </li>
             <li>
-              <strong>Google Gemini API (Vertex AI)</strong> — your prompts
-              and the agent&rsquo;s working context are sent to Google&rsquo;s
-              Gemini models to produce responses and decide which tools to
-              run.
+              <strong>AWS Bedrock (Anthropic Claude)</strong> — your prompts
+              and the agent&rsquo;s working context are sent to Anthropic&rsquo;s
+              Claude models, hosted in AWS Bedrock, to produce responses and
+              decide which tools to run.
             </li>
             <li>
-              <strong>Google Cloud Run / Cloud Workflows</strong> — host the
-              application and execute the modeling engines.
+              <strong>Amazon EC2 / AWS Batch</strong> — host the application
+              and execute the modeling engines.
             </li>
           </ul>
           <p>
@@ -169,7 +170,7 @@ export function Privacy(): JSX.Element {
           <IconArrowLeft size={14} />
           Back to GRACE-2
         </a>
-        <span>© 2026 GRACE-2 · Built on Google Gemini · Cloud Run · QGIS</span>
+        <span>© 2026 GRACE-2 · Built on AWS Bedrock · Amazon EC2 · QGIS</span>
       </footer>
     </div>
   );

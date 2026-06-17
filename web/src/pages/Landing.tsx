@@ -104,7 +104,7 @@ export function Landing({ hasSession = false }: LandingProps): JSX.Element {
         </a>
         <nav className="lp-nav-links" aria-label="Landing navigation">
           <a href="#features">Capabilities</a>
-          <a href="#gemini">Gemini</a>
+          <a href="#agent">The agent</a>
           <a href="/privacy">Privacy</a>
           <a className="lp-nav-launch" href="/app">
             Launch app
@@ -120,7 +120,7 @@ export function Landing({ hasSession = false }: LandingProps): JSX.Element {
               <span className="lp-badge-spark" aria-hidden="true">
                 <IconSparkle size={13} weight="fill" />
               </span>
-              Powered by Google Gemini
+              Powered by Anthropic Claude on AWS
             </span>
             <h1 className="lp-h1">
               Ask for a flood model.
@@ -129,7 +129,7 @@ export function Landing({ hasSession = false }: LandingProps): JSX.Element {
             </h1>
             <p className="lp-sub">
               GRACE-2 is an AI workbench for multi-hazard modeling. A{" "}
-              <strong>Gemini-powered agent</strong> turns plain English into
+              <strong>Claude-powered agent</strong> turns plain English into
               real geospatial pipelines — physics-based flood and groundwater
               solvers, structure-level damage assessment, terrain and live
               weather — all rendered on a full-screen map you can talk to.
@@ -231,21 +231,21 @@ export function Landing({ hasSession = false }: LandingProps): JSX.Element {
         </section>
 
         {/* ─────────────────────── Gemini band ─────────────────────── */}
-        <section className="lp-gemini" id="gemini">
+        <section className="lp-gemini" id="agent">
           <div className="lp-gemini-copy">
             <span className="lp-badge">
               <span className="lp-badge-spark" aria-hidden="true">
                 <IconSparkle size={13} weight="fill" />
               </span>
-              Google Gemini, doing the work
+              Anthropic Claude, doing the work
             </span>
-            <h2 className="lp-h2">The agent is Gemini.</h2>
+            <h2 className="lp-h2">The agent is Claude.</h2>
             <p>
-              GRACE-2 drives Google&rsquo;s Gemini through native function
-              calling: a streaming agent loop that reasons over a catalog of
-              70+ geospatial tools, narrates its plan in the chat, executes
-              cloud solvers, and feeds results — including failures — back
-              into the model so it can recover and retry.
+              GRACE-2 drives Anthropic&rsquo;s Claude (on AWS Bedrock) through
+              native function calling: a streaming agent loop that reasons over
+              a catalog of 90+ geospatial tools, narrates its plan in the chat,
+              executes cloud solvers, and feeds results — including failures —
+              back into the model so it can recover and retry.
             </p>
             <ul className="lp-gemini-list">
               <li>
@@ -258,7 +258,7 @@ export function Landing({ hasSession = false }: LandingProps): JSX.Element {
               </li>
               <li>
                 <strong>Honest recovery</strong> — tool errors return to
-                Gemini as structured results, so it corrects arguments and
+                Claude as structured results, so it corrects arguments and
                 retries instead of pretending.
               </li>
             </ul>
@@ -335,7 +335,7 @@ export function Landing({ hasSession = false }: LandingProps): JSX.Element {
           </nav>
         </div>
         <p className="lp-footer-credit">
-          Built on Google Gemini · Cloud Run · QGIS Server · MapLibre GL ·
+          Built on AWS Bedrock · Amazon EC2 · QGIS Server · MapLibre GL ·
           MongoDB Atlas
         </p>
         <p className="lp-footer-fine">
