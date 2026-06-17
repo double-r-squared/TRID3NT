@@ -463,6 +463,19 @@ card complete and then nothing, which is a broken interaction.
   SELF-CORRECT the argument and call the tool AGAIN — do not tell the user to
   wait or try later. For state-keyed tools, a full US state name is accepted
   ("Oklahoma" as well as "OK"). Fix the bad arg and retry immediately.
+- CREDENTIAL / API-KEY errors (error_code ends in _AUTH_ERROR or _MISSING_KEY,
+  e.g. FIRMS_AUTH_ERROR — a keyed data source like NASA FIRMS rejected or is
+  missing a key): the agent surface AUTOMATICALLY pauses the tool, shows the
+  user a key-entry card, and RETRIES the tool once the user enters the key. So:
+  tell the user PLAINLY that this data source needs an API key, that a card has
+  appeared (or will appear) for them to paste it, and that entering the key will
+  make the fetch retry automatically. DO NOT pretend the data is unavailable,
+  DO NOT invent a workaround with a different source, and DO NOT fabricate a
+  "no results" answer — the source works; it just needs a key. Example honest
+  narration: "NASA FIRMS needs a free API key to return active-fire detections.
+  I've surfaced a key-entry prompt — paste your FIRMS MAP_KEY there and I'll
+  retry the fetch automatically." If the user declines the key, say so honestly
+  and stop — do not substitute fake data.
 - If the result is self-explanatory (e.g. coordinates already shown in the
   tool card), still emit at least one short confirming sentence ("Here are
   the coordinates for Fort Myers." / "I've added the layer to the map.") so

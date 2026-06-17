@@ -60,6 +60,8 @@ from grace2_contracts.payload_warning import (
 )
 from grace2_contracts.sandbox_contracts import CodeExecRequestPayload
 from grace2_contracts.secrets import (
+    CredentialProvidedEnvelopePayload,
+    CredentialRequestEnvelopePayload,
     SecretAddEnvelopePayload,
     SecretRevokeEnvelopePayload,
     SecretsListEnvelopePayload,
@@ -112,6 +114,11 @@ from .auth_handshake import (
     get_auth_token_timeout_s,
 )
 from .case_lifecycle import CaseLifecycleError, ensure_case_qgs
+from .credential_registry import (
+    CredentialProvider,
+    is_credential_error,
+    provider_for_tool,
+)
 from .layer_uri_emit import emit_layer_uri
 from .mode2_classifier import (
     Mode2CandidateEnvelope,
@@ -362,6 +369,64 @@ def _resolve_pending_confirmation(
     return True
 
 
+# --------------------------------------------------------------------------- #
+# Session-scoped pending-CREDENTIAL registry (job VAULT-READ)
+# --------------------------------------------------------------------------- #
+#
+# Mirrors ``_PENDING_CONFIRMATIONS`` (the payload-warning / code-exec / solver
+# gate registry) but for the credential-request flow: when a keyed tool
+# dispatch hits a missing/invalid credential the dispatch coroutine pauses on a
+# future keyed by the credential ``request_id``, having emitted a
+# ``credential-request`` envelope. The inbound ``credential-provided`` handler
+# (which may arrive on a DIFFERENT WebSocket connection of the same session —
+# StrictMode double-mount / reconnect, exactly as for confirmations) resolves
+# the future, and the paused dispatch retries the tool (which now reads the
+# user's freshly-saved vault key). Tagged with the owning session_id so a
+# cross-session credential-provided is refused.
+_PENDING_CREDENTIALS: dict[str, tuple[str, asyncio.Future]] = {}
+
+
+def _register_pending_credential(
+    session_id: str, request_id: str, fut: "asyncio.Future"
+) -> None:
+    _PENDING_CREDENTIALS[request_id] = (session_id, fut)
+
+
+def _pop_pending_credential(request_id: str) -> None:
+    _PENDING_CREDENTIALS.pop(request_id, None)
+
+
+def _resolve_pending_credential(
+    session_id: str, provided: "CredentialProvidedEnvelopePayload"
+) -> bool:
+    """Complete the pending credential future for ``provided.request_id``.
+
+    Returns True when a live future was resolved. False when the request_id is
+    unknown/already-resolved, or when the answering session is not the owner
+    (refused loudly — the request_id is an unguessable ULID, but the string
+    compare is cheap defense-in-depth, matching ``_resolve_pending_confirmation``).
+    """
+    entry = _PENDING_CREDENTIALS.get(provided.request_id)
+    if entry is None:
+        return False
+    owner_session, fut = entry
+    if owner_session != session_id:
+        logger.warning(
+            "credential-provided REFUSED: session=%s is not the owner "
+            "(owner=%s) for request_id=%s",
+            session_id,
+            owner_session,
+            provided.request_id,
+        )
+        return False
+    if fut.done():
+        _PENDING_CREDENTIALS.pop(provided.request_id, None)
+        return False
+    fut.set_result(provided)
+    _PENDING_CREDENTIALS.pop(provided.request_id, None)
+    return True
+
+
 # job-0115: app-level Persistence singleton (Wave 1.5).
 #
 # The MongoDB Atlas MCP server is the LLM-facing DB path (FR-AS-4, Decision F).
@@ -394,9 +459,53 @@ def set_persistence(p: Persistence | None) -> None:
     The agent service startup path calls this once after launching the MCP
     client; tests call it directly with a mock-backed ``Persistence`` to
     exercise the wired-in code paths.
+
+    job credential-pipeline-generic: also binds the SAME ``Persistence`` into
+    EVERY keyed-tool secret-resolution seam (FIRMS / eBird / ERA5 / GTSM /
+    IUCN — each exposes ``set_persistence_for_secrets``) so a tool dispatched
+    with a per-Case ``secret_ref`` can materialize the user's vault key without
+    importing the MCP client. (Movebank constructs its own MCP-less Persistence
+    inline, so it needs no seam.) Binding here keeps every persistence-set path
+    (production MCP, dev file-backed, test mocks) in sync without editing each
+    call site.
     """
     global _PERSISTENCE
     _PERSISTENCE = p
+    _bind_secret_seams(p)
+
+
+# Keyed tools that expose a ``set_persistence_for_secrets(p)`` seam. The server
+# binds the live Persistence into all of them so any keyed tool can resolve a
+# per-Case ``secret_ref`` (vault -> env). Movebank is intentionally absent: it
+# builds its own MCP-less Persistence inline for credential resolution.
+_SECRET_SEAM_TOOL_MODULES: tuple[str, ...] = (
+    "fetch_firms_active_fire",
+    "fetch_ebird_observations",
+    "fetch_era5_reanalysis",
+    "fetch_gtsm_tide_surge",
+    "fetch_iucn_red_list_range",
+)
+
+
+def _bind_secret_seams(p: "Persistence | None") -> None:
+    """Bind ``p`` into every keyed tool's ``set_persistence_for_secrets`` seam.
+
+    Best-effort per tool: a missing module / seam logs at debug and does not
+    abort binding the rest (one tool's import hiccup must not starve the others
+    of their vault resolver).
+    """
+    import importlib
+
+    for mod_name in _SECRET_SEAM_TOOL_MODULES:
+        try:
+            mod = importlib.import_module(f".tools.{mod_name}", __package__)
+            mod.set_persistence_for_secrets(p)
+        except Exception:  # noqa: BLE001 — secret-seam binding is best-effort
+            logger.debug(
+                "set_persistence: could not bind secret seam for %s",
+                mod_name,
+                exc_info=True,
+            )
 
 
 async def init_persistence_from_env() -> Persistence | None:
@@ -719,6 +828,14 @@ class SessionState:
     # which ``summarize_tool_result`` surfaces as the Wave 4.9 structured envelope
     # so Gemini reads the signal and narrates the outage honestly.
     circuit_breaker: ToolCircuitBreaker = field(default_factory=ToolCircuitBreaker)
+    # job VAULT-READ: per-TURN set of tools that have already surfaced a
+    # credential-request this turn. The credential pipeline pauses + prompts +
+    # retries ONCE per tool per turn: after the single retry the tool either
+    # succeeds (key now in vault) or fails through the normal typed-error
+    # surface. Without this guard a still-invalid key (user pasted a bad MAP_KEY)
+    # would re-trip the auth error and re-prompt forever. Reset at the start of
+    # every ``_stream_gemini_reply`` turn (the prompt is a per-request decision).
+    credential_prompted_tools: set[str] = field(default_factory=set)
 
     # ------------------------------------------------------------------ #
     # job-0259: active-Case context — session-scoped, NOT per-connection.
@@ -1006,6 +1123,10 @@ async def _stream_gemini_reply(
     # dispatch wrapper's finally joins THIS turn's list (never the live
     # field) — even on crash/cancel, since registration precedes any await.
     state.current_turn_narration = []
+    # job VAULT-READ: reset the per-turn credential-prompt guard. A new user
+    # turn is a fresh request — a tool that prompted for a key last turn may
+    # legitimately prompt again this turn (the key may still be missing).
+    state.credential_prompted_tools = set()
     turn_narration = state.current_turn_narration
     turn_history = state.chat_history
     # job-0315: per-segment buffer for the CURRENTLY OPEN bubble only (reset by
@@ -3323,6 +3444,270 @@ def _ensure_emitter(websocket: ServerConnection, state: SessionState) -> None:
     )
 
 
+# --------------------------------------------------------------------------- #
+# Credential pipeline (job VAULT-READ): secret_ref injection + auth-error ->
+# credential-request -> retry.
+# --------------------------------------------------------------------------- #
+
+
+async def _resolve_active_secret_ref(
+    state: SessionState, tool_name: str, case_id: str | None
+) -> Any | None:
+    """Return the user's active ``SecretRecord`` for ``tool_name``'s provider.
+
+    Looks up the per-Case secret first (scoped to the turn's Case) then falls
+    back to user-level secrets, filtering by the provider the tool needs
+    (``credential_registry.provider_for_tool``). Returns the freshest active
+    record or ``None`` when the tool is not keyed, no Persistence is bound, or
+    no matching active secret exists.
+
+    Best-effort: a Persistence/MCP wobble logs and returns ``None`` so the tool
+    falls back to its env path / typed auth-error (which the credential-request
+    flow then acts on) — a vault lookup hiccup must not crash the dispatch.
+    """
+    provider = provider_for_tool(tool_name)
+    if provider is None:
+        return None
+    p = get_persistence()
+    if p is None:
+        return None
+    user_id = state.authenticated_user_id or state.session_id
+    try:
+        # Prefer Case-scoped secrets; fall back to user-level (case_id=None)
+        # records so a key the user added outside a Case still resolves.
+        records = []
+        if case_id:
+            records = await p.list_secrets_refs(user_id=user_id, case_id=case_id)
+        if not records:
+            records = await p.list_secrets_refs(user_id=user_id, case_id=None)
+    except Exception:  # noqa: BLE001 — vault lookup is best-effort
+        logger.debug(
+            "secret_ref lookup failed tool=%s case=%s", tool_name, case_id,
+            exc_info=True,
+        )
+        return None
+    # Filter to the tool's provider. ``provider_id`` on the registry may carry a
+    # value not yet in the ``ProviderID`` Literal (FIRMS pre-amendment); match
+    # the SecretRecord.provider string directly.
+    matches = [
+        r for r in records
+        if getattr(r, "provider", None) == provider.provider_id and r.is_active
+    ]
+    if not matches:
+        return None
+    # Freshest by added_at (records are SecretRecords with UTC added_at).
+    matches.sort(key=lambda r: getattr(r, "added_at", None) or "", reverse=True)
+    return matches[0]
+
+
+async def _inject_secret_ref(
+    state: SessionState,
+    tool_name: str,
+    params: dict,
+    case_id: str | None,
+) -> dict:
+    """Thread the user's active per-Case ``secret_ref`` into a keyed tool's params.
+
+    No-op for non-keyed tools, when the caller already supplied an explicit
+    ``secret_ref`` / key kwarg, or when no active secret exists. The tool's
+    ``_resolve_*_key`` then reads the VAULT key first (then env), per the
+    eBird secret_ref convention.
+    """
+    if provider_for_tool(tool_name) is None:
+        return params
+    # Respect an explicit override already on params (dev/test path).
+    if params.get("secret_ref") is not None:
+        return params
+    record = await _resolve_active_secret_ref(state, tool_name, case_id)
+    if record is None:
+        return params
+    params = dict(params)
+    params["secret_ref"] = record
+    logger.info(
+        "secret_ref injected tool=%s provider=%s secret_id=%s",
+        tool_name,
+        getattr(record, "provider", None),
+        getattr(record, "secret_id", None),
+    )
+    return params
+
+
+async def _maybe_handle_credential_error(
+    websocket: ServerConnection,
+    state: SessionState,
+    tool_name: str,
+    params: dict,
+    error: BaseException,
+    case_id: str | None,
+) -> dict | None:
+    """Handle a keyed-tool credential error: prompt + await + re-resolve.
+
+    Returns:
+    - ``dict`` (retry params with a freshly-resolved ``secret_ref``) when the
+      user supplied a key (``credential-provided`` with ``provided=True``) —
+      the caller retries the tool ONCE.
+    - ``None`` when the error is NOT a credential error, the provider is not
+      registered, the tool already prompted this turn (one-prompt-per-tool-per-
+      turn guard), or the user declined / the gate timed out. The caller then
+      re-raises the original error so it flows through the normal typed-error
+      surface (FR-AS-11) and Gemini narrates the failure honestly.
+    """
+    if not is_credential_error(tool_name, error):
+        return None
+    provider = provider_for_tool(tool_name)
+    if provider is None:
+        return None
+    # One prompt per tool per turn — don't loop forever on a still-bad key.
+    if tool_name in state.credential_prompted_tools:
+        logger.info(
+            "credential-request suppressed (already prompted this turn) tool=%s",
+            tool_name,
+        )
+        return None
+    state.credential_prompted_tools.add(tool_name)
+
+    provided = await _emit_credential_request_and_wait(
+        websocket, state, tool_name, provider, error
+    )
+    if provided is None or not provided.provided:
+        # Declined / timed out: surface the original typed error.
+        return None
+
+    # Key saved to the vault: re-resolve the secret_ref so the retry reads the
+    # NEW key. Strip any stale secret_ref/map_key from params first.
+    retry_params = {
+        k: v for k, v in params.items()
+        if k not in ("secret_ref", "map_key", "api_key")
+    }
+    retry_params = await _inject_secret_ref(
+        state, tool_name, retry_params, case_id
+    )
+    return retry_params
+
+
+async def _emit_credential_request_and_wait(
+    websocket: ServerConnection,
+    state: SessionState,
+    tool_name: str,
+    provider: CredentialProvider,
+    error: BaseException,
+) -> "CredentialProvidedEnvelopePayload | None":
+    """Emit a ``credential-request`` envelope and await ``credential-provided``.
+
+    Blocks on a future keyed by the minted ``request_id`` (registered in the
+    session-scoped ``_PENDING_CREDENTIALS`` registry so a reply on a sibling
+    connection still resolves it). Returns the ``CredentialProvidedEnvelopePayload``
+    on reply, or ``None`` on timeout (the gate gets the same 300s read-decision
+    TTL as the payload-warning / code-exec gates — fail-open to the original
+    typed error so the turn is not hung).
+    """
+    request_id = new_ulid()
+    # Prefer the tool's typed-error message (honest, specific) over the
+    # registry default; both name that a key is needed (no silent dead-end).
+    err_detail = str(error).strip()
+    message = provider.default_message
+    if err_detail:
+        message = f"{provider.default_message} ({err_detail[:400]})"
+
+    # Build the envelope scoped to the REAL provider (every registered
+    # provider_id is now a valid ``ProviderID`` Literal member). If validation
+    # fails for an unregistered provider, ``_build_credential_request_payload``
+    # returns ``None`` — we abandon the prompt rather than mis-scope the
+    # secret-add (which would save the key where the retry can't re-resolve it).
+    # The caller then surfaces the original typed error (honest narration).
+    payload = _build_credential_request_payload(
+        request_id=request_id,
+        provider=provider,
+        tool_name=tool_name,
+        message=message,
+    )
+    if payload is None:
+        return None
+
+    loop = asyncio.get_running_loop()
+    fut: asyncio.Future = loop.create_future()
+    _register_pending_credential(state.session_id, request_id, fut)
+
+    await websocket.send(
+        _new_envelope("credential-request", state.session_id, payload)
+    )
+    logger.info(
+        "credential-request emitted session=%s tool=%s provider=%s request_id=%s",
+        state.session_id,
+        tool_name,
+        provider.provider_id,
+        request_id,
+    )
+
+    try:
+        provided: CredentialProvidedEnvelopePayload = await asyncio.wait_for(
+            fut, timeout=CODE_EXEC_CONFIRM_TIMEOUT_SECONDS
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "credential-request timeout session=%s tool=%s request_id=%s",
+            state.session_id,
+            tool_name,
+            request_id,
+        )
+        return None
+    finally:
+        _pop_pending_credential(request_id)
+
+    logger.info(
+        "credential-provided received session=%s tool=%s request_id=%s provided=%s",
+        state.session_id,
+        tool_name,
+        request_id,
+        provided.provided,
+    )
+    return provided
+
+
+def _build_credential_request_payload(
+    *,
+    request_id: str,
+    provider: CredentialProvider,
+    tool_name: str,
+    message: str,
+) -> "CredentialRequestEnvelopePayload | None":
+    """Build a validated ``CredentialRequestEnvelopePayload``.
+
+    Every registered provider's ``provider_id`` is now a member of the closed
+    ``ProviderID`` Literal (the schema amendment landed with this job), so the
+    payload is scoped to the REAL provider — the same scope the resulting
+    ``secret-add`` writes under and the same scope ``_resolve_active_secret_ref``
+    re-reads on retry, so the round-trip closes (no more
+    ``"openweathermap"`` fallback mis-scoping the saved key).
+
+    If a ``provider.provider_id`` is somehow NOT a valid Literal member (an
+    unregistered provider slipped into the registry), we DO NOT fabricate a
+    fallback scope — emitting under the wrong provider would save the key where
+    the retry can't re-resolve it. We log and return ``None`` so the caller
+    abandons the prompt and lets the original typed error surface (the agent
+    narrates honestly that it cannot request a key for an unknown provider).
+    """
+    try:
+        return CredentialRequestEnvelopePayload(
+            request_id=request_id,
+            provider_id=provider.provider_id,  # type: ignore[arg-type]
+            provider_label=provider.label,
+            signup_url=provider.signup_url,
+            secret_key_name=provider.secret_key_name,
+            message=message,
+            tool_name=tool_name,
+        )
+    except ValidationError:
+        logger.error(
+            "credential-request: provider_id=%r (%r) is not a member of the "
+            "ProviderID Literal — cannot scope a secret-add that re-resolves "
+            "on retry; abandoning prompt and surfacing the original error",
+            provider.provider_id,
+            provider.label,
+        )
+        return None
+
+
 async def _invoke_tool_via_emitter(
     websocket: ServerConnection,
     state: SessionState,
@@ -3545,6 +3930,13 @@ async def _invoke_tool_via_emitter(
     uri_registry = get_uri_registry(state.session_id)
     params = uri_registry.resolve_params(tool_name, params)
 
+    # job VAULT-READ: thread the user's per-Case ``secret_ref`` into a keyed
+    # tool so its ``_resolve_*_key`` reads the VAULT key first (then env). This
+    # mirrors the eBird secret_ref convention. No-op for non-keyed tools and
+    # when no active secret exists (the tool falls back to env / typed
+    # auth-error, which the credential-request flow below acts on).
+    params = await _inject_secret_ref(state, tool_name, params, turn_case_id)
+
     state.current_pipeline_id = state.emitter.start_pipeline()
     state.current_turn_pipeline_id = state.current_pipeline_id
     # job-0263: bind the registry as the ambient observation sink for the
@@ -3560,11 +3952,36 @@ async def _invoke_tool_via_emitter(
     _card_started_at = now_utc()
     _card_t0 = asyncio.get_running_loop().time()
     try:
-        result = await state.emitter.emit_tool_call(
-            name=entry.metadata.name,
-            tool_name=tool_name,
-            invoke=lambda: entry.fn(**params),
-        )
+        # job VAULT-READ: dispatch with a credential-request retry. The first
+        # attempt runs the tool; if it raises a missing/invalid-credential
+        # error for a keyed provider (e.g. FIRMS_AUTH_ERROR) we PAUSE, emit a
+        # ``credential-request`` envelope, and await the user's
+        # ``credential-provided`` reply. On provided=True we re-resolve the
+        # (now-saved) vault key and retry the tool ONCE. The guard is one
+        # prompt per tool per turn (``credential_prompted_tools``) so a
+        # still-bad key fails through the normal typed-error surface instead of
+        # re-prompting forever.
+        try:
+            result = await state.emitter.emit_tool_call(
+                name=entry.metadata.name,
+                tool_name=tool_name,
+                invoke=lambda: entry.fn(**params),
+            )
+        except (asyncio.CancelledError, GeneratorExit):
+            raise
+        except BaseException as exc:  # noqa: BLE001 — classify below
+            retry_params = await _maybe_handle_credential_error(
+                websocket, state, tool_name, params, exc, turn_case_id
+            )
+            if retry_params is None:
+                raise
+            # Key provided + vault re-resolved: retry the tool ONCE.
+            params = retry_params
+            result = await state.emitter.emit_tool_call(
+                name=entry.metadata.name,
+                tool_name=tool_name,
+                invoke=lambda: entry.fn(**params),
+            )
         _card_state = "complete"
     except asyncio.CancelledError:
         raise
@@ -5012,6 +5429,44 @@ def _make_handler(settings: GeminiSettings):
                             conf.decision,
                         )
 
+                    elif msg_type == "credential-provided":
+                        # job VAULT-READ: the user saved (or declined) a key the
+                        # agent asked for via ``credential-request``. Resolve the
+                        # paused dispatch coroutine's future so it retries the
+                        # tool (provided=True) or re-raises the original typed
+                        # error (provided=False). The ``secret-add`` that saved
+                        # the key already ran on its own envelope path — this
+                        # carries NO key material (Decision F).
+                        try:
+                            cp = (
+                                CredentialProvidedEnvelopePayload.model_validate(
+                                    payload_dict
+                                )
+                            )
+                        except ValidationError as ve:
+                            await _send_error(
+                                websocket,
+                                state.session_id,
+                                "TOOL_PARAMS_INVALID",
+                                f"credential-provided invalid: {ve.errors()[0]['msg']}",
+                            )
+                            continue
+                        if not _resolve_pending_credential(state.session_id, cp):
+                            logger.warning(
+                                "credential-provided for unknown/closed "
+                                "request_id=%s session=%s",
+                                cp.request_id,
+                                state.session_id,
+                            )
+                            continue
+                        logger.info(
+                            "credential-provided accepted session=%s "
+                            "request_id=%s provided=%s",
+                            state.session_id,
+                            cp.request_id,
+                            cp.provided,
+                        )
+
                     elif msg_type in (
                         "confirm-response",
                         "spatial-input-response",
@@ -5143,6 +5598,13 @@ __all__ = [
     "_emit_secrets_list",
     "_handle_secret_add",
     "_handle_secret_revoke",
+    # job VAULT-READ: credential pipeline (secret_ref injection + JIT prompt).
+    "_inject_secret_ref",
+    "_resolve_active_secret_ref",
+    "_maybe_handle_credential_error",
+    "_emit_credential_request_and_wait",
+    "_build_credential_request_payload",
+    "_resolve_pending_credential",
     # job-B8+B9 (Wave 4.10 Stage 3): circuit breaker + loop_exhausted.
     "_send_loop_exhausted",
     "CircuitBreakerError",

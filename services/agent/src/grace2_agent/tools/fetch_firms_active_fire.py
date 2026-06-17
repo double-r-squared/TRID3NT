@@ -67,8 +67,10 @@ __all__ = [
     "FirmsError",
     "FirmsArgError",
     "FirmsAuthError",
+    "FirmsMissingKeyError",
     "FirmsUpstreamError",
     "FirmsEmptyError",
+    "set_persistence_for_secrets",
 ]
 
 logger = logging.getLogger("grace2_agent.tools.fetch_firms_active_fire")
@@ -94,9 +96,31 @@ class FirmsArgError(FirmsError):
 
 
 class FirmsAuthError(FirmsError):
-    """FIRMS rejected the MAP_KEY (missing / invalid / over rate limit)."""
+    """FIRMS rejected the MAP_KEY (missing / invalid / over rate limit).
+
+    Fires when a key resolved but the upstream rejected it. The agent surface
+    (server.py) treats ``FIRMS_AUTH_ERROR`` as a missing/invalid-credential
+    signal and pauses to emit a ``credential-request`` envelope (job:
+    AUTH-ERROR -> CREDENTIAL-REQUEST) so the user can paste a valid MAP_KEY,
+    which is then read from the vault on retry.
+    """
 
     error_code = "FIRMS_AUTH_ERROR"
+    retryable = False
+
+
+class FirmsMissingKeyError(FirmsError):
+    """No FIRMS MAP_KEY resolved via vault, env, or the demo fallback path.
+
+    Distinct from ``FirmsAuthError`` (which fires when a key resolved but the
+    upstream rejected it). Reserved for callers that opt out of the
+    ``demo``-literal fallback and want a hard pre-network failure when no real
+    key is available — the agent surface treats ``FIRMS_MISSING_KEY`` the same
+    way it treats ``FIRMS_AUTH_ERROR``: a credential-request prompt, not a
+    silent dead-end (data-source fallback norm).
+    """
+
+    error_code = "FIRMS_MISSING_KEY"
     retryable = False
 
 
@@ -236,16 +260,148 @@ def _bbox_to_firms_str(bbox: tuple[float, float, float, float]) -> str:
     return f"{bbox[0]},{bbox[1]},{bbox[2]},{bbox[3]}"
 
 
-def _resolve_map_key() -> str:
-    """Return the FIRMS MAP_KEY to use.
+# ---------------------------------------------------------------------------
+# MAP_KEY resolution (vault-first; generalizes the eBird _resolve_api_key
+# pattern). Priority: explicit map_key kwarg -> per-Case secret_ref via the
+# vault -> GRACE2_FIRMS_MAP_KEY env -> "demo" literal fallback.
+#
+# The cache key NEVER includes the raw key (only a short fingerprint), so two
+# callers with different valid keys still hit the same cached artifact.
+# ---------------------------------------------------------------------------
 
-    Honors ``GRACE2_FIRMS_MAP_KEY`` env var. Falls back to the kickoff-named
-    ``"demo"`` literal (which the upstream will reject — see OQ-0108-MAP-KEY-AUTH).
-    The fallback is deliberate: a hard-fail at the FIRMS layer surfaces as a
-    typed ``FirmsAuthError`` in the agent's error pipeline rather than a silent
-    no-fires-detected result that an LLM could narrate as "no fires found".
+
+def _resolve_map_key(
+    map_key: str | None = None,
+    secret_ref: Any | None = None,
+) -> str:
+    """Return the FIRMS MAP_KEY, resolving the user's vault key first.
+
+    Priority (mirrors ``fetch_ebird_observations._resolve_api_key``):
+
+    1. Explicit ``map_key`` kwarg (live test path, dev override).
+    2. ``secret_ref`` (a ``SecretRecord``) → ``Persistence.get_secret_value``
+       — the per-Case vault path threaded by the server at call time. The
+       user's FIRMS MAP_KEY (saved via the secrets panel / credential-request
+       flow) lives here.
+    3. ``GRACE2_FIRMS_MAP_KEY`` env var (local dev convenience).
+    4. The literal ``"demo"`` (which the upstream rejects — surfaces as a typed
+       ``FirmsAuthError`` rather than a silent no-fires result an LLM could
+       narrate as "no fires found"). See OQ-0108-MAP-KEY-AUTH.
+
+    A vault lookup failure (revoked secret, vault unreachable) does NOT crash
+    the resolution — it logs and falls through to env / demo so the dispatch
+    still produces a typed upstream error the credential-request flow can act
+    on, rather than a hard 500.
     """
-    return os.environ.get("GRACE2_FIRMS_MAP_KEY", "demo")
+    # 1. Explicit kwarg.
+    if map_key:
+        return map_key
+
+    # 2. secret_ref via Persistence.get_secret_value (per-Case vault path).
+    if secret_ref is not None:
+        try:
+            resolved = _materialize_secret(secret_ref)
+            if resolved:
+                return resolved
+        except Exception as exc:  # noqa: BLE001 — fall through to env/demo
+            logger.warning(
+                "fetch_firms_active_fire: secret_ref lookup failed (%s); "
+                "falling back to env/demo",
+                exc,
+            )
+
+    # 3. Env var fallback.
+    env_key = os.environ.get("GRACE2_FIRMS_MAP_KEY")
+    if env_key:
+        return env_key
+
+    # 4. Demo-literal fallback (rejected upstream -> FirmsAuthError).
+    return "demo"
+
+
+def _materialize_secret(secret_ref: Any) -> str:
+    """Bridge ``Persistence.get_secret_value`` (async) into the sync tool body.
+
+    Mirrors ``fetch_ebird_observations._materialize_secret``. The tool body is
+    sync (``read_through`` is sync); when invoked from the agent's running event
+    loop we cannot call ``asyncio.run`` (it raises "cannot be called from a
+    running event loop"), so we run the coroutine on a one-shot worker thread.
+    Tests may pass a plain ``str`` (the test-mock shortcut) which is returned
+    verbatim.
+    """
+    # Test-mock shortcut: a bare string is the resolved key.
+    if isinstance(secret_ref, str):
+        return secret_ref
+
+    persistence = _get_persistence_for_secrets()
+    if persistence is None:
+        raise FirmsMissingKeyError(
+            "Persistence not bound; cannot resolve secret_ref. "
+            "Pass map_key=... explicitly in this context."
+        )
+
+    coro = persistence.get_secret_value(secret_ref)
+    return _run_coro_sync(coro)
+
+
+# Module-level Persistence binding (parallels the eBird/era5/gtsm setter). The
+# agent service binds it at startup so the FIRMS tool can resolve ``secret_ref``
+# without importing the MCP client; tests inject a mock via the same setter.
+_PERSISTENCE_FOR_SECRETS: Any | None = None
+
+
+def set_persistence_for_secrets(persistence: Any | None) -> None:
+    """Bind the agent-service ``Persistence`` for FIRMS MAP_KEY materialization.
+
+    Called once at startup by the agent service. Tests set it in a fixture and
+    reset to ``None`` on teardown.
+    """
+    global _PERSISTENCE_FOR_SECRETS
+    _PERSISTENCE_FOR_SECRETS = persistence
+
+
+def _get_persistence_for_secrets() -> Any | None:
+    return _PERSISTENCE_FOR_SECRETS
+
+
+def _run_coro_sync(coro: Any) -> Any:
+    """Run an ``asyncio`` coroutine and return its result from a sync context.
+
+    Uses ``asyncio.run`` when no loop is running (test/CLI path); falls back to
+    a one-shot worker-thread loop when called from inside a running loop
+    (agent-runtime path). Both paths close the loop they create. Mirrors
+    ``fetch_ebird_observations._run_coro_sync``.
+    """
+    import asyncio
+    import threading
+
+    try:
+        asyncio.get_running_loop()
+        running = True
+    except RuntimeError:
+        running = False
+
+    if not running:
+        return asyncio.run(coro)
+
+    result_box: dict[str, Any] = {}
+    error_box: dict[str, BaseException] = {}
+
+    def _runner() -> None:
+        loop = asyncio.new_event_loop()
+        try:
+            result_box["value"] = loop.run_until_complete(coro)
+        except BaseException as exc:  # noqa: BLE001
+            error_box["err"] = exc
+        finally:
+            loop.close()
+
+    t = threading.Thread(target=_runner, daemon=True)
+    t.start()
+    t.join()
+    if "err" in error_box:
+        raise error_box["err"]
+    return result_box["value"]
 
 
 # ---------------------------------------------------------------------------
@@ -444,6 +600,13 @@ def fetch_firms_active_fire(
     source: Literal[
         "VIIRS_SNPP_NRT", "VIIRS_NOAA20_NRT", "MODIS_NRT"
     ] = "VIIRS_SNPP_NRT",
+    # job VAULT-READ: per-Case MAP_KEY resolution. ``map_key`` is the explicit
+    # override (dev/tests); ``secret_ref`` is the per-Case ``SecretRecord`` the
+    # server threads at call time so the user's vault key is resolved first.
+    # Both are underscore-free so they survive the schema strip ONLY if exposed;
+    # the server injects ``secret_ref`` programmatically (not via the LLM).
+    map_key: str | None = None,
+    secret_ref: Any | None = None,
     # job-0164: absorb LLM-invented kwargs (centralized at server.py via
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
@@ -515,14 +678,18 @@ def fetch_firms_active_fire(
     # 2. Quantize bbox to 4dp for cache-key stability.
     q_bbox = _round_bbox_to_4dp(bbox)
 
-    # 3. Resolve MAP_KEY and a key-fingerprint for the cache. We avoid putting
-    #    the raw key in the cache-key params so cache hits don't depend on the
-    #    secret value — two callers with different valid keys still hit the
-    #    same artifact. A short SHA-256 prefix prevents accidental cross-key
-    #    blob reuse if FIRMS ever segments responses by key.
-    map_key = _resolve_map_key()
+    # 3. Resolve MAP_KEY (vault-first) and a key-fingerprint for the cache. We
+    #    avoid putting the raw key in the cache-key params so cache hits don't
+    #    depend on the secret value — two callers with different valid keys
+    #    still hit the same artifact. A short SHA-256 prefix prevents accidental
+    #    cross-key blob reuse if FIRMS ever segments responses by key.
+    #    job VAULT-READ: the user's per-Case vault key (via ``secret_ref``) wins
+    #    over the env var; ``map_key`` kwarg (dev/test) wins over both.
+    resolved_map_key = _resolve_map_key(map_key=map_key, secret_ref=secret_ref)
     import hashlib as _hashlib
-    key_fingerprint = _hashlib.sha256(map_key.encode("utf-8")).hexdigest()[:8]
+    key_fingerprint = _hashlib.sha256(
+        resolved_map_key.encode("utf-8")
+    ).hexdigest()[:8]
 
     params = {
         "source": source,
@@ -536,7 +703,7 @@ def fetch_firms_active_fire(
         params=params,
         ext="fgb",
         fetch_fn=lambda: _fetch_firms_active_fire_bytes(
-            q_bbox, days_back, source, map_key
+            q_bbox, days_back, source, resolved_map_key
         ),
     )
     assert result.uri is not None, (

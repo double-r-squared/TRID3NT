@@ -124,6 +124,7 @@ __all__ = [
     "IUCNNotFoundError",
     "IUCNUpstreamError",
     "estimate_payload_mb",
+    "set_persistence_for_secrets",
 ]
 
 logger = logging.getLogger("grace2_agent.tools.fetch_iucn_red_list_range")
@@ -205,6 +206,71 @@ _USER_AGENT = (
 
 # Env var fallback for the API key. Matches the kickoff verbatim.
 _API_KEY_ENV_VAR = "GRACE2_IUCN_RED_LIST_API_KEY"
+
+
+# ---------------------------------------------------------------------------
+# Module-level Persistence binding (job credential-pipeline-generic). The agent
+# service binds the SAME ``Persistence`` here at startup (parallels eBird /
+# FIRMS / era5 / gtsm) so a tool dispatched with a per-Case ``secret_ref`` can
+# materialize the user's vault key WITHOUT the caller threading a sync
+# ``persistence=`` resolver. The server only injects ``secret_ref`` (not a
+# persistence object), so without this seam an IUCN secret_ref would dead-end.
+# ---------------------------------------------------------------------------
+_PERSISTENCE_FOR_SECRETS: Any | None = None
+
+
+def set_persistence_for_secrets(persistence: Any | None) -> None:
+    """Bind the agent-service ``Persistence`` for IUCN secret materialization.
+
+    Called once at startup by the agent service (mirrors
+    ``fetch_ebird_observations.set_persistence_for_secrets``). Tests set it in
+    a fixture and reset to ``None`` on teardown.
+    """
+    global _PERSISTENCE_FOR_SECRETS
+    _PERSISTENCE_FOR_SECRETS = persistence
+
+
+def _get_persistence_for_secrets() -> Any | None:
+    return _PERSISTENCE_FOR_SECRETS
+
+
+def _run_coro_sync(coro: Any) -> Any:
+    """Run an ``asyncio`` coroutine and return its result from a sync context.
+
+    Uses ``asyncio.run`` when no loop is running (test / CLI path); falls back
+    to a one-shot worker-thread loop when called from inside a running loop
+    (agent-runtime path). Mirrors ``fetch_ebird_observations._run_coro_sync``.
+    """
+    import asyncio
+    import threading
+
+    try:
+        asyncio.get_running_loop()
+        running = True
+    except RuntimeError:
+        running = False
+
+    if not running:
+        return asyncio.run(coro)
+
+    result_box: dict[str, Any] = {}
+    error_box: dict[str, BaseException] = {}
+
+    def _runner() -> None:
+        loop = asyncio.new_event_loop()
+        try:
+            result_box["value"] = loop.run_until_complete(coro)
+        except BaseException as exc:  # noqa: BLE001
+            error_box["err"] = exc
+        finally:
+            loop.close()
+
+    t = threading.Thread(target=_runner, daemon=True)
+    t.start()
+    t.join()
+    if "err" in error_box:
+        raise error_box["err"]
+    return result_box["value"]
 
 # Maximum length of species_name we will pass through to the URL. IUCN
 # binomial names rarely exceed ~60 chars; cap at 200 defensively to limit
@@ -354,29 +420,30 @@ def _resolve_api_key(
                 f"secret_ref provider mismatch: expected 'iucn_red_list', "
                 f"got {secret_ref.provider!r}"
             )
-        if persistence is None:
-            # No persistence binding — caller wanted secret_ref but provided
-            # no resolver. Don't silently fall through to env var; surface
-            # the misuse so callers wire the persistence seam correctly.
+        # job credential-pipeline-generic: the server injects ``secret_ref``
+        # alone (not a ``persistence=`` resolver), so fall back to the
+        # module-level Persistence seam the agent binds at startup — the same
+        # vault->env pattern eBird / FIRMS / era5 / gtsm use.
+        resolver = persistence if persistence is not None else (
+            _get_persistence_for_secrets()
+        )
+        if resolver is None:
+            # No persistence binding anywhere — surface the misuse so callers
+            # wire the seam (rather than silently dead-ending on a vault key).
             raise IUCNAuthError(
                 "secret_ref was provided but no Persistence resolver is bound; "
-                "either pass api_key= directly or wire persistence= via the agent's "
-                "tool-binding seam"
+                "either pass api_key= directly or bind the agent's "
+                "set_persistence_for_secrets seam"
             )
         try:
-            # ``get_secret_value`` is async — but atomic tools are sync. The
-            # agent service runs in an asyncio loop; callers that need the
-            # async path use ``await persistence.get_secret_value(...)`` and
-            # pass the resolved key via ``api_key=``. The plain string path
-            # is allowed for tests that mock the persistence object with a
-            # sync ``get_secret_value`` returning a str directly.
-            result = persistence.get_secret_value(secret_ref)
+            # ``Persistence.get_secret_value`` is async; the tool body is sync.
+            # Mocks may pass a sync resolver that returns the string directly.
+            # If we get an awaitable (the production async Persistence), run it
+            # synchronously on a worker-thread loop (mirrors eBird/FIRMS) rather
+            # than rejecting it — that is exactly the agent-runtime path.
+            result = resolver.get_secret_value(secret_ref)
             if hasattr(result, "__await__"):
-                raise IUCNAuthError(
-                    "secret_ref resolution returned an awaitable; resolve it "
-                    "in the caller (via await) and pass api_key= directly. "
-                    "The tool body is sync."
-                )
+                result = _run_coro_sync(result)
             if not isinstance(result, str) or not result.strip():
                 raise IUCNAuthError(
                     "secret_ref resolved to an empty/non-string value"

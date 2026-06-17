@@ -111,6 +111,14 @@ ProviderID = Literal[
     "ebird",
     "iucn_red_list",
     "movebank",
+    # Hazard / earth-observation keyed fetchers (job credential-pipeline-generic)
+    # — each is a keyed atomic-tool data source with a self-serve signup page;
+    # the agent JIT-requests the key when the upstream rejects/lacks one.
+    "firms",  # NASA FIRMS active-fire (FIRMS_MAP_KEY)
+    "ecmwf_cds",  # Copernicus CDS — ERA5 reanalysis AND GTSM tide/surge share
+    # one CDS API key (GRACE2_COPERNICUS_CDS_API_KEY); one provider, two tools.
+    "gtsm",  # GTSM tide/surge — alias scope retained for callers that scope a
+    # CDS key specifically to the GTSM tool (resolves alongside ecmwf_cds).
     # Weather (Tier-2 keyed endpoints)
     "nws",
     "openweathermap",

@@ -341,8 +341,16 @@ def test_secret_ref_with_sync_persistence_resolves():
     )
 
 
-def test_secret_ref_awaitable_result_raises():
-    """If the persistence resolver returns a coroutine, the tool refuses."""
+def test_secret_ref_awaitable_result_resolves_synchronously():
+    """An async ``get_secret_value`` (the production Persistence) is resolved
+    synchronously by the tool — NOT refused.
+
+    job credential-pipeline-generic: the generic credential flow injects a
+    ``secret_ref`` and the agent's real ``Persistence.get_secret_value`` is a
+    coroutine. The IUCN tool body is sync, so it must materialize the awaitable
+    on a worker-thread loop (mirrors eBird / FIRMS) — otherwise an IUCN vault
+    key would dead-end. The previous behavior (refuse awaitables) was the bug.
+    """
     good = SecretRecord(
         secret_id=new_ulid(),
         provider="iucn_red_list",
@@ -351,26 +359,49 @@ def test_secret_ref_awaitable_result_raises():
         added_at=now_utc(),
     )
 
+    # A resolver whose get_secret_value returns a coroutine (the production
+    # async Persistence shape).
     class AsyncPersistence:
-        async def get_secret_value(self, ref):  # pragma: no cover
-            return "should-not-resolve"
-
-        def get_secret_value_sync_stub(self):
-            return None
-
-    # Use a wrapper that returns the coroutine without awaiting.
-    class WrappingPersistence:
         def get_secret_value(self, ref):
             async def _inner():
-                return "x"
+                return "vault-async-key"
 
             return _inner()
 
-    with pytest.raises(IUCNAuthError) as excinfo:
+    assert (
         _resolve_api_key(
-            api_key=None, secret_ref=good, persistence=WrappingPersistence()
+            api_key=None, secret_ref=good, persistence=AsyncPersistence()
         )
-    assert "awaitable" in str(excinfo.value)
+        == "vault-async-key"
+    )
+
+
+def test_secret_ref_resolves_via_module_persistence_seam():
+    """When no ``persistence=`` kwarg is passed, the module-level seam (bound
+    by the agent at startup) resolves the vault key — the path the server's
+    ``_inject_secret_ref`` exercises (it injects secret_ref alone)."""
+    import grace2_agent.tools.fetch_iucn_red_list_range as iucn_mod
+
+    good = SecretRecord(
+        secret_id=new_ulid(),
+        provider="iucn_red_list",
+        case_id=new_ulid(),
+        vault_ref="projects/p/secrets/s/versions/1",
+        added_at=now_utc(),
+    )
+
+    class SeamPersistence:
+        def get_secret_value(self, ref):
+            return "seam-resolved-key"
+
+    iucn_mod.set_persistence_for_secrets(SeamPersistence())
+    try:
+        assert (
+            _resolve_api_key(api_key=None, secret_ref=good, persistence=None)
+            == "seam-resolved-key"
+        )
+    finally:
+        iucn_mod.set_persistence_for_secrets(None)
 
 
 def test_env_var_fallback_resolves(monkeypatch):

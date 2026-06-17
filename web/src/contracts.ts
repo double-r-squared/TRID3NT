@@ -307,6 +307,10 @@ export type ProviderID =
   | "ebird"
   | "iucn_red_list"
   | "movebank"
+  // Hazard / earth-observation keyed fetchers (credential-pipeline-generic).
+  | "firms"        // NASA FIRMS active-fire (FIRMS_MAP_KEY)
+  | "ecmwf_cds"    // Copernicus CDS — ERA5 reanalysis + GTSM share one CDS key
+  | "gtsm"         // GTSM tide/surge — alias scope (resolves alongside ecmwf_cds)
   | "nws"
   | "openweathermap"
   | "openai"
