@@ -1952,8 +1952,95 @@ async def _handle_session_resume(
             rebound,
             state.session_id,
         )
+    # job-0356 (per-Case layer DURABILITY): a BARE reconnect (no live turn for
+    # this session) must STILL re-render every layer the user already had on the
+    # map. job-0355 only rebinds LIVE in-flight turns; a layer that COMPLETED +
+    # rendered before the disconnect has no live turn, so without this the
+    # reconnect replays an EMPTY session-state and the user's layers vanish until
+    # an explicit case-open. NATE hard requirement: a rendered layer survives any
+    # WS reconnect — the user must NEVER exit/re-enter a Case to get layers back.
+    #
+    # Fix: resolve the session's active Case (the session-scoped
+    # ``_SESSION_ACTIVE_CASE`` registry, read through ``state.active_case_id``)
+    # and seed THIS reconnect's emitter from the Case's persisted
+    # ``loaded_layers`` BEFORE emitting — the exact case-open / _sync_case_context
+    # seam (``reset_loaded_layers`` + ``reinline_vector_layers``), so the single
+    # ``emit_session_state`` below carries the full A.7 replace-not-reconcile
+    # snapshot the client already knows how to render. (Layers persist via
+    # job-0259 finally-persist + ``_persist_case_loaded_layers``; this only
+    # REPLAYS them on bare resume — no new write.)
+    #
+    # Requirement 2 (dedup): when ``rebound > 0`` a LIVE turn's emitter was just
+    # pointed at THIS socket's sink, so the live turn IS the writer for this
+    # session-state. We must NOT also seed + emit on the new connection's emitter
+    # — that would put TWO emitters on the same sink and deliver duplicate
+    # session-state frames. So the bare-resume replay runs ONLY when nothing was
+    # rebound; the live turn's own (rebound) emitter delivers the terminal A.7
+    # snapshot (which already carries the persisted loaded_layers it seeded at
+    # turn start). One emitter writes the socket either way.
+    if rebound == 0:
+        await _replay_active_case_layers(state)
     await state.emitter.emit_session_state()
     await _emit_case_list(websocket, state)
+
+
+async def _replay_active_case_layers(state: SessionState) -> None:
+    """Seed the reconnect emitter from the active Case's persisted layers.
+
+    job-0356: the bare-reconnect half of the per-Case layer DURABILITY
+    requirement. Resolves the session's active Case via ``state.active_case_id``
+    (backed by the session-scoped ``_SESSION_ACTIVE_CASE`` registry) and seeds
+    this connection's emitter ``_loaded_layers`` from the Case's persisted
+    snapshot so the caller's single ``emit_session_state`` re-renders every
+    already-rendered layer WITHOUT a case-open. Reuses the exact case-open /
+    ``_sync_case_context`` rehydration seam (``reset_loaded_layers`` +
+    ``reinline_vector_layers`` + URI-registry seed).
+
+    No-ops (replays NOTHING, never crashes) when there is no active Case or
+    Persistence is unbound — a fresh session with no Case resumes to the empty
+    snapshot exactly as before. Best-effort: a Persistence failure logs and
+    leaves the emitter as-is so the resume still completes.
+    """
+    if state.emitter is None:  # pragma: no cover — _ensure_emitter always binds
+        return
+    case_id = state.active_case_id
+    if case_id is None:
+        return
+    p = get_persistence()
+    if p is None:
+        return
+    try:
+        session_state = await p.get_session_state(case_id)
+        state.emitter.reset_loaded_layers(session_state.loaded_layers)
+        # Repopulate the inline-GeoJSON side-table so the replayed
+        # session-state carries renderable vectors (the browser never fetches
+        # object-store uris directly — job-0175). Mirrors the case-open path.
+        try:
+            await state.emitter.reinline_vector_layers()
+        except Exception:  # noqa: BLE001 — re-inline is best-effort
+            logger.warning(
+                "session-resume vector re-inline failed session=%s case=%s",
+                state.session_id,
+                case_id,
+            )
+        # Seed the URI registry so handle-indirection resolves for layers
+        # produced in a PRIOR session of this Case (mirrors _sync_case_context).
+        get_uri_registry(state.session_id).seed_from_layers(
+            session_state.loaded_layers
+        )
+        logger.info(
+            "session-resume replayed active-case layers session=%s case=%s "
+            "layers=%d",
+            state.session_id,
+            case_id,
+            len(session_state.loaded_layers),
+        )
+    except Exception:  # noqa: BLE001 — best-effort, never break the resume
+        logger.exception(
+            "session-resume layer replay failed session=%s case=%s",
+            state.session_id,
+            case_id,
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -6274,10 +6361,13 @@ def _make_handler(settings: GeminiSettings):
                     # Ensure the durable registry holds it (it was registered at
                     # spawn for user-message turns; re-assert for any path that
                     # populated inflight_tasks without registering — defensive,
-                    # idempotent). The emitter is dropped to None on disconnect:
-                    # the live turn keeps using its OWN emitter (whose sink now
-                    # points at the dead socket and silently no-ops) until a
-                    # reconnect rebinds it.
+                    # idempotent). NB: this finally DETACHES and KEEPS the turn
+                    # RUNNING — it never sets ``state.emitter = None``. The live
+                    # turn keeps driving its OWN emitter, whose ``_sink`` still
+                    # closes over THIS (now-dead) socket and silently no-ops on
+                    # send, until a reconnecting socket rebinds that emitter's
+                    # sink (``_rebind_live_turns``) so the remaining progress +
+                    # terminal frames land on the user's live connection.
                     if _find_live_turn(state.session_id, _turn_key) is not _t:
                         _register_live_turn(
                             state.session_id, _turn_key, _t, state.emitter

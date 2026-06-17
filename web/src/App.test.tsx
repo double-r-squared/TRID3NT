@@ -1120,3 +1120,146 @@ describe("App — Case-exit fresh slate contract (F84)", () => {
     expect(bus.commandPushes.map((c) => c.command)).not.toContain("zoom-to");
   });
 });
+
+// --- job-0357 — per-Case layer DURABILITY across a WS reconnect ---------- //
+//
+// App.tsx stamps a client-only `replace_layers` flag onto every session-state
+// it pushes onto the LayerPanel bus, derived from the live WebSocket status:
+//   - server snapshot received while `connected`  → replace_layers:true
+//     (authoritative — live layer add AND delete apply via replace-not-
+//     reconcile);
+//   - server snapshot received while NOT `connected` (the disconnect /
+//     reconnect window) → replace_layers:false (additive top-up — Map.tsx
+//     never tears down the active Case's already-rendered layers).
+//
+// The full App can't mount in happy-dom (WebSocket + WebGL), so — per the
+// CollapseShell / ResumeShell / CaseExitShell convention above — this mirrors
+// App.tsx's onStatus + onSessionState stamping over a recording bus and drives
+// a simulated WS close + reopen to the SAME Case. The Map.tsx consumer side
+// (additive-vs-replace reconcile) is pinned in Map.test.tsx.
+
+type WireConnStatus =
+  | "connecting"
+  | "connected"
+  | "disconnected"
+  | "reconnecting";
+
+interface StampedSession {
+  loaded_layers: Array<{ layer_id: string }>;
+  replace_layers?: boolean;
+}
+
+/**
+ * Mirror of App.tsx's GraceWs onStatus + onSessionState handlers: status is
+ * held in a ref, and every server session-state is stamped
+ * `replace_layers: status === "connected"` before being pushed onto the bus.
+ * The harness exposes imperative `setStatus` / `deliverSessionState` seams so
+ * the test can script a close → reconnect → resume sequence deterministically.
+ */
+function DurabilityShell({
+  onReady,
+  push,
+}: {
+  onReady: (api: {
+    setStatus: (s: WireConnStatus) => void;
+    deliverSessionState: (p: { loaded_layers: Array<{ layer_id: string }> }) => void;
+  }) => void;
+  push: (p: StampedSession) => void;
+}): JSX.Element {
+  const statusRef = useRef<WireConnStatus>("connecting");
+  const pushRef = useRef(push);
+  pushRef.current = push;
+  useEffect(() => {
+    onReady({
+      setStatus: (s) => {
+        statusRef.current = s;
+      },
+      deliverSessionState: (p) => {
+        // EXACT mirror of App.tsx onSessionState.
+        pushRef.current({
+          ...p,
+          replace_layers: statusRef.current === "connected",
+        });
+      },
+    });
+  }, [onReady]);
+  return <div data-testid="durability-shell" />;
+}
+
+describe("App — per-Case layer durability across WS reconnect (job-0357)", () => {
+  it("stamps replace_layers:true on a server snapshot while CONNECTED", () => {
+    const pushes: StampedSession[] = [];
+    let api!: Parameters<Parameters<typeof DurabilityShell>[0]["onReady"]>[0];
+    render(
+      <DurabilityShell onReady={(a) => (api = a)} push={(p) => pushes.push(p)} />,
+    );
+    act(() => {
+      api.setStatus("connected");
+      api.deliverSessionState({ loaded_layers: [{ layer_id: "flood-demo" }] });
+    });
+    expect(pushes).toHaveLength(1);
+    expect(pushes[0]!.replace_layers).toBe(true);
+  });
+
+  it("layers SURVIVE a simulated WS close + reopen to the SAME Case (no clearing snapshot)", () => {
+    const pushes: StampedSession[] = [];
+    let api!: Parameters<Parameters<typeof DurabilityShell>[0]["onReady"]>[0];
+    render(
+      <DurabilityShell onReady={(a) => (api = a)} push={(p) => pushes.push(p)} />,
+    );
+
+    // 1. Connected: the Case's layer arrives authoritatively.
+    act(() => {
+      api.setStatus("connected");
+      api.deliverSessionState({ loaded_layers: [{ layer_id: "flood-demo" }] });
+    });
+
+    // 2. The socket drops (close) then starts reconnecting. During this
+    //    window any server snapshot is NON-authoritative — an empty/partial
+    //    one must NOT be allowed to wipe the durable layer.
+    act(() => {
+      api.setStatus("disconnected");
+      api.deliverSessionState({ loaded_layers: [] }); // transient empty
+      api.setStatus("reconnecting");
+    });
+    // The transient empty snapshot was stamped non-authoritative.
+    const transient = pushes[1]!;
+    expect(transient.loaded_layers).toEqual([]);
+    expect(transient.replace_layers).toBe(false);
+
+    // 3. Reconnect completes and the agent replays the FULL persisted layer
+    //    set as a normal session-state. By the time it is processed the
+    //    socket is `connected` again, so it lands authoritative — and because
+    //    it carries the same layer it reconciles idempotently (no wipe).
+    act(() => {
+      api.setStatus("connected");
+      api.deliverSessionState({ loaded_layers: [{ layer_id: "flood-demo" }] });
+    });
+    const resume = pushes[2]!;
+    expect(resume.loaded_layers).toEqual([{ layer_id: "flood-demo" }]);
+    expect(resume.replace_layers).toBe(true);
+    // No snapshot in the whole sequence both EMPTIED layers AND claimed to be
+    // an authoritative replace — i.e. nothing could have blanked the map.
+    const blanking = pushes.find(
+      (p) => p.replace_layers === true && p.loaded_layers.length === 0,
+    );
+    expect(blanking).toBeUndefined();
+  });
+
+  it("a layer DELETE while CONNECTED still applies (authoritative removal preserved)", () => {
+    const pushes: StampedSession[] = [];
+    let api!: Parameters<Parameters<typeof DurabilityShell>[0]["onReady"]>[0];
+    render(
+      <DurabilityShell onReady={(a) => (api = a)} push={(p) => pushes.push(p)} />,
+    );
+    act(() => {
+      api.setStatus("connected");
+      api.deliverSessionState({ loaded_layers: [{ layer_id: "flood-demo" }] });
+      // A layer-delete turn yields a fresh authoritative snapshot WITHOUT the
+      // layer — this must stay a real replace so the overlay is removed.
+      api.deliverSessionState({ loaded_layers: [] });
+    });
+    expect(pushes[1]!.loaded_layers).toEqual([]);
+    expect(pushes[1]!.replace_layers).toBe(true);
+  });
+});

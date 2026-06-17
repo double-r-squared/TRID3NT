@@ -326,6 +326,181 @@ describe("MapView — session-state WMS source wiring (job-0068 change 4)", () =
   });
 });
 
+describe("MapView — per-Case layer DURABILITY across WS reconnect (job-0357)", () => {
+  beforeEach(() => {
+    lastMapMock = null;
+  });
+
+  // The `replace_layers` flag App.tsx stamps onto every session-state it
+  // pushes onto the LayerPanel bus is a client-only field; the test
+  // `WireSessionState` type doesn't carry it, so we widen the push at the
+  // call site. The agent never sends it on the wire.
+  type DurableSession = WireSessionState & { replace_layers?: boolean };
+  const pushDurable = (
+    bus: ReturnType<typeof makeSessionBus>,
+    p: DurableSession,
+  ): void => bus.push(p as unknown as WireSessionState);
+
+  it("KEEPS rendered layers when a reconnect delivers an EMPTY snapshot (replace_layers:false)", () => {
+    // The bug: a bare WS reconnect briefly replayed an empty/absent
+    // session-state, and the reconcile loop tore every overlay off the map
+    // until an explicit case-open. A reconnect snapshot (received while the
+    // socket is not yet `connected`) is stamped replace_layers:false by
+    // App.tsx, so it must NOT remove durable layers.
+    const sessionBus = makeSessionBus();
+    render(
+      <MapView
+        subscribeSessionState={
+          sessionBus.subscribe as (cb: SessionStateSubscriber) => () => void
+        }
+      />,
+    );
+
+    // Connected: an authoritative snapshot adds the Case's layer.
+    act(() => {
+      pushDurable(sessionBus, {
+        loaded_layers: [makeWireLayer("flood-demo")],
+        replace_layers: true,
+      });
+    });
+    const m = lastMapMock!;
+    expect(m.addSource).toHaveBeenCalledWith("flood-demo", expect.anything());
+    m.getLayer.mockReturnValue({ id: "flood-demo" });
+    m.getSource.mockReturnValue({ type: "raster" });
+    m.removeLayer.mockClear();
+    m.removeSource.mockClear();
+
+    // Reconnect window: a transient EMPTY snapshot arrives (socket not
+    // `connected`). It must NOT wipe the durable overlay.
+    act(() => {
+      pushDurable(sessionBus, { loaded_layers: [], replace_layers: false });
+    });
+    expect(m.removeLayer).not.toHaveBeenCalled();
+    expect(m.removeSource).not.toHaveBeenCalled();
+  });
+
+  it("reconnect resume snapshot RECONCILES without duplicate sources (idempotent — REQ 4)", () => {
+    // The agent's resume replay carries the FULL persisted layer set. A
+    // re-delivered snapshot with the same layer must update-in-place (paint
+    // props), never re-add the source.
+    const sessionBus = makeSessionBus();
+    render(
+      <MapView
+        subscribeSessionState={
+          sessionBus.subscribe as (cb: SessionStateSubscriber) => () => void
+        }
+      />,
+    );
+    act(() => {
+      pushDurable(sessionBus, {
+        loaded_layers: [makeWireLayer("flood-demo")],
+        replace_layers: true,
+      });
+    });
+    const m = lastMapMock!;
+    expect(m.addSource).toHaveBeenCalledTimes(1);
+    m.getLayer.mockReturnValue({ id: "flood-demo" });
+
+    // Resume snapshot (non-authoritative top-up) re-delivers the SAME layer.
+    m.addSource.mockClear();
+    m.addLayer.mockClear();
+    act(() => {
+      pushDurable(sessionBus, {
+        loaded_layers: [makeWireLayer("flood-demo")],
+        replace_layers: false,
+      });
+    });
+    // No duplicate source/layer — the existing slot is reconciled in place.
+    expect(m.addSource).not.toHaveBeenCalled();
+    expect(m.addLayer).not.toHaveBeenCalled();
+  });
+
+  it("non-authoritative reconnect snapshot still ADDS a newly-rendered layer (top-up)", () => {
+    // A reconnect resume that carries a layer the client doesn't have yet must
+    // still register it — additive reconcile adds, it only declines to remove.
+    const sessionBus = makeSessionBus();
+    render(
+      <MapView
+        subscribeSessionState={
+          sessionBus.subscribe as (cb: SessionStateSubscriber) => () => void
+        }
+      />,
+    );
+    act(() => {
+      pushDurable(sessionBus, {
+        loaded_layers: [makeWireLayer("flood-demo")],
+        replace_layers: false,
+      });
+    });
+    const m = lastMapMock!;
+    expect(m.addSource).toHaveBeenCalledWith("flood-demo", expect.anything());
+  });
+
+  it("a Case SWITCH (replace_layers:true) STILL clears the prior Case's layers", () => {
+    // The fresh-slate behavior on an explicit Case switch must be preserved:
+    // an authoritative replace removes overlays absent from the new set.
+    const sessionBus = makeSessionBus();
+    render(
+      <MapView
+        subscribeSessionState={
+          sessionBus.subscribe as (cb: SessionStateSubscriber) => () => void
+        }
+      />,
+    );
+    // Case A.
+    act(() => {
+      pushDurable(sessionBus, {
+        loaded_layers: [makeWireLayer("case-a-layer")],
+        replace_layers: true,
+      });
+    });
+    const m = lastMapMock!;
+    m.getLayer.mockReturnValue({ id: "case-a-layer" });
+    m.getSource.mockReturnValue({ type: "raster" });
+    m.removeLayer.mockClear();
+    m.removeSource.mockClear();
+
+    // Switch to Case B (authoritative replace, different layer set).
+    act(() => {
+      pushDurable(sessionBus, {
+        loaded_layers: [makeWireLayer("case-b-layer")],
+        replace_layers: true,
+      });
+    });
+    expect(m.removeLayer).toHaveBeenCalledWith("case-a-layer");
+    expect(m.removeSource).toHaveBeenCalledWith("case-a-layer");
+  });
+
+  it("an authoritative empty snapshot (Case EXIT, replace_layers:true) clears everything", () => {
+    const sessionBus = makeSessionBus();
+    render(
+      <MapView
+        subscribeSessionState={
+          sessionBus.subscribe as (cb: SessionStateSubscriber) => () => void
+        }
+      />,
+    );
+    act(() => {
+      pushDurable(sessionBus, {
+        loaded_layers: [makeWireLayer("flood-demo")],
+        replace_layers: true,
+      });
+    });
+    const m = lastMapMock!;
+    m.getLayer.mockReturnValue({ id: "flood-demo" });
+    m.getSource.mockReturnValue({ type: "raster" });
+    m.removeLayer.mockClear();
+    m.removeSource.mockClear();
+
+    // Case exit: authoritative empty snapshot.
+    act(() => {
+      pushDurable(sessionBus, { loaded_layers: [], replace_layers: true });
+    });
+    expect(m.removeLayer).toHaveBeenCalledWith("flood-demo");
+    expect(m.removeSource).toHaveBeenCalledWith("flood-demo");
+  });
+});
+
 describe("MapView — map-command zoom-to handler (job-0068 change 5 client side)", () => {
   beforeEach(() => {
     lastMapMock = null;

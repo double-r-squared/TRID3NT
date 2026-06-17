@@ -71,7 +71,7 @@ import {
   signIn as authSignIn,
   handleRedirectCallback,
 } from "./auth";
-import { GraceWs } from "./ws";
+import { ConnectionStatus, GraceWs } from "./ws";
 import { SourceCandidatePayload } from "./lib/source_suggestion_suppression";
 import { extractLastZoomTo } from "./lib/case_zoom";
 import { useCases } from "./hooks/useCases";
@@ -359,6 +359,16 @@ export function App(): JSX.Element {
   // Secrets state (job-0125).
   const [secrets, setSecrets] = useState<SecretRecord[]>([]);
   const wsRef = useRef<GraceWs | null>(null);
+  // job-0357 (per-Case layer DURABILITY) — live WS connection status, held in
+  // a ref so the GraceWs `onSessionState` handler (a stable closure created
+  // once when the socket is constructed) can read the CURRENT status without
+  // being re-created on every status flip. The map-side LayerPanel bus push
+  // stamps `session-state.replace_layers` from this: server snapshots received
+  // while NOT `connected` (the disconnect / reconnect window) are
+  // non-authoritative top-ups that must NOT tear down the active Case's
+  // already-rendered layers; snapshots received while `connected` are
+  // authoritative (live layer add AND delete apply via replace-not-reconcile).
+  const wsStatusRef = useRef<ConnectionStatus>("connecting");
 
   // Settings popup visibility (job-0143). job-0321 F29 — the standalone
   // Secrets popup is retired; API-key management now lives INSIDE Settings
@@ -573,10 +583,27 @@ export function App(): JSX.Element {
   // Mount a GraceWs that routes session-state, map-command, AND secrets-list.
   useEffect(() => {
     const ws = new GraceWs(WS_URL, {
-      onStatus: () => { /* status on Chat panel */ },
+      // job-0357 — record live status so onSessionState can classify a
+      // server snapshot as authoritative (connected) vs a reconnect top-up.
+      onStatus: (s) => { wsStatusRef.current = s; },
       onAgentChunk: () => { /* Chat owns rendering */ },
       onPipelineState: () => { /* Chat owns rendering */ },
-      onSessionState: (p) => bus.pushSessionState(p),
+      // job-0357 (per-Case layer DURABILITY) — stamp `replace_layers` from the
+      // live socket status. A server `session-state` received while the socket
+      // is healthy (`connected`) is AUTHORITATIVE → Map.tsx does the full
+      // replace-not-reconcile (live layer adds AND deletes apply). A snapshot
+      // received while NOT `connected` (the brief disconnect / reconnect
+      // window) is a NON-authoritative top-up → Map.tsx adds/reconciles layers
+      // but never tears down the active Case's already-rendered overlays, so a
+      // transient EMPTY snapshot during a bare WS reconnect cannot blank the
+      // map. The agent's resume replay carries the FULL persisted layer set, so
+      // on a healthy reconnect it reconciles idempotently either way (the
+      // diff against addedSourceIds is a no-op when the sets match).
+      onSessionState: (p) =>
+        bus.pushSessionState({
+          ...p,
+          replace_layers: wsStatusRef.current === "connected",
+        }),
       onMapCommand: (p) => bus.pushMapCommand(p),
       onSecretsList: (p) => setSecrets(p.secrets ?? []),
       onMode2Candidate: (p) => fanoutSourceSuggestion(p),
@@ -661,12 +688,17 @@ export function App(): JSX.Element {
     setImpactEnvelope(null);
 
     if (activeSession === null) {
+      // job-0357: Case EXIT is an AUTHORITATIVE clear — replace_layers:true so
+      // Map.tsx tears down the prior Case's overlays (fresh slate). This is the
+      // explicit Case-switch path the durability fix must KEEP clearing; only a
+      // WS reconnect (server snapshot received while not `connected`) is exempt.
       bus.pushSessionState({
         loaded_layers: [],
         chat_history: [],
         pipeline_history: [],
         current_pipeline: null,
         map_view: null,
+        replace_layers: true,
       });
       // ux-batch-1 (F14): exiting a Case must reset client map state, not just
       // the panels. The analysis-extent (AOI) rectangle is drawn directly on
@@ -684,12 +716,18 @@ export function App(): JSX.Element {
       } as unknown as MapCommandPayload);
       return;
     }
+    // job-0357: opening / switching INTO a Case is an AUTHORITATIVE replace —
+    // replace_layers:true so the new Case's loaded_layers replace whatever the
+    // previously-viewed Case had on the map (a Case switch still clears, per
+    // the durability requirement). The reconnect exemption only applies to
+    // server-delivered snapshots received while the socket is not `connected`.
     bus.pushSessionState({
       loaded_layers: activeSession.loaded_layers ?? [],
       chat_history: activeSession.chat_history ?? [],
       pipeline_history: activeSession.pipeline_history ?? [],
       current_pipeline: activeSession.current_pipeline ?? null,
       map_view: null,
+      replace_layers: true,
     });
     const bbox = activeSession.case.bbox;
     if (bbox && bbox.length === 4) {

@@ -238,6 +238,32 @@ export interface SessionStatePayload {
   pipeline_history?: unknown[];
   current_pipeline?: unknown | null;
   map_view?: MapView | null;
+  /**
+   * job-0357 (per-Case layer DURABILITY) — CLIENT-ONLY hint, never on the wire.
+   * The agent never sets this; it is stamped by App.tsx as it pushes a
+   * `session-state` onto the LayerPanel bus, to tell Map.tsx whether this
+   * snapshot is an AUTHORITATIVE layer REPLACE (Appendix A.7 replace-not-
+   * reconcile — remove every tracked overlay absent from `loaded_layers`) or
+   * a NON-AUTHORITATIVE top-up that may ADD/reconcile layers but must NOT
+   * tear down durable overlays absent from it.
+   *
+   *   - ``true``  → full replace-not-reconcile. Set on an explicit Case
+   *                 SWITCH / EXIT and on every server snapshot received while
+   *                 the WebSocket is healthy (`connected`) — live layer adds
+   *                 AND deletes apply normally.
+   *   - ``false`` / absent → additive reconcile. Set for server snapshots
+   *                 received while the socket is NOT `connected`
+   *                 (disconnect / reconnecting window) so a transient EMPTY or
+   *                 partial snapshot during a bare WS reconnect cannot wipe the
+   *                 active Case's already-rendered layers. The agent's resume
+   *                 replay carries the FULL persisted layer set and reconciles
+   *                 idempotently regardless of which mode it lands in.
+   *
+   * Absent on snapshots produced by older code paths / unit fixtures, which
+   * Map.tsx treats as ``true`` (the historical replace-not-reconcile default)
+   * so nothing that relied on the prior behavior regresses.
+   */
+  replace_layers?: boolean;
 }
 
 // --- A.4 map-command --------------------------------------------------- //

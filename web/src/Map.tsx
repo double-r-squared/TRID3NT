@@ -1531,6 +1531,23 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       const currentLayers = payload.loaded_layers ?? [];
       const currentIds = new Set(currentLayers.map((l) => l.layer_id));
 
+      // job-0357 (per-Case layer DURABILITY) — REMOVE only on an AUTHORITATIVE
+      // replace. `replace_layers` is the client-only hint App.tsx stamps:
+      //   - true / absent → full replace-not-reconcile (Case switch / exit, or
+      //     a server snapshot received while the socket is healthy → live adds
+      //     AND deletes apply). Absent defaults to true to preserve the
+      //     historical behavior for older callers + unit fixtures.
+      //   - false → additive reconcile: ADD/update layers in the snapshot but
+      //     do NOT tear down tracked overlays absent from it. Set for server
+      //     snapshots received while the socket is NOT `connected` (the
+      //     disconnect / reconnect window) so a transient EMPTY or partial
+      //     snapshot during a bare WS reconnect can never wipe the active
+      //     Case's already-rendered layers (the bug this job fixes). The
+      //     agent's resume replay carries the FULL persisted layer set, so on a
+      //     healthy reconnect it lands as an idempotent no-op either way.
+      const authoritativeReplace =
+        (payload as { replace_layers?: boolean }).replace_layers !== false;
+
       // Remove layers that are gone (replace-not-reconcile).
       //
       // F84 ROOT-CAUSE FIX: a session-state replace (Case switch / Case exit
@@ -1554,6 +1571,12 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       // An empty currentIds (loaded_layers:[]) => every tracked overlay is gone
       // => all overlays removed (fresh slate). Basemap layers are never tracked
       // in addedSourceIds, so they are untouched.
+      //
+      // job-0357: this teardown is SKIPPED entirely on a non-authoritative
+      // (additive) reconcile — a reconnect top-up never removes durable layers.
+      // The ADD/update loop below always runs, so an additive snapshot still
+      // registers any newly-rendered layer it carries.
+      if (authoritativeReplace) {
       for (const id of addedSourceIds.current) {
         if (!currentIds.has(id)) {
           // Remove all MapLibre paint layers belonging to this logical layer
@@ -1580,6 +1603,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
           layerStylePresets.current.delete(id);
           vectorFetchGen.current.set(id, (vectorFetchGen.current.get(id) ?? 0) + 1);
         }
+      }
       }
 
       // Add new layers; update opacity/visibility on existing.
