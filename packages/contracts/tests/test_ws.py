@@ -32,6 +32,12 @@ ws.SecretRevokeEnvelopePayload = ws.SecretRevokeEnvelopePayload if hasattr(ws, "
 ws.SecretsListEnvelopePayload = ws.SecretsListEnvelopePayload if hasattr(ws, "SecretsListEnvelopePayload") else __import__(
     "grace2_contracts.secrets", fromlist=["SecretsListEnvelopePayload"]
 ).SecretsListEnvelopePayload
+ws.CredentialRequestEnvelopePayload = ws.CredentialRequestEnvelopePayload if hasattr(ws, "CredentialRequestEnvelopePayload") else __import__(
+    "grace2_contracts.secrets", fromlist=["CredentialRequestEnvelopePayload"]
+).CredentialRequestEnvelopePayload
+ws.CredentialProvidedEnvelopePayload = ws.CredentialProvidedEnvelopePayload if hasattr(ws, "CredentialProvidedEnvelopePayload") else __import__(
+    "grace2_contracts.secrets", fromlist=["CredentialProvidedEnvelopePayload"]
+).CredentialProvidedEnvelopePayload
 
 
 def _wrap(payload: GraceModel, session_id: str) -> ws.Envelope:
@@ -399,8 +405,18 @@ def test_secrets_payloads_registered_in_ws_dicts() -> None:
     assert "secret-add" in ws.CLIENT_TO_AGENT_PAYLOADS
     assert "secret-revoke" in ws.CLIENT_TO_AGENT_PAYLOADS
     assert "secrets-list" in ws.AGENT_TO_CLIENT_PAYLOADS
+    # Credential-request flow (§F.3 amendment): request is agent->client, the
+    # retry signal is client->agent (the key itself rides the secret-add path).
+    assert "credential-request" in ws.AGENT_TO_CLIENT_PAYLOADS
+    assert "credential-provided" in ws.CLIENT_TO_AGENT_PAYLOADS
     # And in the aggregated registry the smoke factory test consumes
-    for t in ("secret-add", "secret-revoke", "secrets-list"):
+    for t in (
+        "secret-add",
+        "secret-revoke",
+        "secrets-list",
+        "credential-request",
+        "credential-provided",
+    ):
         assert t in ws.ALL_PAYLOADS, f"{t} missing from ws.ALL_PAYLOADS"
 
 
@@ -492,6 +508,19 @@ def test_every_a3_a4_a4b_payload_round_trips(session_id: str) -> None:
         ),
         "secret-revoke": lambda: ws.SecretRevokeEnvelopePayload(secret_id=new_ulid()),
         "secrets-list": lambda: ws.SecretsListEnvelopePayload(),
+        # §F.3 amendment — just-in-time credential-request flow
+        "credential-request": lambda: ws.CredentialRequestEnvelopePayload(
+            request_id=new_ulid(),
+            provider_id="ebird",
+            provider_label="eBird",
+            signup_url="https://ebird.org/api/keygen",
+            secret_key_name="EBIRD_API_KEY",
+            message="I need an eBird API key to fetch observations for this Case.",
+            tool_name="fetch_ebird_observations",
+        ),
+        "credential-provided": lambda: ws.CredentialProvidedEnvelopePayload(
+            request_id=new_ulid(), secret_id=new_ulid()
+        ),
         # job-0127 — tool payload-warning envelopes (Wave 2)
         "tool-payload-warning": lambda: ws.PayloadWarningEnvelopePayload(
             warning_id=new_ulid(),

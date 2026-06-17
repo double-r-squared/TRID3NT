@@ -21,6 +21,8 @@ import {
   CaseCommandEnvelopePayload,
   CaseListEnvelopePayload,
   CaseOpenEnvelopePayload,
+  CredentialProvidedPayload,
+  CredentialRequestPayload,
   Envelope,
   ErrorPayload,
   LayerDeletePayload,
@@ -121,6 +123,15 @@ export interface WsHandlers {
    * paths wire this to push payloads into a SecretsBus subscription.
    */
   onSecretsList?: (p: SecretsListPayload) => void;
+  /**
+   * Just-in-time credential request (§F.3 amendment). Emitted when a keyed
+   * tool dispatch needs a missing/invalid credential. Optional so chat-only
+   * callers can ignore; the credential-prompt surface subscribes here, runs
+   * the existing `secret-add` path to save the key, then signals retry via
+   * {@link GraceWs.sendCredentialProvided}. Behaviour is out of scope for the
+   * contract-only landing — this is the type seam both sides compile against.
+   */
+  onCredentialRequest?: (p: CredentialRequestPayload) => void;
   /**
    * Tool payload-warning envelope (job-0127, sprint-12-mega Wave 2). Optional
    * so chat-only callers can ignore. Chat.tsx mounts the inline warning card
@@ -332,6 +343,11 @@ const SESSION_SCOPED_TYPES = new Set<string>([
   "case-list",
   "case-open",
   "secrets-list",
+  // credential-request is session-scoped: a keyed tool may dispatch on
+  // Chat.tsx's socket but the credential prompt + SecretsPanel form live on
+  // App.tsx's connection. Fan it out so the prompt reaches the form regardless
+  // of which socket the paused tool ran on. Mirrors the secrets-list rationale.
+  "credential-request",
   "mode2-candidate",
   "tool-payload-warning",
   // Wave 4.11 P4: impact-envelope is session-scoped so App.tsx GraceWs sees it
@@ -638,6 +654,37 @@ export class GraceWs {
     };
     const env: Envelope<SecretRevokePayload> = envelope(
       "secret-revoke",
+      this.sessionId,
+      payload,
+    );
+    this.sendEnvelope(env);
+  }
+
+  /**
+   * Emit a `credential-provided` envelope (§F.3 amendment).
+   *
+   * Sent AFTER the key has been saved via the existing `secret-add` path
+   * ({@link GraceWs.sendSecretAdd}) in response to a `credential-request`.
+   * Carries NO key material — `secret-add` is the only envelope that
+   * transports the raw key value (Decision F). `request_id` echoes the
+   * pending `credential-request` so the agent retries the exact paused tool;
+   * `secretId` is the SecretRecord id the `secret-add` minted. Pass
+   * `provided: false` (with `secretId: null`) to signal the user declined the
+   * prompt — the agent then narrates honestly and abandons the paused tool.
+   */
+  sendCredentialProvided(args: {
+    request_id: string;
+    secret_id: string | null;
+    provided?: boolean;
+  }): void {
+    const payload: CredentialProvidedPayload = {
+      envelope_type: "credential-provided",
+      request_id: args.request_id,
+      secret_id: args.secret_id,
+      provided: args.provided ?? true,
+    };
+    const env: Envelope<CredentialProvidedPayload> = envelope(
+      "credential-provided",
       this.sessionId,
       payload,
     );
@@ -955,6 +1002,19 @@ export class GraceWs {
         if (this.handlers.onSecretsList) {
           this.handlers.onSecretsList(
             payload as unknown as SecretsListPayload,
+          );
+        }
+        break;
+      case "credential-request":
+        // §F.3 amendment: server -> client just-in-time credential prompt. A
+        // keyed tool paused on a missing/invalid credential; the prompt
+        // surface saves the key via the existing secret-add path then signals
+        // retry via sendCredentialProvided(). Optional handler so chat-only
+        // callers can ignore. Behaviour is out of scope for the contract-only
+        // landing — this routes the typed envelope to whoever subscribes.
+        if (this.handlers.onCredentialRequest) {
+          this.handlers.onCredentialRequest(
+            payload as unknown as CredentialRequestPayload,
           );
         }
         break;

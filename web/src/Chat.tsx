@@ -79,6 +79,7 @@ import {
   CaseChatMessage as CaseChatMessageWire,
   CaseOpenEnvelopePayload,
   CaseSessionState,
+  CredentialRequestPayload,
   ErrorPayload,
   PipelineSnapshot,
   PipelineStatePayload,
@@ -103,6 +104,7 @@ import { ThinkingIndicator } from "./components/ThinkingIndicator";
 import { ChartStack, type ChartPayload } from "./components/ChartStack";
 import { ChartGallery } from "./components/ChartGallery";
 import { SandboxCard, type CodeExecRequestPayload, type CodeExecResultPayload, type SandboxCardDecision } from "./components/SandboxCard";
+import { CredentialCard } from "./components/CredentialCard";
 
 // wave-4-10 thinking-state — the agent emits the Gemini "thinking" phase as
 // a pipeline-state step keyed on this raw ``name`` (`llm_generation` per
@@ -777,6 +779,14 @@ export interface StreamState {
   sandboxDecisions: Map<string, SandboxCardDecision>;
   /** First-arrival seq per code_exec_id (chronological interleave). */
   sandboxSeqs: Map<string, number>;
+  // Credential-request cards (SRS §F.3 amendment). A keyed tool paused on a
+  // missing/invalid credential; the user saves the key via the existing
+  // secret-add path then signals retry via credential-provided.
+  credentialRequests: CredentialRequestPayload[];
+  /** Resolved state per request_id once the user saves / declines. */
+  credentialResolved: Map<string, "saved" | "declined">;
+  /** First-arrival seq per credential request_id (chronological interleave). */
+  credentialSeqs: Map<string, number>;
   /** Monotonic arrival counter for this stream (job-0176 interleave). */
   arrivalSeq: number;
   messageOrder: Map<string, number>;
@@ -793,6 +803,9 @@ export function emptyStreamState(): StreamState {
     sandboxResults: new Map(),
     sandboxDecisions: new Map(),
     sandboxSeqs: new Map(),
+    credentialRequests: [],
+    credentialResolved: new Map(),
+    credentialSeqs: new Map(),
     arrivalSeq: 0,
     messageOrder: new Map(),
     stepOrder: new Map(),
@@ -990,6 +1003,44 @@ export function recordSandboxDecision(
   const next = new Map(s.sandboxDecisions);
   next.set(codeExecId, decision);
   s.sandboxDecisions = next;
+}
+
+/**
+ * Route a `credential-request` envelope (SRS §F.3 amendment) into the OWNING
+ * stream — the Case whose keyed tool dispatch paused. credential-request is
+ * session-scoped (ws.ts SESSION_SCOPED_TYPES) so it fans out to Chat's
+ * GraceWs even when the paused tool ran on App.tsx's connection. De-duped on
+ * request_id so a duplicate fan-out emit doesn't stack a second card.
+ */
+export function routeCredentialRequest(
+  cs: ChatStreams,
+  p: CredentialRequestPayload,
+  caseId?: string | null,
+): void {
+  const s = getStream(cs, owningKey(cs, caseId));
+  if (s.credentialRequests.some((r) => r.request_id === p.request_id)) return;
+  if (!s.credentialSeqs.has(p.request_id)) {
+    s.arrivalSeq += 1;
+    s.credentialSeqs.set(p.request_id, s.arrivalSeq);
+  }
+  s.credentialRequests = [...s.credentialRequests, p];
+}
+
+/**
+ * Record the user's resolution of a credential prompt against the stream the
+ * card lives in. "saved" = key persisted + agent signalled to retry;
+ * "declined" = user skipped (agent narrates honestly + abandons the tool).
+ */
+export function recordCredentialResolved(
+  cs: ChatStreams,
+  key: string,
+  requestId: string,
+  resolved: "saved" | "declined",
+): void {
+  const s = getStream(cs, key);
+  const next = new Map(s.credentialResolved);
+  next.set(requestId, resolved);
+  s.credentialResolved = next;
 }
 
 /** Extract persisted charts from a case-open session (sprint-13 schema —
@@ -2356,6 +2407,14 @@ export function Chat({
         routeCodeExecResult(streamsRef.current, p, caseId);
         bump();
       },
+      // SRS §F.3 amendment: a keyed tool paused on a missing/invalid
+      // credential. credential-request is session-scoped so Chat receives it
+      // via the fan-out hub even when the paused tool ran on App.tsx's
+      // connection. We render an inline CredentialCard in the owning stream.
+      onCredentialRequest: (p: CredentialRequestPayload) => {
+        routeCredentialRequest(streamsRef.current, p);
+        bump();
+      },
     });
     wsRef.current = ws;
     ws.connect();
@@ -2497,6 +2556,23 @@ export function Chat({
     };
   }, [bump]);
 
+  // SRS §F.3 amendment: dev-only seam for credential-request injection so
+  // Playwright UI snapshots / unit harnesses can render a CredentialCard
+  // without a live keyed-tool failure. Same routed path as the real envelope.
+  // Guarded behind import.meta.env.DEV so it's stripped from production.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    (window as unknown as Record<string, unknown>).__grace2InjectCredentialRequest =
+      (p: CredentialRequestPayload) => {
+        routeCredentialRequest(streamsRef.current, p);
+        bump();
+      };
+    return () => {
+      delete (window as unknown as Record<string, unknown>)
+        .__grace2InjectCredentialRequest;
+    };
+  }, [bump]);
+
   // Auto-scroll on new content only when the user is already at the bottom.
   // This preserves the user's reading position when they've scrolled up to
   // read history while the stream is still landing new tokens.
@@ -2517,6 +2593,8 @@ export function Chat({
     visible.charts,
     visible.sandboxRequests,
     visible.sandboxResults,
+    visible.credentialRequests,
+    visible.credentialResolved,
   ]);
 
   // job-0153 Part 3 — scroll handler. Computes "near bottom" against the
@@ -2561,6 +2639,64 @@ export function Chat({
     );
   }
 
+  // SRS §F.3 amendment — credential-request resolution.
+  //
+  // Save: route the raw key through the EXISTING secret-add path (the only
+  // envelope that ever carries key material — Decision F), then signal the
+  // agent to retry the paused tool via credential-provided (echoing the
+  // request_id). The fresh secrets-list the server emits after secret-add is
+  // picked up by App.tsx's onSecretsList handler, so the saved key surfaces in
+  // Settings -> API Keys without any extra round-trip here.
+  //
+  // The key value is handed straight to the WS and never persisted in Chat
+  // state; CredentialCard clears its own input immediately after Save.
+  function handleCredentialSave(
+    req: CredentialRequestPayload,
+    keyValue: string,
+  ): void {
+    recordCredentialResolved(
+      streamsRef.current,
+      visibleKey,
+      req.request_id,
+      "saved",
+    );
+    bump();
+    const ws = wsRef.current;
+    if (!ws) return;
+    // 1) Persist the key to the user's vault (user-wide scope: the
+    //    credential is a provider key, not Case-scoped data).
+    ws.sendSecretAdd({
+      provider: req.provider_id,
+      case_id: null,
+      label: req.provider_label,
+      key_value: keyValue,
+    });
+    // 2) Signal the agent to retry the exact paused tool. No key material on
+    //    this envelope — secret-add already carried it.
+    ws.sendCredentialProvided({
+      request_id: req.request_id,
+      secret_id: null,
+      provided: true,
+    });
+  }
+
+  // Decline: emit credential-provided with provided=false so the agent
+  // narrates honestly + abandons the paused tool (no silent dead-end).
+  function handleCredentialDecline(req: CredentialRequestPayload): void {
+    recordCredentialResolved(
+      streamsRef.current,
+      visibleKey,
+      req.request_id,
+      "declined",
+    );
+    bump();
+    wsRef.current?.sendCredentialProvided({
+      request_id: req.request_id,
+      secret_id: null,
+      provided: false,
+    });
+  }
+
   function submit(text: string): void {
     if (!text || !wsRef.current) return;
     // job-0278 — submitting from the collapsed mobile sheet expands it so
@@ -2582,6 +2718,7 @@ export function Chat({
   const pipeline = visible.pipeline;
   const charts = visible.charts;
   const sandboxRequests = visible.sandboxRequests;
+  const credentialRequests = visible.credentialRequests;
   const lastError = visible.lastError;
 
   const showCancel = shouldShowCancel(pipeline);
@@ -2885,6 +3022,38 @@ export function Chat({
                   result={visible.sandboxResults.get(req.code_exec_id)}
                   decided={visible.sandboxDecisions.get(req.code_exec_id) ?? null}
                   onDecide={(d) => handleSandboxDecide(req.code_exec_id, d)}
+                />
+              ))}
+            </div>
+          );
+        })()}
+
+        {/* SRS §F.3 amendment: just-in-time credential prompts. A keyed tool
+            paused on a missing/invalid API key; the inline CredentialCard
+            lets the user fetch + paste the key (saved via the existing
+            secret-add path) then signals the agent to retry. Sorted by
+            first-arrival seq so they interleave chronologically with the rest
+            of the stream. */}
+        {credentialRequests.length > 0 && (() => {
+          const sorted = [...credentialRequests].sort((a, b) => {
+            const sa =
+              visible.credentialSeqs.get(a.request_id) ?? Number.MAX_SAFE_INTEGER;
+            const sb =
+              visible.credentialSeqs.get(b.request_id) ?? Number.MAX_SAFE_INTEGER;
+            return sa - sb;
+          });
+          return (
+            <div
+              data-testid="credential-cards-section"
+              style={{ display: "flex", flexDirection: "column", gap: 10 }}
+            >
+              {sorted.map((req) => (
+                <CredentialCard
+                  key={req.request_id}
+                  request={req}
+                  resolved={visible.credentialResolved.get(req.request_id) ?? null}
+                  onSave={(keyValue) => handleCredentialSave(req, keyValue)}
+                  onDecline={() => handleCredentialDecline(req)}
                 />
               ))}
             </div>

@@ -25,6 +25,23 @@ This module owns:
 - ``SecretRevokeEnvelopePayload`` — client -> server revoke a secret
   (soft-revoke: sets ``is_active=False``; does NOT delete the vault entry —
   keeps the audit trail intact).
+- ``CredentialRequestEnvelopePayload`` — server -> client just-in-time
+  credential request. Emitted when a tool dispatch hits a missing or invalid
+  credential for a keyed provider: the agent pauses the tool, names the
+  provider + the secret key it needs + a signup URL the user can follow, and
+  asks the client to surface a credential-entry affordance. The user's
+  answer rides back on the existing ``secret-add`` path (vault-write), then a
+  ``CredentialProvidedEnvelopePayload`` signals the agent to retry the
+  paused tool.
+- ``CredentialProvidedEnvelopePayload`` — client -> server retry signal.
+  Sent AFTER a successful ``secret-add`` that satisfied a pending
+  ``CredentialRequestEnvelopePayload``. It carries the ``request_id`` of the
+  request it answers (and the ``secret_id`` the ``secret-add`` minted) so the
+  agent can resume the exact paused tool. It carries NO key material —
+  ``secret-add`` is the only envelope that ever transports the raw key value
+  (Decision F). The client may instead send a request with ``provided=False``
+  to signal the user declined / cancelled the credential prompt, in which case
+  the agent narrates honestly and abandons the paused tool.
 
 Invariants this module is responsible for:
 
@@ -70,6 +87,8 @@ __all__ = [
     "SecretsListEnvelopePayload",
     "SecretAddEnvelopePayload",
     "SecretRevokeEnvelopePayload",
+    "CredentialRequestEnvelopePayload",
+    "CredentialProvidedEnvelopePayload",
     "SECRET_PAYLOADS",
     "SECRET_CLIENT_TO_AGENT_PAYLOADS",
     "SECRET_AGENT_TO_CLIENT_PAYLOADS",
@@ -266,6 +285,108 @@ class SecretRevokeEnvelopePayload(GraceModel):
 
 
 # --------------------------------------------------------------------------- #
+# Credential-request flow (just-in-time secrets prompt; §F.3 amendment)
+# --------------------------------------------------------------------------- #
+
+
+class CredentialRequestEnvelopePayload(GraceModel):
+    """``credential-request`` (A.4 amendment): server -> client JIT key prompt.
+
+    Emitted when a tool dispatch needs a credential that is missing or
+    invalid for a keyed provider (e.g. an eBird fetch with no eBird key on the
+    Case, or an expired OpenWeatherMap key). The agent pauses the offending
+    tool, names what it needs, and the client surfaces a credential-entry
+    affordance (typically the same form the ``SecretsPanel`` renders, scoped
+    to the named ``provider_id`` + ``secret_key_name``).
+
+    The user's answer takes the **existing** ``secret-add`` path (which
+    writes the raw key to the vault and returns a refreshed ``secrets-list``).
+    Once the secret is saved, the client emits a
+    ``CredentialProvidedEnvelopePayload`` carrying this envelope's
+    ``request_id`` so the agent can resume the exact paused tool. This
+    envelope carries NO key material in either direction — Decision F keeps
+    the raw key isolated to the ``secret-add`` transport.
+
+    Fields:
+
+    - ``request_id`` — ULID correlating this request with the
+      ``CredentialProvidedEnvelopePayload`` reply (and with the agent's
+      paused-tool record). The client MUST echo it verbatim.
+    - ``provider_id`` — closed ``ProviderID`` Literal identifying the keyed
+      provider the tool needs. Drives the per-provider help / signup copy and
+      scopes the ``secret-add`` the client emits in response.
+    - ``provider_label`` — human-readable provider name for the prompt UI
+      (e.g. "eBird", "OpenWeatherMap"). The web side does NOT hardcode a
+      provider -> label table; it renders whatever the agent sends.
+    - ``signup_url`` — the URL where the user can obtain a key for this
+      provider (e.g. the provider's API-key registration page). Free-form
+      non-empty string; the client renders it as an outbound link. ``None``
+      when no public self-serve signup exists (the message then explains the
+      out-of-band path).
+    - ``secret_key_name`` — the canonical name of the secret the tool is
+      looking for (e.g. "EBIRD_API_KEY"). Surfaced in the prompt so the user
+      knows exactly which credential to paste; the ``secret-add`` the client
+      emits in response is scoped to this provider.
+    - ``message`` — the agent's user-facing explanation of why the credential
+      is needed right now (e.g. "I need an eBird API key to fetch the
+      observation records for this Case."). Plain prose; ≤1024 chars.
+    - ``tool_name`` — the registry tool that paused waiting for the
+      credential. Lets the client correlate the prompt with the inline tool
+      card and lets the agent resume the right dispatch on
+      ``credential-provided``.
+
+    Invariant 9 (no cost theater): no cost / quota / spend field. Invariant 8
+    (cancellation is first-class): there is no per-envelope timeout/cancel
+    field — a declined prompt rides back as a ``credential-provided`` with
+    ``provided=False``; a hard cancel flows through the A.3 ``cancel`` message.
+    """
+
+    MESSAGE_TYPE: ClassVar[str] = "credential-request"
+
+    envelope_type: Literal["credential-request"] = "credential-request"
+    request_id: ULIDStr
+    provider_id: ProviderID
+    provider_label: str = Field(min_length=1, max_length=120)
+    signup_url: str | None = Field(default=None, max_length=512)
+    secret_key_name: str = Field(min_length=1, max_length=200)
+    message: str = Field(min_length=1, max_length=1024)
+    tool_name: str = Field(min_length=1, max_length=120)
+
+
+class CredentialProvidedEnvelopePayload(GraceModel):
+    """``credential-provided`` (A.3 amendment): client -> server retry signal.
+
+    Sent AFTER the client has run the existing ``secret-add`` path to save the
+    key the agent asked for (a ``CredentialRequestEnvelopePayload``). It tells
+    the agent the credential is now in the vault and the paused tool can be
+    retried. It carries NO key material — ``secret-add`` is the only envelope
+    that ever transports the raw key value (Decision F).
+
+    Fields:
+
+    - ``request_id`` — the ``request_id`` of the
+      ``CredentialRequestEnvelopePayload`` this answers. The agent uses it to
+      resolve the exact paused tool to resume.
+    - ``secret_id`` — the ULID of the ``SecretRecord`` the preceding
+      ``secret-add`` minted. ``None`` when ``provided=False`` (no secret was
+      saved). When set it lets the agent confirm the new vault record exists
+      before retrying.
+    - ``provided`` — ``True`` when the user supplied the credential and the
+      ``secret-add`` succeeded (agent should retry the paused tool);
+      ``False`` when the user declined / cancelled the prompt (agent narrates
+      honestly and abandons the paused tool, per the data-source fallback
+      norm — no silent dead-end, no hallucinated success).
+    """
+
+    MESSAGE_TYPE: ClassVar[str] = "credential-provided"
+
+    envelope_type: Literal["credential-provided"] = "credential-provided"
+    request_id: ULIDStr
+    secret_id: ULIDStr | None = None
+    provided: bool = True
+
+
+# --------------------------------------------------------------------------- #
 # Routing registry (per-module — sibling follow-up wires into ws.ALL_PAYLOADS)
 # --------------------------------------------------------------------------- #
 
@@ -279,11 +400,17 @@ class SecretRevokeEnvelopePayload(GraceModel):
 SECRET_CLIENT_TO_AGENT_PAYLOADS: dict[str, type[GraceModel]] = {
     SecretAddEnvelopePayload.MESSAGE_TYPE: SecretAddEnvelopePayload,
     SecretRevokeEnvelopePayload.MESSAGE_TYPE: SecretRevokeEnvelopePayload,
+    CredentialProvidedEnvelopePayload.MESSAGE_TYPE: (
+        CredentialProvidedEnvelopePayload
+    ),
 }
 
 # Server -> client envelopes this module contributes (A.4).
 SECRET_AGENT_TO_CLIENT_PAYLOADS: dict[str, type[GraceModel]] = {
     SecretsListEnvelopePayload.MESSAGE_TYPE: SecretsListEnvelopePayload,
+    CredentialRequestEnvelopePayload.MESSAGE_TYPE: (
+        CredentialRequestEnvelopePayload
+    ),
 }
 
 # Aggregate for downstream consumers that don't care about direction.

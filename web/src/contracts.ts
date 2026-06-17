@@ -345,6 +345,44 @@ export interface SecretRevokePayload {
   secret_id: string;
 }
 
+// --- Credential-request flow (just-in-time secrets prompt; §F.3 amendment) - //
+//
+// Mirrors packages/contracts/src/grace2_contracts/secrets.py
+// (CredentialRequestEnvelopePayload / CredentialProvidedEnvelopePayload).
+//
+// Flow:
+//   1. A tool dispatch hits a missing/invalid credential for a keyed provider.
+//      The agent pauses the tool and emits `credential-request` (server ->
+//      client) naming the provider + the secret key it needs + a signup URL.
+//   2. The client surfaces a credential-entry affordance and SAVES the key via
+//      the EXISTING `secret-add` path (SecretAddPayload) — that is the only
+//      envelope that ever carries the raw key value (Decision F).
+//   3. After the save succeeds, the client emits `credential-provided` (client
+//      -> server) echoing the request_id so the agent retries the paused tool.
+//      A declined prompt rides back as `credential-provided` with
+//      `provided: false` (agent narrates honestly, abandons the paused tool —
+//      no silent dead-end, no hallucinated success).
+//
+// Neither envelope carries key material; only `secret-add` does.
+
+export interface CredentialRequestPayload {
+  envelope_type?: "credential-request";
+  request_id: string;        // ULID; echoed back on credential-provided
+  provider_id: ProviderID;   // closed Literal; scopes the secret-add reply
+  provider_label: string;    // human-readable, e.g. "eBird"
+  signup_url?: string | null; // where to obtain a key; null = no self-serve
+  secret_key_name: string;   // canonical key name, e.g. "EBIRD_API_KEY"
+  message: string;           // agent's user-facing explanation
+  tool_name: string;         // the registry tool that paused
+}
+
+export interface CredentialProvidedPayload {
+  envelope_type?: "credential-provided";
+  request_id: string;        // the CredentialRequestPayload this answers
+  secret_id?: string | null; // ULID minted by the preceding secret-add; null when provided=false
+  provided?: boolean;        // true = key saved, retry; false = user declined (default true)
+}
+
 // --- Case persistence envelopes (job-0137, sprint-12-mega Wave 3 — FR-MP-6) //
 //
 // Mirrors packages/contracts/src/grace2_contracts/case.py (the canonical
