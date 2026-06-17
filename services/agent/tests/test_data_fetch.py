@@ -723,6 +723,376 @@ def test_geocode_location_rejects_empty_query():
 
 
 # ---------------------------------------------------------------------------
+# geocode_location — state-snap fallback (NATE directive 2026-06-17).
+#
+# A vague/regional query ("south Florida") that geocodes to an arbitrary /
+# wrong-state OSM feature must snap to the full state bbox with an honest note,
+# while a PRECISE in-state query ("Fort Myers, FL") must pass through unchanged.
+# ---------------------------------------------------------------------------
+
+
+def _bind_geocode_cache(monkeypatch):
+    """Wire read_through to a fresh fake-storage client (shared test plumbing)."""
+    fake_storage = FakeStorageClient()
+    from grace2_agent.tools import cache as cache_mod
+
+    monkeypatch.setattr(
+        data_fetch,
+        "read_through",
+        lambda *a, **kw: cache_mod.read_through(
+            *a, storage_client=fake_storage, now=PINNED_NOW, **kw
+        ),
+    )
+
+
+# --- _extract_us_state edge cases ------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "query,expected",
+    [
+        # Directional / qualifier stripping.
+        ("south Florida", "Florida"),
+        ("protected areas in south Florida", "Florida"),
+        ("central Texas", "Texas"),
+        ("upstate New York", "New York"),
+        ("greater metro Los Angeles California", "California"),
+        # Full-name match BEFORE directional strip would eat the prefix.
+        ("west virginia", "West Virginia"),
+        ("north carolina", "North Carolina"),
+        ("new mexico", "New Mexico"),
+        ("rhode island", "Rhode Island"),
+        # Bare state names.
+        ("Kansas", "Kansas"),
+        ("california", "California"),
+        # USPS abbreviation in the "City, ST" idiom.
+        ("Fort Myers, FL", "Florida"),
+        ("wildfires near Los Angeles, CA", "California"),
+        # County form still detects the state.
+        ("Lee County Florida", "Florida"),
+        # DC variants.
+        ("Washington DC", "District of Columbia"),
+        ("district of columbia", "District of Columbia"),
+    ],
+)
+def test_extract_us_state_detects(query, expected):
+    assert data_fetch._extract_us_state(query) == expected
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "",
+        "   ",
+        "Houston",            # city, not a state
+        "Gulf of Mexico",     # marine zone by name
+        "in the woods",       # "in" must NOT match Indiana (word-boundary guard)
+        "or maybe later",     # "or" must NOT match Oregon
+        "Canada",             # not a US state
+        "Puerto Rico",        # territory — has no offline bbox row
+        # BARE dangerous 2-letter words (whole query) must NOT leak a state via
+        # resolve_state_code's unconditional 2-letter fast path (step-4 guard).
+        "in",
+        "or",
+        "ok",
+        "hi",
+        "me",
+        "co",
+        "la",
+        # ...and queries that REDUCE to a bare dangerous word after the
+        # leading-qualifier strip ("the or" -> "or").
+        "the or",
+        "near or",
+    ],
+)
+def test_extract_us_state_rejects(query):
+    assert data_fetch._extract_us_state(query) is None
+
+
+def test_extract_us_state_abbreviation_word_boundary_guard():
+    """A dangerous bare English word ('in', 'or') is not a state abbreviation.
+
+    But the SAME letters in the comma idiom ('Bloomington, IN') ARE.
+    """
+    assert data_fetch._extract_us_state("flooding in the valley") is None
+    assert data_fetch._extract_us_state("Bloomington, IN") == "Indiana"
+    assert data_fetch._extract_us_state("Portland, OR") == "Oregon"
+    # Non-string input never raises.
+    assert data_fetch._extract_us_state(None) is None  # type: ignore[arg-type]
+    assert data_fetch._extract_us_state(42) is None  # type: ignore[arg-type]
+
+
+# --- offline backstop table plausibility -----------------------------------
+
+
+@pytest.mark.parametrize(
+    "state,lon_lo,lon_hi,lat_lo,lat_hi",
+    [
+        # (state, expected min_lon range, expected max_lat range) — generous
+        # plausibility bands around known cartographic extents.
+        ("Florida", -88.0, -79.0, 24.0, 31.5),
+        ("California", -125.0, -113.5, 32.0, 42.5),
+        ("Texas", -107.5, -93.0, 25.5, 37.0),
+        ("Kansas", -102.5, -94.0, 36.5, 40.5),
+        ("New York", -80.5, -71.0, 40.0, 45.5),
+    ],
+)
+def test_us_state_bbox_table_plausible(state, lon_lo, lon_hi, lat_lo, lat_hi):
+    bbox = data_fetch._US_STATE_BBOX[state]
+    min_lon, min_lat, max_lon, max_lat = bbox
+    # Canonical ordering.
+    assert min_lon < max_lon and min_lat < max_lat
+    # Within plausibility bands.
+    assert lon_lo <= min_lon <= lon_hi
+    assert lon_lo <= max_lon <= lon_hi
+    assert lat_lo <= min_lat <= lat_hi
+    assert lat_lo <= max_lat <= lat_hi
+
+
+def test_us_state_bbox_table_has_50_states_plus_dc():
+    assert len(data_fetch._US_STATE_BBOX) == 51
+    assert "District of Columbia" in data_fetch._US_STATE_BBOX
+    # Every row is a valid WGS84 ordered bbox.
+    for name, bbox in data_fetch._US_STATE_BBOX.items():
+        min_lon, min_lat, max_lon, max_lat = bbox
+        assert -180.0 <= min_lon < max_lon <= 180.0, name
+        assert -90.0 <= min_lat < max_lat <= 90.0, name
+
+
+# --- (a) precise in-state query returns precise bbox unchanged --------------
+
+
+def test_geocode_precise_in_state_query_not_snapped(monkeypatch):
+    """'Fort Myers, FL' resolves precisely; centroid is in FL -> no widening."""
+    import json as _json
+
+    precise = {
+        "name": "Fort Myers, Lee County, Florida, United States",
+        "latitude": 26.6406,
+        "longitude": -81.8723,
+        "bbox": [-81.93, 26.55, -81.78, 26.71],
+        "source": "nominatim",
+        "query": "Fort Myers, FL",
+        "osm_type": "relation",
+        "osm_id": 12345,
+        "place_id": 67890,
+    }
+    monkeypatch.setattr(
+        data_fetch,
+        "_fetch_nominatim_geocode_bytes",
+        lambda query: _json.dumps(precise).encode("utf-8"),
+    )
+    _bind_geocode_cache(monkeypatch)
+
+    result = geocode_location("Fort Myers, FL")
+    assert result["source"] == "nominatim"
+    assert result["bbox"] == [-81.93, 26.55, -81.78, 26.71]
+    assert "fallback_reason" not in result
+
+
+def test_geocode_precise_county_query_not_snapped(monkeypatch):
+    """'Lee County Florida' (a county) stays precise — not widened to state."""
+    import json as _json
+
+    precise = {
+        "name": "Lee County, Florida, United States",
+        "latitude": 26.66,
+        "longitude": -81.84,
+        "bbox": [-82.27, 26.32, -81.56, 26.79],
+        "source": "nominatim",
+        "query": "Lee County Florida",
+        "osm_type": "relation",
+        "osm_id": 222,
+        "place_id": 333,
+    }
+    monkeypatch.setattr(
+        data_fetch,
+        "_fetch_nominatim_geocode_bytes",
+        lambda query: _json.dumps(precise).encode("utf-8"),
+    )
+    _bind_geocode_cache(monkeypatch)
+
+    result = geocode_location("Lee County Florida")
+    assert result["source"] == "nominatim"
+    assert result["bbox"] == [-82.27, 26.32, -81.56, 26.79]
+    assert "fallback_reason" not in result
+
+
+# --- (b) wrong-state result snaps to the state with honest note -------------
+
+
+def test_geocode_south_florida_wrong_state_snaps_to_florida(monkeypatch):
+    """'south Florida' resolving to KANSAS snaps to FL via the offline table."""
+    import json as _json
+
+    # The pathological observed behavior: Nominatim returns a Kansas feature.
+    wrong = {
+        "name": "Somewhere, Kansas, United States",
+        "latitude": 38.5,
+        "longitude": -98.0,
+        "bbox": [-98.1, 38.4, -97.9, 38.6],
+        "source": "nominatim",
+        "query": "south Florida",
+        "osm_type": "node",
+        "osm_id": 999,
+        "place_id": 111,
+    }
+    monkeypatch.setattr(
+        data_fetch,
+        "_fetch_nominatim_geocode_bytes",
+        lambda query: _json.dumps(wrong).encode("utf-8"),
+    )
+    _bind_geocode_cache(monkeypatch)
+    # Force the offline-table path (no live state lookup) for a deterministic
+    # bbox assertion.
+    monkeypatch.setattr(
+        data_fetch.requests,
+        "get",
+        lambda *a, **kw: (_ for _ in ()).throw(
+            data_fetch.requests.RequestException("offline")
+        ),
+    )
+
+    result = geocode_location("south Florida")
+    assert result["source"] == "state-bbox-fallback"
+    assert result["bbox"] == data_fetch._US_STATE_BBOX["Florida"]
+    assert result["state_bbox_source"] == "offline-state-table"
+    # Honest narration note present and truthful.
+    assert "fallback_reason" in result
+    assert "Florida" in result["fallback_reason"]
+    assert "south Florida" in result["fallback_reason"]
+    # Backward-compatible key shape preserved.
+    for key in (
+        "name", "bbox", "latitude", "longitude", "source", "query",
+        "osm_type", "osm_id", "place_id",
+    ):
+        assert key in result
+    assert result["osm_id"] is None
+    # Centroid is inside the Florida bbox.
+    fl = data_fetch._US_STATE_BBOX["Florida"]
+    assert fl[0] <= result["longitude"] <= fl[2]
+    assert fl[1] <= result["latitude"] <= fl[3]
+
+
+def test_geocode_wrong_state_prefers_live_osm_state_boundary(monkeypatch):
+    """When the live state lookup succeeds, the snap uses the OSM admin bbox."""
+    import json as _json
+
+    wrong = {
+        "name": "Somewhere, Kansas, United States",
+        "latitude": 38.5,
+        "longitude": -98.0,
+        "bbox": [-98.1, 38.4, -97.9, 38.6],
+        "source": "nominatim",
+        "query": "south Florida",
+        "osm_type": "node",
+        "osm_id": 999,
+        "place_id": 111,
+    }
+    monkeypatch.setattr(
+        data_fetch,
+        "_fetch_nominatim_geocode_bytes",
+        lambda query: _json.dumps(wrong).encode("utf-8"),
+    )
+    _bind_geocode_cache(monkeypatch)
+
+    # Nominatim featuretype=state returns the real FL admin boundingbox
+    # ([south, north, west, east] strings, per Nominatim convention).
+    class _FakeStateResp:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return [
+                {
+                    "boundingbox": ["24.396", "31.001", "-87.635", "-79.974"],
+                    "lat": "27.7",
+                    "lon": "-83.8",
+                }
+            ]
+
+    captured = {}
+
+    def _fake_get(url, params=None, headers=None, timeout=None, **_kw):
+        captured["params"] = params
+        return _FakeStateResp()
+
+    monkeypatch.setattr(data_fetch.requests, "get", _fake_get)
+
+    result = geocode_location("south Florida")
+    assert result["source"] == "state-bbox-fallback"
+    assert result["state_bbox_source"] == "nominatim-state"
+    # bbox normalized to [min_lon, min_lat, max_lon, max_lat].
+    assert result["bbox"] == [-87.635, 24.396, -79.974, 31.001]
+    # The live state lookup was scoped to the US with featuretype=state.
+    assert captured["params"]["countrycodes"] == "us"
+    assert captured["params"]["featuretype"] == "state"
+
+
+# --- (c) no-result + state detected snaps to state --------------------------
+
+
+def test_geocode_no_result_with_state_detected_snaps(monkeypatch):
+    """Nominatim returns nothing, but 'south Florida' has a detectable state."""
+
+    def _boom(query):
+        raise UpstreamAPIError(f"Nominatim returned no results for {query!r}")
+
+    monkeypatch.setattr(data_fetch, "_fetch_nominatim_geocode_bytes", _boom)
+    _bind_geocode_cache(monkeypatch)
+    # Offline path for deterministic bbox.
+    monkeypatch.setattr(
+        data_fetch.requests,
+        "get",
+        lambda *a, **kw: (_ for _ in ()).throw(
+            data_fetch.requests.RequestException("offline")
+        ),
+    )
+
+    result = geocode_location("protected areas in south Florida")
+    assert result["source"] == "state-bbox-fallback"
+    assert result["bbox"] == data_fetch._US_STATE_BBOX["Florida"]
+    assert "Florida" in result["fallback_reason"]
+
+
+# --- (d) no state + no result still raises (no silent swallow) --------------
+
+
+def test_geocode_no_result_no_state_still_raises(monkeypatch):
+    """A genuine failure with NO detectable state must NOT be swallowed."""
+
+    def _boom(query):
+        raise UpstreamAPIError(f"Nominatim returned no results for {query!r}")
+
+    monkeypatch.setattr(data_fetch, "_fetch_nominatim_geocode_bytes", _boom)
+    _bind_geocode_cache(monkeypatch)
+
+    with pytest.raises(UpstreamAPIError):
+        geocode_location("Atlantis")
+
+
+# --- _resolve_state_bbox falls back to offline table on live failure --------
+
+
+def test_resolve_state_bbox_falls_back_to_table(monkeypatch):
+    monkeypatch.setattr(
+        data_fetch.requests,
+        "get",
+        lambda *a, **kw: (_ for _ in ()).throw(
+            data_fetch.requests.RequestException("down")
+        ),
+    )
+    bbox, lat, lon, source = data_fetch._resolve_state_bbox("Texas")
+    assert source == "offline-state-table"
+    assert bbox == data_fetch._US_STATE_BBOX["Texas"]
+    # Centroid inside the bbox.
+    assert bbox[0] <= lon <= bbox[2]
+    assert bbox[1] <= lat <= bbox[3]
+
+
+# ---------------------------------------------------------------------------
 # DI binding (set_mcp_client) verified end-to-end through the run() helper.
 # ---------------------------------------------------------------------------
 
