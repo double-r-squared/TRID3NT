@@ -39,6 +39,12 @@ variable "runs_bucket" {
   default     = "grace2-hazard-runs-226996537797"
 }
 
+variable "cache_bucket" {
+  type        = string
+  description = "Name of the S3 bucket holding the staged SFINCS setup decks + manifest.json the solver container READS at run start. The task role needs read-only access to it; the agent stages inputs here before submitting the Batch job."
+  default     = "grace2-hazard-cache-226996537797"
+}
+
 variable "agent_role_name" {
   type        = string
   description = "Name of the existing IAM role attached to the agent EC2 instance (hand-provisioned, not recreated here)."

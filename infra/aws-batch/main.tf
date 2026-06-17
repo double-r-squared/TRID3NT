@@ -58,6 +58,12 @@ data "aws_s3_bucket" "runs" {
   bucket = var.runs_bucket
 }
 
+# The cache bucket holds the staged SFINCS deck + manifest.json the solver
+# container reads at run start. The task role needs READ-ONLY access to it.
+data "aws_s3_bucket" "cache" {
+  bucket = var.cache_bucket
+}
+
 # The existing IAM role on the agent EC2 instance. We attach an inline policy
 # to it below so the agent can submit/describe/terminate Batch jobs and pass
 # the roles it needs to create Batch job containers.
@@ -245,6 +251,24 @@ resource "aws_iam_role_policy" "job_task_s3" {
         Effect   = "Allow"
         Action   = "s3:ListBucket"
         Resource = data.aws_s3_bucket.runs.arn
+      },
+      {
+        # READ-ONLY on the cache bucket: the container reads manifest.json + the
+        # staged SFINCS deck (DEM, precip, landcover, etc.) from here at run
+        # start. It never writes the cache (outputs go to the runs bucket). The
+        # ListBucket grant lets the deck-prefix walk enumerate input objects.
+        Sid    = "CacheBucketRead"
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject",
+        ]
+        Resource = "${data.aws_s3_bucket.cache.arn}/*"
+      },
+      {
+        Sid      = "CacheBucketList"
+        Effect   = "Allow"
+        Action   = "s3:ListBucket"
+        Resource = data.aws_s3_bucket.cache.arn
       }
     ]
   })
@@ -279,20 +303,34 @@ resource "aws_iam_role_policy" "agent_batch" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid    = "BatchDispatch"
+        # SubmitJob + TerminateJob ARE resource-level actions (they target a
+        # specific queue / job-definition / job ARN), so they stay scoped.
+        Sid    = "BatchDispatchScoped"
         Effect = "Allow"
         Action = [
           "batch:SubmitJob",
-          "batch:DescribeJobs",
           "batch:TerminateJob",
-          "batch:ListJobs",
         ]
-        # Scope to queues and job definitions in this account/region.
         Resource = [
           "arn:aws:batch:${var.region}:${data.aws_caller_identity.current.account_id}:job-queue/*",
           "arn:aws:batch:${var.region}:${data.aws_caller_identity.current.account_id}:job-definition/*",
           "arn:aws:batch:${var.region}:${data.aws_caller_identity.current.account_id}:job/*",
         ]
+      },
+      {
+        # DescribeJobs + ListJobs do NOT support resource-level permissions —
+        # AWS evaluates them against Resource "*" and silently denies a scoped
+        # ARN. (This was the live bug: the agent's wait_for_completion early-
+        # FAILED backstop logged "not authorized ... on resource: *" every poll
+        # because these two actions were pinned to job/queue ARNs.) They must be
+        # granted on "*".
+        Sid      = "BatchDescribeListWildcard"
+        Effect   = "Allow"
+        Action   = [
+          "batch:DescribeJobs",
+          "batch:ListJobs",
+        ]
+        Resource = "*"
       },
       {
         Sid    = "PassRoleToBatch"
