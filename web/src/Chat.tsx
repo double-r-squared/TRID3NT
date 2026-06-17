@@ -1160,6 +1160,15 @@ export function mobileSheetContainerStyle(
 ): React.CSSProperties {
   const bands = chatOpacityAlphas(opacityTier);
   const alpha = expanded ? bands.mobileExpanded : bands.mobileCollapsed;
+  // F81 (NATE 2026-06-17) — in LOW/MEDIUM opacity, fade the background to
+  // transparent over the last ~26px so the panel's hard bottom edge dissolves
+  // into the map (no visible bottom border); the rest of the surface keeps its
+  // tier alpha. HIGH stays a uniform solid scrim. The composer/text are child
+  // elements (not the background), so they remain fully opaque/readable.
+  const fadeBottomBorder = opacityTier !== "high";
+  const background = fadeBottomBorder
+    ? `linear-gradient(180deg, rgba(26,27,33,${alpha}) 0%, rgba(18,19,24,${alpha}) calc(100% - 26px), rgba(18,19,24,0) 100%)`
+    : `linear-gradient(180deg, rgba(26,27,33,${alpha}) 0%, rgba(18,19,24,${alpha}) 100%)`;
   return {
     position: "absolute",
     left: 0,
@@ -1172,7 +1181,7 @@ export function mobileSheetContainerStyle(
     // intact.
     bottom: SHEET_BOTTOM_OFFSET_CSS,
     height: expanded ? `${clampSheetHeight(heightVh)}vh` : "auto",
-    background: `linear-gradient(180deg, rgba(26,27,33,${alpha}) 0%, rgba(18,19,24,${alpha}) 100%)`,
+    background,
     color: "#eee",
     borderRadius: "12px 12px 0 0",
     border: "1px solid rgba(255,255,255,0.10)",
