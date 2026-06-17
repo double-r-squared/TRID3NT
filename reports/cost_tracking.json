@@ -1,6 +1,6 @@
 {
   "tracking_started": "2026-06-06",
-  "rationale": "Per-job subagent token accounting. Tracking began after the cost-discipline lesson (see memory/feedback_cost_discipline_model_routing.md) — three failed v0.3.15 workflow attempts burned ~1.4M subagent tokens with zero applied output, prompting the model-routing + orchestrator-direct discipline.",
+  "rationale": "Per-job subagent token accounting. Tracking began after the cost-discipline lesson (see memory/feedback_cost_discipline_model_routing.md) \u2014 three failed v0.3.15 workflow attempts burned ~1.4M subagent tokens with zero applied output, prompting the model-routing + orchestrator-direct discipline.",
   "fields": {
     "job_id": "Job ID per AGENTS.md naming convention",
     "sprint": "Sprint number",
@@ -12,7 +12,7 @@
     {
       "job_id": "job-0030-schema-20260606",
       "sprint": 6,
-      "description": "Extended Appendix D.6 PipelineStepSummary with progress_percent/error_code/error_message and added AtomicToolMetadata model with 4-class TTL Literal for FunctionTool registration; 91 → 131 contracts tests green; closes OQ-W-26 from sprint-05.",
+      "description": "Extended Appendix D.6 PipelineStepSummary with progress_percent/error_code/error_message and added AtomicToolMetadata model with 4-class TTL Literal for FunctionTool registration; 91 \u2192 131 contracts tests green; closes OQ-W-26 from sprint-05.",
       "model": "opus",
       "subagent_tokens": 126553
     },
@@ -26,14 +26,14 @@
     {
       "job_id": "job-0032-agent-20260606",
       "sprint": 6,
-      "description": "Landed services/agent/src/grace2_agent/tools/ package — registry decorator + TOOL_REGISTRY, FR-DC-3 cache shim (compute_cache_key sha256[:32], read_through with live-no-cache short-circuit + force_refresh), and mongo_query/qgis_process pass-through stubs awaiting DI binding; 24 unit tests green.",
+      "description": "Landed services/agent/src/grace2_agent/tools/ package \u2014 registry decorator + TOOL_REGISTRY, FR-DC-3 cache shim (compute_cache_key sha256[:32], read_through with live-no-cache short-circuit + force_refresh), and mongo_query/qgis_process pass-through stubs awaiting DI binding; 24 unit tests green.",
       "model": "opus",
       "subagent_tokens": 145526
     },
     {
       "job_id": "job-0033-engine-20260606",
       "sprint": 6,
-      "description": "Landed 4 data-fetch atomic tools (fetch_dem via py3dep/rioxarray, fetch_buildings via MS Planetary Computer STAC, fetch_population via US Census ACS B01003, geocode_location via Nominatim) routing through cache shim with per-source bbox quantization; bound set_mcp_client DI seam; surfaced critical OQ-33-CACHE-CUSTOMTIME-TYPE-BUG (google.cloud.storage rejects str on blob.custom_time — orchestrator hotfixed 2 lines post-commit).",
+      "description": "Landed 4 data-fetch atomic tools (fetch_dem via py3dep/rioxarray, fetch_buildings via MS Planetary Computer STAC, fetch_population via US Census ACS B01003, geocode_location via Nominatim) routing through cache shim with per-source bbox quantization; bound set_mcp_client DI seam; surfaced critical OQ-33-CACHE-CUSTOMTIME-TYPE-BUG (google.cloud.storage rejects str on blob.custom_time \u2014 orchestrator hotfixed 2 lines post-commit).",
       "model": "opus",
       "subagent_tokens": 180762
     },
@@ -54,14 +54,14 @@
     {
       "job_id": "job-0036-testing-20260606",
       "sprint": 6,
-      "description": "Landed M4 acceptance suite — Fort Myers demo driving real grace2-agent subprocess via /invoke directives, OQ-33 regression test using StrictCustomTimeBlob SDK-fidelity fake, M3 test_pipeline_strip rewritten to drive real agent emission (closes OQ-T-28-SIM-WS-BOUNDARY), make test-m4 opt-in target; demo PASS with 2 honest qualifications (fetch_population qualified at upstream API — Census now requires key; qgis_process legs qualified at M5 workflow composition); 247→250 invocations green; fetch_dem cache write verified live on production GCS with datetime customTime (OQ-33 hotfix end-to-end verified).",
+      "description": "Landed M4 acceptance suite \u2014 Fort Myers demo driving real grace2-agent subprocess via /invoke directives, OQ-33 regression test using StrictCustomTimeBlob SDK-fidelity fake, M3 test_pipeline_strip rewritten to drive real agent emission (closes OQ-T-28-SIM-WS-BOUNDARY), make test-m4 opt-in target; demo PASS with 2 honest qualifications (fetch_population qualified at upstream API \u2014 Census now requires key; qgis_process legs qualified at M5 workflow composition); 247\u2192250 invocations green; fetch_dem cache write verified live on production GCS with datetime customTime (OQ-33 hotfix end-to-end verified).",
       "model": "opus",
       "subagent_tokens": 261674
     },
     {
       "job_id": "job-0038-engine-20260606",
       "sprint": 7,
-      "description": "OQ-4 HydroMT integration depth research + decision — picked Option A (Full HydroMT via hydromt-sfincs end-to-end) over Partial / Custom Config Builders; caught critical Invariant 7 risk (HydroMT roughness component silently fills unmatched NLCD class integers with defaults — mandated validation gate in build_sfincs_model raising SFINCSSetupError on LULC_MAPPING_MISMATCH); established docs/decisions/ convention (5-section format, ≤300 lines, one file per SRS OQ); concrete inheritance contracts for jobs 0039/0040/0042.",
+      "description": "OQ-4 HydroMT integration depth research + decision \u2014 picked Option A (Full HydroMT via hydromt-sfincs end-to-end) over Partial / Custom Config Builders; caught critical Invariant 7 risk (HydroMT roughness component silently fills unmatched NLCD class integers with defaults \u2014 mandated validation gate in build_sfincs_model raising SFINCSSetupError on LULC_MAPPING_MISMATCH); established docs/decisions/ convention (5-section format, \u2264300 lines, one file per SRS OQ); concrete inheritance contracts for jobs 0039/0040/0042.",
       "model": "sonnet",
       "subagent_tokens": 79970
     },
@@ -75,203 +75,203 @@
     {
       "job_id": "job-0040-infra-20260606",
       "sprint": 7,
-      "description": "SFINCS solver substrate landed live and end-to-end-verified: gs://grace-2-hazard-prod-runs bucket (UBA + PAP enforced + versioning ON; deliberate to protect solver outputs) + Cloud Run Job grace-2-sfincs-solver pinned at @sha256:89ce6e27 (thin layer over deltares/sfincs-cpu:sfincs-v2.3.3) + Cloud Workflows grace-2-sfincs-orchestrator + sfincs-runtime/workflow-invoker-sfincs SAs (sfincs-runtime ZERO project-level grants; workflow-invoker has 2 non-storage project grants required by Cloud Logging + Cloud Run LRO API, honestly disclosed); smoke run end-to-end via Workflow execution → Cloud Run Job execution → typed error envelope (exit 2 expected for no model deck); two false-start Dockerfile builds (PEP-668 + binary path) diagnosed + resolved; 23 evidence files; 5 OQs surfaced including OQ-INFRA-40-WORKFLOW-INVOKER-SCOPE.",
+      "description": "SFINCS solver substrate landed live and end-to-end-verified: gs://grace-2-hazard-prod-runs bucket (UBA + PAP enforced + versioning ON; deliberate to protect solver outputs) + Cloud Run Job grace-2-sfincs-solver pinned at @sha256:89ce6e27 (thin layer over deltares/sfincs-cpu:sfincs-v2.3.3) + Cloud Workflows grace-2-sfincs-orchestrator + sfincs-runtime/workflow-invoker-sfincs SAs (sfincs-runtime ZERO project-level grants; workflow-invoker has 2 non-storage project grants required by Cloud Logging + Cloud Run LRO API, honestly disclosed); smoke run end-to-end via Workflow execution \u2192 Cloud Run Job execution \u2192 typed error envelope (exit 2 expected for no model deck); two false-start Dockerfile builds (PEP-668 + binary path) diagnosed + resolved; 23 evidence files; 5 OQs surfaced including OQ-INFRA-40-WORKFLOW-INVOKER-SCOPE.",
       "model": "opus",
       "subagent_tokens": 233895
     },
     {
       "job_id": "job-0039-engine-20260606",
       "sprint": 7,
-      "description": "3 new fetcher atomic tools — fetch_landcover (NLCD WMS GetMap; LIVE-VERIFIED Tier 2 not kickoff-inferred Tier 3 since MRLC direct mirror returns 42-byte placeholder stub; NLCD vintage year sidecar per OQ-4 Invariant 7 mitigation) + fetch_river_geometry (NHDPlus HR HUC4-scoped Tier 4 region download + bbox clip → FlatGeobuf 567 features) + lookup_precip_return_period (NOAA Atlas 14 PFDS Tier 3; 12.1 inches 100-yr 24-hr at Fort Myers); 22 new tests + 104/104 agent suite green; 13 tools registered on startup; 7 OQ-39-* surfaced; 9 evidence files. Commit ea70c1d (misfiled under job-0041 attribution due to concurrent git-add race; files are correctly job-0039's).",
+      "description": "3 new fetcher atomic tools \u2014 fetch_landcover (NLCD WMS GetMap; LIVE-VERIFIED Tier 2 not kickoff-inferred Tier 3 since MRLC direct mirror returns 42-byte placeholder stub; NLCD vintage year sidecar per OQ-4 Invariant 7 mitigation) + fetch_river_geometry (NHDPlus HR HUC4-scoped Tier 4 region download + bbox clip \u2192 FlatGeobuf 567 features) + lookup_precip_return_period (NOAA Atlas 14 PFDS Tier 3; 12.1 inches 100-yr 24-hr at Fort Myers); 22 new tests + 104/104 agent suite green; 13 tools registered on startup; 7 OQ-39-* surfaced; 9 evidence files. Commit ea70c1d (misfiled under job-0041 attribution due to concurrent git-add race; files are correctly job-0039's).",
       "model": "opus",
       "subagent_tokens": 264998
     },
     {
       "job_id": "job-0041-agent-20260606",
       "sprint": 7,
-      "description": "run_solver + wait_for_completion atomic tools — Cloud Workflows submission against grace-2-sfincs-orchestrator (job-0040 substrate); progress emission via job-0035 PipelineEmitter.update_progress (36 emissions captured on ~3min smoke run, linear-in-wallclock curve clamped ≤95%); FR-DC-6 uncacheable; EmitterBinding DI seam mirrors job-0032 set_mcp_client pattern; Invariant 8 cancel chain verified live end-to-end at 850 ms (35× under NFR-R-3 30s budget); RunResult correctly maps completion.json error to A.6 error code; 10 new tests + 104/104 agent suite; 7 OQ-41-* surfaced including OQ-41-COMPUTE-CLASS-NAMING (FR-CE-3 medium↔schema standard alias). Commit c7ce917.",
+      "description": "run_solver + wait_for_completion atomic tools \u2014 Cloud Workflows submission against grace-2-sfincs-orchestrator (job-0040 substrate); progress emission via job-0035 PipelineEmitter.update_progress (36 emissions captured on ~3min smoke run, linear-in-wallclock curve clamped \u226495%); FR-DC-6 uncacheable; EmitterBinding DI seam mirrors job-0032 set_mcp_client pattern; Invariant 8 cancel chain verified live end-to-end at 850 ms (35\u00d7 under NFR-R-3 30s budget); RunResult correctly maps completion.json error to A.6 error code; 10 new tests + 104/104 agent suite; 7 OQ-41-* surfaced including OQ-41-COMPUTE-CLASS-NAMING (FR-CE-3 medium\u2194schema standard alias). Commit c7ce917.",
       "model": "opus",
       "subagent_tokens": 275263
     },
     {
       "job_id": "job-0042-engine-20260606",
       "sprint": 7,
-      "description": "M5 capstone composition — new workflows/ package per Decision G; model_flood_scenario composes geocode → fetch_dem → fetch_landcover → fetch_river_geometry → lookup_precip_return_period → build_sfincs_model (with NLCD validation gate per OQ-4 Invariant 7 mitigation) → run_solver → wait_for_completion → postprocess_flood → AssessmentEnvelope Flood subtype; run_model_flood_scenario atomic-tool wrapper; manning_mapping.csv v1.0.0 (20 canonical L48 classes, 4-source citation bundle). **NLCD validation gate FIRED LIVE on real production data — caught MRLC WMS palette-encoding silent-wrong-answer mode** (raster bytes are palette indices [1,3,4,5,6,7,9,10,11,13,14,18,20,21] not canonical NLCD integers); workflow returned typed failed envelope with solver_version='failed:LULC_MAPPING_MISMATCH' instead of producing silently-wrong flood maps. Real Cloud Workflows execution afd364bd through grace-2-sfincs-orchestrator succeeded (synthetic-manifest expected SOLVER_FAILED). 11 new tests + 115/115 agent suite; 14 tools registered. Closes OQ-36-QGIS-PROCESS-DEMO-CHAIN. 9 OQ-42-* incl. critical OQ-42-NLCD-WMS-PALETTE-ENCODING routed to job-0044 hotfix. Commit cca57bd.",
+      "description": "M5 capstone composition \u2014 new workflows/ package per Decision G; model_flood_scenario composes geocode \u2192 fetch_dem \u2192 fetch_landcover \u2192 fetch_river_geometry \u2192 lookup_precip_return_period \u2192 build_sfincs_model (with NLCD validation gate per OQ-4 Invariant 7 mitigation) \u2192 run_solver \u2192 wait_for_completion \u2192 postprocess_flood \u2192 AssessmentEnvelope Flood subtype; run_model_flood_scenario atomic-tool wrapper; manning_mapping.csv v1.0.0 (20 canonical L48 classes, 4-source citation bundle). **NLCD validation gate FIRED LIVE on real production data \u2014 caught MRLC WMS palette-encoding silent-wrong-answer mode** (raster bytes are palette indices [1,3,4,5,6,7,9,10,11,13,14,18,20,21] not canonical NLCD integers); workflow returned typed failed envelope with solver_version='failed:LULC_MAPPING_MISMATCH' instead of producing silently-wrong flood maps. Real Cloud Workflows execution afd364bd through grace-2-sfincs-orchestrator succeeded (synthetic-manifest expected SOLVER_FAILED). 11 new tests + 115/115 agent suite; 14 tools registered. Closes OQ-36-QGIS-PROCESS-DEMO-CHAIN. 9 OQ-42-* incl. critical OQ-42-NLCD-WMS-PALETTE-ENCODING routed to job-0044 hotfix. Commit cca57bd.",
       "model": "opus",
       "subagent_tokens": 310417
     },
     {
       "job_id": "job-0044-engine-20260607",
       "sprint": 7,
-      "description": "Mid-sprint hotfix for OQ-42-NLCD-WMS-PALETTE-ENCODING. Path B (MRLC WCS 1.0.0 GetCoverage) chosen over Path A (WMS palette ColorTable decode) and Path C (forked variant) — server-side canonical bytes eliminates a future Invariant 7 risk that Path A's client-side RGB→class lookup would introduce if MRLC reorders palette legend. WCS 1.0.0 over 2.0.1 (GeoServer EPSG:3857 projection bug) over 1.1.1 (sub-pixel rejection on small bbox); multi-version live verification before pinning. Re-ran job-0042 model_flood_scenario smoke end-to-end: validation gate PASS (fetched [11,21,22,23,24,31,41,42,43,52,71,81,90,95] ⊂ manning_mapping.csv v1.0.0 20 classes); real Cloud Workflows execution 1d98f3e9 dispatched; wait_for_completion polled ~4 min; SOLVER_FAILED on synthetic manifest (same outcome class as job-0040/0042 — not introduced here). HydroMT deck generation is honest next blocker, scoped to job-0043. 4 new tests + 119/119 agent suite; 14 tools registered. Closes OQ-42-NLCD-WMS-PALETTE-ENCODING. Commit 53e2f05.",
+      "description": "Mid-sprint hotfix for OQ-42-NLCD-WMS-PALETTE-ENCODING. Path B (MRLC WCS 1.0.0 GetCoverage) chosen over Path A (WMS palette ColorTable decode) and Path C (forked variant) \u2014 server-side canonical bytes eliminates a future Invariant 7 risk that Path A's client-side RGB\u2192class lookup would introduce if MRLC reorders palette legend. WCS 1.0.0 over 2.0.1 (GeoServer EPSG:3857 projection bug) over 1.1.1 (sub-pixel rejection on small bbox); multi-version live verification before pinning. Re-ran job-0042 model_flood_scenario smoke end-to-end: validation gate PASS (fetched [11,21,22,23,24,31,41,42,43,52,71,81,90,95] \u2282 manning_mapping.csv v1.0.0 20 classes); real Cloud Workflows execution 1d98f3e9 dispatched; wait_for_completion polled ~4 min; SOLVER_FAILED on synthetic manifest (same outcome class as job-0040/0042 \u2014 not introduced here). HydroMT deck generation is honest next blocker, scoped to job-0043. 4 new tests + 119/119 agent suite; 14 tools registered. Closes OQ-42-NLCD-WMS-PALETTE-ENCODING. Commit 53e2f05.",
       "model": "opus",
       "subagent_tokens": 259702
     },
     {
       "job_id": "job-0043-testing-20260606",
       "sprint": 7,
-      "description": "M5 acceptance — Hurricane Ian/Fort Myers demo end-to-end on deployed substrate. HONEST FAILURE per kickoff §1 substrate-verification criterion: full chain runs through 5 live fetcher cache hits + **Invariant 7 NLCD validation gate PASS branch verified LIVE on canonical WCS bytes** (sister branch to job-0042's FAIL — gate fired BOTH branches in production this sprint; sprint-7 headline win) + NOAA Atlas 14 11.9-inch 100-yr 24-hr forcing for Fort Myers + chain terminates at build_sfincs_model HYDROMT_UNAVAILABLE (hydromt-sfincs not in dev venv; production SFINCS container has it). AssessmentEnvelope returned with typed failure + 5 cited data sources. **Three screenshots captured + surfaced to user via SendUserFile proactive** (baseline + mid_run with progress emissions + final_honest_failure with typed error visible). **Invariant 8 cancel chain measured 8.24 s on full workflow** (3.6× under NFR-R-3 30s budget; combined with job-0041's 850 ms run_solver baseline = both Invariant 8 measurements verified live). NFR-P-4 honestly qualified (substrate only; real SFINCS pends OQ-43-HYDROMT-SFINCS-DEV-VENV-INSTALL). 301 unique-function invocations green across 7 test tiers (largest in project history). 7 OQ-43-* surfaced. Sprint-07 retrospective drafted. Commit 448fd1b.",
+      "description": "M5 acceptance \u2014 Hurricane Ian/Fort Myers demo end-to-end on deployed substrate. HONEST FAILURE per kickoff \u00a71 substrate-verification criterion: full chain runs through 5 live fetcher cache hits + **Invariant 7 NLCD validation gate PASS branch verified LIVE on canonical WCS bytes** (sister branch to job-0042's FAIL \u2014 gate fired BOTH branches in production this sprint; sprint-7 headline win) + NOAA Atlas 14 11.9-inch 100-yr 24-hr forcing for Fort Myers + chain terminates at build_sfincs_model HYDROMT_UNAVAILABLE (hydromt-sfincs not in dev venv; production SFINCS container has it). AssessmentEnvelope returned with typed failure + 5 cited data sources. **Three screenshots captured + surfaced to user via SendUserFile proactive** (baseline + mid_run with progress emissions + final_honest_failure with typed error visible). **Invariant 8 cancel chain measured 8.24 s on full workflow** (3.6\u00d7 under NFR-R-3 30s budget; combined with job-0041's 850 ms run_solver baseline = both Invariant 8 measurements verified live). NFR-P-4 honestly qualified (substrate only; real SFINCS pends OQ-43-HYDROMT-SFINCS-DEV-VENV-INSTALL). 301 unique-function invocations green across 7 test tiers (largest in project history). 7 OQ-43-* surfaced. Sprint-07 retrospective drafted. Commit 448fd1b.",
       "model": "opus",
       "subagent_tokens": 273634
     },
     {
       "job_id": "job-0048-agent-20260607",
       "sprint": 8,
-      "description": "FR-FR-3 MAX_TURNS_PER_SESSION=25 env-var-overridable cap; SessionStateStatus widening (active|max_turns_reached); counter per WS connection + closing message + status flip on cap. 11 new tests + 130/130 agent suite. Scope crept into job-0045 territory (also added 4 §F.1.2 + §3.10 envelope payload classes to ws.py); concurrent job-0045 reconciled with test factories. OQ-48-PARALLEL-SCHEMA-FILE-OWNERSHIP filed. First sprint-08 Sonnet model-routing win. Commit 1c6537a.",
+      "description": "FR-FR-3 MAX_TURNS_PER_SESSION=25 env-var-overridable cap; SessionStateStatus widening (active|max_turns_reached); counter per WS connection + closing message + status flip on cap. 11 new tests + 130/130 agent suite. Scope crept into job-0045 territory (also added 4 \u00a7F.1.2 + \u00a73.10 envelope payload classes to ws.py); concurrent job-0045 reconciled with test factories. OQ-48-PARALLEL-SCHEMA-FILE-OWNERSHIP filed. First sprint-08 Sonnet model-routing win. Commit 1c6537a.",
       "model": "sonnet",
       "subagent_tokens": 103900
     },
     {
       "job_id": "job-0049-infra-20260607",
       "sprint": 8,
-      "description": "hydromt-sfincs install in agent service. Honest pin correction: OQ-4 §4 paper pin hydromt-sfincs>=1.1.2 doesn't exist on PyPI (sequence 1.1.0→1.2.0); corrected to >=1.1.0,<2.0 (resolved 1.2.2 + hydromt 0.10.1). M5 chain advances past HYDROMT_UNAVAILABLE: fetchers cache-hit + Invariant 7 gate PASS again + Atlas 14 forcing loads + HydroMT-SFINCS initialises + new honest blocker HYDROMT_BUILD_FAILED at sfincs_builder.py:692 (raw YAML string to .build(opt=...); 1.2.x expects dict). One-line engine fix surfaced as OQ-49-HYDROMT-BUILD-OPT-ARGUMENT-SHAPE → job-0052 hotfix. infra/THIRD_PARTY_LICENSES.md NEW. Closes OQ-43-HYDROMT-SFINCS-DEV-VENV-INSTALL. Commit b314153.",
+      "description": "hydromt-sfincs install in agent service. Honest pin correction: OQ-4 \u00a74 paper pin hydromt-sfincs>=1.1.2 doesn't exist on PyPI (sequence 1.1.0\u21921.2.0); corrected to >=1.1.0,<2.0 (resolved 1.2.2 + hydromt 0.10.1). M5 chain advances past HYDROMT_UNAVAILABLE: fetchers cache-hit + Invariant 7 gate PASS again + Atlas 14 forcing loads + HydroMT-SFINCS initialises + new honest blocker HYDROMT_BUILD_FAILED at sfincs_builder.py:692 (raw YAML string to .build(opt=...); 1.2.x expects dict). One-line engine fix surfaced as OQ-49-HYDROMT-BUILD-OPT-ARGUMENT-SHAPE \u2192 job-0052 hotfix. infra/THIRD_PARTY_LICENSES.md NEW. Closes OQ-43-HYDROMT-SFINCS-DEV-VENV-INSTALL. Commit b314153.",
       "model": "opus",
       "subagent_tokens": 112731
     },
     {
       "job_id": "job-0045-schema-20260607",
       "sprint": 8,
-      "description": "Mode 1 catalog schema substrate — CatalogEntry pydantic rewritten to §F.1.2 binding shape (id/name/description/urls/access_tier 1-4/credential_tier 1-3/ttl_class/source_class/license/citation/vintage/last_verified/status/how_to_use/api_key_secret_ref + model_validator credential consistency). D.11 catalog_entries + D.12 catalog_audit_log Mongo collections with FR-MP-5-aligned indexes (D.11/D.12 numbering vs kickoff's D.8/D.9 — live-verification of existing D.7-D.10 meta sections; OQ-45-D-NUMBERING). 4 envelopes registered in CLIENT_TO_AGENT_PAYLOADS/AGENT_TO_CLIENT_PAYLOADS routing dicts (payload classes themselves added by concurrent job-0048's scope creep — clean concurrent reconciliation). 11 new tests + 142/142 contracts green. 6 new JSON Schemas exported idempotently. SRS A + D extensions; make srs idempotent. 7 OQ-45-* surfaced. Commit 3c66ab2.",
+      "description": "Mode 1 catalog schema substrate \u2014 CatalogEntry pydantic rewritten to \u00a7F.1.2 binding shape (id/name/description/urls/access_tier 1-4/credential_tier 1-3/ttl_class/source_class/license/citation/vintage/last_verified/status/how_to_use/api_key_secret_ref + model_validator credential consistency). D.11 catalog_entries + D.12 catalog_audit_log Mongo collections with FR-MP-5-aligned indexes (D.11/D.12 numbering vs kickoff's D.8/D.9 \u2014 live-verification of existing D.7-D.10 meta sections; OQ-45-D-NUMBERING). 4 envelopes registered in CLIENT_TO_AGENT_PAYLOADS/AGENT_TO_CLIENT_PAYLOADS routing dicts (payload classes themselves added by concurrent job-0048's scope creep \u2014 clean concurrent reconciliation). 11 new tests + 142/142 contracts green. 6 new JSON Schemas exported idempotently. SRS A + D extensions; make srs idempotent. 7 OQ-45-* surfaced. Commit 3c66ab2.",
       "model": "opus",
       "subagent_tokens": 215062
     },
     {
       "job_id": "job-0052-engine-20260607",
       "sprint": 8,
-      "description": "Mid-sprint hotfix #1: yaml.safe_load fix at sfincs_builder.py:692. M5 chain advances meaningfully (11.47s → 41.11s execution; HydroMT actually runs setup_grid_from_region + setup_dep DEM IDW on 96 cells + setup_mask_active). Next honest blocker: setup_manning_roughness rejects map_fn kwarg in hydromt-sfincs 1.2.x. Substrate-integrity guard worked — TypeError caught + typed as SFINCSSetupError per FR-FR-2 routing. +2 tests + 132/132 agent suite. Closes OQ-49-HYDROMT-BUILD-OPT-ARGUMENT-SHAPE; OQ-52 routed to job-0053. Commit 1b7bf88.",
+      "description": "Mid-sprint hotfix #1: yaml.safe_load fix at sfincs_builder.py:692. M5 chain advances meaningfully (11.47s \u2192 41.11s execution; HydroMT actually runs setup_grid_from_region + setup_dep DEM IDW on 96 cells + setup_mask_active). Next honest blocker: setup_manning_roughness rejects map_fn kwarg in hydromt-sfincs 1.2.x. Substrate-integrity guard worked \u2014 TypeError caught + typed as SFINCSSetupError per FR-FR-2 routing. +2 tests + 132/132 agent suite. Closes OQ-49-HYDROMT-BUILD-OPT-ARGUMENT-SHAPE; OQ-52 routed to job-0053. Commit 1b7bf88.",
       "model": "opus",
       "subagent_tokens": 109143
     },
     {
       "job_id": "job-0046-research-20260607",
       "sprint": 8,
-      "description": "Catalog seed research — public_data_source_catalog.yaml v0.1.0 with 30 vetted entries across all 8 domains (terrain 4, hydrology 5, weather/precip 4, buildings 4, population 3, landcover 3, fire 4, seismic 3). 21 distinct source_class values (finer than the 8 high-level domains; correct per FR-DC-1). **9 access-tier deviations from documentation caught via live probe** — NEXRAD bucket renamed Sep 2025, FEMA NFHL URL moved, USGS 3DEP subdomain change, USFS WHP ArcGIS 403 → Tier 4 FSRDA fallback, LANDFIRE WCS workspaces unconfirmed, WorldPop Tier 4 re-confirmed, MRMS subdomain change, FEMA NRI endpoint deferred to sprint-09, CO-OPS permanent redirect. 4 domain gaps disclosed honestly in footer (not padded). Sonnet routing validated: 142,889 tokens at 63% of sprint-7 Opus average; without live probe, catalog would have shipped with 9 stale URLs requiring sprint-09 hotfix cascades. Commit 3aa394e.",
+      "description": "Catalog seed research \u2014 public_data_source_catalog.yaml v0.1.0 with 30 vetted entries across all 8 domains (terrain 4, hydrology 5, weather/precip 4, buildings 4, population 3, landcover 3, fire 4, seismic 3). 21 distinct source_class values (finer than the 8 high-level domains; correct per FR-DC-1). **9 access-tier deviations from documentation caught via live probe** \u2014 NEXRAD bucket renamed Sep 2025, FEMA NFHL URL moved, USGS 3DEP subdomain change, USFS WHP ArcGIS 403 \u2192 Tier 4 FSRDA fallback, LANDFIRE WCS workspaces unconfirmed, WorldPop Tier 4 re-confirmed, MRMS subdomain change, FEMA NRI endpoint deferred to sprint-09, CO-OPS permanent redirect. 4 domain gaps disclosed honestly in footer (not padded). Sonnet routing validated: 142,889 tokens at 63% of sprint-7 Opus average; without live probe, catalog would have shipped with 9 stale URLs requiring sprint-09 hotfix cascades. Commit 3aa394e.",
       "model": "sonnet",
       "subagent_tokens": 142889
     },
     {
       "job_id": "job-0053-engine-20260607",
       "sprint": 8,
-      "description": "Mid-sprint hotfix #2: setup_manning_roughness v1.2.x kwarg fix via live `inspect.signature(model.setup_manning_roughness)` — closes OQ-52-MANNING-ROUGHNESS-MAP-FN-MISMATCH. Reshape reclass_table into datasets_rgh entries; new _write_hydromt_reclass_table_csv helper. M5 chain advances setup_grid_from_region → setup_dep → setup_mask_active → setup_manning_roughness CLEAR; fails at setup_river_inflow with merit_hydro DataCatalog not loaded — **NEW CLASS of mismatch** (DataCatalog binding vs signature kwarg). Three consecutive 1.2.x mismatches confirms systematic migration need; ESCALATION RULE FIRES → comprehensive 1.2.x API-migration audit (job-0054) rather than 4th hotfix. +1 test + 133/133 agent suite. Commit a6399d2.",
+      "description": "Mid-sprint hotfix #2: setup_manning_roughness v1.2.x kwarg fix via live `inspect.signature(model.setup_manning_roughness)` \u2014 closes OQ-52-MANNING-ROUGHNESS-MAP-FN-MISMATCH. Reshape reclass_table into datasets_rgh entries; new _write_hydromt_reclass_table_csv helper. M5 chain advances setup_grid_from_region \u2192 setup_dep \u2192 setup_mask_active \u2192 setup_manning_roughness CLEAR; fails at setup_river_inflow with merit_hydro DataCatalog not loaded \u2014 **NEW CLASS of mismatch** (DataCatalog binding vs signature kwarg). Three consecutive 1.2.x mismatches confirms systematic migration need; ESCALATION RULE FIRES \u2192 comprehensive 1.2.x API-migration audit (job-0054) rather than 4th hotfix. +1 test + 133/133 agent suite. Commit a6399d2.",
       "model": "opus",
       "subagent_tokens": 119484
     },
     {
       "job_id": "job-0054-engine-20260607",
       "sprint": 8,
-      "description": "Comprehensive hydromt-sfincs 1.2.x API-migration audit (escalation from 0049/0052/0053 hotfix chain). Live-inspected every setup_* method's 1.2.2 signature, cross-walked to library source. Two material mismatches caught + fixed in one pass: OQ-53 closed (setup_river_inflow: dropped hydrography='merit_hydro' — artifact_data catalog ships Italy-only rasters; rivers FGB carries needed geometry per workflows/flwdir.py:194-197 `if da_uparea is not None:` guard); OQ-54 closed (setup_precip_forcing: replaced invalid precip/duration_hr with v1.2.x-accepted magnitude in mm/hr — Atlas 14 11.9 in/24 hr → 12.59 mm/hr). Expanded canonical docstring with live signatures for every step; added all-steps signature audit test (`test_build_sfincs_model_all_setup_steps_match_live_signatures`) as residual guard against future drift. M5 re-run: PARTIAL SUCCESS / NEW FAILURE CLASS — chain advances through **all 5 setup steps cleanly** (`setup_river_inflow` finds 39 inflow points!) and fails INSIDE hydromt-sfincs 1.2.2 itself at `set_forcing_1d` (sfincs.py:1858) calling `pd.RangeIndex.is_integer()` which was REMOVED in pandas ≥ 2.0 (we run 3.0.3). Upstream library bug, not API mismatch. Surfaced as OQ-54-HYDROMT-SFINCS-PANDAS-3X-INCOMPAT; recommended remediation: drop setup_river_inflow from v0.1 pluvial deck (river inflow is M5+ scope). 3 new tests + 17 in test_model_flood_scenario.py; 157 agent suite passes (2 fails are concurrent job-0047 pre-existing). Chained-hotfix loop broken. Commit bc30638.",
+      "description": "Comprehensive hydromt-sfincs 1.2.x API-migration audit (escalation from 0049/0052/0053 hotfix chain). Live-inspected every setup_* method's 1.2.2 signature, cross-walked to library source. Two material mismatches caught + fixed in one pass: OQ-53 closed (setup_river_inflow: dropped hydrography='merit_hydro' \u2014 artifact_data catalog ships Italy-only rasters; rivers FGB carries needed geometry per workflows/flwdir.py:194-197 `if da_uparea is not None:` guard); OQ-54 closed (setup_precip_forcing: replaced invalid precip/duration_hr with v1.2.x-accepted magnitude in mm/hr \u2014 Atlas 14 11.9 in/24 hr \u2192 12.59 mm/hr). Expanded canonical docstring with live signatures for every step; added all-steps signature audit test (`test_build_sfincs_model_all_setup_steps_match_live_signatures`) as residual guard against future drift. M5 re-run: PARTIAL SUCCESS / NEW FAILURE CLASS \u2014 chain advances through **all 5 setup steps cleanly** (`setup_river_inflow` finds 39 inflow points!) and fails INSIDE hydromt-sfincs 1.2.2 itself at `set_forcing_1d` (sfincs.py:1858) calling `pd.RangeIndex.is_integer()` which was REMOVED in pandas \u2265 2.0 (we run 3.0.3). Upstream library bug, not API mismatch. Surfaced as OQ-54-HYDROMT-SFINCS-PANDAS-3X-INCOMPAT; recommended remediation: drop setup_river_inflow from v0.1 pluvial deck (river inflow is M5+ scope). 3 new tests + 17 in test_model_flood_scenario.py; 157 agent suite passes (2 fails are concurrent job-0047 pre-existing). Chained-hotfix loop broken. Commit bc30638.",
       "model": "opus",
       "subagent_tokens": 181195
     },
     {
       "job_id": "job-0047-engine-20260607",
       "sprint": 8,
-      "description": "Stage B: catalog_search + catalog_fetch atomic tools + generic Tier-2 OGC adapter — the §F.1.2 Mode 1 substrate. tools/ogc_adapter.py exposes fetch_ogc_layer(service_type=WMS|WCS|WFS|ArcGIS-REST, version, image_format, ...) with defensive exception-XML detection (raises OGCAdapterError rather than caching error bodies as raster). WCS 1.0.0 sweet spot preserves job-0044's MRLC fix; direct `requests` over `owslib` for Mode 1 retrieval (OQ-47-OWSLIB-CHOICE). **fetch_landcover refactored** to call into adapter — identical WCS 1.0.0 request shape + cache key + exception wrap; job-0044's pinning test still passes + new revert-prevention test added. **Live catalog_search**: topic=flood zones + Fort Myers bbox → rank-1 fema-nfhl-flood-zones (score 7.0); topic=DEM → Copernicus GLO-30/GLO-90/HydroSHEDS (score 8.0); source_filter=landcover restricts; Africa bbox correctly drops 3DEP via CONUS heuristic. **Live catalog_fetch**: fema-nfhl-flood-zones → 8,045,110 bytes real GeoJSON polygons from hazards.fema.gov; usgs-3dep-elevation → 4,195,622 bytes real GeoTIFF (F32 1024×1024) from elevation.nationalmap.gov. 16 tools at startup verified (14+2). 23 new tests + 159/159 agent + 142/142 contracts. OQ-47-CATALOG-YAML-SECRET-REFS (2 of 30 entries — Census ACS + NASA FIRMS — declare credential_tier:2 but lack api_key_secret_ref; routes to infra Secret Manager + engine curator amendment). Commit 034dfd5.",
+      "description": "Stage B: catalog_search + catalog_fetch atomic tools + generic Tier-2 OGC adapter \u2014 the \u00a7F.1.2 Mode 1 substrate. tools/ogc_adapter.py exposes fetch_ogc_layer(service_type=WMS|WCS|WFS|ArcGIS-REST, version, image_format, ...) with defensive exception-XML detection (raises OGCAdapterError rather than caching error bodies as raster). WCS 1.0.0 sweet spot preserves job-0044's MRLC fix; direct `requests` over `owslib` for Mode 1 retrieval (OQ-47-OWSLIB-CHOICE). **fetch_landcover refactored** to call into adapter \u2014 identical WCS 1.0.0 request shape + cache key + exception wrap; job-0044's pinning test still passes + new revert-prevention test added. **Live catalog_search**: topic=flood zones + Fort Myers bbox \u2192 rank-1 fema-nfhl-flood-zones (score 7.0); topic=DEM \u2192 Copernicus GLO-30/GLO-90/HydroSHEDS (score 8.0); source_filter=landcover restricts; Africa bbox correctly drops 3DEP via CONUS heuristic. **Live catalog_fetch**: fema-nfhl-flood-zones \u2192 8,045,110 bytes real GeoJSON polygons from hazards.fema.gov; usgs-3dep-elevation \u2192 4,195,622 bytes real GeoTIFF (F32 1024\u00d71024) from elevation.nationalmap.gov. 16 tools at startup verified (14+2). 23 new tests + 159/159 agent + 142/142 contracts. OQ-47-CATALOG-YAML-SECRET-REFS (2 of 30 entries \u2014 Census ACS + NASA FIRMS \u2014 declare credential_tier:2 but lack api_key_secret_ref; routes to infra Secret Manager + engine curator amendment). Commit 034dfd5.",
       "model": "opus",
       "subagent_tokens": 285820
     },
     {
       "job_id": "job-0055-engine-20260607",
       "sprint": 8,
-      "description": "Mid-sprint follow-up to job-0054 audit rec (b): dropped `setup_river_inflow` from v0.1 pluvial YAML deck. river_local_path kept in signature (still fetched + cached for v0.2+); the block emission removed with 17-line comment block citing v0.1 scope + OQ-54 routing. **Bonus in-scope fix**: SFINCS time format `tref/tstart/tstop` corrected from ISO 8601 (`2026-01-01T00:00:00`) to native (`20260101 000000`) per sfincs_input.py `strptime(val, '%Y%m%d %H%M%S')` parser — discovered live during run. M5 chain advances FURTHER: clears all 4 setup steps + emits `setup_precip_forcing.magnitude: 12.5946...` correctly, then dies INSIDE hydromt-sfincs 1.2.2 at sfincs.py:2456 calling `pd.date_range(..., freq=\"10T\")` — pandas 3.0 removed the \"T\" minute frequency alias (use \"10min\"). NEW upstream incompat **OQ-55-PRECIP-FORCING-PANDAS3X-FREQ-ALIAS** (same class as OQ-54's is_integer()). Routing rec: single pandas pin in services/agent/pyproject.toml should unblock BOTH. 17/17 model_flood_scenario tests + 159/159 agent suite. No screenshot moment. Cost: 114,514 tokens (Sonnet — mechanical execution of Opus's audit recommendation, second sprint-8 Sonnet routing win). Commit cf9bfd3.",
+      "description": "Mid-sprint follow-up to job-0054 audit rec (b): dropped `setup_river_inflow` from v0.1 pluvial YAML deck. river_local_path kept in signature (still fetched + cached for v0.2+); the block emission removed with 17-line comment block citing v0.1 scope + OQ-54 routing. **Bonus in-scope fix**: SFINCS time format `tref/tstart/tstop` corrected from ISO 8601 (`2026-01-01T00:00:00`) to native (`20260101 000000`) per sfincs_input.py `strptime(val, '%Y%m%d %H%M%S')` parser \u2014 discovered live during run. M5 chain advances FURTHER: clears all 4 setup steps + emits `setup_precip_forcing.magnitude: 12.5946...` correctly, then dies INSIDE hydromt-sfincs 1.2.2 at sfincs.py:2456 calling `pd.date_range(..., freq=\"10T\")` \u2014 pandas 3.0 removed the \"T\" minute frequency alias (use \"10min\"). NEW upstream incompat **OQ-55-PRECIP-FORCING-PANDAS3X-FREQ-ALIAS** (same class as OQ-54's is_integer()). Routing rec: single pandas pin in services/agent/pyproject.toml should unblock BOTH. 17/17 model_flood_scenario tests + 159/159 agent suite. No screenshot moment. Cost: 114,514 tokens (Sonnet \u2014 mechanical execution of Opus's audit recommendation, second sprint-8 Sonnet routing win). Commit cf9bfd3.",
       "model": "sonnet",
       "subagent_tokens": 114514
     },
     {
       "job_id": "job-0056-infra-20260607",
       "sprint": 8,
-      "description": "**Major milestone**: pandas 2.2.3 pinned. Path A (pandas>=2.1,<2.2) failed — Python 3.13 cp313 wheel constraint (pandas 2.1.x has no cp313 wheel; build from source fails on _PyLong_AsByteArray signature change). pandas 2.2.x is earliest with cp313 wheel AND both deprecated APIs still functional (FutureWarnings). One pin closes both OQ-54 (is_integer) + OQ-55 (freq=\"10T\"). **No cascade** — numpy/geopandas/rasterio/xarray/pyproj/shapely all unchanged. 162/162 tests (159 baseline + 3 regression guards in test_pandas_pin_regression.py). **M5 chain advances FAR FURTHER — HydroMT model build completes for the first time in project history**: all setup_* steps green + SFINCS deck (sfincs.inp + DEM + Manning + precip forcing) uploaded to gs://grace-2-hazard-prod-cache/cache/static-30d/sfincs_setup/01KTHQP54XVAAF2NPGKTAMP4PV/ + **Cloud Workflows execution 08370fe0-a31b-4edb-a173-1f77ef3cec77 dispatched + ran ~3.8 minutes** in real solver Cloud Run Job. New honest blocker: **SOLVER_FAILED** on the REAL manifest (prior 0040/0042/0044 SOLVER_FAILED outcomes were on synthetic manifests). Chain is past ALL HydroMT + pandas + setup_* issues. Surfaced as **OQ-56-SFINCS-SOLVER-FAILED-REAL-MANIFEST** — routes to infra (Cloud Run Job container review + execution log inspection) or engine (SFINCS deck completeness validation). Commit ad915bf.",
+      "description": "**Major milestone**: pandas 2.2.3 pinned. Path A (pandas>=2.1,<2.2) failed \u2014 Python 3.13 cp313 wheel constraint (pandas 2.1.x has no cp313 wheel; build from source fails on _PyLong_AsByteArray signature change). pandas 2.2.x is earliest with cp313 wheel AND both deprecated APIs still functional (FutureWarnings). One pin closes both OQ-54 (is_integer) + OQ-55 (freq=\"10T\"). **No cascade** \u2014 numpy/geopandas/rasterio/xarray/pyproj/shapely all unchanged. 162/162 tests (159 baseline + 3 regression guards in test_pandas_pin_regression.py). **M5 chain advances FAR FURTHER \u2014 HydroMT model build completes for the first time in project history**: all setup_* steps green + SFINCS deck (sfincs.inp + DEM + Manning + precip forcing) uploaded to gs://grace-2-hazard-prod-cache/cache/static-30d/sfincs_setup/01KTHQP54XVAAF2NPGKTAMP4PV/ + **Cloud Workflows execution 08370fe0-a31b-4edb-a173-1f77ef3cec77 dispatched + ran ~3.8 minutes** in real solver Cloud Run Job. New honest blocker: **SOLVER_FAILED** on the REAL manifest (prior 0040/0042/0044 SOLVER_FAILED outcomes were on synthetic manifests). Chain is past ALL HydroMT + pandas + setup_* issues. Surfaced as **OQ-56-SFINCS-SOLVER-FAILED-REAL-MANIFEST** \u2014 routes to infra (Cloud Run Job container review + execution log inspection) or engine (SFINCS deck completeness validation). Commit ad915bf.",
       "model": "sonnet",
       "subagent_tokens": 82694
     },
     {
       "job_id": "job-0057-engine-20260607",
       "sprint": 8,
-      "description": "**🎉 M5 PIPELINE SUCCESS — FIRST FLOOD-DEPTH OUTPUT IN PROJECT HISTORY**. Two-part root-cause fix in `_default_setup_uri` + `build_sfincs_model`: (1) URI returns `/manifest.json` (file), not trailing-slash directory; (2) emits worker-contract `manifest.json` with `{inputs:[{gs_uri,dest}], sfincs_args:[], outputs:[...]}` enumerating all 11 deck files. fsspec.upload preserves the `deck/` prefix so manifest gs_uri values are correct. **Live E2E**: worker reads manifest with NO 404 → all 11 inputs downloaded → **SFINCS binary ran 287s + exit 0** → `sfincs_map.nc` produced at gs://grace-2-hazard-prod-runs/01KTHS9C5HH9N15SXQ0KEKKBGX/sfincs_map.nc (38 MB, 527×540 grid @ 30 m, EPSG:32617, **hmax 3.52 m**, 27.4% cells with depth ≥50 cm — plausible pluvial response for 100-yr 24-hr Atlas 14 11.9 in design storm over flat Fort Myers terrain). completion.json status=ok exit_code=0. 2 new manifest tests + 164/164 agent suite. Orchestrator-direct hmax → PNG render surfaced via SendUserFile proactive per memory rule. Remaining trivial follow-up: postprocess_flood COG_WRITE_FAILED on singleton timemax dim → job-0058. Commit 15e7832.",
+      "description": "**\ud83c\udf89 M5 PIPELINE SUCCESS \u2014 FIRST FLOOD-DEPTH OUTPUT IN PROJECT HISTORY**. Two-part root-cause fix in `_default_setup_uri` + `build_sfincs_model`: (1) URI returns `/manifest.json` (file), not trailing-slash directory; (2) emits worker-contract `manifest.json` with `{inputs:[{gs_uri,dest}], sfincs_args:[], outputs:[...]}` enumerating all 11 deck files. fsspec.upload preserves the `deck/` prefix so manifest gs_uri values are correct. **Live E2E**: worker reads manifest with NO 404 \u2192 all 11 inputs downloaded \u2192 **SFINCS binary ran 287s + exit 0** \u2192 `sfincs_map.nc` produced at gs://grace-2-hazard-prod-runs/01KTHS9C5HH9N15SXQ0KEKKBGX/sfincs_map.nc (38 MB, 527\u00d7540 grid @ 30 m, EPSG:32617, **hmax 3.52 m**, 27.4% cells with depth \u226550 cm \u2014 plausible pluvial response for 100-yr 24-hr Atlas 14 11.9 in design storm over flat Fort Myers terrain). completion.json status=ok exit_code=0. 2 new manifest tests + 164/164 agent suite. Orchestrator-direct hmax \u2192 PNG render surfaced via SendUserFile proactive per memory rule. Remaining trivial follow-up: postprocess_flood COG_WRITE_FAILED on singleton timemax dim \u2192 job-0058. Commit 15e7832.",
       "model": "sonnet",
       "subagent_tokens": 138172
     },
     {
       "job_id": "job-0058-engine-20260607",
       "sprint": 8,
-      "description": "**🎉 PRODUCTION M5 END-TO-END SUCCESS** (sprint-08 capstone deliverable). postprocess_flood squeeze fix: handle HydroMT-SFINCS 1.2.2's hmax shape (timemax=1, n, m) → squeeze to 2D before COG write; raises RUN_OUTPUT_UNEXPECTED_SHAPE if ndim still > 2 after squeeze (defense-in-depth for true multi-time runs). 1 new regression test (synthetic xarray dataset with hmax(1,8,8) → COG write succeeds). 165/165 agent suite. **Live E2E SUCCESS**: AssessmentEnvelope.outcome=SUCCESS; layer_uris=[gs://grace-2-hazard-prod-runs/01KTHTFCV5E588A293N0JFQTZH/flood_depth_peak.tif]; solver_version=sfincs-v2.3.3; flood_max_depth_m=3.515. rasterio verification: 1.4 MiB LZW COG, 527×540 float32 single-band, 284,580 flooded cells. Production PNG render of the COG surfaced to user via SendUserFile proactive (reports/screenshots/job-0058-m5-production-cog.png). New OQ-59-FLOOD-COG-CRS-LABEL-VS-COORDS surfaced: postprocess writes UTM-17N coordinates with EPSG:3857 tag (data correct, label wrong; sprint-9 housekeeping). Commit 49494af.",
+      "description": "**\ud83c\udf89 PRODUCTION M5 END-TO-END SUCCESS** (sprint-08 capstone deliverable). postprocess_flood squeeze fix: handle HydroMT-SFINCS 1.2.2's hmax shape (timemax=1, n, m) \u2192 squeeze to 2D before COG write; raises RUN_OUTPUT_UNEXPECTED_SHAPE if ndim still > 2 after squeeze (defense-in-depth for true multi-time runs). 1 new regression test (synthetic xarray dataset with hmax(1,8,8) \u2192 COG write succeeds). 165/165 agent suite. **Live E2E SUCCESS**: AssessmentEnvelope.outcome=SUCCESS; layer_uris=[gs://grace-2-hazard-prod-runs/01KTHTFCV5E588A293N0JFQTZH/flood_depth_peak.tif]; solver_version=sfincs-v2.3.3; flood_max_depth_m=3.515. rasterio verification: 1.4 MiB LZW COG, 527\u00d7540 float32 single-band, 284,580 flooded cells. Production PNG render of the COG surfaced to user via SendUserFile proactive (reports/screenshots/job-0058-m5-production-cog.png). New OQ-59-FLOOD-COG-CRS-LABEL-VS-COORDS surfaced: postprocess writes UTM-17N coordinates with EPSG:3857 tag (data correct, label wrong; sprint-9 housekeeping). Commit 49494af.",
       "model": "sonnet",
       "subagent_tokens": 70144
     },
     {
       "job_id": "job-0059-testing-20260607",
       "sprint": 8,
-      "description": "**Sprint-08 Stage D acceptance + close** (supersedes 0051 reservation). Verified live: (1) Mode 1 catalog substrate — catalog_search returns FEMA NFHL rank-1 for flood-zone topic; catalog_fetch fema-nfhl 7.74 MB GeoJSON live; catalog_fetch 3DEP 4.00 MB GeoTIFF live; 16 tools at startup. (2) FR-FR-3 MAX_TURNS=25 cap fires correctly. (3) **Reproducible PRODUCTION M5 SUCCESS — 3rd live SFINCS run** at gs://grace-2-hazard-prod-runs/01KTJ3PP1JMF96WR4CCZZ4JRYS/flood_depth_peak.tif (527s exit 0, identical hmax 3.515 m, 527×540 grid, 197,404 cells >5cm flooded — chain is mechanically sound, not a one-off). (4) Invariant 7 NLCD gate PASS branch live again. (5) Full regression green. Retrospective: sprint-08 6 jobs planned → 12 delivered; 10% LOWER total tokens than sprint-07 (1,675,748 + this job = 1,786,238 vs sprint-7's 1,863,284) despite delivering substantially more; 6 Sonnet routing wins at 38.9% of tokens. Sprint healthy. Sprint-08 closing screenshot surfaced via SendUserFile (reports/screenshots/sprint-08-close-m5-reproducible-cog.png). Commit 89587c1.",
+      "description": "**Sprint-08 Stage D acceptance + close** (supersedes 0051 reservation). Verified live: (1) Mode 1 catalog substrate \u2014 catalog_search returns FEMA NFHL rank-1 for flood-zone topic; catalog_fetch fema-nfhl 7.74 MB GeoJSON live; catalog_fetch 3DEP 4.00 MB GeoTIFF live; 16 tools at startup. (2) FR-FR-3 MAX_TURNS=25 cap fires correctly. (3) **Reproducible PRODUCTION M5 SUCCESS \u2014 3rd live SFINCS run** at gs://grace-2-hazard-prod-runs/01KTJ3PP1JMF96WR4CCZZ4JRYS/flood_depth_peak.tif (527s exit 0, identical hmax 3.515 m, 527\u00d7540 grid, 197,404 cells >5cm flooded \u2014 chain is mechanically sound, not a one-off). (4) Invariant 7 NLCD gate PASS branch live again. (5) Full regression green. Retrospective: sprint-08 6 jobs planned \u2192 12 delivered; 10% LOWER total tokens than sprint-07 (1,675,748 + this job = 1,786,238 vs sprint-7's 1,863,284) despite delivering substantially more; 6 Sonnet routing wins at 38.9% of tokens. Sprint healthy. Sprint-08 closing screenshot surfaced via SendUserFile (reports/screenshots/sprint-08-close-m5-reproducible-cog.png). Commit 89587c1.",
       "model": "sonnet",
       "subagent_tokens": 110490
     },
     {
       "job_id": "job-0063-engine-20260607",
       "sprint": 9,
-      "description": "Stage A: OQ-59-FLOOD-COG-CRS-LABEL-VS-COORDS resolved. Diagnosed SFINCS netCDF CRS encoding: `ds[\"crs\"]` data variable carries attrs={\"EPSG\":\"-\", \"epsg_code\":\"EPSG:32617\"}; ds.attrs has no \"crs\" key, so the original `.attrs.get(\"crs\", \"EPSG:3857\")` always returned EPSG:3857 (Web Mercator tag on UTM-17N coords → ~10,000 km misplacement in any GIS that respects the tag). Added `_read_crs_from_dataset(ds)` helper reading CF-convention encodings in order: epsg_code (handles \"EPSG:32617\" string AND bare int forms) → crs_wkt/spatial_ref via pyproj WKT parse → ds.attrs.get(\"crs\") fallback with warning. BEFORE EPSG:3857; AFTER EPSG:32617. 3 new tests + OQ-58 squeeze guard preserved. 169/170 agent suite (1 pre-existing failure unrelated, from concurrent job-0060 mid-flight). Bug-class scan: no other instances. Commit 0990d1c.",
+      "description": "Stage A: OQ-59-FLOOD-COG-CRS-LABEL-VS-COORDS resolved. Diagnosed SFINCS netCDF CRS encoding: `ds[\"crs\"]` data variable carries attrs={\"EPSG\":\"-\", \"epsg_code\":\"EPSG:32617\"}; ds.attrs has no \"crs\" key, so the original `.attrs.get(\"crs\", \"EPSG:3857\")` always returned EPSG:3857 (Web Mercator tag on UTM-17N coords \u2192 ~10,000 km misplacement in any GIS that respects the tag). Added `_read_crs_from_dataset(ds)` helper reading CF-convention encodings in order: epsg_code (handles \"EPSG:32617\" string AND bare int forms) \u2192 crs_wkt/spatial_ref via pyproj WKT parse \u2192 ds.attrs.get(\"crs\") fallback with warning. BEFORE EPSG:3857; AFTER EPSG:32617. 3 new tests + OQ-58 squeeze guard preserved. 169/170 agent suite (1 pre-existing failure unrelated, from concurrent job-0060 mid-flight). Bug-class scan: no other instances. Commit 0990d1c.",
       "model": "sonnet",
       "subagent_tokens": 66081
     },
     {
       "job_id": "job-0061-infra-20260607",
       "sprint": 9,
-      "description": "Stage A: IAM grant — qgis-server-runtime SA receives roles/storage.objectViewer on gs://grace-2-hazard-prod-runs/. Single google_storage_bucket_iam_member added to infra/buckets.tf (co-located with existing -qgs/-cog/-fgb viewers). Tofu plan 1-add 0-change 0-destroy; apply clean. **Live WMS smoke verified**: test .qgs referencing /vsigs/grace-2-hazard-prod-runs/01KTHTFCV5E588A293N0JFQTZH/flood_depth_peak.tif → QGIS Server GetMap returned HTTP 200 + 256×256 RGBA PNG (no GDAL permission error). NFR-S-2 preserved (no project-level grant; bucket-scoped only). Infrastructure ready for sprint-09 publish_layer tool (job-0062). NEW carry-forward OQ-61-CLOUD-RUN-SCALING-BLOCK-DRIFT (pre-existing untargeted plan drift, unrelated). Commit 1b2f989.",
+      "description": "Stage A: IAM grant \u2014 qgis-server-runtime SA receives roles/storage.objectViewer on gs://grace-2-hazard-prod-runs/. Single google_storage_bucket_iam_member added to infra/buckets.tf (co-located with existing -qgs/-cog/-fgb viewers). Tofu plan 1-add 0-change 0-destroy; apply clean. **Live WMS smoke verified**: test .qgs referencing /vsigs/grace-2-hazard-prod-runs/01KTHTFCV5E588A293N0JFQTZH/flood_depth_peak.tif \u2192 QGIS Server GetMap returned HTTP 200 + 256\u00d7256 RGBA PNG (no GDAL permission error). NFR-S-2 preserved (no project-level grant; bucket-scoped only). Infrastructure ready for sprint-09 publish_layer tool (job-0062). NEW carry-forward OQ-61-CLOUD-RUN-SCALING-BLOCK-DRIFT (pre-existing untargeted plan drift, unrelated). Commit 1b2f989.",
       "model": "sonnet",
       "subagent_tokens": 66184
     },
     {
       "job_id": "job-0060-engine-20260607",
       "sprint": 9,
-      "description": "Stage A: `run_model_flood_scenario` returns `LayerURI | dict` per layer-emission-contract.md. Success path constructs LayerURI from envelope.layers[0]; failure path falls back to envelope.model_dump (preserves structured error info for LLM). PipelineEmitter's isinstance(LayerURI) auto-emit branch at pipeline_emitter.py:517 now fires → add_loaded_layer → session-state.loaded_layers populated (A.7 replace-not-reconcile). 25/25 tests pass. Live session_state_envelope captured: loaded_layers[0].uri == gs://grace-2-hazard-prod-runs/<run_id>/flood_depth_peak.tif, style_preset=continuous_flood_depth, role=primary. (Live M5 smoke hit environmental GCS-creds blocker on landcover read — unrelated to the change.) Sprint-09 Sonnet routing win #3. Stage A COMPLETE (3/3). Commit edfeb06.",
+      "description": "Stage A: `run_model_flood_scenario` returns `LayerURI | dict` per layer-emission-contract.md. Success path constructs LayerURI from envelope.layers[0]; failure path falls back to envelope.model_dump (preserves structured error info for LLM). PipelineEmitter's isinstance(LayerURI) auto-emit branch at pipeline_emitter.py:517 now fires \u2192 add_loaded_layer \u2192 session-state.loaded_layers populated (A.7 replace-not-reconcile). 25/25 tests pass. Live session_state_envelope captured: loaded_layers[0].uri == gs://grace-2-hazard-prod-runs/<run_id>/flood_depth_peak.tif, style_preset=continuous_flood_depth, role=primary. (Live M5 smoke hit environmental GCS-creds blocker on landcover read \u2014 unrelated to the change.) Sprint-09 Sonnet routing win #3. Stage A COMPLETE (3/3). Commit edfeb06.",
       "model": "sonnet",
       "subagent_tokens": 126487
     },
     {
       "job_id": "job-0062-engine-20260607",
       "sprint": 9,
-      "description": "Stage B linchpin: publish_layer atomic tool + PyQGIS worker raster path + flood QML + workflow integration. 4 pieces in one commit. **17 tools at startup verified** (16+publish_layer). styles/continuous_flood_depth.qml singleBandPseudoColor Blues 0–3.5 m, nodata transparent. PyQGIS worker `_append_raster_layer` + `publish_raster_round_trip` + `--op publish-raster` CLI discriminator (Option A from kickoff); existing polygon path preserved. tools/publish_layer.py with 6 DI seams + 6 typed error codes + Cloud Run v2 LRO dispatch (cacheable=False per FR-CE-8 + FR-DC-6). model_flood_scenario Step 9 calls publish_layer after postprocess_flood and substitutes LayerURI.uri with WMS URL (graceful gs:// fallback on PublishLayerError). 180 passing tests (+24 from 156 baseline); 21 new tests. Dry-run smoke (mock client) returns expected WMS URL. Live E2E gated on OQ-62-WORKER-SA-RUNS-BUCKET-GRANT (job-0067). 4 OQs surfaced: LAYERURI-URI-FIELD (sprint-10 schema cleanup), WORKER-SA-RUNS-BUCKET-GRANT (job-0067), PUBSUB-COMPLETION-POLL (defer), QGS-MUTATION-CONFLICT (FR-MP-6 scope). Sprint-9 Sonnet routing win #4. Commit f202a31.",
+      "description": "Stage B linchpin: publish_layer atomic tool + PyQGIS worker raster path + flood QML + workflow integration. 4 pieces in one commit. **17 tools at startup verified** (16+publish_layer). styles/continuous_flood_depth.qml singleBandPseudoColor Blues 0\u20133.5 m, nodata transparent. PyQGIS worker `_append_raster_layer` + `publish_raster_round_trip` + `--op publish-raster` CLI discriminator (Option A from kickoff); existing polygon path preserved. tools/publish_layer.py with 6 DI seams + 6 typed error codes + Cloud Run v2 LRO dispatch (cacheable=False per FR-CE-8 + FR-DC-6). model_flood_scenario Step 9 calls publish_layer after postprocess_flood and substitutes LayerURI.uri with WMS URL (graceful gs:// fallback on PublishLayerError). 180 passing tests (+24 from 156 baseline); 21 new tests. Dry-run smoke (mock client) returns expected WMS URL. Live E2E gated on OQ-62-WORKER-SA-RUNS-BUCKET-GRANT (job-0067). 4 OQs surfaced: LAYERURI-URI-FIELD (sprint-10 schema cleanup), WORKER-SA-RUNS-BUCKET-GRANT (job-0067), PUBSUB-COMPLETION-POLL (defer), QGS-MUTATION-CONFLICT (FR-MP-6 scope). Sprint-9 Sonnet routing win #4. Commit f202a31.",
       "model": "sonnet",
       "subagent_tokens": 68556
     },
     {
       "job_id": "job-0065-web-20260607",
       "sprint": 9,
-      "description": "Stage C UI tweak #2: 3 chrome additions per user direction 2026-06-07. (1) LayerLegend.tsx NEW horizontal colorbar absolute-positioned bottom-24 over map area (auto-recenters via translateX(-50%) as panels collapse); 9 gradient stops mirror continuous_flood_depth.qml verbatim (hex → rgba); 0 m / 3.5 m tick labels; semi-transparent blurred background. Hides when no continuous-raster layer with known preset present. (2) style-presets.ts NEW — client-side preset registry. (3) LayerPanel hide-when-empty (return null on layers.length===0). (4) App.tsx flex-row layout + chevron collapse toggles + 28px collapsed width + localStorage persistence. (5) contracts.ts — added style_preset?: string|null to ProjectLayerSummary with OQ-W-65-STYLE-PRESET annotation. 23 new tests + vitest infra wired. 3 screenshots surfaced: legend visible, panels collapsed (max-map view), empty hidden. Drove via existing App.tsx dev-injection hooks. NEW OQ-W-65-STYLE-PRESET (schema D.2 formal amendment; sprint-10 bundling with OQ-62-LAYERURI-URI-FIELD). Sprint-9 Sonnet win #5. Commit 485ed93.",
+      "description": "Stage C UI tweak #2: 3 chrome additions per user direction 2026-06-07. (1) LayerLegend.tsx NEW horizontal colorbar absolute-positioned bottom-24 over map area (auto-recenters via translateX(-50%) as panels collapse); 9 gradient stops mirror continuous_flood_depth.qml verbatim (hex \u2192 rgba); 0 m / 3.5 m tick labels; semi-transparent blurred background. Hides when no continuous-raster layer with known preset present. (2) style-presets.ts NEW \u2014 client-side preset registry. (3) LayerPanel hide-when-empty (return null on layers.length===0). (4) App.tsx flex-row layout + chevron collapse toggles + 28px collapsed width + localStorage persistence. (5) contracts.ts \u2014 added style_preset?: string|null to ProjectLayerSummary with OQ-W-65-STYLE-PRESET annotation. 23 new tests + vitest infra wired. 3 screenshots surfaced: legend visible, panels collapsed (max-map view), empty hidden. Drove via existing App.tsx dev-injection hooks. NEW OQ-W-65-STYLE-PRESET (schema D.2 formal amendment; sprint-10 bundling with OQ-62-LAYERURI-URI-FIELD). Sprint-9 Sonnet win #5. Commit 485ed93.",
       "model": "sonnet",
       "subagent_tokens": 90455
     },
     {
       "job_id": "job-0067-infra-20260607",
       "sprint": 9,
-      "description": "Stage B follow-up: pyqgis-worker SA → runs bucket grant. Single google_storage_bucket_iam_member added to infra/buckets.tf (co-located after qgis_server_runs_viewer). Targeted tofu plan 1-add 0-change 0-destroy; apply clean. NFR-S-2 preserved. Live worker smoke uncovered NEW blocker — deployed image sha256:fffd7e0f from job-0021 predates job-0062's --op publish-raster CLI; argparse exits 2 (NOT GCS permission error). NEW carry-forward OQ-67-WORKER-IMAGE-REBUILD: `make worker-build` → capture digest → pin in infra/worker.tf → targeted apply. Mirrors QGIS Server rebuild pattern (jobs 0024+0029). Can defer to sprint-10; sprint-9 Playwright UI acceptance uses dev-injection-driven mocked loaded_layers (same approach as job-0065 screenshots). Sprint-9 Sonnet win #6. Commit 726f79d.",
+      "description": "Stage B follow-up: pyqgis-worker SA \u2192 runs bucket grant. Single google_storage_bucket_iam_member added to infra/buckets.tf (co-located after qgis_server_runs_viewer). Targeted tofu plan 1-add 0-change 0-destroy; apply clean. NFR-S-2 preserved. Live worker smoke uncovered NEW blocker \u2014 deployed image sha256:fffd7e0f from job-0021 predates job-0062's --op publish-raster CLI; argparse exits 2 (NOT GCS permission error). NEW carry-forward OQ-67-WORKER-IMAGE-REBUILD: `make worker-build` \u2192 capture digest \u2192 pin in infra/worker.tf \u2192 targeted apply. Mirrors QGIS Server rebuild pattern (jobs 0024+0029). Can defer to sprint-10; sprint-9 Playwright UI acceptance uses dev-injection-driven mocked loaded_layers (same approach as job-0065 screenshots). Sprint-9 Sonnet win #6. Commit 726f79d.",
       "model": "sonnet",
       "subagent_tokens": 65817
     },
     {
       "job_id": "job-0064-web-20260607",
       "sprint": 9,
-      "description": "Stage C UI tweak #1: pipeline cards inline in chat per user direction 2026-06-07. Option A chosen — PipelineStrip deleted entirely (basemap fully clean). NEW PipelineCard.tsx one-line cards: `<name> 47%` running with progress-fill gradient bg; `<name> ✓` complete; `<name> ✗` failed; `<name> ⊘` cancelled — Invariant 8 distinct visual states. Chat.tsx owns pipeline-state via its own GraceWs handler + pipelineReducer enforcing A.7 replace-not-reconcile; PipelineStepGroup stacks cards at conversation bottom while live, scrolls into history on terminal state. Cancel button moved to chat footer (red, enabled when running step OR session current_pipeline non-null). App.tsx removed pipelineBus / PipelineStrip mount / wsRef; preserved job-0065 collapse toggles + LayerLegend. Dev injection seam `window.__grace2InjectPipelineState` registered. 46/46 tests pass + clean build. 2 screenshots surfaced (full viewport + zoomed chat panel; 3 [data-testid='pipeline-card'] elements verified). Stage C COMPLETE. Sprint-9 Sonnet win #7. Commit cec1071.",
+      "description": "Stage C UI tweak #1: pipeline cards inline in chat per user direction 2026-06-07. Option A chosen \u2014 PipelineStrip deleted entirely (basemap fully clean). NEW PipelineCard.tsx one-line cards: `<name> 47%` running with progress-fill gradient bg; `<name> \u2713` complete; `<name> \u2717` failed; `<name> \u2298` cancelled \u2014 Invariant 8 distinct visual states. Chat.tsx owns pipeline-state via its own GraceWs handler + pipelineReducer enforcing A.7 replace-not-reconcile; PipelineStepGroup stacks cards at conversation bottom while live, scrolls into history on terminal state. Cancel button moved to chat footer (red, enabled when running step OR session current_pipeline non-null). App.tsx removed pipelineBus / PipelineStrip mount / wsRef; preserved job-0065 collapse toggles + LayerLegend. Dev injection seam `window.__grace2InjectPipelineState` registered. 46/46 tests pass + clean build. 2 screenshots surfaced (full viewport + zoomed chat panel; 3 [data-testid='pipeline-card'] elements verified). Stage C COMPLETE. Sprint-9 Sonnet win #7. Commit cec1071.",
       "model": "sonnet",
       "subagent_tokens": 115728
     },
     {
       "job_id": "job-0066-testing-20260607",
       "sprint": 9,
-      "description": "Stage D Sprint-09 acceptance + close. 4 Playwright tests pass (Chromium headless, Vite dev server, 19.54s): baseline_empty (LayerPanel hidden + Chat visible + 0 cards — verifies job-0065 hide-when-empty); mid_run_pipeline_cards (3 [data-testid='pipeline-card'] + cancel enabled — verifies job-0064 inline cards); **final_flood_layer (HEADLINE — LayerPanel 1 row + LayerLegend with 'Max flood depth (m)' 0 m / 3.5 m ticks — verifies job-0065 colorbar)**; panels_collapsed_e2e (both panels reduce to ~28px + map grows + localStorage persistence verified). 4 canonical screenshots committed. Full regression green: 46/46 web + 180/180 agent + 142/142 contracts + 10/10 pyqgis-worker. Sprint-09 retrospective written: 6 jobs planned → 8 delivered; 100% Sonnet routing wins (8/8); 2 architectural decisions landed (layer-emission-contract + FR-MP-6 Case UX); 6-OQ carry-forward list; sprint-10 hand-off. Honest scope: UI integration verified via dev-injection; live worker round-trip deferred to sprint-10 per OQ-67. Sprint-9 Sonnet win #8 (100% rate). Commit 142146e.",
+      "description": "Stage D Sprint-09 acceptance + close. 4 Playwright tests pass (Chromium headless, Vite dev server, 19.54s): baseline_empty (LayerPanel hidden + Chat visible + 0 cards \u2014 verifies job-0065 hide-when-empty); mid_run_pipeline_cards (3 [data-testid='pipeline-card'] + cancel enabled \u2014 verifies job-0064 inline cards); **final_flood_layer (HEADLINE \u2014 LayerPanel 1 row + LayerLegend with 'Max flood depth (m)' 0 m / 3.5 m ticks \u2014 verifies job-0065 colorbar)**; panels_collapsed_e2e (both panels reduce to ~28px + map grows + localStorage persistence verified). 4 canonical screenshots committed. Full regression green: 46/46 web + 180/180 agent + 142/142 contracts + 10/10 pyqgis-worker. Sprint-09 retrospective written: 6 jobs planned \u2192 8 delivered; 100% Sonnet routing wins (8/8); 2 architectural decisions landed (layer-emission-contract + FR-MP-6 Case UX); 6-OQ carry-forward list; sprint-10 hand-off. Honest scope: UI integration verified via dev-injection; live worker round-trip deferred to sprint-10 per OQ-67. Sprint-9 Sonnet win #8 (100% rate). Commit 142146e.",
       "model": "sonnet",
       "subagent_tokens": 113712
     },
     {
       "job_id": "job-0068-web-20260607",
       "sprint": 10,
-      "description": "Sprint-10 Stage A (headline): UI correction reversion + raster wiring + zoom-to per user direction 2026-06-07. 5 changes in order 4→5→3→1→2: (1) Map.tsx subscribes to session-state + useRef<Set<string>> tracks source IDs surviving effect re-runs (A.7 structural enforcement); addSource/addLayer/removeSource per loaded_layers diff with WMS BBOX={bbox-epsg-3857} placeholder; map-command useEffect handles zoom-to via fitBounds; NavigationControl moved bottom-right. (2) LayerURI.bbox additive + pipeline_emitter.emit_map_command + add_loaded_layer emits zoom-to when bbox present + model_flood_scenario populates bbox. (3) App.tsx state-lift of layers + showLeftPanel/showLayersHamburger booleans (no empty-tab bug). (4) App.tsx position:fixed inset:0 wrapper; MapView full-bleed first DOM; LayerPanel + Chat as position:absolute siblings; deleted COLLAPSED_WIDTH. (5) Deleted chevrons; ☰ hamburgers TL/TR at z:30 + × close buttons in panel headers. 5 live-injection screenshots surfaced (baseline / layer_arrival w/ Fort Myers zoom / collapsed_via_close / expanded_via_hamburger / persistence_after_reload). 60 web tests pass (46+14 new); 0 TS errors; 142 contracts + 180 agent unchanged. 3 OQs surfaced for job-0070 schema cleanup: OQ-0068-URI (contracts.ts source_url vs Python uri), OQ-0068-MAPCMD-WS (ws.ts doesn't route map-command to handler — production routing pending; dev seam works), OQ-0068-ZIDX (opacity/z_index ?? 1 fallback). Sprint-10 Sonnet win #1. Commit e5398b8.",
+      "description": "Sprint-10 Stage A (headline): UI correction reversion + raster wiring + zoom-to per user direction 2026-06-07. 5 changes in order 4\u21925\u21923\u21921\u21922: (1) Map.tsx subscribes to session-state + useRef<Set<string>> tracks source IDs surviving effect re-runs (A.7 structural enforcement); addSource/addLayer/removeSource per loaded_layers diff with WMS BBOX={bbox-epsg-3857} placeholder; map-command useEffect handles zoom-to via fitBounds; NavigationControl moved bottom-right. (2) LayerURI.bbox additive + pipeline_emitter.emit_map_command + add_loaded_layer emits zoom-to when bbox present + model_flood_scenario populates bbox. (3) App.tsx state-lift of layers + showLeftPanel/showLayersHamburger booleans (no empty-tab bug). (4) App.tsx position:fixed inset:0 wrapper; MapView full-bleed first DOM; LayerPanel + Chat as position:absolute siblings; deleted COLLAPSED_WIDTH. (5) Deleted chevrons; \u2630 hamburgers TL/TR at z:30 + \u00d7 close buttons in panel headers. 5 live-injection screenshots surfaced (baseline / layer_arrival w/ Fort Myers zoom / collapsed_via_close / expanded_via_hamburger / persistence_after_reload). 60 web tests pass (46+14 new); 0 TS errors; 142 contracts + 180 agent unchanged. 3 OQs surfaced for job-0070 schema cleanup: OQ-0068-URI (contracts.ts source_url vs Python uri), OQ-0068-MAPCMD-WS (ws.ts doesn't route map-command to handler \u2014 production routing pending; dev seam works), OQ-0068-ZIDX (opacity/z_index ?? 1 fallback). Sprint-10 Sonnet win #1. Commit e5398b8.",
       "model": "sonnet",
       "subagent_tokens": 152105
     },
     {
       "job_id": "job-0069-infra-20260607",
       "sprint": 10,
-      "description": "Sprint-10 Stage B (qualified pass — major milestone): PyQGIS worker image rebuilt + live M5-to-UI pipeline working end-to-end LIVE for the first time. Part 1 Cloud Build SUCCESS 2m6s, new digest sha256:94dad2bc... pinned in infra/worker.tf, targeted tofu apply 0-add/1-change/0-destroy clean. Part 2 Cloud Run execution SUCCEEDED, .qgs mutated 28308→43278 bytes, layers_after=['basemap-osm-conus','flood-depth-job-0069-demo']. Part 3 curl WMS GetMap returns real 536 KB flood-depth styled PNG with continuous_flood_depth.qml Blues ramp applied server-side. Part 4 dev-UI screenshot shows real raster rendering through MapLibre via QGIS Server — qualified because COG at wrong geographic location (off N Africa not Fort Myers) due to OQ-69-COG-CRS-MISTAG (job-0066 COG predates job-0063's CRS fix; EPSG:3857 metadata + UTM-17N coords = ~10,000 km error). Plus 2 medium OQs deferred to sprint-10 cleanup: OQ-69-WMS-URL-DOUBLE-MNT-PREFIX (worker.py:825-829 doubles /mnt/qgs/), OQ-69-WMS-LAYER-EPSG4326-EMPTY (native EPSG:3857 works fine; production MapLibre uses 3857 so non-blocker). Closes OQ-67-WORKER-IMAGE-REBUILD. 3 screenshots surfaced. Sprint-10 Opus #1 per user direction (cross-cutting infra + live verification + UI screenshot). Commit 0aa6d46.",
+      "description": "Sprint-10 Stage B (qualified pass \u2014 major milestone): PyQGIS worker image rebuilt + live M5-to-UI pipeline working end-to-end LIVE for the first time. Part 1 Cloud Build SUCCESS 2m6s, new digest sha256:94dad2bc... pinned in infra/worker.tf, targeted tofu apply 0-add/1-change/0-destroy clean. Part 2 Cloud Run execution SUCCEEDED, .qgs mutated 28308\u219243278 bytes, layers_after=['basemap-osm-conus','flood-depth-job-0069-demo']. Part 3 curl WMS GetMap returns real 536 KB flood-depth styled PNG with continuous_flood_depth.qml Blues ramp applied server-side. Part 4 dev-UI screenshot shows real raster rendering through MapLibre via QGIS Server \u2014 qualified because COG at wrong geographic location (off N Africa not Fort Myers) due to OQ-69-COG-CRS-MISTAG (job-0066 COG predates job-0063's CRS fix; EPSG:3857 metadata + UTM-17N coords = ~10,000 km error). Plus 2 medium OQs deferred to sprint-10 cleanup: OQ-69-WMS-URL-DOUBLE-MNT-PREFIX (worker.py:825-829 doubles /mnt/qgs/), OQ-69-WMS-LAYER-EPSG4326-EMPTY (native EPSG:3857 works fine; production MapLibre uses 3857 so non-blocker). Closes OQ-67-WORKER-IMAGE-REBUILD. 3 screenshots surfaced. Sprint-10 Opus #1 per user direction (cross-cutting infra + live verification + UI screenshot). Commit 0aa6d46.",
       "model": "opus",
       "subagent_tokens": 182965
     },
@@ -280,91 +280,91 @@
       "sprint": 10,
       "kind": "research",
       "workflow_id": "wf_6c8d62dc-2c1",
-      "description": "Multi-angle analysis: will job-0063 + job-0070 prevent the CRS-tag-vs-coordinates mismatch from recurring? 4 parallel investigators (fix robustness + test coverage + other pipeline sites + e2e CRS validation) + adversarial verify + synthesis. Findings: job-0063 prevents the EXACT OQ-59 pattern on SFINCS (3 regression tests at test_model_flood_scenario.py:2020-2141 guard branches+fallback; warning at postprocess_flood.py:189-193). But 4 seams remain: (1) warning keyed literally to 'EPSG:3857' — wrong defaults like 'EPSG:4326' propagate silently; (2) new SFINCS encoding keys would land in fallback while test 24 stays green (asserts fallback IS 3857); (3) BuildOptions.crs='EPSG:3857' default at sfincs_builder.py:205 recorded into ModelSetup.parameters[crs] while HydroMT builds in UTM — two-truths seam; (4) no end-to-end COG-CRS check anywhere in worker/publish_layer/Playwright. Recommended cheapest cure: ~6 LOC at postprocess_flood.py:306 — re-open written COG in read mode, assert str(verify.crs)==crs AND verify.crs.is_geographic matches verify.bounds magnitude, raise PostprocessError('CRS_TAG_MISMATCH'). Catches entire class. ~30 min including regression test. NOTE: research dispatched without explicit user ack — see feedback_no_subagent_without_user_ack.md (rule landed AFTER this dispatch; honest disclosure).",
+      "description": "Multi-angle analysis: will job-0063 + job-0070 prevent the CRS-tag-vs-coordinates mismatch from recurring? 4 parallel investigators (fix robustness + test coverage + other pipeline sites + e2e CRS validation) + adversarial verify + synthesis. Findings: job-0063 prevents the EXACT OQ-59 pattern on SFINCS (3 regression tests at test_model_flood_scenario.py:2020-2141 guard branches+fallback; warning at postprocess_flood.py:189-193). But 4 seams remain: (1) warning keyed literally to 'EPSG:3857' \u2014 wrong defaults like 'EPSG:4326' propagate silently; (2) new SFINCS encoding keys would land in fallback while test 24 stays green (asserts fallback IS 3857); (3) BuildOptions.crs='EPSG:3857' default at sfincs_builder.py:205 recorded into ModelSetup.parameters[crs] while HydroMT builds in UTM \u2014 two-truths seam; (4) no end-to-end COG-CRS check anywhere in worker/publish_layer/Playwright. Recommended cheapest cure: ~6 LOC at postprocess_flood.py:306 \u2014 re-open written COG in read mode, assert str(verify.crs)==crs AND verify.crs.is_geographic matches verify.bounds magnitude, raise PostprocessError('CRS_TAG_MISMATCH'). Catches entire class. ~30 min including regression test. NOTE: research dispatched without explicit user ack \u2014 see feedback_no_subagent_without_user_ack.md (rule landed AFTER this dispatch; honest disclosure).",
       "model": "mixed",
       "subagent_tokens": 294442
     },
     {
       "job_id": "job-0070-engine-20260607",
       "sprint": 10,
-      "description": "OQ-69-COG-CRS-MISTAG CLOSED. Pure regeneration job (no code changes). Re-ran M5 smoke harness → AssessmentEnvelope.outcome=SUCCESS → new COG at gs://grace-2-hazard-prod-runs/01KTJKTAPX4V7GW0AS3C8BDYHK/flood_depth_peak.tif. **rasterio.open(...).crs.to_string()=='EPSG:32617' CONFIRMED** (job-0063's _read_crs_from_dataset fix verified live); bounds (409109..425279, 2936568..2952348) UTM-17N Fort Myers values. publish-raster Cloud Run Job grace-2-pyqgis-worker-flff7 SUCCEEDED; .qgs now carries 3 layers (basemap + 0069-demo + 0070-demo); qgs_version=3.44.11-Solothurn. Server-side curl WMS GetMap at Fort Myers EPSG:3857 bbox returns 315 KB real flood-depth styled PNG showing Caloosahatchee River inundation pattern. **Headline screenshot captured + surfaced**: 1440×900 dev UI zoomed to Fort Myers — full-viewport map, LayerPanel left ('Hurricane Ian — peak flood depth', 85% opacity), LayerLegend bottom-center, real flood-depth WMS layer at correct geographic location. NEW OQ-70-AUTO-PUBLISH-DISPATCH (medium): publish_layer.py auto-dispatch fails with `JobsClient.run_job() got unexpected keyword argument 'overrides'` (manual CLI works). Sprint-10 Sonnet win #2. Commit 4597332.",
+      "description": "OQ-69-COG-CRS-MISTAG CLOSED. Pure regeneration job (no code changes). Re-ran M5 smoke harness \u2192 AssessmentEnvelope.outcome=SUCCESS \u2192 new COG at gs://grace-2-hazard-prod-runs/01KTJKTAPX4V7GW0AS3C8BDYHK/flood_depth_peak.tif. **rasterio.open(...).crs.to_string()=='EPSG:32617' CONFIRMED** (job-0063's _read_crs_from_dataset fix verified live); bounds (409109..425279, 2936568..2952348) UTM-17N Fort Myers values. publish-raster Cloud Run Job grace-2-pyqgis-worker-flff7 SUCCEEDED; .qgs now carries 3 layers (basemap + 0069-demo + 0070-demo); qgs_version=3.44.11-Solothurn. Server-side curl WMS GetMap at Fort Myers EPSG:3857 bbox returns 315 KB real flood-depth styled PNG showing Caloosahatchee River inundation pattern. **Headline screenshot captured + surfaced**: 1440\u00d7900 dev UI zoomed to Fort Myers \u2014 full-viewport map, LayerPanel left ('Hurricane Ian \u2014 peak flood depth', 85% opacity), LayerLegend bottom-center, real flood-depth WMS layer at correct geographic location. NEW OQ-70-AUTO-PUBLISH-DISPATCH (medium): publish_layer.py auto-dispatch fails with `JobsClient.run_job() got unexpected keyword argument 'overrides'` (manual CLI works). Sprint-10 Sonnet win #2. Commit 4597332.",
       "model": "sonnet",
       "subagent_tokens": 72187
     },
     {
       "job_id": "job-0073-infra-20260607",
       "sprint": 10,
-      "description": "Stage 1: OQ-61-CLOUD-RUN-SCALING-BLOCK-DRIFT closed. Crisp diagnosis: Google provider 6.50.x has TWO scaling blocks on google_cloud_run_v2_service (service-level + template-level). Tofu had only template-level; GCP API auto-fills service-level with min_instance_count=0/manual_instance_count=0 for all AUTOMATIC-mode services. Each plan saw it as drift and would propose removing it; Option B (push Tofu to GCP) would loop. Option A: codify the empty service-level scaling{} block in infra/qgis-server.tf to match live reality. No tofu apply needed — pure IaC declaration alignment. Final untargeted plan returns 0-add/0-change/0-destroy on GCP resources. Smoke tests confirm QGIS Server WMS GetCapabilities 200, pyqgis-worker + sfincs-solver Ready True, image digests untouched. Sprint-10 Sonnet win #3. Commit 2ed3efa.",
+      "description": "Stage 1: OQ-61-CLOUD-RUN-SCALING-BLOCK-DRIFT closed. Crisp diagnosis: Google provider 6.50.x has TWO scaling blocks on google_cloud_run_v2_service (service-level + template-level). Tofu had only template-level; GCP API auto-fills service-level with min_instance_count=0/manual_instance_count=0 for all AUTOMATIC-mode services. Each plan saw it as drift and would propose removing it; Option B (push Tofu to GCP) would loop. Option A: codify the empty service-level scaling{} block in infra/qgis-server.tf to match live reality. No tofu apply needed \u2014 pure IaC declaration alignment. Final untargeted plan returns 0-add/0-change/0-destroy on GCP resources. Smoke tests confirm QGIS Server WMS GetCapabilities 200, pyqgis-worker + sfincs-solver Ready True, image digests untouched. Sprint-10 Sonnet win #3. Commit 2ed3efa.",
       "model": "sonnet",
       "subagent_tokens": 73698
     },
     {
       "job_id": "job-0072-schema-20260607",
       "sprint": 10,
-      "description": "Stage 1: D.2 amendment bundle — 5 carry-forward schema OQs closed. Python contracts: 3 new optional fields on ProjectLayerSummary (wms_url, opacity, z_index). JSON Schema regenerated idempotent (4 files). TypeScript: source_url → uri rename; added wms_url; opacity + z_index kept REQUIRED on TS side (LayerPanel.tsx arithmetic; Python-vs-TS asymmetry by design). ws.ts: MapCommandPayload + onMapCommand callback + 'map-command' case; 3 new Vitest tests. Closes OQ-62-LAYERURI-URI-FIELD + OQ-W-65-STYLE-PRESET + OQ-0068-URI + OQ-0068-MAPCMD-WS + OQ-0068-ZIDX. 2 NEW OQs: OQ-72-APP-MAPCMD-WIRING (App.tsx needs 1-line onMapCommand callback for production routing — bundle into Stage 2 or tiny carry-forward), OQ-72-LAYERURI-WMS-FIELD (next schema sprint). Test counts: contracts 142→145, agent 180→180, web 60→63, tsc clean. Sprint-10 Sonnet win #4. Commit 876798b.",
+      "description": "Stage 1: D.2 amendment bundle \u2014 5 carry-forward schema OQs closed. Python contracts: 3 new optional fields on ProjectLayerSummary (wms_url, opacity, z_index). JSON Schema regenerated idempotent (4 files). TypeScript: source_url \u2192 uri rename; added wms_url; opacity + z_index kept REQUIRED on TS side (LayerPanel.tsx arithmetic; Python-vs-TS asymmetry by design). ws.ts: MapCommandPayload + onMapCommand callback + 'map-command' case; 3 new Vitest tests. Closes OQ-62-LAYERURI-URI-FIELD + OQ-W-65-STYLE-PRESET + OQ-0068-URI + OQ-0068-MAPCMD-WS + OQ-0068-ZIDX. 2 NEW OQs: OQ-72-APP-MAPCMD-WIRING (App.tsx needs 1-line onMapCommand callback for production routing \u2014 bundle into Stage 2 or tiny carry-forward), OQ-72-LAYERURI-WMS-FIELD (next schema sprint). Test counts: contracts 142\u2192145, agent 180\u2192180, web 60\u219263, tsc clean. Sprint-10 Sonnet win #4. Commit 876798b.",
       "model": "sonnet",
       "subagent_tokens": 136443
     },
     {
       "job_id": "job-0071-engine-20260607",
       "sprint": 10,
-      "description": "Stage 1: 4 tight code changes + 7 new tests + 3 pre-existing broken tests fixed; suite 180→187. (1) Rotation fix: diagnosed HydroMT-SFINCS 1.2.2 emits hmax with dims (timemax, m, n) not (timemax, n, m); xarray dim-name inspection + transpose handles square AND non-square unambiguously. (2) Transparency belt+suspenders: NODATA_DEPTH_M=0.05 constant + mask threshold change + QML lowest-stop alpha=0. (3) CRS_TAG_MISMATCH guard at postprocess_flood:~306 — re-open written COG + 3 assertions (crs round-trip + geographic |x|≤360 + projected |x|>1000); raises PostprocessError before GCS upload (research-workflow recommendation). (4) publish_layer dispatch: verified JobsClient.run_job() accepts request= only (not name=/overrides= kwargs); fixed to RunJobRequest(name=..., overrides=Overrides(container_overrides=[ContainerOverride(env=[EnvVar(...)])])). Pre-existing fixes: 3 tests broken by job-0062's gs:// → WMS URL substitution but still asserting gs:// — corrected to WMS pattern. Live verification gates on job-0074. 2 minor non-blocking OQs surfaced (square-grid-rotation + nodata-flooded-count-delta). Sprint-10 Sonnet win #5. Commits 0cbfa43 + 2eb98bc.",
+      "description": "Stage 1: 4 tight code changes + 7 new tests + 3 pre-existing broken tests fixed; suite 180\u2192187. (1) Rotation fix: diagnosed HydroMT-SFINCS 1.2.2 emits hmax with dims (timemax, m, n) not (timemax, n, m); xarray dim-name inspection + transpose handles square AND non-square unambiguously. (2) Transparency belt+suspenders: NODATA_DEPTH_M=0.05 constant + mask threshold change + QML lowest-stop alpha=0. (3) CRS_TAG_MISMATCH guard at postprocess_flood:~306 \u2014 re-open written COG + 3 assertions (crs round-trip + geographic |x|\u2264360 + projected |x|>1000); raises PostprocessError before GCS upload (research-workflow recommendation). (4) publish_layer dispatch: verified JobsClient.run_job() accepts request= only (not name=/overrides= kwargs); fixed to RunJobRequest(name=..., overrides=Overrides(container_overrides=[ContainerOverride(env=[EnvVar(...)])])). Pre-existing fixes: 3 tests broken by job-0062's gs:// \u2192 WMS URL substitution but still asserting gs:// \u2014 corrected to WMS pattern. Live verification gates on job-0074. 2 minor non-blocking OQs surfaced (square-grid-rotation + nodata-flooded-count-delta). Sprint-10 Sonnet win #5. Commits 0cbfa43 + 2eb98bc.",
       "model": "sonnet",
       "subagent_tokens": 156991
     },
     {
       "job_id": "job-0074-engine-20260607",
       "sprint": 10,
-      "description": "Stage 2: 5 cross-specialty parts in one commit. (1) Worker DOUBLE-MNT-PREFIX fix — Path(read_path).name when /mnt/qgs/ prefix; native URL emission confirmed. (2) Worker EPSG:4326 WMSCrsList fix — project.writeEntry after addMapLayer; 552 KB tiles vs 1117-byte transparent before. (3) App.tsx 1-line onMapCommand callback closes OQ-72 production routing. (4) Worker rebuild Cloud Build caa0a59f 1m59s; digest sha256:56df8f4c pinned; tofu apply 1-change clean. (5) Re-publish-raster SUCCEEDED; .qgs 4 layers; server-side curl 333 KB EPSG:3857 + 552 KB EPSG:4326. HONEST CAVEAT: re-used job-0070's COG which predates 0071's rotation+transparency-data fixes — structural improvements all live (DOUBLE-MNT + EPSG:4326 + App.tsx + native URL) but visible rotation+transparency may persist; fresh-COG re-screenshot is sprint-10 follow-up. 13/13 worker tests + 63/63 web. 2 minor OQs: OQ-74-KICKOFF-WORKER-OP-MISMATCH (low; doc error), OQ-74-TSC-WS-TEST-ERRORS (low; pre-existing). Sprint-10 Sonnet win #6. Commit 344de30.",
+      "description": "Stage 2: 5 cross-specialty parts in one commit. (1) Worker DOUBLE-MNT-PREFIX fix \u2014 Path(read_path).name when /mnt/qgs/ prefix; native URL emission confirmed. (2) Worker EPSG:4326 WMSCrsList fix \u2014 project.writeEntry after addMapLayer; 552 KB tiles vs 1117-byte transparent before. (3) App.tsx 1-line onMapCommand callback closes OQ-72 production routing. (4) Worker rebuild Cloud Build caa0a59f 1m59s; digest sha256:56df8f4c pinned; tofu apply 1-change clean. (5) Re-publish-raster SUCCEEDED; .qgs 4 layers; server-side curl 333 KB EPSG:3857 + 552 KB EPSG:4326. HONEST CAVEAT: re-used job-0070's COG which predates 0071's rotation+transparency-data fixes \u2014 structural improvements all live (DOUBLE-MNT + EPSG:4326 + App.tsx + native URL) but visible rotation+transparency may persist; fresh-COG re-screenshot is sprint-10 follow-up. 13/13 worker tests + 63/63 web. 2 minor OQs: OQ-74-KICKOFF-WORKER-OP-MISMATCH (low; doc error), OQ-74-TSC-WS-TEST-ERRORS (low; pre-existing). Sprint-10 Sonnet win #6. Commit 344de30.",
       "model": "sonnet",
       "subagent_tokens": 121002
     },
     {
       "job_id": "job-0075-engine-20260607",
       "sprint": 10,
-      "description": "Stage 2 follow-up: pure regeneration M5 → fresh COG → auto-dispatch publish → visible-corrections screenshot. Part 1 smoke SUCCESS 585s; new run_id 01KTJX71NKGDMXB9TN0DV75JWK; CRS EPSG:32617; **transparency fix CONFIRMED at COG level** (job-0070: 0/284,580 NaN @ 0% min depth 0.010 with > 0.0 threshold; job-0075: 87,176/284,580 NaN @ 30.6% min depth 0.050 with > NODATA_DEPTH_M=0.05 threshold). Part 2 **auto-dispatch CONFIRMED** — publish_layer succeeded CONDITION_SUCCEEDED; job-0071's RunJobRequest.Overrides fix verified in production. New WMS URL flood-depth-job-0075-demo. Part 3 honest visual: WMS tile comparison clearly shows fix (wms_full_0074 349 KB faint blue wash VS wms_full_0075 307 KB transparent dry + concentrated inundation — 42 KB drop = added NaN cells). Playwright zoom-11 visually identical (0.03% diff) due to MapLibre downsampling; zoom-13+ would show. **OQ-75-ROTATION-NOT-TRIGGERED**: rotation guard didn't fire — Fort Myers SFINCS emits (n,m) order natively (transform.a=+29.94, transform.e=-29.94 north-up). User's perceived rotation in job-0070 may have been comparison artifact; COG was always correctly oriented. Code is correct + guarded. OQ-75-PLAYWRIGHT-TILE-VISIBILITY (non-blocking — WMS evidence conclusive). Sprint-10 Sonnet win #7. Commit 70b8dbb.",
+      "description": "Stage 2 follow-up: pure regeneration M5 \u2192 fresh COG \u2192 auto-dispatch publish \u2192 visible-corrections screenshot. Part 1 smoke SUCCESS 585s; new run_id 01KTJX71NKGDMXB9TN0DV75JWK; CRS EPSG:32617; **transparency fix CONFIRMED at COG level** (job-0070: 0/284,580 NaN @ 0% min depth 0.010 with > 0.0 threshold; job-0075: 87,176/284,580 NaN @ 30.6% min depth 0.050 with > NODATA_DEPTH_M=0.05 threshold). Part 2 **auto-dispatch CONFIRMED** \u2014 publish_layer succeeded CONDITION_SUCCEEDED; job-0071's RunJobRequest.Overrides fix verified in production. New WMS URL flood-depth-job-0075-demo. Part 3 honest visual: WMS tile comparison clearly shows fix (wms_full_0074 349 KB faint blue wash VS wms_full_0075 307 KB transparent dry + concentrated inundation \u2014 42 KB drop = added NaN cells). Playwright zoom-11 visually identical (0.03% diff) due to MapLibre downsampling; zoom-13+ would show. **OQ-75-ROTATION-NOT-TRIGGERED**: rotation guard didn't fire \u2014 Fort Myers SFINCS emits (n,m) order natively (transform.a=+29.94, transform.e=-29.94 north-up). User's perceived rotation in job-0070 may have been comparison artifact; COG was always correctly oriented. Code is correct + guarded. OQ-75-PLAYWRIGHT-TILE-VISIBILITY (non-blocking \u2014 WMS evidence conclusive). Sprint-10 Sonnet win #7. Commit 70b8dbb.",
       "model": "sonnet",
       "subagent_tokens": 79482
     },
     {
       "job_id": "job-0076-web-20260607",
       "sprint": 10,
-      "description": "THE actual headline unblock (Opus). **ROOT CAUSE**: Map.tsx:210 pre-fix had `if (!m.isStyleLoaded()) return;` in session-state subscriber — basemap WMS tiles always take >2s on fresh page load so the bail fired every time, silently dropping the entire flood-layer wiring. LayerPanel populated through a different subscriber (no gate); flood addSource/addLayer was NEVER called. THIS is why every headline screenshot since job-0066 was basemap-only with UI chrome (jobs 0066, 0070, 0074, 0075). 3 Sonnet agents reported 'screenshot captured' based on UI-chrome signals; orchestrator trusted them. User caught the actual pixel-level gap. **FIX**: idle-retry pattern — register once('idle', apply) when style not loaded; idempotent via useRef<Set<string>> source tracker. **BUNDLED dark-theme** per user direction: theme prop + CartoDB DarkMatter vector style + beforeId stacking + App.tsx toggle button + localStorage. **FINAL screenshots both visibly contain blue flood overlay**: headline_light_FINAL.png 37.6% bluish, headline_dark_FINAL.png 26.9% bluish unmistakable against DarkMatter. 63→72 tests; tsc clean. 3 non-blocking OQs (CARTO rate limit, MAPCMD-WS production routing pending, IDLE-RETRY-ACCUMULATION minor). Opus well-justified — broke the 3-cycle silent-failure pattern. Commit 96e0060.",
+      "description": "THE actual headline unblock (Opus). **ROOT CAUSE**: Map.tsx:210 pre-fix had `if (!m.isStyleLoaded()) return;` in session-state subscriber \u2014 basemap WMS tiles always take >2s on fresh page load so the bail fired every time, silently dropping the entire flood-layer wiring. LayerPanel populated through a different subscriber (no gate); flood addSource/addLayer was NEVER called. THIS is why every headline screenshot since job-0066 was basemap-only with UI chrome (jobs 0066, 0070, 0074, 0075). 3 Sonnet agents reported 'screenshot captured' based on UI-chrome signals; orchestrator trusted them. User caught the actual pixel-level gap. **FIX**: idle-retry pattern \u2014 register once('idle', apply) when style not loaded; idempotent via useRef<Set<string>> source tracker. **BUNDLED dark-theme** per user direction: theme prop + CartoDB DarkMatter vector style + beforeId stacking + App.tsx toggle button + localStorage. **FINAL screenshots both visibly contain blue flood overlay**: headline_light_FINAL.png 37.6% bluish, headline_dark_FINAL.png 26.9% bluish unmistakable against DarkMatter. 63\u219272 tests; tsc clean. 3 non-blocking OQs (CARTO rate limit, MAPCMD-WS production routing pending, IDLE-RETRY-ACCUMULATION minor). Opus well-justified \u2014 broke the 3-cycle silent-failure pattern. Commit 96e0060.",
       "model": "opus",
       "subagent_tokens": 165989
     },
     {
       "job_id": "job-0077-testing-20260608",
       "sprint": 10,
-      "description": "Sprint-10 close. HEALTHY verdict. All 4 regression suites pass (web 72/72, agent 187/187, contracts 145/145, pyqgis 13/13). tsc qualified — 3 errors in FROZEN ws.test.tsx pre-existing (OQ-74-TSC-WS-TEST-ERRORS); production source clean. Playwright 3/4 — test_panels_collapsed_e2e fails because sprint-10's layout reversion removed data-testids the sprint-9 test relied on (carry-forward to sprint-11). Sprint-10 retrospective in-place covering planned-vs-actual (5 → 9+research), cost telemetry, 3-cycle false-success pattern, orchestrator lesson codified (pixel-evidence required, not UI-chrome signals), architectural wins, 8-item OQ carry-forward. Sprint-11 manifest authored per saved roadmap (Case UX headline + alignment + hillshade + map-command WS + Case persistence + acceptance + v0.3.22 SRS housekeeping pre-flight). Sprint-10 Sonnet win #8. Commit a7bff00.",
+      "description": "Sprint-10 close. HEALTHY verdict. All 4 regression suites pass (web 72/72, agent 187/187, contracts 145/145, pyqgis 13/13). tsc qualified \u2014 3 errors in FROZEN ws.test.tsx pre-existing (OQ-74-TSC-WS-TEST-ERRORS); production source clean. Playwright 3/4 \u2014 test_panels_collapsed_e2e fails because sprint-10's layout reversion removed data-testids the sprint-9 test relied on (carry-forward to sprint-11). Sprint-10 retrospective in-place covering planned-vs-actual (5 \u2192 9+research), cost telemetry, 3-cycle false-success pattern, orchestrator lesson codified (pixel-evidence required, not UI-chrome signals), architectural wins, 8-item OQ carry-forward. Sprint-11 manifest authored per saved roadmap (Case UX headline + alignment + hillshade + map-command WS + Case persistence + acceptance + v0.3.22 SRS housekeeping pre-flight). Sprint-10 Sonnet win #8. Commit a7bff00.",
       "model": "sonnet",
       "subagent_tokens": 105670
     },
     {
       "job_id": "job-0080-engine-20260608",
       "sprint": 11,
-      "description": "Sprint-11 Stage 1 parallel: compute_colored_relief atomic tool wrapping gdaldem color-relief. 4 ramp presets (terrain/elevation_blue_green/grayscale/viridis) inline as Python dicts; -alpha -compute_edges flags; /vsigs/ for GCS reads; cache via read_through (static-30d, colored_relief). Full FR-TA-3 docstring with LLM-pickable guidance per ramp. 19 new tests + full agent suite 202 passed (5 skipped); tool registry 17→19. Live E2E qualified (dev GCS ADC missing — fine in prod). 3 minor OQs: STYLE-PRESET-FOLLOWUP, GDALDEM-PATH-ENV-VAR, VSIGS-AUTH-PROD. Sprint-11 Sonnet win #1. Commit 6a7be2e.",
+      "description": "Sprint-11 Stage 1 parallel: compute_colored_relief atomic tool wrapping gdaldem color-relief. 4 ramp presets (terrain/elevation_blue_green/grayscale/viridis) inline as Python dicts; -alpha -compute_edges flags; /vsigs/ for GCS reads; cache via read_through (static-30d, colored_relief). Full FR-TA-3 docstring with LLM-pickable guidance per ramp. 19 new tests + full agent suite 202 passed (5 skipped); tool registry 17\u219219. Live E2E qualified (dev GCS ADC missing \u2014 fine in prod). 3 minor OQs: STYLE-PRESET-FOLLOWUP, GDALDEM-PATH-ENV-VAR, VSIGS-AUTH-PROD. Sprint-11 Sonnet win #1. Commit 6a7be2e.",
       "model": "sonnet",
       "subagent_tokens": 118426
     },
     {
       "job_id": "job-0082-engine-20260608",
       "sprint": 11,
-      "description": "Sprint-11 Stage 1 parallel: compute_aspect atomic tool. Mirrors compute_slope exactly. gdaldem aspect with Horn/ZT algorithms + zero_for_flat option. Cache static-30d, source_class=aspect, units=degrees. 11 tests pass against real gdaldem (synthetic DEMs verifying aspect ≈ 180° south-facing, flat-DEM branches, cache miss/hit, error paths, 4 distinct cache keys). 21 tools at startup. Idempotent concurrent registration. 1 minor OQ: style preset followup. Sprint-11 Sonnet win #2 (cheapest yet at 75,928 — pattern-mirroring efficiency). Commit 6717c39.",
+      "description": "Sprint-11 Stage 1 parallel: compute_aspect atomic tool. Mirrors compute_slope exactly. gdaldem aspect with Horn/ZT algorithms + zero_for_flat option. Cache static-30d, source_class=aspect, units=degrees. 11 tests pass against real gdaldem (synthetic DEMs verifying aspect \u2248 180\u00b0 south-facing, flat-DEM branches, cache miss/hit, error paths, 4 distinct cache keys). 21 tools at startup. Idempotent concurrent registration. 1 minor OQ: style preset followup. Sprint-11 Sonnet win #2 (cheapest yet at 75,928 \u2014 pattern-mirroring efficiency). Commit 6717c39.",
       "model": "sonnet",
       "subagent_tokens": 75928
     },
     {
       "job_id": "job-0081-engine-20260608",
       "sprint": 11,
-      "description": "Sprint-11 Stage 1 parallel: compute_slope atomic tool. SlopeComputeError typed errors; gdaldem slope with -p (percent) + -alg ZevenbergenThorne flags; cache static-30d, source_class=slope. 10 new tests against real gdaldem (synthetic 1°-gradient DEM verified mean slope ≈ 1.0° degrees + ≈ 1.745% percent; cache miss/hit; error paths; 4 distinct cache keys). Full agent suite 212 passed. **Live E2E confirmed**: Fort Myers DEM cached → slope GeoTIFF in cache; cache hit on second call. 21 tools at startup. 1 minor OQ: SLOPE-STYLE-PRESET-FOLLOWUP. Sprint-11 Sonnet win #3. Commit 145ba27.",
+      "description": "Sprint-11 Stage 1 parallel: compute_slope atomic tool. SlopeComputeError typed errors; gdaldem slope with -p (percent) + -alg ZevenbergenThorne flags; cache static-30d, source_class=slope. 10 new tests against real gdaldem (synthetic 1\u00b0-gradient DEM verified mean slope \u2248 1.0\u00b0 degrees + \u2248 1.745% percent; cache miss/hit; error paths; 4 distinct cache keys). Full agent suite 212 passed. **Live E2E confirmed**: Fort Myers DEM cached \u2192 slope GeoTIFF in cache; cache hit on second call. 21 tools at startup. 1 minor OQ: SLOPE-STYLE-PRESET-FOLLOWUP. Sprint-11 Sonnet win #3. Commit 145ba27.",
       "model": "sonnet",
       "subagent_tokens": 125018
     },
     {
       "job_id": "job-0083-engine-20260608",
       "sprint": 11,
-      "description": "Sprint-11 Stage 1 parallel: compute_zonal_statistics — THE foundational hazard-analysis primitive. Rolled own aggregation (rasterio + numpy; ~600 LOC); 10 statistics. Vector zone via osgeo.ogr + fiona fallback; per-polygon rasterize. Raster-zone grid mismatch auto-warp via rasterio.warp.reproject. NaN nodata explicitly guarded. 11 tests. **LIVE E2E ON REAL DATA**: job-0075 Fort Myers flood COG + synthetic center-quarter mask → count=48,155 mean=0.37m max=1.94m p95=0.89m. Result cached. First analysis tool returning real hazard-relevant numbers (vs derivative layers). 22 tools at startup. 3 OQs: VECTOR-CRS (silent CRS mismatch on vector zones — sprint-12 fix), UNITS (publish_layer should tag write-time), RASTERSTATS (deferred). Sprint-11 Sonnet win #4. Commit 8a0d7e0.",
+      "description": "Sprint-11 Stage 1 parallel: compute_zonal_statistics \u2014 THE foundational hazard-analysis primitive. Rolled own aggregation (rasterio + numpy; ~600 LOC); 10 statistics. Vector zone via osgeo.ogr + fiona fallback; per-polygon rasterize. Raster-zone grid mismatch auto-warp via rasterio.warp.reproject. NaN nodata explicitly guarded. 11 tests. **LIVE E2E ON REAL DATA**: job-0075 Fort Myers flood COG + synthetic center-quarter mask \u2192 count=48,155 mean=0.37m max=1.94m p95=0.89m. Result cached. First analysis tool returning real hazard-relevant numbers (vs derivative layers). 22 tools at startup. 3 OQs: VECTOR-CRS (silent CRS mismatch on vector zones \u2014 sprint-12 fix), UNITS (publish_layer should tag write-time), RASTERSTATS (deferred). Sprint-11 Sonnet win #4. Commit 8a0d7e0.",
       "model": "sonnet",
       "subagent_tokens": 99152
     },
@@ -385,133 +385,133 @@
     {
       "job_id": "job-0079-engine-20260608",
       "sprint": 11,
-      "description": "Sprint-11 Stage 1: compute_hillshade atomic tool with 5 style presets. NEW gdaldem hillshade wrap: standard (Horn/315/45), swiss_double (Horn 315+135 numpy multiply-blend pre-composited to single GeoTIFF per kickoff Option A), multidirectional (-multidirectional flag, GDAL constraint fix: omit -az), combined (-combined flag), smooth (ZevenbergenThorne algorithm). Cache key on (dem_uri,style,algorithm,azimuth,altitude,z_factor) at cache/static-30d/hillshade/. 14 unit tests pass; full agent suite 275 passed. **Live E2E**: swiss_double on job-0075 Fort Myers DEM -> gs://grace-2-hazard-prod-cache/cache/static-30d/hillshade/2b7ca6d8faa4fd4a5ee7d13cce5a98be.tif (388KB) in 1.88s first call, 0.38s cache hit on repeat. --startup-only shows 24 tools. OQ-79-PUBLISH-TERRAIN-COMPOSITE deferred (higher-order composite: hillshade + colorramp + flood stack with QGIS blend modes — sprint-11 follow-up or sprint-12 case-UX work). Commit 03fd1bf.",
+      "description": "Sprint-11 Stage 1: compute_hillshade atomic tool with 5 style presets. NEW gdaldem hillshade wrap: standard (Horn/315/45), swiss_double (Horn 315+135 numpy multiply-blend pre-composited to single GeoTIFF per kickoff Option A), multidirectional (-multidirectional flag, GDAL constraint fix: omit -az), combined (-combined flag), smooth (ZevenbergenThorne algorithm). Cache key on (dem_uri,style,algorithm,azimuth,altitude,z_factor) at cache/static-30d/hillshade/. 14 unit tests pass; full agent suite 275 passed. **Live E2E**: swiss_double on job-0075 Fort Myers DEM -> gs://grace-2-hazard-prod-cache/cache/static-30d/hillshade/2b7ca6d8faa4fd4a5ee7d13cce5a98be.tif (388KB) in 1.88s first call, 0.38s cache hit on repeat. --startup-only shows 24 tools. OQ-79-PUBLISH-TERRAIN-COMPOSITE deferred (higher-order composite: hillshade + colorramp + flood stack with QGIS blend modes \u2014 sprint-11 follow-up or sprint-12 case-UX work). Commit 03fd1bf.",
       "model": "sonnet",
       "subagent_tokens": 104275
     },
     {
       "job_id": "job-0078-web-20260608",
       "sprint": 11,
-      "description": "Sprint-11 Stage 1: OQ-76-MAP-ALIGNMENT diagnosis + fix. **Diagnostic finding**: the flood-overlay 'misalignment' user-flagged in job-0076 was a perception artifact of MapLibre's default `raster-resampling: linear` smearing the COG's discrete ~3-10m flood-depth cells across screen pixels at zoom 13 — NOT a geographic offset. All 5 hypotheses ranked in kickoff REJECTED with evidence: (1) WMS URL params identical (60/60 flood/basemap BBOX matches via page.on('request') Playwright instrumentation), (2) MapLibre `bounds:` not the cause, (3) tileSize 256 matches across sources, (4) WMS 1.3.0 axis-order OK, (5) EPSG:32617->3857 reproject correct (PIL composite of curl'd flood + basemap matches MapLibre render to ~3% mean pixel diff). **Fix**: one-line `raster-resampling: nearest` paint-property addition in web/src/Map.tsx — each COG cell now renders as discrete sharp block, making per-cell alignment with basemap streets/blocks visually verifiable. Tests 72->73 all passing, 1 new regression test. **Evidence**: aligned_light.png + aligned_dark.png + basemap-only counterparts (alignment proof: flood OFF view at same camera state) + 4-up composite + side-by-side proofs + diagnosis.md + url_pairs.json. OQs (non-blocking): OQ-78-AGENT-RASTER-RESAMPLING-FIELD (schema: should agent suggest resampling mode per layer type?), OQ-78-LIGHT-THEME-ALIGNMENT-ANCHORS (cosmetic: OSM water tones blend with light-blue flood palette), OQ-78-OPACITY-WIRE-DEFAULT (agent: 0.9 deliberate or placeholder?). **OPUS DIAGNOSTIC WIN**: 168K tokens to rule out 5 hypotheses with concrete data rather than chase the wrong fix — exactly what Opus is for. Commit 9acec1d.",
+      "description": "Sprint-11 Stage 1: OQ-76-MAP-ALIGNMENT diagnosis + fix. **Diagnostic finding**: the flood-overlay 'misalignment' user-flagged in job-0076 was a perception artifact of MapLibre's default `raster-resampling: linear` smearing the COG's discrete ~3-10m flood-depth cells across screen pixels at zoom 13 \u2014 NOT a geographic offset. All 5 hypotheses ranked in kickoff REJECTED with evidence: (1) WMS URL params identical (60/60 flood/basemap BBOX matches via page.on('request') Playwright instrumentation), (2) MapLibre `bounds:` not the cause, (3) tileSize 256 matches across sources, (4) WMS 1.3.0 axis-order OK, (5) EPSG:32617->3857 reproject correct (PIL composite of curl'd flood + basemap matches MapLibre render to ~3% mean pixel diff). **Fix**: one-line `raster-resampling: nearest` paint-property addition in web/src/Map.tsx \u2014 each COG cell now renders as discrete sharp block, making per-cell alignment with basemap streets/blocks visually verifiable. Tests 72->73 all passing, 1 new regression test. **Evidence**: aligned_light.png + aligned_dark.png + basemap-only counterparts (alignment proof: flood OFF view at same camera state) + 4-up composite + side-by-side proofs + diagnosis.md + url_pairs.json. OQs (non-blocking): OQ-78-AGENT-RASTER-RESAMPLING-FIELD (schema: should agent suggest resampling mode per layer type?), OQ-78-LIGHT-THEME-ALIGNMENT-ANCHORS (cosmetic: OSM water tones blend with light-blue flood palette), OQ-78-OPACITY-WIRE-DEFAULT (agent: 0.9 deliberate or placeholder?). **OPUS DIAGNOSTIC WIN**: 168K tokens to rule out 5 hypotheses with concrete data rather than chase the wrong fix \u2014 exactly what Opus is for. Commit 9acec1d.",
       "model": "opus",
       "subagent_tokens": 168529
     },
     {
       "job_id": "job-0086-engine-20260608",
       "sprint": 11,
-      "description": "Sprint-11 Stage 1 capstone: REAL OQ-76 fix — Y-axis flip in postprocess_flood COG extraction. Orchestrator-direct local diagnosis (rasterio on GCS COG + fsspec on source sfincs_map.nc) localized the in-COG mirror that job-0078's URL-consistency proof was vacuous against. Probe confirmed SFINCS y ascending along rows (y[0,0]=2,936,568 south UTM → y[-1,0]=2,952,348 north UTM); rasterio.from_bounds produces north-up transform; writing arr as-is paints SOUTH data (deep flood at Caloosahatchee mouth + San Carlos Bay) at the NORTH of the overlay bbox. Fix: Y-orientation guard before COG write — detects ascending y and applies `arr = arr[::-1, :]` + `arr_masked = arr_masked[::-1, :]`. Belt-and-suspenders X-orientation guard added analogously. 4 regression tests pass (y ascending fires guard, y descending idempotent no-op, metrics flip-invariant, x descending fires x guard). Full agent suite 279 passed 0 regressions. Re-extracted Fort Myers COG from EXISTING gs://...sfincs_map.nc (no SFINCS re-run) as flood_depth_peak_0086.tif; published WMS layer flood-depth-job-0086-fix (CONDITION_SUCCEEDED). **Live E2E**: z12/z11 dark-theme screenshots confirm deep-flood pixels NOW at SW (Caloosahatchee mouth + Cape Coral) — not NW. before_vs_after.png shows vertical mirror between old 0075 layer and new 0086 layer as expected. **Lesson codified**: URL/render consistency != geographic correctness; in-COG mirror is invisible to every consistency check (server, client, PIL composite all faithfully serve the mirrored array). Commit b862cbf.",
+      "description": "Sprint-11 Stage 1 capstone: REAL OQ-76 fix \u2014 Y-axis flip in postprocess_flood COG extraction. Orchestrator-direct local diagnosis (rasterio on GCS COG + fsspec on source sfincs_map.nc) localized the in-COG mirror that job-0078's URL-consistency proof was vacuous against. Probe confirmed SFINCS y ascending along rows (y[0,0]=2,936,568 south UTM \u2192 y[-1,0]=2,952,348 north UTM); rasterio.from_bounds produces north-up transform; writing arr as-is paints SOUTH data (deep flood at Caloosahatchee mouth + San Carlos Bay) at the NORTH of the overlay bbox. Fix: Y-orientation guard before COG write \u2014 detects ascending y and applies `arr = arr[::-1, :]` + `arr_masked = arr_masked[::-1, :]`. Belt-and-suspenders X-orientation guard added analogously. 4 regression tests pass (y ascending fires guard, y descending idempotent no-op, metrics flip-invariant, x descending fires x guard). Full agent suite 279 passed 0 regressions. Re-extracted Fort Myers COG from EXISTING gs://...sfincs_map.nc (no SFINCS re-run) as flood_depth_peak_0086.tif; published WMS layer flood-depth-job-0086-fix (CONDITION_SUCCEEDED). **Live E2E**: z12/z11 dark-theme screenshots confirm deep-flood pixels NOW at SW (Caloosahatchee mouth + Cape Coral) \u2014 not NW. before_vs_after.png shows vertical mirror between old 0075 layer and new 0086 layer as expected. **Lesson codified**: URL/render consistency != geographic correctness; in-COG mirror is invisible to every consistency check (server, client, PIL composite all faithfully serve the mirrored array). Commit b862cbf.",
       "model": "sonnet",
       "subagent_tokens": 88163
     },
     {
       "job_id": "job-0087-engine-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 1 parallel: fetch_gbif_occurrences. Wave 1 fan-out closed 13/15 ready-for-audit + 1 orchestrator-rescue commit (0091 storm events) + 1 reconciled commit-label-swap pattern (sibling agents racing on git add — files all landed correctly, marker commits document actual content placement). Live geographic-correctness gate per codified job-0086 lesson satisfied for each fetcher (every emitted point/poly inside requested bbox verified).",
+      "description": "Sprint-12-mega Wave 1 parallel: fetch_gbif_occurrences. Wave 1 fan-out closed 13/15 ready-for-audit + 1 orchestrator-rescue commit (0091 storm events) + 1 reconciled commit-label-swap pattern (sibling agents racing on git add \u2014 files all landed correctly, marker commits document actual content placement). Live geographic-correctness gate per codified job-0086 lesson satisfied for each fetcher (every emitted point/poly inside requested bbox verified).",
       "model": "opus",
       "subagent_tokens": 161082
     },
     {
       "job_id": "job-0088-engine-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 1 parallel: fetch_inaturalist_observations. Wave 1 fan-out closed 13/15 ready-for-audit + 1 orchestrator-rescue commit (0091 storm events) + 1 reconciled commit-label-swap pattern (sibling agents racing on git add — files all landed correctly, marker commits document actual content placement). Live geographic-correctness gate per codified job-0086 lesson satisfied for each fetcher (every emitted point/poly inside requested bbox verified).",
+      "description": "Sprint-12-mega Wave 1 parallel: fetch_inaturalist_observations. Wave 1 fan-out closed 13/15 ready-for-audit + 1 orchestrator-rescue commit (0091 storm events) + 1 reconciled commit-label-swap pattern (sibling agents racing on git add \u2014 files all landed correctly, marker commits document actual content placement). Live geographic-correctness gate per codified job-0086 lesson satisfied for each fetcher (every emitted point/poly inside requested bbox verified).",
       "model": "opus",
       "subagent_tokens": 161082
     },
     {
       "job_id": "job-0089-engine-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 1 parallel: fetch_wdpa_protected_areas. Wave 1 fan-out closed 13/15 ready-for-audit + 1 orchestrator-rescue commit (0091 storm events) + 1 reconciled commit-label-swap pattern (sibling agents racing on git add — files all landed correctly, marker commits document actual content placement). Live geographic-correctness gate per codified job-0086 lesson satisfied for each fetcher (every emitted point/poly inside requested bbox verified).",
+      "description": "Sprint-12-mega Wave 1 parallel: fetch_wdpa_protected_areas. Wave 1 fan-out closed 13/15 ready-for-audit + 1 orchestrator-rescue commit (0091 storm events) + 1 reconciled commit-label-swap pattern (sibling agents racing on git add \u2014 files all landed correctly, marker commits document actual content placement). Live geographic-correctness gate per codified job-0086 lesson satisfied for each fetcher (every emitted point/poly inside requested bbox verified).",
       "model": "opus",
       "subagent_tokens": 161082
     },
     {
       "job_id": "job-0090-engine-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 1 parallel: fetch_nws_event. Wave 1 fan-out closed 13/15 ready-for-audit + 1 orchestrator-rescue commit (0091 storm events) + 1 reconciled commit-label-swap pattern (sibling agents racing on git add — files all landed correctly, marker commits document actual content placement). Live geographic-correctness gate per codified job-0086 lesson satisfied for each fetcher (every emitted point/poly inside requested bbox verified).",
+      "description": "Sprint-12-mega Wave 1 parallel: fetch_nws_event. Wave 1 fan-out closed 13/15 ready-for-audit + 1 orchestrator-rescue commit (0091 storm events) + 1 reconciled commit-label-swap pattern (sibling agents racing on git add \u2014 files all landed correctly, marker commits document actual content placement). Live geographic-correctness gate per codified job-0086 lesson satisfied for each fetcher (every emitted point/poly inside requested bbox verified).",
       "model": "opus",
       "subagent_tokens": 161082
     },
     {
       "job_id": "job-0091-engine-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 1 parallel: fetch_storm_events_db. Wave 1 fan-out closed 13/15 ready-for-audit + 1 orchestrator-rescue commit (0091 storm events) + 1 reconciled commit-label-swap pattern (sibling agents racing on git add — files all landed correctly, marker commits document actual content placement). Live geographic-correctness gate per codified job-0086 lesson satisfied for each fetcher (every emitted point/poly inside requested bbox verified).",
+      "description": "Sprint-12-mega Wave 1 parallel: fetch_storm_events_db. Wave 1 fan-out closed 13/15 ready-for-audit + 1 orchestrator-rescue commit (0091 storm events) + 1 reconciled commit-label-swap pattern (sibling agents racing on git add \u2014 files all landed correctly, marker commits document actual content placement). Live geographic-correctness gate per codified job-0086 lesson satisfied for each fetcher (every emitted point/poly inside requested bbox verified).",
       "model": "opus",
       "subagent_tokens": 161082
     },
     {
       "job_id": "job-0092-engine-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 1 parallel: web_fetch (+bs4/lxml deps). Wave 1 fan-out closed 13/15 ready-for-audit + 1 orchestrator-rescue commit (0091 storm events) + 1 reconciled commit-label-swap pattern (sibling agents racing on git add — files all landed correctly, marker commits document actual content placement). Live geographic-correctness gate per codified job-0086 lesson satisfied for each fetcher (every emitted point/poly inside requested bbox verified).",
+      "description": "Sprint-12-mega Wave 1 parallel: web_fetch (+bs4/lxml deps). Wave 1 fan-out closed 13/15 ready-for-audit + 1 orchestrator-rescue commit (0091 storm events) + 1 reconciled commit-label-swap pattern (sibling agents racing on git add \u2014 files all landed correctly, marker commits document actual content placement). Live geographic-correctness gate per codified job-0086 lesson satisfied for each fetcher (every emitted point/poly inside requested bbox verified).",
       "model": "opus",
       "subagent_tokens": 161082
     },
     {
       "job_id": "job-0093-engine-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 1 parallel: aggregate_claims_across_sources. Wave 1 fan-out closed 13/15 ready-for-audit + 1 orchestrator-rescue commit (0091 storm events) + 1 reconciled commit-label-swap pattern (sibling agents racing on git add — files all landed correctly, marker commits document actual content placement). Live geographic-correctness gate per codified job-0086 lesson satisfied for each fetcher (every emitted point/poly inside requested bbox verified).",
+      "description": "Sprint-12-mega Wave 1 parallel: aggregate_claims_across_sources. Wave 1 fan-out closed 13/15 ready-for-audit + 1 orchestrator-rescue commit (0091 storm events) + 1 reconciled commit-label-swap pattern (sibling agents racing on git add \u2014 files all landed correctly, marker commits document actual content placement). Live geographic-correctness gate per codified job-0086 lesson satisfied for each fetcher (every emitted point/poly inside requested bbox verified).",
       "model": "opus",
       "subagent_tokens": 161082
     },
     {
       "job_id": "job-0094-engine-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 1 parallel: extract_landcover_class. Wave 1 fan-out closed 13/15 ready-for-audit + 1 orchestrator-rescue commit (0091 storm events) + 1 reconciled commit-label-swap pattern (sibling agents racing on git add — files all landed correctly, marker commits document actual content placement). Live geographic-correctness gate per codified job-0086 lesson satisfied for each fetcher (every emitted point/poly inside requested bbox verified).",
+      "description": "Sprint-12-mega Wave 1 parallel: extract_landcover_class. Wave 1 fan-out closed 13/15 ready-for-audit + 1 orchestrator-rescue commit (0091 storm events) + 1 reconciled commit-label-swap pattern (sibling agents racing on git add \u2014 files all landed correctly, marker commits document actual content placement). Live geographic-correctness gate per codified job-0086 lesson satisfied for each fetcher (every emitted point/poly inside requested bbox verified).",
       "model": "opus",
       "subagent_tokens": 161082
     },
     {
       "job_id": "job-0095-engine-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 1 parallel: compute_impervious_surface. Wave 1 fan-out closed 13/15 ready-for-audit + 1 orchestrator-rescue commit (0091 storm events) + 1 reconciled commit-label-swap pattern (sibling agents racing on git add — files all landed correctly, marker commits document actual content placement). Live geographic-correctness gate per codified job-0086 lesson satisfied for each fetcher (every emitted point/poly inside requested bbox verified).",
+      "description": "Sprint-12-mega Wave 1 parallel: compute_impervious_surface. Wave 1 fan-out closed 13/15 ready-for-audit + 1 orchestrator-rescue commit (0091 storm events) + 1 reconciled commit-label-swap pattern (sibling agents racing on git add \u2014 files all landed correctly, marker commits document actual content placement). Live geographic-correctness gate per codified job-0086 lesson satisfied for each fetcher (every emitted point/poly inside requested bbox verified).",
       "model": "opus",
       "subagent_tokens": 161082
     },
     {
       "job_id": "job-0096-engine-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 1 parallel: compute_building_density. Wave 1 fan-out closed 13/15 ready-for-audit + 1 orchestrator-rescue commit (0091 storm events) + 1 reconciled commit-label-swap pattern (sibling agents racing on git add — files all landed correctly, marker commits document actual content placement). Live geographic-correctness gate per codified job-0086 lesson satisfied for each fetcher (every emitted point/poly inside requested bbox verified).",
+      "description": "Sprint-12-mega Wave 1 parallel: compute_building_density. Wave 1 fan-out closed 13/15 ready-for-audit + 1 orchestrator-rescue commit (0091 storm events) + 1 reconciled commit-label-swap pattern (sibling agents racing on git add \u2014 files all landed correctly, marker commits document actual content placement). Live geographic-correctness gate per codified job-0086 lesson satisfied for each fetcher (every emitted point/poly inside requested bbox verified).",
       "model": "opus",
       "subagent_tokens": 161082
     },
     {
       "job_id": "job-0097-engine-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 1 parallel: fetch_roads_osm. Wave 1 fan-out closed 13/15 ready-for-audit + 1 orchestrator-rescue commit (0091 storm events) + 1 reconciled commit-label-swap pattern (sibling agents racing on git add — files all landed correctly, marker commits document actual content placement). Live geographic-correctness gate per codified job-0086 lesson satisfied for each fetcher (every emitted point/poly inside requested bbox verified).",
+      "description": "Sprint-12-mega Wave 1 parallel: fetch_roads_osm. Wave 1 fan-out closed 13/15 ready-for-audit + 1 orchestrator-rescue commit (0091 storm events) + 1 reconciled commit-label-swap pattern (sibling agents racing on git add \u2014 files all landed correctly, marker commits document actual content placement). Live geographic-correctness gate per codified job-0086 lesson satisfied for each fetcher (every emitted point/poly inside requested bbox verified).",
       "model": "opus",
       "subagent_tokens": 161082
     },
     {
       "job_id": "job-0098-engine-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 1 parallel: run_pelicun_damage_assessment (stub). Wave 1 fan-out closed 13/15 ready-for-audit + 1 orchestrator-rescue commit (0091 storm events) + 1 reconciled commit-label-swap pattern (sibling agents racing on git add — files all landed correctly, marker commits document actual content placement). Live geographic-correctness gate per codified job-0086 lesson satisfied for each fetcher (every emitted point/poly inside requested bbox verified).",
+      "description": "Sprint-12-mega Wave 1 parallel: run_pelicun_damage_assessment (stub). Wave 1 fan-out closed 13/15 ready-for-audit + 1 orchestrator-rescue commit (0091 storm events) + 1 reconciled commit-label-swap pattern (sibling agents racing on git add \u2014 files all landed correctly, marker commits document actual content placement). Live geographic-correctness gate per codified job-0086 lesson satisfied for each fetcher (every emitted point/poly inside requested bbox verified).",
       "model": "opus",
       "subagent_tokens": 161082
     },
     {
       "job_id": "job-0099-schema-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 1 parallel: Case schema FR-MP-6 envelopes. Wave 1 fan-out closed 13/15 ready-for-audit + 1 orchestrator-rescue commit (0091 storm events) + 1 reconciled commit-label-swap pattern (sibling agents racing on git add — files all landed correctly, marker commits document actual content placement). Live geographic-correctness gate per codified job-0086 lesson satisfied for each fetcher (every emitted point/poly inside requested bbox verified).",
+      "description": "Sprint-12-mega Wave 1 parallel: Case schema FR-MP-6 envelopes. Wave 1 fan-out closed 13/15 ready-for-audit + 1 orchestrator-rescue commit (0091 storm events) + 1 reconciled commit-label-swap pattern (sibling agents racing on git add \u2014 files all landed correctly, marker commits document actual content placement). Live geographic-correctness gate per codified job-0086 lesson satisfied for each fetcher (every emitted point/poly inside requested bbox verified).",
       "model": "opus",
       "subagent_tokens": 161082
     },
     {
       "job_id": "job-0100-schema-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 1 parallel: Secrets schema F.3 envelopes. Wave 1 fan-out closed 13/15 ready-for-audit + 1 orchestrator-rescue commit (0091 storm events) + 1 reconciled commit-label-swap pattern (sibling agents racing on git add — files all landed correctly, marker commits document actual content placement). Live geographic-correctness gate per codified job-0086 lesson satisfied for each fetcher (every emitted point/poly inside requested bbox verified).",
+      "description": "Sprint-12-mega Wave 1 parallel: Secrets schema F.3 envelopes. Wave 1 fan-out closed 13/15 ready-for-audit + 1 orchestrator-rescue commit (0091 storm events) + 1 reconciled commit-label-swap pattern (sibling agents racing on git add \u2014 files all landed correctly, marker commits document actual content placement). Live geographic-correctness gate per codified job-0086 lesson satisfied for each fetcher (every emitted point/poly inside requested bbox verified).",
       "model": "opus",
       "subagent_tokens": 161082
     },
     {
       "job_id": "job-0101-agent-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 1 parallel: Mode 2 .gov/.edu classifier. Wave 1 fan-out closed 13/15 ready-for-audit + 1 orchestrator-rescue commit (0091 storm events) + 1 reconciled commit-label-swap pattern (sibling agents racing on git add — files all landed correctly, marker commits document actual content placement). Live geographic-correctness gate per codified job-0086 lesson satisfied for each fetcher (every emitted point/poly inside requested bbox verified).",
+      "description": "Sprint-12-mega Wave 1 parallel: Mode 2 .gov/.edu classifier. Wave 1 fan-out closed 13/15 ready-for-audit + 1 orchestrator-rescue commit (0091 storm events) + 1 reconciled commit-label-swap pattern (sibling agents racing on git add \u2014 files all landed correctly, marker commits document actual content placement). Live geographic-correctness gate per codified job-0086 lesson satisfied for each fetcher (every emitted point/poly inside requested bbox verified).",
       "model": "opus",
       "subagent_tokens": 161082
     },
     {
       "job_id": "research-engine-real-case-studies-20260608",
       "sprint": 12,
-      "description": "Research workflow (4 parallel Sonnet bundles via web search): real-world case studies for hydrology engines (SFINCS/MODFLOW/TELEMAC/HEC-HMS/ParFlow), wildfire (QUIC-Fire+data), ecosystem (InVEST/Maxent/Circuitscape), damage (Pelicun/HAZUS). Structured findings: 16-30 real citable case studies + workflow comparisons. Key validations: MRMS QPE (Harvey/Houston SFINCS standard), ERA5+GTSM+CaMa-Flood (compound-flood global substrate, NHESS 2023), MODFLOW-setup+SFR-maker (USGS Long Island TCE plume), GCN250 curve numbers (infiltration). Validated user's request to add MRMS + NEXRAD + NWS data layers — research independently identified MRMS as Harvey/Houston standard.",
+      "description": "Research workflow (4 parallel Sonnet bundles via web search): real-world case studies for hydrology engines (SFINCS/MODFLOW/TELEMAC/HEC-HMS/ParFlow), wildfire (QUIC-Fire+data), ecosystem (InVEST/Maxent/Circuitscape), damage (Pelicun/HAZUS). Structured findings: 16-30 real citable case studies + workflow comparisons. Key validations: MRMS QPE (Harvey/Houston SFINCS standard), ERA5+GTSM+CaMa-Flood (compound-flood global substrate, NHESS 2023), MODFLOW-setup+SFR-maker (USGS Long Island TCE plume), GCN250 curve numbers (infiltration). Validated user's request to add MRMS + NEXRAD + NWS data layers \u2014 research independently identified MRMS as Harvey/Houston standard.",
       "model": "sonnet",
       "kind": "research",
       "workflow_id": "wf_fda31770-e52",
@@ -597,7 +597,7 @@
     {
       "job_id": "job-0113-engine-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 1.5 parallel: fetch_gcn250_curve_numbers (GCN250 SCS — SFINCS substrate). Wave 1.5 fan-out closed 16/16 ready-for-audit (with same commit-label-swap race pattern as Wave 1; HEAD files all correct; marker commits document actual landings). Live geographic-correctness gate satisfied for each.",
+      "description": "Sprint-12-mega Wave 1.5 parallel: fetch_gcn250_curve_numbers (GCN250 SCS \u2014 SFINCS substrate). Wave 1.5 fan-out closed 16/16 ready-for-audit (with same commit-label-swap race pattern as Wave 1; HEAD files all correct; marker commits document actual landings). Live geographic-correctness gate satisfied for each.",
       "model": "opus",
       "subagent_tokens": 198089
     },
@@ -618,7 +618,7 @@
     {
       "job_id": "job-0116-schema-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 1.5 parallel: SRS Appendix H — Auth/Users (Firebase Auth, Decision E). Wave 1.5 fan-out closed 16/16 ready-for-audit (with same commit-label-swap race pattern as Wave 1; HEAD files all correct; marker commits document actual landings). Live geographic-correctness gate satisfied for each.",
+      "description": "Sprint-12-mega Wave 1.5 parallel: SRS Appendix H \u2014 Auth/Users (Firebase Auth, Decision E). Wave 1.5 fan-out closed 16/16 ready-for-audit (with same commit-label-swap race pattern as Wave 1; HEAD files all correct; marker commits document actual landings). Live geographic-correctness gate satisfied for each.",
       "model": "opus",
       "subagent_tokens": 198089
     },
@@ -653,14 +653,14 @@
     {
       "job_id": "job-0121-agent-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 2 parallel: Case UX agent backend — per-Case .qgs lazy-init + Persistence wiring + chat replay. Wave 2 fan-out closed 16/16 ready-for-audit (commit-label-swap pattern continued; HEAD files correct; marker commits document landings).",
+      "description": "Sprint-12-mega Wave 2 parallel: Case UX agent backend \u2014 per-Case .qgs lazy-init + Persistence wiring + chat replay. Wave 2 fan-out closed 16/16 ready-for-audit (commit-label-swap pattern continued; HEAD files correct; marker commits document landings).",
       "model": "opus",
       "subagent_tokens": 208314
     },
     {
       "job_id": "job-0122-agent-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 2 parallel: Auth backend — Firebase ID-token verifier + WS connect handshake. Wave 2 fan-out closed 16/16 ready-for-audit (commit-label-swap pattern continued; HEAD files correct; marker commits document landings).",
+      "description": "Sprint-12-mega Wave 2 parallel: Auth backend \u2014 Firebase ID-token verifier + WS connect handshake. Wave 2 fan-out closed 16/16 ready-for-audit (commit-label-swap pattern continued; HEAD files correct; marker commits document landings).",
       "model": "opus",
       "subagent_tokens": 208314
     },
@@ -674,14 +674,14 @@
     {
       "job_id": "job-0124-agent-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 2 parallel: Secrets agent backend — GCP Secret Manager vault + ws handlers. Wave 2 fan-out closed 16/16 ready-for-audit (commit-label-swap pattern continued; HEAD files correct; marker commits document landings).",
+      "description": "Sprint-12-mega Wave 2 parallel: Secrets agent backend \u2014 GCP Secret Manager vault + ws handlers. Wave 2 fan-out closed 16/16 ready-for-audit (commit-label-swap pattern continued; HEAD files correct; marker commits document landings).",
       "model": "opus",
       "subagent_tokens": 208314
     },
     {
       "job_id": "job-0125-web-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 2 parallel: Secrets UX web — SecretsPanel + Tier2UnlockBadge + ws wiring. Wave 2 fan-out closed 16/16 ready-for-audit (commit-label-swap pattern continued; HEAD files correct; marker commits document landings).",
+      "description": "Sprint-12-mega Wave 2 parallel: Secrets UX web \u2014 SecretsPanel + Tier2UnlockBadge + ws wiring. Wave 2 fan-out closed 16/16 ready-for-audit (commit-label-swap pattern continued; HEAD files correct; marker commits document landings).",
       "model": "opus",
       "subagent_tokens": 208314
     },
@@ -695,7 +695,7 @@
     {
       "job_id": "job-0127-schema-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 2 parallel: Tool payload-warning system — cross-cut schema+agent+web envelopes + inline UI. Wave 2 fan-out closed 16/16 ready-for-audit (commit-label-swap pattern continued; HEAD files correct; marker commits document landings).",
+      "description": "Sprint-12-mega Wave 2 parallel: Tool payload-warning system \u2014 cross-cut schema+agent+web envelopes + inline UI. Wave 2 fan-out closed 16/16 ready-for-audit (commit-label-swap pattern continued; HEAD files correct; marker commits document landings).",
       "model": "opus",
       "subagent_tokens": 208314
     },
@@ -723,28 +723,28 @@
     {
       "job_id": "job-0131-engine-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 2 parallel: fetch_era5_reanalysis Tier-2 (Copernicus CDS — compound-flood substrate). Wave 2 fan-out closed 16/16 ready-for-audit (commit-label-swap pattern continued; HEAD files correct; marker commits document landings).",
+      "description": "Sprint-12-mega Wave 2 parallel: fetch_era5_reanalysis Tier-2 (Copernicus CDS \u2014 compound-flood substrate). Wave 2 fan-out closed 16/16 ready-for-audit (commit-label-swap pattern continued; HEAD files correct; marker commits document landings).",
       "model": "opus",
       "subagent_tokens": 208314
     },
     {
       "job_id": "job-0132-engine-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 2 parallel: fetch_gtsm_tide_surge Tier-2 (GTSM v3.0 coastal water-level — compound-flood substrate). Wave 2 fan-out closed 16/16 ready-for-audit (commit-label-swap pattern continued; HEAD files correct; marker commits document landings).",
+      "description": "Sprint-12-mega Wave 2 parallel: fetch_gtsm_tide_surge Tier-2 (GTSM v3.0 coastal water-level \u2014 compound-flood substrate). Wave 2 fan-out closed 16/16 ready-for-audit (commit-label-swap pattern continued; HEAD files correct; marker commits document landings).",
       "model": "opus",
       "subagent_tokens": 208314
     },
     {
       "job_id": "job-0133-engine-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 2 parallel: fetch_cama_flood_discharge Tier-1 (CaMa-Flood — compound-flood fluvial substrate). Wave 2 fan-out closed 16/16 ready-for-audit (commit-label-swap pattern continued; HEAD files correct; marker commits document landings).",
+      "description": "Sprint-12-mega Wave 2 parallel: fetch_cama_flood_discharge Tier-1 (CaMa-Flood \u2014 compound-flood fluvial substrate). Wave 2 fan-out closed 16/16 ready-for-audit (commit-label-swap pattern continued; HEAD files correct; marker commits document landings).",
       "model": "opus",
       "subagent_tokens": 208314
     },
     {
       "job_id": "playwright-wave2-capture-20260608",
       "sprint": 12,
-      "description": "Orchestrator-delegated Playwright UI capture of Wave 2 surfaces. Captured 12 screenshots: AuthPanel both states, SecretsPanel empty+populated, Mode2OfferModal at 0.9 confidence, Case 1 demo composite (LayerPanel discipline visible but map-rendering gap surfaced). 3 OQs: OQ-PAY-MAP-VECTOR-UNSUPPORTED (CRITICAL — Map.tsx is raster-only), OQ-PAY-NO-PAYLOAD-WARNING-SEAM (3-line dev seam), OQ-PAY-NO-EVIDENCE-MRMS (evidence dir empty despite log claim).",
+      "description": "Orchestrator-delegated Playwright UI capture of Wave 2 surfaces. Captured 12 screenshots: AuthPanel both states, SecretsPanel empty+populated, Mode2OfferModal at 0.9 confidence, Case 1 demo composite (LayerPanel discipline visible but map-rendering gap surfaced). 3 OQs: OQ-PAY-MAP-VECTOR-UNSUPPORTED (CRITICAL \u2014 Map.tsx is raster-only), OQ-PAY-NO-PAYLOAD-WARNING-SEAM (3-line dev seam), OQ-PAY-NO-EVIDENCE-MRMS (evidence dir empty despite log claim).",
       "model": "opus",
       "kind": "orchestrator-delegate",
       "subagent_tokens": 81236
@@ -752,28 +752,28 @@
     {
       "job_id": "job-0134-testing-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 3 parallel: Case 1 acceptance — Big Cypress live run (species + WDPA ✓; flood blocked by 5000km² guardrail — honest failure as designed)",
+      "description": "Sprint-12-mega Wave 3 parallel: Case 1 acceptance \u2014 Big Cypress live run (species + WDPA \u2713; flood blocked by 5000km\u00b2 guardrail \u2014 honest failure as designed)",
       "model": "sonnet",
       "subagent_tokens": 167627
     },
     {
       "job_id": "job-0135-testing-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 3 parallel: Case 2 partial acceptance — East Palestine spill ingest demo (all 6 acceptance criteria pass)",
+      "description": "Sprint-12-mega Wave 3 parallel: Case 2 partial acceptance \u2014 East Palestine spill ingest demo (all 6 acceptance criteria pass)",
       "model": "sonnet",
       "subagent_tokens": 167627
     },
     {
       "job_id": "job-0136-testing-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 3 parallel: Pelicun acceptance — Fort Myers damage choropleth",
+      "description": "Sprint-12-mega Wave 3 parallel: Pelicun acceptance \u2014 Fort Myers damage choropleth",
       "model": "sonnet",
       "subagent_tokens": 167627
     },
     {
       "job_id": "job-0137-web-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 3 parallel: Case UX web shell — CasesPanel + chat-replay rehydration + ConfirmationDialog + PersistenceChip (FR-MP-6 headline)",
+      "description": "Sprint-12-mega Wave 3 parallel: Case UX web shell \u2014 CasesPanel + chat-replay rehydration + ConfirmationDialog + PersistenceChip (FR-MP-6 headline)",
       "model": "opus",
       "subagent_tokens": 167627
     },
@@ -787,7 +787,7 @@
     {
       "job_id": "job-0139-web-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 3.5 (Stage A fix): Map.tsx vector rendering — THE CRITICAL UNBLOCK; 190/190 web tests; species + WDPA + Pelicun vectors all render on map; subtle isStyleLoaded-flip bug found+fixed",
+      "description": "Sprint-12-mega Wave 3.5 (Stage A fix): Map.tsx vector rendering \u2014 THE CRITICAL UNBLOCK; 190/190 web tests; species + WDPA + Pelicun vectors all render on map; subtle isStyleLoaded-flip bug found+fixed",
       "model": "opus",
       "subagent_tokens": 173506
     },
@@ -801,63 +801,63 @@
     {
       "job_id": "job-0141-engine-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 3.5 (Stage A fix): MRMS evidence audit — re-captured cache URIs + summary stats",
+      "description": "Sprint-12-mega Wave 3.5 (Stage A fix): MRMS evidence audit \u2014 re-captured cache URIs + summary stats",
       "model": "sonnet",
       "subagent_tokens": 80000
     },
     {
       "job_id": "job-0142-testing-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 3.5 (Stage B verification): Mid-sprint Playwright verification — 7 scenarios → 11 screenshots; AuthGate + anonymous → app + Cases+chat replay + Case 1 with vectors on map + Pelicun + Wave 2 UI in real running state + dark/light parity",
+      "description": "Sprint-12-mega Wave 3.5 (Stage B verification): Mid-sprint Playwright verification \u2014 7 scenarios \u2192 11 screenshots; AuthGate + anonymous \u2192 app + Cases+chat replay + Case 1 with vectors on map + Pelicun + Wave 2 UI in real running state + dark/light parity",
       "model": "opus",
       "subagent_tokens": 173506
     },
     {
       "job_id": "job-0143-web-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 4 UX polish (Stage A): Left rail + nav hierarchy (Cases↔CaseView toggle) + [Settings][Secrets] bottom-row popups + useSaveGate hook + identity chip removed + MapLibre nav repositioned",
+      "description": "Sprint-12-mega Wave 4 UX polish (Stage A): Left rail + nav hierarchy (Cases\u2194CaseView toggle) + [Settings][Secrets] bottom-row popups + useSaveGate hook + identity chip removed + MapLibre nav repositioned",
       "model": "opus",
       "subagent_tokens": 220000
     },
     {
       "job_id": "job-0144-web-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 4 UX polish (Stage A): Chat input redesign — Claude Code-style merged ↑/■ button + dynamic auto-grow textarea (48px→40vh) + drop shadow + rounded overlay (88px scroll padding)",
+      "description": "Sprint-12-mega Wave 4 UX polish (Stage A): Chat input redesign \u2014 Claude Code-style merged \u2191/\u25a0 button + dynamic auto-grow textarea (48px\u219240vh) + drop shadow + rounded overlay (88px scroll padding)",
       "model": "opus",
       "subagent_tokens": 220000
     },
     {
       "job_id": "job-0145-web-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 4 UX polish (Stage A): Inline chat cards — InlineChatCard primitive + SourceSuggestionInline (drops \"Mode 2\" terminology — patterns translated) + restyled PayloadWarningInline",
+      "description": "Sprint-12-mega Wave 4 UX polish (Stage A): Inline chat cards \u2014 InlineChatCard primitive + SourceSuggestionInline (drops \"Mode 2\" terminology \u2014 patterns translated) + restyled PayloadWarningInline",
       "model": "opus",
       "subagent_tokens": 220000
     },
     {
       "job_id": "job-0146-web-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 4 UX polish (Stage A): Vector style polish — curated 12-color palette (partial: 2 species ended up same color — Wave 4.5 follow-up) + Pelicun ds_mean choropleth gradient (working)",
+      "description": "Sprint-12-mega Wave 4 UX polish (Stage A): Vector style polish \u2014 curated 12-color palette (partial: 2 species ended up same color \u2014 Wave 4.5 follow-up) + Pelicun ds_mean choropleth gradient (working)",
       "model": "sonnet",
       "subagent_tokens": 130000
     },
     {
       "job_id": "job-0147-engine-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 4 UX polish (Stage A): Pelicun assets upgrade — run_pelicun_with_buildings composer using compute_building_density grid",
+      "description": "Sprint-12-mega Wave 4 UX polish (Stage A): Pelicun assets upgrade \u2014 run_pelicun_with_buildings composer using compute_building_density grid",
       "model": "sonnet",
       "subagent_tokens": 130000
     },
     {
       "job_id": "job-0148-testing-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 4 UX polish (Stage B verification): Stage B Playwright verification — 12 screenshots captured (Cases-root, Case-active, popups, chat input states, polished cards, palette, choropleth)",
+      "description": "Sprint-12-mega Wave 4 UX polish (Stage B verification): Stage B Playwright verification \u2014 12 screenshots captured (Cases-root, Case-active, popups, chat input states, polished cards, palette, choropleth)",
       "model": "opus",
       "subagent_tokens": 220000
     },
     {
       "job_id": "opus-parallel-diagnostic-job-0154-20260608",
       "sprint": 12,
-      "description": "Opus parallel diagnostic for job-0154 (read-only). Independently confirmed hypothesis B (registration disconnect) — TOOL_REGISTRY never wired into Gemini tools=. Cross-checked Sonnet fix: all 3 required pieces present (disable autocall + FunctionDeclaration.from_callable + dispatch via _invoke_tool_via_emitter). Surfaced 6 new OQs — 2 real bugs (function-response-feedback for prose narration; chat-history-asymmetry).",
+      "description": "Opus parallel diagnostic for job-0154 (read-only). Independently confirmed hypothesis B (registration disconnect) \u2014 TOOL_REGISTRY never wired into Gemini tools=. Cross-checked Sonnet fix: all 3 required pieces present (disable autocall + FunctionDeclaration.from_callable + dispatch via _invoke_tool_via_emitter). Surfaced 6 new OQs \u2014 2 real bugs (function-response-feedback for prose narration; chat-history-asymmetry).",
       "model": "opus",
       "kind": "orchestrator-delegate-parallel",
       "subagent_tokens": 96569
@@ -865,21 +865,21 @@
     {
       "job_id": "job-0149-web-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 4.5 (Stage A): Vector palette collision fix — djb2 hash gives 3 distinct species colors",
+      "description": "Sprint-12-mega Wave 4.5 (Stage A): Vector palette collision fix \u2014 djb2 hash gives 3 distinct species colors",
       "model": "sonnet",
       "subagent_tokens": 95000
     },
     {
       "job_id": "job-0150-web-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 4.5 (Stage A): PayloadWarning restyle apply — shadow + radius now visible at runtime",
+      "description": "Sprint-12-mega Wave 4.5 (Stage A): PayloadWarning restyle apply \u2014 shadow + radius now visible at runtime",
       "model": "sonnet",
       "subagent_tokens": 95000
     },
     {
       "job_id": "job-0151-web-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 4.5 (Stage A): Secrets popup flatten — single card surface, no nested inset",
+      "description": "Sprint-12-mega Wave 4.5 (Stage A): Secrets popup flatten \u2014 single card surface, no nested inset",
       "model": "sonnet",
       "subagent_tokens": 95000
     },
@@ -893,105 +893,105 @@
     {
       "job_id": "job-0153-web-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 4.5 (Stage A): Chat polish bundle — markdown renderer + scroll arrow + user bubble + placeholder + Enter-to-send (all 6 deliverables; 319/319 tests; 5 screenshots)",
+      "description": "Sprint-12-mega Wave 4.5 (Stage A): Chat polish bundle \u2014 markdown renderer + scroll arrow + user bubble + placeholder + Enter-to-send (all 6 deliverables; 319/319 tests; 5 screenshots)",
       "model": "opus",
       "subagent_tokens": 220000
     },
     {
       "job_id": "job-0154-agent-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 4.5 (Stage A): Wire Gemini tool catalog + system prompt — fixes \"I can't model\" refusal (Opus diagnostic confirmed root cause hypothesis B)",
+      "description": "Sprint-12-mega Wave 4.5 (Stage A): Wire Gemini tool catalog + system prompt \u2014 fixes \"I can't model\" refusal (Opus diagnostic confirmed root cause hypothesis B)",
       "model": "sonnet",
       "subagent_tokens": 95000
     },
     {
       "job_id": "job-0155-testing-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 4.5 (Stage B verify): Wave 4.5 Playwright re-verify — 7/7 pass; all 7 verification screenshots produced",
+      "description": "Sprint-12-mega Wave 4.5 (Stage B verify): Wave 4.5 Playwright re-verify \u2014 7/7 pass; all 7 verification screenshots produced",
       "model": "sonnet",
       "subagent_tokens": 95000
     },
     {
       "job_id": "job-0159-engine-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 4.6: Layer emission fix — dual-WebSocket diagnostic; SESSION_HUB fan-out in web/src/ws.ts; 325/325 web tests",
+      "description": "Sprint-12-mega Wave 4.6: Layer emission fix \u2014 dual-WebSocket diagnostic; SESSION_HUB fan-out in web/src/ws.ts; 325/325 web tests",
       "model": "opus",
       "subagent_tokens": 220000
     },
     {
       "job_id": "job-0160-engine-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 4.6: Auto-zoom fix (LayerURI was missing bbox) + zoom-on-area-first via ContextVar emitter — fires zoom-to immediately after _resolve_bbox",
+      "description": "Sprint-12-mega Wave 4.6: Auto-zoom fix (LayerURI was missing bbox) + zoom-on-area-first via ContextVar emitter \u2014 fires zoom-to immediately after _resolve_bbox",
       "model": "opus",
       "subagent_tokens": 230000
     },
     {
       "job_id": "job-0161-engine-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 4.6: Cases FilePersistence dev fallback — JSON files in ~/.grace2/dev_persistence/",
+      "description": "Sprint-12-mega Wave 4.6: Cases FilePersistence dev fallback \u2014 JSON files in ~/.grace2/dev_persistence/",
       "model": "opus",
       "subagent_tokens": 220000
     },
     {
       "job_id": "job-0162-engine-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 4.6: Web UI bundle — collapse preserves chat + chevron icon + single transitioning pipeline card + visual states per memory spec",
+      "description": "Sprint-12-mega Wave 4.6: Web UI bundle \u2014 collapse preserves chat + chevron icon + single transitioning pipeline card + visual states per memory spec",
       "model": "opus",
       "subagent_tokens": 240000
     },
     {
       "job_id": "job-0163-testing-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 4.6: Wave 4.6 Playwright verify — 7 screenshots confirming full Fort Myers demo flow works end-to-end",
+      "description": "Sprint-12-mega Wave 4.6: Wave 4.6 Playwright verify \u2014 7 screenshots confirming full Fort Myers demo flow works end-to-end",
       "model": "opus",
       "subagent_tokens": 65000
     },
     {
       "job_id": "job-0164-engine-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 4.7: Harness sweep — tool_arg_normalizer.py + **_extra_ignored on all 53 @register_tool functions + sanitized docstrings; 28+4 tests + 1104/0 suite",
+      "description": "Sprint-12-mega Wave 4.7: Harness sweep \u2014 tool_arg_normalizer.py + **_extra_ignored on all 53 @register_tool functions + sanitized docstrings; 28+4 tests + 1104/0 suite",
       "model": "opus",
       "subagent_tokens": 280000
     },
     {
       "job_id": "job-0165-engine-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 4.7: SRS Appendix I — LLM tool harness conventions + Decision F (v0.3.22)",
+      "description": "Sprint-12-mega Wave 4.7: SRS Appendix I \u2014 LLM tool harness conventions + Decision F (v0.3.22)",
       "model": "opus",
       "subagent_tokens": 240000
     },
     {
       "job_id": "job-0166-web-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 4.7: UX cleanup bundle (5 parts) — pipeline failure terminates animation + font consistency + single transitioning card + delete-removes-case + case-name-required",
+      "description": "Sprint-12-mega Wave 4.7: UX cleanup bundle (5 parts) \u2014 pipeline failure terminates animation + font consistency + single transitioning card + delete-removes-case + case-name-required",
       "model": "opus",
       "subagent_tokens": 270000
     },
     {
       "job_id": "job-0167-web-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 4.7: Wave 4.7 Playwright verify — 5 screenshots confirming end-to-end demo flow",
+      "description": "Sprint-12-mega Wave 4.7: Wave 4.7 Playwright verify \u2014 5 screenshots confirming end-to-end demo flow",
       "model": "opus",
       "subagent_tokens": 100000
     },
     {
       "job_id": "job-0168-testing-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 4.7: Cross-cutting Gemini-kwargs fuzz harness — regression guard for the sweep",
+      "description": "Sprint-12-mega Wave 4.7: Cross-cutting Gemini-kwargs fuzz harness \u2014 regression guard for the sweep",
       "model": "sonnet",
       "subagent_tokens": 95000
     },
     {
       "job_id": "job-0169-engine-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 4.8: Multi-turn function_call → function_response loop (THE blocker). Live PASS: Fort Myers → geocode → fetch_wdpa with bbox → narrative. 12 tests + agent suite 2190/0. MAX_TURN_ITERATIONS=8.",
+      "description": "Sprint-12-mega Wave 4.8: Multi-turn function_call \u2192 function_response loop (THE blocker). Live PASS: Fort Myers \u2192 geocode \u2192 fetch_wdpa with bbox \u2192 narrative. 12 tests + agent suite 2190/0. MAX_TURN_ITERATIONS=8.",
       "model": "opus",
       "subagent_tokens": 290000
     },
     {
       "job_id": "job-0170-engine-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 4.8: rasterio /vsigs/ migration — gcsfs segfault mitigated",
+      "description": "Sprint-12-mega Wave 4.8: rasterio /vsigs/ migration \u2014 gcsfs segfault mitigated",
       "model": "opus",
       "subagent_tokens": 240000
     },
@@ -1012,14 +1012,14 @@
     {
       "job_id": "job-0173-engine-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 4.8: UX bundle — Thinking label + chat unstick + map pan + remove ▲/▼",
+      "description": "Sprint-12-mega Wave 4.8: UX bundle \u2014 Thinking label + chat unstick + map pan + remove \u25b2/\u25bc",
       "model": "opus",
       "subagent_tokens": 220000
     },
     {
       "job_id": "job-0174-testing-20260608",
       "sprint": 12,
-      "description": "Sprint-12-mega Wave 4.8: Wave 4.8 LIVE Playwright verify (no inject seams) — partial honesty: radar PASS, weather alerts FAIL after 4min, multi-turn confirmed working",
+      "description": "Sprint-12-mega Wave 4.8: Wave 4.8 LIVE Playwright verify (no inject seams) \u2014 partial honesty: radar PASS, weather alerts FAIL after 4min, multi-turn confirmed working",
       "model": "opus",
       "subagent_tokens": 70000
     },
@@ -1089,7 +1089,7 @@
     {
       "job_id": "wave-4-10-parallel-doc-track-20260609",
       "sprint": 12,
-      "description": "Parallel doc work while Stage 2 dependents in flight: (1) sprint manifests for wave-4-11 (16 jobs ~2.71M, 3 workstreams: MongoDB MCP + Pelicun + wildfire), sprint-13 (20 jobs ~3.98M, MODFLOW + Cases 2+3 + conversational analysis + Python sandbox), sprint-13-5 (11 jobs ~3.9M, every job adversarial-verify gated). (2) ImpactEnvelope Pydantic schema + Appendix B.6c.1 amendment + 47/47 tests pass, 296/296 full suite green. (3) CLAUDE.md ADK→raw google-genai correction + SRS 02-system-overview.md Decisions D+E corrected + citation corrections in research findings memory.",
+      "description": "Parallel doc work while Stage 2 dependents in flight: (1) sprint manifests for wave-4-11 (16 jobs ~2.71M, 3 workstreams: MongoDB MCP + Pelicun + wildfire), sprint-13 (20 jobs ~3.98M, MODFLOW + Cases 2+3 + conversational analysis + Python sandbox), sprint-13-5 (11 jobs ~3.9M, every job adversarial-verify gated). (2) ImpactEnvelope Pydantic schema + Appendix B.6c.1 amendment + 47/47 tests pass, 296/296 full suite green. (3) CLAUDE.md ADK\u2192raw google-genai correction + SRS 02-system-overview.md Decisions D+E corrected + citation corrections in research findings memory.",
       "model": "sonnet",
       "kind": "engineering",
       "workflow_id": "wf_1f21f342-1af",
@@ -1125,7 +1125,7 @@
     {
       "job_id": "wave-4-10-stage-2-readversarial-20260609",
       "sprint": 12,
-      "description": "Re-run 12 adversarial verifiers (B5/B6/B10 × 4 lenses) with index-based grouping. Results: B5 3/1 ADVANCE, B10 4/0 ADVANCE, B6 3/1 ADVANCE. KEY EMPIRICAL FINDING: B6 live-verify against real Vertex Gemini 2.5 Pro proved the cache architecture: 99.98% of prompt tokens cached (65700/65715), 90% discount, 3 sequential turns all cache-hit. The pre-dispatch verification round's #1 blocker (cache claim) is empirically resolved. Real regression caught: test_multi_turn_loop.py::test_stream_gemini_reply_multi_turn_loop fails because validator rejects fetch_wdpa_protected_areas not in hot set + no category opened. Fix scheduled.",
+      "description": "Re-run 12 adversarial verifiers (B5/B6/B10 \u00d7 4 lenses) with index-based grouping. Results: B5 3/1 ADVANCE, B10 4/0 ADVANCE, B6 3/1 ADVANCE. KEY EMPIRICAL FINDING: B6 live-verify against real Vertex Gemini 2.5 Pro proved the cache architecture: 99.98% of prompt tokens cached (65700/65715), 90% discount, 3 sequential turns all cache-hit. The pre-dispatch verification round's #1 blocker (cache claim) is empirically resolved. Real regression caught: test_multi_turn_loop.py::test_stream_gemini_reply_multi_turn_loop fails because validator rejects fetch_wdpa_protected_areas not in hot set + no category opened. Fix scheduled.",
       "model": "opus",
       "kind": "research",
       "workflow_id": "wf_bf8011b1-4c5",
@@ -1143,7 +1143,7 @@
     {
       "job_id": "wave-4-10-stage-4-sweep-20260609",
       "sprint": 12,
-      "description": "Wave 4.10 Stage 4 anchor sweep: FAIL due to env issue (google-cloud-storage missing from runtime venv → every tool dispatch ModuleNotFoundError at tools/cache.py:314 read_through). Routing measured at baseline (60/20) because tools error before returning. EMPIRICAL WINS: cache integration verified (every call hit=True, 81K cached tokens); always-narrate clause working (4/4 anchors emitted final narration); 76 tools + 12 categories loaded; AuthGate fix landed (envelope count 2→1). Real routing issue surfaced: A3 still picks geocode over fetch_hrrr_forecast despite registration.",
+      "description": "Wave 4.10 Stage 4 anchor sweep: FAIL due to env issue (google-cloud-storage missing from runtime venv \u2192 every tool dispatch ModuleNotFoundError at tools/cache.py:314 read_through). Routing measured at baseline (60/20) because tools error before returning. EMPIRICAL WINS: cache integration verified (every call hit=True, 81K cached tokens); always-narrate clause working (4/4 anchors emitted final narration); 76 tools + 12 categories loaded; AuthGate fix landed (envelope count 2\u21921). Real routing issue surfaced: A3 still picks geocode over fetch_hrrr_forecast despite registration.",
       "model": "opus",
       "kind": "engineering",
       "workflow_id": "wf_73263cb5-95c",
@@ -1179,7 +1179,7 @@
     {
       "job_id": "wave-4-10-stage-4-sweep-collect-20260609",
       "sprint": 12,
-      "description": "Wave 4.10 Stage 4 sweep finally completed via polling-collect agent (waited ~24min on background PID 2408944). FINAL METRICS: first_tool=100% (+40pp, PASS threshold 80%), full_sequence=20% (-20pp REGRESSION vs 40% baseline, FAIL threshold 70%). ARCHITECTURE THESIS VALIDATED: 5/5 anchors picked correct first tool (routing layer + always-narrate + endpoint name map all working). FULL-SEQUENCE REGRESSION IS ENVIRONMENTAL: every anchor 2-5 hit 'OSERROR Project was not passed' — GCP project env var not set when agent starts (same pattern as earlier missing deps google-cloud-storage and playwright). A4 routed correctly straight to run_model_flood_scenario but Cloud Run config error.",
+      "description": "Wave 4.10 Stage 4 sweep finally completed via polling-collect agent (waited ~24min on background PID 2408944). FINAL METRICS: first_tool=100% (+40pp, PASS threshold 80%), full_sequence=20% (-20pp REGRESSION vs 40% baseline, FAIL threshold 70%). ARCHITECTURE THESIS VALIDATED: 5/5 anchors picked correct first tool (routing layer + always-narrate + endpoint name map all working). FULL-SEQUENCE REGRESSION IS ENVIRONMENTAL: every anchor 2-5 hit 'OSERROR Project was not passed' \u2014 GCP project env var not set when agent starts (same pattern as earlier missing deps google-cloud-storage and playwright). A4 routed correctly straight to run_model_flood_scenario but Cloud Run config error.",
       "model": "sonnet",
       "kind": "engineering",
       "workflow_id": "wf_2709baa7-205",
@@ -1188,7 +1188,7 @@
     {
       "job_id": "wave-4-10-close-a2-verify-AND-wave-4-11-p2-20260609",
       "sprint": 12,
-      "description": "Parallel pair (PASS+PASS in ~13min): (A) Wave 4.10 A2 single-anchor verify — full_sequence_correct=TRUE, cache HIT (82K×7 iter), GCP fallback fix VERIFIED end-to-end. Observed chain shows full architectural cascade: geocode → discover_dataset → list_categories → list_tools_in_category → fetch_wdpa (post-hoc validator routing in production). (B) Wave 4.11 P2 postprocess_pelicun atomic tool — 18 tests pass, 0 regressions, ImpactEnvelope output validates. Zero Gemini for P2.",
+      "description": "Parallel pair (PASS+PASS in ~13min): (A) Wave 4.10 A2 single-anchor verify \u2014 full_sequence_correct=TRUE, cache HIT (82K\u00d77 iter), GCP fallback fix VERIFIED end-to-end. Observed chain shows full architectural cascade: geocode \u2192 discover_dataset \u2192 list_categories \u2192 list_tools_in_category \u2192 fetch_wdpa (post-hoc validator routing in production). (B) Wave 4.11 P2 postprocess_pelicun atomic tool \u2014 18 tests pass, 0 regressions, ImpactEnvelope output validates. Zero Gemini for P2.",
       "model": "sonnet+opus",
       "kind": "engineering",
       "workflow_id": "wf_37d591af-9a9",
@@ -1197,7 +1197,7 @@
     {
       "job_id": "wave-4-11-p3-composer-AND-m1-mongo-mcp-20260609",
       "sprint": 12,
-      "description": "Parallel pair PASS+PASS (~18.5min): (A) Wave 4.11 P3 compute_impact_envelope composer - chains geocode→NSI→Pelicun→postprocess into single LLM-visible tool; 13/13 tests pass; deterministic narrative format. (B) Wave 4.11 M1 MongoDB MCP infra - surprising find: MCP substrate was already fully wired (server.py/mcp.py/persistence.py complete). Job became scaffolding (infra/mongo-mcp/ README + start.sh + .env.example) + 3 Pydantic collection schemas + wiring tests.",
+      "description": "Parallel pair PASS+PASS (~18.5min): (A) Wave 4.11 P3 compute_impact_envelope composer - chains geocode\u2192NSI\u2192Pelicun\u2192postprocess into single LLM-visible tool; 13/13 tests pass; deterministic narrative format. (B) Wave 4.11 M1 MongoDB MCP infra - surprising find: MCP substrate was already fully wired (server.py/mcp.py/persistence.py complete). Job became scaffolding (infra/mongo-mcp/ README + start.sh + .env.example) + 3 Pydantic collection schemas + wiring tests.",
       "model": "opus+sonnet",
       "kind": "engineering",
       "workflow_id": "wf_8ab324b3-42e",
@@ -1215,7 +1215,7 @@
     {
       "job_id": "wave-4-11-m5-discover-mongo-AND-m7-dashboard-20260609",
       "sprint": 12,
-      "description": "Parallel pair PASS+PASS (~26min): (A) Wave 4.11 M5 discover_dataset 4th channel - co-occurrence boost from tool_call_telemetry Mongo collection via Persistence._mcp.call_tool; 5-min cache refresh + threading lock; get_dynamic_hot_set substrate for M6 (top-K from Mongo with static fallback); 12 new + 21 existing tests pass; graceful fallback when Mongo unbound. (B) Wave 4.11 M7 routing dashboard - /api/telemetry/summary endpoint + RoutingQualityDashboard modal (4 KPI cards + top-15 bar chart + per-tool table + chains pills); 30s auto-refresh; Mongo→file fallback.",
+      "description": "Parallel pair PASS+PASS (~26min): (A) Wave 4.11 M5 discover_dataset 4th channel - co-occurrence boost from tool_call_telemetry Mongo collection via Persistence._mcp.call_tool; 5-min cache refresh + threading lock; get_dynamic_hot_set substrate for M6 (top-K from Mongo with static fallback); 12 new + 21 existing tests pass; graceful fallback when Mongo unbound. (B) Wave 4.11 M7 routing dashboard - /api/telemetry/summary endpoint + RoutingQualityDashboard modal (4 KPI cards + top-15 bar chart + per-tool table + chains pills); 30s auto-refresh; Mongo\u2192file fallback.",
       "model": "opus",
       "kind": "engineering",
       "workflow_id": "wf_3ca32c73-6bb",
@@ -1296,7 +1296,7 @@
     {
       "job_id": "sprint-13-stage-3-live-gate-20260610",
       "sprint": 13,
-      "description": "Stage 3 live gate (prep + 3 sessions, HALT_429): prep PASS (agent restart, 89 tools); 0235 Case 2 FAIL (gate bypass + fsspec plume — both real, routing/extraction/solve worked, 2 turns); 0236 Case 3 PARTIAL (zero CONUS flood warnings; honest degrade; SFINCS infra confirmed live; 2 turns); 0237 BLOCKED at 429 (1 turn); 0238+panels not run. 5 Gemini turns total.",
+      "description": "Stage 3 live gate (prep + 3 sessions, HALT_429): prep PASS (agent restart, 89 tools); 0235 Case 2 FAIL (gate bypass + fsspec plume \u2014 both real, routing/extraction/solve worked, 2 turns); 0236 Case 3 PARTIAL (zero CONUS flood warnings; honest degrade; SFINCS infra confirmed live; 2 turns); 0237 BLOCKED at 429 (1 turn); 0238+panels not run. 5 Gemini turns total.",
       "model": "opus+sonnet",
       "kind": "acceptance",
       "workflow_id": "wf_99b38cd6-d30",
@@ -1305,7 +1305,7 @@
     {
       "job_id": "job-0242-reverify-round1-20260610",
       "sprint": 13,
-      "description": "Re-verify round 1 + panels (PARTIAL, 2 turns): case2_gate PASS (job-0241 fix proven at emission); NEW BLOCKER found — Proceed dropped (per-connection pending_payload_warnings vs multi-WS browser sessions; affects ALL gates). Root cause traced + panel-confirmed in source. Sandbox egress leg PASS Gemini-free.",
+      "description": "Re-verify round 1 + panels (PARTIAL, 2 turns): case2_gate PASS (job-0241 fix proven at emission); NEW BLOCKER found \u2014 Proceed dropped (per-connection pending_payload_warnings vs multi-WS browser sessions; affects ALL gates). Root cause traced + panel-confirmed in source. Sandbox egress leg PASS Gemini-free.",
       "model": "opus",
       "kind": "acceptance",
       "workflow_id": "wf_211c1ddd-389",
@@ -1367,7 +1367,7 @@
     {
       "job_id": "job-0252-reverify-round7-20260610",
       "sprint": 13,
-      "description": "Round 7 + panels (PARTIAL, 1 turn): postprocess fix PROVEN LIVE end-to-end — flood layer published + rendered in MapLibre w/ colorbar (first full flood chain in the loop). Last defect OQ-0252 Pelicun hazard-URI hallucination (fixed orchestrator-direct d534f4c: SYSTEM_PROMPT GCS-URI discipline + Pelicun declaration contract).",
+      "description": "Round 7 + panels (PARTIAL, 1 turn): postprocess fix PROVEN LIVE end-to-end \u2014 flood layer published + rendered in MapLibre w/ colorbar (first full flood chain in the loop). Last defect OQ-0252 Pelicun hazard-URI hallucination (fixed orchestrator-direct d534f4c: SYSTEM_PROMPT GCS-URI discipline + Pelicun declaration contract).",
       "model": "opus",
       "kind": "acceptance",
       "workflow_id": "wf_12e1fb9b-982",
@@ -1385,7 +1385,7 @@
     {
       "job_id": "job-0255-reverify-round10-20260610",
       "sprint": 13,
-      "description": "Round 10 + panels (FAIL-honest, 1 turn): flood chain solid (solve+postprocess+publish+render); NEW OQ-0255 WMS-URL-as-hazard (Gemini copied the only URI visible — OQ-62 makes LayerURI.uri the WMS link) + re-solve loop. Fixed orchestrator-direct 76f6aab: WMS reverse-map (proven Gemini-free to full ImpactEnvelope over 70,740 structures), scope/no-re-solve prompt clauses, flood solvers gated.",
+      "description": "Round 10 + panels (FAIL-honest, 1 turn): flood chain solid (solve+postprocess+publish+render); NEW OQ-0255 WMS-URL-as-hazard (Gemini copied the only URI visible \u2014 OQ-62 makes LayerURI.uri the WMS link) + re-solve loop. Fixed orchestrator-direct 76f6aab: WMS reverse-map (proven Gemini-free to full ImpactEnvelope over 70,740 structures), scope/no-re-solve prompt clauses, flood solvers gated.",
       "model": "opus",
       "kind": "acceptance",
       "workflow_id": "wf_a9f93c02-eb2",
@@ -1511,7 +1511,7 @@
     {
       "job_id": "panel-job-0251",
       "sprint": 13.5,
-      "description": "4-lens Opus adversarial panel: 2/4 REFUTED — BLOCKING find: ownership field never written by upsert_case (CaseSummary has no user_id; extra=forbid) → endpoint would 403 every owner. Fix scheduled job-0252b.",
+      "description": "4-lens Opus adversarial panel: 2/4 REFUTED \u2014 BLOCKING find: ownership field never written by upsert_case (CaseSummary has no user_id; extra=forbid) \u2192 endpoint would 403 every owner. Fix scheduled job-0252b.",
       "model": "opus",
       "kind": "verification",
       "workflow_id": "wf_85f54b3f-b37",
@@ -1538,7 +1538,7 @@
     {
       "job_id": "panel-job-0252",
       "sprint": 13.5,
-      "description": "4-lens Opus adversarial panel: PASS 3/4 (correctness+regression+live-verify CONFIRM; contract REFUTED major: case docs store internal users._id ULID but 0251 mint compares Firebase token uid → every owner mint 403s once wired; SRS H.2 says ULID, manifest line was wrong). Minor: gate provisions anon user row before rejecting. Shapes job-0251b/0252b.",
+      "description": "4-lens Opus adversarial panel: PASS 3/4 (correctness+regression+live-verify CONFIRM; contract REFUTED major: case docs store internal users._id ULID but 0251 mint compares Firebase token uid \u2192 every owner mint 403s once wired; SRS H.2 says ULID, manifest line was wrong). Minor: gate provisions anon user row before rejecting. Shapes job-0251b/0252b.",
       "model": "opus",
       "kind": "verification",
       "workflow_id": "wf_cba0b225-134",
@@ -1556,7 +1556,7 @@
     {
       "job_id": "job-0251b-mint-identity-20260611",
       "sprint": 13.5,
-      "description": "Fable infra runner (critical-bug routing): mint_signed_url resolves verified Firebase uid → internal users._id ULID (fail-closed 403/503, no raw-uid fall-through; sentinel unmintable by construction); clamp_ttl OverflowError; tests 55→78 green; tofu validate green; USER_UNBLOCK 0251-A/D addendum. OQ-1 normalization-order nuance, OQ-2 users.firebase_uid unindexed (per-mint scan, fine at M0). Commit beb10e5.",
+      "description": "Fable infra runner (critical-bug routing): mint_signed_url resolves verified Firebase uid \u2192 internal users._id ULID (fail-closed 403/503, no raw-uid fall-through; sentinel unmintable by construction); clamp_ttl OverflowError; tests 55\u219278 green; tofu validate green; USER_UNBLOCK 0251-A/D addendum. OQ-1 normalization-order nuance, OQ-2 users.firebase_uid unindexed (per-mint scan, fine at M0). Commit beb10e5.",
       "model": "fable",
       "kind": "engineering",
       "workflow_id": "agent a3127b1054328a5f5",
@@ -1565,7 +1565,7 @@
     {
       "job_id": "job-0253-web-auth-20260611",
       "sprint": 13.5,
-      "description": "Opus web runner: useAuth + AuthGuard three-mode matrix (disabled passthrough pixel-identical / Google-only sign-in per Decision 6 / signed-in + sign-out on guard) + 4401 no-reconnect-storm with one forceRefresh retry; vitest 686→706; tsc clean; live evidence screenshots. OQs: sign-out placement (SettingsPopup dirty), Chat-instance onAuthExpired wiring. Commit 1672da0.",
+      "description": "Opus web runner: useAuth + AuthGuard three-mode matrix (disabled passthrough pixel-identical / Google-only sign-in per Decision 6 / signed-in + sign-out on guard) + 4401 no-reconnect-storm with one forceRefresh retry; vitest 686\u2192706; tsc clean; live evidence screenshots. OQs: sign-out placement (SettingsPopup dirty), Chat-instance onAuthExpired wiring. Commit 1672da0.",
       "model": "opus",
       "kind": "engineering",
       "workflow_id": "agent a8ba61f6348e18c08",
@@ -1574,7 +1574,7 @@
     {
       "job_id": "repanel-0251b-0252b",
       "sprint": 13.5,
-      "description": "4-lens Fable adversarial re-panel: PASS 4/4 — both prior refutes proven cured with pre-fix reproductions (old code minted under the forged-internal-ULID attack AND 403'd the true owner; fixed code inverts both). 42+31+9+18 fresh probe assertions; gate-ON hostile connections leave zero files on disk; suite 4359 exact; signed_urls 78 with zero weakened assertions. job-0251 REFUTED cleared → DONE.",
+      "description": "4-lens Fable adversarial re-panel: PASS 4/4 \u2014 both prior refutes proven cured with pre-fix reproductions (old code minted under the forged-internal-ULID attack AND 403'd the true owner; fixed code inverts both). 42+31+9+18 fresh probe assertions; gate-ON hostile connections leave zero files on disk; suite 4359 exact; signed_urls 78 with zero weakened assertions. job-0251 REFUTED cleared \u2192 DONE.",
       "model": "fable",
       "kind": "verification",
       "workflow_id": "wf_8fa82d48-ffe",
@@ -1583,7 +1583,7 @@
     {
       "job_id": "panel-job-0253",
       "sprint": 13.5,
-      "description": "4-lens Opus adversarial panel: PASS 4/4 — deliverables re-proven (12 fresh probes + live browser on :5173 + dummy-Firebase vite + gate-ON wire proof). TWO MAJOR latent gaps routed to job-0253b: re-sign-in WS wedge (terminal give-up branch, dead socket under re-signed-in UI) + session-resume sent BEFORE auth-token (gate rejects first non-auth frame → every prod connection 4401s). Minor: tsc count claim inaccurate.",
+      "description": "4-lens Opus adversarial panel: PASS 4/4 \u2014 deliverables re-proven (12 fresh probes + live browser on :5173 + dummy-Firebase vite + gate-ON wire proof). TWO MAJOR latent gaps routed to job-0253b: re-sign-in WS wedge (terminal give-up branch, dead socket under re-signed-in UI) + session-resume sent BEFORE auth-token (gate rejects first non-auth frame \u2192 every prod connection 4401s). Minor: tsc count claim inaccurate.",
       "model": "opus",
       "kind": "verification",
       "workflow_id": "wf_e8bb1bb3-6d9",
@@ -1592,7 +1592,7 @@
     {
       "job_id": "scout-job-0254-design",
       "sprint": 13.5,
-      "description": "Opus read-only design scout: full LayerURI/URL surface inventory (9 surfaces, file:line) — NO browser surface fetches GCS today (rasters=QGIS WMS→0255 proxy; vectors=inline GeoJSON; charts inline); mint_signed_url has no live consumer; only client-reaching gs:// is the publish-failure degraded path. Mint-caller analysis: web-client mints (Arch A) is the only design respecting Decision F + the verified function contract, when a direct-fetch feature arrives. Drove Decision 11 (Reading X rescope: 0254 → ~60-80K agent cleanup).",
+      "description": "Opus read-only design scout: full LayerURI/URL surface inventory (9 surfaces, file:line) \u2014 NO browser surface fetches GCS today (rasters=QGIS WMS\u21920255 proxy; vectors=inline GeoJSON; charts inline); mint_signed_url has no live consumer; only client-reaching gs:// is the publish-failure degraded path. Mint-caller analysis: web-client mints (Arch A) is the only design respecting Decision F + the verified function contract, when a direct-fetch feature arrives. Drove Decision 11 (Reading X rescope: 0254 \u2192 ~60-80K agent cleanup).",
       "model": "opus",
       "kind": "research",
       "workflow_id": "agent a2dde9a45c278f90a",
@@ -1601,7 +1601,7 @@
     {
       "job_id": "job-0253b-auth-wire-order-20260611",
       "sprint": 13.5,
-      "description": "Opus web runner: auth-token strictly first frame (open handler awaits maybeSendAuthToken, chained resume with socket guard — pure reorder, dev byte-identical); authEpoch re-sign-in reconnect for BOTH GraceWs instances (closes OQ-0253-CHAT-WS-4401, dev can't engage); 6 tsc errors cleared. vitest 710→718; stash-proof load-bearing tests. Commit 74de10b.",
+      "description": "Opus web runner: auth-token strictly first frame (open handler awaits maybeSendAuthToken, chained resume with socket guard \u2014 pure reorder, dev byte-identical); authEpoch re-sign-in reconnect for BOTH GraceWs instances (closes OQ-0253-CHAT-WS-4401, dev can't engage); 6 tsc errors cleared. vitest 710\u2192718; stash-proof load-bearing tests. Commit 74de10b.",
       "model": "opus",
       "kind": "engineering",
       "workflow_id": "agent ae5fdd117f7d47221",
@@ -1610,7 +1610,7 @@
     {
       "job_id": "job-0255-qgis-lockdown-proxy-20260611",
       "sprint": 13.5,
-      "description": "Opus infra runner: invoker-only IAM flip planned (in-place, agent-SA invoker + allUsers destroyed; NOT applied — UNBLOCK 0255-A/B with sequencing warning); streaming /qgis-proxy in tool_catalog_http.py (credential-strip by construction, bounded queue O(64KiB), no-open-proxy, OIDC in prod / graceful dev); QGIS_PROXY_ENABLED + VITE_QGIS_PROXY_BASE dual gates default-off; Map.tsx 27-line helper. Proxy tests 28; agent suite 4387+5-known; live tile proof through proxy (79KB PNG). OQs: module path deviation (venv import), tool_catalog_http.py pre-existing untracked drift now staged. Commit d2c2d56.",
+      "description": "Opus infra runner: invoker-only IAM flip planned (in-place, agent-SA invoker + allUsers destroyed; NOT applied \u2014 UNBLOCK 0255-A/B with sequencing warning); streaming /qgis-proxy in tool_catalog_http.py (credential-strip by construction, bounded queue O(64KiB), no-open-proxy, OIDC in prod / graceful dev); QGIS_PROXY_ENABLED + VITE_QGIS_PROXY_BASE dual gates default-off; Map.tsx 27-line helper. Proxy tests 28; agent suite 4387+5-known; live tile proof through proxy (79KB PNG). OQs: module path deviation (venv import), tool_catalog_http.py pre-existing untracked drift now staged. Commit d2c2d56.",
       "model": "opus",
       "kind": "engineering",
       "workflow_id": "agent a12ce7b744dcc9d55",
@@ -1646,7 +1646,7 @@
     {
       "job_id": "sweep-aws-tools-20260612",
       "sprint": 14,
-      "description": "Opus read-only sweep: 15 tool families via /invoke on the live AWS agent — 12 PASS, 3 diagnosed (pelicun gs-only, clip CRS gap, buildings upstream).",
+      "description": "Opus read-only sweep: 15 tool families via /invoke on the live AWS agent \u2014 12 PASS, 3 diagnosed (pelicun gs-only, clip CRS gap, buildings upstream).",
       "model": "opus",
       "kind": "verification",
       "workflow_id": "agent a666a4e088d920f99",
@@ -1655,7 +1655,7 @@
     {
       "job_id": "job-0293b-s3-port-complete-20260612",
       "sprint": 14,
-      "description": "Fable engine: complete S3 port — pelicun x2, clips, vector clip, extract_landcover, analytical_qa, chart_tools (commit bcacfd0, +18 tests); orchestrator follow-up 0293c replaced /vsis3/ with boto3 stage-then-open.",
+      "description": "Fable engine: complete S3 port \u2014 pelicun x2, clips, vector clip, extract_landcover, analytical_qa, chart_tools (commit bcacfd0, +18 tests); orchestrator follow-up 0293c replaced /vsis3/ with boto3 stage-then-open.",
       "model": "fable",
       "kind": "engineering",
       "workflow_id": "agent a10f754331078f973",
@@ -1673,7 +1673,7 @@
     {
       "job_id": "job-0300-pelicun-m55-finish",
       "sprint": 15,
-      "description": "Track A: Pelicun M5.5 finish — recon+gap-close+4-lens verify (3/4); Invariant-7 hardening (NaN ds_mean typed error; default-replacement-value count); S3-staging test coverage; fragility provenance threading.",
+      "description": "Track A: Pelicun M5.5 finish \u2014 recon+gap-close+4-lens verify (3/4); Invariant-7 hardening (NaN ds_mean typed error; default-replacement-value count); S3-staging test coverage; fragility provenance threading.",
       "model": "opus",
       "kind": "workflow",
       "workflow_id": "wf_92f2fcaa-fed",
@@ -1682,7 +1682,7 @@
     {
       "job_id": "job-0301-sandbox-aws-replatform",
       "sprint": 15,
-      "description": "Track B: AWS-isolated Python sandbox — recon+implement+4-lens verify; closed Invariant-9 gate self-approval + Invariant-5 fail-closed bwrap default; bubblewrap netns jail + env scrub + rlimits + killpg.",
+      "description": "Track B: AWS-isolated Python sandbox \u2014 recon+implement+4-lens verify; closed Invariant-9 gate self-approval + Invariant-5 fail-closed bwrap default; bubblewrap netns jail + env scrub + rlimits + killpg.",
       "model": "opus",
       "kind": "workflow",
       "workflow_id": "wf_85ce36c2-6e0",
@@ -1691,7 +1691,7 @@
     {
       "job_id": "job-0302-case3-idaho-flood-finish",
       "sprint": 15,
-      "description": "Track C: Case 3 NWS->MRMS->SFINCS — recon+implement+4-lens verify (4/4); S3-ported two /vsis3/ raster reads (forcing read + NLCD validation gate) to boto3 stage-then-open.",
+      "description": "Track C: Case 3 NWS->MRMS->SFINCS \u2014 recon+implement+4-lens verify (4/4); S3-ported two /vsis3/ raster reads (forcing read + NLCD validation gate) to boto3 stage-then-open.",
       "model": "opus",
       "kind": "workflow",
       "workflow_id": "wf_d0ca97a4-fda",
@@ -1808,6 +1808,41 @@
       "description": "colored shaded land cover: landcover cache-version bump + agent steer (NLCD-as-base, no colored_relief) + narration conciseness. fix+2verify 2/2.",
       "model": "opus",
       "subagent_tokens": 256470
+    },
+    {
+      "job_id": "render-sweep-weather",
+      "sprint": "ux-batch-1",
+      "description": "Read-only render-correctness audit of all 11 weather_atmosphere tools vs the live AWS TiTiler render path; produced prioritized fix plan + strategic answers (default-to-tiling, U+V wind-speed). Root cause: publish_layer hardcoded 2-preset style map blanks all non-flood/plume float32 rasters.",
+      "model": "opus",
+      "subagent_tokens": 915576
+    },
+    {
+      "job_id": "job-0346",
+      "sprint": "ux-batch-1",
+      "description": "geocode_location state-snap fallback (vague/regional + out-of-state -> named state bbox, honest note). impl + 3-lens adversarial verify; correctness lens caught a bare-word leak, orchestrator-fixed inline.",
+      "model": "opus",
+      "subagent_tokens": 302508
+    },
+    {
+      "job_id": "job-0347",
+      "sprint": "ux-batch-1",
+      "description": "weather render-correctness: publish_layer TiTiler auto-style chokepoint (per-family registry + generic band p2/p98 fallback + paletted/RGBA/terrain passthrough) + 10m_wind_speed derived variable (HRRR+ERA5). impl+3-lens verify x2 rounds (2nd caught terrain/RGBA regression).",
+      "model": "opus",
+      "subagent_tokens": 1071725
+    },
+    {
+      "job_id": "job-0348",
+      "sprint": "ux-batch-1",
+      "description": "web UI batch: cases width parity + label ellipsis; large-payload as in-chat interleaved card; feature popup pinned at tap point. impl+3-lens verify.",
+      "model": "opus",
+      "subagent_tokens": 580316
+    },
+    {
+      "job_id": "job-0349",
+      "sprint": "ux-batch-1",
+      "description": "SFINCS silent-failure fix: Atlas-2 Western-US precip fallback (Atlas-14 has no Pacific NW coverage) + model-run honesty floor (modeled envelope w/ empty layers never reads status=ok; covers pre-solver/dispatched-then-failed/publish-drop) + telemetry flag. diagnose(live EC2)+synth+fix+verify, round-2 closed honesty-floor holes.",
+      "model": "opus",
+      "subagent_tokens": 1153342
     }
   ],
   "totals_by_sprint": {
@@ -1824,21 +1859,21 @@
     "ux-batch-1": 6936678
   },
   "historical_context": {
-    "note": "Captured for accountability — NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
+    "note": "Captured for accountability \u2014 NOT counted in totals_by_sprint. These ran BEFORE the cost-discipline rule was in place.",
     "failed_workflows": [
       {
         "workflow_id": "wodu3a4xm",
-        "description": "v0.3.15 SRS amendment first attempt — research + synthesis + adversarial verify across 7 subagents, REFUTED with 11 issues, no edits applied.",
+        "description": "v0.3.15 SRS amendment first attempt \u2014 research + synthesis + adversarial verify across 7 subagents, REFUTED with 11 issues, no edits applied.",
         "subagent_tokens": 418672
       },
       {
         "workflow_id": "w19x3p71s_w94k2zzx6",
-        "description": "v0.3.15 SRS amendment second attempt — 3-judge adversarial panel failed at StructuredOutput synthesis (all 3 judges); user interrupted; resumed and re-failed.",
+        "description": "v0.3.15 SRS amendment second attempt \u2014 3-judge adversarial panel failed at StructuredOutput synthesis (all 3 judges); user interrupted; resumed and re-failed.",
         "subagent_tokens": 0
       },
       {
         "workflow_id": "ww020fjtg_old_job-0028_duplicate",
-        "description": "Old job-0028 (M3 acceptance) workflow that completed AFTER I had already manually closed job-0028 with a single Agent call — produced duplicate work in inflight dir that was cleaned up.",
+        "description": "Old job-0028 (M3 acceptance) workflow that completed AFTER I had already manually closed job-0028 with a single Agent call \u2014 produced duplicate work in inflight dir that was cleaned up.",
         "subagent_tokens": 391943
       }
     ],
