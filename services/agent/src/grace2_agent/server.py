@@ -1941,12 +1941,12 @@ async def _stream_gemini_reply(
             pass
         raise
     except Exception as exc:  # noqa: BLE001 — surface as A.6 LLM_UNAVAILABLE
-        logger.exception("gemini stream failed: %s", exc)
+        logger.exception("model stream failed: %s", exc)
         await _send_error(
             websocket,
             state.session_id,
             "LLM_UNAVAILABLE",
-            f"Gemini generation failed: {exc}",
+            f"Model generation failed: {exc}",
             retryable=True,
         )
 
@@ -6172,8 +6172,32 @@ def _make_handler(settings: GeminiSettings):
                         # A non-None model_id in the message overrides the
                         # session default; None means "keep whatever was last
                         # chosen" (or the env default if never set).
+                        #
+                        # VALIDATE before use: a stale client (or a removed /
+                        # access-disabled / non-tool-capable id like the old
+                        # malformed `us.anthropic.claude-haiku-4-5` or DeepSeek-R1)
+                        # must NEVER reach ConverseStream — an invalid id throws a
+                        # raw ValidationException that surfaced to NATE as
+                        # "provided model identifier is invalid". resolve_selected_model
+                        # maps an unknown id to None (use the capable default) and
+                        # returns a notice we log; the turn then runs on the default
+                        # rather than crashing.
                         if um.model_id is not None:
-                            state.selected_model = um.model_id
+                            from .bedrock_adapter import (
+                                resolve_selected_model as _resolve_selected_model,
+                            )
+
+                            _effective_model, _model_notice = _resolve_selected_model(
+                                um.model_id
+                            )
+                            if _model_notice is not None:
+                                logger.warning(
+                                    "model selector: %s (requested=%r session=%s)",
+                                    _model_notice,
+                                    um.model_id,
+                                    state.session_id,
+                                )
+                            state.selected_model = _effective_model
                         _turn_bedrock_model = state.selected_model
                         if directive is not None:
                             tool_name, params = directive

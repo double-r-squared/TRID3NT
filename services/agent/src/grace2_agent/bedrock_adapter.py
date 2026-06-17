@@ -64,23 +64,22 @@ BEDROCK_DEFAULT_MODEL = "us.anthropic.claude-sonnet-4-6"
 #: Metadata for one selectable agent model.  Only the fields the server
 #: needs at dispatch time (id + cache capability); the richer set (label,
 #: accentColor, provider) lives on the web side in ``modelRegistry.ts``.
+#:
+#: ONLY models PROVEN (probed live 2026-06-17 in account 226996537797/us-west-2)
+#: to be invokable AND to support the Converse ``toolConfig`` the agent loop
+#: needs are listed.  MUST stay in sync with web ``modelRegistry.ts``.
+#:   - ``us.anthropic.claude-haiku-4-5-20251001-v1:0``: valid id but ACCESS NOT
+#:     ENABLED; add here + in the web registry once Bedrock model access is
+#:     granted (it is the strongest cheap+agentic Anthropic option).
+#:   - ``us.deepseek.r1-v1:0``: REJECTS toolConfig on Bedrock -> cannot drive
+#:     the tool loop; intentionally OMITTED (the malformed short-form
+#:     ``us.anthropic.claude-haiku-4-5`` that previously shipped here was the
+#:     root cause of the "provided model identifier is invalid" error).
 SELECTABLE_MODELS: list[dict[str, Any]] = [
     {
         "id": "us.anthropic.claude-sonnet-4-6",
         "label": "Claude Sonnet 4.6",
         "provider": "Anthropic",
-        "supportsPromptCache": True,
-    },
-    {
-        "id": "us.anthropic.claude-haiku-4-5",
-        "label": "Claude Haiku 4.5",
-        "provider": "Anthropic",
-        "supportsPromptCache": True,
-    },
-    {
-        "id": "us.amazon.nova-lite-v1:0",
-        "label": "Amazon Nova Lite",
-        "provider": "Amazon",
         "supportsPromptCache": True,
     },
     {
@@ -90,18 +89,28 @@ SELECTABLE_MODELS: list[dict[str, Any]] = [
         "supportsPromptCache": True,
     },
     {
-        "id": "us.deepseek.r1-v1:0",
-        "label": "DeepSeek-R1",
-        "provider": "DeepSeek",
-        "supportsPromptCache": False,
+        "id": "us.amazon.nova-lite-v1:0",
+        "label": "Amazon Nova Lite",
+        "provider": "Amazon",
+        "supportsPromptCache": True,
     },
 ]
 
-#: Fast-lookup set of model ids that do NOT support cachePoint.  Any model id
-#: NOT listed here is assumed to support cachePoint (safe default for new
-#: Anthropic / Amazon models).  DeepSeek-R1 is the only current exception.
+#: Fast-lookup set of the ids the in-chat selector may legitimately send. The
+#: server validates an inbound ``model_id`` against this before using it (see
+#: ``resolve_selected_model``) so a stale / removed / unsupported id can never
+#: reach ConverseStream and throw a ValidationException.
+SELECTABLE_MODEL_IDS: frozenset[str] = frozenset(m["id"] for m in SELECTABLE_MODELS)
+
+#: Model ids that do NOT support cachePoint.  Kept EXPLICIT (not derived from
+#: SELECTABLE_MODELS) so the guard still holds if such a model is reachable via
+#: the ``BEDROCK_MODEL_ID`` env even though it is not in the picker.  Any id NOT
+#: listed here is assumed to support cachePoint (all current Anthropic + Nova
+#: models do).  DeepSeek-R1 is the current exception.
 MODELS_WITHOUT_CACHE_SUPPORT: frozenset[str] = frozenset(
-    m["id"] for m in SELECTABLE_MODELS if not m["supportsPromptCache"]
+    {
+        "us.deepseek.r1-v1:0",
+    }
 )
 
 
@@ -113,6 +122,34 @@ def model_supports_cache(model_id: str) -> bool:
     listed in ``MODELS_WITHOUT_CACHE_SUPPORT`` are excluded.
     """
     return model_id not in MODELS_WITHOUT_CACHE_SUPPORT
+
+
+def resolve_selected_model(requested: str | None) -> tuple[str | None, str | None]:
+    """Validate a user-requested model id against the selectable allowlist.
+
+    Returns ``(effective_model_id, notice)`` where:
+      - ``effective_model_id`` is ``requested`` when it is a known-good
+        selectable id, else ``None`` (meaning "use the server default", so the
+        caller falls back to ``bedrock_model_id()``).
+      - ``notice`` is ``None`` on the happy path, or a short, user-facing
+        sentence explaining the fall-back when ``requested`` is non-empty but
+        not selectable.  The server surfaces this honestly instead of letting an
+        invalid id reach ConverseStream (which throws a raw ValidationException).
+
+    ``requested is None`` is the normal "no explicit choice" case and returns
+    ``(None, None)`` — silent default, no notice.
+    """
+    if requested is None:
+        return None, None
+    if requested in SELECTABLE_MODEL_IDS:
+        return requested, None
+    return (
+        None,
+        (
+            f"The requested model '{requested}' is not available, so this turn "
+            "is running on the default model."
+        ),
+    )
 
 # Match the Gemini per-request config (adapter.py:GenerateContentConfig).
 _DEFAULT_TEMPERATURE = 0.7
