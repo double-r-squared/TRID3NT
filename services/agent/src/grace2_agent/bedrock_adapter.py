@@ -70,6 +70,65 @@ def bedrock_model_id() -> str:
     return os.environ.get("BEDROCK_MODEL_ID", BEDROCK_DEFAULT_MODEL)
 
 
+def _prompt_cache_enabled() -> bool:
+    """Bedrock prompt caching (``cachePoint``) ON by default; env off-switch.
+
+    The sprint-14 Gemini->Bedrock swap DEFERRED prompt caching, so every turn
+    re-sent the full static system prompt + 94-tool catalog UNCACHED — the #1
+    Bedrock cost driver (the Gemini path had cachedContent ~90% discount). We
+    restore it with ``cachePoint`` markers. Gated by ``BEDROCK_PROMPT_CACHE`` so
+    ops can disable without a redeploy if a model ever rejects cachePoint blocks.
+    """
+    return (
+        os.environ.get("BEDROCK_PROMPT_CACHE", "1").strip().lower()
+        not in {"0", "false", "no", "off"}
+    )
+
+
+def _build_converse_kwargs(
+    contents: Any,
+    tool_declarations: Any,
+    system_prompt: str | None,
+    model: str | None,
+) -> dict[str, Any]:
+    """Build the boto3 ``converse_stream`` kwargs (pure — unit-testable).
+
+    Inserts Bedrock ``cachePoint`` markers (when enabled) at the END of the
+    system block AND the tool list. Caching is PREFIX-based: for Anthropic models
+    the cacheable prefix order is tools -> system -> messages, so the tool-catalog
+    cachePoint caches the large static 94-tool block independently, and the system
+    cachePoint additionally caches the system prefix when it is stable. A miss is
+    a normal uncached call (no correctness risk).
+    """
+    model_id = model or bedrock_model_id()
+    _system_unused, messages = contents_to_bedrock_messages(contents)
+    system_blocks: list[dict[str, Any]] = (
+        [{"text": system_prompt}] if system_prompt else []
+    )
+    tools = tool_declarations_to_bedrock_tools(tool_declarations)
+    cache = _prompt_cache_enabled()
+
+    if system_blocks and cache:
+        system_blocks = [*system_blocks, {"cachePoint": {"type": "default"}}]
+
+    kwargs: dict[str, Any] = {
+        "modelId": model_id,
+        "messages": messages,
+        "inferenceConfig": {
+            "temperature": _DEFAULT_TEMPERATURE,
+            "maxTokens": _DEFAULT_MAX_TOKENS,
+        },
+    }
+    if system_blocks:
+        kwargs["system"] = system_blocks
+    if tools:
+        tool_list = (
+            [*tools, {"cachePoint": {"type": "default"}}] if cache else tools
+        )
+        kwargs["toolConfig"] = {"tools": tool_list, "toolChoice": {"auto": {}}}
+    return kwargs
+
+
 def _bedrock_client():
     """Build a ``bedrock-runtime`` client. boto3 resolves creds + region from
     the standard chain (env / ~/.aws / instance role). ``AWS_REGION`` wins."""
@@ -267,23 +326,9 @@ async def stream_bedrock(
     back-pressure behave identically.
     """
     loop = asyncio.get_running_loop()
-    model_id = model or bedrock_model_id()
-    _system_unused, messages = contents_to_bedrock_messages(contents)
-    system_blocks = [{"text": system_prompt}] if system_prompt else []
-    tools = tool_declarations_to_bedrock_tools(tool_declarations)
-
-    kwargs: dict[str, Any] = {
-        "modelId": model_id,
-        "messages": messages,
-        "inferenceConfig": {
-            "temperature": _DEFAULT_TEMPERATURE,
-            "maxTokens": _DEFAULT_MAX_TOKENS,
-        },
-    }
-    if system_blocks:
-        kwargs["system"] = system_blocks
-    if tools:
-        kwargs["toolConfig"] = {"tools": tools, "toolChoice": {"auto": {}}}
+    # Bedrock prompt-caching restored here (job — bill fix): caches the static
+    # system prompt + 94-tool catalog across turns via cachePoint markers.
+    kwargs = _build_converse_kwargs(contents, tool_declarations, system_prompt, model)
 
     queue: asyncio.Queue[StreamEvent | None | BaseException] = asyncio.Queue()
 
