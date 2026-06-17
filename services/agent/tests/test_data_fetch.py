@@ -779,6 +779,125 @@ def test_fetch_landcover_cache_key_source_is_mrlc_wcs(monkeypatch):
     assert paths[0].endswith(".tif")
 
 
+# ---------------------------------------------------------------------------
+# job-0324 follow-up — STALE-CACHE fix: landcover cache key MUST change so a
+# post-fix fetch MISSES the pre-fix (palette-less) COG and regenerates a
+# colored, palette-preserving one. The bake-NLCD-into-hillshade demo rendered
+# grey because the static-30d cache served a palette-LESS COG written before
+# deploy #3's palette-preservation fix; bumping a landcover-only cache-version
+# salt evicts those entries on the next fetch.
+# ---------------------------------------------------------------------------
+
+
+def test_landcover_cache_version_salt_present_and_folded_into_params():
+    """The landcover-only cache-version salt exists and is part of the params.
+
+    The salt is what makes the post-fix key differ from the stale pre-fix key.
+    It must live ONLY in the landcover params dict (not in the shared
+    ``compute_cache_key`` salt) so no other tool's cache key changes.
+    """
+    assert hasattr(data_fetch, "_LANDCOVER_CACHE_VERSION")
+    # v2 = post-job-0324 palette-preserving COGs (v1 was the stale palette-less
+    # generation). Any bump > 1 forces a clean regenerate.
+    assert data_fetch._LANDCOVER_CACHE_VERSION >= 2
+
+
+def test_landcover_cache_key_changed_after_palette_fix():
+    """A fetch with the SAME bbox now computes a DIFFERENT cache key than the
+    pre-fix entry — i.e. it would MISS the stale palette-less COG.
+
+    Reconstructs the OLD params dict (no cache_version salt) and the NEW params
+    dict (with the salt) exactly as ``fetch_landcover`` builds them, hashes both
+    via ``compute_cache_key`` (the same function the cache shim uses), and
+    asserts the keys differ. This is the load-bearing assertion that post-fix
+    fetches no longer hit the grey, palette-less cached COG.
+    """
+    from grace2_agent.tools.cache import compute_cache_key
+
+    quantized = data_fetch._round_bbox_to_30m_nlcd(FORT_MYERS_BBOX)
+
+    # OLD (pre-fix) params — what the tool wrote before the salt was added.
+    old_params = {
+        "bbox": list(quantized),
+        "dataset": "nlcd_2021",
+        "source": "mrlc-wcs",
+    }
+    # NEW (post-fix) params — exactly what fetch_landcover now builds.
+    new_params = {
+        "bbox": list(quantized),
+        "dataset": "nlcd_2021",
+        "source": "mrlc-wcs",
+        "cache_version": data_fetch._LANDCOVER_CACHE_VERSION,
+    }
+
+    source_id = data_fetch._FETCH_LANDCOVER_METADATA.source_class
+    ttl_class = data_fetch._FETCH_LANDCOVER_METADATA.ttl_class
+    old_key = compute_cache_key(source_id, old_params, ttl_class, now=PINNED_NOW)
+    new_key = compute_cache_key(source_id, new_params, ttl_class, now=PINNED_NOW)
+
+    assert old_key != new_key, (
+        "landcover cache key must change after the palette-fix salt bump so "
+        "post-fix fetches miss the stale palette-less COG"
+    )
+
+
+def test_fetch_landcover_writes_cache_at_new_salted_key(monkeypatch):
+    """End-to-end: ``fetch_landcover`` writes the COG at the NEW salted key.
+
+    Drives the real tool through the (mocked) cache shim and confirms the cache
+    object it lands at matches the salted-params key — NOT the old un-salted key
+    that the stale palette-less COG occupies.
+    """
+    from grace2_agent.tools.cache import (
+        cache_path,
+        compute_cache_key,
+    )
+    from grace2_agent.tools import cache as cache_mod
+
+    fake_storage = FakeStorageClient()
+    monkeypatch.setattr(
+        data_fetch,
+        "_fetch_nlcd_landcover_bytes",
+        lambda bbox, year: b"FAKE_NLCD_GEOTIFF_BYTES_PALETTE_PRESERVED",
+    )
+    monkeypatch.setattr(
+        data_fetch,
+        "read_through",
+        lambda *a, **kw: cache_mod.read_through(
+            *a, storage_client=fake_storage, now=PINNED_NOW, **kw
+        ),
+    )
+
+    fetch_landcover(FORT_MYERS_BBOX, dataset="nlcd_2021")
+
+    quantized = data_fetch._round_bbox_to_30m_nlcd(FORT_MYERS_BBOX)
+    new_params = {
+        "bbox": list(quantized),
+        "dataset": "nlcd_2021",
+        "source": "mrlc-wcs",
+        "cache_version": data_fetch._LANDCOVER_CACHE_VERSION,
+    }
+    expected_key = compute_cache_key(
+        "landcover", new_params, "static-30d", now=PINNED_NOW
+    )
+    expected_path = cache_path("landcover", "static-30d", expected_key, "tif")
+
+    assert expected_path in fake_storage.store, (
+        "COG must land at the NEW salted key, not the stale un-salted key"
+    )
+    # And NOT at the old un-salted key (which holds the grey palette-less COG).
+    old_params = {
+        "bbox": list(quantized),
+        "dataset": "nlcd_2021",
+        "source": "mrlc-wcs",
+    }
+    old_key = compute_cache_key(
+        "landcover", old_params, "static-30d", now=PINNED_NOW
+    )
+    old_path = cache_path("landcover", "static-30d", old_key, "tif")
+    assert old_path not in fake_storage.store
+
+
 def test_fetch_nlcd_landcover_bytes_issues_wcs_1_0_0_getcoverage(monkeypatch):
     """The internal fetcher issues a WCS 1.0.0 GetCoverage request, not WMS GetMap.
 

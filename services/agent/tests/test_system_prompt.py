@@ -239,3 +239,55 @@ def test_system_prompt_still_routes_modflow_groundwater() -> None:
     """run_modflow_job + the article-ingest tool both remain named in the prompt."""
     assert "run_modflow_job" in SYSTEM_PROMPT
     assert "run_model_groundwater_contamination_scenario" in SYSTEM_PROMPT
+
+
+# ---------------------------------------------------------------------------
+# job-0324 follow-up — shaded/baked land cover uses the land cover AS the blend
+# base (it is palette-aware); colored_relief is elevation colors, not
+# land-cover classes. Mirrors the compute_blended_composite description fix.
+# ---------------------------------------------------------------------------
+
+
+def test_system_prompt_has_shaded_landcover_base_section() -> None:
+    """Prompt must carry the shaded/baked land-cover blend-base rule."""
+    assert "Shaded / baked land cover" in SYSTEM_PROMPT
+
+
+def test_system_prompt_says_pass_landcover_as_blend_base() -> None:
+    """The load-bearing instruction: pass the fetch_landcover handle DIRECTLY as
+    compute_blended_composite's base_layer_uri."""
+    flat = " ".join(SYSTEM_PROMPT.split())
+    assert "fetch_landcover" in flat
+    assert "compute_blended_composite" in flat
+    assert "base_layer_uri" in flat
+    # land cover is palette-aware / paletted-categorical.
+    assert "paletted" in flat.lower() or "color table" in flat.lower()
+
+
+def test_system_prompt_forbids_colored_relief_as_landcover_base() -> None:
+    """The anti-substitution half: colored_relief is elevation colors, NOT
+    land-cover classes — do not use it as the base for shaded land cover."""
+    flat = " ".join(SYSTEM_PROMPT.split())
+    assert "compute_colored_relief" in flat
+    assert "ELEVATION colors" in flat or "elevation colors" in flat.lower()
+    assert "land-cover classes" in flat or "land-cover class" in flat
+
+
+# ---------------------------------------------------------------------------
+# Narration conciseness (user 2026-06-16) — be concise; do not re-explain the
+# same thing across retries or recap every step verbosely each turn.
+# ---------------------------------------------------------------------------
+
+
+def test_system_prompt_has_narration_conciseness_section() -> None:
+    """Prompt must carry the narration-conciseness rule."""
+    assert "Narration conciseness" in SYSTEM_PROMPT
+
+
+def test_system_prompt_says_do_not_re_explain_across_retries() -> None:
+    """The load-bearing instruction: do not re-explain across retries / recap
+    every step verbosely each turn."""
+    flat = " ".join(SYSTEM_PROMPT.split())
+    assert "Be concise" in flat
+    assert "re-explain the same thing across retries" in flat
+    assert "recap every" in flat or "recap" in flat

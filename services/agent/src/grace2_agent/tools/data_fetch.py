@@ -1373,6 +1373,26 @@ _FETCH_LANDCOVER_METADATA = AtomicToolMetadata(
 )
 
 
+# Landcover-ONLY cache-version salt (job-0324 follow-up — STALE-CACHE fix).
+# -------------------------------------------------------------------------
+# The "bake NLCD land cover into hillshade" demo rendered grey because the
+# read-through cache (static-30d, 30-day TTL) was serving NLCD COGs written
+# BEFORE deploy #3's palette-preservation fix (job-0324). Those stale COGs
+# dropped their embedded GDAL color table, so blending them produced a flat
+# grayscale base instead of the NLCD class colors.
+#
+# Bumping this salt changes the canonicalized ``params`` dict that drives the
+# landcover cache key (``compute_cache_key`` hashes ``source_id || params ||
+# vintage``), so a post-fix fetch for the SAME bbox now computes a DIFFERENT
+# key than the pre-fix entry — i.e. it MISSES the stale palette-less COG and
+# regenerates a colored (palette-preserving) COG. This is scoped to
+# fetch_landcover ONLY: it is folded into the landcover ``params`` dict, never
+# into the shared ``compute_cache_key`` salt, so no other tool's cache key
+# changes (a recursive cache wipe was deliberately avoided). Bump the integer
+# whenever a landcover-COG-generation fix must force a clean regenerate.
+_LANDCOVER_CACHE_VERSION = 2  # v2 = post-job-0324 palette-preserving COGs
+
+
 # MRLC WCS 1.0.0 GeoServer endpoint (Tier 2 OGC service, live-verified
 # 2026-06-07 in job-0044). WCS 1.0.0 GetCoverage returns canonical NLCD class
 # integers in the raster band — the WMS GetMap path job-0039 landed against
@@ -1886,7 +1906,16 @@ def fetch_landcover(
         # palette-encoded ``mrlc-wms`` entries from job-0039 land under a
         # different key and naturally evict on the 30-day TTL — no explicit
         # invalidation needed (cached COG migration is a no-op).
-        params = {"bbox": list(quantized), "dataset": dataset, "source": "mrlc-wcs"}
+        # STALE-CACHE fix (job-0324 follow-up): the ``cache_version`` salt makes
+        # the post-fix key differ from the pre-fix (palette-less) entry, so this
+        # fetch MISSES the stale COG and regenerates a colored, palette-
+        # preserving one. Landcover-only — see _LANDCOVER_CACHE_VERSION.
+        params = {
+            "bbox": list(quantized),
+            "dataset": dataset,
+            "source": "mrlc-wcs",
+            "cache_version": _LANDCOVER_CACHE_VERSION,
+        }
         result = read_through(
             metadata=_FETCH_LANDCOVER_METADATA,
             params=params,

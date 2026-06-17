@@ -477,3 +477,45 @@ def test_compute_blended_composite_cache_hit_skips_fetch(fake_storage):
                 _bucket="test-bucket",
             )
         assert second.uri == first.uri
+
+
+# ---------------------------------------------------------------------------
+# job-0324 follow-up — description must tell the agent the BASE may be a
+# paletted/categorical raster (NLCD land cover) so it stops substituting
+# compute_colored_relief (elevation colors) as the blend base. The "bake NLCD
+# land cover into hillshade" demo rendered the wrong colors because the
+# description never said land cover could be the base directly.
+# ---------------------------------------------------------------------------
+
+
+def test_blend_description_says_base_may_be_paletted_categorical():
+    """The docstring must state the BASE may be a paletted/categorical raster."""
+    doc = compute_blended_composite.__doc__ or ""
+    flat = " ".join(doc.split())
+    assert "PALETTED" in flat or "paletted" in flat
+    assert "categorical" in flat or "CATEGORICAL" in flat
+    # Names NLCD land cover specifically as a supported base.
+    assert "NLCD" in flat
+    assert "land cover" in flat or "land-cover" in flat
+
+
+def test_blend_description_says_embedded_color_table_applied():
+    """The docstring must say the tool reads + applies the EMBEDDED color table,
+    so blending land cover directly yields the NLCD CLASS colors."""
+    doc = compute_blended_composite.__doc__ or ""
+    flat = " ".join(doc.split())
+    assert "embedded" in flat.lower() and "color table" in flat.lower()
+    # The payoff sentence: real NLCD class colors result.
+    assert "class colors" in flat.lower() or "CLASS colors" in flat
+
+
+def test_blend_description_forbids_colored_relief_substitution():
+    """The docstring must warn AGAINST substituting compute_colored_relief
+    (elevation colors) for the land-cover base — the exact failure mode."""
+    doc = compute_blended_composite.__doc__ or ""
+    flat = " ".join(doc.split())
+    assert "compute_colored_relief" in flat
+    # colored_relief is elevation colors, not land-cover classes.
+    assert "elevation" in flat.lower() or "ELEVATION" in flat
+    # Pass the land cover DIRECTLY as the base.
+    assert "DIRECTLY" in flat or "directly" in flat
