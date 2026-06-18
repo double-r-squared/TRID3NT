@@ -107,6 +107,7 @@ from .sfincs_builder import (
     _to_vsigs,
     build_sfincs_model,
 )
+from .sfincs_forcing_adapter import SFINCSForcingAdapterError
 
 __all__ = [
     "model_flood_scenario",
@@ -114,6 +115,7 @@ __all__ = [
     "WorkflowError",
     "PrecipForcingError",
     "compute_precip_area_mean_mm_per_hr",
+    "_resolve_surge_forcing_from_fetchers",
 ]
 
 logger = logging.getLogger("grace2_agent.workflows.model_flood_scenario")
@@ -705,6 +707,114 @@ def _build_surge_forcing_members(
     return waterlevel, discharge, wind, pressure
 
 
+def _resolve_surge_forcing_from_fetchers(
+    surge_forcing: dict[str, Any] | None,
+    bbox: tuple[float, float, float, float],
+    *,
+    window_hours: float | None = None,
+    data_sources: list[DataSource] | None = None,
+) -> dict[str, Any] | None:
+    """Materialise RAW fetcher outputs in ``surge_forcing`` into deck-ready URIs.
+
+    This is the fetcher → ADAPTER bridge: it lets a caller hand
+    ``model_flood_scenario`` the RAW surge/discharge fetcher outputs (a GTSM /
+    CO-OPS / NWM ``LayerURI`` or FlatGeobuf URI, or a CaMa-Flood COG) instead of
+    pre-materialised bzs/dis CSV + locations files. The adapter
+    (``sfincs_forcing_adapter``) converts each hydrograph into the SFINCS
+    ``timeseries_uri`` + ``locations_uri`` pair that
+    ``_build_surge_forcing_members`` → the deck-emission seam expects.
+
+    Recognised RAW keys inside a sub-dict (in addition to the already-materialised
+    ``timeseries_uri`` / ``locations_uri`` / ``geodataset_uri`` the deck consumes
+    verbatim):
+
+    - ``waterlevel.fetch_uri`` (or ``fgb_uri``) — a GTSM / CO-OPS FlatGeobuf to
+      adapt into bzs files. Optional ``offset`` / ``buffer_m`` pass through.
+    - ``discharge.fetch_uri`` (or ``fgb_uri``) — an NWM FlatGeobuf to adapt into
+      dis files. Optional ``cama_cog_uri`` instead → sample the CaMa COG.
+      ``rivers_uri`` / ``hydrography_uri`` / ``river_upa_km2`` pass through.
+
+    A sub-dict that ALREADY carries ``timeseries_uri`` / ``geodataset_uri`` is
+    left untouched (the pre-materialised path — backward compatible). Returns the
+    surge_forcing dict with raw inputs replaced by materialised URIs, or the
+    input unchanged when there is nothing to adapt. ``None`` → ``None``.
+
+    Adapter failures are NOT swallowed here: a surge event the user explicitly
+    requested that cannot be materialised must surface as a typed failed envelope
+    (the workflow's Step-5 try/except catches ``SFINCSForcingAdapterError`` and
+    threads its ``error_code``), NOT silently degrade to a pluvial-only deck
+    (Invariant 7 — never a silent wrong answer for an explicit surge request).
+    """
+    if not surge_forcing:
+        return surge_forcing
+    from .sfincs_forcing_adapter import (
+        discharge_forcing_from_cama_cog,
+        discharge_forcing_from_fgb,
+        waterlevel_forcing_from_fgb,
+    )
+
+    out = dict(surge_forcing)
+
+    wl = surge_forcing.get("waterlevel")
+    if isinstance(wl, dict):
+        wl_fetch = wl.get("fetch_uri") or wl.get("fgb_uri")
+        already = wl.get("timeseries_uri") or wl.get("geodataset_uri")
+        if wl_fetch and not already:
+            materialised = waterlevel_forcing_from_fgb(
+                wl_fetch,
+                window_hours=window_hours,
+                offset=wl.get("offset"),
+                buffer_m=wl.get("buffer_m"),
+            )
+            out["waterlevel"] = materialised
+            if data_sources is not None:
+                data_sources.append(
+                    DataSource(
+                        name="Water-level forcing (GTSM/CO-OPS → SFINCS bzs)",
+                        uri=str(wl_fetch),
+                        accessed_at=datetime.now(timezone.utc),
+                    )
+                )
+
+    dq = surge_forcing.get("discharge")
+    if isinstance(dq, dict):
+        dq_fetch = dq.get("fetch_uri") or dq.get("fgb_uri")
+        cama_uri = dq.get("cama_cog_uri")
+        already = dq.get("timeseries_uri") or dq.get("geodataset_uri")
+        if dq_fetch and not already:
+            out["discharge"] = discharge_forcing_from_fgb(
+                dq_fetch,
+                window_hours=window_hours,
+                rivers_uri=dq.get("rivers_uri"),
+                hydrography_uri=dq.get("hydrography_uri"),
+                river_upa_km2=dq.get("river_upa_km2"),
+            )
+            if data_sources is not None:
+                data_sources.append(
+                    DataSource(
+                        name="River-discharge forcing (NWM → SFINCS dis)",
+                        uri=str(dq_fetch),
+                        accessed_at=datetime.now(timezone.utc),
+                    )
+                )
+        elif cama_uri and not already:
+            out["discharge"] = discharge_forcing_from_cama_cog(
+                cama_uri,
+                bbox,
+                window_hours=window_hours,
+            )
+            if data_sources is not None:
+                data_sources.append(
+                    DataSource(
+                        name="River-discharge forcing (CaMa-Flood → SFINCS dis)",
+                        uri=str(cama_uri),
+                        accessed_at=datetime.now(timezone.utc),
+                    )
+                )
+
+    return out
+
+
 def _resolve_building_obstacle_uri(
     building_obstacles: bool | str,
     bbox: tuple[float, float, float, float],
@@ -1121,9 +1231,22 @@ async def model_flood_scenario(
     # --- Step 5: build_sfincs_model with NLCD validation gate ---
     try:
         # COASTAL SFINCS — surge / tide / discharge / wind / pressure members.
-        # ``surge_forcing`` is a nested dict of forcing URIs (materialised from
-        # the forcing fetchers upstream); empty/absent → pure-pluvial deck (the
-        # surge blocks are simply not emitted). See ``_build_surge_forcing_members``.
+        # ``surge_forcing`` is a nested dict of forcing URIs. Two shapes are
+        # accepted: (a) PRE-MATERIALISED — sub-dicts already carry
+        # ``timeseries_uri`` / ``locations_uri`` / ``geodataset_uri`` (consumed
+        # verbatim); (b) RAW FETCHER — sub-dicts carry ``fetch_uri`` (a GTSM /
+        # CO-OPS / NWM FlatGeobuf) or ``cama_cog_uri``, which the forcing ADAPTER
+        # (sfincs_forcing_adapter) converts into the bzs/dis CSV + locations files
+        # the deck-emission seam expects. The resolver materialises (b) in place;
+        # an adapter failure for an EXPLICIT surge request raises (caught below as
+        # a typed failed envelope — never a silent pluvial degrade). Empty/absent
+        # → pure-pluvial deck (no surge blocks emitted).
+        surge_forcing = _resolve_surge_forcing_from_fetchers(
+            surge_forcing,
+            resolved_bbox,
+            window_hours=float(duration_hr),
+            data_sources=data_sources,
+        )
         _wl, _dq, _wind, _press = _build_surge_forcing_members(surge_forcing)
         if forcing_raster_uri is not None:
             # Observed-precip netamt path: carry the pre-computed magnitude.
@@ -1231,6 +1354,31 @@ async def model_flood_scenario(
         # code instead of a fabricated FloodPayload.
         logger.warning(
             "build_sfincs_model raised %s (details=%s) — returning failed envelope",
+            exc.error_code,
+            exc.details,
+        )
+        return _build_failed_envelope(
+            bbox=resolved_bbox,
+            project_id=proj_id,
+            session_id=sess_id,
+            error_code=exc.error_code,
+            error_detail=str(exc),
+            workflow_name=workflow_name,
+            data_sources=data_sources,
+            forcing=forcing_summary,
+            solver_run_ids=solver_run_ids,
+            return_period_years=return_period_yr,
+            duration_hours=float(duration_hr),
+            grid_resolution_m=grid_resolution_m,
+        )
+    except SFINCSForcingAdapterError as exc:
+        # COASTAL SFINCS — the surge/discharge FETCHER → ADAPTER bridge failed
+        # (unreadable fetcher FGB/COG, no usable stations, all-NaN hydrographs).
+        # Invariant 7: an EXPLICIT surge request that cannot be materialised
+        # surfaces as a typed failed envelope carrying the adapter error code —
+        # NOT a silent degrade to a pluvial-only deck.
+        logger.warning(
+            "surge forcing adapter raised %s (details=%s) — returning failed envelope",
             exc.error_code,
             exc.details,
         )
