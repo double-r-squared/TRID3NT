@@ -68,6 +68,38 @@ const SUMMARY_WITH_ACCURACY: RoutingDashboardSummary = {
   dispatches_by_source: { llm: 80, workflow: 20 },
   error_rate_by_tool: [],
   top_routing_chains: [],
+  by_model: [
+    {
+      // Highest-use model first (sorted by count desc on the agent side).
+      model_id: "us.anthropic.claude-sonnet-4-6",
+      count: 70,
+      success_rate: 0.93,
+      result_usability_rate: 0.85,
+      routing_accuracy_rate: 0.78,
+      latency_p50_ms: 200,
+      latency_p95_ms: 1400,
+    },
+    {
+      model_id: "us.amazon.nova-lite-v1:0",
+      count: 30,
+      success_rate: 0.83,
+      // Nova-lite row carries NULL usability + routing → must render "—".
+      result_usability_rate: null,
+      routing_accuracy_rate: null,
+      latency_p50_ms: 90,
+      latency_p95_ms: 410,
+    },
+    {
+      // Legacy / pre-feature records bucket under "unknown".
+      model_id: "unknown",
+      count: 5,
+      success_rate: 1.0,
+      result_usability_rate: 1.0,
+      routing_accuracy_rate: 1.0,
+      latency_p50_ms: 150,
+      latency_p95_ms: 300,
+    },
+  ],
   solve_telemetry: {
     recent: [
       {
@@ -276,6 +308,104 @@ describe("RoutingQualityDashboard — solve telemetry", () => {
     ).toBeDefined();
     expect(
       screen.queryByTestId("grace2-routing-dashboard-solve-table"),
+    ).toBeNull();
+  });
+});
+
+describe("RoutingQualityDashboard — by-model comparison", () => {
+  it("renders one row per model with the four metrics, sorted by count", () => {
+    render(
+      <RoutingQualityDashboard
+        onClose={() => undefined}
+        initialSummary={SUMMARY_WITH_ACCURACY}
+        refreshIntervalMs={0}
+      />,
+    );
+    const table = screen.getByTestId(
+      "grace2-routing-dashboard-by-model-table",
+    );
+    expect(table).toBeDefined();
+    const rows = screen.getAllByTestId(
+      "grace2-routing-dashboard-by-model-row",
+    );
+    expect(rows).toHaveLength(3);
+    // Agent emits the rows count-descending; the UI renders them in order.
+    const ids = rows.map((r) => r.getAttribute("data-model-id"));
+    expect(ids).toEqual([
+      "us.anthropic.claude-sonnet-4-6",
+      "us.amazon.nova-lite-v1:0",
+      "unknown",
+    ]);
+    // Sonnet row: friendly label + the four metrics (success 93.0%, usability
+    // 85.0%, routing 78.0%, p50 200 ms / p95 1.40 s).
+    const sonnet = rows.find(
+      (r) =>
+        r.getAttribute("data-model-id") === "us.anthropic.claude-sonnet-4-6",
+    )!;
+    expect(sonnet.textContent).toContain("Claude Sonnet 4.6");
+    expect(sonnet.textContent).toMatch(/93\.0%/);
+    expect(sonnet.textContent).toMatch(/85\.0%/);
+    expect(sonnet.textContent).toMatch(/78\.0%/);
+    expect(sonnet.textContent).toMatch(/200 ms/);
+    expect(sonnet.textContent).toMatch(/1\.40 s/);
+  });
+
+  it("renders a friendly label for known models and the raw bucket otherwise", () => {
+    render(
+      <RoutingQualityDashboard
+        onClose={() => undefined}
+        initialSummary={SUMMARY_WITH_ACCURACY}
+        refreshIntervalMs={0}
+      />,
+    );
+    const rows = screen.getAllByTestId(
+      "grace2-routing-dashboard-by-model-row",
+    );
+    const nova = rows.find(
+      (r) => r.getAttribute("data-model-id") === "us.amazon.nova-lite-v1:0",
+    )!;
+    expect(nova.textContent).toContain("Nova Lite");
+    // unknown bucket is NOT mislabelled as a real model.
+    const unknown = rows.find(
+      (r) => r.getAttribute("data-model-id") === "unknown",
+    )!;
+    expect(unknown.textContent).toContain("Unknown / legacy");
+    expect(unknown.textContent).not.toContain("Claude");
+  });
+
+  it("renders null per-model usability/routing as '—', never 0%", () => {
+    render(
+      <RoutingQualityDashboard
+        onClose={() => undefined}
+        initialSummary={SUMMARY_WITH_ACCURACY}
+        refreshIntervalMs={0}
+      />,
+    );
+    const rows = screen.getAllByTestId(
+      "grace2-routing-dashboard-by-model-row",
+    );
+    const nova = rows.find(
+      (r) => r.getAttribute("data-model-id") === "us.amazon.nova-lite-v1:0",
+    )!;
+    // Nova-lite carries null usability + routing → "—" present, no "0.0%".
+    expect(nova.textContent).toContain("—");
+    // Success (83.0%) is real, but the nullable metrics must not fabricate 0%.
+    expect(nova.textContent).toMatch(/83\.0%/);
+  });
+
+  it("shows an honest empty line when no per-model telemetry exists", () => {
+    render(
+      <RoutingQualityDashboard
+        onClose={() => undefined}
+        initialSummary={SUMMARY_NULL_METRICS}
+        refreshIntervalMs={0}
+      />,
+    );
+    expect(
+      screen.getByTestId("grace2-routing-dashboard-no-models"),
+    ).toBeDefined();
+    expect(
+      screen.queryByTestId("grace2-routing-dashboard-by-model-table"),
     ).toBeNull();
   });
 });

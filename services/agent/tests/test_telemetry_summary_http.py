@@ -183,3 +183,73 @@ def test_build_telemetry_summary_file_fallback(tmp_path, monkeypatch):
     names = [t["name"] for t in summary["dispatches_by_tool"]]
     assert "fetch_dem" in names
     assert "compute_hillshade" in names
+
+
+def test_build_telemetry_summary_carries_by_model_and_accuracy(
+    tmp_path, monkeypatch
+):
+    """End-to-end (file path): the full summary served by /api/telemetry/summary
+    carries the four headline accuracy metrics AND the per-model breakdown, so
+    the dashboard's by-model A/B section + KPI cards have real data to render."""
+    monkeypatch.setattr(
+        "grace2_agent.tool_catalog_http._get_telemetry_path",
+        lambda: tmp_path / "telemetry.jsonl",
+    )
+    # No solve sink for this test — keep the solve section zero-state.
+    monkeypatch.setattr(
+        "grace2_agent.tool_catalog_http._get_solve_telemetry_path",
+        lambda: tmp_path / "no_solves.jsonl",
+    )
+    monkeypatch.setattr("grace2_agent.server.get_persistence", lambda: None)
+
+    fp = tmp_path / "telemetry.jsonl"
+    with fp.open("w") as fh:
+        for r in [
+            # Sonnet: two usable calls (one fast, one slow).
+            _make_local_record(
+                model_id="us.anthropic.claude-sonnet-4-6",
+                latency_ms=100.0,
+                result_usable=True,
+            ),
+            _make_local_record(
+                tool_name="compute_hillshade",
+                ts="2026-06-09T10:01:00Z",
+                model_id="us.anthropic.claude-sonnet-4-6",
+                latency_ms=300.0,
+                result_usable=True,
+            ),
+            # Nova-lite: one failed call (drives success_rate < 1 for the model).
+            _make_local_record(
+                tool_name="fetch_buildings",
+                ts="2026-06-09T10:02:00Z",
+                model_id="us.amazon.nova-lite-v1:0",
+                latency_ms=200.0,
+                success=False,
+                error_code="UPSTREAM_API_ERROR",
+                result_usable=None,
+            ),
+        ]:
+            fh.write(json.dumps(r) + "\n")
+
+    summary = asyncio.run(build_telemetry_summary())
+    # Four headline metrics present + sane (1 of 3 failed -> success 2/3).
+    assert summary["success_rate"] == 0.6667
+    assert summary["result_usability_rate"] == 1.0  # 2 usable of 2 non-null
+    assert "routing_accuracy_rate" in summary
+    assert summary["latency_p50_ms"] == 200.0
+    assert "latency_p95_ms" in summary
+    # by_model: one row per distinct model, sorted by count desc.
+    by_model = {row["model_id"]: row for row in summary["by_model"]}
+    assert set(by_model) == {
+        "us.anthropic.claude-sonnet-4-6",
+        "us.amazon.nova-lite-v1:0",
+    }
+    sonnet = by_model["us.anthropic.claude-sonnet-4-6"]
+    assert sonnet["count"] == 2
+    assert sonnet["success_rate"] == 1.0
+    assert sonnet["result_usability_rate"] == 1.0
+    nova = by_model["us.amazon.nova-lite-v1:0"]
+    assert nova["count"] == 1
+    assert nova["success_rate"] == 0.0
+    # Highest-use model is listed first.
+    assert summary["by_model"][0]["model_id"] == "us.anthropic.claude-sonnet-4-6"

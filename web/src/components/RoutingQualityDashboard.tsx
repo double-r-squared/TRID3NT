@@ -30,6 +30,30 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { IconClose, IconChevronRight } from "./icons";
+import { SELECTABLE_MODELS } from "../lib/modelRegistry";
+
+// Friendly label / accent for a by_model row's model_id. We do NOT use
+// modelRegistry.getModelById here: that helper falls back to Sonnet for any
+// unknown id (including the "unknown" legacy bucket), which would mislabel a
+// non-selectable / pre-feature model as "Claude Sonnet 4.6". For the dashboard
+// we want an HONEST label — a known selectable model gets its short label +
+// accent; anything else (incl. "unknown") shows the raw id with a neutral tint.
+const MODEL_LABELS: Record<string, { label: string; accent: string }> =
+  Object.fromEntries(
+    SELECTABLE_MODELS.map((m) => [
+      m.id,
+      { label: m.label, accent: m.accentColor },
+    ]),
+  );
+
+function modelDisplay(modelId: string): { label: string; accent: string } {
+  const known = MODEL_LABELS[modelId];
+  if (known) return known;
+  if (modelId === "unknown" || !modelId) {
+    return { label: "Unknown / legacy", accent: "#6f7585" };
+  }
+  return { label: modelId, accent: "#6f7585" };
+}
 
 // ---------------------------------------------------------------------------
 // Wire types — mirror /api/telemetry/summary response shape.
@@ -61,6 +85,31 @@ export interface RoutingDashboardToolRow {
 export interface RoutingDashboardChain {
   chain: string[];
   count: number;
+}
+
+// --- by_model section (SHARED WIRE CONTRACT, NATE 2026-06-17) -------------- //
+//
+// Per-Bedrock-model breakdown of the SAME four accuracy metrics, so NATE can
+// A/B the models the in-chat selector exposes (Sonnet 4.6 / Haiku 4.5 / Nova
+// Pro / Nova Lite). The agent emits one row per distinct `model_id` seen in the
+// telemetry window; legacy records with no model_id bucket under "unknown".
+// Sorted by dispatch count descending ("unknown" last). Nullable usability /
+// routing render as "—" exactly like the top-level metrics.
+export interface RoutingDashboardModelRow {
+  /** Bedrock model id (e.g. "us.anthropic.claude-sonnet-4-6") or "unknown". */
+  model_id: string;
+  /** Dispatch count attributed to this model. */
+  count: number;
+  /** 1 - error_rate for this model. 0..1. */
+  success_rate: number;
+  /** Fraction of this model's dispatches whose result was usable. null = n/a. */
+  result_usability_rate: number | null;
+  /** Heuristic routing accuracy for this model. null = n/a. */
+  routing_accuracy_rate: number | null;
+  /** Median per-dispatch latency for this model (ms). */
+  latency_p50_ms: number;
+  /** 95th-percentile per-dispatch latency for this model (ms). */
+  latency_p95_ms: number;
 }
 
 // --- solve_telemetry section (SHARED WIRE CONTRACT, NATE 2026-06-17) ------- //
@@ -113,6 +162,12 @@ export interface RoutingDashboardSummary {
     total: number;
   }[];
   top_routing_chains: RoutingDashboardChain[];
+  /**
+   * Per-Bedrock-model accuracy breakdown (NATE 2026-06-17 model selector A/B).
+   * Optional for backward compatibility with summaries emitted before the
+   * model dimension landed — missing/empty → the by-model section hides.
+   */
+  by_model?: RoutingDashboardModelRow[];
   /** Big-sim solve telemetry (NATE 2026-06-17). Absent on older summaries. */
   solve_telemetry?: SolveTelemetrySection;
   /** Provenance — "mongo" | "file" | "empty" | "telemetry". */
@@ -860,6 +915,99 @@ export function RoutingQualityDashboard({
               >
                 * Routing accuracy is a heuristic estimate. "—" = not measured.
               </div>
+
+              {/* --- By-model comparison (NATE 2026-06-17 selector A/B) ----- */}
+              {/* The SAME four accuracy metrics broken out per Bedrock model    */}
+              {/* the in-chat selector exposes, so models can be A/B'd. Hidden   */}
+              {/* when the summary carries no by_model section (older payloads). */}
+              <div style={sectionHeadingStyle}>By model</div>
+              {!summary.by_model || summary.by_model.length === 0 ? (
+                <div
+                  data-testid="grace2-routing-dashboard-no-models"
+                  style={{
+                    color: "#9aa0ad",
+                    fontSize: 11,
+                    fontStyle: "italic",
+                    padding: "4px 0 8px",
+                  }}
+                >
+                  No per-model telemetry recorded yet.
+                </div>
+              ) : (
+                <table
+                  data-testid="grace2-routing-dashboard-by-model-table"
+                  style={tableStyle}
+                >
+                  <thead>
+                    <tr>
+                      <th style={thStyle}>Model</th>
+                      <th style={{ ...thStyle, textAlign: "right" }}>Calls</th>
+                      <th style={{ ...thStyle, textAlign: "right" }}>Success</th>
+                      <th style={{ ...thStyle, textAlign: "right" }}>
+                        Usability
+                      </th>
+                      <th
+                        style={{ ...thStyle, textAlign: "right" }}
+                        title="Heuristic routing-accuracy estimate"
+                      >
+                        Routing*
+                      </th>
+                      <th style={{ ...thStyle, textAlign: "right" }}>p50</th>
+                      <th style={{ ...thStyle, textAlign: "right" }}>p95</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {summary.by_model.map((m) => {
+                      const disp = modelDisplay(m.model_id);
+                      return (
+                        <tr
+                          key={m.model_id}
+                          data-testid="grace2-routing-dashboard-by-model-row"
+                          data-model-id={m.model_id}
+                        >
+                          <td style={tdStyle}>
+                            <span
+                              style={{
+                                display: "inline-block",
+                                width: 8,
+                                height: 8,
+                                borderRadius: 2,
+                                background: disp.accent,
+                                marginRight: 7,
+                                verticalAlign: "middle",
+                              }}
+                            />
+                            <span style={{ color: "#dfe5f0" }}>
+                              {disp.label}
+                            </span>
+                          </td>
+                          <td style={{ ...tdStyle, textAlign: "right" }}>
+                            {formatCount(m.count)}
+                          </td>
+                          <td
+                            data-testid="grace2-routing-dashboard-by-model-cell-success"
+                            style={{ ...tdStyle, textAlign: "right" }}
+                          >
+                            {formatPct(m.success_rate)}
+                          </td>
+                          <td style={{ ...tdStyle, textAlign: "right" }}>
+                            {formatNullablePct(m.result_usability_rate)}
+                          </td>
+                          <td style={{ ...tdStyle, textAlign: "right" }}>
+                            {formatNullablePct(m.routing_accuracy_rate)}
+                          </td>
+                          <td style={{ ...tdStyle, textAlign: "right" }}>
+                            {formatMs(m.latency_p50_ms)}
+                          </td>
+                          <td style={{ ...tdStyle, textAlign: "right" }}>
+                            {formatMs(m.latency_p95_ms)}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
 
               {/* --- Big-sim solve telemetry (NATE 2026-06-17) ------------- */}
               {/* Recent heavy-compute solves (SFINCS / MODFLOW / Pelicun on  */}
