@@ -13,13 +13,13 @@
 // blue left-border accent are gone. Tests are rewritten accordingly.
 
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, act } from "@testing-library/react";
+import { render, screen, act, fireEvent } from "@testing-library/react";
 import {
   PipelineCard,
   formatDuration,
   MIN_RUNNING_DWELL_MS,
 } from "./PipelineCard";
-import { PipelineStepSummary } from "../contracts";
+import { PipelineStepSummary, ToolIoPayload } from "../contracts";
 
 /** Force `prefers-reduced-motion: reduce` to the given value. Returns a
  *  restore fn. Mirrors the helper used in Chat.mobileSheet.test.tsx. */
@@ -730,5 +730,105 @@ describe("PipelineCard — minimum running dwell (F70)", () => {
     const timer = screen.getByTestId("pipeline-card-timer");
     expect(timer).toHaveTextContent("0:00");
     expect(timer.getAttribute("data-authoritative")).toBe("true");
+  });
+});
+
+// --- Tool-IO expander (tool-card-expand-output spec) --------------------- //
+
+function makeIo(partial: Partial<ToolIoPayload> = {}): ToolIoPayload {
+  return {
+    step_id: partial.step_id ?? "step-001",
+    tool_name: partial.tool_name ?? "geocode_location",
+    raw_args: partial.raw_args ?? '{\n  "location_name": "Boulder, CO"\n}',
+    function_response:
+      partial.function_response ?? '{\n  "status": "ok",\n  "bbox": []\n}',
+    is_error: partial.is_error ?? false,
+    args_truncated: partial.args_truncated ?? false,
+    response_truncated: partial.response_truncated ?? false,
+    args_bytes: partial.args_bytes ?? 40,
+    response_bytes: partial.response_bytes ?? 36,
+  };
+}
+
+describe("PipelineCard tool-IO expander", () => {
+  it("renders no chevron when no IO sidecar is present", () => {
+    render(<PipelineCard step={makeStep({ state: "complete" })} />);
+    expect(screen.queryByTestId("pipeline-card-io-toggle")).toBeNull();
+    expect(screen.queryByTestId("pipeline-card-io-panel")).toBeNull();
+  });
+
+  it("shows the chevron but keeps the panel collapsed by default", () => {
+    render(
+      <PipelineCard step={makeStep({ state: "complete" })} io={makeIo()} />,
+    );
+    const toggle = screen.getByTestId("pipeline-card-io-toggle");
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    // Collapsed: the raw args / response blocks are NOT in the DOM yet.
+    expect(screen.queryByTestId("pipeline-card-io-panel")).toBeNull();
+    expect(screen.queryByTestId("pipeline-card-io-args")).toBeNull();
+  });
+
+  it("expands to reveal the raw args + function_response on click", () => {
+    render(
+      <PipelineCard
+        step={makeStep({ state: "complete" })}
+        io={makeIo({
+          raw_args: '{"location_name":"Boulder, CO"}',
+          function_response: '{"status":"ok","bbox":[1,2,3,4]}',
+        })}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("pipeline-card-io-toggle"));
+    expect(screen.getByTestId("pipeline-card-io-panel")).toBeInTheDocument();
+    const args = screen.getByTestId("pipeline-card-io-args");
+    const resp = screen.getByTestId("pipeline-card-io-response");
+    expect(args).toHaveTextContent("Boulder, CO");
+    expect(resp).toHaveTextContent('"status":"ok"');
+    expect(
+      screen.getByTestId("pipeline-card-io-toggle").getAttribute("aria-expanded"),
+    ).toBe("true");
+    // Toggling again collapses it.
+    fireEvent.click(screen.getByTestId("pipeline-card-io-toggle"));
+    expect(screen.queryByTestId("pipeline-card-io-panel")).toBeNull();
+  });
+
+  it("styles the response block as an error when is_error is set", () => {
+    render(
+      <PipelineCard
+        step={makeStep({ state: "failed", error_code: "UPSTREAM_API_ERROR" })}
+        io={makeIo({
+          is_error: true,
+          function_response:
+            '{"status":"error","error_code":"UPSTREAM_API_ERROR","message":"FIRMS 503"}',
+        })}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("pipeline-card-io-toggle"));
+    const resp = screen.getByTestId("pipeline-card-io-response");
+    // The error response surfaces the hidden upstream failure verbatim.
+    expect(resp).toHaveTextContent("UPSTREAM_API_ERROR");
+    expect(resp).toHaveTextContent("FIRMS 503");
+    // Red-tinted background distinguishes the error block (jsdom normalizes
+    // rgba() with spaces after commas).
+    expect(resp.style.background.replace(/\s/g, "")).toContain("220,60,60");
+  });
+
+  it("shows a 'truncated' note with the original byte size", () => {
+    render(
+      <PipelineCard
+        step={makeStep({ state: "complete" })}
+        io={makeIo({
+          response_truncated: true,
+          response_bytes: 200_000,
+        })}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("pipeline-card-io-toggle"));
+    const note = screen.getByTestId("pipeline-card-io-response-truncated");
+    expect(note).toHaveTextContent(/truncated/i);
+    // 200000 bytes -> "200.0 KB" in the honest note.
+    expect(note).toHaveTextContent("200.0 KB");
+    // The args block was NOT truncated, so it carries no note.
+    expect(screen.queryByTestId("pipeline-card-io-args-truncated")).toBeNull();
   });
 });

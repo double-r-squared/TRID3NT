@@ -601,6 +601,19 @@ def test_every_a3_a4_a4b_payload_round_trips(session_id: str) -> None:
             elapsed_seconds=42.5,
             eta_seconds=300.0,
         ),
+        # tool-io — raw args + function_response sidecar for the tool-card
+        # expander (tool-card-expand-output spec).
+        "tool-io": lambda: ws.ToolIoPayload(
+            step_id=new_ulid(),
+            tool_name="geocode_location",
+            raw_args='{"location_name": "Boulder, CO"}',
+            function_response='{"status": "ok"}',
+            is_error=False,
+            args_truncated=False,
+            response_truncated=False,
+            args_bytes=32,
+            response_bytes=18,
+        ),
     }
     # Every payload registered in ws.ALL_PAYLOADS must have a minimal factory
     # (i.e., the test covers the full inventory).

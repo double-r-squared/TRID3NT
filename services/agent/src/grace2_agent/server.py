@@ -1899,6 +1899,48 @@ async def _stream_gemini_reply(
                     sorted(summary.keys()),
                 )
 
+                # tool-card-expand-output spec: emit the raw input args + the
+                # raw function_response (the dict Gemini reads) on a ``tool-io``
+                # sidecar keyed by THIS dispatch's pipeline step. The web merges
+                # it into the matching tool card's expander so a server-side /
+                # upstream-API failure the narration hides becomes visible. The
+                # emitter mints the card's step_id inside ``emit_tool_call`` and
+                # records it on ``last_tool_step`` — we read it back here so the
+                # IO lands on the right card. Best-effort: a missing step_id
+                # (e.g. a dispatch that never reached the emitter) skips the
+                # emit; the emitter itself never raises on a bad payload.
+                _io_step = (
+                    state.emitter.last_tool_step
+                    if state.emitter is not None
+                    else None
+                )
+                # Guard against a STALE last_tool_step: a dispatch that raised
+                # BEFORE the emitter created a step (ToolNotFoundError, payload-
+                # warning cancel) leaves the prior tool's step on the accessor.
+                # Only stamp IO when the recorded step is THIS tool's step.
+                if _io_step is not None and _io_step.tool_name != call.name:
+                    _io_step = None
+                if _io_step is not None:
+                    _io_is_error = dispatch_error is not None or (
+                        isinstance(summary, dict)
+                        and summary.get("status") == "error"
+                    )
+                    try:
+                        await state.emitter.emit_tool_io(
+                            step_id=_io_step.step_id,
+                            tool_name=call.name,
+                            raw_args=call.args,
+                            function_response=summary,
+                            is_error=_io_is_error,
+                        )
+                    except Exception:  # noqa: BLE001 — expander is best-effort
+                        logger.debug(
+                            "tool-io emit failed session=%s tool=%s",
+                            state.session_id,
+                            call.name,
+                            exc_info=True,
+                        )
+
                 # B-tel: fire-and-forget telemetry for this LLM-initiated
                 # function_call. Non-blocking — ``emit_tool_call_event`` wraps
                 # the write in ``asyncio.ensure_future`` so no await is needed

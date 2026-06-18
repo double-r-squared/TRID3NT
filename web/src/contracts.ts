@@ -149,6 +149,35 @@ export interface PipelineStatePayload {
   steps?: PipelineStepSummary[];
 }
 
+// ToolIoPayload — `tool-io` envelope (tool-card-expand-output spec). Mirrors
+// `ToolIoPayload` in packages/contracts/src/grace2_contracts/ws.py. The
+// `pipeline-state` PipelineStep carries only the humanized label + state +
+// timing; this additive sidecar carries the RAW input args + the RAW
+// function_response (the dict Gemini reads back) for one tool dispatch, keyed
+// by the dispatch's `step_id`. The web merges it into the matching tool card's
+// expander so a server-side / upstream-API failure the agent's narration hides
+// becomes directly visible.
+//
+// `raw_args` / `function_response` are pre-serialized JSON STRINGS (the agent
+// json-dumps + pretty-prints them; a non-serializable value degraded to its
+// repr). Large payloads are TRUNCATED at the agent to a per-field byte cap
+// (large-payload norm); `*_truncated` flags it and `*_bytes` carries the
+// ORIGINAL byte length so the UI renders an honest "truncated, N bytes" note.
+// `is_error` mirrors the honesty-floor signal (function_response had
+// `status == "error"` or the dispatch raised) so the expander styles the
+// response block red without re-parsing the JSON.
+export interface ToolIoPayload {
+  step_id: string;
+  tool_name: string;
+  raw_args: string;
+  function_response: string;
+  is_error: boolean;
+  args_truncated: boolean;
+  response_truncated: boolean;
+  args_bytes: number;
+  response_bytes: number;
+}
+
 export type ErrorCode =
   | "AUTH_FAILED"
   | "RATE_LIMITED"

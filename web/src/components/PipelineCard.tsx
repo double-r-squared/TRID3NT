@@ -33,7 +33,9 @@ import {
   PipelineStepSummary,
   PipelineStepState,
   SolveProgressPayload,
+  ToolIoPayload,
 } from "../contracts";
+import { IconChevronRight } from "./icons";
 
 // --- Duration formatting + live ticker (job-0264) ------------------------ //
 //
@@ -752,10 +754,24 @@ export interface PipelineCardProps {
    * tool card.
    */
   solve?: SolveProgressPayload | null;
+  /**
+   * Tool-IO sidecar (tool-card-expand-output spec). When the agent has emitted
+   * the `tool-io` envelope for this dispatch (matched by step_id in Chat.tsx),
+   * the card grows a chevron that expands to reveal the RAW input args + RAW
+   * function_response (monospace, scrollable JSON). Collapsed by default. Absent
+   * (null) for the `llm_generation` thinking pseudo-step and any card whose IO
+   * sidecar has not (yet) arrived — the chevron simply doesn't render. The whole
+   * affordance is purely additive; it does not alter the existing card chrome.
+   */
+  io?: ToolIoPayload | null;
 }
 
-export function PipelineCard({ step, solve = null }: PipelineCardProps): JSX.Element {
+export function PipelineCard({ step, solve = null, io = null }: PipelineCardProps): JSX.Element {
   const reduced = prefersReducedMotion();
+  // tool-card-expand-output: the IO expander is collapsed by default. Local
+  // per-card state; keyed by step_id in Chat.tsx so toggling one card never
+  // affects another.
+  const [ioExpanded, setIoExpanded] = useState<boolean>(false);
 
   // F70: the VISUAL state may lag the logical state by up to a few hundred ms
   // so the running / rainbow treatment is always perceivable, even when a tool
@@ -900,6 +916,40 @@ export function PipelineCard({ step, solve = null }: PipelineCardProps): JSX.Ele
             {step.error_code ?? "error"}
           </span>
         )}
+        {/* tool-card-expand-output: chevron toggle. Renders only when the IO
+            sidecar has arrived for this dispatch (io != null). Rotates 90deg
+            when expanded. A subtle red dot flags an errored response so the
+            user sees there's a hidden failure worth expanding even when the
+            agent narrated around it. */}
+        {io && (
+          <button
+            type="button"
+            data-testid="pipeline-card-io-toggle"
+            aria-expanded={ioExpanded}
+            aria-label={
+              ioExpanded ? "Hide tool input/output" : "Show tool input/output"
+            }
+            onClick={() => setIoExpanded((v) => !v)}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              flexShrink: 0,
+              width: 18,
+              height: 18,
+              padding: 0,
+              marginLeft: 2,
+              border: "none",
+              background: "transparent",
+              color: io.is_error ? "#fca5a5" : "rgba(255,255,255,0.55)",
+              cursor: "pointer",
+              transform: ioExpanded ? "rotate(90deg)" : "rotate(0deg)",
+              transition: reduced ? undefined : "transform 120ms ease",
+            }}
+          >
+            <IconChevronRight size={13} />
+          </button>
+        )}
       </div>
       {/* Live big-sim solve readout (NATE 2026-06-17) — second line, only while
           running + a solve-progress payload has arrived for this step. */}
@@ -921,6 +971,135 @@ export function PipelineCard({ step, solve = null }: PipelineCardProps): JSX.Ele
           {solveReadout}
         </div>
       )}
+      {/* tool-card-expand-output: the expanded IO panel. Collapsed by default;
+          revealed by the chevron. Shows the RAW input args + RAW
+          function_response as monospace, scrollable JSON so server-side /
+          upstream-API failures the narration hides become visible. */}
+      {io && ioExpanded && <ToolIoPanel io={io} />}
+    </div>
+  );
+}
+
+// --- Tool-IO expanded panel (tool-card-expand-output spec) --------------- //
+//
+// Renders the RAW input args + RAW function_response for one tool dispatch as
+// two labelled, monospace, vertically-scrollable blocks. The function_response
+// block is tinted red when the response was a typed error (io.is_error) so a
+// failure the agent narrated around is obvious at a glance. Truncated payloads
+// (large-payload norm — the agent caps each field) carry an honest
+// "truncated · showing N of M" note built from the byte counts on the wire.
+
+function formatBytes(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)} MB`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)} KB`;
+  return `${n} B`;
+}
+
+interface ToolIoBlockProps {
+  label: string;
+  testId: string;
+  body: string;
+  truncated: boolean;
+  origBytes: number;
+  isError: boolean;
+}
+
+function ToolIoBlock({
+  label,
+  testId,
+  body,
+  truncated,
+  origBytes,
+  isError,
+}: ToolIoBlockProps): JSX.Element {
+  const shownBytes = new TextEncoder().encode(body).length;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "baseline",
+          justifyContent: "space-between",
+          gap: 8,
+        }}
+      >
+        <span
+          style={{
+            fontSize: 10,
+            textTransform: "uppercase",
+            letterSpacing: "0.04em",
+            color: isError ? "#fca5a5" : "rgba(255,255,255,0.5)",
+            fontWeight: 600,
+          }}
+        >
+          {label}
+        </span>
+        {truncated && (
+          <span
+            data-testid={`${testId}-truncated`}
+            style={{ fontSize: 10, color: "#fbbf24" }}
+            title={`Payload truncated for the chat — original was ${origBytes} bytes`}
+          >
+            truncated · showing {formatBytes(shownBytes)} of{" "}
+            {formatBytes(origBytes)}
+          </span>
+        )}
+      </div>
+      <pre
+        data-testid={testId}
+        style={{
+          margin: 0,
+          maxHeight: 220,
+          overflow: "auto",
+          padding: "6px 8px",
+          borderRadius: 4,
+          background: isError ? "rgba(220,60,60,0.14)" : "rgba(0,0,0,0.28)",
+          border: isError
+            ? "1px solid rgba(220,60,60,0.4)"
+            : "1px solid rgba(255,255,255,0.07)",
+          color: isError ? "#fecaca" : "rgba(255,255,255,0.82)",
+          fontFamily: "ui-monospace, 'Cascadia Code', 'Fira Code', monospace",
+          fontSize: 11,
+          lineHeight: 1.45,
+          whiteSpace: "pre-wrap",
+          wordBreak: "break-word",
+        }}
+      >
+        {body}
+      </pre>
+    </div>
+  );
+}
+
+export function ToolIoPanel({ io }: { io: ToolIoPayload }): JSX.Element {
+  return (
+    <div
+      data-testid="pipeline-card-io-panel"
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 8,
+        marginTop: 4,
+        paddingTop: 6,
+        borderTop: "1px solid rgba(255,255,255,0.08)",
+      }}
+    >
+      <ToolIoBlock
+        label="Input args"
+        testId="pipeline-card-io-args"
+        body={io.raw_args || "(no args)"}
+        truncated={io.args_truncated}
+        origBytes={io.args_bytes}
+        isError={false}
+      />
+      <ToolIoBlock
+        label={io.is_error ? "Response (error)" : "Response"}
+        testId="pipeline-card-io-response"
+        body={io.function_response || "(no response)"}
+        truncated={io.response_truncated}
+        origBytes={io.response_bytes}
+        isError={io.is_error}
+      />
     </div>
   );
 }

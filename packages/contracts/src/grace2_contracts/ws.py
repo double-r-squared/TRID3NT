@@ -58,6 +58,7 @@ __all__ = [
     "PipelineStep",
     "PipelineStatePayload",
     "SolveProgressPayload",
+    "ToolIoPayload",
     "MapCommandPayload",
     "ConfirmationRequestPayload",
     "SessionStateStatus",
@@ -381,6 +382,55 @@ class SolveProgressPayload(GraceModel):
     vcpus: int | None = None
     elapsed_seconds: float = Field(ge=0)
     eta_seconds: float | None = Field(default=None, ge=0)
+
+
+# tool-io (tool-card-expand-output spec) ------------------------------------- #
+
+
+class ToolIoPayload(GraceModel):
+    """``tool-io`` (A.4 extension): the RAW input args + function_response for one
+    tool dispatch, keyed by the pipeline step it belongs to.
+
+    The ``pipeline-state`` ``PipelineStep`` carries only the humanized label +
+    state + timing — it deliberately does NOT carry the raw I/O. This envelope
+    is the additive sidecar that lets the chat tool-card's expander reveal the
+    EXACT args the agent sent and the EXACT ``function_response`` the agent read
+    back (the dict ``summarize_tool_result`` produced). Surfacing it makes
+    server-side / upstream-API failures the narration hides directly visible
+    (per ``feedback_tool_card_expand_output``).
+
+    ``step_id`` matches the ``PipelineStep.step_id`` of the dispatch's card so
+    the web merges this into the right card by id (the emitter mints the step
+    inside ``emit_tool_call``; the server reads it back off
+    ``emitter.last_tool_step`` and stamps it here).
+
+    ``raw_args`` / ``function_response`` are pre-serialized JSON STRINGS (the
+    server json-dumps them so a non-JSON-serializable value degrades to a
+    string rather than breaking the envelope). Large payloads are TRUNCATED at
+    the server to ``MAX_FIELD_BYTES`` (large-payload norm — the chat must never
+    ship a multi-MB blob just for an expander); ``args_truncated`` /
+    ``response_truncated`` flag a truncation and the ``*_bytes`` fields carry the
+    ORIGINAL byte length so the UI can render an honest "truncated, N bytes"
+    note. ``is_error`` mirrors the honesty-floor signal (the function_response
+    carried ``status == "error"`` or the dispatch raised) so the expander styles
+    the response block red without re-parsing the JSON.
+    """
+
+    MESSAGE_TYPE: ClassVar[str] = "tool-io"
+
+    #: Server-side truncation cap per field (bytes). Keeps the chat light; the
+    #: expander is a debugging affordance, not a data-transfer channel.
+    MAX_FIELD_BYTES: ClassVar[int] = 32_768
+
+    step_id: ULIDStr
+    tool_name: str
+    raw_args: str = ""
+    function_response: str = ""
+    is_error: bool = False
+    args_truncated: bool = False
+    response_truncated: bool = False
+    args_bytes: int = Field(default=0, ge=0)
+    response_bytes: int = Field(default=0, ge=0)
 
 
 # map-command (A.4) ---------------------------------------------------------- #
@@ -943,6 +993,7 @@ AGENT_TO_CLIENT_PAYLOADS: dict[str, type[GraceModel]] = {
     ToolCallFailedPayload.MESSAGE_TYPE: ToolCallFailedPayload,
     PipelineStatePayload.MESSAGE_TYPE: PipelineStatePayload,
     SolveProgressPayload.MESSAGE_TYPE: SolveProgressPayload,
+    ToolIoPayload.MESSAGE_TYPE: ToolIoPayload,
     MapCommandPayload.MESSAGE_TYPE: MapCommandPayload,
     ConfirmationRequestPayload.MESSAGE_TYPE: ConfirmationRequestPayload,
     SessionStatePayload.MESSAGE_TYPE: SessionStatePayload,

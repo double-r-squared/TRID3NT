@@ -91,6 +91,7 @@ import {
   ResearchMode,
   SessionStatePayload,
   SolveProgressPayload,
+  ToolIoPayload,
 } from "./contracts";
 import { regionChoiceBus } from "./lib/region_choice_bus";
 import {
@@ -896,6 +897,12 @@ export interface StreamState {
   // completion explicitly — the readout only paints while the step is RUNNING,
   // so a stale entry simply stops surfacing once the step settles.
   solveProgress: Map<string, SolveProgressPayload>;
+  // Tool-IO sidecar (tool-card-expand-output spec), keyed by step_id. The agent
+  // emits a `tool-io` envelope right after each tool dispatch with the RAW input
+  // args + RAW function_response; the matching tool card's expander reveals it.
+  // Replace-in-place per step_id (a single dispatch emits one). A fresh Map is
+  // assigned on each write so React's referential-equality bump sees the change.
+  toolIo: Map<string, ToolIoPayload>;
   /** Monotonic arrival counter for this stream (job-0176 interleave). */
   arrivalSeq: number;
   messageOrder: Map<string, number>;
@@ -922,6 +929,7 @@ export function emptyStreamState(): StreamState {
     regionResolved: new Map(),
     regionSeqs: new Map(),
     solveProgress: new Map(),
+    toolIo: new Map(),
     arrivalSeq: 0,
     messageOrder: new Map(),
     stepOrder: new Map(),
@@ -1046,6 +1054,21 @@ export function routeSolveProgress(
   const next = new Map(s.solveProgress);
   next.set(p.run_id, p);
   s.solveProgress = next;
+}
+
+/** tool-card-expand-output spec — store the raw args + function_response for a
+ * tool dispatch (keyed by step_id) in the OWNING stream so the matching tool
+ * card's expander can reveal it. Replace-in-place per step_id; a fresh Map is
+ * assigned so React's referential-equality bump sees the change. */
+export function routeToolIo(
+  cs: ChatStreams,
+  p: ToolIoPayload,
+  caseId?: string | null,
+): void {
+  const s = getStream(cs, owningKey(cs, caseId));
+  const next = new Map(s.toolIo);
+  next.set(p.step_id, p);
+  s.toolIo = next;
 }
 
 export function routeSessionState(
@@ -2613,6 +2636,13 @@ export function Chat({
         routeSolveProgress(streamsRef.current, p, caseId);
         bump();
       },
+      // tool-card-expand-output spec: the agent emits the raw args +
+      // function_response for each tool dispatch keyed by step_id. Store it in
+      // the owning stream; the matching tool card's expander reveals it.
+      onToolIo: (p: ToolIoPayload, caseId?: string | null) => {
+        routeToolIo(streamsRef.current, p, caseId);
+        bump();
+      },
       onSessionState: (p: SessionStatePayload, caseId?: string | null) => {
         routeSessionState(streamsRef.current, p, caseId);
         bump();
@@ -3369,6 +3399,7 @@ export function Chat({
           history={pipeline.history}
           live={pipeline.live}
           solveProgress={visible.solveProgress}
+          toolIo={visible.toolIo}
           messageOrder={visible.messageOrder}
           stepOrder={visible.stepOrder}
           credentialRequests={credentialRequests}
@@ -3917,6 +3948,9 @@ interface InterleavedChatStreamProps {
   // NATE 2026-06-17: live big-sim solve-progress keyed by run_id. Threaded to
   // each running solver step's PipelineCard via matchSolveForStep.
   solveProgress: Map<string, SolveProgressPayload>;
+  // tool-card-expand-output spec: raw args + function_response keyed by step_id.
+  // Threaded to each tool card's expander by step_id lookup.
+  toolIo: Map<string, ToolIoPayload>;
   messageOrder: Map<string, number>;
   stepOrder: Map<string, number>;
   // SRS §F.3 amendment (NATE 2026-06-17): credential prompts interleave INLINE
@@ -3967,6 +4001,7 @@ function InterleavedChatStream({
   history,
   live,
   solveProgress,
+  toolIo,
   messageOrder,
   stepOrder,
   credentialRequests,
@@ -4083,12 +4118,15 @@ function InterleavedChatStream({
         }
         // tool — NATE 2026-06-17: thread the matched live solve-progress so a
         // running heavy-solver card surfaces its inline readout. Non-solver /
-        // non-running steps get null (no readout).
+        // non-running steps get null (no readout). tool-card-expand-output:
+        // thread the raw args + function_response (by step_id) so the card's
+        // chevron expands to reveal them.
         return (
           <PipelineCard
             key={entry.stepKey}
             step={entry.step}
             solve={matchSolveForStep(entry.step, solveProgress)}
+            io={toolIo.get(entry.step.step_id) ?? null}
           />
         );
       })}

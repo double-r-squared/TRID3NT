@@ -76,6 +76,7 @@ from grace2_contracts.ws import (
     PipelineStep,
     SessionStatePayload,
     SolveProgressPayload,
+    ToolIoPayload,
 )
 
 from .layer_uri_emit import emit_layer_uri
@@ -416,6 +417,40 @@ def _elapsed_ms(started_at: datetime | None, completed_at: datetime | None) -> i
     if delta < 0:
         return 0
     return int(round(delta))
+
+
+# --------------------------------------------------------------------------- #
+# tool-io serialization (tool-card-expand-output spec)
+# --------------------------------------------------------------------------- #
+
+
+def _json_for_tool_io(value: Any) -> tuple[str, bool, int]:
+    """Serialize a tool-io field to a (json_string, truncated, orig_bytes) tuple.
+
+    Pretty-prints (indent=2, sort_keys) so the expander renders readable JSON.
+    A non-JSON-serializable value degrades to its ``str()`` rather than raising
+    (``default=str`` covers nested non-serializable leaves too). Truncated to
+    ``ToolIoPayload.MAX_FIELD_BYTES`` so a multi-MB result never rides the chat
+    socket just to back an expander (large-payload norm); the returned byte
+    count is the ORIGINAL length so the UI shows an honest "truncated, N bytes".
+    UTF-8 byte counts (not char counts) so multibyte text is measured honestly;
+    truncation is applied on the character string but bounded by the byte cap.
+    """
+    import json
+
+    try:
+        text = json.dumps(value, indent=2, sort_keys=True, default=str)
+    except Exception:  # noqa: BLE001 — last-resort: never raise on serialization
+        text = str(value)
+    orig_bytes = len(text.encode("utf-8"))
+    cap = ToolIoPayload.MAX_FIELD_BYTES
+    if orig_bytes <= cap:
+        return text, False, orig_bytes
+    # Truncate on the UTF-8 byte boundary, then decode back ignoring a split
+    # multibyte tail so the JSON-ish prefix stays valid text (the UI shows it
+    # as raw text + a truncation note, so it need not remain valid JSON).
+    truncated = text.encode("utf-8")[:cap].decode("utf-8", errors="ignore")
+    return truncated, True, orig_bytes
 
 
 # --------------------------------------------------------------------------- #
@@ -1138,6 +1173,49 @@ class PipelineEmitter:
             logger.warning("emit_solve_progress: bad payload dropped: %s", exc)
             return
         await self._send("solve-progress", payload)
+
+    async def emit_tool_io(
+        self,
+        *,
+        step_id: str,
+        tool_name: str,
+        raw_args: Any,
+        function_response: Any,
+        is_error: bool = False,
+    ) -> None:
+        """Emit a ``tool-io`` envelope (tool-card-expand-output spec).
+
+        The sidecar that carries the RAW input args + the RAW
+        ``function_response`` for one tool dispatch so the chat tool-card's
+        expander can reveal them (keyed by ``step_id`` to the dispatch's card).
+        Both payloads are json-dumped to STRINGS here — a non-serializable value
+        degrades to its ``repr`` rather than breaking the envelope — and
+        TRUNCATED to ``ToolIoPayload.MAX_FIELD_BYTES`` (large-payload norm: the
+        chat must never ship a multi-MB blob for an expander). The original byte
+        length + a truncation flag ride along so the UI renders an honest
+        "truncated, N bytes" note.
+
+        Best-effort: a serialization / send failure is logged and dropped — the
+        expander is a debugging affordance, never a correctness gate, so it must
+        not break the dispatch loop (mirrors ``emit_solve_progress``)."""
+        try:
+            args_str, args_trunc, args_bytes = _json_for_tool_io(raw_args)
+            resp_str, resp_trunc, resp_bytes = _json_for_tool_io(function_response)
+            payload = ToolIoPayload(
+                step_id=step_id,
+                tool_name=tool_name,
+                raw_args=args_str,
+                function_response=resp_str,
+                is_error=bool(is_error),
+                args_truncated=args_trunc,
+                response_truncated=resp_trunc,
+                args_bytes=args_bytes,
+                response_bytes=resp_bytes,
+            )
+        except Exception as exc:  # noqa: BLE001 — never break the dispatch loop
+            logger.warning("emit_tool_io: bad payload dropped: %s", exc)
+            return
+        await self._send("tool-io", payload)
 
     # ------------------------------------------------------------------ #
     # Tool-call wrapper — the integration seam for server.py

@@ -42,6 +42,7 @@ import {
   SessionResumePayload,
   SessionStatePayload,
   SolveProgressPayload,
+  ToolIoPayload,
   UserMessagePayload,
   envelope,
   newUlid,
@@ -218,6 +219,17 @@ export interface WsHandlers {
    * callers can ignore.
    */
   onSolveProgress?: (p: SolveProgressPayload, caseId?: string | null) => void;
+  /**
+   * Tool-IO sidecar (tool-card-expand-output spec). Emitted by the agent right
+   * after a tool dispatch with the RAW input args + RAW function_response,
+   * keyed by the dispatch's pipeline step_id. Chat.tsx stores it per step_id in
+   * the owning stream so the matching tool card's expander reveals it. Follows
+   * the SAME wire as the dispatch's `pipeline-state` (message-scoped, not in
+   * SESSION_SCOPED_TYPES) so it lands on the right stream naturally. Malformed
+   * payloads (missing step_id) are dropped. Optional so chat-only callers can
+   * ignore.
+   */
+  onToolIo?: (p: ToolIoPayload, caseId?: string | null) => void;
   /**
    * Auth-token retriever (job-0123). Optional — when absent we fall back to
    * `getIdToken()` from `./auth` directly. Injected by tests to avoid
@@ -1333,6 +1345,21 @@ export class GraceWs {
           } else {
             // eslint-disable-next-line no-console
             console.warn("[ws] solve-progress dropped: missing run_id", payload);
+          }
+        }
+        break;
+      case "tool-io":
+        // tool-card-expand-output spec: the agent emits the RAW args +
+        // function_response for a tool dispatch keyed by step_id. Chat stores it
+        // so the matching tool card's expander reveals it. Malformed payloads
+        // (missing step_id) are dropped with a console.warn.
+        if (this.handlers.onToolIo) {
+          const io = payload as unknown as ToolIoPayload;
+          if (io && typeof io.step_id === "string") {
+            this.handlers.onToolIo(io, caseId);
+          } else {
+            // eslint-disable-next-line no-console
+            console.warn("[ws] tool-io dropped: missing step_id", payload);
           }
         }
         break;

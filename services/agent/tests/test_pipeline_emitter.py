@@ -1089,3 +1089,118 @@ async def test_update_current_progress_targets_running_step(
     await emitter.update_current_progress(33)
     last = _pipeline_frames(sink)[-1]
     assert last["payload"]["steps"][0]["progress_percent"] == 33
+
+
+# --------------------------------------------------------------------------- #
+# tool-io sidecar (tool-card-expand-output spec)
+# --------------------------------------------------------------------------- #
+
+
+def _tool_io_frames(sink: _CapturingSink) -> list[dict[str, Any]]:
+    return [f for f in sink.frames if f["type"] == "tool-io"]
+
+
+@pytest.mark.asyncio
+async def test_emit_tool_io_carries_args_and_response(
+    emitter: PipelineEmitter, sink: _CapturingSink
+) -> None:
+    """``emit_tool_io`` emits a ``tool-io`` envelope carrying the json-dumped
+    raw args + function_response keyed by the dispatch's step_id."""
+    step_id = await emitter.add_step(name="Geocode", tool_name="geocode_location")
+    await emitter.emit_tool_io(
+        step_id=step_id,
+        tool_name="geocode_location",
+        raw_args={"location_name": "Boulder, CO"},
+        function_response={"status": "ok", "bbox": [-105.3, 39.9, -105.1, 40.1]},
+        is_error=False,
+    )
+    frames = _tool_io_frames(sink)
+    assert len(frames) == 1, frames
+    p = frames[0]["payload"]
+    assert p["step_id"] == step_id
+    assert p["tool_name"] == "geocode_location"
+    assert p["is_error"] is False
+    assert p["args_truncated"] is False
+    assert p["response_truncated"] is False
+    # Round-trips back to the original objects (pretty-printed JSON strings).
+    assert json.loads(p["raw_args"]) == {"location_name": "Boulder, CO"}
+    assert json.loads(p["function_response"]) == {
+        "status": "ok",
+        "bbox": [-105.3, 39.9, -105.1, 40.1],
+    }
+
+
+@pytest.mark.asyncio
+async def test_emit_tool_io_error_flag(
+    emitter: PipelineEmitter, sink: _CapturingSink
+) -> None:
+    """A typed-error function_response is flagged ``is_error`` so the web styles
+    the response block red without re-parsing the JSON."""
+    step_id = await emitter.add_step(name="Fetch fires", tool_name="fetch_firms_active_fire")
+    await emitter.emit_tool_io(
+        step_id=step_id,
+        tool_name="fetch_firms_active_fire",
+        raw_args={"bbox": [0, 0, 1, 1]},
+        function_response={
+            "status": "error",
+            "error_code": "UPSTREAM_API_ERROR",
+            "message": "FIRMS returned 503",
+        },
+        is_error=True,
+    )
+    p = _tool_io_frames(sink)[-1]["payload"]
+    assert p["is_error"] is True
+    assert json.loads(p["function_response"])["error_code"] == "UPSTREAM_API_ERROR"
+
+
+@pytest.mark.asyncio
+async def test_emit_tool_io_truncates_large_payload(
+    emitter: PipelineEmitter, sink: _CapturingSink
+) -> None:
+    """A function_response over the per-field byte cap is truncated, the flag is
+    set, and the ORIGINAL byte length is reported (honest 'truncated, N bytes')."""
+    from grace2_contracts.ws import ToolIoPayload
+
+    big = {"rows": ["x" * 1000 for _ in range(200)]}  # well over the 32KB cap
+    step_id = await emitter.add_step(name="Query", tool_name="mongo_query")
+    await emitter.emit_tool_io(
+        step_id=step_id,
+        tool_name="mongo_query",
+        raw_args={"q": "find"},
+        function_response=big,
+        is_error=False,
+    )
+    p = _tool_io_frames(sink)[-1]["payload"]
+    assert p["response_truncated"] is True
+    # The shipped string is bounded by the cap; the reported size is the original.
+    assert len(p["function_response"].encode("utf-8")) <= ToolIoPayload.MAX_FIELD_BYTES
+    assert p["response_bytes"] > ToolIoPayload.MAX_FIELD_BYTES
+    # Small args are NOT truncated.
+    assert p["args_truncated"] is False
+
+
+@pytest.mark.asyncio
+async def test_emit_tool_io_non_serializable_degrades_to_str(
+    emitter: PipelineEmitter, sink: _CapturingSink
+) -> None:
+    """A non-JSON-serializable value degrades to its str() rather than raising;
+    the envelope is still emitted."""
+
+    class _Weird:
+        def __repr__(self) -> str:
+            return "<Weird object>"
+
+    step_id = await emitter.add_step(name="Tool", tool_name="some_tool")
+    await emitter.emit_tool_io(
+        step_id=step_id,
+        tool_name="some_tool",
+        raw_args={"obj": _Weird()},
+        function_response=_Weird(),
+        is_error=False,
+    )
+    frames = _tool_io_frames(sink)
+    assert len(frames) == 1
+    p = frames[0]["payload"]
+    # default=str renders the repr inside the JSON; non-serializable never raises.
+    assert "Weird" in p["raw_args"]
+    assert "Weird" in p["function_response"]
