@@ -98,10 +98,12 @@ RUN pip install --no-cache-dir --prefer-binary \
         "google-cloud-storage>=2.18,<4" \
     && python -c "from cht_sfincs import SFINCS; import rasterio, geopandas, xugrid, boto3; print('cht_sfincs + geo stack + boto3 import OK')"
 
-# Prune the venv: byte-compiled caches, tests, sample data — dead weight in a
-# one-shot batch worker.
+# Prune the venv: byte-compiled caches only. Do NOT delete package `tests/` dirs —
+# numpy 2.2.x imports `numpy._core.tests` at runtime (via `numpy.testing`, pulled
+# in by scipy's array_api_compat), and other pkgs do similar; deleting them breaks
+# `from numpy import *`. The test dirs are small anyway vs the numba/llvmlite/scipy
+# binaries that dominate the venv weight, so the hygiene saving isn't worth it.
 RUN find /opt/venv -depth -type d -name '__pycache__' -exec rm -rf {} + \
-    && find /opt/venv -depth -type d -name 'tests' -exec rm -rf {} + \
     && find /opt/venv -type f -name '*.pyc' -delete
 
 # Worker code lands on PYTHONPATH so `-m services.workers.sfincs_deckbuilder.entrypoint`
