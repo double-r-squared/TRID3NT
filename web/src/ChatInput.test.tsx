@@ -12,21 +12,43 @@
 //   - Drop shadow + rounded corner styles applied (style assertions)
 //
 // Model selector additions (NATE 2026-06-17):
-//   - Left button row (attach/mic/mode/model) renders
-//   - Model button renders with data-testid="chat-input-model"
-//   - Clicking model button opens the model popover
+//   - Left button row (attach/mic/mode) renders; mode is ICON-ONLY (no "Mode"
+//     text label).
+//   - UNCONTROLLED ChatInput keeps an in-composer model trigger
+//     (data-testid="chat-input-model") so standalone usage can still switch.
+//   - CONTROLLED ChatInput (modelId prop supplied — the header now owns the
+//     selector) hides the in-composer trigger and reflects the prop's model id.
+//   - Clicking model button opens the model popover (now portal'd to <body>).
 //   - Selecting a model closes the popover + updates the active label
 //   - onSubmit receives (text, modelId) — modelId is a non-empty Bedrock id string
+//   - Send button is a CIRCLE in send state / SQUARE in stop state, tinted to
+//     the active model accent color.
 //   - Provider accent tint appears on wrapper border
+//   - Exported ModelSelectorButton (header trigger) renders icon-only + opens
+//     the popover + reports selection via onChange.
 //
 // We test ChatInput directly rather than through Chat (Chat opens a real
 // WebSocket which happy-dom can't run; the existing Chat.test.tsx exercises
 // the pipelineReducer/shouldShowCancel logic with the same pattern).
 
-import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
-import { ChatInput } from "./components/ChatInput";
-import { DEFAULT_MODEL_ID } from "./lib/modelRegistry";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { render, screen, fireEvent, cleanup } from "@testing-library/react";
+import { ChatInput, ModelSelectorButton } from "./components/ChatInput";
+import {
+  DEFAULT_MODEL_ID,
+  getModelById,
+} from "./lib/modelRegistry";
+
+afterEach(() => {
+  cleanup();
+  // Model selection persists to localStorage; clear it so a test that selects a
+  // non-default model can't leak into a later test that asserts the default.
+  try {
+    window.localStorage.clear();
+  } catch {
+    /* private-mode no-op */
+  }
+});
 
 function renderIdle(overrides: Partial<Parameters<typeof ChatInput>[0]> = {}) {
   const onSubmit = vi.fn();
@@ -336,13 +358,12 @@ describe("ChatInput — disabled prop (WS down)", () => {
 });
 
 describe("ChatInput — left button row (NATE 2026-06-17 model selector)", () => {
-  it("renders the left button row with attach, mic, mode, and model buttons", () => {
+  it("renders the left button row with attach, mic, and mode buttons", () => {
     renderIdle();
     expect(screen.getByTestId("chat-input-left-row")).toBeTruthy();
     expect(screen.getByTestId("chat-input-attach")).toBeTruthy();
     expect(screen.getByTestId("chat-input-mic")).toBeTruthy();
     expect(screen.getByTestId("chat-input-mode")).toBeTruthy();
-    expect(screen.getByTestId("chat-input-model")).toBeTruthy();
   });
 
   it("attach, mic, and mode stubs are disabled", () => {
@@ -352,18 +373,30 @@ describe("ChatInput — left button row (NATE 2026-06-17 model selector)", () =>
     expect((screen.getByTestId("chat-input-mode") as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it("model button is NOT disabled and clicking it opens the popover", () => {
+  // Chat-chrome rework item 4: the mode button is now ICON-ONLY — it must NOT
+  // render the literal "Mode" text label.
+  it("mode button is icon-only (no 'Mode' text label)", () => {
+    renderIdle();
+    const mode = screen.getByTestId("chat-input-mode");
+    expect(mode.textContent).toBe("");
+    // It still carries an accessible label so the control is announced.
+    expect(mode.getAttribute("aria-label")).toMatch(/mode/i);
+  });
+
+  // UNCONTROLLED ChatInput (no modelId prop, as renderIdle does) keeps the
+  // in-composer model trigger for standalone usage.
+  it("uncontrolled: model button is NOT disabled and clicking it opens the popover", () => {
     renderIdle();
     const modelBtn = screen.getByTestId("chat-input-model") as HTMLButtonElement;
     expect(modelBtn.disabled).toBe(false);
     // Popover is not yet visible.
     expect(screen.queryByTestId("model-popover")).toBeNull();
     fireEvent.click(modelBtn);
-    // After click, popover renders.
+    // After click, popover renders (portal'd to <body>; screen still finds it).
     expect(screen.getByTestId("model-popover")).toBeTruthy();
   });
 
-  it("clicking a model option in the popover closes the popover", () => {
+  it("uncontrolled: clicking a model option in the popover closes the popover", () => {
     renderIdle();
     fireEvent.click(screen.getByTestId("chat-input-model"));
     expect(screen.getByTestId("model-popover")).toBeTruthy();
@@ -372,7 +405,7 @@ describe("ChatInput — left button row (NATE 2026-06-17 model selector)", () =>
     expect(screen.queryByTestId("model-popover")).toBeNull();
   });
 
-  it("after selecting a different model, onSubmit carries the new model id", () => {
+  it("uncontrolled: after selecting a different model, onSubmit carries the new model id", () => {
     const { onSubmit } = renderIdle();
     // Open popover and select Nova Lite (a proven tool-capable cheap model).
     fireEvent.click(screen.getByTestId("chat-input-model"));
@@ -382,5 +415,93 @@ describe("ChatInput — left button row (NATE 2026-06-17 model selector)", () =>
     fireEvent.change(ta, { target: { value: "use nova lite" } });
     fireEvent.keyDown(ta, { key: "Enter" });
     expect(onSubmit).toHaveBeenCalledWith("use nova lite", "us.amazon.nova-lite-v1:0");
+  });
+});
+
+describe("ChatInput — controlled model (header now owns the selector)", () => {
+  it("with a modelId prop, the in-composer model trigger is NOT rendered", () => {
+    renderIdle({ modelId: "us.amazon.nova-pro-v1:0" });
+    expect(screen.queryByTestId("chat-input-model")).toBeNull();
+  });
+
+  it("reflects the controlled model id on the wrapper data attribute", () => {
+    renderIdle({ modelId: "us.amazon.nova-lite-v1:0" });
+    const wrapper = screen.getByTestId("chat-input-wrapper");
+    expect(wrapper.getAttribute("data-model-id")).toBe("us.amazon.nova-lite-v1:0");
+  });
+
+  it("submit carries the controlled model id (not the default)", () => {
+    const { onSubmit } = renderIdle({ modelId: "us.amazon.nova-pro-v1:0" });
+    const ta = screen.getByTestId("chat-input") as HTMLTextAreaElement;
+    fireEvent.change(ta, { target: { value: "go" } });
+    fireEvent.keyDown(ta, { key: "Enter" });
+    expect(onSubmit).toHaveBeenCalledWith("go", "us.amazon.nova-pro-v1:0");
+  });
+
+  it("wrapper border + send button tint to the controlled model's accent", () => {
+    const novaProAccent = getModelById("us.amazon.nova-pro-v1:0").accentColor;
+    renderIdle({ modelId: "us.amazon.nova-pro-v1:0" });
+    const wrapper = screen.getByTestId("chat-input-wrapper");
+    // Border references the Nova (Amazon) accent, not the default Anthropic one.
+    expect(wrapper.style.border.toLowerCase()).toContain(novaProAccent.toLowerCase());
+  });
+});
+
+describe("ChatInput — send/stop button shape + color (item 3)", () => {
+  it("idle send button is a CIRCLE tinted to the active model accent", () => {
+    const accent = getModelById(DEFAULT_MODEL_ID).accentColor;
+    renderIdle();
+    const ta = screen.getByTestId("chat-input") as HTMLTextAreaElement;
+    fireEvent.change(ta, { target: { value: "hello" } });
+    const btn = screen.getByTestId("chat-input-action") as HTMLButtonElement;
+    expect(btn.getAttribute("data-shape")).toBe("circle");
+    expect(btn.style.borderRadius).toBe("50%");
+    // Accent-tinted ground (the default model's accent hex).
+    expect(btn.style.background.toLowerCase()).toContain(accent.toLowerCase());
+  });
+
+  it("in-flight stop button is a SQUARE (not a circle)", () => {
+    renderInFlight();
+    const btn = screen.getByTestId("chat-input-action") as HTMLButtonElement;
+    expect(btn.getAttribute("data-shape")).toBe("square");
+    expect(btn.style.borderRadius).not.toBe("50%");
+  });
+
+  it("send-button circle color tracks a controlled model change", () => {
+    const novaAccent = getModelById("us.amazon.nova-lite-v1:0").accentColor;
+    renderIdle({ modelId: "us.amazon.nova-lite-v1:0" });
+    const ta = screen.getByTestId("chat-input") as HTMLTextAreaElement;
+    fireEvent.change(ta, { target: { value: "hello" } });
+    const btn = screen.getByTestId("chat-input-action") as HTMLButtonElement;
+    expect(btn.style.background.toLowerCase()).toContain(novaAccent.toLowerCase());
+  });
+});
+
+describe("ModelSelectorButton — header-placed icon-only trigger (item 1)", () => {
+  it("renders icon-only (no model-name text label)", () => {
+    render(<ModelSelectorButton selectedId={DEFAULT_MODEL_ID} />);
+    const btn = screen.getByTestId("model-selector-button");
+    // Icon-only: no visible text content.
+    expect(btn.textContent).toBe("");
+    // Accessible label still names the model for assistive tech.
+    expect(btn.getAttribute("aria-label")).toMatch(/Model:/);
+    expect(btn.getAttribute("data-model-id")).toBe(DEFAULT_MODEL_ID);
+  });
+
+  it("clicking opens the portal'd popover", () => {
+    render(<ModelSelectorButton selectedId={DEFAULT_MODEL_ID} />);
+    expect(screen.queryByTestId("model-popover")).toBeNull();
+    fireEvent.click(screen.getByTestId("model-selector-button"));
+    expect(screen.getByTestId("model-popover")).toBeTruthy();
+  });
+
+  it("selecting a model reports the new id via onChange", () => {
+    const onChange = vi.fn();
+    render(<ModelSelectorButton selectedId={DEFAULT_MODEL_ID} onChange={onChange} />);
+    fireEvent.click(screen.getByTestId("model-selector-button"));
+    fireEvent.click(screen.getByTestId("model-option-us.amazon.nova-pro-v1:0"));
+    expect(onChange).toHaveBeenCalledWith("us.amazon.nova-pro-v1:0");
+    // Popover closes after selection.
+    expect(screen.queryByTestId("model-popover")).toBeNull();
   });
 });

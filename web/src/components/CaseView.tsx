@@ -52,10 +52,21 @@ const breadcrumbStyle: React.CSSProperties = {
   fontSize: 12,
   // Bound the row to its parent so a long case title can't push the card
   // wider than the rail / mobile sheet; the title span ellipsizes within it.
+  // boxSizing so the 10px horizontal padding is INCLUDED in the 100% width
+  // budget (else the padded card overshoots the rail and the title hard-clips
+  // at the right edge — the recurring mid-glyph cutoff).
   minWidth: 0,
+  maxWidth: "100%",
+  boxSizing: "border-box",
   overflow: "hidden",
 };
 
+// The fixed leading controls (← arrow, "Cases" link, "/" separator) must NOT
+// shrink: only the title flexes/ellipsizes. Without flexShrink:0 the browser
+// can squeeze these intrinsic-width items first, which both mangles them AND
+// (combined with min-width:auto quirks) lets the title overrun — the recurring
+// breadcrumb cutoff. Locking them at flexShrink:0 makes the title the sole
+// shrink target so text-overflow:ellipsis engages cleanly.
 const backBtnStyle: React.CSSProperties = {
   background: "transparent",
   border: "none",
@@ -66,6 +77,7 @@ const backBtnStyle: React.CSSProperties = {
   borderRadius: 4,
   fontFamily: "inherit",
   lineHeight: 1,
+  flexShrink: 0,
 };
 
 const linkStyle: React.CSSProperties = {
@@ -76,10 +88,13 @@ const linkStyle: React.CSSProperties = {
   cursor: "pointer",
   padding: 0,
   fontFamily: "inherit",
+  flexShrink: 0,
+  whiteSpace: "nowrap",
 };
 
 const separatorStyle: React.CSSProperties = {
   color: "#666",
+  flexShrink: 0,
 };
 
 const titleStyle: React.CSSProperties = {
@@ -88,7 +103,11 @@ const titleStyle: React.CSSProperties = {
   overflow: "hidden",
   textOverflow: "ellipsis",
   whiteSpace: "nowrap",
-  flex: 1,
+  // flex-basis:0 (the "0" in "1 1 0") so the title's measured width does NOT
+  // seed from its (long) content — it grows only from the leftover space after
+  // the fixed leading controls. Pairing this with min-width:0 is what makes
+  // text-overflow:ellipsis reliably engage instead of hard-clipping.
+  flex: "1 1 0",
   // REQUIRED for text-overflow:ellipsis on a flex child — without it the flex
   // item's default min-width:auto refuses to shrink below content size, so a
   // long case title overflows the card and hard-clips with NO ellipsis

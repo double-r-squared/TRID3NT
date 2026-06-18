@@ -1366,7 +1366,9 @@ describe("desktopChatContainerStyle (job-0283 + ux-batch-1 J1 drag-resize)", () 
     expect(s.position).toBe("absolute");
     expect(s.right).toBe(16);
     expect(s.top).toBe(16);
-    expect(s.bottom).toBe(16);
+    // NATE 2026-06-17 chat-chrome rework (item 6) — the desktop panel now runs
+    // flush to the BOTTOM of the window (was a 16px gap).
+    expect(s.bottom).toBe(0);
     expect(String(s.width)).toContain("384px");
     expect(s.overflow).toBe("hidden");
   });

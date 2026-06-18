@@ -957,7 +957,13 @@ export function App(): JSX.Element {
               top: 12,
               left: 12,
               zIndex: 22,
-              width: 280,
+              // Match CaseView's own 288px wrapStyle exactly. The prior 280px
+              // here was 8px NARROWER than the CaseView it contained, so the
+              // breadcrumb sized its title against 288 while the visible rail
+              // was 280 — the long-title right edge fell outside the wrapper
+              // and hard-clipped mid-glyph (the recurring cutoff). Aligning the
+              // widths lets CaseView's own ellipsis budget match the rail.
+              width: 288,
             }}
           >
             <CaseView
@@ -977,7 +983,7 @@ export function App(): JSX.Element {
                   fontSize: 12,
                   textAlign: "center",
                   lineHeight: 1.4,
-                  width: 280,
+                  width: 288,
                   boxSizing: "border-box",
                 }}
               >

@@ -101,7 +101,15 @@ import {
   prefersReducedMotion,
   useRunningElapsedMs,
 } from "./components/PipelineCard";
-import { ChatInput, ChatInputState } from "./components/ChatInput";
+import {
+  ChatInput,
+  ChatInputState,
+  ModelSelectorButton,
+} from "./components/ChatInput";
+import {
+  DEFAULT_MODEL_ID,
+  loadPersistedModelId,
+} from "./lib/modelRegistry";
 import { IconChevronRight, IconSandbox } from "./components/icons";
 import { AgentMessage } from "./components/AgentMessage";
 import { UserBubble } from "./components/UserBubble";
@@ -1479,7 +1487,12 @@ export function desktopChatContainerStyle(
     position: "absolute",
     right: 16,
     top: 16,
-    bottom: 16,
+    // NATE 2026-06-17 chat-chrome rework (item 6) — the desktop panel now runs
+    // flush to the BOTTOM of the window (was a 16px gap). The composer is the
+    // panel's last flex child, so it sits flush against the window bottom; the
+    // scroll area's bottom-padding (inputHeightPx + INPUT_GAP_PX) still clears
+    // the floating composer overlay, so nothing is clipped.
+    bottom: 0,
     width: `min(${clampChatWidth(widthPx)}px, 92vw)`,
     background: `linear-gradient(180deg, rgba(26,27,33,${alpha}) 0%, rgba(18,19,24,${alpha}) 100%)`,
     color: "#eee",
@@ -2438,6 +2451,16 @@ export function Chat({
       window.removeEventListener("storage", onStorage);
     };
   }, []);
+  // NATE 2026-06-17 chat-chrome rework (item 1) — the active Bedrock model id.
+  // The selector lives in the desktop header (ModelSelectorButton) now; Chat
+  // owns the canonical selection and threads it into the (controlled) ChatInput
+  // so the composer mirrors it for the send-button tint + the model_id carried
+  // on submit. Seeded from localStorage (falls back to the default). The header
+  // button + ChatInput both persist on change; setSelectedModelId keeps Chat's
+  // copy in sync so every render path reads one source of truth.
+  const [selectedModelId, setSelectedModelId] = useState<string>(
+    () => loadPersistedModelId() ?? DEFAULT_MODEL_ID,
+  );
   // ux-batch-1 J1 (F10) — desktop chat-panel WIDTH is user-draggable (distinct
   // from the mobile sheet height). Persisted to localStorage so reloads
   // remember it. Read lazily so SSR / first paint don't touch localStorage
@@ -3225,11 +3248,30 @@ export function Chat({
             gap: 8,
           }}
         >
-          {/* F45 LEFT group — product label + build version. */}
+          {/* F45 LEFT group — connection-signal DOT + product label + build
+              version. NATE 2026-06-17 chat-chrome rework (item 2): the verbose
+              connection-status TEXT indicator that used to sit on the RIGHT is
+              reduced to a small colored dot, pinned to the LEFT of the wordmark.
+              Color tracks the WS status (connected / connecting / disconnected /
+              reconnecting); the accessible label/title is preserved on the dot. */}
           <span
             data-testid="grace2-chat-tab-left"
-            style={{ display: "inline-flex", alignItems: "baseline", gap: 8 }}
+            style={{ display: "inline-flex", alignItems: "center", gap: 8 }}
           >
+            <span
+              data-testid="connection-status"
+              role="img"
+              aria-label={`WebSocket ${STATUS_LABEL[status]}`}
+              title={`WebSocket ${STATUS_LABEL[status]}`}
+              style={{
+                width: 8,
+                height: 8,
+                borderRadius: 4,
+                background: STATUS_COLOR[status],
+                display: "inline-block",
+                flexShrink: 0,
+              }}
+            />
             <strong style={{ fontSize: 14 }}>GRACE-2</strong>
             <span
               data-testid="grace2-build-version"
@@ -3239,32 +3281,16 @@ export function Chat({
               {BUILD_VERSION}
             </span>
           </span>
-          {/* Spacer — pushes the connection status to the RIGHT edge (F45). */}
+          {/* Spacer — pushes the header-right controls to the RIGHT edge (F45). */}
           <span style={{ flex: 1 }} />
-          {/* F45 RIGHT group — connection-status indicator. */}
-          <span
-            data-testid="connection-status"
-            title={`WebSocket ${STATUS_LABEL[status]}`}
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 6,
-              fontSize: 11,
-              color: STATUS_COLOR[status],
-              marginLeft: "auto",
-            }}
-          >
-            <span
-              style={{
-                width: 8,
-                height: 8,
-                borderRadius: 4,
-                background: STATUS_COLOR[status],
-                display: "inline-block",
-              }}
-            />
-            {STATUS_LABEL[status]}
-          </span>
+          {/* NATE 2026-06-17 chat-chrome rework (item 1) — the model selector
+              moved OUT of the composer into the header status area (where the
+              connection text used to be). Icon-only Brain trigger; Chat owns the
+              selection + threads it into the controlled ChatInput below. */}
+          <ModelSelectorButton
+            selectedId={selectedModelId}
+            onChange={setSelectedModelId}
+          />
           {/* ux-batch-1 J1 — the large/normal width TOGGLE was removed in
               favour of a drag-to-resize left border (the
               grace2-chat-resize-handle above). */}
@@ -3539,6 +3565,15 @@ export function Chat({
           /* job-0278 — 16px on mobile prevents the iOS focus auto-zoom;
              desktop keeps the historical 14px default. */
           fontSizePx={mobile ? 16 : 14}
+          /* NATE 2026-06-17 chat-chrome rework (item 1) — controlled model:
+             the header's ModelSelectorButton owns selection. Passing modelId
+             hides ChatInput's in-composer model trigger and mirrors the model
+             for the send-button tint + the model_id carried on submit.
+             onModelChange keeps Chat's copy in sync for any uncontrolled-path
+             change (the composer trigger is hidden in controlled mode, so this
+             is belt-and-suspenders). */
+          modelId={selectedModelId}
+          onModelChange={setSelectedModelId}
         />
       </div>
 

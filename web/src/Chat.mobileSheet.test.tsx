@@ -1046,6 +1046,73 @@ describe("Chat.tsx header layout (F45, job-0325)", () => {
   });
 });
 
+// --- NATE 2026-06-17 chat-chrome rework (items 1 + 2 + 6) ----------------- //
+//
+// The model selector moved into the DESKTOP header (icon-only Brain trigger),
+// the connection signal was reduced to a small colored DOT placed to the LEFT
+// of the wordmark, and the desktop panel runs flush to the window bottom.
+//
+// Chat cannot mount in happy-dom (it opens a real WebSocket), so — consistent
+// with the rest of this file — these structural guarantees are asserted by
+// inspecting the Chat.tsx source string.
+
+describe("Chat.tsx desktop chrome rework (model button + connection dot)", () => {
+  // The DESKTOP header is the SECOND grace2-chat-tab-left in source (the first
+  // is the mobile MobileSheetHeaderRow). Slice from there to the end of the
+  // desktop <header> so the assertions below target the desktop chrome only.
+  const desktopHeaderStart = CHAT_SRC.indexOf(
+    'data-testid="grace2-chat-tab-left"',
+    CHAT_SRC.indexOf('data-testid="grace2-chat-tab-left"') + 1,
+  );
+  const desktopHeaderSrc = CHAT_SRC.slice(
+    desktopHeaderStart,
+    desktopHeaderStart + 2000,
+  );
+
+  it("imports ModelSelectorButton from the ChatInput module", () => {
+    expect(CHAT_SRC).toMatch(
+      /import\s*\{[\s\S]*?ModelSelectorButton[\s\S]*?\}\s*from\s*["']\.\/components\/ChatInput["']/,
+    );
+  });
+
+  it("seeds the selected model from persistence (loadPersistedModelId ?? DEFAULT_MODEL_ID)", () => {
+    expect(CHAT_SRC).toMatch(
+      /useState<string>\(\s*\(\)\s*=>\s*loadPersistedModelId\(\)\s*\?\?\s*DEFAULT_MODEL_ID/,
+    );
+  });
+
+  it("renders the icon-only ModelSelectorButton in the desktop header, wired to selectedModelId", () => {
+    expect(desktopHeaderSrc).toContain("<ModelSelectorButton");
+    expect(desktopHeaderSrc).toMatch(
+      /<ModelSelectorButton[\s\S]*?selectedId=\{selectedModelId\}/,
+    );
+    expect(desktopHeaderSrc).toMatch(
+      /<ModelSelectorButton[\s\S]*?onChange=\{setSelectedModelId\}/,
+    );
+  });
+
+  it("reduces the desktop connection signal to a DOT placed LEFT of the GRACE-2 wordmark", () => {
+    // Inside the desktop LEFT tab group, the connection-status element appears
+    // BEFORE the GRACE-2 wordmark (item 2: dot to the left of the wordmark).
+    const dotIdx = desktopHeaderSrc.indexOf('data-testid="connection-status"');
+    const wordmarkIdx = desktopHeaderSrc.indexOf("GRACE-2</strong>");
+    expect(dotIdx).toBeGreaterThan(-1);
+    expect(wordmarkIdx).toBeGreaterThan(-1);
+    expect(dotIdx).toBeLessThan(wordmarkIdx);
+    // The dot keeps an accessible label/title tied to the WS status.
+    expect(desktopHeaderSrc).toMatch(
+      /connection-status[\s\S]*?aria-label=\{`WebSocket \$\{STATUS_LABEL\[status\]\}`\}/,
+    );
+  });
+
+  it("threads the controlled model id into ChatInput (modelId + onModelChange)", () => {
+    expect(CHAT_SRC).toMatch(/<ChatInput[\s\S]*?modelId=\{selectedModelId\}/);
+    expect(CHAT_SRC).toMatch(
+      /<ChatInput[\s\S]*?onModelChange=\{setSelectedModelId\}/,
+    );
+  });
+});
+
 // --- F61 (job-0330): bottom safe-area clearance --------------------------- //
 //
 // F61 — the mobile sheet floats UP off the bottom edge by the device safe-area

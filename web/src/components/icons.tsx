@@ -59,6 +59,7 @@ import {
   DiamondsFour,
   Hexagon,
   Brain,
+  FadersHorizontal,
 } from '@phosphor-icons/react';
 
 /** Shared public API for every wrapped icon in this module. */
@@ -141,3 +142,6 @@ export const IconTerrain = makeIcon(Mountains, 'IconTerrain');
 export const IconWorkspaces = makeIcon(DiamondsFour, 'IconWorkspaces');
 export const IconSandbox = makeIcon(Hexagon, 'IconSandbox');
 export const IconModel = makeIcon(Brain, 'IconModel');
+// Composer "mode" toggle (research / standard mode). Faders glyph reads as a
+// settings/mode control without the literal "Mode" text label (NATE 2026-06-17).
+export const IconMode = makeIcon(FadersHorizontal, 'IconMode');

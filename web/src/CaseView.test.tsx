@@ -89,4 +89,38 @@ describe("CaseView", () => {
     expect(crumb.style.overflow).toBe("hidden");
     expect(crumb.style.minWidth).toBe("0");
   });
+
+  // Chat-chrome rework item 7 — the RECURRING breadcrumb cutoff. The hardening:
+  //   (a) the breadcrumb card cannot exceed its rail (maxWidth:100% + border-box)
+  //   (b) the fixed leading controls (← arrow, "Cases" link, "/" separator) are
+  //       flexShrink:0 so ONLY the title flexes/ellipsizes — the browser can't
+  //       squeeze those intrinsic items and let the title overrun.
+  //   (c) the title is flex:"1 1 0" so its width seeds from leftover space, not
+  //       its long content (the flexbox-ellipsis gotcha).
+  it("breadcrumb is width-bounded and only the title flexes (cutoff hardening)", () => {
+    render(
+      <CaseView
+        caseTitle="A Very Long Case Title That Would Otherwise Hard-Clip The Breadcrumb"
+        onBack={vi.fn()}
+      />,
+    );
+    const crumb = screen.getByTestId("grace2-case-view-breadcrumb");
+    // (a) card cannot grow past the rail.
+    expect(crumb.style.maxWidth).toBe("100%");
+    expect(crumb.style.boxSizing).toBe("border-box");
+    // (b) leading controls do not shrink.
+    expect(
+      (screen.getByTestId("grace2-case-view-back") as HTMLElement).style.flexShrink,
+    ).toBe("0");
+    expect(
+      (screen.getByTestId("grace2-case-view-cases-link") as HTMLElement).style
+        .flexShrink,
+    ).toBe("0");
+    // (c) the title is the sole flex grower/shrinker, seeded from leftover space.
+    const title = screen.getByTestId("grace2-case-view-title");
+    // The flex shorthand normalizes the basis (0 → 0px); assert the grow/shrink
+    // are 1/1 and the basis is zero (so the title sizes from leftover space).
+    expect(title.style.flex).toMatch(/^1 1 0(px|%)?$/);
+    expect(title.style.minWidth).toBe("0");
+  });
 });

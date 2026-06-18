@@ -7,17 +7,28 @@
 //   2. A LEFT button row of auxiliary controls (below the textarea):
 //        - Paperclip (attach) — disabled stub; title "coming soon"
 //        - Microphone (voice) — disabled stub; title "coming soon"
-//        - Mode toggle       — disabled stub; title "coming soon"
-//        - Model selector    — Brain icon; opens an inline popover to swap the
-//                             active Bedrock model between turns
-//   3. A single square button anchored bottom-right of the wrapper:
-//        - idle  : up-arrow (↑) on a blue ground, disabled when empty
-//        - busy  : stop-square (■) on a grey ground, click emits cancel
+//        - Mode toggle       — disabled stub; ICON ONLY (Faders glyph), no
+//                              literal "Mode" text label (NATE 2026-06-17)
+//   3. A single action button anchored bottom-right of the controls row:
+//        - idle  : up-arrow (↑) on a CIRCLE ground tinted to the active
+//                  model's accent color, disabled when empty
+//        - busy  : stop-square (■) on a SQUARE ground, click emits cancel
 //        - returns to idle when the pipeline completes/cancels
 //
-// Model selector details (NATE 2026-06-17):
+// Chat-chrome rework (NATE 2026-06-17):
+//   - The MODEL SELECTOR no longer lives in the composer bottom row. It moved
+//     UP to the header status area (where the connection signal used to be) as
+//     an ICON-ONLY trigger. That trigger is the exported `ModelSelectorButton`
+//     below; the header (Chat.tsx) renders it and threads the chosen model id
+//     back into ChatInput via the controlled `modelId` / `onModelChange`
+//     props. When those props are omitted ChatInput stays UNCONTROLLED — it
+//     owns its own selection + localStorage persistence exactly as before, so
+//     existing standalone usages / tests keep working.
+//   - The model popover now portals to <body> so it floats OVER the chat
+//     window instead of being clipped by the chat panel's overflow.
 //   - The selected model id is persisted to localStorage via modelRegistry.ts.
 //   - The chat wrapper border is tinted to the active provider's accent color.
+//   - The send button itself is tinted to the active provider's accent color.
 //   - `onSubmit` receives the selected model id alongside the text so the
 //     caller (Chat.tsx) can include `model_id` on the user-message envelope.
 //
@@ -50,15 +61,18 @@
 import {
   CSSProperties,
   KeyboardEvent,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 
 import {
   IconPaperclip,
   IconMic,
+  IconMode,
   IconModel,
 } from "./icons";
 import {
@@ -110,12 +124,27 @@ export interface ChatInputProps {
    * wreck the fixed-shell layout on phones. Desktop callers omit it.
    */
   fontSizePx?: number;
+  /**
+   * Chat-chrome rework (NATE 2026-06-17) — the active model id. OPTIONAL
+   * controlled prop: when supplied (the model selector now lives in the
+   * header), ChatInput uses it for the send-button tint, the wrapper accent,
+   * and the `model_id` carried on submit, and DOES NOT render its own model
+   * trigger. When omitted, ChatInput stays uncontrolled and owns its own
+   * selection + persistence (legacy / standalone behavior).
+   */
+  modelId?: string;
+  /**
+   * Fired when the (uncontrolled) in-composer model trigger changes the
+   * model — only relevant in uncontrolled mode. Controlled callers drive
+   * selection from the header instead.
+   */
+  onModelChange?: (modelId: string) => void;
 }
 
 const MIN_HEIGHT_PX = 48;
 const DEFAULT_MAX_VH = 40;
 
-/** Square action button stack — up-arrow (↑) idle or stop-square (■) in-flight. */
+/** Action glyph stack — up-arrow (↑) idle or stop-square (■) in-flight. */
 function ActionGlyph({ state }: { state: ChatInputState }): JSX.Element {
   if (state === "in-flight") {
     // Stop-square — small solid square centered in the button.
@@ -168,6 +197,12 @@ function ActionGlyph({ state }: { state: ChatInputState }): JSX.Element {
 // ---------------------------------------------------------------------------
 // Model selector popover
 // ---------------------------------------------------------------------------
+//
+// Chat-chrome rework (NATE 2026-06-17): the popover now renders through a
+// portal to <body> and positions itself with fixed coordinates derived from
+// the anchor button's bounding rect. This lifts it OUT of the chat panel's
+// stacking/overflow context so it floats over the chat window (item 5 of the
+// rework) regardless of where the trigger lives (composer or header).
 
 interface ModelPopoverProps {
   anchorRef: React.RefObject<HTMLButtonElement>;
@@ -181,8 +216,44 @@ function ModelPopover({
   selectedId,
   onSelect,
   onClose,
-}: ModelPopoverProps): JSX.Element {
+}: ModelPopoverProps): JSX.Element | null {
   const popoverRef = useRef<HTMLDivElement | null>(null);
+  // Fixed-position coordinates computed from the anchor's bounding rect so the
+  // portal'd popover floats directly over the chat window beside its trigger.
+  const [coords, setCoords] = useState<{ top: number; left: number } | null>(
+    null,
+  );
+
+  const reposition = useCallback(() => {
+    const anchor = anchorRef.current;
+    if (!anchor) return;
+    const r = anchor.getBoundingClientRect();
+    const MENU_WIDTH = 240;
+    const GAP = 8;
+    // Prefer dropping BELOW the trigger (header placement); if that would run
+    // off the bottom of the viewport, flip ABOVE it (composer placement).
+    const estHeight = 220;
+    const below = r.bottom + GAP;
+    const dropAbove = below + estHeight > window.innerHeight;
+    const top = dropAbove ? Math.max(8, r.top - GAP - estHeight) : below;
+    // Right-align the menu to the trigger but keep it on-screen.
+    let left = r.right - MENU_WIDTH;
+    if (left < 8) left = 8;
+    if (left + MENU_WIDTH > window.innerWidth - 8) {
+      left = window.innerWidth - 8 - MENU_WIDTH;
+    }
+    setCoords({ top, left });
+  }, [anchorRef]);
+
+  useLayoutEffect(() => {
+    reposition();
+    window.addEventListener("resize", reposition);
+    window.addEventListener("scroll", reposition, true);
+    return () => {
+      window.removeEventListener("resize", reposition);
+      window.removeEventListener("scroll", reposition, true);
+    };
+  }, [reposition]);
 
   // Close on click-outside.
   useEffect(() => {
@@ -214,20 +285,26 @@ function ModelPopover({
     return acc;
   }, {});
 
+  // High z-index + fixed positioning so the menu overlays the chat window
+  // (the whole point of the portal). 9600 clears the chat panel chrome and
+  // the inline-card stack (z=50) but stays under full-screen modals (≥9500
+  // overlays use their own portals; this is intentionally just above them for
+  // a transient menu that closes on any outside interaction).
   const popoverStyle: CSSProperties = {
-    position: "absolute",
-    bottom: "calc(100% + 8px)",
-    left: 0,
-    zIndex: 2000,
+    position: "fixed",
+    top: coords?.top ?? -9999,
+    left: coords?.left ?? -9999,
+    visibility: coords ? "visible" : "hidden",
+    zIndex: 9600,
     background: "#1e1e26",
     border: "1px solid rgba(255,255,255,0.1)",
     borderRadius: 10,
     padding: "6px 0",
-    minWidth: 240,
+    width: 240,
     boxShadow: "0 8px 24px rgba(0,0,0,0.5)",
   };
 
-  return (
+  return createPortal(
     <div
       ref={popoverRef}
       data-testid="model-popover"
@@ -299,12 +376,97 @@ function ModelPopover({
           })}
         </div>
       ))}
-    </div>
+    </div>,
+    document.body,
   );
 }
 
 // ---------------------------------------------------------------------------
-// Small icon button used for left-row stubs and the model selector trigger.
+// ModelSelectorButton — icon-only model trigger for the header status area.
+// ---------------------------------------------------------------------------
+//
+// Chat-chrome rework (NATE 2026-06-17, item 1): the model button moved OUT of
+// the composer and into the header (where the connection signal used to be),
+// rendered ICON-ONLY (Brain glyph, NO model-name text). The header (Chat.tsx)
+// renders this; it owns the selection + localStorage persistence and reports
+// changes through `onChange` so the composer can mirror the active model id.
+//
+// `selectedId` is OPTIONAL controlled: when omitted the button seeds from
+// localStorage and self-manages, exactly like the old in-composer trigger.
+
+export interface ModelSelectorButtonProps {
+  /** Controlled active model id. Omit to self-manage from localStorage. */
+  selectedId?: string;
+  /** Fired with the new model id whenever the user picks a different model. */
+  onChange?: (modelId: string) => void;
+  /** Optional pixel size for the Brain icon (default 16). */
+  iconSize?: number;
+}
+
+export function ModelSelectorButton({
+  selectedId,
+  onChange,
+  iconSize = 16,
+}: ModelSelectorButtonProps): JSX.Element {
+  const [internalId, setInternalId] = useState<string>(
+    () => getModelById(loadPersistedModelId()).id,
+  );
+  const activeId = selectedId ?? internalId;
+  const activeModel = getModelById(activeId);
+  const [open, setOpen] = useState(false);
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
+
+  function handleSelect(model: ModelEntry): void {
+    if (selectedId === undefined) setInternalId(model.id);
+    persistModelId(model.id);
+    onChange?.(model.id);
+  }
+
+  return (
+    <>
+      <button
+        ref={buttonRef}
+        onClick={() => setOpen((o) => !o)}
+        title={`Model: ${activeModel.label}`}
+        aria-label={`Model: ${activeModel.label}`}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        data-testid="model-selector-button"
+        data-model-id={activeModel.id}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          width: 28,
+          height: 28,
+          borderRadius: 6,
+          border: "none",
+          padding: 0,
+          background: open ? "rgba(255,255,255,0.08)" : "transparent",
+          // Icon tints to the active provider accent so "which model" reads at
+          // a glance even without a text label.
+          color: activeModel.accentColor,
+          cursor: "pointer",
+          transition: "background 120ms ease, color 120ms ease",
+          flexShrink: 0,
+        }}
+      >
+        <IconModel size={iconSize} />
+      </button>
+      {open && (
+        <ModelPopover
+          anchorRef={buttonRef as React.RefObject<HTMLButtonElement>}
+          selectedId={activeModel.id}
+          onSelect={handleSelect}
+          onClose={() => setOpen(false)}
+        />
+      )}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Small icon button used for left-row stubs.
 // ---------------------------------------------------------------------------
 interface IconButtonProps {
   onClick?: () => void;
@@ -370,13 +532,19 @@ export function ChatInput({
   maxVh = DEFAULT_MAX_VH,
   onHeightChange,
   fontSizePx = 14,
+  modelId,
+  onModelChange,
 }: ChatInputProps): JSX.Element {
   const [draft, setDraft] = useState("");
 
-  // Model selection — load from localStorage on mount.
-  const [selectedModel, setSelectedModel] = useState<ModelEntry>(() =>
-    getModelById(loadPersistedModelId()),
+  // Model selection. Controlled when `modelId` is supplied (the selector lives
+  // in the header now); otherwise ChatInput self-manages from localStorage and
+  // renders its own in-composer trigger (legacy / standalone usage).
+  const controlled = modelId !== undefined;
+  const [internalModelId, setInternalModelId] = useState<string>(() =>
+    getModelById(loadPersistedModelId()).id,
   );
+  const selectedModel = getModelById(controlled ? modelId : internalModelId);
   const [popoverOpen, setPopoverOpen] = useState(false);
   const modelButtonRef = useRef<HTMLButtonElement | null>(null);
 
@@ -418,8 +586,9 @@ export function ChatInput({
   }, [state]);
 
   function handleModelSelect(model: ModelEntry): void {
-    setSelectedModel(model);
+    if (!controlled) setInternalModelId(model.id);
     persistModelId(model.id);
+    onModelChange?.(model.id);
   }
 
   function handleSubmit(): void {
@@ -460,33 +629,38 @@ export function ChatInput({
   }
 
   const hasText = draft.trim().length > 0;
+  const accentColor = selectedModel.accentColor;
 
   // Button state derivation:
-  //   - idle + empty             → disabled, blue (faded)
-  //   - idle + has text          → enabled, blue
+  //   - idle + empty             → disabled, accent (faded)
+  //   - idle + has text          → enabled, accent
   //   - in-flight                → enabled, grey
   //   - disabled (prop)          → forced-disabled (e.g. WS down)
   const buttonDisabled =
     disabled ||
     (state === "idle" && !hasText);
-  const buttonStyle: CSSProperties =
-    state === "in-flight"
-      ? {
-          background: buttonDisabled ? "#4a4a52" : "#6b6b76",
-          cursor: buttonDisabled ? "default" : "pointer",
-          opacity: buttonDisabled ? 0.6 : 1,
-        }
-      : {
-          background: hasText && !disabled ? "#3b82f6" : "#1e3a8a",
-          cursor: buttonDisabled ? "default" : "pointer",
-          opacity: buttonDisabled ? 0.45 : 1,
-        };
+  // Chat-chrome rework (NATE 2026-06-17, item 3):
+  //   - SEND  state → CIRCLE (borderRadius 50%), tinted to the model accent.
+  //   - STOP  state → SQUARE (borderRadius 8), neutral grey ground.
+  const isStop = state === "in-flight";
+  const buttonStyle: CSSProperties = isStop
+    ? {
+        borderRadius: 8,
+        background: buttonDisabled ? "#4a4a52" : "#6b6b76",
+        cursor: buttonDisabled ? "default" : "pointer",
+        opacity: buttonDisabled ? 0.6 : 1,
+      }
+    : {
+        borderRadius: "50%",
+        background: accentColor,
+        cursor: buttonDisabled ? "default" : "pointer",
+        opacity: buttonDisabled ? 0.45 : 1,
+      };
 
   // The wrapper border is tinted to the active model's provider accent color.
   // Use a low-opacity tint at rest and a higher-opacity tint on focus (via
   // CSS variable approach with inline style). The provider tint also provides
   // ambient "which model is active" signal at a glance.
-  const accentColor = selectedModel.accentColor;
   const wrapperStyle: CSSProperties = {
     display: "flex",
     flexDirection: "column",
@@ -508,17 +682,6 @@ export function ChatInput({
       data-model-id={selectedModel.id}
       style={wrapperStyle}
     >
-      {/* Model popover (rendered inside wrapper so it participates in the
-          stacking context; positioned absolute relative to wrapper) */}
-      {popoverOpen && (
-        <ModelPopover
-          anchorRef={modelButtonRef as React.RefObject<HTMLButtonElement>}
-          selectedId={selectedModel.id}
-          onSelect={handleModelSelect}
-          onClose={() => setPopoverOpen(false)}
-        />
-      )}
-
       {/* Textarea (full width) — all controls live on the bottom row below */}
       <textarea
         ref={textareaRef}
@@ -546,7 +709,8 @@ export function ChatInput({
         }}
       />
 
-      {/* Left button row: stubs + model selector */}
+      {/* Left button row: attach + mic + mode stubs (model selector moved to
+          the header per the chat-chrome rework). */}
       <div
         data-testid="chat-input-left-row"
         style={{
@@ -574,92 +738,86 @@ export function ChatInput({
           <IconMic size={15} />
         </LeftIconButton>
 
-        {/* Mode toggle — disabled stub */}
+        {/* Mode toggle — disabled stub. ICON ONLY now (Faders glyph), no
+            literal "Mode" text label (NATE 2026-06-17, item 4). */}
         <LeftIconButton
           disabled
           title="Research mode toggle (coming soon)"
           data-testid="chat-input-mode"
         >
-          {/* A small "M" label so the stub looks intentional without a dedicated icon */}
-          <span
-            aria-hidden="true"
-            style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.03em" }}
-          >
-            Mode
-          </span>
+          <IconMode size={15} />
         </LeftIconButton>
 
-        {/* Subtle divider */}
-        <span
-          aria-hidden="true"
-          style={{
-            width: 1,
-            height: 14,
-            background: "rgba(255,255,255,0.1)",
-            margin: "0 4px",
-            flexShrink: 0,
-          }}
-        />
-
-        {/* Model selector trigger — we need the button's ref for popover
-            positioning, so render the button directly here rather than
-            through LeftIconButton (which is not a forwardRef component). */}
-        <button
-          ref={modelButtonRef}
-          onClick={() => setPopoverOpen((o) => !o)}
-          title={`Model: ${selectedModel.label}`}
-          aria-label={`Model: ${selectedModel.label}`}
-          data-testid="chat-input-model"
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            width: 28,
-            height: 28,
-            borderRadius: 6,
-            border: "none",
-            padding: 0,
-            background: popoverOpen ? "rgba(255,255,255,0.08)" : "transparent",
-            color: popoverOpen ? accentColor : "rgba(255,255,255,0.5)",
-            cursor: "pointer",
-            transition: "background 120ms ease, color 120ms ease",
-            flexShrink: 0,
-          }}
-        >
-          <IconModel size={15} />
-        </button>
-
-        {/* Active model label (dim, right of the icon) */}
-        <span
-          style={{
-            fontSize: 11,
-            color: accentColor,
-            opacity: 0.75,
-            fontWeight: 500,
-            letterSpacing: "0.01em",
-            userSelect: "none",
-            pointerEvents: "none",
-          }}
-        >
-          {selectedModel.label}
-        </span>
+        {/* Legacy / standalone mode ONLY: when ChatInput is UNCONTROLLED (no
+            `modelId` prop), the model selector still lives in the composer so
+            existing standalone usages keep a way to switch models. When the
+            header drives selection (controlled), this is hidden — the header's
+            ModelSelectorButton is the single trigger (item 1). */}
+        {!controlled && (
+          <>
+            {/* Subtle divider */}
+            <span
+              aria-hidden="true"
+              style={{
+                width: 1,
+                height: 14,
+                background: "rgba(255,255,255,0.1)",
+                margin: "0 4px",
+                flexShrink: 0,
+              }}
+            />
+            <button
+              ref={modelButtonRef}
+              onClick={() => setPopoverOpen((o) => !o)}
+              title={`Model: ${selectedModel.label}`}
+              aria-label={`Model: ${selectedModel.label}`}
+              data-testid="chat-input-model"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                width: 28,
+                height: 28,
+                borderRadius: 6,
+                border: "none",
+                padding: 0,
+                background: popoverOpen ? "rgba(255,255,255,0.08)" : "transparent",
+                color: accentColor,
+                cursor: "pointer",
+                transition: "background 120ms ease, color 120ms ease",
+                flexShrink: 0,
+              }}
+            >
+              <IconModel size={15} />
+            </button>
+            {popoverOpen && (
+              <ModelPopover
+                anchorRef={modelButtonRef as React.RefObject<HTMLButtonElement>}
+                selectedId={selectedModel.id}
+                onSelect={handleModelSelect}
+                onClose={() => setPopoverOpen(false)}
+              />
+            )}
+          </>
+        )}
 
         {/* Spacer pushes the send button to the right edge so the left
             controls sit INLINE with send (Claude-Code composer), NATE 2026-06-17. */}
         <div style={{ flex: 1 }} />
 
-        {/* Send / stop — inline on the controls row, right-aligned. */}
+        {/* Send / stop — inline on the controls row, right-aligned. Circle in
+            send state (accent-tinted), square in stop state (item 3). */}
         <button
           data-testid="chat-input-action"
           data-action-state={state}
-          aria-label={state === "in-flight" ? "Stop response" : "Send message"}
+          data-shape={isStop ? "square" : "circle"}
+          aria-label={isStop ? "Stop response" : "Send message"}
           onClick={onButtonClick}
           disabled={buttonDisabled}
           style={{
             flex: "0 0 auto",
             width: 32,
             height: 32,
-            borderRadius: 8,
             border: "none",
             color: "#fff",
             display: "flex",
