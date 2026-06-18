@@ -1,5 +1,13 @@
 # Project State
 
+> 🟢 **RESUME (2026-06-17):** a long session was cleared/compacted. **Read
+> `reports/SESSION_HANDOFF.md` FIRST** for the live in-flight state + immediate next
+> moves. TL;DR: one background task in flight (SWMM-vs-SFINCS engine verification
+> `wf_88798825-738`; North Star build gated on its verdict); Wave 3 (auto-stop/wake)
+> + Wave 4 (QGIS worker) authorized + queued; agent box downsized to t3.large;
+> `mongo_query` removed (committed `8e3f8e8`, deploy with the Wave-3 agent change).
+> Two open questions for NATE are in the handoff. Greet **NATE ALMANZA**; no emojis.
+
 > ⚠️ **The header below + most sections are HISTORICAL (frozen ~sprint-05, 2026-06-06).**
 > The single-paragraph CURRENT TRUTH block immediately under this banner supersedes them.
 > The detailed historical sections are retained for context but are NOT current.
