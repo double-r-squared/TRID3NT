@@ -26,6 +26,16 @@ output "ecr_repository_url_swmm" {
   value       = aws_ecr_repository.swmm.repository_url
 }
 
+output "job_definition_name_sfincs_quadtree" {
+  description = "Name of the combined coastal quadtree+SnapWave Batch job definition. Set GRACE2_AWS_BATCH_JOB_DEF_SFINCS_QUADTREE to this value on the agent."
+  value       = aws_batch_job_definition.sfincs_quadtree.name
+}
+
+output "ecr_repository_url_sfincs_quadtree" {
+  description = "Full ECR repository URL for the combined coastal quadtree worker image. Build+push base for services/workers/sfincs_deckbuilder/Dockerfile."
+  value       = aws_ecr_repository.sfincs_quadtree.repository_url
+}
+
 output "compute_environment_arn" {
   description = "ARN of the Batch compute environment. Reference this when adding additional job queues or compute environments in future."
   value       = aws_batch_compute_environment.sfincs_spot.arn
