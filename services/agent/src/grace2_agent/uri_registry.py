@@ -128,11 +128,14 @@ RESOLVABLE_URI_PARAMS: frozenset[str] = frozenset(
     }
 )
 
-#: gs:// bucket-name prefixes we treat as GRACE-managed: unknown URIs inside
-#: these buckets with no plausible registered match are REJECTED (branch 4)
-#: because nothing writes there except our own tools. Override via env
+#: Bucket-name prefixes we treat as GRACE-managed: unknown URIs inside these
+#: buckets with no plausible registered match are REJECTED (branch 4) because
+#: nothing writes there except our own tools. GCP is decommissioned, so the
+#: AWS prefix (``grace2-hazard-``, matching the S3 cache/runs buckets) is the
+#: live one; the legacy GCP prefix (``grace-2-hazard-prod-``) is retained so
+#: any lingering gs:// reference is still recognized. Override via env
 #: ``GRACE2_MANAGED_BUCKET_PREFIXES`` (comma-separated).
-_DEFAULT_MANAGED_BUCKET_PREFIXES = ("grace-2-hazard-prod-",)
+_DEFAULT_MANAGED_BUCKET_PREFIXES = ("grace2-hazard-", "grace-2-hazard-prod-")
 
 #: Minimum shared basename-stem prefix (chars) for the hash-prefix fuzzy
 #: branch. The job-0257 evidence shows ~14 hex chars survive before the tail

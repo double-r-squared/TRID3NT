@@ -240,7 +240,7 @@ def test_read_through_hit_returns_bytes_and_skips_fetch_fn(fake_gcs):
 
     assert result.hit is True
     assert result.data == b"cached-payload"
-    assert result.uri == f"gs://grace-2-hazard-prod-cache/{path}"
+    assert result.uri == f"gs://grace2-hazard-cache-226996537797/{path}"
     assert invoked["n"] == 0  # fetch_fn not invoked on hit
 
 
@@ -267,9 +267,9 @@ def test_read_through_miss_writes_with_custom_time_and_cache_control(fake_gcs):
 
     assert result.hit is False
     assert result.data == b"freshly-fetched"
-    assert result.uri == f"gs://grace-2-hazard-prod-cache/{expected_path}"
+    assert result.uri == f"gs://grace2-hazard-cache-226996537797/{expected_path}"
     # FR-DC-3: customTime set on write so the lifecycle policy can evict.
-    bucket = fake_gcs.bucket("grace-2-hazard-prod-cache")
+    bucket = fake_gcs.bucket("grace2-hazard-cache-226996537797")
     assert bucket.last_blob is not None
     assert bucket.last_blob.custom_time == pinned  # datetime, not isoformat string (OQ-33 hotfix)
     # Cache-Control reflects the TTL class.
@@ -519,7 +519,7 @@ def test_oq33_customtime_is_datetime_not_isoformat_string_regression():
         "layer=cache shim: write-on-miss path did not execute; "
         "OQ-33 regression test cannot exercise blob.custom_time setter."
     )
-    bucket = strict_gcs.bucket("grace-2-hazard-prod-cache")
+    bucket = strict_gcs.bucket("grace2-hazard-cache-226996537797")
     assert bucket.last_blob is not None, (
         "layer=test fake: no blob recorded; cache shim did not call "
         "bucket_obj.blob(path)."

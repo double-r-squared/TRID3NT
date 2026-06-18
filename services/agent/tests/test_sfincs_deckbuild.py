@@ -346,8 +346,11 @@ def test_deckbuild_inert_when_jobdef_unset(reset_seams, monkeypatch) -> None:
 
 def test_deckbuild_inert_when_backend_not_aws_batch(reset_seams, monkeypatch) -> None:
     """The deck-build is Batch-only (GPL isolated); a non-aws-batch backend must
-    NOT silently do nothing — it raises a typed DeckBuildError."""
-    monkeypatch.delenv("GRACE2_SOLVER_BACKEND", raising=False)  # default gcp-workflows
+    NOT silently do nothing — it raises a typed DeckBuildError.
+
+    GCP decommissioned: the unset default is now aws-batch, so pin a non-aws
+    backend (legacy gcp-workflows) explicitly to exercise the guard."""
+    monkeypatch.setenv("GRACE2_SOLVER_BACKEND", "gcp-workflows")  # non-aws-batch
     monkeypatch.setenv("GRACE2_RUNS_BUCKET", "test-runs-bucket")
     monkeypatch.setenv("GRACE2_AWS_BATCH_QUEUE", "q")
     monkeypatch.setenv("GRACE2_AWS_BATCH_JOB_DEF_SFINCS_DECKBUILDER", "jd:1")

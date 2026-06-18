@@ -63,9 +63,9 @@ __all__ = [
 
 logger = logging.getLogger("grace2_agent.tools.cache")
 
-#: Production cache bucket name, provisioned by job-0031.
-#: Override via env var ``GRACE2_CACHE_BUCKET`` for non-prod runs.
-CACHE_BUCKET = "grace-2-hazard-prod-cache"
+#: Production cache bucket name (AWS S3). Override via env var
+#: ``GRACE2_CACHE_BUCKET`` for non-prod runs.
+CACHE_BUCKET = "grace2-hazard-cache-226996537797"
 
 #: Truncation length for the sha256 hex digest. 32 hex chars = 128 bits of
 #: collision resistance — birthday-bound probability of collision after 2^64
@@ -217,14 +217,15 @@ def _gs_uri(bucket: str, path: str) -> str:
 
 
 def storage_scheme() -> str:
-    """Object-store scheme for cache artifacts (sprint-14-aws job-0289).
+    """Object-store scheme for cache artifacts (AWS S3 default).
 
-    ``GRACE2_STORAGE_BACKEND`` = ``s3``/``aws`` -> ``s3``; anything else
-    (default) -> ``gs``. Read at call time so an AWS deploy / run-local env
-    injection takes effect without re-import.
+    GCP is decommissioned. ``GRACE2_STORAGE_BACKEND`` unset (or ``s3``/``aws``)
+    -> ``s3``; only an explicit legacy ``gcs``/``gcp`` still maps to ``gs`` (the
+    duck-typed injected-client test seam). Read at call time so an env injection
+    takes effect without re-import.
     """
-    b = (os.environ.get("GRACE2_STORAGE_BACKEND") or "gcs").strip().lower()
-    return "s3" if b in {"s3", "aws"} else "gs"
+    b = (os.environ.get("GRACE2_STORAGE_BACKEND") or "s3").strip().lower()
+    return "gs" if b in {"gcs", "gcp", "gs"} else "s3"
 
 
 def _obj_uri(bucket: str, path: str) -> str:
@@ -389,29 +390,31 @@ def read_through(
 
     key = compute_cache_key(source_id, params, metadata.ttl_class, now=now)
     path = cache_path(metadata.source_class, metadata.ttl_class, key, ext)
-    uri = _obj_uri(bucket, path)
 
-    # sprint-14-aws (job-0289): on AWS the cache lives in S3. Route the whole
-    # read-through through fsspec (s3fs) and skip the GCS-specific path below.
-    if storage_scheme() == "s3" and storage_client is None:
+    # GCP is decommissioned (job — GCP teardown): on AWS the cache lives in S3.
+    # The production path (no injected client) routes the whole read-through
+    # through boto3 and mints an ``s3://`` URI. The ``from google.cloud import
+    # storage`` default-client builder is GONE — google-cloud-storage is no
+    # longer an agent dependency.
+    if storage_client is None:
+        uri = f"s3://{bucket}/{path}"
         return _read_through_s3(uri, fetch_fn, force_refresh, metadata, key, ext)
 
-    # Lazy import so test environments that don't have google-cloud-storage
-    # (or have it stubbed) don't pay the import cost at module load.
-    # sprint-14-aws (job-0288c): the object-store cache is BEST-EFFORT. On AWS /
-    # run-local there are no GCP credentials, so ``storage.Client()`` raises
-    # DefaultCredentialsError (and any read/write may fail on transient I/O).
-    # Degrade gracefully: treat a storage failure as a cache miss, fetch fresh
-    # from the source API, and return the data UNcached (uri stays the computed
-    # gs:// string so callers' ``assert result.uri is not None`` still holds).
-    # The Gemini/GCP happy path is unchanged. Full GCS->S3 swap is job-0289.
-    try:
-        if storage_client is None:
-            from google.cloud import storage  # type: ignore[import-not-found]
+    # Injected-client path (unit-test seam only): the URI scheme follows the
+    # duck-typed in-memory double the test supplies. Tests model the historical
+    # GCS object-store double (``.bucket()`` -> ``.blob()``), so the URI is
+    # ``gs://`` here. Production never injects a client; this branch is dead at
+    # runtime.
+    uri = f"gs://{bucket}/{path}"
 
-            storage_client = storage.Client(
-                project=os.environ.get("GOOGLE_CLOUD_PROJECT", "grace-2-hazard-prod")
-            )
+    # Injected-client path: a duck-typed object-store client (``.bucket()`` ->
+    # ``.blob()`` with ``exists()``/``download_as_bytes()``/``upload_from_string()``
+    # /``custom_time``/``cache_control``). This is the unit-test seam only — the
+    # tests supply an in-memory double; production never injects a client. No
+    # GCP SDK is imported here. Best-effort: any failure degrades to fetch-
+    # fresh-uncached (uri stays the computed string so callers' non-None
+    # assertions hold).
+    try:
         bucket_obj = storage_client.bucket(bucket)
         blob = bucket_obj.blob(path)
 

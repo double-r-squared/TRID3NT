@@ -137,92 +137,13 @@ async def test_no_mcp_stdio_returns_prebound_or_none():
         set_persistence(None)
 
 
-@pytest.mark.asyncio
-async def test_mcp_stdio_1_attempts_connection():
-    """GRACE2_MONGO_MCP_STDIO=1 triggers MCPClient.start and returns Persistence.
-
-    The MCP transport is mocked — no real subprocess is spawned, no Atlas
-    connection is attempted.  This test verifies only that the correct code
-    path is taken: ``MCPClient.start`` is called with the SRV string, and
-    the returned ``Persistence`` wraps the mocked client.
-    """
-    set_persistence(None)
-    mock_client = _MockMCPClient()
-    fake_srv = "mongodb+srv://test:test@cluster.example.net/"
-
-    try:
-        with patch.dict(os.environ, {"GRACE2_MONGO_MCP_STDIO": "1"}, clear=False):
-            # server.py does a local import inside the if-branch:
-            #   from .mcp import MCPClient, fetch_srv_from_secret_manager
-            # Patch the mcp module attributes so the local import gets the mock.
-            with patch(
-                "grace2_agent.mcp.fetch_srv_from_secret_manager",
-                return_value=fake_srv,
-            ) as mock_fetch_srv:
-                with patch(
-                    "grace2_agent.mcp.MCPClient",
-                ) as mock_client_cls:
-                    # MCPClient.start is a classmethod coroutine.
-                    mock_client_cls.start = AsyncMock(return_value=mock_client)
-
-                    result = await init_persistence_from_env()
-
-        # Verify the SRV was fetched from Secret Manager.
-        mock_fetch_srv.assert_called_once()
-
-        # Verify MCPClient.start was called with the SRV.
-        mock_client_cls.start.assert_awaited_once_with(fake_srv)
-
-        # Verify Persistence was constructed and bound.
-        assert result is not None
-        assert isinstance(result, Persistence)
-        assert get_persistence() is result
-
-    finally:
-        set_persistence(None)
-
-
-@pytest.mark.asyncio
-async def test_mcp_stdio_1_start_failure_does_not_crash_server():
-    """MCPClient.start failure is caught by run_server; agent starts anyway.
-
-    This mirrors the ``try/except Exception`` around ``init_persistence_from_env``
-    in ``run_server`` (server.py).  We call the guard directly and verify
-    the exception is swallowed: the Persistence singleton stays None and no
-    exception propagates.
-    """
-    from grace2_agent import server as _server_module
-
-    set_persistence(None)
-    logged_warnings: list[str] = []
-
-    class _CapturingLogger:
-        def warning(self, msg, *args, **kwargs):
-            logged_warnings.append(msg % args if args else msg)
-
-    try:
-        with patch.dict(os.environ, {"GRACE2_MONGO_MCP_STDIO": "1"}, clear=False):
-            # server.py does a local import: from .mcp import MCPClient, fetch_srv_from_secret_manager
-            # Patch the mcp module attribute that server.py binds at import time.
-            with patch(
-                "grace2_agent.mcp.fetch_srv_from_secret_manager",
-                side_effect=RuntimeError("Secret Manager unavailable"),
-            ):
-                # Replicate run_server's guard around init_persistence_from_env.
-                try:
-                    await init_persistence_from_env()
-                except Exception as exc:
-                    logged_warnings.append(
-                        f"Persistence init failed (continuing without MCP): {exc}"
-                    )
-
-        # Singleton should remain unbound — callers must handle None.
-        assert get_persistence() is None
-        # The error was captured (not re-raised).
-        assert any("Persistence init failed" in w or "Secret Manager" in w for w in logged_warnings)
-
-    finally:
-        set_persistence(None)
+# GCP decommissioned: the live MongoDB-MCP (Atlas) stdio bootstrap was removed
+# from ``init_persistence_from_env`` along with ``grace2_agent.mcp`` (it relied
+# on GCP Secret Manager for the SRV). The two tests that exercised the
+# ``GRACE2_MONGO_MCP_STDIO=1`` -> ``MCPClient.start`` path are gone; prod
+# persistence on AWS is the file / DynamoDB backend bound at startup. The
+# ``MCPClientProtocol`` seam (below) stays as the abstract surface DynamoDB and
+# the file backend implement.
 
 
 def test_mcp_client_protocol_compatibility():

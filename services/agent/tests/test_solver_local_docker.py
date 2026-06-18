@@ -47,6 +47,7 @@ from botocore.exceptions import ClientError
 import grace2_agent.tools.solver as solver_mod
 from grace2_agent.tools.solver import (
     LOCAL_DOCKER_WORKFLOW_NAME,
+    SOLVER_BACKEND_AWS_BATCH,
     SOLVER_BACKEND_GCP_WORKFLOWS,
     SOLVER_BACKEND_LOCAL_DOCKER,
     SolverDispatchError,
@@ -274,16 +275,18 @@ def _wait_for_completion_object(
 # --------------------------------------------------------------------------- #
 
 
-def test_solver_backend_defaults_to_gcp_workflows(
+def test_solver_backend_defaults_to_aws_batch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # GCP decommissioned: the unset default is now aws-batch.
     monkeypatch.delenv("GRACE2_SOLVER_BACKEND", raising=False)
-    assert solver_backend() == SOLVER_BACKEND_GCP_WORKFLOWS
+    assert solver_backend() == SOLVER_BACKEND_AWS_BATCH
+    # Legacy value still honored on exact match (duck-typed test seam).
     monkeypatch.setenv("GRACE2_SOLVER_BACKEND", "gcp-workflows")
     assert solver_backend() == SOLVER_BACKEND_GCP_WORKFLOWS
     # Unknown values fall back to the default (never accidentally local).
-    monkeypatch.setenv("GRACE2_SOLVER_BACKEND", "aws-batch-someday")
-    assert solver_backend() == SOLVER_BACKEND_GCP_WORKFLOWS
+    monkeypatch.setenv("GRACE2_SOLVER_BACKEND", "gcp-workflows-someday")
+    assert solver_backend() == SOLVER_BACKEND_AWS_BATCH
     monkeypatch.setenv("GRACE2_SOLVER_BACKEND", "local-docker")
     assert solver_backend() == SOLVER_BACKEND_LOCAL_DOCKER
 
@@ -615,15 +618,21 @@ async def test_local_wait_emits_progress_via_emitter_binding(
 def test_default_setup_uri_is_scheme_aware(monkeypatch: pytest.MonkeyPatch) -> None:
     from grace2_agent.workflows.sfincs_builder import _default_setup_uri
 
+    # Unset -> S3 default after the GCP decommission.
     monkeypatch.delenv("GRACE2_STORAGE_BACKEND", raising=False)
     monkeypatch.setenv("GRACE2_CACHE_BUCKET", "cache-bkt")
     assert _default_setup_uri((0, 0, 1, 1)).startswith(
-        "gs://cache-bkt/cache/static-30d/sfincs_setup/"
+        "s3://cache-bkt/cache/static-30d/sfincs_setup/"
     )
     monkeypatch.setenv("GRACE2_STORAGE_BACKEND", "s3")
     uri = _default_setup_uri((0, 0, 1, 1))
     assert uri.startswith("s3://cache-bkt/cache/static-30d/sfincs_setup/")
     assert uri.endswith("/manifest.json")
+    # Explicit legacy override still maps to gs:// (duck-typed test seam).
+    monkeypatch.setenv("GRACE2_STORAGE_BACKEND", "gcs")
+    assert _default_setup_uri((0, 0, 1, 1)).startswith(
+        "gs://cache-bkt/cache/static-30d/sfincs_setup/"
+    )
 
 
 def test_build_sfincs_model_uploads_deck_via_boto3_under_s3(

@@ -163,9 +163,10 @@ def batch_env(monkeypatch: pytest.MonkeyPatch):
 # --------------------------------------------------------------------------- #
 
 
-def test_backend_unset_is_gcp_workflows(reset_seams, monkeypatch) -> None:
+def test_backend_unset_is_aws_batch(reset_seams, monkeypatch) -> None:
+    # GCP decommissioned: the unset default is now aws-batch.
     monkeypatch.delenv("GRACE2_SOLVER_BACKEND", raising=False)
-    assert solver_backend() == SOLVER_BACKEND_GCP_WORKFLOWS
+    assert solver_backend() == SOLVER_BACKEND_AWS_BATCH
 
 
 def test_backend_aws_batch_exact_match(reset_seams, monkeypatch) -> None:
@@ -174,7 +175,14 @@ def test_backend_aws_batch_exact_match(reset_seams, monkeypatch) -> None:
 
 
 def test_backend_unknown_value_falls_through(reset_seams, monkeypatch) -> None:
-    monkeypatch.setenv("GRACE2_SOLVER_BACKEND", "aws-batch-typo")
+    # Unknown/typo values now fall through to the aws-batch default.
+    monkeypatch.setenv("GRACE2_SOLVER_BACKEND", "gcp-workflows-typo")
+    assert solver_backend() == SOLVER_BACKEND_AWS_BATCH
+
+
+def test_backend_legacy_gcp_workflows_exact_match(reset_seams, monkeypatch) -> None:
+    # The legacy value is still honored on exact match (duck-typed test seam).
+    monkeypatch.setenv("GRACE2_SOLVER_BACKEND", "gcp-workflows")
     assert solver_backend() == SOLVER_BACKEND_GCP_WORKFLOWS
 
 

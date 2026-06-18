@@ -464,20 +464,20 @@ DOCKER_KILL_TIMEOUT_S: float = 25.0
 def solver_backend() -> str:
     """Return the active solver backend (job-0291 dispatch seam).
 
+    GCP is decommissioned: the default backend is now ``aws-batch``.
     ``GRACE2_SOLVER_BACKEND=local-docker`` → ``"local-docker"``;
-    ``=aws-batch`` → ``"aws-batch"`` (sprint-16, exact match only); anything
-    else (unset, ``gcp-workflows``, typos) → ``"gcp-workflows"`` so the
-    default path stays byte-identical. Read at call time so an AWS deploy /
-    test env injection takes effect without re-import (mirrors
-    ``cache.storage_scheme``). The aws-batch branch is additive — an unknown
-    value still falls through to the safe default.
+    ``=gcp-workflows`` → ``"gcp-workflows"`` (legacy, exact match only — the
+    Cloud Workflows substrate is gone but the value is still honored for the
+    duck-typed test seam); anything else (unset, ``aws-batch``, typos) →
+    ``"aws-batch"``. Read at call time so a systemd / test env injection takes
+    effect without re-import (mirrors ``cache.storage_scheme``).
     """
     b = (os.environ.get("GRACE2_SOLVER_BACKEND") or "").strip().lower()
     if b == SOLVER_BACKEND_LOCAL_DOCKER:
         return SOLVER_BACKEND_LOCAL_DOCKER
-    if b == SOLVER_BACKEND_AWS_BATCH:
-        return SOLVER_BACKEND_AWS_BATCH
-    return SOLVER_BACKEND_GCP_WORKFLOWS
+    if b == SOLVER_BACKEND_GCP_WORKFLOWS:
+        return SOLVER_BACKEND_GCP_WORKFLOWS
+    return SOLVER_BACKEND_AWS_BATCH
 
 
 #: Map the kickoff-named compute classes (small/medium/large) onto the
@@ -806,10 +806,13 @@ def _get_s3_client() -> Any:
 
 def _get_runs_bucket() -> str:
     """Return the overridden runs bucket or the env-default
-    (``GRACE2_RUNS_BUCKET`` if set, else ``grace-2-hazard-prod-runs``)."""
+    (``GRACE2_RUNS_BUCKET`` if set, else the AWS runs bucket).
+
+    GCP is decommissioned: the default is the AWS S3 runs bucket. Production
+    sets ``GRACE2_RUNS_BUCKET`` explicitly via systemd (see aws-batch RUNBOOK)."""
     if _RUNS_BUCKET is not None:
         return _RUNS_BUCKET
-    return os.environ.get("GRACE2_RUNS_BUCKET", "grace-2-hazard-prod-runs")
+    return os.environ.get("GRACE2_RUNS_BUCKET", "grace2-hazard-runs-226996537797")
 
 
 def _get_local_runs_bucket() -> str:

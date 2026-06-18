@@ -160,12 +160,14 @@ _DEFAULT_MAX_TOKENS = 8192
 
 
 def model_provider() -> str:
-    """Resolve the active model provider (``vertex`` default, ``bedrock`` opt-in).
+    """Resolve the active model provider (``bedrock`` default).
 
-    Read at call time so a Cloud Run / ECS env injection (or a local-run
-    ``MODEL_PROVIDER=bedrock``) takes effect without re-import.
+    GCP/Vertex is decommissioned: the agent runs on Amazon Bedrock. The
+    ``MODEL_PROVIDER`` seam is retained — only the default flips from ``vertex``
+    to ``bedrock`` — so an explicit override is still honored. Read at call time
+    so an ECS / systemd env injection takes effect without re-import.
     """
-    return (os.environ.get("MODEL_PROVIDER") or "vertex").strip().lower()
+    return (os.environ.get("MODEL_PROVIDER") or "bedrock").strip().lower()
 
 
 def bedrock_model_id() -> str:

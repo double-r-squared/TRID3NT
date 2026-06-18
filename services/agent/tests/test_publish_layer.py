@@ -54,6 +54,19 @@ except Exception:
     _RUN_V2_AVAILABLE = False
 
 
+@pytest.fixture(autouse=True)
+def _force_legacy_gcs_publish_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Exercise the legacy GCP QGIS-worker dispatch path.
+
+    GCP is decommissioned and the default storage scheme is now ``s3``; under
+    ``s3`` ``publish_layer`` short-circuits raster tiling to the AWS TiTiler
+    path (raising "tile publishing not configured" when ``GRACE2_TILE_SERVER_BASE``
+    is unset). These tests validate the QGIS-Server worker dispatch (a carve-out
+    kept until job-0308), so they pin the legacy ``gcs`` scheme to reach it.
+    """
+    monkeypatch.setenv("GRACE2_STORAGE_BACKEND", "gcs")
+
+
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #

@@ -269,12 +269,17 @@ def _now_utc() -> datetime:
 def _default_secret_manager_client():  # pragma: no cover — exercised live
     """Construct a live Secret Manager client.
 
-    Imported lazily so unit tests that pass a mock client don't pay the
-    ``google.cloud.secretmanager`` import cost (and don't need ADC).
+    GCP is decommissioned: ``google-cloud-secret-manager`` is no longer an agent
+    dependency, so there is no default GCP client to build. The live vault is
+    AWS SSM (``GRACE2_STORAGE_BACKEND`` ∈ {s3, aws} → ``_aws_*`` path). The GCP
+    write/read functions remain only for unit tests that inject a duck-typed
+    ``secret_manager_client``; production never reaches this builder.
     """
-    from google.cloud import secretmanager
-
-    return secretmanager.SecretManagerServiceClient()
+    raise RuntimeError(
+        "GCP Secret Manager is decommissioned; the live secrets vault is AWS "
+        "SSM Parameter Store. Set GRACE2_STORAGE_BACKEND=s3 (the production "
+        "default) so secret writes route to AWS SSM."
+    )
 
 
 # --------------------------------------------------------------------------- #

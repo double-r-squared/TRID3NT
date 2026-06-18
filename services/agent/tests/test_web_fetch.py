@@ -93,16 +93,23 @@ class FakeStorageClient:
 
 @pytest.fixture
 def fake_storage(monkeypatch: pytest.MonkeyPatch) -> FakeStorageClient:
-    """Patch ``read_through``'s lazy storage import to use ``FakeStorageClient``.
+    """Inject a duck-typed in-memory object-store client into ``read_through``.
 
-    The ``cache.read_through`` builds a ``storage.Client()`` via a local import
-    on miss; we patch the underlying class so the agent never touches the
-    network or GCS.
+    GCP is decommissioned: ``cache.read_through`` no longer builds a
+    ``google.cloud.storage.Client`` on miss (the production path is boto3/S3).
+    Tests exercise the cache routing by injecting a duck-typed client via the
+    ``storage_client=`` seam, so web_fetch never touches the network.
     """
     fake = FakeStorageClient()
-    import google.cloud.storage as storage_mod  # type: ignore[import-not-found]
+    from grace2_agent.tools import cache as cache_mod
 
-    monkeypatch.setattr(storage_mod, "Client", lambda *a, **kw: fake)
+    real_rt = cache_mod.read_through
+
+    def patched_read_through(*args: Any, **kwargs: Any):
+        kwargs.setdefault("storage_client", fake)
+        return real_rt(*args, **kwargs)
+
+    monkeypatch.setattr(web_fetch_mod, "read_through", patched_read_through)
     return fake
 
 

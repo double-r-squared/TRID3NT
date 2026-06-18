@@ -108,7 +108,6 @@ from .adapter import (
     summarize_tool_result,
     classify_result_usable,
 )
-from .gemini_cache import get_or_create_cache
 from .auth import (
     AUTH_CLOSE_CODE,
     AUTH_FAILED_ERROR_CODE,
@@ -744,63 +743,22 @@ def _bind_secret_seams(p: "Persistence | None") -> None:
 async def init_persistence_from_env() -> Persistence | None:
     """Resolve a ``Persistence`` instance from environment configuration.
 
-    Order:
-    1. ``GRACE2_MONGO_MCP_URL`` — if set, this is the live MCP endpoint
-       (Cloud Run sidecar URL once OQ-2 lands). For v0.1 the live deployment
-       always uses the stdio sidecar path (FR-AS-4 + OQ-2 resolution), so
-       this is reserved for the future HTTP MCP transport.
-    2. ``GRACE2_MONGO_MCP_STDIO=1`` — launch the ``mongodb-mcp-server``
-       stdio subprocess using ``MCPClient.start`` and the SRV from
-       Secret Manager. This is the production deployment path.
-    3. Otherwise — return None; the agent service still starts (M1
-       in-memory chat/pipeline path keeps working), and any caller that
-       requires persistence raises a clear error.
+    GCP is decommissioned: the live MongoDB-MCP (Atlas) bootstrap is GONE
+    (``mcp.py`` deleted — it depended on GCP Secret Manager for the SRV and the
+    ``mongodb-mcp-server`` stdio subprocess). On AWS the prod persistence is
+    DynamoDB or the file backend, bound by ``main._maybe_bind_dev_persistence``
+    / ``dynamo_backend.make_persistence_for_backend`` before this runs.
 
-    Returns the ``Persistence`` instance or ``None``.
+    This method does NOT clear a pre-bound singleton; it preserves whatever the
+    startup path already bound. Returns the ``Persistence`` instance or ``None``.
     """
-    url = os.environ.get("GRACE2_MONGO_MCP_URL")
-    if url:
-        logger.warning(
-            "GRACE2_MONGO_MCP_URL=%s is reserved for the HTTP MCP transport (not yet wired); "
-            "falling through to stdio resolution",
-            url,
-        )
-    if os.environ.get("GRACE2_MONGO_MCP_STDIO") == "1":
-        from .mcp import MCPClient, fetch_srv_from_secret_manager
-        from .persistence import MCPSurfaceTranslator
-
-        # job-0203 (M4): MCPClient.start defaults MDB_MCP_READ_ONLY=true (a
-        # job-0015 hello-world safety). In read-only mode the server does not
-        # even EXPOSE insert/update tools — every Case/session/user write
-        # would fail. Persistence is the write path; FR-AS-8 confirmation
-        # policy is enforced at OUR layer (CONFIRMATION_TRIGGERS), not by
-        # crippling the MCP server. Explicit env still wins (setdefault).
-        os.environ.setdefault("MDB_MCP_READ_ONLY", "false")
-
-        srv = fetch_srv_from_secret_manager()
-        client = await MCPClient.start(srv)
-        logger.info("MCP client started; binding Persistence singleton")
-        # job-0203 (M4): the live server's document surface is find/
-        # insert-many/update-many, with results EJSON-wrapped in untrusted-
-        # data tags. The translator adapts our logical surface (find-one/
-        # insert-one/update-one/find) at this single boundary — without it
-        # every CRUD call fails on first contact with production.
-        p = Persistence(MCPSurfaceTranslator(client))
-        set_persistence(p)
-        return p
     # job-0161: this method does NOT clear a pre-bound singleton. The agent
-    # startup path (``main._maybe_bind_dev_persistence``) may have already
-    # bound a file-backed ``Persistence`` for LOCAL DEV; we preserve it.
+    # startup path (``main._maybe_bind_dev_persistence`` / DynamoDB binding)
+    # may have already bound a ``Persistence``; we preserve it.
     if get_persistence() is not None:
-        logger.info(
-            "MCP not provisioned (set GRACE2_MONGO_MCP_STDIO=1 to enable); "
-            "pre-bound Persistence singleton retained"
-        )
+        logger.info("Persistence singleton already bound; retained")
         return get_persistence()
-    logger.info(
-        "MCP not provisioned (set GRACE2_MONGO_MCP_STDIO=1 to enable); "
-        "Persistence singleton remains unbound"
-    )
+    logger.info("Persistence singleton remains unbound (no backend configured)")
     return None
 
 
@@ -1282,19 +1240,12 @@ class SessionState:
     # starts at the 8-tool hot set and widens as the LLM opens categories
     # (``list_tools_in_category``) or successfully dispatches tools.
     allowed_tool_set: AllowedToolSet = field(default_factory=AllowedToolSet)
-    # job-B6 (Wave 4.10 Stage 2): per-session Gemini CachedContent reference.
-    #
-    # Lazy-initialised on the first ``user-message``: ``get_or_create_cache``
-    # caches the full tool catalog + system instruction in Vertex once per
-    # session, and every subsequent ``generate_content_stream`` call sets
-    # ``GenerateContentConfig.cached_content=<this>`` (skipping ``tools[]``
-    # and ``tool_config``). ``None`` when cache creation failed (transient
-    # Vertex error, catalog below cache minimum, kill-switch set) — the
-    # adapter falls back to the non-cached path automatically.
-    #
-    # Refreshed transparently by ``get_or_create_cache`` when within 60s of
-    # expiry; the stored value here is the *latest* name observed so the
-    # stream call always sees the freshest cache.
+    # Per-session prompt-cache reference (legacy field name retained for the
+    # ``cache-status`` envelope). GCP is decommissioned: the Vertex-only
+    # CachedContent fast-path (``gemini_cache.py``) is REMOVED, so this is always
+    # ``None``. Bedrock prompt caching is handled by ``bedrock_adapter`` via its
+    # own ``cachePoint`` markers and reported through ``UsageMetadataEvent`` —
+    # there is no per-session cache name to track here.
     gemini_cache_name: str | None = None
     # job-B8 (Wave 4.10 Stage 3): per-session circuit breaker.
     #
@@ -1663,36 +1614,12 @@ async def _stream_gemini_reply(
     # Build tool declarations + system prompt for this request.
     tool_decls = build_tool_declarations(TOOL_REGISTRY)
 
-    # job-B6 (Wave 4.10): lazy-create the per-session Gemini CachedContent
-    # entry on the first user-message. Subsequent turns reuse the cached
-    # ``name``. A creation failure (None return) drops us back to the
-    # non-cached path automatically — the multi-turn loop is otherwise
-    # unchanged. See ``gemini_cache.get_or_create_cache``.
-    if _provider == "bedrock":
-        # Bedrock uses its own cachePoint prompt caching (job-0288); the Gemini
-        # CachedContent fast-path is skipped entirely under MODEL_PROVIDER=bedrock.
-        state.gemini_cache_name = None
-    elif state.gemini_cache_name is None:
-        try:
-            state.gemini_cache_name = await get_or_create_cache(
-                client, state.session_id
-            )
-        except Exception:  # noqa: BLE001 — cache is best-effort
-            logger.warning(
-                "gemini-cache: get_or_create_cache raised session=%s; "
-                "falling back to non-cached path",
-                state.session_id,
-                exc_info=True,
-            )
-            state.gemini_cache_name = None
-    else:
-        # Refresh on every turn so an expiry mid-session triggers a recreate.
-        try:
-            refreshed = await get_or_create_cache(client, state.session_id)
-            if refreshed:
-                state.gemini_cache_name = refreshed
-        except Exception:  # noqa: BLE001
-            pass
+    # GCP decommissioned: the agent runs on Bedrock, whose prompt caching is
+    # its own ``cachePoint`` mechanism (bedrock_adapter). The Vertex-only
+    # ``CachedContent`` fast-path (``gemini_cache.py``) is REMOVED, so this is
+    # always ``None``. The field is retained for the ``cache-status`` envelope
+    # payload (``_emit_cache_status``) which reports cachePoint hit metrics.
+    state.gemini_cache_name = None
 
     # Seed the multi-turn contents list with chat history + this user_text.
     # job-0269: the entry-captured list — a mid-stream case switch rebinds

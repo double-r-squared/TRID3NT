@@ -622,7 +622,7 @@ def test_end_to_end_mocked_happy_path(tmp_path, monkeypatch):
     )
 
     assert layer.uri is not None
-    assert layer.uri.startswith("gs://grace-2-hazard-prod-cache/cache/static-30d/gtsm/")
+    assert layer.uri.startswith("gs://grace2-hazard-cache-226996537797/cache/static-30d/gtsm/")
     assert layer.uri.endswith(".fgb")
     assert layer.layer_type == "vector"
     assert layer.role == "primary"
@@ -632,7 +632,7 @@ def test_end_to_end_mocked_happy_path(tmp_path, monkeypatch):
     # The FlatGeobuf landed in the fake bucket; round-trip via geopandas.
     import geopandas as gpd  # type: ignore[import-not-found]
 
-    bucket_path = layer.uri.split("gs://grace-2-hazard-prod-cache/")[1]
+    bucket_path = layer.uri.split("gs://grace2-hazard-cache-226996537797/")[1]
     fgb_bytes = fake_gcs.store[bucket_path]
     assert fgb_bytes.startswith(b"fgb")
 
@@ -787,7 +787,7 @@ def test_live_florida_coast_hurricane_ian(tmp_path):
         mod.read_through = orig_rt
 
     assert layer.uri is not None
-    bucket_path = layer.uri.split("gs://grace-2-hazard-prod-cache/")[1]
+    bucket_path = layer.uri.split("gs://grace2-hazard-cache-226996537797/")[1]
     fgb_bytes = fake_gcs.store[bucket_path]
 
     out_path = str(tmp_path / "gtsm_live.fgb")

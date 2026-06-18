@@ -119,19 +119,18 @@ ENV PYTHONPATH=/opt/grace2 \
     GRACE2_MF6_BIN=/usr/local/bin/mf6 \
     GRACE2_MF6_SCRATCH=/opt/grace2/work
 
-# Runtime config — overridable from the Cloud Run Job env block.
-#   GCP_PROJECT          — passed to google-cloud-storage client.
-#   GRACE2_CACHE_BUCKET  — source bucket (the agent stages the FloPy deck +
-#                          manifest here under modflow/<run_id>/).
-#   GRACE2_RUNS_BUCKET   — destination bucket (this image is the only
-#                          sanctioned writer of gs://...-runs/<run_id>/).
-#   GRACE2_RUN_ID        — the run ID under which outputs land; set per
-#                          execution by the Cloud Workflows orchestrator.
-#   GRACE2_MANIFEST_URI  — gs:// URI of the JSON setup manifest the entrypoint
-#                          reads (lists input GCS objects + outputs + model_crs).
-ENV GCP_PROJECT=grace-2-hazard-prod \
-    GRACE2_CACHE_BUCKET=grace-2-hazard-prod-cache \
-    GRACE2_RUNS_BUCKET=grace-2-hazard-prod-runs \
+# Runtime config. GCP is decommissioned: on AWS, MODFLOW runs the mf6 binary
+# directly via the agent's local-exec supervisor (run_modflow.py) — there is NO
+# Batch/Cloud-Run job-def for MODFLOW. This image is KEPT only as the SHA-pinned
+# record of the USGS mf6 6.5.0 install the EC2 box reuses; its GCS-only entrypoint
+# is effectively retired. The bucket defaults below are pinned to the AWS S3
+# names for honesty (inert on the live local-exec path).
+#   GRACE2_CACHE_BUCKET  — source bucket (FloPy deck + manifest under modflow/<run_id>/).
+#   GRACE2_RUNS_BUCKET   — destination bucket for outputs (<run_id>/completion.json).
+#   GRACE2_RUN_ID        — the run ID under which outputs land (set per run).
+#   GRACE2_MANIFEST_URI  — URI of the JSON setup manifest the entrypoint reads.
+ENV GRACE2_CACHE_BUCKET=grace2-hazard-cache-226996537797 \
+    GRACE2_RUNS_BUCKET=grace2-hazard-runs-226996537797 \
     GRACE2_RUN_ID="" \
     GRACE2_MANIFEST_URI=""
 

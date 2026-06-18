@@ -171,14 +171,16 @@ def test_pelicun_wms_reverse_map_uses_s3_scheme_on_aws(monkeypatch):
         os.unlink(path)
 
 
-def test_pelicun_wms_reverse_map_default_scheme_stays_gs(monkeypatch):
-    """GCP default unchanged: reverse-map produces gs:// and uses the
-    injected storage client (no s3 reader call)."""
+def test_pelicun_wms_reverse_map_legacy_gcs_scheme(monkeypatch):
+    """Legacy GCS seam: under an explicit GRACE2_STORAGE_BACKEND=gcs the
+    reverse-map produces gs:// and uses the injected storage client (no s3
+    reader call). GCP is decommissioned so this requires the explicit legacy
+    override — the unset default is now s3 (see the s3-shaped test below)."""
     from grace2_agent.tools.run_pelicun_damage_assessment import (
         _download_uri_to_local,
     )
 
-    monkeypatch.delenv("GRACE2_STORAGE_BACKEND", raising=False)
+    monkeypatch.setenv("GRACE2_STORAGE_BACKEND", "gcs")
     monkeypatch.setenv("GRACE2_RUNS_BUCKET", "test-runs")
     s3_calls = _bind_fake_reader(monkeypatch, b"NEVER")
 

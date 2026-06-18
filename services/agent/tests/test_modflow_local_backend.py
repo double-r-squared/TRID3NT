@@ -585,8 +585,9 @@ async def test_local_wait_timeout_kills_process_group(
 def test_deck_base_uri_scheme_aware(
     reset_seams, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The deck prefix follows cache.storage_scheme(): gs:// by default
-    (byte-identical pre-job-0292b), s3:// under GRACE2_STORAGE_BACKEND=s3."""
+    """The deck prefix follows cache.storage_scheme(): s3:// by default after
+    the GCP decommission, and still s3:// under GRACE2_STORAGE_BACKEND=s3. Only
+    an explicit legacy GRACE2_STORAGE_BACKEND=gcs maps back to gs://."""
     args = __import__(
         "grace2_contracts.modflow_contracts", fromlist=["MODFLOWRunArgs"]
     ).MODFLOWRunArgs(
@@ -595,14 +596,15 @@ def test_deck_base_uri_scheme_aware(
         release_rate_kg_s=0.01,
         duration_days=30.0,
     )
+    # Unset -> S3 default (GCP decommissioned).
     monkeypatch.delenv("GRACE2_STORAGE_BACKEND", raising=False)
     monkeypatch.setenv("GRACE2_CACHE_BUCKET", "cache-bkt")
     staging = rm.build_and_stage_modflow_deck(
-        args, workdir=tmp_path / "gs", stage_to_gcs=False
+        args, workdir=tmp_path / "default", stage_to_gcs=False
     )
-    assert staging.manifest_uri.startswith("gs://cache-bkt/modflow/")
+    assert staging.manifest_uri.startswith("s3://cache-bkt/modflow/")
     for entry in staging.manifest_inputs:
-        assert entry["gs_uri"].startswith("gs://cache-bkt/modflow/")
+        assert entry["gs_uri"].startswith("s3://cache-bkt/modflow/")
 
     monkeypatch.setenv("GRACE2_STORAGE_BACKEND", "s3")
     staging_s3 = rm.build_and_stage_modflow_deck(
@@ -613,6 +615,13 @@ def test_deck_base_uri_scheme_aware(
     for entry in staging_s3.manifest_inputs:
         # Legacy field NAME, s3:// VALUE — staging resolves by scheme.
         assert entry["gs_uri"].startswith("s3://cache-bkt/modflow/")
+
+    # Explicit legacy override still maps to gs:// (the duck-typed test seam).
+    monkeypatch.setenv("GRACE2_STORAGE_BACKEND", "gcs")
+    staging_gs = rm.build_and_stage_modflow_deck(
+        args, workdir=tmp_path / "gs", stage_to_gcs=False
+    )
+    assert staging_gs.manifest_uri.startswith("gs://cache-bkt/modflow/")
 
 
 @pytest.mark.skipif(not _HAVE_FLOPY, reason="flopy not installed")

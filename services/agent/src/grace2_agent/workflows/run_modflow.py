@@ -277,13 +277,15 @@ def set_mf6_binary(path: str | None) -> None:
 def _cache_bucket() -> str:
     if _CACHE_BUCKET is not None:
         return _CACHE_BUCKET
-    return os.environ.get("GRACE2_CACHE_BUCKET", "grace-2-hazard-prod-cache")
+    # GCP decommissioned: AWS S3 cache bucket default (prod overrides via env).
+    return os.environ.get("GRACE2_CACHE_BUCKET", "grace2-hazard-cache-226996537797")
 
 
 def _runs_bucket() -> str:
     if _RUNS_BUCKET is not None:
         return _RUNS_BUCKET
-    return os.environ.get("GRACE2_RUNS_BUCKET", "grace-2-hazard-prod-runs")
+    # GCP decommissioned: AWS S3 runs bucket default (prod overrides via env).
+    return os.environ.get("GRACE2_RUNS_BUCKET", "grace2-hazard-runs-226996537797")
 
 
 def _mf6_binary() -> str:
@@ -734,13 +736,21 @@ def submit_modflow_run(
             call (or the local-backend staging/launch) failed.
     """
     from ..tools.solver import (
+        SOLVER_BACKEND_GCP_WORKFLOWS,
         SOLVER_BACKEND_LOCAL_DOCKER,
         SolverDispatchError,
         launch_local_solver,
         solver_backend,
     )
 
-    if solver_backend() == SOLVER_BACKEND_LOCAL_DOCKER:
+    # GCP decommissioned: MODFLOW on AWS runs the ``mf6`` binary directly via
+    # the local-exec supervisor (``launch_local_solver``) — there is NO AWS
+    # Batch job-def for MODFLOW. The solver default is now ``aws-batch``, so
+    # route BOTH ``aws-batch`` AND ``local-docker`` here; only an explicit
+    # legacy ``gcp-workflows`` falls through to the (dead) Cloud Workflows
+    # branch below. Without this, the solver-default flip to ``aws-batch``
+    # would silently break MODFLOW dispatch (the manifest sequencing trap).
+    if solver_backend() != SOLVER_BACKEND_GCP_WORKFLOWS:
         try:
             return launch_local_solver(
                 _modflow_local_spec(staging),

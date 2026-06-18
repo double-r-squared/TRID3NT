@@ -221,8 +221,14 @@ def fake_workflows_sdk(monkeypatch: Any):
     yield
 
 
-def test_submit_modflow_run_returns_execution_handle(fake_workflows_sdk: Any) -> None:
+def test_submit_modflow_run_returns_execution_handle(
+    fake_workflows_sdk: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """submit_modflow_run produces a typed ExecutionHandle with the MODFLOW seam."""
+    # GCP decommissioned: the solver default is now aws-batch (which routes
+    # MODFLOW to local-exec). This test exercises the legacy Cloud Workflows
+    # submit path, so pin it explicitly.
+    monkeypatch.setenv("GRACE2_SOLVER_BACKEND", "gcp-workflows")
     fake_client = MagicMock()
     fake_client.create_execution.return_value = _FakeExecution(
         name="projects/p/locations/us-central1/workflows/grace-2-modflow-orchestrator/executions/abc123"

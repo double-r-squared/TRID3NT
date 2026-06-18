@@ -69,20 +69,22 @@ ENV PYTHONPATH=/opt/grace2 \
     GRACE2_SFINCS_BIN=/usr/local/bin/sfincs \
     GRACE2_SFINCS_SCRATCH=/opt/grace2/work
 
-# Runtime config — overridable from the Cloud Run Job env block.
-#   GCP_PROJECT          — passed to google-cloud-storage client (also
-#                          available via metadata server, kept for symmetry).
+# Runtime config — overridable from the AWS Batch job-def containerOverrides.
+# GCP is decommissioned: the live object store is AWS S3 (GRACE2_OBJECT_STORE=s3,
+# scheme-aware entrypoint). These baked defaults are INERT under AWS Batch (the
+# job-def overrides every value per submission) but are pinned to the AWS S3
+# names + scheme for honesty.
+#   GRACE2_OBJECT_STORE  — runs-bucket output scheme (s3 on AWS).
 #   GRACE2_CACHE_BUCKET  — source bucket (the cache shim populates this with
 #                          the per-tool fetches the workflow stages).
 #   GRACE2_RUNS_BUCKET   — destination bucket (this image is the only sanctioned
-#                          writer of `gs://grace-2-hazard-prod-runs/<run_id>/`).
-#   GRACE2_RUN_ID        — the run ID under which outputs land. The Cloud
-#                          Workflows orchestrator sets this per execution.
-#   GRACE2_MANIFEST_URI  — gs:// URI of the JSON setup manifest the entrypoint
-#                          reads (lists input GCS objects + bbox + scenario).
-ENV GCP_PROJECT=grace-2-hazard-prod \
-    GRACE2_CACHE_BUCKET=grace-2-hazard-prod-cache \
-    GRACE2_RUNS_BUCKET=grace-2-hazard-prod-runs \
+#                          writer of `s3://grace2-hazard-runs-226996537797/<run_id>/`).
+#   GRACE2_RUN_ID        — the run ID under which outputs land (set per Batch job).
+#   GRACE2_MANIFEST_URI  — s3:// URI of the JSON setup manifest the entrypoint
+#                          reads (lists input objects + bbox + scenario).
+ENV GRACE2_OBJECT_STORE=s3 \
+    GRACE2_CACHE_BUCKET=grace2-hazard-cache-226996537797 \
+    GRACE2_RUNS_BUCKET=grace2-hazard-runs-226996537797 \
     GRACE2_RUN_ID="" \
     GRACE2_MANIFEST_URI=""
 

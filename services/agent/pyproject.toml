@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "grace2-agent"
 version = "0.1.0"
-description = "GRACE-2 agent service: ADK + Gemini on Cloud Run, Appendix-A WebSocket server, MongoDB MCP integration."
+description = "GRACE-2 agent service: AWS Bedrock Converse agent loop, Appendix-A WebSocket server, S3/DynamoDB persistence, AWS Batch solver dispatch."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -20,22 +20,26 @@ dependencies = [
     # sprint-14-aws (job-0296): Cognito ID-token (JWKS/RS256) verification in
     # auth_handshake.cognito_verify. [crypto] pulls cryptography for RSAAlgorithm.
     "PyJWT[crypto]>=2.8,<3",
-    "google-adk>=2.2,<3",
+    # GCP decommission: google-adk DROPPED (zero live callers — register_with_adk
+    # is test-only) and google-cloud-secret-manager DROPPED (the vault is AWS SSM
+    # via secrets_handler; the GCP Secret Manager default-client builder is gone).
+    # google-genai is KEPT (carve-out): bedrock_adapter speaks the genai_types
+    # Content/FunctionDeclaration contract that it converts to the Bedrock
+    # Converse API — removing it breaks the live Bedrock path.
     "google-genai>=2.8,<3",
-    "google-cloud-secret-manager>=2.20,<3",
-    # job-0032 M4 substrate: cache shim writes to gs://grace-2-hazard-prod-cache/
-    # provisioned by job-0031; reaches it via ADC in deployed contexts.
-    # job-0250: relaxed <3 -> <4. The old <3 pin silently forced gcsfs back
-    # to 0.8.0 (2021) — modern gcsfs requires google-cloud-storage>=3 — and
-    # that ancient gcsfs crashed on fsspec 2026's NoOpCallback in
-    # postprocess_flood (round-6 live: two completed SFINCS solves, zero
-    # published layers). Our storage usage is stable Blob APIs (upload/
-    # download/list); 3.x is compatible.
+    # GCP decommission: KEPT (legacy gs:// test seam). The production cache +
+    # all object I/O is AWS S3 via boto3; the ``from google.cloud import
+    # storage`` calls survive only as LAZY imports on the gs:// branch of the
+    # scheme-aware tool/workflow staging helpers (compute_*, clip_*,
+    # postprocess_flood, sfincs_builder, ...), which the unit tests exercise by
+    # injecting a duck-typed GCS client. Drop only once those gs:// branches are
+    # collapsed (out of this lane's seam-collapse scope).
     "google-cloud-storage>=3,<4",
-    # job-0041 M5 Stage C: solver dispatch (run_solver + wait_for_completion)
-    # drives Cloud Workflows executions of the SFINCS substrate (job-0040)
-    # and cancels them via workflows.executions.cancel for the Invariant-8
-    # cancel chain (≤30 s per NFR-R-3).
+    # GCP decommission: KEPT (legacy gcp-workflows test seam). The live solver
+    # backend is AWS Batch; the Cloud Workflows ``ExecutionsClient`` /
+    # ``executions_v1`` imports survive only as LAZY imports on the
+    # ``GRACE2_SOLVER_BACKEND=gcp-workflows`` branch (exercised by the solver/
+    # modflow tests via a fake workflows SDK). Drop once that branch is removed.
     "google-cloud-workflows>=1.16,<2",
     # job-0033 M4 Stage C: data-fetch atomic tools.
     # py3dep wraps the USGS 3DEP DEM service (CONUS DEM at 10/30m); pulls in
@@ -83,10 +87,11 @@ dependencies = [
     # pd.api.types.is_integer_dtype() and "10T" with "10min"), drop this pin and
     # bump hydromt-sfincs to the fixed release.
     "pandas>=2.2,<2.3",
-    "fsspec[gcs]>=2024.6",
-    # job-0250: pin gcsfs explicitly IN LOCKSTEP with fsspec — fsspec[gcs]
-    # alone let the resolver pick gcsfs 0.8.0 under the old storage<3 pin.
-    "gcsfs>=2026.1",
+    # GCP decommission: the ``[gcs]`` extra (gcsfs) is DROPPED — the live
+    # object store is S3 (s3fs, below). fsspec core stays; the
+    # ``fsspec.filesystem("gcs")`` calls in the legacy gs:// staging branches
+    # are dead on the AWS default backend.
+    "fsspec>=2024.6",
     # job-0241 (OQ-227-FLOPY-DEP): flopy is the MODFLOW 6 deck builder + UCN
     # reader for the GWT groundwater-transport path (run_modflow /
     # postprocess_modflow / gwt_adapter). 3.9 is the first series with the
@@ -94,10 +99,10 @@ dependencies = [
     # only transitively (3.10.0) — undeclared deps are how the fsspec stale-
     # venv plume bug shipped (job-0235).
     "flopy>=3.9,<4",
-    # job-0244 (OQ-0244-PUBLISH-NO-RUN-V2): google-cloud-run provides
-    # run_v2.JobsClient — publish_layer dispatches the PyQGIS worker as a
-    # Cloud Run Job execution. Absent from the venv, EVERY fresh layer
-    # publish (plume, flood) fails and nothing new renders on the map.
+    # GCP decommission: KEPT (publish-path carve-out, until job-0308). publish_layer
+    # still lazy-imports ``google.cloud.run_v2.JobsClient`` to dispatch the legacy
+    # PyQGIS worker as a Cloud Run Job for the QGIS-Server WMS render path, which
+    # stays live until the AWS QGIS WMS cutover (job-0308). Drop then.
     "google-cloud-run>=0.10",
     # job-0265 sprint-13.5 PREREQ: cloud sandbox result transport via Cloud
     # Logging (OQ-SANDBOX-3 option b). The egress-denied executor prints its
@@ -129,7 +134,9 @@ dependencies = [
     "beautifulsoup4>=4.12,<5",
     "lxml>=5.0,<7",
     "websockets>=13,<16",
-    "pymongo>=4.8,<5",
+    # GCP decommission: pymongo DROPPED. The live persistence is the file /
+    # DynamoDB backend (dynamo_backend via boto3); MongoDB/Atlas access went
+    # through the deleted mongodb-mcp-server subprocess (mcp.py), never pymongo.
     "pydantic>=2,<3",
     "python-ulid>=2,<4",
     # job-0122 Wave 2: Firebase Auth admin SDK for the WS connect handshake.

@@ -235,6 +235,9 @@ def test_run_solver_happy_path_submits_workflow(
     ``run_id`` + ``manifest_uri`` (the job-0040 workflow contract)."""
     fake = _FakeWorkflowsClient(executions=[])
     set_workflows_client(fake)
+    # GCP decommissioned: the solver default is now aws-batch. This test
+    # exercises the legacy Cloud Workflows submit path, so pin it explicitly.
+    monkeypatch.setenv("GRACE2_SOLVER_BACKEND", "gcp-workflows")
     monkeypatch.setenv("GRACE2_GCP_PROJECT", "grace-2-hazard-prod")
     monkeypatch.setenv("GRACE2_GCP_LOCATION", "us-central1")
 
@@ -571,6 +574,9 @@ async def test_integration_full_cycle_with_mocked_workflows_and_gcs(
     completion.json, and returns ``RunResult{status="complete"}`` with
     the first ``output_uri`` from the manifest. Integration shape (mocked
     Workflows + GCS clients) but the codepaths under test are real."""
+    # GCP decommissioned: the solver default is now aws-batch. This integration
+    # test exercises the legacy Cloud Workflows path, so pin it explicitly.
+    monkeypatch.setenv("GRACE2_SOLVER_BACKEND", "gcp-workflows")
     monkeypatch.setenv("GRACE2_GCP_PROJECT", "grace-2-hazard-prod")
     monkeypatch.setenv("GRACE2_GCP_LOCATION", "us-central1")
     fake_wf = _FakeWorkflowsClient(executions=[])
