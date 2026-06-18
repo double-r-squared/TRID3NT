@@ -1962,9 +1962,52 @@
       "description": "Author + validate the AWS Batch OpenTofu module + runbook for the SFINCS Batch cutover + agent-box downsize (cost lever). 1 Sonnet agent; tofu validate=Success. No apply (NATE authorize-list).",
       "model": "sonnet",
       "subagent_tokens": 74438
+    },
+    {
+      "job_id": "wf-per-tool-card-io-20260618",
+      "sprint": 16,
+      "description": "Per-tool-card I/O expander: new tool-io WS envelope + chevron revealing raw args + function_response (surfaces hidden server/upstream errors) with 32KB byte-truncation. Mixed workflow (build + opus verify).",
+      "model": "mixed",
+      "subagent_tokens": 403526
+    },
+    {
+      "job_id": "wf-coastal-p1-scout-20260618",
+      "sprint": 16,
+      "description": "Read-only coastal P1 scoping agent (Mexico Beach topobathy spec: AOI/UTM16N/NAVD88, existing DEM seams, CUDEM source, gap analysis).",
+      "model": "sonnet",
+      "subagent_tokens": 79041
+    },
+    {
+      "job_id": "wf-urban-draw-ui-frwc16-20260618",
+      "sprint": 16,
+      "description": "FR-WC-16 urban walls/flap-gate vector-draw UI (terra-draw): scout + contract + web build + agent-consume + opus adversarial verify. 6 agents.",
+      "model": "mixed",
+      "subagent_tokens": 907937
+    },
+    {
+      "job_id": "wf-fix-untagged-barrier-20260618",
+      "sprint": 16,
+      "description": "Fix FR-WC-16 untagged-barrier hang: client submit-gate + server resolve-future-with-typed-error on ValidationError (no 300s timeout). Mixed (2 fix + opus verify).",
+      "model": "mixed",
+      "subagent_tokens": 257224
+    },
+    {
+      "job_id": "wf-coastal-p1-topobathy-20260618",
+      "sprint": 16,
+      "description": "Coastal SFINCS P1: fetch_topobathy (NOAA NCEI CUDEM + 3DEP -> NAVD88 EPSG:32616 COG) + model_flood_scenario coastal branch + opus verify. Live CUDEM endpoint confirmed.",
+      "model": "mixed",
+      "subagent_tokens": 450151
+    },
+    {
+      "job_id": "wf-p7-swmm-batch-lane-20260617",
+      "sprint": 16,
+      "description": "P7 per-solver Batch job-def routing + SWMM AWS Batch worker (urban PySWMM cloud lane). Completed before this measurement window; exact subagent token count not captured (recorded for accountability, NOT summed into the sprint total).",
+      "model": "mixed",
+      "subagent_tokens": 0
     }
   ],
   "totals_by_sprint": {
+    "16": 2097879,
     "6": 1265567,
     "7": 1863284,
     "8": 1786238,
