@@ -1,17 +1,22 @@
 #!/usr/bin/env python3
-"""Tests for the SFINCS deck-builder worker entrypoint.
+"""Tests for the COMBINED SFINCS quadtree BUILD+SOLVE worker entrypoint.
 
 Two surfaces:
 
   * PURE-PYTHON unit tests (NO cht_sfincs import) — build-spec validation, time
     parsing, the two caveat fixes (snapwave knob mapping = CAVEAT 2; time-column
-    normalizer = CAVEAT 1), manifest composition, object-URI parsing, and
-    build_deck's dispatch with cht mocked out. These run anywhere (the agent CI
-    venv, this box's system python) WITHOUT the GPL library.
+    normalizer = CAVEAT 1), manifest composition, object-URI parsing, the
+    cell-budget estimator + cap (synthetic, no rasters), the SFINCS-binary
+    invocation + output expansion, and build_deck's dispatch with cht mocked out.
+    These run anywhere (the agent CI venv, this box's system python) WITHOUT the
+    GPL library.
 
   * An OPT-IN integration test (run_full_deck_build) that authors a real
     quadtree+SnapWave deck via cht_sfincs against the spike venv where the GPL
-    library is installed, with all object-store I/O mocked to local files. Skipped
+    library is installed (auto-refinement from a synthetic sloping-beach raster +
+    building obstacles), with all object-store I/O mocked to local files. The
+    SOLVE half is NOT exercised here (no SFINCS binary on the dev box) — it is
+    unit-tested via the binary-invocation tests with a fake echo binary. Skipped
     automatically when cht_sfincs is not importable.
 
 Run pure-python set (no GPL needed):
@@ -356,6 +361,190 @@ class ManifestTests(unittest.TestCase):
             self.assertTrue(all("gs_uri" in i and "dest" in i for i in m["inputs"]))
 
 
+# --------------------------------------------------------------------------- #
+# Combined-worker NEW surfaces — all pure-python (no cht, no rasters).
+# --------------------------------------------------------------------------- #
+
+
+class CellBudgetTests(unittest.TestCase):
+    """estimate_quadtree_cells + apply_cell_budget (synthetic, no cht)."""
+
+    def test_estimate_base_only(self):
+        # No refinement => exactly the base grid count.
+        self.assertEqual(ep.estimate_quadtree_cells(16, 24, {}), 16 * 24)
+
+    def test_estimate_full_level1_quadruples_covered(self):
+        # 100% of the base grid refined ONE level => every base cell -> 4 cells.
+        base = 10 * 10
+        est = ep.estimate_quadtree_cells(10, 10, {1: 1.0})
+        self.assertEqual(est, base * 4)
+
+    def test_estimate_partial_two_levels(self):
+        # 50% covered to level 1, 25% covered to level 2 (subset of the 50%).
+        # base*(1-0.5) + base*(0.5-0.25)*4 + base*(0.25)*16
+        base = 100
+        est = ep.estimate_quadtree_cells(10, 10, {1: 0.5, 2: 0.25})
+        expected = base * 0.5 + base * 0.25 * 4 + base * 0.25 * 16
+        self.assertEqual(est, int(round(expected)))
+
+    def test_budget_cap_drops_finest_level(self):
+        # Level 2 over budget, level 1 fits => cap to level 1 with a note.
+        # base=10000, full level-2 coverage => 10000*16 = 160k > 50k budget;
+        # level-1 coverage => 10000*4 = 40k <= 50k.
+        allowed, notes = ep.apply_cell_budget(
+            100, 100, {1: 1.0, 2: 1.0}, max_cells=50_000
+        )
+        self.assertEqual(allowed, 1)
+        self.assertTrue(any("reduced max refinement level" in n for n in notes))
+
+    def test_budget_cap_keeps_all_when_under(self):
+        allowed, notes = ep.apply_cell_budget(
+            10, 10, {1: 0.5, 2: 0.25}, max_cells=10_000
+        )
+        self.assertEqual(allowed, 2)
+        self.assertEqual(notes, [])
+
+    def test_budget_cap_base_over_budget(self):
+        # Even the base grid exceeds the budget => level 0, loud note.
+        allowed, notes = ep.apply_cell_budget(
+            1000, 1000, {1: 1.0}, max_cells=1000
+        )
+        self.assertEqual(allowed, 0)
+        self.assertTrue(any("base grid" in n for n in notes))
+
+
+class ValidateCombinedSpecTests(unittest.TestCase):
+    """The combined spec's NEW optional fields validate + default correctly."""
+
+    def test_defaults_max_cells_and_levels(self):
+        out = ep.validate_build_spec(_valid_spec())
+        self.assertEqual(out["grid"]["max_cells"], ep.DEFAULT_MAX_CELLS)
+        self.assertEqual(out["grid"]["refinement_levels"], 2)
+
+    def test_honours_explicit_budget_and_levels(self):
+        spec = _valid_spec()
+        spec["grid"]["max_cells"] = 500_000
+        spec["grid"]["refinement_levels"] = 3
+        out = ep.validate_build_spec(spec)
+        self.assertEqual(out["grid"]["max_cells"], 500_000)
+        self.assertEqual(out["grid"]["refinement_levels"], 3)
+
+    def test_rejects_nonpositive_budget(self):
+        spec = _valid_spec()
+        spec["grid"]["max_cells"] = 0
+        with self.assertRaises(ep.BuildSpecError):
+            ep.validate_build_spec(spec)
+
+    def test_rejects_bad_building_mode(self):
+        spec = _valid_spec()
+        spec["buildings"] = {"footprints_uri": "s3://b/bld.fgb", "mode": "bogus"}
+        with self.assertRaises(ep.BuildSpecError):
+            ep.validate_build_spec(spec)
+
+    def test_accepts_building_modes(self):
+        for mode in ("thin_dams", "raise_subgrid", "exclude"):
+            spec = _valid_spec()
+            spec["buildings"] = {"footprints_uri": "s3://b/bld.fgb", "mode": mode}
+            out = ep.validate_build_spec(spec)
+            self.assertEqual(out["buildings"]["mode"], mode)
+
+
+class SfincsBinaryInvocationTests(unittest.TestCase):
+    """_run_sfincs + _expand_outputs — the SOLVE half, with a FAKE binary.
+
+    No real SFINCS binary on the dev box; we point GRACE2_SFINCS_BIN at a tiny
+    shell script that writes a sentinel sfincs_map.nc into CWD and exits 0/N,
+    proving the in-process solve invocation + output expansion are correct.
+    """
+
+    def _fake_bin(self, tmp: Path, rc: int, write_map: bool) -> Path:
+        script = tmp / "fake_sfincs.sh"
+        body = "#!/bin/sh\n"
+        body += 'echo "fake sfincs running in $(pwd)"\n'
+        if write_map:
+            body += 'printf "NC" > sfincs_map.nc\n'
+        body += f"exit {rc}\n"
+        script.write_text(body)
+        script.chmod(0o755)
+        return script
+
+    def test_run_and_expand_success(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            deck = tmp / "deck"
+            deck.mkdir()
+            (deck / "sfincs.inp").write_text("x")
+            fake = self._fake_bin(tmp, rc=0, write_map=True)
+            with mock.patch.object(ep, "SFINCS_BIN", str(fake)):
+                rc, out_p, err_p = ep._run_sfincs([], deck)
+            self.assertEqual(rc, 0)
+            self.assertTrue(out_p.exists() and err_p.exists())
+            self.assertEqual(out_p.name, "sfincs.stdout")
+            outs = ep._expand_outputs(list(ep.SOLVE_OUTPUT_PATTERNS), deck)
+            names = {p.name for p in outs}
+            self.assertIn("sfincs_map.nc", names)
+
+    def test_run_nonzero_exit_propagates(self):
+        with tempfile.TemporaryDirectory() as d:
+            tmp = Path(d)
+            deck = tmp / "deck"
+            deck.mkdir()
+            fake = self._fake_bin(tmp, rc=7, write_map=False)
+            with mock.patch.object(ep, "SFINCS_BIN", str(fake)):
+                rc, _out, _err = ep._run_sfincs([], deck)
+            self.assertEqual(rc, 7)
+
+    def test_expand_dedupes_and_sorts(self):
+        with tempfile.TemporaryDirectory() as d:
+            deck = Path(d)
+            (deck / "sfincs_map.nc").write_bytes(b"\x00")
+            (deck / "extra.nc").write_bytes(b"\x00")
+            (deck / "derived.tif").write_bytes(b"\x00")
+            # sfincs_map.nc matches BOTH "sfincs_map.nc" and "*.nc" — must dedupe.
+            outs = ep._expand_outputs(["sfincs_map.nc", "*.nc", "*.tif"], deck)
+            names = sorted(p.name for p in outs)
+            self.assertEqual(names, ["derived.tif", "extra.nc", "sfincs_map.nc"])
+
+
+class CompletionUnionTests(unittest.TestCase):
+    """completion.json is a UNION of the deck + solve schemas the agent polls."""
+
+    def test_completion_payload_has_solve_and_deck_keys(self):
+        captured = {}
+
+        def fake_put_json(payload, uri):
+            captured["payload"] = payload
+            captured["uri"] = uri
+            return uri
+
+        with mock.patch.object(ep, "_put_json", side_effect=fake_put_json), \
+                mock.patch.dict("os.environ", {"GRACE2_OBJECT_STORE": "s3"}):
+            ep._write_completion(
+                run_id="R1",
+                status="ok",
+                exit_code=0,
+                output_uris=["s3://b/R1/sfincs_map.nc", "s3://b/R1/manifest.json"],
+                stdout_uri="s3://b/R1/sfincs.stdout",
+                stderr_uri="s3://b/R1/sfincs.stderr",
+                deck_provenance={"nr_cells": 1234, "nr_levels": 3,
+                                 "manifest_uri": "s3://b/R1/manifest.json",
+                                 "budget_notes": []},
+                started_at="2026-06-18T00:00:00Z",
+                error=None,
+            )
+        p = captured["payload"]
+        # solve-schema keys (wait_for_completion reads these).
+        for k in ("run_id", "status", "exit_code", "output_uris",
+                  "sfincs_stdout_uri", "sfincs_stderr_uri", "started_at",
+                  "finished_at", "error"):
+            self.assertIn(k, p, f"missing solve key {k}")
+        # deck-provenance union block.
+        self.assertEqual(p["deck"]["nr_cells"], 1234)
+        self.assertEqual(p["deck"]["nr_levels"], 3)
+        self.assertTrue(captured["uri"].endswith("/R1/completion.json"))
+        self.assertTrue(captured["uri"].startswith("s3://"))
+
+
 @unittest.skipUnless(
     _geo_stack_available(),
     "geo stack (numpy/xarray/xugrid) not importable",
@@ -437,12 +626,16 @@ class BuildDeckDispatchTests(unittest.TestCase):
                 "sys.modules", {"cht_sfincs": fake_cht_mod}
             ), patch_xu, patch_xr, \
                     mock.patch.object(ep, "_download"), \
-                    mock.patch.object(ep, "_read_polygon_gdf", return_value=None), \
+                    mock.patch.object(ep, "_read_gdf", return_value=None), \
                     mock.patch.object(ep, "_sample_topobathy",
                                       return_value=[0.0, 0.0, 0.0]), \
+                    mock.patch.object(ep, "derive_refinement_polygons",
+                                      return_value=(None, {})), \
+                    mock.patch.object(ep, "burn_building_obstacles",
+                                      side_effect=lambda sf, spec, sc, zb, ep_: zb), \
                     mock.patch.object(ep, "normalize_snapwave_time_columns",
                                       return_value=[]) as norm:
-                deck_dir = ep.build_deck(spec, scratch_p)
+                deck_dir, provenance = ep.build_deck(spec, scratch_p)
 
         # CAVEAT 2: use_herbers=1 set on input.variables.
         self.assertEqual(variables.snapwave_use_herbers, 1)
@@ -457,6 +650,9 @@ class BuildDeckDispatchTests(unittest.TestCase):
         # write + normalizer invoked.
         fake_sf.write.assert_called_once()
         norm.assert_called_once()
+        # combined worker returns (deck_dir, provenance) with the cell counts.
+        self.assertEqual(provenance["nr_cells"], 3)
+        self.assertEqual(provenance["nr_levels"], 3)
         self.assertEqual(captured["crs"], 32616)
         self.assertEqual(deck_dir, scratch_p / "deck")
 
@@ -590,7 +786,12 @@ class FullDeckBuildIntegrationTests(unittest.TestCase):
             scratch = work / "scratch"
             scratch.mkdir()
             with mock.patch.object(ep, "_download", side_effect=fake_download):
-                deck_dir = ep.build_deck(spec, scratch)
+                deck_dir, provenance = ep.build_deck(spec, scratch)
+
+            # combined-worker provenance carries the build counts.
+            self.assertGreater(provenance["nr_cells"], 0)
+            self.assertGreaterEqual(provenance["nr_levels"], 2)
+            self.assertIsInstance(provenance.get("budget_notes"), list)
 
             # --- deck contents present ---
             self.assertTrue((deck_dir / "sfincs.nc").exists())

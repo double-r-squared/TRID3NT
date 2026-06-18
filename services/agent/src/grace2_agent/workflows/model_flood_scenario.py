@@ -77,7 +77,7 @@ from grace2_contracts.envelope import (
     Provenance,
     ResultLayer,
 )
-from grace2_contracts.execution import LayerURI, RunResult
+from grace2_contracts.execution import ExecutionHandle, LayerURI, RunResult
 from grace2_contracts.tool_registry import AtomicToolMetadata
 
 from ..pipeline_emitter import current_emitter
@@ -93,7 +93,7 @@ from ..tools.fetch_topobathy import TopobathyError, fetch_topobathy
 from ..tools.publish_layer import PublishLayerError, publish_layer
 from ..tools.solver import (
     DeckBuildError,
-    build_sfincs_quadtree_deck,
+    run_sfincs_quadtree,
     run_solver,
     select_compute_class,
     wait_for_completion,
@@ -478,6 +478,12 @@ def _compose_and_upload_deckbuild_spec(
     surge_forcing: dict[str, Any] | None,
     grid_resolution_m: float,
     duration_hr: float,
+    buildings_uri: str | None = None,
+    building_obstacle_mode: str = "thin_dams",
+    rivers_uri: str | None = None,
+    refinement_levels: int = 2,
+    max_cells: int = 2_000_000,
+    output_dt_s: float = 600.0,
 ) -> str:
     """Build the deck-build worker's input spec JSON + upload it; return its URI.
 
@@ -620,8 +626,20 @@ def _compose_and_upload_deckbuild_spec(
     deck_manifest_uri = f"{scheme}://{cache_bucket}/{base_prefix}manifest.json"
     build_spec_uri = f"{scheme}://{cache_bucket}/{base_prefix}build_spec.json"
 
+    # --- auto-refinement + cell budget (combined-worker v2) ---
+    # The agent does NOT do heavy GIS or import cht — it only declares the
+    # refinement DEPTH (max levels, x2 each) + the cell budget; the combined
+    # worker DERIVES the actual refinement polygons (e.g. a nearshore/AOI-interior
+    # band carrying the 'refinement_level' int column cht.grid.build requires) and
+    # enforces ``nr_cells <= max_cells`` after the build, erroring honestly if the
+    # refined quadtree blows the budget rather than launching an oversized solve.
+    refine_levels = max(0, int(refinement_levels))
+    cell_budget = max(1, int(max_cells))
+    base_grid["refinement_levels"] = refine_levels
+    base_grid["max_cells"] = cell_budget
+
     build_spec: dict[str, Any] = {
-        "schema_version": "v1",
+        "schema_version": "v2",
         "deck_id": deck_id,
         "aoi": {
             "bbox": [float(b) for b in bbox],  # EPSG:4326
@@ -632,7 +650,9 @@ def _compose_and_upload_deckbuild_spec(
             "bathymetry_present": bool(bathymetry_present),
         },
         # Base (coarsest) grid x0/y0/nmax/mmax/dx/dy in target_epsg; cht refines
-        # x2 per level off this base. Worker-required + complete.
+        # x2 per level off this base (up to ``refinement_levels``). The combined
+        # worker derives the refinement polygons + enforces ``max_cells``.
+        # Worker-required + complete.
         "grid": base_grid,
         "mask": {
             # Active + waterlevel-boundary mask window (domain-adaptive bounds
@@ -676,8 +696,34 @@ def _compose_and_upload_deckbuild_spec(
         "output": {
             "deck_dir_uri": deck_dir_uri,
             "manifest_uri": deck_manifest_uri,
+            # SFINCS map-output cadence (seconds). The combined worker writes the
+            # flood field at this dt; the agent does not author the deck, just
+            # declares the desired output stride.
+            "output_dt": float(output_dt_s),
         },
     }
+
+    # --- buildings-as-obstacles (combined-worker v2, OPTIONAL) ---
+    # OSM building footprints (FlatGeobuf from fetch_buildings(bbox, source=osm)).
+    # The agent only POINTS at the footprint geofile + names the burn MODE; the
+    # combined worker reprojects + burns them (thin_dams = blocked uv-faces along
+    # building edges; raise_subgrid = lift bed elevation under footprint cells;
+    # exclude = mask footprint cells inactive). Absent when no footprints fetched.
+    if buildings_uri:
+        mode = (building_obstacle_mode or "thin_dams").strip().lower()
+        if mode not in ("thin_dams", "raise_subgrid", "exclude"):
+            mode = "thin_dams"
+        build_spec["buildings"] = {
+            "footprints_uri": buildings_uri,
+            "mode": mode,
+        }
+
+    # --- rivers (combined-worker v2, OPTIONAL) ---
+    # OSM waterway LineStrings (FlatGeobuf — same Overpass pattern fetch_roads_osm
+    # uses). The combined worker may burn them as flow paths / refinement seeds.
+    # Absent when no waterways fetched.
+    if rivers_uri:
+        build_spec["rivers"] = {"lines_uri": rivers_uri}
 
     payload = _json.dumps(build_spec, indent=2, default=str).encode("utf-8")
 
@@ -708,10 +754,15 @@ def _compose_and_upload_deckbuild_spec(
         ) from exc
 
     logger.info(
-        "composed + uploaded cht_sfincs deck-build build_spec -> %s "
-        "(deck_manifest=%s, use_herbers=0)",
+        "composed + uploaded cht_sfincs combined-quadtree build_spec -> %s "
+        "(deck_manifest=%s, use_herbers=1, refinement_levels=%d, max_cells=%d, "
+        "buildings=%s, rivers=%s)",
         build_spec_uri,
         deck_manifest_uri,
+        refine_levels,
+        cell_budget,
+        bool(buildings_uri),
+        bool(rivers_uri),
     )
     return build_spec_uri
 
@@ -1126,6 +1177,46 @@ def _resolve_building_obstacle_uri(
             "model_flood_scenario: fetch_buildings failed for bbox=%s (%s) — "
             "proceeding WITHOUT building obstacles (the flood still runs, just "
             "without footprint masking).",
+            bbox,
+            exc,
+        )
+        return None
+
+
+def _resolve_quadtree_rivers_uri(
+    *,
+    bbox: tuple[float, float, float, float],
+    data_sources: list[DataSource],
+) -> str | None:
+    """Resolve the river-geometry geofile URI for the combined quadtree deck.
+
+    BEST-EFFORT: fetches river/waterway LineStrings for ``bbox`` so the combined
+    worker can burn them into the deck as flow paths / refinement seeds. The agent
+    only POINTS at the geofile — it does NO GIS. Any fetch failure logs + returns
+    ``None`` (the combined run proceeds WITHOUT rivers; same degrade policy as the
+    building footprints + the land/pluvial river branch, job-0307). A successful
+    fetch is recorded as a ``DataSource``. Returns the river geofile URI, or
+    ``None`` when nothing was fetched.
+    """
+    try:
+        from ..tools.data_fetch import fetch_river_geometry
+
+        layer = fetch_river_geometry(bbox, source="nhdplus_hr")
+        uri = getattr(layer, "uri", None)
+        if uri:
+            data_sources.append(
+                DataSource(
+                    name="NHDPlus HR river geometry (combined quadtree deck)",
+                    uri=uri,
+                    accessed_at=datetime.now(timezone.utc),
+                )
+            )
+        return uri
+    except Exception as exc:  # noqa: BLE001 — rivers are optional for the flood
+        logger.warning(
+            "model_flood_scenario: fetch_river_geometry failed for bbox=%s (%s) — "
+            "proceeding WITHOUT rivers in the combined quadtree deck (the flood "
+            "still runs).",
             bbox,
             exc,
         )
@@ -1801,24 +1892,53 @@ async def model_flood_scenario(
     # card shows clear forward motion into Step 7.
     await _emit_presolver_progress(emitter, 40)
 
-    # --- Step 5.5: cht_sfincs quadtree+SnapWave deck-build (coastal North Star) -
-    # When ``quadtree`` is requested, REPLACE the regular-grid deck authoring with
-    # a GPL-isolated cht_sfincs deck-build Batch job: compose a build_spec from the
-    # already-fetched topobathy + the grid/forcing build_sfincs_model computed,
-    # SUBMIT the deck-build job (the agent never imports cht_sfincs), poll its
-    # completion, and use the resulting deck manifest URI for the SAME solve. INERT
-    # until NATE provisions the deck-builder job-def — a DeckBuildError surfaces as
-    # a typed DECK_BUILD_FAILED failed envelope (honest degrade, never silent).
+    # --- Step 5.5: COMBINED cht_sfincs quadtree deck-build + SFINCS solve ---------
+    # When ``quadtree`` is requested, REPLACE the regular-grid deck authoring AND
+    # the separate solve with ONE GPL-isolated combined Batch job: the agent
+    # ASSEMBLES a build_spec from the already-fetched topobathy + OSM buildings +
+    # OSM rivers + the grid/forcing/snapwave params + a cell budget, SUBMITS the
+    # ONE combined job (``run_sfincs_quadtree`` — the agent never imports cht_sfincs
+    # and does NO heavy GIS: the worker derives the refinement polygons + builds +
+    # solves in one image, no S3 deck round-trip), and consumes the SOLVE RunResult
+    # DIRECTLY (sfincs_map.nc in output_uris under the SAME run_id). There is NO
+    # second run_solver call for the quadtree path — the combined job already
+    # solved. INERT until NATE provisions the combined job-def
+    # (GRACE2_AWS_BATCH_JOB_DEF_SFINCS_QUADTREE) — a DeckBuildError surfaces as a
+    # typed DECK_BUILD_FAILED failed envelope (honest degrade, never silent).
     solve_model_setup_uri = model_setup.setup_uri
+    quadtree_run_result: RunResult | None = None
     if quadtree:
         logger.info(
-            "model_flood_scenario: quadtree=True — submitting cht_sfincs "
-            "quadtree+SnapWave deck-build for bbox=%s (topobathy=%s, "
-            "bathymetry_present=%s)",
+            "model_flood_scenario: quadtree=True — assembling build_spec + "
+            "submitting COMBINED cht_sfincs quadtree+SnapWave deck-build + SFINCS "
+            "solve for bbox=%s (topobathy=%s, bathymetry_present=%s)",
             resolved_bbox,
             dem_layer.uri,
             bathymetry_present,
         )
+        # Gather the OSM obstacle/river inputs the worker burns into the deck. Both
+        # are BEST-EFFORT (a fetch failure logs + proceeds WITHOUT that layer; the
+        # flood still runs) — the agent only POINTS the worker at the geofiles, it
+        # never does the GIS itself. ``building_obstacles`` reuses the existing
+        # best-effort OSM-footprint helper (True → fetch, str → verbatim URI).
+        _q_buildings_uri = _resolve_building_obstacle_uri(
+            building_obstacles=building_obstacles or True,
+            bbox=resolved_bbox,
+            data_sources=data_sources,
+        )
+        _q_rivers_uri = _resolve_quadtree_rivers_uri(
+            bbox=resolved_bbox, data_sources=data_sources
+        )
+        # Map the building-obstacle MODE onto the combined worker's burn modes.
+        # The workflow's mode vocabulary is {exclude, raise}; the worker's is
+        # {thin_dams, raise_subgrid, exclude}. Default to thin_dams (walls along
+        # footprint edges — the cheapest physically-faithful obstacle).
+        _q_build_mode = {
+            "exclude": "exclude",
+            "raise": "raise_subgrid",
+            "raise_subgrid": "raise_subgrid",
+            "thin_dams": "thin_dams",
+        }.get((building_obstacle_mode or "thin_dams").strip().lower(), "thin_dams")
         try:
             build_spec_uri = _compose_and_upload_deckbuild_spec(
                 bbox=resolved_bbox,
@@ -1829,35 +1949,51 @@ async def model_flood_scenario(
                 surge_forcing=surge_forcing,
                 grid_resolution_m=grid_resolution_m,
                 duration_hr=float(duration_hr),
+                buildings_uri=_q_buildings_uri,
+                building_obstacle_mode=_q_build_mode,
+                rivers_uri=_q_rivers_uri,
             )
-            # SUBMIT the deck-build Batch job + poll → the deck manifest URI.
-            # Invariant 8: a true cancel propagates out (the deck-build wait
-            # terminates the Batch job). The deck-build solve budget is small.
-            deck_manifest_uri = await build_sfincs_quadtree_deck(
+            # SUBMIT the ONE combined job + poll its completion → the SOLVE
+            # RunResult (sfincs_map.nc). Invariant 8: a true cancel propagates out
+            # (the wait terminates the Batch job). Size the combined build+solve
+            # from the per-case element estimate when available (build+solve is
+            # heavier than the deck-build alone; the solve is the long pole).
+            _q_autoscale = _extract_solve_autoscale(model_setup)
+            _q_elements = _q_autoscale.get("estimated_active_cells")
+            _q_compute_class = (
+                select_compute_class(_q_elements) if _q_elements else "standard"
+            )
+            quadtree_run_result = await run_sfincs_quadtree(
                 build_spec_uri,
-                compute_class="small",
+                compute_class=_q_compute_class,
             )
-            solve_model_setup_uri = deck_manifest_uri
+            solver_run_ids.append(quadtree_run_result.run_id)
             data_sources.append(
                 DataSource(
-                    name="cht_sfincs quadtree+SnapWave deck (GPL Batch worker)",
-                    uri=deck_manifest_uri,
+                    name=(
+                        "cht_sfincs quadtree+SnapWave deck + SFINCS solve "
+                        "(combined GPL Batch worker)"
+                    ),
+                    uri=quadtree_run_result.output_uri
+                    or _default_runs_prefix(quadtree_run_result.run_id),
                     accessed_at=datetime.now(timezone.utc),
                 )
             )
             logger.info(
-                "model_flood_scenario: quadtree deck-build complete -> "
-                "solve manifest %s",
-                deck_manifest_uri,
+                "model_flood_scenario: combined quadtree run complete -> "
+                "run_id=%s status=%s output_uri=%s",
+                quadtree_run_result.run_id,
+                quadtree_run_result.status,
+                quadtree_run_result.output_uri,
             )
         except asyncio.CancelledError:
             raise
         except DeckBuildError as exc:
-            # Inert (no job-def / wrong backend) OR a real deck-build failure —
+            # Inert (no combined job-def / wrong backend) OR a real submit failure —
             # honest typed failed envelope, never a silent degrade to the
             # regular-grid deck (the user asked for quadtree+SnapWave).
             logger.warning(
-                "model_flood_scenario: cht_sfincs deck-build failed "
+                "model_flood_scenario: combined cht_sfincs quadtree job failed "
                 "(error_code=%s) — returning DECK_BUILD_FAILED failed envelope: "
                 "%s",
                 getattr(exc, "error_code", "DECK_BUILD_FAILED"),
@@ -1887,90 +2023,100 @@ async def model_flood_scenario(
     # small one stays cheap. When the estimate is unavailable we fall back to the
     # caller's compute_class (default "medium" == standard) — select_compute_class
     # never raises, so a missing/zero estimate can never crash the dispatch.
-    _autoscale_for_sizing = _extract_solve_autoscale(model_setup)
-    _estimated_elements = _autoscale_for_sizing.get("estimated_active_cells")
-    if _estimated_elements:
-        effective_compute_class = select_compute_class(_estimated_elements)
-        logger.info(
-            "model_flood_scenario: auto vertical scaling estimated_active_cells=%s "
-            "→ compute_class=%s (caller requested %s)",
-            _estimated_elements,
-            effective_compute_class,
-            compute_class,
-        )
+    # The combined quadtree job ALREADY solved (Step 5.5 returned its solve
+    # RunResult); skip the second run_solver + wait_for_completion entirely and
+    # carry that result straight into telemetry + postprocess. The non-quadtree
+    # (regular-grid) path is UNCHANGED.
+    handle: ExecutionHandle | None = None
+    if quadtree_run_result is not None:
+        run_result: RunResult = quadtree_run_result
     else:
-        effective_compute_class = compute_class
-        logger.info(
-            "model_flood_scenario: no element estimate available; using caller "
-            "compute_class=%s for the solve dispatch",
-            compute_class,
-        )
-    try:
-        handle = run_solver(
-            solver="sfincs",
-            # When quadtree=True this is the cht_sfincs deck-build's OUTPUT deck
-            # manifest URI (byte-identical shape to build_sfincs_model's
-            # manifest), so the solve half is unchanged; otherwise it is the
-            # regular-grid model_setup.setup_uri.
-            model_setup_uri=solve_model_setup_uri,
-            compute_class=effective_compute_class,
-        )
-        solver_run_ids.append(handle.run_id)
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("run_solver dispatch failed: %s", exc)
-        return _build_failed_envelope(
-            bbox=resolved_bbox,
-            project_id=proj_id,
-            session_id=sess_id,
-            error_code=getattr(exc, "error_code", "SOLVER_DISPATCH_FAILED"),
-            error_detail=str(exc),
-            workflow_name=workflow_name,
-            data_sources=data_sources,
-            forcing=forcing_summary,
-            solver_run_ids=solver_run_ids,
-            return_period_years=return_period_yr,
-            duration_hours=float(duration_hr),
-            grid_resolution_m=grid_resolution_m,
-        )
-
-    # --- Step 7: wait_for_completion (Invariant 8 cancel chain propagates) ---
-    # LIVE big-sim telemetry (NATE 2026-06-17): drive a solve-progress envelope
-    # on the running card every few seconds for the duration of the solve so the
-    # user sees grid/cells/vCPU/elapsed/ETA tick rather than a silent spinner.
-    # The ETA comes from the perf model (autoscale estimated_solve_seconds) when
-    # available, else None (no fabricated ETA). The driver is a side task that we
-    # cancel as soon as the solve returns/raises — it never affects the outcome.
-    _autoscale = _extract_solve_autoscale(model_setup)
-    _live_active_cells = _autoscale.get("estimated_active_cells")
-    _live_vcpus = _autoscale.get("vcpus")
-    _live_eta = _autoscale.get("estimated_solve_seconds")
-    _progress_task = asyncio.ensure_future(
-        _drive_live_solve_progress(
-            emitter=emitter,
-            run_id=handle.run_id,
-            solver=getattr(handle, "solver", "sfincs") or "sfincs",
-            grid_resolution_m=grid_resolution_m,
-            active_cell_count=(
-                int(_live_active_cells) if _live_active_cells is not None else None
-            ),
-            vcpus=int(_live_vcpus) if _live_vcpus is not None else None,
-            eta_seconds=float(_live_eta) if _live_eta is not None else None,
-        )
-    )
-    try:
-        run_result: RunResult = await wait_for_completion(handle)
-    except asyncio.CancelledError:
-        # Invariant 8: the cancel chain is owned by wait_for_completion;
-        # propagate immediately so the WS handler emits pipeline-state(cancelled).
-        logger.info("model_flood_scenario cancelled while awaiting solver")
-        raise
-    finally:
-        # Tear down the live-progress driver (success, failure, OR cancel).
-        _progress_task.cancel()
+        _autoscale_for_sizing = _extract_solve_autoscale(model_setup)
+        _estimated_elements = _autoscale_for_sizing.get("estimated_active_cells")
+        if _estimated_elements:
+            effective_compute_class = select_compute_class(_estimated_elements)
+            logger.info(
+                "model_flood_scenario: auto vertical scaling "
+                "estimated_active_cells=%s → compute_class=%s (caller requested %s)",
+                _estimated_elements,
+                effective_compute_class,
+                compute_class,
+            )
+        else:
+            effective_compute_class = compute_class
+            logger.info(
+                "model_flood_scenario: no element estimate available; using caller "
+                "compute_class=%s for the solve dispatch",
+                compute_class,
+            )
         try:
-            await _progress_task
-        except (asyncio.CancelledError, Exception):  # noqa: BLE001
-            pass
+            handle = run_solver(
+                solver="sfincs",
+                # The regular-grid model_setup.setup_uri (the quadtree path no
+                # longer reaches here — it solved inside the combined job).
+                model_setup_uri=solve_model_setup_uri,
+                compute_class=effective_compute_class,
+            )
+            solver_run_ids.append(handle.run_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("run_solver dispatch failed: %s", exc)
+            return _build_failed_envelope(
+                bbox=resolved_bbox,
+                project_id=proj_id,
+                session_id=sess_id,
+                error_code=getattr(exc, "error_code", "SOLVER_DISPATCH_FAILED"),
+                error_detail=str(exc),
+                workflow_name=workflow_name,
+                data_sources=data_sources,
+                forcing=forcing_summary,
+                solver_run_ids=solver_run_ids,
+                return_period_years=return_period_yr,
+                duration_hours=float(duration_hr),
+                grid_resolution_m=grid_resolution_m,
+            )
+
+        # --- Step 7: wait_for_completion (Invariant 8 cancel chain propagates) ---
+        # LIVE big-sim telemetry (NATE 2026-06-17): drive a solve-progress envelope
+        # on the running card every few seconds for the duration of the solve so
+        # the user sees grid/cells/vCPU/elapsed/ETA tick rather than a silent
+        # spinner. The ETA comes from the perf model (autoscale
+        # estimated_solve_seconds) when available, else None (no fabricated ETA).
+        # The driver is a side task that we cancel as soon as the solve
+        # returns/raises — it never affects the outcome.
+        _autoscale = _extract_solve_autoscale(model_setup)
+        _live_active_cells = _autoscale.get("estimated_active_cells")
+        _live_vcpus = _autoscale.get("vcpus")
+        _live_eta = _autoscale.get("estimated_solve_seconds")
+        _progress_task = asyncio.ensure_future(
+            _drive_live_solve_progress(
+                emitter=emitter,
+                run_id=handle.run_id,
+                solver=getattr(handle, "solver", "sfincs") or "sfincs",
+                grid_resolution_m=grid_resolution_m,
+                active_cell_count=(
+                    int(_live_active_cells)
+                    if _live_active_cells is not None
+                    else None
+                ),
+                vcpus=int(_live_vcpus) if _live_vcpus is not None else None,
+                eta_seconds=float(_live_eta) if _live_eta is not None else None,
+            )
+        )
+        try:
+            run_result = await wait_for_completion(handle)
+        except asyncio.CancelledError:
+            # Invariant 8: the cancel chain is owned by wait_for_completion;
+            # propagate immediately so the WS handler emits
+            # pipeline-state(cancelled).
+            logger.info("model_flood_scenario cancelled while awaiting solver")
+            raise
+        finally:
+            # Tear down the live-progress driver (success, failure, OR cancel).
+            _progress_task.cancel()
+            try:
+                await _progress_task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
 
     # --- Solve-time telemetry (sprint-16 SFINCS per-job autoscale) ---
     # Accumulate real (active_cells, vCPU, wall_clock) data so the adaptive-grid
