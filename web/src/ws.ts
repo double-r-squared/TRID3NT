@@ -42,6 +42,9 @@ import {
   SessionResumePayload,
   SessionStatePayload,
   SolveProgressPayload,
+  SpatialDrawFeatureCollection,
+  SpatialInputRequestPayload,
+  SpatialInputResponsePayload,
   ToolIoPayload,
   UserMessagePayload,
   envelope,
@@ -151,6 +154,21 @@ export interface WsHandlers {
    * credential-request rationale exactly.
    */
   onRegionChoiceRequest?: (p: RegionChoiceRequestPayload) => void;
+  /**
+   * Spatial-input request (FR-WC-13 pick-mode + FR-WC-16 urban vector-draw).
+   * Emitted when the agent needs the user to pick a point/bbox or DRAW geometry
+   * (AOIs + tagged barrier walls / flap gates) for the urban-flood engine. The
+   * agent PAUSES the turn awaiting the reply (mirrors the region-choice /
+   * credential pause/resume seam). Map.tsx enters pick-mode (point/bbox) or
+   * opens the terra-draw surface (vector_draw); Chat.tsx renders the inline
+   * prompt card. The drawn / picked result rides back via
+   * {@link GraceWs.sendSpatialInputResponse}. `spatial-input-request` is
+   * session-scoped (SESSION_SCOPED_TYPES) so it fans out to Chat's GraceWs even
+   * when the paused tool ran on App.tsx's connection — mirrors the
+   * region-choice / credential rationale exactly. Optional so chat-only callers
+   * can ignore.
+   */
+  onSpatialInputRequest?: (p: SpatialInputRequestPayload) => void;
   /**
    * Tool payload-warning envelope (job-0127, sprint-12-mega Wave 2). Optional
    * so chat-only callers can ignore. Chat.tsx mounts the inline warning card
@@ -436,6 +454,13 @@ const SESSION_SCOPED_TYPES = new Set<string>([
   // connections. Fan it out so the prompt reaches the picker regardless of
   // which socket the paused geocode ran on.
   "region-choice-request",
+  // spatial-input-request is session-scoped for the SAME reason as
+  // region-choice-request: the paused tool (e.g. the urban-flood flow) may
+  // dispatch on Chat.tsx's socket but the pick-mode UI / terra-draw surface +
+  // the inline prompt card live across both Chat + App connections. Fan it out
+  // so the prompt reaches the draw surface regardless of which socket the
+  // paused tool ran on (FR-WC-13 / FR-WC-16).
+  "spatial-input-request",
   "mode2-candidate",
   "tool-payload-warning",
   // Wave 4.11 P4: impact-envelope is session-scoped so App.tsx GraceWs sees it
@@ -868,6 +893,50 @@ export class GraceWs {
   }
 
   /**
+   * Emit a `spatial-input-response` envelope (FR-WC-13 pick-mode + FR-WC-16
+   * urban vector-draw).
+   *
+   * Returns the user's geometry (or a cancellation) on a paused
+   * `spatial-input-request`. `request_id` echoes the pending request verbatim so
+   * the agent resumes the exact paused turn. Three shapes ride this one sender:
+   *
+   *   - geometry_type="point":  coordinates=[lon, lat].
+   *   - geometry_type="bbox":   coordinates=[minLon, minLat, maxLon, maxLat].
+   *   - geometry_type="vector_draw": features = the drawn GeoJSON
+   *     FeatureCollection (role-tagged: "aoi" | "barrier" | "point"; a "barrier"
+   *     LineString also carries barrier_type "wall" | "flap_gate"). The
+   *     role=="barrier" subset is field-for-field the urban (SWMM) engine's
+   *     `barriers` FeatureCollection.
+   *   - cancelled=true:         the user dismissed the request (Invariant 8 —
+   *     cancellation is first-class); geometry fields stay null.
+   */
+  sendSpatialInputResponse(args: {
+    request_id: string;
+    geometry_type?: "point" | "bbox" | "vector_draw" | null;
+    coordinates?: number[] | null;
+    features?: SpatialDrawFeatureCollection | null;
+    cancelled?: boolean;
+  }): void {
+    const cancelled = args.cancelled ?? false;
+    const payload: SpatialInputResponsePayload = {
+      envelope_type: "spatial-input-response",
+      request_id: args.request_id,
+      // On a cancellation the geometry fields stay null (mirrors the pydantic
+      // defaults); otherwise carry exactly the shape for the geometry_type.
+      geometry_type: cancelled ? null : args.geometry_type ?? null,
+      coordinates: cancelled ? null : args.coordinates ?? null,
+      features: cancelled ? null : args.features ?? null,
+      cancelled,
+    };
+    const env: Envelope<SpatialInputResponsePayload> = envelope(
+      "spatial-input-response",
+      this.sessionId,
+      payload,
+    );
+    this.sendEnvelope(env);
+  }
+
+  /**
    * Emit a `tool-payload-confirmation` envelope (job-0127, sprint-12-mega Wave 2).
    *
    * Returns the user's decision on the inline payload-warning card to the
@@ -1230,6 +1299,24 @@ export class GraceWs {
           }
         }
         break;
+      case "spatial-input-request":
+        // Spatial-input prompt (FR-WC-13 pick-mode + FR-WC-16 urban
+        // vector-draw). The agent paused the turn awaiting a point / bbox /
+        // drawn FeatureCollection. Map.tsx enters pick-mode or opens the
+        // terra-draw surface; Chat.tsx renders the inline prompt card. The
+        // user's geometry rides back via sendSpatialInputResponse. Malformed
+        // payloads (missing request_id) are dropped to avoid crashing the React
+        // tree. Optional handler so chat-only callers can ignore.
+        if (this.handlers.onSpatialInputRequest) {
+          const si = payload as unknown as SpatialInputRequestPayload;
+          if (si && typeof si.request_id === "string") {
+            this.handlers.onSpatialInputRequest(si);
+          } else {
+            // eslint-disable-next-line no-console
+            console.warn("[ws] spatial-input-request dropped: missing request_id", payload);
+          }
+        }
+        break;
       case "mode2-candidate":
         // job-0126: Mode 2 candidate envelope from the Wave 1 classifier
         // (services/agent/src/grace2_agent/mode2_classifier.py). App.tsx
@@ -1383,8 +1470,8 @@ export class GraceWs {
         break;
       }
       default:
-        // Ignores tool-call-*, location-resolved, and the pick-mode requests.
-        // Logging only.
+        // Ignores tool-call-* and location-resolved (the spatial-input
+        // pick-mode / vector-draw request is now handled above). Logging only.
         // eslint-disable-next-line no-console
         console.debug("[ws] unhandled frame type:", envType);
     }

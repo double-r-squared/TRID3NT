@@ -512,6 +512,119 @@ export interface RegionChoiceProvidedPayload {
   selected_bbox?: RegionBBox | null;   // chosen region's bbox (echoed) when choice=="region"
 }
 
+// --- Spatial input (pick-mode + FR-WC-16 urban vector-draw) ---------------- //
+//
+// Mirrors packages/contracts/src/grace2_contracts/ws.py
+// (SpatialInputRequestPayload / SpatialInputResponsePayload / SuggestedView /
+// ReferenceLayer). Field names + types match the pydantic schema VERBATIM so the
+// two contracts stay byte-for-byte equivalent in shape.
+//
+// Flow (same future-based pause/resume seam as region-choice / credential):
+//   1. The agent emits `spatial-input-request` (server -> client) and PAUSES the
+//      turn awaiting the reply. `mode` selects the client affordance:
+//        - "point"       -> single click; reply carries coordinates=[lon, lat].
+//        - "bbox"        -> drag rectangle; reply carries
+//                           coordinates=[minLon, minLat, maxLon, maxLat].
+//        - "vector_draw" -> FR-WC-16 urban vector-draw: the client opens a
+//                           terra-draw surface (rectangle / polygon / polyline +
+//                           select-edit); reply carries `features` (a GeoJSON
+//                           FeatureCollection of the drawn geometry).
+//   2. The client emits `spatial-input-response` (client -> server) echoing
+//      request_id. For vector_draw, each Feature.properties carries a `role`
+//      ("aoi" | "barrier" | "point"); a "barrier" LineString also carries
+//      `barrier_type` ("wall" | "flap_gate"), and a "flap_gate" may carry an
+//      optional `flap_direction` ("in" | "out" | numeric bearing) +
+//      `protected_side` ("left" | "right"). The role=="barrier" subset is
+//      field-for-field the tagged-LineString FeatureCollection the urban (SWMM)
+//      engine's `barriers` kwarg accepts.
+//
+// Large-payload note: a drawn FeatureCollection is small by construction (a few
+// short LineString/Polygon rings — kilobytes), so NO payload-warning gate (the
+// 25 MB warn / 250 MB hard-block discipline governs TOOL-OUTPUT payloads, not
+// this small user-drawn input). No cap is imposed here beyond shape validation.
+
+/** A minimal GeoJSON position: [lon, lat] (EPSG:4326, lon-first). */
+export type GeoJSONPosition = [number, number] | number[];
+
+/** A minimal GeoJSON geometry (Point / LineString / Polygon — the shapes the
+ * vector-draw surface produces). Loosely typed (coordinates nest by geometry
+ * type) to mirror the pydantic `dict[str, Any]` structural-only validation. */
+export interface GeoJSONGeometry {
+  type: "Point" | "LineString" | "Polygon" | string;
+  coordinates: unknown;
+}
+
+/** The `role` a drawn feature plays (mirrors the ws.py validator vocabulary). */
+export type SpatialDrawRole = "aoi" | "barrier" | "point";
+
+/** Per-segment barrier tag on a role=="barrier" LineString (mirrors
+ * swmm_contracts.BarrierType). */
+export type BarrierType = "wall" | "flap_gate";
+
+/** Optional one-way orientation of a flap gate: a closed enum OR a numeric
+ * bearing in degrees. */
+export type FlapDirection = "in" | "out" | number;
+
+/** Properties carried on a drawn Feature. `role` is required; the barrier
+ * fields are present only on role=="barrier" features. */
+export interface SpatialDrawFeatureProperties {
+  role: SpatialDrawRole;
+  barrier_type?: BarrierType;         // role=="barrier": "wall" | "flap_gate"
+  flap_direction?: FlapDirection;     // role=="barrier" && flap_gate: optional
+  protected_side?: "left" | "right";  // role=="barrier": optional dry-side hint
+  [key: string]: unknown;             // forward-compatible extra props
+}
+
+/** One drawn GeoJSON Feature with role-tagged properties. */
+export interface SpatialDrawFeature {
+  type: "Feature";
+  geometry: GeoJSONGeometry;
+  properties: SpatialDrawFeatureProperties;
+}
+
+/** The drawn FeatureCollection round-tripped on a vector_draw response. */
+export interface SpatialDrawFeatureCollection {
+  type: "FeatureCollection";
+  features: SpatialDrawFeature[];
+}
+
+/** An optional helper layer shown only during a spatial-input request
+ * (mirrors ws.ReferenceLayer). */
+export interface ReferenceLayer {
+  layer_id: string;
+  wms_url: string;
+  style_preset: string;
+}
+
+/** Where the client zooms to make picking easier (mirrors ws.SuggestedView). */
+export interface SuggestedView {
+  bbox: RegionBBox;  // EPSG:4326 [minLon, minLat, maxLon, maxLat]
+  zoom: number;
+}
+
+/** `spatial-input-request` (A.4) — server -> client asks the user for geometry. */
+export interface SpatialInputRequestPayload {
+  envelope_type?: "spatial-input-request";
+  request_id: string;                          // ULID; echoed back on the response
+  mode: "point" | "bbox" | "vector_draw";      // pick affordance / draw surface
+  title: string;
+  description: string;
+  suggested_view?: SuggestedView | null;       // camera hint for the pick
+  reference_layers?: ReferenceLayer[];          // optional helper layers
+  default_timeout_seconds?: number;             // fail-open timeout (default 300)
+}
+
+/** `spatial-input-response` (A.4b) — client -> server the user's geometry, or
+ * a cancellation. point/bbox set `coordinates`; vector_draw sets `features`. */
+export interface SpatialInputResponsePayload {
+  envelope_type?: "spatial-input-response";
+  request_id: string;                                   // echoes the request
+  geometry_type?: "point" | "bbox" | "vector_draw" | null;
+  coordinates?: number[] | null;                        // point=[lon,lat]; bbox=[minLon,minLat,maxLon,maxLat]
+  features?: SpatialDrawFeatureCollection | null;       // vector_draw: drawn geometry
+  cancelled?: boolean;                                  // true = user dismissed
+}
+
 // --- Case persistence envelopes (job-0137, sprint-12-mega Wave 3 — FR-MP-6) //
 //
 // Mirrors packages/contracts/src/grace2_contracts/case.py (the canonical

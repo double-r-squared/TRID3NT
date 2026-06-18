@@ -324,6 +324,10 @@ PRIMARY_CATEGORY: dict[str, str] = {
     # NATE 2026-06-17: fast layer-extent + fit-the-map tool. Replaces the
     # sandbox bbox-math anti-pattern and drives the zoom-to map-command.
     "compute_layer_bounds": "geographic_primitives",
+    # FR-AS-10 / FR-WC-16: pause-the-turn and ask the user to DRAW on the map
+    # (AOI + tagged flood walls / flap gates, or a point/bbox pick). The drawn
+    # barriers feed run_swmm_urban_flood; cross-cutting view/input action.
+    "request_spatial_input": "geographic_primitives",
     "summarize_layer_statistics": "geographic_primitives",
     "count_features_above_threshold": "geographic_primitives",
     "aggregate_property_within_zone": "geographic_primitives",
@@ -427,6 +431,13 @@ HOT_SET_TOOLS: frozenset[str] = frozenset(
         # sandbox for bbox math when compute_layer_bounds isn't in the allowed
         # set (the job-0247 / job-0261 failure mode).
         "compute_layer_bounds",
+        # FR-AS-10 / FR-WC-16: request_spatial_input is a cross-cutting user-
+        # input action the agent invokes at any point ("let me draw the flood
+        # walls"). Same hot-set rationale as code_exec_request / compute_layer_
+        # bounds — it must be reachable WITHOUT a category-open round-trip so the
+        # urban-flood draw flow does not stall on the post-hoc allowed-set
+        # validator (the job-0247 / job-0261 failure mode).
+        "request_spatial_input",
     }
 )
 

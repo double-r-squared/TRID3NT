@@ -60,6 +60,11 @@ import {
   Hexagon,
   Brain,
   FadersHorizontal,
+  Polygon,
+  LineSegment,
+  Scissors,
+  FlowArrow,
+  MapPin,
 } from '@phosphor-icons/react';
 
 /** Shared public API for every wrapped icon in this module. */
@@ -145,3 +150,9 @@ export const IconModel = makeIcon(Brain, 'IconModel');
 // Composer "mode" toggle (research / standard mode). Faders glyph reads as a
 // settings/mode control without the literal "Mode" text label (NATE 2026-06-17).
 export const IconMode = makeIcon(FadersHorizontal, 'IconMode');
+// FR-WC-16 urban vector-draw toolbar glyphs.
+export const IconPolygon = makeIcon(Polygon, 'IconPolygon');
+export const IconLine = makeIcon(LineSegment, 'IconLine');
+export const IconSnip = makeIcon(Scissors, 'IconSnip');
+export const IconFlowArrow = makeIcon(FlowArrow, 'IconFlowArrow');
+export const IconMapPin = makeIcon(MapPin, 'IconMapPin');

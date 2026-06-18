@@ -22,9 +22,9 @@ Invariants this module is responsible for:
 
 from __future__ import annotations
 
-from typing import ClassVar, Generic, Literal, TypeVar
+from typing import Any, ClassVar, Generic, Literal, TypeVar
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from .common import (
     BBox,
@@ -213,17 +213,138 @@ class SessionResumePayload(GraceModel):
 class SpatialInputResponsePayload(GraceModel):
     """``spatial-input-response`` (A.4b): user picked a geometry, or cancelled.
 
-    For a geometry response: ``geometry_type`` + ``coordinates`` are set
-    (``[lon, lat]`` for point, ``[minLon, minLat, maxLon, maxLat]`` for bbox).
-    For a cancellation: ``cancelled=True`` and the geometry fields stay None.
+    Three shapes ride this one payload, keyed by ``geometry_type``:
+
+    - ``"point"`` / ``"bbox"`` — the original FR-WC-13 pick-mode reply:
+      ``coordinates`` is set (``[lon, lat]`` for point,
+      ``[minLon, minLat, maxLon, maxLat]`` for bbox); ``features`` stays None.
+    - ``"vector_draw"`` — the FR-WC-16 urban vector-draw reply: ``features`` is
+      a GeoJSON ``FeatureCollection`` of the drawn geometry; ``coordinates``
+      stays None. Each ``Feature.properties`` carries a ``role`` ∈
+      {``"aoi"``, ``"barrier"``, ``"point"``}. For a ``"barrier"`` LineString,
+      ``properties.barrier_type`` ∈ {``"wall"``, ``"flap_gate"``} (mirrors
+      ``swmm_contracts.BarrierType``) and, for a ``"flap_gate"``, an OPTIONAL
+      ``properties.flap_direction`` ∈ {``"in"``, ``"out"``} (or a numeric
+      bearing) recording the one-way orientation; an OPTIONAL
+      ``properties.protected_side`` ∈ {``"left"``, ``"right"``} mirrors the
+      engine seam (``swmm_mesh_builder._resolve_protected``).
+    - For a cancellation: ``cancelled=True`` and every geometry field stays
+      None.
+
+    The drawn ``features`` round-trips straight into the urban engine: the
+    ``"barrier"`` features are exactly the tagged-``LineString``
+    ``FeatureCollection`` that ``swmm_contracts.SWMMRunArgs.barriers`` accepts
+    (filter to ``role == "barrier"`` and they validate field-for-field).
+
+    Large-payload note (Invariant + large-payload norm): a drawn
+    ``FeatureCollection`` is small by construction (a handful of short
+    ``LineString`` / ``Polygon`` rings — kilobytes, not the megabytes a raster
+    fetch produces), so NO ``estimate_payload_mb`` / payload-warning gate
+    applies to it. The 25 MB warn / 250 MB hard-block discipline
+    (``payload_warning.py``) governs TOOL-OUTPUT payloads, not this small
+    user-drawn input; no cap is imposed here beyond the structural validator.
     """
 
     MESSAGE_TYPE: ClassVar[str] = "spatial-input-response"
 
     request_id: ULIDStr
-    geometry_type: Literal["point", "bbox"] | None = None
+    geometry_type: Literal["point", "bbox", "vector_draw"] | None = None
     coordinates: list[float] | None = None
+    features: dict[str, Any] | None = None
     cancelled: bool = False
+
+    @field_validator("features")
+    @classmethod
+    def _validate_features(
+        cls, value: dict[str, Any] | None
+    ) -> dict[str, Any] | None:
+        """Structurally validate the drawn GeoJSON ``FeatureCollection``.
+
+        Validates STRUCTURE only (no geometry-library dependency in contracts),
+        mirroring ``swmm_contracts._validate_barrier_feature_collection``:
+        a ``FeatureCollection`` whose every ``Feature`` carries a
+        ``properties.role`` ∈ {"aoi", "barrier", "point"}; a ``"barrier"``
+        feature must be a ``LineString`` (>= 2 positions) tagged with
+        ``properties.barrier_type`` ∈ {"wall", "flap_gate"}.
+        """
+        if value is None:
+            return None
+        return _validate_spatial_input_feature_collection(value)
+
+
+def _validate_spatial_input_feature_collection(
+    fc: dict[str, Any],
+) -> dict[str, Any]:
+    """Shared structural validator for a role-tagged drawn FeatureCollection.
+
+    Enforces FR-WC-16's role + per-segment barrier vocabulary while staying a
+    pure-structure check (no shapely/geojson import in the contracts package).
+    """
+    if fc.get("type") != "FeatureCollection":
+        raise ValueError(
+            f"features must be a GeoJSON FeatureCollection, "
+            f"got type={fc.get('type')!r}"
+        )
+    feats = fc.get("features")
+    if not isinstance(feats, list):
+        raise ValueError("features.features must be a list")
+    valid_roles = {"aoi", "barrier", "point"}
+    valid_barrier_types = {"wall", "flap_gate"}
+    valid_flap_directions = {"in", "out"}
+    valid_protected_sides = {"left", "right"}
+    for idx, feat in enumerate(feats):
+        if not isinstance(feat, dict) or feat.get("type") != "Feature":
+            raise ValueError(f"features.features[{idx}] must be a GeoJSON Feature")
+        geom = feat.get("geometry")
+        if not isinstance(geom, dict) or "type" not in geom:
+            raise ValueError(
+                f"features.features[{idx}].geometry must be a GeoJSON geometry"
+            )
+        props = feat.get("properties") or {}
+        role = props.get("role")
+        if role not in valid_roles:
+            raise ValueError(
+                f"features.features[{idx}].properties.role must be one of "
+                f"{sorted(valid_roles)}, got {role!r}"
+            )
+        if role == "barrier":
+            if geom.get("type") != "LineString":
+                raise ValueError(
+                    f"features.features[{idx}] role='barrier' geometry must be a "
+                    f"LineString (got {geom.get('type')!r})"
+                )
+            coords = geom.get("coordinates")
+            if not isinstance(coords, list) or len(coords) < 2:
+                raise ValueError(
+                    f"features.features[{idx}].geometry.coordinates must be a "
+                    f"LineString with >= 2 positions"
+                )
+            tag = props.get("barrier_type")
+            if tag not in valid_barrier_types:
+                raise ValueError(
+                    f"features.features[{idx}].properties.barrier_type must be "
+                    f"one of {sorted(valid_barrier_types)}, got {tag!r}"
+                )
+            # flap_direction is OPTIONAL; when present it is a closed enum OR a
+            # numeric bearing (degrees). protected_side is OPTIONAL closed enum.
+            flap_dir = props.get("flap_direction")
+            if (
+                flap_dir is not None
+                and flap_dir not in valid_flap_directions
+                and not isinstance(flap_dir, (int, float))
+            ):
+                raise ValueError(
+                    f"features.features[{idx}].properties.flap_direction must be "
+                    f"one of {sorted(valid_flap_directions)} or a numeric "
+                    f"bearing, got {flap_dir!r}"
+                )
+            protected = props.get("protected_side")
+            if protected is not None and protected not in valid_protected_sides:
+                raise ValueError(
+                    f"features.features[{idx}].properties.protected_side must be "
+                    f"one of {sorted(valid_protected_sides)}, got {protected!r}"
+                )
+    return fc
 
 
 class DisambiguationResponsePayload(GraceModel):
@@ -638,12 +759,26 @@ class SuggestedView(GraceModel):
 
 
 class SpatialInputRequestPayload(GraceModel):
-    """``spatial-input-request`` (A.4): agent needs the user to pick a geometry."""
+    """``spatial-input-request`` (A.4): agent needs the user to pick a geometry.
+
+    ``mode`` selects the client pick affordance:
+
+    - ``"point"`` — single map click; the reply carries ``coordinates=[lon, lat]``.
+    - ``"bbox"`` — a drag-rectangle; the reply carries
+      ``coordinates=[minLon, minLat, maxLon, maxLat]``.
+    - ``"vector_draw"`` — FR-WC-16 urban vector-draw: the client opens a
+      terra-draw surface (rectangle / polygon / polyline + select-edit) and the
+      reply carries ``features`` (a GeoJSON ``FeatureCollection`` with
+      ``role``-tagged + per-segment ``barrier_type``/``flap_direction``
+      properties). Use this when the agent needs the user to draw AOIs and
+      tagged structural barriers (walls / flap gates) for the urban-flood
+      (SWMM) engine.
+    """
 
     MESSAGE_TYPE: ClassVar[str] = "spatial-input-request"
 
     request_id: ULIDStr
-    mode: Literal["point", "bbox"]  # polygon deferred
+    mode: Literal["point", "bbox", "vector_draw"]
     title: str
     description: str
     suggested_view: SuggestedView | None = None

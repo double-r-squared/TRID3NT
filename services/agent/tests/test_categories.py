@@ -226,15 +226,19 @@ def test_list_tools_in_category_is_registered() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_hot_set_has_eleven_tools() -> None:
+def test_hot_set_has_twelve_tools() -> None:
     """Hot set: the original 8 (Wave 4.10 kickoff) + code_exec_request
     (job-0247 — cross-cutting capability, see OQ-0247-CODE-EXEC-NOT-IN-HOT-SET)
     + fetch_nws_event (job-0261 — validator rejected Gemini's correct
     state-scoped NWS call; the CONUS fallback spilled alerts nationwide)
     + compute_layer_bounds (NATE 2026-06-17 — fit/zoom/resize-to-encompass-all
     must be reachable without a category-open round-trip, else the agent falls
-    back to the Python sandbox for bbox math, same failure mode as job-0247)."""
-    assert len(HOT_SET_TOOLS) == 11
+    back to the Python sandbox for bbox math, same failure mode as job-0247)
+    + request_spatial_input (FR-AS-10 / FR-WC-16 — pause-the-turn user-draw
+    action invoked at any point; same hot-set rationale as code_exec_request /
+    compute_layer_bounds, else the urban-flood draw flow stalls on the post-hoc
+    allowed-set validator)."""
+    assert len(HOT_SET_TOOLS) == 12
 
 
 def test_hot_set_contains_required_anchors() -> None:
@@ -247,7 +251,10 @@ def test_hot_set_contains_required_anchors() -> None:
     texas' and rendered alerts in surrounding states), and
     compute_layer_bounds (NATE 2026-06-17: fit/zoom/resize-the-view is a
     cross-cutting action invoked at any point; keeping it always-reachable
-    stops the agent from reaching for the Python sandbox for bbox math)."""
+    stops the agent from reaching for the Python sandbox for bbox math), and
+    request_spatial_input (FR-AS-10 / FR-WC-16: the pause-the-turn user-draw
+    action for AOIs + flood walls / flap gates — same always-reachable
+    rationale, so the urban-flood draw flow does not stall on the validator)."""
     required = {
         "list_categories",
         "list_tools_in_category",
@@ -260,6 +267,7 @@ def test_hot_set_contains_required_anchors() -> None:
         "run_model_flood_habitat_scenario",
         "code_exec_request",
         "compute_layer_bounds",
+        "request_spatial_input",
     }
     assert required == HOT_SET_TOOLS
 

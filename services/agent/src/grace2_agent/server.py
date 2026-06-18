@@ -80,6 +80,8 @@ from grace2_contracts.ws import (
     PipelineStep,
     SessionResumePayload,
     SessionStatePayload,
+    SpatialInputRequestPayload,
+    SpatialInputResponsePayload,
     UserMessagePayload,
 )
 
@@ -155,6 +157,10 @@ from .scenario_reuse import (
     get_scenario_index,
     scenario_signature,
     scenario_type_for_tool,
+)
+from .spatial_input import (
+    SpatialInputParseError,
+    parse_spatial_input_features,
 )
 from .tools import TOOL_REGISTRY
 from .tools.chart_tools import is_chart_emission_result
@@ -536,6 +542,64 @@ def _resolve_pending_region_choice(
         return False
     fut.set_result(provided)
     _PENDING_REGION_CHOICES.pop(provided.request_id, None)
+    return True
+
+
+# --------------------------------------------------------------------------- #
+# Session-scoped pending-SPATIAL-INPUT registry (FR-AS-10 request_spatial_input)
+# --------------------------------------------------------------------------- #
+#
+# Mirrors ``_PENDING_REGION_CHOICES`` exactly, but for the FR-WC-16 urban
+# vector-draw flow: when the LLM (or the urban-flood flow) calls
+# ``request_spatial_input``, the dispatch coroutine emits a
+# ``spatial-input-request`` envelope (point / bbox / vector_draw) and pauses on a
+# future keyed by the request ``request_id``. The inbound
+# ``spatial-input-response`` handler (which may arrive on a DIFFERENT WebSocket
+# connection of the same session — StrictMode double-mount / reconnect) resolves
+# the future with the drawn ``FeatureCollection`` (or a cancellation). Tagged
+# with the owning session_id so a cross-session response is refused. Fail-open:
+# on timeout / no client the gate resolves to ``None`` and the caller surfaces a
+# typed "no geometry drawn" result (honest — never a fabricated AOI/barriers).
+_PENDING_SPATIAL_INPUTS: dict[str, tuple[str, asyncio.Future]] = {}
+
+
+def _register_pending_spatial_input(
+    session_id: str, request_id: str, fut: "asyncio.Future"
+) -> None:
+    _PENDING_SPATIAL_INPUTS[request_id] = (session_id, fut)
+
+
+def _pop_pending_spatial_input(request_id: str) -> None:
+    _PENDING_SPATIAL_INPUTS.pop(request_id, None)
+
+
+def _resolve_pending_spatial_input(
+    session_id: str, response: "SpatialInputResponsePayload"
+) -> bool:
+    """Complete the pending spatial-input future for ``response.request_id``.
+
+    Returns True when a live future was resolved. False when the request_id is
+    unknown/already-resolved, or when the answering session is not the owner
+    (refused loudly — mirrors ``_resolve_pending_region_choice``).
+    """
+    entry = _PENDING_SPATIAL_INPUTS.get(response.request_id)
+    if entry is None:
+        return False
+    owner_session, fut = entry
+    if owner_session != session_id:
+        logger.warning(
+            "spatial-input-response REFUSED: session=%s is not the owner "
+            "(owner=%s) for request_id=%s",
+            session_id,
+            owner_session,
+            response.request_id,
+        )
+        return False
+    if fut.done():
+        _PENDING_SPATIAL_INPUTS.pop(response.request_id, None)
+        return False
+    fut.set_result(response)
+    _PENDING_SPATIAL_INPUTS.pop(response.request_id, None)
     return True
 
 
@@ -1742,6 +1806,28 @@ async def _stream_gemini_reply(
                     result = await _invoke_tool_via_emitter(
                         websocket, state, call.name, call.args
                     )
+                    # FR-AS-10 / FR-WC-16: request_spatial_input PAUSES the turn
+                    # awaiting a user-drawn FeatureCollection. The catalog tool
+                    # returns the SPATIAL_INPUT_SENTINEL_KEY sentinel (it has no
+                    # websocket access); here — where the live socket + the
+                    # session future registry ARE reachable — we emit the
+                    # spatial-input-request, await the drawn reply, and REPLACE
+                    # ``result`` with the parsed, role-split geometry (the clean
+                    # engine-ready ``barriers`` FeatureCollection + ``aoi_bbox`` +
+                    # ``points``). The LLM then calls run_swmm_urban_flood with
+                    # ``barriers=`` straight from this result. Mirrors the
+                    # geocode_location -> region-choice pause/resume seam.
+                    # Fail-open: timeout / cancel / no client / malformed draw all
+                    # become a TYPED result (honesty floor), never a fabricated
+                    # AOI/barriers.
+                    if (
+                        call.name == "request_spatial_input"
+                        and isinstance(result, dict)
+                        and result.get(SPATIAL_INPUT_SENTINEL_KEY) is True
+                    ):
+                        result = await _handle_request_spatial_input(
+                            websocket, state, call.args or {}
+                        )
                     # Wave 4.11 Follow-up A: emit ``impact-envelope`` WS envelope
                     # whenever ``compute_impact_envelope`` returns a result that
                     # carries a valid ImpactEnvelope (key signal: ``raw_envelope``
@@ -4853,6 +4939,297 @@ async def _maybe_handle_region_choice(
         )
 
 
+# --------------------------------------------------------------------------- #
+# FR-AS-10: request_spatial_input — pause the turn, await the drawn geometry.
+# --------------------------------------------------------------------------- #
+#
+# Mirrors the region-choice pause/resume seam (``_emit_region_choice_and_wait``).
+# The LLM-facing ``request_spatial_input`` tool (tools/spatial_input_tool.py)
+# returns a sentinel result that this interception in the turn loop replaces with
+# the parsed, role-split drawn geometry — so the tool surface stays catalog-clean
+# while the actual websocket pause/resume lives here (where the live socket +
+# session future registry are reachable). The drawn barriers FeatureCollection
+# round-trips straight into ``run_swmm_urban_flood(barriers=...)``.
+
+# Sentinel result the ``request_spatial_input`` catalog tool returns; the turn
+# loop detects it and replaces it with the real drawn-geometry result.
+SPATIAL_INPUT_SENTINEL_KEY = "_request_spatial_input"
+
+
+def _build_spatial_input_request_payload(
+    *,
+    request_id: str,
+    call_args: dict[str, Any],
+) -> "SpatialInputRequestPayload | None":
+    """Build a validated ``spatial-input-request`` from the LLM tool args.
+
+    ``call_args`` is what the LLM passed to ``request_spatial_input`` (mode /
+    title / description / optional suggested_view + reference_layers). Returns
+    ``None`` when the args cannot form a valid payload (the caller then surfaces a
+    typed param error — never silently emits a malformed prompt).
+    """
+    mode = call_args.get("mode") or "vector_draw"
+    title = str(call_args.get("title") or "Draw on the map")
+    description = str(
+        call_args.get("description")
+        or "Draw the area of interest and any flood walls or flap gates."
+    )
+    payload_kwargs: dict[str, Any] = {
+        "request_id": request_id,
+        "mode": mode,
+        "title": title[:200],
+        "description": description[:1024],
+    }
+    # suggested_view: {bbox: [..4..], zoom: float} — optional camera hint.
+    sv = call_args.get("suggested_view")
+    if isinstance(sv, dict) and isinstance(sv.get("bbox"), (list, tuple)):
+        bbox = sv["bbox"]
+        if len(bbox) == 4:
+            try:
+                payload_kwargs["suggested_view"] = {
+                    "bbox": (
+                        float(bbox[0]),
+                        float(bbox[1]),
+                        float(bbox[2]),
+                        float(bbox[3]),
+                    ),
+                    "zoom": float(sv.get("zoom", 13.0)),
+                }
+            except (TypeError, ValueError):
+                pass
+    to = call_args.get("default_timeout_seconds")
+    if isinstance(to, (int, float)) and to > 0:
+        payload_kwargs["default_timeout_seconds"] = int(to)
+    try:
+        return SpatialInputRequestPayload(**payload_kwargs)
+    except ValidationError:
+        logger.warning(
+            "spatial-input: request payload validation failed args=%s",
+            call_args,
+            exc_info=True,
+        )
+        return None
+
+
+async def _emit_spatial_input_and_wait(
+    websocket: ServerConnection,
+    state: SessionState,
+    payload: "SpatialInputRequestPayload",
+) -> "SpatialInputResponsePayload | None":
+    """Emit a ``spatial-input-request`` and await ``spatial-input-response``.
+
+    Blocks on a future keyed by ``payload.request_id`` (registered in the
+    session-scoped ``_PENDING_SPATIAL_INPUTS`` registry so a reply on a sibling
+    connection still resolves it — StrictMode double-mount / reconnect). Returns
+    the ``SpatialInputResponsePayload`` on reply, or ``None`` on timeout (the gate
+    gets the same read-decision TTL as the credential / region-choice gates —
+    fail-open to a typed "no geometry drawn" result, never a hung turn).
+    """
+    loop = asyncio.get_running_loop()
+    fut: asyncio.Future = loop.create_future()
+    _register_pending_spatial_input(state.session_id, payload.request_id, fut)
+
+    await websocket.send(
+        _new_envelope("spatial-input-request", state.session_id, payload)
+    )
+    logger.info(
+        "spatial-input-request emitted session=%s mode=%s request_id=%s",
+        state.session_id,
+        payload.mode,
+        payload.request_id,
+    )
+
+    try:
+        response: SpatialInputResponsePayload = await asyncio.wait_for(
+            fut, timeout=payload.default_timeout_seconds
+        )
+    except asyncio.TimeoutError:
+        logger.info(
+            "spatial-input-request timeout session=%s request_id=%s; "
+            "no geometry drawn",
+            state.session_id,
+            payload.request_id,
+        )
+        return None
+    finally:
+        _pop_pending_spatial_input(payload.request_id)
+
+    logger.info(
+        "spatial-input-response received session=%s request_id=%s "
+        "cancelled=%s geometry_type=%s",
+        state.session_id,
+        payload.request_id,
+        response.cancelled,
+        response.geometry_type,
+    )
+    return response
+
+
+def _spatial_response_to_result(
+    response: "SpatialInputResponsePayload | None",
+) -> dict[str, Any]:
+    """Translate a ``spatial-input-response`` into the tool result the LLM reads.
+
+    The result the LLM sees after ``request_spatial_input`` resumes:
+
+    - timeout / no client (``response is None``)  ->
+      ``{status: "error", error_code: "SPATIAL_INPUT_TIMEOUT", ...}``.
+    - explicit cancellation                       ->
+      ``{status: "cancelled", ...}``.
+    - point / bbox reply                          ->
+      ``{status: "ok", geometry_type, coordinates}``.
+    - vector_draw reply                           ->
+      ``{status: "ok", geometry_type: "vector_draw", aoi_bbox, barriers,
+         n_walls, n_flap_gates, points, n_aoi}`` — ``barriers`` is the clean
+      engine-ready FeatureCollection (pass straight to
+      ``run_swmm_urban_flood(barriers=...)``).
+    - structurally invalid drawn FC               ->
+      ``{status: "error", error_code: "SPATIAL_INPUT_<...>", ...}`` (honesty
+      floor — malformed geometry NEVER reads as a success).
+    """
+    if response is None:
+        return {
+            "status": "error",
+            "error_code": "SPATIAL_INPUT_TIMEOUT",
+            "error_message": (
+                "No drawing was received from the user (the spatial-input "
+                "request timed out or no interactive client was connected). "
+                "Ask the user to draw the area / barriers, or proceed without "
+                "them — do not invent a geometry."
+            ),
+        }
+    if response.cancelled:
+        return {
+            "status": "cancelled",
+            "message": (
+                "The user cancelled the drawing. No area or barriers were "
+                "provided; do not fabricate any — ask how they want to proceed."
+            ),
+        }
+    gtype = response.geometry_type
+    if gtype in ("point", "bbox"):
+        if not response.coordinates:
+            return {
+                "status": "error",
+                "error_code": "SPATIAL_INPUT_MISSING_COORDINATES",
+                "error_message": (
+                    f"spatial-input-response geometry_type={gtype!r} carried no "
+                    f"coordinates."
+                ),
+            }
+        return {
+            "status": "ok",
+            "geometry_type": gtype,
+            "coordinates": list(response.coordinates),
+        }
+    if gtype == "vector_draw":
+        if not isinstance(response.features, dict):
+            return {
+                "status": "error",
+                "error_code": "SPATIAL_INPUT_MISSING_FEATURES",
+                "error_message": (
+                    "vector_draw response carried no features FeatureCollection."
+                ),
+            }
+        try:
+            parsed = parse_spatial_input_features(response.features)
+        except SpatialInputParseError as exc:
+            # Honesty floor: a malformed drawn FeatureCollection degrades to a
+            # TYPED error result, never a silent success.
+            return {
+                "status": "error",
+                "error_code": exc.error_code,
+                "error_message": (
+                    f"The drawn geometry could not be used: {exc}. Ask the "
+                    f"user to redraw; do not fabricate barriers or an AOI."
+                ),
+            }
+        result: dict[str, Any] = {
+            "status": "ok",
+            "geometry_type": "vector_draw",
+            "n_walls": parsed.n_walls,
+            "n_flap_gates": parsed.n_flap_gates,
+            "n_aoi": len(parsed.aoi_features),
+            "points": parsed.points,
+        }
+        if parsed.aoi_bbox is not None:
+            result["aoi_bbox"] = list(parsed.aoi_bbox)
+        if parsed.barriers is not None:
+            # The clean, engine-ready barriers FeatureCollection — pass straight
+            # to run_swmm_urban_flood(barriers=...). It validates field-for-field
+            # against SWMMRunArgs.barriers.
+            result["barriers"] = parsed.barriers
+        return result
+    return {
+        "status": "error",
+        "error_code": "SPATIAL_INPUT_UNKNOWN_GEOMETRY",
+        "error_message": (
+            f"spatial-input-response had unknown geometry_type={gtype!r}."
+        ),
+    }
+
+
+async def _handle_request_spatial_input(
+    websocket: ServerConnection,
+    state: SessionState,
+    call_args: dict[str, Any],
+) -> dict[str, Any]:
+    """Drive one ``request_spatial_input`` turn-pause and return the LLM result.
+
+    Builds the request from the LLM args, emits it, PAUSES the turn awaiting the
+    drawn geometry, then parses + role-splits the reply into the engine-ready
+    result. Never raises — every failure path (no client, validation, parse,
+    timeout, cancellation) becomes a typed result the LLM narrates honestly. The
+    ``role=="barrier"`` features become the ``barriers`` FeatureCollection that
+    feeds ``run_swmm_urban_flood`` -> ``SWMMRunArgs.barriers`` -> the existing
+    ``build_swmm_mesh`` wall=omit-conduit / flap_gate=one-way-orifice seam.
+    """
+    if state.emitter is None:
+        # No interactive surface bound (e.g. headless eval). Honest typed error.
+        return {
+            "status": "error",
+            "error_code": "SPATIAL_INPUT_NO_CLIENT",
+            "error_message": (
+                "No interactive map client is connected, so the user cannot "
+                "draw. Proceed without drawn barriers / AOI, or ask the user to "
+                "provide a bbox in text."
+            ),
+        }
+    request_id = new_ulid()
+    payload = _build_spatial_input_request_payload(
+        request_id=request_id, call_args=call_args
+    )
+    if payload is None:
+        return {
+            "status": "error",
+            "error_code": "SPATIAL_INPUT_PARAMS_INVALID",
+            "error_message": (
+                "Could not build a valid spatial-input request from the given "
+                "mode/title/description."
+            ),
+        }
+    try:
+        response = await _emit_spatial_input_and_wait(websocket, state, payload)
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 — degrade to a typed result, never crash
+        logger.warning(
+            "spatial-input emit/wait failed session=%s request_id=%s",
+            state.session_id,
+            request_id,
+            exc_info=True,
+        )
+        return {
+            "status": "error",
+            "error_code": "SPATIAL_INPUT_FAILED",
+            "error_message": (
+                "The spatial-input request failed unexpectedly; no geometry was "
+                "received. Do not fabricate barriers or an AOI."
+            ),
+        }
+    return _spatial_response_to_result(response)
+
+
 async def _invoke_tool_via_emitter(
     websocket: ServerConnection,
     state: SessionState,
@@ -6929,9 +7306,47 @@ def _make_handler(settings: GeminiSettings):
                             rc.choice,
                         )
 
+                    elif msg_type == "spatial-input-response":
+                        # FR-AS-10 / FR-WC-16: the user finished (or cancelled)
+                        # the terra-draw surface. Resolve the paused
+                        # request_spatial_input future so the dispatch coroutine
+                        # parses the drawn FeatureCollection into engine-ready
+                        # barriers / AOI / points. Mirrors region-choice-provided
+                        # — may arrive on a sibling connection of the session.
+                        try:
+                            sr = SpatialInputResponsePayload.model_validate(
+                                payload_dict
+                            )
+                        except ValidationError as ve:
+                            await _send_error(
+                                websocket,
+                                state.session_id,
+                                "TOOL_PARAMS_INVALID",
+                                f"spatial-input-response invalid: "
+                                f"{ve.errors()[0]['msg']}",
+                            )
+                            continue
+                        if not _resolve_pending_spatial_input(
+                            state.session_id, sr
+                        ):
+                            logger.warning(
+                                "spatial-input-response for unknown/closed "
+                                "request_id=%s session=%s",
+                                sr.request_id,
+                                state.session_id,
+                            )
+                            continue
+                        logger.info(
+                            "spatial-input-response accepted session=%s "
+                            "request_id=%s cancelled=%s geometry_type=%s",
+                            state.session_id,
+                            sr.request_id,
+                            sr.cancelled,
+                            sr.geometry_type,
+                        )
+
                     elif msg_type in (
                         "confirm-response",
-                        "spatial-input-response",
                         "disambiguation-response",
                         "clarification-response",
                     ):

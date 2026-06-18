@@ -91,9 +91,14 @@ import {
   ResearchMode,
   SessionStatePayload,
   SolveProgressPayload,
+  SpatialInputRequestPayload,
   ToolIoPayload,
 } from "./contracts";
 import { regionChoiceBus } from "./lib/region_choice_bus";
+import {
+  spatialInputBus,
+  type SpatialInputResult,
+} from "./lib/spatial_input_bus";
 import {
   PipelineCard,
   Spinner,
@@ -121,6 +126,10 @@ import { ChartGallery } from "./components/ChartGallery";
 import { SandboxCard, type CodeExecRequestPayload, type CodeExecResultPayload, type SandboxCardDecision } from "./components/SandboxCard";
 import { CredentialCard } from "./components/CredentialCard";
 import { RegionPickerCard } from "./components/RegionPickerCard";
+import {
+  SpatialInputCard,
+  type SpatialInputResolution,
+} from "./components/SpatialInputCard";
 import { PayloadWarningInline } from "./components/PayloadWarningInline";
 
 // wave-4-10 thinking-state — the agent emits the Gemini "thinking" phase as
@@ -889,6 +898,17 @@ export interface StreamState {
   regionResolved: Map<string, { choice: "region" | "whole_state"; regionId: string | null }>;
   /** First-arrival seq per region-choice request_id (chronological interleave). */
   regionSeqs: Map<string, number>;
+  // Spatial-input picker cards (FR-WC-13 pick-mode + FR-WC-16 urban
+  // vector-draw). The agent paused the turn to ask the user to pick a point /
+  // bbox or DRAW geometry (AOIs + tagged barrier walls / flap gates). The card
+  // is an in-chat prompt interleaved at its arrival position; the ACTUAL pick /
+  // draw happens on the map (SpatialDrawSurface, synced via the spatial-input
+  // bus). Mirrors the region-choice family exactly.
+  spatialInputs: SpatialInputRequestPayload[];
+  /** Resolved state per request_id once the user submits / cancels. */
+  spatialResolved: Map<string, SpatialInputResolution>;
+  /** First-arrival seq per spatial-input request_id (chronological interleave). */
+  spatialSeqs: Map<string, number>;
   // Live big-sim solve-progress (NATE 2026-06-17), keyed by run_id. The agent
   // streams `solve-progress` envelopes while a heavy solver burns wall-clock;
   // the latest payload per run_id is matched to the currently-running solver
@@ -928,6 +948,9 @@ export function emptyStreamState(): StreamState {
     regionChoices: [],
     regionResolved: new Map(),
     regionSeqs: new Map(),
+    spatialInputs: [],
+    spatialResolved: new Map(),
+    spatialSeqs: new Map(),
     solveProgress: new Map(),
     toolIo: new Map(),
     arrivalSeq: 0,
@@ -1278,6 +1301,47 @@ export function recordRegionResolved(
   const next = new Map(s.regionResolved);
   next.set(requestId, { choice, regionId });
   s.regionResolved = next;
+}
+
+/**
+ * Route a `spatial-input-request` envelope (FR-WC-13 pick-mode + FR-WC-16 urban
+ * vector-draw) into the OWNING stream — the Case whose tool paused. The request
+ * is session-scoped (ws.ts SESSION_SCOPED_TYPES) so it fans out to Chat's
+ * GraceWs even when the paused tool ran on App.tsx's connection. De-duped on
+ * request_id so a duplicate fan-out emit doesn't stack a second card. Mirrors
+ * routeRegionChoice exactly.
+ */
+export function routeSpatialInput(
+  cs: ChatStreams,
+  p: SpatialInputRequestPayload,
+  caseId?: string | null,
+): void {
+  const s = getStream(cs, owningKey(cs, caseId));
+  if (s.spatialInputs.some((r) => r.request_id === p.request_id)) return;
+  if (!s.spatialSeqs.has(p.request_id)) {
+    s.arrivalSeq += 1;
+    s.spatialSeqs.set(p.request_id, s.arrivalSeq);
+  }
+  s.spatialInputs = [...s.spatialInputs, p];
+}
+
+/**
+ * Record the user's resolution of a spatial-input prompt against the stream the
+ * card lives in. "submitted" = the user drew/picked geometry; "cancelled" = the
+ * user dismissed the request. The reply (spatial-input-response) is sent to the
+ * agent by the caller; this only marks the card resolved so it folds to its
+ * compact answered state in place.
+ */
+export function recordSpatialResolved(
+  cs: ChatStreams,
+  key: string,
+  requestId: string,
+  resolution: SpatialInputResolution,
+): void {
+  const s = getStream(cs, key);
+  const next = new Map(s.spatialResolved);
+  next.set(requestId, resolution);
+  s.spatialResolved = next;
 }
 
 /** Extract persisted charts from a case-open session (sprint-13 schema —
@@ -2711,6 +2775,20 @@ export function Chat({
         regionChoiceBus.setRequest(p);
         bump();
       },
+      // Spatial-input request (FR-WC-13 pick-mode + FR-WC-16 urban vector-draw):
+      // the agent paused the turn to ask the user to pick a point / bbox or DRAW
+      // geometry (AOIs + tagged barriers). spatial-input-request is
+      // session-scoped (ws.ts SESSION_SCOPED_TYPES) so Chat's GraceWs receives
+      // it via the fan-out hub even when the paused tool ran on App.tsx's
+      // connection. We render the inline SpatialInputCard in the owning stream
+      // AND publish the request to the spatial-input bus so Map.tsx opens the
+      // pick-mode / terra-draw surface. The drawn / picked geometry rides back
+      // through the bus and Chat sends the reply (sendSpatialInputResponse).
+      onSpatialInputRequest: (p: SpatialInputRequestPayload) => {
+        routeSpatialInput(streamsRef.current, p);
+        spatialInputBus.setRequest(p);
+        bump();
+      },
     });
     wsRef.current = ws;
     ws.connect();
@@ -3141,6 +3219,78 @@ export function Chat({
     };
   }, [handleRegionPick]);
 
+  // Spatial-input resolution (FR-WC-13 pick-mode + FR-WC-16 urban vector-draw).
+  //
+  // The on-map SpatialDrawSurface (point/bbox pick or terra-draw) and the
+  // in-chat card are synced through the spatial-input bus. The map's Submit /
+  // Cancel funnel through THESE handlers — the single reply path that owns the
+  // WebSocket — so the agent re-resolves by request_id exactly once. The card's
+  // own Cancel calls handleSpatialCancel directly. handleSpatialSubmit maps the
+  // bus result (point/bbox coordinates OR a vector_draw FeatureCollection) onto
+  // sendSpatialInputResponse.
+
+  /** Resolve a spatial-input submit: record it (folds the card), clear the
+   * active request (tears down the on-map surface), and send the response with
+   * the carried geometry. Used for the on-map Submit (via the bus). */
+  const handleSpatialSubmit = useCallback(
+    (result: SpatialInputResult): void => {
+      recordSpatialResolved(
+        streamsRef.current,
+        visibleKey,
+        result.requestId,
+        "submitted",
+      );
+      bump();
+      spatialInputBus.clearRequest(result.requestId);
+      wsRef.current?.sendSpatialInputResponse({
+        request_id: result.requestId,
+        geometry_type: result.geometryType,
+        coordinates: result.coordinates,
+        features: result.features,
+      });
+    },
+    [visibleKey, bump],
+  );
+
+  /** Cancel a spatial-input prompt: record it, clear the active request (tears
+   * down the surface), and send the response with cancelled=true. This IS the
+   * decline path (Invariant 8). Used for BOTH the on-map Cancel (via the bus)
+   * and the in-chat card Cancel button. */
+  const handleSpatialCancel = useCallback(
+    (requestId: string): void => {
+      recordSpatialResolved(
+        streamsRef.current,
+        visibleKey,
+        requestId,
+        "cancelled",
+      );
+      bump();
+      spatialInputBus.clearRequest(requestId);
+      wsRef.current?.sendSpatialInputResponse({
+        request_id: requestId,
+        cancelled: true,
+      });
+    },
+    [visibleKey, bump],
+  );
+
+  // Subscribe to the spatial-input bus: relay a MAP Submit / Cancel through the
+  // SAME reply path. The bus carries the completed geometry / a cancel for the
+  // active request; a stale event (request already cleared) is a safe no-op
+  // because the bus drops it before notifying (request_id mismatch).
+  useEffect(() => {
+    const unsubSubmit = spatialInputBus.subscribeSubmit((result) => {
+      handleSpatialSubmit(result);
+    });
+    const unsubCancel = spatialInputBus.subscribeCancel((requestId) => {
+      handleSpatialCancel(requestId);
+    });
+    return () => {
+      unsubSubmit();
+      unsubCancel();
+    };
+  }, [handleSpatialSubmit, handleSpatialCancel]);
+
   function submit(text: string, modelId?: string): void {
     if (!text || !wsRef.current) return;
     // job-0278 — submitting from the collapsed mobile sheet expands it so
@@ -3419,6 +3569,10 @@ export function Chat({
           onRegionHover={handleRegionHover}
           onRegionPick={handleRegionPick}
           onRegionWholeState={handleRegionWholeState}
+          spatialInputs={visible.spatialInputs}
+          spatialSeqs={visible.spatialSeqs}
+          spatialResolved={visible.spatialResolved}
+          onSpatialCancel={handleSpatialCancel}
         />
 
         {/* wave-4-10 ephemeral Thinking indicator — italic muted-gray     */}
@@ -3823,6 +3977,21 @@ export type InterleavedEntry =
       requestId: string;
       request: RegionChoiceRequestPayload;
       resolved: { choice: "region" | "whole_state"; regionId: string | null } | null;
+    }
+  | {
+      // Spatial-input prompt (FR-WC-13 pick-mode + FR-WC-16 urban vector-draw)
+      // INTERLEAVED into the chat scroll at its first-arrival seq — exactly like
+      // a tool / credential / region-choice card. It renders the
+      // SpatialInputCard (honest prompt + on-map action hint + Cancel). The
+      // ACTUAL pick / draw happens on the map (SpatialDrawSurface), synced via
+      // the spatial-input bus. Carries the request + its resolution; the cancel
+      // callback is supplied by InterleavedChatStream (kept off this pure
+      // view-model so buildInterleavedStream stays pure).
+      kind: "spatial-input";
+      seq: number;
+      requestId: string;
+      request: SpatialInputRequestPayload;
+      resolved: SpatialInputResolution | null;
     };
 
 export function buildInterleavedStream(
@@ -3851,6 +4020,11 @@ export function buildInterleavedStream(
     string,
     { choice: "region" | "whole_state"; regionId: string | null }
   > = new Map(),
+  // Spatial-input picker inputs so picker cards interleave at their first-arrival
+  // seq too. Defaulted so existing callers / tests keep working unchanged.
+  spatialInputs: SpatialInputRequestPayload[] = [],
+  spatialSeqs: Map<string, number> = new Map(),
+  spatialResolved: Map<string, SpatialInputResolution> = new Map(),
 ): InterleavedEntry[] {
   const out: InterleavedEntry[] = [];
   // Messages — seq comes from messageOrder; absent → fall back to a large
@@ -3929,6 +4103,19 @@ export function buildInterleavedStream(
       resolved: regionResolved.get(rc.request_id) ?? null,
     });
   }
+  // Spatial-input pickers — seq from spatialSeqs (first-arrival), so the card
+  // lands at its natural chat slot between the narration that preceded the
+  // paused tool and the narration that resumes after the user draws / picks.
+  for (const si of spatialInputs) {
+    const seq = spatialSeqs.get(si.request_id) ?? Number.MAX_SAFE_INTEGER;
+    out.push({
+      kind: "spatial-input",
+      seq,
+      requestId: si.request_id,
+      request: si,
+      resolved: spatialResolved.get(si.request_id) ?? null,
+    });
+  }
   // Stable sort by seq; ties broken by insertion order (preserved by the
   // standard ``Array.prototype.sort`` in V8/spidermonkey/JSC since
   // ES2019). Insertion order here is: messages first then tools, so a
@@ -3994,6 +4181,14 @@ interface InterleavedChatStreamProps {
   onRegionHover: (regionId: string | null) => void;
   onRegionPick: (req: RegionChoiceRequestPayload, candidate: RegionCandidate) => void;
   onRegionWholeState: (req: RegionChoiceRequestPayload) => void;
+  // Spatial-input pickers interleave INLINE at their first-arrival seq, exactly
+  // like the region-choice cards. The on-map pick / draw surface is synced via
+  // the spatial-input bus; the card's Cancel rides on this prop (the WS side
+  // effect lives in Chat).
+  spatialInputs: SpatialInputRequestPayload[];
+  spatialSeqs: Map<string, number>;
+  spatialResolved: Map<string, SpatialInputResolution>;
+  onSpatialCancel: (requestId: string) => void;
 }
 
 function InterleavedChatStream({
@@ -4021,6 +4216,10 @@ function InterleavedChatStream({
   onRegionHover,
   onRegionPick,
   onRegionWholeState,
+  spatialInputs,
+  spatialSeqs,
+  spatialResolved,
+  onSpatialCancel,
 }: InterleavedChatStreamProps): JSX.Element | null {
   const stream = buildInterleavedStream(
     messages,
@@ -4037,6 +4236,9 @@ function InterleavedChatStream({
     regionChoices,
     regionSeqs,
     regionResolved,
+    spatialInputs,
+    spatialSeqs,
+    spatialResolved,
   );
   if (stream.length === 0) return null;
   return (
@@ -4113,6 +4315,21 @@ function InterleavedChatStream({
               onHoverRegion={onRegionHover}
               onPickRegion={(candidate) => onRegionPick(entry.request, candidate)}
               onUseWholeState={() => onRegionWholeState(entry.request)}
+            />
+          );
+        }
+        if (entry.kind === "spatial-input") {
+          // Spatial-input prompt renders inline in the chat scroll. The ACTUAL
+          // pick / draw happens on the map (SpatialDrawSurface), synced via the
+          // spatial-input bus. The card's Cancel (and the on-map Cancel) funnel
+          // through onSpatialCancel; the on-map Submit rides the bus. `resolved`
+          // folds the card to its compact answered state across a remount.
+          return (
+            <SpatialInputCard
+              key={entry.requestId}
+              request={entry.request}
+              resolved={entry.resolved}
+              onCancel={() => onSpatialCancel(entry.request.request_id)}
             />
           );
         }

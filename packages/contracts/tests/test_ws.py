@@ -137,6 +137,167 @@ def test_spatial_input_response_cancelled(session_id: str) -> None:
     assert dumped["payload"]["cancelled"] is True
 
 
+# --- FR-WC-16 urban vector-draw (vector_draw mode) -------------------------- #
+
+
+def _vector_draw_feature_collection() -> dict[str, Any]:
+    """A drawn FeatureCollection carrying an AOI polygon + a wall + a flap gate
+    + a single point — exercising every ``role`` and per-segment barrier tag."""
+    return {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [
+                        [
+                            [-85.31, 35.04],
+                            [-85.30, 35.04],
+                            [-85.30, 35.05],
+                            [-85.31, 35.05],
+                            [-85.31, 35.04],
+                        ]
+                    ],
+                },
+                "properties": {"role": "aoi"},
+            },
+            {
+                "type": "Feature",
+                "geometry": {
+                    "type": "LineString",
+                    "coordinates": [[-85.305, 35.041], [-85.305, 35.048]],
+                },
+                "properties": {"role": "barrier", "barrier_type": "wall"},
+            },
+            {
+                "type": "Feature",
+                "geometry": {
+                    "type": "LineString",
+                    "coordinates": [[-85.308, 35.043], [-85.302, 35.043]],
+                },
+                "properties": {
+                    "role": "barrier",
+                    "barrier_type": "flap_gate",
+                    "flap_direction": "out",
+                    "protected_side": "left",
+                },
+            },
+            {
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [-85.306, 35.045]},
+                "properties": {"role": "point"},
+            },
+        ],
+    }
+
+
+def test_spatial_input_response_vector_draw_roundtrips(session_id: str) -> None:
+    """FR-WC-16: a vector_draw reply carrying a role-tagged FeatureCollection
+    with per-segment barrier tags + flap direction serializes/deserializes
+    cleanly through the envelope."""
+    fc = _vector_draw_feature_collection()
+    payload = ws.SpatialInputResponsePayload(
+        request_id=new_ulid(),
+        geometry_type="vector_draw",
+        features=fc,
+    )
+    dumped = _roundtrip_idempotent(_wrap(payload, session_id))
+    out = dumped["payload"]
+    assert out["geometry_type"] == "vector_draw"
+    assert out["coordinates"] is None
+    roles = [f["properties"]["role"] for f in out["features"]["features"]]
+    assert roles == ["aoi", "barrier", "barrier", "point"]
+    # The two barrier segments preserve their distinct tags + flap direction.
+    barriers = [
+        f for f in out["features"]["features"] if f["properties"]["role"] == "barrier"
+    ]
+    tags = [b["properties"]["barrier_type"] for b in barriers]
+    assert tags == ["wall", "flap_gate"]
+    flap = next(b for b in barriers if b["properties"]["barrier_type"] == "flap_gate")
+    assert flap["properties"]["flap_direction"] == "out"
+    assert flap["properties"]["protected_side"] == "left"
+
+
+def test_spatial_input_response_barriers_feed_swmm_contract(session_id: str) -> None:
+    """The ``role == "barrier"`` subset of a vector_draw reply is field-for-field
+    the tagged-LineString FeatureCollection SWMMRunArgs.barriers accepts — i.e.
+    the drawn result round-trips straight into the urban engine seam."""
+    from grace2_contracts.swmm_contracts import SWMMRunArgs
+
+    fc = _vector_draw_feature_collection()
+    barrier_fc = {
+        "type": "FeatureCollection",
+        "features": [
+            f for f in fc["features"] if f["properties"].get("role") == "barrier"
+        ],
+    }
+    # Construct the urban-engine args directly from the drawn barriers; the
+    # swmm_contracts validator must accept them without translation.
+    args = SWMMRunArgs(bbox=(-85.31, 35.04, -85.30, 35.05), barriers=barrier_fc)
+    assert args.barriers is not None
+    assert {
+        feat["properties"]["barrier_type"] for feat in args.barriers["features"]
+    } == {"wall", "flap_gate"}
+
+
+def test_spatial_input_response_bad_role_rejected() -> None:
+    """An unknown ``role`` is a defect — the structural validator rejects it."""
+    fc = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [-85.3, 35.0]},
+                "properties": {"role": "landmark"},  # not in {aoi, barrier, point}
+            }
+        ],
+    }
+    with pytest.raises(ValidationError):
+        ws.SpatialInputResponsePayload(
+            request_id=new_ulid(), geometry_type="vector_draw", features=fc
+        )
+
+
+def test_spatial_input_response_bad_barrier_type_rejected() -> None:
+    """A barrier LineString tagged with an unknown barrier_type is rejected."""
+    fc = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "geometry": {
+                    "type": "LineString",
+                    "coordinates": [[-85.3, 35.0], [-85.2, 35.0]],
+                },
+                "properties": {"role": "barrier", "barrier_type": "moat"},
+            }
+        ],
+    }
+    with pytest.raises(ValidationError):
+        ws.SpatialInputResponsePayload(
+            request_id=new_ulid(), geometry_type="vector_draw", features=fc
+        )
+
+
+def test_spatial_input_response_barrier_must_be_linestring_rejected() -> None:
+    """A ``role == "barrier"`` feature with a non-LineString geometry is rejected."""
+    fc = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [-85.3, 35.0]},
+                "properties": {"role": "barrier", "barrier_type": "wall"},
+            }
+        ],
+    }
+    with pytest.raises(ValidationError):
+        ws.SpatialInputResponsePayload(
+            request_id=new_ulid(), geometry_type="vector_draw", features=fc
+        )
+
+
 def test_disambiguation_response(session_id: str) -> None:
     payload = ws.DisambiguationResponsePayload(request_id=new_ulid(), candidate_id="cand-1")
     _roundtrip_idempotent(_wrap(payload, session_id))
@@ -358,6 +519,29 @@ def test_spatial_input_request(session_id: str) -> None:
         suggested_view=ws.SuggestedView(bbox=(-82.5, 26.4, -81.7, 26.9), zoom=10.0),
     )
     _roundtrip_idempotent(_wrap(payload, session_id))
+
+
+def test_spatial_input_request_vector_draw_mode(session_id: str) -> None:
+    """FR-WC-16: the request may ask the client to open the vector-draw surface."""
+    payload = ws.SpatialInputRequestPayload(
+        request_id=new_ulid(),
+        mode="vector_draw",
+        title="Draw the AOI and any barriers",
+        description="Draw the study area; add walls (red) and flap gates (green).",
+        suggested_view=ws.SuggestedView(bbox=(-85.31, 35.04, -85.30, 35.05), zoom=15.0),
+    )
+    dumped = _roundtrip_idempotent(_wrap(payload, session_id))
+    assert dumped["payload"]["mode"] == "vector_draw"
+
+
+def test_spatial_input_request_unknown_mode_rejected() -> None:
+    with pytest.raises(ValidationError):
+        ws.SpatialInputRequestPayload(
+            request_id=new_ulid(),
+            mode="polygon",  # type: ignore[arg-type]  # not in the closed enum
+            title="x",
+            description="d",
+        )
 
 
 def test_disambiguation_request(session_id: str) -> None:

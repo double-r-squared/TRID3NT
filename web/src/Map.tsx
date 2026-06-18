@@ -38,6 +38,12 @@ import type { MapCommandPayload, SessionStatePayload, ProjectLayerSummary, Regio
 import type { FeatureCollection, Feature, Polygon, Geometry } from "geojson";
 import { publicTileBase } from "./lib/public_base";
 import { regionChoiceBus, type RegionChoiceBusState } from "./lib/region_choice_bus";
+import {
+  spatialInputBus,
+  type SpatialInputBusState,
+} from "./lib/spatial_input_bus";
+import { SpatialDrawSurface } from "./components/SpatialDrawSurface";
+import type { SpatialInputRequestPayload } from "./contracts";
 import { LayerLegend } from "./components/LayerLegend";
 import { FeaturePopup, type FeaturePopupData, type FeatureAttribute } from "./components/FeaturePopup";
 import { useIsMobile } from "./hooks/useIsMobile";
@@ -1782,6 +1788,15 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
   // the popup-pin effect below. Null until the first projection.
   const [currentZoom, setCurrentZoom] = useState<number | null>(null);
 
+  // FR-WC-13 / FR-WC-16 — the active spatial-input request (null = no pick/draw
+  // in flight). Published by Chat.tsx onto the spatialInputBus when a
+  // `spatial-input-request` arrives; the SpatialDrawSurface overlay mounts while
+  // non-null. The drawn / picked result rides BACK through the bus to Chat (the
+  // WS reply owner) — Map never touches the WebSocket. Mirrors the region-choice
+  // bus pattern exactly.
+  const [spatialRequest, setSpatialRequest] =
+    useState<SpatialInputRequestPayload | null>(null);
+
   useEffect(() => {
     if (!container.current || map.current) return;
     const m = new maplibregl.Map({
@@ -2846,6 +2861,19 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
     };
   }, []);
 
+  // FR-WC-13 / FR-WC-16 — subscribe to the spatial-input bus and mirror the
+  // active request into component state so the SpatialDrawSurface overlay mounts
+  // (point/bbox pick mode or the terra-draw surface). The bus fires immediately
+  // on subscribe with the current state, so a Map mounting AFTER the request
+  // arrived opens the surface right away. The surface's Submit/Cancel ride back
+  // through the bus (bus.submit / bus.cancel) to Chat — Map never sends WS.
+  useEffect(() => {
+    const unsub = spatialInputBus.subscribe((st: SpatialInputBusState) => {
+      setSpatialRequest(st.request);
+    });
+    return unsub;
+  }, []);
+
   // job-0321 (F43) — resolve the legend placement.
   //   - aoiBbox + on-screen anchor → hang off the box's bottom edge, nudged
   //     down a small gap so it clears the dashed outline. On mobile the box can
@@ -2922,6 +2950,22 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
               }
             }
           }}
+        />
+      ) : null}
+
+      {/* FR-WC-13 / FR-WC-16 — the on-map spatial-input surface. Mounts while a
+          `spatial-input-request` is active (mirrored from the spatialInputBus).
+          For vector_draw it hosts the terra-draw toolbar + tagging popover; for
+          point/bbox it enters pick mode. Submit/Cancel funnel back through the
+          bus to Chat (the WS reply owner). Gated on a live map instance so the
+          terra-draw adapter has a real MapLibre target. */}
+      {spatialRequest && map.current ? (
+        <SpatialDrawSurface
+          key={spatialRequest.request_id}
+          map={map.current}
+          request={spatialRequest}
+          onSubmit={(result) => spatialInputBus.submit(result)}
+          onCancel={(requestId) => spatialInputBus.cancel(requestId)}
         />
       ) : null}
     </div>
