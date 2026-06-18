@@ -1,0 +1,116 @@
+#!/bin/bash
+# user_data.sh.tftpl — bring up TiTiler on the isolated box EXACTLY as the agent
+# box runs it today (Investigate findings, job-0290 install + job-0314 hardening).
+#
+# Reproduces, verbatim:
+#   - Python venv at /opt/titiler/venv (python3.11) with the pinned TiTiler stack.
+#   - /etc/systemd/system/titiler.service: plain-uvicorn ExecStart on the same
+#     port, same --workers, Restart=always/RestartSec=2, User=root,
+#     After=network.target, WantedBy=multi-user.target, and the SAME
+#     GDAL/AWS/CPL/VSI Environment= lines.
+#   - (optional) titiler-watchdog.service oneshot + .timer (job-0314).
+#
+# Rendered by templatefile() in main.tf. $${...} are tofu template vars, NOT shell.
+set -euxo pipefail
+
+# ── Packages: python3.11 + venv (Amazon Linux 2023) ──────────────────────────
+dnf install -y python3.11 python3.11-pip || dnf install -y python3 python3-pip
+PY=$(command -v python3.11 || command -v python3)
+
+# ── TiTiler venv (pinned to the live box's resolved versions) ─────────────────
+mkdir -p /opt/titiler
+"$PY" -m venv /opt/titiler/venv
+/opt/titiler/venv/bin/pip install --upgrade pip
+/opt/titiler/venv/bin/pip install ${titiler_pip_spec}
+
+# ── systemd unit — VERBATIM clone of the agent box's titiler.service ──────────
+cat >/etc/systemd/system/titiler.service <<'UNIT'
+[Unit]
+Description=TiTiler COG tile server (GRACE-2 AWS raster rendering, job-0290; hardened job-0314; isolated tiles box)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/opt/titiler/venv/bin/uvicorn titiler.application.main:app --host 0.0.0.0 --port ${titiler_port} --workers ${titiler_workers}
+Restart=always
+RestartSec=2
+# GDAL/AWS/CPL/VSI env — copied verbatim from the live agent box (/proc/<pid>/environ).
+Environment=AWS_REGION=${region}
+Environment=AWS_DEFAULT_REGION=${region}
+Environment=GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR
+Environment=CPL_VSIL_CURL_ALLOWED_EXTENSIONS=.tif,.tiff,.TIF
+Environment=GDAL_HTTP_MERGE_CONSECUTIVE_RANGES=YES
+Environment=GDAL_HTTP_TIMEOUT=30
+Environment=GDAL_HTTP_CONNECTTIMEOUT=10
+Environment=GDAL_HTTP_MAX_RETRY=2
+Environment=GDAL_HTTP_RETRY_DELAY=1
+Environment=VSI_CACHE=TRUE
+Environment=VSI_CACHE_SIZE=26214400
+Environment=GDAL_CACHEMAX=512
+Environment=CPL_VSIL_CURL_CACHE_SIZE=209715200
+Environment=TITILER_API_CORS_ORIGINS=${cors_origins}
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl daemon-reload
+systemctl enable --now titiler.service
+
+# ── titiler-watchdog (job-0314): restart on a wedge (code 000/empty), never on
+#    a valid HTTP error. Health COG lives in the agent-bundle bucket (read via
+#    AmazonS3ReadOnlyAccess). ──────────────────────────────────────────────────
+%{ if install_watchdog ~}
+cat >/usr/local/bin/titiler-watchdog.sh <<'WD'
+#!/bin/bash
+# titiler-watchdog (job-0314) — auto-recover the COG tile server from a wedge.
+# Restart ONLY when curl gets no response at all (code 000/empty) — never on a
+# valid HTTP error, to avoid false restarts.
+HEALTH_URL="s3://${bundle_bucket}/health/titiler-health.tif"
+ENDPOINT="http://localhost:${titiler_port}/cog/info?url=$${HEALTH_URL}"
+code=$(curl -sS -m 15 -o /dev/null -w '%%{http_code}' "$ENDPOINT" 2>/dev/null)
+if [ -z "$code" ] || [ "$code" = "000" ]; then
+  logger -t titiler-watchdog "TiTiler unresponsive (code=$${code:-timeout}) — restarting titiler.service"
+  systemctl restart titiler
+fi
+exit 0
+WD
+chmod +x /usr/local/bin/titiler-watchdog.sh
+
+cat >/etc/systemd/system/titiler-watchdog.service <<'WDUNIT'
+[Unit]
+Description=TiTiler watchdog (job-0314) — restart titiler.service on a wedge
+After=titiler.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/titiler-watchdog.sh
+WDUNIT
+
+cat >/etc/systemd/system/titiler-watchdog.timer <<'WDTIMER'
+[Unit]
+Description=Run the TiTiler watchdog periodically
+
+[Timer]
+OnBootSec=120
+OnUnitActiveSec=60
+AccuracySec=10
+
+[Install]
+WantedBy=timers.target
+WDTIMER
+
+systemctl daemon-reload
+systemctl enable --now titiler-watchdog.timer
+%{ endif ~}
+
+# ── boot smoke: TiTiler answers /cog/info fast when healthy ───────────────────
+for i in $(seq 1 30); do
+  if curl -fsS -m 5 "http://localhost:${titiler_port}/healthz" >/dev/null 2>&1 \
+     || curl -fsS -m 5 "http://localhost:${titiler_port}/api.html" >/dev/null 2>&1; then
+    logger -t titiler-userdata "TiTiler is up on :${titiler_port}"
+    break
+  fi
+  sleep 2
+done

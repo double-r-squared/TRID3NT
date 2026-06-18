@@ -1,0 +1,98 @@
+# cloudfront-tiles-origin.tf.docs — AUTHORED CloudFront /tiles + /cog origin
+# repoint. NOT a live .tf file (suffix is .docs so `tofu` never loads or applies
+# it) and NOT applied. This documents the EXACT change the ORCHESTRATOR makes,
+# carefully, verify-before-cutover, after `tofu apply` of this root brings the
+# new tile box up. Two authored forms below: (A) the exact aws-cli call (the
+# recommended path, since the live distribution is hand-managed and NOT in any
+# tofu state), and (B) an equivalent OpenTofu resource for reference if NATE
+# ever imports the distribution.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# WHAT CHANGES
+# ─────────────────────────────────────────────────────────────────────────────
+# Distribution : E2L74AS56MVZ87  (d125yfbyjrpbre.cloudfront.net)
+# Current ETag : E23ZP02F085DFQ  (re-fetch live before applying — it rotates)
+# Origin       : origin-titiler
+#   FROM DomainName = ec2-54-185-114-233.us-west-2.compute.amazonaws.com  (AGENT box, EIP 54.185.114.233)
+#   TO   DomainName = <titiler_public_dns output of this root>           (NEW tiny box's EIP DNS)
+#   KEEP CustomOriginConfig: HTTPPort=8080, HTTPSPort=443,
+#        OriginProtocolPolicy=http-only, OriginSslProtocols=[TLSv1.2],
+#        OriginReadTimeout=30, OriginKeepaliveTimeout=5, OriginPath=""
+#
+# origin-titiler is the TargetOriginId of BOTH cache behaviors "/tiles*" AND
+# "/cog/*" — repointing the one origin's DomainName moves ALL raster tile
+# traffic to the new box in a single edit (desired). The agent box keeps its
+# OTHER origins UNTOUCHED:
+#   - origin-agent-ws   (:8765, /ws*,  ReadTimeout=60 / Keepalive=60)
+#   - origin-catalog    (:8766, /api/*)  <- catalog/health STAYS with the agent
+#                                            (the idle-Lambda's liveness signal)
+#   - origin-s3-web     (S3 website, default behavior)
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# PRE-CUTOVER VERIFY (do this BEFORE touching CloudFront)
+# ─────────────────────────────────────────────────────────────────────────────
+#   NEW=$(tofu -chdir=infra/aws-titiler output -raw titiler_public_dns)
+#   # Pick a COG that is known to exist in the runs bucket, then:
+#   curl -s -o /dev/null -w '%{http_code}\n' \
+#     "http://$NEW:8080/cog/info?url=s3://grace2-hazard-runs-226996537797/<known.tif>"
+#   # Expect 200. (404 means the box is healthy but that key is missing — pick a
+#   # real key. 000/timeout means the box is NOT ready — do NOT cut over.)
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# (A) RECOMMENDED — exact aws-cli cutover (read-modify-write the live config)
+# ─────────────────────────────────────────────────────────────────────────────
+#   DIST=E2L74AS56MVZ87
+#   NEW=$(tofu -chdir=infra/aws-titiler output -raw titiler_public_dns)
+#
+#   # 1. Pull the LIVE config + ETag (never trust a saved snapshot — ETag rotates).
+#   aws cloudfront get-distribution-config --id "$DIST" > /tmp/cf.json
+#   ETAG=$(jq -r '.ETag' /tmp/cf.json)
+#
+#   # 2. Edit ONLY origin-titiler.DomainName -> the new box DNS. Everything else
+#   #    (behaviors, cache policies, the other 3 origins) is preserved verbatim.
+#   jq --arg new "$NEW" '
+#     .DistributionConfig
+#     | (.Origins.Items[] | select(.Id=="origin-titiler") | .DomainName) = $new
+#   ' /tmp/cf.json > /tmp/cf-new-config.json
+#
+#   # 3. Apply with the live ETag as If-Match.
+#   aws cloudfront update-distribution \
+#     --id "$DIST" \
+#     --if-match "$ETAG" \
+#     --distribution-config file:///tmp/cf-new-config.json
+#
+#   # 4. Wait for Deployed, then verify BOTH behaviors now serve from the new box.
+#   aws cloudfront wait distribution-deployed --id "$DIST"
+#   curl -s -o /dev/null -w '/cog %{http_code}\n'   "https://d125yfbyjrpbre.cloudfront.net/cog/info?url=s3://grace2-hazard-runs-226996537797/<known.tif>"
+#   curl -s -o /dev/null -w '/tiles %{http_code}\n' "https://d125yfbyjrpbre.cloudfront.net/tiles/WebMercatorQuad/0/0/0?url=s3://grace2-hazard-runs-226996537797/<known.tif>"
+#   # Expect 200 on both. The agent box's :8080 may now be retired from the SG /
+#   # auto-stop can be re-armed (infra/aws-autostop) — TiTiler no longer dies with it.
+#
+#   # ROLLBACK: re-run steps 1-3 setting origin-titiler.DomainName back to
+#   #   ec2-54-185-114-233.us-west-2.compute.amazonaws.com (re-fetch the ETag first).
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# (B) REFERENCE — equivalent OpenTofu (only if the distribution is imported)
+# ─────────────────────────────────────────────────────────────────────────────
+# The live distribution is hand-managed and NOT in tofu state, so applying this
+# as HCL would require `tofu import aws_cloudfront_distribution.edge
+# E2L74AS56MVZ87` first AND faithfully transcribing ALL behaviors/origins/cache
+# policies (a large surface — easy to drift). The aws-cli read-modify-write (A)
+# is safer for a single-field change. This block shows ONLY the origin field
+# that changes, for reviewers:
+#
+#   origin {
+#     origin_id   = "origin-titiler"
+#     domain_name = "<titiler_public_dns output>"   # WAS ec2-54-185-114-233.us-west-2.compute.amazonaws.com
+#     custom_origin_config {
+#       http_port                = 8080
+#       https_port               = 443
+#       origin_protocol_policy   = "http-only"
+#       origin_ssl_protocols     = ["TLSv1.2"]
+#       origin_read_timeout      = 30
+#       origin_keepalive_timeout = 5
+#     }
+#   }
+#   # default_cache_behavior + ordered_cache_behavior "/tiles*" and "/cog/*" keep
+#   # target_origin_id = "origin-titiler" and cache_policy_id =
+#   # 3d3fdb28-3073-4a8e-bb60-9f8b4de7e972 (grace2-tiles-qs) UNCHANGED.
