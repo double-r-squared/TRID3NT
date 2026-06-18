@@ -21,26 +21,16 @@ dependencies = [
     # auth_handshake.cognito_verify. [crypto] pulls cryptography for RSAAlgorithm.
     "PyJWT[crypto]>=2.8,<3",
     # GCP decommission: google-adk DROPPED (zero live callers — register_with_adk
-    # is test-only) and google-cloud-secret-manager DROPPED (the vault is AWS SSM
-    # via secrets_handler; the GCP Secret Manager default-client builder is gone).
+    # was test-only and is now removed) and google-cloud-secret-manager DROPPED
+    # (the vault is AWS SSM via secrets_handler; the GCP Secret Manager
+    # default-client builder is gone). google-cloud-workflows / google-cloud-logging
+    # also DROPPED: the cloud sandbox readback (Cloud Logging) and the gcp-workflows
+    # solver branch were removed; object I/O is AWS S3 via boto3. (google-cloud-storage
+    # is KEPT — it is part of the QGIS publish carve-out, see google-cloud-run below.)
     # google-genai is KEPT (carve-out): bedrock_adapter speaks the genai_types
     # Content/FunctionDeclaration contract that it converts to the Bedrock
     # Converse API — removing it breaks the live Bedrock path.
     "google-genai>=2.8,<3",
-    # GCP decommission: KEPT (legacy gs:// test seam). The production cache +
-    # all object I/O is AWS S3 via boto3; the ``from google.cloud import
-    # storage`` calls survive only as LAZY imports on the gs:// branch of the
-    # scheme-aware tool/workflow staging helpers (compute_*, clip_*,
-    # postprocess_flood, sfincs_builder, ...), which the unit tests exercise by
-    # injecting a duck-typed GCS client. Drop only once those gs:// branches are
-    # collapsed (out of this lane's seam-collapse scope).
-    "google-cloud-storage>=3,<4",
-    # GCP decommission: KEPT (legacy gcp-workflows test seam). The live solver
-    # backend is AWS Batch; the Cloud Workflows ``ExecutionsClient`` /
-    # ``executions_v1`` imports survive only as LAZY imports on the
-    # ``GRACE2_SOLVER_BACKEND=gcp-workflows`` branch (exercised by the solver/
-    # modflow tests via a fake workflows SDK). Drop once that branch is removed.
-    "google-cloud-workflows>=1.16,<2",
     # job-0033 M4 Stage C: data-fetch atomic tools.
     # py3dep wraps the USGS 3DEP DEM service (CONUS DEM at 10/30m); pulls in
     # rioxarray + rasterio for COG serialization. requests is the HTTP client
@@ -104,16 +94,13 @@ dependencies = [
     # PyQGIS worker as a Cloud Run Job for the QGIS-Server WMS render path, which
     # stays live until the AWS QGIS WMS cutover (job-0308). Drop then.
     "google-cloud-run>=0.10",
-    # job-0265 sprint-13.5 PREREQ: cloud sandbox result transport via Cloud
-    # Logging (OQ-SANDBOX-3 option b). The egress-denied executor prints its
-    # result envelope (GRACE2_SANDBOX_ENVELOPE_V1 marker) to stdout -> Cloud
-    # Logging; read_sandbox_result reads it back via logging.Client.list_entries
-    # under the AGENT'S identity, keeping the sandbox runtime SA objectViewer-only
-    # (Invariant 5). Resolves cleanly against the load-bearing storage<4 /
-    # fsspec+gcsfs 2026.1.0 pins (pip check stays clean; only pulls in
-    # google-cloud-appengine-logging + google-cloud-audit-log, all transitive
-    # deps already satisfied).
-    "google-cloud-logging>=3.9,<4",
+    # GCP decommission: KEPT (publish-path carve-out, until job-0308). publish_layer
+    # lazy-imports ``from google.cloud import storage`` to upload the project .qgs /
+    # read the GCS-hosted render artifacts for the SAME legacy QGIS-Server WMS path
+    # (the gs:// STORAGE SEAM in every other tool was collapsed to S3/boto3; only
+    # this carve-out keeps google-cloud-storage). Drop together with google-cloud-run
+    # when the AWS QGIS WMS cutover (job-0308) lands.
+    "google-cloud-storage>=2.18,<4",
     # Wave 4.10 job-A2: s3fs is the fsspec S3 backend for the NOAA Big Data
     # Program anonymous S3 mirrors consumed by fetch_hrrr_forecast (HRRR-Zarr
     # at s3://hrrrzarr/) and a planned fetch_hrrr_smoke. Wraps boto3 +

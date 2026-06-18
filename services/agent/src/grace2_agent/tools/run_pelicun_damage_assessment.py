@@ -585,19 +585,23 @@ def _load_hazus_flood_curves() -> dict[str, _HazusLossCurve]:
 
 
 def _download_uri_to_local(uri: str, suffix: str, storage_client: Any | None = None) -> str:
-    """Download ``uri`` (gs:// or local path) into a NamedTemporaryFile.
+    """Download ``uri`` (``s3://`` or local path) into a NamedTemporaryFile.
 
-    Returns the local path. Caller is responsible for unlinking.
+    Returns the local path. Caller is responsible for unlinking. GCP is
+    decommissioned: object-store reads route through boto3 (S3); the
+    ``storage_client`` argument is retained for call-site compatibility but is
+    ignored.
 
     Raises:
         ``PelicunRuntimeError`` on download / read failure.
     """
+    del storage_client  # GCP decommissioned — S3/local only.
     if uri.startswith(("http://", "https://")) and "LAYERS=" in uri:
         # job-0255 (OQ-0255-PELICUN-WMS-URI): the LLM copies the published
         # layer's QGIS WMS GetMap URL verbatim — which IS the LayerURI.uri
-        # field per OQ-62 (the gs:// COG never appears in its context).
+        # field per OQ-62 (the s3:// COG never appears in its context).
         # Reverse-map the WMS layer id back to the runs-bucket COG:
-        # LAYERS=flood-depth-peak-<run_id>  ->  gs://<runs>/<run_id>/flood_depth_peak.tif
+        # LAYERS=flood-depth-peak-<run_id>  ->  s3://<runs>/<run_id>/flood_depth_peak.tif
         # LAYERS=plume-concentration-<run_id> -> .../plume_concentration_4326.tif
         from urllib.parse import parse_qs, urlparse
 
@@ -605,12 +609,7 @@ def _download_uri_to_local(uri: str, suffix: str, storage_client: Any | None = N
         runs_bucket = os.environ.get(
             "GRACE2_RUNS_BUCKET", "grace-2-hazard-prod-runs"
         )
-        # sprint-14-aws (job-0293b): the reverse-mapped runs-bucket COG lives
-        # under the deploy's object-store scheme (gs:// on GCP — unchanged —
-        # s3:// on AWS where GRACE2_STORAGE_BACKEND=s3).
-        from .cache import storage_scheme
-
-        _scheme = storage_scheme()
+        # GCP decommissioned: the reverse-mapped runs-bucket COG is always s3://.
         for layer_id in layers:
             for prefix, fname in (
                 ("flood-depth-peak-", "flood_depth_peak.tif"),
@@ -618,25 +617,23 @@ def _download_uri_to_local(uri: str, suffix: str, storage_client: Any | None = N
             ):
                 if layer_id.startswith(prefix):
                     run_id = layer_id[len(prefix):]
-                    mapped = f"{_scheme}://{runs_bucket}/{run_id}/{fname}"
+                    mapped = f"s3://{runs_bucket}/{run_id}/{fname}"
                     logger.warning(
                         "hazard URI was a WMS GetMap URL; reverse-mapped "
                         "LAYERS=%s -> %s (job-0255 guard)",
                         layer_id,
                         mapped,
                     )
-                    return _download_uri_to_local(
-                        mapped, suffix, storage_client=storage_client
-                    )
+                    return _download_uri_to_local(mapped, suffix)
         raise PelicunRuntimeError(
             f"hazard_raster_uri is a WMS URL with an unmapped layer id "
-            f"({uri!r}); pass the gs:// COG URI from the producing tool"
+            f"({uri!r}); pass the s3:// COG URI from the producing tool"
         )
 
     # sprint-14-aws (job-0293b): s3:// staging via the shared boto3 reader
-    # (NOT s3fs — instance-role lesson, job-0289). Mirrors the gs:// branch:
-    # stage to a NamedTemporaryFile the caller unlinks, with the same
-    # job-0253 last-two-segment retry for LLM path-mangled URIs.
+    # (NOT s3fs — instance-role lesson, job-0289). Stage to a
+    # NamedTemporaryFile the caller unlinks, with the job-0253 last-two-segment
+    # retry for LLM path-mangled URIs.
     if uri.startswith("s3://"):
         from .cache import read_object_bytes_s3
 
@@ -666,61 +663,11 @@ def _download_uri_to_local(uri: str, suffix: str, storage_client: Any | None = N
                 f"S3 download failed for {uri!r}: {exc}"
             ) from exc
 
-    if not uri.startswith("gs://"):
-        if not os.path.exists(uri):
-            raise PelicunRuntimeError(
-                f"local path does not exist: {uri!r}"
-            )
-        return uri
-
-    rest = uri[len("gs://"):]
-    slash = rest.find("/")
-    if slash == -1:
+    if not os.path.exists(uri):
         raise PelicunRuntimeError(
-            f"Malformed gs:// URI (no object key): {uri!r}"
+            f"local path does not exist: {uri!r}"
         )
-    bucket_name = rest[:slash]
-    blob_path = rest[slash + 1:]
-
-    try:
-        if storage_client is None:
-            from google.cloud import storage  # type: ignore[import-not-found]
-
-            storage_client = storage.Client(
-                project=os.environ.get("GOOGLE_CLOUD_PROJECT", "grace-2-hazard-prod")
-            )
-        bucket_obj = storage_client.bucket(bucket_name)
-        blob = bucket_obj.blob(blob_path)
-        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tf:
-            local_path = tf.name
-        try:
-            blob.download_to_filename(local_path)
-        except Exception as first_exc:  # noqa: BLE001
-            # job-0253 (OQ-0253-PELICUN-URI-RUNS-PREFIX-MANGLE): the LLM
-            # RECONSTRUCTS gs:// paths (the flood result's LayerURI.uri is
-            # the WMS URL per OQ-62, so the COG path never appears verbatim
-            # for it to copy) and mangles them with phantom prefix segments —
-            # observed live: gs://...-runs/runs/<run_id>/flood_depth_peak.tif.
-            # Repair: retry the LAST TWO path segments (<run_id>/<file>)
-            # against the same bucket, which strips any invented prefix.
-            parts = blob_path.split("/")
-            if len(parts) > 2:
-                repaired = "/".join(parts[-2:])
-                logger.warning(
-                    "gs:// download failed for %r; retrying suffix-repaired "
-                    "path gs://%s/%s (LLM path-mangle guard, job-0253)",
-                    uri,
-                    bucket_name,
-                    repaired,
-                )
-                bucket_obj.blob(repaired).download_to_filename(local_path)
-            else:
-                raise first_exc
-        return local_path
-    except Exception as exc:  # noqa: BLE001
-        raise PelicunRuntimeError(
-            f"GCS download failed for {uri!r}: {exc}"
-        ) from exc
+    return uri
 
 
 # ---------------------------------------------------------------------------

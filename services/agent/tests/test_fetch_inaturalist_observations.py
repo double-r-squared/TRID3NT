@@ -99,19 +99,37 @@ class FakeStorageClient:
         return FakeBucket(self.store)
 
 
-def _make_read_through_injector(fake_gcs: FakeStorageClient):
-    """Patched read_through that injects fake GCS + pinned now into the real shim."""
-    from grace2_agent.tools.cache import read_through as real_rt
+def _make_read_through_injector(fake_gcs):
+    """S3-only in-memory read-through injector (GCP decommissioned).
+
+    Replaces the retired ``google.cloud.storage`` double: drives the tool's
+    ``read_through`` off an in-memory S3 store (``fake_gcs.store``, keyed by
+    object KEY), minting ``s3://`` URIs and honoring cache hit/miss/write.
+    """
+    from grace2_agent.tools.cache import (
+        CACHE_BUCKET,
+        cache_path,
+        compute_cache_key,
+        is_cacheable,
+        ReadThroughResult,
+    )
+
+    store = fake_gcs.store
 
     def patched(metadata, params, ext, fetch_fn, **kw):
-        return real_rt(
-            metadata=metadata,
-            params=params,
-            ext=ext,
-            fetch_fn=fetch_fn,
-            storage_client=fake_gcs,
-            now=_PINNED_NOW,
-        )
+        bucket = kw.get("bucket") or CACHE_BUCKET
+        source_id = kw.get("source_id") or (metadata.source_class or metadata.name)
+        force_refresh = kw.get("force_refresh", False)
+        if not is_cacheable(metadata):
+            return ReadThroughResult(uri=None, data=fetch_fn(), hit=False)
+        key = compute_cache_key(source_id, params, metadata.ttl_class, now=_PINNED_NOW)
+        path = cache_path(metadata.source_class, metadata.ttl_class, key, ext)
+        uri = f"s3://{bucket}/{path}"
+        if not force_refresh and path in store:
+            return ReadThroughResult(uri=uri, data=store[path], hit=True)
+        data = fetch_fn()
+        store[path] = data
+        return ReadThroughResult(uri=uri, data=data, hit=False)
 
     return patched
 
@@ -382,7 +400,7 @@ def test_happy_path_200_records_writes_fgb_with_points_inside_bbox():
     ):
         result = fetch_inaturalist_observations(taxon_id=43616, bbox=bbox)
 
-    assert result.uri.startswith("gs://"), f"Unexpected URI: {result.uri}"
+    assert result.uri.startswith("s3://"), f"Unexpected URI: {result.uri}"
     assert result.layer_type == "vector"
     assert result.role == "context"
     assert result.units is None
@@ -511,7 +529,7 @@ def test_cache_miss_invokes_fetch_fn_and_writes_store():
         result = fetch_inaturalist_observations(taxon_id=43616, bbox=bbox)
 
     assert fetch_calls["n"] == 1
-    assert result.uri.startswith("gs://")
+    assert result.uri.startswith("s3://")
     assert len(fake_gcs.store) == 1
 
 
@@ -664,7 +682,7 @@ def test_live_alligator_everglades_returns_geographically_valid_points():
             max_records=50,
         )
 
-    assert result.uri.startswith("gs://")
+    assert result.uri.startswith("s3://")
     fgb_bytes = next(iter(fake_gcs.store.values()))
     gdf, coords = _decode_fgb_features(fgb_bytes)
     assert len(coords) >= 1, (

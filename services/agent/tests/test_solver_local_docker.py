@@ -48,15 +48,12 @@ import grace2_agent.tools.solver as solver_mod
 from grace2_agent.tools.solver import (
     LOCAL_DOCKER_WORKFLOW_NAME,
     SOLVER_BACKEND_AWS_BATCH,
-    SOLVER_BACKEND_GCP_WORKFLOWS,
     SOLVER_BACKEND_LOCAL_DOCKER,
     SolverDispatchError,
     run_solver,
     set_emitter_binding,
     set_runs_bucket,
     set_s3_client,
-    set_storage_client,
-    set_workflows_client,
     solver_backend,
     wait_for_completion,
 )
@@ -180,7 +177,7 @@ esac
 @pytest.fixture()
 def reset_seams():
     """Reset every solver DI seam + the local-run registry around each test."""
-    for setter in (set_workflows_client, set_storage_client, set_s3_client):
+    for setter in (set_s3_client,):
         setter(None)
     set_emitter_binding(None)
     set_runs_bucket(None)
@@ -188,7 +185,7 @@ def reset_seams():
     try:
         yield
     finally:
-        for setter in (set_workflows_client, set_storage_client, set_s3_client):
+        for setter in (set_s3_client,):
             setter(None)
         set_emitter_binding(None)
         set_runs_bucket(None)
@@ -271,7 +268,7 @@ def _wait_for_completion_object(
 
 
 # --------------------------------------------------------------------------- #
-# 1. Backend seam default — gcp-workflows, byte-identical
+# 1. Backend seam default — aws-batch (GCP decommissioned)
 # --------------------------------------------------------------------------- #
 
 
@@ -281,27 +278,14 @@ def test_solver_backend_defaults_to_aws_batch(
     # GCP decommissioned: the unset default is now aws-batch.
     monkeypatch.delenv("GRACE2_SOLVER_BACKEND", raising=False)
     assert solver_backend() == SOLVER_BACKEND_AWS_BATCH
-    # Legacy value still honored on exact match (duck-typed test seam).
+    # The dead legacy value now falls through to aws-batch (no gcp backend).
     monkeypatch.setenv("GRACE2_SOLVER_BACKEND", "gcp-workflows")
-    assert solver_backend() == SOLVER_BACKEND_GCP_WORKFLOWS
+    assert solver_backend() == SOLVER_BACKEND_AWS_BATCH
     # Unknown values fall back to the default (never accidentally local).
     monkeypatch.setenv("GRACE2_SOLVER_BACKEND", "gcp-workflows-someday")
     assert solver_backend() == SOLVER_BACKEND_AWS_BATCH
     monkeypatch.setenv("GRACE2_SOLVER_BACKEND", "local-docker")
     assert solver_backend() == SOLVER_BACKEND_LOCAL_DOCKER
-
-
-def test_default_backend_still_requires_gs_uri(
-    reset_seams, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Pre-job-0291 behavior verbatim: under the default backend a non-gs://
-    model_setup_uri raises before any dispatch."""
-    monkeypatch.delenv("GRACE2_SOLVER_BACKEND", raising=False)
-    fake_wf = MagicMock()
-    set_workflows_client(fake_wf)
-    with pytest.raises(SolverDispatchError):
-        run_solver(solver="sfincs", model_setup_uri="s3://bucket/manifest.json")
-    fake_wf.create_execution.assert_not_called()
 
 
 # --------------------------------------------------------------------------- #
@@ -369,16 +353,14 @@ def test_local_run_solver_stages_manifest_and_launches_docker(
     ), run_calls[0]
 
 
-def test_local_manifest_gs_uri_field_with_gs_scheme_uses_storage_client(
+def test_local_manifest_gs_uri_field_with_gs_scheme_rejected(
     reset_seams, local_env: Path, docker_shim: Path
 ) -> None:
-    """Scheme resolution is by VALUE, not field name: a legacy ``gs://``
-    value in the ``gs_uri`` field downloads through the GCS client seam."""
+    """GCP decommissioned: a legacy ``gs://`` value in the ``gs_uri`` field is
+    no longer resolvable (the GCS staging fallback is removed) — staging the
+    deck fails with a typed ``SolverDispatchError`` (unsupported scheme)."""
     s3 = FakeS3Client()
     set_s3_client(s3)
-    set_storage_client(
-        FakeGCSClient({"legacy-gcs-bucket": {"deck/sfincs.inp": b"GS_DECK"}})
-    )
     manifest = {
         "inputs": [
             {"gs_uri": "gs://legacy-gcs-bucket/deck/sfincs.inp", "dest": "sfincs.inp"}
@@ -388,12 +370,10 @@ def test_local_manifest_gs_uri_field_with_gs_scheme_uses_storage_client(
     }
     s3.objects[("deck-bucket", "mixed/manifest.json")] = json.dumps(manifest).encode()
 
-    handle = run_solver(
-        solver="sfincs", model_setup_uri="s3://deck-bucket/mixed/manifest.json"
-    )
-    rundir = local_env / handle.run_id
-    assert (rundir / "sfincs.inp").read_bytes() == b"GS_DECK"
-    _wait_for_completion_object(s3, handle.run_id)
+    with pytest.raises(SolverDispatchError):
+        run_solver(
+            solver="sfincs", model_setup_uri="s3://deck-bucket/mixed/manifest.json"
+        )
 
 
 def test_local_manifest_dest_traversal_rejected(
@@ -618,7 +598,8 @@ async def test_local_wait_emits_progress_via_emitter_binding(
 def test_default_setup_uri_is_scheme_aware(monkeypatch: pytest.MonkeyPatch) -> None:
     from grace2_agent.workflows.sfincs_builder import _default_setup_uri
 
-    # Unset -> S3 default after the GCP decommission.
+    # GCP is decommissioned: the setup URI is always s3:// regardless of any
+    # GRACE2_STORAGE_BACKEND override (the gs legacy seam is gone).
     monkeypatch.delenv("GRACE2_STORAGE_BACKEND", raising=False)
     monkeypatch.setenv("GRACE2_CACHE_BUCKET", "cache-bkt")
     assert _default_setup_uri((0, 0, 1, 1)).startswith(
@@ -628,10 +609,10 @@ def test_default_setup_uri_is_scheme_aware(monkeypatch: pytest.MonkeyPatch) -> N
     uri = _default_setup_uri((0, 0, 1, 1))
     assert uri.startswith("s3://cache-bkt/cache/static-30d/sfincs_setup/")
     assert uri.endswith("/manifest.json")
-    # Explicit legacy override still maps to gs:// (duck-typed test seam).
+    # A stray legacy override no longer resurrects gs:// — S3-only.
     monkeypatch.setenv("GRACE2_STORAGE_BACKEND", "gcs")
     assert _default_setup_uri((0, 0, 1, 1)).startswith(
-        "gs://cache-bkt/cache/static-30d/sfincs_setup/"
+        "s3://cache-bkt/cache/static-30d/sfincs_setup/"
     )
 
 
@@ -759,7 +740,9 @@ def test_to_vsigs_maps_s3_to_vsis3() -> None:
 
     assert _to_vsigs("s3://bkt/key.tif") == "/vsis3/bkt/key.tif"
     assert _to_vsigs("/vsis3/bkt/key.tif") == "/vsis3/bkt/key.tif"
-    assert _to_vsigs("gs://bkt/key.tif") == "/vsigs/bkt/key.tif"  # unchanged
+    # GCP decommissioned: gs:// is no longer special-cased — passed through as a
+    # local path (the resolver layer is the gate).
+    assert _to_vsigs("gs://bkt/key.tif") == "gs://bkt/key.tif"
 
 
 # --------------------------------------------------------------------------- #

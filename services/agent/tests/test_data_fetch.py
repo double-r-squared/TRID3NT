@@ -48,49 +48,73 @@ FORT_MYERS_BBOX = (-81.92, 26.55, -81.80, 26.68)
 PINNED_NOW = datetime(2026, 6, 6, 12, 0, 0, tzinfo=timezone.utc)
 
 
-class FakeBlob:
-    """Duck-typed blob: tracks exists / download / upload / metadata writes."""
+class _S3Body:
+    def __init__(self, data: bytes) -> None:
+        self._data = data
 
-    def __init__(self, store: dict[str, bytes], path: str) -> None:
-        self._store = store
-        self._path = path
-        self.custom_time: datetime | None = None  # google-cloud-storage SDK requires datetime (OQ-33 hotfix)
-        self.cache_control: str | None = None
-        self.uploaded: bytes | None = None
-        self.upload_content_type: str | None = None
-
-    def exists(self) -> bool:
-        return self._path in self._store
-
-    def download_as_bytes(self) -> bytes:
-        return self._store[self._path]
-
-    def upload_from_string(self, data: bytes, content_type: str | None = None) -> None:
-        self.uploaded = data
-        self.upload_content_type = content_type
-        self._store[self._path] = data
-
-
-class FakeBucket:
-    def __init__(self, store: dict[str, bytes]) -> None:
-        self._store = store
-        self.blobs: list[FakeBlob] = []
-
-    def blob(self, path: str) -> FakeBlob:
-        b = FakeBlob(self._store, path)
-        self.blobs.append(b)
-        return b
+    def read(self) -> bytes:
+        return self._data
 
 
 class FakeStorageClient:
-    """Minimal duck-type for ``google.cloud.storage.Client``."""
+    """In-memory S3 double (GCP decommissioned). ``store`` keyed by object KEY.
+
+    Returns the per-test active instance installed by the autouse
+    ``_route_cache_to_inmemory_s3`` fixture so the tool's real S3 read-through
+    (boto3) reads/writes the same store the test inspects.
+    """
+
+    _active: "FakeStorageClient | None" = None
+
+    def __new__(cls) -> "FakeStorageClient":
+        if cls._active is not None:
+            return cls._active
+        return super().__new__(cls)
 
     def __init__(self) -> None:
+        if getattr(self, "_init", False):
+            return
+        self._init = True
         self.store: dict[str, bytes] = {}
-        self._bucket = FakeBucket(self.store)
+        self.last_put: dict | None = None
 
-    def bucket(self, name: str) -> FakeBucket:
-        return self._bucket
+    def get_object(self, *, Bucket, Key):
+        from botocore.exceptions import ClientError
+
+        try:
+            data = self.store[Key]
+        except KeyError:
+            raise ClientError(
+                {"Error": {"Code": "NoSuchKey", "Message": "not found"}},
+                "GetObject",
+            )
+        return {"Body": _S3Body(data)}
+
+    def put_object(self, *, Bucket, Key, Body, ContentType=None):
+        data = Body.read() if hasattr(Body, "read") else Body
+        self.store[Key] = data
+        self.last_put = {"Bucket": Bucket, "Key": Key, "ContentType": ContentType}
+        return {}
+
+
+@pytest.fixture(autouse=True)
+def _route_cache_to_inmemory_s3(monkeypatch):
+    """Route boto3 S3 (the cache shim's only object store) to an in-memory double."""
+    import boto3
+
+    FakeStorageClient._active = None
+    client = FakeStorageClient()
+    FakeStorageClient._active = client
+
+    def _factory(service_name, *a, **k):
+        assert service_name == "s3"
+        return client
+
+    monkeypatch.setattr(boto3, "client", _factory)
+    try:
+        yield client
+    finally:
+        FakeStorageClient._active = None
 
 
 # ---------------------------------------------------------------------------
@@ -232,18 +256,18 @@ def test_fetch_dem_happy_path_writes_through_cache(monkeypatch):
     layer = fetch_dem(FORT_MYERS_BBOX, resolution_m=10)
     assert layer.layer_type == "raster"
     assert layer.style_preset == "continuous_dem"
-    assert layer.uri.startswith("gs://grace2-hazard-cache-226996537797/cache/static-30d/dem/")
+    assert layer.uri.startswith("s3://grace2-hazard-cache-226996537797/cache/static-30d/dem/")
     assert layer.uri.endswith(".tif")
     assert layer.units == "meters"
 
-    # The fake GCS store should now hold the COG bytes.
+    # The in-memory S3 store should now hold the COG bytes.
     paths_written = list(fake_storage.store.keys())
     assert len(paths_written) == 1
     assert fake_storage.store[paths_written[0]] == b"FAKE_COG_BYTES"
-    # The blob should have a customTime set per FR-DC-3.
-    written_blob = fake_storage._bucket.blobs[-1]
-    assert written_blob.custom_time is not None
-    assert written_blob.custom_time.year == 2026 and written_blob.custom_time.month == 6  # datetime, not isoformat str (OQ-33 hotfix)
+    # GCP decommissioned: TTL eviction is an S3 bucket-lifecycle rule, so no
+    # per-object customTime is written; assert the boto3 put landed instead.
+    assert fake_storage.last_put is not None
+    assert fake_storage.last_put["Key"] == paths_written[0]
 
 
 def test_fetch_dem_rejects_oversized_bbox():
@@ -306,7 +330,7 @@ def test_fetch_buildings_happy_path_msft(monkeypatch):
     assert layer.style_preset == "affected_buildings"
     assert layer.name == "Buildings (MSFT)"
     assert layer.uri.startswith(
-        "gs://grace2-hazard-cache-226996537797/cache/static-30d/buildings/"
+        "s3://grace2-hazard-cache-226996537797/cache/static-30d/buildings/"
     )
     assert layer.uri.endswith(".fgb")
 
@@ -581,7 +605,7 @@ def test_fetch_population_acs_opt_in_routes_to_acs_branch(monkeypatch):
     assert layer.layer_type == "vector"
     assert layer.units == "people"
     assert layer.uri.startswith(
-        "gs://grace2-hazard-cache-226996537797/cache/static-30d/population/"
+        "s3://grace2-hazard-cache-226996537797/cache/static-30d/population/"
     )
     assert layer.uri.endswith(".json")
 
@@ -630,7 +654,7 @@ def test_fetch_population_default_routes_to_worldpop_not_acs(monkeypatch):
     assert layer.layer_type == "raster"  # WorldPop is a raster COG, not a GeoJSON FC
     assert layer.units == "people"
     assert layer.uri.startswith(
-        "gs://grace2-hazard-cache-226996537797/cache/static-30d/population/"
+        "s3://grace2-hazard-cache-226996537797/cache/static-30d/population/"
     )
     assert layer.uri.endswith(".tif")
 
@@ -660,9 +684,9 @@ def test_fetch_population_worldpop_writes_tif_cog_to_cache(monkeypatch):
     assert paths[0].startswith("cache/static-30d/population/")
     assert paths[0].endswith(".tif")
     assert fake_storage.store[paths[0]] == b"FAKE_WORLDPOP_COG_BYTES"
-    # customTime set per FR-DC-3.
-    blob = fake_storage._bucket.blobs[-1]
-    assert blob.custom_time is not None
+    # GCP decommissioned: TTL eviction is an S3 bucket-lifecycle rule (no
+    # per-object customTime); assert the boto3 put landed instead.
+    assert fake_storage.last_put is not None
     # LayerURI return shape is raster + meters/people.
     assert layer.layer_type == "raster"
     assert layer.uri.endswith(".tif")
@@ -712,8 +736,8 @@ def test_geocode_location_happy_path(monkeypatch):
     assert result["source"] == "nominatim"
     assert result["bbox"] == [-81.93, 26.55, -81.78, 26.71]
     assert "Fort Myers" in result["name"]
-    # No gs:// URI leaks into the returned payload (Tier separation).
-    assert "gs://" not in str(result)
+    # No s3:// URI leaks into the returned payload (Tier separation).
+    assert "s3://" not in str(result)
 
 
 def test_geocode_location_rejects_empty_query():
@@ -1264,7 +1288,7 @@ def test_fetch_landcover_returns_nlcd_vintage_year_sidecar(monkeypatch):
     assert layer.style_preset == "categorical_landcover"
     assert layer.units == "nlcd_class_code"
     assert layer.uri.startswith(
-        "gs://grace2-hazard-cache-226996537797/cache/static-30d/landcover/"
+        "s3://grace2-hazard-cache-226996537797/cache/static-30d/landcover/"
     )
     assert layer.uri.endswith(".tif")
 
@@ -1294,9 +1318,9 @@ def test_fetch_landcover_routes_through_read_through_writes_cache(monkeypatch):
     assert paths[0].startswith("cache/static-30d/landcover/")
     assert paths[0].endswith(".tif")
     assert fake_storage.store[paths[0]] == b"FAKE_NLCD_GEOTIFF_BYTES"
-    # customTime set per FR-DC-3.
-    blob = fake_storage._bucket.blobs[-1]
-    assert blob.custom_time is not None
+    # GCP decommissioned: TTL eviction is an S3 bucket-lifecycle rule (no
+    # per-object customTime); assert the boto3 put landed instead.
+    assert fake_storage.last_put is not None
 
 
 def test_fetch_landcover_quantizes_bbox_to_30m_nlcd_grid(monkeypatch):
@@ -1989,7 +2013,7 @@ def test_fetch_river_geometry_happy_path_returns_layer_uri(monkeypatch):
     layer = fetch_river_geometry(FORT_MYERS_BBOX)
     assert layer.layer_type == "vector"
     assert layer.uri.startswith(
-        "gs://grace2-hazard-cache-226996537797/cache/static-30d/river_geometry/"
+        "s3://grace2-hazard-cache-226996537797/cache/static-30d/river_geometry/"
     )
     assert layer.uri.endswith(".fgb")
     # Provider-agnostic layer_id; renders inline (NOT published via publish_layer).
@@ -2432,5 +2456,6 @@ def test_lookup_precip_return_period_writes_csv_through_cache(monkeypatch):
     assert paths[0].startswith("cache/static-30d/precip_return_period/")
     assert paths[0].endswith(".csv")
     assert b"NOAA Atlas 14" in fake_storage.store[paths[0]]
-    blob = fake_storage._bucket.blobs[-1]
-    assert blob.custom_time is not None
+    # GCP decommissioned: TTL eviction is an S3 bucket-lifecycle rule (no
+    # per-object customTime); assert the boto3 put landed instead.
+    assert fake_storage.last_put is not None

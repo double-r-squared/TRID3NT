@@ -121,38 +121,73 @@ def _fake_contour_fgb_bytes() -> bytes:
 # ---------------------------------------------------------------------------
 
 
-class FakeBlob:
-    def __init__(self, store: dict[str, bytes], path: str) -> None:
-        self._store = store
-        self._path = path
-        self.custom_time: datetime | None = None
-        self.cache_control: str | None = None
+class _S3Body:
+    def __init__(self, data: bytes) -> None:
+        self._data = data
 
-    def exists(self) -> bool:
-        return self._path in self._store
-
-    def download_as_bytes(self) -> bytes:
-        return self._store[self._path]
-
-    def upload_from_string(self, data: bytes, content_type: str | None = None) -> None:
-        self._store[self._path] = data
-
-
-class FakeBucket:
-    def __init__(self, store: dict[str, bytes]) -> None:
-        self._store = store
-
-    def blob(self, path: str) -> FakeBlob:
-        return FakeBlob(self._store, path)
+    def read(self) -> bytes:
+        return self._data
 
 
 class FakeStorageClient:
-    def __init__(self) -> None:
-        self.store: dict[str, bytes] = {}
-        self._bucket = FakeBucket(self.store)
+    """In-memory S3 double (GCP decommissioned). ``store`` keyed by object KEY.
 
-    def bucket(self, name: str) -> FakeBucket:
-        return self._bucket
+    Returns the per-test active instance installed by the autouse
+    ``_route_cache_to_inmemory_s3`` fixture so the tool's real S3 read-through
+    (boto3) reads/writes the same store the test inspects.
+    """
+
+    _active: "FakeStorageClient | None" = None
+
+    def __new__(cls) -> "FakeStorageClient":
+        if cls._active is not None:
+            return cls._active
+        return super().__new__(cls)
+
+    def __init__(self) -> None:
+        if getattr(self, "_init", False):
+            return
+        self._init = True
+        self.store: dict[str, bytes] = {}
+        self.last_put: dict | None = None
+
+    def get_object(self, *, Bucket, Key):
+        from botocore.exceptions import ClientError
+
+        try:
+            data = self.store[Key]
+        except KeyError:
+            raise ClientError(
+                {"Error": {"Code": "NoSuchKey", "Message": "not found"}},
+                "GetObject",
+            )
+        return {"Body": _S3Body(data)}
+
+    def put_object(self, *, Bucket, Key, Body, ContentType=None):
+        data = Body.read() if hasattr(Body, "read") else Body
+        self.store[Key] = data
+        self.last_put = {"Bucket": Bucket, "Key": Key, "ContentType": ContentType}
+        return {}
+
+
+@pytest.fixture(autouse=True)
+def _route_cache_to_inmemory_s3(monkeypatch):
+    """Route boto3 S3 (the cache shim's only object store) to an in-memory double."""
+    import boto3
+
+    FakeStorageClient._active = None
+    client = FakeStorageClient()
+    FakeStorageClient._active = client
+
+    def _factory(service_name, *a, **k):
+        assert service_name == "s3"
+        return client
+
+    monkeypatch.setattr(boto3, "client", _factory)
+    try:
+        yield client
+    finally:
+        FakeStorageClient._active = None
 
 
 @pytest.fixture()
@@ -293,7 +328,6 @@ def test_compute_contours_layer_uri_shape(fake_storage):
     ), patch("grace2_agent.tools.cache.CACHE_BUCKET", "test-bucket"):
         result = compute_contours(
             dem_uri="gs://test-bucket/cache/static-30d/dem/abc123.tif",
-            _storage_client=fake_storage,
             _bucket="test-bucket",
         )
 
@@ -301,7 +335,7 @@ def test_compute_contours_layer_uri_shape(fake_storage):
     assert result.role == "context"
     assert result.style_preset == "contours"
     assert result.units == "m"
-    assert result.uri.startswith("gs://")
+    assert result.uri.startswith("s3://")
     assert "/contours/" in result.uri
     # bbox set to the DEM extent (EPSG:4326) for auto-zoom.
     assert result.bbox is not None
@@ -326,7 +360,6 @@ def test_compute_contours_explicit_interval_in_name(fake_storage):
         result = compute_contours(
             dem_uri="gs://test-bucket/cache/static-30d/dem/abc123.tif",
             interval_m=50.0,
-            _storage_client=fake_storage,
             _bucket="test-bucket",
         )
     assert "50" in result.name
@@ -355,7 +388,6 @@ def test_compute_contours_binary_missing_raises(fake_storage):
             compute_contours(
                 dem_uri="gs://test-bucket/dem/abc.tif",
                 interval_m=10.0,
-                _storage_client=fake_storage,
                 _bucket="test-bucket",
             )
     assert exc_info.value.error_code == "GDAL_CONTOUR_UNAVAILABLE"
@@ -405,7 +437,6 @@ def test_compute_contours_cache_hit_skips_fetch(fake_storage):
         result = compute_contours(
             dem_uri=dem_uri,
             interval_m=10.0,
-            _storage_client=fake_storage,
             _bucket="test-bucket",
         )
 
@@ -452,7 +483,6 @@ def test_compute_contours_bbox_fetches_dem(fake_storage):
     ), patch("grace2_agent.tools.cache.CACHE_BUCKET", "test-bucket"):
         result = compute_contours(
             bbox=(-100.0, 40.0, -99.9, 40.1),
-            _storage_client=fake_storage,
             _bucket="test-bucket",
         )
 

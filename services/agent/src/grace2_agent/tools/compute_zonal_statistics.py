@@ -194,54 +194,35 @@ def _detect_zone_type(uri: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# GCS download helper
+# Object-store download helper (S3-only; GCP decommissioned)
 # ---------------------------------------------------------------------------
 
 
-def _download_uri_bytes(uri: str, storage_client: object | None) -> bytes:
-    """Download bytes from a ``gs://`` URI or read a local path.
+def _download_uri_bytes(uri: str, storage_client: object | None = None) -> bytes:
+    """Download bytes from an ``s3://`` URI or read a local path.
 
-    ``storage_client`` is injected by tests; production callers pass None and
-    the function builds an ADC-authenticated client lazily.
+    GCP is decommissioned: object-store reads route through boto3 (S3).
+    ``storage_client`` is retained for backward-compatible call signatures
+    but is ignored.
     """
+    del storage_client  # GCP decommissioned — S3/local only.
     # sprint-14-aws (job-0290b): s3:// staging via the shared boto3 reader.
     if uri.startswith("s3://"):
         from .cache import read_object_bytes_s3
-        return read_object_bytes_s3(uri)
-    if not uri.startswith("gs://"):
         try:
-            with open(uri, "rb") as f:
-                return f.read()
-        except OSError as exc:
+            return read_object_bytes_s3(uri)
+        except Exception as exc:  # noqa: BLE001
             raise ZonalStatisticsError(
                 "DOWNLOAD_FAILED",
-                f"Could not read local path {uri!r}: {exc}",
+                f"S3 download failed for {uri!r}: {exc}",
             ) from exc
-
-    rest = uri[len("gs://"):]
-    slash = rest.find("/")
-    if slash == -1:
-        raise ZonalStatisticsError(
-            "DOWNLOAD_FAILED",
-            f"Malformed gs:// URI (no object key): {uri!r}",
-        )
-    bucket_name = rest[:slash]
-    blob_path = rest[slash + 1:]
-
     try:
-        if storage_client is None:
-            from google.cloud import storage  # type: ignore[import-not-found]
-
-            storage_client = storage.Client(
-                project=os.environ.get("GOOGLE_CLOUD_PROJECT", "grace-2-hazard-prod")
-            )
-        bucket_obj = storage_client.bucket(bucket_name)
-        blob = bucket_obj.blob(blob_path)
-        return blob.download_as_bytes()
-    except Exception as exc:  # noqa: BLE001
+        with open(uri, "rb") as f:
+            return f.read()
+    except OSError as exc:
         raise ZonalStatisticsError(
             "DOWNLOAD_FAILED",
-            f"GCS download failed for {uri!r}: {exc}",
+            f"Could not read local path {uri!r}: {exc}",
         ) from exc
 
 

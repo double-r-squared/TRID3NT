@@ -116,8 +116,8 @@ _METADATA = AtomicToolMetadata(
 def _get_source_crs(raster_uri: str) -> Any:
     """Open the raster with rasterio and return its CRS.
 
-    For ``gs://`` URIs uses the ``/vsigs/`` virtual filesystem path so rasterio
-    can read the header without downloading the full file.
+    For ``s3://`` URIs the bytes are staged via the shared boto3 reader and
+    opened in-memory.
 
     Raises:
         ClipRasterPolygonError: if the URI is unrecognised or rasterio cannot
@@ -126,9 +126,7 @@ def _get_source_crs(raster_uri: str) -> Any:
     try:
         import rasterio  # type: ignore[import-not-found]
 
-        # sprint-14-aws (job-0293b): s3:// header-read via GDAL /vsis3/ —
-        # mirrors the /vsigs/ style; the EC2 instance-role creds resolve
-        # through GDAL's AWS credential chain.
+        # sprint-14-aws (job-0293b): s3:// header-read.
         if raster_uri.startswith("s3://"):
             # sprint-14-aws (job-0293c): GDAL's /vsis3/ credential chain does
             # not resolve the EC2 instance role in this env (boto3 does) —
@@ -139,18 +137,14 @@ def _get_source_crs(raster_uri: str) -> Any:
             with MemoryFile(read_object_bytes_s3(raster_uri)) as mf:
                 with mf.open() as src:
                     return src.crs
-        elif raster_uri.startswith("gs://"):
-            vsigs_path = "/vsigs/" + raster_uri[len("gs://"):]
-            with rasterio.open(vsigs_path) as src:
-                return src.crs
         elif os.path.isfile(raster_uri):
             with rasterio.open(raster_uri) as src:
                 return src.crs
         else:
             raise ClipRasterPolygonError(
                 "UNKNOWN_RASTER_URI",
-                f"raster_uri {raster_uri!r} is not a gs:// URI and is not a "
-                "readable local file. Provide a gs:// URI or an absolute local path.",
+                f"raster_uri {raster_uri!r} is not an s3:// URI and is not a "
+                "readable local file. Provide an s3:// URI or an absolute local path.",
                 retryable=False,
             )
     except ClipRasterPolygonError:
@@ -162,116 +156,83 @@ def _get_source_crs(raster_uri: str) -> Any:
         ) from exc
 
 
-def _download_raster_bytes(raster_uri: str, storage_client: Any | None) -> bytes:
-    """Download raster bytes from a ``gs://`` URI or read from a local file."""
+def _download_raster_bytes(raster_uri: str, storage_client: Any | None = None) -> bytes:
+    """Download raster bytes from an ``s3://`` URI or read from a local file.
+
+    GCP is decommissioned: object-store reads route through boto3 (S3).
+    ``storage_client`` is retained for backward-compatible call signatures
+    but is ignored.
+    """
+    del storage_client  # GCP decommissioned — S3/local only.
     # sprint-14-aws (job-0290b): s3:// staging via the shared boto3 reader.
     if raster_uri.startswith("s3://"):
         from .cache import read_object_bytes_s3
-        return read_object_bytes_s3(raster_uri)
-    if not raster_uri.startswith("gs://"):
-        if not os.path.isfile(raster_uri):
-            raise ClipRasterPolygonError(
-                "UNKNOWN_RASTER_URI",
-                f"raster_uri {raster_uri!r} is not a gs:// URI and is not a "
-                "readable local file.",
-                retryable=False,
-            )
         try:
-            with open(raster_uri, "rb") as f:
-                return f.read()
-        except OSError as exc:
+            return read_object_bytes_s3(raster_uri)
+        except Exception as exc:  # noqa: BLE001
             raise ClipRasterPolygonError(
                 "RASTER_DOWNLOAD_FAILED",
-                f"Could not read local raster path {raster_uri!r}: {exc}",
+                f"S3 download failed for {raster_uri!r}: {exc}",
             ) from exc
-
-    rest = raster_uri[len("gs://"):]
-    slash = rest.find("/")
-    if slash == -1:
+    if not os.path.isfile(raster_uri):
         raise ClipRasterPolygonError(
-            "RASTER_DOWNLOAD_FAILED",
-            f"Malformed gs:// URI (no object key): {raster_uri!r}",
+            "UNKNOWN_RASTER_URI",
+            f"raster_uri {raster_uri!r} is not an s3:// URI and is not a "
+            "readable local file.",
             retryable=False,
         )
-    bucket_name = rest[:slash]
-    blob_path = rest[slash + 1:]
-
     try:
-        if storage_client is None:
-            from google.cloud import storage  # type: ignore[import-not-found]
-
-            storage_client = storage.Client(
-                project=os.environ.get("GOOGLE_CLOUD_PROJECT", "grace-2-hazard-prod")
-            )
-        bucket_obj = storage_client.bucket(bucket_name)
-        blob = bucket_obj.blob(blob_path)
-        return blob.download_as_bytes()
-    except Exception as exc:  # noqa: BLE001
+        with open(raster_uri, "rb") as f:
+            return f.read()
+    except OSError as exc:
         raise ClipRasterPolygonError(
             "RASTER_DOWNLOAD_FAILED",
-            f"GCS download failed for {raster_uri!r}: {exc}",
+            f"Could not read local raster path {raster_uri!r}: {exc}",
         ) from exc
 
 
-def _download_polygon_bytes(polygon_uri: str, storage_client: Any | None) -> tuple[bytes, str]:
-    """Download polygon bytes from a ``gs://`` URI or read from a local file.
+def _download_polygon_bytes(polygon_uri: str, storage_client: Any | None = None) -> tuple[bytes, str]:
+    """Download polygon bytes from an ``s3://`` URI or read from a local file.
+
+    GCP is decommissioned: object-store reads route through boto3 (S3).
+    ``storage_client`` is retained for backward-compatible call signatures
+    but is ignored.
 
     Returns:
         (bytes, suffix) where ``suffix`` is the file extension (e.g. ``.fgb``,
         ``.geojson``) used so geopandas/pyogrio picks the right driver when
         reading from the materialized temp file.
     """
+    del storage_client  # GCP decommissioned — S3/local only.
     # sprint-14-aws (job-0290b): s3:// staging via the shared boto3 reader.
     if polygon_uri.startswith("s3://"):
         from .cache import read_object_bytes_s3
         _name = polygon_uri.rstrip("/").rsplit("/", 1)[-1]
         _suffix = ("." + _name.rsplit(".", 1)[-1]) if "." in _name else ".fgb"
-        return read_object_bytes_s3(polygon_uri), _suffix
-    if not polygon_uri.startswith("gs://"):
-        if not os.path.isfile(polygon_uri):
-            raise ClipRasterPolygonError(
-                "UNKNOWN_POLYGON_URI",
-                f"polygon_uri {polygon_uri!r} is not a gs:// URI and is not a "
-                "readable local file.",
-                retryable=False,
-            )
         try:
-            with open(polygon_uri, "rb") as f:
-                data = f.read()
-        except OSError as exc:
+            return read_object_bytes_s3(polygon_uri), _suffix
+        except Exception as exc:  # noqa: BLE001
             raise ClipRasterPolygonError(
                 "POLYGON_DOWNLOAD_FAILED",
-                f"Could not read local polygon path {polygon_uri!r}: {exc}",
+                f"S3 download failed for {polygon_uri!r}: {exc}",
             ) from exc
-        suffix = os.path.splitext(polygon_uri)[1] or ".fgb"
-        return data, suffix
-
-    rest = polygon_uri[len("gs://"):]
-    slash = rest.find("/")
-    if slash == -1:
+    if not os.path.isfile(polygon_uri):
         raise ClipRasterPolygonError(
-            "POLYGON_DOWNLOAD_FAILED",
-            f"Malformed gs:// URI (no object key): {polygon_uri!r}",
+            "UNKNOWN_POLYGON_URI",
+            f"polygon_uri {polygon_uri!r} is not an s3:// URI and is not a "
+            "readable local file.",
             retryable=False,
         )
-    bucket_name = rest[:slash]
-    blob_path = rest[slash + 1:]
-
     try:
-        if storage_client is None:
-            from google.cloud import storage  # type: ignore[import-not-found]
-
-            storage_client = storage.Client(
-                project=os.environ.get("GOOGLE_CLOUD_PROJECT", "grace-2-hazard-prod")
-            )
-        bucket_obj = storage_client.bucket(bucket_name)
-        blob = bucket_obj.blob(blob_path)
-        data = blob.download_as_bytes()
-    except Exception as exc:  # noqa: BLE001
+        with open(polygon_uri, "rb") as f:
+            data = f.read()
+    except OSError as exc:
         raise ClipRasterPolygonError(
             "POLYGON_DOWNLOAD_FAILED",
-            f"GCS download failed for {polygon_uri!r}: {exc}",
+            f"Could not read local polygon path {polygon_uri!r}: {exc}",
         ) from exc
+    suffix = os.path.splitext(polygon_uri)[1] or ".fgb"
+    return data, suffix
 
     suffix = os.path.splitext(blob_path)[1] or ".fgb"
     return data, suffix

@@ -214,17 +214,20 @@ def _validate_uri(uri: object, field_name: str, *, required: bool) -> str:
 def _download_uri_to_local(
     uri: str, suffix: str, storage_client: Any | None = None
 ) -> str:
-    """Download ``uri`` (gs:// or local path) into a NamedTemporaryFile.
+    """Download ``uri`` (``s3://`` or local path) into a NamedTemporaryFile.
 
     Returns the local path. Caller is responsible for unlinking when the input
-    was remote.
+    was remote. GCP is decommissioned: object-store reads route through boto3
+    (S3); ``storage_client`` is retained for call-site compatibility but is
+    ignored.
 
     Raises:
         ``PelicunPostprocessIOError`` on download / read failure.
     """
+    del storage_client  # GCP decommissioned — S3/local only.
     # sprint-14-aws (job-0293b): s3:// staging via the shared boto3 reader
-    # (NOT s3fs — instance-role lesson, job-0289). Mirrors the gs:// branch:
-    # stage to a NamedTemporaryFile the caller unlinks.
+    # (NOT s3fs — instance-role lesson, job-0289). Stage to a
+    # NamedTemporaryFile the caller unlinks.
     if uri.startswith("s3://"):
         from .cache import read_object_bytes_s3
 
@@ -238,43 +241,11 @@ def _download_uri_to_local(
                 f"S3 download failed for {uri!r}: {exc}"
             ) from exc
 
-    if not uri.startswith("gs://"):
-        if not os.path.exists(uri):
-            raise PelicunPostprocessIOError(
-                f"local path does not exist: {uri!r}"
-            )
-        return uri
-
-    rest = uri[len("gs://") :]
-    slash = rest.find("/")
-    if slash == -1:
+    if not os.path.exists(uri):
         raise PelicunPostprocessIOError(
-            f"Malformed gs:// URI (no object key): {uri!r}"
+            f"local path does not exist: {uri!r}"
         )
-    bucket_name = rest[:slash]
-    blob_path = rest[slash + 1 :]
-
-    try:
-        if storage_client is None:
-            from google.cloud import storage  # type: ignore[import-not-found]
-
-            storage_client = storage.Client(
-                project=os.environ.get(
-                    "GOOGLE_CLOUD_PROJECT", "grace-2-hazard-prod"
-                )
-            )
-        bucket_obj = storage_client.bucket(bucket_name)
-        blob = bucket_obj.blob(blob_path)
-        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tf:
-            local_path = tf.name
-        blob.download_to_filename(local_path)
-        return local_path
-    except PelicunPostprocessIOError:
-        raise
-    except Exception as exc:  # noqa: BLE001 — wrap any GCS / FS failure
-        raise PelicunPostprocessIOError(
-            f"GCS download failed for {uri!r}: {exc}"
-        ) from exc
+    return uri
 
 
 # ---------------------------------------------------------------------------

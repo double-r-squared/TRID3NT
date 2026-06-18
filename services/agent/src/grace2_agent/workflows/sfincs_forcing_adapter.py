@@ -242,12 +242,13 @@ def _import_geo():
 
 
 def _read_fetcher_bytes(uri_or_bytes: str | bytes) -> bytes:
-    """Read a fetcher output as bytes from a URI (gs:///s3:///file:///local) or pass bytes.
+    """Read a fetcher output as bytes from a URI (s3:///file:///local) or pass bytes.
 
     Mirrors sfincs_builder's scheme handling so the adapter consumes whatever
-    the fetchers emit on either cloud backend. Bytes are passed through (test
-    path). ``gs://`` uses google-cloud-storage (ADC); ``s3://`` uses the shared
-    boto3 reader (the job-0293c instance-role lesson — NOT s3fs/vsis3).
+    the fetchers emit. Bytes are passed through (test path). GCP is
+    decommissioned: ``s3://`` uses the shared boto3 reader (the job-0293c
+    instance-role lesson — NOT s3fs/vsis3); local/``file://`` paths read
+    directly.
     """
     if isinstance(uri_or_bytes, (bytes, bytearray)):
         return bytes(uri_or_bytes)
@@ -257,14 +258,6 @@ def _read_fetcher_bytes(uri_or_bytes: str | bytes) -> bytes:
             from ..tools.cache import read_object_bytes_s3
 
             return read_object_bytes_s3(uri)
-        if uri.startswith("gs://"):
-            from google.cloud import storage  # ADC
-
-            bucket_name, _, blob_name = uri[len("gs://"):].partition("/")
-            client = storage.Client(
-                project=os.environ.get("GOOGLE_CLOUD_PROJECT", "grace-2-hazard-prod")
-            )
-            return client.bucket(bucket_name).blob(blob_name).download_as_bytes()
         path = uri[len("file://"):] if uri.startswith("file://") else uri
         with open(path, "rb") as fh:
             return fh.read()

@@ -171,54 +171,9 @@ def test_pelicun_wms_reverse_map_uses_s3_scheme_on_aws(monkeypatch):
         os.unlink(path)
 
 
-def test_pelicun_wms_reverse_map_legacy_gcs_scheme(monkeypatch):
-    """Legacy GCS seam: under an explicit GRACE2_STORAGE_BACKEND=gcs the
-    reverse-map produces gs:// and uses the injected storage client (no s3
-    reader call). GCP is decommissioned so this requires the explicit legacy
-    override — the unset default is now s3 (see the s3-shaped test below)."""
-    from grace2_agent.tools.run_pelicun_damage_assessment import (
-        _download_uri_to_local,
-    )
-
-    monkeypatch.setenv("GRACE2_STORAGE_BACKEND", "gcs")
-    monkeypatch.setenv("GRACE2_RUNS_BUCKET", "test-runs")
-    s3_calls = _bind_fake_reader(monkeypatch, b"NEVER")
-
-    requested: dict[str, str] = {}
-
-    class _FakeBlob:
-        def __init__(self, name: str) -> None:
-            self._name = name
-
-        def download_to_filename(self, local_path: str) -> None:
-            requested["blob"] = self._name
-            with open(local_path, "wb") as f:
-                f.write(b"GCS-COG")
-
-    class _FakeBucket:
-        def __init__(self, name: str) -> None:
-            requested["bucket"] = name
-
-        def blob(self, name: str) -> _FakeBlob:
-            return _FakeBlob(name)
-
-    class _FakeStorageClient:
-        def bucket(self, name: str) -> _FakeBucket:
-            return _FakeBucket(name)
-
-    path = _download_uri_to_local(
-        _WMS_URI, ".tif", storage_client=_FakeStorageClient()
-    )
-    try:
-        assert s3_calls == []
-        assert requested == {
-            "bucket": "test-runs",
-            "blob": "RUN123/flood_depth_peak.tif",
-        }
-        with open(path, "rb") as f:
-            assert f.read() == b"GCS-COG"
-    finally:
-        os.unlink(path)
+# NOTE: the former ``test_pelicun_wms_reverse_map_legacy_gcs_scheme`` was
+# deleted in the GCP decommission — the reverse-map is now S3-only (see
+# ``test_pelicun_wms_reverse_map_uses_s3_scheme_on_aws`` above).
 
 
 # ---------------------------------------------------------------------------
@@ -334,21 +289,9 @@ def test_postprocess_pelicun_tool_unlinks_s3_staged_file(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_clip_raster_get_source_crs_gs_branch_unchanged(monkeypatch):
-    """gs:// must still route through /vsigs/ (byte-identical GCP path)."""
-    import rasterio
-
-    from grace2_agent.tools.clip_raster_to_bbox import _get_source_crs
-
-    opened: list[str] = []
-
-    def fake_open(path, *args, **kwargs):
-        opened.append(path)
-        return _FakeRasterioDataset("EPSG:4326")
-
-    monkeypatch.setattr(rasterio, "open", fake_open)
-    assert _get_source_crs("gs://bkt/dem.tif") == "EPSG:4326"
-    assert opened == ["/vsigs/bkt/dem.tif"]
+# NOTE: the former ``test_clip_raster_get_source_crs_gs_branch_unchanged`` was
+# deleted in the GCP decommission — ``_get_source_crs`` no longer has a gs://
+# /vsigs/ branch (S3 stage-then-open only; see the s3 test below).
 
 
 # ---------------------------------------------------------------------------
@@ -400,24 +343,9 @@ def test_clip_vector_resolve_s3_failure_raises_typed_error(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_extract_landcover_open_source_gs_branch_unchanged(monkeypatch):
-    import rasterio
-
-    from grace2_agent.tools.extract_landcover_class import _open_source
-
-    opened: list[str] = []
-
-    def fake_open(path, *args, **kwargs):
-        opened.append(path)
-        return _FakeRasterioDataset("EPSG:5070")
-
-    monkeypatch.setattr(rasterio, "open", fake_open)
-    # job-0305: _open_source is now a context manager (keeps the s3 MemoryFile
-    # alive for the dataset's lifetime). The gs:// branch still rewrites to
-    # /vsigs/ and opens lazily on __enter__.
-    with _open_source("gs://bkt/nlcd_2021.tif") as src:
-        assert src is not None
-    assert opened == ["/vsigs/bkt/nlcd_2021.tif"]
+# NOTE: the former ``test_extract_landcover_open_source_gs_branch_unchanged``
+# was deleted in the GCP decommission — ``_open_source`` no longer has a gs://
+# /vsigs/ branch (S3 stage-then-open only; see the s3 test below).
 
 
 # ---------------------------------------------------------------------------

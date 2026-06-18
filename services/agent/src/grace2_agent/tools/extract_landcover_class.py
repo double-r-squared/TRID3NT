@@ -195,7 +195,7 @@ def _round_bbox(
 
 
 # ---------------------------------------------------------------------------
-# Source-raster opener (gs:// via /vsigs/, local paths native)
+# Source-raster opener (s3:// via boto3 stage-then-open, local paths native)
 # ---------------------------------------------------------------------------
 
 
@@ -203,9 +203,8 @@ def _round_bbox(
 def _open_source(landcover_uri: str) -> Any:
     """Open the landcover raster with rasterio for read (context manager).
 
-    For ``gs://`` URIs we go through the GDAL ``/vsigs/`` virtual filesystem so
-    that window reads stream just the bytes for the requested window — important
-    for nationwide NLCD COGs.
+    GCP is decommissioned: ``s3://`` URIs are staged via boto3 and opened
+    in-memory; local paths open natively.
 
     job-0305: this is a CONTEXT MANAGER (was a plain return-the-dataset
     function). For the s3:// in-memory path the prior code did
@@ -239,8 +238,6 @@ def _open_source(landcover_uri: str) -> Any:
         with mf, dataset as src:
             yield src
         return
-    elif landcover_uri.startswith("gs://"):
-        path = "/vsigs/" + landcover_uri[len("gs://"):]
     else:
         path = landcover_uri
     try:

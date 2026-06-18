@@ -143,17 +143,18 @@ _COMPUTE_BLENDED_COMPOSITE_METADATA = AtomicToolMetadata(
 
 
 def _stage_uri_to_local(
-    uri: str, label: str, storage_client: object | None, error_code: str
+    uri: str, label: str, storage_client: object | None = None, error_code: str = "RASTER_DOWNLOAD_FAILED"
 ) -> tuple[str, bool]:
     """Stage a layer URI to a local file path.
 
     Returns ``(local_path, is_temp)`` where ``is_temp`` marks paths the caller
-    must clean up. Handles ``s3://``, ``gs://``, and local-path inputs exactly
-    like ``compute_zonal_statistics``/``compute_hillshade`` so handle-resolved
-    COGs from any backend work.
+    must clean up. Handles ``s3://`` and local-path inputs exactly like
+    ``compute_zonal_statistics``/``compute_hillshade`` so handle-resolved COGs
+    work. GCP is decommissioned, so ``storage_client`` is ignored.
 
     Raises ``BlendedCompositeError(error_code, …)`` on any download failure.
     """
+    del storage_client  # GCP decommissioned — S3/local only.
     # sprint-14-aws: s3:// staging via the shared boto3 reader.
     if uri.startswith("s3://"):
         try:
@@ -169,41 +170,12 @@ def _stage_uri_to_local(
                 error_code, f"S3 download failed for {uri!r}: {exc}"
             ) from exc
 
-    if not uri.startswith("gs://"):
-        # Local path (test / dev convenience) — read in place.
-        if not os.path.isfile(uri):
-            raise BlendedCompositeError(
-                error_code, f"local raster path {uri!r} does not exist"
-            )
-        return uri, False
-
-    # gs:// path.
-    rest = uri[len("gs://"):]
-    slash = rest.find("/")
-    if slash == -1:
+    # Local path (test / dev convenience) — read in place.
+    if not os.path.isfile(uri):
         raise BlendedCompositeError(
-            error_code, f"Malformed gs:// URI (no object key): {uri!r}"
+            error_code, f"local raster path {uri!r} does not exist"
         )
-    bucket_name = rest[:slash]
-    blob_path = rest[slash + 1:]
-    try:
-        from google.cloud import storage  # type: ignore[import-not-found]
-
-        client = storage_client or storage.Client(
-            project=os.environ.get("GOOGLE_CLOUD_PROJECT", "grace-2-hazard-prod")
-        )
-        with tempfile.NamedTemporaryFile(
-            suffix=".tif", delete=False, prefix=f"grace2_blend_{label}_"
-        ) as f:
-            local_path = f.name
-        client.bucket(bucket_name).blob(blob_path).download_to_filename(local_path)
-        return local_path, True
-    except BlendedCompositeError:
-        raise
-    except Exception as exc:  # noqa: BLE001
-        raise BlendedCompositeError(
-            error_code, f"GCS download failed for {uri!r}: {exc}"
-        ) from exc
+    return uri, False
 
 
 # ---------------------------------------------------------------------------

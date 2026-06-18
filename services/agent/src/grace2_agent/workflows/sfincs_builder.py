@@ -698,33 +698,28 @@ def validate_nlcd_vintage_against_mapping(
 
 
 # --------------------------------------------------------------------------- #
-# GCS path helper — gs:// → /vsigs/ (job-0170)
+# Object-store staging helper (S3-only; GCP decommissioned)
 # --------------------------------------------------------------------------- #
 
 
 def _stage_gcs_local(uri: str) -> str:
-    """Materialize a ``gs://`` object to a local cache path for HydroMT.
+    """Materialize an ``s3://`` object to a local cache path for HydroMT.
 
     job-0248 (OQ-0248-FLOOD-BUILD-VSIGS): HydroMT's data adapter stats every
     catalog path with *fsspec's local filesystem* BEFORE GDAL ever sees it
-    (``data_adapter.py: self.fs.exists(fn)``), so a ``/vsigs/`` GDAL-ism
-    fails the existence check with "No such file found" even though the GCS
-    object exists and GDAL could open it. The job-0170 ``/vsigs/`` rewrite is
-    still correct for DIRECT rasterio reads (see the landcover extraction
-    above) — but paths handed to the HydroMT CATALOG must be real local
-    files. Staging via google-cloud-storage (ADC — the proven auth path on
-    both Cloud Run and the dev box) also keeps gcsfs out of the read path,
-    preserving job-0170's segfault avoidance.
+    (``data_adapter.py: self.fs.exists(fn)``), so a GDAL virtual-filesystem
+    path fails the existence check even though the remote object exists and
+    GDAL could open it. Paths handed to the HydroMT CATALOG must be real local
+    files.
 
-    Local paths pass through unchanged. Downloads are content-keyed under
-    a process-stable cache dir and reused across builds in the same host.
-
-    job-0291 (sprint-14-aws): ``s3://`` URIs stage via **boto3** through the
-    solver module's shared S3 client seam (``tools.solver.set_s3_client`` —
-    boto3 NOT s3fs, the job-0289 instance-role lesson). Same content-keyed
-    cache layout as the gs:// path.
+    GCP is decommissioned (job-0291 / GCP-teardown): ``s3://`` URIs stage via
+    **boto3** through the solver module's shared S3 client seam
+    (``tools.solver._get_s3_client`` — boto3 NOT s3fs, the job-0289
+    instance-role lesson). Local paths pass through unchanged. Downloads are
+    content-keyed under a process-stable cache dir and reused across builds in
+    the same host.
     """
-    if not (uri.startswith("gs://") or uri.startswith("s3://")):
+    if not uri.startswith("s3://"):
         if uri.startswith("file://"):
             return uri[len("file://"):]
         return uri
@@ -740,66 +735,49 @@ def _stage_gcs_local(uri: str) -> str:
         return str(local)
 
     tmp = local.with_suffix(local.suffix + ".part")
-    if uri.startswith("s3://"):
-        from ..tools.solver import _get_s3_client
+    from ..tools.solver import _get_s3_client
 
-        bucket_name, _, obj_key = uri[len("s3://"):].partition("/")
-        resp = _get_s3_client().get_object(Bucket=bucket_name, Key=obj_key)
-        import shutil as _shutil
+    bucket_name, _, obj_key = uri[len("s3://"):].partition("/")
+    resp = _get_s3_client().get_object(Bucket=bucket_name, Key=obj_key)
+    import shutil as _shutil
 
-        with tmp.open("wb") as fh:
-            _shutil.copyfileobj(resp["Body"], fh)
-    else:
-        from google.cloud import storage  # ADC — same client the cache shim uses
-
-        bucket_name, _, blob_name = uri[len("gs://"):].partition("/")
-        client = storage.Client(
-            project=os.environ.get("GOOGLE_CLOUD_PROJECT", "grace-2-hazard-prod")
-        )
-        client.bucket(bucket_name).blob(blob_name).download_to_filename(str(tmp))
+    with tmp.open("wb") as fh:
+        _shutil.copyfileobj(resp["Body"], fh)
     os.replace(tmp, local)
     logger.info("staged %s -> %s (%d bytes)", uri, local, local.stat().st_size)
     return str(local)
 
 
 def _to_vsigs(uri: str) -> str:
-    """Convert a ``gs://bucket/key`` URI to a GDAL ``/vsigs/`` path.
-
-    The ``/vsigs/`` virtual filesystem is rasterio's native, libcurl-backed
-    GCS reader — distinct from (and unaffected by) the fragile ``gcsfs``
-    backend that ``rioxarray.open_rasterio`` would otherwise pick up when
-    handed a ``gs://`` URI.
+    """Convert an ``s3://bucket/key`` URI to a GDAL ``/vsis3/`` path.
 
     Local paths (``file://`` or absolute) pass through unchanged; already-
-    converted ``/vsigs/`` paths are idempotent. Anything else is treated
-    as a local path (the caller's resolver layer is the gate).
+    converted ``/vsis3/`` paths are idempotent. Anything else is treated as a
+    local path (the caller's resolver layer is the gate).
 
-    job-0291 (sprint-14-aws): ``s3://`` URIs map to GDAL's native ``/vsis3/``
-    virtual filesystem string. WARNING (job-0293c live observation): GDAL's
-    ``/vsis3/`` credential chain does NOT resolve the EC2 instance role in this
-    environment — it falls back to anonymous and reports "does not exist" /
-    AccessDenied on an existing private object. boto3 DOES resolve the instance
-    role. Therefore any caller that intends to ``rasterio.open`` an ``s3://``
-    object MUST NOT route it through this function; it must stage the bytes via
-    ``cache.read_object_bytes_s3`` and open them from a ``rasterio.io.MemoryFile``
-    (see ``model_flood_scenario.compute_precip_area_mean_mm_per_hr`` and
+    WARNING (job-0293c live observation): GDAL's ``/vsis3/`` credential chain
+    does NOT resolve the EC2 instance role in this environment — it falls back
+    to anonymous and reports "does not exist" / AccessDenied on an existing
+    private object. boto3 DOES resolve the instance role. Therefore any caller
+    that intends to ``rasterio.open`` an ``s3://`` object MUST NOT route it
+    through this function; it must stage the bytes via
+    ``cache.read_object_bytes_s3`` and open them from a
+    ``rasterio.io.MemoryFile`` (see
+    ``model_flood_scenario.compute_precip_area_mean_mm_per_hr`` and
     ``_extract_unique_nlcd_classes`` below, plus the clip / landcover tools).
     The ``s3://`` → ``/vsis3/`` mapping is retained only for non-rasterio string
     consumers; it is NOT a working read path on this instance.
 
     Args:
-        uri: ``gs://...`` GCS URI, ``s3://...`` S3 URI, ``/vsigs/...`` /
-            ``/vsis3/...`` GDAL virtual path, or local filesystem path
-            (with or without ``file://`` prefix).
+        uri: ``s3://...`` S3 URI, ``/vsis3/...`` GDAL virtual path, or local
+            filesystem path (with or without ``file://`` prefix).
 
     Returns:
         The GDAL-readable string GDAL drivers (rasterio, HydroMT's
-        rioxarray, the gdal CLI) can open without invoking ``gcsfs``/``s3fs``.
+        rioxarray, the gdal CLI) can open without invoking ``s3fs``.
     """
     if uri.startswith("/vsigs/") or uri.startswith("/vsis3/"):
         return uri
-    if uri.startswith("gs://"):
-        return "/vsigs/" + uri[len("gs://"):]
     if uri.startswith("s3://"):
         return "/vsis3/" + uri[len("s3://"):]
     if uri.startswith("file://"):
@@ -2327,12 +2305,10 @@ def build_sfincs_model(
         # run_solver, which will surface its own dispatch error if the URI
         # isn't reachable).
         #
-        # job-0291 (sprint-14-aws): scheme-aware. ``s3://`` manifests upload
-        # via **boto3** (the job-0289 lesson — s3fs falls back to anonymous
-        # on the EC2 instance role; boto3 resolves IMDS credentials). The
-        # gs:// branch is byte-identical to the pre-job-0291 fsspec[gcs]
-        # path. Both branches preserve the ``deck/`` sub-prefix layout the
-        # manifest's input URIs cite.
+        # GCP is decommissioned (job-0291 / GCP-teardown): ``s3://`` manifests
+        # upload via **boto3** (the job-0289 lesson — s3fs falls back to
+        # anonymous on the EC2 instance role; boto3 resolves IMDS credentials).
+        # A non-s3 (local/file) manifest is already on disk — no upload needed.
         final_setup_uri = manifest_uri
         try:
             if manifest_uri.startswith("s3://"):
@@ -2342,8 +2318,7 @@ def build_sfincs_model(
                 s3_bucket, _, manifest_key = (
                     manifest_uri[len("s3://"):].partition("/")
                 )
-                # Deck files land under <deck_base_key>/deck/<rel> — same
-                # layout the fsspec recursive upload produces on GCS.
+                # Deck files land under <deck_base_key>/deck/<rel>.
                 deck_base_key = manifest_key[: -len("manifest.json")]
                 for deck_file in deck_files:
                     rel = deck_file.relative_to(deck_dir).as_posix()
@@ -2366,17 +2341,12 @@ def build_sfincs_model(
                     )
                 logger.info("uploaded manifest.json to %s (boto3)", manifest_uri)
             else:
-                import fsspec  # type: ignore[import-not-found]
-
-                fs = fsspec.filesystem("gcs")
-                # fsspec.upload(src_dir, dest_prefix, recursive=True) uploads
-                # src_dir as a child of dest_prefix, so deck files land at
-                # deck_base_uri/deck/<relative_path>.
-                fs.upload(str(deck_dir), deck_base_uri, recursive=True)
-                logger.info("uploaded SFINCS deck to %s (under deck/ prefix)", deck_base_uri)
-                # Upload manifest.json alongside the deck directory.
-                fs.upload(str(manifest_local), manifest_uri)
-                logger.info("uploaded manifest.json to %s", manifest_uri)
+                # Local / file:// manifest — the deck is already on disk; the
+                # workflow hands the local manifest URI straight to run_solver.
+                logger.info(
+                    "manifest is local (%s); skipping object-store upload",
+                    manifest_uri,
+                )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "deck/manifest upload failed (%s); using local manifest URI",

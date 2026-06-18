@@ -55,42 +55,73 @@ PINNED_NOW = datetime(2026, 6, 8, 12, 0, 0, tzinfo=timezone.utc)
 # ---------------------------------------------------------------------------
 
 
-class FakeBlob:
-    """Duck-typed blob that tracks GCS store reads/writes."""
+class _S3Body:
+    def __init__(self, data: bytes) -> None:
+        self._data = data
 
-    def __init__(self, store: dict[str, bytes], path: str) -> None:
-        self._store = store
-        self._path = path
-        self.custom_time: datetime | None = None
-        self.cache_control: str | None = None
-
-    def exists(self) -> bool:
-        return self._path in self._store
-
-    def download_as_bytes(self) -> bytes:
-        return self._store[self._path]
-
-    def upload_from_string(self, data: bytes, content_type: str | None = None) -> None:
-        self._store[self._path] = data
-
-
-class FakeBucket:
-    def __init__(self, store: dict[str, bytes]) -> None:
-        self._store = store
-
-    def blob(self, path: str) -> FakeBlob:
-        return FakeBlob(self._store, path)
+    def read(self) -> bytes:
+        return self._data
 
 
 class FakeStorageClient:
-    """Minimal duck-type for ``google.cloud.storage.Client``."""
+    """In-memory S3 double (GCP decommissioned). ``store`` keyed by object KEY.
+
+    Returns the per-test active instance installed by the autouse
+    ``_route_cache_to_inmemory_s3`` fixture so the tool's real S3 read-through
+    (boto3) reads/writes the same store the test inspects.
+    """
+
+    _active: "FakeStorageClient | None" = None
+
+    def __new__(cls) -> "FakeStorageClient":
+        if cls._active is not None:
+            return cls._active
+        return super().__new__(cls)
 
     def __init__(self) -> None:
+        if getattr(self, "_init", False):
+            return
+        self._init = True
         self.store: dict[str, bytes] = {}
-        self._bucket = FakeBucket(self.store)
+        self.last_put: dict | None = None
 
-    def bucket(self, name: str) -> FakeBucket:
-        return self._bucket
+    def get_object(self, *, Bucket, Key):
+        from botocore.exceptions import ClientError
+
+        try:
+            data = self.store[Key]
+        except KeyError:
+            raise ClientError(
+                {"Error": {"Code": "NoSuchKey", "Message": "not found"}},
+                "GetObject",
+            )
+        return {"Body": _S3Body(data)}
+
+    def put_object(self, *, Bucket, Key, Body, ContentType=None):
+        data = Body.read() if hasattr(Body, "read") else Body
+        self.store[Key] = data
+        self.last_put = {"Bucket": Bucket, "Key": Key, "ContentType": ContentType}
+        return {}
+
+
+@pytest.fixture(autouse=True)
+def _route_cache_to_inmemory_s3(monkeypatch):
+    """Route boto3 S3 (the cache shim's only object store) to an in-memory double."""
+    import boto3
+
+    FakeStorageClient._active = None
+    client = FakeStorageClient()
+    FakeStorageClient._active = client
+
+    def _factory(service_name, *a, **k):
+        assert service_name == "s3"
+        return client
+
+    monkeypatch.setattr(boto3, "client", _factory)
+    try:
+        yield client
+    finally:
+        FakeStorageClient._active = None
 
 
 # ---------------------------------------------------------------------------
@@ -178,7 +209,6 @@ def test_points_within_polygon_retained_outside_discarded():
             polygon_uri=poly_path,
             feature_filter=None,
             keep_partial=True,
-            _storage_client=fake_sc,
             _bucket="test-bucket",
         )
 
@@ -199,7 +229,7 @@ def test_points_within_polygon_retained_outside_discarded():
 
         assert result.layer_type == "vector"
         assert result.role == "context"
-        assert result.uri.startswith("gs://")
+        assert result.uri.startswith("s3://")
         assert "clip_vector_polygon" in result.uri
 
 
@@ -243,7 +273,6 @@ def test_polygons_partial_overlap_keep_partial_True_kept_False_discarded():
             polygon_uri=poly_path,
             feature_filter=None,
             keep_partial=True,
-            _storage_client=fake_sc_True,
             _bucket="test-bucket",
         )
         clip_bytes_True = list(fake_sc_True.store.values())[0]
@@ -259,12 +288,12 @@ def test_polygons_partial_overlap_keep_partial_True_kept_False_discarded():
 
         # keep_partial=False → only A (fully contained).
         fake_sc_False = FakeStorageClient()
+        fake_sc_False.store.clear()  # isolate this call's write in the shared S3 store
         clip_vector_to_polygon(
             vector_uri=vec_path,
             polygon_uri=poly_path,
             feature_filter=None,
             keep_partial=False,
-            _storage_client=fake_sc_False,
             _bucket="test-bucket",
         )
         clip_bytes_False = list(fake_sc_False.store.values())[0]
@@ -313,7 +342,6 @@ def test_lines_crossing_polygon_boundary_keep_partial_behavior():
             vector_uri=vec_path,
             polygon_uri=poly_path,
             keep_partial=True,
-            _storage_client=fake_sc,
             _bucket="test-bucket",
         )
         clip_bytes = list(fake_sc.store.values())[0]
@@ -327,11 +355,11 @@ def test_lines_crossing_polygon_boundary_keep_partial_behavior():
 
         # keep_partial=False → only L1 (fully within).
         fake_sc2 = FakeStorageClient()
+        fake_sc2.store.clear()  # isolate this call's write in the shared S3 store
         clip_vector_to_polygon(
             vector_uri=vec_path,
             polygon_uri=poly_path,
             keep_partial=False,
-            _storage_client=fake_sc2,
             _bucket="test-bucket",
         )
         clip_bytes2 = list(fake_sc2.store.values())[0]
@@ -385,7 +413,6 @@ def test_feature_filter_on_multi_feature_polygon():
             polygon_uri=poly_path,
             feature_filter={"STUSPS": "B"},
             keep_partial=True,
-            _storage_client=fake_sc,
             _bucket="test-bucket",
         )
 
@@ -437,7 +464,6 @@ def test_cache_miss_writes_and_hit_skips_recompute():
                 polygon_uri=poly_path,
                 feature_filter=None,
                 keep_partial=True,
-                _storage_client=fake_sc,
                 _bucket="test-bucket",
             )
             assert call_count[0] == 1, "Expected clip pipeline to run once (miss)"
@@ -447,7 +473,6 @@ def test_cache_miss_writes_and_hit_skips_recompute():
                 polygon_uri=poly_path,
                 feature_filter=None,
                 keep_partial=True,
-                _storage_client=fake_sc,
                 _bucket="test-bucket",
             )
             assert call_count[0] == 1, (
@@ -477,7 +502,6 @@ def test_unknown_vector_uri_raises_typed_error():
                 polygon_uri=poly_path,
                 feature_filter=None,
                 keep_partial=True,
-                _storage_client=fake_sc,
                 _bucket="test-bucket",
             )
         assert exc_info.value.error_code == "UNKNOWN_VECTOR_URI"
@@ -536,7 +560,6 @@ def test_polygon_filter_empty_raises():
                 vector_uri=vec_path,
                 polygon_uri=poly_path,
                 feature_filter={"STUSPS": "XX"},
-                _storage_client=fake_sc,
                 _bucket="test-bucket",
             )
         assert exc_info.value.error_code == "POLYGON_FILTER_EMPTY"

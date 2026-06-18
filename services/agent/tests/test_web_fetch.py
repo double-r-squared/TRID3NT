@@ -93,21 +93,37 @@ class FakeStorageClient:
 
 @pytest.fixture
 def fake_storage(monkeypatch: pytest.MonkeyPatch) -> FakeStorageClient:
-    """Inject a duck-typed in-memory object-store client into ``read_through``.
+    """Route ``read_through`` through an in-memory S3 store (GCP decommissioned).
 
-    GCP is decommissioned: ``cache.read_through`` no longer builds a
-    ``google.cloud.storage.Client`` on miss (the production path is boto3/S3).
-    Tests exercise the cache routing by injecting a duck-typed client via the
-    ``storage_client=`` seam, so web_fetch never touches the network.
+    The production cache shim is S3-only via boto3; tests must not touch the
+    network. This patches the tool module's ``read_through`` with an in-memory
+    implementation that mints ``s3://`` URIs and reads/writes ``fake.store``
+    (keyed by object KEY), so the cache hit/miss/write assertions hold.
     """
     fake = FakeStorageClient()
-    from grace2_agent.tools import cache as cache_mod
+    from grace2_agent.tools.cache import (
+        CACHE_BUCKET,
+        cache_path,
+        compute_cache_key,
+        is_cacheable,
+        ReadThroughResult,
+    )
 
-    real_rt = cache_mod.read_through
-
-    def patched_read_through(*args: Any, **kwargs: Any):
-        kwargs.setdefault("storage_client", fake)
-        return real_rt(*args, **kwargs)
+    def patched_read_through(metadata, params, ext, fetch_fn, **kw):
+        bucket = kw.get("bucket") or CACHE_BUCKET
+        source_id = kw.get("source_id") or (metadata.source_class or metadata.name)
+        now = kw.get("now")
+        force_refresh = kw.get("force_refresh", False)
+        if not is_cacheable(metadata):
+            return ReadThroughResult(uri=None, data=fetch_fn(), hit=False)
+        key = compute_cache_key(source_id, params, metadata.ttl_class, now=now)
+        path = cache_path(metadata.source_class, metadata.ttl_class, key, ext)
+        uri = f"s3://{bucket}/{path}"
+        if not force_refresh and path in fake.store:
+            return ReadThroughResult(uri=uri, data=fake.store[path], hit=True)
+        data = fetch_fn()
+        fake.store[path] = data
+        return ReadThroughResult(uri=uri, data=data, hit=False)
 
     monkeypatch.setattr(web_fetch_mod, "read_through", patched_read_through)
     return fake

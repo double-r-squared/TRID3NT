@@ -89,17 +89,39 @@ class FakeStorageClient:
 
 @pytest.fixture
 def fake_storage_patched(monkeypatch):
-    """Patch the cache shim to use a FakeStorageClient + pinned now."""
-    fake = FakeStorageClient()
-    from grace2_agent.tools import cache as cache_mod
+    """Route the catalog module's ``read_through`` through an in-memory S3 store.
 
-    monkeypatch.setattr(
-        catalog_mod,
-        "read_through",
-        lambda *a, **kw: cache_mod.read_through(
-            *a, storage_client=fake, now=PINNED_NOW, **kw
-        ),
+    GCP is decommissioned: the cache shim is S3-only via boto3. This patches the
+    catalog module's ``read_through`` with an in-memory implementation that mints
+    ``s3://`` URIs and reads/writes ``fake.store`` (keyed by object KEY), so the
+    cache hit/miss/write assertions hold without touching the network.
+    """
+    from grace2_agent.tools.cache import (
+        CACHE_BUCKET,
+        cache_path,
+        compute_cache_key,
+        is_cacheable,
+        ReadThroughResult,
     )
+
+    fake = FakeStorageClient()
+
+    def _patched(metadata, params, ext, fetch_fn, **kw):
+        bucket = kw.get("bucket") or CACHE_BUCKET
+        source_id = kw.get("source_id") or (metadata.source_class or metadata.name)
+        force_refresh = kw.get("force_refresh", False)
+        if not is_cacheable(metadata):
+            return ReadThroughResult(uri=None, data=fetch_fn(), hit=False)
+        key = compute_cache_key(source_id, params, metadata.ttl_class, now=PINNED_NOW)
+        path = cache_path(metadata.source_class, metadata.ttl_class, key, ext)
+        uri = f"s3://{bucket}/{path}"
+        if not force_refresh and path in fake.store:
+            return ReadThroughResult(uri=uri, data=fake.store[path], hit=True)
+        data = fetch_fn()
+        fake.store[path] = data
+        return ReadThroughResult(uri=uri, data=data, hit=False)
+
+    monkeypatch.setattr(catalog_mod, "read_through", _patched)
     return fake
 
 

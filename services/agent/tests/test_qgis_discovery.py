@@ -132,22 +132,38 @@ class _FakeStorageClient:
 
 @pytest.fixture()
 def fake_storage(monkeypatch: pytest.MonkeyPatch) -> _FakeStorageClient:
-    """Patch read_through's GCS lookup to use an in-memory FakeStorageClient.
+    """Route ``read_through`` through an in-memory S3 store (GCP decommissioned).
 
-    Cache shim auto-instantiates ``storage.Client()`` on miss; we intercept
-    it by patching ``read_through`` to receive an explicit
-    ``storage_client``. The simplest path: monkeypatch ``read_through`` so
-    it always gets our fake. We re-export the helper from the module so
-    tests can call directly.
+    The production cache shim is S3-only via boto3; tests must not touch the
+    network. This patches the tool module's ``read_through`` with an in-memory
+    implementation that mints ``s3://`` URIs and reads/writes ``fake._store``
+    (keyed by object KEY), so the cache hit/miss/write assertions hold.
     """
-    from grace2_agent.tools import cache as cache_mod
+    from grace2_agent.tools.cache import (
+        CACHE_BUCKET,
+        cache_path,
+        compute_cache_key,
+        is_cacheable,
+        ReadThroughResult,
+    )
 
     fake = _FakeStorageClient()
-    real_read_through = cache_mod.read_through
 
     def wrapped(metadata, params, ext, fetch_fn, **kwargs):
-        kwargs.setdefault("storage_client", fake)
-        return real_read_through(metadata, params, ext, fetch_fn, **kwargs)
+        bucket = kwargs.get("bucket") or CACHE_BUCKET
+        source_id = kwargs.get("source_id") or (metadata.source_class or metadata.name)
+        now = kwargs.get("now")
+        force_refresh = kwargs.get("force_refresh", False)
+        if not is_cacheable(metadata):
+            return ReadThroughResult(uri=None, data=fetch_fn(), hit=False)
+        key = compute_cache_key(source_id, params, metadata.ttl_class, now=now)
+        path = cache_path(metadata.source_class, metadata.ttl_class, key, ext)
+        uri = f"s3://{bucket}/{path}"
+        if not force_refresh and path in fake._store:
+            return ReadThroughResult(uri=uri, data=fake._store[path], hit=True)
+        data = fetch_fn()
+        fake._store[path] = data
+        return ReadThroughResult(uri=uri, data=data, hit=False)
 
     monkeypatch.setattr(qgis_discovery, "read_through", wrapped)
     return fake

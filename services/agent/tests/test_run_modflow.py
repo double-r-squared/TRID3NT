@@ -24,12 +24,10 @@ import os
 import shutil
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock
 
 import pytest
 
 from grace2_contracts import new_ulid
-from grace2_contracts.execution import ExecutionHandle
 from grace2_contracts.modflow_contracts import MODFLOWRunArgs, PlumeLayerURI
 
 from grace2_agent.workflows import run_modflow as rm
@@ -188,107 +186,45 @@ def test_deck_namefile_package_refs_rewritten_to_subdir(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# ExecutionHandle shape from the Cloud Workflows submit path (mocked)
+# submit_modflow_run — local-exec dispatch (GCP Cloud Workflows decommissioned)
 # --------------------------------------------------------------------------- #
+#
+# The GCP Cloud Workflows submit path (a fake ``executions_v1.ExecutionsClient``
+# via ``rm.set_workflows_client``) is removed with the backend. ``submit_modflow
+# _run`` now unconditionally routes through ``tools.solver.launch_local_solver``
+# (local-exec). The happy-path local-exec submit is covered end-to-end in
+# test_modflow_local_backend.py (with a fake S3 client + mf6 shim); here we keep
+# the typed-error contract guard.
 
 
-class _FakeExecution:
-    def __init__(self, name: str = "", argument: str = "") -> None:
-        self.name = name
-        self.argument = argument
-
-
-@pytest.fixture()
-def fake_workflows_sdk(monkeypatch: Any):
-    """Inject a fake ``google.cloud.workflows.executions_v1`` module.
-
-    The agent service declares ``google-cloud-workflows`` as a runtime dep but
-    the local dev venv may not have it installed. ``submit_modflow_run`` imports
-    ``Execution`` from that module lazily; this fixture stubs it so the submit
-    tests exercise the real code path without the heavy SDK (CI has the SDK; the
-    stub is harmless there since the fixture installs it for the test scope and
-    restores on teardown via monkeypatch)."""
-    import sys
-    import types
-
-    mod = types.ModuleType("google.cloud.workflows.executions_v1")
-    mod.Execution = _FakeExecution  # type: ignore[attr-defined]
-    # Ensure parent packages resolve for the dotted import.
-    for pkg in ("google", "google.cloud", "google.cloud.workflows"):
-        if pkg not in sys.modules:
-            monkeypatch.setitem(sys.modules, pkg, types.ModuleType(pkg))
-    monkeypatch.setitem(sys.modules, "google.cloud.workflows.executions_v1", mod)
-    yield
-
-
-def test_submit_modflow_run_returns_execution_handle(
-    fake_workflows_sdk: Any, monkeypatch: pytest.MonkeyPatch
+def test_submit_modflow_run_dispatch_failure_is_typed(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """submit_modflow_run produces a typed ExecutionHandle with the MODFLOW seam."""
-    # GCP decommissioned: the solver default is now aws-batch (which routes
-    # MODFLOW to local-exec). This test exercises the legacy Cloud Workflows
-    # submit path, so pin it explicitly.
-    monkeypatch.setenv("GRACE2_SOLVER_BACKEND", "gcp-workflows")
-    fake_client = MagicMock()
-    fake_client.create_execution.return_value = _FakeExecution(
-        name="projects/p/locations/us-central1/workflows/grace-2-modflow-orchestrator/executions/abc123"
+    """A local-exec dispatch failure (no runs bucket → staging fails) surfaces
+    MODFLOW_DISPATCH_FAILED — the typed contract the dispatch carries."""
+    # No GRACE2_RUNS_BUCKET → launch_local_solver raises SolverDispatchError,
+    # which submit_modflow_run wraps as MODFLOW_DISPATCH_FAILED.
+    monkeypatch.setenv("GRACE2_SOLVER_BACKEND", "local-docker")
+    monkeypatch.delenv("GRACE2_RUNS_BUCKET", raising=False)
+    from grace2_agent.tools import solver as _solver
+
+    monkeypatch.setattr(_solver, "_RUNS_BUCKET", None, raising=False)
+    run_id = new_ulid()
+    staging = rm.DeckStaging(
+        run_id=run_id,
+        manifest_uri=f"s3://bucket/modflow/{run_id}/manifest.json",
+        deck_base_uri=f"s3://bucket/modflow/{run_id}/",
+        local_deck_dir="/tmp/none",
+        model_crs="EPSG:32617",
+        gwf_name="gwf_model",
+        gwt_name="gwt_model",
+        spill_lat=26.64,
+        spill_lon=-81.87,
+        output_globs=["gwt_model.ucn"],
     )
-    rm.set_workflows_client(fake_client)
-    run_id = new_ulid()
-    try:
-        staging = rm.DeckStaging(
-            run_id=run_id,
-            manifest_uri=f"gs://bucket/modflow/{run_id}/manifest.json",
-            deck_base_uri=f"gs://bucket/modflow/{run_id}/",
-            local_deck_dir="/tmp/none",
-            model_crs="EPSG:32617",
-            gwf_name="gwf_model",
-            gwt_name="gwt_model",
-            spill_lat=26.64,
-            spill_lon=-81.87,
-            output_globs=["gwt_model.ucn"],
-        )
-        handle = rm.submit_modflow_run(staging, compute_class="standard")
-
-        assert isinstance(handle, ExecutionHandle)
-        assert handle.run_id == run_id
-        assert handle.solver == "modflow"
-        assert handle.compute_class == "standard"
-        assert handle.workflow_name == "grace-2-modflow-orchestrator"
-        assert handle.workflows_execution_id.endswith("/executions/abc123")
-
-        # Exactly one create_execution call against the MODFLOW workflow parent.
-        assert fake_client.create_execution.call_count == 1
-        _, kwargs = fake_client.create_execution.call_args
-        assert "grace-2-modflow-orchestrator" in kwargs["parent"]
-    finally:
-        rm.set_workflows_client(None)
-
-
-def test_submit_modflow_run_dispatch_failure_is_typed(fake_workflows_sdk: Any) -> None:
-    """A create_execution failure surfaces MODFLOW_DISPATCH_FAILED."""
-    fake_client = MagicMock()
-    fake_client.create_execution.side_effect = RuntimeError("IAM denied")
-    rm.set_workflows_client(fake_client)
-    run_id = new_ulid()
-    try:
-        staging = rm.DeckStaging(
-            run_id=run_id,
-            manifest_uri=f"gs://bucket/modflow/{run_id}/manifest.json",
-            deck_base_uri=f"gs://bucket/modflow/{run_id}/",
-            local_deck_dir="/tmp/none",
-            model_crs="EPSG:32617",
-            gwf_name="gwf_model",
-            gwt_name="gwt_model",
-            spill_lat=26.64,
-            spill_lon=-81.87,
-            output_globs=["gwt_model.ucn"],
-        )
-        with pytest.raises(rm.MODFLOWWorkflowError) as exc:
-            rm.submit_modflow_run(staging)
-        assert exc.value.error_code == "MODFLOW_DISPATCH_FAILED"
-    finally:
-        rm.set_workflows_client(None)
+    with pytest.raises(rm.MODFLOWWorkflowError) as exc:
+        rm.submit_modflow_run(staging)
+    assert exc.value.error_code == "MODFLOW_DISPATCH_FAILED"
 
 
 # --------------------------------------------------------------------------- #

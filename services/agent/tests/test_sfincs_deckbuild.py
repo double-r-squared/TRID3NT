@@ -45,8 +45,6 @@ from grace2_agent.tools.solver import (
     set_emitter_binding,
     set_runs_bucket,
     set_s3_client,
-    set_storage_client,
-    set_workflows_client,
     submit_sfincs_deckbuild,
 )
 from grace2_contracts.execution import ExecutionHandle
@@ -146,14 +144,14 @@ def _seed_deck_completion(
 
 @pytest.fixture()
 def reset_seams():
-    for setter in (set_workflows_client, set_storage_client, set_s3_client, set_batch_client):
+    for setter in (set_s3_client, set_batch_client):
         setter(None)
     set_emitter_binding(None)
     set_runs_bucket(None)
     try:
         yield
     finally:
-        for setter in (set_workflows_client, set_storage_client, set_s3_client, set_batch_client):
+        for setter in (set_s3_client, set_batch_client):
             setter(None)
         set_emitter_binding(None)
         set_runs_bucket(None)
@@ -348,9 +346,10 @@ def test_deckbuild_inert_when_backend_not_aws_batch(reset_seams, monkeypatch) ->
     """The deck-build is Batch-only (GPL isolated); a non-aws-batch backend must
     NOT silently do nothing — it raises a typed DeckBuildError.
 
-    GCP decommissioned: the unset default is now aws-batch, so pin a non-aws
-    backend (legacy gcp-workflows) explicitly to exercise the guard."""
-    monkeypatch.setenv("GRACE2_SOLVER_BACKEND", "gcp-workflows")  # non-aws-batch
+    GCP decommissioned: the unset default is now aws-batch, AND the dead
+    gcp-workflows value now resolves to aws-batch too, so pin local-docker (the
+    only remaining non-aws-batch backend) to exercise the guard."""
+    monkeypatch.setenv("GRACE2_SOLVER_BACKEND", "local-docker")  # non-aws-batch
     monkeypatch.setenv("GRACE2_RUNS_BUCKET", "test-runs-bucket")
     monkeypatch.setenv("GRACE2_AWS_BATCH_QUEUE", "q")
     monkeypatch.setenv("GRACE2_AWS_BATCH_JOB_DEF_SFINCS_DECKBUILDER", "jd:1")

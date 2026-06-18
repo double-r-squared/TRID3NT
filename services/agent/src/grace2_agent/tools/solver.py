@@ -1,23 +1,24 @@
 """Solver dispatch atomic tools (job-0041, M5 Stage C).
 
-This module registers two atomic tools that drive the Cloud Workflows
-orchestration substrate landed by job-0040 (``grace-2-sfincs-orchestrator``
-workflow + ``grace-2-sfincs-solver`` Cloud Run Job + ``grace-2-hazard-prod-runs``
-bucket). Together they implement the **FR-TA-2 solver-dispatch surface**:
+This module registers two atomic tools that drive the solver-execution
+substrate. GCP Cloud Workflows is decommissioned; dispatch is now an
+AWS Batch submit (default) or a local container / direct-binary run on the
+agent instance (``GRACE2_SOLVER_BACKEND=local-docker``). Together they
+implement the **FR-TA-2 solver-dispatch surface**:
 
     - ``run_solver(solver, model_setup_uri, compute_class="medium")
-       -> ExecutionHandle`` — submits a Cloud Workflows execution against the
-      solver-specific orchestrator. Currently only ``solver="sfincs"`` is
-      supported; other values raise ``SolverNotRegisteredError`` (FR-TA-2).
+       -> ExecutionHandle`` — submits a solver run on the active backend.
+      Currently only ``solver="sfincs"`` is supported; other values raise
+      ``SolverNotRegisteredError`` (FR-TA-2).
 
     - ``wait_for_completion(handle, poll_interval_s=10, timeout_s=1800)
-       -> RunResult`` — polls the Cloud Workflows execution every
+       -> RunResult`` — polls the run backing ``handle`` every
       ``poll_interval_s`` seconds, emits a ``pipeline-state`` progress update
       on every poll via ``PipelineEmitter.update_progress`` (the opt-in seam
-      job-0035 surfaced for M5+ solvers), and on Workflow success reads
+      job-0035 surfaced for M5+ solvers), and on success reads
       ``completion.json`` from the runs bucket and returns a populated
-      ``RunResult``. On Workflow failure or cancellation the matching
-      terminal ``RunResult`` is returned.
+      ``RunResult``. On failure or cancellation the matching terminal
+      ``RunResult`` is returned.
 
 Both tools are uncacheable-by-construction per FR-DC-6 (solver dispatchers
 are explicitly enumerated): ``cacheable=False``, ``ttl_class="live-no-cache"``,
@@ -32,9 +33,9 @@ Cross-cutting principles (per CLAUDE.md + agents/AGENTS.md):
   100%) so we never falsely advertise completion.
 
 - **Invariant 2 (Deterministic workflows): preserves.** ``run_solver`` is a
-  thin Cloud Workflows ``create_execution`` call; no LLM in the dispatch.
-  The Workflow itself owns the deterministic step graph (validate → invoke
-  job → read completion). FR-CE-2.
+  thin solver dispatch (local container / direct binary / AWS Batch submit);
+  no LLM in the dispatch. The deterministic step graph (stage → invoke →
+  read completion) is owned by the backend. FR-CE-2.
 
 - **Invariant 8 (Cancellation is first-class): the headline.** Cancel chain
   end-to-end:
@@ -44,15 +45,16 @@ Cross-cutting principles (per CLAUDE.md + agents/AGENTS.md):
                 -> emit_tool_call CALLs invoke() which is our
                     wait_for_completion coroutine
                 -> wait_for_completion sees CancelledError in its poll
-                    sleep, calls workflows.executions.cancel(name)
-                -> Cloud Workflows propagates SIGTERM to the Cloud Run Job
-                -> Execution.State flips to CANCELLED within ≤30 s
+                    sleep, terminates the live container / Batch job
+                    (≤30 s, Invariant-8)
+                -> the supervisor writes the status="cancelled"
+                    completion.json
                 -> wait_for_completion re-raises CancelledError so
                     emit_tool_call's mark_cancelled branch fires
 
-  FR-AS-6 / NFR-R-3 30s budget. We additionally call
-  ``cancel_execution`` *before* re-raising the ``CancelledError`` so the
-  cloud-side cancellation is initiated atomically with the local cancel.
+  FR-AS-6 / NFR-R-3 30s budget. The backend handler terminates the run
+  *before* re-raising the ``CancelledError`` so the kill is initiated
+  atomically with the local cancel.
 
 - **A.7 replace-not-reconcile: preserves.** Every progress emission goes
   through ``PipelineEmitter.update_progress(step_id, ...)``, which already
@@ -64,12 +66,6 @@ Cross-cutting principles (per CLAUDE.md + agents/AGENTS.md):
 
 Dependency-injection seams (mirrors job-0032's ``passthroughs.py`` pattern):
 
-- ``_WORKFLOWS_CLIENT`` / ``set_workflows_client(client)`` — the Cloud
-  Workflows ``ExecutionsClient``. Production wiring binds it at startup
-  using Application Default Credentials; tests pass a Mock. Lazily-default
-  at first use (so import-time does not require ADC) — see
-  ``_get_workflows_client``.
-
 - ``_EMITTER_BINDING`` / ``set_emitter_binding(emitter, step_id)`` — the
   active ``PipelineEmitter`` + the step_id this ``wait_for_completion``
   invocation is bracketed by. Set by the integration site (``server.py``)
@@ -79,41 +75,39 @@ Dependency-injection seams (mirrors job-0032's ``passthroughs.py`` pattern):
   harness; the integration with the WS handler lives in a follow-up agent
   job because ``pipeline_emitter.py`` + ``server.py`` are FROZEN here.
 
-- ``_RUNS_BUCKET`` / ``set_runs_bucket(name)`` — overrides the default
-  ``grace-2-hazard-prod-runs`` bucket name. Used by the smoke harness to
-  reach a fixture bucket; production wiring leaves it at the default.
+- ``_RUNS_BUCKET`` / ``set_runs_bucket(name)`` — overrides the runs bucket
+  name. Used by tests to reach a fixture bucket; production wiring leaves it
+  at the env-driven default.
 
-- ``_STORAGE_CLIENT`` / ``set_storage_client(client)`` — the GCS client
-  ``wait_for_completion`` uses to read ``completion.json``. Lazily-default
-  to the application's ADC-bound client.
+- ``_S3_CLIENT`` / ``set_s3_client(client)`` — the boto3 S3 client used for
+  ALL S3 staging / completion I/O. Lazily-default to the EC2 instance-role
+  client (job-0289 boto3-not-s3fs lesson).
 
 Run id generation: the agent service generates a ULID per ``run_solver``
-call. The same id flows into the workflow execution argument
-(``run_id``) and is used to compose the runs-bucket completion path
-(``gs://<runs_bucket>/<run_id>/completion.json``).
+call. The same id is used to compose the runs-bucket completion path
+(``s3://<runs_bucket>/<run_id>/completion.json``).
 
 Solver backend seam (job-0291, sprint-14-aws)
 ---------------------------------------------
 
-``GRACE2_SOLVER_BACKEND`` selects the dispatch substrate at call time:
+``GRACE2_SOLVER_BACKEND`` selects the dispatch substrate at call time. GCP
+Cloud Workflows is decommissioned; the default is ``aws-batch``:
 
-- ``gcp-workflows`` (default) — today's behavior verbatim: Cloud Workflows
-  ``create_execution`` → Cloud Run Job (``services/workers/sfincs/
-  entrypoint.py``) → completion.json in the GCS runs bucket. Byte-identical
-  to the pre-job-0291 path.
-- ``local-docker`` — the AWS EC2 path. The GCS-IN → sfincs → GCS-OUT
-  envelope the GCP container implements moves INTO the agent (testable
-  Python), and the container is the PLAIN upstream ``deltares/sfincs-cpu``
-  binary image run via ``docker run`` on the same instance:
+- ``aws-batch`` (default) — per-job autoscaled solve on an AWS Batch compute
+  env. ``run_solver`` mints a run_id and calls ``batch.submit_job``; the
+  worker container writes completion.json to ``s3://<runs_bucket>/<run_id>/``.
+- ``local-docker`` — the single-instance AWS EC2 path. The S3-IN → sfincs →
+  S3-OUT envelope lives INSIDE the agent (testable Python), and the
+  container is the PLAIN upstream ``deltares/sfincs-cpu`` binary image run
+  via ``docker run`` on the same instance:
 
       run_solver: mint run_id → download the setup manifest from S3 (boto3)
         → stage every ``inputs[]`` object into ``$GRACE2_RUNS_DIR/<run_id>/``
-        (manifest field name stays the legacy ``gs_uri``; the VALUE is
-        resolved by scheme — s3:// via boto3, gs:// via google-cloud-storage)
+        (manifest field name stays the legacy ``gs_uri``; the VALUE is an
+        ``s3://`` URI resolved by scheme via boto3)
         → launch ``docker run --rm --name <run_id> -v <rundir>:/data -w /data
-        $GRACE2_SFINCS_IMAGE [sfincs_args]`` DETACHED (Popen — mirrors the
-        non-blocking Cloud Workflows submit) → return ExecutionHandle
-        immediately (``workflow_name="local-docker"``,
+        $GRACE2_SFINCS_IMAGE [sfincs_args]`` DETACHED (Popen) → return
+        ExecutionHandle immediately (``workflow_name="local-docker"``,
         ``workflows_execution_id="local-docker:<run_id>"`` — the container
         name IS the run_id, which is the Invariant-8 cancellation seam).
 
@@ -126,22 +120,18 @@ Solver backend seam (job-0291, sprint-14-aws)
         (status="error") or cancel (status="cancelled").
 
       wait_for_completion: dispatches on ``handle.workflow_name`` — local
-        handles poll the completion.json object on S3 (same cadence/timeout/
-        progress-ramp semantics as the Workflows poll) and build the
-        RunResult with ``output_uri = s3://<runs_bucket>/<run_id>/``.
+        handles poll the completion.json object on S3 (cadence/timeout/
+        progress-ramp semantics) and build the RunResult with
+        ``output_uri = s3://<runs_bucket>/<run_id>/``.
 
       cancel chain: ``asyncio.CancelledError`` in the poll sleep → mark the
         run cancelled + ``docker kill <run_id>`` (≤30 s, Invariant-8) → the
         supervisor wakes on process exit and writes the status="cancelled"
         completion.json → re-raise.
 
-  ``GRACE2_RUNS_BUCKET`` has NO default under local-docker (we never
-  silently write to a GCP-named bucket from AWS); a missing value raises
-  ``SolverDispatchError``. boto3 is used for ALL S3 I/O (s3fs falls back to
-  anonymous credentials on the EC2 instance role — job-0289 lesson).
-
-  Production scale-up to AWS Batch is a later job; it slots in as a third
-  ``GRACE2_SOLVER_BACKEND`` value behind the same dispatch seam.
+  ``GRACE2_RUNS_BUCKET`` has NO default under local-docker (a missing value
+  raises ``SolverDispatchError``). boto3 is used for ALL S3 I/O (s3fs falls
+  back to anonymous credentials on the EC2 instance role — job-0289 lesson).
 
 Generalized local backend (job-0292b, sprint-14-aws)
 ----------------------------------------------------
@@ -198,13 +188,10 @@ __all__ = [
     "wait_for_completion",
     "SolverNotRegisteredError",
     "SolverDispatchError",
-    "set_workflows_client",
     "set_emitter_binding",
     "set_runs_bucket",
-    "set_storage_client",
     "set_s3_client",
     "solver_backend",
-    "SOLVER_BACKEND_GCP_WORKFLOWS",
     "SOLVER_BACKEND_LOCAL_DOCKER",
     "SOLVER_BACKEND_AWS_BATCH",
     "AWS_BATCH_WORKFLOW_NAME",
@@ -272,9 +259,6 @@ SOLVER_WORKFLOW_REGISTRY: dict[str, str] = {
 
 
 # --- Solver backend seam (job-0291, sprint-14-aws) --- #
-
-#: Default backend — Cloud Workflows dispatch, byte-identical pre-job-0291.
-SOLVER_BACKEND_GCP_WORKFLOWS: str = "gcp-workflows"
 
 #: AWS EC2 backend — plain upstream ``deltares/sfincs-cpu`` via ``docker run``
 #: on the same instance; staging/upload envelope lives in this module.
@@ -490,19 +474,16 @@ DOCKER_KILL_TIMEOUT_S: float = 25.0
 def solver_backend() -> str:
     """Return the active solver backend (job-0291 dispatch seam).
 
-    GCP is decommissioned: the default backend is now ``aws-batch``.
-    ``GRACE2_SOLVER_BACKEND=local-docker`` → ``"local-docker"``;
-    ``=gcp-workflows`` → ``"gcp-workflows"`` (legacy, exact match only — the
-    Cloud Workflows substrate is gone but the value is still honored for the
-    duck-typed test seam); anything else (unset, ``aws-batch``, typos) →
+    GCP is decommissioned: the default backend is now ``aws-batch`` and the
+    Cloud Workflows substrate is fully removed.
+    ``GRACE2_SOLVER_BACKEND=local-docker`` → ``"local-docker"``; anything else
+    (unset, ``aws-batch``, the dead ``gcp-workflows`` value, typos) →
     ``"aws-batch"``. Read at call time so a systemd / test env injection takes
     effect without re-import (mirrors ``cache.storage_scheme``).
     """
     b = (os.environ.get("GRACE2_SOLVER_BACKEND") or "").strip().lower()
     if b == SOLVER_BACKEND_LOCAL_DOCKER:
         return SOLVER_BACKEND_LOCAL_DOCKER
-    if b == SOLVER_BACKEND_GCP_WORKFLOWS:
-        return SOLVER_BACKEND_GCP_WORKFLOWS
     return SOLVER_BACKEND_AWS_BATCH
 
 
@@ -653,10 +634,11 @@ class SolverNotRegisteredError(ValueError):
 
 
 class SolverDispatchError(RuntimeError):
-    """Raised when the Cloud Workflows ``create_execution`` call fails or the
-    completion-manifest read fails. The agent's emitter classifier maps this
-    to ``UPSTREAM_API_ERROR``. The ``error_code`` attribute carries the
-    open-set A.6 code so a downstream wrapper can re-emit it verbatim."""
+    """Raised when the backend dispatch (local container / direct binary /
+    AWS Batch submit) fails or the completion-manifest read fails. The
+    agent's emitter classifier maps this to ``UPSTREAM_API_ERROR``. The
+    ``error_code`` attribute carries the open-set A.6 code so a downstream
+    wrapper can re-emit it verbatim."""
 
     error_code: str = "SOLVER_DISPATCH_FAILED"
 
@@ -681,23 +663,10 @@ class EmitterBinding:
     step_id: str
 
 
-_WORKFLOWS_CLIENT: Any | None = None
 _EMITTER_BINDING: EmitterBinding | None = None
 _RUNS_BUCKET: str | None = None
-_STORAGE_CLIENT: Any | None = None
 _S3_CLIENT: Any | None = None
 _BATCH_CLIENT: Any | None = None
-
-
-def set_workflows_client(client: Any) -> None:
-    """Bind the Cloud Workflows ``ExecutionsClient`` used by both solver tools.
-
-    Production wiring (``main.py``) binds an ADC-authenticated client at
-    startup; tests pass a Mock. ``None`` disables the binding (the lazy
-    default takes over at next use).
-    """
-    global _WORKFLOWS_CLIENT
-    _WORKFLOWS_CLIENT = client
 
 
 def set_emitter_binding(binding: EmitterBinding | None) -> None:
@@ -714,13 +683,6 @@ def set_runs_bucket(name: str | None) -> None:
     """Override the runs-bucket name. ``None`` restores the env-based default."""
     global _RUNS_BUCKET
     _RUNS_BUCKET = name
-
-
-def set_storage_client(client: Any) -> None:
-    """Bind the GCS client used to read ``completion.json``. ``None`` restores
-    the lazy ADC-defaulted client."""
-    global _STORAGE_CLIENT
-    _STORAGE_CLIENT = client
 
 
 def set_s3_client(client: Any) -> None:
@@ -774,43 +736,6 @@ def _get_batch_client() -> Any:
     return boto3.client("batch", region_name=_aws_region())
 
 
-def _get_workflows_client() -> Any:
-    """Return the bound ExecutionsClient or lazily construct an ADC default.
-
-    Lazy import so the agent service can boot in CI/test environments that
-    don't have ADC configured — the import path only resolves
-    ``google.cloud.workflows`` when a tool is actually invoked.
-    """
-    if _WORKFLOWS_CLIENT is not None:
-        return _WORKFLOWS_CLIENT
-    try:
-        from google.cloud.workflows.executions_v1 import ExecutionsClient  # type: ignore[import-not-found]
-    except Exception as exc:  # noqa: BLE001
-        raise SolverDispatchError(
-            f"google-cloud-workflows not importable: {exc}; "
-            "agent service startup should call set_workflows_client(...) "
-            "or install google-cloud-workflows."
-        ) from exc
-    client = ExecutionsClient()
-    return client
-
-
-def _get_storage_client() -> Any:
-    """Return the bound GCS Client or lazily construct an ADC default."""
-    if _STORAGE_CLIENT is not None:
-        return _STORAGE_CLIENT
-    try:
-        from google.cloud import storage  # type: ignore[import-not-found]
-    except Exception as exc:  # noqa: BLE001
-        raise SolverDispatchError(
-            f"google-cloud-storage not importable: {exc}; "
-            "agent service startup should call set_storage_client(...)."
-        ) from exc
-    return storage.Client(
-        project=os.environ.get("GOOGLE_CLOUD_PROJECT", "grace-2-hazard-prod")
-    )
-
-
 def _get_s3_client() -> Any:
     """Return the bound S3 client or lazily construct the boto3 default.
 
@@ -861,16 +786,6 @@ def _get_local_runs_bucket() -> str:
     return bucket
 
 
-def _gcp_project() -> str:
-    """Return the GCP project id (env-driven; mirrors the substrate)."""
-    return os.environ.get("GRACE2_GCP_PROJECT", "grace-2-hazard-prod")
-
-
-def _gcp_location() -> str:
-    """Return the GCP region for the workflows execution (env-driven)."""
-    return os.environ.get("GRACE2_GCP_LOCATION", "us-central1")
-
-
 # --------------------------------------------------------------------------- #
 # local-docker backend (job-0291, sprint-14-aws)
 #
@@ -888,62 +803,55 @@ def _utc_now_iso() -> str:
 
 
 def _split_object_uri(uri: str) -> tuple[str, str, str]:
-    """Split ``s3://bucket/key`` / ``gs://bucket/key`` → (scheme, bucket, key).
+    """Split ``s3://bucket/key`` → (scheme, bucket, key).
 
-    Raises ``SolverDispatchError`` on malformed or unsupported URIs.
+    GCP is decommissioned: only the ``s3://`` scheme is supported. Raises
+    ``SolverDispatchError`` on malformed or unsupported URIs.
     """
-    for scheme in ("s3", "gs"):
-        prefix = f"{scheme}://"
-        if uri.startswith(prefix):
-            bucket, _, key = uri[len(prefix):].partition("/")
-            if not bucket or not key:
-                raise SolverDispatchError(f"malformed {scheme}:// URI: {uri!r}")
-            return scheme, bucket, key
+    prefix = "s3://"
+    if uri.startswith(prefix):
+        bucket, _, key = uri[len(prefix):].partition("/")
+        if not bucket or not key:
+            raise SolverDispatchError(f"malformed s3:// URI: {uri!r}")
+        return "s3", bucket, key
     raise SolverDispatchError(
-        f"unsupported object URI scheme: {uri!r} (expected s3:// or gs://)"
+        f"unsupported object URI scheme: {uri!r} (expected s3://)"
     )
 
 
 def _read_object_bytes(uri: str) -> bytes:
     """Read one object's bytes, resolved BY SCHEME (job-0291 kickoff):
-    ``s3://`` via boto3, ``gs://`` via google-cloud-storage (legacy),
-    ``file://`` / local path via the filesystem (the sfincs_builder
-    local-manifest fallback)."""
+    ``s3://`` via boto3, ``file://`` / local path via the filesystem (the
+    sfincs_builder local-manifest fallback)."""
     if uri.startswith("file://"):
         return Path(uri[len("file://"):]).read_bytes()
-    if not (uri.startswith("s3://") or uri.startswith("gs://")):
+    if not uri.startswith("s3://"):
         return Path(uri).read_bytes()
-    scheme, bucket, key = _split_object_uri(uri)
-    if scheme == "s3":
-        resp = _get_s3_client().get_object(Bucket=bucket, Key=key)
-        return resp["Body"].read()
-    return _get_storage_client().bucket(bucket).blob(key).download_as_bytes()
+    _scheme, bucket, key = _split_object_uri(uri)
+    resp = _get_s3_client().get_object(Bucket=bucket, Key=key)
+    return resp["Body"].read()
 
 
 def _download_object(uri: str, dest: Path) -> None:
     """Download one staged input to ``dest``, resolved by scheme.
 
     The manifest's input entries keep the LEGACY field name ``gs_uri`` but
-    the VALUE may be ``s3://`` (the job-0289 storage backend) or ``gs://``
-    — we dispatch on the URI scheme, never the field name.
+    the VALUE is an ``s3://`` URI (the job-0289 storage backend) — we dispatch
+    on the URI scheme, never the field name. GCP is decommissioned, so only
+    ``s3://`` (and ``file://`` / local paths) are resolved.
     """
     dest.parent.mkdir(parents=True, exist_ok=True)
-    if uri.startswith("file://") or not (
-        uri.startswith("s3://") or uri.startswith("gs://")
-    ):
+    if uri.startswith("file://") or not uri.startswith("s3://"):
         src = Path(uri[len("file://"):] if uri.startswith("file://") else uri)
         dest.write_bytes(src.read_bytes())
         return
-    scheme, bucket, key = _split_object_uri(uri)
+    _scheme, bucket, key = _split_object_uri(uri)
     logger.info("local-docker staging %s -> %s", uri, dest)
-    if scheme == "s3":
-        resp = _get_s3_client().get_object(Bucket=bucket, Key=key)
-        import shutil
+    resp = _get_s3_client().get_object(Bucket=bucket, Key=key)
+    import shutil
 
-        with dest.open("wb") as fh:
-            shutil.copyfileobj(resp["Body"], fh)
-        return
-    _get_storage_client().bucket(bucket).blob(key).download_to_filename(str(dest))
+    with dest.open("wb") as fh:
+        shutil.copyfileobj(resp["Body"], fh)
 
 
 def _upload_file_s3(s3: Any, src: Path, bucket: str, key: str) -> str:
@@ -2512,12 +2420,12 @@ _RUN_SOLVER_METADATA = AtomicToolMetadata(
 
 @register_tool(
     _RUN_SOLVER_METADATA,
-    # Annotations: readOnlyHint=False (submits a Cloud Workflows execution
-    # that ultimately writes output artifacts to the runs bucket),
-    # openWorldHint=False (intra-GCP Cloud Workflows + Cloud Run only),
+    # Annotations: readOnlyHint=False (submits a solver run that ultimately
+    # writes output artifacts to the runs bucket), openWorldHint=False
+    # (local container / direct binary / AWS Batch — no public external API),
     # destructiveHint=False (writes go to a new runs/ prefix; no existing
     # state overwritten), idempotentHint=False (each call creates a new
-    # Workflow execution with a distinct run_id).
+    # run with a distinct run_id).
     read_only_hint=False,
     open_world_hint=False,
     destructive_hint=False,
@@ -2531,59 +2439,52 @@ def run_solver(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> ExecutionHandle:
-    """Submit a solver execution to the deployed Cloud Workflows orchestrator.
+    """Submit a solver execution to the active backend (local / AWS Batch).
 
     Use this when: the agent has a staged model (e.g. from
-    ``build_sfincs_model``) and needs to actually run the solver on Cloud
-    Run. Returns an ``ExecutionHandle`` whose ``workflows_execution_id``
-    field is the Invariant-8 cancellation seam — feed it to
-    ``wait_for_completion`` to poll progress and obtain the
-    ``RunResult``.
+    ``build_sfincs_model``) and needs to actually run the solver. Returns an
+    ``ExecutionHandle`` whose ``workflow_name`` pins the backend and which is
+    the Invariant-8 cancellation seam — feed it to ``wait_for_completion`` to
+    poll progress and obtain the ``RunResult``.
 
     Do NOT use this for: cancelling a running execution (use the WS
-    ``cancel`` envelope — the cancel chain reaches the Cloud Run Job
-    automatically via ``wait_for_completion``'s cancel handler); polling
-    a running execution (use ``wait_for_completion``); inspecting a
-    completed run's outputs (those land in ``RunResult.output_uri`` per
-    FR-CE-4).
+    ``cancel`` envelope — the cancel chain reaches the run automatically via
+    ``wait_for_completion``'s cancel handler); polling a running execution
+    (use ``wait_for_completion``); inspecting a completed run's outputs
+    (those land in ``RunResult.output_uri`` per FR-CE-4).
 
     Params:
         solver: lowercase solver identifier. v0.1 supports ``"sfincs"``
             only; other values raise ``SolverNotRegisteredError`` per
             the kickoff's lazy-per-milestone deploy strategy.
-        model_setup_uri: URI of the manifest the solver envelope will read
-            (the job-0040 manifest schema: ``{"inputs":[...],
-            "sfincs_args":[...], "outputs":[...]}``). ``gs://`` under the
-            default gcp-workflows backend; ``s3://`` under
-            ``GRACE2_SOLVER_BACKEND=local-docker`` (job-0291 — input URIs
-            inside the manifest are resolved by scheme). Engine job-0042's
+        model_setup_uri: ``s3://`` URI of the manifest the solver envelope
+            will read (the job-0040 manifest schema: ``{"inputs":[...],
+            "sfincs_args":[...], "outputs":[...]}``). Input URIs inside the
+            manifest are resolved by scheme (job-0291). Engine job-0042's
             ``model_flood_scenario`` workflow composes this from the M4
             atomic-tool substrate.
-        compute_class: FR-CE-3 compute class. Currently a tag carried on
-            the handle for provenance; the deployed Cloud Run Job (job-
-            0040) is fixed at 4 vCPU / 4 GiB (the FR-CE-3 ``medium``
-            baseline). Other classes land when sprint-09+ adds the
-            per-class Job variants. Defaults to ``"medium"``.
+        compute_class: FR-CE-3 compute class — selects the AWS Batch sizing
+            bucket (small / standard / large / xlarge / gpu). Defaults to
+            ``"medium"`` (== standard).
 
     Returns:
         ``ExecutionHandle{handle_id, run_id, solver, compute_class,
         workflows_execution_id, workflow_name, workflow_location,
         submitted_at}`` — the Invariant-8 cancellation contract. The
-        ``workflows_execution_id`` is the fully-qualified resource name
-        (``projects/.../locations/.../workflows/.../executions/...``)
-        the Cloud Workflows API operates on.
+        ``workflow_name`` pins the backend (``local-docker`` / ``local-exec``
+        / ``aws-batch``) so ``wait_for_completion`` routes correctly.
 
     FR-DC-6: This tool is uncacheable-by-construction (solver dispatch is
     explicitly enumerated). The cache shim is NOT invoked.
 
     Invariant 8 (cancellation): the returned handle carries everything
-    ``wait_for_completion`` needs to call
-    ``workflows.executions.cancel(name)`` on the matching cancel envelope.
+    ``wait_for_completion`` needs to terminate the live run on the matching
+    cancel envelope.
 
     Raises:
         SolverNotRegisteredError: ``solver`` not in
             ``SOLVER_WORKFLOW_REGISTRY``.
-        SolverDispatchError: the Cloud Workflows API call failed (IAM,
+        SolverDispatchError: the backend dispatch failed (IAM,
             quota, malformed manifest). The exception is re-raised so the
             emitter classifier surfaces ``UPSTREAM_API_ERROR`` to the
             client.
@@ -2605,9 +2506,10 @@ def run_solver(
             f"model_setup_uri must be a non-empty string; got {model_setup_uri!r}"
         )
 
-    # --- Backend seam (job-0291 local-docker + sprint-16 aws-batch). The
-    # default gcp-workflows path below is byte-identical to pre-job-0291. The
-    # handle each backend returns pins its own backend (workflow_name) so
+    # --- Backend seam (job-0291 local-docker + sprint-16 aws-batch). GCP is
+    # decommissioned: the Cloud Workflows dispatch path is removed and
+    # ``solver_backend()`` only ever returns ``local-docker`` or ``aws-batch``.
+    # The handle each backend returns pins its own backend (workflow_name) so
     # wait_for_completion routes correctly even if the env churns afterward. ---
     backend = solver_backend()
     if backend == SOLVER_BACKEND_LOCAL_DOCKER:
@@ -2616,77 +2518,12 @@ def run_solver(
             model_setup_uri=model_setup_uri,
             compute_class=compute_class,
         )
-    if backend == SOLVER_BACKEND_AWS_BATCH:
-        return _run_solver_aws_batch(
-            solver=solver,
-            model_setup_uri=model_setup_uri,
-            compute_class=compute_class,
-        )
-
-    if not model_setup_uri.startswith("gs://"):
-        raise SolverDispatchError(
-            f"model_setup_uri must be a gs:// URI; got {model_setup_uri!r}"
-        )
-
-    project = _gcp_project()
-    location = _gcp_location()
-    parent = f"projects/{project}/locations/{location}/workflows/{workflow_name}"
-
-    run_id = new_ulid()
-    submitted_at = datetime.now(timezone.utc)
-    argument = json.dumps({"run_id": run_id, "manifest_uri": model_setup_uri})
-
-    logger.info(
-        "run_solver solver=%s run_id=%s compute_class=%s parent=%s",
-        solver,
-        run_id,
-        compute_class,
-        parent,
-    )
-
-    client = _get_workflows_client()
-    try:
-        # Lazy import the Execution type so test environments without
-        # google-cloud-workflows can still load the registry.
-        from google.cloud.workflows.executions_v1 import Execution  # type: ignore[import-not-found]
-
-        execution_obj = Execution(argument=argument)
-        execution = client.create_execution(parent=parent, execution=execution_obj)
-    except SolverDispatchError:
-        raise
-    except Exception as exc:  # noqa: BLE001
-        raise SolverDispatchError(
-            f"Cloud Workflows create_execution failed for parent={parent}: {exc}"
-        ) from exc
-
-    workflows_execution_id = getattr(execution, "name", None)
-    if not workflows_execution_id:
-        raise SolverDispatchError(
-            f"Cloud Workflows execution returned no resource name: {execution!r}"
-        )
-
-    schema_compute_class = _COMPUTE_CLASS_ALIAS.get(compute_class)
-    if schema_compute_class is None:
-        raise SolverDispatchError(
-            f"compute_class {compute_class!r} not recognized; allowed: "
-            f"{sorted(_COMPUTE_CLASS_ALIAS)}"
-        )
-    handle = ExecutionHandle(
-        handle_id=new_ulid(),
-        run_id=run_id,
+    # ``aws-batch`` is the default (everything that is not ``local-docker``).
+    return _run_solver_aws_batch(
         solver=solver,
-        compute_class=schema_compute_class,  # type: ignore[arg-type]
-        workflows_execution_id=workflows_execution_id,
-        workflow_name=workflow_name,
-        workflow_location=location,
-        submitted_at=submitted_at,
+        model_setup_uri=model_setup_uri,
+        compute_class=compute_class,
     )
-    logger.info(
-        "run_solver submitted handle_id=%s workflows_execution_id=%s",
-        handle.handle_id,
-        handle.workflows_execution_id,
-    )
-    return handle
 
 
 # --------------------------------------------------------------------------- #
@@ -2718,66 +2555,6 @@ def _progress_percent(handle_submitted_at: datetime, now: datetime) -> int:
     return capped
 
 
-async def _read_completion_manifest(run_id: str) -> dict[str, Any]:
-    """Read ``gs://<runs_bucket>/<run_id>/completion.json`` and parse to dict.
-
-    Raises ``SolverDispatchError`` on any read failure (bucket missing, blob
-    absent, JSON parse fail) so the caller surfaces a typed error rather
-    than masking it as a generic exception. Blob reads run on the default
-    executor so the asyncio event loop is not blocked.
-    """
-    bucket = _get_runs_bucket()
-    blob_path = f"{run_id}/completion.json"
-    client = _get_storage_client()
-    try:
-        loop = asyncio.get_running_loop()
-        # blob.download_as_bytes is blocking I/O; defer to executor.
-
-        def _read() -> bytes:
-            b = client.bucket(bucket)
-            blob_obj = b.blob(blob_path)
-            return blob_obj.download_as_bytes()
-
-        data_bytes = await loop.run_in_executor(None, _read)
-    except SolverDispatchError:
-        raise
-    except Exception as exc:  # noqa: BLE001
-        raise SolverDispatchError(
-            f"completion manifest read failed gs://{bucket}/{blob_path}: {exc}"
-        ) from exc
-
-    try:
-        manifest = json.loads(data_bytes)
-    except Exception as exc:  # noqa: BLE001
-        raise SolverDispatchError(
-            f"completion manifest gs://{bucket}/{blob_path} is not valid JSON: {exc}"
-        ) from exc
-    if not isinstance(manifest, dict):
-        raise SolverDispatchError(
-            f"completion manifest gs://{bucket}/{blob_path} is not a JSON object"
-        )
-    return manifest
-
-
-def _state_name(execution: Any) -> str:
-    """Return the execution.State as a string identifier irrespective of how
-    the underlying proto enum repr's. Robust to dict-shaped mocks too.
-
-    Cloud Workflows ``Execution.State`` values: ``STATE_UNSPECIFIED``,
-    ``ACTIVE``, ``SUCCEEDED``, ``FAILED``, ``CANCELLED``, ``UNAVAILABLE``,
-    ``QUEUED``.
-    """
-    state = getattr(execution, "state", None)
-    if state is None and isinstance(execution, dict):
-        state = execution.get("state")
-    if state is None:
-        return "STATE_UNSPECIFIED"
-    name = getattr(state, "name", None)
-    if isinstance(name, str):
-        return name
-    return str(state)
-
-
 async def _emit_progress(progress_percent: int) -> None:
     """Push a progress update to the active emitter binding (if any)."""
     binding = _EMITTER_BINDING
@@ -2789,32 +2566,15 @@ async def _emit_progress(progress_percent: int) -> None:
         logger.warning("emitter.update_progress raised: %s", exc)
 
 
-async def _cancel_workflow_execution(name: str) -> None:
-    """Best-effort ``workflows.executions.cancel(name)`` call. Logs and
-    swallows exceptions; the underlying ``CancelledError`` propagates from
-    the caller regardless."""
-    client = _get_workflows_client()
-    loop = asyncio.get_running_loop()
-    try:
-        await loop.run_in_executor(None, lambda: client.cancel_execution(name=name))
-        logger.info("cancel_execution issued for %s", name)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "cancel_execution(%s) raised %s; cancel chain still propagates locally",
-            name,
-            exc,
-        )
-
-
 @register_tool(
     _WAIT_FOR_COMPLETION_METADATA,
     # Annotations: readOnlyHint=False (emits pipeline-state progress envelopes
     # as a side effect on every poll tick — stateful even though it does not
-    # write GCS directly), openWorldHint=False (polls intra-GCP Cloud Workflows
-    # execution status; no public external API), destructiveHint=False (reads
-    # completion.json from runs bucket; does not overwrite anything),
-    # idempotentHint=False (each call emits progress events; cancellation path
-    # calls cancel_execution on the live workflow).
+    # write to the object store directly), openWorldHint=False (polls the S3
+    # completion.json + AWS Batch job status; no public external API),
+    # destructiveHint=False (reads completion.json from the runs bucket; does
+    # not overwrite anything), idempotentHint=False (each call emits progress
+    # events; cancellation path terminates the live container / Batch job).
     read_only_hint=False,
     open_world_hint=False,
     destructive_hint=False,
@@ -2828,31 +2588,28 @@ async def wait_for_completion(
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
 ) -> RunResult:
-    """Poll the Cloud Workflows execution backing ``handle`` until terminal.
+    """Poll the solver run backing ``handle`` until terminal.
 
     Use this when: the agent has an ``ExecutionHandle`` from ``run_solver``
     and needs the ``RunResult`` (and the ``output_uri``) before continuing
     the pipeline. The tool blocks while the solver runs but is cancellable
     via the WS ``cancel`` chain (Invariant 8 — see module docstring).
 
-    Do NOT use this for: starting a new run (use ``run_solver``); polling
-    a generic Cloud Workflow execution unrelated to a solver (this tool
-    expects the run-bucket completion manifest schema landed by job-0040);
-    short, synchronous tool calls (atomic tools are sub-second; this is the
+    Do NOT use this for: starting a new run (use ``run_solver``); short,
+    synchronous tool calls (atomic tools are sub-second; this is the
     solver-class blocking pattern).
 
     Params:
         handle: the ``ExecutionHandle`` returned by ``run_solver``. The
-            ``workflows_execution_id`` field is the Cloud Workflows
-            resource name we ``get_execution`` / ``cancel_execution`` on.
-        poll_interval_s: seconds between ``get_execution`` polls. Default
-            10s — matches NFR-P-4 ≤15-min budget granularity (≥9 polls per
-            run). Surfaced as OQ-41-POLL-INTERVAL.
-        timeout_s: hard ceiling. Defaults to 1800 s (30 min — mirrors the
-            Cloud Run Job ``task_timeout`` job-0040 set; gives 2× headroom
-            over NFR-P-4). On timeout the tool returns
+            ``workflow_name`` field pins the backend (``local-docker`` /
+            ``local-exec`` / ``aws-batch``) so the poll routes correctly.
+        poll_interval_s: seconds between completion polls. Default 10s —
+            matches NFR-P-4 ≤15-min budget granularity (≥9 polls per run).
+            Surfaced as OQ-41-POLL-INTERVAL.
+        timeout_s: hard ceiling. Defaults to 1800 s (30 min — gives 2×
+            headroom over NFR-P-4). On timeout the tool returns
             ``RunResult{status="failed", error_code="SOLVER_TIMEOUT"}``
-            and best-effort cancels the workflow execution.
+            and best-effort cancels the run.
 
     Returns:
         ``RunResult{run_id, handle_id, status, output_uri?, started_at,
@@ -2866,9 +2623,9 @@ async def wait_for_completion(
     NOT invoked.
 
     Invariant 8 (cancellation): when the M1 WS cancel chain raises
-    ``asyncio.CancelledError`` inside this coroutine's poll-sleep, we call
-    ``workflows.executions.cancel(name)`` *before* re-raising so the
-    cloud-side cancellation is initiated within ≤30 s per NFR-R-3.
+    ``asyncio.CancelledError`` inside this coroutine's poll-sleep, the
+    backend handler terminates the live container / Batch job before
+    re-raising so cancellation is initiated within ≤30 s per NFR-R-3.
     """
     if poll_interval_s < 0:
         raise SolverDispatchError(
@@ -2879,155 +2636,22 @@ async def wait_for_completion(
             f"timeout_s must be positive; got {timeout_s!r}"
         )
 
-    # --- job-0291 backend seam: a local handle pins its backend (the
-    # handle's workflow_name, not the env, decides — env churn between submit
-    # and wait cannot mis-route the poll). ``local-exec`` (job-0292b, MODFLOW
-    # direct-binary) shares the same S3 completion poll. GCP handles take the
-    # Cloud Workflows poll below, byte-identical to pre-job-0291 behavior. ---
+    # --- job-0291 backend seam: a handle pins its backend (the handle's
+    # workflow_name, not the env, decides — env churn between submit and wait
+    # cannot mis-route the poll). ``local-docker`` / ``local-exec`` (job-0292b,
+    # MODFLOW direct-binary) share the S3 completion poll; ``aws-batch``
+    # (sprint-16) polls the SAME S3 completion.json + consults
+    # batch.describe_jobs. GCP Cloud Workflows is decommissioned. ---
     if handle.workflow_name in _LOCAL_WORKFLOW_NAMES:
         return await _wait_for_completion_local(handle, poll_interval_s, timeout_s)
-    # sprint-16: aws-batch handles poll the SAME S3 completion.json + consult
-    # batch.describe_jobs for early terminal FAILED detection; cancel/timeout
-    # call batch.terminate_job.
     if handle.workflow_name == AWS_BATCH_WORKFLOW_NAME:
         return await _wait_for_completion_aws_batch(handle, poll_interval_s, timeout_s)
 
-    client = _get_workflows_client()
-    name = handle.workflows_execution_id
-    deadline = handle.submitted_at.timestamp() + float(timeout_s)
-    loop = asyncio.get_running_loop()
-
-    logger.info(
-        "wait_for_completion handle_id=%s name=%s poll_interval=%ds timeout=%ds",
-        handle.handle_id,
-        name,
-        poll_interval_s,
-        timeout_s,
+    raise SolverDispatchError(
+        f"unsupported handle backend {handle.workflow_name!r}: the Cloud "
+        "Workflows substrate is decommissioned; expected one of "
+        f"{(*_LOCAL_WORKFLOW_NAMES, AWS_BATCH_WORKFLOW_NAME)}."
     )
-
-    last_state: str = "STATE_UNSPECIFIED"
-    started_at: datetime | None = None
-    completed_at: datetime | None = None
-    error_message: str | None = None
-    cancellation_reason: str | None = None
-
-    try:
-        while True:
-            # --- Poll the execution.
-            try:
-                execution = await loop.run_in_executor(
-                    None, lambda: client.get_execution(name=name)
-                )
-            except Exception as exc:  # noqa: BLE001
-                # Transient errors (network blip) shouldn't immediately fail —
-                # but a malformed name / missing resource will keep failing.
-                # We treat a single failure as a poll-cycle warning and let
-                # the timeout catch a persistent fault.
-                logger.warning(
-                    "get_execution(%s) raised %s; will retry next poll",
-                    name,
-                    exc,
-                )
-                execution = None
-
-            now = datetime.now(timezone.utc)
-
-            if execution is not None:
-                last_state = _state_name(execution)
-                # Cloud Workflows populates start_time / end_time on its
-                # execution model; preserve them if present.
-                start_time = getattr(execution, "start_time", None)
-                end_time = getattr(execution, "end_time", None)
-                if start_time is not None and started_at is None:
-                    started_at = _to_utc(start_time)
-                if end_time is not None and completed_at is None:
-                    completed_at = _to_utc(end_time)
-
-            # --- Emit progress (clamped to ≤95% until SUCCEEDED).
-            if last_state == "SUCCEEDED":
-                pct = PROGRESS_TERMINAL
-            else:
-                pct = _progress_percent(handle.submitted_at, now)
-            await _emit_progress(pct)
-
-            # --- Terminal-state branches.
-            if last_state == "SUCCEEDED":
-                # Read the completion manifest and build the RunResult.
-                manifest = await _read_completion_manifest(handle.run_id)
-                return _build_run_result_from_completion(
-                    handle=handle,
-                    manifest=manifest,
-                    started_at=started_at,
-                    completed_at=completed_at or now,
-                )
-            if last_state == "FAILED":
-                error_message = _extract_error_message(execution)
-                # On Workflow failure the entrypoint may still have written
-                # a completion.json with a structured error. Attempt to read
-                # it; absence is non-fatal here (the Workflow's own error
-                # surfaces).
-                manifest = await _try_read_completion(handle.run_id)
-                return _build_failed_result(
-                    handle=handle,
-                    manifest=manifest,
-                    workflow_error_message=error_message,
-                    started_at=started_at,
-                    completed_at=completed_at or now,
-                )
-            if last_state == "CANCELLED":
-                cancellation_reason = (
-                    _extract_error_message(execution)
-                    or "Cloud Workflows execution cancelled"
-                )
-                return RunResult(
-                    run_id=handle.run_id,
-                    handle_id=handle.handle_id,
-                    status="cancelled",
-                    output_uri=None,
-                    started_at=started_at,
-                    completed_at=completed_at or now,
-                    duration_seconds=_duration(started_at, completed_at or now),
-                    cancellation_reason=cancellation_reason,
-                )
-
-            # --- Timeout check.
-            if now.timestamp() >= deadline:
-                logger.warning(
-                    "wait_for_completion timed out handle_id=%s after %ds; "
-                    "cancelling workflow execution",
-                    handle.handle_id,
-                    timeout_s,
-                )
-                await _cancel_workflow_execution(name)
-                return RunResult(
-                    run_id=handle.run_id,
-                    handle_id=handle.handle_id,
-                    status="failed",
-                    output_uri=None,
-                    started_at=started_at,
-                    completed_at=now,
-                    duration_seconds=_duration(started_at, now),
-                    error_code="SOLVER_TIMEOUT",
-                    error_message=(
-                        f"wait_for_completion exceeded {timeout_s}s budget "
-                        f"while polling {name}"
-                    ),
-                )
-
-            # --- Sleep until the next poll. Cancellation propagates here.
-            await asyncio.sleep(poll_interval_s)
-
-    except asyncio.CancelledError:
-        # Invariant 8: best-effort cancel the workflow execution before
-        # re-raising so the cloud-side SIGTERM fires within ≤30 s.
-        logger.info(
-            "wait_for_completion CANCELLED handle_id=%s; "
-            "issuing workflows.executions.cancel(%s)",
-            handle.handle_id,
-            name,
-        )
-        await _cancel_workflow_execution(name)
-        raise
 
 
 # --------------------------------------------------------------------------- #
@@ -3065,152 +2689,6 @@ def _duration(started_at: datetime | None, completed_at: datetime) -> float | No
     if started_at is None:
         return None
     return max(0.0, (completed_at - started_at).total_seconds())
-
-
-def _extract_error_message(execution: Any) -> str:
-    """Pull the error message off an ``Execution`` (or a dict mock).
-
-    Cloud Workflows surfaces failure context in ``execution.error.payload``
-    (JSON-encoded) and ``execution.error.context``. We prefer the payload
-    when present.
-    """
-    err = getattr(execution, "error", None)
-    if err is None and isinstance(execution, dict):
-        err = execution.get("error")
-    if err is None:
-        return ""
-    payload = getattr(err, "payload", None)
-    if payload is None and isinstance(err, dict):
-        payload = err.get("payload")
-    context = getattr(err, "context", None)
-    if context is None and isinstance(err, dict):
-        context = err.get("context")
-    if payload:
-        return str(payload)
-    if context:
-        return str(context)
-    return str(err)
-
-
-async def _try_read_completion(run_id: str) -> dict[str, Any] | None:
-    """Like ``_read_completion_manifest`` but returns ``None`` on failure."""
-    try:
-        return await _read_completion_manifest(run_id)
-    except SolverDispatchError as exc:
-        logger.info(
-            "no completion.json available for run_id=%s (%s); "
-            "workflow-side error will surface alone",
-            run_id,
-            exc,
-        )
-        return None
-
-
-def _build_run_result_from_completion(
-    handle: ExecutionHandle,
-    manifest: dict[str, Any],
-    started_at: datetime | None,
-    completed_at: datetime,
-) -> RunResult:
-    """Build a ``RunResult`` from a parsed completion manifest.
-
-    The job-0040 entrypoint emits a manifest like::
-
-        {
-          "run_id": "smoke-...",
-          "status": "ok" | "error",
-          "exit_code": int,
-          "sfincs_stdout_uri": "gs://...",
-          "sfincs_stderr_uri": "gs://...",
-          "output_uris": ["gs://..."],
-          "started_at": "ISO-Z",
-          "finished_at": "ISO-Z",
-          "error": "..."
-        }
-
-    We map ``status="ok"`` → ``RunResult.status="complete"`` and ``"error"``
-    → ``"failed"``. The first ``output_uri`` in ``output_uris`` populates
-    ``RunResult.output_uri`` (FR-CE-4 single canonical raw-output gs:// URI);
-    additional outputs are post-processed by ``postprocess_flood`` (engine,
-    follow-up).
-    """
-    manifest_status = str(manifest.get("status", "")).lower()
-    output_uris = manifest.get("output_uris") or []
-    output_uri: str | None = (
-        str(output_uris[0]) if isinstance(output_uris, list) and output_uris else None
-    )
-    started_at_eff = _to_utc(manifest.get("started_at")) or started_at
-    completed_at_eff = _to_utc(manifest.get("finished_at")) or completed_at
-
-    if manifest_status == "ok":
-        return RunResult(
-            run_id=handle.run_id,
-            handle_id=handle.handle_id,
-            status="complete",
-            output_uri=output_uri,
-            started_at=started_at_eff,
-            completed_at=completed_at_eff,
-            duration_seconds=_duration(started_at_eff, completed_at_eff),
-        )
-
-    error_message = str(manifest.get("error") or "solver reported failure")
-    return RunResult(
-        run_id=handle.run_id,
-        handle_id=handle.handle_id,
-        status="failed",
-        output_uri=output_uri,
-        started_at=started_at_eff,
-        completed_at=completed_at_eff,
-        duration_seconds=_duration(started_at_eff, completed_at_eff),
-        error_code=_solver_error_code(manifest),
-        error_message=error_message,
-    )
-
-
-def _build_failed_result(
-    handle: ExecutionHandle,
-    manifest: dict[str, Any] | None,
-    workflow_error_message: str,
-    started_at: datetime | None,
-    completed_at: datetime,
-) -> RunResult:
-    """Build a ``RunResult{status="failed"}`` when the Workflow itself reports
-    FAILED. If a completion.json is present we prefer its structured error;
-    otherwise we surface the Workflow's own error message."""
-    if manifest is not None:
-        result_from_completion = _build_run_result_from_completion(
-            handle, manifest, started_at, completed_at
-        )
-        # The completion may say "ok" even if the workflow reports FAILED
-        # (rare: race between Workflow read_completion and Job exit). Honor
-        # the WORKFLOW's FAILED verdict and downgrade.
-        if result_from_completion.status == "complete":
-            return RunResult(
-                run_id=handle.run_id,
-                handle_id=handle.handle_id,
-                status="failed",
-                output_uri=result_from_completion.output_uri,
-                started_at=result_from_completion.started_at,
-                completed_at=result_from_completion.completed_at,
-                duration_seconds=result_from_completion.duration_seconds,
-                error_code="SOLVER_DISPATCH_FAILED",
-                error_message=workflow_error_message
-                or "Cloud Workflows execution reported FAILED",
-            )
-        return result_from_completion
-
-    return RunResult(
-        run_id=handle.run_id,
-        handle_id=handle.handle_id,
-        status="failed",
-        output_uri=None,
-        started_at=started_at,
-        completed_at=completed_at,
-        duration_seconds=_duration(started_at, completed_at),
-        error_code="SOLVER_DISPATCH_FAILED",
-        error_message=workflow_error_message
-        or "Cloud Workflows execution reported FAILED",
-    )
 
 
 def _solver_error_code(manifest: dict[str, Any]) -> str:

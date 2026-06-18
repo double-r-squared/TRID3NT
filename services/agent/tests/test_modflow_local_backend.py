@@ -66,8 +66,6 @@ from grace2_agent.tools.solver import (
     set_emitter_binding,
     set_runs_bucket,
     set_s3_client,
-    set_storage_client,
-    set_workflows_client,
     wait_for_completion,
 )
 from grace2_contracts import new_ulid
@@ -178,11 +176,9 @@ def _write_synthetic_ucn(path: Path, arr2d: "np.ndarray", totim: float = 86400.0
 @pytest.fixture()
 def reset_seams():
     """Reset solver + run_modflow DI seams + the local-run registry."""
-    for setter in (set_workflows_client, set_storage_client, set_s3_client):
-        setter(None)
+    set_s3_client(None)
     set_emitter_binding(None)
     set_runs_bucket(None)
-    rm.set_workflows_client(None)
     rm.set_cache_bucket(None)
     rm.set_runs_bucket(None)
     rm.set_mf6_binary(None)
@@ -190,11 +186,9 @@ def reset_seams():
     try:
         yield
     finally:
-        for setter in (set_workflows_client, set_storage_client, set_s3_client):
-            setter(None)
+        set_s3_client(None)
         set_emitter_binding(None)
         set_runs_bucket(None)
-        rm.set_workflows_client(None)
         rm.set_cache_bucket(None)
         rm.set_runs_bucket(None)
         rm.set_mf6_binary(None)
@@ -304,19 +298,17 @@ def _wait_for_completion_object(
 
 
 # --------------------------------------------------------------------------- #
-# 1. Backend seam — default Cloud Workflows path untouched; local never
-#    touches the workflows client
+# 1. Backend seam — MODFLOW submit always goes through the local-exec launcher
+#    (GCP Cloud Workflows is decommissioned)
 # --------------------------------------------------------------------------- #
 
 
-def test_local_backend_submit_never_touches_cloud_workflows(
+def test_local_backend_submit_uses_local_exec_launcher(
     reset_seams, local_env: Path, mf6_shim: Path
 ) -> None:
     """Under GRACE2_SOLVER_BACKEND=local-docker the MODFLOW submit goes through
-    the local launcher — the Cloud Workflows client is NEVER called (the
-    inverse of the byte-identical-default guard test_run_modflow.py keeps)."""
-    fake_wf = MagicMock()
-    rm.set_workflows_client(fake_wf)
+    the local-exec launcher and returns a local-exec-pinned handle (the Cloud
+    Workflows path is removed, so this is now structurally guaranteed)."""
     s3 = FakeS3Client()
     set_s3_client(s3)
     run_id = new_ulid()
@@ -326,7 +318,7 @@ def test_local_backend_submit_never_touches_cloud_workflows(
 
     handle = rm.submit_modflow_run(staging, compute_class="standard")
     assert isinstance(handle, ExecutionHandle)
-    fake_wf.create_execution.assert_not_called()
+    assert handle.workflow_name == LOCAL_EXEC_WORKFLOW_NAME
     _wait_for_completion_object(s3, run_id)  # let the supervisor finish
 
 
@@ -334,7 +326,7 @@ def test_local_backend_dispatch_failure_is_typed_modflow_error(
     reset_seams, local_env: Path, mf6_shim: Path
 ) -> None:
     """A staging failure (missing manifest) surfaces MODFLOW_DISPATCH_FAILED —
-    the same typed contract the Cloud Workflows path carries."""
+    the typed contract the local-exec dispatch carries."""
     set_s3_client(FakeS3Client())  # empty store: manifest read will fail
     staging = _make_staging(new_ulid())
     with pytest.raises(rm.MODFLOWWorkflowError) as exc_info:
@@ -585,9 +577,9 @@ async def test_local_wait_timeout_kills_process_group(
 def test_deck_base_uri_scheme_aware(
     reset_seams, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The deck prefix follows cache.storage_scheme(): s3:// by default after
-    the GCP decommission, and still s3:// under GRACE2_STORAGE_BACKEND=s3. Only
-    an explicit legacy GRACE2_STORAGE_BACKEND=gcs maps back to gs://."""
+    """The deck prefix follows cache.storage_scheme(): s3:// always after the
+    GCP decommission — the gs legacy seam is gone, so even an explicit
+    GRACE2_STORAGE_BACKEND=gcs override resolves to s3://."""
     args = __import__(
         "grace2_contracts.modflow_contracts", fromlist=["MODFLOWRunArgs"]
     ).MODFLOWRunArgs(
@@ -616,12 +608,12 @@ def test_deck_base_uri_scheme_aware(
         # Legacy field NAME, s3:// VALUE — staging resolves by scheme.
         assert entry["gs_uri"].startswith("s3://cache-bkt/modflow/")
 
-    # Explicit legacy override still maps to gs:// (the duck-typed test seam).
+    # A stray legacy override no longer resurrects gs:// — S3-only.
     monkeypatch.setenv("GRACE2_STORAGE_BACKEND", "gcs")
     staging_gs = rm.build_and_stage_modflow_deck(
         args, workdir=tmp_path / "gs", stage_to_gcs=False
     )
-    assert staging_gs.manifest_uri.startswith("gs://cache-bkt/modflow/")
+    assert staging_gs.manifest_uri.startswith("s3://cache-bkt/modflow/")
 
 
 @pytest.mark.skipif(not _HAVE_FLOPY, reason="flopy not installed")

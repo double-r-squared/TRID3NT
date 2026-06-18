@@ -56,42 +56,73 @@ PINNED_NOW = datetime(2026, 6, 8, 12, 0, 0, tzinfo=timezone.utc)
 # ---------------------------------------------------------------------------
 
 
-class FakeBlob:
-    """Duck-typed blob that tracks GCS store reads/writes."""
+class _S3Body:
+    def __init__(self, data: bytes) -> None:
+        self._data = data
 
-    def __init__(self, store: dict[str, bytes], path: str) -> None:
-        self._store = store
-        self._path = path
-        self.custom_time: datetime | None = None
-        self.cache_control: str | None = None
-
-    def exists(self) -> bool:
-        return self._path in self._store
-
-    def download_as_bytes(self) -> bytes:
-        return self._store[self._path]
-
-    def upload_from_string(self, data: bytes, content_type: str | None = None) -> None:
-        self._store[self._path] = data
-
-
-class FakeBucket:
-    def __init__(self, store: dict[str, bytes]) -> None:
-        self._store = store
-
-    def blob(self, path: str) -> FakeBlob:
-        return FakeBlob(self._store, path)
+    def read(self) -> bytes:
+        return self._data
 
 
 class FakeStorageClient:
-    """Minimal duck-type for ``google.cloud.storage.Client``."""
+    """In-memory S3 double (GCP decommissioned). ``store`` keyed by object KEY.
+
+    Returns the per-test active instance installed by the autouse
+    ``_route_cache_to_inmemory_s3`` fixture so the tool's real S3 read-through
+    (boto3) reads/writes the same store the test inspects.
+    """
+
+    _active: "FakeStorageClient | None" = None
+
+    def __new__(cls) -> "FakeStorageClient":
+        if cls._active is not None:
+            return cls._active
+        return super().__new__(cls)
 
     def __init__(self) -> None:
+        if getattr(self, "_init", False):
+            return
+        self._init = True
         self.store: dict[str, bytes] = {}
-        self._bucket = FakeBucket(self.store)
+        self.last_put: dict | None = None
 
-    def bucket(self, name: str) -> FakeBucket:
-        return self._bucket
+    def get_object(self, *, Bucket, Key):
+        from botocore.exceptions import ClientError
+
+        try:
+            data = self.store[Key]
+        except KeyError:
+            raise ClientError(
+                {"Error": {"Code": "NoSuchKey", "Message": "not found"}},
+                "GetObject",
+            )
+        return {"Body": _S3Body(data)}
+
+    def put_object(self, *, Bucket, Key, Body, ContentType=None):
+        data = Body.read() if hasattr(Body, "read") else Body
+        self.store[Key] = data
+        self.last_put = {"Bucket": Bucket, "Key": Key, "ContentType": ContentType}
+        return {}
+
+
+@pytest.fixture(autouse=True)
+def _route_cache_to_inmemory_s3(monkeypatch):
+    """Route boto3 S3 (the cache shim's only object store) to an in-memory double."""
+    import boto3
+
+    FakeStorageClient._active = None
+    client = FakeStorageClient()
+    FakeStorageClient._active = client
+
+    def _factory(service_name, *a, **k):
+        assert service_name == "s3"
+        return client
+
+    monkeypatch.setattr(boto3, "client", _factory)
+    try:
+        yield client
+    finally:
+        FakeStorageClient._active = None
 
 
 # ---------------------------------------------------------------------------
@@ -198,7 +229,6 @@ def test_extract_single_class_water_only():
             landcover_uri=src_path,
             classes=[11],
             bbox=None,
-            _storage_client=fake_sc,
             _bucket="test-bucket",
         )
 
@@ -223,7 +253,7 @@ def test_extract_single_class_water_only():
         # LayerURI surface check.
         assert result.layer_type == "raster"
         assert result.role == "context"
-        assert result.uri.startswith("gs://")
+        assert result.uri.startswith("s3://")
         assert "landcover_class" in result.uri
         assert meta["nodata"] == 255
 
@@ -256,7 +286,6 @@ def test_extract_multiple_classes_forest():
             landcover_uri=src_path,
             classes=[41, 42, 43],
             bbox=None,
-            _storage_client=fake_sc,
             _bucket="test-bucket",
         )
 
@@ -306,7 +335,6 @@ def test_bbox_window_read_top_right():
             landcover_uri=src_path,
             classes=[24],
             bbox=clip_bbox,
-            _storage_client=fake_sc,
             _bucket="test-bucket",
         )
 
@@ -348,7 +376,6 @@ def test_nodata_preserved():
             landcover_uri=src_path,
             classes=[11],
             bbox=None,
-            _storage_client=fake_sc,
             _bucket="test-bucket",
         )
 
@@ -391,7 +418,6 @@ def test_cache_miss_hit_skips_recompute():
                 landcover_uri=src_path,
                 classes=[11],
                 bbox=None,
-                _storage_client=fake_sc,
                 _bucket="test-bucket",
             )
             assert call_count[0] == 1, "cache miss should invoke extractor once"
@@ -400,7 +426,6 @@ def test_cache_miss_hit_skips_recompute():
                 landcover_uri=src_path,
                 classes=[11],
                 bbox=None,
-                _storage_client=fake_sc,
                 _bucket="test-bucket",
             )
             assert call_count[0] == 1, (
@@ -427,7 +452,6 @@ def test_empty_classes_raises_typed_error():
                 landcover_uri=src_path,
                 classes=[],
                 bbox=None,
-                _storage_client=fake_sc,
                 _bucket="test-bucket",
             )
         assert exc_info.value.error_code == "CLASSES_EMPTY"
@@ -450,7 +474,6 @@ def test_invalid_class_code_raises_typed_error():
                 landcover_uri=src_path,
                 classes=[255],
                 bbox=None,
-                _storage_client=fake_sc,
                 _bucket="test-bucket",
             )
         assert exc_info.value.error_code == "CLASSES_INVALID"
@@ -472,7 +495,6 @@ def test_returns_layer_uri_fields():
             landcover_uri=src_path,
             classes=[11, 21],
             bbox=None,
-            _storage_client=fake_sc,
             _bucket="test-bucket",
         )
 
@@ -563,7 +585,6 @@ def test_live_fortmyers_water_mask(tmp_path):
         landcover_uri=nlcd_uri,
         classes=[11],
         bbox=None,
-        _storage_client=fake_sc,
         _bucket="test-bucket",
     )
 
@@ -600,7 +621,6 @@ def test_live_fortmyers_water_mask(tmp_path):
         landcover_uri=nlcd_uri,
         classes=[21, 22, 23, 24],
         bbox=None,
-        _storage_client=fake_sc,
         _bucket="test-bucket",
     )
     # The previous write is still in the store; new key adds a second entry.

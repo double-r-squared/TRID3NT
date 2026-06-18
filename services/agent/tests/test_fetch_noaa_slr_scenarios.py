@@ -154,29 +154,41 @@ class FakeStorageClient:
         return FakeBucket(self.store)
 
 
-def _make_read_through_injector(fake_gcs: FakeStorageClient):
-    """Return a patched read_through that uses FakeStorageClient instead of GCS."""
-    from grace2_agent.tools.cache import read_through as real_rt
+def _make_read_through_injector(fake_gcs):
+    """S3-only in-memory read-through injector (GCP decommissioned).
 
-    call_count = {"fetch_n": 0}
+    Replaces the retired ``google.cloud.storage`` double: drives the tool's
+    ``read_through`` off an in-memory S3 store (``fake_gcs.store``, keyed by
+    object KEY), minting ``s3://`` URIs and honoring cache hit/miss/write.
+    """
+    from grace2_agent.tools.cache import (
+        CACHE_BUCKET,
+        cache_path,
+        compute_cache_key,
+        is_cacheable,
+        ReadThroughResult,
+    )
+
+    store = fake_gcs.store
 
     def patched(metadata, params, ext, fetch_fn, **kw):
-        original_fetch_fn = fetch_fn
+        bucket = kw.get("bucket") or CACHE_BUCKET
+        source_id = kw.get("source_id") or (metadata.source_class or metadata.name)
+        force_refresh = kw.get("force_refresh", False)
+        if not is_cacheable(metadata):
+            patched.call_count["fetch_n"] += 1
+            return ReadThroughResult(uri=None, data=fetch_fn(), hit=False)
+        key = compute_cache_key(source_id, params, metadata.ttl_class, now=_PINNED_NOW)
+        path = cache_path(metadata.source_class, metadata.ttl_class, key, ext)
+        uri = f"s3://{bucket}/{path}"
+        if not force_refresh and path in store:
+            return ReadThroughResult(uri=uri, data=store[path], hit=True)
+        data = fetch_fn()
+        patched.call_count["fetch_n"] += 1
+        store[path] = data
+        return ReadThroughResult(uri=uri, data=data, hit=False)
 
-        def counting_fetch_fn():
-            call_count["fetch_n"] += 1
-            return original_fetch_fn()
-
-        return real_rt(
-            metadata=metadata,
-            params=params,
-            ext=ext,
-            fetch_fn=counting_fetch_fn,
-            storage_client=fake_gcs,
-            now=_PINNED_NOW,
-        )
-
-    patched.call_count = call_count  # type: ignore[attr-defined]
+    patched.call_count = {"fetch_n": 0}
     return patched
 
 
@@ -692,7 +704,7 @@ def test_layer_uri_shape(monkeypatch):
     assert result.style_preset == "noaa_slr_scenarios"
     assert result.units == "feet"
     assert result.uri is not None
-    assert result.uri.startswith("gs://")
+    assert result.uri.startswith("s3://")
     # Layer ID should embed the scenario tag.
     assert "1.0ft" in result.layer_id or "1.0" in result.name
 

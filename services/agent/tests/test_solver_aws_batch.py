@@ -41,15 +41,12 @@ from grace2_agent.tools.solver import (
     AWS_BATCH_COMPUTE_CLASS_SIZING,
     AWS_BATCH_WORKFLOW_NAME,
     SOLVER_BACKEND_AWS_BATCH,
-    SOLVER_BACKEND_GCP_WORKFLOWS,
     SolverDispatchError,
     run_solver,
     set_batch_client,
     set_emitter_binding,
     set_runs_bucket,
     set_s3_client,
-    set_storage_client,
-    set_workflows_client,
     solver_backend,
     wait_for_completion,
 )
@@ -134,7 +131,7 @@ def _seed_completion(s3: FakeS3Client, run_id: str, *, bucket: str, status: str 
 
 @pytest.fixture()
 def reset_seams():
-    for setter in (set_workflows_client, set_storage_client, set_s3_client, set_batch_client):
+    for setter in (set_s3_client, set_batch_client):
         setter(None)
     set_emitter_binding(None)
     set_runs_bucket(None)
@@ -142,7 +139,7 @@ def reset_seams():
     try:
         yield
     finally:
-        for setter in (set_workflows_client, set_storage_client, set_s3_client, set_batch_client):
+        for setter in (set_s3_client, set_batch_client):
             setter(None)
         set_emitter_binding(None)
         set_runs_bucket(None)
@@ -180,10 +177,11 @@ def test_backend_unknown_value_falls_through(reset_seams, monkeypatch) -> None:
     assert solver_backend() == SOLVER_BACKEND_AWS_BATCH
 
 
-def test_backend_legacy_gcp_workflows_exact_match(reset_seams, monkeypatch) -> None:
-    # The legacy value is still honored on exact match (duck-typed test seam).
+def test_backend_legacy_gcp_workflows_falls_through(reset_seams, monkeypatch) -> None:
+    # GCP Cloud Workflows is decommissioned: the legacy value now falls
+    # through to the aws-batch default (no dead gcp-workflows backend).
     monkeypatch.setenv("GRACE2_SOLVER_BACKEND", "gcp-workflows")
-    assert solver_backend() == SOLVER_BACKEND_GCP_WORKFLOWS
+    assert solver_backend() == SOLVER_BACKEND_AWS_BATCH
 
 
 # --------------------------------------------------------------------------- #

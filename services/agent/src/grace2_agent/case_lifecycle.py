@@ -298,20 +298,22 @@ async def ensure_case_qgs(
 
 
 # --------------------------------------------------------------------------- #
-# Production GCS copy binding (lazy import; ADC-authenticated)
+# Production object-store copy binding (S3; GCP decommissioned)
 # --------------------------------------------------------------------------- #
 
 
 def default_gcs_copy(template_uri: str, target_uri: str) -> str:
-    """Production-default GCS copy implementation.
+    """Production-default object-store copy implementation (boto3 / S3).
 
-    Uses ``google.cloud.storage.Client`` via ADC. The agent service startup
-    path calls ``set_gcs_copy(default_gcs_copy)`` after the Cloud Run
-    instance comes up. Tests inject an in-memory mock instead.
+    GCP is decommissioned: the per-Case ``.qgs`` template copy is a
+    server-side S3 copy via ``boto3``. The name ``default_gcs_copy`` is kept
+    for the historical ``set_gcs_copy`` injection seam; tests inject an
+    in-memory mock instead.
 
     Args:
-        template_uri: source ``gs://<bucket>/<key>`` URI.
-        target_uri: destination ``gs://<bucket>/<key>`` URI.
+        template_uri: source object URI (``s3://<bucket>/<key>`` or legacy
+            ``gs://<bucket>/<key>`` — the scheme is stripped either way).
+        target_uri: destination object URI (same accepted shapes).
 
     Returns:
         The destination URI on success.
@@ -320,20 +322,22 @@ def default_gcs_copy(template_uri: str, target_uri: str) -> str:
         Whatever the underlying storage client raises — wrapped by
         ``ensure_case_qgs`` into ``CaseLifecycleError(GCS_COPY_FAILED)``.
     """
-    from google.cloud import storage  # type: ignore[import-not-found]
+    import boto3
 
     def _parse(uri: str) -> tuple[str, str]:
-        rest = uri[len("gs://"):]
+        rest = uri.split("://", 1)[-1]
         slash = rest.find("/")
         return rest[:slash], rest[slash + 1:]
 
     src_bucket, src_key = _parse(template_uri)
     dst_bucket, dst_key = _parse(target_uri)
 
-    client = storage.Client(project=os.environ.get("GOOGLE_CLOUD_PROJECT", "grace-2-hazard-prod"))
-    src_blob = client.bucket(src_bucket).blob(src_key)
-    dst_bucket_ref = client.bucket(dst_bucket)
-    client.bucket(src_bucket).copy_blob(src_blob, dst_bucket_ref, new_name=dst_key)
+    s3 = boto3.client("s3", region_name=os.environ.get("AWS_REGION", "us-west-2"))
+    s3.copy_object(
+        Bucket=dst_bucket,
+        Key=dst_key,
+        CopySource={"Bucket": src_bucket, "Key": src_key},
+    )
     return target_uri
 
 

@@ -20,7 +20,6 @@ No network. No Gemini. Pure local subprocess harness.
 
 from __future__ import annotations
 
-import os
 import time
 
 import pytest
@@ -327,19 +326,21 @@ def test_submit_sandbox_job_local_mode_returns_envelope() -> None:
     assert result["result"]["value"] == 42
 
 
-def test_submit_sandbox_job_cloud_mode_not_local() -> None:
-    """With GRACE2_SANDBOX_LOCAL unset, submit_sandbox_job takes the cloud path.
-
-    We don't have ADC/clients here, so we assert it does NOT run locally (it
-    raises trying to reach GCS / run_v2, which proves the branch selection — the
-    handle dataclass shape is asserted separately)."""
-    os.environ.pop("GRACE2_SANDBOX_LOCAL", None)
-    with pytest.raises(Exception):  # noqa: B017 — any import/ADC error proves cloud branch
-        submit_sandbox_job("result = 1", {})
+def test_submit_sandbox_job_always_local_after_gcp_decommission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The GCP cloud sandbox path was removed; submit_sandbox_job always runs the
+    local-subprocess path and returns a finished result envelope (never a pending
+    handle), even with GRACE2_SANDBOX_LOCAL unset."""
+    monkeypatch.delenv("GRACE2_SANDBOX_LOCAL", raising=False)
+    result = submit_sandbox_job("result = 1 + 1", {})
+    assert isinstance(result, dict)
+    assert result["status"] == "ok"
+    assert result["result"]["value"] == 2
 
 
 def test_sandbox_execution_handle_shape() -> None:
-    """The cloud handle carries the cancellation/poll seam fields."""
+    """The vestigial cloud handle dataclass is still constructible (back-compat)."""
     from datetime import datetime, timezone
 
     h = SandboxExecutionHandle(

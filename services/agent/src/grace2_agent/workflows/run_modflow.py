@@ -4,7 +4,7 @@ The MODFLOW analogue of the SFINCS ``build_sfincs_model`` + ``run_solver`` +
 ``wait_for_completion`` chain (job-0041 / job-0042). One module owns three
 things for the groundwater-contamination ("spill") engine:
 
-  1. **Deck build + GCS staging** (``build_and_stage_modflow_deck``). Calls the
+  1. **Deck build + S3 staging** (``build_and_stage_modflow_deck``). Calls the
      engine's ``services/workers/modflow/gwt_adapter.build_modflow_deck`` (a
      FloPy GWF+GWT deck builder, FROZEN under job-0221), reorganises the FLAT
      deck FloPy writes into the ``gwf/`` + ``gwt/`` subdirectory layout the
@@ -12,20 +12,19 @@ things for the groundwater-contamination ("spill") engine:
      the worker-contract ``manifest.json`` (populating the OQ-MOD-3
      ``model_crs`` field), and uploads the deck + manifest to the cache bucket.
 
-  2. **Cloud Workflows submit** (``submit_modflow_run``). Mirrors the SFINCS
-     ``run_solver`` Cloud Workflows ``create_execution`` call exactly — same
-     ``{run_id, manifest_uri}`` argument shape — but targets the
-     ``grace-2-modflow-orchestrator`` workflow (infra/modflow.tf). Returns the
-     schema-owned ``ExecutionHandle`` carrying ``workflows_execution_id`` (the
-     Invariant-8 cancellation seam).
+  2. **Solver submit** (``submit_modflow_run``). GCP Cloud Workflows is
+     decommissioned — the submit routes through the shared local-exec solver
+     backend (``tools.solver.launch_local_solver``) with the MODFLOW
+     local-exec spec. Returns the schema-owned ``ExecutionHandle`` carrying
+     ``workflow_name="local-exec"`` (the Invariant-8 cancellation seam).
 
-  3. **LOCAL EXECUTION MODE** (``GRACE2_MODFLOW_LOCAL=1``). Instead of Cloud
-     Workflows, run the staged deck against a locally-downloaded ``mf6`` binary
+  3. **LOCAL EXECUTION MODE** (``GRACE2_MODFLOW_LOCAL=1``). The foreground dev
+     seam: run the staged deck against a locally-downloaded ``mf6`` binary
      in a scratch dir, parse ``mfsim.lst`` for the convergence marker (the same
      authoritative signal the entrypoint uses), and write a ``completion.json``
-     so the downstream postprocess reads it identically to the cloud path. This
-     is BOTH the dev/test seam AND the live-evidence path on a box with no
-     docker daemon / no gcloud (mirrors the SFINCS smoke-harness fallback).
+     so the downstream postprocess reads it identically to the supervised path.
+     This is BOTH the dev/test seam AND the live-evidence path on a box with no
+     docker daemon (mirrors the SFINCS smoke-harness fallback).
 
 CRITICAL handoff fixes (Stage-1 Open Questions, resolved here):
 
@@ -123,7 +122,6 @@ __all__ = [
     "run_modflow_local",
     "is_local_mode",
     "MODFLOW_WORKFLOW_NAME",
-    "set_workflows_client",
     "set_cache_bucket",
     "set_runs_bucket",
     "set_mf6_binary",
@@ -219,7 +217,7 @@ class MODFLOWWorkflowError(RuntimeError):
     - ``MODFLOW_ADAPTER_IMPORT_FAILED`` — gwt_adapter / flopy not importable.
     - ``MODFLOW_DECK_BUILD_FAILED`` — the FloPy deck build raised.
     - ``MODFLOW_DECK_STAGE_FAILED`` — subdir reorg / manifest / upload failed.
-    - ``MODFLOW_DISPATCH_FAILED`` — Cloud Workflows create_execution failed.
+    - ``MODFLOW_DISPATCH_FAILED`` — the local-exec solver dispatch failed.
     - ``MODFLOW_LOCAL_RUN_FAILED`` — local mf6 subprocess failed to launch or
       the binary could not be located.
     - ``MODFLOW_SOLVER_DIVERGED`` — mf6 ran but the list file reports a
@@ -244,16 +242,9 @@ class MODFLOWWorkflowError(RuntimeError):
 # DI seams (mirror tools/solver.py)
 # --------------------------------------------------------------------------- #
 
-_WORKFLOWS_CLIENT: Any | None = None
 _CACHE_BUCKET: str | None = None
 _RUNS_BUCKET: str | None = None
 _MF6_BINARY: str | None = None
-
-
-def set_workflows_client(client: Any) -> None:
-    """Bind the Cloud Workflows ``ExecutionsClient``. ``None`` re-lazies."""
-    global _WORKFLOWS_CLIENT
-    _WORKFLOWS_CLIENT = client
 
 
 def set_cache_bucket(name: str | None) -> None:
@@ -292,14 +283,6 @@ def _mf6_binary() -> str:
     if _MF6_BINARY is not None:
         return _MF6_BINARY
     return os.environ.get("GRACE2_MF6_BIN", "mf6")
-
-
-def _gcp_project() -> str:
-    return os.environ.get("GRACE2_GCP_PROJECT", "grace-2-hazard-prod")
-
-
-def _gcp_location() -> str:
-    return os.environ.get("GRACE2_GCP_LOCATION", "us-central1")
 
 
 def is_local_mode() -> bool:
@@ -635,33 +618,15 @@ def build_and_stage_modflow_deck(
 
 
 # --------------------------------------------------------------------------- #
-# Cloud Workflows submit (mirror of tools/solver.run_solver)
+# Solver dispatch (mirror of tools/solver.run_solver — local-exec backend)
 # --------------------------------------------------------------------------- #
-
-
-def _get_workflows_client() -> Any:
-    if _WORKFLOWS_CLIENT is not None:
-        return _WORKFLOWS_CLIENT
-    try:
-        from google.cloud.workflows.executions_v1 import (  # type: ignore[import-not-found]
-            ExecutionsClient,
-        )
-    except Exception as exc:  # noqa: BLE001
-        raise MODFLOWWorkflowError(
-            "MODFLOW_DISPATCH_FAILED",
-            message=(
-                f"google-cloud-workflows not importable: {exc}; "
-                "agent startup should call set_workflows_client(...)."
-            ),
-        ) from exc
-    return ExecutionsClient()
 
 
 def _modflow_local_spec(staging: DeckStaging) -> Any:
     """Build the MODFLOW ``LocalSolverSpec`` for the shared local backend.
 
     job-0292b solver-binary decision: **image-less local-exec** — there is no
-    maintained public MODFLOW docker image (the GCP Dockerfile itself builds
+    maintained public MODFLOW docker image (the GCP Dockerfile itself built
     from python:3.11-slim + the SHA-pinned USGS 6.5.0 static binary), so the
     simplest contract-preserving path runs the same pinned ``mf6`` binary
     directly on the instance (``$GRACE2_MF6_BIN``, the existing env
@@ -713,125 +678,41 @@ def submit_modflow_run(
     *,
     compute_class: str = "standard",
 ) -> ExecutionHandle:
-    """Submit a Cloud Workflows execution against the MODFLOW orchestrator.
+    """Submit a MODFLOW run via the shared local-exec solver backend.
 
-    The cloud analogue of ``run_solver(solver="sfincs", ...)`` — same
-    ``{run_id, manifest_uri}`` argument shape, targeting
-    ``grace-2-modflow-orchestrator``. Returns the schema-owned
-    ``ExecutionHandle`` whose ``workflows_execution_id`` is the Invariant-8
-    cancellation seam ``wait_for_completion`` operates on.
-
-    job-0292b: under ``GRACE2_SOLVER_BACKEND=local-docker`` (the job-0291 AWS
-    seam) the submit routes through ``tools.solver.launch_local_solver`` with
-    the MODFLOW local-exec spec instead — the staged deck is downloaded from
-    S3 into ``$GRACE2_RUNS_DIR/<run_id>/``, the ``mf6`` binary runs detached,
-    and the supervisor writes the MODFLOW-entrypoint-schema completion.json
-    to ``s3://$GRACE2_RUNS_BUCKET/<run_id>/``. The handle's
+    GCP Cloud Workflows is decommissioned. MODFLOW on AWS runs the ``mf6``
+    binary directly via the local-exec supervisor
+    (``tools.solver.launch_local_solver``) — there is NO AWS Batch job-def for
+    MODFLOW. The submit routes through ``launch_local_solver`` with the MODFLOW
+    local-exec spec: the staged deck is downloaded from S3 into
+    ``$GRACE2_RUNS_DIR/<run_id>/``, the ``mf6`` binary runs detached, and the
+    supervisor writes the MODFLOW-entrypoint-schema completion.json to
+    ``s3://$GRACE2_RUNS_BUCKET/<run_id>/``. The returned handle's
     ``workflow_name="local-exec"`` pins the backend for
-    ``wait_for_completion``. The default Cloud Workflows path below is
-    byte-identical to pre-job-0292b behavior.
+    ``wait_for_completion`` (the Invariant-8 cancellation seam).
 
     Raises:
-        MODFLOWWorkflowError("MODFLOW_DISPATCH_FAILED"): the create_execution
-            call (or the local-backend staging/launch) failed.
+        MODFLOWWorkflowError("MODFLOW_DISPATCH_FAILED"): the local-backend
+            staging / launch failed.
     """
     from ..tools.solver import (
-        SOLVER_BACKEND_GCP_WORKFLOWS,
-        SOLVER_BACKEND_LOCAL_DOCKER,
         SolverDispatchError,
         launch_local_solver,
-        solver_backend,
     )
 
-    # GCP decommissioned: MODFLOW on AWS runs the ``mf6`` binary directly via
-    # the local-exec supervisor (``launch_local_solver``) — there is NO AWS
-    # Batch job-def for MODFLOW. The solver default is now ``aws-batch``, so
-    # route BOTH ``aws-batch`` AND ``local-docker`` here; only an explicit
-    # legacy ``gcp-workflows`` falls through to the (dead) Cloud Workflows
-    # branch below. Without this, the solver-default flip to ``aws-batch``
-    # would silently break MODFLOW dispatch (the manifest sequencing trap).
-    if solver_backend() != SOLVER_BACKEND_GCP_WORKFLOWS:
-        try:
-            return launch_local_solver(
-                _modflow_local_spec(staging),
-                staging.manifest_uri,
-                run_id=staging.run_id,
-                compute_class=compute_class,
-            )
-        except SolverDispatchError as exc:
-            raise MODFLOWWorkflowError(
-                "MODFLOW_DISPATCH_FAILED",
-                message=f"local MODFLOW dispatch failed: {exc}",
-                details={"run_id": staging.run_id},
-            ) from exc
-
-    project = _gcp_project()
-    location = _gcp_location()
-    parent = (
-        f"projects/{project}/locations/{location}/workflows/{MODFLOW_WORKFLOW_NAME}"
-    )
-    argument = json.dumps(
-        {"run_id": staging.run_id, "manifest_uri": staging.manifest_uri}
-    )
-    submitted_at = datetime.now(timezone.utc)
-
-    logger.info(
-        "submit_modflow_run run_id=%s parent=%s manifest=%s",
-        staging.run_id,
-        parent,
-        staging.manifest_uri,
-    )
-
-    client = _get_workflows_client()
     try:
-        from google.cloud.workflows.executions_v1 import (  # type: ignore[import-not-found]
-            Execution,
+        return launch_local_solver(
+            _modflow_local_spec(staging),
+            staging.manifest_uri,
+            run_id=staging.run_id,
+            compute_class=compute_class,
         )
-
-        execution = client.create_execution(
-            parent=parent, execution=Execution(argument=argument)
-        )
-    except MODFLOWWorkflowError:
-        raise
-    except Exception as exc:  # noqa: BLE001
+    except SolverDispatchError as exc:
         raise MODFLOWWorkflowError(
             "MODFLOW_DISPATCH_FAILED",
-            message=f"Cloud Workflows create_execution failed for {parent}: {exc}",
+            message=f"local MODFLOW dispatch failed: {exc}",
             details={"run_id": staging.run_id},
         ) from exc
-
-    name = getattr(execution, "name", None)
-    if not name:
-        raise MODFLOWWorkflowError(
-            "MODFLOW_DISPATCH_FAILED",
-            message=f"Cloud Workflows execution returned no resource name: {execution!r}",
-            details={"run_id": staging.run_id},
-        )
-
-    # Map the requested compute class onto the ExecutionHandle literal contract.
-    schema_compute_class = compute_class if compute_class in {
-        "small",
-        "standard",
-        "large",
-        "gpu",
-    } else "standard"
-
-    handle = ExecutionHandle(
-        handle_id=new_ulid(),
-        run_id=staging.run_id,
-        solver="modflow",
-        compute_class=schema_compute_class,  # type: ignore[arg-type]
-        workflows_execution_id=name,
-        workflow_name=MODFLOW_WORKFLOW_NAME,
-        workflow_location=location,
-        submitted_at=submitted_at,
-    )
-    logger.info(
-        "submit_modflow_run submitted handle_id=%s workflows_execution_id=%s",
-        handle.handle_id,
-        handle.workflows_execution_id,
-    )
-    return handle
 
 
 # --------------------------------------------------------------------------- #

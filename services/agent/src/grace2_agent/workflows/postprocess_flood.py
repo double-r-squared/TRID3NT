@@ -155,48 +155,6 @@ def _resolve_run_output_to_local(run_outputs_uri: str) -> Path:
                 details={"run_outputs_uri": run_outputs_uri},
             ) from exc
         return local_target
-    if run_outputs_uri.startswith("gs://"):
-        try:
-            # job-0250 (OQ-0250-POSTPROCESS-FSSPEC-NOOPCALLBACK): download via
-            # google-cloud-storage, NOT fsspec/gcsfs. The fsspec.get() path
-            # crashed live (round-6 Stage 3: two completed SFINCS solves,
-            # zero published layers) when a version-skewed gcsfs (0.8.0,
-            # forced by the old storage<3 pin) choked on modern fsspec's
-            # NoOpCallback. The storage client is the proven-everywhere ADC
-            # path (cache shim, MODFLOW staging) — same pattern as
-            # sfincs_builder._stage_gcs_local.
-            from google.cloud import storage
-
-            tmpdir = Path(tempfile.mkdtemp(prefix="sfincs-output-"))
-            local_target = tmpdir / "sfincs_map.nc"
-            source = (
-                run_outputs_uri
-                if run_outputs_uri.endswith(".nc")
-                else run_outputs_uri.rstrip("/") + "/sfincs_map.nc"
-            )
-            bucket_name, _, blob_name = source[len("gs://"):].partition("/")
-            try:
-                client = storage.Client(
-                    project=os.environ.get(
-                        "GOOGLE_CLOUD_PROJECT", "grace-2-hazard-prod"
-                    )
-                )
-                client.bucket(bucket_name).blob(blob_name).download_to_filename(
-                    str(local_target)
-                )
-            except Exception as exc:  # noqa: BLE001
-                raise PostprocessError(
-                    "RUN_OUTPUT_READ_FAILED",
-                    message=f"could not fetch run output {source}: {exc}",
-                    details={"run_outputs_uri": run_outputs_uri},
-                ) from exc
-            return local_target
-        except ImportError as exc:
-            raise PostprocessError(
-                "RUN_OUTPUT_READ_FAILED",
-                message=f"google-cloud-storage not available for {run_outputs_uri}: {exc}",
-                details={"run_outputs_uri": run_outputs_uri},
-            ) from exc
     p = Path(run_outputs_uri.replace("file://", ""))
     if p.is_dir():
         candidate = p / "sfincs_map.nc"
@@ -668,7 +626,7 @@ def _upload_cog_to_runs_bucket(
     dest_filename: str = "flood_depth_peak.tif",
 ) -> str:
     """Upload the staged COG to
-    ``{scheme}://<runs_bucket>/<run_id>/<dest_filename>``.
+    ``s3://<runs_bucket>/<run_id>/<dest_filename>``.
 
     ``dest_filename`` defaults to ``flood_depth_peak.tif`` (the peak layer,
     byte-identical key to the pre-animation path). Per-frame callers pass a
@@ -677,61 +635,37 @@ def _upload_cog_to_runs_bucket(
     ``_layer_identity_key`` (no dedup collision; the sequential group keeps all
     its members).
 
-    job-0291 (sprint-14-aws): scheme-aware per ``cache.storage_scheme()``.
-    Under ``s3`` the upload goes via **boto3** (job-0289 lesson) and the
-    runs bucket MUST come from ``GRACE2_RUNS_BUCKET`` / the explicit
-    ``runs_bucket`` arg — there is no GCP-named default on AWS. The default
-    (``gs``) branch is byte-identical to the pre-job-0291 fsspec[gcs] path.
+    GCP is decommissioned (job-0291 / GCP-teardown): the upload always goes via
+    **boto3** (job-0289 lesson) and the runs bucket MUST come from
+    ``GRACE2_RUNS_BUCKET`` / the explicit ``runs_bucket`` arg.
     """
-    from ..tools.cache import storage_scheme
-
-    scheme = storage_scheme()
-    if scheme == "s3":
-        bucket = runs_bucket or (os.environ.get("GRACE2_RUNS_BUCKET") or "").strip()
-        if not bucket:
-            raise PostprocessError(
-                "COG_UPLOAD_FAILED",
-                message=(
-                    "GRACE2_RUNS_BUCKET must be set under "
-                    "GRACE2_STORAGE_BACKEND=s3 (no GCP-named default on AWS; "
-                    "job-0291)"
-                ),
-                details={"local_cog": str(local_cog)},
-            )
-        dest = f"s3://{bucket}/{run_id}/{dest_filename}"
-        try:
-            from ..tools.solver import _get_s3_client
-
-            with local_cog.open("rb") as fh:
-                _get_s3_client().put_object(
-                    Bucket=bucket,
-                    Key=f"{run_id}/{dest_filename}",
-                    Body=fh,
-                    ContentType="image/tiff",
-                )
-        except Exception as exc:  # noqa: BLE001
-            raise PostprocessError(
-                "COG_UPLOAD_FAILED",
-                message=f"upload of {local_cog} to {dest} failed: {exc}",
-                details={"local_cog": str(local_cog), "dest": dest},
-            ) from exc
-        logger.info("uploaded flood-depth COG to %s (boto3)", dest)
-        return dest
-
-    bucket = runs_bucket or os.environ.get("GRACE2_RUNS_BUCKET", RUNS_BUCKET_DEFAULT)
-    dest = f"gs://{bucket}/{run_id}/{dest_filename}"
+    bucket = runs_bucket or (os.environ.get("GRACE2_RUNS_BUCKET") or "").strip()
+    if not bucket:
+        raise PostprocessError(
+            "COG_UPLOAD_FAILED",
+            message=(
+                "GRACE2_RUNS_BUCKET must be set (S3-only; no GCP-named default)"
+            ),
+            details={"local_cog": str(local_cog)},
+        )
+    dest = f"s3://{bucket}/{run_id}/{dest_filename}"
     try:
-        import fsspec  # type: ignore[import-not-found]
+        from ..tools.solver import _get_s3_client
 
-        fs = fsspec.filesystem("gcs")
-        fs.put(str(local_cog), dest)
+        with local_cog.open("rb") as fh:
+            _get_s3_client().put_object(
+                Bucket=bucket,
+                Key=f"{run_id}/{dest_filename}",
+                Body=fh,
+                ContentType="image/tiff",
+            )
     except Exception as exc:  # noqa: BLE001
         raise PostprocessError(
             "COG_UPLOAD_FAILED",
             message=f"upload of {local_cog} to {dest} failed: {exc}",
             details={"local_cog": str(local_cog), "dest": dest},
         ) from exc
-    logger.info("uploaded flood-depth COG to %s", dest)
+    logger.info("uploaded flood-depth COG to %s (boto3)", dest)
     return dest
 
 

@@ -94,14 +94,14 @@ def _localize_to_dem_path(uri: str) -> str:
     on-disk GeoTIFF path the mesh builder can read with rasterio.
 
     The mesh builder reads a local filesystem path; ``fetch_3dep_extra`` /
-    ``fetch_dem`` return a cache URI. ``gs://`` / ``s3://`` objects are staged
-    down to a temp file (boto3 for s3, google-cloud-storage for gs — matching
-    the sfincs_builder staging seam); ``file://`` + bare local paths pass
-    through. On a synthetic / test path the URI is already local.
+    ``fetch_dem`` return a cache URI. GCP is decommissioned: ``s3://`` objects
+    are staged down to a temp file via boto3 (matching the sfincs_builder
+    staging seam); ``file://`` + bare local paths pass through. On a synthetic /
+    test path the URI is already local.
     """
     if uri.startswith("file://"):
         return uri[len("file://"):]
-    if not (uri.startswith("gs://") or uri.startswith("s3://")):
+    if not uri.startswith("s3://"):
         return uri
 
     import hashlib
@@ -113,21 +113,12 @@ def _localize_to_dem_path(uri: str) -> str:
     if local.exists() and local.stat().st_size > 0:
         return str(local)
     tmp = local.with_suffix(local.suffix + ".part")
-    if uri.startswith("s3://"):
-        from ..tools.solver import _get_s3_client
+    from ..tools.solver import _get_s3_client
 
-        bucket_name, _, obj_key = uri[len("s3://"):].partition("/")
-        resp = _get_s3_client().get_object(Bucket=bucket_name, Key=obj_key)
-        with tmp.open("wb") as fh:
-            shutil.copyfileobj(resp["Body"], fh)
-    else:
-        from google.cloud import storage
-
-        bucket_name, _, blob_name = uri[len("gs://"):].partition("/")
-        client = storage.Client(
-            project=os.environ.get("GOOGLE_CLOUD_PROJECT", "grace-2-hazard-prod")
-        )
-        client.bucket(bucket_name).blob(blob_name).download_to_filename(str(tmp))
+    bucket_name, _, obj_key = uri[len("s3://"):].partition("/")
+    resp = _get_s3_client().get_object(Bucket=bucket_name, Key=obj_key)
+    with tmp.open("wb") as fh:
+        shutil.copyfileobj(resp["Body"], fh)
     os.replace(tmp, local)
     logger.info("staged DEM %s -> %s (%d bytes)", uri, local, local.stat().st_size)
     return str(local)

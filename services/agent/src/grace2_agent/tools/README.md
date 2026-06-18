@@ -4,8 +4,8 @@ This package is the agent service's M4 atomic-tool surface (FR-AS-3,
 FR-CE-8, FR-TA-2, Decision O). It owns:
 
 - **The registry** (`__init__.py`) — `@register_tool(metadata)` decorator,
-  module-level `TOOL_REGISTRY`, and `register_with_adk(agent)` startup
-  helper.
+  module-level `TOOL_REGISTRY`, and the `get_registered_tools()` snapshot
+  helper the agent loop builds its tool declarations from.
 - **The cache shim** (`cache.py`) — `compute_cache_key`, `cache_path`,
   `read_through`, `is_cacheable`, `ttl_bucket_vintage`. Mediates every
   external-API atomic-tool fetch per FR-DC-3.
@@ -94,11 +94,12 @@ override at all) would force callers to delete the blob out-of-band.
 
 ## Startup wiring
 
-The agent service's `server.py` calls `register_with_adk(agent)` once at
-startup. Importing `grace2_agent.tools` triggers the import-time
-`@register_tool` decorators in `passthroughs` (and any future submodules);
-the snapshot is then registered with ADK in sorted order for deterministic
-diffs.
+Importing `grace2_agent.tools` triggers the import-time `@register_tool`
+decorators in `passthroughs` (and the other tool submodules), populating
+`TOOL_REGISTRY`. The agent loop reads `get_registered_tools()` (a sorted
+snapshot, for deterministic diffs) to build its Bedrock Converse tool
+declarations directly via the raw SDK in `adapter.py` — there is no ADK
+wrapper (`google-adk` was dropped in the GCP decommission).
 
 ## Cache key derivation (FR-DC-3)
 

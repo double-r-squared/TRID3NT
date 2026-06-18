@@ -126,70 +126,87 @@ def _read_output_array(output_bytes: bytes) -> tuple[np.ndarray, dict]:
 # ---------------------------------------------------------------------------
 
 
-class FakeBlob:
-    def __init__(self, store: dict[str, bytes], path: str) -> None:
-        self._store = store
-        self._path = path
-        self.custom_time: datetime | None = None
-        self.cache_control: str | None = None
+class _S3Body:
+    def __init__(self, data: bytes) -> None:
+        self._data = data
 
-    def exists(self) -> bool:
-        return self._path in self._store
-
-    def download_as_bytes(self) -> bytes:
-        return self._store[self._path]
-
-    def upload_from_string(self, data: bytes, content_type: str | None = None) -> None:
-        self._store[self._path] = data
-
-
-class FakeBucket:
-    def __init__(self, store: dict[str, bytes]) -> None:
-        self._store = store
-
-    def blob(self, path: str) -> FakeBlob:
-        return FakeBlob(self._store, path)
+    def read(self) -> bytes:
+        return self._data
 
 
 class FakeStorageClient:
+    """In-memory S3 double (GCP decommissioned). ``store`` keyed by object KEY.
+
+    GCP is decommissioned: both the SOURCE raster read and the CACHE write now
+    flow through boto3 S3 (the cache shim's only object store). ``source_blobs``
+    is seeded into the same in-memory ``store`` so the tool's
+    ``_download_raster_bytes`` can read an ``s3://`` landcover URI. Returns the
+    per-test active instance installed by the autouse
+    ``_route_cache_to_inmemory_s3`` fixture so the tool's read-through reads /
+    writes the store the test inspects.
+    """
+
+    _active: "FakeStorageClient | None" = None
+
+    def __new__(cls, source_blobs: dict[str, bytes] | None = None) -> "FakeStorageClient":
+        if cls._active is not None:
+            inst = cls._active
+            if source_blobs:
+                inst.store.update(source_blobs)
+                inst.source_blobs.update(source_blobs)
+            return inst
+        return super().__new__(cls)
+
     def __init__(self, source_blobs: dict[str, bytes] | None = None) -> None:
-        # cache-bucket store
-        self.store: dict[str, bytes] = {}
-        # source-bucket store (for download_as_bytes on landcover_uri)
-        self.source_blobs: dict[str, bytes] = source_blobs or {}
-        self._cache_bucket = FakeBucket(self.store)
-        # source bucket: a separate FakeBucket-like that returns source_blobs
-        self._source_bucket_name: str | None = None
+        if getattr(self, "_init", False):
+            return
+        self._init = True
+        self.store: dict[str, bytes] = dict(source_blobs or {})
+        self.source_blobs: dict[str, bytes] = dict(source_blobs or {})
+        self.last_put: dict | None = None
 
-    def bucket(self, name: str):
-        # If the bucket is named "test-bucket" or anything else, prefer the cache
-        # bucket; if it matches a source-blob bucket, serve those.
-        if name in ("test-source-bucket", "src-bucket"):
-            class _SourceBucket:
-                def __init__(self, blobs: dict[str, bytes]) -> None:
-                    self._blobs = blobs
+    def get_object(self, *, Bucket, Key):
+        from botocore.exceptions import ClientError
 
-                def blob(self, path: str):
-                    class _SourceBlob:
-                        def __init__(self, blobs: dict[str, bytes], p: str) -> None:
-                            self._blobs = blobs
-                            self._p = p
-                            self.custom_time = None
-                            self.cache_control = None
+        try:
+            data = self.store[Key]
+        except KeyError:
+            raise ClientError(
+                {"Error": {"Code": "NoSuchKey", "Message": "not found"}},
+                "GetObject",
+            )
+        return {"Body": _S3Body(data)}
 
-                        def exists(self) -> bool:
-                            return self._p in self._blobs
+    def put_object(self, *, Bucket, Key, Body, ContentType=None):
+        data = Body.read() if hasattr(Body, "read") else Body
+        self.store[Key] = data
+        self.last_put = {"Bucket": Bucket, "Key": Key, "ContentType": ContentType}
+        return {}
 
-                        def download_as_bytes(self) -> bytes:
-                            return self._blobs[self._p]
+    @property
+    def cache_writes(self) -> dict[str, bytes]:
+        """Cache-bucket writes only (store minus pre-seeded source blobs)."""
+        return {k: v for k, v in self.store.items() if k not in self.source_blobs}
 
-                        def upload_from_string(self, data: bytes, content_type: str | None = None) -> None:
-                            self._blobs[self._p] = data
 
-                    return _SourceBlob(self._blobs, path)
+@pytest.fixture(autouse=True)
+def _route_cache_to_inmemory_s3(monkeypatch):
+    """Route boto3 S3 (the cache shim's only object store) to an in-memory double."""
+    import boto3
 
-            return _SourceBucket(self.source_blobs)
-        return self._cache_bucket
+    FakeStorageClient._active = None
+    client = FakeStorageClient()
+    FakeStorageClient._active = client
+
+    def _factory(service_name, *a, **k):
+        assert service_name == "s3"
+        return client
+
+    monkeypatch.setattr(boto3, "client", _factory)
+    try:
+        yield client
+    finally:
+        FakeStorageClient._active = None
 
 
 # ---------------------------------------------------------------------------
@@ -405,25 +422,24 @@ def test_compute_impervious_cache_miss_writes():
     storage = FakeStorageClient(
         source_blobs={"cache/static-30d/landcover/xyz.tif": input_bytes}
     )
-    landcover_uri = "gs://test-source-bucket/cache/static-30d/landcover/xyz.tif"
+    landcover_uri = "s3://test-source-bucket/cache/static-30d/landcover/xyz.tif"
 
     result = compute_impervious_surface(
         landcover_uri=landcover_uri,
         bbox=None,
-        _storage_client=storage,
         _bucket="test-bucket",
     )
 
     # Result should reference the cache bucket and the cache key path.
-    assert result.uri.startswith("gs://test-bucket/")
+    assert result.uri.startswith("s3://test-bucket/")
     assert "/impervious/" in result.uri
     assert result.layer_type == "raster"
     assert result.role == "context"
     assert result.units is None
-    # Cache bucket should now have an entry.
-    assert len(storage.store) == 1
+    # Cache bucket should now have exactly one fresh write (source excluded).
+    assert len(storage.cache_writes) == 1
     # The cached bytes should be a valid GeoTIFF; verify it parses.
-    cached_bytes = next(iter(storage.store.values()))
+    cached_bytes = next(iter(storage.cache_writes.values()))
     out_arr, profile = _read_output_array(cached_bytes)
     assert np.allclose(out_arr, 0.3)
 
@@ -447,7 +463,7 @@ def test_compute_impervious_cache_hit_skips_compute():
             landcover_bytes = f.read()
         cached_bytes = _compute_impervious_bytes(landcover_bytes, bbox=None)
 
-    landcover_uri = "gs://test-source-bucket/cache/static-30d/landcover/xyz.tif"
+    landcover_uri = "s3://test-source-bucket/cache/static-30d/landcover/xyz.tif"
 
     # Compute the expected cache path the way the tool does. The cache key
     # uses TTL-bucket vintage — for "static-30d" that's the current year-month.
@@ -462,7 +478,6 @@ def test_compute_impervious_cache_hit_skips_compute():
     result = compute_impervious_surface(
         landcover_uri=landcover_uri,
         bbox=None,
-        _storage_client=storage,
         _bucket="test-bucket",
     )
 
@@ -488,11 +503,10 @@ def test_compute_impervious_returns_layer_uri_fields():
     storage = FakeStorageClient(
         source_blobs={"cache/static-30d/landcover/abc123.tif": input_bytes}
     )
-    landcover_uri = "gs://test-source-bucket/cache/static-30d/landcover/abc123.tif"
+    landcover_uri = "s3://test-source-bucket/cache/static-30d/landcover/abc123.tif"
 
     result = compute_impervious_surface(
         landcover_uri=landcover_uri,
-        _storage_client=storage,
         _bucket="test-bucket",
     )
 
@@ -508,14 +522,13 @@ def test_compute_impervious_returns_layer_uri_fields():
 
 
 def test_compute_impervious_raster_download_failure_raises():
-    """GCS download failure raises ImperviousSurfaceError(error_code='RASTER_DOWNLOAD_FAILED')."""
-    storage = FakeStorageClient(source_blobs={})  # no source bytes
-    landcover_uri = "gs://test-source-bucket/missing.tif"
+    """S3 download failure raises ImperviousSurfaceError(error_code='RASTER_DOWNLOAD_FAILED')."""
+    FakeStorageClient(source_blobs={})  # no source bytes seeded
+    landcover_uri = "s3://test-source-bucket/missing.tif"
 
     with pytest.raises(ImperviousSurfaceError) as exc_info:
         compute_impervious_surface(
             landcover_uri=landcover_uri,
-            _storage_client=storage,
             _bucket="test-bucket",
         )
     assert exc_info.value.error_code == "RASTER_DOWNLOAD_FAILED"
@@ -556,12 +569,11 @@ def test_compute_impervious_non_developed_classes_map_to_zero():
 
 def test_compute_impervious_degenerate_bbox_raises():
     """Degenerate bbox (min >= max) raises ImperviousSurfaceError early."""
-    storage = FakeStorageClient(source_blobs={"x.tif": b""})
+    FakeStorageClient(source_blobs={"x.tif": b""})
     with pytest.raises(ImperviousSurfaceError) as exc_info:
         compute_impervious_surface(
-            landcover_uri="gs://test-source-bucket/x.tif",
+            landcover_uri="s3://test-source-bucket/x.tif",
             bbox=(-82.0, 26.0, -82.0, 26.0),  # degenerate
-            _storage_client=storage,
             _bucket="test-bucket",
         )
     assert exc_info.value.error_code == "BBOX_OUTSIDE_RASTER"

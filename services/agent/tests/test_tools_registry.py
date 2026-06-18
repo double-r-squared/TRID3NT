@@ -7,8 +7,6 @@ Coverage:
 - ``get_registered_tools`` returns a sorted snapshot.
 - The eager passthroughs import populates ``qgis_process``.
 - ``register_tool`` rejects non-``AtomicToolMetadata`` arguments.
-- ``register_with_adk`` mock-test: every entry in the registry is appended
-  to the ADK ``Agent.tools`` list (via a duck-typed fake).
 """
 
 from __future__ import annotations
@@ -210,38 +208,3 @@ def test_global_query_scope_audit():
         assert (
             registry[bbox_required].metadata.supports_global_query is False
         ), f"{bbox_required} must require a bbox (supports_global_query=False)"
-
-
-def test_register_with_adk_appends_each_tool_to_agent_tools(empty_registry):
-    """``register_with_adk`` iterates the snapshot and binds each fn to ADK.
-
-    We don't want to import google-adk in tests, so we stub the
-    FunctionTool symbol with a no-op wrapper via monkey-patching the lazy
-    import.
-    """
-
-    @register_tool(
-        AtomicToolMetadata(
-            name="aaa", ttl_class="static-30d", source_class="x", cacheable=True
-        )
-    )
-    def aaa() -> None:
-        return None
-
-    @register_tool(
-        AtomicToolMetadata(
-            name="bbb", ttl_class="dynamic-1h", source_class="y", cacheable=True
-        )
-    )
-    def bbb() -> None:
-        return None
-
-    # Fake ADK Agent with a mutable tools list.
-    class FakeAgent:
-        def __init__(self) -> None:
-            self.tools: list[object] = []
-
-    agent = FakeAgent()
-    n = agent_tools.register_with_adk(agent)
-    assert n == 2
-    assert len(agent.tools) == 2

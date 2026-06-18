@@ -148,54 +148,34 @@ def _conda_grace2_gdaldem() -> str | None:
 # ---------------------------------------------------------------------------
 
 
-def _download_dem_bytes(dem_uri: str, storage_client: object | None) -> bytes:
-    """Download the DEM bytes from a ``gs://`` URI.
+def _download_dem_bytes(dem_uri: str, storage_client: object | None = None) -> bytes:
+    """Download the DEM bytes from an ``s3://`` URI or a local path.
 
-    ``storage_client`` is injected by tests; production callers pass None and
-    the function builds an ADC-authenticated client lazily.
+    GCP is decommissioned: object-store reads route through boto3 (S3).
+    ``storage_client`` is retained for backward-compatible call signatures
+    but is ignored.
 
     Raises ``SlopeComputeError`` on any failure so callers get a typed error.
     """
+    del storage_client  # GCP decommissioned — S3/local only.
     # sprint-14-aws (job-0290b): s3:// staging via the shared boto3 reader.
     if dem_uri.startswith("s3://"):
         from .cache import read_object_bytes_s3
-        return read_object_bytes_s3(dem_uri)
-    if not dem_uri.startswith("gs://"):
-        # Local path — read directly (test / dev convenience).
         try:
-            with open(dem_uri, "rb") as f:
-                return f.read()
-        except OSError as exc:
+            return read_object_bytes_s3(dem_uri)
+        except Exception as exc:  # noqa: BLE001
             raise SlopeComputeError(
                 "DEM_DOWNLOAD_FAILED",
-                f"Could not read local DEM path {dem_uri!r}: {exc}",
+                f"S3 download failed for {dem_uri!r}: {exc}",
             ) from exc
-
-    # GCS path.
-    rest = dem_uri[len("gs://"):]
-    slash = rest.find("/")
-    if slash == -1:
-        raise SlopeComputeError(
-            "DEM_DOWNLOAD_FAILED",
-            f"Malformed gs:// URI (no object key): {dem_uri!r}",
-        )
-    bucket_name = rest[:slash]
-    blob_path = rest[slash + 1:]
-
+    # Local path — read directly (test / dev convenience).
     try:
-        if storage_client is None:
-            from google.cloud import storage  # type: ignore[import-not-found]
-
-            storage_client = storage.Client(
-                project=os.environ.get("GOOGLE_CLOUD_PROJECT", "grace-2-hazard-prod")
-            )
-        bucket_obj = storage_client.bucket(bucket_name)
-        blob = bucket_obj.blob(blob_path)
-        return blob.download_as_bytes()
-    except Exception as exc:  # noqa: BLE001
+        with open(dem_uri, "rb") as f:
+            return f.read()
+    except OSError as exc:
         raise SlopeComputeError(
             "DEM_DOWNLOAD_FAILED",
-            f"GCS download failed for {dem_uri!r}: {exc}",
+            f"Could not read local DEM path {dem_uri!r}: {exc}",
         ) from exc
 
 

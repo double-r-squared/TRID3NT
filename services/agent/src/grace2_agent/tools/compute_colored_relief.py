@@ -107,50 +107,31 @@ def _conda_grace2_gdaldem() -> str | None:
 
 
 def _download_dem_to_local(dem_uri: str) -> str:
-    """Stage a ``gs://`` DEM to a local temp file; pass local paths through.
+    """Stage an ``s3://`` DEM to a local temp file; pass local paths through.
 
-    job-0269: replaces the ``/vsigs/`` input path — the subprocess gdaldem
-    has no guaranteed GCS auth context, while the agent process holds ADC.
-    Mirrors the compute_slope/_aspect staging pattern. Caller owns cleanup
-    of the returned temp file (only when it differs from ``dem_uri``).
+    job-0269: replaces the ``/vsis3/`` input path — the subprocess gdaldem
+    has no guaranteed object-store auth context, while the agent process holds
+    the EC2 instance-role credentials boto3 resolves via IMDS. Mirrors the
+    compute_slope/_aspect staging pattern. Caller owns cleanup of the returned
+    temp file (only when it differs from ``dem_uri``).
     """
     # sprint-14-aws (job-0290b): s3:// staging — download to a local temp file.
     if dem_uri.startswith("s3://"):
         from .cache import read_object_bytes_s3
-        with tempfile.NamedTemporaryFile(
-            suffix=".tif", delete=False, prefix="grace2_relief_dem_"
-        ) as f:
-            f.write(read_object_bytes_s3(dem_uri))
-            return f.name
-    if not dem_uri.startswith("gs://"):
-        return dem_uri
-    rest = dem_uri[len("gs://"):]
-    slash = rest.find("/")
-    if slash == -1:
-        raise ColoredReliefError(
-            f"Malformed gs:// URI (no object key): {dem_uri!r}"
-        )
-    bucket_name, blob_path = rest[:slash], rest[slash + 1:]
-    try:
-        from google.cloud import storage  # type: ignore[import-not-found]
-
-        client = storage.Client(
-            project=os.environ.get("GOOGLE_CLOUD_PROJECT", "grace-2-hazard-prod")
-        )
-        with tempfile.NamedTemporaryFile(
-            suffix=".tif", delete=False, prefix="grace2_relief_dem_"
-        ) as f:
-            local_path = f.name
-        client.bucket(bucket_name).blob(blob_path).download_to_filename(
-            local_path
-        )
-        return local_path
-    except ColoredReliefError:
-        raise
-    except Exception as exc:  # noqa: BLE001
-        raise ColoredReliefError(
-            f"GCS download failed for {dem_uri!r}: {exc}"
-        ) from exc
+        try:
+            with tempfile.NamedTemporaryFile(
+                suffix=".tif", delete=False, prefix="grace2_relief_dem_"
+            ) as f:
+                f.write(read_object_bytes_s3(dem_uri))
+                return f.name
+        except ColoredReliefError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise ColoredReliefError(
+                f"S3 download failed for {dem_uri!r}: {exc}"
+            ) from exc
+    # Local path — pass through (test / dev convenience).
+    return dem_uri
 
 
 # ---------------------------------------------------------------------------

@@ -195,7 +195,7 @@ class ReadThroughResult:
     """Result of a ``read_through`` call.
 
     Attributes:
-        uri: ``gs://bucket/path`` of the cached artifact, or ``None`` for
+        uri: ``s3://bucket/path`` of the cached artifact, or ``None`` for
             ``live-no-cache`` reads which deliberately do not persist.
         data: the artifact bytes (from the cache hit or freshly fetched).
         hit: True if the response came from the cache, False if fetched.
@@ -212,24 +212,19 @@ class ReadThroughResult:
         return f"ReadThroughResult(uri={self.uri!r}, hit={self.hit}, bytes={len(self.data)})"
 
 
-def _gs_uri(bucket: str, path: str) -> str:
-    return f"gs://{bucket}/{path}"
-
-
 def storage_scheme() -> str:
-    """Object-store scheme for cache artifacts (AWS S3 default).
+    """Object-store scheme for cache artifacts.
 
-    GCP is decommissioned. ``GRACE2_STORAGE_BACKEND`` unset (or ``s3``/``aws``)
-    -> ``s3``; only an explicit legacy ``gcs``/``gcp`` still maps to ``gs`` (the
-    duck-typed injected-client test seam). Read at call time so an env injection
-    takes effect without re-import.
+    GCP is decommissioned: the agent's only object store is AWS S3, so this
+    always resolves to ``"s3"``. Kept as a function (rather than a constant)
+    because ``publish_layer`` and other call sites import it as the
+    single source of truth for the cache-URI scheme.
     """
-    b = (os.environ.get("GRACE2_STORAGE_BACKEND") or "s3").strip().lower()
-    return "gs" if b in {"gcs", "gcp", "gs"} else "s3"
+    return "s3"
 
 
 def _obj_uri(bucket: str, path: str) -> str:
-    return f"{storage_scheme()}://{bucket}/{path}"
+    return f"s3://{bucket}/{path}"
 
 
 def _split_s3_uri(uri: str) -> tuple[str, str]:
@@ -294,22 +289,6 @@ def _read_through_s3(
     return ReadThroughResult(uri=uri, data=data, hit=False)
 
 
-def _ttl_to_cache_control(ttl_class: TTLClass) -> str:
-    """Object-level Cache-Control header reflecting the TTL class.
-
-    Per FR-DC-3 step 3 the shim attaches a ``Cache-Control`` header to every
-    write. We pick object-metadata over bucket-level so per-object visibility
-    is preserved (one of the kickoff's surfaced choices).
-    """
-    seconds = {
-        "static-30d": 30 * 24 * 3600,
-        "semi-static-7d": 7 * 24 * 3600,
-        "dynamic-1h": 3600,
-        "live-no-cache": 0,
-    }[ttl_class]
-    return f"public, max-age={seconds}"
-
-
 def read_through(
     metadata: AtomicToolMetadata,
     params: dict[str, Any],
@@ -330,12 +309,11 @@ def read_through(
        always miss; invoke ``fetch_fn``; do NOT write; return with
        ``uri=None``, ``hit=False``. This honors FR-DC-6.
     2. Otherwise: compute cache key + path. Look up
-       ``gs://<bucket>/<cache_path>``. If present, return the URI + bytes.
-       Lifecycle policy handles eviction so presence == valid.
-    3. On miss (or ``force_refresh=True``): invoke ``fetch_fn()``; write to
-       GCS with ``customTime = now`` (FR-DC-3 / job-0031 verified pattern)
-       and a ``Cache-Control`` header reflecting the TTL class; return URI +
-       bytes.
+       ``s3://<bucket>/<cache_path>``. If present, return the URI + bytes.
+       The bucket lifecycle policy handles eviction so presence == valid.
+    3. On miss (or ``force_refresh=True``): invoke ``fetch_fn()``; write the
+       fresh bytes to S3 via boto3; return URI + bytes. TTL eviction is a
+       bucket lifecycle rule, so no per-object expiry metadata is written.
     4. On ``fetch_fn`` failure: do NOT write a sentinel; re-raise so the
        agent surface (FR-AS-11) can decide whether to retry, clarify, or
        fall back.
@@ -345,25 +323,27 @@ def read_through(
         params: the call parameters (already domain-quantized).
         ext: artifact extension (e.g. ``"tif"``, ``"fgb"``, ``"json"``).
         fetch_fn: a zero-arg callable that produces the fresh bytes. The
-            shim is sync because GCS uploads via ``google-cloud-storage`` are
-            sync; long-running fetches must be invoked from a context that
-            the agent's cancel chain can interrupt.
+            shim is sync because boto3 S3 uploads are sync; long-running
+            fetches must be invoked from a context that the agent's cancel
+            chain can interrupt.
         bucket: cache bucket name (default ``CACHE_BUCKET``).
         source_id: identifier for the upstream source, defaults to
             ``metadata.source_class``. Pass an override for sub-source detail
             like ``"atcf:IAN"``.
         force_refresh: if True, bypass the cache lookup and always invoke
             ``fetch_fn`` (FR-DC-6 ``cache=false`` per-call opt-in). The
-            fresh response is still written through. TENTATIVE per the
-            kickoff Open Questions.
-        storage_client: optional injected ``google.cloud.storage.Client`` for
-            tests. Production callers leave this None; the shim builds the
-            default client via ADC.
+            fresh response is still written through.
+        storage_client: legacy/no-op parameter retained for backward
+            compatibility with the many tool call sites that thread a
+            ``_storage_client`` kwarg through. GCP is decommissioned, so the
+            read-through always routes through boto3/S3; this argument is
+            ignored.
         now: optional timestamp pin for tests / TTL-bucket determinism.
 
     Returns:
         ``ReadThroughResult(uri, data, hit)``.
     """
+    del storage_client  # GCP decommissioned — S3-only read-through.
     # sprint-14-aws (job-0290b): the env override WINS over caller-supplied
     # buckets — several tools pass the legacy CACHE_BUCKET constant explicitly,
     # which on AWS named a nonexistent GCP bucket and silently degraded every
@@ -391,83 +371,9 @@ def read_through(
     key = compute_cache_key(source_id, params, metadata.ttl_class, now=now)
     path = cache_path(metadata.source_class, metadata.ttl_class, key, ext)
 
-    # GCP is decommissioned (job — GCP teardown): on AWS the cache lives in S3.
-    # The production path (no injected client) routes the whole read-through
-    # through boto3 and mints an ``s3://`` URI. The ``from google.cloud import
-    # storage`` default-client builder is GONE — google-cloud-storage is no
-    # longer an agent dependency.
-    if storage_client is None:
-        uri = f"s3://{bucket}/{path}"
-        return _read_through_s3(uri, fetch_fn, force_refresh, metadata, key, ext)
-
-    # Injected-client path (unit-test seam only): the URI scheme follows the
-    # duck-typed in-memory double the test supplies. Tests model the historical
-    # GCS object-store double (``.bucket()`` -> ``.blob()``), so the URI is
-    # ``gs://`` here. Production never injects a client; this branch is dead at
-    # runtime.
-    uri = f"gs://{bucket}/{path}"
-
-    # Injected-client path: a duck-typed object-store client (``.bucket()`` ->
-    # ``.blob()`` with ``exists()``/``download_as_bytes()``/``upload_from_string()``
-    # /``custom_time``/``cache_control``). This is the unit-test seam only — the
-    # tests supply an in-memory double; production never injects a client. No
-    # GCP SDK is imported here. Best-effort: any failure degrades to fetch-
-    # fresh-uncached (uri stays the computed string so callers' non-None
-    # assertions hold).
-    try:
-        bucket_obj = storage_client.bucket(bucket)
-        blob = bucket_obj.blob(path)
-
-        if not force_refresh and blob.exists():
-            # Presence == valid per FR-DC-5: the lifecycle policy evicts based
-            # on customTime, so anything still present is within its TTL window.
-            data = blob.download_as_bytes()
-            logger.info(
-                "read_through hit tool=%s key=%s bytes=%d",
-                metadata.name,
-                key,
-                len(data),
-            )
-            return ReadThroughResult(uri=uri, data=data, hit=True)
-    except Exception as exc:  # noqa: BLE001 — object store unavailable -> degrade
-        logger.warning(
-            "read_through cache degraded (object store unavailable) tool=%s: %s; "
-            "fetching fresh, uncached",
-            metadata.name,
-            exc,
-        )
-        return ReadThroughResult(uri=uri, data=fetch_fn(), hit=False)
-
-    # Miss (or forced refresh). Invoke the fetcher; on failure re-raise so
-    # the agent's FR-AS-11 surface decides next steps. Do NOT write a
-    # sentinel — a sentinel would poison future reads.
-    data = fetch_fn()
-
-    try:
-        fetched_at = now or datetime.now(timezone.utc)
-        blob.custom_time = fetched_at  # google.cloud.storage requires datetime, not str (OQ-33-CACHE-CUSTOMTIME-TYPE-BUG)
-        blob.cache_control = _ttl_to_cache_control(metadata.ttl_class)
-        # Best-effort content-type for HTTP-style consumers; the lifecycle
-        # policy doesn't care, but downstream readers might.
-        content_type = {
-            "json": "application/json",
-            "tif": "image/tiff",
-            "fgb": "application/octet-stream",
-            "nc": "application/x-netcdf",
-            "grib2": "application/x-grib2",
-        }.get(ext.lstrip("."), "application/octet-stream")
-        blob.upload_from_string(data, content_type=content_type)
-        logger.info(
-            "read_through miss-write tool=%s key=%s bytes=%d customTime=%s",
-            metadata.name,
-            key,
-            len(data),
-            fetched_at.isoformat(),
-        )
-    except Exception as exc:  # noqa: BLE001 — write is best-effort
-        logger.warning(
-            "read_through cache write degraded tool=%s: %s; returning uncached",
-            metadata.name,
-            exc,
-        )
-    return ReadThroughResult(uri=uri, data=data, hit=False)
+    # GCP is decommissioned: the cache lives in S3. The whole read-through
+    # routes through boto3 and mints an ``s3://`` URI. The legacy
+    # ``from google.cloud import storage`` default-client builder is GONE —
+    # google-cloud-storage is no longer an agent dependency.
+    uri = f"s3://{bucket}/{path}"
+    return _read_through_s3(uri, fetch_fn, force_refresh, metadata, key, ext)

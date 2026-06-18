@@ -43,8 +43,6 @@ from grace2_agent.tools.solver import (
     set_emitter_binding,
     set_runs_bucket,
     set_s3_client,
-    set_storage_client,
-    set_workflows_client,
 )
 
 
@@ -62,7 +60,7 @@ class FakeBatchClient:
 
 @pytest.fixture()
 def reset_seams():
-    for setter in (set_workflows_client, set_storage_client, set_s3_client, set_batch_client):
+    for setter in (set_s3_client, set_batch_client):
         setter(None)
     set_emitter_binding(None)
     set_runs_bucket(None)
@@ -71,7 +69,7 @@ def reset_seams():
     try:
         yield
     finally:
-        for setter in (set_workflows_client, set_storage_client, set_s3_client, set_batch_client):
+        for setter in (set_s3_client, set_batch_client):
             setter(None)
         set_emitter_binding(None)
         set_runs_bucket(None)

@@ -128,59 +128,39 @@ DEVELOPED_CLASS_TO_IMPERVIOUS: dict[int, float] = {
 
 
 # ---------------------------------------------------------------------------
-# GCS-read helper
+# Object-store read helper (S3-only; GCP decommissioned)
 # ---------------------------------------------------------------------------
 
 
-def _download_raster_bytes(uri: str, storage_client: object | None) -> bytes:
-    """Download raster bytes from a ``gs://`` URI or read from a local path.
+def _download_raster_bytes(uri: str, storage_client: object | None = None) -> bytes:
+    """Download raster bytes from an ``s3://`` URI or read from a local path.
 
-    ``storage_client`` is injected by tests; production callers pass None and
-    the function builds an ADC-authenticated client lazily.
+    GCP is decommissioned: object-store reads route through boto3 (S3).
+    ``storage_client`` is retained for backward-compatible call signatures
+    but is ignored.
 
     Raises ``ImperviousSurfaceError`` on any failure so callers get a typed
     error.
     """
+    del storage_client  # GCP decommissioned — S3/local only.
     # sprint-14-aws (job-0290b): s3:// staging via the shared boto3 reader.
     if uri.startswith("s3://"):
         from .cache import read_object_bytes_s3
-        return read_object_bytes_s3(uri)
-    if not uri.startswith("gs://"):
-        # Local path — read directly (test / dev convenience).
         try:
-            with open(uri, "rb") as f:
-                return f.read()
-        except OSError as exc:
+            return read_object_bytes_s3(uri)
+        except Exception as exc:  # noqa: BLE001
             raise ImperviousSurfaceError(
                 "RASTER_DOWNLOAD_FAILED",
-                f"Could not read local raster path {uri!r}: {exc}",
+                f"S3 download failed for {uri!r}: {exc}",
             ) from exc
-
-    # GCS path.
-    rest = uri[len("gs://"):]
-    slash = rest.find("/")
-    if slash == -1:
-        raise ImperviousSurfaceError(
-            "UNKNOWN_RASTER_URI",
-            f"Malformed gs:// URI (no object key): {uri!r}",
-        )
-    bucket_name = rest[:slash]
-    blob_path = rest[slash + 1:]
-
+    # Local path — read directly (test / dev convenience).
     try:
-        if storage_client is None:
-            from google.cloud import storage  # type: ignore[import-not-found]
-
-            storage_client = storage.Client(
-                project=os.environ.get("GOOGLE_CLOUD_PROJECT", "grace-2-hazard-prod")
-            )
-        bucket_obj = storage_client.bucket(bucket_name)
-        blob = bucket_obj.blob(blob_path)
-        return blob.download_as_bytes()
-    except Exception as exc:  # noqa: BLE001
+        with open(uri, "rb") as f:
+            return f.read()
+    except OSError as exc:
         raise ImperviousSurfaceError(
             "RASTER_DOWNLOAD_FAILED",
-            f"GCS download failed for {uri!r}: {exc}",
+            f"Could not read local raster path {uri!r}: {exc}",
         ) from exc
 
 

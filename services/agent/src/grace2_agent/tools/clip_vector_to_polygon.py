@@ -123,10 +123,12 @@ def _resolve_layer_to_local_path(
 
     Returns ``(path, is_temp)`` — caller deletes the path iff ``is_temp`` is True.
 
-    For ``gs://`` URIs: downloads bytes to a temp file. For local paths: returns
-    the path unchanged. Raises ``ClipVectorError`` on any failure with the given
-    ``not_found_code`` for unknown URIs and ``DOWNLOAD_FAILED`` for GCS errors.
+    For ``s3://`` URIs: downloads bytes to a temp file. For local paths: returns
+    the path unchanged. GCP is decommissioned, so ``storage_client`` is ignored.
+    Raises ``ClipVectorError`` on any failure with the given ``not_found_code``
+    for unknown URIs and ``DOWNLOAD_FAILED`` for object-store errors.
     """
+    del storage_client  # GCP decommissioned — S3/local only.
     # sprint-14-aws (job-0293b): s3:// staging via the shared boto3 reader
     # (NOT s3fs — instance-role lesson, job-0289). Same return shape:
     # (temp path, is_temp=True); caller owns cleanup.
@@ -146,50 +148,12 @@ def _resolve_layer_to_local_path(
             tmp.write(data)
             return tmp.name, True
 
-    if uri.startswith("gs://"):
-        # GCS path → download to a temp file so geopandas/pyogrio can open it.
-        rest = uri[len("gs://"):]
-        slash = rest.find("/")
-        if slash == -1:
-            raise ClipVectorError(
-                "DOWNLOAD_FAILED",
-                f"Malformed gs:// URI (no object key): {uri!r}",
-            )
-        bucket_name = rest[:slash]
-        blob_path = rest[slash + 1:]
-
-        try:
-            if storage_client is None:
-                from google.cloud import storage  # type: ignore[import-not-found]
-
-                storage_client = storage.Client(
-                    project=os.environ.get("GOOGLE_CLOUD_PROJECT", "grace-2-hazard-prod")
-                )
-            bucket_obj = storage_client.bucket(bucket_name)
-            blob = bucket_obj.blob(blob_path)
-            data = blob.download_as_bytes()
-        except ClipVectorError:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            raise ClipVectorError(
-                "DOWNLOAD_FAILED",
-                f"GCS download failed for {uri!r}: {exc}",
-            ) from exc
-
-        # Write bytes to a temp file with the inferred suffix so geopandas/pyogrio
-        # picks the correct driver from the extension.
-        with tempfile.NamedTemporaryFile(
-            suffix=suffix, delete=False, prefix="grace2_clipvec_"
-        ) as tmp:
-            tmp.write(data)
-            return tmp.name, True
-
     if os.path.isfile(uri):
         return uri, False
 
     raise ClipVectorError(
         not_found_code,
-        f"layer URI {uri!r} is not a gs:// URI and is not a readable local file.",
+        f"layer URI {uri!r} is not an s3:// URI and is not a readable local file.",
     )
 
 

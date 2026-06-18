@@ -114,38 +114,73 @@ def _write_polygon_fgb_multi(
 # ---------------------------------------------------------------------------
 
 
-class FakeBlob:
-    def __init__(self, store: dict[str, bytes], path: str) -> None:
-        self._store = store
-        self._path = path
-        self.custom_time = None
-        self.cache_control = None
+class _S3Body:
+    def __init__(self, data: bytes) -> None:
+        self._data = data
 
-    def exists(self) -> bool:
-        return self._path in self._store
-
-    def download_as_bytes(self) -> bytes:
-        return self._store[self._path]
-
-    def upload_from_string(self, data: bytes, content_type: str | None = None) -> None:
-        self._store[self._path] = data
-
-
-class FakeBucket:
-    def __init__(self, store: dict[str, bytes]) -> None:
-        self._store = store
-
-    def blob(self, path: str) -> FakeBlob:
-        return FakeBlob(self._store, path)
+    def read(self) -> bytes:
+        return self._data
 
 
 class FakeStorageClient:
-    def __init__(self) -> None:
-        self.store: dict[str, bytes] = {}
-        self._bucket = FakeBucket(self.store)
+    """In-memory S3 double (GCP decommissioned). ``store`` keyed by object KEY.
 
-    def bucket(self, name: str) -> FakeBucket:
-        return self._bucket
+    Returns the per-test active instance installed by the autouse
+    ``_route_cache_to_inmemory_s3`` fixture so the tool's real S3 read-through
+    (boto3) reads/writes the same store the test inspects.
+    """
+
+    _active: "FakeStorageClient | None" = None
+
+    def __new__(cls) -> "FakeStorageClient":
+        if cls._active is not None:
+            return cls._active
+        return super().__new__(cls)
+
+    def __init__(self) -> None:
+        if getattr(self, "_init", False):
+            return
+        self._init = True
+        self.store: dict[str, bytes] = {}
+        self.last_put: dict | None = None
+
+    def get_object(self, *, Bucket, Key):
+        from botocore.exceptions import ClientError
+
+        try:
+            data = self.store[Key]
+        except KeyError:
+            raise ClientError(
+                {"Error": {"Code": "NoSuchKey", "Message": "not found"}},
+                "GetObject",
+            )
+        return {"Body": _S3Body(data)}
+
+    def put_object(self, *, Bucket, Key, Body, ContentType=None):
+        data = Body.read() if hasattr(Body, "read") else Body
+        self.store[Key] = data
+        self.last_put = {"Bucket": Bucket, "Key": Key, "ContentType": ContentType}
+        return {}
+
+
+@pytest.fixture(autouse=True)
+def _route_cache_to_inmemory_s3(monkeypatch):
+    """Route boto3 S3 (the cache shim's only object store) to an in-memory double."""
+    import boto3
+
+    FakeStorageClient._active = None
+    client = FakeStorageClient()
+    FakeStorageClient._active = client
+
+    def _factory(service_name, *a, **k):
+        assert service_name == "s3"
+        return client
+
+    monkeypatch.setattr(boto3, "client", _factory)
+    try:
+        yield client
+    finally:
+        FakeStorageClient._active = None
 
 
 # ---------------------------------------------------------------------------
@@ -191,7 +226,6 @@ def test_clip_with_square_polygon_yields_correct_extent(tmp_path):
     result = clip_raster_to_polygon(
         raster_uri=str(src_path),
         polygon_uri=str(poly_path),
-        _storage_client=fake_sc,
         _bucket="test-bucket",
     )
 
@@ -227,7 +261,7 @@ def test_clip_with_square_polygon_yields_correct_extent(tmp_path):
 
     # LayerURI shape.
     assert result.layer_type == "raster"
-    assert result.uri.startswith("gs://")
+    assert result.uri.startswith("s3://")
     assert "clip_raster_polygon" in result.uri
 
 
@@ -265,7 +299,6 @@ def test_polygon_crs_mismatch_is_reprojected(tmp_path):
     result = clip_raster_to_polygon(
         raster_uri=str(src_path),
         polygon_uri=str(poly_path),
-        _storage_client=fake_sc,
         _bucket="test-bucket",
     )
 
@@ -325,7 +358,6 @@ def test_feature_filter_selects_one_polygon(tmp_path):
         raster_uri=str(src_path),
         polygon_uri=str(poly_path),
         feature_filter={"property": "name", "value": "Right"},
-        _storage_client=fake_sc,
         _bucket="test-bucket",
     )
 
@@ -384,7 +416,6 @@ def test_nodata_outside_override(tmp_path):
         raster_uri=str(src_path),
         polygon_uri=str(poly_path),
         nodata_outside=-999.0,
-        _storage_client=fake_sc,
         _bucket="test-bucket",
     )
 
@@ -435,14 +466,12 @@ def test_cache_miss_then_hit_skips_mask(tmp_path):
         side_effect=_counting_mask,
     ):
         r1 = clip_raster_to_polygon(
-            raster_uri=str(src_path), polygon_uri=str(poly_path),
-            _storage_client=fake_sc, _bucket="test-bucket",
+            raster_uri=str(src_path), polygon_uri=str(poly_path), _bucket="test-bucket",
         )
         assert mask_call_count[0] == 1
 
         r2 = clip_raster_to_polygon(
-            raster_uri=str(src_path), polygon_uri=str(poly_path),
-            _storage_client=fake_sc, _bucket="test-bucket",
+            raster_uri=str(src_path), polygon_uri=str(poly_path), _bucket="test-bucket",
         )
         # mask NOT called again on cache hit.
         assert mask_call_count[0] == 1, (
@@ -478,7 +507,6 @@ def test_empty_filter_raises_typed_error(tmp_path):
             raster_uri=str(src_path),
             polygon_uri=str(poly_path),
             feature_filter={"property": "name", "value": "Nonexistent"},
-            _storage_client=fake_sc,
             _bucket="test-bucket",
         )
     assert exc_info.value.error_code == "POLYGON_FILTER_EMPTY"
@@ -513,7 +541,6 @@ def test_unknown_polygon_uri_raises_typed_error(tmp_path):
         clip_raster_to_polygon(
             raster_uri=str(src_path),
             polygon_uri="/nonexistent/path/missing.fgb",
-            _storage_client=fake_sc,
             _bucket="test-bucket",
         )
     assert exc_info.value.error_code == "UNKNOWN_POLYGON_URI"
@@ -582,7 +609,6 @@ def test_live_clip_fortmyers_dem_to_lee_county_shape(tmp_path):
         raster_uri=str(src_path),
         polygon_uri=str(poly_path),
         feature_filter={"property": "NAME", "value": "Lee"},
-        _storage_client=fake_sc,
         _bucket="test-bucket",
     )
 

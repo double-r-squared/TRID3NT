@@ -33,11 +33,10 @@ The ``@register_tool`` decorator:
 - Returns the original function unchanged so direct-call testing is trivial.
 
 The ``get_registered_tools()`` helper returns the current registry contents
-(a snapshot list) for the agent service's startup-time ADK FunctionTool
-registration; ``register_with_adk(agent)`` is the convenience wrapper that
-iterates the snapshot and calls ``agent.tools.append(FunctionTool(...))``
-(or whatever the ADK API of the day is — kept thin so ADK churn is contained
-to this one site).
+(a snapshot list) for the agent service's startup-time tool registration. The
+live generation loop is the raw Bedrock Converse SDK (``adapter.py``), which
+builds its tool declarations directly from this snapshot; there is no ADK
+wrapper (``google-adk`` was dropped in the GCP decommission).
 
 Importing the package triggers ``@register_tool`` decorators in submodules
 (``.passthroughs`` for M4 job-0032; ``.fetchers`` etc. for M4 job-0033+).
@@ -60,7 +59,6 @@ __all__ = [
     "register_tool",
     "get_registered_tools",
     "clear_registry_for_tests",
-    "register_with_adk",
 ]
 
 
@@ -87,7 +85,8 @@ class RegisteredTool:
 
 #: Module-level registry, keyed by ``metadata.name``. Populated at import time
 #: by ``@register_tool`` calls in submodules. The agent service iterates this
-#: at startup to register each tool with ADK (see ``register_with_adk``).
+#: at startup (via ``get_registered_tools()``) to build the Bedrock Converse
+#: tool declarations in ``adapter.py`` (raw SDK loop; no ADK wrapper).
 TOOL_REGISTRY: dict[str, RegisteredTool] = {}
 
 
@@ -193,9 +192,10 @@ def register_tool(
 def get_registered_tools() -> list[RegisteredTool]:
     """Return a stable-ordered snapshot of the current registry.
 
-    Used by the agent service at startup to register each tool with ADK.
-    Sorted by ``metadata.name`` so the registration order is deterministic
-    across runs (important for FR-AS-3 review diffs).
+    Used by the agent service at startup to build the Bedrock Converse tool
+    declarations (raw SDK loop in ``adapter.py``). Sorted by ``metadata.name``
+    so the registration order is deterministic across runs (important for
+    FR-AS-3 review diffs).
     """
     return sorted(TOOL_REGISTRY.values(), key=lambda t: t.metadata.name)
 
@@ -207,38 +207,6 @@ def clear_registry_for_tests() -> None:
     or want to swap implementations call this in a fixture.
     """
     TOOL_REGISTRY.clear()
-
-
-def register_with_adk(agent: Any) -> int:
-    """Register every tool in ``TOOL_REGISTRY`` with an ADK ``Agent`` instance.
-
-    The actual ADK API for adding a function tool varies across releases
-    (``Agent.tools.append(FunctionTool(fn))`` or ``agent.add_tool(...)``); we
-    keep the import + adaptation contained here so future ADK churn is a
-    single-site edit, not a registry-wide refactor.
-
-    Returns the number of tools registered. Raises ``ToolRegistrationError``
-    if the ADK import path cannot be resolved, so a misconfigured runtime
-    fails at startup rather than silently exposing zero tools.
-    """
-    try:
-        from google.adk.tools import FunctionTool  # type: ignore[import-not-found]
-    except Exception as exc:  # noqa: BLE001 — surface as ToolRegistrationError
-        raise ToolRegistrationError(
-            f"could not import google.adk.tools.FunctionTool: {exc}"
-        ) from exc
-
-    snapshot = get_registered_tools()
-    for tool in snapshot:
-        # ADK FunctionTool wraps a Python callable; the description / param
-        # surface is derived from the function's signature + docstring per
-        # FR-AS-3. Docstring discipline (Use this when / Do NOT use this for)
-        # is enforced on the source functions themselves, not here.
-        ft = FunctionTool(tool.fn)
-        # ADK Agent objects expose ``tools`` as a mutable list in google-adk
-        # 2.x; keep this thin and let the duck-type fail loudly if it doesn't.
-        agent.tools.append(ft)
-    return len(snapshot)
 
 
 # ---------------------------------------------------------------------------

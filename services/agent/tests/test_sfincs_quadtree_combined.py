@@ -47,8 +47,6 @@ from grace2_agent.tools.solver import (
     set_emitter_binding,
     set_runs_bucket,
     set_s3_client,
-    set_storage_client,
-    set_workflows_client,
     submit_sfincs_quadtree,
 )
 from grace2_contracts.execution import ExecutionHandle, RunResult
@@ -152,8 +150,6 @@ def _seed_solve_completion(
 @pytest.fixture()
 def reset_seams():
     for setter in (
-        set_workflows_client,
-        set_storage_client,
         set_s3_client,
         set_batch_client,
     ):
@@ -164,8 +160,6 @@ def reset_seams():
         yield
     finally:
         for setter in (
-            set_workflows_client,
-            set_storage_client,
             set_s3_client,
             set_batch_client,
         ):
@@ -331,7 +325,7 @@ def test_combined_inert_when_jobdef_unset(reset_seams, monkeypatch) -> None:
 
 
 def test_combined_inert_when_backend_not_aws_batch(reset_seams, monkeypatch) -> None:
-    monkeypatch.setenv("GRACE2_SOLVER_BACKEND", "gcp-workflows")  # non-aws-batch
+    monkeypatch.setenv("GRACE2_SOLVER_BACKEND", "local-docker")  # non-aws-batch (gcp-workflows decommissioned -> now resolves to aws-batch)
     monkeypatch.setenv("GRACE2_RUNS_BUCKET", "test-runs-bucket")
     monkeypatch.setenv("GRACE2_AWS_BATCH_QUEUE", "q")
     monkeypatch.setenv("GRACE2_AWS_BATCH_JOB_DEF_SFINCS_QUADTREE", "jd:1")

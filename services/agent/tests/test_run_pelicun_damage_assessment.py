@@ -648,37 +648,36 @@ def test_live_pelicun_fort_myers_e2e(tmp_path) -> None:
 
 
 def test_download_repairs_llm_mangled_prefix(monkeypatch, tmp_path):
-    """job-0253: a phantom path prefix (gs://bucket/runs/<id>/f.tif when the
-    object lives at gs://bucket/<id>/f.tif) is repaired by retrying the
-    last-two-segment suffix. Live failure: rounds 8/9 Pelicun 404."""
+    """job-0253: a phantom path prefix (s3://bucket/runs/<id>/f.tif when the
+    object lives at s3://bucket/<id>/f.tif) is repaired by retrying the
+    last-two-segment suffix. Live failure: rounds 8/9 Pelicun 404.
+
+    GCP is decommissioned: the repair now runs on the boto3 S3 read path
+    (``read_object_bytes_s3``); the gs:// download branch is gone.
+    """
+    import grace2_agent.tools.run_pelicun_damage_assessment as mod
     from grace2_agent.tools.run_pelicun_damage_assessment import (
         _download_uri_to_local,
     )
 
     calls = []
 
-    class _Blob:
-        def __init__(self, path):
-            self.path = path
+    def _fake_read_object_bytes_s3(uri: str) -> bytes:
+        # The shim imports read_object_bytes_s3 from .cache inside the function;
+        # patch it on the cache module so the lazy import resolves to this stub.
+        _, _, obj_key = uri[len("s3://"):].partition("/")
+        calls.append(obj_key)
+        if obj_key != "01RUNID/flood_depth_peak.tif":
+            raise RuntimeError("404 No such object")
+        return b"cog"
 
-        def download_to_filename(self, fn):
-            calls.append(self.path)
-            if self.path != "01RUNID/flood_depth_peak.tif":
-                raise RuntimeError("404 No such object")
-            open(fn, "wb").write(b"cog")
+    import grace2_agent.tools.cache as cache_mod
 
-    class _Bucket:
-        def blob(self, path):
-            return _Blob(path)
-
-    class _Client:
-        def bucket(self, name):
-            return _Bucket()
+    monkeypatch.setattr(cache_mod, "read_object_bytes_s3", _fake_read_object_bytes_s3)
 
     out = _download_uri_to_local(
-        "gs://bucket-runs/runs/01RUNID/flood_depth_peak.tif",
+        "s3://bucket-runs/runs/01RUNID/flood_depth_peak.tif",
         suffix=".tif",
-        storage_client=_Client(),
     )
     assert calls == [
         "runs/01RUNID/flood_depth_peak.tif",

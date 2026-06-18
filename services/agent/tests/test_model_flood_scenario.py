@@ -1374,63 +1374,64 @@ def test_build_sfincs_model_emits_manifest_json_with_input_list(
     )
 
     # Use a fixed setup URI so we can assert the gs_uri prefix in the manifest.
+    # GCP is decommissioned: the manifest lands on S3 via boto3.
     fixed_manifest_uri = (
-        "gs://grace-2-hazard-prod-cache/cache/static-30d/sfincs_setup/"
+        "s3://grace2-hazard-cache/cache/static-30d/sfincs_setup/"
         "TESTID01/manifest.json"
     )
 
-    # Mock fsspec upload to capture the local manifest.json content instead of
-    # actually uploading to GCS. We intercept the upload call for the manifest
-    # and read the file content immediately (while the TemporaryDirectory is
-    # still alive — the upload happens inside the ``with tempfile.TemporaryDirectory``
-    # block, so the file exists at that moment).
+    # Inject an in-memory S3 client (the boto3 put_object seam the deck upload
+    # uses via tools.solver._get_s3_client). Capture the manifest.json body.
+    from grace2_agent.tools.solver import set_s3_client
+
     uploaded_files: dict[str, Any] = {}
 
-    class _FakeFS:
-        def upload(self, local_path: str, remote_uri: str, recursive: bool = False) -> None:
-            if remote_uri.endswith("manifest.json"):
-                # Read content while the temp dir is still alive.
+    class _FakeS3:
+        def put_object(self, *, Bucket, Key, Body, ContentType=None):
+            data = Body.read() if hasattr(Body, "read") else Body
+            if Key.endswith("manifest.json"):
                 uploaded_files["manifest_content"] = _json.loads(
-                    Path(local_path).read_text(encoding="utf-8")
+                    data.decode("utf-8") if isinstance(data, bytes) else data
                 )
-                uploaded_files["manifest_uri"] = remote_uri
-            # Don't raise — let the deck upload succeed silently.
+                uploaded_files["manifest_uri"] = f"s3://{Bucket}/{Key}"
+            return {}
 
-    fake_fsspec = MagicMock()
-    fake_fsspec.filesystem.return_value = _FakeFS()
-
-    with (
-        patch.dict("sys.modules", {"hydromt_sfincs": fake_module, "fsspec": fake_fsspec}, clear=False),
-        patch(
-            "grace2_agent.workflows.sfincs_builder._extract_unique_nlcd_classes",
-            return_value={11, 41},
-        ),
-        patch(
-            "grace2_agent.workflows.sfincs_builder._stage_gcs_local",
-            side_effect=lambda uri: (
-                "/tmp/staged-" + uri[len("gs://"):].replace("/", "_")
-                if uri.startswith("gs://") else uri
+    set_s3_client(_FakeS3())
+    try:
+        with (
+            patch.dict("sys.modules", {"hydromt_sfincs": fake_module}, clear=False),
+            patch(
+                "grace2_agent.workflows.sfincs_builder._extract_unique_nlcd_classes",
+                return_value={11, 41},
             ),
-        ),
-        patch(
-            "grace2_agent.workflows.sfincs_builder._default_setup_uri",
-            return_value=fixed_manifest_uri,
-        ),
-    ):
-        setup = build_sfincs_model(
-            dem_uri="gs://test/dem.tif",
-            landcover_uri="gs://test/landcover.tif",
-            river_geometry_uri=None,
-            forcing=forcing,
-            bbox=(-81.92, 26.55, -81.80, 26.68),
-            options=BuildOptions(grid_resolution_m=30.0, simulation_hours=24.0),
-            nlcd_vintage_year=2021,
-            manning_mapping_csv=mapping_path,
-        )
+            patch(
+                "grace2_agent.workflows.sfincs_builder._stage_gcs_local",
+                side_effect=lambda uri: (
+                    "/tmp/staged-" + uri.split("://", 1)[-1].replace("/", "_")
+                    if "://" in uri else uri
+                ),
+            ),
+            patch(
+                "grace2_agent.workflows.sfincs_builder._default_setup_uri",
+                return_value=fixed_manifest_uri,
+            ),
+        ):
+            setup = build_sfincs_model(
+                dem_uri="s3://test/dem.tif",
+                landcover_uri="s3://test/landcover.tif",
+                river_geometry_uri=None,
+                forcing=forcing,
+                bbox=(-81.92, 26.55, -81.80, 26.68),
+                options=BuildOptions(grid_resolution_m=30.0, simulation_hours=24.0),
+                nlcd_vintage_year=2021,
+                manning_mapping_csv=mapping_path,
+            )
+    finally:
+        set_s3_client(None)
 
-    # The manifest file should have been captured by our fake fsspec.
+    # The manifest file should have been captured by our fake S3 client.
     assert "manifest_content" in uploaded_files, (
-        "build_sfincs_model did not upload a manifest.json via fsspec; "
+        "build_sfincs_model did not upload a manifest.json via boto3; "
         "the worker would hit 404 on the manifest URI."
     )
     manifest = uploaded_files["manifest_content"]
@@ -1452,8 +1453,8 @@ def test_build_sfincs_model_emits_manifest_json_with_input_list(
     for entry in inputs:
         assert "gs_uri" in entry, f"input entry missing 'gs_uri': {entry}"
         assert "dest" in entry, f"input entry missing 'dest': {entry}"
-        assert entry["gs_uri"].startswith("gs://"), (
-            f"input gs_uri must be a gs:// URI; got {entry['gs_uri']!r}"
+        assert entry["gs_uri"].startswith("s3://"), (
+            f"input gs_uri must be an s3:// URI; got {entry['gs_uri']!r}"
         )
         # dest may be a relative path (e.g. "gis/dep.tif" for subdirectory
         # files); the worker does ``scratch / item["dest"]`` which handles
@@ -1480,7 +1481,7 @@ def test_build_sfincs_model_emits_manifest_json_with_input_list(
     # "deck" directory as a child of deck_base_uri, so files land at
     # deck_base_uri/deck/<relative>.
     expected_prefix = (
-        "gs://grace-2-hazard-prod-cache/cache/static-30d/sfincs_setup/TESTID01/deck/"
+        "s3://grace2-hazard-cache/cache/static-30d/sfincs_setup/TESTID01/deck/"
     )
     for entry in inputs:
         assert entry["gs_uri"].startswith(expected_prefix), (
@@ -3229,24 +3230,28 @@ def test_crs_tag_mismatch_guard_projected_tag_geographic_coords(tmp_path: Path) 
 
 
 def test_to_vsigs_rewrites_gs_uri_to_vsigs_path() -> None:
-    """``_to_vsigs('gs://bucket/key')`` → ``/vsigs/bucket/key``.
+    """``_to_vsigs('s3://bucket/key')`` → ``/vsis3/bucket/key`` (GCP decommissioned).
 
-    Failure mode this guards against: regressing to passing ``gs://`` URIs
-    to HydroMT / rasterio. That dispatches the read through ``gcsfs``,
-    which segfaults inside ``DatasetBase.stop`` under HydroMT's concurrent
-    open/close pattern (job-0170 root cause).
+    Failure mode this guards against: regressing to passing remote URIs to
+    HydroMT / rasterio in a way that dispatches the read through a fragile
+    fsspec backend (job-0170 root cause). With GCP retired, the only remote
+    scheme is ``s3://`` → GDAL ``/vsis3/``; the gs:// rewrite is gone (gs URIs
+    pass through as local paths).
     """
     from grace2_agent.workflows.sfincs_builder import _to_vsigs
 
-    # The headline rewrite.
-    assert _to_vsigs("gs://grace-2-hazard-prod-cache/cache/static-30d/landcover/x.tif") == (
-        "/vsigs/grace-2-hazard-prod-cache/cache/static-30d/landcover/x.tif"
+    # The headline rewrite (s3 → /vsis3/).
+    assert _to_vsigs("s3://grace2-hazard-cache/cache/static-30d/landcover/x.tif") == (
+        "/vsis3/grace2-hazard-cache/cache/static-30d/landcover/x.tif"
     )
 
     # Idempotence — calling twice does not double-prefix.
-    once = _to_vsigs("gs://bucket/key.tif")
+    once = _to_vsigs("s3://bucket/key.tif")
     twice = _to_vsigs(once)
-    assert twice == once == "/vsigs/bucket/key.tif"
+    assert twice == once == "/vsis3/bucket/key.tif"
+
+    # gs:// is no longer special-cased — passes through unchanged.
+    assert _to_vsigs("gs://bucket/key.tif") == "gs://bucket/key.tif"
 
     # ``file://`` prefix stripped — local fixtures still readable.
     assert _to_vsigs("file:///tmp/local.tif") == "/tmp/local.tif"

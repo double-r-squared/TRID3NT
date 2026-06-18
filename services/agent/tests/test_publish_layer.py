@@ -58,13 +58,18 @@ except Exception:
 def _force_legacy_gcs_publish_path(monkeypatch: pytest.MonkeyPatch) -> None:
     """Exercise the legacy GCP QGIS-worker dispatch path.
 
-    GCP is decommissioned and the default storage scheme is now ``s3``; under
-    ``s3`` ``publish_layer`` short-circuits raster tiling to the AWS TiTiler
-    path (raising "tile publishing not configured" when ``GRACE2_TILE_SERVER_BASE``
-    is unset). These tests validate the QGIS-Server worker dispatch (a carve-out
-    kept until job-0308), so they pin the legacy ``gcs`` scheme to reach it.
+    GCP is decommissioned and ``cache.storage_scheme()`` is now hard-wired to
+    ``s3`` (the env override is gone); under ``s3`` ``publish_layer``
+    short-circuits raster tiling to the AWS TiTiler path (raising "tile
+    publishing not configured" when ``GRACE2_TILE_SERVER_BASE`` is unset).
+    These tests validate the QGIS-Server worker dispatch — a carve-out kept
+    until job-0308 — so they monkeypatch the scheme helper itself to ``"gcs"``
+    to reach that still-present (but no-longer-default) branch in the untouched
+    ``publish_layer`` module.
     """
-    monkeypatch.setenv("GRACE2_STORAGE_BACKEND", "gcs")
+    import grace2_agent.tools.cache as _cache_mod
+
+    monkeypatch.setattr(_cache_mod, "storage_scheme", lambda: "gcs")
 
 
 # --------------------------------------------------------------------------- #

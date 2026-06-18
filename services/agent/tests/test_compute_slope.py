@@ -110,46 +110,11 @@ def _read_slope_mean(path: str) -> float:
 
 
 # ---------------------------------------------------------------------------
-# FakeBlob / FakeStorageClient for cache shim tests
+# Cache shim tests run against the shared in-memory S3 double (``fake_s3``
+# fixture in conftest.py). GCP is decommissioned: the read-through writes /
+# reads via boto3 S3, so artifact URIs are ``s3://`` and the cache store is
+# keyed by object key.
 # ---------------------------------------------------------------------------
-
-
-class FakeBlob:
-    """Duck-typed blob that tracks GCS store reads/writes."""
-
-    def __init__(self, store: dict[str, bytes], path: str) -> None:
-        self._store = store
-        self._path = path
-        self.custom_time: datetime | None = None
-        self.cache_control: str | None = None
-
-    def exists(self) -> bool:
-        return self._path in self._store
-
-    def download_as_bytes(self) -> bytes:
-        return self._store[self._path]
-
-    def upload_from_string(self, data: bytes, content_type: str | None = None) -> None:
-        self._store[self._path] = data
-
-
-class FakeBucket:
-    def __init__(self, store: dict[str, bytes]) -> None:
-        self._store = store
-
-    def blob(self, path: str) -> FakeBlob:
-        return FakeBlob(self._store, path)
-
-
-class FakeStorageClient:
-    """Minimal duck-type for ``google.cloud.storage.Client``."""
-
-    def __init__(self) -> None:
-        self.store: dict[str, bytes] = {}
-        self._bucket = FakeBucket(self.store)
-
-    def bucket(self, name: str) -> FakeBucket:
-        return self._bucket
 
 
 # ---------------------------------------------------------------------------
@@ -269,22 +234,16 @@ def _make_fake_slope_bytes() -> bytes:
 
 
 def _fake_dem_bytes() -> bytes:
-    """Return minimal DEM GeoTIFF bytes (used as fake GCS download)."""
+    """Return minimal DEM GeoTIFF bytes (used as fake DEM download)."""
     return _make_fake_slope_bytes()
 
 
-@pytest.fixture()
-def fake_storage():
-    """Provide a FakeStorageClient for cache shim isolation."""
-    return FakeStorageClient()
-
-
-def test_compute_slope_cache_miss_writes(fake_storage):
+def test_compute_slope_cache_miss_writes(fake_s3):
     """On cache miss: gdaldem is called and bytes are written to the cache bucket."""
     fake_dem = _fake_dem_bytes()
 
-    # Pre-seed the DEM bytes as the GCS-download return value by injecting
-    # _download_dem_bytes via patch.
+    # Pre-seed the DEM bytes as the download return value by patching
+    # _download_dem_bytes. The cache write routes through the boto3 S3 double.
     with patch(
         "grace2_agent.tools.compute_slope._download_dem_bytes",
         return_value=fake_dem,
@@ -295,23 +254,22 @@ def test_compute_slope_cache_miss_writes(fake_storage):
         "grace2_agent.tools.cache.CACHE_BUCKET", "test-bucket"
     ):
         result = compute_slope(
-            dem_uri="gs://test-bucket/cache/static-30d/dem/abc123.tif",
+            dem_uri="s3://test-bucket/cache/static-30d/dem/abc123.tif",
             output_unit="degrees",
             algorithm="Horn",
-            _storage_client=fake_storage,
             _bucket="test-bucket",
         )
 
     assert result.layer_type == "raster"
     assert result.role == "context"
     assert result.units == "degrees"
-    assert result.uri.startswith("gs://")
+    assert result.uri.startswith("s3://")
     assert "/slope/" in result.uri
     mock_download.assert_called_once()
     mock_gdaldem.assert_called_once()
 
 
-def test_compute_slope_cache_hit_skips_fetch(fake_storage):
+def test_compute_slope_cache_hit_skips_fetch(fake_s3):
     """On cache hit: gdaldem is NOT invoked; cached bytes are returned."""
     fake_slope = _make_fake_slope_bytes()
 
@@ -320,13 +278,13 @@ def test_compute_slope_cache_hit_skips_fetch(fake_storage):
     from grace2_agent.tools.cache import compute_cache_key, cache_path as make_cache_path
 
     params = {
-        "dem_uri": "gs://test-bucket/cache/static-30d/dem/abc123.tif",
+        "dem_uri": "s3://test-bucket/cache/static-30d/dem/abc123.tif",
         "output_unit": "degrees",
         "algorithm": "Horn",
     }
     key = compute_cache_key("slope", params, "static-30d", now=PINNED_NOW)
     path = make_cache_path("slope", "static-30d", key, "tif")
-    fake_storage.store[path] = fake_slope
+    fake_s3.store[path] = fake_slope
 
     gdaldem_called = []
 
@@ -343,10 +301,9 @@ def test_compute_slope_cache_hit_skips_fetch(fake_storage):
         "grace2_agent.tools.cache.CACHE_BUCKET", "test-bucket"
     ):
         result = compute_slope(
-            dem_uri="gs://test-bucket/cache/static-30d/dem/abc123.tif",
+            dem_uri="s3://test-bucket/cache/static-30d/dem/abc123.tif",
             output_unit="degrees",
             algorithm="Horn",
-            _storage_client=fake_storage,
             _bucket="test-bucket",
         )
 
@@ -357,7 +314,7 @@ def test_compute_slope_cache_hit_skips_fetch(fake_storage):
     )
 
 
-def test_compute_slope_returns_layer_uri_fields():
+def test_compute_slope_returns_layer_uri_fields(fake_s3):
     """LayerURI returned by compute_slope has the expected field values."""
     fake_dem = _fake_dem_bytes()
 
@@ -368,12 +325,10 @@ def test_compute_slope_returns_layer_uri_fields():
         "grace2_agent.tools.compute_slope._run_gdaldem_slope",
         side_effect=lambda inp, out, unit, algo: open(out, "wb").write(_make_fake_slope_bytes()) or None,
     ):
-        fake_sc = FakeStorageClient()
         result = compute_slope(
-            dem_uri="gs://bucket/cache/static-30d/dem/deadbeef.tif",
+            dem_uri="s3://bucket/cache/static-30d/dem/deadbeef.tif",
             output_unit="percent",
             algorithm="ZevenbergenThorne",
-            _storage_client=fake_sc,
             _bucket="test-bucket",
         )
 
@@ -392,7 +347,7 @@ def test_compute_slope_returns_layer_uri_fields():
 # ---------------------------------------------------------------------------
 
 
-def test_compute_slope_gdaldem_failure_raises_slope_compute_error():
+def test_compute_slope_gdaldem_failure_raises_slope_compute_error(fake_s3):
     """Non-zero gdaldem exit → SlopeComputeError with error_code='GDALDEM_FAILED'."""
     fake_dem = _fake_dem_bytes()
 
@@ -403,27 +358,23 @@ def test_compute_slope_gdaldem_failure_raises_slope_compute_error():
         "grace2_agent.tools.compute_slope._get_gdaldem_bin",
         return_value="/bin/false",  # always exits 1
     ):
-        fake_sc = FakeStorageClient()
         with pytest.raises(SlopeComputeError) as exc_info:
             compute_slope(
-                dem_uri="gs://bucket/dem/abc.tif",
-                _storage_client=fake_sc,
+                dem_uri="s3://bucket/dem/abc.tif",
                 _bucket="test-bucket",
             )
     assert exc_info.value.error_code == "GDALDEM_FAILED"
 
 
-def test_compute_slope_dem_download_failure_raises_slope_compute_error():
-    """GCS download failure → SlopeComputeError with error_code='DEM_DOWNLOAD_FAILED'."""
+def test_compute_slope_dem_download_failure_raises_slope_compute_error(fake_s3):
+    """DEM download failure → SlopeComputeError with error_code='DEM_DOWNLOAD_FAILED'."""
     with patch(
         "grace2_agent.tools.compute_slope._download_dem_bytes",
-        side_effect=SlopeComputeError("DEM_DOWNLOAD_FAILED", "GCS download failed"),
+        side_effect=SlopeComputeError("DEM_DOWNLOAD_FAILED", "S3 download failed"),
     ):
-        fake_sc = FakeStorageClient()
         with pytest.raises(SlopeComputeError) as exc_info:
             compute_slope(
-                dem_uri="gs://bucket/dem/missing.tif",
-                _storage_client=fake_sc,
+                dem_uri="s3://bucket/dem/missing.tif",
                 _bucket="test-bucket",
             )
     assert exc_info.value.error_code == "DEM_DOWNLOAD_FAILED"

@@ -106,19 +106,38 @@ class FakeStorageClient:
         return FakeBucket(self.store)
 
 
-def _make_read_through_injector(fake_gcs: FakeStorageClient):
-    """Patch helper: inject fake GCS into the real read_through."""
-    from grace2_agent.tools.cache import read_through as real_rt
+def _make_read_through_injector(fake_gcs):
+    """S3-only in-memory read-through injector (GCP decommissioned).
+
+    Replaces the retired ``google.cloud.storage`` double: drives the tool's
+    ``read_through`` off an in-memory S3 store (``fake_gcs.store``, keyed by
+    object KEY), minting ``s3://`` URIs and honoring cache hit/miss/write.
+    """
+    from grace2_agent.tools.cache import (
+        CACHE_BUCKET,
+        cache_path,
+        compute_cache_key,
+        is_cacheable,
+        ReadThroughResult,
+    )
+
+    store = fake_gcs.store
 
     def patched(metadata, params, ext, fetch_fn, **kw):
-        return real_rt(
-            metadata=metadata,
-            params=params,
-            ext=ext,
-            fetch_fn=fetch_fn,
-            storage_client=fake_gcs,
-            now=_PINNED_NOW,
-        )
+        bucket = kw.get("bucket") or CACHE_BUCKET
+        source_id = kw.get("source_id") or (metadata.source_class or metadata.name)
+        force_refresh = kw.get("force_refresh", False)
+        if not is_cacheable(metadata):
+            return ReadThroughResult(uri=None, data=fetch_fn(), hit=False)
+        key = compute_cache_key(source_id, params, metadata.ttl_class, now=_PINNED_NOW)
+        path = cache_path(metadata.source_class, metadata.ttl_class, key, ext)
+        uri = f"s3://{bucket}/{path}"
+        if not force_refresh and path in store:
+            return ReadThroughResult(uri=uri, data=store[path], hit=True)
+        data = fetch_fn()
+        store[path] = data
+        return ReadThroughResult(uri=uri, data=data, hit=False)
+
     return patched
 
 
@@ -404,7 +423,7 @@ def test_synthetic_response_writes_fgb_with_correct_count():
     ):
         result = fetch_usace_dams(bbox=(-125.0, 25.0, -65.0, 50.0))
 
-    assert result.uri.startswith("gs://")
+    assert result.uri.startswith("s3://")
     assert "usace_nid_dams" in result.uri
     assert "static-30d" in result.uri
     assert result.layer_type == "vector"
@@ -542,7 +561,7 @@ def test_extra_kwargs_absorbed_by_signature():
             limit=100,
             format="geojson",
         )
-    assert result.uri.startswith("gs://")
+    assert result.uri.startswith("s3://")
 
 
 # ---------------------------------------------------------------------------
@@ -721,7 +740,7 @@ def test_layer_uri_shape_for_global_sweep():
     assert result.layer_type == "vector"
     assert result.role == "primary"
     assert result.units is None
-    assert result.uri.startswith("gs://")
+    assert result.uri.startswith("s3://")
     assert "USACE National Inventory of Dams" in result.name
     assert result.layer_id == "usace-nid-dams-global"
     assert result.style_preset == "usace_nid_dams"

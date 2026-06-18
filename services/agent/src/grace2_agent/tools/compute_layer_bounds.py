@@ -129,15 +129,16 @@ def _infer_suffix(uri: str) -> str:
 
 
 def _resolve_layer_to_local_path(
-    uri: str, storage_client: object | None
+    uri: str, storage_client: object | None = None
 ) -> tuple[str, bool]:
     """Resolve ``uri`` to a local file path.
 
     Returns ``(path, is_temp)`` — caller deletes the path iff ``is_temp``.
-    Supports ``s3://`` (boto3, EC2 instance-role — job-0289 lesson), ``gs://``
-    (google-cloud-storage client), and local paths. Raises
+    Supports ``s3://`` (boto3, EC2 instance-role — job-0289 lesson) and local
+    paths. GCP is decommissioned, so ``storage_client`` is ignored. Raises
     ``ComputeLayerBoundsError`` on failure.
     """
+    del storage_client  # GCP decommissioned — S3/local only.
     suffix = _infer_suffix(uri)
 
     if uri.startswith("s3://"):
@@ -155,43 +156,12 @@ def _resolve_layer_to_local_path(
             tmp.write(data)
             return tmp.name, True
 
-    if uri.startswith("gs://"):
-        rest = uri[len("gs://"):]
-        slash = rest.find("/")
-        if slash == -1:
-            raise ComputeLayerBoundsError(
-                "DOWNLOAD_FAILED", f"Malformed gs:// URI (no object key): {uri!r}"
-            )
-        bucket_name = rest[:slash]
-        blob_path = rest[slash + 1:]
-        try:
-            if storage_client is None:
-                from google.cloud import storage  # type: ignore[import-not-found]
-
-                storage_client = storage.Client(
-                    project=os.environ.get(
-                        "GOOGLE_CLOUD_PROJECT", "grace-2-hazard-prod"
-                    )
-                )
-            bucket_obj = storage_client.bucket(bucket_name)
-            blob = bucket_obj.blob(blob_path)
-            data = blob.download_as_bytes()
-        except Exception as exc:  # noqa: BLE001
-            raise ComputeLayerBoundsError(
-                "DOWNLOAD_FAILED", f"GCS download failed for {uri!r}: {exc}"
-            ) from exc
-        with tempfile.NamedTemporaryFile(
-            suffix=suffix, delete=False, prefix="grace2_bounds_"
-        ) as tmp:
-            tmp.write(data)
-            return tmp.name, True
-
     if os.path.isfile(uri):
         return uri, False
 
     raise ComputeLayerBoundsError(
         "UNKNOWN_LAYER_URI",
-        f"layer URI {uri!r} is not a gs:///s3:// URI and is not a readable local file.",
+        f"layer URI {uri!r} is not an s3:// URI and is not a readable local file.",
     )
 
 

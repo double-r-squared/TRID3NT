@@ -171,10 +171,8 @@ def _conda_grace2_bin(name: str) -> str | None:
 def _get_source_crs(raster_uri: str) -> object:
     """Open the raster with rasterio and return its CRS.
 
-    For ``gs://`` URIs uses the ``/vsigs/`` virtual filesystem path so rasterio
-    can read the header without downloading the full file.
-
-    For local paths, opens directly.
+    For ``s3://`` URIs the bytes are staged via the shared boto3 reader and
+    opened in-memory. For local paths, opens directly.
 
     Raises:
         ClipRasterError: if the URI is unrecognised or rasterio cannot open it.
@@ -195,18 +193,14 @@ def _get_source_crs(raster_uri: str) -> object:
             with MemoryFile(read_object_bytes_s3(raster_uri)) as mf:
                 with mf.open() as src:
                     return src.crs
-        elif raster_uri.startswith("gs://"):
-            vsigs_path = "/vsigs/" + raster_uri[len("gs://"):]
-            with rasterio.open(vsigs_path) as src:
-                return src.crs
         elif os.path.isfile(raster_uri):
             with rasterio.open(raster_uri) as src:
                 return src.crs
         else:
             raise ClipRasterError(
                 "UNKNOWN_RASTER_URI",
-                f"raster_uri {raster_uri!r} is not a gs:// URI and is not a "
-                "readable local file. Provide a gs:// URI or an absolute local path.",
+                f"raster_uri {raster_uri!r} is not an s3:// URI and is not a "
+                "readable local file. Provide an s3:// URI or an absolute local path.",
             )
     except ClipRasterError:
         raise
@@ -222,58 +216,41 @@ def _get_source_crs(raster_uri: str) -> object:
 # ---------------------------------------------------------------------------
 
 
-def _download_raster_bytes(raster_uri: str, storage_client: object | None) -> bytes:
-    """Download the raster bytes from a ``gs://`` URI or read from local path.
+def _download_raster_bytes(raster_uri: str, storage_client: object | None = None) -> bytes:
+    """Download the raster bytes from an ``s3://`` URI or read from local path.
+
+    GCP is decommissioned: object-store reads route through boto3 (S3).
+    ``storage_client`` is retained for backward-compatible call signatures
+    but is ignored.
 
     Raises:
         ClipRasterError: on any failure so callers get a typed error.
     """
+    del storage_client  # GCP decommissioned — S3/local only.
     # sprint-14-aws (job-0290b): s3:// staging via the shared boto3 reader.
     if raster_uri.startswith("s3://"):
         from .cache import read_object_bytes_s3
-        return read_object_bytes_s3(raster_uri)
-    if not raster_uri.startswith("gs://"):
-        # Local path — read directly (test / dev convenience).
-        if not os.path.isfile(raster_uri):
-            raise ClipRasterError(
-                "UNKNOWN_RASTER_URI",
-                f"raster_uri {raster_uri!r} is not a gs:// URI and is not a "
-                "readable local file. Provide a gs:// URI or an absolute local path.",
-            )
         try:
-            with open(raster_uri, "rb") as f:
-                return f.read()
-        except OSError as exc:
+            return read_object_bytes_s3(raster_uri)
+        except Exception as exc:  # noqa: BLE001
             raise ClipRasterError(
                 "RASTER_DOWNLOAD_FAILED",
-                f"Could not read local raster path {raster_uri!r}: {exc}",
+                f"S3 download failed for {raster_uri!r}: {exc}",
             ) from exc
-
-    # GCS path.
-    rest = raster_uri[len("gs://"):]
-    slash = rest.find("/")
-    if slash == -1:
+    # Local path — read directly (test / dev convenience).
+    if not os.path.isfile(raster_uri):
         raise ClipRasterError(
-            "RASTER_DOWNLOAD_FAILED",
-            f"Malformed gs:// URI (no object key): {raster_uri!r}",
+            "UNKNOWN_RASTER_URI",
+            f"raster_uri {raster_uri!r} is not an s3:// URI and is not a "
+            "readable local file. Provide an s3:// URI or an absolute local path.",
         )
-    bucket_name = rest[:slash]
-    blob_path = rest[slash + 1:]
-
     try:
-        if storage_client is None:
-            from google.cloud import storage  # type: ignore[import-not-found]
-
-            storage_client = storage.Client(
-                project=os.environ.get("GOOGLE_CLOUD_PROJECT", "grace-2-hazard-prod")
-            )
-        bucket_obj = storage_client.bucket(bucket_name)
-        blob = bucket_obj.blob(blob_path)
-        return blob.download_as_bytes()
-    except Exception as exc:  # noqa: BLE001
+        with open(raster_uri, "rb") as f:
+            return f.read()
+    except OSError as exc:
         raise ClipRasterError(
             "RASTER_DOWNLOAD_FAILED",
-            f"GCS download failed for {raster_uri!r}: {exc}",
+            f"Could not read local raster path {raster_uri!r}: {exc}",
         ) from exc
 
 

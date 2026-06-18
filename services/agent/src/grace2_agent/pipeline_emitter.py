@@ -458,17 +458,6 @@ def _json_for_tool_io(value: Any) -> tuple[str, bool, int]:
 # --------------------------------------------------------------------------- #
 
 
-def _parse_gs_uri(gs_uri: str) -> tuple[str, str] | None:
-    """Return ``(bucket, key)`` from a ``gs://bucket/key`` URI, or ``None``."""
-    if not gs_uri.startswith("gs://"):
-        return None
-    rest = gs_uri[len("gs://"):]
-    slash = rest.find("/")
-    if slash <= 0 or slash == len(rest) - 1:
-        return None
-    return rest[:slash], rest[slash + 1:]
-
-
 def _fgb_bytes_to_geojson(fgb_bytes: bytes) -> dict[str, Any] | None:
     """Convert FlatGeobuf bytes to a GeoJSON FeatureCollection dict via
     pyogrio + geopandas. Returns None if read fails."""
@@ -519,15 +508,15 @@ def _fgb_bytes_to_geojson(fgb_bytes: bytes) -> dict[str, Any] | None:
 
 
 async def _read_vector_uri_as_geojson(uri: str) -> dict[str, Any] | None:
-    """Read a vector LayerURI from GCS, parse FlatGeobuf, return GeoJSON dict.
+    """Read a vector LayerURI from S3, parse FlatGeobuf, return GeoJSON dict.
 
-    Supports ``gs://`` URIs for FlatGeobuf (`.fgb`) and GeoJSON (`.json` /
-    `.geojson`). Returns ``None`` and logs a warning on any failure.
-    Runs in a thread pool so the synchronous GCS + pyogrio call doesn't
-    block the asyncio loop.
+    Supports ``s3://`` URIs (and local paths) for FlatGeobuf (`.fgb`) and
+    GeoJSON (`.json` / `.geojson`). Returns ``None`` and logs a warning on any
+    failure. Runs in a thread pool so the synchronous read + pyogrio call
+    doesn't block the asyncio loop.
     """
-    # sprint-14-aws (job-0289): read via fsspec so the vector artifact resolves
-    # for gs:// (gcsfs), s3:// (s3fs, AWS), or a local path — scheme-dispatched.
+    # GCP decommissioned: s3:// reads go through boto3 (EC2 instance-role);
+    # everything else is a local path read via fsspec.
     if "://" in uri:
         key = uri.split("://", 1)[1].split("/", 1)[-1]
     else:
@@ -540,7 +529,7 @@ async def _read_vector_uri_as_geojson(uri: str) -> dict[str, Any] | None:
         try:
             if uri.startswith("s3://"):
                 # sprint-14-aws (job-0289): boto3 resolves the EC2 instance role
-                # (s3fs falls back to anonymous here). gs:// + local go via fsspec.
+                # (s3fs falls back to anonymous here).
                 import boto3
                 rest = uri[len("s3://"):]
                 b, _, k = rest.partition("/")
@@ -548,6 +537,7 @@ async def _read_vector_uri_as_geojson(uri: str) -> dict[str, Any] | None:
                     "s3", region_name=os.environ.get("AWS_REGION", "us-west-2")
                 ).get_object(Bucket=b, Key=k)["Body"].read()
             else:
+                # Local path (test / dev convenience).
                 import fsspec  # type: ignore[import-not-found]
                 with fsspec.open(uri, "rb") as f:
                     data = f.read()

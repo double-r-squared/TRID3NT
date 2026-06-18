@@ -159,38 +159,73 @@ def _write_geojson_rect(path: str, minx: float, miny: float, maxx: float, maxy: 
 # ---------------------------------------------------------------------------
 
 
-class FakeBlob:
-    def __init__(self, store: dict[str, bytes], path: str) -> None:
-        self._store = store
-        self._path = path
-        self.custom_time: datetime | None = None
-        self.cache_control: str | None = None
+class _S3Body:
+    def __init__(self, data: bytes) -> None:
+        self._data = data
 
-    def exists(self) -> bool:
-        return self._path in self._store
-
-    def download_as_bytes(self) -> bytes:
-        return self._store[self._path]
-
-    def upload_from_string(self, data: bytes, content_type: str | None = None) -> None:
-        self._store[self._path] = data
-
-
-class FakeBucket:
-    def __init__(self, store: dict[str, bytes]) -> None:
-        self._store = store
-
-    def blob(self, path: str) -> FakeBlob:
-        return FakeBlob(self._store, path)
+    def read(self) -> bytes:
+        return self._data
 
 
 class FakeStorageClient:
-    def __init__(self) -> None:
-        self.store: dict[str, bytes] = {}
-        self._bucket = FakeBucket(self.store)
+    """In-memory S3 double (GCP decommissioned). ``store`` keyed by object KEY.
 
-    def bucket(self, name: str) -> FakeBucket:
-        return self._bucket
+    Returns the per-test active instance installed by the autouse
+    ``_route_cache_to_inmemory_s3`` fixture so the tool's real S3 read-through
+    (boto3) reads/writes the same store the test inspects.
+    """
+
+    _active: "FakeStorageClient | None" = None
+
+    def __new__(cls) -> "FakeStorageClient":
+        if cls._active is not None:
+            return cls._active
+        return super().__new__(cls)
+
+    def __init__(self) -> None:
+        if getattr(self, "_init", False):
+            return
+        self._init = True
+        self.store: dict[str, bytes] = {}
+        self.last_put: dict | None = None
+
+    def get_object(self, *, Bucket, Key):
+        from botocore.exceptions import ClientError
+
+        try:
+            data = self.store[Key]
+        except KeyError:
+            raise ClientError(
+                {"Error": {"Code": "NoSuchKey", "Message": "not found"}},
+                "GetObject",
+            )
+        return {"Body": _S3Body(data)}
+
+    def put_object(self, *, Bucket, Key, Body, ContentType=None):
+        data = Body.read() if hasattr(Body, "read") else Body
+        self.store[Key] = data
+        self.last_put = {"Bucket": Bucket, "Key": Key, "ContentType": ContentType}
+        return {}
+
+
+@pytest.fixture(autouse=True)
+def _route_cache_to_inmemory_s3(monkeypatch):
+    """Route boto3 S3 (the cache shim's only object store) to an in-memory double."""
+    import boto3
+
+    FakeStorageClient._active = None
+    client = FakeStorageClient()
+    FakeStorageClient._active = client
+
+    def _factory(service_name, *a, **k):
+        assert service_name == "s3"
+        return client
+
+    monkeypatch.setattr(boto3, "client", _factory)
+    try:
+        yield client
+    finally:
+        FakeStorageClient._active = None
 
 
 # ---------------------------------------------------------------------------
@@ -245,7 +280,6 @@ def test_raster_zone_ramp_quadrant():
             value_raster_uri=val_path,
             zone_input_uri=zone_path,
             statistics=["count", "sum", "mean", "max"],
-            _storage_client=fake_sc,
             _bucket="test-bucket",
         )
 
@@ -283,7 +317,6 @@ def test_raster_zone_threshold():
             zone_input_uri=flood_path,
             statistics=["count", "mean", "min", "max"],
             zone_threshold=0.5,
-            _storage_client=fake_sc,
             _bucket="test-bucket",
         )
 
@@ -325,7 +358,6 @@ def test_vector_zone_single_polygon():
             value_raster_uri=val_path,
             zone_input_uri=zone_path,
             statistics=["count", "sum", "mean"],
-            _storage_client=fake_sc,
             _bucket="test-bucket",
         )
 
@@ -387,14 +419,12 @@ def test_cache_hit_on_repeat_call():
                 value_raster_uri=val_path,
                 zone_input_uri=zone_path,
                 statistics=["count", "mean"],
-                _storage_client=fake_sc,
                 _bucket="test-bucket",
             )
             result2 = compute_zonal_statistics(
                 value_raster_uri=val_path,
                 zone_input_uri=zone_path,
                 statistics=["count", "mean"],
-                _storage_client=fake_sc,
                 _bucket="test-bucket",
             )
 
@@ -428,7 +458,6 @@ def test_all_statistics_computed():
                 "count", "sum", "mean", "min", "max", "std",
                 "median", "percentile_25", "percentile_75", "percentile_95",
             ],
-            _storage_client=fake_sc,
             _bucket="test-bucket",
         )
 
@@ -483,7 +512,6 @@ def test_nodata_pixels_excluded():
             value_raster_uri=val_path,
             zone_input_uri=zone_path,
             statistics=["count", "min"],
-            _storage_client=fake_sc,
             _bucket="test-bucket",
         )
 
@@ -527,7 +555,6 @@ def test_empty_zone_returns_none_stats():
             value_raster_uri=val_path,
             zone_input_uri=zone_path,
             statistics=["count", "mean", "max"],
-            _storage_client=fake_sc,
             _bucket="test-bucket",
         )
 

@@ -551,10 +551,10 @@ def _fetch_3dep_land_to_file(
 
 
 def _stage_uri_to_local(uri: str) -> str | None:
-    """Stage a gs:// / s3:// / local DEM URI to a local temp .tif for the merge.
+    """Stage an ``s3://`` / local DEM URI to a local temp .tif for the merge.
 
-    For gs:// we read via google-cloud-storage; for s3:// via boto3 (the cache
-    shim's ``read_object_bytes_s3``); a local path is returned as-is.
+    GCP is decommissioned: ``s3://`` is read via boto3 (the cache shim's
+    ``read_object_bytes_s3``); a local path is returned as-is.
     """
     if uri.startswith("/") or uri.startswith("file://"):
         return uri[len("file://"):] if uri.startswith("file://") else uri
@@ -563,15 +563,6 @@ def _stage_uri_to_local(uri: str) -> str | None:
             from .cache import read_object_bytes_s3
 
             data = read_object_bytes_s3(uri)
-        elif uri.startswith("gs://"):
-            from google.cloud import storage  # type: ignore[import-not-found]
-
-            rest = uri[len("gs://"):]
-            bucket, _, obj = rest.partition("/")
-            client = storage.Client(
-                project=os.environ.get("GOOGLE_CLOUD_PROJECT", "grace-2-hazard-prod")
-            )
-            data = client.bucket(bucket).blob(obj).download_as_bytes()
         else:
             logger.warning("fetch_topobathy: unknown DEM URI scheme: %s", uri)
             return None
