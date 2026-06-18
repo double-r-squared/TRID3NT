@@ -10,7 +10,7 @@ Items deferred to future versions are not categorically excluded; they are simpl
 | Multi-hazard chaining | E.g., wildfire → debris flow, earthquake → tsunami, storm → spill |
 | Multi-user collaboration | Shared sessions, project sharing, real-time co-presence |
 | Custom domain MCP server | v0.1 uses MongoDB's off-the-shelf MCP; custom hazard-domain MCP tools could improve agent ergonomics later |
-| Drawing / annotation tools | User-drawn AOIs, points of interest, annotations |
+| Decorative annotation tools | Free-form annotations, labels, and points-of-interest markup for presentation (not consumed by any model). Deferred. Note: user-drawn *model-input* vector geometry — AOI polygons, barrier polylines with per-segment wall/flap-gate metadata, and lasso edits that the agent consumes as solver inputs — is **in scope as v0.2** (see FR-WC-16); it is distinct from this decorative tooling. |
 | Print and export reports | PDF reports of model runs with embedded maps and metrics |
 | QGIS Desktop plugin distribution | A complementary desktop experience for power users |
 | Mobile-specific UX | Mobile-responsive works; mobile-optimized doesn't |

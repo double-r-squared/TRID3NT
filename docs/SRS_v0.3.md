@@ -343,6 +343,17 @@ A toggle in the chat panel allows the user to select between "Research" (default
 
 In v0.1, selecting "Deep Research" displays a tooltip indicating the feature is forthcoming and the pipeline proceeds in research mode. The toggle is visible and selectable but visually marked (subtle indicator, e.g., "Coming soon" subtext) to signal the feature is documented but not yet operational. This surfaces the capability while being honest about v0.1 scope.
 
+**FR-WC-16: Vector draw + tag mode (v0.2)**
+Extending the spatial-input mechanism of FR-WC-13 (and the agent-side solicitation of FR-AS-10) beyond single point/bbox picks, the client shall provide a vector-drawing mode for authoring *model-input* geometry that the agent consumes as solver inputs:
+
+1. **Primitives.** On receipt of a `spatial-input-request` whose `input_kind` is `vector_draw`, the client shall enable drawing of polygons (AOIs), polylines (barriers), and points. The v0.2 input primitives are rectangle, line, and simple polygon; a drag-and-drop shape bank is future work.
+2. **Per-segment tagging.** A drawn polyline may carry per-segment `barrier_type ∈ {wall, flap_gate}` metadata; a `flap_gate` segment additionally carries a flap `direction` (the permitted one-way flow heading). This maps directly to the urban-engine semantics (a `wall` omits the overland conduit across that segment; a `flap_gate` is a one-way orifice).
+3. **Editing.** The client shall support client-side edits to drawn and agent-returned geometry — vertex move/insert/delete, segment snipping (e.g., removing stray tributaries from a fetched river network), and area-threshold discard of small enclosed polygons.
+4. **Response payload.** On submit, the client shall send a `spatial-input-response` whose geometry is a GeoJSON `FeatureCollection`; each feature's `properties` carries its role (`aoi` | `barrier` | `point`) and, for barriers, the per-segment `barrier_type`/`direction` tags. The agent consumes this FeatureCollection directly as solver input.
+5. **Honesty.** As with all spatial input, a "Cancel" affordance sends a cancellation response; on response or cancellation the temporary draw layers and banner are removed.
+
+This requirement is documented for v0.2; the underlying spatial-input transport (FR-WC-13 / FR-AS-10) is the v0.1 foundation it extends.
+
 ### 3.2 Agent Service (FR-AS)
 
 **FR-AS-1: Framework and model**
@@ -1029,7 +1040,7 @@ Items deferred to future versions are not categorically excluded; they are simpl
 | Multi-hazard chaining | E.g., wildfire → debris flow, earthquake → tsunami, storm → spill |
 | Multi-user collaboration | Shared sessions, project sharing, real-time co-presence |
 | Custom domain MCP server | v0.1 uses MongoDB's off-the-shelf MCP; custom hazard-domain MCP tools could improve agent ergonomics later |
-| Drawing / annotation tools | User-drawn AOIs, points of interest, annotations |
+| Decorative annotation tools | Free-form annotations, labels, and points-of-interest markup for presentation (not consumed by any model). Deferred. Note: user-drawn *model-input* vector geometry — AOI polygons, barrier polylines with per-segment wall/flap-gate metadata, and lasso edits that the agent consumes as solver inputs — is **in scope as v0.2** (see FR-WC-16); it is distinct from this decorative tooling. |
 | Print and export reports | PDF reports of model runs with embedded maps and metrics |
 | QGIS Desktop plugin distribution | A complementary desktop experience for power users |
 | Mobile-specific UX | Mobile-responsive works; mobile-optimized doesn't |
