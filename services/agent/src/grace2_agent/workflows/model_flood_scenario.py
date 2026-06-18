@@ -2416,6 +2416,8 @@ async def run_model_flood_scenario(
     forcing_raster_uri: str | None = None,
     coastal: bool = False,
     quadtree: bool = False,
+    building_obstacles: bool | str = False,
+    building_obstacle_mode: str = "exclude",
     # job-0164: absorb LLM-invented kwargs (centralized at server.py via
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
@@ -2498,6 +2500,34 @@ async def run_model_flood_scenario(
             boundary is supplied. Use for prompts mentioning the coast, storm
             surge, hurricane inundation at the shoreline, tide, or "include the
             sea floor / bathymetry".
+        building_obstacles: OPTIONAL, default ``False`` (OFF). When truthy, the
+            workflow burns building footprints into the SFINCS grid so the flood
+            routes AROUND buildings — a more realistic (but slightly slower)
+            urban-flood estimate. Three forms:
+              * ``True`` → best-effort fetch of OSM building footprints (OSM
+                Overpass) for the AOI; burned as no-flow ``exclude_mask`` cells.
+                A footprint-fetch failure NEVER aborts the flood — it logs a
+                warning and proceeds WITHOUT obstacles (honest degrade, same
+                policy as river geometry).
+              * a ``str`` → used verbatim as a footprint geofile URI (e.g. a
+                prior ``fetch_buildings`` output FlatGeobuf / GeoJSON).
+              * ``False`` → no obstacles (terrain-only; the default, unchanged
+                plain DEM + Manning deck).
+            ASK-WHEN-URBAN: for an URBAN / developed AOI (a named city core,
+            downtown / midtown, a dense built-up bbox), if the user has NOT said
+            whether to include buildings, ASK before running — e.g. "Model
+            buildings as obstacles so water routes around them — more realistic
+            but a bit slower — or just terrain?" — and set ``building_obstacles``
+            from the answer. If the user PRE-specified ("include buildings" /
+            "route around buildings" → ``True``; "terrain only" → ``False``),
+            honor it without asking. RURAL / non-urban AOIs default to no
+            buildings WITHOUT asking. Obstacles are OFF by default everywhere.
+        building_obstacle_mode: how footprints are burned, default ``"exclude"``.
+            ``"exclude"`` makes footprint cells INACTIVE no-flow holes on the
+            plain regular grid (fast/rough, no subgrid). ``"raise"`` instead
+            lifts the footprint bed elevation via the SFINCS subgrid so flow is
+            impeded without disconnecting the domain (higher fidelity; auto-uses
+            subgrid). Leave ``"exclude"`` unless higher fidelity is requested.
 
     Returns:
         On success: the primary flood-depth COG as a ``LayerURI`` — the
@@ -2543,6 +2573,8 @@ async def run_model_flood_scenario(
         forcing_raster_uri=forcing_raster_uri,
         coastal=coastal,
         quadtree=quadtree,
+        building_obstacles=building_obstacles,
+        building_obstacle_mode=building_obstacle_mode,
     )
     # --- Layer-emission contract pin (docs/decisions/layer-emission-contract.md, 2026-06-07) ---
     # Return the primary flood-depth COG as a LayerURI so PipelineEmitter's
