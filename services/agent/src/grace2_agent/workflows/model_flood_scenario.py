@@ -90,7 +90,7 @@ from ..tools.data_fetch import (
     lookup_precip_return_period,
 )
 from ..tools.publish_layer import PublishLayerError, publish_layer
-from ..tools.solver import run_solver, wait_for_completion
+from ..tools.solver import run_solver, select_compute_class, wait_for_completion
 from .postprocess_flood import (
     FLOOD_DEPTH_STYLE_PRESET,
     PostprocessError,
@@ -1255,11 +1255,37 @@ async def model_flood_scenario(
     await _emit_presolver_progress(emitter, 40)
 
     # --- Step 6: run_solver (Invariant 9 confirmation seam owned by agent) ---
+    # Auto vertical scaling per case (NATE 2026-06-17): size the Batch
+    # compute_class from the AOI/mesh element count the adaptive-grid autoscale
+    # already estimated (model_setup.parameters['autoscale']['estimated_active_
+    # cells']) instead of always dispatching at the default "standard" (8 vCPU).
+    # A big domain grabs more compute (up to the new xlarge 48-vCPU tier); a
+    # small one stays cheap. When the estimate is unavailable we fall back to the
+    # caller's compute_class (default "medium" == standard) — select_compute_class
+    # never raises, so a missing/zero estimate can never crash the dispatch.
+    _autoscale_for_sizing = _extract_solve_autoscale(model_setup)
+    _estimated_elements = _autoscale_for_sizing.get("estimated_active_cells")
+    if _estimated_elements:
+        effective_compute_class = select_compute_class(_estimated_elements)
+        logger.info(
+            "model_flood_scenario: auto vertical scaling estimated_active_cells=%s "
+            "→ compute_class=%s (caller requested %s)",
+            _estimated_elements,
+            effective_compute_class,
+            compute_class,
+        )
+    else:
+        effective_compute_class = compute_class
+        logger.info(
+            "model_flood_scenario: no element estimate available; using caller "
+            "compute_class=%s for the solve dispatch",
+            compute_class,
+        )
     try:
         handle = run_solver(
             solver="sfincs",
             model_setup_uri=model_setup.setup_uri,
-            compute_class=compute_class,
+            compute_class=effective_compute_class,
         )
         solver_run_ids.append(handle.run_id)
     except Exception as exc:  # noqa: BLE001

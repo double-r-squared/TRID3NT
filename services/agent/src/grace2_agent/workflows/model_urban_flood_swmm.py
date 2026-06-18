@@ -49,6 +49,7 @@ from .postprocess_swmm import (
     postprocess_swmm,
 )
 from .run_swmm import (
+    SWMM_SOLVER_NAME,
     SWMMWorkflowError,
     build_and_stage_swmm_deck,
     is_local_mode,
@@ -310,14 +311,52 @@ async def model_urban_flood_swmm(
         )
         deck_dir_to_clean = str(Path(staging.inp_path).parent)
 
+        # --- Auto vertical scaling per case (NATE 2026-06-17) ----------------
+        # Size the Batch compute_class from the built mesh's active-cell count
+        # (the adaptive-mesh budget already coarsened the grid to fit a cap;
+        # n_active_cells IS the element count) instead of the caller's blind
+        # default. A big urban AOI grabs more compute (up to the new xlarge
+        # 48-vCPU tier); a small one stays cheap. select_compute_class never
+        # raises — a zero/absent count falls back to the caller's compute_class.
+        from ..tools.solver import select_compute_class
+
+        n_active = int(getattr(staging.build, "n_active_cells", 0) or 0)
+        if n_active > 0:
+            effective_compute_class = select_compute_class(n_active)
+            logger.info(
+                "model_urban_flood_swmm: auto vertical scaling n_active_cells=%d "
+                "→ compute_class=%s (caller requested %s)",
+                n_active,
+                effective_compute_class,
+                compute_class,
+            )
+        else:
+            effective_compute_class = compute_class
+            logger.info(
+                "model_urban_flood_swmm: no active-cell count; using caller "
+                "compute_class=%s for the dispatch",
+                compute_class,
+            )
+
         # --- Step 5: solve (pyswmm in-process — the dev primary path) -------
         # is_local_mode() is True by default; the out-of-process staged-manifest
         # lane (run_solver(solver='swmm') + wait_for_completion) is wired via the
         # SWMM LocalSolverSpec but the urban engine's primary path is in-process.
         if not is_local_mode():
-            logger.info(
-                "model_urban_flood_swmm: GRACE2_SWMM_LOCAL=0 set, but the v0.1 "
-                "primary path runs pyswmm in-process; using run_swmm_local."
+            # Out-of-process lane: dispatch the staged deck through the shared
+            # solver-dispatch seam, PASSING the per-case computed compute_class
+            # (auto vertical scaling) instead of the default "standard". The
+            # local-exec/aws-batch backends size the box from this class. The
+            # in-process pyswmm solve below still produces the depth grid this
+            # composer postprocesses (the v0.1 primary path); the run_solver
+            # dispatch is the symmetric out-of-process hand-off (kept honest:
+            # the class is the one the mesh size demanded).
+            from ..tools.solver import run_solver
+
+            run_solver(
+                solver=SWMM_SOLVER_NAME,
+                model_setup_uri=f"file://{staging.inp_path}",
+                compute_class=effective_compute_class,
             )
         run = run_swmm_local(staging)
 

@@ -209,6 +209,11 @@ __all__ = [
     "SOLVER_BACKEND_AWS_BATCH",
     "AWS_BATCH_WORKFLOW_NAME",
     "AWS_BATCH_COMPUTE_CLASS_SIZING",
+    "select_compute_class",
+    "COMPUTE_CLASS_SMALL_MAX_ELEMENTS",
+    "COMPUTE_CLASS_STANDARD_MAX_ELEMENTS",
+    "COMPUTE_CLASS_LARGE_MAX_ELEMENTS",
+    "COMPUTE_CLASS_FALLBACK",
     "set_batch_client",
     "LOCAL_DOCKER_WORKFLOW_NAME",
     "LOCAL_EXEC_WORKFLOW_NAME",
@@ -315,10 +320,20 @@ def _aws_region() -> str:
 #: MEMORY in MiB as a string. Aliased the same way ``_COMPUTE_CLASS_ALIAS``
 #: maps FR-CE-3 names onto the schema literal, so ``medium`` (== standard)
 #: resolves to the 8-vCPU bucket.
+#:
+#: ``xlarge`` is the higher-powered vertical-scale tier (NATE 2026-06-17 — auto
+#: vertical scaling per case so a big AOI/mesh can grab MORE compute). 48 vCPU /
+#: 96 GiB at the 2 GB/vCPU ratio is a clean fit for a single c7i.12xlarge (48
+#: vCPU / 96 GiB) or m7i.12xlarge — both real, SPOT-eligible, x86_64 instances
+#: in us-west-2 — so the Batch CE can place the whole job on ONE box (no NUMA
+#: fragmentation across instances for the SFINCS/SWMM OpenMP solve). ``gpu`` is
+#: left AS-IS per kickoff (32 vCPU / 64 GiB) — it is a distinct accelerator
+#: bucket, not part of the vCPU vertical ladder ``select_compute_class`` walks.
 AWS_BATCH_COMPUTE_CLASS_SIZING: dict[str, dict[str, int]] = {
     "small": {"vcpus": 4, "mem_mib": 8192, "omp_threads": 4},
     "standard": {"vcpus": 8, "mem_mib": 16384, "omp_threads": 8},
     "large": {"vcpus": 16, "mem_mib": 32768, "omp_threads": 16},
+    "xlarge": {"vcpus": 48, "mem_mib": 98304, "omp_threads": 48},
     "gpu": {"vcpus": 32, "mem_mib": 65536, "omp_threads": 32},
 }
 
@@ -375,8 +390,126 @@ _COMPUTE_CLASS_ALIAS: dict[str, str] = {
     "medium": "standard",  # FR-CE-3 medium == schema-side standard
     "standard": "standard",
     "large": "large",
+    "xlarge": "xlarge",  # higher-powered vertical-scale tier (48 vCPU / 96 GiB)
     "gpu": "gpu",
 }
+
+
+# --------------------------------------------------------------------------- #
+# Auto vertical scaling per case (NATE 2026-06-17)
+# --------------------------------------------------------------------------- #
+#
+# The Batch CE already right-sizes the EC2 instance per job + scales to zero; the
+# missing piece was the agent PICKING the right compute_class per case from the
+# AOI/mesh size instead of always defaulting to "standard" (8 vCPU). The mesh
+# builders (sfincs_builder / swmm_mesh_builder) already estimate the active
+# ELEMENT count (cells); ``select_compute_class`` maps that estimate onto the
+# vertical vCPU ladder small → standard → large → xlarge. ``gpu`` is NOT on this
+# ladder (it is a distinct accelerator bucket, not a vCPU step).
+#
+# Thresholds are the element-count boundaries between tiers. They are calibrated
+# against the SFINCS/SWMM perf models' per-vCPU cell caps (the point at which a
+# bigger box buys a meaningfully shorter solve): a small domain stays on the
+# cheap 4-vCPU box; a mid domain on the 8-vCPU standard; a large urban/coastal
+# AOI on 16 vCPU; only a very large mesh reaches for the 48-vCPU xlarge tier.
+# Env-overridable so the ladder re-tunes from logged solve-telemetry without a
+# code change (mirrors the autoscale perf-model constants).
+
+#: Element-count → compute_class boundaries (upper-exclusive). An estimate in
+#: ``[0, SMALL_MAX)`` → small; ``[SMALL_MAX, STANDARD_MAX)`` → standard;
+#: ``[STANDARD_MAX, LARGE_MAX)`` → large; ``>= LARGE_MAX`` → xlarge.
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return int(float(raw.strip()))
+    except (TypeError, ValueError):
+        logger.warning(
+            "select_compute_class: env %s=%r not an int; using default %s",
+            name,
+            raw,
+            default,
+        )
+        return default
+
+
+#: Upper bound (exclusive) of the SMALL tier — at/under this many elements a 4
+#: vCPU box solves comfortably. Env: ``GRACE2_COMPUTE_CLASS_SMALL_MAX``.
+COMPUTE_CLASS_SMALL_MAX_ELEMENTS: int = _env_int(
+    "GRACE2_COMPUTE_CLASS_SMALL_MAX", 50_000
+)
+#: Upper bound (exclusive) of the STANDARD tier (8 vCPU).
+#: Env: ``GRACE2_COMPUTE_CLASS_STANDARD_MAX``.
+COMPUTE_CLASS_STANDARD_MAX_ELEMENTS: int = _env_int(
+    "GRACE2_COMPUTE_CLASS_STANDARD_MAX", 250_000
+)
+#: Upper bound (exclusive) of the LARGE tier (16 vCPU). At/above this the job
+#: reaches for the higher-powered ``xlarge`` (48 vCPU) tier.
+#: Env: ``GRACE2_COMPUTE_CLASS_LARGE_MAX``.
+COMPUTE_CLASS_LARGE_MAX_ELEMENTS: int = _env_int(
+    "GRACE2_COMPUTE_CLASS_LARGE_MAX", 1_000_000
+)
+
+#: The class returned when the element estimate is missing / non-positive — the
+#: 8-vCPU standard bucket (the prior default; never crash, never under-provision
+#: to ``small`` on a blind estimate).
+COMPUTE_CLASS_FALLBACK: str = "standard"
+
+
+def select_compute_class(estimated_elements: int | float | None) -> str:
+    """Pick the per-case Batch ``compute_class`` from the estimated ELEMENT count.
+
+    Auto vertical scaling per case (NATE 2026-06-17): the mesh builders already
+    estimate the active-cell/element count; this maps that estimate onto the
+    vertical vCPU ladder so a big AOI/mesh grabs more compute and a small one
+    stays cheap. The ladder (low → high) is::
+
+        elements < SMALL_MAX            → "small"     (4 vCPU / 8 GiB)
+        SMALL_MAX <= e < STANDARD_MAX   → "standard"  (8 vCPU / 16 GiB)
+        STANDARD_MAX <= e < LARGE_MAX   → "large"     (16 vCPU / 32 GiB)
+        e >= LARGE_MAX                  → "xlarge"    (48 vCPU / 96 GiB)
+
+    A missing / zero / negative / non-numeric estimate falls back to
+    ``"standard"`` (the prior default) — this function NEVER raises, so the
+    workflow always has a usable class even when the autoscale provenance is
+    absent. ``gpu`` is intentionally NOT reachable here (it is an accelerator
+    bucket, not a vCPU step — selected explicitly by a caller, never by size).
+
+    Args:
+        estimated_elements: the estimated active-element count for the run
+            (SFINCS active cells / SWMM active cells). ``None`` / non-positive /
+            non-numeric → the standard fallback.
+
+    Returns:
+        One of ``"small"`` / ``"standard"`` / ``"large"`` / ``"xlarge"`` — a key
+        present in ``AWS_BATCH_COMPUTE_CLASS_SIZING`` and ``_COMPUTE_CLASS_ALIAS``
+        (so it resolves cleanly through ``_aws_batch_sizing`` + ``run_solver``).
+    """
+    try:
+        n = float(estimated_elements)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        n = 0.0
+    if not (n > 0) or n != n:  # non-positive OR NaN
+        return COMPUTE_CLASS_FALLBACK
+    if n < COMPUTE_CLASS_SMALL_MAX_ELEMENTS:
+        chosen = "small"
+    elif n < COMPUTE_CLASS_STANDARD_MAX_ELEMENTS:
+        chosen = "standard"
+    elif n < COMPUTE_CLASS_LARGE_MAX_ELEMENTS:
+        chosen = "large"
+    else:
+        chosen = "xlarge"
+    logger.info(
+        "select_compute_class: estimated_elements=%d → compute_class=%s "
+        "(bounds small<%d standard<%d large<%d)",
+        int(n),
+        chosen,
+        COMPUTE_CLASS_SMALL_MAX_ELEMENTS,
+        COMPUTE_CLASS_STANDARD_MAX_ELEMENTS,
+        COMPUTE_CLASS_LARGE_MAX_ELEMENTS,
+    )
+    return chosen
 
 
 # --------------------------------------------------------------------------- #

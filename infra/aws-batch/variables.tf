@@ -60,7 +60,13 @@ variable "ecr_repo_name" {
 variable "max_vcpus" {
   type        = number
   description = "Maximum aggregate vCPUs the Batch compute environment may use across all running jobs. Scale this up for larger parallel workloads."
-  default     = 64
+  # Bumped 64 -> 96 so the compute environment can launch the higher-powered
+  # "xlarge" compute_class (48 vCPU / 96 GiB) the agent now auto-selects for a
+  # big AOI/mesh (auto vertical scaling per case, NATE 2026-06-17). 96 fits one
+  # xlarge job on a single c7i.12xlarge (48 vCPU) with headroom, or two
+  # standard (8 vCPU) + one large (16 vCPU) concurrently. NOT applied — authored
+  # for NATE to `tofu apply`.
+  default = 96
 }
 
 variable "spot_bid_percentage" {
@@ -79,5 +85,13 @@ variable "instance_types" {
     ["c7i.2xlarge", "c7i.4xlarge", "c7i.8xlarge"]. x86_64 only — the SFINCS
     binary in deltares/sfincs-cpu is compiled for amd64.
   EOT
-  default     = ["optimal"]
+  # Auto vertical scaling per case (NATE 2026-06-17): the agent now selects a
+  # compute_class from the AOI/mesh element count (small 4 vCPU -> standard 8 ->
+  # large 16 -> the new xlarge 48 vCPU / 96 GiB). The default is locked to the
+  # c7i family across the FULL vCPU ladder so Batch can place each class on a
+  # single right-sized box (predictable NUMA topology for the SFINCS/SWMM
+  # OpenMP solve): c7i.xlarge (4) / 2xlarge (8) / 4xlarge (16) / 12xlarge (48,
+  # the xlarge tier). All x86_64, all SPOT-eligible in us-west-2. NOT applied —
+  # authored for NATE to `tofu apply`.
+  default = ["c7i.xlarge", "c7i.2xlarge", "c7i.4xlarge", "c7i.12xlarge"]
 }
