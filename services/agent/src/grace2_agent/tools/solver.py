@@ -209,6 +209,7 @@ __all__ = [
     "SOLVER_BACKEND_AWS_BATCH",
     "AWS_BATCH_WORKFLOW_NAME",
     "AWS_BATCH_COMPUTE_CLASS_SIZING",
+    "SOLVER_BATCH_JOBDEF_REGISTRY",
     "select_compute_class",
     "COMPUTE_CLASS_SMALL_MAX_ELEMENTS",
     "COMPUTE_CLASS_STANDARD_MAX_ELEMENTS",
@@ -308,6 +309,66 @@ SOLVER_BACKEND_AWS_BATCH: str = "aws-batch"
 #: churn between submit and wait cannot mis-route the poll). The Batch jobId
 #: lives in ``workflows_execution_id``.
 AWS_BATCH_WORKFLOW_NAME: str = "aws-batch"
+
+#: PER-SOLVER Batch job-definition registry (sprint-16 P7 — SWMM is the FIRST
+#: non-SFINCS Batch user). SFINCS and SWMM run DIFFERENT container images
+#: (deltares/sfincs-cpu vs the pyswmm worker), so each solver must submit to its
+#: OWN job definition. The pre-P7 code read ONE ``GRACE2_AWS_BATCH_JOB_DEF``
+#: regardless of solver, which would have sent a ``solver='swmm'`` run to the
+#: SFINCS image. This dict is the lowest-priority in-code default; the resolver
+#: order is:
+#:   1. ``GRACE2_AWS_BATCH_JOB_DEF_<SOLVER>``  (per-solver env, UPPERCASE solver)
+#:   2. this registry entry                    (in-code per-solver default)
+#:   3. ``GRACE2_AWS_BATCH_JOB_DEF``           (generic fallback — SFINCS-era)
+#: An EMPTY value at any tier is treated as unset and falls through to the next.
+#: Empty by default so the resolver is driven by env on the deployed box (NATE
+#: sets ``GRACE2_AWS_BATCH_JOB_DEF_SWMM`` after ``tofu apply`` registers the
+#: SWMM job-def); a deployment may instead seed this dict to pin defaults in
+#: code. The generic fallback keeps SFINCS byte-identical: a box that only sets
+#: ``GRACE2_AWS_BATCH_JOB_DEF`` still routes ``solver='sfincs'`` correctly.
+SOLVER_BATCH_JOBDEF_REGISTRY: dict[str, str] = {}
+
+
+def _resolve_batch_job_def(solver: str) -> str:
+    """Resolve the AWS Batch job-definition name/ARN for ``solver`` (P7).
+
+    Per-solver routing so the FIRST non-SFINCS Batch user (SWMM) submits to its
+    OWN image's job-def instead of the SFINCS one. Resolution order (first
+    non-empty wins):
+
+        1. ``GRACE2_AWS_BATCH_JOB_DEF_<SOLVER>`` env (solver upper-cased, any
+           non-``[A-Z0-9_]`` char mapped to ``_`` — ``swmm`` →
+           ``GRACE2_AWS_BATCH_JOB_DEF_SWMM``).
+        2. ``SOLVER_BATCH_JOBDEF_REGISTRY[solver]`` (in-code per-solver default).
+        3. ``GRACE2_AWS_BATCH_JOB_DEF`` env (the generic SFINCS-era fallback —
+           keeps a single-job-def box routing SFINCS unchanged).
+
+    Raises ``SolverDispatchError`` (the inert-until-provisioned gate) when none
+    of the three resolve to a non-empty value, naming the per-solver env var so
+    the operator knows exactly what to set.
+    """
+    key = "".join(c if c.isalnum() else "_" for c in solver.strip().upper())
+    per_solver_env = f"GRACE2_AWS_BATCH_JOB_DEF_{key}"
+
+    candidate = (os.environ.get(per_solver_env) or "").strip()
+    if candidate:
+        return candidate
+
+    candidate = (SOLVER_BATCH_JOBDEF_REGISTRY.get(solver) or "").strip()
+    if candidate:
+        return candidate
+
+    candidate = (os.environ.get("GRACE2_AWS_BATCH_JOB_DEF") or "").strip()
+    if candidate:
+        return candidate
+
+    raise SolverDispatchError(
+        f"No AWS Batch job definition for solver {solver!r}: set "
+        f"{per_solver_env} (the per-solver job-def NATE provisions via "
+        f"`tofu apply` of infra/aws-batch), or the generic "
+        f"GRACE2_AWS_BATCH_JOB_DEF fallback. The backend stays inert until "
+        f"one is set."
+    )
 
 def _aws_region() -> str:
     """The AWS region for boto3 batch/S3 clients + the AWS Batch handle's
@@ -1310,11 +1371,20 @@ def _run_solver_aws_batch(
     plain string id field) and ``workflow_name=AWS_BATCH_WORKFLOW_NAME`` so the
     wait branch routes correctly even if the env churns afterward.
 
+    Per-solver job-def routing (P7): SWMM is the FIRST non-SFINCS Batch user and
+    runs a DIFFERENT image, so the job-definition is resolved PER SOLVER via
+    ``_resolve_batch_job_def`` (``GRACE2_AWS_BATCH_JOB_DEF_<SOLVER>`` env →
+    ``SOLVER_BATCH_JOBDEF_REGISTRY`` → the generic ``GRACE2_AWS_BATCH_JOB_DEF``
+    fallback). The queue / CE / IAM are shared (engine-agnostic), so only the
+    job-def differs between SFINCS and SWMM. SFINCS stays byte-identical on a box
+    that sets only the generic ``GRACE2_AWS_BATCH_JOB_DEF``.
+
     Inert-until-provisioned gate: every prerequisite (runs bucket, job queue,
     job definition, the boto3 batch client, the submit call itself) raises a
     clean typed ``SolverDispatchError`` on absence/failure — the backend never
     crashes the agent. NATE flips ``GRACE2_SOLVER_BACKEND=aws-batch`` +
-    ``GRACE2_AWS_BATCH_QUEUE`` + ``GRACE2_AWS_BATCH_JOB_DEF`` to activate it.
+    ``GRACE2_AWS_BATCH_QUEUE`` + the per-solver ``GRACE2_AWS_BATCH_JOB_DEF_<SOLVER>``
+    (or the generic ``GRACE2_AWS_BATCH_JOB_DEF``) to activate it.
     """
     if not (
         model_setup_uri.startswith("s3://")
@@ -1335,19 +1405,17 @@ def _run_solver_aws_batch(
     runs_bucket = _get_local_runs_bucket()  # fail fast on missing GRACE2_RUNS_BUCKET
 
     queue = (os.environ.get("GRACE2_AWS_BATCH_QUEUE") or "").strip()
-    job_def = (os.environ.get("GRACE2_AWS_BATCH_JOB_DEF") or "").strip()
     if not queue:
         raise SolverDispatchError(
             "GRACE2_AWS_BATCH_QUEUE must be set when "
             "GRACE2_SOLVER_BACKEND=aws-batch (the Batch job queue ARN/name — "
             "NATE provisions it; the backend stays inert until then)."
         )
-    if not job_def:
-        raise SolverDispatchError(
-            "GRACE2_AWS_BATCH_JOB_DEF must be set when "
-            "GRACE2_SOLVER_BACKEND=aws-batch (the Batch job definition ARN/name "
-            "— NATE provisions it; the backend stays inert until then)."
-        )
+    # PER-SOLVER job-def routing (P7): SWMM and SFINCS run different images, so
+    # the job-def is resolved per solver (GRACE2_AWS_BATCH_JOB_DEF_<SOLVER> →
+    # registry → generic GRACE2_AWS_BATCH_JOB_DEF). SFINCS stays byte-identical
+    # on a box that only sets the generic var; SWMM routes to its own job-def.
+    job_def = _resolve_batch_job_def(solver)
 
     sizing = _aws_batch_sizing(compute_class)
     run_id = new_ulid()

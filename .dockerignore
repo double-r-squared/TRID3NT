@@ -1,0 +1,68 @@
+# Repo-root .dockerignore (sprint-16 P7).
+#
+# All worker images (services/workers/{sfincs,modflow,swmm}/Dockerfile) build
+# with the REPO ROOT as the build context (see infra/aws-batch/RUNBOOK.md
+# "Run from the repo root"). Each Dockerfile COPYs ONLY its own
+# services/workers/<name>/ subtree, so everything below is safe to prune from
+# the context for EVERY worker build — it shrinks the upload, speeds the build,
+# and keeps secrets/state/caches out of any layer.
+#
+# CONSERVATIVE BY DESIGN: with one explicit, commented exception (the SWMM P0
+# reference spike, below), this lists ONLY paths that NO worker Dockerfile COPYs
+# into its image (verified against the sfincs/modflow/swmm Dockerfiles) — so the
+# existing SFINCS + MODFLOW images stay byte-identical. It does NOT exclude
+# docs/reports/*.md/fixtures, which the MODFLOW build COPYs as part of its
+# services/workers/modflow/ subtree.
+
+# Version control + IDE
+.git
+.gitignore
+.github
+.vscode
+.idea
+
+# Python build/test caches + venvs (the worker images build their OWN venv)
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/.tox
+**/*.egg-info
+**/.venv
+**/venv
+.coverage
+**/htmlcov
+
+# Node / web build artifacts (the workers are pure Python — none of this is copied)
+**/node_modules
+services/web/dist
+services/web/build
+**/.next
+
+# OpenTofu / Terraform state + plans (NEVER ship into an image)
+**/.terraform
+**/*.tfstate
+**/*.tfstate.*
+**/tfplan
+**/*.tfplan
+
+# Local env + secrets
+**/.env
+**/.env.*
+**/*.local
+
+# Local spike scratch output (not part of any worker build)
+**/_spike_out
+
+# SWMM P0 reference spike — kept in-repo (the urban-engine docstrings in
+# swmm_hyetograph.py / swmm_mesh_builder.py cite its path as the source of every
+# swmm-api signature), but it is a DEV reference, not runtime. The SWMM
+# Dockerfile COPYs the whole services/workers/swmm/ subtree, so exclude this one
+# file explicitly to keep the 26 KB script out of the shipped image (bare-bones
+# hygiene norm). swmm-only; does not affect the SFINCS/MODFLOW images.
+services/workers/swmm/spike_quasi2d.py
+
+# OS cruft
+**/.DS_Store

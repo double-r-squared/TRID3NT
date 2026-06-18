@@ -57,6 +57,12 @@ variable "ecr_repo_name" {
   default     = "grace2-sfincs"
 }
 
+variable "swmm_ecr_repo_name" {
+  type        = string
+  description = "Name for the ECR repository that will hold the SWMM (pyswmm) worker image (sprint-16 P7 — SWMM is the first non-SFINCS Batch user; its own image lives in its own repo)."
+  default     = "grace2-swmm"
+}
+
 variable "max_vcpus" {
   type        = number
   description = "Maximum aggregate vCPUs the Batch compute environment may use across all running jobs. Scale this up for larger parallel workloads."

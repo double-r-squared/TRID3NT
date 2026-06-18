@@ -16,6 +16,16 @@ output "ecr_repository_url" {
   value       = aws_ecr_repository.sfincs.repository_url
 }
 
+output "job_definition_name_swmm" {
+  description = "Name of the SWMM Batch job definition (without revision suffix). Set GRACE2_AWS_BATCH_JOB_DEF_SWMM to this value on the agent (sprint-16 P7 per-solver routing)."
+  value       = aws_batch_job_definition.swmm.name
+}
+
+output "ecr_repository_url_swmm" {
+  description = "Full ECR repository URL for the SWMM (pyswmm) worker image. Use this as the image tag base when building and pushing services/workers/swmm/Dockerfile."
+  value       = aws_ecr_repository.swmm.repository_url
+}
+
 output "compute_environment_arn" {
   description = "ARN of the Batch compute environment. Reference this when adding additional job queues or compute environments in future."
   value       = aws_batch_compute_environment.sfincs_spot.arn

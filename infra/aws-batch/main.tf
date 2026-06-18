@@ -324,9 +324,9 @@ resource "aws_iam_role_policy" "agent_batch" {
         # FAILED backstop logged "not authorized ... on resource: *" every poll
         # because these two actions were pinned to job/queue ARNs.) They must be
         # granted on "*".
-        Sid      = "BatchDescribeListWildcard"
-        Effect   = "Allow"
-        Action   = [
+        Sid    = "BatchDescribeListWildcard"
+        Effect = "Allow"
+        Action = [
           "batch:DescribeJobs",
           "batch:ListJobs",
         ]
