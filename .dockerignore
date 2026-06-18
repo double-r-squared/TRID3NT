@@ -64,5 +64,11 @@ services/web/build
 # hygiene norm). swmm-only; does not affect the SFINCS/MODFLOW images.
 services/workers/swmm/spike_quasi2d.py
 
+# SFINCS deck-builder worker — the Dockerfile COPYs the whole
+# services/workers/sfincs_deckbuilder/ subtree; keep the dev-only test + README
+# out of the shipped GPL image (bare-bones hygiene norm). sfincs_deckbuilder-only.
+services/workers/sfincs_deckbuilder/test_entrypoint.py
+services/workers/sfincs_deckbuilder/README.md
+
 # OS cruft
 **/.DS_Store

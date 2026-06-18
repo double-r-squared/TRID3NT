@@ -91,7 +91,13 @@ from ..tools.data_fetch import (
 )
 from ..tools.fetch_topobathy import TopobathyError, fetch_topobathy
 from ..tools.publish_layer import PublishLayerError, publish_layer
-from ..tools.solver import run_solver, select_compute_class, wait_for_completion
+from ..tools.solver import (
+    DeckBuildError,
+    build_sfincs_quadtree_deck,
+    run_solver,
+    select_compute_class,
+    wait_for_completion,
+)
 from .postprocess_flood import (
     FLOOD_DEPTH_STYLE_PRESET,
     PostprocessError,
@@ -449,6 +455,265 @@ def _default_runs_prefix(run_id: str) -> str:
         if bucket:
             return f"s3://{bucket}/{run_id}/"
     return f"gs://grace-2-hazard-prod-runs/{run_id}/"
+
+
+# --------------------------------------------------------------------------- #
+# cht_sfincs quadtree+SnapWave deck-build (coastal North Star) — agent side
+#
+# The agent composes a build_spec JSON from the already-fetched topobathy +
+# forcing + the grid params build_sfincs_model already computed, uploads it to
+# S3, and hands its URI to ``build_sfincs_quadtree_deck`` (solver.py) which
+# SUBMITS the GPL-isolated deck-builder Batch job and returns the deck manifest
+# URI. The agent NEVER imports cht_sfincs — this is pure JSON + S3 + batch.submit.
+# --------------------------------------------------------------------------- #
+
+
+def _compose_and_upload_deckbuild_spec(
+    *,
+    bbox: tuple[float, float, float, float],
+    topobathy_uri: str,
+    bathymetry_present: bool,
+    model_setup: Any,
+    forcing_spec: Any,
+    surge_forcing: dict[str, Any] | None,
+    grid_resolution_m: float,
+    duration_hr: float,
+) -> str:
+    """Build the deck-build worker's input spec JSON + upload it; return its URI.
+
+    The build_spec is the cht_sfincs deck-builder worker's ONLY input (the worker
+    downloads it, authors the quadtree+SnapWave deck via cht_sfincs, uploads the
+    deck + a deck manifest.json, and writes completion.json). It is composed
+    ENTIRELY from artifacts the regular ``build_sfincs_model`` already produced
+    (topobathy COG URI, grid params on ``model_setup.parameters``, materialised
+    surge/wave forcing URIs) so the deck-build mirrors the regular build's inputs
+    — only the authoring engine (refined quadtree + SnapWave) differs.
+
+    The two known cht_sfincs caveats are baked in here so the worker reproduces
+    the deck exactly:
+      * CAVEAT 2 — ``snapwave.use_herbers = 1`` (the Herbers infragravity-wave
+        run-up path; matches the deck-builder worker's validated default). Passed
+        EXPLICITLY so agent + worker agree on the contract value.
+      * CAVEAT 1 (SnapWave bnd time column) is owned by cht/the worker (the
+        boundary time column is written as ``(time - tref).total_seconds()``
+        there; do NOT post-correct it agent-side) — recorded here as
+        ``snapwave.time_column_owned_by_cht = True`` so the worker honors it.
+
+    The deck dir + manifest output URIs are co-located with the build_spec under
+    the cache bucket's ``sfincs_deck/<id>/`` prefix; the manifest URI is the
+    EXACT input the existing ``run_solver('sfincs', model_setup_uri=...)`` solve
+    consumes. Returns the build_spec ``s3://.../build_spec.json`` URI.
+
+    Raises ``DeckBuildError`` when the build_spec cannot be uploaded (no S3
+    backend / upload failure) — honest typed failure, never a silent local
+    fallback the GPL worker on Batch could not reach.
+    """
+    import json as _json
+    import math
+
+    from ..tools.cache import storage_scheme
+    from ..tools.solver import DeckBuildError as _DeckBuildError
+
+    params = getattr(model_setup, "parameters", {}) or {}
+    if not isinstance(params, dict):
+        params = {}
+    explicit_grid = params.get("grid")
+    explicit_grid = explicit_grid if isinstance(explicit_grid, dict) else {}
+
+    # --- target_epsg: the projected CRS the quadtree grid is authored in ---
+    # Prefer an explicit epsg in params; else parse the EPSG int from the builder's
+    # ``crs`` param (e.g. "EPSG:3857"); else derive the UTM zone from the bbox
+    # centroid (matching ``fetch_topobathy``'s UTM default — a coastal AOI gets a
+    # metric grid, not Web-Mercator). The deck-build worker REQUIRES an int.
+    target_epsg = (
+        explicit_grid.get("epsg")
+        or params.get("epsg")
+        or params.get("target_epsg")
+    )
+    if target_epsg is None:
+        crs_str = str(params.get("crs") or "")
+        if crs_str.upper().startswith("EPSG:"):
+            try:
+                target_epsg = int(crs_str.split(":", 1)[1])
+            except (ValueError, IndexError):
+                target_epsg = None
+    if not target_epsg or int(target_epsg) in (4326, 3857):
+        # Web-Mercator / geographic is unsuitable for a metric quadtree grid;
+        # snap to the bbox-centroid UTM zone (northern hemisphere assumed for the
+        # CONUS coastal North Star — matches fetch_topobathy).
+        lon_c = (float(bbox[0]) + float(bbox[2])) / 2.0
+        lat_c = (float(bbox[1]) + float(bbox[3])) / 2.0
+        zone = int((lon_c + 180.0) // 6.0) + 1
+        zone = max(1, min(60, zone))
+        target_epsg = (32600 if lat_c >= 0 else 32700) + zone
+    target_epsg = int(target_epsg)
+
+    # --- base (coarsest) grid params x0/y0/nmax/mmax/dx/dy ---
+    # The deck-build worker REQUIRES these (cht refines x2 per level off this
+    # base). build_sfincs_model does NOT carry them on ModelSetup.parameters
+    # (HydroMT computes the grid into the deck files), so derive a deterministic
+    # base grid from the AOI bbox reprojected to target_epsg + grid_resolution_m.
+    # The worker re-snaps/validates; this gives it a complete, valid base.
+    dx = dy = float(grid_resolution_m)
+    base_grid: dict[str, Any] = dict(explicit_grid)
+    if not all(k in base_grid for k in ("x0", "y0", "nmax", "mmax", "dx", "dy")):
+        try:
+            from pyproj import Transformer  # type: ignore[import-not-found]
+
+            tf = Transformer.from_crs(4326, target_epsg, always_xy=True)
+            x_min, y_min = tf.transform(float(bbox[0]), float(bbox[1]))
+            x_max, y_max = tf.transform(float(bbox[2]), float(bbox[3]))
+        except Exception as exc:  # noqa: BLE001
+            raise _DeckBuildError(
+                f"could not reproject bbox {bbox} to EPSG:{target_epsg} for the "
+                f"deck-build base grid: {exc}"
+            ) from exc
+        x0 = min(x_min, x_max)
+        y0 = min(y_min, y_max)
+        nmax = max(1, int(math.ceil(abs(x_max - x_min) / dx)))
+        mmax = max(1, int(math.ceil(abs(y_max - y_min) / dy)))
+        base_grid = {
+            "x0": float(x0),
+            "y0": float(y0),
+            "nmax": int(nmax),
+            "mmax": int(mmax),
+            "dx": dx,
+            "dy": dy,
+            "rotation": float(base_grid.get("rotation", 0.0)),
+        }
+    base_grid["grid_resolution_m"] = float(grid_resolution_m)
+
+    # --- tref/tstart/tstop (SFINCS "YYYYMMDD HHMMSS" strings) ---
+    # Prefer the forcing provenance; else a deterministic window anchored at a
+    # fixed reference spanning ``duration_hr`` (the worker parses these; tstop
+    # must be after tstart). The worker owns the SnapWave bnd time column
+    # (CAVEAT 1) relative to tref.
+    forcing_provenance = dict(getattr(forcing_spec, "provenance", {}) or {})
+    builder_provenance = params.get("forcing_provenance")
+    builder_provenance = builder_provenance if isinstance(builder_provenance, dict) else {}
+
+    def _pick_time(key: str) -> Any:
+        return (
+            forcing_provenance.get(key)
+            or builder_provenance.get(key)
+            or params.get(key)
+        )
+
+    tref = _pick_time("tref")
+    tstart = _pick_time("tstart")
+    tstop = _pick_time("tstop")
+    if not (tref and tstart and tstop):
+        # Deterministic fallback window (matches the builder's sfincs.inp anchor).
+        span_h = max(1, int(round(float(duration_hr))))
+        ref = "20260101 000000"
+        end_day = 1 + (span_h // 24)
+        end_hh = span_h % 24
+        tref = tref or ref
+        tstart = tstart or ref
+        tstop = tstop or f"202601{end_day:02d} {end_hh:02d}0000"
+
+    scheme = storage_scheme()
+    cache_bucket = os.environ.get("GRACE2_CACHE_BUCKET", "grace-2-hazard-prod-cache")
+    deck_id = new_ulid()
+    base_prefix = f"cache/static-30d/sfincs_deck/{deck_id}/"
+    deck_dir_uri = f"{scheme}://{cache_bucket}/{base_prefix}deck/"
+    deck_manifest_uri = f"{scheme}://{cache_bucket}/{base_prefix}manifest.json"
+    build_spec_uri = f"{scheme}://{cache_bucket}/{base_prefix}build_spec.json"
+
+    build_spec: dict[str, Any] = {
+        "schema_version": "v1",
+        "deck_id": deck_id,
+        "aoi": {
+            "bbox": [float(b) for b in bbox],  # EPSG:4326
+            "target_epsg": target_epsg,
+        },
+        "topobathy": {
+            "cog_uri": topobathy_uri,
+            "bathymetry_present": bool(bathymetry_present),
+        },
+        # Base (coarsest) grid x0/y0/nmax/mmax/dx/dy in target_epsg; cht refines
+        # x2 per level off this base. Worker-required + complete.
+        "grid": base_grid,
+        "mask": {
+            # Active + waterlevel-boundary mask window (domain-adaptive bounds
+            # build_sfincs_model used; the worker mirrors them).
+            "zmin": params.get("mask_zmin") if isinstance(params, dict) else None,
+            "zmax": params.get("mask_zmax") if isinstance(params, dict) else None,
+        },
+        "snapwave": {
+            # CAVEAT 2 — snapwave_use_herbers = 1 (the Herbers infragravity-wave
+            # run-up path; the deck-builder worker's validated default is also 1).
+            # The agent passes it EXPLICITLY so agent + worker agree on the
+            # contract value rather than the agent silently overriding the
+            # worker's default.
+            "use_herbers": 1,
+            # CAVEAT 1 — let cht own the SnapWave boundary time column; do NOT
+            # post-correct to tref-relative (the boundary time column is written
+            # as (time - tref).total_seconds() inside cht/the worker, NOT a raw
+            # epoch column — the worker owns it).
+            "time_column_owned_by_cht": True,
+            "gamma": 0.8,
+            "gammaig": 1.0,
+            "gammax": 1.0,
+            "dtheta": 15.0,
+            "hmin": 0.1,
+            "fw0": 0.01,
+            "crit": 0.01,
+            "igwaves": 1,
+            "nrsweeps": 1,
+        },
+        "forcing": {
+            "tref": tref,
+            "tstart": tstart,
+            "tstop": tstop,
+            "duration_hours": float(duration_hr),
+            # Materialised surge/wave/discharge forcing URIs (timeseries CSV +
+            # locations geofile). The deck-builder reads these to write the
+            # bzs/dis + snapwave.bnd/bhs/btp/bwd/bds files. ``None`` → that block
+            # absent (a pure quadtree run with no surge boundary still valid).
+            "surge_forcing": surge_forcing or {},
+        },
+        "output": {
+            "deck_dir_uri": deck_dir_uri,
+            "manifest_uri": deck_manifest_uri,
+        },
+    }
+
+    payload = _json.dumps(build_spec, indent=2, default=str).encode("utf-8")
+
+    if not build_spec_uri.startswith("s3://"):
+        raise _DeckBuildError(
+            "The cht_sfincs deck-build requires an S3 storage backend so the "
+            "GPL deck-builder Batch worker can read the build_spec "
+            "(GRACE2_STORAGE_BACKEND=s3). Composed build_spec URI was "
+            f"{build_spec_uri!r} — staying inert."
+        )
+    try:
+        from ..tools.solver import _get_s3_client
+
+        s3 = _get_s3_client()
+        s3_bucket, _, key = build_spec_uri[len("s3://"):].partition("/")
+        s3.put_object(
+            Bucket=s3_bucket,
+            Key=key,
+            Body=payload,
+            ContentType="application/json",
+        )
+    except _DeckBuildError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise _DeckBuildError(
+            f"failed to upload the cht_sfincs deck-build build_spec to "
+            f"{build_spec_uri}: {exc}"
+        ) from exc
+
+    logger.info(
+        "composed + uploaded cht_sfincs deck-build build_spec -> %s "
+        "(deck_manifest=%s, use_herbers=0)",
+        build_spec_uri,
+        deck_manifest_uri,
+    )
+    return build_spec_uri
 
 
 # --------------------------------------------------------------------------- #
@@ -885,6 +1150,7 @@ async def model_flood_scenario(
     building_obstacles: bool | str = False,
     building_obstacle_mode: str = "exclude",
     coastal: bool = False,
+    quadtree: bool = False,
     *,
     project_id: str | None = None,
     session_id: str | None = None,
@@ -968,6 +1234,21 @@ async def model_flood_scenario(
             hard topobathy failure (no CUDEM AND no 3DEP, bad bbox) surfaces as a
             typed failed envelope. The land DEM behaviour for a non-coastal run
             is never touched.
+        quadtree: COASTAL SFINCS North Star — build the deck with a multi-level
+            REFINED QUADTREE grid + SnapWave wave coupling (incident + infragravity
+            waves) instead of a regular grid. This authoring requires cht_sfincs
+            (GPL-3.0), so it runs in a DEDICATED GPL-isolated Batch worker the
+            agent only SUBMITS: the workflow composes a build_spec from the
+            already-fetched topobathy + forcing, submits the deck-build Batch job
+            (``build_sfincs_quadtree_deck``), and feeds the resulting deck
+            manifest URI into the SAME ``run_solver('sfincs', ...)`` solve — the
+            solve half is unchanged. INERT until NATE provisions + flips
+            ``GRACE2_SOLVER_BACKEND=aws-batch`` + the deck-builder job-def
+            (``GRACE2_AWS_BATCH_JOB_DEF_SFINCS_DECKBUILDER``); when unset the
+            quadtree request surfaces as a typed ``DECK_BUILD_FAILED`` failed
+            envelope (honest degrade, never silent). Implies ``coastal=True``.
+            ``False`` (default) → the regular-grid build_sfincs_model path,
+            byte-identical to today. The agent NEVER imports cht_sfincs.
         project_id / session_id: ULID identifiers from the WS session. When
             ``None``, fresh ULIDs are minted (for direct-call / smoke).
 
@@ -1008,13 +1289,17 @@ async def model_flood_scenario(
     # testable signal off the existing workflow inputs — no geometry/coastline
     # lookup needed. When False, the DEM fetch stays on ``fetch_dem`` exactly as
     # the v0.1 land/pluvial path (regression-critical).
-    is_coastal = bool(coastal) or bool(surge_forcing)
+    # ``quadtree`` (the cht_sfincs quadtree+SnapWave deck-build North Star) is a
+    # coastal-only path — a wave-coupled run needs the merged topo-bathymetry
+    # surface — so it implies coastal regardless of the explicit flag.
+    is_coastal = bool(coastal) or bool(surge_forcing) or bool(quadtree)
     logger.info(
-        "model_flood_scenario coastal=%s (explicit=%s, surge_forcing=%s) — "
-        "DEM fetch routes through %s",
+        "model_flood_scenario coastal=%s (explicit=%s, surge_forcing=%s, "
+        "quadtree=%s) — DEM fetch routes through %s",
         is_coastal,
         bool(coastal),
         bool(surge_forcing),
+        bool(quadtree),
         "fetch_topobathy" if is_coastal else "fetch_dem",
     )
 
@@ -1253,6 +1538,10 @@ async def model_flood_scenario(
         _fetch_out["landcover_layer"] = landcover_layer
         _fetch_out["nlcd_vintage_year"] = nlcd_vintage_year
         _fetch_out["river_layer"] = river_layer
+        # ``_bathy_present`` is only assigned on the coastal branch; default True
+        # for the land/pluvial path (no bathymetry concept there). The quadtree
+        # deck-build (coastal) reads it to flag a wave-coupled run.
+        _fetch_out["bathymetry_present"] = bool(locals().get("_bathy_present", True))
 
     try:
         await asyncio.wait_for(
@@ -1335,6 +1624,7 @@ async def model_flood_scenario(
     landcover_layer = _fetch_out["landcover_layer"]
     nlcd_vintage_year = _fetch_out["nlcd_vintage_year"]
     river_layer = _fetch_out["river_layer"]
+    bathymetry_present = bool(_fetch_out.get("bathymetry_present", True))
     await _emit_presolver_progress(emitter, 25)
 
     # --- Step 5: build_sfincs_model with NLCD validation gate ---
@@ -1511,6 +1801,83 @@ async def model_flood_scenario(
     # card shows clear forward motion into Step 7.
     await _emit_presolver_progress(emitter, 40)
 
+    # --- Step 5.5: cht_sfincs quadtree+SnapWave deck-build (coastal North Star) -
+    # When ``quadtree`` is requested, REPLACE the regular-grid deck authoring with
+    # a GPL-isolated cht_sfincs deck-build Batch job: compose a build_spec from the
+    # already-fetched topobathy + the grid/forcing build_sfincs_model computed,
+    # SUBMIT the deck-build job (the agent never imports cht_sfincs), poll its
+    # completion, and use the resulting deck manifest URI for the SAME solve. INERT
+    # until NATE provisions the deck-builder job-def — a DeckBuildError surfaces as
+    # a typed DECK_BUILD_FAILED failed envelope (honest degrade, never silent).
+    solve_model_setup_uri = model_setup.setup_uri
+    if quadtree:
+        logger.info(
+            "model_flood_scenario: quadtree=True — submitting cht_sfincs "
+            "quadtree+SnapWave deck-build for bbox=%s (topobathy=%s, "
+            "bathymetry_present=%s)",
+            resolved_bbox,
+            dem_layer.uri,
+            bathymetry_present,
+        )
+        try:
+            build_spec_uri = _compose_and_upload_deckbuild_spec(
+                bbox=resolved_bbox,
+                topobathy_uri=dem_layer.uri,
+                bathymetry_present=bathymetry_present,
+                model_setup=model_setup,
+                forcing_spec=forcing_spec,
+                surge_forcing=surge_forcing,
+                grid_resolution_m=grid_resolution_m,
+                duration_hr=float(duration_hr),
+            )
+            # SUBMIT the deck-build Batch job + poll → the deck manifest URI.
+            # Invariant 8: a true cancel propagates out (the deck-build wait
+            # terminates the Batch job). The deck-build solve budget is small.
+            deck_manifest_uri = await build_sfincs_quadtree_deck(
+                build_spec_uri,
+                compute_class="small",
+            )
+            solve_model_setup_uri = deck_manifest_uri
+            data_sources.append(
+                DataSource(
+                    name="cht_sfincs quadtree+SnapWave deck (GPL Batch worker)",
+                    uri=deck_manifest_uri,
+                    accessed_at=datetime.now(timezone.utc),
+                )
+            )
+            logger.info(
+                "model_flood_scenario: quadtree deck-build complete -> "
+                "solve manifest %s",
+                deck_manifest_uri,
+            )
+        except asyncio.CancelledError:
+            raise
+        except DeckBuildError as exc:
+            # Inert (no job-def / wrong backend) OR a real deck-build failure —
+            # honest typed failed envelope, never a silent degrade to the
+            # regular-grid deck (the user asked for quadtree+SnapWave).
+            logger.warning(
+                "model_flood_scenario: cht_sfincs deck-build failed "
+                "(error_code=%s) — returning DECK_BUILD_FAILED failed envelope: "
+                "%s",
+                getattr(exc, "error_code", "DECK_BUILD_FAILED"),
+                exc,
+            )
+            return _build_failed_envelope(
+                bbox=resolved_bbox,
+                project_id=proj_id,
+                session_id=sess_id,
+                error_code=getattr(exc, "error_code", "DECK_BUILD_FAILED"),
+                error_detail=str(exc),
+                workflow_name=workflow_name,
+                data_sources=data_sources,
+                forcing=forcing_summary,
+                solver_run_ids=solver_run_ids,
+                return_period_years=return_period_yr,
+                duration_hours=float(duration_hr),
+                grid_resolution_m=grid_resolution_m,
+            )
+
     # --- Step 6: run_solver (Invariant 9 confirmation seam owned by agent) ---
     # Auto vertical scaling per case (NATE 2026-06-17): size the Batch
     # compute_class from the AOI/mesh element count the adaptive-grid autoscale
@@ -1541,7 +1908,11 @@ async def model_flood_scenario(
     try:
         handle = run_solver(
             solver="sfincs",
-            model_setup_uri=model_setup.setup_uri,
+            # When quadtree=True this is the cht_sfincs deck-build's OUTPUT deck
+            # manifest URI (byte-identical shape to build_sfincs_model's
+            # manifest), so the solve half is unchanged; otherwise it is the
+            # regular-grid model_setup.setup_uri.
+            model_setup_uri=solve_model_setup_uri,
             compute_class=effective_compute_class,
         )
         solver_run_ids.append(handle.run_id)
@@ -1898,6 +2269,7 @@ async def run_model_flood_scenario(
     compute_class: str = "medium",
     forcing_raster_uri: str | None = None,
     coastal: bool = False,
+    quadtree: bool = False,
     # job-0164: absorb LLM-invented kwargs (centralized at server.py via
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
@@ -2024,6 +2396,7 @@ async def run_model_flood_scenario(
         compute_class=compute_class,
         forcing_raster_uri=forcing_raster_uri,
         coastal=coastal,
+        quadtree=quadtree,
     )
     # --- Layer-emission contract pin (docs/decisions/layer-emission-contract.md, 2026-06-07) ---
     # Return the primary flood-depth COG as a LayerURI so PipelineEmitter's

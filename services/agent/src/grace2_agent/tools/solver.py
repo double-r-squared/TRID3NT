@@ -210,6 +210,10 @@ __all__ = [
     "AWS_BATCH_WORKFLOW_NAME",
     "AWS_BATCH_COMPUTE_CLASS_SIZING",
     "SOLVER_BATCH_JOBDEF_REGISTRY",
+    "SFINCS_DECKBUILDER_SOLVER",
+    "DeckBuildError",
+    "submit_sfincs_deckbuild",
+    "build_sfincs_quadtree_deck",
     "select_compute_class",
     "COMPUTE_CLASS_SMALL_MAX_ELEMENTS",
     "COMPUTE_CLASS_STANDARD_MAX_ELEMENTS",
@@ -327,6 +331,42 @@ AWS_BATCH_WORKFLOW_NAME: str = "aws-batch"
 #: code. The generic fallback keeps SFINCS byte-identical: a box that only sets
 #: ``GRACE2_AWS_BATCH_JOB_DEF`` still routes ``solver='sfincs'`` correctly.
 SOLVER_BATCH_JOBDEF_REGISTRY: dict[str, str] = {}
+
+
+# --- cht_sfincs quadtree+SnapWave deck-build job (coastal North Star gate) --- #
+#
+# GPL ISOLATION: the cht_sfincs library (GPL-3.0) is the ONLY thing that can
+# author a multi-level refined quadtree connectivity table + the SnapWave mask /
+# boundary files from scratch. It MUST NEVER enter the agent venv or be imported
+# by any agent code — the GPL boundary. So deck authoring runs in a DEDICATED
+# Batch worker image (services/workers/sfincs_deckbuilder/, carrying cht_sfincs) that
+# the agent only SUBMITS over the Batch + S3 seam. The agent here composes a
+# build_spec JSON, calls batch.submit_job for the deck-builder job-def, polls the
+# SAME completion.json the solve worker writes, and reads the deck-build's
+# OUTPUT manifest_uri — which is byte-identical in shape to the manifest
+# build_sfincs_model already emits, so the EXISTING solve ``run_solver('sfincs',
+# model_setup_uri=<that manifest>)`` path is unchanged.
+#
+# This is the SAME arms-length pattern the agent already uses for the GPL-free
+# solve worker (the agent never imports the SFINCS binary either). The deck
+# builder needs its OWN job-def (its GPL image differs from the deltares/
+# sfincs-cpu solve image), routed via the per-solver ``_resolve_batch_job_def``
+# under this distinct solver key so the two images never cross-route.
+
+#: Per-solver key for the cht_sfincs deck-build Batch job. Routed through the
+#: SAME ``_resolve_batch_job_def`` resolver as a normal solver, so its job-def is
+#: ``GRACE2_AWS_BATCH_JOB_DEF_SFINCS_DECKBUILDER`` (per-solver env, the canonical
+#: knob NATE flips after ``tofu apply`` registers the deck-builder image's
+#: job-def) → ``SOLVER_BATCH_JOBDEF_REGISTRY['sfincs-deckbuilder']`` → the
+#: generic ``GRACE2_AWS_BATCH_JOB_DEF`` fallback. Kept INERT (no registry seed,
+#: no generic fallback intended) so a coastal quadtree run honestly typed-errors
+#: until the deck-builder job-def env is set — mirroring how SWMM stays inert.
+SFINCS_DECKBUILDER_SOLVER: str = "sfincs-deckbuilder"
+
+#: ``ExecutionHandle.workflow_name`` sentinel for the deck-build Batch job. It is
+#: the SAME AWS Batch poll branch (``_wait_for_completion_aws_batch``) — the deck
+#: worker writes the SAME completion.json schema — so we reuse
+#: ``AWS_BATCH_WORKFLOW_NAME`` rather than a new sentinel.
 
 
 def _resolve_batch_job_def(solver: str) -> str:
@@ -1500,6 +1540,282 @@ def _run_solver_aws_batch(
         job_id,
     )
     return handle
+
+
+# --------------------------------------------------------------------------- #
+# cht_sfincs quadtree+SnapWave deck-build job (submit + poll + deck URI)
+#
+# The agent SUBMITS a Batch job that runs the GPL-isolated deck-builder worker
+# image, then consumes the deck-build's OUTPUT manifest.json (the SAME shape
+# build_sfincs_model emits). NO cht_sfincs import crosses into the agent: this is
+# pure batch.submit_job + S3 completion poll, mirroring how the agent reaches the
+# GPL-free solve worker. Everything is gated so a missing job-def / queue /
+# runs-bucket / boto3 raises a clean typed SolverDispatchError (INERT until NATE
+# provisions + flips the env), never a crash — degrade honestly.
+# --------------------------------------------------------------------------- #
+
+
+class DeckBuildError(SolverDispatchError):
+    """Raised when the cht_sfincs deck-build Batch job cannot be submitted, the
+    poll fails, or the completed job did not produce a deck manifest URI.
+
+    Subclass of ``SolverDispatchError`` so the agent's emitter classifier maps
+    it onto the same ``UPSTREAM_API_ERROR`` / ``SOLVER_DISPATCH_FAILED`` surface
+    (and existing ``except SolverDispatchError`` handlers in the workflow catch
+    it), while letting a caller distinguish the deck-build phase if it wants."""
+
+    error_code: str = "DECK_BUILD_FAILED"
+
+
+def submit_sfincs_deckbuild(
+    build_spec_uri: str, compute_class: str = "small"
+) -> ExecutionHandle:
+    """Submit the cht_sfincs quadtree+SnapWave deck-build Batch job (coastal).
+
+    Mirrors ``_run_solver_aws_batch`` but targets the deck-builder image's OWN
+    job-def (resolved PER SOLVER under ``SFINCS_DECKBUILDER_SOLVER`` so its GPL
+    image never cross-routes to the deltares/sfincs-cpu solve image) and passes
+    a ``--build-spec-uri`` (the build_spec JSON the worker downloads — AOI,
+    topobathy COG URI, grid/mask/snapwave/forcing params, + the output deck_dir /
+    manifest URIs). The worker writes the SAME ``completion.json`` to
+    ``s3://<runs_bucket>/<run_id>/`` the solve worker writes, so
+    ``wait_for_completion`` / ``_wait_for_completion_aws_batch`` poll it
+    identically (handle pins ``workflow_name=AWS_BATCH_WORKFLOW_NAME``).
+
+    DECK-BUILD IS A BATCH-ONLY JOB. cht_sfincs is GPL-isolated in its own worker
+    image; there is no in-agent / local-docker deck-build path (that would drag
+    the GPL library into the agent box's image). When the active backend is NOT
+    ``aws-batch`` we raise a clean typed ``DeckBuildError`` rather than silently
+    doing nothing — the coastal quadtree path stays honestly inert until the box
+    runs ``GRACE2_SOLVER_BACKEND=aws-batch`` + the deck-builder job-def env.
+
+    Inert-until-provisioned: every prerequisite (aws-batch backend, runs bucket,
+    job queue, the per-solver deck-builder job-def, the boto3 batch client, the
+    submit call itself) raises a clean typed ``DeckBuildError`` /
+    ``SolverDispatchError`` on absence/failure. NATE flips
+    ``GRACE2_AWS_BATCH_JOB_DEF_SFINCS_DECKBUILDER`` (the deck-builder image's
+    job-def, provisioned via ``tofu apply``) to activate it — mirroring how SWMM
+    stayed inert until ``GRACE2_AWS_BATCH_JOB_DEF_SWMM`` was set.
+
+    Returns the ``ExecutionHandle`` (solver=``sfincs-deckbuilder``); feed it to
+    ``wait_for_deckbuild`` (or ``wait_for_completion``) to get the deck manifest.
+    """
+    if not isinstance(build_spec_uri, str) or not build_spec_uri:
+        raise DeckBuildError(
+            f"build_spec_uri must be a non-empty string; got {build_spec_uri!r}"
+        )
+    if not (
+        build_spec_uri.startswith("s3://")
+        or build_spec_uri.startswith("gs://")
+        or build_spec_uri.startswith("file://")
+    ):
+        raise DeckBuildError(
+            "build_spec_uri must be an s3:// / gs:// / file:// URI for the "
+            f"deck-build worker to download; got {build_spec_uri!r}"
+        )
+
+    backend = solver_backend()
+    if backend != SOLVER_BACKEND_AWS_BATCH:
+        raise DeckBuildError(
+            "The cht_sfincs quadtree+SnapWave deck-build runs ONLY as an AWS "
+            "Batch job (the GPL deck-builder library is isolated in its own "
+            "worker image; there is no in-agent deck-build path). Set "
+            "GRACE2_SOLVER_BACKEND=aws-batch + the deck-builder job-def "
+            "(GRACE2_AWS_BATCH_JOB_DEF_SFINCS_DECKBUILDER) to enable the coastal "
+            f"quadtree path. Active backend is {backend!r} — staying inert."
+        )
+
+    schema_compute_class = _COMPUTE_CLASS_ALIAS.get(compute_class)
+    if schema_compute_class is None:
+        raise DeckBuildError(
+            f"compute_class {compute_class!r} not recognized; allowed: "
+            f"{sorted(_COMPUTE_CLASS_ALIAS)}"
+        )
+
+    runs_bucket = _get_local_runs_bucket()  # fail fast on missing GRACE2_RUNS_BUCKET
+
+    queue = (os.environ.get("GRACE2_AWS_BATCH_QUEUE") or "").strip()
+    if not queue:
+        raise DeckBuildError(
+            "GRACE2_AWS_BATCH_QUEUE must be set for the cht_sfincs deck-build "
+            "job (the Batch job queue ARN/name — NATE provisions it; the "
+            "deck-build stays inert until then)."
+        )
+    # PER-SOLVER job-def routing: the deck-builder GPL image has its OWN job-def
+    # distinct from the deltares/sfincs-cpu solve image. Resolved under the
+    # deck-builder solver key so GRACE2_AWS_BATCH_JOB_DEF_SFINCS_DECKBUILDER is
+    # the canonical knob (with the registry + generic fallbacks behind it). A
+    # missing job-def raises SolverDispatchError naming the per-solver env.
+    try:
+        job_def = _resolve_batch_job_def(SFINCS_DECKBUILDER_SOLVER)
+    except SolverDispatchError as exc:
+        # Re-raise as a DeckBuildError so callers can distinguish the build
+        # phase, but keep the env-naming message verbatim.
+        raise DeckBuildError(str(exc)) from exc
+
+    sizing = _aws_batch_sizing(compute_class)
+    run_id = new_ulid()
+    submitted_at = datetime.now(timezone.utc)
+
+    # The deck-builder worker entrypoint takes --run-id + --build-spec-uri and
+    # reads/writes the runs bucket from env. It downloads the build_spec JSON,
+    # authors the quadtree+SnapWave deck via cht_sfincs, uploads the deck dir +
+    # the deck manifest.json, then writes completion.json (with the manifest_uri
+    # in output_uris). We pass BOTH the CLI args and the env (belt-and-suspenders
+    # — the worker accepts either).
+    container_overrides: dict[str, Any] = {
+        "command": [
+            "--run-id",
+            run_id,
+            "--build-spec-uri",
+            build_spec_uri,
+        ],
+        "environment": [
+            {"name": "GRACE2_RUNS_BUCKET", "value": runs_bucket},
+            {"name": "GRACE2_RUN_ID", "value": run_id},
+            {"name": "GRACE2_BUILD_SPEC_URI", "value": build_spec_uri},
+            {"name": "OMP_NUM_THREADS", "value": str(sizing["omp_threads"])},
+            # The deck-builder reads/writes S3 on Batch (build_spec + deck +
+            # completion all on S3); pin the object store so it does not fall
+            # back to its default (GCS) and fail to read the s3:// build_spec.
+            {"name": "GRACE2_OBJECT_STORE", "value": "s3"},
+        ],
+        "resourceRequirements": [
+            {"type": "VCPU", "value": str(sizing["vcpus"])},
+            {"type": "MEMORY", "value": str(sizing["mem_mib"])},
+        ],
+    }
+
+    logger.info(
+        "aws-batch submit deck-build solver=%s run_id=%s compute_class=%s "
+        "vcpus=%d mem_mib=%d queue=%s job_def=%s build_spec=%s",
+        SFINCS_DECKBUILDER_SOLVER,
+        run_id,
+        compute_class,
+        sizing["vcpus"],
+        sizing["mem_mib"],
+        queue,
+        job_def,
+        build_spec_uri,
+    )
+
+    client = _get_batch_client()
+    try:
+        resp = client.submit_job(
+            jobName=f"grace2-{SFINCS_DECKBUILDER_SOLVER}-{run_id}",
+            jobQueue=queue,
+            jobDefinition=job_def,
+            containerOverrides=container_overrides,
+        )
+    except SolverDispatchError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise DeckBuildError(
+            f"AWS Batch submit_job failed for the deck-build "
+            f"(queue={queue} job_def={job_def}): {exc}"
+        ) from exc
+
+    job_id = (
+        (resp or {}).get("jobId")
+        if isinstance(resp, dict)
+        else getattr(resp, "jobId", None)
+    )
+    if not job_id:
+        raise DeckBuildError(
+            f"AWS Batch submit_job returned no jobId for the deck-build: {resp!r}"
+        )
+
+    handle = ExecutionHandle(
+        handle_id=new_ulid(),
+        run_id=run_id,
+        solver=SFINCS_DECKBUILDER_SOLVER,
+        compute_class=schema_compute_class,  # type: ignore[arg-type]
+        workflows_execution_id=str(job_id),  # the Batch jobId — cancel/describe key
+        workflow_name=AWS_BATCH_WORKFLOW_NAME,
+        workflow_location=_aws_region(),
+        submitted_at=submitted_at,
+    )
+    logger.info(
+        "aws-batch deck-build submitted run_id=%s handle_id=%s jobId=%s",
+        run_id,
+        handle.handle_id,
+        job_id,
+    )
+    return handle
+
+
+def _extract_deck_manifest_uri(result: RunResult, runs_bucket: str) -> str:
+    """Pull the deck manifest.json URI out of a completed deck-build RunResult.
+
+    The deck-build worker writes the deck manifest's URI into
+    ``completion.json``'s ``output_uris`` (the SAME field the solve worker uses
+    for its outputs). We re-read the completion.json (it is small, already on S3)
+    and pick the ``output_uri`` that ends in ``manifest.json`` — that is the
+    EXACT input the existing solve ``run_solver('sfincs', model_setup_uri=...)``
+    consumes. Raises ``DeckBuildError`` if no manifest URI is present (a deck
+    build that 'succeeded' without emitting a deck is a real failure — never a
+    silent dead-end)."""
+    manifest = _try_get_completion_s3(runs_bucket, result.run_id)
+    output_uris: list[str] = []
+    if isinstance(manifest, dict):
+        raw = manifest.get("output_uris")
+        if isinstance(raw, list):
+            output_uris = [str(u) for u in raw if u]
+    deck_manifests = [
+        u for u in output_uris if u.rstrip("/").endswith("manifest.json")
+    ]
+    if not deck_manifests:
+        raise DeckBuildError(
+            f"deck-build run {result.run_id} completed (status={result.status}) "
+            f"but produced no deck manifest.json in completion.json output_uris "
+            f"(got {output_uris!r}); cannot feed the solve."
+        )
+    # Prefer the LAST manifest.json (stable if the worker lists deck files first
+    # then the manifest); there should be exactly one in practice.
+    return deck_manifests[-1]
+
+
+async def build_sfincs_quadtree_deck(
+    build_spec_uri: str,
+    compute_class: str = "small",
+    poll_interval_s: int = DEFAULT_POLL_INTERVAL_S,
+    timeout_s: int = DEFAULT_TIMEOUT_S,
+) -> str:
+    """Submit the cht_sfincs deck-build, await it, and return the deck manifest URI.
+
+    The single coastal-path entrypoint the workflow calls: SUBMIT the GPL-isolated
+    quadtree+SnapWave deck-build Batch job (``submit_sfincs_deckbuild``), poll its
+    completion.json on S3 (``wait_for_completion`` — same Batch poll +
+    early-FAILED consult + cancel/terminate chain as the solve), and on success
+    return the deck ``manifest.json`` URI. That URI is byte-identical in shape to
+    what ``build_sfincs_model`` emits, so the caller hands it STRAIGHT to the
+    existing ``run_solver('sfincs', model_setup_uri=<that URI>)`` — the solve half
+    is unchanged.
+
+    Raises ``DeckBuildError`` (a ``SolverDispatchError`` subclass) when the
+    deck-build is inert (no job-def / wrong backend), submission fails, the build
+    job reports a non-complete terminal status, or it produced no deck manifest.
+    Honest typed failure end-to-end — never a silent success. ``asyncio.
+    CancelledError`` propagates (Invariant 8: the wait terminates the Batch job).
+    """
+    handle = submit_sfincs_deckbuild(build_spec_uri, compute_class=compute_class)
+    result = await wait_for_completion(
+        handle, poll_interval_s=poll_interval_s, timeout_s=timeout_s
+    )
+    if result.status != "complete":
+        raise DeckBuildError(
+            f"cht_sfincs deck-build did not complete (status={result.status}, "
+            f"error_code={result.error_code}): "
+            f"{result.error_message or result.cancellation_reason or 'no detail'}"
+        )
+    runs_bucket = _get_local_runs_bucket()
+    manifest_uri = _extract_deck_manifest_uri(result, runs_bucket)
+    logger.info(
+        "cht_sfincs deck-build complete run_id=%s -> deck manifest %s",
+        result.run_id,
+        manifest_uri,
+    )
+    return manifest_uri
 
 
 def _batch_terminal_failure(job_id: str) -> str | None:
