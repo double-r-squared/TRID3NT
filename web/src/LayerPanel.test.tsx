@@ -19,6 +19,8 @@ import {
   applyVisibilityOverrides,
   readLayerVisibilityOverrides,
   writeLayerVisibilityOverride,
+  parseFrameToken,
+  detectSequentialGroups,
 } from "./LayerPanel";
 import { ProjectLayerSummary, SessionStatePayload } from "./contracts";
 
@@ -834,5 +836,293 @@ describe("LayerPanel — visibility survives unmount/remount (job-0325 F55)", ()
 
     render(<LayerPanel initialLayers={[{ ...makeLayer("y"), visible: true }]} />);
     expect((screen.getByTestId("layer-visibility") as HTMLInputElement).checked).toBe(true);
+  });
+});
+
+// --- Sequential-layer grouping (NATE: enumerated temporal raster stacks) --- //
+//
+// Enumerated temporal sequences (e.g. 3 HRRR forecast hours F+01h/F+03h/F+06h)
+// collapse into ONE collapsible "sequential group" row + a bottom scrubber.
+// Stepping shows ONE frame at a time via the EXISTING visibility callback.
+
+/** A forecast-frame layer: shared run dir (same AOI/source) + a lead-time token. */
+function makeFrame(
+  hour: number,
+  run = "run-a",
+  preset = "hrrr_precip",
+  z_index = 1,
+): ProjectLayerSummary {
+  const hh = String(hour).padStart(2, "0");
+  return {
+    layer_id: `${run}-f${hh}`,
+    name: `HRRR precip F+${hh}h`,
+    layer_type: "raster",
+    uri: `gs://grace-2/runs/${run}/precip_f${hh}.cog.tif`,
+    visible: true,
+    opacity: 1,
+    z_index,
+    style_preset: preset,
+  };
+}
+
+describe("parseFrameToken — lead-time / step / index parsing", () => {
+  it("parses a forecast lead hour token (F+03h) into value + label + stem", () => {
+    const t = parseFrameToken("HRRR precip F+03h");
+    expect(t).not.toBeNull();
+    expect(t?.value).toBe(3);
+    expect(t?.label).toBe("F+03h");
+    expect(t?.stem).toBe("hrrr precip");
+  });
+
+  it("two frames in one series share a stem (differ only by the token)", () => {
+    const a = parseFrameToken("HRRR precip F+01h");
+    const b = parseFrameToken("HRRR precip F+06h");
+    expect(a?.stem).toBe(b?.stem);
+    expect(a?.value).toBeLessThan(b?.value ?? -1);
+  });
+
+  it("parses t+N and step tokens", () => {
+    expect(parseFrameToken("Depth t+2")?.value).toBe(2);
+    expect(parseFrameToken("Depth t+2")?.label).toBe("t+2");
+    expect(parseFrameToken("Frame 4 depth")?.value).toBe(4);
+  });
+
+  it("returns null when there is no monotonic token", () => {
+    expect(parseFrameToken("Storm surge maximum")).toBeNull();
+    expect(parseFrameToken("Basemap")).toBeNull();
+    expect(parseFrameToken("")).toBeNull();
+  });
+});
+
+describe("detectSequentialGroups — conservative grouping", () => {
+  it("groups >=2 monotonic frames sharing source/AOI/preset into one group", () => {
+    const groups = detectSequentialGroups([
+      makeFrame(1),
+      makeFrame(3),
+      makeFrame(6),
+    ]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.layers).toHaveLength(3);
+    // Members ordered ascending by lead hour.
+    expect(groups[0]?.frameLabels).toEqual(["F+01h", "F+03h", "F+06h"]);
+  });
+
+  it("does NOT group a single framed layer (needs >=2)", () => {
+    expect(detectSequentialGroups([makeFrame(1)])).toHaveLength(0);
+  });
+
+  it("does NOT group frames from different runs / AOIs together", () => {
+    const groups = detectSequentialGroups([
+      makeFrame(1, "run-a"),
+      makeFrame(3, "run-b"), // different run dir => different AOI/source signature
+    ]);
+    // Each run has only one frame → no group forms.
+    expect(groups).toHaveLength(0);
+  });
+
+  it("does NOT group ordinary distinct layers without tokens", () => {
+    const flood = { ...makeLayer("flood"), name: "Storm surge max" };
+    const roads = { ...makeLayer("roads"), name: "Roads" };
+    expect(detectSequentialGroups([flood, roads])).toHaveLength(0);
+  });
+
+  it("rejects a non-monotonic series (duplicate frame values)", () => {
+    // Two frames both at F+03h (duplicate value) is not a clear monotonic series.
+    const dupA = { ...makeFrame(3), layer_id: "dup-a", uri: "gs://grace-2/runs/run-a/precip_f03_a.cog.tif" };
+    const dupB = { ...makeFrame(3), layer_id: "dup-b", uri: "gs://grace-2/runs/run-a/precip_f03_b.cog.tif" };
+    expect(detectSequentialGroups([dupA, dupB])).toHaveLength(0);
+  });
+});
+
+describe("LayerPanel — sequential group row rendering", () => {
+  afterEach(() => {
+    try { localStorage.clear(); } catch { /* ignore */ }
+  });
+
+  it("collapses N forecast frames into ONE group row (not N ordinary rows)", () => {
+    render(
+      <LayerPanel initialLayers={[makeFrame(1), makeFrame(3), makeFrame(6)]} />,
+    );
+    expect(screen.getAllByTestId("layer-group-row")).toHaveLength(1);
+    // The N individual SortableRows are NOT rendered for grouped layers.
+    expect(screen.queryAllByTestId("layer-row")).toHaveLength(0);
+    // Frame count chip + count attribute reflect 3 frames.
+    expect(screen.getByTestId("layer-group-row")).toHaveAttribute(
+      "data-frame-count",
+      "3",
+    );
+    expect(screen.getByTestId("layer-group-count-chip")).toHaveTextContent("3f");
+  });
+
+  it("ungrouped layers still render as ordinary rows alongside a group", () => {
+    const flood = { ...makeLayer("flood"), name: "Storm surge max", z_index: 9 };
+    render(
+      <LayerPanel initialLayers={[flood, makeFrame(1), makeFrame(3)]} />,
+    );
+    expect(screen.getAllByTestId("layer-group-row")).toHaveLength(1);
+    expect(screen.getAllByTestId("layer-row")).toHaveLength(1);
+    expect(screen.getByTestId("layer-row")).toHaveAttribute("data-layer-id", "flood");
+  });
+
+  it("shows the active frame label + position (defaults to the LAST frame)", () => {
+    render(
+      <LayerPanel initialLayers={[makeFrame(1), makeFrame(3), makeFrame(6)]} />,
+    );
+    // Default active = last frame (latest forecast hour reads as "current").
+    expect(screen.getByTestId("layer-group-frame-label")).toHaveTextContent(
+      "F+06h (3/3)",
+    );
+  });
+
+  it("RIGHT arrow steps to the next frame and emits visibility toggles", () => {
+    const onMapCommand = vi.fn<(cmd: MapCommandPayload) => void>();
+    render(
+      <LayerPanel
+        initialLayers={[
+          { ...makeFrame(1), visible: false },
+          { ...makeFrame(3), visible: false },
+          { ...makeFrame(6), visible: true }, // already single-framed on the last
+        ]}
+        onMapCommand={onMapCommand}
+      />,
+    );
+    onMapCommand.mockClear();
+    // From frame 3/3 (F+06h), NEXT wraps to frame 1/3 (F+01h).
+    fireEvent.click(screen.getByTestId("layer-group-next"));
+    expect(screen.getByTestId("layer-group-frame-label")).toHaveTextContent(
+      "F+01h (1/3)",
+    );
+    // It showed F+01h and hid F+06h via set-layer-visibility emissions.
+    const cmds = onMapCommand.mock.calls.map((c) => c[0]);
+    expect(cmds).toContainEqual({
+      command: "set-layer-visibility",
+      layer_id: "run-a-f01",
+      visible: true,
+    });
+    expect(cmds).toContainEqual({
+      command: "set-layer-visibility",
+      layer_id: "run-a-f06",
+      visible: false,
+    });
+  });
+
+  it("LEFT arrow steps to the previous frame (wraps at the start)", () => {
+    render(
+      <LayerPanel
+        initialLayers={[
+          { ...makeFrame(1), visible: false },
+          { ...makeFrame(3), visible: false },
+          { ...makeFrame(6), visible: true },
+        ]}
+      />,
+    );
+    // From 3/3, PREV → 2/3 (F+03h).
+    fireEvent.click(screen.getByTestId("layer-group-prev"));
+    expect(screen.getByTestId("layer-group-frame-label")).toHaveTextContent(
+      "F+03h (2/3)",
+    );
+  });
+
+  it("expand chevron reveals per-frame sub-rows; collapse hides them", () => {
+    render(
+      <LayerPanel initialLayers={[makeFrame(1), makeFrame(3), makeFrame(6)]} />,
+    );
+    // Collapsed by default — no frame sub-rows.
+    expect(screen.queryByTestId("layer-group-frames")).toBeNull();
+    fireEvent.click(screen.getByTestId("layer-group-expand"));
+    expect(screen.getByTestId("layer-group-frames")).toBeInTheDocument();
+    expect(screen.getAllByTestId("layer-group-frame")).toHaveLength(3);
+    // Collapse again.
+    fireEvent.click(screen.getByTestId("layer-group-expand"));
+    expect(screen.queryByTestId("layer-group-frames")).toBeNull();
+  });
+
+  it("an expanded frame select-dot steps the group to that frame", () => {
+    render(
+      <LayerPanel
+        initialLayers={[
+          { ...makeFrame(1), visible: false },
+          { ...makeFrame(3), visible: false },
+          { ...makeFrame(6), visible: true },
+        ]}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("layer-group-expand"));
+    const dots = screen.getAllByTestId("layer-group-frame-select");
+    // Click the first frame's dot → group active = F+01h (1/3).
+    fireEvent.click(dots[0]!);
+    expect(screen.getByTestId("layer-group-frame-label")).toHaveTextContent(
+      "F+01h (1/3)",
+    );
+  });
+
+  it("collapses an all-visible stack down to a single visible frame on mount", () => {
+    const onMapCommand = vi.fn<(cmd: MapCommandPayload) => void>();
+    // All three start visible (the server published them all) — the group must
+    // hide all but the default (last) frame so the map shows one overlay.
+    render(
+      <LayerPanel
+        initialLayers={[makeFrame(1), makeFrame(3), makeFrame(6)]}
+        onMapCommand={onMapCommand}
+      />,
+    );
+    const cmds = onMapCommand.mock.calls.map((c) => c[0]);
+    // F+01h and F+03h hidden; F+06h (default last frame) stays visible.
+    expect(cmds).toContainEqual({
+      command: "set-layer-visibility",
+      layer_id: "run-a-f01",
+      visible: false,
+    });
+    expect(cmds).toContainEqual({
+      command: "set-layer-visibility",
+      layer_id: "run-a-f03",
+      visible: false,
+    });
+  });
+});
+
+describe("LayerPanel — sequence scrubber mounting", () => {
+  afterEach(() => {
+    try { localStorage.clear(); } catch { /* ignore */ }
+  });
+
+  it("mounts the bottom-center scrubber when a sequential group is active", () => {
+    render(
+      <LayerPanel initialLayers={[makeFrame(1), makeFrame(3), makeFrame(6)]} />,
+    );
+    expect(screen.getByTestId("grace2-sequence-scrubber")).toBeInTheDocument();
+  });
+
+  it("does NOT mount the scrubber when there is no sequential group", () => {
+    render(<LayerPanel initialLayers={[makeLayer("flood")]} />);
+    expect(screen.queryByTestId("grace2-sequence-scrubber")).toBeNull();
+  });
+
+  it("the scrubber slider steps the group (drives the same visibility toggle)", () => {
+    const onMapCommand = vi.fn<(cmd: MapCommandPayload) => void>();
+    render(
+      <LayerPanel
+        initialLayers={[
+          { ...makeFrame(1), visible: false },
+          { ...makeFrame(3), visible: false },
+          { ...makeFrame(6), visible: true },
+        ]}
+        onMapCommand={onMapCommand}
+      />,
+    );
+    onMapCommand.mockClear();
+    // Drag the scrubber slider to index 0 (F+01h).
+    fireEvent.change(screen.getByTestId("scrubber-slider"), {
+      target: { value: "0" },
+    });
+    expect(screen.getByTestId("scrubber-frame-label")).toHaveTextContent(
+      "F+01h (1/3)",
+    );
+    const cmds = onMapCommand.mock.calls.map((c) => c[0]);
+    expect(cmds).toContainEqual({
+      command: "set-layer-visibility",
+      layer_id: "run-a-f01",
+      visible: true,
+    });
   });
 });

@@ -57,12 +57,18 @@ import {
   SessionStatePayload,
 } from "./contracts";
 import { ConfirmationDialog } from "./components/ConfirmationDialog";
+import { SequenceScrubber } from "./components/SequenceScrubber";
 import {
   IconClose,
   IconDelete,
   IconDragHandle,
   IconEye,
   IconEyeOff,
+  IconArrowLeft,
+  IconArrowRight,
+  IconChevronDown,
+  IconChevronRight,
+  IconWaves,
 } from "./components/icons";
 
 // --- Reducer + state shape --------------------------------------------- //
@@ -214,6 +220,178 @@ function clamp01(x: number): number {
   if (x < 0) return 0;
   if (x > 1) return 1;
   return x;
+}
+
+// --- Sequential-layer grouping (NATE: enumerated temporal raster stacks) --- //
+//
+// NATE's ask: enumerated temporal raster sequences — e.g. 3 HRRR forecast hours
+// "...F+01h" / "...F+03h" / "...F+06h" — should COLLAPSE into ONE "sequential
+// group" row you can step through (LEFT/RIGHT + a bottom scrubber) instead of N
+// near-identical rows. Stepping shows ONE frame at a time by toggling layer
+// visibility through the EXISTING LayerPanel visibility callback (client-side
+// only; no backend, no Map.tsx edits).
+//
+// Detection is deliberately CONSERVATIVE: we only form a group when there is a
+// CLEAR monotonic series of >=2 layers that (a) share a common source/tool +
+// AOI and (b) carry a parseable lead-time / step / index token whose values are
+// strictly increasing. Everything else stays an ordinary row.
+
+/** A parsed frame token: the numeric position + the verbatim label to show. */
+interface FrameToken {
+  /** Monotonic numeric position (e.g. lead hours, step index). */
+  value: number;
+  /** Short human label for the frame, e.g. "F+03h" / "t+2" / "step 4". */
+  label: string;
+  /** The common "stem" (name with the token stripped) — the grouping key. */
+  stem: string;
+}
+
+// Ordered token patterns over a layer name. First match wins. Each captures a
+// numeric position and yields a normalized short label + the stem (name minus
+// the matched token) so layers in one series share a stem. Tokens are matched
+// near the END of the name (where enumerations live) but anywhere is accepted.
+const FRAME_PATTERNS: ReadonlyArray<{
+  rx: RegExp;
+  label: (m: RegExpMatchArray) => string;
+}> = [
+  // Forecast lead hour: "F+01h", "f+12h", "F+1 h", "+06h"
+  { rx: /\bf?\+?\s*(\d{1,3})\s*h\b/i, label: (m) => `F+${pad2(m[1])}h` },
+  // Hour token: "hour 3", "hr 06", "h12"
+  { rx: /\bh(?:ou)?r?\s*\+?(\d{1,3})\b/i, label: (m) => `hr ${stripZeros(m[1])}` },
+  // Step/frame/index: "step 4", "frame 02", "t+2", "t2", "#3"
+  { rx: /\b(?:step|frame|idx|index)\s*\+?(\d{1,4})\b/i, label: (m) => `step ${stripZeros(m[1])}` },
+  { rx: /\bt\s*\+\s*(\d{1,4})\b/i, label: (m) => `t+${stripZeros(m[1])}` },
+  { rx: /#\s*(\d{1,4})\b/i, label: (m) => `#${stripZeros(m[1])}` },
+  // Day token: "day 1", "d+3"
+  { rx: /\bd(?:ay)?\s*\+?(\d{1,3})\b/i, label: (m) => `day ${stripZeros(m[1])}` },
+];
+
+function pad2(s: string | undefined): string {
+  const n = Number(s ?? "0");
+  return Number.isFinite(n) ? String(n).padStart(2, "0") : (s ?? "");
+}
+function stripZeros(s: string | undefined): string {
+  const n = Number(s ?? "0");
+  return Number.isFinite(n) ? String(n) : (s ?? "");
+}
+
+/**
+ * Parse a frame token out of a layer name. Returns null when no monotonic
+ * lead-time / step / index token is present. Exported for unit testing.
+ */
+export function parseFrameToken(name: string): FrameToken | null {
+  if (!name) return null;
+  for (const { rx, label } of FRAME_PATTERNS) {
+    const m = name.match(rx);
+    if (m && m[1] != null) {
+      const value = Number(m[1]);
+      if (!Number.isFinite(value)) continue;
+      // Stem = the name with the matched token removed + whitespace collapsed.
+      // Series members differ ONLY in the token, so they share a stem.
+      const stem = name
+        .slice(0, m.index)
+        .concat(name.slice((m.index ?? 0) + m[0].length))
+        .replace(/\s+/g, " ")
+        .replace(/[\s,(\-–—]+$/g, "")
+        .replace(/^[\s,(\-–—]+/g, "")
+        .trim()
+        .toLowerCase();
+      return { value, label: label(m), stem };
+    }
+  }
+  return null;
+}
+
+/** A detected sequential group: the ordered member layers + their frame labels. */
+export interface SequentialGroup {
+  /** Stable key for the group (shared stem + bbox signature). */
+  key: string;
+  /** Human label for the group, derived from the shared stem / first member. */
+  label: string;
+  /** Member layers in series order (ascending frame value). */
+  layers: ProjectLayerSummary[];
+  /** Per-member short frame labels, parallel to `layers`. */
+  frameLabels: string[];
+}
+
+/** Round a bbox-ish signature so near-identical AOIs group together. */
+function bboxSignature(layer: ProjectLayerSummary): string {
+  // ProjectLayerSummary has no bbox field; the URI prefix (run/source dir) is
+  // the best available AOI/source proxy — same run dir => same AOI + tool. We
+  // strip the final path segment (the per-frame filename) so sibling frames in
+  // one run share a signature.
+  const uri = layer.uri ?? "";
+  const lastSlash = uri.lastIndexOf("/");
+  return lastSlash >= 0 ? uri.slice(0, lastSlash) : uri;
+}
+
+/** Titleize a lowercased stem for display ("hrrr forecast" → "Hrrr Forecast"). */
+function titleizeStem(stem: string, fallback: string): string {
+  const s = stem.trim();
+  if (!s) return fallback;
+  return s.replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+/**
+ * Detect sequential groups among an ordered layer list. CONSERVATIVE: a group
+ * forms only when >=2 layers share (stem + source/AOI signature + style_preset)
+ * AND carry strictly-increasing, DISTINCT frame values. Members are returned in
+ * ascending frame order. Layers that don't qualify are simply absent from the
+ * result (the caller renders them as ordinary rows). Exported for unit testing.
+ */
+export function detectSequentialGroups(
+  layers: ProjectLayerSummary[],
+): SequentialGroup[] {
+  const buckets = new Map<
+    string,
+    { token: FrameToken; layer: ProjectLayerSummary }[]
+  >();
+  for (const layer of layers) {
+    const token = parseFrameToken(layer.name);
+    if (!token) continue;
+    // Group key: stem + source/AOI signature + preset. All three must match so
+    // we never fuse two unrelated series that happen to share a token shape.
+    const key = [
+      token.stem,
+      bboxSignature(layer),
+      (layer.style_preset ?? layer.layer_type ?? "").toLowerCase(),
+    ].join("§");
+    const arr = buckets.get(key) ?? [];
+    arr.push({ token, layer });
+    buckets.set(key, arr);
+  }
+
+  const groups: SequentialGroup[] = [];
+  for (const [key, members] of buckets) {
+    if (members.length < 2) continue;
+    // Sort by frame value ascending; require strictly-increasing DISTINCT values
+    // (a clear monotonic series — reject duplicates / non-monotonic noise).
+    const sorted = [...members].sort((a, b) => a.token.value - b.token.value);
+    let monotonic = true;
+    for (let i = 1; i < sorted.length; i++) {
+      const cur = sorted[i];
+      const prev = sorted[i - 1];
+      if (!cur || !prev || cur.token.value <= prev.token.value) {
+        monotonic = false;
+        break;
+      }
+    }
+    if (!monotonic) continue;
+    const first = sorted[0];
+    if (!first) continue;
+    groups.push({
+      key,
+      label: titleizeStem(first.token.stem, first.layer.name),
+      layers: sorted.map((m) => m.layer),
+      frameLabels: sorted.map((m) => m.token.label),
+    });
+  }
+  // Stable order: by the group's first member's z_index (top-of-stack first),
+  // matching the rest of the panel's ordering.
+  groups.sort(
+    (a, b) => (b.layers[0]?.z_index ?? 0) - (a.layers[0]?.z_index ?? 0),
+  );
+  return groups;
 }
 
 // --- Kind chip (job-0264 polish) --------------------------------------- //
@@ -629,6 +807,110 @@ export function LayerPanel({
     console.debug("[LayerPanel] delete confirmed:", { layerId });
   }, [pendingDeleteId, onMapCommand, onDeleteLayer]);
 
+  // --- Sequential-layer grouping (NATE) -------------------------------- //
+  //
+  // Detect enumerated temporal raster sequences among the active layers and
+  // collapse each into ONE "sequential group" row + drive a bottom scrubber.
+  // All stepping goes through the EXISTING visibility callback (show frame i,
+  // hide the rest) — no Map.tsx edits, client-side only.
+  const groups = useMemo(
+    () => detectSequentialGroups(state.layers),
+    [state.layers],
+  );
+  // Set of layer_ids that belong to SOME group (so ordinary-row render skips
+  // them — they live in the group row instead).
+  const groupedIds = useMemo(() => {
+    const s = new Set<string>();
+    for (const g of groups) for (const l of g.layers) s.add(l.layer_id);
+    return s;
+  }, [groups]);
+
+  // Per-group active frame index, keyed by group.key. Defaults to the LAST
+  // frame (the latest forecast hour reads as "current") on first sight.
+  const [frameByGroup, setFrameByGroup] = useState<Record<string, number>>({});
+  // Which groups are expanded (collapsible). Collapsed by default — the whole
+  // point is to shrink N rows to one tidy row.
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
+  // Which group the bottom scrubber drives + whether it is auto-playing. The
+  // scrubber follows the FIRST group that exists; a user can pin it by stepping.
+  const [activeGroupKey, setActiveGroupKey] = useState<string | null>(null);
+  const [playing, setPlaying] = useState(false);
+
+  // Keep activeGroupKey valid as groups appear/disappear. Default to the first.
+  useEffect(() => {
+    if (groups.length === 0) {
+      if (activeGroupKey !== null) setActiveGroupKey(null);
+      if (playing) setPlaying(false);
+      return;
+    }
+    const first = groups[0];
+    if (first && (!activeGroupKey || !groups.some((g) => g.key === activeGroupKey))) {
+      setActiveGroupKey(first.key);
+    }
+  }, [groups, activeGroupKey, playing]);
+
+  /** The resolved active frame index for a group (default = last frame). */
+  const frameIndexFor = useCallback(
+    (g: SequentialGroup): number => {
+      const raw = frameByGroup[g.key];
+      const idx = typeof raw === "number" ? raw : g.layers.length - 1;
+      return Math.max(0, Math.min(g.layers.length - 1, idx));
+    },
+    [frameByGroup],
+  );
+
+  /**
+   * Step a group to frame `index`: show that member, hide every sibling. Drives
+   * the SAME `onVisibilityToggle` the row checkbox uses, so the map, the panel
+   * reducer, and the persisted override all stay consistent. No-ops on members
+   * already in the desired visibility to avoid redundant emissions.
+   */
+  const stepGroupTo = useCallback(
+    (g: SequentialGroup, index: number): void => {
+      const clamped = Math.max(0, Math.min(g.layers.length - 1, index));
+      setFrameByGroup((prev) => ({ ...prev, [g.key]: clamped }));
+      g.layers.forEach((layer, i) => {
+        const wantVisible = i === clamped;
+        if (layer.visible !== wantVisible) {
+          onVisibilityToggle(layer.layer_id, wantVisible);
+        }
+      });
+    },
+    // onVisibilityToggle is a stable closure over dispatch + props (not memoized
+    // but defined once per render — listing it would re-create on every render;
+    // it only reads refs/props so omitting it is safe and matches the existing
+    // handler-call sites below).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+
+  // When a group first becomes active (or its frame changes externally), make
+  // sure exactly ONE frame is visible. Runs once per group key appearing — it
+  // collapses a freshly-detected N-visible stack down to a single visible frame
+  // so the map doesn't show all N overlays stacked. Guarded so it only fires
+  // when the group is NOT already single-framed (>1 visible).
+  const initializedGroupsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    for (const g of groups) {
+      if (initializedGroupsRef.current.has(g.key)) continue;
+      initializedGroupsRef.current.add(g.key);
+      const visibleCount = g.layers.filter((l) => l.visible).length;
+      if (visibleCount !== 1) {
+        stepGroupTo(g, frameIndexFor(g));
+      }
+    }
+    // Drop keys for groups that no longer exist so re-formed groups re-init.
+    const live = new Set(groups.map((g) => g.key));
+    for (const k of Array.from(initializedGroupsRef.current)) {
+      if (!live.has(k)) initializedGroupsRef.current.delete(k);
+    }
+  }, [groups, stepGroupTo, frameIndexFor]);
+
+  const activeGroup = useMemo(
+    () => groups.find((g) => g.key === activeGroupKey) ?? null,
+    [groups, activeGroupKey],
+  );
+
   // Tweak 2 (job-0065): hide the panel entirely when no layers are loaded.
   // Hooks must all run before this conditional return.
   if (state.layers.length === 0) return null;
@@ -767,22 +1049,66 @@ export function LayerPanel({
           collisionDetection={closestCenter}
           onDragEnd={onDragEnd}
         >
+          {/* Only UNGROUPED layers are individually drag-sortable; a sequential
+              group renders as one consolidated (non-sortable) row. */}
           <SortableContext
-            items={state.layers.map((l) => l.layer_id)}
+            items={state.layers
+              .filter((l) => !groupedIds.has(l.layer_id))
+              .map((l) => l.layer_id)}
             strategy={verticalListSortingStrategy}
           >
-            {state.layers.map((layer) => (
-              <SortableRow
-                key={layer.layer_id}
-                layer={layer}
-                onVisibilityToggle={onVisibilityToggle}
+            {/* Sequential group rows, top-of-stack first. Each collapses N
+                near-identical temporal frames into ONE row with LEFT/RIGHT
+                stepping (drives the existing visibility callback). */}
+            {groups.map((g) => (
+              <SequentialGroupRow
+                key={g.key}
+                group={g}
+                activeIndex={frameIndexFor(g)}
+                expanded={!!expandedGroups[g.key]}
+                isScrubberTarget={g.key === activeGroupKey}
+                onToggleExpand={() =>
+                  setExpandedGroups((prev) => ({
+                    ...prev,
+                    [g.key]: !prev[g.key],
+                  }))
+                }
+                onStep={(idx) => {
+                  setActiveGroupKey(g.key);
+                  stepGroupTo(g, idx);
+                }}
                 onOpacityChange={onOpacityChange}
                 onRequestDelete={requestDelete}
               />
             ))}
+            {state.layers
+              .filter((l) => !groupedIds.has(l.layer_id))
+              .map((layer) => (
+                <SortableRow
+                  key={layer.layer_id}
+                  layer={layer}
+                  onVisibilityToggle={onVisibilityToggle}
+                  onOpacityChange={onOpacityChange}
+                  onRequestDelete={requestDelete}
+                />
+              ))}
           </SortableContext>
         </DndContext>
       </div>
+      {/* Bottom-center SCRUBBER for the active sequential group. Rendered from
+          within LayerPanel (not App/Map) so it shares the frame state; it pins
+          itself to the viewport bottom-center and only appears when a group is
+          active. Stepping it drives the SAME visibility toggling as the row. */}
+      {activeGroup && (
+        <SequenceScrubber
+          label={activeGroup.label}
+          frameLabels={activeGroup.frameLabels}
+          activeIndex={frameIndexFor(activeGroup)}
+          onStep={(idx) => stepGroupTo(activeGroup, idx)}
+          playing={playing}
+          onPlayToggle={() => setPlaying((p) => !p)}
+        />
+      )}
       {/* F53 (job-0326): confirm-before-delete. The per-row trash control (the
           sole delete affordance, desktop + mobile) opens this dialog; the
           destructive path runs only on confirm. The dialog itself portals to
@@ -1062,6 +1388,291 @@ function SortableRow({
     </div>
   );
 }
+
+// --- Sequential group row --------------------------------------------- //
+//
+// One consolidated row standing in for N enumerated temporal frames (e.g. the
+// 3 HRRR forecast hours). Shows the active frame's label + position, LEFT/RIGHT
+// step arrows, and a frame-count chip. Collapsible: expand to reveal each
+// member frame as a compact sub-row (visibility/opacity/delete still work on
+// the individual frames via the same callbacks). Stepping toggles visibility
+// through the existing onVisibilityToggle (show frame i, hide the rest).
+
+interface SequentialGroupRowProps {
+  group: SequentialGroup;
+  activeIndex: number;
+  expanded: boolean;
+  isScrubberTarget: boolean;
+  onToggleExpand: () => void;
+  onStep: (index: number) => void;
+  onOpacityChange: (layerId: string, opacity: number) => void;
+  onRequestDelete: (layerId: string) => void;
+}
+
+function SequentialGroupRow({
+  group,
+  activeIndex,
+  expanded,
+  isScrubberTarget,
+  onToggleExpand,
+  onStep,
+  onOpacityChange,
+  onRequestDelete,
+}: SequentialGroupRowProps): JSX.Element {
+  const n = group.layers.length;
+  const idx = Math.max(0, Math.min(n - 1, activeIndex));
+  const frameLabel = group.frameLabels[idx] ?? "";
+  // The active member's kind drives the chip accent (same family as the rows).
+  // Falls back to the first member then a synthetic raster so the row never
+  // crashes if `idx` momentarily outruns the (always >=2) member list.
+  const activeLayer = group.layers[idx] ?? group.layers[0];
+  const kind = activeLayer
+    ? layerKind(activeLayer)
+    : { label: "raster", color: "#9aa7b8" };
+  // Per-group opacity readout (drives every member together). Resolve to a
+  // finite [0,1] once — same defaulting rule as the per-row slider.
+  const groupOpacity =
+    activeLayer &&
+    typeof activeLayer.opacity === "number" &&
+    Number.isFinite(activeLayer.opacity)
+      ? clamp01(activeLayer.opacity)
+      : 1;
+
+  return (
+    <div
+      data-testid="layer-group-row"
+      data-group-key={group.key}
+      data-frame-count={n}
+      data-active-index={idx}
+      style={{
+        background: isScrubberTarget
+          ? "rgba(74,163,255,0.10)"
+          : "rgba(255,255,255,0.03)",
+        border: `1px solid ${
+          isScrubberTarget ? "rgba(74,163,255,0.35)" : "rgba(255,255,255,0.08)"
+        }`,
+        borderRadius: 8,
+        padding: "7px 9px",
+        display: "flex",
+        flexDirection: "column",
+        gap: expanded ? 6 : 0,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+        {/* Collapse/expand chevron. */}
+        <button
+          type="button"
+          data-testid="layer-group-expand"
+          aria-label={expanded ? "Collapse sequence" : "Expand sequence"}
+          aria-expanded={expanded}
+          title={expanded ? "Collapse sequence" : "Expand sequence"}
+          onClick={onToggleExpand}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 18,
+            height: 22,
+            flexShrink: 0,
+            padding: 0,
+            background: "transparent",
+            border: "none",
+            color: "#8a929e",
+            cursor: "pointer",
+          }}
+        >
+          {expanded ? <IconChevronDown size={13} /> : <IconChevronRight size={13} />}
+        </button>
+        {/* Sequence glyph — signals this row is a temporal stack. */}
+        <span
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            color: kind.color,
+            flexShrink: 0,
+          }}
+          title="Sequential layer group"
+        >
+          <IconWaves size={15} />
+        </span>
+        {/* Group label + active frame readout. */}
+        <span
+          style={{
+            flex: 1,
+            minWidth: 0,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+            fontSize: 12.5,
+            color: "#e8e8ec",
+          }}
+          title={group.label}
+        >
+          {group.label}{" "}
+          <span
+            data-testid="layer-group-frame-label"
+            style={{ color: "#9aa1ab", fontVariantNumeric: "tabular-nums" }}
+          >
+            {frameLabel} ({idx + 1}/{n})
+          </span>
+        </span>
+        {/* Frame-count chip. */}
+        <span
+          data-testid="layer-group-count-chip"
+          title={`${n} frames`}
+          style={{
+            flexShrink: 0,
+            fontSize: 9.5,
+            fontWeight: 600,
+            letterSpacing: 0.3,
+            color: kind.color,
+            background: hexToRgba(kind.color, 0.14),
+            border: `1px solid ${hexToRgba(kind.color, 0.32)}`,
+            borderRadius: 5,
+            padding: "1px 6px",
+            lineHeight: "15px",
+          }}
+        >
+          {n}f
+        </span>
+        {/* LEFT / RIGHT step arrows. Wrap at the ends so the series loops. */}
+        <button
+          type="button"
+          data-testid="layer-group-prev"
+          aria-label="Previous frame"
+          title="Previous frame"
+          onClick={() => onStep((idx - 1 + n) % n)}
+          style={groupArrowStyle}
+        >
+          <IconArrowLeft size={13} />
+        </button>
+        <button
+          type="button"
+          data-testid="layer-group-next"
+          aria-label="Next frame"
+          title="Next frame"
+          onClick={() => onStep((idx + 1) % n)}
+          style={groupArrowStyle}
+        >
+          <IconArrowRight size={13} />
+        </button>
+      </div>
+      {/* Expanded: each member frame as a compact sub-row. The radio-like dot
+          shows + selects the active frame; the trash deletes that one frame. */}
+      {expanded && (
+        <div
+          data-testid="layer-group-frames"
+          style={{ display: "flex", flexDirection: "column", gap: 4, paddingLeft: 25 }}
+        >
+          {group.layers.map((layer, i) => (
+            <div
+              key={layer.layer_id}
+              data-testid="layer-group-frame"
+              data-layer-id={layer.layer_id}
+              data-active={i === idx}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 7,
+                fontSize: 11.5,
+                color: i === idx ? "#e8e8ec" : "#8a929e",
+              }}
+            >
+              <button
+                type="button"
+                data-testid="layer-group-frame-select"
+                aria-label={`show frame ${group.frameLabels[i]}`}
+                aria-pressed={i === idx}
+                onClick={() => onStep(i)}
+                style={{
+                  width: 14,
+                  height: 14,
+                  flexShrink: 0,
+                  borderRadius: "50%",
+                  padding: 0,
+                  cursor: "pointer",
+                  background: i === idx ? kind.color : "transparent",
+                  border: `1px solid ${i === idx ? kind.color : "rgba(255,255,255,0.25)"}`,
+                }}
+              />
+              <span
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                  fontVariantNumeric: "tabular-nums",
+                }}
+                title={layer.name}
+              >
+                {group.frameLabels[i]}
+              </span>
+              <button
+                type="button"
+                data-testid="layer-group-frame-delete"
+                aria-label={`delete frame ${group.frameLabels[i]}`}
+                title="Delete this frame"
+                onClick={() => onRequestDelete(layer.layer_id)}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  width: 20,
+                  height: 20,
+                  flexShrink: 0,
+                  padding: 0,
+                  background: "transparent",
+                  border: "none",
+                  color: "#7d8794",
+                  cursor: "pointer",
+                }}
+              >
+                <IconDelete size={12} />
+              </button>
+            </div>
+          ))}
+          {/* Per-group opacity — drives ALL frames together so the sequence
+              reads at one transparency as you scrub. Applies to every member. */}
+          <div
+            data-testid="layer-group-opacity-row"
+            style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 2 }}
+          >
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.01}
+              value={groupOpacity}
+              onChange={(e) => {
+                const v = Number(e.target.value);
+                group.layers.forEach((l) => onOpacityChange(l.layer_id, v));
+              }}
+              aria-label={`opacity for ${group.label} sequence`}
+              data-testid="layer-group-opacity"
+              style={{ flex: 1, height: 16, accentColor: kind.color, cursor: "pointer" }}
+            />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const groupArrowStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  width: 22,
+  height: 22,
+  flexShrink: 0,
+  padding: 0,
+  background: "rgba(255,255,255,0.06)",
+  border: "1px solid rgba(255,255,255,0.08)",
+  borderRadius: 6,
+  color: "#cfd4db",
+  cursor: "pointer",
+};
 
 // --- Test-injectable global bus ---------------------------------------- //
 //
