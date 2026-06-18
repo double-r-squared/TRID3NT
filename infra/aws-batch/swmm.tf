@@ -11,8 +11,11 @@
 #     grace2-solvers queue + grace2-solvers-spot compute environment + the
 #     SAME grace2-batch-job-task-role IAM (all defined in main.tf)
 #
-# NOT APPLIED — authored for NATE to `tofu apply` (and to push the image first;
-# the agent stays inert until GRACE2_AWS_BATCH_JOB_DEF_SWMM is set on the box).
+# APPLIED (additive resources only — ECR repo + lifecycle + job def) during the
+# auto-class infra finish. The image is NOT pushed yet and the agent stays inert
+# until GRACE2_AWS_BATCH_JOB_DEF_SWMM is set on the box (registering a job def
+# that references an unpushed tag is harmless — Batch resolves the image at job
+# start, not at registration).
 #
 # Per-solver routing seam (agent side): the agent resolves the job-def PER
 # SOLVER via GRACE2_AWS_BATCH_JOB_DEF_<SOLVER> (solver.py::_resolve_batch_job_def).
@@ -33,8 +36,11 @@ resource "aws_ecr_repository" "swmm" {
     scan_on_push = true
   }
 
+  # NOTE: AWS ECR tag VALUES reject parentheses (allowed: letters, digits,
+  # spaces, and + - = . _ : / @). Keep "pyswmm" unparenthesized or CreateRepository
+  # fails with InvalidTagParameterException.
   tags = {
-    description = "SWMM (pyswmm) solver worker image - services/workers/swmm/Dockerfile"
+    description = "SWMM pyswmm solver worker image - services/workers/swmm/Dockerfile"
   }
 }
 
