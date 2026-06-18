@@ -39,6 +39,7 @@ from . import (
     region_choice,
     sandbox_contracts,
     secrets,
+    swmm_contracts,
     tool_metadata,
     tool_registry,
     user,
@@ -65,6 +66,7 @@ from .common import (
     now_utc,
 )
 from .modflow_contracts import MODFLOWRunArgs, PlumeLayerURI
+from .swmm_contracts import SWMMDepthLayerURI, SWMMRunArgs
 from .sandbox_contracts import (
     CodeExecRequestPayload,
     CodeExecResultPayload,
@@ -95,6 +97,7 @@ __all__ = [
     "region_choice",
     "sandbox_contracts",
     "secrets",
+    "swmm_contracts",
     "tool_metadata",
     "tool_registry",
     "user",
@@ -106,6 +109,9 @@ __all__ = [
     # MODFLOW groundwater contracts (sprint-13)
     "MODFLOWRunArgs",
     "PlumeLayerURI",
+    # SWMM quasi-2D urban-flood contracts (sprint-16 P1)
+    "SWMMRunArgs",
+    "SWMMDepthLayerURI",
     # chart-emission contracts (sprint-13 conversational analysis layer)
     "ChartEmissionPayload",
     "SessionChartRecord",
