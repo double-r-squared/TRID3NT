@@ -944,6 +944,101 @@ def _any_live_turn(session_id: str) -> "asyncio.Task | None":
     return None
 
 
+# ---------------------------------------------------------------------------
+# Solver-in-flight marker (autostop infra — agent-box auto-stop/wake).
+#
+# The always-on agent EC2 box (t3.large, i-0251879a278df797f) burns idle money.
+# A self-contained tofu root (``infra/aws-autostop/``) runs an idle-check Lambda
+# that polls ``GET /api/health`` and only StopInstances after N consecutive
+# checks return ZERO active connections AND ``busy=false``. The SINGLE SOURCE OF
+# TRUTH for the safety gate is ``liveness_snapshot`` below; ``busy`` is the OR of
+# three independent signals so the box is NEVER stopped while there is any live
+# work (bulletproof by construction — any doubt keeps the box up):
+#
+#  1. ``active_connection_count()`` — live, attached WebSocket clients (the
+#     set-based registry defined alongside ``_make_handler`` further down; a
+#     client is registered on its first inbound frame, deregistered in the
+#     handler ``finally``).
+#  2. ``inflight_turn_count()``     — detached in-flight turns whose launching
+#     socket dropped (a long solve survives a reconnect via
+#     ``_SESSION_LIVE_TURNS``); the box is busy while any such turn runs even
+#     with zero sockets open.
+#  3. ``_SOLVE_IN_FLIGHT`` (HERE)   — the count of currently-executing SOLVER
+#     dispatches (the ``SOLVER_CONFIRM_TOOLS`` long-running composers — SFINCS /
+#     MODFLOW flood + groundwater solves, minutes-to-tens-of-minutes). A DIRECT
+#     solve signal, independent of connection/turn-detachment state: a solve
+#     running while the user STAYS connected is already covered by signal (1),
+#     but this guarantees the box reads busy the instant a solve starts and
+#     keeps reading busy through any transient gap before a dropped socket's
+#     detach bookkeeping registers the turn under (2). Incremented around the
+#     solver tool body in ``_invoke_tool_via_emitter`` and decremented in its
+#     ``finally`` so a crashed / stop-button-cancelled solve still releases the
+#     marker (NO leak).
+#
+# ``_SOLVE_IN_FLIGHT`` is a plain ``int`` mutated only on the single asyncio loop
+# (no thread sharing — see the ``tool_catalog_http`` module docstring), so no
+# lock is needed. ``active_connection_count`` / ``inflight_turn_count`` are
+# defined later in the module (alongside the connection registry); ``is_busy`` /
+# ``liveness_snapshot`` reference them by name, resolved at call time.
+# ---------------------------------------------------------------------------
+_SOLVE_IN_FLIGHT: int = 0
+
+
+def _solve_started() -> None:
+    """Mark a solver dispatch as in flight (auto-stop safety gate)."""
+    global _SOLVE_IN_FLIGHT
+    _SOLVE_IN_FLIGHT += 1
+
+
+def _solve_finished() -> None:
+    """Mark a solver dispatch as finished.
+
+    Clamped at zero — a defensive double-decrement can never drive the count
+    negative and trick the auto-stop gate into reading ``busy=false`` while a
+    solve is still running."""
+    global _SOLVE_IN_FLIGHT
+    _SOLVE_IN_FLIGHT = max(0, _SOLVE_IN_FLIGHT - 1)
+
+
+def solve_in_flight_count() -> int:
+    """Number of solver dispatches currently executing (auto-stop gate)."""
+    return _SOLVE_IN_FLIGHT
+
+
+def is_busy() -> bool:
+    """Conservative busy signal for the auto-stop safety gate.
+
+    True when ANY of the three signals is live: an attached WebSocket client, a
+    detached in-flight turn, or an executing solver dispatch. The auto-stop
+    Lambda must NEVER stop the box while this is True. Errs toward UP (busy) on
+    any live work. ``active_connection_count`` / ``inflight_turn_count`` are
+    resolved at call time (defined later, alongside the connection registry)."""
+    return (
+        active_connection_count() > 0
+        or inflight_turn_count() > 0
+        or solve_in_flight_count() > 0
+    )
+
+
+def liveness_snapshot() -> dict[str, object]:
+    """Point-in-time liveness for ``GET /api/health`` (autostop gate reads this).
+
+    Returns the exact shape the idle Lambda's safety gate consumes::
+
+        {"ok": True, "active_connections": <int>, "busy": <bool>}
+
+    ``active_connections`` is the attached-client count; ``busy`` is the
+    conservative OR over connections + detached turns + in-flight solves (so a
+    box mid-solve whose only socket dropped still reads ``busy=true``). Computed
+    synchronously on the asyncio loop — no awaits, no locks (single-loop
+    invariant)."""
+    return {
+        "ok": True,
+        "active_connections": active_connection_count(),
+        "busy": is_busy(),
+    }
+
+
 @dataclass
 class SessionState:
     """Per-session in-memory state. M1 keeps everything in-process; Mongo-backed
@@ -5051,6 +5146,19 @@ async def _invoke_tool_via_emitter(
             return _await_and_restamp()
         return _restamp(out)
 
+    # Autostop liveness: mark a REAL solver dispatch (a long-running SFINCS /
+    # MODFLOW composer, minutes-to-tens-of-minutes) as in flight so the idle
+    # Lambda's safety gate sees ``busy=true`` and NEVER stops the box mid-solve.
+    # A reuse short-circuit (``_ReuseEntry``) returns an already-produced layer
+    # synchronously — no solver runs — so it is NOT marked. The release is in
+    # the dispatch ``finally`` below (every exit path: success, error, cancel),
+    # so a crashed/cancelled solve still clears the marker (NO leak).
+    _is_solver_dispatch = (
+        tool_name in SOLVER_CONFIRM_TOOLS and not isinstance(entry, _ReuseEntry)
+    )
+    if _is_solver_dispatch:
+        _solve_started()
+
     try:
         # job VAULT-READ: dispatch with a credential-request retry. The first
         # attempt runs the tool; if it raises a missing/invalid-credential
@@ -5089,6 +5197,13 @@ async def _invoke_tool_via_emitter(
         _card_state = "failed"
         raise
     finally:
+        # Autostop liveness: release the solver-in-flight marker on EVERY exit
+        # path (success, error, cancellation) so a crashed or stop-button-killed
+        # solve never leaves a phantom ``busy=true`` that keeps an idle box up
+        # forever. First statement in the finally so a raise in the cleanup
+        # below cannot skip it.
+        if _is_solver_dispatch:
+            _solve_finished()
         deactivate_registry(_uri_reg_token)
         state.emitter.close_pipeline()
         state.current_pipeline_id = None
@@ -6252,6 +6367,85 @@ async def _handle_layer_delete(
     )
 
 
+# --------------------------------------------------------------------------- #
+# Live WebSocket connection registry (agent-box auto-stop/wake infra)
+# --------------------------------------------------------------------------- #
+#
+# The always-on agent EC2 box (t3.large, i-0251879a278df797f) burns idle money
+# when no user is connected. The ``infra/aws-autostop`` tofu root runs an
+# idle-check Lambda that polls ``GET /api/health`` on a schedule and stops the
+# box ONLY after N consecutive checks where the box is NOT busy. This registry
+# is the authoritative live-connection signal that endpoint reads via
+# ``active_connection_count`` (and ``is_busy`` / ``liveness_snapshot`` above).
+#
+# A "live connection" is a WebSocket the handler is actively serving. We
+# register on handler ENTRY (the connection was accepted) and deregister in the
+# handler ``finally`` -- so the count tracks genuinely-attached sockets across
+# every exit path (normal close, crash, cancellation).
+#
+# ``inflight_turn_count`` is a SEPARATE busy signal: a long solver turn survives
+# a socket drop (``_SESSION_LIVE_TURNS``), so the box stays busy while such a
+# turn runs even with zero sockets open. ``is_busy`` ORs the connection count,
+# the in-flight-turn count, and the solver-dispatch count so the autostop Lambda
+# never stops a box doing real work.
+#
+# Thread-safety: the whole agent runs on ONE asyncio loop in ONE process, so a
+# plain set mutated from coroutine context needs no lock (no preemption between
+# the membership test and the mutation). Keyed by ``id(websocket)`` (stable for
+# the connection object's lifetime); the set de-dupes so a re-register is a
+# harmless no-op and a double-deregister cannot drive the count negative.
+
+_ACTIVE_WS_CONNECTIONS: "set[int]" = set()
+
+
+def _register_active_connection(websocket: "ServerConnection") -> None:
+    """Mark ``websocket`` as a live, attached client connection (handler entry).
+
+    Idempotent -- re-registering the same connection is a no-op (set semantics).
+    """
+    _ACTIVE_WS_CONNECTIONS.add(id(websocket))
+
+
+def _deregister_active_connection(websocket: "ServerConnection") -> None:
+    """Drop ``websocket`` from the live-connection set (handler ``finally``).
+
+    Idempotent -- ``discard`` never raises and never drives the count negative,
+    so a defensive double-call cannot trick the autostop gate into seeing the
+    box as idle while a socket is still open.
+    """
+    _ACTIVE_WS_CONNECTIONS.discard(id(websocket))
+
+
+def active_connection_count() -> int:
+    """Number of live, attached WebSocket client connections right now.
+
+    Read by ``is_busy`` / ``liveness_snapshot`` (and thus the ``/api/health``
+    endpoint) so the autostop idle-check Lambda can decide whether the box is
+    safe to stop. NEVER negative.
+    """
+    return len(_ACTIVE_WS_CONNECTIONS)
+
+
+def inflight_turn_count() -> int:
+    """Number of in-flight turns detached from a (possibly-dead) connection.
+
+    A long solver turn survives a socket drop (``_SESSION_LIVE_TURNS``); the box
+    is BUSY while any such turn is still running even if zero sockets are open.
+    ``is_busy`` ORs this with ``active_connection_count`` + ``solve_in_flight_count``
+    so the autostop Lambda treats the box as busy on the OR of the three. Counts
+    only not-yet-done tasks (a done task is awaiting its self-removing callback).
+    """
+    total = 0
+    for bucket in _SESSION_LIVE_TURNS.values():
+        for live in bucket.values():
+            try:
+                if not live.task.done():
+                    total += 1
+            except Exception:  # noqa: BLE001 -- defensive; never break health
+                continue
+    return total
+
+
 def _make_handler(settings: GeminiSettings):
     """Build the per-connection coroutine, closing over the resolved settings."""
 
@@ -6259,6 +6453,12 @@ def _make_handler(settings: GeminiSettings):
         # The session_id will be set on the first inbound envelope; we surface
         # an error if the client speaks before establishing one.
         state: SessionState | None = None
+
+        # agent-box autostop infra: this socket is now being served -- count it
+        # as a live connection so /api/health reports a non-zero count and the
+        # idle-check Lambda holds the box up. Deregistered in the finally below
+        # on EVERY exit path (normal close, crash, cancellation).
+        _register_active_connection(websocket)
 
         try:
             async for raw in websocket:
@@ -6716,6 +6916,15 @@ def _make_handler(settings: GeminiSettings):
         except Exception:
             logger.exception("connection handler crashed")
         finally:
+            # Autostop liveness: drop this connection from the live-connection
+            # registry on EVERY exit path (normal close, crash, cancellation) so
+            # the idle-check Lambda never sees a phantom-active count that keeps
+            # an idle box up forever. Runs FIRST in the finally so a raise in the
+            # detach bookkeeping below cannot skip it. A detached solve registered
+            # below still keeps the box busy via ``inflight_turn_count()`` /
+            # ``_SOLVE_IN_FLIGHT``, so dropping the connection count here does NOT
+            # expose the box to being stopped mid-solve.
+            _deregister_active_connection(websocket)
             # job-SOLVE-SURVIVE (the #1 SFINCS blocker): a socket close must NOT
             # kill an in-flight turn. ROOT CAUSE of "no successful SFINCS run
             # since Fort Myers": this finally used to ``.cancel()`` EVERY not-done
@@ -6850,6 +7059,14 @@ __all__ = [
     "get_persistence",
     "set_persistence",
     "init_persistence_from_env",
+    # Autostop liveness probe (agent-box auto-stop/wake infra). The
+    # ``/api/health`` endpoint serves ``liveness_snapshot``; the individual
+    # accessors are exported for tests + the idle-check Lambda contract.
+    "liveness_snapshot",
+    "active_connection_count",
+    "inflight_turn_count",
+    "solve_in_flight_count",
+    "is_busy",
     # job-0121: Case lifecycle handlers + chat persistence.
     "_emit_case_list",
     "_emit_case_open",

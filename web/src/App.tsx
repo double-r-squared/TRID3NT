@@ -34,7 +34,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MapView, type MapCommandSubscribeFunc, type MapTheme } from "./Map";
-import { Chat, readChatWidth } from "./Chat";
+import { Chat, readChatWidth, clampChatWidth } from "./Chat";
 import { LayerPanel, createLayerPanelBus, readLayersWidth } from "./LayerPanel";
 import {
   AuthGate,
@@ -82,6 +82,8 @@ import {
   MobileDrawerButton,
 } from "./components/MobileDrawer";
 import { IconMenu, IconSettings } from "./components/icons";
+import { WakeOverlay, WakePhase } from "./components/WakeOverlay";
+import { AgentWaker, wakeConfigured } from "./lib/wake";
 import {
   CaseListEnvelopePayload,
   CaseOpenEnvelopePayload,
@@ -96,6 +98,15 @@ import {
   SecretsListPayload,
   SessionStatePayload,
 } from "./contracts";
+
+// Auto-stop/wake (NATE 2026-06-17) — number of CONSECUTIVE failed reconnect
+// schedules before the "Wake up agent" overlay appears. The first failed
+// attempt is usually a transient WS blip while the box is still UP (CloudFront
+// idle cull, brief network drop) — showing the overlay then would be noise. By
+// the SECOND consecutive failure the box is plausibly stopped, so we surface
+// the overlay. ws.ts has already been firing the (debounced) wake POST from the
+// first schedule, so by the time the overlay shows, StartInstances is in flight.
+const WAKE_OVERLAY_THRESHOLD = 2;
 
 // localStorage keys for panel collapse state (job-0065).
 const LS_LEFT_COLLAPSED = "grace2.leftPanelCollapsed";
@@ -370,6 +381,26 @@ export function App(): JSX.Element {
   // authoritative (live layer add AND delete apply via replace-not-reconcile).
   const wsStatusRef = useRef<ConnectionStatus>("connecting");
 
+  // Auto-stop/wake (NATE 2026-06-17) — the always-on agent box can be STOPPED
+  // by the idle-check Lambda; a stopped box answers nothing so the WS can't
+  // connect. These drive the "Wake up agent" overlay:
+  //   - `wsStatus` mirrors the live connection status as STATE (the ref above
+  //     is a stable closure read; the overlay needs a re-render on flip).
+  //   - `wakeAttempts` counts consecutive failed reconnect schedules since the
+  //     last successful open (fed by ws.ts `onWakeNeeded`). The overlay shows
+  //     only past WAKE_OVERLAY_THRESHOLD so a single transient blip (one failed
+  //     attempt — e.g. a WS hiccup while the box is still up) never flashes it.
+  //   - `wakerRef` is the SHARED AgentWaker so the overlay's explicit-tap path
+  //     (resetDebounce → immediate StartInstances POST) and ws.ts's auto-wake
+  //     loop coalesce against the same debounce window.
+  const [wsStatus, setWsStatus] = useState<ConnectionStatus>("connecting");
+  const [wakeAttempts, setWakeAttempts] = useState<number>(0);
+  // True while the user has tapped the overlay (or ws.ts is auto-waking) — keeps
+  // the overlay in the "waking" (shimmer) phase until the socket re-opens.
+  const [wakeRequested, setWakeRequested] = useState<boolean>(false);
+  const wakerRef = useRef<AgentWaker | null>(null);
+  if (wakerRef.current === null) wakerRef.current = new AgentWaker();
+
   // Settings popup visibility (job-0143). job-0321 F29 — the standalone
   // Secrets popup is retired; API-key management now lives INSIDE Settings
   // (SettingsPopup's embedded SecretsPanel), so there is no separate
@@ -580,12 +611,60 @@ export function App(): JSX.Element {
     clearActive();
   }, [clearActive]);
 
+  // Auto-stop/wake (NATE 2026-06-17) — derive the WakeOverlay phase from the
+  // live WS status + the consecutive-failure count + whether wake is even
+  // configured. The overlay NEVER shows in dev/LAN (no wake endpoint → the box
+  // can't be auto-stopped). It shows only when the socket is NOT connected and
+  // we've crossed the failure threshold (so a single transient blip can't flash
+  // it). Once the user taps wake (or ws.ts auto-wakes past the threshold) we
+  // pin "waking" until the socket re-opens (onStatus clears wakeRequested on
+  // "connected"), which flips the phase back to "hidden" → fade-out.
+  const wakePhase: WakePhase = (() => {
+    if (!wakeConfigured()) return "hidden";
+    if (wsStatus === "connected") return "hidden";
+    if (wakeRequested) return "waking";
+    if (wakeAttempts >= WAKE_OVERLAY_THRESHOLD) return "asleep";
+    return "hidden";
+  })();
+
+  // Explicit user tap on the "Wake up agent" rectangle: reset the shared
+  // waker's debounce so a manual press always fires StartInstances (even right
+  // after an automatic attempt), POST the wake endpoint, and pin the overlay to
+  // "waking" until the socket re-opens. Fire-and-forget — never throws.
+  const handleWakeTap = useCallback(() => {
+    setWakeRequested(true);
+    const waker = wakerRef.current;
+    if (!waker) return;
+    waker.resetDebounce();
+    void waker.wake().catch(() => {
+      /* best-effort; the reconnect loop owns recovery */
+    });
+  }, []);
+
   // Mount a GraceWs that routes session-state, map-command, AND secrets-list.
   useEffect(() => {
     const ws = new GraceWs(WS_URL, {
       // job-0357 — record live status so onSessionState can classify a
       // server snapshot as authoritative (connected) vs a reconnect top-up.
-      onStatus: (s) => { wsStatusRef.current = s; },
+      // Auto-stop/wake — ALSO mirror into state so the WakeOverlay re-renders
+      // on a flip. On a successful (re)connect, clear the wake state: the box
+      // is up, so the overlay fades out and the attempt counter resets.
+      onStatus: (s) => {
+        wsStatusRef.current = s;
+        setWsStatus(s);
+        if (s === "connected") {
+          setWakeAttempts(0);
+          setWakeRequested(false);
+        }
+      },
+      // Auto-stop/wake — ws.ts schedules a reconnect that won't open (the box
+      // may be stopped). Track the consecutive-failure count so the overlay
+      // shows only past the threshold. ws.ts already fired the (debounced) wake
+      // POST itself, so once we cross the threshold we reflect "waking".
+      onWakeNeeded: (attempt) => {
+        setWakeAttempts(attempt);
+        if (attempt >= WAKE_OVERLAY_THRESHOLD) setWakeRequested(true);
+      },
       onAgentChunk: () => { /* Chat owns rendering */ },
       onPipelineState: () => { /* Chat owns rendering */ },
       // job-0357 (per-Case layer DURABILITY) — stamp `replace_layers` from the
@@ -621,7 +700,7 @@ export function App(): JSX.Element {
       onImpactEnvelope: (p) => setImpactEnvelope(p),
       // sprint-13 job-0231: accumulate chart-emission payloads per session.
       onChartEmission: (p) => handleChartEmission(p),
-    });
+    }, { waker: wakerRef.current ?? undefined });
     wsRef.current = ws;
     ws.connect();
     return () => {
@@ -1093,6 +1172,54 @@ export function App(): JSX.Element {
           onWidthChange={setChatWidth}
         />
       </div>
+
+      {/* Auto-stop/wake (NATE 2026-06-17) — the "Wake up agent" overlay sits
+          OVER the chat panel when the always-on agent box appears stopped. The
+          chat-mount above uses display:contents (no positioning context), so
+          this wrapper is an absolutely-positioned sibling that MIRRORS the chat
+          panel geometry: desktop = the right column (right:16 / top:16 /
+          bottom:0 / clamped width); mobile = the bottom-sheet band. It renders
+          only when there's a panel to cover (not while the desktop panel is
+          collapsed) AND the wake phase isn't "hidden" (WakeOverlay itself fades
+          to nothing on "hidden"). z-index 55 clears the chat panel (32) + its
+          inline gate cards (50). */}
+      {(isMobile || !rightCollapsed) && (
+        <div
+          data-testid="grace2-wake-overlay-mount"
+          style={
+            isMobile
+              ? {
+                  position: "absolute",
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  // Cover the bottom ~52% of the viewport — where the chat
+                  // bottom sheet lives — so the overlay reads as "over the
+                  // chat" without blanketing the whole map.
+                  height: "52vh",
+                  zIndex: 55,
+                  // The wrapper itself is inert until the overlay shows; the
+                  // overlay's own pointerEvents handle hit-testing.
+                  pointerEvents: wakePhase === "hidden" ? "none" : "auto",
+                  borderRadius: "12px 12px 0 0",
+                  overflow: "hidden",
+                }
+              : {
+                  position: "absolute",
+                  right: 16,
+                  top: 16,
+                  bottom: 0,
+                  width: `min(${clampChatWidth(chatWidth)}px, 92vw)`,
+                  zIndex: 55,
+                  pointerEvents: wakePhase === "hidden" ? "none" : "auto",
+                  borderRadius: 12,
+                  overflow: "hidden",
+                }
+          }
+        >
+          <WakeOverlay phase={wakePhase} onWake={handleWakeTap} />
+        </div>
+      )}
 
       {/* Layers hamburger — top-LEFT. (Desktop; mobile uses the drawer ☰.) */}
       {!isMobile && showLayersHamburger && (

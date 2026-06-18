@@ -50,6 +50,7 @@ import type { ImpactEnvelope } from "./components/ImpactPanel";
 import type { ChartPayload } from "./components/ChartStack";
 import type { CodeExecRequestPayload, CodeExecResultPayload } from "./components/SandboxCard";
 import { getIdToken } from "./auth";
+import { AgentWaker } from "./lib/wake";
 // Wire-shape mirrors for the server's source-suggestion candidate envelopes.
 // Server-internal envelope_type names (`mode2-candidate`, etc.) are preserved
 // on the wire; UI text never references them (translated by
@@ -244,6 +245,24 @@ export interface WsHandlers {
    * existing/anonymous-mode callers need no change.
    */
   onAuthExpired?: (p: ErrorPayload | null) => void;
+  /**
+   * Wake-on-reconnect hook (auto-stop/wake infra, NATE 2026-06-17). Fires when
+   * the reconnect loop schedules a retry against a socket that won't open —
+   * the agent box may have been STOPPED by the idle-check Lambda. The web
+   * fires a single (debounced) POST to the wake endpoint to ask the wake
+   * Lambda to StartInstances, then the existing backoff reconnect re-dials.
+   *
+   * This handler is the SIGNAL to the UI ("the box looks down, we're waking
+   * it") — App.tsx maps it to the "Wake up agent" overlay's auto-waking state.
+   * The actual wake POST is issued by ws.ts via its injected {@link AgentWaker}
+   * (see `waker` below) regardless of whether this handler is wired, so wake
+   * works even for callers that don't render the overlay. Optional.
+   *
+   * `attempt` is the count of consecutive failed reconnect schedules since the
+   * last successful open — the UI uses it to avoid flashing the overlay on a
+   * single transient blip (show only after a couple of failed attempts).
+   */
+  onWakeNeeded?: (attempt: number) => void;
 }
 
 // job-0253 — A.5 auth-failure close code. The agent's production gate
@@ -490,11 +509,23 @@ export class GraceWs {
   // Any inbound frame (the resume reply or ordinary traffic) clears the deadline.
   private keepaliveTimer: number | null = null;
   private pongDeadlineTimer: number | null = null;
+  // Auto-stop/wake (NATE 2026-06-17) — count of consecutive failed reconnect
+  // schedules since the last successful open. Drives the wake-on-reconnect
+  // POST (we only start poking the wake endpoint after the FIRST schedule, but
+  // a single transient blip shouldn't flash the UI's "Wake up agent" overlay —
+  // App.tsx reads `attempt` and shows the overlay only past a small threshold).
+  // Reset to 0 in the open handler.
+  private reconnectAttempts = 0;
+  // Injected waker so the reconnect loop can ask the wake Lambda to
+  // StartInstances when the box appears stopped. Debounced internally; a no-op
+  // when no wake endpoint is configured (dev/LAN). Injectable for tests.
+  private readonly waker: AgentWaker;
 
-  constructor(url: string, handlers: WsHandlers) {
+  constructor(url: string, handlers: WsHandlers, opts?: { waker?: AgentWaker }) {
     this.url = url;
     this.handlers = handlers;
     this.sessionId = loadOrCreateSessionId();
+    this.waker = opts?.waker ?? new AgentWaker();
     // job-0159: register with the per-session fan-out hub so envelopes
     // received by sibling GraceWs instances (e.g. App's instance when the
     // tool ran on Chat's instance) are still delivered to OUR handlers.
@@ -985,6 +1016,10 @@ export class GraceWs {
     this.socket = ws;
     ws.addEventListener("open", () => {
       this.backoffMs = 500;
+      // Auto-stop/wake — a successful open means the box is up; clear the
+      // consecutive-failure counter so the next drop starts fresh (the UI
+      // overlay only shows past a threshold of consecutive failures).
+      this.reconnectAttempts = 0;
       this.handlers.onStatus("connected");
       // BUG 4a — start the application-level keepalive now that the socket is
       // OPEN. Re-armed fresh on every (re)open; torn down in the close handler
@@ -1511,6 +1546,26 @@ export class GraceWs {
 
   private scheduleReconnect(): void {
     this.handlers.onStatus("reconnecting");
+    // Auto-stop/wake (NATE 2026-06-17) — a scheduled reconnect means the socket
+    // would not open / dropped. The agent box may have been STOPPED by the
+    // idle-check Lambda, in which case NO amount of WS retrying alone will
+    // reconnect (a stopped box answers nothing) — we must ask the wake Lambda
+    // to StartInstances. Fire a single (debounced, fire-and-forget) wake POST
+    // on EVERY schedule; the AgentWaker coalesces the burst into one
+    // StartInstances request and no-ops entirely when no wake endpoint is
+    // configured (dev/LAN). The await is intentionally NOT taken here so a slow
+    // / failing wake fetch can never delay the backoff reconnect below.
+    this.reconnectAttempts += 1;
+    void this.waker.wake().catch(() => {
+      /* wake is best-effort; the reconnect loop owns recovery */
+    });
+    // Signal the UI ("box looks down, we're waking it"). The attempt count lets
+    // App.tsx debounce the overlay so a single transient blip doesn't flash it.
+    try {
+      this.handlers.onWakeNeeded?.(this.reconnectAttempts);
+    } catch {
+      /* a UI handler throw must not wedge the reconnect loop */
+    }
     const delay = this.backoffMs;
     this.backoffMs = Math.min(this.backoffMs * 2, this.maxBackoffMs);
     this.reconnectTimer = window.setTimeout(() => {

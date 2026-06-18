@@ -1088,7 +1088,24 @@ async def _handle_http(
                 _format_response(500, b'{"error":"telemetry summary failed"}')
             )
     elif path == "/api/health":
-        writer.write(_format_response(200, b'{"ok":true}'))
+        # Autostop liveness probe (agent-box auto-stop/wake infra). The idle
+        # Lambda polls this and its safety gate reads ``active_connections`` +
+        # ``busy`` to decide whether the always-on agent EC2 box may be stopped:
+        # it stops ONLY after N consecutive polls with active_connections == 0
+        # AND busy == false. Both signals come from the live WS connection
+        # registry + solver-in-flight markers in ``server.py`` (same process,
+        # same asyncio loop). Best-effort: if the snapshot raises for any reason
+        # we fall back to a conservative busy=true so a transient glitch can
+        # never trick the gate into stopping a live box.
+        try:
+            from .server import liveness_snapshot
+
+            health = liveness_snapshot()
+        except Exception:  # noqa: BLE001 — never let the probe stop a live box
+            logger.exception("liveness snapshot failed; reporting busy=true")
+            health = {"ok": True, "active_connections": 1, "busy": True}
+        body = json.dumps(health, separators=(",", ":")).encode("utf-8")
+        writer.write(_format_response(200, body))
     else:
         writer.write(_format_response(404, b'{"error":"not found"}'))
     await writer.drain()

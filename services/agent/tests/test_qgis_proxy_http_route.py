@@ -116,11 +116,18 @@ def test_qgis_proxy_route_502_when_upstream_unreachable(monkeypatch):
 
 
 def test_catalog_route_unaffected(monkeypatch):
-    """The proxy wiring must not perturb the existing catalog endpoint."""
+    """The proxy wiring must not perturb the existing health endpoint.
+
+    The autostop liveness probe expanded the body to
+    ``{"ok":true,"active_connections":<int>,"busy":<bool>}`` (idle Lambda gate);
+    ``ok`` is still present + 200, and at rest the box reports zero connections
+    and not busy."""
     monkeypatch.setenv("QGIS_PROXY_ENABLED", "true")
     reader = _FakeReader(_request("/api/health"))
     writer = _FakeWriter()
     _run(tool_catalog_http._handle_http(reader, writer))
     out = bytes(writer.buffer)
     assert b"200 OK" in out
-    assert b'{"ok":true}' in out
+    assert b'"ok":true' in out
+    assert b'"active_connections":0' in out
+    assert b'"busy":false' in out
