@@ -178,9 +178,11 @@ CATEGORIES: tuple[CategorySpec, ...] = (
         id="coastal",
         name="Coastal and ocean",
         description=(
-            "Coastal water levels, tides, surge, and sea-level-rise scenarios: "
-            "GTSM tide+surge reanalysis, NOAA CO-OPS station tides, NOAA OCM "
-            "SLR bathtub scenarios."
+            "Coastal water levels, tides, surge, sea-level-rise scenarios, and "
+            "merged topo-bathymetry: GTSM tide+surge reanalysis, NOAA CO-OPS "
+            "station tides, NOAA OCM SLR bathtub scenarios, NOAA NCEI CUDEM "
+            "topo-bathymetric DEM (sea-floor + land elevation for coastal "
+            "SFINCS)."
         ),
     ),
     CategorySpec(
@@ -307,6 +309,10 @@ PRIMARY_CATEGORY: dict[str, str] = {
     "fetch_gtsm_tide_surge": "coastal",
     "fetch_noaa_coops_tides": "coastal",
     "fetch_noaa_slr_scenarios": "coastal",
+    # SFINCS North Star P1: merged coastal topo-bathymetry DEM (NOAA NCEI CUDEM
+    # 1/9 arc-sec + USGS 3DEP land) — the bathymetric input the coastal SFINCS
+    # bed needs (fetch_dem alone is land-only). EPSG:32616 NAVD88 positive-up.
+    "fetch_topobathy": "coastal",
     # ---- 9. damage_assessment ---------------------------------------------
     "compute_impact_envelope": "damage_assessment",
     "postprocess_pelicun": "damage_assessment",

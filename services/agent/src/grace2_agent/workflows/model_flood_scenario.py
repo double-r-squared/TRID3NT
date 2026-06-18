@@ -89,6 +89,7 @@ from ..tools.data_fetch import (
     geocode_location,
     lookup_precip_return_period,
 )
+from ..tools.fetch_topobathy import TopobathyError, fetch_topobathy
 from ..tools.publish_layer import PublishLayerError, publish_layer
 from ..tools.solver import run_solver, select_compute_class, wait_for_completion
 from .postprocess_flood import (
@@ -883,6 +884,7 @@ async def model_flood_scenario(
     enable_subgrid: bool = False,
     building_obstacles: bool | str = False,
     building_obstacle_mode: str = "exclude",
+    coastal: bool = False,
     *,
     project_id: str | None = None,
     session_id: str | None = None,
@@ -949,6 +951,23 @@ async def model_flood_scenario(
         building_obstacle_mode: ``"exclude"`` (default) makes footprint cells
             INACTIVE no-flow holes; ``"raise"`` keeps them active but lifts their
             bed elevation via the subgrid (requires subgrid; auto-enabled).
+        coastal: COASTAL-AOI flag (SFINCS North Star P1). When ``True`` — OR
+            implicitly when ``surge_forcing`` is supplied (a water-level / surge
+            boundary is physically incoherent without a nearshore bed) — the DEM
+            fetch is routed through ``fetch_topobathy`` instead of ``fetch_dem``.
+            ``fetch_topobathy`` produces ONE seamless topo-bathymetry surface
+            (USGS 3DEP land + NOAA NCEI CUDEM bathymetry, CUDEM winning on the
+            coast) in the SAME contract as ``fetch_dem`` (single-band float32
+            NAVD88-metres COG, positive-up, EPSG:32616), so ``build_sfincs_model``
+            / ``setup_dep`` consume it UNCHANGED — the coastal DEM is a drop-in.
+            ``False`` (default) AND no ``surge_forcing`` → the LAND/pluvial path
+            is byte-identical to the v0.1 workflow (``fetch_dem``,
+            regression-critical). If ``fetch_topobathy`` cannot find CUDEM
+            bathymetry for the AOI it degrades INTERNALLY to a 3DEP-land-only
+            surface (honest ``fallback_warning``, never a silent dead-end); a
+            hard topobathy failure (no CUDEM AND no 3DEP, bad bbox) surfaces as a
+            typed failed envelope. The land DEM behaviour for a non-coastal run
+            is never touched.
         project_id / session_id: ULID identifiers from the WS session. When
             ``None``, fresh ULIDs are minted (for direct-call / smoke).
 
@@ -979,6 +998,24 @@ async def model_flood_scenario(
         duration_hr,
         compute_class,
         forcing_raster_uri,
+    )
+
+    # --- Coastal-AOI detection (SFINCS North Star P1) ---
+    # Signal = explicit ``coastal`` flag OR ``surge_forcing`` present. A surge /
+    # water-level boundary is physically incoherent on a land-only DEM (there is
+    # no nearshore bed to route run-up over), so a surge request implies a
+    # coastal AOI that needs the merged topo-bathymetry surface. This is a clean,
+    # testable signal off the existing workflow inputs — no geometry/coastline
+    # lookup needed. When False, the DEM fetch stays on ``fetch_dem`` exactly as
+    # the v0.1 land/pluvial path (regression-critical).
+    is_coastal = bool(coastal) or bool(surge_forcing)
+    logger.info(
+        "model_flood_scenario coastal=%s (explicit=%s, surge_forcing=%s) — "
+        "DEM fetch routes through %s",
+        is_coastal,
+        bool(coastal),
+        bool(surge_forcing),
+        "fetch_topobathy" if is_coastal else "fetch_dem",
     )
 
     # --- Step 0: bbox resolution (Decision K; bbox-direct wins precedence) ---
@@ -1045,10 +1082,55 @@ async def model_flood_scenario(
 
     def _fetcher_chain() -> None:
         nonlocal precip_inches, precip_magnitude_mm_per_hr, forcing_summary
-        dem_layer = fetch_dem(resolved_bbox, resolution_m=int(grid_resolution_m))
-        data_sources.append(
-            DataSource(name="USGS 3DEP", uri=dem_layer.uri, accessed_at=datetime.now(timezone.utc))
-        )
+        # --- DEM fetch: COASTAL branch (fetch_topobathy) vs LAND/pluvial branch
+        # (fetch_dem). Both return a LayerURI with .uri pointing at a single-band
+        # float32 NAVD88-metres COG (positive-up, bathymetry NEGATIVE on the
+        # coastal path, NO sign flip) in the SAME contract, so the downstream
+        # build_sfincs_model(dem_uri=...) seam is identical for both. The
+        # non-coastal branch is byte-identical to the v0.1 workflow.
+        if is_coastal:
+            # ``fetch_topobathy`` REUSES fetch_dem internally for the 3DEP land
+            # DEM and merges NOAA NCEI CUDEM bathymetry on top (CUDEM wins on the
+            # coast). It DEGRADES internally to 3DEP-land-only with an honest
+            # fallback_warning if CUDEM is missing for the AOI (never a silent
+            # dead-end); a hard failure (no CUDEM AND no 3DEP, bad bbox, datum
+            # mismatch) raises a TopobathyError carrying an error_code that the
+            # outer handler threads into the failed envelope.
+            topobathy_layer = fetch_topobathy(
+                resolved_bbox, resolution_m=int(grid_resolution_m)
+            )
+            dem_layer = topobathy_layer
+            _bathy_present = bool(getattr(topobathy_layer, "bathymetry_present", True))
+            _tile_count = int(getattr(topobathy_layer, "cudem_tile_count", 0))
+            _fallback_warning = getattr(topobathy_layer, "fallback_warning", None)
+            data_sources.append(
+                DataSource(
+                    name=(
+                        "NOAA NCEI CUDEM + USGS 3DEP (merged topo-bathymetry)"
+                        if _bathy_present
+                        else "USGS 3DEP (topobathy fallback: bathymetry ABSENT)"
+                    ),
+                    uri=dem_layer.uri,
+                    accessed_at=datetime.now(timezone.utc),
+                )
+            )
+            if not _bathy_present:
+                logger.warning(
+                    "model_flood_scenario: coastal AOI but fetch_topobathy "
+                    "degraded to 3DEP-land-only (cudem_tile_count=%s) — %s",
+                    _tile_count,
+                    _fallback_warning
+                    or "bathymetry absent; coastal inundation under-represented",
+                )
+        else:
+            dem_layer = fetch_dem(resolved_bbox, resolution_m=int(grid_resolution_m))
+            data_sources.append(
+                DataSource(
+                    name="USGS 3DEP",
+                    uri=dem_layer.uri,
+                    accessed_at=datetime.now(timezone.utc),
+                )
+            )
         landcover_result = fetch_landcover(resolved_bbox, dataset="nlcd_2021")
         landcover_layer: LayerURI = landcover_result["layer"]
         nlcd_vintage_year = int(landcover_result.get("nlcd_vintage_year"))
@@ -1197,6 +1279,33 @@ async def model_flood_scenario(
                 f"data-fetch phase exceeded {_FETCHER_PHASE_TIMEOUT_S:.0f}s "
                 "(a data endpoint or terrain/landcover read stalled)"
             ),
+            workflow_name=workflow_name,
+            data_sources=data_sources,
+            forcing=forcing_summary,
+            solver_run_ids=solver_run_ids,
+            return_period_years=return_period_yr,
+            duration_hours=float(duration_hr),
+            grid_resolution_m=grid_resolution_m,
+        )
+    except TopobathyError as exc:
+        # COASTAL DEM hard failure (no CUDEM AND no 3DEP, bad bbox, datum
+        # mismatch). The soft "CUDEM missing, 3DEP present" case does NOT reach
+        # here — fetch_topobathy degrades internally and returns a result. This
+        # is the honest dead-end: thread the typed error_code into the failed
+        # envelope (Invariant 7 — never a fabricated topobathy success).
+        logger.warning(
+            "model_flood_scenario: fetch_topobathy hard-failed for coastal "
+            "bbox=%s (%s / %s) — returning failed envelope.",
+            resolved_bbox,
+            exc.error_code,
+            exc,
+        )
+        return _build_failed_envelope(
+            bbox=resolved_bbox,
+            project_id=proj_id,
+            session_id=sess_id,
+            error_code=exc.error_code,
+            error_detail=str(exc),
             workflow_name=workflow_name,
             data_sources=data_sources,
             forcing=forcing_summary,
@@ -1788,6 +1897,7 @@ async def run_model_flood_scenario(
     duration_hr: int = 24,
     compute_class: str = "medium",
     forcing_raster_uri: str | None = None,
+    coastal: bool = False,
     # job-0164: absorb LLM-invented kwargs (centralized at server.py via
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
@@ -1860,6 +1970,16 @@ async def run_model_flood_scenario(
             is the Case 3 real-data forcing path. ``duration_hours`` is reused
             as the accumulation window. Leave unset (``None``) for the standard
             return-period design-storm scenario.
+        coastal: set ``True`` for a COASTAL flood / surge / run-up scenario near
+            the ocean shoreline. This routes the terrain fetch through
+            ``fetch_topobathy`` (a SEAMLESS land-plus-seafloor DEM merging USGS
+            3DEP with NOAA NCEI CUDEM bathymetry) instead of the land-only
+            ``fetch_dem`` — so the model has a real nearshore bed to route
+            inundation over. Default ``False`` for an inland / pluvial flood
+            (land-only DEM, unchanged). Auto-enabled when a surge water-level
+            boundary is supplied. Use for prompts mentioning the coast, storm
+            surge, hurricane inundation at the shoreline, tide, or "include the
+            sea floor / bathymetry".
 
     Returns:
         On success: the primary flood-depth COG as a ``LayerURI`` — the
@@ -1903,6 +2023,7 @@ async def run_model_flood_scenario(
         duration_hr=duration_hr,
         compute_class=compute_class,
         forcing_raster_uri=forcing_raster_uri,
+        coastal=coastal,
     )
     # --- Layer-emission contract pin (docs/decisions/layer-emission-contract.md, 2026-06-07) ---
     # Return the primary flood-depth COG as a LayerURI so PipelineEmitter's
