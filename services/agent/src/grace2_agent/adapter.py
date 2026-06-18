@@ -450,9 +450,17 @@ Boulder"), the request is NOT complete after the compute/fetch tool — you
 MUST finish by calling publish_layer(layer_uri=<handle>,
 layer_id=<descriptive-id>) with the producing tool's handle, then narrate a
 one-line summary. NEVER claim a layer is displayed, shown, or "added to the
-map" unless publish_layer returned a WMS URL THIS turn. The only exception
-is a tool whose own function_response already contains a wms_url — it
-published internally and needs no second publish_layer call.
+map" unless publish_layer returned a WMS URL THIS turn. The only exception is
+a tool whose own function_response signals it ALREADY PUBLISHED its layer —
+recognized by ANY of: a "wms_url" field, "published": true, "on_map": true,
+or a "publish_status" of "published". A simulation/scenario result
+(run_model_flood_scenario, run_model_nws_flood_event_scenario,
+run_model_flood_habitat_scenario, run_model_groundwater_contamination_scenario,
+run_modflow_job) returns its peak-depth / plume layer ALREADY published, styled,
+and on the map — its function_response carries "published": true and "on_map":
+true. Do NOT call publish_layer on that scenario layer's handle or URI: it is
+already rendered, and a second publish_layer would paint a redundant styleless
+duplicate (live finding — two flood layers, one viridis). Just narrate from it.
 
 publish_layer is for RASTER COGs ONLY (CRITICAL — vector render path):
 NEVER call publish_layer on a VECTOR layer — roads, rivers, waterways,
@@ -1631,6 +1639,85 @@ def _extract_flood_metrics_phrase(result: dict[str, Any]) -> str:
     return ", ".join(parts)
 
 
+#: Scenario/simulation composer tool names whose successful return is an
+#: ALREADY-PUBLISHED, styled layer on the user's map (job duplicate-flood-layer).
+#: Their thin wrapper publishes the postprocess result internally and returns the
+#: published LayerURI (uri = the renderable http(s) WMS/tile URL). The LLM must
+#: NOT call publish_layer on that handle again — a second publish re-styles the
+#: SAME COG with TiTiler's viridis default and paints a duplicate map row. Kept
+#: aligned with ``scenario_reuse.EXPENSIVE_SCENARIO_TOOLS`` (the reuse index keys
+#: off the same set); a lazy import keeps the two in lockstep without a hard
+#: module coupling at import time.
+def _published_scenario_tool_names() -> frozenset[str]:
+    try:
+        from .scenario_reuse import EXPENSIVE_SCENARIO_TOOLS
+
+        names = set(EXPENSIVE_SCENARIO_TOOLS.keys())
+    except Exception:  # noqa: BLE001 — never let an import hiccup break summary
+        names = set()
+    # ``run_model_flood_habitat_scenario`` is a flood composer that is NOT in the
+    # reuse index (it produces a habitat-paired flood layer) but ALSO returns an
+    # already-published flood LayerURI, so include it explicitly.
+    names.add("run_model_flood_habitat_scenario")
+    return frozenset(names)
+
+
+def _layer_uri_is_published(result: Any) -> bool:
+    """True when ``result`` duck-types as a LayerURI whose ``uri`` is a renderable
+    http(s) WMS/tile URL — i.e. it has ALREADY been published to the map. A raw
+    ``gs://`` / ``s3://`` COG handle is storage-only and returns False."""
+    if isinstance(result, (dict, str, bytes)) or result is None:
+        return False
+    uri = getattr(result, "uri", None)
+    if not (hasattr(result, "layer_id") and isinstance(uri, str)):
+        return False
+    return uri.startswith("http://") or uri.startswith("https://")
+
+
+def _summarize_published_scenario_layer(
+    tool_name: str, result: Any
+) -> dict[str, Any]:
+    """Compact function_response for a scenario wrapper that returned an
+    ALREADY-PUBLISHED, styled LayerURI (job duplicate-flood-layer, PRIMARY fix).
+
+    Carries explicit ``published`` / ``on_map`` flags (plus a ``publish_status``
+    and a ``wms_url`` alias matching the prompt's escape-clause vocabulary) so the
+    LLM reliably recognizes the layer is on the map and does NOT issue a redundant
+    publish_layer call on the same handle (which would paint a styleless viridis
+    duplicate). The metadata the loop needs to narrate + pass the handle is kept:
+    layer_id (the canonical handle), name, layer_type, uri, style_preset, bbox.
+    """
+    layer_id = getattr(result, "layer_id", None)
+    uri = getattr(result, "uri", None)
+    bbox = getattr(result, "bbox", None)
+    summary: dict[str, Any] = {
+        "tool": tool_name,
+        "status": "ok",
+        "published": True,
+        "on_map": True,
+        "publish_status": "published",
+        # ``wms_url`` alias — the publish-discipline escape clause keys on this
+        # field name; the LayerURI's ``uri`` IS the renderable WMS/tile URL here.
+        "wms_url": uri,
+        "layer_id": layer_id,
+        # ``handle`` mirrors the layer_id so the model passes the canonical
+        # handle (never a raw gs:// path) into any downstream *_uri param.
+        "handle": layer_id,
+        "name": getattr(result, "name", None),
+        "layer_type": getattr(result, "layer_type", None),
+        "uri": uri,
+        "style_preset": getattr(result, "style_preset", None),
+        "already_published_note": (
+            "This scenario layer is ALREADY published, styled, and on the user's "
+            "map. Do NOT call publish_layer on it — that would paint a redundant "
+            "styleless duplicate. Narrate the result from this layer."
+        ),
+    }
+    if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
+        summary["bbox"] = list(bbox)
+    return summary
+
+
 def summarize_tool_result(
     tool_name: str,
     result: Any,
@@ -1683,6 +1770,24 @@ def summarize_tool_result(
 
     if result is None:
         return {"tool": tool_name, "status": "no_result"}
+
+    # job duplicate-flood-layer (PRIMARY): a scenario/simulation composer
+    # (run_model_flood_scenario & friends) returns its peak-depth / plume layer
+    # ALREADY published, styled, and on the map (its thin wrapper publishes the
+    # postprocess result internally; the returned LayerURI's ``uri`` is the
+    # renderable http(s) WMS/tile URL). Without an explicit signal, this LayerURI
+    # falls through to the repr-coerce branch below and the LLM, seeing only a
+    # raw COG-ish repr, issues a SECOND publish_layer on the handle — TiTiler
+    # then re-styles the same COG with its viridis default and a duplicate
+    # styleless layer appears on the map. Stamp ``published``/``on_map`` so the
+    # publish-discipline escape clause fires and the model narrates instead of
+    # re-publishing. Scoped to the scenario tool set AND a genuinely-published
+    # (http) LayerURI, so a FAILED scenario (no layer / honesty-floor empty
+    # envelope, handled above) and every non-scenario tool are untouched.
+    if tool_name in _published_scenario_tool_names() and _layer_uri_is_published(
+        result
+    ):
+        return _summarize_published_scenario_layer(tool_name, result)
 
     # job-0230 (sprint-13 Stage 2): chart-emission results carry a full
     # Vega-Lite spec with INLINE data rows (up to ~2000). Gemini must narrate

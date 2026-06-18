@@ -313,6 +313,52 @@ SOLVER_CONFIRM_TOOLS: set[str] = {
 }
 
 
+#: job duplicate-flood-layer (SAFETY NET): tokens that mark a FLOOD / DEPTH COG
+#: (vs terrain / land-cover / plume / generic rasters). Used at the publish_layer
+#: wrap-site so a re-publish of a flood-depth COG that arrives with an EMPTY
+#: style_preset is defaulted to ``continuous_flood_depth`` (white->blue->green)
+#: instead of "" — an empty preset makes TiTiler fall back to viridis and paints
+#: a redundant styleless flood layer (the exact duplicate-flood-layer symptom).
+#: Token-boundary matched (not substring) so e.g. ``demo`` never trips ``dem``.
+_FLOOD_DEPTH_STYLE_TOKENS: frozenset[str] = frozenset(
+    {"flood", "depth", "inundation", "floodepth"}
+)
+_DEFAULT_FLOOD_DEPTH_STYLE_PRESET: str = "continuous_flood_depth"
+
+
+def _is_flood_depth_cog(layer_uri: str, layer_id: str) -> bool:
+    """True when the resolved URI or layer_id tokenizes to a FLOOD/DEPTH raster.
+
+    Token-boundary matching on non-alphanumerics so ``flood-depth-peak-<run_id>``
+    and a ``.../flood_depth_peak.tif`` URI both match, while ``demo``/``dem`` do
+    not. Conservative: an unrecognized raster returns False (keeps the existing
+    empty-preset / QGIS-default behavior for non-flood rasters)."""
+    import re as _re
+
+    tokens = set(_re.split(r"[^a-z0-9]+", f"{layer_uri} {layer_id}".lower()))
+    return bool(tokens & _FLOOD_DEPTH_STYLE_TOKENS)
+
+
+def _resolve_publish_wrap_style_preset(
+    *, style_preset: str | None, layer_uri: str, layer_id: str
+) -> str:
+    """Style preset for the publish_layer wrap-site LayerURI (job
+    duplicate-flood-layer SAFETY NET).
+
+    Honors an explicit non-empty ``style_preset`` (the LLM / tool asked for it).
+    When it resolves EMPTY, default a flood/depth COG to
+    ``continuous_flood_depth`` so a redundant re-publish is never styleless
+    (which TiTiler renders as viridis). Non-flood rasters keep ``""`` (QGIS /
+    TiTiler default) exactly as before — terrain auto-scales, paletted COGs use
+    their embedded color table."""
+    preset = (style_preset or "").strip()
+    if preset:
+        return preset
+    if _is_flood_depth_cog(layer_uri, layer_id):
+        return _DEFAULT_FLOOD_DEPTH_STYLE_PRESET
+    return ""
+
+
 # --------------------------------------------------------------------------- #
 # Session-scoped confirmation registry (job-0243)
 # --------------------------------------------------------------------------- #
@@ -5159,7 +5205,16 @@ async def _invoke_tool_via_emitter(
                             name=lid,
                             layer_type="raster",
                             uri=result,
-                            style_preset=params.get("style_preset") or "",
+                            # job duplicate-flood-layer SAFETY NET: when a
+                            # re-publish of a FLOOD/DEPTH COG carries an empty
+                            # style_preset, default it to continuous_flood_depth
+                            # so the layer is never styleless (= viridis). Non-
+                            # flood rasters keep "" (QGIS/TiTiler default).
+                            style_preset=_resolve_publish_wrap_style_preset(
+                                style_preset=params.get("style_preset"),
+                                layer_uri=result,
+                                layer_id=lid,
+                            ),
                         )
                     )
                     if _emit_layer is not None:

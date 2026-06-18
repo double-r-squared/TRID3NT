@@ -157,6 +157,60 @@ logger = logging.getLogger("grace2_agent.pipeline_emitter")
 
 
 # --------------------------------------------------------------------------- #
+# Layer dedup-by-identity (job duplicate-flood-layer, SAFETY NET)
+# --------------------------------------------------------------------------- #
+#
+# ``add_loaded_layer`` historically deduped by the DISPLAY ``uri`` only. That is
+# too weak for the duplicate-flood-layer bug: the workflow's INTERNAL publish and
+# a redundant LLM re-publish of the SAME underlying COG arrive with DIFFERENT
+# display URLs (two distinct TiTiler tile templates / WMS LAYERS for one run) and
+# DIFFERENT layer_ids, so the uri-only dedup never merged them — two rows for one
+# flood result. The fix: derive a stable IDENTITY key from the underlying
+# COG/run, not the display URL, so the two publishes of the same COG collide and
+# merge into ONE loaded_layer.
+#
+# Identity precedence (most-specific first):
+#   1. the COG path carried in a TiTiler tile template's ``url=<quoted s3/gs>``
+#      query param — both publishes of the same COG embed the SAME ``url=`` value
+#      even when the surrounding template (rescale/colormap) differs;
+#   2. otherwise the raw ``uri`` itself (preserves the legacy uri-only behavior
+#      for plain gs:///s3:// COGs, QGIS WMS display URLs, and non-raster vectors).
+# Conservative by construction: an unrecognized display URL degrades to the full
+# ``uri`` key (== the prior behavior), so nothing that did NOT previously dedup
+# starts collapsing unexpectedly. In particular the QGIS WMS ``LAYERS=`` param is
+# NOT used as a key — it carries a GENERIC layer name (e.g. ``LAYERS=wdpa``) that
+# is shared across genuinely-distinct fetches (F97), so collapsing on it would
+# wrongly merge two independent map layers.
+
+def _layer_identity_key(uri: str) -> str:
+    """Stable cross-publish identity for a layer's display ``uri``.
+
+    Two publishes of the SAME underlying COG (workflow-internal + a redundant LLM
+    re-publish) yield the SAME key because each TiTiler tile template embeds the
+    SAME ``url=<COG>`` query param even when the surrounding rescale/colormap
+    differs. Everything else falls back to the raw ``uri`` (legacy behavior)."""
+    from urllib.parse import parse_qs, unquote, urlsplit
+
+    if not isinstance(uri, str) or not uri:
+        return uri
+    try:
+        parts = urlsplit(uri)
+    except Exception:  # noqa: BLE001 — a malformed URL degrades to itself
+        return uri
+    if not parts.query:
+        return uri
+    qs = parse_qs(parts.query)
+    # TiTiler tile template — the underlying COG is the ``url=`` param. This is
+    # the SHARED identity across the workflow publish and a redundant LLM
+    # re-publish of the same COG (the duplicate-flood-layer mechanism).
+    cog = qs.get("url")
+    if cog and cog[0]:
+        return unquote(cog[0])
+    # Unrecognized — keep the full uri so behavior is unchanged.
+    return uri
+
+
+# --------------------------------------------------------------------------- #
 # Terminal-on-RETURN detector (job — terminal-pipeline-card hardening)
 # --------------------------------------------------------------------------- #
 #
@@ -949,10 +1003,16 @@ class PipelineEmitter:
         and append to the session's ``loaded_layers``, then emit a fresh
         ``session-state`` envelope (A.7 replace-not-reconcile).
 
-        Dedup policy (TENTATIVE per kickoff): by ``uri``. If a tool re-fetches
-        the same layer, the existing entry is REPLACED in place with the
-        fresh metadata (e.g. style_preset may have changed) rather than
-        appended.
+        Dedup policy (job duplicate-flood-layer, SAFETY NET): by the underlying
+        COG/run IDENTITY (``_layer_identity_key``), NOT by the display ``uri``
+        alone. The workflow's internal publish and a redundant LLM re-publish of
+        the SAME COG arrive with different display URLs (distinct TiTiler tile
+        templates / WMS LAYERS) and different layer_ids; keying on the shared COG
+        identity makes them COLLIDE and MERGE into ONE row instead of painting a
+        styleless duplicate. The existing entry is REPLACED in place with the
+        fresh metadata (e.g. a styled re-publish supersedes a styleless one). A
+        plain gs:///s3:// COG (no query string) keys to its own uri, so the
+        legacy uri-only behavior is preserved for everything not display-wrapped.
         """
         summary = ProjectLayerSummary(
             layer_id=layer.layer_id,
@@ -964,9 +1024,18 @@ class PipelineEmitter:
             role=layer.role,
             temporal=layer.temporal is not None,
         )
-        # Dedup by uri — in-place replace if present, else append.
+        # Dedup by underlying-COG identity — in-place replace if present, else
+        # append. ``_layer_identity_key`` collapses two display URLs of the same
+        # COG to one key; for a plain COG it is the uri itself (legacy behavior).
+        _new_key = _layer_identity_key(summary.uri)
         for i, existing in enumerate(self._loaded_layers):
-            if existing.uri == summary.uri:
+            if _layer_identity_key(existing.uri) == _new_key:
+                # Drop the SUPERSEDED layer_id's side tables (inline GeoJSON /
+                # density meta) so a merge cannot leave an orphan keyed on the
+                # old id. No-op for raster flood layers (no inline GeoJSON).
+                if existing.layer_id != summary.layer_id:
+                    self._inline_geojson_by_layer_id.pop(existing.layer_id, None)
+                    self._density_meta_by_layer_id.pop(existing.layer_id, None)
                 self._loaded_layers[i] = summary
                 break
         else:
