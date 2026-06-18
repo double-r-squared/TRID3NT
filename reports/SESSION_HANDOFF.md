@@ -12,13 +12,26 @@ Greeting reminder: address the user as **NATE ALMANZA**; **no emojis** anywhere.
 
 ## 1. ONE IN-FLIGHT BACKGROUND TASK (read its result first)
 
-**SWMM-vs-SFINCS engine verification workflow — run `wf_88798825-738`.** Launched
-because NATE (correctly) pushed back on an over-broad "PySWMM can't do 2D" claim.
-It adversarially verifies what EPA-SWMM5/PySWMM can/cannot do HEADLESS for the
-animated-2D-urban-flood-around-buildings demo, vs SFINCS, and returns an honest
-engine recommendation + the 1-2 questions that pin the choice. **The North Star
-build is GATED on this verdict — do not start building the urban-2D demo until you
-read this result and NATE weighs in.**
+**IMPORTANT FRAMING (NATE corrected this at wind-down — do NOT inherit the false
+"versus"):** NATE wants BOTH North Star demos (urban AND coastal) AND BOTH engines.
+PySWMM is a wanted, real, headless engine (drainage networks, pipes, surcharge,
+flap-gate control, real-time stepping) — it is NOT being replaced by SFINCS. SFINCS
+owns coastal/broad-2D. The ONLY narrow open question is: for the URBAN demo, HOW to
+render animated 2D depth flowing AROUND buildings — via SWMM's own node-link surface
+representation, SWMM coupled to a thin 2D surface step, or a hybrid. The verification
+below answers "how to build the urban demo honestly, SWMM-centric," NOT "which engine
+wins." Earlier session notes that say "urban-2D = SFINCS, not PySWMM" OVER-corrected —
+treat PySWMM as the urban-demo engine of record, with the 2D-sheet-flow mechanism the
+open sub-question.
+
+**Engine/toolchain verification workflow — run `wf_88798825-738`.** Launched because
+NATE (correctly) pushed back on an over-broad "PySWMM can't do 2D" claim (the real
+question is the 2D-mesh SOLVER, not headless-ness — pyswmm IS headless). It verifies
+what EPA-SWMM5/PySWMM can/cannot do for the animated-2D-around-buildings demo, what
+tools produce such a demo, and recommends the honest toolchain (incl. PySWMM's role +
+a hybrid option) + the 1-2 questions that pin the 2D mechanism. **The urban North Star
+BUILD is gated on reading this + NATE's answer to §2 — but the engine (PySWMM) and
+both demos are NOT in question.**
 - Result file: `/tmp/claude-1000/-home-nate-Documents-GRACE-2/<sessionId>/tasks/wlcbkoqyd.output`
   (the task-id is `wlcbkoqyd`; if gone, re-run the script at
   `.../workflows/scripts/swmm-2d-engine-verify-wf_88798825-738.js`).
@@ -52,12 +65,19 @@ read this result and NATE weighs in.**
   `project_qgis_worker_job0308_design`. ECR mirror + IAM + S3 .qgs bucket + EC2 QGIS
   container + CloudFront /ogc/wms + env flips + a publish_layer vector branch. Touches
   the LIVE box + CloudFront — do it methodically, plan/apply/verify each step.
-- **North Star build** — GATED on §1's verdict. If it confirms SFINCS: start with
-  Phase 1 (animation): `postprocess_flood.py` currently np.squeeze's timemax to ONE
-  max COG (~L305-330); change to emit N per-frame COGs (+ set `dtout` in setup_config)
-  → feed the just-shipped Wave-1 sequential-group + scrubber + legend. Same-week
-  standalone win, demoable on ANY existing SFINCS run. Full 5-phase plan in
-  `project_pyswmm_north_star_demo`.
+- **North Star builds — BUILD BOTH (not versus):**
+  - **Urban demo** (NATE's "PySWMM" showcase): engine of record = **PySWMM/SWMM5**
+    (drainage + flap-gate barrier are SWMM's home turf); the 2D-sheet-flow-around-
+    buildings MECHANISM is the open sub-question §1 answers. PySWMM is a new Class-B
+    engine to stand up (headless on Batch; see `project_tool_integration_paradigm`).
+  - **Coastal demo**: **SFINCS + SnapWave** (quadtree); deck-authoring is the risk
+    (HydroMT can't author quadtree+SnapWave — spike it). Florence-vs-Michael = §2.
+  - **START with Phase 1 (animation) — it is ENGINE-AGNOSTIC and serves BOTH:**
+    `postprocess_flood.py` currently np.squeeze's timemax to ONE max COG (~L305-330);
+    change to emit N per-frame COGs (+ set `dtout`) → feed the just-shipped Wave-1
+    sequential-group + scrubber + legend. Same-week standalone win, demoable on ANY
+    existing time-series flood output (SFINCS today, SWMM later). 5-phase urban plan +
+    the corrected PySWMM framing in `project_pyswmm_north_star_demo`.
 
 ## 4. COMMITTED-NOT-DEPLOYED
 - `mongo_query` removal (commit `8e3f8e8`, pushed): registry 94→93. The agent is NOT
@@ -105,8 +125,11 @@ Agent batch + web shipped across commits `80ac536`→`8e3f8e8`, all on prod:
 - **Scale-to-zero via auto-stop/wake** chosen over a tiny always-warm box (NATE:
   latency is relative to minute-long sims). EC2 cold start is ~1-2 min (NOT the 2-5s
   Lambda figure). Skip the wake shimmer UI for dev.
-- **North Star reframe**: the urban-2D demo is a SFINCS generalization, NOT PySWMM
-  (pending §1 final verdict). Coastal = second, Florence-not-Michael.
+- **North Star = BOTH demos + BOTH engines** (NATE corrected the false "versus" at
+  wind-down). Urban demo engine = PySWMM (the 2D-sheet-flow mechanism is the only
+  open sub-question, §1); coastal = SFINCS+SnapWave. Build both; Phase-1 animation is
+  engine-agnostic and goes first. (An earlier subagent's "urban = SFINCS not PySWMM"
+  was an over-correction — superseded.)
 
 ## 8. OUTSTANDING HYGIENE
 - **cost_tracking.json**: this session ran MANY workflows/agents (diagnosis, 2 bug-fix
