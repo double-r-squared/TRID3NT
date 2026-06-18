@@ -257,6 +257,11 @@ export function SpatialDrawSurface({
   }
 
   function handleSubmit(): void {
+    // Authoritative gate — never relay a response while submit is blocked (e.g.
+    // an untagged barrier would otherwise round-trip a role=="barrier" feature
+    // with no barrier_type). The disabled button is the affordance; this guard
+    // closes the programmatic path.
+    if (!canSubmit) return;
     if (isVectorDraw) {
       const c = controllerRef.current;
       if (!c) return;
@@ -283,10 +288,26 @@ export function SpatialDrawSurface({
   }
 
   // --- Submit-enabled gate ----------------------------------------------- //
-  const canSubmit = useMemo(() => {
-    if (isVectorDraw) return counts.aoi + counts.barrier + counts.point > 0;
-    return pickCoords !== null;
+  // FR-WC-16: a vector_draw response must NEVER carry a role=="barrier" feature
+  // with no barrier_type (the untagged-barrier mismatch). The toolbar already
+  // tracks `counts.untaggedBarrier`; we hard-block submit while ANY drawn
+  // barrier is still untagged, and surface the reason. This is the client-side
+  // half of the gate that pairs with draw_controller.getFeatureCollection()
+  // emitting untyped barriers honestly (never silently coercing them).
+  const submitBlockReason = useMemo<string | null>(() => {
+    if (isVectorDraw) {
+      if (counts.untaggedBarrier > 0) {
+        return "Tag every barrier as wall or flap-gate to submit";
+      }
+      if (counts.aoi + counts.barrier + counts.point === 0) {
+        return "Draw an area, barrier, or point to submit";
+      }
+      return null;
+    }
+    return pickCoords !== null ? null : "Pick a location on the map to submit";
   }, [isVectorDraw, counts, pickCoords]);
+
+  const canSubmit = submitBlockReason === null;
 
   // --- Render ------------------------------------------------------------ //
   return (
@@ -430,23 +451,36 @@ export function SpatialDrawSurface({
 
       {/* Submit + Cancel (pinned bottom-center). */}
       <div data-testid="spatial-draw-actions" style={actionsStyle}>
-        <button
-          type="button"
-          data-testid="spatial-draw-cancel"
-          onClick={handleCancel}
-          style={cancelBtnStyle}
-        >
-          <IconClose size={14} /> Cancel
-        </button>
-        <button
-          type="button"
-          data-testid="spatial-draw-submit"
-          onClick={handleSubmit}
-          disabled={!canSubmit}
-          style={submitBtnStyle(canSubmit)}
-        >
-          <IconCheck size={14} /> Submit
-        </button>
+        {submitBlockReason && (
+          <span
+            data-testid="spatial-draw-submit-reason"
+            role="status"
+            style={submitReasonStyle}
+          >
+            <IconWarning size={13} color="#fbbf24" />
+            {submitBlockReason}
+          </span>
+        )}
+        <div style={{ display: "flex", gap: 10 }}>
+          <button
+            type="button"
+            data-testid="spatial-draw-cancel"
+            onClick={handleCancel}
+            style={cancelBtnStyle}
+          >
+            <IconClose size={14} /> Cancel
+          </button>
+          <button
+            type="button"
+            data-testid="spatial-draw-submit"
+            onClick={handleSubmit}
+            disabled={!canSubmit}
+            title={submitBlockReason ?? undefined}
+            style={submitBtnStyle(canSubmit)}
+          >
+            <IconCheck size={14} /> Submit
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -710,9 +744,29 @@ const actionsStyle: React.CSSProperties = {
   left: "50%",
   transform: "translateX(-50%)",
   display: "flex",
-  gap: 10,
+  flexDirection: "column",
+  alignItems: "center",
+  gap: 8,
   pointerEvents: "auto",
   zIndex: 6,
+};
+
+// Honest "why is Submit disabled" note pinned above the action buttons —
+// surfaces the FR-WC-16 untagged-barrier block (and the other empty-draw /
+// no-pick cases) in plain language. Amber matches the discard-notice + the
+// untagged-barrier line color convention.
+const submitReasonStyle: React.CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 6,
+  background: "rgba(20,20,26,0.92)",
+  border: "1px solid rgba(251,191,36,0.45)",
+  borderRadius: 8,
+  color: "#fbbf24",
+  padding: "5px 12px",
+  fontSize: 12,
+  fontWeight: 500,
+  fontFamily: "system-ui, sans-serif",
 };
 
 const cancelBtnStyle: React.CSSProperties = {

@@ -603,6 +603,63 @@ def _resolve_pending_spatial_input(
     return True
 
 
+class SpatialInputInvalidResponseError(Exception):
+    """A spatial-input-response arrived but failed structural validation.
+
+    Carries the typed error the paused ``request_spatial_input`` turn surfaces
+    to the LLM (honesty floor: a malformed reply degrades to a typed error, NOT
+    a silent success and NOT a hung turn that drains the read TTL). Raised into
+    the pending future by ``_fail_pending_spatial_input`` so the awaiting
+    dispatch coroutine returns IN-BAND immediately instead of blocking until
+    ``default_timeout_seconds`` then degrading to ``SPATIAL_INPUT_TIMEOUT``
+    (the FR-WC-16 untagged-barrier mismatch).
+    """
+
+    def __init__(self, error_code: str, error_message: str) -> None:
+        super().__init__(error_message)
+        self.error_code = error_code
+        self.error_message = error_message
+
+
+def _fail_pending_spatial_input(
+    session_id: str,
+    request_id: str,
+    error_code: str,
+    error_message: str,
+) -> bool:
+    """Fail the pending spatial-input future for ``request_id`` with a typed error.
+
+    Used when an inbound ``spatial-input-response`` cannot be parsed/validated
+    (e.g. a barrier feature missing ``barrier_type``). Resolves the future
+    EAGERLY via ``set_exception`` so the awaiting ``request_spatial_input`` turn
+    wakes immediately with a typed error result rather than hanging until the
+    read TTL expires. Returns True when a live future was failed; False when the
+    request_id is unknown/already-resolved, or the answering session is not the
+    owner (refused loudly — mirrors ``_resolve_pending_spatial_input``).
+    """
+    entry = _PENDING_SPATIAL_INPUTS.get(request_id)
+    if entry is None:
+        return False
+    owner_session, fut = entry
+    if owner_session != session_id:
+        logger.warning(
+            "spatial-input-response (invalid) REFUSED: session=%s is not the "
+            "owner (owner=%s) for request_id=%s",
+            session_id,
+            owner_session,
+            request_id,
+        )
+        return False
+    if fut.done():
+        _PENDING_SPATIAL_INPUTS.pop(request_id, None)
+        return False
+    fut.set_exception(
+        SpatialInputInvalidResponseError(error_code, error_message)
+    )
+    _PENDING_SPATIAL_INPUTS.pop(request_id, None)
+    return True
+
+
 # job-0115: app-level Persistence singleton (Wave 1.5).
 #
 # The MongoDB Atlas MCP server is the LLM-facing DB path (FR-AS-4, Decision F).
@@ -5051,6 +5108,18 @@ async def _emit_spatial_input_and_wait(
             payload.request_id,
         )
         return None
+    except SpatialInputInvalidResponseError:
+        # The user's reply ARRIVED but failed structural validation (e.g. a
+        # barrier missing barrier_type). The inbound handler failed the future
+        # eagerly so we wake here IN-BAND — NOT after the read TTL. Re-raise so
+        # _handle_request_spatial_input surfaces the typed error result.
+        logger.info(
+            "spatial-input-request invalid-response session=%s request_id=%s; "
+            "resolving turn with typed error (not timeout path)",
+            state.session_id,
+            payload.request_id,
+        )
+        raise
     finally:
         _pop_pending_spatial_input(payload.request_id)
 
@@ -5212,6 +5281,26 @@ async def _handle_request_spatial_input(
         response = await _emit_spatial_input_and_wait(websocket, state, payload)
     except asyncio.CancelledError:
         raise
+    except SpatialInputInvalidResponseError as exc:
+        # The reply arrived but was structurally invalid (honesty floor: a
+        # malformed drawn FeatureCollection — e.g. a barrier missing
+        # barrier_type — degrades to a TYPED error result, NOT a silent success
+        # and NOT a hung turn that drains default_timeout_seconds then reads as
+        # SPATIAL_INPUT_TIMEOUT). The user already saw TOOL_PARAMS_INVALID.
+        logger.info(
+            "spatial-input invalid-response session=%s request_id=%s code=%s",
+            state.session_id,
+            request_id,
+            exc.error_code,
+        )
+        return {
+            "status": "error",
+            "error_code": exc.error_code,
+            "error_message": (
+                f"The drawn geometry could not be used: {exc.error_message}. "
+                f"Ask the user to redraw; do not fabricate barriers or an AOI."
+            ),
+        }
     except Exception:  # noqa: BLE001 — degrade to a typed result, never crash
         logger.warning(
             "spatial-input emit/wait failed session=%s request_id=%s",
@@ -7128,10 +7217,12 @@ def _make_handler(settings: GeminiSettings):
 
                     elif msg_type == "secret-revoke":
                         # job-0124: soft-revoke a per-Case secret.
-                        sr = SecretRevokeEnvelopePayload.model_validate(
+                        secret_revoke = SecretRevokeEnvelopePayload.model_validate(
                             payload_dict
                         )
-                        await _handle_secret_revoke(websocket, state, sr)
+                        await _handle_secret_revoke(
+                            websocket, state, secret_revoke
+                        )
 
                     elif msg_type == "secrets-list-request":
                         # job-0124: explicit list-refresh request. The
@@ -7314,25 +7405,65 @@ def _make_handler(settings: GeminiSettings):
                         # barriers / AOI / points. Mirrors region-choice-provided
                         # — may arrive on a sibling connection of the session.
                         try:
-                            sr = SpatialInputResponsePayload.model_validate(
-                                payload_dict
+                            spatial_resp = (
+                                SpatialInputResponsePayload.model_validate(
+                                    payload_dict
+                                )
                             )
                         except ValidationError as ve:
+                            # FR-WC-16 untagged-barrier mismatch (the critical
+                            # correctness fix): the reply ARRIVED but failed
+                            # structural validation (e.g. a barrier feature
+                            # missing barrier_type). The user-facing notification
+                            # stays, but we MUST also FAIL the pending future
+                            # eagerly so the paused request_spatial_input turn
+                            # wakes IN-BAND with a typed error result instead of
+                            # hanging until default_timeout_seconds (~300s) then
+                            # degrading to SPATIAL_INPUT_TIMEOUT. The request_id
+                            # is parsed defensively from the raw payload (it may
+                            # itself be absent/garbage on a totally malformed
+                            # envelope — then we just notify + continue, no crash).
+                            err_msg = ve.errors()[0]["msg"]
                             await _send_error(
                                 websocket,
                                 state.session_id,
                                 "TOOL_PARAMS_INVALID",
-                                f"spatial-input-response invalid: "
-                                f"{ve.errors()[0]['msg']}",
+                                f"spatial-input-response invalid: {err_msg}",
                             )
+                            req_id = None
+                            if isinstance(payload_dict, dict):
+                                rid = payload_dict.get("request_id")
+                                if isinstance(rid, str) and rid:
+                                    req_id = rid
+                            if req_id is not None and _fail_pending_spatial_input(
+                                state.session_id,
+                                req_id,
+                                "SPATIAL_INPUT_BAD_BARRIER_TYPE",
+                                err_msg,
+                            ):
+                                logger.info(
+                                    "spatial-input-response invalid: FAILED "
+                                    "pending future session=%s request_id=%s "
+                                    "(no timeout wait)",
+                                    state.session_id,
+                                    req_id,
+                                )
+                            else:
+                                logger.warning(
+                                    "spatial-input-response invalid with no "
+                                    "resolvable pending request_id=%s session=%s "
+                                    "(notified only)",
+                                    req_id,
+                                    state.session_id,
+                                )
                             continue
                         if not _resolve_pending_spatial_input(
-                            state.session_id, sr
+                            state.session_id, spatial_resp
                         ):
                             logger.warning(
                                 "spatial-input-response for unknown/closed "
                                 "request_id=%s session=%s",
-                                sr.request_id,
+                                spatial_resp.request_id,
                                 state.session_id,
                             )
                             continue
@@ -7340,9 +7471,9 @@ def _make_handler(settings: GeminiSettings):
                             "spatial-input-response accepted session=%s "
                             "request_id=%s cancelled=%s geometry_type=%s",
                             state.session_id,
-                            sr.request_id,
-                            sr.cancelled,
-                            sr.geometry_type,
+                            spatial_resp.request_id,
+                            spatial_resp.cancelled,
+                            spatial_resp.geometry_type,
                         )
 
                     elif msg_type in (

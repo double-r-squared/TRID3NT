@@ -298,10 +298,20 @@ export class DrawController {
    * spatial-draw contract shape:
    *   - Polygon  -> role "aoi"
    *   - LineString that was tagged -> role "barrier" + barrier_type (+ flap dir)
-   *   - LineString untagged -> role "barrier" (no barrier_type — agent ignores
-   *     untyped barriers; surfaced honestly rather than silently coercing)
+   *   - LineString untagged -> role "barrier" (no barrier_type — surfaced
+   *     honestly rather than silently coercing OR silently dropping)
    *   - Point    -> role "point"
    * terra-draw's own `mode` property is stripped; everything else is preserved.
+   *
+   * UNTAGGED-BARRIER CONTRACT (FR-WC-16): this readback is a faithful, lossless
+   * mirror of what is on the surface — it deliberately does NOT omit or coerce
+   * an untagged barrier (that would either silently drop the user's drawn work
+   * or fabricate a wall/flap they never chose). The guarantee that a SUBMITTED
+   * response never carries a role=="barrier" feature without barrier_type is
+   * enforced by the SpatialDrawSurface submit gate (canSubmit is false while
+   * `counts().untaggedBarrier > 0`), and by the server-side ws.py validator.
+   * Keeping the readback honest here means the gate has the real inventory to
+   * decide on; the gate, not this method, is the single chokepoint.
    */
   getFeatureCollection(): SpatialDrawFeatureCollection {
     const features: SpatialDrawFeature[] = [];
