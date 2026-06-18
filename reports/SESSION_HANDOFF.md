@@ -3,7 +3,7 @@
 **Refreshed 2026-06-18** after a large engine + UX session. Read AFTER the normal bootstrap
 (CLAUDE.md → AGENTS.md → orchestrator.md → PROJECT_STATE.md → MEMORY.md). Greeting: address
 the user as **NATE ALMANZA**; **no emojis**. Auto-memory under `~/.claude/.../memory/` holds
-the durable detail; this is the live "pick up here" note. HEAD = `ca35895` (origin/main).
+the durable detail; this is the live "pick up here" note. HEAD = `6aab859` (origin/main); **prod agent redeployed to it + verified** (see §1).
 
 ---
 
@@ -25,21 +25,31 @@ the durable detail; this is the live "pick up here" note. HEAD = `ca35895` (orig
 - **Persistence** DynamoDB. **LLM** Bedrock (Sonnet default; Haiku/Nova selectable; cachePoint
   Anthropic-only).
 
-## 1. PROD-DEPLOY STATE — IMPORTANT
-The LIVE agent box runs PRE-this-session engine code. Everything below is **committed + pushed
-but NOT deployed to the box** — committed work outpaces the deployed binary:
-- Phase-1 flood animation, the full **PySWMM urban engine** (local lane), coastal SFINCS
-  forcing/obstacles + **P1 topobathy (fetch_topobathy)**, **FR-WC-16 urban draw UI** (web+agent),
-  per-tool-card I/O expander. (Auto-class + SWMM-lane INFRA is applied; the agent CODE that uses
-  them is not deployed.)
-- **To make the urban + draw-UI demo drivable LIVE:** wake the agent box → add `pyswmm` +
-  `swmm-api` + `httpx` to the PROD venv (topobathy uses py3dep/rasterio already present; confirm)
-  → run targeted tests → SSM-deploy agent + deploy web (terra-draw). **OPEN DECISION for NATE:**
-  do this prod-venv engine deploy now, or hold until the cht_sfincs quadtree+SnapWave worker
-  lands so urban + coastal go live together. (Continuous-deploy norm permits deploying as green;
-  held only pending NATE's "now vs batch with coastal" call.)
+## 1. PROD-DEPLOY STATE — CURRENT (redeployed 2026-06-18)
+**Prod AGENT redeployed to HEAD `6aab859` and verified.** Live + healthy: `/api/health` ok,
+**92 tools** (incl. fetch_topobathy, request_spatial_input, run_swmm_urban_flood), **Bedrock**
+(sonnet-4-6) + **DynamoDB**, **auto-stop re-armed**. So LIVE now: PySWMM urban engine, the
+**FR-WC-16 terra-draw draw UI + per-tool-card I/O** (web shipped in the earlier deploy), coastal
+**P1 topobathy**, and the **GCP-decommissioned AWS-default agent** — the 7 dropped deps
+(google-adk/secret-manager/workflows/logging, pymongo, gcsfs, firebase-admin) are uninstalled
+from the box venv; carve-outs **google-cloud-run/storage/genai** kept. Backup on box:
+`/opt/grace2/_backup-20260618-210607`.
+- Web bundle (`index-C-8h3jFW.js`) live on CloudFront; NO web commits this session after the
+  earlier deploy → no web redeploy needed.
+- The coastal **quadtree+SnapWave** path (combined worker + agent wiring) is CODE-COMPLETE but
+  **INERT** until the EC2 image build + `GRACE2_AWS_BATCH_JOB_DEF_SFINCS_QUADTREE` env (see §3).
+  Same for the SWMM Batch cloud lane (`GRACE2_AWS_BATCH_JOB_DEF_SWMM`, image not pushed).
 
-## 2. BUILT + COMMITTED THIS SESSION (origin/main, HEAD `ca35895`)
+## 2. BUILT + COMMITTED THIS SESSION (origin/main, HEAD `6aab859`)
+**Post-`ca35895` (the coastal + decommission batch):** cht_sfincs deck-builder worker (`2ee8298`)
+→ **full GCP decommission** (`4565d02`: AWS-default flips, delete dead GCP code/IaC, rewrite
+docs) → **combined coastal quadtree worker** (`13370b7`: build+solve in one job, auto-refine +
+building-obstacles + SnapWave; reverted the GPL 2-job split — license now irrelevant per NATE) →
+auto-refine numerics test (`10a44f5`) → **decommission finish** (`6aab859`: collapse gs:// seam
+to S3-only, fresh-venv GCP-free except the QGIS carve-out). All re-verified + pushed; prod
+redeployed to `6aab859`. (cht/combined images NOT built — EC2 step, §3.)
+---
+*(earlier this session, through `ca35895`):*
 - **SRS FR-WC-16 amendment** (`06f1801`): vector draw + tag mode (v0.2) scoped IN; out-of-scope
   split (decorative annotation stays deferred). `make srs` regenerated.
 - **Per-tool-card I/O expander** (`861075f`): chevron reveals raw args + function_response,
@@ -56,20 +66,25 @@ but NOT deployed to the box** — committed work outpaces the deployed binary:
 - Housekeeping: stale qgis_process test fixed (`ca21c46`); sprint-16 cost log (`ca35895`).
 
 ## 3. NEXT — COASTAL SFINCS IS THE LEAD NORTH STAR
-Mexico Beach (Hurricane Michael) coastal demo. Done: P0 forcing + **P1 topobathy**. Remaining:
-- **cht_sfincs quadtree + SnapWave deck-builder WORKER CONTAINER** (the gate). cht_sfincs v1.0.0
-  is GPL-3.0 + 1.2 GB → build the deck in a worker container (2nd stage of
-  `services/workers/sfincs/Dockerfile`), SOLVE on `deltares/sfincs-cpu:v2.3.3`, agent NEVER
-  imports cht_sfincs. Spike proven in `services/workers/sfincs_quadtree_spike/`. CAVEAT: **no
-  docker on the orchestrator box** → the image build/push is an EC2/SSM step (like the SFINCS
-  image). Author the worker code/wiring + fix the two spike caveats (SnapWave time-col
-  epoch→tref; snapwave_use_herbers=1 for IG run-up) here; build/push on EC2.
-- Then: **wave animation** (hm0/hm0ig + wavemaker propagating crests — the visible moving waves
-  NATE wants) → **computed-vs-observed validation** (graph + rasters, "water-level m-NAVD88" key).
-- INTERMEDIATE WIN now reachable (forcing + topobathy both done): a **regular-grid Mexico Beach
-  SURGE** run end-to-end (de-risks before the quadtree spike) — needs a live SFINCS Batch solve.
-- Urban PySWMM demo continues in parallel: engine done; remaining = the prod-venv deploy (§1) +
-  P8 SWMM image build/push (EC2) to light up the cloud lane.
+Mexico Beach (Hurricane Michael) coastal demo. **CODE-COMPLETE** through deck-build+solve: P0
+forcing + P1 topobathy + the **combined quadtree worker** (`services/workers/sfincs_deckbuilder/`
+— one Batch job: auto-refine polygons + building-obstacles + SnapWave + subprocess-solve, base
+`deltares/sfincs-cpu:sfincs-v2.3.3@sha256:46b5fc9e…` which ALREADY contains the SnapWave-compiled
+binary) + agent wiring (`sfincs-quadtree` job-def). Remaining = activation + polish:
+- **THE GATE — build/push the combined image on EC2** (no docker on the orch box): `docker build`
+  services/workers/sfincs_deckbuilder/Dockerfile → ECR → register Batch job-def → set
+  `GRACE2_AWS_BATCH_JOB_DEF_SFINCS_QUADTREE` + `GRACE2_AWS_BATCH_QUEUE`. WATCH: the one build risk
+  is a GDAL/PROJ clash (Ubuntu-22.04 sfincs-cpu base vs the manylinux rasterio/geopandas wheels in
+  cht's closure — Dockerfile forces `--prefer-binary` + a build-smoke import to trip it at build).
+  Then a ~2-min smoke run of `services/workers/sfincs_quadtree_spike/deck_cht/` confirms the v2.3.3
+  binary runs `snapwave=1` on a quadtree deck end-to-end.
+- INTERMEDIATE WIN (reachable NOW — forcing + topobathy live in prod): a **regular-grid Mexico
+  Beach SURGE** run (de-risks before quadtree) — needs a live SFINCS Batch solve. NATE's surge
+  prompt is drivable.
+- Then **wave animation** (hm0/hm0ig + propagating crests — the visible moving waves) →
+  **computed-vs-observed validation** ("water-level m-NAVD88" key).
+- Urban: engine LIVE in prod; remaining = P8 SWMM image build/push (EC2) to light the cloud lane
+  (`GRACE2_AWS_BATCH_JOB_DEF_SWMM`); the in-process local lane works now.
 
 ## 4. DECIDED + SCOPED (not built)
 - **HEC stack** (`reports/hec_stack_recommendation.md`): HMS first → HEC-RAS. v0.1 = templated
