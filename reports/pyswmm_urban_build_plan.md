@@ -120,3 +120,16 @@ BONUS forward-notes from the critique (not urban-blocking, captured so they aren
 - **Coastal low-confidence claims to primary-source before the SFINCS build**: SnapWave
   "XBeach-quality R²~0.96" and SFINCS-SSWE validity for supercritical/dam-break are research
   claims, not settled — verify in the coastal spike.
+
+## PCSWMM fidelity note (video summary, 2026-06-17)
+PCSWMM v20 "2D" = Dynamic 1D analysis INTEGRATED with a 2D overland mesh (dual-drainage).
+Our quasi-2D node-link mesh IS the 2D-overland part (solved by SWMM's dynamic-wave engine).
+The buried 1D storm-sewer network is the one OPTIONAL piece — a natural PURE-SWMM add
+(couple a 1D pipe network to surface cells via inlets), NOT a new engine. v0.1 =
+2D-overland-only reproduces the screenshot visual; the 1D network is a fast-follow fidelity
+add (needs pipe data: user-supplied or OSM/inferred) — surface the choice, default to
+2D-overland-only for the first demo. "Partial flap gates" confirmed = the red-wall/green-flap
+mapping. Variable-size mesh = our adaptive budget. PCSWMM→Google-Earth animation; ours = web
+map + per-frame COG scrubber. GENERALIZES (PCSWMM "advanced applications") to flood-hazard
+mapping, river overbank, levee zones, and rural ponding — the urban demo is the beachhead for
+a broad PySWMM flood capability.
