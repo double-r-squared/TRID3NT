@@ -98,8 +98,12 @@ from .postprocess_flood import (
 )
 from .sfincs_builder import (
     BuildOptions,
+    DischargeForcing,
     ForcingSpec,
+    PressureForcing,
     SFINCSSetupError,
+    WaterlevelForcing,
+    WindForcing,
     _to_vsigs,
     build_sfincs_model,
 )
@@ -597,6 +601,162 @@ def compute_precip_area_mean_mm_per_hr(
 
 
 # --------------------------------------------------------------------------- #
+# COASTAL SFINCS — surge-forcing member construction (engine plumbing)
+# --------------------------------------------------------------------------- #
+
+
+def _build_surge_forcing_members(
+    surge_forcing: dict[str, Any] | None,
+) -> tuple[
+    WaterlevelForcing | None,
+    DischargeForcing | None,
+    WindForcing | None,
+    PressureForcing | None,
+]:
+    """Translate the workflow ``surge_forcing`` dict into typed ``ForcingSpec`` members.
+
+    The COASTAL SFINCS North Star couples surge / tide / discharge / wind /
+    pressure forcing into the SFINCS deck. The workflow caller (or a future
+    fetcher-plumbing step that materialises ``fetch_gtsm_tide_surge`` /
+    ``fetch_noaa_coops_tides`` / ``fetch_noaa_nwm_streamflow`` /
+    ``fetch_cama_flood_discharge`` hydrographs to CSV + locations) supplies a
+    nested dict::
+
+        {
+          "waterlevel": {"timeseries_uri": ..., "locations_uri": ...,
+                          "geodataset_uri": ..., "offset": ..., "buffer_m": ...},
+          "discharge":  {"timeseries_uri": ..., "locations_uri": ...,
+                          "rivers_uri": ..., "hydrography_uri": ...,
+                          "river_upa_km2": ...},
+          "wind":       {"magnitude": ..., "direction": ...} | {"grid_uri": ...},
+          "pressure":   {"grid_uri": ..., "fill_value": ...},
+        }
+
+    Any subset of keys may be present; an absent / empty sub-dict yields ``None``
+    for that member (no block emitted). Unknown keys inside a sub-dict are
+    ignored so a forward-compatible caller can't crash the build. Returns the
+    four typed members ready to drop onto ``ForcingSpec``.
+    """
+    if not surge_forcing:
+        return None, None, None, None
+
+    def _sub(name: str) -> dict[str, Any]:
+        v = surge_forcing.get(name)
+        return dict(v) if isinstance(v, dict) else {}
+
+    wl_raw = _sub("waterlevel")
+    waterlevel = (
+        WaterlevelForcing(
+            timeseries_uri=wl_raw.get("timeseries_uri"),
+            locations_uri=wl_raw.get("locations_uri"),
+            geodataset_uri=wl_raw.get("geodataset_uri"),
+            offset=wl_raw.get("offset"),
+            buffer_m=wl_raw.get("buffer_m"),
+            provenance={k: v for k, v in wl_raw.items() if k.startswith("_prov")},
+        )
+        if wl_raw and (
+            wl_raw.get("timeseries_uri") or wl_raw.get("geodataset_uri")
+        )
+        else None
+    )
+
+    dq_raw = _sub("discharge")
+    discharge = (
+        DischargeForcing(
+            timeseries_uri=dq_raw.get("timeseries_uri"),
+            locations_uri=dq_raw.get("locations_uri"),
+            rivers_uri=dq_raw.get("rivers_uri"),
+            hydrography_uri=dq_raw.get("hydrography_uri"),
+            river_upa_km2=dq_raw.get("river_upa_km2"),
+        )
+        if dq_raw and (
+            dq_raw.get("timeseries_uri")
+            or dq_raw.get("rivers_uri")
+            or dq_raw.get("hydrography_uri")
+        )
+        else None
+    )
+
+    wd_raw = _sub("wind")
+    wind = (
+        WindForcing(
+            magnitude=wd_raw.get("magnitude"),
+            direction=wd_raw.get("direction"),
+            grid_uri=wd_raw.get("grid_uri"),
+        )
+        if wd_raw
+        and (
+            wd_raw.get("grid_uri")
+            or (wd_raw.get("magnitude") is not None and wd_raw.get("direction") is not None)
+        )
+        else None
+    )
+
+    pr_raw = _sub("pressure")
+    pressure = (
+        PressureForcing(
+            grid_uri=pr_raw["grid_uri"],
+            fill_value=pr_raw.get("fill_value"),
+        )
+        if pr_raw and pr_raw.get("grid_uri")
+        else None
+    )
+
+    return waterlevel, discharge, wind, pressure
+
+
+def _resolve_building_obstacle_uri(
+    building_obstacles: bool | str,
+    bbox: tuple[float, float, float, float],
+    data_sources: list[DataSource],
+) -> str | None:
+    """Resolve the building-obstacle geofile URI for the SFINCS deck (best-effort).
+
+    COASTAL SFINCS — burn building footprints into the deck so the rough 2D
+    flood routes around buildings. Three forms of ``building_obstacles``:
+
+    - ``False`` / falsy → no obstacles (``None``).
+    - a ``str`` → used verbatim as the footprint geofile URI (caller already has
+      a FlatGeobuf / GeoJSON; e.g. a prior ``fetch_buildings`` output).
+    - ``True`` → fetch OSM building footprints for ``bbox`` via the
+      ``fetch_buildings`` atomic tool (OSM Overpass primary, job-0331). This is
+      BEST-EFFORT: any fetch failure logs + returns ``None`` (the flood proceeds
+      WITHOUT obstacles, never aborts) — same degrade policy as river geometry
+      (job-0307). A successful fetch is recorded as a ``DataSource``.
+
+    Returns the obstacle geofile URI, or ``None`` when there is nothing to burn.
+    """
+    if not building_obstacles:
+        return None
+    if isinstance(building_obstacles, str):
+        return building_obstacles
+    # building_obstacles is True → fetch OSM footprints (best-effort).
+    try:
+        from ..tools.data_fetch import fetch_buildings  # local: keep top imports lean
+
+        layer = fetch_buildings(bbox, source="osm")
+        uri = getattr(layer, "uri", None)
+        if uri:
+            data_sources.append(
+                DataSource(
+                    name="OSM building footprints (Overpass — SFINCS obstacles)",
+                    uri=uri,
+                    accessed_at=datetime.now(timezone.utc),
+                )
+            )
+        return uri
+    except Exception as exc:  # noqa: BLE001 — obstacles are optional for the flood
+        logger.warning(
+            "model_flood_scenario: fetch_buildings failed for bbox=%s (%s) — "
+            "proceeding WITHOUT building obstacles (the flood still runs, just "
+            "without footprint masking).",
+            bbox,
+            exc,
+        )
+        return None
+
+
+# --------------------------------------------------------------------------- #
 # The workflow itself
 # --------------------------------------------------------------------------- #
 
@@ -609,6 +769,10 @@ async def model_flood_scenario(
     duration_hr: int = 24,
     compute_class: str = "medium",
     forcing_raster_uri: str | None = None,
+    surge_forcing: dict[str, Any] | None = None,
+    enable_subgrid: bool = False,
+    building_obstacles: bool | str = False,
+    building_obstacle_mode: str = "exclude",
     *,
     project_id: str | None = None,
     session_id: str | None = None,
@@ -653,6 +817,28 @@ async def model_flood_scenario(
             accumulation window for the depth→rate conversion. When ``None``
             (the default) the Atlas 14 design-storm path runs unchanged —
             behavior is **identical** to the v1 workflow (regression-critical).
+        surge_forcing: optional nested dict wiring the COASTAL SFINCS surge /
+            tide / discharge / wind / pressure boundary forcing into the deck —
+            ``{"waterlevel": {...}, "discharge": {...}, "wind": {...},
+            "pressure": {...}}``. Each sub-dict carries the forcing-file URIs
+            (timeseries CSV + locations geofile, or a geodataset / grid netCDF)
+            materialised from the forcing fetchers (``fetch_gtsm_tide_surge`` /
+            ``fetch_noaa_coops_tides`` / ``fetch_noaa_nwm_streamflow`` /
+            ``fetch_cama_flood_discharge`` / ERA5). See
+            ``_build_surge_forcing_members``. ``None`` (default) → pure-pluvial
+            deck (NO surge blocks emitted; byte-identical to the v0.1 deck).
+        enable_subgrid: emit a SFINCS ``setup_subgrid`` block so the solve runs
+            on a coarse grid while resolving sub-cell topography + roughness (the
+            cheap urban-flood estimate). Auto-enabled when ``building_obstacles``
+            is set. Default ``False``.
+        building_obstacles: burn building footprints into the deck so the rough
+            2D flood routes around buildings (the COASTAL "urban flood" ask).
+            ``True`` → BEST-EFFORT OSM-footprint fetch (a fetch failure degrades
+            to no obstacles, never aborts the flood); a ``str`` is used verbatim
+            as the footprint geofile URI; ``False`` (default) → no obstacles.
+        building_obstacle_mode: ``"exclude"`` (default) makes footprint cells
+            INACTIVE no-flow holes; ``"raise"`` keeps them active but lifts their
+            bed elevation via the subgrid (requires subgrid; auto-enabled).
         project_id / session_id: ULID identifiers from the WS session. When
             ``None``, fresh ULIDs are minted (for direct-call / smoke).
 
@@ -934,12 +1120,21 @@ async def model_flood_scenario(
 
     # --- Step 5: build_sfincs_model with NLCD validation gate ---
     try:
+        # COASTAL SFINCS — surge / tide / discharge / wind / pressure members.
+        # ``surge_forcing`` is a nested dict of forcing URIs (materialised from
+        # the forcing fetchers upstream); empty/absent → pure-pluvial deck (the
+        # surge blocks are simply not emitted). See ``_build_surge_forcing_members``.
+        _wl, _dq, _wind, _press = _build_surge_forcing_members(surge_forcing)
         if forcing_raster_uri is not None:
             # Observed-precip netamt path: carry the pre-computed magnitude.
             forcing_spec = ForcingSpec(
                 forcing_type="pluvial_observed",
                 duration_hours=float(duration_hr),
                 precip_magnitude_mm_per_hr=precip_magnitude_mm_per_hr,
+                waterlevel=_wl,
+                discharge=_dq,
+                wind=_wind,
+                pressure=_press,
                 provenance=dict(forcing_summary.parameters if forcing_summary else {}),
             )
         else:
@@ -948,8 +1143,19 @@ async def model_flood_scenario(
                 precip_inches=precip_inches,
                 duration_hours=float(duration_hr),
                 return_period_years=return_period_yr,
+                waterlevel=_wl,
+                discharge=_dq,
+                wind=_wind,
+                pressure=_press,
                 provenance=dict(forcing_summary.parameters if forcing_summary else {}),
             )
+        # COASTAL SFINCS — building-obstacle URI. ``building_obstacles=True``
+        # triggers a BEST-EFFORT OSM-footprint fetch (so a footprint-fetch
+        # failure NEVER kills the flood — same degrade policy as river geometry,
+        # job-0307); a string is used verbatim as the obstacle geofile URI.
+        building_obstacle_uri = _resolve_building_obstacle_uri(
+            building_obstacles, resolved_bbox, data_sources
+        )
         options = BuildOptions(
             grid_resolution_m=grid_resolution_m,
             simulation_hours=float(duration_hr),
@@ -958,6 +1164,12 @@ async def model_flood_scenario(
             # solve budget + vCPU via the perf model). build_sfincs_model snaps
             # grid_resolution_m UP if the estimated active-cell count overruns.
             compute_class=compute_class,
+            # COASTAL SFINCS — subgrid + building-obstacle mask (urban flood).
+            # Subgrid is auto-enabled when buildings are present (the obstacle
+            # "raise" mode needs it; "exclude" benefits from sub-cell topography).
+            enable_subgrid=bool(enable_subgrid or building_obstacle_uri),
+            building_obstacle_uri=building_obstacle_uri,
+            building_obstacle_mode=building_obstacle_mode,
         )
         # ``build_sfincs_model`` is SYNCHRONOUS with no overall timeout
         # (sfincs_builder GDAL VSI cache/timeout is per-read only). Run it off

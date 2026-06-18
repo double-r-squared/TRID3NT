@@ -76,6 +76,10 @@ from grace2_contracts.execution import LayerURI, ModelSetup
 __all__ = [
     "SFINCSSetupError",
     "ForcingSpec",
+    "WaterlevelForcing",
+    "DischargeForcing",
+    "WindForcing",
+    "PressureForcing",
     "BuildOptions",
     "build_sfincs_model",
     "load_manning_mapping",
@@ -153,6 +157,78 @@ os.environ.setdefault("CPL_VSIL_CURL_CHUNK_SIZE", "1048576")  # 1 MiB
 
 
 # --------------------------------------------------------------------------- #
+# pandas>=2.0 guard for hydromt-sfincs 1.2.2 ``set_forcing_1d`` (COASTAL SFINCS)
+# --------------------------------------------------------------------------- #
+#
+# hydromt-sfincs 1.2.2 ``SfincsModel.set_forcing_1d`` (sfincs.py:1858-1871) is
+# the shared 1D-forcing sink for EVERY surge / tide / river-discharge boundary —
+# ``setup_waterlevel_forcing`` (``bzs``), ``setup_river_inflow`` +
+# ``setup_discharge_forcing`` (``dis``) all funnel through it. It calls three
+# pandas ``Index`` methods that were DEPRECATED in pandas 2.0 and REMOVED in
+# pandas 3.0::
+#
+#     gdf_locs.index.is_integer()      # sfincs.py:1858
+#     df_ts.columns.is_integer()       # sfincs.py:1869
+#     df_ts.index.is_numeric()         # sfincs.py:1871
+#
+# On the agent venv (pandas 2.2.3) these still exist but emit FutureWarning; on
+# any pandas>=3.0 they raise ``AttributeError: 'RangeIndex' object has no
+# attribute 'is_integer'`` deep inside the surge/river forcing path — exactly
+# the forcing path the COASTAL SFINCS North Star needs. The kickoff forbids
+# editing the installed package and a hard ``pandas<2.0`` pin would fight the
+# rest of the stack, so we GUARD in OUR code: re-attach the removed methods to
+# ``pandas.Index`` (idempotent; a no-op where they already exist) delegating to
+# the supported ``pandas.api.types`` predicates the deprecation warnings name.
+# Installed at import time so any importer (the build path, the worker, tests)
+# inherits the safe shim. NEVER raises — a guard failure logs and proceeds (the
+# methods exist on 2.x, so the only realistic failure is a future pandas API
+# change we'd rather degrade through than crash the whole module import on).
+def _install_pandas_set_forcing_1d_guard() -> bool:
+    """Re-attach ``Index.is_integer`` / ``Index.is_numeric`` if pandas dropped them.
+
+    Returns ``True`` if the guard ran cleanly (whether or not it had to patch),
+    ``False`` if the guard itself errored (logged, never raised). Idempotent:
+    safe to call repeatedly; only attaches a method that is genuinely absent.
+    """
+    try:
+        import pandas as pd  # type: ignore[import-not-found]
+        import pandas.api.types as pat  # type: ignore[import-not-found]
+
+        index_cls = pd.Index
+        patched: list[str] = []
+        if not hasattr(index_cls, "is_integer"):
+            def _is_integer(self):  # noqa: ANN001, ANN202
+                return bool(pat.is_integer_dtype(self.dtype))
+
+            index_cls.is_integer = _is_integer  # type: ignore[attr-defined]
+            patched.append("is_integer")
+        if not hasattr(index_cls, "is_numeric"):
+            def _is_numeric(self):  # noqa: ANN001, ANN202
+                return bool(pat.is_any_real_numeric_dtype(self.dtype))
+
+            index_cls.is_numeric = _is_numeric  # type: ignore[attr-defined]
+            patched.append("is_numeric")
+        if patched:
+            logger.info(
+                "pandas guard: re-attached pandas.Index.%s for hydromt-sfincs "
+                "set_forcing_1d (pandas %s removed them)",
+                "/".join(patched),
+                getattr(pd, "__version__", "?"),
+            )
+        return True
+    except Exception as exc:  # noqa: BLE001 — never break module import on the guard
+        logger.warning(
+            "pandas guard for set_forcing_1d could not install (%s); surge/river "
+            "forcing may raise on pandas>=3.0",
+            exc,
+        )
+        return False
+
+
+_PANDAS_GUARD_OK = _install_pandas_set_forcing_1d_guard()
+
+
+# --------------------------------------------------------------------------- #
 # Module constants — Manning's mapping CSV location + version
 # --------------------------------------------------------------------------- #
 
@@ -221,15 +297,123 @@ class SFINCSSetupError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class WaterlevelForcing:
+    """Surge / tide water-level boundary forcing (SFINCS ``bzs``).
+
+    COASTAL SFINCS North Star: the surge / tide hydrograph the boundary cells
+    are driven with. Two ways the deck can ingest it, mirroring
+    ``SfincsModel.setup_waterlevel_forcing(timeseries=..., locations=...)`` /
+    ``geodataset=...``:
+
+    - ``timeseries_uri`` + ``locations_uri`` — a tabular CSV of water-level
+      time series (first column the datetime index, remaining columns the
+      integer station ids) PLUS a point geofile of those station locations.
+      This is what the fetcher fan-out (``fetch_gtsm_tide_surge`` /
+      ``fetch_noaa_coops_tides``) materialises: each station's
+      ``times``/``values`` hydrograph → CSV, station coords → points.
+    - ``geodataset_uri`` — a single geospatial point-timeseries (netCDF / zarr)
+      carrying both the water-level series and the point geometry; HydroMT's
+      ``geodataset`` path reads it directly.
+
+    ``offset`` (optional, metres) is the vertical-datum offset added to the
+    series (e.g. MSL→NAVD88) — passed verbatim to ``setup_waterlevel_forcing``.
+    ``buffer_m`` bounds the gauge-selection buffer around the water-level
+    boundary cells (HydroMT default 5 km).
+    """
+
+    timeseries_uri: str | None = None
+    locations_uri: str | None = None
+    geodataset_uri: str | None = None
+    offset: float | None = None
+    buffer_m: float | None = None
+    provenance: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class DischargeForcing:
+    """River-inflow discharge boundary forcing (SFINCS ``dis``).
+
+    Fluvial / compound-flood coupling: the river-discharge hydrograph
+    (``fetch_noaa_nwm_streamflow`` / ``fetch_cama_flood_discharge``) injected at
+    the points where rivers enter the domain.
+
+    ORDER MATTERS (hydromt-sfincs contract): ``setup_river_inflow`` must run
+    BEFORE ``setup_discharge_forcing`` — ``setup_river_inflow`` establishes the
+    ``src`` discharge points (and trims boundary cells the river crosses), then
+    ``setup_discharge_forcing`` attaches the time series to those points. The
+    YAML emitter encodes both, in that order, whenever this member is present.
+
+    - ``rivers_uri`` / ``hydrography_uri`` feed ``setup_river_inflow`` (river
+      centrelines or an upstream-area+flow-direction hydrography raster); at
+      least one is needed for the inflow points.
+    - ``timeseries_uri`` (+ optional ``locations_uri``) is the discharge series
+      handed to ``setup_discharge_forcing`` (m3/s), same tabular shape as the
+      water-level series.
+    - ``river_upa_km2`` is the minimum upstream-area threshold for a river to
+      count as an inflow (HydroMT default 10 km2).
+    """
+
+    timeseries_uri: str | None = None
+    locations_uri: str | None = None
+    rivers_uri: str | None = None
+    hydrography_uri: str | None = None
+    river_upa_km2: float | None = None
+    provenance: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class WindForcing:
+    """Wind forcing — uniform (``setup_wind_forcing``) or gridded.
+
+    - Uniform: ``magnitude`` (m/s) + ``direction`` (deg, where the wind comes
+      FROM; 0=N, 90=E) → ``setup_wind_forcing(magnitude=, direction=)``. This is
+      the quick storm-wind paddle for the coastal demo.
+    - Gridded: ``grid_uri`` (a netCDF with ``wind10_u`` / ``wind10_v`` over
+      ``time,y,x``) → ``setup_wind_forcing_from_grid(wind=)`` for a real
+      spatially-varying wind field (e.g. ERA5 / HRRR).
+    """
+
+    magnitude: float | None = None
+    direction: float | None = None
+    grid_uri: str | None = None
+    provenance: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class PressureForcing:
+    """Gridded mean-sea-level-pressure forcing (``setup_pressure_forcing_from_grid``).
+
+    ``grid_uri`` is a netCDF with ``press_msl`` (Pa) over ``time,y,x`` (e.g.
+    ERA5). The inverse-barometer setup that completes a surge deck alongside
+    wind. ``fill_value`` (Pa) is the no-data fill (standard atmosphere 101325).
+    """
+
+    grid_uri: str
+    fill_value: float | None = None
+    provenance: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class ForcingSpec:
     """Compact specification of the design-storm forcing for SFINCS.
 
     For the v0.1 substrate ``model_flood_scenario`` constructs this from the
     ``lookup_precip_return_period`` atomic-tool output — a single
-    precipitation depth + duration + ARI metadata. Future workflows (storm
-    surge, fluvial) populate it from ``fetch_hurricane_track`` /
-    ``fetch_streamflow`` instead; the shape is intentionally open enough to
-    grow.
+    precipitation depth + duration + ARI metadata. The COASTAL SFINCS North
+    Star extends it with the surge / tide / discharge / wind / pressure members
+    below, populated from the forcing fetchers
+    (``fetch_gtsm_tide_surge`` / ``fetch_noaa_coops_tides`` /
+    ``fetch_noaa_nwm_streamflow`` / ``fetch_cama_flood_discharge`` / ERA5); the
+    shape is intentionally open enough to grow.
+
+    Surge / compound-flood members (all optional; ``None`` → that forcing block
+    is not emitted, so a pure-pluvial deck is byte-identical to v0.1):
+
+    - ``waterlevel`` — ``WaterlevelForcing`` (surge + tide ``bzs`` boundary).
+    - ``discharge`` — ``DischargeForcing`` (river-inflow ``dis`` boundary;
+      ``setup_river_inflow`` is emitted BEFORE ``setup_discharge_forcing``).
+    - ``wind`` — ``WindForcing`` (uniform or gridded wind).
+    - ``pressure`` — ``PressureForcing`` (gridded MSL pressure).
 
     Fields used by the v0.1 pluvial SFINCS deck:
 
@@ -266,7 +450,19 @@ class ForcingSpec:
     duration_hours: float | None = None
     return_period_years: int | None = None
     precip_magnitude_mm_per_hr: float | None = None
+    # COASTAL SFINCS surge / compound-flood members (None → block not emitted).
+    waterlevel: WaterlevelForcing | None = None
+    discharge: DischargeForcing | None = None
+    wind: WindForcing | None = None
+    pressure: PressureForcing | None = None
     provenance: dict[str, Any] = field(default_factory=dict)
+
+    def has_surge_forcing(self) -> bool:
+        """True iff any non-precip (surge/tide/discharge/wind/pressure) member is set."""
+        return any(
+            m is not None
+            for m in (self.waterlevel, self.discharge, self.wind, self.pressure)
+        )
 
 
 @dataclass(frozen=True)
@@ -293,6 +489,27 @@ class BuildOptions:
       ``grid_resolution_m`` UP the resolution ladder so the estimated active-cell
       count fits the solve budget (sprint-16). Set ``False`` to pin
       ``grid_resolution_m`` verbatim (tests / explicit overrides).
+    - ``enable_subgrid`` — emit a ``setup_subgrid`` block. Subgrid tables let
+      SFINCS run on a COARSE computational grid while still resolving local
+      topography + roughness at sub-pixel resolution — the standard way to get
+      an urban-flood-around-buildings estimate cheaply (the COASTAL North Star's
+      "rough urban flood" ask). Default ``False`` (v0.1 pluvial decks stay on
+      the plain ``setup_dep`` + ``setup_manning_roughness`` path).
+    - ``subgrid_nr_subgrid_pixels`` — sub-pixels per computational cell in the
+      subgrid tables (HydroMT default 20). Higher = finer sub-cell topography,
+      more build cost.
+    - ``building_obstacle_uri`` — a vector geofile (FlatGeobuf / GeoJSON) of
+      building footprints (``fetch_buildings`` OSM Overpass output). When set,
+      the footprints are burned into the deck as a BUILDING-OBSTACLE mask so the
+      flow routes AROUND buildings (a rough 2D urban-flood estimate). Burned via
+      ``setup_subgrid`` ``datasets_riv`` raised-bank cells when subgrid is on,
+      and/or as a ``setup_mask_active`` ``exclude_mask`` (footprint cells become
+      INACTIVE / no-flow). Default ``None`` (no obstacles).
+    - ``building_obstacle_mode`` — how footprints enter the deck:
+      ``"exclude"`` (default) makes building cells INACTIVE (hard no-flow holes —
+      the fast/rough approximation NATE asked for); ``"raise"`` keeps them active
+      but raises their bed elevation via the subgrid so water is impeded but the
+      domain stays connected. ``"raise"`` requires ``enable_subgrid=True``.
     """
 
     grid_resolution_m: float = 30.0
@@ -301,6 +518,11 @@ class BuildOptions:
     output_setup_uri: str | None = None
     compute_class: str = "medium"
     autoscale_grid: bool = True
+    # COASTAL SFINCS — subgrid + building-obstacle mask (urban-flood estimate).
+    enable_subgrid: bool = False
+    subgrid_nr_subgrid_pixels: int = 20
+    building_obstacle_uri: str | None = None
+    building_obstacle_mode: str = "exclude"
 
 
 # --------------------------------------------------------------------------- #
@@ -1406,6 +1628,103 @@ def autoscale_grid_resolution(
     )
 
 
+def _emit_surge_forcing_blocks(
+    components: list[str],
+    forcing: ForcingSpec,
+) -> None:
+    """Append the COASTAL SFINCS surge / discharge / wind / pressure YAML blocks.
+
+    Mutates ``components`` in place, emitting (in this fixed order) the HydroMT
+    setup steps for whichever ``ForcingSpec`` surge members are present:
+
+    1. ``setup_waterlevel_forcing`` (``bzs``) — surge + tide boundary. Emitted
+       from a ``geodataset`` (single point-timeseries netCDF) OR a tabular
+       ``timeseries`` CSV + ``locations`` point file.
+    2. ``setup_river_inflow`` THEN ``setup_discharge_forcing`` (``dis``) — river
+       boundary. The inflow step (rivers / hydrography) ALWAYS precedes the
+       discharge-series step (HydroMT contract: inflow makes the ``src`` points,
+       discharge attaches the series). Order is load-bearing.
+    3. ``setup_wind_forcing`` (uniform mag/dir) OR ``setup_wind_forcing_from_grid``
+       (gridded netCDF).
+    4. ``setup_pressure_forcing_from_grid`` (gridded MSL pressure netCDF).
+
+    Every input URI is staged to a local path via ``_stage_gcs_local`` first
+    (HydroMT's data adapter stats catalog paths with fsspec's LOCAL filesystem
+    before GDAL opens them — a ``gs://``/``s3://`` URI would fail that stat;
+    job-0248). All steps funnel surge/discharge series through
+    ``set_forcing_1d``, which the module-level pandas guard keeps callable on
+    pandas >= 3.0.
+    """
+    # --- 1. Water-level (surge + tide) boundary ---
+    wl = forcing.waterlevel
+    if wl is not None:
+        components.append("setup_waterlevel_forcing:")
+        if wl.geodataset_uri:
+            components.append(
+                f"  geodataset: '{_stage_gcs_local(wl.geodataset_uri)}'"
+            )
+        else:
+            if wl.timeseries_uri:
+                components.append(
+                    f"  timeseries: '{_stage_gcs_local(wl.timeseries_uri)}'"
+                )
+            if wl.locations_uri:
+                components.append(
+                    f"  locations: '{_stage_gcs_local(wl.locations_uri)}'"
+                )
+        if wl.offset is not None:
+            components.append(f"  offset: {wl.offset}")
+        if wl.buffer_m is not None:
+            components.append(f"  buffer: {wl.buffer_m}")
+
+    # --- 2. River inflow (BEFORE discharge — order matters) ---
+    dq = forcing.discharge
+    if dq is not None:
+        if dq.rivers_uri or dq.hydrography_uri:
+            components.append("setup_river_inflow:")
+            if dq.rivers_uri:
+                components.append(
+                    f"  rivers: '{_stage_gcs_local(dq.rivers_uri)}'"
+                )
+            if dq.hydrography_uri:
+                components.append(
+                    f"  hydrography: '{_stage_gcs_local(dq.hydrography_uri)}'"
+                )
+            if dq.river_upa_km2 is not None:
+                components.append(f"  river_upa: {dq.river_upa_km2}")
+        # Discharge series attaches to the src points established above.
+        components.append("setup_discharge_forcing:")
+        if dq.timeseries_uri:
+            components.append(
+                f"  timeseries: '{_stage_gcs_local(dq.timeseries_uri)}'"
+            )
+        if dq.locations_uri:
+            components.append(
+                f"  locations: '{_stage_gcs_local(dq.locations_uri)}'"
+            )
+
+    # --- 3. Wind (uniform OR gridded) ---
+    wind = forcing.wind
+    if wind is not None:
+        if wind.grid_uri:
+            components.append("setup_wind_forcing_from_grid:")
+            components.append(f"  wind: '{_stage_gcs_local(wind.grid_uri)}'")
+        elif wind.magnitude is not None and wind.direction is not None:
+            components.append("setup_wind_forcing:")
+            components.append(f"  magnitude: {wind.magnitude}  # m/s")
+            components.append(
+                f"  direction: {wind.direction}  # deg (from; 0=N, 90=E)"
+            )
+
+    # --- 4. Pressure (gridded MSL) ---
+    press = forcing.pressure
+    if press is not None and press.grid_uri:
+        components.append("setup_pressure_forcing_from_grid:")
+        components.append(f"  press: '{_stage_gcs_local(press.grid_uri)}'")
+        if press.fill_value is not None:
+            components.append(f"  fill_value: {press.fill_value}")
+
+
 def _generate_hydromt_yaml_config(
     *,
     bbox: tuple[float, float, float, float],
@@ -1454,19 +1773,24 @@ def _generate_hydromt_yaml_config(
         supports ``manning`` (gridded n) OR ``lulc`` + ``reclass_table``);
         the CSV must be ``index_col=0`` + column literally ``N`` —
         ``_write_hydromt_reclass_table_csv`` materializes that view.
-      * setup_river_inflow — NOT EMITTED for v0.1 pluvial deck. The v0.1
-        M5 demo is pluvial-only (Atlas 14 design storm, no river forcing
-        required). Additionally, hydromt-sfincs 1.2.2's ``set_forcing_1d``
-        (sfincs.py:1858) calls ``pd.RangeIndex.is_integer()`` which was
-        removed in pandas ≥ 2.0 (we run 3.0.3); this upstream library bug
-        is exercised by the river-inflow discharge-point path. Dropping this
-        block bypasses ``set_forcing_1d`` entirely and lets the chain reach
-        solver dispatch (job-0055, OQ-54 routing recommendation b).
-        The ``river_local_path`` parameter is RETAINED in the function
-        signature (so call sites still pass the cached FGB without change);
-        re-enabling river inflow for v0.2+ (real ATCF storm surge) requires
-        adding this block back AND either pinning pandas < 2.0 or applying
-        the upstream hydromt-sfincs fix (``pd.api.types.is_integer_dtype``).
+      * setup_subgrid — OPTIONAL (``options.enable_subgrid``). Subgrid tables
+        let SFINCS run on a coarse computational grid while resolving sub-cell
+        topography + roughness from the same dep + roughness datasets — the
+        standard cheap urban-flood-around-buildings estimate. Live sig:
+        ``(datasets_dep, datasets_rgh=[], datasets_riv=[], nr_subgrid_pixels=20,
+        ...)``. The building-obstacle ``"raise"`` mode burns OSM footprints as a
+        ``datasets_riv`` raised-bank entry here.
+      * setup_waterlevel_forcing / setup_river_inflow + setup_discharge_forcing
+        / setup_wind_forcing[_from_grid] / setup_pressure_forcing_from_grid —
+        the COASTAL SFINCS surge / tide / discharge / wind / pressure forcing
+        blocks, emitted by ``_emit_surge_forcing_blocks`` ONLY when the matching
+        ``ForcingSpec`` member is present. ``setup_river_inflow`` is emitted
+        BEFORE ``setup_discharge_forcing`` (order matters — inflow makes the src
+        points, discharge attaches the series). These funnel through HydroMT's
+        ``set_forcing_1d``, which the module-level pandas guard keeps callable on
+        pandas >= 3.0 (the old job-0055 blocker that forced river inflow OFF).
+        A pure-pluvial deck (no surge members) emits NONE of these, so it stays
+        byte-identical to the v0.1 deck.
       * setup_precip_forcing — uniform precip forcing. Live sig:
         ``(timeseries=None, magnitude=None)`` — accepts EITHER a tabulated
         timeseries CSV OR a single ``magnitude`` float in ``mm/hr``
@@ -1544,28 +1868,71 @@ def _generate_hydromt_yaml_config(
         + ("" if _mask_adaptive else "  # wide fallback (DEM range unreadable)")
     )
     components.append(f"  zmax: {mask_zmax}")
+    # COASTAL SFINCS — BUILDING-OBSTACLE mask (rough urban-flood-around-buildings).
+    # ``building_obstacle_mode == "exclude"`` burns the OSM footprint polygons as
+    # an ``exclude_mask`` so those cells become INACTIVE (msk=0) — hard no-flow
+    # holes the flood routes AROUND. This is the FAST/ROUGH approximation NATE
+    # asked for (a 2D grid that respects building outlines without a true
+    # building-resolving mesh). ``setup_mask_active``'s ``exclude_mask`` arg takes
+    # a vector geofile path (FlatGeobuf / GeoJSON) of polygons; HydroMT clips it
+    # to the domain and removes those cells from the active mask. The ``"raise"``
+    # mode keeps the cells active and instead lifts their bed elevation through
+    # the subgrid (``datasets_riv`` raised-bank cells) — see setup_subgrid below.
+    building_uri = options.building_obstacle_uri
+    obstacle_mode = (options.building_obstacle_mode or "exclude").strip().lower()
+    if building_uri and obstacle_mode == "exclude":
+        building_read_path = _stage_gcs_local(building_uri)
+        components.append(f"  exclude_mask: '{building_read_path}'")
+        components.append("  all_touched: true  # footprint-touching cells -> no-flow")
     components.append("setup_manning_roughness:")
     components.append(
         f"  datasets_rgh: [{{ lulc: '{landcover_read_path}', "
         f"reclass_table: '{mapping_csv_path}' }}]"
     )
-    # v0.1 SCOPE DECISION (job-0055, OQ-54 routing recommendation b):
-    # ``setup_river_inflow`` is intentionally NOT emitted for the v0.1 pluvial
-    # deck. Two reasons:
-    #   1. Scope: the v0.1 M5 demo is pluvial-only (Atlas 14 design storm);
-    #      river inflow is M5+ / sprint-9+ scope (real ATCF + storm surge).
-    #   2. Upstream bug: hydromt-sfincs 1.2.2's ``set_forcing_1d``
-    #      (sfincs.py:1858) calls ``pd.RangeIndex.is_integer()`` which was
-    #      removed in pandas ≥ 2.0 (we run pandas 3.0.3). This bug is
-    #      exercised by the river-inflow discharge-point path — dropping this
-    #      block bypasses ``set_forcing_1d`` entirely and lets the chain
-    #      proceed to solver dispatch without triggering the upstream defect.
-    # ``river_local_path`` is kept in the function signature so call sites
-    # continue to pass the cached NHDPlus HR FlatGeobuf unchanged; the FGB
-    # is fetched and cached for future use but not wired into this deck.
-    # To re-enable for v0.2+ (real ATCF + river inflow): add the block back
-    # AND pin pandas < 2.0 OR apply the upstream patch
-    # (``pd.api.types.is_integer_dtype(idx)`` instead of ``idx.is_integer()``).
+    # COASTAL SFINCS — SUBGRID tables. ``setup_subgrid`` lets SFINCS run on a
+    # COARSE computational grid while resolving sub-cell topography + roughness
+    # (the standard way to get an urban-flood-around-buildings estimate cheaply).
+    # We reuse the SAME dep + roughness datasets the plain path uses; the subgrid
+    # derives water-level↔volume + representative-depth relations from them. When
+    # a building-obstacle geofile is supplied in ``"raise"`` mode it is burned as
+    # a ``datasets_riv`` raised-bank entry so the footprints impede flow without
+    # disconnecting the domain (keeps active cells, unlike the exclude path).
+    if options.enable_subgrid:
+        components.append("setup_subgrid:")
+        components.append(
+            f"  datasets_dep: [{{ elevtn: '{dem_read_path}' }}]"
+        )
+        components.append(
+            f"  datasets_rgh: [{{ lulc: '{landcover_read_path}', "
+            f"reclass_table: '{mapping_csv_path}' }}]"
+        )
+        components.append(
+            f"  nr_subgrid_pixels: {int(options.subgrid_nr_subgrid_pixels)}"
+        )
+        if building_uri and obstacle_mode == "raise":
+            building_read_path = _stage_gcs_local(building_uri)
+            # Burn footprints as raised-bank river-mask cells: the subgrid lifts
+            # their bed level so water is impeded around buildings while the
+            # domain stays connected (the higher-fidelity obstacle option).
+            components.append(
+                f"  datasets_riv: [{{ centerlines: '{building_read_path}', "
+                "rivwth: 5, rivdph: -3 }]  # OSM footprints as raised obstacles"
+            )
+    # --- COASTAL SFINCS — surge / tide / discharge / wind / pressure forcing ---
+    #
+    # HISTORICAL NOTE (job-0055): for the v0.1 PLUVIAL deck ``setup_river_inflow``
+    # was intentionally NOT emitted, partly because hydromt-sfincs 1.2.2's
+    # ``set_forcing_1d`` (sfincs.py:1858) calls ``pd.Index.is_integer()`` which
+    # pandas removed in 3.0. That blocker is now neutralised by the module-level
+    # ``_install_pandas_set_forcing_1d_guard`` (re-attaches the removed Index
+    # predicates), so the 1D-forcing sink is reachable again. These blocks are
+    # emitted ONLY when the matching ``ForcingSpec`` member is present — a pure
+    # pluvial deck (no surge members) is byte-identical to the v0.1 deck.
+    #
+    # ORDER MATTERS: ``setup_river_inflow`` MUST precede ``setup_discharge_forcing``
+    # — the former establishes the ``src`` discharge points (and trims boundary
+    # cells the river crosses); the latter attaches the time series to them.
+    _emit_surge_forcing_blocks(components, forcing)
     # --- Precip forcing emission (uniform netamt magnitude) ---
     #
     # Two upstream paths converge on the same SFINCS ``setup_precip_forcing``
