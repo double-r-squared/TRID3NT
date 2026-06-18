@@ -362,27 +362,28 @@ def test_discovery_tool_with_no_submitter_bound_raises(
 # ---------------------------------------------------------------------------
 
 
-def test_qgis_process_pass_through_invokes_bound_submitter(
-    stubbed_submitter,
-) -> None:
-    """With a bound submitter, the qgis_process body raises NotImplementedError.
+def test_qgis_process_raises_runtime_error_when_no_backend(monkeypatch) -> None:
+    """With no docker image, no docker, and no local qgis_process, the
+    qgis_process pass-through raises an actionable RuntimeError.
 
-    Note: job-0032 deliberately left the call-time body raising
-    NotImplementedError pending the M4 follow-up that maps the Cloud Run
-    Jobs API onto the pass-through's contract. job-0034 binds the
-    submitter (so the registration / startup flow works), but does NOT
-    overwrite the call-time body — that remains job-0032's surface and
-    will be revisited when the agent calls qgis_process for real
-    (post-discovery in the demo). This test pins the current contract:
-    binding is in place, but call still raises NotImplementedError until
-    the follow-up wires the submitter into the body.
+    job-0308 (Decision Q) rewired qgis_process OFF the old job-0032
+    NotImplementedError stub and onto a stage-then-mount docker path
+    (``GRACE2_QGIS_DOCKER_IMAGE`` / the ``grace2-qgis`` image present on the
+    EC2 box) with a local-``qgis_process``-on-PATH dev fallback. When NO
+    backend is reachable the body raises a RuntimeError telling the operator
+    how to provide one. This pins that contract deterministically — we
+    monkeypatch ``shutil.which`` to None and clear the image env so the
+    result does not depend on whether docker / qgis_process happen to be
+    installed on the test host. (The ``_WORKER_SUBMITTER`` binding is NOT
+    used by qgis_process anymore — it remains live only for the discovery
+    tools, covered by the tests above.)
     """
+    import shutil
+
     from grace2_agent.tools.passthroughs import qgis_process
 
-    # Verify the binding is in place (set by stubbed_submitter fixture).
-    assert passthroughs._WORKER_SUBMITTER is not None
-    # The pass-through body still raises NotImplementedError — that's the
-    # job-0032 surface; job-0034 only adds the binding so the discovery
-    # tools can reach it.
-    with pytest.raises(NotImplementedError):
+    monkeypatch.delenv("GRACE2_QGIS_DOCKER_IMAGE", raising=False)
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+
+    with pytest.raises(RuntimeError, match="qgis_process unavailable"):
         qgis_process(algorithm="native:zonalstatistics", params={})
