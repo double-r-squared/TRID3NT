@@ -83,6 +83,9 @@ EXPENSIVE_SCENARIO_TOOLS: dict[str, str] = {
     "run_model_nws_flood_event_scenario": "flood-depth",
     "run_modflow_job": "plume",
     "run_model_groundwater_contamination_scenario": "plume",
+    # sprint-16 P4: the quasi-2D PySWMM urban-flood engine mints a peak depth
+    # layer id ``swmm-depth-peak-<run_id>`` (same depth family as SFINCS).
+    "run_swmm_urban_flood": "swmm-depth",
 }
 
 #: ``layer_id`` prefixes that identify an existing RESULT layer of each family.
@@ -92,6 +95,7 @@ EXPENSIVE_SCENARIO_TOOLS: dict[str, str] = {
 _SCENARIO_LAYER_ID_MARKERS: dict[str, tuple[str, ...]] = {
     "flood-depth": ("flood-depth", "flood_depth", "flood-peak"),
     "plume": ("plume", "modflow", "contamination", "concentration"),
+    "swmm-depth": ("swmm-depth", "swmm_depth"),
 }
 
 #: Default bbox quantization (degrees). Two AOIs whose bbox corners agree to

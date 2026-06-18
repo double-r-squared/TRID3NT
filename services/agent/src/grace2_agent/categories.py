@@ -244,6 +244,7 @@ PRIMARY_CATEGORY: dict[str, str] = {
     "run_model_nws_flood_event_scenario": "hazard_modeling",
     "run_model_groundwater_contamination_scenario": "hazard_modeling",
     "run_modflow_job": "hazard_modeling",
+    "run_swmm_urban_flood": "hazard_modeling",
     "run_pelicun_damage_assessment": "hazard_modeling",
     "run_pelicun_with_buildings": "hazard_modeling",
     "run_solver": "hazard_modeling",
