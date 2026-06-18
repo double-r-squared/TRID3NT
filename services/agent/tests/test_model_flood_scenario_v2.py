@@ -369,6 +369,56 @@ def test_none_path_deck_yaml_unchanged() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Flood-animation Phase 1 — dtout map-output cadence in the deck YAML
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "sim_hours, expected_dtout",
+    [
+        (24.0, max(600, int(24 * 3600 / 24))),   # 3600 s (1 frame/hr over 24h)
+        (48.0, max(600, int(48 * 3600 / 24))),   # 7200 s
+        (2.0, max(600, int(2 * 3600 / 24))),     # floors at 600 s (10 min)
+    ],
+)
+def test_dtout_emitted_in_setup_config(sim_hours: float, expected_dtout: int) -> None:
+    """``setup_config`` now carries ``dtout`` / ``dtmaxout`` (seconds) so SFINCS
+    writes TIME-VARYING ``zs(time,n,m)`` map output — the source of the per-frame
+    flood-animation COGs. Value targets ~24 raw snapshots over the sim window,
+    floored at 600 s (10 min) to match SFINCS's internal precip grid."""
+    forcing = ForcingSpec(
+        forcing_type="pluvial_synthetic",
+        precip_inches=12.1,
+        duration_hours=sim_hours,
+        return_period_years=100,
+        provenance={"vintage_volume": "NOAA Atlas 14 Volume 1"},
+    )
+    yaml_text = _generate_hydromt_yaml_config(
+        bbox=_BBOX,
+        options=BuildOptions(grid_resolution_m=30.0, simulation_hours=sim_hours),
+        dem_local_path="/tmp/dem.tif",
+        landcover_local_path="/tmp/lc.tif",
+        river_local_path=None,
+        forcing=forcing,
+        mapping_csv_path="/tmp/manning.csv",
+    )
+    assert f"dtout: {expected_dtout}" in yaml_text, (
+        f"setup_config must emit dtout: {expected_dtout} for simulation_hours="
+        f"{sim_hours}; yaml=\n{yaml_text}"
+    )
+    assert f"dtmaxout: {expected_dtout}" in yaml_text
+    # dtout must be a POSITIVE integer derived from the sim window.
+    assert expected_dtout > 0
+    # The cadence lives INSIDE the setup_config block (before setup_grid_from_region).
+    setup_config_idx = yaml_text.index("setup_config:")
+    grid_idx = yaml_text.index("setup_grid_from_region:")
+    dtout_idx = yaml_text.index("dtout:")
+    assert setup_config_idx < dtout_idx < grid_idx, (
+        "dtout must be emitted inside the setup_config block"
+    )
+
+
+# --------------------------------------------------------------------------- #
 # Test 1 + 5 — full-workflow forcing-spec capture (None path vs raster path)
 # --------------------------------------------------------------------------- #
 

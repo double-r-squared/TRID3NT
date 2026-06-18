@@ -1178,8 +1178,19 @@ async def model_flood_scenario(
     # stays intact, so the LLM narrates the publish failure truthfully and the
     # job-0177 retry-on-failure loop can act. The layer_uri_emit seam enforces
     # this same rule at the emission boundary as a belt-and-suspenders invariant.
+    # postprocess_flood returns [peak_primary] + [frame_0..frame_k]. The PEAK
+    # layer (role="primary") is the ONE returned by the wrapper + the
+    # published/on_map summary source + the habitat/Pelicun hazard raster — it
+    # takes the existing publish-or-honest-drop path UNCHANGED. The FRAME layers
+    # (role="context", names "Flood depth step N") are the time-stepped animation
+    # (flood North Star Phase 1): each is published + emitted OUT-OF-BAND via the
+    # emitter so the web SequenceScrubber group forms, WITHOUT changing the tool's
+    # single-LayerURI return shape (no re-publish trip in summarize_tool_result).
+    primary_layers = [lyr for lyr in layers if lyr.role == "primary"]
+    frame_layers = [lyr for lyr in layers if lyr.role != "primary"]
+
     published_layers: list[LayerURI] = []
-    for lyr in layers:
+    for lyr in primary_layers:
         # job-0291: s3:// COGs (AWS local-docker backend) take the same
         # publish-or-honest-drop gate as gs:// — a raw object-store URI never
         # renders in MapLibre (job-0254 §1), so it must never reach the map.
@@ -1244,6 +1255,76 @@ async def model_flood_scenario(
                 # success path; until then the depth metrics still surface.)
         else:
             published_layers.append(lyr)
+
+    # --- Step 9b: publish + emit the time-step animation frames (Phase 1) ---
+    # Each frame is a DISTINCT COG (distinct runs-bucket key → distinct TiTiler
+    # url= → distinct pipeline_emitter._layer_identity_key → no dedup collapse).
+    # We publish in ASCENDING step order and call emitter.add_loaded_layer for
+    # each so all N frames arrive as one contiguous sequential group; the final
+    # session-state snapshot carries peak + N frames. Frames are emitted ONLY
+    # through the emitter (NOT added to published_layers / result_layers / the
+    # wrapper return), so they never reach summarize_tool_result and can't trip a
+    # re-publish, and the habitat/Pelicun consumers still see layers[0] = peak.
+    # When current_emitter() is None (direct call / smoke / unit test) frame
+    # emission is skipped — the frames still live in the returned `layers` from
+    # postprocess_flood for tests to assert on.
+    if frame_layers and emitter is not None:
+        published_frame_count = 0
+        for lyr in frame_layers:
+            if not (lyr.uri.startswith("gs://") or lyr.uri.startswith("s3://")):
+                # Already a renderable URL (defensive) — emit as-is.
+                try:
+                    await emitter.add_loaded_layer(lyr)
+                    published_frame_count += 1
+                except Exception as exc:  # noqa: BLE001 — never break the solve
+                    logger.warning("frame emit failed for %s: %s", lyr.layer_id, exc)
+                continue
+            try:
+                frame_wms_url = publish_layer(
+                    layer_uri=lyr.uri,
+                    layer_id=lyr.layer_id,
+                    style_preset=lyr.style_preset or FLOOD_DEPTH_STYLE_PRESET,
+                )
+            except PublishLayerError as exc:
+                # Honest drop: a frame that won't publish is dropped (its raw
+                # gs:// never renders). The remaining frames + the peak layer
+                # stay intact. If too many frames drop the group may fall below
+                # 2 members and simply not form — acceptable, never a fake row.
+                logger.warning(
+                    "publish_layer failed for frame layer_id=%s error_code=%s "
+                    "(%s) — dropping this frame from the animation group.",
+                    lyr.layer_id, exc.error_code, exc,
+                )
+                continue
+            frame_layer = LayerURI(
+                layer_id=lyr.layer_id,
+                name=lyr.name,  # "Flood depth step N" — the web grouping token
+                layer_type=lyr.layer_type,
+                uri=frame_wms_url,
+                style_preset=lyr.style_preset or FLOOD_DEPTH_STYLE_PRESET,
+                role=lyr.role,  # "context"
+                units=lyr.units,
+                bbox=resolved_bbox,
+            )
+            try:
+                await emitter.add_loaded_layer(frame_layer)
+                published_frame_count += 1
+            except Exception as exc:  # noqa: BLE001 — never break the solve
+                logger.warning(
+                    "frame add_loaded_layer failed for %s: %s", lyr.layer_id, exc
+                )
+        if published_frame_count:
+            logger.info(
+                "model_flood_scenario: emitted %d/%d animation frames as a "
+                "sequential group (run_id=%s)",
+                published_frame_count, len(frame_layers), run_result.run_id,
+            )
+    elif frame_layers:
+        logger.info(
+            "model_flood_scenario: %d animation frames available but no emitter "
+            "bound (direct/smoke/test) — frames not emitted to the map.",
+            len(frame_layers),
+        )
 
     # --- Step 10: build success envelope ---
     bbox_area_km2 = _bbox_area_km2(resolved_bbox)

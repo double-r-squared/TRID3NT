@@ -45,6 +45,7 @@ __all__ = [
     "FLOOD_DEPTH_STYLE_PRESET",
     "NODATA_DEPTH_M",
     "RUNS_BUCKET_DEFAULT",
+    "MAX_FLOOD_FRAMES",
 ]
 
 logger = logging.getLogger("grace2_agent.workflows.postprocess_flood")
@@ -66,6 +67,15 @@ FLOOD_DEPTH_STYLE_PRESET: str = "continuous_flood_depth"
 #: Belt-and-suspenders: the QML renderer also hides values < 0.05 m (alpha=0),
 #: so the two layers reinforce each other (job-0071 transparency fix).
 NODATA_DEPTH_M: float = 0.05
+
+#: Hard cap on the number of per-frame depth COGs the time-stepped flood
+#: animation emits (flood North Star Phase 1, engine-agnostic). When the SFINCS
+#: map output carries MORE than this many ``zs(time,...)`` snapshots we subsample
+#: EVENLY across the full time span (first + last steps always kept) so the
+#: scrubber stays bounded and the per-Case session-state snapshot never balloons.
+#: 24 ≈ one frame/hour over a 1-day sim — enough to read the wave of inundation
+#: without flooding the LayerPanel with near-identical rows.
+MAX_FLOOD_FRAMES: int = 24
 
 
 class PostprocessError(RuntimeError):
@@ -252,6 +262,254 @@ def _read_crs_from_dataset(ds: Any) -> str:
     return fallback
 
 
+def _orient_array_for_cog(arr: Any, ds: Any) -> Any:
+    """Apply the rotation + Y-flip + X-flip orientation guards to a 2D depth array.
+
+    Centralizes the per-cell orientation corrections that used to live inline in
+    ``_extract_peak_depth_geotiff`` so they can be applied IDENTICALLY to every
+    per-frame depth array (flood-animation Phase 1). Pure geometry — no masking,
+    no I/O. Takes the squeezed 2D ``arr`` (already rotation-aware? NO — rotation
+    is decided from ds dim names below) and the open dataset; returns the
+    correctly-oriented array (``(y_rows, x_cols)``, row 0 = north, col 0 = west).
+
+    The rotation guard reads the ``x``/``y`` dim names from ``ds`` (not array
+    shapes) so square grids are handled correctly. Y/X flips read the coordinate
+    direction. All three degrade to identity on probe failure (defensive — a bad
+    coordinate read must never corrupt the raster, only skip the correction).
+    """
+    import numpy as np  # type: ignore[import-not-found]
+
+    # --- Rotation fix (job-0071) ---
+    # SFINCS netCDF convention: ds["x"].dims = ("m",), ds["y"].dims = ("n",)
+    # where m=x-cols, n=y-rows. If the depth array's last two dims are
+    # (x_dim, y_dim) instead of (y_dim, x_dim), transpose to (y_rows, x_cols).
+    # We re-derive the dim ordering from the *array* shape vs the ds coord
+    # lengths, since a single frame slice may not carry the original dim names.
+    try:
+        _x_dim = ds["x"].dims[0]  # e.g. "m"
+        _y_dim = ds["y"].dims[0]  # e.g. "n"
+        _n_x = int(ds.sizes.get(_x_dim, ds["x"].shape[0]))
+        _n_y = int(ds.sizes.get(_y_dim, ds["y"].shape[0]))
+        # If the array is (n_x, n_y) — x-cols in rows — transpose to (n_y, n_x).
+        if (
+            arr.ndim == 2
+            and _n_x != _n_y
+            and arr.shape[0] == _n_x
+            and arr.shape[1] == _n_y
+        ):
+            logger.info(
+                "postprocess_flood: transposing depth array shape %s — x-dim (%s,n=%d) "
+                "is in rows; expected (y_rows=%d, x_cols=%d). Rotation fix (job-0071).",
+                arr.shape, _x_dim, _n_x, _n_y, _n_x,
+            )
+            arr = arr.T
+    except Exception:  # noqa: BLE001 — dim inspection failure falls through to identity
+        pass
+
+    # --- Y-orientation guard (job-0086) ---
+    # SFINCS often emits y ascending along rows (row 0 = south). COG transforms
+    # declare row 0 = north, so flip rows when y ascends.
+    try:
+        _y_vals = ds["y"].values
+        if _y_vals.ndim == 2:
+            y_ascends_along_rows = bool(_y_vals[0, 0] < _y_vals[-1, 0])
+        else:
+            y_ascends_along_rows = bool(_y_vals[0] < _y_vals[-1])
+        if y_ascends_along_rows:
+            arr = arr[::-1, :]
+    except Exception:  # noqa: BLE001 — defensive; bad y → identity, no harm
+        logger.warning("postprocess_flood: y-orientation probe failed; not flipping")
+
+    # --- X-orientation guard (job-0086, belt-and-suspenders) ---
+    # Curvilinear grids can have x descending along columns (col 0 = east). COG
+    # from_bounds always produces west-to-east, so flip cols when x descends.
+    try:
+        _x_vals = ds["x"].values
+        if _x_vals.ndim == 2:
+            x_descends_along_cols = bool(_x_vals[0, 0] > _x_vals[0, -1])
+        else:
+            x_descends_along_cols = bool(_x_vals[0] > _x_vals[-1])
+        if x_descends_along_cols:
+            arr = arr[:, ::-1]
+    except Exception:  # noqa: BLE001 — defensive; bad x → identity, no harm
+        logger.warning("postprocess_flood: x-orientation probe failed; not flipping")
+
+    return np.ascontiguousarray(arr)
+
+
+def _write_verified_cog(
+    arr_2d: Any,
+    *,
+    ds: Any,
+    netcdf_path: Path,
+) -> tuple[Path, dict[str, Any]]:
+    """Orient, mask, write, and CRS-verify a single 2D depth array as a COG.
+
+    The reusable per-frame COG writer (flood-animation Phase 1). Applies the
+    rotation/Y-flip/X-flip orientation guards (``_orient_array_for_cog``), masks
+    sub-threshold depths to NaN, writes a Cloud-Optimized GeoTIFF to a tmp path,
+    then re-opens it to assert the CRS tag round-trips (TiTiler-wedge guard: the
+    COG is guaranteed valid + correctly CRS-tagged before any upload).
+
+    Returns ``(tmp_cog_path, metrics_summary)`` where ``metrics_summary`` carries
+    the depth aggregates (max/mean/p95/flooded_cell_count) FOR THIS ARRAY plus
+    ``crs`` + ``units`` — the peak path uses the peak array's aggregates for
+    FloodMetrics; per-frame callers ignore the per-frame aggregates.
+    """
+    import numpy as np  # type: ignore[import-not-found]
+    import rasterio  # type: ignore[import-not-found]
+
+    arr = np.asarray(arr_2d, dtype="float32")
+    if arr.ndim > 2:
+        arr = np.squeeze(arr)
+    if arr.ndim != 2:
+        raise PostprocessError(
+            "RUN_OUTPUT_UNEXPECTED_SHAPE",
+            message=(
+                f"depth array has shape {arr.shape}; expected 2D after squeeze"
+            ),
+            details={"netcdf_path": str(netcdf_path), "shape": list(arr.shape)},
+        )
+
+    arr = _orient_array_for_cog(arr, ds)
+
+    # Mask sub-threshold depths to NaN so the COG is dry-cell-aware (job-0071).
+    arr_masked = np.where(arr > NODATA_DEPTH_M, arr, np.nan)
+    flooded = arr_masked[~np.isnan(arr_masked)]
+    if flooded.size == 0:
+        metrics_summary: dict[str, Any] = {
+            "max_depth_m": 0.0,
+            "mean_depth_m": 0.0,
+            "p95_depth_m": 0.0,
+            "flooded_cell_count": 0,
+        }
+    else:
+        metrics_summary = {
+            "max_depth_m": float(np.nanmax(flooded)),
+            "mean_depth_m": float(np.nanmean(flooded)),
+            "p95_depth_m": float(np.nanpercentile(flooded, 95)),
+            "flooded_cell_count": int(flooded.size),
+        }
+
+    # CRS + transform from the dataset (CF-convention 'crs' variable; OQ-59 fix).
+    crs = _read_crs_from_dataset(ds)
+    try:
+        _x = ds["x"].values
+        _y = ds["y"].values
+        transform = rasterio.transform.from_bounds(
+            float(_x.min()), float(_y.min()), float(_x.max()), float(_y.max()),
+            arr.shape[-1], arr.shape[-2],
+        )
+    except Exception:  # noqa: BLE001
+        transform = rasterio.Affine.identity()
+
+    tmp_cog = Path(tempfile.NamedTemporaryFile(suffix=".tif", delete=False).name)
+    try:
+        with rasterio.open(
+            tmp_cog,
+            "w",
+            driver="COG",
+            width=arr.shape[-1],
+            height=arr.shape[-2],
+            count=1,
+            dtype="float32",
+            crs=crs,
+            transform=transform,
+            nodata=float("nan"),
+            compress="LZW",
+        ) as dst:
+            dst.write(arr_masked.astype("float32"), 1)
+    except Exception as exc:  # noqa: BLE001
+        raise PostprocessError(
+            "COG_WRITE_FAILED",
+            message=f"COG write failed: {exc}",
+            details={"netcdf_path": str(netcdf_path)},
+        ) from exc
+
+    # --- CRS_TAG_MISMATCH guard (job-0071 / research-workflow 2026-06-07) ---
+    # Re-open the COG and verify the CRS tag round-trips BEFORE any upload. This
+    # is also the per-frame VALID-COG assertion (a frame that can't be re-opened
+    # or carries a bad CRS tag raises here, never reaching the runs bucket).
+    with rasterio.open(tmp_cog, "r") as verify:
+        if str(verify.crs) != str(crs):
+            raise PostprocessError(
+                "CRS_TAG_MISMATCH",
+                message=(
+                    f"COG written with crs={crs!r} but rasterio read back "
+                    f"{verify.crs!r}"
+                ),
+                details={"netcdf_path": str(netcdf_path)},
+            )
+        is_geographic = verify.crs.is_geographic
+        bounds_max = max(abs(verify.bounds.left), abs(verify.bounds.right))
+        if is_geographic and bounds_max > 360:
+            raise PostprocessError(
+                "CRS_TAG_MISMATCH",
+                message=(
+                    f"crs={crs!r} is geographic but bounds.left="
+                    f"{verify.bounds.left} implies projected coords (|x|>360)"
+                ),
+                details={"netcdf_path": str(netcdf_path)},
+            )
+        if (not is_geographic) and bounds_max < 1000:
+            raise PostprocessError(
+                "CRS_TAG_MISMATCH",
+                message=(
+                    f"crs={crs!r} is projected but bounds.left="
+                    f"{verify.bounds.left} implies geographic coords (|x|<1000)"
+                ),
+                details={"netcdf_path": str(netcdf_path)},
+            )
+
+    metrics_summary["crs"] = crs
+    metrics_summary["units"] = "meters"
+    return tmp_cog, metrics_summary
+
+
+def _select_peak_depth(ds: Any) -> Any:
+    """Select the PEAK (max-over-time) depth field from a SFINCS dataset.
+
+    Fallback order: ``hmax`` (max water depth, direct) → ``zsmax - zb`` (max
+    water-level minus bed) → ``zs.max(time) - zb`` (max of the time series).
+    Returns an xarray DataArray (NOT yet a numpy array). Raises
+    ``RUN_OUTPUT_EMPTY`` when no depth field is present.
+    """
+    if "hmax" in ds.variables:
+        return ds["hmax"]
+    if "zsmax" in ds.variables and "zb" in ds.variables:
+        return ds["zsmax"] - ds["zb"]
+    if "zs" in ds.variables and "zb" in ds.variables:
+        return (ds["zs"].max(dim="time") - ds["zb"]).clip(min=0.0)
+    raise PostprocessError(
+        "RUN_OUTPUT_EMPTY",
+        message=(
+            f"sfincs_map.nc carries neither hmax nor zsmax/zs+zb; "
+            "no depth field to extract."
+        ),
+        details={"variables": list(ds.variables.keys())},
+    )
+
+
+def _select_frame_time_indices(n_steps: int) -> list[int]:
+    """Pick up to ``MAX_FLOOD_FRAMES`` evenly-spaced time indices over ``n_steps``.
+
+    Endpoints (first + last step) are ALWAYS included so the animation spans the
+    full event. When ``n_steps <= MAX_FLOOD_FRAMES`` every step is returned. When
+    more, ``np.linspace(0, n_steps-1, MAX_FLOOD_FRAMES)`` rounded to ints +
+    ``np.unique`` gives an even, collision-free subsample (<= MAX_FLOOD_FRAMES,
+    strictly increasing). Returned indices are the RAW time-dim positions; the
+    frame NUMBER (1..k) used for the web token is the position in this list.
+    """
+    import numpy as np  # type: ignore[import-not-found]
+
+    if n_steps <= 0:
+        return []
+    if n_steps <= MAX_FLOOD_FRAMES:
+        return list(range(n_steps))
+    idx = np.linspace(0, n_steps - 1, MAX_FLOOD_FRAMES).round().astype(int)
+    return [int(i) for i in np.unique(idx)]
+
+
 def _extract_peak_depth_geotiff(netcdf_path: Path) -> tuple[Path, dict[str, Any]]:
     """Read sfincs_map.nc, compute the per-cell peak depth, write a COG to a tmp path.
 
@@ -264,8 +522,6 @@ def _extract_peak_depth_geotiff(netcdf_path: Path) -> tuple[Path, dict[str, Any]
     depth, units, crs string) the AssessmentEnvelope's FloodMetrics consumes.
     """
     try:
-        import numpy as np  # type: ignore[import-not-found]
-        import rasterio  # type: ignore[import-not-found]
         import xarray as xr  # type: ignore[import-not-found]
     except Exception as exc:  # noqa: BLE001
         raise PostprocessError(
@@ -284,211 +540,119 @@ def _extract_peak_depth_geotiff(netcdf_path: Path) -> tuple[Path, dict[str, Any]
         ) from exc
 
     try:
-        if "hmax" in ds.variables:
-            depth = ds["hmax"]
-        elif "zsmax" in ds.variables and "zb" in ds.variables:
-            depth = ds["zsmax"] - ds["zb"]
-        elif "zs" in ds.variables and "zb" in ds.variables:
-            depth = (ds["zs"].max(dim="time") - ds["zb"]).clip(min=0.0)
-        else:
-            raise PostprocessError(
-                "RUN_OUTPUT_EMPTY",
-                message=(
-                    f"sfincs_map.nc at {netcdf_path} carries neither hmax nor "
-                    "zsmax/zs+zb; no depth field to extract."
-                ),
-                details={"variables": list(ds.variables.keys())},
-            )
-
-        arr = np.asarray(depth.values, dtype="float32")
-        # Squeeze any singleton leading dims (e.g. HydroMT-SFINCS 1.2.2 emits
-        # hmax with shape (timemax=1, n, m)). COG writer expects exactly 2D.
-        if arr.ndim > 2:
-            arr = np.squeeze(arr)
-            if arr.ndim != 2:
-                raise PostprocessError(
-                    "RUN_OUTPUT_UNEXPECTED_SHAPE",
-                    message=(
-                        f"depth array has shape {arr.shape}; expected 2D after squeeze"
-                    ),
-                    details={"netcdf_path": str(netcdf_path), "shape": list(arr.shape)},
-                )
-
-        # --- Rotation fix (job-0071) ---
-        # SFINCS netCDF convention: ds["x"].dims = ("m",), ds["y"].dims = ("n",)
-        # where m=x-cols, n=y-rows.  Diagnostic (2026-06-07): the Fort Myers run
-        # had hmax dims (timemax, m, n) — x-cols in the leading spatial axis —
-        # so after squeeze depth.dims = ("m", "n") with shape (m, n).
-        # The COG writer expects arr.shape = (y_rows, x_cols); we detect the
-        # mismatch by comparing the squeezed DataArray's dim names against
-        # ds["x"].dims[0] and ds["y"].dims[0], then transpose if needed.
-        # Using dim names (not array shapes) handles square grids correctly.
+        depth = _select_peak_depth(ds)
+        return _write_verified_cog(depth.values, ds=ds, netcdf_path=netcdf_path)
+    finally:
         try:
-            _x_dim = ds["x"].dims[0]  # e.g. "m"
-            _y_dim = ds["y"].dims[0]  # e.g. "n"
-            _depth_squeezed = depth.squeeze()
-            _depth_dims = _depth_squeezed.dims  # e.g. ("n", "m") or ("m", "n")
-            if _depth_dims[-1] == _y_dim and _depth_dims[-2] == _x_dim:
-                # Axes are swapped: arr is (x_cols, y_rows); transpose to (y_rows, x_cols).
-                logger.info(
-                    "postprocess_flood: transposing depth array — dims %s have x-dim "
-                    "(%s) in rows and y-dim (%s) in cols; expected (y_rows, x_cols). "
-                    "This indicates SFINCS hmax was emitted as (timemax, m, n) instead of "
-                    "(timemax, n, m). Rotation fix applied (job-0071).",
-                    _depth_dims, _x_dim, _y_dim,
-                )
-                arr = arr.T
-        except Exception:  # noqa: BLE001 — dim inspection failure falls through to identity
+            ds.close()
+        except Exception:  # noqa: BLE001
             pass
 
-        # Mask sub-threshold depths to NaN so the COG is dry-cell-aware.
-        # NODATA_DEPTH_M = 0.05 m is the physical wet-cell threshold (job-0071
-        # transparency belt-and-suspenders).  Belt-and-suspenders: the QML
-        # renderer also hides values < 0.05 m via alpha=0 at the bottom stop.
-        arr_masked = np.where(arr > NODATA_DEPTH_M, arr, np.nan)
-        flooded = arr_masked[~np.isnan(arr_masked)]
-        if flooded.size == 0:
-            metrics_summary = {
-                "max_depth_m": 0.0,
-                "mean_depth_m": 0.0,
-                "p95_depth_m": 0.0,
-                "flooded_cell_count": 0,
-            }
-        else:
-            metrics_summary = {
-                "max_depth_m": float(np.nanmax(flooded)),
-                "mean_depth_m": float(np.nanmean(flooded)),
-                "p95_depth_m": float(np.nanpercentile(flooded, 95)),
-                "flooded_cell_count": int(flooded.size),
-            }
 
-        # Write a COG. Best-effort CRS + transform from the dataset; SFINCS
-        # output carries its CRS in a data variable named 'crs' (CF-convention),
-        # not in .attrs.  Read from the variable first; fall back to .attrs for
-        # any dataset that still uses the old encoding (OQ-59 fix, job-0063).
-        # x and y may have been read above in the rotation block; reuse them.
-        crs = _read_crs_from_dataset(ds)
-        try:
-            # x/y may already be bound from the rotation block; re-read to be safe
-            # (the rotation block catches exceptions so x/y may not be in scope).
-            _x = ds["x"].values
-            _y = ds["y"].values
-            transform = rasterio.transform.from_bounds(
-                float(_x.min()), float(_y.min()), float(_x.max()), float(_y.max()),
-                arr.shape[-1], arr.shape[-2],
-            )
-        except Exception:  # noqa: BLE001
-            transform = rasterio.Affine.identity()
+def _extract_depth_frames(
+    netcdf_path: Path,
+) -> tuple[Path, dict[str, Any], list[Path], list[str]]:
+    """Extract the PEAK depth COG AND (when time-varying output exists) N per-frame
+    depth COGs from a SFINCS map output — the engine-agnostic flood-animation core.
 
-        # --- Y-orientation guard (job-0086) ---
-        # SFINCS often emits y ascending along rows (row 0 = south). COG built via
-        # rasterio.transform.from_bounds(...) declares row 0 = north. If we write
-        # arr as-is into that transform, the COG is internally Y-flipped: deep-flood
-        # pixels (at the SOUTH river mouth) paint onto the NORTH of the bbox.
-        # Detect direction along the row axis and flip BOTH arr + arr_masked.
-        try:
-            _y_vals = ds["y"].values
-            if _y_vals.ndim == 2:
-                y_ascends_along_rows = bool(_y_vals[0, 0] < _y_vals[-1, 0])
-            else:
-                y_ascends_along_rows = bool(_y_vals[0] < _y_vals[-1])
-            if y_ascends_along_rows:
-                logger.info(
-                    "postprocess_flood: flipping rows — SFINCS y ascends along rows "
-                    "(row 0 = south, %.2f → %.2f); COG expects row 0 = north. "
-                    "Y-axis flip applied (job-0086).",
-                    float(_y_vals.flat[0]), float(_y_vals.flat[-1]),
-                )
-                arr = arr[::-1, :]
-                arr_masked = arr_masked[::-1, :]
-        except Exception:  # noqa: BLE001 — defensive; bad y → identity, no harm
-            logger.warning("postprocess_flood: y-orientation probe failed; not flipping")
+    Returns ``(peak_cog, peak_metrics, frame_cogs, frame_labels)``:
 
-        # --- X-orientation guard (job-0086, belt-and-suspenders) ---
-        # Curvilinear grids can also have x descending along columns (col 0 = east).
-        # COG from_bounds always produces west-to-east (ascending x), so if the
-        # data has x descending along cols, flip columns to match. Do NOT flip when
-        # x is already ascending — this guard is identity for all normal SFINCS runs.
-        try:
-            _x_vals = ds["x"].values
-            if _x_vals.ndim == 2:
-                x_descends_along_cols = bool(_x_vals[0, 0] > _x_vals[0, -1])
-            else:
-                x_descends_along_cols = bool(_x_vals[0] > _x_vals[-1])
-            if x_descends_along_cols:
-                logger.info(
-                    "postprocess_flood: flipping cols — SFINCS x descends along cols "
-                    "(col 0 = east, %.2f → %.2f); COG expects col 0 = west. "
-                    "X-axis flip applied (job-0086).",
-                    float(_x_vals.flat[0]), float(_x_vals.flat[-1]),
-                )
-                arr = arr[:, ::-1]
-                arr_masked = arr_masked[:, ::-1]
-        except Exception:  # noqa: BLE001 — defensive; bad x → identity, no harm
-            logger.warning("postprocess_flood: x-orientation probe failed; not flipping")
+    - ``peak_cog`` — the representative max-depth COG (always produced; identical
+      to the legacy ``_extract_peak_depth_geotiff`` output). Drives FloodMetrics
+      + the habitat/Pelicun/honesty-floor consumers (regression-safe).
+    - ``peak_metrics`` — PEAK aggregates (max/mean/p95/flooded_cell_count) +
+      crs/units. Computed over the PEAK field, NOT a single frame.
+    - ``frame_cogs`` — up to ``MAX_FLOOD_FRAMES`` per-timestep depth COGs in
+      ASCENDING time order, evenly subsampled (first + last always kept). EMPTY
+      when the dataset has no usable time-varying water level (only hmax/zsmax,
+      or a single zs timestep) → caller emits ONLY the peak layer (full
+      backward-compat). Each frame COG is orientation-corrected + CRS-verified
+      by ``_write_verified_cog`` (the per-frame VALID-COG guard).
+    - ``frame_labels`` — parallel short labels (e.g. ``"step 1"``) for provenance;
+      the AUTHORITATIVE web grouping token lives in the LayerURI NAME the caller
+      assigns ("Flood depth step N"), NOT here.
 
-        tmp_cog = Path(tempfile.NamedTemporaryFile(suffix=".tif", delete=False).name)
-        try:
-            with rasterio.open(
-                tmp_cog,
-                "w",
-                driver="COG",
-                width=arr.shape[-1],
-                height=arr.shape[-2],
-                count=1,
-                dtype="float32",
-                crs=crs,
-                transform=transform,
-                nodata=float("nan"),
-                compress="LZW",
-            ) as dst:
-                dst.write(arr_masked.astype("float32"), 1)
-        except Exception as exc:  # noqa: BLE001
-            raise PostprocessError(
-                "COG_WRITE_FAILED",
-                message=f"COG write failed: {exc}",
-                details={"netcdf_path": str(netcdf_path)},
-            ) from exc
+    The per-frame path REQUIRES ``zs(time,n,m)`` + ``zb(n,m)`` with a time dim of
+    length > 1 — which only exists once ``dtout`` is set in the SFINCS deck
+    (sfincs_builder). Without time-varying output the function degrades cleanly
+    to the single-max behavior.
+    """
+    try:
+        import xarray as xr  # type: ignore[import-not-found]
+    except Exception as exc:  # noqa: BLE001
+        raise PostprocessError(
+            "RUN_OUTPUT_READ_FAILED",
+            message=f"xarray/rasterio/numpy not available: {exc}",
+            details={"netcdf_path": str(netcdf_path)},
+        ) from exc
 
-        # --- CRS_TAG_MISMATCH guard (job-0071 / research-workflow 2026-06-07) ---
-        # Re-open the COG and verify the CRS tag was written correctly BEFORE
-        # uploading to the runs bucket.  Two checks:
-        # 1. Round-trip: str(verify.crs) must equal str(crs).
-        # 2. Sanity: geographic CRS → |x| ≤ 360; projected → |x| > 1000.
-        with rasterio.open(tmp_cog, "r") as verify:
-            if str(verify.crs) != str(crs):
-                raise PostprocessError(
-                    "CRS_TAG_MISMATCH",
-                    message=(
-                        f"COG written with crs={crs!r} but rasterio read back "
-                        f"{verify.crs!r}"
-                    ),
-                    details={"netcdf_path": str(netcdf_path)},
-                )
-            is_geographic = verify.crs.is_geographic
-            bounds_max = max(abs(verify.bounds.left), abs(verify.bounds.right))
-            if is_geographic and bounds_max > 360:
-                raise PostprocessError(
-                    "CRS_TAG_MISMATCH",
-                    message=(
-                        f"crs={crs!r} is geographic but bounds.left="
-                        f"{verify.bounds.left} implies projected coords (|x|>360)"
-                    ),
-                    details={"netcdf_path": str(netcdf_path)},
-                )
-            if (not is_geographic) and bounds_max < 1000:
-                raise PostprocessError(
-                    "CRS_TAG_MISMATCH",
-                    message=(
-                        f"crs={crs!r} is projected but bounds.left="
-                        f"{verify.bounds.left} implies geographic coords (|x|<1000)"
-                    ),
-                    details={"netcdf_path": str(netcdf_path)},
-                )
+    try:
+        ds = xr.open_dataset(str(netcdf_path))
+    except Exception as exc:  # noqa: BLE001
+        raise PostprocessError(
+            "RUN_OUTPUT_READ_FAILED",
+            message=f"xarray could not open {netcdf_path}: {exc}",
+            details={"netcdf_path": str(netcdf_path)},
+        ) from exc
 
-        metrics_summary["crs"] = crs
-        metrics_summary["units"] = "meters"
-        return tmp_cog, metrics_summary
+    frame_cogs: list[Path] = []
+    frame_labels: list[str] = []
+    try:
+        # Peak COG + metrics ALWAYS (the representative + FloodMetrics source).
+        peak_field = _select_peak_depth(ds)
+        peak_cog, peak_metrics = _write_verified_cog(
+            peak_field.values, ds=ds, netcdf_path=netcdf_path
+        )
+
+        # Per-frame path: only when zs(time,...)+zb carry a real time dim > 1.
+        has_timeseries = (
+            "zs" in ds.variables
+            and "zb" in ds.variables
+            and "time" in ds["zs"].dims
+        )
+        if has_timeseries:
+            n_steps = int(ds.sizes.get("time", ds["zs"].sizes.get("time", 0)))
+            if n_steps > 1:
+                zb = ds["zb"]
+                indices = _select_frame_time_indices(n_steps)
+                for frame_no, t_idx in enumerate(indices, start=1):
+                    depth_t = (ds["zs"].isel(time=t_idx) - zb).clip(min=0.0)
+                    try:
+                        frame_cog, _frame_metrics = _write_verified_cog(
+                            depth_t.values, ds=ds, netcdf_path=netcdf_path
+                        )
+                    except PostprocessError:
+                        # A single corrupt frame must not sink the whole animation
+                        # OR the peak layer. Clean up partial frames and degrade to
+                        # the peak-only path (honest: better one good layer than a
+                        # broken group). Re-raise only the peak-write failures above.
+                        logger.warning(
+                            "postprocess_flood: frame %d (t=%d) COG write/verify "
+                            "failed; degrading to peak-only (no animation group).",
+                            frame_no, t_idx,
+                        )
+                        for p in frame_cogs:
+                            try:
+                                p.unlink(missing_ok=True)
+                            except Exception:  # noqa: BLE001
+                                pass
+                        frame_cogs = []
+                        frame_labels = []
+                        break
+                    frame_cogs.append(frame_cog)
+                    frame_labels.append(f"step {frame_no}")
+                # A 1-frame "group" can never form on the web (needs >= 2 distinct
+                # values); drop it so we never publish a lone styled frame row.
+                if len(frame_cogs) < 2:
+                    for p in frame_cogs:
+                        try:
+                            p.unlink(missing_ok=True)
+                        except Exception:  # noqa: BLE001
+                            pass
+                    frame_cogs = []
+                    frame_labels = []
+
+        return peak_cog, peak_metrics, frame_cogs, frame_labels
     finally:
         try:
             ds.close()
@@ -497,10 +661,21 @@ def _extract_peak_depth_geotiff(netcdf_path: Path) -> tuple[Path, dict[str, Any]
 
 
 def _upload_cog_to_runs_bucket(
-    local_cog: Path, run_id: str, runs_bucket: str | None = None
+    local_cog: Path,
+    run_id: str,
+    runs_bucket: str | None = None,
+    *,
+    dest_filename: str = "flood_depth_peak.tif",
 ) -> str:
     """Upload the staged COG to
-    ``{scheme}://<runs_bucket>/<run_id>/flood_depth_peak.tif``.
+    ``{scheme}://<runs_bucket>/<run_id>/<dest_filename>``.
+
+    ``dest_filename`` defaults to ``flood_depth_peak.tif`` (the peak layer,
+    byte-identical key to the pre-animation path). Per-frame callers pass a
+    DISTINCT name (e.g. ``flood_depth_frame_03.tif``) so each frame COG lands at
+    its own object key → its own ``url=`` in the TiTiler tile template → its own
+    ``_layer_identity_key`` (no dedup collision; the sequential group keeps all
+    its members).
 
     job-0291 (sprint-14-aws): scheme-aware per ``cache.storage_scheme()``.
     Under ``s3`` the upload goes via **boto3** (job-0289 lesson) and the
@@ -523,14 +698,14 @@ def _upload_cog_to_runs_bucket(
                 ),
                 details={"local_cog": str(local_cog)},
             )
-        dest = f"s3://{bucket}/{run_id}/flood_depth_peak.tif"
+        dest = f"s3://{bucket}/{run_id}/{dest_filename}"
         try:
             from ..tools.solver import _get_s3_client
 
             with local_cog.open("rb") as fh:
                 _get_s3_client().put_object(
                     Bucket=bucket,
-                    Key=f"{run_id}/flood_depth_peak.tif",
+                    Key=f"{run_id}/{dest_filename}",
                     Body=fh,
                     ContentType="image/tiff",
                 )
@@ -544,7 +719,7 @@ def _upload_cog_to_runs_bucket(
         return dest
 
     bucket = runs_bucket or os.environ.get("GRACE2_RUNS_BUCKET", RUNS_BUCKET_DEFAULT)
-    dest = f"gs://{bucket}/{run_id}/flood_depth_peak.tif"
+    dest = f"gs://{bucket}/{run_id}/{dest_filename}"
     try:
         import fsspec  # type: ignore[import-not-found]
 
@@ -582,40 +757,98 @@ def postprocess_flood(
 
     Returns:
         A tuple ``(layers, metrics)`` where ``layers`` is a list of
-        ``LayerURI`` (first element is always the peak flood-depth COG;
-        CRS-tagged + units-tagged per FR-CE-4) and ``metrics`` is a dict
-        carrying ``max_depth_m``, ``mean_depth_m``, ``p95_depth_m``, and
-        ``flooded_cell_count`` for the workflow to populate ``FloodMetrics``.
+        ``LayerURI`` and ``metrics`` is a dict carrying the PEAK aggregates
+        (``max_depth_m``, ``mean_depth_m``, ``p95_depth_m``,
+        ``flooded_cell_count``) for the workflow to populate ``FloodMetrics``.
+
+        ``layers[0]`` is ALWAYS the representative peak flood-depth COG
+        (``layer_id=flood-depth-peak-{run_id}``, name ``"Peak flood depth"``,
+        role ``"primary"``) — the regression-safe single layer the habitat /
+        Pelicun / honesty-floor / wrapper-return consumers read. ``layers[1:]``
+        (present ONLY when the SFINCS output carries time-varying water level)
+        are up to ``MAX_FLOOD_FRAMES`` per-timestep depth COGs named
+        ``"Flood depth step N"`` (N = 1..k, contiguous, 1-based) with role
+        ``"context"`` — the web ``parseFrameToken`` recognizes the ``step N``
+        token and ``detectSequentialGroups`` collapses them into ONE bottom-
+        center-scrubber temporal group (engine-agnostic flood animation,
+        Phase 1). Each frame COG lands at a DISTINCT runs-bucket key so its
+        ``url=`` (hence ``_layer_identity_key``) is distinct → no dedup collapse.
 
     Raises:
         PostprocessError: any step of the read → COG-write → upload chain
             failed; ``error_code`` identifies the stage.
     """
     netcdf_path = _resolve_run_output_to_local(run_outputs_uri)
-    cog_path, metrics = _extract_peak_depth_geotiff(netcdf_path)
+    peak_cog, metrics, frame_cogs, frame_labels = _extract_depth_frames(netcdf_path)
+
+    # --- Peak (representative) layer — ALWAYS layers[0], unchanged contract. ---
     try:
-        cog_uri = _upload_cog_to_runs_bucket(cog_path, run_id, runs_bucket)
+        peak_uri = _upload_cog_to_runs_bucket(peak_cog, run_id, runs_bucket)
     finally:
-        # Best-effort cleanup of the local COG (the upload made a copy).
         try:
-            cog_path.unlink(missing_ok=True)
+            peak_cog.unlink(missing_ok=True)
         except Exception:  # noqa: BLE001
             pass
 
-    layer = LayerURI(
-        # job (flood-duplicate-layer fix): a clear human-readable name —
-        # "Peak flood depth" — so the LayerPanel row matches the
-        # white->blue->green ``continuous_flood_depth`` styling. The
-        # style_preset MUST stay set (FLOOD_DEPTH_STYLE_PRESET); a layer that
-        # reaches publish_layer / the map with NO preset falls through to the
-        # raw COG and TiTiler renders it in matplotlib viridis (the redundant
-        # unstyled-duplicate symptom).
-        layer_id=f"flood-depth-peak-{run_id}",
-        name="Peak flood depth",
-        layer_type="raster",
-        uri=cog_uri,
-        style_preset=FLOOD_DEPTH_STYLE_PRESET,
-        role="primary",
-        units="meters",
-    )
-    return [layer], metrics
+    layers: list[LayerURI] = [
+        LayerURI(
+            # job (flood-duplicate-layer fix): a clear human-readable name —
+            # "Peak flood depth" — so the LayerPanel row matches the
+            # white->blue->green ``continuous_flood_depth`` styling. The
+            # style_preset MUST stay set (FLOOD_DEPTH_STYLE_PRESET); a layer that
+            # reaches publish_layer / the map with NO preset falls through to the
+            # raw COG and TiTiler renders it in matplotlib viridis (the redundant
+            # unstyled-duplicate symptom).
+            layer_id=f"flood-depth-peak-{run_id}",
+            name="Peak flood depth",
+            layer_type="raster",
+            uri=peak_uri,
+            style_preset=FLOOD_DEPTH_STYLE_PRESET,
+            role="primary",
+            units="meters",
+        )
+    ]
+
+    # --- Per-frame layers (time-stepped animation, engine-agnostic). ---
+    # Each frame uploads to a DISTINCT key flood_depth_frame_{NN:02d}.tif so its
+    # TiTiler url= (→ _layer_identity_key) is unique and the dedup keeps every
+    # frame. Names carry the EXACT web token ("Flood depth step N") so the panel
+    # forms the sequential group. role="context" (LayerURI.role is a closed
+    # Literal["primary","context","input"]; frames are NOT the primary peak
+    # layer, so they ride as context — the grouping key on the web side is the
+    # NAME token + style_preset + bbox-signature, never the role).
+    for frame_no, (frame_cog, _label) in enumerate(
+        zip(frame_cogs, frame_labels), start=1
+    ):
+        try:
+            frame_uri = _upload_cog_to_runs_bucket(
+                frame_cog,
+                run_id,
+                runs_bucket,
+                dest_filename=f"flood_depth_frame_{frame_no:02d}.tif",
+            )
+        finally:
+            try:
+                frame_cog.unlink(missing_ok=True)
+            except Exception:  # noqa: BLE001
+                pass
+        layers.append(
+            LayerURI(
+                layer_id=f"flood-depth-frame-{frame_no:02d}-{run_id}",
+                name=f"Flood depth step {frame_no}",
+                layer_type="raster",
+                uri=frame_uri,
+                style_preset=FLOOD_DEPTH_STYLE_PRESET,
+                role="context",
+                units="meters",
+            )
+        )
+
+    if len(layers) > 1:
+        logger.info(
+            "postprocess_flood: emitted peak layer + %d time-step frames "
+            "(animation group) for run_id=%s",
+            len(layers) - 1,
+            run_id,
+        )
+    return layers, metrics

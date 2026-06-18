@@ -216,8 +216,13 @@ def test_postprocess_flood_layer_is_styled_and_single() -> None:
             return_value=Path("/tmp/fake.nc"),
         ),
         patch(
-            "grace2_agent.workflows.postprocess_flood._extract_peak_depth_geotiff",
-            return_value=(Path("/tmp/fake_cog.tif"), dict(_DEPTH_METRICS)),
+            # postprocess_flood now extracts via _extract_depth_frames, which
+            # returns (peak_cog, peak_metrics, frame_cogs, frame_labels). With NO
+            # time-varying output (only hmax/zsmax) frame_cogs/labels are empty,
+            # so postprocess_flood emits EXACTLY the single peak layer (the
+            # styled-single-layer contract this test guards).
+            "grace2_agent.workflows.postprocess_flood._extract_depth_frames",
+            return_value=(Path("/tmp/fake_cog.tif"), dict(_DEPTH_METRICS), [], []),
         ),
         patch(
             "grace2_agent.workflows.postprocess_flood._upload_cog_to_runs_bucket",

@@ -89,6 +89,63 @@ def _epsg_to_wkt(epsg_str: str) -> str:
         return epsg_str
 
 
+def _make_sfincs_nc_timeseries(
+    tmp_path: Path,
+    *,
+    x_vals: list[float],
+    y_vals: list[float],
+    n_steps: int,
+    crs_wkt: str = "EPSG:32617",
+    filename: str = "sfincs_map.nc",
+) -> Path:
+    """Write a synthetic SFINCS netCDF with TIME-VARYING ``zs(time,n,m)`` + ``zb(n,m)``.
+
+    This is the flood-animation source shape: water-level time series + bed
+    level, from which per-frame depth = (zs - zb).clip(0). Depth rises
+    monotonically with the time index (step 0 = dry, last step = deepest) so the
+    frames are easy to assert on. Also emits ``zsmax`` (= max over time) + ``zb``
+    so the PEAK path resolves to zsmax-zb (a genuine max field, not a single
+    frame). ``n_steps`` controls the time-dim length.
+    """
+    import numpy as np_inner
+    import xarray as xr
+
+    ny, nx = len(y_vals), len(x_vals)
+    # Bed level 0 everywhere; water level ramps 0 -> 3.0 m across the time steps.
+    zb = np_inner.zeros((ny, nx), dtype="float32")
+    zs = np_inner.zeros((n_steps, ny, nx), dtype="float32")
+    for t in range(n_steps):
+        # Uniform water level rising with t: 0 at t=0 up to 3.0 at the last step.
+        level = 3.0 * (t / max(1, n_steps - 1))
+        zs[t, :, :] = level
+    zsmax = zs.max(axis=0)  # (ny, nx) — the true peak water level
+
+    ds = xr.Dataset(
+        {
+            "zs": xr.DataArray(zs, dims=["time", "n", "m"], attrs={"units": "m"}),
+            "zsmax": xr.DataArray(zsmax, dims=["n", "m"], attrs={"units": "m"}),
+            "zb": xr.DataArray(zb, dims=["n", "m"], attrs={"units": "m"}),
+            "crs": xr.DataArray(
+                0,
+                attrs={
+                    "crs_wkt": _epsg_to_wkt(crs_wkt),
+                    "grid_mapping_name": "transverse_mercator",
+                },
+            ),
+        },
+        coords={
+            "x": xr.DataArray(np_inner.array(x_vals, dtype="float64"), dims=["m"]),
+            "y": xr.DataArray(np_inner.array(y_vals, dtype="float64"), dims=["n"]),
+            "time": xr.DataArray(
+                np_inner.arange(n_steps, dtype="int64"), dims=["time"]
+            ),
+        },
+    )
+    out = tmp_path / filename
+    ds.to_netcdf(str(out))
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Shared asymmetric depth pattern.
 # High values (3.0 m) at y-index 0 (the low-y / south row in ascending y).
@@ -271,3 +328,228 @@ def test_x_descending_gets_flipped(tmp_path: Path) -> None:
         )
     finally:
         Path(cog_path).unlink(missing_ok=True)
+
+
+# ===========================================================================
+# Flood-animation Phase 1 (engine-agnostic time-stepped inundation)
+# ===========================================================================
+#
+# postprocess_flood now emits N per-frame depth COGs (one per output timestep)
+# as a SINGLE Wave-1 sequential temporal group the web LayerPanel
+# (parseFrameToken + detectSequentialGroups + SequenceScrubber) renders with a
+# bottom-center scrubber. These tests pin: the per-frame extraction, the <=24
+# frame cap + even subsampling, the EXACT web frame-token name format, valid
+# per-frame COGs, PEAK-aggregate metrics, and full backward-compat for the
+# no-time-dim (hmax/zsmax-only) path that all the legacy fixtures exercise.
+
+
+# --- Pin the web parseFrameToken contract from the Python side. ------------
+# This is the THIRD FRAME_PATTERNS regex in web/src/LayerPanel.tsx:262 —
+#   /\b(?:step|frame|idx|index)\s*\+?(\d{1,4})\b/i
+# If the frame NAMES don't match it the web group never forms. Replicating the
+# regex here makes a name-format drift fail loudly in CI on the Python side.
+import re  # noqa: E402
+
+_WEB_STEP_TOKEN_RE = re.compile(r"\b(?:step|frame|idx|index)\s*\+?(\d{1,4})\b", re.I)
+
+
+def test_frame_names_match_web_parseFrameToken_step_pattern(tmp_path: Path) -> None:
+    """Each frame LayerURI.name matches the web 'step N' token + yields strictly
+    increasing distinct ints (the contract detectSequentialGroups requires)."""
+    from grace2_agent.workflows.postprocess_flood import _extract_depth_frames
+
+    nc = _make_sfincs_nc_timeseries(
+        tmp_path, x_vals=X_VALS_ASC, y_vals=Y_VALS_DESC, n_steps=6
+    )
+    _peak_cog, _peak_metrics, frame_cogs, frame_labels = _extract_depth_frames(nc)
+    try:
+        assert len(frame_cogs) == 6, f"expected 6 frames; got {len(frame_cogs)}"
+        # frame_labels are the provenance labels; the AUTHORITATIVE web token is
+        # the LayerURI NAME the caller assigns. Reconstruct that name here exactly
+        # as postprocess_flood does: "Flood depth step N" (N=1..k).
+        names = [f"Flood depth step {i}" for i in range(1, len(frame_cogs) + 1)]
+        values: list[int] = []
+        for name in names:
+            m = _WEB_STEP_TOKEN_RE.search(name)
+            assert m is not None, (
+                f"frame name {name!r} does not match the web step token regex "
+                f"{_WEB_STEP_TOKEN_RE.pattern!r} — the sequential group will NOT "
+                f"form on the web side"
+            )
+            values.append(int(m.group(1)))
+        # Strictly increasing + distinct (detectSequentialGroups requirement).
+        assert values == sorted(values), f"frame values not increasing: {values}"
+        assert len(set(values)) == len(values), f"frame values not distinct: {values}"
+        assert values == list(range(1, len(frame_cogs) + 1)), (
+            f"frame values must be contiguous 1..k; got {values}"
+        )
+    finally:
+        for p in frame_cogs:
+            Path(p).unlink(missing_ok=True)
+        Path(_peak_cog).unlink(missing_ok=True)
+
+
+def test_per_frame_cogs_are_valid_and_capped(tmp_path: Path) -> None:
+    """>24 raw steps → <=24 frames, evenly subsampled with first+last kept; each
+    frame COG round-trips through rasterio with the correct CRS tag."""
+    import rasterio
+    from grace2_agent.workflows.postprocess_flood import (
+        MAX_FLOOD_FRAMES,
+        _extract_depth_frames,
+    )
+
+    # 50 raw steps → must cap at MAX_FLOOD_FRAMES (24).
+    nc = _make_sfincs_nc_timeseries(
+        tmp_path, x_vals=X_VALS_ASC, y_vals=Y_VALS_DESC, n_steps=50
+    )
+    peak_cog, peak_metrics, frame_cogs, frame_labels = _extract_depth_frames(nc)
+    try:
+        assert MAX_FLOOD_FRAMES == 24
+        assert len(frame_cogs) <= MAX_FLOOD_FRAMES, (
+            f"frame count {len(frame_cogs)} exceeds cap {MAX_FLOOD_FRAMES}"
+        )
+        assert len(frame_cogs) >= 2, "expected a multi-frame group from 50 steps"
+        assert len(frame_cogs) == len(frame_labels)
+
+        # Each frame COG must be a VALID COG (rasterio round-trip) with the
+        # dataset CRS tag (EPSG:32617) — the TiTiler-wedge guard.
+        for fp in frame_cogs:
+            with rasterio.open(fp) as src:
+                assert src.crs is not None
+                assert src.crs.to_epsg() == 32617, (
+                    f"frame COG {fp} CRS {src.crs} != EPSG:32617"
+                )
+                arr = src.read(1)
+                assert arr.ndim == 2 and arr.shape == (
+                    len(Y_VALS_DESC),
+                    len(X_VALS_ASC),
+                )
+
+        # First frame (step 1) = the FIRST raw timestep (dry, ~0 m → all masked
+        # to NaN); last frame = the LAST raw timestep (deepest). The depth ramps
+        # monotonically, so the last frame must carry MORE wet cells than (or
+        # equal to) the first — proving endpoints are kept + ordering ascending.
+        with rasterio.open(frame_cogs[0]) as a, rasterio.open(frame_cogs[-1]) as b:
+            first = a.read(1)
+            last = b.read(1)
+        first_wet = int(np.count_nonzero(~np.isnan(first)))
+        last_wet = int(np.count_nonzero(~np.isnan(last)))
+        assert last_wet >= first_wet, (
+            f"last frame wet-cell count {last_wet} < first {first_wet}; "
+            f"endpoints/ordering wrong"
+        )
+    finally:
+        for p in frame_cogs:
+            Path(p).unlink(missing_ok=True)
+        Path(peak_cog).unlink(missing_ok=True)
+
+
+def test_peak_metrics_are_peak_aggregates_not_a_single_frame(tmp_path: Path) -> None:
+    """The returned peak_metrics are computed over the PEAK (max-over-time) field,
+    NOT a single timestep — guards the FloodMetrics / habitat / Pelicun contract."""
+    from grace2_agent.workflows.postprocess_flood import _extract_depth_frames
+
+    nc = _make_sfincs_nc_timeseries(
+        tmp_path, x_vals=X_VALS_ASC, y_vals=Y_VALS_DESC, n_steps=8
+    )
+    peak_cog, peak_metrics, frame_cogs, _labels = _extract_depth_frames(nc)
+    try:
+        # Water ramps 0 -> 3.0 m; the PEAK (zsmax) is 3.0 m everywhere → max
+        # depth ~3.0 m. A single mid-frame would be < 3.0. Assert we got the peak.
+        assert peak_metrics["max_depth_m"] == pytest.approx(3.0, rel=1e-3), (
+            f"peak max_depth_m {peak_metrics['max_depth_m']} != 3.0 — metrics "
+            f"must be the PEAK aggregate, not a single frame"
+        )
+        assert peak_metrics["flooded_cell_count"] == len(X_VALS_ASC) * len(Y_VALS_DESC)
+        assert peak_metrics["crs"] == "EPSG:32617"
+    finally:
+        for p in frame_cogs:
+            Path(p).unlink(missing_ok=True)
+        Path(peak_cog).unlink(missing_ok=True)
+
+
+def test_no_time_dim_falls_back_to_single_peak_layer(tmp_path: Path) -> None:
+    """hmax-only fixture (no time dim) → _extract_depth_frames returns ZERO frames
+    and postprocess_flood emits EXACTLY ONE layer 'Peak flood depth' (role primary)
+    with the legacy depth_metrics. Backward-compat for habitat/Pelicun/honesty-floor."""
+    from unittest.mock import patch
+
+    from grace2_agent.workflows.postprocess_flood import (
+        _extract_depth_frames,
+        postprocess_flood,
+    )
+
+    nc = _make_sfincs_nc(
+        tmp_path,
+        x_vals=X_VALS_ASC,
+        y_vals=Y_VALS_DESC,
+        hmax_pattern=HMAX_NORTH_HIGH,
+    )
+
+    # 1. _extract_depth_frames returns NO frames for the no-time-dim case.
+    peak_cog, peak_metrics, frame_cogs, frame_labels = _extract_depth_frames(nc)
+    Path(peak_cog).unlink(missing_ok=True)
+    assert frame_cogs == [], f"hmax-only fixture must yield no frames; got {frame_cogs}"
+    assert frame_labels == []
+
+    # 2. postprocess_flood (with upload stubbed) emits EXACTLY ONE layer, the
+    #    primary peak layer — the legacy single-max-COG contract is preserved.
+    def _fake_upload(local_cog, run_id, runs_bucket=None, *, dest_filename="flood_depth_peak.tif"):  # noqa: ANN001
+        return f"gs://test-runs/{run_id}/{dest_filename}"
+
+    with patch(
+        "grace2_agent.workflows.postprocess_flood._upload_cog_to_runs_bucket",
+        side_effect=_fake_upload,
+    ):
+        layers, metrics = postprocess_flood(str(nc), run_id="run-xyz")
+
+    assert len(layers) == 1, (
+        f"no-time-dim path must emit exactly ONE layer (the peak); got "
+        f"{[l.name for l in layers]}"
+    )
+    assert layers[0].name == "Peak flood depth"
+    assert layers[0].role == "primary"
+    assert layers[0].layer_id == "flood-depth-peak-run-xyz"
+    assert metrics["max_depth_m"] == pytest.approx(3.0, rel=1e-3)
+
+
+def test_postprocess_flood_emits_peak_plus_frames_with_distinct_uris(
+    tmp_path: Path,
+) -> None:
+    """postprocess_flood on a time-series fixture emits layers[0]=peak (primary)
+    + N frame layers (role context, distinct URIs, 'Flood depth step N' names)."""
+    from unittest.mock import patch
+
+    from grace2_agent.workflows.postprocess_flood import postprocess_flood
+
+    nc = _make_sfincs_nc_timeseries(
+        tmp_path, x_vals=X_VALS_ASC, y_vals=Y_VALS_DESC, n_steps=5
+    )
+
+    def _fake_upload(local_cog, run_id, runs_bucket=None, *, dest_filename="flood_depth_peak.tif"):  # noqa: ANN001
+        return f"gs://test-runs/{run_id}/{dest_filename}"
+
+    with patch(
+        "grace2_agent.workflows.postprocess_flood._upload_cog_to_runs_bucket",
+        side_effect=_fake_upload,
+    ):
+        layers, metrics = postprocess_flood(str(nc), run_id="run-abc")
+
+    # layers[0] = peak primary (the regression-safe representative).
+    assert layers[0].name == "Peak flood depth"
+    assert layers[0].role == "primary"
+    assert layers[0].layer_id == "flood-depth-peak-run-abc"
+
+    # layers[1:] = 5 frames named "Flood depth step 1..5", role context.
+    frames = layers[1:]
+    assert len(frames) == 5, f"expected 5 frames; got {[f.name for f in frames]}"
+    assert [f.name for f in frames] == [f"Flood depth step {i}" for i in range(1, 6)]
+    assert all(f.role == "context" for f in frames)
+    assert all(f.style_preset == "continuous_flood_depth" for f in frames)
+
+    # DISTINCT uris (distinct runs-bucket keys) → distinct _layer_identity_key →
+    # no dedup collapse → the web group keeps all members.
+    uris = [f.uri for f in frames]
+    assert len(set(uris)) == len(uris), f"frame uris must be distinct; got {uris}"
+    # And distinct from the peak uri.
+    assert layers[0].uri not in uris

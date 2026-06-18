@@ -1493,6 +1493,21 @@ def _generate_hydromt_yaml_config(
     components.append(f'  tref: "20260101 000000"')
     components.append(f'  tstart: "20260101 000000"')
     components.append(f'  tstop: "202601{tstop_day:02d} 000000"')
+    # --- Map-output cadence (flood-animation Phase 1, engine-agnostic) ---
+    # ``dtout`` / ``dtmaxout`` are native sfincs.inp parameters (seconds) that
+    # make SFINCS write TIME-VARYING map output — i.e. ``zs(time,n,m)`` snapshots
+    # into sfincs_map.nc. WITHOUT them SFINCS writes only the max fields
+    # (``zsmax`` / ``hmax``) and postprocess_flood can only build the single peak
+    # COG (no animation). We target ~MAX_FLOOD_FRAMES (24) raw snapshots over the
+    # whole sim window so postprocess gets a useful, bounded number of frames
+    # BEFORE subsampling. Floor at 600 s (10 min) to match SFINCS's internal
+    # 10-minute precip grid (see the setup_precip_forcing note above) — finer
+    # cadence buys nothing and only bloats sfincs_map.nc. The cadence flows
+    # through HydroMT's setup_config passthrough alongside tref/tstart/tstop.
+    _total_seconds = int(max(1.0, options.simulation_hours) * 3600)
+    dtout_seconds = max(600, int(_total_seconds / 24))
+    components.append(f"  dtout: {dtout_seconds}")
+    components.append(f"  dtmaxout: {dtout_seconds}")
     components.append("setup_grid_from_region:")
     components.append(
         f"  region: {{ bbox: [{bbox[0]}, {bbox[1]}, {bbox[2]}, {bbox[3]}] }}"

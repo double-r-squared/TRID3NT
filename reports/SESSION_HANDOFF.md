@@ -10,7 +10,62 @@ Greeting reminder: address the user as **NATE ALMANZA**; **no emojis** anywhere.
 
 ---
 
-## 1. ONE IN-FLIGHT BACKGROUND TASK (read its result first)
+## 1. SWMM vs SFINCS ENGINE VERDICT — RESOLVED 2026-06-17 (`wf_88798825-738`)
+
+**The verification that was in-flight at the last wind-down COMPLETED. Verdict captured
+here durably (raw output was ephemeral `/tmp/.../tasks/wlcbkoqyd.output`). Confidence
+HIGH — confirmed against EPA Reference Manual Vol I/II primary sources, not just
+secondary reports.**
+
+NUMERICS (settled): the EPA-SWMM5 engine pyswmm/swmm-toolkit link = 0D lumped
+nonlinear-reservoir hydrology + 1D St. Venant node-link hydraulics, with NO native 2D
+mesh shallow-water overland solver. "SWMM 2D" exists ONLY as proprietary GUI quasi-2D
+(PCSWMM 2D — a storage-node-per-DEM-cell grid; its DEM->mesh auto-builder is
+closed-source, NO open/headless equivalent) or as external coupling to a real 2D engine
+(Iber-SWMM). So the lecture's "2D depth around buildings" was almost certainly PCSWMM 2D
+— not replicable headless. FLAP GATES ARE NATIVE to SWMM (one-way-flow attribute on
+conduits/orifices/weirs/outlets) — the cleanest match for the green barrier segments.
+
+NATE'S DECISION 2026-06-17 (AUTHORITATIVE — overrides any "use SFINCS for the urban
+demo" reading of the numerics above; he was emphatic, do NOT steer the urban demo back
+to SFINCS): the URBAN flood demo is built with **PySWMM, NOT SFINCS.** The numerics fact
+stands (no native 2D mesh), so the honest PySWMM path is the QUASI-2D node-link mesh —
+exactly what PCSWMM (NATE's best guess for the lecture tool) does, but hand-built because
+there is no open auto-mesher. Concretely:
+- 100-year DESIGN STORM (Atlas-14 hyetograph -> SWMM rain series).
+- BUILDINGS as OBSTRUCTIONS: OSM footprints (job-0331) drop/elevate the mesh cells they
+  cover so water routes AROUND them.
+- WALLS + FLAP GATES, USER-DEFINED via a draw UI (NATE: "most wiring/data is the agent;
+  the walls and flap gates are defined by the user"): red wall segment = blocked/omitted
+  link; green flap-gate segment = NATIVE SWMM flap-gate attribute (one-way pass) — clean
+  literal match. See [[project-river-to-shapefile-tool]] draw-lib glue + the per-segment
+  metadata notes in `project_pyswmm_north_star_demo`.
+- ENGINE: PySWMM headless on AWS Batch (new Class-B engine; first of the
+  [[project-tool-integration-paradigm]] explicitly-defined frameworks). The DEM ->
+  quasi-2D storage-node + overland-conduit mesh is built by COMPOSING OPEN TOOLS (NATE
+  2026-06-17, correcting an earlier "no open auto-mesher" overstatement — this is exactly
+  what GRACE-2 links tools for): QGIS Processing (create grid, sample DEM to cells,
+  centroids, polygon adjacency) via the EXISTING `qgis_process` Class-A seam + a GIS->INP
+  converter (open Generate_SWMM_inp QGIS plugin / GISSWMM / swmm-api) + thin glue. The
+  STEPS are all standard open GIS ops; only PCSWMM's one-click auto-mesher BUNDLE has no
+  off-the-shelf open clone -> this is tool-linking, NOT a from-scratch numerical mesher.
+  Ties directly into job-0308 (QGIS worker). Per-node depth/step -> rasterize ->
+  per-frame COG -> Wave-1 animation.
+- MESHER CONFIRMED (research agent, 2026-06-17): ~70% link / 20% glue / 10% custom.
+  pysheds `tools/swmm.py` `SwmmIngester` (GPLv3+, headless) ALREADY builds DEM-cell nodes
+  + inverts + adjacency conduits + storage + `.inp` writer = the adopt/adapt hit; alts =
+  GisToSWMM5 (MIT), Generate_SWMM_inp (GPL-2.0 QGIS plugin via qgis_process), swmm-api
+  (MIT). SWMM 5.2 has a native quasi-2D wide-channel wall-ignore flag; flap gates native
+  (CONDUITS FlapGate). Seam = `qgis_process` (passthroughs.py:194) + discovery triple.
+  SRS already names it: docs/srs/02-system-overview.md:144 ("EPA SWMM via PySWMM — v0.2").
+- SFINCS = the COASTAL demo ONLY (Florence/Michael). It is NOT the urban demo.
+- Phase-1 ANIMATION (per-frame COG -> Wave-1 sequential group, from `postprocess_flood`)
+  serves the COASTAL demo directly AND yields the reusable per-frame-COG sequential
+  PUBLISHING path the urban PySWMM demo also needs -> still built first (workflow running,
+  §3). A PySWMM urban-engine SCOPING workflow is also running (concrete phased build plan
+  for the quasi-2D mesh path).
+
+## 1B. EARLIER FRAMING NOTES (superseded by the §1 verdict above; kept for context)
 
 **IMPORTANT FRAMING (NATE corrected this at wind-down — do NOT inherit the false
 "versus"):** NATE wants BOTH North Star demos (urban AND coastal) AND BOTH engines.
