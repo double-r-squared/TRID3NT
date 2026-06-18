@@ -397,12 +397,22 @@ resource "aws_cloudwatch_log_group" "batch" {
 # ─────────────────────────────────────────────────────────────────────────────
 
 resource "aws_batch_compute_environment" "sfincs_spot" {
-  # "grace2-solvers-spot" conveys that this CE hosts all GRACE-2 solver types,
-  # not just SFINCS. The name is set at creation and cannot be changed in-place;
-  # rename requires destroy + recreate.
-  compute_environment_name = "grace2-solvers-spot"
-  type                     = "MANAGED"
-  state                    = "ENABLED"
+  # "grace2-solvers-spot-<suffix>" conveys that this CE hosts all GRACE-2 solver
+  # types, not just SFINCS. We use name_PREFIX (not a fixed name) deliberately:
+  # several CE attributes (instance_type, the whole compute_resources block) are
+  # immutable and force a REPLACEMENT on change. With a fixed name + the default
+  # destroy-then-create, AWS Batch would refuse to delete the old CE while the
+  # job queue still references it (a queue needs >=1 CE) -> a stuck/degraded
+  # apply. name_prefix + create_before_destroy below gives a ZERO-GAP swap: the
+  # new CE is created under a fresh name, the queue is repointed to it, THEN the
+  # old CE is drained + destroyed. If the new CE fails to create, the old one is
+  # left intact (Terraform errors before any destroy) so the solver queue is
+  # never left without a CE. Nothing references the CE by fixed name (the agent
+  # submits to the QUEUE name "grace2-solvers"); only comments mentioned the old
+  # literal.
+  compute_environment_name_prefix = "grace2-solvers-spot-"
+  type                            = "MANAGED"
+  state                           = "ENABLED"
 
   # The Batch service role must exist before the CE can be created.
   service_role = aws_iam_role.batch_service.arn
@@ -445,6 +455,16 @@ resource "aws_batch_compute_environment" "sfincs_spot" {
   # Depend on the service role attachment being complete before creating the CE;
   # AWS validates the role's trust policy at CE creation time.
   depends_on = [aws_iam_role_policy_attachment.batch_service_managed]
+
+  # ZERO-GAP REPLACEMENT: immutable compute_resources changes (e.g. the
+  # instance_type ladder for the auto compute-class tiers) force a CE
+  # replacement. create_before_destroy + the name_prefix above make Batch stand
+  # up the new CE, repoint the queue, and only THEN drain + delete the old one —
+  # so the solver queue is never left without a compute environment, and a failed
+  # create leaves the existing CE untouched.
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
