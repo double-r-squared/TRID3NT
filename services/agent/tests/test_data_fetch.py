@@ -141,7 +141,6 @@ def test_registry_contains_job_0039_subset_after_eager_import():
     """
     names = set(TOOL_REGISTRY.keys())
     expected_subset = {
-        "mongo_query",
         "qgis_process",
         "fetch_dem",
         "fetch_buildings",
@@ -153,10 +152,10 @@ def test_registry_contains_job_0039_subset_after_eager_import():
         "lookup_precip_return_period",
     }
     assert expected_subset.issubset(names), f"missing: {expected_subset - names}"
-    # 2 passthroughs + 4 M4 fetchers + 3 new fetchers = 9 minimum in test
-    # context; ≥9 tolerates qgis_discovery / solver / pipeline-emitter
+    # 1 passthrough + 4 M4 fetchers + 3 new fetchers = 8 minimum in test
+    # context; ≥8 tolerates qgis_discovery / solver / pipeline-emitter
     # imports landing in parallel.
-    assert len(names) >= 9
+    assert len(names) >= 8
 
 
 # ---------------------------------------------------------------------------
@@ -1186,50 +1185,6 @@ def test_resolve_state_bbox_falls_back_to_table(monkeypatch):
     # Centroid inside the bbox.
     assert bbox[0] <= lon <= bbox[2]
     assert bbox[1] <= lat <= bbox[3]
-
-
-# ---------------------------------------------------------------------------
-# DI binding (set_mcp_client) verified end-to-end through the run() helper.
-# ---------------------------------------------------------------------------
-
-
-def test_set_mcp_client_unblocks_mongo_query_body(monkeypatch):
-    """With a bound MCP client, ``mongo_query`` no longer raises 'not bound'.
-
-    The wire integration (async MCP -> sync ADK surface) still lands in a
-    follow-up, so a NotImplementedError is the expected "registry placement
-    in place" sentinel. The point is the binding flow works: ``set_mcp_client
-    (client)`` removes the "MCP client is not bound" RuntimeError surface.
-    """
-    from grace2_agent.tools import passthroughs
-
-    class StubMCP:
-        def call_tool(self, *_a, **_kw):
-            return {}
-
-    passthroughs.set_mcp_client(StubMCP())
-    try:
-        with pytest.raises(NotImplementedError):
-            passthroughs.mongo_query("sessions", {"_id": "abc"})
-    finally:
-        passthroughs.set_mcp_client(None)
-
-
-def test_main_bind_mcp_client_helper_wires_through(monkeypatch):
-    """``main._bind_mcp_client`` is the orchestrated DI seam exposed in the
-    startup path; verify it binds the passed client into ``passthroughs``."""
-    from grace2_agent.main import _bind_mcp_client
-    from grace2_agent.tools import passthroughs
-
-    class StubMCP:
-        pass
-
-    stub = StubMCP()
-    _bind_mcp_client(stub)
-    try:
-        assert passthroughs._MCP_CLIENT is stub
-    finally:
-        passthroughs.set_mcp_client(None)
 
 
 # ---------------------------------------------------------------------------

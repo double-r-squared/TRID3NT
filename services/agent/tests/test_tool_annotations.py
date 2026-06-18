@@ -234,17 +234,6 @@ def test_web_fetch_annotations():
     assert meta.idempotent_hint is True
 
 
-def test_mongo_query_annotations():
-    """mongo_query: read-only + intra-GCP (MCP sidecar) + idempotent."""
-    snapshot = _registry_snapshot()
-    assert "mongo_query" in snapshot, "mongo_query not registered"
-    meta = snapshot["mongo_query"]
-    assert meta.read_only_hint is True
-    assert meta.open_world_hint is False, "mongo_query uses MCP sidecar (intra-GCP)"
-    assert meta.destructive_hint is False
-    assert meta.idempotent_hint is True
-
-
 # ---------------------------------------------------------------------------
 # Schema defaults test
 # ---------------------------------------------------------------------------

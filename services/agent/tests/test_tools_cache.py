@@ -281,7 +281,7 @@ def test_read_through_miss_writes_with_custom_time_and_cache_control(fake_gcs):
 def test_read_through_live_no_cache_skips_gcs(fake_gcs):
     """FR-DC-6: live-no-cache tools never touch the bucket."""
     md = AtomicToolMetadata(
-        name="mongo_query",
+        name="qgis_process",
         ttl_class="live-no-cache",
         source_class=None,
         cacheable=False,

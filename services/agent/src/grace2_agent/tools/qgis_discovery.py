@@ -560,8 +560,7 @@ def list_qgis_algorithms(
 
     Do NOT use this for: finding the right pre-wired typed wrapper (use the
     agent's tool registry); discovering hazard layers (use
-    ``hazard_catalog_search``); locating MongoDB documents (use
-    ``mongo_query``).
+    ``hazard_catalog_search``).
 
     Params:
         category_filter: optional substring matched case-insensitively

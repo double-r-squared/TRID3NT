@@ -161,23 +161,6 @@ def _import_tools_registry() -> int:
     return len(tools.TOOL_REGISTRY)
 
 
-def _bind_mcp_client(client: object) -> None:
-    """Bind the running ``MCPClient`` into the ``mongo_query`` pass-through.
-
-    job-0033 DI seam: completes the wire-up promised by job-0032's
-    ``passthroughs.set_mcp_client`` hook. With a bound client, the
-    ``mongo_query`` tool body delegates to ``MCPClient.call_tool`` instead
-    of raising ``RuntimeError("MCP client is not bound...")``.
-
-    The pre-flight smoke harness (``scripts/mcp_smoke.py``) still owns the
-    full ``MCPClient.start()`` async lifecycle; this helper just registers
-    the in-flight handle with the tool surface.
-    """
-    from .tools.passthroughs import set_mcp_client
-
-    set_mcp_client(client)
-
-
 def _default_qgis_process_submitter():
     """Return the default ``qgis_process`` submitter used by ``set_worker_submitter``.
 
@@ -355,7 +338,7 @@ def _bind_worker_submitter() -> None:
         # Production agent containers will bind a Cloud Run Job submitter
         # here instead of a local subprocess; the dev-env fallback failing is
         # informational, not fatal — we let the agent service start so the
-        # other tools (data_fetch, mongo_query, passthroughs) keep working,
+        # other tools (data_fetch, passthroughs) keep working,
         # and any actual QGIS discovery call surfaces the RuntimeError.
         logging.getLogger("grace2_agent.main").warning(
             "worker submitter not bound (qgis_process unavailable): %s", exc

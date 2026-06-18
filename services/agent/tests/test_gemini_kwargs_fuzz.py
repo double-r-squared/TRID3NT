@@ -245,10 +245,6 @@ _MINIMAL_VALID_PARAMS: dict[str, dict[str, Any]] = {
         "return_period_years": 100,
         "duration_hours": 24,
     },
-    "mongo_query": {
-        "collection": "runs",
-        "filter": {"status": "complete"},
-    },
     "publish_layer": {
         "layer_uri": _SAMPLE_GCS_URI,
         "layer_id": "test-layer-id",

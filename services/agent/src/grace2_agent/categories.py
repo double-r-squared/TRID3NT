@@ -346,7 +346,6 @@ PRIMARY_CATEGORY: dict[str, str] = {
     "list_qgis_algorithms": "geographic_primitives",
     "describe_qgis_algorithm": "geographic_primitives",
     "qgis_process": "geographic_primitives",
-    "mongo_query": "geographic_primitives",
     # ---- 12. news_events --------------------------------------------------
     "web_fetch": "news_events",
     "fetch_storm_events_db": "news_events",

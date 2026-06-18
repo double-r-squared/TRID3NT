@@ -4,7 +4,7 @@ This package is the agent-service-owned surface for atomic tools (M4 substrate).
 ``schema`` owns ``AtomicToolMetadata`` (in ``grace2_contracts.tool_registry``);
 ``agent`` owns the registry that collects the decorated functions at import
 time and the cache shim that mediates external-API calls (see ``.cache``).
-Pass-through tools (``mongo_query``, ``qgis_process``) live in ``.passthroughs``.
+The ``qgis_process`` pass-through tool lives in ``.passthroughs``.
 
 How registration works:
 
@@ -250,7 +250,7 @@ def register_with_adk(agent: Any) -> int:
 # references them. Keep this list narrow: only submodules whose tools should
 # always be available at startup belong here.
 # ---------------------------------------------------------------------------
-from . import passthroughs  # noqa: E402,F401 — registers mongo_query, qgis_process
+from . import passthroughs  # noqa: E402,F401 — registers qgis_process
 from . import compute_colored_relief  # noqa: E402,F401 — job-0080: registers compute_colored_relief
 from . import compute_slope  # noqa: E402,F401 — job-0081: registers compute_slope
 from . import compute_aspect  # noqa: E402,F401 — job-0082: registers compute_aspect

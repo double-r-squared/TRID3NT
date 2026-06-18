@@ -16,8 +16,8 @@ from grace2_agent.main import _import_tools_registry, run
 def test_import_tools_registry_populates_passthroughs():
     n = _import_tools_registry()
     assert n >= 2
-    assert "mongo_query" in agent_tools.TOOL_REGISTRY
     assert "qgis_process" in agent_tools.TOOL_REGISTRY
+    assert "mongo_query" not in agent_tools.TOOL_REGISTRY
 
 
 def test_run_startup_only_returns_zero_without_serving(caplog):
@@ -28,5 +28,4 @@ def test_run_startup_only_returns_zero_without_serving(caplog):
     # Startup log line includes the registered tool names.
     joined = "\n".join(r.message for r in caplog.records)
     assert "tool registry loaded" in joined
-    assert "mongo_query" in joined
     assert "qgis_process" in joined

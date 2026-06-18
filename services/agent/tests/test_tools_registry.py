@@ -5,7 +5,7 @@ Coverage:
   unchanged.
 - Duplicate-name registration raises ``ToolRegistrationError``.
 - ``get_registered_tools`` returns a sorted snapshot.
-- The eager passthroughs import populates ``mongo_query`` + ``qgis_process``.
+- The eager passthroughs import populates ``qgis_process``.
 - ``register_tool`` rejects non-``AtomicToolMetadata`` arguments.
 - ``register_with_adk`` mock-test: every entry in the registry is appended
   to the ADK ``Agent.tools`` list (via a duck-typed fake).
@@ -107,22 +107,20 @@ def test_get_registered_tools_returns_sorted_snapshot(empty_registry):
     assert [t.metadata.name for t in snapshot] == ["a_tool", "b_tool"]
 
 
-def test_passthroughs_eager_import_registers_mongo_and_qgis():
-    """Importing ``grace2_agent.tools`` populates the two pass-throughs.
+def test_passthroughs_eager_import_registers_qgis():
+    """Importing ``grace2_agent.tools`` populates the ``qgis_process`` pass-through.
 
-    This is the acceptance-criterion test: the running agent registers them
-    with ADK on startup because their module-level ``@register_tool`` calls
-    fire when ``grace2_agent.tools`` is imported. We exercise that by
+    This is the acceptance-criterion test: the running agent registers it
+    with ADK on startup because its module-level ``@register_tool`` call
+    fires when ``grace2_agent.tools`` is imported. We exercise that by
     reading the live ``TOOL_REGISTRY`` after the package import.
+
+    The dead ``mongo_query`` stub (MongoDB Atlas torn down) was removed; it
+    must NOT be in the registry.
     """
     # No fixture: we deliberately use the live registry populated by import.
-    assert "mongo_query" in agent_tools.TOOL_REGISTRY
     assert "qgis_process" in agent_tools.TOOL_REGISTRY
-
-    mq = agent_tools.TOOL_REGISTRY["mongo_query"]
-    assert mq.metadata.ttl_class == "live-no-cache"
-    assert mq.metadata.cacheable is False
-    assert mq.metadata.source_class is None
+    assert "mongo_query" not in agent_tools.TOOL_REGISTRY
 
     qp = agent_tools.TOOL_REGISTRY["qgis_process"]
     assert qp.metadata.ttl_class == "live-no-cache"
