@@ -70,6 +70,7 @@ import {
   signOut as authSignOut,
   signIn as authSignIn,
   handleRedirectCallback,
+  getIdToken,
 } from "./auth";
 import { ConnectionStatus, GraceWs } from "./ws";
 import { SourceCandidatePayload } from "./lib/source_suggestion_suppression";
@@ -84,6 +85,7 @@ import {
 import { IconMenu, IconSettings } from "./components/icons";
 import { AgentWaker, wakeConfigured, WakeState } from "./lib/wake";
 import { fetchCaseView, caseViewConfigured } from "./lib/case_view";
+import { fetchCaseList, caseListConfigured } from "./lib/case_list";
 import {
   CaseListEnvelopePayload,
   CaseOpenEnvelopePayload,
@@ -998,6 +1000,57 @@ export function App(): JSX.Element {
       cancelled = true;
     };
   }, [activeCaseId, wsStatus, activeSession, useCases_onCaseOpen]);
+
+  // sleep/wake STAGE 2 (NATE 2026-06-19) - COLD-LOAD the Cases LIST when the
+  // agent box is asleep. SIBLING of the case-VIEW cold-load above: that paints
+  // ONE open Case; this paints the Cases ROOT (the left rail) so "paper" renders
+  // even with the "pen" (the agent) asleep. When the App socket is NOT connected
+  // the WS never delivers a `case-list` frame, so the rail would stay empty until
+  // the box wakes. We GET the serverless /case-list snapshot (lib/case_list) and
+  // feed it through the SAME useCases_onCaseList path the live WS uses - but with
+  // isAuthoritative=true, so a genuinely-empty cold list correctly shows zero
+  // cases (the LAST-CASE EDGE FIX in useCases.onCaseList).
+  //
+  // Fires ONCE (a ref guard) only while: the App socket is NOT connected AND
+  // cold-load is configured AND the rail is still empty (cases.length === 0). A
+  // later live `case-list` over the WS supersedes it (non-empty replaces; the
+  // reconcile is idempotent). Gated to dev/LAN safety by caseListConfigured()
+  // (null endpoint -> no fetch).
+  const coldLoadedListRef = useRef<boolean>(false);
+  useEffect(() => {
+    // Reset the cold-load-list guard whenever the App socket goes healthy:
+    // a live `case-list` is now authoritative and a future disconnect should
+    // be allowed to cold-load the rail again. Mirrors coldLoadedCaseRef's
+    // reset-on-reconnect above; without this the ref latched true forever
+    // after the first cold session, so a later cold session never re-fetched.
+    if (wsStatus === "connected") {
+      coldLoadedListRef.current = false;
+      return;
+    }
+    if (coldLoadedListRef.current) return;
+    if (!caseListConfigured()) return;
+    if (cases.length > 0) return;
+
+    coldLoadedListRef.current = true;
+    let cancelled = false;
+    void (async () => {
+      const token = await getIdToken().catch(() => null);
+      const payload = await fetchCaseList(undefined, token);
+      // A failed / empty cold-load releases the guard so a later attempt in the
+      // same disconnected episode can re-fetch (mirrors coldLoadedCaseRef on
+      // fetch failure). A successful non-null payload keeps the guard set.
+      if (cancelled || payload === null) {
+        if (!cancelled) coldLoadedListRef.current = false;
+        return;
+      }
+      // Cold FETCH is AUTHORITATIVE: an empty list genuinely means zero cases
+      // (clears the rail); a non-empty list paints it.
+      useCases_onCaseList(payload, true);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [wsStatus, cases.length, useCases_onCaseList]);
 
   // Lift layers from session-state.
   useEffect(() => {

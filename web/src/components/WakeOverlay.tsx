@@ -1,36 +1,39 @@
-// GRACE-2 web — "Wake up agent" overlay (auto-stop/wake infra, NATE 2026-06-17).
+// GRACE-2 web - not-connected composer overlay (auto-stop/wake infra, NATE
+// 2026-06-17; redesigned 2026-06-19 per `project_wake_composer_redesign`).
 //
-// The always-on AGENT box (EC2 t3.large) is now eligible to be STOPPED by an
+// The always-on AGENT box (EC2 t3.large) is eligible to be STOPPED by an
 // idle-check Lambda after N consecutive zero-connection polls. A stopped box
 // answers nothing, so the WebSocket cannot connect until the box is started.
 //
-// This overlay is the WAKE-UP UIUX (per the reactivated `feedback_wake_up_agent
-// _cold_start_ux` spec):
+// This is the SINGLE overlay that renders ALL THREE not-connected composer
+// treatments (NATE's locked redesign - supersedes the prior separate
+// "composer-connecting" div + the card-in-card waking surface). The parent
+// (Chat.tsx) feeds `phase`; the overlay renders ONE card with nothing
+// underneath (the composer + sheet chrome are hidden by the parent), so the
+// surface is MID-TRANSPARENCY and the page background reads through it:
 //
-//   "'Wake up agent' rectangle over the chat panel when scaled to zero; tap ->
-//    provision + shimmer/upward-wave + 'Waking up...' dots; fade on the ready
-//    ping. Respect prefers-reduced-motion."
+//   - "hidden"     → connected (or below the failure threshold): render
+//                    nothing (after a brief opacity fade-out if it was
+//                    previously visible - reads as "the agent woke up").
+//   - "connecting" → NOT connected and not (yet) classified asleep: a quiet
+//                    "Connecting" card with a YELLOW shimmer edge + a simple
+//                    spinner. NEVER auto-wakes.
+//   - "asleep"     → the box looks stopped AND a wake endpoint is configured:
+//                    a tappable "Wake up" card with a STATIC model-color edge.
+//                    Tapping POSTs the wake endpoint (App wires `onWake`).
+//   - "waking"     → a wake POST is in flight / the box is booting: a "Waking
+//                    up" card with a RAINBOW shimmer edge (no icon). Same card
+//                    shape as the others - NOT a card-in-card.
 //
-// Lifecycle (owned by the parent, App.tsx, which feeds `phase`):
-//   - "hidden"  → connected (or below the failure threshold): render nothing.
-//   - "asleep"  → the box appears stopped (consecutive WS failures past the
-//                 threshold AND a wake endpoint is configured): show the
-//                 idle rectangle with a "Wake up agent" call-to-action. Tapping
-//                 it POSTs the wake endpoint (App wires `onWake`) and moves to…
-//   - "waking"  → a wake POST is in flight OR the box is booting: shimmer /
-//                 upward-wave animation + "Waking up…" animated dots. We also
-//                 auto-enter this state when ws.ts has already fired its own
-//                 wake POST (App passes phase="waking") so the user sees motion
-//                 without having to tap.
-//   - on the first successful WS frame / ready ping the parent flips `phase`
-//     back to "hidden"; the overlay FADES OUT (opacity transition) rather than
-//     hard-unmounting, so the transition reads as "the agent woke up".
+// Edge-shimmer ONLY (NATE redesign): no loading icon, no upward-wave, no power
+// glyph, no subtext sub-lines - just the words. The state reads off the EDGE
+// treatment + (connecting) a small spinner.
 //
-// prefers-reduced-motion: the shimmer + upward-wave + dot animation are all
-// suppressed; the overlay still shows static text ("Waking up…") so the state
-// is communicated without motion.
+// prefers-reduced-motion: the shimmer + spinner are suppressed; every phase
+// falls back to a STATIC edge (the model-color edge), and the state is still
+// communicated via the word ("Connecting" / "Wake up" / "Waking up").
 //
-// Pure presentational. No network I/O, no WebSocket coupling — the parent owns
+// Pure presentational. No network I/O, no WebSocket coupling - the parent owns
 // the wake POST (lib/wake.ts) and the phase machine. SSR-safe.
 
 import { CSSProperties, useEffect, useRef, useState } from "react";
@@ -48,12 +51,11 @@ function prefersReducedMotion(): boolean {
 
 // --- Keyframes (mounted once) -------------------------------------------- //
 //
-// Two motions per the spec:
-//   - shimmer: a diagonal light sweep across the rectangle (the "provisioning"
-//     feel), 2.4s linear.
-//   - upward-wave: three stacked bars that rise + fade, staggered, evoking the
-//     box "spinning up". 1.4s ease-in-out, staggered by child.
-//   - dots: the classic "Waking up…" three-dot pulse, 1.4s steps.
+// Two motions, both EDGE-only per the redesign:
+//   - edge-shimmer: a light sweep travels around the card's border (the
+//     conic-gradient border-image rotates), 2.6s linear. Used by "connecting"
+//     (yellow tones) + "waking" (rainbow tones).
+//   - spin: the simple "connecting" spinner ring, 0.9s linear.
 
 const KEYFRAMES_ID = "grace2-wake-overlay-keyframes";
 
@@ -63,18 +65,13 @@ function ensureKeyframes(): void {
   const style = document.createElement("style");
   style.id = KEYFRAMES_ID;
   style.textContent = `
-@keyframes grace2-wake-shimmer {
-  0%   { background-position: -150% 0; }
-  100% { background-position: 250% 0; }
+@keyframes grace2-wake-edge-shimmer {
+  0%   { background-position: 0% 50%; }
+  100% { background-position: 200% 50%; }
 }
-@keyframes grace2-wake-rise {
-  0%   { transform: translateY(6px) scaleY(0.55); opacity: 0.30; }
-  50%  { transform: translateY(-2px) scaleY(1.0);  opacity: 1.00; }
-  100% { transform: translateY(6px) scaleY(0.55); opacity: 0.30; }
-}
-@keyframes grace2-wake-dot {
-  0%, 80%, 100% { opacity: 0.25; }
-  40%           { opacity: 1.00; }
+@keyframes grace2-wake-spin {
+  0%   { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
 }
 `;
   document.head.appendChild(style);
@@ -84,25 +81,35 @@ ensureKeyframes();
 
 // --- Phase ---------------------------------------------------------------- //
 
-export type WakePhase = "hidden" | "asleep" | "waking";
+export type WakePhase = "hidden" | "connecting" | "asleep" | "waking";
 
 export interface WakeOverlayProps {
   /**
-   * Overlay state, owned by App.tsx:
+   * Overlay state, owned by App.tsx / Chat.tsx:
    *   - "hidden": connected / below failure threshold → renders nothing
    *     (after a brief fade-out if it was previously visible).
-   *   - "asleep": box looks stopped → show the tap-to-wake rectangle.
-   *   - "waking": a wake POST is in flight / the box is booting → shimmer +
-   *     upward-wave + "Waking up…" dots.
+   *   - "connecting": not connected, not classified asleep → "Connecting"
+   *     card with a yellow shimmer edge + a simple spinner.
+   *   - "asleep": box looks stopped → tappable "Wake up" card with a static
+   *     model-color edge.
+   *   - "waking": a wake POST is in flight / the box is booting → "Waking up"
+   *     card with a rainbow shimmer edge.
    */
   phase: WakePhase;
   /**
-   * Called when the user TAPS the "Wake up agent" rectangle. App.tsx wires this
-   * to its AgentWaker (resets the debounce so a manual tap always fires) and
-   * flips `phase` to "waking". No-op-safe: the overlay also calls it on Enter /
-   * Space for keyboard users.
+   * Called when the user TAPS the "Wake up" card. App.tsx wires this to its
+   * AgentWaker (resets the debounce so a manual tap always fires) and flips
+   * `phase` to "waking". No-op-safe: the overlay also calls it on Enter /
+   * Space for keyboard users. Only the "asleep" phase is tappable.
    */
   onWake: () => void;
+  /**
+   * Per-model accent color (Chat feeds getModelById(selectedModelId)
+   * .accentColor). Drives the STATIC edge for the "asleep"/"wake" phase AND
+   * the reduced-motion fallback edge for every phase. Defaults to a neutral
+   * slate so the overlay still renders if a caller omits it.
+   */
+  accentColor?: string;
 }
 
 /**
@@ -111,7 +118,14 @@ export interface WakeOverlayProps {
  */
 export const WAKE_FADE_MS = 420;
 
-export function WakeOverlay({ phase, onWake }: WakeOverlayProps): JSX.Element | null {
+/** Fallback edge color when no per-model accent is supplied. */
+const DEFAULT_ACCENT = "#5c7fa3";
+
+export function WakeOverlay({
+  phase,
+  onWake,
+  accentColor = DEFAULT_ACCENT,
+}: WakeOverlayProps): JSX.Element | null {
   const reduced = prefersReducedMotion();
 
   // Keep the overlay mounted through the fade-out: when phase flips to "hidden"
@@ -150,10 +164,13 @@ export function WakeOverlay({ phase, onWake }: WakeOverlayProps): JSX.Element | 
 
   const visible = phase !== "hidden";
   const waking = phase === "waking";
+  const connecting = phase === "connecting";
+  const asleep = phase === "asleep";
 
-  // Full-cover overlay anchored to the chat panel container (App.tsx positions
-  // the wrapper). We blur/dim the chat behind it so the rectangle reads as the
-  // foreground call-to-action.
+  // Mid-transparency overlay anchored to the composer slot (Chat positions the
+  // wrapper). NOTHING underneath (the composer + sheet chrome are hidden by the
+  // parent in the not-connected states), so we drop the heavy blur/dim and let
+  // the page background read through a light semi-transparent scrim.
   const overlayStyle: CSSProperties = {
     position: "absolute",
     inset: 0,
@@ -162,38 +179,61 @@ export function WakeOverlay({ phase, onWake }: WakeOverlayProps): JSX.Element | 
     alignItems: "center",
     justifyContent: "center",
     padding: 24,
-    background: "rgba(14,15,20,0.72)",
-    backdropFilter: reduced ? undefined : "blur(2px)",
-    WebkitBackdropFilter: reduced ? undefined : "blur(2px)",
+    background: "rgba(14,15,20,0.45)",
     opacity: visible ? 1 : 0,
     transition: reduced ? undefined : `opacity ${WAKE_FADE_MS}ms ease`,
     // While fading out (not visible) stop intercepting clicks immediately so the
-    // chat behind is interactive the moment the agent is back.
+    // composer behind is interactive the moment the agent is back.
     pointerEvents: visible ? "auto" : "none",
     fontFamily:
       "-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif",
   };
 
-  // The rectangle. In "asleep" it's a button (tap to wake); in "waking" it's a
-  // non-interactive status surface with the shimmer + upward-wave.
-  const rectShimmer: CSSProperties =
-    waking && !reduced
-      ? {
-          backgroundImage:
-            "linear-gradient(110deg, rgba(56,140,255,0.10) 0%, rgba(56,140,255,0.10) 35%, rgba(120,180,255,0.32) 50%, rgba(56,140,255,0.10) 65%, rgba(56,140,255,0.10) 100%)",
-          backgroundSize: "220% 100%",
-          animation: "grace2-wake-shimmer 2.4s linear infinite",
-        }
-      : {};
+  // The EDGE treatment is a gradient border painted via a padding-box/border-box
+  // mask trick so the card interior stays clean. We build the border gradient
+  // per phase:
+  //   - reduced motion → STATIC accent edge (all phases).
+  //   - connecting      → yellow shimmer edge (animated).
+  //   - waking          → rainbow shimmer edge (animated).
+  //   - asleep/wake     → STATIC accent edge.
+  const animatedEdge = !reduced && (connecting || waking);
+  const edgeGradient = reduced
+    ? `linear-gradient(${accentColor}, ${accentColor})`
+    : connecting
+      ? "linear-gradient(90deg, #f5c542, #ffe08a, #f5c542, #ffe08a, #f5c542)"
+      : waking
+        ? "linear-gradient(90deg, #FF6B6B, #FFD93D, #6BCB77, #4D96FF, #B266FF, #FF6B6B)"
+        : `linear-gradient(${accentColor}, ${accentColor})`;
 
-  const rectStyle: CSSProperties = {
+  const edgeStyle: CSSProperties = {
+    // Paint the gradient only in the border region (border-box minus
+    // padding-box) so the card surface underneath stays the panel color.
+    // Use backgroundImage (not the `background` shorthand) so the gradient
+    // reflects reliably in the CSSOM (and so tests can read it).
+    backgroundImage: edgeGradient,
+    backgroundSize: animatedEdge ? "200% 100%" : undefined,
+    animation: animatedEdge
+      ? "grace2-wake-edge-shimmer 2.6s linear infinite"
+      : undefined,
+    WebkitMask:
+      "linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0)",
+    WebkitMaskComposite: "xor",
+    mask: "linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0)",
+    maskComposite: "exclude",
+    position: "absolute",
+    inset: 0,
+    padding: 2,
+    borderRadius: 16,
+    pointerEvents: "none",
+  };
+
+  const cardStyle: CSSProperties = {
     position: "relative",
     overflow: "hidden",
     width: "min(320px, 84%)",
-    minHeight: 132,
+    minHeight: 96,
     borderRadius: 16,
-    border: "1px solid rgba(120,170,255,0.35)",
-    background: waking ? "rgba(24,32,52,0.92)" : "rgba(22,24,32,0.94)",
+    background: "rgba(22,24,32,0.92)",
     boxShadow: "0 8px 30px rgba(0,0,0,0.45)",
     color: "#e7ecf5",
     display: "flex",
@@ -201,14 +241,15 @@ export function WakeOverlay({ phase, onWake }: WakeOverlayProps): JSX.Element | 
     alignItems: "center",
     justifyContent: "center",
     gap: 12,
-    padding: "20px 18px",
-    cursor: waking ? "default" : "pointer",
+    padding: "22px 18px",
+    cursor: asleep ? "pointer" : "default",
     textAlign: "center",
-    ...rectShimmer,
   };
 
+  const label = waking ? "Waking up" : connecting ? "Connecting" : "Wake up";
+
   const handleWake = (): void => {
-    if (waking) return; // already waking — tapping again is a no-op
+    if (!asleep) return; // only the asleep card taps to wake
     onWake();
   };
 
@@ -217,120 +258,65 @@ export function WakeOverlay({ phase, onWake }: WakeOverlayProps): JSX.Element | 
       data-testid="wake-overlay"
       data-phase={phase}
       style={overlayStyle}
-      // Block click-through to the (dead) chat while asleep/waking.
       aria-hidden={!visible}
     >
       <div
         data-testid="wake-overlay-rect"
-        role={waking ? "status" : "button"}
-        aria-live={waking ? "polite" : undefined}
-        tabIndex={waking ? -1 : 0}
-        aria-label={waking ? "Waking up agent" : "Wake up agent"}
-        onClick={waking ? undefined : handleWake}
+        role={asleep ? "button" : "status"}
+        aria-live={asleep ? undefined : "polite"}
+        tabIndex={asleep ? 0 : -1}
+        aria-label={
+          waking ? "Waking up agent" : asleep ? "Wake up agent" : "Connecting"
+        }
+        onClick={asleep ? handleWake : undefined}
         onKeyDown={
-          waking
-            ? undefined
-            : (e) => {
+          asleep
+            ? (e) => {
                 if (e.key === "Enter" || e.key === " ") {
                   e.preventDefault();
                   handleWake();
                 }
               }
+            : undefined
         }
-        style={rectStyle}
+        style={cardStyle}
       >
-        {waking ? (
-          <>
-            <UpwardWave reduced={reduced} />
-            <div style={{ fontSize: 15, fontWeight: 600, letterSpacing: 0.2 }}>
-              Waking up
-              <WakingDots reduced={reduced} />
-            </div>
-            <div style={{ fontSize: 12, color: "#9aa6bd", maxWidth: 240 }}>
-              Starting the agent — this can take a minute on a cold start.
-            </div>
-          </>
-        ) : (
-          <>
-            <div aria-hidden="true" style={{ fontSize: 26, lineHeight: 1 }}>
-              {/* simple "sleeping" glyph, no external icon dep */}
-              <PowerGlyph />
-            </div>
-            <div style={{ fontSize: 16, fontWeight: 700 }}>Wake up agent</div>
-            <div style={{ fontSize: 12, color: "#9aa6bd", maxWidth: 240 }}>
-              The agent went to sleep to save costs. Tap to start it back up.
-            </div>
-          </>
-        )}
+        {/* Animated / static gradient EDGE (no icon glyph inside the card). */}
+        <span data-testid="wake-overlay-edge" aria-hidden="true" style={edgeStyle} />
+        {connecting && <ConnectingSpinner reduced={reduced} accentColor={accentColor} />}
+        <div style={{ fontSize: 16, fontWeight: 700, letterSpacing: 0.2 }}>
+          {label}
+        </div>
       </div>
     </div>
   );
 }
 
-// --- Upward-wave (three rising bars) ------------------------------------- //
+// --- Connecting spinner (the ONLY motion glyph; connecting phase only) --- //
+//
+// A simple rotating ring. Suppressed under reduced motion (the static edge
+// + the "Connecting" word communicate the state without motion).
 
-function UpwardWave({ reduced }: { reduced: boolean }): JSX.Element {
-  const bar = (i: number): CSSProperties => ({
-    width: 6,
-    height: 22,
-    borderRadius: 3,
-    background: "linear-gradient(180deg, #8fc0ff 0%, #4f8fff 100%)",
-    transformOrigin: "bottom center",
-    animation: reduced
-      ? undefined
-      : `grace2-wake-rise 1.4s ease-in-out ${i * 0.18}s infinite`,
-    // Static fallback under reduced motion: mid-height, full opacity.
-    opacity: reduced ? 0.85 : undefined,
-  });
+function ConnectingSpinner({
+  reduced,
+  accentColor,
+}: {
+  reduced: boolean;
+  accentColor: string;
+}): JSX.Element | null {
+  if (reduced) return null;
   return (
-    <div
-      data-testid="wake-upward-wave"
+    <span
+      data-testid="wake-overlay-spinner"
       aria-hidden="true"
-      style={{ display: "flex", alignItems: "flex-end", gap: 6, height: 26 }}
-    >
-      <span style={bar(0)} />
-      <span style={bar(1)} />
-      <span style={bar(2)} />
-    </div>
-  );
-}
-
-// --- "Waking up…" dots --------------------------------------------------- //
-
-function WakingDots({ reduced }: { reduced: boolean }): JSX.Element {
-  if (reduced) {
-    // Static ellipsis under reduced motion.
-    return <span aria-hidden="true">…</span>;
-  }
-  const dot = (i: number): CSSProperties => ({
-    animation: `grace2-wake-dot 1.4s ${i * 0.2}s infinite`,
-  });
-  return (
-    <span aria-hidden="true" style={{ marginLeft: 2 }}>
-      <span style={dot(0)}>.</span>
-      <span style={dot(1)}>.</span>
-      <span style={dot(2)}>.</span>
-    </span>
-  );
-}
-
-// --- Power glyph (inline SVG; no icon-module dep) ------------------------ //
-
-function PowerGlyph(): JSX.Element {
-  return (
-    <svg
-      width="26"
-      height="26"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="#8fc0ff"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M12 3v9" />
-      <path d="M6.5 6.5a8 8 0 1 0 11 0" />
-    </svg>
+      style={{
+        width: 18,
+        height: 18,
+        borderRadius: "50%",
+        border: "2px solid rgba(255,255,255,0.18)",
+        borderTopColor: accentColor,
+        animation: "grace2-wake-spin 0.9s linear infinite",
+      }}
+    />
   );
 }

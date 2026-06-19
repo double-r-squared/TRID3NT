@@ -27,6 +27,14 @@ interface ImportMetaEnv {
   // Precedence: VITE_GRACE2_CASE_VIEW_URL > VITE_GRACE2_PUBLIC_BASE(/case-view-url)
   // > null (cold-load disabled — dev/LAN). See lib/case_view.ts.
   readonly VITE_GRACE2_CASE_VIEW_URL?: string;
+  // sleep/wake STAGE 2 (NATE 2026-06-19): the API-Gateway HTTP endpoint that
+  // serves the user's CASES LIST (the SINGLE-GET sibling of the case-view
+  // signer). GET <url> -> 200 {envelope_type:"case-list", cases:[...]} where the
+  // body is byte-identical to the WS case-list. The web fetches this when the
+  // Cases ROOT is viewed while the agent box is asleep, so the rail renders COLD.
+  // Precedence: VITE_GRACE2_CASE_LIST_URL > VITE_GRACE2_PUBLIC_BASE(/case-list)
+  // > null (cold-load disabled - dev/LAN). See lib/case_list.ts.
+  readonly VITE_GRACE2_CASE_LIST_URL?: string;
 }
 
 interface ImportMeta {

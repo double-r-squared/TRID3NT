@@ -116,6 +116,7 @@ import {
 } from "./components/ChatInput";
 import {
   DEFAULT_MODEL_ID,
+  getModelById,
   loadPersistedModelId,
 } from "./lib/modelRegistry";
 import { IconChevronRight, IconSandbox } from "./components/icons";
@@ -2550,6 +2551,10 @@ export function SheetActiveStripStack({
 
 export interface MobileSheetHeaderRowProps {
   expanded: boolean;
+  /** WS connection status. NATE tweak 2026-06-19 - the mobile sheet header no
+   * longer RENDERS a connection-status signal (the connecting/wake/waking
+   * sequence implies it), so this is retained only for API stability /
+   * callers that still pass it; the row does not read it. */
   status: ConnectionStatus;
   /** F44 — grabber callbacks, threaded straight to SheetToggleHandle. */
   onToggle: () => void;
@@ -2571,7 +2576,9 @@ export interface MobileSheetHeaderRowProps {
 
 export function MobileSheetHeaderRow({
   expanded,
-  status,
+  // `status` is intentionally not destructured: NATE tweak 2026-06-19 removed
+  // the connection-status signal from this row (the connecting/wake/waking
+  // sequence implies it). The prop stays on the interface for API stability.
   onToggle,
   onResize,
   onResizeEnd,
@@ -2637,47 +2644,30 @@ export function MobileSheetHeaderRow({
         >
           {grabber}
         </div>
-        {/* MODEL zone - the Bedrock model selector (was desktop-only). Sits
-            BETWEEN the centered grabber and the right status; flex:0 0 auto so
-            the two flex:1 label/status zones stay balanced and the grabber
-            stays centered. Reuses the SAME controlled state the desktop header
-            uses, so localStorage persistence + model_id on submit keep working. */}
-        <div
-          data-testid="grace2-sheet-model-zone"
-          style={{ flex: "0 0 auto", display: "flex", alignItems: "center" }}
-        >
-          <ModelSelectorButton
-            selectedId={selectedModelId}
-            onChange={onModelChange}
-          />
-        </div>
-        {/* RIGHT zone — connection status (F45). */}
+        {/* MODEL zone - the Bedrock model selector. NATE tweak 2026-06-19: it
+            now MIRRORS the desktop ModelSelectorButton exactly (icon-only Brain
+            trigger, brain glyph on the LEFT as the leading element) and is the
+            RIGHT-MOST control - the mobile connection STATUS signal was REMOVED
+            from this row entirely (the connecting/wake/waking sequence now
+            implies connection state). flex:1 + justify-end balances the LEFT
+            label zone so the grabber stays centered. Reuses the SAME controlled
+            state the desktop header uses, so localStorage persistence + model_id
+            on submit keep working. */}
         <span
-          data-testid="connection-status"
-          title={`WebSocket ${STATUS_LABEL[status]}`}
+          data-testid="grace2-sheet-model-zone"
           style={{
             flex: 1,
             minWidth: 0,
             display: "inline-flex",
             alignItems: "center",
             justifyContent: "flex-end",
-            gap: 6,
-            fontSize: 11,
-            color: STATUS_COLOR[status],
             marginLeft: "auto",
           }}
         >
-          <span
-            style={{
-              width: 8,
-              height: 8,
-              borderRadius: 4,
-              background: STATUS_COLOR[status],
-              display: "inline-block",
-              flexShrink: 0,
-            }}
+          <ModelSelectorButton
+            selectedId={selectedModelId}
+            onChange={onModelChange}
           />
-          {STATUS_LABEL[status]}
         </span>
       </div>
     );
@@ -3729,21 +3719,76 @@ export function Chat({
     setComposerWaking(true);
     onWakeTap();
   }, [onWakeTap]);
-  // Derive the WakeOverlay phase for the composer slot: "waking" once tapped,
-  // else "asleep" while in the wake phase. (The overlay renders nothing when the
-  // composer is "chat"/"connecting".)
-  const composerWakePhase: WakePhase = composerWaking ? "waking" : "asleep";
+  // Derive the SINGLE WakeOverlay phase for the composer slot (NATE redesign
+  // 2026-06-19): the one overlay now renders ALL THREE not-connected
+  // treatments - connecting / wake (asleep) / waking - so the separate
+  // composer-connecting div is gone. Mapping:
+  //   - composerPhase "chat"       maps to "hidden"     (renders nothing)
+  //   - composerPhase "connecting" maps to "connecting" (yellow shimmer+spinner)
+  //   - composerPhase "wake"       maps to "waking" once tapped, else "asleep"
+  //     (static model-color edge; tap-to-wake).
+  const composerOverlayPhase: WakePhase =
+    composerPhase === "chat"
+      ? "hidden"
+      : composerPhase === "connecting"
+        ? "connecting"
+        : composerWaking
+          ? "waking"
+          : "asleep";
+  // Per-model accent color feeds the static "wake"/"asleep" edge + the
+  // reduced-motion fallback edge (reuse the selector / send-button tint).
+  const composerAccentColor = getModelById(selectedModelId).accentColor;
   // The composer is disabled whenever we're NOT in the live chat phase. (The
-  // wake/connecting surfaces replace it visually; this also belt-and-suspenders
-  // disables the textarea underneath if both ever co-render.)
+  // wake/connecting/waking overlay replaces it visually; this also
+  // belt-and-suspenders disables the textarea underneath if both ever
+  // co-render.)
   const inputDisabled = composerPhase !== "chat";
+
+  // NATE redesign 2026-06-19 - in the NOT-connected composer states
+  // (connecting / wake / waking) the MOBILE bottom-sheet chrome is hidden
+  // ENTIRELY: no grabber, no header row, no back panel / scrollback, not
+  // expandable, not even visible. Only the floating composer (with the
+  // WakeOverlay over it) renders. The mid-transparency overlay shows the page
+  // background through it, NOT the chat. Desktop is unaffected (its header /
+  // scrollback stay; the overlay scopes to the composer slot there too).
+  const notConnected = composerPhase !== "chat";
+  const hideMobileChrome = mobile && notConnected;
+
+  // Staggered ease-in on connect (NATE redesign): when status flips to
+  // `connected`, ease the COMPOSER in first, then the sheet header / back panel
+  // a beat later (~160ms). `chromeRevealed` gates the chrome's opacity/transform
+  // so it fades in after the composer. Reset to false whenever we leave the
+  // connected state so the next connect re-staggers. prefers-reduced-motion
+  // skips the transition (chrome appears immediately on connect).
+  const reducedMotion = prefersReducedMotion();
+  const [chromeRevealed, setChromeRevealed] = useState<boolean>(false);
+  useEffect(() => {
+    if (notConnected) {
+      // Not connected -> chrome is hidden; arm it to re-stagger on next connect.
+      setChromeRevealed(false);
+      return;
+    }
+    if (reducedMotion) {
+      setChromeRevealed(true);
+      return;
+    }
+    // Connected: ease the composer in immediately, then the chrome a beat later.
+    const t = window.setTimeout(() => setChromeRevealed(true), 160);
+    return () => window.clearTimeout(t);
+  }, [notConnected, reducedMotion]);
 
   // job-0278 — desktop panel vs mobile bottom sheet. Every mobile divergence
   // is behind the `mobile` prop; the desktop style lives in the exported
   // desktopChatContainerStyle below (job-0283). ux-batch-1 J1 — the desktop
-  // column width is the user-dragged chatWidth (px).
+  // column width is the user-dragged chatWidth (px). When the mobile chrome is
+  // hidden (not-connected), force the COLLAPSED container so the sheet hugs the
+  // floating composer (no 70vh empty back panel behind the overlay).
   const containerStyle: React.CSSProperties = mobile
-    ? mobileSheetContainerStyle(sheetExpanded, sheetHeightVh, opacityTier)
+    ? mobileSheetContainerStyle(
+        hideMobileChrome ? false : sheetExpanded,
+        sheetHeightVh,
+        opacityTier,
+      )
     : desktopChatContainerStyle(chatWidth, opacityTier);
 
   return (
@@ -3788,24 +3833,39 @@ export function Chat({
           sandbox are running, the active-strip stack fills the middle.
           The grabber stays the F44 drag affordance. Desktop renders the
           classic <header> below instead. */}
-      {mobile && (
-        <MobileSheetHeaderRow
-          expanded={sheetExpanded}
-          status={status}
-          onToggle={() => setSheetExpanded((v) => !v)}
-          // F44 — drag the handle to resize the EXPANDED sheet. A resize
-          // gesture only makes sense while expanded; when collapsed a small
-          // tap still toggles open (drag-vs-tap threshold inside the handle).
-          onResize={sheetExpanded ? handleSheetResize : undefined}
-          onResizeEnd={sheetExpanded ? handleSheetResizeEnd : undefined}
-          activeStrips={collapsedActiveStrips}
-          onExpandFromStrip={() => setSheetExpanded(true)}
-          // The SAME controlled state pair the desktop header uses, so the
-          // mobile model picker shares localStorage persistence + threads the
-          // selected model_id into the controlled ChatInput on submit.
-          selectedModelId={selectedModelId}
-          onModelChange={setSelectedModelId}
-        />
+      {mobile && !hideMobileChrome && (
+        <div
+          data-testid="grace2-sheet-chrome"
+          // Staggered ease-in (NATE redesign): the chrome fades + slides in a
+          // beat AFTER the composer once the socket connects. Hidden entirely
+          // in the not-connected states (this branch doesn't render then).
+          style={{
+            flex: "0 0 auto",
+            opacity: chromeRevealed ? 1 : 0,
+            transform: chromeRevealed ? "translateY(0)" : "translateY(-6px)",
+            transition: reducedMotion
+              ? undefined
+              : "opacity 220ms ease, transform 220ms ease",
+          }}
+        >
+          <MobileSheetHeaderRow
+            expanded={sheetExpanded}
+            status={status}
+            onToggle={() => setSheetExpanded((v) => !v)}
+            // F44 — drag the handle to resize the EXPANDED sheet. A resize
+            // gesture only makes sense while expanded; when collapsed a small
+            // tap still toggles open (drag-vs-tap threshold inside the handle).
+            onResize={sheetExpanded ? handleSheetResize : undefined}
+            onResizeEnd={sheetExpanded ? handleSheetResizeEnd : undefined}
+            activeStrips={collapsedActiveStrips}
+            onExpandFromStrip={() => setSheetExpanded(true)}
+            // The SAME controlled state pair the desktop header uses, so the
+            // mobile model picker shares localStorage persistence + threads the
+            // selected model_id into the controlled ChatInput on submit.
+            selectedModelId={selectedModelId}
+            onModelChange={setSelectedModelId}
+          />
+        </div>
       )}
       {/* DESKTOP header — classic F45 row: 'GRACE-2' + version LEFT, the
           connection status RIGHT, the collapse control at the far right.
@@ -3918,7 +3978,17 @@ export function Chat({
           padding: mobile
             ? "4px 12px 12px 12px"
             : `12px 12px ${inputHeightPx + INPUT_GAP_PX}px 12px`,
-          display: mobile && !sheetExpanded ? "none" : "flex",
+          // NATE redesign - the mobile scrollback (the "back panel") is hidden
+          // ENTIRELY in the not-connected states (only the floating composer
+          // shows), and stays hidden while collapsed. On connect it eases in a
+          // beat after the composer (staggered with the chrome above).
+          display:
+            (mobile && hideMobileChrome) || (mobile && !sheetExpanded)
+              ? "none"
+              : "flex",
+          opacity: mobile && !chromeRevealed ? 0 : 1,
+          transition:
+            mobile && !reducedMotion ? "opacity 220ms ease" : undefined,
           flexDirection: "column",
           gap: 10,
         }}
@@ -4114,21 +4184,27 @@ export function Chat({
             ? {
                 // job-0278 — in normal flow on mobile so the collapsed
                 // sheet's height is handle + composer. F61 (job-0330): the
-                // sheet CONTAINER now floats up by the safe-area inset
-                // (SHEET_BOTTOM_OFFSET_CSS), so the composer only needs its
-                // own constant bottom padding here — no double-counted
-                // env(safe-area-inset-bottom). A small extra keeps the
-                // textarea off the rounded sheet edge.
+                // sheet CONTAINER floats up by the safe-area inset
+                // (SHEET_BOTTOM_OFFSET_CSS), so the composer needs no
+                // double-counted env(safe-area-inset-bottom).
+                // NATE redesign 2026-06-19 - the mobile composer extends to the
+                // VERY BOTTOM edge of the (lifted) sheet: no bottom gap (the
+                // safe-area lift on the container already clears the curved
+                // corners / home indicator).
                 flex: "0 0 auto",
-                padding: "0 10px 12px 10px",
+                padding: "0 10px 0 10px",
                 pointerEvents: "auto",
                 zIndex: 3,
               }
             : {
+                // NATE redesign 2026-06-19 - desktop composer uses SYMMETRIC
+                // top + bottom padding (both 12) so it sits balanced in the
+                // panel rather than hugging the bottom.
                 position: "absolute",
                 left: 12,
                 right: 12,
                 bottom: 12,
+                padding: "12px 0",
                 pointerEvents: "auto",
                 zIndex: 3,
               }
@@ -4166,44 +4242,21 @@ export function Chat({
             modelId={selectedModelId}
             onModelChange={setSelectedModelId}
           />
-          {/* WAKE phase: tap-to-wake UI over the composer ONLY. onWake fires the
-              POST wake (tap-only; never auto-wake). Once tapped we pin "waking"
-              (shimmer) until the socket reconnects -> composerPhase flips to
-              "chat" -> phase "hidden" -> the overlay FADES OUT (it stays mounted
-              through the fade, then unmounts itself; it renders nothing while
-              hidden, so it never blocks the live composer). */}
+          {/* SINGLE not-connected overlay (NATE redesign 2026-06-19): the one
+              WakeOverlay renders ALL THREE treatments - connecting (yellow
+              shimmer edge + spinner) / wake (static model-color edge,
+              tap-to-wake) / waking (rainbow shimmer edge) - over the composer
+              ONLY. onWake fires the POST wake (tap-only; never auto-wake). Once
+              tapped we pin "waking" until the socket reconnects -> composerPhase
+              flips to "chat" -> overlay phase "hidden" -> it FADES OUT (it stays
+              mounted through the fade, then unmounts itself; it renders nothing
+              while hidden, so it never blocks the live composer). The scrollback
+              + map stay live behind the mid-transparency scrim. */}
           <WakeOverlay
-            phase={composerPhase === "wake" ? composerWakePhase : "hidden"}
+            phase={composerOverlayPhase}
             onWake={handleComposerWakeTap}
+            accentColor={composerAccentColor}
           />
-          {/* CONNECTING phase: a quiet base surface over the composer while we
-              don't yet know reachable-vs-asleep. No motion beyond the text; the
-              scrollback + map remain fully live behind it. */}
-          {composerPhase === "connecting" && (
-            <div
-              data-testid="composer-connecting"
-              role="status"
-              aria-live="polite"
-              style={{
-                position: "absolute",
-                inset: 0,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                borderRadius: 12,
-                background: "rgba(14,15,20,0.66)",
-                color: "#c9d2e3",
-                fontSize: 13,
-                fontWeight: 600,
-                letterSpacing: 0.2,
-                fontFamily:
-                  "-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif",
-                pointerEvents: "auto",
-              }}
-            >
-              Connecting...
-            </div>
-          )}
         </div>
       </div>
 

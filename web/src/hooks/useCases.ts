@@ -86,7 +86,21 @@ export interface UseCasesReturn {
   persistenceState: PersistenceState;
 
   // --- Envelope handlers (App.tsx wires these into GraceWs handlers) ---- //
-  onCaseList: (payload: CaseListEnvelopePayload) => void;
+  /**
+   * Reconcile a case-list frame into the left rail.
+   *
+   * `isAuthoritative` distinguishes the SOURCE of an EMPTY list:
+   *   - false (DEFAULT - the live WS path): an empty incoming list is a
+   *     NON-authoritative keepalive/heartbeat blip; keep the current rail
+   *     (the flicker fix). A non-empty list always replaces.
+   *   - true (the /case-list cold FETCH path): an empty list is a GENUINE
+   *     zero-cases answer and clears the rail (so deleting the last case
+   *     followed by an authoritative empty list correctly empties it).
+   */
+  onCaseList: (
+    payload: CaseListEnvelopePayload,
+    isAuthoritative?: boolean,
+  ) => void;
   onCaseOpen: (payload: CaseOpenEnvelopePayload) => void;
 
   // --- Emitters --------------------------------------------------------- //
@@ -138,23 +152,36 @@ export function useCases(opts: UseCasesOptions): UseCasesReturn {
   }
 
   // --- Envelope handlers -------------------------------------------------- //
-  const onCaseList = useCallback((payload: CaseListEnvelopePayload) => {
-    // CLIENT FLICKER FIX (per-Case layer DURABILITY) - the server re-ships a
-    // full case-list on every resume INCLUDING the 25s keepalive heartbeat. A
-    // heartbeat (or a reconnect mid-flight) can momentarily carry an EMPTY /
-    // stale list; a wholesale `setCases(payload.cases ?? [])` then blanked the
-    // left rail and refilled on the next good frame -> the flicker (and, since
-    // the active-Case tombstone guard reads `cases`, a transient empty list
-    // could race-clear the open Case). Reconcile instead: an EMPTY incoming
-    // list while we already hold cases is treated as a non-authoritative pong
-    // (keep what we have); a NON-empty list is authoritative and replaces
-    // (covers genuine create / rename / archive / delete refreshes).
-    const incoming = payload.cases ?? [];
-    setCases((prev) =>
-      incoming.length === 0 && prev.length > 0 ? prev : incoming,
-    );
-    settle();
-  }, []);
+  const onCaseList = useCallback(
+    (payload: CaseListEnvelopePayload, isAuthoritative = false) => {
+      // CLIENT FLICKER FIX (per-Case layer DURABILITY) - the server re-ships a
+      // full case-list on every resume INCLUDING the 25s keepalive heartbeat. A
+      // heartbeat (or a reconnect mid-flight) can momentarily carry an EMPTY /
+      // stale list; a wholesale `setCases(payload.cases ?? [])` then blanked the
+      // left rail and refilled on the next good frame -> the flicker (and, since
+      // the active-Case tombstone guard reads `cases`, a transient empty list
+      // could race-clear the open Case). Reconcile instead: an EMPTY incoming
+      // list while we already hold cases is treated as a non-authoritative pong
+      // (keep what we have); a NON-empty list is authoritative and replaces
+      // (covers genuine create / rename / archive / delete refreshes).
+      //
+      // LAST-CASE EDGE FIX (sleep/wake STAGE 2) - the empty-keep rule above is
+      // correct for a WS keepalive blip but WRONG for the /case-list cold FETCH:
+      // when the cold fetch returns an empty list it is the GENUINE truth (the
+      // user has zero cases, e.g. just deleted the last one), so it MUST clear
+      // the rail. `isAuthoritative` carries that source distinction: only an
+      // authoritative empty list replaces; a non-authoritative (live-WS) empty
+      // list keeps the current rail (preserving the flicker fix).
+      const incoming = payload.cases ?? [];
+      setCases((prev) =>
+        incoming.length === 0 && prev.length > 0 && !isAuthoritative
+          ? prev
+          : incoming,
+      );
+      settle();
+    },
+    [],
+  );
 
   const onCaseOpen = useCallback((payload: CaseOpenEnvelopePayload) => {
     const session = payload.session_state ?? null;
@@ -191,6 +218,16 @@ export function useCases(opts: UseCasesOptions): UseCasesReturn {
 
   const selectCase = useCallback(
     (caseId: string) => {
+      // sleep/wake STAGE 2 (NATE 2026-06-19) - ALWAYS set the active Case
+      // LOCALLY, not only via the server's case-open reply. When the agent box
+      // is asleep the WS `select` below merely QUEUES (ws.ts sendOrQueue) and no
+      // `case-open` ever round-trips, so without this the App cold-load effect
+      // (keyed on activeCaseId) would never arm and the Case never paints. The
+      // local set is IDEMPOTENT with the live case-open reply (which sets the
+      // same id + the rehydrated session); when the box is up the reply simply
+      // re-affirms it. We do NOT clear activeSession here - a queued select that
+      // never lands must leave any cold-loaded session in place.
+      setActiveCaseId(caseId);
       bumpInFlight(+1);
       sendCaseCommand("select", caseId, {});
     },
@@ -225,6 +262,17 @@ export function useCases(opts: UseCasesOptions): UseCasesReturn {
 
   const deleteCase = useCallback(
     (caseId: string) => {
+      // LAST-CASE LIVE FIX (box-off batch) - OPTIMISTICALLY drop the deleted
+      // Case from the local rail immediately, instead of waiting on an
+      // authoritative case-list to clear it. On the LIVE (connected) path the
+      // server's follow-up empty case-list is NON-authoritative by design (the
+      // flicker fix keeps a non-empty rail on an empty keepalive blip), so
+      // deleting the user's LAST Case would otherwise leave it lingering in the
+      // rail until a cold authoritative fetch. Removing it here covers the
+      // last-Case case AND every non-last delete cleanly; the case-list frame
+      // that follows canonicalizes. This is symmetric with the optimistic
+      // rename patch above and does NOT touch the empty-keep keepalive rule.
+      setCases((prev) => prev.filter((c) => c.case_id !== caseId));
       bumpInFlight(+1);
       sendCaseCommand("delete", caseId, {});
     },

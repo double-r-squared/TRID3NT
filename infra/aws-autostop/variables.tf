@@ -147,3 +147,16 @@ variable "view_anon_ttl_s" {
   EOT
   default     = 900
 }
+
+variable "cases_table" {
+  type        = string
+  description = <<-EOT
+    DynamoDB cases table (GRACE2_DYNAMO_TABLE_PREFIX + "cases" on the agent
+    side; the live default is grace2_cases). The case-list Lambda Queries its
+    user_id-index / owner_user_id-index GSIs (owner-scoped listing), and the
+    view-signer GetItems it for the cold-open Case-shell fallback. The case-list
+    role is granted dynamodb:Query + dynamodb:GetItem on this table ARN AND its
+    /index/* ONLY; the view-signer role gains dynamodb:GetItem on the table ARN.
+  EOT
+  default     = "grace2_cases"
+}

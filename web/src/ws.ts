@@ -340,6 +340,22 @@ export const AUTH_FAILED_CLOSE_CODE = 4401;
 export const KEEPALIVE_INTERVAL_MS = 25_000;
 export const KEEPALIVE_PONG_TIMEOUT_MS = 10_000;
 
+// Mobile connect-attempt timeout (transport surface). When the agent box has
+// been STOPPED by the idle-check Lambda the new WebSocket sits in CONNECTING
+// while the browser waits out its default TCP connect timeout (30-120s) before
+// firing `error`/`close`. That delays the wake overlay by up to two minutes on
+// mobile. We arm a one-shot timer the instant we create the socket; if it is
+// still CONNECTING (never reached OPEN) when the timer fires, we tear it down
+// via `ws.close()` so the EXISTING close handler runs `scheduleReconnect` ->
+// `onWakeNeeded`, surfacing the wake overlay in ~10s instead.
+//
+// This is a CONNECT-PHASE timer ONLY: it is armed in `openSocket` right after
+// the socket is created and CLEARED the instant the open handler fires (and in
+// the close handler). It NEVER interacts with the keepalive ping / pong timers
+// (those run only while OPEN) so it cannot regress the no-10s-cycling reconnect
+// contract - by the time the keepalive is live this timer is already cleared.
+export const CONNECT_ATTEMPT_TIMEOUT_MS = 10_000;
+
 const SESSION_KEY = "grace2.session_id";
 // job-0172 Part C — sticky anonymous user_id. The server's H.3 anonymous
 // fallback mints a fresh ULID on every connect; without a client-side cache,
@@ -564,6 +580,15 @@ export class GraceWs {
   // Any inbound frame (the resume reply or ordinary traffic) clears the deadline.
   private keepaliveTimer: number | null = null;
   private pongDeadlineTimer: number | null = null;
+  // Mobile connect-attempt timeout (transport surface). Armed in openSocket the
+  // instant the socket is created; if it fires while the socket is still
+  // CONNECTING (never reached OPEN), we tear the socket down via ws.close() so
+  // the existing close handler runs scheduleReconnect -> onWakeNeeded and the
+  // wake overlay surfaces in ~CONNECT_ATTEMPT_TIMEOUT_MS instead of the
+  // browser's default TCP connect timeout (30-120s) on a stopped box. CLEARED
+  // the instant the open handler fires AND in the close handler - it is a
+  // connect-phase-only timer and never touches the keepalive ping/pong timers.
+  private connectTimer: number | null = null;
   // Auto-stop/wake (NATE 2026-06-17) — count of consecutive failed reconnect
   // schedules since the last successful open. Drives the wake-on-reconnect
   // POST (we only start poking the wake endpoint after the FIRST schedule, but
@@ -668,6 +693,9 @@ export class GraceWs {
     // a fresh GraceWs (App re-mount) starts with an empty queue so stale
     // selects/messages from a torn-down connection never replay.
     this.outboundQueue = [];
+    // Mobile connect-attempt timeout - clear the connect-phase timer on explicit
+    // teardown so a pending connect timeout can't fire after close().
+    this.clearConnectTimer();
     // BUG 4a — stop the keepalive ping/pong timers on explicit teardown.
     this.stopKeepalive();
     if (this.reconnectTimer !== null) {
@@ -1188,7 +1216,31 @@ export class GraceWs {
       return;
     }
     this.socket = ws;
+    // Mobile connect-attempt timeout (transport surface). Arm a one-shot timer
+    // the instant the socket is created. If it fires while the socket is still
+    // CONNECTING (the open handler never ran - e.g. the box is STOPPED and the
+    // TCP connect is hanging), tear it down via ws.close() so the EXISTING close
+    // handler runs scheduleReconnect -> onWakeNeeded and the wake overlay
+    // surfaces in ~CONNECT_ATTEMPT_TIMEOUT_MS instead of the browser default
+    // (30-120s). Cleared in BOTH the open handler and the close handler below,
+    // so it can only act during the connect phase and never races the keepalive.
+    this.connectTimer = window.setTimeout(() => {
+      this.connectTimer = null;
+      // Only act if the socket never opened (still CONNECTING). An OPEN socket
+      // already cleared this timer in its open handler; a CLOSING/CLOSED one is
+      // already being handled by the close path.
+      if (this.socket !== ws || ws.readyState !== WebSocket.CONNECTING) return;
+      try {
+        ws.close();
+      } catch {
+        // ignore - already closing; the close handler still runs scheduleReconnect.
+      }
+    }, CONNECT_ATTEMPT_TIMEOUT_MS);
     ws.addEventListener("open", () => {
+      // Connect phase succeeded - clear the connect-attempt timeout so it can
+      // never tear down this now-OPEN socket. MUST run before any keepalive
+      // arming so the two timer families never overlap.
+      this.clearConnectTimer();
       this.backoffMs = 500;
       // Auto-stop/wake — a successful open means the box is up; clear the
       // consecutive-failure counter so the next drop starts fresh (the UI
@@ -1251,6 +1303,11 @@ export class GraceWs {
       // in the detach case, so simply bail.)
       if (this.socket !== null && this.socket !== ws) return;
       this.socket = null;
+      // Mobile connect-attempt timeout - the socket reached a terminal close
+      // (whether it ever opened or not); clear the connect-phase timer so it
+      // can't fire against a fresh socket a subsequent (re)open installs. Safe
+      // when already cleared (the open handler clears it on a successful open).
+      this.clearConnectTimer();
       // BUG 4a — the live socket is gone; stop the keepalive so its ping timer
       // can't fire against a dead socket or arm a spurious pong deadline. A
       // fresh open re-arms it.
@@ -1767,6 +1824,20 @@ export class GraceWs {
     this.keepaliveTimer = window.setInterval(() => {
       this.sendKeepalivePing();
     }, KEEPALIVE_INTERVAL_MS);
+  }
+
+  /**
+   * Mobile connect-attempt timeout - clear the one-shot connect-phase timer.
+   * Safe to call when it is not armed (idempotent). Called the instant the open
+   * handler fires (success) and in the close handler / explicit teardown.
+   * Deliberately separate from stopKeepalive so the connect-phase timer and the
+   * keepalive ping/pong timers never share a clear path or accidentally overlap.
+   */
+  private clearConnectTimer(): void {
+    if (this.connectTimer !== null) {
+      window.clearTimeout(this.connectTimer);
+      this.connectTimer = null;
+    }
   }
 
   /** Clear both keepalive timers. Safe to call when neither is armed. */

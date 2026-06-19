@@ -1029,21 +1029,22 @@ describe("Chat.tsx header layout (F45, job-0325)", () => {
     );
   });
 
-  it("pushes the connection status to the RIGHT (spacer + marginLeft:auto)", () => {
-    // A flex:1 spacer separates the LEFT group from the RIGHT status, and the
-    // status itself carries marginLeft:auto so it pins to the right edge.
+  it("pins a RIGHT-edge control via a flex spacer (marginLeft:auto)", () => {
+    // NATE redesign 2026-06-19: the mobile row's RIGHT-edge control is now the
+    // model-selector zone (the connection STATUS signal was removed from the
+    // mobile row). It pins to the right edge via marginLeft:auto.
     expect(CHAT_SRC).toMatch(/flex:\s*1/);
     expect(CHAT_SRC).toMatch(
-      /connection-status[\s\S]*?marginLeft:\s*["']auto["']/,
+      /grace2-sheet-model-zone[\s\S]*?marginLeft:\s*["']auto["']/,
     );
   });
 
-  it("LEFT group precedes the connection status in source (left-before-right)", () => {
+  it("LEFT group precedes the right-edge model zone in source (left-before-right)", () => {
     const leftIdx = CHAT_SRC.indexOf('data-testid="grace2-chat-tab-left"');
-    const statusIdx = CHAT_SRC.indexOf('data-testid="connection-status"');
+    const modelIdx = CHAT_SRC.indexOf('data-testid="grace2-sheet-model-zone"');
     expect(leftIdx).toBeGreaterThan(-1);
-    expect(statusIdx).toBeGreaterThan(-1);
-    expect(leftIdx).toBeLessThan(statusIdx);
+    expect(modelIdx).toBeGreaterThan(-1);
+    expect(leftIdx).toBeLessThan(modelIdx);
   });
 });
 
@@ -1148,12 +1149,20 @@ describe("mobileSheetContainerStyle — F61 bottom safe-area clearance", () => {
   });
 
   it("the composer overlay does NOT double-count env(safe-area-inset-bottom)", () => {
-    // The CONTAINER now owns the safe-area lift (F61). The mobile composer
-    // padding must therefore be a plain constant — counting env() in both the
-    // container offset AND the composer padding would push the sheet up twice.
-    // Source-guard: the mobile composer-overlay branch uses a constant bottom
-    // padding (no env() in the composer's own padding string).
-    expect(CHAT_SRC).toContain('padding: "0 10px 12px 10px"');
+    // The CONTAINER owns the safe-area lift (F61). The mobile composer padding
+    // must therefore be a plain constant — counting env() in both the container
+    // offset AND the composer padding would push the sheet up twice.
+    // NATE redesign 2026-06-19 - the mobile composer extends to the VERY BOTTOM
+    // edge of the (lifted) sheet, so its bottom padding is 0 (no env() either).
+    expect(CHAT_SRC).toContain('padding: "0 10px 0 10px"');
+    // No env() in the mobile composer's own padding string.
+    expect(CHAT_SRC).not.toMatch(/padding:\s*["']0 10px[^"']*env\(/);
+  });
+
+  it("NATE redesign: the desktop composer uses symmetric top+bottom padding", () => {
+    // The desktop composer-overlay branch sits balanced in the panel (12px top
+    // + 12px bottom padding) rather than hugging the bottom edge.
+    expect(CHAT_SRC).toContain('padding: "12px 0"');
   });
 });
 
@@ -1166,7 +1175,7 @@ describe("mobileSheetContainerStyle — F61 bottom safe-area clearance", () => {
 // tools/sandbox are in use.
 
 describe("MobileSheetHeaderRow — F45 refined three-zone layout (EXPANDED)", () => {
-  it("renders LEFT (grace+version), CENTER grabber, model selector, RIGHT status in one row", () => {
+  it("renders LEFT (grace+version), CENTER grabber, RIGHT model selector in one row", () => {
     render(
       <MobileSheetHeaderRow
         expanded={true}
@@ -1185,14 +1194,13 @@ describe("MobileSheetHeaderRow — F45 refined three-zone layout (EXPANDED)", ()
     // CENTER zone — the grabber rectangle (the drag handle).
     expect(screen.getByTestId("grace2-sheet-grabber-zone")).toBeTruthy();
     expect(screen.getByTestId("grace2-chat-sheet-toggle")).toBeTruthy();
-    // MODEL zone - the Bedrock model selector (was desktop-only; now surfaced
-    // on mobile too).
+    // MODEL zone (RIGHT-most) - the Bedrock model selector mirroring the
+    // desktop ModelSelectorButton (icon-only Brain trigger).
     expect(screen.getByTestId("grace2-sheet-model-zone")).toBeTruthy();
     expect(screen.getByTestId("model-selector-button")).toBeTruthy();
-    // RIGHT zone — connection status.
-    expect(screen.getByTestId("connection-status").textContent).toContain(
-      "connected",
-    );
+    // NATE tweak 2026-06-19 - the connection STATUS signal was REMOVED from the
+    // mobile row entirely.
+    expect(screen.queryByTestId("connection-status")).toBeNull();
     // The row marks itself expanded.
     expect(screen.getByTestId("grace2-sheet-header-row")).toHaveAttribute(
       "data-sheet-row-state",
@@ -1200,7 +1208,7 @@ describe("MobileSheetHeaderRow — F45 refined three-zone layout (EXPANDED)", ()
     );
   });
 
-  it("orders the zones LEFT → CENTER(grabber) → MODEL → RIGHT in the DOM", () => {
+  it("orders the zones LEFT → CENTER(grabber) → MODEL(right) in the DOM (no status)", () => {
     render(
       <MobileSheetHeaderRow
         expanded={true}
@@ -1218,8 +1226,30 @@ describe("MobileSheetHeaderRow — F45 refined three-zone layout (EXPANDED)", ()
       "grace2-chat-tab-left",
       "grace2-sheet-grabber-zone",
       "grace2-sheet-model-zone",
-      "connection-status",
     ]);
+  });
+
+  it("NATE tweak: the model picker mirrors the desktop ModelSelectorButton with the Brain icon LEADING (left)", () => {
+    render(
+      <MobileSheetHeaderRow
+        expanded={true}
+        status="connected"
+        onToggle={vi.fn()}
+        activeStrips={[]}
+        onExpandFromStrip={vi.fn()}
+        selectedModelId={DEFAULT_MODEL_ID}
+        onModelChange={vi.fn()}
+      />,
+    );
+    const zone = screen.getByTestId("grace2-sheet-model-zone");
+    const button = screen.getByTestId("model-selector-button");
+    // The picker is the SAME icon-only Brain ModelSelectorButton the desktop
+    // header renders, and it is the leading (first) child of the model zone.
+    expect(zone.firstElementChild).toBe(button);
+    // Brain glyph present (icon-only trigger, no model-name text label).
+    expect(button.querySelector("svg")).toBeTruthy();
+    // It carries the active model id (controlled by selectedModelId).
+    expect(button).toHaveAttribute("data-model-id", DEFAULT_MODEL_ID);
   });
 
   it("the grabber stays the F44 drag affordance (tap toggles)", () => {
@@ -1568,5 +1598,71 @@ describe("SheetActiveStripStack — F66 stacking", () => {
     } finally {
       restore();
     }
+  });
+});
+
+// --- Wake-composer redesign (NATE 2026-06-19) ----------------------------- //
+//
+// The not-connected composer states (connecting / wake / waking) now route
+// through the SINGLE WakeOverlay (the separate composer-connecting div is
+// gone), the mobile bottom-sheet chrome is hidden ENTIRELY while not
+// connected, the chrome eases in a beat after the composer on connect, and the
+// connection STATUS signal was removed from the mobile sheet header. The full
+// <Chat> can't mount in happy-dom (it opens a WebSocket), so - per the
+// established source-guard pattern - these pin the relevant Chat.tsx source
+// invariants so a regression is caught by the suite.
+
+describe("Chat.tsx wake-composer redesign (NATE 2026-06-19)", () => {
+  it("routes connecting/wake/waking through the SINGLE WakeOverlay (no composer-connecting div)", () => {
+    // The separate connecting surface is gone - one overlay handles all three.
+    expect(CHAT_SRC).not.toContain('data-testid="composer-connecting"');
+    // The overlay phase is fed by the single composerOverlayPhase deriver…
+    expect(CHAT_SRC).toContain("const composerOverlayPhase: WakePhase =");
+    expect(CHAT_SRC).toMatch(/<WakeOverlay[\s\S]*?phase=\{composerOverlayPhase\}/);
+  });
+
+  it("passes accentColor=getModelById(selectedModelId).accentColor to the overlay", () => {
+    expect(CHAT_SRC).toContain(
+      "const composerAccentColor = getModelById(selectedModelId).accentColor;",
+    );
+    expect(CHAT_SRC).toMatch(
+      /<WakeOverlay[\s\S]*?accentColor=\{composerAccentColor\}/,
+    );
+  });
+
+  it("hides the mobile sheet chrome ENTIRELY while not connected", () => {
+    // The hideMobileChrome gate (mobile AND not-connected) suppresses both the
+    // MobileSheetHeaderRow (grabber/labels) and forces the collapsed container.
+    expect(CHAT_SRC).toContain("const notConnected = composerPhase !== \"chat\";");
+    expect(CHAT_SRC).toContain("const hideMobileChrome = mobile && notConnected;");
+    // The header row only renders when chrome is NOT hidden.
+    expect(CHAT_SRC).toMatch(/\{mobile && !hideMobileChrome &&/);
+    // The container collapses (no 70vh back panel) when chrome is hidden.
+    expect(CHAT_SRC).toMatch(
+      /mobileSheetContainerStyle\(\s*hideMobileChrome \? false : sheetExpanded/,
+    );
+  });
+
+  it("staggers the chrome ease-in after the composer on connect (~160ms)", () => {
+    expect(CHAT_SRC).toContain("setChromeRevealed");
+    expect(CHAT_SRC).toMatch(/setTimeout\(\(\) => setChromeRevealed\(true\), 160\)/);
+    // The chrome wrapper opacity/transform is gated by chromeRevealed.
+    expect(CHAT_SRC).toMatch(/opacity: chromeRevealed \? 1 : 0/);
+  });
+
+  it("removes the connection STATUS signal from the mobile sheet header row", () => {
+    // The MobileSheetHeaderRow EXPANDED branch must no longer render a
+    // connection-status element. (The desktop header still has its dot, which
+    // is asserted elsewhere; the mobile row was the only one with marginLeft
+    // auto on the status, now reassigned to the model zone.)
+    const expandedBranchStart = CHAT_SRC.indexOf(
+      "export function MobileSheetHeaderRow",
+    );
+    const expandedBranchEnd = CHAT_SRC.indexOf(
+      "// COLLAPSED (F45b)",
+      expandedBranchStart,
+    );
+    const expandedBranch = CHAT_SRC.slice(expandedBranchStart, expandedBranchEnd);
+    expect(expandedBranch).not.toContain('data-testid="connection-status"');
   });
 });

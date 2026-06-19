@@ -1318,10 +1318,18 @@ function DurabilityShell({
         statusRef.current = s;
       },
       deliverSessionState: (p) => {
-        // EXACT mirror of App.tsx onSessionState.
+        // EXACT mirror of App.tsx onSessionState (CLIENT FLICKER FIX): a
+        // server-delivered snapshot is authoritative (replace-not-reconcile)
+        // ONLY when the socket is `connected` AND it actually carries layers.
+        // An EMPTY connected frame is a NON-authoritative top-up (additive
+        // no-op) so a keepalive/heartbeat empty frame can never blank the map;
+        // only the explicit Case switch/exit path stamps replace_layers:true
+        // on its empty clear.
         pushRef.current({
           ...p,
-          replace_layers: statusRef.current === "connected",
+          replace_layers:
+            statusRef.current === "connected" &&
+            (p.loaded_layers?.length ?? 0) > 0,
         });
       },
     });
@@ -1389,7 +1397,20 @@ describe("App — per-Case layer durability across WS reconnect (job-0357)", () 
     expect(blanking).toBeUndefined();
   });
 
-  it("a layer DELETE while CONNECTED still applies (authoritative removal preserved)", () => {
+  it("an EMPTY connected frame is a NO-OP (layers persist until an explicit Case switch)", () => {
+    // NEW semantics (CLIENT FLICKER FIX): the server re-ships a full
+    // session-state on every resume INCLUDING the 25s keepalive heartbeat, and a
+    // heartbeat (or a reconnect mid-flight) can momentarily carry an EMPTY
+    // loaded_layers for the SAME Case. Under the OLD `replace_layers = connected`
+    // stamp that wiped the map then refilled on the next good frame (the flicker
+    // + a durability-HARD-REQ violation). The stamp now also requires the frame
+    // to actually CARRY layers, so an EMPTY connected frame is NON-authoritative
+    // (replace_layers:false): Map.tsx treats it as an additive no-op and the
+    // already-rendered overlays survive. A real DELETE is delivered NOT as an
+    // empty session-state but via the explicit `layer-delete` envelope ->
+    // server-persisted list -> a fresh snapshot that still carries the REMAINING
+    // layers (or the explicit Case-switch clear, which stamps replace_layers:true
+    // itself - see the F84 Case-exit tests above).
     const pushes: StampedSession[] = [];
     let api!: Parameters<Parameters<typeof DurabilityShell>[0]["onReady"]>[0];
     render(
@@ -1398,11 +1419,15 @@ describe("App — per-Case layer durability across WS reconnect (job-0357)", () 
     act(() => {
       api.setStatus("connected");
       api.deliverSessionState({ loaded_layers: [{ layer_id: "flood-demo" }] });
-      // A layer-delete turn yields a fresh authoritative snapshot WITHOUT the
-      // layer — this must stay a real replace so the overlay is removed.
+      // A keepalive/heartbeat empty frame for the SAME Case - must NOT blank.
       api.deliverSessionState({ loaded_layers: [] });
     });
+    // The first frame carried a layer while connected -> authoritative replace.
+    expect(pushes[0]!.loaded_layers).toEqual([{ layer_id: "flood-demo" }]);
+    expect(pushes[0]!.replace_layers).toBe(true);
+    // The empty connected frame is a NON-authoritative no-op (additive top-up):
+    // Map.tsx keeps the durable layer, so this can never blank the map.
     expect(pushes[1]!.loaded_layers).toEqual([]);
-    expect(pushes[1]!.replace_layers).toBe(true);
+    expect(pushes[1]!.replace_layers).toBe(false);
   });
 });

@@ -341,6 +341,9 @@ def handler(event, context):  # noqa: ANN001, ARG001
     # Existence + owner check.
     exists, owner = _snapshot_owner(key)
     if not exists:
+        # No materialized snapshot for this Case. Return a typed 404 so the
+        # client can show "this case has no shared view yet" (and fall back to
+        # waking the agent to hydrate) rather than a server error.
         return _response(
             404,
             {"error": "no shared view for this case", "case_id": case_id},

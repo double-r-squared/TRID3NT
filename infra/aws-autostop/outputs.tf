@@ -6,7 +6,10 @@ output "wake_endpoint_url" {
     the client can wake the box when the WebSocket is down. POST or GET /wake
     starts the instance if it is stopped (no-op if already running).
   EOT
-  value       = "${aws_apigatewayv2_stage.default.invoke_url}/wake"
+  # trimsuffix guards the $default stage invoke_url's trailing slash so the URL
+  # is a clean single-slash path (a double slash would 404 the HTTP API route) --
+  # same pattern as case_view_url_endpoint / case_list_url_endpoint.
+  value = "${trimsuffix(aws_apigatewayv2_stage.default.invoke_url, "/")}/wake"
 }
 
 output "idle_check_function_name" {
@@ -49,10 +52,28 @@ output "case_view_url_endpoint" {
   EOT
   # trimsuffix guards the $default stage invoke_url's trailing slash so the URL
   # is a clean single-slash path (a double slash would 404 the HTTP API route).
-  value       = "${trimsuffix(aws_apigatewayv2_stage.default.invoke_url, "/")}/case-view-url"
+  value = "${trimsuffix(aws_apigatewayv2_stage.default.invoke_url, "/")}/case-view-url"
 }
 
 output "view_sign_function_name" {
   description = "Name of the view-signer Lambda (for manual `aws lambda invoke` smoke tests)."
   value       = aws_lambda_function.view_sign.function_name
+}
+
+output "case_list_url_endpoint" {
+  description = <<-EOT
+    Full case-list endpoint URL. Set the web build's VITE_GRACE2_CASE_LIST_URL
+    to this. GET /case-list (Authorization: Bearer <Cognito ID token>) returns
+    {envelope_type: "case-list", cases: [...]} -- the signed-in user's own Cases
+    so the left rail renders with the agent box asleep. No/invalid token ->
+    200 with an empty list (never 401). Shares the wake API Gateway HTTP API.
+  EOT
+  # trimsuffix guards the $default stage invoke_url's trailing slash so the URL
+  # is a clean single-slash path (a double slash would 404 the HTTP API route).
+  value = "${trimsuffix(aws_apigatewayv2_stage.default.invoke_url, "/")}/case-list"
+}
+
+output "case_list_function_name" {
+  description = "Name of the case-list Lambda (for manual `aws lambda invoke` smoke tests)."
+  value       = aws_lambda_function.case_list.function_name
 }

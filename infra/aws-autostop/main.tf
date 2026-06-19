@@ -537,3 +537,158 @@ resource "aws_lambda_permission" "apigw_invoke_view_sign" {
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${aws_apigatewayv2_api.wake.execution_arn}/*/*"
 }
+
+# --------------------------------------------------------------------------- #
+# CASE-LIST Lambda -- GET /case-list (reuses the wake API above).
+#
+# DESIGN INVARIANTS (read before modifying):
+#
+#   1. READ-ONLY, OWNER-SCOPED. The role can dynamodb:Query + dynamodb:GetItem
+#      on the cases table ARN AND its /index/* (the user_id-index /
+#      owner_user_id-index GSIs the owner-scoped listing Queries) and NOTHING
+#      else -- no PutItem, no other table, no S3, no EC2. The agent (a different
+#      role) WRITES the Cases; this Lambda only reads the signed-in user's own.
+#
+#   2. SIGNED-IN ONLY, NEVER 401. The handler ports cognito_verify from the
+#      view-signer/wake handlers (keep the three copies in sync). A verified uid
+#      -> that uid's own Cases (union of both GSIs, tombstones excluded). No
+#      token / invalid token / no pool / unset table -> HTTP 200 with an EMPTY
+#      list (never 401, never another user's Cases) -- the cold-open path stays a
+#      clean no-surprises read; the live WS list reconciles on agent wake.
+#
+#   3. THIRD-PARTY DEPS. The handler needs PyJWT[crypto] + requests beyond the
+#      runtime boto3 (RS256 verify + JWKS fetch). They are pip-installed into
+#      build/case_list_pkg at apply time (null_resource below) and zipped with
+#      the handler -- mirrors null_resource.view_sign_build exactly.
+# --------------------------------------------------------------------------- #
+
+locals {
+  case_list_src_dir = "${path.module}/lambda/case_list"
+  case_list_pkg_dir = "${path.module}/build/case_list_pkg"
+}
+
+# Install the third-party deps + copy the handler into a package dir, then zip.
+# The trigger hashes the handler so a code edit re-runs the install; the deps
+# pin keeps the artifact reproducible. manylinux/linux platform wheels are
+# requested so the cryptography native extension matches the Lambda runtime
+# (python3.12 on Amazon Linux x86_64), not the build host.
+resource "null_resource" "case_list_build" {
+  triggers = {
+    handler_sha = filesha256("${local.case_list_src_dir}/handler.py")
+    deps        = "PyJWT[crypto]==2.9.0 requests==2.32.3"
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      set -euo pipefail
+      rm -rf "${local.case_list_pkg_dir}"
+      mkdir -p "${local.case_list_pkg_dir}"
+      python3 -m pip install \
+        --platform manylinux2014_x86_64 \
+        --implementation cp \
+        --python-version 3.12 \
+        --only-binary=:all: \
+        --target "${local.case_list_pkg_dir}" \
+        "PyJWT[crypto]==2.9.0" "requests==2.32.3"
+      cp "${local.case_list_src_dir}/handler.py" "${local.case_list_pkg_dir}/handler.py"
+    EOT
+  }
+}
+
+data "archive_file" "case_list" {
+  type        = "zip"
+  source_dir  = local.case_list_pkg_dir
+  output_path = "${path.module}/build/case_list.zip"
+  depends_on  = [null_resource.case_list_build]
+}
+
+resource "aws_iam_role" "case_list" {
+  name = "${local.name_prefix}-case-list-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "case_list" {
+  name = "${local.name_prefix}-case-list"
+  role = aws_iam_role.case_list.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        # Query + GetItem on the cases table ARN AND its GSIs (/index/*) ONLY.
+        # The owner-scoped listing Queries the user_id-index / owner_user_id-index
+        # GSIs; GetItem covers the table itself. No PutItem, no other table.
+        Sid    = "ReadCasesOwnerScoped"
+        Effect = "Allow"
+        Action = ["dynamodb:Query", "dynamodb:GetItem"]
+        Resource = [
+          "arn:aws:dynamodb:${var.region}:${var.account_id}:table/${var.cases_table}",
+          "arn:aws:dynamodb:${var.region}:${var.account_id}:table/${var.cases_table}/index/*",
+        ]
+      },
+      {
+        Sid      = "Logs"
+        Effect   = "Allow"
+        Action   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
+        Resource = "arn:aws:logs:${var.region}:${var.account_id}:log-group:/aws/lambda/${local.name_prefix}-case-list:*"
+      },
+    ]
+  })
+}
+
+resource "aws_cloudwatch_log_group" "case_list" {
+  name              = "/aws/lambda/${local.name_prefix}-case-list"
+  retention_in_days = var.lambda_log_retention_days
+}
+
+resource "aws_lambda_function" "case_list" {
+  function_name    = "${local.name_prefix}-case-list"
+  role             = aws_iam_role.case_list.arn
+  handler          = "handler.handler"
+  runtime          = "python3.12"
+  filename         = data.archive_file.case_list.output_path
+  source_code_hash = data.archive_file.case_list.output_base64sha256
+  # JWKS fetch (5s) + the two GSI Queries on top; small headroom. Memory bumped
+  # to load the cryptography native ext (same as the view-signer).
+  timeout     = 15
+  memory_size = 256
+
+  environment {
+    variables = {
+      CASES_TABLE                 = var.cases_table
+      GRACE2_COGNITO_USER_POOL_ID = var.cognito_user_pool_id
+      GRACE2_COGNITO_CLIENT_ID    = var.cognito_client_id
+    }
+  }
+
+  depends_on = [aws_cloudwatch_log_group.case_list]
+}
+
+resource "aws_apigatewayv2_integration" "case_list" {
+  api_id                 = aws_apigatewayv2_api.wake.id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = aws_lambda_function.case_list.invoke_arn
+  payload_format_version = "2.0"
+}
+
+resource "aws_apigatewayv2_route" "case_list" {
+  api_id    = aws_apigatewayv2_api.wake.id
+  route_key = "GET /case-list"
+  target    = "integrations/${aws_apigatewayv2_integration.case_list.id}"
+}
+
+resource "aws_lambda_permission" "apigw_invoke_case_list" {
+  statement_id  = "AllowAPIGatewayInvokeCaseList"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.case_list.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_apigatewayv2_api.wake.execution_arn}/*/*"
+}

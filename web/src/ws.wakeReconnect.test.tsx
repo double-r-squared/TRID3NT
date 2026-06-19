@@ -10,10 +10,18 @@
 //   3. The reconnect backoff still revives a fresh socket (the loop is intact).
 //   4. `reportWakeState()` delegates a REPORT-ONLY GET to the injected waker
 //      (asleep detection) and NEVER POSTs / wakes the box.
+//
+// Mobile connect-attempt timeout (transport surface): a socket that never opens
+// (the box is STOPPED and the TCP connect hangs) is torn down after
+// CONNECT_ATTEMPT_TIMEOUT_MS so the EXISTING close handler runs scheduleReconnect
+// -> onWakeNeeded - surfacing the wake overlay in ~10s instead of the browser's
+// default 30-120s connect timeout. A socket that opens promptly CLEARS the timer
+// and is never torn down by it (no regression to the no-10s-cycling contract).
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   GraceWs,
+  CONNECT_ATTEMPT_TIMEOUT_MS,
   __test_resetSessionHub,
   type WsHandlers,
 } from "./ws";
@@ -190,6 +198,111 @@ describe("GraceWs — reconnect signal + report-only wake (sleep/wake STAGE 2)",
       "https://explicit.example/wake",
       expect.objectContaining({ method: "POST" }),
     );
+
+    ws.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Mobile connect-attempt timeout (transport surface). When the agent box is
+// STOPPED the new WebSocket sits in CONNECTING while the browser waits out its
+// default TCP connect timeout (30-120s) before firing close. ws.ts arms a
+// one-shot CONNECT_ATTEMPT_TIMEOUT_MS timer the instant the socket is created;
+// if it is still CONNECTING when the timer fires, it tears the socket down via
+// ws.close() so the EXISTING close handler runs scheduleReconnect ->
+// onWakeNeeded and the wake overlay surfaces in ~10s. A socket that opens
+// promptly CLEARS the timer in its open handler and is never torn down by it.
+// ---------------------------------------------------------------------------
+
+describe("GraceWs - mobile connect-attempt timeout (transport surface)", () => {
+  beforeEach(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (window as any).__webSockets = [];
+    __test_resetSessionHub();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.runOnlyPendingTimers();
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
+    vi.resetModules();
+    vi.restoreAllMocks();
+  });
+
+  it("a socket that never opens fires onWakeNeeded within the connect timeout", () => {
+    const onWakeNeeded = vi.fn();
+    const ws = new GraceWs(
+      "ws://localhost:8765",
+      makeHandlers({ onWakeNeeded }),
+    );
+    ws.connect();
+
+    const sock = instanceSocket(ws);
+    expect(sock).not.toBeNull();
+    // The socket is still CONNECTING (never opened) - exactly the stopped-box case.
+    expect(sock!.readyState).toBe(0); // CONNECTING
+
+    // Spy on close so we (a) confirm the connect-timer tears the socket down and
+    // (b) stop happy-dom's async close from racing the manual close-event drive
+    // below; the production close handler is exercised via the dispatched event.
+    const closeSpy = vi
+      .spyOn(sock!, "close")
+      .mockImplementation(() => undefined);
+
+    // BEFORE the timeout fires nothing has happened on the wake path.
+    vi.advanceTimersByTime(CONNECT_ATTEMPT_TIMEOUT_MS - 1);
+    expect(closeSpy).not.toHaveBeenCalled();
+    expect(onWakeNeeded).not.toHaveBeenCalled();
+
+    // The connect-attempt timer fires: the still-CONNECTING socket is torn down.
+    vi.advanceTimersByTime(1);
+    expect(closeSpy).toHaveBeenCalledTimes(1);
+
+    // Drive the resulting close event (force CLOSED + dispatch) so the EXISTING
+    // close handler runs scheduleReconnect -> onWakeNeeded - the whole point.
+    forceReadyState(sock!, 3); // CLOSED
+    sock!.dispatchEvent(new CloseEvent("close", { code: 1006 }));
+    expect(onWakeNeeded).toHaveBeenCalledTimes(1);
+    expect(onWakeNeeded).toHaveBeenLastCalledWith(1);
+
+    ws.close();
+  });
+
+  it("a socket that opens promptly clears the timer and is never torn down by it", () => {
+    const onWakeNeeded = vi.fn();
+    // Inject a token getter so the open handler's maybeSendAuthToken resolves
+    // without touching real Firebase.
+    const idTokenGetter = vi.fn(async () => null);
+    const ws = new GraceWs(
+      "ws://localhost:8765",
+      makeHandlers({ onWakeNeeded, idTokenGetter }),
+    );
+    ws.connect();
+
+    const sock = instanceSocket(ws);
+    expect(sock).not.toBeNull();
+    const closeSpy = vi
+      .spyOn(sock!, "close")
+      .mockImplementation(() => undefined);
+    // The forced OPEN readyState makes ws.ts treat the socket as OPEN, but the
+    // happy-dom socket is internally still CONNECTING and its real send() would
+    // throw; stub send to a no-op so the open handler's auth-token/session-resume
+    // sends are harmless (this test is only about the connect-timer lifecycle).
+    vi.spyOn(sock!, "send").mockImplementation(() => undefined);
+
+    // The socket opens BEFORE the connect-attempt timeout. The open handler
+    // clears the connect timer.
+    forceReadyState(sock!, 1); // OPEN
+    sock!.dispatchEvent(new Event("open"));
+
+    // Advance well PAST the connect timeout: the (now cleared) timer must NOT
+    // fire, so the OPEN socket is never closed and the wake path never runs.
+    vi.advanceTimersByTime(CONNECT_ATTEMPT_TIMEOUT_MS * 3);
+    expect(closeSpy).not.toHaveBeenCalled();
+    expect(onWakeNeeded).not.toHaveBeenCalled();
+    // The same socket is still the live one (it was not torn down + replaced).
+    expect(instanceSocket(ws)).toBe(sock);
 
     ws.close();
   });
