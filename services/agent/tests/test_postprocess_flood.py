@@ -553,3 +553,120 @@ def test_postprocess_flood_emits_peak_plus_frames_with_distinct_uris(
     assert len(set(uris)) == len(uris), f"frame uris must be distinct; got {uris}"
     # And distinct from the peak uri.
     assert layers[0].uri not in uris
+
+
+def _make_sfincs_nc_running_max_blocks(
+    tmp_path: Path,
+    *,
+    x_vals: list[float],
+    y_vals: list[float],
+    n_steps: int,
+    n_maxblocks: int,
+    crs_wkt: str = "EPSG:32617",
+    filename: str = "sfincs_map.nc",
+) -> Path:
+    """SFINCS netCDF where ``hmax``/``zsmax`` carry a MULTI-block ``timemax`` axis.
+
+    Reproduces the live Fort Myers 100-yr break: when the deck sets ``dtmaxout``
+    finer than the sim window, SFINCS writes a SEQUENCE of running-max snapshots,
+    so ``hmax`` arrives as ``(timemax=N, n, m)`` with N>1 (NOT the size-1 global
+    max the legacy fixtures use). The representative peak is the max OVER those
+    blocks. Also carries the time-varying ``zs(time,n,m)`` so the frame path runs.
+    """
+    import numpy as np_inner
+    import xarray as xr
+
+    ny, nx = len(y_vals), len(x_vals)
+    zb = np_inner.zeros((ny, nx), dtype="float32")
+    zs = np_inner.zeros((n_steps, ny, nx), dtype="float32")
+    for t in range(n_steps):
+        zs[t, :, :] = 3.0 * (t / max(1, n_steps - 1))
+    # Running-max blocks: each block holds the cumulative max up to that block;
+    # the LAST block is the global max (3.0). Shape (timemax, n, m), timemax>1.
+    hmax_blocks = np_inner.zeros((n_maxblocks, ny, nx), dtype="float32")
+    for b in range(n_maxblocks):
+        hmax_blocks[b, :, :] = 3.0 * ((b + 1) / n_maxblocks)
+    zsmax_blocks = hmax_blocks.copy()  # zb=0 so depth == level
+
+    ds = xr.Dataset(
+        {
+            "zs": xr.DataArray(zs, dims=["time", "n", "m"], attrs={"units": "m"}),
+            "zb": xr.DataArray(zb, dims=["n", "m"], attrs={"units": "m"}),
+            "hmax": xr.DataArray(hmax_blocks, dims=["timemax", "n", "m"], attrs={"units": "m"}),
+            "zsmax": xr.DataArray(zsmax_blocks, dims=["timemax", "n", "m"], attrs={"units": "m"}),
+            "crs": xr.DataArray(
+                0,
+                attrs={
+                    "crs_wkt": _epsg_to_wkt(crs_wkt),
+                    "grid_mapping_name": "transverse_mercator",
+                },
+            ),
+        },
+        coords={
+            "x": xr.DataArray(np.array(x_vals, dtype="float64"), dims=["m"]),
+            "y": xr.DataArray(np.array(y_vals, dtype="float64"), dims=["n"]),
+            "time": xr.DataArray(np.arange(n_steps, dtype="int64"), dims=["time"]),
+            "timemax": xr.DataArray(np.arange(n_maxblocks, dtype="int64"), dims=["timemax"]),
+        },
+    )
+    out = tmp_path / filename
+    ds.to_netcdf(str(out))
+    return out
+
+
+def test_multiblock_running_max_collapses_to_peak_and_emits_frames(
+    tmp_path: Path,
+) -> None:
+    """REGRESSION (live Fort Myers 100-yr, 2026-06-19): ``hmax(timemax=N>1,n,m)``.
+
+    Finer-than-sim ``dtmaxout`` makes SFINCS emit a multi-block running-max field.
+    Before the fix ``_select_peak_depth`` returned the 3D ``hmax`` as-is and the
+    COG writer's squeeze raised ``RUN_OUTPUT_UNEXPECTED_SHAPE`` — sinking BOTH the
+    peak layer AND every animation frame on an otherwise-good solve. The fix
+    collapses the ``timemax`` axis to a true 2D global peak.
+    """
+    from unittest.mock import patch
+
+    from grace2_agent.workflows.postprocess_flood import (
+        _extract_depth_frames,
+        _select_peak_depth,
+        postprocess_flood,
+    )
+
+    nc = _make_sfincs_nc_running_max_blocks(
+        tmp_path,
+        x_vals=X_VALS_ASC,
+        y_vals=Y_VALS_DESC,
+        n_steps=25,
+        n_maxblocks=24,  # the real shape: hmax (timemax=24, n, m)
+    )
+
+    # 1. _select_peak_depth must collapse the timemax axis to 2D (n, m).
+    import xarray as xr
+
+    with xr.open_dataset(str(nc)) as ds:
+        peak_da = _select_peak_depth(ds)
+        assert peak_da.ndim == 2, f"peak must be 2D after collapse; got {peak_da.dims}"
+
+    # 2. _extract_depth_frames must NOT raise and must produce peak + frames.
+    peak_cog, peak_metrics, frame_cogs, frame_labels = _extract_depth_frames(nc)
+    Path(peak_cog).unlink(missing_ok=True)
+    for f in frame_cogs:
+        Path(f).unlink(missing_ok=True)
+    assert peak_metrics["max_depth_m"] == pytest.approx(3.0, rel=1e-3)
+    assert len(frame_cogs) >= 2, "time-varying zs must still yield animation frames"
+
+    # 3. End-to-end: peak primary + frames, all with the fixed preset.
+    def _fake_upload(local_cog, run_id, runs_bucket=None, *, dest_filename="flood_depth_peak.tif"):  # noqa: ANN001
+        return f"s3://test-runs/{run_id}/{dest_filename}"
+
+    with patch(
+        "grace2_agent.workflows.postprocess_flood._upload_cog_to_runs_bucket",
+        side_effect=_fake_upload,
+    ):
+        layers, metrics = postprocess_flood(str(nc), run_id="run-fortmyers")
+
+    assert layers[0].name == "Peak flood depth" and layers[0].role == "primary"
+    frames = layers[1:]
+    assert len(frames) >= 2
+    assert all(f.style_preset == "continuous_flood_depth" for f in frames)

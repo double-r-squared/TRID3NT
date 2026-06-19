@@ -424,6 +424,29 @@ def _write_verified_cog(
     return tmp_cog, metrics_summary
 
 
+def _collapse_running_max(field: Any) -> Any:
+    """Collapse a SFINCS running-max field (``hmax`` / ``zsmax``) to a 2D peak.
+
+    SFINCS writes its max fields with a leading ``timemax`` axis whose length is
+    ``ceil(tstop-tstart / dtmaxout)``. When ``dtmaxout >= sim-length`` that axis
+    is size 1 (a single global max, squeezes away cleanly). But when ``dtmaxout``
+    is set FINER than the sim window — which the flood-animation deck does
+    (``dtmaxout = max(600, total/24)`` in sfincs_builder, giving ~24 blocks over a
+    24h sim) — SFINCS emits a SEQUENCE of running-max snapshots: ``hmax`` arrives
+    as ``(timemax=24, n, m)``. The representative PEAK is the max OVER those
+    blocks, so we reduce any ``timemax``/``time`` leading axis here. Without this
+    the peak array stays 3D and ``_write_verified_cog``'s squeeze raises
+    ``RUN_OUTPUT_UNEXPECTED_SHAPE`` — sinking BOTH the peak layer and every
+    animation frame (the whole flood layer set vanishes on an otherwise-good
+    solve). Any non-spatial reduce dim present on the field is collapsed; the
+    spatial ``n``/``m`` dims are left intact.
+    """
+    reduce_dims = [d for d in getattr(field, "dims", ()) if d in ("timemax", "time")]
+    for d in reduce_dims:
+        field = field.max(dim=d)
+    return field
+
+
 def _select_peak_depth(ds: Any) -> Any:
     """Select the PEAK (max-over-time) depth field from a SFINCS dataset.
 
@@ -431,11 +454,17 @@ def _select_peak_depth(ds: Any) -> Any:
     water-level minus bed) → ``zs.max(time) - zb`` (max of the time series).
     Returns an xarray DataArray (NOT yet a numpy array). Raises
     ``RUN_OUTPUT_EMPTY`` when no depth field is present.
+
+    ``hmax`` / ``zsmax`` carry a leading ``timemax`` axis that is size 1 when
+    ``dtmaxout >= sim-length`` but size N when the deck sets a finer
+    ``dtmaxout`` (the animation deck does — ~24 running-max blocks). We collapse
+    that axis to a true global 2D peak via ``_collapse_running_max`` so the COG
+    writer always receives a 2D field.
     """
     if "hmax" in ds.variables:
-        return ds["hmax"]
+        return _collapse_running_max(ds["hmax"])
     if "zsmax" in ds.variables and "zb" in ds.variables:
-        return ds["zsmax"] - ds["zb"]
+        return _collapse_running_max(ds["zsmax"]) - ds["zb"]
     if "zs" in ds.variables and "zb" in ds.variables:
         return (ds["zs"].max(dim="time") - ds["zb"]).clip(min=0.0)
     raise PostprocessError(
