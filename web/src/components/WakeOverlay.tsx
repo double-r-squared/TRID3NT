@@ -235,9 +235,10 @@ export function WakeOverlay({
 
   // The box reads as the SAME box as <ChatInput> with its content swapped: full
   // width, the composer's radius (14), the SAME height as the live composer
-  // (boxHeight), and the colored EDGE as its border. NATE 2026-06-19: TRANSPARENT
-  // fill (no solid surface) - just the colored edge + the word over the map; a
-  // text-shadow keeps the word legible on a varied background.
+  // (boxHeight), and the colored EDGE as its border. NATE 2026-06-19: FROSTED
+  // GLASS fill (not solid, not fully transparent) - a translucent surface that
+  // blurs the map behind it; ``-webkit-backdrop-filter`` is required for iOS
+  // Safari. A text-shadow keeps the word legible over the frost.
   const cardStyle: CSSProperties = {
     position: "relative",
     overflow: "hidden",
@@ -245,7 +246,9 @@ export function WakeOverlay({
     boxSizing: "border-box",
     minHeight: boxHeight,
     borderRadius: 14,
-    background: "transparent",
+    background: "rgba(18,20,26,0.45)",
+    backdropFilter: "blur(14px) saturate(1.3)",
+    WebkitBackdropFilter: "blur(14px) saturate(1.3)",
     color: "#e7ecf5",
     display: "flex",
     flexDirection: "row",
