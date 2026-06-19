@@ -34,8 +34,10 @@ from grace2_agent.tools.publish_layer import (
     PublishLayerError,
     _benign_vector_noop,
     _build_cog_with_overviews,
+    _build_vector_wms_url,
     _ensure_raster_has_overviews,
     _is_vector_uri,
+    _parse_qgs_key,
     _raster_has_overviews,
     publish_layer,
 )
@@ -165,6 +167,202 @@ def test_publish_layer_raster_s3_still_raises_for_non_s3(_s3_titiler: None) -> N
     with pytest.raises(PublishLayerError) as exc:
         publish_layer(layer_uri="gs://legacy/bucket/x.tif", layer_id="flood")
     assert exc.value.error_code == "LAYER_URI_NOT_FOUND"
+
+
+# --------------------------------------------------------------------------- #
+# job-0308 - s3-branch QGIS-vector route (env-gated, NO-OP until infra exists)
+#
+# WHEN GRACE2_QGIS_WMS_BASE is set -> publish_layer composes a styled WMS
+# GetMap URL for the vector (pointed at the AWS QGIS Server) and registers it
+# as the display face. WHEN it is UNSET -> the existing benign no-op is
+# returned, so live behavior is byte-for-byte unchanged until the AWS QGIS
+# Server is stood up.
+# --------------------------------------------------------------------------- #
+
+
+def test_build_vector_wms_url_is_well_formed() -> None:
+    """The helper mirrors the GCP MAP=/LAYERS= shape, pointed at the WMS base."""
+    url = _build_vector_wms_url(
+        "https://cf.example.net/ogc/wms",
+        "s3://bucket/roads.fgb",
+        "roads-layer",
+        "grace2-sample.qgs",
+    )
+    assert url.startswith("https://cf.example.net/ogc/wms?")
+    # MAP= carries the /mnt/qgs/<key> mount convention (URL-encoded).
+    assert "MAP=" in url
+    assert "grace2-sample.qgs" in url
+    # Standard WMS GetMap envelope so uri_registry recognizes it as a render
+    # face (LAYERS= + service=wms).
+    assert "SERVICE=WMS" in url
+    assert "REQUEST=GetMap" in url
+    assert "LAYERS=roads-layer" in url
+    assert "STYLES=" in url
+    assert "FORMAT=image/png" in url
+
+
+def test_build_vector_wms_url_recognized_as_wms_render_face() -> None:
+    """The composed URL is recognized by uri_registry as a WMS display face."""
+    from grace2_agent.uri_registry import _looks_like_wms
+
+    url = _build_vector_wms_url(
+        "https://cf.example.net/ogc/wms",
+        "s3://bucket/rivers.geojson",
+        "rivers",
+        "grace2-sample.qgs",
+    )
+    assert _looks_like_wms(url) is True
+
+
+def test_publish_layer_vector_s3_env_unset_returns_benign_no_op(
+    _s3_titiler: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ENV UNSET: vector on s3 still benign no-op (current behavior unchanged)."""
+    # The _s3_titiler fixture sets storage=s3 + tile base but NOT the QGIS WMS
+    # base; ensure it is absent.
+    monkeypatch.delenv("GRACE2_QGIS_WMS_BASE", raising=False)
+    calls: list[tuple] = []
+    monkeypatch.setattr(
+        "grace2_agent.tools.publish_layer.observe_published_layer",
+        lambda *a, **k: calls.append((a, k)),
+    )
+
+    result = publish_layer(layer_uri="s3://bucket/roads.fgb", layer_id="roads")
+
+    assert isinstance(result, str)
+    assert result.startswith("noop")
+    assert "/cog/tiles/" not in result
+    assert "service=wms" not in result.lower()
+    # No display face registered for the no-op.
+    assert calls == [], f"unset-env vector must stay a no-op; got {calls}"
+
+
+def test_publish_layer_vector_s3_env_set_returns_vector_wms_url(
+    _s3_titiler: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ENV SET: vector on s3 -> a well-formed styled WMS URL + display face."""
+    monkeypatch.setenv("GRACE2_QGIS_WMS_BASE", "https://cf.example.net/ogc/wms")
+    calls: list[tuple] = []
+    monkeypatch.setattr(
+        "grace2_agent.tools.publish_layer.observe_published_layer",
+        lambda *a, **k: calls.append((a, k)),
+    )
+
+    result = publish_layer(layer_uri="s3://bucket/roads.fgb", layer_id="roads")
+
+    # 1. A well-formed WMS URL (not a benign no-op).
+    assert isinstance(result, str)
+    assert not result.startswith("noop")
+    assert result.startswith("https://cf.example.net/ogc/wms?")
+    assert "SERVICE=WMS" in result
+    assert "REQUEST=GetMap" in result
+    assert "LAYERS=roads" in result
+    assert "MAP=" in result
+    # 2. BOTH faces registered: the s3:// data uri + the WMS display face.
+    assert len(calls) == 1, f"expected one registration; got {calls}"
+    (_args, kwargs) = calls[0]
+    assert kwargs["gcs_uri"] == "s3://bucket/roads.fgb"
+    assert kwargs["wms_url"] == result
+
+
+# --------------------------------------------------------------------------- #
+# job-0308 P0 (LOW forward-path): the .qgs key resolver must accept s3:// as
+# well as gs://. On AWS the canonical .qgs lives at s3://...; if the QGIS-vector
+# WMS branch (GRACE2_QGIS_WMS_BASE set) resolved a gs://-only key it would fail
+# on the live AWS stack. The no-op-when-unset path is unaffected.
+# --------------------------------------------------------------------------- #
+
+
+def test_parse_qgs_key_accepts_s3() -> None:
+    """An s3:// .qgs URI resolves to the same key as the gs:// form."""
+    assert (
+        _parse_qgs_key("s3://grace-2-hazard-prod-qgs/grace2-sample.qgs")
+        == "grace2-sample.qgs"
+    )
+    assert (
+        _parse_qgs_key("s3://bucket/nested/dir/project.qgs")
+        == "nested/dir/project.qgs"
+    )
+
+
+def test_parse_qgs_key_accepts_gs_unchanged() -> None:
+    """The gs:// path is byte-identical to before (no regression)."""
+    assert (
+        _parse_qgs_key("gs://grace-2-hazard-prod-qgs/grace2-sample.qgs")
+        == "grace2-sample.qgs"
+    )
+
+
+@pytest.mark.parametrize(
+    "bad_uri",
+    [
+        "https://host/project.qgs",  # wrong scheme
+        "s3://bucket-only",  # no key component
+        "gs://bucket-only",  # no key component
+        "s3://bucket/",  # trailing slash, empty key
+    ],
+)
+def test_parse_qgs_key_rejects_bad_uris(bad_uri: str) -> None:
+    """Non-gs/s3 schemes and key-less URIs still raise the typed error."""
+    with pytest.raises(PublishLayerError) as exc:
+        _parse_qgs_key(bad_uri)
+    assert exc.value.error_code == "QGS_URI_PARSE_ERROR"
+
+
+def test_publish_layer_vector_s3_env_set_with_s3_qgs_uri(
+    _s3_titiler: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ENV SET + an s3:// project_qgs_uri -> the WMS branch resolves the key
+    (no QGS_URI_PARSE_ERROR) and composes a styled WMS URL with that key."""
+    monkeypatch.setenv("GRACE2_QGIS_WMS_BASE", "https://cf.example.net/ogc/wms")
+    monkeypatch.setattr(
+        "grace2_agent.tools.publish_layer.observe_published_layer",
+        lambda *a, **k: None,
+    )
+
+    result = publish_layer(
+        layer_uri="s3://bucket/roads.fgb",
+        layer_id="roads",
+        project_qgs_uri="s3://grace-2-hazard-prod-qgs/grace2-sample.qgs",
+    )
+
+    # Did NOT raise (s3 .qgs key resolved) and is a real WMS URL.
+    assert result.startswith("https://cf.example.net/ogc/wms?")
+    assert "SERVICE=WMS" in result
+    assert "REQUEST=GetMap" in result
+    # The s3 .qgs key rode into the MAP= mount param.
+    assert "grace2-sample.qgs" in result
+
+
+def test_publish_layer_vector_s3_env_set_trailing_slash_base(
+    _s3_titiler: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A trailing slash on the WMS base is tolerated (no double slash)."""
+    monkeypatch.setenv("GRACE2_QGIS_WMS_BASE", "https://cf.example.net/ogc/wms/")
+    monkeypatch.setattr(
+        "grace2_agent.tools.publish_layer.observe_published_layer",
+        lambda *a, **k: None,
+    )
+
+    result = publish_layer(layer_uri="s3://bucket/rivers.geojson", layer_id="rivers")
+
+    assert result.startswith("https://cf.example.net/ogc/wms?")
+    assert "ogc/wms//" not in result
+
+
+def test_publish_layer_vector_s3_env_blank_falls_back_to_no_op(
+    _s3_titiler: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A blank (whitespace-only after strip) WMS base falls back to the no-op."""
+    monkeypatch.setenv("GRACE2_QGIS_WMS_BASE", "")
+    monkeypatch.setattr(
+        "grace2_agent.tools.publish_layer.observe_published_layer",
+        lambda *a, **k: None,
+    )
+
+    result = publish_layer(layer_uri="s3://bucket/roads.fgb", layer_id="roads")
+
+    assert result.startswith("noop")
 
 
 # --------------------------------------------------------------------------- #

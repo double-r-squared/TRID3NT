@@ -22,10 +22,13 @@ import pytest
 
 from grace2_agent.tools import TOOL_REGISTRY, passthroughs, qgis_discovery
 from grace2_agent.tools.qgis_discovery import (
+    CURATED_ALLOWLIST,
     MAX_LIST_RESULTS,
     SOURCE_CLASS,
+    _apply_curated_allowlist,
     _parse_qgis_help_output,
     _parse_qgis_list_output,
+    curated_allowlist,
     describe_qgis_algorithm,
     list_qgis_algorithms,
 )
@@ -49,6 +52,35 @@ QGIS (native c++)
 \tnative:zonalstatistics\tZonal statistics (in place)
 \tnative:reprojectlayer\tReproject layer
 \tnative:reclassifybytable\tReclassify by table
+"""
+
+
+# A wider list spanning ALL providers - used to exercise the curated allowlist
+# (native/gdal/qgis/3d pass wholesale; GRASS r.watershed passes via the
+# explicit-id set; a non-curated GRASS algorithm + a non-curated SAGA algorithm
+# are dropped by the curated default).
+_FAKE_LIST_OUTPUT_ALL_PROVIDERS = """Available algorithms
+
+QGIS (3D)
+\t3d:tessellate\tTessellate
+
+GDAL
+\tgdal:aspect\tAspect
+
+QGIS (native c++)
+\tnative:zonalstatistics\tZonal statistics (in place)
+
+QGIS
+\tqgis:basicstatisticsforfields\tBasic statistics for fields
+
+GRASS
+\tgrass:r.watershed\tr.watershed
+\tgrass:r.water.outlet\tr.water.outlet
+\tgrass:r.sun\tr.sun
+
+SAGA
+\tsaga:fillsinkswangliu\tFill sinks (Wang and Liu)
+\tsaga:thinplatespline\tThin plate spline
 """
 
 
@@ -403,3 +435,169 @@ def test_qgis_process_raises_runtime_error_when_no_backend(monkeypatch) -> None:
 
     with pytest.raises(RuntimeError, match="qgis_process unavailable"):
         qgis_process(algorithm="native:zonalstatistics", params={})
+
+
+# ---------------------------------------------------------------------------
+# Curated allowlist (job-0308 Q-discovery lane).
+# ---------------------------------------------------------------------------
+
+
+def test_curated_allowlist_default_keeps_high_value_drops_noise() -> None:
+    """The pure post-filter keeps native/gdal/qgis/3d + explicit GRASS picks,
+    drops non-curated GRASS / SAGA algorithms."""
+    summaries = _parse_qgis_list_output(_FAKE_LIST_OUTPUT_ALL_PROVIDERS)
+    kept_ids = {s["algorithm_id"] for s in _apply_curated_allowlist(summaries)}
+    # Wholesale provider families.
+    assert "native:zonalstatistics" in kept_ids
+    assert "gdal:aspect" in kept_ids
+    assert "qgis:basicstatisticsforfields" in kept_ids
+    assert "3d:tessellate" in kept_ids
+    # Explicit GRASS hydrology picks survive.
+    assert "grass:r.watershed" in kept_ids
+    assert "grass:r.water.outlet" in kept_ids
+    # Explicit SAGA pick survives.
+    assert "saga:fillsinkswangliu" in kept_ids
+    # Non-curated GRASS + SAGA dropped.
+    assert "grass:r.sun" not in kept_ids
+    assert "saga:thinplatespline" not in kept_ids
+
+
+def test_curated_allowlist_module_constant_includes_grass_hydrology() -> None:
+    """The exported constant enumerates the GRASS hydrology set the roadmap
+    leans on."""
+    for hydro in (
+        "grass:r.watershed",
+        "grass:r.water.outlet",
+        "grass:r.stream.extract",
+        "grass:r.fill.dir",
+    ):
+        assert hydro in CURATED_ALLOWLIST
+
+
+def test_curated_allowlist_env_all_disables_curation(monkeypatch) -> None:
+    """``GRACE2_QGIS_ALLOWLIST=all`` -> empty-sets sentinel -> no filtering."""
+    monkeypatch.setenv("GRACE2_QGIS_ALLOWLIST", "all")
+    prefixes, explicit = curated_allowlist()
+    assert prefixes == frozenset()
+    assert explicit == frozenset()
+    summaries = _parse_qgis_list_output(_FAKE_LIST_OUTPUT_ALL_PROVIDERS)
+    # Sentinel -> the filter returns everything untouched.
+    assert _apply_curated_allowlist(summaries) == summaries
+
+
+def test_curated_allowlist_env_custom_overrides(monkeypatch) -> None:
+    """A custom comma list of <provider>:* wildcards + ids replaces the set."""
+    monkeypatch.setenv("GRACE2_QGIS_ALLOWLIST", "gdal:*, grass:r.sun")
+    prefixes, explicit = curated_allowlist()
+    assert prefixes == frozenset({"gdal"})
+    assert explicit == frozenset({"grass:r.sun"})
+    summaries = _parse_qgis_list_output(_FAKE_LIST_OUTPUT_ALL_PROVIDERS)
+    kept_ids = {s["algorithm_id"] for s in _apply_curated_allowlist(summaries)}
+    assert kept_ids == {"gdal:aspect", "grass:r.sun"}
+
+
+def test_curated_allowlist_trailing_star_id_prefix(monkeypatch) -> None:
+    """P0 edge: a ``<provider>:<stem>*`` token (e.g. ``gdal:aspect*``) is an
+    id-PREFIX match, not an exact id and not a provider wildcard.
+
+    Pre-fix this token matched NOTHING: it ends in ``*`` but is not exactly
+    ``:*`` (so not a provider wildcard) and is not a literal id (so not an exact
+    match). It must now keep every algorithm whose id starts with the stem.
+    """
+    monkeypatch.setenv("GRACE2_QGIS_ALLOWLIST", "gdal:aspect*")
+    prefixes, explicit = curated_allowlist()
+    # Not a provider-prefix wildcard.
+    assert prefixes == frozenset()
+    # Stored as an explicit entry WITH the trailing star preserved so the
+    # matcher treats it as an id-prefix.
+    assert explicit == frozenset({"gdal:aspect*"})
+
+    summaries = [
+        {
+            "algorithm_id": "gdal:aspect",
+            "name": "Aspect",
+            "provider": "GDAL",
+            "brief_description": "Aspect",
+        },
+        {
+            "algorithm_id": "gdal:aspectband",
+            "name": "Aspect (band)",
+            "provider": "GDAL",
+            "brief_description": "Aspect (band)",
+        },
+        {
+            "algorithm_id": "gdal:slope",
+            "name": "Slope",
+            "provider": "GDAL",
+            "brief_description": "Slope",
+        },
+        {
+            "algorithm_id": "native:zonalstatistics",
+            "name": "Zonal statistics",
+            "provider": "QGIS",
+            "brief_description": "Zonal statistics",
+        },
+    ]
+    kept_ids = {s["algorithm_id"] for s in _apply_curated_allowlist(summaries)}
+    # Both ``gdal:aspect*`` matches kept; ``gdal:slope`` + native dropped.
+    assert kept_ids == {"gdal:aspect", "gdal:aspectband"}
+
+
+def test_curated_allowlist_trailing_star_mixed_with_exact_and_wildcard(
+    monkeypatch,
+) -> None:
+    """A trailing-* id-prefix coexists with exact ids and provider wildcards."""
+    monkeypatch.setenv(
+        "GRACE2_QGIS_ALLOWLIST", "native:*, gdal:aspect*, grass:r.watershed"
+    )
+    prefixes, explicit = curated_allowlist()
+    assert prefixes == frozenset({"native"})
+    assert explicit == frozenset({"gdal:aspect*", "grass:r.watershed"})
+
+    summaries = [
+        {"algorithm_id": "native:buffer", "name": "Buffer", "provider": "QGIS",
+         "brief_description": "Buffer"},
+        {"algorithm_id": "gdal:aspect", "name": "Aspect", "provider": "GDAL",
+         "brief_description": "Aspect"},
+        {"algorithm_id": "gdal:slope", "name": "Slope", "provider": "GDAL",
+         "brief_description": "Slope"},
+        {"algorithm_id": "grass:r.watershed", "name": "r.watershed",
+         "provider": "GRASS", "brief_description": "r.watershed"},
+        {"algorithm_id": "grass:r.sun", "name": "r.sun", "provider": "GRASS",
+         "brief_description": "r.sun"},
+    ]
+    kept_ids = {s["algorithm_id"] for s in _apply_curated_allowlist(summaries)}
+    assert kept_ids == {"native:buffer", "gdal:aspect", "grass:r.watershed"}
+
+
+def test_list_qgis_algorithms_curated_by_default(
+    stubbed_submitter, fake_storage: _FakeStorageClient
+) -> None:
+    """The tool curates by default: non-curated GRASS/SAGA dropped."""
+    stubbed_submitter.responses["list"] = {
+        "stdout": _FAKE_LIST_OUTPUT_ALL_PROVIDERS,
+        "returncode": 0,
+        "duration_s": 0.1,
+    }
+    result = list_qgis_algorithms()
+    ids = {s["algorithm_id"] for s in result}
+    assert "native:zonalstatistics" in ids
+    assert "grass:r.watershed" in ids  # explicit hydrology pick
+    assert "grass:r.sun" not in ids  # non-curated GRASS dropped
+    assert "saga:thinplatespline" not in ids  # non-curated SAGA dropped
+
+
+def test_list_qgis_algorithms_include_all_escape_hatch(
+    stubbed_submitter, fake_storage: _FakeStorageClient
+) -> None:
+    """``include_all=True`` returns the full unfiltered catalog."""
+    stubbed_submitter.responses["list"] = {
+        "stdout": _FAKE_LIST_OUTPUT_ALL_PROVIDERS,
+        "returncode": 0,
+        "duration_s": 0.1,
+    }
+    result = list_qgis_algorithms(include_all=True)
+    ids = {s["algorithm_id"] for s in result}
+    # The non-curated algorithms ARE present when include_all is set.
+    assert "grass:r.sun" in ids
+    assert "saga:thinplatespline" in ids

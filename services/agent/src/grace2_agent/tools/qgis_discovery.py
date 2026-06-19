@@ -111,6 +111,7 @@ Invariants honored
 from __future__ import annotations
 
 import logging
+import os
 import re
 from typing import Any, TypedDict
 
@@ -128,6 +129,8 @@ __all__ = [
     "QGISAlgorithmOutput",
     "MAX_LIST_RESULTS",
     "SOURCE_CLASS",
+    "CURATED_ALLOWLIST",
+    "curated_allowlist",
 ]
 
 logger = logging.getLogger("grace2_agent.tools.qgis_discovery")
@@ -138,6 +141,152 @@ MAX_LIST_RESULTS = 50
 
 #: Bucket prefix under ``cache/static-30d/`` for the discovery cache.
 SOURCE_CLASS = "qgis_algorithms_catalog"
+
+# ---------------------------------------------------------------------------
+# Curated allowlist (job-0308 Q-discovery lane).
+#
+# A bare ``qgis_process list`` on the deployed worker image surfaces ~695
+# algorithms across native QGIS + GDAL + GRASS + SAGA. Handing all 695 to the
+# LLM is illegible: most are niche transforms the agent never needs, and the
+# noise crowds out the high-value families. The curated allowlist trims the
+# default surface to the families that earn their place in a hazard-modeling
+# workbench: the native QGIS Processing core, the full GDAL raster/vector
+# toolbox, the QGIS-prefixed legacy algorithms, the GRASS hydrology set the
+# watershed/stream-delineation roadmap leans on, and a small slice of SAGA.
+#
+# Matching is by provider PREFIX (the part before the ``:`` in an
+# ``algorithm_id``) for the wildcard families, plus an explicit set of
+# fully-qualified ids for the curated GRASS hydrology / SAGA picks (so we get
+# the watershed tools without dragging in all ~300 GRASS algorithms).
+#
+# The agent always has an ESCAPE HATCH: ``list_qgis_algorithms(include_all=
+# True)`` (or the ``GRACE2_QGIS_ALLOWLIST=all`` env flip) returns the full
+# unfiltered catalog. The curated set is a default for legibility, not a
+# capability ceiling.
+# ---------------------------------------------------------------------------
+
+#: Provider prefixes whose algorithms pass the curated allowlist wholesale.
+_CURATED_PROVIDER_PREFIXES: frozenset[str] = frozenset(
+    {
+        "native",  # QGIS native C++ Processing core (the workhorse)
+        "gdal",  # GDAL/OGR raster + vector toolbox
+        "qgis",  # legacy QGIS-prefixed Processing algorithms
+        "3d",  # QGIS 3D (tessellate etc.) - small, high-signal
+    }
+)
+
+#: Fully-qualified ids curated in from otherwise-excluded providers: the
+#: GRASS hydrology set the watershed/stream-network roadmap depends on, plus a
+#: few high-value SAGA terrain/hydrology picks. Kept explicit so we surface the
+#: watershed tools without flooding the LLM with all ~300 GRASS algorithms.
+_CURATED_EXPLICIT_IDS: frozenset[str] = frozenset(
+    {
+        # GRASS hydrology core (watershed + stream delineation).
+        "grass:r.watershed",
+        "grass:r.water.outlet",
+        "grass:r.stream.extract",
+        "grass:r.stream.order",
+        "grass:r.stream.snap",
+        "grass:r.fill.dir",
+        "grass:r.flow",
+        "grass:r.lake",
+        "grass:r.basins.fill",
+        # Key SAGA terrain/hydrology picks.
+        "saga:fillsinkswangliu",
+        "saga:channelnetwork",
+        "saga:catchmentarea",
+        "saga:flowaccumulationtopdown",
+        "saga:slopeaspectcurvature",
+    }
+)
+
+#: Module-level curated allowlist of fully-qualified ids (the explicit GRASS /
+#: SAGA picks). Provider-prefix families are matched separately at filter time
+#: via ``_CURATED_PROVIDER_PREFIXES``. Exposed as a module constant so tests
+#: (and a future ops audit) can introspect the curated surface.
+CURATED_ALLOWLIST: frozenset[str] = _CURATED_EXPLICIT_IDS
+
+
+def curated_allowlist() -> tuple[frozenset[str], frozenset[str]]:
+    """Resolve the effective curated allowlist (env-overridable).
+
+    Returns ``(provider_prefixes, explicit_ids)``. The agent default is the
+    module constants above; ops can override via ``GRACE2_QGIS_ALLOWLIST``:
+
+    - ``GRACE2_QGIS_ALLOWLIST=all`` (or ``*``) -> sentinel: both sets empty,
+      which ``_apply_curated_allowlist`` reads as "return everything" (the
+      same effect as the ``include_all=True`` call-site escape hatch).
+    - ``GRACE2_QGIS_ALLOWLIST=native:*,gdal:*,grass:r.watershed,...`` -> a
+      comma-separated mix of ``<provider>:*`` prefix wildcards and
+      fully-qualified ids replaces the built-in curated set entirely.
+    - unset -> the built-in curated set.
+    """
+    raw = (os.environ.get("GRACE2_QGIS_ALLOWLIST") or "").strip()
+    if not raw:
+        return _CURATED_PROVIDER_PREFIXES, _CURATED_EXPLICIT_IDS
+    if raw.lower() in ("all", "*"):
+        # Sentinel: empty sets => no curation (return everything).
+        return frozenset(), frozenset()
+    prefixes: set[str] = set()
+    explicit: set[str] = set()
+    for tok in raw.split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        if tok.endswith(":*"):
+            # ``<provider>:*`` -> provider-prefix wildcard.
+            prefixes.add(tok[: -len(":*")])
+        elif tok.endswith("*") and ":" not in tok:
+            # Bare ``<provider>*`` -> provider-prefix wildcard.
+            prefixes.add(tok[:-1])
+        elif tok.endswith("*"):
+            # ``<provider>:<stem>*`` (e.g. ``gdal:aspect*``) -> an id-PREFIX
+            # match (handled in ``_apply_curated_allowlist``). Without this
+            # branch a token like ``gdal:aspect*`` was neither a wildcard nor an
+            # exact id, so it matched NOTHING. Keep the trailing ``*`` so the
+            # matcher recognizes the entry as a prefix rather than an exact id.
+            explicit.add(tok)
+        else:
+            explicit.add(tok)
+    return frozenset(prefixes), frozenset(explicit)
+
+
+def _provider_prefix(algorithm_id: str) -> str:
+    """Return the provider prefix of a fully-qualified algorithm id.
+
+    ``"native:zonalstatistics"`` -> ``"native"``; ``"gdal:aspect"`` ->
+    ``"gdal"``. Ids without a ``:`` return the whole string (tolerant).
+    """
+    return algorithm_id.split(":", 1)[0] if ":" in algorithm_id else algorithm_id
+
+
+def _apply_curated_allowlist(
+    summaries: list[QGISAlgorithmSummary],
+) -> list[QGISAlgorithmSummary]:
+    """Filter summaries down to the curated allowlist (legibility default).
+
+    Keeps an algorithm when its provider prefix is in the curated prefix set
+    OR its fully-qualified id is in the curated explicit-id set OR its id starts
+    with one of the curated id-PREFIX entries (an explicit token that ended in a
+    trailing ``*``, e.g. ``gdal:aspect*`` -> keeps ``gdal:aspect``,
+    ``gdal:aspectband``). When the resolved allowlist is the ``all`` sentinel
+    (both sets empty) the full list passes through unchanged.
+    """
+    prefixes, explicit_ids = curated_allowlist()
+    if not prefixes and not explicit_ids:
+        return summaries  # "all" sentinel - no curation.
+    # Split explicit entries into exact ids and trailing-* id-prefix stems.
+    exact_ids = {e for e in explicit_ids if not e.endswith("*")}
+    id_prefixes = tuple(e[:-1] for e in explicit_ids if e.endswith("*"))
+
+    def _keep(alg_id: str) -> bool:
+        if _provider_prefix(alg_id) in prefixes:
+            return True
+        if alg_id in exact_ids:
+            return True
+        return any(alg_id.startswith(p) for p in id_prefixes)
+
+    return [s for s in summaries if _keep(s["algorithm_id"])]
 
 #: Subprocess timeout for ``qgis_process list`` — typically completes in 2-3 s
 #: locally; deployed worker may take longer through Cloud Run Job cold-start.
@@ -546,6 +695,7 @@ def _parse_outputs_block(lines: list[str]) -> list[QGISAlgorithmOutput]:
 def list_qgis_algorithms(
     category_filter: str | None = None,
     search_terms: str | None = None,
+    include_all: bool = False,
     # job-0164: absorb LLM-invented kwargs (centralized at server.py via
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
@@ -562,6 +712,16 @@ def list_qgis_algorithms(
     agent's tool registry); discovering hazard layers (use
     ``hazard_catalog_search``).
 
+    Curated default:
+        The deployed worker exposes ~695 algorithms across native QGIS + GDAL +
+        GRASS + SAGA. By default this returns only a CURATED set of high-value
+        families (native QGIS Processing core, the GDAL raster/vector toolbox,
+        legacy ``qgis:*`` algorithms, the GRASS hydrology set
+        (``r.watershed`` / ``r.water.outlet`` / ``r.stream.extract`` /
+        ``r.fill.dir`` etc.) and key SAGA terrain/hydrology picks) so the
+        candidate list stays legible. Pass ``include_all=True`` to see the
+        full unfiltered catalog (or set ``GRACE2_QGIS_ALLOWLIST=all`` ops-side).
+
     Params:
         category_filter: optional substring matched case-insensitively
             against the provider name (e.g. ``"native"``, ``"gdal"``,
@@ -570,6 +730,10 @@ def list_qgis_algorithms(
             the algorithm id and human label. Pass ``None`` to skip
             full-text filtering. Useful for narrowing 1000+ entries to a
             handful relevant to the task.
+        include_all: when ``True``, bypass the curated allowlist and return the
+            full unfiltered catalog (still capped + ranked). Default ``False``
+            (curated). Use this only when the curated set demonstrably lacks
+            the algorithm you need.
 
     Returns:
         A list of ``QGISAlgorithmSummary`` dicts (``algorithm_id``, ``name``,
@@ -581,7 +745,9 @@ def list_qgis_algorithms(
         ``ttl_class="static-30d"``, ``source_class="qgis_algorithms_catalog"``.
         The algorithm catalog only changes on a worker image rebuild
         (~quarterly); a 30-day TTL is comfortable. Cache hits return the same
-        bytes without re-invoking the worker.
+        bytes without re-invoking the worker. The curated allowlist is applied
+        AFTER the cache read (a pure post-filter), so a single cached raw
+        listing serves both curated and ``include_all`` calls.
 
     Substrate:
         Wraps ``qgis_process list`` via the worker submitter bound at agent
@@ -589,6 +755,8 @@ def list_qgis_algorithms(
         discussion.
     """
     # Cache params — what the agent passes, deterministically canonicalized.
+    # NOTE: the curated allowlist is intentionally NOT part of the cache key;
+    # it is a pure post-filter over the same cached raw listing.
     cache_params: dict[str, Any] = {
         "subcommand": "list",
     }
@@ -608,14 +776,23 @@ def list_qgis_algorithms(
     )
     stdout = rt.data.decode("utf-8", errors="replace")
     summaries = _parse_qgis_list_output(stdout)
+    total_raw = len(summaries)
+
+    # Curated allowlist (legibility default) unless the caller escapes to all.
+    if not include_all:
+        summaries = _apply_curated_allowlist(summaries)
+    curated_n = len(summaries)
 
     # Filter + rank.
     filtered = _filter_and_rank_summaries(summaries, category_filter, search_terms)
     logger.info(
-        "list_qgis_algorithms cache_hit=%s total=%d filtered=%d category=%r search=%r",
+        "list_qgis_algorithms cache_hit=%s total=%d curated=%d filtered=%d "
+        "include_all=%s category=%r search=%r",
         rt.hit,
-        len(summaries),
+        total_raw,
+        curated_n,
         len(filtered),
+        include_all,
         category_filter,
         search_terms,
     )

@@ -208,9 +208,12 @@ CATEGORIES: tuple[CategorySpec, ...] = (
         name="Geographic primitives",
         description=(
             "Foundational geographic operations and platform plumbing: "
-            "geocoding, administrative-boundary fetching, raster/vector "
-            "clipping, layer publishing to QGIS, dataset discovery, generic "
-            "catalog search/fetch, QGIS algorithm discovery."
+            "geocoding, admin-boundary fetching, raster/vector clipping, "
+            "layer publishing to QGIS, catalog search/fetch. Two Class-A "
+            "discovery entry points: discover_dataset for DATA (free-text -> "
+            "vetted source), and the list_qgis_algorithms -> "
+            "describe_qgis_algorithm -> qgis_process triple for COMPUTE (run "
+            "any curated QGIS/GDAL/GRASS/SAGA algorithm)."
         ),
     ),
     CategorySpec(

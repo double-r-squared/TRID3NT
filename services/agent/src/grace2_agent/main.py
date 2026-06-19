@@ -348,6 +348,73 @@ def _bind_worker_submitter() -> None:
 
     set_worker_submitter(submitter)
 
+    # job-0308 (Q-discovery lane): best-effort readiness probe. The submitter
+    # binding above is silent-on-success: a mis-set env flip (e.g. a
+    # GRACE2_QGIS_DOCKER_IMAGE pointing at a tag that isn't pulled, or a
+    # qgis_process binary that's on PATH but broken) would only surface on the
+    # FIRST discovery call, deep in a user session. Probe ``qgis_process
+    # --version`` once at boot so a broken substrate is visible in the startup
+    # logs.
+    #
+    # COLD-START GUARANTEE (P0 review): on the LIVE box there is no QGIS infra
+    # (GRACE2_QGIS_DOCKER_IMAGE unset), yet ``submitter(["--version"], 30)`` ran
+    # SYNCHRONOUSLY here at every boot BEFORE ``run_server`` binds the WS port,
+    # so a slow/hung ``qgis_process`` could add up to ~30 s of cold-start. Fix:
+    #   - QGIS infra configured (GRACE2_QGIS_DOCKER_IMAGE set) -> run the probe
+    #     synchronously so the boot diagnostic is in the startup logs the
+    #     operator is watching.
+    #   - QGIS infra NOT configured (the live box default) -> run the probe in a
+    #     daemon thread so it NEVER delays the WS port bind. Zero added
+    #     cold-start latency on the live box; the diagnostic still lands in the
+    #     logs shortly after boot if anything is wrong.
+    # Either way the probe is best-effort + non-fatal: any failure (timeout,
+    # non-zero exit, exception) logs a warning and the agent keeps serving; the
+    # real call still raises its own typed error if the substrate is down.
+    if os.environ.get("GRACE2_QGIS_DOCKER_IMAGE"):
+        _run_readiness_probe(submitter)
+    else:
+        import threading
+
+        threading.Thread(
+            target=_run_readiness_probe,
+            args=(submitter,),
+            name="qgis-readiness-probe",
+            daemon=True,
+        ).start()
+
+
+def _run_readiness_probe(submitter) -> None:
+    """Probe ``qgis_process --version`` and log readiness. Never raises.
+
+    Factored out of ``_bind_worker_submitter`` so it can run either inline
+    (QGIS infra configured) or on a daemon thread (no QGIS infra) without
+    duplicating the logging. Best-effort: every failure path logs a warning
+    and returns; nothing here aborts agent startup.
+    """
+    log = logging.getLogger("grace2_agent.main")
+    try:
+        probe = submitter(["--version"], 30)
+        rc = probe.get("returncode")
+        ver = (probe.get("stdout") or "").strip().splitlines()[:1]
+        ver_line = ver[0] if ver else "<no version output>"
+        if rc == 0:
+            log.info(
+                "qgis_process readiness probe OK (bin=%s): %s",
+                probe.get("qgis_bin", "?"),
+                ver_line,
+            )
+        else:
+            log.warning(
+                "qgis_process readiness probe NOT-READY (bin=%s returncode=%s): %s",
+                probe.get("qgis_bin", "?"),
+                rc,
+                (probe.get("stderr") or ver_line).strip()[:200],
+            )
+    except Exception as exc:  # noqa: BLE001 - probe must never abort startup
+        log.warning(
+            "qgis_process readiness probe NOT-READY (probe raised): %s", exc
+        )
+
 
 def run(argv: list[str] | None = None) -> int:
     """Console-script entry point. ``make run-agent`` calls this.

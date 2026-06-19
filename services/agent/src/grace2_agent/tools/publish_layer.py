@@ -321,24 +321,32 @@ def _get_pyqgis_worker_job_name() -> str:
 
 
 def _parse_qgs_key(qgs_uri: str) -> str:
-    """Extract the GCS object key (no leading slash) from a gs:// URI.
+    """Extract the object key (no leading slash) from a gs:// or s3:// URI.
 
-    Used to build the MAP= parameter in the WMS URL.
+    Used to build the MAP= parameter in the WMS URL. Both schemes share the
+    ``<scheme>://<bucket>/<key>`` shape, so the key extraction is identical.
+    On the GCP path the .qgs lives at ``gs://...``; on AWS (job-0308) it lives
+    at ``s3://...``; the AWS QGIS-vector WMS branch (GRACE2_QGIS_WMS_BASE set)
+    must accept the s3:// form or the branch fails.
 
     Examples:
-        ``gs://grace-2-hazard-prod-qgs/grace2-sample.qgs``
-        → ``grace2-sample.qgs``
+        ``gs://grace-2-hazard-prod-qgs/grace2-sample.qgs`` -> ``grace2-sample.qgs``
+        ``s3://grace-2-hazard-prod-qgs/grace2-sample.qgs`` -> ``grace2-sample.qgs``
 
     Raises:
-        PublishLayerError: if the URI cannot be parsed as gs://.
+        PublishLayerError: if the URI is not a gs:// or s3:// URI, or has no
+        key component.
     """
-    if not qgs_uri.startswith("gs://"):
+    for scheme in ("gs://", "s3://"):
+        if qgs_uri.startswith(scheme):
+            rest = qgs_uri[len(scheme):]
+            break
+    else:
         raise PublishLayerError(
             "QGS_URI_PARSE_ERROR",
-            f"project_qgs_uri must be a gs:// URI; got {qgs_uri!r}",
+            f"project_qgs_uri must be a gs:// or s3:// URI; got {qgs_uri!r}",
         )
-    # gs://<bucket>/<key>
-    rest = qgs_uri[len("gs://"):]
+    # <scheme>://<bucket>/<key>
     slash_idx = rest.find("/")
     if slash_idx == -1 or slash_idx == len(rest) - 1:
         raise PublishLayerError(
@@ -361,6 +369,59 @@ def _build_wms_url(qgs_key: str, layer_id: str) -> str:
     base = _get_qgis_server_url()
     map_param = f"/mnt/qgs/{qgs_key}"
     return f"{base}?MAP={map_param}&LAYERS={layer_id}"
+
+
+#: Env var that, WHEN SET, activates the s3-branch QGIS-vector publish route.
+#: It is the base URL of the AWS QGIS Server WMS endpoint (e.g.
+#: ``https://<cloudfront>/ogc/wms``). The route lands ahead of the AWS QGIS
+#: infra (sprint-16 job-0308): until ``GRACE2_QGIS_WMS_BASE`` is exported the
+#: s3 branch keeps the existing ``_benign_vector_noop`` (vectors already render
+#: inline via their producing fetch tool's GeoJSON), so LIVE behavior is
+#: UNCHANGED. Once the QGIS Server is stood up, exporting this var flips
+#: publish_layer to compose a styled WMS GetMap face for the vector.
+_QGIS_WMS_BASE_ENV: str = "GRACE2_QGIS_WMS_BASE"
+
+
+def _get_qgis_wms_base() -> str:
+    """Return the configured AWS QGIS Server WMS base (trailing slash stripped).
+
+    Empty string when ``GRACE2_QGIS_WMS_BASE`` is unset/blank - the caller
+    treats that as "infra not yet stood up" and falls back to the benign no-op.
+    """
+    return os.environ.get(_QGIS_WMS_BASE_ENV, "").rstrip("/")
+
+
+def _build_vector_wms_url(
+    wms_base: str,
+    layer_uri: str,
+    layer_id: str,
+    qgs_key: str,
+) -> str:
+    """Compose a styled WMS GetMap URL for a VECTOR on the AWS QGIS path.
+
+    Mirrors the GCP ``_build_wms_url`` shape (``MAP=<.qgs key>&LAYERS=<id>``)
+    but points at ``GRACE2_QGIS_WMS_BASE`` (the AWS QGIS Server) and carries
+    the standard WMS GetMap envelope so ``uri_registry._looks_like_wms``
+    recognizes it as a renderable display face. The MAP= param uses the same
+    ``/mnt/qgs/<key>`` mount convention as the GCP worker path.
+
+    Style seam: the family-aware ``_infer_style_preset`` (the same selector the
+    raster paths use) is threaded into a ``STYLES=`` value so the QGIS Server
+    can apply a named style when one is registered; the empty-string default
+    (terrain-family / unknown) yields ``STYLES=`` which is a valid WMS "server
+    default style" request.
+    """
+    from urllib.parse import quote
+
+    style = _infer_style_preset(layer_uri, layer_id)
+    map_param = f"/mnt/qgs/{qgs_key}"
+    return (
+        f"{wms_base}?MAP={quote(map_param, safe='/')}"
+        "&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap"
+        f"&LAYERS={quote(layer_id, safe='')}"
+        f"&STYLES={quote(style, safe='')}"
+        "&FORMAT=image/png&TRANSPARENT=true"
+    )
 
 
 #: job-0269b: token vocabulary marking TERRAIN-family rasters. These are
@@ -1630,6 +1691,35 @@ def publish_layer(
         # calm function_response so the agent narrates honestly and never
         # re-calls publish_layer for the vector.
         if _is_vector_uri(layer_uri):
+            # job-0308 forward seam: WHEN the AWS QGIS Server is stood up and
+            # GRACE2_QGIS_WMS_BASE is exported, route the vector through a
+            # styled WMS GetMap face (mirrors the GCP ``_build_wms_url`` shape
+            # MAP=<.qgs key>&LAYERS=<id>&... but pointed at the AWS WMS base).
+            # This NO-OPs on the live stack TODAY: the var is unset until the
+            # infra exists, so the existing benign no-op is returned and
+            # behavior is byte-for-byte unchanged (vectors render inline via
+            # their producing fetch tool's GeoJSON).
+            wms_base = _get_qgis_wms_base()
+            if wms_base:
+                effective_qgs_uri = _get_effective_qgs_uri(project_qgs_uri)
+                qgs_key = _parse_qgs_key(effective_qgs_uri)
+                wms_url = _build_vector_wms_url(
+                    wms_base, layer_uri, layer_id, qgs_key
+                )
+                logger.info(
+                    "publish_layer (qgis-vector) layer_id=%s uri=%s wms=%s",
+                    layer_id,
+                    layer_uri,
+                    wms_url,
+                )
+                # Register BOTH faces: the s3:// vector (consumable DATA uri)
+                # + the WMS GetMap URL (display face). ``_looks_like_wms``
+                # routes the WMS URL to the wms/display slot so it never
+                # displaces the s3:// data uri (mirrors the raster branch).
+                observe_published_layer(
+                    layer_id, gcs_uri=layer_uri, wms_url=wms_url
+                )
+                return wms_url
             return _benign_vector_noop(layer_uri, layer_id)
         if not layer_uri.startswith("s3://"):
             raise PublishLayerError(
