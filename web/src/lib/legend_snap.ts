@@ -176,14 +176,21 @@ export function nearestSide(aoi: ScreenRect, point: { x: number; y: number }): A
 }
 
 /**
- * Reconstructs an AOI ScreenRect from the props Map.tsx ALREADY passes the
- * legend: `anchor` (the bbox BOTTOM-edge midpoint {left, top}) and `barWidth`
- * (the bbox on-screen EAST-WEST extent in px). The bottom edge is fully known
- * from those two; the AOI height is NOT received, so we estimate the top edge
- * by assuming a square-ish box (height = width) UNLESS an explicit height is
- * supplied. This lets the snapping feature work with zero Map.tsx edits today;
- * threading a real {left,top,right,bottom} rect upstream later makes top/left
- * snapping pixel-exact (see residual risk).
+ * FALLBACK ESTIMATOR — only used when the TRUE projected AOI rect is unavailable.
+ *
+ * Reconstructs an *approximate* AOI ScreenRect from `anchor` (the bbox
+ * BOTTOM-edge midpoint {left, top}) and `barWidth` (the bbox on-screen EAST-WEST
+ * extent in px). The bottom edge is known exactly from those two; the AOI HEIGHT
+ * is NOT carried by anchor+width, so the top edge is ESTIMATED by assuming a
+ * square-ish box (height = width) UNLESS an explicit height is supplied. Because
+ * the height is a guess, top/left snapping off this rect is only approximate for
+ * non-square or skewed AOIs.
+ *
+ * Map.tsx now threads the real {left,top,right,bottom} rect (computeBboxScreenRect
+ * — min/max over all four projected corners) straight into LayerLegend, which
+ * snaps off THAT when present. This estimator is retained ONLY as the fallback
+ * for when the true rect is absent (off-screen / not yet projected) and for unit
+ * tests that exercise the anchor+width reconstruction path.
  *
  * Returns null when there is no anchor or no positive width (no AOI on screen),
  * so the caller can fall back to the static bottom-center placement.

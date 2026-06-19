@@ -420,6 +420,223 @@ def contents_to_bedrock_messages(
 
 
 # --------------------------------------------------------------------------- #
+# Inline <thinking> stripper (narration thinking-strip)
+# --------------------------------------------------------------------------- #
+#
+# The tags we suppress are ``<thinking>`` / ``</thinking>`` (case-insensitive,
+# whitespace-tolerant — see ``_ThinkingStripper._match_tag``).  The amount of
+# trailing text held back across a delta boundary is NOT a fixed length: the
+# matcher recognises a partial tag from any prefix and holds exactly that
+# prefix, so an arbitrarily-padded tag (``< thinking >``) is still buffered
+# correctly until disambiguated.
+
+
+class _ThinkingStripper:
+    """Streaming state machine that removes inline ``<thinking>...</thinking>``.
+
+    Amazon Nova writes its chain-of-thought as literal ``<thinking>`` tags
+    INSIDE the normal text content block, so it arrives under
+    ``delta['text']`` and would otherwise stream straight to chat as visible
+    narration.  Claude, by contrast, emits reasoning in a SEPARATE
+    ``reasoningContent`` block (dropped explicitly in the producer), so this
+    stripper is a no-op for Claude — but it is robust per-model, not a Nova
+    special-case.
+
+    The tags arrive SPLIT across deltas (a per-delta ``re.sub`` would fail to
+    match a tag straddling a chunk boundary), so this maintains state across
+    ``feed`` calls:
+
+      * ``_in_think`` — currently inside a ``<thinking>`` span (suppress).
+      * ``_buf`` — a small TAIL of trailing text we have not yet emitted
+        because it could be the start of a partial ``<thinking>`` /
+        ``</thinking>`` tag spanning into the next delta.
+
+    Matching is case-insensitive and tolerates whitespace immediately after
+    ``<thinking``/``</thinking`` and before the closing ``>`` (e.g.
+    ``< thinking >``); ATTRIBUTES are also tolerated
+    (``<thinking foo="bar">``) — any span up to the first ``>`` after the body
+    is swallowed — see ``_match_tag``.  ``feed`` returns the text that is safe
+    to emit NOW; ``flush`` returns whatever post-thinking narration remains at
+    end-of-stream (an unclosed ``<thinking>`` span is dropped rather than
+    leaked as raw tags, but a buffered partial that is NOT actually a
+    thinking-tag prefix — e.g. a lone trailing ``<`` of genuine narration — is
+    emitted, and real text after a closed span is never swallowed).
+    """
+
+    def __init__(self) -> None:
+        self._in_think = False
+        self._buf = ""
+
+    @staticmethod
+    def _match_tag(text: str, pos: int, *, closing: bool) -> int | None:
+        """Try to match a ``<thinking>`` (open) / ``</thinking>`` (close) at *pos*.
+
+        Whitespace is tolerated after the leading ``<``, after the closing
+        slash (``</ thinking>``), and before the trailing ``>``; matching is
+        case-insensitive.  ATTRIBUTES are tolerated on the OPEN tag
+        (``<thinking foo="bar">``): once the body ``thinking`` is followed by
+        whitespace, any span up to the first ``>`` is consumed as an attribute
+        list and the whole tag is suppressed.  Returns the index just past
+        ``>`` on a full match, ``-1`` when the text from *pos* could still be a
+        PARTIAL of this tag (caller must hold and wait for more), or ``None``
+        when it definitively is not this tag.
+        """
+        n = len(text)
+        if pos >= n or text[pos] != "<":
+            return None
+        i = pos + 1
+        # optional whitespace after '<'
+        while i < n and text[i].isspace():
+            i += 1
+        if closing:
+            if i >= n:
+                return -1  # '<' (+ws) only so far — could still become '</...'
+            if text[i] != "/":
+                return None
+            i += 1
+            # optional whitespace after '/'
+            while i < n and text[i].isspace():
+                i += 1
+        # match the literal body "thinking" (case-insensitive)
+        body = "thinking"
+        j = 0
+        while i < n and j < len(body) and text[i].lower() == body[j]:
+            i += 1
+            j += 1
+        if j < len(body):
+            # ran out of text mid-body -> partial if we consumed everything
+            return -1 if i >= n else None
+        # After the body, the tag closes either immediately at '>', or after a
+        # whitespace-introduced attribute span (e.g. ``<thinking foo="bar">``).
+        # A non-whitespace, non-'>' char immediately after the body means this
+        # is a DIFFERENT tag (e.g. ``<thinkingx>``) — not a thinking tag.
+        if i < n and not text[i].isspace() and text[i] != ">":
+            return None
+        # consume the (possibly attribute-bearing) remainder up to the first '>'
+        while i < n and text[i] != ">":
+            i += 1
+        if i >= n:
+            return -1  # body matched but '>' not yet arrived -> partial
+        return i + 1  # text[i] == '>'
+
+    def _scan_for_tag(self, text: str, pos: int) -> tuple[str | None, int]:
+        """Return ``(kind, end)`` for a tag at *pos*.
+
+        ``kind`` is ``"open"`` / ``"close"`` on a full match (``end`` is the
+        index past ``>``), ``"partial"`` when the text could still grow into a
+        tag (``end`` == ``pos``), or ``(None, pos)`` when no tag starts here.
+        """
+        open_end = self._match_tag(text, pos, closing=False)
+        if open_end is not None and open_end >= 0:
+            return "open", open_end
+        close_end = self._match_tag(text, pos, closing=True)
+        if close_end is not None and close_end >= 0:
+            return "close", close_end
+        if open_end == -1 or close_end == -1:
+            return "partial", pos
+        return None, pos
+
+    def feed(self, text: str) -> str:
+        """Consume a text delta, returning the text safe to emit now."""
+        if not text:
+            return ""
+        work = self._buf + text
+        self._buf = ""
+        out: list[str] = []
+        i = 0
+        n = len(work)
+        while i < n:
+            ch = work[i]
+            if ch == "<":
+                kind, end = self._scan_for_tag(work, i)
+                if kind == "open":
+                    self._in_think = True
+                    i = end
+                    continue
+                if kind == "close":
+                    self._in_think = False
+                    i = end
+                    continue
+                if kind == "partial":
+                    # Could be the start of a real tag spanning into the next
+                    # delta — hold the remainder and wait for more text.
+                    self._buf = work[i:]
+                    i = n
+                    break
+                # Not a tag — a literal '<'. Emit it (if outside thinking).
+                if not self._in_think:
+                    out.append(ch)
+                i += 1
+                continue
+            # plain char: find the next '<' and emit/suppress the run.
+            nxt = work.find("<", i)
+            if nxt == -1:
+                segment = work[i:]
+                i = n
+            else:
+                segment = work[i:nxt]
+                i = nxt
+            if not self._in_think:
+                out.append(segment)
+        return "".join(out)
+
+    @staticmethod
+    def _buf_is_thinking_prefix(buf: str) -> bool:
+        """Is *buf* a genuine PREFIX of a ``<thinking>``/``</thinking>`` tag?
+
+        ``_buf`` is only ever set from ``feed``'s ``partial`` branch, so it
+        always begins with ``<`` and could-in-principle still grow into a tag.
+        But "could grow" includes the trivial case of a LONE ``<`` (optionally
+        followed by whitespace) which has not yet committed to anything — that
+        is far more likely to be genuine narration (a trailing ``<`` of real
+        text) than the start of a thinking tag.  This returns ``True`` only
+        when *buf* has progressed PAST the bare ``<`` (+ optional whitespace)
+        into actual tag content — a ``/`` (closing) or the first letter of the
+        case-insensitive body ``thinking``.  Such a prefix is dropped at EOS
+        (an unfinished/unclosed thinking tag); everything else is emitted.
+        """
+        n = len(buf)
+        if n == 0 or buf[0] != "<":
+            return False
+        i = 1
+        while i < n and buf[i].isspace():
+            i += 1
+        if i >= n:
+            return False  # '<' (+ whitespace) only — not committed to a tag
+        ch = buf[i]
+        if ch == "/":
+            return True  # '</...' — a closing-tag prefix
+        return ch.lower() == "t"  # first body char of "thinking"
+
+    def flush(self) -> str:
+        """End-of-stream flush.
+
+        Returns whatever narration is safe to emit at end-of-stream:
+
+          * If a ``<thinking>`` span is still OPEN, the trailing suppressed
+            content was thinking — emit nothing (the span never closed).
+          * ``self._buf`` is set ONLY in ``feed``'s ``partial`` branch, so a
+            non-empty buffer is a held ``<...`` that never disambiguated.  If it
+            is a genuine thinking-tag prefix (``"<thin"``, ``"</th"``, ...) it
+            is an unfinished tag and is DROPPED (no raw partial-tag leak).  If
+            it is merely a lone trailing ``<`` (+ optional whitespace) of real
+            narration — ``feed(["done<"]) -> "done"`` then ``flush() -> "<"`` —
+            it is genuine text and is EMITTED rather than lost.
+
+        Real post-thinking narration is emitted by ``feed`` the moment the span
+        CLOSES, so it is never swallowed here.
+        """
+        buf = self._buf
+        self._buf = ""
+        if self._in_think:
+            # Unclosed thinking span — buffered partial is suppressed content.
+            return ""
+        if self._buf_is_thinking_prefix(buf):
+            return ""  # unfinished thinking tag — drop rather than leak
+        return buf  # genuine trailing narration (e.g. a lone '<')
+
+
+# --------------------------------------------------------------------------- #
 # Streaming
 # --------------------------------------------------------------------------- #
 
@@ -454,6 +671,14 @@ async def stream_bedrock(
             resp = client.converse_stream(**kwargs)
             # Per-contentBlock accumulation of streamed toolUse input JSON.
             tool_blocks: dict[int, dict[str, Any]] = {}
+            # Per-turn inline <thinking> stripper: Amazon Nova writes its
+            # chain-of-thought as literal <thinking>...</thinking> INSIDE the
+            # normal text block (so it arrives under delta['text']); the tags
+            # split across deltas, so a streaming state machine — not a
+            # per-delta re.sub — is required to suppress them.  Claude routes
+            # reasoning through a separate reasoningContent block (dropped
+            # below), so this is a no-op for Claude.
+            stripper = _ThinkingStripper()
             for event in resp["stream"]:
                 if "contentBlockStart" in event:
                     start = event["contentBlockStart"]
@@ -469,10 +694,24 @@ async def stream_bedrock(
                     d = event["contentBlockDelta"]
                     idx = d.get("contentBlockIndex", 0)
                     delta = d.get("delta", {})
-                    if "text" in delta and delta["text"]:
-                        loop.call_soon_threadsafe(
-                            queue.put_nowait, TextDeltaEvent(delta=delta["text"])
-                        )
+                    if "reasoningContent" in delta:
+                        # Claude emits chain-of-thought in a SEPARATE
+                        # reasoningContent block (reasoningText / redactedContent
+                        # / signature sub-keys).  This is model THINKING, not
+                        # user-facing narration — drop it outright.  Documenting
+                        # the branch explicitly (rather than letting it fall
+                        # through) makes the intent unmistakable.
+                        pass
+                    elif "text" in delta and delta["text"]:
+                        # Route through the inline <thinking> stripper: Nova
+                        # writes its thinking as literal tags in this text
+                        # stream, split across deltas.  Emit only the cleaned,
+                        # outside-thinking text.
+                        clean = stripper.feed(delta["text"])
+                        if clean:
+                            loop.call_soon_threadsafe(
+                                queue.put_nowait, TextDeltaEvent(delta=clean)
+                            )
                     elif "toolUse" in delta and idx in tool_blocks:
                         tool_blocks[idx]["buf"] += delta["toolUse"].get("input", "")
                 elif "contentBlockStop" in event:
@@ -502,6 +741,17 @@ async def stream_bedrock(
                         cache_hit=bool(cached and cached > 0),
                     )
                     loop.call_soon_threadsafe(queue.put_nowait, ev)
+            # Flush any buffered tail held back across delta boundaries. A
+            # closed thinking span leaves only real post-thinking narration
+            # here; a buffered partial that is genuine trailing text (a lone
+            # '<') is emitted, while an unclosed <thinking> span or an
+            # unfinished thinking-tag prefix is dropped (the stripper returns
+            # "" so raw tags never leak to chat).
+            trailing = stripper.flush()
+            if trailing:
+                loop.call_soon_threadsafe(
+                    queue.put_nowait, TextDeltaEvent(delta=trailing)
+                )
             loop.call_soon_threadsafe(queue.put_nowait, None)
         except BaseException as exc:  # noqa: BLE001 — surface to caller
             loop.call_soon_threadsafe(queue.put_nowait, exc)

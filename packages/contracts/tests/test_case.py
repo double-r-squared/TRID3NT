@@ -447,6 +447,74 @@ def test_tool_card_record_failed_state_roundtrip() -> None:
     assert dumped["label"] is None
 
 
+def test_tool_card_record_io_fields_default_none() -> None:
+    """C1: the 7 persisted IO fields default to None on a minimal record so
+    pre-C1 documents (no IO keys) validate + replay unchanged."""
+    card = ToolCardRecord(tool_name="fetch_3dep_dem", state="complete")
+    assert card.raw_args is None
+    assert card.function_response is None
+    assert card.is_error is None
+    assert card.args_truncated is None
+    assert card.response_truncated is None
+    assert card.args_bytes is None
+    assert card.response_bytes is None
+    # A document with NO IO keys at all validates (backward-compatible).
+    raw = {"schema_version": "v1", "tool_name": "x", "state": "complete"}
+    rehydrated = ToolCardRecord.model_validate(raw)
+    assert rehydrated.raw_args is None
+    assert rehydrated.function_response is None
+
+
+def test_tool_card_record_io_fields_roundtrip() -> None:
+    """C1: the persisted IO fields ride the TYPED record (the integration path
+    W2 reads off ``m.tool_card``) and round-trip with the SAME names as the live
+    ``ToolIoPayload`` / web ``ToolCardRecord`` (web/src/contracts.ts:698-704)."""
+    card = ToolCardRecord(
+        tool_name="fetch_3dep_dem",
+        state="complete",
+        started_at="2026-06-10T12:00:00Z",
+        duration_ms=2340,
+        label="fetch_3dep_dem",
+        raw_args='{\n  "bbox": [-82.0, 26.0, -81.0, 27.0]\n}',
+        function_response='{\n  "status": "ok"\n}',
+        is_error=False,
+        args_truncated=False,
+        response_truncated=True,
+        args_bytes=42,
+        response_bytes=900000,
+    )
+    dumped = _roundtrip(card)
+    assert dumped["raw_args"].startswith("{")
+    assert dumped["function_response"] == '{\n  "status": "ok"\n}'
+    assert dumped["is_error"] is False
+    assert dumped["args_truncated"] is False
+    assert dumped["response_truncated"] is True
+    assert dumped["args_bytes"] == 42
+    assert dumped["response_bytes"] == 900000
+
+
+def test_tool_card_record_field_set_matches_ts_contract() -> None:
+    """C1: the Python record field set EQUALS the web ``ToolCardRecord``
+    (web/src/contracts.ts:689-705) so the producer<->consumer contract holds."""
+    expected = {
+        "schema_version",
+        "tool_name",
+        "state",
+        "started_at",
+        "duration_ms",
+        "label",
+        # C1 IO fields (same names as ToolIoPayload):
+        "raw_args",
+        "function_response",
+        "is_error",
+        "args_truncated",
+        "response_truncated",
+        "args_bytes",
+        "response_bytes",
+    }
+    assert set(ToolCardRecord.model_fields) == expected
+
+
 def test_tool_card_record_rejects_unknown_state() -> None:
     """Closed enum: pending/running/cancelled are live-wire-only states."""
     for bad in ("pending", "running", "cancelled", "ok"):

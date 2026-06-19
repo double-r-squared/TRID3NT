@@ -673,6 +673,19 @@ export interface CaseSummary {
 // twin so a Case reopen re-renders the inline cards. `state` is a CLOSED
 // two-value enum — cancelled dispatches persist nothing (Invariant 8) and
 // pending/running are live-wire-only states.
+//
+// C1 tool-card IO persistence (A1 produces, W2 consumes): the live IO
+// drop-down (input args + function_response chevron) is driven by the
+// `tool-io` envelope (ToolIoPayload), which is wire-only and was LOST on Case
+// reopen — the chevron went blank. A1 now persists the SAME IO fields on this
+// record under the SAME field names the live `ToolIoPayload` uses (reuse, do
+// NOT invent new names): `raw_args`, `function_response`, `is_error`,
+// `args_truncated`, `response_truncated`, `args_bytes`, `response_bytes`. The
+// replay path (replayStreamFromChatHistory) reads them off this record and
+// rebuilds a ToolIoPayload keyed by the synthesized replay step_id so the
+// drop-down rehydrates exactly like the live render. All optional so pre-C1
+// documents (no IO fields) validate + replay unchanged (the chevron simply
+// stays absent for an old card with no persisted IO).
 export interface ToolCardRecord {
   schema_version?: "v1";
   tool_name: string;
@@ -680,6 +693,15 @@ export interface ToolCardRecord {
   started_at?: string | null;
   duration_ms?: number | null;
   label?: string | null;
+  // C1 — persisted tool-io fields (same names as ToolIoPayload). Present only
+  // when A1 captured the dispatch's IO; absent on pre-C1 / IO-less cards.
+  raw_args?: string | null;
+  function_response?: string | null;
+  is_error?: boolean | null;
+  args_truncated?: boolean | null;
+  response_truncated?: boolean | null;
+  args_bytes?: number | null;
+  response_bytes?: number | null;
 }
 
 // CaseChatMessage — one persisted chat exchange in a Case session. The
@@ -833,6 +855,30 @@ export interface SolveProgressPayload {
   elapsed_seconds: number;
   /** Estimated seconds remaining; null when the backend cannot estimate yet. */
   eta_seconds?: number | null;
+}
+
+// --- Turn-complete / idle signal (C2 terminal-state durability) ---------- //
+//
+// C2 (A1 produces, W2 consumes): a tool card could hang in `running` forever
+// if its terminal `pipeline-state` frame was lost on a socket drop. A1 now
+// emits an explicit end-of-turn `turn-complete` envelope (and re-emits the
+// turn's terminal pipeline-state on session-resume). W2 treats this as the
+// authoritative "the turn is over" signal: any card still rendering `running`
+// when it arrives is force-completed so no card hangs after the turn ends.
+//
+// The signal is intentionally minimal. `pipeline_id` is the turn's pipeline
+// when the agent has one (so a future consumer could scope the force-complete
+// to that pipeline); absent / null means "the whole turn idled" and every
+// running card is settled. Both fields are optional so the agent can emit a
+// bare `{}` payload and W2 still treats it as a turn-end. This is ADDITIVE to
+// the existing live idle signal (`session-state` with `current_pipeline ===
+// null`), which W2 ALSO honors — the two converge on the same force-complete.
+export interface TurnCompletePayload {
+  envelope_type?: "turn-complete";
+  /** The turn's pipeline id, when the agent ran one. null/absent → whole-turn idle. */
+  pipeline_id?: string | null;
+  /** Final settle state hint for the turn ("complete" | "failed"); cosmetic. */
+  final_state?: "complete" | "failed" | null;
 }
 
 // --- Outbound message constructors -------------------------------------- //

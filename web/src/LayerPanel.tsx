@@ -135,7 +135,15 @@ function reducer(state: LayerPanelState, action: LayerPanelAction): LayerPanelSt
           const without = state.layers.filter(
             (l) => l.layer_id !== cmd.layer.layer_id,
           );
-          const next = [...without, cmd.layer];
+          // C3 (job-0356) — apply the user's persisted visibility override to the
+          // (re)published layer, exactly like the `session-state` seed at ~124.
+          // A republish of a layer_id the user explicitly HID arrives with
+          // visible:true from the server (no per-user visibility state there), so
+          // without this the panel row would snap back to visible. The
+          // hasOwnProperty guard inside applyVisibilityOverrides means a
+          // never-toggled layer keeps the server value verbatim.
+          const [overridden] = applyVisibilityOverrides([cmd.layer]);
+          const next = [...without, overridden ?? cmd.layer];
           return { layers: sortTopFirst(next) };
         }
         case "remove-layer": {

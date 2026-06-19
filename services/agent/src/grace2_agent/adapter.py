@@ -549,6 +549,13 @@ decorative unicode pictographs, no emoticons — not in headers, not in lists,
 not as status markers. Use plain words ("done", "failed", "warning") instead
 of symbols. This is a hard formatting rule for this workbench: keep all output
 clean, professional, sans-emoji prose.
+
+No thinking tags in output (CRITICAL):
+Answer directly. Do NOT wrap any reasoning, planning, or scratch work in
+<thinking>...</thinking> tags (or any similar XML/markup thinking tags) in the
+text you emit — the user sees your narration verbatim, and literal <thinking>
+tags are leaked internal reasoning, not a user-facing answer. Keep your
+chain-of-thought internal; emit only the final, user-facing narration.
 """
 
 

@@ -134,6 +134,7 @@ from .mode2_classifier import (
 from .persistence import Persistence
 from .pipeline_emitter import (
     PipelineEmitter,
+    _json_for_tool_io,
     bind_turn_case,
     current_turn_case,
 )
@@ -1217,6 +1218,23 @@ class SessionState:
     firebase_uid: str | None = None
     tier: str = "free"
     auth_handshake_complete: bool = False
+    # A1 FIX 4 (GATE REPLAY — kills the blink): the web's app-level keepalive
+    # (ws.ts) sends a ``session-resume`` envelope every 25s on the OPEN socket
+    # as a proof-of-life ping (it is the only server-handled type that re-emits
+    # an authoritative ``session-state`` "pong"). The agent cannot tell that
+    # periodic ping apart from a genuine FRESH-SOCKET resume by the envelope
+    # alone — both are empty ``session-resume`` frames. Pre-fix, EVERY 25s ping
+    # ran a Dynamo read + ``_replay_active_case_layers`` + re-asserted layers
+    # (visible=true), which (a) re-painted the active Case's layers every 25s
+    # (the BLINK / un-hid a user-hidden layer) and (b) did a blocking Dynamo
+    # read on the loop. This flag is the gate: a fresh ``SessionState`` is built
+    # per WebSocket connection (handler-local), so the FIRST ``session-resume``
+    # on THIS connection is the real fresh-socket resume (replay layers — job-0356
+    # durability) and every later one is a keepalive ping (skip the layer
+    # replay; still emit the ``session-state`` pong so the client's pong
+    # deadline clears). Reset to False only by a brand-new connection's fresh
+    # SessionState — never within a connection.
+    did_fresh_resume: bool = False
     # job-0127 (Wave 2): per-session pending payload-warning gates.
     # Key is the ``warning_id`` ULID; value is an asyncio.Future that the
     # inbound ``tool-payload-confirmation`` handler completes with the user's
@@ -1388,6 +1406,73 @@ async def _send_loop_exhausted(
     except Exception:  # noqa: BLE001 — observability; never break the reply path
         logger.exception(
             "loop_exhausted envelope send failed session=%s", session_id
+        )
+
+
+async def _emit_turn_complete(
+    websocket: ServerConnection,
+    state: SessionState,
+    *,
+    pipeline_id: str | None = None,
+    final_state: str | None = None,
+) -> None:
+    """C2 (A1 produces, W2 consumes): emit the end-of-turn ``turn-complete``
+    signal so the client force-completes any card still rendering ``running``.
+
+    The root cause this addresses: a tool/turn's TERMINAL ``pipeline-state``
+    frame can be written onto a just-dropped socket and LOST (the BLINK's
+    sibling symptom — a card spins forever after its tool actually finished).
+    A1 emits this explicit whole-turn idle marker at the END of every turn
+    (``_dispatch_gemini_and_persist`` / ``_dispatch_tool_and_persist`` finally)
+    AND re-emits it on session-resume; W2 settles every still-``running`` card
+    when it arrives so no card hangs past turn end.
+
+    Wire shape (matches the W2-pinned ``TurnCompletePayload`` exactly — both
+    fields optional, a bare ``{}`` is a valid whole-turn idle):
+        {"type": "turn-complete", "session_id": ..., "case_id": <turn case>,
+         "payload": {"envelope_type": "turn-complete",
+                     "pipeline_id": <str|null>, "final_state": <str|null>}}
+
+    Built as a raw-JSON envelope (NOT via ``_new_envelope``) because the typed
+    ``Envelope.payload`` is a ``GraceModel`` with ``extra="forbid"`` and the
+    ``turn-complete`` payload model lives in the schema lane (not yet in this
+    repo's ``grace2_contracts``); the same raw-JSON pattern ``_send_loop_exhausted``
+    uses. We still stamp ``case_id`` from the turn's ContextVar tag (set by the
+    dispatch wrappers) so W2 fans it out session-wide and routes by ``case_id``
+    to the owning Case's stream, exactly like ``solve-progress``.
+
+    Best-effort: a wire failure (the socket may already be half-closed) is
+    logged, never raised — the persisted tool-card terminal state
+    (``_persist_tool_card`` / ``_persist_terminal_failure_card``) is the durable
+    replay backstop, and session-resume re-emits this signal anyway.
+    """
+    import json as _json
+
+    try:
+        env = {
+            "type": "turn-complete",
+            "id": new_ulid(),
+            "ts": now_utc().isoformat().replace("+00:00", "Z"),
+            "session_id": state.session_id,
+            "case_id": current_turn_case(),
+            "payload": {
+                "envelope_type": "turn-complete",
+                "pipeline_id": pipeline_id,
+                "final_state": final_state,
+            },
+        }
+        await websocket.send(_json.dumps(env))
+        logger.debug(
+            "turn-complete emitted session=%s case=%s pipeline=%s final=%s",
+            state.session_id,
+            env["case_id"],
+            pipeline_id,
+            final_state,
+        )
+    except Exception:  # noqa: BLE001 — idle signal; never break the reply path
+        logger.debug(
+            "turn-complete emit failed session=%s", state.session_id,
+            exc_info=True,
         )
 
 
@@ -2343,10 +2428,42 @@ async def _handle_session_resume(
     # rebound; the live turn's own (rebound) emitter delivers the terminal A.7
     # snapshot (which already carries the persisted loaded_layers it seeded at
     # turn start). One emitter writes the socket either way.
-    if rebound == 0:
+    #
+    # A1 FIX 4 (GATE REPLAY): replay the active Case's layers ONCE per
+    # connection — on the first BARE (non-rebound) resume — never on the 25s
+    # keepalive ping. job-0356 durability: a rendered layer survives any
+    # reconnect, so a genuine fresh socket must re-seed + re-render the Case's
+    # persisted layers. The client's keepalive sends an identical empty
+    # session-resume on the SAME open socket every 25s; pre-fix each one did a
+    # blocking Dynamo read + re-asserted visible=true, which RE-PAINTED the
+    # active Case's layers every 25s (the BLINK) and un-hid a user-hidden
+    # layer. ``did_fresh_resume`` gates the replay to the first bare resume.
+    #
+    # The flag flips ONLY when we actually seeded this connection's emitter
+    # (the ``rebound == 0`` branch). When ``rebound > 0`` a live turn's emitter
+    # was just rebound onto this socket and IS the writer — we must not double-
+    # seed/emit — but this connection's own emitter stays un-seeded, so we
+    # leave the flag False: a LATER keepalive resume (after the live turn ends
+    # and stops being the writer) then performs the one-time seed+replay so the
+    # Case's layers are restored to this connection's emitter exactly once.
+    did_replay_now = False
+    if rebound == 0 and not state.did_fresh_resume:
         await _replay_active_case_layers(state)
+        state.did_fresh_resume = True
+        did_replay_now = True
     await state.emitter.emit_session_state()
     await _emit_case_list(websocket, state)
+    # C2 (re-emit on resume): ONLY on the genuine fresh-socket resume (the
+    # first bare resume that just seeded + replayed this connection's layers),
+    # never on a keepalive ping and never on a rebound (a rebound live turn is
+    # still streaming and will emit its OWN terminal frames — a turn-complete
+    # now would prematurely settle that turn's still-running cards). On a real
+    # reconnect the card the user last saw spinning may have finished while the
+    # socket was down; the persisted tool-card row carries its real terminal
+    # state, and this bare whole-turn idle is the belt-and-suspenders that
+    # force-completes any card the client still believes is running.
+    if did_replay_now:
+        await _emit_turn_complete(websocket, state)
 
 
 async def _replay_active_case_layers(state: SessionState) -> None:
@@ -3602,6 +3719,9 @@ async def _persist_tool_card(
     started_at_fallback: datetime,
     duration_ms_fallback: int,
     case_id: str | None = None,
+    raw_args: Any = None,
+    function_response: Any = None,
+    io_is_error: bool = False,
 ) -> None:
     """Persist one replayable tool-card row for the active Case (job-0267).
 
@@ -3618,6 +3738,20 @@ async def _persist_tool_card(
     displayed). The wall-clock fallbacks only engage when the emitter stamp
     is unavailable (e.g. the wire died before the terminal transition).
 
+    C1 (A1 produces, W2 consumes) — tool-card IO persistence: when ``raw_args``
+    / ``function_response`` are supplied, the SAME input args + output response
+    the live ``tool-io`` sidecar carries (``PipelineEmitter.emit_tool_io``) are
+    serialized with the SAME helper (``_json_for_tool_io`` — identical
+    truncation/byte semantics) and populated on the TYPED ``ToolCardRecord``
+    under the EXACT live ``ToolIoPayload`` field names — ``raw_args`` /
+    ``function_response`` / ``args_truncated`` / ``response_truncated`` /
+    ``args_bytes`` / ``response_bytes`` / ``is_error`` (added to the record
+    contract for C1, all optional/nullable). ``get_session_state`` replay carries
+    them on ``m.tool_card``; W2 rehydrates the tool-card expander on Case reopen
+    by reading them off the typed record (the ``content`` JSON twin carries the
+    identical values for non-contract consumers but is no longer the integration
+    path — reading IO off ``content`` was the original blank-chevron bug).
+
     Best-effort, never raises: record construction is wrapped here and the
     underlying ``_persist_chat_turn`` already swallows write failures.
     """
@@ -3632,17 +3766,48 @@ async def _persist_tool_card(
                 started_at = emitter_step.started_at
             if emitter_step.duration_ms is not None:
                 duration_ms = emitter_step.duration_ms
+        # C1 (the rehydration fix): the persisted IO must ride the TYPED
+        # ``ToolCardRecord`` — ``get_session_state`` replay carries it on
+        # ``m.tool_card`` and the web renderer (W2) reads it off there (NOT off
+        # the row ``content`` JSON, which A1 originally wrote — that was the
+        # blank-chevron bug). Compute the IO ONCE with the SAME
+        # ``_json_for_tool_io`` helper + field names the live ``tool-io`` sidecar
+        # uses, populate the typed record's IO fields, and keep the identical
+        # values on the ``content`` JSON twin (belt-and-suspenders for
+        # non-contract consumers). Only when at least one of
+        # raw_args/function_response was provided (the LLM-dispatch path) — the
+        # /invoke directive path passes neither, so its rows stay IO-less exactly
+        # as before and the typed record's IO fields default to ``None`` (pre-C1
+        # documents validate + replay unchanged).
+        _io_fields: dict[str, Any] = {}
+        if raw_args is not None or function_response is not None:
+            args_str, args_trunc, args_bytes = _json_for_tool_io(raw_args)
+            resp_str, resp_trunc, resp_bytes = _json_for_tool_io(function_response)
+            _io_fields = {
+                "raw_args": args_str,
+                "function_response": resp_str,
+                "args_truncated": args_trunc,
+                "response_truncated": resp_trunc,
+                "args_bytes": args_bytes,
+                "response_bytes": resp_bytes,
+                "is_error": bool(io_is_error),
+            }
         record = ToolCardRecord(
             tool_name=tool_name,
             state=card_state,  # type: ignore[arg-type]
             started_at=started_at,
             duration_ms=duration_ms,
             label=label,
+            **_io_fields,  # C1: typed IO on the record == the integration path
         )
+        # Content JSON twin: model_dump_json now already carries the IO fields
+        # (they live on the typed record), so a single dump matches the wire
+        # shape for non-contract consumers without a separate merge.
+        content = record.model_dump_json()
         await _persist_chat_turn(
             state,
             role="tool",
-            content=record.model_dump_json(),
+            content=content,
             pipeline_id=state.current_turn_pipeline_id,
             tool_card=record,
             layer_emissions=[],
@@ -5246,6 +5411,66 @@ async def _handle_request_spatial_input(
     return _spatial_response_to_result(response)
 
 
+# Arg keys whose VALUES are credentials/secrets and must NEVER appear in an
+# emitted envelope. The early input-only tool-io frame snapshots the ORIGINAL
+# call args, which on the dev/test resolution path can carry a raw key (see
+# test_credential_request_envelope_never_carries_raw_key). Mirrors + extends the
+# secret keys the credential pipeline strips at ``_inject_secret_ref`` (~4586).
+_SECRET_ARG_KEYS: frozenset[str] = frozenset({
+    "secret_ref", "map_key", "api_key", "apikey", "token", "access_token",
+    "password", "passwd", "secret", "secret_key", "access_key", "private_key",
+    "credentials", "credential", "auth", "authorization",
+})
+
+
+def _redact_secret_args(args: Any) -> Any:
+    """Copy ``args`` with any secret-bearing VALUE masked (key kept visible).
+
+    Defense-in-depth for the early input-only tool-io frame: the visible input
+    (bbox, place, …) is preserved so the card shows the real request, but a raw
+    credential value is never echoed into a wire/persisted envelope.
+    """
+    if not isinstance(args, dict):
+        return args
+    return {
+        k: ("***redacted***" if str(k).lower() in _SECRET_ARG_KEYS else v)
+        for k, v in args.items()
+    }
+
+
+def _running_emitter_step_id(emitter: Any, tool_name: str) -> str | None:
+    """Return the step_id of the emitter's CURRENTLY-running step for ``tool_name``.
+
+    FIX B (early input-only tool-io frame): ``emit_tool_call`` mints the card's
+    step INSIDE itself (``add_step`` + ``mark_running``) and only publishes the
+    id on ``last_tool_step`` at the TERMINAL transition. To emit an early
+    input-only ``tool-io`` frame at dispatch START — so the client shows the
+    input args immediately + a "Running…" output placeholder before the tool
+    body returns — we need the in-flight step's id from INSIDE the invoke
+    callable (which runs after ``mark_running``). We derive it the SAME way
+    ``PipelineEmitter.update_current_progress`` does: the most-recently-added
+    step still in ``running`` state. Best-effort + defensive: any missing
+    pipeline internals (or no running step) returns ``None`` so the caller skips
+    the early emit — it is a UX nicety, never a correctness gate. We also guard
+    on ``tool_name`` so a stale running step from a sibling dispatch never
+    mis-keys the frame.
+    """
+    if emitter is None:
+        return None
+    try:
+        order = emitter._step_order  # type: ignore[attr-defined]
+        steps = emitter._steps  # type: ignore[attr-defined]
+        for step_id in reversed(order):
+            s = steps.get(step_id)
+            if s is not None and getattr(s, "state", None) == "running":
+                if getattr(s, "tool_name", None) != tool_name:
+                    return None
+                return step_id
+    except Exception:  # noqa: BLE001 — never break the dispatch on an emit nicety
+        return None
+    return None
+
+
 async def _invoke_tool_via_emitter(
     websocket: ServerConnection,
     state: SessionState,
@@ -5279,6 +5504,15 @@ async def _invoke_tool_via_emitter(
         # turns. (FR-AS-3, FR-AS-11, job B-rev.)
         raise ToolNotFoundError(tool_name, list(TOOL_REGISTRY))
     entry = TOOL_REGISTRY[tool_name]
+
+    # FIX B (#7 early input-only frame): snapshot the ORIGINAL call args NOW,
+    # before the normalize_args / gating / URI-resolve / secret-inject pipeline
+    # below rewrites ``params`` (normalize_args empties args that don't match the
+    # fn signature; secret-inject/URI-resolve add resolved values we must NOT
+    # surface). The early frame's ``raw_args`` must equal the LIVE completion
+    # frame's ``raw_args=call.args`` (server.py ~2087) so the tool card shows the
+    # SAME input the LLM sent, both live and at completion.
+    _original_tool_args = dict(params)
 
     # job-0268: bind this dispatch to the turn's Case ONCE, up front. The
     # .qgs routing, tool-card persist, and layer attribution below all use
@@ -5542,6 +5776,18 @@ async def _invoke_tool_via_emitter(
     _card_state: str | None = None
     _card_started_at = now_utc()
     _card_t0 = asyncio.get_running_loop().time()
+    # C1: capture the tool IO for the persisted tool-card row so a Case reopen
+    # rehydrates the expander (the live ``tool-io`` sidecar is wire-only and
+    # was LOST on reopen). ``_card_raw_args`` is the post-resolution params the
+    # tool actually ran with; ``_card_response`` is the raw tool RESULT (the
+    # closest in-wrapper analogue of the live sidecar's ``function_response``
+    # summary — the summary itself is built downstream in _stream_gemini_reply,
+    # which we don't reach from here). ``_persist_tool_card`` serializes both
+    # with the SAME ``_json_for_tool_io`` helper + field names the live sidecar
+    # uses, so the persisted shape matches the wire shape.
+    _card_raw_args: Any = None
+    _card_response: Any = None
+    _card_io_error: bool = False
 
     # F97: mint a UNIQUE layer_id for every FRESHLY-fetched layer so two
     # layers from the SAME source (e.g. two `fetch_wdpa_protected_areas`
@@ -5565,20 +5811,50 @@ async def _invoke_tool_via_emitter(
     # ``_ReuseEntry``.
     _mint_unique_layer_id = not isinstance(entry, _ReuseEntry)
 
-    def _invoke_with_unique_layer_id() -> Any:
+    def _restamp(value: Any) -> Any:
+        if _mint_unique_layer_id and isinstance(value, LayerURI):
+            return value.model_copy(update={"layer_id": new_ulid()})
+        return value
+
+    async def _emit_early_input_frame() -> None:
+        # FIX B (#7 — input immediately + 'Running…'): the live ``tool-io``
+        # sidecar was emitted ONLY at tool COMPLETION (a single frame carrying
+        # BOTH raw_args AND function_response), so the chat card showed no input
+        # and no output placeholder until the tool returned. Emit an EARLY
+        # input-only frame at dispatch START — SAME ``ToolIoPayload`` wire shape,
+        # raw_args populated, function_response EMPTY (None -> "null"),
+        # is_error False — keyed on THIS dispatch's running step so the client
+        # paints the input + a "Running…" output placeholder immediately. The
+        # completion-time emit (server.py ~2090) re-keys the SAME step_id and
+        # fills in function_response, so the two frames are idempotent on one
+        # card (last-write-wins per step_id; merge, not duplicate). We run inside
+        # the invoke callable (after emit_tool_call's mark_running) so the step
+        # exists; best-effort so an emit hiccup never blocks the tool body.
+        try:
+            step_id = _running_emitter_step_id(state.emitter, tool_name)
+            if step_id is not None:
+                await state.emitter.emit_tool_io(
+                    step_id=step_id,
+                    tool_name=tool_name,
+                    raw_args=_redact_secret_args(_original_tool_args),
+                    function_response=None,
+                    is_error=False,
+                )
+        except Exception:  # noqa: BLE001 — early frame is a UX nicety
+            logger.debug(
+                "early tool-io emit failed session=%s tool=%s",
+                state.session_id,
+                tool_name,
+                exc_info=True,
+            )
+
+    async def _invoke_with_unique_layer_id() -> Any:
+        # Emit the input-only frame BEFORE the tool body runs so the input +
+        # 'Running…' placeholder land while the tool is still executing.
+        await _emit_early_input_frame()
         out = entry.fn(**params)
-
-        def _restamp(value: Any) -> Any:
-            if _mint_unique_layer_id and isinstance(value, LayerURI):
-                return value.model_copy(update={"layer_id": new_ulid()})
-            return value
-
         if asyncio.iscoroutine(out):
-
-            async def _await_and_restamp() -> Any:
-                return _restamp(await out)
-
-            return _await_and_restamp()
+            return _restamp(await out)
         return _restamp(out)
 
     # Autostop liveness: mark a REAL solver dispatch (a long-running SFINCS /
@@ -5626,10 +5902,22 @@ async def _invoke_tool_via_emitter(
                 invoke=_invoke_with_unique_layer_id,
             )
         _card_state = "complete"
+        # C1: stamp the IO for the persisted tool-card row. ``params`` is the
+        # post-resolution arg dict the tool ran with; ``result`` is the raw
+        # return. A LayerURI / pydantic model is dumped via ``default=str`` in
+        # ``_json_for_tool_io`` so it never breaks serialization.
+        _card_raw_args = params
+        _card_response = result
     except asyncio.CancelledError:
         raise
-    except BaseException:
+    except BaseException as _exc:
         _card_state = "failed"
+        _card_raw_args = params
+        # On failure there is no result; persist the exception text as the
+        # response so the reopened expander shows WHY it failed (mirrors the
+        # live sidecar's is_error path).
+        _card_response = {"error": str(_exc) or _exc.__class__.__name__}
+        _card_io_error = True
         raise
     finally:
         # Autostop liveness: release the solver-in-flight marker on EVERY exit
@@ -5659,6 +5947,11 @@ async def _invoke_tool_via_emitter(
                     (asyncio.get_running_loop().time() - _card_t0) * 1000.0
                 ),
                 case_id=turn_case_id,
+                # C1: persist the tool IO on the row so a Case reopen rehydrates
+                # the expander (reuses the live ToolIoPayload field names).
+                raw_args=_card_raw_args,
+                function_response=_card_response,
+                io_is_error=_card_io_error,
             )
         # job-0259: persist the Case layer accumulator in the FINALLY block —
         # the round-3 plume evidence showed a published layer vanishing from
@@ -6406,6 +6699,15 @@ async def _dispatch_gemini_and_persist(
             # accumulator (segments_done > 0 ending in narration), or the turn
             # emitted no zoom-to/layer accumulator at all -> every narration run
             # was already persisted as its own interleaved row. Nothing to add.
+        # C2: whole-turn idle signal — fires on EVERY exit (clean, cancel,
+        # error) so the client settles any card still spinning ``running`` after
+        # the turn ends (its terminal pipeline-state frame may have died on a
+        # dropped socket). Outside the ``if turn_case_id`` guard so a root-stream
+        # turn (no Case) still idles its cards; ``_emit_turn_complete`` reads the
+        # turn's Case from the ContextVar bound at task entry. Best-effort.
+        await _emit_turn_complete(
+            websocket, state, pipeline_id=state.current_turn_pipeline_id
+        )
 
 
 async def _dispatch_tool_and_persist(
@@ -6483,6 +6785,11 @@ async def _dispatch_tool_and_persist(
                 pipeline_id=state.current_turn_pipeline_id,
                 case_id=turn_case_id,
             )
+        # C2: end-of-turn idle signal for the /invoke directive path too — same
+        # rationale as _dispatch_gemini_and_persist. Best-effort.
+        await _emit_turn_complete(
+            websocket, state, pipeline_id=state.current_turn_pipeline_id
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -7554,7 +7861,26 @@ async def run_server(host: str = "127.0.0.1", port: int | None = None) -> None:
         )
 
     try:
-        async with serve(handler, host, port):
+        # A1 FIX 3 (EXPLICIT SERVE KEEPALIVE): the bare ``serve(handler, host,
+        # port)`` left websockets on its defaults, so the server emitted no
+        # protocol-level pings and gave a stalled send the default close grace.
+        # Pin ping_interval/ping_timeout (~20s/20s) so the SERVER actively
+        # probes liveness and reaps a truly-dead peer on its own clock (the
+        # client's app-level session-resume keepalive is the belt; this is the
+        # suspenders), and a sane ``close_timeout`` so a terminal frame written
+        # onto a half-closed socket doesn't hang the handler. These are
+        # deliberately looser than the client's 25s/10s app keepalive so the
+        # two layers don't fight (the client force-reconnects first on a real
+        # stall; the server ping just keeps an otherwise-idle-but-alive socket
+        # from being culled by an intermediary).
+        async with serve(
+            handler,
+            host,
+            port,
+            ping_interval=20,
+            ping_timeout=20,
+            close_timeout=10,
+        ):
             await asyncio.Future()  # serve forever
     finally:
         if http_server is not None:

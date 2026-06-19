@@ -46,6 +46,7 @@ import {
   SpatialInputRequestPayload,
   SpatialInputResponsePayload,
   ToolIoPayload,
+  TurnCompletePayload,
   UserMessagePayload,
   envelope,
   newUlid,
@@ -248,6 +249,18 @@ export interface WsHandlers {
    * ignore.
    */
   onToolIo?: (p: ToolIoPayload, caseId?: string | null) => void;
+  /**
+   * Turn-complete / idle signal (C2 terminal-state durability). Emitted by the
+   * agent at the END of every turn (and re-emitted on session-resume). Chat.tsx
+   * subscribes to force-complete any tool card still rendering `running` when
+   * the turn ends — the terminal `pipeline-state` frame can be LOST on a socket
+   * drop, leaving a card spinning forever. `turn-complete` is session-scoped
+   * (SESSION_SCOPED_TYPES) so it fans out to Chat's GraceWs even when the turn's
+   * tools ran on App.tsx's connection — mirrors the solve-progress rationale.
+   * Malformed payloads never crash (no required field). Optional so chat-only /
+   * older callers can ignore.
+   */
+  onTurnComplete?: (p: TurnCompletePayload, caseId?: string | null) => void;
   /**
    * Auth-token retriever (job-0123). Optional — when absent we fall back to
    * `getIdToken()` from `./auth` directly. Injected by tests to avoid
@@ -479,6 +492,11 @@ const SESSION_SCOPED_TYPES = new Set<string>([
   // rationale but pipeline-state is message-scoped (follows its user-message);
   // solve-progress fans out because the card it enriches can be on either wire.
   "solve-progress",
+  // C2 terminal-state durability: turn-complete is session-scoped so Chat's
+  // GraceWs sees the end-of-turn signal even when the turn's tools ran on
+  // App.tsx's connection — Chat owns the tool cards that must be force-
+  // completed when the turn ends. Mirrors solve-progress's rationale exactly.
+  "turn-complete",
 ]);
 
 const SESSION_HUB: Map<string, Set<GraceWs>> = new Map();
@@ -1448,6 +1466,20 @@ export class GraceWs {
             // eslint-disable-next-line no-console
             console.warn("[ws] tool-io dropped: missing step_id", payload);
           }
+        }
+        break;
+      case "turn-complete":
+        // C2 terminal-state durability: end-of-turn signal. Chat.tsx force-
+        // completes any tool card still rendering `running` (its terminal
+        // pipeline-state frame may have been lost on a socket drop). No
+        // required field — a bare `{}` payload is a valid whole-turn idle, so
+        // there is nothing to validate/drop here. Optional handler so chat-only
+        // / older callers can ignore.
+        if (this.handlers.onTurnComplete) {
+          this.handlers.onTurnComplete(
+            payload as unknown as TurnCompletePayload,
+            caseId,
+          );
         }
         break;
       case "auth-ack": {

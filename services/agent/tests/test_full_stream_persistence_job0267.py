@@ -223,6 +223,98 @@ async def test_no_agent_row_when_stream_dies_with_nothing_said(
 # --------------------------------------------------------------------------- #
 
 
+# --------------------------------------------------------------------------- #
+# FIX B — early input-only tool-io frame at dispatch START (#7 input + Running…)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture()
+def slow_arg_tool():
+    """Register a tool that takes args + yields once so the early frame can be
+    observed BEFORE the completion frame; deregister on teardown."""
+    name = "fixb_slow_arg_tool"
+
+    async def _fn(*, bbox=None) -> dict:
+        # Yield control so the dispatch loop is genuinely mid-flight when the
+        # early frame is asserted (the tool has not yet returned its response).
+        await asyncio.sleep(0)
+        return {"status": "ok", "rows": 7}
+
+    meta = AtomicToolMetadata(name=name, ttl_class="live-no-cache", cacheable=False)
+    agent_tools.TOOL_REGISTRY[name] = RegisteredTool(
+        metadata=meta, fn=_fn, module=__name__
+    )
+    try:
+        yield name
+    finally:
+        agent_tools.TOOL_REGISTRY.pop(name, None)
+
+
+def _tool_io_frames(ws) -> list[dict]:
+    """Pull every ``tool-io`` envelope's payload off the FakeWS wire."""
+    out = []
+    for raw in ws.sent:
+        env = json.loads(raw)
+        if env.get("type") == "tool-io":
+            out.append(env["payload"])
+    return out
+
+
+@pytest.mark.asyncio
+async def test_early_input_only_tool_io_frame_at_dispatch_start(
+    file_persistence, slow_arg_tool
+) -> None:
+    """FIX B: ``_invoke_tool_via_emitter`` emits an EARLY input-only ``tool-io``
+    frame at dispatch START — SAME ToolIoPayload wire shape, raw_args populated,
+    function_response empty (the 'Running…' placeholder), is_error False —
+    keyed on THIS dispatch's running card. (The completion-time emit that fills
+    function_response lives in the outer _stream_gemini_reply loop and re-keys
+    the SAME step_id; it is not driven by this lower-level seam, so exactly the
+    early frame rides the wire here.)"""
+    ws = FakeWS()
+    state = server.SessionState(session_id=new_ulid())
+    await _create_case(ws, state)
+
+    args = {"bbox": [-82.0, 26.0, -81.0, 27.0]}
+    result = await server._invoke_tool_via_emitter(ws, state, slow_arg_tool, args)
+    assert result == {"status": "ok", "rows": 7}
+
+    frames = _tool_io_frames(ws)
+    assert len(frames) == 1, f"expected ONE early frame, got {len(frames)}"
+    early = frames[0]
+    assert early["tool_name"] == slow_arg_tool
+    # Input present immediately.
+    assert json.loads(early["raw_args"]) == args
+    # Output empty -> serialized "null" (the client treats this as Running…).
+    assert early["function_response"] in (None, "null")
+    assert early["is_error"] is False
+    # The frame is keyed on the SAME card the live pipeline used (the emitter's
+    # terminal step), so the later completion emit merges (not duplicates).
+    assert early["step_id"] == state.emitter.last_tool_step.step_id
+
+
+@pytest.mark.asyncio
+async def test_early_frame_for_failing_tool_still_input_only(
+    file_persistence, failing_tool
+) -> None:
+    """FIX B: even a tool that RAISES still gets the early input-only frame (the
+    input + Running… paints before the failure surfaces)."""
+    ws = FakeWS()
+    state = server.SessionState(session_id=new_ulid())
+    await _create_case(ws, state)
+
+    with pytest.raises(RuntimeError, match="upstream exploded"):
+        await server._invoke_tool_via_emitter(ws, state, failing_tool, {"k": "v"})
+
+    frames = _tool_io_frames(ws)
+    assert len(frames) == 1
+    early = frames[0]
+    assert early["tool_name"] == failing_tool
+    assert json.loads(early["raw_args"]) == {"k": "v"}
+    assert early["function_response"] in (None, "null")
+    assert early["is_error"] is False
+
+
 @pytest.mark.asyncio
 async def test_tool_card_persists_with_duration(
     file_persistence, fake_tool

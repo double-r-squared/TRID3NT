@@ -150,6 +150,22 @@ class ToolCardRecord(GraceModel):
     ``label`` is the human-facing step name the live card showed (the registry
     display name); the web client MAY override it with its own humanizer keyed
     on ``tool_name``.
+
+    C1 (the IO-rehydration fix): the live chat tool-card expander (input args +
+    ``function_response`` chevron) is driven by the wire-only ``tool-io``
+    sidecar (``ToolIoPayload``), which was LOST on Case reopen — the chevron
+    went blank. The 7 IO fields below persist the SAME values the live sidecar
+    carries, under the EXACT same field names (reuse, do NOT invent new ones),
+    directly on the TYPED record so ``get_session_state`` replay carries them on
+    ``m.tool_card`` (the contract-blessed access path the web renderer reads).
+    They mirror ``web/src/contracts.ts`` ``ToolCardRecord`` 1:1. ``raw_args`` /
+    ``function_response`` are pre-serialized JSON STRINGS (the agent json-dumps +
+    pretty-prints them with the SAME ``_json_for_tool_io`` helper the live emit
+    uses, so persisted shape == wire shape); ``*_truncated`` / ``*_bytes`` carry
+    the large-payload truncation note; ``is_error`` mirrors the honesty-floor
+    signal. ALL optional / default ``None`` so pre-C1 documents (no IO fields)
+    validate + replay unchanged — the chevron simply stays absent for an old
+    card with no persisted IO.
     """
 
     schema_version: Literal["v1"] = "v1"
@@ -159,6 +175,18 @@ class ToolCardRecord(GraceModel):
     started_at: UTCDatetime | None = None
     duration_ms: int | None = Field(default=None, ge=0)
     label: str | None = None  # human-facing card label at dispatch time
+
+    # C1 — persisted tool-io fields (same names as ``ToolIoPayload`` /
+    # ``web/src/contracts.ts:698-704``). Present only when the dispatch's IO was
+    # captured; ``None`` on pre-C1 / IO-less cards. ``raw_args`` /
+    # ``function_response`` are pre-serialized JSON strings.
+    raw_args: str | None = None
+    function_response: str | None = None
+    is_error: bool | None = None
+    args_truncated: bool | None = None
+    response_truncated: bool | None = None
+    args_bytes: int | None = None
+    response_bytes: int | None = None
 
 
 class CaseChatMessage(GraceModel):

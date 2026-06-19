@@ -16,14 +16,23 @@
 //   The component is rendered INSIDE the map container div (in Map.tsx) so it
 //   anchors to the AOI box. Map.tsx passes:
 //     - `layers`   : ordered layer list, top-of-stack first (LayerPanel order).
-//     - `anchor`   : the AOI bbox BOTTOM-edge midpoint {left, top} (projected).
-//     - `barWidth` : the AOI bbox on-screen EAST-WEST extent in px (projected).
-//   From `anchor` + `barWidth` we reconstruct the AOI screen rectangle (the
-//   bottom edge is exact; the height is estimated square-ish — see legend_snap
-//   `rectFromAnchorAndWidth` and the residual-risk note about threading a real
-//   {left,top,right,bottom} rect upstream for pixel-exact top/left snapping).
-//   When there is no AOI (`anchor`/`barWidth` null) the keys fall back to a
-//   static bottom-center stack so the legend never vanishes.
+//     - `aoiRect`  : the TRUE projected AOI screen rectangle {left,top,right,
+//                    bottom} (min/max over all four projected bbox corners). This
+//                    is what the keys SNAP against — it carries the real AOI
+//                    aspect ratio and on-screen skew, so the colorbar rails along
+//                    the actual AOI edges, not a square-ish estimate.
+//     - `anchor`   : the AOI bbox BOTTOM-edge midpoint {left, top} (projected) —
+//                    used for the (already gap-nudged) vertical positioning the
+//                    owner resolves; not the snap geometry.
+//     - `barWidth` : the AOI bbox on-screen EAST-WEST extent in px (projected) —
+//                    used to SIZE the default colorbar width.
+//   Snap source of truth: when `aoiRect` is provided the keys snap CCW to ITS
+//   four edges directly. When it is absent (off-screen / not yet projected) we
+//   FALL BACK to reconstructing an approximate rect from `anchor` + `barWidth`
+//   (legend_snap `rectFromAnchorAndWidth` — the bottom edge is exact, the height
+//   is a square-ish estimate). When there is no AOI at all (no rect AND no
+//   anchor/barWidth) the keys fall back to a static bottom-center stack so the
+//   legend never vanishes.
 //
 // Invariant 1: this component displays received values only — no geography is
 //   computed. minValue / maxValue / stops come from the preset registry (mirrors
@@ -46,18 +55,31 @@ export interface LayerLegendProps {
   /** Ordered layer list, top-of-stack first (same order as LayerPanel). */
   layers: ProjectLayerSummary[];
   /**
+   * EDGE-RAIL snap (NATE 2026-06-17) — the TRUE projected AOI screen rectangle
+   * {left, top, right, bottom} in absolute map-container coords. The owner
+   * (Map.tsx) projects ALL FOUR bbox corners each move/zoom/render and passes
+   * their min/max box here (computeBboxScreenRect). When present this is the
+   * snap source of truth: the keys rail CCW along ITS four edges, so the snap
+   * follows the real AOI aspect ratio + on-screen skew (not a square estimate).
+   * Null/undefined => no true rect (off-screen / not yet projected) => the keys
+   * fall back to reconstructing an approximate rect from `anchor` + `barWidth`.
+   */
+  aoiRect?: ScreenRect | null;
+  /**
    * job-0321 (F43) — optional screen-space anchor: the AOI bbox BOTTOM-edge
    * midpoint {left, top} (absolute, map-container coords). The owner (Map.tsx)
-   * projects it each move/zoom/render. Combined with `barWidth` it reconstructs
-   * the AOI rectangle the keys snap to. Null/undefined => no AOI on screen =>
-   * the keys fall back to a static bottom-center stack so they never vanish.
+   * projects it each move/zoom/render. Used as the FALLBACK snap-rect source
+   * (with `barWidth`, via rectFromAnchorAndWidth) only when `aoiRect` is absent.
+   * Null/undefined AND no `aoiRect` => no AOI on screen => the keys fall back to
+   * a static bottom-center stack so they never vanish.
    */
   anchor?: { left: number; top: number } | null;
   /**
    * FIX 4 (NATE 2026-06-17) — the AOI bbox's ON-SCREEN east-west extent in px
-   * (already clamped by Map.tsx). Used both to SIZE the default colorbar width
-   * and (with `anchor`) to reconstruct the AOI rectangle for snapping. Null =>
-   * no AOI bbox => static fallback width + bottom-center stack.
+   * (already clamped by Map.tsx). Used to SIZE the default colorbar width, and
+   * (with `anchor`) to reconstruct the FALLBACK AOI rectangle for snapping when
+   * `aoiRect` is absent. Null => no AOI bbox => static fallback width +
+   * bottom-center stack.
    */
   barWidth?: number | null;
 }
@@ -117,6 +139,7 @@ function selectKeyModels(layers: ProjectLayerSummary[]): LegendKeyModel[] {
 
 export function LayerLegend({
   layers,
+  aoiRect: trueRect,
   anchor,
   barWidth,
 }: LayerLegendProps): JSX.Element | null {
@@ -137,11 +160,16 @@ export function LayerLegend({
     offsetY: number;
   } | null>(null);
 
-  // The AOI rectangle in screen space, reconstructed from anchor + barWidth.
-  // Null => no AOI on screen => fall back to a bottom-center stack.
+  // The AOI rectangle in screen space that the keys SNAP against. Prefer the
+  // TRUE projected rect (all four bbox corners, min/max box) threaded from
+  // Map.tsx — it carries the real AOI aspect ratio + on-screen skew, so the
+  // CCW edge-rail follows the actual AOI edges. Only when the true rect is
+  // absent (off-screen / not yet projected) do we fall back to reconstructing
+  // an APPROXIMATE rect from anchor + barWidth (square-ish height estimate).
+  // Null from both => no AOI on screen => bottom-center stack fallback.
   const aoiRect: ScreenRect | null = useMemo(
-    () => rectFromAnchorAndWidth(anchor, barWidth),
-    [anchor, barWidth],
+    () => trueRect ?? rectFromAnchorAndWidth(anchor, barWidth),
+    [trueRect, anchor, barWidth],
   );
 
   // Default per-key width: the AOI on-screen width (clamped) when available,

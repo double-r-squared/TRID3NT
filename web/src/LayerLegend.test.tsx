@@ -217,6 +217,114 @@ describe("LayerLegend — CCW snapping to AOI sides", () => {
   });
 });
 
+describe("LayerLegend — snaps to the TRUE projected AOI rect (aoiRect)", () => {
+  // A deliberately NON-SQUARE AOI rect: width 400, height 100. If the keys snap
+  // off the real rect, the TOP key rails just above top=100; if they fell back to
+  // the anchor+width square-ish ESTIMATE (height = width = 400) the top key would
+  // be ~300px higher. This is the discriminating geometry for the fix.
+  const trueRect = { left: 100, top: 100, right: 500, bottom: 200 };
+  // The collapsed anchor+width the old path would have used (bottom midpoint +
+  // east-west extent). These describe the SAME bottom edge but carry no height.
+  const anchor = { left: 300, top: 200 };
+  const barWidth = 400;
+
+  function fourKeys(): ProjectLayerSummary[] {
+    return [0, 1, 2, 3].map((i) => makeLayer({ layer_id: `tk${i}`, z_index: 4 - i }));
+  }
+
+  it("rails the bottom key just below the true bottom edge (200), not a square estimate", () => {
+    render(
+      <LayerLegend
+        layers={[makeLayer({ layer_id: "tk0" })]}
+        aoiRect={trueRect}
+        anchor={anchor}
+        barWidth={barWidth}
+      />,
+    );
+    const key = screen.getByTestId("grace2-layer-legend-key");
+    // Absolute coords (not the 50%/bottom fallback) when a rect is present.
+    expect(key.style.left).not.toBe("50%");
+    expect(key.style.bottom).toBe("");
+    // Bottom side: top = bbox.bottom(200) + SIDE_GAP(10) = 210.
+    expect(parseFloat(key.style.top)).toBeCloseTo(210, 0);
+  });
+
+  it("rails the top key against the SHORT (height=100) edge, proving the true rect is used", () => {
+    render(
+      <LayerLegend
+        layers={fourKeys()}
+        aoiRect={trueRect}
+        anchor={anchor}
+        barWidth={barWidth}
+      />,
+    );
+    const keys = screen.getAllByTestId("grace2-layer-legend-key");
+    const topKey = keys.find((k) => k.getAttribute("data-legend-side") === "top")!;
+    // Top side off the TRUE rect: top = bbox.top(100) - SIDE_GAP(10) - keyHeight.
+    // (keyHeight is the full ~64px stacking height.) This lands NEAR +26, i.e.
+    // close to the real top edge (100). The square ESTIMATE (height=400) would put
+    // the top edge at bottom-400 = -200, so the top key would sit far negative
+    // (~-274) — so a non-negative-ish value here proves the true rect path.
+    const top = parseFloat(topKey.style.top);
+    expect(top).toBeGreaterThan(0);
+    expect(top).toBeLessThan(100);
+  });
+
+  it("prefers aoiRect over anchor+width when both are supplied", () => {
+    // Same anchor+width, but two DIFFERENT true rects → the top key must move with
+    // the rect height, proving aoiRect (not the collapsed scalars) drives snapping.
+    const shortRect = { left: 100, top: 100, right: 500, bottom: 200 }; // h=100
+    const tallRect = { left: 100, top: -300, right: 500, bottom: 200 }; // h=500
+
+    const { rerender } = render(
+      <LayerLegend
+        layers={fourKeys()}
+        aoiRect={shortRect}
+        anchor={anchor}
+        barWidth={barWidth}
+      />,
+    );
+    const topShort = parseFloat(
+      screen
+        .getAllByTestId("grace2-layer-legend-key")
+        .find((k) => k.getAttribute("data-legend-side") === "top")!.style.top,
+    );
+
+    rerender(
+      <LayerLegend
+        layers={fourKeys()}
+        aoiRect={tallRect}
+        anchor={anchor}
+        barWidth={barWidth}
+      />,
+    );
+    const topTall = parseFloat(
+      screen
+        .getAllByTestId("grace2-layer-legend-key")
+        .find((k) => k.getAttribute("data-legend-side") === "top")!.style.top,
+    );
+
+    // Taller rect → top edge is higher (smaller/negative y) → top key sits higher.
+    expect(topTall).toBeLessThan(topShort);
+  });
+
+  it("falls back to the anchor+width estimate when aoiRect is absent", () => {
+    // No aoiRect → reconstruct a square-ish rect from anchor + barWidth so the
+    // legend still snaps (never silently breaks). Bottom key still rails the
+    // exact bottom edge (anchor.top = 200).
+    render(
+      <LayerLegend
+        layers={[makeLayer({ layer_id: "fb0" })]}
+        anchor={anchor}
+        barWidth={barWidth}
+      />,
+    );
+    const key = screen.getByTestId("grace2-layer-legend-key");
+    expect(key.style.left).not.toBe("50%");
+    expect(parseFloat(key.style.top)).toBeCloseTo(210, 0);
+  });
+});
+
 describe("LayerLegend — resize", () => {
   it("widens a key when the resize handle is dragged right", () => {
     render(

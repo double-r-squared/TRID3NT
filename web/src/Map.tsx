@@ -45,6 +45,15 @@ import {
 import { SpatialDrawSurface } from "./components/SpatialDrawSurface";
 import type { SpatialInputRequestPayload } from "./contracts";
 import { LayerLegend } from "./components/LayerLegend";
+// C3 (job-0356 / per-case-layer-durability) — the CLIENT is the source of truth
+// for visibility on a server replay. A genuine fresh-socket resume re-asserts
+// visible:true for every active-Case layer (the server keeps no per-user
+// visibility state), which would un-hide a layer the user explicitly hid. We
+// read the user's persisted override map and let it WIN on replay — but ONLY for
+// layer_ids the user explicitly toggled (the hasOwnProperty guard inside
+// `readLayerVisibilityOverrides`'s consumers), so a never-toggled VISIBLE layer
+// keeps rendering across reconnect.
+import { readLayerVisibilityOverrides } from "./LayerPanel";
 import { FeaturePopup, type FeaturePopupData, type FeatureAttribute } from "./components/FeaturePopup";
 import { useIsMobile } from "./hooks/useIsMobile";
 import {
@@ -422,7 +431,15 @@ const ANALYSIS_EXTENT_LINE_LAYER_ID = "grace2-analysis-extent-line";
  * instead. The latch lives on the map instance so both the MapView effect and
  * the module-level ``addVectorLayer`` (which only receives ``m``) can read it.
  */
-type ReadyMap = MapLibreMap & { __grace2StyleReady?: boolean };
+type ReadyMap = MapLibreMap & {
+  __grace2StyleReady?: boolean;
+  // FIX 2 (vector AOI clip) — the current AOI bbox `[minLon,minLat,maxLon,maxLat]`
+  // (EPSG:4326), stashed on the map instance so the MODULE-LEVEL vector add path
+  // (`addVectorLayer` / `registerVectorOnMap`, which only receive `m`) can clip
+  // features to the AOI without threading React state down. Mirrors the
+  // `__grace2StyleReady` latch pattern. Null/undefined => no AOI => no clip.
+  __grace2AoiBbox?: [number, number, number, number] | null;
+};
 export function mapStyleReady(m: MapLibreMap): boolean {
   const rm = m as ReadyMap;
   try {
@@ -434,6 +451,112 @@ export function mapStyleReady(m: MapLibreMap): boolean {
     return false;
   }
   return rm.__grace2StyleReady === true;
+}
+
+/**
+ * FIX 2 (vector AOI clip) — read/write the AOI bbox stashed on the map instance.
+ * The agent fetches NSI points / building footprints with the AOI bbox expanded
+ * ~10% (so edge features aren't clipped server-side), which left vectors
+ * rendering BEYOND the AOI rectangle the user drew. We clip client-side to the
+ * exact AOI bbox before adding the GeoJSON source.
+ */
+export function setMapAoiBbox(
+  m: MapLibreMap,
+  bbox: [number, number, number, number] | null,
+): void {
+  (m as ReadyMap).__grace2AoiBbox = bbox;
+}
+export function getMapAoiBbox(
+  m: MapLibreMap,
+): [number, number, number, number] | null {
+  return (m as ReadyMap).__grace2AoiBbox ?? null;
+}
+
+/** True when a feature's own bbox overlaps the AOI bbox (axis-aligned overlap). */
+function bboxesOverlap(
+  a: [number, number, number, number],
+  b: [number, number, number, number],
+): boolean {
+  // a/b = [minLon, minLat, maxLon, maxLat]. Overlap iff they intersect on both
+  // axes. Touching edges count as overlap (inclusive) so an AOI-edge feature is
+  // kept. Pure pixel/coord math — no geography computed (Invariant 1).
+  return a[0] <= b[2] && a[2] >= b[0] && a[1] <= b[3] && a[3] >= b[1];
+}
+
+/** Compute a geometry's [minLon,minLat,maxLon,maxLat] bbox; null when empty. */
+function geometryBbox(
+  geom: Geometry | null | undefined,
+): [number, number, number, number] | null {
+  if (!geom) return null;
+  let minLon = Infinity;
+  let minLat = Infinity;
+  let maxLon = -Infinity;
+  let maxLat = -Infinity;
+  const visit = (coords: unknown): void => {
+    if (!Array.isArray(coords)) return;
+    // A position is [lon, lat, ...]; recurse otherwise.
+    if (typeof coords[0] === "number" && typeof coords[1] === "number") {
+      const lon = coords[0];
+      const lat = coords[1];
+      if (lon < minLon) minLon = lon;
+      if (lat < minLat) minLat = lat;
+      if (lon > maxLon) maxLon = lon;
+      if (lat > maxLat) maxLat = lat;
+      return;
+    }
+    for (const c of coords) visit(c);
+  };
+  if (geom.type === "GeometryCollection") {
+    for (const g of geom.geometries) {
+      const sub = geometryBbox(g);
+      if (sub) {
+        if (sub[0] < minLon) minLon = sub[0];
+        if (sub[1] < minLat) minLat = sub[1];
+        if (sub[2] > maxLon) maxLon = sub[2];
+        if (sub[3] > maxLat) maxLat = sub[3];
+      }
+    }
+  } else {
+    visit((geom as { coordinates?: unknown }).coordinates);
+  }
+  if (
+    !Number.isFinite(minLon) ||
+    !Number.isFinite(minLat) ||
+    !Number.isFinite(maxLon) ||
+    !Number.isFinite(maxLat)
+  ) {
+    return null;
+  }
+  return [minLon, minLat, maxLon, maxLat];
+}
+
+/**
+ * FIX 2 (vector AOI clip) — drop every feature whose geometry bbox does not
+ * overlap the AOI bbox, so a vector layer fetched with an ~10%-expanded bbox
+ * does not render beyond the AOI rectangle. Feature-level (no edge slicing): we
+ * keep any feature that touches/overlaps the AOI and drop the rest. Returns the
+ * SAME collection (no copy) when `aoi` is null or nothing is dropped, so the
+ * common no-AOI path is allocation-free. Exported for unit testing.
+ */
+export function clipFeaturesToBbox(
+  fc: FeatureCollection,
+  aoi: [number, number, number, number] | null,
+): FeatureCollection {
+  if (!aoi) return fc;
+  const kept: Feature[] = [];
+  let dropped = 0;
+  for (const f of fc.features) {
+    const gb = geometryBbox(f.geometry as Geometry | null);
+    // Keep features we can't bbox (defensive — never silently drop on a parse
+    // miss); drop only those whose bbox is fully outside the AOI.
+    if (gb == null || bboxesOverlap(gb, aoi)) {
+      kept.push(f);
+    } else {
+      dropped += 1;
+    }
+  }
+  if (dropped === 0) return fc;
+  return { ...fc, features: kept };
 }
 
 /**
@@ -522,6 +645,13 @@ export async function addVectorLayer(
       return;
     }
   }
+
+  // FIX 2 (vector AOI clip) — drop features that fall OUTSIDE the AOI bbox. The
+  // agent fetches NSI points / building footprints with the AOI bbox expanded
+  // ~10% (so edge features aren't lost), which without this leaves vectors
+  // painting beyond the AOI rectangle the user drew. We clip to the exact AOI
+  // bbox stashed on the map instance (getMapAoiBbox). No AOI => no-op pass-through.
+  fc = clipFeaturesToBbox(fc, getMapAoiBbox(m));
 
   // Race-guard: if a remove or re-add happened during the fetch, the
   // generation counter advanced. Bail out cleanly.
@@ -670,6 +800,9 @@ function registerVectorOnMap(
           "circle-stroke-color": "#ffffff",
           "circle-stroke-width": 1.5,
           "circle-opacity": opacity * 0.85,
+          // FIX 3 — fade the cluster's white stroke with the fill so the whole
+          // symbol dims when the opacity slider moves (matches applyLayerOpacity).
+          "circle-stroke-opacity": opacity * 0.85,
         },
         layout: { visibility: visible ? "visible" : "none" },
       });
@@ -960,9 +1093,14 @@ export function applyLayerOpacity(
   if (!m.getLayer(layerId)) return;
   if (geomKind === "point") {
     m.setPaintProperty(layerId, "circle-opacity", opacity);
+    // FIX 3 — fade the OUTLINE (white stroke) with the fill so the whole symbol
+    // dims, not just the inner circle. The individual-point layer's stroke is
+    // wired here AND on the cluster circle below.
     m.setPaintProperty(layerId, "circle-stroke-opacity", opacity);
     if (m.getLayer(`${layerId}-clusters`)) {
       m.setPaintProperty(`${layerId}-clusters`, "circle-opacity", opacity * 0.85);
+      // FIX 3 — the cluster circle carries a white stroke too; fade it in step.
+      m.setPaintProperty(`${layerId}-clusters`, "circle-stroke-opacity", opacity * 0.85);
     }
     if (m.getLayer(`${layerId}-cluster-count`)) {
       m.setPaintProperty(`${layerId}-cluster-count`, "text-opacity", opacity);
@@ -1446,18 +1584,23 @@ export function clearFeatureHighlight(m: MapLibreMap): void {
   }
 }
 
-// job-0321 (F43) — legend anchor geometry. The legend (depth-key / colorbar)
-// hangs off the BOTTOM EDGE of the AOI bounding box so it reads as the key for
-// that AOI. This pure helper projects the two bottom corners of the bbox to
-// screen space and returns the bottom-edge MIDPOINT (anchor x) at the LOWEST
-// (max-y) of the two projected corners (anchor y) — the bbox can be slightly
-// rotated on screen by the Web-Mercator projection at the poles, so we take the
-// lower of the two so the legend always clears the box.
+// job-0321 (F43) — legend bottom-edge anchor geometry.
+//
+// RETAINED FOR TESTS / as a standalone helper. The LIVE legend path no longer
+// calls this: Map.tsx now derives the legend anchor from the full projected AOI
+// rectangle (computeBboxScreenRect) in one pass. This helper is kept because its
+// unit tests (Map.test.tsx) still exercise the bottom-edge-midpoint projection
+// and it is a clean, pure primitive; it has no other production caller.
+//
+// It projects the two bottom corners of the bbox to screen space and returns the
+// bottom-edge MIDPOINT (anchor x) at the LOWEST (max-y) of the two projected
+// corners (anchor y) — the bbox can be slightly rotated on screen by the
+// Web-Mercator projection at the poles, so we take the lower of the two so a
+// legend hung here would always clear the box.
 //
 // Returns null when the bbox is off-screen (the midpoint falls outside the map
-// canvas), so the caller can fall back to the bottom-center placement and the
-// legend never disappears. Pure — every number comes from MapLibre's project()
-// (Invariant 1: the client renders, it never computes geography).
+// canvas). Pure — every number comes from MapLibre's project() (Invariant 1:
+// the client renders, it never computes geography).
 export interface LegendAnchor {
   left: number;
   top: number;
@@ -1498,16 +1641,21 @@ export function computeBboxBottomAnchor(
 
 // --- FIX 4 (NATE 2026-06-17) — legend WIDTH sized to the AOI bbox on-screen -- //
 //
-// The colorbar was a static 320px. We now size its width to the AOI bbox's
+// RETAINED FOR TESTS / as a standalone helper. The LIVE legend path no longer
+// calls this either: legendBarWidth is now derived as (right-left) of the full
+// projected rect (computeBboxScreenRect) in the same pass. Kept because its unit
+// tests (Map.featureInspect.test.tsx) exercise the bottom-edge width projection
+// + clamps; it has no other production caller.
+//
+// The colorbar was a static 320px. This sizes its width to the AOI bbox's
 // ON-SCREEN east-west extent: project the bbox's two bottom corners and take the
 // horizontal pixel distance between them. That makes the colorbar SPAN the box
 // and SHRINK as you zoom out (the bbox gets smaller on screen), reading as the
 // physical key for that AOI. Clamped to a sane min (so it never becomes an
 // illegible sliver) and to the viewport width minus margins (so it never
 // overflows). Returns null when the bbox can't be projected (off-screen / no
-// canvas) so the caller falls back to the static 320 width. Pure — every number
-// comes from MapLibre's project() (Invariant 1: the client renders, never
-// computes geography).
+// canvas). Pure — every number comes from MapLibre's project() (Invariant 1: the
+// client renders, never computes geography).
 export const LEGEND_MIN_WIDTH_PX = 160;
 export const LEGEND_VIEWPORT_MARGIN_PX = 24; // px kept clear on each side.
 
@@ -1539,6 +1687,86 @@ export function computeBboxScreenWidth(
   // Guard a degenerate (tiny) canvas so the max clamp can't drop below the min.
   if (maxWidth < LEGEND_MIN_WIDTH_PX) maxWidth = LEGEND_MIN_WIDTH_PX;
   return Math.max(LEGEND_MIN_WIDTH_PX, Math.min(raw, maxWidth));
+}
+
+// --- FIX 4 (legend EDGE-RAIL snap) — full projected AOI screen rectangle ----- //
+//
+// The legend overlay used to snap only to the AOI bbox bottom-edge CENTER
+// (computeBboxBottomAnchor returns the bottom-edge midpoint). NATE's overlay
+// spec wants the gradient colorbar to EDGE-RAIL snap to the nearest AOI side and
+// slide ALONG it, placeable anywhere around the AOI perimeter. Edge-rail
+// snapping needs the FULL projected AOI rectangle (all four edges), not just the
+// bottom midpoint — given only anchor+width the legend's fallback estimator
+// (legend_snap.rectFromAnchorAndWidth) has to GUESS the height as square, which
+// makes top/left snapping imprecise for non-square or skewed AOIs.
+//
+// This helper projects ALL FOUR bbox corners to screen space and returns a
+// {left, top, right, bottom} ScreenRect covering the box's true on-screen extent
+// (min/max over the projected corners, so it reflects the real AOI aspect ratio
+// + on-screen skew even when Web-Mercator skews the box at high latitude). That
+// rectangle is threaded straight into LayerLegend (via the `aoiRect` prop) and
+// used directly as the snap geometry: legend_snap.layoutKeysCcw rails the
+// colorbar keys CCW along its four edges. Returns null when the box can't be
+// projected / is off-screen so the legend falls back to its bottom-center stack
+// and never vanishes. Pure — every number comes from MapLibre's project()
+// (Invariant 1).
+export interface LegendScreenRect {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+export function computeBboxScreenRect(
+  m: MapLibreMap,
+  bbox: [number, number, number, number],
+): LegendScreenRect | null {
+  const [minLon, minLat, maxLon, maxLat] = bbox;
+  let p: { x: number; y: number }[];
+  try {
+    p = [
+      m.project([minLon, minLat]), // SW
+      m.project([maxLon, minLat]), // SE
+      m.project([maxLon, maxLat]), // NE
+      m.project([minLon, maxLat]), // NW
+    ];
+  } catch {
+    return null;
+  }
+  let left = Infinity;
+  let top = Infinity;
+  let right = -Infinity;
+  let bottom = -Infinity;
+  for (const { x, y } of p) {
+    if (x < left) left = x;
+    if (x > right) right = x;
+    if (y < top) top = y;
+    if (y > bottom) bottom = y;
+  }
+  if (
+    !Number.isFinite(left) ||
+    !Number.isFinite(top) ||
+    !Number.isFinite(right) ||
+    !Number.isFinite(bottom) ||
+    right <= left ||
+    bottom <= top
+  ) {
+    return null;
+  }
+  // Off-screen test: drop the rect when its center falls outside the canvas, so
+  // the legend reverts to the bottom-center fallback (never vanishes).
+  try {
+    const c = m.getCanvas();
+    if (c) {
+      const cx = (left + right) / 2;
+      const cy = (top + bottom) / 2;
+      if (cx < 0 || cx > c.clientWidth || cy < 0 || cy > c.clientHeight) {
+        return null;
+      }
+    }
+  } catch {
+    /* no canvas in test env — return the rect as-is */
+  }
+  return { left, top, right, bottom };
 }
 
 // --- F74b feature-click/tap-to-inspect ---------------------------------- //
@@ -1760,12 +1988,23 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
   //      `layers.find(...)` "topmost wins" contract.
   //   2. aoiBbox — the current AOI bbox corners (mirrors lastZoomToCorners into
   //      state so a re-render projects it). Null = no AOI → bottom-center.
-  //   3. legendAnchor — the projected {left, top} bottom-edge midpoint of the
-  //      AOI box, recomputed on map move/zoom/render (rAF-throttled). Null when
-  //      there is no AOI or the box is off-screen → legend falls back to the
-  //      previous bottom-center placement so it never disappears.
+  //   3. legendRect — the TRUE projected AOI screen rectangle {left,top,right,
+  //      bottom} (computeBboxScreenRect: min/max over all four projected bbox
+  //      corners), recomputed on map move/zoom/render (rAF-throttled). This is
+  //      the snap source of truth: it is passed straight to LayerLegend, which
+  //      rails the colorbar keys CCW along ITS four edges — so the snap follows
+  //      the real AOI aspect ratio + on-screen skew, not a square-ish estimate.
+  //      Null when there is no AOI / the box is off-screen → legend falls back to
+  //      bottom-center so it never disappears.
+  //   4. legendAnchor — the projected {left, top} bottom-edge midpoint of the AOI
+  //      box, derived from the SAME rect in the same pass. Used only for the
+  //      legend's vertical placement nudge (resolvedAnchor), NOT the snap math.
+  //   5. legendBarWidth — the box's on-screen EAST-WEST extent (right-left),
+  //      also from the same rect. Used only to SIZE the default colorbar width.
   const [legendLayers, setLegendLayers] = useState<ProjectLayerSummary[]>([]);
   const [aoiBbox, setAoiBbox] = useState<[number, number, number, number] | null>(null);
+  // The TRUE projected AOI rectangle the legend snaps against (all four corners).
+  const [legendRect, setLegendRect] = useState<LegendScreenRect | null>(null);
   const [legendAnchor, setLegendAnchor] = useState<LegendAnchor | null>(null);
   // FIX 4 (NATE 2026-06-17) — the AOI bbox's ON-SCREEN width in px, projected on
   // each map move/zoom (same listeners as legendAnchor). Null when there is no
@@ -1992,14 +2231,41 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       }
       }
 
+      // C3 (job-0356 / per-case-layer-durability) — the CLIENT is the source of
+      // truth for visibility across a server replay. A genuine fresh-socket
+      // resume re-asserts visible:true for every active-Case layer (the server
+      // keeps no per-user visibility state), which without this guard would
+      // un-hide a layer the user had explicitly hidden. Read the persisted
+      // override map ONCE per reconcile pass and prefer it — but ONLY for
+      // layer_ids the user EXPLICITLY toggled (the hasOwnProperty guard below).
+      // INVARIANT: a never-toggled VISIBLE layer has no override key, so it keeps
+      // rendering across reconnect (we never blanket-hide).
+      const visibilityOverrides = readLayerVisibilityOverrides();
+
       // Add new layers; update opacity/visibility on existing.
       // Cast to WireLayerSummary: the agent emits `uri` on the wire even though
       // contracts.ts uses `source_url` (schema mismatch; tracked as OQ-0068-URI).
       for (const _layer of currentLayers) {
         const layer = _layer as unknown as WireLayerSummary;
         const opacity = layer.opacity ?? 1;
-        const visible = layer.visible !== false;
+        // C3: effectiveVisible = the user's explicit override when present, else
+        // the wire value. hasOwnProperty guards so only an explicitly-toggled
+        // layer_id is affected; an untouched layer uses the server `visible`.
+        const visible = Object.prototype.hasOwnProperty.call(
+          visibilityOverrides,
+          layer.layer_id,
+        )
+          ? visibilityOverrides[layer.layer_id] === true
+          : layer.visible !== false;
         const layerType = layer.layer_type;
+        // C3: the vector / vector-tile registration helpers read `visible` off
+        // the layer object they receive (not the local `visible` const), so a
+        // freshly RECREATED vector layer would otherwise ignore the user's hide.
+        // Stamp the effective visibility onto a shallow copy and pass THAT to the
+        // new-layer creation branches so a recreated layer is created hidden when
+        // the user hid it. (The raster branch + existing-layer update branch use
+        // the local `visible` const directly.)
+        const effectiveLayer = { ...layer, visible } as WireLayerSummary;
         // job-0258: keep the preset bookkeeping current for the map-command
         // opacity path (Pelicun fill multiplier).
         layerStylePresets.current.set(layer.layer_id, layer.style_preset ?? null);
@@ -2035,7 +2301,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
             styleReady = false;
           }
           if (styleReady) {
-            registerVectorTileLayer(m, layer as unknown as Parameters<typeof registerVectorTileLayer>[1], vectorGeomKinds);
+            registerVectorTileLayer(m, effectiveLayer as unknown as Parameters<typeof registerVectorTileLayer>[1], vectorGeomKinds);
           } else {
             // Defer until the style settles (mirrors addVectorLayer's retry).
             m.once("idle", () => {
@@ -2045,7 +2311,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
               } catch {
                 return;
               }
-              registerVectorTileLayer(m, layer as unknown as Parameters<typeof registerVectorTileLayer>[1], vectorGeomKinds);
+              registerVectorTileLayer(m, effectiveLayer as unknown as Parameters<typeof registerVectorTileLayer>[1], vectorGeomKinds);
             });
           }
         } else if (layerType === "vector" || layerType === "geojson") {
@@ -2060,7 +2326,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
           addedSourceIds.current.add(layer.layer_id);
           const gen = (vectorFetchGen.current.get(layer.layer_id) ?? 0) + 1;
           vectorFetchGen.current.set(layer.layer_id, gen);
-          void addVectorLayer(m, layer, gen, vectorFetchGen, vectorGeomKinds, addedSourceIds);
+          void addVectorLayer(m, effectiveLayer, gen, vectorFetchGen, vectorGeomKinds, addedSourceIds);
         } else {
           // Raster (existing path).
           //
@@ -2281,6 +2547,9 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
           // edge). The projection effect recomputes legendAnchor whenever aoiBbox
           // or the camera changes.
           setAoiBbox(corners);
+          // FIX 2 (vector AOI clip) — stash the AOI bbox on the map instance so
+          // the module-level vector add path clips features to it.
+          setMapAoiBbox(m, corners);
           // job-0294 — ALSO outline the extent as a styled rectangle so the
           // user sees exactly what area is being measured. The fitBounds above
           // is camera-only; this draws the bbox on the map.
@@ -2353,6 +2622,9 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
         // job-0321 (F43) — drop the AOI bbox so the legend falls back to its
         // bottom-center placement (no AOI to anchor to anymore).
         setAoiBbox(null);
+        // FIX 2 (vector AOI clip) — clear the stashed AOI bbox so subsequent
+        // vector layers (e.g. a new Case) aren't clipped to the prior AOI.
+        setMapAoiBbox(m, null);
         // INCIDENT FIX 2026-06-16: gate on mapStyleReady, not raw
         // isStyleLoaded(). A hung tile (or a mid-flight camera animation) kept
         // isStyleLoaded() false, so the clear deferred forever and the AOI
@@ -2384,6 +2656,8 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
         // anchor to a box that is no longer on screen (belt + suspenders with
         // the clear-analysis-extent command).
         setAoiBbox(null);
+        // FIX 2 (vector AOI clip) — clear the stashed AOI bbox too.
+        setMapAoiBbox(m, null);
         const prefersReducedMotion =
           typeof window !== "undefined" &&
           typeof window.matchMedia === "function" &&
@@ -2425,6 +2699,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
     if (!m) return undefined;
 
     if (!aoiBbox) {
+      setLegendRect(null);
       setLegendAnchor(null);
       // FIX 4 — no AOI bbox → drop the projected width so the legend reverts to
       // its static 320 fallback.
@@ -2439,10 +2714,31 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       if (disposed) return;
       const cur = map.current;
       if (!cur) return;
-      setLegendAnchor(computeBboxBottomAnchor(cur, aoiBbox));
-      // FIX 4 — project the bbox's on-screen east-west width on the SAME
-      // move/zoom listeners, so the colorbar spans the box + shrinks on zoom-out.
-      setLegendBarWidth(computeBboxScreenWidth(cur, aoiBbox));
+      // EDGE-RAIL snap — project the FULL AOI rectangle in ONE pass
+      // (computeBboxScreenRect: min/max over all four projected bbox corners) and
+      // thread that TRUE rectangle to the legend as `legendRect`. The legend snaps
+      // its colorbar keys CCW directly against that rect's four edges, so the rail
+      // follows the real AOI aspect ratio + on-screen skew (correct even when
+      // Web-Mercator skews the box at high latitude) — the colorbar slides ALONG
+      // the actual AOI edges, placeable around the whole perimeter, NOT off a
+      // square-ish estimate. From the SAME rect we also derive two convenience
+      // scalars that are NOT used for snapping:
+      //   - legendAnchor = the bottom-edge midpoint ({(left+right)/2, bottom}),
+      //     consumed only by resolvedAnchor for the legend's vertical placement;
+      //   - legendBarWidth = the on-screen EAST-WEST extent (right-left), used
+      //     only to SIZE the default colorbar width.
+      // When the rect can't be projected / is off-screen we clear all three so the
+      // legend reverts to its bottom-center fallback (it never vanishes).
+      const rect = computeBboxScreenRect(cur, aoiBbox);
+      if (rect) {
+        setLegendRect(rect);
+        setLegendAnchor({ left: (rect.left + rect.right) / 2, top: rect.bottom });
+        setLegendBarWidth(rect.right - rect.left);
+      } else {
+        setLegendRect(null);
+        setLegendAnchor(null);
+        setLegendBarWidth(null);
+      }
     };
     const schedule = () => {
       if (rafId != null) return; // already queued this frame
@@ -2917,10 +3213,13 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       {/* job-0321 (F43) — the legend now lives INSIDE the map container so it
           can anchor to the AOI box. `anchor` non-null = hang off the box's
           bottom edge; null = LayerLegend's own bottom-center fallback. */}
-      {/* job-0321 (F43) anchor + FIX 4 (barWidth) — the legend hangs off the AOI
-          box's bottom edge and is sized to the box's on-screen width. */}
+      {/* EDGE-RAIL snap (aoiRect) — the TRUE projected AOI rectangle is the snap
+          source of truth: the colorbar keys rail CCW along its real edges. anchor
+          (resolvedAnchor) drives only the vertical placement nudge; barWidth only
+          sizes the default colorbar width. */}
       <LayerLegend
         layers={legendLayers}
+        aoiRect={legendRect}
         anchor={resolvedAnchor}
         barWidth={legendBarWidth}
       />

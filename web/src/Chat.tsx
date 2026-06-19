@@ -92,7 +92,9 @@ import {
   SessionStatePayload,
   SolveProgressPayload,
   SpatialInputRequestPayload,
+  ToolCardRecord,
   ToolIoPayload,
+  TurnCompletePayload,
 } from "./contracts";
 import { regionChoiceBus } from "./lib/region_choice_bus";
 import {
@@ -229,6 +231,66 @@ export function matchSolveForStep(
   // No family match: the single-run common case is unambiguous; otherwise
   // decline rather than paint a possibly-wrong run onto this card.
   return runs.length === 1 ? runs[0]! : null;
+}
+
+// --- Tool-IO drop-down: live "Running…" placeholder (FIX 2) -------------- //
+//
+// FX1 now emits an EARLY input-only `tool-io` frame at tool DISPATCH START
+// (raw_args set, function_response empty/None) and a SECOND completion frame
+// post-dispatch with the real response. Before FX1 the envelope arrived only
+// AFTER a tool returned, so while a tool was EXECUTING the IO drop-down had
+// nothing to show — the chevron didn't even render, and once it did the output
+// went straight from absent to final. FIX 2: while a step is `running`, the
+// drop-down shows the INPUT immediately (as soon as FX1's early input-only
+// frame arrives) and this placeholder string as the OUTPUT until the completion
+// frame's real function_response lands. The early frame's function_response is
+// "" or null (Python `None` json-serializes to `null` over the wire); BOTH are
+// treated as "no output yet" → "Running…". This is render-side only — we never
+// fabricate a result, just an explicit "still running" affordance in the output
+// slot. The instant a real (non-empty) function_response arrives, it replaces
+// the placeholder.
+export const RUNNING_IO_PLACEHOLDER = "Running…";
+
+/**
+ * FIX 2 — resolve the ``io`` payload to hand a tool card's IO drop-down,
+ * applying the live "Running…" output placeholder.
+ *
+ * Rules (pure; exported for tests):
+ *   - Non-running step (pending / terminal): return the live/replayed ``io``
+ *     verbatim (or null when none) — completed cards show the REAL response.
+ *   - Running step WITH a live ``io`` whose ``function_response`` is still empty
+ *     — i.e. ``""`` OR ``null`` (FX1's early input-only frame; Python ``None``
+ *     arrives as JSON ``null``): keep the input (``raw_args``), swap the EMPTY
+ *     output for ``RUNNING_IO_PLACEHOLDER`` so the user sees "Running…" not a
+ *     blank box. The truthiness guard short-circuits on ``null``/``undefined``/
+ *     ``""`` alike, so an early frame never throws on a missing response. A
+ *     running step whose io ALREADY has a non-empty response is left verbatim
+ *     (the completion frame's result landed; honor it).
+ *   - Running step with NO ``io`` yet: synthesize a minimal placeholder io
+ *     (empty input, "Running…" output) so the chevron renders during execution.
+ *     When the early input-only frame arrives, ``raw_args`` fills in; when the
+ *     terminal frame arrives, the real response replaces the placeholder.
+ */
+export function resolveCardIo(
+  step: PipelineStepSummary,
+  io: ToolIoPayload | null | undefined,
+): ToolIoPayload | null {
+  if (step.state !== "running") return io ?? null;
+  if (io) {
+    if (io.function_response && io.function_response.length > 0) return io;
+    return { ...io, function_response: RUNNING_IO_PLACEHOLDER };
+  }
+  return {
+    step_id: step.step_id,
+    tool_name: step.tool_name,
+    raw_args: "",
+    function_response: RUNNING_IO_PLACEHOLDER,
+    is_error: false,
+    args_truncated: false,
+    response_truncated: false,
+    args_bytes: 0,
+    response_bytes: 0,
+  };
 }
 
 // job-0153 Part 4 — gap between input wrapper and the last chat message.
@@ -529,7 +591,17 @@ type PipelineAction =
   // this Case will surface again via ``session-state.pipeline_history``
   // on the next hydration; on a brand-new Case the inline strip stays
   // empty until the user issues the first prompt.
-  | { type: "case-open" };
+  | { type: "case-open" }
+  // C2 terminal-state durability — the turn ended (turn-complete envelope OR
+  // a session-state with current_pipeline === null) but some tool card is
+  // STILL rendering `running` because its terminal pipeline-state frame was
+  // lost on a socket drop. Force every running step across (live ∪ history)
+  // to `complete` so no card hangs spinning after the turn is over. We settle
+  // to `complete` (not `failed`) because a lost frame is not evidence of
+  // failure — an actual failure rides the `error` action (red card) which
+  // runs its own force-flip-to-failed first. Idempotent: a turn with no
+  // running steps is a no-op.
+  | { type: "turn-complete" };
 
 function narrowCurrentPipeline(x: unknown): PipelineSnapshot | null {
   if (x === null || x === undefined) return null;
@@ -601,6 +673,45 @@ export function pipelineReducer(
       return {
         live: null,
         history: [],
+        currentPipelineFromSession: null,
+      };
+    }
+    case "turn-complete": {
+      // C2 — the turn ended; settle any card still `running` to `complete` so
+      // it stops spinning. Rewrite running steps in BOTH live + history (the
+      // stuck step could be in either snapshot). After the flip, if no live
+      // step is still running, archive the live snapshot to history so the
+      // settled card keeps rendering without a residual in-flight pipeline,
+      // and clear the session current_pipeline (the cancel predicate's (b))
+      // so ChatInput returns to idle. Mirrors the `error` action's archive +
+      // clear, minus the failure styling.
+      const flipped = forceRunningStepsToComplete(state);
+      // Archive the live snapshot to history ONLY when it is now FULLY terminal
+      // (every step complete/failed/cancelled) — the turn-complete flip settled
+      // all `running` steps, so a live snapshot that still has `pending` steps
+      // (an anomalous never-started step) is left in place rather than
+      // prematurely archived. The settled cards keep rendering either way (the
+      // interleaved stream merges live ∪ history); archiving just clears the
+      // residual "in-flight" pipeline so ChatInput returns to idle.
+      const liveSteps = flipped.live?.steps ?? [];
+      const liveFullyTerminal =
+        liveSteps.length > 0 &&
+        liveSteps.every(
+          (s) =>
+            s.state === "complete" ||
+            s.state === "failed" ||
+            s.state === "cancelled",
+        );
+      let nextHistory = flipped.history;
+      let nextLive = flipped.live;
+      if (liveFullyTerminal && flipped.live !== null) {
+        nextHistory = [...flipped.history, flipped.live];
+        nextLive = null;
+      }
+      return {
+        ...flipped,
+        live: nextLive,
+        history: nextHistory,
         currentPipelineFromSession: null,
       };
     }
@@ -741,6 +852,40 @@ export function forceMostRecentRunningToFailed(
     }
   }
   return { ...state, history: nextHistory, live: nextLive };
+}
+
+// --- Force-complete stuck cards on turn end (C2) ------------------------- //
+//
+// Walk every snapshot (history + live) and flip EVERY step still in `running`
+// to `complete`. Used when the turn ends (turn-complete envelope OR a
+// current_pipeline === null session-state) but a terminal pipeline-state frame
+// for the step was lost on a socket drop, leaving the card spinning. Unlike the
+// `error` force-flip (which targets the single most-recent running step and
+// marks it FAILED), this settles ALL running steps to `complete` — the turn is
+// over, a lost frame is not a failure, and a never-settling spinner is the bug.
+// A genuinely-failed step was already flipped to `failed` by the `error` action
+// before this runs, so it is no longer `running` and this leaves it untouched.
+// Pure; exported for tests.
+export function forceRunningStepsToComplete(
+  state: PipelineInlineState,
+): PipelineInlineState {
+  const settleRunning = (
+    snap: PipelineStatePayload,
+  ): PipelineStatePayload => {
+    const steps = snap.steps ?? [];
+    if (!steps.some((s) => s.state === "running")) return snap;
+    return {
+      ...snap,
+      steps: steps.map((s) =>
+        s.state === "running" ? { ...s, state: "complete" as const } : s,
+      ),
+    };
+  };
+  return {
+    ...state,
+    history: state.history.map(settleRunning),
+    live: state.live ? settleRunning(state.live) : null,
+  };
 }
 
 // --- Thinking-indicator active predicate (wave-4-10) -------------------- //
@@ -1104,6 +1249,38 @@ export function routeSessionState(
     type: "session-state",
     payload: p,
   });
+  // C2 — a session-state whose ``current_pipeline`` is null/absent is the LIVE
+  // turn-idle signal the agent already emits at end of turn (it clears
+  // current_pipeline once the final tool returns) AND the shape it re-emits on
+  // session-resume. Treat it as a turn-complete: force-settle any card still
+  // `running` so a card whose terminal pipeline-state frame was lost on a
+  // socket drop can't hang spinning after the turn ended. This is ADDITIVE to
+  // the explicit ``turn-complete`` envelope (routeTurnComplete) — whichever
+  // arrives first settles the cards; the other is then a no-op. We gate on a
+  // null current_pipeline so a mid-turn session-state (current_pipeline set)
+  // never prematurely completes a legitimately-running card.
+  const cp = narrowCurrentPipeline(p.current_pipeline);
+  if (cp === null) {
+    s.pipeline = pipelineReducer(s.pipeline, { type: "turn-complete" });
+  }
+}
+
+/**
+ * C2 terminal-state durability — route a ``turn-complete`` envelope (A1's
+ * explicit end-of-turn signal) into the OWNING stream and force-settle any tool
+ * card still rendering `running`. The terminal ``pipeline-state`` frame for a
+ * step can be LOST on a socket drop, leaving the card spinning forever; this is
+ * the belt to the session-state suspenders (routeSessionState also force-
+ * settles on a null current_pipeline). Idempotent: a turn with no running cards
+ * is a no-op, so a duplicate / fanned-out turn-complete is harmless.
+ */
+export function routeTurnComplete(
+  cs: ChatStreams,
+  _p: TurnCompletePayload,
+  caseId?: string | null,
+): void {
+  const s = getStream(cs, owningKey(cs, caseId));
+  s.pipeline = pipelineReducer(s.pipeline, { type: "turn-complete" });
 }
 
 export function routeError(
@@ -1427,6 +1604,11 @@ export function replayStreamFromChatHistory(
 ): void {
   const messages: ChatMessage[] = [];
   const replayed: PipelineStatePayload[] = [];
+  // C1 — rebuild the per-card IO drop-down across reopen. We accumulate a
+  // fresh toolIo Map keyed by the SAME synthesized step_id the replayed step
+  // carries (`replay-<message_id>`), so the InterleavedChatStream's
+  // ``toolIo.get(entry.step.step_id)`` lookup hits exactly as it does live.
+  const toolIo = new Map<string, ToolIoPayload>();
   for (const m of chat) {
     if (m.role === "user" || m.role === "agent") {
       recordMessageSeqIn(s, m.message_id);
@@ -1438,11 +1620,12 @@ export function replayStreamFromChatHistory(
       });
     } else if (m.role === "tool" && m.tool_card) {
       const card = m.tool_card;
+      const stepId = `replay-${m.message_id}`;
       const snap: PipelineStatePayload = {
         pipeline_id: m.pipeline_id ?? `replay-${m.message_id}`,
         steps: [
           {
-            step_id: `replay-${m.message_id}`,
+            step_id: stepId,
             name: card.label ?? card.tool_name,
             tool_name: card.tool_name,
             state: card.state,
@@ -1453,12 +1636,64 @@ export function replayStreamFromChatHistory(
       };
       recordPipelineStepSeqsIn(s, snap);
       replayed.push(snap);
+      // C1 — `card` IS the TYPED ToolCardRecord (`m.tool_card`), which FX1 now
+      // populates with the 7 IO fields under the SAME names the live `tool-io`
+      // envelope / ToolIoPayload uses. We read them off the typed record (NOT
+      // the content-JSON twin — the typed record is the integration path) and
+      // rebuild a ToolIoPayload so the chevron rehydrates on Case reopen. A
+      // pre-C1 card with no persisted IO yields null → the chevron stays absent
+      // (no fabrication).
+      const io = toolIoFromCardRecord(stepId, card);
+      if (io) toolIo.set(stepId, io);
     }
   }
   s.messages = messages;
   if (replayed.length > 0) {
     s.pipeline = { ...s.pipeline, history: replayed };
   }
+  if (toolIo.size > 0) {
+    // Fresh Map (referential-equality bump) merged onto any pre-existing IO.
+    s.toolIo = new Map([...s.toolIo, ...toolIo]);
+  }
+}
+
+/**
+ * C1 — build a ``ToolIoPayload`` for the replayed tool card's IO drop-down from
+ * a persisted ``ToolCardRecord``. FX1 (case.py / server.py) now populates the IO
+ * directly on the TYPED ``ToolCardRecord`` — so ``get_session_state`` replay
+ * carries it on ``m.tool_card`` — under the SAME field names the live
+ * ``tool-io`` envelope (ToolIoPayload) uses: ``raw_args`` / ``function_response``
+ * / ``is_error`` / ``args_truncated`` / ``response_truncated`` / ``args_bytes`` /
+ * ``response_bytes``. We read them verbatim off the typed record (no invented
+ * names, NOT the content-JSON twin) and key the result by the synthesized replay
+ * ``step_id``.
+ *
+ * Returns ``null`` when the record carries NO persisted IO (pre-C1 documents,
+ * or a card A1 chose not to attach IO to) so the chevron simply doesn't render
+ * — we never fabricate input/output the agent didn't persist. "Has IO" = either
+ * the args or the response string is present (a tool with empty args but a real
+ * response, or vice versa, still rehydrates).
+ */
+export function toolIoFromCardRecord(
+  stepId: string,
+  card: ToolCardRecord,
+): ToolIoPayload | null {
+  const rawArgs = card.raw_args;
+  const fnResp = card.function_response;
+  const hasArgs = typeof rawArgs === "string" && rawArgs.length > 0;
+  const hasResp = typeof fnResp === "string" && fnResp.length > 0;
+  if (!hasArgs && !hasResp) return null;
+  return {
+    step_id: stepId,
+    tool_name: card.tool_name,
+    raw_args: rawArgs ?? "",
+    function_response: fnResp ?? "",
+    is_error: card.is_error ?? card.state === "failed",
+    args_truncated: card.args_truncated ?? false,
+    response_truncated: card.response_truncated ?? false,
+    args_bytes: card.args_bytes ?? 0,
+    response_bytes: card.response_bytes ?? 0,
+  };
 }
 
 // --- Mobile bottom sheet (job-0278) --------------------------------------- //
@@ -2705,6 +2940,16 @@ export function Chat({
       // the owning stream; the matching tool card's expander reveals it.
       onToolIo: (p: ToolIoPayload, caseId?: string | null) => {
         routeToolIo(streamsRef.current, p, caseId);
+        bump();
+      },
+      // C2 terminal-state durability: the agent emits turn-complete at the END
+      // of every turn (and re-emits on session-resume). turn-complete is
+      // session-scoped (ws.ts SESSION_SCOPED_TYPES) so Chat receives it via the
+      // fan-out hub even when the turn's tools ran on App.tsx's connection.
+      // We force-settle any card still `running` so none hangs spinning after
+      // the terminal pipeline-state frame was lost on a socket drop.
+      onTurnComplete: (p: TurnCompletePayload, caseId?: string | null) => {
+        routeTurnComplete(streamsRef.current, p, caseId);
         bump();
       },
       onSessionState: (p: SessionStatePayload, caseId?: string | null) => {
@@ -4343,7 +4588,10 @@ function InterleavedChatStream({
             key={entry.stepKey}
             step={entry.step}
             solve={matchSolveForStep(entry.step, solveProgress)}
-            io={toolIo.get(entry.step.step_id) ?? null}
+            // FIX 2 — apply the live "Running…" output placeholder so an
+            // executing tool's drop-down shows its input + "Running…" instead of
+            // a blank box; completed/replayed cards show the real response.
+            io={resolveCardIo(entry.step, toolIo.get(entry.step.step_id))}
           />
         );
       })}

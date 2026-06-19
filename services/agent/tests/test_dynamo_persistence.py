@@ -595,9 +595,14 @@ def test_make_persistence_for_backend_dynamodb_builds_dynamo(monkeypatch):
 
     captured = {}
 
-    def _fake_resource(service, region_name=None):
+    # A1 FIX 2: the production resource is now built with a bounded botocore
+    # Config (connect_timeout/read_timeout/retries) so a stalled DynamoDB call
+    # can't freeze the WS loop. The fake must accept the new ``config`` kwarg
+    # (and we assert the bounded values are passed through).
+    def _fake_resource(service, region_name=None, config=None):
         captured["service"] = service
         captured["region"] = region_name
+        captured["config"] = config
         return _FakeDynamoResource(dynamo_backend.DEFAULT_TABLE_PREFIX)
 
     import boto3
@@ -615,6 +620,12 @@ def test_make_persistence_for_backend_dynamodb_builds_dynamo(monkeypatch):
         or "us-west-2"
     )
     assert captured["region"] == expected_region
+    # A1 FIX 2: bounded timeouts + retries are applied.
+    cfg = captured["config"]
+    assert cfg is not None
+    assert cfg.connect_timeout == 2
+    assert cfg.read_timeout == 3
+    assert cfg.retries == {"max_attempts": 2, "mode": "standard"}
 
 
 def test_ddb_item_strips_none_gsi_key_preserves_other_none():

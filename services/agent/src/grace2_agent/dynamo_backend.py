@@ -54,6 +54,7 @@ native ``get_item`` / ``Query`` vs. a Scan fallback.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from decimal import Decimal
@@ -227,15 +228,45 @@ class DynamoMCPClient:
             self._ddb = resource
         else:
             import boto3  # local import: keeps boto3 lazy for the file path
+            from botocore.config import Config
 
             region = (
                 os.environ.get("AWS_REGION")
                 or os.environ.get("AWS_DEFAULT_REGION")
                 or "us-west-2"
             )
-            self._ddb = boto3.resource("dynamodb", region_name=region)
+            # A1 FIX 2 (BOUNDED TIMEOUTS): the agent's asyncio WS loop drives
+            # these calls (via ``asyncio.to_thread`` — FIX 1). botocore's
+            # DEFAULT read_timeout is 60s; a single stalled DynamoDB call would
+            # otherwise pin a worker thread (and any awaiter) for a full minute,
+            # well past the client's 10s pong deadline -> force-reconnect ->
+            # BLINK. Cap connect at 2s / read at 3s with 2 standard-mode
+            # retries so a transient blip self-heals but a true stall surfaces
+            # as a fast typed error instead of freezing the turn. The
+            # keyed/GSI fast paths (``_fetch_candidates``) keep normal reads off
+            # the Scan path, so these short timeouts never turn a routine read
+            # into a spurious timeout.
+            self._ddb = boto3.resource(
+                "dynamodb",
+                region_name=region,
+                config=Config(
+                    connect_timeout=2,
+                    read_timeout=3,
+                    retries={"max_attempts": 2, "mode": "standard"},
+                ),
+            )
         # Table handle cache (one boto3 Table resource per alias).
         self._tables: dict[str, Any] = {}
+        # A1 FIX 1 (NON-BLOCKING / atomicity): per-``_id`` asyncio.Lock guarding
+        # the ``_update`` read-modify-write. Now that each boto3 call runs in a
+        # worker thread (``asyncio.to_thread``), two coroutines updating the
+        # SAME ``_id`` could interleave get_item/put_item across threads and the
+        # last writer would clobber the other's ``$push``/``$addToSet``. The
+        # lock serializes read-modify-write PER document key (different ids stay
+        # concurrent). Keyed by ``f"{alias}:{_id}"`` so two tables sharing an id
+        # don't false-share. Lazily allocated; bounded-evicted so the always-on
+        # agent never grows it without limit.
+        self._update_locks: dict[str, asyncio.Lock] = {}
 
     # ------------------------------------------------------------------ #
     # Table resolution
@@ -332,12 +363,44 @@ class DynamoMCPClient:
             key[sk] = sk_value
         return key
 
-    def _scan_all(self, table) -> list[dict]:
-        """Full scan with pagination, returning JSON-shaped docs."""
+    #: Cap on the per-``_id`` update-lock table so the always-on agent process
+    #: never grows it without bound over thousands of distinct case/session ids.
+    _MAX_UPDATE_LOCKS = 4096
+
+    def _lock_for_id(self, alias: str, doc_id: Any) -> asyncio.Lock:
+        """Resolve (lazily allocate) the per-document update lock (A1 FIX 1).
+
+        Serializes the ``_update`` read-modify-write for one ``{alias}:{_id}``
+        so two coroutines touching the SAME doc can't interleave their
+        get/put across worker threads and lose a ``$push``/``$addToSet``.
+        Different documents never contend. FIFO-evicts the oldest entry past
+        the cap; an evicted lock that is still held stays alive (the holder
+        keeps its own reference) — only the dict slot is reclaimed, and a
+        concurrent contender that lost the slot allocates a fresh lock, so
+        the worst case past the cap is reduced serialization, never
+        corruption (the cap is far above realistic concurrent-write fan-out).
+        """
+        key = f"{alias}:{doc_id}"
+        lock = self._update_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._update_locks[key] = lock
+            while len(self._update_locks) > self._MAX_UPDATE_LOCKS:
+                # dict preserves insertion order; pop the oldest.
+                self._update_locks.pop(next(iter(self._update_locks)))
+        return lock
+
+    async def _scan_all(self, table) -> list[dict]:
+        """Full scan with pagination, returning JSON-shaped docs.
+
+        A1 FIX 1: each blocking ``table.scan`` runs in a worker thread via
+        ``asyncio.to_thread`` so a paginating Scan never freezes the WS event
+        loop (the BLINK root cause).
+        """
         items: list[dict] = []
         kwargs: dict[str, Any] = {}
         while True:
-            resp = table.scan(**kwargs)
+            resp = await asyncio.to_thread(lambda kw=kwargs: table.scan(**kw))
             items.extend(_from_ddb(it) for it in resp.get("Items", []))
             lek = resp.get("LastEvaluatedKey")
             if not lek:
@@ -345,8 +408,13 @@ class DynamoMCPClient:
             kwargs["ExclusiveStartKey"] = lek
         return items
 
-    def _query_gsi(self, table, index_name: str, attr: str, value: Any) -> list[dict]:
-        """Query a GSI by a single equality, paginating, JSON-shaped out."""
+    async def _query_gsi(
+        self, table, index_name: str, attr: str, value: Any
+    ) -> list[dict]:
+        """Query a GSI by a single equality, paginating, JSON-shaped out.
+
+        A1 FIX 1: each blocking ``table.query`` runs off the event loop.
+        """
         from boto3.dynamodb.conditions import Key
 
         items: list[dict] = []
@@ -355,7 +423,7 @@ class DynamoMCPClient:
             "KeyConditionExpression": Key(attr).eq(value),
         }
         while True:
-            resp = table.query(**kwargs)
+            resp = await asyncio.to_thread(lambda kw=kwargs: table.query(**kw))
             items.extend(_from_ddb(it) for it in resp.get("Items", []))
             lek = resp.get("LastEvaluatedKey")
             if not lek:
@@ -363,8 +431,11 @@ class DynamoMCPClient:
             kwargs["ExclusiveStartKey"] = lek
         return items
 
-    def _query_pk(self, table, alias: str, pk_value: Any) -> list[dict]:
-        """Query a table's partition key (used for the chat table)."""
+    async def _query_pk(self, table, alias: str, pk_value: Any) -> list[dict]:
+        """Query a table's partition key (used for the chat table).
+
+        A1 FIX 1: each blocking ``table.query`` runs off the event loop.
+        """
         from boto3.dynamodb.conditions import Key
 
         items: list[dict] = []
@@ -372,7 +443,7 @@ class DynamoMCPClient:
             "KeyConditionExpression": Key(_pk_attr(alias)).eq(pk_value),
         }
         while True:
-            resp = table.query(**kwargs)
+            resp = await asyncio.to_thread(lambda kw=kwargs: table.query(**kw))
             items.extend(_from_ddb(it) for it in resp.get("Items", []))
             lek = resp.get("LastEvaluatedKey")
             if not lek:
@@ -380,7 +451,7 @@ class DynamoMCPClient:
             kwargs["ExclusiveStartKey"] = lek
         return items
 
-    def _fetch_candidates(self, collection: str, filt: dict) -> list[dict]:
+    async def _fetch_candidates(self, collection: str, filt: dict) -> list[dict]:
         """Resolve the candidate docs for a filter, preferring keyed access.
 
         Strategy (mirrors FileMCPClient's "fast path vs. scan" split, plus a
@@ -405,15 +476,17 @@ class DynamoMCPClient:
         pk = _pk_attr(alias)
         sk = _sk_attr(alias)
 
-        # 1. _id-keyed table, _id equality -> get_item.
+        # 1. _id-keyed table, _id equality -> get_item (off the event loop).
         if pk == "_id" and isinstance(filt.get("_id"), str):
-            resp = table.get_item(Key={"_id": filt["_id"]})
+            resp = await asyncio.to_thread(
+                table.get_item, Key={"_id": filt["_id"]}
+            )
             item = resp.get("Item")
             return [_from_ddb(item)] if item else []
 
         # 2. partition-key equality on a composite-key table (chat) -> Query.
         if pk != "_id" and isinstance(filt.get(pk), str) and sk is not None:
-            return self._query_pk(table, alias, filt[pk])
+            return await self._query_pk(table, alias, filt[pk])
 
         gsis = _TABLE_GSIS.get(alias, {})
 
@@ -436,7 +509,7 @@ class DynamoMCPClient:
             if ok and attrs:
                 merged: dict[str, dict] = {}
                 for attr, val in attrs:
-                    for doc in self._query_gsi(table, gsis[attr], attr, val):
+                    for doc in await self._query_gsi(table, gsis[attr], attr, val):
                         did = doc.get("_id")
                         merged[did if did is not None else id(doc)] = doc
                 return list(merged.values())
@@ -445,10 +518,10 @@ class DynamoMCPClient:
         for attr, gsi_name in gsis.items():
             val = filt.get(attr)
             if isinstance(val, str):
-                return self._query_gsi(table, gsi_name, attr, val)
+                return await self._query_gsi(table, gsi_name, attr, val)
 
         # 5. fallback: full Scan.
-        return self._scan_all(table)
+        return await self._scan_all(table)
 
     # ------------------------------------------------------------------ #
     # MCP tool surface
@@ -474,14 +547,17 @@ class DynamoMCPClient:
             doc_id = doc.get("_id")
             if doc_id is None:
                 raise ValueError("DynamoMCPClient insert-one: document missing '_id'")
-            table.put_item(Item=_ddb_item(doc, alias))
+            # A1 FIX 1: put_item off the event loop.
+            await asyncio.to_thread(table.put_item, Item=_ddb_item(doc, alias))
             return {"insertedId": doc_id}
 
         if name == "update-one":
             filt = args.get("filter", {})
             update = args.get("update", {})
             upsert = bool(args.get("upsert", False))
-            return self._update(table, alias, filt, update, upsert=upsert, many=False)
+            return await self._update(
+                table, alias, filt, update, upsert=upsert, many=False
+            )
 
         if name == "update-many":
             filt = args.get("filter", {})
@@ -489,11 +565,13 @@ class DynamoMCPClient:
             # The migrate_preauth_cases path never upserts; honor an explicit
             # upsert flag anyway for surface completeness.
             upsert = bool(args.get("upsert", False))
-            return self._update(table, alias, filt, update, upsert=upsert, many=True)
+            return await self._update(
+                table, alias, filt, update, upsert=upsert, many=True
+            )
 
         if name == "find-one":
             filt = args.get("filter", {})
-            candidates = self._fetch_candidates(collection, filt)
+            candidates = await self._fetch_candidates(collection, filt)
             for doc in candidates:
                 if self._matches(doc, filt):
                     return {"document": doc}
@@ -503,7 +581,7 @@ class DynamoMCPClient:
             filt = args.get("filter", {})
             sort = args.get("sort", {}) or {}
             limit = args.get("limit")
-            candidates = self._fetch_candidates(collection, filt)
+            candidates = await self._fetch_candidates(collection, filt)
             results = [d for d in candidates if self._matches(d, filt)]
             if sort:
                 key = next(iter(sort.keys()))
@@ -525,7 +603,7 @@ class DynamoMCPClient:
     # Shared update path (read-modify-write — Mongo-faithful via _apply_update)
     # ------------------------------------------------------------------ #
 
-    def _update(
+    async def _update(
         self,
         table,
         alias: str,
@@ -548,6 +626,17 @@ class DynamoMCPClient:
         Upsert: only meaningful when the filter is an ``_id`` equality on an
         ``_id``-keyed table (the only upsert shape Persistence sends). A fresh
         doc seeded with the ``_id`` is created and ``$setOnInsert`` fires.
+
+        A1 FIX 1 (atomicity): every boto3 call now runs in a worker thread
+        (``asyncio.to_thread``) so it never freezes the WS loop. That makes the
+        read-modify-write window race-prone — two coroutines updating the same
+        ``_id`` (e.g. the per-turn ``touch_session`` + a concurrent chart
+        ``$push`` onto the SAME session doc) could each get_item the SAME
+        snapshot in different threads, apply their op, and put_item last-wins,
+        DROPPING the other's mutation. The per-``_id`` ``asyncio.Lock`` below
+        serializes the whole get->apply->put for one document key so the
+        ``$push``/``$addToSet`` accumulators (session ``charts`` /
+        ``project_ids``) stay intact; different ids never contend.
         """
         pk = _pk_attr(alias)
         target_id = filt.get("_id")
@@ -555,37 +644,52 @@ class DynamoMCPClient:
         modified = 0
 
         if pk == "_id" and isinstance(target_id, str):
-            resp = table.get_item(Key={"_id": target_id})
-            existing = resp.get("Item")
-            if existing is not None:
-                doc = _from_ddb(existing)
-                self._apply_update(doc, update, inserting=False)
-                table.put_item(Item=_ddb_item(doc, alias))
-                return {"matchedCount": 1, "modifiedCount": 1}
-            if upsert:
-                fresh: dict[str, Any] = {"_id": target_id}
-                self._apply_update(fresh, update, inserting=True)
-                table.put_item(Item=_ddb_item(fresh, alias))
-                return {"matchedCount": 1, "modifiedCount": 1}
-            return {"matchedCount": 0, "modifiedCount": 0}
+            async with self._lock_for_id(alias, target_id):
+                resp = await asyncio.to_thread(
+                    table.get_item, Key={"_id": target_id}
+                )
+                existing = resp.get("Item")
+                if existing is not None:
+                    doc = _from_ddb(existing)
+                    self._apply_update(doc, update, inserting=False)
+                    await asyncio.to_thread(
+                        table.put_item, Item=_ddb_item(doc, alias)
+                    )
+                    return {"matchedCount": 1, "modifiedCount": 1}
+                if upsert:
+                    fresh: dict[str, Any] = {"_id": target_id}
+                    self._apply_update(fresh, update, inserting=True)
+                    await asyncio.to_thread(
+                        table.put_item, Item=_ddb_item(fresh, alias)
+                    )
+                    return {"matchedCount": 1, "modifiedCount": 1}
+                return {"matchedCount": 0, "modifiedCount": 0}
 
         # Non-_id filter (firebase_uid stamp, migrate_preauth_cases
         # $exists:false, secrets user_id stamp). Resolve candidates (GSI Query
         # when possible, else Scan), apply _matches, update first (update-one)
-        # or all (update-many) by their primary key.
-        candidates = self._fetch_candidates_for_update(table, alias, filt)
+        # or all (update-many) by their primary key. Each matched doc's
+        # put-back is serialized on its own ``_id`` lock so it can't race a
+        # concurrent ``_id``-keyed update of the same document.
+        candidates = await self._fetch_candidates_for_update(table, alias, filt)
         for doc in candidates:
             if not self._matches(doc, filt):
                 continue
-            self._apply_update(doc, update, inserting=False)
-            table.put_item(Item=_ddb_item(doc, alias))
+            doc_id = doc.get(pk)
+            async with self._lock_for_id(alias, doc_id):
+                self._apply_update(doc, update, inserting=False)
+                await asyncio.to_thread(
+                    table.put_item, Item=_ddb_item(doc, alias)
+                )
             matched += 1
             modified += 1
             if not many:
                 break
         return {"matchedCount": matched, "modifiedCount": modified}
 
-    def _fetch_candidates_for_update(self, table, alias: str, filt: dict) -> list[dict]:
+    async def _fetch_candidates_for_update(
+        self, table, alias: str, filt: dict
+    ) -> list[dict]:
         """Candidate resolution for the non-_id update path.
 
         Like ``_fetch_candidates`` but bound to an already-resolved table (we
@@ -598,8 +702,8 @@ class DynamoMCPClient:
         for attr, gsi_name in gsis.items():
             val = filt.get(attr)
             if isinstance(val, str):
-                return self._query_gsi(table, gsi_name, attr, val)
-        return self._scan_all(table)
+                return await self._query_gsi(table, gsi_name, attr, val)
+        return await self._scan_all(table)
 
 
 # --------------------------------------------------------------------------- #
