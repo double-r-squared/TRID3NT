@@ -1495,7 +1495,11 @@ export function App(): JSX.Element {
                   so the breadcrumb card stays tappable even though the drawer
                   column above is click-transparent (gutter taps fall through to
                   the backdrop = close). */}
-              <div style={{ width: "fit-content", pointerEvents: "auto" }}>
+              {/* NATE 2026-06-19: fill the drawer width (was width:"fit-content",
+                  which sized to CaseView's old fixed 288px wrap and overflowed
+                  narrow phones -> breadcrumb cutoff). 100% + min-width:0 lets the
+                  breadcrumb bound to the real drawer width and ellipsize. */}
+              <div style={{ width: "100%", minWidth: 0, pointerEvents: "auto" }}>
                 <CaseView
                   caseTitle={activeCase?.title ?? "Case"}
                   onBack={handleCaseBack}

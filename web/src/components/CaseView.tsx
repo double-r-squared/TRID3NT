@@ -144,8 +144,23 @@ export function CaseView({
     void onKey;
   }, [mounted, onBack]);
 
+  // NATE 2026-06-19: on MOBILE the fixed 288px wrap overflowed the narrow drawer
+  // (min(320px,85vw) — only ~272px on a 320px phone), so the breadcrumb clipped
+  // at the screen edge. Mobile fills its parent (100%, border-box, min-width:0)
+  // so the breadcrumb's own maxWidth:100% bounds to the real drawer width and
+  // the title ellipsizes. Desktop keeps the fixed 288px rail.
+  const effectiveWrapStyle: React.CSSProperties = mobile
+    ? {
+        ...wrapStyle,
+        width: "100%",
+        maxWidth: "100%",
+        minWidth: 0,
+        boxSizing: "border-box",
+      }
+    : wrapStyle;
+
   return (
-    <div data-testid="grace2-case-view" style={wrapStyle}>
+    <div data-testid="grace2-case-view" style={effectiveWrapStyle}>
       <div
         data-testid="grace2-case-view-breadcrumb"
         style={breadcrumbStyle}
