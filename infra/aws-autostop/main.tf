@@ -284,7 +284,10 @@ resource "aws_apigatewayv2_api" "wake" {
   cors_configuration {
     allow_origins = ["*"]
     allow_methods = ["GET", "POST", "OPTIONS"]
-    allow_headers = ["content-type"]
+    # `authorization` added for the /case-view-url route: a signed-in browser
+    # sends the Cognito ID token in the Authorization header, so the shared
+    # preflight must allow it (the /wake route never sends it — harmless there).
+    allow_headers = ["content-type", "authorization"]
     max_age       = 300
   }
 }
@@ -315,4 +318,155 @@ resource "aws_lambda_permission" "apigw_invoke_wake" {
   principal     = "apigateway.amazonaws.com"
   # Restrict to this API's executions (any stage/method/route under it).
   source_arn = "${aws_apigatewayv2_api.wake.execution_arn}/*/*"
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# VIEW-SIGNER Lambda — GET /case-view-url (reuses the wake API above).
+#
+# DESIGN INVARIANTS (read before modifying):
+#
+#   1. SIGN ONLY. The role can s3:GetObject on the runs bucket's case-views/*
+#      prefix and nothing else — no s3:ListBucket, no PutObject, no other
+#      prefix, no DynamoDB, no EC2. The agent (a different role) WRITES the
+#      snapshots; this Lambda only mints time-boxed GET URLs for them.
+#
+#   2. AUTH TIERING lives in the handler, not the IAM/route. The handler ports
+#      cognito_verify from auth_handshake.py: a verified signed-in owner ->
+#      view_signed_ttl_s (12h); anonymous / invalid token / no pool -> anon TTL
+#      (15min). The bucket stays private; the pre-signed URL is the only read.
+#
+#   3. THIRD-PARTY DEPS. The handler needs PyJWT[crypto] + requests beyond the
+#      runtime boto3. They are pip-installed into build/view_sign_pkg at apply
+#      time (null_resource below) and zipped with the handler. Minimal footprint
+#      per container-hygiene: only PyJWT[crypto] (+ its cryptography wheel) and
+#      requests are installed; no layer, no extra base.
+# ─────────────────────────────────────────────────────────────────────────────
+
+locals {
+  view_sign_src_dir = "${path.module}/lambda/view_sign"
+  view_sign_pkg_dir = "${path.module}/build/view_sign_pkg"
+}
+
+# Install the third-party deps + copy the handler into a package dir, then zip.
+# The trigger hashes the handler so a code edit re-runs the install; the deps
+# pin keeps the artifact reproducible. manylinux/linux platform wheels are
+# requested so the cryptography native extension matches the Lambda runtime
+# (python3.12 on Amazon Linux x86_64), not the build host.
+resource "null_resource" "view_sign_build" {
+  triggers = {
+    handler_sha = filesha256("${local.view_sign_src_dir}/handler.py")
+    deps        = "PyJWT[crypto]==2.9.0 requests==2.32.3"
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      set -euo pipefail
+      rm -rf "${local.view_sign_pkg_dir}"
+      mkdir -p "${local.view_sign_pkg_dir}"
+      python3 -m pip install \
+        --platform manylinux2014_x86_64 \
+        --implementation cp \
+        --python-version 3.12 \
+        --only-binary=:all: \
+        --target "${local.view_sign_pkg_dir}" \
+        "PyJWT[crypto]==2.9.0" "requests==2.32.3"
+      cp "${local.view_sign_src_dir}/handler.py" "${local.view_sign_pkg_dir}/handler.py"
+    EOT
+  }
+}
+
+data "archive_file" "view_sign" {
+  type        = "zip"
+  source_dir  = local.view_sign_pkg_dir
+  output_path = "${path.module}/build/view_sign.zip"
+  depends_on  = [null_resource.view_sign_build]
+}
+
+resource "aws_iam_role" "view_sign" {
+  name = "${local.name_prefix}-view-sign-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "view_sign" {
+  name = "${local.name_prefix}-view-sign"
+  role = aws_iam_role.view_sign.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        # GetObject scoped to the case-views/ prefix of the runs bucket — the
+        # only thing the signer needs to mint a pre-signed GET URL. No list,
+        # no put, no other prefix.
+        Sid      = "SignCaseViewSnapshots"
+        Effect   = "Allow"
+        Action   = ["s3:GetObject"]
+        Resource = "arn:aws:s3:::${var.runs_bucket}/case-views/*"
+      },
+      {
+        Sid      = "Logs"
+        Effect   = "Allow"
+        Action   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
+        Resource = "arn:aws:logs:${var.region}:${var.account_id}:log-group:/aws/lambda/${local.name_prefix}-view-sign:*"
+      },
+    ]
+  })
+}
+
+resource "aws_cloudwatch_log_group" "view_sign" {
+  name              = "/aws/lambda/${local.name_prefix}-view-sign"
+  retention_in_days = var.lambda_log_retention_days
+}
+
+resource "aws_lambda_function" "view_sign" {
+  function_name    = "${local.name_prefix}-view-sign"
+  role             = aws_iam_role.view_sign.arn
+  handler          = "handler.handler"
+  runtime          = "python3.12"
+  filename         = data.archive_file.view_sign.output_path
+  source_code_hash = data.archive_file.view_sign.output_base64sha256
+  # JWKS fetch (5s) + S3 get_object + presign on top; small headroom.
+  timeout     = 15
+  memory_size = 256
+
+  environment {
+    variables = {
+      RUNS_BUCKET                 = var.runs_bucket
+      GRACE2_COGNITO_USER_POOL_ID = var.cognito_user_pool_id
+      GRACE2_COGNITO_CLIENT_ID    = var.cognito_client_id
+      SIGNED_TTL                  = tostring(var.view_signed_ttl_s)
+      ANON_TTL                    = tostring(var.view_anon_ttl_s)
+    }
+  }
+
+  depends_on = [aws_cloudwatch_log_group.view_sign]
+}
+
+resource "aws_apigatewayv2_integration" "view_sign" {
+  api_id                 = aws_apigatewayv2_api.wake.id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = aws_lambda_function.view_sign.invoke_arn
+  payload_format_version = "2.0"
+}
+
+resource "aws_apigatewayv2_route" "view_sign" {
+  api_id    = aws_apigatewayv2_api.wake.id
+  route_key = "GET /case-view-url"
+  target    = "integrations/${aws_apigatewayv2_integration.view_sign.id}"
+}
+
+resource "aws_lambda_permission" "apigw_invoke_view_sign" {
+  statement_id  = "AllowAPIGatewayInvokeViewSign"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.view_sign.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_apigatewayv2_api.wake.execution_arn}/*/*"
 }

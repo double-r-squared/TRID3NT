@@ -52,6 +52,7 @@ from typing import Any, Protocol
 from grace2_contracts import new_ulid, now_utc
 from grace2_contracts.case import (
     CaseChatMessage,
+    CaseOpenEnvelopePayload,
     CaseSessionState,
     CaseSummary,
 )
@@ -66,6 +67,27 @@ logger = logging.getLogger("grace2_agent.persistence")
 import os
 
 DEFAULT_DATABASE = os.environ.get("GRACE2_MONGO_DB", "grace2_dev")
+
+# Lane A1 (pen=agent / paper=case): the durable runs bucket holds the
+# materialized case-view SNAPSHOT (``case-views/{case_id}.json``) that the
+# view-without-agent path serves via a pre-signed S3 GET (the agent box may be
+# asleep). The bucket already holds solver decks/results and the agent already
+# has S3 write creds to it (GRACE2_RUNS_BUCKET / the EC2 instance role). Mirror
+# the resolution used in ``tools/solver.py`` so a single env var moves both.
+CASE_VIEWS_BUCKET = os.environ.get(
+    "GRACE2_RUNS_BUCKET", "grace2-hazard-runs-226996537797"
+)
+#: Object-key prefix for materialized case-view snapshots (PRIVATE objects).
+CASE_VIEWS_PREFIX = "case-views"
+
+
+def case_view_snapshot_key(case_id: str) -> str:
+    """Return the S3 object key for a Case's materialized view snapshot.
+
+    Single seam so the writer (here) and the signer (infra lane's Lambda) name
+    the object identically: ``case-views/{case_id}.json``.
+    """
+    return f"{CASE_VIEWS_PREFIX}/{case_id}.json"
 
 # Collection names — pinned by Appendix D nomenclature (D.2 ``projects`` for
 # Cases, D.6 ``sessions`` for chat history, D.13 ``users`` for the
@@ -690,6 +712,214 @@ class Persistence:
         return CaseSessionState(
             case=case, chat_history=chat, loaded_layers=loaded_layers, charts=charts,
         )
+
+    # ----- Materialized case-view snapshot (Lane A1: view-without-agent) ---- #
+
+    async def build_case_view_snapshot(
+        self,
+        case_id: str,
+        *,
+        inline_geojson_by_layer_id: dict[str, Any] | None = None,
+        density_meta_by_layer_id: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Assemble the materialized case-view snapshot dict (no I/O).
+
+        The snapshot is the EXACT payload ``server._emit_case_open`` ships on the
+        wire — ``CaseOpenEnvelopePayload(session_state=get_session_state(...))``
+        serialized with ``model_dump(mode="json")`` — so the web's existing
+        ``useCases.onCaseOpen`` + ``App.tsx`` synthesize path renders it
+        verbatim from S3 with the agent box OFF.
+
+        The ONE addition is the inline vector GeoJSON: persisted vector layers
+        carry no inline GeoJSON (the side-table is in-memory on the live
+        emitter; ``server.reinline_vector_layers`` repopulates it only for an
+        OPEN socket). For a true cold view we MERGE that GeoJSON (and any
+        dense-vector ``vector_density`` tag) onto the matching ``loaded_layers``
+        entries here — byte-for-byte the same merge ``emit_session_state``
+        performs on the live wire (additive ``inline_geojson`` / density fields).
+
+        Pure: builds and returns the dict; ``write_case_view_snapshot`` does the
+        S3 put. Split so the contract test can assert the shape without S3.
+        """
+        session_state = await self.get_session_state(case_id)
+        payload = CaseOpenEnvelopePayload(session_state=session_state)
+        snapshot = payload.model_dump(mode="json")
+        inline = inline_geojson_by_layer_id or {}
+        density = density_meta_by_layer_id or {}
+        if not inline and not density:
+            return snapshot
+        # Merge inline GeoJSON / density tags into loaded_layers, mirroring
+        # PipelineEmitter.emit_session_state EXACTLY (same field names, same
+        # best-effort density-tag handling) so a cold view paints vectors and a
+        # warm case-open are indistinguishable to the client.
+        ss = snapshot.get("session_state")
+        if isinstance(ss, dict):
+            layers = ss.get("loaded_layers")
+            if isinstance(layers, list):
+                for layer in layers:
+                    if not isinstance(layer, dict):
+                        continue
+                    lid = layer.get("layer_id")
+                    geojson_obj = inline.get(lid)
+                    if geojson_obj is not None:
+                        layer["inline_geojson"] = geojson_obj
+                    meta = density.get(lid)
+                    if meta is not None:
+                        try:
+                            layer.update(meta.as_wire_tag())
+                        except Exception:  # noqa: BLE001 — match live merge
+                            pass
+        return snapshot
+
+    async def _resolve_case_owner(self, case_id: str) -> str | None:
+        """Resolve a Case's owner from the RAW ``projects`` doc (best-effort).
+
+        Reads ``owner_user_id`` (preferred) or ``user_id`` straight off the
+        stored document — the same owner-link fields ``list_cases_for_user``
+        filters on — BEFORE the owner-stripping ``_doc_to_case_summary`` runs.
+        Those fields are deliberately dropped from the ``CaseSummary`` envelope
+        (and therefore from the snapshot BODY), so the snapshot writer must read
+        them from the raw doc here to carry the owner in S3 OBJECT METADATA.
+
+        Returns ``None`` when the Case is missing or carries no owner link
+        (the legacy / pre-Auth shape). Best-effort: any read hiccup yields
+        ``None`` so a snapshot write is never blocked on the owner probe.
+        """
+        try:
+            raw = await self._mcp.call_tool(
+                "find-one",
+                {
+                    "database": self._db,
+                    "collection": CASES_COLLECTION,
+                    "filter": {"_id": case_id},
+                },
+            )
+            doc = _unwrap_mcp_result(raw)
+            if not isinstance(doc, dict):
+                return None
+            owner = doc.get("owner_user_id") or doc.get("user_id")
+            return owner if isinstance(owner, str) and owner else None
+        except Exception:  # noqa: BLE001 — owner probe is best-effort
+            logger.warning(
+                "case-view-snapshot owner probe failed case=%s", case_id
+            )
+            return None
+
+    async def write_case_view_snapshot(
+        self,
+        case_id: str,
+        *,
+        inline_geojson_by_layer_id: dict[str, Any] | None = None,
+        density_meta_by_layer_id: dict[str, Any] | None = None,
+        s3_put: Any = None,
+    ) -> bool:
+        """Materialize the case-view snapshot to S3 (view-without-agent path).
+
+        Writes ``s3://{CASE_VIEWS_BUCKET}/case-views/{case_id}.json`` (PRIVATE;
+        ``content-type: application/json``) so the signer Lambda (infra lane) can
+        hand out a pre-signed GET and a user can VIEW a Case with the agent box
+        asleep. Called on every Case MUTATION (layer publish, per-turn persist,
+        case create/rename) — idempotent, last-write-wins.
+
+        Owner-gate carrier (adversarial-review fix): the snapshot BODY strips the
+        owner-link fields (``_doc_to_case_summary`` drops ``user_id`` /
+        ``owner_user_id``), so the signer could never owner-match off the body.
+        We resolve the owner from the RAW ``projects`` doc and carry it in S3
+        OBJECT METADATA (``owner-user-id``) — NEVER in the JSON body. The signer
+        reads it cheaply via ``head_object`` (no full download). The metadata key
+        is set ONLY when the Case has an owner; the BODY is byte-identical with
+        or without an owner.
+
+        Best-effort by contract: wrapped in ``try/except`` and returns ``False``
+        on any failure so a snapshot hiccup NEVER breaks the user's turn (the
+        same discipline as ``touch_session`` / chart persistence). Returns
+        ``True`` on a successful put.
+
+        ``s3_put`` injects a callable
+        ``(bucket, key, body_bytes, metadata) -> None`` for tests (a fake S3
+        capture; ``metadata`` is ``{"owner-user-id": <owner>}`` or ``{}`` when
+        the Case has no owner); production lazily constructs a boto3 S3 client
+        whose creds boto3 resolves from the EC2 instance role (same chain as
+        ``case_lifecycle.default_gcs_copy`` / the dense-vector reader).
+        """
+        import json
+
+        try:
+            snapshot = await self.build_case_view_snapshot(
+                case_id,
+                inline_geojson_by_layer_id=inline_geojson_by_layer_id,
+                density_meta_by_layer_id=density_meta_by_layer_id,
+            )
+            body = json.dumps(snapshot, separators=(",", ":")).encode("utf-8")
+            key = case_view_snapshot_key(case_id)
+            # Owner lives ONLY in object metadata, never in the body. S3
+            # lowercases metadata keys — use the lowercase key directly so the
+            # signer's ``resp["Metadata"].get("owner-user-id")`` matches.
+            owner = await self._resolve_case_owner(case_id)
+            metadata: dict[str, str] = (
+                {"owner-user-id": owner} if owner else {}
+            )
+            if s3_put is not None:
+                _maybe = s3_put(CASE_VIEWS_BUCKET, key, body, metadata)
+                # Allow either a sync or async injected put.
+                if hasattr(_maybe, "__await__"):
+                    await _maybe
+            else:
+                await self._default_s3_put_case_view(key, body, metadata)
+            logger.debug(
+                "case-view-snapshot wrote s3://%s/%s bytes=%d owner=%s",
+                CASE_VIEWS_BUCKET,
+                key,
+                len(body),
+                owner or "(none)",
+            )
+            return True
+        except Exception:  # noqa: BLE001 — never break a turn
+            logger.warning(
+                "case-view-snapshot write failed case=%s bucket=%s",
+                case_id,
+                CASE_VIEWS_BUCKET,
+            )
+            return False
+
+    @staticmethod
+    async def _default_s3_put_case_view(
+        key: str, body: bytes, metadata: dict[str, str] | None = None
+    ) -> None:
+        """Production S3 put for the case-view snapshot.
+
+        Runs the synchronous boto3 ``put_object`` in a worker thread so the
+        async turn loop is never blocked (the same off-thread discipline the
+        DynamoDB backend uses). boto3 resolves creds + region from the standard
+        chain (env / ~/.aws / EC2 instance role — job-0289 lesson).
+
+        ``metadata`` is the S3 OBJECT METADATA dict (the owner-gate carrier:
+        ``{"owner-user-id": <owner>}`` or ``{}`` / ``None`` when the Case has no
+        owner). Passed through to boto3 ``put_object(Metadata=...)`` ONLY when
+        non-empty so an owner-less snapshot stamps no metadata. The owner is
+        carried here, NOT in the JSON body, so the body stays byte-identical.
+        """
+        import asyncio
+
+        meta = dict(metadata or {})
+
+        def _put() -> None:
+            import boto3
+
+            s3 = boto3.client(
+                "s3", region_name=os.environ.get("AWS_REGION", "us-west-2")
+            )
+            kwargs: dict[str, Any] = dict(
+                Bucket=CASE_VIEWS_BUCKET,
+                Key=key,
+                Body=body,
+                ContentType="application/json",
+            )
+            if meta:
+                kwargs["Metadata"] = meta
+            s3.put_object(**kwargs)
+
+        await asyncio.to_thread(_put)
 
     # ----- Session records (D.6 ``sessions`` collection) ------------------- #
     #
@@ -1658,4 +1888,7 @@ __all__ = [
     "USERS_COLLECTION",
     "SECRETS_COLLECTION",
     "AUDIT_COLLECTION",
+    "CASE_VIEWS_BUCKET",
+    "CASE_VIEWS_PREFIX",
+    "case_view_snapshot_key",
 ]

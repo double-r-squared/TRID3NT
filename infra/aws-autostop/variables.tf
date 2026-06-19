@@ -85,3 +85,65 @@ variable "lambda_log_retention_days" {
   description = "CloudWatch Logs retention for both Lambdas."
   default     = 14
 }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# View-signer Lambda (GET /case-view-url) — "view a Case with the agent OFF".
+# Issues a pre-signed S3 GET URL for the materialized Case-view snapshot the
+# agent writes to s3://<runs_bucket>/case-views/{case_id}.json. Tiered by
+# Cognito sign-in: a verified owner gets signed_ttl (12h), anyone else anon_ttl
+# (15min). The bucket stays private; the only read path is a URL this Lambda
+# signs. Routes through the EXISTING wake API Gateway HTTP API.
+# ─────────────────────────────────────────────────────────────────────────────
+
+variable "runs_bucket" {
+  type        = string
+  description = <<-EOT
+    Durable runs bucket holding the Case-view snapshots under the case-views/
+    prefix (GRACE2_RUNS_BUCKET). The signer's IAM role is granted s3:GetObject
+    ONLY on arn:aws:s3:::<runs_bucket>/case-views/* — no list, no put, no other
+    prefix. The agent (a separate role) writes the snapshots.
+  EOT
+  default     = "grace2-hazard-runs-226996537797"
+}
+
+variable "cognito_user_pool_id" {
+  type        = string
+  description = <<-EOT
+    Cognito user pool id (e.g. us-west-2_AbCdEf123) injected into the signer as
+    GRACE2_COGNITO_USER_POOL_ID. UNSET (the demo default "") ⇒ the verifier
+    returns None for every token and every request gets the anonymous (short)
+    TTL — the live demo is unaffected. Mirrors the agent's gate.
+  EOT
+  default     = ""
+}
+
+variable "cognito_client_id" {
+  type        = string
+  description = <<-EOT
+    Cognito SPA app client id injected as GRACE2_COGNITO_CLIENT_ID. ID tokens
+    carry this in their `aud` claim; the verifier fails closed when it is unset
+    while a pool IS configured (misconfiguration ⇒ reject rather than accept any
+    audience).
+  EOT
+  default     = ""
+}
+
+variable "view_signed_ttl_s" {
+  type        = number
+  description = <<-EOT
+    Pre-signed URL expiry (seconds) for a VERIFIED signed-in owner. Default
+    43200 = 12h; the client re-issues on demand so it is effectively unlimited.
+    Injected as SIGNED_TTL.
+  EOT
+  default     = 43200
+}
+
+variable "view_anon_ttl_s" {
+  type        = number
+  description = <<-EOT
+    Pre-signed URL expiry (seconds) for the anonymous / public-demo path (no
+    token, invalid token, or no pool configured). Default 900 = 15min. Injected
+    as ANON_TTL.
+  EOT
+  default     = 900
+}

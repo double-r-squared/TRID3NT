@@ -38,3 +38,19 @@ output "dry_run" {
   description = "True when auto-stop is in DRY_RUN (logs the decision, does not stop). Flip var.dry_run to arm."
   value       = var.dry_run
 }
+
+output "case_view_url_endpoint" {
+  description = <<-EOT
+    Full view-signer endpoint URL. Set the web build's VITE_GRACE2_CASE_VIEW_URL
+    to this. GET /case-view-url?case_id=<id> (optional Authorization: Bearer
+    <Cognito ID token>) returns {url, expires_in, mode} — a pre-signed S3 GET
+    URL for the Case-view snapshot so the browser can render a Case with the
+    agent box asleep. Shares the wake API Gateway HTTP API.
+  EOT
+  value       = "${aws_apigatewayv2_stage.default.invoke_url}/case-view-url"
+}
+
+output "view_sign_function_name" {
+  description = "Name of the view-signer Lambda (for manual `aws lambda invoke` smoke tests)."
+  value       = aws_lambda_function.view_sign.function_name
+}

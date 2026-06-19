@@ -3233,6 +3233,10 @@ async def _handle_case_command(
         _ensure_emitter(websocket, state)
         if state.emitter is not None:
             state.emitter.reset_loaded_layers([])
+        # Lane A1: materialize the (empty) view snapshot for the fresh Case so a
+        # view-without-agent link resolves immediately after create — before any
+        # turn lands. Emitter was just flushed, so no inline vectors to merge.
+        await _persist_case_view_snapshot(state, case_id=new_case_id)
         await _emit_case_list(websocket, state)
         logger.info(
             "case-command create session=%s case=%s title=%r",
@@ -3323,6 +3327,11 @@ async def _handle_case_command(
                 f"case rename failed: {exc}",
             )
             return
+        # Lane A1: the title is part of the materialized view (``case.title``),
+        # so re-snapshot the renamed Case to S3 so a cold view shows the new
+        # name. Inline vectors merge only if this is the open Case (guarded in
+        # _persist_case_view_snapshot); else a correct URI-only snapshot lands.
+        await _persist_case_view_snapshot(state, case_id=cmd.case_id)
         await _emit_case_list(websocket, state)
         logger.info(
             "case-command rename session=%s case=%s title=%r",
@@ -6171,6 +6180,11 @@ async def _invoke_tool_via_emitter(
                     "case-layer-persist (finally) failed case=%s",
                     turn_case_id,
                 )
+            # Lane A1: re-materialize the full case view to S3 right after the
+            # layer accumulator is persisted, while the emitter still holds the
+            # in-memory inline vector GeoJSON (the only source of it). A layer
+            # publish is the mutation that most needs the cold-view refresh.
+            await _persist_case_view_snapshot(state, case_id=turn_case_id)
 
     # job-0263: register every URI the result carries (LayerURI layer_id↔uri
     # pairs + bare gs:// strings) so the NEXT tool call can resolve handles /
@@ -6274,6 +6288,14 @@ async def _invoke_tool_via_emitter(
                         # tool call and nothing persisted afterwards).
                         if turn_case_id:
                             await _persist_case_loaded_layers(
+                                state, case_id=turn_case_id
+                            )
+                            # Lane A1: this wrap-site add runs AFTER the
+                            # dispatch finally-persist, so re-materialize the S3
+                            # snapshot here too — otherwise the published tile
+                            # layer (publish_layer is the LAST tool) lands only
+                            # in memory and the cold view would miss it.
+                            await _persist_case_view_snapshot(
                                 state, case_id=turn_case_id
                             )
                 except Exception:  # noqa: BLE001 — emission is best-effort
@@ -6389,6 +6411,61 @@ async def _persist_case_loaded_layers(
         logger.exception(
             "case-layer-persist: upsert failed case=%s",
             target_case,
+        )
+
+
+async def _persist_case_view_snapshot(
+    state: SessionState, *, case_id: str | None = None
+) -> None:
+    """Materialize the full case view to S3 (Lane A1: view-without-agent).
+
+    Writes ``s3://$GRACE2_RUNS_BUCKET/case-views/{case_id}.json`` — the EXACT
+    ``CaseOpenEnvelopePayload`` the live ``case-open`` ships, PLUS the in-memory
+    inline vector GeoJSON merged onto ``loaded_layers`` so vectors paint when
+    the agent box is asleep. Called on every Case mutation (layer publish,
+    per-turn persist, case create/rename); idempotent, last-write-wins.
+
+    The inline vector GeoJSON + dense-vector tags live ONLY on the live emitter
+    (``add_loaded_layer`` / ``reinline_vector_layers`` populate them; the
+    persisted Case carries URI-only summaries). Source them from
+    ``state.emitter`` here so the snapshot captures them durably at the moment
+    of the mutation — exactly when the agent still holds them.
+
+    Best-effort: a missing Persistence binding / no Case / no emitter
+    short-circuits; ``write_case_view_snapshot`` itself swallows S3 errors and
+    returns ``False`` (same discipline as ``_persist_case_loaded_layers`` /
+    chart persistence). Never raises, never blocks the turn's happy path.
+    """
+    target_case = case_id if case_id is not None else _turn_case_id(state)
+    if not target_case:
+        return
+    p = get_persistence()
+    if p is None:
+        return
+    inline: dict[str, Any] = {}
+    density: dict[str, Any] = {}
+    # Only source the emitter's in-memory inline-vector side-tables when the
+    # snapshot target IS the Case currently open on THIS connection — the
+    # emitter holds exactly one Case's accumulator, so merging it into a
+    # DIFFERENT Case's snapshot (e.g. renaming Case B while Case A is open)
+    # would stamp the wrong Case's vectors. When they differ we still write a
+    # correct URI-only snapshot (title/chat/layers from persisted state); the
+    # next layer/turn mutation on the open Case re-materializes its vectors.
+    open_case = _turn_case_id(state)
+    if state.emitter is not None and target_case == open_case:
+        # Defensive copies from the emitter's in-memory side-tables (the only
+        # place the inline vector GeoJSON exists at publish time).
+        inline = state.emitter.inline_geojson_by_layer_id
+        density = state.emitter.density_meta_by_layer_id
+    try:
+        await p.write_case_view_snapshot(
+            target_case,
+            inline_geojson_by_layer_id=inline,
+            density_meta_by_layer_id=density,
+        )
+    except Exception:  # noqa: BLE001 — snapshot is a side-effect, never a gate
+        logger.warning(
+            "case-view-snapshot: persist failed case=%s", target_case
         )
 
 
@@ -6901,6 +6978,12 @@ async def _dispatch_gemini_and_persist(
             # accumulator (segments_done > 0 ending in narration), or the turn
             # emitted no zoom-to/layer accumulator at all -> every narration run
             # was already persisted as its own interleaved row. Nothing to add.
+            # Lane A1: the per-turn chat (+ layers) for this Case is now
+            # persisted, so re-materialize the full case view to S3 ONCE at
+            # turn close. Captures chat-only turns the layer-publish path never
+            # touches, and refreshes the cold view's chat replay. Best-effort
+            # (swallows S3 errors) so it cannot break turn teardown.
+            await _persist_case_view_snapshot(state, case_id=turn_case_id)
         # C2: whole-turn idle signal — fires on EVERY exit (clean, cancel,
         # error) so the client settles any card still spinning ``running`` after
         # the turn ends (its terminal pipeline-state frame may have died on a
@@ -8117,6 +8200,8 @@ __all__ = [
     "_emit_case_open",
     "_handle_case_command",
     "_persist_chat_turn",
+    # Lane A1: view-without-agent — materialize the full case view to S3.
+    "_persist_case_view_snapshot",
     # job-0268: turn-start Case binding (cross-Case contamination fix).
     "_turn_case_id",
     "_dispatch_tool_and_persist",
