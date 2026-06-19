@@ -47,7 +47,9 @@ output "case_view_url_endpoint" {
     URL for the Case-view snapshot so the browser can render a Case with the
     agent box asleep. Shares the wake API Gateway HTTP API.
   EOT
-  value       = "${aws_apigatewayv2_stage.default.invoke_url}/case-view-url"
+  # trimsuffix guards the $default stage invoke_url's trailing slash so the URL
+  # is a clean single-slash path (a double slash would 404 the HTTP API route).
+  value       = "${trimsuffix(aws_apigatewayv2_stage.default.invoke_url, "/")}/case-view-url"
 }
 
 output "view_sign_function_name" {
