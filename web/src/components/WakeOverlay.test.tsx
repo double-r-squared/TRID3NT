@@ -104,18 +104,26 @@ describe("WakeOverlay - phase rendering", () => {
 });
 
 describe("WakeOverlay - redesign invariants", () => {
-  it("the overlay scrim is mid-transparency (~0.45) with no heavy blur/dim", () => {
+  it("REPLACES the composer in place - no scrim, no overlay backdrop (NATE 2026-06-19)", () => {
     mockReducedMotion(false);
     render(
       <WakeOverlay phase="connecting" onWake={() => {}} accentColor={ACCENT} />,
     );
     const overlay = screen.getByTestId("wake-overlay") as HTMLElement;
-    // happy-dom's CSSOM normalizes rgba spacing.
-    expect(overlay.style.background.replace(/\s+/g, "")).toContain(
+    // NOT an overlay: the wrapper is an in-flow block with NO dim/scrim
+    // background (the parent renders this INSTEAD of <ChatInput>, so there is
+    // nothing underneath to scrim over).
+    expect(overlay.style.background.replace(/\s+/g, "")).not.toContain(
       "rgba(14,15,20,0.45)",
     );
-    // The heavy blur/dim is GONE.
-    expect(overlay.style.backdropFilter === "" || overlay.style.backdropFilter == null).toBe(true);
+    expect(overlay.style.position).not.toBe("absolute");
+    expect(
+      overlay.style.backdropFilter === "" || overlay.style.backdropFilter == null,
+    ).toBe(true);
+    // The box spans the composer slot (it IS the composer box with swapped
+    // content), not a floating mini-card.
+    const rect = screen.getByTestId("wake-overlay-rect") as HTMLElement;
+    expect(rect.style.width).toBe("100%");
   });
 
   it("renders ONLY the phase word - no subtext sub-lines", () => {

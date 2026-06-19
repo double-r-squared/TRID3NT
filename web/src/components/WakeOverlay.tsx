@@ -167,23 +167,18 @@ export function WakeOverlay({
   const connecting = phase === "connecting";
   const asleep = phase === "asleep";
 
-  // Mid-transparency overlay anchored to the composer slot (Chat positions the
-  // wrapper). NOTHING underneath (the composer + sheet chrome are hidden by the
-  // parent in the not-connected states), so we drop the heavy blur/dim and let
-  // the page background read through a light semi-transparent scrim.
+  // NATE 2026-06-19 FIX: this is NOT an overlay. It REPLACES the composer's
+  // content IN PLACE — the parent (Chat.tsx) renders EITHER <ChatInput> OR this,
+  // never both — so there is NOTHING underneath and NO card-in-card. This
+  // wrapper is a plain IN-FLOW block spanning the composer slot; the box below
+  // is styled to look like the composer box with its content swapped.
   const overlayStyle: CSSProperties = {
-    position: "absolute",
-    inset: 0,
-    zIndex: 50,
+    position: "relative",
+    width: "100%",
     display: "flex",
-    alignItems: "center",
     justifyContent: "center",
-    padding: 24,
-    background: "rgba(14,15,20,0.45)",
     opacity: visible ? 1 : 0,
     transition: reduced ? undefined : `opacity ${WAKE_FADE_MS}ms ease`,
-    // While fading out (not visible) stop intercepting clicks immediately so the
-    // composer behind is interactive the moment the agent is back.
     pointerEvents: visible ? "auto" : "none",
     fontFamily:
       "-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif",
@@ -222,26 +217,31 @@ export function WakeOverlay({
     maskComposite: "exclude",
     position: "absolute",
     inset: 0,
-    padding: 2,
-    borderRadius: 16,
+    padding: 1.5,
+    borderRadius: 14,
     pointerEvents: "none",
   };
 
+  // The box reads as the SAME box as <ChatInput> with its content swapped: full
+  // width, the composer's radius (14) + surface (#1a1a20) + shadow, a modest
+  // composer-like height, and the colored EDGE as its border. NOT a floating
+  // mini-card.
   const cardStyle: CSSProperties = {
     position: "relative",
     overflow: "hidden",
-    width: "min(320px, 84%)",
-    minHeight: 96,
-    borderRadius: 16,
-    background: "rgba(22,24,32,0.92)",
-    boxShadow: "0 8px 30px rgba(0,0,0,0.45)",
+    width: "100%",
+    boxSizing: "border-box",
+    minHeight: 56,
+    borderRadius: 14,
+    background: "#1a1a20",
+    boxShadow: "0 2px 12px rgba(0,0,0,0.35)",
     color: "#e7ecf5",
     display: "flex",
-    flexDirection: "column",
+    flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 12,
-    padding: "22px 18px",
+    gap: 10,
+    padding: "14px 16px",
     cursor: asleep ? "pointer" : "default",
     textAlign: "center",
   };

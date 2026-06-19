@@ -296,13 +296,12 @@ function CaseRow({
             <IconCheck size={14} />
           </button>
         ) : (
-          // Data export (NATE 2026-06-19) + the F57 kebab overflow menu form the
-          // per-row action cluster. ExportButton self-gates (signed-in AND
-          // endpoint configured) and renders nothing otherwise, so this is an
-          // additive insertion that never disturbs the rename/archive/delete
-          // actions in the kebab popover.
+          // NATE 2026-06-19: the per-row action cluster is JUST the F57 kebab
+          // overflow menu now. Export moved INSIDE that popover (below) instead
+          // of sitting as a standalone row icon. ExportButton still self-gates
+          // (signed-in AND endpoint configured) so the menu item simply doesn't
+          // appear when export is unavailable.
           <>
-          <ExportButton caseId={c.case_id} />
           {/* F57 - single kebab overflow button -> popover menu. */}
           <div
             ref={menuWrapRef}
@@ -359,6 +358,13 @@ function CaseRow({
                   <IconRename size={14} />
                   <span>Rename</span>
                 </button>
+                {/* Export (NATE 2026-06-19) — in-menu item; self-gates on
+                    signed-in + endpoint configured, runs in place. */}
+                <ExportButton
+                  caseId={c.case_id}
+                  asMenuItem
+                  itemStyle={menuItemStyle()}
+                />
                 <button
                   data-testid="grace2-case-row-menu-archive"
                   role="menuitem"

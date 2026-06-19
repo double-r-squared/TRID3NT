@@ -2,7 +2,14 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- viewport-fit=cover (NATE 2026-06-19): REQUIRED so env(safe-area-inset-*)
+         resolves to the real notch/home-indicator insets on iOS. Without it
+         env() is 0, so the mobile chat sheet's SHEET_BOTTOM_OFFSET lift was
+         dead and the composer/text-form got clipped by the iPhone bottom edge. -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+    />
     <meta name="color-scheme" content="dark light" />
     <title>GRACE-2 — Hazard Modeling Workbench (M1 stub)</title>
   </head>

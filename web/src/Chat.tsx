@@ -1781,6 +1781,11 @@ export function mobileSheetContainerStyle(
   expanded: boolean,
   heightVh: number = SHEET_HEIGHT_DEFAULT_VH,
   opacityTier: ChatOpacityTier = CHAT_OPACITY_DEFAULT,
+  // NATE 2026-06-19: when true (not-connected states) the panel container is
+  // BARE — transparent, no border/shadow/rounded sheet — so only the floating
+  // composer/wake box shows over the map. The composer slot is a child and
+  // still renders.
+  bare: boolean = false,
 ): React.CSSProperties {
   const bands = chatOpacityAlphas(opacityTier);
   const alpha = expanded ? bands.mobileExpanded : bands.mobileCollapsed;
@@ -1805,12 +1810,12 @@ export function mobileSheetContainerStyle(
     // intact.
     bottom: SHEET_BOTTOM_OFFSET_CSS,
     height: expanded ? `${clampSheetHeight(heightVh)}vh` : "auto",
-    background,
+    background: bare ? "transparent" : background,
     color: "#eee",
-    borderRadius: "12px 12px 0 0",
-    border: "1px solid rgba(255,255,255,0.10)",
+    borderRadius: bare ? 0 : "12px 12px 0 0",
+    border: bare ? "none" : "1px solid rgba(255,255,255,0.10)",
     borderBottom: "none",
-    boxShadow: "0 -4px 24px rgba(0,0,0,0.35)",
+    boxShadow: bare ? "none" : "0 -4px 24px rgba(0,0,0,0.35)",
     display: "flex",
     flexDirection: "column",
     fontFamily: "system-ui, sans-serif",
@@ -3788,6 +3793,11 @@ export function Chat({
         hideMobileChrome ? false : sheetExpanded,
         sheetHeightVh,
         opacityTier,
+        // NATE 2026-06-19: in the not-connected states the PANEL that contains
+        // the composer is HIDDEN entirely (no background / border / shadow /
+        // rounded sheet) so only the floating text form (the colored-border
+        // box) shows over the map. The composer slot itself still renders.
+        hideMobileChrome,
       )
     : desktopChatContainerStyle(chatWidth, opacityTier);
 
@@ -4222,41 +4232,40 @@ export function Chat({
           {/* job-0266 — keyed by the visible stream so navigating between
               Cases / root remounts the composer with an empty draft ("clean
               empty composer" per the per-Case product shape). */}
-          <ChatInput
-            key={visibleKey}
-            state={inputState}
-            onSubmit={submit}
-            onCancel={cancel}
-            disabled={inputDisabled}
-            onHeightChange={handleInputHeightChange}
-            /* job-0278 — 16px on mobile prevents the iOS focus auto-zoom;
-               desktop keeps the historical 14px default. */
-            fontSizePx={mobile ? 16 : 14}
-            /* NATE 2026-06-17 chat-chrome rework (item 1) — controlled model:
-               the header's ModelSelectorButton owns selection. Passing modelId
-               hides ChatInput's in-composer model trigger and mirrors the model
-               for the send-button tint + the model_id carried on submit.
-               onModelChange keeps Chat's copy in sync for any uncontrolled-path
-               change (the composer trigger is hidden in controlled mode, so this
-               is belt-and-suspenders). */
-            modelId={selectedModelId}
-            onModelChange={setSelectedModelId}
-          />
-          {/* SINGLE not-connected overlay (NATE redesign 2026-06-19): the one
-              WakeOverlay renders ALL THREE treatments - connecting (yellow
-              shimmer edge + spinner) / wake (static model-color edge,
-              tap-to-wake) / waking (rainbow shimmer edge) - over the composer
-              ONLY. onWake fires the POST wake (tap-only; never auto-wake). Once
-              tapped we pin "waking" until the socket reconnects -> composerPhase
-              flips to "chat" -> overlay phase "hidden" -> it FADES OUT (it stays
-              mounted through the fade, then unmounts itself; it renders nothing
-              while hidden, so it never blocks the live composer). The scrollback
-              + map stay live behind the mid-transparency scrim. */}
-          <WakeOverlay
-            phase={composerOverlayPhase}
-            onWake={handleComposerWakeTap}
-            accentColor={composerAccentColor}
-          />
+          {/* NATE 2026-06-19 FIX: the not-connected states REPLACE the
+              composer's content IN PLACE - we render EITHER the live <ChatInput>
+              OR the WakeOverlay box, NEVER both. No overlay, no card-in-card, and
+              nothing rendered underneath. WakeOverlay is now an in-flow box
+              styled to look like the composer box (same border/radius/surface)
+              with its content swapped to the connecting/wake/waking treatment. */}
+          {composerOverlayPhase === "hidden" ? (
+            <ChatInput
+              key={visibleKey}
+              state={inputState}
+              onSubmit={submit}
+              onCancel={cancel}
+              disabled={inputDisabled}
+              onHeightChange={handleInputHeightChange}
+              /* job-0278 — 16px on mobile prevents the iOS focus auto-zoom;
+                 desktop keeps the historical 14px default. */
+              fontSizePx={mobile ? 16 : 14}
+              /* NATE 2026-06-17 chat-chrome rework (item 1) — controlled model:
+                 the header's ModelSelectorButton owns selection. Passing modelId
+                 hides ChatInput's in-composer model trigger and mirrors the model
+                 for the send-button tint + the model_id carried on submit.
+                 onModelChange keeps Chat's copy in sync for any uncontrolled-path
+                 change (the composer trigger is hidden in controlled mode, so this
+                 is belt-and-suspenders). */
+              modelId={selectedModelId}
+              onModelChange={setSelectedModelId}
+            />
+          ) : (
+            <WakeOverlay
+              phase={composerOverlayPhase}
+              onWake={handleComposerWakeTap}
+              accentColor={composerAccentColor}
+            />
+          )}
         </div>
       </div>
 

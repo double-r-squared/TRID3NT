@@ -19,7 +19,7 @@
 // line). All AWS work happens behind requestCaseExport (lib/export.ts), which
 // NEVER throws.
 
-import { useState } from "react";
+import { CSSProperties, useState } from "react";
 import { getIdToken } from "../auth";
 import { useAuth } from "../hooks/useAuth";
 import {
@@ -32,6 +32,16 @@ import { IconDownload, IconRefresh } from "./icons";
 export interface ExportButtonProps {
   /** The case to export. */
   caseId: string;
+  /**
+   * NATE 2026-06-19: render as an item INSIDE the per-row 3-dots (kebab)
+   * popover menu instead of a standalone row icon. The popover supplies its
+   * ``itemStyle`` so the row matches Rename/Archive/Delete. Clicking runs the
+   * export in place (the label flips to "Preparing export" -> "Exported
+   * <size>") and does NOT close the menu, so the status stays visible.
+   */
+  asMenuItem?: boolean;
+  /** Menu-item style from the popover (CasesPanel ``menuItemStyle()``). */
+  itemStyle?: CSSProperties;
 }
 
 /**
@@ -77,7 +87,11 @@ function triggerDownload(url: string): void {
   }
 }
 
-export function ExportButton({ caseId }: ExportButtonProps): JSX.Element | null {
+export function ExportButton({
+  caseId,
+  asMenuItem = false,
+  itemStyle,
+}: ExportButtonProps): JSX.Element | null {
   const { user } = useAuth();
   const isSignedIn = !!user && !user.isAnonymous;
 
@@ -106,6 +120,35 @@ export function ExportButton({ caseId }: ExportButtonProps): JSX.Element | null 
     } finally {
       setBusy(false);
     }
+  }
+
+  // NATE 2026-06-19: in-menu variant — a single role=menuitem row that matches
+  // Rename/Archive/Delete. Runs the export in place; the label reflects state.
+  if (asMenuItem) {
+    const label = busy
+      ? "Preparing export"
+      : outcome && outcome !== "error"
+        ? `Exported ${formatBytes(outcome.size_bytes)}`
+        : outcome === "error"
+          ? "Export failed, try again"
+          : "Export";
+    return (
+      <button
+        data-testid="grace2-case-export-menuitem"
+        role="menuitem"
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          void onExportClick();
+        }}
+        disabled={busy}
+        aria-label={busy ? "Preparing export" : "Export case data"}
+        style={itemStyle}
+      >
+        {busy ? <IconRefresh size={14} /> : <IconDownload size={14} />}
+        <span>{label}</span>
+      </button>
+    );
   }
 
   return (
