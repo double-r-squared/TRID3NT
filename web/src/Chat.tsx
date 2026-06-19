@@ -1808,7 +1808,14 @@ export function mobileSheetContainerStyle(
     // degrades to a small constant lift. The vh height band (clampSheetHeight)
     // is unaffected by this fixed-px offset, so the drag-resize clamp stays
     // intact.
-    bottom: SHEET_BOTTOM_OFFSET_CSS,
+    // NATE 2026-06-19: the panel EXTENDS to the very bottom edge (bg reaches the
+    // screen bottom, no floating gap). The safe-area inset becomes bottom
+    // PADDING so the composer/content still clears the iPhone home indicator
+    // while the panel surface fills to the edge. (Was bottom:SHEET_BOTTOM_OFFSET,
+    // which left a visible gap below the panel.)
+    bottom: 0,
+    paddingBottom: SHEET_BOTTOM_OFFSET_CSS,
+    boxSizing: "border-box",
     height: expanded ? `${clampSheetHeight(heightVh)}vh` : "auto",
     background: bare ? "transparent" : background,
     color: "#eee",
@@ -3043,6 +3050,14 @@ export function Chat({
       // activeCaseId prop, which App.tsx updates from the same envelope.
       onCaseOpen: (p: CaseOpenEnvelopePayload) => {
         routeCaseOpen(streamsRef.current, p);
+        // NATE 2026-06-19: on mobile the scrollback is hidden while the sheet is
+        // COLLAPSED, so opening a Case that has prior conversation showed an
+        // empty chat ("history doesn't populate after connection"). Auto-expand
+        // the sheet when the opened Case carries history (mirrors the submit
+        // auto-expand below). Setting true is idempotent.
+        if (mobile && (p.session_state?.chat_history?.length ?? 0) > 0) {
+          setSheetExpanded(true);
+        }
         bump();
       },
       onError: (p: ErrorPayload, caseId?: string | null) => {
@@ -4264,6 +4279,9 @@ export function Chat({
               phase={composerOverlayPhase}
               onWake={handleComposerWakeTap}
               accentColor={composerAccentColor}
+              /* NATE 2026-06-19: the wake box must be the SAME SIZE as the text
+                 form - feed it the live composer height. */
+              boxHeight={inputHeightPx}
             />
           )}
         </div>

@@ -135,10 +135,11 @@ describe("mobileSheetContainerStyle", () => {
       expect(s.position).toBe("absolute");
       expect(s.left).toBe(0);
       expect(s.right).toBe(0);
-      // F61 (job-0330) — the sheet now floats UP off the bottom edge by the
-      // device safe-area inset + a few extra px (so it clears the iPhone's
-      // curved corners / home indicator). It is no longer pinned at bottom:0.
-      expect(s.bottom).toBe(SHEET_BOTTOM_OFFSET_CSS);
+      // NATE 2026-06-19 — the panel EXTENDS to the very bottom edge (bottom:0,
+      // bg reaches the screen edge); the safe-area lift moved to bottom PADDING
+      // so the composer still clears the iPhone home indicator.
+      expect(s.bottom).toBe(0);
+      expect(s.paddingBottom).toBe(SHEET_BOTTOM_OFFSET_CSS);
       expect(s.display).toBe("flex");
       expect(s.flexDirection).toBe("column");
     }
@@ -1129,13 +1130,16 @@ describe("mobileSheetContainerStyle — F61 bottom safe-area clearance", () => {
     expect(SHEET_BOTTOM_EXTRA_PX).toBeGreaterThan(0);
   });
 
-  it("applies the safe-area bottom offset in BOTH collapsed + expanded states", () => {
+  it("applies the safe-area lift as bottom PADDING with the panel anchored to the edge (NATE 2026-06-19)", () => {
     for (const expanded of [false, true]) {
       const s = mobileSheetContainerStyle(expanded);
-      expect(s.bottom).toBe(SHEET_BOTTOM_OFFSET_CSS);
-      // The lift must reference env(safe-area-inset-bottom) so it tracks the
-      // device's home-indicator inset (0 on non-notched screens).
-      expect(String(s.bottom)).toContain("env(safe-area-inset-bottom)");
+      // The panel now EXTENDS to the very bottom edge (bottom:0) and the
+      // safe-area inset is applied as bottom PADDING, so the panel surface
+      // reaches the screen edge while the composer still clears the iPhone
+      // home indicator. The lift must still reference env(safe-area-inset-bottom).
+      expect(s.bottom).toBe(0);
+      expect(s.paddingBottom).toBe(SHEET_BOTTOM_OFFSET_CSS);
+      expect(String(s.paddingBottom)).toContain("env(safe-area-inset-bottom)");
     }
   });
 

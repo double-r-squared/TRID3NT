@@ -110,6 +110,13 @@ export interface WakeOverlayProps {
    * slate so the overlay still renders if a caller omits it.
    */
   accentColor?: string;
+  /**
+   * NATE 2026-06-19: the box must be the SAME SIZE as the live composer (text
+   * form). Chat feeds its measured composer height (``inputHeightPx``); the box
+   * uses it as its min-height so the swap is seamless. Falls back to the
+   * composer default when unset.
+   */
+  boxHeight?: number;
 }
 
 /**
@@ -121,10 +128,14 @@ export const WAKE_FADE_MS = 420;
 /** Fallback edge color when no per-model accent is supplied. */
 const DEFAULT_ACCENT = "#5c7fa3";
 
+/** Composer resting height fallback (mirrors Chat DEFAULT_INPUT_HEIGHT_PX). */
+const DEFAULT_BOX_HEIGHT = 68;
+
 export function WakeOverlay({
   phase,
   onWake,
   accentColor = DEFAULT_ACCENT,
+  boxHeight = DEFAULT_BOX_HEIGHT,
 }: WakeOverlayProps): JSX.Element | null {
   const reduced = prefersReducedMotion();
 
@@ -223,18 +234,18 @@ export function WakeOverlay({
   };
 
   // The box reads as the SAME box as <ChatInput> with its content swapped: full
-  // width, the composer's radius (14) + surface (#1a1a20) + shadow, a modest
-  // composer-like height, and the colored EDGE as its border. NOT a floating
-  // mini-card.
+  // width, the composer's radius (14), the SAME height as the live composer
+  // (boxHeight), and the colored EDGE as its border. NATE 2026-06-19: TRANSPARENT
+  // fill (no solid surface) - just the colored edge + the word over the map; a
+  // text-shadow keeps the word legible on a varied background.
   const cardStyle: CSSProperties = {
     position: "relative",
     overflow: "hidden",
     width: "100%",
     boxSizing: "border-box",
-    minHeight: 56,
+    minHeight: boxHeight,
     borderRadius: 14,
-    background: "#1a1a20",
-    boxShadow: "0 2px 12px rgba(0,0,0,0.35)",
+    background: "transparent",
     color: "#e7ecf5",
     display: "flex",
     flexDirection: "row",
@@ -284,7 +295,15 @@ export function WakeOverlay({
         {/* Animated / static gradient EDGE (no icon glyph inside the card). */}
         <span data-testid="wake-overlay-edge" aria-hidden="true" style={edgeStyle} />
         {connecting && <ConnectingSpinner reduced={reduced} accentColor={accentColor} />}
-        <div style={{ fontSize: 16, fontWeight: 700, letterSpacing: 0.2 }}>
+        <div
+          style={{
+            fontSize: 16,
+            fontWeight: 700,
+            letterSpacing: 0.2,
+            // legible on the transparent fill over a varied map background.
+            textShadow: "0 1px 3px rgba(0,0,0,0.7)",
+          }}
+        >
           {label}
         </div>
       </div>
