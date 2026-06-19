@@ -129,6 +129,14 @@ ProviderID = Literal[
     # Basemap providers (paid tier; per-Case scoped)
     "mapbox",
     "maptiler",
+    # Generic name-only fallback — the credential card for ANY keyed endpoint
+    # that has no dedicated provider above. The server derives a human credential
+    # name from the failing tool (``derive_generic_credential_name``) and emits a
+    # NAME-ONLY card (signup_url=None — never a fabricated URL). The key is saved
+    # under this scope so the user is never left at a silent dead-end; auto-inject
+    # on retry is provider-specific, so a fully-unregistered tool resolves its
+    # saved key via its own path. Surfacing the form for any endpoint is the goal.
+    "generic",
 ]
 
 

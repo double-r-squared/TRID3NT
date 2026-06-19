@@ -192,6 +192,26 @@ _DEFAULT_CDS_URL = "https://cds.climate.copernicus.eu/api"
 # Per audit.md: poll up to 5 min for completion.
 _RETRIEVE_TIMEOUT_S = 300
 
+# Narrow, specific phrases that mark a cdsapi failure as "no credentials
+# configured at all" (the missing-``~/.cdsapirc`` / no-key family) — distinct
+# from a present-but-rejected key (AUTH) or a transient queue/network failure
+# (UPSTREAM). When the cdsapi Client constructor cannot find any key it raises
+# ``Exception("Missing/incomplete configuration file: <path>/.cdsapirc")``;
+# these phrases catch that and the close variants WITHOUT over-matching a
+# generic upstream error (LIVE BUG NATE 2026-06-18 — the missing-config
+# message previously fell through to ERA5UpstreamError and no credential card
+# fired). Matched case-insensitively against the lower-cased message.
+_MISSING_KEY_CDS_PHRASES: tuple[str, ...] = (
+    ".cdsapirc",
+    "missing/incomplete configuration",
+    "missing or incomplete configuration",
+    "incomplete configuration file",
+    "no api key configured",
+    "no api key found",
+    "credentials not configured",
+    "no credentials found",
+)
+
 # Real CDS single-level variable names (each maps to one CDS retrieve).
 _CDS_VARIABLES: frozenset[str] = frozenset(
     {
@@ -597,18 +617,45 @@ def _cds_retrieve_with_timeout(
     if "err" in err_box:
         exc = err_box["err"]
         msg = str(exc)
-        # Distinguish auth from generic upstream — cdsapi raises
-        # ``Exception`` with messages mentioning "401" / "403" / "key" /
-        # "Authentication" / "User not authenticated".
         low = msg.lower()
+        # Classify in priority order: MISSING-KEY (no credentials configured at
+        # all) → AUTH (a key is present but rejected) → generic UPSTREAM.
+        #
+        # The NO-KEY case is what fires when none of the four key-resolution
+        # paths produced a key AND there is no ``~/.cdsapirc``: cdsapi's own
+        # Client constructor raises ``Exception("Missing/incomplete
+        # configuration file: <path>/.cdsapirc")`` (LIVE BUG NATE 2026-06-18:
+        # a Mexico Beach run hit exactly this and got NO secret-entry card
+        # because the message matched neither the auth nor the old missing-key
+        # heuristic, so it fell through to ``ERA5UpstreamError`` and the
+        # credential pipeline never fired). We now classify it as
+        # ``ERA5MissingKeyError`` (error_code ERA5_MISSING_KEY) so the server's
+        # ``is_credential_error`` → ``credential-request`` path surfaces the
+        # registered ``ecmwf_cds`` card. ``_MISSING_KEY_CDS_PHRASES`` is kept
+        # narrow + specific so a genuine transient/queue/timeout upstream
+        # failure is NOT misclassified as a missing key.
+        if any(phrase in low for phrase in _MISSING_KEY_CDS_PHRASES):
+            raise ERA5MissingKeyError(
+                f"No Copernicus CDS API key is configured "
+                f"(cdsapi: {msg[:200]})"
+            ) from exc
+        # AUTH: a key is present but the CDS server rejected it (invalid /
+        # revoked / not licensed). cdsapi surfaces these with "401" / "403" /
+        # "Authentication" / "User not authenticated" / "unauthorized".
         if any(tok in low for tok in ("401", "403", "authentication", "unauthorized")):
             raise ERA5AuthError(
                 f"CDS API rejected the key: {msg[:200]}"
             ) from exc
-        if "no api key" in low or "missing" in low and "key" in low:
+        # Backstop missing-key heuristic ("no api key" / a message that names
+        # both "missing" and "key") — kept for upstreams whose phrasing differs
+        # from cdsapi's own constructor text.
+        if "no api key" in low or ("missing" in low and "key" in low):
             raise ERA5MissingKeyError(
                 f"CDS API key not available: {msg[:200]}"
             ) from exc
+        # Everything else is a genuine transient/queue/network/upstream
+        # failure → retryable ERA5UpstreamError (do NOT misclassify as a
+        # missing key, or we'd prompt for a key the user already has).
         raise ERA5UpstreamError(
             f"CDS retrieve failed: {msg[:200]}"
         ) from exc

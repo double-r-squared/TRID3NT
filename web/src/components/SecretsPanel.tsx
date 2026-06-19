@@ -56,6 +56,10 @@ const PROVIDER_LABEL: Record<ProviderID, string> = {
   google_genai: "Google GenAI",
   mapbox: "Mapbox",
   maptiler: "MapTiler",
+  // Generic name-only fallback scope (any keyed endpoint with no dedicated
+  // provider). The credential card shows a tool-derived name; this is the
+  // SecretsPanel list label for keys saved under that fallback scope.
+  generic: "Other data source",
 };
 
 // Tier-2 conservation/weather providers (the kickoff §4 empty-state names

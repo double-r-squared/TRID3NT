@@ -31,6 +31,7 @@ from grace2_agent.server import (
     SessionState,
     _build_credential_request_payload,
     _invoke_tool_via_emitter,
+    _maybe_handle_credential_error,
     _resolve_pending_credential,
 )
 from grace2_agent import credential_registry as cr
@@ -384,13 +385,141 @@ def test_generic_classifier_ignores_non_credential_text():
 
 def test_generic_classifier_never_classifies_unknown_provider():
     """A credential-shaped error from a tool with NO provider returns False —
-    the server cannot request a key for an unknown provider (no fabrication)."""
+    the server cannot request a REGISTERED-provider key for an unknown provider
+    (the generic NAME-ONLY card path is a separate, shape-only check below)."""
     assert not cr.is_credential_error(
         "compute_hillshade", _ErrWithCode("x", "HILLSHADE_AUTH_ERROR")
     )
     assert not cr.is_credential_error(
         "geocode_location", RuntimeError("requires an api key")
     )
+
+
+# --------------------------------------------------------------------------- #
+# 2c. Config-missing family — the ERA5 .cdsapirc LIVE BUG (NATE 2026-06-18).
+# --------------------------------------------------------------------------- #
+
+
+def test_classifier_matches_cdsapirc_config_missing_message():
+    """The exact live ERA5 no-key message ('Missing/incomplete configuration
+    file: /root/.cdsapirc') now classifies as a credential error for the
+    registered ecmwf_cds tool — even when wrapped in an *_UPSTREAM_ERROR code.
+
+    This is the root-cause regression guard: previously the message matched NO
+    credential phrase, is_credential_error returned False, and NO secret-entry
+    card fired during the Mexico Beach run."""
+    assert cr.is_credential_error(
+        "fetch_era5_reanalysis",
+        _ErrWithCode(
+            "CDS retrieve failed: Missing/incomplete configuration file: "
+            "/root/.cdsapirc",
+            "ERA5_UPSTREAM_ERROR",
+        ),
+    )
+    # The clean ERA5_MISSING_KEY code (the new classification) also matches.
+    assert cr.is_credential_error(
+        "fetch_era5_reanalysis",
+        _ErrWithCode("No CDS key configured", "ERA5_MISSING_KEY"),
+    )
+
+
+def test_classifier_config_missing_phrases_narrow_no_false_positive():
+    """The config-missing phrases are narrow: a genuine outage message that
+    merely contains 'configuration' but NOT a credential phrase is NOT a
+    credential error (no over-triggering on real upstream failures)."""
+    assert not cr.is_credential_error(
+        "fetch_era5_reanalysis",
+        _ErrWithCode("upstream returned 503 service unavailable",
+                     "ERA5_UPSTREAM_ERROR"),
+    )
+    assert not cr.is_credential_error(
+        "fetch_era5_reanalysis",
+        _ErrWithCode("the grid configuration produced an empty window",
+                     "ERA5_EMPTY"),
+    )
+
+
+def test_signup_url_none_provider_round_trips_end_to_end():
+    """A registered provider with signup_url=None still builds a valid payload
+    (the no-URL / out-of-band mode is fully supported end to end — NATE
+    principle 2). Movebank is the registered None-URL... actually it has a URL;
+    construct a None-URL provider over a real provider_id to prove the wire
+    path accepts signup_url=None."""
+    none_url_provider = cr.CredentialProvider(
+        provider_id="ecmwf_cds",  # a real ProviderID Literal member
+        label="Copernicus CDS (out-of-band)",
+        signup_url=None,
+        secret_key_name="GRACE2_COPERNICUS_CDS_API_KEY",
+        default_message="Add your CDS key (no public signup link).",
+    )
+    payload = _build_credential_request_payload(
+        request_id=new_ulid(),
+        provider=none_url_provider,
+        tool_name="fetch_era5_reanalysis",
+        message="needs a key",
+    )
+    assert payload is not None
+    assert payload.signup_url is None
+    assert payload.secret_key_name == "GRACE2_COPERNICUS_CDS_API_KEY"
+
+
+# --------------------------------------------------------------------------- #
+# 2d. Generic NAME-ONLY fallback helpers (NATE principle 3).
+# --------------------------------------------------------------------------- #
+
+
+def test_is_credential_shaped_error_is_provider_agnostic():
+    """is_credential_shaped_error classifies a credential-shaped error WITHOUT
+    requiring a registered provider (the generic-path gate)."""
+    # Unregistered tool, credential-shaped → True (unlike is_credential_error).
+    assert cr.is_credential_shaped_error(
+        "fetch_usgs_water_gauges", RuntimeError("This endpoint requires an api key")
+    )
+    assert cr.is_credential_shaped_error(
+        "fetch_usgs_water_gauges", _ErrWithCode("x", "USGS_AUTH_ERROR")
+    )
+    assert cr.is_credential_shaped_error(
+        "fetch_usgs_water_gauges", _ErrWithCode("blocked", "USGS_UPSTREAM", status=401)
+    )
+    # Non-credential error → False (no over-trigger).
+    assert not cr.is_credential_shaped_error(
+        "fetch_usgs_water_gauges", _ErrWithCode("bad bbox", "USGS_INPUT_ERROR")
+    )
+
+
+def test_derive_generic_credential_name_humanizes_tool():
+    """The generic name strips a fetch/get verb, upper-cases short acronyms,
+    title-cases words, and appends ' API key'."""
+    assert cr.derive_generic_credential_name("fetch_usgs_water_gauges") == (
+        "USGS Water Gauges API key"
+    )
+    assert cr.derive_generic_credential_name("get_gbif_occurrences") == (
+        "GBIF Occurrences API key"
+    )
+    assert cr.derive_generic_credential_name("fetch_noaa_tides") == (
+        "NOAA Tides API key"
+    )
+    # Empty / verb-only never yields an empty secret_key_name (min_length=1).
+    assert cr.derive_generic_credential_name("") == "API key"
+    assert cr.derive_generic_credential_name("fetch").endswith("API key")
+
+
+def test_generic_provider_has_no_signup_url():
+    """generic_provider_for_tool NEVER fabricates a signup_url (NATE
+    principles 2 + 3): the card is name + form only."""
+    gp = cr.generic_provider_for_tool("fetch_usgs_water_gauges")
+    assert gp.provider_id == cr.GENERIC_PROVIDER_ID == "generic"
+    assert gp.signup_url is None
+    assert gp.label == "USGS Water Gauges API key"
+    assert gp.secret_key_name == "USGS_WATER_GAUGES_API_KEY"
+    assert gp.default_message  # non-empty, honest copy
+
+
+def test_generic_provider_id_is_not_a_real_scope():
+    """The 'generic' sentinel is NOT a registered provider (it can never
+    mis-scope a real per-Case secret-add)."""
+    assert "generic" not in cr.CREDENTIAL_PROVIDERS
+    assert "generic" not in cr.TOOL_PROVIDER.values()
 
 
 # =========================================================================== #
@@ -670,5 +799,147 @@ def test_cross_session_credential_provided_refused():
             assert not fut.done()
         finally:
             server._pop_pending_credential(request_id)
+
+    asyncio.run(_run())
+
+
+# =========================================================================== #
+# 5. Generic NAME-ONLY fallback for UNREGISTERED tools (NATE principle 3).
+#
+# A credential-shaped failure from a tool with NO registered provider must
+# still surface a card — a derived credential NAME + secret-entry form,
+# signup_url=None — rather than letting the agent narrate a fabricated URL.
+# These drive _maybe_handle_credential_error directly, patching
+# _emit_credential_request_and_wait so the test is independent of whether the
+# 'generic' provider_id is yet a wire ProviderID Literal member.
+# =========================================================================== #
+
+
+class _UnregErr(RuntimeError):
+    error_code = "WATERGAUGE_UPSTREAM_ERROR"
+
+    def __init__(self, msg: str) -> None:
+        super().__init__(msg)
+
+
+def test_generic_fallback_emits_name_only_card_for_unregistered_tool():
+    """An unregistered tool's credential-shaped error → a generic card whose
+    provider carries the derived NAME and signup_url=None (no fabricated URL).
+    On provided=True, retry params are returned (best-effort retry)."""
+    captured: dict[str, Any] = {}
+
+    async def _fake_emit(websocket, state, tool_name, provider, error):
+        captured["provider"] = provider
+        captured["tool_name"] = tool_name
+        return CredentialProvidedEnvelopePayload(
+            request_id=new_ulid(), secret_id=new_ulid(), provided=True
+        )
+
+    ws = MockWebSocket()
+    state = SessionState(session_id=new_ulid())
+
+    async def _run():
+        with patch.object(server, "_emit_credential_request_and_wait", _fake_emit):
+            retry = await server._maybe_handle_credential_error(
+                ws, state, "fetch_usgs_water_gauges",
+                {"bbox": [-1, -1, 1, 1], "api_key": "stale"},
+                _UnregErr("This endpoint requires an api key"),
+                None,
+            )
+        # A retry dict is returned (provided=True) — stale inline key stripped.
+        assert retry is not None
+        assert "api_key" not in retry
+        assert retry["bbox"] == [-1, -1, 1, 1]
+        # The generic provider carries the derived name + NO signup_url.
+        prov = captured["provider"]
+        assert prov.provider_id == cr.GENERIC_PROVIDER_ID
+        assert prov.signup_url is None
+        assert prov.label == "USGS Water Gauges API key"
+        assert captured["tool_name"] == "fetch_usgs_water_gauges"
+
+    asyncio.run(_run())
+
+
+def test_generic_fallback_surfaces_original_error_when_payload_unbuildable():
+    """If the generic card cannot be built/emitted (e.g. 'generic' is not yet a
+    wire ProviderID), _emit_... returns None → _maybe_handle returns None →
+    the caller re-raises the ORIGINAL typed error. The agent NEVER fabricates a
+    URL. This is the live behavior today (until the schema adds 'generic')."""
+    async def _fake_emit_none(websocket, state, tool_name, provider, error):
+        # Mirrors _build_credential_request_payload returning None on an
+        # unknown provider_id → _emit_... returns None.
+        return None
+
+    ws = MockWebSocket()
+    state = SessionState(session_id=new_ulid())
+
+    async def _run():
+        with patch.object(
+            server, "_emit_credential_request_and_wait", _fake_emit_none
+        ):
+            retry = await server._maybe_handle_credential_error(
+                ws, state, "fetch_usgs_water_gauges",
+                {"bbox": [-1, -1, 1, 1]},
+                _UnregErr("401 Unauthorized"),
+                None,
+            )
+        assert retry is None  # → caller re-raises the original error (honest)
+
+    asyncio.run(_run())
+
+
+def test_generic_fallback_not_triggered_for_non_credential_error():
+    """A non-credential error from an unregistered tool does NOT trigger the
+    generic card (no over-prompting)."""
+    emit_calls = {"n": 0}
+
+    async def _fake_emit(websocket, state, tool_name, provider, error):
+        emit_calls["n"] += 1
+        return None
+
+    ws = MockWebSocket()
+    state = SessionState(session_id=new_ulid())
+
+    async def _run():
+        with patch.object(server, "_emit_credential_request_and_wait", _fake_emit):
+            retry = await server._maybe_handle_credential_error(
+                ws, state, "fetch_usgs_water_gauges",
+                {"bbox": [-1, -1, 1, 1]},
+                _UnregErr("the bounding box is degenerate"),
+                None,
+            )
+        assert retry is None
+        assert emit_calls["n"] == 0  # no card attempted
+
+    asyncio.run(_run())
+
+
+def test_generic_fallback_respects_one_prompt_per_turn_guard():
+    """The generic path honors the one-prompt-per-tool-per-turn guard so it
+    can't loop on a still-failing unregistered tool."""
+    emit_calls = {"n": 0}
+
+    async def _fake_emit(websocket, state, tool_name, provider, error):
+        emit_calls["n"] += 1
+        return CredentialProvidedEnvelopePayload(
+            request_id=new_ulid(), secret_id=new_ulid(), provided=True
+        )
+
+    ws = MockWebSocket()
+    state = SessionState(session_id=new_ulid())
+
+    async def _run():
+        with patch.object(server, "_emit_credential_request_and_wait", _fake_emit):
+            r1 = await server._maybe_handle_credential_error(
+                ws, state, "fetch_usgs_water_gauges",
+                {"bbox": [-1, -1, 1, 1]}, _UnregErr("requires an api key"), None,
+            )
+            r2 = await server._maybe_handle_credential_error(
+                ws, state, "fetch_usgs_water_gauges",
+                {"bbox": [-1, -1, 1, 1]}, _UnregErr("requires an api key"), None,
+            )
+        assert r1 is not None  # first prompt fired
+        assert r2 is None      # second suppressed by the per-turn guard
+        assert emit_calls["n"] == 1
 
     asyncio.run(_run())

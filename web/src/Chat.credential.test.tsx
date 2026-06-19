@@ -83,6 +83,56 @@ describe("routeCredentialRequest — credential card routing (§F.3)", () => {
       "R2",
     ]);
   });
+
+  // NATE no-URL fallback (2026-06-18): a credential-request with NO reliable
+  // signup URL (null / undefined / "" — e.g. a USGS-water-gauge key, or a
+  // credential-shaped failure from a tool that isn't even in the registry)
+  // must still route + carry the card cleanly. The render guard lives in
+  // CredentialCard (name-only, no fabricated link); here we pin that the
+  // routing layer never drops or mangles a no-URL payload — the card the user
+  // sees is built from exactly this stored request.
+  it("routes a no-URL (signup_url: null) credential request unchanged", () => {
+    const cs = createChatStreams();
+    routeUserMessage(cs, CASE_A, "fetch era5 reanalysis");
+    // Mirrors the live Mexico-Beach ERA5 failure: a keyed provider whose
+    // request reaches the client with NO signup URL (NATE no-URL fallback).
+    routeCredentialRequest(
+      cs,
+      req("R3", {
+        provider_id: "ecmwf_cds",
+        provider_label: "Copernicus CDS",
+        signup_url: null,
+        secret_key_name: "CDSAPI_KEY",
+        message: "Copernicus CDS needs an API key.",
+        tool_name: "fetch_era5_reanalysis",
+      }),
+    );
+    const stored = getStream(cs, CASE_A).credentialRequests;
+    expect(stored).toHaveLength(1);
+    // The card consumes request.signup_url directly; a null survives intact so
+    // CredentialCard's `request.signup_url && (...)` guard renders name-only.
+    expect(stored[0]!.signup_url).toBeNull();
+    expect(stored[0]!.provider_label).toBe("Copernicus CDS");
+  });
+
+  it("treats an empty-string signup_url as no-URL (carried through unchanged)", () => {
+    const cs = createChatStreams();
+    routeUserMessage(cs, CASE_A, "fetch some keyed source");
+    routeCredentialRequest(cs, req("R4", { signup_url: "" }));
+    const stored = getStream(cs, CASE_A).credentialRequests;
+    expect(stored).toHaveLength(1);
+    // "" is falsy, so CredentialCard's truthy guard hides the link exactly like
+    // null does — no broken/empty anchor. The routing layer carries it verbatim.
+    expect(stored[0]!.signup_url).toBe("");
+  });
+
+  it("a no-URL request still records a saved resolution (name-only card usable)", () => {
+    const cs = createChatStreams();
+    routeUserMessage(cs, CASE_A, "hi");
+    routeCredentialRequest(cs, req("R5", { signup_url: null }));
+    recordCredentialResolved(cs, CASE_A, "R5", "saved");
+    expect(getStream(cs, CASE_A).credentialResolved.get("R5")).toBe("saved");
+  });
 });
 
 describe("recordCredentialResolved — saved / declined", () => {

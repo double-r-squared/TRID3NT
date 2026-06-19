@@ -61,10 +61,24 @@ __all__ = [
     "CREDENTIAL_PROVIDERS",
     "TOOL_PROVIDER",
     "TOOL_AUTH_ERROR_CODES",
+    "GENERIC_PROVIDER_ID",
     "get_provider",
     "provider_for_tool",
     "is_credential_error",
+    "is_credential_shaped_error",
+    "derive_generic_credential_name",
+    "generic_provider_for_tool",
 ]
+
+# Provider-id used for the NAME-ONLY generic credential card emitted when a
+# credential-shaped failure comes from a tool that is NOT in this registry
+# (NATE principle 3, 2026-06-18: still surface a card — a credential NAME + a
+# secret-entry form — rather than letting the LLM free-text a possibly-fake
+# signup URL). This id is NOT a real provider scope; it carries no signup_url.
+# The server only emits the generic card when this id is a valid wire
+# ``ProviderID`` (the schema owns that Literal); until then the server falls
+# back to surfacing the original typed error — it NEVER fabricates a URL.
+GENERIC_PROVIDER_ID = "generic"
 
 
 @dataclass(frozen=True)
@@ -252,6 +266,21 @@ _CREDENTIAL_TEXT_PHRASES: tuple[str, ...] = (
     "authentication required",
     "authentication failed",
     "not authorized",
+    # Config-missing family — a credential-shaped failure whose message names a
+    # missing/incomplete credentials CONFIG rather than the literal words "api
+    # key" (LIVE BUG NATE 2026-06-18: ERA5's no-key path surfaced
+    # "Missing/incomplete configuration file: /root/.cdsapirc", which matched
+    # NONE of the phrases above, so no credential card fired). Kept narrow +
+    # specific so a generic upstream/outage message does NOT trip the gate.
+    ".cdsapirc",
+    "missing/incomplete configuration",
+    "missing or incomplete configuration",
+    "incomplete configuration file",
+    "no api key configured",
+    "no api key found",
+    "credentials not configured",
+    "no credentials found",
+    "credential not configured",
 )
 
 
@@ -337,13 +366,41 @@ def is_credential_error(tool_name: str, error: BaseException) -> bool:
 
     Gating rule (HONEST, NO FABRICATION): only returns True for a tool that has
     a registered provider in ``TOOL_PROVIDER``. A credential-shaped error from a
-    tool with no provider returns ``False`` — the server cannot request a key
-    for an unknown provider, so it narrates the failure honestly via the normal
-    typed-error surface rather than fabricating a provider/prompt.
+    tool with no provider returns ``False`` here — the server then asks
+    ``is_credential_shaped_error`` (provider-agnostic) whether to surface a
+    NAME-ONLY generic card (NATE principle 3) instead of fabricating a
+    provider/URL.
     """
     if provider_for_tool(tool_name) is None:
         return False
+    # The error is credential-shaped by the same provider-agnostic checks the
+    # generic path uses; the only difference here is the registered-provider
+    # gate above (so a REGISTERED tool routes to its real provider card).
+    return is_credential_shaped_error(tool_name, error)
 
+
+def is_credential_shaped_error(tool_name: str, error: BaseException) -> bool:
+    """True when ``error`` looks like a missing/invalid-credential signal.
+
+    Provider-AGNOSTIC: unlike ``is_credential_error`` this does NOT require the
+    tool to have a registered provider. It is the shared shape-detector both
+    paths use:
+
+    - ``is_credential_error`` calls it AFTER confirming the tool has a
+      registered provider (→ a real per-provider card with a real signup_url).
+    - the server's generic fallback (NATE principle 3) calls it for a tool with
+      NO registered provider, to decide whether to surface a NAME-ONLY card
+      (credential name + secret-entry form, signup_url=None) rather than letting
+      the LLM narrate a possibly-fabricated URL.
+
+    Matches on ANY of: an explicit per-tool ``TOOL_AUTH_ERROR_CODES`` code; a
+    credential-SHAPED ``error_code`` (``*_AUTH_ERROR`` / ``*_MISSING_KEY`` /
+    contains ``API_KEY`` / ``UNAUTHORIZED`` / ``FORBIDDEN``); an HTTP 401/403 on
+    the typed error; a message/body that reads like a missing-key signal (incl.
+    the config-missing family — ``.cdsapirc`` / "missing/incomplete
+    configuration" / "credentials not configured"); or a known
+    ``*AuthError`` / ``*MissingKeyError`` exception-class family.
+    """
     # 1 + 2. error_code: explicit per-tool set, then generic pattern.
     ec = getattr(error, "error_code", None)
     codes = TOOL_AUTH_ERROR_CODES.get(tool_name)
@@ -382,3 +439,76 @@ def is_credential_error(tool_name: str, error: BaseException) -> bool:
     ):
         return True
     return False
+
+
+def derive_generic_credential_name(tool_name: str) -> str:
+    """Human credential name for a NAME-ONLY generic card (NATE principle 3).
+
+    For a credential-shaped failure from a tool NOT in this registry, the server
+    has no real provider label or ``secret_key_name`` to show — and MUST NOT
+    invent a signup URL. This derives an honest, readable credential name from
+    the tool name alone (the only thing we reliably know), e.g.::
+
+        fetch_usgs_water_gauges -> "USGS Water Gauges API key"
+        fetch_some_provider_data -> "Some Provider Data API key"
+        weird_tool              -> "Weird Tool API key"
+
+    The rules: strip a leading ``fetch_`` / ``get_`` / ``query_`` verb, split on
+    underscores, upper-case any short all-letter token (<=4 chars, e.g. "usgs",
+    "noaa", "gbif" -> "USGS", "NOAA", "GBIF") else title-case it, and append
+    " API key". Always returns a non-empty string so the card's
+    ``secret_key_name`` field (min_length=1) is satisfiable.
+    """
+    raw = (tool_name or "").strip()
+    if not raw:
+        return "API key"
+    parts = [p for p in raw.split("_") if p]
+    # Drop a leading fetch/get-style verb so the name reads as the DATA source.
+    if len(parts) > 1 and parts[0].lower() in (
+        "fetch", "get", "query", "load", "pull", "download", "request",
+    ):
+        parts = parts[1:]
+    words: list[str] = []
+    for p in parts:
+        if p.isalpha() and len(p) <= 4:
+            words.append(p.upper())
+        else:
+            words.append(p.capitalize())
+    base = " ".join(words).strip()
+    if not base:
+        return "API key"
+    return f"{base} API key"
+
+
+def generic_provider_for_tool(tool_name: str) -> CredentialProvider:
+    """Build a NAME-ONLY generic ``CredentialProvider`` (no real provider).
+
+    Used by the server's generic-fallback path (NATE principle 3) for a
+    credential-shaped failure from a tool with NO registered provider. Carries:
+
+    - ``provider_id = GENERIC_PROVIDER_ID`` ("generic") — a non-scoping
+      sentinel; the server only emits the card if this id is a valid wire
+      ``ProviderID`` (schema-owned), else it surfaces the original error.
+    - ``signup_url = None`` — NEVER a fabricated URL. The card shows the
+      credential NAME + a secret-entry form only (NATE principle 2: no-URL
+      fallback).
+    - ``secret_key_name`` / ``label`` derived from the tool name.
+    """
+    name = derive_generic_credential_name(tool_name)
+    # secret_key_name as an ENV-style token (e.g. "USGS Water Gauges API key"
+    # -> "USGS_WATER_GAUGES_API_KEY") so the prompt names a concrete field.
+    key_token = (
+        "_".join(name.replace("/", " ").split())
+        .upper()
+        .replace("-", "_")
+    ) or "API_KEY"
+    return CredentialProvider(
+        provider_id=GENERIC_PROVIDER_ID,
+        label=name,
+        signup_url=None,
+        secret_key_name=key_token,
+        default_message=(
+            f"This data source needs an API key ({name}). "
+            f"Add the key and I'll retry the request."
+        ),
+    )

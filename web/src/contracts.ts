@@ -374,7 +374,12 @@ export type ProviderID =
   | "anthropic"
   | "google_genai"
   | "mapbox"
-  | "maptiler";
+  | "maptiler"
+  // Generic name-only fallback — the credential card for ANY keyed endpoint with
+  // no dedicated provider above. Server derives the credential name from the
+  // failing tool and emits a NAME-ONLY card (signup_url null — never a fabricated
+  // URL). Surfaces the secret-entry form for any endpoint instead of a dead-end.
+  | "generic";
 
 export interface SecretRecord {
   schema_version?: "v1";
@@ -414,7 +419,14 @@ export interface SecretRevokePayload {
 // Flow:
 //   1. A tool dispatch hits a missing/invalid credential for a keyed provider.
 //      The agent pauses the tool and emits `credential-request` (server ->
-//      client) naming the provider + the secret key it needs + a signup URL.
+//      client) naming the provider + the secret key it needs + (when one
+//      exists) a signup URL. NATE no-URL fallback (2026-06-18): `signup_url`
+//      is OPTIONAL — when the provider has no reliable self-serve URL (or the
+//      failing tool isn't even in the credential registry) the envelope omits
+//      it (null/absent) and the client renders a NAME-ONLY card (provider
+//      label / credential name + the secret-entry form), NEVER a fabricated
+//      link. The registry is the ONLY source of a signup URL; the client must
+//      not invent one. The card stays fully usable name-only (Enter -> submit).
 //   2. The client surfaces a credential-entry affordance and SAVES the key via
 //      the EXISTING `secret-add` path (SecretAddPayload) — that is the only
 //      envelope that ever carries the raw key value (Decision F).
@@ -431,7 +443,11 @@ export interface CredentialRequestPayload {
   request_id: string;        // ULID; echoed back on credential-provided
   provider_id: ProviderID;   // closed Literal; scopes the secret-add reply
   provider_label: string;    // human-readable, e.g. "eBird"
-  signup_url?: string | null; // where to obtain a key; null = no self-serve
+  // Where to obtain a key. OPTIONAL: null / undefined / "" (empty) all mean
+  // "no reliable self-serve URL" — the card renders NAME-ONLY (no link) and
+  // stays fully usable. The registry is the ONLY source of this URL; the
+  // client never fabricates one (NATE no-hallucinate-URL rule 2026-06-18).
+  signup_url?: string | null;
   secret_key_name: string;   // canonical key name, e.g. "EBIRD_API_KEY"
   message: string;           // agent's user-facing explanation
   tool_name: string;         // the registry tool that paused

@@ -47,6 +47,7 @@ from grace2_agent.tools.fetch_era5_reanalysis import (
     ERA5MissingKeyError,
     ERA5UpstreamError,
     _build_cds_request,
+    _cds_retrieve_with_timeout,
     _resolve_api_key,
     _round_bbox_to_6dp,
     _validate_bbox,
@@ -585,6 +586,125 @@ def test_cdsapi_auth_error_surfaces_as_auth_error(monkeypatch):
                 api_key="bad-key",
             )
         assert exc_info.value.retryable is False
+
+
+# ---------------------------------------------------------------------------
+# Missing-credential classification (LIVE BUG NATE 2026-06-18).
+#
+# A Mexico Beach North Star run failed because the no-key CDS path raised the
+# cdsapi constructor error "Missing/incomplete configuration file:
+# /root/.cdsapirc" classified as ERA5UpstreamError — a code whose message
+# matched NO credential phrase, so the credential pipeline never fired and NO
+# secret-entry card surfaced. These tests pin the fix: the missing-.cdsapirc /
+# no-config family now classifies as ERA5MissingKeyError (ERA5_MISSING_KEY), so
+# is_credential_error → credential-request fires the registered ecmwf_cds card,
+# while a GENUINE transient/queue/timeout upstream failure stays
+# ERA5UpstreamError (a real outage is NOT misread as a missing key).
+# ---------------------------------------------------------------------------
+
+_REQ = {
+    "product_type": "reanalysis",
+    "variable": "total_precipitation",
+    "year": ["2024"],
+    "month": ["09"],
+    "day": ["26"],
+    "time": ["00:00"],
+    "area": [27.0, -82.0, 26.0, -81.0],
+    "format": "netcdf",
+}
+
+
+def _fake_cdsapi_raising(monkeypatch, *, on_construct=None, on_retrieve=None):
+    """Install a fake cdsapi whose Client constructor / retrieve raises."""
+    fake_mod = types.ModuleType("cdsapi")
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            if on_construct is not None:
+                on_construct()
+
+        def retrieve(self, dataset, request, out_path):
+            if on_retrieve is not None:
+                on_retrieve()
+
+    fake_mod.Client = FakeClient
+    monkeypatch.setitem(sys.modules, "cdsapi", fake_mod)
+
+
+def test_missing_cdsapirc_classifies_as_missing_key(monkeypatch):
+    """The cdsapi 'Missing/incomplete configuration file: ...cdsapirc' error
+    (no key + no rc file) → ERA5MissingKeyError (ERA5_MISSING_KEY), NOT
+    ERA5UpstreamError. This is the exact live failure NATE hit."""
+    def _construct():
+        raise Exception(
+            "Missing/incomplete configuration file: /root/.cdsapirc"
+        )
+
+    _fake_cdsapi_raising(monkeypatch, on_construct=_construct)
+    with pytest.raises(ERA5MissingKeyError) as exc_info:
+        _cds_retrieve_with_timeout(
+            api_url="https://x", api_key=None, request=_REQ, out_path="/tmp/x.nc"
+        )
+    assert exc_info.value.error_code == "ERA5_MISSING_KEY"
+    assert exc_info.value.retryable is False
+
+
+@pytest.mark.parametrize(
+    "msg",
+    [
+        "Missing/incomplete configuration file: /root/.cdsapirc",
+        "Missing or incomplete configuration file: ~/.cdsapirc",
+        "no api key configured",
+        "credentials not configured for this client",
+    ],
+)
+def test_no_credentials_family_classifies_as_missing_key(monkeypatch, msg):
+    """Every member of the no-credentials family → ERA5MissingKeyError."""
+    def _retrieve():
+        raise RuntimeError(msg)
+
+    _fake_cdsapi_raising(monkeypatch, on_retrieve=_retrieve)
+    with pytest.raises(ERA5MissingKeyError):
+        _cds_retrieve_with_timeout(
+            api_url="https://x", api_key=None, request=_REQ, out_path="/tmp/x.nc"
+        )
+
+
+@pytest.mark.parametrize(
+    "msg",
+    [
+        "CDS queue stalled — please retry later",
+        "503 Service Unavailable",
+        "Connection reset by peer",
+        "Internal Server Error",
+    ],
+)
+def test_genuine_upstream_failure_stays_upstream(monkeypatch, msg):
+    """A real transient/queue/network failure (a key IS present) stays
+    ERA5UpstreamError — it is NOT misclassified as a missing key."""
+    def _retrieve():
+        raise RuntimeError(msg)
+
+    _fake_cdsapi_raising(monkeypatch, on_retrieve=_retrieve)
+    with pytest.raises(ERA5UpstreamError) as exc_info:
+        _cds_retrieve_with_timeout(
+            api_url="https://x", api_key="present-key", request=_REQ,
+            out_path="/tmp/x.nc",
+        )
+    assert exc_info.value.retryable is True
+
+
+def test_present_but_rejected_key_stays_auth_error(monkeypatch):
+    """A present-but-rejected key (401/403) stays ERA5AuthError, not missing."""
+    def _retrieve():
+        raise RuntimeError("401 Unauthorized: User not authenticated")
+
+    _fake_cdsapi_raising(monkeypatch, on_retrieve=_retrieve)
+    with pytest.raises(ERA5AuthError):
+        _cds_retrieve_with_timeout(
+            api_url="https://x", api_key="bad-key", request=_REQ,
+            out_path="/tmp/x.nc",
+        )
 
 
 def test_layer_uri_shape_fields(monkeypatch):

@@ -123,7 +123,9 @@ from .auth_handshake import (
 from .case_lifecycle import CaseLifecycleError, ensure_case_qgs
 from .credential_registry import (
     CredentialProvider,
+    generic_provider_for_tool,
     is_credential_error,
+    is_credential_shaped_error,
     provider_for_tool,
 )
 from .layer_uri_emit import emit_layer_uri
@@ -4552,17 +4554,35 @@ async def _maybe_handle_credential_error(
     - ``dict`` (retry params with a freshly-resolved ``secret_ref``) when the
       user supplied a key (``credential-provided`` with ``provided=True``) —
       the caller retries the tool ONCE.
-    - ``None`` when the error is NOT a credential error, the provider is not
-      registered, the tool already prompted this turn (one-prompt-per-tool-per-
-      turn guard), or the user declined / the gate timed out. The caller then
-      re-raises the original error so it flows through the normal typed-error
-      surface (FR-AS-11) and Gemini narrates the failure honestly.
+    - ``None`` when the error is NOT credential-shaped, the tool already
+      prompted this turn (one-prompt-per-tool-per-turn guard), or the user
+      declined / the gate timed out. The caller then re-raises the original
+      error so it flows through the normal typed-error surface (FR-AS-11) and
+      the LLM narrates the failure honestly.
+
+    Two paths:
+    1. REGISTERED tool (``provider_for_tool`` resolves): emit the real
+       per-provider card (real ``signup_url`` from the registry — the ONLY
+       source of real URLs) and, on provided=True, re-resolve the per-Case
+       ``secret_ref`` so the retry reads the saved key.
+    2. UNREGISTERED tool with a credential-SHAPED error (NATE principle 3,
+       2026-06-18): emit a NAME-ONLY generic card (credential name derived from
+       the tool, ``signup_url=None``, just the secret-entry form) so the user
+       still gets a card and the agent NEVER narrates a fabricated URL. On
+       provided=True we retry once with the original params (the tool reads its
+       own key path); there is no per-Case ``secret_ref`` to inject for an
+       unregistered provider.
     """
-    if not is_credential_error(tool_name, error):
-        return None
     provider = provider_for_tool(tool_name)
-    if provider is None:
+    is_registered_credential = (
+        provider is not None and is_credential_error(tool_name, error)
+    )
+    is_generic_credential = (
+        provider is None and is_credential_shaped_error(tool_name, error)
+    )
+    if not is_registered_credential and not is_generic_credential:
         return None
+
     # One prompt per tool per turn — don't loop forever on a still-bad key.
     if tool_name in state.credential_prompted_tools:
         logger.info(
@@ -4570,6 +4590,38 @@ async def _maybe_handle_credential_error(
             tool_name,
         )
         return None
+
+    if is_generic_credential:
+        # NATE principle 3: NAME-ONLY card for a tool with no registered
+        # provider. ``generic_provider_for_tool`` derives a human credential
+        # name and pins ``signup_url=None`` (NO fabricated URL). The emit is
+        # best-effort: if the generic ``provider_id`` is not yet a valid wire
+        # ``ProviderID`` (schema-owned Literal), ``_emit_credential_request_and_wait``
+        # → ``_build_credential_request_payload`` returns None and we surface
+        # the original typed error instead — we still NEVER invent a URL.
+        generic_provider = generic_provider_for_tool(tool_name)
+        state.credential_prompted_tools.add(tool_name)
+        logger.info(
+            "credential-request (generic name-only) tool=%s label=%r "
+            "signup_url=None — no registered provider",
+            tool_name,
+            generic_provider.label,
+        )
+        provided = await _emit_credential_request_and_wait(
+            websocket, state, tool_name, generic_provider, error
+        )
+        if provided is None or not provided.provided:
+            return None
+        # Unregistered provider: no per-Case secret_ref to inject. Retry once
+        # with the original params (minus any stale inline key) so the tool can
+        # pick up a key from its own resolution path.
+        return {
+            k: v for k, v in params.items()
+            if k not in ("secret_ref", "map_key", "api_key")
+        }
+
+    # REGISTERED path: real per-provider card with a real signup_url.
+    assert provider is not None  # narrowed by is_registered_credential
     state.credential_prompted_tools.add(tool_name)
 
     provided = await _emit_credential_request_and_wait(
