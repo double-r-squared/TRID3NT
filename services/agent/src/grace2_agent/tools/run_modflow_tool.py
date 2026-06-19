@@ -44,11 +44,13 @@ from grace2_contracts.modflow_contracts import MODFLOWRunArgs, PlumeLayerURI
 from grace2_contracts.tool_registry import AtomicToolMetadata
 
 from . import register_tool
+from ..pipeline_emitter import current_emitter
 from ..tool_arg_normalizer import LatLonCoercionError, coerce_latlon
 from ..workflows.postprocess_modflow import (
     PostprocessMODFLOWError,
     postprocess_modflow,
 )
+from ..workflows.solve_progress import drive_live_solve_progress
 from ..workflows.run_modflow import (
     MODFLOWWorkflowError,
     build_and_stage_modflow_deck,
@@ -230,7 +232,35 @@ async def run_modflow_job(
             # long-blocking-solve class that killed the WS for SWMM. Offload to
             # a worker thread. run_modflow_local is a foreground subprocess run
             # + mfsim.lst parse + completion.json write; emit-free.
-            run_outputs_uri = await asyncio.to_thread(run_modflow_local, staging)
+            #
+            # LIVE solve-progress heartbeat (NATE 2026-06-17): the off-loop mf6
+            # solve emits nothing for minutes, so the running card is a silent
+            # spinner. Drive the shared solve-progress envelope ON the loop (the
+            # emitter is loop-bound) alongside the off-loop solve - identical to
+            # the proven SFINCS pattern. DeckStaging carries no cell-count /
+            # resolution / perf-model ETA, so those pass None - the heartbeat
+            # still ticks elapsed wall-clock (the point). Best-effort: emitter
+            # None -> no-op; cancelled + awaited in the finally regardless.
+            _progress_task = asyncio.ensure_future(
+                drive_live_solve_progress(
+                    emitter=current_emitter(),
+                    run_id=staging.run_id,
+                    solver="modflow",
+                    grid_resolution_m=None,
+                    active_cell_count=None,
+                    vcpus=None,
+                    eta_seconds=None,
+                )
+            )
+            try:
+                run_outputs_uri = await asyncio.to_thread(run_modflow_local, staging)
+            finally:
+                # Tear down the heartbeat (success, failure, OR cancel).
+                _progress_task.cancel()
+                try:
+                    await _progress_task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
         else:
             # audit #4: submit_modflow_run is a synchronous boto3-backed
             # local-exec dispatch (launch_local_solver is non-blocking but does

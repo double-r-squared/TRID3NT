@@ -59,6 +59,8 @@ from .run_swmm import (
     is_local_mode,
     run_swmm_local,
 )
+from .solve_progress import drive_live_solve_progress
+from .swmm_mesh_builder import estimate_swmm_solve_seconds
 
 logger = logging.getLogger("grace2_agent.workflows.model_urban_flood_swmm")
 
@@ -388,7 +390,40 @@ async def model_urban_flood_swmm(
         # added later, switch to run_coroutine_threadsafe(loop) inside the
         # worker. (Mirrors model_flood_scenario's asyncio.to_thread off-loading
         # of its blocking fetcher/solve stages.)
-        run = await asyncio.to_thread(run_swmm_local, staging)
+        #
+        # LIVE solve-progress heartbeat (NATE 2026-06-17): run_swmm_local emits
+        # nothing for minutes off-loop, so the running card is a silent spinner.
+        # Drive the shared solve-progress envelope ON the loop (the emitter is
+        # loop-bound) alongside the off-loop solve - identical to the proven
+        # SFINCS pattern in model_flood_scenario. Best-effort: emitter None ->
+        # no-op; cancelled + awaited in the finally regardless of outcome.
+        from ..tools.solver import AWS_BATCH_COMPUTE_CLASS_SIZING
+
+        _swmm_vcpus = AWS_BATCH_COMPUTE_CLASS_SIZING.get(
+            effective_compute_class, {}
+        ).get("vcpus")
+        _progress_task = asyncio.ensure_future(
+            drive_live_solve_progress(
+                emitter=current_emitter(),
+                run_id=staging.run_id,
+                solver=SWMM_SOLVER_NAME,
+                grid_resolution_m=getattr(staging.build, "resolution_m", None),
+                active_cell_count=getattr(staging.build, "n_active_cells", None),
+                vcpus=int(_swmm_vcpus) if _swmm_vcpus is not None else None,
+                eta_seconds=estimate_swmm_solve_seconds(
+                    int(getattr(staging.build, "n_active_cells", 0) or 0)
+                ),
+            )
+        )
+        try:
+            run = await asyncio.to_thread(run_swmm_local, staging)
+        finally:
+            # Tear down the heartbeat (success, failure, OR cancel).
+            _progress_task.cancel()
+            try:
+                await _progress_task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
 
         # --- Step 6: postprocess (rasterize node depths -> peak + frames) ---
         # BREAK B, post-solve: postprocess_swmm is a SYNCHRONOUS compute (pyswmm
