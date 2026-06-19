@@ -575,6 +575,25 @@ export class GraceWs {
   // StartInstances when the box appears stopped. Debounced internally; a no-op
   // when no wake endpoint is configured (dev/LAN). Injectable for tests.
   private readonly waker: AgentWaker;
+  // LANE CASE-WEB — the CLIENT's CURRENT active Case (mirrors
+  // useCases.activeCaseId). The app keeps this updated via setCurrentCaseId.
+  // It is STAMPED onto every outbound user-message AND onto the session-resume
+  // sent on (re)connect / keepalive / explicit re-pull, so the SERVER always
+  // learns the client's current case and uses it as the authority — closing the
+  // two-sources-of-truth gap (server `_SESSION_ACTIVE_CASE` vs client) where a
+  // reconnect-replay or a stale turn-bind snapped to the wrong case. `null` =
+  // root view (no active Case).
+  private currentCaseId: string | null = null;
+  // LANE CASE-WEB — outbound queue for envelopes issued while the socket is NOT
+  // OPEN. sendEnvelope previously no-opped silently (ws.ts "send to no one while
+  // connecting"), so a case-command(select) or user-message tapped during
+  // connecting/reconnecting was LOST and the server stranded on the wrong case.
+  // We buffer those intent-bearing frames here and FLUSH them in the open
+  // handler AFTER auth-token + session-resume. Liveness/ack frames
+  // (session-resume keepalive, auth-token, cancel) are NOT queued — they are
+  // either re-issued naturally on reconnect or meaningless once the socket is
+  // gone.
+  private outboundQueue: string[] = [];
 
   constructor(url: string, handlers: WsHandlers, opts?: { waker?: AgentWaker }) {
     this.url = url;
@@ -590,6 +609,22 @@ export class GraceWs {
   /** Current session ULID; survives page reload via localStorage. */
   get session(): string {
     return this.sessionId;
+  }
+
+  /**
+   * LANE CASE-WEB — tell this connection the client's CURRENT active Case
+   * (useCases.activeCaseId). App.tsx calls this whenever the active Case
+   * changes (and on connect). The value is stamped onto every subsequent
+   * outbound user-message + session-resume so the server treats the client as
+   * the case authority. `null` = root view (no active Case). Idempotent.
+   */
+  setCurrentCaseId(caseId: string | null): void {
+    this.currentCaseId = caseId;
+  }
+
+  /** LANE CASE-WEB — the client's current active Case as this socket knows it. */
+  get caseId(): string | null {
+    return this.currentCaseId;
   }
 
   /**
@@ -616,6 +651,10 @@ export class GraceWs {
 
   close(): void {
     this.closedByUser = true;
+    // LANE CASE-WEB — an explicit teardown abandons any buffered intent frames;
+    // a fresh GraceWs (App re-mount) starts with an empty queue so stale
+    // selects/messages from a torn-down connection never replay.
+    this.outboundQueue = [];
     // BUG 4a — stop the keepalive ping/pong timers on explicit teardown.
     this.stopKeepalive();
     if (this.reconnectTimer !== null) {
@@ -653,10 +692,12 @@ export class GraceWs {
    */
   requestSessionState(): void {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return;
+    // LANE CASE-WEB — re-pull also re-asserts the client's CURRENT active Case
+    // so a resume-time replay never snaps the server back to a stale case.
     const resume: Envelope<SessionResumePayload> = envelope(
       "session-resume",
       this.sessionId,
-      {} as SessionResumePayload,
+      { case_id: this.currentCaseId },
     );
     this.sendEnvelope(resume);
   }
@@ -770,13 +811,21 @@ export class GraceWs {
       // means "use server's current selection" (omit the field entirely so
       // older server builds that don't know the field still parse cleanly).
       ...(modelId != null ? { model_id: modelId } : {}),
+      // LANE CASE-WEB — STAMP the client's CURRENT active Case so the server
+      // binds the turn to the case the client is actually looking at (the
+      // authority), not a possibly-stale in-memory active case. `null` = root.
+      case_id: this.currentCaseId,
     };
     const env: Envelope<UserMessagePayload> = envelope(
       "user-message",
       this.sessionId,
       payload,
     );
-    this.sendEnvelope(env);
+    // LANE CASE-WEB — a user-message issued while the socket isn't OPEN must NOT
+    // be silently dropped; QUEUE it so the open handler flushes it once
+    // connected (after auth-token + session-resume). When OPEN this sends
+    // immediately via sendEnvelope as before.
+    this.sendOrQueue(env);
   }
 
   sendCancel(reason: string | null = null): void {
@@ -1051,7 +1100,20 @@ export class GraceWs {
       this.sessionId,
       payload,
     );
-    this.sendEnvelope(env);
+    // LANE CASE-WEB — a case-command (above all `select`) issued while the
+    // socket isn't OPEN (a select tapped mid-reconnect) must NOT be silently
+    // dropped — that is exactly what stranded the server on the wrong case.
+    // QUEUE it so the open handler flushes it once connected (after auth-token +
+    // session-resume re-assert the case). When OPEN this sends immediately.
+    // ``select`` ALSO updates our stamped currentCaseId so the very next
+    // session-resume / user-message re-asserts the same case even if the queued
+    // frame and the resume race.
+    if (command === "select" && caseId) {
+      this.currentCaseId = caseId;
+    } else if (command === "deselect") {
+      this.currentCaseId = null;
+    }
+    this.sendOrQueue(env);
   }
 
   /**
@@ -1146,13 +1208,23 @@ export class GraceWs {
         // The socket may have closed (or been re-opened) while awaiting the
         // token; sendEnvelope no-ops unless THIS socket is still OPEN.
         if (this.socket !== ws || ws.readyState !== WebSocket.OPEN) return;
-        // Resume the session (envelope carries the persisted id; payload empty).
+        // Resume the session. LANE CASE-WEB — STAMP the client's CURRENT active
+        // Case so the server's reconnect-replay re-asserts the client's case as
+        // the authority (instead of snapping back to its stale in-memory active
+        // case). `null` = root view → empty-payload wire shape preserved.
         const resume: Envelope<SessionResumePayload> = envelope(
           "session-resume",
           this.sessionId,
-          {} as SessionResumePayload,
+          { case_id: this.currentCaseId },
         );
         this.sendEnvelope(resume);
+        // LANE CASE-WEB — FLUSH any envelopes that were issued while the socket
+        // was NOT OPEN (case-command(select) tapped mid-reconnect, a queued
+        // user-message). They go out AFTER auth-token + session-resume so the
+        // gate's first-frame rule holds and the server's case is already
+        // re-asserted before the select/message lands. Done only for THIS
+        // socket while it is still OPEN.
+        this.flushOutboundQueue(ws);
       })();
     });
     ws.addEventListener("message", (ev) => this.handleMessage(ev.data));
@@ -1515,6 +1587,54 @@ export class GraceWs {
   }
 
   /**
+   * LANE CASE-WEB — send NOW if the socket is OPEN, else BUFFER for the open
+   * handler to flush. Used for intent-bearing client->server frames
+   * (case-command(select), user-message) so a select/message issued during
+   * connecting / reconnecting / waking is delivered once connected instead of
+   * being silently dropped (NATE's "don't send to no one while connecting").
+   *
+   * The frame is pre-serialized here so the queued bytes are stable (the
+   * stamped case_id / model_id are captured at call time, matching the user's
+   * intent at the moment they acted). A small cap guards against unbounded
+   * growth while a box is stopped for a long time; the OLDEST frames are
+   * dropped first (keep the most recent intent).
+   */
+  private sendOrQueue<P>(env: Envelope<P>): void {
+    if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+      this.socket.send(JSON.stringify(env));
+      return;
+    }
+    this.outboundQueue.push(JSON.stringify(env));
+    const MAX_QUEUE = 50;
+    if (this.outboundQueue.length > MAX_QUEUE) {
+      this.outboundQueue.splice(0, this.outboundQueue.length - MAX_QUEUE);
+    }
+  }
+
+  /**
+   * LANE CASE-WEB — flush the buffered intent frames onto the just-opened
+   * socket, in FIFO order, AFTER auth-token + session-resume have been sent (the
+   * open handler calls this last). Guards that THIS socket is still the live
+   * OPEN one before each batch so a mid-flush close can't blast frames into a
+   * dead socket. Anything still queued if the socket isn't OPEN stays buffered
+   * for the next open.
+   */
+  private flushOutboundQueue(ws: WebSocket): void {
+    if (this.outboundQueue.length === 0) return;
+    if (this.socket !== ws || ws.readyState !== WebSocket.OPEN) return;
+    const pending = this.outboundQueue;
+    this.outboundQueue = [];
+    for (const raw of pending) {
+      if (this.socket !== ws || ws.readyState !== WebSocket.OPEN) {
+        // Socket died mid-flush — re-buffer the rest (this frame included).
+        this.outboundQueue.push(raw);
+        continue;
+      }
+      ws.send(raw);
+    }
+  }
+
+  /**
    * Fetch the Firebase ID token (if any) and emit the `auth-token` envelope.
    *
    * Job-0123 / SRS H.5: when a token is available, the agent's
@@ -1657,10 +1777,14 @@ export class GraceWs {
    */
   private sendKeepalivePing(): void {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return;
+    // LANE CASE-WEB — the keepalive resume also carries the client's CURRENT
+    // active Case so the server's authoritative active case never drifts away
+    // from the client between turns (the resume reply is replace-not-reconcile,
+    // so a matching case is a no-op).
     const resume: Envelope<SessionResumePayload> = envelope(
       "session-resume",
       this.sessionId,
-      {} as SessionResumePayload,
+      { case_id: this.currentCaseId },
     );
     this.sendEnvelope(resume);
     if (this.pongDeadlineTimer === null) {

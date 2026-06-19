@@ -2870,6 +2870,15 @@ export function Chat({
   const wsRef = useRef<GraceWs | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
+  // Case-authority: Chat owns its OWN GraceWs (separate from App's), and it is
+  // the sender of chat turns. Keep that socket's notion of the current Case in
+  // sync with the visible Case so every user-message + reconnect-resume stamps
+  // `case_id` — so the server binds the turn to the Case the user is actually in
+  // (closes the gap where a chat turn bound to the server's stale active Case).
+  // A ref (not a dep of the WS-construction effect, whose deps are deliberately
+  // stable) so a Case switch never tears down + reopens Chat's socket.
+  const activeCaseIdRef = useRef<string | null>(activeCaseId ?? null);
+
   // job-0266 — visible stream key + view-model for this render. getStream
   // lazily creates the entry; the ref-map mutation during render is
   // idempotent and safe.
@@ -3036,12 +3045,24 @@ export function Chat({
       },
     });
     wsRef.current = ws;
+    // Stamp the current Case BEFORE connect() so the open-handler session-resume
+    // re-asserts it as the server authority (and any queued/first turn carries it).
+    ws.setCurrentCaseId(activeCaseIdRef.current);
     ws.connect();
     return () => ws.close();
     // job-0253b — authEpoch bumps on a recovered re-sign-in so Chat's GraceWs
     // closes its dead post-4401 socket and reconnects (OQ-0253-CHAT-WS-4401).
     // Constant in disabled/dev mode → this effect still runs exactly once.
   }, [wsUrl, bump, authEpoch]);
+
+  // Case-authority sync: push the visible Case into Chat's live socket whenever
+  // it changes (separate from the WS-construction effect so a Case switch does
+  // NOT tear down + reopen the socket). Keeps the ref current for a later
+  // reconnect (the construction effect re-stamps from it).
+  useEffect(() => {
+    activeCaseIdRef.current = activeCaseId ?? null;
+    wsRef.current?.setCurrentCaseId(activeCaseId ?? null);
+  }, [activeCaseId]);
 
   // Dev-only seam: expose pipeline-state injection so the browser console /
   // Playwright scripts can drive the inline cards without a live agent.

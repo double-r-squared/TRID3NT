@@ -110,8 +110,58 @@ def test_confirm_response(session_id: str) -> None:
 def test_session_resume_empty_payload(session_id: str) -> None:
     payload = ws.SessionResumePayload()
     dumped = _roundtrip_idempotent(_wrap(payload, session_id))
-    # payload object is always present, never null
-    assert dumped["payload"] == {}
+    # payload object is always present, never null. job-CASE-AUTHORITY adds an
+    # OPTIONAL case_id (default None) — an older/empty resume carries it as null.
+    assert dumped["payload"] == {"case_id": None}
+
+
+def test_session_resume_carries_client_case_id(session_id: str) -> None:
+    """job-CASE-AUTHORITY: the resume stamps the client's CURRENT Case so the
+    server re-binds its active-Case pointer to it on reconnect (the SNAP fix).
+    """
+    case_id = new_ulid()
+    payload = ws.SessionResumePayload(case_id=case_id)
+    dumped = _roundtrip_idempotent(_wrap(payload, session_id))
+    assert dumped["type"] == "session-resume"
+    assert dumped["payload"]["case_id"] == case_id
+    # parses back to the same value (str | None field).
+    reparsed = ws.SessionResumePayload.model_validate(dumped["payload"])
+    assert reparsed.case_id == case_id
+
+
+def test_session_resume_case_id_defaults_none() -> None:
+    """Older client (no stamp) leaves case_id None — server keeps its pointer."""
+    assert ws.SessionResumePayload().case_id is None
+
+
+def test_user_message_carries_client_case_id(session_id: str) -> None:
+    """job-CASE-AUTHORITY: user-message stamps the client's CURRENT Case so the
+    turn binds to it (e.g. a 'resize bbox' runs in the user's actual Case), not
+    a stale server pointer. Same field name/shape as SessionResumePayload.
+    """
+    case_id = new_ulid()
+    payload = ws.UserMessagePayload(text="resize the bbox a bit larger", case_id=case_id)
+    dumped = _roundtrip_idempotent(_wrap(payload, session_id))
+    assert dumped["type"] == "user-message"
+    assert dumped["payload"]["case_id"] == case_id
+    reparsed = ws.UserMessagePayload.model_validate(dumped["payload"])
+    assert reparsed.case_id == case_id
+
+
+def test_user_message_case_id_defaults_none() -> None:
+    """Older client (no stamp) leaves case_id None — server falls back to its
+    own active-Case pointer (prior behavior preserved)."""
+    assert ws.UserMessagePayload(text="hi").case_id is None
+
+
+def test_case_id_field_identical_shape_on_both_payloads() -> None:
+    """PINNED CONTRACT: case_id is the SAME name + shape (str | None, default
+    None, optional) on BOTH SessionResumePayload and UserMessagePayload."""
+    sr_field = ws.SessionResumePayload.model_fields["case_id"]
+    um_field = ws.UserMessagePayload.model_fields["case_id"]
+    assert sr_field.annotation == um_field.annotation
+    assert sr_field.default is None and um_field.default is None
+    assert not sr_field.is_required() and not um_field.is_required()
 
 
 # --------------------------------------------------------------------------- #

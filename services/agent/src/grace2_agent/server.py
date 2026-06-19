@@ -2378,7 +2378,10 @@ async def _stream_gemini_reply(
 
 
 async def _handle_session_resume(
-    websocket: ServerConnection, state: SessionState
+    websocket: ServerConnection,
+    state: SessionState,
+    *,
+    client_case_id: str | None = None,
 ) -> None:
     """Reply with a fresh session-state. M1 in-memory only; Mongo replay lands
     when the session-records seam is wired.
@@ -2389,8 +2392,49 @@ async def _handle_session_resume(
     job-0121: also emits a ``case-list`` so the client renders the left-rail
     Case list on initial connect (FR-MP-6 landing state). Best-effort — if
     Persistence is unbound the case-list emission is skipped and the M1
-    in-memory path keeps working."""
+    in-memory path keeps working.
+
+    job-CASE-AUTHORITY: ``client_case_id`` is the Case the CLIENT is currently
+    in (stamped on the ``session-resume`` payload). It is the AUTHORITY: when
+    it differs from the server's ``state.active_case_id`` we RE-BIND the
+    server pointer to it BEFORE the layer replay, so a reconnect replays the
+    Case the user is actually in — never a stale server pointer (THE SNAP: a
+    case-select tapped mid-reconnect never reached the server, and the bare
+    ``session-resume {}`` then replayed the server's stale active Case). A
+    resume that carries NO ``case_id`` (older client) keeps the current
+    behavior untouched. INVARIANT (job-0356): we are correcting WHICH Case the
+    replay targets, not removing replay — a genuine fresh reconnect still
+    replays the active Case's rendered layers."""
     _ensure_emitter(websocket, state)
+    # job-CASE-AUTHORITY: warm the in-memory pointer from the persisted
+    # ``last_active_case_id`` first (a no-op when this session already has a
+    # live pointer this process). After an EC2 auto-stop/restart the
+    # ``_SESSION_ACTIVE_CASE`` cache is empty; without this a bare resume from
+    # an older client (no stamp) would resume to None and lose the Case. The
+    # client stamp below still overrides this seed on any disagreement.
+    await _reload_session_active_case(state)
+    # job-CASE-AUTHORITY: re-bind the server's active-Case pointer to the
+    # client's current Case BEFORE the replay below resolves it. The client is
+    # the authority; the in-memory ``_SESSION_ACTIVE_CASE`` pointer is a cache
+    # that may be stale (mid-reconnect select dropped) or cold (EC2 restart
+    # wiped it). Only re-bind on a genuine change to a non-None Case so an
+    # older client's bare resume (no stamp) leaves the pointer alone. The
+    # ``state.active_case_id`` setter writes through ``_set_session_active_case``
+    # so EVERY connection of the session observes the corrected Case; we also
+    # persist the pointer so it survives the next restart. A change here also
+    # invalidates this connection's case-context sync marker so the next
+    # ``user-message`` re-syncs (LLM history + layer accumulator) to the
+    # corrected Case via ``_sync_case_context``.
+    if client_case_id is not None and client_case_id != state.active_case_id:
+        logger.info(
+            "session-resume re-binding active case session=%s server=%s client=%s",
+            state.session_id,
+            state.active_case_id,
+            client_case_id,
+        )
+        state.active_case_id = client_case_id
+        state.case_context_synced_to = _CASE_SYNC_NEVER
+        await _persist_session_active_case(state, client_case_id)
     # job-SOLVE-SURVIVE Requirement 2: this is the canonical reconnect entry —
     # a freshly-opened socket sends ``session-resume`` first. If a turn from a
     # now-closed socket of this SAME session is still running (a live SFINCS
@@ -2681,6 +2725,77 @@ async def _touch_session_record(
         )
 
 
+async def _persist_session_active_case(
+    state: SessionState, case_id: str | None
+) -> None:
+    """Persist the session's active-Case pointer (job-CASE-AUTHORITY).
+
+    Writes ``last_active_case_id`` onto the ``sessions`` document so the active
+    pointer survives an EC2 auto-stop/restart that wipes the in-memory
+    ``_SESSION_ACTIVE_CASE`` dict. The client-stamped ``case_id`` on
+    ``session-resume`` / ``user-message`` stays the REAL authority; this is the
+    cold-start cache. Fired whenever the server re-binds the pointer to the
+    client's Case (resume re-bind, user-turn re-bind) so a later restart's
+    fresh ``SessionState`` reloads the right Case (see
+    ``_reload_session_active_case``).
+
+    Best-effort like ``_touch_session_record``: a persistence hiccup is logged
+    at WARNING and never reaches the caller's turn.
+    """
+    p = get_persistence()
+    if p is None:
+        return
+    try:
+        await p.set_session_active_case(state.session_id, case_id)
+    except Exception:  # noqa: BLE001 — side effect, never bubble up
+        logger.warning(
+            "persist active-case pointer failed session=%s",
+            state.session_id,
+            exc_info=True,
+        )
+
+
+async def _reload_session_active_case(state: SessionState) -> None:
+    """Reload the persisted active-Case pointer into the in-memory registry.
+
+    job-CASE-AUTHORITY: when a fresh ``SessionState`` is built after an EC2
+    restart (or a brand-new process), the session-scoped
+    ``_SESSION_ACTIVE_CASE`` dict is empty — the in-memory cache died with the
+    old process. This reloads the persisted ``last_active_case_id`` for the
+    session so the server's pointer is warm again BEFORE the first replay /
+    turn. The client-stamped ``case_id`` (resume + user-message) still wins on
+    any disagreement; this only seeds a sensible default for a bare resume
+    (older client, no stamp).
+
+    Idempotent + guarded: only seeds when the registry has NO entry for this
+    session yet (a value already present — set by a case-command or a prior
+    client stamp this process — is the live truth and is never overwritten).
+    Best-effort: a missing record / persistence hiccup leaves the pointer
+    None, exactly as before this fix.
+    """
+    if state.session_id in _SESSION_ACTIVE_CASE:
+        return
+    p = get_persistence()
+    if p is None:
+        return
+    try:
+        persisted = await p.get_session_active_case(state.session_id)
+    except Exception:  # noqa: BLE001 — best-effort, never break resume
+        logger.warning(
+            "reload active-case pointer failed session=%s",
+            state.session_id,
+            exc_info=True,
+        )
+        return
+    if persisted is not None and state.session_id not in _SESSION_ACTIVE_CASE:
+        _set_session_active_case(state.session_id, persisted)
+        logger.info(
+            "reloaded persisted active case session=%s case=%s",
+            state.session_id,
+            persisted,
+        )
+
+
 async def _ensure_auth_handshake(
     websocket: ServerConnection,
     state: SessionState,
@@ -2935,6 +3050,11 @@ async def _emit_case_open(
     state.chat_history = []
     state.turn_count = 0
     await _touch_session_record(state, case_id=case_id)  # D.6 heartbeat (M4)
+    # job-CASE-AUTHORITY: persist the active-Case pointer on explicit
+    # case-open/select so the cold-start cache (``last_active_case_id``) is warm
+    # for a reconnect after an EC2 restart — even for an older client that
+    # later resumes with no ``case_id`` stamp.
+    await _persist_session_active_case(state, case_id)
     p = get_persistence()
     if p is None:
         logger.warning(
@@ -3152,6 +3272,9 @@ async def _handle_case_command(
         state.turn_count = 0
         if state.emitter is not None:
             state.emitter.reset_loaded_layers([])
+        # job-CASE-AUTHORITY: clear the persisted pointer too, so a reconnect
+        # after restart does NOT re-seed the just-exited Case.
+        await _persist_session_active_case(state, None)
         logger.info(
             "case-command deselect session=%s prev_case=%s",
             state.session_id,
@@ -3456,6 +3579,8 @@ async def _prepare_user_turn(
     websocket: ServerConnection,
     state: SessionState,
     text: str,
+    *,
+    client_case_id: str | None = None,
 ) -> tuple[str, dict] | None:
     """Pre-dispatch sequence for one ``user-message`` (job-0262 extraction).
 
@@ -3463,8 +3588,15 @@ async def _prepare_user_turn(
     Gemini stream or ``/invoke`` directive — observes the final Case
     context):
 
-    1. ``_sync_case_context`` — catch this connection up to the session's
-       active Case (job-0259 sibling-connection sync).
+    0. job-CASE-AUTHORITY: re-bind the server's active-Case pointer to the
+       client's stamped ``client_case_id`` (the Case the user is actually in)
+       when it differs from the stale server pointer — BEFORE the sync, the
+       auto-create check, and the turn pin. So e.g. a 'resize bbox' turn runs
+       in the client's current Case, never a Case the server pointer drifted to
+       (mid-reconnect select dropped / restart wiped the cache). A message with
+       NO ``case_id`` (older client) keeps the prior behavior.
+    1. ``_sync_case_context`` — catch this connection up to the (now corrected)
+       session active Case (job-0259 sibling-connection sync).
     2. job-0262 auto-create: a non-directive prompt with NO active Case
        mints + activates a prompt-named Case (see
        ``_auto_create_case_from_root``). ``/invoke`` debug directives stay on
@@ -3478,6 +3610,24 @@ async def _prepare_user_turn(
     Returns the parsed ``/invoke`` directive (``(tool_name, params)``) or
     ``None`` for the Gemini path — the caller branches on it.
     """
+    # job-CASE-AUTHORITY (step 0): the client's stamped Case is the authority
+    # for this turn. Re-bind the session-scoped pointer to it before any
+    # sync/auto-create/pin reads ``active_case_id``, so the whole turn (LLM
+    # context sync, AOI bbox, every persistence write) follows the Case the
+    # user is actually viewing — not a server pointer that drifted while the
+    # socket was reconnecting. Invalidate this connection's sync marker so
+    # ``_sync_case_context`` below reloads the corrected Case's LLM history +
+    # layer accumulator, and persist the pointer so it survives a restart.
+    if client_case_id is not None and client_case_id != state.active_case_id:
+        logger.info(
+            "user-message re-binding active case session=%s server=%s client=%s",
+            state.session_id,
+            state.active_case_id,
+            client_case_id,
+        )
+        state.active_case_id = client_case_id
+        state.case_context_synced_to = _CASE_SYNC_NEVER
+        await _persist_session_active_case(state, client_case_id)
     await _sync_case_context(websocket, state)
     directive = _parse_invoke_directive(text)
     auto_case_id: str | None = None
@@ -7321,8 +7471,10 @@ def _make_handler(settings: GeminiSettings):
                             return
 
                     if msg_type == "session-resume":
-                        SessionResumePayload.model_validate(payload_dict)
-                        await _handle_session_resume(websocket, state)
+                        sr = SessionResumePayload.model_validate(payload_dict)
+                        await _handle_session_resume(
+                            websocket, state, client_case_id=sr.case_id
+                        )
 
                     elif msg_type == "user-message":
                         um = UserMessagePayload.model_validate(payload_dict)
@@ -7362,7 +7514,7 @@ def _make_handler(settings: GeminiSettings):
                         # parsed ``/invoke`` directive for the M4
                         # live-evidence path; None streams through Gemini.
                         directive = await _prepare_user_turn(
-                            websocket, state, um.text
+                            websocket, state, um.text, client_case_id=um.case_id
                         )
                         # job-0269: stream-scoped cancellation replaces the
                         # M1 "cancel anything running" policy. Only a

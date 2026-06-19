@@ -53,19 +53,38 @@ export interface UserMessagePayload {
   research_mode?: ResearchMode; // default "research" (FR-WC-15 toggle carrier; A1 amendment)
   /** In-chat model selector — Bedrock model id (NATE 2026-06-17). Null → server keeps its current selection. */
   model_id?: string | null;
+  /**
+   * Client's CURRENT active Case (useCases.activeCaseId), stamped on every
+   * outbound user-message so the SERVER binds the turn to the case the client
+   * is actually looking at — closing the two-sources-of-truth gap where the
+   * server's in-memory `_SESSION_ACTIVE_CASE` could lag behind the client
+   * (e.g. a case-select tapped mid-reconnect that never reached the server).
+   * `null` / absent = root view (no active Case); the server keeps its own
+   * notion. Mirrors `UserMessagePayload.case_id` in
+   * packages/contracts/src/grace2_contracts/ws.py (same name, same shape).
+   */
+  case_id?: string | null;
 }
 
 export interface CancelPayload {
   reason?: string | null;
 }
 
-// `session-resume` carries `payload: {}` literally on the wire (see
-// ws_session_resume.json: `properties: {}`, `additionalProperties: false`).
-// Modeled as `Record<string, never>` so any non-empty assignment is a TS
-// error AND the docstring matches the wire shape (the prior interface form
-// with `[k: string]: never` was index-signature semantics — same compile-
-// time effect but reads as "indexed by string", which is misleading here).
-export type SessionResumePayload = Record<string, never>;
+// `session-resume` historically carried `payload: {}` literally on the wire.
+// It now carries an OPTIONAL `case_id` (the client's CURRENT active Case) so a
+// reconnect-time replay re-asserts the client's case as the authority instead
+// of the server snapping back to its stale in-memory active case
+// (`_SESSION_ACTIVE_CASE`). `null` / absent = root view (no active Case), which
+// preserves the historical empty-payload wire shape exactly. Mirrors
+// `SessionResumePayload.case_id` in
+// packages/contracts/src/grace2_contracts/ws.py (same name, same shape).
+//
+// Modeled as an interface (no longer `Record<string, never>`) so the single
+// optional field is expressible while a bare `{}` still validates (every field
+// optional). The agent's pydantic model is likewise empty-by-default.
+export interface SessionResumePayload {
+  case_id?: string | null;
+}
 
 // --- A.4 agent -> client payloads --------------------------------------- //
 

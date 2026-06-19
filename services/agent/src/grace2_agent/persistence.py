@@ -809,6 +809,76 @@ class Persistence:
                 },
             )
 
+    async def set_session_active_case(
+        self, session_id: str, case_id: str | None
+    ) -> None:
+        """Persist the session's active-Case pointer (job-CASE-AUTHORITY).
+
+        Writes a storage-only ``last_active_case_id`` field onto the session
+        record so the active-Case pointer survives an EC2 auto-stop/restart
+        (the in-memory ``_SESSION_ACTIVE_CASE`` dict in server.py is wiped on
+        process death). ``SessionDocument`` deliberately does NOT carry this
+        field — it is storage-only, exactly like the job-0230 ``charts`` array;
+        ``get_session_record`` drops unknown fields before validation, so the
+        contract model stays narrow while the storage doc accretes.
+
+        The client-stamped ``case_id`` on ``session-resume`` /
+        ``user-message`` remains the REAL authority for turn-binding + replay;
+        this persisted pointer is only the cold-start cache so a reconnecting
+        client that sends a bare resume (older client, no stamp) still lands on
+        the Case it last worked in instead of None.
+
+        ``$set`` (with ``upsert``) so the pointer lands even if no prior
+        ``touch_session`` created the doc; ``$setOnInsert`` mirrors
+        ``touch_session`` so a doc created HERE first is still well-formed.
+        ``case_id=None`` clears the pointer (an explicit Case exit).
+        Fire-and-forget at call sites: a persistence hiccup must never take
+        down the user's turn.
+        """
+        now = now_utc()
+        iso_now = now.isoformat().replace("+00:00", "Z")
+        await self._mcp.call_tool(
+            "update-one",
+            {
+                "database": self._db,
+                "collection": SESSIONS_COLLECTION,
+                "filter": {"_id": session_id},
+                "update": {
+                    "$set": {"last_active_case_id": case_id},
+                    "$setOnInsert": {
+                        "schema_version": "v1",
+                        "created_at": iso_now,
+                    },
+                },
+                "upsert": True,
+            },
+        )
+
+    async def get_session_active_case(self, session_id: str) -> str | None:
+        """Read back the persisted active-Case pointer (job-CASE-AUTHORITY).
+
+        Returns the ``last_active_case_id`` written by
+        ``set_session_active_case``, or ``None`` when the session has no
+        record / no persisted pointer (a fresh session, or one that never
+        bound a Case). Used by server.py to reload the in-memory pointer when a
+        fresh ``SessionState`` is built after an EC2 restart, so the cold-start
+        cache survives process death. Best-effort: any malformed shape yields
+        ``None``.
+        """
+        raw = await self._mcp.call_tool(
+            "find-one",
+            {
+                "database": self._db,
+                "collection": SESSIONS_COLLECTION,
+                "filter": {"_id": session_id},
+            },
+        )
+        doc = _unwrap_mcp_result(raw)
+        if not isinstance(doc, dict):
+            return None
+        value = doc.get("last_active_case_id")
+        return value if isinstance(value, str) else None
+
     async def get_session_record(self, session_id: str) -> "SessionDocument | None":
         """Read one session record back as a typed ``SessionDocument``.
 

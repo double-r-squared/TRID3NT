@@ -180,6 +180,15 @@ class UserMessagePayload(GraceModel):
     # The client sends this on every user-message so the agent can hot-swap the
     # model between turns without a session restart.
     model_id: str | None = None
+    # job-CASE-AUTHORITY (Appendix A.3 amendment): the Case the CLIENT is
+    # currently in, stamped on every user-message. The server treats it as the
+    # authority for turn-binding — a 'resize bbox' turn runs in the client's
+    # current Case, never a stale in-memory server pointer. ``None`` (older
+    # client that does not stamp) preserves the prior behavior: the server
+    # falls back to its own ``_SESSION_ACTIVE_CASE`` pointer. Same field name +
+    # shape as ``SessionResumePayload.case_id`` and the web ``contracts.ts``
+    # mirror so the client<->server contract is identical across both messages.
+    case_id: str | None = None
 
 
 class CancelPayload(GraceModel):
@@ -203,6 +212,18 @@ class SessionResumePayload(GraceModel):
     """``session-resume`` (A.3): resume an existing session (id in envelope)."""
 
     MESSAGE_TYPE: ClassVar[str] = "session-resume"
+
+    # job-CASE-AUTHORITY (Appendix A.3 amendment): the Case the CLIENT is
+    # currently in, stamped on reconnect. On resume the server RE-BINDS its
+    # active-Case pointer to this value before replaying the Case's layers — so
+    # a reconnect replays the Case the user is actually in, never a stale
+    # server-side pointer (the SNAP root cause: a select tapped mid-reconnect
+    # never reaches the server, and the bare ``session-resume {}`` replays the
+    # server's stale active Case). ``None`` (older client, or a fresh session
+    # with no Case yet) preserves the prior behavior: the server keeps its own
+    # pointer and replays whatever it last had. Same field name + shape as
+    # ``UserMessagePayload.case_id`` and the web ``contracts.ts`` mirror.
+    case_id: str | None = None
 
 
 # =========================================================================== #

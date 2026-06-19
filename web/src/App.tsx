@@ -725,6 +725,19 @@ export function App(): JSX.Element {
     // stability".)
   }, [bus, fanoutSourceSuggestion, useCases_onCaseList, useCases_onCaseOpen, handleChartEmission, authEpoch]);
 
+  // LANE CASE-WEB — keep the GraceWs's notion of the CURRENT active Case in
+  // sync with useCases.activeCaseId. ws.ts STAMPS this onto every outbound
+  // user-message + session-resume so the server treats the client as the case
+  // authority. This is a SEPARATE effect from the socket-construction effect on
+  // purpose: that effect's deps are deliberately all-stable (adding activeCaseId
+  // there would tear down + re-open the socket on every Case switch — the WS
+  // cycling we must avoid). Here we only push the value into the EXISTING
+  // socket. The null-guard covers the brief construct/teardown window; the open
+  // handler reads the latest currentCaseId at connect time regardless.
+  useEffect(() => {
+    wsRef.current?.setCurrentCaseId(activeCaseId);
+  }, [activeCaseId]);
+
   // job-0322 F31 — resume-repaint (iOS zombie-socket fix). Mobile browsers
   // tear down (or silently wedge) the WebSocket when the tab is backgrounded;
   // on return the in-memory layers were never re-pulled, so the map looks empty
