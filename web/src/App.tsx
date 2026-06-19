@@ -736,7 +736,13 @@ export function App(): JSX.Element {
       // FIX 2 — payload-warning is handled by Chat's GraceWs now (in-chat card),
       // not App. No onPayloadWarning handler here.
       onCaseList: (p: CaseListEnvelopePayload) => useCases_onCaseList(p),
-      onCaseOpen: (p: CaseOpenEnvelopePayload) => useCases_onCaseOpen(p),
+      onCaseOpen: (p: CaseOpenEnvelopePayload) => {
+        useCases_onCaseOpen(p);
+        // job-0179 — mirror the cold-load: push case-open onto the bus so Chat
+        // can build the stream's chat-history bubbles. Idempotent (routeCaseOpen
+        // only rebuilds a stream the first time it sees the caseId).
+        bus.pushCaseOpen(p);
+      },
       onError: () => { /* Chat owns rendering */ },
       // job-0253 (sprint-13.5): the agent's prod auth gate rejected us
       // (4401 / AUTH_FAILED) and the one-shot token refresh also failed.
@@ -990,6 +996,13 @@ export function App(): JSX.Element {
         // uses. The rehydration effect above ([activeSession, bus]) then paints
         // it. If a live case-open arrives later it supersedes idempotently.
         useCases_onCaseOpen(payload);
+        // job-0179 — ALSO push the case-open onto the bus so Chat (which does
+        // not subscribe to App's useCases state) can materialize the COLD
+        // chat-history bubbles via routeCaseOpen. Idempotent vs the live WS
+        // onCaseOpen below: routeCaseOpen only rebuilds a stream the first time
+        // it sees the caseId, so whichever fires first wins and the other is a
+        // no-op.
+        bus.pushCaseOpen(payload);
       })
       .catch(() => {
         // fetchCaseView never throws, but guard belt-and-suspenders: a failed
@@ -999,7 +1012,7 @@ export function App(): JSX.Element {
     return () => {
       cancelled = true;
     };
-  }, [activeCaseId, wsStatus, activeSession, useCases_onCaseOpen]);
+  }, [activeCaseId, wsStatus, activeSession, useCases_onCaseOpen, bus]);
 
   // sleep/wake STAGE 2 (NATE 2026-06-19) - COLD-LOAD the Cases LIST when the
   // agent box is asleep. SIBLING of the case-VIEW cold-load above: that paints
@@ -1349,6 +1362,12 @@ export function App(): JSX.Element {
              only). Chat gates ONLY the composer; its scrollback stays live. */
           agentAsleep={composerWakeReady}
           onWakeTap={handleWakeTap}
+          /* job-0179 — COLD chat-history render. App routes every case-open
+             (live WS + cold serverless snapshot) onto the bus; Chat subscribes
+             here to materialize the per-Case chat-history bubbles via
+             routeCaseOpen. Chat does NOT see App's useCases state, so without
+             this the cold view leaves the conversation blank. Idempotent. */
+          subscribeCaseOpen={bus.subscribeCaseOpen}
         />
       </div>
 

@@ -2768,6 +2768,19 @@ export interface ChatProps {
    * agentAsleep false) the composer never shows the Wake UI.
    */
   onWakeTap?: () => void;
+  /**
+   * job-0179 — COLD chat-history render. App pushes EVERY case-open envelope
+   * (live WS onCaseOpen AND the cold serverless /case-view snapshot) onto the
+   * shared LayerPanel bus; Chat subscribes here to route it through
+   * routeCaseOpen so the per-Case chat-history bubbles materialize even when
+   * Chat's OWN socket is asleep (the cold view). Chat does NOT subscribe to
+   * App's useCases state, so this is the only channel that carries the cold
+   * snapshot into Chat's stream map. Idempotent vs Chat's own live-WS
+   * onCaseOpen handler: routeCaseOpen only rebuilds a stream the first time it
+   * sees a caseId, so whichever source fires first wins and the other is a
+   * no-op (no double render). Optional; when omitted Chat behaves as before.
+   */
+  subscribeCaseOpen?: (cb: (p: CaseOpenEnvelopePayload) => void) => () => void;
 }
 
 // --- Connection status display ------------------------------------------- //
@@ -2798,6 +2811,7 @@ export function Chat({
   onWidthChange,
   agentAsleep = false,
   onWakeTap,
+  subscribeCaseOpen,
 }: ChatProps): JSX.Element {
   // job-0278 — mobile bottom-sheet expansion. Collapsed (composer only) by
   // default; presentation-only state, lives and dies with the Chat mount.
@@ -3141,6 +3155,31 @@ export function Chat({
     // closes its dead post-4401 socket and reconnects (OQ-0253-CHAT-WS-4401).
     // Constant in disabled/dev mode → this effect still runs exactly once.
   }, [wsUrl, bump, authEpoch]);
+
+  // job-0179 — COLD chat-history render. The ONLY code that materializes chat
+  // bubbles is routeCaseOpen -> replayStreamFromChatHistory, and in production
+  // it was reachable ONLY via Chat's OWN live-WS onCaseOpen handler (above). So
+  // when a Case is opened with the agent box ASLEEP, the cold serverless
+  // snapshot (App's fetchCaseView) flowed only into App's useCases state and
+  // NEVER into Chat's stream map -> the conversation rendered blank even though
+  // the snapshot carried the full chat_history. App now pushes EVERY case-open
+  // (live + cold) onto the shared bus; here we subscribe and run the SAME body
+  // as the live onCaseOpen handler. Idempotent: routeCaseOpen only rebuilds a
+  // stream the first time it sees a caseId (`!cs.streams.has(caseId)` +
+  // replayStreamFromChatHistory HARD-ASSIGNS s.messages), so whichever of the
+  // cold push / live onCaseOpen fires first builds the stream and the other is
+  // a no-op (no double render). Standalone effect (NOT inside the
+  // WS-construction effect) so it never participates in socket teardown.
+  useEffect(() => {
+    if (!subscribeCaseOpen) return;
+    return subscribeCaseOpen((p) => {
+      routeCaseOpen(streamsRef.current, p);
+      if (mobile && (p.session_state?.chat_history?.length ?? 0) > 0) {
+        setSheetExpanded(true);
+      }
+      bump();
+    });
+  }, [subscribeCaseOpen, bump, mobile]);
 
   // Case-authority sync: push the visible Case into Chat's live socket whenever
   // it changes (separate from the WS-construction effect so a Case switch does

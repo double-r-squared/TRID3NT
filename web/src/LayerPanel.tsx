@@ -52,6 +52,7 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import {
+  CaseOpenEnvelopePayload,
   MapCommandPayload,
   ProjectLayerSummary,
   SessionStatePayload,
@@ -1696,17 +1697,21 @@ const groupArrowStyle: React.CSSProperties = {
 export interface LayerPanelBus {
   pushSessionState: (p: SessionStatePayload) => void;
   pushMapCommand: (p: MapCommandPayload) => void;
+  pushCaseOpen: (p: CaseOpenEnvelopePayload) => void;
 }
 
 export function createLayerPanelBus(): LayerPanelBus & {
   subscribeSessionState: (cb: SessionStateSubscriber) => () => void;
   subscribeMapCommand: (cb: MapCommandSubscriber) => () => void;
+  subscribeCaseOpen: (cb: (p: CaseOpenEnvelopePayload) => void) => () => void;
 } {
   const sessionSubs = new Set<SessionStateSubscriber>();
   const mapSubs = new Set<MapCommandSubscriber>();
+  const caseOpenSubs = new Set<(p: CaseOpenEnvelopePayload) => void>();
   return {
     pushSessionState: (p) => sessionSubs.forEach((s) => s(p)),
     pushMapCommand: (p) => mapSubs.forEach((s) => s(p)),
+    pushCaseOpen: (p) => caseOpenSubs.forEach((s) => s(p)),
     subscribeSessionState: (cb) => {
       sessionSubs.add(cb);
       return () => sessionSubs.delete(cb);
@@ -1714,6 +1719,10 @@ export function createLayerPanelBus(): LayerPanelBus & {
     subscribeMapCommand: (cb) => {
       mapSubs.add(cb);
       return () => mapSubs.delete(cb);
+    },
+    subscribeCaseOpen: (cb) => {
+      caseOpenSubs.add(cb);
+      return () => caseOpenSubs.delete(cb);
     },
   };
 }
