@@ -612,11 +612,12 @@ def _build_merged_topobathy(
 
     Precedence: CUDEM is listed LAST so it WINS in the overlap (nearshore /
     shoreline); 3DEP fills the land where CUDEM has nodata. Mutual nodata fill.
-    Clip + reproject to ``target_crs`` via ``clip_raster_to_bbox._run_gdalwarp_clip``.
+    The merge reprojects EACH source individually from its own CRS onto a
+    common bbox-clipped ``target_crs`` grid, then composites LAST-wins (see
+    ``_merge_sources``) — robust to the CUDEM-EPSG:4269 / 3DEP-EPSG:5070 mix
+    and to opposite pixel orientation, with NO GDAL-CLI dependency.
 
     Returns ``(cog_bytes, bathymetry_present, cudem_tile_count)``.
-    Pure GDAL where the binaries exist; rasterio fallback otherwise so the
-    merge runs in environments without the GDAL CLI (e.g. CI).
     """
     import rasterio
 
@@ -737,82 +738,127 @@ def _merge_sources(
     target_crs: str,
     bbox: tuple[float, float, float, float],
 ) -> str:
-    """Mosaic ``sources_in_precedence`` (last wins) onto a common grid and
-    reproject/clip to ``target_crs``.
+    """Mosaic ``sources_in_precedence`` (LAST wins) onto a common
+    ``target_crs`` grid, clipped to ``bbox`` (EPSG:4326).
 
-    GDAL-CLI path (preferred, per spec): gdalbuildvrt (later sources paint
-    over earlier) → clip_raster_to_bbox._run_gdalwarp_clip (reproject to
-    target_crs + clip to the AOI bbox, bbox given in EPSG:4326).
+    ROBUST per-source warp (the ONLY path — no GDAL CLI required, since prod
+    lacks it). The sources are HETEROGENEOUS: CUDEM tiles are EPSG:4269
+    (NAD83 geographic) and the 3DEP land DEM is EPSG:5070 (CONUS Albers),
+    and the two can even have opposite pixel orientation. A raw
+    ``rasterio.merge`` on that mix throws the "upside-down rasters cannot be
+    merged" ``MergeError`` (the live Mexico-Beach demo crash). So we instead:
 
-    rasterio fallback (CI / no-CLI environments): rasterio.merge with
-    ``method='last'`` then rasterio.warp reproject. Functionally identical
-    precedence (CUDEM, listed last, wins).
+      1. Compute ONE common target grid: transform ``bbox`` into
+         ``target_crs`` and pick the finest source resolution (projected to
+         ``target_crs`` metres). This grid is already bbox-clipped, so we
+         never materialise a full 8000x8000 native tile in UTM.
+      2. Reproject EACH source INDIVIDUALLY from its OWN CRS onto that grid
+         (bilinear, NaN nodata) — this normalises CRS *and* orientation.
+      3. Composite by precedence: start from the first source (3DEP land),
+         then for each later source (CUDEM) overwrite cells where it has
+         valid (non-NaN) data. CUDEM is listed LAST, so it WINS on the coast.
+
+    Returns a path to a single-band float32 GTiff in ``target_crs``, already
+    clipped to the AOI bbox. Downstream re-emits it as a COG.
     """
-    gdalbuildvrt = _gdal_bin("gdalbuildvrt")
-    gdalwarp = _gdal_bin("gdalwarp")
-    if gdalbuildvrt and gdalwarp:
-        return _merge_sources_gdal_cli(sources_in_precedence, target_crs, bbox)
-    logger.info(
-        "fetch_topobathy: GDAL CLI (gdalbuildvrt/gdalwarp) not found; using the "
-        "rasterio merge+warp fallback (functionally identical precedence)"
-    )
+    if not sources_in_precedence:
+        # Caller (_build_merged_topobathy) already guards the both-empty case;
+        # this is defence-in-depth.
+        raise TopobathyEmptyError("no sources to merge")
     return _merge_sources_rasterio(sources_in_precedence, target_crs, bbox)
 
 
-def _merge_sources_gdal_cli(
+def _compute_target_grid(
     sources_in_precedence: list[str],
     target_crs: str,
     bbox: tuple[float, float, float, float],
-) -> str:
-    """gdalbuildvrt (later wins) + clip_raster_to_bbox._run_gdalwarp_clip."""
-    import subprocess
+):
+    """Build the common bbox-aligned target grid (transform, width, height) in
+    ``target_crs`` for the per-source warp.
 
-    gdalbuildvrt = _gdal_bin("gdalbuildvrt")
-    assert gdalbuildvrt is not None
-    with tempfile.NamedTemporaryFile(
-        suffix=".vrt", delete=False, prefix="grace2_topobathy_"
-    ) as f:
-        vrt_path = f.name
-    # -allow_projdiff: CUDEM is EPSG:4269 (NAD83) + 3DEP is EPSG:5070 — the VRT
-    # collects them in their native CRS; the gdalwarp reproject step lands the
-    # mosaic on the single target CRS. gdalbuildvrt paints later inputs over
-    # earlier ones, so listing CUDEM LAST makes it win on the coast.
-    cmd = [
-        gdalbuildvrt,
-        "-allow_projection_difference",
-        "-resolution", "highest",
-        vrt_path,
-        *sources_in_precedence,
-    ]
-    env = dict(os.environ)
-    env.update({k: str(v) for k, v in _VSICURL_ENV_KW.items()})
-    proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
-    if proc.returncode != 0:
+    The grid spans ``bbox`` (EPSG:4326) transformed into ``target_crs``; the
+    pixel size is the FINEST source resolution expressed in ``target_crs``
+    metres (so CUDEM's ~3 m wins the grid resolution over 3DEP's ~10 m). The
+    grid is clipped to the AOI, so the warped arrays stay AOI-sized regardless
+    of how large the native source tiles are.
+    """
+    import math as _math
+
+    import rasterio
+    from rasterio.warp import transform_bounds
+
+    west, south, east, north = bbox
+    # AOI bounds in target_crs metres.
+    t_west, t_south, t_east, t_north = transform_bounds(
+        "EPSG:4326", target_crs, west, south, east, north, densify_pts=21
+    )
+    if not (t_east > t_west and t_north > t_south):
         raise TopobathyUpstreamError(
-            f"gdalbuildvrt failed (rc={proc.returncode}): {proc.stderr.strip()[:400]}"
+            f"degenerate AOI bounds in {target_crs}: "
+            f"({t_west}, {t_south}, {t_east}, {t_north})"
         )
-    # Reproject + clip to the AOI via the shared clip seam. The bbox is in
-    # EPSG:4326; _run_gdalwarp_clip passes -te_srs EPSG:4326 + -t_srs target_crs.
-    from .clip_raster_to_bbox import _run_gdalwarp_clip
 
-    with tempfile.NamedTemporaryFile(
-        suffix=".tif", delete=False, prefix="grace2_topobathy_merged_"
-    ) as f:
-        merged_path = f.name
-    try:
-        _run_gdalwarp_clip(
-            input_path=vrt_path,
-            output_path=merged_path,
-            bbox=bbox,
-            bbox_crs="EPSG:4326",
-            target_crs=target_crs,
+    # Finest source resolution, expressed in target_crs metres. For each
+    # source we transform a 1-pixel span of its native grid into target_crs and
+    # measure it, then take the smallest (finest) across sources.
+    finest_res: float | None = None
+    with rasterio.Env(**_VSICURL_ENV_KW):
+        for src in sources_in_precedence:
+            try:
+                with rasterio.open(src) as ds:
+                    px_w = abs(ds.transform.a)
+                    px_h = abs(ds.transform.e)
+                    s_crs = ds.crs
+                    # A pixel near the AOI centre, in the source CRS.
+                    cx, cy = (ds.bounds.left + ds.bounds.right) / 2.0, (
+                        ds.bounds.bottom + ds.bounds.top
+                    ) / 2.0
+                    # Map one source pixel's extent into target_crs metres.
+                    rt_w, rt_s, rt_e, rt_n = transform_bounds(
+                        s_crs,
+                        target_crs,
+                        cx,
+                        cy,
+                        cx + px_w,
+                        cy + px_h,
+                        densify_pts=2,
+                    )
+                    res_m = min(abs(rt_e - rt_w), abs(rt_n - rt_s))
+            except Exception as exc:  # noqa: BLE001 — skip an unreadable source
+                logger.warning(
+                    "fetch_topobathy: could not probe resolution of %s: %s",
+                    src,
+                    exc,
+                )
+                continue
+            if res_m and res_m > 0 and (finest_res is None or res_m < finest_res):
+                finest_res = res_m
+
+    if finest_res is None or finest_res <= 0:
+        # No source readable for resolution — fall back to ~3 m (CUDEM native).
+        finest_res = 3.0
+
+    width = max(1, int(_math.ceil((t_east - t_west) / finest_res)))
+    height = max(1, int(_math.ceil((t_north - t_south) / finest_res)))
+    # Guardrail: cap the grid so a pathological AOI/resolution combination can
+    # never blow memory (a 10k x 10k float32 grid is ~400 MB). For typical demo
+    # AOIs this is never hit; if it would be, coarsen the pixel size.
+    _MAX_DIM = 12000
+    if width > _MAX_DIM or height > _MAX_DIM:
+        scale = max(width / _MAX_DIM, height / _MAX_DIM)
+        finest_res *= scale
+        width = max(1, int(_math.ceil((t_east - t_west) / finest_res)))
+        height = max(1, int(_math.ceil((t_north - t_south) / finest_res)))
+        logger.info(
+            "fetch_topobathy: AOI grid exceeded %d px at native res; coarsened "
+            "to %.2f m (%d x %d)", _MAX_DIM, finest_res, width, height,
         )
-    finally:
-        try:
-            os.unlink(vrt_path)
-        except OSError:
-            pass
-    return merged_path
+
+    # North-up affine anchored at the NW corner of the AOI in target_crs.
+    from rasterio.transform import from_origin
+
+    dst_transform = from_origin(t_west, t_north, finest_res, finest_res)
+    return dst_transform, width, height
 
 
 def _merge_sources_rasterio(
@@ -820,70 +866,87 @@ def _merge_sources_rasterio(
     target_crs: str,
     bbox: tuple[float, float, float, float],
 ) -> str:
-    """rasterio.merge(method='last') + reproject — the no-GDAL-CLI fallback."""
+    """Per-source warp + precedence composite — the robust, no-GDAL-CLI merge.
+
+    NEVER ``rasterio.merge``s raw heterogeneous sources (that throws the
+    upside-down ``MergeError`` for the CUDEM-EPSG:4269 + 3DEP-EPSG:5070 mix).
+    Each source is reprojected from its OWN CRS onto the shared bbox-clipped
+    target grid (normalising CRS *and* orientation), then composited LAST-wins.
+    """
     import numpy as np
     import rasterio
-    from rasterio.merge import merge as rio_merge
-    from rasterio.warp import calculate_default_transform, reproject, Resampling
+    from rasterio.warp import Resampling, reproject
 
-    open_handles = []
-    try:
-        with rasterio.Env(**_VSICURL_ENV_KW):
-            for src in sources_in_precedence:
-                open_handles.append(rasterio.open(src))
-            # method='last': the LAST source in the list wins where data
-            # overlaps — CUDEM is listed last, so CUDEM wins on the coast.
-            mosaic, mosaic_transform = rio_merge(
-                open_handles, method="last", nodata=open_handles[0].nodata
-            )
-            src_crs = open_handles[0].crs
-            src_nodata = open_handles[0].nodata
-        mosaic = mosaic.astype("float32")
+    dst_transform, width, height = _compute_target_grid(
+        sources_in_precedence, target_crs, bbox
+    )
 
-        # Reproject the (native-CRS) mosaic to the target CRS.
-        height, width = mosaic.shape[-2], mosaic.shape[-1]
-        dst_transform, dst_w, dst_h = calculate_default_transform(
-            src_crs, target_crs, width, height,
-            left=mosaic_transform.c,
-            top=mosaic_transform.f,
-            right=mosaic_transform.c + mosaic_transform.a * width,
-            bottom=mosaic_transform.f + mosaic_transform.e * height,
-        )
-        dst = np.full((1, dst_h, dst_w), np.nan, dtype="float32")
-        reproject(
-            source=mosaic[0],
-            destination=dst[0],
-            src_transform=mosaic_transform,
-            src_crs=src_crs,
-            dst_transform=dst_transform,
-            dst_crs=target_crs,
-            src_nodata=src_nodata,
-            dst_nodata=np.nan,
-            resampling=Resampling.bilinear,
-        )
-        with tempfile.NamedTemporaryFile(
-            suffix=".tif", delete=False, prefix="grace2_topobathy_merged_"
-        ) as f:
-            merged_path = f.name
-        profile = {
-            "driver": "GTiff",
-            "dtype": "float32",
-            "count": 1,
-            "height": dst_h,
-            "width": dst_w,
-            "crs": target_crs,
-            "transform": dst_transform,
-            "nodata": float("nan"),
-        }
-        with rasterio.open(merged_path, "w", **profile) as out:
-            out.write(dst[0], 1)
-        return merged_path
-    finally:
-        for h in open_handles:
+    # Accumulator: NaN everywhere, then each source paints its valid cells over
+    # the prior result (precedence order => last source wins).
+    composite = np.full((height, width), np.nan, dtype="float32")
+    any_painted = False
+
+    with rasterio.Env(**_VSICURL_ENV_KW):
+        for src in sources_in_precedence:
             try:
-                h.close()
-            except Exception:  # noqa: BLE001
-                pass
+                with rasterio.open(src) as ds:
+                    src_band = ds.read(1, masked=True).astype("float32")
+                    # Normalise the source's own nodata to NaN before warp so
+                    # the warp's NaN dst_nodata is consistent and no sentinel
+                    # (-9999 / -99999) leaks through bilinear blending.
+                    src_arr = src_band.filled(np.nan).astype("float32")
+                    src_crs = ds.crs
+                    src_transform = ds.transform
+            except Exception as exc:  # noqa: BLE001 — skip an unreadable source
+                logger.warning(
+                    "fetch_topobathy: skipping unreadable merge source %s: %s",
+                    src,
+                    exc,
+                )
+                continue
+
+            warped = np.full((height, width), np.nan, dtype="float32")
+            reproject(
+                source=src_arr,
+                destination=warped,
+                src_transform=src_transform,
+                src_crs=src_crs,
+                dst_transform=dst_transform,
+                dst_crs=target_crs,
+                src_nodata=np.nan,
+                dst_nodata=np.nan,
+                resampling=Resampling.bilinear,
+            )
+            # Composite: this source paints only where it has valid data, over
+            # whatever earlier (lower-precedence) sources already laid down.
+            valid = ~np.isnan(warped)
+            if valid.any():
+                composite[valid] = warped[valid]
+                any_painted = True
+
+    if not any_painted:
+        raise TopobathyUpstreamError(
+            "merge produced no valid cells — all sources were empty / "
+            "unreadable / outside the AOI"
+        )
+
+    with tempfile.NamedTemporaryFile(
+        suffix=".tif", delete=False, prefix="grace2_topobathy_merged_"
+    ) as f:
+        merged_path = f.name
+    profile = {
+        "driver": "GTiff",
+        "dtype": "float32",
+        "count": 1,
+        "height": height,
+        "width": width,
+        "crs": target_crs,
+        "transform": dst_transform,
+        "nodata": float("nan"),
+    }
+    with rasterio.open(merged_path, "w", **profile) as out:
+        out.write(composite, 1)
+    return merged_path
 
 
 # ---------------------------------------------------------------------------

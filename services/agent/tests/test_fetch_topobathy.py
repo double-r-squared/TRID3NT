@@ -47,6 +47,8 @@ from grace2_agent.tools.fetch_topobathy import (
     TopobathyUpstreamError,
     _build_merged_topobathy,
     _classify_vertical_datum,
+    _fetch_topobathy_bytes_and_flags,
+    _merge_sources,
     _parse_tile_nw_corner,
     _select_cudem_tiles,
     _tile_intersects_bbox,
@@ -375,6 +377,102 @@ def test_merge_land_only_is_land_only(tmp_path: Any) -> None:
     assert (finite > 0).all()
 
 
+def test_merge_mixed_crs_and_orientation_no_mergeerror() -> None:
+    """REGRESSION (live Mexico-Beach crash): merging HETEROGENEOUS-CRS sources
+    — a 3DEP land DEM in EPSG:5070 (Albers) + a CUDEM tile in EPSG:4269 (NAD83)
+    — where one is "upside down" (POSITIVE pixel-height) must NOT raise
+    ``rasterio.errors.MergeError``. The per-source warp normalises CRS AND
+    orientation; CUDEM (listed last) still wins in the overlap; output is a
+    valid EPSG:32616 single-band float32 raster.
+
+    Before the fix, ``_merge_sources`` fed these straight into ``rio_merge``,
+    which threw: ``Rasters with negative pixel height ("upside down" rasters)
+    cannot be merged.``
+    """
+    import shutil
+
+    from rasterio.errors import MergeError
+    from rasterio.transform import Affine, from_origin
+    from rasterio.warp import transform_bounds
+
+    tmpdir = tempfile.mkdtemp(prefix="grace2_topobathy_mixedcrs_")
+    land_path = os.path.join(tmpdir, "land_5070.tif")
+    cudem_path = os.path.join(tmpdir, "cudem_4269.tif")
+    try:
+        # The two sources overlap over the smoke bbox but live in DIFFERENT CRS.
+        west, south, east, north = _SMOKE_BBOX
+
+        # --- 3DEP land in EPSG:5070 (Albers), NORTH-UP (negative pixel-height),
+        #     a flat +50 m land plateau over the AOI footprint.
+        l_w, l_s, l_e, l_n = transform_bounds(
+            "EPSG:4326", "EPSG:5070", west, south, east, north, densify_pts=21
+        )
+        nx5070, ny5070 = 60, 60
+        res_x = (l_e - l_w) / nx5070
+        res_y = (l_n - l_s) / ny5070
+        land_tx = from_origin(l_w, l_n, res_x, res_y)  # north-up
+        land_arr = np.full((ny5070, nx5070), 50.0, dtype="float32")
+        with rasterio.open(
+            land_path, "w", driver="GTiff", dtype="float32", count=1,
+            height=ny5070, width=nx5070, crs="EPSG:5070", transform=land_tx,
+            nodata=-9999.0,
+        ) as dst:
+            dst.write(land_arr, 1)
+
+        # --- CUDEM in EPSG:4269 (NAD83 geographic), written "UPSIDE DOWN":
+        #     a POSITIVE pixel-height affine (origin at the SOUTH edge, rows go
+        #     north). This is exactly the orientation that tripped rio_merge.
+        #     WEST half is bathymetry (-8 m); EAST half is nodata (land fills).
+        nx4269, ny4269 = 50, 50
+        c_res_x = (east - west) / nx4269
+        c_res_y = (north - south) / ny4269
+        # Positive e (pixel height) => "upside down" relative to the usual
+        # north-up convention; origin at the SW corner.
+        cudem_tx = Affine(c_res_x, 0.0, west, 0.0, c_res_y, south)
+        cudem_arr = np.full((ny4269, nx4269), -8.0, dtype="float32")
+        col = np.arange(nx4269)[None, :].repeat(ny4269, axis=0)
+        cudem_arr[col >= nx4269 // 2] = -99999.0  # east half nodata
+        with rasterio.open(
+            cudem_path, "w", driver="GTiff", dtype="float32", count=1,
+            height=ny4269, width=nx4269, crs="EPSG:4269", transform=cudem_tx,
+            nodata=-99999.0,
+        ) as dst:
+            dst.write(cudem_arr, 1)
+
+        # Confirm the CUDEM tile really is "upside down" (positive pixel height),
+        # i.e. the exact condition that made the old code raise MergeError.
+        with rasterio.open(cudem_path) as ds:
+            assert ds.transform.e > 0, "test fixture must be an upside-down raster"
+
+        # Precedence: land (5070) FIRST, CUDEM (4269) LAST -> CUDEM wins coast.
+        try:
+            merged = _merge_sources(
+                [land_path, cudem_path],
+                target_crs="EPSG:32616",
+                bbox=_SMOKE_BBOX,
+            )
+        except MergeError as exc:  # pragma: no cover — the bug we are fixing
+            pytest.fail(f"_merge_sources raised the upside-down MergeError: {exc}")
+
+        with rasterio.open(merged) as ds:
+            assert ds.count == 1, "must be single-band"
+            assert str(ds.dtypes[0]) == "float32", "must be float32"
+            assert ds.crs.to_epsg() == 32616, "must reproject to EPSG:32616"
+            data = ds.read(1, masked=True)
+        os.unlink(merged)
+
+        finite = data.compressed()
+        assert finite.size > 0, "merge must produce valid cells"
+        # CUDEM (last) wins where it has data: bathy ~ -8 survived the overlap.
+        assert (finite < -1.0).any(), "CUDEM bathy (last source) must win the coast"
+        # 3DEP land fills the east half where CUDEM is nodata.
+        assert (finite > 40.0).any(), "3DEP land must fill where CUDEM is nodata"
+        # No sentinel nodata leaked through (no -9999 / -99999).
+        assert finite.min() > -1000.0, "no sentinel nodata may survive the merge"
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
 # ---------------------------------------------------------------------------
 # End-to-end fetch_topobathy via mocked fetch (no network, no GCS).
 # ---------------------------------------------------------------------------
@@ -553,3 +651,61 @@ def test_live_cudem_manifest_resolves() -> None:
     tiles = _select_cudem_tiles(_SMOKE_BBOX, timeout_s=60.0)
     assert len(tiles) >= 1, "expected at least one CUDEM tile over the smoke bbox"
     assert all(t.startswith("https://") and t.endswith(".tif") for t in tiles)
+
+
+# Mexico Beach demo AOI — the EXACT bbox from the live-prod crash.
+_MEXICO_BEACH_BBOX = (-85.47, 29.89, -85.36, 29.98)
+
+
+@pytest.mark.skipif(not _LIVE, reason="set GRACE2_TEST_LIVE_TOPOBATHY=1 to run")
+def test_live_mexico_beach_merge_no_cli(monkeypatch: pytest.MonkeyPatch) -> None:
+    """LIVE end-to-end: pull the REAL NOAA NCEI CUDEM tiles + the REAL 3DEP land
+    DEM for the Mexico-Beach demo AOI and run the FULL merge -> COG with the
+    GDAL CLI forced absent (``_gdal_bin`` -> None), exercising EXACTLY the prod
+    (no-CLI) path that crashed with the upside-down ``MergeError``.
+
+    Asserts a valid single-band float32 EPSG:32616 COG with bathymetry present.
+    Takes a minute or two (real multi-source downloads).
+    """
+    # Force the prod path: NO GDAL CLI available anywhere.
+    monkeypatch.setattr(ftb, "_gdal_bin", lambda *_a, **_k: None)
+
+    cog_bytes, bathy_present, fallback_warning, cudem_count = (
+        _fetch_topobathy_bytes_and_flags(
+            bbox=_MEXICO_BEACH_BBOX,
+            resolution_m=10,
+            target_crs=TARGET_CRS,
+            navd88_offset_m=None,
+            timeout_s=180.0,
+        )
+    )
+
+    assert cog_bytes, "no COG bytes produced"
+    assert cudem_count >= 1, "expected real CUDEM tiles over Mexico Beach"
+    assert bathy_present is True, "Mexico Beach must have CUDEM bathymetry"
+    assert fallback_warning is None, "should not fall back to land-only"
+
+    # Validate the COG contract + that it really spans the shoreline.
+    with tempfile.NamedTemporaryFile(suffix=".tif", delete=False) as f:
+        out_path = f.name
+    try:
+        with open(out_path, "wb") as fh:
+            fh.write(cog_bytes)
+        with rasterio.open(out_path) as ds:
+            assert ds.count == 1, "must be single-band"
+            assert str(ds.dtypes[0]) == "float32", "must be float32"
+            assert ds.crs.to_epsg() == 32616, "must be EPSG:32616 (UTM 16N)"
+            data = ds.read(1, masked=True)
+        finite = data.compressed()
+        assert finite.size > 0, "merged COG has no valid cells"
+        # A real coastal AOI spans the shoreline: both land (positive-up) and
+        # nearshore bathymetry (negative) must be present, no sign flip.
+        assert (finite > 0).any(), "expected land (positive-up) cells"
+        assert (finite < 0).any(), "expected bathymetry (negative) cells"
+        print(
+            f"\nLIVE Mexico-Beach merge OK: {len(cog_bytes):,} byte COG, "
+            f"{cudem_count} CUDEM tile(s), bathymetry_present={bathy_present}, "
+            f"elev range [{finite.min():.2f}, {finite.max():.2f}] m NAVD88"
+        )
+    finally:
+        os.unlink(out_path)
