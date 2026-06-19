@@ -28,6 +28,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { CaseSummary } from "../contracts";
 import { ConfirmationDialog } from "./ConfirmationDialog";
+import { ExportButton } from "./ExportButton";
 import {
   IconKebab,
   IconRename,
@@ -295,7 +296,14 @@ function CaseRow({
             <IconCheck size={14} />
           </button>
         ) : (
-          // F57 — single kebab overflow button → popover menu.
+          // Data export (NATE 2026-06-19) + the F57 kebab overflow menu form the
+          // per-row action cluster. ExportButton self-gates (signed-in AND
+          // endpoint configured) and renders nothing otherwise, so this is an
+          // additive insertion that never disturbs the rename/archive/delete
+          // actions in the kebab popover.
+          <>
+          <ExportButton caseId={c.case_id} />
+          {/* F57 - single kebab overflow button -> popover menu. */}
           <div
             ref={menuWrapRef}
             // job-0330 — the kebab must never shrink or be pushed off the row's
@@ -380,6 +388,7 @@ function CaseRow({
               </div>
             )}
           </div>
+          </>
         )}
       </div>
       <div

@@ -35,6 +35,14 @@ interface ImportMetaEnv {
   // Precedence: VITE_GRACE2_CASE_LIST_URL > VITE_GRACE2_PUBLIC_BASE(/case-list)
   // > null (cold-load disabled - dev/LAN). See lib/case_list.ts.
   readonly VITE_GRACE2_CASE_LIST_URL?: string;
+  // data export (NATE 2026-06-19): the API-Gateway HTTP endpoint that packages a
+  // case's data bundle (its rendered layers) into a single downloadable archive.
+  // GET <url>?case_id=<id> -> 200 {url, size_bytes, layer_count} where `url` is a
+  // pre-signed S3 GET to the packaged archive; the web triggers a browser
+  // download of it. Requires a signed-in user (Authorization: Bearer <id-token>).
+  // Precedence: VITE_GRACE2_CASE_EXPORT_URL > VITE_GRACE2_PUBLIC_BASE(/case-export-url)
+  // > null (export disabled - dev/LAN). See lib/export.ts.
+  readonly VITE_GRACE2_CASE_EXPORT_URL?: string;
 }
 
 interface ImportMeta {

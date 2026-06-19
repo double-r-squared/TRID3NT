@@ -77,3 +77,22 @@ output "case_list_function_name" {
   description = "Name of the case-list Lambda (for manual `aws lambda invoke` smoke tests)."
   value       = aws_lambda_function.case_list.function_name
 }
+
+output "case_export_url_endpoint" {
+  description = <<-EOT
+    Full case-export endpoint URL. Set the web build's VITE_GRACE2_CASE_EXPORT_URL
+    to this. GET /case-export-url?case_id=<id> (Authorization: Bearer <Cognito ID
+    token> REQUIRED) downloads the whole Case as a QGIS-ready zip and returns
+    {url, size_bytes, layer_count, expires_in} -- a pre-signed S3 GET URL for the
+    zip. Signed-in + owner-scoped (401 no token / 403 owner mismatch). Shares the
+    wake API Gateway HTTP API.
+  EOT
+  # trimsuffix guards the $default stage invoke_url's trailing slash so the URL
+  # is a clean single-slash path (a double slash would 404 the HTTP API route).
+  value = "${trimsuffix(aws_apigatewayv2_stage.default.invoke_url, "/")}/case-export-url"
+}
+
+output "case_export_function_name" {
+  description = "Name of the case-export Lambda (for manual `aws lambda invoke` smoke tests)."
+  value       = aws_lambda_function.case_export.function_name
+}

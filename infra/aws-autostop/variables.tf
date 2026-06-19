@@ -160,3 +160,44 @@ variable "cases_table" {
   EOT
   default     = "grace2_cases"
 }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Case-export Lambda (GET /case-export-url) -- "download a whole Case as a
+# QGIS-ready zip". A signed-in OWNER downloads the Case rasters (.tif) + vectors
+# (.geojson) PLUS a styled .qgs project, uploaded to the runs bucket's exports/
+# prefix and returned as a pre-signed GET URL. Reads the Case doc (cases_table)
+# + the content-addressed COGs (cache_bucket) + inline-vector GeoJSON from the
+# case-view snapshots (runs_bucket); writes the zip under exports/ on the runs
+# bucket. Routes through the EXISTING wake API Gateway HTTP API.
+# ─────────────────────────────────────────────────────────────────────────────
+
+variable "cache_bucket" {
+  type        = string
+  description = <<-EOT
+    Content-addressed cache bucket holding the Case COGs the layer URIs / TiTiler
+    ?url= params point at. The case-export role is granted s3:GetObject on
+    arn:aws:s3:::<cache_bucket>/* ONLY (no list, no put). The agent (a separate
+    role) writes the cache objects.
+  EOT
+  default     = "grace2-hazard-cache-226996537797"
+}
+
+variable "export_signed_ttl_s" {
+  type        = number
+  description = <<-EOT
+    Pre-signed GET URL expiry (seconds) for the export zip. Default 3600 = 1h.
+    Injected as EXPORT_SIGNED_TTL_S.
+  EOT
+  default     = 3600
+}
+
+variable "exports_prefix" {
+  type        = string
+  description = <<-EOT
+    Prefix under the runs bucket the export zip is written to. The case-export
+    role's s3:PutObject is scoped to arn:aws:s3:::<runs_bucket>/<exports_prefix>/*
+    and a 7-day expiration lifecycle is applied to the same prefix. Injected as
+    EXPORTS_PREFIX.
+  EOT
+  default     = "exports"
+}

@@ -692,3 +692,215 @@ resource "aws_lambda_permission" "apigw_invoke_case_list" {
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${aws_apigatewayv2_api.wake.execution_arn}/*/*"
 }
+
+# --------------------------------------------------------------------------- #
+# CASE-EXPORT Lambda -- GET /case-export-url (reuses the wake API above).
+#
+# DESIGN INVARIANTS (read before modifying):
+#
+#   1. SIGNED-IN + OWNER-SCOPED, NEVER ANONYMOUS. An export is a privileged data
+#      egress: the handler REQUIRES a verified Cognito ID token (401 otherwise,
+#      unlike the cold-open case-list) AND enforces the Case owner == the token
+#      uid (hard 403 on mismatch; an owner-less case is exportable by no one --
+#      fail closed). The role can dynamodb:GetItem the cases table ARN,
+#      s3:GetObject the CACHE bucket (the content-addressed COGs) + the RUNS
+#      bucket's case-views/ prefix ONLY (the case-view snapshots' inline vector
+#      GeoJSON), and s3:PutObject ONLY under the runs bucket's exports/ prefix --
+#      no list, no other prefix, no other table, no EC2.
+#
+#   2. SYNCHRONOUS v0.1 (zip-in-Lambda). The handler downloads each layer into a
+#      named per-layer folder in /tmp, generates a STYLED plain-XML .qgs (NO
+#      PyQGIS) referencing the files by RELATIVE path, zips the tree, puts it to
+#      exports/{case_id}/{ulid}.zip, and returns a pre-signed GET in ONE request.
+#      timeout 300 / memory 1024 / ephemeral_storage 2048 give headroom for the
+#      download + zip of a multi-layer Case.
+#
+#   3. THIRD-PARTY DEPS. The handler needs PyJWT[crypto] + requests beyond the
+#      runtime boto3 (RS256 verify + JWKS fetch). They are pip-installed into
+#      build/case_export_pkg at apply time (null_resource below) and zipped with
+#      the handler -- mirrors null_resource.case_list_build exactly.
+#
+#   4. SCOPED exports/ LIFECYCLE. The runs bucket is hand-provisioned/unmanaged;
+#      a PREFIX-SCOPED expiration lifecycle (filter prefix exports/, 7 days) is
+#      additive + safe (it touches only the export zips, never the durable
+#      case-views/ snapshots or run artifacts).
+# --------------------------------------------------------------------------- #
+
+locals {
+  case_export_src_dir = "${path.module}/lambda/case_export"
+  case_export_pkg_dir = "${path.module}/build/case_export_pkg"
+}
+
+# Install the third-party deps + copy the handler into a package dir, then zip.
+# The trigger hashes the handler so a code edit re-runs the install; the deps
+# pin keeps the artifact reproducible. manylinux/linux platform wheels are
+# requested so the cryptography native extension matches the Lambda runtime
+# (python3.12 on Amazon Linux x86_64), not the build host.
+resource "null_resource" "case_export_build" {
+  triggers = {
+    handler_sha = filesha256("${local.case_export_src_dir}/handler.py")
+    deps        = "PyJWT[crypto]==2.9.0 requests==2.32.3"
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      set -euo pipefail
+      rm -rf "${local.case_export_pkg_dir}"
+      mkdir -p "${local.case_export_pkg_dir}"
+      python3 -m pip install \
+        --platform manylinux2014_x86_64 \
+        --implementation cp \
+        --python-version 3.12 \
+        --only-binary=:all: \
+        --target "${local.case_export_pkg_dir}" \
+        "PyJWT[crypto]==2.9.0" "requests==2.32.3"
+      cp "${local.case_export_src_dir}/handler.py" "${local.case_export_pkg_dir}/handler.py"
+    EOT
+  }
+}
+
+data "archive_file" "case_export" {
+  type        = "zip"
+  source_dir  = local.case_export_pkg_dir
+  output_path = "${path.module}/build/case_export.zip"
+  depends_on  = [null_resource.case_export_build]
+}
+
+resource "aws_iam_role" "case_export" {
+  name = "${local.name_prefix}-case-export-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "case_export" {
+  name = "${local.name_prefix}-case-export"
+  role = aws_iam_role.case_export.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        # GetItem on the cases table ARN ONLY (the owner-scoped Case doc load).
+        # No Query, no GSI, no PutItem, no other table.
+        Sid      = "ReadCaseDoc"
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem"]
+        Resource = "arn:aws:dynamodb:${var.region}:${var.account_id}:table/${var.cases_table}"
+      },
+      {
+        # GetObject on the content-addressed cache bucket (the Case COGs) AND
+        # the runs bucket's case-views/ prefix ONLY (the handler reads just
+        # case-views/{case_id}.json for the snapshots' inline vector GeoJSON; the
+        # COGs come from the cache bucket). No list, no put here.
+        Sid    = "ReadCaseObjects"
+        Effect = "Allow"
+        Action = ["s3:GetObject"]
+        Resource = [
+          "arn:aws:s3:::${var.cache_bucket}/*",
+          "arn:aws:s3:::${var.runs_bucket}/case-views/*",
+        ]
+      },
+      {
+        # PutObject ONLY under the runs bucket's exports/ prefix (the zip). No
+        # other prefix on the runs bucket is writable.
+        Sid      = "WriteExportZip"
+        Effect   = "Allow"
+        Action   = ["s3:PutObject"]
+        Resource = "arn:aws:s3:::${var.runs_bucket}/${var.exports_prefix}/*"
+      },
+      {
+        Sid      = "Logs"
+        Effect   = "Allow"
+        Action   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
+        Resource = "arn:aws:logs:${var.region}:${var.account_id}:log-group:/aws/lambda/${local.name_prefix}-case-export:*"
+      },
+    ]
+  })
+}
+
+resource "aws_cloudwatch_log_group" "case_export" {
+  name              = "/aws/lambda/${local.name_prefix}-case-export"
+  retention_in_days = var.lambda_log_retention_days
+}
+
+resource "aws_lambda_function" "case_export" {
+  function_name    = "${local.name_prefix}-case-export"
+  role             = aws_iam_role.case_export.arn
+  handler          = "handler.handler"
+  runtime          = "python3.12"
+  filename         = data.archive_file.case_export.output_path
+  source_code_hash = data.archive_file.case_export.output_base64sha256
+  # Synchronous download + zip of a multi-layer Case can take many seconds;
+  # 300s timeout + 1024MB memory + 2048MB ephemeral /tmp give headroom.
+  timeout     = 300
+  memory_size = 1024
+
+  ephemeral_storage {
+    size = 2048
+  }
+
+  environment {
+    variables = {
+      CASES_TABLE                 = var.cases_table
+      CACHE_BUCKET                = var.cache_bucket
+      RUNS_BUCKET                 = var.runs_bucket
+      EXPORTS_PREFIX              = var.exports_prefix
+      EXPORT_SIGNED_TTL_S         = tostring(var.export_signed_ttl_s)
+      GRACE2_COGNITO_USER_POOL_ID = var.cognito_user_pool_id
+      GRACE2_COGNITO_CLIENT_ID    = var.cognito_client_id
+    }
+  }
+
+  depends_on = [aws_cloudwatch_log_group.case_export]
+}
+
+resource "aws_apigatewayv2_integration" "case_export" {
+  api_id                 = aws_apigatewayv2_api.wake.id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = aws_lambda_function.case_export.invoke_arn
+  payload_format_version = "2.0"
+}
+
+resource "aws_apigatewayv2_route" "case_export" {
+  api_id    = aws_apigatewayv2_api.wake.id
+  route_key = "GET /case-export-url"
+  target    = "integrations/${aws_apigatewayv2_integration.case_export.id}"
+}
+
+resource "aws_lambda_permission" "apigw_invoke_case_export" {
+  statement_id  = "AllowAPIGatewayInvokeCaseExport"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.case_export.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_apigatewayv2_api.wake.execution_arn}/*/*"
+}
+
+# Scoped exports/ lifecycle on the hand-provisioned runs bucket. The bucket is
+# unmanaged by this module (referenced by name, not data-sourced/managed), and a
+# PREFIX-SCOPED rule is additive: it expires ONLY the export zips under
+# exports/ after 7 days and never touches case-views/ snapshots or run
+# artifacts. The export zip is a transient, re-mintable artifact (a fresh zip +
+# pre-signed URL is produced per request), so a short TTL keeps storage bounded.
+resource "aws_s3_bucket_lifecycle_configuration" "runs_exports" {
+  bucket = var.runs_bucket
+
+  rule {
+    id     = "expire-case-exports"
+    status = "Enabled"
+
+    filter {
+      prefix = "${var.exports_prefix}/"
+    }
+
+    expiration {
+      days = 7
+    }
+  }
+}
