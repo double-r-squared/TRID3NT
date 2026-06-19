@@ -1089,12 +1089,14 @@ async def _handle_http(
             )
     elif path == "/api/health":
         # Autostop liveness probe (agent-box auto-stop/wake infra). The idle
-        # Lambda polls this and its safety gate reads ``active_connections`` +
-        # ``busy`` to decide whether the always-on agent EC2 box may be stopped:
-        # it stops ONLY after N consecutive polls with active_connections == 0
-        # AND busy == false. Both signals come from the live WS connection
-        # registry + solver-in-flight markers in ``server.py`` (same process,
-        # same asyncio loop). Best-effort: if the snapshot raises for any reason
+        # Lambda polls this and its safety gate reads ``busy`` to decide whether
+        # the always-on agent EC2 box may be stopped: it stops ONLY after N
+        # consecutive polls with busy == false (Stage 3: a merely-open IDLE
+        # connection no longer keeps the box up; ``active_connections`` is still
+        # reported for observability). ``busy`` comes from the in-flight turn +
+        # solver markers in ``server.py`` (same process, same asyncio loop), and
+        # the idle Lambda additionally ORs its own Batch DescribeJobs check.
+        # Best-effort: if the snapshot raises for any reason
         # we fall back to a conservative busy=true so a transient glitch can
         # never trick the gate into stopping a live box.
         try:

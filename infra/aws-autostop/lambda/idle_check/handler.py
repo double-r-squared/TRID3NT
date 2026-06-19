@@ -8,9 +8,16 @@ one of these guards passes -- the auto-stop logic is bulletproof by construction
   G1. The instance is in the ``running`` state (never act on a box that is
       already stopped / stopping / pending).
   G2. The health probe SUCCEEDS and reports the box is NOT busy:
-      ``busy == false`` AND ``active_connections == 0``. A probe failure, a
-      malformed body, a non-zero connection count, OR ``busy == true`` all count
-      as "busy" -> the idle streak RESETS to zero (fail-safe: a box we cannot
+      ``busy == false``. STAGE 3 (sleep/wake): a merely-open IDLE viewer
+      connection NO LONGER counts as busy -- ``active_connections`` is logged
+      for observability but does NOT gate the stop decision, so a user just
+      LOOKING at a painted case lets the box auto-stop (then sees the cold case
+      + a Wake button on return). A running turn/solve still pins the box: the
+      agent's ``busy`` flag already ORs detached in-flight turns + in-flight
+      solver dispatches (both of which SURVIVE a socket drop), so a long turn
+      whose socket dropped keeps ``busy == true`` here even at zero connections.
+      A probe failure, a malformed body, OR ``busy == true`` all count as
+      "busy" -> the idle streak RESETS to zero (fail-safe: a box we cannot
       confirm idle is treated as busy).
   G3. No AWS Batch solve is in flight on the solver queue(s) -- heavy compute
       (SFINCS / MODFLOW) runs on Batch and the agent stages/polls it; stopping
@@ -230,12 +237,20 @@ def handler(event, context):  # noqa: ANN001, ARG001
 
     health = _probe_health()
     batch_busy = _batch_solve_in_flight()
-    busy = health["busy"] or health["active_connections"] != 0 or batch_busy
+    # STAGE 3 (sleep/wake): the open-connection term is INTENTIONALLY dropped --
+    # an idle-but-open viewer no longer keeps the box up. ``health["busy"]``
+    # already reflects any in-flight turn/solve (which survive a socket drop on
+    # the agent), and ``batch_busy`` covers heavy Batch compute; either keeps
+    # the box up. ``active_connections`` stays REPORTED in the decision below for
+    # observability but no longer gates the stop.
+    busy = health["busy"] or batch_busy
 
     if busy:
-        # G2/G3 failed -> reset the streak. Bulletproof: ANY busy signal (live
-        # connection, busy flag, in-flight solve, or an unreadable health probe)
-        # zeroes the countdown so the next stop is a full threshold away.
+        # G2/G3 failed -> reset the streak. Bulletproof: ANY busy signal (the
+        # agent busy flag = detached in-flight turn or in-flight solve, an
+        # in-flight Batch solve, or an unreadable health probe) zeroes the
+        # countdown so the next stop is a full threshold away. An idle open tab
+        # alone is NOT a busy signal (Stage 3).
         _write_streak(0)
         decision = {
             "action": "noop",
@@ -258,6 +273,9 @@ def handler(event, context):  # noqa: ANN001, ARG001
         decision = {
             "action": "stop" if not DRY_RUN else "stop_dryrun",
             "reason": "idle_threshold_reached",
+            # Reported for observability (STAGE 3): an idle viewer may have a tab
+            # open here; the open connection no longer gates the stop.
+            "active_connections": health["active_connections"],
             "idle_streak": streak,
             "threshold": IDLE_THRESHOLD_CHECKS,
         }
@@ -268,6 +286,8 @@ def handler(event, context):  # noqa: ANN001, ARG001
     decision = {
         "action": "noop",
         "reason": "idle_below_threshold",
+        # Reported for observability (STAGE 3); does not gate the stop decision.
+        "active_connections": health["active_connections"],
         "idle_streak": streak,
         "threshold": IDLE_THRESHOLD_CHECKS,
     }

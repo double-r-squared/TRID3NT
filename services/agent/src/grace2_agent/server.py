@@ -1032,10 +1032,14 @@ def _any_live_turn(session_id: str) -> "asyncio.Task | None":
 # The always-on agent EC2 box (t3.large, i-0251879a278df797f) burns idle money.
 # A self-contained tofu root (``infra/aws-autostop/``) runs an idle-check Lambda
 # that polls ``GET /api/health`` and only StopInstances after N consecutive
-# checks return ZERO active connections AND ``busy=false``. The SINGLE SOURCE OF
-# TRUTH for the safety gate is ``liveness_snapshot`` below; ``busy`` is the OR of
-# three independent signals so the box is NEVER stopped while there is any live
-# work (bulletproof by construction — any doubt keeps the box up):
+# checks return ``busy=false``. The SINGLE SOURCE OF TRUTH for the safety gate is
+# ``liveness_snapshot`` below; ``busy`` is the OR of the IN-FLIGHT-WORK signals so
+# the box is NEVER stopped while there is any live work (bulletproof by
+# construction -- any doubt keeps the box up). STAGE 3 (sleep-while-viewing): a
+# merely-open IDLE connection no longer counts as busy, so the box auto-stops
+# while a user just views a case; ``active_connection_count()`` is still REPORTED
+# (informational) but no longer GATES ``busy``. Of the signals below, #1 is now
+# informational-only; #2 (solve) and #3 (inflight turn) are what gate ``busy``:
 #
 #  1. ``active_connection_count()`` — live, attached WebSocket clients (the
 #     set-based registry defined alongside ``_make_handler`` further down; a
@@ -1090,16 +1094,22 @@ def solve_in_flight_count() -> int:
 def is_busy() -> bool:
     """Conservative busy signal for the auto-stop safety gate.
 
-    True when ANY of the three signals is live: an attached WebSocket client, a
-    detached in-flight turn, or an executing solver dispatch. The auto-stop
-    Lambda must NEVER stop the box while this is True. Errs toward UP (busy) on
-    any live work. ``active_connection_count`` / ``inflight_turn_count`` are
-    resolved at call time (defined later, alongside the connection registry)."""
-    return (
-        active_connection_count() > 0
-        or inflight_turn_count() > 0
-        or solve_in_flight_count() > 0
-    )
+    STAGE 3 (sleep/wake): True only when REAL work is in flight -- a detached
+    in-flight turn OR an executing solver dispatch. A merely-open, IDLE viewer
+    connection no longer pins the box: a user who is just LOOKING at a painted
+    case (WS open, nothing running) lets the box auto-stop after the idle
+    Lambda's consecutive-idle streak elapses, and on return sees the cold case
+    + a Wake button (Stages 1+2). The auto-stop Lambda must NEVER stop the box
+    while this is True. Errs toward UP (busy) on any live work.
+
+    NOTE the connection term is INTENTIONALLY dropped: a long turn/solve
+    SURVIVES a socket drop via ``_SESSION_LIVE_TURNS`` / ``_SOLVE_IN_FLIGHT``,
+    so ``inflight_turn_count`` / ``solve_in_flight_count`` keep the box busy
+    through running work even with zero sockets attached -- the open-connection
+    count is no longer needed (and no longer used) to protect in-flight work.
+    ``inflight_turn_count`` is resolved at call time (defined later, alongside
+    the connection registry)."""
+    return inflight_turn_count() > 0 or solve_in_flight_count() > 0
 
 
 def liveness_snapshot() -> dict[str, object]:
@@ -1109,11 +1119,14 @@ def liveness_snapshot() -> dict[str, object]:
 
         {"ok": True, "active_connections": <int>, "busy": <bool>}
 
-    ``active_connections`` is the attached-client count; ``busy`` is the
-    conservative OR over connections + detached turns + in-flight solves (so a
-    box mid-solve whose only socket dropped still reads ``busy=true``). Computed
-    synchronously on the asyncio loop — no awaits, no locks (single-loop
-    invariant)."""
+    ``active_connections`` is the attached-client count, kept REPORTED for
+    observability (the idle Lambda logs it) but, as of STAGE 3, it NO LONGER
+    GATES ``busy``: an idle-but-open viewer does not pin the box. ``busy`` is
+    the conservative OR over detached turns + in-flight solves only (so a box
+    mid-turn/solve whose only socket dropped still reads ``busy=true``, while a
+    box whose only signal is an idle open tab reads ``busy=false`` and may be
+    stopped after the idle streak). Computed synchronously on the asyncio loop
+    -- no awaits, no locks (single-loop invariant)."""
     return {
         "ok": True,
         "active_connections": active_connection_count(),
@@ -7458,9 +7471,10 @@ def inflight_turn_count() -> int:
 
     A long solver turn survives a socket drop (``_SESSION_LIVE_TURNS``); the box
     is BUSY while any such turn is still running even if zero sockets are open.
-    ``is_busy`` ORs this with ``active_connection_count`` + ``solve_in_flight_count``
-    so the autostop Lambda treats the box as busy on the OR of the three. Counts
-    only not-yet-done tasks (a done task is awaiting its self-removing callback).
+    ``is_busy`` ORs this with ``solve_in_flight_count`` so the autostop Lambda
+    treats the box as busy whenever a turn or solve is in flight. (Stage 3: a
+    merely-open IDLE connection no longer counts toward busy.) Counts only
+    not-yet-done tasks (a done task is awaiting its self-removing callback).
     """
     total = 0
     for bucket in _SESSION_LIVE_TURNS.values():

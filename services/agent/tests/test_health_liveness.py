@@ -2,18 +2,20 @@
 
 The always-on agent EC2 box (t3.large, ``i-0251879a278df797f``) burns idle
 money. A self-contained tofu root (``infra/aws-autostop/``) runs an idle-check
-Lambda that polls ``GET /api/health`` and only ``StopInstances`` after N
-consecutive checks return ZERO ``active_connections`` AND ``busy == false``.
-These tests pin the agent side of that contract so the auto-stop gate is
-bulletproof:
+Lambda that polls ``GET /api/health`` and ``StopInstances`` after N consecutive
+checks return ``busy == false``. STAGE 3 (sleep/wake): ``active_connections`` is
+REPORTED but no longer gates ``busy`` -- an idle-but-open viewer no longer pins
+the box. These tests pin the agent side of that contract so the auto-stop gate
+is bulletproof:
 
   1. ``test_health_shape_at_rest`` — the ``/api/health`` body is exactly
      ``{"ok": True, "active_connections": 0, "busy": False}`` on a fresh box.
   2. ``test_connection_registry_register_deregister`` — a served socket bumps
      the count; deregister drops it; both are idempotent and never negative
-     (a stuck/double call can NEVER trick the gate into "idle").
-  3. ``test_busy_when_connection_open`` — an attached client alone makes the
-     box busy (the gate must not stop a box with a live tab).
+     (a stuck/double call can NEVER drive the reported count negative).
+  3. ``test_open_idle_connection_not_busy`` — STAGE 3: an attached but IDLE
+     client (no turn, no solve) does NOT make the box busy; the count stays
+     reported. A running turn/solve still pins the box (covered by 4 + 5).
   4. ``test_busy_when_solve_in_flight`` — a solver dispatch marker makes the
      box busy even with ZERO sockets (a detached solve must keep the box up);
      the release is clamped so a double-release can't read ``busy=false`` early.
@@ -122,15 +124,16 @@ def test_connection_registry_register_deregister():
     assert server.active_connection_count() == 0
 
 
-def test_busy_when_connection_open():
+def test_open_idle_connection_not_busy():
     ws = _FakeWS()
     server._register_active_connection(ws)
-    # A live tab alone is "busy" — the gate must hold the box up.
-    assert server.is_busy() is True
+    # STAGE 3 (sleep/wake): a live but IDLE tab (no in-flight turn, no solve) is
+    # NOT busy -- an idle viewer must not pin the box. The count is REPORTED.
+    assert server.is_busy() is False
     assert server.liveness_snapshot() == {
         "ok": True,
         "active_connections": 1,
-        "busy": True,
+        "busy": False,
     }
     server._deregister_active_connection(ws)
     assert server.is_busy() is False
@@ -190,19 +193,28 @@ def test_health_route_reflects_live_state():
         "active_connections": 0,
         "busy": False,
     }
-    # With a live connection + an in-flight solve, the route reflects it.
+    # STAGE 3: an idle open connection alone is REPORTED but is NOT busy on the
+    # route (an idle viewer must not pin the box).
     ws = _FakeWS()
     server._register_active_connection(ws)
-    server._solve_started()
     try:
         assert _serve_health() == {
             "ok": True,
             "active_connections": 1,
-            "busy": True,
+            "busy": False,
         }
+        # An in-flight solve flips busy true even while the connection is open.
+        server._solve_started()
+        try:
+            assert _serve_health() == {
+                "ok": True,
+                "active_connections": 1,
+                "busy": True,
+            }
+        finally:
+            server._solve_finished()
     finally:
         server._deregister_active_connection(ws)
-        server._solve_finished()
 
 
 def test_health_route_busy_on_snapshot_error(monkeypatch):

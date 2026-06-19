@@ -5,9 +5,16 @@ handler module fresh per test with the required env vars set and the boto3
 clients patched, then exercise each guard + the streak state machine.
 
 The CRITICAL property under test: the box is stopped ONLY when EVERY guard
-passes for IDLE_THRESHOLD_CHECKS consecutive ticks. Any busy signal (live
-connection, busy flag, in-flight Batch solve, unreachable health, non-running
-instance) must RESET the streak and leave the box up.
+passes for IDLE_THRESHOLD_CHECKS consecutive ticks. Any busy signal (the agent
+``busy`` flag = detached in-flight turn or in-flight solve, an in-flight Batch
+solve, unreachable health, or a non-running instance) must RESET the streak and
+leave the box up.
+
+STAGE 3 (sleep/wake): a merely-open IDLE viewer connection
+(``active_connections > 0`` with ``busy == false`` and no Batch) is NO LONGER a
+busy signal -- it counts as IDLE and is eligible to advance the streak, so an
+idle viewer no longer pins the box forever. ``active_connections`` is still
+reported in the decision for observability.
 """
 
 from __future__ import annotations
@@ -110,17 +117,37 @@ def test_noop_when_instance_not_running(env, monkeypatch):
     ec2.stop_instances.assert_not_called()
 
 
-def test_busy_live_connection_resets_streak(env, monkeypatch):
+def test_open_idle_connection_counts_as_idle_advances_streak(env, monkeypatch):
+    # STAGE 3 (sleep/wake): an OPEN but IDLE viewer connection
+    # (active_connections > 0, busy == false, no Batch) is NO LONGER busy. The
+    # poll must count as idle and ADVANCE the streak (not reset it), so an idle
+    # viewer no longer pins the box. active_connections is still reported.
     module, ec2, ddb, batch, streak = _load_handler(env)
     _set_state(ec2, "running")
     _no_batch(batch)
-    _set_health(monkeypatch, module, busy=False, active=1)  # a tab is open
-    streak.value = 2
+    _set_health(monkeypatch, module, busy=False, active=1)  # a tab is open, idle
+    streak.value = 1
     out = module.handler({}, None)
     assert out["action"] == "noop"
-    assert out["reason"] == "busy"
-    assert streak.value == 0
+    assert out["reason"] == "idle_below_threshold"
+    assert out["idle_streak"] == 2  # advanced, NOT reset
+    assert streak.value == 2
     ec2.stop_instances.assert_not_called()
+
+
+def test_open_idle_connection_does_not_block_stop_at_threshold(env, monkeypatch):
+    # STAGE 3: an idle viewer with the connection open must NOT prevent the box
+    # from stopping once the consecutive-idle threshold is reached.
+    module, ec2, ddb, batch, streak = _load_handler(env)
+    _set_state(ec2, "running")
+    _no_batch(batch)
+    _set_health(monkeypatch, module, busy=False, active=3)  # idle viewer, open tab
+    streak.value = 2  # threshold is 3 (env fixture); this tick is the 3rd, idle
+    out = module.handler({}, None)
+    assert out["action"] == "stop"
+    assert out["idle_streak"] == 3
+    ec2.stop_instances.assert_called_once_with(InstanceIds=["i-0251879a278df797f"])
+    assert streak.value == 0
 
 
 def test_busy_flag_true_resets_streak(env, monkeypatch):
@@ -205,8 +232,10 @@ def test_busy_midway_resets_then_requires_full_threshold_again(env, monkeypatch)
     module.handler({}, None)
     module.handler({}, None)
     assert streak.value == 2
-    # ...then a user connects (busy) -> reset.
-    _set_health(monkeypatch, module, busy=False, active=2)
+    # ...then a real busy signal arrives (agent busy flag true = an in-flight
+    # turn/solve that survived a socket drop) -> reset. STAGE 3: it is the busy
+    # FLAG, not the connection count, that resets the streak.
+    _set_health(monkeypatch, module, busy=True, active=0)
     module.handler({}, None)
     assert streak.value == 0
     ec2.stop_instances.assert_not_called()
