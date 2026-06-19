@@ -5703,6 +5703,172 @@ def _running_emitter_step_id(emitter: Any, tool_name: str) -> str | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# #6 STAGED SYNC-TOOL DISPATCH OFF-LOAD (loop-safety, ships DARK)
+# ---------------------------------------------------------------------------
+# Every synchronous atomic tool currently runs its WHOLE body on the agent
+# asyncio event loop inside ``_invoke_with_unique_layer_id`` below (the
+# ``out = entry.fn(**params)`` branch). A slow sync tool (boto3 / requests /
+# heavy GDAL/numpy compute) therefore stalls the WS keepalive past the pong
+# deadline -> client reconnect-cycle (layer flicker) or WS death. See
+# feedback_no_sync_blocking_on_asyncio_loop. The fix is to off-load the sync
+# tool body to a worker thread via ``asyncio.to_thread``. This is SAFE because
+# tool bodies are EMIT-FREE: all loop-bound PipelineEmitter use (``emit_*`` /
+# ``add_loaded_layer`` / ``update_progress``) lives in the SURROUNDING
+# ``emit_tool_call`` wrapper + ``_restamp`` + early-input-frame machinery, which
+# stay on the loop; only the pure ``entry.fn(**params)`` call moves to the
+# thread. ``asyncio.to_thread`` propagates the contextvars Context, so a stray
+# emit WOULD still resolve the ContextVar — hence the armed-only
+# ``_assert_sync_offload_safe`` startup guard below refuses to arm if any
+# candidate sync tool's source even references the emitter API.
+#
+# Rolled out in STAGES via the ``GRACE2_SYNC_TOOL_OFFLOAD`` env var (NO code
+# change between stages):
+#   ""/"off"  (DEFAULT, Stage 0)  -> disabled; sync tools stay on the loop.
+#   "subset"  (Stage 1)           -> off-load only the pure compute_*/clip_*
+#                                    family (smallest provably emit-free set),
+#                                    live-verify, then advance.
+#   "global"/"all"/"on" (Stage 2) -> off-load every sync tool body.
+# Stage 3 (bake "global" as the in-code default) is a later commit once global
+# mode is live-proven.
+_SYNC_OFFLOAD_MODE = os.environ.get("GRACE2_SYNC_TOOL_OFFLOAD", "off").strip().lower()
+_SYNC_OFFLOAD_GLOBAL_VALUES = frozenset({"global", "all", "on", "1", "true", "yes"})
+#: Stage-1 subset: the hand-audited pure-compute / pure-clip tool families that
+#: take no emitter and do CPU-bound GDAL/numpy work — the safest first cohort.
+_SYNC_OFFLOAD_SUBSET_PREFIXES = ("compute_", "clip_")
+#: Loop-bound emitter API names. A sync tool whose CODE (comments + string /
+#: docstring literals EXCLUDED) references any of these — or any ``emit_*``
+#: attribute — is NOT safe to off-load (it would touch the loop from a worker
+#: thread); ``_assert_sync_offload_safe`` refuses to arm in that case.
+_EMITTER_API_NAMES = frozenset(
+    {
+        "current_emitter",
+        "add_loaded_layer",
+        "update_progress",
+        "start_pipeline",
+        "reinline_vector_layers",
+    }
+)
+
+
+def _source_references_emitter(src: str) -> bool:
+    """True if ``src`` (a tool's source) contains a real CODE reference to the
+    loop-bound emitter API.
+
+    Comments and string/docstring literals are ignored (tokenize drops them) so
+    a doc mention like ``# Wave 4.9 drives via add_loaded_layer`` is NOT a false
+    positive — only an actual identifier in code counts. (publish_layer and
+    fetch_river_geometry both only MENTION add_loaded_layer in docstrings; their
+    bodies are emit-free, the surrounding emit_tool_call wrapper does the emit.)
+    """
+    import io
+    import textwrap
+    import tokenize
+
+    try:
+        tokens = tokenize.generate_tokens(
+            io.StringIO(textwrap.dedent(src)).readline
+        )
+        for tok in tokens:
+            if tok.type != tokenize.NAME:
+                continue
+            name = tok.string
+            if name in _EMITTER_API_NAMES or name.startswith("emit_"):
+                return True
+        return False
+    except (tokenize.TokenError, IndentationError, SyntaxError):
+        # Un-tokenizable (odd indent/decorator/partial): be CONSERVATIVE — fall
+        # back to a line scan that skips obvious comment lines and flag on any
+        # surviving emitter token (better to refuse-arm than silently break).
+        for line in src.splitlines():
+            if line.lstrip().startswith("#"):
+                continue
+            if (
+                "current_emitter" in line
+                or "add_loaded_layer" in line
+                or "emit_" in line
+            ):
+                return True
+        return False
+
+
+def _should_offload_sync_tool(tool_name: str) -> bool:
+    """Return True when ``tool_name``'s sync body should run via
+    ``asyncio.to_thread`` under the current ``GRACE2_SYNC_TOOL_OFFLOAD`` mode.
+    ``off`` (the dark default) and any unknown value -> False."""
+    mode = _SYNC_OFFLOAD_MODE
+    if mode in _SYNC_OFFLOAD_GLOBAL_VALUES:
+        return True
+    if mode == "subset":
+        return tool_name.startswith(_SYNC_OFFLOAD_SUBSET_PREFIXES)
+    return False
+
+
+def _assert_sync_offload_safe() -> None:
+    """ARMED-ONLY startup safety gate for the #6 sync-tool off-load.
+
+    Dark default (mode ``off``) returns immediately and pays nothing. When the
+    off-load is ARMED (``subset``/``global``), scan the SOURCE of every
+    candidate sync tool the current mode would off-load and RAISE if any one
+    references the loop-bound emitter API — off-loading such a tool would let a
+    worker thread touch the event loop. This enforces the headline #6 invariant
+    ("sync tool bodies are emit-free") at the moment we arm, so a future
+    emitting sync tool can never be silently off-loaded. The cost (an
+    ``inspect.getsource`` sweep) is paid once, only when armed.
+    """
+    armed = (
+        _SYNC_OFFLOAD_MODE in _SYNC_OFFLOAD_GLOBAL_VALUES
+        or _SYNC_OFFLOAD_MODE == "subset"
+    )
+    if not armed:
+        logger.info(
+            "sync-tool off-load DISABLED (GRACE2_SYNC_TOOL_OFFLOAD=%r)",
+            _SYNC_OFFLOAD_MODE,
+        )
+        return
+    import inspect  # local: only imported when the off-load is armed
+
+    offenders: list[str] = []
+    uninspectable: list[str] = []
+    n_candidates = 0
+    for name, reg in TOOL_REGISTRY.items():
+        fn = getattr(reg, "fn", None)
+        if fn is None or asyncio.iscoroutinefunction(fn):
+            continue
+        if not _should_offload_sync_tool(name):
+            continue
+        n_candidates += 1
+        try:
+            src = inspect.getsource(fn)
+        except (OSError, TypeError):
+            uninspectable.append(name)
+            continue
+        if _source_references_emitter(src):
+            offenders.append(name)
+    if offenders:
+        raise RuntimeError(
+            "GRACE2_SYNC_TOOL_OFFLOAD is armed (mode=%r) but these sync tools "
+            "reference the loop-bound emitter API and are UNSAFE to off-load: "
+            "%s. Refusing to start. (See "
+            "feedback_no_sync_blocking_on_asyncio_loop.)"
+            % (_SYNC_OFFLOAD_MODE, ", ".join(sorted(offenders)))
+        )
+    if uninspectable:
+        logger.warning(
+            "sync-tool off-load armed (mode=%r): %d candidate tool(s) could not "
+            "be source-inspected for the emit-free check: %s",
+            _SYNC_OFFLOAD_MODE,
+            len(uninspectable),
+            ", ".join(sorted(uninspectable)),
+        )
+    logger.info(
+        "sync-tool off-load ARMED (mode=%r): %d candidate sync tool(s) "
+        "verified emit-free",
+        _SYNC_OFFLOAD_MODE,
+        n_candidates,
+    )
+
+
 async def _invoke_tool_via_emitter(
     websocket: ServerConnection,
     state: SessionState,
@@ -6084,6 +6250,25 @@ async def _invoke_tool_via_emitter(
         # Emit the input-only frame BEFORE the tool body runs so the input +
         # 'Running…' placeholder land while the tool is still executing.
         await _emit_early_input_frame()
+        # #6 (loop-safety, ships dark): when the staged off-load is armed for
+        # this tool (GRACE2_SYNC_TOOL_OFFLOAD), run the SYNCHRONOUS body in a
+        # worker thread so a slow tool cannot stall the WS keepalive. The emit
+        # machinery stays on the loop (see _should_offload_sync_tool /
+        # _assert_sync_offload_safe). Reuse short-circuits return a trivial
+        # already-produced layer synchronously — never worth a thread, and they
+        # are not covered by the startup emit-free scan — so they are excluded.
+        # A tool mis-classified as sync (e.g. an async-callable object that
+        # iscoroutinefunction missed) returns a coroutine from the thread; we
+        # await it back on the loop so semantics are preserved.
+        if (
+            not isinstance(entry, _ReuseEntry)
+            and _should_offload_sync_tool(tool_name)
+            and not asyncio.iscoroutinefunction(entry.fn)
+        ):
+            out = await asyncio.to_thread(entry.fn, **params)
+            if asyncio.iscoroutine(out):
+                return _restamp(await out)
+            return _restamp(out)
         out = entry.fn(**params)
         if asyncio.iscoroutine(out):
             return _restamp(await out)
@@ -8177,6 +8362,11 @@ async def run_server(host: str = "127.0.0.1", port: int | None = None) -> None:
         settings.project,
         settings.location,
     )
+    # #6 (loop-safety): armed-only emit-free safety gate for the staged
+    # sync-tool dispatch off-load. No-op (one log line) under the dark default;
+    # raises and aborts startup if GRACE2_SYNC_TOOL_OFFLOAD is armed for a tool
+    # whose body would touch the loop-bound emitter from a worker thread.
+    _assert_sync_offload_safe()
     try:
         await init_persistence_from_env()
     except Exception as exc:  # noqa: BLE001 — startup must not abort on MCP issues
