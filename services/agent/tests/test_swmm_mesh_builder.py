@@ -3,10 +3,12 @@
 
 These tests PROVE the engine core runnable, not just constructable:
 
-1. **Adaptive budget (RE-FIT from the P0 anchor).** The perf model reproduces
-   the LIVE P0 anchor (400 cells / dt=2 s / 6 h => ~19 s), the cell cap is
-   sane, and the resolution autoscaler coarsens a big AOI up the
-   ``SWMM_RES_LADDER`` while never producing a degenerate grid.
+1. **Adaptive budget (RE-FIT from the LIVE urban anchor, BREAK D).** The perf
+   model reproduces the FIRST LIVE urban run (1190 cells -> 983 s) - the
+   synthetic P0 spike (400 cells -> 19 s) proved ~16x optimistic and is no
+   longer the sizing anchor. The cell cap is sane (and conservative: smaller
+   than under the old fit), and the resolution autoscaler coarsens a big AOI up
+   the ``SWMM_RES_LADDER`` while never producing a degenerate grid.
 
 2. **End-to-end build + RUN on a synthetic AOI.** We synthesize a small GeoTIFF
    DEM (a tilted plane draining to a low corner + a central pit, like the P0
@@ -169,19 +171,47 @@ def _barriers() -> dict:
 
 
 # --------------------------------------------------------------------------- #
-# (1) Adaptive budget — RE-FIT from the P0 anchor.
+# (1) Adaptive budget - RE-FIT from the LIVE urban anchor (BREAK D).
 # --------------------------------------------------------------------------- #
-def test_perf_model_reproduces_p0_anchor():
-    """T(400) ~ 19 s — the LIVE P0 anchor the model was fit to (within 5 %)."""
-    est = estimate_swmm_solve_seconds(400)
-    assert math.isclose(est, 19.022, rel_tol=0.05), est
+def test_perf_model_reproduces_live_anchor():
+    """T(1190) ~ 983 s - the FIRST LIVE urban anchor the model is re-fit to.
+
+    This is the BREAK-D fix: the old fit (anchored to the synthetic 400-cell
+    spike) predicted only ~63 s at 1190 cells (~16x optimistic), so the
+    autoscaler under-coarsened. The re-fit must reproduce the real 983 s.
+    """
+    est = estimate_swmm_solve_seconds(1190)
+    assert math.isclose(est, 983.0, rel_tol=0.02), est
+    # And it must NOT regress to the optimistic old prediction at 1190 cells.
+    assert est > 500.0, est
 
 
-def test_cell_cap_sane_and_floored():
+def test_perf_model_not_optimistic_vs_old_fit():
+    """At 1190 cells the re-fit predicts ~16x what the old (spike) fit did.
+
+    The old fit was A=2.604e-2, p=1.10 -> ~62.9 s at 1190 cells. The re-fit
+    must be conservatively LARGER (so the autoscaler coarsens enough).
+    """
+    old_pred = 2.604e-2 * (1190.0 ** 1.10)  # ~62.9 s - the bug
+    new_pred = estimate_swmm_solve_seconds(1190)
+    assert new_pred > 10.0 * old_pred, (old_pred, new_pred)
+
+
+def test_cell_cap_conservative_at_default_budget():
+    """After the re-fit the default-budget cap is small + conservative.
+
+    At 300 s budget / 0.35 overhead / p=1.10 / re-fit A the cap is ~273 cells
+    (vs ~4.6k under the optimistic spike fit). It must stay floored and well
+    BELOW the 1190-cell run that blew the budget.
+    """
     cap = compute_swmm_cell_cap()
     assert cap >= mb.SWMM_MIN_CELL_CAP
-    # At the default budget the cap should comfortably exceed the 400-cell anchor.
-    assert cap > 400
+    # The cap must keep the estimated solve at/under the net (post-overhead)
+    # budget - the whole point of the autoscaler.
+    solve_budget = mb.SWMM_SOLVE_BUDGET_S * (1.0 - mb.SWMM_OVERHEAD_FRACTION)
+    assert estimate_swmm_solve_seconds(cap) <= solve_budget + 1.0, cap
+    # And it must be far below the 1190-cell live run that took 983 s.
+    assert cap < 1190, cap
 
 
 def test_res_ladder_is_urban_scale():
@@ -190,10 +220,12 @@ def test_res_ladder_is_urban_scale():
 
 
 def test_autoscale_keeps_small_aoi_at_base():
-    a = autoscale_swmm_resolution(400, base_resolution_m=10.0)
+    # A count comfortably under the re-fit cap (~273 @ default budget) stays put.
+    small = max(1, compute_swmm_cell_cap() // 2)
+    a = autoscale_swmm_resolution(small, base_resolution_m=10.0)
     assert a.resolution_m == 10.0
     assert not a.coarsened
-    assert a.estimated_active_cells == 400
+    assert a.estimated_active_cells == small
 
 
 def test_autoscale_coarsens_big_aoi_without_degenerating():
@@ -238,7 +270,13 @@ def test_build_and_run_end_to_end(synthetic_aoi):
         building_representation="drop",
         infiltration_method="none",
         barriers=synthetic_aoi["barriers"],
-        enable_autoscale=True,
+        # Autoscale OFF for the STRUCTURAL assertions: this test pins exact cell
+        # coords (walls at (8,9)-(9,9), flap at (3,3)-(4,3), building at (6,6)),
+        # which only hold at the requested 10 m. After the BREAK-D re-fit the
+        # default cap (~273) is below this 20x20 (~398-cell) AOI, so leaving
+        # autoscale ON would coarsen 10m->20m and shift every coordinate.
+        # Autoscale coarsening is covered independently by the budget tests.
+        enable_autoscale=False,
     )
 
     # --- the deck exists and the mesh provenance is sane ---

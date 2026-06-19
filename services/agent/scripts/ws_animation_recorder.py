@@ -42,6 +42,7 @@ import websockets
 from grace2_contracts import new_ulid
 from grace2_contracts.payload_warning import PayloadConfirmationEnvelopePayload
 from grace2_contracts.ws import (
+    ClarificationResponsePayload,
     ConfirmResponsePayload,
     Envelope,
     SessionResumePayload,
@@ -65,6 +66,7 @@ class Recorder:
         self.errors: list[dict] = []
         self.pipeline_states: list[list[str]] = []
         self.agent_text: list[str] = []
+        self.clarifications: list[dict] = []
         self.saw_solver_tool = False
         self.solver_started_at = 0.0
         self.turn_complete_count = 0
@@ -108,6 +110,34 @@ class Recorder:
                     ConfirmResponsePayload(request_id=rid, approved=True),
                 )
             )
+        elif mt == "clarification-request":
+            # B3 urban-vs-coastal disambiguation: pick the URBAN / storm-drain
+            # / PySWMM option. Match on label/description keywords; fall back to
+            # the first option if no urban cue is found.
+            rid = pl.get("request_id")
+            opts = pl.get("options", []) or []
+            urban_kw = ("urban", "storm", "drain", "street", "swmm", "pyswmm", "pipe", "sewer")
+            chosen = None
+            for o in opts:
+                blob = f"{o.get('label','')} {o.get('description','')}".lower()
+                if any(k in blob for k in urban_kw):
+                    chosen = o.get("id")
+                    break
+            if chosen is None and opts:
+                chosen = opts[0].get("id")
+            self.clarifications.append({"question": pl.get("question"), "options": opts, "chose": chosen})
+            print(
+                f"< clarification-request q={str(pl.get('question'))[:90]!r} "
+                f"options={[(o.get('id'), o.get('label')) for o in opts]} -> choosing {chosen!r} (URBAN)"
+            )
+            await ws.send(
+                _serialize(
+                    "clarification-response",
+                    self.session_id,
+                    ClarificationResponsePayload(request_id=rid, option_id=chosen),
+                )
+            )
+            print("> clarification-response(URBAN) sent", file=sys.stderr)
         elif mt == "map-command":
             cmd = pl.get("command")
             a = pl.get("args", {})
@@ -262,6 +292,7 @@ async def main(args) -> int:
         "tool_events": rec.tool_events,
         "pipeline_states": rec.pipeline_states,
         "errors": rec.errors,
+        "clarifications": rec.clarifications,
         "agent_text": "".join(rec.agent_text),
     }
     with open(args.out, "w") as fh:

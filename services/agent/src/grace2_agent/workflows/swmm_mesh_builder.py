@@ -52,11 +52,16 @@ Infiltration (``infiltration_method`` PARAM on the PERVIOUS fraction):
 - ``"green_ampt"`` Green-Ampt loss (suction / conductivity / initial deficit on
   the pervious area).
 
-Adaptive-mesh budget (lifted from ``sfincs_builder`` + RE-FIT for SWMM from the
-P0 anchor: 400 cells / dt=2 s / 6 h => ~19 s single-thread). DYNWAVE overland is
-O(cells * steps), so a large AOI is coarsened up ``SWMM_RES_LADDER =
-(1, 2, 5, 10, 20) m`` until the estimated active-cell count fits a wall-clock
-budget. Never produces a degenerate/empty grid.
+Adaptive-mesh budget (lifted from ``sfincs_builder`` + RE-FIT for SWMM). The
+model was originally anchored to the P0 SYNTHETIC spike (400 cells / dt=2 s /
+6 h => ~19 s single-thread), but the FIRST LIVE urban run exposed that anchor
+as ~16x optimistic: 1190 active cells took 983 s (16.4 min) wall, where the
+old fit predicted only ~63 s, so the autoscaler UNDER-coarsened. The model is
+now RE-FIT to the LIVE anchor (1190 cells -> 983 s); the synthetic spike is a
+different (easy-convergence) regime and is no longer trusted for sizing.
+DYNWAVE overland is O(cells * steps), so a large AOI is coarsened up
+``SWMM_RES_LADDER = (1, 2, 5, 10, 20) m`` until the estimated active-cell
+count fits a wall-clock budget. Never produces a degenerate/empty grid.
 
 Mass-balance honesty gate (cross-check improvement): after the run we read the
 ``.rpt`` **Flow Routing Continuity** error; if it exceeds the tolerance we raise
@@ -159,15 +164,24 @@ class SWMMMeshError(RuntimeError):
 # --------------------------------------------------------------------------- #
 # Adaptive-mesh budget — lifted from sfincs_builder + RE-FIT for SWMM.
 #
-# P0 anchor (LIVE, from spike_result.json): 400 ACTIVE cells, dt=2 s, 6 h sim,
-# single thread => 19.022 s wall. DYNWAVE overland cost scales ~ cells * steps;
-# with a fixed dt+duration the step count is fixed, so wall time is ~LINEAR in
-# the active-cell count at fixed routing-step. We adopt a near-linear exponent
-# (p slightly > 1 to be conservative against super-linear trial/Jacobian growth
-# in DYNWAVE as the network widens) and pin A from the anchor.
+# RE-FIT (BREAK D): the model is now anchored to the FIRST LIVE urban run, NOT
+# the synthetic P0 spike. The spike (400 ACTIVE cells -> 19.022 s) turned out to
+# be ~16x optimistic relative to a real urban DEM: the live run logged 1190
+# ACTIVE cells taking 983 s (16.4 min) single-thread, where the old fit
+# (A=2.604e-2, p=1.10) predicted only ~62.9 s. So the autoscaler UNDER-coarsened
+# (it thought fine resolution fit the budget when it did not). We re-fit so the
+# model REPRODUCES the live anchor and slightly OVER-estimates everywhere else.
+#
+# DYNWAVE overland cost scales ~ cells * steps; with a fixed dt+duration the
+# step count is fixed, so wall time is ~LINEAR in the active-cell count at fixed
+# routing-step. We KEEP the near-linear exponent p=1.10 (p slightly > 1 to stay
+# conservative against super-linear trial/Jacobian growth in DYNWAVE as the
+# network widens - a HIGHER p coarsens MORE, the safe direction) and re-pin A
+# from the LIVE anchor (1190 cells -> 983 s). This is the env-overridable retune
+# the original comments anticipated as real (cells, time) telemetry landed.
 #
 # Every coefficient is an env-overridable module constant so the cap re-tunes
-# from logged solve-telemetry as real (cells, time) records land. We NEVER
+# from logged solve-telemetry as MORE real (cells, time) records land. We NEVER
 # produce a degenerate/empty grid — resolution is clamped to the coarsest rung
 # and the cap floored.
 # --------------------------------------------------------------------------- #
@@ -207,15 +221,18 @@ SWMM_SOLVE_BUDGET_S: float = _env_float("GRACE2_SWMM_SOLVE_BUDGET_S", 300.0)
 #: write, postprocess). Env: ``GRACE2_SWMM_OVERHEAD_FRACTION``.
 SWMM_OVERHEAD_FRACTION: float = _env_float("GRACE2_SWMM_OVERHEAD_FRACTION", 0.35)
 
-#: Perf model T(N) = PERF_A * N^PERF_P (single thread). RE-FIT from the P0
-#: anchor: 19.022 s @ 400 cells. p slightly > 1 (1.10) to stay conservative
-#: against DYNWAVE's super-linear trial growth as the network widens (a HIGHER p
-#: coarsens MORE — the safe direction). A solved anchor-exact given p:
-#:     19.022 = A * 400^1.10  ->  400^1.10 = exp(1.10*ln400)=exp(6.593)=730.6
-#:     A = 19.022 / 730.6 = 2.604e-2
+#: Perf model T(N) = PERF_A * N^PERF_P (single thread). RE-FIT (BREAK D) from the
+#: LIVE urban anchor (983 s @ 1190 cells), NOT the optimistic synthetic spike.
+#: p kept at 1.10 (slightly > 1 to stay conservative against DYNWAVE's
+#: super-linear trial growth as the network widens - a HIGHER p coarsens MORE,
+#: the safe direction). A solved anchor-exact given p:
+#:     983 = A * 1190^1.10  ->  1190^1.10 = exp(1.10*ln1190)=2416.03
+#:     A = 983 / 2416.03 = 0.40687
+#: This re-fit predicts T(1190)=983 s (exact) and T(400)~=296 s, vs the old
+#: A=2.604e-2 which predicted only ~62.9 s at 1190 cells (~16x optimistic).
 #: Env: ``GRACE2_SWMM_PERF_P`` / ``GRACE2_SWMM_PERF_A``.
 SWMM_PERF_P: float = _env_float("GRACE2_SWMM_PERF_P", 1.10)
-SWMM_PERF_A: float = _env_float("GRACE2_SWMM_PERF_A", 2.604e-2)
+SWMM_PERF_A: float = _env_float("GRACE2_SWMM_PERF_A", 0.40687)
 
 #: Resolution ladder (m) the autoscaler snaps UP through. 1 m is the finest
 #: urban rung (building-scale); 20 m the coarsest we will solve at (still
@@ -224,16 +241,18 @@ SWMM_PERF_A: float = _env_float("GRACE2_SWMM_PERF_A", 2.604e-2)
 SWMM_RES_LADDER: tuple[float, ...] = _env_resolution_ladder((1.0, 2.0, 5.0, 10.0, 20.0))
 
 #: Hard floor on the active-cell cap so a hostile budget/perf override can never
-#: drive the cap to a degenerate near-zero value. At the default
-#: 300 s / 0.35 overhead / p=1.10 / A=2.604e-2 the natural cap is ~4.6k cells.
+#: drive the cap to a degenerate near-zero value. After the BREAK-D re-fit, at
+#: the default 300 s / 0.35 overhead / p=1.10 / A=0.40687 the natural cap is
+#: ~273 cells (was ~4.6k under the optimistic spike fit), so this 200-cell floor
+#: is now close to the operating point but still not binding at default budget.
 SWMM_MIN_CELL_CAP: int = int(_env_float("GRACE2_SWMM_MIN_CELL_CAP", 200))
 
 
 def estimate_swmm_solve_seconds(active_cells: int) -> float:
     """Estimate single-thread SWMM wall-clock seconds for ``active_cells``.
 
-    ``T(N) = SWMM_PERF_A * N^SWMM_PERF_P``, RE-FIT from the P0 anchor
-    (19.022 s @ 400 cells). Returns 0.0 for a non-positive count.
+    ``T(N) = SWMM_PERF_A * N^SWMM_PERF_P``, RE-FIT (BREAK D) from the LIVE urban
+    anchor (983 s @ 1190 cells). Returns 0.0 for a non-positive count.
     """
     if active_cells <= 0:
         return 0.0

@@ -197,6 +197,44 @@ def _fake_upload(local_cog, run_id, runs_bucket=None, *, dest_filename="swmm_dep
     return f"gs://test-runs/{run_id}/{dest_filename}"
 
 
+def _titiler_template(layer_uri: str) -> str:
+    """A TiTiler-style published tile template (the publish_layer success shape).
+
+    BREAK A: the composer now routes the raw object-store COG through
+    publish_layer (the render chokepoint) before returning/emitting it. In-test
+    there is no QGIS/TiTiler worker, so we stub publish_layer with a deterministic
+    http(s) template that embeds the source uri as the ``url=`` query param - this
+    mirrors the live TiTiler tile-URL shape and gives each frame a DISTINCT
+    renderable url (distinct _layer_identity_key -> no dedup collapse).
+    """
+    from urllib.parse import quote
+
+    return (
+        "https://tiles.example/cog/tiles/{z}/{x}/{y}.png"
+        f"?url={quote(layer_uri, safe='')}"
+    )
+
+
+def _patch_publish_layer(monkeypatch, calls: list | None = None):  # noqa: ANN001
+    """Stub model_urban_flood_swmm.publish_layer to the TiTiler template shape.
+
+    The peak + each frame are published through this seam; without the stub the
+    composer would hit the real (absent) QGIS worker, publish would fail, and the
+    honest-drop path would strip the peak's renderable url + drop all frames.
+    """
+
+    def _pub(layer_uri, layer_id, style_preset=None, **kwargs):  # noqa: ANN001
+        if calls is not None:
+            calls.append(
+                {"layer_uri": layer_uri, "layer_id": layer_id, "style_preset": style_preset}
+            )
+        return _titiler_template(layer_uri)
+
+    monkeypatch.setattr(
+        "grace2_agent.workflows.model_urban_flood_swmm.publish_layer", _pub
+    )
+
+
 class _FakeEmitter:
     """Captures the out-of-band frame emissions + the zoom-to map command."""
 
@@ -253,6 +291,10 @@ def test_full_local_chain_emits_peak_plus_frames(synthetic_inputs, monkeypatch):
         "grace2_agent.workflows.postprocess_swmm._upload_cog_to_runs_bucket",
         _fake_upload,
     )
+    # BREAK A: stub publish_layer so the peak + each frame are routed through the
+    # render chokepoint and come back as renderable http(s) tile templates.
+    publish_calls: list = []
+    _patch_publish_layer(monkeypatch, publish_calls)
     # Bind a fake emitter so the out-of-band frame emission is captured (mirrors
     # the WS dispatch ContextVar binding).
     from grace2_agent import pipeline_emitter as pe
@@ -294,6 +336,10 @@ def test_full_local_chain_emits_peak_plus_frames(synthetic_inputs, monkeypatch):
     # barriers echoed back for rendering (RED walls / GREEN flap gates).
     assert peak.barriers is not None
     assert peak.barriers["type"] == "FeatureCollection"
+    # BREAK A: the returned peak carries a PUBLISHED renderable http(s) tile URL,
+    # NOT a raw s3:///gs:// COG (which the emit guardrail would drop from the map).
+    assert peak.uri.startswith("http"), peak.uri
+    assert not peak.uri.startswith("s3://") and not peak.uri.startswith("gs://")
 
     # --- frames emitted OUT-OF-BAND as a contiguous "Flood depth step N" group ---
     frames = fake.loaded_layers
@@ -304,12 +350,23 @@ def test_full_local_chain_emits_peak_plus_frames(synthetic_inputs, monkeypatch):
     assert names == [f"Flood depth step {i}" for i in range(1, len(frames) + 1)]
     for name in names:
         assert _WEB_STEP_TOKEN_RE.search(name) is not None, name
-    # DISTINCT uris (distinct runs-bucket keys -> no dedup collapse).
+    # BREAK A: every emitted frame carries a PUBLISHED renderable http(s) URL.
+    assert all(f.uri.startswith("http") for f in frames), [f.uri for f in frames]
+    # DISTINCT uris (distinct runs-bucket keys -> distinct published url -> no
+    # dedup collapse).
     uris = [f.uri for f in frames]
     assert len(set(uris)) == len(uris)
     assert peak.uri not in uris
     # the peak is NOT in the emitted frame set (it is the returned layer).
     assert all(f.layer_id != peak.layer_id for f in frames)
+
+    # BREAK A: publish_layer fired once for the peak + once per emitted frame.
+    assert len(publish_calls) == 1 + len(frames), (
+        f"expected publish_layer x{1 + len(frames)} (peak + {len(frames)} frames); "
+        f"got {len(publish_calls)}: {[c['layer_id'] for c in publish_calls]}"
+    )
+    assert publish_calls[0]["layer_id"] == "swmm-depth-peak-run-urban"
+    assert all(c["style_preset"] == "continuous_flood_depth" for c in publish_calls)
 
     # --- zoom-on-area-first emitted before the solve ---
     assert any(k == "zoom-to" for k, _ in fake.map_commands)
@@ -317,7 +374,7 @@ def test_full_local_chain_emits_peak_plus_frames(synthetic_inputs, monkeypatch):
 
 def test_tool_wrapper_drives_full_chain(synthetic_inputs, monkeypatch):
     """The LLM-facing run_swmm_urban_flood tool drives the same chain and returns
-    a SWMMDepthLayerURI (the add_loaded_layer gate target) — DEM fetch stubbed to
+    a SWMMDepthLayerURI (the add_loaded_layer gate target) - DEM fetch stubbed to
     the synthetic file so no network is touched."""
     import asyncio
 
@@ -327,6 +384,8 @@ def test_tool_wrapper_drives_full_chain(synthetic_inputs, monkeypatch):
         "grace2_agent.workflows.postprocess_swmm._upload_cog_to_runs_bucket",
         _fake_upload,
     )
+    # BREAK A: stub publish_layer (no QGIS/TiTiler worker in-test).
+    _patch_publish_layer(monkeypatch)
     # Stub the composer's DEM + buildings acquisition to the synthetic inputs so
     # the tool path needs no live fetch.
     monkeypatch.setattr(
@@ -359,3 +418,5 @@ def test_tool_wrapper_drives_full_chain(synthetic_inputs, monkeypatch):
     assert out.role == "primary"
     assert out.layer_id.startswith("swmm-depth-peak-")
     assert out.max_depth_m >= 0.0
+    # BREAK A: the returned peak carries a published renderable http(s) URL.
+    assert out.uri.startswith("http"), out.uri

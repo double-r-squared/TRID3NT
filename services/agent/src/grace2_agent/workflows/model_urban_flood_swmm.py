@@ -1,8 +1,8 @@
-"""PySWMM quasi-2D urban-flood composer (sprint-16 P4, Path A — the LOCAL lane).
+"""PySWMM quasi-2D urban-flood composer (sprint-16 P4, Path A - the LOCAL lane).
 
 The SWMM analogue of ``model_flood_scenario`` (SFINCS) /
 ``model_groundwater_contamination_scenario`` (MODFLOW). A deterministic
-orchestrator-style workflow (Invariant 2 — no LLM in the chain) that composes
+orchestrator-style workflow (Invariant 2 - no LLM in the chain) that composes
 the urban-flood engine end-to-end on NATE's PCSWMM screenshot path:
 
     fetch DEM (fetch_3dep_extra 1m -> fetch_dem 10m fallback)
@@ -10,7 +10,7 @@ the urban-flood engine end-to-end on NATE's PCSWMM screenshot path:
       -> lookup_precip_return_period (Atlas-14 design-storm depth)
       -> build_swmm_mesh (P2: quasi-2D node/link SWMM deck; barriers/buildings/
          infiltration/single-outfall/nested-hyetograph/mass-balance gate)
-      -> run_swmm_local (P4: pyswmm IN-PROCESS — the dev primary path)
+      -> run_swmm_local (P4: pyswmm IN-PROCESS - the dev primary path)
       -> postprocess_swmm (P3: rasterize per-timestep node INVERT_DEPTH ->
          peak primary COG + per-frame COGs)
       -> publish the peak primary + emit the frames via the Phase-1 Step-9b
@@ -18,7 +18,7 @@ the urban-flood engine end-to-end on NATE's PCSWMM screenshot path:
          peak is the single returned LayerURI).
 
 Returns the PEAK ``SWMMDepthLayerURI`` directly (a ``LayerURI`` subtype) so the
-``emit_tool_call`` ``add_loaded_layer`` gate fires on it — exactly like
+``emit_tool_call`` ``add_loaded_layer`` gate fires on it - exactly like
 ``run_modflow_job`` returns a ``PlumeLayerURI``. The per-frame depth COGs are
 emitted OUT-OF-BAND through ``emitter.add_loaded_layer`` (distinct runs-bucket
 keys -> distinct TiTiler url -> no dedup collapse) so the web
@@ -28,11 +28,12 @@ single-LayerURI return shape (no re-publish trip in ``summarize_tool_result``).
 Determinism boundary (Invariant 1): every depth number the agent narrates comes
 from the typed ``SWMMDepthLayerURI.max_depth_m`` / ``.flooded_area_km2`` /
 ``.n_buildings_affected`` fields the postprocess computed with plain arithmetic
-— never free-generated.
+- never free-generated.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import shutil
@@ -40,11 +41,14 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from grace2_contracts.execution import LayerURI
 from grace2_contracts.swmm_contracts import SWMMRunArgs
 from grace2_contracts.swmm_contracts import SWMMDepthLayerURI
 
 from ..pipeline_emitter import current_emitter
+from ..tools.publish_layer import PublishLayerError, publish_layer
 from .postprocess_swmm import (
+    FLOOD_DEPTH_STYLE_PRESET,
     PostprocessSWMMError,
     postprocess_swmm,
 )
@@ -141,7 +145,7 @@ def _fetch_dem_for_urban(
     try:
         layer = fetch_3dep_extra(bbox, resolution="1 meter")
         return _localize_to_dem_path(layer.uri), "USGS 3DEP 1m LiDAR"
-    except Exception as exc:  # noqa: BLE001 — fall through to the 10 m fallback
+    except Exception as exc:  # noqa: BLE001 - fall through to the 10 m fallback
         logger.info(
             "fetch_3dep_extra(1m) failed (%s); falling back to fetch_dem(10m)", exc
         )
@@ -163,12 +167,12 @@ def _fetch_buildings_for_urban(
     """Fetch OSM building footprints for the AOI (the reliable footprint source,
     per memory project_building_footprints_source). Returns the GeoJSON
     FeatureCollection dict, or ``None`` on failure (footprints are an enhancement,
-    not a hard gate — the mesh still builds without obstructions)."""
+    not a hard gate - the mesh still builds without obstructions)."""
     from ..tools.data_fetch import fetch_buildings
 
     try:
         layer = fetch_buildings(bbox, source="osm")
-    except Exception as exc:  # noqa: BLE001 — buildings are optional
+    except Exception as exc:  # noqa: BLE001 - buildings are optional
         logger.info("fetch_buildings(osm) failed (%s); proceeding without footprints", exc)
         return None
     # The footprints come back as an inline GeoJSON FeatureCollection on the
@@ -188,7 +192,7 @@ def _atlas14_total_depth_mm(
     """Look up the Atlas-14 design-storm depth (mm) for the AOI centroid.
 
     Returns the total storm depth in mm, or ``None`` on lookup failure (the
-    builder then uses its sane hyetograph default — never a silent dead-end).
+    builder then uses its sane hyetograph default - never a silent dead-end).
     """
     from ..tools.data_fetch import lookup_precip_return_period
 
@@ -199,7 +203,7 @@ def _atlas14_total_depth_mm(
             return_period_years=int(return_period_yr),
             duration_hours=float(storm_duration_hr),
         )
-    except Exception as exc:  # noqa: BLE001 — fall back to the builder default
+    except Exception as exc:  # noqa: BLE001 - fall back to the builder default
         logger.info(
             "lookup_precip_return_period failed (%s); using the builder's "
             "hyetograph default depth", exc
@@ -260,7 +264,7 @@ async def model_urban_flood_swmm(
     if emitter is not None:
         try:
             await emitter.emit_map_command("zoom-to", {"bbox": list(bbox)})
-        except Exception as exc:  # noqa: BLE001 — non-fatal UX hint
+        except Exception as exc:  # noqa: BLE001 - non-fatal UX hint
             logger.warning("model_urban_flood_swmm: zoom-to emit failed: %s", exc)
 
     # --- Step 1: DEM (1 m 3DEP primary -> 10 m fallback) --------------------
@@ -308,7 +312,7 @@ async def model_urban_flood_swmm(
         # n_active_cells IS the element count) instead of the caller's blind
         # default. A big urban AOI grabs more compute (up to the new xlarge
         # 48-vCPU tier); a small one stays cheap. select_compute_class never
-        # raises — a zero/absent count falls back to the caller's compute_class.
+        # raises - a zero/absent count falls back to the caller's compute_class.
         from ..tools.solver import select_compute_class
 
         n_active = int(getattr(staging.build, "n_active_cells", 0) or 0)
@@ -316,7 +320,7 @@ async def model_urban_flood_swmm(
             effective_compute_class = select_compute_class(n_active)
             logger.info(
                 "model_urban_flood_swmm: auto vertical scaling n_active_cells=%d "
-                "→ compute_class=%s (caller requested %s)",
+                "-> compute_class=%s (caller requested %s)",
                 n_active,
                 effective_compute_class,
                 compute_class,
@@ -329,7 +333,7 @@ async def model_urban_flood_swmm(
                 compute_class,
             )
 
-        # --- Step 5: solve (pyswmm in-process — the dev primary path) -------
+        # --- Step 5: solve (pyswmm in-process - the dev primary path) -------
         # is_local_mode() is True by default; the out-of-process staged-manifest
         # lane (run_solver(solver='swmm') + wait_for_completion) is wired via the
         # SWMM LocalSolverSpec but the urban engine's primary path is in-process.
@@ -349,7 +353,23 @@ async def model_urban_flood_swmm(
                 model_setup_uri=f"file://{staging.inp_path}",
                 compute_class=effective_compute_class,
             )
-        run = run_swmm_local(staging)
+        # BREAK B (event-loop starvation): run_swmm_local is a SYNCHRONOUS
+        # ~16-min pyswmm solve. Calling it inline on the async event loop blocks
+        # the loop for the entire solve -> the WS keepalive ping coroutine never
+        # runs -> the socket dies (ConnectionClosedError x40) -> every later
+        # emit/persist lands on a dead socket and the terminal layer never
+        # surfaces. The remedy is to push the blocking call OFF the loop onto a
+        # worker thread so the loop stays responsive (ping/pong keeps the WS
+        # alive) while pyswmm churns. run_swmm_deck (the body of run_swmm_local)
+        # does NOT report progress through the async PipelineEmitter mid-solve -
+        # it is a self-contained synchronous compute with no loop-bound calls -
+        # so a plain to_thread wrap is correct here: no asyncio.run_coroutine_
+        # threadsafe marshaling / progress-queue draining is required (there are
+        # no emitter calls to marshal back). When mid-solve emitter progress IS
+        # added later, switch to run_coroutine_threadsafe(loop) inside the
+        # worker. (Mirrors model_flood_scenario's asyncio.to_thread off-loading
+        # of its blocking fetcher/solve stages.)
+        run = await asyncio.to_thread(run_swmm_local, staging)
 
         # --- Step 6: postprocess (rasterize node depths -> peak + frames) ---
         layers, metrics = postprocess_swmm(
@@ -359,7 +379,7 @@ async def model_urban_flood_swmm(
             building_footprints=building_footprints,
         )
     except (SWMMWorkflowError, PostprocessSWMMError):
-        # Cleanup before re-raising — the tool wrapper turns these into a typed
+        # Cleanup before re-raising - the tool wrapper turns these into a typed
         # error dict.
         if cleanup_deck and deck_dir_to_clean:
             _cleanup_deck_dir(deck_dir_to_clean)
@@ -373,23 +393,45 @@ async def model_urban_flood_swmm(
             "postprocess_swmm produced no depth layers (empty solve?)",
         )
 
-    peak = layers[0]
+    raw_peak = layers[0]
     frame_layers = layers[1:]
 
-    # --- Step 7 / 9b: emit the per-frame animation layers OUT-OF-BAND --------
+    # --- Step 7 (BREAK A): publish the PEAK COG through publish_layer ---------
+    # postprocess_swmm returns the peak + frame COGs as RAW s3:// object URIs.
+    # A raw object-store URI NEVER renders in MapLibre and the job-0254 emission
+    # guardrail (layer_uri_emit) DROPS a renderable raster carrying s3:// - so
+    # without publishing, the peak silently vanishes from the map and persists no
+    # renderable loaded_layer (BREAK A). Mirror the SFINCS model_flood_scenario
+    # Step-9 publish-or-honest-drop path: route the peak COG through publish_layer
+    # (the _resolve_titiler_style_params render chokepoint) so it carries a
+    # published /tiles or WMS URL before it is returned. The returned LayerURI's
+    # dispatch-level emit_layer_uri seam then PASSES it (http(s) renders) and
+    # persists it as a renderable primary loaded_layer.
+    #
+    # On publish failure we return the peak UNPUBLISHED (raw s3://): the dispatch
+    # guardrail drops the dead raster from the map (honest - no broken row) while
+    # the typed narration scalars (max_depth_m / flooded_area_km2 /
+    # n_buildings_affected) still reach the LLM so the failure is narrated and the
+    # job-0177 retry loop can re-attempt. The wrapper REQUIRES a SWMMDepthLayerURI
+    # return, so we never drop the whole layer - only its renderability.
+    peak = _publish_peak_layer(raw_peak, staging.run_id)
+
+    # --- Step 7b / 9b: publish + emit the per-frame animation layers OUT-OF-BAND
     # Mirrors model_flood_scenario Step-9b: each frame is a DISTINCT COG (distinct
-    # runs-bucket key -> distinct TiTiler url -> no dedup collapse). We emit in
+    # runs-bucket key -> distinct published url -> no dedup collapse). Each frame
+    # COG is published through publish_layer (renderable URL) and emitted in
     # ascending step order via emitter.add_loaded_layer so all N frames arrive as
-    # one contiguous sequential group. Frames are emitted ONLY through the emitter
-    # (NOT returned), so they never reach summarize_tool_result. When the emitter
-    # is None (direct/smoke/test) frame emission is skipped — the frames still
-    # live in `layers` for tests to assert on.
+    # one contiguous sequential group; the "Flood depth step N" name token is
+    # preserved so the web detectSequentialGroups scrubber group forms. Frames are
+    # emitted ONLY through the emitter (NOT returned), so they never reach
+    # summarize_tool_result. When the emitter is None (direct/smoke/test) frame
+    # emission is skipped - the frames still live in `layers` for tests to assert.
     emitted_frames = await _emit_frame_layers(emitter, frame_layers, staging.run_id)
 
     logger.info(
         "model_urban_flood_swmm complete run_id=%s max_depth_m=%.4g "
         "flooded_area_km2=%.6g n_buildings_affected=%d frames_emitted=%d/%d "
-        "continuity=%+.3f%%",
+        "continuity=%+.3f%% peak_uri=%s",
         staging.run_id,
         peak.max_depth_m,
         peak.flooded_area_km2,
@@ -397,45 +439,152 @@ async def model_urban_flood_swmm(
         emitted_frames,
         len(frame_layers),
         run.continuity_error_pct,
+        peak.uri,
     )
 
     # --- Step 8: cleanup the scratch deck (COGs already uploaded) -----------
     if cleanup_deck and deck_dir_to_clean:
         _cleanup_deck_dir(deck_dir_to_clean)
 
-    # The PEAK SWMMDepthLayerURI is returned directly — the emit_tool_call
-    # add_loaded_layer gate fires on it (a LayerURI subtype). Invariant 1: the
-    # agent narrates peak.max_depth_m / .flooded_area_km2 / .n_buildings_affected.
+    # The PEAK SWMMDepthLayerURI is returned directly - the emit_tool_call
+    # add_loaded_layer gate fires on it (a LayerURI subtype) and persists it as a
+    # renderable primary loaded_layer. Invariant 1: the agent narrates
+    # peak.max_depth_m / .flooded_area_km2 / .n_buildings_affected.
     return peak
+
+
+def _publish_peak_layer(
+    raw_peak: SWMMDepthLayerURI, run_id: str
+) -> SWMMDepthLayerURI:
+    """Publish the PEAK depth COG through publish_layer (BREAK A render chokepoint).
+
+    Routes the raw s3:// peak COG through ``publish_layer`` (the
+    ``_resolve_titiler_style_params`` render seam) and returns a NEW
+    ``SWMMDepthLayerURI`` carrying the published /tiles or WMS URL plus the
+    narration scalars + echoed barriers. On publish failure (e.g. QGIS-on-AWS not
+    yet landed - job-0308) the raw peak is returned UNCHANGED: the dispatch-level
+    ``emit_layer_uri`` guardrail then drops the dead raw-s3:// raster from the map
+    (honest - no broken layer row) while the typed metrics still narrate. The
+    wrapper requires a ``SWMMDepthLayerURI`` return, so we never drop the layer
+    object itself - only its renderability degrades.
+
+    Mirrors the SFINCS ``model_flood_scenario`` Step-9 primary publish (a raster
+    carrying a raw object-store URI takes the publish-or-honest-drop gate).
+    """
+    if raw_peak.layer_type != "raster" or not (
+        raw_peak.uri.startswith("gs://") or raw_peak.uri.startswith("s3://")
+    ):
+        # Already a renderable URL (defensive) - return as-is.
+        return raw_peak
+    layer_id_for_pub = f"swmm-depth-peak-{run_id}"
+    try:
+        published_uri = publish_layer(
+            layer_uri=raw_peak.uri,
+            layer_id=layer_id_for_pub,
+            style_preset=raw_peak.style_preset or FLOOD_DEPTH_STYLE_PRESET,
+        )
+    except PublishLayerError as exc:
+        logger.warning(
+            "model_urban_flood_swmm: publish_layer FAILED for the peak "
+            "layer_id=%s error_code=%s (%s) - returning the unpublished peak. "
+            "Its raw s3:// uri never renders, so the dispatch guardrail drops it "
+            "from the map; the depth metrics still narrate honestly and the "
+            "retry-on-failure loop (job-0177) can re-attempt publish.",
+            layer_id_for_pub,
+            exc.error_code,
+            exc,
+        )
+        return raw_peak
+    # Substitute the published URL into a fresh SWMMDepthLayerURI so the returned
+    # layer renders directly while preserving the narration scalars + barriers.
+    return SWMMDepthLayerURI(
+        layer_id=layer_id_for_pub,
+        name=raw_peak.name,
+        layer_type=raw_peak.layer_type,
+        uri=published_uri,
+        style_preset=raw_peak.style_preset or FLOOD_DEPTH_STYLE_PRESET,
+        role=raw_peak.role,
+        units=raw_peak.units,
+        bbox=raw_peak.bbox,
+        max_depth_m=raw_peak.max_depth_m,
+        flooded_area_km2=raw_peak.flooded_area_km2,
+        n_buildings_affected=raw_peak.n_buildings_affected,
+        barriers=raw_peak.barriers,
+    )
 
 
 async def _emit_frame_layers(
     emitter: Any, frame_layers: list[SWMMDepthLayerURI], run_id: str
 ) -> int:
-    """Emit per-frame depth COGs out-of-band so the web scrubber group forms.
+    """Publish + emit per-frame depth COGs out-of-band so the web scrubber forms.
 
-    Returns the number of frames emitted (0 when no emitter is bound — the
-    direct/smoke/test path). Never raises — a frame emit failure must not sink
-    the peak layer (the postprocess_flood honesty stance carried into the
+    Each frame COG is routed through ``publish_layer`` (BREAK A render chokepoint)
+    so it carries a renderable /tiles or WMS URL before ``add_loaded_layer``;
+    without this every frame is a raw s3:// COG the job-0254 guardrail drops, so
+    the scrubber group never forms on the map. The "Flood depth step N" name token
+    is preserved so the web ``detectSequentialGroups`` groups them. A frame that
+    fails to publish is HONESTLY DROPPED (its raw uri never renders) - the
+    remaining frames + the peak stay intact; if too many drop the group may fall
+    below 2 members and simply not form (acceptable, never a fake row).
+
+    Returns the number of frames emitted (0 when no emitter is bound - the
+    direct/smoke/test path). Never raises - a frame publish/emit failure must not
+    sink the peak layer (the postprocess_flood honesty stance carried into the
     composer).
     """
     if not frame_layers or emitter is None:
         if frame_layers:
             logger.info(
                 "model_urban_flood_swmm: %d animation frames available but no "
-                "emitter bound (direct/smoke/test) — frames not emitted.",
+                "emitter bound (direct/smoke/test) - frames not emitted.",
                 len(frame_layers),
             )
         return 0
     emitted = 0
     for lyr in frame_layers:
+        # Defensive: a frame that is already a renderable URL (not raw object
+        # store) emits as-is; otherwise publish it through the render chokepoint.
+        if not (lyr.uri.startswith("gs://") or lyr.uri.startswith("s3://")):
+            emit_layer: LayerURI = lyr
+        else:
+            try:
+                frame_uri = publish_layer(
+                    layer_uri=lyr.uri,
+                    layer_id=lyr.layer_id,
+                    style_preset=lyr.style_preset or FLOOD_DEPTH_STYLE_PRESET,
+                )
+            except PublishLayerError as exc:
+                logger.warning(
+                    "model_urban_flood_swmm: publish_layer FAILED for frame "
+                    "layer_id=%s error_code=%s (%s) - dropping this frame from "
+                    "the animation group (its raw s3:// uri never renders).",
+                    lyr.layer_id,
+                    exc.error_code,
+                    exc,
+                )
+                continue
+            # Keep the "Flood depth step N" name token so the web grouping forms.
+            emit_layer = SWMMDepthLayerURI(
+                layer_id=lyr.layer_id,
+                name=lyr.name,
+                layer_type=lyr.layer_type,
+                uri=frame_uri,
+                style_preset=lyr.style_preset or FLOOD_DEPTH_STYLE_PRESET,
+                role=lyr.role,
+                units=lyr.units,
+                bbox=lyr.bbox,
+                max_depth_m=lyr.max_depth_m,
+                flooded_area_km2=lyr.flooded_area_km2,
+                n_buildings_affected=lyr.n_buildings_affected,
+                barriers=lyr.barriers,
+            )
         try:
-            await emitter.add_loaded_layer(lyr)
+            await emitter.add_loaded_layer(emit_layer)
             emitted += 1
-        except Exception as exc:  # noqa: BLE001 — never break the solve
+        except Exception as exc:  # noqa: BLE001 - never break the solve
             logger.warning(
                 "model_urban_flood_swmm: frame add_loaded_layer failed for %s: %s",
-                lyr.layer_id,
+                emit_layer.layer_id,
                 exc,
             )
     if emitted:
