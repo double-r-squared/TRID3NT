@@ -272,3 +272,13 @@ tests/m3/artifacts/*.png
 **/mf6_extracted/
 **/liveverify_adv/
 reports/inflight/**/*.zip
+
+# --- Dev evidence + exploratory spike scratch (accumulates during live debugging
+#     / engine spikes; never shipped). The CANONICAL committed evidence trail
+#     stays under reports/inflight/<job>/evidence/ — these rules are ANCHORED so
+#     they do NOT shadow that. ---
+/evidence/
+/services/agent/evidence/
+/services/workers/sfincs_quadtree_spike/
+**/_spike_out/
+/reports/inflight/p0_*

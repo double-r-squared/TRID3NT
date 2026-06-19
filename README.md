@@ -5,7 +5,13 @@ hazard scenario in natural language; the agent geocodes the area, fetches
 authoritative data, sets up and runs physics-based solvers, and renders the
 results on an interactive map — no GIS expertise or desktop software required.
 
-**Live:** <https://d125yfbyjrpbre.cloudfront.net/app>
+**Live — entry points:**
+
+- **Landing page** (the public entry point): <https://d125yfbyjrpbre.cloudfront.net/>
+  — shown to first-time visitors; returning sessions skip straight to the app.
+  Force the landing page any time at <https://d125yfbyjrpbre.cloudfront.net/landing>.
+- **App**: <https://d125yfbyjrpbre.cloudfront.net/app>
+- **Privacy**: <https://d125yfbyjrpbre.cloudfront.net/privacy>
 
 See [`docs/srs/INDEX.md`](docs/srs/INDEX.md) for the section-addressed canonical
 SRS (or [`docs/SRS_v0.3.md`](docs/SRS_v0.3.md) for the regenerated monolith).
