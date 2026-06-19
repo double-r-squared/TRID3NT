@@ -2561,6 +2561,12 @@ export interface MobileSheetHeaderRowProps {
   activeStrips: ActiveStripItem[];
   /** Tap target for the active strips — expands the sheet. */
   onExpandFromStrip: () => void;
+  /** Controlled active Bedrock model id - same state the desktop header uses.
+   * Threaded so the mobile ModelSelectorButton stays in sync (localStorage
+   * persistence + model_id on submit keep working). */
+  selectedModelId: string;
+  /** Fired when the user picks a different model from the mobile selector. */
+  onModelChange: (id: string) => void;
 }
 
 export function MobileSheetHeaderRow({
@@ -2571,6 +2577,8 @@ export function MobileSheetHeaderRow({
   onResizeEnd,
   activeStrips,
   onExpandFromStrip,
+  selectedModelId,
+  onModelChange,
 }: MobileSheetHeaderRowProps): JSX.Element {
   // The grabber: the SINGLE drag affordance. When EXPANDED it sits in the
   // CENTER zone (flex:1) between the label zones; when COLLAPSED it spans the
@@ -2628,6 +2636,20 @@ export function MobileSheetHeaderRow({
           style={{ flex: "0 0 auto", display: "flex", width: 56 }}
         >
           {grabber}
+        </div>
+        {/* MODEL zone - the Bedrock model selector (was desktop-only). Sits
+            BETWEEN the centered grabber and the right status; flex:0 0 auto so
+            the two flex:1 label/status zones stay balanced and the grabber
+            stays centered. Reuses the SAME controlled state the desktop header
+            uses, so localStorage persistence + model_id on submit keep working. */}
+        <div
+          data-testid="grace2-sheet-model-zone"
+          style={{ flex: "0 0 auto", display: "flex", alignItems: "center" }}
+        >
+          <ModelSelectorButton
+            selectedId={selectedModelId}
+            onChange={onModelChange}
+          />
         </div>
         {/* RIGHT zone — connection status (F45). */}
         <span
@@ -3778,6 +3800,11 @@ export function Chat({
           onResizeEnd={sheetExpanded ? handleSheetResizeEnd : undefined}
           activeStrips={collapsedActiveStrips}
           onExpandFromStrip={() => setSheetExpanded(true)}
+          // The SAME controlled state pair the desktop header uses, so the
+          // mobile model picker shares localStorage persistence + threads the
+          // selected model_id into the controlled ChatInput on submit.
+          selectedModelId={selectedModelId}
+          onModelChange={setSelectedModelId}
         />
       )}
       {/* DESKTOP header — classic F45 row: 'GRACE-2' + version LEFT, the

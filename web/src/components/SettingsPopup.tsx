@@ -13,10 +13,17 @@
 // backdrop, centred card, Esc / click-backdrop / X to dismiss.
 
 import { useEffect, useState } from "react";
-import { IconClose } from "./icons";
+import { IconClose, IconPause } from "./icons";
 import type { MapTheme } from "../Map";
 import { SecretsPanel } from "./SecretsPanel";
 import type { ProviderID, SecretRecord } from "../contracts";
+// Agent sleep/wake (NATE 2026-06-18) - the INVERSE of the wake overlay. Settings
+// is the only signed-in surface that lets a user put the agent box to sleep on
+// demand; the token is sourced the SAME way the rest of the app does for the
+// wake/secrets calls (getIdToken). After a successful sleep the existing wake
+// state machine surfaces the wake overlay on its own - no extra wiring here.
+import { requestSleep, wakeConfigured } from "../lib/wake";
+import { getIdToken } from "../auth";
 // job-0322 F56 — chat-opacity control. The SHARED localStorage key + the tier
 // type + the read/write helpers are OWNED by Chat.tsx (Group B), which also
 // applies the resulting alpha to both the desktop chat container and the
@@ -263,6 +270,54 @@ export function SettingsPopup({
     writeChatOpacity(tier);
   }
 
+  // Agent sleep control (NATE 2026-06-18). Two-step: first click ARMS a confirm,
+  // second click fires the POST. `sleepStatus` is the inline outcome line under
+  // the button; `sleeping` disables the control while the request is in flight.
+  // Only ever rendered for a signed-in user with wake configured (dev/LAN has no
+  // box to stop), so the request always carries a bearer token.
+  const [sleepConfirming, setSleepConfirming] = useState(false);
+  const [sleeping, setSleeping] = useState(false);
+  const [sleepStatus, setSleepStatus] = useState<
+    null | "ok" | "busy" | "unauthorized" | "error"
+  >(null);
+
+  async function onSleepClick(): Promise<void> {
+    if (sleeping) return;
+    if (!sleepConfirming) {
+      setSleepConfirming(true);
+      setSleepStatus(null);
+      return;
+    }
+    // Confirmed - fire the stop request. Never logs/echoes the token value.
+    setSleepConfirming(false);
+    setSleeping(true);
+    setSleepStatus(null);
+    try {
+      const token = await getIdToken();
+      const result = await requestSleep(token);
+      if (result.status === "ok") {
+        setSleepStatus("ok");
+      } else if (result.status === "busy") {
+        setSleepStatus("busy");
+      } else if (result.status === "unauthorized") {
+        setSleepStatus("unauthorized");
+      } else {
+        // "disabled" should not reach here (the section is gated on
+        // wakeConfigured), but treat it as a generic failure if it does.
+        setSleepStatus("error");
+      }
+    } catch {
+      setSleepStatus("error");
+    } finally {
+      setSleeping(false);
+    }
+  }
+
+  // The agent-sleep section only makes sense when (a) the user is signed in (the
+  // stop endpoint requires a bearer token) AND (b) a wake endpoint is configured
+  // (dev/LAN never auto-stops the box, so there is nothing to put to sleep).
+  const showSleepSection = isSignedIn && wakeConfigured();
+
   // Esc-to-close (memory rule "Cancellation is first-class").
   useEffect(() => {
     function onKey(e: KeyboardEvent): void {
@@ -385,6 +440,76 @@ export function SettingsPopup({
             </div>
           </div>
         </div>
+
+        {/* Agent section (NATE 2026-06-18) - explicit "Put agent to sleep",
+            the inverse of the wake overlay. Signed-in only + wake-configured
+            (dev/LAN has no auto-stopped box to sleep). Two-step confirm; the
+            outcome is surfaced inline. After a successful sleep the existing
+            wake state machine raises the wake overlay on its own. */}
+        {showSleepSection && (
+          <div style={sectionStyle} data-testid="grace2-settings-agent">
+            <div style={sectionTitleStyle}>Agent</div>
+            <div style={valueStyle}>
+              <span>
+                {sleepConfirming
+                  ? "Put the agent to sleep? It will need to wake up again next time."
+                  : "Put the agent to sleep to save resources"}
+              </span>
+              <button
+                data-testid="grace2-settings-agent-sleep"
+                onClick={() => {
+                  void onSleepClick();
+                }}
+                disabled={sleeping}
+                style={{
+                  ...buttonStyle,
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  opacity: sleeping ? 0.6 : 1,
+                  cursor: sleeping ? "default" : "pointer",
+                }}
+                aria-label={
+                  sleepConfirming
+                    ? "Confirm putting the agent to sleep"
+                    : "Put agent to sleep"
+                }
+              >
+                <IconPause size={14} />
+                {sleeping
+                  ? "Sending..."
+                  : sleepConfirming
+                    ? "Confirm sleep"
+                    : "Put agent to sleep"}
+              </button>
+            </div>
+            {sleepStatus && (
+              <div
+                data-testid="grace2-settings-agent-sleep-status"
+                role="status"
+                style={{
+                  fontSize: 11,
+                  marginTop: 6,
+                  lineHeight: 1.5,
+                  color:
+                    sleepStatus === "ok"
+                      ? "#7fd18a"
+                      : sleepStatus === "busy"
+                        ? "#e0b257"
+                        : "#e08a8a",
+                }}
+              >
+                {sleepStatus === "ok"
+                  ? "Agent going to sleep."
+                  : sleepStatus === "busy"
+                    ? "Agent is busy, it cannot sleep until the current work finishes."
+                    : sleepStatus === "unauthorized"
+                      ? "Please sign in again to put the agent to sleep."
+                      : "Could not put the agent to sleep. Please try again."}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Tools section (Wave 4.10 C1 + Wave 4.11 M7) — only when at least
             one tools-area hook is wired. */}

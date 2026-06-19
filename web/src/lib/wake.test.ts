@@ -268,3 +268,124 @@ describe("AgentWaker.reportState / wakeState (report-only GET)", () => {
     );
   });
 });
+
+// sleep/wake — explicit user-initiated "Put agent to sleep" (the INVERSE of
+// wake()). POSTs {"action":"stop"} to the wake endpoint with a bearer token;
+// distinguishes outcomes by HTTP status and NEVER throws.
+describe("requestSleep (explicit Put-agent-to-sleep POST)", () => {
+  it("returns 'disabled' and issues no fetch when wake is unconfigured", async () => {
+    const { requestSleep } = await import("./wake");
+    const fetchFn = vi.fn();
+    const res = await requestSleep("tok", fetchFn);
+    expect(res).toEqual({ status: "disabled" });
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
+  it("POSTs {action:stop} as JSON with the bearer token and returns 'ok' on 200", async () => {
+    vi.resetModules();
+    vi.stubEnv("VITE_GRACE2_WAKE_URL", "https://explicit.example/wake");
+    const { requestSleep } = await import("./wake");
+    const fetchFn = vi.fn(async () => ({ ok: true, status: 200 }));
+    const res = await requestSleep("tok-123", fetchFn);
+    expect(res).toEqual({ status: "ok" });
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(fetchFn).toHaveBeenCalledWith(
+      "https://explicit.example/wake",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ action: "stop" }),
+        headers: expect.objectContaining({
+          "content-type": "application/json",
+          authorization: "Bearer tok-123",
+        }),
+      }),
+    );
+  });
+
+  it("trims surrounding whitespace from the supplied token", async () => {
+    vi.resetModules();
+    vi.stubEnv("VITE_GRACE2_WAKE_URL", "https://explicit.example/wake");
+    const { requestSleep } = await import("./wake");
+    const fetchFn = vi.fn(async () => ({ ok: true, status: 200 }));
+    await requestSleep("  tok-123  ", fetchFn);
+    expect(fetchFn).toHaveBeenCalledWith(
+      "https://explicit.example/wake",
+      expect.objectContaining({
+        headers: expect.objectContaining({ authorization: "Bearer tok-123" }),
+      }),
+    );
+  });
+
+  it("omits the Authorization header when the token is null", async () => {
+    vi.resetModules();
+    vi.stubEnv("VITE_GRACE2_WAKE_URL", "https://explicit.example/wake");
+    const { requestSleep } = await import("./wake");
+    const fetchFn = vi.fn(
+      async (
+        _url: string,
+        _init?: { method?: string; headers?: Record<string, string>; body?: string },
+      ) => ({ ok: true, status: 200 }),
+    );
+    await requestSleep(null, fetchFn);
+    const init = fetchFn.mock.calls[0]![1] as {
+      headers: Record<string, string>;
+    };
+    expect(init.headers).not.toHaveProperty("authorization");
+    expect(init.headers).toEqual({ "content-type": "application/json" });
+  });
+
+  it("omits the Authorization header when the token is blank (whitespace-only)", async () => {
+    vi.resetModules();
+    vi.stubEnv("VITE_GRACE2_WAKE_URL", "https://explicit.example/wake");
+    const { requestSleep } = await import("./wake");
+    const fetchFn = vi.fn(
+      async (
+        _url: string,
+        _init?: { method?: string; headers?: Record<string, string>; body?: string },
+      ) => ({ ok: true, status: 200 }),
+    );
+    await requestSleep("   ", fetchFn);
+    const init = fetchFn.mock.calls[0]![1] as {
+      headers: Record<string, string>;
+    };
+    expect(init.headers).not.toHaveProperty("authorization");
+  });
+
+  it("returns 'busy' on 409 (agent mid-work)", async () => {
+    vi.resetModules();
+    vi.stubEnv("VITE_GRACE2_WAKE_URL", "https://explicit.example/wake");
+    const { requestSleep } = await import("./wake");
+    const fetchFn = vi.fn(async () => ({ ok: false, status: 409 }));
+    expect(await requestSleep("tok", fetchFn)).toEqual({ status: "busy" });
+  });
+
+  it("returns 'unauthorized' on 401 (missing/invalid token)", async () => {
+    vi.resetModules();
+    vi.stubEnv("VITE_GRACE2_WAKE_URL", "https://explicit.example/wake");
+    const { requestSleep } = await import("./wake");
+    const fetchFn = vi.fn(async () => ({ ok: false, status: 401 }));
+    expect(await requestSleep("tok", fetchFn)).toEqual({
+      status: "unauthorized",
+    });
+  });
+
+  it("returns 'error' (never throws) on any other non-2xx (e.g. 500)", async () => {
+    vi.resetModules();
+    vi.stubEnv("VITE_GRACE2_WAKE_URL", "https://explicit.example/wake");
+    const { requestSleep } = await import("./wake");
+    const fetchFn = vi.fn(async () => ({ ok: false, status: 500 }));
+    const res = await requestSleep("tok", fetchFn);
+    expect(res.status).toBe("error");
+  });
+
+  it("returns 'error' (never throws) when fetch rejects", async () => {
+    vi.resetModules();
+    vi.stubEnv("VITE_GRACE2_WAKE_URL", "https://explicit.example/wake");
+    const { requestSleep } = await import("./wake");
+    const fetchFn = vi.fn(async () => {
+      throw new Error("network down");
+    });
+    const res = await requestSleep("tok", fetchFn);
+    expect(res.status).toBe("error");
+  });
+});

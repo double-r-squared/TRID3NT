@@ -234,6 +234,13 @@ def test_vector_tiles_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 def test_build_pmtiles_produces_valid_archive() -> None:
+    # The PMTiles build/round-trip path depends on optional deps (pmtiles +
+    # mapbox_vector_tile + mercantile) that are env-gated OFF by default and may
+    # be absent from a given venv (e.g. the SSM file-swap deploy does not pip-
+    # install). Skip gracefully rather than hard-fail when they are missing.
+    pytest.importorskip("pmtiles")
+    pytest.importorskip("mapbox_vector_tile")
+    pytest.importorskip("mercantile")
     fc = _polygon_fc(600)
     data = build_pmtiles(fc, layer_name="buildings", min_zoom=10, max_zoom=13)
     # PMTiles magic header.

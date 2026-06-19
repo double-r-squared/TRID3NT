@@ -65,6 +65,7 @@ import {
   Scissors,
   FlowArrow,
   MapPin,
+  DownloadSimple,
 } from '@phosphor-icons/react';
 
 /** Shared public API for every wrapped icon in this module. */
@@ -156,3 +157,6 @@ export const IconLine = makeIcon(LineSegment, 'IconLine');
 export const IconSnip = makeIcon(Scissors, 'IconSnip');
 export const IconFlowArrow = makeIcon(FlowArrow, 'IconFlowArrow');
 export const IconMapPin = makeIcon(MapPin, 'IconMapPin');
+// Station-popup "Download CSV" affordance (L3-web-station-csv). Matches the
+// IconClose style - a thin wrapped Phosphor glyph, no raw unicode.
+export const IconDownload = makeIcon(DownloadSimple, 'IconDownload');

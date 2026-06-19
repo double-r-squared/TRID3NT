@@ -34,6 +34,7 @@ from grace2_agent.tools import TOOL_REGISTRY
 from grace2_agent.tools import data_fetch
 from grace2_agent.tools.data_fetch import (
     BboxInvalidError,
+    GeocodeNoMatchError,
     UpstreamAPIError,
     fetch_buildings,
     fetch_dem,
@@ -1074,12 +1075,12 @@ def test_geocode_bare_dangerous_word_does_not_snap_to_state(monkeypatch):
     """F71 guard: a bare 'in'/'or' query never resolves to a state (no snap).
 
     'in' must NOT leak to Indiana and 'or' must NOT leak to Oregon — so when the
-    primary geocode of such a token fails, the genuine UpstreamAPIError must
-    propagate (no state detected -> no silent snap).
+    primary geocode of such a token finds no match, the typed GeocodeNoMatchError
+    must propagate (no state detected -> no silent snap).
     """
 
     def _boom(query):
-        raise UpstreamAPIError(f"Nominatim returned no results for {query!r}")
+        raise GeocodeNoMatchError(f"Could not locate {query!r}.")
 
     monkeypatch.setattr(data_fetch, "_fetch_nominatim_geocode_bytes", _boom)
     _bind_geocode_cache(monkeypatch)
@@ -1089,7 +1090,7 @@ def test_geocode_bare_dangerous_word_does_not_snap_to_state(monkeypatch):
     assert data_fetch._extract_us_state("in") is None
     assert data_fetch._extract_us_state("or") is None
     for q in ("in", "or"):
-        with pytest.raises(UpstreamAPIError):
+        with pytest.raises(GeocodeNoMatchError):
             geocode_location(q)
 
 
@@ -1154,10 +1155,14 @@ def test_geocode_wrong_state_prefers_live_osm_state_boundary(monkeypatch):
 
 
 def test_geocode_no_result_with_state_detected_snaps(monkeypatch):
-    """Nominatim returns nothing, but 'south Florida' has a detectable state."""
+    """Nominatim returns nothing, but 'south Florida' has a detectable state.
+
+    GeocodeNoMatchError subclasses UpstreamAPIError, so the state-snap fallback
+    STILL fires when a US state is recognized in the query.
+    """
 
     def _boom(query):
-        raise UpstreamAPIError(f"Nominatim returned no results for {query!r}")
+        raise GeocodeNoMatchError(f"Could not locate {query!r}.")
 
     monkeypatch.setattr(data_fetch, "_fetch_nominatim_geocode_bytes", _boom)
     _bind_geocode_cache(monkeypatch)
@@ -1180,16 +1185,85 @@ def test_geocode_no_result_with_state_detected_snaps(monkeypatch):
 
 
 def test_geocode_no_result_no_state_still_raises(monkeypatch):
-    """A genuine failure with NO detectable state must NOT be swallowed."""
+    """A genuine no-match with NO detectable state propagates GeocodeNoMatchError."""
 
     def _boom(query):
-        raise UpstreamAPIError(f"Nominatim returned no results for {query!r}")
+        raise GeocodeNoMatchError(f"Could not locate {query!r}.")
 
     monkeypatch.setattr(data_fetch, "_fetch_nominatim_geocode_bytes", _boom)
     _bind_geocode_cache(monkeypatch)
 
-    with pytest.raises(UpstreamAPIError):
+    with pytest.raises(GeocodeNoMatchError):
         geocode_location("Atlantis")
+
+
+# --- typed GEOCODE_NO_MATCH from the real Nominatim fetch branches -----------
+
+
+class _FakeGeocodeResp:
+    """Minimal requests.Response stand-in returning a fixed JSON body."""
+
+    status_code = 200
+
+    def __init__(self, body):
+        self._body = body
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._body
+
+
+def test_geocode_empty_body_raises_typed_no_match(monkeypatch):
+    """An empty Nominatim result body for an unknown non-US place raises
+    GeocodeNoMatchError with the non-retryable GEOCODE_NO_MATCH code.
+
+    Drives the real ``_fetch_nominatim_geocode_bytes`` empty-result branch
+    (no _fetch_nominatim_geocode_bytes monkeypatch) so the typed-error contract
+    is locked end-to-end through ``geocode_location``.
+    """
+    monkeypatch.setattr(
+        data_fetch.requests,
+        "get",
+        lambda *a, **kw: _FakeGeocodeResp([]),
+    )
+    _bind_geocode_cache(monkeypatch)
+
+    # "Atlantis" has no detectable US state, so the no-match error propagates
+    # instead of being swallowed by a state-snap.
+    assert data_fetch._extract_us_state("Atlantis") is None
+    with pytest.raises(GeocodeNoMatchError) as excinfo:
+        geocode_location("Atlantis")
+    assert excinfo.value.error_code == "GEOCODE_NO_MATCH"
+    assert excinfo.value.retryable is False
+
+
+def test_geocode_malformed_boundingbox_raises_typed_no_match(monkeypatch):
+    """A top hit whose boundingbox is the wrong length raises the typed
+    GeocodeNoMatchError (non-retryable GEOCODE_NO_MATCH) from the real fetch.
+    """
+    malformed = [
+        {
+            "display_name": "Somewhere",
+            "lat": "10.0",
+            "lon": "20.0",
+            # Only two values -> len(bb) != 4 -> malformed-boundingbox branch.
+            "boundingbox": ["10.0", "11.0"],
+        }
+    ]
+    monkeypatch.setattr(
+        data_fetch.requests,
+        "get",
+        lambda *a, **kw: _FakeGeocodeResp(malformed),
+    )
+    _bind_geocode_cache(monkeypatch)
+
+    assert data_fetch._extract_us_state("Atlantis") is None
+    with pytest.raises(GeocodeNoMatchError) as excinfo:
+        geocode_location("Atlantis")
+    assert excinfo.value.error_code == "GEOCODE_NO_MATCH"
+    assert excinfo.value.retryable is False
 
 
 # --- _resolve_state_bbox falls back to offline table on live failure --------

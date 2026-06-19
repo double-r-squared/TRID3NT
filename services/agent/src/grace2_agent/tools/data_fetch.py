@@ -116,6 +116,24 @@ class UpstreamAPIError(FetchError):
     retryable = True
 
 
+class GeocodeNoMatchError(UpstreamAPIError):
+    """Forward-geocoding found no match for the query (zero/malformed result).
+
+    This is an HONEST, NOT-retryable failure: re-running the SAME query string
+    will not suddenly resolve, so ``retryable`` is False and the agent must ask
+    the user to refine the place name (add a state/country, fix spelling, name a
+    nearby larger place, or supply coordinates) rather than retry.
+
+    It subclasses ``UpstreamAPIError`` so the existing ``except UpstreamAPIError``
+    state-snap fallback in ``geocode_location`` STILL fires when a US state is
+    recognized in the query (e.g. "south Florida"); when no state is detected,
+    the distinct ``error_code`` / non-retryable flag propagate to the surface.
+    """
+
+    error_code = "GEOCODE_NO_MATCH"
+    retryable = False
+
+
 class BboxInvalidError(FetchError):
     """The bbox failed validation (degenerate, out of CRS range, too large)."""
 
@@ -1881,16 +1899,19 @@ def _fetch_nominatim_geocode_bytes(query: str) -> bytes:
         ) from exc
 
     if not body:
-        raise UpstreamAPIError(
-            f"Nominatim returned no results for query={query!r}"
+        raise GeocodeNoMatchError(
+            f"Could not locate {query!r}. Try refining the place name "
+            f"(add City, ST or a country, or check the spelling)."
         )
 
     top = body[0]
     # Nominatim returns boundingbox as [south, north, west, east] strings.
     bb = top.get("boundingbox", [])
     if len(bb) != 4:
-        raise UpstreamAPIError(
-            f"Nominatim boundingbox missing/malformed for query={query!r}: {bb!r}"
+        raise GeocodeNoMatchError(
+            f"Could not locate {query!r} (no valid bounding box returned). Try "
+            f"refining the place name (add City, ST or a country, or check the "
+            f"spelling)."
         )
     try:
         south, north, west, east = [float(v) for v in bb]
@@ -2029,7 +2050,11 @@ def geocode_location(query: str, **_extra_ignored: Any) -> dict[str, Any]:
     except UpstreamAPIError:
         # No precise match / upstream failure. If we recognized a state, snap to
         # it instead of dead-ending (fallback norm: primary -> fallback ->
-        # honest, never silent). Otherwise the genuine failure propagates.
+        # honest, never silent). This branch ALSO catches GeocodeNoMatchError
+        # (a subclass of UpstreamAPIError) so a no-match query like "south
+        # Florida" still snaps to the state. Otherwise the genuine failure
+        # propagates -- for GEOCODE_NO_MATCH that means a non-retryable error
+        # the agent surfaces as a clarify-the-place request, not a retry.
         if detected_state is not None:
             return _state_snap_payload(
                 query,

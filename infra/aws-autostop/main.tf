@@ -4,9 +4,13 @@
 #
 #   1. SCOPE EC2 stop/start to ONE instance ARN.
 #      The idle-check Lambda may ec2:StopInstances and the wake Lambda may
-#      ec2:StartInstances ONLY on var.agent_instance_id. ec2:DescribeInstances
-#      has no resource-level support (AWS evaluates it on "*"), so it is granted
-#      on "*" but is read-only. There is NO TerminateInstances anywhere.
+#      ec2:StartInstances AND ec2:StopInstances ONLY on var.agent_instance_id.
+#      The wake Lambda's StopInstances is the server side of the explicit user
+#      "sleep" control; the handler gates it behind a valid Cognito token AND a
+#      not-busy /api/health probe, so the IAM grant alone never sleeps a busy box
+#      (see invariant 4). ec2:DescribeInstances has no resource-level support
+#      (AWS evaluates it on "*"), so it is granted on "*" but is read-only. There
+#      is NO TerminateInstances anywhere.
 #
 #   2. The auto-stop logic lives in the Lambda, not the IAM/schedule.
 #      This module wires the schedule -> idle Lambda and the HTTP endpoint ->
@@ -19,10 +23,16 @@
 #      a data source for validation/outputs only. `tofu destroy` on this module
 #      removes the schedule/Lambdas/IAM/table/API — never the instance.
 #
-#   4. The wake endpoint is unauthenticated + CORS-open by design.
-#      It can only START one hard-coded instance (never stop/terminate/touch
-#      anything else). The browser must call it before a session exists. Abuse
-#      ceiling = the box starts (then idle-check stops it); no data exposure.
+#   4. The wake (START) action is unauthenticated + CORS-open by design; the
+#      sleep (STOP) action is Cognito-gated + busy-guarded.
+#      A WAKE (POST default / action=="wake") can only START one hard-coded
+#      instance and stays unauthenticated -- the browser must call it before a
+#      session exists; abuse ceiling = the box starts (then idle-check stops it),
+#      no data exposure. A SLEEP (POST action=="stop") can only STOP that same
+#      one instance and is gated in the handler behind a valid Cognito ID token
+#      AND a not-busy /api/health probe (a busy/unreachable box -> 409, no stop),
+#      so a stray/anonymous call can never sleep the box mid-turn. Neither action
+#      can terminate or touch anything else.
 
 data "aws_caller_identity" "current" {}
 
@@ -63,10 +73,44 @@ data "archive_file" "idle_check" {
   output_path = "${path.module}/build/idle_check.zip"
 }
 
+# The wake handler's STOP action verifies a Cognito ID token (RS256/JWKS), so it
+# needs PyJWT[crypto] + requests beyond the runtime boto3 -- same deps as the
+# view-signer. Install them into a package dir + copy the handler, then zip
+# (mirrors null_resource.view_sign_build). The WAKE action stays dep-free at
+# runtime (boto3 + urllib only); the extra deps load lazily only on a stop.
+locals {
+  wake_src_dir = "${path.module}/lambda/wake"
+  wake_pkg_dir = "${path.module}/build/wake_pkg"
+}
+
+resource "null_resource" "wake_build" {
+  triggers = {
+    handler_sha = filesha256("${local.wake_src_dir}/handler.py")
+    deps        = "PyJWT[crypto]==2.9.0 requests==2.32.3"
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      set -euo pipefail
+      rm -rf "${local.wake_pkg_dir}"
+      mkdir -p "${local.wake_pkg_dir}"
+      python3 -m pip install \
+        --platform manylinux2014_x86_64 \
+        --implementation cp \
+        --python-version 3.12 \
+        --only-binary=:all: \
+        --target "${local.wake_pkg_dir}" \
+        "PyJWT[crypto]==2.9.0" "requests==2.32.3"
+      cp "${local.wake_src_dir}/handler.py" "${local.wake_pkg_dir}/handler.py"
+    EOT
+  }
+}
+
 data "archive_file" "wake" {
   type        = "zip"
-  source_file = "${path.module}/lambda/wake/handler.py"
+  source_dir  = local.wake_pkg_dir
   output_path = "${path.module}/build/wake.zip"
+  depends_on  = [null_resource.wake_build]
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -136,8 +180,11 @@ resource "aws_iam_role_policy" "idle_check" {
 
 # ─────────────────────────────────────────────────────────────────────────────
 # IAM — wake Lambda role.
-# Least privilege: DescribeInstances (read, "*"), StartInstances (scoped to the
-# instance ARN), CloudWatch Logs. No stop, no terminate.
+# Least privilege: DescribeInstances (read, "*"), StartInstances + StopInstances
+# (BOTH scoped to the instance ARN), CloudWatch Logs. No terminate.
+# StopInstances is the server side of the explicit user "sleep" control; the
+# wake handler gates it behind a valid Cognito token AND a not-busy /api/health
+# probe, so the IAM grant alone never sleeps a busy box.
 # ─────────────────────────────────────────────────────────────────────────────
 
 resource "aws_iam_role" "wake" {
@@ -164,6 +211,15 @@ resource "aws_iam_role_policy" "wake" {
         Sid      = "StartAgentInstanceOnly"
         Effect   = "Allow"
         Action   = ["ec2:StartInstances"]
+        Resource = local.instance_arn
+      },
+      {
+        # StopInstances scoped to the ONE agent instance ARN (same scope as the
+        # idle-check role's StopAgentInstanceOnly). No terminate. The user-sleep
+        # path in the wake handler is the only caller, gated on Cognito + not-busy.
+        Sid      = "StopAgentInstanceOnly"
+        Effect   = "Allow"
+        Action   = ["ec2:StopInstances"]
         Resource = local.instance_arn
       },
       {
@@ -234,12 +290,23 @@ resource "aws_lambda_function" "wake" {
   runtime          = "python3.12"
   filename         = data.archive_file.wake.output_path
   source_code_hash = data.archive_file.wake.output_base64sha256
-  timeout          = 15
-  memory_size      = 128
+  # Stop path: JWKS fetch (5s) + health probe (health_timeout_s) + EC2 calls on
+  # top; small headroom. Memory bumped to load the cryptography native ext.
+  timeout     = 15
+  memory_size = 256
 
   environment {
     variables = {
       AGENT_INSTANCE_ID = var.agent_instance_id
+      # Stop guard reuses the idle-check health URL + timeout: the SAME busy
+      # signal the auto-stop uses (a busy box -> 409, no StopInstances).
+      HEALTH_URL       = var.health_url
+      HEALTH_TIMEOUT_S = tostring(var.health_timeout_s)
+      # Cognito gate for the stop action (mirrors the view-signer). UNSET pool =>
+      # every token fails verify -> stop returns 401 (inert until a pool is
+      # wired). The wake action is unaffected.
+      GRACE2_COGNITO_USER_POOL_ID = var.cognito_user_pool_id
+      GRACE2_COGNITO_CLIENT_ID    = var.cognito_client_id
     }
   }
 

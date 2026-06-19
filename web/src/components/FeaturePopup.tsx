@@ -21,7 +21,11 @@
 // number is computed here.
 
 import { useEffect } from "react";
-import { IconClose } from "./icons";
+import { IconClose, IconDownload } from "./icons";
+// csvFromFeatures is a PURE helper (no React / no map dependency) exported by
+// Map.tsx. The import edge is call-time only (used inside the click handler
+// below), so the Map<->FeaturePopup module cycle never bites at load time.
+import { csvFromFeatures } from "../Map";
 
 /** One attribute row in the popup. `label` is the human-facing key. */
 export interface FeatureAttribute {
@@ -70,6 +74,24 @@ export interface FeaturePopupData {
    * Optional; absent → no scaling (scale 1).
    */
   refZoom?: number;
+  /**
+   * L3-web-station-csv: the RAW property bag of the tapped station feature.
+   * Present ONLY when the tapped layer is a station layer (USGS gauges /
+   * ASOS-METAR / RAWS / NOAA CO-OPS). When set, the popup header shows a
+   * Download-CSV button. Invariant 1: these are received feature properties
+   * only - never computed geography.
+   */
+  rawProperties?: Record<string, unknown>;
+  /**
+   * L3-web-station-csv: the property bags for the WHOLE station layer (an
+   * all-stations dump), captured from the GeoJSON source at tap time. Optional
+   * - absent when the source was already gone, in which case the CSV falls back
+   * to the single tapped feature (`rawProperties`).
+   */
+  layerFeatures?: Record<string, unknown>[];
+  /** L3-web-station-csv: the station layer's id/name, used to derive a CSV
+   *  filename when the tapped feature has no site identifier. */
+  stationLayerName?: string;
 }
 
 export interface FeaturePopupProps {
@@ -168,6 +190,36 @@ export function resolvePopupPlacement(
   return { left, top, width };
 }
 
+/**
+ * L3-web-station-csv: derive a safe CSV filename for a station download. Prefers
+ * the tapped feature's `site_no` (USGS / CO-OPS station id), then its `title`,
+ * then the layer name; falls back to a generic "stations" base. Sanitized to
+ * filesystem-safe characters and suffixed with `.csv`. Pure + exported so it is
+ * unit-testable. `data` carries the raw property bag captured at tap time.
+ */
+export function stationCsvFilename(data: FeaturePopupData): string {
+  const props = data.rawProperties ?? {};
+  // Case-insensitive lookup for the site identifier.
+  let siteNo: unknown;
+  for (const k of Object.keys(props)) {
+    if (k.toLowerCase() === "site_no") {
+      siteNo = props[k];
+      break;
+    }
+  }
+  const candidate =
+    (typeof siteNo === "string" && siteNo.trim()) ||
+    (typeof siteNo === "number" && Number.isFinite(siteNo) && String(siteNo)) ||
+    (data.title && data.title.trim()) ||
+    (data.stationLayerName && data.stationLayerName.trim()) ||
+    "stations";
+  const base = String(candidate)
+    .replace(/[^A-Za-z0-9._-]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 80);
+  return `${base || "stations"}.csv`;
+}
+
 export function FeaturePopup({
   data,
   canvasSize,
@@ -193,6 +245,35 @@ export function FeaturePopup({
 
   // FIX 3 — scale the card to the map zoom so it reads like a map-drawn label.
   const scale = resolvePopupScale(data.refZoom, currentZoom);
+
+  // L3-web-station-csv: the Download-CSV affordance shows ONLY when a station
+  // CSV payload was attached (so non-station popups are completely unaffected).
+  // Prefer the whole-layer dump; fall back to the single tapped feature when
+  // the source was already gone.
+  const csvRows: Record<string, unknown>[] | null =
+    data.layerFeatures && data.layerFeatures.length > 0
+      ? data.layerFeatures
+      : data.rawProperties
+        ? [data.rawProperties]
+        : null;
+
+  const onDownloadCsv = (): void => {
+    if (!csvRows) return;
+    try {
+      // Invariant 1: csvFromFeatures serializes only the received property bags
+      // (geometry is excluded), never computed geography.
+      const csv = csvFromFeatures(csvRows);
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = stationCsvFilename(data);
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      // best-effort - a failed download must never break the popup.
+    }
+  };
 
   return (
     <div
@@ -270,6 +351,34 @@ export function FeaturePopup({
             </div>
           ) : null}
         </div>
+        {/* L3-web-station-csv: Download-CSV button - rendered ONLY for station
+            popups (csvRows present), so non-station popups are unaffected. */}
+        {csvRows ? (
+          <button
+            type="button"
+            data-testid="feature-popup-download-csv"
+            aria-label="Download CSV"
+            title="Download CSV"
+            onClick={onDownloadCsv}
+            style={{
+              flex: "0 0 auto",
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: 28,
+              height: 28,
+              // Generous touch target for mobile (>=28px).
+              padding: 0,
+              background: "transparent",
+              border: "none",
+              borderRadius: 6,
+              color: "#aab2c0",
+              cursor: "pointer",
+            }}
+          >
+            <IconDownload size={16} />
+          </button>
+        ) : null}
         <button
           type="button"
           data-testid="feature-popup-close"

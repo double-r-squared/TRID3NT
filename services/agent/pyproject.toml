@@ -195,6 +195,17 @@ dependencies = [
     # inlet link — both P0 carry-forwards encoded in the builder.
     "pyswmm>=2.1,<3",
     "swmm-api>=0.4.73,<0.5",
+    # F94 vector-tiles path (job-0175 follow-up): pmtiles is the PMTiles v3
+    # archive writer/reader used by vector_tiles.build_pmtiles. The import
+    # surface it relies on (pmtiles.tile.zxy_to_tileid + Compression + TileType,
+    # pmtiles.writer.Writer, pmtiles.reader.Reader/MmapSource) is provided by the
+    # 3.x line (verified against 3.7.0). The build path is env-gated OFF by
+    # default (vector_tiles_enabled() requires GRACE2_VECTOR_TILES_BASE_URL), so
+    # the dep only matters once an HTTP tile-serving face exists. mapbox-vector-
+    # tile + mercantile are pulled transitively (shapely already present via
+    # geopandas). NOTE: the SSM file-swap deploy does NOT pip-install, so the
+    # deployed agent box venv must have pmtiles installed out-of-band.
+    "pmtiles>=3,<4",
     # Consumed verbatim from packages/contracts/ (editable install via make run-agent).
     "grace2-contracts>=0.1,<0.2",
 ]

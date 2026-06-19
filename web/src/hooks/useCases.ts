@@ -139,7 +139,20 @@ export function useCases(opts: UseCasesOptions): UseCasesReturn {
 
   // --- Envelope handlers -------------------------------------------------- //
   const onCaseList = useCallback((payload: CaseListEnvelopePayload) => {
-    setCases(payload.cases ?? []);
+    // CLIENT FLICKER FIX (per-Case layer DURABILITY) - the server re-ships a
+    // full case-list on every resume INCLUDING the 25s keepalive heartbeat. A
+    // heartbeat (or a reconnect mid-flight) can momentarily carry an EMPTY /
+    // stale list; a wholesale `setCases(payload.cases ?? [])` then blanked the
+    // left rail and refilled on the next good frame -> the flicker (and, since
+    // the active-Case tombstone guard reads `cases`, a transient empty list
+    // could race-clear the open Case). Reconcile instead: an EMPTY incoming
+    // list while we already hold cases is treated as a non-authoritative pong
+    // (keep what we have); a NON-empty list is authoritative and replaces
+    // (covers genuine create / rename / archive / delete refreshes).
+    const incoming = payload.cases ?? [];
+    setCases((prev) =>
+      incoming.length === 0 && prev.length > 0 ? prev : incoming,
+    );
     settle();
   }, []);
 

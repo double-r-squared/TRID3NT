@@ -1551,6 +1551,11 @@ class FileMCPClient:
 
     @staticmethod
     def _read_store(path: _Path) -> dict[str, dict]:
+        # OFF-LOOP CONTRACT: this is a BLOCKING body. Callers in ``call_tool``
+        # run it via ``await _asyncio.to_thread(self._read_store, path)`` (the
+        # file-backend twin of the DynamoMCPClient boto3 off-loop fix) so the
+        # blocking read never stalls the asyncio WS loop. The per-collection
+        # async lock is still held across the await, preserving serialization.
         if not path.exists():
             return {}
         try:
@@ -1678,7 +1683,7 @@ class FileMCPClient:
 
         if name == "insert-one":
             async with lock:
-                store = self._read_store(path)
+                store = await _asyncio.to_thread(self._read_store, path)
                 doc = args["document"]
                 doc_id = doc.get("_id")
                 if doc_id is None:
@@ -1686,12 +1691,12 @@ class FileMCPClient:
                         "FileMCPClient insert-one: document missing '_id'"
                     )
                 store[doc_id] = doc
-                self._atomic_write(path, store)
+                await _asyncio.to_thread(self._atomic_write, path, store)
                 return {"insertedId": doc_id}
 
         if name == "update-one":
             async with lock:
-                store = self._read_store(path)
+                store = await _asyncio.to_thread(self._read_store, path)
                 filt = args.get("filter", {})
                 update = args.get("update", {})
                 upsert = bool(args.get("upsert", False))
@@ -1716,7 +1721,7 @@ class FileMCPClient:
                             matched = 1
                             modified = 1
                             break
-                self._atomic_write(path, store)
+                await _asyncio.to_thread(self._atomic_write, path, store)
                 return {"matchedCount": matched, "modifiedCount": modified}
 
         if name == "update-many":
@@ -1726,7 +1731,7 @@ class FileMCPClient:
             # translator, so we honor it here: apply the update to EVERY
             # matching doc. No upsert (the migration never upserts).
             async with lock:
-                store = self._read_store(path)
+                store = await _asyncio.to_thread(self._read_store, path)
                 filt = args.get("filter", {})
                 update = args.get("update", {})
                 matched = 0
@@ -1737,12 +1742,12 @@ class FileMCPClient:
                         matched += 1
                         modified += 1
                 if modified:
-                    self._atomic_write(path, store)
+                    await _asyncio.to_thread(self._atomic_write, path, store)
                 return {"matchedCount": matched, "modifiedCount": modified}
 
         if name == "find-one":
             async with lock:
-                store = self._read_store(path)
+                store = await _asyncio.to_thread(self._read_store, path)
                 filt = args.get("filter", {})
                 for doc in store.values():
                     if self._matches(doc, filt):
@@ -1751,7 +1756,7 @@ class FileMCPClient:
 
         if name == "find":
             async with lock:
-                store = self._read_store(path)
+                store = await _asyncio.to_thread(self._read_store, path)
                 filt = args.get("filter", {})
                 sort = args.get("sort", {})
                 results = [d for d in store.values() if self._matches(d, filt)]

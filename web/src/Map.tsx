@@ -1818,6 +1818,26 @@ const DESIGNATION_KEYS: readonly string[] = [
 const IUCN_KEYS: readonly string[] = ["iucn_cat", "iucn_category", "iucn"];
 
 /**
+ * Style-preset prefixes that mark a vector layer as a STATION layer
+ * (L3-web-station-csv). A tap on one of these layers gets the Download-CSV
+ * affordance on its popup (USGS gauges, ASOS/METAR, RAWS weather, NOAA CO-OPS).
+ * Prefix match so preset variants (e.g. `coops_water_level`) all qualify.
+ */
+const STATION_PRESET_PREFIXES: readonly string[] = [
+  "usgs_gauges",
+  "asos_metar",
+  "raws_weather",
+  "coops_",
+];
+
+/** True when `preset` marks a station layer (prefix match, case-insensitive). */
+export function isStationPreset(preset: string | null | undefined): boolean {
+  if (typeof preset !== "string") return false;
+  const p = preset.toLowerCase();
+  return STATION_PRESET_PREFIXES.some((prefix) => p.startsWith(prefix));
+}
+
+/**
  * Keys we DROP from the generic attribute list because they are either internal
  * IDs / geometry noise or already surfaced as the title/subtitle/IUCN rows.
  */
@@ -1879,6 +1899,78 @@ function pickByKeys(
     if (v !== null) return { key: actual, value: v };
   }
   return null;
+}
+
+/**
+ * RFC-4180 CSV serialization of an array of property bags (L3-web-station-csv).
+ *
+ * PURE + EXPORTED for unit testing. Flattens `rows` to a CSV string:
+ *   - header  = union of keys across all rows, in first-seen order, EXCLUDING
+ *               geometry + internal/noise keys (HIDDEN_ATTR_KEYS, plus the
+ *               literal "geometry" GeoJSON member). An explicit `columns`
+ *               argument overrides the derived header (used as-is, order kept).
+ *   - a cell  = the property stringified (objects/arrays JSON-encoded); a
+ *               missing key on a row yields an empty cell.
+ *   - quoting = RFC-4180 - a field is wrapped in double quotes when it contains
+ *               a comma, double quote, CR or LF; embedded double quotes are
+ *               doubled. Rows are joined with CRLF.
+ *
+ * Invariant 1: this only serializes RECEIVED feature properties - it never
+ * computes geography (the "geometry" member is deliberately excluded).
+ */
+export function csvFromFeatures(
+  rows: ReadonlyArray<Record<string, unknown> | null | undefined>,
+  columns?: readonly string[],
+): string {
+  const safeRows: Record<string, unknown>[] = (rows ?? []).map((r) => r ?? {});
+
+  // Resolve the column set. An explicit `columns` wins; otherwise take the
+  // union of keys in first-seen order, dropping geometry + internal/noise keys.
+  let header: string[];
+  if (columns && columns.length > 0) {
+    header = [...columns];
+  } else {
+    const seen = new Set<string>();
+    header = [];
+    for (const row of safeRows) {
+      for (const key of Object.keys(row)) {
+        if (seen.has(key)) continue;
+        const lk = key.toLowerCase();
+        if (lk === "geometry") continue;
+        if (HIDDEN_ATTR_KEYS.has(lk)) continue;
+        seen.add(key);
+        header.push(key);
+      }
+    }
+  }
+
+  const cellToString = (value: unknown): string => {
+    if (value === null || value === undefined) return "";
+    if (typeof value === "string") return value;
+    if (typeof value === "number") return Number.isFinite(value) ? String(value) : "";
+    if (typeof value === "boolean") return value ? "true" : "false";
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value);
+    }
+  };
+
+  // RFC-4180: quote when the field contains a comma, quote, CR or LF; double up
+  // embedded quotes.
+  const escapeCell = (raw: string): string => {
+    if (/[",\r\n]/.test(raw)) {
+      return `"${raw.replace(/"/g, '""')}"`;
+    }
+    return raw;
+  };
+
+  const lines: string[] = [];
+  lines.push(header.map((h) => escapeCell(h)).join(","));
+  for (const row of safeRows) {
+    lines.push(header.map((h) => escapeCell(cellToString(row[h]))).join(","));
+  }
+  return lines.join("\r\n");
 }
 
 /**
@@ -2888,6 +2980,42 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       } catch {
         refZoom = undefined;
       }
+      // L3-web-station-csv: when the tapped layer is a STATION layer (USGS
+      // gauges / ASOS-METAR / RAWS / NOAA CO-OPS, by style_preset prefix),
+      // capture the raw tapped properties AND - when still available - the
+      // whole-layer feature set so the popup can offer a Download-CSV dump. All
+      // of this is already client-side; Invariant 1 holds because we only carry
+      // received feature properties, never computed geography.
+      const stationPreset = sourceId
+        ? layerStylePresets.current.get(sourceId) ?? null
+        : null;
+      let rawProperties: Record<string, unknown> | undefined;
+      let layerFeatures: Record<string, unknown>[] | undefined;
+      let stationLayerName: string | undefined;
+      if (isStationPreset(stationPreset)) {
+        rawProperties =
+          (hit.properties as Record<string, unknown> | null | undefined) ?? {};
+        stationLayerName = sourceId;
+        try {
+          const src = sourceId
+            ? (m.getSource(sourceId) as maplibregl.GeoJSONSource | undefined)
+            : undefined;
+          // GeoJSONSource keeps the data we set on it; read it back for the
+          // all-stations dump. Only the FeatureCollection shape carries the
+          // per-station rows we want.
+          const sd = src
+            ? (src as unknown as { _data?: unknown })._data
+            : undefined;
+          const fc = sd as { features?: Array<{ properties?: unknown }> } | undefined;
+          if (fc && Array.isArray(fc.features)) {
+            layerFeatures = fc.features.map(
+              (f) => (f?.properties as Record<string, unknown> | null) ?? {},
+            );
+          }
+        } catch {
+          /* source gone / not a GeoJSON source - fall back to the single hit */
+        }
+      }
       const data: FeaturePopupData = {
         ...buildFeaturePopupData(
           (hit.properties ?? null) as Record<string, unknown> | null,
@@ -2896,6 +3024,9 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
         ),
         lngLat,
         refZoom,
+        rawProperties,
+        layerFeatures,
+        stationLayerName,
       };
       setMapCanvasSize(readCanvasSize());
       if (typeof refZoom === "number") setCurrentZoom(refZoom);

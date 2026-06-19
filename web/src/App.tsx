@@ -703,21 +703,30 @@ export function App(): JSX.Element {
       },
       onAgentChunk: () => { /* Chat owns rendering */ },
       onPipelineState: () => { /* Chat owns rendering */ },
-      // job-0357 (per-Case layer DURABILITY) — stamp `replace_layers` from the
-      // live socket status. A server `session-state` received while the socket
-      // is healthy (`connected`) is AUTHORITATIVE → Map.tsx does the full
-      // replace-not-reconcile (live layer adds AND deletes apply). A snapshot
-      // received while NOT `connected` (the brief disconnect / reconnect
-      // window) is a NON-authoritative top-up → Map.tsx adds/reconciles layers
-      // but never tears down the active Case's already-rendered overlays, so a
-      // transient EMPTY snapshot during a bare WS reconnect cannot blank the
-      // map. The agent's resume replay carries the FULL persisted layer set, so
-      // on a healthy reconnect it reconciles idempotently either way (the
-      // diff against addedSourceIds is a no-op when the sets match).
+      // job-0357 (per-Case layer DURABILITY) - stamp the client-only
+      // `replace_layers` hint Map.tsx reads to decide replace-not-reconcile
+      // (Appendix A.7) vs additive top-up. See the CLIENT FLICKER FIX note on
+      // the stamp itself below for the exact authoritative-vs-no-op rule.
       onSessionState: (p) =>
         bus.pushSessionState({
           ...p,
-          replace_layers: wsStatusRef.current === "connected",
+          // CLIENT FLICKER FIX (per-Case layer DURABILITY) - a SERVER-DELIVERED
+          // snapshot is authoritative (full replace-not-reconcile: live adds AND
+          // deletes apply) ONLY when the socket is healthy AND it actually
+          // carries layers. The server re-ships a full session-state on every
+          // resume INCLUDING the 25s keepalive heartbeat; a heartbeat (or a
+          // reconnect mid-flight) can momentarily carry an EMPTY / stale
+          // loaded_layers for the SAME Case, which under the old
+          // `replace_layers = (connected)` stamp wiped the map then refilled on
+          // the next good frame -> the flicker, and violated the durability HARD
+          // REQ. An EMPTY server frame is now NON-authoritative (additive no-op):
+          // Map.tsx never tears down the active Case's already-rendered overlays
+          // on it. The EXPLICIT Case SWITCH / EXIT path (the activeSession effect
+          // below) still stamps replace_layers:true on its empty clear, so only a
+          // real Case change clears prior-Case layers.
+          replace_layers:
+            wsStatusRef.current === "connected" &&
+            (p.loaded_layers?.length ?? 0) > 0,
         }),
       onMapCommand: (p) => bus.pushMapCommand(p),
       onSecretsList: (p) => setSecrets(p.secrets ?? []),
@@ -1115,7 +1124,7 @@ export function App(): JSX.Element {
           style={{
             position: "absolute",
             top: 12,
-            left: 12,
+            left: 16,
             zIndex: 20,
             maxHeight: "calc(100vh - 80px)",
           }}
@@ -1144,7 +1153,7 @@ export function App(): JSX.Element {
             style={{
               position: "absolute",
               top: 12,
-              left: 12,
+              left: 16,
               zIndex: 22,
               // Match CaseView's own 288px wrapStyle exactly. The prior 280px
               // here was 8px NARROWER than the CaseView it contained, so the
@@ -1307,7 +1316,7 @@ export function App(): JSX.Element {
           aria-expanded={false}
           aria-controls="grace2-layer-panel"
           onClick={expandLeft}
-          style={{ ...hamburgerBtnStyle, left: 12 }}
+          style={{ ...hamburgerBtnStyle, left: 16 }}
         >
           {/* job-0322 F52 — icon-module glyph (no raw unicode ☰). */}
           <IconMenu size={18} />

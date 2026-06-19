@@ -40,6 +40,7 @@ from typing import Any
 
 from pydantic import ValidationError
 from websockets.asyncio.server import ServerConnection, serve
+from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
 
 from grace2_contracts import new_ulid, now_utc
 from grace2_contracts.execution import LayerURI
@@ -805,6 +806,13 @@ async def _run_preauth_case_migration() -> None:
 # session's next case-command re-establishes context).
 _SESSION_ACTIVE_CASE: dict[str, str | None] = {}
 _SESSION_ACTIVE_CASE_CAP = 4096
+
+#: A1 FIX 5: strong references to the fire-and-forget S3 case-view snapshot
+#: tasks. ``asyncio.create_task`` only holds a weak reference, so an
+#: unreferenced task can be garbage-collected mid-flight (the snapshot's S3 PUT
+#: silently dropped before it completes). Each detached snapshot task is added
+#: here and self-discards via an ``add_done_callback`` once it finishes.
+_BG_SNAPSHOT_TASKS: set[asyncio.Task] = set()
 
 #: Sentinel for ``SessionState.case_context_synced_to`` — distinct from None
 #: because ``None`` is a legitimate "no active Case" binding.
@@ -6197,7 +6205,16 @@ async def _invoke_tool_via_emitter(
             # layer accumulator is persisted, while the emitter still holds the
             # in-memory inline vector GeoJSON (the only source of it). A layer
             # publish is the mutation that most needs the cold-view refresh.
-            await _persist_case_view_snapshot(state, case_id=turn_case_id)
+            # A1 FIX 5 (latency): fire-and-forget - the Dynamo round-trips + S3
+            # PUT must NEVER sit on the turn/resume response hot path (a slow
+            # snapshot delayed the resume pong past the deadline -> blink). The
+            # snapshot swallows its own errors and returns False (never raises),
+            # so the detached task leaves no unretrieved exception.
+            _t = asyncio.create_task(
+                _persist_case_view_snapshot(state, case_id=turn_case_id)
+            )
+            _BG_SNAPSHOT_TASKS.add(_t)
+            _t.add_done_callback(_BG_SNAPSHOT_TASKS.discard)
 
     # job-0263: register every URI the result carries (LayerURI layer_id↔uri
     # pairs + bare gs:// strings) so the NEXT tool call can resolve handles /
@@ -6308,9 +6325,16 @@ async def _invoke_tool_via_emitter(
                             # snapshot here too — otherwise the published tile
                             # layer (publish_layer is the LAST tool) lands only
                             # in memory and the cold view would miss it.
-                            await _persist_case_view_snapshot(
-                                state, case_id=turn_case_id
+                            # A1 FIX 5 (latency): fire-and-forget so the S3 PUT
+                            # never blocks the turn/resume path (the snapshot
+                            # never raises, so no unretrieved-task exception).
+                            _t = asyncio.create_task(
+                                _persist_case_view_snapshot(
+                                    state, case_id=turn_case_id
+                                )
                             )
+                            _BG_SNAPSHOT_TASKS.add(_t)
+                            _t.add_done_callback(_BG_SNAPSHOT_TASKS.discard)
                 except Exception:  # noqa: BLE001 — emission is best-effort
                     logger.exception(
                         "publish_layer loaded-layer emission failed "
@@ -6996,7 +7020,14 @@ async def _dispatch_gemini_and_persist(
             # turn close. Captures chat-only turns the layer-publish path never
             # touches, and refreshes the cold view's chat replay. Best-effort
             # (swallows S3 errors) so it cannot break turn teardown.
-            await _persist_case_view_snapshot(state, case_id=turn_case_id)
+            # A1 FIX 5 (latency): fire-and-forget so the snapshot's Dynamo+S3
+            # round-trips never sit on the turn-close (-> resume) path (the
+            # snapshot never raises, so the detached task leaks no exception).
+            _t = asyncio.create_task(
+                _persist_case_view_snapshot(state, case_id=turn_case_id)
+            )
+            _BG_SNAPSHOT_TASKS.add(_t)
+            _t.add_done_callback(_BG_SNAPSHOT_TASKS.discard)
         # C2: whole-turn idle signal — fires on EVERY exit (clean, cancel,
         # error) so the client settles any card still spinning ``running`` after
         # the turn ends (its terminal pipeline-state frame may have died on a
@@ -8036,6 +8067,16 @@ def _make_handler(settings: GeminiSettings):
                         f"payload validation failed: {ve.errors()[0]['msg']}",
                     )
 
+        except (ConnectionClosedError, ConnectionClosedOK) as exc:
+            # Normal/abnormal peer closes (pong timeout, tab/mobile close,
+            # network blip, StrictMode socket churn) are not crashes - log a
+            # quiet one-liner instead of a full traceback.
+            logger.debug(
+                "connection closed session=%s code=%s reason=%s",
+                getattr(state, "session_id", None),
+                getattr(exc, "code", None),
+                getattr(exc, "reason", None),
+            )
         except Exception:
             logger.exception("connection handler crashed")
         finally:

@@ -40,6 +40,7 @@ import {
   writeSheetHeight,
   type ActiveStripItem,
 } from "./Chat";
+import { DEFAULT_MODEL_ID } from "./lib/modelRegistry";
 import type {
   CodeExecRequestPayload,
   CodeExecResultPayload,
@@ -1165,7 +1166,7 @@ describe("mobileSheetContainerStyle — F61 bottom safe-area clearance", () => {
 // tools/sandbox are in use.
 
 describe("MobileSheetHeaderRow — F45 refined three-zone layout (EXPANDED)", () => {
-  it("renders LEFT (grace+version), CENTER grabber, RIGHT status in one row", () => {
+  it("renders LEFT (grace+version), CENTER grabber, model selector, RIGHT status in one row", () => {
     render(
       <MobileSheetHeaderRow
         expanded={true}
@@ -1173,6 +1174,8 @@ describe("MobileSheetHeaderRow — F45 refined three-zone layout (EXPANDED)", ()
         onToggle={vi.fn()}
         activeStrips={[]}
         onExpandFromStrip={vi.fn()}
+        selectedModelId={DEFAULT_MODEL_ID}
+        onModelChange={vi.fn()}
       />,
     );
     // LEFT zone — grace + version.
@@ -1182,6 +1185,10 @@ describe("MobileSheetHeaderRow — F45 refined three-zone layout (EXPANDED)", ()
     // CENTER zone — the grabber rectangle (the drag handle).
     expect(screen.getByTestId("grace2-sheet-grabber-zone")).toBeTruthy();
     expect(screen.getByTestId("grace2-chat-sheet-toggle")).toBeTruthy();
+    // MODEL zone - the Bedrock model selector (was desktop-only; now surfaced
+    // on mobile too).
+    expect(screen.getByTestId("grace2-sheet-model-zone")).toBeTruthy();
+    expect(screen.getByTestId("model-selector-button")).toBeTruthy();
     // RIGHT zone — connection status.
     expect(screen.getByTestId("connection-status").textContent).toContain(
       "connected",
@@ -1193,7 +1200,7 @@ describe("MobileSheetHeaderRow — F45 refined three-zone layout (EXPANDED)", ()
     );
   });
 
-  it("orders the three zones LEFT → CENTER(grabber) → RIGHT in the DOM", () => {
+  it("orders the zones LEFT → CENTER(grabber) → MODEL → RIGHT in the DOM", () => {
     render(
       <MobileSheetHeaderRow
         expanded={true}
@@ -1201,6 +1208,8 @@ describe("MobileSheetHeaderRow — F45 refined three-zone layout (EXPANDED)", ()
         onToggle={vi.fn()}
         activeStrips={[]}
         onExpandFromStrip={vi.fn()}
+        selectedModelId={DEFAULT_MODEL_ID}
+        onModelChange={vi.fn()}
       />,
     );
     const row = screen.getByTestId("grace2-sheet-header-row");
@@ -1208,6 +1217,7 @@ describe("MobileSheetHeaderRow — F45 refined three-zone layout (EXPANDED)", ()
     expect(ids).toEqual([
       "grace2-chat-tab-left",
       "grace2-sheet-grabber-zone",
+      "grace2-sheet-model-zone",
       "connection-status",
     ]);
   });
@@ -1223,6 +1233,8 @@ describe("MobileSheetHeaderRow — F45 refined three-zone layout (EXPANDED)", ()
         onResizeEnd={vi.fn()}
         activeStrips={[]}
         onExpandFromStrip={vi.fn()}
+        selectedModelId={DEFAULT_MODEL_ID}
+        onModelChange={vi.fn()}
       />,
     );
     tap(screen.getByTestId("grace2-chat-sheet-toggle"));
@@ -1239,6 +1251,8 @@ describe("MobileSheetHeaderRow — F45b collapsed (labels hidden)", () => {
         onToggle={vi.fn()}
         activeStrips={[]}
         onExpandFromStrip={vi.fn()}
+        selectedModelId={DEFAULT_MODEL_ID}
+        onModelChange={vi.fn()}
       />,
     );
     // The grabber rectangle is present at the top…
@@ -1261,6 +1275,8 @@ describe("MobileSheetHeaderRow — F45b collapsed (labels hidden)", () => {
         onToggle={vi.fn()}
         activeStrips={[]}
         onExpandFromStrip={vi.fn()}
+        selectedModelId={DEFAULT_MODEL_ID}
+        onModelChange={vi.fn()}
       />,
     );
     expect(screen.queryByTestId("grace2-sheet-collapsed-strips")).toBeNull();
@@ -1277,6 +1293,8 @@ describe("MobileSheetHeaderRow — F45b collapsed (labels hidden)", () => {
         onToggle={vi.fn()}
         activeStrips={items}
         onExpandFromStrip={vi.fn()}
+        selectedModelId={DEFAULT_MODEL_ID}
+        onModelChange={vi.fn()}
       />,
     );
     // Grabber at top + the strip stack as the middle fill.

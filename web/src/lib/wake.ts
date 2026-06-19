@@ -270,3 +270,70 @@ export function wakeAgent(): Promise<WakeResult> {
 export function wakeState(): Promise<WakeState> {
   return defaultWaker.reportState();
 }
+
+/**
+ * Outcome of a {@link requestSleep} call (the INVERSE of `wake()` - an explicit
+ * user-initiated "Put agent to sleep" from Settings).
+ *
+ *   - "ok"           - the POST returned 200: the wake Lambda accepted the
+ *     StopInstances request; the box is going to sleep. The existing wake state
+ *     machine surfaces the wake overlay on its own once the box is asleep.
+ *   - "busy"         - 409: the agent is mid-work (an active WS connection / a
+ *     running solve) so the box will not stop yet.
+ *   - "unauthorized" - 401: no / invalid bearer token; the caller prompts to
+ *     sign in.
+ *   - "disabled"     - no wake endpoint configured (dev/LAN; the box is never
+ *     auto-stopped there) so there is nothing to put to sleep.
+ *   - "error"        - the POST threw (network) or returned any other non-2xx.
+ */
+export type SleepResult =
+  | { status: "ok" }
+  | { status: "busy" }
+  | { status: "unauthorized" }
+  | { status: "disabled" }
+  | { status: "error"; error: unknown };
+
+/**
+ * Ask the wake Lambda to STOP the agent box (explicit user "Put agent to
+ * sleep"). POSTs `{"action":"stop"}` to the same wake endpoint base as
+ * `wakeAgent()`, authenticated with the caller's Cognito bearer token.
+ *
+ * Mirrors the `AgentWaker.wake` POST shape (JSON body + content-type) and the
+ * `reportState` "never throws, collapse failures to a typed result" contract.
+ * The endpoint distinguishes outcomes by HTTP status:
+ *   200 -> "ok" (stopping) ; 409 -> "busy" ; 401 -> "unauthorized" ;
+ *   anything else / a thrown fetch -> "error". When wake is unconfigured the
+ *   call is a no-op returning "disabled".
+ *
+ * The token is sent ONLY in the Authorization header and is never logged or
+ * echoed. `fetchFn` is injectable (DOM `fetch` by default) for unit tests.
+ */
+export async function requestSleep(
+  token: string | null,
+  fetchFn?: FetchLike,
+): Promise<SleepResult> {
+  const url = wakeUrl();
+  if (url === null) return { status: "disabled" };
+
+  const doFetch: FetchLike =
+    fetchFn ?? ((input, init) => (globalThis.fetch as unknown as FetchLike)(input, init));
+
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  if (token != null && token.trim() !== "") {
+    headers.authorization = `Bearer ${token.trim()}`;
+  }
+
+  try {
+    const resp = await doFetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ action: "stop" }),
+    });
+    if (resp.ok) return { status: "ok" };
+    if (resp.status === 409) return { status: "busy" };
+    if (resp.status === 401) return { status: "unauthorized" };
+    return { status: "error", error: new Error(`sleep POST ${resp.status}`) };
+  } catch (error) {
+    return { status: "error", error };
+  }
+}
