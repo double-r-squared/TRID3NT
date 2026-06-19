@@ -67,6 +67,7 @@ __all__ = [
     "SWMMWorkflowError",
     "SWMMStaging",
     "build_and_stage_swmm_deck",
+    "stage_swmm_manifest",
     "run_swmm_local",
     "is_local_mode",
     "swmm_local_spec",
@@ -269,6 +270,92 @@ def build_and_stage_swmm_deck(
         run_args=run_args,
         building_footprints=building_footprints,
     )
+
+
+# --------------------------------------------------------------------------- #
+# Out-of-process (Batch / local-exec) staging — upload the .inp + a manifest.
+# --------------------------------------------------------------------------- #
+def stage_swmm_manifest(staging: SWMMStaging) -> str:
+    """Upload the built ``.inp`` + a worker-contract ``manifest.json`` to S3.
+
+    The out-of-process analogue of ``build_and_stage_modflow_deck``'s staging
+    half / the SFINCS ``build_sfincs_model`` manifest write. Mirrors that path
+    EXACTLY (no new client): uses the same ``cache.storage_scheme()`` scheme +
+    the same ``tools.solver._get_s3_client()`` boto3 client + the same
+    ``GRACE2_CACHE_BUCKET`` staging bucket the SFINCS deck uploads land in.
+
+    Writes:
+
+      - ``.../mesh.inp``     — the built deck (``staging.inp_path``).
+      - ``.../manifest.json`` — the manifest the SWMM worker entrypoint reads
+        (``services/workers/swmm/entrypoint.py``): ``inputs[]`` carry the legacy
+        ``gs_uri`` field NAME with an ``s3://`` VALUE (resolved by scheme in the
+        worker), ``dest='mesh.inp'``; ``swmm_args=['mesh.inp']``; ``outputs``
+        glob the ``.out`` + ``.rpt`` the postprocess reads.
+
+    Args:
+        staging: the ``SWMMStaging`` from ``build_and_stage_swmm_deck`` (the
+            ``.inp`` on disk + the ``run_id`` the staged objects are keyed under).
+
+    Returns:
+        The ``s3://`` URI of the uploaded ``manifest.json`` — feed it STRAIGHT to
+        ``run_solver(solver='swmm', model_setup_uri=<this>, ...)``.
+
+    Raises:
+        SWMMWorkflowError("SWMM_STAGING_FAILED"): the upload could not complete
+            (the out-of-process lane cannot dispatch without a reachable
+            manifest — fail loudly, never a silent dead-end).
+    """
+    from ..tools.cache import storage_scheme
+    from ..tools.solver import _get_s3_client
+
+    scheme = storage_scheme()  # "s3" on AWS (GCP decommissioned)
+    cache_bucket = os.environ.get("GRACE2_CACHE_BUCKET", "grace-2-hazard-prod-cache")
+    # Per-run prefix under the cache bucket's staged-deck source class (mirrors
+    # the SFINCS sfincs_setup/ prefix). The run_id keys the staged objects.
+    prefix = f"cache/static-30d/swmm_setup/{staging.run_id}/"
+    inp_key = f"{prefix}mesh.inp"
+    manifest_key = f"{prefix}manifest.json"
+    inp_uri = f"{scheme}://{cache_bucket}/{inp_key}"
+    manifest_uri = f"{scheme}://{cache_bucket}/{manifest_key}"
+
+    # The worker downloads inputs[] BY SCHEME (the field name is the legacy
+    # ``gs_uri``; the VALUE is the s3:// URI). outputs[] glob the .out the
+    # postprocess reads + the .rpt for continuity provenance.
+    manifest_dict: dict[str, Any] = {
+        "inputs": [{"gs_uri": inp_uri, "dest": "mesh.inp"}],
+        "swmm_args": ["mesh.inp"],
+        "outputs": ["*.out", "*.rpt"],
+    }
+
+    import json
+
+    try:
+        s3 = _get_s3_client()
+        # Upload the .inp deck.
+        with open(staging.inp_path, "rb") as fh:
+            s3.put_object(Bucket=cache_bucket, Key=inp_key, Body=fh)
+        # Upload the manifest.
+        s3.put_object(
+            Bucket=cache_bucket,
+            Key=manifest_key,
+            Body=json.dumps(manifest_dict, indent=2).encode("utf-8"),
+            ContentType="application/json",
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise SWMMWorkflowError(
+            "SWMM_STAGING_FAILED",
+            message=f"failed to stage SWMM deck/manifest to {manifest_uri}: {exc}",
+            details={"run_id": staging.run_id, "manifest_uri": manifest_uri},
+        ) from exc
+
+    logger.info(
+        "stage_swmm_manifest run_id=%s inp=%s -> manifest=%s",
+        staging.run_id,
+        inp_uri,
+        manifest_uri,
+    )
+    return manifest_uri
 
 
 # --------------------------------------------------------------------------- #

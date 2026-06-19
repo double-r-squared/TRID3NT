@@ -89,6 +89,71 @@ def test_is_local_mode_default_true():
     assert is_local_mode() is True
 
 
+def test_stage_swmm_manifest_uploads_inp_and_manifest(tmp_path, monkeypatch):
+    """stage_swmm_manifest uploads the .inp + a worker-contract manifest.json to
+    S3 (via the shared solver _get_s3_client seam) and returns the s3:// manifest
+    URI with inputs[]/swmm_args/outputs in the exact shape the SWMM worker reads.
+    """
+    import json as _json
+
+    from grace2_agent.tools import solver as solver_mod
+    from grace2_agent.workflows.run_swmm import SWMMStaging, stage_swmm_manifest
+
+    # A real on-disk .inp the helper reads + uploads.
+    inp = tmp_path / "mesh.inp"
+    inp.write_text("[TITLE]\nstub deck\n", encoding="utf-8")
+
+    staging = SWMMStaging(
+        run_id="run-stage-1",
+        inp_path=str(inp),
+        build=object(),  # unused by staging
+        run_args=None,  # unused by staging
+        building_footprints=None,
+    )
+
+    # Capture every put_object via an injected fake S3 client (the test seam).
+    puts: list[dict] = []
+
+    class _FakeS3:
+        def put_object(self, **kw):
+            body = kw.get("Body")
+            data = body.read() if hasattr(body, "read") else body
+            puts.append({"Bucket": kw["Bucket"], "Key": kw["Key"], "Body": data})
+            return {}
+
+    monkeypatch.setenv("GRACE2_CACHE_BUCKET", "test-cache-bucket")
+    solver_mod.set_s3_client(_FakeS3())
+    try:
+        manifest_uri = stage_swmm_manifest(staging)
+    finally:
+        solver_mod.set_s3_client(None)
+
+    # Returns the s3:// manifest URI under the cache bucket / per-run prefix.
+    assert manifest_uri == (
+        "s3://test-cache-bucket/cache/static-30d/swmm_setup/"
+        "run-stage-1/manifest.json"
+    )
+
+    # Two uploads: the .inp deck + the manifest.json.
+    keys = {p["Key"] for p in puts}
+    assert "cache/static-30d/swmm_setup/run-stage-1/mesh.inp" in keys
+    assert "cache/static-30d/swmm_setup/run-stage-1/manifest.json" in keys
+
+    manifest_put = next(p for p in puts if p["Key"].endswith("manifest.json"))
+    body = manifest_put["Body"]
+    manifest = _json.loads(body.decode("utf-8") if isinstance(body, bytes) else body)
+    # The exact worker-contract shape (services/workers/swmm/entrypoint.py).
+    assert manifest["swmm_args"] == ["mesh.inp"]
+    assert manifest["outputs"] == ["*.out", "*.rpt"]
+    assert len(manifest["inputs"]) == 1
+    inp_entry = manifest["inputs"][0]
+    assert inp_entry["dest"] == "mesh.inp"
+    # The legacy field NAME is gs_uri; the VALUE is the s3:// .inp URI.
+    assert inp_entry["gs_uri"] == (
+        "s3://test-cache-bucket/cache/static-30d/swmm_setup/run-stage-1/mesh.inp"
+    )
+
+
 # --- Heavy end-to-end chain (needs pyswmm + swmm-api + rasterio) ---------- #
 swmm_api = pytest.importorskip("swmm_api")
 pyswmm = pytest.importorskip("pyswmm")

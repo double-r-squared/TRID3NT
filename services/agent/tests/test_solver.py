@@ -10,8 +10,10 @@ with the backend. What remains here is the backend-AGNOSTIC coverage:
    appear in ``TOOL_REGISTRY`` with ``cacheable=False`` +
    ``ttl_class="live-no-cache"`` + ``source_class="solver_dispatch"``
    (FR-DC-6 enumeration honored).
-2. ``test_run_solver_rejects_unregistered_solver`` — ``solver="modflow"``
+2. ``test_run_solver_rejects_unregistered_solver`` — ``solver="telemac"``
    raises ``SolverNotRegisteredError`` (lazy per-milestone deploy strategy).
+   (``modflow`` is now a registered solver — wired to the generic AWS Batch
+   seam alongside sfincs/swmm — so an as-yet-unbuilt engine name is used.)
 3. ``test_progress_estimator_is_wall_clock_linear_clamped`` — pure-function
    guard on ``_progress_percent``.
 
@@ -89,14 +91,17 @@ def test_registry_registers_solver_tools_uncacheable() -> None:
 
 
 def test_run_solver_rejects_unregistered_solver(reset_solver_di_seams) -> None:
-    """v0.1 ships SFINCS only; other solvers raise
+    """An engine that has NOT landed its milestone (e.g. ``telemac``) raises
     ``SolverNotRegisteredError`` (lazy per-milestone deploy strategy). This is
-    backend-agnostic — the registry check fires before any dispatch."""
+    backend-agnostic — the registry check fires before any dispatch. NOTE:
+    ``modflow`` is now registered (wired to the generic AWS Batch seam), so an
+    as-yet-unbuilt engine name is used for the rejection probe."""
     with pytest.raises(SolverNotRegisteredError) as exc_info:
-        run_solver(solver="modflow", model_setup_uri="s3://x/y.json")
-    assert "modflow" in str(exc_info.value)
+        run_solver(solver="telemac", model_setup_uri="s3://x/y.json")
+    assert "telemac" in str(exc_info.value)
     assert "sfincs" in str(exc_info.value)
-    # sfincs is the only registered solver in v0.1.
+    # sfincs is always registered; modflow/swmm register lazily when their
+    # workflow modules import.
     assert set(SOLVER_WORKFLOW_REGISTRY) >= {"sfincs"}
 
 

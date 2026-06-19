@@ -58,6 +58,7 @@ from .run_swmm import (
     build_and_stage_swmm_deck,
     is_local_mode,
     run_swmm_local,
+    stage_swmm_manifest,
 )
 from .solve_progress import drive_live_solve_progress
 from .swmm_mesh_builder import estimate_swmm_solve_seconds
@@ -354,93 +355,171 @@ async def model_urban_flood_swmm(
                 compute_class,
             )
 
-        # --- Step 5: solve (pyswmm in-process - the dev primary path) -------
-        # is_local_mode() is True by default; the out-of-process staged-manifest
-        # lane (run_solver(solver='swmm') + wait_for_completion) is wired via the
-        # SWMM LocalSolverSpec but the urban engine's primary path is in-process.
-        if not is_local_mode():
-            # Out-of-process lane: dispatch the staged deck through the shared
-            # solver-dispatch seam, PASSING the per-case computed compute_class
-            # (auto vertical scaling) instead of the default "standard". The
-            # local-exec/aws-batch backends size the box from this class. The
-            # in-process pyswmm solve below still produces the depth grid this
-            # composer postprocesses (the v0.1 primary path); the run_solver
-            # dispatch is the symmetric out-of-process hand-off (kept honest:
-            # the class is the one the mesh size demanded).
-            from ..tools.solver import run_solver
-
-            run_solver(
-                solver=SWMM_SOLVER_NAME,
-                model_setup_uri=f"file://{staging.inp_path}",
-                compute_class=effective_compute_class,
-            )
-        # BREAK B (event-loop starvation): run_swmm_local is a SYNCHRONOUS
-        # ~16-min pyswmm solve. Calling it inline on the async event loop blocks
-        # the loop for the entire solve -> the WS keepalive ping coroutine never
-        # runs -> the socket dies (ConnectionClosedError x40) -> every later
-        # emit/persist lands on a dead socket and the terminal layer never
-        # surfaces. The remedy is to push the blocking call OFF the loop onto a
-        # worker thread so the loop stays responsive (ping/pong keeps the WS
-        # alive) while pyswmm churns. run_swmm_deck (the body of run_swmm_local)
-        # does NOT report progress through the async PipelineEmitter mid-solve -
-        # it is a self-contained synchronous compute with no loop-bound calls -
-        # so a plain to_thread wrap is correct here: no asyncio.run_coroutine_
-        # threadsafe marshaling / progress-queue draining is required (there are
-        # no emitter calls to marshal back). When mid-solve emitter progress IS
-        # added later, switch to run_coroutine_threadsafe(loop) inside the
-        # worker. (Mirrors model_flood_scenario's asyncio.to_thread off-loading
-        # of its blocking fetcher/solve stages.)
+        # --- Step 5+6: solve + postprocess ----------------------------------
+        # is_local_mode() is True by DEFAULT (GRACE2_SWMM_LOCAL unset): the
+        # urban engine's primary path is pyswmm IN-PROCESS (the `else` branch
+        # below, byte-identical to the proven local lane). When the env is
+        # flipped (GRACE2_SWMM_LOCAL=0) the `if not is_local_mode():` branch
+        # routes the SAME staged deck through the GENERIC solver-dispatch seam
+        # (run_solver -> wait_for_completion -> Batch output) instead. Zero
+        # regression until the env is set.
         #
-        # LIVE solve-progress heartbeat (NATE 2026-06-17): run_swmm_local emits
-        # nothing for minutes off-loop, so the running card is a silent spinner.
-        # Drive the shared solve-progress envelope ON the loop (the emitter is
-        # loop-bound) alongside the off-loop solve - identical to the proven
-        # SFINCS pattern in model_flood_scenario. Best-effort: emitter None ->
-        # no-op; cancelled + awaited in the finally regardless of outcome.
+        # LIVE solve-progress heartbeat (NATE 2026-06-17): the solve emits
+        # nothing for minutes (off-loop thread OR remote Batch job), so the
+        # running card is a silent spinner. Drive the shared solve-progress
+        # envelope ON the loop (the emitter is loop-bound) alongside the solve -
+        # identical to the proven SFINCS pattern in model_flood_scenario.
+        # Best-effort: emitter None -> no-op; cancelled + awaited in a finally
+        # regardless of outcome. The heartbeat wraps BOTH lanes.
         from ..tools.solver import AWS_BATCH_COMPUTE_CLASS_SIZING
 
         _swmm_vcpus = AWS_BATCH_COMPUTE_CLASS_SIZING.get(
             effective_compute_class, {}
         ).get("vcpus")
-        _progress_task = asyncio.ensure_future(
-            drive_live_solve_progress(
-                emitter=current_emitter(),
-                run_id=staging.run_id,
-                solver=SWMM_SOLVER_NAME,
-                grid_resolution_m=getattr(staging.build, "resolution_m", None),
-                active_cell_count=getattr(staging.build, "n_active_cells", None),
-                vcpus=int(_swmm_vcpus) if _swmm_vcpus is not None else None,
-                eta_seconds=estimate_swmm_solve_seconds(
-                    int(getattr(staging.build, "n_active_cells", 0) or 0)
-                ),
-            )
-        )
-        try:
-            run = await asyncio.to_thread(run_swmm_local, staging)
-        finally:
-            # Tear down the heartbeat (success, failure, OR cancel).
-            _progress_task.cancel()
-            try:
-                await _progress_task
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                pass
+        if not is_local_mode():
+            # --- Out-of-process lane (GRACE2_SWMM_LOCAL=0): GENERIC Batch seam.
+            # Stage the built deck + a worker-contract manifest to S3, then
+            # dispatch through run_solver / wait_for_completion (the SAME seam
+            # SFINCS uses in model_flood_scenario), PASSING the per-case computed
+            # compute_class (auto vertical scaling). The SWMM Batch worker
+            # (services/workers/swmm/entrypoint.py) solves the deck and writes
+            # completion.json + the .out/.rpt to s3://<runs_bucket>/<run_id>/; we
+            # download the .out/.rpt and postprocess from the BATCH output.
+            from ..tools.solver import run_solver, wait_for_completion
 
-        # --- Step 6: postprocess (rasterize node depths -> peak + frames) ---
-        # BREAK B, post-solve: postprocess_swmm is a SYNCHRONOUS compute (pyswmm
-        # Output read + per-step grid scatter + COG rasterize/reproject + S3
-        # upload) - heavy blocking I/O + GDAL that would stall the loop inline.
-        # It builds the peak + frame COGs OFF-LINE (its own internal
-        # _emit_frame_layers only WRITES COGs - it does NOT touch the loop-bound
-        # PipelineEmitter / add_loaded_layer; the emitter add_loaded_layer happens
-        # back on the loop in _emit_frame_layers below) so a plain to_thread wrap
-        # is correct - no run_coroutine_threadsafe marshaling required.
-        layers, metrics = await asyncio.to_thread(
-            postprocess_swmm,
-            run,
-            staging.build,
-            run_id=staging.run_id,
-            building_footprints=building_footprints,
-        )
+            manifest_uri = await asyncio.to_thread(stage_swmm_manifest, staging)
+            handle = run_solver(
+                solver=SWMM_SOLVER_NAME,
+                model_setup_uri=manifest_uri,
+                compute_class=effective_compute_class,
+            )
+            _progress_task = asyncio.ensure_future(
+                drive_live_solve_progress(
+                    emitter=current_emitter(),
+                    run_id=staging.run_id,
+                    solver=SWMM_SOLVER_NAME,
+                    grid_resolution_m=getattr(staging.build, "resolution_m", None),
+                    active_cell_count=getattr(
+                        staging.build, "n_active_cells", None
+                    ),
+                    vcpus=int(_swmm_vcpus) if _swmm_vcpus is not None else None,
+                    eta_seconds=estimate_swmm_solve_seconds(
+                        int(getattr(staging.build, "n_active_cells", 0) or 0)
+                    ),
+                )
+            )
+            try:
+                run_result = await wait_for_completion(handle)
+            except asyncio.CancelledError:
+                # Invariant 8: the cancel chain is owned by wait_for_completion;
+                # propagate immediately so the WS handler emits cancelled.
+                logger.info("model_urban_flood_swmm cancelled while awaiting solver")
+                raise
+            finally:
+                # Tear down the heartbeat (success, failure, OR cancel).
+                _progress_task.cancel()
+                try:
+                    await _progress_task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
+
+            if run_result.status != "complete":
+                # SOLVER_FAILED / SOLVER_TIMEOUT / cancelled -> typed failure
+                # (mirror model_flood_scenario's non-complete guard). The
+                # SWMMWorkflowError below is caught by the except clause + turned
+                # into a typed error dict by the tool wrapper.
+                raise SWMMWorkflowError(
+                    "SWMM_LOCAL_RUN_FAILED",
+                    message=(
+                        "SWMM Batch solve did not complete "
+                        f"(status={run_result.status}, "
+                        f"error_code={run_result.error_code}): "
+                        f"{run_result.error_message or run_result.cancellation_reason or ''}"
+                    ),
+                    details={
+                        "run_id": staging.run_id,
+                        "output_uri": run_result.output_uri,
+                    },
+                )
+
+            # Download the Batch .out (+ .rpt for continuity provenance) to a
+            # local tmp dir, then postprocess from a run-shim carrying the local
+            # out_path (postprocess_swmm reads only run.out_path; the S_i_j
+            # cell<->node map lives in staging.build, agent-side, unchanged).
+            run, batch_out_dir = await asyncio.to_thread(
+                _download_batch_swmm_outputs, run_result, staging.run_id
+            )
+            try:
+                layers, metrics = await asyncio.to_thread(
+                    postprocess_swmm,
+                    run,
+                    staging.build,
+                    run_id=staging.run_id,
+                    building_footprints=building_footprints,
+                )
+            finally:
+                _cleanup_deck_dir(batch_out_dir)
+        else:
+            # --- In-process lane (DEFAULT): pyswmm in this venv ---------------
+            # BREAK B (event-loop starvation): run_swmm_local is a SYNCHRONOUS
+            # ~16-min pyswmm solve. Calling it inline on the async event loop
+            # blocks the loop for the entire solve -> the WS keepalive ping
+            # coroutine never runs -> the socket dies (ConnectionClosedError x40)
+            # -> every later emit/persist lands on a dead socket and the terminal
+            # layer never surfaces. The remedy is to push the blocking call OFF
+            # the loop onto a worker thread so the loop stays responsive
+            # (ping/pong keeps the WS alive) while pyswmm churns. run_swmm_deck
+            # (the body of run_swmm_local) does NOT report progress through the
+            # async PipelineEmitter mid-solve - it is a self-contained
+            # synchronous compute with no loop-bound calls - so a plain to_thread
+            # wrap is correct here: no asyncio.run_coroutine_threadsafe
+            # marshaling / progress-queue draining is required (there are no
+            # emitter calls to marshal back). When mid-solve emitter progress IS
+            # added later, switch to run_coroutine_threadsafe(loop) inside the
+            # worker. (Mirrors model_flood_scenario's asyncio.to_thread
+            # off-loading of its blocking fetcher/solve stages.)
+            _progress_task = asyncio.ensure_future(
+                drive_live_solve_progress(
+                    emitter=current_emitter(),
+                    run_id=staging.run_id,
+                    solver=SWMM_SOLVER_NAME,
+                    grid_resolution_m=getattr(staging.build, "resolution_m", None),
+                    active_cell_count=getattr(
+                        staging.build, "n_active_cells", None
+                    ),
+                    vcpus=int(_swmm_vcpus) if _swmm_vcpus is not None else None,
+                    eta_seconds=estimate_swmm_solve_seconds(
+                        int(getattr(staging.build, "n_active_cells", 0) or 0)
+                    ),
+                )
+            )
+            try:
+                run = await asyncio.to_thread(run_swmm_local, staging)
+            finally:
+                # Tear down the heartbeat (success, failure, OR cancel).
+                _progress_task.cancel()
+                try:
+                    await _progress_task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
+
+            # --- Step 6: postprocess (rasterize node depths -> peak + frames) -
+            # BREAK B, post-solve: postprocess_swmm is a SYNCHRONOUS compute
+            # (pyswmm Output read + per-step grid scatter + COG rasterize/reproject
+            # + S3 upload) - heavy blocking I/O + GDAL that would stall the loop
+            # inline. It builds the peak + frame COGs OFF-LINE (its own internal
+            # _emit_frame_layers only WRITES COGs - it does NOT touch the
+            # loop-bound PipelineEmitter / add_loaded_layer; the emitter
+            # add_loaded_layer happens back on the loop in _emit_frame_layers
+            # below) so a plain to_thread wrap is correct - no
+            # run_coroutine_threadsafe marshaling required.
+            layers, metrics = await asyncio.to_thread(
+                postprocess_swmm,
+                run,
+                staging.build,
+                run_id=staging.run_id,
+                building_footprints=building_footprints,
+            )
     except (SWMMWorkflowError, PostprocessSWMMError):
         # Cleanup before re-raising - the tool wrapper turns these into a typed
         # error dict.
@@ -689,3 +768,125 @@ def _cleanup_deck_dir(deck_dir: str) -> None:
         shutil.rmtree(p, ignore_errors=True)
     except Exception:  # noqa: BLE001
         pass
+
+
+class _BatchSWMMRun:
+    """A minimal ``swmm_mesh_builder.RunResult`` shim for the Batch lane.
+
+    ``postprocess_swmm`` reads ONLY ``run.out_path`` (the local pyswmm ``.out``)
+    plus ``run.continuity_error_pct`` for narration provenance; the S_i_j
+    cell<->node map lives in ``staging.build`` (agent-side, unchanged). The Batch
+    worker solved the deck remotely and uploaded the ``.out``/``.rpt`` to the
+    runs bucket, so we hand postprocess a shim carrying the DOWNLOADED local
+    ``out_path`` (+ the continuity read from the downloaded ``.rpt``). No change
+    to ``postprocess_swmm`` is required (Change 3: do the download in the
+    composer, keep postprocess minimal)."""
+
+    def __init__(self, out_path: str, continuity_error_pct: float) -> None:
+        self.out_path = out_path
+        self.continuity_error_pct = continuity_error_pct
+
+
+def _download_batch_swmm_outputs(run_result: Any, run_id: str) -> tuple[Any, str]:
+    """Download the Batch ``.out`` (+ ``.rpt``) to a tmp dir for postprocess.
+
+    The SWMM Batch worker (``services/workers/swmm/entrypoint.py``) uploads the
+    ``mesh.out`` / ``mesh.rpt`` it produced under
+    ``s3://<runs_bucket>/<run_id>/`` and records their full URIs in the
+    completion.json ``output_uris``. We re-read completion.json (small, already
+    on S3) to find the EXACT ``.out``/``.rpt`` keys (robust to the deck filename),
+    download them via the SAME boto3 client the solver dispatch uses (no new
+    client), read continuity from the ``.rpt`` (``swmm_mesh_builder``'s
+    ``read_flow_routing_continuity``), and return a run-shim carrying the local
+    ``out_path`` + a tmp-dir path for the caller to clean up.
+
+    Args:
+        run_result: the terminal ``RunResult`` from ``wait_for_completion``
+            (``output_uri = s3://<runs_bucket>/<run_id>/``).
+        run_id: the run id the outputs are keyed under.
+
+    Returns:
+        ``(_BatchSWMMRun, tmp_dir)`` — feed the shim to ``postprocess_swmm`` and
+        pass ``tmp_dir`` to ``_cleanup_deck_dir`` afterward.
+
+    Raises:
+        SWMMWorkflowError("SWMM_BATCH_OUTPUT_MISSING"): the completed run did not
+            produce a downloadable ``.out`` (a 'complete' solve with no output is
+            a real failure - never a silent dead-end).
+    """
+    from ..tools.solver import (
+        _get_runs_bucket,
+        _get_s3_client,
+        _split_object_uri,
+        _try_get_completion_s3,
+    )
+    from .swmm_mesh_builder import read_flow_routing_continuity
+
+    runs_bucket = _get_runs_bucket()
+    s3 = _get_s3_client()
+
+    # Resolve the exact .out/.rpt object keys from completion.json output_uris;
+    # fall back to the conventional mesh.out / mesh.rpt under the runs prefix.
+    out_keys: list[str] = []
+    rpt_keys: list[str] = []
+    manifest = _try_get_completion_s3(runs_bucket, run_id)
+    if isinstance(manifest, dict):
+        for raw in manifest.get("output_uris") or []:
+            uri = str(raw)
+            try:
+                _scheme, _bucket, key = _split_object_uri(uri)
+            except Exception:  # noqa: BLE001 — skip an unparseable entry
+                continue
+            if key.endswith(".out"):
+                out_keys.append(key)
+            elif key.endswith(".rpt"):
+                rpt_keys.append(key)
+    if not out_keys:
+        out_keys = [f"{run_id}/mesh.out"]
+    if not rpt_keys:
+        rpt_keys = [f"{run_id}/mesh.rpt"]
+
+    tmp_dir = tempfile.mkdtemp(prefix=f"swmm-batch-out-{run_id}-")
+
+    def _download(key: str) -> str | None:
+        dest = Path(tmp_dir) / Path(key).name
+        try:
+            resp = s3.get_object(Bucket=runs_bucket, Key=key)
+            with dest.open("wb") as fh:
+                shutil.copyfileobj(resp["Body"], fh)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "SWMM Batch output download failed s3://%s/%s: %s",
+                runs_bucket,
+                key,
+                exc,
+            )
+            return None
+        return str(dest)
+
+    local_out = next((p for p in (_download(k) for k in out_keys) if p), None)
+    if local_out is None:
+        _cleanup_deck_dir(tmp_dir)
+        raise SWMMWorkflowError(
+            "SWMM_BATCH_OUTPUT_MISSING",
+            message=(
+                f"SWMM Batch run {run_id} completed but produced no downloadable "
+                f".out under s3://{runs_bucket}/{run_id}/ "
+                f"(looked for {out_keys!r})"
+            ),
+            details={"run_id": run_id, "runs_bucket": runs_bucket},
+        )
+
+    local_rpt = next((p for p in (_download(k) for k in rpt_keys) if p), None)
+    continuity = 0.0
+    if local_rpt is not None:
+        try:
+            cont = read_flow_routing_continuity(local_rpt)
+            if cont is not None:
+                continuity = float(cont)
+        except Exception as exc:  # noqa: BLE001 — provenance only; never fatal
+            logger.warning(
+                "SWMM Batch .rpt continuity read failed (%s): %s", local_rpt, exc
+            )
+
+    return _BatchSWMMRun(out_path=local_out, continuity_error_pct=continuity), tmp_dir

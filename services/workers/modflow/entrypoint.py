@@ -1,8 +1,11 @@
-"""MODFLOW 6 Cloud Run Job entrypoint — thin shim around the `mf6` binary.
+"""MODFLOW 6 solver-worker entrypoint — thin shim around the `mf6` binary.
 
 Sprint-13 / MOD-1 / job-0220 / FR-CE-1/2/3. The MODFLOW-6 analogue of
-services/workers/sfincs/entrypoint.py. Same GCS-IN -> RUN -> GCS-OUT envelope;
-the two MODFLOW-specific differences from the SFINCS shim are:
+services/workers/sfincs/entrypoint.py. Same OBJECT-STORE-IN -> RUN ->
+OBJECT-STORE-OUT envelope; SCHEME-AWARE like the SFINCS shim (``s3://`` via
+boto3 when ``GRACE2_OBJECT_STORE=s3``, ``gs://`` via google-cloud-storage
+otherwise — see the object-store abstraction below). The two MODFLOW-specific
+differences from the SFINCS shim are:
 
   1. Subdirectory-preserving input layout. SFINCS takes a flat `sfincs.inp`
      deck; MODFLOW 6 uses a simulation namefile (`mfsim.nam`) that references
@@ -77,9 +80,11 @@ Contract:
 Design notes:
     - mf6 takes its inputs from CWD (it reads `mfsim.nam` from the working
       directory by convention). We chdir into the scratch dir before exec.
-    - We do NOT mount GCS; we download via google-cloud-storage SDK (same
-      reasoning as the SFINCS shim — outputs are bounded; explicit upload is
-      auditable; no gcsfuse complexity).
+    - We do NOT mount the object store; we download via the SDK resolved BY URI
+      SCHEME (boto3 for ``s3://`` on AWS Batch; google-cloud-storage for
+      ``gs://`` on the legacy Cloud Run path). Same reasoning as the SFINCS
+      shim — outputs are bounded; explicit upload is auditable; no gcsfuse /
+      s3fs complexity. job-0289 lesson: boto3 for S3, NOT s3fs/anonymous.
     - The smoke-pattern (kickoff verification): the fixtures/ deck under this
       package is a minimal 10x10 single-layer GWF model; staged into the cache
       bucket with a manifest pointing at it, the entrypoint reproduces the
@@ -98,8 +103,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-
-from google.cloud import storage  # type: ignore
+from typing import Any
 
 LOG = logging.getLogger("grace2.worker.modflow")
 logging.basicConfig(
@@ -125,40 +129,118 @@ def _utc_now() -> str:
     return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+# --------------------------------------------------------------------------- #
+# Object-store abstraction (scheme-aware — same image on the legacy Cloud Run
+# Job AND AWS Batch). MIRRORS services/workers/sfincs/entrypoint.py verbatim:
+# the SFINCS shim is already scheme-aware and is the reference. We dispatch the
+# I/O BY URI SCHEME: ``gs://`` via google-cloud-storage (lazy import — a pure-S3
+# Batch image never pays for the GCP SDK), ``s3://`` via boto3 (job-0289 lesson:
+# boto3, NOT s3fs/anonymous). The runs-bucket OUTPUT scheme follows
+# ``GRACE2_OBJECT_STORE`` (``s3`` -> ``s3://``, default ``gcs`` -> ``gs://``) so
+# completion.json + outputs land in the same store the agent polls. The GCS
+# behavior is byte-identical to the pre-port path.
+# --------------------------------------------------------------------------- #
+
+
+def _split_object_uri(uri: str) -> tuple[str, str, str]:
+    """Split ``s3://bucket/key`` / ``gs://bucket/key`` -> (scheme, bucket, key)."""
+    for scheme in ("s3", "gs"):
+        prefix = f"{scheme}://"
+        if uri.startswith(prefix):
+            bucket, _, key = uri[len(prefix):].partition("/")
+            if not bucket or not key:
+                raise ValueError(f"malformed {scheme}:// URI: {uri!r}")
+            return scheme, bucket, key
+    raise ValueError(f"unsupported object URI scheme: {uri!r} (expected s3:// or gs://)")
+
+
+# Legacy alias retained for any external caller / test that imports it.
 def _parse_gs_uri(uri: str) -> tuple[str, str]:
-    if not uri.startswith("gs://"):
+    scheme, bucket, key = _split_object_uri(uri)
+    if scheme != "gs":
         raise ValueError(f"not a gs:// URI: {uri!r}")
-    path = uri[len("gs://") :]
-    bucket, _, blob = path.partition("/")
-    if not bucket or not blob:
-        raise ValueError(f"malformed gs:// URI: {uri!r}")
-    return bucket, blob
+    return bucket, key
 
 
-def _download(client: storage.Client, gs_uri: str, dest: Path) -> None:
-    bucket_name, blob_name = _parse_gs_uri(gs_uri)
+def _output_scheme() -> str:
+    """Runs-bucket output scheme — ``s3`` or ``gs`` (env ``GRACE2_OBJECT_STORE``)."""
+    b = (os.environ.get("GRACE2_OBJECT_STORE") or "gcs").strip().lower()
+    return "s3" if b in {"s3", "aws"} else "gs"
+
+
+def _runs_uri(run_id: str, rel: str) -> str:
+    """Compose ``{scheme}://{RUNS_BUCKET}/{run_id}/{rel}`` for an output object."""
+    return f"{_output_scheme()}://{RUNS_BUCKET}/{run_id}/{rel}"
+
+
+_GCS_CLIENT: Any = None
+
+
+def _gcs_client() -> Any:
+    """Lazily build (and cache) the google-cloud-storage client.
+
+    Lazy so a pure-S3 Batch image (no GCP creds, possibly no SDK) never imports
+    it. Only reached when a ``gs://`` URI is actually handled.
+    """
+    global _GCS_CLIENT
+    if _GCS_CLIENT is None:
+        from google.cloud import storage  # type: ignore
+
+        _GCS_CLIENT = storage.Client(project=GCP_PROJECT)
+    return _GCS_CLIENT
+
+
+_S3_CLIENT: Any = None
+
+
+def _s3_client() -> Any:
+    """Lazily build (and cache) the boto3 S3 client (resolves the Batch task
+    role via the standard credential chain). Lazy import so the GCS-only Cloud
+    Run path never pays for boto3."""
+    global _S3_CLIENT
+    if _S3_CLIENT is None:
+        import boto3  # type: ignore
+
+        _S3_CLIENT = boto3.client(
+            "s3", region_name=os.environ.get("AWS_REGION", "us-west-2")
+        )
+    return _S3_CLIENT
+
+
+def _download(uri: str, dest: Path) -> None:
+    """Download one object to ``dest``, resolved BY SCHEME (s3:// or gs://)."""
+    scheme, bucket, key = _split_object_uri(uri)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    LOG.info("downloading %s -> %s", gs_uri, dest)
-    bucket = client.bucket(bucket_name)
-    blob = bucket.blob(blob_name)
-    blob.download_to_filename(str(dest))
+    LOG.info("downloading %s -> %s", uri, dest)
+    if scheme == "s3":
+        resp = _s3_client().get_object(Bucket=bucket, Key=key)
+        with dest.open("wb") as fh:
+            shutil.copyfileobj(resp["Body"], fh)
+        return
+    _gcs_client().bucket(bucket).blob(key).download_to_filename(str(dest))
 
 
-def _upload(client: storage.Client, src: Path, gs_uri: str) -> str:
-    bucket_name, blob_name = _parse_gs_uri(gs_uri)
-    LOG.info("uploading %s -> %s", src, gs_uri)
-    bucket = client.bucket(bucket_name)
-    blob = bucket.blob(blob_name)
-    blob.upload_from_filename(str(src))
-    return gs_uri
+def _upload(src: Path, uri: str) -> str:
+    """Upload ``src`` to ``uri``, resolved BY SCHEME (s3:// or gs://)."""
+    scheme, bucket, key = _split_object_uri(uri)
+    LOG.info("uploading %s -> %s", src, uri)
+    if scheme == "s3":
+        with src.open("rb") as fh:
+            _s3_client().put_object(Bucket=bucket, Key=key, Body=fh)
+        return uri
+    _gcs_client().bucket(bucket).blob(key).upload_from_filename(str(src))
+    return uri
 
 
-def _read_manifest(client: storage.Client, manifest_uri: str) -> dict:
-    bucket_name, blob_name = _parse_gs_uri(manifest_uri)
+def _read_manifest(manifest_uri: str) -> dict:
+    """Read + parse the setup manifest JSON, resolved BY SCHEME."""
+    scheme, bucket, key = _split_object_uri(manifest_uri)
     LOG.info("reading manifest %s", manifest_uri)
-    bucket = client.bucket(bucket_name)
-    blob = bucket.blob(blob_name)
-    text = blob.download_as_text()
+    if scheme == "s3":
+        resp = _s3_client().get_object(Bucket=bucket, Key=key)
+        text = resp["Body"].read().decode("utf-8")
+    else:
+        text = _gcs_client().bucket(bucket).blob(key).download_as_text()
     data = json.loads(text)
     if not isinstance(data, dict):
         raise ValueError("manifest must be a JSON object")
@@ -249,7 +331,6 @@ def _build_argv_parser() -> argparse.ArgumentParser:
 
 
 def _write_completion(
-    client: storage.Client,
     run_id: str,
     status: str,
     exit_code: int,
@@ -274,14 +355,20 @@ def _write_completion(
         "finished_at": _utc_now(),
         "error": error,
     }
-    completion_uri = f"gs://{RUNS_BUCKET}/{run_id}/completion.json"
-    bucket_name, blob_name = _parse_gs_uri(completion_uri)
-    bucket = client.bucket(bucket_name)
-    blob = bucket.blob(blob_name)
-    blob.upload_from_string(
-        json.dumps(payload, indent=2),
-        content_type="application/json",
-    )
+    completion_uri = _runs_uri(run_id, "completion.json")
+    scheme, bucket, key = _split_object_uri(completion_uri)
+    body = json.dumps(payload, indent=2)
+    if scheme == "s3":
+        _s3_client().put_object(
+            Bucket=bucket,
+            Key=key,
+            Body=body.encode("utf-8"),
+            ContentType="application/json",
+        )
+    else:
+        _gcs_client().bucket(bucket).blob(key).upload_from_string(
+            body, content_type="application/json"
+        )
     LOG.info("wrote completion -> %s", completion_uri)
     return completion_uri
 
@@ -300,13 +387,14 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     LOG.info(
-        "grace-2-modflow-solver starting — project=%s run_id=%s manifest=%s",
+        "grace-2-modflow-solver starting — project=%s run_id=%s manifest=%s "
+        "object_store=%s",
         GCP_PROJECT,
         run_id,
         manifest_uri,
+        _output_scheme(),
     )
     started_at = _utc_now()
-    client = storage.Client(project=GCP_PROJECT)
 
     # Best-effort completion writing: even on hard error we attempt to write
     # completion.json so wait-for-completion (job-0227) sees a terminal state
@@ -321,7 +409,7 @@ def main(argv: list[str] | None = None) -> int:
     model_crs: str | None = None
 
     try:
-        manifest = _read_manifest(client, manifest_uri)
+        manifest = _read_manifest(manifest_uri)
         inputs = manifest.get("inputs", []) or []
         mf6_args = manifest.get("mf6_args", []) or []
         outputs = manifest.get("outputs", []) or []
@@ -330,12 +418,14 @@ def main(argv: list[str] | None = None) -> int:
         scratch = _prepare_scratch()
 
         for item in inputs:
-            gs_uri = item["gs_uri"]
+            # Manifest input entries keep the LEGACY field name ``gs_uri``; the
+            # VALUE is resolved by scheme (s3:// on Batch, gs:// on Cloud Run).
+            input_uri = item["gs_uri"]
             # dest may carry a subdir path (gwf/..., gwt/...); _download
             # mkdir -p's the parent, reconstructing the mfsim.nam-referenced
             # subdirectory tree in scratch.
             dest = scratch / item["dest"]
-            _download(client, gs_uri, dest)
+            _download(input_uri, dest)
 
         rc, stdout_path, stderr_path = _run_mf6(list(mf6_args), scratch)
 
@@ -343,16 +433,12 @@ def main(argv: list[str] | None = None) -> int:
         converged, conv_note = _check_convergence(scratch)
 
         # Always upload stdout/stderr so the smoke run produces evidence.
-        stdout_uri = _upload(
-            client, stdout_path, f"gs://{RUNS_BUCKET}/{run_id}/mf6.stdout"
-        )
-        stderr_uri = _upload(
-            client, stderr_path, f"gs://{RUNS_BUCKET}/{run_id}/mf6.stderr"
-        )
+        stdout_uri = _upload(stdout_path, _runs_uri(run_id, "mf6.stdout"))
+        stderr_uri = _upload(stderr_path, _runs_uri(run_id, "mf6.stderr"))
 
         for path in _expand_outputs(list(outputs), scratch):
-            rel = path.relative_to(scratch)
-            uri = _upload(client, path, f"gs://{RUNS_BUCKET}/{run_id}/{rel}")
+            rel = path.relative_to(scratch).as_posix()
+            uri = _upload(path, _runs_uri(run_id, rel))
             output_uris.append(uri)
 
         # Exit-code resolution (design doc § 8):
@@ -380,7 +466,6 @@ def main(argv: list[str] | None = None) -> int:
         converged = False
 
     _write_completion(
-        client=client,
         run_id=run_id,
         status=status,
         exit_code=exit_code,

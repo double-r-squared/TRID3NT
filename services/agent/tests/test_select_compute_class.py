@@ -355,8 +355,9 @@ async def test_swmm_workflow_passes_computed_class_on_out_of_process_lane(
     monkeypatch,
 ) -> None:
     """When the out-of-process lane is taken (is_local_mode()==False), the
-    composer dispatches run_solver with the class COMPUTED from the built mesh's
-    n_active_cells — a large mesh -> a larger class."""
+    composer stages a manifest + dispatches run_solver with the class COMPUTED
+    from the built mesh's n_active_cells — a large mesh -> a larger class — then
+    awaits wait_for_completion and postprocesses from the Batch download."""
     from grace2_contracts.swmm_contracts import SWMMDepthLayerURI, SWMMRunArgs
 
     from grace2_agent.workflows import model_urban_flood_swmm as mod
@@ -365,6 +366,7 @@ async def test_swmm_workflow_passes_computed_class_on_out_of_process_lane(
     build = SimpleNamespace(
         n_active_cells=400_000,
         inp_path="/tmp/swmm-test/mesh.inp",
+        resolution_m=10.0,
         barriers_geojson=None,
     )
     staging = SimpleNamespace(run_id="run-x", inp_path=build.inp_path, build=build)
@@ -381,7 +383,11 @@ async def test_swmm_workflow_passes_computed_class_on_out_of_process_lane(
         flooded_area_km2=0.5,
         n_buildings_affected=3,
     )
-    run_obj = SimpleNamespace(continuity_error_pct=0.1)
+    # The Batch lane never calls run_swmm_local; postprocess consumes the
+    # downloaded-out shim instead.
+    batch_run_shim = SimpleNamespace(
+        out_path="/tmp/swmm-batch-out/mesh.out", continuity_error_pct=0.1
+    )
 
     captured: dict[str, Any] = {}
 
@@ -389,7 +395,19 @@ async def test_swmm_workflow_passes_computed_class_on_out_of_process_lane(
         captured["solver"] = solver
         captured["compute_class"] = compute_class
         captured["model_setup_uri"] = model_setup_uri
-        return SimpleNamespace(run_id="run-x")
+        return SimpleNamespace(
+            run_id="run-x", handle_id="h-x", workflow_name="aws-batch"
+        )
+
+    async def _fake_wait(handle, *a, **k):  # noqa: ANN001
+        captured["awaited"] = True
+        return SimpleNamespace(
+            status="complete",
+            output_uri="s3://runs/run-x/",
+            error_code=None,
+            error_message=None,
+            cancellation_reason=None,
+        )
 
     run_args = SWMMRunArgs(
         bbox=(-88.0, 36.0, -87.99, 36.01),
@@ -401,9 +419,20 @@ async def test_swmm_workflow_passes_computed_class_on_out_of_process_lane(
     with (
         patch.object(mod, "build_and_stage_swmm_deck", return_value=staging),
         patch.object(mod, "is_local_mode", return_value=False),
-        patch.object(mod, "run_swmm_local", return_value=run_obj),
+        patch.object(
+            mod, "stage_swmm_manifest", return_value="s3://cache/swmm_setup/run-x/manifest.json"
+        ),
+        patch.object(
+            mod,
+            "_download_batch_swmm_outputs",
+            return_value=(batch_run_shim, "/tmp/swmm-batch-out-run-x"),
+        ),
+        patch.object(mod, "_cleanup_deck_dir", return_value=None),
         patch.object(mod, "postprocess_swmm", return_value=([peak], {})),
         patch("grace2_agent.tools.solver.run_solver", side_effect=_fake_run_solver),
+        patch(
+            "grace2_agent.tools.solver.wait_for_completion", side_effect=_fake_wait
+        ),
     ):
         result = await mod.model_urban_flood_swmm(
             run_args,
@@ -417,4 +446,7 @@ async def test_swmm_workflow_passes_computed_class_on_out_of_process_lane(
     assert result is peak
     assert captured["solver"] == "swmm"
     assert captured["compute_class"] == "large"  # 400k cells -> large tier
-    assert captured["model_setup_uri"].startswith("file://")
+    # The out-of-process lane now stages an s3:// manifest (not file://) and
+    # routes through wait_for_completion (the generic Batch seam).
+    assert captured["model_setup_uri"].startswith("s3://")
+    assert captured["awaited"] is True

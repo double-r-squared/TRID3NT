@@ -13,10 +13,16 @@ things for the groundwater-contamination ("spill") engine:
      ``model_crs`` field), and uploads the deck + manifest to the cache bucket.
 
   2. **Solver submit** (``submit_modflow_run``). GCP Cloud Workflows is
-     decommissioned — the submit routes through the shared local-exec solver
-     backend (``tools.solver.launch_local_solver``) with the MODFLOW
-     local-exec spec. Returns the schema-owned ``ExecutionHandle`` carrying
-     ``workflow_name="local-exec"`` (the Invariant-8 cancellation seam).
+     decommissioned. Two gated lanes: the GENERIC AWS Batch seam (the shared
+     ``tools.solver.run_solver(solver='modflow', ...)`` per-job autoscaled
+     submit) when ``is_batch_mode()`` (``GRACE2_SOLVER_BACKEND=aws-batch`` + a
+     resolvable ``GRACE2_AWS_BATCH_JOB_DEF_MODFLOW``); otherwise — the DEFAULT,
+     inert-until-flipped fallback — the shared local-exec solver backend
+     (``tools.solver.launch_local_solver``) with the MODFLOW local-exec spec
+     (the ``mf6`` binary on the box). Either way returns the schema-owned
+     ``ExecutionHandle`` whose ``workflow_name`` pins the backend
+     (``aws-batch`` / ``local-exec``) for ``wait_for_completion`` (the
+     Invariant-8 cancellation seam).
 
   3. **LOCAL EXECUTION MODE** (``GRACE2_MODFLOW_LOCAL=1``). The foreground dev
      seam: run the staged deck against a locally-downloaded ``mf6`` binary
@@ -121,6 +127,9 @@ __all__ = [
     "submit_modflow_run",
     "run_modflow_local",
     "is_local_mode",
+    "is_batch_mode",
+    "register_modflow_solver",
+    "MODFLOW_SOLVER_NAME",
     "MODFLOW_WORKFLOW_NAME",
     "set_cache_bucket",
     "set_runs_bucket",
@@ -137,6 +146,14 @@ __all__ = [
 #: ``{run_id, manifest_uri}`` execution against it; cancellation propagates to
 #: the running Cloud Run Job (Invariant 8).
 MODFLOW_WORKFLOW_NAME: str = "grace-2-modflow-orchestrator"
+
+#: The registry key + ``ExecutionHandle.solver`` tag for the groundwater engine.
+#: Mirrors ``run_swmm.SWMM_SOLVER_NAME`` — its PRESENCE in
+#: ``tools.solver.SOLVER_WORKFLOW_REGISTRY`` is what gates ``run_solver(
+#: solver='modflow', ...)`` dispatch (an absent key raises
+#: ``SolverNotRegisteredError``). Registered at import via
+#: ``register_modflow_solver()`` exactly like SWMM.
+MODFLOW_SOLVER_NAME: str = "modflow"
 
 #: Concentration floor (mg/L) below which a cell is NOT counted as plume. The
 #: postprocess module owns plume metrics; this constant is mirrored there for
@@ -297,6 +314,81 @@ def is_local_mode() -> bool:
         "yes",
         "on",
     }
+
+
+def is_batch_mode() -> bool:
+    """True when the GENERIC AWS Batch seam should drive the MODFLOW solve.
+
+    The Batch path is INERT by default — it only activates when BOTH:
+
+      1. the shared solver backend is ``aws-batch`` (``solver_backend()`` —
+         i.e. ``GRACE2_SOLVER_BACKEND`` is unset or ``aws-batch``; NOT
+         ``local-docker``), AND
+      2. a MODFLOW-SPECIFIC Batch job-definition is resolvable — the per-solver
+         env ``GRACE2_AWS_BATCH_JOB_DEF_MODFLOW`` (the knob NATE flips after
+         ``tofu apply``) or an in-code ``SOLVER_BATCH_JOBDEF_REGISTRY['modflow']``
+         default.
+
+    The generic ``GRACE2_AWS_BATCH_JOB_DEF`` fallback is DELIBERATELY EXCLUDED
+    from this gate: the live agent box sets ``GRACE2_AWS_BATCH_JOB_DEF=grace2-sfincs``
+    (the SFINCS image's job-def, see infra/aws-batch/RUNBOOK.md), so honoring the
+    generic fallback would cross-route a MODFLOW run to the SFINCS container. The
+    gate requires the MODFLOW-OWN job-def so MODFLOW stays on the local-exec path
+    until NATE provisions + sets ``GRACE2_AWS_BATCH_JOB_DEF_MODFLOW`` — ZERO
+    regression on the current deployment. (The actual ``run_solver`` submit still
+    re-resolves via ``_resolve_batch_job_def`` once this gate opens, so the wired
+    MODFLOW job-def is what's submitted.)
+
+    ``is_local_mode`` (``GRACE2_MODFLOW_LOCAL``, the foreground dev seam) is
+    checked FIRST by the tool wrapper and is independent of this gate.
+    """
+    try:
+        from ..tools.solver import (
+            SOLVER_BACKEND_AWS_BATCH,
+            SOLVER_BATCH_JOBDEF_REGISTRY,
+            solver_backend,
+        )
+    except Exception:  # noqa: BLE001 — solver module unavailable -> stay local
+        return False
+    if solver_backend() != SOLVER_BACKEND_AWS_BATCH:
+        return False
+    # Mirror _resolve_batch_job_def's per-solver-env key derivation, but ONLY
+    # the MODFLOW-specific tiers (per-solver env + in-code registry) — NOT the
+    # generic GRACE2_AWS_BATCH_JOB_DEF fallback (which points at the SFINCS
+    # image on the live box).
+    key = "".join(
+        c if c.isalnum() else "_" for c in MODFLOW_SOLVER_NAME.strip().upper()
+    )
+    per_solver = (os.environ.get(f"GRACE2_AWS_BATCH_JOB_DEF_{key}") or "").strip()
+    if per_solver:
+        return True
+    registry_default = (
+        SOLVER_BATCH_JOBDEF_REGISTRY.get(MODFLOW_SOLVER_NAME) or ""
+    ).strip()
+    return bool(registry_default)
+
+
+def register_modflow_solver() -> None:
+    """Register ``'modflow'`` in ``tools.solver.SOLVER_WORKFLOW_REGISTRY``.
+
+    Mirrors ``run_swmm.register_swmm_solver`` (and the SFINCS registration): the
+    registry maps the solver name to a workflow/dispatch sentinel; ``run_solver``
+    only requires the KEY to be PRESENT to dispatch (an absent key raises
+    ``SolverNotRegisteredError``). The backend seam then routes the run to the
+    AWS Batch submit (default ``aws-batch``) or the local launcher. We seed the
+    ``LOCAL_EXEC_WORKFLOW_NAME`` sentinel as the value (exactly what SWMM seeds)
+    — the value is only a default tag; the per-call handle pins the real backend.
+    Idempotent (``setdefault``) — safe to call at import.
+    """
+    from ..tools.solver import LOCAL_EXEC_WORKFLOW_NAME, SOLVER_WORKFLOW_REGISTRY
+
+    SOLVER_WORKFLOW_REGISTRY.setdefault(MODFLOW_SOLVER_NAME, LOCAL_EXEC_WORKFLOW_NAME)
+
+
+# Register at import so ``run_solver(solver='modflow')`` is wired wherever this
+# module is imported (the composer + the tool wrapper both import it) — exactly
+# mirroring run_swmm's import-time ``register_swmm_solver()`` call.
+register_modflow_solver()
 
 
 # --------------------------------------------------------------------------- #
@@ -678,27 +770,60 @@ def submit_modflow_run(
     *,
     compute_class: str = "standard",
 ) -> ExecutionHandle:
-    """Submit a MODFLOW run via the shared local-exec solver backend.
+    """Submit a MODFLOW run via the active solver backend.
 
-    GCP Cloud Workflows is decommissioned. MODFLOW on AWS runs the ``mf6``
-    binary directly via the local-exec supervisor
-    (``tools.solver.launch_local_solver``) — there is NO AWS Batch job-def for
-    MODFLOW. The submit routes through ``launch_local_solver`` with the MODFLOW
-    local-exec spec: the staged deck is downloaded from S3 into
-    ``$GRACE2_RUNS_DIR/<run_id>/``, the ``mf6`` binary runs detached, and the
-    supervisor writes the MODFLOW-entrypoint-schema completion.json to
-    ``s3://$GRACE2_RUNS_BUCKET/<run_id>/``. The returned handle's
-    ``workflow_name="local-exec"`` pins the backend for
-    ``wait_for_completion`` (the Invariant-8 cancellation seam).
+    Two dispatch lanes, gated so the Batch path is INERT until NATE flips the
+    env (zero regression by default):
+
+      * **GENERIC AWS Batch seam** (``is_batch_mode()`` — ``GRACE2_SOLVER_BACKEND``
+        ``aws-batch`` + a resolvable ``GRACE2_AWS_BATCH_JOB_DEF_MODFLOW``). Routes
+        through the SHARED ``tools.solver.run_solver(solver='modflow',
+        model_setup_uri=staging.manifest_uri, compute_class=...)`` — the same
+        per-job autoscaled Batch submit SFINCS/SWMM use. The Batch container runs
+        the SAME ``services/workers/modflow/entrypoint.py`` (now scheme-aware)
+        and writes the SAME ``completion.json`` to
+        ``s3://$GRACE2_RUNS_BUCKET/<run_id>/``; the handle's
+        ``workflow_name="aws-batch"`` routes ``wait_for_completion`` to the Batch
+        poll branch.
+
+      * **Local-exec fallback** (DEFAULT until the Batch env is flipped). Runs the
+        ``mf6`` binary directly via the local-exec supervisor
+        (``tools.solver.launch_local_solver`` with the MODFLOW local-exec spec):
+        the staged deck is downloaded from S3 into ``$GRACE2_RUNS_DIR/<run_id>/``,
+        ``mf6`` runs detached, and the supervisor writes the
+        MODFLOW-entrypoint-schema completion.json. The returned handle's
+        ``workflow_name="local-exec"`` pins the backend for ``wait_for_completion``.
+
+    Both handles feed the SFINCS-shared ``wait_for_completion`` (the Invariant-8
+    cancellation seam) — ``run_modflow_tool.py`` is unchanged.
 
     Raises:
-        MODFLOWWorkflowError("MODFLOW_DISPATCH_FAILED"): the local-backend
-            staging / launch failed.
+        MODFLOWWorkflowError("MODFLOW_DISPATCH_FAILED"): the dispatch (Batch
+            submit or local-backend staging/launch) failed.
     """
     from ..tools.solver import (
         SolverDispatchError,
         launch_local_solver,
+        run_solver,
     )
+
+    if is_batch_mode():
+        # GENERIC AWS Batch seam — shared run_solver dispatch. The manifest was
+        # staged to s3:// by build_and_stage_modflow_deck (storage_scheme()=='s3'
+        # under GRACE2_STORAGE_BACKEND=s3), so model_setup_uri is the s3:// the
+        # Batch backend requires.
+        try:
+            return run_solver(
+                solver=MODFLOW_SOLVER_NAME,
+                model_setup_uri=staging.manifest_uri,
+                compute_class=compute_class,
+            )
+        except SolverDispatchError as exc:
+            raise MODFLOWWorkflowError(
+                "MODFLOW_DISPATCH_FAILED",
+                message=f"AWS Batch MODFLOW dispatch failed: {exc}",
+                details={"run_id": staging.run_id},
+            ) from exc
 
     try:
         return launch_local_solver(

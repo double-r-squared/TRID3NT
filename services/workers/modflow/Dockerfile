@@ -74,17 +74,20 @@ RUN apt-get update \
 # --- Python venv + deps (single layer, design doc § 3) -------------------
 # venv at /opt/grace2/.venv to sidestep PEP 668 on Bookworm. flopy is needed
 # by the agent-side deck builder + postprocess (and for in-container
-# verification); google-cloud-storage drives the GCS envelope; numpy/rasterio
-# back the postprocess COG conversion.
+# verification); the entrypoint object-store envelope is SCHEME-AWARE
+# (google-cloud-storage drives gs://; boto3 drives s3:// on AWS Batch — the
+# job-0289 boto3-not-s3fs lesson, mirroring the SFINCS worker image);
+# numpy/rasterio back the postprocess COG conversion.
 ENV VENV=/opt/grace2/.venv
 RUN python3 -m venv "$VENV" \
     && "$VENV/bin/pip" install --no-cache-dir --upgrade pip \
     && "$VENV/bin/pip" install --no-cache-dir \
         "flopy>=3.7,<4" \
         "google-cloud-storage>=2.18,<4" \
+        "boto3>=1.34,<2" \
         "numpy>=1.26,<3" \
         "rasterio>=1.3,<2" \
-    && "$VENV/bin/python" -c "import flopy, numpy, rasterio; from google.cloud import storage; print('python deps import OK — flopy', flopy.__version__)"
+    && "$VENV/bin/python" -c "import flopy, numpy, rasterio, boto3; from google.cloud import storage; print('python deps import OK — flopy', flopy.__version__)"
 
 # venv on PATH so `python3`/`pip` resolve to the venv for all later layers
 # and at run time.
