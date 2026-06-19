@@ -119,6 +119,8 @@ import {
   loadPersistedModelId,
 } from "./lib/modelRegistry";
 import { IconChevronRight, IconSandbox } from "./components/icons";
+import { WakeOverlay, WakePhase } from "./components/WakeOverlay";
+import { wakeConfigured } from "./lib/wake";
 import { AgentMessage } from "./components/AgentMessage";
 import { UserBubble } from "./components/UserBubble";
 import { ScrollToBottom } from "./components/ScrollToBottom";
@@ -328,6 +330,40 @@ const LS_CHAT_WIDTH = "grace2.chatWidthPx";
 export function clampChatWidth(px: number): number {
   if (!Number.isFinite(px)) return CHAT_WIDTH_DEFAULT_PX;
   return Math.max(CHAT_WIDTH_MIN_PX, Math.min(CHAT_WIDTH_MAX_PX, Math.round(px)));
+}
+
+// sleep/wake STAGE 2 (NATE 2026-06-18) — the COMPOSER-ONLY gate phase. ONE base
+// "Connecting..." -> branch to RESUME the chat composer OR the WAKE UI. Only the
+// text-entry composer is gated; the scrollback + map stay live with the box
+// asleep. Exported (with the pure deriver below) so it is unit-testable in the
+// established pure-helper pattern — the full Chat component can't mount in
+// happy-dom (it opens a WebSocket).
+export type ComposerPhase = "chat" | "connecting" | "wake";
+
+/**
+ * Derive the composer phase from the Chat socket status + the asleep signal.
+ * Pure — no React, no I/O.
+ *
+ *   - "chat"       : status === "connected" -> render the live composer (being
+ *     in the chat phase IMPLIES connected; the status dot is demoted to cosmetic).
+ *   - "wake"       : NOT connected AND the box is classified asleep
+ *     (`agentAsleep`, set ONLY by App's report-only GET probe) AND we can wake it
+ *     (`canWake` = a tap handler + a configured wake endpoint) -> tap-to-wake UI.
+ *   - "connecting" : NOT connected and not (yet) classified asleep -> the base
+ *     "Connecting..." surface. NEVER auto-wakes.
+ *
+ * @param status     the Chat GraceWs connection status.
+ * @param agentAsleep App's classified asleep signal (stopped/stopping).
+ * @param canWake    whether a wake is even possible (tap handler + endpoint).
+ */
+export function deriveComposerPhase(
+  status: ConnectionStatus,
+  agentAsleep: boolean,
+  canWake: boolean,
+): ComposerPhase {
+  if (status === "connected") return "chat";
+  if (agentAsleep && canWake) return "wake";
+  return "connecting";
 }
 
 /** Read the persisted desktop chat width (px). Defaults to the historical
@@ -2691,6 +2727,23 @@ export interface ChatProps {
    * resize handle or nudges it with the keyboard, so App can mirror it.
    */
   onWidthChange?: (widthPx: number) => void;
+  /**
+   * sleep/wake STAGE 2 (NATE 2026-06-18) — whether the agent box is ASLEEP, as
+   * classified by App (the App socket + a report-only wakeState GET). App is the
+   * single source of truth; Chat consumes the boolean to branch its
+   * composer-only state machine: Connecting -> (Chat | Wake). When true AND the
+   * composer isn't connected, the composer slot shows the tap-to-wake UI
+   * (scrollback + map stay live). Default false (dev/LAN, or box up). NEVER
+   * causes an auto-wake — only the user's tap (onWakeTap) POSTs wake.
+   */
+  agentAsleep?: boolean;
+  /**
+   * sleep/wake STAGE 2 — fired when the user TAPS the composer's "Wake up agent"
+   * rectangle. App wires this to its shared AgentWaker (resetDebounce + POST
+   * wake). This is the ONLY path that wakes the box. Optional: when omitted (or
+   * agentAsleep false) the composer never shows the Wake UI.
+   */
+  onWakeTap?: () => void;
 }
 
 // --- Connection status display ------------------------------------------- //
@@ -2719,6 +2772,8 @@ export function Chat({
   authEpoch = 0,
   width,
   onWidthChange,
+  agentAsleep = false,
+  onWakeTap,
 }: ChatProps): JSX.Element {
   // job-0278 — mobile bottom-sheet expansion. Collapsed (composer only) by
   // default; presentation-only state, lives and dies with the Chat mount.
@@ -3610,7 +3665,56 @@ export function Chat({
   // session-state.current_pipeline). Returns to idle on terminal /
   // cancelled pipeline-state per the existing pipelineReducer.
   const inputState: ChatInputState = showCancel ? "in-flight" : "idle";
-  const inputDisabled = status !== "connected";
+
+  // sleep/wake STAGE 2 (NATE 2026-06-18) — COMPOSER-ONLY state machine. ONE base
+  // "Connecting..." -> branch to RESUME the chat composer (box reachable) OR the
+  // WAKE UI (box asleep; tap to wake). This gates ONLY the text-entry composer;
+  // the scrollback (history / tool cards / insights, above) and the whole map
+  // (App) stay LIVE with the box asleep. "Being in the chat phase implies
+  // connected" — so the plain connection-status dot is demoted to cosmetic chrome
+  // and is NOT the composer gate (this machine owns that).
+  //
+  //   - "chat"       : Chat's socket is `connected` -> render the live composer.
+  //   - "wake"       : NOT connected AND App classified the box asleep
+  //     (agentAsleep, only set via the report-only GET probe) AND a tap handler +
+  //     wake endpoint exist -> render the tap-to-wake UI in the slot.
+  //   - "connecting" : NOT connected and not (yet) classified asleep -> show the
+  //     base "Connecting..." surface (we may still be probing, or the box is
+  //     genuinely coming up). NEVER auto-waking here.
+  //
+  // While in "wake"/"connecting" the composer is unusable; any user intent
+  // tapped before the gate is covered by ws.ts's outbound queue (sendOrQueue ->
+  // flush on open), so NO prompt/command is sent while not in "chat".
+  // `canWake` = a tap handler exists AND a wake endpoint is configured (dev/LAN
+  // has neither, so the composer never shows a dead Wake button there).
+  const canWake = !!onWakeTap && wakeConfigured();
+  const composerPhase: ComposerPhase = deriveComposerPhase(
+    status,
+    agentAsleep,
+    canWake,
+  );
+  // sleep/wake STAGE 2 — once the user taps wake, pin the WakeOverlay to "waking"
+  // (shimmer) until the socket re-opens (status -> "connected" flips the phase to
+  // "chat"; this local flag is reset when that happens via the effect below).
+  const [composerWaking, setComposerWaking] = useState<boolean>(false);
+  useEffect(() => {
+    // A healthy connection ends the waking animation; leaving "chat" (a fresh
+    // drop) resets it so a later tap re-arms cleanly.
+    if (status === "connected" && composerWaking) setComposerWaking(false);
+  }, [status, composerWaking]);
+  const handleComposerWakeTap = useCallback(() => {
+    if (!onWakeTap) return;
+    setComposerWaking(true);
+    onWakeTap();
+  }, [onWakeTap]);
+  // Derive the WakeOverlay phase for the composer slot: "waking" once tapped,
+  // else "asleep" while in the wake phase. (The overlay renders nothing when the
+  // composer is "chat"/"connecting".)
+  const composerWakePhase: WakePhase = composerWaking ? "waking" : "asleep";
+  // The composer is disabled whenever we're NOT in the live chat phase. (The
+  // wake/connecting surfaces replace it visually; this also belt-and-suspenders
+  // disables the textarea underneath if both ever co-render.)
+  const inputDisabled = composerPhase !== "chat";
 
   // job-0278 — desktop panel vs mobile bottom sheet. Every mobile divergence
   // is behind the `mobile` prop; the desktop style lives in the exported
@@ -4003,29 +4107,77 @@ export function Chat({
               }
         }
       >
-        {/* job-0266 — keyed by the visible stream so navigating between
-            Cases / root remounts the composer with an empty draft ("clean
-            empty composer" per the per-Case product shape). */}
-        <ChatInput
-          key={visibleKey}
-          state={inputState}
-          onSubmit={submit}
-          onCancel={cancel}
-          disabled={inputDisabled}
-          onHeightChange={handleInputHeightChange}
-          /* job-0278 — 16px on mobile prevents the iOS focus auto-zoom;
-             desktop keeps the historical 14px default. */
-          fontSizePx={mobile ? 16 : 14}
-          /* NATE 2026-06-17 chat-chrome rework (item 1) — controlled model:
-             the header's ModelSelectorButton owns selection. Passing modelId
-             hides ChatInput's in-composer model trigger and mirrors the model
-             for the send-button tint + the model_id carried on submit.
-             onModelChange keeps Chat's copy in sync for any uncontrolled-path
-             change (the composer trigger is hidden in controlled mode, so this
-             is belt-and-suspenders). */
-          modelId={selectedModelId}
-          onModelChange={setSelectedModelId}
-        />
+        {/* sleep/wake STAGE 2 (NATE 2026-06-18) — COMPOSER-ONLY gate machine.
+            The relative wrapper scopes the Wake/Connecting surfaces to JUST the
+            composer slot (position:absolute inset:0), so the scrollback above
+            and the map stay live + interactive while the box is asleep. */}
+        <div
+          data-testid="composer-gate"
+          data-composer-phase={composerPhase}
+          style={{ position: "relative" }}
+        >
+          {/* job-0266 — keyed by the visible stream so navigating between
+              Cases / root remounts the composer with an empty draft ("clean
+              empty composer" per the per-Case product shape). */}
+          <ChatInput
+            key={visibleKey}
+            state={inputState}
+            onSubmit={submit}
+            onCancel={cancel}
+            disabled={inputDisabled}
+            onHeightChange={handleInputHeightChange}
+            /* job-0278 — 16px on mobile prevents the iOS focus auto-zoom;
+               desktop keeps the historical 14px default. */
+            fontSizePx={mobile ? 16 : 14}
+            /* NATE 2026-06-17 chat-chrome rework (item 1) — controlled model:
+               the header's ModelSelectorButton owns selection. Passing modelId
+               hides ChatInput's in-composer model trigger and mirrors the model
+               for the send-button tint + the model_id carried on submit.
+               onModelChange keeps Chat's copy in sync for any uncontrolled-path
+               change (the composer trigger is hidden in controlled mode, so this
+               is belt-and-suspenders). */
+            modelId={selectedModelId}
+            onModelChange={setSelectedModelId}
+          />
+          {/* WAKE phase: tap-to-wake UI over the composer ONLY. onWake fires the
+              POST wake (tap-only; never auto-wake). Once tapped we pin "waking"
+              (shimmer) until the socket reconnects -> composerPhase flips to
+              "chat" -> phase "hidden" -> the overlay FADES OUT (it stays mounted
+              through the fade, then unmounts itself; it renders nothing while
+              hidden, so it never blocks the live composer). */}
+          <WakeOverlay
+            phase={composerPhase === "wake" ? composerWakePhase : "hidden"}
+            onWake={handleComposerWakeTap}
+          />
+          {/* CONNECTING phase: a quiet base surface over the composer while we
+              don't yet know reachable-vs-asleep. No motion beyond the text; the
+              scrollback + map remain fully live behind it. */}
+          {composerPhase === "connecting" && (
+            <div
+              data-testid="composer-connecting"
+              role="status"
+              aria-live="polite"
+              style={{
+                position: "absolute",
+                inset: 0,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                borderRadius: 12,
+                background: "rgba(14,15,20,0.66)",
+                color: "#c9d2e3",
+                fontSize: 13,
+                fontWeight: 600,
+                letterSpacing: 0.2,
+                fontFamily:
+                  "-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif",
+                pointerEvents: "auto",
+              }}
+            >
+              Connecting...
+            </div>
+          )}
+        </div>
       </div>
 
       {/* sprint-13 job-0231: ChartGallery full-viewport overlay.

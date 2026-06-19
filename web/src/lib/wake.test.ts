@@ -166,3 +166,105 @@ describe("AgentWaker.wake", () => {
     expect(fetchFn).toHaveBeenCalledTimes(2);
   });
 });
+
+// sleep/wake STAGE 2 — REPORT-ONLY state probe (GET, never wakes). Verifies the
+// GET method, the {state} body parse + normalisation, and that it NEVER throws.
+describe("AgentWaker.reportState / wakeState (report-only GET)", () => {
+  it("returns 'unknown' and issues no fetch when wake is unconfigured", async () => {
+    const { AgentWaker } = await import("./wake");
+    const fetchFn = vi.fn();
+    const waker = new AgentWaker({ fetchFn });
+    expect(await waker.reportState()).toBe("unknown");
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
+  it("issues a GET (not POST) and never starts the box (asleep detection)", async () => {
+    vi.resetModules();
+    vi.stubEnv("VITE_GRACE2_WAKE_URL", "https://explicit.example/wake");
+    const { AgentWaker } = await import("./wake");
+    const fetchFn = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ state: "stopped", started: false }),
+    }));
+    const waker = new AgentWaker({ fetchFn });
+    expect(await waker.reportState()).toBe("stopped");
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(fetchFn).toHaveBeenCalledWith(
+      "https://explicit.example/wake",
+      expect.objectContaining({ method: "GET" }),
+    );
+    // The probe must NEVER POST (POST is the only thing that wakes the box).
+    expect(fetchFn).not.toHaveBeenCalledWith(
+      "https://explicit.example/wake",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("normalises the EC2 state vocabulary (stopping/running/pending/shutting-down)", async () => {
+    vi.resetModules();
+    vi.stubEnv("VITE_GRACE2_WAKE_URL", "https://explicit.example/wake");
+    const { AgentWaker } = await import("./wake");
+    const make = (state: string) =>
+      new AgentWaker({
+        fetchFn: async () => ({
+          ok: true,
+          status: 200,
+          json: async () => ({ state }),
+        }),
+      });
+    expect(await make("stopping").reportState()).toBe("stopping");
+    expect(await make("running").reportState()).toBe("running");
+    expect(await make("pending").reportState()).toBe("pending");
+    // shutting-down/terminated collapse to "stopping" (asleep -> show Wake UI).
+    expect(await make("shutting-down").reportState()).toBe("stopping");
+    expect(await make("terminated").reportState()).toBe("stopping");
+    // anything unrecognised -> "unknown" (never spuriously "stopped").
+    expect(await make("weird-state").reportState()).toBe("unknown");
+  });
+
+  it("returns 'unknown' (never throws) on non-2xx, missing json, or a throw", async () => {
+    vi.resetModules();
+    vi.stubEnv("VITE_GRACE2_WAKE_URL", "https://explicit.example/wake");
+    const { AgentWaker } = await import("./wake");
+    // non-2xx
+    expect(
+      await new AgentWaker({
+        fetchFn: async () => ({ ok: false, status: 500, json: async () => ({}) }),
+      }).reportState(),
+    ).toBe("unknown");
+    // no json() on the response shape (e.g. the POST-only FetchLike mock)
+    expect(
+      await new AgentWaker({
+        fetchFn: async () => ({ ok: true, status: 200 }),
+      }).reportState(),
+    ).toBe("unknown");
+    // fetch throws
+    expect(
+      await new AgentWaker({
+        fetchFn: async () => {
+          throw new Error("network down");
+        },
+      }).reportState(),
+    ).toBe("unknown");
+  });
+
+  it("module-level wakeState() delegates to the shared default waker", async () => {
+    vi.resetModules();
+    vi.stubEnv("VITE_GRACE2_WAKE_URL", "https://explicit.example/wake");
+    const { wakeState } = await import("./wake");
+    // The shared default waker uses the DOM fetch; stub it to a stopped box.
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({ state: "stopped" }),
+      } as unknown as Response);
+    expect(await wakeState()).toBe("stopped");
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "https://explicit.example/wake",
+      expect.objectContaining({ method: "GET" }),
+    );
+  });
+});

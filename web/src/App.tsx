@@ -34,7 +34,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MapView, type MapCommandSubscribeFunc, type MapTheme } from "./Map";
-import { Chat, readChatWidth, clampChatWidth } from "./Chat";
+import { Chat, readChatWidth } from "./Chat";
 import { LayerPanel, createLayerPanelBus, readLayersWidth } from "./LayerPanel";
 import {
   AuthGate,
@@ -82,8 +82,8 @@ import {
   MobileDrawerButton,
 } from "./components/MobileDrawer";
 import { IconMenu, IconSettings } from "./components/icons";
-import { WakeOverlay, WakePhase } from "./components/WakeOverlay";
-import { AgentWaker, wakeConfigured } from "./lib/wake";
+import { AgentWaker, wakeConfigured, WakeState } from "./lib/wake";
+import { fetchCaseView, caseViewConfigured } from "./lib/case_view";
 import {
   CaseListEnvelopePayload,
   CaseOpenEnvelopePayload,
@@ -99,13 +99,14 @@ import {
   SessionStatePayload,
 } from "./contracts";
 
-// Auto-stop/wake (NATE 2026-06-17) — number of CONSECUTIVE failed reconnect
-// schedules before the "Wake up agent" overlay appears. The first failed
-// attempt is usually a transient WS blip while the box is still UP (CloudFront
-// idle cull, brief network drop) — showing the overlay then would be noise. By
-// the SECOND consecutive failure the box is plausibly stopped, so we surface
-// the overlay. ws.ts has already been firing the (debounced) wake POST from the
-// first schedule, so by the time the overlay shows, StartInstances is in flight.
+// sleep/wake STAGE 2 (NATE 2026-06-18) — number of CONSECUTIVE failed reconnect
+// schedules before we run the REPORT-ONLY wakeState() GET probe (which classifies
+// asleep and may surface the composer Wake UI). The first failed attempt is
+// usually a transient WS blip while the box is still UP (CloudFront idle cull,
+// brief network drop) — probing then would be noise. By the SECOND consecutive
+// failure the box is plausibly stopped, so we GET-probe its state. NEVER
+// AUTO-WAKE: the probe is read-only; only the user's explicit composer tap POSTs
+// wake (StartInstances).
 const WAKE_OVERLAY_THRESHOLD = 2;
 
 // localStorage keys for panel collapse state (job-0065).
@@ -381,25 +382,37 @@ export function App(): JSX.Element {
   // authoritative (live layer add AND delete apply via replace-not-reconcile).
   const wsStatusRef = useRef<ConnectionStatus>("connecting");
 
-  // Auto-stop/wake (NATE 2026-06-17) — the always-on agent box can be STOPPED
-  // by the idle-check Lambda; a stopped box answers nothing so the WS can't
-  // connect. These drive the "Wake up agent" overlay:
-  //   - `wsStatus` mirrors the live connection status as STATE (the ref above
-  //     is a stable closure read; the overlay needs a re-render on flip).
-  //   - `wakeAttempts` counts consecutive failed reconnect schedules since the
-  //     last successful open (fed by ws.ts `onWakeNeeded`). The overlay shows
-  //     only past WAKE_OVERLAY_THRESHOLD so a single transient blip (one failed
-  //     attempt — e.g. a WS hiccup while the box is still up) never flashes it.
-  //   - `wakerRef` is the SHARED AgentWaker so the overlay's explicit-tap path
-  //     (resetDebounce → immediate StartInstances POST) and ws.ts's auto-wake
-  //     loop coalesce against the same debounce window.
+  // sleep/wake STAGE 2 (NATE 2026-06-18) — the always-on agent box can be
+  // STOPPED by the idle-check Lambda; a stopped box answers nothing so the WS
+  // can't connect. STAGE 2 gates ONLY the chat COMPOSER behind a Connecting ->
+  // (Chat | Wake) state machine (Chat.tsx owns the slot); the scrollback + the
+  // whole map stay LIVE with the box asleep. App.tsx is the SINGLE SOURCE OF
+  // TRUTH for the asleep signal (the App socket + a report-only wakeState GET)
+  // and threads it down to Chat:
+  //   - `wsStatus` mirrors the App socket's live status as STATE (the ref above
+  //     is a stable closure read; the asleep derivation needs a re-render).
+  //   - the consecutive-failure count arrives directly as the `attempt` arg of
+  //     ws.ts `onWakeNeeded`. We only RUN the report-only wakeState() probe past
+  //     WAKE_OVERLAY_THRESHOLD so a single transient blip (one failed attempt)
+  //     never trips the Wake UI.
+  //   - `agentAsleep` is the classified result of that GET probe (true when the
+  //     box reports stopped/stopping). It NEVER triggers a wake — only the
+  //     user's explicit composer tap POSTs wake. Cleared on a healthy reconnect.
+  //   - `wakerRef` is the SHARED AgentWaker so the composer's explicit-tap path
+  //     (resetDebounce -> StartInstances POST) and the report-only GET probe
+  //     coalesce against the same instance.
   const [wsStatus, setWsStatus] = useState<ConnectionStatus>("connecting");
-  const [wakeAttempts, setWakeAttempts] = useState<number>(0);
-  // True while the user has tapped the overlay (or ws.ts is auto-waking) — keeps
-  // the overlay in the "waking" (shimmer) phase until the socket re-opens.
-  const [wakeRequested, setWakeRequested] = useState<boolean>(false);
+  // sleep/wake STAGE 2 — classified asleep signal from the report-only GET
+  // probe (true = box reports stopped/stopping). Drives Chat's composer Wake UI.
+  // NEVER set from a reconnect/case-open alone (never auto-wake); only the GET
+  // probe sets it. A successful WS reconnect clears it (the box is up).
+  const [agentAsleep, setAgentAsleep] = useState<boolean>(false);
   const wakerRef = useRef<AgentWaker | null>(null);
   if (wakerRef.current === null) wakerRef.current = new AgentWaker();
+  // sleep/wake STAGE 2 — guard so the report-only wakeState() probe runs at most
+  // once per "unreachable" episode (not on every reconnect tick). Reset on a
+  // healthy reconnect.
+  const wakeProbeInFlightRef = useRef<boolean>(false);
 
   // Settings popup visibility (job-0143). job-0321 F29 — the standalone
   // Secrets popup is retired; API-key management now lives INSIDE Settings
@@ -611,28 +624,22 @@ export function App(): JSX.Element {
     clearActive();
   }, [clearActive]);
 
-  // Auto-stop/wake (NATE 2026-06-17) — derive the WakeOverlay phase from the
-  // live WS status + the consecutive-failure count + whether wake is even
-  // configured. The overlay NEVER shows in dev/LAN (no wake endpoint → the box
-  // can't be auto-stopped). It shows only when the socket is NOT connected and
-  // we've crossed the failure threshold (so a single transient blip can't flash
-  // it). Once the user taps wake (or ws.ts auto-wakes past the threshold) we
-  // pin "waking" until the socket re-opens (onStatus clears wakeRequested on
-  // "connected"), which flips the phase back to "hidden" → fade-out.
-  const wakePhase: WakePhase = (() => {
-    if (!wakeConfigured()) return "hidden";
-    if (wsStatus === "connected") return "hidden";
-    if (wakeRequested) return "waking";
-    if (wakeAttempts >= WAKE_OVERLAY_THRESHOLD) return "asleep";
-    return "hidden";
-  })();
+  // sleep/wake STAGE 2 — whether the composer should surface the Wake UI. App
+  // owns this single source of truth (the App socket + the report-only probe)
+  // and threads it down to Chat, which renders the Wake UI INSIDE the composer
+  // slot only (scrollback + map stay live). Gated on wakeConfigured() so dev/LAN
+  // (no wake endpoint -> the box is never auto-stopped) never shows it, and on
+  // the App socket NOT being connected (a healthy App socket implies the box is
+  // up). The actual asleep classification is `agentAsleep`, set by the GET probe.
+  const composerWakeReady =
+    wakeConfigured() && wsStatus !== "connected" && agentAsleep;
 
-  // Explicit user tap on the "Wake up agent" rectangle: reset the shared
-  // waker's debounce so a manual press always fires StartInstances (even right
-  // after an automatic attempt), POST the wake endpoint, and pin the overlay to
-  // "waking" until the socket re-opens. Fire-and-forget — never throws.
+  // Explicit user tap on the composer's "Wake up agent" rectangle: reset the
+  // shared waker's debounce so a manual press always fires StartInstances (even
+  // right after a prior attempt) and POST the wake endpoint. This is the ONLY
+  // path that POSTs wake (never auto-wake). Fire-and-forget — never throws. The
+  // App socket's onStatus "connected" clears agentAsleep when the box is back.
   const handleWakeTap = useCallback(() => {
-    setWakeRequested(true);
     const waker = wakerRef.current;
     if (!waker) return;
     waker.resetDebounce();
@@ -653,17 +660,46 @@ export function App(): JSX.Element {
         wsStatusRef.current = s;
         setWsStatus(s);
         if (s === "connected") {
-          setWakeAttempts(0);
-          setWakeRequested(false);
+          // Healthy (re)connect — the box is up. Clear the asleep state (the
+          // composer flips Connecting/Wake -> Chat) and reset the probe guard so
+          // a future unreachable episode probes again.
+          setAgentAsleep(false);
+          wakeProbeInFlightRef.current = false;
         }
       },
-      // Auto-stop/wake — ws.ts schedules a reconnect that won't open (the box
-      // may be stopped). Track the consecutive-failure count so the overlay
-      // shows only past the threshold. ws.ts already fired the (debounced) wake
-      // POST itself, so once we cross the threshold we reflect "waking".
+      // sleep/wake STAGE 2 — ws.ts schedules a reconnect that won't open (the box
+      // may be stopped). NEVER AUTO-WAKE: ws.ts no longer POSTs wake here. Track
+      // the consecutive-failure count and, once we cross the threshold, run a
+      // REPORT-ONLY GET probe (wakeState — never starts the box) to classify
+      // asleep. If the box reports stopped/stopping we flip `agentAsleep` so the
+      // composer surfaces the tap-to-wake UI; otherwise we keep retrying the WS
+      // (the composer stays "Connecting"). The wakeProbeInFlightRef guard runs
+      // the probe at most once per unreachable episode (not on every tick).
       onWakeNeeded: (attempt) => {
-        setWakeAttempts(attempt);
-        if (attempt >= WAKE_OVERLAY_THRESHOLD) setWakeRequested(true);
+        if (attempt < WAKE_OVERLAY_THRESHOLD) return;
+        if (wakeProbeInFlightRef.current) return;
+        const ws = wsRef.current;
+        if (!ws) return;
+        wakeProbeInFlightRef.current = true;
+        void ws
+          .reportWakeState()
+          .then((state: WakeState) => {
+            // Only the App socket's onStatus "connected" clears agentAsleep; a
+            // probe that comes back "running"/"pending" leaves it as-is (keep
+            // retrying WS). stopped/stopping -> asleep (show Wake UI).
+            if (state === "stopped" || state === "stopping") {
+              setAgentAsleep(true);
+            }
+          })
+          .catch(() => {
+            /* report-only probe is best-effort; stay in Connecting */
+          })
+          .finally(() => {
+            // Allow a re-probe on the NEXT threshold crossing (e.g. a probe that
+            // came back "pending" and the box later actually stopped). onStatus
+            // "connected" also resets this.
+            wakeProbeInFlightRef.current = false;
+          });
       },
       onAgentChunk: () => { /* Chat owns rendering */ },
       onPipelineState: () => { /* Chat owns rendering */ },
@@ -892,6 +928,67 @@ export function App(): JSX.Element {
       ));
     }
   }, [activeSession, bus]);
+
+  // sleep/wake STAGE 2 (NATE 2026-06-18) — COLD-LOAD a Case when the agent box
+  // is asleep. "Pen = agent, paper = case": the case must PAINT even with the
+  // agent (the pen) asleep. When the user opens a Case while the App socket is
+  // NOT connected, the WS `select` only QUEUES (ws.ts sendOrQueue) — it never
+  // reaches the agent, so NO `case-open` envelope comes back and the Case never
+  // paints. This effect fills that gap: it fetches the agent's persisted S3
+  // view-state snapshot via the signer (GET VITE_GRACE2_CASE_VIEW_URL) and feeds
+  // the resulting CaseOpenEnvelopePayload through the SAME useCases_onCaseOpen
+  // path the live WS uses, so rasters AND inline vectors paint with ZERO new
+  // render code.
+  //
+  // Triggers when: a Case is active (activeCaseId) AND cold-load is configured
+  //   AND we haven't already painted a live session for this Case AND the App
+  //   socket is NOT connected (connecting / reconnecting / disconnected). The
+  //   queued WS `select` stays in flight in parallel; if the box later wakes,
+  //   the LIVE case-open re-runs onCaseOpen and supersedes the cold snapshot
+  //   (replace_layers semantics + idempotent rail upsert handle the swap).
+  //
+  // 404 (no snapshot for this Case — never materialised) -> fetchCaseView
+  //   returns null -> we leave the Case shell + Wake UI (NOT an error).
+  //
+  // The ref guards against a re-fetch storm while reconnecting: at most one
+  //   cold-load per (caseId) while disconnected; a healthy reconnect or a Case
+  //   switch resets it so a later disconnect can cold-load again.
+  const coldLoadedCaseRef = useRef<string | null>(null);
+  useEffect(() => {
+    // Reset the cold-load guard whenever the App socket goes healthy: a live
+    // case-open is now authoritative and a future disconnect should be allowed
+    // to cold-load again.
+    if (wsStatus === "connected") {
+      coldLoadedCaseRef.current = null;
+      return;
+    }
+    if (!caseViewConfigured()) return;
+    if (activeCaseId === null) return;
+    // Already have the live session for this Case (it round-tripped over the WS
+    // before the drop) — nothing to cold-load.
+    if (activeSession && activeSession.case.case_id === activeCaseId) return;
+    // Already cold-loaded this Case during the current disconnected episode.
+    if (coldLoadedCaseRef.current === activeCaseId) return;
+
+    coldLoadedCaseRef.current = activeCaseId;
+    let cancelled = false;
+    void fetchCaseView(activeCaseId)
+      .then((payload) => {
+        if (cancelled || payload === null) return;
+        // Feed the cold snapshot through the SAME path the live WS case-open
+        // uses. The rehydration effect above ([activeSession, bus]) then paints
+        // it. If a live case-open arrives later it supersedes idempotently.
+        useCases_onCaseOpen(payload);
+      })
+      .catch(() => {
+        // fetchCaseView never throws, but guard belt-and-suspenders: a failed
+        // cold-load just leaves the Case shell + Wake UI.
+        if (!cancelled) coldLoadedCaseRef.current = null;
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeCaseId, wsStatus, activeSession, useCases_onCaseOpen]);
 
   // Lift layers from session-state.
   useEffect(() => {
@@ -1183,56 +1280,24 @@ export function App(): JSX.Element {
           authEpoch={authEpoch}
           width={chatWidth}
           onWidthChange={setChatWidth}
+          /* sleep/wake STAGE 2 — App owns the asleep classification (App socket
+             + report-only probe) and threads it down so Chat's composer machine
+             can branch Connecting -> (Chat | Wake). `agentAsleep` =
+             composerWakeReady; `onWakeTap` is the ONLY POST-wake path (tap
+             only). Chat gates ONLY the composer; its scrollback stays live. */
+          agentAsleep={composerWakeReady}
+          onWakeTap={handleWakeTap}
         />
       </div>
 
-      {/* Auto-stop/wake (NATE 2026-06-17) — the "Wake up agent" overlay sits
-          OVER the chat panel when the always-on agent box appears stopped. The
-          chat-mount above uses display:contents (no positioning context), so
-          this wrapper is an absolutely-positioned sibling that MIRRORS the chat
-          panel geometry: desktop = the right column (right:16 / top:16 /
-          bottom:0 / clamped width); mobile = the bottom-sheet band. It renders
-          only when there's a panel to cover (not while the desktop panel is
-          collapsed) AND the wake phase isn't "hidden" (WakeOverlay itself fades
-          to nothing on "hidden"). z-index 55 clears the chat panel (32) + its
-          inline gate cards (50). */}
-      {(isMobile || !rightCollapsed) && (
-        <div
-          data-testid="grace2-wake-overlay-mount"
-          style={
-            isMobile
-              ? {
-                  position: "absolute",
-                  left: 0,
-                  right: 0,
-                  bottom: 0,
-                  // Cover the bottom ~52% of the viewport — where the chat
-                  // bottom sheet lives — so the overlay reads as "over the
-                  // chat" without blanketing the whole map.
-                  height: "52vh",
-                  zIndex: 55,
-                  // The wrapper itself is inert until the overlay shows; the
-                  // overlay's own pointerEvents handle hit-testing.
-                  pointerEvents: wakePhase === "hidden" ? "none" : "auto",
-                  borderRadius: "12px 12px 0 0",
-                  overflow: "hidden",
-                }
-              : {
-                  position: "absolute",
-                  right: 16,
-                  top: 16,
-                  bottom: 0,
-                  width: `min(${clampChatWidth(chatWidth)}px, 92vw)`,
-                  zIndex: 55,
-                  pointerEvents: wakePhase === "hidden" ? "none" : "auto",
-                  borderRadius: 12,
-                  overflow: "hidden",
-                }
-          }
-        >
-          <WakeOverlay phase={wakePhase} onWake={handleWakeTap} />
-        </div>
-      )}
+      {/* sleep/wake STAGE 2 (NATE 2026-06-18) — the OLD full-chat-panel
+          WakeOverlay mount is REMOVED. It blanketed the entire chat panel
+          (scrollback included) and was driven by the App socket. STAGE 2 keeps
+          the chat scrollback + tool cards + insights AND the whole map LIVE with
+          the box asleep, gating ONLY the text-entry composer. The Wake UI now
+          lives INSIDE Chat's composer slot (Chat.tsx renders WakeOverlay scoped
+          to that slot), driven by the asleep signal (`composerWakeReady`) +
+          tap handler (`handleWakeTap`) threaded down via the Chat props below. */}
 
       {/* Layers hamburger — top-LEFT. (Desktop; mobile uses the drawer ☰.) */}
       {!isMobile && showLayersHamburger && (

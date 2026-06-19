@@ -40,7 +40,8 @@ def _body(resp):
     return json.loads(resp["body"])
 
 
-def test_wake_starts_stopped_instance(env):
+def test_post_starts_stopped_instance(env):
+    """POST on a stopped box is the user-tap wake -> StartInstances."""
     module, ec2 = _load(env)
     _set_state(ec2, "stopped")
     resp = module.handler({"requestContext": {"http": {"method": "POST"}}}, None)
@@ -54,10 +55,47 @@ def test_wake_starts_stopped_instance(env):
     assert resp["headers"]["Cache-Control"] == "no-store"
 
 
-def test_wake_noop_when_running(env):
+def test_get_stopped_does_not_start(env):
+    """Asleep-detection contract: GET on a STOPPED box REPORTS, never wakes."""
+    module, ec2 = _load(env)
+    _set_state(ec2, "stopped")
+    resp = module.handler({"requestContext": {"http": {"method": "GET"}}}, None)
+    assert resp["statusCode"] == 200
+    body = _body(resp)
+    assert body["state"] == "stopped"
+    assert body["started"] is False
+    # The probe must have NO side effect -- this is the whole point of the split.
+    ec2.start_instances.assert_not_called()
+
+
+def test_default_method_stopped_does_not_start(env):
+    """A blind probe with no method must NOT wake a stopped box (report-only)."""
+    module, ec2 = _load(env)
+    _set_state(ec2, "stopped")
+    resp = module.handler({}, None)
+    assert resp["statusCode"] == 200
+    body = _body(resp)
+    assert body["state"] == "stopped"
+    assert body["started"] is False
+    ec2.start_instances.assert_not_called()
+
+
+def test_get_noop_when_running(env):
     module, ec2 = _load(env)
     _set_state(ec2, "running")
     resp = module.handler({"requestContext": {"http": {"method": "GET"}}}, None)
+    assert resp["statusCode"] == 200
+    body = _body(resp)
+    assert body["state"] == "running"
+    assert body["started"] is False
+    ec2.start_instances.assert_not_called()
+
+
+def test_post_noop_when_running(env):
+    """POST on a running box no-ops (the WS connects on its own)."""
+    module, ec2 = _load(env)
+    _set_state(ec2, "running")
+    resp = module.handler({"requestContext": {"http": {"method": "POST"}}}, None)
     assert resp["statusCode"] == 200
     body = _body(resp)
     assert body["state"] == "running"

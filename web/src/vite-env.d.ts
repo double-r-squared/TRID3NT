@@ -14,7 +14,19 @@ interface ImportMetaEnv {
   // the WebSocket nor any HTTP endpoint; the web POSTs here to ask the wake
   // Lambda to start it. Precedence: VITE_GRACE2_WAKE_URL > VITE_GRACE2_PUBLIC_BASE(/wake)
   // > null (wake disabled — dev/LAN, where the box is never auto-stopped).
+  // GET this same endpoint to REPORT the box state WITHOUT waking it (asleep
+  // detection); POST WAKES (StartInstances). See lib/wake.ts wakeState().
   readonly VITE_GRACE2_WAKE_URL?: string;
+  // sleep/wake STAGE 2 (NATE 2026-06-18): the API-Gateway HTTP endpoint that
+  // fronts the "case-view-url" signer Lambda (infra/aws-autostop view_sign).
+  // GET <url>?case_id=<id> -> 200 {url, expires_in, mode} where `url` is a
+  // pre-signed S3 GET to the case-view JSON snapshot (a CaseOpenEnvelopePayload
+  // byte-identical to the WS case-open). A MISSING snapshot -> 404 {error}. The
+  // web fetches this when a Case is opened while the agent box is asleep, so the
+  // Case paints COLD (rasters + inline vectors) with only the composer waiting.
+  // Precedence: VITE_GRACE2_CASE_VIEW_URL > VITE_GRACE2_PUBLIC_BASE(/case-view-url)
+  // > null (cold-load disabled — dev/LAN). See lib/case_view.ts.
+  readonly VITE_GRACE2_CASE_VIEW_URL?: string;
 }
 
 interface ImportMeta {

@@ -79,11 +79,61 @@ export type WakeResult =
   | { status: "disabled" } // no wake endpoint configured (dev/LAN)
   | { status: "error"; error: unknown }; // POST failed (network / non-2xx)
 
-/** Minimal fetch signature so tests can inject without DOM `fetch`. */
+/**
+ * Reported lifecycle state of the agent EC2 box (sleep/wake STAGE 2 asleep
+ * detection). Mirrors the EC2 instance-state vocabulary the wake Lambda returns
+ * on a GET (report-only) probe, collapsed to the values the composer machine
+ * branches on:
+ *   - "stopped" / "stopping" — the box is (or is becoming) ASLEEP → show Wake UI.
+ *   - "running" / "pending"  — the box is up (or coming up) → keep retrying WS
+ *     (Connecting). "pending" can follow a POST wake (StartInstances issued).
+ *   - "unknown"              — wake not configured (dev/LAN), the probe failed,
+ *     or the body was unparseable. The caller treats this as "don't show Wake
+ *     UI from a probe" and falls back to the plain reconnect/Connecting path.
+ *
+ * GET /wake REPORTS this WITHOUT waking; only POST /wake wakes (the handler
+ * enforces the split server-side). `wakeState()` is therefore safe to call on
+ * every WS connect-fail with no risk of starting the box.
+ */
+export type WakeState =
+  | "stopped"
+  | "stopping"
+  | "running"
+  | "pending"
+  | "unknown";
+
+/**
+ * Normalise an EC2-ish instance-state string into the closed {@link WakeState}.
+ * Unknown / absent values collapse to "unknown" (never spuriously "stopped").
+ */
+function normalizeWakeState(raw: unknown): WakeState {
+  if (typeof raw !== "string") return "unknown";
+  const s = raw.trim().toLowerCase();
+  // "shutting-down" / "terminated" are degenerate (the box is going away) — we
+  // treat them like "stopping": asleep → show Wake UI (the tap re-StartInstances
+  // path is idempotent server-side).
+  if (s === "stopped") return "stopped";
+  if (s === "stopping" || s === "shutting-down" || s === "terminated") {
+    return "stopping";
+  }
+  if (s === "running") return "running";
+  if (s === "pending") return "pending";
+  return "unknown";
+}
+
+/**
+ * Minimal fetch signature so tests can inject without DOM `fetch`.
+ *
+ * `json()` is OPTIONAL: the wake POST (`AgentWaker.wake`) reads only `ok` +
+ * `status`, so existing injected mocks that return `{ ok, status }` keep
+ * working unchanged. The asleep-detection GET (`wakeState`) additionally reads
+ * the JSON body (`{ state }`), so its fetch mock supplies `json()`. The DOM
+ * `fetch` Response satisfies both shapes structurally.
+ */
 export type FetchLike = (
   input: string,
   init?: { method?: string; headers?: Record<string, string>; body?: string; signal?: AbortSignal },
-) => Promise<{ ok: boolean; status: number }>;
+) => Promise<{ ok: boolean; status: number; json?: () => Promise<unknown> }>;
 
 /** Injectable clock for deterministic debounce tests. */
 export type NowFn = () => number;
@@ -167,6 +217,39 @@ export class AgentWaker {
   resetDebounce(): void {
     this.lastAttemptMs = Number.NEGATIVE_INFINITY;
   }
+
+  /**
+   * REPORT the agent box's lifecycle state WITHOUT waking it (sleep/wake STAGE 2
+   * asleep detection). Issues a GET to the wake endpoint — the wake Lambda's
+   * GET branch describes the instance and returns `{ state, started:false, ... }`
+   * and NEVER calls StartInstances (the POST branch wakes). So this is safe to
+   * call on every WS connect-fail.
+   *
+   * Returns:
+   *   - the normalised {@link WakeState} from the body's `state` field on a 2xx.
+   *   - "unknown" when wake is unconfigured (dev/LAN), the GET is non-2xx, the
+   *     body is missing/unparseable, or the fetch throws. NEVER throws — the
+   *     caller falls back to the plain Connecting/reconnect path on "unknown".
+   *
+   * NOT debounced (a state probe is read-only + cheap) and NOT subject to the
+   * in-flight POST guard — it shares no mutable state with `wake()`.
+   */
+  async reportState(): Promise<WakeState> {
+    const url = wakeUrl();
+    if (url === null) return "unknown";
+    try {
+      const resp = await this.fetchFn(url, {
+        method: "GET",
+        headers: { accept: "application/json" },
+      });
+      if (!resp.ok) return "unknown";
+      if (typeof resp.json !== "function") return "unknown";
+      const body = (await resp.json()) as { state?: unknown } | null;
+      return normalizeWakeState(body?.state);
+    } catch {
+      return "unknown";
+    }
+  }
 }
 
 // Shared default waker for callers (ws.ts reconnect loop) that don't manage
@@ -177,4 +260,13 @@ const defaultWaker = new AgentWaker();
 /** Convenience: wake via the shared default `AgentWaker`. */
 export function wakeAgent(): Promise<WakeResult> {
   return defaultWaker.wake();
+}
+
+/**
+ * Convenience: REPORT the box state (GET, report-only — never wakes) via the
+ * shared default `AgentWaker`. "unknown" when wake is unconfigured / the probe
+ * fails. See {@link AgentWaker.reportState}.
+ */
+export function wakeState(): Promise<WakeState> {
+  return defaultWaker.reportState();
 }

@@ -1,19 +1,24 @@
 """Wake Lambda for the GRACE-2 always-on agent EC2 box.
 
-Fronted by an API Gateway HTTP API endpoint (``POST/GET /wake``). The web client
-calls it when the WebSocket is down (wake-on-load / reconnect-retry, plus the
-explicit "Wake up agent" rectangle) to bring the auto-stopped box back.
+Fronted by an API Gateway HTTP API endpoint (``ANY /wake``). The web client
+calls it when the WebSocket is down (asleep-detection + the explicit "Wake up
+agent" rectangle) to inspect or bring the auto-stopped box back.
 
-Behaviour:
-  - If the instance is ``stopped`` -> call StartInstances, return
-    ``{"state":"starting","started":true}``.
-  - If the instance is already ``running`` -> no-op, return
-    ``{"state":"running","started":false}`` (the WS will connect on its own).
-  - Any transitional state (``pending`` / ``stopping`` / ``shutting-down``) ->
-    no StartInstances call (it would error or be wasted); return the live state
-    so the client keeps polling/retrying the WS.
-  - StartInstances is idempotent-friendly: calling it on a ``stopping`` instance
-    is avoided here; calling it on a ``stopped`` instance is the normal path.
+HTTP method drives the side effect (NATE Stage-2 contract -- detection must
+NEVER wake the box; only an explicit user tap wakes it):
+  - ``GET`` (or ``HEAD`` / any non-POST method) -> REPORT-ONLY. Describe the
+    instance and return its live state with ``started:false``. NEVER calls
+    StartInstances, even when the box is ``stopped``. This is the asleep-probe
+    the web GETs on WS connect-fail to decide whether to show the Wake UI.
+  - ``POST`` -> WAKE. If the instance is ``stopped`` -> call StartInstances and
+    return ``{"state":"starting","started":true}``. If already ``running`` ->
+    no-op ``{"state":"running","started":false}``. Any transitional state
+    (``pending`` / ``stopping`` / ``shutting-down``) -> no StartInstances call
+    (it would error or be wasted); return the live state.
+  - ``OPTIONS`` -> CORS preflight, no instance describe.
+
+StartInstances is therefore reachable ONLY from POST on a ``stopped`` box --
+the normal user-tap wake path.
 
 The endpoint is intentionally UNAUTHENTICATED and CORS-open: the wake action is
 low-risk (it can only START one specific, hard-coded instance -- never stop,
@@ -74,22 +79,24 @@ def _instance_state() -> str:
 
 
 def handler(event, context):  # noqa: ANN001, ARG001
-    """API Gateway HTTP entrypoint. Wakes the agent box if it is stopped."""
-    # Preflight: API Gateway can route OPTIONS here when the route is ANY.
+    """API Gateway HTTP entrypoint. GET reports state; POST wakes if stopped."""
+    # API Gateway HTTP API (payload format 2.0): the verb lives at
+    # event.requestContext.http.method. Default to "" (treated as report-only).
     method = (
         (event or {}).get("requestContext", {}).get("http", {}).get("method", "")
         if isinstance(event, dict)
         else ""
     )
+
+    # Preflight: API Gateway can route OPTIONS here when the route is ANY.
     if method == "OPTIONS":
         return _response(200, {"ok": True})
 
     state = _instance_state()
 
-    if state == "running":
-        return _response(200, {"state": "running", "started": False, "instance_id": INSTANCE_ID})
-
-    if state == "stopped":
+    # WAKE is the side-effecting path and is gated behind POST ONLY. A POST on a
+    # ``stopped`` box is the user-tap wake. Detection (GET) must never reach here.
+    if method == "POST" and state == "stopped":
         try:
             _ec2.start_instances(InstanceIds=[INSTANCE_ID])
             logger.info("StartInstances issued for %s (wake request)", INSTANCE_ID)
@@ -102,7 +109,12 @@ def handler(event, context):  # noqa: ANN001, ARG001
                 500, {"state": state, "started": False, "error": str(exc), "instance_id": INSTANCE_ID}
             )
 
-    # Transitional (pending / stopping / shutting-down) or unknown: do NOT call
-    # StartInstances (it would error on a stopping box). Report the live state so
-    # the client keeps retrying the WS / re-polling wake.
+    # Report-only for everything else:
+    #   - GET / HEAD / unknown method (asleep-detection probe): NEVER start, even
+    #     when ``stopped`` -- just report the live state so the web can decide to
+    #     show the Wake UI.
+    #   - POST on a ``running`` box: no-op (the WS will connect on its own).
+    #   - POST on a transitional box (pending / stopping / shutting-down): no
+    #     StartInstances call (it would error on a stopping box).
+    # ``started`` is always False on this path.
     return _response(200, {"state": state, "started": False, "instance_id": INSTANCE_ID})

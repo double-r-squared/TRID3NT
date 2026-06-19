@@ -1,19 +1,15 @@
-// GRACE-2 web — ws.ts wake-on-reconnect wiring tests (auto-stop/wake infra,
-// NATE 2026-06-17).
+// GRACE-2 web — ws.ts reconnect / wake-signal wiring tests.
 //
-// Verifies the GraceWs reconnect loop drives the wake path:
-//   1. When a socket drops and the close handler schedules a reconnect, the
-//      injected AgentWaker.wake() is called (the box may be stopped → ask the
-//      wake Lambda to StartInstances) AND `onWakeNeeded(attempt)` fires with an
-//      incrementing attempt counter.
-//   2. A failing / slow wake never wedges the reconnect loop (a fresh socket is
-//      still scheduled).
-//   3. A successful (re)open resets the attempt counter so the NEXT drop starts
-//      from attempt 1 again.
-//   4. With NO wake endpoint configured (dev/LAN), the wake POST is a no-op
-//      (the AgentWaker short-circuits to "disabled") but `onWakeNeeded` STILL
-//      fires (so the UI threshold logic is exercised) — though App.tsx gates the
-//      overlay on wakeConfigured() so it never shows in dev.
+// sleep/wake STAGE 2 (NATE 2026-06-18) — NEVER AUTO-WAKE. The reconnect loop no
+// longer POSTs the wake endpoint. This file verifies the STAGE-2 contract:
+//   1. When a socket drops and the close handler schedules a reconnect,
+//      `onWakeNeeded(attempt)` fires with an incrementing attempt counter — but
+//      NO wake POST is issued (the box is woken ONLY by an explicit user tap).
+//   2. The attempt counter increments across consecutive failed reconnects and
+//      resets after a successful (re)open.
+//   3. The reconnect backoff still revives a fresh socket (the loop is intact).
+//   4. `reportWakeState()` delegates a REPORT-ONLY GET to the injected waker
+//      (asleep detection) and NEVER POSTs / wakes the box.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
@@ -45,7 +41,7 @@ function forceReadyState(socket: WebSocket, state: number): void {
   });
 }
 
-describe("GraceWs — wake-on-reconnect (auto-stop/wake)", () => {
+describe("GraceWs — reconnect signal + report-only wake (sleep/wake STAGE 2)", () => {
   beforeEach(() => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (window as any).__webSockets = [];
@@ -68,7 +64,7 @@ describe("GraceWs — wake-on-reconnect (auto-stop/wake)", () => {
     s!.dispatchEvent(new CloseEvent("close", { code: 1006 }));
   }
 
-  it("fires AgentWaker.wake() and onWakeNeeded(attempt) when a reconnect is scheduled", async () => {
+  it("fires onWakeNeeded(attempt) on a scheduled reconnect but NEVER auto-POSTs wake", async () => {
     vi.stubEnv("VITE_GRACE2_WAKE_URL", "https://explicit.example/wake");
     const fetchFn = vi.fn(async () => ({ ok: true, status: 200 }));
     const waker = new AgentWaker({ fetchFn });
@@ -82,24 +78,19 @@ describe("GraceWs — wake-on-reconnect (auto-stop/wake)", () => {
     ws.connect();
     dropSocket(ws);
 
-    // The close handler scheduled a reconnect → wake fired + handler notified.
+    // The close handler scheduled a reconnect → the UI signal fired…
     expect(onWakeNeeded).toHaveBeenCalledTimes(1);
     expect(onWakeNeeded).toHaveBeenLastCalledWith(1);
-    // The wake POST is async (we didn't await); flush the microtask queue.
+    // …but NO wake POST was issued (never auto-wake). Flush microtasks to be sure.
     await Promise.resolve();
     await Promise.resolve();
-    expect(fetchFn).toHaveBeenCalledTimes(1);
-    expect(fetchFn).toHaveBeenCalledWith(
-      "https://explicit.example/wake",
-      expect.objectContaining({ method: "POST" }),
-    );
+    expect(fetchFn).not.toHaveBeenCalled();
 
     ws.close();
   });
 
-  it("increments the attempt counter across consecutive failed reconnects", () => {
+  it("increments the attempt counter across consecutive failed reconnects (no POST)", () => {
     vi.stubEnv("VITE_GRACE2_WAKE_URL", "https://explicit.example/wake");
-    // Debounce so only the FIRST wake POSTs, but onWakeNeeded fires every time.
     const fetchFn = vi.fn(async () => ({ ok: true, status: 200 }));
     const waker = new AgentWaker({ fetchFn });
     const onWakeNeeded = vi.fn();
@@ -120,14 +111,15 @@ describe("GraceWs — wake-on-reconnect (auto-stop/wake)", () => {
     dropSocket(ws);
     expect(onWakeNeeded).toHaveBeenLastCalledWith(2);
 
+    // Still no wake POST across either reconnect.
+    expect(fetchFn).not.toHaveBeenCalled();
+
     ws.close();
   });
 
-  it("does not wedge the reconnect loop when the wake fetch rejects", () => {
+  it("still revives a fresh socket on the backoff reconnect", () => {
     vi.stubEnv("VITE_GRACE2_WAKE_URL", "https://explicit.example/wake");
-    const fetchFn = vi.fn(async () => {
-      throw new Error("wake endpoint down");
-    });
+    const fetchFn = vi.fn(async () => ({ ok: true, status: 200 }));
     const waker = new AgentWaker({ fetchFn });
     const ws = new GraceWs(
       "ws://localhost:8765",
@@ -138,7 +130,7 @@ describe("GraceWs — wake-on-reconnect (auto-stop/wake)", () => {
     const first = instanceSocket(ws);
     dropSocket(ws);
 
-    // Backoff fires → a brand-new socket is opened despite the wake failure.
+    // Backoff fires → a brand-new socket is opened.
     vi.advanceTimersByTime(600);
     const revived = instanceSocket(ws);
     expect(revived).not.toBeNull();
@@ -176,22 +168,28 @@ describe("GraceWs — wake-on-reconnect (auto-stop/wake)", () => {
     ws.close();
   });
 
-  it("onWakeNeeded still fires with no wake endpoint, but no fetch is issued (dev/LAN)", async () => {
-    // No VITE_GRACE2_WAKE_URL / PUBLIC_BASE → AgentWaker short-circuits.
-    const fetchFn = vi.fn();
+  it("reportWakeState() delegates a REPORT-ONLY GET (asleep detection; never POSTs)", async () => {
+    vi.stubEnv("VITE_GRACE2_WAKE_URL", "https://explicit.example/wake");
+    const fetchFn = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ state: "stopped" }),
+    }));
     const waker = new AgentWaker({ fetchFn });
-    const onWakeNeeded = vi.fn();
-    const ws = new GraceWs(
-      "ws://localhost:8765",
-      makeHandlers({ onWakeNeeded }),
-      { waker },
-    );
-    ws.connect();
-    dropSocket(ws);
+    const ws = new GraceWs("ws://localhost:8765", makeHandlers(), { waker });
 
-    expect(onWakeNeeded).toHaveBeenCalledTimes(1);
-    await Promise.resolve();
-    expect(fetchFn).not.toHaveBeenCalled();
+    const state = await ws.reportWakeState();
+    expect(state).toBe("stopped");
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(fetchFn).toHaveBeenCalledWith(
+      "https://explicit.example/wake",
+      expect.objectContaining({ method: "GET" }),
+    );
+    // The probe must NEVER POST.
+    expect(fetchFn).not.toHaveBeenCalledWith(
+      "https://explicit.example/wake",
+      expect.objectContaining({ method: "POST" }),
+    );
 
     ws.close();
   });

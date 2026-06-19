@@ -55,7 +55,7 @@ import type { ImpactEnvelope } from "./components/ImpactPanel";
 import type { ChartPayload } from "./components/ChartStack";
 import type { CodeExecRequestPayload, CodeExecResultPayload } from "./components/SandboxCard";
 import { getIdToken } from "./auth";
-import { AgentWaker } from "./lib/wake";
+import { AgentWaker, WakeState } from "./lib/wake";
 // Wire-shape mirrors for the server's source-suggestion candidate envelopes.
 // Server-internal envelope_type names (`mode2-candidate`, etc.) are preserved
 // on the wire; UI text never references them (translated by
@@ -625,6 +625,19 @@ export class GraceWs {
   /** LANE CASE-WEB — the client's current active Case as this socket knows it. */
   get caseId(): string | null {
     return this.currentCaseId;
+  }
+
+  /**
+   * sleep/wake STAGE 2 — REPORT the agent box's lifecycle state via the injected
+   * waker's report-only GET (it NEVER wakes the box; only an explicit tap ->
+   * POST wakes). App.tsx calls this on the App-socket's onWakeNeeded signal so
+   * the composer machine can branch to the Wake UI when the box is asleep
+   * (state stopped/stopping). "unknown" when wake is unconfigured / the probe
+   * fails — the caller then keeps plain Connecting/reconnect. Delegates to the
+   * SAME shared AgentWaker the explicit-tap wake() uses so they stay coherent.
+   */
+  reportWakeState(): Promise<WakeState> {
+    return this.waker.reportState();
   }
 
   /**
@@ -1816,21 +1829,22 @@ export class GraceWs {
 
   private scheduleReconnect(): void {
     this.handlers.onStatus("reconnecting");
-    // Auto-stop/wake (NATE 2026-06-17) — a scheduled reconnect means the socket
-    // would not open / dropped. The agent box may have been STOPPED by the
-    // idle-check Lambda, in which case NO amount of WS retrying alone will
-    // reconnect (a stopped box answers nothing) — we must ask the wake Lambda
-    // to StartInstances. Fire a single (debounced, fire-and-forget) wake POST
-    // on EVERY schedule; the AgentWaker coalesces the burst into one
-    // StartInstances request and no-ops entirely when no wake endpoint is
-    // configured (dev/LAN). The await is intentionally NOT taken here so a slow
-    // / failing wake fetch can never delay the backoff reconnect below.
+    // sleep/wake STAGE 2 (NATE 2026-06-18) — NEVER AUTO-WAKE. A scheduled
+    // reconnect means the socket would not open / dropped, and the agent box may
+    // have been STOPPED by the idle-check Lambda. Under STAGE 1 we POSTed the
+    // wake endpoint here on EVERY reconnect schedule (StartInstances), so a
+    // case-open / tab-blip / reconnect would silently wake the box without any
+    // user intent. STAGE 2 SEVERS that: the wake POST happens ONLY on the user's
+    // explicit TAP of the composer's Wake UI (App.tsx handleWakeTap ->
+    // AgentWaker.wake). We do NOT even GET-report here — the App-socket's
+    // onWakeNeeded signal below tells the composer machine to run a report-only
+    // GET (wakeState) so it can branch to the Wake UI. The reconnect backoff
+    // keeps retrying the WS so a box that is up (or that the user woke) reconnects
+    // on its own.
     this.reconnectAttempts += 1;
-    void this.waker.wake().catch(() => {
-      /* wake is best-effort; the reconnect loop owns recovery */
-    });
-    // Signal the UI ("box looks down, we're waking it"). The attempt count lets
-    // App.tsx debounce the overlay so a single transient blip doesn't flash it.
+    // Signal the UI ("the box is unreachable on this socket"). The attempt count
+    // lets App.tsx debounce the wake probe so a single transient blip doesn't
+    // flash the Wake UI. NO wake POST is issued here (never auto-wake).
     try {
       this.handlers.onWakeNeeded?.(this.reconnectAttempts);
     } catch {
