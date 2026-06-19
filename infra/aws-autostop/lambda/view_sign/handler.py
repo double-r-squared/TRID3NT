@@ -278,6 +278,14 @@ def _snapshot_owner(key: str) -> tuple[bool, str | None]:
         status = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
         if code in ("NoSuchKey", "404", "NotFound") or status == 404:
             return (False, None)
+        # GetObject-only role (no s3:ListBucket): S3 returns 403/AccessDenied
+        # for a MISSING key under case-views/* (it hides existence without
+        # ListBucket). Since this role DOES hold GetObject on the prefix, a 403
+        # here means the snapshot does not exist -> treat as a clean miss (404),
+        # NOT a transient error to fail-open on. Otherwise we mint a useless
+        # pre-signed URL for a nonexistent object.
+        if code in ("403", "AccessDenied", "Forbidden") or status == 403:
+            return (False, None)
         logger.info("head_object error (%s) for %s; fail-open on owner", code, key)
         return (True, None)
     except Exception:  # noqa: BLE001
