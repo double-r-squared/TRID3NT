@@ -268,16 +268,29 @@ async def model_urban_flood_swmm(
             logger.warning("model_urban_flood_swmm: zoom-to emit failed: %s", exc)
 
     # --- Step 1: DEM (1 m 3DEP primary -> 10 m fallback) --------------------
+    # BREAK B (event-loop starvation), pre-solve: _fetch_dem_for_urban is
+    # SYNCHRONOUS blocking I/O (HTTP fetch + boto3 S3 stage-down + GDAL VSI
+    # reads). Run it OFF the loop in a worker thread so the WS keepalive ping
+    # coroutine keeps running while the fetch churns (mirrors the SFINCS
+    # _fetcher_chain asyncio.to_thread wrap). _fetch_dem_for_urban does NOT call
+    # the loop-bound PipelineEmitter mid-call - it only logs + returns a tuple -
+    # so a plain to_thread wrap is correct (no run_coroutine_threadsafe marshaling
+    # is required). The async frame still emits around (before/after) the wrap.
     deck_dir_to_clean: str | None = None
     if dem_path is None:
-        local_dem_path, dem_source = _fetch_dem_for_urban(bbox)
+        local_dem_path, dem_source = await asyncio.to_thread(
+            _fetch_dem_for_urban, bbox
+        )
     else:
         local_dem_path, dem_source = dem_path, "supplied"
     logger.info("model_urban_flood_swmm: DEM=%s (%s)", local_dem_path, dem_source)
 
     # --- Step 2: building footprints (OSM) ----------------------------------
+    # BREAK B, pre-solve: _fetch_buildings_for_urban is a SYNCHRONOUS HTTP fetch
+    # (OSM Overpass). Offload it off the loop too - it is emitter-free (logs +
+    # returns a FeatureCollection dict / None), so a plain to_thread wrap is safe.
     if building_footprints is None and dem_path is None:
-        building_footprints = _fetch_buildings_for_urban(bbox)
+        building_footprints = await asyncio.to_thread(_fetch_buildings_for_urban, bbox)
 
     # --- Step 3: Atlas-14 design-storm depth (populate run_args if unset) ----
     effective_args = run_args
@@ -298,7 +311,13 @@ async def model_urban_flood_swmm(
 
     try:
         # --- Step 4: build the quasi-2D SWMM deck (build_swmm_mesh) ----------
-        staging = build_and_stage_swmm_deck(
+        # BREAK B, pre-solve: build_and_stage_swmm_deck is a SYNCHRONOUS compute
+        # (rasterio DEM read + adaptive-mesh build + .inp staging) with NO
+        # loop-bound emitter calls, so offload it off the loop too (mirrors the
+        # SFINCS deck-build asyncio.to_thread wrap). A plain to_thread wrap is
+        # correct - no run_coroutine_threadsafe marshaling required.
+        staging = await asyncio.to_thread(
+            build_and_stage_swmm_deck,
             effective_args,
             dem_path=local_dem_path,
             building_footprints=building_footprints,
@@ -372,7 +391,16 @@ async def model_urban_flood_swmm(
         run = await asyncio.to_thread(run_swmm_local, staging)
 
         # --- Step 6: postprocess (rasterize node depths -> peak + frames) ---
-        layers, metrics = postprocess_swmm(
+        # BREAK B, post-solve: postprocess_swmm is a SYNCHRONOUS compute (pyswmm
+        # Output read + per-step grid scatter + COG rasterize/reproject + S3
+        # upload) - heavy blocking I/O + GDAL that would stall the loop inline.
+        # It builds the peak + frame COGs OFF-LINE (its own internal
+        # _emit_frame_layers only WRITES COGs - it does NOT touch the loop-bound
+        # PipelineEmitter / add_loaded_layer; the emitter add_loaded_layer happens
+        # back on the loop in _emit_frame_layers below) so a plain to_thread wrap
+        # is correct - no run_coroutine_threadsafe marshaling required.
+        layers, metrics = await asyncio.to_thread(
+            postprocess_swmm,
             run,
             staging.build,
             run_id=staging.run_id,
@@ -414,7 +442,14 @@ async def model_urban_flood_swmm(
     # n_buildings_affected) still reach the LLM so the failure is narrated and the
     # job-0177 retry loop can re-attempt. The wrapper REQUIRES a SWMMDepthLayerURI
     # return, so we never drop the whole layer - only its renderability.
-    peak = _publish_peak_layer(raw_peak, staging.run_id)
+    # BREAK B, post-solve: _publish_peak_layer drives publish_layer (the COG
+    # rasterize/reproject/upload + the publish-status time.sleep polls) - all
+    # SYNCHRONOUS blocking work. It does NOT call the loop-bound PipelineEmitter
+    # (the peak's add_loaded_layer fires at the dispatch site, held #6, on the
+    # returned LayerURI - NOT inside this function), so offload the whole call off
+    # the loop. A plain to_thread wrap is correct - no run_coroutine_threadsafe
+    # marshaling required.
+    peak = await asyncio.to_thread(_publish_peak_layer, raw_peak, staging.run_id)
 
     # --- Step 7b / 9b: publish + emit the per-frame animation layers OUT-OF-BAND
     # Mirrors model_flood_scenario Step-9b: each frame is a DISTINCT COG (distinct
@@ -548,7 +583,14 @@ async def _emit_frame_layers(
             emit_layer: LayerURI = lyr
         else:
             try:
-                frame_uri = publish_layer(
+                # BREAK B, post-solve: offload ONLY the publish_layer compute
+                # (COG rasterize/reproject/upload + the publish-status time.sleep
+                # polls - SYNCHRONOUS blocking work) off the loop. The
+                # add_loaded_layer emit MUST stay on the loop (it is loop-bound),
+                # so this thread-offloads the per-frame publish and then emits on
+                # the loop below - NEVER the whole emit loop.
+                frame_uri = await asyncio.to_thread(
+                    publish_layer,
                     layer_uri=lyr.uri,
                     layer_id=lyr.layer_id,
                     style_preset=lyr.style_preset or FLOOD_DEPTH_STYLE_PRESET,

@@ -216,13 +216,30 @@ async def run_modflow_job(
     staging = None
     try:
         # --- Step 1: build + stage the deck ---------------------------------
-        staging = build_and_stage_modflow_deck(run_args)
+        # audit #4: deck build (FloPy) + subdir reorg + S3/GCS upload are
+        # synchronous and CPU/IO-bound. Offload to a worker thread so they do
+        # NOT stall the asyncio event loop (WS keepalive). build_and_stage is
+        # emit-free (no current_emitter / add_loaded_layer / emit_*) - verified
+        # safe to run off-loop; the bracketing emit_tool_call still runs on the
+        # loop around this call.
+        staging = await asyncio.to_thread(build_and_stage_modflow_deck, run_args)
 
         # --- Step 2: run the solver (local or cloud) ------------------------
         if is_local_mode():
-            run_outputs_uri = run_modflow_local(staging)
+            # audit #4: a local mf6 binary solve can run for MINUTES - the same
+            # long-blocking-solve class that killed the WS for SWMM. Offload to
+            # a worker thread. run_modflow_local is a foreground subprocess run
+            # + mfsim.lst parse + completion.json write; emit-free.
+            run_outputs_uri = await asyncio.to_thread(run_modflow_local, staging)
         else:
-            handle = submit_modflow_run(staging, compute_class=compute_class)
+            # audit #4: submit_modflow_run is a synchronous boto3-backed
+            # local-exec dispatch (launch_local_solver is non-blocking but does
+            # synchronous manifest read + S3 input staging before returning the
+            # handle). Offload so the submit IO does not stall the loop;
+            # emit-free. The async wait_for_completion below stays on the loop.
+            handle = await asyncio.to_thread(
+                submit_modflow_run, staging, compute_class=compute_class
+            )
             # Reuse the SFINCS-shared poller — its ExecutionHandle cancel seam
             # is solver-agnostic (Invariant 8 cancel chain propagates here).
             from .solver import wait_for_completion
@@ -248,11 +265,23 @@ async def run_modflow_job(
             )
 
         # --- Step 3: postprocess UCN → plume COG → PlumeLayerURI ------------
-        plume = postprocess_modflow(
-            run_outputs_uri,
-            run_id=staging.run_id,
-            model_crs=staging.model_crs,
-            deck_dir=staging.local_deck_dir,
+        # audit #4: postprocess reads the UCN, reprojects to a COG, uploads it,
+        # and calls publish_layer - all synchronous and IO/CPU-bound. Offload to
+        # a worker thread. EMITTER SUBTLETY: postprocess_modflow calls
+        # publish_layer, but publish_layer is purely synchronous and does NOT
+        # touch the loop-bound emitter (no current_emitter / add_loaded_layer /
+        # emit_*; it only bridges the COG to a tile/WMS URL). The actual
+        # add_loaded_layer happens later, on the loop, in the bracketing
+        # emit_tool_call when the returned PlumeLayerURI is processed - so the
+        # whole call is emit-free and safe off-loop (no compute/emit split
+        # needed here).
+        plume = await asyncio.to_thread(
+            lambda: postprocess_modflow(
+                run_outputs_uri,
+                run_id=staging.run_id,
+                model_crs=staging.model_crs,
+                deck_dir=staging.local_deck_dir,
+            )
         )
         logger.info(
             "run_modflow_job complete run_id=%s max_concentration_mgl=%.6g "

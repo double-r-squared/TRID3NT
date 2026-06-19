@@ -1395,9 +1395,16 @@ async def model_flood_scenario(
     )
 
     # --- Step 0: bbox resolution (Decision K; bbox-direct wins precedence) ---
+    # audit #5: ``_resolve_bbox`` calls ``geocode_location`` -> a SYNC
+    # ``requests.get`` to Nominatim (up to ~15s) plus a sync S3 cache read.
+    # Run it off the loop so it cannot stall the WS keepalive while geocoding.
+    # ``_resolve_bbox`` is EMIT-FREE (no current_emitter()/emit_*/
+    # add_loaded_layer): it geocodes + does dict work then returns, so it is
+    # safe to move to a worker thread. The async frame still emits around it
+    # (the zoom-on-area-first emit below runs back on the loop).
     try:
-        resolved_bbox, geocode_result = _resolve_bbox(
-            bbox=bbox, location_query=location_query
+        resolved_bbox, geocode_result = await asyncio.to_thread(
+            _resolve_bbox, bbox=bbox, location_query=location_query
         )
     except WorkflowError as exc:
         # No bbox to anchor a failed envelope on; this is the rare fatal case.
@@ -2153,8 +2160,17 @@ async def model_flood_scenario(
         )
 
     # --- Step 8: postprocess_flood ---
+    # audit #1: ``postprocess_flood`` downloads the full ``sfincs_map.nc`` via
+    # SYNC boto3 and writes N COGs to object storage — tens of seconds to
+    # minutes of blocking I/O right after the solve. Run it off the loop so it
+    # cannot stall the WS keepalive. ``postprocess_flood`` is EMIT-FREE (no
+    # current_emitter()/emit_*/add_loaded_layer): it produces the LayerURIs +
+    # metrics then returns, and THIS workflow does all the emitting (the
+    # publish + add_loaded_layer steps below run back on the loop), so it is
+    # safe to move to a worker thread.
     try:
-        layers, depth_metrics = postprocess_flood(
+        layers, depth_metrics = await asyncio.to_thread(
+            postprocess_flood,
             run_result.output_uri or _default_runs_prefix(run_result.run_id),
             run_id=run_result.run_id,
         )
@@ -2215,7 +2231,16 @@ async def model_flood_scenario(
         ):
             layer_id_for_wms = f"flood-depth-peak-{run_result.run_id}"
             try:
-                wms_url = publish_layer(
+                # audit #1: ``publish_layer`` runs a ``time.sleep`` poll loop
+                # (worker job poll) that blocks the loop for tens of seconds.
+                # Run it off the loop so it cannot stall the WS keepalive.
+                # ``publish_layer`` is EMIT-FREE (no current_emitter()/emit_*/
+                # add_loaded_layer): it returns the WMS URL; this workflow does
+                # the emitting (the LayerURI it builds reaches the map via the
+                # wrapper return / out-of-band add_loaded_layer back on the
+                # loop), so it is safe to move to a worker thread.
+                wms_url = await asyncio.to_thread(
+                    publish_layer,
                     layer_uri=lyr.uri,
                     layer_id=layer_id_for_wms,
                     style_preset=lyr.style_preset or "continuous_flood_depth",
@@ -2292,7 +2317,14 @@ async def model_flood_scenario(
                     logger.warning("frame emit failed for %s: %s", lyr.layer_id, exc)
                 continue
             try:
-                frame_wms_url = publish_layer(
+                # audit #1: same as the peak ``publish_layer`` above —
+                # ``time.sleep`` poll loop blocks the loop for tens of seconds
+                # per frame. Run it off the loop so it cannot stall the WS
+                # keepalive. EMIT-FREE: it returns the WMS URL; the
+                # ``add_loaded_layer`` emit for this frame runs back on the loop
+                # just below, so moving the publish to a worker thread is safe.
+                frame_wms_url = await asyncio.to_thread(
+                    publish_layer,
                     layer_uri=lyr.uri,
                     layer_id=lyr.layer_id,
                     style_preset=lyr.style_preset or FLOOD_DEPTH_STYLE_PRESET,
