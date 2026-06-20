@@ -28,6 +28,9 @@ import {
   CLUSTER_RADIUS,
   PELICUN_DAMAGE_PRESET,
   vectorResultFromInlineGeoJson,
+  resolveVectorLineWidth,
+  VECTOR_LINE_WIDTH,
+  MESH_LINE_WIDTH,
 } from "./vector_rendering";
 
 // ---------------------------------------------------------------------------
@@ -356,5 +359,75 @@ describe("resolveVectorColor — water preset + geometry-family (job-3)", () => 
     expect(resolveVectorColor("any", "gbif_occurrences", "point")).toBe("#FF7F0E");
     expect(resolveVectorColor("any", "wdpa_polygon", "polygon")).toBe("#708090");
     expect(resolveVectorColor("any", "osm_roads", "line")).toBe("#FFD700");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NATE #156 — computational-mesh wireframe colour + hairline width
+// ---------------------------------------------------------------------------
+
+describe("presetColorFor — mesh wireframe (NATE #156)", () => {
+  it("maps mesh presets → cyan scaffold #5BC0DE", () => {
+    expect(presetColorFor("mesh_grid")).toBe("#5BC0DE");
+    expect(presetColorFor("computational_mesh")).toBe("#5BC0DE");
+    expect(presetColorFor("sfincs_mesh")).toBe("#5BC0DE");
+  });
+
+  it("mesh wins over the water branch (no 'mesh' bleed into hydro blue)", () => {
+    // A river/mesh collision must NOT resolve to the hydro sky-blue; the mesh
+    // branch is ordered before the water branch.
+    expect(presetColorFor("river_mesh")).toBe("#5BC0DE");
+    expect(presetColorFor("river_mesh")).not.toBe("#4477FF");
+  });
+
+  it("does not disturb existing preset colours", () => {
+    // Regression guard: the mesh branch must not change rivers / roads.
+    expect(presetColorFor("osm_waterways")).toBe("#4477FF");
+    expect(presetColorFor("osm_roads")).toBe("#FFD700");
+    expect(presetColorFor("gbif_occurrences")).toBe("#FF7F0E");
+  });
+});
+
+describe("resolveVectorColor — mesh line preset (NATE #156)", () => {
+  it("a mesh_grid LINE layer resolves to the cyan mesh colour", () => {
+    expect(resolveVectorColor("mesh-aoi-1", "mesh_grid", "line")).toBe("#5BC0DE");
+  });
+
+  it("the mesh colour is deterministic, NOT a per-layer-id hash", () => {
+    const a = resolveVectorColor("mesh-30.1-87.5", "mesh_grid", "line");
+    const b = resolveVectorColor("mesh-44.9-93.1", "mesh_grid", "line");
+    expect(a).toBe("#5BC0DE");
+    expect(b).toBe("#5BC0DE");
+    expect(a).toBe(b);
+    // And NOT the old per-layer-id palette hash.
+    expect(a).not.toBe(paletteColorFor("mesh-30.1-87.5"));
+  });
+
+  it("the mesh cyan is DISTINCT from rivers-blue and roads-amber", () => {
+    const mesh = resolveVectorColor("mesh-aoi", "mesh_grid", "line");
+    const river = resolveVectorColor("river-aoi", "osm_waterways", "line");
+    const road = resolveVectorColor("road-aoi", "osm_roads", "line");
+    expect(mesh).toBe("#5BC0DE");
+    expect(mesh).not.toBe(river); // not #4477FF
+    expect(mesh).not.toBe(road); // not #FFD700
+    // All three line colours are mutually distinct.
+    expect(new Set([mesh, river, road]).size).toBe(3);
+  });
+});
+
+describe("resolveVectorLineWidth — mesh hairline (NATE #156)", () => {
+  it("mesh presets get the thinner MESH_LINE_WIDTH", () => {
+    expect(resolveVectorLineWidth("mesh_grid")).toBe(MESH_LINE_WIDTH);
+    expect(resolveVectorLineWidth("computational_mesh")).toBe(MESH_LINE_WIDTH);
+    expect(MESH_LINE_WIDTH).toBeLessThan(VECTOR_LINE_WIDTH);
+  });
+
+  it("non-mesh / unknown / nullish presets keep the default VECTOR_LINE_WIDTH", () => {
+    expect(resolveVectorLineWidth("osm_waterways")).toBe(VECTOR_LINE_WIDTH);
+    expect(resolveVectorLineWidth("osm_roads")).toBe(VECTOR_LINE_WIDTH);
+    expect(resolveVectorLineWidth("totally_unknown")).toBe(VECTOR_LINE_WIDTH);
+    expect(resolveVectorLineWidth(null)).toBe(VECTOR_LINE_WIDTH);
+    expect(resolveVectorLineWidth(undefined)).toBe(VECTOR_LINE_WIDTH);
+    expect(VECTOR_LINE_WIDTH).toBe(2);
   });
 });

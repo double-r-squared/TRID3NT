@@ -68,6 +68,7 @@ import {
   fetchVectorAsGeoJson,
   vectorResultFromInlineGeoJson,
   resolveVectorColor,
+  resolveVectorLineWidth,
   isPelicunDamageLayer,
   buildDsMeanExpression,
   POLYGON_FILL_OPACITY,
@@ -883,7 +884,8 @@ function registerVectorOnMap(
       source: layer.layer_id,
       paint: {
         "line-color": color,
-        "line-width": 2,
+        // Mesh-grid presets render as a hairline lattice; data lines stay 2px.
+        "line-width": resolveVectorLineWidth(layer.style_preset),
         "line-opacity": opacity,
       },
       layout: { visibility: visible ? "visible" : "none" },
@@ -1013,7 +1015,8 @@ export function registerVectorTileLayer(
       "source-layer": sourceLayer,
       paint: {
         "line-color": color,
-        "line-width": 2,
+        // Mesh-grid presets render as a hairline lattice; data lines stay 2px.
+        "line-width": resolveVectorLineWidth(layer.style_preset),
         "line-opacity": opacity,
       },
       layout: { visibility: visible ? "visible" : "none" },

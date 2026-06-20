@@ -299,6 +299,11 @@ export function presetColorFor(stylePreset: string | null | undefined): string |
   if (key.includes("firms") || key.includes("active_fire")) return "#FF4444";
   // Roads / infrastructure
   if (key.includes("osm_road") || key === "roads" || key === "osm_roads") return "#FFD700";
+  // Computational mesh wireframe (NATE #156): a cool cyan/grey scaffold colour
+  // so the quad-cell lattice reads as scaffolding, distinct from rivers (blue)
+  // and roads (amber). Must come BEFORE the water branch so 'mesh' never bleeds
+  // into the hydro match.
+  if (key.includes("mesh")) return "#5BC0DE";
   // Water / hydrography — rivers, streams, waterways, NHDPlus flowlines, contours.
   // Sky-blue so every water vector reads the same regardless of AOI (fixes the
   // yellow-vs-blue split where two rivers hashed to different palette slots).
@@ -329,6 +334,34 @@ export const POLYGON_FILL_OPACITY = 0.4;
  * remain visible against the lower fill opacity.
  */
 export const POLYGON_STROKE_WIDTH = 1.5;
+
+/**
+ * Default stroke width (px) for vector LINE layers. 2px matches the rivers /
+ * roads convention so flowlines and infrastructure read as data.
+ */
+export const VECTOR_LINE_WIDTH = 2;
+
+/**
+ * Thinner stroke width (px) for computational-mesh wireframe lines (NATE #156).
+ * The quad-cell lattice can be dense, so a hairline keeps it reading as
+ * scaffolding rather than competing with the data layers painted on top.
+ */
+export const MESH_LINE_WIDTH = 0.6;
+
+/**
+ * Resolve the MapLibre `line-width` for a vector line layer keyed on its
+ * `style_preset`. Mesh-grid presets get a hairline (MESH_LINE_WIDTH); every
+ * other line keeps the default (VECTOR_LINE_WIDTH). Additive + deterministic:
+ * unknown presets fall through to the default, so existing layers are unchanged.
+ */
+export function resolveVectorLineWidth(
+  stylePreset: string | null | undefined,
+): number {
+  if (stylePreset && stylePreset.toLowerCase().includes("mesh")) {
+    return MESH_LINE_WIDTH;
+  }
+  return VECTOR_LINE_WIDTH;
+}
 
 /**
  * Build a MapLibre `fill-color` expression mapping a `ds_mean` property
