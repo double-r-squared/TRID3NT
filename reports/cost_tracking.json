@@ -2088,10 +2088,24 @@
       "description": "Wave 1 (4 agents): #159 AOI floored zoom-to/peak-bbox + single replace-on-new extent (stale-closure race) + case-open snap; #157 animation decoupled into a module controller (survives panel close) + App-root scrubber + play button + legend pill above composer + cases-scroll confirm. web 1563, agent 5760. Residual: re-entry persisted-bbox (server.py one-liner) folded to Wave 2.",
       "model": "opus",
       "subagent_tokens": 629495
+    },
+    {
+      "job_id": "wf-demo-ux-wave2-20260620",
+      "sprint": 16,
+      "description": "Wave 2 (cold case-view + AOI re-entry persist): #158 layer_cache mergeSnapshot empty-authoritative guard so a cold-open empty frame no longer evicts a populated case; #159 server.py dispatch-site appends the floored zoom-to to current_turn_map_commands so re-entry persists the floored bbox. Deployed e66a499.",
+      "model": "opus",
+      "subagent_tokens": 179241
+    },
+    {
+      "job_id": "wf-demo-ux-wave3a-mesh-20260620",
+      "sprint": 16,
+      "description": "Wave 3a SWMM computational-mesh layer (#156, 2 build agents): agent workflows/mesh_layer.py auto-emits the quasi-2D uniform quad-cell mesh as a clickable mesh_grid vector layer on deck-build (authoritative INP STORAGE cells, reproject to EPSG:4326, per-cell props, super-cell decimation past a 6000-cell cap, best-effort off-loop, bbox=None); web renders mesh_grid as a wireframe (MESH_FILL_OPACITY 0.06 + hairline outline) not a cyan blanket. tsc0/web148/agent22 green. Deployed d5011bb (web CloudFront + agent SSM file-swap).",
+      "model": "opus",
+      "subagent_tokens": 132890
     }
   ],
   "totals_by_sprint": {
-    "16": 6273717,
+    "16": 6585848,
     "6": 1265567,
     "7": 1863284,
     "8": 1786238,
