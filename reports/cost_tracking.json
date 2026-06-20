@@ -2053,10 +2053,17 @@
       "description": "Single agent: solve telemetry - capture Batch Spot instance type + lifecycle + az + timing split (queue/provision vs compute) via describe-jobs->ECS->EC2 (off-loop, best-effort) + mesh size descriptor, record_type=solve row, RunResult.batch_compute_meta. 15 new tests; selection 753 passed.",
       "model": "opus",
       "subagent_tokens": 177420
+    },
+    {
+      "job_id": "wf-cases-scroll-fix-20260620",
+      "sprint": 16,
+      "description": "Diagnose+fix workflow (2 agents): the cases list never scrolled because the A3 overflow change (ae45399) was never height-bounded - root had only maxHeight:100vh, mobile double-scrolled. Fixed the height chain (root height:100% fills parent; desktop rail bottom:12 bound; mobile hugger overflow:hidden = single scroll container). vitest 1491/1491.",
+      "model": "opus",
+      "subagent_tokens": 122315
     }
   ],
   "totals_by_sprint": {
-    "16": 4355992,
+    "16": 4478307,
     "6": 1265567,
     "7": 1863284,
     "8": 1786238,
