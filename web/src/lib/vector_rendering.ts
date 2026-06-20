@@ -299,6 +299,19 @@ export function presetColorFor(stylePreset: string | null | undefined): string |
   if (key.includes("firms") || key.includes("active_fire")) return "#FF4444";
   // Roads / infrastructure
   if (key.includes("osm_road") || key === "roads" || key === "osm_roads") return "#FFD700";
+  // Water / hydrography — rivers, streams, waterways, NHDPlus flowlines, contours.
+  // Sky-blue so every water vector reads the same regardless of AOI (fixes the
+  // yellow-vs-blue split where two rivers hashed to different palette slots).
+  if (
+    key.includes("waterway") ||
+    key.includes("river") ||
+    key.includes("stream") ||
+    key.includes("nhdplus") ||
+    key.includes("flowline") ||
+    key.includes("hydro")
+  ) {
+    return "#4477FF";
+  }
   // Pelicun damage: sentinel — caller must use choropleth expression
   if (key === PELICUN_DAMAGE_PRESET) return PELICUN_DAMAGE_PRESET;
   return undefined;
@@ -357,16 +370,52 @@ export function buildDsMeanExpression(): unknown[] {
 export const CLUSTER_THRESHOLD = 500;
 export const CLUSTER_RADIUS = 50;
 
-/** Final colour to use for a vector layer (preset > palette). */
+/**
+ * Default colour by GEOMETRY FAMILY for vector layers with no known preset.
+ * Replaces the per-layer-id random palette hash (which gave two rivers from
+ * different AOIs different colours): line=amber, polygon=slate, point=orange.
+ * This is deterministic across AOIs — every unknown line reads amber, etc.
+ */
+export function geomFamilyColor(geomKind: VectorGeomKind): string {
+  switch (geomKind) {
+    case "line":
+      return "#FFD700"; // amber — matches the roads line convention
+    case "polygon":
+      return "#708090"; // slate
+    case "point":
+      return "#FF7F0E"; // orange
+    default:
+      // "unknown" geometry: fall back to slate (neutral).
+      return "#708090";
+  }
+}
+
+/**
+ * Final colour to use for a vector layer (preset > geometry family).
+ *
+ * Resolution order:
+ *   1. A known `style_preset` (presetColorFor) always wins.
+ *   2. The pelicun sentinel resolves to neutral grey (real colour comes from
+ *      buildDsMeanExpression()).
+ *   3. Unknown preset + a `geomKind` => deterministic GEOMETRY-FAMILY colour
+ *      (line=amber, polygon=slate, point=orange). No per-layer-id hashing, so
+ *      the same geometry family always reads the same colour across AOIs.
+ *   4. Unknown preset + no `geomKind` (legacy callers) => the original
+ *      deterministic palette hash, preserved for backward compatibility.
+ */
 export function resolveVectorColor(
   layerId: string,
   stylePreset: string | null | undefined,
+  geomKind?: VectorGeomKind,
 ): string {
   const preset = presetColorFor(stylePreset);
   // If the preset is the pelicun sentinel, fall back to a neutral grey
   // since the real color comes from buildDsMeanExpression()
   if (preset === PELICUN_DAMAGE_PRESET) return "#708090";
-  return preset ?? paletteColorFor(layerId);
+  if (preset) return preset;
+  // Unknown preset: colour by geometry family when known, else legacy hash.
+  if (geomKind !== undefined) return geomFamilyColor(geomKind);
+  return paletteColorFor(layerId);
 }
 
 /**

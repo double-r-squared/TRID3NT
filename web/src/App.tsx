@@ -36,6 +36,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MapView, type MapCommandSubscribeFunc, type MapTheme } from "./Map";
 import { Chat, readChatWidth } from "./Chat";
 import { LayerPanel, createLayerPanelBus, readLayersWidth } from "./LayerPanel";
+import { getLayerCache } from "./lib/layer_cache";
 import type { ScreenRect } from "./lib/legend_snap";
 import {
   AuthGate,
@@ -213,6 +214,19 @@ const hamburgerBtnStyle: React.CSSProperties = {
 
 export function App(): JSX.Element {
   const bus = useMemo(() => createLayerPanelBus(), []);
+
+  // job-0179 (per-Case client cache + view-state durability — "the seatbelt").
+  // The process-global LayerCache holds the per-Case layer SET (in-memory) and
+  // the user's per-layer view-overrides (opacity / visibility / zIndex, mirrored
+  // to IndexedDB). It is the single source of truth the bus-subscribing surfaces
+  // (Map.tsx reconcile teardown gate, LayerPanel user edits) share. A WS blip /
+  // stale snapshot routes through cache.mergeSnapshot (additive, never evicts);
+  // only an explicit Case switch / delete evicts. See lib/layer_cache.ts.
+  const layerCache = useMemo(() => getLayerCache(), []);
+  useEffect(() => {
+    // Best-effort one-time hydrate of persisted view-overrides from IndexedDB.
+    void layerCache.hydrate();
+  }, [layerCache]);
 
   // job-0278 — mobile layout (<768px). EVERY mobile divergence below is
   // guarded by this flag so desktop renders pixel-identical to before.
@@ -849,8 +863,21 @@ export function App(): JSX.Element {
     // CASE-SWITCH LAYER LEAK FIX — keep the ref the stable onSessionState
     // closure reads in lockstep with the active Case so a trailing snapshot
     // tagged with the PREVIOUS Case is dropped the instant we switch.
+    const prevCaseId = activeCaseIdRef.current;
     activeCaseIdRef.current = activeCaseId;
-  }, [activeCaseId]);
+    // job-0179 — keep the shared LayerCache's notion of the active Case in
+    // lockstep so Map.tsx / LayerPanel (bus subscribers with no caseId prop)
+    // resolve allowsEvict / getOverride against the right Case. A genuine Case
+    // SWITCH (prev != next, both meaningful) is the ONLY in-memory evict path:
+    // drop the Case we just LEFT so its layer SET no longer protects against the
+    // new Case's authoritative replace. (The persisted view-overrides survive
+    // the evict — re-opening the old Case restores them.) Snapshot omission never
+    // reaches here, so the seatbelt holds.
+    if (prevCaseId !== null && prevCaseId !== activeCaseId) {
+      layerCache.evictCase(prevCaseId);
+    }
+    layerCache.activeCaseId = activeCaseId;
+  }, [activeCaseId, layerCache]);
 
   // job-0322 F31 — resume-repaint (iOS zombie-socket fix). Mobile browsers
   // tear down (or silently wedge) the WebSocket when the tab is backgrounded;
@@ -1156,12 +1183,28 @@ export function App(): JSX.Element {
   }, [wsStatus, cases.length, coldListIdentity, isSignedIn, useCases_onCaseList]);
 
   // Lift layers from session-state.
+  //
+  // job-0179 (per-Case client cache — "the seatbelt"): route the incoming layer
+  // SET through cache.mergeSnapshot so a STALE / partial / reconnect frame that
+  // OMITS a layer ADDS/REFRESHES but never EVICTS it; the rendered list comes
+  // from cache.layersFor(active Case). `replace_layers` is App's authoritative
+  // stamp (true on a Case switch/exit or a healthy non-empty server frame;
+  // false on a transient reconnect frame) — it gates whether omitted layers may
+  // be dropped. At the root (no active Case) there is no Case to cache against,
+  // so mergeSnapshot passes the list through verbatim (byte-identical to before).
   useEffect(() => {
     const unsub = bus.subscribeSessionState((p) => {
-      setLayers(p.loaded_layers ?? []);
+      const incoming = p.loaded_layers ?? [];
+      const authoritativeReplace =
+        (p as { replace_layers?: boolean }).replace_layers !== false;
+      const caseId = layerCache.activeCaseId;
+      const merged = layerCache.mergeSnapshot(caseId, incoming, {
+        authoritativeReplace,
+      });
+      setLayers(merged);
     });
     return unsub;
-  }, [bus]);
+  }, [bus, layerCache]);
 
   // Dev-only debug seam.
   useEffect(() => {
@@ -1196,6 +1239,19 @@ export function App(): JSX.Element {
       delete window.__grace2ClearCharts;
     };
   }, [bus, fanoutSourceSuggestion, useCases_onCaseList, useCases_onCaseOpen, handleChartEmission]);
+
+  // job-0179 — per-layer delete is an EXPLICIT eviction: drop the layer (and its
+  // persisted view-override) from the shared cache so the seatbelt's allowsEvict
+  // permits Map.tsx to tear the overlay down, THEN tell the server (which echoes
+  // a fresh session-state sans the layer). Without the cache delete, allowsEvict
+  // would protect the just-deleted layer against the authoritative replace.
+  const handleDeleteLayer = useCallback(
+    (id: string): void => {
+      layerCache.deleteLayer(layerCache.activeCaseId, id);
+      wsRef.current?.sendDeleteLayer(id);
+    },
+    [layerCache],
+  );
 
   // job-0125: bridge SecretsPanel callbacks to the active GraceWs.
   function handleSecretAdd(payload: {
@@ -1443,7 +1499,7 @@ export function App(): JSX.Element {
                      session-state (sans the layer) which onSessionState →
                      bus.pushSessionState reconciles into the Map via
                      replace-not-reconcile — so the layer stays gone. */
-                  onDeleteLayer={(id) => wsRef.current?.sendDeleteLayer(id)}
+                  onDeleteLayer={handleDeleteLayer}
                 />
               </div>
             </div>
@@ -1723,7 +1779,7 @@ export function App(): JSX.Element {
                        mount too (swipe-right-to-delete in Group C drives this
                        same callback). See the desktop mount above for the
                        full data-flow rationale. */
-                    onDeleteLayer={(id) => wsRef.current?.sendDeleteLayer(id)}
+                    onDeleteLayer={handleDeleteLayer}
                     mobile
                   />
                   </div>

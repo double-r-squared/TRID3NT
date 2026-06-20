@@ -6,7 +6,7 @@
 //   3. LayerPanel shows/hides dynamically as layers go 0 → 1 → 0.
 //   4. onLayersChange callback fires with the correct layer list.
 
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, act } from "@testing-library/react";
 import {
   LayerPanel,
@@ -23,6 +23,32 @@ import {
   detectSequentialGroups,
 } from "./LayerPanel";
 import { ProjectLayerSummary, SessionStatePayload } from "./contracts";
+import { LayerCache, setLayerCache } from "./lib/layer_cache";
+
+// Job 4 made layer visibility/opacity/order read from a SHARED LayerCache
+// singleton (getLayerCache()). A prior test that writes a view-override into
+// the singleton would otherwise leak that override into later tests in this
+// file (e.g. the eye-toggle test reading a stale visible:false). Reset the
+// singleton (and localStorage, belt-and-suspenders) before EVERY test so no
+// override can leak across tests. Inner per-block setLayerCache() calls run in
+// their own beforeEach AFTER this global one, so they still override cleanly.
+const moduleNoopBackend = {
+  async load() {
+    return {};
+  },
+  async save() {
+    /* no-op */
+  },
+};
+
+beforeEach(() => {
+  setLayerCache(new LayerCache({ backend: moduleNoopBackend }));
+  try {
+    localStorage.clear();
+  } catch {
+    /* ignore */
+  }
+});
 
 // dnd-kit requires pointer events which happy-dom supports but the PointerSensor
 // needs a minimum drag distance. Our tests don't exercise drag — just layer
@@ -368,6 +394,64 @@ describe("LayerPanel — user controls emit map-commands (job-0258)", () => {
       });
       fireEvent.click(screen.getByTestId("layer-visibility"));
     }).not.toThrow();
+  });
+});
+
+// --- job-0179: user edits WRITE THROUGH into the shared LayerCache --------- //
+//
+// The seatbelt: an opacity / visibility edit (and a drag-reorder, exercised in
+// layer_cache.test.ts for the z-order math) must be remembered in the shared
+// cache so it survives a panel unmount->remount + a WS reconnect even when the
+// Map is not mounted to receive the bus command. We point the singleton at a
+// fresh cache with a no-op backend and an active Case per test.
+// (LayerCache + setLayerCache are imported at the top of the file.)
+
+describe("LayerPanel — user edits write through into the shared cache (job-0179)", () => {
+  const noopBackend = {
+    async load() {
+      return {};
+    },
+    async save() {
+      /* no-op */
+    },
+  };
+
+  function freshCache(activeCaseId: string | null): LayerCache {
+    const cache = new LayerCache({ backend: noopBackend });
+    cache.activeCaseId = activeCaseId;
+    setLayerCache(cache);
+    return cache;
+  }
+
+  it("opacity edit is written to the cache for the active Case", () => {
+    const cache = freshCache("case-A");
+    render(<LayerPanel initialLayers={[makeLayer("flood-demo")]} />);
+    fireEvent.change(screen.getByTestId("layer-opacity"), {
+      target: { value: "0.42" },
+    });
+    expect(cache.getOverride("case-A", "flood-demo")).toEqual({
+      opacity: 0.42,
+    });
+  });
+
+  it("visibility toggle is written to the cache for the active Case", () => {
+    const cache = freshCache("case-A");
+    render(<LayerPanel initialLayers={[makeLayer("flood-demo")]} />);
+    fireEvent.click(screen.getByTestId("layer-visibility")); // true -> false
+    expect(cache.getOverride("case-A", "flood-demo")).toEqual({
+      visible: false,
+    });
+  });
+
+  it("at the root (no active Case) the edit is a cache no-op (back-compat)", () => {
+    const cache = freshCache(null);
+    render(<LayerPanel initialLayers={[makeLayer("flood-demo")]} />);
+    // Must not throw and must not record anything against a null Case.
+    fireEvent.change(screen.getByTestId("layer-opacity"), {
+      target: { value: "0.5" },
+    });
+    expect(cache.getOverride(null, "flood-demo")).toBeUndefined();
+    expect(cache.layersFor(null)).toEqual([]);
   });
 });
 

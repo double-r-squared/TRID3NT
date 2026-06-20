@@ -54,6 +54,14 @@ import { LayerLegend } from "./components/LayerLegend";
 // `readLayerVisibilityOverrides`'s consumers), so a never-toggled VISIBLE layer
 // keeps rendering across reconnect.
 import { readLayerVisibilityOverrides } from "./LayerPanel";
+// job-0179 (per-Case client cache + view-state durability — "the seatbelt").
+// The shared LayerCache gates teardown (allowsEvict: an omitted-but-still-
+// tracked layer is NOT torn down on a stale/partial reconcile frame), supplies
+// the user's persisted view-overrides (opacity / visibility / zIndex) to
+// re-apply after a (re-)add, and records the user's live LayerPanel edits via
+// setOverride so they survive a re-render. This SUBSUMES the localStorage
+// `grace2.layerVisibility` override map (still read above for back-compat).
+import { getLayerCache } from "./lib/layer_cache";
 import { FeaturePopup, type FeaturePopupData, type FeatureAttribute } from "./components/FeaturePopup";
 import { useIsMobile } from "./hooks/useIsMobile";
 import {
@@ -605,7 +613,6 @@ export async function addVectorLayer(
 ): Promise<void> {
   const opacity = layer.opacity ?? 1;
   const visible = layer.visible !== false;
-  const color = resolveVectorColor(layer.layer_id, layer.style_preset);
 
   // Debug-only console.log behind import.meta.env.DEV (matches existing
   // diagnostic-seam pattern). Helps the Playwright capture confirm the
@@ -655,6 +662,11 @@ export async function addVectorLayer(
       return;
     }
   }
+
+  // Resolve the paint colour now that geomKind is known: an unknown style_preset
+  // colours by GEOMETRY FAMILY (line=amber, polygon=slate, point=orange) instead
+  // of a per-layer-id hash, so e.g. two rivers from different AOIs read the same.
+  const color = resolveVectorColor(layer.layer_id, layer.style_preset, geomKind);
 
   // FIX 2 (vector AOI clip) — drop features that fall OUTSIDE the AOI bbox. The
   // agent fetches NSI points / building footprints with the AOI bbox expanded
@@ -958,12 +970,12 @@ export function registerVectorTileLayer(
 ): void {
   const opacity = layer.opacity ?? 1;
   const visible = layer.visible !== false;
-  const color = resolveVectorColor(layer.layer_id, layer.style_preset);
   const geomKind = (
     ["point", "line", "polygon"].includes(layer.vector_geom_kind ?? "")
       ? layer.vector_geom_kind
       : "polygon"
   ) as VectorGeomKind;
+  const color = resolveVectorColor(layer.layer_id, layer.style_preset, geomKind);
   const sourceLayer = layer.vector_source_layer || "vector";
   const url = layer.vector_tile_url;
 
@@ -1122,7 +1134,7 @@ export function applyLayerOpacity(
       ? opacity * 0.7
       : opacity * POLYGON_FILL_OPACITY;
     m.setPaintProperty(layerId, "fill-opacity", polyOpacity);
-    m.setPaintProperty(layerId, "fill-outline-color", resolveVectorColor(layerId, stylePreset));
+    m.setPaintProperty(layerId, "fill-outline-color", resolveVectorColor(layerId, stylePreset, geomKind));
     if (m.getLayer(`${layerId}-outline`)) {
       m.setPaintProperty(`${layerId}-outline`, "line-opacity", opacity * 0.6);
     }
@@ -2037,6 +2049,10 @@ export function buildFeaturePopupData(
 export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "light", onAoiScreenRectChange }: MapViewProps = {}): JSX.Element {
   const container = useRef<HTMLDivElement | null>(null);
   const map = useRef<MapLibreMap | null>(null);
+  // job-0179 — the shared per-Case layer cache (the seatbelt). Stable singleton;
+  // gates teardown (allowsEvict), supplies persisted view-overrides, and records
+  // the user's live LayerPanel edits. App.tsx keeps `.activeCaseId` in lockstep.
+  const layerCache = getLayerCache();
   // useRef so this survives effect re-runs without triggering re-render (A.7).
   const addedSourceIds = useRef<Set<string>>(new Set());
   // Per-layer geometry kind for added vector layers. Lets the update branch
@@ -2304,8 +2320,17 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
         /* highlight already gone — best-effort */
       }
       setFeaturePopup(null);
+      // job-0179 (per-Case client cache — "the seatbelt") — the shared cache is
+      // the final teardown arbiter: even on an authoritative replace, an overlay
+      // is torn down ONLY if the cache agrees it may be evicted. On a genuine
+      // Case switch / exit / delete the cache has already dropped the layer (so
+      // allowsEvict is true and teardown proceeds exactly as before); the gate
+      // ONLY ever PREVENTS a teardown — it can never force one — so a layer the
+      // cache still tracks (omitted by a stale frame that nonetheless slipped in
+      // as authoritative) survives. Resolved against the cache's active Case.
+      const evictCaseId = layerCache.activeCaseId;
       for (const id of addedSourceIds.current) {
-        if (!currentIds.has(id)) {
+        if (!currentIds.has(id) && layerCache.allowsEvict(evictCaseId, id)) {
           // Remove all MapLibre paint layers belonging to this logical layer
           // (fill + outline, or cluster + cluster-count + points, or the lone
           // raster/point/line layer) so the source is no longer referenced.
@@ -2349,16 +2374,33 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       // contracts.ts uses `source_url` (schema mismatch; tracked as OQ-0068-URI).
       for (const _layer of currentLayers) {
         const layer = _layer as unknown as WireLayerSummary;
-        const opacity = layer.opacity ?? 1;
-        // C3: effectiveVisible = the user's explicit override when present, else
-        // the wire value. hasOwnProperty guards so only an explicitly-toggled
-        // layer_id is affected; an untouched layer uses the server `visible`.
-        const visible = Object.prototype.hasOwnProperty.call(
-          visibilityOverrides,
+        // job-0179 (per-Case client cache — "the seatbelt"): the user's persisted
+        // VIEW-OVERRIDE (opacity / visibility, set via the LayerPanel) WINS over
+        // the wire value so a (re-)add after a reconnect / re-render never resets
+        // the user's edit. The cache subsumes the localStorage visibility map; we
+        // still read that map as a fallback for back-compat with older sessions
+        // whose override was written before this cache existed.
+        const cacheOverride = layerCache.getOverride(
+          layerCache.activeCaseId,
           layer.layer_id,
-        )
-          ? visibilityOverrides[layer.layer_id] === true
-          : layer.visible !== false;
+        );
+        const opacity =
+          cacheOverride?.opacity !== undefined
+            ? cacheOverride.opacity
+            : layer.opacity ?? 1;
+        // C3: effectiveVisible = the user's explicit override when present, else
+        // the wire value. The cache override wins first; then the legacy
+        // localStorage visibility map (hasOwnProperty guards so only an
+        // explicitly-toggled layer_id is affected); else the server `visible`.
+        const visible =
+          cacheOverride?.visible !== undefined
+            ? cacheOverride.visible
+            : Object.prototype.hasOwnProperty.call(
+                  visibilityOverrides,
+                  layer.layer_id,
+                )
+              ? visibilityOverrides[layer.layer_id] === true
+              : layer.visible !== false;
         const layerType = layer.layer_type;
         // C3: the vector / vector-tile registration helpers read `visible` off
         // the layer object they receive (not the local `visible` const), so a
@@ -2468,6 +2510,37 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
           });
           addedSourceIds.current.add(layer.layer_id);
         }
+      }
+
+      // job-0179 (per-Case client cache — "the seatbelt"): re-apply the user's
+      // persisted Z-ORDER override after a (re-)add so a reconnect / re-render
+      // never resets a drag-reorder. We ONLY act when the cache actually holds a
+      // zIndex override for the active Case — otherwise this is a no-op and the
+      // historical insertion-order stacking is preserved byte-identically. The
+      // effective per-layer z-index is the cached override when present, else the
+      // wire `z_index`; we sort DESCENDING (higher z renders on top) into the
+      // top-first order applyLayerOrder expects.
+      const caseOverrides = layerCache.overridesFor(layerCache.activeCaseId);
+      const hasZOverride = Object.values(caseOverrides).some(
+        (ov) => ov.zIndex !== undefined,
+      );
+      if (hasZOverride) {
+        const ordered = currentLayers
+          .filter((l) => addedSourceIds.current.has(l.layer_id))
+          .map((l) => {
+            const ov = caseOverrides[l.layer_id];
+            const wireZ = (l as { z_index?: unknown }).z_index;
+            const z =
+              ov?.zIndex !== undefined
+                ? ov.zIndex
+                : typeof wireZ === "number"
+                  ? wireZ
+                  : 0;
+            return { id: l.layer_id, z };
+          })
+          .sort((a, b) => b.z - a.z)
+          .map((e) => e.id);
+        if (ordered.length > 0) applyLayerOrder(m, ordered);
       }
     };
 
@@ -2778,10 +2851,27 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
           vectorGeomKinds.current.get(payload.layer_id),
           layerStylePresets.current.get(payload.layer_id) ?? null,
         );
+        // job-0179 — write-through so the edit survives a re-render / reconnect.
+        layerCache.setOverride(layerCache.activeCaseId, payload.layer_id, {
+          opacity,
+        });
       } else if (payload.command === "set-layer-visibility") {
         applyLayerVisibility(m, payload.layer_id, payload.visible);
+        // job-0179 — write-through (subsumes the localStorage visibility map).
+        layerCache.setOverride(layerCache.activeCaseId, payload.layer_id, {
+          visible: payload.visible,
+        });
       } else if (payload.command === "set-layer-order") {
         applyLayerOrder(m, payload.layer_ids);
+        // job-0179 — write-through: stamp each layer's resulting z-index (the
+        // command is top-first, so the LAST element gets the lowest z) so a
+        // re-render / reconnect re-asserts the user's drag-reorder.
+        const ids = payload.layer_ids;
+        ids.forEach((id, idx) => {
+          layerCache.setOverride(layerCache.activeCaseId, id, {
+            zIndex: ids.length - idx,
+          });
+        });
       } else {
         // eslint-disable-next-line no-console
         console.warn("[MapView] MapCommand not yet implemented:", payload.command);

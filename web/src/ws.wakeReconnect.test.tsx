@@ -114,8 +114,12 @@ describe("GraceWs — reconnect signal + report-only wake (sleep/wake STAGE 2)",
     expect(onWakeNeeded).toHaveBeenLastCalledWith(1);
 
     // Advance the backoff so the scheduled reconnect opens a fresh socket,
-    // then drop THAT one too.
-    vi.advanceTimersByTime(600);
+    // then drop THAT one too. Job 1b raised the backoff floor to 1500ms and
+    // added jitter (delay = base * factor, factor in [0.5,1.0), base caps at
+    // maxBackoffMs=5000), so advance by the max backoff (5000) to reliably fire
+    // the pending reconnect. 5000 >= any jittered delay yet < the connect-attempt
+    // timeout (10000) and the 25s keepalive, so ONLY the reconnect fires.
+    vi.advanceTimersByTime(5000);
     dropSocket(ws);
     expect(onWakeNeeded).toHaveBeenLastCalledWith(2);
 
@@ -138,8 +142,10 @@ describe("GraceWs — reconnect signal + report-only wake (sleep/wake STAGE 2)",
     const first = instanceSocket(ws);
     dropSocket(ws);
 
-    // Backoff fires → a brand-new socket is opened.
-    vi.advanceTimersByTime(600);
+    // Backoff fires → a brand-new socket is opened. Job 1b raised the backoff
+    // floor to 1500ms + jitter (base caps at maxBackoffMs=5000), so advance by
+    // the max backoff (5000) to reliably fire the pending reconnect.
+    vi.advanceTimersByTime(5000);
     const revived = instanceSocket(ws);
     expect(revived).not.toBeNull();
     expect(revived).not.toBe(first);
@@ -163,7 +169,10 @@ describe("GraceWs — reconnect signal + report-only wake (sleep/wake STAGE 2)",
     expect(onWakeNeeded).toHaveBeenLastCalledWith(1);
 
     // Let the backoff reconnect, then mark the fresh socket OPEN (fire 'open').
-    vi.advanceTimersByTime(600);
+    // Job 1b raised the backoff floor to 1500ms + jitter (base caps at
+    // maxBackoffMs=5000), so advance by the max backoff (5000) to reliably fire
+    // the pending reconnect.
+    vi.advanceTimersByTime(5000);
     const revived = instanceSocket(ws);
     expect(revived).not.toBeNull();
     forceReadyState(revived!, 1); // OPEN

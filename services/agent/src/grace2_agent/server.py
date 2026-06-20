@@ -97,6 +97,7 @@ from .adapter import (
     UsageMetadataEvent,
     build_client,
     build_contents_from_history,
+    build_layers_present_note,
     build_function_call_content,
     build_function_response_content,
     build_tool_declarations,
@@ -1199,6 +1200,16 @@ class SessionState:
     # synced to. A string sentinel (never a valid case id) means "never
     # synced"; ``None`` is a legitimate value (no active Case).
     case_context_synced_to: str | None = _CASE_SYNC_NEVER
+    # JOB 2 (active-AOI repair): durable cache of the active Case's persisted
+    # AOI bbox (``CaseSummary.bbox`` == ``[lon_min, lat_min, lon_max,
+    # lat_max]``). Set when the active Case is selected / synced (the same
+    # ``session_state.case.bbox`` already read for the layers-present note) and
+    # cleared on deselect. ``_turn_case_bbox`` reads THIS instead of the
+    # non-existent ``state.active_case`` attribute (the pre-fix read always
+    # returned None, so the agent had no active-AOI signal and re-geocoded /
+    # re-fetched, starving the sim/fetch reuse short-circuits of an AOI anchor).
+    # ``None`` is legitimate (no active Case, or a Case with no recorded bbox).
+    case_bbox: Any = None
     # job-0121: per-turn layer + map-command emission accumulators. Reset at
     # the start of every dispatch (Gemini stream or /invoke tool). The
     # CaseChatMessage write at turn close reads from these so a Case replay
@@ -1733,7 +1744,36 @@ async def _stream_gemini_reply(
     # Seed the multi-turn contents list with chat history + this user_text.
     # job-0269: the entry-captured list — a mid-stream case switch rebinds
     # ``state.chat_history`` to the new Case's list, never mutates this one.
-    contents = build_contents_from_history(user_text, turn_history)
+    #
+    # JOB 2 (per-turn context note): inject the already-loaded-layers +
+    # reuse-AOI note on EVERY live turn, not just on case reopen. The note
+    # (build_layers_present_note) lists each layer already on the map (RESULT /
+    # INPUT[<kind>] + reusable handle/uri) and the Case AOI bbox with the
+    # "REUSE this exact extent, do NOT re-geocode" instruction. Pre-fix it was
+    # built ONLY on a case reopen (rehydrate_history_from_case), so a long live
+    # turn re-geocoded + re-fetched layers already present. We append it as the
+    # LAST history turn (just before the user message) so the model reads the
+    # current Case state as context, then the user's actual ask. Kept compact;
+    # ``None`` (no layers and no bbox) is a no-op. Built from the LIVE emitter +
+    # the JOB-2 cached Case AOI (``state.case_bbox``) so it reflects this turn's
+    # truth, never mutating the entry-captured ``turn_history`` list.
+    turn_history_for_contents = turn_history
+    try:
+        loaded_layers = (
+            [layer.model_dump(mode="json") for layer in state.emitter.loaded_layers]
+            if state.emitter is not None
+            else []
+        )
+        case_state_note = build_layers_present_note(
+            loaded_layers, case_bbox=_turn_case_bbox(state)
+        )
+        if case_state_note:
+            turn_history_for_contents = list(turn_history) + [
+                {"role": "user", "text": case_state_note}
+            ]
+    except Exception:  # noqa: BLE001 — the note is an optimization, never fatal
+        logger.debug("per-turn case-state note build failed", exc_info=True)
+    contents = build_contents_from_history(user_text, turn_history_for_contents)
 
     # Wave 4.11 M6: refresh the dynamic hot set once per user-message dispatch
     # so the allowed set is primed with the user's most-dispatched tools before
@@ -2561,6 +2601,9 @@ async def _replay_active_case_layers(state: SessionState) -> None:
         return
     try:
         session_state = await p.get_session_state(case_id)
+        # JOB 2: restore the Case AOI anchor on a bare reconnect so a follow-up
+        # turn after a WS blip reuses the original extent (no Case re-open).
+        _cache_case_bbox_from_session_state(state, session_state)
         state.emitter.reset_loaded_layers(session_state.loaded_layers)
         # Repopulate the inline-GeoJSON side-table so the replayed
         # session-state carries renderable vectors (the browser never fetches
@@ -2993,6 +3036,8 @@ async def _sync_case_context(
     if state.emitter is None:  # pragma: no cover — _ensure_emitter always binds
         return
     if current is None:
+        # JOB 2: no active Case -> no AOI anchor.
+        state.case_bbox = None
         state.emitter.reset_loaded_layers([])
         return
     p = get_persistence()
@@ -3001,6 +3046,10 @@ async def _sync_case_context(
         return
     try:
         session_state = await p.get_session_state(current)
+        # JOB 2: cache the Case AOI so ``_turn_case_bbox`` has a durable
+        # active-AOI anchor on this connection's turns (kills repeat-fetch /
+        # re-geocode by feeding the reuse short-circuits + the per-turn note).
+        _cache_case_bbox_from_session_state(state, session_state)
         state.emitter.reset_loaded_layers(session_state.loaded_layers)
         # sprint-14-aws (job-0290d): repopulate the inline-GeoJSON side-table
         # so this connection's next session-state emission carries renderable
@@ -3100,6 +3149,9 @@ async def _emit_case_open(
             _new_envelope("case-open", state.session_id, payload)
         )
         return
+    # JOB 2: cache the opened Case's AOI so the very first turn in this Case
+    # already has the active-AOI anchor (reuse short-circuits + per-turn note).
+    _cache_case_bbox_from_session_state(state, session_state)
     payload = CaseOpenEnvelopePayload(session_state=session_state)
     await websocket.send(_new_envelope("case-open", state.session_id, payload))
 
@@ -3293,6 +3345,9 @@ async def _handle_case_command(
         prev = state.active_case_id
         state.active_case_id = None
         state.case_context_synced_to = None
+        # JOB 2: clear the cached Case AOI so a root prompt (which auto-creates
+        # a FRESH Case) does not reuse the just-exited Case's extent.
+        state.case_bbox = None
         # job-0269: REBIND, never clear() — see _sync_case_context.
         state.chat_history = []
         state.turn_count = 0
@@ -3693,21 +3748,46 @@ def _turn_case_id(state: SessionState) -> str | None:
 def _turn_case_bbox(state: SessionState) -> Any:
     """The current turn's Case AOI bbox (job-0326), or None.
 
-    Used by the expensive-simulation reuse guard as the AOI anchor when a
-    persistence-seeded result has no recorded bbox: a bbox-keyed re-run in a
-    single-result Case whose request bbox equals the Case AOI is a clear match.
+    Used by the expensive-simulation reuse guard AND the fetch reuse guard as
+    the AOI anchor when a request / persistence-seeded layer has no recorded
+    bbox: a bbox-keyed re-run (or a bare follow-up fetch) in a single-result
+    Case whose request bbox equals the Case AOI is a clear match.
+
+    JOB 2 (active-AOI repair): reads ``state.case_bbox`` — the durable cache of
+    the active Case's persisted ``CaseSummary.bbox`` (set on case select / sync).
+    The pre-fix body read ``getattr(state, "active_case", None)``, an attribute
+    that NEVER existed on ``SessionState`` (only ``active_case_id`` does), so it
+    ALWAYS returned None — the agent had no active-AOI signal and re-geocoded /
+    re-fetched, starving both reuse short-circuits of an AOI anchor.
     """
-    p = get_persistence()
     case_id = _turn_case_id(state)
-    if p is None or not case_id:
+    if not case_id:
         return None
+    return state.case_bbox
+
+
+def _cache_case_bbox_from_session_state(
+    state: SessionState, session_state: Any
+) -> None:
+    """Cache the active Case's AOI bbox onto ``state.case_bbox`` (JOB 2).
+
+    Reads ``session_state.case.bbox`` — the persisted ``CaseSummary.bbox`` that
+    the layers-present note already consumes — and stores it so
+    ``_turn_case_bbox`` has a durable active-AOI anchor on every live turn (the
+    reuse short-circuits + the per-turn [Case state] note both read it). Pydantic
+    BBox models serialize to a plain list; we coerce to a list so the value is a
+    cheap, JSON-shaped ``[lon_min, lat_min, lon_max, lat_max]`` (or ``None``).
+    Best-effort: a missing / malformed case leaves the cache untouched-to-None.
+    """
     try:
-        # Cheap synchronous read of the already-cached active case summary.
-        case = getattr(state, "active_case", None)
+        case = getattr(session_state, "case", None)
         bbox = getattr(case, "bbox", None) if case is not None else None
-        return bbox
-    except Exception:  # noqa: BLE001 — best-effort
-        return None
+        if bbox is None:
+            state.case_bbox = None
+            return
+        state.case_bbox = list(bbox)
+    except Exception:  # noqa: BLE001 — best-effort cache, never break the turn
+        state.case_bbox = None
 
 
 @dataclass

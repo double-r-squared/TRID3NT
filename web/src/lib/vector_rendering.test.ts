@@ -19,6 +19,7 @@ import {
   paletteColorFor,
   presetColorFor,
   resolveVectorColor,
+  geomFamilyColor,
   isPelicunDamageLayer,
   buildDsMeanExpression,
   POLYGON_FILL_OPACITY,
@@ -149,6 +150,17 @@ describe("presetColorFor — curated preset registry (job-0146 Part 1)", () => {
     expect(presetColorFor("osm_roads")).toBe("#FFD700");
     expect(presetColorFor("osm_road")).toBe("#FFD700");
     expect(presetColorFor("roads")).toBe("#FFD700");
+  });
+
+  it("maps water / hydrography presets → sky-blue #4477FF (job-3)", () => {
+    // The agent emits osm_waterways for fetch_river_geometry; correctly-tagged
+    // NHDPlus flowlines and compute_contours water layers also resolve here.
+    expect(presetColorFor("osm_waterways")).toBe("#4477FF");
+    expect(presetColorFor("rivers_streams")).toBe("#4477FF");
+    expect(presetColorFor("nhdplus_flowlines")).toBe("#4477FF");
+    expect(presetColorFor("flowline")).toBe("#4477FF");
+    expect(presetColorFor("hydro_network")).toBe("#4477FF");
+    expect(presetColorFor("stream_segments")).toBe("#4477FF");
   });
 
   it("returns PELICUN_DAMAGE_PRESET sentinel for pelicun_damage", () => {
@@ -284,9 +296,65 @@ describe("resolveVectorColor — pelicun fallback (job-0146)", () => {
     expect(resolveVectorColor("any-id", "wdpa_polygon")).toBe("#708090");
   });
 
-  it("falls back to palette hash when preset is null/undefined", () => {
+  it("falls back to palette hash when preset is null/undefined (no geomKind)", () => {
     const id = "panther-occurrences";
     expect(resolveVectorColor(id, null)).toBe(paletteColorFor(id));
     expect(resolveVectorColor(id, undefined)).toBe(paletteColorFor(id));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// job-3 — deterministic water colour + geometry-family fallback
+// ---------------------------------------------------------------------------
+
+describe("geomFamilyColor — geometry-family default colours (job-3)", () => {
+  it("colours by geometry family deterministically", () => {
+    expect(geomFamilyColor("line")).toBe("#FFD700"); // amber
+    expect(geomFamilyColor("polygon")).toBe("#708090"); // slate
+    expect(geomFamilyColor("point")).toBe("#FF7F0E"); // orange
+    expect(geomFamilyColor("unknown")).toBe("#708090"); // neutral slate
+  });
+});
+
+describe("resolveVectorColor — water preset + geometry-family (job-3)", () => {
+  it("resolves a river/waterway preset to sky-blue regardless of layer_id", () => {
+    expect(resolveVectorColor("rivers-1.23-4.56", "osm_waterways", "line")).toBe("#4477FF");
+    expect(resolveVectorColor("nhd-flowlines-77", "nhdplus_flowlines", "line")).toBe("#4477FF");
+  });
+
+  it("two DIFFERENT river layer_ids resolve to the SAME blue (no per-id split)", () => {
+    // The original bug: two rivers from different AOIs hashed to different
+    // palette slots (yellow vs blue). Both must now read the same sky-blue.
+    const a = resolveVectorColor("rivers-30.1234-87.5678", "osm_waterways", "line");
+    const b = resolveVectorColor("rivers-44.9876-93.1111", "osm_waterways", "line");
+    expect(a).toBe("#4477FF");
+    expect(b).toBe("#4477FF");
+    expect(a).toBe(b);
+  });
+
+  it("an unknown-preset LINE resolves to amber by geometry, NOT a per-id hash", () => {
+    const a = resolveVectorColor("mystery-line-AAA", "totally_unknown", "line");
+    const b = resolveVectorColor("mystery-line-ZZZ", "totally_unknown", "line");
+    // Geometry-family deterministic: amber, and identical across layer_ids.
+    expect(a).toBe("#FFD700");
+    expect(b).toBe("#FFD700");
+    expect(a).toBe(b);
+    // And NOT the old per-layer-id palette hash (which would differ per id).
+    expect(a).not.toBe(paletteColorFor("mystery-line-AAA"));
+  });
+
+  it("unknown-preset polygon=slate, point=orange (deterministic by geometry)", () => {
+    expect(resolveVectorColor("poly-1", "totally_unknown", "polygon")).toBe("#708090");
+    expect(resolveVectorColor("poly-2", "totally_unknown", "polygon")).toBe("#708090");
+    expect(resolveVectorColor("pt-1", "totally_unknown", "point")).toBe("#FF7F0E");
+    expect(resolveVectorColor("pt-2", "totally_unknown", "point")).toBe("#FF7F0E");
+  });
+
+  it("a known preset still wins over geometry family", () => {
+    // osm_roads line stays amber via preset (same as geometry default here),
+    // but gbif points stay orange-by-preset, wdpa polygons stay slate-by-preset.
+    expect(resolveVectorColor("any", "gbif_occurrences", "point")).toBe("#FF7F0E");
+    expect(resolveVectorColor("any", "wdpa_polygon", "polygon")).toBe("#708090");
+    expect(resolveVectorColor("any", "osm_roads", "line")).toBe("#FFD700");
   });
 });

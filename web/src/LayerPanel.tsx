@@ -72,6 +72,15 @@ import {
   IconPause,
   IconWaves,
 } from "./components/icons";
+// job-0179 (per-Case client cache + view-state durability — "the seatbelt").
+// The LayerPanel write-throughs the user's opacity / visibility / drag-reorder
+// edits into the shared cache so they survive a panel unmount->remount (mobile
+// drawer collapse) and a WS reconnect — even when the Map is not mounted to
+// receive the bus map-command. This SUBSUMES the localStorage
+// `grace2.layerVisibility` map (writeLayerVisibilityOverride is still called for
+// back-compat). The cache resolves the active Case via its own `.activeCaseId`,
+// which App.tsx keeps in lockstep.
+import { getLayerCache } from "./lib/layer_cache";
 
 // --- Reducer + state shape --------------------------------------------- //
 //
@@ -771,6 +780,18 @@ export function LayerPanel({
       (l) => l.layer_id,
     );
     dispatch({ type: "local-reorder", layer_ids: reorderedIds });
+    // job-0179 — write-through the new z-order into the shared cache so the
+    // drag-reorder survives a panel remount / reconnect. Top-first list: the
+    // first element gets the HIGHEST z (renders on top). Mirrors the reducer's
+    // `local-reorder` z_index assignment (length - idx).
+    {
+      const cache = getLayerCache();
+      reorderedIds.forEach((id, idx) => {
+        cache.setOverride(cache.activeCaseId, id, {
+          zIndex: reorderedIds.length - idx,
+        });
+      });
+    }
     // job-0258: emit the real map-command so MapView re-stacks the MapLibre
     // layers (moveLayer). `reorderedIds` is top-of-stack first — the
     // set-layer-order contract (contracts.ts SetLayerOrderCommand).
@@ -785,6 +806,13 @@ export function LayerPanel({
     // unmount->remount (mobile drawer collapse). Reads back in
     // applyVisibilityOverrides at the next seed.
     writeLayerVisibilityOverride(layerId, visible);
+    // job-0179 — write-through into the shared cache (the durable seatbelt; it
+    // also covers the case where the Map is unmounted and never sees the bus
+    // command). The localStorage write above stays for back-compat.
+    {
+      const cache = getLayerCache();
+      cache.setOverride(cache.activeCaseId, layerId, { visible });
+    }
     // job-0258: emit so MapView flips layout visibility on the live map.
     onMapCommand?.({ command: "set-layer-visibility", layer_id: layerId, visible });
     // eslint-disable-next-line no-console
@@ -794,6 +822,12 @@ export function LayerPanel({
   function onOpacityChange(layerId: string, opacity: number): void {
     const clamped = clamp01(opacity);
     dispatch({ type: "local-opacity", layer_id: layerId, opacity: clamped });
+    // job-0179 — write-through into the shared cache so the opacity edit
+    // survives a panel remount / WS reconnect (persisted to IndexedDB).
+    {
+      const cache = getLayerCache();
+      cache.setOverride(cache.activeCaseId, layerId, { opacity: clamped });
+    }
     // job-0258: emit so MapView updates the paint properties on the live map.
     onMapCommand?.({ command: "set-layer-opacity", layer_id: layerId, opacity: clamped });
     // eslint-disable-next-line no-console

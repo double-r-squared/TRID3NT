@@ -3520,7 +3520,7 @@ def fetch_river_geometry(
         name="Rivers & Streams",
         layer_type="vector",
         uri=result.uri,
-        style_preset="continuous_dem",  # placeholder — hydrography preset is a follow-up
+        style_preset="osm_waterways",  # water-vector preset (mirrors osm_roads for fetch_roads_osm)
         role="input",
     )
 

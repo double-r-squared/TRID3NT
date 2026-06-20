@@ -21,6 +21,9 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, act } from "@testing-library/react";
 import { MapView, type MapCommandSubscribeFunc, type SessionStateSubscriber } from "./Map";
+// job-0179 — drive the shared LayerCache singleton MapView reads for the
+// teardown gate (allowsEvict) + persisted view-override re-apply.
+import { LayerCache, setLayerCache } from "./lib/layer_cache";
 
 // --- MapLibre mock -------------------------------------------------------- //
 // Capture all relevant method calls for assertion.
@@ -498,6 +501,153 @@ describe("MapView — per-Case layer DURABILITY across WS reconnect (job-0357)",
     });
     expect(m.removeLayer).toHaveBeenCalledWith("flood-demo");
     expect(m.removeSource).toHaveBeenCalledWith("flood-demo");
+  });
+});
+
+describe("MapView — per-Case client cache seatbelt (job-0179)", () => {
+  type DurableSession = WireSessionState & { replace_layers?: boolean };
+  const pushDurable = (
+    bus: ReturnType<typeof makeSessionBus>,
+    p: DurableSession,
+  ): void => bus.push(p as unknown as WireSessionState);
+  // A no-op persistence backend so these UI tests never touch IndexedDB.
+  const noopBackend = {
+    async load() {
+      return {};
+    },
+    async save() {
+      /* no-op */
+    },
+  };
+
+  beforeEach(() => {
+    lastMapMock = null;
+  });
+
+  it("does NOT tear down an omitted layer the cache still tracks (allowsEvict=false)", () => {
+    // Defense-in-depth: even if an authoritative-tagged frame OMITS a layer the
+    // cache still tracks for the active Case, the teardown gate (allowsEvict)
+    // refuses to remove it. We seed the cache so layer L1 is tracked for case-A
+    // but is NOT in the incoming snapshot.
+    const cache = new LayerCache({ backend: noopBackend });
+    cache.activeCaseId = "case-A";
+    cache.mergeSnapshot(
+      "case-A",
+      [
+        { layer_id: "L1", name: "L1", layer_type: "raster", uri: "u", visible: true, opacity: 1, z_index: 0 },
+      ],
+      { authoritativeReplace: false },
+    );
+    setLayerCache(cache);
+
+    const sessionBus = makeSessionBus();
+    render(
+      <MapView
+        subscribeSessionState={
+          sessionBus.subscribe as (cb: SessionStateSubscriber) => () => void
+        }
+      />,
+    );
+    // Add L1 + L2 to the map.
+    act(() => {
+      pushDurable(sessionBus, {
+        loaded_layers: [makeWireLayer("L1"), makeWireLayer("L2")],
+        replace_layers: true,
+      });
+    });
+    const m = lastMapMock!;
+    m.getLayer.mockReturnValue({ id: "x" });
+    m.getSource.mockReturnValue({ type: "raster" });
+    m.removeLayer.mockClear();
+    m.removeSource.mockClear();
+
+    // A frame omits L1 but tags itself authoritative. Because the cache STILL
+    // tracks L1 for case-A, the gate must refuse to tear it down. L2 (which the
+    // cache does NOT track) is evictable and removed.
+    act(() => {
+      pushDurable(sessionBus, {
+        loaded_layers: [makeWireLayer("keep-me")],
+        replace_layers: true,
+      });
+    });
+    expect(m.removeLayer).not.toHaveBeenCalledWith("L1");
+    expect(m.removeSource).not.toHaveBeenCalledWith("L1");
+    expect(m.removeLayer).toHaveBeenCalledWith("L2");
+  });
+
+  it("re-applies a persisted opacity/visibility override after a (re-)add", () => {
+    // The user hid + dimmed L1 earlier (override persisted in the cache). A
+    // fresh authoritative snapshot re-ships L1 with the server defaults
+    // (visible:true, opacity:1); the reconcile must paint it with the OVERRIDE.
+    const cache = new LayerCache({ backend: noopBackend });
+    cache.activeCaseId = "case-A";
+    cache.setOverride("case-A", "L1", { opacity: 0.25, visible: false });
+    setLayerCache(cache);
+
+    const sessionBus = makeSessionBus();
+    render(
+      <MapView
+        subscribeSessionState={
+          sessionBus.subscribe as (cb: SessionStateSubscriber) => () => void
+        }
+      />,
+    );
+    act(() => {
+      // Server defaults: visible:true (the makeWireLayer default), opacity:1.
+      pushDurable(sessionBus, {
+        loaded_layers: [makeWireLayer("L1")],
+        replace_layers: true,
+      });
+    });
+    const m = lastMapMock!;
+    // The raster layer was added with the OVERRIDE opacity + hidden visibility.
+    const addCall = m.addLayer.mock.calls.find(
+      (c) => (c[0] as { id: string }).id === "L1",
+    );
+    expect(addCall).toBeTruthy();
+    const def = addCall![0] as {
+      paint: { "raster-opacity": number };
+      layout: { visibility: string };
+    };
+    expect(def.paint["raster-opacity"]).toBe(0.25);
+    expect(def.layout.visibility).toBe("none");
+  });
+
+  it("a user opacity/visibility edit WRITES THROUGH into the shared cache", () => {
+    const cache = new LayerCache({ backend: noopBackend });
+    cache.activeCaseId = "case-A";
+    setLayerCache(cache);
+
+    const sessionBus = makeSessionBus();
+    const cmdBus = makeMapCmdBus();
+    render(
+      <MapView
+        subscribeSessionState={
+          sessionBus.subscribe as (cb: SessionStateSubscriber) => () => void
+        }
+        subscribeMapCommand={
+          cmdBus.subscribe as unknown as MapCommandSubscribeFunc
+        }
+      />,
+    );
+    act(() => {
+      pushDurable(sessionBus, {
+        loaded_layers: [makeWireLayer("L1")],
+        replace_layers: true,
+      });
+    });
+    const m = lastMapMock!;
+    m.getLayer.mockReturnValue({ id: "L1" });
+
+    // The LayerPanel user-edit map-commands flow through the bus to MapView.
+    act(() => {
+      cmdBus.push({ command: "set-layer-opacity", layer_id: "L1", opacity: 0.4 } as never);
+      cmdBus.push({ command: "set-layer-visibility", layer_id: "L1", visible: false } as never);
+    });
+    expect(cache.getOverride("case-A", "L1")).toEqual({
+      opacity: 0.4,
+      visible: false,
+    });
   });
 });
 
@@ -1262,7 +1412,11 @@ describe("MapView — vector layer rendering (job-0139)", () => {
     expect(layerDef.type).toBe("line");
   });
 
-  it("adds multiple vector layers with deterministically-different palette colors", async () => {
+  it("colours preset-less point layers by geometry family (job-3: orange, not per-id hash)", async () => {
+    // job-3: the per-layer-id random palette fallback was KILLED. An unknown
+    // style_preset now colours by GEOMETRY FAMILY (point=orange), so three
+    // preset-less point layers all read the same deterministic orange rather
+    // than three different hashed palette slots.
     const makeFc = (lng: number) => ({
       type: "FeatureCollection",
       features: [{ type: "Feature", geometry: { type: "Point", coordinates: [lng, 26.0] }, properties: {} }],
@@ -1298,12 +1452,59 @@ describe("MapView — vector layer rendering (job-0139)", () => {
       const def = (c as MockCallArgs)[0] as { paint: Record<string, unknown> };
       return def.paint["circle-color"] as string;
     });
-    // Per-species discipline: each species gets a distinct deterministic colour.
-    expect(new Set(colors).size).toBe(3);
-    // All from the palette.
+    // Geometry-family discipline: every preset-less point reads the SAME orange.
+    expect(new Set(colors).size).toBe(1);
     for (const c of colors) {
-      expect(VECTOR_PALETTE).toContain(c);
+      expect(c).toBe("#FF7F0E");
     }
+  });
+
+  it("colours a preset-less river LINE layer sky-blue via the osm_waterways preset (job-3)", async () => {
+    // The agent emits style_preset="osm_waterways" for fetch_river_geometry;
+    // two rivers from different AOIs must read the SAME sky-blue (the old hash
+    // gave them yellow vs blue).
+    const makeLineFc = (lat: number) => ({
+      type: "FeatureCollection",
+      features: [
+        {
+          type: "Feature",
+          geometry: { type: "LineString", coordinates: [[-81.0, lat], [-81.1, lat + 0.1]] },
+          properties: {},
+        },
+      ],
+    });
+    const fetchSpy = vi.spyOn(global, "fetch")
+      .mockResolvedValueOnce(makeFetchResponse(makeLineFc(30.1)))
+      .mockResolvedValueOnce(makeFetchResponse(makeLineFc(44.9)));
+
+    const sessionBus = makeSessionBus();
+    render(<MapView subscribeSessionState={sessionBus.subscribe as (cb: SessionStateSubscriber) => () => void} />);
+
+    act(() => {
+      sessionBus.push({
+        loaded_layers: [
+          makeWireVectorLayer("rivers-30.1234-87.5678", "https://ex.com/r1.geojson", { style_preset: "osm_waterways" }),
+          makeWireVectorLayer("rivers-44.9876-93.1111", "https://ex.com/r2.geojson", { style_preset: "osm_waterways" }),
+        ],
+      });
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    const m = lastMapMock!;
+    const calls = ["rivers-30.1234-87.5678", "rivers-44.9876-93.1111"].map((id) =>
+      m.addLayer.mock.calls.find((c) => ((c as MockCallArgs)[0] as { id: string }).id === id),
+    );
+    expect(calls.every((c) => c !== undefined)).toBe(true);
+    const colors = calls.map((c) => {
+      const def = (c as MockCallArgs)[0] as { paint: Record<string, unknown> };
+      return def.paint["line-color"] as string;
+    });
+    // Both rivers read the same sky-blue regardless of AOI-derived layer_id.
+    expect(colors[0]).toBe("#4477FF");
+    expect(colors[1]).toBe("#4477FF");
+    expect(colors[0]).toBe(colors[1]);
   });
 
   it("uses style_preset color when present (overrides palette)", async () => {

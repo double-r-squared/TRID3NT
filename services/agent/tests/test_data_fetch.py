@@ -2093,6 +2093,11 @@ def test_fetch_river_geometry_happy_path_returns_layer_uri(monkeypatch):
     # Provider-agnostic layer_id; renders inline (NOT published via publish_layer).
     assert layer.layer_id.startswith("rivers-")
     assert layer.name == "Rivers & Streams"
+    # job-3: the river vector carries a WATER preset (osm_waterways), mirroring
+    # fetch_roads_osm's osm_roads — NOT the continuous_dem raster ramp that was
+    # wrongly applied to this line vector (which made the web client hash a
+    # random per-layer-id colour: yellow on one AOI, blue on another).
+    assert layer.style_preset == "osm_waterways"
 
 
 def test_fetch_river_geometry_cache_key_distinct_per_bbox(monkeypatch):

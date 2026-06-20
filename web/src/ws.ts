@@ -561,7 +561,12 @@ export class GraceWs {
   private handlers: WsHandlers;
   private socket: WebSocket | null = null;
   private sessionId: string;
-  private backoffMs = 500;
+  // BUG 1b — reconnect-backoff FLOOR. Raised from 500ms to 1500ms so the FIRST
+  // reconnect after a transport drop waits longer; a burst of transport-level
+  // drops (the reconnect "storm") no longer hammers the agent at ~500ms cadence.
+  // The doubling and the 5000ms ceiling are unchanged.
+  private static readonly RECONNECT_FLOOR_MS = 1500;
+  private backoffMs = GraceWs.RECONNECT_FLOOR_MS;
   private readonly maxBackoffMs = 5000;
   private reconnectTimer: number | null = null;
   private closedByUser = false;
@@ -619,6 +624,20 @@ export class GraceWs {
   // either re-issued naturally on reconnect or meaningless once the socket is
   // gone.
   private outboundQueue: string[] = [];
+  // BUG 1b — randomness source for reconnect-delay JITTER. Defaults to
+  // Math.random; injectable so tests can seed a deterministic value. Returns a
+  // float in [0, 1) like Math.random. See scheduleReconnect for how it is
+  // mapped onto the [0.5, 1.0] delay-multiplier window.
+  private rng: () => number = Math.random;
+
+  /**
+   * BUG 1b — test-only hook to make the reconnect JITTER deterministic. Injects
+   * the [0, 1) randomness source used by scheduleReconnect. Production code
+   * never calls this (the default is Math.random).
+   */
+  __test_setRng(rng: () => number): void {
+    this.rng = rng;
+  }
 
   constructor(url: string, handlers: WsHandlers, opts?: { waker?: AgentWaker }) {
     this.url = url;
@@ -1241,7 +1260,9 @@ export class GraceWs {
       // never tear down this now-OPEN socket. MUST run before any keepalive
       // arming so the two timer families never overlap.
       this.clearConnectTimer();
-      this.backoffMs = 500;
+      // BUG 1b — reset the ladder back to the FLOOR (not a bare literal) so a
+      // successful open restores the same gentler first-reconnect delay.
+      this.backoffMs = GraceWs.RECONNECT_FLOOR_MS;
       // Auto-stop/wake — a successful open means the box is up; clear the
       // consecutive-failure counter so the next drop starts fresh (the UI
       // overlay only shows past a threshold of consecutive failures).
@@ -1921,8 +1942,16 @@ export class GraceWs {
     } catch {
       /* a UI handler throw must not wedge the reconnect loop */
     }
-    const delay = this.backoffMs;
+    // BUG 1b — JITTER the scheduled delay so many tabs/sockets do not reconnect
+    // in lockstep and a single flapping socket does not retry on a fixed
+    // cadence. The base ladder (backoffMs) still DOUBLES toward the 5000ms
+    // ceiling; only the actual wait is randomized within [0.5, 1.0] x base
+    // (i.e. up to a 50 percent earlier retry, never later than the base). With
+    // rng() in [0, 1), the factor is 0.5 + 0.5*rng() in [0.5, 1.0).
+    const base = this.backoffMs;
     this.backoffMs = Math.min(this.backoffMs * 2, this.maxBackoffMs);
+    const jitterFactor = 0.5 + 0.5 * this.rng();
+    const delay = Math.round(base * jitterFactor);
     this.reconnectTimer = window.setTimeout(() => {
       this.reconnectTimer = null;
       this.openSocket("connecting");

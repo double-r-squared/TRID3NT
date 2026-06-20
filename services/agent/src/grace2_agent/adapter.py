@@ -2528,6 +2528,7 @@ __all__ = [
     "SYSTEM_PROMPT",
     "build_client",
     "build_contents_from_history",
+    "build_layers_present_note",
     "build_function_call_content",
     "build_function_response_content",
     "build_tool_declarations",
