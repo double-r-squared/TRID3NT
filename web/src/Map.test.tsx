@@ -21,6 +21,14 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, act } from "@testing-library/react";
 import { MapView, type MapCommandSubscribeFunc, type SessionStateSubscriber } from "./Map";
+// JOB WEB-ANIM (#157.1) — the module-level controller whose frame-visibility
+// emitter Map.tsx registers, so frames drive MapLibre visibility independent of
+// the LayerPanel's lifetime.
+import {
+  AnimationController,
+  setAnimationController,
+  getAnimationController,
+} from "./lib/animation_controller";
 // job-0179 — drive the shared LayerCache singleton MapView reads for the
 // teardown gate (allowsEvict) + persisted view-override re-apply.
 import { LayerCache, setLayerCache } from "./lib/layer_cache";
@@ -920,6 +928,57 @@ describe("MapView — map-command zoom-to handler (job-0068 change 5 client side
       geometry: { coordinates: number[][][] };
     };
     expect(swapped.geometry.coordinates[0]![0]).toEqual([-122.5, 37.7]);
+  });
+
+  // JOB WEB-AOI-LEGEND (#159) — SINGLE rectangle: a STALE moveend/idle redraw
+  // queued by an EARLIER (smaller) zoom-to must NOT redraw its old corners over
+  // a newer (floored, larger) zoom-to's extent. The redraw closure now reads the
+  // CURRENT corners (lastZoomToCorners), so a late callback re-asserts the LATEST
+  // extent — not the stale small box (the "small box + large box both show" bug).
+  it("a stale moveend redraw from an earlier zoom-to draws the CURRENT (latest) corners, not the old ones", () => {
+    const mapCmdBus = makeMapCmdBus();
+    render(
+      <MapView
+        subscribeMapCommand={mapCmdBus.subscribe as MapCommandSubscribeFunc}
+      />,
+    );
+    const m = lastMapMock!;
+
+    // First (SMALL) zoom-to — arms a moveend redraw closing over the small bbox.
+    act(() => {
+      mapCmdBus.push({
+        command: "zoom-to",
+        args: { bbox: [-81.91, 26.55, -81.75, 26.69] },
+      });
+    });
+    const staleMoveend = m.once.mock.calls.find(
+      (c) => (c as MockCallArgs)[0] === "moveend",
+    ) as MockCallArgs | undefined;
+    expect(staleMoveend).toBeDefined();
+
+    // Second (LARGER, floored) zoom-to replaces the extent via setData.
+    const setData = m._sourceSetData.get("grace2-analysis-extent")!;
+    act(() => {
+      mapCmdBus.push({
+        command: "zoom-to",
+        args: { bbox: [-122.6, 37.4, -122.2, 37.9] },
+      });
+    });
+
+    // Now fire the FIRST (stale) zoom-to's queued moveend callback. It must
+    // redraw the CURRENT large corners (lastZoomToCorners), never the stale
+    // small ones — so the map only ever shows the latest single rectangle.
+    setData.mockClear();
+    act(() => {
+      (staleMoveend![1] as () => void)();
+    });
+    expect(setData).toHaveBeenCalled();
+    const redrawn = setData.mock.calls[setData.mock.calls.length - 1]![0] as {
+      geometry: { coordinates: number[][][] };
+    };
+    // First ring corner = the LARGE bbox's [minLon, minLat], NOT the small one.
+    expect(redrawn.geometry.coordinates[0]![0]).toEqual([-122.6, 37.4]);
+    expect(redrawn.geometry.coordinates[0]![0]).not.toEqual([-81.91, 26.55]);
   });
 
   it("self-heals a half-built extent: re-adds a missing line layer when the source already exists", () => {
@@ -2778,5 +2837,89 @@ describe("LayerPanel ↔ MapView end-to-end over the App bus (job-0258)", () => 
     });
 
     expect(m.moveLayer.mock.calls.map((c: MockCallArgs) => c[0])).toEqual(["layer-a", "layer-b"]);
+  });
+});
+
+describe("MapView ↔ AnimationController frame-visibility emitter (JOB WEB-ANIM #157.1)", () => {
+  beforeEach(() => {
+    lastMapMock = null;
+    // Fresh controller per test (process-global singleton).
+    setAnimationController(new AnimationController());
+  });
+
+  it("registers a frame-visibility emitter that flips MapLibre layer visibility", () => {
+    const sessionBus = makeSessionBus();
+    render(
+      <MapView
+        subscribeSessionState={sessionBus.subscribe as (cb: SessionStateSubscriber) => () => void}
+      />,
+    );
+    // Add three frame layers so the map "knows" them (getLayer returns truthy).
+    act(() => {
+      sessionBus.push({
+        loaded_layers: [
+          makeWireLayer("f01"),
+          makeWireLayer("f03"),
+          makeWireLayer("f06"),
+        ],
+      });
+    });
+    const m = lastMapMock!;
+    m.setLayoutProperty.mockClear();
+
+    // Drive the controller as the panel/scrubber/auto-play would: show frame 1
+    // (f03), hide the others. The emitter Map.tsx registered must translate this
+    // into setLayoutProperty visibility calls on the live map.
+    act(() => {
+      getAnimationController().setGroups([
+        {
+          key: "grp",
+          label: "HRRR precip",
+          layerIds: ["f01", "f03", "f06"],
+          frameLabels: ["F+01h", "F+03h", "F+06h"],
+        },
+      ]);
+      getAnimationController().stepGroupTo("grp", 1);
+    });
+
+    const calls = m.setLayoutProperty.mock.calls as MockCallArgs[];
+    const visById = new Map<string, string>();
+    for (const [id, prop, val] of calls) {
+      if (prop === "visibility") visById.set(id as string, val as string);
+    }
+    // f03 visible; f01 + f06 hidden — the single-visible-frame contract.
+    expect(visById.get("f03")).toBe("visible");
+    expect(visById.get("f01")).toBe("none");
+    expect(visById.get("f06")).toBe("none");
+  });
+
+  it("unregisters the emitter on unmount (no map writes after teardown)", () => {
+    const sessionBus = makeSessionBus();
+    const view = render(
+      <MapView
+        subscribeSessionState={sessionBus.subscribe as (cb: SessionStateSubscriber) => () => void}
+      />,
+    );
+    act(() => {
+      sessionBus.push({ loaded_layers: [makeWireLayer("f01"), makeWireLayer("f03")] });
+    });
+    const m = lastMapMock!;
+    act(() => {
+      view.unmount();
+    });
+    m.setLayoutProperty.mockClear();
+    // After unmount the emitter is gone; stepping must not touch the map.
+    act(() => {
+      getAnimationController().setGroups([
+        {
+          key: "grp",
+          label: "x",
+          layerIds: ["f01", "f03"],
+          frameLabels: ["a", "b"],
+        },
+      ]);
+      getAnimationController().stepGroupTo("grp", 0);
+    });
+    expect(m.setLayoutProperty).not.toHaveBeenCalled();
   });
 });

@@ -62,6 +62,13 @@ import { readLayerVisibilityOverrides } from "./LayerPanel";
 // setOverride so they survive a re-render. This SUBSUMES the localStorage
 // `grace2.layerVisibility` override map (still read above for back-compat).
 import { getLayerCache } from "./lib/layer_cache";
+// JOB WEB-ANIM (#157.1) — the module-level sequence-animation controller. The
+// frame-advance playback used to live inside LayerPanel/SequenceScrubber, so
+// closing/unmounting the panel killed the animation. The controller now holds
+// the playback state + interval OUTSIDE the React tree; Map.tsx (always mounted)
+// registers the frame-visibility emitter so frames keep advancing on the map
+// even while the Layers panel is closed.
+import { getAnimationController } from "./lib/animation_controller";
 import { FeaturePopup, type FeaturePopupData, type FeatureAttribute } from "./components/FeaturePopup";
 import { useIsMobile } from "./hooks/useIsMobile";
 import {
@@ -2755,6 +2762,17 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
             // after the clear — otherwise the AOI box persists after leaving the
             // Case (user-reported). Bail when the corners were cleared.
             if (lastZoomToCorners.current === null) return;
+            // JOB WEB-AOI-LEGEND (#159) — SINGLE rectangle, replace-on-new. This
+            // closure used to draw the per-invocation captured `corners`. A
+            // moveend/idle callback queued by an EARLIER (smaller) zoom-to could
+            // therefore fire AFTER a newer (floored, larger) zoom-to had already
+            // setData-replaced the extent, redrawing the STALE small box over the
+            // new large one — the "small box + large box both show" symptom. We
+            // now always draw the CURRENT corners (lastZoomToCorners.current), so
+            // a late callback re-asserts the latest extent instead of a stale
+            // one. drawAnalysisExtent setData-replaces the single source, so the
+            // map only ever holds one rectangle.
+            const liveCorners = lastZoomToCorners.current;
             // INCIDENT FIX 2026-06-16: gate the AOI draw on the mapStyleReady
             // LATCH, not raw isStyleLoaded() — a hung raster tile keeps
             // isStyleLoaded() false forever and would stall the bounding-box
@@ -2765,7 +2783,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
               return;
             }
             try {
-              drawAnalysisExtent(map.current, corners);
+              drawAnalysisExtent(map.current, liveCorners);
             } catch (err) {
               // Mid style-mutation race; re-schedule rather than drop. Bounded
               // so a permanently-broken style cannot loop forever.
@@ -2881,6 +2899,38 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       }
     });
   }, [subscribeMapCommand]);
+
+  // JOB WEB-ANIM (#157.1) — register the sequence-animation frame-visibility
+  // emitter. The module-level AnimationController holds the playback state + the
+  // advance interval OUTSIDE the React tree (so closing the LayerPanel no longer
+  // stops playback); whenever it changes the active frame it calls this emitter
+  // to flip MapLibre layer visibility directly. Showing frame `visibleIndex`
+  // means: that member visible, every sibling hidden. We ALSO write each member's
+  // visibility through the layer cache (the seatbelt) so a reconcile/reconnect
+  // re-asserts the single-visible-frame state. Mounted once with the map; the
+  // emitter no-ops until the map style is ready. Map.tsx is always mounted, so
+  // frames keep advancing on the map while the panel is closed.
+  useEffect(() => {
+    const controller = getAnimationController();
+    const unregister = controller.setEmitter((layerIds, visibleIndex) => {
+      const m = map.current;
+      if (!m) return;
+      layerIds.forEach((id, i) => {
+        const visible = i === visibleIndex;
+        try {
+          applyLayerVisibility(m, id, visible);
+        } catch {
+          // Layer not on the style yet (mid-add) — the next session-state
+          // reconcile + the cache override below restore the right state.
+        }
+        layerCache.setOverride(layerCache.activeCaseId, id, { visible });
+      });
+    });
+    return unregister;
+    // layerCache is a stable singleton; map.current is read live. Intentionally
+    // empty deps so the emitter registers once for the map's lifetime.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // job-0321 (F43) — keep the legend anchored to the AOI box's bottom edge as
   // the camera moves. Re-project the bbox bottom-edge midpoint on every map

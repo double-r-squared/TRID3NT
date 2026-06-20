@@ -24,6 +24,7 @@ solve.
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 
 from grace2_contracts.swmm_contracts import SWMMDepthLayerURI, SWMMRunArgs
@@ -298,6 +299,74 @@ def test_full_composer_publishes_peak_and_frames(monkeypatch):
 
     # zoom-to issued before the solve.
     assert any(k == "zoom-to" for k, _ in fake.map_commands)
+
+
+# --------------------------------------------------------------------------- #
+# job AGENT-AOI (#159): the SINGLE authoritative AOI is the FLOORED bbox
+# --------------------------------------------------------------------------- #
+def _collapsed_single_building_bbox() -> tuple[float, float, float, float]:
+    """A ~15 m single-building bbox (the live geocode-collapse symptom)."""
+    cen_lon, cen_lat = -84.388, 33.749  # Atlanta-ish
+    half_lat = 7.5 / 111_320.0
+    half_lon = 7.5 / (111_320.0 * math.cos(math.radians(cen_lat)))
+    return (
+        cen_lon - half_lon,
+        cen_lat - half_lat,
+        cen_lon + half_lon,
+        cen_lat + half_lat,
+    )
+
+
+def test_emitted_zoom_to_and_peak_bbox_use_the_floored_aoi(monkeypatch):
+    """On a COLLAPSED single-building input bbox the composer emits a SINGLE
+    authoritative AOI = _enforce_min_urban_aoi(input) (floored), NOT the raw
+    input and NOT the stale postprocess/COG bbox:
+
+      - the FINAL emitted zoom-to bbox == floored,
+      - the returned peak.bbox is STAMPED to floored (so the dispatch
+        add_loaded_layer zoom-to + the persisted Case AOI agree),
+
+    so the drawn rectangle the user sees == the sim/DEM/mesh extent and a
+    re-entry snaps to the floored extent (not the collapsed geocode bbox).
+    """
+    from grace2_agent import pipeline_emitter as pe
+
+    _install_pyswmm_free_chain(monkeypatch)
+
+    tiny = _collapsed_single_building_bbox()
+    floored = M._enforce_min_urban_aoi(tiny)
+    # Precondition: the floor ACTUALLY expanded this input (the test is real).
+    assert floored != tiny
+
+    fake = _FakeEmitter()
+    token = pe._CURRENT_EMITTER.set(fake)
+    try:
+        run_args = SWMMRunArgs(bbox=tiny)
+        peak = asyncio.run(
+            M.model_urban_flood_swmm(
+                run_args,
+                dem_path="/tmp/synthetic.tif",  # skip the DEM fetch
+                building_footprints=None,
+                run_id="RID",
+            )
+        )
+    finally:
+        pe._CURRENT_EMITTER.reset(token)
+
+    # The returned peak's bbox is the FLOORED AOI, not the raw collapsed input
+    # and not the stub postprocess COG bbox (-88.0, 36.0, -87.99, 36.01).
+    assert tuple(peak.bbox) == tuple(floored)
+    assert tuple(peak.bbox) != tuple(tiny)
+
+    # EVERY emitted zoom-to used the floored AOI (the early one AND the
+    # authoritative-last one) -- none leaked the raw collapsed input.
+    zoom_bboxes = [
+        tuple(payload["bbox"]) for k, payload in fake.map_commands if k == "zoom-to"
+    ]
+    assert zoom_bboxes, "composer emitted no zoom-to"
+    assert all(bb == tuple(floored) for bb in zoom_bboxes)
+    # The FINAL (authoritative-last) zoom-to is the floored AOI.
+    assert zoom_bboxes[-1] == tuple(floored)
 
 
 def test_full_composer_peak_drop_keeps_metrics(monkeypatch):

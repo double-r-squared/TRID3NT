@@ -82,10 +82,24 @@ describe("SequenceScrubber — render + controls", () => {
     expect(onStep).toHaveBeenCalledWith(2);
   });
 
-  it("play button is NOT in the scrubber (moved to group header — item 5)", () => {
-    renderScrubber();
-    // The play button lives in the LayerPanel group header now, not the scrubber.
-    expect(screen.queryByTestId("scrubber-play")).toBeNull();
+  it("renders a play/pause button on the scrubber (JOB WEB-ANIM #157.3)", () => {
+    renderScrubber({ playing: false });
+    const play = screen.getByTestId("scrubber-play");
+    expect(play).toBeInTheDocument();
+    expect(play).toHaveAttribute("aria-label", "Play sequence");
+  });
+
+  it("the play button shows PAUSE state + fires onPlayToggle when clicked", () => {
+    const { onPlayToggle } = renderScrubber({ playing: true });
+    const play = screen.getByTestId("scrubber-play");
+    expect(play).toHaveAttribute("aria-label", "Pause sequence");
+    fireEvent.click(play);
+    expect(onPlayToggle).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables the play button for a single-frame series", () => {
+    renderScrubber({ frameLabels: ["F+01h"], activeIndex: 0 });
+    expect(screen.getByTestId("scrubber-play")).toBeDisabled();
   });
 
   it("renders nothing for an empty frame list", () => {
@@ -124,7 +138,12 @@ describe("SequenceScrubber — render + controls", () => {
   });
 });
 
-describe("SequenceScrubber — auto-play", () => {
+// JOB WEB-ANIM (#157.1) — the auto-advance INTERVAL no longer lives in the
+// scrubber; the module-level AnimationController owns it (so playback survives a
+// panel unmount). The scrubber must therefore NOT run its own timer, otherwise
+// frames would advance twice as fast (controller tick + scrubber tick). These
+// tests pin that: even with `playing`, the scrubber never auto-steps on its own.
+describe("SequenceScrubber — no internal auto-advance (controller owns the timer)", () => {
   beforeEach(() => {
     vi.useFakeTimers();
   });
@@ -133,7 +152,7 @@ describe("SequenceScrubber — auto-play", () => {
     vi.useRealTimers();
   });
 
-  it("auto-advances while playing on the cadence interval", () => {
+  it("does NOT auto-advance on its own while playing (controller drives it)", () => {
     const onStep = vi.fn();
     render(
       <SequenceScrubber
@@ -147,12 +166,13 @@ describe("SequenceScrubber — auto-play", () => {
       />,
     );
     act(() => {
-      vi.advanceTimersByTime(1000);
+      vi.advanceTimersByTime(5000);
     });
-    expect(onStep).toHaveBeenCalledWith(1); // 0 -> 1 after one tick
+    // No internal interval — the scrubber reflects state, it doesn't advance it.
+    expect(onStep).not.toHaveBeenCalled();
   });
 
-  it("does not auto-advance when paused", () => {
+  it("does not auto-advance when paused either", () => {
     const onStep = vi.fn();
     render(
       <SequenceScrubber

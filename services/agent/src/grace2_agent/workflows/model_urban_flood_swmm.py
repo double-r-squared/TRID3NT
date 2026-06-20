@@ -370,6 +370,16 @@ async def model_urban_flood_swmm(
     emitter = current_emitter()
 
     # --- Zoom-on-area-first (job-0160): the map zooms before the solve runs. ---
+    # AUTHORITATIVE AOI (job AGENT-AOI / #159): every AOI the user sees and the
+    # sim consumes is the SAME ``bbox`` - the FLOORED value from
+    # _enforce_min_urban_aoi above, not the raw geocoded ``run_args.bbox``. A
+    # collapsed single-building geocode emits an early competing zoom-to to its
+    # tiny bbox (server.py geocode snap); this floored zoom-to is emitted next so
+    # the camera + the drawn AOI rectangle land on the floored extent (the one
+    # the DEM/buildings/mesh use). The floored AOI is re-asserted as the
+    # AUTHORITATIVE LAST zoom-to just before the return (see below), and the
+    # returned peak's ``bbox`` is stamped to the SAME floored value so the
+    # dispatch add_loaded_layer zoom-to + the persisted Case AOI agree with it.
     if emitter is not None:
         try:
             await emitter.emit_map_command("zoom-to", {"bbox": list(bbox)})
@@ -739,6 +749,18 @@ async def model_urban_flood_swmm(
     # marshaling required.
     peak = await asyncio.to_thread(_publish_peak_layer, raw_peak, staging.run_id)
 
+    # --- AUTHORITATIVE AOI stamp (job AGENT-AOI / #159) ----------------------
+    # Stamp the returned peak's ``bbox`` to the SAME floored AOI the sim/DEM/
+    # buildings/mesh consumed (``bbox`` == _enforce_min_urban_aoi(run_args.bbox)),
+    # NOT the COG-derived extent that may drift from the floor by a mesh-cell snap.
+    # The dispatch-site add_loaded_layer fires a zoom-to from THIS bbox (the last
+    # live zoom-to of the turn) and the persisted Case AOI is derived from it, so
+    # this single value guarantees the drawn rectangle == the sim extent and a
+    # re-entry snaps to the floored extent rather than the collapsed geocode bbox.
+    # model_copy keeps every narration scalar + the published uri intact.
+    if tuple(peak.bbox or ()) != tuple(bbox):
+        peak = peak.model_copy(update={"bbox": tuple(bbox)})
+
     # --- Step 7b / 9b: publish + emit the per-frame animation layers OUT-OF-BAND
     # Mirrors model_flood_scenario Step-9b: each frame is a DISTINCT COG (distinct
     # runs-bucket key -> distinct published url -> no dedup collapse). Each frame
@@ -768,6 +790,22 @@ async def model_urban_flood_swmm(
     # --- Step 8: cleanup the scratch deck (COGs already uploaded) -----------
     if cleanup_deck and deck_dir_to_clean:
         _cleanup_deck_dir(deck_dir_to_clean)
+
+    # --- AUTHORITATIVE LAST zoom-to (job AGENT-AOI / #159) -------------------
+    # Re-assert the floored AOI as the FINAL composer-side zoom-to so it
+    # SUPERSEDES the early competing geocode snap (a collapsed single-building
+    # bbox) regardless of whether the peak published renderably. The dispatch
+    # add_loaded_layer below also zooms from peak.bbox (now floored), but a
+    # publish-degraded peak whose s3:// uri is dropped at the guardrail must STILL
+    # leave the floored AOI as the last camera command - so we emit it here too.
+    # Best-effort: emitter None / emit failure never affects the returned peak.
+    if emitter is not None:
+        try:
+            await emitter.emit_map_command("zoom-to", {"bbox": list(bbox)})
+        except Exception as exc:  # noqa: BLE001 - non-fatal UX hint
+            logger.warning(
+                "model_urban_flood_swmm: authoritative zoom-to emit failed: %s", exc
+            )
 
     # The PEAK SWMMDepthLayerURI is returned directly - the emit_tool_call
     # add_loaded_layer gate fires on it (a LayerURI subtype) and persists it as a

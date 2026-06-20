@@ -443,7 +443,16 @@ async def test_swmm_workflow_passes_computed_class_on_out_of_process_lane(
             cleanup_deck=False,
         )
 
-    assert result is peak
+    # job AGENT-AOI (#159): the composer stamps the FLOORED AOI onto the returned
+    # peak (here the stub peak carried no bbox), so identity is no longer the
+    # invariant - content + the authoritative AOI are. The input bbox is already
+    # above the urban floor, so the floored AOI == the input bbox.
+    assert result.layer_id == peak.layer_id
+    assert result.uri == peak.uri
+    assert result.max_depth_m == peak.max_depth_m
+    assert result.flooded_area_km2 == peak.flooded_area_km2
+    assert result.n_buildings_affected == peak.n_buildings_affected
+    assert tuple(result.bbox) == tuple(run_args.bbox)  # floored AOI stamped on
     assert captured["solver"] == "swmm"
     assert captured["compute_class"] == "large"  # 400k cells -> large tier
     # The out-of-process lane now stages an s3:// manifest (not file://) and

@@ -13,9 +13,14 @@
 // The wrapper element (data-testid "grace2-layer-legend") is now a full-bleed,
 // click-through container; the positioned/sized card is the KEY element.
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, within } from "@testing-library/react";
-import { LayerLegend } from "./components/LayerLegend";
+import {
+  LayerLegend,
+  MOBILE_LEGEND_PILL_BOTTOM_CSS,
+  MOBILE_LEGEND_PILL_CLEARANCE_PX,
+  DESKTOP_LEGEND_PILL_BOTTOM_PX,
+} from "./components/LayerLegend";
 import { ProjectLayerSummary } from "./contracts";
 
 function makeLayer(overrides: Partial<ProjectLayerSummary> = {}): ProjectLayerSummary {
@@ -448,6 +453,71 @@ describe("LayerLegend — compact / flatten + hide toggles", () => {
     expect(screen.getAllByTestId("layer-legend-hide")).toHaveLength(1);
     // But every key has its own compact toggle.
     expect(screen.getAllByTestId("layer-legend-compact-toggle")).toHaveLength(2);
+  });
+});
+
+// --- JOB WEB-AOI-LEGEND (#157) — "Show legend" pill clears the chat composer  //
+//
+// The collapsed re-open pill must NOT overlap the mobile chat composer (the
+// bottom-sheet input form). On mobile it lifts above the composer (safe-area
+// inset + clearance); on desktop (no bottom sheet) it keeps the low position.
+describe("LayerLegend — Show-legend pill position vs mobile composer (#157)", () => {
+  /** Mock useIsMobile's media query (max-width:767px) match for one render. */
+  function mockIsMobile(mobile: boolean): () => void {
+    const original = window.matchMedia;
+    window.matchMedia = ((query: string) => ({
+      matches: query.includes("max-width") ? mobile : false,
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })) as unknown as typeof window.matchMedia;
+    return () => {
+      window.matchMedia = original;
+    };
+  }
+
+  it("the mobile pill offset references the safe-area inset + a positive clearance", () => {
+    // Source-of-truth: a calc() over the device safe-area inset plus a fixed
+    // clearance that lifts the pill clear of the bottom-sheet composer. (jsdom's
+    // CSSOM drops calc(env(...)) from an inline `bottom`, so we pin the exported
+    // constant directly — the same convention Chat's SHEET_BOTTOM_OFFSET_CSS uses.)
+    expect(MOBILE_LEGEND_PILL_CLEARANCE_PX).toBeGreaterThan(DESKTOP_LEGEND_PILL_BOTTOM_PX);
+    expect(MOBILE_LEGEND_PILL_BOTTOM_CSS).toBe(
+      `calc(env(safe-area-inset-bottom) + ${MOBILE_LEGEND_PILL_CLEARANCE_PX}px)`,
+    );
+    expect(MOBILE_LEGEND_PILL_BOTTOM_CSS).toContain("env(safe-area-inset-bottom)");
+  });
+
+  it("keeps the pill at the low bottom-center position on DESKTOP", () => {
+    const restore = mockIsMobile(false);
+    try {
+      render(<LayerLegend layers={[makeLayer()]} />);
+      fireEvent.click(screen.getByTestId("layer-legend-hide"));
+      const pill = screen.getByTestId("grace2-layer-legend-show");
+      // Desktop: original low position (a bare px value jsdom stores fine),
+      // no composer to clear.
+      expect(pill.style.bottom).toBe(`${DESKTOP_LEGEND_PILL_BOTTOM_PX}px`);
+    } finally {
+      restore();
+    }
+  });
+
+  it("does NOT use the bare desktop 24px position on MOBILE (would overlap the composer)", () => {
+    const restore = mockIsMobile(true);
+    try {
+      render(<LayerLegend layers={[makeLayer()]} />);
+      fireEvent.click(screen.getByTestId("layer-legend-hide"));
+      const pill = screen.getByTestId("grace2-layer-legend-show");
+      // The mobile branch sets a calc(env(...)) value; jsdom drops it to "" — the
+      // key invariant is it is NOT the desktop 24px that overlapped the form.
+      expect(pill.style.bottom).not.toBe(`${DESKTOP_LEGEND_PILL_BOTTOM_PX}px`);
+    } finally {
+      restore();
+    }
   });
 });
 

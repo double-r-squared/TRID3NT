@@ -24,6 +24,16 @@ import {
 } from "./LayerPanel";
 import { ProjectLayerSummary, SessionStatePayload } from "./contracts";
 import { LayerCache, setLayerCache } from "./lib/layer_cache";
+// JOB WEB-ANIM (#157.1) — the sequence playback now lives in the module-level
+// AnimationController; LayerPanel pushes its detected groups in + steps through
+// it (the controller drives the map via an emitter, not via onMapCommand). Tests
+// reset the controller per-test and register a stub emitter to observe stepping.
+import {
+  AnimationController,
+  setAnimationController,
+  getAnimationController,
+  type FrameVisibilityEmitter,
+} from "./lib/animation_controller";
 
 // Job 4 made layer visibility/opacity/order read from a SHARED LayerCache
 // singleton (getLayerCache()). A prior test that writes a view-override into
@@ -43,6 +53,9 @@ const moduleNoopBackend = {
 
 beforeEach(() => {
   setLayerCache(new LayerCache({ backend: moduleNoopBackend }));
+  // JOB WEB-ANIM — reset the shared AnimationController so playback / frame
+  // state from one test never leaks into the next (it is a process-global).
+  setAnimationController(new AnimationController());
   try {
     localStorage.clear();
   } catch {
@@ -1109,38 +1122,13 @@ describe("LayerPanel — sequential group row rendering", () => {
     );
   });
 
-  it("scrubber NEXT arrow steps to the next frame and emits visibility toggles", () => {
-    const onMapCommand = vi.fn<(cmd: MapCommandPayload) => void>();
-    render(
-      <LayerPanel
-        initialLayers={[
-          { ...makeFrame(1), visible: false },
-          { ...makeFrame(3), visible: false },
-          { ...makeFrame(6), visible: true }, // already single-framed on the last
-        ]}
-        onMapCommand={onMapCommand}
-      />,
-    );
-    onMapCommand.mockClear();
-    // From frame 3/3 (F+06h), NEXT wraps to frame 1/3 (F+01h).
-    // Step arrows are now on the scrubber (not the group header row).
-    fireEvent.click(screen.getByTestId("scrubber-next"));
-    expect(screen.getByTestId("layer-group-frame-label")).toHaveTextContent("1/3");
-    // It showed F+01h and hid F+06h via set-layer-visibility emissions.
-    const cmds = onMapCommand.mock.calls.map((c) => c[0]);
-    expect(cmds).toContainEqual({
-      command: "set-layer-visibility",
-      layer_id: "run-a-f01",
-      visible: true,
-    });
-    expect(cmds).toContainEqual({
-      command: "set-layer-visibility",
-      layer_id: "run-a-f06",
-      visible: false,
-    });
-  });
-
-  it("scrubber PREV arrow steps to the previous frame (wraps at the start)", () => {
+  // JOB WEB-ANIM (#157.1) — the step ARROWS now live on the App-owned scrubber,
+  // not inside LayerPanel. Frame stepping drives the module-level controller,
+  // which advances the ACTIVE group + drives the map via its emitter. Advancing
+  // the controller updates the panel header's x/N readout (the panel mirrors the
+  // controller's frame). (Scrubber DOM-arrow tests live in SequenceScrubber +
+  // the controller's own unit tests.)
+  it("advancing the controller updates the group header x/N (panel mirrors it)", () => {
     render(
       <LayerPanel
         initialLayers={[
@@ -1150,9 +1138,11 @@ describe("LayerPanel — sequential group row rendering", () => {
         ]}
       />,
     );
-    // From 3/3, PREV → 2/3. Arrows now on the scrubber.
-    fireEvent.click(screen.getByTestId("scrubber-prev"));
-    expect(screen.getByTestId("layer-group-frame-label")).toHaveTextContent("2/3");
+    // Default = 3/3 (last frame). advanceActive(1) wraps to 1/3.
+    act(() => {
+      getAnimationController().advanceActive(1);
+    });
+    expect(screen.getByTestId("layer-group-frame-label")).toHaveTextContent("1/3");
   });
 
   it("header has NO step arrows (they live on the scrubber — item 5)", () => {
@@ -1196,100 +1186,91 @@ describe("LayerPanel — sequential group row rendering", () => {
   });
 
   it("collapses an all-visible stack down to a single visible frame on mount", () => {
-    const onMapCommand = vi.fn<(cmd: MapCommandPayload) => void>();
+    // JOB WEB-ANIM (#157.1) — the map is now driven by the controller's emitter
+    // (show frame i, hide the rest), NOT by onMapCommand. Register a stub emitter
+    // BEFORE mount and assert the panel collapses the all-visible stack to the
+    // default (last) frame: the emitter is called with the full member list +
+    // visibleIndex = 2 (F+06h).
+    const emitted: Array<{ ids: string[]; idx: number }> = [];
+    const emitter: FrameVisibilityEmitter = (ids, idx) =>
+      emitted.push({ ids: [...ids], idx });
+    getAnimationController().setEmitter(emitter);
     // All three start visible (the server published them all) — the group must
     // hide all but the default (last) frame so the map shows one overlay.
-    render(
-      <LayerPanel
-        initialLayers={[makeFrame(1), makeFrame(3), makeFrame(6)]}
-        onMapCommand={onMapCommand}
-      />,
-    );
-    const cmds = onMapCommand.mock.calls.map((c) => c[0]);
-    // F+01h and F+03h hidden; F+06h (default last frame) stays visible.
-    expect(cmds).toContainEqual({
-      command: "set-layer-visibility",
-      layer_id: "run-a-f01",
-      visible: false,
+    act(() => {
+      render(
+        <LayerPanel initialLayers={[makeFrame(1), makeFrame(3), makeFrame(6)]} />,
+      );
     });
-    expect(cmds).toContainEqual({
-      command: "set-layer-visibility",
-      layer_id: "run-a-f03",
-      visible: false,
-    });
+    // The emitter was driven to show only the last frame (index 2 of 3).
+    expect(emitted.length).toBeGreaterThan(0);
+    const last = emitted[emitted.length - 1]!;
+    expect(last.ids).toEqual(["run-a-f01", "run-a-f03", "run-a-f06"]);
+    expect(last.idx).toBe(2);
+    // The panel reducer also reflects the single-visible-frame state: expand to
+    // confirm only the last frame's sub-row is the active one.
+    fireEvent.click(screen.getByTestId("layer-group-expand"));
+    const frames = screen.getAllByTestId("layer-group-frame");
+    expect(frames[2]).toHaveAttribute("data-active", "true");
+    expect(frames[0]).toHaveAttribute("data-active", "false");
   });
 });
 
-describe("LayerPanel — sequence scrubber mounting", () => {
+// JOB WEB-ANIM (#157.2) — the SCRUBBER no longer lives inside LayerPanel. It is
+// rendered by App.tsx from the shared controller so it survives panel close. The
+// LayerPanel's role is to DETECT groups + push them into the controller; these
+// tests verify that contract (and that the panel itself no longer mounts the
+// scrubber). (Scrubber DOM behaviour is covered in SequenceScrubber.test.tsx;
+// the App-level "renders when animating + panel closed" coverage lives in
+// App.sequenceScrubber.test.tsx.)
+describe("LayerPanel — pushes groups to the controller (scrubber is App-owned)", () => {
   afterEach(() => {
     try { localStorage.clear(); } catch { /* ignore */ }
   });
 
-  it("mounts the bottom-center scrubber when a sequential group is active", () => {
+  it("does NOT render the scrubber itself anymore (App renders it)", () => {
     render(
       <LayerPanel initialLayers={[makeFrame(1), makeFrame(3), makeFrame(6)]} />,
     );
-    expect(screen.getByTestId("grace2-sequence-scrubber")).toBeInTheDocument();
-  });
-
-  it("does NOT mount the scrubber when there is no sequential group", () => {
-    render(<LayerPanel initialLayers={[makeLayer("flood")]} />);
+    // The panel no longer mounts the scrubber overlay; App owns it now.
     expect(screen.queryByTestId("grace2-sequence-scrubber")).toBeNull();
   });
 
-  it("the scrubber slider steps the group (drives the same visibility toggle)", () => {
-    const onMapCommand = vi.fn<(cmd: MapCommandPayload) => void>();
-    render(
-      <LayerPanel
-        initialLayers={[
-          { ...makeFrame(1), visible: false },
-          { ...makeFrame(3), visible: false },
-          { ...makeFrame(6), visible: true },
-        ]}
-        onMapCommand={onMapCommand}
-      />,
-    );
-    onMapCommand.mockClear();
-    // Drag the scrubber slider to index 0 (F+01h).
-    fireEvent.change(screen.getByTestId("scrubber-slider"), {
-      target: { value: "0" },
+  it("pushes the detected sequential group into the shared controller", () => {
+    act(() => {
+      render(
+        <LayerPanel initialLayers={[makeFrame(1), makeFrame(3), makeFrame(6)]} />,
+      );
     });
-    // Item 4: scrubber frame label shows only x/N (not full frame label text).
-    expect(screen.getByTestId("scrubber-frame-label")).toHaveTextContent("1/3");
-    const cmds = onMapCommand.mock.calls.map((c) => c[0]);
-    expect(cmds).toContainEqual({
-      command: "set-layer-visibility",
-      layer_id: "run-a-f01",
-      visible: true,
-    });
+    const ctrl = getAnimationController();
+    const groups = ctrl.getGroups();
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.layerIds).toEqual([
+      "run-a-f01",
+      "run-a-f03",
+      "run-a-f06",
+    ]);
+    // Active group + default frame (last) are set so App can render the scrubber.
+    expect(ctrl.getActiveGroup()?.key).toBe(groups[0]?.key);
+    expect(ctrl.frameIndexFor(groups[0]!.key)).toBe(2);
   });
 
-  // FLAG (a) — LayerPanel forwards the lifted `aoiRect` to the scrubber, which
-  // pins itself bottom-center of the AOI bbox (left = center x, top = bottom+12)
-  // instead of the viewport bottom-center fallback.
-  it("forwards aoiRect to the scrubber so it pins to the AOI bbox bottom-center", () => {
-    render(
-      <LayerPanel
-        initialLayers={[makeFrame(1), makeFrame(3), makeFrame(6)]}
-        aoiRect={{ left: 200, top: 100, right: 400, bottom: 300 }}
-      />,
-    );
-    const scrubber = screen.getByTestId("grace2-sequence-scrubber");
-    expect(scrubber.style.position).toBe("fixed");
-    // center x = (200 + 400) / 2 = 300; top = bottom (300) + 12 = 312.
-    expect(scrubber.style.left).toBe("300px");
-    expect(scrubber.style.top).toBe("312px");
-    expect(scrubber.style.transform).toBe("translateX(-50%)");
+  it("registers NO group when there is no sequential series", () => {
+    act(() => {
+      render(<LayerPanel initialLayers={[makeLayer("flood")]} />);
+    });
+    expect(getAnimationController().getGroups()).toHaveLength(0);
+    expect(getAnimationController().getActiveGroup()).toBeNull();
   });
 
-  it("falls back to viewport bottom-center when no aoiRect is supplied", () => {
+  it("the group header play button toggles the controller's playing state", () => {
     render(
       <LayerPanel initialLayers={[makeFrame(1), makeFrame(3), makeFrame(6)]} />,
     );
-    const scrubber = screen.getByTestId("grace2-sequence-scrubber");
-    // No aoiRect -> bottom:24 + left:50% (the prior static placement).
-    expect(scrubber.style.bottom).toBe("24px");
-    expect(scrubber.style.left).toBe("50%");
-    expect(scrubber.style.top).toBe("");
+    expect(getAnimationController().isPlaying()).toBe(false);
+    fireEvent.click(screen.getByTestId("layer-group-play"));
+    expect(getAnimationController().isPlaying()).toBe(true);
+    fireEvent.click(screen.getByTestId("layer-group-play"));
+    expect(getAnimationController().isPlaying()).toBe(false);
   });
 });

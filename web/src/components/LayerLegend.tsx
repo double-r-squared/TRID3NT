@@ -57,6 +57,18 @@ import {
   parseTitilerTileStyle,
   type ParsedRescale,
 } from "../lib/titiler_colormap";
+import { useIsMobile } from "../hooks/useIsMobile";
+
+// JOB WEB-AOI-LEGEND (#157) — the collapsed "Show legend" pill must clear the
+// mobile chat composer (the bottom-sheet at the foot of the screen). The pill
+// is portaled to document.body with position:fixed, so on mobile we lift it
+// above the composer by the device safe-area inset PLUS a fixed clearance that
+// clears the collapsed sheet (drag handle + composer card + the sheet's own
+// SHEET_BOTTOM_OFFSET lift). On desktop the chat is a right-side panel, not a
+// bottom sheet, so the pill keeps its original low bottom-center position.
+export const MOBILE_LEGEND_PILL_CLEARANCE_PX = 96;
+export const MOBILE_LEGEND_PILL_BOTTOM_CSS = `calc(env(safe-area-inset-bottom) + ${MOBILE_LEGEND_PILL_CLEARANCE_PX}px)`;
+export const DESKTOP_LEGEND_PILL_BOTTOM_PX = 24;
 
 export interface LayerLegendProps {
   /** Ordered layer list, top-of-stack first (same order as LayerPanel). */
@@ -227,6 +239,10 @@ export function LayerLegend({
 }: LayerLegendProps): JSX.Element | null {
   // One key per eligible raster layer, in stack order.
   const keyModels = useMemo(() => selectKeyModels(layers), [layers]);
+
+  // JOB WEB-AOI-LEGEND (#157) — lift the collapsed "Show legend" pill above the
+  // mobile chat composer so it does not overlap the bottom-sheet input form.
+  const isMobile = useIsMobile();
 
   // Per-key interactive state, keyed by layer_id so it survives reorders.
   const [uiState, setUiState] = useState<Record<string, KeyUiState>>({});
@@ -453,7 +469,12 @@ export function LayerLegend({
         onClick={() => setHidden(false)}
         style={{
           position: "fixed",
-          bottom: 24,
+          // JOB WEB-AOI-LEGEND (#157) — on mobile, sit ABOVE the chat composer
+          // (safe-area inset + clearance for the collapsed sheet); on desktop
+          // keep the original low bottom-center position (no bottom sheet).
+          bottom: isMobile
+            ? MOBILE_LEGEND_PILL_BOTTOM_CSS
+            : DESKTOP_LEGEND_PILL_BOTTOM_PX,
           left: "50%",
           transform: "translateX(-50%)",
           padding: "5px 12px",

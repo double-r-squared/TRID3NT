@@ -58,7 +58,6 @@ import {
   SessionStatePayload,
 } from "./contracts";
 import { ConfirmationDialog } from "./components/ConfirmationDialog";
-import { SequenceScrubber } from "./components/SequenceScrubber";
 import type { ScreenRect } from "./lib/legend_snap";
 import {
   IconClose,
@@ -81,6 +80,12 @@ import {
 // back-compat). The cache resolves the active Case via its own `.activeCaseId`,
 // which App.tsx keeps in lockstep.
 import { getLayerCache } from "./lib/layer_cache";
+// JOB WEB-ANIM (#157.1) — the module-level playback controller + its React
+// binding. The LayerPanel pushes its detected sequential groups into the
+// controller and reads playback state from it (instead of owning the `playing`
+// flag + the advance interval), so the animation survives a panel unmount.
+import { getAnimationController } from "./lib/animation_controller";
+import { useAnimationState } from "./lib/use_animation_controller";
 
 // --- Reducer + state shape --------------------------------------------- //
 //
@@ -680,7 +685,9 @@ export function LayerPanel({
   width,
   onWidthChange,
   mobile = false,
-  aoiRect,
+  // aoiRect is kept in the props contract (App still passes it) but the
+  // SequenceScrubber it fed now lives in App.tsx (JOB WEB-ANIM #157.2), so the
+  // panel no longer consumes it. Intentionally not destructured.
 }: LayerPanelProps): JSX.Element | null {
   const initial = useMemo<LayerPanelState>(
     // F55 (job-0325): apply persisted visibility overrides at first mount too,
@@ -881,8 +888,18 @@ export function LayerPanel({
   //
   // Detect enumerated temporal raster sequences among the active layers and
   // collapse each into ONE "sequential group" row + drive a bottom scrubber.
-  // All stepping goes through the EXISTING visibility callback (show frame i,
-  // hide the rest) — no Map.tsx edits, client-side only.
+  //
+  // JOB WEB-ANIM (#157.1): the PLAYBACK state (active group / per-group frame
+  // index / playing) + the advance interval used to live HERE in LayerPanel, so
+  // closing/unmounting the panel (mobile drawer collapse, desktop close) killed
+  // the animation and dropped the scrubber. They now live in the module-level
+  // AnimationController (lib/animation_controller.ts); the LayerPanel is a
+  // CONTROL over it. The controller drives the MAP frame visibility directly
+  // (via the emitter registered in Map.tsx), so frames keep advancing while the
+  // panel is closed. The LayerPanel still mirrors the active frame into its OWN
+  // reducer + the persisted overrides so the panel rows reflect the current
+  // frame when it IS open — but it no longer emits the map-command for frame
+  // stepping (the controller is the single map driver) to avoid double-toggling.
   const groups = useMemo(
     () => detectSequentialGroups(state.layers),
     [state.layers],
@@ -895,70 +912,90 @@ export function LayerPanel({
     return s;
   }, [groups]);
 
-  // Per-group active frame index, keyed by group.key. Defaults to the LAST
-  // frame (the latest forecast hour reads as "current") on first sight.
-  const [frameByGroup, setFrameByGroup] = useState<Record<string, number>>({});
-  // Which groups are expanded (collapsible). Collapsed by default — the whole
-  // point is to shrink N rows to one tidy row.
-  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
-  // Which group the bottom scrubber drives + whether it is auto-playing. The
-  // scrubber follows the FIRST group that exists; a user can pin it by stepping.
-  const [activeGroupKey, setActiveGroupKey] = useState<string | null>(null);
-  const [playing, setPlaying] = useState(false);
+  // The shared playback controller (process-global; survives panel unmount).
+  const animController = useMemo(() => getAnimationController(), []);
+  // Subscribe so the panel re-renders when playback state changes (the scrubber
+  // play button outside the panel, auto-advance ticks, etc.).
+  const animState = useAnimationState(animController);
+  const { activeGroupKey, playing } = animState;
 
-  // Keep activeGroupKey valid as groups appear/disappear. Default to the first.
+  // Push the detected groups into the controller whenever they change. This is
+  // the panel's role as a CONTROL: it owns detection (it has the layer list);
+  // the controller owns playback. setGroups keeps the active key valid + seeds
+  // each new group's default frame (last frame) + stops play when none remain.
   useEffect(() => {
-    if (groups.length === 0) {
-      if (activeGroupKey !== null) setActiveGroupKey(null);
-      if (playing) setPlaying(false);
-      return;
-    }
-    const first = groups[0];
-    if (first && (!activeGroupKey || !groups.some((g) => g.key === activeGroupKey))) {
-      setActiveGroupKey(first.key);
-    }
-  }, [groups, activeGroupKey, playing]);
+    animController.setGroups(
+      groups.map((g) => ({
+        key: g.key,
+        label: g.label,
+        layerIds: g.layers.map((l) => l.layer_id),
+        frameLabels: g.frameLabels,
+      })),
+    );
+  }, [groups, animController]);
+
+  // Which groups are expanded (collapsible) — purely a panel-local concern, so
+  // it stays in component state. Collapsed by default (shrink N rows to one).
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
 
   /** The resolved active frame index for a group (default = last frame). */
   const frameIndexFor = useCallback(
     (g: SequentialGroup): number => {
-      const raw = frameByGroup[g.key];
-      const idx = typeof raw === "number" ? raw : g.layers.length - 1;
-      return Math.max(0, Math.min(g.layers.length - 1, idx));
+      return animController.frameIndexFor(g.key);
     },
-    [frameByGroup],
+    [animController, animState],
   );
 
   /**
-   * Step a group to frame `index`: show that member, hide every sibling. Drives
-   * the SAME `onVisibilityToggle` the row checkbox uses, so the map, the panel
-   * reducer, and the persisted override all stay consistent. No-ops on members
-   * already in the desired visibility to avoid redundant emissions.
+   * Mirror the active frame into the panel's OWN reducer + persisted overrides
+   * (show frame i, hide every sibling) WITHOUT emitting a map-command — the
+   * AnimationController emitter (registered in Map.tsx) is the single driver of
+   * the map's frame visibility. Keeps the panel rows + the legend in sync with
+   * the current frame when the panel is open.
    */
-  const stepGroupTo = useCallback(
+  const syncFrameVisibilityLocal = useCallback(
     (g: SequentialGroup, index: number): void => {
       const clamped = Math.max(0, Math.min(g.layers.length - 1, index));
-      setFrameByGroup((prev) => ({ ...prev, [g.key]: clamped }));
       g.layers.forEach((layer, i) => {
         const wantVisible = i === clamped;
         if (layer.visible !== wantVisible) {
-          onVisibilityToggle(layer.layer_id, wantVisible);
+          dispatch({
+            type: "local-visibility",
+            layer_id: layer.layer_id,
+            visible: wantVisible,
+          });
+          writeLayerVisibilityOverride(layer.layer_id, wantVisible);
+          getLayerCache().setOverride(getLayerCache().activeCaseId, layer.layer_id, {
+            visible: wantVisible,
+          });
         }
       });
     },
-    // onVisibilityToggle is a stable closure over dispatch + props (not memoized
-    // but defined once per render — listing it would re-create on every render;
-    // it only reads refs/props so omitting it is safe and matches the existing
-    // handler-call sites below).
+    // dispatch is stable; g + index are passed in. No deps needed.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
   );
 
-  // When a group first becomes active (or its frame changes externally), make
-  // sure exactly ONE frame is visible. Runs once per group key appearing — it
-  // collapses a freshly-detected N-visible stack down to a single visible frame
-  // so the map doesn't show all N overlays stacked. Guarded so it only fires
-  // when the group is NOT already single-framed (>1 visible).
+  /**
+   * Step a group to frame `index`: tell the controller (which records the frame
+   * + drives the map) AND mirror into the panel's reducer/overrides. The
+   * controller becomes the active-group target as a side effect of stepGroupTo.
+   */
+  const stepGroupTo = useCallback(
+    (g: SequentialGroup, index: number): void => {
+      const clamped = Math.max(0, Math.min(g.layers.length - 1, index));
+      animController.stepGroupTo(g.key, clamped);
+      syncFrameVisibilityLocal(g, clamped);
+    },
+    [animController, syncFrameVisibilityLocal],
+  );
+
+  // When a group first becomes active, make sure exactly ONE frame is visible.
+  // Runs once per group key appearing — collapses a freshly-detected N-visible
+  // stack down to a single visible frame (both on the map, via the controller,
+  // and in the panel reducer). Guarded so it only fires when the group is NOT
+  // already single-framed (>1 visible). Mirrors the controller's seeded default
+  // frame (last frame) so the panel + map agree.
   const initializedGroupsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     for (const g of groups) {
@@ -976,10 +1013,25 @@ export function LayerPanel({
     }
   }, [groups, stepGroupTo, frameIndexFor]);
 
-  const activeGroup = useMemo(
-    () => groups.find((g) => g.key === activeGroupKey) ?? null,
-    [groups, activeGroupKey],
-  );
+  // JOB WEB-ANIM (#157.1) — mirror the CONTROLLER's active frame back into the
+  // panel's reducer whenever the controller changes it externally (an auto-play
+  // tick or a step from the App-owned scrubber, which happen even while this
+  // panel is closed). This keeps the panel's group rows / radio dots showing the
+  // right frame when the panel IS open, without the panel owning the frame state.
+  // It does NOT emit map-commands (the controller already drove the map); it only
+  // updates the local reducer + persisted overrides via syncFrameVisibilityLocal.
+  useEffect(() => {
+    for (const g of groups) {
+      const idx = animController.frameIndexFor(g.key);
+      const visibleCount = g.layers.filter((l) => l.visible).length;
+      const activeVisible = g.layers[idx]?.visible === true;
+      // Only re-sync when the reducer disagrees with the controller (active
+      // frame not the sole visible one) — avoids redundant dispatches per tick.
+      if (!activeVisible || visibleCount !== 1) {
+        syncFrameVisibilityLocal(g, idx);
+      }
+    }
+  }, [animState, groups, animController, syncFrameVisibilityLocal]);
 
   // Tweak 2 (job-0065): hide the panel entirely when no layers are loaded.
   // Hooks must all run before this conditional return.
@@ -1139,8 +1191,10 @@ export function LayerPanel({
                 isScrubberTarget={g.key === activeGroupKey}
                 playing={playing && g.key === activeGroupKey}
                 onPlayToggle={() => {
-                  setActiveGroupKey(g.key);
-                  setPlaying((p) => !p);
+                  // Make this group the playback target, then toggle play on the
+                  // shared controller (so the interval lives outside the panel).
+                  animController.setActiveGroup(g.key);
+                  animController.togglePlaying();
                 }}
                 onToggleExpand={() =>
                   setExpandedGroups((prev) => ({
@@ -1149,7 +1203,7 @@ export function LayerPanel({
                   }))
                 }
                 onStep={(idx) => {
-                  setActiveGroupKey(g.key);
+                  // stepGroupTo already sets the controller's active group.
                   stepGroupTo(g, idx);
                 }}
                 onOpacityChange={onOpacityChange}
@@ -1170,23 +1224,14 @@ export function LayerPanel({
           </SortableContext>
         </DndContext>
       </div>
-      {/* Bottom-center SCRUBBER for the active sequential group. Rendered from
-          within LayerPanel (not App/Map) so it shares the frame state; it pins
-          itself to the AOI bbox bottom-center (when aoiRect is provided) or
-          viewport bottom-center otherwise. Stepping it drives the SAME
-          visibility toggling as the row. The play button now lives in the
-          group header (item 5) — the scrubber carries prev/track/next + x/N. */}
-      {activeGroup && (
-        <SequenceScrubber
-          label={activeGroup.label}
-          frameLabels={activeGroup.frameLabels}
-          activeIndex={frameIndexFor(activeGroup)}
-          onStep={(idx) => stepGroupTo(activeGroup, idx)}
-          playing={playing}
-          onPlayToggle={() => setPlaying((p) => !p)}
-          aoiRect={aoiRect}
-        />
-      )}
+      {/* JOB WEB-ANIM (#157.2): the bottom-center SCRUBBER is NO LONGER rendered
+          from inside LayerPanel. It now lives in App.tsx and renders WHENEVER a
+          sequence group is active on the shared AnimationController — regardless
+          of whether the Layers panel is open. (Previously it only showed when the
+          panel was mounted, so closing the panel dropped the scrubber AND, since
+          the play interval lived in the scrubber, killed the animation.) The
+          panel keeps the group ROWS (with their own play button + frame readout);
+          the floating scrubber is App-owned now. */}
       {/* F53 (job-0326): confirm-before-delete. The per-row trash control (the
           sole delete affordance, desktop + mobile) opens this dialog; the
           destructive path runs only on confirm. The dialog itself portals to

@@ -13,20 +13,28 @@
 // falls back to viewport bottom-center otherwise (mirroring the LayerLegend's
 // bottom-center fallback placement).
 //
-// Layout (item 4): `< ——●—— >` — prev-arrow, track/slider, next-arrow, plus
-// a compact `x/N` readout. The group label and frame label are omitted from
-// the scrubber (they show in the LayerPanel group row). The play button and
-// `x/N` readout are folded into the COLLAPSED group header in LayerPanel.
+// Layout: `▶ < ——●—— > x/N` — a PLAY/PAUSE toggle, prev-arrow, track/slider,
+// next-arrow, plus a compact `x/N` readout. The group label and frame label are
+// omitted from the scrubber (they show in the LayerPanel group row).
 //
-// It only appears when a sequential group is active (LayerPanel returns null
-// otherwise — see SequentialGroup detection in LayerPanel.tsx). Pure
-// presentation: all frame state + the step callback come in as props.
+// JOB WEB-ANIM (#157.3): NATE wants the play/pause button back ON the scrubber
+// (it had been folded into the LayerPanel group header). The auto-advance
+// INTERVAL no longer lives here either — the module-level AnimationController
+// owns it (so playback survives a panel unmount); this component is now pure
+// presentation that just reflects `playing` and toggles it via onPlayToggle.
+//
+// It is rendered FROM App.tsx (JOB WEB-ANIM #157.2) and appears WHENEVER a
+// sequential group is active on the controller — regardless of whether the
+// Layers panel is open. Pure presentation: all frame state + callbacks come in
+// as props.
 
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useRef } from "react";
 import { createPortal } from "react-dom";
 import {
   IconArrowLeft,
   IconArrowRight,
+  IconPlay,
+  IconPause,
 } from "./icons";
 import type { ScreenRect } from "../lib/legend_snap";
 
@@ -66,13 +74,15 @@ export function SequenceScrubber({
   activeIndex,
   onStep,
   playing,
-  onPlayToggle: _onPlayToggle, // kept in props API; play button is in group header (item 5)
-  intervalMs = 1100,
+  onPlayToggle,
+  // intervalMs is retained in the props contract for backward compatibility but
+  // is no longer used here — the AnimationController owns the advance interval.
+  intervalMs: _intervalMs,
   aoiRect,
 }: SequenceScrubberProps): JSX.Element | null {
   const n = frameLabels.length;
-  // Hold the latest active index in a ref so the play interval always advances
-  // from the current frame without re-arming the timer every step.
+  // Hold the latest active index in a ref so prev/next step from the current
+  // frame even if the parent re-renders between presses.
   const activeRef = useRef(activeIndex);
   activeRef.current = activeIndex;
   const onStepRef = useRef(onStep);
@@ -84,14 +94,6 @@ export function SequenceScrubber({
     },
     [n],
   );
-
-  // Auto-advance while playing. Re-arms only when play state / length /
-  // cadence changes — never on every frame (the ref keeps it current).
-  useEffect(() => {
-    if (!playing || n <= 1) return;
-    const id = window.setInterval(() => stepBy(1), intervalMs);
-    return () => window.clearInterval(id);
-  }, [playing, n, intervalMs, stepBy]);
 
   if (n === 0) return null;
 
@@ -126,10 +128,10 @@ export function SequenceScrubber({
   // of the AOI (or viewport fallback) while still being mounted from within
   // LayerPanel.
   //
-  // Item 4 layout: `< ——●—— >` — prev-arrow, slider/track, next-arrow.
-  // A compact `x/N` counter sits between the prev arrow and slider.
-  // The group label and frame label text are omitted (shown in LayerPanel
-  // group header instead). The play button is now in the group header too.
+  // Layout: `▶ < ——●—— > x/N` — play/pause, prev-arrow, slider/track,
+  // next-arrow, then a compact `x/N` counter. The group label + frame label
+  // text are omitted (shown in the LayerPanel group row). JOB WEB-ANIM (#157.3):
+  // the play/pause button is back on the scrubber, wired to the controller.
   return createPortal(
     <div
       data-testid="grace2-sequence-scrubber"
@@ -157,6 +159,17 @@ export function SequenceScrubber({
         maxWidth: 480,
       }}
     >
+      {/* Play / pause toggle (JOB WEB-ANIM #157.3). Drives the shared
+          AnimationController's `playing` state (App wires onPlayToggle). */}
+      <ScrubButton
+        testId="scrubber-play"
+        label={playing ? "Pause sequence" : "Play sequence"}
+        onClick={onPlayToggle}
+        disabled={n <= 1}
+      >
+        {playing ? <IconPause size={14} /> : <IconPlay size={14} />}
+      </ScrubButton>
+
       {/* Prev arrow */}
       <ScrubButton
         testId="scrubber-prev"

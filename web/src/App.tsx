@@ -37,6 +37,12 @@ import { MapView, type MapCommandSubscribeFunc, type MapTheme } from "./Map";
 import { Chat, readChatWidth } from "./Chat";
 import { LayerPanel, createLayerPanelBus, readLayersWidth } from "./LayerPanel";
 import { getLayerCache } from "./lib/layer_cache";
+// JOB WEB-ANIM (#157.2-.3) — the floating sequence scrubber now lives at the App
+// level (not inside LayerPanel) so it renders WHENEVER a sequence is animating on
+// the shared AnimationController, regardless of whether the Layers panel is open.
+import { SequenceScrubber } from "./components/SequenceScrubber";
+import { getAnimationController } from "./lib/animation_controller";
+import { useAnimationState } from "./lib/use_animation_controller";
 import type { ScreenRect } from "./lib/legend_snap";
 import {
   AuthGate,
@@ -76,7 +82,7 @@ import {
 } from "./auth";
 import { ConnectionStatus, GraceWs } from "./ws";
 import { SourceCandidatePayload } from "./lib/source_suggestion_suppression";
-import { extractLastZoomTo } from "./lib/case_zoom";
+import { extractLastZoomTo, asBbox } from "./lib/case_zoom";
 import { useCases } from "./hooks/useCases";
 import { useIsMobile } from "./hooks/useIsMobile";
 import { useSaveGate } from "./hooks/useSaveGate";
@@ -991,19 +997,26 @@ export function App(): JSX.Element {
       map_view: null,
       replace_layers: true,
     });
-    const bbox = activeSession.case.bbox;
-    if (bbox && bbox.length === 4) {
+    // JOB WEB-AOI-LEGEND (#159) — snap to the FINAL/floored AOI. Prefer
+    // `case.bbox` (the agent-AOI job now persists the FLOORED bbox there), but
+    // validate it with the SAME finite-4-number guard the zoom-to replay path
+    // uses (asBbox) — a null / malformed / non-finite persisted bbox must NOT
+    // produce a broken fitBounds; it falls through to the last zoom-to instead.
+    const caseBbox = asBbox(activeSession.case.bbox);
+    if (caseBbox) {
       bus.pushMapCommand({
         command: "zoom-to",
-        args: { bbox },
+        args: { bbox: caseBbox },
       } as unknown as MapCommandPayload);
     } else {
       // job-0280 — Case-open snap-to-location. `CaseSummary.bbox` is null in
-      // practice today, so fall back to replaying the LAST `zoom-to` the
-      // Case's persisted turns emitted (CaseChatMessage.map_command_emissions
-      // in the rehydrated chat_history) through the SAME bus → Map.tsx
-      // fitBounds path. No zoom-to anywhere in history → leave the camera
-      // alone (root/new Cases unchanged).
+      // practice today (and the agent-AOI floored bbox may not be persisted on
+      // older Cases), so fall back to replaying the LAST `zoom-to` the Case's
+      // persisted turns emitted (CaseChatMessage.map_command_emissions in the
+      // rehydrated chat_history) through the SAME bus → Map.tsx fitBounds path.
+      // extractLastZoomTo walks newest-first, so this is the LATEST (floored)
+      // zoom-to — never the first/small pre-floor one. No zoom-to anywhere in
+      // history → leave the camera alone (root/new Cases unchanged).
       const replay = extractLastZoomTo(activeSession.chat_history);
       if (replay) {
         bus.pushMapCommand(replay as unknown as MapCommandPayload);
@@ -1973,7 +1986,52 @@ export function App(): JSX.Element {
           onDismiss={saveGate.dismiss}
         />
       )}
+
+      {/* JOB WEB-ANIM (#157.2-.3) — the floating sequence SCRUBBER. Rendered at
+          the App root (always mounted) so it shows WHENEVER a sequential group is
+          active on the shared AnimationController, regardless of whether the
+          Layers panel is open/collapsed. It pins bottom-center of the AOI box via
+          aoiScreenRect. Carries its own play/pause button (item 3) wired to the
+          controller, so closing the panel never drops the scrubber or playback. */}
+      <AppSequenceScrubber aoiRect={aoiScreenRect} />
     </div>
     </AuthGuard>
+  );
+}
+
+// --- App-level sequence scrubber (JOB WEB-ANIM #157.2-.3) --------------- //
+//
+// The scrubber used to render from inside LayerPanel, so closing the panel
+// dropped it (and, since the play interval also lived there, killed playback).
+// It now lives here, driven entirely by the module-level AnimationController, so
+// it appears whenever ANY sequence is active — panel open or not. Stepping +
+// play/pause go straight to the controller (which drives the map + the interval);
+// the LayerPanel, when open, mirrors the controller's frame into its own rows.
+function AppSequenceScrubber({
+  aoiRect,
+}: {
+  aoiRect: ScreenRect | null;
+}): JSX.Element | null {
+  const controller = useMemo(() => getAnimationController(), []);
+  const anim = useAnimationState(controller);
+  const activeGroup =
+    anim.activeGroupKey != null
+      ? anim.groups.find((g) => g.key === anim.activeGroupKey) ?? null
+      : null;
+  if (!activeGroup) return null;
+  const activeIndex = controller.frameIndexFor(activeGroup.key);
+  return (
+    <SequenceScrubber
+      label={activeGroup.label}
+      frameLabels={activeGroup.frameLabels}
+      activeIndex={activeIndex}
+      onStep={(idx) => controller.stepGroupTo(activeGroup.key, idx)}
+      playing={anim.playing}
+      onPlayToggle={() => {
+        controller.setActiveGroup(activeGroup.key);
+        controller.togglePlaying();
+      }}
+      aoiRect={aoiRect}
+    />
   );
 }

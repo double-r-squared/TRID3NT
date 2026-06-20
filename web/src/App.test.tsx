@@ -17,6 +17,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { useState, useEffect, useRef } from "react";
+// JOB WEB-AOI-LEGEND (#159) — the case-open snap uses the SAME pure helpers
+// App.tsx imports: asBbox validates the persisted (floored) case.bbox; when it
+// is null/malformed the snap falls through to extractLastZoomTo (the LATEST,
+// floored zoom-to in the rehydrated chat history).
+import { asBbox, extractLastZoomTo } from "./lib/case_zoom";
+import type { CaseChatMessage } from "./contracts";
 
 // --- Minimal test harness ------------------------------------------------ //
 // Mirrors the collapse logic in App.tsx without importing WebSocket/WebGL deps.
@@ -1350,6 +1356,135 @@ describe("App — Case-exit fresh slate contract (F84)", () => {
     );
     expect(bus.commandPushes.map((c) => c.command)).toContain("clear-analysis-extent");
     expect(bus.commandPushes.map((c) => c.command)).not.toContain("zoom-to");
+  });
+});
+
+// --- JOB WEB-AOI-LEGEND (#159) — case-open snaps to the FINAL/floored bbox -- //
+//
+// App.tsx's case-open snap (App.tsx ~line 1000) now snaps to the FLOORED AOI:
+//   1. Prefer activeSession.case.bbox VALIDATED via asBbox (the agent-AOI job
+//      now persists the floored bbox there) — a null / malformed / non-finite
+//      persisted bbox must NOT produce a broken fitBounds.
+//   2. Else replay the LAST zoom-to (extractLastZoomTo walks newest-first, so
+//      it returns the latest floored zoom-to, never the first/small pre-floor).
+//   3. Else clear any stale AOI from the prior Case.
+//
+// This shell mirrors the FULL snap branch (unlike the F84 shell above, which
+// intentionally omits the replay fallback) using the SAME pure helpers App.tsx
+// imports, so the selection precedence is pinned without WebSocket/WebGL deps.
+
+type SnapSession = {
+  case: { bbox: number[] | null };
+  chat_history: CaseChatMessage[];
+};
+
+/** Mirror of App.tsx's case-open snap selection (validated case.bbox first,
+ *  else the LATEST zoom-to, else clear). Records the emitted command. */
+function CaseOpenSnapShell({
+  bus,
+  activeSession,
+}: {
+  bus: ReturnType<typeof makeRecordingBus>;
+  activeSession: SnapSession;
+}): JSX.Element {
+  useEffect(() => {
+    const caseBbox = asBbox(activeSession.case.bbox);
+    if (caseBbox) {
+      bus.pushMapCommand({ command: "zoom-to", args: { bbox: caseBbox } });
+    } else {
+      const replay = extractLastZoomTo(activeSession.chat_history);
+      if (replay) {
+        bus.pushMapCommand(replay);
+      } else {
+        bus.pushMapCommand({ command: "clear-analysis-extent" });
+      }
+    }
+  }, [activeSession, bus]);
+  return <div data-testid="case-open-snap-shell" />;
+}
+
+let snapSeq = 0;
+function snapMsg(emissions: unknown[]): CaseChatMessage {
+  snapSeq += 1;
+  return {
+    message_id: `01SNAPMSG0${String(snapSeq).padStart(16, "0")}`,
+    case_id: "01SNAPCASE000000000000000",
+    role: "agent",
+    content: "narration",
+    created_at: "2026-06-20T00:00:00Z",
+    map_command_emissions: emissions as never,
+  } as CaseChatMessage;
+}
+
+describe("App — case-open snaps to the FINAL/floored bbox (#159)", () => {
+  const SMALL: [number, number, number, number] = [-82.0, 26.55, -81.95, 26.6];
+  const FLOORED: [number, number, number, number] = [-82.2, 26.4, -81.7, 26.8];
+
+  it("prefers the persisted (floored) case.bbox when present", () => {
+    const bus = makeRecordingBus();
+    render(
+      <CaseOpenSnapShell
+        bus={bus}
+        activeSession={{
+          case: { bbox: FLOORED },
+          // A small early zoom-to in history must be IGNORED in favor of case.bbox.
+          chat_history: [snapMsg([{ command: "zoom-to", args: { bbox: SMALL } }])],
+        }}
+      />,
+    );
+    const zoom = bus.commandPushes.find((c) => c.command === "zoom-to");
+    expect(zoom).toBeDefined();
+    expect(zoom!.args!.bbox).toEqual(FLOORED);
+  });
+
+  it("falls through to the LAST (floored) zoom-to when case.bbox is null", () => {
+    const bus = makeRecordingBus();
+    render(
+      <CaseOpenSnapShell
+        bus={bus}
+        activeSession={{
+          case: { bbox: null },
+          // Newest-first: the LATER FLOORED zoom-to wins over the earlier SMALL one.
+          chat_history: [
+            snapMsg([{ command: "zoom-to", args: { bbox: SMALL } }]),
+            snapMsg([{ command: "zoom-to", args: { bbox: FLOORED } }]),
+          ],
+        }}
+      />,
+    );
+    const zoom = bus.commandPushes.find((c) => c.command === "zoom-to");
+    expect(zoom).toBeDefined();
+    expect(zoom!.args!.bbox).toEqual(FLOORED);
+  });
+
+  it("treats a MALFORMED case.bbox as absent and uses the last zoom-to (no broken fitBounds)", () => {
+    const bus = makeRecordingBus();
+    render(
+      <CaseOpenSnapShell
+        bus={bus}
+        activeSession={{
+          // Non-finite / wrong-arity persisted bbox must NOT be snapped to.
+          case: { bbox: [NaN, 26.4, -81.7, 26.8] },
+          chat_history: [snapMsg([{ command: "zoom-to", args: { bbox: FLOORED } }])],
+        }}
+      />,
+    );
+    const zoom = bus.commandPushes.find((c) => c.command === "zoom-to");
+    expect(zoom).toBeDefined();
+    expect(zoom!.args!.bbox).toEqual(FLOORED);
+  });
+
+  it("clears the stale AOI when there is no bbox AND no zoom-to in history", () => {
+    const bus = makeRecordingBus();
+    render(
+      <CaseOpenSnapShell
+        bus={bus}
+        activeSession={{ case: { bbox: null }, chat_history: [] }}
+      />,
+    );
+    const cmds = bus.commandPushes.map((c) => c.command);
+    expect(cmds).toContain("clear-analysis-extent");
+    expect(cmds).not.toContain("zoom-to");
   });
 });
 
