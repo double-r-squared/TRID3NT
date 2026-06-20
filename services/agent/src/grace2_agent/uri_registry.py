@@ -78,7 +78,7 @@ from collections import OrderedDict
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 logger = logging.getLogger("grace2_agent.uri_registry")
 
@@ -254,6 +254,22 @@ def _wms_layer_id(value: str) -> str | None:
             # Multiple layers possible; the publish convention is one.
             return vals[0].split(",")[0].strip() or None
     return None
+
+
+def _titiler_cog_uri(value: str) -> str | None:
+    """Unquote the ``url=<s3/gs COG>`` query param of a TiTiler tile template.
+
+    Mirrors :func:`pipeline_emitter._layer_identity_key`: a TiTiler display URL
+    (``https://<cf>/cog/tiles/.../{z}/{x}/{y}.png?url=s3%3A%2F%2F…``) embeds the
+    real data COG as its (URL-encoded) ``url=`` param. Returns the unquoted COG,
+    or ``None`` when there is no ``url=`` param (a foreign/malformed template).
+    """
+    try:
+        q = parse_qs(urlparse(value).query)
+    except Exception:  # noqa: BLE001 — malformed URL; treat as opaque
+        return None
+    cog = q.get("url")
+    return unquote(cog[0]) if cog and cog[0] else None
 
 
 def _basename(uri: str) -> str:
@@ -516,6 +532,27 @@ class SessionUriRegistry:
                     return rec.uri  # display URL where a data URI belongs
                 raise UriResolutionError(param_name, value, self._inventory_text())
             return v
+
+        # Branch 3-titiler — a TiTiler tile-template DISPLAY URL: the underlying
+        # data COG is the unquoted ``url=`` query param (job-0304 /
+        # _is_tile_template). Recover it so a display URL handed to a *_uri param
+        # resolves to the s3 COG instead of failing open as an unreadable
+        # https:// string (the compute_layer_bounds UNKNOWN_LAYER_URI incident).
+        # Mirrors pipeline_emitter._layer_identity_key.
+        if _is_tile_template(v):
+            cog = _titiler_cog_uri(v)
+            if cog:
+                cog_norm = _normalize_gs(cog)
+                # Prefer the registered data face if the COG is known; else use
+                # the embedded COG verbatim (it is the real object key).
+                handle = self._uri_to_handle.get(cog_norm) or self._uri_to_handle.get(
+                    cog
+                )
+                if handle is not None and self._records[handle].uri:
+                    return self._records[handle].uri
+                if _is_gs(cog_norm) or cog.startswith("s3://"):
+                    return cog
+            raise UriResolutionError(param_name, value, self._inventory_text())
 
         # Branch 3-wms — unknown WMS-style URL: recover the layer_id handle.
         if _looks_like_wms(v):

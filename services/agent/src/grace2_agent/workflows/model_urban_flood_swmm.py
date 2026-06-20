@@ -77,6 +77,61 @@ __all__ = [
 #: Inches -> mm (Atlas-14 PFDS returns inches; the hyetograph builder wants mm).
 _INCH_TO_MM: float = 25.4
 
+#: Minimum urban-flood AOI side length (m). A geocoded single-building / street-
+#: address bbox can be a few metres across (Nominatim returns the OSM feature's
+#: own footprint bbox); an urban-flood scenario needs at least a block. Below
+#: this, the bbox is EXPANDED (centred) to this side length. A normal city-block
+#: / neighbourhood AOI is already far above this, so this is a no-op except on a
+#: collapsed (single-building) bbox. Floor only; never shrinks. (D2 — the live
+#: SWMM run that bounded a single building, case 01KVH4MZ9JF7GGHQ88D5PSWZVH.)
+_MIN_URBAN_AOI_SIDE_M: float = 300.0
+
+
+def _enforce_min_urban_aoi(
+    bbox: tuple[float, float, float, float],
+) -> tuple[float, float, float, float]:
+    """Expand a too-small AOI bbox to a sensible urban-flood minimum, centred.
+
+    Floors BOTH side lengths to ``_MIN_URBAN_AOI_SIDE_M`` metres about the bbox
+    centroid (lon scaled by cos(lat) for the metres->degrees conversion). Returns
+    the bbox UNCHANGED when both sides already meet the floor. Never shrinks.
+
+    Deterministic, safe-by-construction guardrail: it only ever EXPANDS a bbox
+    below the floor and is a no-op for any reasonably-sized AOI. It cannot move
+    or shrink a normal AOI. The deeper question (the model geocoding a too-precise
+    single-building feature) is a judgment issue left for NATE; this is the
+    minimal floor that stops a collapsed AOI from solving a near-trivial grid.
+    """
+    import math
+
+    min_lon, min_lat, max_lon, max_lat = bbox
+    cen_lat = 0.5 * (min_lat + max_lat)
+    cen_lon = 0.5 * (min_lon + max_lon)
+    m_per_deg_lat = 111_320.0
+    m_per_deg_lon = 111_320.0 * max(math.cos(math.radians(cen_lat)), 1e-6)
+    width_m = (max_lon - min_lon) * m_per_deg_lon
+    height_m = (max_lat - min_lat) * m_per_deg_lat
+    if width_m >= _MIN_URBAN_AOI_SIDE_M and height_m >= _MIN_URBAN_AOI_SIDE_M:
+        return bbox
+    half_lon = 0.5 * max(width_m, _MIN_URBAN_AOI_SIDE_M) / m_per_deg_lon
+    half_lat = 0.5 * max(height_m, _MIN_URBAN_AOI_SIDE_M) / m_per_deg_lat
+    expanded = (
+        cen_lon - half_lon,
+        cen_lat - half_lat,
+        cen_lon + half_lon,
+        cen_lat + half_lat,
+    )
+    logger.info(
+        "model_urban_flood_swmm: AOI floor applied - input bbox %s was "
+        "%.0fm x %.0fm (below the %.0fm urban-flood minimum); expanded to %s",
+        bbox,
+        width_m,
+        height_m,
+        _MIN_URBAN_AOI_SIDE_M,
+        expanded,
+    )
+    return expanded
+
 
 class UrbanFloodWorkflowError(RuntimeError):
     """Raised on a fatal composer failure (carries an open-set ``error_code``)."""
@@ -264,7 +319,9 @@ async def model_urban_flood_swmm(
         fatal stage failure (the tool wrapper catches these and returns a typed
         error dict so the agent narrates honestly).
     """
-    bbox = tuple(run_args.bbox)  # (min_lon, min_lat, max_lon, max_lat)
+    bbox = _enforce_min_urban_aoi(
+        tuple(run_args.bbox)  # (min_lon, min_lat, max_lon, max_lat)
+    )
     emitter = current_emitter()
 
     # --- Zoom-on-area-first (job-0160): the map zooms before the solve runs. ---

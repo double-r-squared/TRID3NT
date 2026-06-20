@@ -292,6 +292,76 @@ class TestResolutionBranches:
 
 
 # --------------------------------------------------------------------------- #
+# 2b. TiTiler tile-template DISPLAY URL recovery (D1 — the live SWMM run, case
+#     01KVH4MZ9JF7GGHQ88D5PSWZVH: compute_layer_bounds UNKNOWN_LAYER_URI when the
+#     LLM passes a frame's display tile URL to a *_uri param instead of the COG).
+# --------------------------------------------------------------------------- #
+
+# A SWMM depth-frame COG + its TiTiler display template (the `url=` param is the
+# COG, URL-encoded, exactly as publish_layer.py:1763 builds it).
+SWMM_FRAME_COG = (
+    "s3://grace2-hazard-runs/01KVHKWETM1QMXH059QZGXP4V6/swmm_depth_frame_01.tif"
+)
+SWMM_FRAME_LAYER_ID = "swmm-depth-frame-01-01KVHKWETM1QMXH059QZGXP4V6"
+SWMM_FRAME_TILE_TEMPLATE = (
+    "https://d123abc.cloudfront.net/cog/tiles/WebMercatorQuad/{z}/{x}/{y}.png"
+    "?url=s3%3A%2F%2Fgrace2-hazard-runs%2F01KVHKWETM1QMXH059QZGXP4V6"
+    "%2Fswmm_depth_frame_01.tif&rescale=0%2C2&colormap_name=blues"
+)
+
+
+class TestTitilerTemplateRecovery:
+    def test_titiler_display_template_resolves_to_registered_cog(self) -> None:
+        """The live failure: the LLM grabs a frame's display tile URL from
+        loaded_layers and hands it to compute_layer_bounds(layer_uri=...).
+        The resolver must recover the registered COG, not fail open."""
+        reg = make_registry()
+        # publish_layer registers both faces (observe_published_layer):
+        reg.record(
+            SWMM_FRAME_LAYER_ID,
+            uri=SWMM_FRAME_COG,
+            wms_url=SWMM_FRAME_TILE_TEMPLATE,
+            tool_name="publish_layer",
+        )
+        out = reg.resolve_params(
+            "compute_layer_bounds", {"layer_uri": SWMM_FRAME_TILE_TEMPLATE}
+        )
+        assert out["layer_uri"] == SWMM_FRAME_COG
+
+    def test_titiler_template_unregistered_cog_returns_embedded_cog(self) -> None:
+        """Even with NO registered record, the embedded `url=` COG is the real
+        object key, so it is recovered verbatim (honest, deterministic)."""
+        reg = make_registry()
+        out = reg.resolve_params(
+            "compute_layer_bounds", {"layer_uri": SWMM_FRAME_TILE_TEMPLATE}
+        )
+        assert out["layer_uri"] == SWMM_FRAME_COG
+
+    def test_titiler_template_with_no_url_param_raises_typed_error(self) -> None:
+        """A tile template lacking a recoverable `url=` COG raises the typed,
+        retryable URI_HANDLE_UNRESOLVED so the LLM self-corrects."""
+        reg = make_registry()
+        reg.record(SWMM_FRAME_LAYER_ID, uri=SWMM_FRAME_COG)
+        bad = "https://d123abc.cloudfront.net/cog/tiles/WebMercatorQuad/3/2/1.png"
+        with pytest.raises(UriResolutionError):
+            reg.resolve_params("compute_layer_bounds", {"layer_uri": bad})
+
+    def test_titiler_template_does_not_disturb_handle_path(self) -> None:
+        """The already-working path (LLM passes the layer_id handle) still
+        resolves directly — the new branch is additive."""
+        reg = make_registry()
+        reg.record(
+            SWMM_FRAME_LAYER_ID,
+            uri=SWMM_FRAME_COG,
+            wms_url=SWMM_FRAME_TILE_TEMPLATE,
+        )
+        out = reg.resolve_params(
+            "compute_layer_bounds", {"layer_uri": SWMM_FRAME_LAYER_ID}
+        )
+        assert out["layer_uri"] == SWMM_FRAME_COG
+
+
+# --------------------------------------------------------------------------- #
 # 3. Cross-session isolation
 # --------------------------------------------------------------------------- #
 

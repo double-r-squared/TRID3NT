@@ -56,6 +56,7 @@ import asyncio
 import contextvars
 import logging
 import os
+import re
 from collections.abc import Awaitable, Callable
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -236,6 +237,43 @@ def _layer_identity_key(uri: str) -> str:
         return unquote(cog[0])
     # Unrecognized — keep the full uri so behavior is unchanged.
     return uri
+
+
+# --------------------------------------------------------------------------- #
+# Cross-RUN animation-frame identity (D3 — re-run frame accumulation)
+# --------------------------------------------------------------------------- #
+#
+# A re-run of a flood scenario emits the SAME "Flood depth step N" name + role
+# "context" but a NEW run-id-suffixed layer_id (...-frame-NN-<runB>) and a NEW
+# per-run COG uri (.../<runB>/..._depth_frame_NN.tif). The COG-identity dedup in
+# ``_layer_identity_key`` therefore NEVER collapses run B's frame N against run
+# A's frame N -> the connection's ``_loaded_layers`` (and the persisted case)
+# accumulate [step1, step1, step2, step2, ...] on every re-run (the live
+# 50-layer case 01KVH4MZ9JF7GGHQ88D5PSWZVH). The stable cross-run token is the
+# ``name`` ("Flood depth step N") + role="context", identical across runs for
+# BOTH SWMM (postprocess_swmm) and SFINCS (postprocess_flood). Keying frames on
+# that lets the NEWEST run's step N SUPERSEDE the prior run's step N in place.
+
+#: Matches the EXACT frame name token both engines emit ("Flood depth step N").
+_FLOOD_FRAME_NAME_RE = re.compile(r"^Flood depth step \d+$")
+
+
+def _frame_series_key(summary: "ProjectLayerSummary") -> str | None:
+    """Stable cross-RUN identity for an animation frame, else ``None``.
+
+    Returns ``"flood-frame::<name>"`` for a flood animation frame (role
+    "context" AND a ``"Flood depth step N"`` name); ``None`` for every other
+    layer (peak, vectors, basemaps) so they keep the COG-identity dedup
+    unchanged. Engine-agnostic: SWMM and SFINCS frames share the name token, so
+    both de-accumulate uniformly. A frame only ever matches another frame.
+    """
+    if (
+        summary.role == "context"
+        and isinstance(summary.name, str)
+        and _FLOOD_FRAME_NAME_RE.match(summary.name)
+    ):
+        return f"flood-frame::{summary.name}"
+    return None
 
 
 # --------------------------------------------------------------------------- #
@@ -1232,9 +1270,22 @@ class PipelineEmitter:
         # Dedup by underlying-COG identity — in-place replace if present, else
         # append. ``_layer_identity_key`` collapses two display URLs of the same
         # COG to one key; for a plain COG it is the uri itself (legacy behavior).
+        # D3: animation frames ALSO supersede the prior run's same-step frame via
+        # the (role + "Flood depth step N") series key, because a re-run's frame N
+        # is a DISTINCT COG (new run-id) and would otherwise accumulate. A frame
+        # only ever matches another frame; everything else keeps COG-identity
+        # dedup (the ``_match`` guard prevents frame/non-frame cross-collapse).
+        _new_frame_key = _frame_series_key(summary)
         _new_key = _layer_identity_key(summary.uri)
         for i, existing in enumerate(self._loaded_layers):
-            if _layer_identity_key(existing.uri) == _new_key:
+            if _new_frame_key is not None:
+                _match = _frame_series_key(existing) == _new_frame_key
+            else:
+                _match = (
+                    _frame_series_key(existing) is None
+                    and _layer_identity_key(existing.uri) == _new_key
+                )
+            if _match:
                 # Drop the SUPERSEDED layer_id's side tables (inline GeoJSON /
                 # density meta) so a merge cannot leave an orphan keyed on the
                 # old id. No-op for raster flood layers (no inline GeoJSON).
