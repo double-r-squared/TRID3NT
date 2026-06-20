@@ -2025,10 +2025,24 @@
       "description": "Mobile-demo feedback A2 follow-up flags (web): scrubber aoiRect lift Map->App->LayerPanel (ref-guarded callback, no render loop) + legend frame-truth (new lib/titiler_colormap.ts parses rescale+colormap_name from the TiTiler tile URL; gradient/labels match the painted frames; preset fallback). vitest 1482/1482, +41 tests.",
       "model": "opus",
       "subagent_tokens": 208447
+    },
+    {
+      "job_id": "wf-swmm-offbox-diagnostic-20260620",
+      "sprint": 16,
+      "description": "Read-only root-cause workflow (7 agents): off-box SWMM file:// crash (= stale deploy, confirmed via SSM), observability gap, MODFLOW same-class check (safe), SFINCS working reference, building-param obstacles->drop fumble, staged-web-batch coverage; synthesized two-card observability design + unified fix plan.",
+      "model": "opus",
+      "subagent_tokens": 649333
+    },
+    {
+      "job_id": "wf-swmm-observability-fixset-20260620",
+      "sprint": 16,
+      "description": "Build workflow (6 agents, phased file-disjoint): J-A file:// dispatch honesty guard + J-B emitter terminal-resilience, J-C1 two-card schema fields, J-C2 two-card agent emit + batch phase, J-C3 two-card web render, J-D building-param harness, + final verify. Web 1487/1487, agent pytest 5715, contracts 471.",
+      "model": "opus",
+      "subagent_tokens": 614525
     }
   ],
   "totals_by_sprint": {
-    "16": 2477898,
+    "16": 3741756,
     "6": 1265567,
     "7": 1863284,
     "8": 1786238,
