@@ -992,6 +992,27 @@ describe("CasesPanel", () => {
       expect(hasMask).toBe(true);
     });
 
+    it("the mask top is FULLY OPAQUE from 0px (first case not dimmed by the top fade)", () => {
+      // GRADIENT NUDGE (NATE): the old top-fade band (`transparent 0px ->
+      // black 20px`) dimmed the FIRST case row. The mask now starts opaque at
+      // 0px so the first case renders at full opacity; only the bottom fades.
+      renderPanel();
+      const list = screen.getByTestId("grace2-cases-list");
+      const mask =
+        list.style.maskImage ||
+        list.style.webkitMaskImage ||
+        (list.style as CSSStyleDeclaration & Record<string, string>)[
+          "WebkitMaskImage"
+        ] ||
+        "";
+      // No leading transparent->black top band (the band that covered case #1).
+      expect(mask).not.toContain("transparent 0px");
+      // Top stop is opaque at 0px.
+      expect(mask).toContain("black 0px");
+      // Bottom fade is preserved.
+      expect(mask).toContain("transparent 100%");
+    });
+
     it("the header is flex-shrink:0 (stays pinned; only list scrolls)", () => {
       // flex-shrink:0 prevents the header from collapsing when the list
       // flex:1 expands to take remaining panel height.
@@ -1269,6 +1290,59 @@ describe("useCases", () => {
     });
     expect(result.current.cases).toHaveLength(2);
     expect(result.current.cases[0]!.case_id).toBe(CASE_FORT_MYERS.case_id);
+  });
+
+  // "Cases vanish on refresh" - an EMPTY case-list that arrives over the live
+  // WS while identity is still settling (a reconnect heartbeat, or the moment
+  // before the server re-binds the anon User) is NON-authoritative: it must NOT
+  // clear a populated rail (that is the flash-empty NATE reported). Only an
+  // EXPLICIT empty result AFTER identity is confirmed bound (the authoritative
+  // cold FETCH, isAuthoritative=true) clears it.
+  it("an EMPTY non-authoritative case-list during settle does NOT clear a populated rail", () => {
+    const send = vi.fn();
+    const { result } = renderHook(() =>
+      useCases({ sendCaseCommand: send, isSignedIn: true }),
+    );
+    // Rail is populated (a good frame landed).
+    act(() => {
+      result.current.onCaseList({
+        envelope_type: "case-list",
+        cases: [CASE_FORT_MYERS, CASE_NORCAL_FIRE],
+      });
+    });
+    expect(result.current.cases).toHaveLength(2);
+    // A reconnect/settle empty frame arrives over the live WS (default
+    // isAuthoritative=false). The rail MUST be preserved.
+    act(() => {
+      result.current.onCaseList({
+        envelope_type: "case-list",
+        cases: [],
+      });
+    });
+    expect(result.current.cases).toHaveLength(2);
+    expect(result.current.cases[0]!.case_id).toBe(CASE_FORT_MYERS.case_id);
+  });
+
+  it("an EMPTY AUTHORITATIVE case-list (cold fetch after identity bound) DOES clear the rail", () => {
+    const send = vi.fn();
+    const { result } = renderHook(() =>
+      useCases({ sendCaseCommand: send, isSignedIn: true }),
+    );
+    act(() => {
+      result.current.onCaseList({
+        envelope_type: "case-list",
+        cases: [CASE_FORT_MYERS],
+      });
+    });
+    expect(result.current.cases).toHaveLength(1);
+    // Authoritative empty = genuine zero-cases answer; clears the rail.
+    act(() => {
+      result.current.onCaseList(
+        { envelope_type: "case-list", cases: [] },
+        true,
+      );
+    });
+    expect(result.current.cases).toHaveLength(0);
   });
 
   it("onCaseOpen with session_state hydrates active case + session", () => {

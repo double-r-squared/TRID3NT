@@ -384,6 +384,40 @@ function loadOrCreateSessionId(): string {
   return id;
 }
 
+/**
+ * "Cases vanish on refresh" durable fix - mint a STABLE client-owned anonymous
+ * user_id on FIRST load and persist it (a sibling of loadOrCreateSessionId).
+ *
+ * Root cause this addresses: the tab opens TWO GraceWs sockets (App + Chat),
+ * each running an independent auth handshake. With no Cognito token and no
+ * pre-existing stored anon hint, EACH connection used to make the server mint a
+ * DIFFERENT anon ULID; the last server-minted id won the localStorage write
+ * (last-write-wins) but Cases got created under whichever socket carried the
+ * user message. On refresh the case-list was scoped to one id while the cases
+ * were owned by the other -> empty rail.
+ *
+ * By minting the anon id on the CLIENT before either socket connects, both
+ * sockets present the SAME anonymous_user_id from frame one and every refresh
+ * reuses it. The server re-binds the same anonymous User -> cases stay
+ * owner-scoped. We reuse newUlid() (the same generator that mints session_id)
+ * so the value is a valid 26-char ULID the contracts package accepts.
+ */
+export function loadOrCreateAnonId(): string {
+  try {
+    const cached = window.localStorage.getItem(ANONYMOUS_USER_ID_KEY);
+    if (cached && cached.length === 26) return cached;
+  } catch {
+    // localStorage may be disabled (privacy mode)
+  }
+  const id = newUlid();
+  try {
+    window.localStorage.setItem(ANONYMOUS_USER_ID_KEY, id);
+  } catch {
+    // ignore
+  }
+  return id;
+}
+
 /** job-0172 Part C — read the persisted anonymous user_id hint, if any. */
 export function readAnonymousUserId(): string | null {
   try {
@@ -395,12 +429,26 @@ export function readAnonymousUserId(): string | null {
   }
 }
 
-/** job-0172 Part C — store the assigned anonymous user_id hint. */
+/**
+ * job-0172 Part C — store the anonymous user_id hint.
+ *
+ * "Cases vanish on refresh" fix - EARLIEST-WINS: never overwrite a non-empty
+ * stored id. The client now mints+persists a stable anon id at first load
+ * (loadOrCreateAnonId), so a later server-minted auth-ack must NEVER clobber
+ * the client-owned id (which would re-introduce the id divergence between the
+ * two sockets). Only the first writer (loadOrCreateAnonId, before any socket
+ * connects) establishes the id; subsequent writes are no-ops unless the slot
+ * is empty (e.g. localStorage was cleared mid-session).
+ */
 export function writeAnonymousUserId(userId: string): void {
   try {
-    if (userId && userId.length === 26) {
-      window.localStorage.setItem(ANONYMOUS_USER_ID_KEY, userId);
+    if (!userId || userId.length !== 26) return;
+    const existing = window.localStorage.getItem(ANONYMOUS_USER_ID_KEY);
+    if (existing && existing.length === 26) {
+      // earliest-wins: a valid id is already present; do not clobber it.
+      return;
     }
+    window.localStorage.setItem(ANONYMOUS_USER_ID_KEY, userId);
   } catch {
     // ignore
   }
@@ -643,6 +691,16 @@ export class GraceWs {
     this.url = url;
     this.handlers = handlers;
     this.sessionId = loadOrCreateSessionId();
+    // "Cases vanish on refresh" durable fix - establish the STABLE client-owned
+    // anonymous user_id the INSTANT any GraceWs is constructed (App + Chat each
+    // construct one at first load, before any socket connects). Minting it here
+    // guarantees the id exists in localStorage before maybeSendAuthToken runs on
+    // EITHER socket, so both present the SAME anonymous_user_id from frame one
+    // and the server reuses it (instead of minting a fresh ULID per connect ->
+    // the two-id divergence that orphaned cases on refresh). Idempotent across
+    // siblings + refreshes (earliest-wins): the first call persists, the rest
+    // read the cached value.
+    loadOrCreateAnonId();
     this.waker = opts?.waker ?? new AgentWaker();
     // job-0159: register with the per-session fan-out hub so envelopes
     // received by sibling GraceWs instances (e.g. App's instance when the
@@ -1751,7 +1809,17 @@ export class GraceWs {
     // we returned early when ``token`` was null and relied on the agent's
     // implicit-anonymous fallback (which mints a FRESH user_id every
     // connect — the bug this part fixes).
-    const stickyHint = token ? null : readAnonymousUserId();
+    // "Cases vanish on refresh" durable fix - when there is NO Cognito token,
+    // ALWAYS attach the STABLE client-owned anon id (loadOrCreateAnonId mints it
+    // on first load and returns the same value forever after). Using
+    // loadOrCreateAnonId (not readAnonymousUserId) guarantees a non-null, valid
+    // ULID hint from the FIRST connect of BOTH sockets even if the constructor's
+    // mint somehow had not landed yet (e.g. localStorage cleared mid-session) -
+    // the server then reuses this one id for the session, so every refresh and
+    // every sibling socket bind to the SAME anonymous User and cases stay
+    // owner-scoped. The contract field (auth.py AuthTokenEnvelope) is
+    // anonymous_user_id: ULIDStr|None, so a valid 26-char ULID is required here.
+    const stickyHint = token ? null : loadOrCreateAnonId();
     // Wire the payload using the server's AuthTokenEnvelope field names:
     //   ``token``     — the Firebase ID JWT (server expects ``token``, not
     //                   ``id_token``, per AuthTokenEnvelope in auth.py).

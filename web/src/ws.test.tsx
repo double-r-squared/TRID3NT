@@ -20,6 +20,10 @@ import {
   KEEPALIVE_PONG_TIMEOUT_MS,
   __test_resetSessionHub,
   __test_sessionHubSize,
+  loadOrCreateAnonId,
+  readAnonymousUserId,
+  writeAnonymousUserId,
+  clearAnonymousUserId,
   type WsHandlers,
 } from "./ws";
 import type { MapCommandPayload } from "./contracts";
@@ -1142,5 +1146,154 @@ describe("GraceWs — keepalive ping/pong (BUG 4a)", () => {
     expect(sendSpy).not.toHaveBeenCalled();
 
     ws.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// "Cases vanish on refresh" - STABLE client-owned anonymous user_id.
+//
+// Root cause: the tab opens TWO GraceWs sockets (App + Chat). With no Cognito
+// token and no stored anon hint, EACH connection used to let the server mint a
+// DIFFERENT anon ULID; localStorage was last-write-wins so the case-list scoped
+// to one id while cases were created under the other -> empty rail on refresh.
+//
+// The durable fix mints a STABLE anon ULID on the CLIENT at first load and
+// persists it (earliest-wins), so both sockets + every refresh present the SAME
+// anonymous_user_id from frame one and the server reuses it. These tests pin:
+//   1. loadOrCreateAnonId returns a valid 26-char ULID and is STABLE across
+//      calls (connect #1, #2, and a simulated refresh reading the same store).
+//   2. BOTH GraceWs instances (App + Chat siblings) present the SAME anon id.
+//   3. writeAnonymousUserId is EARLIEST-WINS: never overwrites an existing id
+//      (so a server-minted auth-ack can never clobber the client id).
+//   4. The wire auth-token envelope (no token) carries the stable anon id from
+//      the FIRST connect, and the SAME id on a reconnect.
+// ---------------------------------------------------------------------------
+
+/** A null-token getter - simulates the live anonymous build (no Cognito). */
+const nullTokenGetter = (): Promise<string | null> => Promise.resolve(null);
+
+/**
+ * Call the GraceWs private `maybeSendAuthToken` against an OPEN socket and
+ * return the parsed auth-token wire frame (or null if nothing was sent).
+ * Mirrors the structural test-only access the suite already uses.
+ */
+async function captureAuthTokenFrame(
+  ws: GraceWs,
+): Promise<{
+  type: string;
+  payload: { token?: string; anonymous?: boolean; anonymous_user_id?: string };
+} | null> {
+  ws.connect();
+  const socket = instanceSocket(ws);
+  expect(socket).not.toBeNull();
+  forceReadyState(socket!, 1); // WebSocket.OPEN
+  const sendSpy = vi
+    .spyOn(socket!, "send")
+    .mockImplementation(() => undefined);
+  await (
+    ws as unknown as { maybeSendAuthToken: () => Promise<void> }
+  ).maybeSendAuthToken();
+  if (sendSpy.mock.calls.length === 0) return null;
+  return JSON.parse(sendSpy.mock.calls[0]![0] as string);
+}
+
+describe("GraceWs - stable client-owned anonymous user_id (cases-vanish fix)", () => {
+  beforeEach(() => {
+    __test_resetSessionHub();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (window as any).__webSockets = [];
+    // Fresh-load baseline: clear the persisted anon id so each test exercises
+    // the FIRST-load mint path deterministically.
+    clearAnonymousUserId();
+  });
+
+  it("loadOrCreateAnonId mints a valid 26-char ULID and is STABLE across calls", () => {
+    const first = loadOrCreateAnonId();
+    expect(first).toHaveLength(26);
+    // Crockford base32 alphabet only (the newUlid contract).
+    expect(first).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
+    // Repeated calls (connect #1, #2) return the SAME id.
+    expect(loadOrCreateAnonId()).toBe(first);
+    expect(loadOrCreateAnonId()).toBe(first);
+    // readAnonymousUserId now reflects the same persisted id.
+    expect(readAnonymousUserId()).toBe(first);
+  });
+
+  it("a simulated refresh / new instance reading the same localStorage gets the SAME anon id", () => {
+    const before = loadOrCreateAnonId();
+    // Simulate a page refresh: localStorage persists, in-memory state is gone.
+    // loadOrCreateAnonId re-reads the SAME stored id (no new mint).
+    const afterRefresh = loadOrCreateAnonId();
+    expect(afterRefresh).toBe(before);
+    // A brand-new GraceWs (mirrors a remounted App/Chat) reads the same store.
+    new GraceWs("ws://localhost:8765", makeHandlers());
+    expect(readAnonymousUserId()).toBe(before);
+  });
+
+  it("BOTH socket instances (App + Chat siblings) present the SAME anon id", () => {
+    // Constructing a GraceWs establishes the anon id (constructor mint). Two
+    // siblings in the same tab share the same persisted id.
+    new GraceWs("ws://localhost:8765", makeHandlers()); // App-like
+    const idAfterFirst = readAnonymousUserId();
+    expect(idAfterFirst).not.toBeNull();
+    new GraceWs("ws://localhost:8765", makeHandlers()); // Chat-like
+    const idAfterSecond = readAnonymousUserId();
+    expect(idAfterSecond).toBe(idAfterFirst);
+  });
+
+  it("writeAnonymousUserId is EARLIEST-WINS: never overwrites an existing id", () => {
+    const clientId = loadOrCreateAnonId(); // the client-owned id
+    // A later server-minted auth-ack tries to write a DIFFERENT valid ULID.
+    const serverId = "01SERVERMINTEDXXXXXXXXXX99"; // 26 chars
+    writeAnonymousUserId(serverId);
+    // The stored id is STILL the client id - the server write was a no-op.
+    expect(readAnonymousUserId()).toBe(clientId);
+  });
+
+  it("writeAnonymousUserId DOES populate an EMPTY slot (e.g. localStorage cleared)", () => {
+    // Defensive: with no existing id, a valid write lands (earliest-wins only
+    // protects a NON-empty slot).
+    clearAnonymousUserId();
+    const id = "01ABCDEFGHJKMNPQRSTVWX0001"; // 26-char valid ULID shape
+    writeAnonymousUserId(id);
+    expect(readAnonymousUserId()).toBe(id);
+  });
+
+  it("the no-token auth-token frame carries the STABLE anon id from the FIRST connect", async () => {
+    const expectedId = loadOrCreateAnonId();
+    const ws = new GraceWs(
+      "ws://localhost:8765",
+      makeHandlers({ idTokenGetter: nullTokenGetter }),
+    );
+    const frame = await captureAuthTokenFrame(ws);
+    expect(frame).not.toBeNull();
+    expect(frame!.type).toBe("auth-token");
+    expect(frame!.payload.anonymous).toBe(true);
+    expect(frame!.payload.token).toBe("");
+    expect(frame!.payload.anonymous_user_id).toBe(expectedId);
+    ws.close();
+  });
+
+  it("sends the SAME anon id on connect #1 and after a simulated reconnect/refresh", async () => {
+    const ws1 = new GraceWs(
+      "ws://localhost:8765",
+      makeHandlers({ idTokenGetter: nullTokenGetter }),
+    );
+    const frame1 = await captureAuthTokenFrame(ws1);
+    ws1.close();
+    // Simulate a reconnect / refresh: a brand-new GraceWs reading the SAME
+    // persisted localStorage anon id (we do NOT clear it here).
+    const ws2 = new GraceWs(
+      "ws://localhost:8765",
+      makeHandlers({ idTokenGetter: nullTokenGetter }),
+    );
+    const frame2 = await captureAuthTokenFrame(ws2);
+    ws2.close();
+    expect(frame1).not.toBeNull();
+    expect(frame2).not.toBeNull();
+    expect(frame1!.payload.anonymous_user_id).toBe(
+      frame2!.payload.anonymous_user_id,
+    );
+    expect(frame1!.payload.anonymous_user_id).toHaveLength(26);
   });
 });

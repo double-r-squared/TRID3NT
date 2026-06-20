@@ -436,18 +436,47 @@ async def authenticate_token(
         anon_hint = (
             token_envelope.anonymous_user_id if token_envelope else None
         )
-        if anon_hint and persistence is not None:
-            existing = await _try_reuse_anonymous_user(persistence, anon_hint)
-            if existing is not None:
-                logger.info(
-                    "anonymous reuse: rebound user_id=%s (sticky)", existing.user_id
-                )
-                return AuthResult(
-                    user=existing,
-                    firebase_uid=None,
-                    is_anonymous=True,
-                    tier="free",
-                )
+        if anon_hint is None:
+            # No client hint at all -> mint a fresh random ULID (server-side
+            # session registry handles dual-socket convergence in this window).
+            return await _provision_anonymous_user(persistence)
+        if persistence is None:
+            # No collection to look up / collide with (M1 substrate / CI path).
+            # Claim the presented id VERBATIM so this session's sockets still
+            # converge on one in-memory anonymous identity.
+            return await _provision_anonymous_user(
+                persistence, requested_user_id=anon_hint
+            )
+        existing = await _try_reuse_anonymous_user(persistence, anon_hint)
+        if existing is not None:
+            logger.info(
+                "anonymous reuse: rebound user_id=%s (sticky)", existing.user_id
+            )
+            return AuthResult(
+                user=existing,
+                firebase_uid=None,
+                is_anonymous=True,
+                tier="free",
+            )
+        # cases-vanish fix: ``_try_reuse_anonymous_user`` returned None for one
+        # of three reasons — distinguish them so we PROVISION the id VERBATIM
+        # ONLY when it is genuinely free, and MINT FRESH when the id collides
+        # with an existing (non-anonymous / inactive) record.
+        # ``_anonymous_id_is_claimable`` re-reads and reports True only when NO
+        # record exists for the id — so reusing it verbatim can never overwrite
+        # / hijack a Firebase-verified or deactivated user.
+        if await _anonymous_id_is_claimable(persistence, anon_hint):
+            # No record yet (first connect of a fresh client-owned id, or the
+            # record never got persisted) -> claim the id VERBATIM. This is the
+            # keystone of dual-socket convergence: the web replays one
+            # client-owned id from BOTH sockets, so both connections resolve to
+            # the SAME ``user_id`` (reuse above, or this same-id provision) and
+            # the owner-scoped case-list is stable across reconnects.
+            return await _provision_anonymous_user(
+                persistence, requested_user_id=anon_hint
+            )
+        # Id is taken by a non-anonymous / inactive record -> never verbatim;
+        # mint a fresh random ULID (the reuse helper already logged why).
         return await _provision_anonymous_user(persistence)
 
     # 2. Verify the token.
@@ -491,11 +520,16 @@ async def authenticate_token(
     )
 
 
-async def _provision_anonymous_user(persistence: Persistence | None) -> AuthResult:
+async def _provision_anonymous_user(
+    persistence: Persistence | None,
+    *,
+    requested_user_id: str | None = None,
+) -> AuthResult:
     """Provision an ephemeral anonymous ``User`` per H.3 fallback.
 
     The anonymous User has:
-    - a fresh ULID ``user_id``,
+    - a ULID ``user_id`` — the client-presented ``requested_user_id`` when one
+      was supplied (cases-vanish fix), else a fresh ULID,
     - ``firebase_uid=None`` (no Firebase binding),
     - ``email=None`` / ``display_name=None``,
     - ``is_active=True`` (Cases CAN be created; web prompts upgrade at save),
@@ -506,10 +540,25 @@ async def _provision_anonymous_user(persistence: Persistence | None) -> AuthResu
     persistence is unbound (no MCP env), the anonymous user lives in-memory
     only — the M1 substrate path keeps working.
 
+    cases-vanish fix: when the client presents a stable ``anonymous_user_id``
+    that has no record yet, the caller passes it as ``requested_user_id`` so the
+    User is provisioned with THAT EXACT id. This is what lets two sockets of one
+    browser session (App + Chat, both replaying the same client-owned id)
+    converge on ONE anonymous identity — whichever socket wins the provision
+    race writes the deterministic id, and the loser then *reuses* it. Without
+    this, each connection minted a random ULID and the owner-scoped case-list
+    forked, so Cases appeared to vanish on refresh. The id is ULID-validated
+    upstream (``AuthTokenEnvelope.anonymous_user_id: ULIDStr``) and, on the
+    persistence-backed path, only reaches here as ``requested_user_id`` after
+    ``_anonymous_id_is_claimable`` confirmed NO record exists for it — so the
+    verbatim ``upsert_user`` can never overwrite / hijack a Firebase-verified
+    or deactivated user. On the no-persistence path (CI / M1 substrate) the id
+    is claimed verbatim too, but there is no collection to collide with.
+
     Returns ``AuthResult`` with ``is_anonymous=True``, ``tier="free"``.
     """
     user = User(
-        user_id=new_ulid(),
+        user_id=requested_user_id or new_ulid(),
         firebase_uid=None,
         email=None,
         display_name=None,
@@ -600,6 +649,38 @@ async def _try_reuse_anonymous_user(
         )
         return None
     return existing
+
+
+async def _anonymous_id_is_claimable(
+    persistence: Persistence,
+    anonymous_user_id: str,
+) -> bool:
+    """Return True iff NO user record exists for ``anonymous_user_id``.
+
+    cases-vanish fix: the verbatim-provision gate. ``_try_reuse_anonymous_user``
+    returns ``None`` for three different reasons — id-not-found, id-belongs-to-
+    a-non-anonymous-record, or id-belongs-to-an-inactive-record. We may only
+    claim a presented id VERBATIM in the first case; claiming verbatim in the
+    other two would overwrite (hijack) an existing Firebase-verified or
+    deactivated user's ``_id`` on the next ``upsert_user``. This helper isolates
+    "the id is genuinely free" so the caller can branch safely.
+
+    Fail-closed: any lookup error returns ``False`` (treat the id as taken),
+    so a transient persistence hiccup mints a fresh ULID rather than risk an
+    overwrite. The brief extra read is on the (rare) first-connect-of-a-new-id
+    path only; the common sticky-reuse path already returned above.
+    """
+    try:
+        existing = await persistence.get_user_by_id(anonymous_user_id)
+    except Exception as exc:  # noqa: BLE001 — fail closed: treat as taken
+        logger.warning(
+            "anonymous claim-check: get_user_by_id(%s) failed (%s); "
+            "minting fresh (not claiming verbatim)",
+            anonymous_user_id,
+            exc,
+        )
+        return False
+    return existing is None
 
 
 async def _resolve_or_provision_user(

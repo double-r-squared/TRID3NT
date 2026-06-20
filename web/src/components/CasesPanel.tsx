@@ -646,11 +646,13 @@ export function CasesPanel({
             would overflow the panel instead of scrolling).
           - overflowY:auto: the actual scroll surface for the row list.
           - maskImage / WebkitMaskImage: transparent gradient fade at the
-            bottom (and top when scrolled) so the cutoff is clean rather
-            than a hard clip. 20px top-fade (barely visible at rest, appears
-            as content scrolls up); 32px bottom-fade (always present, signals
-            more content below). Both are transparent-to-opaque so only the
-            edge content fades — the rest renders at full opacity. */}
+            bottom (and a small top fade when scrolled) so the cutoff is clean
+            rather than a hard clip. The TOP is now FULLY OPAQUE from 0px (no
+            top fade band): the previous 20px top-fade dimmed the FIRST case at
+            rest (NATE: "the gradient covers the first case"), so the first row
+            now renders at full opacity. 32px bottom-fade stays (always
+            present, signals more content below). transparent-to-opaque so only
+            the bottom edge content fades - the rest renders at full opacity. */}
       <div
         data-testid="grace2-cases-list"
         style={{
@@ -660,15 +662,16 @@ export function CasesPanel({
           display: "flex",
           flexDirection: "column",
           gap: 6,
-          // Gradient fade mask: bottom edge always fades (signals more rows),
-          // top edge fades too (content scrolls under the header cleanly).
-          // black = fully opaque, transparent = invisible. The mask maps
-          // the scroll viewport edges, not the content — so it stays fixed
-          // as the user scrolls.
+          // Gradient fade mask: bottom edge always fades (signals more rows).
+          // The TOP is FULLY OPAQUE from 0px so the FIRST case is never dimmed
+          // by the fade (NATE: the old `transparent 0px -> black 20px` top band
+          // covered the first row). black = fully opaque, transparent =
+          // invisible. The mask maps the scroll viewport edges, not the
+          // content - so it stays fixed as the user scrolls.
           WebkitMaskImage:
-            "linear-gradient(to bottom, transparent 0px, black 20px, black calc(100% - 32px), transparent 100%)",
+            "linear-gradient(to bottom, black 0px, black calc(100% - 32px), transparent 100%)",
           maskImage:
-            "linear-gradient(to bottom, transparent 0px, black 20px, black calc(100% - 32px), transparent 100%)",
+            "linear-gradient(to bottom, black 0px, black calc(100% - 32px), transparent 100%)",
           // Small bottom padding so the last row is visible above the fade.
           paddingBottom: 6,
         }}

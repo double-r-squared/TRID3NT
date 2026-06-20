@@ -107,8 +107,15 @@ async def test_anonymous_reuse_rejects_non_anonymous_record() -> None:
 
 
 @pytest.mark.asyncio
-async def test_anonymous_reuse_missing_hint_mints_fresh() -> None:
-    """A hint pointing at a missing User mints a fresh anonymous User."""
+async def test_anonymous_hint_for_unknown_id_is_provisioned_verbatim() -> None:
+    """cases-vanish fix: a presented id with no record provisions THAT id.
+
+    Pre-fix this minted a fresh random ULID, forking the owner-scoped
+    case-list across the App + Chat sockets. The client now always replays one
+    stable client-owned ``anonymous_user_id``; the agent must honor it by
+    provisioning a User with THAT EXACT id so both sockets converge on one
+    identity.
+    """
     client = FakeMCPClient()
     p = Persistence(client)
 
@@ -117,18 +124,37 @@ async def test_anonymous_reuse_missing_hint_mints_fresh() -> None:
         AuthTokenEnvelope(token="", anonymous_user_id=fake_id), p
     )
     assert result.is_anonymous
-    assert result.user.user_id != fake_id
+    # Provisioned VERBATIM — no fresh ULID minted.
+    assert result.user.user_id == fake_id
     assert result.user.is_anonymous is True
+    # And persisted under that exact id so a sibling/reconnect socket reuses it.
+    assert fake_id in client.users
+    assert client.users[fake_id]["is_anonymous"] is True
 
 
 @pytest.mark.asyncio
-async def test_anonymous_hint_ignored_when_persistence_absent() -> None:
-    """No Persistence → fall through to fresh in-memory anonymous User."""
+async def test_anonymous_hint_claimed_verbatim_when_persistence_absent() -> None:
+    """No Persistence → claim the presented id VERBATIM (in-memory only).
+
+    cases-vanish fix: with no collection there is nothing to collide with, so
+    the presented client-owned id is claimed verbatim. This keeps this session's
+    sockets converged on one in-memory anonymous identity even on the M1
+    substrate / CI path. Pre-fix this minted a fresh ULID and ignored the hint.
+    """
     hint = new_ulid()
     result = await authenticate_token(
         AuthTokenEnvelope(token="", anonymous_user_id=hint), persistence=None
     )
     assert result.is_anonymous
-    # Without persistence we cannot look up the hint; result is a fresh user.
-    assert result.user.user_id != hint
+    assert result.user.user_id == hint  # verbatim, not a fresh ULID
+    assert result.user.is_anonymous is True
+
+
+@pytest.mark.asyncio
+async def test_anonymous_no_hint_no_persistence_mints_fresh() -> None:
+    """No hint + no Persistence → fresh in-memory anonymous User (unchanged)."""
+    result = await authenticate_token(
+        AuthTokenEnvelope(token=""), persistence=None
+    )
+    assert result.is_anonymous
     assert result.user.is_anonymous is True

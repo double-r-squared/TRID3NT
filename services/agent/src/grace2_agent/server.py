@@ -930,6 +930,93 @@ def _set_session_active_case(session_id: str, case_id: str | None) -> None:
     _SESSION_ACTIVE_CASE[session_id] = case_id
 
 
+# cases-vanish fix: session-scoped ANON-ID registry. Belt-and-suspenders mirror
+# of ``_SESSION_ACTIVE_CASE`` above for the dual-socket anon-identity race.
+#
+# ROOT CAUSE: the web mounts TWO WebSocket connections per tab (App.tsx +
+# Chat.tsx, one localStorage session_id — web/src/ws.ts job-0159 hub). Each
+# connection runs its OWN auth handshake. The PRIMARY fix is client-side (always
+# replay one stable client-owned ``anonymous_user_id`` from BOTH sockets) +
+# server-side (provision the presented id verbatim, above). But there remains a
+# rare first-ever-connect window where neither socket has a usable hint yet (a
+# brand-new browser, both sockets opening before the id is persisted): without a
+# hint each connection would mint a DIFFERENT random ULID, fork the owner-scoped
+# case-list, and Cases would appear to vanish on the next refresh.
+#
+# This registry collapses that window: when a connection mints OR binds an
+# anonymous user for a ``session_id``, it records ``session_id -> anon_user_id``.
+# A second connection of the SAME ``session_id`` that reaches the no-hint
+# anonymous path reuses the recorded id instead of minting a fresh one — so both
+# sockets converge on ONE anon identity even with zero client hint.
+#
+# Bounded like ``_SESSION_ACTIVE_CASE`` (one short string per browser session;
+# eviction past the cap only means a stale session re-mints on its next connect).
+# Scope discipline: ONLY anonymous ids are recorded here — a Cognito-verified
+# bind never writes this registry, so it can never down-bind an authed session
+# to an anon id (the authed path is unaffected).
+_SESSION_ANON_ID: dict[str, str] = {}
+_SESSION_ANON_ID_CAP = 4096
+
+
+def _get_session_anon_id(session_id: str) -> str | None:
+    """Return the anon ``user_id`` bound to ``session_id`` this process, if any."""
+    return _SESSION_ANON_ID.get(session_id)
+
+
+def _set_session_anon_id(session_id: str, anon_user_id: str) -> None:
+    """Record ``anon_user_id`` as the session's anon identity (idempotent).
+
+    Bounded + insertion-order eviction, mirroring ``_set_session_active_case``.
+    No-op when ``anon_user_id`` is falsy (defensive — never record an empty id).
+    """
+    if not session_id or not anon_user_id:
+        return
+    if (
+        session_id not in _SESSION_ANON_ID
+        and len(_SESSION_ANON_ID) >= _SESSION_ANON_ID_CAP
+    ):
+        # Evict oldest (insertion order) — bounded memory, see note above.
+        _SESSION_ANON_ID.pop(next(iter(_SESSION_ANON_ID)))
+    _SESSION_ANON_ID[session_id] = anon_user_id
+
+
+def _apply_session_anon_hint(
+    session_id: str, tok: "AuthTokenEnvelope | None"
+) -> "AuthTokenEnvelope | None":
+    """Fill a MISSING anon hint from the session-scoped registry.
+
+    cases-vanish fix (belt-and-suspenders). When a connection of ``session_id``
+    presents no token AND no ``anonymous_user_id`` hint, but a sibling
+    connection of the same session already bound an anon identity this process,
+    return a copy of the envelope carrying that recorded id as the hint — so
+    ``authenticate_token`` reuses the SAME anon user instead of minting a fresh
+    random ULID. This collapses the (now rare) first-connect no-hint window
+    where the App + Chat sockets would otherwise fork the owner-scoped
+    case-list.
+
+    Strictly additive / non-clobbering:
+    - A client-supplied hint always wins (it is the durable, cross-refresh id) —
+      we only fill when the hint is absent.
+    - A non-empty ``token`` is left untouched: a real (or attempted) Cognito
+      verification must run on the JWT, never be diverted to an anon id. This
+      keeps the authed path byte-identical.
+    - No registry entry → the envelope is returned unchanged.
+    """
+    recorded = _get_session_anon_id(session_id)
+    if not recorded:
+        return tok
+    # Only fill the anonymous path: a present token means the verify path owns
+    # this connect (authed path unaffected).
+    if tok is not None and (tok.token or "").strip():
+        return tok
+    # A client-supplied hint is the durable id — never override it.
+    if tok is not None and tok.anonymous_user_id:
+        return tok
+    if tok is None:
+        return AuthTokenEnvelope(token="", anonymous_user_id=recorded)
+    return tok.model_copy(update={"anonymous_user_id": recorded})
+
+
 # job-SOLVE-SURVIVE: module-level live-turn registry keyed by
 # ``(session_id, turn_key)`` — mirrors ``_SESSION_ACTIVE_CASE``'s session-scoped
 # discipline so an in-flight turn OUTLIVES the per-connection ``SessionState``.
@@ -2779,6 +2866,13 @@ async def _handle_auth_token(
         # gate is engaged, in which case the result is rejected below.
         tok = None
 
+    # cases-vanish fix (belt-and-suspenders): if this connection presents NO
+    # usable anonymous hint but a sibling connection of the SAME session already
+    # bound an anon identity this process, replay that recorded id as the hint so
+    # both sockets converge on ONE anon user. Only fills a MISSING hint — a
+    # client-supplied hint always wins (it is the durable, cross-refresh id).
+    tok = _apply_session_anon_hint(state.session_id, tok)
+
     result = await authenticate_token(tok, get_persistence())
 
     # job-0252 AUTH_REQUIRED gate: when sign-in is mandatory, an anonymous
@@ -2790,6 +2884,11 @@ async def _handle_auth_token(
             websocket, state, reason="no valid Firebase ID token"
         )
         return False
+
+    # cases-vanish fix: record the anon identity so a sibling/reconnecting
+    # socket of the same session converges on it (no-op for the authed path).
+    if result.is_anonymous:
+        _set_session_anon_id(state.session_id, result.user.user_id)
 
     _bind_auth_result(state, result)
     await _touch_session_record(state)  # D.6 heartbeat (job-0203 / M4)
@@ -2973,7 +3072,15 @@ async def _ensure_auth_handshake(
             reason="auth-token envelope required before any other message",
         )
         return False
-    result = await authenticate_token(None, get_persistence())
+    # cases-vanish fix: this implicit-anonymous path never saw a client hint
+    # (the connection skipped the auth-token envelope). If a sibling connection
+    # of this session already bound an anon identity this process, reuse it so
+    # both sockets converge on ONE anon user — otherwise this path would mint a
+    # fresh random ULID and fork the owner-scoped case-list.
+    tok = _apply_session_anon_hint(state.session_id, None)
+    result = await authenticate_token(tok, get_persistence())
+    if result.is_anonymous:
+        _set_session_anon_id(state.session_id, result.user.user_id)
     _bind_auth_result(state, result)
     await _touch_session_record(state)  # D.6 heartbeat (job-0203 / M4)
     ack = build_auth_ack(result)
