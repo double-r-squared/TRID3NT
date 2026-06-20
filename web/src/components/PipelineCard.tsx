@@ -105,7 +105,7 @@ export function formatCellCount(cells: number): string {
  * couple-minutes ETA stays legible at a glance (matches the wire-contract
  * example "est ~70s" for a 70s ETA); longer estimates roll into "~m:ss".
  */
-function formatEta(seconds: number): string {
+export function formatEta(seconds: number): string {
   const s = Math.max(0, Math.round(seconds));
   if (s < 90) return `~${s}s`;
   return `~${formatDuration(s * 1000)}`;

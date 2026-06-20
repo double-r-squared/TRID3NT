@@ -335,6 +335,7 @@ async def model_urban_flood_swmm(
     run_id: str | None = None,
     compute_class: str = "standard",
     cleanup_deck: bool = True,
+    enable_autoscale: bool = True,
 ) -> SWMMDepthLayerURI:
     """Compose the full quasi-2D PySWMM urban-flood chain end-to-end (LOCAL lane).
 
@@ -354,6 +355,11 @@ async def model_urban_flood_swmm(
         cleanup_deck: when True, the scratch deck dir is removed after
             postprocess (the COGs were already uploaded). Tests pass False to
             inspect the deck.
+        enable_autoscale: when True (default) the mesh builder's adaptive budget
+            may COARSEN ``run_args.target_resolution_m`` to fit the cell cap.
+            When False (the #154 granularity gate's ``narrow_scope`` path) the
+            builder honours the user-chosen resolution EXACTLY (the gate already
+            clamped it under the cap).
 
     Returns:
         The PEAK ``SWMMDepthLayerURI`` (role ``"primary"``, name
@@ -443,6 +449,7 @@ async def model_urban_flood_swmm(
             dem_path=local_dem_path,
             building_footprints=building_footprints,
             run_id=run_id,
+            enable_autoscale=enable_autoscale,
         )
         deck_dir_to_clean = str(Path(staging.inp_path).parent)
 

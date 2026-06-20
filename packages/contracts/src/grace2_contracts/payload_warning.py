@@ -47,7 +47,7 @@ from __future__ import annotations
 
 from typing import Any, ClassVar, Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from .common import GraceModel, ULIDStr
 
@@ -56,6 +56,7 @@ __all__ = [
     "PayloadWarningEnvelopePayload",
     "PayloadConfirmationDecision",
     "PayloadConfirmationEnvelopePayload",
+    "GranularitySuggestion",
     "WARNING_THRESHOLD_MB_DEFAULT",
     "HARD_CAP_MB_DEFAULT",
 ]
@@ -83,6 +84,130 @@ HARD_CAP_MB_DEFAULT: float = 250.0
 #: - ``narrow_scope`` — re-dispatch with revised args (the client returns
 #:   them via ``revised_args`` on the confirmation envelope).
 PayloadWarningOption = Literal["proceed", "cancel", "narrow_scope"]
+
+
+class GranularitySuggestion(GraceModel):
+    """Pre-run mesh-granularity suggestion attached to a ``tool-payload-warning``
+    (#154 granularity gate, sprint-16).
+
+    The granularity gate makes mesh resolution a USER lever rather than a
+    silent auto-coarsen (memory: ``feedback_user_controlled_granularity``).
+    Before a heavy solver run (SWMM / SFINCS), the autoscaler emits a
+    SUGGESTED resolution alongside the active-cell count, the estimated
+    solve wall-clock, and the chosen compute class so the user can SEE the
+    cost-of-resolution and override the rung before execution. The user's
+    override reuses the existing ``tool-payload-confirmation`` path
+    (``decision="narrow_scope"`` + ``revised_args`` carrying the chosen
+    ``resolution_param`` value) — no new confirmation envelope.
+
+    This model is an OPTIONAL enrichment on ``PayloadWarningEnvelopePayload``;
+    a payload-warning without a granularity suggestion is unchanged.
+
+    Fields:
+
+    - ``engine`` — the solver this suggestion is for (``"swmm"`` / ``"sfincs"``).
+    - ``resolution_param`` — the solver-args field the user overrides:
+      ``"target_resolution_m"`` (SWMM overland cell size) or
+      ``"grid_resolution_m"`` (SFINCS grid). The client writes the chosen
+      rung back into ``revised_args`` under this exact key.
+    - ``suggested_resolution_m`` — the autoscaler's recommended cell size in
+      metres (> 0). The default-selected rung.
+    - ``resolution_choices`` — the ascending ladder of selectable cell sizes
+      in metres (the rungs the user can pick from). Each rung > 0.
+    - ``estimated_active_cells`` — projected active-cell count at the
+      suggested resolution (>= 0). Drives the "~46k cells" readout.
+    - ``estimated_solve_seconds`` — projected solver wall-clock in seconds
+      at the suggested resolution (>= 0). An inference, surfaced as "est ~70s".
+    - ``vcpus`` — vCPU count of the chosen compute class (> 0).
+    - ``compute_class`` — human/infra label for the compute tier
+      (e.g. a Batch Spot instance type "c7i.2xlarge").
+    - ``cell_cap`` — the element-cap the autoscaler honoured (> 0); the
+      ceiling above which the suggestion coarsens.
+    - ``coarsened`` — True when the suggested resolution is COARSER than the
+      user's originally-requested resolution because the request would have
+      exceeded ``cell_cap``. Surfaces the "we coarsened" honesty signal.
+    - ``reason`` — short human-readable rationale (e.g. "Requested 10 m would
+      exceed the 2M-cell cap; suggesting 30 m").
+    - ``spot_label`` — optional Spot-pricing/instance label for the readout
+      (e.g. "c7i.2xlarge Spot"); None when not on a Spot tier.
+
+    Invariant 1 (Determinism boundary): every number the chat narrates here is
+    a structured field, never inferred from prose.
+    Invariant 9 (No cost theater): cells / seconds / vCPUs / instance label are
+    capacity + capability descriptors, NOT dollar figures. No dollar field.
+    """
+
+    engine: Literal["swmm", "sfincs"]
+    resolution_param: Literal["target_resolution_m", "grid_resolution_m"]
+    suggested_resolution_m: float = Field(gt=0.0)
+    resolution_choices: list[float] = Field(default_factory=list)
+    estimated_active_cells: int = Field(ge=0)
+    estimated_solve_seconds: float = Field(ge=0.0)
+    vcpus: int = Field(gt=0)
+    compute_class: str = Field(min_length=1)
+    cell_cap: int = Field(gt=0)
+    coarsened: bool
+    reason: str = Field(max_length=512)
+    spot_label: str | None = None
+
+    @field_validator("suggested_resolution_m")
+    @classmethod
+    def _validate_suggested_resolution(cls, value: float) -> float:
+        """Resolution must be a positive cell size (metres)."""
+        if value <= 0.0:
+            raise ValueError(
+                f"suggested_resolution_m must be > 0; got {value!r}"
+            )
+        return value
+
+    @field_validator("resolution_choices")
+    @classmethod
+    def _validate_resolution_choices(cls, value: list[float]) -> list[float]:
+        """Every ladder rung must be a positive cell size (metres). Negative or
+        zero rungs are non-sensical and would render an unselectable option."""
+        for rung in value:
+            if rung <= 0.0:
+                raise ValueError(
+                    f"resolution_choices rungs must be > 0; got {rung!r} "
+                    f"in {value!r}"
+                )
+        return value
+
+    @field_validator("estimated_active_cells")
+    @classmethod
+    def _validate_active_cells(cls, value: int) -> int:
+        """A negative cell count is non-sensical."""
+        if value < 0:
+            raise ValueError(
+                f"estimated_active_cells must be >= 0; got {value!r}"
+            )
+        return value
+
+    @field_validator("estimated_solve_seconds")
+    @classmethod
+    def _validate_solve_seconds(cls, value: float) -> float:
+        """A negative wall-clock estimate is non-sensical."""
+        if value < 0.0:
+            raise ValueError(
+                f"estimated_solve_seconds must be >= 0; got {value!r}"
+            )
+        return value
+
+    @field_validator("vcpus")
+    @classmethod
+    def _validate_vcpus(cls, value: int) -> int:
+        """A compute tier must have at least one vCPU."""
+        if value <= 0:
+            raise ValueError(f"vcpus must be > 0; got {value!r}")
+        return value
+
+    @field_validator("cell_cap")
+    @classmethod
+    def _validate_cell_cap(cls, value: int) -> int:
+        """The element-cap must be a positive ceiling."""
+        if value <= 0:
+            raise ValueError(f"cell_cap must be > 0; got {value!r}")
+        return value
 
 
 class PayloadWarningEnvelopePayload(GraceModel):
@@ -126,6 +251,13 @@ class PayloadWarningEnvelopePayload(GraceModel):
       expiry the gate becomes a typed failure (``CONFIRMATION_TIMEOUT``
       from A.6). Default 300s — payload-warning gates are read-decisions,
       so they get the same TTL as a confirmation-request.
+    - ``granularity`` — OPTIONAL pre-run mesh-granularity suggestion
+      (#154 granularity gate). When present, the client renders the
+      resolution ladder + estimated cells / solve time / compute class and
+      lets the user override the rung before the heavy solver run. The
+      override rides back on the existing ``tool-payload-confirmation``
+      (``decision="narrow_scope"`` + ``revised_args``). None on ordinary
+      payload-warnings — fully back-compatible.
 
     Invariant 1 (Determinism boundary): every number the chat narrates
     here is a structured field, never inferred from prose.
@@ -149,6 +281,7 @@ class PayloadWarningEnvelopePayload(GraceModel):
         max_length=3,
     )
     ttl_seconds: int = Field(default=300, ge=1)
+    granularity: GranularitySuggestion | None = None
 
     @model_validator(mode="after")
     def _validate_options_unique(self) -> "PayloadWarningEnvelopePayload":

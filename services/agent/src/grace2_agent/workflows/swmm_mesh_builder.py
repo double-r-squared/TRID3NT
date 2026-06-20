@@ -106,7 +106,10 @@ __all__ = [
     "estimate_swmm_solve_seconds",
     "compute_swmm_cell_cap",
     "autoscale_swmm_resolution",
+    "suggest_swmm_resolution",
     "SWMMAutoscaleResult",
+    "clamp_swmm_resolution_to_real_cap",
+    "SWMMRealCapClampResult",
     # Manning loader re-export (the SFINCS substrate table)
     "load_manning_mapping",
 ]
@@ -376,6 +379,185 @@ def autoscale_swmm_resolution(
         estimated_solve_seconds=est_solve_s,
         coarsened=coarsened,
         reason=reason,
+    )
+
+
+def suggest_swmm_resolution(
+    dem_path: str,
+    requested_resolution_m: float,
+) -> SWMMAutoscaleResult:
+    """Pre-run granularity suggestion for the #154 gate — DEM read + autoscale ONLY.
+
+    Reads the staged DEM at ``requested_resolution_m``, counts active (finite)
+    cells with the EXACT same ``_read_and_resample_dem`` + ``np.isfinite(...).sum()``
+    that :func:`build_swmm_mesh` uses for its inline autoscale prelude, then runs
+    :func:`autoscale_swmm_resolution` on that count. This is the ONLY thing it
+    does — no deck authoring, no building rasterization, no run. Reusing the same
+    read+count guarantees the gate card and the real build cannot diverge: the
+    suggested resolution / active-cell estimate the user SEES is what the build
+    would compute given the same DEM + requested resolution.
+
+    The active-cell count here is the count BEFORE building drop (the build
+    additionally subtracts dropped-building cells later), matching the inline
+    autoscale prelude in :func:`build_swmm_mesh` which also autoscales on the raw
+    finite-cell count at the base resolution.
+
+    Args:
+        dem_path: an on-disk DEM (GeoTIFF) path the mesh builder reads (the
+            composer localizes the cache URI to a local path before calling).
+        requested_resolution_m: the user-requested overland cell size, m (> 0) —
+            the base resolution the ladder snaps UP from.
+
+    Returns:
+        A :class:`SWMMAutoscaleResult` carrying the suggested resolution, the
+        active-cell estimate at the suggested resolution, the honoured cell cap,
+        the estimated solve seconds, and the coarsened flag + reason.
+
+    Raises:
+        SWMMMeshError: ``SWMM_DEPENDENCY_MISSING`` (numpy/rasterio unavailable),
+        ``SWMM_DEM_UNREADABLE`` (read failure), or ``SWMM_EMPTY_MESH`` (the DEM
+        produced zero finite cells at the requested resolution).
+    """
+    if np is None:  # pragma: no cover - numpy is a hard dep in practice
+        raise SWMMMeshError("SWMM_DEPENDENCY_MISSING", message="numpy unavailable")
+
+    base_res = float(requested_resolution_m)
+    if base_res <= 0:
+        # Defensive: a non-positive request would degenerate the ladder. The
+        # contract / tool default is 10 m; fall back to the builder default.
+        base_res = 10.0
+
+    # IDENTICAL read + count to build_swmm_mesh's inline prelude (~839-858) so
+    # the card and the build cannot diverge.
+    grid = _read_and_resample_dem(dem_path, base_res)
+    active_at_base = int(np.isfinite(grid.elev).sum())
+    if active_at_base <= 0:
+        raise SWMMMeshError(
+            "SWMM_EMPTY_MESH",
+            message="DEM produced zero finite cells at the requested resolution",
+            details={"dem_path": dem_path, "resolution_m": base_res},
+        )
+    return autoscale_swmm_resolution(active_at_base, base_resolution_m=base_res)
+
+
+@dataclass(frozen=True)
+class SWMMRealCapClampResult:
+    """Outcome of :func:`clamp_swmm_resolution_to_real_cap`.
+
+    ``resolution_m`` is the resolution the build MUST use; ``real_active_cells``
+    is the REAL ceil-grid finite-cell count :func:`build_swmm_mesh` will count at
+    that resolution (already <= ``cell_cap`` whenever a finite resolution exists);
+    ``clamped`` is True iff the user's ``chosen_resolution_m`` was coarsened to fit.
+    """
+
+    resolution_m: float
+    real_active_cells: int
+    cell_cap: int
+    chosen_resolution_m: float
+    clamped: bool
+
+
+def clamp_swmm_resolution_to_real_cap(
+    dem_path: str,
+    chosen_resolution_m: float,
+    *,
+    cell_cap: int | None = None,
+) -> SWMMRealCapClampResult:
+    """Clamp a user-chosen SWMM resolution against the REAL build cell count.
+
+    The #154 ``narrow_scope`` override gate previously inverted the AREA model
+    ``cells = base_cells * (base/res)**2`` to find the finest resolution that
+    "fits" the cap, then built with ``enable_autoscale=False`` (no downstream
+    cap re-check). But :func:`build_swmm_mesh` re-reads the DEM at the clamped
+    resolution and counts active cells via the REAL ``ceil(extent/res)`` grid
+    (the same ``_read_and_resample_dem`` + ``np.isfinite().sum()`` the build
+    uses), which OVERSHOOTS the area model (~6% for a square fully-active AOI,
+    worse for sparse AOIs) -- so an over-fine override could still solve OVER cap.
+
+    This helper closes that breach by clamping against the AUTHORITATIVE count:
+    it probes the real grid at the SWMM resolution ladder (the same rungs the
+    proceed-path autoscaler walks), ASCENDING from the chosen resolution, and
+    returns the FINEST rung whose REAL active-cell count is at or under the cap.
+    A coarser-than-cap choice is honoured unchanged (its real count already
+    fits). The walk never degenerates: it stops at the coarsest rung even if the
+    cap is still exceeded (a huge AOI solves coarse but non-empty), mirroring
+    :func:`autoscale_swmm_resolution`.
+
+    Probing reads the DEM at candidate resolutions via the SAME
+    :func:`_read_and_resample_dem` the build uses, so the returned
+    ``real_active_cells`` is exactly what :func:`build_swmm_mesh` will count.
+    This is synchronous compute (rasterio + numpy) -- the gate offloads the whole
+    call via ``asyncio.to_thread`` (no-sync-blocking-on-asyncio-loop norm).
+
+    Args:
+        dem_path: an on-disk DEM (GeoTIFF) the mesh builder reads (the gate has
+            already localized the cache URI to a local path).
+        chosen_resolution_m: the user's narrow_scope override resolution, m (>0);
+            a non-positive value falls back to the finest ladder rung.
+        cell_cap: the cap to honour; defaults to :func:`compute_swmm_cell_cap`.
+
+    Returns:
+        A :class:`SWMMRealCapClampResult`.
+
+    Raises:
+        SWMMMeshError: ``SWMM_DEPENDENCY_MISSING`` / ``SWMM_DEM_UNREADABLE`` from
+        the DEM read, or ``SWMM_EMPTY_MESH`` if every candidate rung is empty.
+    """
+    if np is None:  # pragma: no cover - numpy is a hard dep in practice
+        raise SWMMMeshError("SWMM_DEPENDENCY_MISSING", message="numpy unavailable")
+
+    cap = int(cell_cap) if cell_cap is not None else compute_swmm_cell_cap()
+    if cap <= 0:
+        cap = SWMM_MIN_CELL_CAP
+
+    chosen = float(chosen_resolution_m)
+    if chosen <= 0:
+        chosen = float(min(SWMM_RES_LADDER)) if SWMM_RES_LADDER else 10.0
+
+    # Candidate rungs >= the chosen resolution (we only ever COARSEN to fit the
+    # cap; a finer rung would only INCREASE the count). Always include the chosen
+    # resolution itself as the finest candidate so an under-cap choice is kept
+    # EXACTLY (not snapped onto a ladder rung).
+    rungs = sorted({chosen, *(float(r) for r in SWMM_RES_LADDER if float(r) >= chosen)})
+    if not rungs:
+        rungs = [chosen]
+
+    def _real_active_cells(res_m: float) -> int:
+        grid = _read_and_resample_dem(dem_path, res_m)
+        return int(np.isfinite(grid.elev).sum())
+
+    last_res = rungs[0]
+    last_count = 0
+    for res in rungs:
+        count = _real_active_cells(res)
+        last_res, last_count = res, count
+        if count <= cap:
+            break
+
+    if last_count <= 0:
+        raise SWMMMeshError(
+            "SWMM_EMPTY_MESH",
+            message="DEM produced zero finite cells at every candidate resolution",
+            details={"dem_path": dem_path, "chosen_resolution_m": chosen},
+        )
+
+    clamped = last_res > chosen
+    if last_count > cap:
+        logger.warning(
+            "swmm real-cap clamp: coarsest rung %.2fm still over cap "
+            "(real %d > cap %d) -- solving coarse but non-empty",
+            last_res, last_count, cap,
+        )
+    logger.info(
+        "swmm real-cap clamp: chosen=%.2fm -> built=%.2fm real_active=%d cap=%d clamped=%s",
+        chosen, last_res, last_count, cap, clamped,
+    )
+    return SWMMRealCapClampResult(
+        resolution_m=float(last_res),
+        real_active_cells=int(last_count),
+        cell_cap=cap,
+        chosen_resolution_m=chosen,
+        clamped=bool(clamped),
     )
 
 

@@ -136,6 +136,7 @@ import {
   type SpatialInputResolution,
 } from "./components/SpatialInputCard";
 import { PayloadWarningInline } from "./components/PayloadWarningInline";
+import { ResolutionPickerCard } from "./components/ResolutionPickerCard";
 
 // wave-4-10 thinking-state — the agent emits the Gemini "thinking" phase as
 // a pipeline-state step keyed on this raw ``name`` (`llm_generation` per
@@ -4905,6 +4906,26 @@ function InterleavedChatStream({
           // "proceed" option) is preserved by PayloadWarningInline (overHardCap
           // hides Proceed). `resolved` keeps the card answered across a remount
           // (Case switch + return).
+          //
+          // #154 granularity gate - when the warning carries a `granularity`
+          // suggestion (heavy SWMM / SFINCS pre-run mesh-resolution confirm),
+          // render the ResolutionPickerCard instead of the generic warning card.
+          // Both ride the SAME onPayloadDecide -> sendPayloadConfirmation seam
+          // (proceed / narrow_scope / cancel). When `granularity` is absent the
+          // generic card renders EXACTLY as today (back-compat).
+          if (entry.warning.granularity) {
+            return (
+              <ResolutionPickerCard
+                key={entry.warningId}
+                warning={entry.warning}
+                granularity={entry.warning.granularity}
+                resolved={entry.resolved}
+                onDecide={(decision, revised) =>
+                  onPayloadDecide(entry.warning, decision, revised)
+                }
+              />
+            );
+          }
           return (
             <PayloadWarningInline
               key={entry.warningId}

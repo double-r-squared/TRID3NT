@@ -822,6 +822,32 @@ export interface CaseCommandEnvelopePayload {
 
 export type PayloadWarningOption = "proceed" | "cancel" | "narrow_scope";
 
+// Pre-run mesh-granularity suggestion (#154 granularity gate, sprint-16).
+// Mirrors GranularitySuggestion in
+// packages/contracts/src/grace2_contracts/payload_warning.py. OPTIONAL
+// enrichment on a `tool-payload-warning`: when present, the client renders the
+// resolution ladder + estimated cells / solve time / compute class and lets the
+// user override the rung before the heavy solver run. The override rides back on
+// the existing `tool-payload-confirmation` (decision="narrow_scope" +
+// revised_args carrying the chosen resolution_param value).
+//
+// Invariant 9 (no cost theater): cells / seconds / vCPUs / instance label are
+// capacity + capability descriptors, NOT dollar figures. No dollar field.
+export interface GranularitySuggestion {
+  engine: "swmm" | "sfincs";
+  resolution_param: "target_resolution_m" | "grid_resolution_m";
+  suggested_resolution_m: number;
+  resolution_choices: number[];
+  estimated_active_cells: number;
+  estimated_solve_seconds: number;
+  vcpus: number;
+  compute_class: string;
+  cell_cap: number;
+  coarsened: boolean;
+  reason: string;
+  spot_label?: string | null;
+}
+
 export interface PayloadWarningEnvelopePayload {
   envelope_type?: "tool-payload-warning";
   warning_id: string;
@@ -833,6 +859,7 @@ export interface PayloadWarningEnvelopePayload {
   alternative_args?: Record<string, unknown> | null;
   options: PayloadWarningOption[];
   ttl_seconds?: number;
+  granularity?: GranularitySuggestion | null;
 }
 
 export type PayloadConfirmationDecision = "proceed" | "cancel" | "narrow_scope";

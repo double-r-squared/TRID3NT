@@ -17,7 +17,8 @@
 //     stream is untouched); explicit caseId targeting overrides the in-flight
 //     targetKey.
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { cleanup, render, screen } from "@testing-library/react";
 import {
   ROOT_STREAM_KEY,
   createChatStreams,
@@ -26,7 +27,16 @@ import {
   routePayloadWarning,
   recordPayloadResolved,
 } from "./Chat";
-import { PayloadWarningEnvelopePayload } from "./contracts";
+import {
+  GranularitySuggestion,
+  PayloadWarningEnvelopePayload,
+} from "./contracts";
+import { PayloadWarningInline } from "./components/PayloadWarningInline";
+import { ResolutionPickerCard } from "./components/ResolutionPickerCard";
+
+afterEach(() => {
+  cleanup();
+});
 
 const CASE_A = "01CASEAAAAAAAAAAAAAAAAAAAA";
 const CASE_B = "01CASEBBBBBBBBBBBBBBBBBBBB";
@@ -46,6 +56,47 @@ function warning(
     options: ["proceed", "narrow_scope", "cancel"],
     ...overrides,
   };
+}
+
+function granularity(): GranularitySuggestion {
+  return {
+    engine: "swmm",
+    resolution_param: "target_resolution_m",
+    suggested_resolution_m: 20,
+    resolution_choices: [10, 20, 40],
+    estimated_active_cells: 40000,
+    estimated_solve_seconds: 120,
+    vcpus: 8,
+    compute_class: "c7i.2xlarge",
+    cell_cap: 250000,
+    coarsened: false,
+    reason: "Balanced resolution for the requested area.",
+    spot_label: null,
+  };
+}
+
+// Mirrors the production render conditional in Chat.tsx's InterleavedChatStream
+// payload-warning branch (InterleavedChatStream is not exported; the conditional
+// is a one-liner). A `granularity`-bearing warning routes to the
+// ResolutionPickerCard; otherwise the generic PayloadWarningInline renders.
+function PayloadWarningEntry({
+  w,
+}: {
+  w: PayloadWarningEnvelopePayload;
+}): JSX.Element {
+  if (w.granularity) {
+    return (
+      <ResolutionPickerCard
+        warning={w}
+        granularity={w.granularity}
+        resolved={null}
+        onDecide={vi.fn()}
+      />
+    );
+  }
+  return (
+    <PayloadWarningInline warning={w} resolved={null} onDecide={vi.fn()} />
+  );
 }
 
 describe("routePayloadWarning — in-chat payload-warning card routing (FIX 2)", () => {
@@ -122,5 +173,31 @@ describe("recordPayloadResolved — proceed / cancel / narrow_scope", () => {
     routePayloadWarning(cs, warning("W1"));
     recordPayloadResolved(cs, CASE_A, "W1", "narrow_scope");
     expect(getStream(cs, CASE_A).payloadResolved.get("W1")).toBe("narrow_scope");
+  });
+});
+
+describe("payload-warning render routing - #154 granularity gate", () => {
+  it("routes a warning WITH granularity to the ResolutionPickerCard", () => {
+    render(<PayloadWarningEntry w={warning("W1", { granularity: granularity() })} />);
+    expect(screen.getByTestId("resolution-picker-card")).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("payload-warning-inline"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("routes a warning WITHOUT granularity to the existing PayloadWarningInline (back-compat)", () => {
+    render(<PayloadWarningEntry w={warning("W1")} />);
+    expect(screen.getByTestId("payload-warning-inline")).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("resolution-picker-card"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("treats an explicit null granularity as absent (existing card)", () => {
+    render(<PayloadWarningEntry w={warning("W1", { granularity: null })} />);
+    expect(screen.getByTestId("payload-warning-inline")).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("resolution-picker-card"),
+    ).not.toBeInTheDocument();
   });
 });

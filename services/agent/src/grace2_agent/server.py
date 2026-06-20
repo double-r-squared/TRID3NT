@@ -322,6 +322,13 @@ SOLVER_CONFIRM_TOOLS: set[str] = {
     # built from the call args (location/return period/duration).
     "run_model_flood_scenario",
     "run_model_flood_habitat_scenario",
+    # #154 granularity gate (sprint-16): the SWMM urban-flood solver joins the
+    # confirm set with an ENRICHED card carrying a GranularitySuggestion (the
+    # autoscaler's pre-run resolution ladder + estimated cells / solve time /
+    # compute class). The user can override the rung before the heavy solve via
+    # the existing tool-payload-confirmation ``narrow_scope`` path. Same gate
+    # machinery, no new WS envelope type.
+    "run_swmm_urban_flood",
 }
 
 
@@ -4550,6 +4557,167 @@ async def _gate_on_code_exec(
     return True, approved
 
 
+async def _build_swmm_granularity_envelope(params: dict) -> tuple[Any, Any, str]:
+    """Build the #154 granularity confirm card for ``run_swmm_urban_flood``.
+
+    Mirrors the SWMM tool / composer DEM-resolution path EXACTLY so the suggested
+    resolution + active-cell count the user SEES is what the build would compute:
+    coerce + floor the bbox (``_enforce_min_urban_aoi``), fetch the DEM
+    (``_fetch_dem_for_urban``: 3DEP 1m -> fetch_dem 10m), then call
+    ``suggest_swmm_resolution`` (DEM read + active-cell count + autoscale only).
+    The synchronous DEM read + suggest is OFFLOADED via ``asyncio.to_thread`` so
+    the WS heartbeat is never starved (memory: no-sync-blocking-on-asyncio-loop).
+
+    Returns ``(envelope, autoscale_result, local_dem_path)`` — the
+    ``PayloadWarningEnvelopePayload`` carrying the ``GranularitySuggestion``
+    block, the raw ``SWMMAutoscaleResult``, and the localized DEM path the
+    decision tail needs for the REAL-grid cap-clamp on a ``narrow_scope``
+    override (``clamp_swmm_resolution_to_real_cap`` re-probes this same DEM so the
+    clamp matches the count :func:`build_swmm_mesh` will produce).
+
+    Raises on ANY failure (DEM fetch, read, suggest) — the caller's try/except
+    fails OPEN (proceeds with the original params) so a gate problem never blocks
+    or orphans a solve.
+    """
+    from grace2_contracts.payload_warning import (
+        GranularitySuggestion,
+        PayloadWarningEnvelopePayload,
+    )
+    from grace2_contracts.swmm_contracts import SWMMRunArgs
+    from .tool_arg_normalizer import coerce_bbox_value
+    from .tools.solver import (
+        AWS_BATCH_COMPUTE_CLASS_SIZING,
+        select_compute_class,
+    )
+    from .workflows.model_urban_flood_swmm import (
+        _enforce_min_urban_aoi,
+        _fetch_dem_for_urban,
+    )
+    from .workflows.run_swmm import is_local_mode
+    from .workflows.swmm_mesh_builder import (
+        SWMM_RES_LADDER,
+        estimate_swmm_solve_seconds,
+        suggest_swmm_resolution,
+    )
+
+    # The user's requested resolution rung (the base the ladder snaps UP from).
+    # Defaults to the SWMMRunArgs / tool default so an absent value matches build.
+    try:
+        requested_res = float(
+            params.get("target_resolution_m")
+            if params.get("target_resolution_m") is not None
+            else SWMMRunArgs.model_fields["target_resolution_m"].default
+        )
+    except (TypeError, ValueError):
+        requested_res = 10.0
+
+    coerced = coerce_bbox_value(params.get("bbox"))
+    if coerced is None:
+        # No usable bbox: let the tool raise its own typed SWMM_PARAMS error.
+        raise ValueError("run_swmm_urban_flood gate: bbox missing/invalid")
+    bbox = _enforce_min_urban_aoi(tuple(coerced))  # type: ignore[arg-type]
+
+    # DEM fetch + read + suggest are SYNCHRONOUS compute (network + rasterio +
+    # numpy); offload the whole thing off the event loop. The resolved local DEM
+    # path is surfaced so a narrow_scope override can re-probe the SAME DEM for
+    # the REAL-grid cap-clamp (the build re-reads this DEM at the chosen rung).
+    def _resolve_and_suggest() -> tuple[Any, str]:
+        local_dem_path, _src = _fetch_dem_for_urban(bbox)
+        return suggest_swmm_resolution(local_dem_path, requested_res), local_dem_path
+
+    auto, dem_path = await asyncio.to_thread(_resolve_and_suggest)
+
+    # The selectable ladder = the SWMM rungs at/above the floor of the ladder,
+    # plus the user's requested rung, ascending. Keep every rung > 0.
+    rungs = sorted({r for r in SWMM_RES_LADDER if r > 0} | {requested_res})
+    resolution_choices = [float(r) for r in rungs if r > 0]
+
+    # Off-box (Batch) lane sizes a Spot compute_class from the active-cell count;
+    # the in-process LOCAL lane has no Spot label. is_local_mode() default = True.
+    local_lane = is_local_mode()
+    if local_lane:
+        compute_class = "local"
+        sizing = {"vcpus": os.cpu_count() or 1}
+        spot_label = None
+    else:
+        compute_class = select_compute_class(auto.estimated_active_cells)
+        sizing = AWS_BATCH_COMPUTE_CLASS_SIZING.get(
+            compute_class, AWS_BATCH_COMPUTE_CLASS_SIZING["standard"]
+        )
+        spot_label = f"Spot-eligible ({compute_class})"
+    vcpus = int(sizing.get("vcpus", 1)) or 1
+
+    granularity = GranularitySuggestion(
+        engine="swmm",
+        resolution_param="target_resolution_m",
+        suggested_resolution_m=float(auto.resolution_m),
+        resolution_choices=resolution_choices,
+        estimated_active_cells=int(auto.estimated_active_cells),
+        estimated_solve_seconds=float(auto.estimated_solve_seconds),
+        vcpus=vcpus,
+        compute_class=compute_class,
+        cell_cap=int(auto.cell_cap),
+        coarsened=bool(auto.coarsened),
+        reason=auto.reason[:512],
+        spot_label=spot_label,
+    )
+
+    where = params.get("location_query") or params.get("bbox") or "?"
+    envelope = PayloadWarningEnvelopePayload(
+        warning_id=new_ulid(),
+        tool_name="run_swmm_urban_flood",
+        tool_args={
+            "location": str(where),
+            "return_period_yr": params.get("return_period_yr"),
+            "storm_duration_hr": params.get("storm_duration_hr"),
+            "building_representation": params.get("building_representation"),
+            "target_resolution_m": float(auto.resolution_m),
+            "compute_class": compute_class,
+        },
+        estimated_mb=0.0,
+        threshold_mb=0.0,
+        recommendation=(
+            f"Run a SWMM urban-flood simulation for {where} at "
+            f"~{auto.resolution_m:.0f} m (~{auto.estimated_active_cells} active "
+            f"cells, est ~{auto.estimated_solve_seconds:.0f} s). Pick a finer or "
+            "coarser resolution, or confirm to start."
+        )[:512],
+        options=["proceed", "cancel", "narrow_scope"],
+        granularity=granularity,
+    )
+    return envelope, auto, dem_path
+
+
+def _clamp_swmm_resolution_to_cap(
+    chosen_res_m: float, auto: Any, requested_res_m: float
+) -> tuple[float, bool]:
+    """HARD-CLAMP a user-chosen SWMM resolution so the cell count cannot exceed
+    ``auto.cell_cap`` (#154 narrow_scope path).
+
+    A finer (smaller) resolution multiplies the active-cell count by
+    ``(base/chosen)**2``; the cell count must stay <= ``cell_cap``. We invert the
+    estimate to find the FINEST resolution whose cell count fits the cap and clamp
+    the chosen value UP to it when the user picked finer. A coarser-than-suggested
+    choice is always honoured (fewer cells). Returns ``(clamped_res_m, clamped)``.
+    """
+    chosen = float(chosen_res_m)
+    if chosen <= 0:
+        chosen = float(requested_res_m) if requested_res_m > 0 else float(auto.resolution_m)
+    base_cells = int(auto.estimated_active_cells_at_base)
+    base_res = float(auto.base_resolution_m)
+    cap = int(auto.cell_cap)
+    if base_cells <= 0 or base_res <= 0 or cap <= 0:
+        return chosen, False
+    # cells(res) = base_cells * (base_res/res)**2 <= cap
+    #   => res >= base_res * sqrt(base_cells / cap)
+    import math
+
+    min_res = base_res * math.sqrt(base_cells / float(cap))
+    if chosen < min_res:
+        return float(min_res), True
+    return chosen, False
+
+
 async def _gate_on_solver_confirm(
     websocket: ServerConnection,
     state: SessionState,
@@ -4574,6 +4742,13 @@ async def _gate_on_solver_confirm(
     composer raises its own typed extraction error — the gate must not mask
     parameter problems behind a confusing confirm card.
     """
+    # #154: the SWMM autoscale result + the localized DEM path are captured here
+    # so the decision tail can CAP-CLAMP a user-chosen finer resolution on a
+    # narrow_scope override against the REAL build cell count (re-probing the same
+    # DEM). Both None for every non-SWMM gated tool (their tail is the existing
+    # proceed/cancel).
+    swmm_autoscale: Any = None
+    swmm_dem_path: str | None = None
     try:
         if tool_name == "run_model_groundwater_contamination_scenario":
             from .workflows.model_groundwater_contamination_scenario import (
@@ -4634,6 +4809,17 @@ async def _gate_on_solver_confirm(
                 )[:512],
                 options=["proceed", "cancel"],
             )
+        elif tool_name == "run_swmm_urban_flood":
+            # #154 granularity gate (sprint-16): make mesh resolution a USER
+            # lever (memory: feedback_user_controlled_granularity). The enriched
+            # card carries a GranularitySuggestion the user can override before
+            # the heavy solve. The DEM read + autoscale arithmetic is offloaded
+            # off the event loop inside the helper (no-sync-blocking norm).
+            (
+                envelope,
+                swmm_autoscale,
+                swmm_dem_path,
+            ) = await _build_swmm_granularity_envelope(params)
         else:  # unknown gated tool: fail open to the tool's own validation
             return True, params
     except Exception:  # noqa: BLE001 — never mask param errors with a gate
@@ -4693,8 +4879,8 @@ async def _gate_on_solver_confirm(
         decision_payload.decision,
     )
 
-    if decision_payload.decision != "proceed":
-        # cancel OR narrow_scope (meaningless for a solver run; fail-closed).
+    if decision_payload.decision == "cancel":
+        # Explicit cancel: fail-closed (no solve), existing behavior.
         await _send_error(
             websocket,
             state.session_id,
@@ -4704,8 +4890,115 @@ async def _gate_on_solver_confirm(
         )
         return False, params
 
+    if decision_payload.decision == "narrow_scope":
+        # #154 granularity override: ONLY meaningful for the SWMM gate (it
+        # advertised a GranularitySuggestion). For any other gated solver a
+        # narrow_scope reply is meaningless -> fail-closed (existing behavior).
+        if swmm_autoscale is None:
+            await _send_error(
+                websocket,
+                state.session_id,
+                "USER_INPUT_CANCELLED",
+                f"{tool_name} declined by user "
+                f"(decision={decision_payload.decision!r}); the solver did not run",
+            )
+            return False, params
+
+        revised = decision_payload.revised_args or {}
+        requested_res = float(
+            swmm_autoscale.base_resolution_m
+        )
+        try:
+            chosen_res = float(
+                revised.get("target_resolution_m", swmm_autoscale.resolution_m)
+            )
+        except (TypeError, ValueError):
+            chosen_res = float(swmm_autoscale.resolution_m)
+
+        # CAP-CLAMP against the REAL build cell count, NOT the area model. The
+        # area-model clamp (cells = base_cells*(base/res)**2) UNDERSHOOTS the
+        # real ceil(extent/res) grid count that build_swmm_mesh actually counts
+        # (the build re-reads the DEM at the clamped resolution with
+        # enable_autoscale=False and does NO downstream cap re-check), so an
+        # over-fine override could solve OVER the cap. clamp_swmm_resolution_to_
+        # real_cap re-probes the SAME localized DEM at the SWMM ladder rungs and
+        # returns the finest rung whose REAL active-cell count fits the cap. This
+        # is synchronous rasterio/numpy compute -> off the event loop (memory:
+        # no-sync-blocking-on-asyncio-loop). If the real probe is unavailable
+        # (no DEM path) or fails, fall back to the area-model clamp so the gate
+        # never blocks/orphans the override (fail-OPEN-on-error norm), accepting
+        # the (rare) edge that the legacy clamp could still slightly overshoot.
+        clamped_res = chosen_res
+        clamped = False
+        used_real_clamp = False
+        if swmm_dem_path:
+            try:
+                from .workflows.swmm_mesh_builder import (
+                    clamp_swmm_resolution_to_real_cap,
+                )
+
+                cap = int(swmm_autoscale.cell_cap)
+                real_clamp = await asyncio.to_thread(
+                    clamp_swmm_resolution_to_real_cap,
+                    swmm_dem_path,
+                    chosen_res,
+                    cell_cap=cap,
+                )
+                clamped_res = float(real_clamp.resolution_m)
+                clamped = bool(real_clamp.clamped)
+                used_real_clamp = True
+                logger.info(
+                    "swmm granularity narrow_scope (REAL-cap) session=%s "
+                    "warning_id=%s chosen_res=%.2f built_res=%.2f real_active=%d "
+                    "clamped=%s cell_cap=%d",
+                    state.session_id,
+                    warning_id,
+                    chosen_res,
+                    clamped_res,
+                    real_clamp.real_active_cells,
+                    clamped,
+                    cap,
+                )
+            except Exception:  # noqa: BLE001 -- never orphan the override on a probe fail
+                logger.warning(
+                    "swmm granularity narrow_scope: REAL-cap clamp probe failed "
+                    "for session=%s; falling back to the area-model clamp",
+                    state.session_id,
+                    exc_info=True,
+                )
+        if not used_real_clamp:
+            clamped_res, clamped = _clamp_swmm_resolution_to_cap(
+                chosen_res, swmm_autoscale, requested_res
+            )
+            logger.info(
+                "swmm granularity narrow_scope (area-model fallback) session=%s "
+                "warning_id=%s chosen_res=%.2f clamped_res=%.2f clamped=%s "
+                "cell_cap=%d",
+                state.session_id,
+                warning_id,
+                chosen_res,
+                clamped_res,
+                clamped,
+                swmm_autoscale.cell_cap,
+            )
+
+        approved = dict(params)
+        approved["confirmed"] = True
+        approved["target_resolution_m"] = clamped_res
+        # The user pinned an EXPLICIT resolution -> disable the autoscaler so the
+        # builder honours the chosen (already-real-cap-clamped) rung exactly.
+        approved["enable_autoscale"] = False
+        if clamped:
+            approved["_granularity_clamped"] = True
+        return True, approved
+
+    # proceed: pin the SUGGESTED resolution for SWMM (so the build matches the
+    # card the user approved) and inject confirmed. Other solvers just confirm.
     approved = dict(params)
     approved["confirmed"] = True
+    if swmm_autoscale is not None:
+        approved["target_resolution_m"] = float(swmm_autoscale.resolution_m)
+        approved["enable_autoscale"] = False
     return True, approved
 
 

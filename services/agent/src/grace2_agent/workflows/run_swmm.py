@@ -174,6 +174,7 @@ def build_and_stage_swmm_deck(
     building_footprints: Any = None,
     run_id: str | None = None,
     workdir: str | Path | None = None,
+    enable_autoscale: bool = True,
 ) -> SWMMStaging:
     """Build a quasi-2D SWMM ``.inp`` deck from a DEM + the run args.
 
@@ -195,6 +196,11 @@ def build_and_stage_swmm_deck(
             count. ``None`` for a plain run.
         run_id: optional ULID; minted if absent.
         workdir: optional scratch base; a temp dir is used otherwise.
+        enable_autoscale: when True (default) the mesh builder runs its adaptive
+            budget and may COARSEN ``run_args.target_resolution_m`` to fit the
+            cell cap. When False (the #154 gate's ``narrow_scope`` path) the
+            builder honours ``target_resolution_m`` EXACTLY — the gate already
+            clamped it under the cap, so the user's chosen rung is final.
 
     Returns:
         ``SWMMStaging`` carrying the ``.inp`` path + ``BuildResult`` + echoed
@@ -230,6 +236,7 @@ def build_and_stage_swmm_deck(
         infiltration_method=run_args.infiltration_method,
         manning_overland=float(run_args.manning_overland),
         barriers=run_args.barriers,
+        enable_autoscale=bool(enable_autoscale),
     )
     # total_rain_depth_mm is optional on SWMMRunArgs (the Atlas-14 lookup may
     # not have populated it); the builder has a sane default, so only override

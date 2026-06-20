@@ -94,6 +94,7 @@ async def run_swmm_urban_flood(
     mass_balance_tolerance_pct: float = 5.0,
     barriers: dict[str, Any] | None = None,
     compute_class: str = "standard",
+    enable_autoscale: bool = True,
     # job-0164: absorb LLM-invented kwargs (centralized at server.py via
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
@@ -157,6 +158,12 @@ async def run_swmm_urban_flood(
             hard dam); a GREEN ``flap_gate`` is a one-way SWMM orifice. ``None``
             for a plain run.
         compute_class: FR-CE-3 compute class. Default ``"standard"``.
+        enable_autoscale: when True (DEFAULT) the adaptive-mesh budget may COARSEN
+            ``target_resolution_m`` so a large AOI fits the cell cap. When False
+            the mesh builder honours ``target_resolution_m`` EXACTLY — set by the
+            server-side #154 granularity gate after the user picks a finer rung
+            (the gate has already clamped it under the cap). LLMs should leave
+            this UNSET; the gate is the only intended writer.
 
     Returns:
         On success: a ``SWMMDepthLayerURI`` (a ``LayerURI`` subtype) — the
@@ -235,6 +242,7 @@ async def run_swmm_urban_flood(
         peak = await model_urban_flood_swmm(
             run_args,
             compute_class=compute_class,
+            enable_autoscale=bool(enable_autoscale),
         )
         logger.info(
             "run_swmm_urban_flood complete layer_id=%s max_depth_m=%.4g "
