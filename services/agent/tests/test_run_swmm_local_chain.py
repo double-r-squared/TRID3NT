@@ -84,6 +84,68 @@ def test_run_swmm_urban_flood_registered_and_typed_error():
     assert out2["error_code"] == "SWMM_PARAMS_INVALID"
 
 
+def test_run_swmm_urban_flood_obstacles_alias_does_not_trip_params_invalid(monkeypatch):
+    """The LLM-invented 'obstacles' building_representation normalizes to 'drop'
+    in SWMMRunArgs (contract alias validator) so the tool's FIRST attempt does
+    NOT return SWMM_PARAMS_INVALID -> it proceeds into the workflow (no visible
+    self-correcting retry loop). We stub the composer to capture the normalized
+    run_args without running the heavy solver chain."""
+    import asyncio
+
+    from grace2_agent.tools import run_swmm_tool as RT
+
+    captured: dict = {}
+
+    async def _fake_composer(run_args, **kwargs):  # noqa: ANN001, ANN003
+        captured["run_args"] = run_args
+        # short-circuit with a typed error AFTER capture (no solver needed); the
+        # tool maps it to an error dict, but we only assert on the run_args.
+        raise RT.UrbanFloodWorkflowError("URBAN_STUB", "stub: no solve in unit test")
+
+    monkeypatch.setattr(RT, "model_urban_flood_swmm", _fake_composer)
+
+    out = asyncio.run(
+        RT.run_swmm_urban_flood(
+            bbox=[-85.32, 35.02, -85.28, 35.06],
+            building_representation="obstacles",
+        )
+    )
+    # The composer was reached with a NORMALIZED run_args (alias -> "drop"); the
+    # early SWMM_PARAMS_INVALID guard did NOT fire on "obstacles".
+    assert "run_args" in captured, out
+    assert captured["run_args"].building_representation == "drop"
+    # The tool surfaces the stub workflow error (NOT SWMM_PARAMS_INVALID).
+    assert out["status"] == "error"
+    assert out["error_code"] == "URBAN_STUB"
+
+
+def test_run_swmm_urban_flood_bogus_building_representation_is_params_invalid(monkeypatch):
+    """A genuinely-bogus building_representation still trips the honest
+    SWMM_PARAMS_INVALID guard (the alias map does not silently coerce it) and the
+    composer is never reached."""
+    import asyncio
+
+    from grace2_agent.tools import run_swmm_tool as RT
+
+    reached = {"composer": False}
+
+    async def _fake_composer(run_args, **kwargs):  # noqa: ANN001, ANN003
+        reached["composer"] = True
+        raise AssertionError("composer must not be reached for a bogus param")
+
+    monkeypatch.setattr(RT, "model_urban_flood_swmm", _fake_composer)
+
+    out = asyncio.run(
+        RT.run_swmm_urban_flood(
+            bbox=[-85.32, 35.02, -85.28, 35.06],
+            building_representation="bananas",
+        )
+    )
+    assert reached["composer"] is False
+    assert out["status"] == "error"
+    assert out["error_code"] == "SWMM_PARAMS_INVALID"
+
+
 def test_is_local_mode_default_true():
     """The urban engine runs in-process by default (pyswmm is headless)."""
     assert is_local_mode() is True

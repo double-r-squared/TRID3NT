@@ -520,6 +520,68 @@ def test_pipeline_step_summary_duration_ms_rejects_negative(bad: int) -> None:
         )
 
 
+# --- D.6 PipelineStepSummary two-card sim observability (task-149) ----------- #
+# Mirror the ws.PipelineStep card-kind discriminator + Batch binding so a
+# persisted/replayed snapshot and a cold-case rehydration carry the off-box
+# solver card across a reconnect. role defaults "tool", ids default None.
+
+
+def test_pipeline_step_summary_role_defaults_to_tool_back_compat() -> None:
+    """task-149: a minimally-built summary is an on-box tool card with no Batch
+    binding — proving the persisted snapshot stays byte-identical for old steps.
+    """
+    step = PipelineStepSummary(
+        step_id=new_ulid(),
+        name="step",
+        tool_name="t",
+        state="pending",
+    )
+    assert step.role == "tool"
+    assert step.batch_job_id is None
+    assert step.batch_status is None
+    dumped = step.model_dump(mode="json")
+    assert dumped["role"] == "tool"
+    assert dumped["batch_job_id"] is None
+    assert dumped["batch_status"] is None
+
+
+def test_pipeline_step_summary_compute_card_roundtrips() -> None:
+    """task-149: a ``role="compute"`` Batch-bound solver card persists the
+    jobId + last DescribeJobs status and survives a JSON round-trip unchanged.
+    """
+    step = PipelineStepSummary(
+        step_id=new_ulid(),
+        name="run_sfincs_solver",
+        tool_name="run_solver",
+        state="running",
+        role="compute",
+        batch_job_id="a1b2c3d4-0000-1111-2222-333344445555",
+        batch_status="RUNNING",
+    )
+    dumped_a = step.model_dump(mode="json")
+    assert dumped_a["role"] == "compute"
+    assert dumped_a["batch_job_id"] == "a1b2c3d4-0000-1111-2222-333344445555"
+    assert dumped_a["batch_status"] == "RUNNING"
+    text_a = json.dumps(dumped_a, sort_keys=True)
+    step_b = PipelineStepSummary.model_validate(json.loads(text_a))
+    assert step_b.role == "compute"
+    assert step_b.batch_job_id == "a1b2c3d4-0000-1111-2222-333344445555"
+    text_b = json.dumps(step_b.model_dump(mode="json"), sort_keys=True)
+    assert text_a == text_b
+
+
+def test_pipeline_step_summary_rejects_unknown_role() -> None:
+    """task-149: role is a closed Literal — only ``tool``/``compute``."""
+    with pytest.raises(ValidationError):
+        PipelineStepSummary(
+            step_id=new_ulid(),
+            name="step",
+            tool_name="t",
+            state="running",
+            role="solver",  # type: ignore[arg-type]
+        )
+
+
 # --- D.2 ProjectLayerSummary: job-0072 new optional fields ------------------ #
 # Closes OQ-62-LAYERURI-URI-FIELD, OQ-W-65-STYLE-PRESET, OQ-0068-ZIDX.
 

@@ -80,7 +80,11 @@ from grace2_contracts.envelope import (
 from grace2_contracts.execution import ExecutionHandle, LayerURI, RunResult
 from grace2_contracts.tool_registry import AtomicToolMetadata
 
-from ..pipeline_emitter import current_emitter
+from ..pipeline_emitter import (
+    current_emitter,
+    mint_dispatch_and_sim_cards,
+    route_sim_terminal,
+)
 from ..tools import register_tool
 from ..tools.data_fetch import (
     fetch_dem,
@@ -2082,6 +2086,24 @@ async def model_flood_scenario(
                 grid_resolution_m=grid_resolution_m,
             )
 
+        # --- Two-card sim observability (task-149) ----------------------------
+        # Mint the Dispatch (tool, lands complete) + Sim (compute, bound to the
+        # Batch jobId) cards and point the solver emitter binding at the SIM step
+        # so wait_for_completion's poller feeds its live batch_status. The
+        # ephemeral SFINCS Batch worker has NO inbound WS; status flows agent-side
+        # over the EXISTING WS via the poller. Best-effort: emitter None / emit
+        # failure -> no cards, solve proceeds unchanged.
+        from ..tools.solver import EmitterBinding, set_emitter_binding
+
+        _sim_step_id = await mint_dispatch_and_sim_cards(
+            emitter=emitter,
+            solver=getattr(handle, "solver", "sfincs") or "sfincs",
+            handle=handle,
+            compute_class=effective_compute_class,
+        )
+        if emitter is not None and _sim_step_id is not None:
+            set_emitter_binding(EmitterBinding(emitter=emitter, step_id=_sim_step_id))
+
         # --- Step 7: wait_for_completion (Invariant 8 cancel chain propagates) ---
         # LIVE big-sim telemetry (NATE 2026-06-17): drive a solve-progress envelope
         # on the running card every few seconds for the duration of the solve so
@@ -2114,16 +2136,25 @@ async def model_flood_scenario(
         except asyncio.CancelledError:
             # Invariant 8: the cancel chain is owned by wait_for_completion;
             # propagate immediately so the WS handler emits
-            # pipeline-state(cancelled).
+            # pipeline-state(cancelled). Route the cancel to the SIM card
+            # (best-effort terminal send, J-B-i).
             logger.info("model_flood_scenario cancelled while awaiting solver")
+            await route_sim_terminal(emitter, _sim_step_id, run_result=None)
             raise
         finally:
-            # Tear down the live-progress driver (success, failure, OR cancel).
+            # Tear down the live-progress driver (success, failure, OR cancel)
+            # + clear the compute-card emitter binding.
             _progress_task.cancel()
             try:
                 await _progress_task
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
+            set_emitter_binding(None)
+
+        # task-149: route the SIM compute card to its terminal state from the
+        # RunResult (complete -> green, non-complete -> red) before the
+        # solve-time telemetry + non-complete guard below.
+        await route_sim_terminal(emitter, _sim_step_id, run_result=run_result)
 
     # --- Solve-time telemetry (sprint-16 SFINCS per-job autoscale) ---
     # Accumulate real (active_cells, vCPU, wall_clock) data so the adaptive-grid

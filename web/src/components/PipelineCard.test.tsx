@@ -57,6 +57,10 @@ function makeStep(
     started_at: partial.started_at,
     completed_at: partial.completed_at,
     duration_ms: partial.duration_ms,
+    // task-149: two-card sim observability fields (role defaults to "tool").
+    role: partial.role,
+    batch_job_id: partial.batch_job_id,
+    batch_status: partial.batch_status,
   };
 }
 
@@ -830,5 +834,111 @@ describe("PipelineCard tool-IO expander", () => {
     expect(note).toHaveTextContent("200.0 KB");
     // The args block was NOT truncated, so it carries no note.
     expect(screen.queryByTestId("pipeline-card-io-args-truncated")).toBeNull();
+  });
+});
+
+// --- Two-card sim observability: compute-role card (task-149) ------------- //
+//
+// A `role === "compute"` step is the off-box AWS Batch solver card. It keeps
+// the same card shape but gets a distinct compute-violet accent + a Batch-
+// status chip. The default `role === "tool"` card must render byte-identical to
+// pre-task-149 (no accent, no chip).
+
+describe("PipelineCard — compute-role card (task-149)", () => {
+  it("a default (tool-role) step shows NO batch chip and keeps data-role=tool", () => {
+    render(<PipelineCard step={makeStep({ state: "running" })} />);
+    // No chip — the tool card is unchanged.
+    expect(screen.queryByTestId("pipeline-card-batch-chip")).toBeNull();
+    const card = screen.getByTestId("pipeline-card");
+    expect(card.getAttribute("data-role")).toBe("tool");
+    // No compute left-edge accent on a tool card.
+    expect(card.style.borderLeft === "" || card.style.borderLeft === undefined).toBe(
+      true,
+    );
+  });
+
+  it("a running compute step renders the violet accent + a RUNNING batch chip", () => {
+    render(
+      <PipelineCard
+        step={makeStep({
+          state: "running",
+          name: "run_model_flood_scenario",
+          role: "compute",
+          batch_job_id: "batch-abc-123",
+          batch_status: "RUNNING",
+        })}
+      />,
+    );
+    const card = screen.getByTestId("pipeline-card");
+    expect(card.getAttribute("data-role")).toBe("compute");
+    // Distinct compute accent: a violet left-edge bar + violet-tinted bg base
+    // (jsdom normalizes rgba() with spaces after commas → "124, 92, 255").
+    expect(card.style.borderLeft.replace(/\s/g, "")).toContain("124,92,255");
+    expect(card.style.background.replace(/\s/g, "")).toContain("124,92,255");
+    // The Batch-status chip mirrors the verbatim DescribeJobs status.
+    const chip = screen.getByTestId("pipeline-card-batch-chip");
+    expect(chip).toHaveTextContent("RUNNING");
+    // In-flight chip tint is the compute-violet (not green / not red).
+    const chipBg = chip.style.background.replace(/\s/g, "");
+    expect(chipBg).toContain("124,92,255");
+    expect(chipBg).not.toContain("220,60,60");
+    // The chip's tooltip carries the Batch jobId so the binding is inspectable.
+    expect(chip.getAttribute("title")).toContain("batch-abc-123");
+  });
+
+  it("a terminal FAILED compute step shows the RED terminal chip", () => {
+    render(
+      <PipelineCard
+        step={makeStep({
+          state: "failed",
+          name: "run_model_flood_scenario",
+          role: "compute",
+          batch_job_id: "batch-xyz-9",
+          batch_status: "FAILED",
+        })}
+      />,
+    );
+    const chip = screen.getByTestId("pipeline-card-batch-chip");
+    expect(chip).toHaveTextContent("FAILED");
+    // Locked to the red terminal treatment (not the in-flight violet).
+    const chipBg = chip.style.background.replace(/\s/g, "");
+    expect(chipBg).toContain("220,60,60");
+    expect(chipBg).not.toContain("124,92,255");
+  });
+
+  it("a terminal SUCCEEDED compute step locks the chip to GREEN", () => {
+    render(
+      <PipelineCard
+        step={makeStep({
+          state: "complete",
+          name: "run_model_flood_scenario",
+          role: "compute",
+          batch_job_id: "batch-done-1",
+          batch_status: "SUCCEEDED",
+        })}
+      />,
+    );
+    const chip = screen.getByTestId("pipeline-card-batch-chip");
+    expect(chip).toHaveTextContent("SUCCEEDED");
+    const chipBg = chip.style.background.replace(/\s/g, "");
+    expect(chipBg).toContain("40,200,100");
+    expect(chipBg).not.toContain("124,92,255");
+  });
+
+  it("a compute step with NO batch_status yet still shows a chip (falls back to the pipeline state)", () => {
+    render(
+      <PipelineCard
+        step={makeStep({
+          state: "running",
+          name: "run_model_flood_scenario",
+          role: "compute",
+          batch_job_id: "batch-pending",
+        })}
+      />,
+    );
+    // Never an empty chip on a compute card — falls back to RUNNING.
+    expect(screen.getByTestId("pipeline-card-batch-chip")).toHaveTextContent(
+      "RUNNING",
+    );
   });
 });

@@ -349,6 +349,87 @@ function cardVisual(state: PipelineStepState): CardVisual {
   }
 }
 
+// --- Two-card sim observability: compute-role card (task-149) ------------- //
+//
+// A `role === "compute"` step is the OFF-BOX solver card bound to an AWS Batch
+// job (vs the default on-box "tool" card). It renders with the SAME card shape
+// but a DISTINCT compute-violet accent so the user can tell the heavy external
+// solve apart from the local atomic-tool dispatches around it, plus a status
+// CHIP mirroring the Batch `batch_status` (the verbatim DescribeJobs status).
+//
+// On a non-terminal pipeline state the chip's color follows the Batch status
+// (in-flight statuses tint violet/blue; a terminal Batch status pre-colors the
+// chip green/red even before the pipeline step itself settles). Once the step
+// reaches a terminal pipeline state, the chip LOCKS to the terminal color
+// (green for complete, red for failed/cancelled) and the duration freezes via
+// the existing authoritative-duration path. The card re-renders verbatim from
+// the replayed `pipeline-state` after a WS reconnect — nothing extra to persist.
+
+const COMPUTE_ACCENT_BG = "rgba(124, 92, 255, 0.13)";
+
+interface ChipVisual {
+  background: string;
+  color: string;
+  border: string;
+}
+
+// Map a step's PAINTED state + the verbatim Batch status to a chip treatment.
+// A terminal pipeline state wins (locks green/red); otherwise the Batch status
+// drives it (terminal Batch status pre-colors; in-flight tints violet).
+function computeChipVisual(
+  displayState: PipelineStepState,
+  batchStatus: string | null | undefined,
+): ChipVisual {
+  const status = (batchStatus ?? "").toUpperCase();
+  const terminalSuccess =
+    displayState === "complete" || status === "SUCCEEDED";
+  const terminalFailure =
+    displayState === "failed" ||
+    displayState === "cancelled" ||
+    status === "FAILED";
+  if (terminalSuccess && !terminalFailure) {
+    return {
+      background: "rgba(40, 200, 100, 0.22)",
+      color: "#a7f3c4",
+      border: "1px solid rgba(40, 200, 100, 0.45)",
+    };
+  }
+  if (terminalFailure) {
+    return {
+      background: "rgba(220, 60, 60, 0.24)",
+      color: "#fca5a5",
+      border: "1px solid rgba(220, 60, 60, 0.5)",
+    };
+  }
+  // In-flight (or unknown) Batch status: compute-violet, matching the accent.
+  return {
+    background: "rgba(124, 92, 255, 0.22)",
+    color: "#cbb8ff",
+    border: "1px solid rgba(124, 92, 255, 0.45)",
+  };
+}
+
+// The chip LABEL. Prefer the verbatim Batch status (control-plane truth, never
+// an estimate); fall back to the pipeline state's word when no status has
+// arrived yet so the chip is never empty on a compute card.
+function computeChipLabel(
+  displayState: PipelineStepState,
+  batchStatus: string | null | undefined,
+): string {
+  if (batchStatus && batchStatus.trim().length > 0) return batchStatus;
+  switch (displayState) {
+    case "complete":
+      return "SUCCEEDED";
+    case "failed":
+    case "cancelled":
+      return "FAILED";
+    case "running":
+      return "RUNNING";
+    default:
+      return "SUBMITTED";
+  }
+}
+
 // --- Spinner ------------------------------------------------------------- //
 //
 // 14px circular spinner. Pure SVG so it inherits color via `currentColor` and
@@ -784,6 +865,18 @@ export function PipelineCard({ step, solve = null, io = null }: PipelineCardProp
   const visual = cardVisual(displayState);
   const displayIsRunning = displayState === "running";
   const displayIsFailed = displayState === "failed";
+
+  // Two-card sim observability (task-149): a `role === "compute"` step is the
+  // off-box AWS Batch solver card. It keeps the SAME card shape but gets a
+  // distinct compute-violet accent + a Batch-status chip. role defaults to
+  // "tool" so every existing tool card renders byte-identical.
+  const isCompute = step.role === "compute";
+  const chipVisual = isCompute
+    ? computeChipVisual(displayState, step.batch_status)
+    : null;
+  const chipLabel = isCompute
+    ? computeChipLabel(displayState, step.batch_status)
+    : null;
   // Logical flags (truth from the wire), used for the timer + a11y prefix.
   const isRunning = step.state === "running";
   const isTerminal = TERMINAL_STATES.has(step.state);
@@ -834,6 +927,8 @@ export function PipelineCard({ step, solve = null, io = null }: PipelineCardProp
       data-testid="pipeline-card"
       data-step-id={step.step_id}
       data-state={step.state}
+      data-role={step.role ?? "tool"}
+      data-batch-status={isCompute ? step.batch_status ?? undefined : undefined}
       aria-live="polite"
       style={{
         display: "flex",
@@ -843,7 +938,15 @@ export function PipelineCard({ step, solve = null, io = null }: PipelineCardProp
         lineHeight: "1.4",
         padding: "8px 10px",
         borderRadius: 6,
-        background: visual.background,
+        // Compute cards layer the state tint over a violet accent base so the
+        // off-box solver card reads distinctly from on-box tool cards; tool
+        // cards keep the plain state tint (byte-identical to pre-task-149).
+        background: isCompute
+          ? `linear-gradient(${visual.background}, ${visual.background}), ${COMPUTE_ACCENT_BG}`
+          : visual.background,
+        // A thin violet left-edge bar reinforces the compute accent (only on
+        // compute cards; tool cards carry no border, unchanged).
+        borderLeft: isCompute ? "3px solid rgba(124, 92, 255, 0.7)" : undefined,
         boxShadow: "0 1px 3px rgba(0,0,0,0.25)",
         fontFamily: "ui-monospace, 'Cascadia Code', 'Fira Code', monospace",
         position: "relative",
@@ -907,6 +1010,36 @@ export function PipelineCard({ step, solve = null, io = null }: PipelineCardProp
           </span>
         )}
         {displayIsRunning && <Spinner reduced={reduced} />}
+        {/* Two-card sim observability (task-149): the Batch-status chip on a
+            compute-role card. Mirrors the verbatim DescribeJobs status; locks to
+            green/red on a terminal pipeline state. Never an LLM estimate. */}
+        {isCompute && chipVisual && chipLabel && (
+          <span
+            data-testid="pipeline-card-batch-chip"
+            data-batch-status={step.batch_status ?? undefined}
+            style={{
+              flexShrink: 0,
+              marginLeft: 4,
+              padding: "1px 6px",
+              borderRadius: 4,
+              fontSize: 10,
+              fontWeight: 600,
+              letterSpacing: "0.04em",
+              fontVariantNumeric: "tabular-nums",
+              background: chipVisual.background,
+              color: chipVisual.color,
+              border: chipVisual.border,
+              whiteSpace: "nowrap",
+            }}
+            title={
+              step.batch_job_id
+                ? `AWS Batch ${step.batch_job_id}: ${chipLabel}`
+                : `AWS Batch: ${chipLabel}`
+            }
+          >
+            {chipLabel}
+          </span>
+        )}
         {displayIsFailed && (step.error_code || step.error_message) && (
           <span
             data-testid="pipeline-card-error"

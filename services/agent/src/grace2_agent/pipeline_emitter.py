@@ -91,6 +91,8 @@ __all__ = [
     "current_emitter",
     "bind_turn_case",
     "current_turn_case",
+    "mint_dispatch_and_sim_cards",
+    "route_sim_terminal",
 ]
 
 
@@ -155,6 +157,31 @@ def current_emitter() -> "PipelineEmitter | None":
     return _CURRENT_EMITTER.get()
 
 logger = logging.getLogger("grace2_agent.pipeline_emitter")
+
+
+# --------------------------------------------------------------------------- #
+# Dead-socket terminal-send resilience (J-B-part-i)
+# --------------------------------------------------------------------------- #
+#
+# The TERMINAL pipeline-state send (mark_failed / mark_complete / mark_cancelled)
+# can raise ConnectionClosed* on a dead / mid-cycling WS, which aborts the
+# terminal transition and LOSES the red/green card. We swallow ONLY the
+# connection-closed class on the terminal path (never real logic errors) so the
+# state transition itself always completes. ``websockets`` is a hard agent dep,
+# but we import defensively (empty tuple) so the emitter module is importable in
+# any minimal env / unit-test context that lacks it.
+try:  # pragma: no cover — import shape, not behavior
+    from websockets.exceptions import (
+        ConnectionClosedError,
+        ConnectionClosedOK,
+    )
+
+    _CONNECTION_CLOSED_EXC: tuple[type[BaseException], ...] = (
+        ConnectionClosedError,
+        ConnectionClosedOK,
+    )
+except Exception:  # pragma: no cover — websockets absent in a minimal env
+    _CONNECTION_CLOSED_EXC = ()
 
 
 # --------------------------------------------------------------------------- #
@@ -636,6 +663,17 @@ class _StepState:
     #: Stamped on the terminal transition from ``started_at``→``completed_at``;
     #: ``None`` while pending/running. Deterministic — never an LLM estimate.
     duration_ms: int | None = None
+    #: Two-card sim observability (task-149): card-kind discriminator + Batch
+    #: binding. ``role`` defaults to ``"tool"`` (the on-box atomic-tool card —
+    #: every existing step); ``"compute"`` is the off-box solver card bound to an
+    #: AWS Batch job. ``batch_job_id`` is the Batch ``jobId`` the compute card
+    #: tracks; ``batch_status`` mirrors the last ``DescribeJobs`` status verbatim
+    #: (SUBMITTED / RUNNABLE / STARTING / RUNNING / SUCCEEDED / FAILED). Never an
+    #: LLM estimate (Invariant 1). Both ids ``None`` for a plain tool card so the
+    #: wire shape is byte-identical (back-compat).
+    role: str = "tool"
+    batch_job_id: str | None = None
+    batch_status: str | None = None
 
 
 class PipelineEmitter:
@@ -728,6 +766,14 @@ class PipelineEmitter:
         #: read-only everywhere else.
         self.last_tool_step: PipelineStepSummary | None = None
 
+        #: J-B-part-i: the most recent TERMINAL pipeline-state payload (set on
+        #: every terminal transition via ``_emit_terminal_pipeline_state``).
+        #: ``rebind_sink`` replays it onto a reconnected socket so a
+        #: RENDERED/terminal card stays surfaced across a WS blip
+        #: (per-Case-durability / replay-on-reconnect). ``None`` until the first
+        #: terminal transition.
+        self._last_terminal_pipeline_payload: PipelineStatePayload | None = None
+
     # ------------------------------------------------------------------ #
     # Sink rebinding (job-SOLVE-SURVIVE: WS-disconnect survival)
     # ------------------------------------------------------------------ #
@@ -745,10 +791,48 @@ class PipelineEmitter:
         to the new socket's ``send`` so the still-running solve's progress and
         its terminal ``session-state`` (the published flood layer) reach the
         user on their live connection. The next ``emit_*`` call uses the new
-        sink; no buffered frames are replayed here (the terminal
-        ``session-state`` is a full A.7 snapshot, so the next emission alone
-        re-paints the complete view)."""
+        sink.
+
+        J-B-part-i (replay-on-reconnect / per-Case durability): if a TERMINAL
+        pipeline-state was already emitted (the red/green/yellow card) but the
+        launching socket was dead when it went out, the still-running turn may
+        emit NOTHING further — so the next ``emit_*`` never repaints the card and
+        the terminal state is lost on the new socket. To make the terminal card
+        survive a WS blip, we REPLAY the last terminal pipeline-state snapshot
+        onto the NEW sink here, schedule-and-forget (this method is sync and the
+        sink is async). The replay is best-effort: it swallows a dead-socket
+        failure on the new sink (it too may have just cycled) and never raises
+        out of the rebind."""
         self._sink = sink
+        snapshot = self._last_terminal_pipeline_payload
+        if snapshot is None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # No running loop (e.g. a sync test rebind) — nothing to schedule.
+            # The snapshot stays stashed; a later emit still carries the full
+            # A.7 view, and a loop-bound rebind replays it.
+            return
+        loop.create_task(self._replay_terminal_pipeline_state(snapshot))
+
+    async def _replay_terminal_pipeline_state(
+        self, payload: PipelineStatePayload
+    ) -> None:
+        """Replay a stashed terminal pipeline-state onto the (rebound) sink.
+
+        J-B-part-i: best-effort — the new sink may also be mid-cycle, so a
+        ConnectionClosed* is swallowed (the card replays on the NEXT rebind);
+        any other error propagates from ``_send`` as usual."""
+        try:
+            await self._send("pipeline-state", payload)
+        except _CONNECTION_CLOSED_EXC:  # type: ignore[misc]
+            logger.debug(
+                "emitter: terminal pipeline-state replay failed on the rebound "
+                "socket (best-effort drop) session=%s pipeline_id=%s",
+                self.session_id,
+                self._pipeline_id,
+            )
 
     # ------------------------------------------------------------------ #
     # Snapshot accessors (read-only views; tests + integrations introspect)
@@ -998,6 +1082,67 @@ class PipelineEmitter:
         step.progress_percent = self._coerce_progress(progress_percent)
         await self._emit_pipeline_state()
 
+    # ------------------------------------------------------------------ #
+    # Two-card sim observability (task-149) — the off-box compute card
+    # ------------------------------------------------------------------ #
+
+    async def add_compute_step(
+        self,
+        *,
+        name: str,
+        tool_name: str,
+        batch_job_id: str,
+        batch_status: str | None = None,
+    ) -> str:
+        """Append a ``role="compute"`` step bound to an AWS Batch job; emit.
+
+        Thin helper over ``add_step`` + ``mark_running`` that mints the SECOND
+        of the two sim cards (task-149): the off-box solver card the composer
+        opens right BEFORE ``wait_for_completion``. The first card is a plain
+        ``add_step`` → ``mark_complete`` recording the submit; this one tracks
+        the live Batch job. The step lands in ``running`` state immediately
+        (``started_at`` stamped) so the card shows forward motion while the
+        ephemeral Batch worker (no inbound WS) runs and the agent-side poll loop
+        feeds ``batch_status`` via ``update_compute_status``. Returns the new
+        ``step_id``.
+
+        ``batch_status`` mirrors the Batch control-plane verbatim — never an LLM
+        estimate (Invariant 1); ``None`` until the first ``DescribeJobs`` tick.
+        """
+        step_id = await self.add_step(name=name, tool_name=tool_name)
+        step = self._require_step(step_id)
+        step.role = "compute"
+        step.batch_job_id = batch_job_id
+        step.batch_status = batch_status
+        # Flip to running (stamps started_at + re-emits) so the compute card is
+        # live the moment the solve begins.
+        await self.mark_running(step_id)
+        return step_id
+
+    async def update_compute_status(
+        self, step_id: str, batch_status: str
+    ) -> None:
+        """Patch a compute step's ``batch_status`` and re-emit; best-effort.
+
+        task-149 sibling of ``update_current_progress``: the agent-side solver
+        wait-loop calls this each poll tick with the latest ``DescribeJobs``
+        status so the off-box compute card reflects the Batch control-plane
+        (SUBMITTED / RUNNABLE / STARTING / RUNNING / SUCCEEDED / FAILED) verbatim
+        — never an LLM estimate (Invariant 1). No-op (best-effort) when the
+        ``step_id`` is unknown OR when nothing changed, so a steady poll does not
+        spam an identical frame and a stale binding never raises out of the poll
+        loop (live status is a UX signal, not a correctness gate). Does NOT alter
+        the step's ``state`` — the terminal ``mark_complete`` / ``mark_failed``
+        owns that transition.
+        """
+        step = self._steps.get(step_id)
+        if step is None:
+            return
+        if step.batch_status == batch_status:
+            return
+        step.batch_status = batch_status
+        await self._emit_pipeline_state()
+
     async def mark_complete(self, step_id: str) -> None:
         """Flip ``step_id`` to ``complete``, stamp ``completed_at``, emit."""
         step = self._require_step(step_id)
@@ -1011,7 +1156,9 @@ class PipelineEmitter:
         # the client doesn't render a stale "99%" alongside a green chip.
         # We leave it set when the tool deliberately reported 100 — that's a
         # legitimate workflow signal.
-        await self._emit_pipeline_state()
+        # J-B-part-i: terminal emit is best-effort on a dead socket + snapshots
+        # for replay-on-rebind so the green card survives a WS cycle.
+        await self._emit_terminal_pipeline_state()
 
     async def mark_failed(
         self, step_id: str, error_code: str, error_message: str
@@ -1034,7 +1181,9 @@ class PipelineEmitter:
         step.duration_ms = _elapsed_ms(step.started_at, step.completed_at)
         step.error_code = error_code
         step.error_message = self._truncate_message(error_message)
-        await self._emit_pipeline_state()
+        # J-B-part-i: terminal emit is best-effort on a dead socket + snapshots
+        # for replay-on-rebind so the red card survives a WS cycle.
+        await self._emit_terminal_pipeline_state()
 
     async def mark_cancelled(self, step_id: str) -> None:
         """Flip ``step_id`` to ``cancelled``; emit. Distinct from ``failed``
@@ -1046,7 +1195,9 @@ class PipelineEmitter:
         # job-0264: cancelled is terminal — stamp duration so the yellow card
         # locks to the elapsed-before-cancel time rather than ticking forever.
         step.duration_ms = _elapsed_ms(step.started_at, step.completed_at)
-        await self._emit_pipeline_state()
+        # J-B-part-i: terminal emit is best-effort on a dead socket + snapshots
+        # for replay-on-rebind so the yellow card survives a WS cycle.
+        await self._emit_terminal_pipeline_state()
 
     # ------------------------------------------------------------------ #
     # session-state — current_pipeline + loaded_layers
@@ -1424,6 +1575,11 @@ class PipelineEmitter:
             completed_at=s.completed_at,
             progress_percent=s.progress_percent,
             duration_ms=s.duration_ms,
+            # task-149: carry the two-card discriminator + Batch binding onto the
+            # wire (defaults keep a plain tool card byte-identical).
+            role=s.role,  # type: ignore[arg-type]
+            batch_job_id=s.batch_job_id,
+            batch_status=s.batch_status,
         )
 
     def _to_summary(self, step_id: str) -> PipelineStepSummary:
@@ -1439,6 +1595,11 @@ class PipelineEmitter:
             error_code=s.error_code,
             error_message=s.error_message,
             duration_ms=s.duration_ms,
+            # task-149: mirror the card-kind fields onto the persisted/replayed
+            # summary so the compute card survives a reconnect / cold-case view.
+            role=s.role,  # type: ignore[arg-type]
+            batch_job_id=s.batch_job_id,
+            batch_status=s.batch_status,
         )
 
     async def _emit_pipeline_state(self) -> None:
@@ -1455,6 +1616,49 @@ class PipelineEmitter:
             steps=[self._to_wire_step(sid) for sid in self._step_order],
         )
         await self._send("pipeline-state", payload)
+
+    async def _emit_terminal_pipeline_state(self) -> None:
+        """Emit the pipeline-state for a TERMINAL transition, best-effort.
+
+        J-B-part-i: a terminal ``mark_failed`` / ``mark_complete`` /
+        ``mark_cancelled`` emits the red/green/yellow card. If the WS is dead or
+        mid-cycling, the underlying ``_send`` raises ConnectionClosed* — that
+        would ABORT the terminal transition and LOSE the card. We:
+
+          1. snapshot the terminal payload so ``rebind_sink`` can REPLAY it onto a
+             reconnected socket (per-Case durability / replay-on-reconnect), and
+          2. swallow ONLY the connection-closed class (mirrors the best-effort
+             pattern in ``workflows.solve_progress`` and the server sink) so the
+             state transition itself always completes; any OTHER exception (a
+             real logic/serialization error) still propagates loudly.
+        """
+        if self._pipeline_id is None:
+            # Same defensive contract as _emit_pipeline_state — a terminal emit
+            # with no open pipeline is a programming error at the call site.
+            raise EmitterError(
+                "_emit_terminal_pipeline_state called with no open pipeline; "
+                "call start_pipeline / add_step first"
+            )
+        payload = PipelineStatePayload(
+            pipeline_id=self._pipeline_id,
+            steps=[self._to_wire_step(sid) for sid in self._step_order],
+        )
+        # Stash the LAST terminal snapshot so a sink rebind (reconnect) can
+        # replay it — a RENDERED/terminal card stays surfaced across a WS blip.
+        self._last_terminal_pipeline_payload = payload
+        try:
+            await self._send("pipeline-state", payload)
+        except _CONNECTION_CLOSED_EXC:  # type: ignore[misc]
+            # Dead / cycling socket — best-effort drop. The terminal STATE is
+            # already recorded on the step; the snapshot above replays on the
+            # next sink rebind so the card is not lost.
+            logger.debug(
+                "emitter: terminal pipeline-state send failed on a closed "
+                "socket (best-effort drop; will replay on rebind) session=%s "
+                "pipeline_id=%s",
+                self.session_id,
+                self._pipeline_id,
+            )
 
     async def _send(self, message_type: str, payload: Any) -> None:
         env = Envelope(
@@ -1474,3 +1678,113 @@ class PipelineEmitter:
             len(self._step_order),
             len(self._loaded_layers),
         )
+
+
+# --------------------------------------------------------------------------- #
+# Two-card sim observability composer helpers (task-149)
+# --------------------------------------------------------------------------- #
+#
+# Shared by BOTH off-box-solver composers (model_urban_flood_swmm /
+# model_flood_scenario) so the SWMM and SFINCS Batch dispatches mint the same
+# two cards: a "Dispatch" tool card recording the submit (lands complete
+# immediately) + a "Sim" compute card bound to the Batch jobId whose live
+# ``batch_status`` the wait-loop poller feeds. Pure thin orchestration over the
+# emitter transition methods; lives here (not in a composer) so the logic is
+# defined + tested once and the composer edits stay minimal.
+
+
+async def mint_dispatch_and_sim_cards(
+    *,
+    emitter: "PipelineEmitter | None",
+    solver: str,
+    handle: Any,
+    compute_class: str | None = None,
+) -> str | None:
+    """Mint the Dispatch (tool) + Sim (compute) cards for an off-box solve.
+
+    task-149: ``handle`` is the ``ExecutionHandle`` from ``run_solver`` /
+    ``submit_sfincs_quadtree`` — its ``workflows_execution_id`` is the AWS Batch
+    ``jobId`` the sim card binds to and the wait-loop describes. Card 1 is a
+    plain tool step (``add_step`` -> ``mark_complete``) recording the submit;
+    card 2 is the ``role="compute"`` step bound to the jobId, left running.
+
+    Returns the SIM step's id so the composer can point the solver emitter
+    binding at it (so the wait-loop's phase ticks land on the right card) and
+    route the terminal there. Best-effort: ``emitter is None`` (direct/smoke/unit
+    call) OR any emit failure returns ``None`` and the solve proceeds unchanged —
+    the two cards are an observability affordance, never a correctness gate.
+    """
+    if emitter is None:
+        return None
+    job_id = str(getattr(handle, "workflows_execution_id", "") or "")
+    backend = str(getattr(handle, "workflow_name", "") or "aws-batch")
+    try:
+        # Card 1 "Dispatch": a normal tool step recording the submit.
+        dispatch_label = f"Dispatch {solver} solve"
+        if compute_class:
+            dispatch_label = f"{dispatch_label} ({compute_class})"
+        dispatch_id = await emitter.add_step(
+            name=dispatch_label, tool_name=f"{solver}:dispatch"
+        )
+        await emitter.mark_running(dispatch_id)
+        await emitter.mark_complete(dispatch_id)
+        # Card 2 "Sim": the off-box compute card bound to the Batch jobId.
+        sim_id = await emitter.add_compute_step(
+            name=f"{solver} solve",
+            tool_name=f"{solver}:solve",
+            batch_job_id=job_id,
+            batch_status="SUBMITTED",
+        )
+        logger.info(
+            "two-card sim observability: minted dispatch + compute cards "
+            "solver=%s backend=%s jobId=%s sim_step_id=%s",
+            solver,
+            backend,
+            job_id,
+            sim_id,
+        )
+        return sim_id
+    except Exception as exc:  # noqa: BLE001 — observability, never break the solve
+        logger.warning("mint_dispatch_and_sim_cards failed (non-fatal): %s", exc)
+        return None
+
+
+async def route_sim_terminal(
+    emitter: "PipelineEmitter | None",
+    sim_step_id: str | None,
+    *,
+    run_result: Any,
+) -> None:
+    """Drive the SIM compute card to its terminal state (task-149).
+
+    ``run_result`` is the ``RunResult`` from ``wait_for_completion`` (or ``None``
+    on a cancel): ``status == "complete"`` -> ``mark_complete`` (green),
+    ``status == "cancelled"`` / a cancel (``run_result is None``) ->
+    ``mark_cancelled`` (yellow), anything else -> ``mark_failed`` (red, carrying
+    the RunResult's open-set error_code/message). Uses the emitter's terminal
+    transition methods, which are J-B-i best-effort on a dead socket (the red /
+    green card survives a WS cycle + replays on rebind). No-op when the emitter
+    or the sim step is absent. Best-effort: an emit failure is swallowed so the
+    composer's own non-complete guard still raises the typed workflow error."""
+    if emitter is None or not sim_step_id:
+        return
+    try:
+        status = str(getattr(run_result, "status", "") or "") if run_result is not None else ""
+        if run_result is None or status == "cancelled":
+            await emitter.mark_cancelled(sim_step_id)
+        elif status == "complete":
+            await emitter.mark_complete(sim_step_id)
+        else:
+            error_code = (
+                getattr(run_result, "error_code", None) or (status.upper() if status else "SOLVER_FAILED")
+            )
+            error_message = (
+                getattr(run_result, "error_message", None)
+                or getattr(run_result, "cancellation_reason", None)
+                or f"solver run {status or 'failed'}"
+            )
+            await emitter.mark_failed(
+                sim_step_id, error_code=str(error_code), error_message=str(error_message)
+            )
+    except Exception as exc:  # noqa: BLE001 — observability, never break the solve
+        logger.warning("route_sim_terminal failed (non-fatal): %s", exc)

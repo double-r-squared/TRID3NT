@@ -68,11 +68,36 @@ __all__ = [
 
 # How a building footprint is represented in the quasi-2D overland mesh.
 #   "drop"      — remove the cell from the mesh (a hole/void); water routes
-#                 AROUND the obstruction. Matches NATE's PCSWMM screenshot.
+#                 AROUND the obstruction (the buildings-as-obstacles behavior).
+#                 Matches NATE's PCSWMM screenshot. DEFAULT.
 #   "raise"     — keep the cell but lift its invert above grade so it dams flow.
 #   "roughness" — keep the cell but bump its Manning n (a soft obstruction).
 # Open ``Literal`` so the engine may add representations without a wire break.
 BuildingRepresentation = Literal["drop", "raise", "roughness"]
+
+# LLM-friendly aliases for ``building_representation``. The docs describe the
+# concept as "BUILDING OBSTRUCTIONS", so the LLM frequently invents synonyms
+# ("obstacles", "block", "friction", ...) that fail the bare ``Literal`` and
+# trigger a visible self-correcting retry loop. We normalize these synonyms to
+# the canonical value on the FIRST attempt; an unknown string passes through
+# unchanged so a genuinely-invalid value still raises the honest Literal error.
+_BUILDING_REPRESENTATION_ALIASES: dict[str, str] = {
+    # "drop" — building cells become holes; water routes around the obstruction.
+    "obstacle": "drop",
+    "obstacles": "drop",
+    "obstruction": "drop",
+    "obstructions": "drop",
+    "hole": "drop",
+    "holes": "drop",
+    "remove": "drop",
+    # "raise" — building cells dam flow.
+    "block": "raise",
+    "dam": "raise",
+    "wall": "raise",
+    # "roughness" — building cells bump Manning n.
+    "friction": "roughness",
+    "manning": "roughness",
+}
 
 # Infiltration on the PERVIOUS fraction of each cell's subcatchment.
 #   "none"       — fully impervious (the spike default; all rain runs off).
@@ -131,9 +156,12 @@ class SWMMRunArgs(GraceModel):
             Atlas-14 depth lookup AND the nested-hyetograph builder.
         rain_interval_min: hyetograph timestep, minutes (> 0). The nested
             hyetograph emits one intensity per interval over the duration.
-        building_representation: how building footprints enter the mesh
-            (EXPLICIT parameter, never hardcoded). Default ``"drop"`` matches
-            the screenshot.
+        building_representation: how building footprints enter the mesh, EXACTLY
+            one of {"drop", "raise", "roughness"} (EXPLICIT parameter, never
+            hardcoded). ``"drop"`` (DEFAULT, recommended) = building cells become
+            holes so water routes AROUND them (the buildings-as-obstacles
+            behavior; matches the screenshot); ``"raise"`` = cells dam flow;
+            ``"roughness"`` = bump Manning n. Leave UNSET to get ``"drop"``.
         infiltration_method: loss model on the pervious fraction. Default
             ``"none"`` (fully impervious, the spike default).
         target_resolution_m: requested overland cell size, m (> 0). Subject to
@@ -170,6 +198,24 @@ class SWMMRunArgs(GraceModel):
     mass_balance_tolerance_pct: float = Field(default=5.0, gt=0.0, le=100.0)
 
     barriers: dict[str, Any] | None = None
+
+    @field_validator("building_representation", mode="before")
+    @classmethod
+    def _normalize_building_representation(cls, value: Any) -> Any:
+        """Map common LLM synonyms onto the canonical representation BEFORE the
+        ``Literal`` check, so the FIRST attempt succeeds (no self-correcting
+        retry loop). The docs call the concept "BUILDING OBSTRUCTIONS", so the
+        LLM invents synonyms like "obstacles" -> these normalize to ``"drop"``.
+
+        Lowercase/strip, then alias-map ({obstacles,...} -> "drop";
+        {block,dam,wall} -> "raise"; {friction,manning} -> "roughness"). An
+        unknown string passes through UNCHANGED so a genuinely-invalid value
+        still raises the honest ``Literal`` error.
+        """
+        if not isinstance(value, str):
+            return value
+        key = value.strip().lower()
+        return _BUILDING_REPRESENTATION_ALIASES.get(key, key)
 
     @field_validator("barriers")
     @classmethod

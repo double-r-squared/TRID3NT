@@ -1204,3 +1204,301 @@ async def test_emit_tool_io_non_serializable_degrades_to_str(
     # default=str renders the repr inside the JSON; non-serializable never raises.
     assert "Weird" in p["raw_args"]
     assert "Weird" in p["function_response"]
+
+
+# --------------------------------------------------------------------------- #
+# J-B-part-i: terminal-state survives a dead/cycling socket + rebind replay
+# --------------------------------------------------------------------------- #
+
+
+class _ClosingSink:
+    """A sink that raises ConnectionClosedError on send (simulates a dead WS).
+
+    Mirrors how ``websocket.send`` blows up on a closed/cycling socket — the
+    exact failure that previously aborted a terminal pipeline-state emit and
+    LOST the red/green card."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def __call__(self, text: str) -> None:
+        from websockets.exceptions import ConnectionClosedError
+
+        self.calls += 1
+        raise ConnectionClosedError(None, None)
+
+
+@pytest.mark.asyncio
+async def test_mark_failed_survives_dead_socket(
+    emitter: PipelineEmitter, sink: _CapturingSink
+) -> None:
+    """J-B-part-i: ``mark_failed`` whose TERMINAL send raises
+    ConnectionClosedError still flips the step to ``failed`` and does NOT let
+    the exception escape (the red card must record even on a dead socket)."""
+    step_id = await emitter.add_step(name="Solve", tool_name="run_solver")
+    await emitter.mark_running(step_id)
+
+    # Swap in a dead-socket sink ONLY for the terminal emit so add_step /
+    # mark_running succeed normally first.
+    emitter._sink = _ClosingSink()
+
+    # No exception escapes despite the underlying ConnectionClosedError.
+    await emitter.mark_failed(
+        step_id, error_code="SOLVER_DISPATCH_FAILED", error_message="off-box crash"
+    )
+
+    # The state transition itself completed: the step is terminal + carries the
+    # error code/message even though the wire send failed.
+    snap = emitter.current_snapshot()
+    assert snap is not None
+    assert snap.steps[0].state == "failed"
+    assert snap.steps[0].error_code == "SOLVER_DISPATCH_FAILED"
+    assert snap.steps[0].error_message == "off-box crash"
+    # The terminal snapshot was stashed for replay-on-rebind.
+    assert emitter._last_terminal_pipeline_payload is not None
+
+
+@pytest.mark.asyncio
+async def test_mark_complete_survives_dead_socket(
+    emitter: PipelineEmitter,
+) -> None:
+    """J-B-part-i: ``mark_complete`` on a dead socket still flips to
+    ``complete`` (green card) without raising."""
+    step_id = await emitter.add_step(name="Fetch", tool_name="fetch_dem")
+    await emitter.mark_running(step_id)
+    emitter._sink = _ClosingSink()
+
+    await emitter.mark_complete(step_id)
+
+    snap = emitter.current_snapshot()
+    assert snap is not None
+    assert snap.steps[0].state == "complete"
+
+
+@pytest.mark.asyncio
+async def test_terminal_emit_propagates_non_connection_errors(
+    emitter: PipelineEmitter,
+) -> None:
+    """J-B-part-i: the best-effort swallow is NARROW — a REAL logic error from
+    the sink (not a connection-closed) still propagates; we only swallow the
+    connection-closed class so genuine bugs are never hidden."""
+
+    async def _broken_sink(text: str) -> None:
+        raise ValueError("serialization bug, not a dead socket")
+
+    step_id = await emitter.add_step(name="Solve", tool_name="run_solver")
+    await emitter.mark_running(step_id)
+    emitter._sink = _broken_sink
+
+    with pytest.raises(ValueError, match="serialization bug"):
+        await emitter.mark_complete(step_id)
+
+    # The state still flipped before the emit attempt (terminal recorded).
+    assert emitter._steps[step_id].state == "complete"
+
+
+@pytest.mark.asyncio
+async def test_rebind_sink_replays_last_terminal_pipeline_state(
+    emitter: PipelineEmitter,
+) -> None:
+    """J-B-part-i: after a terminal transition went out on a (now dead) socket,
+    ``rebind_sink`` REPLAYS the last terminal pipeline-state onto the NEW sink so
+    the RENDERED/terminal card stays surfaced across a WS blip."""
+    step_id = await emitter.add_step(name="Solve", tool_name="run_solver")
+    await emitter.mark_running(step_id)
+
+    # Terminal emit goes out on a dead socket (best-effort drop).
+    emitter._sink = _ClosingSink()
+    await emitter.mark_complete(step_id)
+
+    # A NEW socket connects: rebind. The replay is scheduled as a task, so let
+    # the loop run it.
+    new_sink = _CapturingSink()
+    emitter.rebind_sink(new_sink)
+    await asyncio.sleep(0)  # let the scheduled replay task run
+    await asyncio.sleep(0)
+
+    replayed = _pipeline_frames(new_sink)
+    assert len(replayed) == 1, replayed
+    payload = replayed[0]["payload"]
+    assert payload["pipeline_id"] == emitter.pipeline_id
+    assert payload["steps"][0]["state"] == "complete"
+
+
+@pytest.mark.asyncio
+async def test_rebind_sink_no_replay_without_terminal_state(
+    emitter: PipelineEmitter,
+) -> None:
+    """J-B-part-i: with NO terminal transition yet, ``rebind_sink`` replays
+    nothing (the running turn's next emit carries the full A.7 view)."""
+    step_id = await emitter.add_step(name="Solve", tool_name="run_solver")
+    await emitter.mark_running(step_id)  # running, NOT terminal
+
+    new_sink = _CapturingSink()
+    emitter.rebind_sink(new_sink)
+    await asyncio.sleep(0)
+
+    assert _pipeline_frames(new_sink) == []
+
+
+# --------------------------------------------------------------------------- #
+# Two-card sim observability (task-149)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_add_compute_step_yields_role_compute_bound_to_jobid(
+    emitter: PipelineEmitter, sink: _CapturingSink
+) -> None:
+    """``add_compute_step`` mints a ``role="compute"`` step bound to the Batch
+    jobId, lands it running, and carries the discriminator on the wire."""
+    step_id = await emitter.add_compute_step(
+        name="sfincs solve",
+        tool_name="sfincs:solve",
+        batch_job_id="batch-job-xyz",
+        batch_status="SUBMITTED",
+    )
+
+    frames = _pipeline_frames(sink)
+    # The last frame is the mark_running emit; its step carries the compute card.
+    step = frames[-1]["payload"]["steps"][-1]
+    assert step["step_id"] == step_id
+    assert step["role"] == "compute"
+    assert step["batch_job_id"] == "batch-job-xyz"
+    assert step["batch_status"] == "SUBMITTED"
+    assert step["state"] == "running"
+    assert step["started_at"] is not None  # mark_running stamped it
+
+
+@pytest.mark.asyncio
+async def test_update_compute_status_patches_batch_status(
+    emitter: PipelineEmitter, sink: _CapturingSink
+) -> None:
+    """``update_compute_status`` patches ``batch_status`` + re-emits; an
+    identical status is a no-op (no duplicate frame), and the ``state`` is
+    untouched (terminal transitions own that)."""
+    step_id = await emitter.add_compute_step(
+        name="sfincs solve",
+        tool_name="sfincs:solve",
+        batch_job_id="batch-job-xyz",
+        batch_status="SUBMITTED",
+    )
+    n_before = len(_pipeline_frames(sink))
+
+    await emitter.update_compute_status(step_id, "RUNNING")
+    frames = _pipeline_frames(sink)
+    assert len(frames) == n_before + 1  # one new frame
+    step = frames[-1]["payload"]["steps"][-1]
+    assert step["batch_status"] == "RUNNING"
+    assert step["state"] == "running"  # unchanged
+
+    # Identical status -> no-op (no new frame).
+    await emitter.update_compute_status(step_id, "RUNNING")
+    assert len(_pipeline_frames(sink)) == n_before + 1
+
+    # Unknown step id -> best-effort no-op (never raises).
+    await emitter.update_compute_status("does-not-exist", "RUNNING")
+    assert len(_pipeline_frames(sink)) == n_before + 1
+
+
+@pytest.mark.asyncio
+async def test_tool_card_role_defaults_to_tool_backcompat(
+    emitter: PipelineEmitter, sink: _CapturingSink
+) -> None:
+    """A plain ``add_step`` card carries the default ``role="tool"`` with both
+    Batch ids ``None`` (back-compat — byte-identical on the wire)."""
+    step_id = await emitter.add_step(name="Geocode", tool_name="geocode_location")
+    step = _pipeline_frames(sink)[-1]["payload"]["steps"][-1]
+    assert step["role"] == "tool"
+    assert step["batch_job_id"] is None
+    assert step["batch_status"] is None
+    # The persisted summary mirrors the same defaults.
+    summary = emitter._to_summary(step_id)
+    assert summary.role == "tool"
+    assert summary.batch_job_id is None
+    assert summary.batch_status is None
+
+
+@pytest.mark.asyncio
+async def test_mint_dispatch_and_sim_cards_emits_two_cards(
+    emitter: PipelineEmitter, sink: _CapturingSink
+) -> None:
+    """``mint_dispatch_and_sim_cards`` mints a complete Dispatch tool card + a
+    running compute card bound to the handle's jobId."""
+    from grace2_agent.pipeline_emitter import mint_dispatch_and_sim_cards
+
+    handle = type(
+        "H",
+        (),
+        {"workflows_execution_id": "batch-job-777", "workflow_name": "aws-batch", "solver": "sfincs"},
+    )()
+    sim_id = await mint_dispatch_and_sim_cards(
+        emitter=emitter, solver="sfincs", handle=handle, compute_class="large"
+    )
+    assert sim_id is not None
+
+    steps = _pipeline_frames(sink)[-1]["payload"]["steps"]
+    # Two cards: a complete tool dispatch + a running compute sim bound to jobId.
+    dispatch = [s for s in steps if s["role"] == "tool"]
+    compute = [s for s in steps if s["role"] == "compute"]
+    assert len(dispatch) == 1 and dispatch[0]["state"] == "complete"
+    assert len(compute) == 1
+    assert compute[0]["step_id"] == sim_id
+    assert compute[0]["batch_job_id"] == "batch-job-777"
+    assert compute[0]["state"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_mint_dispatch_and_sim_cards_none_emitter_is_noop() -> None:
+    """``emitter is None`` (direct/smoke call) returns ``None`` and emits
+    nothing — the two cards are an observability affordance, never required."""
+    from grace2_agent.pipeline_emitter import mint_dispatch_and_sim_cards
+
+    handle = type("H", (), {"workflows_execution_id": "j", "solver": "sfincs"})()
+    sim_id = await mint_dispatch_and_sim_cards(
+        emitter=None, solver="sfincs", handle=handle
+    )
+    assert sim_id is None
+
+
+@pytest.mark.asyncio
+async def test_route_sim_terminal_marks_complete_and_failed(
+    session_id: str,
+) -> None:
+    """``route_sim_terminal`` drives the compute card green on a complete
+    RunResult and red on a non-complete one (carrying its error_code)."""
+    from grace2_agent.pipeline_emitter import route_sim_terminal
+
+    # complete -> green
+    sink_ok = _CapturingSink()
+    em_ok = PipelineEmitter(session_id=session_id, sink=sink_ok)
+    sim_ok = await em_ok.add_compute_step(
+        name="sfincs solve", tool_name="sfincs:solve", batch_job_id="j1"
+    )
+    rr_ok = type("R", (), {"status": "complete", "error_code": None, "error_message": None})()
+    await route_sim_terminal(em_ok, sim_ok, run_result=rr_ok)
+    assert _pipeline_frames(sink_ok)[-1]["payload"]["steps"][-1]["state"] == "complete"
+
+    # non-complete -> red, error_code surfaced
+    sink_bad = _CapturingSink()
+    em_bad = PipelineEmitter(session_id=session_id, sink=sink_bad)
+    sim_bad = await em_bad.add_compute_step(
+        name="sfincs solve", tool_name="sfincs:solve", batch_job_id="j2"
+    )
+    rr_bad = type(
+        "R",
+        (),
+        {"status": "failed", "error_code": "SOLVER_TIMEOUT", "error_message": "ran out of budget"},
+    )()
+    await route_sim_terminal(em_bad, sim_bad, run_result=rr_bad)
+    step = _pipeline_frames(sink_bad)[-1]["payload"]["steps"][-1]
+    assert step["state"] == "failed"
+
+    # cancel (run_result is None) -> yellow
+    sink_cx = _CapturingSink()
+    em_cx = PipelineEmitter(session_id=session_id, sink=sink_cx)
+    sim_cx = await em_cx.add_compute_step(
+        name="sfincs solve", tool_name="sfincs:solve", batch_job_id="j3"
+    )
+    await route_sim_terminal(em_cx, sim_cx, run_result=None)
+    assert _pipeline_frames(sink_cx)[-1]["payload"]["steps"][-1]["state"] == "cancelled"

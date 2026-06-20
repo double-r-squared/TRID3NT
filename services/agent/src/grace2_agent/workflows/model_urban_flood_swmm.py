@@ -45,7 +45,11 @@ from grace2_contracts.execution import LayerURI
 from grace2_contracts.swmm_contracts import SWMMRunArgs
 from grace2_contracts.swmm_contracts import SWMMDepthLayerURI
 
-from ..pipeline_emitter import current_emitter
+from ..pipeline_emitter import (
+    current_emitter,
+    mint_dispatch_and_sim_cards,
+    route_sim_terminal,
+)
 from ..tools.publish_layer import PublishLayerError, publish_layer
 from .postprocess_swmm import (
     FLOOD_DEPTH_STYLE_PRESET,
@@ -385,7 +389,12 @@ async def model_urban_flood_swmm(
             # (services/workers/swmm/entrypoint.py) solves the deck and writes
             # completion.json + the .out/.rpt to s3://<runs_bucket>/<run_id>/; we
             # download the .out/.rpt and postprocess from the BATCH output.
-            from ..tools.solver import run_solver, wait_for_completion
+            from ..tools.solver import (
+                EmitterBinding,
+                run_solver,
+                set_emitter_binding,
+                wait_for_completion,
+            )
 
             manifest_uri = await asyncio.to_thread(stage_swmm_manifest, staging)
             handle = run_solver(
@@ -393,6 +402,23 @@ async def model_urban_flood_swmm(
                 model_setup_uri=manifest_uri,
                 compute_class=effective_compute_class,
             )
+            # --- Two-card sim observability (task-149) ----------------------
+            # Mint the TWO cards the off-box lane shows: a "Dispatch" tool card
+            # (records the submit — solver, queue, Batch jobId) that lands
+            # complete immediately, and a "Sim" compute card bound to the SAME
+            # jobId that tracks the live Batch job. The ephemeral Batch worker has
+            # NO inbound WS; its status flows agent-side via wait_for_completion's
+            # poller over the EXISTING WS, so we point the emitter binding at the
+            # SIM step before the wait and route the terminal there. Best-effort:
+            # emitter None / emit failure never breaks the solve.
+            _sim_step_id = await mint_dispatch_and_sim_cards(
+                emitter=emitter,
+                solver=SWMM_SOLVER_NAME,
+                handle=handle,
+                compute_class=effective_compute_class,
+            )
+            if emitter is not None and _sim_step_id is not None:
+                set_emitter_binding(EmitterBinding(emitter=emitter, step_id=_sim_step_id))
             _progress_task = asyncio.ensure_future(
                 drive_live_solve_progress(
                     emitter=current_emitter(),
@@ -412,16 +438,25 @@ async def model_urban_flood_swmm(
                 run_result = await wait_for_completion(handle)
             except asyncio.CancelledError:
                 # Invariant 8: the cancel chain is owned by wait_for_completion;
-                # propagate immediately so the WS handler emits cancelled.
+                # propagate immediately so the WS handler emits cancelled. Route
+                # the cancel to the SIM card (best-effort terminal send, J-B-i).
                 logger.info("model_urban_flood_swmm cancelled while awaiting solver")
+                await route_sim_terminal(emitter, _sim_step_id, run_result=None)
                 raise
             finally:
-                # Tear down the heartbeat (success, failure, OR cancel).
+                # Tear down the heartbeat (success, failure, OR cancel) + clear
+                # the compute-card emitter binding.
                 _progress_task.cancel()
                 try:
                     await _progress_task
                 except (asyncio.CancelledError, Exception):  # noqa: BLE001
                     pass
+                set_emitter_binding(None)
+
+            # task-149: route the SIM compute card to its terminal state from the
+            # RunResult (complete -> green, non-complete -> red) before the
+            # workflow's own non-complete guard re-raises.
+            await route_sim_terminal(emitter, _sim_step_id, run_result=run_result)
 
             if run_result.status != "complete":
                 # SOLVER_FAILED / SOLVER_TIMEOUT / cancelled -> typed failure

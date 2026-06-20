@@ -41,6 +41,7 @@ from grace2_agent.tools.solver import (
     AWS_BATCH_COMPUTE_CLASS_SIZING,
     AWS_BATCH_WORKFLOW_NAME,
     SOLVER_BACKEND_AWS_BATCH,
+    EmitterBinding,
     SolverDispatchError,
     run_solver,
     set_batch_client,
@@ -292,6 +293,83 @@ async def test_aws_batch_wait_early_failed_via_describe(reset_seams, batch_env) 
 
 
 # --------------------------------------------------------------------------- #
+# task-149: the wait-loop surfaces the live Batch phase on the compute card
+# --------------------------------------------------------------------------- #
+
+
+class _RecordingComputeEmitter:
+    """Records the wait-loop's phase signals: ``update_compute_status`` patches +
+    the ``solve-progress`` ticks carrying ``phase``. Mirrors the
+    PipelineEmitter surface the wait-loop drives via the EmitterBinding."""
+
+    def __init__(self) -> None:
+        self.compute_status: list[tuple[str, str]] = []
+        self.solve_progress: list[dict] = []
+
+    async def update_compute_status(self, step_id: str, batch_status: str) -> None:
+        self.compute_status.append((step_id, batch_status))
+
+    async def update_progress(self, step_id: str, percent: int) -> None:
+        # The composer points the binding at the compute step; regular progress
+        # rides the same step (no-op for this assertion).
+        pass
+
+    async def emit_solve_progress(self, payload: dict) -> None:
+        self.solve_progress.append(payload)
+
+
+class _DeferredCompletionS3(FakeS3Client):
+    """Returns the completion.json only AFTER the first poll tick so the wait
+    loop runs >= 1 no-completion tick (which reads + surfaces the Batch phase)."""
+
+    def __init__(self, *, ready_after: int) -> None:
+        super().__init__()
+        self._calls = 0
+        self._ready_after = ready_after
+
+    def get_object(self, Bucket: str, Key: str):  # noqa: N803
+        if Key.endswith("completion.json"):
+            self._calls += 1
+            if self._calls <= self._ready_after:
+                raise _no_such_key(Key)
+        return super().get_object(Bucket=Bucket, Key=Key)
+
+
+@pytest.mark.asyncio
+async def test_aws_batch_wait_surfaces_phase_on_compute_card(
+    reset_seams, batch_env
+) -> None:
+    """task-149: each no-completion poll tick reads the live DescribeJobs status
+    (RUNNING) and pushes it to the bound compute card BOTH ways — a
+    ``update_compute_status`` patch + a ``solve-progress`` tick carrying
+    ``phase`` — and the OK completion surfaces the terminal SUCCEEDED phase."""
+    batch = FakeBatchClient()  # describe_jobs reports RUNNING by default
+    s3 = _DeferredCompletionS3(ready_after=1)  # 1 RUNNING tick, then OK
+    set_batch_client(batch)
+    set_s3_client(s3)
+    handle = run_solver(solver="sfincs", model_setup_uri="s3://b/m.json")
+    _seed_completion(s3, handle.run_id, bucket="test-runs-bucket", status="ok")
+
+    em = _RecordingComputeEmitter()
+    set_emitter_binding(EmitterBinding(emitter=em, step_id="sim-step-1"))
+
+    result: RunResult = await wait_for_completion(handle, poll_interval_s=0)
+    assert result.status == "complete"
+
+    # The RUNNING phase was surfaced on the no-completion tick, then SUCCEEDED on
+    # the OK completion — both via update_compute_status (the compute card patch).
+    statuses = [s for _sid, s in em.compute_status]
+    assert "RUNNING" in statuses
+    assert "SUCCEEDED" in statuses
+    assert all(sid == "sim-step-1" for sid, _ in em.compute_status)
+
+    # And both rode a solve-progress tick carrying the phase verbatim.
+    phases = [p.get("phase") for p in em.solve_progress]
+    assert "RUNNING" in phases
+    assert "SUCCEEDED" in phases
+
+
+# --------------------------------------------------------------------------- #
 # 4. Cancel → terminate_job + re-raise (Invariant 8)
 # --------------------------------------------------------------------------- #
 
@@ -381,5 +459,39 @@ def test_aws_batch_submit_failure_raises_typed(reset_seams, batch_env) -> None:
 
 def test_aws_batch_rejects_plain_path(reset_seams, batch_env) -> None:
     set_batch_client(FakeBatchClient())
-    with pytest.raises(SolverDispatchError, match="s3:// / gs:// / file://"):
+    with pytest.raises(SolverDispatchError, match="s3:// or gs://"):
         run_solver(solver="sfincs", model_setup_uri="/tmp/manifest.json")
+
+
+def test_aws_batch_rejects_file_uri_off_box_honesty_guard(
+    reset_seams, batch_env
+) -> None:
+    """J-A: a ``file://`` deck URI is REJECTED loud + cheap BEFORE any Batch
+    submit / Spot spend.
+
+    The ephemeral off-box Batch worker has NO access to the agent box local FS,
+    so forwarding a ``file://`` deck silently crashes the solve (the exact SWMM
+    0-for-3 failure). The guard now accepts ONLY s3:// / gs:// and raises a typed
+    SolverDispatchError (SOLVER_DISPATCH_FAILED) for file:// — protecting SWMM +
+    MODFLOW + every future Batch caller. The message must point the caller at
+    object-storage staging (data-source honesty norm)."""
+    set_batch_client(FakeBatchClient())
+    with pytest.raises(SolverDispatchError) as excinfo:
+        run_solver(
+            solver="swmm",
+            model_setup_uri="file:///opt/grace2/runs/deck/manifest.json",
+        )
+    # Typed code + a clear, honest message that names the off-box FS gap.
+    assert excinfo.value.error_code == "SOLVER_DISPATCH_FAILED"
+    msg = str(excinfo.value)
+    assert "s3:// or gs://" in msg
+    assert "local filesystem" in msg
+
+
+def test_aws_batch_accepts_gs_uri(reset_seams, batch_env) -> None:
+    """J-A: ``gs://`` is still accepted (the guard only tightened to drop the
+    local-FS file:// case; object-store schemes pass through unchanged)."""
+    set_batch_client(FakeBatchClient())
+    # Submits cleanly (no SolverDispatchError from the scheme guard).
+    handle = run_solver(solver="sfincs", model_setup_uri="gs://b/m.json")
+    assert handle.run_id

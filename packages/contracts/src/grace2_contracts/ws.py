@@ -472,6 +472,16 @@ class PipelineStep(GraceModel):
     ``None`` for pending/running steps: the client renders a cosmetic live
     ticker until this lands, then locks the card to this number. Milliseconds
     so a sub-second tool reads honestly (0 displays as "0:00"). ``ge=0``.
+
+    Two-card sim observability (task-149): ``role`` discriminates the card
+    KIND — the default ``"tool"`` is an on-box atomic-tool card (every existing
+    payload), while ``"compute"`` is the off-box solver card that binds to an
+    AWS Batch job. For a ``"compute"`` card, ``batch_job_id`` carries the Batch
+    ``jobId`` it tracks and ``batch_status`` the last ``DescribeJobs`` status
+    (SUBMITTED / RUNNABLE / STARTING / RUNNING / SUCCEEDED / FAILED). All three
+    are optional with defaults that keep every existing tool card byte-identical
+    on the wire (``role="tool"``, both ids ``None``). Never an LLM estimate
+    (Invariant 1): ``batch_status`` mirrors the Batch control-plane verbatim.
     """
 
     step_id: ULIDStr
@@ -482,6 +492,9 @@ class PipelineStep(GraceModel):
     completed_at: UTCDatetime | None = None
     progress_percent: int | None = Field(default=None, ge=0, le=100)
     duration_ms: int | None = Field(default=None, ge=0)
+    role: Literal["tool", "compute"] = "tool"
+    batch_job_id: str | None = None
+    batch_status: str | None = None
 
 
 class PipelineStatePayload(GraceModel):
@@ -524,6 +537,11 @@ class SolveProgressPayload(GraceModel):
     vcpus: int | None = None
     elapsed_seconds: float = Field(ge=0)
     eta_seconds: float | None = Field(default=None, ge=0)
+    # Two-card sim observability (task-149): the DescribeJobs status this
+    # progress tick reflects (SUBMITTED / RUNNABLE / STARTING / RUNNING /
+    # SUCCEEDED / FAILED). Optional/None for ticks not bound to a Batch job;
+    # mirrors the Batch control-plane verbatim (Invariant 1, never inferred).
+    phase: str | None = None
 
 
 # tool-io (tool-card-expand-output spec) ------------------------------------- #

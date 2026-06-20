@@ -1364,13 +1364,20 @@ def _run_solver_aws_batch(
     (or the generic ``GRACE2_AWS_BATCH_JOB_DEF``) to activate it.
     """
     if not (
-        model_setup_uri.startswith("s3://")
-        or model_setup_uri.startswith("gs://")
-        or model_setup_uri.startswith("file://")
+        model_setup_uri.startswith("s3://") or model_setup_uri.startswith("gs://")
     ):
+        # HONESTY GUARD (SWMM/MODFLOW off-box crash): the ephemeral Batch worker
+        # runs on a DIFFERENT box and has NO access to the agent box local FS, so
+        # a file:// (or any non-object-store) deck URI cannot be read by the
+        # worker and silently crashes the solve AFTER a Spot submit. Reject it
+        # here — loud + cheap, BEFORE any Batch submit / Spot spend — and tell the
+        # caller to stage the deck to object storage first. Protects SWMM,
+        # MODFLOW, and every future Batch caller.
         raise SolverDispatchError(
-            f"model_setup_uri must be an s3:// / gs:// / file:// URI under the "
-            f"aws-batch backend; got {model_setup_uri!r}"
+            f"model_setup_uri must be an s3:// or gs:// URI under the aws-batch "
+            f"backend (the ephemeral Batch worker has no access to the agent box "
+            f"local filesystem, so a file:// / local deck cannot be read — stage "
+            f"the deck to object storage first); got {model_setup_uri!r}"
         )
     schema_compute_class = _COMPUTE_CLASS_ALIAS.get(compute_class)
     if schema_compute_class is None:
@@ -2030,6 +2037,72 @@ def _batch_terminal_failure(job_id: str) -> str | None:
     return str(reason or "AWS Batch job FAILED")
 
 
+def _batch_status(job_id: str) -> str | None:
+    """Read the current ``DescribeJobs`` status verbatim (task-149).
+
+    Returns the raw Batch status string (SUBMITTED / RUNNABLE / STARTING /
+    RUNNING / SUCCEEDED / FAILED) so the wait-loop can surface the live phase on
+    the off-box compute card, or ``None`` on any describe error / empty response
+    (best-effort — phase is a UX signal, the S3 completion poll stays the
+    primary terminal signal). Never raises; never an LLM estimate (Invariant 1).
+    """
+    try:
+        client = _get_batch_client()
+        resp = client.describe_jobs(jobs=[job_id])
+    except Exception as exc:  # noqa: BLE001 — describe is advisory only
+        logger.warning("aws-batch describe_jobs(%s) phase degraded: %s", job_id, exc)
+        return None
+    jobs = (resp or {}).get("jobs") if isinstance(resp, dict) else getattr(resp, "jobs", None)
+    if not jobs:
+        return None
+    job = jobs[0]
+    status = (job.get("status") if isinstance(job, dict) else getattr(job, "status", "")) or ""
+    status = str(status).strip()
+    return status or None
+
+
+async def _emit_compute_phase(batch_status: str | None, run_id: str, solver: str) -> None:
+    """Surface a Batch phase on the active compute card (task-149).
+
+    Each poll tick that reads a ``DescribeJobs`` status pushes it BOTH ways
+    through the active ``_EMITTER_BINDING`` (the binding the composer pointed at
+    the COMPUTE step before the wait):
+
+      1. ``emit_solve_progress`` with ``phase=batch_status`` so the live
+         solve-progress tick carries the Batch phase, and
+      2. ``update_compute_status`` so the off-box compute card's ``batch_status``
+         reflects the control-plane verbatim.
+
+    Both are best-effort + no-op when no binding / no status (live telemetry is a
+    UX signal, never a correctness gate; mirrors ``_emit_progress``). The
+    ephemeral Batch worker has NO inbound WS — status flows agent-side over the
+    EXISTING WS via this poller."""
+    binding = _EMITTER_BINDING
+    if binding is None or not batch_status:
+        return
+    emitter = binding.emitter
+    # solve-progress tick carrying the phase (elapsed-only payload; the long
+    # solve already drives the rich grid/cells telemetry from the composer's
+    # heartbeat — this tick is the Batch-phase carrier).
+    try:
+        await emitter.emit_solve_progress(
+            {
+                "run_id": run_id,
+                "solver": solver,
+                "elapsed_seconds": 0.0,
+                "phase": batch_status,
+            }
+        )
+    except Exception as exc:  # noqa: BLE001 — emission must never fail the poll
+        logger.warning("emitter.emit_solve_progress(phase) raised: %s", exc)
+    # Patch the compute card's batch_status (no-op for a plain tool step or an
+    # unchanged status — update_compute_status guards both).
+    try:
+        await emitter.update_compute_status(binding.step_id, batch_status)
+    except Exception as exc:  # noqa: BLE001 — emission must never fail the poll
+        logger.warning("emitter.update_compute_status raised: %s", exc)
+
+
 def _terminate_batch_job(job_id: str, reason: str) -> None:
     """Best-effort ``batch.terminate_job(jobId, reason)`` (Invariant-8 cancel).
 
@@ -2087,15 +2160,25 @@ async def _wait_for_completion_aws_batch(
             if manifest is not None:
                 if str(manifest.get("status", "")).lower() == "ok":
                     await _emit_progress(PROGRESS_TERMINAL)
+                    # task-149: the S3 completion landed OK — the worker has run
+                    # to SUCCEEDED even if DescribeJobs has not flipped yet; surface
+                    # the terminal phase on the compute card so it lands green.
+                    await _emit_compute_phase("SUCCEEDED", handle.run_id, handle.solver)
                 else:
                     await _emit_progress(_progress_percent(handle.submitted_at, now))
                 return _build_local_run_result(handle, manifest, runs_bucket)
 
-            # No completion yet — consult Batch for an early terminal FAILED so
-            # we don't poll a dead job until timeout.
-            batch_failure = await loop.run_in_executor(
-                None, _batch_terminal_failure, job_id
-            )
+            # No completion yet — read the live Batch status ONCE per tick
+            # (task-149): surface the phase on the compute card (solve-progress
+            # phase + batch_status) AND reuse it to detect an early terminal
+            # FAILED so we don't poll a dead job until timeout.
+            batch_status = await loop.run_in_executor(None, _batch_status, job_id)
+            await _emit_compute_phase(batch_status, handle.run_id, handle.solver)
+            batch_failure: str | None = None
+            if batch_status is not None and batch_status.upper() == "FAILED":
+                batch_failure = await loop.run_in_executor(
+                    None, _batch_terminal_failure, job_id
+                )
             if batch_failure is not None:
                 logger.warning(
                     "wait_for_completion(aws-batch) early FAILED handle_id=%s "

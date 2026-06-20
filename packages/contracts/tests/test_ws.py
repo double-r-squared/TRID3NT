@@ -463,6 +463,75 @@ def test_pipeline_step_duration_ms_rejects_negative() -> None:
         )
 
 
+# --- two-card sim observability (task-149) ---------------------------------- #
+
+
+def test_pipeline_step_role_defaults_to_tool_back_compat() -> None:
+    """task-149: a minimally-built PipelineStep is an on-box tool card with no
+    Batch binding — proving the new fields keep every existing payload identical.
+    """
+    step = ws.PipelineStep(
+        step_id=new_ulid(), name="fetch DEM", tool_name="fetch_dem", state="running"
+    )
+    assert step.role == "tool"
+    assert step.batch_job_id is None
+    assert step.batch_status is None
+
+
+def test_pipeline_step_compute_card_carries_batch_binding(session_id: str) -> None:
+    """task-149: a ``role="compute"`` off-box solver card carries the Batch
+    jobId + last DescribeJobs status, and round-trips through the envelope.
+    """
+    payload = ws.PipelineStatePayload(
+        pipeline_id=new_ulid(),
+        steps=[
+            ws.PipelineStep(
+                step_id=new_ulid(), name="fetch DEM", tool_name="fetch_dem", state="complete"
+            ),
+            ws.PipelineStep(
+                step_id=new_ulid(),
+                name="run SFINCS",
+                tool_name="run_solver",
+                state="running",
+                role="compute",
+                batch_job_id="a1b2c3d4-0000-1111-2222-333344445555",
+                batch_status="RUNNING",
+            ),
+        ],
+    )
+    dumped = _roundtrip_idempotent(_wrap(payload, session_id))
+    steps = dumped["payload"]["steps"]
+    assert steps[0]["role"] == "tool"
+    assert steps[0]["batch_job_id"] is None
+    assert steps[1]["role"] == "compute"
+    assert steps[1]["batch_job_id"] == "a1b2c3d4-0000-1111-2222-333344445555"
+    assert steps[1]["batch_status"] == "RUNNING"
+
+
+def test_pipeline_step_rejects_unknown_role() -> None:
+    """task-149: role is a closed Literal — only ``tool``/``compute``."""
+    with pytest.raises(ValidationError):
+        ws.PipelineStep(
+            step_id=new_ulid(),
+            name="x",
+            tool_name="x",
+            state="running",
+            role="solver",  # type: ignore[arg-type]
+        )
+
+
+def test_solve_progress_phase_defaults_none_and_carries_batch_status() -> None:
+    """task-149: SolveProgressPayload.phase defaults None (back-compat) and,
+    when populated, carries the DescribeJobs status verbatim.
+    """
+    minimal = ws.SolveProgressPayload(run_id=new_ulid(), solver="sfincs", elapsed_seconds=1.0)
+    assert minimal.phase is None
+    populated = ws.SolveProgressPayload(
+        run_id=new_ulid(), solver="sfincs", elapsed_seconds=42.5, phase="STARTING"
+    )
+    assert populated.phase == "STARTING"
+
+
 # --- map-command and the per-command args models ---------------------------- #
 
 

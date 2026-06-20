@@ -160,6 +160,49 @@ def test_building_representation_enum_rejects_unknown() -> None:
         SWMMRunArgs(bbox=BBOX, building_representation="explode")  # type: ignore[arg-type]
 
 
+def test_building_representation_default_unset_is_drop() -> None:
+    """Leaving building_representation UNSET yields the canonical default 'drop'
+    (the param is NOT required)."""
+    args = SWMMRunArgs(bbox=BBOX)
+    assert args.building_representation == "drop"
+
+
+@pytest.mark.parametrize(
+    ("alias", "canonical"),
+    [
+        # The LLM-invented "BUILDING OBSTRUCTIONS" synonyms -> "drop".
+        ("obstacles", "drop"),
+        ("obstacle", "drop"),
+        ("obstruction", "drop"),
+        ("obstructions", "drop"),
+        ("holes", "drop"),
+        ("remove", "drop"),
+        # case/whitespace insensitivity + the canonical value itself.
+        ("  Obstacles ", "drop"),
+        ("DROP", "drop"),
+        # dam/wall/block -> "raise".
+        ("block", "raise"),
+        ("dam", "raise"),
+        ("wall", "raise"),
+        # friction/manning -> "roughness".
+        ("friction", "roughness"),
+        ("manning", "roughness"),
+    ],
+)
+def test_building_representation_aliases_normalize(alias: str, canonical: str) -> None:
+    """A common synonym (e.g. the LLM-invented 'obstacles') normalizes to the
+    canonical value on the FIRST attempt — no self-correcting retry loop."""
+    args = SWMMRunArgs(bbox=BBOX, building_representation=alias)  # type: ignore[arg-type]
+    assert args.building_representation == canonical
+
+
+def test_building_representation_unknown_string_still_raises() -> None:
+    """A genuinely-bogus value passes through the alias map unchanged and still
+    raises the honest Literal error (no silent coercion to a default)."""
+    with pytest.raises(ValidationError):
+        SWMMRunArgs(bbox=BBOX, building_representation="bananas")  # type: ignore[arg-type]
+
+
 def test_infiltration_method_enum_rejects_unknown() -> None:
     with pytest.raises(ValidationError):
         SWMMRunArgs(bbox=BBOX, infiltration_method="magic")  # type: ignore[arg-type]

@@ -321,6 +321,16 @@ class PipelineStepSummary(GraceModel):
     error_code: str | None = None
     error_message: str | None = Field(default=None, max_length=_ERROR_MESSAGE_MAX_LEN)
     duration_ms: int | None = Field(default=None, ge=0)
+    # Two-card sim observability (task-149): mirror the ws.PipelineStep card-kind
+    # discriminator + Batch binding so a persisted/replayed snapshot and a
+    # cold-case rehydration carry the off-box solver card across a reconnect.
+    # ``role`` defaults to ``"tool"`` and the ids to ``None`` so every existing
+    # persisted step is byte-identical (back-compat); ``"compute"`` is the
+    # Batch-bound solver card. ``batch_status`` mirrors DescribeJobs verbatim
+    # (Invariant 1, never an LLM estimate).
+    role: Literal["tool", "compute"] = "tool"
+    batch_job_id: str | None = None
+    batch_status: str | None = None
 
     @field_validator("error_code")
     @classmethod

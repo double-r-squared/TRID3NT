@@ -135,10 +135,12 @@ async def run_swmm_urban_flood(
             Overrides the Atlas-14 return-period lookup when set.
         storm_duration_hr: design-storm duration, hours (> 0). Default 6.
         rain_interval_min: hyetograph timestep, minutes (> 0). Default 5.
-        building_representation: how building footprints enter the overland mesh.
-            ``"drop"`` (DEFAULT — building cells are holes, water routes around;
-            matches the screenshot), ``"raise"`` (cells dam flow), or
-            ``"roughness"`` (cells bump Manning n).
+        building_representation: how building footprints enter the overland mesh,
+            EXACTLY one of {"drop", "raise", "roughness"}. ``"drop"`` (DEFAULT,
+            recommended) = building cells become holes so water routes AROUND
+            them (the buildings-as-obstacles behavior; matches the screenshot);
+            ``"raise"`` = cells dam flow; ``"roughness"`` = cells bump Manning n.
+            Leave UNSET to get ``"drop"``.
         infiltration_method: loss model on the pervious fraction. ``"none"``
             (DEFAULT, fully impervious), ``"scs_cn"`` (SCS Curve Number), or
             ``"green_ampt"`` (Green-Ampt).

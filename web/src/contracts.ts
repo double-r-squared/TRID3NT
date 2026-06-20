@@ -140,6 +140,17 @@ export interface PipelineStepSummary {
   // shows a cosmetic live ticker until this lands, then locks to this value.
   // Never fabricated client-side. Mirrors PipelineStep.duration_ms (ws.py).
   duration_ms?: number | null;
+  // Two-card sim observability (task-149). `role` discriminates the card KIND:
+  // "tool" (default) is an on-box atomic-tool card; "compute" is the off-box
+  // solver card bound to an AWS Batch job. A "compute" card additionally carries
+  // `batch_job_id` (the Batch jobId it tracks) and `batch_status` (the last
+  // DescribeJobs status verbatim — SUBMITTED/RUNNABLE/STARTING/RUNNING/
+  // SUCCEEDED/FAILED, never an LLM estimate). All three are optional; the
+  // defaults (role="tool", null ids) keep every existing tool card byte-identical
+  // on the wire. Mirrors PipelineStep / PipelineStepSummary (ws.py + collections.py).
+  role?: "tool" | "compute";
+  batch_job_id?: string | null;
+  batch_status?: string | null;
 }
 
 // PipelineSnapshot — Appendix D.6 (`collections.py` PipelineSnapshot). Carried
@@ -890,6 +901,14 @@ export interface SolveProgressPayload {
   elapsed_seconds: number;
   /** Estimated seconds remaining; null when the backend cannot estimate yet. */
   eta_seconds?: number | null;
+  /**
+   * Two-card sim observability (task-149). The DescribeJobs status this live
+   * progress tick reflects (same vocabulary as PipelineStepSummary.batch_status:
+   * SUBMITTED/RUNNABLE/STARTING/RUNNING/SUCCEEDED/FAILED), or null/absent for
+   * ticks not bound to a Batch job. Optional + back-compatible. Mirrors
+   * SolveProgressPayload.phase (ws.py).
+   */
+  phase?: string | null;
 }
 
 // --- Turn-complete / idle signal (C2 terminal-state durability) ---------- //
