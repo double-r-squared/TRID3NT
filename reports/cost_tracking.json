@@ -2039,10 +2039,24 @@
       "description": "Build workflow (6 agents, phased file-disjoint): J-A file:// dispatch honesty guard + J-B emitter terminal-resilience, J-C1 two-card schema fields, J-C2 two-card agent emit + batch phase, J-C3 two-card web render, J-D building-param harness, + final verify. Web 1487/1487, agent pytest 5715, contracts 471.",
       "model": "opus",
       "subagent_tokens": 614525
+    },
+    {
+      "job_id": "wf-swmm-agent-followups-20260620",
+      "sprint": 16,
+      "description": "Diagnose+implement+verify workflow (5 agents): #1 compute_layer_bounds UNKNOWN_LAYER_URI (resolver Branch-3-titiler recovers COG from tile-template url=), #2 min urban AOI 300m floor, #3 re-run frame dedup on series token (live + persist). Full agent pytest 5734 passed, no regressions.",
+      "model": "opus",
+      "subagent_tokens": 436816
+    },
+    {
+      "job_id": "agent-solve-telemetry-20260620",
+      "sprint": 16,
+      "description": "Single agent: solve telemetry - capture Batch Spot instance type + lifecycle + az + timing split (queue/provision vs compute) via describe-jobs->ECS->EC2 (off-loop, best-effort) + mesh size descriptor, record_type=solve row, RunResult.batch_compute_meta. 15 new tests; selection 753 passed.",
+      "model": "opus",
+      "subagent_tokens": 177420
     }
   ],
   "totals_by_sprint": {
-    "16": 3741756,
+    "16": 4355992,
     "6": 1265567,
     "7": 1863284,
     "8": 1786238,
