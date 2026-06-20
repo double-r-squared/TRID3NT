@@ -468,8 +468,33 @@ def test_full_local_chain_emits_peak_plus_frames(synthetic_inputs, monkeypatch):
     assert peak.uri.startswith("http"), peak.uri
     assert not peak.uri.startswith("s3://") and not peak.uri.startswith("gs://")
 
+    # --- emitted layers partition: ONE mesh context layer + the depth frames ----
+    # NATE task #156: model_urban_flood_swmm now emits a quasi-2D computational
+    # "mesh_grid" CONTEXT vector layer via add_loaded_layer right after the deck
+    # build (before the depth frames), so fake.loaded_layers carries that mesh
+    # layer ALONGSIDE the SWMMDepthLayerURI depth frames. The depth FRAMES are
+    # still the "Flood depth step N" SWMMDepthLayerURI group; the mesh is the new,
+    # NON-SWMMDepthLayerURI addition (an inline-geojson vector, NOT published).
+    depth_frames = [
+        f for f in fake.loaded_layers if isinstance(f, SWMMDepthLayerURI)
+    ]
+    mesh_layers = [
+        f for f in fake.loaded_layers if not isinstance(f, SWMMDepthLayerURI)
+    ]
+
+    # Exactly ONE computational-mesh context layer, with its #156 contract.
+    assert len(mesh_layers) == 1, (
+        f"expected exactly one mesh context layer; got {len(mesh_layers)}: "
+        f"{[getattr(m, 'name', m) for m in mesh_layers]}"
+    )
+    mesh = mesh_layers[0]
+    assert mesh.style_preset == "mesh_grid", mesh.style_preset
+    assert mesh.role == "context", mesh.role
+    assert mesh.layer_type == "vector", mesh.layer_type
+    assert mesh.name.startswith("Computational mesh"), mesh.name
+
     # --- frames emitted OUT-OF-BAND as a contiguous "Flood depth step N" group ---
-    frames = fake.loaded_layers
+    frames = depth_frames
     assert len(frames) >= 2, f"expected a multi-frame animation group; got {len(frames)}"
     assert all(isinstance(f, SWMMDepthLayerURI) for f in frames)
     assert all(f.role == "context" for f in frames)
@@ -488,6 +513,8 @@ def test_full_local_chain_emits_peak_plus_frames(synthetic_inputs, monkeypatch):
     assert all(f.layer_id != peak.layer_id for f in frames)
 
     # BREAK A: publish_layer fired once for the peak + once per emitted frame.
+    # The mesh context layer is an inline-geojson vector and is NOT published, so
+    # it does NOT add to the publish_calls count.
     assert len(publish_calls) == 1 + len(frames), (
         f"expected publish_layer x{1 + len(frames)} (peak + {len(frames)} frames); "
         f"got {len(publish_calls)}: {[c['layer_id'] for c in publish_calls]}"
@@ -745,7 +772,28 @@ def test_batch_lane_returns_populated_peak_envelope(synthetic_inputs, monkeypatc
     # BREAK A: the returned peak renders (published http(s) URL, never raw s3://).
     assert peak.uri.startswith("http"), peak.uri
 
-    # The Batch lane also emits the per-frame animation group out-of-band.
-    frames = fake.loaded_layers
+    # The Batch lane also emits the per-frame animation group out-of-band, PLUS
+    # the #156 computational-mesh context layer right after the deck build. Split
+    # the emitted layers: the depth FRAMES are SWMMDepthLayerURI; the mesh layer
+    # is the lone NON-SWMMDepthLayerURI addition (an inline-geojson vector).
+    depth_frames = [
+        f for f in fake.loaded_layers if isinstance(f, SWMMDepthLayerURI)
+    ]
+    mesh_layers = [
+        f for f in fake.loaded_layers if not isinstance(f, SWMMDepthLayerURI)
+    ]
+
+    # Exactly ONE computational-mesh context layer, with its #156 contract.
+    assert len(mesh_layers) == 1, (
+        f"expected exactly one mesh context layer; got {len(mesh_layers)}: "
+        f"{[getattr(m, 'name', m) for m in mesh_layers]}"
+    )
+    mesh = mesh_layers[0]
+    assert mesh.style_preset == "mesh_grid", mesh.style_preset
+    assert mesh.role == "context", mesh.role
+    assert mesh.layer_type == "vector", mesh.layer_type
+    assert mesh.name.startswith("Computational mesh"), mesh.name
+
+    frames = depth_frames
     assert len(frames) >= 2, f"expected a multi-frame group; got {len(frames)}"
     assert all(isinstance(f, SWMMDepthLayerURI) for f in frames)
