@@ -298,6 +298,16 @@ export interface MapViewProps {
   /** Light = QGIS Server WMS basemap. Dark = CartoDB DarkMatter raster.
    *  job-0076 bundled enhancement (dark backdrop makes flood overlay obvious). */
   theme?: MapTheme;
+  /**
+   * Lifts the TRUE projected AOI screen rectangle (the same `legendRect` the
+   * LayerLegend snaps against — computeBboxScreenRect over all four bbox
+   * corners) up to App so the SequenceScrubber (rendered inside LayerPanel,
+   * which has no map handle) can pin bottom-center of the AOI box and track
+   * pan/zoom, exactly like the legend keys. Called with the rect whenever it
+   * changes, and with null when the AOI leaves the viewport / there is no AOI.
+   * `LegendScreenRect` is structurally identical to legend_snap's `ScreenRect`.
+   */
+  onAoiScreenRectChange?: (rect: LegendScreenRect | null) => void;
 }
 
 /**
@@ -2024,7 +2034,7 @@ export function buildFeaturePopupData(
   return { title, subtitle, attributes, point };
 }
 
-export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "light" }: MapViewProps = {}): JSX.Element {
+export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "light", onAoiScreenRectChange }: MapViewProps = {}): JSX.Element {
   const container = useRef<HTMLDivElement | null>(null);
   const map = useRef<MapLibreMap | null>(null);
   // useRef so this survives effect re-runs without triggering re-render (A.7).
@@ -2862,6 +2872,31 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       }
     };
   }, [aoiBbox]);
+
+  // Lift `legendRect` up to App so the SequenceScrubber (rendered inside
+  // LayerPanel, which has no map handle) can pin bottom-center of the AOI box
+  // and track pan/zoom exactly like the legend keys. The recompute effect above
+  // re-derives `legendRect` on every move/zoom/render (rAF-throttled), so this
+  // could fire very often with identical values — guard with a ref that holds
+  // the last rect we reported and only invoke the callback when the four edges
+  // actually change (or transition to/from null). That keeps App's state stable
+  // and avoids render loops.
+  const lastReportedRectRef = useRef<LegendScreenRect | null>(null);
+  useEffect(() => {
+    if (!onAoiScreenRectChange) return;
+    const prev = lastReportedRectRef.current;
+    const same =
+      (prev == null && legendRect == null) ||
+      (prev != null &&
+        legendRect != null &&
+        prev.left === legendRect.left &&
+        prev.top === legendRect.top &&
+        prev.right === legendRect.right &&
+        prev.bottom === legendRect.bottom);
+    if (same) return;
+    lastReportedRectRef.current = legendRect;
+    onAoiScreenRectChange(legendRect);
+  }, [legendRect, onAoiScreenRectChange]);
 
   // F74b feature-click/tap-to-inspect. The agent advertises "click polygons to
   // see name / designation / IUCN", so a click OR a tap on a rendered vector

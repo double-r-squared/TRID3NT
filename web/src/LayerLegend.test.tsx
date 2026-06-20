@@ -483,3 +483,138 @@ describe("LayerLegend — drag", () => {
     fireEvent.pointerUp(window);
   });
 });
+
+// FRAME-TRUTH (NATE 2026-06-19) — the legend gradient + numeric bounds must
+// match what the map actually paints, i.e. the TiTiler rescale + colormap_name
+// embedded in the frame layer's XYZ tile-template URL (the SOURCE OF TRUTH),
+// falling back to style_preset only when those params are absent / unknown.
+describe("LayerLegend — TiTiler rescale + colormap from the tile URL (frame truth)", () => {
+  // An AWS frame layer whose wms_url is a TiTiler XYZ template carrying the
+  // truth as query params (rescale=lo,hi + colormap_name).
+  function makeTitilerLayer(
+    query: string,
+    overrides: Partial<ProjectLayerSummary> = {},
+  ): ProjectLayerSummary {
+    return makeLayer({
+      wms_url: `https://edge.example/cog/tiles/WebMercatorQuad/{z}/{x}/{y}.png?url=s3%3A%2F%2Fb%2Fk.tif${query}`,
+      ...overrides,
+    });
+  }
+
+  it("uses rescale=0,3.5 for the min/max labels (real bounds, not the preset)", () => {
+    render(
+      <LayerLegend
+        layers={[makeTitilerLayer("&rescale=0,3.5&colormap_name=blues")]}
+      />,
+    );
+    // The preset default for continuous_flood_depth is 0..3.5 m WITH a unit;
+    // the URL rescale drops the unit (arbitrary-layer bounds) — assert exact.
+    expect(screen.getByTestId("layer-legend-min-label").textContent).toBe("0");
+    expect(screen.getByTestId("layer-legend-max-label").textContent).toBe("3.5");
+  });
+
+  it("renders the parsed-from-URL bounds even when they differ from the preset", () => {
+    render(
+      <LayerLegend
+        layers={[makeTitilerLayer("&rescale=10,250&colormap_name=viridis")]}
+      />,
+    );
+    expect(screen.getByTestId("layer-legend-min-label").textContent).toBe("10");
+    expect(screen.getByTestId("layer-legend-max-label").textContent).toBe("250");
+  });
+
+  it("renders a blues gradient from colormap_name=blues", () => {
+    render(
+      <LayerLegend
+        layers={[makeTitilerLayer("&rescale=0,3.5&colormap_name=blues")]}
+      />,
+    );
+    const bar = screen.getByTestId("layer-legend-bar");
+    // Blues ramp anchors: light #f7fbff -> dark #08519c (see titiler_colormap).
+    expect(bar.style.background).toContain("#f7fbff");
+    expect(bar.style.background).toContain("#08519c");
+    // The flood preset gradient (rgba blues) must NOT be what painted here.
+    expect(bar.style.background).not.toContain("rgba(8,48,107");
+  });
+
+  it("falls back to the style_preset gradient + bounds when the URL has no params", () => {
+    // wms_url is a plain QGIS WMS endpoint (no rescale / colormap_name), and
+    // uri is a gs:// pointer — neither carries TiTiler params.
+    render(
+      <LayerLegend
+        layers={[
+          makeLayer({
+            wms_url: "https://qgis.example/ows/?SERVICE=WMS&LAYERS=depth",
+          }),
+        ]}
+      />,
+    );
+    // Preset bounds (WITH unit) are preserved.
+    expect(screen.getByTestId("layer-legend-min-label")).toHaveTextContent("0 m");
+    expect(screen.getByTestId("layer-legend-max-label")).toHaveTextContent("3.5 m");
+    // Preset gradient (rgba flood blues) still paints.
+    const bar = screen.getByTestId("layer-legend-bar");
+    expect(bar.style.background).toContain("rgba(8,48,107");
+  });
+
+  it("falls back to the preset gradient for an unknown colormap_name (but uses the URL rescale)", () => {
+    render(
+      <LayerLegend
+        layers={[makeTitilerLayer("&rescale=0,7&colormap_name=nonexistent_cmap")]}
+      />,
+    );
+    // Unknown colormap -> preset gradient fallback (rgba flood blues paints).
+    const bar = screen.getByTestId("layer-legend-bar");
+    expect(bar.style.background).toContain("rgba(8,48,107");
+    expect(bar.style.background).not.toContain("#08519c");
+    // The rescale IS valid, so the numeric bounds still come from the URL.
+    expect(screen.getByTestId("layer-legend-min-label").textContent).toBe("0");
+    expect(screen.getByTestId("layer-legend-max-label").textContent).toBe("7");
+  });
+
+  it("parses rescale + colormap from the `uri` field when wms_url lacks them", () => {
+    // Some layers carry the TiTiler template in `uri` instead of `wms_url`.
+    render(
+      <LayerLegend
+        layers={[
+          makeLayer({
+            wms_url: null,
+            uri: "https://edge.example/cog/tiles/WebMercatorQuad/{z}/{x}/{y}.png?url=s3%3A%2F%2Fb%2Fk.tif&rescale=0,25&colormap_name=reds",
+          }),
+        ]}
+      />,
+    );
+    expect(screen.getByTestId("layer-legend-min-label").textContent).toBe("0");
+    expect(screen.getByTestId("layer-legend-max-label").textContent).toBe("25");
+    // Reds ramp anchors (light #fff5f0 -> dark #a50f15).
+    const bar = screen.getByTestId("layer-legend-bar");
+    expect(bar.style.background).toContain("#fff5f0");
+    expect(bar.style.background).toContain("#a50f15");
+  });
+
+  it("reflects the representative frame's rescale + colormap for a sequential group (item 4)", () => {
+    // All frames in a group share rescale + colormap; parse from the first.
+    function makeFrameTitiler(hour: number): ProjectLayerSummary {
+      const hh = String(hour).padStart(2, "0");
+      return {
+        layer_id: `run-a-f${hh}`,
+        name: `HRRR precip F+${hh}h`,
+        layer_type: "raster",
+        uri: `gs://grace-2/runs/run-a/precip_f${hh}.cog.tif`,
+        wms_url: `https://edge.example/cog/tiles/WebMercatorQuad/{z}/{x}/{y}.png?url=s3%3A%2F%2Fb%2Fprecip_f${hh}.tif&rescale=0,100&colormap_name=blues`,
+        visible: true,
+        opacity: 1,
+        z_index: 1,
+        style_preset: "continuous_flood_depth",
+      };
+    }
+    const layers = [makeFrameTitiler(1), makeFrameTitiler(3), makeFrameTitiler(6)];
+    render(<LayerLegend layers={layers} />);
+    // Exactly ONE group key, and its bounds + gradient come from the frames.
+    expect(screen.getAllByTestId("grace2-layer-legend-key")).toHaveLength(1);
+    expect(screen.getByTestId("layer-legend-min-label").textContent).toBe("0");
+    expect(screen.getByTestId("layer-legend-max-label").textContent).toBe("100");
+    const bar = screen.getByTestId("layer-legend-bar");
+    expect(bar.style.background).toContain("#f7fbff");
+  });
+});

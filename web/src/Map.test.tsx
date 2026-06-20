@@ -2349,6 +2349,92 @@ describe("MapView — legend lives inside the map container (job-0321 F43)", () 
   });
 });
 
+describe("MapView — onAoiScreenRectChange lift (scrubber AOI snap)", () => {
+  beforeEach(() => {
+    lastMapMock = null;
+  });
+
+  // The rect recompute is rAF-throttled (schedule()); happy-dom provides rAF,
+  // so we flush a frame (+ microtasks) after the act() that sets aoiBbox.
+  async function flushRaf(): Promise<void> {
+    await act(async () => {
+      await new Promise<void>((resolve) => {
+        if (typeof requestAnimationFrame === "function") {
+          requestAnimationFrame(() => resolve());
+        } else {
+          setTimeout(resolve, 0);
+        }
+      });
+    });
+  }
+
+  it("fires onAoiScreenRectChange with the projected rect after a zoom-to sets the AOI bbox", async () => {
+    const mapCmdBus = makeMapCmdBus();
+    const onRect = vi.fn();
+    render(
+      <MapView
+        subscribeMapCommand={mapCmdBus.subscribe as MapCommandSubscribeFunc}
+        onAoiScreenRectChange={onRect}
+      />,
+    );
+    // Initial: no AOI → null (the guard fires once for the initial null state
+    // only if it changes; since the ref starts null and legendRect starts null,
+    // no spurious null call is expected — assert nothing fired yet).
+    expect(onRect).not.toHaveBeenCalled();
+
+    act(() => {
+      mapCmdBus.push({
+        command: "zoom-to",
+        args: { bbox: [-100, 30, -90, 40] },
+      });
+    });
+    await flushRaf();
+
+    // The mock project() maps [lon,lat] -> { x:(lon+180)*2, y:(90-lat)*2 }, so
+    // the min/max box over the four corners is left/right from lon, top/bottom
+    // from lat. lon in [-100,-90] -> x in [160,180]; lat in [30,40] -> y in
+    // [100,120]. Assert the callback got that rect.
+    expect(onRect).toHaveBeenCalled();
+    const last = onRect.mock.calls[onRect.mock.calls.length - 1]![0];
+    expect(last).toEqual({ left: 160, top: 100, right: 180, bottom: 120 });
+  });
+
+  it("only fires again when the rect actually CHANGES (change-detection guard)", async () => {
+    const mapCmdBus = makeMapCmdBus();
+    const onRect = vi.fn();
+    render(
+      <MapView
+        subscribeMapCommand={mapCmdBus.subscribe as MapCommandSubscribeFunc}
+        onAoiScreenRectChange={onRect}
+      />,
+    );
+
+    act(() => {
+      mapCmdBus.push({ command: "zoom-to", args: { bbox: [-100, 30, -90, 40] } });
+    });
+    await flushRaf();
+    const callsAfterFirst = onRect.mock.calls.length;
+    expect(callsAfterFirst).toBeGreaterThanOrEqual(1);
+
+    // Re-push the SAME bbox: the rect is identical → the guard suppresses it.
+    act(() => {
+      mapCmdBus.push({ command: "zoom-to", args: { bbox: [-100, 30, -90, 40] } });
+    });
+    await flushRaf();
+    expect(onRect.mock.calls.length).toBe(callsAfterFirst);
+
+    // A DIFFERENT bbox → a fresh call with the new rect.
+    act(() => {
+      mapCmdBus.push({ command: "zoom-to", args: { bbox: [-80, 20, -70, 25] } });
+    });
+    await flushRaf();
+    expect(onRect.mock.calls.length).toBe(callsAfterFirst + 1);
+    const last = onRect.mock.calls[onRect.mock.calls.length - 1]![0];
+    // lon [-80,-70] -> x [200,220]; lat [20,25] -> y [130,140].
+    expect(last).toEqual({ left: 200, top: 130, right: 220, bottom: 140 });
+  });
+});
+
 describe("MapView — map-command layer controls (job-0258)", () => {
   beforeEach(() => {
     lastMapMock = null;

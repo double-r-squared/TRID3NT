@@ -42,7 +42,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ProjectLayerSummary } from "../contracts";
-import { getStylePreset, StylePreset } from "../lib/style-presets";
+import { getStylePreset, StylePreset, type GradientStop } from "../lib/style-presets";
 import {
   layoutKeysCcw,
   rectFromAnchorAndWidth,
@@ -52,6 +52,11 @@ import {
   type ScreenRect,
 } from "../lib/legend_snap";
 import { detectSequentialGroups } from "../LayerPanel";
+import {
+  getColormapStops,
+  parseTitilerTileStyle,
+  type ParsedRescale,
+} from "../lib/titiler_colormap";
 
 export interface LayerLegendProps {
   /** Ordered layer list, top-of-stack first (same order as LayerPanel). */
@@ -90,6 +95,16 @@ export interface LayerLegendProps {
 interface LegendKeyModel {
   layerId: string;
   preset: StylePreset;
+  /**
+   * FRAME-TRUTH (NATE 2026-06-19) — the rescale + colormap parsed from the
+   * layer's TiTiler tile-template URL, when present. This is the SOURCE OF
+   * TRUTH: when set, the key renders these bounds/colors (what the map actually
+   * paints) instead of the preset guess. Null when the URL carries no such
+   * params (QGIS WMS / non-animated single raster) => preset fallback.
+   */
+  rescale: ParsedRescale | null;
+  /** Parsed-colormap CSS gradient stops (from `colormap_name`), or null. */
+  colormapStops: GradientStop[] | null;
 }
 
 /** Per-key interactive UI state the user can drive (width + compact + free pos). */
@@ -102,12 +117,33 @@ interface KeyUiState {
   free?: { left: number; top: number } | null;
 }
 
-/** Builds the CSS linear-gradient string from the preset's stops (sorted asc). */
-function buildGradient(preset: StylePreset): string {
-  const parts = preset.stops
+/** Builds a CSS linear-gradient string from gradient stops (sorted by caller). */
+function buildGradient(stops: GradientStop[]): string {
+  const parts = stops
     .map((s) => `${s.color} ${(s.position * 100).toFixed(2)}%`)
     .join(", ");
   return `linear-gradient(to right, ${parts})`;
+}
+
+/**
+ * FRAME-TRUTH (NATE 2026-06-19) — parses the TiTiler rescale + colormap out of a
+ * layer's tile-template URL. The AWS frame layers carry the truth (rescale +
+ * colormap_name) as query params on the XYZ template. We check `wms_url` first
+ * (the field Map.tsx registers the tile source from — it holds the `{z}`
+ * template for TiTiler layers) and fall back to `uri`. Returns null fields when
+ * neither carries the params (QGIS WMS / non-animated single raster), so the
+ * caller keeps the style_preset behavior. Never throws.
+ */
+function parseLayerTitilerStyle(layer: ProjectLayerSummary): {
+  rescale: ParsedRescale | null;
+  colormapStops: GradientStop[] | null;
+} {
+  const fromWms = parseTitilerTileStyle(layer.wms_url);
+  const fromUri = parseTitilerTileStyle(layer.uri);
+  // Prefer whichever field actually carried each param (wms_url first).
+  const rescale = fromWms.rescale ?? fromUri.rescale;
+  const colormapName = fromWms.colormapName ?? fromUri.colormapName;
+  return { rescale, colormapStops: getColormapStops(colormapName) };
 }
 
 // Default colorbar width when there is no AOI bbox to size against.
@@ -156,18 +192,28 @@ function selectKeyModels(layers: ProjectLayerSummary[]): LegendKeyModel[] {
       if (!g || emittedGroupKeys.has(g.key)) continue; // already emitted or no group
       emittedGroupKeys.add(g.key);
       // Use the first member of the group as the key representative (they all
-      // share the same preset / colormap). layer_id is used to key the UI state.
+      // share the same preset / colormap / rescale). layer_id keys the UI state.
+      // FRAME-TRUTH: all frames share the same rescale+colormap, so parse them
+      // from the representative frame's tile URL (item 4).
       const rep = g.layers[0];
       if (!rep) continue;
       const repPreset = getStylePreset(rep.style_preset ?? "");
-      if (!repPreset) {
+      const repStyle = parseLayerTitilerStyle(rep);
+      out.push({
+        layerId: `group:${g.key}`,
         // Fallback to the current layer's preset if the rep doesn't resolve.
-        out.push({ layerId: `group:${g.key}`, preset });
-      } else {
-        out.push({ layerId: `group:${g.key}`, preset: repPreset });
-      }
+        preset: repPreset ?? preset,
+        rescale: repStyle.rescale,
+        colormapStops: repStyle.colormapStops,
+      });
     } else {
-      out.push({ layerId: l.layer_id, preset });
+      const style = parseLayerTitilerStyle(l);
+      out.push({
+        layerId: l.layer_id,
+        preset,
+        rescale: style.rescale,
+        colormapStops: style.colormapStops,
+      });
     }
   }
   return out;
@@ -481,7 +527,16 @@ export function LayerLegend({
           };
         }
 
-        const gradient = buildGradient(preset);
+        // FRAME-TRUTH (NATE 2026-06-19) — the gradient + numeric bounds match
+        // what the map actually paints. The parsed-from-URL colormap/rescale are
+        // the SOURCE OF TRUTH when present; the style_preset is the FALLBACK.
+        const gradient = buildGradient(model.colormapStops ?? preset.stops);
+        const minLabel = model.rescale ? model.rescale.min : preset.minValue;
+        const maxLabel = model.rescale ? model.rescale.max : preset.maxValue;
+        // The preset unit is meaningful only for the preset's own scale; when
+        // the bounds come from the URL rescale (an arbitrary layer), drop the
+        // unit so we never mislabel (e.g. tagging a temperature ramp with "m").
+        const unitLabel = model.rescale ? "" : preset.unit;
         const sideLabel: AoiSide = aoiRect
           ? sideForIndex(idx)
           : "bottom";
@@ -603,13 +658,13 @@ export function LayerLegend({
                   data-testid="layer-legend-min-label"
                   style={{ fontSize: 10, color: "#bbb" }}
                 >
-                  {preset.minValue} {preset.unit}
+                  {minLabel}{unitLabel ? ` ${unitLabel}` : ""}
                 </span>
                 <span
                   data-testid="layer-legend-max-label"
                   style={{ fontSize: 10, color: "#bbb" }}
                 >
-                  {preset.maxValue} {preset.unit}
+                  {maxLabel}{unitLabel ? ` ${unitLabel}` : ""}
                 </span>
               </div>
             ) : null}

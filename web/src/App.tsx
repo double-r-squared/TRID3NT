@@ -36,6 +36,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MapView, type MapCommandSubscribeFunc, type MapTheme } from "./Map";
 import { Chat, readChatWidth } from "./Chat";
 import { LayerPanel, createLayerPanelBus, readLayersWidth } from "./LayerPanel";
+import type { ScreenRect } from "./lib/legend_snap";
 import {
   AuthGate,
   clearAnonymousAccepted,
@@ -247,6 +248,14 @@ export function App(): JSX.Element {
 
   // Map theme (job-0076).
   const [theme, setTheme] = useState<MapTheme>(() => readTheme());
+
+  // The TRUE projected AOI screen rectangle, lifted out of MapView so the
+  // SequenceScrubber (rendered inside LayerPanel, which has no map handle) can
+  // pin bottom-center of the AOI box and track pan/zoom like the legend keys.
+  // MapView fires onAoiScreenRectChange when the rect changes (null when there
+  // is no AOI / it leaves the viewport). Mirrors the layers/chatWidth lift
+  // pattern: App holds the Map-derived screen state, LayerPanel consumes it.
+  const [aoiScreenRect, setAoiScreenRect] = useState<ScreenRect | null>(null);
 
   // Auth state (job-0123, sprint-12-mega Wave 2).
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
@@ -1247,6 +1256,9 @@ export function App(): JSX.Element {
         subscribeSessionState={bus.subscribeSessionState}
         subscribeMapCommand={bus.subscribeMapCommand as MapCommandSubscribeFunc}
         theme={theme}
+        /* Lift the projected AOI rect so the SequenceScrubber (inside
+           LayerPanel) can pin bottom-center of the AOI box like the legend. */
+        onAoiScreenRectChange={setAoiScreenRect}
       />
 
       {/* MOBILE TOP FROST GRADIENT (NATE 2026-06-19) — with the iOS status bar
@@ -1404,6 +1416,9 @@ export function App(): JSX.Element {
                   onClose={collapseLeft}
                   width={layersWidth}
                   onWidthChange={setLayersWidth}
+                  /* Projected AOI rect (lifted from MapView) so the
+                     SequenceScrubber pins bottom-center of the AOI box. */
+                  aoiRect={aoiScreenRect}
                   /* job-0258: user layer-control intents (opacity slider /
                      visibility checkbox / drag-reorder) flow through the bus
                      so MapView applies them to the live MapLibre instance.
@@ -1684,6 +1699,9 @@ export function App(): JSX.Element {
                     initialLayers={layers}
                     onClose={() => setMobileDrawerOpen(false)}
                     onMapCommand={bus.pushMapCommand}
+                    /* Projected AOI rect (lifted from MapView) so the mobile
+                       SequenceScrubber pins bottom-center of the AOI box. */
+                    aoiRect={aoiScreenRect}
                     /* job-0322 F53 — end-to-end delete on the mobile drawer
                        mount too (swipe-right-to-delete in Group C drives this
                        same callback). See the desktop mount above for the

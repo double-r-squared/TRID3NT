@@ -827,6 +827,95 @@ describe("App F53 wiring — onDeleteLayer reaches GraceWs.sendDeleteLayer (job-
 });
 
 // ---------------------------------------------------------------------------
+// FLAG (a) — the AOI screen rect flows Map(mock) -> App -> LayerPanel so the
+// SequenceScrubber (inside LayerPanel) can pin to the AOI bbox. App holds the
+// rect in state and wires `onAoiScreenRectChange={setAoiScreenRect}` on MapView
+// + `aoiRect={aoiScreenRect}` on LayerPanel. We can't mount the real App
+// (WebSocket/WebGL/MapLibre), so we mirror that exact glue with a fake Map that
+// invokes the callback and a fake LayerPanel that surfaces the received rect.
+// ---------------------------------------------------------------------------
+
+interface FakeScreenRect {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
+/** Fake Map: exposes a button that fires onAoiScreenRectChange (mirrors the
+ *  Map.tsx lift effect calling the callback when legendRect changes). */
+function FakeMap({
+  onAoiScreenRectChange,
+  rect,
+}: {
+  onAoiScreenRectChange?: (r: FakeScreenRect | null) => void;
+  rect: FakeScreenRect | null;
+}): JSX.Element {
+  return (
+    <button
+      data-testid="fake-map-fire-rect"
+      onClick={() => onAoiScreenRectChange?.(rect)}
+    >
+      fire rect
+    </button>
+  );
+}
+
+/** Fake LayerPanel: surfaces the received aoiRect (mirrors the prop the real
+ *  LayerPanel forwards to the SequenceScrubber). */
+function FakeRectLayerPanel({ aoiRect }: { aoiRect?: FakeScreenRect | null }): JSX.Element {
+  return (
+    <span data-testid="fake-layer-panel-rect">
+      {aoiRect ? `${aoiRect.left},${aoiRect.top},${aoiRect.right},${aoiRect.bottom}` : "none"}
+    </span>
+  );
+}
+
+/** Mirrors the App.tsx glue: state holds the rect; Map sets it; LayerPanel reads it. */
+function AoiRectShell({ rect }: { rect: FakeScreenRect | null }): JSX.Element {
+  const [aoiScreenRect, setAoiScreenRect] = useState<FakeScreenRect | null>(null);
+  return (
+    <div>
+      <FakeMap onAoiScreenRectChange={setAoiScreenRect} rect={rect} />
+      <FakeRectLayerPanel aoiRect={aoiScreenRect} />
+    </div>
+  );
+}
+
+describe("App FLAG (a) wiring — AOI rect flows Map -> App -> LayerPanel", () => {
+  it("LayerPanel starts with no rect (null) before Map reports one", () => {
+    render(<AoiRectShell rect={{ left: 10, top: 20, right: 110, bottom: 220 }} />);
+    expect(screen.getByTestId("fake-layer-panel-rect")).toHaveTextContent("none");
+  });
+
+  it("the rect Map reports lands on LayerPanel's aoiRect prop", () => {
+    render(<AoiRectShell rect={{ left: 10, top: 20, right: 110, bottom: 220 }} />);
+    act(() => {
+      fireEvent.click(screen.getByTestId("fake-map-fire-rect"));
+    });
+    expect(screen.getByTestId("fake-layer-panel-rect")).toHaveTextContent(
+      "10,20,110,220",
+    );
+  });
+
+  it("a null report (AOI off-screen) clears LayerPanel's aoiRect", () => {
+    const { rerender } = render(
+      <AoiRectShell rect={{ left: 10, top: 20, right: 110, bottom: 220 }} />,
+    );
+    act(() => {
+      fireEvent.click(screen.getByTestId("fake-map-fire-rect"));
+    });
+    expect(screen.getByTestId("fake-layer-panel-rect")).toHaveTextContent("10,20,110,220");
+    // Now Map reports null (AOI left the viewport) -> LayerPanel clears.
+    rerender(<AoiRectShell rect={null} />);
+    act(() => {
+      fireEvent.click(screen.getByTestId("fake-map-fire-rect"));
+    });
+    expect(screen.getByTestId("fake-layer-panel-rect")).toHaveTextContent("none");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // job-0322 F31 (resume-repaint, iOS zombie-socket): App.tsx registers a
 // `visibilitychange` listener; on `visible` it branches on isMobile:
 //   - MOBILE: wsRef.current?.forceReconnect() — UNCONDITIONALLY tears the

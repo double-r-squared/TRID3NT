@@ -1141,4 +1141,33 @@ describe("LayerPanel — sequence scrubber mounting", () => {
       visible: true,
     });
   });
+
+  // FLAG (a) — LayerPanel forwards the lifted `aoiRect` to the scrubber, which
+  // pins itself bottom-center of the AOI bbox (left = center x, top = bottom+12)
+  // instead of the viewport bottom-center fallback.
+  it("forwards aoiRect to the scrubber so it pins to the AOI bbox bottom-center", () => {
+    render(
+      <LayerPanel
+        initialLayers={[makeFrame(1), makeFrame(3), makeFrame(6)]}
+        aoiRect={{ left: 200, top: 100, right: 400, bottom: 300 }}
+      />,
+    );
+    const scrubber = screen.getByTestId("grace2-sequence-scrubber");
+    expect(scrubber.style.position).toBe("fixed");
+    // center x = (200 + 400) / 2 = 300; top = bottom (300) + 12 = 312.
+    expect(scrubber.style.left).toBe("300px");
+    expect(scrubber.style.top).toBe("312px");
+    expect(scrubber.style.transform).toBe("translateX(-50%)");
+  });
+
+  it("falls back to viewport bottom-center when no aoiRect is supplied", () => {
+    render(
+      <LayerPanel initialLayers={[makeFrame(1), makeFrame(3), makeFrame(6)]} />,
+    );
+    const scrubber = screen.getByTestId("grace2-sequence-scrubber");
+    // No aoiRect -> bottom:24 + left:50% (the prior static placement).
+    expect(scrubber.style.bottom).toBe("24px");
+    expect(scrubber.style.left).toBe("50%");
+    expect(scrubber.style.top).toBe("");
+  });
 });
