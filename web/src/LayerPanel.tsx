@@ -374,9 +374,26 @@ export function detectSequentialGroups(
   const groups: SequentialGroup[] = [];
   for (const [key, members] of buckets) {
     if (members.length < 2) continue;
-    // Sort by frame value ascending; require strictly-increasing DISTINCT values
-    // (a clear monotonic series — reject duplicates / non-monotonic noise).
-    const sorted = [...members].sort((a, b) => a.token.value - b.token.value);
+    // Dedupe by frame value FIRST. A re-run of the same scenario appends a
+    // SECOND full series under fresh run_ids: the new frames are distinct COGs,
+    // so add_loaded_layer never collapses them, and the case ends up carrying
+    // [step1, step1, step2, step2, ...]. Those duplicate values would fail the
+    // strict-monotonic check below, so the WHOLE series gets rejected and every
+    // frame falls back to its own legend key (the duplicate-legend explosion) +
+    // a double-length scrubber that animates twice as fast. Keep the LAST
+    // occurrence per value: members are in load order, so newest-last == the
+    // most recent run, which is the one the user wants to see.
+    const byValue = new Map<
+      number,
+      { token: FrameToken; layer: ProjectLayerSummary }
+    >();
+    for (const m of members) byValue.set(m.token.value, m);
+    const deduped = [...byValue.values()];
+    if (deduped.length < 2) continue;
+    // Sort by frame value ascending; values are now distinct, so the series is
+    // strictly increasing by construction (the guard below stays as a safety
+    // net against any non-monotonic noise from an unexpected token shape).
+    const sorted = deduped.sort((a, b) => a.token.value - b.token.value);
     let monotonic = true;
     for (let i = 1; i < sorted.length; i++) {
       const cur = sorted[i];

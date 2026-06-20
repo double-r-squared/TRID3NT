@@ -932,6 +932,44 @@ describe("detectSequentialGroups — conservative grouping", () => {
     const dupB = { ...makeFrame(3), layer_id: "dup-b", uri: "gs://grace-2/runs/run-a/precip_f03_b.cog.tif" };
     expect(detectSequentialGroups([dupA, dupB])).toHaveLength(0);
   });
+
+  it("collapses a re-run's duplicate full series into ONE group (dedupe by value, keep newest run)", () => {
+    // Mimic the real SWMM re-run: both runs publish the SAME TiTiler tile
+    // template shape and the run_id lives in the percent-encoded ?url= query
+    // AFTER the last literal "/", so bboxSignature is identical across runs and
+    // both series land in one bucket with duplicate values [1,1,2,2,3,3]. The
+    // old code rejected this as non-monotonic, exploding into per-frame legends.
+    const frame = (run: string, step: number): ProjectLayerSummary => {
+      const ss = String(step).padStart(2, "0");
+      return {
+        layer_id: `${run}-swmm-depth-frame-${ss}`,
+        name: `Flood depth step ${step}`,
+        layer_type: "raster",
+        uri:
+          "https://cf.example/cog/tiles/WebMercatorQuad/{z}/{x}/{y}.png" +
+          `?url=s3%3A%2F%2Fbucket%2F${run}%2Fswmm_depth_frame_${ss}.tif` +
+          "&rescale=0,3&colormap_name=blues",
+        visible: true,
+        opacity: 1,
+        z_index: 1,
+        style_preset: "continuous_flood_depth",
+      };
+    };
+    const layers = [
+      frame("RUNA", 1), frame("RUNA", 2), frame("RUNA", 3),
+      frame("RUNB", 1), frame("RUNB", 2), frame("RUNB", 3),
+    ];
+    const groups = detectSequentialGroups(layers);
+    expect(groups).toHaveLength(1);
+    // Deduped to one frame per step (3), not the raw 6.
+    expect(groups[0]?.layers).toHaveLength(3);
+    // Newest run kept: last occurrence per value == RUNB.
+    expect(groups[0]?.layers.map((l) => l.layer_id)).toEqual([
+      "RUNB-swmm-depth-frame-01",
+      "RUNB-swmm-depth-frame-02",
+      "RUNB-swmm-depth-frame-03",
+    ]);
+  });
 });
 
 describe("LayerPanel — sequential group row rendering", () => {
