@@ -938,11 +938,22 @@ describe("CasesPanel", () => {
       expect(panel.style.overflow).toBe("hidden");
     });
 
-    it("the panel root has maxHeight so it stays bounded on mobile + desktop", () => {
+    it("the panel root FILLS its parent's bound (height:100% + minHeight:0), NOT a 100vh maxHeight", () => {
+      // Root-cause fix: the root previously asserted maxHeight: calc(100vh -
+      // 24px), which sized the panel to content (capped at ~full viewport)
+      // and ignored the drawer header/footer, so the inner list's flex:1 was
+      // never squeezed below content and overflowY:auto had nothing to scroll.
+      // The panel now FILLS its parent's bounded height (the desktop rail
+      // wrapper / the mobile drawer hugger) via height:100% + minHeight:0 so
+      // the list (flex:1) can be squeezed and actually scroll on both paths.
       renderPanel();
       const panel = screen.getByTestId("grace2-cases-panel");
-      // maxHeight caps the whole panel; the list div absorbs remaining space.
-      expect(panel.style.maxHeight).toBeTruthy();
+      expect(panel.style.height).toBe("100%");
+      expect(panel.style.minHeight).toBe("0");
+      // The old viewport-sized cap must be gone — it is the wrong reference
+      // (ignores the drawer header/footer) and re-adding it would reintroduce
+      // the content-sized panel that never lets the list scroll.
+      expect(panel.style.maxHeight).toBe("");
     });
 
     it("the list div is the scroll container (overflowY:auto)", () => {
@@ -1011,6 +1022,101 @@ describe("CasesPanel", () => {
         )!,
       );
       expect(onSelect).toHaveBeenCalledWith(CASE_NORCAL_FIRE.case_id);
+    });
+
+    // --- single-scroll-container invariant (mobile drawer chain) ----------
+    // The visibly-broken path was the mobile drawer. The bug was a DOUBLE
+    // scroll container: the App.tsx hugger had overflowY:auto AND the
+    // CasesPanel list has overflowY:auto. The hugger won (it scrolled the
+    // whole panel including the pinned header), the internal list never
+    // engaged, and the root's 100vh maxHeight (taller than the hugger's
+    // bounded slot) meant the panel sized to content and never squeezed the
+    // list. The fix demotes the hugger to overflow:hidden so the LIST is the
+    // SINGLE scroll container. We mirror App.tsx's mobile chain here and
+    // assert exactly one overflowY:auto element in the cases-panel subtree.
+    describe("single scroll container on the mobile drawer path", () => {
+      function renderMobileChain(caseCount = 8) {
+        const cases: CaseSummary[] = Array.from(
+          { length: caseCount },
+          (_, i) => ({
+            schema_version: "v1" as const,
+            case_id: `01ABCDEFGHJKMNPQRSTVWX00${String(i).padStart(2, "0")}`,
+            title: `Case ${i}`,
+            created_at: "2026-06-01T00:00:00.000Z",
+            updated_at: `2026-06-0${Math.max(1, i + 1)}T00:00:00.000Z`,
+            status: "active" as const,
+          }),
+        );
+        render(
+          // Mirror App.tsx mobile slot EXACTLY: MobileDrawer > hugger
+          // (flex:1 + minHeight:0 + overflow:hidden + pointerEvents:none) >
+          // inner div (width:100% + pointerEvents:auto) > CasesPanel.
+          <MobileDrawer open={true} onClose={vi.fn()}>
+            <div
+              data-testid="test-mobile-hugger"
+              style={{
+                flex: 1,
+                minHeight: 0,
+                overflow: "hidden",
+                pointerEvents: "none",
+              }}
+            >
+              <div style={{ width: "100%", pointerEvents: "auto" }}>
+                <CasesPanel
+                  cases={cases}
+                  activeCaseId={null}
+                  onCreate={vi.fn()}
+                  onSelect={vi.fn()}
+                  onRename={vi.fn()}
+                  onArchive={vi.fn()}
+                  onDelete={vi.fn()}
+                />
+              </div>
+            </div>
+          </MobileDrawer>,
+        );
+      }
+
+      it("the hugger does NOT double-scroll (overflow:hidden, not overflowY:auto)", () => {
+        // The hugger is a bounded flex passthrough, NOT a scroll container —
+        // it must not compete with the CasesPanel list. A regression that
+        // re-adds overflowY:auto here reintroduces the double-scroll that
+        // scrolled the pinned header and defeated the mask-gradient.
+        renderMobileChain();
+        const hugger = screen.getByTestId("test-mobile-hugger");
+        expect(hugger.style.overflow).toBe("hidden");
+        expect(hugger.style.overflowY).toBe("");
+        // The F52 pointer-events click-through is preserved.
+        expect(hugger.style.pointerEvents).toBe("none");
+      });
+
+      it("there is EXACTLY ONE overflowY:auto scroll container in the cases-panel subtree", () => {
+        // The single scroll container must be the inner cases-list div (so the
+        // header stays pinned + the mask-gradient applies). Walk the whole
+        // mobile drawer subtree and count overflowY:auto elements.
+        renderMobileChain();
+        const drawer = screen.getByTestId("grace2-mobile-drawer");
+        const scrollers = Array.from(
+          drawer.querySelectorAll<HTMLElement>("*"),
+        ).filter((el) => el.style.overflowY === "auto");
+        expect(scrollers).toHaveLength(1);
+        // And it is the cases-list div, not the hugger / panel root.
+        expect(scrollers[0]!.getAttribute("data-testid")).toBe(
+          "grace2-cases-list",
+        );
+      });
+
+      it("the panel root fills the hugger bound (height:100% + minHeight:0) inside the drawer", () => {
+        // With the hugger bounded (flex:1 + minHeight:0) and CasesPanel
+        // height:100%, the list (flex:1) gets squeezed below content so its
+        // overflowY:auto engages — the mechanism that actually makes the list
+        // scroll on the mobile path.
+        renderMobileChain();
+        const panel = screen.getByTestId("grace2-cases-panel");
+        expect(panel.style.height).toBe("100%");
+        expect(panel.style.minHeight).toBe("0");
+        expect(panel.style.overflow).toBe("hidden");
+      });
     });
   });
 });

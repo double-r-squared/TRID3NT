@@ -555,14 +555,22 @@ export function CasesPanel({
         flexDirection: "column",
         // The panel is a flex column: header is fixed-height, list is the
         // scrollable region (flex:1 + minHeight:0 + overflowY:auto on the list
-        // wrapper below). This maxHeight caps the whole panel so the list
-        // region takes whatever space remains after the header.
-        maxHeight: "calc(100vh - 24px)",
+        // wrapper below). The panel FILLS its parent's bounded height (the
+        // desktop rail wrapper / the mobile drawer hugger) rather than
+        // asserting a viewport-sized maxHeight: calc(100vh - 24px). That old
+        // cap ignored the drawer header/footer (and on desktop was looser than
+        // the rail wrapper's own cap), so the panel sized to content and the
+        // list's flex:1 never got squeezed below content -> overflowY:auto had
+        // nothing to scroll. height:100% + minHeight:0 lets the list (flex:1)
+        // be squeezed below content so its overflowY:auto actually engages on
+        // BOTH paths. The parent now owns the height bound.
+        height: "100%",
+        minHeight: 0,
         // overflow:hidden (not auto): the panel itself must NOT scroll.
         // Only the inner grace2-cases-list div scrolls so the header stays
         // pinned at the top. Without this, overflow:auto on the outer div
         // scrolls the header too AND the flex children (no minHeight:0)
-        // expand past maxHeight anyway instead of being clipped.
+        // expand past the bound anyway instead of being clipped.
         overflow: "hidden",
       }}
     >

@@ -1311,8 +1311,18 @@ export function App(): JSX.Element {
             position: "absolute",
             top: 12,
             left: 16,
+            // top + bottom => a real bounded pixel height (100vh - 12 - 12)
+            // for the child CasesPanel (height:100%) to fill. The old
+            // maxHeight: calc(100vh - 80px) only capped a content-sized
+            // (height:auto) wrapper, so the panel never got squeezed below
+            // content and its inner list never scrolled.
+            bottom: 12,
             zIndex: 20,
-            maxHeight: "calc(100vh - 80px)",
+            // flex column so CasesPanel's height:100% resolves against this
+            // bounded-height wrapper; minHeight:0 lets the column squeeze.
+            display: "flex",
+            flexDirection: "column",
+            minHeight: 0,
           }}
         >
           <CasesPanel
@@ -1601,7 +1611,14 @@ export function App(): JSX.Element {
               style={{
                 flex: 1,
                 minHeight: 0,
-                overflowY: "auto",
+                // CasesPanel scrolls its OWN list internally (pinned header +
+                // mask fade); the hugger must NOT double-scroll. flex:1 +
+                // minHeight:0 already give it a bounded height from the
+                // MobileDrawer column (top:0/bottom:0); overflow:hidden (was
+                // overflowY:auto) removes the competing scroll container so
+                // CasesPanel height:100% fills this bound and the list — not
+                // the whole panel including the header — is what scrolls.
+                overflow: "hidden",
                 pointerEvents: "none",
               }}
             >
