@@ -349,6 +349,26 @@ export const VECTOR_LINE_WIDTH = 2;
 export const MESH_LINE_WIDTH = 0.6;
 
 /**
+ * Faint fill opacity (NATE #156) for computational-mesh POLYGON layers, so the
+ * mesh reads as a WIREFRAME (you see the grid cells) instead of a solid cyan
+ * blanket. A fill-opacity > 0 (rather than 0) keeps each cell CLICKABLE for the
+ * feature popup; 0.06 is just enough tint that the basemap/AOI shows through.
+ * The caller multiplies this by the layer opacity setting.
+ */
+export const MESH_FILL_OPACITY = 0.06;
+
+/**
+ * True when a layer's `style_preset` is a computational-mesh preset (NATE #156).
+ * Mirrors the other mesh checks (lowercased + includes "mesh"); Map.tsx uses it
+ * to gate mesh polygons to a faint fill + hairline outline (wireframe look).
+ */
+export function isMeshGridLayer(
+  stylePreset: string | null | undefined,
+): boolean {
+  return Boolean(stylePreset && stylePreset.toLowerCase().includes("mesh"));
+}
+
+/**
  * Resolve the MapLibre `line-width` for a vector line layer keyed on its
  * `style_preset`. Mesh-grid presets get a hairline (MESH_LINE_WIDTH); every
  * other line keeps the default (VECTOR_LINE_WIDTH). Additive + deterministic:

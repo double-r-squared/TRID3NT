@@ -77,6 +77,9 @@ import {
   resolveVectorColor,
   resolveVectorLineWidth,
   isPelicunDamageLayer,
+  isMeshGridLayer,
+  MESH_FILL_OPACITY,
+  MESH_LINE_WIDTH,
   buildDsMeanExpression,
   POLYGON_FILL_OPACITY,
   POLYGON_STROKE_WIDTH,
@@ -912,9 +915,12 @@ function registerVectorOnMap(
         // MapLibre fill-color accepts expression arrays natively.
         "fill-color": fillColor as string,
         // Reduced fill opacity (0.4) so basemap labels stay readable
-        // underneath polygon fills (Part 3). Pelicun uses 0.7 so the
-        // damage gradient is visually prominent.
-        "fill-opacity": isPelicunDamageLayer(layer.style_preset)
+        // underneath polygon fills (Part 3). Mesh-grid (NATE #156) uses a
+        // faint MESH_FILL_OPACITY so it reads as a wireframe (cells visible,
+        // still clickable). Pelicun uses 0.7 so the damage gradient is bold.
+        "fill-opacity": isMeshGridLayer(layer.style_preset)
+          ? opacity * MESH_FILL_OPACITY
+          : isPelicunDamageLayer(layer.style_preset)
           ? opacity * 0.7
           : opacity * POLYGON_FILL_OPACITY,
         // Subtle stroke softens the CDP-rectangle look while keeping edges
@@ -925,13 +931,16 @@ function registerVectorOnMap(
     });
     // Add a separate line layer for the polygon stroke so we can set stroke
     // width (fill-outline-color only draws 1px; line layer gives us 1.5px).
+    // Mesh-grid (NATE #156) gets the hairline so the lattice reads as scaffold.
     m.addLayer({
       id: `${layer.layer_id}-outline`,
       type: "line",
       source: layer.layer_id,
       paint: {
         "line-color": color,
-        "line-width": POLYGON_STROKE_WIDTH,
+        "line-width": isMeshGridLayer(layer.style_preset)
+          ? MESH_LINE_WIDTH
+          : POLYGON_STROKE_WIDTH,
         "line-opacity": opacity * 0.6,
       },
       layout: { visibility: visible ? "visible" : "none" },
@@ -1039,7 +1048,11 @@ export function registerVectorTileLayer(
       "source-layer": sourceLayer,
       paint: {
         "fill-color": fillColor as string,
-        "fill-opacity": isPelicunDamageLayer(layer.style_preset)
+        // Mesh-grid (NATE #156): faint fill so the lattice reads as a wireframe
+        // (cells visible, still clickable); Pelicun stays bold at 0.7.
+        "fill-opacity": isMeshGridLayer(layer.style_preset)
+          ? opacity * MESH_FILL_OPACITY
+          : isPelicunDamageLayer(layer.style_preset)
           ? opacity * 0.7
           : opacity * POLYGON_FILL_OPACITY,
         "fill-outline-color": color,
@@ -1053,7 +1066,9 @@ export function registerVectorTileLayer(
       "source-layer": sourceLayer,
       paint: {
         "line-color": color,
-        "line-width": POLYGON_STROKE_WIDTH,
+        "line-width": isMeshGridLayer(layer.style_preset)
+          ? MESH_LINE_WIDTH
+          : POLYGON_STROKE_WIDTH,
         "line-opacity": opacity * 0.6,
       },
       layout: { visibility: visible ? "visible" : "none" },
@@ -1140,7 +1155,11 @@ export function applyLayerOpacity(
   } else if (geomKind === "line") {
     m.setPaintProperty(layerId, "line-opacity", opacity);
   } else if (geomKind === "polygon") {
-    const polyOpacity = isPelicunDamageLayer(stylePreset)
+    // Mesh-grid (NATE #156) keeps the faint wireframe fill when the LayerPanel
+    // opacity slider moves; Pelicun stays bold at 0.7; others use the default.
+    const polyOpacity = isMeshGridLayer(stylePreset)
+      ? opacity * MESH_FILL_OPACITY
+      : isPelicunDamageLayer(stylePreset)
       ? opacity * 0.7
       : opacity * POLYGON_FILL_OPACITY;
     m.setPaintProperty(layerId, "fill-opacity", polyOpacity);

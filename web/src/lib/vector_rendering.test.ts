@@ -31,6 +31,8 @@ import {
   resolveVectorLineWidth,
   VECTOR_LINE_WIDTH,
   MESH_LINE_WIDTH,
+  isMeshGridLayer,
+  MESH_FILL_OPACITY,
 } from "./vector_rendering";
 
 // ---------------------------------------------------------------------------
@@ -429,5 +431,28 @@ describe("resolveVectorLineWidth — mesh hairline (NATE #156)", () => {
     expect(resolveVectorLineWidth(null)).toBe(VECTOR_LINE_WIDTH);
     expect(resolveVectorLineWidth(undefined)).toBe(VECTOR_LINE_WIDTH);
     expect(VECTOR_LINE_WIDTH).toBe(2);
+  });
+});
+
+describe("isMeshGridLayer + MESH_FILL_OPACITY — wireframe polygon gating (NATE #156)", () => {
+  it("returns true for mesh presets", () => {
+    expect(isMeshGridLayer("mesh_grid")).toBe(true);
+    expect(isMeshGridLayer("computational_mesh")).toBe(true);
+    expect(isMeshGridLayer("MESH_GRID")).toBe(true); // case-insensitive
+  });
+
+  it("returns false for non-mesh presets and nullish inputs", () => {
+    expect(isMeshGridLayer("flood_depth")).toBe(false);
+    expect(isMeshGridLayer("osm_waterways")).toBe(false);
+    expect(isMeshGridLayer(null)).toBe(false);
+    expect(isMeshGridLayer(undefined)).toBe(false);
+    expect(isMeshGridLayer("")).toBe(false);
+  });
+
+  it("MESH_FILL_OPACITY is a small positive number < 0.2 (faint but clickable)", () => {
+    // > 0 keeps the mesh polygon clickable for the feature popup; < 0.2 keeps
+    // it effectively a wireframe (cells visible, no solid cyan blanket).
+    expect(MESH_FILL_OPACITY).toBeGreaterThan(0);
+    expect(MESH_FILL_OPACITY).toBeLessThan(0.2);
   });
 });

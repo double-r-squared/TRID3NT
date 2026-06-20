@@ -66,6 +66,8 @@ from .run_swmm import (
 )
 from .solve_progress import drive_live_solve_progress
 from .swmm_mesh_builder import estimate_swmm_solve_seconds
+from .mesh_layer import make_swmm_mesh_layer_uri
+from ..layer_uri_emit import emit_layer_uri
 
 logger = logging.getLogger("grace2_agent.workflows.model_urban_flood_swmm")
 
@@ -443,6 +445,38 @@ async def model_urban_flood_swmm(
             run_id=run_id,
         )
         deck_dir_to_clean = str(Path(staging.inp_path).parent)
+
+        # --- Computational-mesh layer (NATE task #156) ----------------------
+        # Auto-emit the quasi-2D SWMM uniform quad-cell mesh as a clickable
+        # "mesh_grid" vector layer so the user can SEE the true mesh structure
+        # (where the cells are) over the AOI - the same grid the solver runs on.
+        # It is a DEFAULT-VISIBLE CONTEXT backdrop (role="context"), NOT the
+        # primary result (that is the flood-depth raster). bbox=None on the
+        # LayerURI so add_loaded_layer does NOT emit a competing zoom-to that
+        # would fight the AOI camera (zoom-on-area-first owns the view).
+        # BEST-EFFORT: a mesh-emit failure must NEVER break the solve - mirror
+        # the _emit_frame_layers best-effort pattern (log a warning, continue).
+        # The build is SYNC compute (re-reads the staged INP + reprojects every
+        # corner + writes mesh.geojson), so it is OFFLOADED off the event loop
+        # via asyncio.to_thread (never run sync compute on the asyncio loop).
+        # add_loaded_layer inlines the geojson into memory immediately, so it is
+        # safe even though deck_dir_to_clean is cleaned later in this workflow.
+        try:
+            mesh_layer = await asyncio.to_thread(
+                make_swmm_mesh_layer_uri,
+                staging.build,
+                out_dir=deck_dir_to_clean,
+                run_id=staging.run_id,
+            )
+            if mesh_layer is not None and emitter is not None:
+                safe = emit_layer_uri(mesh_layer)
+                if safe is not None:
+                    await emitter.add_loaded_layer(safe)
+        except Exception as exc:  # noqa: BLE001 - mesh emit is non-fatal
+            logger.warning(
+                "model_urban_flood_swmm: mesh layer emit failed (non-fatal): %s",
+                exc,
+            )
 
         # --- Auto vertical scaling per case (NATE 2026-06-17) ----------------
         # Size the Batch compute_class from the built mesh's active-cell count
