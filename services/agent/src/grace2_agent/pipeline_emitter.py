@@ -813,6 +813,25 @@ class PipelineEmitter:
         self._last_terminal_pipeline_payload: PipelineStatePayload | None = None
 
     # ------------------------------------------------------------------ #
+    # Session-state seeding (#147 reconnect-resync)
+    # ------------------------------------------------------------------ #
+
+    def seed_chat_history(self, history: list[dict]) -> None:
+        """Replace the chat-history mirror this emitter ships in session-state.
+
+        #147 reconnect-resync: the next ``emit_session_state`` snapshot carries
+        ``list(self._chat_history)``, so seeding this mirror with a rehydrated
+        per-Case history lets a reconnecting client resync its transcript from
+        the server's authoritative copy. A defensive ``list(...)`` copy is taken
+        so the caller's list cannot later mutate the emitter's mirror.
+
+        Dormant until a call-site invokes it: the constructor still seeds
+        ``_chat_history`` exactly as before, so an emitter that is never seeded
+        behaves byte-identically to the prior version.
+        """
+        self._chat_history = list(history or [])
+
+    # ------------------------------------------------------------------ #
     # Sink rebinding (job-SOLVE-SURVIVE: WS-disconnect survival)
     # ------------------------------------------------------------------ #
 

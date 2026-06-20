@@ -25,6 +25,7 @@ constants here, NOT a locked Atlas config.
 
 from __future__ import annotations
 
+import os
 import re
 from typing import Any, Literal
 
@@ -428,6 +429,21 @@ SESSIONS_TTL: dict[str, Any] = {
     "field": "expires_at",
     "expire_after_seconds": 30 * 24 * 60 * 60,  # 30 days past expires_at
 }
+
+#: TTL window for ANONYMOUS (pre-Auth) Cases (#147 ephemeral-cases track).
+#:
+#: Authed Cases are durable forever and carry NO ``expires_at`` — only an
+#: anonymous Case opts in to expiry by being written ``ephemeral=True``
+#: (``persistence.upsert_case`` / ``touch_case``). DynamoDB-native TTL needs a
+#: NUMERIC epoch-seconds attribute (unlike the ISO ``expires_at`` strings the
+#: sessions collection uses for the Mongo TTL index), so the value stamped on
+#: the case doc is ``int(now + CASES_ANON_TTL_SECONDS)``.
+#:
+#: Env-overridable via ``CASES_ANON_TTL_SECONDS`` (mirrors the env-config
+#: pattern used elsewhere); defaults to 7 days.
+CASES_ANON_TTL_SECONDS: int = int(
+    os.environ.get("CASES_ANON_TTL_SECONDS", 7 * 24 * 60 * 60)  # 7 days
+)
 
 
 # --------------------------------------------------------------------------- #

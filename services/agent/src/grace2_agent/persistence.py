@@ -389,7 +389,10 @@ class Persistence:
 
         Strips ``_id`` (rewires to ``case_id``), drops user-link fields the
         schema doesn't know, and drops any other storage-only fields the
-        denormalized envelope doesn't carry.
+        denormalized envelope doesn't carry — including the #147 ephemeral-case
+        ``expires_at`` TTL stamp, which is storage-only and must NEVER reach the
+        wire ``CaseSummary`` (the ``k not in allowed`` filter below already
+        drops it, since ``expires_at`` is not a ``CaseSummary`` field).
         """
         allowed = set(CaseSummary.model_fields.keys())
         normalized: dict[str, object] = {}
@@ -399,6 +402,8 @@ class Persistence:
             if k in {"user_id", "owner_user_id"}:
                 continue
             if k not in allowed:
+                # storage-only field (e.g. user_id, expires_at TTL stamp) —
+                # never surfaced to the wire CaseSummary.
                 continue
             normalized[k] = v
         if "case_id" not in normalized and "_id" in doc:
@@ -406,7 +411,11 @@ class Persistence:
         return CaseSummary.model_validate(normalized)
 
     async def upsert_case(
-        self, case: CaseSummary, *, owner_user_id: str | None = None
+        self,
+        case: CaseSummary,
+        *,
+        owner_user_id: str | None = None,
+        ephemeral: bool = False,
     ) -> CaseSummary:
         """Insert or update a Case. Returns the persisted ``CaseSummary``.
 
@@ -428,11 +437,31 @@ class Persistence:
         with a fresh ``owner_user_id`` updates it; passing ``None`` never
         clears an already-stamped owner (the ``user_id`` key is simply absent
         from the ``$set``).
+
+        #147 ephemeral-cases track: ``ephemeral=True`` (only ever passed for
+        ANONYMOUS / pre-Auth Cases) stamps a NUMERIC epoch-seconds
+        ``expires_at`` (``int(now + CASES_ANON_TTL_SECONDS)``) so DynamoDB-native
+        TTL can reap the Case after the window. This is intentionally a Number
+        attribute, NOT the ISO ``expires_at`` string the sessions collection
+        uses — DynamoDB TTL only honours a numeric epoch. ``expires_at`` is a
+        storage-only field; ``_doc_to_case_summary`` drops it so it NEVER
+        reaches the wire ``CaseSummary``.
+
+        ``ephemeral=False`` (the DEFAULT, and the only shape authed call-sites
+        ever use) writes NO ``expires_at`` at all — authed Cases are durable
+        forever. This default is exactly byte-compatible with the prior
+        behaviour, so the new kwarg is dormant until a call-site opts in.
         """
         body = case.model_dump(mode="json")
         body["_id"] = case.case_id  # MongoDB primary key (FR-MP-5)
         if owner_user_id:
             body["user_id"] = owner_user_id
+        if ephemeral:
+            from grace2_contracts.collections import CASES_ANON_TTL_SECONDS
+
+            # DynamoDB-native TTL requires a NUMBER epoch-seconds attribute
+            # (not the ISO string sessions use). Authed Cases never reach here.
+            body["expires_at"] = int(now_utc().timestamp()) + CASES_ANON_TTL_SECONDS
         await self._mcp.call_tool(
             "update-one",
             {
@@ -1038,6 +1067,50 @@ class Persistence:
                     "update": {"$set": repair},
                 },
             )
+
+    async def touch_case(
+        self,
+        case_id: str,
+        *,
+        ttl_seconds: int | None = None,
+    ) -> None:
+        """Slide the TTL window on an EPHEMERAL (anonymous) Case (#147).
+
+        Activity heartbeat for an anonymous Case: ``$set`` a fresh NUMERIC
+        epoch-seconds ``expires_at`` (``int(now) + ttl``) on the case doc so a
+        Case the user is actively working in is not reaped mid-session. Mirrors
+        :meth:`touch_session`, but stamps a Number epoch (DynamoDB-native TTL),
+        NOT the ISO string the sessions TTL index uses.
+
+        Only ever called for anonymous Cases. Authed Cases carry no
+        ``expires_at`` and must stay durable forever — server.py simply never
+        invokes ``touch_case`` for them (the kwarg defaults keep this dormant
+        until the call-site is wired).
+
+        ``ttl_seconds`` defaults to ``CASES_ANON_TTL_SECONDS``. Unlike
+        ``upsert_case``, this is a bare ``$set`` with NO ``upsert`` — it only
+        slides an existing Case's window and never resurrects a reaped one.
+
+        Fire-and-forget discipline (same as ``touch_session`` / telemetry M3):
+        a persistence hiccup must never take down the user's turn, so any error
+        is swallowed and logged rather than raised.
+        """
+        from grace2_contracts.collections import CASES_ANON_TTL_SECONDS
+
+        ttl = ttl_seconds if ttl_seconds is not None else CASES_ANON_TTL_SECONDS
+        try:
+            expires_at = int(now_utc().timestamp()) + ttl
+            await self._mcp.call_tool(
+                "update-one",
+                {
+                    "database": self._db,
+                    "collection": CASES_COLLECTION,
+                    "filter": {"_id": case_id},
+                    "update": {"$set": {"expires_at": expires_at}},
+                },
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("touch_case failed for case_id=%s", case_id, exc_info=True)
 
     async def set_session_active_case(
         self, session_id: str, case_id: str | None

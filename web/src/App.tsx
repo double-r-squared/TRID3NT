@@ -1090,26 +1090,38 @@ export function App(): JSX.Element {
 
     coldLoadedCaseRef.current = activeCaseId;
     let cancelled = false;
-    void fetchCaseView(activeCaseId)
-      .then((payload) => {
-        if (cancelled || payload === null) return;
-        // Feed the cold snapshot through the SAME path the live WS case-open
-        // uses. The rehydration effect above ([activeSession, bus]) then paints
-        // it. If a live case-open arrives later it supersedes idempotently.
-        useCases_onCaseOpen(payload);
-        // job-0179 — ALSO push the case-open onto the bus so Chat (which does
-        // not subscribe to App's useCases state) can materialize the COLD
-        // chat-history bubbles via routeCaseOpen. Idempotent vs the live WS
-        // onCaseOpen below: routeCaseOpen only rebuilds a stream the first time
-        // it sees the caseId, so whichever fires first wins and the other is a
-        // no-op.
-        bus.pushCaseOpen(payload);
-      })
-      .catch(() => {
+    // #147 Feature B GAP B2 - forward the signed-in owner's Cognito bearer token
+    // (the SAME token ws.ts sends in the `auth-token` handshake) to the signer
+    // hop so the view_sign Lambda owner-gates it and mints the 12h OWNER-tier
+    // pre-signed URL instead of the anon 15min TTL. Anonymous users (no token)
+    // pass `undefined`, so the anon tier is unchanged. getIdToken() never throws
+    // here (the .catch collapses any auth-subsystem failure to null -> undefined
+    // 3rd arg), so a token hiccup degrades gracefully to the anon path.
+    void (async () => {
+      const rawToken = await getIdToken().catch(() => null);
+      if (cancelled) return;
+      const authToken =
+        rawToken != null && rawToken.trim() !== "" ? rawToken : undefined;
+      const payload = await fetchCaseView(activeCaseId, undefined, authToken);
+      if (cancelled || payload === null) {
         // fetchCaseView never throws, but guard belt-and-suspenders: a failed
-        // cold-load just leaves the Case shell + Wake UI.
+        // cold-load just leaves the Case shell + Wake UI and releases the guard
+        // so a later attempt in the same disconnected episode can re-fetch.
         if (!cancelled) coldLoadedCaseRef.current = null;
-      });
+        return;
+      }
+      // Feed the cold snapshot through the SAME path the live WS case-open
+      // uses. The rehydration effect above ([activeSession, bus]) then paints
+      // it. If a live case-open arrives later it supersedes idempotently.
+      useCases_onCaseOpen(payload);
+      // job-0179 — ALSO push the case-open onto the bus so Chat (which does
+      // not subscribe to App's useCases state) can materialize the COLD
+      // chat-history bubbles via routeCaseOpen. Idempotent vs the live WS
+      // onCaseOpen below: routeCaseOpen only rebuilds a stream the first time
+      // it sees the caseId, so whichever fires first wins and the other is a
+      // no-op.
+      bus.pushCaseOpen(payload);
+    })();
     return () => {
       cancelled = true;
     };
