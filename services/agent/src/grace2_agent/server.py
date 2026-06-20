@@ -2660,6 +2660,25 @@ async def _replay_active_case_layers(state: SessionState) -> None:
                 state.session_id,
                 case_id,
             )
+        # #147 reconnect-resync (Feature B GAP B1): seed the emitter's
+        # chat-history mirror from the SAME persisted CaseSessionState already
+        # fetched above (do NOT re-fetch) so a BARE reconnect re-renders the
+        # chat bubbles, not just the layers. Without this the replayed
+        # session-state shipped an EMPTY chat_history and a reconnecting client
+        # lost its transcript until an explicit case-open. The persisted
+        # CaseChatMessage list is serialized to the wire dict shape
+        # SessionStatePayload.chat_history carries. Best-effort, mirroring the
+        # adjacent reinline block — a hiccup must not break the resume.
+        try:
+            state.emitter.seed_chat_history(
+                [m.model_dump(mode="json") for m in session_state.chat_history]
+            )
+        except Exception:  # noqa: BLE001 — chat seed is best-effort
+            logger.warning(
+                "session-resume chat-history seed failed session=%s case=%s",
+                state.session_id,
+                case_id,
+            )
         # Seed the URI registry so handle-indirection resolves for layers
         # produced in a PRIOR session of this Case (mirrors _sync_case_context).
         get_uri_registry(state.session_id).seed_from_layers(
@@ -2823,15 +2842,36 @@ async def _touch_session_record(
     p = get_persistence()
     if p is None:
         return
+    active_case_id = case_id if case_id is not None else state.active_case_id
     try:
         await p.touch_session(
             state.session_id,
-            case_id=case_id if case_id is not None else state.active_case_id,
+            case_id=active_case_id,
         )
     except Exception:  # noqa: BLE001 — side effect, never bubble up
         logger.warning(
             "session-touch failed session=%s", state.session_id, exc_info=True
         )
+    # #147 ephemeral-cases ACTIVITY HEARTBEAT (LOAD-BEARING): an actively-used
+    # ANONYMOUS Case must NEVER be reaped. ``upsert_case(ephemeral=True)`` stamps
+    # a numeric TTL at CREATE time only; without sliding it forward on activity,
+    # an anon Case would be swept one TTL window after creation regardless of
+    # use. This helper already fires on auth bind, Case open/create, and every
+    # persisted chat turn — exactly the activity signal — so slide the Case TTL
+    # here too. Gate STRICTLY on is_anonymous: an authed Case carries no
+    # expires_at and stays durable forever (no TTL write at all). Best-effort:
+    # touch_case already swallows + logs its own failures, but guard the call
+    # anyway so it can never break the turn.
+    if state.is_anonymous and active_case_id is not None:
+        try:
+            await p.touch_case(active_case_id)
+        except Exception:  # noqa: BLE001 — side effect, never bubble up
+            logger.warning(
+                "case-touch failed session=%s case=%s",
+                state.session_id,
+                active_case_id,
+                exc_info=True,
+            )
 
 
 async def _persist_session_active_case(
@@ -3319,7 +3359,17 @@ async def _handle_case_command(
             # $exists:false leak clause is gone). authenticated_user_id is set
             # by the auth handshake (real Firebase UID or the sticky-anonymous
             # ULID in dev); None only on the M1 unbound-Persistence path.
-            await p.upsert_case(case, owner_user_id=state.authenticated_user_id)
+            #
+            # #147 ephemeral-cases: an ANONYMOUS (pre-Auth) session's Case is
+            # ephemeral -> a numeric TTL ``expires_at`` is stamped so DynamoDB
+            # reaps abandoned scratch Cases. An authed session (is_anonymous
+            # False) passes ephemeral=False -> no ``expires_at`` -> durable
+            # forever (byte-identical to the prior behaviour).
+            await p.upsert_case(
+                case,
+                owner_user_id=state.authenticated_user_id,
+                ephemeral=state.is_anonymous,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.exception("case-command(create) upsert failed: %s", exc)
             await _send_error(
@@ -3632,7 +3682,15 @@ async def _auto_create_case_from_root(
     try:
         # job-0252 (OQ-0115-CASE-USER-LINK): stamp the creator as owner so the
         # auto-created Case is visible to them via list_cases_for_user.
-        await p.upsert_case(case, owner_user_id=state.authenticated_user_id)
+        #
+        # #147 ephemeral-cases: an anonymous root prompt mints an ephemeral
+        # Case (numeric TTL ``expires_at`` so abandoned scratch work is reaped);
+        # an authed session passes ephemeral=False -> durable forever.
+        await p.upsert_case(
+            case,
+            owner_user_id=state.authenticated_user_id,
+            ephemeral=state.is_anonymous,
+        )
     except Exception:  # noqa: BLE001 — fall back to the stateless path
         logger.exception(
             "auto-create-case upsert failed session=%s", state.session_id
