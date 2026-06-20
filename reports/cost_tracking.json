@@ -2074,10 +2074,24 @@
       "description": "Build workflow (5 agents): J1b ws backoff floor+jitter, J2 SessionState.case_bbox repair + per-turn layers/AOI note, J3 river osm_waterways + deterministic color-by-kind, J4 per-case client cache + view-state durability (idb view-state only). J4+verify died on a 401 mid-run; code applied; 2 test-only regressions fixed by a follow-up agent (67329 tok, folded here). tsc0/web1529/agent5759.",
       "model": "opus",
       "subagent_tokens": 600710
+    },
+    {
+      "job_id": "wf-mesh-layer-view-20260620",
+      "sprint": 16,
+      "description": "Mesh-layer view build (3 agents): web polish (mesh_grid cyan + hairline) DONE + banked (70cec80); agent geometry side died on a 529 + needed quadtree redesign anyway (deferred to a later wave).",
+      "model": "opus",
+      "subagent_tokens": 190565
+    },
+    {
+      "job_id": "wf-demo-ux-wave1-20260620",
+      "sprint": 16,
+      "description": "Wave 1 (4 agents): #159 AOI floored zoom-to/peak-bbox + single replace-on-new extent (stale-closure race) + case-open snap; #157 animation decoupled into a module controller (survives panel close) + App-root scrubber + play button + legend pill above composer + cases-scroll confirm. web 1563, agent 5760. Residual: re-entry persisted-bbox (server.py one-liner) folded to Wave 2.",
+      "model": "opus",
+      "subagent_tokens": 629495
     }
   ],
   "totals_by_sprint": {
-    "16": 5453657,
+    "16": 6273717,
     "6": 1265567,
     "7": 1863284,
     "8": 1786238,
