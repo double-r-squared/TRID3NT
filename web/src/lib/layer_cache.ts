@@ -292,8 +292,19 @@ export class LayerCache {
     const entry = this.ensure(caseId, /*touch*/ true);
     const incomingIds = new Set(layers.map((l) => l.layer_id));
 
-    if (opts.authoritativeReplace) {
-      // Full replace: drop tracked layers the authoritative set omits.
+    // Full replace: drop tracked layers the authoritative set omits — BUT
+    // guard the cold-open hazard: an EMPTY authoritative frame for a Case that
+    // already has tracked layers is a NO-OP, never a blank. (Opening a case
+    // cold transiently feeds an empty/short session-state frame; without this
+    // gate it would evict every populated layer.) An empty frame is still
+    // honored when the Case has nothing tracked yet (an EMPTY case stays
+    // empty), and a NON-empty frame still evicts omitted layers as before.
+    // Genuine clears (case exit / explicit delete / real switch) go through
+    // evictCase / deleteLayer directly, so guarding the omission-evict is safe.
+    if (
+      opts.authoritativeReplace &&
+      (layers.length > 0 || entry.layers.size === 0)
+    ) {
       for (const id of Array.from(entry.layers.keys())) {
         if (!incomingIds.has(id)) entry.layers.delete(id);
       }

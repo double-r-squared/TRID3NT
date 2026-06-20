@@ -103,6 +103,50 @@ describe("LayerCache — layer-set durability (the seatbelt)", () => {
     expect(cache.allowsEvict(caseId, "L1")).toBe(false);
   });
 
+  it("an empty authoritative frame does NOT evict a populated case", () => {
+    // The cold-open hazard: opening a case cold feeds an empty/short
+    // authoritative session-state frame; it must be a NO-OP, never a blank.
+    const cache = new LayerCache({ backend: noopBackend });
+    const caseId = "case-A";
+    cache.mergeSnapshot(caseId, [mkLayer("L1"), mkLayer("L2")], {
+      authoritativeReplace: true,
+    });
+    // An EMPTY authoritative frame arrives — must NOT blank the populated case.
+    const merged = cache.mergeSnapshot(caseId, [], {
+      authoritativeReplace: true,
+    });
+    expect(merged.map((l) => l.layer_id).sort()).toEqual(["L1", "L2"]);
+    expect(cache.allowsEvict(caseId, "L1")).toBe(false);
+    expect(cache.allowsEvict(caseId, "L2")).toBe(false);
+  });
+
+  it("an empty authoritative frame on an EMPTY case stays empty", () => {
+    // No layers tracked yet -> an empty authoritative frame is honored as a
+    // (still-empty) full set, not silently turned into a tracked phantom.
+    const cache = new LayerCache({ backend: noopBackend });
+    const caseId = "case-A";
+    const merged = cache.mergeSnapshot(caseId, [], {
+      authoritativeReplace: true,
+    });
+    expect(merged).toEqual([]);
+    expect(cache.layersFor(caseId)).toEqual([]);
+  });
+
+  it("a non-empty authoritative frame still evicts omitted layers", () => {
+    // The guard must not weaken a genuine non-empty authoritative replace.
+    const cache = new LayerCache({ backend: noopBackend });
+    const caseId = "case-A";
+    cache.mergeSnapshot(caseId, [mkLayer("L1"), mkLayer("L2")], {
+      authoritativeReplace: true,
+    });
+    const merged = cache.mergeSnapshot(caseId, [mkLayer("L1")], {
+      authoritativeReplace: true,
+    });
+    expect(merged.map((l) => l.layer_id)).toEqual(["L1"]);
+    expect(cache.allowsEvict(caseId, "L2")).toBe(true);
+    expect(cache.allowsEvict(caseId, "L1")).toBe(false);
+  });
+
   it("an explicit case switch (evictCase) DOES evict the whole Case", () => {
     const cache = new LayerCache({ backend: noopBackend });
     cache.mergeSnapshot("case-A", [mkLayer("L1")], {

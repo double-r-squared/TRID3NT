@@ -31,6 +31,7 @@ OQ-1 (Cloud Run WS vs Agent Engine) — see report's Open Questions section.
 from __future__ import annotations
 
 import asyncio
+import math
 import weakref
 import logging
 import os
@@ -490,6 +491,42 @@ def _resolve_pending_credential(
     fut.set_result(provided)
     _PENDING_CREDENTIALS.pop(provided.request_id, None)
     return True
+
+
+# --------------------------------------------------------------------------- #
+# job AGENT-AOI-RESIDUAL (#159): turn zoom-to accumulator helpers
+# --------------------------------------------------------------------------- #
+def _is_finite_bbox4(bbox: Any) -> bool:
+    """True iff ``bbox`` is a 4-tuple/list of finite real numbers.
+
+    Guards the LayerURI floored-bbox append so a None / wrong-length /
+    NaN / inf bbox never lands a bad zoom-to in ``current_turn_map_commands``.
+    """
+    if not isinstance(bbox, (tuple, list)) or len(bbox) != 4:
+        return False
+    for v in bbox:
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            return False
+        if not math.isfinite(float(v)):
+            return False
+    return True
+
+
+def _last_zoom_to_bbox(commands: list[dict]) -> list | None:
+    """Return the bbox of the most-recent ``zoom-to`` entry, else None.
+
+    Mirrors the web ``extractLastZoomTo`` newest-first walk so the dedupe
+    here compares against the SAME bbox the client would replay.
+    """
+    for cmd in reversed(commands):
+        if isinstance(cmd, dict) and cmd.get("command") == "zoom-to":
+            args = cmd.get("args")
+            if isinstance(args, dict):
+                bbox = args.get("bbox")
+                if isinstance(bbox, (tuple, list)):
+                    return list(bbox)
+            return None
+    return None
 
 
 # --------------------------------------------------------------------------- #
@@ -6486,6 +6523,26 @@ async def _invoke_tool_via_emitter(
     # pairs + bare gs:// strings) so the NEXT tool call can resolve handles /
     # detect mangles. Best-effort — registration never breaks the dispatch.
     uri_registry.register_tool_result(tool_name, result)
+
+    # job AGENT-AOI-RESIDUAL (#159): a composer's LayerURI carries the FINAL
+    # (peak, floored - Wave 1) AOI bbox, and ``emit_tool_call``'s LayerURI gate
+    # fired the live floored zoom-to via ``add_loaded_layer``. But that live
+    # emission was the ONLY writer of the floored extent - it never landed in
+    # ``current_turn_map_commands``. The only writer of that accumulator was
+    # ``geocode_location``'s EARLIER snap to the SMALL collapsed bbox (~2015),
+    # so the closing ``CaseChatMessage.map_command_emissions`` persisted only
+    # the small geocode bbox. Re-entry replays it (web ``extractLastZoomTo``
+    # walks newest-first) and the Case reverts to the old tiny AOI. Append the
+    # floored bbox HERE - after the geocode snap was appended earlier this turn
+    # - so it is the LAST zoom-to and re-entry snaps to the floored AOI.
+    # GUARDS: only a finite 4-number tuple; DEDUPE against the last accumulated
+    # zoom-to bbox so a double-dispatch / repeat does not double-append.
+    if isinstance(result, LayerURI) and _is_finite_bbox4(result.bbox):
+        _floored_bbox = list(result.bbox)
+        if _last_zoom_to_bbox(state.current_turn_map_commands) != _floored_bbox:
+            state.current_turn_map_commands.append(
+                {"command": "zoom-to", "args": {"bbox": _floored_bbox}}
+            )
 
     # job-0326: record a FRESHLY-PRODUCED expensive-scenario result into the
     # session reuse index so a later identical request short-circuits instead of
