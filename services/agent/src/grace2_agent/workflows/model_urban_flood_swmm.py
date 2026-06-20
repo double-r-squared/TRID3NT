@@ -277,6 +277,51 @@ def _atlas14_total_depth_mm(
     return float(inches) * _INCH_TO_MM
 
 
+def _record_swmm_batch_solve_telemetry(
+    *,
+    run_result: Any,
+    handle: Any,
+    build: Any,
+    run_id: str,
+    compute_class: str,
+    session_id: str | None = None,
+    case_id: str | None = None,
+) -> dict | None:
+    """Record ONE SOLVE row for the SWMM off-box Batch lane (task-153).
+
+    Merges the Spot instance + timing breakdown the wait-loop captured onto
+    ``run_result.batch_compute_meta`` (best-effort, may be ``None``) with the
+    SWMM mesh size descriptor (``build.n_active_cells`` + ``build.resolution_m``)
+    + the solver name + terminal status + the run/case/session ids, and writes it
+    to the SOLVE telemetry sink (``telemetry.record_solve_telemetry``) so a perf
+    model can later infer SWMM completion time. Sibling of the SFINCS
+    ``_record_flood_batch_solve_telemetry``. Best-effort; returns the recorded row
+    (or ``None`` on any failure) so the call site stays trivial.
+    """
+    from ..telemetry import record_solve_telemetry
+
+    meta = getattr(run_result, "batch_compute_meta", None) or {}
+    if not isinstance(meta, dict):
+        meta = {}
+
+    n_active = getattr(build, "n_active_cells", None)
+    resolution_m = getattr(build, "resolution_m", None)
+
+    row: dict = {
+        "run_id": getattr(run_result, "run_id", None) or run_id,
+        "solver": SWMM_SOLVER_NAME,
+        "status": getattr(run_result, "status", None),
+        "backend": str(getattr(handle, "workflow_name", "") or "unknown"),
+        "compute_class": compute_class,
+        "case_id": case_id,
+        "session_id": session_id,
+        "active_cell_count": int(n_active) if n_active is not None else None,
+        "resolution_m": float(resolution_m) if resolution_m is not None else None,
+    }
+    row.update(meta)
+    return record_solve_telemetry(row)
+
+
 # --------------------------------------------------------------------------- #
 # The composer.
 # --------------------------------------------------------------------------- #
@@ -514,6 +559,27 @@ async def model_urban_flood_swmm(
             # RunResult (complete -> green, non-complete -> red) before the
             # workflow's own non-complete guard re-raises.
             await route_sim_terminal(emitter, _sim_step_id, run_result=run_result)
+
+            # --- SOLVE telemetry (task-153): Batch instance + size + timing ----
+            # Record ONE solve row merging run_result.batch_compute_meta (the Spot
+            # instance + queue/compute/total timing the wait-loop captured) with
+            # the SWMM mesh size descriptor (n_active_cells + resolution_m) so a
+            # perf model can later infer SWMM completion time. Records for BOTH
+            # success and failure (a censored failure is itself a data point).
+            # Best-effort; a telemetry failure never affects the solve result.
+            try:
+                _record_swmm_batch_solve_telemetry(
+                    run_result=run_result,
+                    handle=handle,
+                    build=staging.build,
+                    run_id=staging.run_id,
+                    compute_class=effective_compute_class,
+                )
+            except Exception as exc:  # noqa: BLE001 — never break the solve
+                logger.warning(
+                    "SWMM solve batch-compute telemetry failed (non-fatal): %s",
+                    exc,
+                )
 
             if run_result.status != "complete":
                 # SOLVER_FAILED / SOLVER_TIMEOUT / cancelled -> typed failure

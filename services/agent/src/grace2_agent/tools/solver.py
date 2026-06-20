@@ -210,6 +210,8 @@ __all__ = [
     "COMPUTE_CLASS_LARGE_MAX_ELEMENTS",
     "COMPUTE_CLASS_FALLBACK",
     "set_batch_client",
+    "set_ecs_client",
+    "set_ec2_client",
     "LOCAL_DOCKER_WORKFLOW_NAME",
     "LOCAL_EXEC_WORKFLOW_NAME",
     "LocalSolverSpec",
@@ -667,6 +669,8 @@ _EMITTER_BINDING: EmitterBinding | None = None
 _RUNS_BUCKET: str | None = None
 _S3_CLIENT: Any | None = None
 _BATCH_CLIENT: Any | None = None
+_ECS_CLIENT: Any | None = None
+_EC2_CLIENT: Any | None = None
 
 
 def set_emitter_binding(binding: EmitterBinding | None) -> None:
@@ -715,6 +719,30 @@ def set_batch_client(client: Any) -> None:
     _BATCH_CLIENT = client
 
 
+def set_ecs_client(client: Any) -> None:
+    """Bind the boto3 ECS client used by the Batch compute-meta capture (task-153).
+
+    Production wiring leaves this ``None`` (the lazy default builds
+    ``boto3.client("ecs", region_name=$AWS_REGION)``, resolving the agent box's
+    instance-role credentials via IMDS — same job-0289 boto3 lesson as the Batch
+    seam). Tests inject a fake exposing ``describe_container_instances``. ``None``
+    restores the lazy default.
+    """
+    global _ECS_CLIENT
+    _ECS_CLIENT = client
+
+
+def set_ec2_client(client: Any) -> None:
+    """Bind the boto3 EC2 client used by the Batch compute-meta capture (task-153).
+
+    Production wiring leaves this ``None`` (the lazy default builds
+    ``boto3.client("ec2", region_name=$AWS_REGION)``). Tests inject a fake
+    exposing ``describe_instances``. ``None`` restores the lazy default.
+    """
+    global _EC2_CLIENT
+    _EC2_CLIENT = client
+
+
 def _get_batch_client() -> Any:
     """Return the bound Batch client or lazily construct the boto3 default.
 
@@ -734,6 +762,43 @@ def _get_batch_client() -> Any:
             "terminate_job (sprint-16)."
         ) from exc
     return boto3.client("batch", region_name=_aws_region())
+
+
+def _get_ecs_client() -> Any:
+    """Return the bound ECS client or lazily construct the boto3 default (task-153).
+
+    Raises ``SolverDispatchError`` when boto3 is unimportable so the caller's
+    best-effort try/except degrades the compute-meta capture to ``None`` rather
+    than crashing the solve.
+    """
+    if _ECS_CLIENT is not None:
+        return _ECS_CLIENT
+    try:
+        import boto3  # type: ignore[import-not-found]
+    except Exception as exc:  # noqa: BLE001
+        raise SolverDispatchError(
+            f"boto3 not importable: {exc}; the Batch compute-meta capture "
+            "requires boto3 for ecs.describe_container_instances (task-153)."
+        ) from exc
+    return boto3.client("ecs", region_name=_aws_region())
+
+
+def _get_ec2_client() -> Any:
+    """Return the bound EC2 client or lazily construct the boto3 default (task-153).
+
+    Raises ``SolverDispatchError`` when boto3 is unimportable (the caller's
+    best-effort wrapper degrades to ``None``).
+    """
+    if _EC2_CLIENT is not None:
+        return _EC2_CLIENT
+    try:
+        import boto3  # type: ignore[import-not-found]
+    except Exception as exc:  # noqa: BLE001
+        raise SolverDispatchError(
+            f"boto3 not importable: {exc}; the Batch compute-meta capture "
+            "requires boto3 for ec2.describe_instances (task-153)."
+        ) from exc
+    return boto3.client("ec2", region_name=_aws_region())
 
 
 def _get_s3_client() -> Any:
@@ -2061,6 +2126,186 @@ def _batch_status(job_id: str) -> str | None:
     return status or None
 
 
+def _epoch_ms(value: Any) -> int | None:
+    """Coerce a Batch ``createdAt``/``startedAt``/``stoppedAt`` field to int ms.
+
+    Batch returns these as epoch-milliseconds (int or float) over the wire (or
+    as a ``datetime`` when a mocked SDK hands one back); returns ``None`` for an
+    absent / unparseable value. Never raises.
+    """
+    if value is None:
+        return None
+    try:
+        if isinstance(value, datetime):
+            return int(value.timestamp() * 1000.0)
+        return int(value)
+    except Exception:  # noqa: BLE001 — advisory only
+        return None
+
+
+def _capture_batch_compute_meta(job_id: str) -> dict | None:
+    """Capture the Spot instance + timing breakdown a Batch job landed on (task-153).
+
+    Best-effort lookup chain (NATE-verified live):
+
+        batch.describe_jobs(jobs=[job_id]).jobs[0]
+          -> container.containerInstanceArn + createdAt/startedAt/stoppedAt
+             + container.resourceRequirements (VCPU / MEMORY)
+        -> the cluster ARN is embedded IN the containerInstanceArn
+           (arn:aws:ecs:REGION:ACCT:container-instance/CLUSTER/ID) so we derive it
+           rather than needing the compute environment
+        -> ecs.describe_container_instances(cluster, containerInstances=[ci])
+             .containerInstances[0].ec2InstanceId
+        -> ec2.describe_instances(InstanceIds=[id]).Reservations[].Instances[]
+             .{InstanceType, InstanceLifecycle, Placement.AvailabilityZone}
+
+    The Spot instance is usually TERMINATED by the time the job is terminal
+    (scale-to-zero), but describe-instances still returns its type for a while;
+    a not-found / empty Reservations response degrades the instance fields to
+    ``None`` while the timing + resourceRequirements fields still populate.
+
+    Returns the merged dict, or ``None`` when the describe-jobs call itself fails
+    / returns nothing (no job to attribute). EVERY AWS call is wrapped and ALL
+    exceptions are swallowed — this MUST never break the solve. Sync boto3: the
+    async caller MUST invoke this via ``asyncio.to_thread`` (Invariant: never
+    block the event loop).
+    """
+    # --- describe-jobs: the anchor. A failure here means no attribution. ---
+    try:
+        batch = _get_batch_client()
+        resp = batch.describe_jobs(jobs=[job_id])
+    except Exception as exc:  # noqa: BLE001 — capture is advisory only
+        logger.warning("compute-meta describe_jobs(%s) degraded: %s", job_id, exc)
+        return None
+    jobs = (resp or {}).get("jobs") if isinstance(resp, dict) else getattr(resp, "jobs", None)
+    if not jobs:
+        return None
+    job = jobs[0]
+
+    def _g(obj: Any, key: str) -> Any:
+        return obj.get(key) if isinstance(obj, dict) else getattr(obj, key, None)
+
+    created_ms = _epoch_ms(_g(job, "createdAt"))
+    started_ms = _epoch_ms(_g(job, "startedAt"))
+    stopped_ms = _epoch_ms(_g(job, "stoppedAt"))
+
+    container = _g(job, "container") or {}
+    ci_arn = _g(container, "containerInstanceArn")
+
+    # vCPU / memory from the resourceRequirements (Batch returns these as
+    # {"type": "VCPU"|"MEMORY", "value": "<str count>"}).
+    vcpus: int | None = None
+    memory_mib: int | None = None
+    rr = _g(container, "resourceRequirements") or []
+    try:
+        for req in rr:
+            rtype = str(_g(req, "type") or "").upper()
+            rval = _g(req, "value")
+            if rtype == "VCPU" and rval is not None:
+                vcpus = int(float(rval))
+            elif rtype == "MEMORY" and rval is not None:
+                memory_mib = int(float(rval))
+    except Exception as exc:  # noqa: BLE001 — partial sizing is fine
+        logger.warning("compute-meta resourceRequirements parse degraded: %s", exc)
+
+    # --- ECS -> EC2: resolve the instance the container landed on. ---
+    instance_type: str | None = None
+    instance_lifecycle: str | None = None
+    az: str | None = None
+    ec2_instance_id: str | None = None
+
+    cluster_arn = _cluster_arn_from_ci_arn(ci_arn) if ci_arn else None
+    if ci_arn and cluster_arn:
+        try:
+            ecs = _get_ecs_client()
+            ecs_resp = ecs.describe_container_instances(
+                cluster=cluster_arn, containerInstances=[ci_arn]
+            )
+            cis = (
+                (ecs_resp or {}).get("containerInstances")
+                if isinstance(ecs_resp, dict)
+                else getattr(ecs_resp, "containerInstances", None)
+            )
+            if cis:
+                ec2_instance_id = _g(cis[0], "ec2InstanceId")
+        except Exception as exc:  # noqa: BLE001 — instance fields degrade to None
+            logger.warning(
+                "compute-meta describe_container_instances degraded: %s", exc
+            )
+
+    if ec2_instance_id:
+        try:
+            ec2 = _get_ec2_client()
+            ec2_resp = ec2.describe_instances(InstanceIds=[ec2_instance_id])
+            reservations = (
+                (ec2_resp or {}).get("Reservations")
+                if isinstance(ec2_resp, dict)
+                else getattr(ec2_resp, "Reservations", None)
+            ) or []
+            inst = None
+            for res in reservations:
+                insts = _g(res, "Instances") or []
+                if insts:
+                    inst = insts[0]
+                    break
+            if inst is not None:
+                instance_type = _g(inst, "InstanceType")
+                # On-demand instances OMIT InstanceLifecycle entirely; Spot
+                # carries "spot". Normalize an absent value to "on-demand".
+                instance_lifecycle = _g(inst, "InstanceLifecycle") or "on-demand"
+                placement = _g(inst, "Placement") or {}
+                az = _g(placement, "AvailabilityZone")
+        except Exception as exc:  # noqa: BLE001 — terminated Spot box -> None type
+            logger.warning(
+                "compute-meta describe_instances(%s) degraded (likely "
+                "scale-to-zero terminated): %s",
+                ec2_instance_id,
+                exc,
+            )
+
+    def _secs(a: int | None, b: int | None) -> float | None:
+        if a is None or b is None:
+            return None
+        return round((a - b) / 1000.0, 3)
+
+    return {
+        "instance_type": instance_type,
+        "instance_lifecycle": instance_lifecycle,
+        "az": az,
+        "vcpus": vcpus,
+        "memory_mib": memory_mib,
+        "created_at_ms": created_ms,
+        "started_at_ms": started_ms,
+        "stopped_at_ms": stopped_ms,
+        "queue_provision_secs": _secs(started_ms, created_ms),
+        "compute_secs": _secs(stopped_ms, started_ms),
+        "total_secs": _secs(stopped_ms, created_ms),
+    }
+
+
+def _cluster_arn_from_ci_arn(ci_arn: str) -> str | None:
+    """Derive the ECS cluster ARN from a container-instance ARN (task-153).
+
+    A containerInstance ARN is
+    ``arn:aws:ecs:REGION:ACCT:container-instance/CLUSTER/ID`` — the CLUSTER
+    segment lets us build ``arn:aws:ecs:REGION:ACCT:cluster/CLUSTER`` without
+    needing to look up the compute environment. Returns ``None`` on any
+    unexpected shape. Never raises.
+    """
+    try:
+        # Split ARN head (5 colon-fields) from the resource tail.
+        head, _, resource = ci_arn.partition(":container-instance/")
+        if not resource:
+            return None
+        cluster_name = resource.split("/", 1)[0]
+        if not cluster_name:
+            return None
+        # head == arn:aws:ecs:REGION:ACCT
+        return f"{head}:cluster/{cluster_name}"
+    except Exception:  # noqa: BLE001 — advisory only
+        return None
+
+
 async def _emit_compute_phase(batch_status: str | None, run_id: str, solver: str) -> None:
     """Surface a Batch phase on the active compute card (task-149).
 
@@ -2166,7 +2411,20 @@ async def _wait_for_completion_aws_batch(
                     await _emit_compute_phase("SUCCEEDED", handle.run_id, handle.solver)
                 else:
                     await _emit_progress(_progress_percent(handle.submitted_at, now))
-                return _build_local_run_result(handle, manifest, runs_bucket)
+                run_result = _build_local_run_result(handle, manifest, runs_bucket)
+                # task-153: capture the Spot instance + timing breakdown the job
+                # landed on so the perf model can later infer completion time.
+                # Best-effort + off-loop (sync boto3 via to_thread); a None result
+                # leaves the field defaulted. Populate on BOTH terminal outcomes
+                # (a solver-FAILED manifest is itself a data point).
+                meta = await loop.run_in_executor(
+                    None, _capture_batch_compute_meta, job_id
+                )
+                if meta is not None:
+                    run_result = run_result.model_copy(
+                        update={"batch_compute_meta": meta}
+                    )
+                return run_result
 
             # No completion yet — read the live Batch status ONCE per tick
             # (task-149): surface the phase on the compute card (solve-progress
@@ -2188,6 +2446,12 @@ async def _wait_for_completion_aws_batch(
                     batch_failure,
                 )
                 await _emit_progress(_progress_percent(handle.submitted_at, now))
+                # task-153: capture the instance + timing even on an early FAILED
+                # (capacity timeout / image-pull failure) — a censored failure is
+                # itself a data point about the chosen instance/AOI. Best-effort.
+                meta = await loop.run_in_executor(
+                    None, _capture_batch_compute_meta, job_id
+                )
                 return RunResult(
                     run_id=handle.run_id,
                     handle_id=handle.handle_id,
@@ -2201,6 +2465,7 @@ async def _wait_for_completion_aws_batch(
                         f"AWS Batch job {job_id} reported FAILED before writing "
                         f"completion.json: {batch_failure}"
                     ),
+                    batch_compute_meta=meta,
                 )
 
             await _emit_progress(_progress_percent(handle.submitted_at, now))

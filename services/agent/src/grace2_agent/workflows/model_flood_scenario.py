@@ -440,6 +440,58 @@ def _emit_flood_solve_telemetry(
     )
 
 
+def _record_flood_batch_solve_telemetry(
+    *,
+    run_result: "RunResult",
+    handle: Any,
+    model_setup: Any,
+    grid_resolution_m: float,
+    session_id: str | None,
+    case_id: str | None,
+) -> dict | None:
+    """Record ONE SOLVE row merging the Batch compute meta + the mesh descriptor.
+
+    task-153: the regular-grid SFINCS Batch path exposes both a ``handle`` and a
+    terminal ``RunResult``; the wait-loop captured the Spot instance + timing
+    breakdown onto ``run_result.batch_compute_meta`` (best-effort, may be
+    ``None``). This folds that together with the active-cell count + the built
+    grid resolution + the solver + the terminal status + the run/case/session ids
+    into the SOLVE telemetry sink (``telemetry.record_solve_telemetry``). Mirrors
+    ``_emit_flood_solve_telemetry`` (the autoscale row) — they are siblings: the
+    autoscale row drives cap re-tuning, this row drives completion-time
+    inference. Best-effort; returns the recorded row (or ``None`` on any failure)
+    so the caller's try/except stays trivial. Only the regular-grid path calls
+    this (the quadtree submit+wait path is left uninstrumented, consistent with
+    the two-card work)."""
+    from ..telemetry import record_solve_telemetry
+
+    meta = getattr(run_result, "batch_compute_meta", None) or {}
+    if not isinstance(meta, dict):
+        meta = {}
+
+    params = getattr(model_setup, "parameters", {}) or {}
+    autoscale = params.get("autoscale") if isinstance(params, dict) else None
+    autoscale = autoscale if isinstance(autoscale, dict) else {}
+    active_cells = autoscale.get("estimated_active_cells")
+    built_res = getattr(model_setup, "grid_resolution_m", None) or grid_resolution_m
+
+    row: dict = {
+        "run_id": run_result.run_id,
+        "solver": getattr(handle, "solver", "sfincs") or "sfincs",
+        "status": run_result.status,
+        "backend": str(getattr(handle, "workflow_name", "") or "unknown"),
+        "case_id": case_id,
+        "session_id": session_id,
+        "active_cell_count": int(active_cells) if active_cells is not None else None,
+        "resolution_m": float(built_res) if built_res is not None else None,
+    }
+    # Merge the Batch instance + timing fields (instance_type / lifecycle / az /
+    # vcpus / memory_mib / *_at_ms / *_secs) — present only on the aws-batch
+    # terminal paths; empty dict otherwise (local/in-process).
+    row.update(meta)
+    return record_solve_telemetry(row)
+
+
 def _default_runs_prefix(run_id: str) -> str:
     """Scheme-aware fallback runs prefix when ``RunResult.output_uri`` is None.
 
@@ -2172,6 +2224,28 @@ async def model_flood_scenario(
         )
     except Exception as exc:  # noqa: BLE001 — telemetry must never break the solve
         logger.warning("solve telemetry emission failed (non-fatal): %s", exc)
+
+    # --- SOLVE telemetry (task-153): Batch instance + size + timing breakdown ---
+    # Record ONE solve row merging run_result.batch_compute_meta (Spot instance +
+    # queue/compute/total timing the wait-loop captured) with the mesh size
+    # descriptor (active_cell_count + resolution_m) so a perf model can later infer
+    # completion time. ONLY the regular-grid path (handle is not None) records this
+    # — the quadtree submit+wait path is left uninstrumented (consistent with the
+    # two-card work). Best-effort; a telemetry failure never affects the solve.
+    if handle is not None:
+        try:
+            _record_flood_batch_solve_telemetry(
+                run_result=run_result,
+                handle=handle,
+                model_setup=model_setup,
+                grid_resolution_m=grid_resolution_m,
+                session_id=sess_id,
+                case_id=None,
+            )
+        except Exception as exc:  # noqa: BLE001 — telemetry must never break the solve
+            logger.warning(
+                "solve batch-compute telemetry failed (non-fatal): %s", exc
+            )
 
     if run_result.status != "complete":
         # SOLVER_FAILED, SOLVER_TIMEOUT, cancelled — surface as failed envelope.

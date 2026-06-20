@@ -109,6 +109,17 @@ class RunResult(GraceModel):
     # Cancellation details (status == "cancelled")
     cancellation_reason: str | None = None
 
+    # AWS Batch compute metadata (task-153 — solve-time inference). Best-effort
+    # capture of the Spot instance + timing breakdown the run landed on, so the
+    # adaptive perf model can later infer completion time from real (instance,
+    # problem-size) measurements. Populated ONLY on the aws-batch terminal paths
+    # (SUCCEEDED / FAILED); ``None`` on the local/in-process paths and on any
+    # AWS-describe failure (the capture is wrapped + swallows all exceptions).
+    # Shape (all keys optional): ``{instance_type, instance_lifecycle, az,
+    # vcpus, memory_mib, created_at_ms, started_at_ms, stopped_at_ms,
+    # queue_provision_secs, compute_secs, total_secs}``.
+    batch_compute_meta: dict | None = None
+
 
 class LayerURI(GraceModel):
     """Returned by ``postprocess_flood`` (one per output layer).

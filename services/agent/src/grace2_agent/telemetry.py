@@ -482,6 +482,121 @@ def emit_solve_telemetry(
     return record
 
 
+# --------------------------------------------------------------------------- #
+# SOLVE completion telemetry — Batch instance + problem size + timing (task-153)
+#
+# A richer sibling to ``emit_solve_telemetry`` (above). Where that record carries
+# the autoscale provenance for re-tuning the adaptive cell cap, THIS record folds
+# in the REAL AWS Batch compute the solve landed on — the Spot instance type +
+# lifecycle + AZ + the queue-provision / compute / total timing breakdown
+# (captured by ``solver._capture_batch_compute_meta``) MERGED with the mesh size
+# descriptor (active_cell_count + resolution_m) — so a perf model can later infer
+# completion time from real (instance, problem-size, wall-clock) measurements.
+#
+# Same sink discipline as the per-tool + autoscale telemetry: a structured INFO
+# line ALWAYS (scrape-able out of the agent log even when the JSONL path is
+# unwritable) PLUS a JSONL append, both wrapped so a sink failure never breaks
+# the solve. Carries a ``record_type="solve"`` discriminator so a reader can
+# distinguish these rows from the per-tool ``tool_call`` rows that share the
+# accumulation sink. NOT MCP-routed yet (no Mongo collection contract for it);
+# the JSONL + structured log is the minimum — a Mongo collection can be folded
+# in later without changing call sites (mirrors ``emit_solve_telemetry``).
+# --------------------------------------------------------------------------- #
+
+#: Dedicated structured logger so a log scrape can grep these rows out of the
+#: agent log even when the JSONL file path is unwritable (mirrors solve_logger).
+solve_meta_logger = logging.getLogger("grace2_agent.solve_telemetry")
+
+
+def record_solve_telemetry(record: dict) -> dict:
+    """Write ONE SOLVE-completion telemetry record (structured log + JSONL).
+
+    The record is built by the composer (see
+    ``model_flood_scenario`` / ``model_urban_flood_swmm``) by MERGING the Batch
+    compute meta (``solver._capture_batch_compute_meta`` — instance + timing) with
+    the mesh size descriptor + solver + terminal status + run/case/session ids.
+    This writer stamps a ``record_type="solve"`` discriminator and a ``ts`` when
+    absent, then emits to the SAME accumulation sink (JSONL at
+    ``GRACE2_SOLVE_TELEMETRY_PATH`` / the default) the autoscale solve telemetry
+    uses, plus an ALWAYS-on structured INFO line.
+
+    Record shape (the keys a complete row carries — every field is optional so a
+    partial capture still records what it has)::
+
+        {
+            "record_type":          "solve",
+            "ts":                   str  (ISO-8601 UTC; stamped if absent),
+            "run_id":               str | None,
+            "solver":               str | None   ("sfincs" | "swmm" | ...),
+            "status":               str | None   (terminal: "complete"/"failed"/...),
+            "backend":              str | None   (handle.workflow_name),
+            "case_id":              str | None,
+            "session_id":           str | None,
+            # --- mesh size descriptor (the problem size) ---
+            "active_cell_count":    int | None,
+            "resolution_m":         float | None,
+            # --- AWS Batch compute meta (instance + timing) ---
+            "instance_type":        str | None   (e.g. "c7i.2xlarge"),
+            "instance_lifecycle":   str | None   ("spot" | "on-demand"),
+            "az":                   str | None   (e.g. "us-west-2d"),
+            "vcpus":                int | None,
+            "memory_mib":           int | None,
+            "created_at_ms":        int | None,
+            "started_at_ms":        int | None,
+            "stopped_at_ms":        int | None,
+            "queue_provision_secs": float | None (started - created),
+            "compute_secs":         float | None (stopped - started),
+            "total_secs":           float | None (stopped - created),
+        }
+
+    Best-effort + synchronous: mirrors ``emit_solve_telemetry``'s never-raise
+    contract — telemetry must NEVER break the solve path. Returns the stamped
+    record (so the composer can fold it into provenance / a test can assert it).
+    """
+    try:
+        rec = dict(record or {})
+    except Exception:  # noqa: BLE001 — defensive; never break the solve
+        rec = {}
+    rec.setdefault("record_type", "solve")
+    rec.setdefault(
+        "ts",
+        datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
+    )
+
+    # Always log the structured line (the durable, scrape-able signal).
+    solve_meta_logger.info(
+        "solve_record run_id=%s solver=%s status=%s instance_type=%s "
+        "lifecycle=%s az=%s vcpus=%s active_cells=%s resolution_m=%s "
+        "queue_provision_s=%s compute_s=%s total_s=%s backend=%s case=%s",
+        rec.get("run_id"),
+        rec.get("solver"),
+        rec.get("status"),
+        rec.get("instance_type"),
+        rec.get("instance_lifecycle"),
+        rec.get("az"),
+        rec.get("vcpus"),
+        rec.get("active_cell_count"),
+        rec.get("resolution_m"),
+        rec.get("queue_provision_secs"),
+        rec.get("compute_secs"),
+        rec.get("total_secs"),
+        rec.get("backend"),
+        rec.get("case_id"),
+    )
+    # Best-effort JSONL append (the accumulation sink the perf model reads).
+    try:
+        path = _get_solve_telemetry_path()
+        with open(path, mode="a", encoding="utf-8") as fh:
+            fh.write(json.dumps(rec, default=str) + "\n")
+    except Exception:  # noqa: BLE001 — telemetry must never break the solve loop
+        solve_meta_logger.warning(
+            "solve_record JSONL write failed run_id=%s",
+            rec.get("run_id"),
+            exc_info=True,
+        )
+    return rec
+
+
 def build_live_solve_progress(
     *,
     run_id: str,
@@ -529,5 +644,6 @@ __all__ = [
     "compute_args_hash",
     "emit_solve_telemetry",
     "build_solve_telemetry_record",
+    "record_solve_telemetry",
     "build_live_solve_progress",
 ]
