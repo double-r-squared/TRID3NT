@@ -137,7 +137,7 @@ ENV GRACE2_OBJECT_STORE=s3 \
 RUN test -x /usr/local/bin/sfincs \
     && echo "SFINCS binary OK at /usr/local/bin/sfincs" \
     && python -c "from cht_sfincs import SFINCS; import rasterio, geopandas; print('cht_sfincs + geo OK')" \
-    && python -c "from services.workers.sfincs_deckbuilder.entrypoint import main, validate_build_spec, compose_manifest, build_deck, _run_sfincs, derive_refinement_polygons, apply_cell_budget, normalize_snapwave_time_columns; print('combined entrypoint import OK')"
+    && python -c "from services.workers.sfincs_deckbuilder.entrypoint import main, validate_build_spec, compose_manifest, build_deck, _run_sfincs, derive_refinement_polygons, apply_cell_budget, normalize_snapwave_time_columns, emit_quadtree_mesh_geojson, build_mesh_geodataframe, extract_quadtree_faces; print('combined entrypoint import OK')"
 
 # One-shot Batch worker: argv flows straight to the entrypoint module; env-var
 # fallbacks (GRACE2_RUN_ID, GRACE2_BUILD_SPEC_URI) are parsed if no CLI flags.

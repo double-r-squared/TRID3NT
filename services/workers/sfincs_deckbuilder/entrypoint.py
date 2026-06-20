@@ -119,8 +119,12 @@ SFINCS_TIME_FMT = "%Y%m%d %H%M%S"
 
 # SFINCS outputs to upload after the solve (glob patterns, expanded under the
 # deck dir). sfincs_map.nc is the load-bearing flood output; *.nc / *.tif sweep
-# any extra outputs (his, point series, derived rasters).
-SOLVE_OUTPUT_PATTERNS = ("sfincs_map.nc", "*.nc", "*.tif")
+# any extra outputs (his, point series, derived rasters). mesh.geojson is the
+# best-effort quadtree-mesh layer emit_quadtree_mesh_geojson writes at the end of
+# build_deck (EPSG:4326 active-cell polygons w/ per-cell level + size_m); the
+# existing _expand_outputs sweep uploads it to <run_id>/mesh.geojson with no new
+# upload code.
+SOLVE_OUTPUT_PATTERNS = ("sfincs_map.nc", "*.nc", "*.tif", "mesh.geojson")
 
 #: Default grid CRS when the build-spec leaves ``aoi.target_epsg`` unset — the
 #: fetch_topobathy default (UTM 16N / Mexico Beach zone, the coastal North Star).
@@ -130,6 +134,13 @@ DEFAULT_TARGET_EPSG = 32616
 #: size builds + solves comfortably inside a c7i-class Batch box; the budget cap
 #: coarsens refinement levels until the estimate fits.
 DEFAULT_MAX_CELLS = 2_000_000
+
+#: Cap on the number of features written to the best-effort mesh.geojson layer.
+#: The client renders the quadtree mesh as a vector overlay; a multi-million-cell
+#: quadtree would produce a GeoJSON too large to ship/draw, so we deterministically
+#: decimate (every Nth active cell) down to this many features and RECORD the cap +
+#: decimation factor in the deck provenance (NO silent drop).
+MESH_GEOJSON_MAX_FEATURES = 20_000
 
 
 def _utc_now() -> str:
@@ -1324,7 +1335,263 @@ def build_deck(spec: dict, scratch: Path) -> tuple[Path, dict]:
     if rewritten:
         LOG.info("re-based SnapWave time columns to tref-relative: %s", rewritten)
 
+    # ---- 13. BEST-EFFORT quadtree mesh layer (mesh.geojson) -----------------
+    # Extract the active quadtree faces as an EPSG:4326 vector overlay so the web
+    # client can paint the computational mesh. This must NEVER fail the build or
+    # solve: the helper wraps everything in try/except, logs a warning, returns.
+    emit_quadtree_mesh_geojson(sf, deck_dir, target_epsg, provenance)
+
     return deck_dir, provenance
+
+
+# --------------------------------------------------------------------------- #
+# BEST-EFFORT quadtree mesh layer (mesh.geojson).
+#
+# Three separable pieces so the SERIALIZATION half is unit-testable with mock
+# shapely polygons (no cht_sfincs / xugrid needed in the test):
+#
+#   1. extract_quadtree_faces(sf, target_epsg)  — GPL/xugrid-touching geometry
+#      extraction: pull the per-face shapely polygons + the level / size_m / z /
+#      mask / snapwave_mask arrays off the in-scope ``sf`` (the cht SFINCS model).
+#   2. build_mesh_geodataframe(...)              — PURE shapely+geopandas: take
+#      polygons + attribute arrays, filter to ACTIVE cells, deterministically
+#      decimate to MESH_GEOJSON_MAX_FEATURES, build a GeoDataFrame in the source
+#      CRS, reproject to EPSG:4326. No cht/xugrid touched -> unit-testable.
+#   3. emit_quadtree_mesh_geojson(...)           — the best-effort orchestrator
+#      called from build_deck: stitches 1 -> 2, writes deck_dir/mesh.geojson,
+#      records n_features / decimated / cap in provenance. NEVER raises.
+# --------------------------------------------------------------------------- #
+
+
+def extract_quadtree_faces(sf, target_epsg: int) -> dict:
+    """Extract quadtree faces + per-cell arrays from the cht SFINCS model.
+
+    GPL/xugrid-touching half. ``sf`` is the in-scope cht ``SFINCS`` model after
+    ``sf.write()``; ``sf.grid.data`` is a xugrid UgridDataset in EPSG:<target_epsg>
+    (UTM) and ``sf.grid.data.grid`` is the underlying ``xugrid.Ugrid2d``. We
+    convert the face dimension to shapely polygons and read the face-indexed
+    ``level`` / ``z`` / ``mask`` / ``snapwave_mask`` UgridDataArrays.
+
+    Per-cell metric size: cht stores a 0-based refinement ``level`` (0 = coarsest)
+    and each level halves the base ``dx`` (``dxb[ilev] = dx / 2**ilev``), so the
+    cell edge length is ``base_dx / 2**level``.
+
+    Returns a dict with numpy/shapely arrays (all face-ordered, same length):
+        {"polygons": ndarray[shapely.Polygon], "level": ndarray[int],
+         "size_m": ndarray[float], "z": ndarray|None, "mask": ndarray|None,
+         "snapwave_mask": ndarray|None, "source_epsg": int}
+    """
+    import numpy as np  # type: ignore
+
+    ds = sf.grid.data
+    ugrid2d = ds.grid
+    face_dim = ugrid2d.face_dimension
+
+    polygons = np.asarray(ugrid2d.to_shapely(face_dim))
+    n_faces = int(polygons.shape[0])
+
+    def _face_array(name: str):
+        if name not in ds:
+            return None
+        try:
+            return np.asarray(ds[name].values).reshape(-1)
+        except Exception as exc:  # noqa: BLE001
+            LOG.warning("mesh: could not read face array %r: %s", name, exc)
+            return None
+
+    level = _face_array("level")
+    if level is None:
+        level = np.zeros(n_faces, dtype=int)
+    level = level.astype(int)
+
+    # Per-cell metric edge length. Prefer the model's base dx (square cells in the
+    # coastal North Star); fall back to grid attrs.
+    base_dx = None
+    for src in (
+        getattr(sf.grid, "dx", None),
+        ds.attrs.get("dx") if hasattr(ds, "attrs") else None,
+    ):
+        if src is not None:
+            try:
+                base_dx = float(src)
+                break
+            except (TypeError, ValueError):
+                continue
+    if base_dx is None or not np.isfinite(base_dx) or base_dx <= 0:
+        base_dx = float("nan")
+    size_m = base_dx / np.power(2.0, level.astype(float))
+
+    return {
+        "polygons": polygons,
+        "level": level,
+        "size_m": size_m,
+        "z": _face_array("z"),
+        "mask": _face_array("mask"),
+        "snapwave_mask": _face_array("snapwave_mask"),
+        "source_epsg": int(target_epsg),
+    }
+
+
+def build_mesh_geodataframe(
+    polygons,
+    level,
+    size_m,
+    source_epsg: int,
+    *,
+    z=None,
+    mask=None,
+    snapwave_mask=None,
+    max_features: int = MESH_GEOJSON_MAX_FEATURES,
+):
+    """Serialize quadtree faces -> active-only EPSG:4326 GeoDataFrame.
+
+    PURE shapely + geopandas (no cht_sfincs / xugrid). Unit-testable with mock
+    polygons + fake level / size arrays.
+
+    Steps:
+      * filter to ACTIVE cells (``mask == 1``) when a mask is supplied (keeps the
+        layer useful — boundary/inactive cells are dropped); without a mask, all
+        polygons are kept.
+      * deterministically DECIMATE (every Nth active cell, evenly strided) down to
+        ``max_features`` if over -> NO silent drop; the stride is reported back.
+      * build a GeoDataFrame in EPSG:<source_epsg> with per-cell columns
+        ``level`` + ``size_m`` (+ ``z`` + ``mask`` + ``snapwave_mask`` when given),
+        then reproject ``.to_crs(4326)``.
+
+    Returns ``(gdf, info)`` where ``gdf`` is a 4326 GeoDataFrame (possibly EMPTY)
+    and ``info`` is ``{"n_total","n_active","n_features","decimated","stride",
+    "max_features"}``.
+    """
+    import geopandas as gpd  # type: ignore
+    import numpy as np  # type: ignore
+
+    polygons = np.asarray(polygons, dtype=object)
+    n_total = int(polygons.shape[0])
+    level = np.asarray(level).reshape(-1)
+    size_m = np.asarray(size_m, dtype=float).reshape(-1)
+
+    def _opt(arr):
+        return None if arr is None else np.asarray(arr).reshape(-1)
+
+    z = _opt(z)
+    mask = _opt(mask)
+    snapwave_mask = _opt(snapwave_mask)
+
+    # 1. active-cell filter (mask == 1). No mask -> keep everything.
+    if mask is not None and mask.shape[0] == n_total:
+        active = mask == 1
+    else:
+        active = np.ones(n_total, dtype=bool)
+    idx = np.nonzero(active)[0]
+    n_active = int(idx.shape[0])
+
+    # 2. deterministic decimation (even stride) if over the cap.
+    stride = 1
+    decimated = False
+    if max_features is not None and n_active > int(max_features):
+        # ceil division so the strided count never exceeds max_features.
+        stride = int(np.ceil(n_active / float(max_features)))
+        idx = idx[::stride]
+        decimated = True
+    n_features = int(idx.shape[0])
+
+    info = {
+        "n_total": n_total,
+        "n_active": n_active,
+        "n_features": n_features,
+        "decimated": decimated,
+        "stride": int(stride),
+        "max_features": int(max_features) if max_features is not None else None,
+    }
+
+    # 3. build the GeoDataFrame in the source CRS, then reproject to 4326.
+    data: dict[str, Any] = {
+        "level": [int(level[i]) for i in idx] if level.shape[0] == n_total else [],
+        "size_m": [
+            (float(size_m[i]) if np.isfinite(size_m[i]) else None) for i in idx
+        ] if size_m.shape[0] == n_total else [],
+    }
+    if z is not None and z.shape[0] == n_total:
+        data["z"] = [(float(z[i]) if np.isfinite(z[i]) else None) for i in idx]
+    if mask is not None and mask.shape[0] == n_total:
+        data["mask"] = [int(mask[i]) for i in idx]
+    if snapwave_mask is not None and snapwave_mask.shape[0] == n_total:
+        data["snapwave_mask"] = [int(snapwave_mask[i]) for i in idx]
+
+    geoms = [polygons[i] for i in idx]
+    gdf = gpd.GeoDataFrame(data, geometry=geoms, crs=f"EPSG:{int(source_epsg)}")
+    if len(gdf) > 0:
+        gdf = gdf.to_crs(epsg=4326)
+    return gdf, info
+
+
+def emit_quadtree_mesh_geojson(
+    sf, deck_dir: Path, target_epsg: int, provenance: dict
+) -> str | None:
+    """BEST-EFFORT: write deck_dir/mesh.geojson (active quadtree faces, EPSG:4326).
+
+    Called at the end of ``build_deck`` AFTER ``sf.write()`` while ``sf`` / the
+    grid are in scope. Stitches the GPL geometry extraction to the pure
+    serialization, writes the file, and records ``mesh`` provenance
+    (``n_features`` / ``decimated`` / cap) so completion.json's deck block carries
+    it. NEVER raises: any failure logs a warning and returns ``None`` so the deck
+    build + solve are untouched.
+    """
+    try:
+        faces = extract_quadtree_faces(sf, target_epsg)
+        gdf, info = build_mesh_geodataframe(
+            faces["polygons"],
+            faces["level"],
+            faces["size_m"],
+            faces["source_epsg"],
+            z=faces.get("z"),
+            mask=faces.get("mask"),
+            snapwave_mask=faces.get("snapwave_mask"),
+            max_features=MESH_GEOJSON_MAX_FEATURES,
+        )
+
+        mesh_path = Path(deck_dir) / "mesh.geojson"
+        mesh_prov: dict[str, Any] = {
+            "path": "mesh.geojson",
+            "crs": "EPSG:4326",
+            "n_total_cells": info["n_total"],
+            "n_active_cells": info["n_active"],
+            "n_features": info["n_features"],
+            "decimated": info["decimated"],
+            "decimation_stride": info["stride"],
+            "max_features": info["max_features"],
+        }
+
+        if info["n_features"] == 0:
+            # Empty -> write a valid empty FeatureCollection so a downstream reader
+            # never chokes, and record that the mesh was empty.
+            mesh_path.write_text(
+                '{"type": "FeatureCollection", "features": []}', encoding="utf-8"
+            )
+            mesh_prov["empty"] = True
+            provenance["mesh"] = mesh_prov
+            LOG.warning(
+                "mesh: no active cells (total=%d) -> wrote empty FeatureCollection "
+                "to %s", info["n_total"], mesh_path,
+            )
+            return str(mesh_path)
+
+        gdf.to_file(mesh_path, driver="GeoJSON")
+        provenance["mesh"] = mesh_prov
+        LOG.info(
+            "mesh: wrote %s (n_features=%d of %d active / %d total, decimated=%s "
+            "stride=%d, cap=%s)",
+            mesh_path, info["n_features"], info["n_active"], info["n_total"],
+            info["decimated"], info["stride"], info["max_features"],
+        )
+        return str(mesh_path)
+    except Exception as exc:  # noqa: BLE001 — best-effort: NEVER fail the build
+        LOG.warning("mesh: best-effort quadtree mesh emit failed: %s", exc)
+        try:
+            provenance["mesh"] = {"error": f"{type(exc).__name__}: {exc}"}
+        except Exception:  # noqa: BLE001
+            pass
+        return None
 
 
 def _attach_waterlevel_forcing(sf, waterlevel: dict | None) -> None:

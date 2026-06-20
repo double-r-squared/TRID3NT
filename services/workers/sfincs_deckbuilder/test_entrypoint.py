@@ -349,7 +349,10 @@ class ManifestTests(unittest.TestCase):
             (deck / "snapwave.bhs").write_text("0.0 3.0\n")
             m = ep.compose_manifest(deck, "s3://b/cache/x/deck/")
             self.assertEqual(m["sfincs_args"], [])
-            self.assertEqual(m["outputs"], ["sfincs_map.nc", "*.nc", "*.tif"])
+            self.assertEqual(
+                m["outputs"],
+                ["sfincs_map.nc", "*.nc", "*.tif", "mesh.geojson"],
+            )
             uris = {i["gs_uri"]: i["dest"] for i in m["inputs"]}
             self.assertEqual(
                 uris["s3://b/cache/x/deck/sfincs.nc"], "sfincs.nc"
@@ -543,6 +546,241 @@ class CompletionUnionTests(unittest.TestCase):
         self.assertEqual(p["deck"]["nr_levels"], 3)
         self.assertTrue(captured["uri"].endswith("/R1/completion.json"))
         self.assertTrue(captured["uri"].startswith("s3://"))
+
+
+def _serialization_stack_available() -> bool:
+    """True when numpy + shapely + geopandas are importable.
+
+    The mesh SERIALIZATION path (build_mesh_geodataframe) is pure
+    shapely/geopandas — NO cht_sfincs / xugrid — so it is testable in the agent
+    CI venv that carries the geo stack but NOT the GPL library.
+    """
+    return all(
+        importlib.util.find_spec(m) is not None
+        for m in ("numpy", "shapely", "geopandas")
+    )
+
+
+@unittest.skipUnless(
+    _serialization_stack_available(),
+    "serialization stack (numpy/shapely/geopandas) not importable",
+)
+class MeshGeojsonSerializationTests(unittest.TestCase):
+    """Unit tests for the mesh SERIALIZATION path (no cht_sfincs / xugrid).
+
+    Exercises build_mesh_geodataframe + emit_quadtree_mesh_geojson with MOCK
+    shapely polygons + fake level / size / mask arrays. Asserts: EPSG:4326
+    output, per-cell properties present, the active-cell filter, the cap +
+    deterministic decimation triggers + is recorded, and that an empty input
+    yields a valid empty FeatureCollection (no crash).
+    """
+
+    @staticmethod
+    def _square(i: int):
+        """A unique 1x1 square polygon at x-offset i (UTM-ish meters)."""
+        from shapely.geometry import Polygon
+
+        x = 600000.0 + i * 10.0
+        y = 3200000.0
+        return Polygon([(x, y), (x + 10.0, y), (x + 10.0, y + 10.0),
+                        (x, y + 10.0)])
+
+    def _mock_faces(self, n: int):
+        import numpy as np
+
+        polys = np.array([self._square(i) for i in range(n)], dtype=object)
+        # level 0..2 cycling; size_m = base_dx / 2**level with base_dx=100.
+        level = np.array([i % 3 for i in range(n)], dtype=int)
+        size_m = 100.0 / np.power(2.0, level.astype(float))
+        z = np.linspace(-5.0, 5.0, n)
+        return polys, level, size_m, z
+
+    def test_basic_4326_with_properties(self):
+        polys, level, size_m, z = self._mock_faces(6)
+        # mask: 1 (active), 1, 0 (inactive), 2 (boundary), 1, 1 -> 4 active.
+        import numpy as np
+        mask = np.array([1, 1, 0, 2, 1, 1], dtype=int)
+        swmask = np.array([1, 0, 0, 2, 1, 0], dtype=int)
+
+        gdf, info = ep.build_mesh_geodataframe(
+            polys, level, size_m, 32616,
+            z=z, mask=mask, snapwave_mask=swmask, max_features=20000,
+        )
+
+        # EPSG:4326 output.
+        self.assertEqual(int(gdf.crs.to_epsg()), 4326)
+        # active-cell filter: 4 active (mask==1), all kept (under cap).
+        self.assertEqual(info["n_total"], 6)
+        self.assertEqual(info["n_active"], 4)
+        self.assertEqual(info["n_features"], 4)
+        self.assertFalse(info["decimated"])
+        self.assertEqual(info["stride"], 1)
+        self.assertEqual(len(gdf), 4)
+        # per-cell properties present.
+        for col in ("level", "size_m", "z", "mask", "snapwave_mask"):
+            self.assertIn(col, gdf.columns)
+        # only active cells survived.
+        self.assertTrue(all(int(v) == 1 for v in gdf["mask"]))
+        # size_m matches base_dx / 2**level.
+        for lvl, sz in zip(gdf["level"], gdf["size_m"]):
+            self.assertAlmostEqual(float(sz), 100.0 / (2 ** int(lvl)), places=6)
+        # reprojected coords are lon/lat-ish (UTM 16N near -85 lon, 28 lat).
+        minx, miny, maxx, maxy = gdf.total_bounds
+        self.assertTrue(-90.0 < minx < -80.0)
+        self.assertTrue(25.0 < miny < 32.0)
+
+    def test_no_mask_keeps_all(self):
+        polys, level, size_m, _ = self._mock_faces(5)
+        gdf, info = ep.build_mesh_geodataframe(
+            polys, level, size_m, 32616, mask=None, max_features=20000,
+        )
+        self.assertEqual(info["n_active"], 5)
+        self.assertEqual(info["n_features"], 5)
+        self.assertEqual(len(gdf), 5)
+        self.assertEqual(int(gdf.crs.to_epsg()), 4326)
+
+    def test_cap_triggers_deterministic_decimation(self):
+        import numpy as np
+
+        n = 250
+        polys, level, size_m, z = self._mock_faces(n)
+        mask = np.ones(n, dtype=int)  # all active
+
+        gdf, info = ep.build_mesh_geodataframe(
+            polys, level, size_m, 32616,
+            z=z, mask=mask, max_features=100,
+        )
+        # decimation triggers and is recorded; stride = ceil(250/100) = 3.
+        self.assertTrue(info["decimated"])
+        self.assertEqual(info["stride"], 3)
+        self.assertEqual(info["n_active"], 250)
+        # ceil-stride keeps the feature count at or under the cap.
+        self.assertLessEqual(info["n_features"], 100)
+        self.assertEqual(len(gdf), info["n_features"])
+        # deterministic: same inputs -> same count + same first level value.
+        gdf2, info2 = ep.build_mesh_geodataframe(
+            polys, level, size_m, 32616,
+            z=z, mask=mask, max_features=100,
+        )
+        self.assertEqual(info, info2)
+        self.assertEqual(list(gdf["level"]), list(gdf2["level"]))
+
+    def test_empty_input_yields_empty_collection(self):
+        import numpy as np
+
+        gdf, info = ep.build_mesh_geodataframe(
+            np.array([], dtype=object),
+            np.array([], dtype=int),
+            np.array([], dtype=float),
+            32616, mask=np.array([], dtype=int), max_features=20000,
+        )
+        self.assertEqual(info["n_total"], 0)
+        self.assertEqual(info["n_active"], 0)
+        self.assertEqual(info["n_features"], 0)
+        self.assertEqual(len(gdf), 0)
+
+    def test_all_inactive_yields_zero_features(self):
+        import numpy as np
+
+        polys, level, size_m, z = self._mock_faces(4)
+        mask = np.array([0, 2, 0, 2], dtype=int)  # no active cells
+        gdf, info = ep.build_mesh_geodataframe(
+            polys, level, size_m, 32616, z=z, mask=mask, max_features=20000,
+        )
+        self.assertEqual(info["n_active"], 0)
+        self.assertEqual(info["n_features"], 0)
+        self.assertEqual(len(gdf), 0)
+
+    def test_emit_writes_geojson_file_and_records_provenance(self):
+        """End-to-end SERIALIZATION via emit_quadtree_mesh_geojson with a fake sf.
+
+        extract_quadtree_faces is patched to return mock polygons (so no
+        cht_sfincs / xugrid is touched); the file is actually written + parsed.
+        """
+        import json as _json
+        import numpy as np
+
+        n = 8
+        polys, level, size_m, z = self._mock_faces(n)
+        mask = np.array([1, 1, 0, 2, 1, 1, 0, 1], dtype=int)  # 5 active
+        swmask = np.array([1, 0, 0, 2, 1, 1, 0, 0], dtype=int)
+        fake = {
+            "polygons": polys, "level": level, "size_m": size_m,
+            "z": z, "mask": mask, "snapwave_mask": swmask,
+            "source_epsg": 32616,
+        }
+
+        with tempfile.TemporaryDirectory() as d:
+            deck = Path(d)
+            provenance: dict = {}
+            with mock.patch.object(ep, "extract_quadtree_faces",
+                                   return_value=fake):
+                out = ep.emit_quadtree_mesh_geojson(
+                    object(), deck, 32616, provenance
+                )
+            self.assertIsNotNone(out)
+            mesh_path = deck / "mesh.geojson"
+            self.assertTrue(mesh_path.exists())
+            fc = _json.loads(mesh_path.read_text())
+            self.assertEqual(fc["type"], "FeatureCollection")
+            self.assertEqual(len(fc["features"]), 5)  # active-only
+            # every feature carries the per-cell props in EPSG:4326.
+            props = fc["features"][0]["properties"]
+            for k in ("level", "size_m", "mask"):
+                self.assertIn(k, props)
+            # provenance carries the mesh block (deck block -> completion.json).
+            self.assertIn("mesh", provenance)
+            self.assertEqual(provenance["mesh"]["crs"], "EPSG:4326")
+            self.assertEqual(provenance["mesh"]["n_features"], 5)
+            self.assertEqual(provenance["mesh"]["n_active_cells"], 5)
+            self.assertEqual(provenance["mesh"]["n_total_cells"], 8)
+            self.assertFalse(provenance["mesh"]["decimated"])
+            self.assertEqual(provenance["mesh"]["max_features"],
+                             ep.MESH_GEOJSON_MAX_FEATURES)
+
+    def test_emit_never_raises_on_extract_failure(self):
+        """Best-effort contract: extractor blowing up must NOT raise."""
+        with tempfile.TemporaryDirectory() as d:
+            deck = Path(d)
+            provenance: dict = {}
+            with mock.patch.object(
+                ep, "extract_quadtree_faces",
+                side_effect=RuntimeError("xugrid exploded"),
+            ):
+                out = ep.emit_quadtree_mesh_geojson(
+                    object(), deck, 32616, provenance
+                )
+            # returns None, writes no file, records the error -> deck untouched.
+            self.assertIsNone(out)
+            self.assertFalse((deck / "mesh.geojson").exists())
+            self.assertIn("mesh", provenance)
+            self.assertIn("error", provenance["mesh"])
+
+    def test_emit_empty_writes_valid_empty_collection(self):
+        """All-inactive -> emit writes a valid empty FeatureCollection, no crash."""
+        import json as _json
+        import numpy as np
+
+        polys, level, size_m, z = self._mock_faces(3)
+        mask = np.array([0, 0, 2], dtype=int)  # none active
+        fake = {
+            "polygons": polys, "level": level, "size_m": size_m,
+            "z": z, "mask": mask, "snapwave_mask": None, "source_epsg": 32616,
+        }
+        with tempfile.TemporaryDirectory() as d:
+            deck = Path(d)
+            provenance: dict = {}
+            with mock.patch.object(ep, "extract_quadtree_faces",
+                                   return_value=fake):
+                out = ep.emit_quadtree_mesh_geojson(
+                    object(), deck, 32616, provenance
+                )
+            self.assertIsNotNone(out)
+            fc = _json.loads((deck / "mesh.geojson").read_text())
+            self.assertEqual(fc["type"], "FeatureCollection")
+            self.assertEqual(fc["features"], [])
+            self.assertTrue(provenance["mesh"]["empty"])
+            self.assertEqual(provenance["mesh"]["n_features"], 0)
 
 
 @unittest.skipUnless(
@@ -839,7 +1077,7 @@ class FullDeckBuildIntegrationTests(unittest.TestCase):
             self.assertIn("sfincs.nc", dests)
             self.assertIn("sfincs.inp", dests)
             self.assertEqual(manifest["outputs"],
-                             ["sfincs_map.nc", "*.nc", "*.tif"])
+                             ["sfincs_map.nc", "*.nc", "*.tif", "mesh.geojson"])
 
 
 if __name__ == "__main__":

@@ -48,6 +48,7 @@ __all__ = [
     "mesh_cells_to_feature_collection",
     "swmm_mesh_to_geojson",
     "make_swmm_mesh_layer_uri",
+    "make_sfincs_mesh_layer_uri",
 ]
 
 
@@ -271,6 +272,54 @@ def make_swmm_mesh_layer_uri(
         name=f"Computational mesh ({eff_res:.0f} m cells)",
         layer_type="vector",
         uri=str(out_path),
+        style_preset="mesh_grid",
+        role="context",
+        bbox=None,
+    )
+
+
+def make_sfincs_mesh_layer_uri(
+    mesh_uri: str,
+    *,
+    run_id: str,
+    n_cells: int | None = None,
+) -> LayerURI | None:
+    """THIN constructor over an ALREADY-BUILT SFINCS quadtree ``mesh.geojson``.
+
+    NATE task #160 (coastal North Star): the cht_sfincs worker authors the
+    VARIABLE-SIZE quadtree mesh and writes an ALREADY-EPSG:4326
+    ``mesh.geojson`` to ``s3://<runs_bucket>/<run_id>/mesh.geojson``. Unlike the
+    SWMM helper above, this function builds NO geometry, does NO reproject, and
+    writes NO file - the worker already did all of that (the quadtree has
+    per-face cell sizes/levels, so the SWMM row/col + single-affine
+    :func:`mesh_cells_to_feature_collection` path is WRONG for it and must NOT
+    be reused). We only construct a ``LayerURI`` over the worker's output and let
+    the existing emitter inline the s3:// ``.geojson`` via
+    ``pipeline_emitter.add_loaded_layer`` -> ``_read_vector_uri_as_geojson``
+    (boto3 instance-role GET, already offloaded off the event loop).
+
+    The returned ``LayerURI`` carries ``style_preset="mesh_grid"``,
+    ``role="context"`` and ``bbox=None`` (the mesh must not fight the AOI
+    camera - the regular flood camera owns the view). When ``n_cells`` is given
+    the name reads ``Computational mesh (quadtree, N cells)``.
+
+    BEST-EFFORT: a blank/falsy ``mesh_uri`` returns ``None`` (the caller's
+    best-effort emit simply skips). This is pure dict work - NO asyncio.to_thread
+    is needed; the s3 read happens later inside ``add_loaded_layer``.
+    """
+    if not mesh_uri or not str(mesh_uri).strip():
+        return None
+
+    if n_cells is not None and n_cells > 0:
+        name = f"Computational mesh (quadtree, {n_cells} cells)"
+    else:
+        name = "Computational mesh (quadtree)"
+
+    return LayerURI(
+        layer_id=f"sfincs-mesh-{run_id}",
+        name=name,
+        layer_type="vector",
+        uri=str(mesh_uri),
         style_preset="mesh_grid",
         role="context",
         bbox=None,

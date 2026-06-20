@@ -80,6 +80,7 @@ from grace2_contracts.envelope import (
 from grace2_contracts.execution import ExecutionHandle, LayerURI, RunResult
 from grace2_contracts.tool_registry import AtomicToolMetadata
 
+from ..layer_uri_emit import emit_layer_uri
 from ..pipeline_emitter import (
     current_emitter,
     mint_dispatch_and_sim_cards,
@@ -102,6 +103,7 @@ from ..tools.solver import (
     select_compute_class,
     wait_for_completion,
 )
+from .mesh_layer import make_sfincs_mesh_layer_uri
 from .postprocess_flood import (
     FLOOD_DEPTH_STYLE_PRESET,
     PostprocessError,
@@ -2263,6 +2265,36 @@ async def model_flood_scenario(
             duration_hours=float(duration_hr),
             grid_resolution_m=grid_resolution_m,
         )
+
+    # --- Step 7.5: emit the cht_sfincs quadtree mesh as a context layer ----
+    # NATE task #160 (coastal North Star): when the COMBINED quadtree job ran,
+    # the cht_sfincs worker authored the VARIABLE-SIZE quadtree mesh and wrote an
+    # ALREADY-EPSG:4326 ``mesh.geojson`` next to its outputs. We construct a THIN
+    # LayerURI over it (no geometry build / no reproject / no file write - the
+    # worker did all of that; the regular-grid SFINCS path has NO quadtree mesh,
+    # so the emit is GATED on ``quadtree_run_result is not None``) and let the
+    # emitter inline the s3:// .geojson via _read_vector_uri_as_geojson (the
+    # boto3 GET runs inside add_loaded_layer, already offloaded off the loop).
+    # It is a DEFAULT-VISIBLE CONTEXT backdrop (role="context", bbox=None so it
+    # does not emit a competing zoom-to that would fight the AOI camera).
+    # BEST-EFFORT: a mesh-emit failure must NEVER break the solve (log + go on).
+    if quadtree_run_result is not None:
+        mesh_uri = (
+            run_result.output_uri or _default_runs_prefix(run_result.run_id)
+        ).rstrip("/") + "/mesh.geojson"
+        try:
+            mesh_layer = make_sfincs_mesh_layer_uri(
+                mesh_uri, run_id=run_result.run_id
+            )
+            if mesh_layer is not None and emitter is not None:
+                safe = emit_layer_uri(mesh_layer)
+                if safe is not None:
+                    await emitter.add_loaded_layer(safe)
+        except Exception as exc:  # noqa: BLE001 — mesh emit is non-fatal
+            logger.warning(
+                "model_flood_scenario: sfincs mesh emit failed (non-fatal): %s",
+                exc,
+            )
 
     # --- Step 8: postprocess_flood ---
     # audit #1: ``postprocess_flood`` downloads the full ``sfincs_map.nc`` via

@@ -14,6 +14,7 @@ from dataclasses import dataclass
 import pytest
 
 from grace2_agent.workflows.mesh_layer import (
+    make_sfincs_mesh_layer_uri,
     make_swmm_mesh_layer_uri,
     mesh_cells_to_feature_collection,
 )
@@ -169,3 +170,41 @@ def test_make_layer_uri_zero_features_returns_none(tmp_path, monkeypatch) -> Non
     assert layer is None
     # No file should be written when there is nothing to render.
     assert not (tmp_path / "mesh.geojson").exists()
+
+
+# --------------------------------------------------------------------------- #
+# SFINCS quadtree mesh (task #160): THIN constructor over an already-built,
+# already-EPSG:4326 mesh.geojson the worker wrote. No geometry build / reproject
+# / file write here - just a LayerURI over the worker's s3:// output.
+# --------------------------------------------------------------------------- #
+
+
+def test_make_sfincs_mesh_layer_uri_basic() -> None:
+    uri = "s3://my-runs/run-xyz/mesh.geojson"
+    layer = make_sfincs_mesh_layer_uri(uri, run_id="run-xyz")
+
+    assert layer is not None
+    assert layer.layer_type == "vector"
+    assert layer.style_preset == "mesh_grid"
+    assert layer.role == "context"
+    assert layer.bbox is None
+    assert layer.layer_id == "sfincs-mesh-run-xyz"
+    assert layer.uri == uri
+    # No n_cells -> plain quadtree name (no cell count).
+    assert layer.name == "Computational mesh (quadtree)"
+
+
+def test_make_sfincs_mesh_layer_uri_blank_returns_none() -> None:
+    assert make_sfincs_mesh_layer_uri("", run_id="run-blank") is None
+    assert make_sfincs_mesh_layer_uri("   ", run_id="run-ws") is None
+    assert make_sfincs_mesh_layer_uri(None, run_id="run-none") is None  # type: ignore[arg-type]
+
+
+def test_make_sfincs_mesh_layer_uri_n_cells_names_it() -> None:
+    uri = "s3://my-runs/run-q/mesh.geojson"
+    layer = make_sfincs_mesh_layer_uri(uri, run_id="run-q", n_cells=12345)
+
+    assert layer is not None
+    assert layer.name == "Computational mesh (quadtree, 12345 cells)"
+    assert layer.uri == uri
+    assert layer.layer_id == "sfincs-mesh-run-q"
