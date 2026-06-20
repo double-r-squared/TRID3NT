@@ -2060,10 +2060,24 @@
       "description": "Diagnose+fix workflow (2 agents): the cases list never scrolled because the A3 overflow change (ae45399) was never height-bounded - root had only maxHeight:100vh, mobile double-scrolled. Fixed the height chain (root height:100% fills parent; desktop rail bottom:12 bound; mobile hugger overflow:hidden = single scroll container). vitest 1491/1491.",
       "model": "opus",
       "subagent_tokens": 122315
+    },
+    {
+      "job_id": "wf-ws-flicker-rootcause-fixplan-20260620",
+      "sprint": 16,
+      "description": "Read-only root-cause workflow (5 agents): the flicker/opacity-reset/missing-cards/repeat-fetch cluster - WS storm = client backoff vs invisible transport drops (arch sound); keystone _turn_case_bbox reads non-existent state.active_case; river preset=continuous_dem -> random color; no client cache. Synthesized one ordered fix plan.",
+      "model": "opus",
+      "subagent_tokens": 374640
+    },
+    {
+      "job_id": "wf-ws-flicker-fixbuild-20260620",
+      "sprint": 16,
+      "description": "Build workflow (5 agents): J1b ws backoff floor+jitter, J2 SessionState.case_bbox repair + per-turn layers/AOI note, J3 river osm_waterways + deterministic color-by-kind, J4 per-case client cache + view-state durability (idb view-state only). J4+verify died on a 401 mid-run; code applied; 2 test-only regressions fixed by a follow-up agent (67329 tok, folded here). tsc0/web1529/agent5759.",
+      "model": "opus",
+      "subagent_tokens": 600710
     }
   ],
   "totals_by_sprint": {
-    "16": 4478307,
+    "16": 5453657,
     "6": 1265567,
     "7": 1863284,
     "8": 1786238,
