@@ -40,6 +40,7 @@
 //   snap geometry is pure pixel math over the already-projected AOI rectangle.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { ProjectLayerSummary } from "../contracts";
 import { getStylePreset, StylePreset } from "../lib/style-presets";
 import {
@@ -50,6 +51,7 @@ import {
   type KeySize,
   type ScreenRect,
 } from "../lib/legend_snap";
+import { detectSequentialGroups } from "../LayerPanel";
 
 export interface LayerLegendProps {
   /** Ordered layer list, top-of-stack first (same order as LayerPanel). */
@@ -121,18 +123,52 @@ const KEY_HEIGHT_COMPACT = 26;
 const FALLBACK_STACK_GAP = 10;
 
 /**
- * Selects every continuous-raster layer with a known preset, in stack order
- * (top-of-stack first). This is the multi-key generalization of the old
- * "topmost layer wins" rule — every eligible raster gets its own key.
+ * Selects one legend key per eligible raster layer, in stack order
+ * (top-of-stack first).
+ *
+ * SEQUENTIAL-GROUP DEDUP (item 1): layers that belong to a sequential group
+ * (enumerated temporal stack) all share the same colormap / preset. Rendering
+ * one key per frame would crowd the screen with N identical bars. Instead we
+ * detect groups here and emit exactly ONE key per group (using the active /
+ * first member's preset). Non-grouped raster layers each still get their own
+ * key.
  */
 function selectKeyModels(layers: ProjectLayerSummary[]): LegendKeyModel[] {
+  // Detect sequential groups to emit one key per group.
+  const groups = detectSequentialGroups(layers);
+  // Collect layer_ids that belong to a group; track which groups we've emitted.
+  const groupedIds = new Set<string>();
+  const emittedGroupKeys = new Set<string>();
+  for (const g of groups) {
+    for (const l of g.layers) groupedIds.add(l.layer_id);
+  }
+
   const out: LegendKeyModel[] = [];
   for (const l of layers) {
     if (l.layer_type !== "raster") continue;
     if (l.style_preset == null) continue;
     const preset = getStylePreset(l.style_preset);
     if (!preset) continue;
-    out.push({ layerId: l.layer_id, preset });
+
+    if (groupedIds.has(l.layer_id)) {
+      // Find the group this layer belongs to and emit one key for that group.
+      const g = groups.find((gr) => gr.layers.some((m) => m.layer_id === l.layer_id));
+      if (!g || emittedGroupKeys.has(g.key)) continue; // already emitted or no group
+      emittedGroupKeys.add(g.key);
+      // Use the first member of the group as the key representative (they all
+      // share the same preset / colormap). layer_id is used to key the UI state.
+      const rep = g.layers[0];
+      if (!rep) continue;
+      const repPreset = getStylePreset(rep.style_preset ?? "");
+      if (!repPreset) {
+        // Fallback to the current layer's preset if the rep doesn't resolve.
+        out.push({ layerId: `group:${g.key}`, preset });
+      } else {
+        out.push({ layerId: `group:${g.key}`, preset: repPreset });
+      }
+    } else {
+      out.push({ layerId: l.layer_id, preset });
+    }
   }
   return out;
 }
@@ -362,14 +398,15 @@ export function LayerLegend({
   if (keyModels.length === 0) return null;
 
   // When fully hidden, render only a tiny "show legend" pill (bottom-center).
+  // Portal to document.body so it appears above the mobile chat panel (item 6).
   if (hidden) {
-    return (
+    return createPortal(
       <button
         type="button"
         data-testid="grace2-layer-legend-show"
         onClick={() => setHidden(false)}
         style={{
-          position: "absolute",
+          position: "fixed",
           bottom: 24,
           left: "50%",
           transform: "translateX(-50%)",
@@ -385,29 +422,35 @@ export function LayerLegend({
           fontWeight: 600,
           cursor: "pointer",
           pointerEvents: "auto",
-          zIndex: 11,
+          // z-index 50: above the mobile chat/drawer (z=30-41) so the legend
+          // is always visible on mobile (item 6 fix).
+          zIndex: 50,
         }}
       >
         Show legend
-      </button>
+      </button>,
+      document.body,
     );
   }
 
+  // The wrapper keeps a stable testid so existing tests + Map.tsx mounting
+  // expectations hold. It is a zero-size placeholder; the actual key cards
+  // portal to document.body with position:fixed so they escape the map
+  // container's stacking context and appear above the mobile chat panel
+  // (item 6 fix: z-index 50 > drawer z-index 30-41).
+  //
+  // position:fixed keys use the SAME snapped coordinates as before because
+  // the map container is position:absolute;inset:0 relative to the app shell
+  // which is position:fixed;inset:0 — so map-container coords == viewport coords.
   return (
-    // A full-bleed, click-through layer; only the key cards capture pointers.
-    // The container does NOT set bottom-center placement — each key positions
-    // itself absolutely (snapped or free / fallback). The wrapper keeps a stable
-    // testid so existing tests + Map.tsx mounting expectations hold.
     <div
       data-testid="grace2-layer-legend"
       style={{
         position: "absolute",
         inset: 0,
         pointerEvents: "none",
-        zIndex: 10,
-        // Bottom-center reference point for the AOI-less fallback: the keys are
-        // positioned relative to this 0x0 marker via negative offsets.
-        // (When an AOI rect exists the snapped coords are absolute map coords.)
+        // Zero z-index on the anchor wrapper — the actual keys are portaled.
+        zIndex: 0,
       }}
     >
       {keyModels.map((model, idx) => {
@@ -421,6 +464,8 @@ export function LayerLegend({
         const snapPos = snapped[idx] ?? { left: 0, top: 0, side: "bottom" as AoiSide };
 
         // Position: free (dragging) > snapped (AOI) > fallback bottom-center.
+        // Keys use position:fixed (portaled to document.body) so coords map
+        // 1:1 to viewport space (map container is inset:0 → same origin).
         let posStyle: React.CSSProperties;
         if (ui.free) {
           posStyle = { left: ui.free.left, top: ui.free.top };
@@ -441,7 +486,7 @@ export function LayerLegend({
           ? sideForIndex(idx)
           : "bottom";
 
-        return (
+        const keyCard = (
           <div
             key={layerId}
             data-testid="grace2-layer-legend-key"
@@ -449,7 +494,7 @@ export function LayerLegend({
             data-legend-compact={compact ? "1" : "0"}
             onPointerDown={(e) => startDrag(layerId, e)}
             style={{
-              position: "absolute",
+              position: "fixed",
               ...posStyle,
               width,
               padding: compact ? "5px 10px 6px" : "8px 12px 10px",
@@ -465,6 +510,8 @@ export function LayerLegend({
               cursor: "grab",
               userSelect: "none",
               touchAction: "none",
+              // z-index 50: above the mobile chat/drawer (z=30-41) — item 6.
+              zIndex: 50,
             }}
           >
             {/* Title row (hidden in compact mode) + per-key controls. */}
@@ -588,6 +635,10 @@ export function LayerLegend({
             />
           </div>
         );
+
+        // Portal each key card to document.body so it escapes the map
+        // container's stacking context and renders above the mobile drawer.
+        return createPortal(keyCard, document.body, `legend-key-${layerId}`);
       })}
     </div>
   );

@@ -964,17 +964,30 @@ describe("LayerPanel — sequential group row rendering", () => {
     expect(screen.getByTestId("layer-row")).toHaveAttribute("data-layer-id", "flood");
   });
 
-  it("shows the active frame label + position (defaults to the LAST frame)", () => {
+  it("shows the active frame position as x/N in header (defaults to the LAST frame)", () => {
     render(
       <LayerPanel initialLayers={[makeFrame(1), makeFrame(3), makeFrame(6)]} />,
     );
-    // Default active = last frame (latest forecast hour reads as "current").
-    expect(screen.getByTestId("layer-group-frame-label")).toHaveTextContent(
-      "F+06h (3/3)",
+    // Default active = last frame (3/3). Item 5: header shows x/N counter, not
+    // full frame label text (that's in the expanded sub-rows and the scrubber).
+    expect(screen.getByTestId("layer-group-frame-label")).toHaveTextContent("3/3");
+  });
+
+  it("play button in the group header toggles auto-play (item 5)", () => {
+    render(
+      <LayerPanel initialLayers={[makeFrame(1), makeFrame(3), makeFrame(6)]} />,
+    );
+    // Play button now lives in the group header row, not the scrubber.
+    expect(screen.getByTestId("layer-group-play")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("layer-group-play"));
+    // After one click the scrubber is playing (play icon changed to pause).
+    expect(screen.getByTestId("layer-group-play")).toHaveAttribute(
+      "aria-label",
+      "Pause sequence",
     );
   });
 
-  it("RIGHT arrow steps to the next frame and emits visibility toggles", () => {
+  it("scrubber NEXT arrow steps to the next frame and emits visibility toggles", () => {
     const onMapCommand = vi.fn<(cmd: MapCommandPayload) => void>();
     render(
       <LayerPanel
@@ -988,10 +1001,9 @@ describe("LayerPanel — sequential group row rendering", () => {
     );
     onMapCommand.mockClear();
     // From frame 3/3 (F+06h), NEXT wraps to frame 1/3 (F+01h).
-    fireEvent.click(screen.getByTestId("layer-group-next"));
-    expect(screen.getByTestId("layer-group-frame-label")).toHaveTextContent(
-      "F+01h (1/3)",
-    );
+    // Step arrows are now on the scrubber (not the group header row).
+    fireEvent.click(screen.getByTestId("scrubber-next"));
+    expect(screen.getByTestId("layer-group-frame-label")).toHaveTextContent("1/3");
     // It showed F+01h and hid F+06h via set-layer-visibility emissions.
     const cmds = onMapCommand.mock.calls.map((c) => c[0]);
     expect(cmds).toContainEqual({
@@ -1006,7 +1018,7 @@ describe("LayerPanel — sequential group row rendering", () => {
     });
   });
 
-  it("LEFT arrow steps to the previous frame (wraps at the start)", () => {
+  it("scrubber PREV arrow steps to the previous frame (wraps at the start)", () => {
     render(
       <LayerPanel
         initialLayers={[
@@ -1016,11 +1028,18 @@ describe("LayerPanel — sequential group row rendering", () => {
         ]}
       />,
     );
-    // From 3/3, PREV → 2/3 (F+03h).
-    fireEvent.click(screen.getByTestId("layer-group-prev"));
-    expect(screen.getByTestId("layer-group-frame-label")).toHaveTextContent(
-      "F+03h (2/3)",
+    // From 3/3, PREV → 2/3. Arrows now on the scrubber.
+    fireEvent.click(screen.getByTestId("scrubber-prev"));
+    expect(screen.getByTestId("layer-group-frame-label")).toHaveTextContent("2/3");
+  });
+
+  it("header has NO step arrows (they live on the scrubber — item 5)", () => {
+    render(
+      <LayerPanel initialLayers={[makeFrame(1), makeFrame(3), makeFrame(6)]} />,
     );
+    // layer-group-next / layer-group-prev were removed from the header row.
+    expect(screen.queryByTestId("layer-group-next")).toBeNull();
+    expect(screen.queryByTestId("layer-group-prev")).toBeNull();
   });
 
   it("expand chevron reveals per-frame sub-rows; collapse hides them", () => {
@@ -1049,11 +1068,9 @@ describe("LayerPanel — sequential group row rendering", () => {
     );
     fireEvent.click(screen.getByTestId("layer-group-expand"));
     const dots = screen.getAllByTestId("layer-group-frame-select");
-    // Click the first frame's dot → group active = F+01h (1/3).
+    // Click the first frame's dot → group active = 1/3.
     fireEvent.click(dots[0]!);
-    expect(screen.getByTestId("layer-group-frame-label")).toHaveTextContent(
-      "F+01h (1/3)",
-    );
+    expect(screen.getByTestId("layer-group-frame-label")).toHaveTextContent("1/3");
   });
 
   it("collapses an all-visible stack down to a single visible frame on mount", () => {
@@ -1115,9 +1132,8 @@ describe("LayerPanel — sequence scrubber mounting", () => {
     fireEvent.change(screen.getByTestId("scrubber-slider"), {
       target: { value: "0" },
     });
-    expect(screen.getByTestId("scrubber-frame-label")).toHaveTextContent(
-      "F+01h (1/3)",
-    );
+    // Item 4: scrubber frame label shows only x/N (not full frame label text).
+    expect(screen.getByTestId("scrubber-frame-label")).toHaveTextContent("1/3");
     const cmds = onMapCommand.mock.calls.map((c) => c[0]);
     expect(cmds).toContainEqual({
       command: "set-layer-visibility",

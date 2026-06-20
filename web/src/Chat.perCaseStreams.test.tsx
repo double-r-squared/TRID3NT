@@ -112,6 +112,50 @@ describe("routeCaseOpen — stream swap (job-0266)", () => {
     expect(s.messageOrder.get("m2")).toBe(2);
   });
 
+  it("replays chat_history into a PRE-EXISTING EMPTY placeholder stream (older-case display fix)", () => {
+    // CHAT-HISTORY DISPLAY FIX (NATE 2026-06-19): the render path calls
+    // getStream(streams, activeCaseId), which LAZILY CREATES an empty placeholder
+    // stream for the active Case BEFORE the case-open envelope arrives. The old
+    // `!streams.has(caseId)` guard then saw the placeholder and SKIPPED the
+    // replay, so an OLDER Case with persisted history showed a BLANK chat even
+    // though the data exists in DynamoDB. Now routeCaseOpen also replays into a
+    // provably-empty placeholder.
+    const cs = createChatStreams();
+    // Simulate the render-time lazy creation of the placeholder for CASE_A.
+    const placeholder = getStream(cs, CASE_A);
+    expect(placeholder.messages).toHaveLength(0); // empty placeholder exists
+    // Now the case-open (live or cold) arrives with the persisted history.
+    const opened = routeCaseOpen(
+      cs,
+      caseOpen(CASE_A, [
+        { id: "h1", role: "user", content: "older prompt" },
+        { id: "h2", role: "agent", content: "older reply" },
+      ]),
+    );
+    expect(opened).toBe(CASE_A);
+    // The history is replayed INTO the same placeholder (no blank chat).
+    expect(getStream(cs, CASE_A).messages.map((m) => m.text)).toEqual([
+      "older prompt",
+      "older reply",
+    ]);
+  });
+
+  it("does NOT clobber a placeholder that already received LIVE content", () => {
+    // Guard the other direction: if a turn has already started arriving into the
+    // (no-longer-placeholder) stream, a trailing case-open must NOT wipe it.
+    const cs = createChatStreams();
+    getStream(cs, CASE_A); // lazy placeholder
+    routeUserMessage(cs, CASE_A, "live prompt"); // now has real content
+    const populated = getStream(cs, CASE_A);
+    expect(populated.messages).toHaveLength(1);
+    routeCaseOpen(cs, caseOpen(CASE_A, [{ id: "h1", role: "user", content: "older prompt" }]));
+    // Same stream object, live content intact — NOT replaced by the replay.
+    expect(getStream(cs, CASE_A)).toBe(populated);
+    expect(getStream(cs, CASE_A).messages.map((m) => m.text)).toEqual([
+      "live prompt",
+    ]);
+  });
+
   it("two Cases hold DISTINCT streams; opening B leaves A's stream intact", () => {
     const cs = createChatStreams();
     routeCaseOpen(cs, caseOpen(CASE_A, [{ id: "a1", role: "user", content: "flood in Fort Myers" }]));

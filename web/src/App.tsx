@@ -384,6 +384,21 @@ export function App(): JSX.Element {
   // authoritative (live layer add AND delete apply via replace-not-reconcile).
   const wsStatusRef = useRef<ConnectionStatus>("connecting");
 
+  // CASE-SWITCH LAYER LEAK FIX (NATE 2026-06-19) — the currently-active Case id,
+  // mirrored into a ref so the GraceWs `onSessionState` handler (a STABLE
+  // closure created once when the socket is constructed, see the WS effect
+  // below) can read the LIVE active Case without being re-created on every Case
+  // switch (which would tear down + re-open the socket — the WS cycling we must
+  // avoid). The leak NATE hit: switching Case A -> B paints B's layers, then a
+  // TRAILING server `session-state` STILL TAGGED with Case A (a late solve-finish
+  // snapshot, or the server's resume replay racing the case-open) arrives over
+  // the live socket; under the old handler it was stamped authoritative
+  // (`replace_layers:true`, because the socket is `connected`) and Map.tsx
+  // REPLACED B's layers with A's. ws.ts already extracts the envelope-level
+  // `case_id` and passes it as the 2nd arg of `onSessionState`; we now DROP any
+  // snapshot whose tag != the active Case. Synced in the effect just below.
+  const activeCaseIdRef = useRef<string | null>(null);
+
   // sleep/wake STAGE 2 (NATE 2026-06-18) — the always-on agent box can be
   // STOPPED by the idle-check Lambda; a stopped box answers nothing so the WS
   // can't connect. STAGE 2 gates ONLY the chat COMPOSER behind a Connecting ->
@@ -709,7 +724,25 @@ export function App(): JSX.Element {
       // `replace_layers` hint Map.tsx reads to decide replace-not-reconcile
       // (Appendix A.7) vs additive top-up. See the CLIENT FLICKER FIX note on
       // the stamp itself below for the exact authoritative-vs-no-op rule.
-      onSessionState: (p) =>
+      onSessionState: (p, caseId) => {
+        // CASE-SWITCH LAYER LEAK FIX (NATE 2026-06-19) — DROP a server snapshot
+        // tagged with a Case that is NOT the active one. ws.ts surfaces the
+        // envelope-level `case_id` here as `caseId`; a snapshot whose tag does
+        // not match `activeCaseIdRef.current` is a TRAILING update for a Case we
+        // already left (a late solve-finish frame, or the resume replay racing
+        // the new Case's case-open). Applying it to the live map would replace
+        // the now-active Case's layers with the stale Case's (NATE's bug:
+        // "the layers are filled with the urban flood ones, and the original
+        // disappeared"). We compare ONLY when BOTH are non-null: a snapshot with
+        // no tag (`caseId == null`) is an untagged/root frame we still honor (it
+        // never carries another Case's layers), and an untagged-active state
+        // (`activeCaseIdRef.current == null`, the root view) likewise applies —
+        // so per-Case layer DURABILITY across a WS reconnect is unaffected (a
+        // reconnect resume for the SAME active Case is either tagged with that
+        // Case, matching here, or untagged, applied). Only a genuine
+        // cross-Case mismatch is dropped.
+        const active = activeCaseIdRef.current;
+        if (caseId != null && active != null && caseId !== active) return;
         bus.pushSessionState({
           ...p,
           // CLIENT FLICKER FIX (per-Case layer DURABILITY) - a SERVER-DELIVERED
@@ -729,7 +762,8 @@ export function App(): JSX.Element {
           replace_layers:
             wsStatusRef.current === "connected" &&
             (p.loaded_layers?.length ?? 0) > 0,
-        }),
+        });
+      },
       onMapCommand: (p) => bus.pushMapCommand(p),
       onSecretsList: (p) => setSecrets(p.secrets ?? []),
       onMode2Candidate: (p) => fanoutSourceSuggestion(p),
@@ -737,6 +771,20 @@ export function App(): JSX.Element {
       // not App. No onPayloadWarning handler here.
       onCaseList: (p: CaseListEnvelopePayload) => useCases_onCaseList(p),
       onCaseOpen: (p: CaseOpenEnvelopePayload) => {
+        // CASE-SWITCH LAYER LEAK FIX (NATE 2026-06-19) — DROP a trailing
+        // `case-open` for a Case we already LEFT. The same leak class as the
+        // session-state guard above: after switching A -> B, a late `case-open`
+        // still tagged with Case A (an in-flight `select` reply racing the new
+        // one) would re-assert A's whole session — rail, layers AND chat — over
+        // B. We drop ONLY when the active Case is non-null AND the incoming
+        // Case is a DIFFERENT non-null Case. This deliberately still applies:
+        //   - auto-create from root (active == null) — a brand-new Case opens;
+        //   - the normal `select(B)` reply (incoming B == active B, set
+        //     optimistically by selectCase) — re-affirms B idempotently;
+        //   - a deselect-to-root reply (incoming null) — clears cleanly.
+        const incoming = p.session_state?.case.case_id ?? null;
+        const active = activeCaseIdRef.current;
+        if (incoming != null && active != null && incoming !== active) return;
         useCases_onCaseOpen(p);
         // job-0179 — mirror the cold-load: push case-open onto the bus so Chat
         // can build the stream's chat-history bubbles. Idempotent (routeCaseOpen
@@ -789,6 +837,10 @@ export function App(): JSX.Element {
   // handler reads the latest currentCaseId at connect time regardless.
   useEffect(() => {
     wsRef.current?.setCurrentCaseId(activeCaseId);
+    // CASE-SWITCH LAYER LEAK FIX — keep the ref the stable onSessionState
+    // closure reads in lockstep with the active Case so a trailing snapshot
+    // tagged with the PREVIOUS Case is dropped the instant we switch.
+    activeCaseIdRef.current = activeCaseId;
   }, [activeCaseId]);
 
   // job-0322 F31 — resume-repaint (iOS zombie-socket fix). Mobile browsers
@@ -1024,36 +1076,65 @@ export function App(): JSX.Element {
   // isAuthoritative=true, so a genuinely-empty cold list correctly shows zero
   // cases (the LAST-CASE EDGE FIX in useCases.onCaseList).
   //
-  // Fires ONCE (a ref guard) only while: the App socket is NOT connected AND
-  // cold-load is configured AND the rail is still empty (cases.length === 0). A
-  // later live `case-list` over the WS supersedes it (non-empty replaces; the
-  // reconcile is idempotent). Gated to dev/LAN safety by caseListConfigured()
-  // (null endpoint -> no fetch).
-  const coldLoadedListRef = useRef<boolean>(false);
+  // Fires ONCE per (signed-in identity) ref guard only while: the App socket is
+  // NOT connected AND cold-load is configured AND the rail is still empty
+  // (cases.length === 0). A later live `case-list` over the WS supersedes it
+  // (non-empty replaces; the reconcile is idempotent). Gated to dev/LAN safety
+  // by caseListConfigured() (null endpoint -> no fetch).
+  //
+  // COLD-LIST SIGNED-IN FIX (NATE 2026-06-19) — NATE is signed in (Cognito) but
+  // saw an EMPTY rail with the box asleep. Root cause: the effect fired on mount
+  // BEFORE auth resolved, so `getIdToken()` returned null; the Lambda's auth
+  // contract answers a tokenless request with an AUTHORITATIVE 200 EMPTY list
+  // (never 401), which is a non-null payload — so the old guard LATCHED `true`
+  // and NEVER re-fetched once the token arrived (its deps `[wsStatus,
+  // cases.length, ...]` don't change on sign-in). Two changes fix it:
+  //   1. Depend on the signed-in identity (`coldListIdentity` = the uid, or
+  //      "anon"); the guard is keyed to it (`coldLoadedListIdRef`) so when auth
+  //      resolves / the user signs in, the identity flips and the effect RE-RUNS
+  //      with the now-available token.
+  //   2. NEVER cold-load WITHOUT the token when the user IS signed in: if
+  //      `isSignedIn` but `getIdToken()` came back null (token not ready yet),
+  //      skip the fetch and release the guard so the next identity-keyed run (or
+  //      a token-ready re-render) retries — we must not burn the one attempt on
+  //      a tokenless request that the Lambda would answer empty.
+  const coldLoadedListIdRef = useRef<string | null>(null);
+  const coldListIdentity = isSignedIn ? authUser?.uid ?? "signed-in" : "anon";
   useEffect(() => {
     // Reset the cold-load-list guard whenever the App socket goes healthy:
     // a live `case-list` is now authoritative and a future disconnect should
     // be allowed to cold-load the rail again. Mirrors coldLoadedCaseRef's
-    // reset-on-reconnect above; without this the ref latched true forever
-    // after the first cold session, so a later cold session never re-fetched.
+    // reset-on-reconnect above; without this the ref latched forever after the
+    // first cold session, so a later cold session never re-fetched.
     if (wsStatus === "connected") {
-      coldLoadedListRef.current = false;
+      coldLoadedListIdRef.current = null;
       return;
     }
-    if (coldLoadedListRef.current) return;
+    // Already cold-loaded for THIS identity during the current disconnected
+    // episode. A sign-in (identity flip) clears this by inequality below.
+    if (coldLoadedListIdRef.current === coldListIdentity) return;
     if (!caseListConfigured()) return;
     if (cases.length > 0) return;
 
-    coldLoadedListRef.current = true;
+    coldLoadedListIdRef.current = coldListIdentity;
     let cancelled = false;
     void (async () => {
       const token = await getIdToken().catch(() => null);
+      if (cancelled) return;
+      // Signed in but the token is not ready yet — do NOT spend the attempt on a
+      // tokenless request (the Lambda would answer an authoritative empty list).
+      // Release the guard so an identity-keyed / token-ready re-run retries.
+      if (isSignedIn && (token == null || token.trim() === "")) {
+        coldLoadedListIdRef.current = null;
+        return;
+      }
       const payload = await fetchCaseList(undefined, token);
-      // A failed / empty cold-load releases the guard so a later attempt in the
+      // A failed / null cold-load releases the guard so a later attempt in the
       // same disconnected episode can re-fetch (mirrors coldLoadedCaseRef on
-      // fetch failure). A successful non-null payload keeps the guard set.
+      // fetch failure). A successful non-null payload keeps the guard set for
+      // this identity.
       if (cancelled || payload === null) {
-        if (!cancelled) coldLoadedListRef.current = false;
+        if (!cancelled) coldLoadedListIdRef.current = null;
         return;
       }
       // Cold FETCH is AUTHORITATIVE: an empty list genuinely means zero cases
@@ -1063,7 +1144,7 @@ export function App(): JSX.Element {
     return () => {
       cancelled = true;
     };
-  }, [wsStatus, cases.length, useCases_onCaseList]);
+  }, [wsStatus, cases.length, coldListIdentity, isSignedIn, useCases_onCaseList]);
 
   // Lift layers from session-state.
   useEffect(() => {
@@ -1167,6 +1248,33 @@ export function App(): JSX.Element {
         subscribeMapCommand={bus.subscribeMapCommand as MapCommandSubscribeFunc}
         theme={theme}
       />
+
+      {/* MOBILE TOP FROST GRADIENT (NATE 2026-06-19) — with the iOS status bar
+          now translucent (apple-mobile-web-app-status-bar-style=black-translucent
+          in index.html), the page runs UNDER the time/battery, so more map shows
+          but those glyphs can wash out over a light basemap. This thin
+          top-anchored dark->transparent gradient sits behind the status-bar area
+          (height = the safe-area inset + a small amount) to keep them legible.
+          pointer-events:none so the map underneath stays fully draggable; mobile
+          only (desktop has no status bar to cover). z-index above the map but
+          below the rail/hamburgers/overlays. */}
+      {isMobile && (
+        <div
+          data-testid="grace2-mobile-top-frost"
+          aria-hidden
+          style={{
+            position: "absolute",
+            top: 0,
+            left: 0,
+            right: 0,
+            height: "calc(env(safe-area-inset-top) + 14px)",
+            pointerEvents: "none",
+            zIndex: 15,
+            background:
+              "linear-gradient(180deg, rgba(10,11,15,0.55) 0%, rgba(10,11,15,0) 100%)",
+          }}
+        />
+      )}
 
       {/* job-0321 F43 — the layer legend/colorbar is no longer an App-level
           floating element. It now renders INSIDE Map.tsx, anchored to the

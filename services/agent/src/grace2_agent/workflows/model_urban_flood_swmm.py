@@ -446,8 +446,24 @@ async def model_urban_flood_swmm(
             # local tmp dir, then postprocess from a run-shim carrying the local
             # out_path (postprocess_swmm reads only run.out_path; the S_i_j
             # cell<->node map lives in staging.build, agent-side, unchanged).
+            #
+            # ROOT-CAUSE (NATE: "Batch succeeded + published layers but the
+            # composer's RESULT came back null/no narration"): the AWS-Batch
+            # dispatch (_run_solver_aws_batch) MINTS A FRESH run_id (new_ulid())
+            # for the job and the worker writes completion.json + the .out/.rpt
+            # under s3://<runs_bucket>/<run_result.run_id>/ — NOT under the
+            # deck-build's staging.run_id. Passing staging.run_id here pointed the
+            # download at an EMPTY prefix, so completion.json + .out were never
+            # found and the branch raised SWMM_BATCH_OUTPUT_MISSING (or, worse,
+            # the postprocess ran on an absent/empty out and the result never
+            # populated the narration scalars) — exactly the silent-no-narration
+            # symptom. Mirror model_flood_scenario's SFINCS Batch path, which
+            # postprocesses from run_result.output_uri / run_result.run_id (the
+            # worker's run_id), NEVER the staged deck's id. Fall back to
+            # staging.run_id only if the RunResult carries no run_id (defensive).
+            batch_run_id = getattr(run_result, "run_id", None) or staging.run_id
             run, batch_out_dir = await asyncio.to_thread(
-                _download_batch_swmm_outputs, run_result, staging.run_id
+                _download_batch_swmm_outputs, run_result, batch_run_id
             )
             try:
                 layers, metrics = await asyncio.to_thread(

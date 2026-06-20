@@ -553,9 +553,17 @@ export function CasesPanel({
           "-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif",
         display: "flex",
         flexDirection: "column",
-        gap: 8,
+        // The panel is a flex column: header is fixed-height, list is the
+        // scrollable region (flex:1 + minHeight:0 + overflowY:auto on the list
+        // wrapper below). This maxHeight caps the whole panel so the list
+        // region takes whatever space remains after the header.
         maxHeight: "calc(100vh - 24px)",
-        overflow: "auto",
+        // overflow:hidden (not auto): the panel itself must NOT scroll.
+        // Only the inner grace2-cases-list div scrolls so the header stays
+        // pinned at the top. Without this, overflow:auto on the outer div
+        // scrolls the header too AND the flex children (no minHeight:0)
+        // expand past maxHeight anyway instead of being clipped.
+        overflow: "hidden",
       }}
     >
       <div
@@ -568,6 +576,9 @@ export function CasesPanel({
           alignItems: "center",
           justifyContent: "space-between",
           marginBottom: 4,
+          // flex-shrink:0 keeps the header at its natural height — the list
+          // (flex:1) absorbs all remaining space.
+          flexShrink: 0,
         }}
       >
         <strong
@@ -620,12 +631,38 @@ export function CasesPanel({
         </div>
       )}
 
+      {/* Scroll container for the case rows.
+          - flex:1 + minHeight:0: lets it take remaining panel height and
+            shrink below its content height (without minHeight:0 a flex child
+            refuses to shrink below its intrinsic content size, so the list
+            would overflow the panel instead of scrolling).
+          - overflowY:auto: the actual scroll surface for the row list.
+          - maskImage / WebkitMaskImage: transparent gradient fade at the
+            bottom (and top when scrolled) so the cutoff is clean rather
+            than a hard clip. 20px top-fade (barely visible at rest, appears
+            as content scrolls up); 32px bottom-fade (always present, signals
+            more content below). Both are transparent-to-opaque so only the
+            edge content fades — the rest renders at full opacity. */}
       <div
         data-testid="grace2-cases-list"
         style={{
+          flex: 1,
+          minHeight: 0,
+          overflowY: "auto",
           display: "flex",
           flexDirection: "column",
           gap: 6,
+          // Gradient fade mask: bottom edge always fades (signals more rows),
+          // top edge fades too (content scrolls under the header cleanly).
+          // black = fully opaque, transparent = invisible. The mask maps
+          // the scroll viewport edges, not the content — so it stays fixed
+          // as the user scrolls.
+          WebkitMaskImage:
+            "linear-gradient(to bottom, transparent 0px, black 20px, black calc(100% - 32px), transparent 100%)",
+          maskImage:
+            "linear-gradient(to bottom, transparent 0px, black 20px, black calc(100% - 32px), transparent 100%)",
+          // Small bottom padding so the last row is visible above the fade.
+          paddingBottom: 6,
         }}
       >
         {sortedCases.map((c) => (

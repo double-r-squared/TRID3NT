@@ -47,10 +47,12 @@ function renderScrubber(overrides: Partial<React.ComponentProps<typeof SequenceS
 }
 
 describe("SequenceScrubber — render + controls", () => {
-  it("renders the group label + active frame readout", () => {
+  it("renders the compact x/N counter (no group label, no full frame label)", () => {
     renderScrubber({ activeIndex: 1 });
-    expect(screen.getByTestId("scrubber-group-label")).toHaveTextContent("HRRR precip");
-    expect(screen.getByTestId("scrubber-frame-label")).toHaveTextContent("F+03h (2/3)");
+    // Item 4: only x/N shown in the scrubber, not the group label or frame label text.
+    expect(screen.getByTestId("scrubber-frame-label")).toHaveTextContent("2/3");
+    // No group-label element in the scrubber.
+    expect(screen.queryByTestId("scrubber-group-label")).toBeNull();
   });
 
   it("portals to document.body (escapes the panel stacking context)", () => {
@@ -80,10 +82,10 @@ describe("SequenceScrubber — render + controls", () => {
     expect(onStep).toHaveBeenCalledWith(2);
   });
 
-  it("play button fires onPlayToggle", () => {
-    const { onPlayToggle } = renderScrubber();
-    fireEvent.click(screen.getByTestId("scrubber-play"));
-    expect(onPlayToggle).toHaveBeenCalledTimes(1);
+  it("play button is NOT in the scrubber (moved to group header — item 5)", () => {
+    renderScrubber();
+    // The play button lives in the LayerPanel group header now, not the scrubber.
+    expect(screen.queryByTestId("scrubber-play")).toBeNull();
   });
 
   it("renders nothing for an empty frame list", () => {
@@ -100,11 +102,25 @@ describe("SequenceScrubber — render + controls", () => {
     expect(screen.queryByTestId("grace2-sequence-scrubber")).toBeNull();
   });
 
-  it("disables controls for a single-frame series", () => {
+  it("disables prev/next controls for a single-frame series", () => {
     renderScrubber({ frameLabels: ["F+01h"], activeIndex: 0 });
     expect(screen.getByTestId("scrubber-next")).toBeDisabled();
     expect(screen.getByTestId("scrubber-prev")).toBeDisabled();
-    expect(screen.getByTestId("scrubber-play")).toBeDisabled();
+  });
+
+  it("snaps bottom-center to aoiRect when provided (item 3)", () => {
+    renderScrubber({
+      aoiRect: { left: 100, top: 50, right: 700, bottom: 400 },
+    });
+    const el = screen.getByTestId("grace2-sequence-scrubber");
+    // Center of rect is (100+700)/2 = 400; top = bottom(400) + 12 = 412.
+    expect(el).toHaveStyle({ left: "400px", top: "412px" });
+  });
+
+  it("falls back to viewport bottom-center when aoiRect is absent (item 3)", () => {
+    renderScrubber();
+    const el = screen.getByTestId("grace2-sequence-scrubber");
+    expect(el).toHaveStyle({ left: "50%", bottom: "24px" });
   });
 });
 

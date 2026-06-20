@@ -5,12 +5,18 @@
 // hours F+01h / F+03h / F+06h) collapse into ONE group you can step through.
 //
 // This component is the map-overlay half of that: a horizontal slider +
-// LEFT/RIGHT + play/pause that drives the SAME visibility toggling the
-// LayerPanel group row uses (it never touches the map directly — stepping is
-// "show frame i, hide the rest" through the existing LayerPanel visibility
-// callback). It is rendered FROM WITHIN LayerPanel (so it shares the panel's
-// frame state) and pins itself bottom-center of the viewport, mirroring the
-// LayerLegend's bottom-center fallback placement.
+// LEFT/RIGHT that drives the SAME visibility toggling the LayerPanel group row
+// uses (it never touches the map directly — stepping is "show frame i, hide
+// the rest" through the existing LayerPanel visibility callback). It is
+// rendered FROM WITHIN LayerPanel (so it shares the panel's frame state) and
+// pins itself bottom-center of the AOI bbox when `aoiRect` is provided, or
+// falls back to viewport bottom-center otherwise (mirroring the LayerLegend's
+// bottom-center fallback placement).
+//
+// Layout (item 4): `< ——●—— >` — prev-arrow, track/slider, next-arrow, plus
+// a compact `x/N` readout. The group label and frame label are omitted from
+// the scrubber (they show in the LayerPanel group row). The play button and
+// `x/N` readout are folded into the COLLAPSED group header in LayerPanel.
 //
 // It only appears when a sequential group is active (LayerPanel returns null
 // otherwise — see SequentialGroup detection in LayerPanel.tsx). Pure
@@ -21,9 +27,8 @@ import { createPortal } from "react-dom";
 import {
   IconArrowLeft,
   IconArrowRight,
-  IconPlay,
-  IconPause,
 } from "./icons";
+import type { ScreenRect } from "../lib/legend_snap";
 
 export interface SequenceScrubberProps {
   /** Short group label, e.g. the shared source/tool ("HRRR forecast"). */
@@ -40,6 +45,13 @@ export interface SequenceScrubberProps {
   onPlayToggle: () => void;
   /** Auto-advance cadence in ms while playing. Default 1100. */
   intervalMs?: number;
+  /**
+   * TRUE projected AOI screen rectangle {left,top,right,bottom} in absolute
+   * map-container coords (= viewport coords since the map fills the viewport).
+   * When provided the scrubber pins bottom-center of the AOI bbox (item 3).
+   * When absent it falls back to viewport bottom-center.
+   */
+  aoiRect?: ScreenRect | null;
 }
 
 /** Clamp `i` into [0, n) with wraparound so the scrubber loops cleanly. */
@@ -54,8 +66,9 @@ export function SequenceScrubber({
   activeIndex,
   onStep,
   playing,
-  onPlayToggle,
+  onPlayToggle: _onPlayToggle, // kept in props API; play button is in group header (item 5)
   intervalMs = 1100,
+  aoiRect,
 }: SequenceScrubberProps): JSX.Element | null {
   const n = frameLabels.length;
   // Hold the latest active index in a ref so the play interval always advances
@@ -83,27 +96,51 @@ export function SequenceScrubber({
   if (n === 0) return null;
 
   const safeIndex = wrapIndex(activeIndex, n);
-  const frameLabel = frameLabels[safeIndex] ?? "";
 
-  // Portal to document.body so `fixed` bottom-center resolves against the
+  // Item 3: Snap the scrubber to the AOI bbox bottom-center when aoiRect is
+  // available. The aoiRect coords are map-container-relative which equals
+  // viewport coords (map container is position:fixed;inset:0 relative to the
+  // app shell). When absent, fall back to viewport bottom-center.
+  let posStyle: React.CSSProperties;
+  if (aoiRect) {
+    const cx = (aoiRect.left + aoiRect.right) / 2;
+    posStyle = {
+      position: "fixed",
+      left: cx,
+      top: aoiRect.bottom + 12,
+      transform: "translateX(-50%)",
+    };
+  } else {
+    posStyle = {
+      position: "fixed",
+      bottom: 24,
+      left: "50%",
+      transform: "translateX(-50%)",
+    };
+  }
+
+  // Portal to document.body so `fixed` positioning resolves against the
   // VIEWPORT, not the LayerPanel's transformed/filtered stacking context (the
   // panel is absolutely positioned + backdrop-filtered — same reason
   // ConfirmationDialog portals). This keeps the scrubber pinned bottom-center
-  // of the screen while still being mounted from within LayerPanel.
+  // of the AOI (or viewport fallback) while still being mounted from within
+  // LayerPanel.
+  //
+  // Item 4 layout: `< ——●—— >` — prev-arrow, slider/track, next-arrow.
+  // A compact `x/N` counter sits between the prev arrow and slider.
+  // The group label and frame label text are omitted (shown in LayerPanel
+  // group header instead). The play button is now in the group header too.
   return createPortal(
     <div
       data-testid="grace2-sequence-scrubber"
       role="group"
       aria-label={`${label} sequence scrubber`}
       style={{
-        position: "fixed",
-        bottom: 24,
-        left: "50%",
-        transform: "translateX(-50%)",
+        ...posStyle,
         display: "flex",
         alignItems: "center",
-        gap: 10,
-        padding: "8px 12px",
+        gap: 8,
+        padding: "7px 12px",
         // Joins the panel surface family (matches LayerLegend chrome).
         background: "rgba(17,18,23,0.82)",
         backdropFilter: "blur(6px)",
@@ -115,48 +152,12 @@ export function SequenceScrubber({
         color: "#e8e8ec",
         // The slider/buttons are interactive, but the chrome lets nothing else
         // through (it's a control surface, unlike the legend).
-        zIndex: 11,
-        minWidth: 320,
-        maxWidth: 560,
+        zIndex: 51,
+        minWidth: 220,
+        maxWidth: 480,
       }}
     >
-      {/* Group label + frame readout. */}
-      <div
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          minWidth: 0,
-          flexShrink: 0,
-          lineHeight: 1.15,
-        }}
-      >
-        <span
-          data-testid="scrubber-group-label"
-          title={label}
-          style={{
-            fontSize: 11,
-            fontWeight: 600,
-            color: "#cfd4db",
-            maxWidth: 150,
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
-        >
-          {label}
-        </span>
-        <span
-          data-testid="scrubber-frame-label"
-          style={{
-            fontSize: 10.5,
-            color: "#9aa1ab",
-            fontVariantNumeric: "tabular-nums",
-          }}
-        >
-          {frameLabel} ({safeIndex + 1}/{n})
-        </span>
-      </div>
-
+      {/* Prev arrow */}
       <ScrubButton
         testId="scrubber-prev"
         label="Previous frame"
@@ -166,25 +167,8 @@ export function SequenceScrubber({
         <IconArrowLeft size={15} />
       </ScrubButton>
 
-      <ScrubButton
-        testId="scrubber-play"
-        label={playing ? "Pause sequence" : "Play sequence"}
-        onClick={onPlayToggle}
-        disabled={n <= 1}
-      >
-        {playing ? <IconPause size={15} /> : <IconPlay size={15} />}
-      </ScrubButton>
-
-      <ScrubButton
-        testId="scrubber-next"
-        label="Next frame"
-        onClick={() => stepBy(1)}
-        disabled={n <= 1}
-      >
-        <IconArrowRight size={15} />
-      </ScrubButton>
-
-      {/* The slider — one detent per frame; dragging steps frames. */}
+      {/* The slider — one detent per frame; dragging steps frames.
+          Layout: the track sits between the two arrows. */}
       <input
         type="range"
         min={0}
@@ -196,12 +180,37 @@ export function SequenceScrubber({
         data-testid="scrubber-slider"
         style={{
           flex: 1,
-          minWidth: 120,
+          minWidth: 80,
           height: 16,
           accentColor: "#4aa3ff",
           cursor: "pointer",
         }}
       />
+
+      {/* Next arrow */}
+      <ScrubButton
+        testId="scrubber-next"
+        label="Next frame"
+        onClick={() => stepBy(1)}
+        disabled={n <= 1}
+      >
+        <IconArrowRight size={15} />
+      </ScrubButton>
+
+      {/* Compact x/N counter — the only text readout on the scrubber (item 4). */}
+      <span
+        data-testid="scrubber-frame-label"
+        style={{
+          fontSize: 11,
+          color: "#9aa1ab",
+          fontVariantNumeric: "tabular-nums",
+          flexShrink: 0,
+          minWidth: 36,
+          textAlign: "right",
+        }}
+      >
+        {safeIndex + 1}/{n}
+      </span>
     </div>,
     document.body,
   );

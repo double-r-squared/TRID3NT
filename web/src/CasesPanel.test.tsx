@@ -899,6 +899,120 @@ describe("CasesPanel", () => {
     expect(newBtn.textContent).toBe("");
     expect(newBtn.querySelector("svg")).not.toBeNull();
   });
+
+  // --- scrollable list (mobile + desktop fix) --------------------------------
+  // Root cause: grace2-cases-list had no flex:1 / minHeight:0 / overflowY, so
+  // flex children expanded past the panel's maxHeight instead of scrolling.
+  // Fix: list div is the scroll container (flex:1 + minHeight:0 + overflowY:
+  // auto); panel root clips via overflow:hidden; header is flex-shrink:0 so it
+  // stays pinned. A gradient mask (maskImage / WebkitMaskImage) on the list
+  // fades the top+bottom edges instead of hard-clipping.
+  describe("scrollable list + gradient fade mask", () => {
+    function renderPanel(caseCount = 2) {
+      const cases: CaseSummary[] = Array.from({ length: caseCount }, (_, i) => ({
+        schema_version: "v1" as const,
+        case_id: `01ABCDEFGHJKMNPQRSTVWX00${String(i).padStart(2, "0")}`,
+        title: `Case ${i}`,
+        created_at: "2026-06-01T00:00:00.000Z",
+        updated_at: `2026-06-0${Math.max(1, i + 1)}T00:00:00.000Z`,
+        status: "active" as const,
+      }));
+      render(
+        <CasesPanel
+          cases={cases}
+          activeCaseId={null}
+          onCreate={vi.fn()}
+          onSelect={vi.fn()}
+          onRename={vi.fn()}
+          onArchive={vi.fn()}
+          onDelete={vi.fn()}
+        />,
+      );
+    }
+
+    it("the panel root does NOT itself scroll (overflow:hidden, not auto)", () => {
+      // The panel root must not be the scroll container — if it were, the
+      // header would scroll away with the list. Only the inner list div scrolls.
+      renderPanel();
+      const panel = screen.getByTestId("grace2-cases-panel");
+      expect(panel.style.overflow).toBe("hidden");
+    });
+
+    it("the panel root has maxHeight so it stays bounded on mobile + desktop", () => {
+      renderPanel();
+      const panel = screen.getByTestId("grace2-cases-panel");
+      // maxHeight caps the whole panel; the list div absorbs remaining space.
+      expect(panel.style.maxHeight).toBeTruthy();
+    });
+
+    it("the list div is the scroll container (overflowY:auto)", () => {
+      // The list must carry overflowY:auto so rows scroll rather than overflow.
+      renderPanel();
+      const list = screen.getByTestId("grace2-cases-list");
+      expect(list.style.overflowY).toBe("auto");
+    });
+
+    it("the list div is flex:1 + minHeight:0 (can shrink below its content height)", () => {
+      // flex:1 takes remaining panel space after the header.
+      // minHeight:0 is load-bearing: without it a flex child defaults to
+      // min-height:auto and refuses to shrink below its content height, so
+      // it overflows the panel instead of scrolling.
+      renderPanel();
+      const list = screen.getByTestId("grace2-cases-list");
+      expect(list.style.flex).toMatch(/^1\b/);
+      expect(list.style.minHeight).toBe("0");
+    });
+
+    it("the list div carries a gradient mask image (transparent fade at edges)", () => {
+      // The mask fades the top+bottom edges of the scroll region so the
+      // cutoff is visually clean rather than a hard clip.
+      renderPanel();
+      const list = screen.getByTestId("grace2-cases-list");
+      // Either the standard or webkit-prefixed property must be set.
+      const hasMask =
+        list.style.maskImage !== "" ||
+        list.style.webkitMaskImage !== "" ||
+        (list.style as CSSStyleDeclaration & Record<string, string>)[
+          "WebkitMaskImage"
+        ] !== "" ||
+        (list.style as CSSStyleDeclaration & Record<string, string>)[
+          "-webkit-mask-image"
+        ] !== "";
+      expect(hasMask).toBe(true);
+    });
+
+    it("the header is flex-shrink:0 (stays pinned; only list scrolls)", () => {
+      // flex-shrink:0 prevents the header from collapsing when the list
+      // flex:1 expands to take remaining panel height.
+      renderPanel();
+      const header = screen.getByTestId("grace2-cases-header");
+      expect(header.style.flexShrink).toBe("0");
+    });
+
+    it("rows still render and are selectable inside the scrollable list", () => {
+      const onSelect = vi.fn();
+      render(
+        <CasesPanel
+          cases={[CASE_FORT_MYERS, CASE_NORCAL_FIRE]}
+          activeCaseId={null}
+          onCreate={vi.fn()}
+          onSelect={onSelect}
+          onRename={vi.fn()}
+          onArchive={vi.fn()}
+          onDelete={vi.fn()}
+        />,
+      );
+      const list = screen.getByTestId("grace2-cases-list");
+      const rows = list.querySelectorAll('[data-testid="grace2-case-row"]');
+      expect(rows).toHaveLength(2);
+      fireEvent.click(
+        Array.from(rows).find(
+          (r) => r.getAttribute("data-case-id") === CASE_NORCAL_FIRE.case_id,
+        )!,
+      );
+      expect(onSelect).toHaveBeenCalledWith(CASE_NORCAL_FIRE.case_id);
+    });
+  });
 });
 
 // --- ConfirmationDialog ------------------------------------------------ //

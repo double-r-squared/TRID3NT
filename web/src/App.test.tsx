@@ -1431,3 +1431,121 @@ describe("App — per-Case layer durability across WS reconnect (job-0357)", () 
     expect(pushes[1]!.replace_layers).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// CASE-SWITCH LAYER LEAK FIX (NATE 2026-06-19).
+//
+// NATE: switching Case A (urban flood) -> Case B (Mexico Beach) loaded B's
+// layers, then A's layers RE-ASSERTED and cleared B's. Root cause: the live WS
+// `onSessionState(p, caseId)` handler ignored the envelope-level `case_id`, so a
+// TRAILING server snapshot STILL tagged with Case A (a late solve-finish frame,
+// or the resume replay racing the new Case's case-open) was applied authoritative
+// over B. The fix drops any snapshot whose tag != the active Case. This shell
+// mirrors the EXACT filter App.tsx now applies in its onSessionState handler.
+// ---------------------------------------------------------------------------
+
+function CaseFilterShell({
+  onReady,
+  push,
+}: {
+  onReady: (api: {
+    setStatus: (s: WireConnStatus) => void;
+    setActiveCase: (id: string | null) => void;
+    deliverSessionState: (
+      p: { loaded_layers: Array<{ layer_id: string }> },
+      caseId: string | null,
+    ) => void;
+  }) => void;
+  push: (p: StampedSession) => void;
+}): JSX.Element {
+  const statusRef = useRef<WireConnStatus>("connecting");
+  const activeCaseIdRef = useRef<string | null>(null);
+  const pushRef = useRef(push);
+  pushRef.current = push;
+  useEffect(() => {
+    onReady({
+      setStatus: (s) => {
+        statusRef.current = s;
+      },
+      setActiveCase: (id) => {
+        activeCaseIdRef.current = id;
+      },
+      deliverSessionState: (p, caseId) => {
+        // EXACT mirror of App.tsx onSessionState (CASE-SWITCH LAYER LEAK FIX):
+        // drop a snapshot tagged with a Case that is not the active one; both
+        // non-null mismatch => ignore. Untagged frames + the root view apply.
+        const active = activeCaseIdRef.current;
+        if (caseId != null && active != null && caseId !== active) return;
+        pushRef.current({
+          ...p,
+          replace_layers:
+            statusRef.current === "connected" &&
+            (p.loaded_layers?.length ?? 0) > 0,
+        });
+      },
+    });
+  }, [onReady]);
+  return <div data-testid="case-filter-shell" />;
+}
+
+describe("App — case-switch layer leak (NATE 2026-06-19)", () => {
+  it("DROPS a trailing snapshot tagged with the PREVIOUS Case after switching", () => {
+    const pushes: StampedSession[] = [];
+    let api!: Parameters<Parameters<typeof CaseFilterShell>[0]["onReady"]>[0];
+    render(
+      <CaseFilterShell onReady={(a) => (api = a)} push={(p) => pushes.push(p)} />,
+    );
+    act(() => {
+      api.setStatus("connected");
+      // Open Case A and paint its layer.
+      api.setActiveCase("caseA");
+      api.deliverSessionState({ loaded_layers: [{ layer_id: "urban-flood" }] }, "caseA");
+      // User switches to Case B; B's layers paint.
+      api.setActiveCase("caseB");
+      api.deliverSessionState({ loaded_layers: [{ layer_id: "mexico-beach" }] }, "caseB");
+      // A TRAILING snapshot for Case A arrives (late solve-finish / resume race).
+      api.deliverSessionState({ loaded_layers: [{ layer_id: "urban-flood" }] }, "caseA");
+    });
+    // Exactly TWO snapshots reached the bus: Case A's (while A active) and
+    // Case B's (while B active). The trailing Case-A snapshot was DROPPED.
+    expect(pushes).toHaveLength(2);
+    expect(pushes[0]!.loaded_layers).toEqual([{ layer_id: "urban-flood" }]);
+    expect(pushes[1]!.loaded_layers).toEqual([{ layer_id: "mexico-beach" }]);
+    // The map's last authoritative state is Case B's layers — never re-asserted
+    // back to Case A.
+    const last = pushes[pushes.length - 1]!;
+    expect(last.loaded_layers).toEqual([{ layer_id: "mexico-beach" }]);
+  });
+
+  it("APPLIES an untagged snapshot (older builds / root view) — durability unaffected", () => {
+    const pushes: StampedSession[] = [];
+    let api!: Parameters<Parameters<typeof CaseFilterShell>[0]["onReady"]>[0];
+    render(
+      <CaseFilterShell onReady={(a) => (api = a)} push={(p) => pushes.push(p)} />,
+    );
+    act(() => {
+      api.setStatus("connected");
+      api.setActiveCase("caseB");
+      // An UNTAGGED frame (caseId null) for the active Case must still apply —
+      // a reconnect resume for the SAME Case is either tagged caseB or untagged.
+      api.deliverSessionState({ loaded_layers: [{ layer_id: "mexico-beach" }] }, null);
+    });
+    expect(pushes).toHaveLength(1);
+    expect(pushes[0]!.loaded_layers).toEqual([{ layer_id: "mexico-beach" }]);
+  });
+
+  it("APPLIES a snapshot tagged with the ACTIVE Case (the normal live path)", () => {
+    const pushes: StampedSession[] = [];
+    let api!: Parameters<Parameters<typeof CaseFilterShell>[0]["onReady"]>[0];
+    render(
+      <CaseFilterShell onReady={(a) => (api = a)} push={(p) => pushes.push(p)} />,
+    );
+    act(() => {
+      api.setStatus("connected");
+      api.setActiveCase("caseB");
+      api.deliverSessionState({ loaded_layers: [{ layer_id: "mexico-beach" }] }, "caseB");
+    });
+    expect(pushes).toHaveLength(1);
+    expect(pushes[0]!.replace_layers).toBe(true);
+  });
+});

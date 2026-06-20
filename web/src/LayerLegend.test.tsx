@@ -119,6 +119,54 @@ describe("LayerLegend — one key per eligible raster layer", () => {
   });
 });
 
+// Helper: build a sequential frame layer (same pattern as LayerPanel.test.tsx makeFrame).
+function makeFrameLayer(hour: number, run = "run-a"): ProjectLayerSummary {
+  const hh = String(hour).padStart(2, "0");
+  return {
+    layer_id: `${run}-f${hh}`,
+    name: `HRRR precip F+${hh}h`,
+    layer_type: "raster",
+    uri: `gs://grace-2/runs/${run}/precip_f${hh}.cog.tif`,
+    visible: true,
+    opacity: 1,
+    z_index: 1,
+    style_preset: "continuous_flood_depth",
+  };
+}
+
+describe("LayerLegend — ONE key per sequential group (item 1)", () => {
+  it("collapses N frame layers into a single legend key (not N keys)", () => {
+    // 3 HRRR forecast frames — all same preset, all form a sequential group.
+    const layers = [makeFrameLayer(1), makeFrameLayer(3), makeFrameLayer(6)];
+    render(<LayerLegend layers={layers} />);
+    // Item 1: exactly ONE key for the whole group, not 3.
+    expect(screen.getAllByTestId("grace2-layer-legend-key")).toHaveLength(1);
+  });
+
+  it("renders a key for the group's representative preset (same gradient)", () => {
+    const layers = [makeFrameLayer(1), makeFrameLayer(3), makeFrameLayer(6)];
+    render(<LayerLegend layers={layers} />);
+    // The single group key still shows the shared preset's label and min/max.
+    expect(screen.getByTestId("layer-legend-title")).toHaveTextContent("Max flood depth (m)");
+    expect(screen.getByTestId("layer-legend-min-label")).toHaveTextContent("0 m");
+    expect(screen.getByTestId("layer-legend-max-label")).toHaveTextContent("3.5 m");
+  });
+
+  it("non-grouped layers still get their own key alongside a group key", () => {
+    // One sequential group (2 frames) + one unrelated raster = 2 keys total.
+    const grouped1 = makeFrameLayer(1);
+    const grouped2 = makeFrameLayer(3);
+    const standalone = makeLayer({
+      layer_id: "surge",
+      name: "Storm surge max",
+      style_preset: "continuous_flood_depth",
+      z_index: 10,
+    });
+    render(<LayerLegend layers={[standalone, grouped1, grouped2]} />);
+    expect(screen.getAllByTestId("grace2-layer-legend-key")).toHaveLength(2);
+  });
+});
+
 describe("LayerLegend — AOI-less fallback placement", () => {
   it("places the key bottom-center when no anchor/barWidth is given", () => {
     render(<LayerLegend layers={[makeLayer()]} />);

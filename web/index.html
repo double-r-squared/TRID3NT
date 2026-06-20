@@ -11,6 +11,21 @@
       content="width=device-width, initial-scale=1.0, viewport-fit=cover"
     />
     <meta name="color-scheme" content="dark light" />
+    <!-- MOBILE TOP CHROME (NATE 2026-06-19): run the web app content UNDER a
+         translucent iOS status bar so the map shows through the time/battery
+         area instead of being obfuscated by an opaque Safari/status bar.
+         black-translucent makes the status bar transparent and lets the page
+         extend full-height behind it (paired with viewport-fit=cover above so
+         env(safe-area-inset-top) resolves). A subtle top frost-gradient overlay
+         (App-level, pointer-events:none) keeps the time/battery legible over
+         the map. mobile-web-app-capable is the standardized twin of the
+         apple- prefix for non-Safari engines. -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta
+      name="apple-mobile-web-app-status-bar-style"
+      content="black-translucent"
+    />
     <title>GRACE-2 — Hazard Modeling Workbench (M1 stub)</title>
   </head>
   <body>

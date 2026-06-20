@@ -485,3 +485,205 @@ def test_tool_wrapper_drives_full_chain(synthetic_inputs, monkeypatch):
     assert out.max_depth_m >= 0.0
     # BREAK A: the returned peak carries a published renderable http(s) URL.
     assert out.uri.startswith("http"), out.uri
+
+
+def test_batch_lane_returns_populated_peak_envelope(synthetic_inputs, monkeypatch):
+    """The OFF-BOX AWS Batch lane (`if not is_local_mode():`) must converge to the
+    SAME shared envelope-build + `return peak` the in-process lane does, so the
+    composer hands the agent loop a NON-NULL populated SWMMDepthLayerURI to
+    narrate (NATE bug: the Batch solve succeeded + published layers but the
+    composer's RESULT came back null/empty -> no closing narration).
+
+    ROOT-CAUSE GUARD: _run_solver_aws_batch MINTS A FRESH run_id (new_ulid()) for
+    the Batch job, and the worker writes completion.json + the .out/.rpt under
+    s3://<runs_bucket>/<run_result.run_id>/ — NOT under the deck-build's
+    staging.run_id. The composer must download the outputs under the WORKER's
+    run_id. This test makes the two run_ids DISTINCT and drives the REAL
+    _download_batch_swmm_outputs against a fake S3 whose objects live under the
+    worker's run_id; with the old `staging.run_id` lookup the download finds
+    nothing and the branch fails, with the fix it finds the real .out and returns
+    a populated peak.
+    """
+    import asyncio
+
+    from grace2_agent.tools import solver as _solver
+    from grace2_agent.workflows import model_urban_flood_swmm as M
+    from grace2_agent.workflows.run_swmm import run_swmm_local
+
+    dem_path, footprints, barriers = synthetic_inputs
+
+    _STAGING_RUN_ID = "deck-build-id"
+    _WORKER_RUN_ID = "batch-worker-id"  # the fresh ulid _run_solver_aws_batch mints
+    _RUNS_BUCKET = "test-runs-bucket"
+
+    # Stub the COG upload + publish (no object store / QGIS worker in-test).
+    monkeypatch.setattr(
+        "grace2_agent.workflows.postprocess_swmm._upload_cog_to_runs_bucket",
+        _fake_upload,
+    )
+    _patch_publish_layer(monkeypatch)
+
+    # Force the OUT-OF-PROCESS (Batch) lane.
+    monkeypatch.setattr(M, "is_local_mode", lambda: False)
+    monkeypatch.setattr(M, "stage_swmm_manifest", lambda staging: "s3://test/manifest.json")
+
+    # Solve the SAME deck the composer staged IN-PROCESS to produce a REAL .out
+    # the "worker" would have written; stash its bytes under the WORKER run_id in
+    # the fake S3 below. Capture the staging the composer builds so we solve the
+    # identical deck.
+    captured: dict = {}
+    _orig_stage = M.build_and_stage_swmm_deck
+
+    def _capturing_stage(*args, **kwargs):  # noqa: ANN002, ANN003
+        staging = _orig_stage(*args, **kwargs)
+        captured["staging"] = staging
+        return staging
+
+    monkeypatch.setattr(M, "build_and_stage_swmm_deck", _capturing_stage)
+
+    # run_solver returns a handle whose run_id is the FRESH worker id (mirrors
+    # _run_solver_aws_batch new_ulid()); wait_for_completion returns a 'complete'
+    # RunResult carrying that SAME worker run_id + output_uri prefix.
+    class _FakeHandle:
+        run_id = _WORKER_RUN_ID
+        handle_id = "h-batch"
+        solver = "swmm"
+
+    class _FakeRunResult:
+        status = "complete"
+        run_id = _WORKER_RUN_ID
+        output_uri = f"s3://{_RUNS_BUCKET}/{_WORKER_RUN_ID}/"
+        error_code = None
+        error_message = None
+        cancellation_reason = None
+
+    monkeypatch.setattr(_solver, "run_solver", lambda **kw: _FakeHandle())
+
+    async def _fake_wait(handle):  # noqa: ANN001
+        return _FakeRunResult()
+
+    monkeypatch.setattr(_solver, "wait_for_completion", _fake_wait)
+
+    # Fake S3: the worker's completion.json + .out/.rpt live ONLY under the
+    # WORKER run_id prefix. A read under any other prefix raises NoSuchKey, which
+    # _try_get_completion_s3 maps to None — exactly the empty-prefix the buggy
+    # `staging.run_id` lookup would hit.
+    def _solve_and_stash() -> None:
+        solved = run_swmm_local(captured["staging"])
+        with open(solved.out_path, "rb") as fh:
+            out_bytes = fh.read()
+        rpt_path = Path(solved.out_path).with_suffix(".rpt")
+        rpt_bytes = rpt_path.read_bytes() if rpt_path.exists() else b""
+        import json as _json
+
+        completion = {
+            "status": "ok",
+            "output_uris": [
+                f"s3://{_RUNS_BUCKET}/{_WORKER_RUN_ID}/mesh.out",
+                f"s3://{_RUNS_BUCKET}/{_WORKER_RUN_ID}/mesh.rpt",
+            ],
+        }
+        store["objects"] = {
+            f"{_WORKER_RUN_ID}/completion.json": _json.dumps(completion).encode(),
+            f"{_WORKER_RUN_ID}/mesh.out": out_bytes,
+            f"{_WORKER_RUN_ID}/mesh.rpt": rpt_bytes,
+        }
+
+    store: dict = {"objects": {}}
+
+    class _NoSuchKey(Exception):
+        def __init__(self) -> None:
+            super().__init__("NoSuchKey")
+            self.response = {"Error": {"Code": "NoSuchKey"}}
+
+    class _Body:
+        """Minimal boto3 StreamingBody stand-in: read() honors the chunk-size
+        contract (shutil.copyfileobj reads in chunks until read() returns b'')."""
+
+        def __init__(self, data: bytes) -> None:
+            self._buf = memoryview(data)
+            self._pos = 0
+
+        def read(self, size: int = -1) -> bytes:
+            if self._pos >= len(self._buf):
+                return b""
+            if size is None or size < 0:
+                chunk = self._buf[self._pos:]
+                self._pos = len(self._buf)
+            else:
+                chunk = self._buf[self._pos:self._pos + size]
+                self._pos += len(chunk)
+            return bytes(chunk)
+
+    class _FakeS3:
+        def get_object(self, Bucket, Key):  # noqa: ANN001, N803
+            objs = store["objects"]
+            if Key not in objs:
+                raise _NoSuchKey()
+            return {"Body": _Body(objs[Key])}
+
+    monkeypatch.setattr(_solver, "set_runs_bucket", _solver.set_runs_bucket)
+    _solver.set_runs_bucket(_RUNS_BUCKET)
+    _solver.set_s3_client(_FakeS3())
+
+    from grace2_agent import pipeline_emitter as pe
+
+    fake = _FakeEmitter()
+    token = pe._CURRENT_EMITTER.set(fake)
+    try:
+        run_args = SWMMRunArgs(
+            bbox=(-88.0, 36.0, -87.99, 36.01),
+            total_rain_depth_mm=120.0,
+            storm_duration_hr=1.0,
+            rain_interval_min=5,
+            target_resolution_m=10.0,
+            building_representation="drop",
+            barriers=barriers,
+            mass_balance_tolerance_pct=100.0,
+        )
+
+        # Build + stage the deck first (via the composer) by solving it once so
+        # the fake S3 has the worker outputs ready BEFORE wait_for_completion
+        # returns. We trigger the deck build by running the composer; but the
+        # composer needs the S3 outputs DURING the run. So pre-build the staging
+        # here through the same path the composer uses, then stash.
+        staging_probe = M.build_and_stage_swmm_deck(
+            run_args, dem_path=dem_path, building_footprints=footprints,
+            run_id=_STAGING_RUN_ID,
+        )
+        captured["staging"] = staging_probe
+        _solve_and_stash()
+
+        peak = asyncio.run(
+            model_urban_flood_swmm(
+                run_args,
+                dem_path=dem_path,
+                building_footprints=footprints,
+                run_id=_STAGING_RUN_ID,
+                cleanup_deck=True,
+            )
+        )
+    finally:
+        pe._CURRENT_EMITTER.reset(token)
+        _solver.set_s3_client(None)
+        _solver.set_runs_bucket(None)
+
+    # --- THE REGRESSION GUARD: a NON-NULL populated peak envelope -------------
+    assert peak is not None, "Batch lane returned None (no result to narrate)"
+    assert isinstance(peak, SWMMDepthLayerURI), peak
+    assert peak.role == "primary"
+    assert peak.name == "Peak flood depth"
+    # The three narration scalars are populated (Invariant 1 — the LLM narrates
+    # these). A null/empty envelope would have no numbers to summarise.
+    assert peak.max_depth_m >= 0.0
+    assert peak.flooded_area_km2 >= 0.0
+    assert peak.n_buildings_affected >= 0
+    assert peak.barriers is not None
+    assert peak.barriers["type"] == "FeatureCollection"
+    # BREAK A: the returned peak renders (published http(s) URL, never raw s3://).
+    assert peak.uri.startswith("http"), peak.uri
+
+    # The Batch lane also emits the per-frame animation group out-of-band.
+    frames = fake.loaded_layers
+    assert len(frames) >= 2, f"expected a multi-frame group; got {len(frames)}"
+    assert all(isinstance(f, SWMMDepthLayerURI) for f in frames)

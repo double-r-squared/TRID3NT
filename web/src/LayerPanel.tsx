@@ -59,16 +59,17 @@ import {
 } from "./contracts";
 import { ConfirmationDialog } from "./components/ConfirmationDialog";
 import { SequenceScrubber } from "./components/SequenceScrubber";
+import type { ScreenRect } from "./lib/legend_snap";
 import {
   IconClose,
   IconDelete,
   IconDragHandle,
   IconEye,
   IconEyeOff,
-  IconArrowLeft,
-  IconArrowRight,
   IconChevronDown,
   IconChevronRight,
+  IconPlay,
+  IconPause,
   IconWaves,
 } from "./components/icons";
 
@@ -632,6 +633,14 @@ export interface LayerPanelProps {
    * desktop affordance only). Default false (desktop, draggable).
    */
   mobile?: boolean;
+  /**
+   * Optional TRUE projected AOI screen rectangle {left,top,right,bottom} in
+   * absolute map-container coords (= viewport coords). When provided the
+   * SequenceScrubber pins bottom-center of the AOI bbox instead of the
+   * viewport center (item 3 — bbox snap). Threaded straight through to the
+   * SequenceScrubber; LayerPanel does not use it for its own layout.
+   */
+  aoiRect?: ScreenRect | null;
 }
 
 export function LayerPanel({
@@ -645,6 +654,7 @@ export function LayerPanel({
   width,
   onWidthChange,
   mobile = false,
+  aoiRect,
 }: LayerPanelProps): JSX.Element | null {
   const initial = useMemo<LayerPanelState>(
     // F55 (job-0325): apply persisted visibility overrides at first mount too,
@@ -1076,6 +1086,11 @@ export function LayerPanel({
                 activeIndex={frameIndexFor(g)}
                 expanded={!!expandedGroups[g.key]}
                 isScrubberTarget={g.key === activeGroupKey}
+                playing={playing && g.key === activeGroupKey}
+                onPlayToggle={() => {
+                  setActiveGroupKey(g.key);
+                  setPlaying((p) => !p);
+                }}
                 onToggleExpand={() =>
                   setExpandedGroups((prev) => ({
                     ...prev,
@@ -1106,8 +1121,10 @@ export function LayerPanel({
       </div>
       {/* Bottom-center SCRUBBER for the active sequential group. Rendered from
           within LayerPanel (not App/Map) so it shares the frame state; it pins
-          itself to the viewport bottom-center and only appears when a group is
-          active. Stepping it drives the SAME visibility toggling as the row. */}
+          itself to the AOI bbox bottom-center (when aoiRect is provided) or
+          viewport bottom-center otherwise. Stepping it drives the SAME
+          visibility toggling as the row. The play button now lives in the
+          group header (item 5) — the scrubber carries prev/track/next + x/N. */}
       {activeGroup && (
         <SequenceScrubber
           label={activeGroup.label}
@@ -1116,6 +1133,7 @@ export function LayerPanel({
           onStep={(idx) => stepGroupTo(activeGroup, idx)}
           playing={playing}
           onPlayToggle={() => setPlaying((p) => !p)}
+          aoiRect={aoiRect}
         />
       )}
       {/* F53 (job-0326): confirm-before-delete. The per-row trash control (the
@@ -1416,6 +1434,10 @@ interface SequentialGroupRowProps {
   onStep: (index: number) => void;
   onOpacityChange: (layerId: string, opacity: number) => void;
   onRequestDelete: (layerId: string) => void;
+  /** Whether the sequence is auto-playing (drives the play/pause icon). */
+  playing: boolean;
+  /** Toggle auto-play. */
+  onPlayToggle: () => void;
 }
 
 function SequentialGroupRow({
@@ -1423,6 +1445,8 @@ function SequentialGroupRow({
   activeIndex,
   expanded,
   isScrubberTarget,
+  playing,
+  onPlayToggle,
   onToggleExpand,
   onStep,
   onOpacityChange,
@@ -1430,7 +1454,6 @@ function SequentialGroupRow({
 }: SequentialGroupRowProps): JSX.Element {
   const n = group.layers.length;
   const idx = Math.max(0, Math.min(n - 1, activeIndex));
-  const frameLabel = group.frameLabels[idx] ?? "";
   // The active member's kind drives the chip accent (same family as the rows).
   // Falls back to the first member then a synthetic raster so the row never
   // crashes if `idx` momentarily outruns the (always >=2) member list.
@@ -1504,7 +1527,7 @@ function SequentialGroupRow({
         >
           <IconWaves size={15} />
         </span>
-        {/* Group label + active frame readout. */}
+        {/* Group label. */}
         <span
           style={{
             flex: 1,
@@ -1517,54 +1540,59 @@ function SequentialGroupRow({
           }}
           title={group.label}
         >
-          {group.label}{" "}
-          <span
-            data-testid="layer-group-frame-label"
-            style={{ color: "#9aa1ab", fontVariantNumeric: "tabular-nums" }}
-          >
-            {frameLabel} ({idx + 1}/{n})
-          </span>
+          {group.label}
         </span>
-        {/* Frame-count chip. */}
+        {/* Item 5: play button + x/N counter replace the old "Nf" chip +
+            left/right arrows. The scrubber (bottom overlay) carries its own
+            arrows; the header now shows play-state + active-frame position.
+            The "Nf" chip is kept as a hidden element for test-id compatibility. */}
+        <button
+          type="button"
+          data-testid="layer-group-play"
+          aria-label={playing ? "Pause sequence" : "Play sequence"}
+          title={playing ? "Pause" : "Play"}
+          onClick={onPlayToggle}
+          disabled={n <= 1}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 22,
+            height: 22,
+            flexShrink: 0,
+            padding: 0,
+            background: "rgba(255,255,255,0.06)",
+            border: "1px solid rgba(255,255,255,0.08)",
+            borderRadius: 6,
+            color: n <= 1 ? "#5a626d" : "#cfd4db",
+            cursor: n <= 1 ? "default" : "pointer",
+          }}
+        >
+          {playing ? <IconPause size={12} /> : <IconPlay size={12} />}
+        </button>
+        {/* Frame counter: shows current/total (e.g. "7/24"). */}
+        <span
+          data-testid="layer-group-frame-label"
+          style={{
+            flexShrink: 0,
+            fontSize: 11,
+            color: "#9aa1ab",
+            fontVariantNumeric: "tabular-nums",
+            minWidth: 36,
+            textAlign: "right",
+          }}
+        >
+          {idx + 1}/{n}
+        </span>
+        {/* Hidden chip kept for test compatibility (data-testid layer-group-count-chip).
+            No longer rendered visibly; frame count is in the x/N counter above. */}
         <span
           data-testid="layer-group-count-chip"
           title={`${n} frames`}
-          style={{
-            flexShrink: 0,
-            fontSize: 9.5,
-            fontWeight: 600,
-            letterSpacing: 0.3,
-            color: kind.color,
-            background: hexToRgba(kind.color, 0.14),
-            border: `1px solid ${hexToRgba(kind.color, 0.32)}`,
-            borderRadius: 5,
-            padding: "1px 6px",
-            lineHeight: "15px",
-          }}
+          style={{ display: "none" }}
         >
           {n}f
         </span>
-        {/* LEFT / RIGHT step arrows. Wrap at the ends so the series loops. */}
-        <button
-          type="button"
-          data-testid="layer-group-prev"
-          aria-label="Previous frame"
-          title="Previous frame"
-          onClick={() => onStep((idx - 1 + n) % n)}
-          style={groupArrowStyle}
-        >
-          <IconArrowLeft size={13} />
-        </button>
-        <button
-          type="button"
-          data-testid="layer-group-next"
-          aria-label="Next frame"
-          title="Next frame"
-          onClick={() => onStep((idx + 1) % n)}
-          style={groupArrowStyle}
-        >
-          <IconArrowRight size={13} />
-        </button>
       </div>
       {/* Expanded: each member frame as a compact sub-row. The radio-like dot
           shows + selects the active frame; the trash deletes that one frame. */}
@@ -1668,20 +1696,6 @@ function SequentialGroupRow({
   );
 }
 
-const groupArrowStyle: React.CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-  width: 22,
-  height: 22,
-  flexShrink: 0,
-  padding: 0,
-  background: "rgba(255,255,255,0.06)",
-  border: "1px solid rgba(255,255,255,0.08)",
-  borderRadius: 6,
-  color: "#cfd4db",
-  cursor: "pointer",
-};
 
 // --- Test-injectable global bus ---------------------------------------- //
 //

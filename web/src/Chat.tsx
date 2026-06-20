@@ -1606,8 +1606,25 @@ export function routeCaseOpen(
     cs.targetKey = caseId;
     clearRootStream(cs);
   }
-  if (!cs.streams.has(caseId)) {
-    const s = emptyStreamState();
+  // CHAT-HISTORY DISPLAY FIX (NATE 2026-06-19) — replay the rehydrated
+  // chat_history into the Case's stream when that stream does NOT yet exist OR
+  // exists but is still EMPTY (a placeholder). The render path calls
+  // `getStream(streams, activeCaseId)`, which LAZILY CREATES an empty stream for
+  // the active Case BEFORE this case-open arrives — so for an OLDER Case with
+  // persisted history the old `!streams.has(caseId)` guard saw the placeholder
+  // and SKIPPED the replay, leaving the conversation blank (NATE: chat data
+  // exists in DynamoDB but doesn't display). We now also replay into a
+  // pre-existing stream that is provably empty (no messages, no pipeline live
+  // or history) — i.e. the lazy placeholder — while still NOT clobbering a
+  // stream that already holds real (live or previously-replayed) content.
+  const existing = cs.streams.get(caseId);
+  const isPlaceholder =
+    existing !== undefined &&
+    existing.messages.length === 0 &&
+    existing.pipeline.live === null &&
+    existing.pipeline.history.length === 0;
+  if (existing === undefined || isPlaceholder) {
+    const s = existing ?? emptyStreamState();
     replayStreamFromChatHistory(s, session.chat_history ?? []);
     s.charts = chartsFromSession(session);
     cs.streams.set(caseId, s);
@@ -4214,7 +4231,20 @@ export function Chat({
           position: "absolute",
           left: 0,
           right: 0,
-          bottom: inputHeightPx + INPUT_GAP_PX + 8,
+          // SNAP-BUTTON CLIP FIX (NATE 2026-06-19) — the recent viewport-fit /
+          // safe-area composer rework lifted the composer box, and the snap
+          // button (anchored from the panel bottom) ended up flush with — and
+          // clipped by — the composer's top edge (NATE: "cut in half"). Clear
+          // it fully above the composer: on DESKTOP the composer overlay sits at
+          // bottom:12 with 12px top padding, so its top is at
+          // (12 + 12 + inputHeightPx); on MOBILE the composer rides in normal
+          // flow at the very bottom of a sheet that is itself lifted by the
+          // safe-area inset (SHEET_BOTTOM_OFFSET_CSS). Add that inset on mobile
+          // plus a larger 14px gap on both so the 32px circle floats clearly
+          // above the composer instead of overlapping it.
+          bottom: mobile
+            ? `calc(${SHEET_BOTTOM_OFFSET_CSS} + ${inputHeightPx + INPUT_GAP_PX + 14}px)`
+            : inputHeightPx + INPUT_GAP_PX + 14,
           // job-0278 — hidden while the mobile sheet is collapsed (the
           // scroll area it serves is hidden too).
           display: mobile && !sheetExpanded ? "none" : "flex",
@@ -4230,6 +4260,33 @@ export function Chat({
           />
         </div>
       </div>
+
+      {/* COMPOSER SEAM FADE (NATE 2026-06-19) — a thin TRANSPARENT GRADIENT at
+          the seam where the chat history meets the composer, so scrollback
+          content fades out cleanly behind the composer instead of a hard
+          cutoff line. Desktop only: the composer floats OVER the scroll area
+          (position:absolute bottom:12), so a ~28px transparent->panel-bg fade
+          sits just above the composer box top (~inputHeightPx + 24 from the
+          panel bottom). On mobile the composer is in normal flow BELOW the
+          scroll (no overlap seam), so this is skipped there. pointer-events:none
+          so it never intercepts scroll/clicks. */}
+      {!mobile && (
+        <div
+          data-testid="composer-seam-fade"
+          aria-hidden
+          style={{
+            position: "absolute",
+            left: 0,
+            right: 0,
+            bottom: inputHeightPx + INPUT_GAP_PX + 8,
+            height: 28,
+            pointerEvents: "none",
+            zIndex: 2,
+            background:
+              "linear-gradient(180deg, rgba(18,19,24,0) 0%, rgba(18,19,24,0.85) 100%)",
+          }}
+        />
+      )}
 
       {/* F45b / F66 (job-0330) — the collapsed-sheet active-strip STACK now
           renders INSIDE the collapsed handle row (MobileSheetHeaderRow above)
