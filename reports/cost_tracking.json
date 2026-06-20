@@ -2004,10 +2004,31 @@
       "description": "P7 per-solver Batch job-def routing + SWMM AWS Batch worker (urban PySWMM cloud lane). Completed before this measurement window; exact subagent token count not captured (recorded for accountability, NOT summed into the sprint total).",
       "model": "mixed",
       "subagent_tokens": 0
+    },
+    {
+      "job_id": "wf-mobile-demo-fix-a1-swmm-nullreturn-20260619",
+      "sprint": 16,
+      "description": "Mobile-demo feedback fix lane A1 (agent): SWMM AWS Batch composer downloaded worker outputs under the staged-deck run_id instead of the worker RunResult.run_id (empty prefix -> null peak -> no narration). Resolved download id from run_result.run_id (mirrors SFINCS/MODFLOW), +1 load-bearing test. 82 swmm tests pass.",
+      "model": "opus",
+      "subagent_tokens": 171572
+    },
+    {
+      "job_id": "wf-mobile-demo-fix-a234-web-20260619",
+      "sprint": 16,
+      "description": "Mobile-demo feedback fix lanes A2/A3/A4 (web): A2 one-key-per-sequence legend + minimalist scrubber + group-header play; A3 cases panel scroll + mask-gradient; A4 case-switch layer-leak + cold-load + cold chat-render + mobile top frost chrome. 3 file-disjoint agents completed before the post-compaction measurement window; exact per-agent token counts not captured (recorded for accountability, NOT summed into the sprint total).",
+      "model": "opus",
+      "subagent_tokens": 0
+    },
+    {
+      "job_id": "wf-mobile-demo-fix-a2flags-web-20260619",
+      "sprint": 16,
+      "description": "Mobile-demo feedback A2 follow-up flags (web): scrubber aoiRect lift Map->App->LayerPanel (ref-guarded callback, no render loop) + legend frame-truth (new lib/titiler_colormap.ts parses rescale+colormap_name from the TiTiler tile URL; gradient/labels match the painted frames; preset fallback). vitest 1482/1482, +41 tests.",
+      "model": "opus",
+      "subagent_tokens": 208447
     }
   ],
   "totals_by_sprint": {
-    "16": 2097879,
+    "16": 2477898,
     "6": 1265567,
     "7": 1863284,
     "8": 1786238,
