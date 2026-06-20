@@ -2102,10 +2102,17 @@
       "description": "Wave 3a SWMM computational-mesh layer (#156, 2 build agents): agent workflows/mesh_layer.py auto-emits the quasi-2D uniform quad-cell mesh as a clickable mesh_grid vector layer on deck-build (authoritative INP STORAGE cells, reproject to EPSG:4326, per-cell props, super-cell decimation past a 6000-cell cap, best-effort off-loop, bbox=None); web renders mesh_grid as a wireframe (MESH_FILL_OPACITY 0.06 + hairline outline) not a cyan blanket. tsc0/web148/agent22 green. Deployed d5011bb (web CloudFront + agent SSM file-swap).",
       "model": "opus",
       "subagent_tokens": 132890
+    },
+    {
+      "job_id": "wf-demo-ux-3feature-landing-20260620",
+      "sprint": 16,
+      "description": "Parallel 3-feature landing (ultracode): #154 granularity gate (scope 536809 + build 864086 + cap-fix 228809), #147 ephemeral cases + cold-view resync (scope shared + disjoint build 530235 + sweeper-fix 48979 + server wiring 244307), #160 SFINCS quadtree mesh (147+160 scope 893338 + build 580151) + a SWMM mesh-test-fix 67592. 10 workflows/agents; one fable-5 attempt died (env lacks fable, 0 tok) + reran on opus. All committed/pushed (efa2eea/4350f54/5daa0d2/362a614/c45a822) + deployed (web+agent+worker image). Verified: agent 5825 + web 1590 green; adversarial verify on every landing.",
+      "model": "opus",
+      "subagent_tokens": 3994306
     }
   ],
   "totals_by_sprint": {
-    "16": 6585848,
+    "16": 10580154,
     "6": 1265567,
     "7": 1863284,
     "8": 1786238,
