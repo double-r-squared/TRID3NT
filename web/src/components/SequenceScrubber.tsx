@@ -36,12 +36,10 @@ import {
   IconPlay,
   IconPause,
 } from "./icons";
-import { aoiScaleFactor, type ScreenRect } from "../lib/legend_snap";
+import { scrubberWidthForAoi, type ScreenRect } from "../lib/legend_snap";
 
-// Item d (SCALE WITH AOI, NATE 2026-06-20) — the scrubber's natural (1.0)
-// min/max width and its content gap; scaled by aoiScaleFactor so a zoomed-out
-// tiny AOI gets a proportionally small scrubber and a zoomed-in big AOI gets a
-// larger one — both clamped (the scale factor itself clamps to [0.6, 1.6]).
+// The scrubber's natural (AOI-less) min/max width band. Used ONLY when there is
+// no active AOI rect to size against — see scrubberWidthForAoi below.
 const SCRUBBER_BASE_MIN_WIDTH = 220;
 const SCRUBBER_BASE_MAX_WIDTH = 480;
 
@@ -106,11 +104,21 @@ export function SequenceScrubber({
 
   const safeIndex = wrapIndex(activeIndex, n);
 
-  // Item d — scale the scrubber's footprint with the AOI on-screen size so it
-  // doesn't dwarf a tiny zoomed-out bbox; clamped via aoiScaleFactor.
-  const scale = aoiScaleFactor(aoiRect);
-  const scrubberMinWidth = Math.round(SCRUBBER_BASE_MIN_WIDTH * scale);
-  const scrubberMaxWidth = Math.round(SCRUBBER_BASE_MAX_WIDTH * scale);
+  // SCRUBBER WIDTH = AOI bbox on-screen px width (NATE 2026-06-20). When an AOI
+  // rect is present the scrubber spans EXACTLY the bbox's projected EAST-WEST
+  // pixel extent (right - left), clamped to a usable [floor, ceiling] band so a
+  // few-px-wide zoomed-out box still leaves room for the controls and a fully
+  // zoomed-in box never stretches the bar absurdly wide. scrubberWidthForAoi
+  // returns null when there is no rect / it is degenerate, in which case we fall
+  // back to the natural (AOI-less) min/max width band.
+  const bboxWidth = scrubberWidthForAoi(aoiRect);
+  // The exact width (when sizing to the AOI) is applied as `width`; min/maxWidth
+  // are pinned to the same value so flex children + the slider's flex:1 cannot
+  // push the bar off the AOI width. Without an AOI we keep the elastic band.
+  const widthStyle: React.CSSProperties =
+    bboxWidth != null
+      ? { width: bboxWidth, minWidth: bboxWidth, maxWidth: bboxWidth }
+      : { minWidth: SCRUBBER_BASE_MIN_WIDTH, maxWidth: SCRUBBER_BASE_MAX_WIDTH };
 
   // Item 3: Snap the scrubber to the AOI bbox bottom-center when aoiRect is
   // available. The aoiRect coords are map-container-relative which equals
@@ -168,9 +176,9 @@ export function SequenceScrubber({
         // The slider/buttons are interactive, but the chrome lets nothing else
         // through (it's a control surface, unlike the legend).
         zIndex: 51,
-        // Item d — width scales with the AOI on-screen size (clamped).
-        minWidth: scrubberMinWidth,
-        maxWidth: scrubberMaxWidth,
+        // Width tracks the AOI bbox on-screen px width (clamped), or the natural
+        // band when there is no AOI rect.
+        ...widthStyle,
       }}
     >
       {/* Play / pause toggle (JOB WEB-ANIM #157.3). Drives the shared

@@ -16,6 +16,9 @@ import {
   layoutKeysCcw,
   nearestSide,
   rectFromAnchorAndWidth,
+  scrubberWidthForAoi,
+  DEFAULT_SCRUBBER_MIN_WIDTH_PX,
+  DEFAULT_SCRUBBER_MAX_WIDTH_PX,
   sideForIndex,
   snapKeyToSide,
   stackPositionForIndex,
@@ -224,5 +227,58 @@ describe("aoiScaleFactor — scales with the AOI on-screen size, clamped", () =>
     expect(aoiScaleFactor(undefined)).toBe(1);
     // Zero-area rect => can't size against it => natural scale.
     expect(aoiScaleFactor({ left: 50, top: 50, right: 50, bottom: 50 })).toBe(1);
+  });
+});
+
+// scrubberWidthForAoi (NATE 2026-06-20) — the time scrubber's WIDTH equals the
+// AOI bbox's on-screen EAST-WEST pixel width (right - left), clamped to a usable
+// [floor, ceiling] band; null when there is no AOI rect / it's degenerate.
+describe("scrubberWidthForAoi — width == bbox on-screen px width (clamped)", () => {
+  it("returns the bbox EAST-WEST extent (right - left) when within the band", () => {
+    // 600px-wide box -> 600px scrubber, untouched by the clamps.
+    const rect: ScreenRect = { left: 100, top: 50, right: 700, bottom: 400 };
+    expect(scrubberWidthForAoi(rect)).toBe(600);
+  });
+
+  it("ignores the bbox HEIGHT — only the on-screen WIDTH drives it", () => {
+    // Same 600px width but a much taller box: still 600px (height irrelevant).
+    const wideShort: ScreenRect = { left: 0, top: 0, right: 600, bottom: 40 };
+    const wideTall: ScreenRect = { left: 0, top: 0, right: 600, bottom: 1200 };
+    expect(scrubberWidthForAoi(wideShort)).toBe(600);
+    expect(scrubberWidthForAoi(wideTall)).toBe(600);
+  });
+
+  it("clamps a TINY (zoomed-out) bbox UP to the min floor (200px default)", () => {
+    // 12px-wide box -> clamp up to the floor so the controls stay usable.
+    const tiny: ScreenRect = { left: 500, top: 500, right: 512, bottom: 540 };
+    expect(scrubberWidthForAoi(tiny)).toBe(DEFAULT_SCRUBBER_MIN_WIDTH_PX);
+    expect(DEFAULT_SCRUBBER_MIN_WIDTH_PX).toBe(200);
+  });
+
+  it("clamps a HUGE (zoomed-in) bbox DOWN to the max ceiling", () => {
+    const huge: ScreenRect = { left: 0, top: 0, right: 4000, bottom: 4000 };
+    expect(scrubberWidthForAoi(huge)).toBe(DEFAULT_SCRUBBER_MAX_WIDTH_PX);
+  });
+
+  it("respects custom floor / ceiling options", () => {
+    const rect: ScreenRect = { left: 0, top: 0, right: 600, bottom: 300 };
+    // Custom ceiling below the natural width -> clamp down to it.
+    expect(scrubberWidthForAoi(rect, { maxPx: 400 })).toBe(400);
+    // Custom floor above the natural width -> clamp up to it.
+    const small: ScreenRect = { left: 0, top: 0, right: 50, bottom: 50 };
+    expect(scrubberWidthForAoi(small, { minPx: 120 })).toBe(120);
+  });
+
+  it("returns null for null / undefined / degenerate (zero or negative) width", () => {
+    expect(scrubberWidthForAoi(null)).toBeNull();
+    expect(scrubberWidthForAoi(undefined)).toBeNull();
+    // Zero-width rect -> no AOI width to size against.
+    expect(scrubberWidthForAoi({ left: 200, top: 0, right: 200, bottom: 300 })).toBeNull();
+    // Inverted (negative) width -> degenerate -> null (caller falls back).
+    expect(scrubberWidthForAoi({ left: 300, top: 0, right: 100, bottom: 300 })).toBeNull();
+  });
+
+  it("default ceiling is wider than the default floor (sane band)", () => {
+    expect(DEFAULT_SCRUBBER_MAX_WIDTH_PX).toBeGreaterThan(DEFAULT_SCRUBBER_MIN_WIDTH_PX);
   });
 });

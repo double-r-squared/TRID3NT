@@ -192,16 +192,48 @@ describe("SequenceScrubber — no internal auto-advance (controller owns the tim
   });
 });
 
-// Item d (SCALE WITH AOI, NATE 2026-06-20) — the scrubber's footprint scales
-// with the AOI bbox's on-screen size so it doesn't dwarf a tiny zoomed-out box.
-describe("SequenceScrubber — scales with the AOI on-screen size (item d)", () => {
-  it("a tiny on-screen AOI yields a SMALLER min/max width than a large one", () => {
-    const tiny = { left: 100, top: 100, right: 140, bottom: 140 }; // 40px box
-    const huge = { left: 0, top: 0, right: 1400, bottom: 1400 };
-    const { rerender } = renderScrubber({ aoiRect: tiny });
-    const tinyEl = screen.getByTestId("grace2-sequence-scrubber");
-    const tinyMin = parseFloat(tinyEl.style.minWidth);
-    const tinyMax = parseFloat(tinyEl.style.maxWidth);
+// SCRUBBER WIDTH = AOI bbox on-screen px width (NATE 2026-06-20) — the scrubber
+// spans EXACTLY the AOI bbox's projected EAST-WEST pixel extent (right - left),
+// clamped to a usable [floor, ceiling] band. Falls back to the natural band when
+// there is no AOI rect.
+import {
+  DEFAULT_SCRUBBER_MIN_WIDTH_PX,
+  DEFAULT_SCRUBBER_MAX_WIDTH_PX,
+} from "../lib/legend_snap";
+
+describe("SequenceScrubber — width tracks the AOI bbox on-screen px width", () => {
+  it("sets width EXACTLY to the projected bbox px width (right - left)", () => {
+    // A 600px-wide on-screen bbox -> the scrubber is exactly 600px wide.
+    renderScrubber({ aoiRect: { left: 100, top: 50, right: 700, bottom: 400 } });
+    const el = screen.getByTestId("grace2-sequence-scrubber");
+    expect(el.style.width).toBe("600px");
+    // min/maxWidth are pinned to the same value so flex children can't push the
+    // bar off the AOI width.
+    expect(el.style.minWidth).toBe("600px");
+    expect(el.style.maxWidth).toBe("600px");
+  });
+
+  it("clamps a TINY (zoomed-out) bbox up to the MIN FLOOR (200px)", () => {
+    // A 12px-wide box would be unusable -> clamp up to the floor.
+    renderScrubber({ aoiRect: { left: 500, top: 500, right: 512, bottom: 540 } });
+    const el = screen.getByTestId("grace2-sequence-scrubber");
+    expect(el.style.width).toBe(`${DEFAULT_SCRUBBER_MIN_WIDTH_PX}px`);
+    expect(DEFAULT_SCRUBBER_MIN_WIDTH_PX).toBe(200);
+  });
+
+  it("clamps a HUGE (zoomed-in) bbox down to the MAX CEILING", () => {
+    // A 4000px-wide box would be absurd -> clamp down to the ceiling.
+    renderScrubber({ aoiRect: { left: 0, top: 0, right: 4000, bottom: 4000 } });
+    const el = screen.getByTestId("grace2-sequence-scrubber");
+    expect(el.style.width).toBe(`${DEFAULT_SCRUBBER_MAX_WIDTH_PX}px`);
+  });
+
+  it("tracks the new width when the projected bbox changes (pan/zoom recompute)", () => {
+    const { rerender } = renderScrubber({
+      aoiRect: { left: 100, top: 50, right: 400, bottom: 300 }, // 300px wide
+    });
+    expect(screen.getByTestId("grace2-sequence-scrubber").style.width).toBe("300px");
+    // A subsequent map move re-projects a wider bbox -> the scrubber widens.
     rerender(
       <SequenceScrubber
         label="HRRR precip"
@@ -210,21 +242,17 @@ describe("SequenceScrubber — scales with the AOI on-screen size (item d)", () 
         onStep={() => {}}
         playing={false}
         onPlayToggle={() => {}}
-        aoiRect={huge}
+        aoiRect={{ left: 0, top: 0, right: 550, bottom: 300 }} // 550px wide
       />,
     );
-    const hugeEl = screen.getByTestId("grace2-sequence-scrubber");
-    expect(tinyMin).toBeLessThan(parseFloat(hugeEl.style.minWidth));
-    expect(tinyMax).toBeLessThan(parseFloat(hugeEl.style.maxWidth));
-    // Stays within a usable band (clamped — never absurdly tiny / huge).
-    expect(tinyMin).toBeGreaterThan(100);
-    expect(parseFloat(hugeEl.style.maxWidth)).toBeLessThan(900);
+    expect(screen.getByTestId("grace2-sequence-scrubber").style.width).toBe("550px");
   });
 
-  it("uses the natural (1.0) footprint when there is no AOI rect", () => {
+  it("falls back to the natural width band when there is no AOI rect", () => {
     renderScrubber();
     const el = screen.getByTestId("grace2-sequence-scrubber");
-    // Natural base sizes (scale 1.0): minWidth 220, maxWidth 480.
+    // No exact width is applied; the elastic band is used instead.
+    expect(el.style.width).toBe("");
     expect(el.style.minWidth).toBe("220px");
     expect(el.style.maxWidth).toBe("480px");
   });

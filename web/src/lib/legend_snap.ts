@@ -222,6 +222,53 @@ export function aoiScaleFactor(
 }
 
 /**
+ * Scrubber WIDTH = AOI bbox on-screen px width (NATE 2026-06-20).
+ *
+ * NATE's refinement of item d for the SCRUBBER specifically: instead of a
+ * proportional scale factor, the time scrubber's width should EXACTLY match the
+ * AOI bbox's on-screen EAST-WEST pixel extent (right - left of the projected
+ * rect), so the scrubber spans the same width as the box it pins under. This is
+ * the pure-geometry half: given the already-projected AOI ScreenRect, return the
+ * clamped on-screen width in CSS px.
+ *
+ * Clamps (NATE-approved "== bbox width with a min floor"):
+ *   - a MIN FLOOR so when zoomed far out and the bbox is only a few px wide the
+ *     scrubber stays usable (its controls need room);
+ *   - a MAX CEILING so a fully zoomed-in AOI doesn't stretch the scrubber past a
+ *     sane width.
+ *
+ * Returns null when there is no rect / the rect is degenerate (zero or negative
+ * on-screen width), so the caller falls back to its natural min/max behavior
+ * (the AOI-less static placement). Pure pixel math (Invariant 1).
+ */
+export interface ScrubberWidthOptions {
+  /** Smallest scrubber width in px (keeps controls usable). Default 200. */
+  minPx?: number;
+  /** Largest scrubber width in px (never absurdly wide). Default 900. */
+  maxPx?: number;
+}
+
+/** Min floor for the scrubber width (NATE-approved default). */
+export const DEFAULT_SCRUBBER_MIN_WIDTH_PX = 200;
+/** Max ceiling for the scrubber width (sanity cap). */
+export const DEFAULT_SCRUBBER_MAX_WIDTH_PX = 900;
+
+export function scrubberWidthForAoi(
+  rect: ScreenRect | null | undefined,
+  opts: ScrubberWidthOptions = {},
+): number | null {
+  if (!rect) return null;
+  const minPx = opts.minPx ?? DEFAULT_SCRUBBER_MIN_WIDTH_PX;
+  const maxPx = opts.maxPx ?? DEFAULT_SCRUBBER_MAX_WIDTH_PX;
+  // The bbox on-screen EAST-WEST extent: right - left of the projected rect.
+  const w = rect.right - rect.left;
+  if (!Number.isFinite(w) || w <= 0) return null;
+  // Clamp to [floor, ceiling]. If the band is degenerate (min > max) the floor
+  // wins, so the scrubber never collapses below a usable size.
+  return Math.max(minPx, Math.min(w, maxPx));
+}
+
+/**
  * FALLBACK ESTIMATOR — only used when the TRUE projected AOI rect is unavailable.
  *
  * Reconstructs an *approximate* AOI ScreenRect from `anchor` (the bbox
