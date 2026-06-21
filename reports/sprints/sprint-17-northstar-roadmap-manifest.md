@@ -2,7 +2,15 @@
 
 Status: PLANNED (NATE selected all four 2026-06-21). Grounded by roadmap-research workflow `wen0ew0mv` (real practitioner pipelines + GRACE-2 seams). Build NOT started; awaiting go.
 
-Four tracks: **Compound flood** (lead demo), **Data-island #165** (platform gate), **MODFLOW river-seepage**, **HEC-RAS** (XL, spike-gated).
+Four tracks: **Compound flood** (lead demo), **Data-island #165** (platform gate), **MODFLOW river-seepage**, ~~HEC-RAS~~ -> **GeoClaw** (see Engine-backlog decision below).
+
+## ENGINE-BACKLOG DECISION (NATE 2026-06-21, approved)
+
+After the engine cloud/AI-drivability ranking ([[reference_engine_cloud_ai_drivability_ranking]]), NATE approved:
+- **SWAP HEC-RAS -> GeoClaw.** HEC-RAS is XL/high-risk (Windows/GUI heritage, RASMapper mesh authoring, COM controller; headless-on-Linux unproven) and not on the drivability list. GeoClaw (Clawpack, BSD, pip, native-Python setrun.py/setplot.py, headless Linux, AMR, public data) solves the SAME 2D shallow-water core and covers dam-break / overland / surge PLUS tsunami (a new hazard class). Same depth-raster+animation deliverable, S-tier integration cost. HEC-RAS is SHELVED as a later, deliberately-scoped effort ONLY if FEMA-grade regulatory channel hydraulics with structures (bridges/culverts/levees, 1D gradually-varied profiles) become a hard requirement -- GeoClaw is not a drop-in for that.
+- **ADD OpenQuake** (S-tier, AGPL, Docker+CLI+REST): probabilistic seismic hazard; pairs directly with the existing Pelicun impact path for an earthquake demo.
+- **ADD Landlab** (S-tier, MIT, BMI): landslide / overland flow / landscape evolution -- a hazard class GRACE-2 lacks; snap-together components.
+- **BMI BRIDGE (cross-cutting multiplier, do first among the new engines):** one CSDMS-BMI driver in the run_solver seam (initialize/update/finalize/get/set). Landlab + SFINCS + GeoClaw(PyClaw) are BMI-capable, so the bridge makes Landlab + GeoClaw near-free to plug in. Sequencing: BMI bridge -> Landlab + GeoClaw (via BMI) ; OpenQuake in parallel (containerized CLI, not BMI). This becomes its own sprint after sprint-17 Wave A/B land; the multi-hazard-workbench story = GeoClaw(tsunami/surge) + SFINCS(compound) + OpenQuake(seismic) + Landlab(landslide) + (later) ELMFIRE(wildfire) + HYSPLIT/FALL3D(dispersion).
 
 ## The gating contract (freeze before any engine track edits publish_layer)
 
@@ -39,6 +47,7 @@ Lane file ownership (zero overlap): FLOOD = sfincs_builder/sfincs_forcing_adapte
 | #165 data-island | L / med | fgb->GeoJSON at publish, durable case-data/, paints box-off from plain S3 url, no inline-render regression |
 | Compound flood | L / med | ONE Batch SFINCS deck with bzs+dis+precip simultaneously solves (Cape Fear/Wilmington; canonical = Hurricane Florence 2018, Grimley 2025 / Eilander 2023); also probes setup_precip_forcing_from_grid spw support |
 | MODFLOW seepage | L / med | FloPy GWF+RIV+GWT+SRC deck, local mf6 6.5.0, Normal termination + non-zero RIV leakage in cbc |
-| HEC-RAS | XL / high | SPIKE A: HEC-RAS 6.6 Linux binaries solve a known-good 2D deck on Rocky8. SPIKE B (real crux): headless arbitrary-AOI 2D mesh authoring without Windows RASMapper. B fails -> template-AOI fallback only |
+| ~~HEC-RAS~~ SHELVED | XL / high | SUPERSEDED by the GeoClaw swap (NATE 2026-06-21, see decision above). Revisit only for FEMA-grade regulatory channel hydraulics. |
+| GeoClaw (replaces HEC-RAS) | M / low-med | Clawpack/PyClaw pip build in a Batch worker; setrun.py over an AOI + topo + a driver (dam-break / surge / tsunami) -> depth raster + animation via the existing postprocess/publish path. Scoped in its own sub-sprint after Wave A/B. |
 
 Refs: [[project_baird_coastal_lecture_oceanmesh2d]] [[project_sfincs_north_star_demo]] [[project_modflow_river_seepage_demo]] [[project_hecras_engine_research]] [[project_scale_to_zero_island_architecture]] (#165). Full research: workflow `wen0ew0mv` output.
