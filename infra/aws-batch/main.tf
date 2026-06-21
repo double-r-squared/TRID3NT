@@ -253,16 +253,30 @@ resource "aws_iam_role_policy" "job_task_s3" {
         Resource = data.aws_s3_bucket.runs.arn
       },
       {
-        # READ-ONLY on the cache bucket: the container reads manifest.json + the
-        # staged SFINCS deck (DEM, precip, landcover, etc.) from here at run
-        # start. It never writes the cache (outputs go to the runs bucket). The
-        # ListBucket grant lets the deck-prefix walk enumerate input objects.
+        # READ on the cache bucket: the container reads the staged SFINCS deck
+        # (DEM, precip, landcover, build_spec.json, etc.) from here at run start.
+        # The ListBucket grant lets the deck-prefix walk enumerate input objects.
         Sid    = "CacheBucketRead"
         Effect = "Allow"
         Action = [
           "s3:GetObject",
         ]
         Resource = "${data.aws_s3_bucket.cache.arn}/*"
+      },
+      {
+        # WRITE on the cache DECK prefix ONLY: the COMBINED cht_sfincs
+        # quadtree+SnapWave worker (services/workers/sfincs_deckbuilder) writes the
+        # built deck's manifest.json (and deck artifacts) back to
+        # cache/static-30d/sfincs_deck/<deck_id>/ after building. Solve OUTPUTS
+        # still go to the runs bucket; this is scoped to the deck prefix only so
+        # the worker cannot write anywhere else in the content-addressed cache.
+        Sid    = "CacheBucketDeckWrite"
+        Effect = "Allow"
+        Action = [
+          "s3:PutObject",
+          "s3:DeleteObject",
+        ]
+        Resource = "${data.aws_s3_bucket.cache.arn}/cache/static-30d/sfincs_deck/*"
       },
       {
         Sid      = "CacheBucketList"
