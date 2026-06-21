@@ -260,6 +260,10 @@ def test_fetch_dem_happy_path_writes_through_cache(monkeypatch):
     assert layer.uri.startswith("s3://grace2-hazard-cache-226996537797/cache/static-30d/dem/")
     assert layer.uri.endswith(".tif")
     assert layer.units == "meters"
+    # LANE-C (#159 follow-up #4): the returned layer declares the requested
+    # (quantized) extent so the AOI-pin reuse + zoom-to know the DEM's intent.
+    assert layer.bbox is not None
+    assert tuple(layer.bbox) == round_bbox_to_resolution(FORT_MYERS_BBOX, 10)
 
     # The in-memory S3 store should now hold the COG bytes.
     paths_written = list(fake_storage.store.keys())
@@ -298,6 +302,94 @@ def test_fetch_dem_upstream_failure_reraises(monkeypatch):
         fetch_dem(FORT_MYERS_BBOX, resolution_m=10)
     # No sentinel written.
     assert fake_storage.store == {}
+
+
+# ---------------------------------------------------------------------------
+# LANE-C (#159 follow-up #4): fetch_dem coverage gate. 3DEP can return a DEM
+# SHORT on an edge (the live south-edge clip -> 79% height hillshade); the gate
+# raises a typed DemPartialCoverageError so we never silently mesh / hillshade a
+# clipped DEM, per the data-source-fallback norm.
+# ---------------------------------------------------------------------------
+
+
+def _fake_dem_dataarray(bounds, crs="EPSG:4326"):
+    """A minimal rioxarray DataArray spanning ``bounds`` in ``crs``.
+
+    ``bounds`` = ``(left, bottom, right, top)``. Used to drive the real
+    ``_dem_wgs84_bounds`` reprojection + ``_bbox_covers`` coverage check inside
+    ``_fetch_3dep_dem_bytes`` without hitting the live 3DEP service.
+    """
+    import numpy as np
+    import rioxarray  # noqa: F401 — registers the .rio accessor
+    import xarray as xr
+    from rasterio.transform import from_bounds
+
+    left, bottom, right, top = bounds
+    h, w = 8, 8
+    da = xr.DataArray(
+        np.ones((h, w), dtype="float32"),
+        dims=("y", "x"),
+        coords={
+            "y": np.linspace(top, bottom, h),
+            "x": np.linspace(left, right, w),
+        },
+    )
+    da = da.rio.write_crs(crs)
+    da.rio.write_transform(from_bounds(left, bottom, right, top, w, h), inplace=True)
+    return da
+
+
+def test_fetch_3dep_full_coverage_passes(monkeypatch):
+    """A DEM that fully spans the requested bbox serializes to COG bytes (no raise)."""
+    req = (-97.755, 30.26, -97.725, 30.285)
+    # py3dep returns a raster slightly LARGER than the request -> full coverage.
+    full = (-97.76, 30.255, -97.72, 30.29)
+    import py3dep
+
+    monkeypatch.setattr(
+        py3dep, "get_dem", lambda bbox, resolution: _fake_dem_dataarray(full)
+    )
+    data = data_fetch._fetch_3dep_dem_bytes(req, 10)
+    assert isinstance(data, (bytes, bytearray)) and len(data) > 0
+
+
+def test_fetch_3dep_south_edge_short_raises_partial_coverage(monkeypatch):
+    """A DEM short on the SOUTH edge (the live bug) raises DemPartialCoverageError."""
+    req = (-97.755, 30.26, -97.725, 30.285)
+    # The returned raster starts ~0.005 deg NORTH of the requested south edge
+    # (well past the coverage tolerance) -> under-covers the requested height.
+    short_south = (-97.755, 30.265, -97.725, 30.285)
+    import py3dep
+
+    monkeypatch.setattr(
+        py3dep, "get_dem", lambda bbox, resolution: _fake_dem_dataarray(short_south)
+    )
+    with pytest.raises(data_fetch.DemPartialCoverageError) as exc:
+        data_fetch._fetch_3dep_dem_bytes(req, 10)
+    assert exc.value.error_code == "DEM_PARTIAL_COVERAGE"
+
+
+def test_dem_partial_coverage_is_upstream_subclass():
+    """DemPartialCoverageError subclasses UpstreamAPIError so the urban workflow's
+    1m->10m fallback (except Exception) still fires on a partial 1m tile."""
+    assert issubclass(data_fetch.DemPartialCoverageError, UpstreamAPIError)
+
+
+def test_bbox_covers_flags_material_shortfall():
+    """_bbox_covers: full coverage True; any material edge shortfall False;
+    a sub-tolerance shortfall still True (no false partial-coverage flag)."""
+    req = (-97.755, 30.26, -97.725, 30.285)
+    tol = data_fetch._DEM_COVERAGE_TOL_DEG
+    assert data_fetch._bbox_covers((-97.76, 30.25, -97.72, 30.29), req) is True
+    # South-edge clip well past tolerance -> partial.
+    assert data_fetch._bbox_covers((-97.755, 30.27, -97.725, 30.285), req) is False
+    # Sub-tolerance clip -> still covers (absorb a half-cell edge snap).
+    assert (
+        data_fetch._bbox_covers(
+            (-97.755, 30.26 + tol * 0.4, -97.725, 30.285), req
+        )
+        is True
+    )
 
 
 # ---------------------------------------------------------------------------

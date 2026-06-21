@@ -157,6 +157,27 @@ class PrecipForcingUnavailableError(FetchError):
     retryable = False
 
 
+class DemPartialCoverageError(UpstreamAPIError):
+    """3DEP returned a DEM that materially under-covers the requested bbox.
+
+    LANE-C (#159 follow-up #4): the live case fetched a DEM SHORT on the south
+    edge, so a correctly-bboxed hillshade re-fetch still under-covered (79% of the
+    requested height). 3DEP coverage gaps / edge clipping leave the returned raster
+    smaller than the requested extent; without a check we silently mesh / hillshade
+    a partial DEM (the honesty floor forbids that).
+
+    Per the data-source-fallback norm this is a TYPED, RETRYABLE upstream signal —
+    it subclasses ``UpstreamAPIError`` so the urban workflow's
+    ``except Exception`` 1m->10m fallback still fires (the 10m seamless layer
+    usually covers where a 1m tile is missing), and the standalone ``fetch_dem``
+    tool surfaces the distinct ``error_code`` so the agent narrates the partial
+    coverage rather than presenting a silently-clipped terrain layer.
+    """
+
+    error_code = "DEM_PARTIAL_COVERAGE"
+    retryable = True
+
+
 # Nominatim usage policy requires a descriptive User-Agent identifying the
 # application + a contact. We bake the project name + repo URL; override the
 # contact email via env var ``GRACE2_NOMINATIM_USER_AGENT`` for ops.
@@ -267,6 +288,60 @@ def _bbox_area_km2(bbox: tuple[float, float, float, float]) -> float:
 # fetch_dem — USGS 3DEP via py3dep
 # ---------------------------------------------------------------------------
 
+#: Coverage shortfall (in degrees) tolerated before a DEM is flagged partial.
+#: ~0.0008 deg ~= 90 m at the equator — generous enough to absorb a one-tile /
+#: half-cell edge snap (3DEP cells are 1-30 m) without flagging a good DEM, but
+#: tight enough to catch the live south-edge clip (~21% of the requested height).
+_DEM_COVERAGE_TOL_DEG = 0.0008
+
+
+def _dem_wgs84_bounds(dem: Any) -> tuple[float, float, float, float] | None:
+    """Return a rioxarray DEM's bounds reprojected to WGS84, else ``None``.
+
+    ``py3dep.get_dem`` returns an EPSG:5070 (Albers) DataArray; we reproject just
+    the bounding box corners to EPSG:4326 so the coverage check compares like with
+    like. Returns ``None`` when the bounds / CRS cannot be read (the caller then
+    skips the coverage gate rather than blocking a usable DEM).
+    """
+    rio = getattr(dem, "rio", None)
+    if rio is None:
+        return None
+    left, bottom, right, top = (float(v) for v in rio.bounds())
+    crs = rio.crs
+    if crs is None:
+        return None
+    try:
+        from pyproj import CRS as _CRS  # type: ignore[import-not-found]
+
+        if _CRS.from_user_input(crs).to_epsg() == 4326:
+            return (left, bottom, right, top)
+        from pyproj import Transformer  # type: ignore[import-not-found]
+
+        tf = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
+        xs, ys = tf.transform([left, right, left, right], [bottom, top, top, bottom])
+        return (min(xs), min(ys), max(xs), max(ys))
+    except Exception:  # noqa: BLE001 — pyproj/CRS slip -> skip the gate
+        return None
+
+
+def _bbox_covers(
+    coverage: tuple[float, float, float, float],
+    requested: tuple[float, float, float, float],
+    tol: float = _DEM_COVERAGE_TOL_DEG,
+) -> bool:
+    """True iff ``coverage`` spans ``requested`` on all four edges within ``tol``.
+
+    Both are ``(min_lon, min_lat, max_lon, max_lat)`` WGS84. A material shortfall
+    on ANY edge (the live south-edge clip) returns False so the caller surfaces a
+    typed partial-coverage signal.
+    """
+    return (
+        coverage[0] <= requested[0] + tol
+        and coverage[1] <= requested[1] + tol
+        and coverage[2] >= requested[2] - tol
+        and coverage[3] >= requested[3] - tol
+    )
+
 
 _FETCH_DEM_METADATA = AtomicToolMetadata(
     name="fetch_dem",
@@ -321,6 +396,25 @@ def _fetch_3dep_dem_bytes(
         raise UpstreamAPIError(
             f"py3dep.get_dem failed for bbox={bbox} resolution={resolution_m}: {exc}"
         ) from exc
+
+    # LANE-C (#159 follow-up #4): coverage gate. 3DEP can return a DEM SHORT on an
+    # edge (the live south-edge clip -> 79% height hillshade). Reproject the
+    # returned raster's bounds back to WGS84 and assert they span the requested
+    # bbox within a small tolerance; a material shortfall raises the typed
+    # DemPartialCoverageError so we never silently mesh / hillshade a clipped DEM
+    # (the urban workflow's 1m->10m fallback + the agent's honest narration act on
+    # it). Best-effort on the bounds read — a bounds-introspection failure leaves
+    # the prior (no-check) behavior unchanged rather than blocking a good DEM.
+    try:
+        cov = _dem_wgs84_bounds(dem)
+    except Exception:  # noqa: BLE001 — never block a DEM on an introspection slip
+        cov = None
+    if cov is not None and not _bbox_covers(cov, bbox):
+        raise DemPartialCoverageError(
+            f"3DEP DEM for bbox={bbox} resolution={resolution_m}m under-covers the "
+            f"requested extent (got coverage {cov}); the returned raster is "
+            "materially short on at least one edge."
+        )
 
     # Serialize to a COG via rioxarray's to_raster. We round-trip through a
     # temp file because rasterio's MemoryFile lacks COG driver options on
@@ -431,6 +525,11 @@ def fetch_dem(
         style_preset="continuous_dem",
         role="input",
         units="meters",
+        # LANE-C (#159 follow-up #4): declare the requested extent on the layer.
+        # The coverage gate in ``_fetch_3dep_dem_bytes`` guarantees the raster
+        # spans this bbox (or raised), so stamping it lets the AOI-pin reuse
+        # short-circuit + the post-result zoom-to know the DEM's intended extent.
+        bbox=quantized,
     )
 
 

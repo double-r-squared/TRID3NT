@@ -158,6 +158,8 @@ from .uri_registry import (
     get_uri_registry,
 )
 from .scenario_reuse import (
+    bbox_encloses,
+    bbox_equivalent,
     fetched_kind_for_tool,
     find_reusable_fetched_layer,
     get_scenario_index,
@@ -517,6 +519,18 @@ def _is_finite_bbox4(bbox: Any) -> bool:
         if not math.isfinite(float(v)):
             return False
     return True
+
+
+def _coerce_bbox4(value: Any) -> tuple[float, float, float, float] | None:
+    """Coerce ``value`` into a finite 4-float bbox tuple, else ``None``.
+
+    Shared by the LANE-C AOI-pin + fetch-default helpers. Tolerates list/tuple of
+    4 numbers; rejects strings, wrong lengths, and non-finite values (so a bad
+    extent never becomes a pinned AOI or a forced fetch bbox).
+    """
+    if not _is_finite_bbox4(value):
+        return None
+    return (float(value[0]), float(value[1]), float(value[2]), float(value[3]))
 
 
 def _last_zoom_to_bbox(commands: list[dict]) -> list | None:
@@ -3999,6 +4013,168 @@ def _cache_case_bbox_from_session_state(
         state.case_bbox = None
 
 
+# job LANE-C (#159 follow-up): the AOI is PINNED to the solve domain.
+#
+# CONFIRMED ROOT CAUSE (case 01KVM4NH7M8BT5HV21JV72MD97): there was NO pinned
+# AOI. ``case.bbox`` stayed None because no ``upsert_case`` caller ever wrote the
+# AOI from a solve, so ``_turn_case_bbox`` returned None and the LLM free-handed a
+# DIFFERENT bbox for every follow-up tool call (5 boxes in one case). The SWMM
+# solve ran on one extent; ``fetch_buildings`` got a narrower+shorter box (87%
+# width / 63% height of the flood domain); rivers/dem/roads each got yet another
+# smaller box. The authoritative extent IS the solve domain (the peak depth /
+# mesh LayerURI bbox the workflow already floors + stamps), so we pin THAT.
+
+
+def _scenario_produces_domain(tool_name: str) -> bool:
+    """True when ``tool_name`` is an expensive solver whose result LayerURI bbox
+    is the authoritative AOI to pin (SWMM / SFINCS / MODFLOW domains).
+
+    Any tool ``scenario_type_for_tool`` recognizes mints a domain-extent layer
+    (flood-depth peak / plume) — the SAME extent ``compute_layer_bounds`` returns
+    for the produced handle. Reuses that taxonomy so a new solver auto-pins.
+    """
+    return scenario_type_for_tool(tool_name) is not None
+
+
+async def _pin_case_aoi_from_solve(
+    state: SessionState,
+    *,
+    case_id: str | None,
+    bbox: Any,
+) -> None:
+    """Persist a completed solve's domain ``bbox`` as the Case AOI (LANE-C #1).
+
+    Writes ``CaseSummary.bbox`` via ``upsert_case`` AND updates the durable
+    in-session cache ``state.case_bbox`` so ``_turn_case_bbox`` returns the pinned
+    extent for the rest of THIS session (every follow-up fetch defaults to it) and
+    a later Case reopen rehydrates the SAME AOI from persistence. This is the core
+    fix: nothing previously wrote ``case.bbox`` from a solve, so the AOI was never
+    pinned and each follow-up tool re-guessed the extent.
+
+    Best-effort: a missing/tombstoned Case or a Persistence hiccup is logged and
+    never raised — pinning is a side-effect, not the solve's happy path. Idempotent:
+    a re-run at the SAME extent skips the round-trip (the persisted value already
+    matches, within the bbox quantization tolerance).
+    """
+    coerced = _coerce_bbox4(bbox)
+    if coerced is None or not case_id:
+        return
+    # Update the in-session anchor first — it drives the fetch default below even
+    # if the persistence write fails (e.g. an anonymous/ephemeral Case).
+    state.case_bbox = list(coerced)
+    p = get_persistence()
+    if p is None:
+        return
+    try:
+        case = await p.get_case(case_id)
+    except Exception:  # noqa: BLE001 — best-effort, never break the turn
+        logger.exception("aoi-pin: get_case failed case=%s", case_id)
+        return
+    if case is None:
+        logger.debug("aoi-pin: case=%s missing; skipping pin", case_id)
+        return
+    # Idempotent: skip the write when the persisted AOI already equals the solve
+    # domain (a re-run at the same extent, or a second domain-producing tool).
+    if case.bbox is not None and bbox_equivalent(list(case.bbox), list(coerced)):
+        return
+    updated = case.model_copy(
+        update={"bbox": list(coerced), "updated_at": now_utc()}
+    )
+    try:
+        await p.upsert_case(updated)
+        logger.info(
+            "aoi-pin: pinned Case AOI case=%s bbox=%s (solve domain)",
+            case_id,
+            list(coerced),
+        )
+    except Exception:  # noqa: BLE001 — best-effort, never break the turn
+        logger.exception("aoi-pin: upsert failed case=%s", case_id)
+
+
+def _bbox_overlaps(a: Any, b: Any) -> bool:
+    """True iff two WGS84 bboxes have a non-empty intersection (LANE-C helper).
+
+    Used by the fetch-default rule to distinguish a DRIFTED box targeting the
+    pinned AOI (overlaps -> snap to the pin) from a genuinely DIFFERENT place
+    (disjoint -> honor the LLM's box). Touching-edge counts as overlap.
+    """
+    pa = _coerce_bbox4(a)
+    pb = _coerce_bbox4(b)
+    if pa is None or pb is None:
+        return False
+    return pa[0] <= pb[2] and pb[0] <= pa[2] and pa[1] <= pb[3] and pb[1] <= pa[3]
+
+
+#: Near-exact tolerance (deg) for the fetch-default snap decision. Deliberately
+#: MUCH tighter than the coarse ~2 km ``_BBOX_QUANT_DEG`` scenario-reuse quant so a
+#: same-area-but-drifted box (the live ~0.005-0.01 deg under-coverage) is snapped
+#: to the pin rather than waved through as "equivalent". ~1.1 m at the equator.
+_AOI_DEFAULT_EQ_TOL_DEG = 1e-5
+
+
+def _maybe_default_fetch_bbox_to_pinned_aoi(
+    tool_name: str,
+    params: dict,
+    pinned_bbox: Any,
+) -> dict:
+    """Default a bbox-taking fetch tool to the pinned Case AOI (LANE-C #2).
+
+    The LLM free-hands a fresh (and usually NARROWER) bbox for every follow-up
+    fetch even when it means "the same area I just modeled", which is why
+    buildings/rivers/dem/roads under-covered the flood domain. When a domain has
+    been pinned (``state.case_bbox`` set by a solve), force follow-up fetches onto
+    that SAME extent so all layers cover the AOI by construction.
+
+    PRECISE RULE (honor "a different place", fix "the same place, drifted box"):
+      * Only applies to recognized bbox-taking fetchers (``fetched_kind_for_tool``).
+      * No pinned AOI -> no-op (returns ``params`` unchanged).
+      * No / invalid ``bbox`` supplied (bare follow-up) -> inject the pin.
+      * Supplied bbox that OVERLAPS the pin but does NOT already enclose it (a
+        narrower / drifted box for the same area) -> REPLACE with the pin.
+      * Supplied bbox that already ENCLOSES the pin (an explicit larger area) ->
+        HONOR it (the user asked to widen).
+      * Supplied bbox DISJOINT from the pin (a genuinely different place) ->
+        HONOR it (do not drag the new area back to the old AOI).
+
+    Pure + conservative: returns a NEW dict only when it changes ``bbox``; never
+    mutates the input dict in place.
+    """
+    if fetched_kind_for_tool(tool_name) is None:
+        return params
+    pin = _coerce_bbox4(pinned_bbox)
+    if pin is None:
+        return params
+    supplied = _coerce_bbox4(params.get("bbox"))
+    if supplied is not None:
+        # TIGHT tolerance for the snap decision (NOT the coarse ~2 km scenario-
+        # reuse quantization): the live bug was a same-area box only ~0.005-0.01
+        # deg off the pin yet covering 87% width / 63% height of the domain, which
+        # the reuse quant would call "equivalent". We compare near-exactly here so
+        # those drifted same-area boxes are snapped, not waved through.
+        if bbox_equivalent(supplied, pin, quant=_AOI_DEFAULT_EQ_TOL_DEG):
+            return params  # already (essentially) the pin -> no needless copy
+        # A genuinely DIFFERENT place (disjoint) is the user's intent -> honor it.
+        if not _bbox_overlaps(supplied, pin):
+            return params
+        # An explicit WIDEN: the supplied box ENCLOSES the pin on all four edges
+        # (it is at least as large as the pin everywhere, so the user asked for a
+        # bigger area). A drifted / narrower same-area box CLIPS the pin on at
+        # least one edge -> not an enclose -> falls through to the snap. The tight
+        # tolerance keeps a near-equal box from masquerading as a widen.
+        if bbox_encloses(supplied, pin, quant=_AOI_DEFAULT_EQ_TOL_DEG):
+            return params
+    # Bare follow-up OR a drifted/narrower same-area box -> snap to the pinned AOI.
+    new_params = dict(params)
+    new_params["bbox"] = list(pin)
+    logger.info(
+        "aoi-default: %s bbox -> pinned Case AOI %s (was %s)",
+        tool_name,
+        list(pin),
+        list(supplied) if supplied is not None else None,
+    )
+    return new_params
+
+
 @dataclass
 class _ReuseEntry:
     """A drop-in ``RegisteredTool``-shaped shim for the reuse short-circuit
@@ -6587,6 +6763,18 @@ async def _invoke_tool_via_emitter(
     # gate AND the reuse guard so both see canonicalized (_yr/_hr) param names.
     params = normalize_args(tool_name, params, entry.fn)
 
+    # job LANE-C (#159 follow-up #2): default a bbox-taking FETCH to the pinned
+    # Case AOI. After a solve pins the domain (see the post-result pin below), the
+    # LLM still free-hands a fresh (usually narrower) bbox for every follow-up
+    # fetch, so buildings/rivers/dem/roads under-covered the flood domain. Force a
+    # same-area follow-up onto the pinned extent so all layers cover the SAME AOI
+    # by construction; a genuinely DIFFERENT place (disjoint) or an explicit WIDEN
+    # (encloses the pin) is honored. Runs BEFORE the fetcher reuse guard so the
+    # reuse comparison sees the snapped bbox. No-op when no AOI is pinned.
+    params = _maybe_default_fetch_bbox_to_pinned_aoi(
+        tool_name, params, _turn_case_bbox(state)
+    )
+
     # job-0326: DETERMINISTIC expensive-simulation reuse guard (NATE 2026-06-16).
     # The F54 prompt steer ("reuse the existing layer; do NOT re-run") was being
     # IGNORED by the live model, so the agent re-ran ~10-20-minute SFINCS/MODFLOW
@@ -6995,9 +7183,30 @@ async def _invoke_tool_via_emitter(
     # - so it is the LAST zoom-to and re-entry snaps to the floored AOI.
     # GUARDS: only a finite 4-number tuple; DEDUPE against the last accumulated
     # zoom-to bbox so a double-dispatch / repeat does not double-append.
+    #
+    # job LANE-C (#159 follow-up #3): for a DOMAIN-producing solver, emit ONLY the
+    # pinned domain bbox - NOT the geocode-then-domain double rectangle. The
+    # geocode snap appended an EARLIER zoom-to to the small collapsed bbox this
+    # turn; replaying both makes the camera (and the persisted view) flash the
+    # geocode box then the domain box (the #159 double rectangle). PURGE the
+    # earlier zoom-to entries on a domain solve so the closing
+    # ``map_command_emissions`` carries the single authoritative domain extent.
+    # Plain fetches keep the append-only behavior (no purge) so unrelated
+    # multi-layer flows are unaffected.
     if isinstance(result, LayerURI) and _is_finite_bbox4(result.bbox):
         _floored_bbox = list(result.bbox)
-        if _last_zoom_to_bbox(state.current_turn_map_commands) != _floored_bbox:
+        if not isinstance(entry, _ReuseEntry) and _scenario_produces_domain(
+            tool_name
+        ):
+            state.current_turn_map_commands = [
+                cmd
+                for cmd in state.current_turn_map_commands
+                if not (isinstance(cmd, dict) and cmd.get("command") == "zoom-to")
+            ]
+            state.current_turn_map_commands.append(
+                {"command": "zoom-to", "args": {"bbox": _floored_bbox}}
+            )
+        elif _last_zoom_to_bbox(state.current_turn_map_commands) != _floored_bbox:
             state.current_turn_map_commands.append(
                 {"command": "zoom-to", "args": {"bbox": _floored_bbox}}
             )
@@ -7023,6 +7232,27 @@ async def _invoke_tool_via_emitter(
             )
         except Exception:  # noqa: BLE001 — indexing must never break dispatch
             logger.debug("scenario_reuse record failed", exc_info=True)
+
+    # job LANE-C (#159 follow-up #1): PIN the solve domain as the Case AOI.
+    # A freshly-completed expensive solver (SWMM / SFINCS / MODFLOW) mints a
+    # LayerURI whose ``bbox`` IS the authoritative floored solve domain (the same
+    # extent ``compute_layer_bounds`` returns for the produced handle). Persist it
+    # as ``CaseSummary.bbox`` + cache it onto ``state.case_bbox`` so every
+    # subsequent fetch defaults to this extent (via the fetch-default above) and a
+    # Case reopen rehydrates the SAME AOI. Skip the reuse short-circuit (already
+    # pinned when first produced). Best-effort — never breaks the dispatch.
+    if (
+        not isinstance(entry, _ReuseEntry)
+        and _scenario_produces_domain(tool_name)
+        and isinstance(result, LayerURI)
+        and _is_finite_bbox4(result.bbox)
+    ):
+        try:
+            await _pin_case_aoi_from_solve(
+                state, case_id=turn_case_id, bbox=result.bbox
+            )
+        except Exception:  # noqa: BLE001 — pin is a side-effect, never break
+            logger.debug("aoi-pin failed", exc_info=True)
 
     # job-0326: when this dispatch was a reuse short-circuit, the emitter has
     # ALREADY re-loaded the existing layer onto the map (the emit_tool_call
