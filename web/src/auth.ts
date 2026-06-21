@@ -338,7 +338,20 @@ export async function initAuth(): Promise<void> {
   cachedInitStatus = "initializing";
   const t = loadTokens();
   if (t && t.expiresAt > Date.now()) {
-    cachedTokens = t;
+    // Live ID token (same-tab reload fast path). Persist via storeTokens — NOT a
+    // bare `cachedTokens = t` — so the DURABLE localStorage refresh mirror is
+    // (re)seeded on EVERY box-on load that has a valid session.
+    //
+    // COLD-CASES-BOX-OFF SEED FIX (NATE 2026-06-20): a session signed in BEFORE
+    // the durable-mirror landed (or any plain reload) carries its refresh token
+    // only in sessionStorage. The old live-token branch skipped storeTokens, so
+    // localStorage's LS_REFRESH was NEVER written on a normal reload — only a
+    // fresh OAuth sign-in or a token-expiry refresh seeded it. That left the
+    // user one cold boot away from resolving signed-OUT box-off (blank Cases
+    // rail) despite holding a perfectly good refresh token. Routing through
+    // storeTokens mirrors that refresh token to localStorage every load, so the
+    // very next box-off cold boot restores the session with no manual re-sign-in.
+    storeTokens(t);
     cachedUser = userFromIdToken(t.idToken);
   } else if (t && t.refreshToken) {
     // No live ID token but we hold a refresh token (expired sessionStorage set

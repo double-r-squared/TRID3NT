@@ -162,6 +162,39 @@ describe("auth.ts — cold-boot CLIENT-SIDE session restore (box-off cases fix)"
     expect(sessionStorage.getItem(SS_TOKENS)).toBeTruthy();
   });
 
+  it("a plain box-ON reload of a LIVE session (refresh token only in sessionStorage) SEEDS the durable localStorage mirror", async () => {
+    // The pre-existing-session case NATE hit live: signed in BEFORE the durable
+    // mirror landed, so the refresh token lives ONLY in the sessionStorage token
+    // set; localStorage holds nothing. A normal box-on reload must mirror it to
+    // localStorage so the NEXT box-off cold boot can restore — WITHOUT a fresh
+    // sign-in. (Regression guard for the live-token branch skipping storeTokens.)
+    sessionStorage.setItem(
+      SS_TOKENS,
+      JSON.stringify({
+        idToken: FRESH_ID_TOKEN,
+        accessToken: "acc",
+        refreshToken: "session-only-refresh",
+        expiresAt: FUTURE_EXP * 1000,
+      }),
+    );
+    expect(localStorage.getItem(LS_REFRESH)).toBeNull(); // not seeded yet
+
+    // No network: the live ID token is used as-is (no refresh grant fired).
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+
+    const auth = await import("./auth");
+    await auth.initAuth();
+
+    // The durable mirror is now seeded from the sessionStorage refresh token.
+    expect(localStorage.getItem(LS_REFRESH)).toBe("session-only-refresh");
+    // And no refresh grant was needed (the live ID token sufficed).
+    expect(fetchMock).not.toHaveBeenCalled();
+    // Identity resolved signed-in from the live token.
+    const token = await auth.getIdToken();
+    expect(token).toBe(FRESH_ID_TOKEN);
+  });
+
   it("sign-out CLEARS the durable refresh token (a subsequent cold boot reads signed-out)", async () => {
     localStorage.setItem(LS_REFRESH, "durable-refresh-xyz");
     sessionStorage.setItem(
