@@ -2151,10 +2151,17 @@
       "description": "3-lane implement+adversarial-verify workflow (wdx3mssn3, 10 agents): A box-off cases (Lambda Cognito-sub->internal-ULID resolution + scoped IAM, the elusive bug); B web scrubber uniform-scale + relaxed client vector clip; C agent AOI-pin + default-fetch-to-pin + one-zoom-to + fetch_dem coverage gate. All lanes 3/3 + 2/2 verify; lambda 41 + agent 5872 + web 1672 green. Deployed 300fafb+a6952a3+9d5101f via tofu apply + web CloudFront + SSM. (Excludes the superseded scrubber-width Agent from earlier this session, not separately metered.)",
       "model": "opus",
       "subagent_tokens": 1303044
+    },
+    {
+      "job_id": "wf-roadmap-research-4-northstars-20260621",
+      "sprint": 16,
+      "description": "Read-only roadmap research workflow (wen0ew0mv, 5 agents): grounded 4 next-up tracks (compound flood, data-island #165, MODFLOW river-seepage, HEC-RAS) in real practitioner pipelines (primary sources) + exact GRACE-2 seams; synthesized a sequenced sprint with the publish_layer/persistence collision contract. Key finding: run_model_flood_scenario drops surge_forcing -> the built+tested coastal-surge/fluvial-discharge engine is unreachable (2-line unlock).",
+      "model": "opus",
+      "subagent_tokens": 586572
     }
   ],
   "totals_by_sprint": {
-    "16": 14574770,
+    "16": 15161342,
     "6": 1265567,
     "7": 1863284,
     "8": 1786238,
