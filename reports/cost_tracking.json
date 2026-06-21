@@ -2158,10 +2158,17 @@
       "description": "Read-only roadmap research workflow (wen0ew0mv, 5 agents): grounded 4 next-up tracks (compound flood, data-island #165, MODFLOW river-seepage, HEC-RAS) in real practitioner pipelines (primary sources) + exact GRACE-2 seams; synthesized a sequenced sprint with the publish_layer/persistence collision contract. Key finding: run_model_flood_scenario drops surge_forcing -> the built+tested coastal-surge/fluvial-discharge engine is unreachable (2-line unlock).",
       "model": "opus",
       "subagent_tokens": 586572
+    },
+    {
+      "job_id": "wf-sprint17-wave-a-20260621",
+      "sprint": 16,
+      "description": "Sprint-17 Wave A build+verify workflow (w3dswg3m5, 5 agents): J1 #165 Phase 0 (publish_layer durable browser-readable GeoJSON to runs bucket case-data/<case_id>/<layer_id>.geojson, both-faces register, fail-open - the frozen data-island vector contract) + J2 compound-flood unlock (expose surge_forcing in run_model_flood_scenario, byte-identical when None). 2/2 + 1/1 adversarial verify; agent 5893 green (after catching+clearing a pre-existing hash-seed flake on test_bare_followup_reuses_loaded_layer). Deployed 3836ab2+83dbe15 via SSM.",
+      "model": "opus",
+      "subagent_tokens": 473262
     }
   ],
   "totals_by_sprint": {
-    "16": 15161342,
+    "16": 15634604,
     "6": 1265567,
     "7": 1863284,
     "8": 1786238,
