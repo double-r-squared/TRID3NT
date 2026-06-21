@@ -15,6 +15,9 @@ These tests exercise the pure translation helpers (no network, no solver):
 
 from __future__ import annotations
 
+import asyncio
+
+import grace2_agent.workflows.model_flood_scenario as mfs
 from grace2_agent.workflows.model_flood_scenario import (
     _build_surge_forcing_members,
     _resolve_building_obstacle_uri,
@@ -131,3 +134,125 @@ def test_resolve_building_obstacle_true_records_source_on_success(monkeypatch) -
     assert uri == "s3://cache/buildings.fgb"
     assert len(ds) == 1
     assert ds[0].uri == "s3://cache/buildings.fgb"
+
+
+# --------------------------------------------------------------------------- #
+# COMPOUND-FLOOD PHASE 1 (sprint-17 J2): the LLM-facing wrapper
+# ``run_model_flood_scenario`` must FORWARD ``surge_forcing`` (+ the companion
+# params the internal ``model_flood_scenario`` already accepts) so the
+# already-built coastal-surge + fluvial-discharge engine is reachable from the
+# agent. Prior to this lane the wrapper OMITTED the param and the internal call
+# DROPPED it, so the surge / discharge path was dead from the agent surface.
+#
+# The wrapper resolves ``model_flood_scenario`` as a module global, so a
+# monkeypatched capturing stub on the module intercepts the forwarded kwargs
+# without touching the network / solver chain.
+# --------------------------------------------------------------------------- #
+
+
+class _CapturingEnvelope:
+    """Minimal stand-in for ``AssessmentEnvelope`` — the wrapper only touches
+    ``.layers`` (empty → falls back to ``model_dump``) and ``model_dump``."""
+
+    layers: list = []
+
+    def model_dump(self, *_a, **_k) -> dict:
+        return {"captured": True}
+
+
+def _capture_internal_call(monkeypatch) -> dict:
+    """Patch the module-global ``model_flood_scenario`` with an async stub that
+    records the kwargs the wrapper forwards. Returns the capture dict."""
+    captured: dict = {}
+
+    async def _stub(**kwargs):
+        captured.update(kwargs)
+        return _CapturingEnvelope()
+
+    monkeypatch.setattr(mfs, "model_flood_scenario", _stub)
+    return captured
+
+
+_SURGE_SPEC = {
+    "waterlevel": {
+        "timeseries_uri": "/tmp/wl.csv",
+        "locations_uri": "/tmp/bnd.fgb",
+        "offset": 0.2,
+    },
+    "discharge": {
+        "timeseries_uri": "/tmp/dis.csv",
+        "rivers_uri": "/tmp/riv.fgb",
+        "river_upa_km2": 12.0,
+    },
+}
+
+
+def test_wrapper_forwards_surge_forcing_to_internal(monkeypatch) -> None:
+    """``run_model_flood_scenario(surge_forcing=...)`` reaches the internal call.
+
+    This is the compound-flood unlock: the wrapper must thread the exact
+    ``surge_forcing`` dict (the same shape ``_resolve_surge_forcing_from_fetchers``
+    / ``_build_surge_forcing_members`` / the deck emission consume) into
+    ``model_flood_scenario``. Before this lane the param was unreachable.
+    """
+    captured = _capture_internal_call(monkeypatch)
+    asyncio.run(
+        mfs.run_model_flood_scenario(
+            location_query="Fort Myers, FL",
+            surge_forcing=_SURGE_SPEC,
+        )
+    )
+    # The forwarded dict is IDENTICAL to what was passed in (mirror the internal
+    # contract exactly — no reshaping at the wrapper boundary).
+    assert captured["surge_forcing"] == _SURGE_SPEC
+    assert captured["surge_forcing"]["waterlevel"]["timeseries_uri"] == "/tmp/wl.csv"
+    assert captured["surge_forcing"]["discharge"]["river_upa_km2"] == 12.0
+
+
+def test_wrapper_surge_forcing_default_is_none_pure_pluvial(monkeypatch) -> None:
+    """Zero-regression guarantee: with no ``surge_forcing`` the wrapper forwards
+    ``surge_forcing=None`` (the pure-pluvial path) — the deck stays byte-identical
+    to today (no surge / discharge blocks emitted; the internal None branch in
+    ``_build_surge_forcing_members`` / ``_resolve_surge_forcing_from_fetchers``
+    short-circuits)."""
+    captured = _capture_internal_call(monkeypatch)
+    asyncio.run(mfs.run_model_flood_scenario(location_query="Boise, ID"))
+    assert captured["surge_forcing"] is None
+    # The companion knobs also default to their byte-identical-today values.
+    assert captured["enable_subgrid"] is False
+    assert captured["coastal"] is False
+    assert captured["quadtree"] is False
+    assert captured["building_obstacles"] is False
+
+
+def test_wrapper_forwards_companion_params(monkeypatch) -> None:
+    """The other internal-accepted-but-previously-dropped params
+    (``enable_subgrid`` / ``project_id`` / ``session_id``) also forward."""
+    captured = _capture_internal_call(monkeypatch)
+    asyncio.run(
+        mfs.run_model_flood_scenario(
+            location_query="New Orleans, LA",
+            surge_forcing=_SURGE_SPEC,
+            enable_subgrid=True,
+            project_id="proj-ulid-123",
+            session_id="sess-ulid-456",
+        )
+    )
+    assert captured["enable_subgrid"] is True
+    assert captured["project_id"] == "proj-ulid-123"
+    assert captured["session_id"] == "sess-ulid-456"
+
+
+def test_wrapper_surge_forcing_via_tool_registry(monkeypatch) -> None:
+    """End-to-end through the registry dispatch path (the production call site):
+    the registered ``run_model_flood_scenario`` accepts + forwards
+    ``surge_forcing`` (no TypeError; the kwarg is signature-accepted, not
+    swallowed by ``**_extra_ignored``)."""
+    from grace2_agent.tools import TOOL_REGISTRY
+
+    captured = _capture_internal_call(monkeypatch)
+    entry = TOOL_REGISTRY["run_model_flood_scenario"]
+    asyncio.run(
+        entry.fn(location_query="Fort Myers, FL", surge_forcing=_SURGE_SPEC)
+    )
+    assert captured["surge_forcing"] == _SURGE_SPEC

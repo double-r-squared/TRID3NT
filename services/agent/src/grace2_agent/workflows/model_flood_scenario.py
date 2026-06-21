@@ -2583,10 +2583,14 @@ async def run_model_flood_scenario(
     duration_hr: int = 24,
     compute_class: str = "medium",
     forcing_raster_uri: str | None = None,
+    surge_forcing: dict[str, Any] | None = None,
+    enable_subgrid: bool = False,
     coastal: bool = False,
     quadtree: bool = False,
     building_obstacles: bool | str = False,
     building_obstacle_mode: str = "exclude",
+    project_id: str | None = None,
+    session_id: str | None = None,
     # job-0164: absorb LLM-invented kwargs (centralized at server.py via
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
@@ -2659,6 +2663,29 @@ async def run_model_flood_scenario(
             is the Case 3 real-data forcing path. ``duration_hours`` is reused
             as the accumulation window. Leave unset (``None``) for the standard
             return-period design-storm scenario.
+        surge_forcing: optional COMPOUND-FLOOD forcing spec — a nested dict that
+            wires the coastal water-level (surge / tide) boundary AND/OR the
+            fluvial river-discharge boundary (plus optional wind / pressure)
+            into the SFINCS deck, so the run combines coastal surge + river
+            discharge + the pluvial design storm. Shape (each sub-dict optional;
+            mirror the internal ``model_flood_scenario`` contract exactly):
+            ``{"waterlevel": {"timeseries_uri": ..., "locations_uri": ...,
+            "offset": ..., "buffer_m": ...} | {"geodataset_uri": ...},
+            "discharge": {"timeseries_uri": ..., "rivers_uri": ...,
+            "river_upa_km2": ...}, "wind": {"magnitude": ..., "direction": ...},
+            "pressure": {"grid_uri": ..., "fill_value": ...}}``. The forcing-file
+            URIs come from the forcing fetchers (``fetch_gtsm_tide_surge`` /
+            ``fetch_noaa_coops_tides`` / ``fetch_noaa_nwm_streamflow`` /
+            ``fetch_cama_flood_discharge`` / ERA5). Supplying a water-level
+            boundary IMPLIES ``coastal=True`` (the surge needs a nearshore bed),
+            so the DEM fetch auto-routes through ``fetch_topobathy``. ``None``
+            (the default) → pure-pluvial deck, BYTE-IDENTICAL to today (no surge /
+            discharge blocks emitted; regression-critical).
+        enable_subgrid: emit a SFINCS ``setup_subgrid`` block so the solve runs on
+            a coarse grid while resolving sub-cell topography + roughness (the
+            cheap higher-fidelity urban-flood estimate). Auto-enabled when
+            ``building_obstacles`` is set. Default ``False`` (no subgrid block;
+            byte-identical to today).
         coastal: set ``True`` for a COASTAL flood / surge / run-up scenario near
             the ocean shoreline. This routes the terrain fetch through
             ``fetch_topobathy`` (a SEAMLESS land-plus-seafloor DEM merging USGS
@@ -2697,6 +2724,9 @@ async def run_model_flood_scenario(
             lifts the footprint bed elevation via the SFINCS subgrid so flow is
             impeded without disconnecting the domain (higher fidelity; auto-uses
             subgrid). Leave ``"exclude"`` unless higher fidelity is requested.
+        project_id / session_id: ULID identifiers from the WS session, forwarded
+            for provenance / artifact namespacing. When ``None`` (default), the
+            internal workflow mints fresh ULIDs (direct-call / smoke path).
 
     Returns:
         On success: the primary flood-depth COG as a ``LayerURI`` — the
@@ -2740,10 +2770,14 @@ async def run_model_flood_scenario(
         duration_hr=duration_hr,
         compute_class=compute_class,
         forcing_raster_uri=forcing_raster_uri,
+        surge_forcing=surge_forcing,
+        enable_subgrid=enable_subgrid,
         coastal=coastal,
         quadtree=quadtree,
         building_obstacles=building_obstacles,
         building_obstacle_mode=building_obstacle_mode,
+        project_id=project_id,
+        session_id=session_id,
     )
     # --- Layer-emission contract pin (docs/decisions/layer-emission-contract.md, 2026-06-07) ---
     # Return the primary flood-depth COG as a LayerURI so PipelineEmitter's
