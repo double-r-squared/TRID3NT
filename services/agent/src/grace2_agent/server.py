@@ -3526,6 +3526,10 @@ async def _handle_case_command(
         # view-without-agent link resolves immediately after create — before any
         # turn lands. Emitter was just flushed, so no inline vectors to merge.
         await _persist_case_view_snapshot(state, case_id=new_case_id)
+        # #165 dual-write: write the thin manifest ALONGSIDE the snapshot so the
+        # data-island cold path lists the fresh Case immediately. Best-effort —
+        # a manifest failure never breaks the snapshot path (own try/except).
+        await _persist_case_manifest(state, case_id=new_case_id)
         await _emit_case_list(websocket, state)
         logger.info(
             "case-command create session=%s case=%s title=%r",
@@ -3624,6 +3628,9 @@ async def _handle_case_command(
         # name. Inline vectors merge only if this is the open Case (guarded in
         # _persist_case_view_snapshot); else a correct URI-only snapshot lands.
         await _persist_case_view_snapshot(state, case_id=cmd.case_id)
+        # #165 dual-write: refresh the thin manifest too (``title`` is a manifest
+        # field). Best-effort; never breaks the snapshot path.
+        await _persist_case_manifest(state, case_id=cmd.case_id)
         await _emit_case_list(websocket, state)
         logger.info(
             "case-command rename session=%s case=%s title=%r",
@@ -7164,6 +7171,15 @@ async def _invoke_tool_via_emitter(
             )
             _BG_SNAPSHOT_TASKS.add(_t)
             _t.add_done_callback(_BG_SNAPSHOT_TASKS.discard)
+            # #165 dual-write: fire-and-forget the thin manifest ALONGSIDE the
+            # snapshot (same latency discipline — never on the turn/resume hot
+            # path). The manifest swallows its own errors (returns False, never
+            # raises), so the detached task leaves no unretrieved exception.
+            _tm = asyncio.create_task(
+                _persist_case_manifest(state, case_id=turn_case_id)
+            )
+            _BG_SNAPSHOT_TASKS.add(_tm)
+            _tm.add_done_callback(_BG_SNAPSHOT_TASKS.discard)
 
     # job-0263: register every URI the result carries (LayerURI layer_id↔uri
     # pairs + bare gs:// strings) so the NEXT tool call can resolve handles /
@@ -7346,6 +7362,17 @@ async def _invoke_tool_via_emitter(
                             )
                             _BG_SNAPSHOT_TASKS.add(_t)
                             _t.add_done_callback(_BG_SNAPSHOT_TASKS.discard)
+                            # #165 dual-write: thin manifest ALONGSIDE the
+                            # snapshot (publish_layer is the LAST tool, so the
+                            # published layer would land only in memory without
+                            # this). Fire-and-forget, swallows its own errors.
+                            _tm = asyncio.create_task(
+                                _persist_case_manifest(
+                                    state, case_id=turn_case_id
+                                )
+                            )
+                            _BG_SNAPSHOT_TASKS.add(_tm)
+                            _tm.add_done_callback(_BG_SNAPSHOT_TASKS.discard)
                 except Exception:  # noqa: BLE001 — emission is best-effort
                     logger.exception(
                         "publish_layer loaded-layer emission failed "
@@ -7547,6 +7574,41 @@ async def _persist_case_view_snapshot(
         logger.warning(
             "case-view-snapshot: persist failed case=%s", target_case
         )
+
+
+async def _persist_case_manifest(
+    state: SessionState, *, case_id: str | None = None
+) -> None:
+    """Materialize the THIN per-case manifest to S3 (#165 data-island index).
+
+    DUAL-WRITE sibling of ``_persist_case_view_snapshot``: writes
+    ``s3://$GRACE2_RUNS_BUCKET/case-manifests/{case_id}.json`` — the thin
+    ``CaseManifest`` (title / bbox / hazard + layer asset URLs) a future cold
+    path lists cases + their layers from WITHOUT downloading the fat snapshot.
+    Called ALONGSIDE the snapshot at the SAME Case mutation call-sites; the
+    snapshot path is UNCHANGED (this is additive — dual-write only).
+
+    The manifest is sourced entirely from the persisted Case doc
+    (``loaded_layer_summaries`` — the same data ``case-list`` marshals); it does
+    NOT need the emitter's in-memory inline-vector side-tables (those are only
+    for the fat snapshot's cold-paint), so this helper is simpler than the
+    snapshot one.
+
+    Best-effort: a missing Persistence binding / no Case short-circuits;
+    ``write_case_manifest`` swallows its own S3 / build errors and returns
+    ``False``. A manifest failure must NOT break the snapshot path or the turn —
+    so this is wrapped and never raises (same discipline as the snapshot).
+    """
+    target_case = case_id if case_id is not None else _turn_case_id(state)
+    if not target_case:
+        return
+    p = get_persistence()
+    if p is None:
+        return
+    try:
+        await p.write_case_manifest(target_case)
+    except Exception:  # noqa: BLE001 — manifest is a side-effect, never a gate
+        logger.warning("case-manifest: persist failed case=%s", target_case)
 
 
 async def _maybe_emit_impact_envelope(
@@ -8071,6 +8133,13 @@ async def _dispatch_gemini_and_persist(
             )
             _BG_SNAPSHOT_TASKS.add(_t)
             _t.add_done_callback(_BG_SNAPSHOT_TASKS.discard)
+            # #165 dual-write: refresh the thin manifest ONCE at turn close too,
+            # ALONGSIDE the snapshot. Fire-and-forget; swallows its own errors.
+            _tm = asyncio.create_task(
+                _persist_case_manifest(state, case_id=turn_case_id)
+            )
+            _BG_SNAPSHOT_TASKS.add(_tm)
+            _tm.add_done_callback(_BG_SNAPSHOT_TASKS.discard)
         # C2: whole-turn idle signal — fires on EVERY exit (clean, cancel,
         # error) so the client settles any card still spinning ``running`` after
         # the turn ends (its terminal pipeline-state frame may have died on a
@@ -9305,6 +9374,8 @@ __all__ = [
     "_persist_chat_turn",
     # Lane A1: view-without-agent — materialize the full case view to S3.
     "_persist_case_view_snapshot",
+    # #165 data-island: dual-write the THIN per-case manifest to S3.
+    "_persist_case_manifest",
     # job-0268: turn-start Case binding (cross-Case contamination fix).
     "_turn_case_id",
     "_dispatch_tool_and_persist",

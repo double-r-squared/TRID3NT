@@ -52,6 +52,8 @@ from typing import Any, Protocol
 from grace2_contracts import new_ulid, now_utc
 from grace2_contracts.case import (
     CaseChatMessage,
+    CaseManifest,
+    CaseManifestLayer,
     CaseOpenEnvelopePayload,
     CaseSessionState,
     CaseSummary,
@@ -80,6 +82,13 @@ CASE_VIEWS_BUCKET = os.environ.get(
 #: Object-key prefix for materialized case-view snapshots (PRIVATE objects).
 CASE_VIEWS_PREFIX = "case-views"
 
+#: Object-key prefix for THIN per-case manifests (#165 data-island index).
+#: Written ALONGSIDE the fat snapshot (dual-write) in the SAME durable runs
+#: bucket so a future cold path can list cases + their layers from S3 with the
+#: agent box asleep, WITHOUT downloading the fat snapshot per Case. Mirrors the
+#: ``case-views`` prefix convention (PRIVATE objects, owner in S3 metadata).
+CASE_MANIFESTS_PREFIX = "case-manifests"
+
 
 def case_view_snapshot_key(case_id: str) -> str:
     """Return the S3 object key for a Case's materialized view snapshot.
@@ -88,6 +97,16 @@ def case_view_snapshot_key(case_id: str) -> str:
     the object identically: ``case-views/{case_id}.json``.
     """
     return f"{CASE_VIEWS_PREFIX}/{case_id}.json"
+
+
+def case_manifest_key(case_id: str) -> str:
+    """Return the S3 object key for a Case's thin manifest (#165 data-island).
+
+    Single seam so the writer (here) and the future cold-serve reader name the
+    object identically: ``case-manifests/{case_id}.json``. Mirrors
+    ``case_view_snapshot_key`` exactly, swapping the prefix.
+    """
+    return f"{CASE_MANIFESTS_PREFIX}/{case_id}.json"
 
 # Collection names — pinned by Appendix D nomenclature (D.2 ``projects`` for
 # Cases, D.6 ``sessions`` for chat history, D.13 ``users`` for the
@@ -927,6 +946,192 @@ class Persistence:
         owner). Passed through to boto3 ``put_object(Metadata=...)`` ONLY when
         non-empty so an owner-less snapshot stamps no metadata. The owner is
         carried here, NOT in the JSON body, so the body stays byte-identical.
+        """
+        import asyncio
+
+        meta = dict(metadata or {})
+
+        def _put() -> None:
+            import boto3
+
+            s3 = boto3.client(
+                "s3", region_name=os.environ.get("AWS_REGION", "us-west-2")
+            )
+            kwargs: dict[str, Any] = dict(
+                Bucket=CASE_VIEWS_BUCKET,
+                Key=key,
+                Body=body,
+                ContentType="application/json",
+            )
+            if meta:
+                kwargs["Metadata"] = meta
+            s3.put_object(**kwargs)
+
+        await asyncio.to_thread(_put)
+
+    # ----- Thin per-case manifest (#165 data-island cold-serve index) ------ #
+    #
+    # SIBLINGS of the case-view snapshot writers above. Written ALONGSIDE the
+    # fat snapshot (dual-write) at the SAME Case mutation call-sites; the
+    # snapshot is NOT retired here (cold serving + retirement are later phases).
+    # A future cold path lists cases + their layers from these thin manifests
+    # WITHOUT the agent and WITHOUT downloading the fat snapshot per Case.
+
+    @staticmethod
+    def _manifest_layer_from_summary(layer: dict) -> CaseManifestLayer | None:
+        """Project ONE persisted ``ProjectLayerSummary`` dict into a manifest row.
+
+        The layer list is sourced from the Case doc's
+        ``loaded_layer_summaries`` — the SAME data ``list_cases`` / the live
+        ``case-list`` marshals — so the manifest never diverges from the rail.
+
+        ``asset_url`` is the DISPLAY face the cold path serves: every
+        ``observe_published_layer`` registration routes the renderable face
+        (raster tile-template, vector ``.geojson`` asset, or QGIS WMS GetMap
+        URL) into ``wms_url``, so we prefer that and fall back to ``uri`` only
+        when no display face was registered. ``wms_url`` is carried separately
+        ONLY when it is a WMS GetMap face (so a reader can tell a true WMS layer
+        from a tile/geojson asset); for non-WMS display faces it stays ``None``.
+
+        Returns ``None`` for a malformed entry (missing required keys) so a bad
+        row is skipped rather than failing the whole manifest write.
+        """
+        if not isinstance(layer, dict):
+            return None
+        layer_id = layer.get("layer_id")
+        name = layer.get("name")
+        layer_type = layer.get("layer_type")
+        style_preset = layer.get("style_preset")
+        if not (layer_id and name and layer_type and style_preset is not None):
+            return None
+        display = layer.get("wms_url")
+        uri = layer.get("uri")
+        asset_url = display or uri
+        if not asset_url:
+            return None
+        # Only carry wms_url separately when it is a genuine WMS GetMap face —
+        # ``_looks_like_wms`` is the same predicate ``observe_published_layer``
+        # uses to route a display URL into the wms slot.
+        from .uri_registry import _looks_like_wms
+
+        wms_url = display if (display and _looks_like_wms(display)) else None
+        try:
+            return CaseManifestLayer(
+                layer_id=str(layer_id),
+                name=str(name),
+                layer_type=layer_type,
+                style_preset=str(style_preset),
+                asset_url=str(asset_url),
+                wms_url=wms_url,
+            )
+        except Exception:  # noqa: BLE001 — skip a row that won't validate
+            logger.warning(
+                "case-manifest: skipping malformed layer row layer_id=%s",
+                layer_id,
+            )
+            return None
+
+    async def build_case_manifest(self, case_id: str) -> CaseManifest | None:
+        """Assemble the thin ``CaseManifest`` for a Case (no I/O beyond the read).
+
+        Sources every field from the Case doc the left rail already consumes
+        (``get_case`` -> ``CaseSummary``): ``title`` / ``bbox`` /
+        ``primary_hazard`` and the ``loaded_layer_summaries`` layer list.
+        ``updated_at`` stamps the manifest materialization time.
+
+        Returns ``None`` when the Case is missing (the writer then no-ops) so a
+        manifest is never written for a non-existent Case.
+        """
+        case = await self.get_case(case_id)
+        if case is None:
+            return None
+        layers: list[CaseManifestLayer] = []
+        for entry in case.loaded_layer_summaries:
+            row = self._manifest_layer_from_summary(entry)
+            if row is not None:
+                layers.append(row)
+        return CaseManifest(
+            case_id=case.case_id,
+            updated_at=now_utc(),
+            title=case.title,
+            bbox=case.bbox,
+            primary_hazard=case.primary_hazard,
+            layers=layers,
+        )
+
+    async def write_case_manifest(
+        self, case_id: str, *, s3_put: Any = None
+    ) -> bool:
+        """Materialize the thin Case manifest to S3 (#165 data-island index).
+
+        Writes ``s3://{CASE_VIEWS_BUCKET}/case-manifests/{case_id}.json``
+        (PRIVATE; ``content-type: application/json``) ALONGSIDE the fat
+        case-view snapshot — a dual-write at the SAME Case mutation call-sites.
+        Idempotent, last-write-wins.
+
+        Owner-gate carrier: identical to the snapshot — the owner is resolved
+        from the RAW ``projects`` doc and carried in S3 OBJECT METADATA
+        (``owner-user-id``), NEVER in the JSON body, so the signer can owner-gate
+        off a cheap ``head_object``. The metadata key is set ONLY when the Case
+        has an owner.
+
+        Best-effort by contract: wrapped in ``try/except`` and returns ``False``
+        on ANY failure (a missing Case, a build error, an S3 error) so a manifest
+        hiccup NEVER breaks the snapshot path or the user's turn — the SAME
+        discipline as ``write_case_view_snapshot``. Returns ``True`` on a
+        successful put.
+
+        ``s3_put`` injects a callable
+        ``(bucket, key, body_bytes, metadata) -> None`` for tests; production
+        lazily constructs a boto3 S3 client (creds from the EC2 instance role).
+        """
+        import json
+
+        try:
+            manifest = await self.build_case_manifest(case_id)
+            if manifest is None:
+                # No such Case -> nothing to materialize (not an error).
+                return False
+            body = json.dumps(
+                manifest.model_dump(mode="json"), separators=(",", ":")
+            ).encode("utf-8")
+            key = case_manifest_key(case_id)
+            owner = await self._resolve_case_owner(case_id)
+            metadata: dict[str, str] = {"owner-user-id": owner} if owner else {}
+            if s3_put is not None:
+                _maybe = s3_put(CASE_VIEWS_BUCKET, key, body, metadata)
+                if hasattr(_maybe, "__await__"):
+                    await _maybe
+            else:
+                await self._default_s3_put_case_manifest(key, body, metadata)
+            logger.debug(
+                "case-manifest wrote s3://%s/%s bytes=%d layers=%d owner=%s",
+                CASE_VIEWS_BUCKET,
+                key,
+                len(body),
+                len(manifest.layers),
+                owner or "(none)",
+            )
+            return True
+        except Exception:  # noqa: BLE001 — never break the snapshot/turn path
+            logger.warning(
+                "case-manifest write failed case=%s bucket=%s",
+                case_id,
+                CASE_VIEWS_BUCKET,
+            )
+            return False
+
+    @staticmethod
+    async def _default_s3_put_case_manifest(
+        key: str, body: bytes, metadata: dict[str, str] | None = None
+    ) -> None:
+        """Production S3 put for the thin Case manifest (mirrors the snapshot put).
+
+        Runs the synchronous boto3 ``put_object`` in a worker thread so the
+        async turn loop is never blocked (no-sync-blocking-on-loop norm). boto3
+        resolves creds + region from the standard chain (env / ~/.aws / EC2
+        instance role). ``metadata`` is the owner-gate carrier, passed to
+        ``put_object(Metadata=...)`` ONLY when non-empty.
         """
         import asyncio
 
