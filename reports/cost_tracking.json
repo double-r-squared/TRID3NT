@@ -2109,10 +2109,38 @@
       "description": "Parallel 3-feature landing (ultracode): #154 granularity gate (scope 536809 + build 864086 + cap-fix 228809), #147 ephemeral cases + cold-view resync (scope shared + disjoint build 530235 + sweeper-fix 48979 + server wiring 244307), #160 SFINCS quadtree mesh (147+160 scope 893338 + build 580151) + a SWMM mesh-test-fix 67592. 10 workflows/agents; one fable-5 attempt died (env lacks fable, 0 tok) + reran on opus. All committed/pushed (efa2eea/4350f54/5daa0d2/362a614/c45a822) + deployed (web+agent+worker image). Verified: agent 5825 + web 1590 green; adversarial verify on every landing.",
       "model": "opus",
       "subagent_tokens": 3994306
+    },
+    {
+      "job_id": "wf-cases-vanish-identity-20260620",
+      "sprint": 16,
+      "description": "Cases-vanish-on-refresh fix (dual-socket anon-identity race): client stable anon ULID + agent verbatim-reuse + non-authoritative-empty guard. 2/2 verify. Deployed 9bdb6da.",
+      "model": "opus",
+      "subagent_tokens": 625593
+    },
+    {
+      "job_id": "wf-demo-stability-batch-20260620",
+      "sprint": 16,
+      "description": "Stability batch: bound Bedrock Converse (read_timeout) so a hung model turn cannot wedge the loop/pin busy + surface error; densify off-loop; desktop cases adopt mobile look. 2/2 verify. Deployed dad8f52.",
+      "model": "opus",
+      "subagent_tokens": 637461
+    },
+    {
+      "job_id": "agent-identity-rootcause-20260620",
+      "sprint": 16,
+      "description": "Read-only root-cause of the cases-blank-box-off + identity lifecycle (general-purpose agent).",
+      "model": "opus",
+      "subagent_tokens": 165847
+    },
+    {
+      "job_id": "wf-fix-batch-166-20260621",
+      "sprint": 16,
+      "description": "#166 batch: SWMM mesh.geojson->S3 (durable, fixes vanish) + n_buildings_dropped surfaced + fetch_buildings edge-clip; web client-side Cognito session (cases box-off) + mobile cases scroll + legend/scrubber overlay overhaul (z/mobile-in-layers/clear-on-exit/scale-with-AOI/one-legend/not-under-scrubber/vertical-sides). 3/3 verify; agent 5863 + web 1647 green. Deployed 8771505+16976ce. (Excludes minor read-only diagnosis Explores not individually metered.)",
+      "model": "opus",
+      "subagent_tokens": 1066873
     }
   ],
   "totals_by_sprint": {
-    "16": 10580154,
+    "16": 13075928,
     "6": 1265567,
     "7": 1863284,
     "8": 1786238,
