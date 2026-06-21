@@ -2165,10 +2165,24 @@
       "description": "Sprint-17 Wave A build+verify workflow (w3dswg3m5, 5 agents): J1 #165 Phase 0 (publish_layer durable browser-readable GeoJSON to runs bucket case-data/<case_id>/<layer_id>.geojson, both-faces register, fail-open - the frozen data-island vector contract) + J2 compound-flood unlock (expose surge_forcing in run_model_flood_scenario, byte-identical when None). 2/2 + 1/1 adversarial verify; agent 5893 green (after catching+clearing a pre-existing hash-seed flake on test_bare_followup_reuses_loaded_layer). Deployed 3836ab2+83dbe15 via SSM.",
       "model": "opus",
       "subagent_tokens": 473262
+    },
+    {
+      "job_id": "wf-sprint17-wave-b-20260621",
+      "sprint": 16,
+      "model": "opus",
+      "subagent_tokens": 839468,
+      "description": "Sprint-17 Wave B build+verify (wqysu44ym, 7 agents): J3 #165 thin per-case manifest + dual-write (PASS); J4 USGS discharge-hydrograph fetcher + offline 3-driver compound deck proof (adversarial verify CAUGHT an Invariant-7 cfs->cms unit-wiring gap in the production resolver -> orchestrator fixed + 3 regression tests); J5 MODFLOW RIV/SRC local-mf6 feasibility spike (GO: 835 m3/day leakage + SRC solute). Deployed J3/J5 committed; J4 fix committed d22a9fa."
+    },
+    {
+      "job_id": "agent-wave-animation-scope-20260621",
+      "sprint": 16,
+      "model": "opus",
+      "subagent_tokens": 183773,
+      "description": "Read-only scope of the SnapWave animated-waves feature: verified vs SFINCS ncoutput.F90 that hm0/hm0ig are TIME-RESOLVED on the quadtree path (true moving waves, no image rebuild); found the load-bearing UGRID-vs-regular-grid rasterizer gap; produced the phased build plan (P0-P6) + Mexico Beach run recipe."
     }
   ],
   "totals_by_sprint": {
-    "16": 15634604,
+    "16": 16657845,
     "6": 1265567,
     "7": 1863284,
     "8": 1786238,
