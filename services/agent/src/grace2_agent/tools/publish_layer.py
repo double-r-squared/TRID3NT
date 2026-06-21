@@ -836,6 +836,178 @@ def _benign_vector_noop(layer_uri: str, layer_id: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# DATA-ISLAND #165 PHASE 0: durable browser-readable GeoJSON for every vector.
+#
+# Vectors are produced as FlatGeobuf (``.fgb``) which the browser CANNOT read,
+# and today the agent delivers them INLINE (it reads the .fgb back, parses to
+# GeoJSON, and ships the FeatureCollection on the WS). That works ONLY while the
+# agent box is awake — the box-off cold path (signer -> S3) has no browser-
+# readable copy of a vector layer, so a cold-opened case paints rasters but not
+# roads/rivers/footprints/mesh.
+#
+# This phase FREEZES a durable contract: every vector publish materializes a
+# GeoJSON FeatureCollection at a STABLE, per-Case key in the DURABLE runs bucket
+# (the same bucket that holds the case-view snapshot + solver decks), so a later
+# phase's case manifest / cold-view materializer can serve it with ZERO agent
+# involvement. The .fgb stays the DATA face (analytical tools open it); the
+# GeoJSON asset is the DISPLAY face (the browser fetches it).
+#
+# Frozen contract (engine tracks rebase onto this):
+#   bucket : GRACE2_RUNS_BUCKET (solver._get_runs_bucket — the DURABLE runs
+#            bucket, NOT the 30-day-TTL content-addressed cache bucket; a
+#            published layer must outlive cache eviction).
+#   key    : ``case-data/<case_id>/<layer_id>.geojson``
+#   asset  : the returned ``s3://<runs_bucket>/case-data/<case_id>/<layer_id>.geojson``
+#            URI — the DISPLAY face (resolved to a served/pre-signed URL by the
+#            cold-view path, exactly like the case-view snapshot).
+#   faces  : observe_published_layer(layer_id, gcs_uri=<s3 .fgb DATA>,
+#            wms_url=<s3 .geojson DISPLAY>) — the GeoJSON never displaces the
+#            data uri (mirrors the raster tile-template / WMS branches).
+# --------------------------------------------------------------------------- #
+
+#: Object-key prefix for durable per-Case vector GeoJSON assets in the runs
+#: bucket. Single seam so this writer and the (future) cold-view materializer
+#: name the object identically. Mirrors ``persistence.CASE_VIEWS_PREFIX``.
+DURABLE_CASE_DATA_PREFIX: str = "case-data"
+
+
+def durable_vector_geojson_key(case_id: str, layer_id: str) -> str:
+    """Return the runs-bucket object key for a Case's durable vector GeoJSON.
+
+    Frozen #165 Phase-0 contract: ``case-data/<case_id>/<layer_id>.geojson``.
+    One seam so the writer (here) and any later reader name it identically.
+    """
+    return f"{DURABLE_CASE_DATA_PREFIX}/{case_id}/{layer_id}.geojson"
+
+
+def _vector_uri_to_geojson_bytes(layer_uri: str) -> bytes | None:
+    """Read a vector artifact URI and return UTF-8 GeoJSON FeatureCollection bytes.
+
+    REUSES the existing read + parse helpers — does NOT reimplement them:
+      - ``.fgb`` bytes -> ``pipeline_emitter._fgb_bytes_to_geojson`` (pyogrio +
+        geopandas; the same converter the inline path uses).
+      - ``.geojson`` / ``.json`` -> validated FeatureCollection passed through.
+
+    Source bytes are read with the SAME boto3 EC2-instance-role client every
+    other s3 download in this module uses (``cache.read_object_bytes_s3``); a
+    local path is read directly (dev / test convenience). Returns ``None`` on
+    ANY read / parse / unsupported-extension error (caller fails open).
+    """
+    import json as _json
+
+    try:
+        if layer_uri.startswith("s3://"):
+            from .cache import read_object_bytes_s3
+
+            raw = read_object_bytes_s3(layer_uri)
+        elif layer_uri.startswith(("gs://", "/vsigs/")):
+            # GCP is decommissioned; a gs:// vector here is unexpected on the
+            # AWS data island. Fail open (caller -> benign no-op).
+            return None
+        else:
+            with open(layer_uri, "rb") as f:
+                raw = f.read()
+    except Exception as exc:  # noqa: BLE001 — fail-open
+        logger.warning(
+            "publish_layer: durable-geojson source read failed uri=%s (%s: %s)",
+            layer_uri,
+            type(exc).__name__,
+            exc,
+        )
+        return None
+
+    ext = layer_uri.lower().rstrip("/").rsplit(".", 1)[-1] if "." in layer_uri else ""
+    try:
+        if ext == "fgb":
+            from ..pipeline_emitter import _fgb_bytes_to_geojson
+
+            obj = _fgb_bytes_to_geojson(raw)
+            if obj is None:
+                return None
+        elif ext in {"geojson", "json"}:
+            obj = _json.loads(raw)
+            if not isinstance(obj, dict) or obj.get("type") != "FeatureCollection":
+                logger.warning(
+                    "publish_layer: durable-geojson source is not a "
+                    "FeatureCollection uri=%s",
+                    layer_uri,
+                )
+                return None
+        else:
+            logger.warning(
+                "publish_layer: durable-geojson unsupported extension %r uri=%s",
+                ext,
+                layer_uri,
+            )
+            return None
+        return _json.dumps(obj).encode("utf-8")
+    except Exception as exc:  # noqa: BLE001 — fail-open
+        logger.warning(
+            "publish_layer: durable-geojson parse/dump failed uri=%s (%s: %s)",
+            layer_uri,
+            type(exc).__name__,
+            exc,
+        )
+        return None
+
+
+def _write_durable_vector_geojson(
+    layer_uri: str, layer_id: str, case_id: str
+) -> str | None:
+    """Materialize a vector layer's GeoJSON to the DURABLE runs bucket (#165 P0).
+
+    Reads ``layer_uri`` (FlatGeobuf / GeoJSON) to a GeoJSON FeatureCollection,
+    writes it to ``s3://<runs_bucket>/case-data/<case_id>/<layer_id>.geojson``
+    via the SAME boto3 EC2-instance-role client + runs-bucket convention every
+    run artifact uses (``solver._get_runs_bucket``), and returns the durable
+    ``s3://`` asset URI.
+
+    FAIL-OPEN: returns ``None`` on ANY read / parse / write error (the caller
+    degrades to the existing benign no-op — data-source-fallback norm). NEVER
+    raises.
+    """
+    geojson_bytes = _vector_uri_to_geojson_bytes(layer_uri)
+    if geojson_bytes is None:
+        return None
+    try:
+        import boto3
+
+        from .solver import _get_runs_bucket
+
+        bucket = _get_runs_bucket()
+        key = durable_vector_geojson_key(case_id, layer_id)
+        s3 = boto3.client(
+            "s3", region_name=os.environ.get("AWS_REGION", "us-west-2")
+        )
+        s3.put_object(
+            Bucket=bucket,
+            Key=key,
+            Body=geojson_bytes,
+            ContentType="application/geo+json",
+        )
+        asset_uri = f"s3://{bucket}/{key}"
+        logger.info(
+            "publish_layer: durable vector GeoJSON written layer_id=%s case=%s "
+            "asset=%s bytes=%d",
+            layer_id,
+            case_id,
+            asset_uri,
+            len(geojson_bytes),
+        )
+        return asset_uri
+    except Exception as exc:  # noqa: BLE001 — fail-open
+        logger.warning(
+            "publish_layer: durable vector GeoJSON write failed layer_id=%s "
+            "case=%s (%s: %s) — falling back to benign no-op",
+            layer_id,
+            case_id,
+            type(exc).__name__,
+            exc,
+        )
+        return None
+
+
+# --------------------------------------------------------------------------- #
 # F33: overview enforcement (no-overview COGs render spotty / never paint)
 # --------------------------------------------------------------------------- #
 
@@ -1720,6 +1892,39 @@ def publish_layer(
                     layer_id, gcs_uri=layer_uri, wms_url=wms_url
                 )
                 return wms_url
+            # DATA-ISLAND #165 PHASE 0: when no QGIS WMS base is configured
+            # (the live stack TODAY) write a DURABLE, browser-readable GeoJSON
+            # for this vector so the box-off cold path can paint it. The .fgb is
+            # the browser-unreadable DATA face; the GeoJSON asset is the DISPLAY
+            # face. ``case_id`` is threaded by the server wrapper
+            # (``_invoke_tool_via_emitter``: ``params.setdefault("case_id", ...)``
+            # for EVERY publish_layer call, raster OR vector) so an in-Case
+            # vector publish reaches here with the Case bound. FAIL-OPEN: any
+            # geopandas/read/write error returns the existing benign no-op
+            # (data-source-fallback norm; never raise).
+            if case_id:
+                asset_uri = _write_durable_vector_geojson(
+                    layer_uri, layer_id, case_id
+                )
+                if asset_uri is not None:
+                    # Register BOTH faces: the s3:// .fgb stays the DATA uri,
+                    # the durable s3:// GeoJSON asset is the DISPLAY face. It is
+                    # routed via ``wms_url`` so it NEVER displaces the data uri
+                    # (mirrors the WMS / tile-template branches above).
+                    observe_published_layer(
+                        layer_id, gcs_uri=layer_uri, wms_url=asset_uri
+                    )
+                    logger.info(
+                        "publish_layer (durable-vector) layer_id=%s data=%s "
+                        "display=%s",
+                        layer_id,
+                        layer_uri,
+                        asset_uri,
+                    )
+                    return asset_uri
+            # No Case context, or the durable write failed: fall back to the
+            # existing benign no-op (vectors still render inline via their
+            # producing fetch tool's GeoJSON while the agent box is awake).
             return _benign_vector_noop(layer_uri, layer_id)
         if not layer_uri.startswith("s3://"):
             raise PublishLayerError(
