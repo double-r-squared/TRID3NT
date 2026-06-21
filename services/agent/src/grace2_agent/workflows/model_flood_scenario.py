@@ -109,6 +109,10 @@ from .postprocess_flood import (
     PostprocessError,
     postprocess_flood,
 )
+from .postprocess_waves import (
+    WAVE_HEIGHT_STYLE_PRESET,
+    postprocess_waves,
+)
 from .sfincs_builder import (
     BuildOptions,
     DischargeForcing,
@@ -2517,6 +2521,157 @@ async def model_flood_scenario(
             "bound (direct/smoke/test) — frames not emitted to the map.",
             len(frame_layers),
         )
+
+    # --- Step 9c: postprocess + emit the SnapWave WAVE field (sprint-17) ---
+    # GATED on a quadtree+SnapWave run: the time-resolved wave height field
+    # (hm0 / hm0ig, dims (nmesh2d_face, time)) is written EVERY output step ONLY
+    # on the quadtree+SnapWave solve, so the wave postprocess runs ONLY when the
+    # combined quadtree job ran (``quadtree_run_result is not None`` — the
+    # regular-grid SFINCS path has no wave field). This makes the SnapWave waves
+    # visibly ANIMATE on the Mexico Beach (Hurricane Michael) North Star.
+    #
+    # DEGRADE-not-fail: the entire block is best-effort (mirrors the Step 7.5
+    # mesh-emit pattern). A wave-postprocess failure (no SnapWave field, a COG
+    # write error, a publish/emit error) MUST NEVER sink the depth layers OR the
+    # envelope — it logs + degrades, leaving the flood-depth peak + frames intact.
+    # The peak wave layer takes the SAME publish-or-honest-drop gate the depth
+    # peak uses; the wave frames emit OUT-OF-BAND via the emitter (same as the
+    # depth frames) so they form a SEPARATE web scrubber group ("Wave height
+    # step N") without changing the tool's single-LayerURI return shape.
+    if quadtree_run_result is not None:
+        try:
+            wave_layers, _wave_metrics = await asyncio.to_thread(
+                postprocess_waves,
+                run_result.output_uri or _default_runs_prefix(run_result.run_id),
+                run_id=run_result.run_id,
+                bbox=resolved_bbox,
+            )
+        except PostprocessError as exc:
+            # No SnapWave field / read / write failure — degrade silently to the
+            # depth layers (a non-SnapWave quadtree run is a legitimate state).
+            logger.info(
+                "model_flood_scenario: wave postprocess degraded (%s: %s) — "
+                "depth layers intact, no wave animation.",
+                exc.error_code, exc,
+            )
+            wave_layers = []
+        except Exception as exc:  # noqa: BLE001 — wave emit is non-fatal
+            logger.warning(
+                "model_flood_scenario: wave postprocess raised unexpectedly "
+                "(non-fatal): %s — depth layers intact.",
+                exc,
+            )
+            wave_layers = []
+
+        wave_peak = [lyr for lyr in wave_layers if lyr.role == "primary"]
+        wave_frames = [lyr for lyr in wave_layers if lyr.role != "primary"]
+
+        # Peak wave layer — publish-or-honest-drop gate (same as the depth peak).
+        # The published peak wave LayerURI is appended to ``published_layers`` so
+        # it rides into the success envelope's ResultLayer set alongside the
+        # depth peak; a publish failure DROPS it (a raw s3:// never renders).
+        for lyr in wave_peak:
+            if lyr.uri.startswith("gs://") or lyr.uri.startswith("s3://"):
+                try:
+                    wave_wms_url = await asyncio.to_thread(
+                        publish_layer,
+                        layer_uri=lyr.uri,
+                        layer_id=lyr.layer_id,
+                        style_preset=lyr.style_preset or WAVE_HEIGHT_STYLE_PRESET,
+                    )
+                except PublishLayerError as exc:
+                    logger.warning(
+                        "model_flood_scenario: publish_layer failed for peak "
+                        "wave layer_id=%s error_code=%s (%s) — dropping it "
+                        "(depth layers intact).",
+                        lyr.layer_id, exc.error_code, exc,
+                    )
+                    continue
+                except Exception as exc:  # noqa: BLE001 — never break the solve
+                    logger.warning(
+                        "model_flood_scenario: peak wave publish raised "
+                        "unexpectedly (non-fatal): %s", exc,
+                    )
+                    continue
+                published_layers.append(
+                    LayerURI(
+                        layer_id=lyr.layer_id,
+                        name=lyr.name,
+                        layer_type=lyr.layer_type,
+                        uri=wave_wms_url,
+                        style_preset=lyr.style_preset or WAVE_HEIGHT_STYLE_PRESET,
+                        role=lyr.role,
+                        units=lyr.units,
+                        bbox=resolved_bbox,
+                    )
+                )
+                logger.info(
+                    "model_flood_scenario: published peak wave layer_id=%s",
+                    lyr.layer_id,
+                )
+            else:
+                published_layers.append(lyr)
+
+        # Wave frames — publish + emit OUT-OF-BAND (same as the depth frames) so
+        # they form a SEPARATE "Wave height step N" scrubber group. Emitted only
+        # through the emitter (NOT added to published_layers / result_layers), so
+        # they never reach summarize_tool_result. Skipped when no emitter bound.
+        if wave_frames and emitter is not None:
+            published_wave_frames = 0
+            for lyr in wave_frames:
+                if not (lyr.uri.startswith("gs://") or lyr.uri.startswith("s3://")):
+                    try:
+                        await emitter.add_loaded_layer(lyr)
+                        published_wave_frames += 1
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "wave frame emit failed for %s: %s", lyr.layer_id, exc
+                        )
+                    continue
+                try:
+                    wf_wms_url = await asyncio.to_thread(
+                        publish_layer,
+                        layer_uri=lyr.uri,
+                        layer_id=lyr.layer_id,
+                        style_preset=lyr.style_preset or WAVE_HEIGHT_STYLE_PRESET,
+                    )
+                except PublishLayerError as exc:
+                    logger.warning(
+                        "publish_layer failed for wave frame layer_id=%s "
+                        "error_code=%s (%s) — dropping this wave frame.",
+                        lyr.layer_id, exc.error_code, exc,
+                    )
+                    continue
+                except Exception as exc:  # noqa: BLE001 — never break the solve
+                    logger.warning(
+                        "wave frame publish raised unexpectedly (non-fatal): %s",
+                        exc,
+                    )
+                    continue
+                wave_frame_layer = LayerURI(
+                    layer_id=lyr.layer_id,
+                    name=lyr.name,  # "Wave height step N" — the web grouping token
+                    layer_type=lyr.layer_type,
+                    uri=wf_wms_url,
+                    style_preset=lyr.style_preset or WAVE_HEIGHT_STYLE_PRESET,
+                    role=lyr.role,  # "context"
+                    units=lyr.units,
+                    bbox=resolved_bbox,
+                )
+                try:
+                    await emitter.add_loaded_layer(wave_frame_layer)
+                    published_wave_frames += 1
+                except Exception as exc:  # noqa: BLE001 — never break the solve
+                    logger.warning(
+                        "wave frame add_loaded_layer failed for %s: %s",
+                        lyr.layer_id, exc,
+                    )
+            if published_wave_frames:
+                logger.info(
+                    "model_flood_scenario: emitted %d/%d wave-animation frames "
+                    "as a separate sequential group (run_id=%s)",
+                    published_wave_frames, len(wave_frames), run_result.run_id,
+                )
 
     # --- Step 10: build success envelope ---
     bbox_area_km2 = _bbox_area_km2(resolved_bbox)

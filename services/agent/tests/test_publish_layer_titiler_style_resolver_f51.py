@@ -187,6 +187,54 @@ def test_plume_preset_params_unchanged() -> None:
     )
 
 
+# --------------------------------------------------------------------------- #
+# sprint-17 wave animation — continuous_wave_height (ADDITIVE; depth unchanged)
+# --------------------------------------------------------------------------- #
+
+
+def test_wave_height_preset_resolves_to_cyan_ramp() -> None:
+    """continuous_wave_height resolves to the new 0,6 gnbu (cyan/blue) ramp."""
+    assert (
+        _registry_style_params("continuous_wave_height")
+        == "&rescale=0,6&colormap_name=gnbu"
+    )
+
+
+def test_wave_height_preset_is_in_registry() -> None:
+    assert "continuous_wave_height" in pl._TITILER_STYLE_REGISTRY
+    assert pl._TITILER_STYLE_REGISTRY["continuous_wave_height"] == ("0,6", "gnbu")
+
+
+def test_wave_height_distinct_from_flood_depth() -> None:
+    """The wave ramp must be VISIBLY distinct from depth (different colormap)."""
+    wave = _registry_style_params("continuous_wave_height")
+    depth = _registry_style_params("continuous_flood_depth")
+    assert wave != depth
+    assert "gnbu" in wave
+    assert "ylgnbu" in depth
+
+
+def test_flood_depth_byte_identical_after_wave_addition() -> None:
+    """Adding the wave preset MUST NOT change continuous_flood_depth (byte-id)."""
+    assert (
+        _registry_style_params("continuous_flood_depth")
+        == "&rescale=0,3&colormap_name=ylgnbu"
+    )
+    assert pl._TITILER_STYLE_REGISTRY["continuous_flood_depth"] == ("0,3", "ylgnbu")
+
+
+def test_resolve_wave_height_preset_wins_over_band_stats(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The wave registry entry resolves even with a continuous COG in hand
+    (registry exact-match wins before the band-stats fallback)."""
+    monkeypatch.setattr(
+        MOD, "_read_raster_bytes", lambda uri: _continuous_geotiff_bytes(0.0, 6.0)
+    )
+    out = _resolve_titiler_style_params("continuous_wave_height", "s3://b/wave.tif")
+    assert out == "&rescale=0,6&colormap_name=gnbu"
+
+
 def test_resolve_flood_preset_does_not_read_or_rescale_differently(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

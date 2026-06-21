@@ -295,28 +295,251 @@ def _orient_array_for_cog(arr: Any, ds: Any) -> Any:
     return np.ascontiguousarray(arr)
 
 
+def _is_quadtree_output(ds: Any) -> bool:
+    """Probe whether a SFINCS dataset is a FACE-INDEXED UGRID (quadtree) output.
+
+    The cht_sfincs quadtree solve writes a UGRID ``sfincs_map.nc`` whose fields
+    live on ``nmesh2d_face`` (one scalar per quadtree face) with per-face
+    coordinates ``mesh2d_face_x`` / ``mesh2d_face_y`` — NOT the regular
+    ``(n, m)`` grid + 1D ``x``/``y`` coords the legacy ``_write_verified_cog``
+    ``from_bounds`` path assumes. ``_write_verified_cog`` branches on this probe
+    so a face-indexed field routes through ``_rasterize_face_field`` (P1) instead
+    of failing on the missing regular-grid coords. Probe is purely structural
+    (dim name OR the face-x variable) so it never imports cht_sfincs.
+    """
+    try:
+        dims = set(getattr(ds, "dims", {}))
+        variables = set(getattr(ds, "variables", {}))
+    except Exception:  # noqa: BLE001
+        return False
+    return "nmesh2d_face" in dims or "mesh2d_face_x" in variables
+
+
+def _read_face_coords(ds: Any) -> tuple[Any, Any]:
+    """Read the per-face centroid coordinates (UGRID quadtree output).
+
+    Returns ``(face_x, face_y)`` 1D numpy arrays in the deck's projected CRS
+    (UTM metres). The canonical UGRID names are ``mesh2d_face_x`` /
+    ``mesh2d_face_y``; some cht/SFINCS variants use ``face_x`` / ``face_y`` —
+    both are tried. Raised as ``RUN_OUTPUT_UNEXPECTED_SHAPE`` when neither pair
+    is present so a malformed quadtree output surfaces a typed error rather than
+    a silent grayscale.
+    """
+    import numpy as np  # type: ignore[import-not-found]
+
+    for xk, yk in (("mesh2d_face_x", "mesh2d_face_y"), ("face_x", "face_y")):
+        if xk in ds.variables and yk in ds.variables:
+            return (
+                np.asarray(ds[xk].values, dtype="float64").ravel(),
+                np.asarray(ds[yk].values, dtype="float64").ravel(),
+            )
+    raise PostprocessError(
+        "RUN_OUTPUT_UNEXPECTED_SHAPE",
+        message=(
+            "quadtree output carries no face-centroid coordinates "
+            "(mesh2d_face_x/_y or face_x/_y)"
+        ),
+        details={"variables": list(ds.variables.keys())},
+    )
+
+
+def _rasterize_face_field(
+    values_1d: Any,
+    face_x: Any,
+    face_y: Any,
+    *,
+    crs: str,
+    bbox: tuple[float, float, float, float] | None,
+    resolution_m: float = 30.0,
+) -> tuple[Any, Any]:
+    """Grid a per-face scalar UGRID field onto a regular raster.
+
+    The quadtree solve emits one scalar per face (``values_1d``) at the face
+    centroids (``face_x``/``face_y`` in the deck's PROJECTED CRS — UTM metres).
+    To produce a COG the agent's TiTiler fast-path can serve, we interpolate the
+    scattered per-face values onto a regular metric grid via
+    ``scipy.interpolate.griddata`` (nearest-neighbour — preserves the per-face
+    value, no smoothing across the variable-size quadtree, and never invents
+    intermediate magnitudes), at ``resolution_m`` metres.
+
+    The output raster is authored in the SAME projected CRS as the face coords
+    (UTM); the COG carries that CRS tag so MapLibre/TiTiler reproject on the fly.
+    ``bbox`` (EPSG:4326) is reprojected to the face CRS to bound the output grid
+    when supplied; otherwise the face-coordinate extent is used.
+
+    Returns ``(arr_2d, transform)`` — a float32 2D array (row 0 = north) and the
+    rasterio Affine. NaN fills cells with no nearby face (outside the convex hull
+    of the mesh) so the dry/no-data mask downstream stays honest.
+
+    Never imports the GPL cht packages — pure numpy + scipy + the face vars off
+    the NetCDF (the 1.2GB cht deck-builder stays in the worker image).
+    """
+    import numpy as np  # type: ignore[import-not-found]
+    import rasterio  # type: ignore[import-not-found]
+    from scipy.interpolate import griddata  # type: ignore[import-not-found]
+
+    vals = np.asarray(values_1d, dtype="float64").ravel()
+    fx = np.asarray(face_x, dtype="float64").ravel()
+    fy = np.asarray(face_y, dtype="float64").ravel()
+    if not (vals.shape[0] == fx.shape[0] == fy.shape[0]):
+        raise PostprocessError(
+            "RUN_OUTPUT_UNEXPECTED_SHAPE",
+            message=(
+                f"quadtree face field length {vals.shape[0]} != face-coord "
+                f"length ({fx.shape[0]}, {fy.shape[0]})"
+            ),
+            details={"n_values": int(vals.shape[0]), "n_faces": int(fx.shape[0])},
+        )
+
+    # Drop non-finite faces (defensive — a NaN centroid would poison the grid).
+    finite = np.isfinite(fx) & np.isfinite(fy)
+    fx, fy, vals = fx[finite], fy[finite], vals[finite]
+    if fx.size == 0:
+        raise PostprocessError(
+            "RUN_OUTPUT_EMPTY",
+            message="quadtree output has no finite face centroids",
+            details={},
+        )
+
+    # --- output grid extent in the FACE (projected) CRS ---
+    # Reproject the AOI bbox (EPSG:4326) into the face CRS when supplied; else
+    # bound to the face-coordinate extent. The face CRS is UTM metres so the
+    # resolution is directly metres-per-pixel.
+    minx = maxx = miny = maxy = None
+    if bbox is not None:
+        try:
+            from pyproj import Transformer  # type: ignore[import-not-found]
+
+            tf = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
+            bx0, by0 = tf.transform(float(bbox[0]), float(bbox[1]))
+            bx1, by1 = tf.transform(float(bbox[2]), float(bbox[3]))
+            minx, maxx = min(bx0, bx1), max(bx0, bx1)
+            miny, maxy = min(by0, by1), max(by0, by1)
+        except Exception as exc:  # noqa: BLE001 — fall back to the face extent
+            logger.warning(
+                "postprocess_flood: bbox->%s reproject for the quadtree raster "
+                "grid failed (%s); bounding to the face extent instead.",
+                crs, exc,
+            )
+            minx = maxx = miny = maxy = None
+    if minx is None:
+        minx, maxx = float(fx.min()), float(fx.max())
+        miny, maxy = float(fy.min()), float(fy.max())
+
+    res = max(1.0, float(resolution_m))
+    width = max(1, int(np.ceil((maxx - minx) / res)))
+    height = max(1, int(np.ceil((maxy - miny) / res)))
+    # Guard against a degenerate / pathological grid blowing memory.
+    _MAX_DIM = 8192
+    if width > _MAX_DIM or height > _MAX_DIM:
+        scale = max(width / _MAX_DIM, height / _MAX_DIM)
+        res = res * scale
+        width = max(1, int(np.ceil((maxx - minx) / res)))
+        height = max(1, int(np.ceil((maxy - miny) / res)))
+
+    # Pixel centres (row 0 = north → descending y).
+    xs = minx + (np.arange(width) + 0.5) * res
+    ys = maxy - (np.arange(height) + 0.5) * res
+    grid_x, grid_y = np.meshgrid(xs, ys)
+
+    arr = griddata(
+        (fx, fy), vals, (grid_x, grid_y), method="nearest"
+    ).astype("float32")
+    # Mask grid cells outside the mesh's convex hull (no nearby face) to NaN so
+    # nearest-neighbour does not stretch the edge value across empty space.
+    try:
+        hull_mask = griddata(
+            (fx, fy), np.ones_like(vals), (grid_x, grid_y), method="linear"
+        )
+        arr = np.where(np.isfinite(hull_mask), arr, np.nan).astype("float32")
+    except Exception:  # noqa: BLE001 — convex-hull mask is best-effort
+        pass
+
+    transform = rasterio.transform.from_bounds(
+        minx, miny, maxx, maxy, width, height
+    )
+    return np.ascontiguousarray(arr), transform
+
+
 def _write_verified_cog(
     arr_2d: Any,
     *,
     ds: Any,
     netcdf_path: Path,
+    face_values: Any = None,
+    bbox: tuple[float, float, float, float] | None = None,
+    resolution_m: float = 30.0,
+    nodata_threshold_m: float = NODATA_DEPTH_M,
 ) -> tuple[Path, dict[str, Any]]:
-    """Orient, mask, write, and CRS-verify a single 2D depth array as a COG.
+    """Orient, mask, write, and CRS-verify a single 2D field as a COG.
 
-    The reusable per-frame COG writer (flood-animation Phase 1). Applies the
-    rotation/Y-flip/X-flip orientation guards (``_orient_array_for_cog``), masks
-    sub-threshold depths to NaN, writes a Cloud-Optimized GeoTIFF to a tmp path,
-    then re-opens it to assert the CRS tag round-trips (TiTiler-wedge guard: the
-    COG is guaranteed valid + correctly CRS-tagged before any upload).
+    The reusable per-frame COG writer (flood-animation Phase 1; now quadtree
+    aware, P1). Two input modes:
 
-    Returns ``(tmp_cog_path, metrics_summary)`` where ``metrics_summary`` carries
-    the depth aggregates (max/mean/p95/flooded_cell_count) FOR THIS ARRAY plus
-    ``crs`` + ``units`` — the peak path uses the peak array's aggregates for
-    FloodMetrics; per-frame callers ignore the per-frame aggregates.
+    - **Regular grid** (default): ``arr_2d`` is a 2D ``(n, m)`` array; the
+      rotation/Y-flip/X-flip orientation guards (``_orient_array_for_cog``) are
+      applied and the transform comes from the 1D ``x``/``y`` coords via
+      ``rasterio.transform.from_bounds`` (legacy path, byte-identical when
+      ``face_values is None`` and the dataset is NOT face-indexed).
+    - **Quadtree / face-indexed UGRID**: when the dataset is face-indexed
+      (``_is_quadtree_output``) OR ``face_values`` (a 1D per-face array) is
+      supplied, the field is rasterized via ``_rasterize_face_field`` onto a
+      regular metric grid in the deck's projected (UTM) CRS — no ``from_bounds``
+      regular-grid assumption. This is what fixes BOTH depth and waves on the
+      true quadtree path (the legacy path would raise on the missing ``x``/``y``
+      regular coords).
+
+    Sub-threshold values (< ``nodata_threshold_m``) are masked to NaN so the COG
+    is dry/no-data aware (job-0071). Returns ``(tmp_cog_path, metrics_summary)``
+    with the field aggregates (max/mean/p95/flooded_cell_count) + ``crs`` +
+    ``units``.
     """
     import numpy as np  # type: ignore[import-not-found]
     import rasterio  # type: ignore[import-not-found]
 
+    crs = _read_crs_from_dataset(ds)
+
+    # --- Quadtree / face-indexed branch (P1) -------------------------------- #
+    # Route a per-face scalar field through the UGRID rasterizer. Triggered when
+    # an explicit ``face_values`` 1D array is passed OR the dataset is face
+    # indexed (then ``arr_2d`` IS the 1D per-face field). Reads face geometry
+    # straight off the NetCDF (mesh2d_face_x/_y) — never imports cht_sfincs.
+    face_indexed = _is_quadtree_output(ds)
+    face_field = face_values if face_values is not None else (
+        arr_2d if face_indexed else None
+    )
+    if face_indexed or face_values is not None:
+        face_x, face_y = _read_face_coords(ds)
+        arr, transform = _rasterize_face_field(
+            face_field,
+            face_x,
+            face_y,
+            crs=crs,
+            bbox=bbox,
+            resolution_m=resolution_m,
+        )
+        arr_masked = np.where(arr > nodata_threshold_m, arr, np.nan)
+        flooded = arr_masked[~np.isnan(arr_masked)]
+        if flooded.size == 0:
+            metrics_summary: dict[str, Any] = {
+                "max_depth_m": 0.0,
+                "mean_depth_m": 0.0,
+                "p95_depth_m": 0.0,
+                "flooded_cell_count": 0,
+            }
+        else:
+            metrics_summary = {
+                "max_depth_m": float(np.nanmax(flooded)),
+                "mean_depth_m": float(np.nanmean(flooded)),
+                "p95_depth_m": float(np.nanpercentile(flooded, 95)),
+                "flooded_cell_count": int(flooded.size),
+            }
+        return _finalize_cog(
+            arr_masked, crs=crs, transform=transform, netcdf_path=netcdf_path,
+            metrics_summary=metrics_summary,
+        )
+
+    # --- Regular-grid branch (legacy, byte-identical) ----------------------- #
     arr = np.asarray(arr_2d, dtype="float32")
     if arr.ndim > 2:
         arr = np.squeeze(arr)
@@ -332,10 +555,10 @@ def _write_verified_cog(
     arr = _orient_array_for_cog(arr, ds)
 
     # Mask sub-threshold depths to NaN so the COG is dry-cell-aware (job-0071).
-    arr_masked = np.where(arr > NODATA_DEPTH_M, arr, np.nan)
+    arr_masked = np.where(arr > nodata_threshold_m, arr, np.nan)
     flooded = arr_masked[~np.isnan(arr_masked)]
     if flooded.size == 0:
-        metrics_summary: dict[str, Any] = {
+        metrics_summary = {
             "max_depth_m": 0.0,
             "mean_depth_m": 0.0,
             "p95_depth_m": 0.0,
@@ -350,7 +573,6 @@ def _write_verified_cog(
         }
 
     # CRS + transform from the dataset (CF-convention 'crs' variable; OQ-59 fix).
-    crs = _read_crs_from_dataset(ds)
     try:
         _x = ds["x"].values
         _y = ds["y"].values
@@ -361,14 +583,41 @@ def _write_verified_cog(
     except Exception:  # noqa: BLE001
         transform = rasterio.Affine.identity()
 
+    return _finalize_cog(
+        arr_masked, crs=crs, transform=transform, netcdf_path=netcdf_path,
+        metrics_summary=metrics_summary,
+    )
+
+
+def _finalize_cog(
+    arr_masked: Any,
+    *,
+    crs: str,
+    transform: Any,
+    netcdf_path: Path,
+    metrics_summary: dict[str, Any],
+) -> tuple[Path, dict[str, Any]]:
+    """Write the (already oriented + masked) 2D array as a CRS-verified COG.
+
+    Shared tail of ``_write_verified_cog`` (both the regular-grid and the
+    quadtree-rasterized branches feed identical bytes here): write the LZW COG to
+    a tmp path, then re-open it to assert the CRS tag round-trips + the
+    geographic/projected classification is consistent with the bounds magnitudes
+    (the TiTiler-wedge / mistagged-raster guards). Returns
+    ``(tmp_cog_path, metrics_summary)`` with ``crs`` + ``units`` attached.
+    """
+    import numpy as np  # type: ignore[import-not-found]
+    import rasterio  # type: ignore[import-not-found]
+
+    arr_masked = np.asarray(arr_masked, dtype="float32")
     tmp_cog = Path(tempfile.NamedTemporaryFile(suffix=".tif", delete=False).name)
     try:
         with rasterio.open(
             tmp_cog,
             "w",
             driver="COG",
-            width=arr.shape[-1],
-            height=arr.shape[-2],
+            width=arr_masked.shape[-1],
+            height=arr_masked.shape[-2],
             count=1,
             dtype="float32",
             crs=crs,

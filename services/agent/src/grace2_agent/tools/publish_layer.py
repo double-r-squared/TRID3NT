@@ -494,6 +494,11 @@ _TITILER_STYLE_REGISTRY: dict[str, tuple[str, str]] = {
     # Hydrology (UNCHANGED — pre-F51 behavior pinned by tests).
     "continuous_flood_depth": ("0,3", "ylgnbu"),
     "continuous_plume_concentration": ("0,10", "reds"),
+    # SnapWave significant wave height (m) — sprint-17 wave animation. A
+    # CYAN/BLUE ramp (gnbu) over 0..6 m, visibly DISTINCT from depth's ylgnbu so
+    # the wave layer group never looks identical to the flood-depth group on the
+    # Mexico Beach North Star. ADDITIVE — depth/plume stay byte-identical.
+    "continuous_wave_height": ("0,6", "gnbu"),
     # Precipitation (mm).
     "precipitation_mm": ("0,100", "blues"),
     "gridmet_pr": ("0,100", "blues"),
