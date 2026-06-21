@@ -1157,17 +1157,28 @@ def _resolve_surge_forcing_from_fetchers(
         cama_uri = dq.get("cama_cog_uri")
         already = dq.get("timeseries_uri") or dq.get("geodataset_uri")
         if dq_fetch and not already:
+            # UNIT WIRING (Invariant-7 silent-wrong-physics guard): SFINCS dis is
+            # m^3/s. A USGS NWIS hydrograph FGB carries discharge in ft^3/s (cfs);
+            # NWM's streamflow_cms is already metric. discharge_forcing_from_fgb
+            # defaults value_unit="cms", so a USGS hydrograph routed through here
+            # WITHOUT a unit would be fed ~35.3x too large. Thread an explicit
+            # value_unit, inferring cfs for USGS/NWIS sources when not supplied.
+            dq_unit = dq.get("value_unit")
+            if not dq_unit:
+                _src = str(dq_fetch).lower()
+                dq_unit = "cfs" if ("usgs" in _src or "nwis" in _src) else "cms"
             out["discharge"] = discharge_forcing_from_fgb(
                 dq_fetch,
                 window_hours=window_hours,
                 rivers_uri=dq.get("rivers_uri"),
                 hydrography_uri=dq.get("hydrography_uri"),
                 river_upa_km2=dq.get("river_upa_km2"),
+                value_unit=dq_unit,
             )
             if data_sources is not None:
                 data_sources.append(
                     DataSource(
-                        name="River-discharge forcing (NWM → SFINCS dis)",
+                        name="River-discharge forcing (USGS/NWM → SFINCS dis)",
                         uri=str(dq_fetch),
                         accessed_at=datetime.now(timezone.utc),
                     )

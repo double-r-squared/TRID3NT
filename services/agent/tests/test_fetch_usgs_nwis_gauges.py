@@ -43,8 +43,10 @@ from grace2_agent.tools.fetch_usgs_nwis_gauges import (
     _build_iv_url,
     _build_site_url,
     _parse_iv_json,
+    _parse_iv_json_window,
     _parse_site_rdb,
     _records_bbox,
+    _resolve_window,
     _validate_bbox,
     _validate_state_code,
     estimate_payload_mb,
@@ -94,6 +96,49 @@ def _ts(
         "variable": {"variableCode": [{"value": param}]},
         "values": [{"value": [{"value": value, "dateTime": dt}]}],
     }
+
+
+def _ts_window(
+    site_no: str,
+    site_name: str,
+    lat: float,
+    lon: float,
+    param: str,
+    samples: list[tuple[str, str]],
+) -> dict[str, Any]:
+    """Build one IV timeSeries entry carrying a MULTI-sample window (hydrograph).
+
+    ``samples`` is a list of ``(dateTime, value)`` rows — the full series the IV
+    service returns when called with a startDT/endDT (or period) window.
+    """
+    return {
+        "sourceInfo": {
+            "siteName": site_name,
+            "siteCode": [{"value": site_no}],
+            "geoLocation": {
+                "geogLocation": {"latitude": lat, "longitude": lon}
+            },
+        },
+        "variable": {"variableCode": [{"value": param}]},
+        "values": [
+            {"value": [{"value": v, "dateTime": dt} for dt, v in samples]}
+        ],
+    }
+
+
+def _hydrograph_samples(n: int = 12, base: float = 100.0) -> list[tuple[str, str]]:
+    """Build ``n`` hourly (dateTime, value) discharge samples — a rising/falling
+    flood wave so the values are NOT constant (proves it is a real hydrograph)."""
+    out: list[tuple[str, str]] = []
+    for i in range(n):
+        dt = (
+            datetime.datetime(2018, 10, 10, 0, 0, 0, tzinfo=datetime.timezone.utc)
+            + datetime.timedelta(hours=i)
+        )
+        # Triangular flood wave peaking mid-window.
+        v = base + (i if i <= n // 2 else (n - i)) * 50.0
+        out.append((dt.strftime("%Y-%m-%dT%H:%M:%S.000-00:00"), f"{v:.2f}"))
+    return out
 
 
 def _make_site_rdb(rows: list[tuple[str, str, float, float]]) -> bytes:
@@ -633,6 +678,190 @@ def test_extra_kwargs_absorbed():
             another_fake=42,  # type: ignore[call-arg]
         )
     assert result.layer_type == "vector"
+
+
+# ---------------------------------------------------------------------------
+# WINDOW / HYDROGRAPH mode (J4 — the compound-flood discharge driver).
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_window_none_is_instant_default():
+    # No temporal selector -> None (the latest-instantaneous default).
+    assert _resolve_window(None, None, None) is None
+
+
+def test_resolve_window_period_wins():
+    # A period is returned uppercased and verbatim, and WINS over dates.
+    assert _resolve_window(None, None, "p7d") == "P7D"
+    assert _resolve_window("2018-10-08", "2018-10-14", "P3D") == "P3D"
+
+
+def test_resolve_window_period_invalid_raises():
+    with pytest.raises(NwisInputError, match="ISO-8601 duration"):
+        _resolve_window(None, None, "last week")
+
+
+def test_resolve_window_dates_ok():
+    assert _resolve_window("2018-10-08", "2018-10-14", None) == (
+        "2018-10-08",
+        "2018-10-14",
+    )
+
+
+def test_resolve_window_half_open_raises():
+    with pytest.raises(NwisInputError, match="BOTH start_date and end_date"):
+        _resolve_window("2018-10-08", None, None)
+
+
+def test_resolve_window_reversed_raises():
+    with pytest.raises(NwisInputError, match="start_date must be <="):
+        _resolve_window("2018-10-14", "2018-10-08", None)
+
+
+def test_resolve_window_over_cap_raises():
+    with pytest.raises(NwisInputError, match="exceeds the"):
+        _resolve_window("2018-01-01", "2018-12-31", None)
+
+
+def test_build_iv_url_window_dates():
+    url = _build_iv_url(
+        state_code=None,
+        bbox=_BOISE_BBOX,
+        window=("2018-10-08", "2018-10-14"),
+    )
+    assert "startDT=2018-10-08" in url
+    assert "endDT=2018-10-14" in url
+    assert "period" not in url
+
+
+def test_build_iv_url_window_period():
+    url = _build_iv_url(state_code="ID", bbox=None, window="P7D")
+    assert "period=P7D" in url
+    assert "startDT" not in url
+
+
+def test_build_iv_url_no_window_has_no_temporal_param():
+    url = _build_iv_url(state_code=None, bbox=_BOISE_BBOX, window=None)
+    assert "startDT" not in url and "endDT" not in url and "period" not in url
+
+
+def test_parse_iv_window_builds_multipoint_time_series_csv():
+    """A windowed IV body yields a per-station time_series_csv with >2 rows."""
+    samples = _hydrograph_samples(n=12, base=100.0)
+    raw = _make_iv_json([
+        _ts_window("13206000", "BOISE R AT BOISE", 43.62, -116.20, "00060", samples),
+    ])
+    recs = {r["site_no"]: r for r in _parse_iv_json_window(raw)}
+    r = recs["13206000"]
+    csv_text = r["time_series_csv"]
+    assert isinstance(csv_text, str)
+    rows = [ln for ln in csv_text.strip().splitlines() if ln]
+    assert len(rows) == 12  # the FULL hydrograph, not a flattened 2-point
+    # The series is NOT constant (a real flood wave).
+    vals = [float(ln.split(",")[1]) for ln in rows]
+    assert len(set(vals)) > 2
+    assert r["n_timesteps"] == 12
+    assert r["discharge_max_cfs"] > r["discharge_min_cfs"]
+    # Latest sample mirrored into the static scalar for the overlay.
+    assert r["discharge_cfs"] == vals[-1]
+
+
+def test_parse_iv_window_merges_gage_height_as_latest_only():
+    samples_q = _hydrograph_samples(n=6, base=50.0)
+    raw = _make_iv_json([
+        _ts_window("13206000", "BOISE R", 43.62, -116.20, "00060", samples_q),
+        _ts_window(
+            "13206000", "BOISE R", 43.62, -116.20, "00065",
+            [("2018-10-10T00:00:00.000-00:00", "5.5"),
+             ("2018-10-10T01:00:00.000-00:00", "5.7")],
+        ),
+    ])
+    recs = {r["site_no"]: r for r in _parse_iv_json_window(raw)}
+    r = recs["13206000"]
+    # Discharge keeps its full series; gage height keeps only the latest scalar.
+    assert r["n_timesteps"] == 6
+    assert r["gage_height_ft"] == 5.7
+
+
+def test_parse_iv_window_empty_body():
+    assert _parse_iv_json_window(b"") == []
+    assert _parse_iv_json_window(_make_iv_json([])) == []
+
+
+def test_window_mode_layer_uri_carries_hydrograph(monkeypatch):
+    """End-to-end (mocked HTTP): a window request emits a hydrograph FGB whose
+    feature carries a multi-point time_series_csv (the compound-flood driver)."""
+    if not _have_geo():
+        pytest.skip("geopandas/shapely not installed")
+
+    fake_gcs = FakeStorageClient()
+    samples = _hydrograph_samples(n=10, base=200.0)
+    iv_window = _make_iv_json([
+        _ts_window("13206000", "BOISE R AT BOISE", 43.62, -116.20, "00060", samples),
+    ])
+
+    captured_urls: list[str] = []
+
+    def fake_http_get(url: str, timeout: float = 60.0) -> bytes:
+        captured_urls.append(url)
+        return iv_window
+
+    with (
+        patch("grace2_agent.tools.fetch_usgs_nwis_gauges._http_get", side_effect=fake_http_get),
+        patch(
+            "grace2_agent.tools.fetch_usgs_nwis_gauges.read_through",
+            side_effect=_make_read_through_injector(fake_gcs),
+        ),
+    ):
+        result = fetch_usgs_nwis_gauges(
+            bbox=_BOISE_BBOX,
+            start_date="2018-10-08",
+            end_date="2018-10-14",
+        )
+
+    # The window request used startDT/endDT (not the instantaneous default).
+    assert any("startDT=2018-10-08" in u for u in captured_urls)
+    assert result.layer_type == "vector"
+    assert result.layer_id.startswith("usgs-hydrograph-")
+    assert "hydrograph" in result.style_preset
+
+    # Read back the FGB and confirm the inline multi-point hydrograph survived.
+    fgb_bytes = next(iter(fake_gcs.store.values()))
+    import geopandas as gpd
+    with tempfile.NamedTemporaryFile(suffix=".fgb", delete=False) as f:
+        path = f.name
+        f.write(fgb_bytes)
+    try:
+        gdf = gpd.read_file(path, engine="pyogrio")
+        assert "time_series_csv" in gdf.columns
+        csv_text = gdf.iloc[0]["time_series_csv"]
+        rows = [ln for ln in str(csv_text).strip().splitlines() if ln]
+        assert len(rows) == 10  # full hydrograph preserved through the FGB
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+def test_window_mode_no_stations_raises(monkeypatch):
+    """A window request with zero stations is an honest typed error (no
+    Site-service fallback, since locations carry no readings)."""
+    fake_gcs = FakeStorageClient()
+
+    with (
+        patch(
+            "grace2_agent.tools.fetch_usgs_nwis_gauges._http_get",
+            return_value=_make_iv_json([]),
+        ),
+        patch(
+            "grace2_agent.tools.fetch_usgs_nwis_gauges.read_through",
+            side_effect=_make_read_through_injector(fake_gcs),
+        ),
+        pytest.raises(NwisNoStationsError, match="window"),
+    ):
+        fetch_usgs_nwis_gauges(bbox=_BOISE_BBOX, period="P7D")
+    assert len(fake_gcs.store) == 0
 
 
 # ---------------------------------------------------------------------------

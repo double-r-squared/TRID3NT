@@ -18,9 +18,11 @@ from __future__ import annotations
 import asyncio
 
 import grace2_agent.workflows.model_flood_scenario as mfs
+import grace2_agent.workflows.sfincs_forcing_adapter as _sfa
 from grace2_agent.workflows.model_flood_scenario import (
     _build_surge_forcing_members,
     _resolve_building_obstacle_uri,
+    _resolve_surge_forcing_from_fetchers,
 )
 from grace2_agent.workflows.sfincs_builder import (
     DischargeForcing,
@@ -256,3 +258,58 @@ def test_wrapper_surge_forcing_via_tool_registry(monkeypatch) -> None:
         entry.fn(location_query="Fort Myers, FL", surge_forcing=_SURGE_SPEC)
     )
     assert captured["surge_forcing"] == _SURGE_SPEC
+
+
+# --------------------------------------------------------------------------- #
+# DISCHARGE UNIT WIRING (Invariant-7 silent-wrong-physics guard) — the PRODUCTION
+# resolver _resolve_surge_forcing_from_fetchers must thread value_unit into
+# discharge_forcing_from_fgb, so a USGS NWIS hydrograph (ft^3/s) is converted to
+# m^3/s (NOT fed to SFINCS ~35.3x too large). These drive the REAL resolver (not
+# a bypass) and capture the forwarded kwarg on a stubbed adapter.
+# --------------------------------------------------------------------------- #
+
+
+def _capture_discharge_kwargs(monkeypatch) -> dict:
+    """Stub sfincs_forcing_adapter.discharge_forcing_from_fgb on the adapter
+    module (the resolver re-imports it per call), capturing the kwargs the
+    PRODUCTION resolver forwards. Returns the captured-kwargs dict."""
+    seen: dict = {}
+
+    def _spy(fgb, **kwargs):
+        seen["fgb"] = fgb
+        seen.update(kwargs)
+        return {"timeseries_uri": "/tmp/dis.csv", "locations_uri": "/tmp/dis.fgb"}
+
+    monkeypatch.setattr(_sfa, "discharge_forcing_from_fgb", _spy)
+    return seen
+
+
+_BBOX = (-85.75, 29.55, -85.25, 30.20)
+
+
+def test_resolver_infers_cfs_for_usgs_discharge(monkeypatch) -> None:
+    """A USGS/NWIS discharge fetch_uri (ft^3/s) -> value_unit='cfs' threaded."""
+    seen = _capture_discharge_kwargs(monkeypatch)
+    _resolve_surge_forcing_from_fetchers(
+        {"discharge": {"fetch_uri": "s3://b/cache/usgs_hydrograph_abc.fgb"}}, _BBOX
+    )
+    assert seen.get("value_unit") == "cfs"
+
+
+def test_resolver_defaults_cms_for_nwm_discharge(monkeypatch) -> None:
+    """A non-USGS (NWM) discharge source stays value_unit='cms' (already metric)."""
+    seen = _capture_discharge_kwargs(monkeypatch)
+    _resolve_surge_forcing_from_fetchers(
+        {"discharge": {"fetch_uri": "s3://b/cache/nwm_streamflow_xyz.fgb"}}, _BBOX
+    )
+    assert seen.get("value_unit") == "cms"
+
+
+def test_resolver_honors_explicit_discharge_value_unit(monkeypatch) -> None:
+    """An explicit discharge.value_unit overrides the source-based inference."""
+    seen = _capture_discharge_kwargs(monkeypatch)
+    _resolve_surge_forcing_from_fetchers(
+        {"discharge": {"fetch_uri": "s3://b/cache/nwm_streamflow_xyz.fgb", "value_unit": "cfs"}},
+        _BBOX,
+    )
+    assert seen.get("value_unit") == "cfs"

@@ -443,15 +443,32 @@ def parse_station_hydrographs_from_fgb(
 
 def parse_discharge_points_from_fgb(
     fgb: str | bytes,
+    *,
+    timeseries_column: str = "time_series_csv",
+    value_unit: str = "cms",
 ) -> list[StationHydrograph]:
-    """Parse NWM streamflow FlatGeobuf into per-reach discharge points.
+    """Parse a discharge FlatGeobuf into per-point discharge hydrographs.
 
-    ``fetch_noaa_nwm_streamflow`` emits one Point per NHDPlus reach carrying
-    ``feature_id`` + ``streamflow_cms`` (a SINGLE instantaneous value, no inline
-    series) + ``valid_time``. We model each reach as a 1-sample hydrograph at its
-    ``valid_time`` (the re-anchor step then expands it to a flat 2-point series
-    over the deck window — discharge held constant, the v0.1 fluvial-forcing
-    behaviour; a true NWM forecast hydrograph is the documented upgrade).
+    Two source shapes are supported, in priority order:
+
+    1.  REAL HYDROGRAPH (the J4 compound-flood driver): a Point feature carrying
+        an inline ``time_series_csv`` (``"iso,value"`` rows) — what the windowed
+        ``fetch_usgs_nwis_gauges`` (USGS NWIS IV time-window) and a short_range
+        ``fetch_noaa_nwm_streamflow`` hydrograph emit. Each station becomes a
+        FULL multi-sample ``StationHydrograph`` (the re-anchor step preserves the
+        real series — NO flat-2-point flatten). ``value_unit="cfs"`` converts
+        ft^3/s → m^3/s (SFINCS discharge is m^3/s); ``"cms"`` passes through.
+
+    2.  SINGLE INSTANTANEOUS VALUE (the v0.1 fallback): a Point per NHDPlus reach
+        carrying ``feature_id`` + ``streamflow_cms`` (m^3/s) + ``valid_time`` —
+        the unwindowed ``fetch_noaa_nwm_streamflow`` shape. Each reach becomes a
+        1-sample hydrograph at its ``valid_time``; the re-anchor step expands it
+        to a flat 2-point series over the deck window (discharge held constant).
+        This single-value behaviour is UNCHANGED.
+
+    A row that carries a non-empty ``time_series_csv`` uses path 1; a row without
+    one falls back to path 2 if ``streamflow_cms`` is present. A FlatGeobuf with
+    NEITHER an inline series column NOR ``streamflow_cms`` is unreadable.
 
     Raises:
         SFINCSForcingAdapterError("FORCING_FGB_READ_FAILED" / "FORCING_NO_STATIONS").
@@ -477,11 +494,14 @@ def parse_discharge_points_from_fgb(
             message=f"geopandas could not read the NWM FlatGeobuf: {exc}",
         ) from exc
 
-    if "streamflow_cms" not in gdf.columns:
+    has_series = timeseries_column in gdf.columns
+    has_single = "streamflow_cms" in gdf.columns
+    if not has_series and not has_single:
         raise SFINCSForcingAdapterError(
             "FORCING_FGB_READ_FAILED",
             message=(
-                "NWM FlatGeobuf lacks the 'streamflow_cms' column; "
+                f"discharge FlatGeobuf lacks BOTH the {timeseries_column!r} "
+                "hydrograph column and the 'streamflow_cms' single-value column; "
                 f"columns={list(gdf.columns)}"
             ),
         )
@@ -491,11 +511,48 @@ def parse_discharge_points_from_fgb(
         except Exception:  # noqa: BLE001
             pass
 
+    # ft^3/s → m^3/s conversion when the source carries imperial discharge.
+    cfs_to_cms = 0.028316846592
+    scale = cfs_to_cms if str(value_unit).lower() in ("cfs", "ft3/s", "ft^3/s") else 1.0
+
+    id_col = next(
+        (c for c in ("feature_id", "site_no", "gauge_id", "id") if c in gdf.columns),
+        None,
+    )
+
     out: list[StationHydrograph] = []
     next_id = 1
     for _, row in gdf.iterrows():
         geom = row.geometry
         if geom is None or geom.is_empty:
+            continue
+        lon, lat = float(geom.x), float(geom.y)
+
+        # ---- Path 1: a REAL inline hydrograph (preserve the multi-point series).
+        csv_text = row[timeseries_column] if has_series else None
+        if isinstance(csv_text, str) and csv_text.strip():
+            times, values = _parse_time_series_csv(csv_text)
+            values = [v * scale for v in values]
+            # Drop physically-impossible negatives (gauge artefacts).
+            keep = [(t, v) for t, v in zip(times, values) if v >= 0]
+            if len(keep) >= 1:
+                times = [t for t, _v in keep]
+                values = [v for _t, v in keep]
+                out.append(
+                    StationHydrograph(
+                        point_id=next_id,
+                        lon=lon,
+                        lat=lat,
+                        times=times,
+                        values=values,
+                        source_id=str(row[id_col]) if id_col else f"reach-{next_id}",
+                    )
+                )
+                next_id += 1
+                continue  # series path won this row
+
+        # ---- Path 2: a single instantaneous value (the unchanged fallback).
+        if not has_single:
             continue
         try:
             flow = float(row["streamflow_cms"])
@@ -511,11 +568,11 @@ def parse_discharge_points_from_fgb(
         out.append(
             StationHydrograph(
                 point_id=next_id,
-                lon=float(geom.x),
-                lat=float(geom.y),
+                lon=lon,
+                lat=lat,
                 times=[valid],
-                values=[flow],
-                source_id=str(row["feature_id"]) if "feature_id" in gdf.columns else f"reach-{next_id}",
+                values=[flow],  # streamflow_cms is already m^3/s — no scale
+                source_id=str(row[id_col]) if id_col else f"reach-{next_id}",
             )
         )
         next_id += 1
@@ -524,14 +581,17 @@ def parse_discharge_points_from_fgb(
         raise SFINCSForcingAdapterError(
             "FORCING_NO_STATIONS",
             message=(
-                "the NWM FlatGeobuf carried no usable discharge reaches "
-                "(no finite non-negative streamflow_cms) — no fluvial forcing "
-                "is materialisable"
+                "the discharge FlatGeobuf carried no usable reaches/stations "
+                "(no finite non-negative discharge series or streamflow_cms) — "
+                "no fluvial forcing is materialisable"
             ),
         )
+    n_multi = sum(1 for s in out if len(s.values) > 1)
     logger.info(
-        "sfincs_forcing_adapter: parsed %d discharge reach point(s) from NWM FGB",
+        "sfincs_forcing_adapter: parsed %d discharge point(s) from FGB "
+        "(%d with a real multi-point hydrograph)",
         len(out),
+        n_multi,
     )
     return out
 
@@ -853,15 +913,23 @@ def discharge_forcing_from_fgb(
     river_upa_km2: float | None = None,
     stage_dir: str | None = None,
     timeseries_format: str = "datetime",
+    value_unit: str = "cms",
 ) -> dict[str, Any]:
-    """NWM streamflow FlatGeobuf → SFINCS ``dis`` files → ``DischargeForcing`` dict.
+    """NWM / NWIS discharge FlatGeobuf → SFINCS ``dis`` files → ``DischargeForcing``.
 
-    Materialises per-reach discharge into a wide dis timeseries CSV (m^3/s) +
-    a src-points locations FGB, and returns the dict shape
+    Materialises per-reach/per-station discharge into a wide dis timeseries CSV
+    (m^3/s) + a src-points locations FGB, and returns the dict shape
     ``surge_forcing["discharge"]`` expects::
 
         {"timeseries_uri": <dis.csv>, "locations_uri": <src.fgb>,
          "rivers_uri": ..., "hydrography_uri": ..., "river_upa_km2": ...}
+
+    The parser PRESERVES a real multi-point hydrograph when the FGB carries an
+    inline ``time_series_csv`` (the windowed-NWIS / short_range-NWM driver) —
+    only a single-instantaneous-value source is flattened to a flat 2-point
+    series. ``value_unit="cfs"`` converts ft^3/s → m^3/s for the USGS NWIS
+    hydrograph (whose discharge is ft^3/s); ``"cms"`` (default) passes NWM's
+    already-metric ``streamflow_cms`` through unchanged.
 
     NOTE on river inflow: ``setup_discharge_forcing`` attaches the series to the
     ``src`` points established by ``setup_river_inflow`` — which needs
@@ -870,7 +938,7 @@ def discharge_forcing_from_fgb(
     NO ``setup_river_inflow`` (the locations carry their own geometry). Pass
     ``rivers_uri`` / ``hydrography_uri`` to additionally drive the inflow-trim.
     """
-    points = parse_discharge_points_from_fgb(fgb)
+    points = parse_discharge_points_from_fgb(fgb, value_unit=value_unit)
     series_by_id: dict[int, ReanchoredSeries] = {}
     for pt in points:
         series_by_id[pt.point_id] = reanchor_to_tref(
@@ -1020,6 +1088,7 @@ def build_surge_forcing(
     rivers_uri: str | None = None,
     hydrography_uri: str | None = None,
     river_upa_km2: float | None = None,
+    discharge_value_unit: str = "cms",
     wind: dict[str, Any] | None = None,
     pressure: dict[str, Any] | None = None,
     stage_dir: str | None = None,
@@ -1075,6 +1144,7 @@ def build_surge_forcing(
             rivers_uri=rivers_uri,
             hydrography_uri=hydrography_uri,
             river_upa_km2=river_upa_km2,
+            value_unit=discharge_value_unit,
             stage_dir=stage_dir,
             timeseries_format=timeseries_format,
         )

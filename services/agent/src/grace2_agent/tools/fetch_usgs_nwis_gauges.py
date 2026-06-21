@@ -21,6 +21,20 @@ gauge source; ``fetch_noaa_nwm_streamflow`` is the modeled companion.
             &bBox=west,south,east,north   (area asks)
         00060 = discharge (ft^3/s); 00065 = gage height (ft).
 
+    WINDOW / HYDROGRAPH mode (the compound-flood discharge driver — J4):
+        The SAME IV service accepts a TIME WINDOW (``startDT``/``endDT`` ISO
+        dates, or a relative ``period`` like ``P7D``). With a window the IV
+        body carries the FULL per-site time series (every sample in the
+        window) instead of just the latest reading. We emit one Point feature
+        per station carrying an inline ``time_series_csv`` attribute
+        (``"iso,value"`` rows, discharge in ft^3/s) — the EXACT shape
+        ``fetch_noaa_coops_tides`` emits for water level — so the SFINCS
+        forcing adapter (``discharge_forcing_from_fgb``) can preserve a REAL
+        multi-point river hydrograph instead of synthesising a flat 2-point
+        constant. The latest-instantaneous behaviour stays the DEFAULT; the
+        window mode engages only when an explicit start/end (or period) is
+        supplied.
+
     FALLBACK — Site service (station LOCATIONS only, no current reading):
         https://waterservices.usgs.gov/nwis/site/
             ?format=rdb&siteStatus=active
@@ -74,6 +88,7 @@ import json
 import logging
 import math
 import os
+import re
 import tempfile
 import urllib.error
 import urllib.parse
@@ -97,12 +112,16 @@ __all__ = [
     "_validate_bbox",
     "_validate_state_code",
     "_round_bbox_to_6dp",
+    "_resolve_window",
     "_build_iv_url",
     "_build_site_url",
     "_parse_iv_json",
+    "_parse_iv_json_window",
     "_parse_site_rdb",
     "_build_flatgeobuf",
+    "_build_window_flatgeobuf",
     "_fetch_usgs_nwis_gauges_bytes",
+    "_fetch_usgs_nwis_hydrograph_bytes",
     "IV_URL",
     "SITE_URL",
 ]
@@ -196,6 +215,11 @@ _HTTP_TIMEOUT = 60.0
 #: USGS bBox area limit. The product of the lon-range and lat-range must be
 #: <= ~25 deg^2 or the service 400s. We clamp the gate just under that.
 _MAX_BBOX_SQ_DEG = 24.5
+
+#: Maximum hydrograph window (days). The IV service serves up to ~120 days of
+#: instantaneous values; we cap conservatively so a window request stays a
+#: bounded payload. A wider span should be chunked by the caller.
+_MAX_WINDOW_DAYS = 120
 
 #: 2-letter USPS state / territory codes accepted by NWIS ``stateCd``.
 _VALID_STATE_CODES: frozenset[str] = frozenset(
@@ -323,6 +347,69 @@ def _round_bbox_to_6dp(
     return tuple(round(v, 6) for v in bbox)  # type: ignore[return-value]
 
 
+def _resolve_window(
+    start_date: str | None,
+    end_date: str | None,
+    period: str | None,
+) -> tuple[str, str] | str | None:
+    """Resolve the hydrograph time-window selector for the IV service.
+
+    Returns one of:
+      - ``None`` — no window requested (the default latest-instantaneous mode).
+      - ``str`` — a validated ISO-8601 ``period`` (e.g. ``"P7D"``); passed
+        verbatim to the IV ``period`` parameter.
+      - ``(start, end)`` — validated ISO ``YYYY-MM-DD`` dates for ``startDT`` /
+        ``endDT``.
+
+    ``period`` (when given) WINS over explicit dates — it is the simpler,
+    relative form the LLM is most likely to emit. Raises ``NwisInputError`` on
+    a malformed selector (bad date, reversed range, over the day cap).
+    """
+    if period is not None and str(period).strip() != "":
+        p = str(period).strip().upper()
+        # USGS accepts ISO-8601 durations like "P7D", "P1M", "PT6H".
+        if not re.fullmatch(r"P(?:\d+[YMWD])*(?:T(?:\d+[HMS])+)?", p) or p == "P":
+            raise NwisInputError(
+                f"period={period!r} is not a valid ISO-8601 duration (e.g. "
+                f"'P7D' = last 7 days, 'P1M' = last month, 'PT6H' = last 6 hours)"
+            )
+        return p
+
+    if start_date is None and end_date is None:
+        return None
+
+    if start_date is None or end_date is None:
+        raise NwisInputError(
+            "a hydrograph window requires BOTH start_date and end_date "
+            "(ISO YYYY-MM-DD), or a single relative period (e.g. period='P7D'); "
+            f"got start_date={start_date!r}, end_date={end_date!r}"
+        )
+
+    try:
+        d0 = _dt.date.fromisoformat(str(start_date))
+    except ValueError as exc:
+        raise NwisInputError(
+            f"start_date={start_date!r} is not a valid ISO date (YYYY-MM-DD): {exc}"
+        ) from exc
+    try:
+        d1 = _dt.date.fromisoformat(str(end_date))
+    except ValueError as exc:
+        raise NwisInputError(
+            f"end_date={end_date!r} is not a valid ISO date (YYYY-MM-DD): {exc}"
+        ) from exc
+    if d0 > d1:
+        raise NwisInputError(
+            f"start_date must be <= end_date; got start={d0}, end={d1}"
+        )
+    n_days = (d1 - d0).days + 1
+    if n_days > _MAX_WINDOW_DAYS:
+        raise NwisInputError(
+            f"hydrograph window {n_days} days exceeds the {_MAX_WINDOW_DAYS}-day "
+            f"cap; request a shorter window or call in chunks"
+        )
+    return (d0.isoformat(), d1.isoformat())
+
+
 # ---------------------------------------------------------------------------
 # HTTP helper.
 # ---------------------------------------------------------------------------
@@ -366,8 +453,19 @@ def _build_iv_url(
     *,
     state_code: str | None,
     bbox: tuple[float, float, float, float] | None,
+    window: tuple[str, str] | str | None = None,
 ) -> str:
-    """Build the Instantaneous Values URL for a state or bbox selector."""
+    """Build the Instantaneous Values URL for a state or bbox selector.
+
+    ``window`` controls the temporal selector:
+      - ``None`` (default) — no temporal parameter; the IV service returns the
+        latest instantaneous value (the original behaviour).
+      - ``str`` — an ISO-8601 ``period`` (e.g. ``"P7D"``) → ``&period=P7D``.
+      - ``(start, end)`` — ISO dates → ``&startDT=...&endDT=...``.
+
+    With a window the IV body carries the FULL per-site time series (every
+    sample in the window) instead of just the latest reading.
+    """
     params: list[tuple[str, str]] = [
         ("format", "json"),
         ("siteStatus", "active"),
@@ -378,6 +476,12 @@ def _build_iv_url(
     elif bbox is not None:
         west, south, east, north = bbox
         params.append(("bBox", f"{west},{south},{east},{north}"))
+    if isinstance(window, str):
+        params.append(("period", window))
+    elif isinstance(window, tuple):
+        start, end = window
+        params.append(("startDT", start))
+        params.append(("endDT", end))
     return IV_URL + "?" + urllib.parse.urlencode(params)
 
 
@@ -499,6 +603,131 @@ def _parse_iv_json(raw: bytes) -> list[dict[str, Any]]:
     return list(by_site.values())
 
 
+def _parse_iv_json_window(raw: bytes) -> list[dict[str, Any]]:
+    """Parse a WINDOWED IV WaterML-JSON body → one record per station with a
+    full discharge HYDROGRAPH (``time_series_csv``).
+
+    Mirrors ``_parse_iv_json`` (grouping by ``site_no``) but reads the WHOLE
+    ``values[0].value[]`` array for the DISCHARGE parameter (00060) and emits an
+    inline ``time_series_csv`` attribute (``"iso,value"`` rows, ft^3/s) — the
+    EXACT shape ``fetch_noaa_coops_tides`` emits for water level — so the SFINCS
+    forcing adapter can build a real multi-point river hydrograph.
+
+    Per station record:
+
+        {site_no, site_name, lon, lat,
+         discharge_cfs (latest sample, for the static overlay),
+         gage_height_ft (latest sample),
+         reading_dt (latest discharge sample timestamp),
+         time_series_csv (the full 00060 hydrograph; "" if 00060 absent),
+         time_start, time_end, n_timesteps,
+         discharge_min_cfs, discharge_max_cfs, discharge_mean_cfs}
+
+    Stations with no parseable coordinate are dropped. Records that carry NO
+    discharge series (only gage height in the window) still survive with an
+    empty ``time_series_csv`` — the FGB builder keeps them so the overlay shows
+    the station, and the forcing adapter skips empty-series rows. Returns ``[]``
+    for an empty body.
+    """
+    if not raw:
+        return []
+    try:
+        obj = json.loads(raw.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise NwisUpstreamError(
+            f"USGS IV (window) response is not valid JSON: {exc}"
+        ) from exc
+
+    series = (obj.get("value") or {}).get("timeSeries") or []
+    by_site: dict[str, dict[str, Any]] = {}
+
+    for ts in series:
+        source = ts.get("sourceInfo") or {}
+        site_codes = source.get("siteCode") or []
+        if not site_codes:
+            continue
+        site_no = str(site_codes[0].get("value") or "").strip()
+        if not site_no:
+            continue
+        site_name = str(source.get("siteName") or "").strip()
+
+        geo = (source.get("geoLocation") or {}).get("geogLocation") or {}
+        try:
+            lat = float(geo.get("latitude"))
+            lon = float(geo.get("longitude"))
+        except (TypeError, ValueError):
+            continue
+        if not (math.isfinite(lat) and math.isfinite(lon)):
+            continue
+
+        var = ts.get("variable") or {}
+        var_codes = var.get("variableCode") or []
+        param = str(var_codes[0].get("value") or "").strip() if var_codes else ""
+
+        # Parse the FULL sample array (the hydrograph), filtering no-data.
+        samples: list[tuple[str, float]] = []
+        values_blocks = ts.get("values") or []
+        if values_blocks:
+            for s in values_blocks[0].get("value") or []:
+                raw_v = s.get("value")
+                try:
+                    fv = float(raw_v)
+                except (TypeError, ValueError):
+                    continue
+                if fv <= -999990.0:  # USGS no-data sentinel
+                    continue
+                dt_s = str(s.get("dateTime") or "").strip()
+                if not dt_s:
+                    continue
+                samples.append((dt_s, fv))
+
+        rec = by_site.setdefault(
+            site_no,
+            {
+                "site_no": site_no,
+                "site_name": site_name,
+                "lon": lon,
+                "lat": lat,
+                "discharge_cfs": None,
+                "gage_height_ft": None,
+                "reading_dt": None,
+                "time_series_csv": "",
+                "time_start": None,
+                "time_end": None,
+                "n_timesteps": 0,
+                "discharge_min_cfs": None,
+                "discharge_max_cfs": None,
+                "discharge_mean_cfs": None,
+            },
+        )
+        if site_name and not rec.get("site_name"):
+            rec["site_name"] = site_name
+
+        if not samples:
+            continue
+
+        if param == _PARAM_DISCHARGE:
+            # Build the inline time_series_csv (the hydrograph driver).
+            lines = [f"{dt_s},{v:.6f}" for dt_s, v in samples]
+            rec["time_series_csv"] = "\n".join(lines) + "\n"
+            vals = [v for _dt_s, v in samples]
+            rec["n_timesteps"] = len(vals)
+            rec["time_start"] = samples[0][0]
+            rec["time_end"] = samples[-1][0]
+            rec["discharge_min_cfs"] = min(vals)
+            rec["discharge_max_cfs"] = max(vals)
+            rec["discharge_mean_cfs"] = sum(vals) / len(vals)
+            # Latest sample → the static-overlay scalar (same as instant mode).
+            rec["discharge_cfs"] = samples[-1][1]
+            rec["reading_dt"] = samples[-1][0]
+        elif param == _PARAM_GAGE_HEIGHT:
+            rec["gage_height_ft"] = samples[-1][1]
+            if rec["reading_dt"] is None:
+                rec["reading_dt"] = samples[-1][0]
+
+    return list(by_site.values())
+
+
 def _parse_site_rdb(raw: bytes) -> list[dict[str, Any]]:
     """Parse the Site-service RDB (tab-delimited) body → station-location records.
 
@@ -612,6 +841,64 @@ def _build_flatgeobuf(records: list[dict[str, Any]]) -> bytes:
                 pass
 
 
+def _build_window_flatgeobuf(records: list[dict[str, Any]]) -> bytes:
+    """Serialize WINDOW (hydrograph) station records → FlatGeobuf bytes.
+
+    One Point feature per station carrying the inline ``time_series_csv``
+    hydrograph attribute (discharge, ft^3/s) plus the latest-sample scalars and
+    the per-station summary fields — the SAME column shape
+    ``fetch_noaa_coops_tides`` emits, so the SFINCS forcing adapter consumes it
+    via the existing ``time_series_csv`` path.
+
+    Raises ``NwisUpstreamError`` if geopandas/shapely are unavailable or the
+    write fails. ``records`` must be non-empty.
+    """
+    try:
+        import geopandas as gpd  # type: ignore[import-not-found]
+        from shapely.geometry import Point  # type: ignore[import-not-found]
+    except ImportError as exc:
+        raise NwisUpstreamError(
+            f"geopandas / shapely not available: {exc}"
+        ) from exc
+
+    geoms = [Point(r["lon"], r["lat"]) for r in records]
+    data = {
+        "site_no": [str(r["site_no"]) for r in records],
+        "site_name": [str(r.get("site_name") or "") for r in records],
+        "discharge_cfs": [r.get("discharge_cfs") for r in records],
+        "gage_height_ft": [r.get("gage_height_ft") for r in records],
+        "reading_dt": [r.get("reading_dt") for r in records],
+        "time_series_csv": [str(r.get("time_series_csv") or "") for r in records],
+        "time_start": [r.get("time_start") for r in records],
+        "time_end": [r.get("time_end") for r in records],
+        "n_timesteps": [int(r.get("n_timesteps") or 0) for r in records],
+        "discharge_min_cfs": [r.get("discharge_min_cfs") for r in records],
+        "discharge_max_cfs": [r.get("discharge_max_cfs") for r in records],
+        "discharge_mean_cfs": [r.get("discharge_mean_cfs") for r in records],
+    }
+    gdf = gpd.GeoDataFrame(data, geometry=geoms, crs="EPSG:4326")
+
+    tmp_fgb: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            suffix=".fgb", delete=False, prefix="grace2_nwis_hyd_"
+        ) as f:
+            tmp_fgb = f.name
+        gdf.to_file(tmp_fgb, driver="FlatGeobuf", engine="pyogrio")
+        with open(tmp_fgb, "rb") as f:
+            return f.read()
+    except Exception as exc:
+        raise NwisUpstreamError(
+            f"FlatGeobuf write failed for {len(records)} gauge hydrographs: {exc}"
+        ) from exc
+    finally:
+        if tmp_fgb is not None:
+            try:
+                os.unlink(tmp_fgb)
+            except OSError:
+                pass
+
+
 def _records_bbox(
     records: list[dict[str, Any]],
 ) -> tuple[float, float, float, float] | None:
@@ -698,6 +985,54 @@ def _fetch_usgs_nwis_gauges_bytes(
     return _build_flatgeobuf(records), extent
 
 
+def _fetch_usgs_nwis_hydrograph_bytes(
+    *,
+    state_code: str | None,
+    bbox: tuple[float, float, float, float] | None,
+    window: tuple[str, str] | str,
+) -> tuple[bytes, tuple[float, float, float, float]]:
+    """End-to-end WINDOW fetch: IV-window (full hydrographs) → FGB bytes.
+
+    Unlike the latest-instantaneous path, this requests the IV service with a
+    time window so the body carries the FULL per-site discharge series, then
+    emits one Point feature per station carrying an inline ``time_series_csv``.
+    There is NO Site-service fallback here (the Site service has no readings, so
+    a hydrograph request that misses is an honest no-stations error).
+
+    Returns ``(fgb_bytes, extent_bbox)``. Raises ``NwisNoStationsError`` when
+    the IV-window request returns zero stations.
+    """
+    iv_url = _build_iv_url(state_code=state_code, bbox=bbox, window=window)
+    logger.info("fetch_usgs_nwis_gauges: IV-window GET %s", iv_url)
+    iv_raw = _http_get(iv_url)
+    records = _parse_iv_json_window(iv_raw)
+
+    if records:
+        n_with_series = sum(1 for r in records if r.get("time_series_csv"))
+        logger.info(
+            "fetch_usgs_nwis_gauges: IV-window returned %d station(s); "
+            "%d carry a discharge hydrograph",
+            len(records),
+            n_with_series,
+        )
+    else:
+        scope = (
+            f"state_code={state_code!r}"
+            if state_code is not None
+            else f"bbox={bbox!r}"
+        )
+        raise NwisNoStationsError(
+            f"No active USGS NWIS gauge stations reporting discharge (00060) or "
+            f"gage height (00065) found for {scope} over window {window!r}. The IV "
+            f"real-time service returned zero stations for that time range. Try a "
+            f"different area, a wider window, or a state-level query."
+        )
+
+    extent = _records_bbox(records)
+    assert extent is not None
+    return _build_window_flatgeobuf(records), extent
+
+
 # ---------------------------------------------------------------------------
 # Registered atomic tool.
 # ---------------------------------------------------------------------------
@@ -715,6 +1050,9 @@ def _fetch_usgs_nwis_gauges_bytes(
 def fetch_usgs_nwis_gauges(
     state_code: str | None = None,
     bbox: tuple[float, float, float, float] | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    period: str | None = None,
     # Absorb LLM-invented kwargs (centralized at server.py via
     # tool_arg_normalizer, but kept as belt-and-suspenders).
     **_extra_ignored: Any,
@@ -727,6 +1065,17 @@ def fetch_usgs_nwis_gauges(
     one Point feature per gauge station at the station's coordinates, carrying
     the latest reading. This is the canonical **observed** (instrument-record)
     gauge source.
+
+    TWO MODES (the temporal selector decides):
+        - DEFAULT (no start/end/period): one Point per station carrying the
+          LATEST instantaneous discharge / gage height (the map-overlay mode).
+        - HYDROGRAPH WINDOW (an explicit ``start_date`` + ``end_date``, or a
+          relative ``period`` like ``"P7D"``): one Point per station carrying
+          the FULL discharge time series as an inline ``time_series_csv``
+          attribute (``"iso,value"`` rows, ft^3/s) — the same shape
+          ``fetch_noaa_coops_tides`` emits. This is the REAL river DISCHARGE
+          HYDROGRAPH the compound-flood SFINCS deck needs as its fluvial driver
+          (instead of a flat constant synthesised from a single value).
 
     When to use:
         - The user asks for USGS water/stream gauges, "gauge stations", "stream
@@ -767,6 +1116,19 @@ def fetch_usgs_nwis_gauges(
             ``state_code`` (or a smaller bbox) — we never silently 400.
         When both are given, ``state_code`` wins. When neither is given,
         ``NwisInputError`` is raised.
+
+    Temporal selector (controls instantaneous vs hydrograph mode):
+        start_date / end_date: Optional ISO ``YYYY-MM-DD`` window bounds. Pass
+            BOTH to request the full per-station DISCHARGE HYDROGRAPH over the
+            window (one Point per station carrying a ``time_series_csv``). The
+            window is capped at 120 days. Example: ``start_date="2018-10-08"``,
+            ``end_date="2018-10-14"`` for the Hurricane Michael week.
+        period: Optional relative ISO-8601 duration (e.g. ``"P7D"`` = last 7
+            days, ``"P1M"`` = last month, ``"PT6H"`` = last 6 hours). A simpler
+            alternative to start/end; ``period`` WINS if both are supplied. Use
+            this for "the last week's flow at the gauges".
+        When NONE of start_date / end_date / period is given, the tool returns
+        the LATEST instantaneous reading per station (the default overlay mode).
 
     Returns:
         ``LayerURI`` pointing at a FlatGeobuf in the cache bucket:
@@ -850,10 +1212,18 @@ def fetch_usgs_nwis_gauges(
             "bbox=(west, south, east, north) for an area query."
         )
 
-    # 2. Cache-key params (resolved selector only).
+    # 1b. Resolve the TEMPORAL selector → instantaneous (default) or hydrograph.
+    window = _resolve_window(start_date, end_date, period)
+    is_window = window is not None
+
+    # 2. Cache-key params (resolved selector + temporal window).
     params: dict[str, Any] = {
         "state_code": resolved_state,
         "bbox": list(resolved_bbox) if resolved_bbox is not None else None,
+        "window": (
+            list(window) if isinstance(window, tuple)
+            else (window if isinstance(window, str) else None)
+        ),
     }
 
     # The fetch_fn returns (bytes, extent); read_through caches the bytes. We
@@ -861,9 +1231,14 @@ def fetch_usgs_nwis_gauges(
     captured: dict[str, Any] = {}
 
     def _fetch_bytes() -> bytes:
-        fgb, extent = _fetch_usgs_nwis_gauges_bytes(
-            state_code=resolved_state, bbox=resolved_bbox
-        )
+        if is_window:
+            fgb, extent = _fetch_usgs_nwis_hydrograph_bytes(
+                state_code=resolved_state, bbox=resolved_bbox, window=window
+            )
+        else:
+            fgb, extent = _fetch_usgs_nwis_gauges_bytes(
+                state_code=resolved_state, bbox=resolved_bbox
+            )
         captured["extent"] = extent
         return fgb
 
@@ -897,13 +1272,28 @@ def fetch_usgs_nwis_gauges(
         json.dumps(params, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()[:8]
 
+    if is_window:
+        if isinstance(window, str):
+            window_tag = window
+        else:
+            window_tag = f"{window[0]}..{window[1]}"  # type: ignore[index]
+        name = f"USGS discharge hydrographs — {scope_tag} ({window_tag})"
+        layer_id = f"usgs-hydrograph-{seed}"
+        style_preset = "usgs_gauges_hydrograph"
+        units = "ft^3/s (discharge hydrograph)"
+    else:
+        name = f"USGS stream gauges — {scope_tag}"
+        layer_id = f"usgs-gauges-{seed}"
+        style_preset = "usgs_gauges"
+        units = "mixed (cfs / ft)"
+
     return LayerURI(
-        layer_id=f"usgs-gauges-{seed}",
-        name=f"USGS stream gauges — {scope_tag}",
+        layer_id=layer_id,
+        name=name,
         layer_type="vector",
         uri=result.uri,
-        style_preset="usgs_gauges",
+        style_preset=style_preset,
         role="primary",
-        units="mixed (cfs / ft)",
+        units=units,
         bbox=extent_bbox,
     )
