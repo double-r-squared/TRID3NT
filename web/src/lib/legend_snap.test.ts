@@ -17,9 +17,11 @@ import {
   nearestSide,
   rectFromAnchorAndWidth,
   scrubberScaleForAoi,
+  scrubberVisibleForAoi,
   DEFAULT_SCRUBBER_SCALE_MIN,
   DEFAULT_SCRUBBER_SCALE_MAX,
   DEFAULT_SCRUBBER_SCALE_REFERENCE_PX,
+  DEFAULT_SCRUBBER_HIDE_BELOW_SCALE,
   sideForIndex,
   snapKeyToSide,
   stackPositionForIndex,
@@ -255,11 +257,11 @@ describe("scrubberScaleForAoi — uniform scale == bbox width / reference (clamp
     expect(s).toBeLessThan(1);
   });
 
-  it("a mid-size bbox scales proportionally between min and 1", () => {
-    // 240px-wide box -> raw 240/480 = 0.5 (== the default floor here).
-    const mid: ScreenRect = { left: 0, top: 0, right: 240, bottom: 200 };
-    expect(scrubberScaleForAoi(mid)).toBeCloseTo(0.5, 5);
-    // 360px box -> 0.75, strictly between min and 1.
+  it("a mid-size bbox scales proportionally between the floor and 1", () => {
+    // 384px-wide box -> raw 384/480 = 0.8, strictly between the 0.7 floor and 1.
+    const mid: ScreenRect = { left: 0, top: 0, right: 384, bottom: 200 };
+    expect(scrubberScaleForAoi(mid)).toBeCloseTo(0.8, 5);
+    // 360px box -> 0.75, also between the floor and 1.
     const bigger: ScreenRect = { left: 0, top: 0, right: 360, bottom: 200 };
     expect(scrubberScaleForAoi(bigger)).toBeCloseTo(0.75, 5);
   });
@@ -301,5 +303,57 @@ describe("scrubberScaleForAoi — uniform scale == bbox width / reference (clamp
 
   it("default ceiling is greater than the default floor (sane band)", () => {
     expect(DEFAULT_SCRUBBER_SCALE_MAX).toBeGreaterThan(DEFAULT_SCRUBBER_SCALE_MIN);
+  });
+});
+
+// scrubberVisibleForAoi (NATE 2026-06-21) — "when it gets to that point let's
+// just hide it so we have a threshold of when it's visible." Below the usable
+// scale floor the scrubber is HIDDEN entirely (not rendered tiny); it returns on
+// zoom-in past the threshold.
+describe("scrubberVisibleForAoi — hides below the usable scale threshold", () => {
+  const ref = DEFAULT_SCRUBBER_SCALE_REFERENCE_PX;
+
+  it("HIDES when the bbox on-screen width is below the hide threshold", () => {
+    // width = (hideBelow - epsilon) * ref -> just under the threshold -> hidden.
+    const justUnder = (DEFAULT_SCRUBBER_HIDE_BELOW_SCALE - 0.05) * ref;
+    const rect: ScreenRect = { left: 0, top: 0, right: justUnder, bottom: 200 };
+    expect(scrubberVisibleForAoi(rect)).toBe(false);
+    // A truly tiny (zoomed-way-out) box is hidden too.
+    expect(
+      scrubberVisibleForAoi({ left: 500, top: 500, right: 512, bottom: 540 }),
+    ).toBe(false);
+  });
+
+  it("SHOWS at or above the hide threshold", () => {
+    // Exactly at the threshold -> visible (>=).
+    const atThreshold = DEFAULT_SCRUBBER_HIDE_BELOW_SCALE * ref;
+    expect(
+      scrubberVisibleForAoi({ left: 0, top: 0, right: atThreshold, bottom: 200 }),
+    ).toBe(true);
+    // A comfortably large box -> visible.
+    expect(
+      scrubberVisibleForAoi({ left: 0, top: 0, right: ref, bottom: 200 }),
+    ).toBe(true);
+  });
+
+  it("the hide threshold equals the min visible scale (a shown scrubber is never below the floor)", () => {
+    expect(DEFAULT_SCRUBBER_HIDE_BELOW_SCALE).toBe(DEFAULT_SCRUBBER_SCALE_MIN);
+  });
+
+  it("always SHOWS when there is no AOI rect / a degenerate rect (viewport-bottom fallback)", () => {
+    expect(scrubberVisibleForAoi(null)).toBe(true);
+    expect(scrubberVisibleForAoi(undefined)).toBe(true);
+    // Zero-width / inverted rect -> no usable width -> fall back to showing it.
+    expect(scrubberVisibleForAoi({ left: 200, top: 0, right: 200, bottom: 300 })).toBe(true);
+    expect(scrubberVisibleForAoi({ left: 300, top: 0, right: 100, bottom: 300 })).toBe(true);
+  });
+
+  it("respects a custom hideBelowScale / reference", () => {
+    const rect: ScreenRect = { left: 0, top: 0, right: 300, bottom: 200 };
+    // 300/480 = 0.625; hidden under a 0.7 threshold, shown under a 0.5 threshold.
+    expect(scrubberVisibleForAoi(rect, { hideBelowScale: 0.7 })).toBe(false);
+    expect(scrubberVisibleForAoi(rect, { hideBelowScale: 0.5 })).toBe(true);
+    // Custom reference shrinks the px needed to clear the threshold.
+    expect(scrubberVisibleForAoi(rect, { referencePx: 240, hideBelowScale: 0.7 })).toBe(true);
   });
 });

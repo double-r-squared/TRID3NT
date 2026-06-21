@@ -36,7 +36,11 @@ import {
   IconPlay,
   IconPause,
 } from "./icons";
-import { scrubberScaleForAoi, type ScreenRect } from "../lib/legend_snap";
+import {
+  scrubberScaleForAoi,
+  scrubberVisibleForAoi,
+  type ScreenRect,
+} from "../lib/legend_snap";
 
 // The scrubber's natural (AOI-less) min/max width band. The widget renders at
 // its base size, then a uniform CSS transform scales the WHOLE control with the
@@ -103,6 +107,12 @@ export function SequenceScrubber({
 
   if (n === 0) return null;
 
+  // VISIBILITY THRESHOLD (NATE 2026-06-21): when the AOI bbox is zoomed out so
+  // far the scrubber would scale below the usable floor, HIDE it entirely rather
+  // than render an unusably tiny widget; it reappears on zoom-in past the
+  // threshold. No AOI rect -> the viewport-bottom fallback is always shown.
+  if (!scrubberVisibleForAoi(aoiRect)) return null;
+
   const safeIndex = wrapIndex(activeIndex, n);
 
   // SCRUBBER UNIFORM SCALE (NATE 2026-06-21). The widget renders at its NATURAL
@@ -126,9 +136,10 @@ export function SequenceScrubber({
   // viewport coords (map container is position:fixed;inset:0 relative to the
   // app shell). When absent, fall back to viewport bottom-center.
   //
-  // The uniform `scale(s)` is composed with the centering translate. We pin
-  // transform-origin to BOTTOM CENTER so the widget scales toward the AOI's
-  // bottom edge it hangs off (it never drifts away from the box as it shrinks).
+  // The uniform `scale(s)` is composed with the centering translate. For the
+  // AOI-anchored case the widget hangs by its TOP edge under aoiRect.bottom, so
+  // transform-origin is TOP CENTER (it stays pinned to the box edge as it
+  // scales); the viewport-bottom fallback uses BOTTOM CENTER.
   let posStyle: React.CSSProperties;
   if (aoiRect) {
     const cx = (aoiRect.left + aoiRect.right) / 2;
@@ -183,8 +194,8 @@ export function SequenceScrubber({
         // The slider/buttons are interactive, but the chrome lets nothing else
         // through (it's a control surface, unlike the legend).
         zIndex: 51,
-        // Width tracks the AOI bbox on-screen px width (clamped), or the natural
-        // band when there is no AOI rect.
+        // Natural base width band; the uniform transform: scale() above does the
+        // sizing relative to the bbox (the widget hides below the scale floor).
         ...widthStyle,
       }}
     >

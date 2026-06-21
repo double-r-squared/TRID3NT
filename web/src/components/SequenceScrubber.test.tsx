@@ -228,13 +228,18 @@ describe("SequenceScrubber — uniform scale tracks the AOI bbox on-screen size"
     expect(el.style.maxWidth).toBe("480px");
   });
 
-  it("scales a TINY (zoomed-out) bbox WELL BELOW 1 (not large/intrusive)", () => {
-    // A 12px-wide box -> raw 12/480 = 0.025 -> clamped UP to the min floor (0.5).
+  it("HIDES a TINY (zoomed-out) bbox below the usable threshold (NATE 2026-06-21)", () => {
+    // A 12px-wide box -> raw 12/480 = 0.025, far below the hide threshold -> the
+    // scrubber is not rendered at all (it returns on zoom-in past the threshold).
     renderScrubber({ aoiRect: { left: 500, top: 500, right: 512, bottom: 540 } });
+    expect(screen.queryByTestId("grace2-sequence-scrubber")).toBeNull();
+  });
+
+  it("SHOWS at the threshold, rendered at the min scale", () => {
+    // 336px = 0.7 * 480 = exactly the hide threshold -> shown at the min scale.
+    renderScrubber({ aoiRect: { left: 0, top: 0, right: 336, bottom: 200 } });
     const el = screen.getByTestId("grace2-sequence-scrubber");
-    const s = scaleFromTransform(el.style.transform);
-    expect(s).toBe(DEFAULT_SCRUBBER_SCALE_MIN);
-    expect(s).toBeLessThan(1);
+    expect(scaleFromTransform(el.style.transform)).toBeCloseTo(DEFAULT_SCRUBBER_SCALE_MIN, 5);
   });
 
   it("a mid-size (between floor and reference) bbox scales between min and 1", () => {
@@ -253,12 +258,12 @@ describe("SequenceScrubber — uniform scale tracks the AOI bbox on-screen size"
 
   it("re-scales when the projected bbox changes (pan/zoom recompute)", () => {
     const { rerender } = renderScrubber({
-      aoiRect: { left: 0, top: 0, right: 240, bottom: 200 }, // 240px -> 0.5 scale
+      aoiRect: { left: 0, top: 0, right: 384, bottom: 200 }, // 384px -> 0.8 scale (visible)
     });
     const first = scaleFromTransform(
       screen.getByTestId("grace2-sequence-scrubber").style.transform,
     );
-    expect(first).toBeCloseTo(0.5, 5);
+    expect(first).toBeCloseTo(0.8, 5);
     // A subsequent map move re-projects a wider bbox -> the widget grows.
     rerender(
       <SequenceScrubber
