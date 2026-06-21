@@ -2923,3 +2923,137 @@ describe("MapView ↔ AnimationController frame-visibility emitter (JOB WEB-ANIM
     expect(m.setLayoutProperty).not.toHaveBeenCalled();
   });
 });
+
+// clipFeaturesToBbox — RELAXED 2026-06-21. The agent (Lane C) now clips vectors
+// to the pinned AOI server-side, so an incoming server-provided layer is already
+// AOI-scoped. The client clip must therefore NEVER drop a feature when the AOI
+// bbox stashed on the map (__grace2AoiBbox, the last zoom-to camera extent) is
+// SMALLER than the layer's own data extent — that stale/smaller bbox would
+// silently drop legitimate buildings/rivers. It only trims a far-flung stray
+// when the AOI genuinely encloses the data.
+import { clipFeaturesToBbox, CLIP_CONTAINMENT_TOLERANCE } from "./Map";
+
+/** A point Feature at [lon, lat] (smallest bbox-able geometry). */
+function ptFeature(lon: number, lat: number) {
+  return {
+    type: "Feature" as const,
+    properties: {},
+    geometry: { type: "Point" as const, coordinates: [lon, lat] },
+  };
+}
+
+/** A FeatureCollection from a list of [lon, lat] points. */
+function fcOfPoints(pts: Array<[number, number]>) {
+  return {
+    type: "FeatureCollection" as const,
+    features: pts.map(([lon, lat]) => ptFeature(lon, lat)),
+  } as unknown as Parameters<typeof clipFeaturesToBbox>[0];
+}
+
+describe("clipFeaturesToBbox — relaxed AOI clip (server already AOI-scopes)", () => {
+  it("passes the collection through untouched when aoi is null (no-AOI path)", () => {
+    const fc = fcOfPoints([
+      [0, 0],
+      [10, 10],
+    ]);
+    expect(clipFeaturesToBbox(fc, null)).toBe(fc); // same ref, allocation-free
+  });
+
+  it("NEVER drops features when __grace2AoiBbox is SMALLER than the layer extent", () => {
+    // The layer's data spans [0..10] in both axes; the (stale/smaller) AOI is a
+    // tiny [4..6] camera extent. The relax must keep EVERYTHING — the server
+    // already AOI-scoped this layer; the smaller stale bbox must not clip it.
+    const fc = fcOfPoints([
+      [0, 0], // far corner, well outside the small AOI
+      [5, 5], // inside the small AOI
+      [10, 10], // far corner, well outside the small AOI
+    ]);
+    const out = clipFeaturesToBbox(fc, [4, 4, 6, 6]);
+    // No feature dropped -> same collection reference returned.
+    expect(out).toBe(fc);
+    expect(out.features).toHaveLength(3);
+  });
+
+  it("retains an edge-overlapping feature (inclusive overlap at the AOI boundary)", () => {
+    // Data is contained within the AOI, and one feature sits EXACTLY on the AOI
+    // edge. Inclusive overlap keeps it.
+    const fc = fcOfPoints([
+      [2, 2], // interior
+      [10, 5], // exactly on the AOI's right edge (x == aoi.right)
+    ]);
+    const out = clipFeaturesToBbox(fc, [0, 0, 10, 10]);
+    expect(out.features).toHaveLength(2);
+  });
+
+  it("passes a layer through untouched when a stray pushes the extent past the AOI", () => {
+    // The bulk of the data sits inside [1..9]; one stray feature sits far outside
+    // (at 100,100). The unioned data extent is now [1..100], which is NOT
+    // contained in the AOI [-1..11], so the AOI is SMALLER than the data and the
+    // relax passes the WHOLE collection through (it does not second-guess the
+    // server's own AOI scoping by dropping the stray against a smaller bbox).
+    const fc = fcOfPoints([
+      [1, 1],
+      [5, 5],
+      [9, 9],
+    ]);
+    const withStray = {
+      type: "FeatureCollection" as const,
+      features: [...fc.features, ptFeature(100, 100)],
+    } as unknown as typeof fc;
+    const out = clipFeaturesToBbox(withStray, [-1, -1, 11, 11]);
+    expect(out).toBe(withStray); // same ref -> nothing dropped
+    expect(out.features).toHaveLength(4);
+  });
+
+  it("returns the same ref (no drop) when the AOI encloses the whole data extent", () => {
+    // Data extent [2..8] is fully inside the AOI [0..10] (within tolerance), so
+    // the clip is active — but because the data is contained, EVERY feature
+    // overlaps the AOI, so nothing is dropped and the same collection is
+    // returned. This is the safe invariant: the relaxed clip never strips a
+    // feature the server provided.
+    const fc = fcOfPoints([
+      [2, 2],
+      [5, 5],
+      [8, 8],
+    ]);
+    const out = clipFeaturesToBbox(fc, [0, 0, 10, 10]);
+    expect(out).toBe(fc);
+  });
+
+  it("keeps features that cannot be bbox'd (never silently drop on a parse miss)", () => {
+    const fc = {
+      type: "FeatureCollection" as const,
+      features: [
+        ptFeature(5, 5),
+        // A feature with a null geometry -> geometryBbox returns null -> kept.
+        { type: "Feature" as const, properties: {}, geometry: null },
+      ],
+    } as unknown as Parameters<typeof clipFeaturesToBbox>[0];
+    const out = clipFeaturesToBbox(fc, [0, 0, 10, 10]);
+    expect(out.features).toHaveLength(2);
+  });
+
+  it("passes through when ALL features are unparseable (nothing safe to clip)", () => {
+    const fc = {
+      type: "FeatureCollection" as const,
+      features: [{ type: "Feature" as const, properties: {}, geometry: null }],
+    } as unknown as Parameters<typeof clipFeaturesToBbox>[0];
+    expect(clipFeaturesToBbox(fc, [0, 0, 10, 10])).toBe(fc);
+  });
+
+  it("exposes a generous containment tolerance (bias toward keeping)", () => {
+    expect(CLIP_CONTAINMENT_TOLERANCE).toBeGreaterThan(0);
+    // A layer whose extent grazes JUST past the AOI edge (within the tolerance
+    // band) still counts as "contained", so the clip stays active rather than
+    // bailing — and because the data is (within tolerance) inside the AOI, all
+    // its features are kept. AOI width 10 -> tol = 1.0; a 10.5 feature is past
+    // the edge by 0.5 (< tol) so the extent is treated as contained, and that
+    // grazing feature is RETAINED (the bias is toward keeping).
+    const fc = fcOfPoints([
+      [0, 0],
+      [10.5, 5], // 0.5 past the right edge; within tolerance -> kept
+    ]);
+    const out = clipFeaturesToBbox(fc, [0, 0, 10, 10]);
+    expect(out.features).toHaveLength(2);
+  });
+});

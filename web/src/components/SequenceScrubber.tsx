@@ -36,10 +36,11 @@ import {
   IconPlay,
   IconPause,
 } from "./icons";
-import { scrubberWidthForAoi, type ScreenRect } from "../lib/legend_snap";
+import { scrubberScaleForAoi, type ScreenRect } from "../lib/legend_snap";
 
-// The scrubber's natural (AOI-less) min/max width band. Used ONLY when there is
-// no active AOI rect to size against — see scrubberWidthForAoi below.
+// The scrubber's natural (AOI-less) min/max width band. The widget renders at
+// its base size, then a uniform CSS transform scales the WHOLE control with the
+// AOI bbox's on-screen size — see scrubberScaleForAoi below.
 const SCRUBBER_BASE_MIN_WIDTH = 220;
 const SCRUBBER_BASE_MAX_WIDTH = 480;
 
@@ -104,26 +105,30 @@ export function SequenceScrubber({
 
   const safeIndex = wrapIndex(activeIndex, n);
 
-  // SCRUBBER WIDTH = AOI bbox on-screen px width (NATE 2026-06-20). When an AOI
-  // rect is present the scrubber spans EXACTLY the bbox's projected EAST-WEST
-  // pixel extent (right - left), clamped to a usable [floor, ceiling] band so a
-  // few-px-wide zoomed-out box still leaves room for the controls and a fully
-  // zoomed-in box never stretches the bar absurdly wide. scrubberWidthForAoi
-  // returns null when there is no rect / it is degenerate, in which case we fall
-  // back to the natural (AOI-less) min/max width band.
-  const bboxWidth = scrubberWidthForAoi(aoiRect);
-  // The exact width (when sizing to the AOI) is applied as `width`; min/maxWidth
-  // are pinned to the same value so flex children + the slider's flex:1 cannot
-  // push the bar off the AOI width. Without an AOI we keep the elastic band.
-  const widthStyle: React.CSSProperties =
-    bboxWidth != null
-      ? { width: bboxWidth, minWidth: bboxWidth, maxWidth: bboxWidth }
-      : { minWidth: SCRUBBER_BASE_MIN_WIDTH, maxWidth: SCRUBBER_BASE_MAX_WIDTH };
+  // SCRUBBER UNIFORM SCALE (NATE 2026-06-21). The widget renders at its NATURAL
+  // base width band; a single CSS `transform: scale(s)` then shrinks/grows the
+  // ENTIRE control (buttons, handle, font, track) together with the AOI bbox's
+  // on-screen size, so a tiny zoomed-out box gets a proportionally tiny scrubber
+  // (not a fixed-px bar that dwarfs the box) and a zoomed-in box a larger one —
+  // both clamped. scrubberScaleForAoi returns 1.0 (natural) when there is no
+  // rect, so the AOI-less fallback renders at full size.
+  const scale = scrubberScaleForAoi(aoiRect);
+  // The base width band is always the natural one; uniform scaling (below) does
+  // the sizing relative to the bbox. No more width-floor that kept the bar large
+  // when zoomed out.
+  const widthStyle: React.CSSProperties = {
+    minWidth: SCRUBBER_BASE_MIN_WIDTH,
+    maxWidth: SCRUBBER_BASE_MAX_WIDTH,
+  };
 
   // Item 3: Snap the scrubber to the AOI bbox bottom-center when aoiRect is
   // available. The aoiRect coords are map-container-relative which equals
   // viewport coords (map container is position:fixed;inset:0 relative to the
   // app shell). When absent, fall back to viewport bottom-center.
+  //
+  // The uniform `scale(s)` is composed with the centering translate. We pin
+  // transform-origin to BOTTOM CENTER so the widget scales toward the AOI's
+  // bottom edge it hangs off (it never drifts away from the box as it shrinks).
   let posStyle: React.CSSProperties;
   if (aoiRect) {
     const cx = (aoiRect.left + aoiRect.right) / 2;
@@ -131,14 +136,16 @@ export function SequenceScrubber({
       position: "fixed",
       left: cx,
       top: aoiRect.bottom + 12,
-      transform: "translateX(-50%)",
+      transform: `translateX(-50%) scale(${scale})`,
+      transformOrigin: "top center",
     };
   } else {
     posStyle = {
       position: "fixed",
       bottom: 24,
       left: "50%",
-      transform: "translateX(-50%)",
+      transform: `translateX(-50%) scale(${scale})`,
+      transformOrigin: "bottom center",
     };
   }
 

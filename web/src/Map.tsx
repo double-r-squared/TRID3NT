@@ -574,25 +574,87 @@ function geometryBbox(
 }
 
 /**
- * FIX 2 (vector AOI clip) — drop every feature whose geometry bbox does not
- * overlap the AOI bbox, so a vector layer fetched with an ~10%-expanded bbox
- * does not render beyond the AOI rectangle. Feature-level (no edge slicing): we
- * keep any feature that touches/overlaps the AOI and drop the rest. Returns the
- * SAME collection (no copy) when `aoi` is null or nothing is dropped, so the
- * common no-AOI path is allocation-free. Exported for unit testing.
+ * FIX 2 (vector AOI clip), RELAXED 2026-06-21.
+ *
+ * Historically this dropped every feature whose geometry bbox did not overlap
+ * the AOI bbox stashed on the map (`__grace2AoiBbox`, set from the LAST zoom-to
+ * camera move). That was redundant and actively HARMFUL: the agent (Lane C) now
+ * clips vectors to the pinned AOI SERVER-SIDE, so an incoming server-provided
+ * layer is already AOI-scoped; meanwhile `__grace2AoiBbox` can be a STALE /
+ * SMALLER camera extent than the layer's true data, in which case this silently
+ * dropped legitimate buildings/rivers that the user expected to see.
+ *
+ * The relax: NEVER clip a layer against an AOI bbox that is SMALLER than the
+ * layer's own data extent. We first union every feature's bbox into the layer's
+ * overall data extent; if that extent is not fully CONTAINED within `aoi`
+ * (allowing a tiny coord tolerance), the AOI is stale/smaller than the data and
+ * we pass the collection through UNTOUCHED. We only drop outliers when the AOI
+ * genuinely encloses the data (the data is a strict subset of the AOI) — i.e.
+ * the historical "fetched ~10% expanded, trim the fringe" case, where dropping a
+ * far-flung stray feature is safe and the bulk of the data is well inside.
+ *
+ * Edge-overlapping features are always kept (`bboxesOverlap` is inclusive).
+ * Features we can't bbox are always kept (never silently drop on a parse miss).
+ * Returns the SAME collection (no copy) when `aoi` is null or nothing is
+ * dropped, so the common path is allocation-free. Exported for unit testing.
  */
 export function clipFeaturesToBbox(
   fc: FeatureCollection,
   aoi: [number, number, number, number] | null,
 ): FeatureCollection {
   if (!aoi) return fc;
+
+  // Union of all feature bboxes = the layer's own data extent.
+  let dataMinLon = Infinity;
+  let dataMinLat = Infinity;
+  let dataMaxLon = -Infinity;
+  let dataMaxLat = -Infinity;
+  let anyBbox = false;
+  for (const f of fc.features) {
+    const gb = geometryBbox(f.geometry as Geometry | null);
+    if (gb == null) continue;
+    anyBbox = true;
+    if (gb[0] < dataMinLon) dataMinLon = gb[0];
+    if (gb[1] < dataMinLat) dataMinLat = gb[1];
+    if (gb[2] > dataMaxLon) dataMaxLon = gb[2];
+    if (gb[3] > dataMaxLat) dataMaxLat = gb[3];
+  }
+
+  // No bbox-able features (all unparseable) -> nothing safe to clip against.
+  if (!anyBbox) return fc;
+
+  // If the layer's data extent is NOT fully contained within the AOI (allowing a
+  // small tolerance), the AOI is stale/smaller than the layer's own data. In
+  // that case we MUST NOT clip — the server already AOI-scoped this layer, and
+  // dropping against a smaller stale camera extent would silently lose coverage.
+  // Tolerance is a fraction of the AOI's own span so it scales with zoom.
+  const aoiW = aoi[2] - aoi[0];
+  const aoiH = aoi[3] - aoi[1];
+  const tolX = Math.max(Math.abs(aoiW), 1e-9) * CLIP_CONTAINMENT_TOLERANCE;
+  const tolY = Math.max(Math.abs(aoiH), 1e-9) * CLIP_CONTAINMENT_TOLERANCE;
+  const dataContainedInAoi =
+    dataMinLon >= aoi[0] - tolX &&
+    dataMinLat >= aoi[1] - tolY &&
+    dataMaxLon <= aoi[2] + tolX &&
+    dataMaxLat <= aoi[3] + tolY;
+  if (!dataContainedInAoi) return fc;
+
+  // The AOI genuinely encloses the data (data is a strict subset of the AOI):
+  // safe to trim any far-flung stray feature that does not overlap the AOI. The
+  // per-feature overlap test uses the SAME tolerance-expanded AOI as the
+  // containment gate above, so a feature grazing just past the AOI edge (within
+  // the tolerance band) is still kept — the bias is consistently toward KEEPING.
+  const aoiTol: [number, number, number, number] = [
+    aoi[0] - tolX,
+    aoi[1] - tolY,
+    aoi[2] + tolX,
+    aoi[3] + tolY,
+  ];
   const kept: Feature[] = [];
   let dropped = 0;
   for (const f of fc.features) {
     const gb = geometryBbox(f.geometry as Geometry | null);
-    // Keep features we can't bbox (defensive — never silently drop on a parse
-    // miss); drop only those whose bbox is fully outside the AOI.
-    if (gb == null || bboxesOverlap(gb, aoi)) {
+    if (gb == null || bboxesOverlap(gb, aoiTol)) {
       kept.push(f);
     } else {
       dropped += 1;
@@ -601,6 +663,15 @@ export function clipFeaturesToBbox(
   if (dropped === 0) return fc;
   return { ...fc, features: kept };
 }
+
+/**
+ * Fractional tolerance for the "data extent contained within AOI" containment
+ * check in clipFeaturesToBbox: the AOI is grown by this fraction of its own span
+ * on each axis before testing containment, so a feature whose bbox grazes the
+ * AOI edge (or sits within the agent's ~10% fetch expansion) still counts as
+ * contained. Generous on purpose — the bias is toward KEEPING features.
+ */
+export const CLIP_CONTAINMENT_TOLERANCE = 0.1;
 
 /**
  * Async vector-layer registration (job-0139). Fetches the layer's GeoJSON

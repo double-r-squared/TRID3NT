@@ -222,50 +222,56 @@ export function aoiScaleFactor(
 }
 
 /**
- * Scrubber WIDTH = AOI bbox on-screen px width (NATE 2026-06-20).
+ * Scrubber UNIFORM SCALE = AOI bbox on-screen px width / reference (NATE 2026-06-21).
  *
- * NATE's refinement of item d for the SCRUBBER specifically: instead of a
- * proportional scale factor, the time scrubber's width should EXACTLY match the
- * AOI bbox's on-screen EAST-WEST pixel extent (right - left of the projected
- * rect), so the scrubber spans the same width as the box it pins under. This is
- * the pure-geometry half: given the already-projected AOI ScreenRect, return the
- * clamped on-screen width in CSS px.
+ * NATE's refinement (supersedes the old width-floor approach): "I don't want the
+ * LENGTH affected, I want the WHOLE scale to stay the same relative to the bbox;
+ * when I zoom out the scrubber becomes large and intrusive." The old
+ * scrubberWidthForAoi only stretched the TRACK and floored at 200px, so a tiny
+ * zoomed-out box still got a 200px-wide bar with full-size buttons/font — huge
+ * relative to the box.
  *
- * Clamps (NATE-approved "== bbox width with a min floor"):
- *   - a MIN FLOOR so when zoomed far out and the bbox is only a few px wide the
- *     scrubber stays usable (its controls need room);
- *   - a MAX CEILING so a fully zoomed-in AOI doesn't stretch the scrubber past a
- *     sane width.
+ * Instead, derive a single SCALE FACTOR from the AOI bbox's on-screen EAST-WEST
+ * pixel width relative to a REFERENCE width (the width at which the scrubber
+ * renders at its natural 1.0). The caller applies this as a uniform
+ * `transform: scale(s)` (transform-origin bottom center) so the ENTIRE widget —
+ * buttons, handle, font, track — shrinks/grows together with the box on-screen.
  *
- * Returns null when there is no rect / the rect is degenerate (zero or negative
- * on-screen width), so the caller falls back to its natural min/max behavior
- * (the AOI-less static placement). Pure pixel math (Invariant 1).
+ * Clamped to [min, max] so the widget never becomes unusably tiny or absurdly
+ * large. Returns the natural 1.0 when there is no rect / the rect is degenerate
+ * (zero or negative on-screen width), so an AOI-less fallback renders at full
+ * size. Pure pixel math (Invariant 1).
  */
-export interface ScrubberWidthOptions {
-  /** Smallest scrubber width in px (keeps controls usable). Default 200. */
-  minPx?: number;
-  /** Largest scrubber width in px (never absurdly wide). Default 900. */
-  maxPx?: number;
+export interface ScrubberScaleOptions {
+  /** On-screen px width at which the scrubber renders at scale 1.0. Default 480. */
+  referencePx?: number;
+  /** Smallest allowed scale (never unusably tiny). Default 0.5. */
+  min?: number;
+  /** Largest allowed scale (never absurdly large/intrusive). Default 1.15. */
+  max?: number;
 }
 
-/** Min floor for the scrubber width (NATE-approved default). */
-export const DEFAULT_SCRUBBER_MIN_WIDTH_PX = 200;
-/** Max ceiling for the scrubber width (sanity cap). */
-export const DEFAULT_SCRUBBER_MAX_WIDTH_PX = 900;
+/** On-screen px width at which the scrubber renders at its natural 1.0 scale. */
+export const DEFAULT_SCRUBBER_SCALE_REFERENCE_PX = 480;
+/** Smallest scrubber scale (keeps the controls usable when zoomed far out). */
+export const DEFAULT_SCRUBBER_SCALE_MIN = 0.5;
+/** Largest scrubber scale (never intrusive when zoomed in). */
+export const DEFAULT_SCRUBBER_SCALE_MAX = 1.15;
 
-export function scrubberWidthForAoi(
+export function scrubberScaleForAoi(
   rect: ScreenRect | null | undefined,
-  opts: ScrubberWidthOptions = {},
-): number | null {
-  if (!rect) return null;
-  const minPx = opts.minPx ?? DEFAULT_SCRUBBER_MIN_WIDTH_PX;
-  const maxPx = opts.maxPx ?? DEFAULT_SCRUBBER_MAX_WIDTH_PX;
+  opts: ScrubberScaleOptions = {},
+): number {
+  const reference = opts.referencePx ?? DEFAULT_SCRUBBER_SCALE_REFERENCE_PX;
+  const min = opts.min ?? DEFAULT_SCRUBBER_SCALE_MIN;
+  const max = opts.max ?? DEFAULT_SCRUBBER_SCALE_MAX;
+  if (!rect) return 1;
   // The bbox on-screen EAST-WEST extent: right - left of the projected rect.
   const w = rect.right - rect.left;
-  if (!Number.isFinite(w) || w <= 0) return null;
-  // Clamp to [floor, ceiling]. If the band is degenerate (min > max) the floor
-  // wins, so the scrubber never collapses below a usable size.
-  return Math.max(minPx, Math.min(w, maxPx));
+  if (!Number.isFinite(w) || w <= 0 || reference <= 0) return 1;
+  const raw = w / reference;
+  // Clamp to [min, max]. If the band is degenerate (min > max) the floor wins.
+  return Math.max(min, Math.min(raw, max));
 }
 
 /**

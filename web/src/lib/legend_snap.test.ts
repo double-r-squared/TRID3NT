@@ -16,9 +16,10 @@ import {
   layoutKeysCcw,
   nearestSide,
   rectFromAnchorAndWidth,
-  scrubberWidthForAoi,
-  DEFAULT_SCRUBBER_MIN_WIDTH_PX,
-  DEFAULT_SCRUBBER_MAX_WIDTH_PX,
+  scrubberScaleForAoi,
+  DEFAULT_SCRUBBER_SCALE_MIN,
+  DEFAULT_SCRUBBER_SCALE_MAX,
+  DEFAULT_SCRUBBER_SCALE_REFERENCE_PX,
   sideForIndex,
   snapKeyToSide,
   stackPositionForIndex,
@@ -230,55 +231,75 @@ describe("aoiScaleFactor — scales with the AOI on-screen size, clamped", () =>
   });
 });
 
-// scrubberWidthForAoi (NATE 2026-06-20) — the time scrubber's WIDTH equals the
-// AOI bbox's on-screen EAST-WEST pixel width (right - left), clamped to a usable
-// [floor, ceiling] band; null when there is no AOI rect / it's degenerate.
-describe("scrubberWidthForAoi — width == bbox on-screen px width (clamped)", () => {
-  it("returns the bbox EAST-WEST extent (right - left) when within the band", () => {
-    // 600px-wide box -> 600px scrubber, untouched by the clamps.
-    const rect: ScreenRect = { left: 100, top: 50, right: 700, bottom: 400 };
-    expect(scrubberWidthForAoi(rect)).toBe(600);
+// scrubberScaleForAoi (NATE 2026-06-21) — the time scrubber's UNIFORM SCALE
+// FACTOR = AOI bbox on-screen EAST-WEST width / reference, clamped to [min, max].
+// The caller applies it as a single `transform: scale(s)` so the WHOLE widget
+// (buttons, handle, font, track) shrinks/grows together with the box on-screen.
+// Returns the natural 1.0 when there is no rect / it's degenerate. NATE: "I don't
+// want the LENGTH affected, I want the whole scale to stay the same relative to
+// the bbox; when I zoom out the scrubber becomes large and intrusive."
+describe("scrubberScaleForAoi — uniform scale == bbox width / reference (clamped)", () => {
+  it("returns the natural 1.0 scale at the reference on-screen width", () => {
+    const ref = DEFAULT_SCRUBBER_SCALE_REFERENCE_PX;
+    const rect: ScreenRect = { left: 0, top: 0, right: ref, bottom: 300 };
+    expect(scrubberScaleForAoi(rect)).toBeCloseTo(1, 5);
   });
 
-  it("ignores the bbox HEIGHT — only the on-screen WIDTH drives it", () => {
-    // Same 600px width but a much taller box: still 600px (height irrelevant).
-    const wideShort: ScreenRect = { left: 0, top: 0, right: 600, bottom: 40 };
-    const wideTall: ScreenRect = { left: 0, top: 0, right: 600, bottom: 1200 };
-    expect(scrubberWidthForAoi(wideShort)).toBe(600);
-    expect(scrubberWidthForAoi(wideTall)).toBe(600);
-  });
-
-  it("clamps a TINY (zoomed-out) bbox UP to the min floor (200px default)", () => {
-    // 12px-wide box -> clamp up to the floor so the controls stay usable.
+  it("a SMALL (zoomed-out) bbox -> a small scale WELL BELOW 1 (clamped at min)", () => {
+    // 12px-wide box -> raw 12/480 = 0.025 -> clamped UP to the min floor.
     const tiny: ScreenRect = { left: 500, top: 500, right: 512, bottom: 540 };
-    expect(scrubberWidthForAoi(tiny)).toBe(DEFAULT_SCRUBBER_MIN_WIDTH_PX);
-    expect(DEFAULT_SCRUBBER_MIN_WIDTH_PX).toBe(200);
+    const s = scrubberScaleForAoi(tiny);
+    expect(s).toBe(DEFAULT_SCRUBBER_SCALE_MIN);
+    // Strictly below the natural scale: the widget shrinks with the box, so it is
+    // no longer large/intrusive when zoomed out.
+    expect(s).toBeLessThan(1);
   });
 
-  it("clamps a HUGE (zoomed-in) bbox DOWN to the max ceiling", () => {
+  it("a mid-size bbox scales proportionally between min and 1", () => {
+    // 240px-wide box -> raw 240/480 = 0.5 (== the default floor here).
+    const mid: ScreenRect = { left: 0, top: 0, right: 240, bottom: 200 };
+    expect(scrubberScaleForAoi(mid)).toBeCloseTo(0.5, 5);
+    // 360px box -> 0.75, strictly between min and 1.
+    const bigger: ScreenRect = { left: 0, top: 0, right: 360, bottom: 200 };
+    expect(scrubberScaleForAoi(bigger)).toBeCloseTo(0.75, 5);
+  });
+
+  it("ignores the bbox HEIGHT — only the on-screen WIDTH drives the scale", () => {
+    const wideShort: ScreenRect = { left: 0, top: 0, right: 480, bottom: 40 };
+    const wideTall: ScreenRect = { left: 0, top: 0, right: 480, bottom: 1200 };
+    expect(scrubberScaleForAoi(wideShort)).toBeCloseTo(1, 5);
+    expect(scrubberScaleForAoi(wideTall)).toBeCloseTo(1, 5);
+  });
+
+  it("a LARGE (zoomed-in) bbox -> capped at the MAX ceiling", () => {
+    // 4000px box -> raw ~8.3 -> clamped DOWN to the max ceiling.
     const huge: ScreenRect = { left: 0, top: 0, right: 4000, bottom: 4000 };
-    expect(scrubberWidthForAoi(huge)).toBe(DEFAULT_SCRUBBER_MAX_WIDTH_PX);
+    expect(scrubberScaleForAoi(huge)).toBe(DEFAULT_SCRUBBER_SCALE_MAX);
+    expect(DEFAULT_SCRUBBER_SCALE_MAX).toBeGreaterThan(1);
   });
 
-  it("respects custom floor / ceiling options", () => {
-    const rect: ScreenRect = { left: 0, top: 0, right: 600, bottom: 300 };
-    // Custom ceiling below the natural width -> clamp down to it.
-    expect(scrubberWidthForAoi(rect, { maxPx: 400 })).toBe(400);
-    // Custom floor above the natural width -> clamp up to it.
-    const small: ScreenRect = { left: 0, top: 0, right: 50, bottom: 50 };
-    expect(scrubberWidthForAoi(small, { minPx: 120 })).toBe(120);
+  it("respects custom reference / clamp options", () => {
+    // Custom reference: a 240px box at reference 240 -> exactly 1.0.
+    const rect: ScreenRect = { left: 0, top: 0, right: 240, bottom: 200 };
+    expect(scrubberScaleForAoi(rect, { referencePx: 240 })).toBeCloseTo(1, 5);
+    // Custom min floor.
+    const tiny: ScreenRect = { left: 0, top: 0, right: 10, bottom: 10 };
+    expect(scrubberScaleForAoi(tiny, { min: 0.3 })).toBe(0.3);
+    // Custom max ceiling.
+    const big: ScreenRect = { left: 0, top: 0, right: 9000, bottom: 9000 };
+    expect(scrubberScaleForAoi(big, { max: 2.0 })).toBe(2.0);
   });
 
-  it("returns null for null / undefined / degenerate (zero or negative) width", () => {
-    expect(scrubberWidthForAoi(null)).toBeNull();
-    expect(scrubberWidthForAoi(undefined)).toBeNull();
-    // Zero-width rect -> no AOI width to size against.
-    expect(scrubberWidthForAoi({ left: 200, top: 0, right: 200, bottom: 300 })).toBeNull();
-    // Inverted (negative) width -> degenerate -> null (caller falls back).
-    expect(scrubberWidthForAoi({ left: 300, top: 0, right: 100, bottom: 300 })).toBeNull();
+  it("returns the natural 1.0 scale for null / undefined / degenerate width", () => {
+    expect(scrubberScaleForAoi(null)).toBe(1);
+    expect(scrubberScaleForAoi(undefined)).toBe(1);
+    // Zero-width rect -> no AOI width to size against -> natural scale.
+    expect(scrubberScaleForAoi({ left: 200, top: 0, right: 200, bottom: 300 })).toBe(1);
+    // Inverted (negative) width -> degenerate -> natural scale.
+    expect(scrubberScaleForAoi({ left: 300, top: 0, right: 100, bottom: 300 })).toBe(1);
   });
 
-  it("default ceiling is wider than the default floor (sane band)", () => {
-    expect(DEFAULT_SCRUBBER_MAX_WIDTH_PX).toBeGreaterThan(DEFAULT_SCRUBBER_MIN_WIDTH_PX);
+  it("default ceiling is greater than the default floor (sane band)", () => {
+    expect(DEFAULT_SCRUBBER_SCALE_MAX).toBeGreaterThan(DEFAULT_SCRUBBER_SCALE_MIN);
   });
 });
