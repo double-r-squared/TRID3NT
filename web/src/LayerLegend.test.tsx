@@ -17,9 +17,12 @@ import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, within } from "@testing-library/react";
 import {
   LayerLegend,
+  LEGEND_Z_INDEX,
   MOBILE_LEGEND_PILL_BOTTOM_CSS,
   MOBILE_LEGEND_PILL_CLEARANCE_PX,
   DESKTOP_LEGEND_PILL_BOTTOM_PX,
+  MobileLegendToggle,
+  legendHasContent,
 } from "./components/LayerLegend";
 import { ProjectLayerSummary } from "./contracts";
 
@@ -686,5 +689,231 @@ describe("LayerLegend — TiTiler rescale + colormap from the tile URL (frame tr
     expect(screen.getByTestId("layer-legend-max-label").textContent).toBe("100");
     const bar = screen.getByTestId("layer-legend-bar");
     expect(bar.style.background).toContain("#f7fbff");
+  });
+});
+
+// --- Item a (Z-HIERARCHY, NATE 2026-06-20) — legend renders BELOW chat/layers - //
+//
+// The legend keys + the collapsed show-pill must paint BEHIND the chat panel
+// (z=32) and the Layers/Cases panels (z=20) so they never cover the user's
+// controls. (They previously used z=50, which painted OVER the chat — the bug.)
+describe("LayerLegend — z-index below the chat + layers panels (item a)", () => {
+  it("the key card z-index is below the chat (32) and layers panels (20)", () => {
+    render(<LayerLegend layers={[makeLayer()]} />);
+    const key = screen.getByTestId("grace2-layer-legend-key");
+    const z = parseInt(key.style.zIndex, 10);
+    expect(z).toBe(LEGEND_Z_INDEX);
+    expect(z).toBeLessThan(20); // below the Layers/Cases panels
+    expect(z).toBeLessThan(32); // below the chat panel
+  });
+
+  it("the collapsed show-pill z-index is also below chat + layers", () => {
+    render(<LayerLegend layers={[makeLayer()]} />);
+    fireEvent.click(screen.getByTestId("layer-legend-hide"));
+    const pill = screen.getByTestId("grace2-layer-legend-show");
+    const z = parseInt(pill.style.zIndex, 10);
+    expect(z).toBe(LEGEND_Z_INDEX);
+    expect(z).toBeLessThan(20);
+    expect(z).toBeLessThan(32);
+  });
+});
+
+// --- Item e (ONE LEGEND per flood-depth series) — peak folds into the frames -- //
+//
+// The per-frame depth COGs ("Flood depth step N") AND the max/peak depth layer
+// all paint with the SAME colormap + rescale, so they form ONE series and must
+// collapse to ONE legend key — not one-per-frame + a separate peak key.
+describe("LayerLegend — one legend per depth series incl. the peak (item e)", () => {
+  function depthFrame(hour: number): ProjectLayerSummary {
+    const hh = String(hour).padStart(2, "0");
+    return makeLayer({
+      layer_id: `run-a-depth-f${hh}`,
+      name: `Flood depth step ${hour}`,
+      wms_url: `https://edge.example/cog/tiles/WebMercatorQuad/{z}/{x}/{y}.png?url=s3%3A%2F%2Fb%2Fdepth_f${hh}.tif&rescale=0,3.5&colormap_name=blues`,
+    });
+  }
+  function peakDepth(): ProjectLayerSummary {
+    // SAME colormap + rescale as the frames => same series.
+    return makeLayer({
+      layer_id: "run-a-depth-peak",
+      name: "Max flood depth",
+      wms_url:
+        "https://edge.example/cog/tiles/WebMercatorQuad/{z}/{x}/{y}.png?url=s3%3A%2F%2Fb%2Fdepth_peak.tif&rescale=0,3.5&colormap_name=blues",
+    });
+  }
+
+  it("collapses N depth frames + the peak into ONE legend key (series dedup)", () => {
+    const layers = [peakDepth(), depthFrame(1), depthFrame(3), depthFrame(6)];
+    render(<LayerLegend layers={layers} />);
+    // Item e: exactly ONE key for the whole depth series (frames + peak).
+    expect(screen.getAllByTestId("grace2-layer-legend-key")).toHaveLength(1);
+  });
+
+  it("a layer with a DIFFERENT colormap/scale still gets its own key", () => {
+    const depthSeries = [depthFrame(1), depthFrame(3), peakDepth()];
+    // A velocity raster — different colormap + rescale => different series.
+    const velocity = makeLayer({
+      layer_id: "run-a-velocity",
+      name: "Flow velocity",
+      wms_url:
+        "https://edge.example/cog/tiles/WebMercatorQuad/{z}/{x}/{y}.png?url=s3%3A%2F%2Fb%2Fvel.tif&rescale=0,5&colormap_name=viridis",
+    });
+    render(<LayerLegend layers={[velocity, ...depthSeries]} />);
+    // Two series => two keys (depth + velocity).
+    expect(screen.getAllByTestId("grace2-layer-legend-key")).toHaveLength(2);
+  });
+});
+
+// --- Item g (ORIENTATION) — vertical on left/right, horizontal on top/bottom -- //
+describe("LayerLegend — orientation flips by docked side (item g)", () => {
+  const anchor = { left: 500, top: 400 };
+  const barWidth = 200;
+
+  function fourKeys(): ProjectLayerSummary[] {
+    // Four DISTINCT preset-only rasters (no URL colormap => not a series), so
+    // each gets its own key and lands on its own CCW side.
+    return [0, 1, 2, 3].map((i) =>
+      makeLayer({ layer_id: `o${i}`, z_index: 4 - i }),
+    );
+  }
+
+  it("the bottom + top keys are HORIZONTAL; the left + right keys are VERTICAL", () => {
+    render(<LayerLegend layers={fourKeys()} anchor={anchor} barWidth={barWidth} />);
+    const keys = screen.getAllByTestId("grace2-layer-legend-key");
+    const bySide = (s: string) =>
+      keys.find((k) => k.getAttribute("data-legend-side") === s)!;
+    expect(bySide("bottom").getAttribute("data-legend-orientation")).toBe("horizontal");
+    expect(bySide("top").getAttribute("data-legend-orientation")).toBe("horizontal");
+    expect(bySide("right").getAttribute("data-legend-orientation")).toBe("vertical");
+    expect(bySide("left").getAttribute("data-legend-orientation")).toBe("vertical");
+  });
+
+  it("a vertical (left/right) bar uses a to-top gradient; a horizontal one to-right", () => {
+    render(<LayerLegend layers={fourKeys()} anchor={anchor} barWidth={barWidth} />);
+    const keys = screen.getAllByTestId("grace2-layer-legend-key");
+    const bySide = (s: string) =>
+      keys.find((k) => k.getAttribute("data-legend-side") === s)!;
+    const rightBar = within(bySide("right")).getByTestId("layer-legend-bar");
+    const bottomBar = within(bySide("bottom")).getByTestId("layer-legend-bar");
+    expect(rightBar.style.background).toContain("to top");
+    expect(bottomBar.style.background).toContain("to right");
+  });
+
+  it("the AOI-less bottom-center fallback is horizontal", () => {
+    render(<LayerLegend layers={[makeLayer()]} />);
+    const key = screen.getByTestId("grace2-layer-legend-key");
+    expect(key.getAttribute("data-legend-orientation")).toBe("horizontal");
+  });
+});
+
+// --- Item d (SCALE WITH AOI) — overlay scales with the AOI on-screen px size -- //
+describe("LayerLegend — scales the default key width with the AOI px size (item d)", () => {
+  it("a tiny on-screen AOI yields a SMALLER default key than a large one", () => {
+    // No barWidth override => the default width is sized off STATIC * scale,
+    // which tracks the aoiRect's on-screen size (clamped). A tiny rect shrinks it.
+    const tiny = { left: 100, top: 100, right: 140, bottom: 140 }; // 40px box
+    const huge = { left: 0, top: 0, right: 1200, bottom: 1200 };
+    const { rerender } = render(
+      <LayerLegend layers={[makeLayer()]} aoiRect={tiny} />,
+    );
+    const tinyW = parseFloat(screen.getByTestId("grace2-layer-legend-key").style.width);
+    rerender(<LayerLegend layers={[makeLayer()]} aoiRect={huge} />);
+    const hugeW = parseFloat(screen.getByTestId("grace2-layer-legend-key").style.width);
+    expect(tinyW).toBeLessThan(hugeW);
+    // Both stay within the usable clamp band (never unusably tiny / huge).
+    expect(tinyW).toBeGreaterThanOrEqual(140); // KEY_MIN_WIDTH floor
+    expect(hugeW).toBeLessThanOrEqual(520); // KEY_MAX_WIDTH ceiling
+  });
+});
+
+// --- Item f (legend not obscured by the scrubber) — bottom-reserve push ------- //
+describe("LayerLegend — bottom key clears the scrubber footprint (item f)", () => {
+  it("pushes the bottom-side key down by the supplied bottomReservePx", () => {
+    const rect = { left: 100, top: 100, right: 500, bottom: 200 };
+    const { rerender } = render(
+      <LayerLegend layers={[makeLayer({ layer_id: "br0" })]} aoiRect={rect} />,
+    );
+    const baseTop = parseFloat(
+      screen.getByTestId("grace2-layer-legend-key").style.top,
+    );
+    rerender(
+      <LayerLegend
+        layers={[makeLayer({ layer_id: "br0" })]}
+        aoiRect={rect}
+        bottomReservePx={60}
+      />,
+    );
+    const reservedTop = parseFloat(
+      screen.getByTestId("grace2-layer-legend-key").style.top,
+    );
+    // The bottom key is pushed DOWN (greater top) by the reserve so it clears
+    // the scrubber that pins just below the AOI bottom edge.
+    expect(reservedTop).toBeCloseTo(baseTop + 60, 0);
+  });
+});
+
+// --- Item b (mobile controlled hide + suppressed pill) ------------------------ //
+describe("LayerLegend — controlled hide + suppressed floating pill (item b)", () => {
+  it("renders nothing for the pill when hidden + suppressShowPill (mobile)", () => {
+    render(
+      <LayerLegend layers={[makeLayer()]} hidden suppressShowPill />,
+    );
+    // No floating pill (the in-panel toggle is the only affordance on mobile).
+    expect(screen.queryByTestId("grace2-layer-legend-show")).toBeNull();
+    // And no keys (hidden).
+    expect(screen.queryByTestId("grace2-layer-legend-key")).toBeNull();
+  });
+
+  it("honors the controlled `hidden` prop (parent owns the state)", () => {
+    const { rerender } = render(
+      <LayerLegend layers={[makeLayer()]} hidden={false} suppressShowPill />,
+    );
+    expect(screen.getByTestId("grace2-layer-legend-key")).toBeInTheDocument();
+    rerender(<LayerLegend layers={[makeLayer()]} hidden suppressShowPill />);
+    expect(screen.queryByTestId("grace2-layer-legend-key")).toBeNull();
+  });
+
+  it("fires onHiddenChange when the per-key hide control is clicked (controlled)", () => {
+    const onHiddenChange = vi.fn();
+    render(
+      <LayerLegend
+        layers={[makeLayer()]}
+        hidden={false}
+        onHiddenChange={onHiddenChange}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("layer-legend-hide"));
+    expect(onHiddenChange).toHaveBeenCalledWith(true);
+  });
+});
+
+// --- legendHasContent + MobileLegendToggle (item b helpers) ------------------- //
+describe("legendHasContent helper", () => {
+  it("is true when there is an eligible raster legend, false otherwise", () => {
+    expect(legendHasContent([makeLayer()])).toBe(true);
+    expect(legendHasContent([])).toBe(false);
+    expect(legendHasContent([makeLayer({ style_preset: null })])).toBe(false);
+  });
+});
+
+describe("MobileLegendToggle", () => {
+  it("shows 'Hide legend' when visible and toggles to hidden on click", () => {
+    const onToggle = vi.fn();
+    render(<MobileLegendToggle hidden={false} onToggle={onToggle} />);
+    const btn = screen.getByTestId("grace2-mobile-legend-toggle");
+    expect(btn).toHaveTextContent("Hide legend");
+    expect(btn).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(btn);
+    expect(onToggle).toHaveBeenCalledWith(true);
+  });
+
+  it("shows 'Show legend' when hidden and toggles to visible on click", () => {
+    const onToggle = vi.fn();
+    render(<MobileLegendToggle hidden onToggle={onToggle} />);
+    const btn = screen.getByTestId("grace2-mobile-legend-toggle");
+    expect(btn).toHaveTextContent("Show legend");
+    expect(btn).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(btn);
+    expect(onToggle).toHaveBeenCalledWith(false);
   });
 });

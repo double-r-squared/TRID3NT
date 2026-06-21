@@ -176,6 +176,52 @@ export function nearestSide(aoi: ScreenRect, point: { x: number; y: number }): A
 }
 
 /**
+ * Item d (NATE 2026-06-20) — derive a SCALE FACTOR for the AOI-anchored overlays
+ * (legend keys + scrubber) from the AOI bbox's ON-SCREEN size, so that when the
+ * map is zoomed out and the bbox is tiny the overlays shrink with it (instead of
+ * dwarfing the box in fixed screen-px), and when zoomed in they grow — both
+ * clamped so they never become unusably tiny or absurdly huge.
+ *
+ * The factor is the AOI's smaller on-screen dimension (min of width/height — the
+ * limiting axis the overlay must not overwhelm) divided by a REFERENCE size at
+ * which the overlays render at their natural 1.0 scale. It is then clamped to
+ * [min, max].
+ *
+ * Pure pixel math (Invariant 1). Returns 1.0 (the natural scale) when there is
+ * no rect, so an AOI-less fallback renders at full size.
+ */
+export interface AoiScaleOptions {
+  /** On-screen px at which the overlay renders at scale 1.0. Default 360. */
+  referencePx?: number;
+  /** Smallest allowed scale (never unusably tiny). Default 0.6. */
+  min?: number;
+  /** Largest allowed scale (never absurdly huge). Default 1.6. */
+  max?: number;
+}
+
+export const DEFAULT_AOI_SCALE_REFERENCE_PX = 360;
+export const DEFAULT_AOI_SCALE_MIN = 0.6;
+export const DEFAULT_AOI_SCALE_MAX = 1.6;
+
+export function aoiScaleFactor(
+  rect: ScreenRect | null | undefined,
+  opts: AoiScaleOptions = {},
+): number {
+  const reference = opts.referencePx ?? DEFAULT_AOI_SCALE_REFERENCE_PX;
+  const min = opts.min ?? DEFAULT_AOI_SCALE_MIN;
+  const max = opts.max ?? DEFAULT_AOI_SCALE_MAX;
+  if (!rect) return 1;
+  const w = Math.abs(rect.right - rect.left);
+  const h = Math.abs(rect.bottom - rect.top);
+  // The limiting axis: the overlay must not overwhelm the SMALLER on-screen
+  // extent of the AOI box. Guard against a degenerate (zero-area) rect.
+  const limiting = Math.min(w, h);
+  if (!Number.isFinite(limiting) || limiting <= 0 || reference <= 0) return 1;
+  const raw = limiting / reference;
+  return Math.max(min, Math.min(raw, max));
+}
+
+/**
  * FALLBACK ESTIMATOR — only used when the TRUE projected AOI rect is unavailable.
  *
  * Reconstructs an *approximate* AOI ScreenRect from `anchor` (the bbox

@@ -167,3 +167,41 @@ describe("AnimationController — singleton", () => {
     expect(getAnimationController()).toBe(replacement);
   });
 });
+
+// Item c (CLEAR ON CASE-EXIT, NATE 2026-06-20) — reset() drops ALL playback
+// state so the App-level scrubber vanishes when a Case is closed (the LayerPanel
+// unmounts on exit, so it never pushes setGroups([]) to clear the controller).
+describe("AnimationController — reset() clears all state on case-exit (item c)", () => {
+  it("drops groups + active key + frame state + playing, and stops the interval", () => {
+    const { timers, tick, cleared } = makeFakeTimers();
+    const c = new AnimationController({ timers });
+    c.setGroups([GROUP]);
+    c.stepGroupTo(GROUP.key, 0);
+    c.setPlaying(true);
+    expect(c.getActiveGroup()).not.toBeNull();
+    expect(c.isPlaying()).toBe(true);
+
+    c.reset();
+
+    // Everything is cleared — the scrubber (which renders only when a group is
+    // active) will unmount.
+    expect(c.getGroups()).toHaveLength(0);
+    expect(c.getActiveGroup()).toBeNull();
+    expect(c.isPlaying()).toBe(false);
+    expect(cleared()).toBe(true);
+    // A post-reset tick is a no-op (no active group to advance).
+    tick();
+    expect(c.getActiveGroup()).toBeNull();
+  });
+
+  it("notifies subscribers so the scrubber re-renders (and disappears) on reset", () => {
+    const c = new AnimationController({ timers: makeFakeTimers().timers });
+    c.setGroups([GROUP]);
+    const cb = vi.fn();
+    c.subscribe(cb); // immediate call (1)
+    cb.mockClear();
+    c.reset();
+    expect(cb).toHaveBeenCalled();
+    expect(cb.mock.calls.at(-1)![0].activeGroupKey).toBeNull();
+  });
+});

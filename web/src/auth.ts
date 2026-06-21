@@ -97,7 +97,25 @@ export function isFirebaseConfigured(): boolean {
 }
 
 // --------------------------------------------------------------------------- //
-// In-memory + sessionStorage token store (survives reload within the tab).
+// Token store: sessionStorage for the live ID/access token set (tab-scoped, fast
+// reload path) + a DURABLE refresh token in localStorage so the Cognito session
+// can be restored CLIENT-SIDE on a cold boot (new tab / browser restart / a
+// phone that evicted the tab), independent of the agent / WebSocket.
+//
+// COLD-CASES-BOX-OFF FIX (NATE 2026-06-20): the cases rail (and cold case-view)
+// fetch the serverless /case-list with the Cognito ID token; with the agent box
+// ASLEEP that is the ONLY way they can authenticate. Previously the ENTIRE token
+// set lived in sessionStorage, which a fresh tab / restart clears — so box-off
+// the user looked SIGNED OUT (isSignedIn=false -> coldListIdentity="anon" -> a
+// tokenless, authoritative-EMPTY list) until the box woke and the user re-signed
+// in. Persisting the long-lived REFRESH token in localStorage lets initAuth()
+// mint a fresh ID token via the Cognito refresh_token grant on load (a direct
+// POST to the Hosted UI /oauth2/token endpoint — NO agent involvement), so the
+// session is restored and the cold fetches go out authenticated. The minted ID
+// token is byte-identical to a Hosted-UI-minted one (same Cognito issuer,
+// claims, JWKS), so the agent's verify_id_token + the Lambdas' verification are
+// completely unchanged. The refresh token NEVER leaves the browser (Decision F
+// wire isolation preserved — only the ID token crosses to the agent).
 // --------------------------------------------------------------------------- //
 
 interface TokenSet {
@@ -110,6 +128,9 @@ interface TokenSet {
 
 const SS_TOKENS = "grace2_cognito_tokens";
 const SS_PKCE_VERIFIER = "grace2_cognito_pkce_verifier";
+/** Durable (localStorage) refresh token — survives tab close / browser restart
+ *  so the session can be restored on a cold boot box-off. */
+const LS_REFRESH = "grace2_cognito_refresh";
 
 let injectedUser: AuthUser | null = null;
 let injectedActive = false;
@@ -189,16 +210,54 @@ function expiresAtFromIdToken(idToken: string): number {
 // Token persistence.
 // --------------------------------------------------------------------------- //
 
+/** Read the durable refresh token from localStorage (null when absent / blocked). */
+function loadDurableRefresh(): string | null {
+  try {
+    const raw = localStorage.getItem(LS_REFRESH);
+    return raw && raw.trim() !== "" ? raw : null;
+  } catch {
+    // localStorage unavailable (private mode) — durable restore not possible.
+    return null;
+  }
+}
+
+/**
+ * Load the persisted token set.
+ *
+ * Precedence:
+ *   1. The full sessionStorage ID/access/refresh token set (same-tab fast path,
+ *      survives a reload). Returned verbatim when it carries an ID token.
+ *   2. When sessionStorage holds no ID token but localStorage holds a DURABLE
+ *      refresh token (a cold boot box-off: fresh tab / restart), synthesise a
+ *      refresh-ONLY TokenSet (idToken="" / expiresAt=0). initAuth()'s
+ *      "expired-but-has-refresh" branch then mints a fresh ID token client-side
+ *      via the Cognito refresh_token grant — restoring the session with no agent
+ *      / WebSocket involvement.
+ *   3. null — neither present (genuinely signed out).
+ */
 function loadTokens(): TokenSet | null {
   try {
     const raw = sessionStorage.getItem(SS_TOKENS);
-    if (!raw) return null;
-    const t = JSON.parse(raw) as TokenSet;
-    if (!t.idToken) return null;
-    return t;
+    if (raw) {
+      const t = JSON.parse(raw) as TokenSet;
+      // Backfill the durable refresh token if the sessionStorage copy lost it
+      // (Cognito does not re-issue one on refresh, so a refreshed sessionStorage
+      // set carries the original — but be defensive across storage edits).
+      if (t.idToken) {
+        if (!t.refreshToken) t.refreshToken = loadDurableRefresh();
+        return t;
+      }
+    }
   } catch {
-    return null;
+    // fall through to the durable-refresh restore
   }
+  // No usable sessionStorage ID token — try the durable refresh token so a cold
+  // boot box-off can still restore the signed-in session client-side.
+  const durable = loadDurableRefresh();
+  if (durable) {
+    return { idToken: "", accessToken: null, refreshToken: durable, expiresAt: 0 };
+  }
+  return null;
 }
 
 function storeTokens(t: TokenSet | null): void {
@@ -208,6 +267,16 @@ function storeTokens(t: TokenSet | null): void {
     else sessionStorage.removeItem(SS_TOKENS);
   } catch {
     // sessionStorage unavailable (private mode) — proceed in-memory only.
+  }
+  // Mirror the long-lived refresh token to localStorage so the session survives
+  // a tab close / browser restart (the box-off cold-boot restore path). Clearing
+  // the token set (sign-out / terminal refresh failure) removes it too.
+  try {
+    if (t && t.refreshToken) localStorage.setItem(LS_REFRESH, t.refreshToken);
+    else localStorage.removeItem(LS_REFRESH);
+  } catch {
+    // localStorage unavailable (private mode) — durable restore won't be
+    // available next cold boot, but the in-tab session still works.
   }
 }
 
@@ -243,11 +312,16 @@ async function sha256Base64Url(input: string): Promise<string> {
 // --------------------------------------------------------------------------- //
 
 /**
- * Initialise the auth subsystem. No network: it restores any token set
- * persisted in sessionStorage (so a reload keeps the signed-in session), or
- * reports "disabled" when Cognito env vars are absent.
+ * Initialise the auth subsystem. Restores the signed-in session CLIENT-SIDE:
+ *   - a same-tab reload reuses the sessionStorage ID token (no network), OR
+ *   - a cold boot (fresh tab / browser restart / box-off) mints a fresh ID
+ *     token from the DURABLE localStorage refresh token via the Cognito
+ *     refresh_token grant (one direct POST to /oauth2/token — NO agent / WS),
+ * or reports "disabled" when Cognito env vars are absent.
  *
- * Idempotent.
+ * The restored ID token is what getIdToken() returns + what ws.ts sends on the
+ * auth-token handshake, so the cold case-list / case-view fetches authenticate
+ * box-off exactly as box-on. Idempotent.
  */
 export async function initAuth(): Promise<void> {
   if (injectedActive) return;
@@ -267,12 +341,16 @@ export async function initAuth(): Promise<void> {
     cachedTokens = t;
     cachedUser = userFromIdToken(t.idToken);
   } else if (t && t.refreshToken) {
-    // Persisted token expired but we hold a refresh token — try to refresh.
+    // No live ID token but we hold a refresh token (expired sessionStorage set
+    // OR a durable-refresh-only cold boot) — mint a fresh ID token client-side.
     const refreshed = await refreshTokens(t.refreshToken).catch(() => null);
     if (refreshed) {
-      cachedTokens = refreshed;
+      // Persist so the in-tab fast path + the durable refresh mirror are both
+      // up to date (storeTokens writes sessionStorage + localStorage).
+      storeTokens(refreshed);
       cachedUser = userFromIdToken(refreshed.idToken);
     } else {
+      // Refresh failed (revoked / expired refresh token) — clear durable state.
       storeTokens(null);
       cachedUser = null;
     }

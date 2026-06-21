@@ -244,3 +244,84 @@ describe("JOB WEB-ANIM #157.3 — the scrubber play button toggles playing", () 
     expect(emitted).toContain(0);
   });
 });
+
+// --- Item b/c (NATE 2026-06-20) — mobile legend toggle + case-exit clearing --- //
+//
+// These compose the real pieces App.tsx wires: the MOBILE legend show/hide
+// toggle rendered INSIDE the LayerPanel's expanded section (off the chat
+// composer), and the AnimationController.reset() App calls on Case exit to clear
+// the scrubber (which, on exit, the unmounting LayerPanel can no longer clear).
+import {
+  MobileLegendToggle,
+  legendHasContent,
+} from "./components/LayerLegend";
+
+describe("Item b — mobile legend toggle lives INSIDE the Layers section", () => {
+  beforeEach(() => {
+    installFakeTimerController();
+  });
+
+  it("renders the MobileLegendToggle inside the LayerPanel body (not floating)", () => {
+    // App passes <MobileLegendToggle/> as LayerPanel's `legendControl` on mobile.
+    let hidden = false;
+    render(
+      <LayerPanel
+        initialLayers={FRAMES}
+        mobile
+        legendControl={
+          <MobileLegendToggle hidden={hidden} onToggle={(h) => (hidden = h)} />
+        }
+      />,
+    );
+    // The toggle sits in the panel's dedicated legend-control slot.
+    const slot = screen.getByTestId("grace2-layer-panel-legend-control");
+    const toggle = screen.getByTestId("grace2-mobile-legend-toggle");
+    expect(slot.contains(toggle)).toBe(true);
+    // It is a child of the Layers panel (in-flow), not portaled to the body root.
+    const panel = screen.getByTestId("grace2-layer-panel");
+    expect(panel.contains(toggle)).toBe(true);
+  });
+
+  it("LayerPanel renders no legend-control slot when none is supplied (desktop)", () => {
+    render(<LayerPanel initialLayers={FRAMES} />);
+    expect(screen.queryByTestId("grace2-layer-panel-legend-control")).toBeNull();
+  });
+
+  it("legendHasContent gates whether App renders the mobile toggle", () => {
+    // A raster with a KNOWN preset has a legend => the toggle should render.
+    const depth: ProjectLayerSummary = {
+      layer_id: "depth-1",
+      name: "Max flood depth",
+      layer_type: "raster",
+      uri: "s3://b/depth.cog.tif",
+      visible: true,
+      opacity: 1,
+      z_index: 1,
+      style_preset: "continuous_flood_depth",
+    };
+    expect(legendHasContent([depth])).toBe(true);
+    // No eligible raster legend => no toggle.
+    expect(legendHasContent([])).toBe(false);
+  });
+});
+
+describe("Item c — Case exit clears the scrubber (controller reset)", () => {
+  it("after the panel unmounts (Case exit) + reset(), the App scrubber clears", () => {
+    installFakeTimerController();
+    // Mount the panel (pushes the group) + the App scrubber harness.
+    const panel = render(<LayerPanel initialLayers={FRAMES} />);
+    render(<AppScrubberHarness />);
+    expect(screen.getByTestId("grace2-sequence-scrubber")).toBeInTheDocument();
+    // On Case EXIT: the LayerPanel unmounts (the rail shows the Cases list, not
+    // CaseView) — so nothing re-pushes the old Case's groups — and App's
+    // Case-switch handler resets the shared controller.
+    act(() => {
+      panel.unmount();
+      getAnimationController().reset();
+    });
+    // The scrubber renders only when a group is active; reset cleared it, and
+    // (unlike a panel close alone) nothing re-pushes the group, so the scrubber
+    // stays gone — item c: the scrubber clears on Case exit.
+    expect(screen.queryByTestId("grace2-sequence-scrubber")).toBeNull();
+  });
+});

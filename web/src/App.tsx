@@ -41,6 +41,9 @@ import { getLayerCache } from "./lib/layer_cache";
 // level (not inside LayerPanel) so it renders WHENEVER a sequence is animating on
 // the shared AnimationController, regardless of whether the Layers panel is open.
 import { SequenceScrubber } from "./components/SequenceScrubber";
+// Item b (NATE 2026-06-20) — the MOBILE legend show/hide toggle lives inside the
+// expanded Layers section (off the chat composer); legendHasContent gates it.
+import { MobileLegendToggle, legendHasContent } from "./components/LayerLegend";
 import { getAnimationController } from "./lib/animation_controller";
 import { useAnimationState } from "./lib/use_animation_controller";
 import type { ScreenRect } from "./lib/legend_snap";
@@ -276,6 +279,13 @@ export function App(): JSX.Element {
   // is no AOI / it leaves the viewport). Mirrors the layers/chatWidth lift
   // pattern: App holds the Map-derived screen state, LayerPanel consumes it.
   const [aoiScreenRect, setAoiScreenRect] = useState<ScreenRect | null>(null);
+
+  // Item b (NATE 2026-06-20) — MOBILE legend show/hide state, owned at App level
+  // so the toggle can live INSIDE the expanded Layers section (out of the way of
+  // the chat composer) while the legend itself renders from Map.tsx. On desktop
+  // the legend keeps its own internal hide state (this stays false). Cleared on
+  // Case exit (item c) along with the scrubber + legend.
+  const [legendHiddenMobile, setLegendHiddenMobile] = useState<boolean>(false);
 
   // Auth state (job-0123, sprint-12-mega Wave 2).
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
@@ -881,6 +891,16 @@ export function App(): JSX.Element {
     // reaches here, so the seatbelt holds.
     if (prevCaseId !== null && prevCaseId !== activeCaseId) {
       layerCache.evictCase(prevCaseId);
+      // Item c (NATE 2026-06-20) — clear the SCRUBBER + the (mobile) legend on
+      // Case EXIT / SWITCH. The scrubber is driven by the module-level
+      // AnimationController; on exit the LayerPanel unmounts (the rail shows the
+      // Cases list, not CaseView) so it never pushes setGroups([]) to clear it —
+      // the left Case's groups would linger and the App-level scrubber would
+      // keep showing. reset() drops all groups + stops playback so the scrubber
+      // vanishes. The legend clears with the layers (Map.tsx), but the MOBILE
+      // hide-state is App-owned, so reset it too (a fresh Case shows its legend).
+      getAnimationController().reset();
+      setLegendHiddenMobile(false);
     }
     layerCache.activeCaseId = activeCaseId;
   }, [activeCaseId, layerCache]);
@@ -1340,6 +1360,13 @@ export function App(): JSX.Element {
         /* Lift the projected AOI rect so the SequenceScrubber (inside
            LayerPanel) can pin bottom-center of the AOI box like the legend. */
         onAoiScreenRectChange={setAoiScreenRect}
+        /* Item b (NATE 2026-06-20) — on MOBILE the legend show/hide is App-owned
+           so the toggle can live INSIDE the expanded Layers section (off the chat
+           composer); the floating pill is suppressed. On desktop the legend keeps
+           its own internal hide state (these stay undefined => uncontrolled). */
+        legendHidden={isMobile ? legendHiddenMobile : undefined}
+        onLegendHiddenChange={isMobile ? setLegendHiddenMobile : undefined}
+        suppressLegendShowPill={isMobile}
       />
 
       {/* MOBILE TOP FROST GRADIENT (NATE 2026-06-19) — with the iOS status bar
@@ -1732,8 +1759,31 @@ export function App(): JSX.Element {
                   flex:1 + min-width:0 ellipsis engages and the kebab
                   (flex-shrink:0) stays inside the column's overflow:hidden
                   clip. (The mobile fixed width is set in global.css
-                  `.grace2-mobile-touch [data-testid="grace2-cases-panel"]`.) */}
-              <div style={{ width: "100%", pointerEvents: "auto" }}>
+                  `.grace2-mobile-touch [data-testid="grace2-cases-panel"]`.)
+
+                  MOBILE CASES-SCROLL FIX (NATE 2026-06-20): this inner wrapper
+                  was `width:100%` ONLY — a content-sized (height:auto) block
+                  BETWEEN the bounded hugger (flex:1 + minHeight:0) and
+                  CasesPanel. CasesPanel's `height:100%` (the ed4cf91 desktop
+                  fix) resolved against this auto height, so the panel sized to
+                  content, never got squeezed, and its inner list never scrolled
+                  on mobile. Making this wrapper a bounded flex column
+                  (flex:1 + minHeight:0 + display:flex + flexDirection:column)
+                  passes the hugger's real bounded height THROUGH to CasesPanel
+                  (height:100% now resolves), so the grace2-cases-list — the
+                  single scroll surface (pinned header + mask fade) — scrolls.
+                  Mirrors the desktop convergence (rail wrapper is a bounded
+                  flex column). width:100% + pointerEvents:auto are preserved. */}
+              <div
+                style={{
+                  width: "100%",
+                  flex: 1,
+                  minHeight: 0,
+                  display: "flex",
+                  flexDirection: "column",
+                  pointerEvents: "auto",
+                }}
+              >
                 <CasesPanel
                   cases={cases}
                   activeCaseId={activeCaseId}
@@ -1826,6 +1876,17 @@ export function App(): JSX.Element {
                        same callback). See the desktop mount above for the
                        full data-flow rationale. */
                     onDeleteLayer={handleDeleteLayer}
+                    /* Item b (NATE 2026-06-20) — the MOBILE legend show/hide
+                       toggle lives IN the expanded Layers section (off the chat
+                       composer). Only rendered when there's a legend to toggle. */
+                    legendControl={
+                      legendHasContent(layers) ? (
+                        <MobileLegendToggle
+                          hidden={legendHiddenMobile}
+                          onToggle={setLegendHiddenMobile}
+                        />
+                      ) : null
+                    }
                     mobile
                   />
                   </div>

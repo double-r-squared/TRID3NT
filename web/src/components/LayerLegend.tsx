@@ -44,6 +44,7 @@ import { createPortal } from "react-dom";
 import { ProjectLayerSummary } from "../contracts";
 import { getStylePreset, StylePreset, type GradientStop } from "../lib/style-presets";
 import {
+  aoiScaleFactor,
   layoutKeysCcw,
   rectFromAnchorAndWidth,
   sideForIndex,
@@ -58,6 +59,7 @@ import {
   type ParsedRescale,
 } from "../lib/titiler_colormap";
 import { useIsMobile } from "../hooks/useIsMobile";
+import { useAnimationState } from "../lib/use_animation_controller";
 
 // JOB WEB-AOI-LEGEND (#157) — the collapsed "Show legend" pill must clear the
 // mobile chat composer (the bottom-sheet at the foot of the screen). The pill
@@ -69,6 +71,17 @@ import { useIsMobile } from "../hooks/useIsMobile";
 export const MOBILE_LEGEND_PILL_CLEARANCE_PX = 96;
 export const MOBILE_LEGEND_PILL_BOTTOM_CSS = `calc(env(safe-area-inset-bottom) + ${MOBILE_LEGEND_PILL_CLEARANCE_PX}px)`;
 export const DESKTOP_LEGEND_PILL_BOTTOM_PX = 24;
+
+// Item a (Z-HIERARCHY, NATE 2026-06-20) — the legend must render BEHIND the chat
+// (z=32) and the Layers/Cases panels (z=20) and the desktop hamburgers (z=30),
+// but ABOVE the map. A single low z keeps the legend in the map's chrome layer
+// so a user can always reach the chat + layers controls over it. (Previously the
+// keys used z=50, which painted OVER the chat + panels — the reported bug.)
+// On mobile the Layers drawer (z=40/41) is a transient OVERLAY; the legend
+// staying at z=15 means it sits behind the open drawer, which is correct (the
+// drawer is the focused surface). The mobile show/hide toggle moves INTO the
+// drawer's expanded Layers section (item b) so it is never lost behind the chat.
+export const LEGEND_Z_INDEX = 15;
 
 export interface LayerLegendProps {
   /** Ordered layer list, top-of-stack first (same order as LayerPanel). */
@@ -101,6 +114,57 @@ export interface LayerLegendProps {
    * bottom-center stack.
    */
   barWidth?: number | null;
+  /**
+   * Item f (NATE 2026-06-20) — reserve vertical px below the AOI bottom edge so
+   * the bottom-side keys clear the SCRUBBER (which pins bottom-center of the AOI
+   * box). When > 0 the bottom-side keys are pushed down past the scrubber's
+   * footprint so the legend is never obscured by it. 0 / undefined => no reserve.
+   */
+  bottomReservePx?: number | null;
+  /**
+   * Item b (NATE 2026-06-20) — CONTROLLED hidden state. When provided the
+   * parent owns whether the legend is shown (the toggle lives in the Layers
+   * panel on mobile). When omitted the legend keeps its own internal hidden
+   * state (desktop default). Pair with `onHiddenChange`.
+   */
+  hidden?: boolean;
+  /** Item b — fired when the user toggles hide/show (controlled mode). */
+  onHiddenChange?: (hidden: boolean) => void;
+  /**
+   * Item b — suppress the floating "Show legend" pill entirely. On mobile the
+   * show/hide affordance lives INSIDE the expanded Layers section (out of the
+   * way of the chat composer), so the floating pill must not also render. The
+   * keys themselves still render when not hidden.
+   */
+  suppressShowPill?: boolean;
+}
+
+/**
+ * Item e (NATE 2026-06-20) — the SERIES IDENTITY of a raster layer: the colormap
+ * + scale it paints with. Per-frame depth COGs ("Flood depth step N") AND the
+ * max/peak depth layer all share the SAME colormap + rescale, so they form ONE
+ * series and must collapse to ONE legend key (not one-per-frame + a peak key).
+ *
+ * The key is the TiTiler colormap_name + rescale (the SOURCE OF TRUTH for what
+ * the map paints) when present — this is what the depth frames + the peak depth
+ * layer all carry, so they share ONE key. When a layer carries NO TiTiler
+ * colormap on its URL (a plain QGIS-WMS / preset-only single raster, with no
+ * frame-truth scale), it is NOT part of a TiTiler series, so we key it by its
+ * own layer_id (one key per such layer — the prior behavior). This keeps
+ * distinct preset-only rasters each legible while folding the genuine
+ * same-colormap depth series into a single key (item e).
+ */
+function seriesKeyFor(
+  layer: ProjectLayerSummary,
+  style: { rescale: ParsedRescale | null; colormapName: string | null },
+): string {
+  if (style.colormapName) {
+    const r = style.rescale ? `${style.rescale.min},${style.rescale.max}` : "";
+    return `cmap:${style.colormapName}|rescale:${r}`;
+  }
+  // No URL colormap → not a TiTiler series; key per-layer so each distinct
+  // preset-only raster keeps its own legend key.
+  return `layer:${layer.layer_id}`;
 }
 
 /** A raster layer that resolved to a known preset — one legend key per entry. */
@@ -149,13 +213,18 @@ function buildGradient(stops: GradientStop[]): string {
 function parseLayerTitilerStyle(layer: ProjectLayerSummary): {
   rescale: ParsedRescale | null;
   colormapStops: GradientStop[] | null;
+  colormapName: string | null;
 } {
   const fromWms = parseTitilerTileStyle(layer.wms_url);
   const fromUri = parseTitilerTileStyle(layer.uri);
   // Prefer whichever field actually carried each param (wms_url first).
   const rescale = fromWms.rescale ?? fromUri.rescale;
   const colormapName = fromWms.colormapName ?? fromUri.colormapName;
-  return { rescale, colormapStops: getColormapStops(colormapName) };
+  return {
+    rescale,
+    colormapStops: getColormapStops(colormapName),
+    colormapName: colormapName ?? null,
+  };
 }
 
 // Default colorbar width when there is no AOI bbox to size against.
@@ -180,6 +249,14 @@ const FALLBACK_STACK_GAP = 10;
  * detect groups here and emit exactly ONE key per group (using the active /
  * first member's preset). Non-grouped raster layers each still get their own
  * key.
+ *
+ * SERIES DEDUP (item e, NATE 2026-06-20): beyond sequential groups, ANY two
+ * layers that share the SAME series identity (colormap + rescale, see
+ * seriesKeyFor) collapse to ONE key. This folds the max/PEAK depth layer into
+ * the same series as the per-frame depth COGs — they all paint with the same
+ * colormap + scale, so they read off one legend, not one-per-frame + a peak.
+ * The FIRST eligible layer (group or standalone) to claim a series key wins;
+ * later layers with the same series key are skipped.
  */
 function selectKeyModels(layers: ProjectLayerSummary[]): LegendKeyModel[] {
   // Detect sequential groups to emit one key per group.
@@ -190,6 +267,11 @@ function selectKeyModels(layers: ProjectLayerSummary[]): LegendKeyModel[] {
   for (const g of groups) {
     for (const l of g.layers) groupedIds.add(l.layer_id);
   }
+
+  // Item e — every series identity already emitted (by a group OR a standalone
+  // layer). A later layer sharing one of these is the same colormap/scale, so it
+  // dedups into the existing key rather than spawning a duplicate.
+  const emittedSeries = new Set<string>();
 
   const out: LegendKeyModel[] = [];
   for (const l of layers) {
@@ -211,6 +293,14 @@ function selectKeyModels(layers: ProjectLayerSummary[]): LegendKeyModel[] {
       if (!rep) continue;
       const repPreset = getStylePreset(rep.style_preset ?? "");
       const repStyle = parseLayerTitilerStyle(rep);
+      // Item e — register the group's series so a standalone peak/max layer with
+      // the same colormap + rescale folds INTO this key instead of adding its own.
+      const repSeries = seriesKeyFor(rep, {
+        rescale: repStyle.rescale,
+        colormapName: repStyle.colormapName,
+      });
+      if (emittedSeries.has(repSeries)) continue;
+      emittedSeries.add(repSeries);
       out.push({
         layerId: `group:${g.key}`,
         // Fallback to the current layer's preset if the rep doesn't resolve.
@@ -220,6 +310,15 @@ function selectKeyModels(layers: ProjectLayerSummary[]): LegendKeyModel[] {
       });
     } else {
       const style = parseLayerTitilerStyle(l);
+      // Item e — one key per SERIES. A standalone layer sharing a series with an
+      // already-emitted group/layer (e.g. the peak depth alongside depth frames)
+      // dedups into that existing key.
+      const series = seriesKeyFor(l, {
+        rescale: style.rescale,
+        colormapName: style.colormapName,
+      });
+      if (emittedSeries.has(series)) continue;
+      emittedSeries.add(series);
       out.push({
         layerId: l.layer_id,
         preset,
@@ -231,11 +330,24 @@ function selectKeyModels(layers: ProjectLayerSummary[]): LegendKeyModel[] {
   return out;
 }
 
+/**
+ * Item b/e (NATE 2026-06-20) — does the legend have ANY content for these
+ * layers? Exported so the Layers panel can decide whether to render the mobile
+ * "show/hide legend" toggle (only when there's a legend to toggle).
+ */
+export function legendHasContent(layers: ProjectLayerSummary[]): boolean {
+  return selectKeyModels(layers).length > 0;
+}
+
 export function LayerLegend({
   layers,
   aoiRect: trueRect,
   anchor,
   barWidth,
+  bottomReservePx,
+  hidden: hiddenProp,
+  onHiddenChange,
+  suppressShowPill,
 }: LayerLegendProps): JSX.Element | null {
   // One key per eligible raster layer, in stack order.
   const keyModels = useMemo(() => selectKeyModels(layers), [layers]);
@@ -244,10 +356,30 @@ export function LayerLegend({
   // mobile chat composer so it does not overlap the bottom-sheet input form.
   const isMobile = useIsMobile();
 
+  // Item f — is the SCRUBBER currently showing? The scrubber pins bottom-center
+  // of the AOI box (just below its bottom edge), exactly where the legend's
+  // bottom-side key would otherwise sit. The scrubber renders whenever the
+  // shared AnimationController has an active group, so we read that here to
+  // push the legend's bottom-side keys past the scrubber's footprint (the
+  // explicit `bottomReservePx` prop, when supplied, overrides this default).
+  const anim = useAnimationState();
+  const scrubberActive = anim.activeGroupKey != null;
+
   // Per-key interactive state, keyed by layer_id so it survives reorders.
   const [uiState, setUiState] = useState<Record<string, KeyUiState>>({});
   // Whether the whole legend is hidden (the eye toggle on the first key).
-  const [hidden, setHidden] = useState(false);
+  // Item b — CONTROLLED when `hidden` is supplied (the parent owns it so the
+  // toggle can live in the Layers panel on mobile); else internal state.
+  const [hiddenInternal, setHiddenInternal] = useState(false);
+  const isControlled = hiddenProp !== undefined;
+  const hidden = isControlled ? !!hiddenProp : hiddenInternal;
+  const setHidden = useCallback(
+    (next: boolean) => {
+      if (!isControlled) setHiddenInternal(next);
+      onHiddenChange?.(next);
+    },
+    [isControlled, onHiddenChange],
+  );
 
   // Live drag bookkeeping. Tracks the key being dragged, the pointer offset
   // inside the card, and the latest pointer position. Stored in a ref so the
@@ -270,15 +402,23 @@ export function LayerLegend({
     [trueRect, anchor, barWidth],
   );
 
+  // Item d (SCALE WITH AOI, NATE 2026-06-20) — the legend chrome (font, padding,
+  // bar height) scales with the AOI's on-screen size so a zoomed-out tiny bbox
+  // gets a proportionally small legend (not a fixed-px one that dwarfs it) and a
+  // zoomed-in big bbox gets a larger one — both clamped to [min, max] so the
+  // legend is never unusably tiny or absurdly huge. Recomputes whenever the rect
+  // changes (Map.tsx re-projects on every move/zoom and re-threads aoiRect).
+  const scale = useMemo(() => aoiScaleFactor(aoiRect), [aoiRect]);
+
   // Default per-key width: the AOI on-screen width (clamped) when available,
-  // else the static fallback. A user resize overrides this per key.
+  // else the static fallback (also scaled). A user resize overrides this per key.
   const defaultWidth = useMemo(() => {
     const w =
       typeof barWidth === "number" && Number.isFinite(barWidth) && barWidth > 0
         ? barWidth
-        : STATIC_LEGEND_WIDTH;
+        : STATIC_LEGEND_WIDTH * scale;
     return Math.max(KEY_MIN_WIDTH, Math.min(w, KEY_MAX_WIDTH));
-  }, [barWidth]);
+  }, [barWidth, scale]);
 
   const widthFor = useCallback(
     (layerId: string): number => {
@@ -310,8 +450,29 @@ export function LayerLegend({
     [keyModels, widthFor, heightFor],
   );
 
+  // Item f — extra px to push bottom-side keys past the scrubber's footprint
+  // (the scrubber pins bottom-center of the AOI box). The explicit prop wins;
+  // otherwise default to a sensible reserve WHENEVER the scrubber is active so
+  // the legend is never obscured by it. 0 when neither applies.
+  const SCRUBBER_FOOTPRINT_PX = 52; // scrubber height (~40) + its 12px gap.
+  const bottomReserve =
+    typeof bottomReservePx === "number" && bottomReservePx > 0
+      ? bottomReservePx
+      : scrubberActive
+        ? SCRUBBER_FOOTPRINT_PX
+        : 0;
+
   const snapped = useMemo(() => {
-    if (aoiRect) return layoutKeysCcw(aoiRect, sizes);
+    if (aoiRect) {
+      const base = layoutKeysCcw(aoiRect, sizes);
+      // Item f — shove the bottom-side keys down past the scrubber so the legend
+      // is never obscured by it (the scrubber sits just below the AOI bottom
+      // edge). Top/right/left keys are untouched.
+      if (bottomReserve <= 0) return base;
+      return base.map((r) =>
+        r.side === "bottom" ? { ...r, top: r.top + bottomReserve } : r,
+      );
+    }
     // No AOI: lay the keys out as a bottom-center row (each key centered, then
     // stacked upward so they don't overlap). We synthesize a degenerate rect at
     // a nominal bottom-center point; this keeps the legend visible.
@@ -321,7 +482,7 @@ export function LayerLegend({
       consumed += s.height + FALLBACK_STACK_GAP;
       return { left: -s.width / 2, top, side: "bottom" as AoiSide };
     });
-  }, [aoiRect, sizes]);
+  }, [aoiRect, sizes, bottomReserve]);
 
   // --- drag wiring --------------------------------------------------------- //
 
@@ -460,8 +621,14 @@ export function LayerLegend({
   if (keyModels.length === 0) return null;
 
   // When fully hidden, render only a tiny "show legend" pill (bottom-center).
-  // Portal to document.body so it appears above the mobile chat panel (item 6).
+  // Portal to document.body so it appears above the mobile chat panel.
+  //
+  // Item b — when `suppressShowPill` is set the floating pill is NOT rendered:
+  // the show/hide affordance lives inside the expanded Layers section instead
+  // (the parent renders <MobileLegendToggle/>), so the pill must not also float
+  // over the chat. We render nothing in that case (the parent owns re-showing).
   if (hidden) {
+    if (suppressShowPill) return null;
     return createPortal(
       <button
         type="button"
@@ -489,9 +656,9 @@ export function LayerLegend({
           fontWeight: 600,
           cursor: "pointer",
           pointerEvents: "auto",
-          // z-index 50: above the mobile chat/drawer (z=30-41) so the legend
-          // is always visible on mobile (item 6 fix).
-          zIndex: 50,
+          // Item a — BELOW the chat (z=32) + panels (z=20); the pill is part of
+          // the legend's map-chrome layer, never over the chat/layers controls.
+          zIndex: LEGEND_Z_INDEX,
         }}
       >
         Show legend
@@ -551,7 +718,6 @@ export function LayerLegend({
         // FRAME-TRUTH (NATE 2026-06-19) — the gradient + numeric bounds match
         // what the map actually paints. The parsed-from-URL colormap/rescale are
         // the SOURCE OF TRUTH when present; the style_preset is the FALLBACK.
-        const gradient = buildGradient(model.colormapStops ?? preset.stops);
         const minLabel = model.rescale ? model.rescale.min : preset.minValue;
         const maxLabel = model.rescale ? model.rescale.max : preset.maxValue;
         // The preset unit is meaningful only for the preset's own scale; when
@@ -562,11 +728,38 @@ export function LayerLegend({
           ? sideForIndex(idx)
           : "bottom";
 
+        // Item g (ORIENTATION, NATE 2026-06-20) — the colorbar is VERTICAL (a
+        // tall bar) when the key docks on the LEFT or RIGHT side of the AOI, and
+        // HORIZONTAL when it docks on TOP or BOTTOM (and in the AOI-less
+        // bottom-center fallback). The gradient direction follows: bottom->top
+        // for vertical (min at the bottom, max at the top), left->right for
+        // horizontal (min at the left, max at the right).
+        const orientation: "vertical" | "horizontal" =
+          sideLabel === "left" || sideLabel === "right" ? "vertical" : "horizontal";
+        const stops = model.colormapStops ?? preset.stops;
+        const gradient =
+          orientation === "vertical"
+            ? `linear-gradient(to top, ${stops
+                .map((s) => `${s.color} ${(s.position * 100).toFixed(2)}%`)
+                .join(", ")})`
+            : buildGradient(stops);
+
+        // Item d — scaled type + chrome metrics (clamped via the scale factor).
+        const titleFont = Math.round((compact ? 10 : 11) * scale);
+        const labelFont = Math.round(10 * scale);
+        const barThickness = Math.round((compact ? 8 : 14) * scale);
+        // A vertical bar needs a sensible height to read as a tall colorbar.
+        const verticalBarHeight = Math.round((compact ? 90 : 130) * scale);
+
+        const minText = `${minLabel}${unitLabel ? ` ${unitLabel}` : ""}`;
+        const maxText = `${maxLabel}${unitLabel ? ` ${unitLabel}` : ""}`;
+
         const keyCard = (
           <div
             key={layerId}
             data-testid="grace2-layer-legend-key"
             data-legend-side={sideLabel}
+            data-legend-orientation={orientation}
             data-legend-compact={compact ? "1" : "0"}
             onPointerDown={(e) => startDrag(layerId, e)}
             style={{
@@ -586,8 +779,10 @@ export function LayerLegend({
               cursor: "grab",
               userSelect: "none",
               touchAction: "none",
-              // z-index 50: above the mobile chat/drawer (z=30-41) — item 6.
-              zIndex: 50,
+              // Item a — BELOW the chat (z=32) + Layers/Cases panels (z=20) +
+              // hamburgers (z=30); above the map. (Was z=50, which painted OVER
+              // the chat + layers — the reported bug.)
+              zIndex: LEGEND_Z_INDEX,
             }}
           >
             {/* Title row (hidden in compact mode) + per-key controls. */}
@@ -604,7 +799,7 @@ export function LayerLegend({
                 <span
                   data-testid="layer-legend-title"
                   style={{
-                    fontSize: 11,
+                    fontSize: titleFont,
                     fontWeight: 600,
                     letterSpacing: "0.03em",
                     color: "#ddd",
@@ -635,7 +830,7 @@ export function LayerLegend({
                 <span
                   data-testid="layer-legend-title"
                   style={{
-                    fontSize: 10,
+                    fontSize: titleFont,
                     fontWeight: 600,
                     color: "#ccc",
                     overflow: "hidden",
@@ -654,41 +849,91 @@ export function LayerLegend({
               </div>
             )}
 
-            {/* Gradient bar (always shown). */}
-            <div
-              data-testid="layer-legend-bar"
-              style={{
-                height: compact ? 8 : 14,
-                marginTop: compact ? 3 : 0,
-                borderRadius: 3,
-                background: gradient,
-                border: "1px solid rgba(255,255,255,0.12)",
-              }}
-            />
-
-            {/* Axis labels (hidden in compact mode to flatten). */}
-            {!compact ? (
+            {orientation === "vertical" ? (
+              // Item g — VERTICAL colorbar: a tall bar with min at the bottom and
+              // max at the top, labels stacked alongside it (max on top, min at
+              // the foot). Shown for LEFT/RIGHT-docked keys.
               <div
                 style={{
                   display: "flex",
-                  justifyContent: "space-between",
-                  marginTop: 4,
+                  alignItems: "stretch",
+                  gap: 6,
+                  marginTop: compact ? 3 : 2,
                 }}
               >
-                <span
-                  data-testid="layer-legend-min-label"
-                  style={{ fontSize: 10, color: "#bbb" }}
-                >
-                  {minLabel}{unitLabel ? ` ${unitLabel}` : ""}
-                </span>
-                <span
-                  data-testid="layer-legend-max-label"
-                  style={{ fontSize: 10, color: "#bbb" }}
-                >
-                  {maxLabel}{unitLabel ? ` ${unitLabel}` : ""}
-                </span>
+                <div
+                  data-testid="layer-legend-bar"
+                  style={{
+                    width: barThickness,
+                    height: verticalBarHeight,
+                    borderRadius: 3,
+                    background: gradient,
+                    border: "1px solid rgba(255,255,255,0.12)",
+                    flexShrink: 0,
+                  }}
+                />
+                {!compact ? (
+                  <div
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      justifyContent: "space-between",
+                    }}
+                  >
+                    <span
+                      data-testid="layer-legend-max-label"
+                      style={{ fontSize: labelFont, color: "#bbb" }}
+                    >
+                      {maxText}
+                    </span>
+                    <span
+                      data-testid="layer-legend-min-label"
+                      style={{ fontSize: labelFont, color: "#bbb" }}
+                    >
+                      {minText}
+                    </span>
+                  </div>
+                ) : null}
               </div>
-            ) : null}
+            ) : (
+              <>
+                {/* Item g — HORIZONTAL colorbar (TOP/BOTTOM-docked keys). */}
+                <div
+                  data-testid="layer-legend-bar"
+                  style={{
+                    height: barThickness,
+                    marginTop: compact ? 3 : 0,
+                    borderRadius: 3,
+                    background: gradient,
+                    border: "1px solid rgba(255,255,255,0.12)",
+                  }}
+                />
+
+                {/* Axis labels (hidden in compact mode to flatten). */}
+                {!compact ? (
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      marginTop: 4,
+                    }}
+                  >
+                    <span
+                      data-testid="layer-legend-min-label"
+                      style={{ fontSize: labelFont, color: "#bbb" }}
+                    >
+                      {minText}
+                    </span>
+                    <span
+                      data-testid="layer-legend-max-label"
+                      style={{ fontSize: labelFont, color: "#bbb" }}
+                    >
+                      {maxText}
+                    </span>
+                  </div>
+                ) : null}
+              </>
+            )}
 
             {/* Resize handle (bottom-right corner). */}
             <div
@@ -778,3 +1023,60 @@ const controlBtnStyle: React.CSSProperties = {
   borderRadius: 4,
   cursor: "pointer",
 };
+
+/**
+ * Item b (NATE 2026-06-20) — the MOBILE legend show/hide control, rendered
+ * INSIDE the expanded Layers section (the LayerPanel) instead of floating over
+ * the chat composer. It is a plain inline row (no portal), so it sits in the
+ * panel's normal flow, out of the way. The legend's own floating pill is
+ * suppressed on mobile (`suppressShowPill`), so this is the ONLY show/hide
+ * affordance there.
+ *
+ * Pure controlled component: the parent owns the `hidden` boolean (App threads
+ * the same value into LayerLegend's `hidden` prop). Render it only when there is
+ * legend content to toggle (`legendHasContent(layers)`).
+ */
+export function MobileLegendToggle({
+  hidden,
+  onToggle,
+}: {
+  hidden: boolean;
+  onToggle: (hidden: boolean) => void;
+}): JSX.Element {
+  return (
+    <button
+      type="button"
+      data-testid="grace2-mobile-legend-toggle"
+      aria-pressed={!hidden}
+      onClick={() => onToggle(!hidden)}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 8,
+        width: "100%",
+        padding: "8px 10px",
+        background: "rgba(255,255,255,0.04)",
+        border: "1px solid rgba(255,255,255,0.08)",
+        borderRadius: 8,
+        color: "#cfd4db",
+        fontFamily: "system-ui, sans-serif",
+        fontSize: 12,
+        fontWeight: 600,
+        cursor: "pointer",
+      }}
+    >
+      <span>{hidden ? "Show legend" : "Hide legend"}</span>
+      <span
+        aria-hidden="true"
+        style={{
+          fontSize: 11,
+          color: hidden ? "#8a929e" : "#4aa3ff",
+          fontWeight: 700,
+        }}
+      >
+        {hidden ? "OFF" : "ON"}
+      </span>
+    </button>
+  );
+}

@@ -1190,7 +1190,15 @@ describe("CasesPanel", () => {
         render(
           // Mirror App.tsx mobile slot EXACTLY: MobileDrawer > hugger
           // (flex:1 + minHeight:0 + overflow:hidden + pointerEvents:none) >
-          // inner div (width:100% + pointerEvents:auto) > CasesPanel.
+          // inner div (width:100% + flex:1 + minHeight:0 + display:flex +
+          // flexDirection:column + pointerEvents:auto) > CasesPanel.
+          //
+          // MOBILE CASES-SCROLL FIX (NATE 2026-06-20): the inner wrapper used to
+          // be `width:100% + pointerEvents:auto` ONLY — a content-sized
+          // (height:auto) block that broke the height chain between the bounded
+          // hugger and CasesPanel (height:100% resolved against auto). It is now
+          // a bounded flex column so the hugger's real height passes THROUGH to
+          // CasesPanel and the inner list scrolls.
           <MobileDrawer open={true} onClose={vi.fn()}>
             <div
               data-testid="test-mobile-hugger"
@@ -1201,7 +1209,17 @@ describe("CasesPanel", () => {
                 pointerEvents: "none",
               }}
             >
-              <div style={{ width: "100%", pointerEvents: "auto" }}>
+              <div
+                data-testid="test-mobile-inner"
+                style={{
+                  width: "100%",
+                  flex: 1,
+                  minHeight: 0,
+                  display: "flex",
+                  flexDirection: "column",
+                  pointerEvents: "auto",
+                }}
+              >
                 <CasesPanel
                   cases={cases}
                   activeCaseId={null}
@@ -1246,11 +1264,28 @@ describe("CasesPanel", () => {
         );
       });
 
+      it("the inner wrapper is a BOUNDED flex passthrough (flex:1 + minHeight:0 + flex column)", () => {
+        // MOBILE CASES-SCROLL FIX (NATE 2026-06-20): the wrapper BETWEEN the
+        // bounded hugger and CasesPanel must propagate the hugger's bounded
+        // height. A content-sized (height:auto) block here makes CasesPanel's
+        // height:100% resolve against auto, so the panel sizes to content, the
+        // list (flex:1) is never squeezed, and the mobile list does not scroll.
+        // It must be flex:1 + minHeight:0 + display:flex + flexDirection:column.
+        renderMobileChain();
+        const inner = screen.getByTestId("test-mobile-inner");
+        expect(inner.style.flex).toMatch(/^1\b/);
+        expect(inner.style.minHeight).toBe("0");
+        expect(inner.style.display).toBe("flex");
+        expect(inner.style.flexDirection).toBe("column");
+        // F52 click-through on the interactive card is preserved.
+        expect(inner.style.pointerEvents).toBe("auto");
+      });
+
       it("the panel root fills the hugger bound (height:100% + minHeight:0) inside the drawer", () => {
-        // With the hugger bounded (flex:1 + minHeight:0) and CasesPanel
-        // height:100%, the list (flex:1) gets squeezed below content so its
-        // overflowY:auto engages — the mechanism that actually makes the list
-        // scroll on the mobile path.
+        // With the hugger bounded (flex:1 + minHeight:0), the inner wrapper a
+        // bounded flex passthrough, and CasesPanel height:100%, the list
+        // (flex:1) gets squeezed below content so its overflowY:auto engages —
+        // the mechanism that actually makes the list scroll on the mobile path.
         renderMobileChain();
         const panel = screen.getByTestId("grace2-cases-panel");
         expect(panel.style.height).toBe("100%");

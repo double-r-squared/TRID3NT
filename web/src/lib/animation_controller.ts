@@ -315,6 +315,25 @@ export class AnimationController {
     }
   }
 
+  /**
+   * Item c (NATE 2026-06-20) — fully clear playback state. Used on CASE-EXIT /
+   * CASE-SWITCH: when a Case is closed the LayerPanel unmounts (the left rail
+   * shows the Cases list, not CaseView), so it never pushes `setGroups([])` to
+   * clear the controller — the old Case's groups would linger and the
+   * App-level scrubber would keep rendering for a Case you've left. App calls
+   * this to drop ALL groups + the active key + frame state + stop playback (and
+   * tear the interval down), so the scrubber vanishes on Case exit. The new
+   * Case's LayerPanel re-pushes its own groups on mount.
+   */
+  reset(): void {
+    this.groups = [];
+    this.activeGroupKey = null;
+    this.frameByGroup = {};
+    this.playing = false;
+    this.dispose(); // stop the advance interval
+    this.notify();
+  }
+
   /** Tear the interval down (tests / explicit reset). */
   dispose(): void {
     if (this.timerId !== null) {

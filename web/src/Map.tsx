@@ -327,6 +327,20 @@ export interface MapViewProps {
    * `LegendScreenRect` is structurally identical to legend_snap's `ScreenRect`.
    */
   onAoiScreenRectChange?: (rect: LegendScreenRect | null) => void;
+  /**
+   * Item b (NATE 2026-06-20) — CONTROLLED legend hide state, threaded straight
+   * to LayerLegend. App owns it on mobile so the show/hide toggle can live in
+   * the expanded Layers section (out of the chat composer's way). Undefined =>
+   * the legend keeps its own internal hide state (desktop default).
+   */
+  legendHidden?: boolean;
+  /** Item b — fired when the legend hide state toggles (controlled mode). */
+  onLegendHiddenChange?: (hidden: boolean) => void;
+  /**
+   * Item b — suppress the legend's floating "Show legend" pill (mobile uses the
+   * in-panel toggle instead, so the floating pill must not also render).
+   */
+  suppressLegendShowPill?: boolean;
 }
 
 /**
@@ -2075,7 +2089,7 @@ export function buildFeaturePopupData(
   return { title, subtitle, attributes, point };
 }
 
-export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "light", onAoiScreenRectChange }: MapViewProps = {}): JSX.Element {
+export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "light", onAoiScreenRectChange, legendHidden, onLegendHiddenChange, suppressLegendShowPill }: MapViewProps = {}): JSX.Element {
   const container = useRef<HTMLDivElement | null>(null);
   const map = useRef<MapLibreMap | null>(null);
   // job-0179 — the shared per-Case layer cache (the seatbelt). Stable singleton;
@@ -3550,6 +3564,11 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
         aoiRect={legendRect}
         anchor={resolvedAnchor}
         barWidth={legendBarWidth}
+        /* Item b — controlled hide state (App owns it on mobile so the toggle
+           lives in the Layers section, off the chat composer). */
+        hidden={legendHidden}
+        onHiddenChange={onLegendHiddenChange}
+        suppressShowPill={suppressLegendShowPill}
       />
 
       {/* F74b / FIX 2 / FIX 3 — feature-click/tap-to-inspect popup. Shown when a

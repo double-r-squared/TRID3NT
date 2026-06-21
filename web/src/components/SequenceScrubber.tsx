@@ -36,7 +36,14 @@ import {
   IconPlay,
   IconPause,
 } from "./icons";
-import type { ScreenRect } from "../lib/legend_snap";
+import { aoiScaleFactor, type ScreenRect } from "../lib/legend_snap";
+
+// Item d (SCALE WITH AOI, NATE 2026-06-20) — the scrubber's natural (1.0)
+// min/max width and its content gap; scaled by aoiScaleFactor so a zoomed-out
+// tiny AOI gets a proportionally small scrubber and a zoomed-in big AOI gets a
+// larger one — both clamped (the scale factor itself clamps to [0.6, 1.6]).
+const SCRUBBER_BASE_MIN_WIDTH = 220;
+const SCRUBBER_BASE_MAX_WIDTH = 480;
 
 export interface SequenceScrubberProps {
   /** Short group label, e.g. the shared source/tool ("HRRR forecast"). */
@@ -99,6 +106,12 @@ export function SequenceScrubber({
 
   const safeIndex = wrapIndex(activeIndex, n);
 
+  // Item d — scale the scrubber's footprint with the AOI on-screen size so it
+  // doesn't dwarf a tiny zoomed-out bbox; clamped via aoiScaleFactor.
+  const scale = aoiScaleFactor(aoiRect);
+  const scrubberMinWidth = Math.round(SCRUBBER_BASE_MIN_WIDTH * scale);
+  const scrubberMaxWidth = Math.round(SCRUBBER_BASE_MAX_WIDTH * scale);
+
   // Item 3: Snap the scrubber to the AOI bbox bottom-center when aoiRect is
   // available. The aoiRect coords are map-container-relative which equals
   // viewport coords (map container is position:fixed;inset:0 relative to the
@@ -155,8 +168,9 @@ export function SequenceScrubber({
         // The slider/buttons are interactive, but the chrome lets nothing else
         // through (it's a control surface, unlike the legend).
         zIndex: 51,
-        minWidth: 220,
-        maxWidth: 480,
+        // Item d — width scales with the AOI on-screen size (clamped).
+        minWidth: scrubberMinWidth,
+        maxWidth: scrubberMaxWidth,
       }}
     >
       {/* Play / pause toggle (JOB WEB-ANIM #157.3). Drives the shared

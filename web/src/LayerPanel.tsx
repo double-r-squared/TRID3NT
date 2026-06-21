@@ -672,6 +672,13 @@ export interface LayerPanelProps {
    * SequenceScrubber; LayerPanel does not use it for its own layout.
    */
   aoiRect?: ScreenRect | null;
+  /**
+   * Item b (NATE 2026-06-20) — an optional control node (the mobile legend
+   * show/hide toggle) rendered INSIDE the expanded Layers section, at the top
+   * of the panel body. The mobile legend toggle moved here off the chat
+   * composer (App passes <MobileLegendToggle/>). Desktop passes nothing.
+   */
+  legendControl?: React.ReactNode;
 }
 
 export function LayerPanel({
@@ -685,6 +692,7 @@ export function LayerPanel({
   width,
   onWidthChange,
   mobile = false,
+  legendControl,
   // aoiRect is kept in the props contract (App still passes it) but the
   // SequenceScrubber it fed now lives in App.tsx (JOB WEB-ANIM #157.2), so the
   // panel no longer consumes it. Intentionally not destructured.
@@ -1153,6 +1161,12 @@ export function LayerPanel({
           gap: 6,
         }}
       >
+        {/* Item b (NATE 2026-06-20) — the MOBILE legend show/hide toggle lives
+            here, at the top of the expanded Layers section, off the chat
+            composer. Desktop passes nothing (legend keeps its own pill). */}
+        {legendControl ? (
+          <div data-testid="grace2-layer-panel-legend-control">{legendControl}</div>
+        ) : null}
         {state.layers.length === 0 && (
           <p
             data-testid="grace2-layer-panel-empty"

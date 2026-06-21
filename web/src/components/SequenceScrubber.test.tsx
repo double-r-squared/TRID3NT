@@ -191,3 +191,41 @@ describe("SequenceScrubber — no internal auto-advance (controller owns the tim
     expect(onStep).not.toHaveBeenCalled();
   });
 });
+
+// Item d (SCALE WITH AOI, NATE 2026-06-20) — the scrubber's footprint scales
+// with the AOI bbox's on-screen size so it doesn't dwarf a tiny zoomed-out box.
+describe("SequenceScrubber — scales with the AOI on-screen size (item d)", () => {
+  it("a tiny on-screen AOI yields a SMALLER min/max width than a large one", () => {
+    const tiny = { left: 100, top: 100, right: 140, bottom: 140 }; // 40px box
+    const huge = { left: 0, top: 0, right: 1400, bottom: 1400 };
+    const { rerender } = renderScrubber({ aoiRect: tiny });
+    const tinyEl = screen.getByTestId("grace2-sequence-scrubber");
+    const tinyMin = parseFloat(tinyEl.style.minWidth);
+    const tinyMax = parseFloat(tinyEl.style.maxWidth);
+    rerender(
+      <SequenceScrubber
+        label="HRRR precip"
+        frameLabels={FRAMES}
+        activeIndex={0}
+        onStep={() => {}}
+        playing={false}
+        onPlayToggle={() => {}}
+        aoiRect={huge}
+      />,
+    );
+    const hugeEl = screen.getByTestId("grace2-sequence-scrubber");
+    expect(tinyMin).toBeLessThan(parseFloat(hugeEl.style.minWidth));
+    expect(tinyMax).toBeLessThan(parseFloat(hugeEl.style.maxWidth));
+    // Stays within a usable band (clamped — never absurdly tiny / huge).
+    expect(tinyMin).toBeGreaterThan(100);
+    expect(parseFloat(hugeEl.style.maxWidth)).toBeLessThan(900);
+  });
+
+  it("uses the natural (1.0) footprint when there is no AOI rect", () => {
+    renderScrubber();
+    const el = screen.getByTestId("grace2-sequence-scrubber");
+    // Natural base sizes (scale 1.0): minWidth 220, maxWidth 480.
+    expect(el.style.minWidth).toBe("220px");
+    expect(el.style.maxWidth).toBe("480px");
+  });
+});

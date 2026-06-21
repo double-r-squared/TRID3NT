@@ -9,6 +9,10 @@ import {
   CCW_SIDES,
   SIDE_GAP_PX,
   STACK_GAP_PX,
+  aoiScaleFactor,
+  DEFAULT_AOI_SCALE_MIN,
+  DEFAULT_AOI_SCALE_MAX,
+  DEFAULT_AOI_SCALE_REFERENCE_PX,
   layoutKeysCcw,
   nearestSide,
   rectFromAnchorAndWidth,
@@ -168,5 +172,57 @@ describe("rectFromAnchorAndWidth", () => {
     expect(rectFromAnchorAndWidth({ left: 200, top: 300 }, null)).toBeNull();
     expect(rectFromAnchorAndWidth({ left: 200, top: 300 }, 0)).toBeNull();
     expect(rectFromAnchorAndWidth({ left: 200, top: 300 }, -5)).toBeNull();
+  });
+});
+
+// Item d (SCALE WITH AOI, NATE 2026-06-20) — the AOI-anchored overlays (legend
+// keys + scrubber) scale with the AOI bbox's on-screen size so a tiny zoomed-out
+// box does not get a fixed-px overlay that dwarfs it, and a big zoomed-in box
+// gets a larger one — both clamped to [min, max].
+describe("aoiScaleFactor — scales with the AOI on-screen size, clamped", () => {
+  it("returns the natural 1.0 scale at the reference on-screen size", () => {
+    // A square AOI whose limiting (min) extent == the reference px => scale 1.0.
+    const ref = DEFAULT_AOI_SCALE_REFERENCE_PX;
+    const rect: ScreenRect = { left: 0, top: 0, right: ref, bottom: ref };
+    expect(aoiScaleFactor(rect)).toBeCloseTo(1, 5);
+  });
+
+  it("shrinks (but never below min) when the AOI is tiny on-screen (zoomed out)", () => {
+    // A 20px x 20px box: raw = 20/360 ≈ 0.056, clamped UP to the min floor.
+    const rect: ScreenRect = { left: 0, top: 0, right: 20, bottom: 20 };
+    const s = aoiScaleFactor(rect);
+    expect(s).toBe(DEFAULT_AOI_SCALE_MIN);
+    // Strictly smaller than the natural scale — the overlay shrinks with the box.
+    expect(s).toBeLessThan(1);
+  });
+
+  it("grows (but never above max) when the AOI is huge on-screen (zoomed in)", () => {
+    // A 4000px box: raw = 4000/360 ≈ 11, clamped DOWN to the max ceiling.
+    const rect: ScreenRect = { left: 0, top: 0, right: 4000, bottom: 4000 };
+    const s = aoiScaleFactor(rect);
+    expect(s).toBe(DEFAULT_AOI_SCALE_MAX);
+    expect(s).toBeGreaterThan(1);
+  });
+
+  it("uses the LIMITING (smaller) on-screen axis of a non-square AOI", () => {
+    // Wide-but-short box: width 2000, height 252 (< reference). The limiting
+    // axis is the height, so the scale tracks 252/360 = 0.7 (within clamps),
+    // NOT the wide axis (which would over-size the overlay for a thin box).
+    const rect: ScreenRect = { left: 0, top: 0, right: 2000, bottom: 252 };
+    expect(aoiScaleFactor(rect)).toBeCloseTo(0.7, 5);
+  });
+
+  it("respects custom clamp options", () => {
+    const rect: ScreenRect = { left: 0, top: 0, right: 10, bottom: 10 };
+    expect(aoiScaleFactor(rect, { min: 0.3 })).toBe(0.3);
+    const big: ScreenRect = { left: 0, top: 0, right: 9000, bottom: 9000 };
+    expect(aoiScaleFactor(big, { max: 2.5 })).toBe(2.5);
+  });
+
+  it("returns the natural 1.0 scale for a null / degenerate rect (AOI-less)", () => {
+    expect(aoiScaleFactor(null)).toBe(1);
+    expect(aoiScaleFactor(undefined)).toBe(1);
+    // Zero-area rect => can't size against it => natural scale.
+    expect(aoiScaleFactor({ left: 50, top: 50, right: 50, bottom: 50 })).toBe(1);
   });
 });
