@@ -1392,18 +1392,39 @@ export function App(): JSX.Element {
             position: "absolute",
             top: 12,
             left: 16,
-            // top + bottom => a real bounded pixel height (100vh - 12 - 12)
-            // for the child CasesPanel (height:100%) to fill. The old
-            // maxHeight: calc(100vh - 80px) only capped a content-sized
-            // (height:auto) wrapper, so the panel never got squeezed below
-            // content and its inner list never scrolled.
-            bottom: 12,
+            // cases-panel-layout (NATE 2026-06-20) - CONVERGE the desktop cases
+            // rail onto the MOBILE cases-section presentation: content-sized but
+            // CAPPED, with the inner list scrolling internally past the cap.
+            //
+            // The mobile mount (MobileDrawer hugger) is `flex:1` of a bounded
+            // flex column whose footer (Settings pills + composer clearance)
+            // reserves the bottom space, so the panel hugs its content, caps at
+            // the available height, and its inner grace2-cases-list scrolls.
+            //
+            // The desktop wrapper previously stretched `top:12 -> bottom:12`
+            // (a full-viewport-height bound) and CasesPanel height:100% filled
+            // ALL of it, so the panel ran the entire left edge and OVERLAPPED
+            // the bottom-left Settings pill (BottomRowButtons, position:absolute
+            // left:12 bottom:12). To match mobile we drop the `bottom` anchor
+            // and instead cap the column with a maxHeight that STOPS ABOVE the
+            // Settings pill (the pill is ~44px tall at bottom:12, so reserve
+            // ~72px = pill height + a 12px gap + the 12px top inset alignment).
+            // With no fixed height the column is content-sized (a short list
+            // hugs its rows, like mobile); when the content exceeds the cap the
+            // column clips (overflow:hidden) and CasesPanel height:100% resolves
+            // to the capped height so its inner list's overflowY:auto engages.
+            maxHeight: "calc(100vh - 84px)",
             zIndex: 20,
             // flex column so CasesPanel's height:100% resolves against this
-            // bounded-height wrapper; minHeight:0 lets the column squeeze.
+            // (now content-sized, max-capped) wrapper; minHeight:0 lets the
+            // column squeeze so the inner list can scroll. overflow:hidden so
+            // the cap clips to the inner list's own scroll region (matching the
+            // mobile hugger's overflow:hidden - the LIST is the single scroll
+            // container, never the wrapper).
             display: "flex",
             flexDirection: "column",
             minHeight: 0,
+            overflow: "hidden",
           }}
         >
           <CasesPanel

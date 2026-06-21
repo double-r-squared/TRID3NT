@@ -245,9 +245,112 @@ def _build_converse_kwargs(
     return kwargs
 
 
+# --------------------------------------------------------------------------- #
+# Client-side timeout bounds for the Converse call (live-down hardening).
+#
+# THE BUG THIS FIXES (2026-06-20, live agent DOWN): a hung Bedrock Converse
+# call (NATE switched to Haiku then Nova; the call hung) blocked its
+# ``asyncio.to_thread`` executor worker INDEFINITELY. With no client-side
+# timeout, ``converse_stream`` / EventStream iteration never returns and never
+# raises, so the producer thread is stuck forever, the consumer's
+# ``await queue.get()`` never completes, the turn task never finishes ->
+# ``inflight_turn_count()`` stays > 0 -> ``is_busy()`` is pinned True (the
+# auto-stop gate refuses to sleep) AND the loop is effectively wedged on that
+# turn, so NO model (even Sonnet) could respond and ``/api/health`` went
+# unresponsive behind the blocked loop.
+#
+# THE FIX: attach a botocore ``Config`` with a bounded ``read_timeout`` /
+# ``connect_timeout`` so a hung call RAISES ``ReadTimeoutError`` /
+# ``ConnectTimeoutError`` instead of hanging forever. The producer's
+# ``except BaseException`` then puts that exception on the queue, ``stream_*``
+# re-raises it, and the server turn loop's ``except Exception`` handler
+# surfaces an honest ``LLM_UNAVAILABLE`` error envelope AND lets the turn
+# TERMINATE (so the live-turn entry's task completes -> ``inflight_turn_count``
+# drops -> ``is_busy`` clears). This bounds ONLY the LLM Converse call -- it is
+# NOT a turn-wide or solve-wide timeout. The minutes-long ``run_solver`` /
+# ``wait_for_completion`` solve path runs through Batch (a SEPARATE boto3
+# client built elsewhere) and is intentionally NOT bounded here.
+#
+# Both are env-overridable (ops safety valve) but default to values comfortably
+# longer than a healthy Converse-stream first-byte + steady token flow yet far
+# shorter than the ~indefinite hang that took the box down.
+# --------------------------------------------------------------------------- #
+
+#: Per-socket read timeout (seconds) for the bedrock-runtime client. A streamed
+#: Converse turn keeps the socket active with token deltas, so this bounds the
+#: gap between bytes -- a healthy stream resets it on every chunk; a wedged call
+#: trips it. 60s is generous for first-byte + inter-chunk latency.
+_BEDROCK_READ_TIMEOUT_DEFAULT = 60.0
+
+#: TCP connect timeout (seconds) -- bounds DNS + handshake to the endpoint.
+_BEDROCK_CONNECT_TIMEOUT_DEFAULT = 10.0
+
+#: Max boto3 attempts (1 original + retries) for transient errors. ``standard``
+#: mode retries throttling / 5xx but NOT a read-timeout of a streaming call.
+_BEDROCK_MAX_ATTEMPTS_DEFAULT = 2
+
+
+def _env_float(name: str, default: float) -> float:
+    """Read a float from env ``name``; fall back to ``default`` on missing/bad."""
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        return default
+    return val if val > 0 else default
+
+
+def _env_int(name: str, default: int) -> int:
+    """Read an int from env ``name``; fall back to ``default`` on missing/bad."""
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return val if val >= 1 else default
+
+
+def _bedrock_timeout_config():
+    """Build the botocore ``Config`` that bounds the Converse call.
+
+    Returns a ``botocore.config.Config`` carrying ``read_timeout`` /
+    ``connect_timeout`` (so a hung call RAISES instead of hanging the executor
+    thread forever -- the core live-down fix) plus a small retry policy. Env
+    overrides: ``BEDROCK_READ_TIMEOUT_S`` / ``BEDROCK_CONNECT_TIMEOUT_S`` /
+    ``BEDROCK_MAX_ATTEMPTS``. Kept as its own function so the tests can assert
+    the timeout values without standing up a real client.
+    """
+    from botocore.config import Config  # local import: optional for Vertex path
+
+    return Config(
+        read_timeout=_env_float(
+            "BEDROCK_READ_TIMEOUT_S", _BEDROCK_READ_TIMEOUT_DEFAULT
+        ),
+        connect_timeout=_env_float(
+            "BEDROCK_CONNECT_TIMEOUT_S", _BEDROCK_CONNECT_TIMEOUT_DEFAULT
+        ),
+        retries={
+            "max_attempts": _env_int(
+                "BEDROCK_MAX_ATTEMPTS", _BEDROCK_MAX_ATTEMPTS_DEFAULT
+            ),
+            "mode": "standard",
+        },
+    )
+
+
 def _bedrock_client():
     """Build a ``bedrock-runtime`` client. boto3 resolves creds + region from
-    the standard chain (env / ~/.aws / instance role). ``AWS_REGION`` wins."""
+    the standard chain (env / ~/.aws / instance role). ``AWS_REGION`` wins.
+
+    The client carries a ``Config`` with a bounded ``read_timeout`` /
+    ``connect_timeout`` (see ``_bedrock_timeout_config``) so a hung Converse
+    call RAISES rather than blocking its executor thread forever -- WITHOUT this
+    the agent loop wedges on a stuck model turn (the 2026-06-20 live-down). The
+    bound is on the LLM call ONLY; the Batch solve path uses its own client."""
     import boto3  # local import: keeps boto3 optional for the Vertex path
 
     region = (
@@ -255,7 +358,11 @@ def _bedrock_client():
         or os.environ.get("AWS_DEFAULT_REGION")
         or "us-west-2"
     )
-    return boto3.client("bedrock-runtime", region_name=region)
+    return boto3.client(
+        "bedrock-runtime",
+        region_name=region,
+        config=_bedrock_timeout_config(),
+    )
 
 
 # --------------------------------------------------------------------------- #

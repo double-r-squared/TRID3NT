@@ -26,6 +26,7 @@
 // opens a ConfirmationDialog before emitting `case-command(delete)`.
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { CaseSummary } from "../contracts";
 import { ConfirmationDialog } from "./ConfirmationDialog";
 import { ExportButton } from "./ExportButton";
@@ -112,9 +113,22 @@ function CaseRow({
   const [editing, setEditing] = useState(false);
   const [draftTitle, setDraftTitle] = useState(c.title);
   const [menuOpen, setMenuOpen] = useState(false);
+  // cases-panel-layout (NATE 2026-06-20) - the kebab popover is PORTALED to
+  // document.body (createPortal) and positioned `position:fixed` against the
+  // kebab button's viewport rect, so it is never clipped by the
+  // overflowY:auto/overflow:hidden of the grace2-cases-list (the bottom-row
+  // menu was being cut off by that scroll clip on BOTH desktop + mobile). This
+  // anchor rect is captured when the menu opens. Mirrors ConfirmationDialog's
+  // createPortal(document.body) pattern.
+  const [menuRect, setMenuRect] = useState<DOMRect | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const menuWrapRef = useRef<HTMLDivElement | null>(null);
   const kebabRef = useRef<HTMLButtonElement | null>(null);
+  // The portaled menu surface lives OUTSIDE menuWrapRef's subtree (it is a
+  // child of document.body), so the outside-click test must also treat a click
+  // inside this node as "inside" or the menu would dismiss itself on its own
+  // item clicks.
+  const menuRef = useRef<HTMLDivElement | null>(null);
   const firstMenuItemRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
@@ -133,8 +147,14 @@ function CaseRow({
     if (!menuOpen) return;
     firstMenuItemRef.current?.focus();
     function onPointerDown(ev: PointerEvent): void {
-      if (!menuWrapRef.current) return;
-      if (!menuWrapRef.current.contains(ev.target as Node)) {
+      const target = ev.target as Node;
+      // The popover is portaled to document.body (outside menuWrapRef), so a
+      // click inside EITHER the kebab wrapper OR the portaled menu node counts
+      // as "inside" - otherwise tapping a menu item would dismiss the menu
+      // before the item's own click handler runs.
+      const insideWrap = menuWrapRef.current?.contains(target) ?? false;
+      const insideMenu = menuRef.current?.contains(target) ?? false;
+      if (!insideWrap && !insideMenu) {
         setMenuOpen(false);
       }
     }
@@ -146,11 +166,23 @@ function CaseRow({
         kebabRef.current?.focus();
       }
     }
+    // The fixed-positioned popover is anchored to the kebab's viewport rect;
+    // if the page scrolls or resizes while it is open, re-measure so it stays
+    // glued to the button (then close on scroll would also be acceptable, but
+    // re-anchoring is less jarring for a short list scroll).
+    function reanchor(): void {
+      const r = kebabRef.current?.getBoundingClientRect();
+      if (r) setMenuRect(r);
+    }
     window.addEventListener("pointerdown", onPointerDown, true);
     window.addEventListener("keydown", onKey, true);
+    window.addEventListener("resize", reanchor, true);
+    window.addEventListener("scroll", reanchor, true);
     return () => {
       window.removeEventListener("pointerdown", onPointerDown, true);
       window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("resize", reanchor, true);
+      window.removeEventListener("scroll", reanchor, true);
     };
   }, [menuOpen]);
 
@@ -325,11 +357,23 @@ function CaseRow({
               aria-expanded={menuOpen}
               onClick={(e) => {
                 e.stopPropagation();
+                // Capture the kebab's viewport rect on OPEN so the portaled,
+                // fixed-position popover anchors to it (never clipped by the
+                // cases-list scroll region). `menuOpen` is the current value in
+                // this render - safe to read for the toggle direction.
+                if (!menuOpen) {
+                  setMenuRect(
+                    kebabRef.current?.getBoundingClientRect() ?? null,
+                  );
+                }
                 setMenuOpen((v) => !v);
               }}
               onKeyDown={(e) => {
                 if (e.key === "ArrowDown" && !menuOpen) {
                   e.preventDefault();
+                  setMenuRect(
+                    kebabRef.current?.getBoundingClientRect() ?? null,
+                  );
                   setMenuOpen(true);
                 }
               }}
@@ -337,62 +381,79 @@ function CaseRow({
             >
               <IconKebab size={16} />
             </button>
-            {menuOpen && (
-              <div
-                data-testid="grace2-case-row-menu"
-                role="menu"
-                aria-label={`Actions for ${c.title}`}
-                style={menuStyle}
-              >
-                <button
-                  ref={firstMenuItemRef}
-                  data-testid="grace2-case-row-menu-rename"
-                  role="menuitem"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setMenuOpen(false);
-                    startEdit();
-                  }}
-                  style={menuItemStyle()}
+            {menuOpen &&
+              createPortal(
+                // cases-panel-layout (NATE 2026-06-20) - the popover is PORTALED
+                // to document.body and `position:fixed`, anchored to the kebab's
+                // viewport rect (menuRect). This lifts it OUT of the
+                // grace2-cases-list overflow clip so the bottom-row menu is never
+                // cut off (the reported clipping, desktop + mobile). It is
+                // right-aligned to the kebab's right edge (the old
+                // right:0/absolute behaviour) and opens downward; the
+                // outside-click handler treats clicks inside this node (via
+                // menuRef) as "inside". Mirrors ConfirmationDialog's
+                // createPortal(document.body) pattern.
+                <div
+                  ref={menuRef}
+                  data-testid="grace2-case-row-menu"
+                  role="menu"
+                  aria-label={`Actions for ${c.title}`}
+                  // Don't let clicks inside the portaled menu bubble to the map
+                  // / document (the menu lives at body root, so without this a
+                  // bubbled click could be read as an outside-the-row click).
+                  onClick={(e) => e.stopPropagation()}
+                  style={fixedMenuStyle(menuRect)}
                 >
-                  <IconRename size={14} />
-                  <span>Rename</span>
-                </button>
-                {/* Export (NATE 2026-06-19) — in-menu item; self-gates on
-                    signed-in + endpoint configured, runs in place. */}
-                <ExportButton
-                  caseId={c.case_id}
-                  asMenuItem
-                  itemStyle={menuItemStyle()}
-                />
-                <button
-                  data-testid="grace2-case-row-menu-archive"
-                  role="menuitem"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setMenuOpen(false);
-                    onArchive();
-                  }}
-                  style={menuItemStyle()}
-                >
-                  <IconArchive size={14} />
-                  <span>Archive</span>
-                </button>
-                <button
-                  data-testid="grace2-case-row-menu-delete"
-                  role="menuitem"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setMenuOpen(false);
-                    onRequestDelete();
-                  }}
-                  style={menuItemStyle("#f87171")}
-                >
-                  <IconDelete size={14} />
-                  <span>Delete</span>
-                </button>
-              </div>
-            )}
+                  <button
+                    ref={firstMenuItemRef}
+                    data-testid="grace2-case-row-menu-rename"
+                    role="menuitem"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setMenuOpen(false);
+                      startEdit();
+                    }}
+                    style={menuItemStyle()}
+                  >
+                    <IconRename size={14} />
+                    <span>Rename</span>
+                  </button>
+                  {/* Export (NATE 2026-06-19) - in-menu item; self-gates on
+                      signed-in + endpoint configured, runs in place. */}
+                  <ExportButton
+                    caseId={c.case_id}
+                    asMenuItem
+                    itemStyle={menuItemStyle()}
+                  />
+                  <button
+                    data-testid="grace2-case-row-menu-archive"
+                    role="menuitem"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setMenuOpen(false);
+                      onArchive();
+                    }}
+                    style={menuItemStyle()}
+                  >
+                    <IconArchive size={14} />
+                    <span>Archive</span>
+                  </button>
+                  <button
+                    data-testid="grace2-case-row-menu-delete"
+                    role="menuitem"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setMenuOpen(false);
+                      onRequestDelete();
+                    }}
+                    style={menuItemStyle("#f87171")}
+                  >
+                    <IconDelete size={14} />
+                    <span>Delete</span>
+                  </button>
+                </div>,
+                document.body,
+              )}
           </div>
           </>
         )}
@@ -462,24 +523,39 @@ const iconBtnStyle: React.CSSProperties = {
   fontFamily: "inherit",
 };
 
-// F57 — popover menu surface anchored to the kebab button. Right-aligned so it
-// doesn't spill past the row's right edge; high z-index so it floats above
-// neighbouring rows.
-const menuStyle: React.CSSProperties = {
-  position: "absolute",
-  top: "calc(100% + 4px)",
-  right: 0,
-  minWidth: 132,
-  background: "rgba(28,28,34,0.98)",
-  border: "1px solid rgba(255,255,255,0.12)",
-  borderRadius: 8,
-  padding: 4,
-  display: "flex",
-  flexDirection: "column",
-  gap: 2,
-  boxShadow: "0 6px 20px rgba(0,0,0,0.55)",
-  zIndex: 50,
-};
+// F57 / cases-panel-layout - popover menu surface. PORTALED to document.body
+// and `position:fixed`, anchored to the kebab button's VIEWPORT rect so it is
+// never clipped by the grace2-cases-list overflow (the reported bottom-row
+// clipping). Right-aligned to the kebab's right edge (preserves the old
+// right:0 look) and opens downward just below the button. zIndex sits above
+// the rails (z=20-22) but below the ConfirmationDialog backdrop (z=2000) so a
+// delete-confirm still overlays it. A null rect (no measurement yet) falls
+// back to the top-left so it is still reachable rather than off-screen.
+const MENU_MIN_WIDTH = 132;
+function fixedMenuStyle(rect: DOMRect | null): React.CSSProperties {
+  const top = rect ? rect.bottom + 4 : 8;
+  // Right-align the menu's right edge to the kebab's right edge: use `left`
+  // computed as right-edge minus the menu min-width, clamped to >= 8px so it
+  // never spills off the left of the viewport on a narrow column.
+  const left = rect
+    ? Math.max(8, rect.right - MENU_MIN_WIDTH)
+    : 8;
+  return {
+    position: "fixed",
+    top,
+    left,
+    minWidth: MENU_MIN_WIDTH,
+    background: "rgba(28,28,34,0.98)",
+    border: "1px solid rgba(255,255,255,0.12)",
+    borderRadius: 8,
+    padding: 4,
+    display: "flex",
+    flexDirection: "column",
+    gap: 2,
+    boxShadow: "0 6px 20px rgba(0,0,0,0.55)",
+    zIndex: 1500,
+  };
+}
 
 function menuItemStyle(color = "#ddd"): React.CSSProperties {
   return {
@@ -633,6 +709,10 @@ export function CasesPanel({
             padding: 12,
             textAlign: "center",
             lineHeight: 1.4,
+            // cases-panel-layout (NATE 2026-06-20) - nudge the empty stub down
+            // a bit so it sits below the pinned "Cases" header rather than
+            // hugging it (it read as cramped right under the title).
+            marginTop: 16,
           }}
         >
           Start a Case to save your work and chat history.

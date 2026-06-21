@@ -1502,3 +1502,187 @@ async def test_route_sim_terminal_marks_complete_and_failed(
     )
     await route_sim_terminal(em_cx, sim_cx, run_result=None)
     assert _pipeline_frames(sink_cx)[-1]["payload"]["steps"][-1]["state"] == "cancelled"
+
+
+# --------------------------------------------------------------------------- #
+# 10. Off-loop densify (WS-30s drop-cycle fix)
+# --------------------------------------------------------------------------- #
+#
+# Root cause: ``_read_vector_uri_as_geojson`` read the object off-loop (good) but
+# ran the CPU-heavy ``densify_if_needed`` BACK ON the asyncio loop after the
+# executor returned. On session-resume the active-case layers are re-inlined +
+# re-densified on EVERY ~30s reconnect (observed live: buildings 39509 -> 4000
+# each reconnect), so that densify blocked the WS keepalive and fed the 30s drop
+# cycle. The densify now runs inside the SAME ``run_in_executor`` thread as the
+# read. These tests pin: (a) a large FC still gets densified/capped via the
+# off-loop path, (b) the URI-keyed density-meta side-table is still populated +
+# bounded, and (c) the densify is actually off-loop (a concurrent loop task is
+# not starved while it runs).
+
+
+def _make_dense_fc(n: int) -> dict[str, Any]:
+    """A FeatureCollection with ``n`` small square polygons on a grid.
+
+    Distinct, non-empty geometries so the simplify/cap path runs for real (the
+    largest-area cap keeps the first ``MAX_INLINE_FEATURES``).
+    """
+    feats = []
+    for i in range(n):
+        x = (i % 100) * 0.001
+        y = (i // 100) * 0.001
+        feats.append(
+            {
+                "type": "Feature",
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[
+                        [x, y], [x + 0.0008, y], [x + 0.0008, y + 0.0008],
+                        [x, y + 0.0008], [x, y],
+                    ]],
+                },
+                "properties": {"idx": i},
+            }
+        )
+    return {"type": "FeatureCollection", "features": feats}
+
+
+@pytest.mark.asyncio
+async def test_dense_vector_is_densified_via_off_loop_read(
+    tmp_path: Any,
+) -> None:
+    """A FeatureCollection above the dense threshold is read AND densified/capped
+    through the off-loop path, and the URI-keyed density-meta side-table is
+    populated (so the wire layer can be honestly tagged on re-inline)."""
+    from grace2_agent.pipeline_emitter import (
+        _LAST_DENSITY_META_BY_URI,
+        _read_vector_uri_as_geojson,
+    )
+    from grace2_agent.tools.vector_tiles import (
+        DENSE_VECTOR_THRESHOLD,
+        MAX_INLINE_FEATURES,
+    )
+
+    n = MAX_INLINE_FEATURES + 1500  # comfortably above threshold AND the cap
+    assert n > DENSE_VECTOR_THRESHOLD
+    fc = _make_dense_fc(n)
+
+    path = tmp_path / "buildings.geojson"
+    path.write_text(json.dumps(fc))
+    uri = str(path)
+
+    _LAST_DENSITY_META_BY_URI.pop(uri, None)
+
+    out = await _read_vector_uri_as_geojson(uri)
+
+    assert out is not None
+    assert out["type"] == "FeatureCollection"
+    # Capped to the inline cap -> fewer features than the original dense FC.
+    assert len(out["features"]) == MAX_INLINE_FEATURES
+    assert len(out["features"]) < n
+    # The density-meta side-table is populated for this URI and records the
+    # honest original/emitted counts (this is what add_loaded_layer /
+    # reinline_vector_layers lift onto the wire layer).
+    meta = _LAST_DENSITY_META_BY_URI.get(uri)
+    assert meta is not None
+    assert meta.original_feature_count == n
+    assert meta.emitted_feature_count == MAX_INLINE_FEATURES
+    assert meta.capped is True
+
+
+@pytest.mark.asyncio
+async def test_small_vector_is_not_densified_off_loop(tmp_path: Any) -> None:
+    """Below the threshold the FC is returned unchanged and no density-meta is
+    recorded (byte-for-byte the prior inline behavior, just off-loop)."""
+    from grace2_agent.pipeline_emitter import (
+        _LAST_DENSITY_META_BY_URI,
+        _read_vector_uri_as_geojson,
+    )
+    from grace2_agent.tools.vector_tiles import DENSE_VECTOR_THRESHOLD
+
+    n = max(1, DENSE_VECTOR_THRESHOLD // 2)
+    fc = _make_dense_fc(n)
+    path = tmp_path / "small.geojson"
+    path.write_text(json.dumps(fc))
+    uri = str(path)
+    _LAST_DENSITY_META_BY_URI.pop(uri, None)
+
+    out = await _read_vector_uri_as_geojson(uri)
+
+    assert out is not None
+    assert len(out["features"]) == n
+    assert _LAST_DENSITY_META_BY_URI.get(uri) is None
+
+
+@pytest.mark.asyncio
+async def test_densify_runs_in_executor_not_on_loop(tmp_path: Any) -> None:
+    """The densify must NOT run on the asyncio loop: a concurrent loop task must
+    keep ticking while a dense FC is being read + densified.
+
+    This is the WS-keepalive proxy. We instrument ``densify_if_needed`` to block
+    for a beat (simulating the real CPU cost) and concurrently run a tight
+    ``asyncio.sleep(0)`` heartbeat. If the densify ran ON the loop, the heartbeat
+    would be starved for the whole block; because it runs in an executor thread,
+    the heartbeat keeps advancing.
+    """
+    import time
+
+    from grace2_agent import pipeline_emitter as pe
+    from grace2_agent.tools.vector_tiles import MAX_INLINE_FEATURES
+
+    fc = _make_dense_fc(MAX_INLINE_FEATURES + 200)
+    path = tmp_path / "blocking.geojson"
+    path.write_text(json.dumps(fc))
+    uri = str(path)
+    pe._LAST_DENSITY_META_BY_URI.pop(uri, None)
+
+    from grace2_agent.tools import vector_tiles as vt
+
+    real = vt.densify_if_needed
+    started = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    def slow_densify(*args: Any, **kwargs: Any):
+        # Mark the moment the densify body actually runs (in whatever thread),
+        # then block this thread for a beat.
+        loop.call_soon_threadsafe(started.set)
+        time.sleep(0.25)
+        return real(*args, **kwargs)
+
+    heartbeats = 0
+
+    async def heartbeat() -> None:
+        nonlocal heartbeats
+        await started.wait()
+        # Spin the loop while the densify thread is blocked. If the densify ran
+        # on the loop, control would never return here until it finished.
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < 0.20:
+            heartbeats += 1
+            await asyncio.sleep(0)
+
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(vt, "densify_if_needed", slow_densify)
+    try:
+        hb_task = asyncio.create_task(heartbeat())
+        out = await _read_vector_uri_as_geojson_for_test(uri)
+        await hb_task
+    finally:
+        monkey.undo()
+
+    # The densify produced a real capped result via the off-loop path...
+    assert out is not None
+    assert len(out["features"]) == MAX_INLINE_FEATURES
+    # ...and the loop kept ticking thousands of times while the densify thread
+    # was blocked -> the densify did NOT run on the loop.
+    assert heartbeats > 100, heartbeats
+
+
+# ``_read_vector_uri_as_geojson`` imports ``densify_if_needed`` from the
+# ``vector_tiles`` module at call time (``from .tools.vector_tiles import
+# densify_if_needed``), so monkeypatching ``vector_tiles.densify_if_needed`` is
+# what the off-loop thread picks up. This thin wrapper just re-exports the
+# function under test so the patch site above is unambiguous.
+async def _read_vector_uri_as_geojson_for_test(uri: str) -> Any:
+    from grace2_agent.pipeline_emitter import _read_vector_uri_as_geojson
+
+    return await _read_vector_uri_as_geojson(uri)

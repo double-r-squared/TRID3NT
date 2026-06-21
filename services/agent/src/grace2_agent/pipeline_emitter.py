@@ -612,8 +612,8 @@ async def _read_vector_uri_as_geojson(uri: str) -> dict[str, Any] | None:
             )
             return None
         if ext == "fgb":
-            return _fgb_bytes_to_geojson(data)
-        if ext in {"json", "geojson"}:
+            obj = _fgb_bytes_to_geojson(data)
+        elif ext in {"json", "geojson"}:
             try:
                 import json
                 obj = json.loads(data)
@@ -622,49 +622,67 @@ async def _read_vector_uri_as_geojson(uri: str) -> dict[str, Any] | None:
                         "_read_vector_uri_as_geojson: not a FeatureCollection uri=%s", uri,
                     )
                     return None
-                return obj
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "_read_vector_uri_as_geojson: JSON parse failed uri=%s: %s", uri, exc,
                 )
                 return None
-        logger.warning(
-            "_read_vector_uri_as_geojson: unsupported extension '%s' for uri=%s", ext, uri,
-        )
-        return None
-
-    geojson_obj = await loop.run_in_executor(None, _read_and_parse)
-    # F94: a vector layer's FeatureCollection is the single thing that makes the
-    # client laggy when it carries thousands of footprints — this is the one
-    # choke point every inline vector flows through (``add_loaded_layer`` +
-    # ``reinline_vector_layers`` both call here), so the dense-vector decision
-    # lives here. Below the threshold the FC is returned unchanged; above it the
-    # FC is topology-preserving-simplified + capped so it is light to ship AND
-    # light for MapLibre to draw. The transform is best-effort + always renders;
-    # the per-layer density tag is recorded out-of-band in ``_density_meta_by_uri``
-    # so ``emit_session_state`` can stamp it on the wire layer honestly.
-    if isinstance(geojson_obj, dict) and geojson_obj.get("type") == "FeatureCollection":
-        try:
-            from .tools.vector_tiles import densify_if_needed
-
-            geojson_obj, _density_meta = densify_if_needed(geojson_obj, layer_id=uri)
-            if _density_meta is not None:
-                # Bound this module-global side-table so the always-on agent
-                # process never grows it without limit (F94 verifier: the
-                # per-emitter table is pruned on reset, but this URI-keyed one
-                # was not). FIFO-evict the oldest entry past the cap; dict
-                # preserves insertion order.
-                if uri in _LAST_DENSITY_META_BY_URI:
-                    del _LAST_DENSITY_META_BY_URI[uri]
-                _LAST_DENSITY_META_BY_URI[uri] = _density_meta
-                while len(_LAST_DENSITY_META_BY_URI) > _MAX_DENSITY_META_ENTRIES:
-                    _LAST_DENSITY_META_BY_URI.pop(
-                        next(iter(_LAST_DENSITY_META_BY_URI))
-                    )
-        except Exception as exc:  # noqa: BLE001 — never block a vector render
+        else:
             logger.warning(
-                "_read_vector_uri_as_geojson: densify failed uri=%s: %s", uri, exc,
+                "_read_vector_uri_as_geojson: unsupported extension '%s' for uri=%s",
+                ext, uri,
             )
+            return None
+        # F94 + WS-30s fix: the densify is CPU-heavy (topology-preserving
+        # simplify + feature cap over thousands of footprints) and session-resume
+        # re-inlines + re-densifies the active-case layers on EVERY ~30s
+        # reconnect. It MUST run here in the executor thread, NOT back on the
+        # asyncio loop after the executor returns — running it on the loop blocked
+        # the WS keepalive and contributed to the 30s drop cycle. The read above
+        # was already off-loop; the densify is now folded into the same thread so
+        # the entire read+densify path is off-loop for both callers
+        # (``add_loaded_layer`` + ``reinline_vector_layers``).
+        return _densify_off_loop(obj, uri)
+
+    return await loop.run_in_executor(None, _read_and_parse)
+
+
+def _densify_off_loop(geojson_obj: Any, uri: str) -> Any:
+    """Densify a just-read FeatureCollection and stamp the URI-keyed side-table.
+
+    Runs INSIDE the ``run_in_executor`` thread (never on the asyncio loop) so the
+    CPU-heavy simplify/cap cannot block the WS keepalive. Behavior is identical to
+    the prior loop-side block: below the threshold the FC is returned unchanged;
+    above it the FC is topology-preserving-simplified + capped, and the
+    per-layer ``DensifyMeta`` is recorded out-of-band in
+    ``_LAST_DENSITY_META_BY_URI`` (FIFO-bounded) so ``emit_session_state`` can
+    stamp the wire layer honestly. Densify failures fall through to the
+    undensified FC (best-effort; a vector render always wins over a tag).
+    """
+    if not (isinstance(geojson_obj, dict)
+            and geojson_obj.get("type") == "FeatureCollection"):
+        return geojson_obj
+    try:
+        from .tools.vector_tiles import densify_if_needed
+
+        geojson_obj, _density_meta = densify_if_needed(geojson_obj, layer_id=uri)
+        if _density_meta is not None:
+            # Bound this module-global side-table so the always-on agent
+            # process never grows it without limit (F94 verifier: the
+            # per-emitter table is pruned on reset, but this URI-keyed one
+            # was not). FIFO-evict the oldest entry past the cap; dict
+            # preserves insertion order.
+            if uri in _LAST_DENSITY_META_BY_URI:
+                del _LAST_DENSITY_META_BY_URI[uri]
+            _LAST_DENSITY_META_BY_URI[uri] = _density_meta
+            while len(_LAST_DENSITY_META_BY_URI) > _MAX_DENSITY_META_ENTRIES:
+                _LAST_DENSITY_META_BY_URI.pop(
+                    next(iter(_LAST_DENSITY_META_BY_URI))
+                )
+    except Exception as exc:  # noqa: BLE001 — never block a vector render
+        logger.warning(
+            "_read_vector_uri_as_geojson: densify failed uri=%s: %s", uri, exc,
+        )
     return geojson_obj
 
 

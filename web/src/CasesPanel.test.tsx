@@ -575,6 +575,125 @@ describe("CasesPanel", () => {
     });
   });
 
+  // --- cases-panel-layout (NATE 2026-06-20): kebab popover portals to body --
+  // The bottom-row kebab menu was being CLIPPED by the grace2-cases-list
+  // overflow (overflowY:auto on the list, overflow:hidden on the panel root +
+  // wrapper). The fix renders the popover via createPortal(document.body) with
+  // position:fixed anchored to the kebab's viewport rect (mirrors
+  // ConfirmationDialog), so it floats above every scroll clip. The outside-
+  // click / Esc dismiss must keep working with the portaled node included in
+  // the inside test.
+  describe("cases-panel-layout - kebab popover portals to body (no clip)", () => {
+    function renderOneRow(overrides: Partial<Record<string, () => void>> = {}) {
+      const handlers = {
+        onCreate: vi.fn(),
+        onSelect: vi.fn(),
+        onRename: vi.fn(),
+        onArchive: vi.fn(),
+        onDelete: vi.fn(),
+        ...overrides,
+      };
+      render(
+        <CasesPanel
+          cases={[CASE_FORT_MYERS]}
+          activeCaseId={null}
+          {...(handlers as Required<typeof handlers>)}
+        />,
+      );
+      return handlers;
+    }
+
+    it("the open menu is portaled OUTSIDE the cases-list scroll container", () => {
+      renderOneRow();
+      fireEvent.click(screen.getByTestId("grace2-case-row-menu-button"));
+      const menu = screen.getByTestId("grace2-case-row-menu");
+      const list = screen.getByTestId("grace2-cases-list");
+      const panel = screen.getByTestId("grace2-cases-panel");
+      // The menu must NOT be nested inside the list (the overflow clip) nor the
+      // panel root - it lives at document.body so it can never be cut off.
+      expect(list.contains(menu)).toBe(false);
+      expect(panel.contains(menu)).toBe(false);
+      expect(document.body.contains(menu)).toBe(true);
+    });
+
+    it("the portaled menu uses position:fixed (escapes the scroll clip)", () => {
+      renderOneRow();
+      fireEvent.click(screen.getByTestId("grace2-case-row-menu-button"));
+      const menu = screen.getByTestId("grace2-case-row-menu");
+      // position:fixed anchors to the viewport, not the clipped scroll parent.
+      expect(menu.style.position).toBe("fixed");
+    });
+
+    it("an outside click (on the panel) still dismisses the portaled menu", () => {
+      renderOneRow();
+      fireEvent.click(screen.getByTestId("grace2-case-row-menu-button"));
+      expect(screen.getByTestId("grace2-case-row-menu")).toBeTruthy();
+      // The panel is outside both the kebab wrapper AND the portaled menu node,
+      // so a pointerdown there dismisses.
+      fireEvent.pointerDown(screen.getByTestId("grace2-cases-panel"));
+      expect(screen.queryByTestId("grace2-case-row-menu")).toBeNull();
+    });
+
+    it("a click on a portaled menu ITEM does NOT self-dismiss before it runs", () => {
+      // Regression guard: the portaled menu lives outside menuWrapRef, so the
+      // outside-click test must treat clicks inside the portaled node (menuRef)
+      // as "inside" - otherwise the menu would close before the item handler
+      // fires. We assert the item still triggers its action (Archive).
+      const onArchive = vi.fn();
+      renderOneRow({ onArchive });
+      fireEvent.click(screen.getByTestId("grace2-case-row-menu-button"));
+      // pointerdown on the item (capture-phase outside-click listener) then the
+      // click handler - the item must run and the menu closes AFTER acting.
+      const item = screen.getByTestId("grace2-case-row-menu-archive");
+      fireEvent.pointerDown(item);
+      fireEvent.click(item);
+      expect(onArchive).toHaveBeenCalledWith(CASE_FORT_MYERS.case_id);
+      expect(screen.queryByTestId("grace2-case-row-menu")).toBeNull();
+    });
+
+    it("Esc still dismisses the portaled menu", () => {
+      renderOneRow();
+      fireEvent.click(screen.getByTestId("grace2-case-row-menu-button"));
+      expect(screen.getByTestId("grace2-case-row-menu")).toBeTruthy();
+      fireEvent.keyDown(window, { key: "Escape" });
+      expect(screen.queryByTestId("grace2-case-row-menu")).toBeNull();
+    });
+
+    it("opening Delete from the portaled menu still gates the confirmation dialog", () => {
+      // The full delete flow must survive the portal change: kebab -> Delete ->
+      // ConfirmationDialog -> Confirm fires onDelete.
+      const onDelete = vi.fn();
+      renderOneRow({ onDelete });
+      fireEvent.click(screen.getByTestId("grace2-case-row-menu-button"));
+      fireEvent.click(screen.getByTestId("grace2-case-row-menu-delete"));
+      expect(screen.getByTestId("grace2-case-delete-dialog")).toBeTruthy();
+      fireEvent.click(screen.getByTestId("grace2-case-delete-dialog-confirm"));
+      expect(onDelete).toHaveBeenCalledWith(CASE_FORT_MYERS.case_id);
+    });
+  });
+
+  // --- cases-panel-layout (NATE 2026-06-20): empty stub nudged down --------
+  describe("cases-panel-layout - empty stub nudged down", () => {
+    it("the 'Start a Case' stub has a top margin (sits below the header)", () => {
+      render(
+        <CasesPanel
+          cases={[]}
+          activeCaseId={null}
+          onCreate={vi.fn()}
+          onSelect={vi.fn()}
+          onRename={vi.fn()}
+          onArchive={vi.fn()}
+          onDelete={vi.fn()}
+        />,
+      );
+      const stub = screen.getByTestId("grace2-cases-empty");
+      // Nudged down a bit (NATE) - a non-zero top margin separates it from the
+      // pinned "Cases" header.
+      expect(parseInt(stub.style.marginTop, 10)).toBeGreaterThan(0);
+      expect(stub.textContent).toMatch(/Start a Case/i);
+    });
+  });
+
   // --- job-0330 mobile portrait clip fix ------------------------------- //
   // The mobile-drawer column is min(320px,85vw) with overflow:hidden. The bug:
   // a fixed-width / shrink-wrapped panel let a long Case title (whiteSpace:
@@ -1137,6 +1256,168 @@ describe("CasesPanel", () => {
         expect(panel.style.height).toBe("100%");
         expect(panel.style.minHeight).toBe("0");
         expect(panel.style.overflow).toBe("hidden");
+      });
+    });
+
+    // --- cases-panel-layout (NATE 2026-06-20): DESKTOP rail converged onto ----
+    // the mobile cases-section presentation. The desktop wrapper used to stretch
+    // top:12 -> bottom:12 (full-viewport-height) so the panel ran the entire
+    // left edge and OVERLAPPED the bottom-left Settings pill. It now CONVERGES
+    // on the mobile look: content-sized but CAPPED with a maxHeight that stops
+    // above the Settings pill, and overflow:hidden so the inner list is the
+    // SINGLE scroll container (matching the mobile hugger). We mirror App.tsx's
+    // desktop rail wrapper EXACTLY here and assert the converged contract.
+    describe("single scroll container on the desktop rail path", () => {
+      function renderDesktopChain(caseCount = 8) {
+        const cases: CaseSummary[] = Array.from(
+          { length: caseCount },
+          (_, i) => ({
+            schema_version: "v1" as const,
+            case_id: `01ABCDEFGHJKMNPQRSTVWX00${String(i).padStart(2, "0")}`,
+            title: `Case ${i}`,
+            created_at: "2026-06-01T00:00:00.000Z",
+            updated_at: `2026-06-0${Math.max(1, i + 1)}T00:00:00.000Z`,
+            status: "active" as const,
+          }),
+        );
+        render(
+          // Mirror App.tsx desktop cases-list rail wrapper EXACTLY: a
+          // position:absolute, content-sized + maxHeight-capped flex column with
+          // overflow:hidden (NO bottom anchor -> does not stretch over the
+          // Settings pill).
+          <div
+            data-testid="test-desktop-rail"
+            className="grace2-desktop-rail"
+            style={{
+              position: "absolute",
+              top: 12,
+              left: 16,
+              maxHeight: "calc(100vh - 84px)",
+              zIndex: 20,
+              display: "flex",
+              flexDirection: "column",
+              minHeight: 0,
+              overflow: "hidden",
+            }}
+          >
+            <CasesPanel
+              cases={cases}
+              activeCaseId={null}
+              onCreate={vi.fn()}
+              onSelect={vi.fn()}
+              onRename={vi.fn()}
+              onArchive={vi.fn()}
+              onDelete={vi.fn()}
+            />
+          </div>,
+        );
+      }
+
+      it("the desktop rail wrapper is content-sized + CAPPED (maxHeight, no bottom stretch)", () => {
+        // Converged onto the mobile look: NOT a full-height (top->bottom)
+        // stretch. A maxHeight caps it; with no fixed height a short list hugs
+        // its content. The absence of a `bottom` anchor is what keeps it ABOVE
+        // the Settings pill (no overlap).
+        renderDesktopChain();
+        const wrap = screen.getByTestId("test-desktop-rail");
+        expect(wrap.style.maxHeight).not.toBe("");
+        expect(wrap.style.height).toBe(""); // content-sized, not stretched
+        expect(wrap.style.bottom).toBe(""); // no bottom anchor -> clears Settings
+        // overflow:hidden so the cap clips to the inner list's scroll region.
+        expect(wrap.style.overflow).toBe("hidden");
+        // flex column + minHeight:0 so the panel can be squeezed and its inner
+        // list scrolls.
+        expect(wrap.style.display).toBe("flex");
+        expect(wrap.style.flexDirection).toBe("column");
+        expect(wrap.style.minHeight).toBe("0");
+      });
+
+      it("the wrapper does NOT itself scroll (the LIST is the single scroller)", () => {
+        renderDesktopChain();
+        const wrap = screen.getByTestId("test-desktop-rail");
+        // The wrapper clips (overflow:hidden) but is not a scroll container.
+        expect(wrap.style.overflowY).toBe("");
+      });
+
+      it("there is EXACTLY ONE overflowY:auto scroll container in the desktop rail subtree", () => {
+        // Same single-scroll-container invariant as the mobile path: the only
+        // scroller is the inner cases-list div, so the header stays pinned and
+        // the mask-gradient applies.
+        renderDesktopChain();
+        const wrap = screen.getByTestId("test-desktop-rail");
+        const scrollers = Array.from(
+          wrap.querySelectorAll<HTMLElement>("*"),
+        ).filter((el) => el.style.overflowY === "auto");
+        expect(scrollers).toHaveLength(1);
+        expect(scrollers[0]!.getAttribute("data-testid")).toBe(
+          "grace2-cases-list",
+        );
+      });
+
+      it("the panel root fills the capped wrapper (height:100% + minHeight:0 + overflow:hidden)", () => {
+        // Same panel contract on both surfaces - the convergence point: the
+        // panel fills the bounded slot and its inner list (flex:1 + minHeight:0)
+        // is what scrolls.
+        renderDesktopChain();
+        const panel = screen.getByTestId("grace2-cases-panel");
+        expect(panel.style.height).toBe("100%");
+        expect(panel.style.minHeight).toBe("0");
+        expect(panel.style.overflow).toBe("hidden");
+      });
+
+      it("ALL desktop functionality survives: create / select / rename / delete reachable", () => {
+        // Convergence must drop ZERO desktop functionality. Assert each control
+        // is present + wired inside the converged rail.
+        const onCreate = vi.fn();
+        const onSelect = vi.fn();
+        const onRename = vi.fn();
+        const onDelete = vi.fn();
+        render(
+          <div
+            data-testid="test-desktop-rail-fn"
+            className="grace2-desktop-rail"
+            style={{
+              position: "absolute",
+              top: 12,
+              left: 16,
+              maxHeight: "calc(100vh - 84px)",
+              display: "flex",
+              flexDirection: "column",
+              minHeight: 0,
+              overflow: "hidden",
+            }}
+          >
+            <CasesPanel
+              cases={[CASE_FORT_MYERS]}
+              activeCaseId={null}
+              onCreate={onCreate}
+              onSelect={onSelect}
+              onRename={onRename}
+              onArchive={vi.fn()}
+              onDelete={onDelete}
+            />
+          </div>,
+        );
+        // Create
+        fireEvent.click(screen.getByTestId("grace2-cases-new"));
+        expect(onCreate).toHaveBeenCalledTimes(1);
+        // Select (row click)
+        fireEvent.click(screen.getByTestId("grace2-case-row"));
+        expect(onSelect).toHaveBeenCalledWith(CASE_FORT_MYERS.case_id);
+        // Rename (kebab -> Rename -> Enter)
+        fireEvent.click(screen.getByTestId("grace2-case-row-menu-button"));
+        fireEvent.click(screen.getByTestId("grace2-case-row-menu-rename"));
+        const input = screen.getByTestId(
+          "grace2-case-row-rename-input",
+        ) as HTMLInputElement;
+        fireEvent.change(input, { target: { value: "Renamed" } });
+        fireEvent.keyDown(input, { key: "Enter" });
+        expect(onRename).toHaveBeenCalledWith(CASE_FORT_MYERS.case_id, "Renamed");
+        // Delete (kebab -> Delete -> Confirm)
+        fireEvent.click(screen.getByTestId("grace2-case-row-menu-button"));
+        fireEvent.click(screen.getByTestId("grace2-case-row-menu-delete"));
+        fireEvent.click(screen.getByTestId("grace2-case-delete-dialog-confirm"));
+        expect(onDelete).toHaveBeenCalledWith(CASE_FORT_MYERS.case_id);
       });
     });
   });
