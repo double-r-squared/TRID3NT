@@ -464,15 +464,19 @@ async def model_urban_flood_swmm(
         # BEST-EFFORT: a mesh-emit failure must NEVER break the solve - mirror
         # the _emit_frame_layers best-effort pattern (log a warning, continue).
         # The build is SYNC compute (re-reads the staged INP + reprojects every
-        # corner + writes mesh.geojson), so it is OFFLOADED off the event loop
-        # via asyncio.to_thread (never run sync compute on the asyncio loop).
-        # add_loaded_layer inlines the geojson into memory immediately, so it is
-        # safe even though deck_dir_to_clean is cleaned later in this workflow.
+        # corner) PLUS a boto3 upload of mesh.geojson, so it is OFFLOADED off the
+        # event loop via asyncio.to_thread (never run sync compute / boto3 on the
+        # asyncio loop). DURABILITY (NATE high-pri shipped bug): the mesh is now
+        # uploaded to the DURABLE runs bucket (s3://<runs_bucket>/<run_id>/
+        # mesh.geojson), NOT the deck staging dir - so when add_loaded_layer (and
+        # any later session-state RE-emit/reconnect) re-reads the LayerURI via
+        # _read_vector_uri_as_geojson it finds the object on S3 instead of a
+        # deleted /tmp path (which made the mesh VANISH + storm warnings). The
+        # deck_dir_to_clean removal later in this workflow no longer affects it.
         try:
             mesh_layer = await asyncio.to_thread(
                 make_swmm_mesh_layer_uri,
                 staging.build,
-                out_dir=deck_dir_to_clean,
                 run_id=staging.run_id,
             )
             if mesh_layer is not None and emitter is not None:
@@ -799,8 +803,24 @@ async def model_urban_flood_swmm(
     # this single value guarantees the drawn rectangle == the sim extent and a
     # re-entry snaps to the floored extent rather than the collapsed geocode bbox.
     # model_copy keeps every narration scalar + the published uri intact.
+    #
+    # OBSERVABILITY (NATE): also fold n_buildings_dropped - the count of building
+    # footprints applied as OBSTACLES (holes in the mesh) - into the peak layer
+    # NAME so it is VISIBLE in the LayerPanel + the narration that buildings were
+    # used as obstacles (n_buildings_affected is a SEPARATE flooding metric that
+    # reads 0 on a dry run, which made NATE doubt obstacles were applied). The
+    # bbox + name updates are merged into a single model_copy so neither is lost.
+    n_buildings_dropped = int(getattr(staging.build, "n_buildings_dropped", 0) or 0)
+    peak_updates: dict[str, Any] = {}
     if tuple(peak.bbox or ()) != tuple(bbox):
-        peak = peak.model_copy(update={"bbox": tuple(bbox)})
+        peak_updates["bbox"] = tuple(bbox)
+    if n_buildings_dropped > 0 and "(" not in (peak.name or ""):
+        plural = "building" if n_buildings_dropped == 1 else "buildings"
+        peak_updates["name"] = (
+            f"{peak.name} ({n_buildings_dropped} {plural} as obstacles)"
+        )
+    if peak_updates:
+        peak = peak.model_copy(update=peak_updates)
 
     # --- Step 7b / 9b: publish + emit the per-frame animation layers OUT-OF-BAND
     # Mirrors model_flood_scenario Step-9b: each frame is a DISTINCT COG (distinct
@@ -814,13 +834,22 @@ async def model_urban_flood_swmm(
     # emission is skipped - the frames still live in `layers` for tests to assert.
     emitted_frames = await _emit_frame_layers(emitter, frame_layers, staging.run_id)
 
+    # OBSERVABILITY (NATE): the completion log surfaces n_buildings_dropped (the
+    # count of building footprints applied as OBSTACLES - holes in the mesh, the
+    # "drop" representation) ALONGSIDE n_buildings_affected. The prior log showed
+    # only n_buildings_affected (a FLOODING metric that read 0 on a dry run),
+    # which made it look like buildings were never used as obstacles. The two
+    # numbers are distinct: n_buildings_dropped = obstacles applied to the mesh,
+    # n_buildings_affected = footprints touched by water at peak. n_buildings_
+    # dropped was already computed above (folded into the peak name).
     logger.info(
         "model_urban_flood_swmm complete run_id=%s max_depth_m=%.4g "
-        "flooded_area_km2=%.6g n_buildings_affected=%d frames_emitted=%d/%d "
-        "continuity=%+.3f%% peak_uri=%s",
+        "flooded_area_km2=%.6g n_buildings_dropped=%d n_buildings_affected=%d "
+        "frames_emitted=%d/%d continuity=%+.3f%% peak_uri=%s",
         staging.run_id,
         peak.max_depth_m,
         peak.flooded_area_km2,
+        n_buildings_dropped,
         peak.n_buildings_affected,
         emitted_frames,
         len(frame_layers),

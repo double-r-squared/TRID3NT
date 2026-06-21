@@ -565,6 +565,113 @@ def test_fetch_osm_buildings_bytes_writes_flatgeobuf(monkeypatch):
     assert gdf.geometry.iloc[0].geom_type in ("Polygon", "MultiPolygon")
 
 
+def _square_geometry(
+    lon_min: float, lat_min: float, lon_max: float, lat_max: float
+) -> list[dict[str, float]]:
+    """Closed-ring Overpass ``geometry`` for an axis-aligned square (lon/lat box)."""
+    return [
+        {"lat": lat_min, "lon": lon_min},
+        {"lat": lat_min, "lon": lon_max},
+        {"lat": lat_max, "lon": lon_max},
+        {"lat": lat_max, "lon": lon_min},
+        {"lat": lat_min, "lon": lon_min},
+    ]
+
+
+def test_fetch_osm_buildings_retains_edge_straddling_footprint(monkeypatch):
+    """A building straddling the LEFT bbox edge is RETAINED (intersects, not clipped).
+
+    NATE's bug: "asked for buildings in the bbox, missed some on the LEFT". The
+    fetcher must keep a footprint that pokes outside the AOI edge — and keep it
+    WHOLE (un-sliced), not chopped at the boundary.
+    """
+    pytest.importorskip("geopandas")
+    pytest.importorskip("pyogrio")
+    min_lon, min_lat, max_lon, max_lat = FORT_MYERS_BBOX  # left = -81.92
+    # Building half outside the LEFT edge: spans from just outside min_lon to
+    # just inside it.
+    half_w = 0.001
+    left_straddle = _square_geometry(
+        min_lon - half_w, min_lat + 0.01, min_lon + half_w, min_lat + 0.02
+    )
+    payload = {
+        "elements": [
+            {"type": "way", "id": 1, "tags": {"building": "yes"},
+             "geometry": left_straddle},
+        ]
+    }
+    monkeypatch.setattr(data_fetch, "_post_overpass_buildings", lambda ql: payload)
+    raw = data_fetch._fetch_osm_buildings_bytes(FORT_MYERS_BBOX)
+
+    import io as _io
+
+    import geopandas as gpd  # type: ignore[import-not-found]
+
+    gdf = gpd.read_file(_io.BytesIO(raw))
+    assert len(gdf) == 1, "edge-straddling building must be retained"
+    # Whole, un-sliced: the western extent still reaches outside the bbox edge
+    # (a clip would have snapped it to exactly min_lon).
+    geom = gdf.geometry.iloc[0]
+    assert geom.bounds[0] < min_lon, "footprint must NOT be clipped to the bbox edge"
+
+
+def test_fetch_osm_buildings_excludes_fully_outside_footprint(monkeypatch):
+    """A building wholly outside the bbox is EXCLUDED (honest UpstreamAPIError)."""
+    pytest.importorskip("geopandas")
+    min_lon, min_lat, max_lon, max_lat = FORT_MYERS_BBOX
+    # Entirely west of (left of) the bbox, no intersection.
+    outside = _square_geometry(
+        min_lon - 0.05, min_lat + 0.01, min_lon - 0.04, min_lat + 0.02
+    )
+    payload = {
+        "elements": [
+            {"type": "way", "id": 2, "tags": {"building": "yes"},
+             "geometry": outside},
+        ]
+    }
+    monkeypatch.setattr(data_fetch, "_post_overpass_buildings", lambda ql: payload)
+    with pytest.raises(UpstreamAPIError):
+        data_fetch._fetch_osm_buildings_bytes(FORT_MYERS_BBOX)
+
+
+def test_fetch_osm_buildings_symmetric_edge_coverage(monkeypatch):
+    """Footprints straddling EACH of the four bbox edges are all retained.
+
+    Guards against any side (left/right/top/bottom) being preferentially
+    dropped — the intersects filter must be symmetric.
+    """
+    pytest.importorskip("geopandas")
+    pytest.importorskip("pyogrio")
+    min_lon, min_lat, max_lon, max_lat = FORT_MYERS_BBOX
+    d = 0.001
+    mid_lon = (min_lon + max_lon) / 2.0
+    mid_lat = (min_lat + max_lat) / 2.0
+    elements = [
+        # Left edge straddle.
+        {"type": "way", "id": 10, "tags": {"building": "yes"},
+         "geometry": _square_geometry(min_lon - d, mid_lat - d, min_lon + d, mid_lat + d)},
+        # Right edge straddle.
+        {"type": "way", "id": 11, "tags": {"building": "yes"},
+         "geometry": _square_geometry(max_lon - d, mid_lat - d, max_lon + d, mid_lat + d)},
+        # Bottom edge straddle.
+        {"type": "way", "id": 12, "tags": {"building": "yes"},
+         "geometry": _square_geometry(mid_lon - d, min_lat - d, mid_lon + d, min_lat + d)},
+        # Top edge straddle.
+        {"type": "way", "id": 13, "tags": {"building": "yes"},
+         "geometry": _square_geometry(mid_lon - d, max_lat - d, mid_lon + d, max_lat + d)},
+    ]
+    payload = {"elements": elements}
+    monkeypatch.setattr(data_fetch, "_post_overpass_buildings", lambda ql: payload)
+    raw = data_fetch._fetch_osm_buildings_bytes(FORT_MYERS_BBOX)
+
+    import io as _io
+
+    import geopandas as gpd  # type: ignore[import-not-found]
+
+    gdf = gpd.read_file(_io.BytesIO(raw))
+    assert len(gdf) == 4, "all four edge-straddling buildings must be retained"
+
+
 # ---------------------------------------------------------------------------
 # fetch_population — mocked Census REST.
 # ---------------------------------------------------------------------------

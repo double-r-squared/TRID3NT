@@ -120,7 +120,28 @@ def test_empty_active_cells() -> None:
     assert fc["features"] == []
 
 
-def test_make_layer_uri_writes_geojson(tmp_path, monkeypatch) -> None:
+class _FakeS3:
+    """Captures put_object calls so the mesh upload can be asserted in-test."""
+
+    def __init__(self) -> None:
+        self.puts: list[dict] = []
+
+    def put_object(self, **kw):  # noqa: ANN003
+        body = kw.get("Body")
+        data = body.read() if hasattr(body, "read") else body
+        self.puts.append(
+            {"Bucket": kw["Bucket"], "Key": kw["Key"], "Body": data}
+        )
+        return {}
+
+
+def test_make_layer_uri_uploads_to_s3_durable(monkeypatch) -> None:
+    """DURABILITY FIX: make_swmm_mesh_layer_uri UPLOADS mesh.geojson to the runs
+    bucket and returns an s3:// uri (NOT a local /tmp path that the deck-cleanup
+    deletes). The uri is re-readable by the emitter on every reconnect/re-emit.
+    """
+    from grace2_agent.tools import solver as solver_mod
+
     build = _FakeBuild(
         transform=UTM_TRANSFORM,
         crs=UTM_CRS,
@@ -133,9 +154,13 @@ def test_make_layer_uri_writes_geojson(tmp_path, monkeypatch) -> None:
         lambda b: [(0, 0), (0, 1), (1, 0), (1, 1)],
     )
 
-    layer = make_swmm_mesh_layer_uri(
-        build, out_dir=str(tmp_path), run_id="run-abc"
-    )
+    fake_s3 = _FakeS3()
+    monkeypatch.setenv("GRACE2_RUNS_BUCKET", "test-runs-bucket")
+    solver_mod.set_s3_client(fake_s3)
+    try:
+        layer = make_swmm_mesh_layer_uri(build, run_id="run-abc")
+    finally:
+        solver_mod.set_s3_client(None)
 
     assert layer is not None
     assert layer.layer_type == "vector"
@@ -143,16 +168,81 @@ def test_make_layer_uri_writes_geojson(tmp_path, monkeypatch) -> None:
     assert layer.role == "context"
     assert layer.bbox is None
     assert layer.layer_id == "swmm-mesh-run-abc"
-    assert layer.uri.endswith("mesh.geojson")
 
-    out_file = tmp_path / "mesh.geojson"
-    assert out_file.exists()
-    parsed = json.loads(out_file.read_text(encoding="utf-8"))
+    # The uri is a DURABLE s3:// path under the runs bucket / per-run prefix -
+    # NOT a local /tmp deck-staging path that deck cleanup would delete.
+    assert layer.uri == "s3://test-runs-bucket/run-abc/mesh.geojson"
+    assert layer.uri.startswith("s3://")
+    assert "/tmp/" not in layer.uri
+    assert not layer.uri.startswith("file://")
+
+    # Exactly one put_object of the FeatureCollection to the conventional key.
+    assert len(fake_s3.puts) == 1
+    put = fake_s3.puts[0]
+    assert put["Bucket"] == "test-runs-bucket"
+    assert put["Key"] == "run-abc/mesh.geojson"
+    body = put["Body"]
+    parsed = json.loads(body.decode("utf-8") if isinstance(body, bytes) else body)
     assert parsed["type"] == "FeatureCollection"
     assert len(parsed["features"]) == 4
 
 
-def test_make_layer_uri_zero_features_returns_none(tmp_path, monkeypatch) -> None:
+def test_make_layer_uri_runs_bucket_override(monkeypatch) -> None:
+    """An explicit runs_bucket arg overrides the solver default for the s3 key."""
+    from grace2_agent.tools import solver as solver_mod
+
+    build = _FakeBuild(
+        transform=UTM_TRANSFORM, crs=UTM_CRS, resolution_m=10.0, grid_shape=(2, 2)
+    )
+    monkeypatch.setattr(
+        "grace2_agent.workflows.swmm_mesh_builder._active_cells_from_deck",
+        lambda b: [(0, 0), (0, 1), (1, 0), (1, 1)],
+    )
+    fake_s3 = _FakeS3()
+    solver_mod.set_s3_client(fake_s3)
+    try:
+        layer = make_swmm_mesh_layer_uri(
+            build, run_id="run-ov", runs_bucket="explicit-bucket"
+        )
+    finally:
+        solver_mod.set_s3_client(None)
+
+    assert layer is not None
+    assert layer.uri == "s3://explicit-bucket/run-ov/mesh.geojson"
+    assert fake_s3.puts[0]["Bucket"] == "explicit-bucket"
+
+
+def test_make_layer_uri_returns_none_on_upload_failure(monkeypatch) -> None:
+    """BEST-EFFORT: an S3 put failure returns None (mesh simply absent) - it must
+    NEVER raise / break the solve, and must NOT return a local /tmp fallback."""
+    from grace2_agent.tools import solver as solver_mod
+
+    build = _FakeBuild(
+        transform=UTM_TRANSFORM, crs=UTM_CRS, resolution_m=10.0, grid_shape=(2, 2)
+    )
+    monkeypatch.setattr(
+        "grace2_agent.workflows.swmm_mesh_builder._active_cells_from_deck",
+        lambda b: [(0, 0), (0, 1), (1, 0), (1, 1)],
+    )
+
+    class _BoomS3:
+        def put_object(self, **kw):  # noqa: ANN003
+            raise RuntimeError("S3 put boom (no creds / bad bucket)")
+
+    monkeypatch.setenv("GRACE2_RUNS_BUCKET", "test-runs-bucket")
+    solver_mod.set_s3_client(_BoomS3())
+    try:
+        layer = make_swmm_mesh_layer_uri(build, run_id="run-boom")
+    finally:
+        solver_mod.set_s3_client(None)
+
+    assert layer is None
+
+
+def test_make_layer_uri_zero_features_returns_none(monkeypatch) -> None:
+    """Zero active cells -> None, and NO S3 upload is attempted."""
+    from grace2_agent.tools import solver as solver_mod
+
     build = _FakeBuild(
         transform=UTM_TRANSFORM,
         crs=UTM_CRS,
@@ -164,12 +254,16 @@ def test_make_layer_uri_zero_features_returns_none(tmp_path, monkeypatch) -> Non
         lambda b: [],
     )
 
-    layer = make_swmm_mesh_layer_uri(
-        build, out_dir=str(tmp_path), run_id="run-empty"
-    )
+    fake_s3 = _FakeS3()
+    solver_mod.set_s3_client(fake_s3)
+    try:
+        layer = make_swmm_mesh_layer_uri(build, run_id="run-empty")
+    finally:
+        solver_mod.set_s3_client(None)
+
     assert layer is None
-    # No file should be written when there is nothing to render.
-    assert not (tmp_path / "mesh.geojson").exists()
+    # Nothing to render -> no upload attempted.
+    assert fake_s3.puts == []
 
 
 # --------------------------------------------------------------------------- #

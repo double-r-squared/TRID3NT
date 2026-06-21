@@ -37,7 +37,6 @@ from __future__ import annotations
 import json
 import logging
 import math
-from pathlib import Path
 from typing import Any, Iterable
 
 from grace2_contracts.execution import LayerURI
@@ -224,21 +223,34 @@ def swmm_mesh_to_geojson(build: Any, *, cap: int = 6000) -> tuple[dict, dict]:
 def make_swmm_mesh_layer_uri(
     build: Any,
     *,
-    out_dir: str,
     run_id: str,
+    runs_bucket: str | None = None,
     cap: int = 6000,
 ) -> LayerURI | None:
-    """Write the mesh ``FeatureCollection`` to ``mesh.geojson`` + return a LayerURI.
+    """Build the mesh ``FeatureCollection`` + UPLOAD it to S3, return a LayerURI.
 
-    Returns ``None`` (and logs a warning on a caught error) when there are zero
-    features to render, so the caller's best-effort emit simply skips. The
-    returned ``LayerURI`` carries ``style_preset="mesh_grid"``, ``role="context"``
-    and ``bbox=None`` (the mesh must not fight the AOI camera). The ``uri`` is the
-    written ``.geojson`` path - the emitter inlines it via
-    ``_read_vector_uri_as_geojson`` immediately, so it is safe even after the
-    deck dir is cleaned.
+    DURABILITY FIX (NATE high-pri, shipped bug): the mesh ``.geojson`` used to be
+    written to the deck STAGING dir (``/tmp/swmm-<run>/...``), which the composer
+    DELETES on deck cleanup. On any session-state re-emit/reconnect the emitter
+    re-reads the LayerURI ``uri`` via ``_read_vector_uri_as_geojson`` and hit
+    'No such file or directory' -> the mesh layer could not re-inline -> it
+    VANISHED + spammed a warning storm. We now UPLOAD ``mesh.geojson`` to the
+    DURABLE runs bucket at
+    ``s3://<runs_bucket>/<run_id>/mesh.geojson`` (the SAME convention every other
+    run artifact uses, and the SAME s3:// path
+    :func:`make_sfincs_mesh_layer_uri` relies on) and set ``LayerURI.uri`` to that
+    s3:// path. ``pipeline_emitter.add_loaded_layer`` then inlines from s3://
+    (boto3 instance-role GET, off the event loop) on EVERY re-read - durable like
+    every other vector.
 
-    SYNC compute + file write - the caller wraps in ``asyncio.to_thread``.
+    Returns ``None`` (best-effort, never fatal) when there are zero features to
+    render OR the S3 upload fails (a put failure -> the mesh is simply absent,
+    never breaks the solve). The returned ``LayerURI`` carries
+    ``style_preset="mesh_grid"``, ``role="context"`` and ``bbox=None`` (the mesh
+    must not fight the AOI camera).
+
+    SYNC compute + boto3 upload - the caller wraps it in ``asyncio.to_thread``
+    (never run sync boto3 on the asyncio event loop).
     """
     try:
         fc, meta = swmm_mesh_to_geojson(build, cap=cap)
@@ -256,12 +268,27 @@ def make_swmm_mesh_layer_uri(
         )
         return None
 
-    out_path = Path(out_dir) / "mesh.geojson"
+    # Upload to the DURABLE runs bucket (NOT the soon-to-be-deleted deck dir).
+    # Reuse the shared solver S3 seam (_get_s3_client / _get_runs_bucket) so the
+    # mesh rides the EXACT same boto3 instance-role + bucket convention as every
+    # other run artifact (postprocess COGs, completion.json, the SFINCS mesh).
     try:
-        out_path.write_text(json.dumps(fc), encoding="utf-8")
-    except Exception as exc:  # noqa: BLE001 - best-effort; mesh emit is non-fatal
+        from ..tools.solver import _get_runs_bucket, _get_s3_client
+
+        bucket = runs_bucket or _get_runs_bucket()
+        key = f"{run_id}/mesh.geojson"
+        _get_s3_client().put_object(
+            Bucket=bucket,
+            Key=key,
+            Body=json.dumps(fc).encode("utf-8"),
+            ContentType="application/geo+json",
+        )
+        s3_uri = f"s3://{bucket}/{key}"
+    except Exception as exc:  # noqa: BLE001 - best-effort; S3 put failure is non-fatal
         logger.warning(
-            "make_swmm_mesh_layer_uri: mesh.geojson write failed (non-fatal): %s",
+            "make_swmm_mesh_layer_uri: mesh.geojson S3 upload failed (non-fatal, "
+            "mesh absent; run_id=%s): %s",
+            run_id,
             exc,
         )
         return None
@@ -271,7 +298,7 @@ def make_swmm_mesh_layer_uri(
         layer_id=f"swmm-mesh-{run_id}",
         name=f"Computational mesh ({eff_res:.0f} m cells)",
         layer_type="vector",
-        uri=str(out_path),
+        uri=s3_uri,
         style_preset="mesh_grid",
         role="context",
         bbox=None,

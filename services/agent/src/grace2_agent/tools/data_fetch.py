@@ -719,15 +719,21 @@ def _fetch_osm_buildings_bytes(
 
     Queries the OpenStreetMap Overpass API for ``building``-tagged ways AND
     relations intersecting the bbox, assembles closed ways into ``Polygon``s
-    and multipolygon relations into ``(Multi)Polygon``s, clips every footprint
-    to the EXACT requested bbox (Overpass ``out geom`` returns full geometry of
-    any feature with a node inside the bbox, so footprints can spill outside),
-    and serializes the result to FlatGeobuf — the SAME output format the
-    ``msft`` branch produces, so the cache write + downstream consumers are
+    and multipolygon relations into ``(Multi)Polygon``s, retains EVERY footprint
+    whose geometry INTERSECTS the requested bbox (whole, un-sliced — a building
+    straddling any AOI edge is kept intact, not chopped at the boundary), and
+    serializes the result to FlatGeobuf — the SAME output format the ``msft``
+    branch produces, so the cache write + downstream consumers are
     source-agnostic.
 
+    Edge-coverage note (the "missed buildings on the LEFT" fix): a previous
+    revision ran ``gpd.clip(gdf, bbox)``, which geometrically slices every
+    footprint at the bbox boundary. That dropped/mangled buildings straddling
+    the AOI edge. We now filter by INTERSECTS instead of clipping, so any
+    building touching the bbox is returned whole — symmetric on all four sides.
+
     Raises ``UpstreamAPIError`` on Overpass failure OR when no building
-    footprints fall inside the bbox (honest typed empty per the data-source
+    footprints intersect the bbox (honest typed empty per the data-source
     fallback norm — the caller decides whether to fall back to ``msft``).
     """
     _validate_bbox(bbox)
@@ -753,30 +759,36 @@ def _fetch_osm_buildings_bytes(
     attrs = [a for _g, a in features]
     gdf = gpd.GeoDataFrame(attrs, geometry=geometries, crs="EPSG:4326")
 
-    # Clip to the EXACT requested bbox: Overpass ``out geom`` returns the full
-    # footprint of any building with a node inside the bbox, so a building on
-    # the AOI edge spills outside. Clipping keeps rendered footprints strictly
-    # inside the AOI (matches the fetch_roads_osm F39 clip discipline).
+    # Retain every footprint that INTERSECTS the requested bbox — do NOT clip.
+    #
+    # Overpass ``out geom`` returns the FULL footprint of any building with a
+    # node inside the bbox, so a building straddling an AOI edge spills outside.
+    # The previous revision ran ``gpd.clip(gdf, bbox)``, which geometrically
+    # slices each footprint at the boundary. That dropped/mangled edge buildings
+    # (NATE: "missed some on the LEFT"). We instead keep footprints whole when
+    # they intersect the bbox and exclude only those that fall entirely outside.
+    # ``intersects`` is symmetric on all four edges (left/right/top/bottom), so
+    # no side is preferentially dropped. Geometries are left un-sliced.
     min_lon, min_lat, max_lon, max_lat = bbox
-    clip_box = box(min_lon, min_lat, max_lon, max_lat)
-    try:
-        gdf = gpd.clip(gdf, clip_box)
-    except Exception as exc:  # noqa: BLE001 — defend against degenerate geom
-        raise UpstreamAPIError(
-            f"OSM buildings clip-to-bbox failed for bbox={bbox}: {exc}"
-        ) from exc
-    # Drop anything the clip collapsed to empty / non-areal.
+    bbox_geom = box(min_lon, min_lat, max_lon, max_lat)
+    # Defend against degenerate / non-areal geometry surviving assembly.
     gdf = gdf[~gdf.geometry.is_empty & gdf.geometry.notna()]
     gdf = gdf[gdf.geometry.geom_type.isin(["Polygon", "MultiPolygon"])]
+    try:
+        gdf = gdf[gdf.geometry.intersects(bbox_geom)]
+    except Exception as exc:  # noqa: BLE001 — defend against degenerate geom
+        raise UpstreamAPIError(
+            f"OSM buildings bbox-intersects filter failed for bbox={bbox}: {exc}"
+        ) from exc
 
     if len(gdf) == 0:
         raise UpstreamAPIError(
             f"OSM Overpass building footprints all fell outside bbox={bbox} "
-            f"after clipping (caller may fall back to source='msft')"
+            f"(none intersect the AOI — caller may fall back to source='msft')"
         )
 
     logger.info(
-        "fetch_buildings(osm): %d building footprint(s) in-AOI for bbox=%s",
+        "fetch_buildings(osm): %d building footprint(s) intersecting AOI for bbox=%s",
         len(gdf),
         bbox,
     )

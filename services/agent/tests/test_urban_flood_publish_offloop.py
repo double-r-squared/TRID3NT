@@ -209,15 +209,19 @@ def test_emit_frames_no_emitter_returns_zero():
 # Full composer (pyswmm-free) - BREAK A end to end + BREAK B off-loop
 # --------------------------------------------------------------------------- #
 class _FakeStaging:
-    def __init__(self) -> None:
+    def __init__(self, *, n_buildings_dropped: int = 0) -> None:
         self.run_id = "RID"
         self.inp_path = "/tmp/does-not-exist/mesh.inp"
-        self.build = type("B", (), {"n_active_cells": 0})()
+        self.build = type(
+            "B",
+            (),
+            {"n_active_cells": 0, "n_buildings_dropped": n_buildings_dropped},
+        )()
 
 
-def _install_pyswmm_free_chain(monkeypatch, *, solve_fn=None):
+def _install_pyswmm_free_chain(monkeypatch, *, solve_fn=None, n_buildings_dropped=0):
     """Stub the heavy solve chain so the composer runs without pyswmm."""
-    staging = _FakeStaging()
+    staging = _FakeStaging(n_buildings_dropped=n_buildings_dropped)
 
     monkeypatch.setattr(
         M, "build_and_stage_swmm_deck",
@@ -299,6 +303,118 @@ def test_full_composer_publishes_peak_and_frames(monkeypatch):
 
     # zoom-to issued before the solve.
     assert any(k == "zoom-to" for k, _ in fake.map_commands)
+
+
+# --------------------------------------------------------------------------- #
+# OBSERVABILITY (NATE): surface n_buildings_dropped (obstacles applied) in the
+# completion telemetry log AND the returned peak narration name. The prior
+# completion log showed only n_buildings_affected (a flooding metric that read 0
+# on a dry run), making it look like buildings were never used as obstacles.
+# --------------------------------------------------------------------------- #
+def test_completion_log_surfaces_n_buildings_dropped(monkeypatch, caplog):
+    """The composer's completion telemetry log includes n_buildings_dropped (the
+    obstacle count from BuildResult), distinct from n_buildings_affected."""
+    import logging
+
+    from grace2_agent import pipeline_emitter as pe
+
+    _install_pyswmm_free_chain(monkeypatch, n_buildings_dropped=7)
+
+    fake = _FakeEmitter()
+    token = pe._CURRENT_EMITTER.set(fake)
+    caplog.set_level(logging.INFO, logger="grace2_agent.workflows.model_urban_flood_swmm")
+    try:
+        run_args = SWMMRunArgs(bbox=(-88.0, 36.0, -87.99, 36.01))
+        asyncio.run(
+            M.model_urban_flood_swmm(
+                run_args,
+                dem_path="/tmp/synthetic.tif",
+                building_footprints=None,
+                run_id="RID",
+            )
+        )
+    finally:
+        pe._CURRENT_EMITTER.reset(token)
+
+    completion = [
+        r.getMessage() for r in caplog.records
+        if "model_urban_flood_swmm complete" in r.getMessage()
+    ]
+    assert completion, "no completion telemetry log emitted"
+    msg = completion[-1]
+    # Both the obstacle count AND the flooding metric are surfaced + distinct.
+    assert "n_buildings_dropped=7" in msg, msg
+    assert "n_buildings_affected=" in msg, msg
+
+
+def test_returned_peak_name_surfaces_obstacles(monkeypatch):
+    """When buildings were dropped as obstacles, the returned peak's NAME carries
+    the obstacle count so it is VISIBLE in the LayerPanel / narration."""
+    from grace2_agent import pipeline_emitter as pe
+
+    _install_pyswmm_free_chain(monkeypatch, n_buildings_dropped=3)
+
+    fake = _FakeEmitter()
+    token = pe._CURRENT_EMITTER.set(fake)
+    try:
+        run_args = SWMMRunArgs(bbox=(-88.0, 36.0, -87.99, 36.01))
+        peak = asyncio.run(
+            M.model_urban_flood_swmm(
+                run_args,
+                dem_path="/tmp/synthetic.tif",
+                building_footprints=None,
+                run_id="RID",
+            )
+        )
+    finally:
+        pe._CURRENT_EMITTER.reset(token)
+
+    assert isinstance(peak, SWMMDepthLayerURI)
+    assert "3 buildings as obstacles" in peak.name, peak.name
+    # Narration scalars stay intact (no contract change).
+    assert peak.max_depth_m == 1.25
+
+
+def test_returned_peak_name_unchanged_when_no_obstacles(monkeypatch):
+    """No dropped buildings -> the peak name is the plain 'Peak flood depth' (no
+    obstacle suffix), and the completion log shows n_buildings_dropped=0."""
+    import logging
+
+    from grace2_agent import pipeline_emitter as pe
+
+    _install_pyswmm_free_chain(monkeypatch, n_buildings_dropped=0)
+
+    fake = _FakeEmitter()
+    token = pe._CURRENT_EMITTER.set(fake)
+    caplog_msgs: list[str] = []
+
+    class _H(logging.Handler):
+        def emit(self, record):  # noqa: ANN001
+            caplog_msgs.append(record.getMessage())
+
+    lg = logging.getLogger("grace2_agent.workflows.model_urban_flood_swmm")
+    handler = _H()
+    lg.addHandler(handler)
+    prev_level = lg.level
+    lg.setLevel(logging.INFO)
+    try:
+        run_args = SWMMRunArgs(bbox=(-88.0, 36.0, -87.99, 36.01))
+        peak = asyncio.run(
+            M.model_urban_flood_swmm(
+                run_args,
+                dem_path="/tmp/synthetic.tif",
+                building_footprints=None,
+                run_id="RID",
+            )
+        )
+    finally:
+        pe._CURRENT_EMITTER.reset(token)
+        lg.removeHandler(handler)
+        lg.setLevel(prev_level)
+
+    assert peak.name == "Peak flood depth", peak.name
+    completion = [m for m in caplog_msgs if "model_urban_flood_swmm complete" in m]
+    assert completion and "n_buildings_dropped=0" in completion[-1]
 
 
 # --------------------------------------------------------------------------- #

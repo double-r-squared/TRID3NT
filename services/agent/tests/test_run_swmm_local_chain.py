@@ -362,6 +362,42 @@ def _patch_publish_layer(monkeypatch, calls: list | None = None):  # noqa: ANN00
     )
 
 
+class _MeshUploadS3:
+    """A put-capable fake S3 client for the #156 mesh.geojson upload.
+
+    The mesh layer is now uploaded to the runs bucket via the solver
+    _get_s3_client().put_object seam (durability fix: the s3:// uri survives deck
+    cleanup + reconnect). Stub the client so the composer's mesh emit succeeds
+    end to end in-test (no live object store)."""
+
+    def __init__(self) -> None:
+        self.puts: list[dict] = []
+
+    def put_object(self, **kw):  # noqa: ANN003
+        body = kw.get("Body")
+        data = body.read() if hasattr(body, "read") else body
+        self.puts.append({"Bucket": kw["Bucket"], "Key": kw["Key"], "Body": data})
+        return {}
+
+
+def _install_mesh_upload_s3(monkeypatch) -> "_MeshUploadS3":
+    """Bind a put-capable fake S3 client + a runs bucket so make_swmm_mesh_layer_uri
+    uploads mesh.geojson durably in-test (returns the fake for assertions).
+
+    Uses monkeypatch.setattr on the solver module global so the bound client +
+    runs bucket are auto-restored at test teardown (no global leak)."""
+    from grace2_agent.tools import solver as solver_mod
+
+    fake = _MeshUploadS3()
+    monkeypatch.setenv("GRACE2_RUNS_BUCKET", "test-runs-bucket")
+    # _get_s3_client() returns the module global _S3_CLIENT when set; patching it
+    # here is auto-reverted by monkeypatch (unlike solver.set_s3_client which sets
+    # a global that would leak across tests).
+    monkeypatch.setattr(solver_mod, "_S3_CLIENT", fake)
+    monkeypatch.setattr(solver_mod, "_RUNS_BUCKET", None)
+    return fake
+
+
 class _FakeEmitter:
     """Captures the out-of-band frame emissions + the zoom-to map command."""
 
@@ -422,6 +458,9 @@ def test_full_local_chain_emits_peak_plus_frames(synthetic_inputs, monkeypatch):
     # render chokepoint and come back as renderable http(s) tile templates.
     publish_calls: list = []
     _patch_publish_layer(monkeypatch, publish_calls)
+    # #156 durability: the mesh.geojson is uploaded to the runs bucket via the
+    # solver S3 seam; bind a put-capable fake client so the mesh emits as s3://.
+    _install_mesh_upload_s3(monkeypatch)
     # Bind a fake emitter so the out-of-band frame emission is captured (mirrors
     # the WS dispatch ContextVar binding).
     from grace2_agent import pipeline_emitter as pe
@@ -454,7 +493,11 @@ def test_full_local_chain_emits_peak_plus_frames(synthetic_inputs, monkeypatch):
     # --- peak primary: the run_modflow-style single returned LayerURI ---------
     assert isinstance(peak, SWMMDepthLayerURI)
     assert peak.role == "primary"
-    assert peak.name == "Peak flood depth"
+    # OBSERVABILITY (NATE): the synthetic deck drops >= 1 building as an obstacle,
+    # so the peak name carries the obstacle count (visible in the LayerPanel /
+    # narration) in addition to the base "Peak flood depth" label.
+    assert peak.name.startswith("Peak flood depth"), peak.name
+    assert "as obstacles)" in peak.name, peak.name
     assert peak.layer_id == "swmm-depth-peak-run-urban"
     assert peak.style_preset == "continuous_flood_depth"
     assert peak.max_depth_m >= 0.0
@@ -492,6 +535,12 @@ def test_full_local_chain_emits_peak_plus_frames(synthetic_inputs, monkeypatch):
     assert mesh.role == "context", mesh.role
     assert mesh.layer_type == "vector", mesh.layer_type
     assert mesh.name.startswith("Computational mesh"), mesh.name
+    # #156 DURABILITY: the mesh uri is a DURABLE s3:// runs-bucket object, NOT a
+    # local /tmp deck-staging path that deck cleanup would delete (the shipped
+    # bug: on re-emit/reconnect the deleted /tmp path made the mesh VANISH).
+    assert mesh.uri.startswith("s3://"), mesh.uri
+    assert "/tmp/" not in mesh.uri
+    assert mesh.uri.endswith("/mesh.geojson"), mesh.uri
 
     # --- frames emitted OUT-OF-BAND as a contiguous "Flood depth step N" group ---
     frames = depth_frames
@@ -540,6 +589,9 @@ def test_tool_wrapper_drives_full_chain(synthetic_inputs, monkeypatch):
     )
     # BREAK A: stub publish_layer (no QGIS/TiTiler worker in-test).
     _patch_publish_layer(monkeypatch)
+    # #156 durability: bind a put-capable fake S3 so the mesh.geojson upload
+    # succeeds in-test (the mesh emits as a durable s3:// uri).
+    _install_mesh_upload_s3(monkeypatch)
     # Stub the composer's DEM + buildings acquisition to the synthetic inputs so
     # the tool path needs no live fetch.
     monkeypatch.setattr(
@@ -711,6 +763,15 @@ def test_batch_lane_returns_populated_peak_envelope(synthetic_inputs, monkeypatc
                 raise _NoSuchKey()
             return {"Body": _Body(objs[Key])}
 
+        def put_object(self, **kw):  # noqa: ANN003
+            # The #156 mesh layer is now uploaded to the runs bucket via
+            # _get_s3_client().put_object before the solve; accept + stash it so
+            # the durability path exercises end to end (mesh emits as s3://).
+            body = kw.get("Body")
+            data = body.read() if hasattr(body, "read") else body
+            store["objects"][kw["Key"]] = data
+            return {}
+
     monkeypatch.setattr(_solver, "set_runs_bucket", _solver.set_runs_bucket)
     _solver.set_runs_bucket(_RUNS_BUCKET)
     _solver.set_s3_client(_FakeS3())
@@ -761,7 +822,10 @@ def test_batch_lane_returns_populated_peak_envelope(synthetic_inputs, monkeypatc
     assert peak is not None, "Batch lane returned None (no result to narrate)"
     assert isinstance(peak, SWMMDepthLayerURI), peak
     assert peak.role == "primary"
-    assert peak.name == "Peak flood depth"
+    # OBSERVABILITY (NATE): the synthetic deck drops >= 1 building as an obstacle,
+    # so the peak name carries the obstacle count alongside "Peak flood depth".
+    assert peak.name.startswith("Peak flood depth"), peak.name
+    assert "as obstacles)" in peak.name, peak.name
     # The three narration scalars are populated (Invariant 1 — the LLM narrates
     # these). A null/empty envelope would have no numbers to summarise.
     assert peak.max_depth_m >= 0.0
