@@ -31,28 +31,73 @@ import pytest
 _HERE = Path(__file__).resolve().parent
 _CASE_LIST_HANDLER = _HERE.parent / "handler.py"
 
-_UID = "user-abc-123"
-_OTHER_UID = "user-xyz-999"
+# In the live system ``cognito_verify`` returns the Cognito SUB; cases are owned
+# by the INTERNAL ULID resolved from the users table (Decision 10). The tests
+# keep these distinct so the sub -> ULID resolution is actually exercised.
+_SUB = "cognito-sub-abc-123"
+_UID = "01ULIDOWNER0000000000000001"  # internal ULID the sub maps to
+_OTHER_UID = "01ULIDOTHER0000000000000099"
+
+_USERS_TABLE = "grace2_users"
+_CASES_TABLE = "grace2_cases"
 
 
 @pytest.fixture
 def env(monkeypatch):
     monkeypatch.setenv("AWS_REGION", "us-west-2")
-    monkeypatch.setenv("CASES_TABLE", "grace2_cases")
+    monkeypatch.setenv("CASES_TABLE", _CASES_TABLE)
+    monkeypatch.setenv("USERS_TABLE", _USERS_TABLE)
     # A configured pool so cognito_verify is the only gate the test patches.
     monkeypatch.setenv("GRACE2_COGNITO_USER_POOL_ID", "us-west-2_TESTPOOL")
     monkeypatch.setenv("GRACE2_COGNITO_CLIENT_ID", "testclientid")
 
 
-def _load(*, table=None):
+def _users_table(sub_to_ulid: dict[str, str] | None):
+    """A fake users Table whose firebase_uid-index Query maps sub -> {_id: ulid}.
+
+    ``sub_to_ulid`` None / a sub absent from it -> the GSI Query returns no
+    Items (no user record), so ``_resolve_internal_uid`` returns None.
+    """
+    mapping = dict(sub_to_ulid or {})
+    table = mock.MagicMock(name="users_table")
+
+    def _query(**kwargs):
+        from boto3.dynamodb.conditions import Key  # noqa: F401
+
+        cond = kwargs.get("KeyConditionExpression")
+        bound = cond.get_expression()["values"]
+        sub = bound[1]
+        ulid = mapping.get(sub)
+        if ulid is None:
+            return {"Items": []}
+        return {"Items": [{"_id": ulid, "firebase_uid": sub}]}
+
+    table.query.side_effect = _query
+    return table
+
+
+def _load(*, table=None, sub_to_ulid=None):
     """Import the case-list handler fresh with boto3.resource replaced by a mock
     DynamoDB resource. The resource is constructed at module import, so patch it
-    first. Returns ``(module, resource, table)``.
+    first. ``Table(name)`` returns the users-table mock for USERS_TABLE and the
+    cases-table mock otherwise. Returns ``(module, resource, table)``.
+
+    ``sub_to_ulid`` (default: {_SUB: _UID}) drives the sub -> ULID resolution so
+    a verified sub maps to its internal ULID before the case GSIs are queried.
     """
     if table is None:
         table = mock.MagicMock(name="table")
+    if sub_to_ulid is None:
+        sub_to_ulid = {_SUB: _UID}
+    users_table = _users_table(sub_to_ulid)
     resource = mock.MagicMock(name="ddb_resource")
-    resource.Table.return_value = table
+
+    def _Table(name):  # noqa: N802
+        if name == _USERS_TABLE:
+            return users_table
+        return table
+
+    resource.Table.side_effect = _Table
     spec = importlib.util.spec_from_file_location(
         "case_list_handler_under_test", _CASE_LIST_HANDLER
     )
@@ -67,8 +112,12 @@ def _body(resp):
 
 
 def _set_verify(monkeypatch, module, claims):
-    """Patch the module's Cognito verifier to return ``claims`` for any token."""
+    """Patch the module's Cognito verifier to return ``claims`` for any token.
+
+    Reset the module's sub -> ULID resolution cache so per-test mappings apply.
+    """
     monkeypatch.setattr(module, "cognito_verify", lambda token: claims)
+    module._uid_cache.clear()
 
 
 def _gsi_query_table(pages_by_index: dict[str, list[list[dict]]]):
@@ -137,7 +186,7 @@ def test_signed_in_unions_both_gsis_dedup_by_id(env, monkeypatch):
         }
     )
     module, _resource, _table = _load(table=table)
-    _set_verify(monkeypatch, module, {"uid": _UID})
+    _set_verify(monkeypatch, module, {"uid": _SUB})
 
     resp = module.handler(_get(token="good.jwt"), None)
     assert resp["statusCode"] == 200
@@ -169,7 +218,7 @@ def test_signed_in_marshal_strips_user_link_and_renames_id(env, monkeypatch):
     }
     table = _gsi_query_table({"user_id-index": [[doc]]})
     module, _resource, _table = _load(table=table)
-    _set_verify(monkeypatch, module, {"uid": _UID})
+    _set_verify(monkeypatch, module, {"uid": _SUB})
 
     resp = module.handler(_get(token="good.jwt"), None)
     assert resp["statusCode"] == 200
@@ -205,7 +254,7 @@ def test_signed_in_excludes_tombstones(env, monkeypatch):
         {"user_id-index": [[live, deleted, archived, no_status]]}
     )
     module, _resource, _table = _load(table=table)
-    _set_verify(monkeypatch, module, {"uid": _UID})
+    _set_verify(monkeypatch, module, {"uid": _SUB})
 
     resp = module.handler(_get(token="good.jwt"), None)
     assert resp["statusCode"] == 200
@@ -213,24 +262,28 @@ def test_signed_in_excludes_tombstones(env, monkeypatch):
     assert ids == ["01L", "01Z"]  # tombstones gone, legacy kept
 
 
-def test_signed_in_only_queries_with_own_uid(env, monkeypatch):
-    """Owner-scoping: the GSI Query value is the VERIFIED uid, never another
-    user's -- a verified user can only ever list their own Cases."""
+def test_signed_in_only_queries_with_resolved_ulid(env, monkeypatch):
+    """Owner-scoping: the cases GSI Query value is the RESOLVED internal ULID
+    (sub -> ULID), never the raw sub and never another user's -- a verified user
+    can only ever list their own Cases. This is the box-off empty-rail fix: the
+    case GSIs must be scoped by the ULID, not the Cognito sub."""
     table = _gsi_query_table({"user_id-index": [[]], "owner_user_id-index": [[]]})
     module, _resource, _table = _load(table=table)
-    _set_verify(monkeypatch, module, {"uid": _UID})
+    _set_verify(monkeypatch, module, {"uid": _SUB})
 
     resp = module.handler(_get(token="good.jwt"), None)
     assert resp["statusCode"] == 200
     assert _body(resp)["cases"] == []
-    # Every Query's KeyConditionExpression must bind the verified uid (not
-    # _OTHER_UID). boto3 Key(...).eq(value) -> an Equals condition whose
-    # get_expression()["values"] is (Key, bound_value).
+    # Every cases-GSI Query's KeyConditionExpression must bind the RESOLVED ULID
+    # (_UID), never the raw sub (_SUB) and never _OTHER_UID. boto3
+    # Key(...).eq(value) -> an Equals condition whose get_expression()["values"]
+    # is (Key, bound_value).
     assert table.query.call_args_list  # both GSIs were queried
     for call in table.query.call_args_list:
         cond = call.kwargs["KeyConditionExpression"]
         bound = cond.get_expression()["values"]
         assert bound[1] == _UID
+        assert bound[1] != _SUB
         assert bound[1] != _OTHER_UID
 
 
@@ -273,7 +326,7 @@ def test_unset_table_is_200_empty_and_no_query(env, monkeypatch):
     monkeypatch.setenv("CASES_TABLE", "")
     table = _gsi_query_table({"user_id-index": [[{"_id": "leak", "title": "x"}]]})
     module, _resource, _table = _load(table=table)
-    _set_verify(monkeypatch, module, {"uid": _UID})  # signed in, but no table
+    _set_verify(monkeypatch, module, {"uid": _SUB})  # signed in, but no table
 
     resp = module.handler(_get(token="good.jwt"), None)
     assert resp["statusCode"] == 200
@@ -299,9 +352,87 @@ def test_query_error_degrades_to_empty_not_500(env, monkeypatch):
     cold-open path must never surface a 500)."""
     table = mock.MagicMock(name="table")
     table.query.side_effect = RuntimeError("throttled")
-    module, _resource, _table = _load(table=table)
-    _set_verify(monkeypatch, module, {"uid": _UID})
+    module, _resource, _table = _load(table=table, sub_to_ulid={_SUB: _UID})
+    _set_verify(monkeypatch, module, {"uid": _SUB})
 
     resp = module.handler(_get(token="good.jwt"), None)
     assert resp["statusCode"] == 200
     assert _body(resp)["cases"] == []
+
+
+# --------------------------------------------------------------------------- #
+# Decision 10: sub -> internal ULID resolution (the box-off empty-rail fix).
+# --------------------------------------------------------------------------- #
+
+
+def test_sub_resolves_to_ulid_and_lists_that_ulids_cases(env, monkeypatch):
+    """The headline fix: a verified SUB maps (via the users table) to an
+    internal ULID, and the case GSIs are queried by THAT ULID -- so the user's
+    real cases (owned by the ULID, NOT the sub) are returned box-off."""
+    # Cases are owned by the internal ULID (_UID), not the Cognito sub (_SUB).
+    case = {"_id": "01CASE", "title": "Mine", "user_id": _UID, "status": "active"}
+    table = _gsi_query_table({"user_id-index": [[case]]})
+    module, _resource, _table = _load(table=table, sub_to_ulid={_SUB: _UID})
+    _set_verify(monkeypatch, module, {"uid": _SUB})
+
+    resp = module.handler(_get(token="good.jwt"), None)
+    assert resp["statusCode"] == 200
+    ids = [c["case_id"] for c in _body(resp)["cases"]]
+    assert ids == ["01CASE"]
+    # The cases GSIs were bound with the resolved ULID, never the raw sub.
+    for call in table.query.call_args_list:
+        bound = call.kwargs["KeyConditionExpression"].get_expression()["values"]
+        assert bound[1] == _UID
+        assert bound[1] != _SUB
+
+
+def test_no_user_record_is_200_empty_and_no_case_query(env, monkeypatch):
+    """A verified sub with NO matching users record -> 200 EMPTY list, never a
+    500, and the cases table is NEVER queried (no internal id to scope by)."""
+    table = _gsi_query_table({"user_id-index": [[{"_id": "leak", "title": "x"}]]})
+    # Empty mapping -> the users-table GSI returns no Items -> resolve -> None.
+    module, _resource, _table = _load(table=table, sub_to_ulid={})
+    _set_verify(monkeypatch, module, {"uid": _SUB})
+
+    resp = module.handler(_get(token="good.jwt"), None)
+    assert resp["statusCode"] == 200
+    assert _body(resp)["cases"] == []
+    table.query.assert_not_called()  # cases table never touched
+
+
+def test_users_table_error_is_200_empty_not_500(env, monkeypatch):
+    """A DynamoDB error resolving the sub -> ULID fails CLOSED to a 200 empty
+    list (never a 500); the cases table is not queried."""
+    table = _gsi_query_table({"user_id-index": [[{"_id": "leak", "title": "x"}]]})
+    module, _resource, _table = _load(table=table, sub_to_ulid={_SUB: _UID})
+    # Break the users-table resolution after import.
+    module._uid_cache.clear()
+
+    def _boom(name):  # noqa: ANN001
+        t = mock.MagicMock(name="users_table_boom")
+        if name == _USERS_TABLE:
+            t.query.side_effect = RuntimeError("throttled")
+            return t
+        return table
+
+    _resource.Table.side_effect = _boom
+    _set_verify(monkeypatch, module, {"uid": _SUB})
+
+    resp = module.handler(_get(token="good.jwt"), None)
+    assert resp["statusCode"] == 200
+    assert _body(resp)["cases"] == []
+    table.query.assert_not_called()
+
+
+def test_unset_users_table_is_200_empty(env, monkeypatch):
+    """USERS_TABLE unset -> resolution short-circuits to None -> 200 empty list,
+    cases table never queried (read at import, so set before _load)."""
+    monkeypatch.setenv("USERS_TABLE", "")
+    table = _gsi_query_table({"user_id-index": [[{"_id": "leak", "title": "x"}]]})
+    module, _resource, _table = _load(table=table, sub_to_ulid={_SUB: _UID})
+    _set_verify(monkeypatch, module, {"uid": _SUB})
+
+    resp = module.handler(_get(token="good.jwt"), None)
+    assert resp["statusCode"] == 200
+    assert _body(resp)["cases"] == []
+    table.query.assert_not_called()

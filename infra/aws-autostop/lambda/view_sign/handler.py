@@ -69,6 +69,20 @@ REGION = os.environ.get("AWS_REGION", "us-west-2")
 RUNS_BUCKET = os.environ["RUNS_BUCKET"]
 VIEW_PREFIX = "case-views"
 
+#: DynamoDB users table (PK ``_id`` = the INTERNAL ULID; GSI
+#: ``firebase_uid-index`` keyed by the Cognito subject). Decision 10: the
+#: snapshot's stamped owner (``owner-user-id`` object metadata) is the internal
+#: ULID, NOT the Cognito sub that ``cognito_verify`` yields. The sub MUST be
+#: resolved to the internal ULID before the owner comparison -- otherwise a
+#: signed-in OWNER compares sub != ULID and is wrongly demoted to the anon TTL.
+#: UNSET/empty -> resolution short-circuits to None (no internal id -> anon
+#: tier; never a 500).
+USERS_TABLE = os.environ.get("USERS_TABLE", "grace2_users").strip()
+
+#: GSI on the users table mapping a Cognito sub (``firebase_uid``) -> the user
+#: doc whose ``_id`` is the internal ULID. Mirrors dynamo_backend._TABLE_GSIS.
+FIREBASE_UID_INDEX = "firebase_uid-index"
+
 #: Long expiry for a verified signed-in owner (seconds). Default 12h.
 SIGNED_TTL = int(os.environ.get("SIGNED_TTL", "43200"))
 #: Short expiry for the anonymous/demo path (seconds). Default 15min.
@@ -90,6 +104,19 @@ _s3 = boto3.client(
     "s3",
     region_name=REGION,
     config=BotoConfig(signature_version="s3v4", s3={"addressing_style": "virtual"}),
+)
+
+# Bounded DynamoDB resource for the sub -> internal ULID resolution (Decision
+# 10). Tight timeouts so a stalled users table never pins the Lambda to its 15s
+# limit -- a failed resolve fails closed to None (anon tier), never a 500.
+_ddb = boto3.resource(
+    "dynamodb",
+    region_name=REGION,
+    config=BotoConfig(
+        connect_timeout=2,
+        read_timeout=3,
+        retries={"max_attempts": 2, "mode": "standard"},
+    ),
 )
 
 _CORS_HEADERS = {
@@ -251,6 +278,63 @@ def _query_case_id(event: dict) -> str | None:
     return cid or None
 
 
+# --------------------------------------------------------------------------- #
+# Cognito sub -> internal ULID resolution (Decision 10).
+#
+# Mirrors ``Persistence.get_user_by_firebase_uid``: query the users table's
+# ``firebase_uid-index`` GSI for ``firebase_uid == sub``; the matched item's
+# ``_id`` is the internal ULID the snapshot owner-metadata holds. FAIL CLOSED:
+# any error, no users table, or no record -> None (the owner gate then can't
+# match -> the caller falls back to the anon TTL; never a 500).
+# --------------------------------------------------------------------------- #
+
+#: Tiny in-process cache (sub -> ULID); warm Lambda contexts reuse it.
+_uid_cache: dict[str, str] = {}
+_uid_cache_lock = threading.Lock()
+
+
+def _resolve_internal_uid(sub: str) -> str | None:
+    """Resolve a Cognito sub to the internal ULID via the users-table GSI.
+
+    Returns the internal ULID (users._id) on a hit, else None. NEVER raises:
+    a missing users table, a GSI error, or no matching record all fail closed
+    to None so the owner gate degrades to the anon tier rather than a 500.
+    """
+    if not sub:
+        return None
+    with _uid_cache_lock:
+        cached = _uid_cache.get(sub)
+    if cached is not None:
+        return cached
+    if not USERS_TABLE:
+        return None
+
+    from boto3.dynamodb.conditions import Key
+
+    try:
+        table = _ddb.Table(USERS_TABLE)
+        resp = table.query(
+            IndexName=FIREBASE_UID_INDEX,
+            KeyConditionExpression=Key("firebase_uid").eq(sub),
+            Limit=1,
+        )
+        items = resp.get("Items") or []
+    except Exception as exc:  # noqa: BLE001 -- fail closed to None
+        logger.info(
+            "users-table resolve failed for sub (%s); treating as no internal id",
+            type(exc).__name__,
+        )
+        return None
+    if not items:
+        return None
+    internal = items[0].get("_id")
+    if not internal or not isinstance(internal, str):
+        return None
+    with _uid_cache_lock:
+        _uid_cache[sub] = internal
+    return internal
+
+
 def _snapshot_owner(key: str) -> tuple[bool, str | None]:
     """Read the snapshot's stamped owner from S3 OBJECT METADATA (cheap HEAD).
 
@@ -352,11 +436,16 @@ def handler(event, context):  # noqa: ANN001, ARG001
     mode = "anon"
     ttl = ANON_TTL
     if signed_in:
+        # Decision 10: the snapshot owner metadata holds the INTERNAL ULID, not
+        # the Cognito sub ``cognito_verify`` returns. Resolve sub -> ULID before
+        # the owner comparison so a signed-in OWNER is recognized (without this
+        # the owner's sub != ULID and they were wrongly demoted to the anon TTL).
+        internal_uid = _resolve_internal_uid(claims.get("uid"))
         # When the snapshot carries an owner, require a match to grant the
         # signed-in (long) tier. A signed-in non-owner falls back to the anon
         # TTL rather than being denied (the snapshot is still readable; we just
         # don't hand a 12h URL to a non-owner).
-        if owner is None or claims.get("uid") == owner:
+        if owner is None or (internal_uid is not None and internal_uid == owner):
             mode = "signed"
             ttl = SIGNED_TTL
         else:

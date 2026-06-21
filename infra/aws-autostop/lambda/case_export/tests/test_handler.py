@@ -33,10 +33,15 @@ import pytest
 _HERE = Path(__file__).resolve().parent
 _HANDLER = _HERE.parent / "handler.py"
 
-_UID = "user-abc-123"
-_OTHER_UID = "user-xyz-999"
+# ``cognito_verify`` returns the Cognito SUB; the Case doc's owner is the
+# INTERNAL ULID resolved from the users table (Decision 10). Keep them distinct
+# so the sub -> ULID resolution is actually exercised.
+_SUB = "cognito-sub-abc-123"
+_UID = "01ULIDOWNER0000000000000001"  # internal ULID the sub maps to
+_OTHER_UID = "01ULIDOTHER0000000000000099"
 _CASE_ID = "01CASE"
 
+_USERS_TABLE = "grace2_users"
 _CACHE_BUCKET = "grace2-hazard-cache-test"
 _RUNS_BUCKET = "grace2-hazard-runs-test"
 _TILE_BASE = "https://edge.example"
@@ -46,6 +51,7 @@ _TILE_BASE = "https://edge.example"
 def env(monkeypatch):
     monkeypatch.setenv("AWS_REGION", "us-west-2")
     monkeypatch.setenv("CASES_TABLE", "grace2_cases")
+    monkeypatch.setenv("USERS_TABLE", _USERS_TABLE)
     monkeypatch.setenv("CACHE_BUCKET", _CACHE_BUCKET)
     monkeypatch.setenv("RUNS_BUCKET", _RUNS_BUCKET)
     monkeypatch.setenv("EXPORTS_PREFIX", "exports")
@@ -107,9 +113,35 @@ class _FakeS3:
         )
 
 
-def _load(*, case_doc, s3):
+def _users_table(sub_to_ulid: dict[str, str] | None):
+    """A fake users Table whose firebase_uid-index Query maps sub -> {_id: ulid}.
+
+    ``sub_to_ulid`` None / a sub absent from it -> the GSI Query returns no
+    Items (no user record), so ``_resolve_internal_uid`` returns None.
+    """
+    mapping = dict(sub_to_ulid or {})
+    table = mock.MagicMock(name="users_table")
+
+    def _query(**kwargs):
+        cond = kwargs.get("KeyConditionExpression")
+        bound = cond.get_expression()["values"]
+        sub = bound[1]
+        ulid = mapping.get(sub)
+        if ulid is None:
+            return {"Items": []}
+        return {"Items": [{"_id": ulid, "firebase_uid": sub}]}
+
+    table.query.side_effect = _query
+    return table
+
+
+def _load(*, case_doc, s3, sub_to_ulid=None):
     """Import the handler fresh with boto3.resource (DynamoDB) + boto3.client
     (S3) replaced. Both are constructed at module import, so patch first.
+
+    ``Table(name)`` returns the users-table mock for USERS_TABLE and the cases
+    -table mock otherwise. ``sub_to_ulid`` (default: {_SUB: _UID}) drives the
+    sub -> internal ULID resolution that precedes the owner check.
 
     Returns ``(module, table, s3)``.
     """
@@ -118,8 +150,17 @@ def _load(*, case_doc, s3):
         table.get_item.return_value = {}
     else:
         table.get_item.return_value = {"Item": case_doc}
+    if sub_to_ulid is None:
+        sub_to_ulid = {_SUB: _UID}
+    users_table = _users_table(sub_to_ulid)
     resource = mock.MagicMock(name="ddb_resource")
-    resource.Table.return_value = table
+
+    def _Table(name):  # noqa: N802
+        if name == _USERS_TABLE:
+            return users_table
+        return table
+
+    resource.Table.side_effect = _Table
 
     def _client(name, **kwargs):
         assert name == "s3"
@@ -140,6 +181,8 @@ def _body(resp):
 
 def _set_verify(monkeypatch, module, claims):
     monkeypatch.setattr(module, "cognito_verify", lambda token: claims)
+    # Reset the per-module sub -> ULID resolution cache so per-test mappings apply.
+    module._uid_cache.clear()
 
 
 def _get(*, token=None, case_id=_CASE_ID):
@@ -213,9 +256,13 @@ def test_invalid_token_is_401(env, monkeypatch):
 
 def test_owner_mismatch_is_403(env, monkeypatch):
     s3 = _FakeS3()
-    # Owner is _UID; the signed-in caller is _OTHER_UID -> hard 403.
-    module, _table, _s3 = _load(case_doc=_flood_doc(owner=_UID), s3=s3)
-    _set_verify(monkeypatch, module, {"uid": _OTHER_UID})
+    # Owner ULID is _UID; the signed-in caller's sub resolves to a DIFFERENT
+    # ULID (_OTHER_UID) -> hard 403. The mismatch is on the RESOLVED ULIDs.
+    other_sub = "cognito-sub-xyz-999"
+    module, _table, _s3 = _load(
+        case_doc=_flood_doc(owner=_UID), s3=s3, sub_to_ulid={other_sub: _OTHER_UID}
+    )
+    _set_verify(monkeypatch, module, {"uid": other_sub})
     resp = module.handler(_get(token="good.jwt"), None)
     assert resp["statusCode"] == 403
     assert s3.puts == []
@@ -241,7 +288,64 @@ def test_owner_less_case_is_403(env, monkeypatch):
         ],
     }
     module, _table, _s3 = _load(case_doc=doc, s3=s3)
-    _set_verify(monkeypatch, module, {"uid": _UID})
+    _set_verify(monkeypatch, module, {"uid": _SUB})
+    resp = module.handler(_get(token="good.jwt"), None)
+    assert resp["statusCode"] == 403
+    assert s3.puts == []
+
+
+# --------------------------------------------------------------------------- #
+# Decision 10: sub -> internal ULID resolution before the owner check.
+# --------------------------------------------------------------------------- #
+
+
+def test_owner_check_uses_resolved_ulid(env, monkeypatch):
+    """The headline fix: the Case owner is the internal ULID; the verified SUB
+    is resolved to that ULID BEFORE the owner check -- so the TRUE owner (sub !=
+    owner ULID) is NOT wrongly 403'd and the export succeeds."""
+    s3 = _FakeS3()
+    s3.store[(_CACHE_BUCKET, "cog/abc123/flood_depth_peak.tif")] = b"Z" * 64
+    # Case owned by the internal ULID _UID; the caller's sub resolves to _UID.
+    module, _table, _s3 = _load(
+        case_doc=_flood_doc(owner=_UID), s3=s3, sub_to_ulid={_SUB: _UID}
+    )
+    _set_verify(monkeypatch, module, {"uid": _SUB})
+    resp = module.handler(_get(token="good.jwt"), None)
+    assert resp["statusCode"] == 200, resp["body"]
+    assert _body(resp)["layer_count"] == 1
+
+
+def test_no_user_record_is_403(env, monkeypatch):
+    """A verified sub with NO matching users record resolves to None -> the owner
+    check fails closed to 403 (never an implicit allow, never a 500)."""
+    s3 = _FakeS3()
+    module, _table, _s3 = _load(
+        case_doc=_flood_doc(owner=_UID), s3=s3, sub_to_ulid={}
+    )
+    _set_verify(monkeypatch, module, {"uid": _SUB})
+    resp = module.handler(_get(token="good.jwt"), None)
+    assert resp["statusCode"] == 403
+    assert s3.puts == []
+
+
+def test_users_table_error_is_403_not_500(env, monkeypatch):
+    """A DynamoDB error resolving sub -> ULID fails CLOSED to 403 (never 500)."""
+    s3 = _FakeS3()
+    module, _table, _s3 = _load(
+        case_doc=_flood_doc(owner=_UID), s3=s3, sub_to_ulid={_SUB: _UID}
+    )
+    module._uid_cache.clear()
+
+    def _boom(name):  # noqa: ANN001
+        if name == _USERS_TABLE:
+            t = mock.MagicMock(name="users_table_boom")
+            t.query.side_effect = RuntimeError("throttled")
+            return t
+        return _table
+
+    # Re-point the module's resource so the users-table query raises.
+    module._ddb.Table.side_effect = _boom
+    _set_verify(monkeypatch, module, {"uid": _SUB})
     resp = module.handler(_get(token="good.jwt"), None)
     assert resp["statusCode"] == 403
     assert s3.puts == []
@@ -250,7 +354,7 @@ def test_owner_less_case_is_403(env, monkeypatch):
 def test_case_not_found_is_404(env, monkeypatch):
     s3 = _FakeS3()
     module, _table, _s3 = _load(case_doc=None, s3=s3)
-    _set_verify(monkeypatch, module, {"uid": _UID})
+    _set_verify(monkeypatch, module, {"uid": _SUB})
     resp = module.handler(_get(token="good.jwt"), None)
     assert resp["statusCode"] == 404
 
@@ -258,7 +362,7 @@ def test_case_not_found_is_404(env, monkeypatch):
 def test_missing_case_id_is_400(env, monkeypatch):
     s3 = _FakeS3()
     module, _table, _s3 = _load(case_doc=_flood_doc(), s3=s3)
-    _set_verify(monkeypatch, module, {"uid": _UID})
+    _set_verify(monkeypatch, module, {"uid": _SUB})
     resp = module.handler(_get(token="good.jwt", case_id=None), None)
     assert resp["statusCode"] == 400
 
@@ -284,7 +388,7 @@ def test_owner_export_builds_styled_qgs_zip(env, monkeypatch):
     s3.store[(_CACHE_BUCKET, cog_key)] = cog_bytes
 
     module, _table, _s3 = _load(case_doc=_flood_doc(), s3=s3)
-    _set_verify(monkeypatch, module, {"uid": _UID})
+    _set_verify(monkeypatch, module, {"uid": _SUB})
 
     resp = module.handler(_get(token="good.jwt"), None)
     assert resp["statusCode"] == 200, resp["body"]
@@ -324,7 +428,7 @@ def test_url_param_cog_recovery(env, monkeypatch):
     cog_key = "cog/abc123/flood_depth_peak.tif"
     s3.store[(_CACHE_BUCKET, cog_key)] = b"X" * 500
     module, _table, _s3 = _load(case_doc=_flood_doc(), s3=s3)
-    _set_verify(monkeypatch, module, {"uid": _UID})
+    _set_verify(monkeypatch, module, {"uid": _SUB})
 
     # Unit-level: the recovery helper itself returns the decoded s3 URI.
     recovered = module._recover_s3_uri(
@@ -356,7 +460,7 @@ def test_evicted_cache_object_is_skipped(env, monkeypatch):
     )
     # L1's COG (cog/abc123/...) is NOT in the store -> evicted.
     module, _table, _s3 = _load(case_doc=doc, s3=s3)
-    _set_verify(monkeypatch, module, {"uid": _UID})
+    _set_verify(monkeypatch, module, {"uid": _SUB})
 
     resp = module.handler(_get(token="good.jwt"), None)
     assert resp["statusCode"] == 200
@@ -409,7 +513,7 @@ def test_vector_inline_geojson_from_snapshot(env, monkeypatch):
         ],
     }
     module, _table, _s3 = _load(case_doc=doc, s3=s3)
-    _set_verify(monkeypatch, module, {"uid": _UID})
+    _set_verify(monkeypatch, module, {"uid": _SUB})
 
     resp = module.handler(_get(token="good.jwt"), None)
     assert resp["statusCode"] == 200
@@ -445,7 +549,7 @@ def test_vector_no_inline_is_skipped(env, monkeypatch):
         ],
     }
     module, _table, _s3 = _load(case_doc=doc, s3=s3)
-    _set_verify(monkeypatch, module, {"uid": _UID})
+    _set_verify(monkeypatch, module, {"uid": _SUB})
     resp = module.handler(_get(token="good.jwt"), None)
     assert resp["statusCode"] == 200
     assert _body(resp)["layer_count"] == 0
@@ -473,7 +577,7 @@ def test_terrain_preset_no_pseudocolor(env, monkeypatch):
         ],
     }
     module, _table, _s3 = _load(case_doc=doc, s3=s3)
-    _set_verify(monkeypatch, module, {"uid": _UID})
+    _set_verify(monkeypatch, module, {"uid": _SUB})
     resp = module.handler(_get(token="good.jwt"), None)
     assert resp["statusCode"] == 200
     zf = _unzip(s3)
@@ -488,7 +592,7 @@ def test_put_key_is_under_exports_prefix(env, monkeypatch):
     s3 = _FakeS3()
     s3.store[(_CACHE_BUCKET, "cog/abc123/flood_depth_peak.tif")] = b"Z" * 64
     module, _table, _s3 = _load(case_doc=_flood_doc(), s3=s3)
-    _set_verify(monkeypatch, module, {"uid": _UID})
+    _set_verify(monkeypatch, module, {"uid": _SUB})
     resp = module.handler(_get(token="good.jwt"), None)
     assert resp["statusCode"] == 200
     put = [p for p in s3.puts if p[1].startswith("exports/")][0]

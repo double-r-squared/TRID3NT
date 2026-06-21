@@ -479,6 +479,20 @@ resource "aws_iam_role_policy" "view_sign" {
         Resource = "arn:aws:s3:::${var.runs_bucket}/case-views/*"
       },
       {
+        # Decision 10: resolve the verified Cognito sub -> the internal ULID via
+        # the users table's firebase_uid-index GSI before the snapshot owner
+        # comparison (the snapshot owner metadata holds the ULID, not the sub).
+        # Query (the GSI) + GetItem on the users table ARN AND its GSI ARN ONLY
+        # -- no PutItem, no other table.
+        Sid    = "ResolveUserUlid"
+        Effect = "Allow"
+        Action = ["dynamodb:Query", "dynamodb:GetItem"]
+        Resource = [
+          "arn:aws:dynamodb:${var.region}:${var.account_id}:table/${var.users_table}",
+          "arn:aws:dynamodb:${var.region}:${var.account_id}:table/${var.users_table}/index/firebase_uid-index",
+        ]
+      },
+      {
         Sid      = "Logs"
         Effect   = "Allow"
         Action   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
@@ -507,6 +521,7 @@ resource "aws_lambda_function" "view_sign" {
   environment {
     variables = {
       RUNS_BUCKET                 = var.runs_bucket
+      USERS_TABLE                 = var.users_table
       GRACE2_COGNITO_USER_POOL_ID = var.cognito_user_pool_id
       GRACE2_COGNITO_CLIENT_ID    = var.cognito_client_id
       SIGNED_TTL                  = tostring(var.view_signed_ttl_s)
@@ -635,6 +650,19 @@ resource "aws_iam_role_policy" "case_list" {
         ]
       },
       {
+        # Decision 10: resolve the verified Cognito sub -> the internal ULID via
+        # the users table's firebase_uid-index GSI BEFORE scoping the case GSIs
+        # (cases are owned by the ULID, not the sub). Query (the GSI) + GetItem
+        # on the users table ARN AND its firebase_uid-index ARN ONLY.
+        Sid    = "ResolveUserUlid"
+        Effect = "Allow"
+        Action = ["dynamodb:Query", "dynamodb:GetItem"]
+        Resource = [
+          "arn:aws:dynamodb:${var.region}:${var.account_id}:table/${var.users_table}",
+          "arn:aws:dynamodb:${var.region}:${var.account_id}:table/${var.users_table}/index/firebase_uid-index",
+        ]
+      },
+      {
         Sid      = "Logs"
         Effect   = "Allow"
         Action   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
@@ -664,6 +692,7 @@ resource "aws_lambda_function" "case_list" {
   environment {
     variables = {
       CASES_TABLE                 = var.cases_table
+      USERS_TABLE                 = var.users_table
       GRACE2_COGNITO_USER_POOL_ID = var.cognito_user_pool_id
       GRACE2_COGNITO_CLIENT_ID    = var.cognito_client_id
     }
@@ -795,6 +824,19 @@ resource "aws_iam_role_policy" "case_export" {
         Resource = "arn:aws:dynamodb:${var.region}:${var.account_id}:table/${var.cases_table}"
       },
       {
+        # Decision 10: resolve the verified Cognito sub -> the internal ULID via
+        # the users table's firebase_uid-index GSI BEFORE the owner check (the
+        # Case doc's owner is the ULID, not the sub). Query (the GSI) + GetItem
+        # on the users table ARN AND its firebase_uid-index ARN ONLY.
+        Sid    = "ResolveUserUlid"
+        Effect = "Allow"
+        Action = ["dynamodb:Query", "dynamodb:GetItem"]
+        Resource = [
+          "arn:aws:dynamodb:${var.region}:${var.account_id}:table/${var.users_table}",
+          "arn:aws:dynamodb:${var.region}:${var.account_id}:table/${var.users_table}/index/firebase_uid-index",
+        ]
+      },
+      {
         # GetObject on the content-addressed cache bucket (the Case COGs) AND
         # the runs bucket's case-views/ prefix ONLY (the handler reads just
         # case-views/{case_id}.json for the snapshots' inline vector GeoJSON; the
@@ -849,6 +891,7 @@ resource "aws_lambda_function" "case_export" {
   environment {
     variables = {
       CASES_TABLE                 = var.cases_table
+      USERS_TABLE                 = var.users_table
       CACHE_BUCKET                = var.cache_bucket
       RUNS_BUCKET                 = var.runs_bucket
       EXPORTS_PREFIX              = var.exports_prefix

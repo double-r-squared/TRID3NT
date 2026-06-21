@@ -87,6 +87,19 @@ REGION = os.environ.get("AWS_REGION", "us-west-2")
 #: path is not wired in this deployment).
 CASES_TABLE = os.environ.get("CASES_TABLE", "grace2_cases").strip()
 
+#: DynamoDB users table (PK ``_id`` = the INTERNAL ULID; GSI
+#: ``firebase_uid-index`` keyed by the Cognito subject). Decision 10: the Case
+#: doc's owner (``owner_user_id`` / ``user_id``) is the internal ULID, NOT the
+#: Cognito sub ``cognito_verify`` yields. The sub MUST be resolved to the
+#: internal ULID before the owner check -- otherwise the TRUE owner (sub != ULID)
+#: is wrongly 403'd. UNSET/empty -> resolution short-circuits to None (no
+#: internal id -> 403 fail-closed; never a 500).
+USERS_TABLE = os.environ.get("USERS_TABLE", "grace2_users").strip()
+
+#: GSI on the users table mapping a Cognito sub (``firebase_uid``) -> the user
+#: doc whose ``_id`` is the internal ULID. Mirrors dynamo_backend._TABLE_GSIS.
+FIREBASE_UID_INDEX = "firebase_uid-index"
+
 #: Content-addressed cache bucket holding the Case COGs (the s3:// objects the
 #: layer URIs / TiTiler ?url= params point at). GetObject only.
 CACHE_BUCKET = os.environ.get("CACHE_BUCKET", "").strip()
@@ -312,6 +325,63 @@ def _from_ddb(value: Any) -> Any:
     if isinstance(value, (set, frozenset)):
         return [_from_ddb(v) for v in value]
     return value
+
+
+# --------------------------------------------------------------------------- #
+# Cognito sub -> internal ULID resolution (Decision 10).
+#
+# Mirrors ``Persistence.get_user_by_firebase_uid``: query the users table's
+# ``firebase_uid-index`` GSI for ``firebase_uid == sub``; the matched item's
+# ``_id`` is the internal ULID the Case doc is owned by. FAIL CLOSED: any error,
+# no users table, or no record -> None (the owner check then can't match -> 403;
+# never a 500, never an implicit allow).
+# --------------------------------------------------------------------------- #
+
+#: Tiny in-process cache (sub -> ULID); warm Lambda contexts reuse it.
+_uid_cache: dict[str, str] = {}
+_uid_cache_lock = threading.Lock()
+
+
+def _resolve_internal_uid(sub: str) -> str | None:
+    """Resolve a Cognito sub to the internal ULID via the users-table GSI.
+
+    Returns the internal ULID (users._id) on a hit, else None. NEVER raises:
+    a missing users table, a GSI error, or no matching record all fail closed
+    to None so the owner check denies (403) rather than 500-ing.
+    """
+    if not sub:
+        return None
+    with _uid_cache_lock:
+        cached = _uid_cache.get(sub)
+    if cached is not None:
+        return cached
+    if not USERS_TABLE:
+        return None
+
+    from boto3.dynamodb.conditions import Key
+
+    try:
+        table = _ddb.Table(USERS_TABLE)
+        resp = table.query(
+            IndexName=FIREBASE_UID_INDEX,
+            KeyConditionExpression=Key("firebase_uid").eq(sub),
+            Limit=1,
+        )
+        items = resp.get("Items") or []
+    except Exception as exc:  # noqa: BLE001 -- fail closed to None
+        logger.info(
+            "users-table resolve failed for sub (%s); treating as no internal id",
+            type(exc).__name__,
+        )
+        return None
+    if not items:
+        return None
+    internal = items[0].get("_id")
+    if not internal or not isinstance(internal, str):
+        return None
+    with _uid_cache_lock:
+        _uid_cache[sub] = internal
+    return internal
 
 
 # --------------------------------------------------------------------------- #
@@ -762,12 +832,20 @@ def handler(event, context):  # noqa: ANN001, ARG001, C901
         return _response(404, {"error": "case not found", "case_id": case_id})
     doc = _from_ddb(item)
 
-    # FAIL CLOSED: deny unless a PRESENT owner positively equals the verified uid.
+    # Decision 10: the Case doc's owner is the INTERNAL ULID, not the Cognito sub
+    # ``cognito_verify`` returns. Resolve sub -> ULID before the owner check, else
+    # the TRUE owner (sub != ULID) is wrongly 403'd. No user record -> None ->
+    # the comparison fails closed to 403 (never an implicit allow, never a 500).
+    internal_uid = _resolve_internal_uid(uid)
+
+    # FAIL CLOSED: deny unless a PRESENT owner positively equals the resolved id.
     # An owner-less case (no owner_user_id / user_id) is NOT exportable by anyone
     # -- a falsy owner must never short-circuit the guard into an implicit allow.
     owner = doc.get("owner_user_id") or doc.get("user_id")
-    if (not owner) or (owner != uid):
-        logger.info("case-export: owner mismatch case=%s uid=%s owner=%s", case_id, uid, owner)
+    if (not owner) or (not internal_uid) or (owner != internal_uid):
+        logger.info(
+            "case-export: owner mismatch case=%s uid=%s owner=%s", case_id, internal_uid, owner
+        )
         return _response(403, {"error": "not authorized to export this case"})
 
     case_title = doc.get("title") or case_id

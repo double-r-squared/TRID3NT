@@ -161,6 +161,21 @@ variable "cases_table" {
   default     = "grace2_cases"
 }
 
+variable "users_table" {
+  type        = string
+  description = <<-EOT
+    DynamoDB users table (GRACE2_DYNAMO_TABLE_PREFIX + "users" on the agent
+    side; the live default is grace2_users). PK is the INTERNAL ULID (_id);
+    the firebase_uid-index GSI maps a Cognito sub -> the user doc whose _id is
+    that ULID. Decision 10: cases are owned by the internal ULID, so each
+    case Lambda (case-list / view-sign / case-export) resolves the verified
+    Cognito sub -> ULID via this table before scoping/comparing owners. The
+    three case-Lambda roles are granted dynamodb:Query + dynamodb:GetItem on
+    this table ARN AND its firebase_uid-index ARN ONLY.
+  EOT
+  default     = "grace2_users"
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Case-export Lambda (GET /case-export-url) -- "download a whole Case as a
 # QGIS-ready zip". A signed-in OWNER downloads the Case rasters (.tif) + vectors

@@ -68,10 +68,26 @@ REGION = os.environ.get("AWS_REGION", "us-west-2")
 #: a deployment that has not wired the table.
 CASES_TABLE = os.environ.get("CASES_TABLE", "grace2_cases").strip()
 
+#: DynamoDB users table (mirrors GRACE2_DYNAMO_TABLE_PREFIX + "users"; the live
+#: default is grace2_users). PK ``_id`` (the INTERNAL ULID), with a
+#: ``firebase_uid-index`` GSI keyed by the Cognito subject. Decision 10: cases
+#: are owned by the internal ULID (``user_id`` / ``owner_user_id`` on each case
+#: doc), NOT by the Cognito sub. ``cognito_verify`` yields the sub, so the sub
+#: MUST be resolved to the internal ULID via this table before scoping the case
+#: GSIs -- otherwise the owner-scoped Query matches 0 cases (the box-off
+#: empty-rail bug). UNSET/empty -> resolution short-circuits to None (no internal
+#: id -> empty list; never a 500).
+USERS_TABLE = os.environ.get("USERS_TABLE", "grace2_users").strip()
+
 #: GSI names on the cases table -- owner-scoped listing avoids a full Scan. These
 #: match the live table (verified) AND ``_TABLE_GSIS`` in dynamo_backend.py.
 USER_ID_INDEX = "user_id-index"
 OWNER_USER_ID_INDEX = "owner_user_id-index"
+
+#: GSI on the users table that maps a Cognito sub (``firebase_uid``) -> the user
+#: doc whose ``_id`` is the internal ULID. Mirrors ``_TABLE_GSIS["users"]`` in
+#: dynamo_backend.py and ``Persistence.get_user_by_firebase_uid``.
+FIREBASE_UID_INDEX = "firebase_uid-index"
 
 #: Tombstone statuses excluded from the wire (mirrors list_cases_for_user).
 _TOMBSTONE_STATUSES = {"deleted", "archived"}
@@ -332,6 +348,65 @@ def _query_gsi(table, index_name: str, attr: str, value: str) -> list[dict]:
     return items
 
 
+# --------------------------------------------------------------------------- #
+# Cognito sub -> internal ULID resolution (Decision 10).
+#
+# Mirrors ``Persistence.get_user_by_firebase_uid`` (persistence.py): query the
+# users table's ``firebase_uid-index`` GSI for ``firebase_uid == sub``; the
+# matched item's ``_id`` is the internal ULID that case docs are owned by. FAIL
+# CLOSED: any error, no users table, or no matching record -> None (the caller
+# returns an empty list -- never a 500, never another user's cases).
+# --------------------------------------------------------------------------- #
+
+#: Tiny in-process cache (sub -> ULID). Lambda execution contexts are reused
+#: across invocations, so a hot resolution avoids a second GSI read. Bounded by
+#: the natural churn of distinct signed-in subs hitting one warm container.
+_uid_cache: dict[str, str] = {}
+_uid_cache_lock = threading.Lock()
+
+
+def _resolve_internal_uid(sub: str) -> str | None:
+    """Resolve a Cognito sub to the internal ULID via the users-table GSI.
+
+    Returns the internal ULID (users._id) on a hit, else None. NEVER raises:
+    a missing users table, a GSI error, or no matching record all fail closed
+    to None so the caller degrades to an empty list rather than a 500.
+    """
+    if not sub:
+        return None
+    with _uid_cache_lock:
+        cached = _uid_cache.get(sub)
+    if cached is not None:
+        return cached
+    if not USERS_TABLE:
+        return None
+
+    from boto3.dynamodb.conditions import Key
+
+    try:
+        table = _ddb.Table(USERS_TABLE)
+        resp = table.query(
+            IndexName=FIREBASE_UID_INDEX,
+            KeyConditionExpression=Key("firebase_uid").eq(sub),
+            Limit=1,
+        )
+        items = resp.get("Items") or []
+    except Exception as exc:  # noqa: BLE001 -- fail closed to None
+        logger.info(
+            "users-table resolve failed for sub (%s); treating as no internal id",
+            type(exc).__name__,
+        )
+        return None
+    if not items:
+        return None
+    internal = items[0].get("_id")
+    if not internal or not isinstance(internal, str):
+        return None
+    with _uid_cache_lock:
+        _uid_cache[sub] = internal
+    return internal
+
+
 def _doc_to_case_summary(doc: dict) -> dict:
     """Marshal a stored cases document into a CaseSummary-shaped dict.
 
@@ -410,12 +485,19 @@ def handler(event, context):  # noqa: ANN001, ARG001
     if claims is None:
         return _empty_list()
 
-    uid = claims.get("uid")
-    if not uid:
+    sub = claims.get("uid")  # cognito_verify yields the Cognito sub here.
+    if not sub:
+        return _empty_list()
+
+    # Decision 10: cases are owned by the INTERNAL ULID, not the Cognito sub.
+    # Resolve sub -> ULID via the users table; no record -> empty list (the
+    # box-off empty-rail bug was scoping the case GSIs by the raw sub -> 0 hits).
+    internal_uid = _resolve_internal_uid(sub)
+    if not internal_uid:
         return _empty_list()
 
     try:
-        cases = _list_cases_for_uid(uid)
+        cases = _list_cases_for_uid(internal_uid)
     except Exception:  # noqa: BLE001 -- never 500 the cold-open list path
         logger.exception("case-list failed for uid; returning empty list")
         return _empty_list()
