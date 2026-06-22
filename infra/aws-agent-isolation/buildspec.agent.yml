@@ -1,0 +1,70 @@
+# buildspec.agent.yml -- AWS CodeBuild buildspec for the GRACE-2 AGENT image
+# (services/agent/Dockerfile), mirroring the off-box worker-builder pattern
+# (infra/aws-codebuild/main.tf, project grace2-worker-builder).
+#
+# WHY OFF-BOX (project_offbox_codebuild_worker_builder): the dev box has no
+# docker socket access and the agent box autostop is BLIND to docker builds (it
+# kills any >15-min build mid-flight). So the agent image -- like every worker
+# image -- builds on CodeBuild (isolated, scale-to-zero, LARGE compute).
+#
+# The image build context is the REPO ROOT so the Dockerfile COPY paths
+# (services/agent/...) resolve, matching the worker images. The context tarball
+# is the SAME engine-build flow the orchestrator already uses; here it just
+# needs services/agent/ inside it.
+#
+# This standalone file documents the exact build steps; the IaC
+# (infra/aws-agent-isolation/codebuild.tf) inlines the equivalent via
+# yamlencode so a `tofu apply` provisions a self-contained project. Either runs
+# the identical commands.
+#
+# TRIGGER (manual, off-box):
+#   # 1. upload the build context (repo root subset incl. services/agent):
+#   tar czf agent_src.tgz services/agent
+#   aws s3 cp agent_src.tgz \
+#     s3://grace2-agent-bundle-226996537797/agent-build/agent_src.tgz --region us-west-2
+#   # 2. build + push :latest + :codebuild to the agent ECR repo:
+#   aws codebuild start-build --project-name grace2-agent-builder --region us-west-2
+#   # 3. poll:
+#   aws codebuild batch-get-builds --ids <build-id> --region us-west-2
+
+version: 0.2
+
+env:
+  variables:
+    # Overridable per build with --environment-variables-override. Defaults match
+    # the IaC + the deploy facts (account 226996537797, us-west-2).
+    AWS_REGION: "us-west-2"
+    REGISTRY: "226996537797.dkr.ecr.us-west-2.amazonaws.com"
+    ECR_REPO: "grace2-agent"
+    SRC_S3: "s3://grace2-agent-bundle-226996537797/agent-build/agent_src.tgz"
+
+phases:
+  pre_build:
+    commands:
+      - echo "Logging in to ECR $REGISTRY"
+      - aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
+      - echo "Fetching build context $SRC_S3"
+      - rm -rf ctx && mkdir -p ctx
+      - aws s3 cp "$SRC_S3" /tmp/agent_src.tgz
+      - tar xzf /tmp/agent_src.tgz -C ctx
+      - ls ctx/services/agent
+  build:
+    commands:
+      - cd ctx
+      - echo "Building agent image -> $REGISTRY/$ECR_REPO"
+      # linux/amd64 (Fargate X86_64). The Dockerfile is multi-stage; the build
+      # context is the repo-root subset so services/agent/Dockerfile COPY paths
+      # resolve. NOTE buildx/--platform is implicit on the amd64 CodeBuild image.
+      - docker build --file services/agent/Dockerfile --tag "$REGISTRY/$ECR_REPO:latest" --tag "$REGISTRY/$ECR_REPO:codebuild" .
+      # Container-hygiene norm: emit size + layer breakdown to the build log so
+      # the orchestrator can confirm the image weight against the Dockerfile's
+      # ~1.2-1.6 GB estimate BEFORE it is used.
+      - echo "=== IMAGE SIZE ==="
+      - docker images "$REGISTRY/$ECR_REPO:latest"
+      - echo "=== LAYER HISTORY ==="
+      - docker history --human --no-trunc "$REGISTRY/$ECR_REPO:latest" || true
+  post_build:
+    commands:
+      - docker push "$REGISTRY/$ECR_REPO:latest"
+      - docker push "$REGISTRY/$ECR_REPO:codebuild"
+      - echo "PUSH_OK $ECR_REPO"

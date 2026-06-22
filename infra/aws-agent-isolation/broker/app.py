@@ -1,0 +1,229 @@
+"""GRACE-2 session broker -- the connection-time control flow.
+
+This is the thin always-on tier that turns the shared single-box agent into
+Fargate-per-session isolation (reports/design/agent_isolation_spike.md). It owns
+NO session state (all state is in DynamoDB); it just routes each WSS connection to
+the right per-session agent task.
+
+PER NEW WSS CONNECTION (the concrete flow -- routing.py does the heavy lifting):
+
+  1. Extract the Cognito ID token + session_id PRE-UPGRADE (see _extract_identity).
+  2. cognito_verify(token) -> claims{uid=sub}     (cognito_verify.py, zero-drift)
+  3. resolve_user_ulid(sub) -> internal ULID      (users firebase_uid-index GSI)
+  4. resolve_or_provision(user_ulid, session_id)  (HIT -> task; MISS -> RunTask +
+     wait :8766 health + write route)             (routing.py)
+  5. bidirectionally proxy the WSS frames task <-> client (proxy.py).
+
+The HTTP control flow + the route decision are CONCRETE here. The raw WS
+byte-proxy plumbing in proxy.py is a documented skeleton (the spike scopes it as
+"may be a documented skeleton/TODO").
+
+PRE-UPGRADE IDENTITY (the one net-new client-coupling -- spike section 9.2):
+  Today the Cognito ID token + session_id ride IN-BAND as the post-connect
+  ``auth-token`` / ``session-resume`` envelopes (ws.ts chose this over the
+  subprotocol because chrome rejects an oversize subprotocol header for a long
+  JWT -- OQ-0123). For ROUTING the broker needs them BEFORE the upgrade. The
+  options, in preference order (decided in the canary, not here):
+    (a) a short-lived connect query token (?st=<jwt|exchange-code>&sid=<session>)
+        -- simplest for the browser; keep the token short-lived/single-use.
+    (b) the ``Sec-WebSocket-Protocol`` ``base64UrlBearerAuthorization`` subprotocol
+        (the same surface AgentCore-LATER would need -- so the work is not wasted).
+  _extract_identity below reads BOTH a query param and a subprotocol so either
+  client change works; it is the single seam to adapt when the client lands the
+  pre-upgrade carrier. The agent's in-band ``_ensure_auth_handshake`` stays the
+  SECOND, authoritative check inside the task -- the broker's verify is only for
+  routing.
+
+This module sketches the server with the ``websockets`` library (the same library
+the agent uses) so the byte-proxy can reuse its frame APIs; the actual upgrade/
+serve wiring is a TODO in proxy.py. The route-decision functions here are fully
+unit-tested (tests/) with mocked AWS + a fake verifier.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import threading
+from collections import defaultdict
+from typing import Optional, Tuple
+from urllib.parse import parse_qs, urlsplit
+
+from .cognito_verify import cognito_verify
+from .routing import (
+    RoutingConfig,
+    Route,
+    resolve_or_provision,
+    resolve_user_ulid,
+)
+
+logger = logging.getLogger("grace2.broker.app")
+
+
+# --------------------------------------------------------------------------- #
+# Config from env (set by the broker task definition -- see broker.tf).
+# --------------------------------------------------------------------------- #
+def load_config() -> RoutingConfig:
+    def _csv(name: str) -> list[str]:
+        return [s.strip() for s in os.environ.get(name, "").split(",") if s.strip()]
+
+    return RoutingConfig(
+        routes_table=os.environ.get("ROUTES_TABLE", "grace2_session_routes"),
+        users_table=os.environ.get("USERS_TABLE", "grace2_users"),
+        users_firebase_uid_index=os.environ.get("USERS_FIREBASE_UID_INDEX", "firebase_uid-index"),
+        ecs_cluster=os.environ.get("ECS_CLUSTER", "grace2-agents"),
+        agent_task_definition=os.environ.get("AGENT_TASK_DEFINITION", "grace2-agent-session"),
+        agent_container_name=os.environ.get("AGENT_CONTAINER_NAME", "agent"),
+        agent_ws_port=int(os.environ.get("AGENT_WS_PORT", "8765")),
+        agent_health_port=int(os.environ.get("AGENT_HEALTH_PORT", "8766")),
+        task_subnets=_csv("TASK_SUBNETS"),
+        task_security_groups=_csv("TASK_SECURITY_GROUPS"),
+        route_ttl_seconds=int(os.environ.get("ROUTE_TTL_SECONDS", "86400")),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Per-(user, session) provisioning lock so a tab's two near-simultaneous sockets
+# do not double-RunTask. The SECOND socket waits, re-reads, and HITs the row the
+# first wrote -> both land on the SAME task (the convergence the agent needs).
+# --------------------------------------------------------------------------- #
+_provision_locks: "defaultdict[Tuple[str, str], threading.Lock]" = defaultdict(threading.Lock)
+_provision_locks_guard = threading.Lock()
+
+
+def _lock_for(user_ulid: str, session_id: str) -> threading.Lock:
+    key = (user_ulid, session_id)
+    with _provision_locks_guard:
+        return _provision_locks[key]
+
+
+# --------------------------------------------------------------------------- #
+# Pre-upgrade identity extraction (the single client-coupling seam).
+# --------------------------------------------------------------------------- #
+def _extract_identity(
+    request_uri: str, subprotocols: Optional[list[str]] = None
+) -> Tuple[Optional[str], Optional[str]]:
+    """Return (token, session_id) from the connect, or (None, None).
+
+    Reads BOTH a query param and a subprotocol so EITHER client change works:
+      - query:        ?st=<token>&sid=<session_id>
+      - subprotocol:  ["grace2.session.<session_id>",
+                       "base64UrlBearerAuthorization.<token>"]
+    The session_id is REQUIRED for routing (it is the SK of the route). The token
+    may be absent -> anonymous fallback (the broker keys the route on the
+    client-replayed anonymous ULID, exactly like the agent's sticky-anon path;
+    that anon-ULID carrier is a documented TODO -- the canary uses the
+    authenticated path first).
+    """
+    token: Optional[str] = None
+    session_id: Optional[str] = None
+
+    # Query params.
+    try:
+        qs = parse_qs(urlsplit(request_uri).query)
+        if qs.get("st"):
+            token = qs["st"][0]
+        if qs.get("sid"):
+            session_id = qs["sid"][0]
+    except Exception:  # noqa: BLE001 - a malformed URI yields no identity
+        pass
+
+    # Subprotocols (override query if present -- the subprotocol is the more
+    # tamper-resistant carrier).
+    for proto in subprotocols or []:
+        if proto.startswith("base64UrlBearerAuthorization."):
+            token = proto.split(".", 1)[1] or token
+        elif proto.startswith("grace2.session."):
+            session_id = proto.split("grace2.session.", 1)[1] or session_id
+
+    return token, session_id
+
+
+# --------------------------------------------------------------------------- #
+# The connection decision: identity -> ULID -> route. Returns a Route to proxy to
+# or None to reject. AWS clients are injected so this is unit-testable.
+# --------------------------------------------------------------------------- #
+def decide_route(
+    ddb_resource,
+    ecs_client,
+    cfg: RoutingConfig,
+    *,
+    request_uri: str,
+    subprotocols: Optional[list[str]],
+    health_probe,
+    verify=cognito_verify,
+) -> Optional[Route]:
+    """Run steps 1-4. Returns the Route to proxy to, or None to reject the
+    connect (caller closes with an appropriate WS close code)."""
+    token, session_id = _extract_identity(request_uri, subprotocols)
+    if not session_id:
+        logger.info("connect rejected: no session_id (routing key) present")
+        return None
+
+    claims = verify(token) if token else None
+    if claims is None:
+        # Authenticated path required for the canary. Anonymous-ULID routing is a
+        # documented TODO (key on the client-replayed anon ULID like the agent).
+        logger.info("connect rejected: token did not verify (anonymous routing is a TODO)")
+        return None
+
+    sub = claims.get("uid")
+    user_ulid = resolve_user_ulid(ddb_resource, cfg, sub)
+    if not user_ulid:
+        # Auto-provision-on-first-connect (the agent does this in-band via
+        # get_user_by_firebase_uid). The broker's read-only resolve cannot create
+        # the user, so on a first-ever connect it returns None here; the agent's
+        # in-band handshake creates the User. OPTION for the canary: a tiny
+        # provisioning write here, OR let the FIRST connect fall through to a
+        # shared bootstrap task that creates the user, then route. Documented TODO.
+        logger.info("connect rejected: sub has no internal ULID yet (first-connect provisioning is a TODO)")
+        return None
+
+    lock = _lock_for(user_ulid, session_id)
+    with lock:
+        return resolve_or_provision(
+            ddb_resource, ecs_client, cfg, user_ulid, session_id, health_probe=health_probe
+        )
+
+
+# --------------------------------------------------------------------------- #
+# WS server entry (SKELETON -- the byte-proxy plumbing is documented in proxy.py).
+# --------------------------------------------------------------------------- #
+async def handle_connection(client_ws, ddb_resource, ecs_client, cfg: RoutingConfig, health_probe):
+    """Per-connection coroutine: decide the route, then proxy frames.
+
+    SKELETON: the route decision is concrete (decide_route); the bidirectional
+    byte-proxy is proxy.py.proxy_frames (TODO plumbing). client_ws is a
+    ``websockets`` server connection (it exposes .path / .request_uri /
+    .subprotocol and async iteration of frames).
+    """
+    from .proxy import open_upstream, proxy_frames  # local import: optional dep at test time
+
+    request_uri = getattr(client_ws, "path", "") or getattr(client_ws, "request_uri", "")
+    subprotocols = list(getattr(client_ws, "requested_subprotocols", []) or [])
+
+    route = decide_route(
+        ddb_resource,
+        ecs_client,
+        cfg,
+        request_uri=request_uri,
+        subprotocols=subprotocols,
+        health_probe=health_probe,
+    )
+    if route is None:
+        # 1011/4401-style reject. The skeleton just closes; the real codes are a
+        # TODO matched to the client's reconnect/backoff expectations (ws.ts).
+        await client_ws.close(code=4401, reason="unauthorized or unroutable")
+        return
+
+    # Connect to the per-session agent task and pump frames both ways until either
+    # side closes. The 12s server-push heartbeat keeps the connection never-idle,
+    # so the proxy must NOT impose its own idle timeout (TODO: assert this in the
+    # proxy config).
+    upstream = await open_upstream(route.private_ip, route.port)
+    await proxy_frames(client_ws, upstream)
+
+
+def healthz() -> dict:
+    """Liveness for the ALB target-group health check (NOT a per-session probe)."""
+    return {"ok": True, "service": "grace2-session-broker"}

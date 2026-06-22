@@ -1,0 +1,45 @@
+# terraform.tfvars.example -- fill the LIVE-VALUE TODOs, then copy to
+# terraform.tfvars before any `tofu plan`. SCAFFOLD: do NOT apply until the gated
+# migration runbook (RUNBOOK.md) reaches the dark-build step.
+#
+# The four REQUIRED (no-default) variables -- a plan FAILS without them:
+
+# The VPC the agent EC2 box + the TiTiler box already run in.
+# Find it:  aws ec2 describe-instances --instance-ids i-0251879a278df797f \
+#             --query 'Reservations[].Instances[].VpcId' --output text --region us-west-2
+vpc_id = "vpc-TODO"
+
+# >=2 public subnets (across AZs) for the internet-facing broker ALB.
+# Find them: aws ec2 describe-subnets --filters Name=vpc-id,Values=<vpc> \
+#             Name=map-public-ip-on-launch,Values=true \
+#             --query 'Subnets[].SubnetId' --output text --region us-west-2
+public_subnet_ids = ["subnet-TODO-a", "subnet-TODO-b"]
+
+# Subnets the Fargate tasks + broker run in (private w/ NAT preferred; the broker
+# must be able to reach each task's private IP, so tasks + broker share these).
+task_subnet_ids = ["subnet-TODO-a", "subnet-TODO-b"]
+
+# Regional ACM cert (us-west-2) covering the broker hostname the canary uses.
+# List: aws acm list-certificates --region us-west-2
+acm_certificate_arn = "arn:aws:acm:us-west-2:226996537797:certificate/TODO"
+
+# The agent image, built off-box via the grace2-agent-builder CodeBuild project.
+# Pin to a digest for a real cutover; :latest is fine for the dark build.
+agent_image = "226996537797.dkr.ecr.us-west-2.amazonaws.com/grace2-agent:latest"
+
+# --- Optional overrides (sane defaults in variables.tf) ---------------------
+
+# The broker image (built from infra/aws-agent-isolation/broker/). REQUIRED for a
+# real apply of the broker service; empty in the scaffold.
+# broker_image = "226996537797.dkr.ecr.us-west-2.amazonaws.com/grace2-broker:latest"
+
+# Cognito (defaults already match the live pool -- the public SPA ids, not secrets):
+# cognito_user_pool_id = "us-west-2_mIpKrr727"
+# cognito_client_id    = "43ovkrtt97oh6gsnl006aecera"
+
+# Keep the reaper in DRY_RUN until the canary proves the busy/streak logic against
+# live tasks; flip to false to arm per-task auto-stop (RUNBOOK step 6).
+# reaper_dry_run = true
+
+# ALB idle timeout (max 4000s) -- the 12s heartbeat keeps the WS never-idle.
+# alb_idle_timeout_seconds = 4000
