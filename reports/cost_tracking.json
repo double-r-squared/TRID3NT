@@ -2312,6 +2312,13 @@
       "model": "opus",
       "subagent_tokens": 177061,
       "description": "Isolation foundation STEP 1 (file-only, non-destructive, committed 9650117): containerize the agent (Dockerfile/.dockerignore, multi-stage ECR-Public base), per-session broker (cognito_verify reusing the REAL agent verifier + no-drift test, sub->ULID routing, app, proxy skeleton), full infra/aws-agent-isolation tofu scaffold (grace2_session_routes DynamoDB, ECS cluster + per-session agent task def, ALB, broker service, scoped IAM, per-task idle reaper Lambda generalizing ec2:StopInstances->ecs:StopTask, off-box CodeBuild) + RUNBOOK 9-step gated migration. Verify: tofu validate clean, 33 unit tests pass (26 broker + 7 reaper, no skips)."
+    },
+    {
+      "job_id": "goes-fire-animation-demo-spike-20260622",
+      "sprint": 17,
+      "model": "opus",
+      "subagent_tokens": 594875,
+      "description": "GOES-18 fire-animation demo spike (5-agent ultracode workflow w21zaiadd: GOES imagery pipeline + Fire Temperature RGB recipe / FIRMS + NIFC incident + news / existing fire-tool coverage / add-a-tool pattern -> synthesis). Verdict BUILD-mostly-reuses-seams. Wrote reports/design/demo_spike_goes_fire_animation.md + reports/references/cira_goes_fire_animation/notes.md + a paste-ready recreate prompt. Live-verified during research: FIRMS 152 active-fire detections for the UT cluster on 2026-06-22; keyless CIRA SLIDER GeoColor + Fire Temperature tiles at 5-min cadence; noaa-goes18 anonymous S3. 6 fire/satellite tools already exist. Gaps: GOES time-window replay, Fire Temperature/GeoColor products, fetch_wfigs_incident, FIRMS historical-date positional, the chaining workflow. Build order S1-S7."
     }
   ],
   "totals_by_sprint": {
