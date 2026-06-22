@@ -1,14 +1,21 @@
-# GRACE-2 — Hazard Modeling Agent
+# GRACE-2 - Multi-Hazard Modeling Agent
 
 A web-based AI workbench for multi-hazard modeling and discovery. You describe a
-hazard scenario in natural language; the agent geocodes the area, fetches
-authoritative data, sets up and runs physics-based solvers, and renders the
-results on an interactive map — no GIS expertise or desktop software required.
+hazard scenario in natural language; a Claude-powered agent geocodes the area,
+fetches authoritative data, sets up and runs real physics-based solvers, and
+renders the results on an interactive map - no GIS expertise or desktop software
+required.
 
-**Live — entry points:**
+The agent drives 8 real numerical engines spanning flood (coastal with waves,
+urban, riverine and compound), groundwater contamination, seismic hazard,
+dam-break, landslide susceptibility, and impact/loss - 100+ geospatial tools and
+60+ live data sources behind a single conversation. Every solve runs on AWS
+Batch Spot (scale-to-zero); the map serves 24/7 even when the agent is asleep.
+
+**Live - entry points:**
 
 - **Landing page** (the public entry point): <https://d125yfbyjrpbre.cloudfront.net/>
-  — shown to first-time visitors; returning sessions skip straight to the app.
+  - shown to first-time visitors; returning sessions skip straight to the app.
   Force the landing page any time at <https://d125yfbyjrpbre.cloudfront.net/landing>.
 - **App**: <https://d125yfbyjrpbre.cloudfront.net/app>
 - **Privacy**: <https://d125yfbyjrpbre.cloudfront.net/privacy>
@@ -28,9 +35,31 @@ Note: the SRS body still describes the project's original GCP/Gemini design; the
 
 Representative runs the agent drives end-to-end today: Hurricane-Ian / Fort Myers
 pluvial flood + Pelicun damage; a Mexico Beach (Hurricane Michael) coastal
-SFINCS + SnapWave demo (in progress); urban flooding via PySWMM; a Fort Myers
-groundwater contaminant plume via MODFLOW; and news-event ingest with
-provenance-tracked claims.
+SFINCS + SnapWave surge-and-wave demo; urban street flooding via PySWMM; a Fort
+Myers groundwater contaminant plume via MODFLOW; OpenQuake seismic hazard;
+GeoClaw dam-break shallow-water routing; Landlab landslide susceptibility; and
+news-event ingest with provenance-tracked claims.
+
+## Hazards and engines
+
+Every engine is a real numerical solver, run on AWS Batch Spot (scale-to-zero),
+driven entirely from the chat:
+
+| Hazard | Engine |
+| :--- | :--- |
+| Coastal flood + waves | SFINCS quadtree + SnapWave |
+| Urban (pluvial) flood | PySWMM quasi-2D node-link mesh |
+| Riverine + compound flood | SFINCS multi-driver forcing |
+| Groundwater contamination | MODFLOW 6 + transport (FloPy) |
+| Seismic hazard (PSHA) | OpenQuake |
+| Dam-break / shallow water | GeoClaw |
+| Landslide susceptibility | Landlab |
+| Impact + loss | Pelicun over USACE NSI |
+
+Around the engines sit 100+ agent tools and 60+ live data sources - 3DEP/USGS
+elevation, building footprints, HRRR/MRMS weather, FEMA NFHL, USACE levees/dams
+and the National Structure Inventory, NOAA tides and surge, land cover,
+population, and more - fetched, clipped, and styled on demand.
 
 ## Architecture (live stack)
 
@@ -48,9 +77,11 @@ DynamoDB. Raster results render through TiTiler; vector results render inline.
    │  (Sonnet default · Haiku / Nova select)  │
    │  submits jobs ▼                          │
  AWS Batch solvers (Spot, scale-to-zero) ──► S3 buckets (COG, FlatGeobuf, .qgs)
-   - SFINCS  coastal quadtree + SnapWave / regular-grid surge + pluvial
-   - PySWMM  urban flooding (quasi-2D node–link mesh)
-   - MODFLOW groundwater (FloPy)
+   - SFINCS   coastal quadtree + SnapWave / surge + pluvial / compound
+   - PySWMM   urban flooding (quasi-2D node-link mesh)
+   - MODFLOW  groundwater flow + transport (FloPy)
+   - OpenQuake seismic hazard (PSHA) · GeoClaw dam-break · Landlab landslide
+   - Pelicun  impact + loss over USACE NSI
    │
    ▼
  DynamoDB (cases, sessions, users, secret refs, audit log) · Cognito (auth)
@@ -106,18 +137,18 @@ python -m pytest tests/      # acceptance + unit suites
 
 **Toolchain:**
 
-- **Node + npm** — web client (`web/`).
-- **Python 3.11+** — agent + workers; editable installs of `grace2_agent` and
+- **Node + npm** - web client (`web/`).
+- **Python 3.11+** - agent + workers; editable installs of `grace2_agent` and
   `grace2_contracts`.
-- **AWS CLI** — authenticated to account `226996537797`, region `us-west-2`.
-  `aws ... login` / IAM is an **interactive user step** — never scripted.
-- **Docker** — Batch solver image builds (built on EC2, not the dev box).
-- **OpenTofu `tofu`** — IaC under `infra/` (the MPL-2.0 fork of Terraform).
-- **Bedrock** — model access enabled for Claude (Sonnet/Haiku) + Amazon Nova.
+- **AWS CLI** - authenticated to account `226996537797`, region `us-west-2`.
+  `aws ... login` / IAM is an **interactive user step** - never scripted.
+- **Docker** - Batch solver image builds (built on EC2, not the dev box).
+- **OpenTofu `tofu`** - IaC under `infra/` (the MPL-2.0 fork of Terraform).
+- **Bedrock** - model access enabled for Claude (Sonnet/Haiku) + Amazon Nova.
 
 ## Deployment
 
-- **Web:** `npm run build` → `aws s3 sync dist/ s3://grace2-hazard-web-…/` →
+- **Web:** `npm run build` -> `aws s3 sync dist/ s3://grace2-hazard-web-.../` ->
   CloudFront invalidation.
 - **Agent:** file-swap onto the EC2 box (`/opt/grace2`) via SSM, then
   `systemctl restart grace2-agent`; the box auto-stops when idle and wakes on
