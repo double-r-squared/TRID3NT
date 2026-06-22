@@ -21,6 +21,17 @@ rejects ``days_back > 5`` with HTTP 400 "Invalid day range. Expects [1..5]".
 The tool accepts the kickoff range (1..10) for forward-compatibility but
 surfaces upstream 400s as ``FirmsUpstreamError``. See OQ-0108-DAYS-RANGE.
 
+Historical-date positional (fire-animation demo S2/J2):
+    The AREA endpoint accepts an OPTIONAL trailing ``/{YYYY-MM-DD}`` start-date
+    segment so a SPECIFIC PAST date works (not just the rolling-window
+    ``days_back`` from FIRMS "today"). When ``date`` is supplied the tool builds
+    ``.../<source>/<bbox>/<days>/<YYYY-MM-DD>`` and forces ``day_range=1`` so the
+    result is exactly that one acquisition day. This is what unblocks the
+    co-registered hot-pixel overlay for a recreate-this-animation prompt over a
+    past window (e.g. 2026-06-22 for the GOES demo, or 2026-05-15..05-19 day-by-
+    day for the JPSS Santa Rosa demo). Backward compatible: ``date=None`` (the
+    default) keeps the original rolling-``days_back`` URL byte-identical.
+
 MAP_KEY (FR-AS-11 / OQ surfaced):
     NASA FIRMS requires a free MAP_KEY via the self-serve registration page at
     https://firms.modaps.eosdis.nasa.gov/api/map_key/. The kickoff specifies
@@ -52,6 +63,7 @@ import logging
 import math
 import os
 import tempfile
+from datetime import datetime
 from typing import Literal, Any
 
 import requests
@@ -71,6 +83,8 @@ __all__ = [
     "FirmsUpstreamError",
     "FirmsEmptyError",
     "set_persistence_for_secrets",
+    "_build_firms_url",
+    "_validate_date",
 ]
 
 logger = logging.getLogger("grace2_agent.tools.fetch_firms_active_fire")
@@ -258,6 +272,56 @@ def _round_bbox_to_4dp(
 def _bbox_to_firms_str(bbox: tuple[float, float, float, float]) -> str:
     """Format bbox as the comma-string FIRMS expects: ``west,south,east,north``."""
     return f"{bbox[0]},{bbox[1]},{bbox[2]},{bbox[3]}"
+
+
+def _validate_date(date: str | None) -> str | None:
+    """Validate an optional historical-date string and return it normalized.
+
+    Accepts ``"YYYY-MM-DD"`` (the FIRMS AREA-endpoint trailing start-date
+    format). Returns ``None`` for a falsy / blank input. Raises ``FirmsArgError``
+    for a malformed date so a typo surfaces as a typed argument error rather than
+    a confusing upstream 400.
+    """
+    if not date or not str(date).strip():
+        return None
+    s = str(date).strip()
+    try:
+        parsed = datetime.strptime(s, "%Y-%m-%d")
+    except ValueError as exc:
+        raise FirmsArgError(
+            f"date={date!r} must be 'YYYY-MM-DD' (FIRMS historical start date)"
+        ) from exc
+    return parsed.strftime("%Y-%m-%d")
+
+
+def _build_firms_url(
+    bbox: tuple[float, float, float, float],
+    days_back: int,
+    source: str,
+    map_key: str,
+    date: str | None = None,
+) -> str:
+    """Build the FIRMS AREA-endpoint CSV URL.
+
+    Rolling window (``date=None``)::
+
+        <base>/<MAP_KEY>/<source>/<west,south,east,north>/<days_back>
+
+    Historical single date (``date="YYYY-MM-DD"``) -- appends the trailing
+    start-date segment so the result is exactly that one acquisition day::
+
+        <base>/<MAP_KEY>/<source>/<west,south,east,north>/<days>/<YYYY-MM-DD>
+
+    The historical path is byte-additive: the rolling URL is unchanged when
+    ``date`` is omitted.
+    """
+    url = (
+        f"{_FIRMS_BASE}/{map_key}/{source}/"
+        f"{_bbox_to_firms_str(bbox)}/{days_back}"
+    )
+    if date:
+        url = f"{url}/{date}"
+    return url
 
 
 # ---------------------------------------------------------------------------
@@ -518,14 +582,18 @@ def _fetch_firms_csv(
     days_back: int,
     source: str,
     map_key: str,
+    date: str | None = None,
 ) -> str:
     """Hit the FIRMS AREA-endpoint and return the CSV body as text.
+
+    ``date`` (optional ``"YYYY-MM-DD"``) appends the trailing historical
+    start-date segment for a specific past acquisition day.
 
     Raises:
         FirmsAuthError: FIRMS rejected the MAP_KEY (invalid / rate-limited).
         FirmsUpstreamError: network failure or non-200 status.
     """
-    url = f"{_FIRMS_BASE}/{map_key}/{source}/{_bbox_to_firms_str(bbox)}/{days_back}"
+    url = _build_firms_url(bbox, days_back, source, map_key, date=date)
     logger.info(
         "fetch_firms_active_fire: requesting %s",
         url.replace(map_key, "***"),  # don't log the key
@@ -576,9 +644,10 @@ def _fetch_firms_active_fire_bytes(
     days_back: int,
     source: str,
     map_key: str,
+    date: str | None = None,
 ) -> bytes:
     """Fetch FIRMS CSV → FlatGeobuf bytes. The cache-shim fetch_fn."""
-    csv_text = _fetch_firms_csv(bbox, days_back, source, map_key)
+    csv_text = _fetch_firms_csv(bbox, days_back, source, map_key, date=date)
     return _parse_firms_csv_to_fgb(csv_text)
 
 
@@ -600,6 +669,10 @@ def fetch_firms_active_fire(
     source: Literal[
         "VIIRS_SNPP_NRT", "VIIRS_NOAA20_NRT", "MODIS_NRT"
     ] = "VIIRS_SNPP_NRT",
+    # fire-animation demo S2/J2: optional historical start-date "YYYY-MM-DD".
+    # When supplied, queries exactly that one acquisition day (day_range forced
+    # to 1) so a SPECIFIC PAST date works in addition to the rolling days_back.
+    date: str | None = None,
     # job VAULT-READ: per-Case MAP_KEY resolution. ``map_key`` is the explicit
     # override (dev/tests); ``secret_ref`` is the per-Case ``SecretRecord`` the
     # server threads at call time so the user's vault key is resolved first.
@@ -649,6 +722,12 @@ def fetch_firms_active_fire(
     - ``source`` (str): ``"VIIRS_SNPP_NRT"`` (default; Suomi NPP, 375m),
       ``"VIIRS_NOAA20_NRT"`` (NOAA-20, 375m), or ``"MODIS_NRT"``
       (Terra/Aqua, 1km).
+    - ``date`` (str, optional): a historical acquisition day ``"YYYY-MM-DD"``.
+      When given, the tool queries EXACTLY that one day (the FIRMS trailing
+      start-date segment, ``day_range`` forced to 1) -- use this to overlay the
+      hot pixels for a SPECIFIC PAST date (e.g. recreating a past animation
+      window) rather than the rolling ``days_back`` from FIRMS "today". Default
+      ``None`` keeps the rolling-window behaviour.
 
     **Returns:**
     ``LayerURI(layer_type="vector", role="primary", units=None)`` pointing at a
@@ -674,6 +753,11 @@ def fetch_firms_active_fire(
             f"days_back must be int in [{_DAYS_MIN},{_DAYS_MAX}]; got {days_back!r}"
         )
     _validate_bbox(bbox)
+    # Historical-date positional: a single past acquisition day. When supplied,
+    # force day_range=1 so the result is exactly that day (the trailing
+    # /{YYYY-MM-DD} segment + day_range=1 is the FIRMS single-day idiom).
+    q_date = _validate_date(date)
+    effective_days_back = 1 if q_date is not None else days_back
 
     # 2. Quantize bbox to 4dp for cache-key stability.
     q_bbox = _round_bbox_to_4dp(bbox)
@@ -694,7 +778,11 @@ def fetch_firms_active_fire(
     params = {
         "source": source,
         "bbox": list(q_bbox),
-        "days_back": days_back,
+        "days_back": effective_days_back,
+        # ``date`` is None for the rolling-window path (pruned by the cache
+        # canonicalizer), so a rolling call's key is byte-identical to before;
+        # a historical call keys on the specific day.
+        "date": q_date,
         "key_fp": key_fingerprint,
     }
 
@@ -703,7 +791,7 @@ def fetch_firms_active_fire(
         params=params,
         ext="fgb",
         fetch_fn=lambda: _fetch_firms_active_fire_bytes(
-            q_bbox, days_back, source, resolved_map_key
+            q_bbox, effective_days_back, source, resolved_map_key, date=q_date
         ),
     )
     assert result.uri is not None, (
@@ -717,12 +805,23 @@ def fetch_firms_active_fire(
         "MODIS_NRT": "MODIS Terra/Aqua",
     }[source]
 
-    return LayerURI(
-        layer_id=(
+    if q_date is not None:
+        layer_id = (
+            f"firms-{source.lower()}-{q_bbox[0]:.3f}-{q_bbox[1]:.3f}-{q_date}"
+        )
+        layer_name = f"NASA FIRMS active fires - {source_label} ({q_date})"
+    else:
+        layer_id = (
             f"firms-{source.lower()}-{q_bbox[0]:.3f}-{q_bbox[1]:.3f}-"
             f"d{days_back}"
-        ),
-        name=f"NASA FIRMS active fires — {source_label} (last {days_back}d)",
+        )
+        layer_name = (
+            f"NASA FIRMS active fires - {source_label} (last {days_back}d)"
+        )
+
+    return LayerURI(
+        layer_id=layer_id,
+        name=layer_name,
         layer_type="vector",
         uri=result.uri,
         style_preset="firms_active_fire",

@@ -247,6 +247,10 @@ PRIMARY_CATEGORY: dict[str, str] = {
     "run_model_flood_habitat_scenario": "hazard_modeling",
     "run_model_news_event_ingest": "hazard_modeling",
     "run_model_nws_flood_event_scenario": "hazard_modeling",
+    # fire-animation demos (GOES geostationary + JPSS/VIIRS polar): the
+    # news/incident -> bbox+window -> per-frame imagery -> scrubber-group
+    # composer (review-gated). Cross-listed to fire + news_events below.
+    "run_model_satellite_fire_animation": "hazard_modeling",
     "run_model_groundwater_contamination_scenario": "hazard_modeling",
     "run_modflow_job": "hazard_modeling",
     "run_swmm_urban_flood": "hazard_modeling",
@@ -274,6 +278,10 @@ PRIMARY_CATEGORY: dict[str, str] = {
     "fetch_hrrr_forecast": "weather_atmosphere",
     "fetch_hrrr_smoke": "weather_atmosphere",
     "fetch_goes_satellite": "weather_atmosphere",
+    # fire-animation demo S3: GOES GeoColor + Fire Temperature multi-timestamp
+    # animation frames (filed in weather next to fetch_goes_satellite; cross-
+    # listed to 'fire' via SECONDARY_CATEGORIES).
+    "fetch_goes_animation": "weather_atmosphere",
     "fetch_era5_reanalysis": "weather_atmosphere",
     "fetch_asos_metar": "weather_atmosphere",
     "fetch_raws_weather": "weather_atmosphere",
@@ -320,6 +328,11 @@ PRIMARY_CATEGORY: dict[str, str] = {
     "fetch_nifc_fire_perimeters": "fire",
     "fetch_landfire_fuels": "fire",
     "fetch_usfs_canopy_fuels": "fire",
+    # fire-animation demos: named-incident lookup + the JPSS/VIIRS Day Fire
+    # polar animation fetcher (the GOES animation fetcher is filed in
+    # weather_atmosphere with its fetch_goes_satellite sibling).
+    "fetch_wfigs_incident": "fire",
+    "fetch_viirs_day_fire": "fire",
     # ---- 8. coastal -------------------------------------------------------
     "fetch_gtsm_tide_surge": "coastal",
     "fetch_noaa_coops_tides": "coastal",
@@ -402,6 +415,13 @@ SECONDARY_CATEGORIES: dict[str, tuple[str, ...]] = {
     # (it is THE defensible nearshore wave-field tool -- a user reaches it from the
     # coastal lane to compare against SFINCS+SnapWave on the same case).
     "run_swan_waves": ("coastal",),
+    # The GOES animation fetcher is primary-filed in weather_atmosphere (next to
+    # fetch_goes_satellite) but materially belongs to the fire branch too.
+    "fetch_goes_animation": ("fire",),
+    # The satellite fire-animation composer spans hazard_modeling (it composes a
+    # multi-tool imagery pipeline) AND fire (it is the fire-branch demo) AND
+    # news_events (it ingests the fire news / incident lookup up front).
+    "run_model_satellite_fire_animation": ("fire", "news_events"),
 }
 
 

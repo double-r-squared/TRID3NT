@@ -256,6 +256,9 @@ from . import fetch_landfire_fuels  # noqa: E402,F401 — job-0111: registers fe
 from . import fetch_gcn250_curve_numbers  # noqa: E402,F401 — job-0113: registers fetch_gcn250_curve_numbers (GCN250 global SCS curve numbers, Figshare AMC-I/II/III)
 from . import fetch_mtbs_burn_severity  # noqa: E402,F401 — job-0109: registers fetch_mtbs_burn_severity (MTBS burn-severity polygons)
 from . import fetch_nifc_fire_perimeters  # noqa: E402,F401 — job-0110: registers fetch_nifc_fire_perimeters (NIFC active wildfire perimeters)
+from . import fetch_wfigs_incident  # noqa: E402,F401 - fire-animation demo S1/J1: registers fetch_wfigs_incident (NIFC/WFIGS named-incident lookup -> authoritative point + discovery time + AOI bbox; resolves by IncidentName so offshore islands work)
+from . import fetch_goes_animation  # noqa: E402,F401 - fire-animation demo S3: registers fetch_goes_animation (GOES-18 GeoColor + Fire Temperature CIRA SLIDER multi-timestamp animation frames over a time window; ordered per-frame RGB COGs)
+from . import fetch_viirs_day_fire  # noqa: E402,F401 - fire-animation demo J3: registers fetch_viirs_day_fire (JPSS/VIIRS Day Fire CIRA Polar SLIDER multi-day irregular polar-overpass animation frames; day-only; ordered per-pass RGB COGs)
 from . import fetch_ebird_observations  # noqa: E402,F401 — job-0128: registers fetch_ebird_observations (Cornell Lab eBird Tier-2 recent sightings)
 from . import fetch_iucn_red_list_range  # noqa: E402,F401 — job-0129: registers fetch_iucn_red_list_range (IUCN Red List Tier-2 species range info fetcher)
 from . import fetch_movebank_tracks  # noqa: E402,F401 — job-0130: registers fetch_movebank_tracks (Movebank Tier-2 animal-tracking trajectories)
@@ -300,6 +303,11 @@ from . import run_swan_tool  # noqa: E402,F401 -- SWAN Phase 1: registers run_sw
 # compute_impact_envelope composer import below). The MODFLOW-seepage verifier flagged
 # this composer as never-registered — this import is the fix.
 from ..workflows import model_river_seepage_scenario as _model_river_seepage_scenario  # noqa: E402,F401 — sprint-17: registers run_model_river_seepage_scenario (LLM-facing river-seepage composer)
+
+# fire-animation demos S5/J5: the satellite fire-animation composer carries its
+# OWN @register_tool (run_model_satellite_fire_animation); import it so the
+# review-gated GOES/JPSS animation workflow is in TOOL_REGISTRY at startup.
+from ..workflows import model_satellite_fire_animation as _model_satellite_fire_animation  # noqa: E402,F401 - fire-animation demos S5/J5: registers run_model_satellite_fire_animation (incident lookup -> bbox+window review gate -> GOES/VIIRS per-frame imagery -> FIRMS+NIFC overlays -> publish)
 
 # job-B5 (Wave 4.10 Stage 2): the 12-category registry + the two meta-tools
 # (``list_categories`` + ``list_tools_in_category``) live alongside the rest
