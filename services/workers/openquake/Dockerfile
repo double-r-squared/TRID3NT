@@ -59,6 +59,7 @@ RUN python3 -m venv "$VENV" \
         "openquake.engine>=3.19,<3.21" \
         "fiona>=1.9,<2" \
         "numba" \
+        "networkx" \
         "boto3>=1.34,<2" \
     && "$VENV/bin/python" -c "import openquake.baselib, boto3; from openquake.commonlib import logs; print('openquake deps import OK')"
 
