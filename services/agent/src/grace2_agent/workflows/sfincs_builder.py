@@ -518,6 +518,15 @@ class BuildOptions:
     output_setup_uri: str | None = None
     compute_class: str = "medium"
     autoscale_grid: bool = True
+    # COASTAL/WAVE animation cadence (coastal surge+SnapWave "looks like rain"
+    # fix): the SFINCS map-output stride (``dtout``/``dtmaxout``) in MINUTES.
+    # ``None`` (default) = the legacy hourly cadence (``max(600, total/24)``),
+    # byte-identical to the pluvial deck. A coastal/wave run passes a FINE value
+    # (e.g. 5) so SFINCS writes minute-scale snapshots and the animation reads as
+    # water rolling in (waves move in seconds-to-minutes; hourly snapshots of a
+    # rising surge look like a slowly-filling bathtub regardless of the wave
+    # model). The physical floor is 60 s for a wave run (see the dtout wiring).
+    output_interval_min: float | None = None
     # COASTAL SFINCS — subgrid + building-obstacle mask (urban-flood estimate).
     enable_subgrid: bool = False
     subgrid_nr_subgrid_pixels: int = 20
@@ -1800,14 +1809,32 @@ def _generate_hydromt_yaml_config(
     # make SFINCS write TIME-VARYING map output — i.e. ``zs(time,n,m)`` snapshots
     # into sfincs_map.nc. WITHOUT them SFINCS writes only the max fields
     # (``zsmax`` / ``hmax``) and postprocess_flood can only build the single peak
-    # COG (no animation). We target ~MAX_FLOOD_FRAMES (24) raw snapshots over the
-    # whole sim window so postprocess gets a useful, bounded number of frames
-    # BEFORE subsampling. Floor at 600 s (10 min) to match SFINCS's internal
-    # 10-minute precip grid (see the setup_precip_forcing note above) — finer
-    # cadence buys nothing and only bloats sfincs_map.nc. The cadence flows
-    # through HydroMT's setup_config passthrough alongside tref/tstart/tstop.
+    # COG (no animation). The cadence flows through HydroMT's setup_config
+    # passthrough alongside tref/tstart/tstop.
+    #
+    # PLUVIAL (``options.output_interval_min is None``): the legacy HOURLY cadence
+    #  -  ~MAX_FLOOD_FRAMES (24) raw snapshots over the whole sim window, floored at
+    # 600 s (10 min) to match SFINCS's internal 10-minute precip grid. A rising
+    # rain-driven sheet reads fine at hourly stride and finer buys nothing while
+    # bloating sfincs_map.nc. Byte-identical to the pre-cadence deck.
+    #
+    # COASTAL/WAVE (``options.output_interval_min`` set): a FINE minute-scale
+    # stride so the animation shows water rolling in. Waves move in
+    # seconds-to-minutes; an hourly surge snapshot looks like a slowly-filling
+    # bathtub regardless of SnapWave. The physical floor here is 60 s (the wave
+    # cadence justifies sub-10-min output, unlike the precip grid) so a tiny
+    # requested interval can't drive a pathological dtout=0.
     _total_seconds = int(max(1.0, options.simulation_hours) * 3600)
-    dtout_seconds = max(600, int(_total_seconds / 24))
+    if options.output_interval_min is not None:
+        # FINE wave cadence: requested minutes -> seconds, floored at 60 s.
+        _WAVE_DTOUT_FLOOR_S = 60
+        dtout_seconds = max(
+            _WAVE_DTOUT_FLOOR_S,
+            int(round(float(options.output_interval_min) * 60.0)),
+        )
+    else:
+        # Legacy HOURLY cadence (pluvial, unchanged): ~24 frames, 600 s floor.
+        dtout_seconds = max(600, int(_total_seconds / 24))
     components.append(f"  dtout: {dtout_seconds}")
     components.append(f"  dtmaxout: {dtout_seconds}")
     components.append("setup_grid_from_region:")
@@ -2364,6 +2391,10 @@ def build_sfincs_model(
         parameters={
             "crs": opts.crs,
             "simulation_hours": opts.simulation_hours,
+            # COASTAL/WAVE map-output cadence (minutes); ``None`` on the pluvial
+            # path (legacy hourly). Provenance + the quadtree deck-build reads it
+            # back to drive its remote ``output_dt`` so both paths agree.
+            "output_interval_min": opts.output_interval_min,
             "manning_mapping_version": MANNING_MAPPING_VERSION,
             "manning_mapping_path": mapping_path,
             "nlcd_vintage_year": nlcd_vintage_year,

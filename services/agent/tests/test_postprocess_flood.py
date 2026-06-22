@@ -390,25 +390,30 @@ def test_frame_names_match_web_parseFrameToken_step_pattern(tmp_path: Path) -> N
 
 
 def test_per_frame_cogs_are_valid_and_capped(tmp_path: Path) -> None:
-    """>24 raw steps → <=24 frames, evenly subsampled with first+last kept; each
-    frame COG round-trips through rasterio with the correct CRS tag."""
+    """More raw steps than the cap -> <=MAX_FLOOD_FRAMES frames, evenly subsampled
+    with first+last kept; each frame COG round-trips through rasterio with the
+    correct CRS tag. (The cap was raised 24 -> 144 for fine coastal/wave cadence;
+    this test drives ENOUGH raw steps to exceed whatever the cap is.)"""
     import rasterio
     from grace2_agent.workflows.postprocess_flood import (
         MAX_FLOOD_FRAMES,
         _extract_depth_frames,
     )
 
-    # 50 raw steps → must cap at MAX_FLOOD_FRAMES (24).
+    # Always overshoot the cap (whatever its configured value) so the subsample
+    # path is exercised: 2*cap+2 raw steps -> must clamp to <=MAX_FLOOD_FRAMES.
+    n_steps = MAX_FLOOD_FRAMES * 2 + 2
     nc = _make_sfincs_nc_timeseries(
-        tmp_path, x_vals=X_VALS_ASC, y_vals=Y_VALS_DESC, n_steps=50
+        tmp_path, x_vals=X_VALS_ASC, y_vals=Y_VALS_DESC, n_steps=n_steps
     )
     peak_cog, peak_metrics, frame_cogs, frame_labels = _extract_depth_frames(nc)
     try:
-        assert MAX_FLOOD_FRAMES == 24
         assert len(frame_cogs) <= MAX_FLOOD_FRAMES, (
             f"frame count {len(frame_cogs)} exceeds cap {MAX_FLOOD_FRAMES}"
         )
-        assert len(frame_cogs) >= 2, "expected a multi-frame group from 50 steps"
+        # Capping must have actually FIRED (fewer frames than raw steps).
+        assert len(frame_cogs) < n_steps, "subsample/cap did not fire"
+        assert len(frame_cogs) >= 2, "expected a multi-frame group"
         assert len(frame_cogs) == len(frame_labels)
 
         # Each frame COG must be a VALID COG (rasterio round-trip) with the

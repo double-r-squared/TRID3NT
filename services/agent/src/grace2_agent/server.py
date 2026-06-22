@@ -5342,6 +5342,12 @@ async def _gate_on_solver_confirm(
     # proceed/cancel).
     swmm_autoscale: Any = None
     swmm_dem_path: str | None = None
+    # #154 cadence lever: the resolved flood animation interval (minutes) shown
+    # on the card, pinned into the approved params on ``proceed`` so the run uses
+    # EXACTLY what the user saw. None for the pluvial path (legacy hourly) and
+    # for every non-flood gated tool.
+    flood_output_interval_min: float | None = None
+    flood_cadence_gated: bool = False
     try:
         if tool_name == "run_model_groundwater_contamination_scenario":
             from .workflows.model_groundwater_contamination_scenario import (
@@ -5382,8 +5388,50 @@ async def _gate_on_solver_confirm(
             from grace2_contracts.payload_warning import (
                 PayloadWarningEnvelopePayload,
             )
+            from .workflows.model_flood_scenario import (
+                _estimate_frame_count,
+                _resolve_output_interval_min,
+            )
 
             where = params.get("location_query") or params.get("bbox") or "?"
+            # #154 cadence lever ("looks like rain" fix): surface the resolved
+            # animation cadence (interval + frame count) the run will use so the
+            # user can SEE "N frames every M min" and override before the solve.
+            # Coastal/wave -> a FINE minute-scale stride (water rolls in); pluvial
+            # -> hourly (unchanged). is_coastal mirrors the workflow signal.
+            flood_is_coastal = bool(
+                params.get("coastal")
+                or params.get("quadtree")
+                or params.get("surge_forcing")
+            )
+            try:
+                flood_duration_hr = float(
+                    params.get("duration_hr")
+                    if params.get("duration_hr") is not None
+                    else params.get("duration_hours", 24)
+                )
+            except (TypeError, ValueError):
+                flood_duration_hr = 24.0
+            resolved_interval_min = _resolve_output_interval_min(
+                is_coastal=flood_is_coastal,
+                output_interval_min=params.get("output_interval_min"),
+                duration_hr=flood_duration_hr,
+            )
+            flood_output_interval_min = resolved_interval_min
+            flood_cadence_gated = True
+            frame_count = _estimate_frame_count(
+                output_interval_min=resolved_interval_min,
+                duration_hr=flood_duration_hr,
+            )
+            if resolved_interval_min is not None:
+                cadence_phrase = (
+                    f" Animation: ~{frame_count} frames every "
+                    f"{resolved_interval_min:g} min (fine wave cadence)."
+                )
+            else:
+                cadence_phrase = (
+                    f" Animation: ~{frame_count} hourly frames."
+                )
             envelope = PayloadWarningEnvelopePayload(
                 warning_id=new_ulid(),
                 tool_name=tool_name,
@@ -5393,12 +5441,16 @@ async def _gate_on_solver_confirm(
                     "duration_hr": params.get("duration_hr"),
                     "forcing_raster_uri": params.get("forcing_raster_uri"),
                     "compute_class": params.get("compute_class", "standard"),
+                    # #154 cadence lever  -  visible + overridable in the card.
+                    "output_interval_min": resolved_interval_min,
+                    "animation_frames": frame_count,
                 },
                 estimated_mb=0.0,
                 threshold_mb=0.0,
                 recommendation=(
                     f"Run a SFINCS flood simulation for {where} "
-                    "(cloud solve, typically 5-20 minutes). Confirm to start."
+                    "(cloud solve, typically 5-20 minutes)." + cadence_phrase
+                    + " Confirm to start."
                 )[:512],
                 options=["proceed", "cancel"],
             )
@@ -5592,6 +5644,12 @@ async def _gate_on_solver_confirm(
     if swmm_autoscale is not None:
         approved["target_resolution_m"] = float(swmm_autoscale.resolution_m)
         approved["enable_autoscale"] = False
+    # #154 cadence lever: pin the resolved flood animation interval the card
+    # showed so the run emits exactly the "N frames every M min" the user
+    # approved (coastal/wave only; None on the pluvial path leaves the legacy
+    # hourly default untouched -> unchanged pluvial behavior).
+    if flood_cadence_gated and flood_output_interval_min is not None:
+        approved["output_interval_min"] = float(flood_output_interval_min)
     return True, approved
 
 

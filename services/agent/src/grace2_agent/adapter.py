@@ -358,6 +358,12 @@ default every flood to SFINCS.
   otherwise-inland AOI. ``coastal=True`` with NO sea/surge/wave intent (a rainfall
   flood that merely happens to be near the coast) models only rainfall -- only flag
   coastal when the SEA is part of the scenario.
+  WAVE ANIMATION CADENCE: a coastal/wave run automatically outputs FINE
+  minute-scale animation frames (default ~5 min) so the surge+waves read as water
+  rolling in, not a slowly-filling bathtub (hourly frames hide wave motion). The
+  user can override the speed via ``output_interval_min`` (minutes per frame, e.g.
+  5 or 10); leave it unset to use the sim-type default. The pluvial path stays
+  hourly -- do NOT pass ``output_interval_min`` for a rainfall-only flood.
 
 When the scope is ambiguous between the two (e.g. a developed AOI with no
 storm-drain / barrier / street framing, where either engine could fit), ASK the

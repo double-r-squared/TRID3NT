@@ -68,14 +68,23 @@ FLOOD_DEPTH_STYLE_PRESET: str = "continuous_flood_depth"
 #: so the two layers reinforce each other (job-0071 transparency fix).
 NODATA_DEPTH_M: float = 0.05
 
-#: Hard cap on the number of per-frame depth COGs the time-stepped flood
+#: Upper bound on the number of per-frame depth COGs the time-stepped flood
 #: animation emits (flood North Star Phase 1, engine-agnostic). When the SFINCS
 #: map output carries MORE than this many ``zs(time,...)`` snapshots we subsample
 #: EVENLY across the full time span (first + last steps always kept) so the
 #: scrubber stays bounded and the per-Case session-state snapshot never balloons.
-#: 24 ≈ one frame/hour over a 1-day sim — enough to read the wave of inundation
-#: without flooding the LayerPanel with near-identical rows.
-MAX_FLOOD_FRAMES: int = 24
+#:
+#: COASTAL/WAVE "looks like rain" fix: the cap was a HARD 24 (~one frame/hour
+#: over a 1-day sim) which is too coarse for a coastal surge+SnapWave animation  - 
+#: waves move in seconds-to-minutes, so an hourly stride reads as a filling
+#: bathtub. The deck now emits minute-scale frames for coastal runs (sfincs_builder
+#: ``output_interval_min``); raising the cap to 144 lets a fine-cadence run
+#: (e.g. 5-min over ~12 h, or ~10-min over a full day) emit ALL its frames
+#: rather than silently subsampling back down to 24. 144 ~= 5-min frames over
+#: 12 h, a bounded-but-watchable wave animation. When a run still exceeds the
+#: cap, ``_select_frame_time_indices`` LOGS the subsample (never silent).
+#: Overridable via env for ops tuning.
+MAX_FLOOD_FRAMES: int = int(os.environ.get("GRACE2_MAX_FLOOD_FRAMES", "144"))
 
 
 class PostprocessError(RuntimeError):
@@ -829,7 +838,19 @@ def _select_frame_time_indices(n_steps: int) -> list[int]:
     if n_steps <= MAX_FLOOD_FRAMES:
         return list(range(n_steps))
     idx = np.linspace(0, n_steps - 1, MAX_FLOOD_FRAMES).round().astype(int)
-    return [int(i) for i in np.unique(idx)]
+    kept = [int(i) for i in np.unique(idx)]
+    # Never silently truncate (kickoff requirement): a coastal/wave run with a
+    # fine cadence can emit MANY raw snapshots; if we still exceed the cap we
+    # subsample EVENLY (endpoints kept) and LOG it so the cap is visible.
+    logger.info(
+        "postprocess_flood: %d raw map snapshots exceed MAX_FLOOD_FRAMES=%d; "
+        "subsampling evenly to %d frames (first+last kept). Raise "
+        "GRACE2_MAX_FLOOD_FRAMES to emit more.",
+        n_steps,
+        MAX_FLOOD_FRAMES,
+        len(kept),
+    )
+    return kept
 
 
 def _extract_peak_depth_geotiff(netcdf_path: Path) -> tuple[Path, dict[str, Any]]:

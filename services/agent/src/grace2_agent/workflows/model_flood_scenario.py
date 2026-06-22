@@ -195,6 +195,86 @@ async def _emit_presolver_progress(
 _LIVE_SOLVE_PROGRESS_INTERVAL_S = 10.0
 
 
+# --------------------------------------------------------------------------- #
+# COASTAL/WAVE animation cadence ("looks like rain" fix)
+#
+# A coastal surge+SnapWave animation rendered at HOURLY frames (the legacy
+# dtout = duration/24 + the 24-frame cap) reads like a slowly-filling bathtub:
+# waves move in seconds-to-minutes, so an hourly snapshot of a rising surge
+# hides the wave motion entirely regardless of the wave model. For coastal /
+# quadtree / wave runs we therefore output map frames at a FINE minute-scale
+# interval. Cadence and duration are COUPLED  -  a fine interval over the full 24h
+# is hundreds of frames (huge payload), so a watchable wave animation is a
+# fine interval over a FOCUSED window (default a few hours, frame count bounded).
+# The PLUVIAL path keeps ``output_interval_min=None`` -> the legacy hourly
+# cadence (byte-identical).
+# --------------------------------------------------------------------------- #
+
+#: Default fine map-output interval (minutes) for a coastal/wave run when the
+#: caller/LLM did not pin one. 5 min over a focused window gives a smooth
+#: water-rolling-in animation without ballooning the frame count.
+_COASTAL_OUTPUT_INTERVAL_MIN_DEFAULT: float = float(
+    os.environ.get("GRACE2_COASTAL_OUTPUT_INTERVAL_MIN", "5")
+)
+#: Physical floor for the requested interval (minutes)  -  mirrors the 60 s deck
+#: floor so the resolved frame count never explodes past what the deck emits.
+_OUTPUT_INTERVAL_MIN_FLOOR: float = 1.0
+
+
+def _resolve_output_interval_min(
+    *,
+    is_coastal: bool,
+    output_interval_min: int | float | None,
+    duration_hr: float,
+) -> float | None:
+    """Resolve the SFINCS map-output interval (minutes) by sim type.
+
+    Returns the FINE minute-scale interval for a coastal/wave run (so the
+    animation reads as water rolling in, not a filling bathtub) and ``None`` for
+    the pluvial path (the legacy hourly cadence, byte-identical).
+
+    Precedence:
+    - PLUVIAL (``is_coastal`` False): ALWAYS ``None``  -  the pluvial deck is never
+      touched (regression-critical), even if a stray ``output_interval_min`` was
+      passed; rain animates fine at hourly stride.
+    - COASTAL with an explicit ``output_interval_min``: honor it, floored at
+      ``_OUTPUT_INTERVAL_MIN_FLOOR`` minutes (the deck re-floors at 60 s).
+    - COASTAL with no explicit value: the
+      ``_COASTAL_OUTPUT_INTERVAL_MIN_DEFAULT`` (LLM-default-by-sim-type).
+
+    ``duration_hr`` is accepted so a future window-narrowing default can ride
+    here; v0.1 keeps the full ``duration_hr`` window and bounds the frame count
+    via ``MAX_FLOOD_FRAMES`` (postprocess) + the deck dtout floor.
+    """
+    if not is_coastal:
+        return None
+    if output_interval_min is not None:
+        try:
+            return max(_OUTPUT_INTERVAL_MIN_FLOOR, float(output_interval_min))
+        except (TypeError, ValueError):
+            pass
+    return max(_OUTPUT_INTERVAL_MIN_FLOOR, _COASTAL_OUTPUT_INTERVAL_MIN_DEFAULT)
+
+
+def _estimate_frame_count(
+    *, output_interval_min: float | None, duration_hr: float
+) -> int:
+    """Estimate the number of animation frames a cadence yields over the window.
+
+    Used by the user gate to surface "N frames every M min" before the run. The
+    real frame count is bounded by ``MAX_FLOOD_FRAMES`` in postprocess; this is
+    the pre-cap raw snapshot count = ``duration_hr*60 / interval`` (clamped to
+    [1, MAX_FLOOD_FRAMES]). ``None`` interval -> the legacy ~24 hourly frames.
+    """
+    from .postprocess_flood import MAX_FLOOD_FRAMES
+
+    if output_interval_min is None or output_interval_min <= 0:
+        raw = max(1, int(round(float(duration_hr))))  # ~1 frame/hour
+    else:
+        raw = int(round(float(duration_hr) * 60.0 / float(output_interval_min)))
+    return max(1, min(int(MAX_FLOOD_FRAMES), raw))
+
+
 def _extract_solve_autoscale(model_setup: Any) -> dict[str, Any]:
     """Pull the autoscale provenance (active cells / vCPU / est-solve) off the
     built ``ModelSetup`` for the live solve-progress envelope + telemetry.
@@ -1894,6 +1974,7 @@ async def model_flood_scenario(
     building_obstacle_mode: str = "exclude",
     coastal: bool = False,
     quadtree: bool = False,
+    output_interval_min: int | float | None = None,
     *,
     project_id: str | None = None,
     session_id: str | None = None,
@@ -2002,6 +2083,19 @@ async def model_flood_scenario(
             envelope (honest degrade, never silent). Implies ``coastal=True``.
             ``False`` (default) → the regular-grid build_sfincs_model path,
             byte-identical to today. The agent NEVER imports cht_sfincs.
+        output_interval_min: animation map-output cadence in MINUTES (the SFINCS
+            ``dtout``/``dtmaxout`` stride). Drives how often the solve writes a
+            depth snapshot, hence how fast the animation reads. Resolved BY SIM
+            TYPE via ``_resolve_output_interval_min``: a COASTAL / quadtree / wave
+            run defaults to a FINE ~5-min stride (so the animation shows water
+            rolling in  -  waves move in seconds-to-minutes; an hourly surge
+            snapshot looks like a slowly-filling bathtub), while the PLUVIAL path
+            ALWAYS resolves to ``None`` -> the legacy HOURLY cadence
+            (byte-identical, regression-critical). An explicit value overrides the
+            coastal default (floored at 1 min; the deck re-floors at 60 s). Frame
+            count is bounded by ``MAX_FLOOD_FRAMES`` in postprocess so a fine
+            cadence over the full window can't balloon the payload. ``None``
+            (default) lets the sim-type default apply.
         project_id / session_id: ULID identifiers from the WS session. When
             ``None``, fresh ULIDs are minted (for direct-call / smoke).
 
@@ -2054,6 +2148,27 @@ async def model_flood_scenario(
         bool(surge_forcing),
         bool(quadtree),
         "fetch_topobathy" if is_coastal else "fetch_dem",
+    )
+
+    # --- Animation cadence by sim type ("looks like rain" fix) ---
+    # Coastal/wave -> a FINE minute-scale map-output stride so the animation
+    # shows water rolling in; pluvial -> None (legacy hourly, byte-identical).
+    resolved_output_interval_min = _resolve_output_interval_min(
+        is_coastal=is_coastal,
+        output_interval_min=output_interval_min,
+        duration_hr=float(duration_hr),
+    )
+    logger.info(
+        "model_flood_scenario output cadence: is_coastal=%s requested=%s -> "
+        "resolved_interval_min=%s (~%d frames over %s h; pluvial=hourly)",
+        is_coastal,
+        output_interval_min,
+        resolved_output_interval_min,
+        _estimate_frame_count(
+            output_interval_min=resolved_output_interval_min,
+            duration_hr=float(duration_hr),
+        ),
+        duration_hr,
     )
 
     # --- Step 0: bbox resolution (Decision K; bbox-direct wins precedence) ---
@@ -2520,6 +2635,11 @@ async def model_flood_scenario(
             enable_subgrid=bool(enable_subgrid or building_obstacle_uri),
             building_obstacle_uri=building_obstacle_uri,
             building_obstacle_mode=building_obstacle_mode,
+            # COASTAL/WAVE animation cadence: a fine minute-scale map-output
+            # stride for a coastal/wave run, None (legacy hourly) for pluvial.
+            # Drives dtout/dtmaxout in the regular-grid deck (the quadtree path
+            # threads the same value into the remote deck-build output_dt below).
+            output_interval_min=resolved_output_interval_min,
         )
         # ``build_sfincs_model`` is SYNCHRONOUS with no overall timeout
         # (sfincs_builder GDAL VSI cache/timeout is per-read only). Run it off
@@ -2731,6 +2851,16 @@ async def model_flood_scenario(
                     # coastal flag (issue 2  -  wavebnd>0 / non-flat hm0).
                     return_period_yr=return_period_yr,
                     is_coastal=is_coastal,
+                    # COASTAL/WAVE animation cadence: thread the FINE resolved
+                    # interval into the remote deck-build output_dt so the
+                    # quadtree+SnapWave map output writes minute-scale frames too
+                    # (the "looks like rain" fix applies to BOTH solve paths).
+                    # Floored at 60 s; None (pluvial) keeps the 600 s deck default.
+                    output_dt_s=(
+                        max(60.0, float(resolved_output_interval_min) * 60.0)
+                        if resolved_output_interval_min is not None
+                        else 600.0
+                    ),
                 )
                 # SUBMIT the ONE combined job + poll its completion -> the SOLVE
                 # RunResult (sfincs_map.nc). Invariant 8: a true cancel propagates
@@ -3483,6 +3613,7 @@ async def run_model_flood_scenario(
     quadtree: bool = False,
     building_obstacles: bool | str = False,
     building_obstacle_mode: str = "exclude",
+    output_interval_min: int | float | None = None,
     project_id: str | None = None,
     session_id: str | None = None,
     # job-0164: absorb LLM-invented kwargs (centralized at server.py via
@@ -3594,6 +3725,8 @@ async def run_model_flood_scenario(
             (no ``surge_forcing`` needed); set it only when the sea is involved.
         quadtree: set ``True`` for storm waves / wave run-up (implies
             ``coastal=True``; auto-enabled for any coastal run). Default ``False``.
+        output_interval_min: optional animation frame spacing in minutes (coastal
+            runs default fine; pluvial stays hourly). Leave unset unless asked.
         building_obstacles: OPTIONAL, default ``False`` (OFF). When truthy, the
             workflow burns building footprints into the SFINCS grid so the flood
             routes AROUND buildings — a more realistic (but slightly slower)
@@ -3674,6 +3807,7 @@ async def run_model_flood_scenario(
         quadtree=quadtree,
         building_obstacles=building_obstacles,
         building_obstacle_mode=building_obstacle_mode,
+        output_interval_min=output_interval_min,
         project_id=project_id,
         session_id=session_id,
     )
