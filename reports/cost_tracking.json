@@ -2298,6 +2298,13 @@
       "model": "opus",
       "subagent_tokens": 397893,
       "description": "5-agent ultracode engine go/no-go (NATE proposed Delft3D). Verdict GO_WITH_CAVEATS scoped-narrowly (adversarially verified, high confidence): Delft3D-WAVE IS SWAN + Delft3D-FLOW overlaps SFINCS, so the ONLY additive value is morphology/sediment + DELWAQ water-quality + online flow-wave coupling. Do NOT adopt the monolith; scope to the sediment/dye North Star, self-host single-node 2D D-Flow FM (Inductiva.AI managed = escape-hatch only). Open (AGPL/GPL/LGPL, no license server). Wrote engine_spike_delft3d.md (D0-D8) + archived video notes. NOTE: NATE's ranking lists Delft3D-FM A-tier; spike scopes B for coupled/multi-node (single-node 2D = A once a deck_builder exists)."
+    },
+    {
+      "job_id": "workflow-agent-isolation-spike-20260622",
+      "sprint": 17,
+      "model": "opus",
+      "subagent_tokens": 419802,
+      "description": "5-agent ultracode spike (NATE: per-user agent isolation after a live shared-box cross-user WS incident; do both isolation + AgentCore). Verdict (adversarially verified, high confidence) HYBRID_FARGATE_NOW_AGENTCORE_LATER: Fargate-per-session task running the existing WS agent byte-identical behind a thin broker (Cognito auth -> grace2_session_routes -> WSS proxy; dual-sockets co-locate -> real isolation), idle-stop generalizes the autostop; AgentCore Runtime now viable (Dec-18-2025 bidirectional-WS GA + per-session Firecracker microVM) but gated behind ARM64/2GB + 2vCPU/8GB + the 60-min connection cap re-arch (~8-15 eng-days, low lock-in). Wrote engine_spike-style reports/design/agent_isolation_spike.md (9-step migration, single-box rollback)."
     }
   ],
   "totals_by_sprint": {
