@@ -211,9 +211,13 @@ def _run_geoclaw(cwd: Path) -> tuple[int, Path, Path]:
          compiles the GeoClaw Fortran (if needed) and runs the solver, writing
          fort.q frames under ``_output/``.
 
-    GeoClaw ships an ``$CLAW`` Makefile machinery; the worker image stages a
-    minimal ``Makefile`` that includes ``$(CLAW)/clawutil/src/Makefile.common``
-    so ``make .output`` resolves the standard target. Returns
+    GeoClaw ships an ``$CLAW`` Makefile machinery; the ``.output`` rule lives in
+    ``$(CLAW)/clawutil/src/Makefile.common`` and is only usable once a
+    per-application ``Makefile`` (setting CLAW_PKG/EXE/SETRUN_FILE/OUTDIR + the
+    GeoClaw module/source lists) includes it. The deck author
+    (``setrun_builder.build_geoclaw_deck``) WRITES that ``Makefile`` into ``cwd``
+    alongside ``setrun.py`` -- without it ``make .output`` fails instantly with
+    "No rule to make target '.output'". Returns
     ``(exit_code, stdout_path, stderr_path)``: 0 on a clean solve, non-zero on a
     compile/solve failure.
 

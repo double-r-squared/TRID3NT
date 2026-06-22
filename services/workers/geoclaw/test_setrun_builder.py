@@ -30,6 +30,7 @@ from services.workers.geoclaw.setrun_builder import (
     build_geoclaw_deck,
     parse_build_spec,
     render_maketopo_dtopo,
+    render_makefile,
     render_qinit_data,
     render_setrun_py,
 )
@@ -180,6 +181,40 @@ def test_render_maketopo_dtopo_is_valid_python_and_uses_dtopotools():
 
 
 # ===========================================================================
+# (3b) the per-application Makefile -- THIS supplies the `.output` target.
+# ===========================================================================
+def test_render_makefile_provides_output_target_via_includes():
+    spec = parse_build_spec(_spec(scenario="dam_break"))
+    mk = render_makefile(spec)
+    # The load-bearing include: the `.output` rule lives in Makefile.common.
+    # Its absence is exactly the live bug ("No rule to make target '.output'").
+    # The canonical example reaches it via CLAWMAKE; assert both the binding and
+    # the include of it (so $(CLAWMAKE) resolves to Makefile.common).
+    assert "CLAWMAKE = $(CLAW)/clawutil/src/Makefile.common" in mk
+    assert "include $(CLAWMAKE)" in mk
+    # The GeoClaw 2d shallow module/source lists come from Makefile.geoclaw.
+    assert "include $(CLAW)/geoclaw/src/2d/shallow/Makefile.geoclaw" in mk
+    # The required GeoClaw build vars (mirror the canonical example Makefile).
+    assert "CLAW_PKG = geoclaw" in mk
+    assert "EXE = xgeoclaw" in mk
+    assert "SETRUN_FILE = setrun.py" in mk
+    assert "OUTDIR = _output" in mk
+    # CLAW must be exported in the runtime env for the includes to resolve.
+    assert "ifndef CLAW" in mk
+
+
+def test_render_makefile_is_scenario_agnostic():
+    # The build machinery is identical across scenarios -- only the deck data
+    # (qinit/dtopo/sea_level) differs, not the Makefile.
+    for scen in ("dam_break", "tsunami", "surge"):
+        spec = parse_build_spec(_spec(scenario=scen))
+        mk = render_makefile(spec)
+        assert "CLAWMAKE = $(CLAW)/clawutil/src/Makefile.common" in mk
+        assert "include $(CLAWMAKE)" in mk
+        assert "CLAW_PKG = geoclaw" in mk
+
+
+# ===========================================================================
 # (4) full deck build into a tmp dir + DeckManifest provenance.
 # ===========================================================================
 def test_build_dam_break_deck_writes_setrun_and_qinit(tmp_path: Path):
@@ -191,6 +226,14 @@ def test_build_dam_break_deck_writes_setrun_and_qinit(tmp_path: Path):
     assert "setrun.py" in manifest.files_written
     assert "qinit.xyz" in manifest.files_written
     assert "dam_break" in manifest.driver_descriptor
+    # The Makefile MUST be written alongside setrun.py so `make .output` has a
+    # rule for the `.output` target (the live "No rule to make target" bug).
+    assert (tmp_path / "Makefile").exists()
+    assert "Makefile" in manifest.files_written
+    mk = (tmp_path / "Makefile").read_text()
+    assert "CLAWMAKE = $(CLAW)/clawutil/src/Makefile.common" in mk
+    assert "include $(CLAWMAKE)" in mk
+    assert "CLAW_PKG = geoclaw" in mk
     # the on-disk setrun.py is valid Python.
     ast.parse((tmp_path / "setrun.py").read_text())
     # the persisted manifest round-trips.
@@ -217,12 +260,14 @@ def test_build_tsunami_staged_dtopo_skips_maketopo(tmp_path: Path):
     assert "my_dtopo.tt3" in (tmp_path / "setrun.py").read_text()
 
 
-def test_build_surge_deck_writes_only_setrun(tmp_path: Path):
+def test_build_surge_deck_writes_setrun_and_makefile_only(tmp_path: Path):
     manifest = build_geoclaw_deck(_spec(scenario="surge", sea_level_m=2.0), tmp_path)
     assert (tmp_path / "setrun.py").exists()
+    assert (tmp_path / "Makefile").exists()
     assert not (tmp_path / "qinit.xyz").exists()
     assert not (tmp_path / "maketopo.py").exists()
-    assert manifest.files_written == ["setrun.py"]
+    # surge writes no scenario source file -- only the setrun.py + the Makefile.
+    assert manifest.files_written == ["setrun.py", "Makefile"]
 
 
 def test_source_lonlat_overrides_centroid_in_qinit(tmp_path: Path):
