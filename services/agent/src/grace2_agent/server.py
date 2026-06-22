@@ -1522,6 +1522,86 @@ async def _send_error(
     await websocket.send(_new_envelope("error", session_id, payload))
 
 
+# WS-30s STORM FIX (server data heartbeat): the browser ``WebSocket`` API
+# handles server PROTOCOL-level PING control-frames transparently and NEVER
+# surfaces them to ``onmessage``, so the server's ``ping_interval=20`` pings do
+# NOT reset the web client's inbound-frame timer (ws.ts ``noteInboundActivity``
+# fires only on a DATA frame). Between turns the ONLY data frame the client sees
+# is its own keepalive's ``session-state`` reply; if that reply is slow or stalls
+# (a reconnect re-runs the active-case layer replay + vector densify), the
+# client's pong deadline expires and it force-reconnects -> the reconnect re-runs
+# the replay -> stalls again -> a self-sustaining ~30s reconnect storm in which
+# the user's prompts never reach the turn handler.
+#
+# Fix: per WS connection, a background task sends a lightweight ``heartbeat`` DATA
+# frame every ``HEARTBEAT_INTERVAL_SECONDS`` (well under the client's
+# ~25s ping + 10s pong-timeout window) so the client's ``onmessage`` fires and
+# its inbound-activity timer is reset on a cheap server clock that is independent
+# of the (possibly-slow) resume reply. ws.ts already (a) calls
+# ``noteInboundActivity()`` on EVERY inbound frame BEFORE any type parsing and
+# (b) routes an unknown ``heartbeat`` type to a no-op ``default:`` (console.debug
+# only) -- so NO web change is required for the client to tolerate + benefit from
+# it. The interval is deliberately shorter than the client's 25s keepalive so a
+# heartbeat lands inside every pong window even on a busy loop.
+HEARTBEAT_INTERVAL_SECONDS: float = 12.0
+
+
+async def _heartbeat_loop(
+    websocket: ServerConnection,
+    session_id: str,
+) -> None:
+    """Send a lightweight ``heartbeat`` DATA frame every interval until cancelled.
+
+    WS-30s STORM FIX (primary): the server PING control-frames never reach the
+    browser ``onmessage`` handler, so they cannot keep the web client's
+    inbound-activity / pong-deadline timer alive. This per-connection task sends a
+    tiny ``heartbeat`` envelope on a server clock (every
+    ``HEARTBEAT_INTERVAL_SECONDS``) so the client always sees a fresh DATA frame
+    well inside its pong window -- breaking the reconnect storm regardless of how
+    slow the session-resume reply is.
+
+    Built as a raw-JSON envelope (the same pattern ``_emit_turn_complete`` /
+    ``_send_loop_exhausted`` use) so no schema-lane payload model is required; the
+    payload carries only a server timestamp. NOT stamped with a Case tag -- it is
+    a pure transport-liveness frame, never routed to a Case stream.
+
+    Cancelled cleanly by the handler's ``finally`` on EVERY disconnect path. A
+    per-send wire failure (the socket may be mid-close) is swallowed so a transient
+    write error never tears down the loop early; a ``ConnectionClosed`` ends the
+    ``async for``-driven handler which then cancels this task.
+    """
+    import json as _json
+
+    while True:
+        await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
+        try:
+            await websocket.send(
+                _json.dumps(
+                    {
+                        "type": "heartbeat",
+                        "id": new_ulid(),
+                        "ts": now_utc().isoformat().replace("+00:00", "Z"),
+                        "session_id": session_id,
+                        "case_id": None,
+                        "payload": {
+                            "ts": now_utc().isoformat().replace("+00:00", "Z"),
+                        },
+                    }
+                )
+            )
+        except asyncio.CancelledError:
+            # Clean shutdown from the handler ``finally`` -- propagate so the
+            # awaiting canceller observes completion (NATE: cancel cleanly).
+            raise
+        except Exception:  # noqa: BLE001 -- transport liveness; never tear down
+            # A half-closed socket send fails; the handler loop will end on the
+            # real ConnectionClosed and cancel this task. Swallow + keep ticking
+            # so a single transient write hiccup does not kill the heartbeat.
+            logger.debug(
+                "heartbeat send failed session=%s", session_id, exc_info=True
+            )
+
+
 async def _send_loop_exhausted(
     websocket: ServerConnection,
     session_id: str,
@@ -8680,6 +8760,18 @@ def _make_handler(settings: GeminiSettings):
         # on EVERY exit path (normal close, crash, cancellation).
         _register_active_connection(websocket)
 
+        # WS-30s STORM FIX (primary): start the per-connection data heartbeat so
+        # the web client's inbound-activity timer is reset on a fast server clock
+        # (every HEARTBEAT_INTERVAL_SECONDS), independent of the possibly-slow
+        # session-resume reply. Cancelled in the finally below on EVERY exit path.
+        # The session_id is bound on the first inbound envelope; the heartbeat
+        # frame's session_id is purely cosmetic (the client routes by transport,
+        # not session, for a liveness frame) so a pre-handshake placeholder ULID
+        # of zeros is fine until ``state`` is set.
+        heartbeat_task = asyncio.create_task(
+            _heartbeat_loop(websocket, "00000000000000000000000000")
+        )
+
         try:
             async for raw in websocket:
                 if isinstance(raw, bytes):
@@ -8718,6 +8810,22 @@ def _make_handler(settings: GeminiSettings):
                     continue
 
                 payload_dict = parsed.get("payload", {})
+
+                # WS-30s TELEMETRY (NATE): log EVERY inbound frame's type BEFORE
+                # routing so "did the user's prompt arrive?" is directly visible
+                # in the agent journal. The high-frequency keepalive (the client's
+                # ``session-resume`` ping ~every 25s) is logged at DEBUG so it does
+                # not flood the INFO stream; everything else (user-message,
+                # case-command, ...) is logged at INFO. The server-sent
+                # ``heartbeat`` is OUTBOUND only and never reaches this point.
+                if msg_type == "session-resume":
+                    logger.debug(
+                        "ws-recv session=%s type=%s", session_id, msg_type
+                    )
+                else:
+                    logger.info(
+                        "ws-recv session=%s type=%s", session_id, msg_type
+                    )
 
                 # Dispatch on message type. Every payload is re-validated
                 # through its concrete grace2_contracts model.
@@ -9219,8 +9327,13 @@ def _make_handler(settings: GeminiSettings):
             # Normal/abnormal peer closes (pong timeout, tab/mobile close,
             # network blip, StrictMode socket churn) are not crashes - log a
             # quiet one-liner instead of a full traceback.
-            logger.debug(
-                "connection closed session=%s code=%s reason=%s",
+            #
+            # WS-30s TELEMETRY (NATE): log the close code + reason at INFO so the
+            # "why did the socket die?" question is directly answerable from the
+            # journal (e.g. a 1006/no-close-frame storm vs a clean 1000/1001 tab
+            # close). This is one line per disconnect, not a per-frame flood.
+            logger.info(
+                "ws-close session=%s code=%s reason=%r",
                 getattr(state, "session_id", None),
                 getattr(exc, "code", None),
                 getattr(exc, "reason", None),
@@ -9237,6 +9350,18 @@ def _make_handler(settings: GeminiSettings):
             # ``_SOLVE_IN_FLIGHT``, so dropping the connection count here does NOT
             # expose the box to being stopped mid-solve.
             _deregister_active_connection(websocket)
+            # WS-30s STORM FIX: stop the per-connection data heartbeat on EVERY
+            # exit path (normal close, crash, cancellation, loop exhaustion) so
+            # the background task never outlives its socket. Cancel + await so the
+            # CancelledError is observed (no "Task was destroyed but it is pending"
+            # warning); a never-started/already-done task is a harmless no-op.
+            heartbeat_task.cancel()
+            try:
+                await heartbeat_task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                # CancelledError is the expected clean-stop path; any other error
+                # from the dying task must not mask the disconnect handling below.
+                pass
             # job-SOLVE-SURVIVE (the #1 SFINCS blocker): a socket close must NOT
             # kill an in-flight turn. ROOT CAUSE of "no successful SFINCS run
             # since Fort Myers": this finally used to ``.cancel()`` EVERY not-done
