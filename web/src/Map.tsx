@@ -1,10 +1,10 @@
-// GRACE-2 web — MapLibre GL JS CONUS basemap + WMS overlay wiring.
+// GRACE-2 web  -  MapLibre GL JS CONUS basemap + WMS overlay wiring.
 //
 // M3 pivot (job-0025):
 //   The default basemap is now sourced from the deployed QGIS Server WMS at
 //   /ogc/wms?MAP=/mnt/qgs/grace2-sample.qgs&LAYERS=basemap-osm-conus (see
-//   job-0024 audit — `.qgs` mounted at `/mnt/qgs/` via Cloud Run gen2 native
-//   GCS volume mount; image digest @sha256:a703476049…). This satisfies
+//   job-0024 audit  -  `.qgs` mounted at `/mnt/qgs/` via Cloud Run gen2 native
+//   GCS volume mount; image digest @sha256:a703476049...). This satisfies
 //   FR-WC-2 (Tier B / QGIS Server rendering path) and Invariant 4 (rendering
 //   through QGIS Server) for the basemap-layer slice. Tier separation
 //   (Invariant 5) is preserved: zero `gs://` URLs in client code; the client
@@ -12,7 +12,7 @@
 //
 //   The OSM-direct raster source from M1 is KEPT in the style as an inactive
 //   fallback layer (`layout.visibility = 'none'`). This is the FR-DT-1
-//   swappability proof — flipping the visibility in the style spec swaps
+//   swappability proof  -  flipping the visibility in the style spec swaps
 //   the basemap source without touching the agent. No runtime feature-flag
 //   plumbing (per "No legacy support pre-MVP").
 //
@@ -23,12 +23,12 @@
 //
 // job-0068 additions:
 //   - Subscribes to session-state.loaded_layers and wires WMS raster sources
-//     via MapLibre addSource/addLayer (Invariant 4 — QGIS Server renders;
+//     via MapLibre addSource/addLayer (Invariant 4  -  QGIS Server renders;
 //     client only registers URLs). Replace-not-reconcile per A.7: diffs
 //     against a useRef<Set<string>> of added source IDs.
 //   - Subscribes to map-command and handles zoom-to via map.fitBounds.
 //
-// The client renders, it never computes — every number on the map is a
+// The client renders, it never computes  -  every number on the map is a
 // MapLibre-internal coordinate (Invariant 1 preserved trivially).
 
 import { useEffect, useRef, useState } from "react";
@@ -46,16 +46,16 @@ import { SpatialDrawSurface } from "./components/SpatialDrawSurface";
 import { AoiPickerCard } from "./components/AoiPickerCard";
 import type { SpatialInputRequestPayload } from "./contracts";
 import { LayerLegend } from "./components/LayerLegend";
-// C3 (job-0356 / per-case-layer-durability) — the CLIENT is the source of truth
+// C3 (job-0356 / per-case-layer-durability)  -  the CLIENT is the source of truth
 // for visibility on a server replay. A genuine fresh-socket resume re-asserts
 // visible:true for every active-Case layer (the server keeps no per-user
 // visibility state), which would un-hide a layer the user explicitly hid. We
-// read the user's persisted override map and let it WIN on replay — but ONLY for
+// read the user's persisted override map and let it WIN on replay  -  but ONLY for
 // layer_ids the user explicitly toggled (the hasOwnProperty guard inside
 // `readLayerVisibilityOverrides`'s consumers), so a never-toggled VISIBLE layer
 // keeps rendering across reconnect.
 import { readLayerVisibilityOverrides } from "./LayerPanel";
-// job-0179 (per-Case client cache + view-state durability — "the seatbelt").
+// job-0179 (per-Case client cache + view-state durability  -  "the seatbelt").
 // The shared LayerCache gates teardown (allowsEvict: an omitted-but-still-
 // tracked layer is NOT torn down on a stale/partial reconcile frame), supplies
 // the user's persisted view-overrides (opacity / visibility / zIndex) to
@@ -63,7 +63,7 @@ import { readLayerVisibilityOverrides } from "./LayerPanel";
 // setOverride so they survive a re-render. This SUBSUMES the localStorage
 // `grace2.layerVisibility` override map (still read above for back-compat).
 import { getLayerCache } from "./lib/layer_cache";
-// JOB WEB-ANIM (#157.1) — the module-level sequence-animation controller. The
+// JOB WEB-ANIM (#157.1)  -  the module-level sequence-animation controller. The
 // frame-advance playback used to live inside LayerPanel/SequenceScrubber, so
 // closing/unmounting the panel killed the animation. The controller now holds
 // the playback state + interval OUTSIDE the React tree; Map.tsx (always mounted)
@@ -89,7 +89,7 @@ import {
   type VectorGeomKind,
 } from "./lib/vector_rendering";
 
-/** UI theme — see App.tsx for toggle implementation (job-0076). */
+/** UI theme  -  see App.tsx for toggle implementation (job-0076). */
 export type MapTheme = "light" | "dark";
 
 /**
@@ -100,16 +100,16 @@ export type MapTheme = "light" | "dark";
  *      paint props for the flood overlay.
  *   2. The vector style.json brings in glyphs/sprites + multiple sub-sources
  *      that complicate the swap path; raster is one-source one-layer.
- * Attribution per CartoDB ToS: "© OpenStreetMap contributors © CARTO".
+ * Attribution per CartoDB ToS: "- OpenStreetMap contributors - CARTO".
  */
 const CARTO_DARK_TILE_TEMPLATE = "https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png";
 const CARTO_DARK_ATTRIBUTION =
-  '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors © <a href="https://carto.com/attributions" target="_blank" rel="noopener noreferrer">CARTO</a>';
+  '- <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors - <a href="https://carto.com/attributions" target="_blank" rel="noopener noreferrer">CARTO</a>';
 
-// LIGHT-theme basemap — CartoDB Positron raster (CC-BY, no API key, CDN).
+// LIGHT-theme basemap  -  CartoDB Positron raster (CC-BY, no API key, CDN).
 // ux-batch-1 GCP-DECOUPLE FIX (2026-06-16): the light basemap previously
 // pointed at the GCP Cloud Run QGIS Server (DEFAULT_WMS_URL below), a lingering
-// GCP dependency missed in the AWS migration — and that server is private
+// GCP dependency missed in the AWS migration  -  and that server is private
 // (invoker-only) so the prod site got 403s and the map never settled, which
 // stalled every deferred layer/extent draw (the "layers in panel but not on
 // map / waits to go light->dark" incident). Positron mirrors the dark CartoDB
@@ -121,7 +121,7 @@ const CARTO_LIGHT_ATTRIBUTION = CARTO_DARK_ATTRIBUTION;
 // QGIS Server WMS endpoint. Overridable via VITE_GRACE2_WMS_URL at build/dev
 // start. Default = deployed M2 substrate (job-0018 + job-0024).
 //
-// NOTE: the MAP= query string IS part of the WMS endpoint contract here —
+// NOTE: the MAP= query string IS part of the WMS endpoint contract here  - 
 // QGIS Server keys projects by the filesystem-mounted `.qgs` path. Per the
 // FR-QS-2 amendment surfaced from job-0024, `.qgs` reaches QGIS Server via
 // the /mnt/qgs/ Cloud Run gen2 native GCS volume mount; layer-data refs
@@ -134,11 +134,11 @@ const DEFAULT_WMS_URL =
 // scheme+host+path is replaced by the agent's /qgis-proxy endpoint and the
 // original WMS query string is preserved. The agent proxy (which holds the
 // only invoker grant on the now-private QGIS Server) forwards + streams the
-// tile, stripping user credentials. ABSENT (dev/today) → returns the URL
+// tile, stripping user credentials. ABSENT (dev/today) -> returns the URL
 // byte-identical, so behavior is unchanged. Example:
 //   VITE_QGIS_PROXY_BASE = "https://agent.example/qgis-proxy"
 //   https://qgis.run.app/ogc/wms?MAP=x&LAYERS=y
-//     → https://agent.example/qgis-proxy?MAP=x&LAYERS=y
+//     -> https://agent.example/qgis-proxy?MAP=x&LAYERS=y
 const QGIS_PROXY_BASE: string | undefined =
   (import.meta.env.VITE_QGIS_PROXY_BASE as string | undefined) || undefined;
 
@@ -156,16 +156,16 @@ const WMS_BASE_URL: string = applyQgisProxy(
 
 // MapLibre injects {bbox-epsg-3857} into the tile URL with the tile's
 // bounding box in EPSG:3857 (the default Web Mercator projection). QGIS
-// Server returns a 256×256 PNG per tile request.
+// Server returns a 256-256 PNG per tile request.
 const WMS_TILE_TEMPLATE = `${WMS_BASE_URL}&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&LAYERS=basemap-osm-conus&CRS=EPSG:3857&FORMAT=image/png&TRANSPARENT=true&BBOX={bbox-epsg-3857}&WIDTH=256&HEIGHT=256&STYLES=`;
 
 // OSM Tier A fallback. Kept committed to demonstrate FR-DT-1 swappability;
 // the visibility flag is 'none' so it does not render at runtime.
 const OSM_TILE_TEMPLATE = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
 const OSM_ATTRIBUTION =
-  '© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors';
+  '- <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors';
 const QGIS_WMS_ATTRIBUTION =
-  'Basemap via GRACE-2 QGIS Server — © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors';
+  'Basemap via GRACE-2 QGIS Server  -  - <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors';
 
 const CONUS_VIEW = {
   center: [-95.5, 37.0] as [number, number],
@@ -176,11 +176,11 @@ const STYLE: StyleSpecification = {
   version: 8,
   sources: {
     // LIGHT basemap. ux-batch-1 GCP-decouple (2026-06-16): was the GCP QGIS
-    // Server WMS (now private/unreachable from prod → dead map). Swapped to
+    // Server WMS (now private/unreachable from prod -> dead map). Swapped to
     // CartoDB Positron (CDN, no GCP, no QGIS Server). Source id kept as
     // "qgis-wms" so the theme-swap / beforeId logic below is unchanged; it now
     // serves CartoDB Positron tiles. (Re-point at QGIS Server once it is on AWS
-    // — sprint-16 — via VITE_GRACE2_WMS_URL.)
+    //  -  sprint-16  -  via VITE_GRACE2_WMS_URL.)
     "qgis-wms": {
       type: "raster",
       tiles: [
@@ -194,7 +194,7 @@ const STYLE: StyleSpecification = {
         : CARTO_LIGHT_ATTRIBUTION,
       maxzoom: 19,
     },
-    // Inactive fallback: OSM direct. FR-DT-1 Tier A swappability proof —
+    // Inactive fallback: OSM direct. FR-DT-1 Tier A swappability proof  - 
     // present in the style spec but `visibility: 'none'`. No runtime swap
     // affordance (no legacy support pre-MVP).
     "osm-fallback": {
@@ -226,7 +226,7 @@ const STYLE: StyleSpecification = {
 
 // Module-level reference so external code (e.g. integration tests, future
 // LayerPanel apply paths) can introspect the map. The web side never
-// mutates basemap style spec at runtime — only future agent-driven layers
+// mutates basemap style spec at runtime  -  only future agent-driven layers
 // (M4) will append/remove layers via map-command handlers (job-0026+).
 let activeMap: MapLibreMap | null = null;
 
@@ -247,29 +247,29 @@ interface WireLayerSummary {
   uri: string;          // agent wire format (Python `uri` field)
   visible?: boolean;
   opacity?: number;
-  // job-0139 — vector layer additions. Optional because raster layers omit them.
+  // job-0139  -  vector layer additions. Optional because raster layers omit them.
   style_preset?: string | null;
   bbox?: [number, number, number, number] | null;
-  // job-0175 — inline GeoJSON for vector layers. When present, the client
+  // job-0175  -  inline GeoJSON for vector layers. When present, the client
   // skips the `uri` fetch (which would hit Invariant 5's gs:// guardrail
   // and silently no-op) and renders directly from this FeatureCollection.
   // The agent populates this for every cacheable vector fetcher (see
   // `services/agent/src/grace2_agent/pipeline_emitter.py:add_loaded_layer`).
-  // Optional — older session-state snapshots predate this field.
+  // Optional  -  older session-state snapshots predate this field.
   inline_geojson?: unknown;
-  // F94 — dense-vector handling. When the agent's tiled path is enabled it
+  // F94  -  dense-vector handling. When the agent's tiled path is enabled it
   // emits a client-reachable vector-tile URL ({z}/{x}/{y}.pbf MVT or a
   // pmtiles:// URL) instead of inline GeoJSON, so MapLibre only draws what is
   // in view. When present this takes precedence over `inline_geojson`.
   vector_tile_url?: string;
-  // F94 — geometry family for the tiled source's paint layer (point/line/
+  // F94  -  geometry family for the tiled source's paint layer (point/line/
   // polygon). The tiled path has no features to classify client-side, so the
   // agent declares the kind. Defaults to "polygon" (the footprint case).
   vector_geom_kind?: string;
-  // F94 — vector source-layer name inside the MVT tiles (PMTiles builder uses
+  // F94  -  vector source-layer name inside the MVT tiles (PMTiles builder uses
   // "vector" by default). Required to address features in a vector source.
   vector_source_layer?: string;
-  // F94 — honest density tag when a dense layer was simplified/capped on the
+  // F94  -  honest density tag when a dense layer was simplified/capped on the
   // inline fallback path. Additive (extra-tolerant): surfaced so the user knows
   // the layer was reduced for performance; never a silent drop.
   vector_density?: {
@@ -290,15 +290,15 @@ interface ZoomToCommand {
   args: { bbox: number[] };
 }
 // job-0294 follow-on (ux-batch-1 F14): clear the analysis-extent rectangle.
-// Emitted by App.tsx on Case exit (activeSession → null) and on opening a Case
+// Emitted by App.tsx on Case exit (activeSession -> null) and on opening a Case
 // that has no bbox / no zoom-to history, so a prior Case's AOI outline does not
-// linger on the map. No args — it removes the single extent source + layers.
+// linger on the map. No args  -  it removes the single extent source + layers.
 interface ClearAnalysisExtentCommand {
   command: "clear-analysis-extent";
 }
 // ux-batch-1 (F-CASES-CLEAR-ALL): snap the camera back to the default CONUS
 // view. Emitted by App.tsx on Case EXIT (to the Cases root) so leaving a Case
-// visibly resets the map (camera-only — no extent rectangle, unlike zoom-to).
+// visibly resets the map (camera-only  -  no extent rectangle, unlike zoom-to).
 interface ResetViewCommand {
   command: "reset-view";
 }
@@ -320,7 +320,7 @@ export interface MapViewProps {
   theme?: MapTheme;
   /**
    * Lifts the TRUE projected AOI screen rectangle (the same `legendRect` the
-   * LayerLegend snaps against — computeBboxScreenRect over all four bbox
+   * LayerLegend snaps against  -  computeBboxScreenRect over all four bbox
    * corners) up to App so the SequenceScrubber (rendered inside LayerPanel,
    * which has no map handle) can pin bottom-center of the AOI box and track
    * pan/zoom, exactly like the legend keys. Called with the rect whenever it
@@ -329,16 +329,16 @@ export interface MapViewProps {
    */
   onAoiScreenRectChange?: (rect: LegendScreenRect | null) => void;
   /**
-   * Item b (NATE 2026-06-20) — CONTROLLED legend hide state, threaded straight
+   * Item b (NATE 2026-06-20)  -  CONTROLLED legend hide state, threaded straight
    * to LayerLegend. App owns it on mobile so the show/hide toggle can live in
    * the expanded Layers section (out of the chat composer's way). Undefined =>
    * the legend keeps its own internal hide state (desktop default).
    */
   legendHidden?: boolean;
-  /** Item b — fired when the legend hide state toggles (controlled mode). */
+  /** Item b  -  fired when the legend hide state toggles (controlled mode). */
   onLegendHiddenChange?: (hidden: boolean) => void;
   /**
-   * Item b — suppress the legend's floating "Show legend" pill (mobile uses the
+   * Item b  -  suppress the legend's floating "Show legend" pill (mobile uses the
    * in-panel toggle instead, so the floating pill must not also render).
    */
   suppressLegendShowPill?: boolean;
@@ -349,20 +349,20 @@ export interface MapViewProps {
    * card is request-free (no active turn; the agent box may be asleep).
    */
   aoiCaptureActive?: boolean;
-  /** #170 - confirm the AOI capture with the chosen bbox [minLon,minLat,maxLon,maxLat]. */
-  onAoiCaptureConfirm?: (bbox: [number, number, number, number]) => void;
-  /** #170 - skip the AOI step (create with no bbox). */
-  onAoiCaptureSkip?: () => void;
+  /** #170 - confirm the AOI capture with the chosen bbox [minLon,minLat,maxLon,maxLat] + Case name. */
+  onAoiCaptureConfirm?: (bbox: [number, number, number, number], name: string) => void;
+  /** #170 - skip the AOI step (create with the name + no bbox). */
+  onAoiCaptureSkip?: (name: string) => void;
   /** #170 - dismiss the AOI overlay without creating a Case. */
   onAoiCaptureCancel?: () => void;
 }
 
 /**
- * Style-preset → WMS LAYERS value derivation table for upstream tools that
- * emit a bare WMS endpoint (no `?LAYERS=…`) and rely on the client to
+ * Style-preset -> WMS LAYERS value derivation table for upstream tools that
+ * emit a bare WMS endpoint (no `?LAYERS=...`) and rely on the client to
  * supply the layer name. Currently used for Iowa State Mesonet NEXRAD
- * (`fetch_nexrad_reflectivity` — job-0102/0105 family) whose LayerURI.uri
- * is `https://…/wms/nexrad/<product>.cgi` with the LAYERS value implicit
+ * (`fetch_nexrad_reflectivity`  -  job-0102/0105 family) whose LayerURI.uri
+ * is `https://.../wms/nexrad/<product>.cgi` with the LAYERS value implicit
  * in the path.
  *
  * job-0171: the producer contract documented in
@@ -379,7 +379,7 @@ export interface MapViewProps {
  */
 const STYLE_PRESET_TO_WMS_LAYERS: Record<string, string> = {
   // job-0171 live diagnosis (evidence/iowa_capabilities_audit.txt): the
-  // Iowa Mesonet WMS does NOT publish `nexrad-{product}-wmst` layers — that
+  // Iowa Mesonet WMS does NOT publish `nexrad-{product}-wmst` layers  -  that
   // value in the agent tool's `_PRODUCT_LAYER_NAME` table is wrong. The
   // EPSG:3857 (Web Mercator) layer name follows the legacy `-900913`
   // convention (the original Web-Mercator EPSG code, kept for back-compat
@@ -401,39 +401,39 @@ const STYLE_PRESET_TO_WMS_LAYERS: Record<string, string> = {
  * MAP and LAYERS. job-0171 diagnosis (evidence/radar_diag.json) shows
  * the Iowa State Mesonet NEXRAD tool emits the bare `*.cgi` endpoint
  * without either `?` or `LAYERS=`, which means this helper used to
- * produce malformed URLs like `…n0r.cgi&SERVICE=WMS&…&LAYERS=` (no
+ * produce malformed URLs like `...n0r.cgi&SERVICE=WMS&...&LAYERS=` (no
  * `LAYERS` value) that the Iowa Mesonet WMS rejects as a 400.
  *
  * This helper now defensively normalises:
  *   1. Use `?` as separator when the base URL has no `?` yet, `&` otherwise.
  *   2. If the base URL is missing a `LAYERS=` param, fall back to the
- *      `style_preset → STYLE_PRESET_TO_WMS_LAYERS` lookup. Logs a warn
+ *      `style_preset -> STYLE_PRESET_TO_WMS_LAYERS` lookup. Logs a warn
  *      when neither is present so the diagnosis is loud.
  *   3. Add the per-tile WMS GetMap params MapLibre's raster source needs.
  */
 export function buildWmsTileUrl(wmsUrl: string, stylePreset?: string | null): string {
   // sprint-14-aws (job-0290): the AWS agent publishes rasters as ready XYZ
-  // tile TEMPLATES (TiTiler — contains {z}/{x}/{y}). Pass them through
+  // tile TEMPLATES (TiTiler  -  contains {z}/{x}/{y}). Pass them through
   // untouched: appending WMS params to an XYZ template would 400 every tile.
   if (wmsUrl.includes("{z}")) {
     // sprint-14-aws (job-0296): on the HTTPS CloudFront edge, rewrite a legacy
     // http://<ip>:8080 TiTiler origin (baked into pre-cutover layer URIs) to the
     // public base so persisted tiles aren't mixed-content-blocked. CloudFront's
     // /cog/* behavior routes to TiTiler. No-op when VITE_GRACE2_PUBLIC_BASE is
-    // unset (publicTileBase()===null) — byte-identical to the http-site path.
+    // unset (publicTileBase()===null)  -  byte-identical to the http-site path.
     const base = publicTileBase();
     if (base) return wmsUrl.replace(/^https?:\/\/[^/]+:8080/, base);
     return wmsUrl;
   }
   // job-0255: route overlay WMS URLs through the agent proxy when
-  // VITE_QGIS_PROXY_BASE is set (no-op otherwise — byte-identical).
+  // VITE_QGIS_PROXY_BASE is set (no-op otherwise  -  byte-identical).
   wmsUrl = applyQgisProxy(wmsUrl);
   const sep = wmsUrl.includes("?") ? "&" : "?";
   let layersParam = "";
   // The upstream URL may already contain LAYERS=. If it doesn't, attempt to
   // synthesise one from the style preset so the tile request is actually
   // valid (otherwise the WMS server 400s and MapLibre silently paints
-  // nothing — the user-reported symptom).
+  // nothing  -  the user-reported symptom).
   if (!/[?&]LAYERS=/i.test(wmsUrl)) {
     const layers = stylePreset ? STYLE_PRESET_TO_WMS_LAYERS[stylePreset] : undefined;
     if (layers) {
@@ -461,10 +461,10 @@ const BASEMAP_SOURCE_ID = "qgis-wms";
 const DARK_BASEMAP_LAYER_ID = "carto-dark-basemap";
 const DARK_BASEMAP_SOURCE_ID = "carto-dark";
 
-// job-0294 — "analysis extent" rectangle. When the agent emits a `zoom-to`
+// job-0294  -  "analysis extent" rectangle. When the agent emits a `zoom-to`
 // map-command with a bbox, we ALSO outline that extent as a styled rectangle so
 // the user sees exactly what area is being measured. A SINGLE extent rectangle
-// (replace-on-new-bbox) is the v0.1 contract — the source is the same
+// (replace-on-new-bbox) is the v0.1 contract  -  the source is the same
 // map-command the camera consumes, so persisted-case reopen (App.tsx replays
 // the last zoom-to through the bus) redraws it for free. Thin dashed accent
 // stroke, faint fill.
@@ -473,10 +473,10 @@ const ANALYSIS_EXTENT_FILL_LAYER_ID = "grace2-analysis-extent-fill";
 const ANALYSIS_EXTENT_LINE_LAYER_ID = "grace2-analysis-extent-line";
 
 /**
- * INCIDENT FIX 2026-06-16 — hung-tile resilience. The reconcile + layer-add
+ * INCIDENT FIX 2026-06-16  -  hung-tile resilience. The reconcile + layer-add
  * paths gated on ``map.isStyleLoaded()``, which maplibre-gl returns false while
  * ANY source cache is still loading. A single HUNG raster source (e.g. a
- * vector .fgb wrongly published behind TiTiler's /cog raster face — its tiles
+ * vector .fgb wrongly published behind TiTiler's /cog raster face  -  its tiles
  * never resolve) made ``isStyleLoaded()`` false PERMANENTLY, which froze the
  * whole reconcile loop: NO overlays painted, removals didn't run, the AOI
  * never drew (the "layers in panel, blank map, hit-or-miss" incident).
@@ -490,7 +490,7 @@ const ANALYSIS_EXTENT_LINE_LAYER_ID = "grace2-analysis-extent-line";
  */
 type ReadyMap = MapLibreMap & {
   __grace2StyleReady?: boolean;
-  // FIX 2 (vector AOI clip) — the current AOI bbox `[minLon,minLat,maxLon,maxLat]`
+  // FIX 2 (vector AOI clip)  -  the current AOI bbox `[minLon,minLat,maxLon,maxLat]`
   // (EPSG:4326), stashed on the map instance so the MODULE-LEVEL vector add path
   // (`addVectorLayer` / `registerVectorOnMap`, which only receive `m`) can clip
   // features to the AOI without threading React state down. Mirrors the
@@ -511,7 +511,7 @@ export function mapStyleReady(m: MapLibreMap): boolean {
 }
 
 /**
- * FIX 2 (vector AOI clip) — read/write the AOI bbox stashed on the map instance.
+ * FIX 2 (vector AOI clip)  -  read/write the AOI bbox stashed on the map instance.
  * The agent fetches NSI points / building footprints with the AOI bbox expanded
  * ~10% (so edge features aren't clipped server-side), which left vectors
  * rendering BEYOND the AOI rectangle the user drew. We clip client-side to the
@@ -536,7 +536,7 @@ function bboxesOverlap(
 ): boolean {
   // a/b = [minLon, minLat, maxLon, maxLat]. Overlap iff they intersect on both
   // axes. Touching edges count as overlap (inclusive) so an AOI-edge feature is
-  // kept. Pure pixel/coord math — no geography computed (Invariant 1).
+  // kept. Pure pixel/coord math  -  no geography computed (Invariant 1).
   return a[0] <= b[2] && a[2] >= b[0] && a[1] <= b[3] && a[3] >= b[1];
 }
 
@@ -603,7 +603,7 @@ function geometryBbox(
  * overall data extent; if that extent is not fully CONTAINED within `aoi`
  * (allowing a tiny coord tolerance), the AOI is stale/smaller than the data and
  * we pass the collection through UNTOUCHED. We only drop outliers when the AOI
- * genuinely encloses the data (the data is a strict subset of the AOI) — i.e.
+ * genuinely encloses the data (the data is a strict subset of the AOI)  -  i.e.
  * the historical "fetched ~10% expanded, trim the fringe" case, where dropping a
  * far-flung stray feature is safe and the bulk of the data is well inside.
  *
@@ -639,7 +639,7 @@ export function clipFeaturesToBbox(
 
   // If the layer's data extent is NOT fully contained within the AOI (allowing a
   // small tolerance), the AOI is stale/smaller than the layer's own data. In
-  // that case we MUST NOT clip — the server already AOI-scoped this layer, and
+  // that case we MUST NOT clip  -  the server already AOI-scoped this layer, and
   // dropping against a smaller stale camera extent would silently lose coverage.
   // Tolerance is a fraction of the AOI's own span so it scales with zoom.
   const aoiW = aoi[2] - aoi[0];
@@ -657,7 +657,7 @@ export function clipFeaturesToBbox(
   // safe to trim any far-flung stray feature that does not overlap the AOI. The
   // per-feature overlap test uses the SAME tolerance-expanded AOI as the
   // containment gate above, so a feature grazing just past the AOI edge (within
-  // the tolerance band) is still kept — the bias is consistently toward KEEPING.
+  // the tolerance band) is still kept  -  the bias is consistently toward KEEPING.
   const aoiTol: [number, number, number, number] = [
     aoi[0] - tolX,
     aoi[1] - tolY,
@@ -683,7 +683,7 @@ export function clipFeaturesToBbox(
  * check in clipFeaturesToBbox: the AOI is grown by this fraction of its own span
  * on each axis before testing containment, so a feature whose bbox grazes the
  * AOI edge (or sits within the agent's ~10% fetch expansion) still counts as
- * contained. Generous on purpose — the bias is toward KEEPING features.
+ * contained. Generous on purpose  -  the bias is toward KEEPING features.
  */
 export const CLIP_CONTAINMENT_TOLERANCE = 0.1;
 
@@ -700,7 +700,7 @@ export const CLIP_CONTAINMENT_TOLERANCE = 0.1;
  * is the apply loop inside MapView's session-state effect.
  *
  * Invariant 1: every coordinate painted on the map comes from `fc.features`
- * — we never compute geometry client-side.
+ *  -  we never compute geometry client-side.
  */
 export async function addVectorLayer(
   m: MapLibreMap,
@@ -778,7 +778,7 @@ export async function addVectorLayer(
   // of a per-layer-id hash, so e.g. two rivers from different AOIs read the same.
   const color = resolveVectorColor(layer.layer_id, layer.style_preset, geomKind);
 
-  // FIX 2 (vector AOI clip) — drop features that fall OUTSIDE the AOI bbox. The
+  // FIX 2 (vector AOI clip)  -  drop features that fall OUTSIDE the AOI bbox. The
   // agent fetches NSI points / building footprints with the AOI bbox expanded
   // ~10% (so edge features aren't lost), which without this leaves vectors
   // painting beyond the AOI rectangle the user drew. We clip to the exact AOI
@@ -806,7 +806,7 @@ export async function addVectorLayer(
   // If the map has been torn down (e.g. component unmount during fetch),
   // there's nothing to add to. The MapLibre instance throws on calls after
   // remove(). INCIDENT FIX 2026-06-16: gate on mapStyleReady (a one-time latch)
-  // NOT raw isStyleLoaded() — a hung sibling raster tile keeps isStyleLoaded()
+  // NOT raw isStyleLoaded()  -  a hung sibling raster tile keeps isStyleLoaded()
   // false forever and would block this vector add (which renders from inline
   // GeoJSON and does not even need tiles) indefinitely. Once the style has
   // loaded once, proceed.
@@ -821,7 +821,7 @@ export async function addVectorLayer(
       // eslint-disable-next-line no-console
       console.log(`[MapView] addVectorLayer defer (style not loaded): ${layer.layer_id}`);
     }
-    // The MapLibre style is mid-load — typically because a SIBLING vector
+    // The MapLibre style is mid-load  -  typically because a SIBLING vector
     // layer's addSource we just kicked off triggered tile resolution, or
     // the basemap's WMS tiles are still resolving. We must NOT abandon the
     // layer (otherwise a multi-layer Case 1 push only lands the first one).
@@ -867,7 +867,7 @@ export async function addVectorLayer(
 }
 
 /**
- * Inner registration helper — adds a GeoJSON source + the right paint layer
+ * Inner registration helper  -  adds a GeoJSON source + the right paint layer
  * to the map. Pure side-effect; no race-guard logic (the caller handles
  * those before invoking).
  *
@@ -899,7 +899,7 @@ function registerVectorOnMap(
       data: fc,
       cluster: true,
       clusterRadius: CLUSTER_RADIUS,
-      clusterMaxZoom: 14, // clusters disappear above z14 → individual points show
+      clusterMaxZoom: 14, // clusters disappear above z14 -> individual points show
     });
   } else {
     m.addSource(layer.layer_id, {
@@ -924,15 +924,15 @@ function registerVectorOnMap(
           "circle-radius": [
             "step",
             ["get", "point_count"],
-            12, 10,   // < 10 points → r12
-            18, 100,  // 10–99 points → r18
-            24,       // ≥100 points → r24
+            12, 10,   // < 10 points -> r12
+            18, 100,  // 10-99 points -> r18
+            24,       // -100 points -> r24
           ],
           "circle-color": color,
           "circle-stroke-color": "#ffffff",
           "circle-stroke-width": 1.5,
           "circle-opacity": opacity * 0.85,
-          // FIX 3 — fade the cluster's white stroke with the fill so the whole
+          // FIX 3  -  fade the cluster's white stroke with the fill so the whole
           // symbol dims when the opacity slider moves (matches applyLayerOpacity).
           "circle-stroke-opacity": opacity * 0.85,
         },
@@ -1045,7 +1045,7 @@ function registerVectorOnMap(
       layout: { visibility: visible ? "visible" : "none" },
     });
   } else {
-    // Unknown geometry — leave the source registered but skip the paint
+    // Unknown geometry  -  leave the source registered but skip the paint
     // layer. The LayerPanel still shows the row (driven by session-state),
     // and the next style-preset addition can rescue.
     // eslint-disable-next-line no-console
@@ -1056,7 +1056,7 @@ function registerVectorOnMap(
 }
 
 /**
- * F94 — register a DENSE vector layer as a MapLibre VECTOR-TILE source + paint
+ * F94  -  register a DENSE vector layer as a MapLibre VECTOR-TILE source + paint
  * layer, so the browser fetches and draws ONLY the tiles in the current
  * viewport instead of one giant inline GeoJSON FeatureCollection (the OSM
  * building-footprint lag NATE reported). This is the agent's PREFERRED dense
@@ -1064,7 +1064,7 @@ function registerVectorOnMap(
  *
  * The url is either a `{z}/{x}/{y}.pbf` MVT template (plain MapLibre `vector`
  * source, no extra dependency) or a `pmtiles://...` URL (requires the pmtiles
- * protocol to be registered with MapLibre — a follow-on once a serving face
+ * protocol to be registered with MapLibre  -  a follow-on once a serving face
  * exists). Either way the source `type` is `vector`; only the `tiles`/`url`
  * field differs. We reuse the SAME geometry-kind paint styling as the inline
  * path (fill/line/circle) for visual consistency.
@@ -1188,7 +1188,7 @@ export function registerVectorTileLayer(
 // ROOT-CAUSE CONTEXT: until job-0258, the LayerPanel's user controls
 // (opacity slider / visibility checkbox / drag-reorder) dispatched ONLY to
 // the panel's local reducer ("M3 local intent" stubs, LayerPanel.tsx) and
-// never reached the MapLibre instance — and Map.tsx had no `moveLayer` call
+// never reached the MapLibre instance  -  and Map.tsx had no `moveLayer` call
 // anywhere, so stack reordering was impossible even for agent-driven
 // `set-layer-order` envelopes. These exported helpers are the single shared
 // "apply to map" path, used by BOTH the session-state reconciliation loop
@@ -1225,9 +1225,9 @@ export function layerGroupMemberIds(m: MapLibreMap, layerId: string): string[] {
 /**
  * Apply a 0..1 opacity to every paint property of the layer group, using the
  * same per-geometry multipliers `registerVectorOnMap` used at creation time
- * (cluster circles ×0.85, polygon fill ×POLYGON_FILL_OPACITY or ×0.7 for
- * Pelicun damage, outline ×0.6). Raster/unknown falls through to
- * `raster-opacity` — the original flood-COG path.
+ * (cluster circles -0.85, polygon fill -POLYGON_FILL_OPACITY or -0.7 for
+ * Pelicun damage, outline -0.6). Raster/unknown falls through to
+ * `raster-opacity`  -  the original flood-COG path.
  */
 export function applyLayerOpacity(
   m: MapLibreMap,
@@ -1239,13 +1239,13 @@ export function applyLayerOpacity(
   if (!m.getLayer(layerId)) return;
   if (geomKind === "point") {
     m.setPaintProperty(layerId, "circle-opacity", opacity);
-    // FIX 3 — fade the OUTLINE (white stroke) with the fill so the whole symbol
+    // FIX 3  -  fade the OUTLINE (white stroke) with the fill so the whole symbol
     // dims, not just the inner circle. The individual-point layer's stroke is
     // wired here AND on the cluster circle below.
     m.setPaintProperty(layerId, "circle-stroke-opacity", opacity);
     if (m.getLayer(`${layerId}-clusters`)) {
       m.setPaintProperty(`${layerId}-clusters`, "circle-opacity", opacity * 0.85);
-      // FIX 3 — the cluster circle carries a white stroke too; fade it in step.
+      // FIX 3  -  the cluster circle carries a white stroke too; fade it in step.
       m.setPaintProperty(`${layerId}-clusters`, "circle-stroke-opacity", opacity * 0.85);
     }
     if (m.getLayer(`${layerId}-cluster-count`)) {
@@ -1267,7 +1267,7 @@ export function applyLayerOpacity(
       m.setPaintProperty(`${layerId}-outline`, "line-opacity", opacity * 0.6);
     }
   } else {
-    // Raster or unknown — preserve the raster path so the flood-depth COG
+    // Raster or unknown  -  preserve the raster path so the flood-depth COG
     // keeps responding (the original demo symptom).
     m.setPaintProperty(layerId, "raster-opacity", opacity);
   }
@@ -1288,7 +1288,7 @@ export function applyLayerVisibility(
  * Re-stack overlay layer groups to match `layerIdsTopFirst` (the LayerPanel /
  * `set-layer-order` convention: first element renders ON TOP). MapLibre's
  * `moveLayer(id)` with no beforeId moves a layer to the top of the stack, so
- * iterating bottom-first pulls each group to the top in turn — the last
+ * iterating bottom-first pulls each group to the top in turn  -  the last
  * (top-of-panel) group ends up painted last, i.e. on top. Basemap layers are
  * never named in the command, so they stay at the bottom. Group members move
  * in their internal bottom-to-top order so sublayers keep their relative
@@ -1301,7 +1301,7 @@ export function applyLayerOrder(m: MapLibreMap, layerIdsTopFirst: string[]): voi
       try {
         m.moveLayer(member);
       } catch {
-        // Mid-removal race (style mutation between getLayer and moveLayer) —
+        // Mid-removal race (style mutation between getLayer and moveLayer)  - 
         // skip; the next session-state reconciliation restores consistency.
       }
     }
@@ -1309,14 +1309,14 @@ export function applyLayerOrder(m: MapLibreMap, layerIdsTopFirst: string[]): voi
 }
 
 /**
- * job-0294 — draw (or replace) the single "analysis extent" rectangle for a
+ * job-0294  -  draw (or replace) the single "analysis extent" rectangle for a
  * bbox `[minLon, minLat, maxLon, maxLat]`. Idempotent: the first call adds the
  * GeoJSON source + a faint fill layer + a dashed accent outline; subsequent
  * calls call `setData` so the extent REPLACES (one extent at a time, v0.1).
  *
  * The bbox comes from the same `zoom-to` map-command the camera consumes, so no
  * agent change is needed; case-reopen replays the last zoom-to (App.tsx) and
- * redraws the rectangle for free. Pure rendering — no numbers are computed
+ * redraws the rectangle for free. Pure rendering  -  no numbers are computed
  * (Invariant 1): the geometry is built verbatim from the received bbox corners.
  */
 export function drawAnalysisExtent(
@@ -1339,7 +1339,7 @@ export function drawAnalysisExtent(
 
   // AWS-migration hardening (bbox track): make this idempotent AND
   // partial-state tolerant. A prior call that threw mid-mutation (the live
-  // failure mode — addSource succeeded but an addLayer threw, or the camera
+  // failure mode  -  addSource succeeded but an addLayer threw, or the camera
   // animation churned the style between the two addLayer calls) can leave the
   // source present but one/both layers missing. The old code early-returned
   // the moment the source existed, so a half-built extent never self-healed
@@ -1357,15 +1357,15 @@ export function drawAnalysisExtent(
     m.addSource(ANALYSIS_EXTENT_SOURCE_ID, { type: "geojson", data });
   }
 
-  // job-0321 (F40) — OUTLINE-ONLY AOI. The AOI rectangle previously painted a
+  // job-0321 (F40)  -  OUTLINE-ONLY AOI. The AOI rectangle previously painted a
   // translucent fill (#4D96FF @ 0.06) over the whole extent, which tinted every
   // layer rendered beneath it (the user-reported "blue wash over my layers").
-  // We now draw the dashed outline ONLY — no fill layer is added. The fill
+  // We now draw the dashed outline ONLY  -  no fill layer is added. The fill
   // LAYER ID constant + the clearAnalysisExtent() removal guard are KEPT intact
   // so a stale fill left over from a previous app version / partial style still
   // gets torn down cleanly (idempotent, partial-state tolerant).
   //
-  // Thin dashed accent outline — the primary "here's the measured extent" cue.
+  // Thin dashed accent outline  -  the primary "here's the measured extent" cue.
   if (!m.getLayer(ANALYSIS_EXTENT_LINE_LAYER_ID)) {
     m.addLayer({
       id: ANALYSIS_EXTENT_LINE_LAYER_ID,
@@ -1382,7 +1382,7 @@ export function drawAnalysisExtent(
 }
 
 /**
- * ux-batch-1 (F14) — remove the analysis-extent rectangle (fill + outline +
+ * ux-batch-1 (F14)  -  remove the analysis-extent rectangle (fill + outline +
  * source). Inverse of drawAnalysisExtent. Idempotent and partial-state
  * tolerant: each removal is existence-guarded so a half-built extent (source
  * present, a layer missing) still clears cleanly and a missing extent is a
@@ -1411,7 +1411,7 @@ export function clearAnalysisExtent(m: MapLibreMap): void {
 // (same reply path as clicking the card row). Each candidate carries an
 // EPSG:4326 bbox (`RegionCandidate.bbox`); we draw one rectangle polygon per
 // candidate keyed by `region_id`. Invariant 1: the geometry is built verbatim
-// from the received candidate bboxes — no geography is computed.
+// from the received candidate bboxes  -  no geography is computed.
 //
 // Reuses the same MapLibre GeoJSON fill+line vector pattern the analysis-extent
 // rectangle / vector layers use (Invariant 4: the client just registers
@@ -1429,7 +1429,7 @@ const REGION_ACCENT = "#3b82f6"; // matches RegionPickerCard ACCENT (blue)
  * Build the candidate county choropleth FeatureCollection from the request's
  * candidates. One rectangle Polygon per candidate, keyed by `region_id` as the
  * feature id (so `setFeatureState` can target it) AND in `properties.region_id`
- * + `properties.name` (so a tap hit-test reads them back). Pure — exported for
+ * + `properties.name` (so a tap hit-test reads them back). Pure  -  exported for
  * unit testing.
  */
 export function buildRegionChoiceGeoJson(
@@ -1490,7 +1490,7 @@ export function drawRegionChoropleth(
       source: REGION_CHOICE_SOURCE_ID,
       paint: {
         "fill-color": REGION_ACCENT,
-        // selected (0.42) > hovered (0.30) > base (0.12) — the highlighted
+        // selected (0.42) > hovered (0.30) > base (0.12)  -  the highlighted
         // county reads as the focus while the rest stay tappable hints.
         "fill-opacity": [
           "case",
@@ -1567,7 +1567,7 @@ export function applyRegionChoiceHighlight(
         { hovered: false, selected: false },
       );
     } catch {
-      /* feature gone mid-swap — ignore */
+      /* feature gone mid-swap  -  ignore */
     }
   }
   // Apply current state to the touched regions.
@@ -1578,33 +1578,33 @@ export function applyRegionChoiceHighlight(
         { hovered: hoveredId === id, selected: selectedId === id },
       );
     } catch {
-      /* feature gone mid-swap — ignore */
+      /* feature gone mid-swap  -  ignore */
     }
   }
   return nextIds;
 }
 
-// --- FIX 1 (NATE 2026-06-17) — generic whole-feature tap HIGHLIGHT --------- //
+// --- FIX 1 (NATE 2026-06-17)  -  generic whole-feature tap HIGHLIGHT --------- //
 //
 // Tapping a vector feature opens FeaturePopup but used to leave the feature
 // unmarked, so the user couldn't tell WHICH polygon/line/point they hit. We now
 // outline the ENTIRE tapped geometry, GENERICALLY across every vector overlay
 // type and geometry, with ONE dedicated highlight source + three paint layers:
-//   - a fill layer    → paints the interior of a tapped POLYGON
-//   - a line layer    → paints a thick stroke for a tapped LINE *and* the
+//   - a fill layer    -> paints the interior of a tapped POLYGON
+//   - a line layer    -> paints a thick stroke for a tapped LINE *and* the
 //                       boundary of a tapped polygon (MapLibre's line layer
 //                       renders polygon rings too), so one layer covers both
-//   - a circle layer  → paints an enlarged ring for a tapped POINT
+//   - a circle layer  -> paints an enlarged ring for a tapped POINT
 // MapLibre only paints the geometry kinds each layer type understands, so a
 // single highlight source carrying ONE feature lights up exactly the right
-// layer(s) regardless of geometry — no per-overlay-type branching.
+// layer(s) regardless of geometry  -  no per-overlay-type branching.
 //
 // The highlight lives in MAP space (a geojson source), so it pans with the map
 // and scales with zoom for free (FIX 1 acceptance). It is cleared when the popup
 // closes (X / Esc / a no-hit tap) and REPLACED when another feature is tapped.
 //
 // Invariant 1: the highlight geometry is CLONED verbatim from the tapped
-// feature's own geometry — no geography is computed client-side.
+// feature's own geometry  -  no geography is computed client-side.
 
 export const FEATURE_HIGHLIGHT_SOURCE_ID = "grace2-feature-highlight";
 export const FEATURE_HIGHLIGHT_FILL_LAYER_ID = "grace2-feature-highlight-fill";
@@ -1619,8 +1619,8 @@ const HIGHLIGHT_ACCENT = "#facc15"; // amber-400
  * Build a single-feature FeatureCollection from a tapped feature's geometry.
  * The geometry is CLONED (structuredClone / JSON round-trip) so a later
  * setData / source teardown can never mutate MapLibre's own feature objects.
- * Returns an empty FeatureCollection when the geometry is absent (defensive —
- * a hit with no geometry simply clears the highlight). Pure — exported for unit
+ * Returns an empty FeatureCollection when the geometry is absent (defensive  - 
+ * a hit with no geometry simply clears the highlight). Pure  -  exported for unit
  * testing without a live map.
  */
 export function buildHighlightGeoJson(
@@ -1648,8 +1648,8 @@ export function buildHighlightGeoJson(
  * call adds the source + the fill/line/circle paint layers; subsequent calls
  * swap the data on the existing source and re-add any layer that went missing.
  * The three layers are ALWAYS present so the SAME highlight source lights up the
- * correct one(s) for whatever geometry it currently holds (polygon → fill+line,
- * line → line, point → circle). Pure side-effect on the map (Invariant 4).
+ * correct one(s) for whatever geometry it currently holds (polygon -> fill+line,
+ * line -> line, point -> circle). Pure side-effect on the map (Invariant 4).
  */
 export function setFeatureHighlight(
   m: MapLibreMap,
@@ -1665,7 +1665,7 @@ export function setFeatureHighlight(
     m.addSource(FEATURE_HIGHLIGHT_SOURCE_ID, { type: "geojson", data });
   }
 
-  // Polygon interior — a faint amber wash so the tapped polygon reads as filled.
+  // Polygon interior  -  a faint amber wash so the tapped polygon reads as filled.
   if (!m.getLayer(FEATURE_HIGHLIGHT_FILL_LAYER_ID)) {
     m.addLayer({
       id: FEATURE_HIGHLIGHT_FILL_LAYER_ID,
@@ -1698,7 +1698,7 @@ export function setFeatureHighlight(
       source: FEATURE_HIGHLIGHT_SOURCE_ID,
       paint: {
         "circle-radius": 10,
-        "circle-color": "rgba(0,0,0,0)", // ring only — don't blanket the point
+        "circle-color": "rgba(0,0,0,0)", // ring only  -  don't blanket the point
         "circle-stroke-color": HIGHLIGHT_ACCENT,
         "circle-stroke-width": 3,
         "circle-stroke-opacity": 0.95,
@@ -1722,7 +1722,7 @@ export function clearFeatureHighlight(m: MapLibreMap): void {
     try {
       if (m.getLayer(id)) m.removeLayer(id);
     } catch {
-      /* mid-removal race — best effort */
+      /* mid-removal race  -  best effort */
     }
   }
   try {
@@ -1730,11 +1730,11 @@ export function clearFeatureHighlight(m: MapLibreMap): void {
       m.removeSource(FEATURE_HIGHLIGHT_SOURCE_ID);
     }
   } catch {
-    /* still referenced / gone — next clear retries */
+    /* still referenced / gone  -  next clear retries */
   }
 }
 
-// job-0321 (F43) — legend bottom-edge anchor geometry.
+// job-0321 (F43)  -  legend bottom-edge anchor geometry.
 //
 // RETAINED FOR TESTS / as a standalone helper. The LIVE legend path no longer
 // calls this: Map.tsx now derives the legend anchor from the full projected AOI
@@ -1744,12 +1744,12 @@ export function clearFeatureHighlight(m: MapLibreMap): void {
 //
 // It projects the two bottom corners of the bbox to screen space and returns the
 // bottom-edge MIDPOINT (anchor x) at the LOWEST (max-y) of the two projected
-// corners (anchor y) — the bbox can be slightly rotated on screen by the
+// corners (anchor y)  -  the bbox can be slightly rotated on screen by the
 // Web-Mercator projection at the poles, so we take the lower of the two so a
 // legend hung here would always clear the box.
 //
 // Returns null when the bbox is off-screen (the midpoint falls outside the map
-// canvas). Pure — every number comes from MapLibre's project() (Invariant 1:
+// canvas). Pure  -  every number comes from MapLibre's project() (Invariant 1:
 // the client renders, it never computes geography).
 export interface LegendAnchor {
   left: number;
@@ -1759,7 +1759,7 @@ export function computeBboxBottomAnchor(
   m: MapLibreMap,
   bbox: [number, number, number, number],
 ): LegendAnchor | null {
-  // Only the bottom edge ([minLat]) is needed — maxLat is intentionally unused.
+  // Only the bottom edge ([minLat]) is needed  -  maxLat is intentionally unused.
   const [minLon, minLat, maxLon] = bbox;
   let bl: { x: number; y: number };
   let br: { x: number; y: number };
@@ -1789,7 +1789,7 @@ export function computeBboxBottomAnchor(
   return { left, top };
 }
 
-// --- FIX 4 (NATE 2026-06-17) — legend WIDTH sized to the AOI bbox on-screen -- //
+// --- FIX 4 (NATE 2026-06-17)  -  legend WIDTH sized to the AOI bbox on-screen -- //
 //
 // RETAINED FOR TESTS / as a standalone helper. The LIVE legend path no longer
 // calls this either: legendBarWidth is now derived as (right-left) of the full
@@ -1804,7 +1804,7 @@ export function computeBboxBottomAnchor(
 // physical key for that AOI. Clamped to a sane min (so it never becomes an
 // illegible sliver) and to the viewport width minus margins (so it never
 // overflows). Returns null when the bbox can't be projected (off-screen / no
-// canvas). Pure — every number comes from MapLibre's project() (Invariant 1: the
+// canvas). Pure  -  every number comes from MapLibre's project() (Invariant 1: the
 // client renders, never computes geography).
 export const LEGEND_MIN_WIDTH_PX = 160;
 export const LEGEND_VIEWPORT_MARGIN_PX = 24; // px kept clear on each side.
@@ -1839,14 +1839,14 @@ export function computeBboxScreenWidth(
   return Math.max(LEGEND_MIN_WIDTH_PX, Math.min(raw, maxWidth));
 }
 
-// --- FIX 4 (legend EDGE-RAIL snap) — full projected AOI screen rectangle ----- //
+// --- FIX 4 (legend EDGE-RAIL snap)  -  full projected AOI screen rectangle ----- //
 //
 // The legend overlay used to snap only to the AOI bbox bottom-edge CENTER
 // (computeBboxBottomAnchor returns the bottom-edge midpoint). NATE's overlay
 // spec wants the gradient colorbar to EDGE-RAIL snap to the nearest AOI side and
 // slide ALONG it, placeable anywhere around the AOI perimeter. Edge-rail
 // snapping needs the FULL projected AOI rectangle (all four edges), not just the
-// bottom midpoint — given only anchor+width the legend's fallback estimator
+// bottom midpoint  -  given only anchor+width the legend's fallback estimator
 // (legend_snap.rectFromAnchorAndWidth) has to GUESS the height as square, which
 // makes top/left snapping imprecise for non-square or skewed AOIs.
 //
@@ -1858,7 +1858,7 @@ export function computeBboxScreenWidth(
 // used directly as the snap geometry: legend_snap.layoutKeysCcw rails the
 // colorbar keys CCW along its four edges. Returns null when the box can't be
 // projected / is off-screen so the legend falls back to its bottom-center stack
-// and never vanishes. Pure — every number comes from MapLibre's project()
+// and never vanishes. Pure  -  every number comes from MapLibre's project()
 // (Invariant 1).
 export interface LegendScreenRect {
   left: number;
@@ -1914,7 +1914,7 @@ export function computeBboxScreenRect(
       }
     }
   } catch {
-    /* no canvas in test env — return the rect as-is */
+    /* no canvas in test env  -  return the rect as-is */
   }
   return { left, top, right, bottom };
 }
@@ -1924,7 +1924,7 @@ export function computeBboxScreenRect(
 // The agent advertises "click polygons to see name / designation / IUCN", but
 // until this feature nothing in the web client hit-tested rendered features.
 // These helpers turn a hit feature's `properties` bag into popup-ready content.
-// All of it is pure (Invariant 1: we surface received values verbatim — no
+// All of it is pure (Invariant 1: we surface received values verbatim  -  no
 // geography is computed). The MapLibre wiring (queryRenderedFeatures, the
 // click/touch handlers, the cursor) lives inside MapView below.
 
@@ -2003,7 +2003,7 @@ const HIDDEN_ATTR_KEYS: ReadonlySet<string> = new Set([
   "shape__area",
 ]);
 
-/** Humanize a raw property key for display: `name_eng` → "Name Eng", `iucn_cat` → "Iucn Cat". */
+/** Humanize a raw property key for display: `name_eng` -> "Name Eng", `iucn_cat` -> "Iucn Cat". */
 export function humanizePropertyKey(key: string): string {
   const cleaned = key.replace(/[_-]+/g, " ").replace(/([a-z])([A-Z])/g, "$1 $2").trim();
   if (!cleaned) return key;
@@ -2026,11 +2026,11 @@ export function stringifyPropertyValue(value: unknown): string | null {
     return Number.isInteger(value) ? String(value) : String(Math.round(value * 1000) / 1000);
   }
   if (typeof value === "boolean") return value ? "Yes" : "No";
-  // Objects / arrays — JSON, but keep it short so the card stays compact.
+  // Objects / arrays  -  JSON, but keep it short so the card stays compact.
   try {
     const s = JSON.stringify(value);
     if (!s || s === "{}" || s === "[]") return null;
-    return s.length > 120 ? `${s.slice(0, 117)}…` : s;
+    return s.length > 120 ? `${s.slice(0, 117)}...` : s;
   } catch {
     return null;
   }
@@ -2137,7 +2137,7 @@ export function buildFeaturePopupData(
   opts: { layerName?: string; geomKindLabel?: string } = {},
 ): FeaturePopupData {
   const props = properties ?? {};
-  // Case-insensitive lookup map: lowercased key → original key.
+  // Case-insensitive lookup map: lowercased key -> original key.
   const lowerMap = new Map<string, string>();
   for (const k of Object.keys(props)) lowerMap.set(k.toLowerCase(), k);
 
@@ -2161,7 +2161,7 @@ export function buildFeaturePopupData(
   // IUCN category leads the attribute list when present (advertised explicitly).
   if (iucnHit) attributes.push({ label: "IUCN Category", value: iucnHit.value });
 
-  // Remaining properties — humanized, de-noised, in declaration order.
+  // Remaining properties  -  humanized, de-noised, in declaration order.
   for (const key of Object.keys(props)) {
     const lk = key.toLowerCase();
     if (usedKeys.has(lk)) continue;
@@ -2177,7 +2177,7 @@ export function buildFeaturePopupData(
 export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "light", onAoiScreenRectChange, legendHidden, onLegendHiddenChange, suppressLegendShowPill, aoiCaptureActive, onAoiCaptureConfirm, onAoiCaptureSkip, onAoiCaptureCancel }: MapViewProps = {}): JSX.Element {
   const container = useRef<HTMLDivElement | null>(null);
   const map = useRef<MapLibreMap | null>(null);
-  // job-0179 — the shared per-Case layer cache (the seatbelt). Stable singleton;
+  // job-0179  -  the shared per-Case layer cache (the seatbelt). Stable singleton;
   // gates teardown (allowsEvict), supplies persisted view-overrides, and records
   // the user's live LayerPanel edits. App.tsx keeps `.activeCaseId` in lockstep.
   const layerCache = getLayerCache();
@@ -2194,7 +2194,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
   const layerStylePresets = useRef<Map<string, string | null>>(new Map());
   // Tracks the in-flight vector-fetch generation per layer_id. When a layer is
   // removed mid-fetch, this counter advances so a late-arriving fetch resolves
-  // into a no-op rather than re-registering the source (kickoff §scope:
+  // into a no-op rather than re-registering the source (kickoff -scope:
   // "Cleanup on remove: when a layer is removed... remove both source and
   // layer cleanly").
   const vectorFetchGen = useRef<Map<string, number>>(new Map());
@@ -2205,11 +2205,11 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
   // with the old style. Remembering the corners lets a follow-up redraw
   // re-assert the rectangle without needing the bus to re-deliver the
   // command. Null until the first zoom-to. Kept inside this track's
-  // ownership (no LayerPanel bus replay buffer — see crossTrackChanges).
+  // ownership (no LayerPanel bus replay buffer  -  see crossTrackChanges).
   const lastZoomToCorners = useRef<[number, number, number, number] | null>(null);
   // ROOT-CAUSE FIX (job-0076 diagnosis): the prior implementation read
   // `payload.loaded_layers` synchronously in the subscriber and bailed if
-  // `m.isStyleLoaded()` was false — so when session-state arrived BEFORE the
+  // `m.isStyleLoaded()` was false  -  so when session-state arrived BEFORE the
   // remote QGIS Server basemap tiles finished loading, the entire flood-layer
   // wiring was dropped on the floor with no retry. Diagnosis evidence:
   // `reports/inflight/job-0076-*/evidence/diagnosis.log` shows 69 basemap
@@ -2225,36 +2225,36 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
   // most-recent state (still replace-not-reconcile per A.7).
   const latestSessionState = useRef<SessionStatePayload | null>(null);
 
-  // job-0321 (F43) — the legend (depth-key / colorbar) now lives INSIDE the map
+  // job-0321 (F43)  -  the legend (depth-key / colorbar) now lives INSIDE the map
   // container so it can anchor to the AOI bounding box. Three pieces of state:
-  //   1. legendLayers — the ordered ProjectLayerSummary list the legend needs,
+  //   1. legendLayers  -  the ordered ProjectLayerSummary list the legend needs,
   //      sourced from this component's own session-state subscription (App.tsx
   //      no longer mounts the legend, so it passes nothing). Ordered top-of-
   //      stack-first (z_index desc) to match LayerPanel + LayerLegend's
   //      `layers.find(...)` "topmost wins" contract.
-  //   2. aoiBbox — the current AOI bbox corners (mirrors lastZoomToCorners into
-  //      state so a re-render projects it). Null = no AOI → bottom-center.
-  //   3. legendRect — the TRUE projected AOI screen rectangle {left,top,right,
+  //   2. aoiBbox  -  the current AOI bbox corners (mirrors lastZoomToCorners into
+  //      state so a re-render projects it). Null = no AOI -> bottom-center.
+  //   3. legendRect  -  the TRUE projected AOI screen rectangle {left,top,right,
   //      bottom} (computeBboxScreenRect: min/max over all four projected bbox
   //      corners), recomputed on map move/zoom/render (rAF-throttled). This is
   //      the snap source of truth: it is passed straight to LayerLegend, which
-  //      rails the colorbar keys CCW along ITS four edges — so the snap follows
+  //      rails the colorbar keys CCW along ITS four edges  -  so the snap follows
   //      the real AOI aspect ratio + on-screen skew, not a square-ish estimate.
-  //      Null when there is no AOI / the box is off-screen → legend falls back to
+  //      Null when there is no AOI / the box is off-screen -> legend falls back to
   //      bottom-center so it never disappears.
-  //   4. legendAnchor — the projected {left, top} bottom-edge midpoint of the AOI
+  //   4. legendAnchor  -  the projected {left, top} bottom-edge midpoint of the AOI
   //      box, derived from the SAME rect in the same pass. Used only for the
   //      legend's vertical placement nudge (resolvedAnchor), NOT the snap math.
-  //   5. legendBarWidth — the box's on-screen EAST-WEST extent (right-left),
+  //   5. legendBarWidth  -  the box's on-screen EAST-WEST extent (right-left),
   //      also from the same rect. Used only to SIZE the default colorbar width.
   const [legendLayers, setLegendLayers] = useState<ProjectLayerSummary[]>([]);
   const [aoiBbox, setAoiBbox] = useState<[number, number, number, number] | null>(null);
   // The TRUE projected AOI rectangle the legend snaps against (all four corners).
   const [legendRect, setLegendRect] = useState<LegendScreenRect | null>(null);
   const [legendAnchor, setLegendAnchor] = useState<LegendAnchor | null>(null);
-  // FIX 4 (NATE 2026-06-17) — the AOI bbox's ON-SCREEN width in px, projected on
+  // FIX 4 (NATE 2026-06-17)  -  the AOI bbox's ON-SCREEN width in px, projected on
   // each map move/zoom (same listeners as legendAnchor). Null when there is no
-  // AOI / the bbox is off-screen → LayerLegend uses its static 320 fallback.
+  // AOI / the bbox is off-screen -> LayerLegend uses its static 320 fallback.
   const [legendBarWidth, setLegendBarWidth] = useState<number | null>(null);
   const isMobile = useIsMobile();
 
@@ -2268,16 +2268,16 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
     width: 0,
     height: 0,
   });
-  // FIX 3 (NATE 2026-06-17) — the live map zoom, tracked so the popup can scale
+  // FIX 3 (NATE 2026-06-17)  -  the live map zoom, tracked so the popup can scale
   // with zoom (scale = 2^(zoom - refZoom), clamped). Updated on map move/zoom by
   // the popup-pin effect below. Null until the first projection.
   const [currentZoom, setCurrentZoom] = useState<number | null>(null);
 
-  // FR-WC-13 / FR-WC-16 — the active spatial-input request (null = no pick/draw
+  // FR-WC-13 / FR-WC-16  -  the active spatial-input request (null = no pick/draw
   // in flight). Published by Chat.tsx onto the spatialInputBus when a
   // `spatial-input-request` arrives; the SpatialDrawSurface overlay mounts while
   // non-null. The drawn / picked result rides BACK through the bus to Chat (the
-  // WS reply owner) — Map never touches the WebSocket. Mirrors the region-choice
+  // WS reply owner)  -  Map never touches the WebSocket. Mirrors the region-choice
   // bus pattern exactly.
   const [spatialRequest, setSpatialRequest] =
     useState<SpatialInputRequestPayload | null>(null);
@@ -2294,16 +2294,16 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       pitchWithRotate: false,
       touchPitch: false,
       // job-0152: attribution tag removed for v0.1 demo (overlays other UI).
-      // Users zoom via scroll/pinch/keyboard — no NavigationControl added below.
+      // Users zoom via scroll/pinch/keyboard  -  no NavigationControl added below.
       // Production hosting should restore attribution per OSM tile-use terms.
       attributionControl: false,
     });
-    // Decision I: 2D-only navigation. Belt + suspenders — explicitly disable
+    // Decision I: 2D-only navigation. Belt + suspenders  -  explicitly disable
     // rotation in addition to constructor options so a future MapLibre default
     // change can't silently re-enable it.
     m.touchZoomRotate.disableRotation();
     m.keyboard.disableRotation();
-    // job-0152: NavigationControl (zoom +/- and compass) removed — overlays
+    // job-0152: NavigationControl (zoom +/- and compass) removed  -  overlays
     // other UI elements. Scroll-zoom, pinch-zoom, and keyboard +/- remain
     // active (MapLibre defaults; no code change needed). See OQ below re: OSM
     // attribution terms.
@@ -2318,7 +2318,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
 
     // Dev-only seam: expose the live MapLibre instance so the Playwright
     // diagnostic driver (reports/inflight/job-0076-*/evidence/) can introspect
-    // m.getStyle() — i.e. confirm flood layer was added, capture the actual
+    // m.getStyle()  -  i.e. confirm flood layer was added, capture the actual
     // tile URL template, etc. Production builds drop this via import.meta.env.
     if (import.meta.env.DEV) {
       (window as unknown as { __grace2GetMap?: () => MapLibreMap | null }).__grace2GetMap = () => map.current;
@@ -2338,13 +2338,13 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
   // job-0076 race-condition fix). Replace-not-reconcile per A.7: diff
   // loaded_layers against addedSourceIds ref.
   // Invariant 4: QGIS Server renders all Tier B raster data; Map.tsx only
-  // registers tile URLs — never computes colors, reads COGs, or touches GCS.
+  // registers tile URLs  -  never computes colors, reads COGs, or touches GCS.
   useEffect(() => {
     if (!subscribeSessionState) return;
 
     /**
      * Apply the latest session-state payload (from `latestSessionState`) to
-     * the live map. Idempotent — reads the ref each call so multiple deferred
+     * the live map. Idempotent  -  reads the ref each call so multiple deferred
      * calls collapse to the most-recent payload. Called both from the bus
      * subscription AND from the map "idle" handler in case the bus event
      * arrived before the style finished loading.
@@ -2355,7 +2355,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       if (!m || !payload) return;
       // If the style isn't loaded yet, RE-ARM and retry on the next idle.
       // job-0258 live-probe finding: the previous `return` here did NOT
-      // re-arm — the subscriber registers exactly one once("idle") per push,
+      // re-arm  -  the subscriber registers exactly one once("idle") per push,
       // and when that idle callback ran right after applyTheme had mutated
       // the style in the SAME idle dispatch (dark theme swaps the basemap),
       // isStyleLoaded() was false again and the whole layer batch was
@@ -2365,7 +2365,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       // invocations are harmless.
       // INCIDENT FIX 2026-06-16: gate on the mapStyleReady LATCH, not raw
       // isStyleLoaded(). A hung raster tile (vector-as-raster) keeps
-      // isStyleLoaded() false forever — the old gate then deferred this whole
+      // isStyleLoaded() false forever  -  the old gate then deferred this whole
       // reconcile (adds AND removals AND the AOI) indefinitely, so the map
       // froze. Once the style has loaded once, proceed regardless of stuck
       // tiles; addSource/addLayer/removeLayer are all safe.
@@ -2377,12 +2377,12 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       // F97: DEDUP by layer_id so one logical layer_id == exactly one entry.
       // MapLibre sources are keyed by layer_id (addedSourceIds + addSource(id)),
       // so two snapshot entries sharing a layer_id collide: the second add is
-      // skipped, yet both occupy ONE shared source — and a later delete-by-id
+      // skipped, yet both occupy ONE shared source  -  and a later delete-by-id
       // tears that source down, making BOTH vanish (the F97 bug). The primary
       // fix mints a unique layer_id per fetch server-side; this dedup is the
       // client-side defense-in-depth so that IF a duplicate id ever reaches the
       // reconcile, it never desyncs the source map. Keep the LAST occurrence
-      // (the freshest metadata — matches the server's append/replace-by-id
+      // (the freshest metadata  -  matches the server's append/replace-by-id
       // merge order) while preserving overall order.
       const rawLayers = payload.loaded_layers ?? [];
       const dedupById = new Map<string, (typeof rawLayers)[number]>();
@@ -2392,13 +2392,13 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       const currentLayers = Array.from(dedupById.values());
       const currentIds = new Set(currentLayers.map((l) => l.layer_id));
 
-      // job-0357 (per-Case layer DURABILITY) — REMOVE only on an AUTHORITATIVE
+      // job-0357 (per-Case layer DURABILITY)  -  REMOVE only on an AUTHORITATIVE
       // replace. `replace_layers` is the client-only hint App.tsx stamps:
-      //   - true / absent → full replace-not-reconcile (Case switch / exit, or
-      //     a server snapshot received while the socket is healthy → live adds
+      //   - true / absent -> full replace-not-reconcile (Case switch / exit, or
+      //     a server snapshot received while the socket is healthy -> live adds
       //     AND deletes apply). Absent defaults to true to preserve the
       //     historical behavior for older callers + unit fixtures.
-      //   - false → additive reconcile: ADD/update layers in the snapshot but
+      //   - false -> additive reconcile: ADD/update layers in the snapshot but
       //     do NOT tear down tracked overlays absent from it. Set for server
       //     snapshots received while the socket is NOT `connected` (the
       //     disconnect / reconnect window) so a transient EMPTY or partial
@@ -2413,17 +2413,17 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       //
       // F84 ROOT-CAUSE FIX: a session-state replace (Case switch / Case exit
       // with loaded_layers:[]) MUST drop EVERY currently-rendered overlay whose
-      // layer_id is not in the new set — raster AND inline-GeoJSON vector. The
+      // layer_id is not in the new set  -  raster AND inline-GeoJSON vector. The
       // prior code only removed the single MapLibre layer named `id` plus its
       // source. That is correct for rasters (one MapLibre layer per source) but
       // WRONG for vectors: `registerVectorOnMap` adds SEVERAL MapLibre layers
-      // per geojson source —
+      // per geojson source  - 
       //     polygon:      `${id}` (fill) + `${id}-outline` (line)
       //     dense point:  `${id}-clusters` + `${id}-cluster-count` + `${id}`
       // so removing only `${id}` left e.g. the `${id}-outline` layer still
       // referencing the source. MapLibre then THROWS on removeSource(id)
       // ("Source can't be removed while layer is using it"), and because that
-      // throw was uncaught it aborted the whole removal loop — so WDPA-style
+      // throw was uncaught it aborted the whole removal loop  -  so WDPA-style
       // polygon vectors persisted across Case switches / Case exit (the bug).
       //
       // Fix: remove EVERY member of the layer group (via layerGroupMemberIds,
@@ -2434,7 +2434,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       // in addedSourceIds, so they are untouched.
       //
       // job-0357: this teardown is SKIPPED entirely on a non-authoritative
-      // (additive) reconcile — a reconnect top-up never removes durable layers.
+      // (additive) reconcile  -  a reconnect top-up never removes durable layers.
       // The ADD/update loop below always runs, so an additive snapshot still
       // registers any newly-rendered layer it carries.
       if (authoritativeReplace) {
@@ -2445,15 +2445,15 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       try {
         if (m.getSource(FEATURE_HIGHLIGHT_SOURCE_ID)) clearFeatureHighlight(m);
       } catch {
-        /* highlight already gone — best-effort */
+        /* highlight already gone  -  best-effort */
       }
       setFeaturePopup(null);
-      // job-0179 (per-Case client cache — "the seatbelt") — the shared cache is
+      // job-0179 (per-Case client cache  -  "the seatbelt")  -  the shared cache is
       // the final teardown arbiter: even on an authoritative replace, an overlay
       // is torn down ONLY if the cache agrees it may be evicted. On a genuine
       // Case switch / exit / delete the cache has already dropped the layer (so
       // allowsEvict is true and teardown proceeds exactly as before); the gate
-      // ONLY ever PREVENTS a teardown — it can never force one — so a layer the
+      // ONLY ever PREVENTS a teardown  -  it can never force one  -  so a layer the
       // cache still tracks (omitted by a stale frame that nonetheless slipped in
       // as authoritative) survives. Resolved against the cache's active Case.
       const evictCaseId = layerCache.activeCaseId;
@@ -2466,7 +2466,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
             try {
               m.removeLayer(member);
             } catch {
-              // Mid-removal race / already gone — keep going so a single bad
+              // Mid-removal race / already gone  -  keep going so a single bad
               // member can't leave the rest (or the source) behind.
             }
           }
@@ -2474,7 +2474,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
             if (m.getSource(id)) m.removeSource(id);
           } catch {
             // Source still referenced (a member we couldn't remove) or already
-            // gone — best-effort; the next reconcile re-attempts.
+            // gone  -  best-effort; the next reconcile re-attempts.
           }
           addedSourceIds.current.delete(id);
           // job-0139: tear down vector bookkeeping too. Bump fetch generation
@@ -2486,12 +2486,12 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       }
       }
 
-      // C3 (job-0356 / per-case-layer-durability) — the CLIENT is the source of
+      // C3 (job-0356 / per-case-layer-durability)  -  the CLIENT is the source of
       // truth for visibility across a server replay. A genuine fresh-socket
       // resume re-asserts visible:true for every active-Case layer (the server
       // keeps no per-user visibility state), which without this guard would
       // un-hide a layer the user had explicitly hidden. Read the persisted
-      // override map ONCE per reconcile pass and prefer it — but ONLY for
+      // override map ONCE per reconcile pass and prefer it  -  but ONLY for
       // layer_ids the user EXPLICITLY toggled (the hasOwnProperty guard below).
       // INVARIANT: a never-toggled VISIBLE layer has no override key, so it keeps
       // rendering across reconnect (we never blanket-hide).
@@ -2502,7 +2502,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       // contracts.ts uses `source_url` (schema mismatch; tracked as OQ-0068-URI).
       for (const _layer of currentLayers) {
         const layer = _layer as unknown as WireLayerSummary;
-        // job-0179 (per-Case client cache — "the seatbelt"): the user's persisted
+        // job-0179 (per-Case client cache  -  "the seatbelt"): the user's persisted
         // VIEW-OVERRIDE (opacity / visibility, set via the LayerPanel) WINS over
         // the wire value so a (re-)add after a reconnect / re-render never resets
         // the user's edit. The cache subsumes the localStorage visibility map; we
@@ -2544,7 +2544,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
 
         if (addedSourceIds.current.has(layer.layer_id)) {
           // Update paint/layout on existing layer via the shared helpers
-          // (job-0258) — these branch on the tracked geometry kind AND cover
+          // (job-0258)  -  these branch on the tracked geometry kind AND cover
           // sublayers (`-outline`, `-clusters`, `-cluster-count`) that the
           // previous inline branch missed.
           if (m.getLayer(layer.layer_id)) {
@@ -2555,7 +2555,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
           continue;
         }
 
-        // New layer — branch on layer_type.
+        // New layer  -  branch on layer_type.
         if (
           (layerType === "vector" || layerType === "geojson") &&
           typeof layer.vector_tile_url === "string" &&
@@ -2623,7 +2623,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
           // bilinear interpolation smears flood-depth cells across screen pixels,
           // making it impossible to visually verify per-cell alignment with
           // underlying basemap features (streets, building blocks). nearest
-          // shows the source-projection grid 1:1 — the user can see that each
+          // shows the source-projection grid 1:1  -  the user can see that each
           // flood cell sits over the specific street/lot it covers, which is
           // the only visually-irrefutable proof of geographic alignment.
           m.addLayer({
@@ -2640,10 +2640,10 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
         }
       }
 
-      // job-0179 (per-Case client cache — "the seatbelt"): re-apply the user's
+      // job-0179 (per-Case client cache  -  "the seatbelt"): re-apply the user's
       // persisted Z-ORDER override after a (re-)add so a reconnect / re-render
       // never resets a drag-reorder. We ONLY act when the cache actually holds a
-      // zIndex override for the active Case — otherwise this is a no-op and the
+      // zIndex override for the active Case  -  otherwise this is a no-op and the
       // historical insertion-order stacking is preserved byte-identically. The
       // effective per-layer z-index is the cached override when present, else the
       // wire `z_index`; we sort DESCENDING (higher z renders on top) into the
@@ -2675,13 +2675,13 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
     const unsub = subscribeSessionState((payload) => {
       latestSessionState.current = payload;
 
-      // job-0321 (F43) — capture the ordered layer list the legend needs from
+      // job-0321 (F43)  -  capture the ordered layer list the legend needs from
       // THIS component's own subscription (App.tsx no longer owns the legend).
       // Order top-of-stack-first (z_index DESCENDING) to match LayerPanel and
       // LayerLegend's `layers.find(...)` "topmost wins" contract. The wire
       // payload carries z_index when present; when it's absent on every layer
       // (older snapshots) the sort is stable and preserves emission order,
-      // which is already roughly top-of-stack-last → we reverse in that case so
+      // which is already roughly top-of-stack-last -> we reverse in that case so
       // the most-recently-added (topmost) layer is first. We detect "no usable
       // z_index" as: every layer's z_index is undefined.
       const raw = (payload.loaded_layers ?? []) as ProjectLayerSummary[];
@@ -2732,7 +2732,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       const layerIds = style.layers.map((l) => l.id);
 
       // The lowest flood-overlay layer (i.e. the first one we added beyond the
-      // basemap layers) is our `beforeId` target — the new basemap layer
+      // basemap layers) is our `beforeId` target  -  the new basemap layer
       // should be inserted just before it. If no flood overlays exist yet,
       // append; the basemap will be the top layer until a flood overlay is
       // added, at which point the flood overlay will paint above it (correct).
@@ -2743,7 +2743,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       if (theme === "dark") {
         // Remove light basemap layer+source if present.
         if (currentMap.getLayer(BASEMAP_LAYER_ID)) currentMap.removeLayer(BASEMAP_LAYER_ID);
-        // (Leave the qgis-wms source in place — removing it can race with
+        // (Leave the qgis-wms source in place  -  removing it can race with
         // any pending tile requests; harmless to keep since it has no layer
         // referencing it.)
         // Add dark basemap if not already there.
@@ -2769,7 +2769,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
           );
         }
       } else {
-        // light theme — restore QGIS WMS basemap.
+        // light theme  -  restore QGIS WMS basemap.
         if (currentMap.getLayer(DARK_BASEMAP_LAYER_ID)) currentMap.removeLayer(DARK_BASEMAP_LAYER_ID);
         if (!currentMap.getLayer(BASEMAP_LAYER_ID)) {
           // Source was kept; just re-add the layer.
@@ -2804,13 +2804,13 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
     };
 
     applyTheme();
-    // No cleanup — basemap state lives in the map's style; the next theme
+    // No cleanup  -  basemap state lives in the map's style; the next theme
     // change will reconcile it.
   }, [theme]);
 
   // Subscribe to map-command for zoom-to and transient camera/animation verbs
   // (job-0068, change 5 client side) PLUS the layer-control verbs
-  // set-layer-opacity / set-layer-visibility / set-layer-order (job-0258 —
+  // set-layer-opacity / set-layer-visibility / set-layer-order (job-0258  - 
   // the LayerPanel user controls emit these through the App bus; until this
   // handler existed they never reached the map, which is why the panel's
   // opacity slider and drag-reorder were dead in the live demo). Layer CRUD
@@ -2830,7 +2830,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
           const [minLon, minLat, maxLon, maxLat] = corners;
           // Respect prefers-reduced-motion: a 1200ms camera flight is motion.
           // When the user has asked for reduced motion, jump (duration 0) so
-          // there is no animation — the moveend below still fires synchronously
+          // there is no animation  -  the moveend below still fires synchronously
           // enough that the extent redraw lands without an animated sweep.
           const prefersReducedMotion =
             typeof window !== "undefined" &&
@@ -2843,23 +2843,23 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
           // Remember the last extent corners so a late style (re)load (theme
           // setStyle, case-reopen remount) can re-assert the rectangle. Stays
           // inside this track's ownership (a ref, not the cross-track bus
-          // replay buffer — see crossTrackChanges).
+          // replay buffer  -  see crossTrackChanges).
           lastZoomToCorners.current = corners;
-          // job-0321 (F43) — mirror the corners into state so the legend can
+          // job-0321 (F43)  -  mirror the corners into state so the legend can
           // re-project against the AOI box (the legend hangs off its bottom
           // edge). The projection effect recomputes legendAnchor whenever aoiBbox
           // or the camera changes.
           setAoiBbox(corners);
-          // FIX 2 (vector AOI clip) — stash the AOI bbox on the map instance so
+          // FIX 2 (vector AOI clip)  -  stash the AOI bbox on the map instance so
           // the module-level vector add path clips features to it.
           setMapAoiBbox(m, corners);
-          // job-0294 — ALSO outline the extent as a styled rectangle so the
+          // job-0294  -  ALSO outline the extent as a styled rectangle so the
           // user sees exactly what area is being measured. The fitBounds above
           // is camera-only; this draws the bbox on the map.
           //
           // AWS-migration root-cause fix (bbox track): the prior code wrapped
           // drawAnalysisExtent in a bare `catch {}` that SILENTLY SWALLOWED any
-          // throw — so a transient MapLibre "style not done loading" /
+          // throw  -  so a transient MapLibre "style not done loading" /
           // source-not-ready / mid-camera-animation style-churn throw dropped
           // the rectangle forever (camera moved, no rectangle: the live
           // symptom). Now a throw RE-SCHEDULES the draw on the next idle, with
@@ -2877,22 +2877,22 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
             // INCIDENT FIX 2026-06-16: a Case-exit clear-analysis-extent sets
             // lastZoomToCorners=null. If a redraw was already queued (the
             // moveend/idle re-assert below), it must NOT re-add the rectangle
-            // after the clear — otherwise the AOI box persists after leaving the
+            // after the clear  -  otherwise the AOI box persists after leaving the
             // Case (user-reported). Bail when the corners were cleared.
             if (lastZoomToCorners.current === null) return;
-            // JOB WEB-AOI-LEGEND (#159) — SINGLE rectangle, replace-on-new. This
+            // JOB WEB-AOI-LEGEND (#159)  -  SINGLE rectangle, replace-on-new. This
             // closure used to draw the per-invocation captured `corners`. A
             // moveend/idle callback queued by an EARLIER (smaller) zoom-to could
             // therefore fire AFTER a newer (floored, larger) zoom-to had already
             // setData-replaced the extent, redrawing the STALE small box over the
-            // new large one — the "small box + large box both show" symptom. We
+            // new large one  -  the "small box + large box both show" symptom. We
             // now always draw the CURRENT corners (lastZoomToCorners.current), so
             // a late callback re-asserts the latest extent instead of a stale
             // one. drawAnalysisExtent setData-replaces the single source, so the
             // map only ever holds one rectangle.
             const liveCorners = lastZoomToCorners.current;
             // INCIDENT FIX 2026-06-16: gate the AOI draw on the mapStyleReady
-            // LATCH, not raw isStyleLoaded() — a hung raster tile keeps
+            // LATCH, not raw isStyleLoaded()  -  a hung raster tile keeps
             // isStyleLoaded() false forever and would stall the bounding-box
             // draw indefinitely (the "no bounding box" symptom). Once the style
             // has loaded once, draw regardless of stuck tiles.
@@ -2933,17 +2933,17 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
         // the remembered corners FIRST so a late style (re)load can't re-assert
         // the rectangle via the moveend/idle redraw path, then remove it.
         lastZoomToCorners.current = null;
-        // job-0321 (F43) — drop the AOI bbox so the legend falls back to its
+        // job-0321 (F43)  -  drop the AOI bbox so the legend falls back to its
         // bottom-center placement (no AOI to anchor to anymore).
         setAoiBbox(null);
-        // FIX 2 (vector AOI clip) — clear the stashed AOI bbox so subsequent
+        // FIX 2 (vector AOI clip)  -  clear the stashed AOI bbox so subsequent
         // vector layers (e.g. a new Case) aren't clipped to the prior AOI.
         setMapAoiBbox(m, null);
         // INCIDENT FIX 2026-06-16: gate on mapStyleReady, not raw
         // isStyleLoaded(). A hung tile (or a mid-flight camera animation) kept
         // isStyleLoaded() false, so the clear deferred forever and the AOI
         // rectangle PERSISTED after leaving a Case (user-reported). Once the
-        // style has loaded once, removeLayer/removeSource are safe — clear now.
+        // style has loaded once, removeLayer/removeSource are safe  -  clear now.
         if (mapStyleReady(m)) {
           try {
             clearAnalysisExtent(m);
@@ -2957,20 +2957,20 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
             try {
               clearAnalysisExtent(map.current);
             } catch {
-              /* best-effort — see above */
+              /* best-effort  -  see above */
             }
           });
         }
       } else if (payload.command === "reset-view") {
         // ux-batch-1 (F-CASES-CLEAR-ALL): leaving a Case snaps the camera back
         // to the default CONUS view so the user clearly sees they are no longer
-        // in a Case. Camera-only — the extent rectangle is cleared separately
+        // in a Case. Camera-only  -  the extent rectangle is cleared separately
         // by the clear-analysis-extent command App also emits on exit.
-        // job-0321 (F43) — also drop the AOI bbox so the legend stops trying to
+        // job-0321 (F43)  -  also drop the AOI bbox so the legend stops trying to
         // anchor to a box that is no longer on screen (belt + suspenders with
         // the clear-analysis-extent command).
         setAoiBbox(null);
-        // FIX 2 (vector AOI clip) — clear the stashed AOI bbox too.
+        // FIX 2 (vector AOI clip)  -  clear the stashed AOI bbox too.
         setMapAoiBbox(m, null);
         const prefersReducedMotion =
           typeof window !== "undefined" &&
@@ -2990,19 +2990,19 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
           vectorGeomKinds.current.get(payload.layer_id),
           layerStylePresets.current.get(payload.layer_id) ?? null,
         );
-        // job-0179 — write-through so the edit survives a re-render / reconnect.
+        // job-0179  -  write-through so the edit survives a re-render / reconnect.
         layerCache.setOverride(layerCache.activeCaseId, payload.layer_id, {
           opacity,
         });
       } else if (payload.command === "set-layer-visibility") {
         applyLayerVisibility(m, payload.layer_id, payload.visible);
-        // job-0179 — write-through (subsumes the localStorage visibility map).
+        // job-0179  -  write-through (subsumes the localStorage visibility map).
         layerCache.setOverride(layerCache.activeCaseId, payload.layer_id, {
           visible: payload.visible,
         });
       } else if (payload.command === "set-layer-order") {
         applyLayerOrder(m, payload.layer_ids);
-        // job-0179 — write-through: stamp each layer's resulting z-index (the
+        // job-0179  -  write-through: stamp each layer's resulting z-index (the
         // command is top-first, so the LAST element gets the lowest z) so a
         // re-render / reconnect re-asserts the user's drag-reorder.
         const ids = payload.layer_ids;
@@ -3018,7 +3018,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
     });
   }, [subscribeMapCommand]);
 
-  // JOB WEB-ANIM (#157.1) — register the sequence-animation frame-visibility
+  // JOB WEB-ANIM (#157.1)  -  register the sequence-animation frame-visibility
   // emitter. The module-level AnimationController holds the playback state + the
   // advance interval OUTSIDE the React tree (so closing the LayerPanel no longer
   // stops playback); whenever it changes the active frame it calls this emitter
@@ -3038,7 +3038,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
         try {
           applyLayerVisibility(m, id, visible);
         } catch {
-          // Layer not on the style yet (mid-add) — the next session-state
+          // Layer not on the style yet (mid-add)  -  the next session-state
           // reconcile + the cache override below restore the right state.
         }
         layerCache.setOverride(layerCache.activeCaseId, id, { visible });
@@ -3050,7 +3050,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // job-0321 (F43) — keep the legend anchored to the AOI box's bottom edge as
+  // job-0321 (F43)  -  keep the legend anchored to the AOI box's bottom edge as
   // the camera moves. Re-project the bbox bottom-edge midpoint on every map
   // `move` / `zoom` / `render` (render fires throughout the fitBounds flight),
   // throttled to one update per animation frame so a 60fps pan doesn't thrash
@@ -3064,7 +3064,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
     if (!aoiBbox) {
       setLegendRect(null);
       setLegendAnchor(null);
-      // FIX 4 — no AOI bbox → drop the projected width so the legend reverts to
+      // FIX 4  -  no AOI bbox -> drop the projected width so the legend reverts to
       // its static 320 fallback.
       setLegendBarWidth(null);
       return undefined;
@@ -3077,12 +3077,12 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       if (disposed) return;
       const cur = map.current;
       if (!cur) return;
-      // EDGE-RAIL snap — project the FULL AOI rectangle in ONE pass
+      // EDGE-RAIL snap  -  project the FULL AOI rectangle in ONE pass
       // (computeBboxScreenRect: min/max over all four projected bbox corners) and
       // thread that TRUE rectangle to the legend as `legendRect`. The legend snaps
       // its colorbar keys CCW directly against that rect's four edges, so the rail
       // follows the real AOI aspect ratio + on-screen skew (correct even when
-      // Web-Mercator skews the box at high latitude) — the colorbar slides ALONG
+      // Web-Mercator skews the box at high latitude)  -  the colorbar slides ALONG
       // the actual AOI edges, placeable around the whole perimeter, NOT off a
       // square-ish estimate. From the SAME rect we also derive two convenience
       // scalars that are NOT used for snapping:
@@ -3108,7 +3108,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       if (typeof requestAnimationFrame === "function") {
         rafId = requestAnimationFrame(recompute);
       } else {
-        // SSR / test environments without rAF — compute synchronously.
+        // SSR / test environments without rAF  -  compute synchronously.
         recompute();
       }
     };
@@ -3138,7 +3138,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
   // LayerPanel, which has no map handle) can pin bottom-center of the AOI box
   // and track pan/zoom exactly like the legend keys. The recompute effect above
   // re-derives `legendRect` on every move/zoom/render (rAF-throttled), so this
-  // could fire very often with identical values — guard with a ref that holds
+  // could fire very often with identical values  -  guard with a ref that holds
   // the last rect we reported and only invoke the callback when the four edges
   // actually change (or transition to/from null). That keeps App's state stable
   // and avoids render loops.
@@ -3162,22 +3162,22 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
   // F74b feature-click/tap-to-inspect. The agent advertises "click polygons to
   // see name / designation / IUCN", so a click OR a tap on a rendered vector
   // feature must surface its attributes. Mechanism:
-  //   - On `click` (fires for mouse AND for a tap on touch devices — MapLibre
+  //   - On `click` (fires for mouse AND for a tap on touch devices  -  MapLibre
   //     synthesizes a click from a tap that did not pan), run
   //     queryRenderedFeatures at the point restricted to the rendered vector
-  //     paint layers (tracked in vectorGeomKinds — every layer_id we painted as
+  //     paint layers (tracked in vectorGeomKinds  -  every layer_id we painted as
   //     a circle/line/fill). On a hit, open the popup at the point.
   //   - Desktop hover: set the canvas cursor to "pointer" over a hittable
   //     feature (mouseenter/mouseleave per layer) so users know it's clickable.
   //   - Dismiss: tapping the empty map (no hit) closes any open popup; the X
   //     button and Esc are handled inside FeaturePopup.
-  // queryRenderedFeatures is the MapLibre hit-test — Invariant 1 holds: every
+  // queryRenderedFeatures is the MapLibre hit-test  -  Invariant 1 holds: every
   // value shown comes from the feature's own properties, nothing is computed.
   useEffect(() => {
     const m = map.current;
     if (!m) return undefined;
 
-    // Geometry-kind → human label for the no-name title fallback.
+    // Geometry-kind -> human label for the no-name title fallback.
     const geomLabel = (kind: VectorGeomKind | undefined): string => {
       switch (kind) {
         case "point":
@@ -3193,7 +3193,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
 
     // The set of MapLibre layer ids we hit-test: the main paint layer for every
     // tracked vector layer_id that currently exists on the map. (Cluster
-    // sublayers / polygon outlines are intentionally excluded — the main paint
+    // sublayers / polygon outlines are intentionally excluded  -  the main paint
     // layer carries the real per-feature properties.)
     const queryableLayerIds = (): string[] => {
       const ids: string[] = [];
@@ -3201,7 +3201,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
         try {
           if (m.getLayer(id)) ids.push(id);
         } catch {
-          /* layer mid-removal — skip */
+          /* layer mid-removal  -  skip */
         }
       }
       return ids;
@@ -3221,7 +3221,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       const layers = queryableLayerIds();
       if (layers.length === 0) {
         setFeaturePopup(null);
-        // FIX 1 — no vector layers → nothing to highlight; clear any stale one.
+        // FIX 1  -  no vector layers -> nothing to highlight; clear any stale one.
         try {
           if (m.getSource(FEATURE_HIGHLIGHT_SOURCE_ID)) clearFeatureHighlight(m);
         } catch {
@@ -3237,7 +3237,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       }
       if (!features || features.length === 0) {
         // Tap on empty map (or basemap/raster) dismisses any open popup AND
-        // clears the highlight (FIX 1 — a no-hit tap replaces/clears it).
+        // clears the highlight (FIX 1  -  a no-hit tap replaces/clears it).
         setFeaturePopup(null);
         try {
           if (m.getSource(FEATURE_HIGHLIGHT_SOURCE_ID)) clearFeatureHighlight(m);
@@ -3252,7 +3252,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
           ? ((hit as unknown as { layer: { source: string } }).layer.source as string)
           : undefined;
       const geomKind = sourceId ? vectorGeomKinds.current.get(sourceId) : undefined;
-      // FIX 1 — highlight the ENTIRE tapped feature geometry. Generic across
+      // FIX 1  -  highlight the ENTIRE tapped feature geometry. Generic across
       // polygon/line/point: setFeatureHighlight feeds the cloned geometry into a
       // single highlight source whose fill/line/circle layers paint whichever
       // kind matches. Map-space, so it pans + scales with zoom for free. Replaces
@@ -3262,8 +3262,8 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       } catch {
         /* highlight is best-effort; the popup still opens */
       }
-      // FIX 2 — capture the feature's geographic anchor so the popup stays glued
-      // to its MAP location across pans/zooms. FIX 3 — capture the zoom at tap as
+      // FIX 2  -  capture the feature's geographic anchor so the popup stays glued
+      // to its MAP location across pans/zooms. FIX 3  -  capture the zoom at tap as
       // the scale reference. e.lngLat is MapLibre's geographic coordinate of the
       // tap point (Invariant 1: received from MapLibre, not computed).
       const lngLat =
@@ -3329,7 +3329,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       setFeaturePopup(data);
     };
 
-    // Desktop cursor affordance — pointer over a hittable feature. We attach a
+    // Desktop cursor affordance  -  pointer over a hittable feature. We attach a
     // single mousemove handler (cheap) instead of per-layer enter/leave so it
     // keeps working as vector layers come and go without re-binding.
     const onMouseMove = (e: maplibregl.MapMouseEvent): void => {
@@ -3360,7 +3360,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
     };
   }, []);
 
-  // FIX 2 + FIX 3 (NATE 2026-06-17) — keep the popup PINNED TO THE MAP and
+  // FIX 2 + FIX 3 (NATE 2026-06-17)  -  keep the popup PINNED TO THE MAP and
   // TRACK ZOOM for the scale transform. While a popup with a geographic anchor
   // (`lngLat`) is open, re-project that lng/lat to a screen point on every map
   // `move` / `zoom` so the card stays glued to the feature's MAP location (pans
@@ -3375,7 +3375,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
     const m = map.current;
     if (!m) return undefined;
     if (typeof popupLng !== "number" || typeof popupLat !== "number") {
-      return undefined; // no geographic anchor (older fixtures) → stays screen-anchored.
+      return undefined; // no geographic anchor (older fixtures) -> stays screen-anchored.
     }
 
     let rafId: number | null = null;
@@ -3398,7 +3398,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
         z = currentZoom ?? 0;
       }
       setCurrentZoom(z);
-      // Update only `point` — keep the rest of the popup payload intact so the
+      // Update only `point`  -  keep the rest of the popup payload intact so the
       // card re-renders glued to the feature's projected map location.
       setFeaturePopup((prev) =>
         prev ? { ...prev, point: { x: pt.x, y: pt.y } } : prev,
@@ -3409,7 +3409,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       if (typeof requestAnimationFrame === "function") {
         rafId = requestAnimationFrame(recompute);
       } else {
-        recompute(); // SSR / test env without rAF → synchronous.
+        recompute(); // SSR / test env without rAF -> synchronous.
       }
     };
 
@@ -3431,7 +3431,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
         /* map may already be torn down */
       }
     };
-    // currentZoom is intentionally omitted — it's a fallback read, not a trigger.
+    // currentZoom is intentionally omitted  -  it's a fallback read, not a trigger.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [popupLng, popupLat]);
 
@@ -3445,7 +3445,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
   //   - hovered/selected ids drive each polygon's feature-state highlight so a
   //     CARD-ROW hover/click highlights the matching polygon.
   //   - A polygon TAP (or hover) feeds the bus (pickRegion / setHovered) so the
-  //     map drives the card the same way the card drives the map — one reply
+  //     map drives the card the same way the card drives the map  -  one reply
   //     path (Chat owns the WebSocket; the bus relays the map tap to it).
   //
   // All MapLibre source/layer work is gated on style-readiness + existence
@@ -3465,7 +3465,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       if (!mapStyleReady(m)) return;
       const req = st.request;
       if (!req) {
-        // Cleared — tear down the choropleth.
+        // Cleared  -  tear down the choropleth.
         if (currentRequestId !== null) {
           clearRegionChoropleth(m);
           highlightIds.current = new Set();
@@ -3473,7 +3473,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
         }
         return;
       }
-      // New request (or first paint) — draw + frame the whole-state bbox so the
+      // New request (or first paint)  -  draw + frame the whole-state bbox so the
       // candidate counties are visible.
       if (currentRequestId !== req.request_id) {
         drawRegionChoropleth(m, req.candidates);
@@ -3489,10 +3489,10 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
             { padding: 48, duration: 600, maxZoom: 8 },
           );
         } catch {
-          /* fitBounds can throw on a degenerate bbox — leave the camera */
+          /* fitBounds can throw on a degenerate bbox  -  leave the camera */
         }
       } else {
-        // Same request — keep the data fresh (candidates are stable, but a
+        // Same request  -  keep the data fresh (candidates are stable, but a
         // re-emit is harmless) without re-framing the camera.
         drawRegionChoropleth(m, req.candidates);
       }
@@ -3509,7 +3509,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
     const unsub = regionChoiceBus.subscribe((st) => {
       const m = map.current;
       // Nothing to draw / tear down (no active request and none currently
-      // painted) → do not arm an idle deferral. This keeps the common no-pick
+      // painted) -> do not arm an idle deferral. This keeps the common no-pick
       // case (the vast majority of sessions) from touching the map at all.
       if (!st.request && currentRequestId === null) return;
       if (m && !mapStyleReady(m)) {
@@ -3521,7 +3521,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       apply(st);
     });
 
-    // Map TAP on a candidate polygon → relay a pick to the bus (Chat sends the
+    // Map TAP on a candidate polygon -> relay a pick to the bus (Chat sends the
     // reply). A hover over a polygon highlights it via the bus too.
     const m0 = map.current;
     const onChoroplethClick = (e: maplibregl.MapMouseEvent): void => {
@@ -3584,12 +3584,12 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
     };
   }, []);
 
-  // FR-WC-13 / FR-WC-16 — subscribe to the spatial-input bus and mirror the
+  // FR-WC-13 / FR-WC-16  -  subscribe to the spatial-input bus and mirror the
   // active request into component state so the SpatialDrawSurface overlay mounts
   // (point/bbox pick mode or the terra-draw surface). The bus fires immediately
   // on subscribe with the current state, so a Map mounting AFTER the request
   // arrived opens the surface right away. The surface's Submit/Cancel ride back
-  // through the bus (bus.submit / bus.cancel) to Chat — Map never sends WS.
+  // through the bus (bus.submit / bus.cancel) to Chat  -  Map never sends WS.
   useEffect(() => {
     const unsub = spatialInputBus.subscribe((st: SpatialInputBusState) => {
       setSpatialRequest(st.request);
@@ -3597,13 +3597,13 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
     return unsub;
   }, []);
 
-  // job-0321 (F43) — resolve the legend placement.
-  //   - aoiBbox + on-screen anchor → hang off the box's bottom edge, nudged
+  // job-0321 (F43)  -  resolve the legend placement.
+  //   - aoiBbox + on-screen anchor -> hang off the box's bottom edge, nudged
   //     down a small gap so it clears the dashed outline. On mobile the box can
   //     sit behind the collapsed bottom sheet, so we add the same ~116px sheet
-  //     clearance App used for the old bottom-center mobile legend — but only as
+  //     clearance App used for the old bottom-center mobile legend  -  but only as
   //     a floor: if the anchored position is already higher than that, keep it.
-  //   - no anchor (AOI-less / off-screen / no map yet) → null, and LayerLegend
+  //   - no anchor (AOI-less / off-screen / no map yet) -> null, and LayerLegend
   //     falls back to its own bottom-center placement.
   const LEGEND_GAP_PX = 10; // small gap below the bbox bottom edge.
   const MOBILE_SHEET_CLEARANCE_PX = 116; // matches the prior App mobile offset.
@@ -3637,10 +3637,10 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
       data-testid="grace2-map"
       style={{ position: "absolute", inset: 0 }}
     >
-      {/* job-0321 (F43) — the legend now lives INSIDE the map container so it
+      {/* job-0321 (F43)  -  the legend now lives INSIDE the map container so it
           can anchor to the AOI box. `anchor` non-null = hang off the box's
           bottom edge; null = LayerLegend's own bottom-center fallback. */}
-      {/* EDGE-RAIL snap (aoiRect) — the TRUE projected AOI rectangle is the snap
+      {/* EDGE-RAIL snap (aoiRect)  -  the TRUE projected AOI rectangle is the snap
           source of truth: the colorbar keys rail CCW along its real edges. anchor
           (resolvedAnchor) drives only the vertical placement nudge; barWidth only
           sizes the default colorbar width. */}
@@ -3649,19 +3649,19 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
         aoiRect={legendRect}
         anchor={resolvedAnchor}
         barWidth={legendBarWidth}
-        /* Item b — controlled hide state (App owns it on mobile so the toggle
+        /* Item b  -  controlled hide state (App owns it on mobile so the toggle
            lives in the Layers section, off the chat composer). */
         hidden={legendHidden}
         onHiddenChange={onLegendHiddenChange}
         suppressShowPill={suppressLegendShowPill}
       />
 
-      {/* F74b / FIX 2 / FIX 3 — feature-click/tap-to-inspect popup. Shown when a
+      {/* F74b / FIX 2 / FIX 3  -  feature-click/tap-to-inspect popup. Shown when a
           click/tap hits a rendered vector feature; PINNED TO THE FEATURE'S MAP
           LOCATION (re-projected on pan/zoom so it pans with the map) and SCALED
           with the map zoom (shrinks zoomed out, grows zoomed in; clamped). It
           PERSISTS until the user taps elsewhere (a no-hit click dismisses it),
-          taps another feature (it moves there), or hits the X / Esc — and the
+          taps another feature (it moves there), or hits the X / Esc  -  and the
           generic feature HIGHLIGHT (FIX 1) is cleared on any of those. */}
       {featurePopup ? (
         <FeaturePopup
@@ -3671,7 +3671,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
           currentZoom={currentZoom ?? undefined}
           onClose={() => {
             setFeaturePopup(null);
-            // FIX 1 — clear the highlight when the popup is dismissed (X / Esc).
+            // FIX 1  -  clear the highlight when the popup is dismissed (X / Esc).
             const m = map.current;
             if (m) {
               try {
@@ -3684,7 +3684,7 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
         />
       ) : null}
 
-      {/* FR-WC-13 / FR-WC-16 — the on-map spatial-input surface. Mounts while a
+      {/* FR-WC-13 / FR-WC-16  -  the on-map spatial-input surface. Mounts while a
           `spatial-input-request` is active (mirrored from the spatialInputBus).
           For vector_draw it hosts the terra-draw toolbar + tagging popover; for
           point/bbox it enters pick mode. Submit/Cancel funnel back through the

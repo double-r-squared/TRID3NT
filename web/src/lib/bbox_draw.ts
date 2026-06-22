@@ -271,6 +271,60 @@ export function attachBboxDrag(
   };
 }
 
+// --- bbox -> screen rect projection (for AOI-anchored overlays) ---------- //
+
+/** A screen-space rectangle in CSS pixels (origin = map container top-left).
+ *  Mirrors legend_snap.ScreenRect / Map.tsx LegendScreenRect so an overlay
+ *  pinned to a drawn bbox (e.g. the draw-mode Save/Retry/Cancel control) can
+ *  reuse the same bottom-center anchoring math the legend + scrubber use. */
+export interface BboxScreenRect {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
+/**
+ * Project an EPSG:4326 bbox into the map's on-screen pixel rectangle (min/max
+ * over all four projected corners), the same one-pass projection Map.tsx's
+ * computeBboxScreenRect does for the legend. Returns null when the box can't be
+ * projected (map torn down / mid style swap). Pure projection (Invariant 1: the
+ * client only renders  -  every number comes from MapLibre's project()).
+ */
+export function projectBboxScreenRect(
+  map: MapLibreMap,
+  bbox: BBox | number[],
+): BboxScreenRect | null {
+  const minLon = bbox[0] ?? 0;
+  const minLat = bbox[1] ?? 0;
+  const maxLon = bbox[2] ?? 0;
+  const maxLat = bbox[3] ?? 0;
+  let pts: { x: number; y: number }[];
+  try {
+    pts = [
+      map.project([minLon, minLat]), // SW
+      map.project([maxLon, minLat]), // SE
+      map.project([maxLon, maxLat]), // NE
+      map.project([minLon, maxLat]), // NW
+    ];
+  } catch {
+    return null;
+  }
+  let left = Infinity;
+  let top = Infinity;
+  let right = -Infinity;
+  let bottom = -Infinity;
+  for (const { x, y } of pts) {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    if (x < left) left = x;
+    if (x > right) right = x;
+    if (y < top) top = y;
+    if (y > bottom) bottom = y;
+  }
+  if (!Number.isFinite(left) || !Number.isFinite(top)) return null;
+  return { left, top, right, bottom };
+}
+
 // --- bbox validation (mirrors the server _is_finite_bbox4) --------------- //
 
 /**

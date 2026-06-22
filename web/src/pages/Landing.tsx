@@ -1,120 +1,104 @@
-// GRACE-2 web - public landing page.
+// GRACE-2 web - public landing page (v2).
 //
 // The hero/marketing page rendered at "/" for first-time visitors (and at
 // "/landing" always - see EntryRouter.tsx for the passthrough rule). Pure
-// presentational React + CSS: no router, no UI kit, no heavy assets. The
-// showcase imagery under /landing/*.webp is real product screenshots
-// (SFINCS flood render, Pelicun/NSI impact assessment, colored-relief
-// terrain) recompressed from live-verify evidence runs. Fresh Playwright
-// captures drop into the SAME filenames, so the asset paths stay stable.
+// presentational React + CSS + one hand-rolled canvas backdrop: no router, no
+// UI kit, no heavy assets, no new dependencies.
 //
-// CTA + routing contract (PRESERVE): the primary CTA points at "/app" with a
-// data-testid of "grace2-landing-cta"; the "Resume session" variant renders
-// when hasSession is true (returning visitors reaching "/landing"). The
-// privacy link points at "/privacy". None of that is allowed to drift -
-// EntryRouter and the live-verify tooling depend on it.
+// CTA + routing contract (PRESERVE - EntryRouter and live-verify depend on it):
+//   - the primary CTA points at "/app" with data-testid "grace2-landing-cta";
+//   - the "Resume session" variant renders when hasSession is true (returning
+//     visitors reaching "/landing");
+//   - the privacy link points at "/privacy" (data-testid
+//     "grace2-landing-privacy-link").
 //
-// Design language: clean, modern, dark-friendly geospatial/AI product page -
-// blue->cyan->teal accent gradient, glassmorphism cards, a map-graticule
-// backdrop and slow aurora drift (disabled under prefers-reduced-motion in
-// landing.css). Strong typographic hierarchy, responsive, accessible.
+// Design language (v2 - deliberately distinct from v1):
+//   - a deep, near-black scientific palette with ONE restrained cool accent
+//     (no rainbow gradient, no vendor logos, no count-bragging);
+//   - lead motif is an animated, cursor-interactive topographic CONTOUR FIELD
+//     drawn on a <canvas> (ContourField.tsx) behind the hero - it bends toward
+//     the pointer and slowly drifts, evoking terrain / flood surfaces;
+//   - generous whitespace, a clear type hierarchy, and scroll-reveal
+//     transitions (IntersectionObserver) that degrade to instant-visible under
+//     prefers-reduced-motion (handled in landing.css and the canvas itself).
+//
+// Copy leads with OUTCOME, not architecture: what defensible, fast multi-hazard
+// analysis enables - grounded in real numerical simulation, not estimates.
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import type { FC } from "react";
 import {
   IconChat,
   IconWaves,
   IconGrid,
   IconTerrain,
-  IconWorkspaces,
   IconGlobe,
   IconFlowArrow,
   IconModel,
   IconMapPin,
-  IconSparkle,
   IconArrowRight,
-  IconChevronRight,
 } from "../components/icons";
 import type { IconProps } from "../components/icons";
+import { ContourField } from "../components/landing/ContourField";
 import "./landing.css";
 
 export interface LandingProps {
   /**
    * True when the browser already carries a GRACE-2 session key - only
    * reachable via the explicit "/landing" path in that case (EntryRouter
-   * passes "/" straight through to the app). Switches the primary CTA to
-   * the "Resume session" variant.
+   * passes "/" straight through to the app). Switches the primary CTA to the
+   * "Resume session" variant.
    */
   hasSession?: boolean;
 }
 
-interface Hazard {
+interface Capability {
   icon: FC<IconProps>;
   title: string;
-  engine: string;
   body: string;
 }
 
 /**
- * The shipped hazard/engine matrix - every one runs as a real solver on AWS
- * Batch Spot (scale-to-zero), driven entirely from the conversation.
+ * Capabilities framed as plain-English OUTCOMES for a general/professional
+ * audience - no engine name-drops, no jargon. Every one is backed by a real
+ * numerical solver under the hood; the page sells the result, not the tool.
  */
-const HAZARDS: Hazard[] = [
+const CAPABILITIES: Capability[] = [
   {
     icon: IconWaves,
-    title: "Coastal flood + waves",
-    engine: "SFINCS + SnapWave",
+    title: "Coastal flooding and storm surge",
     body:
-      "Storm surge and wave setup on a SFINCS quadtree mesh with SnapWave coupling - the same workflow Deltares uses for hurricane inundation studies.",
-  },
-  {
-    icon: IconGrid,
-    title: "Urban flood",
-    engine: "PySWMM",
-    body:
-      "Pluvial street flooding through a quasi-2D node-link mesh: buildings become obstructions, walls block links, flap gates are modeled natively.",
+      "See how far the water reaches when a storm pushes the ocean inland - surge and wave run-up resolved across the coastline and the streets behind it.",
   },
   {
     icon: IconFlowArrow,
-    title: "Riverine + compound flood",
-    engine: "SFINCS multi-driver",
+    title: "River and compound flooding",
     body:
-      "Surge, river discharge, and rainfall combined in one compound-flood run - the multi-driver forcing real practitioners use for coastal watersheds.",
+      "Combine rainfall, river discharge, and surge in a single run to understand the floods that build when several drivers arrive at once.",
+  },
+  {
+    icon: IconGrid,
+    title: "Urban drainage and pluvial flooding",
+    body:
+      "Trace where rain pools in a city block by block, with buildings, walls, and drainage structures shaping the flow the way they do on the ground.",
   },
   {
     icon: IconGlobe,
-    title: "Groundwater contamination",
-    engine: "MODFLOW 6 + transport",
+    title: "Groundwater and contamination",
     body:
-      "Subsurface flow and solute transport with MODFLOW 6 via FloPy - track a contaminant plume from source to receptor across the aquifer.",
-  },
-  {
-    icon: IconSparkle,
-    title: "Seismic hazard (PSHA)",
-    engine: "OpenQuake",
-    body:
-      "Probabilistic seismic hazard with OpenQuake: ground-motion hazard curves and shaking maps from the canonical open-source PSHA engine.",
-  },
-  {
-    icon: IconWaves,
-    title: "Dam-break + shallow water",
-    engine: "GeoClaw",
-    body:
-      "Shallow-water dam-break and overland routing on adaptively refined grids with GeoClaw - wetting-and-drying done right.",
+      "Follow a contaminant plume through an aquifer from source to receptor, so you know what is at risk and when it arrives.",
   },
   {
     icon: IconTerrain,
-    title: "Landslide susceptibility",
-    engine: "Landlab",
+    title: "Earthquake and terrain hazard",
     body:
-      "Slope-stability and surface-process modeling with Landlab to map where terrain is primed to fail under rain or shaking.",
+      "Map expected ground shaking and the slopes most primed to fail, turning regional hazard into something you can act on locally.",
   },
   {
-    icon: IconWorkspaces,
-    title: "Impact + loss",
-    engine: "Pelicun",
+    icon: IconMapPin,
+    title: "Damage and loss to what matters",
     body:
-      "Structure-level damage and loss with Pelicun over the USACE National Structure Inventory - tens of thousands of buildings scored against any hazard field.",
+      "Score real buildings against the modeled hazard to estimate damage and loss - the human and economic stakes, not just a depth map.",
   },
 ];
 
@@ -129,65 +113,80 @@ const STEPS: Step[] = [
   {
     n: "01",
     icon: IconChat,
-    title: "Chat",
+    title: "Describe it",
     body:
-      "Describe the scenario in plain English - 'model a 100-year flood for Fort Myers and assess building damage.' Draw an AOI on the map if you want precise bounds.",
+      "State the scenario in plain language - a hundred-year flood for a stretch of coast, the damage to the buildings behind it. Draw the area on the map if the bounds matter.",
   },
   {
     n: "02",
     icon: IconModel,
-    title: "Model",
+    title: "It runs the science",
     body:
-      "The agent geocodes, pulls authoritative data, builds the model deck, and submits the solver to AWS Batch - narrating each tool call as it runs, recovering from errors honestly.",
+      "Authoritative elevation, weather, and infrastructure data are assembled into a model and solved with the same numerical engines specialists rely on - not an estimate or a guess.",
   },
   {
     n: "03",
     icon: IconMapPin,
-    title: "Map",
+    title: "Read the result",
     body:
-      "Results paint onto an interactive MapLibre map: raster depth fields, vector structures, time-stepped water animation, 3D terrain - ready to inspect, scrub, and export.",
+      "Results paint onto an interactive map you can pan, scrub through time, and export - every number traceable to a simulation or a source you can name.",
   },
 ];
 
-const STATS = [
-  { n: "8", l: "physics engines, all real" },
-  { n: "100+", l: "agent tools" },
-  { n: "60+", l: "live data sources" },
-  { n: "$0", l: "idle compute (scale-to-zero)" },
+const IMPACTS = [
+  { n: "Weeks to minutes", l: "Analysis that took a specialist team weeks, asked for and answered in a single sitting." },
+  { n: "Grounded in physics", l: "Every result comes from a real numerical simulation - never an estimate dressed up as one." },
+  { n: "Built to defend", l: "Each value is traceable to the data and the model behind it, so the work holds up to scrutiny." },
 ];
 
-const PIPELINE_CHIPS = [
-  "geocode_location",
-  "fetch_dem",
-  "run_model_flood_scenario",
-  "publish_layer",
-];
+/** Lightweight scroll-reveal: adds `is-in` to observed nodes once on screen. */
+function useScrollReveal(): (el: HTMLElement | null) => void {
+  const observer = useRef<IntersectionObserver | null>(null);
+
+  useEffect(() => {
+    const reduce =
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reduce || typeof IntersectionObserver === "undefined") return;
+    observer.current = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            entry.target.classList.add("is-in");
+            observer.current?.unobserve(entry.target);
+          }
+        }
+      },
+      { threshold: 0.12, rootMargin: "0px 0px -8% 0px" },
+    );
+    return () => observer.current?.disconnect();
+  }, []);
+
+  return (el: HTMLElement | null) => {
+    if (el && observer.current) observer.current.observe(el);
+  };
+}
 
 export function Landing({ hasSession = false }: LandingProps): JSX.Element {
   useEffect(() => {
-    document.title = "GRACE-2 - AI workbench for multi-hazard modeling";
+    document.title =
+      "GRACE-2 - Conversational multi-hazard analysis, grounded in real simulation";
   }, []);
 
+  const reveal = useScrollReveal();
   const ctaLabel = hasSession ? "Resume session" : "Launch GRACE-2";
 
   return (
     <div className="lp" data-testid="grace2-landing">
-      {/* Decorative backdrop: graticule grid + aurora blobs (CSS only). */}
-      <div className="lp-bg" aria-hidden="true">
-        <div className="lp-bg-grid" />
-        <div className="lp-bg-aurora lp-bg-aurora-a" />
-        <div className="lp-bg-aurora lp-bg-aurora-b" />
-      </div>
-
       <header className="lp-nav">
         <a className="lp-wordmark" href="/">
           <span className="lp-wordmark-glyph" aria-hidden="true" />
           GRACE-2
         </a>
         <nav className="lp-nav-links" aria-label="Landing navigation">
-          <a href="#hazards">Hazards</a>
+          <a href="#capabilities">Capabilities</a>
           <a href="#how">How it works</a>
-          <a href="#agent">The agent</a>
+          <a href="#impact">Why it matters</a>
           <a href="/privacy">Privacy</a>
           <a className="lp-nav-launch" href="/app">
             Launch app
@@ -196,26 +195,26 @@ export function Landing({ hasSession = false }: LandingProps): JSX.Element {
       </header>
 
       <main>
-        {/* ───────────────────────── Hero ───────────────────────── */}
+        {/* ------------------------- Hero ------------------------- */}
         <section className="lp-hero">
-          <div className="lp-hero-copy">
-            <span className="lp-badge">
-              <span className="lp-badge-spark" aria-hidden="true">
-                <IconSparkle size={13} weight="fill" />
-              </span>
-              Powered by Anthropic Claude on AWS
-            </span>
+          <div className="lp-hero-field" aria-hidden="true">
+            <ContourField className="lp-contours" />
+            <div className="lp-hero-veil" />
+          </div>
+
+          <div className="lp-hero-inner">
+            <span className="lp-eyebrow">Multi-hazard modeling, made conversational</span>
             <h1 className="lp-h1">
-              Chat to run real hazard models
+              Understand the hazard
               <br />
-              <span className="lp-h1-grad">on a live map.</span>
+              <span className="lp-accent">before it arrives.</span>
             </h1>
             <p className="lp-sub">
-              GRACE-2 is an AI workbench for multi-hazard modeling. Describe a
-              flood, earthquake, or groundwater scenario in plain English and a{" "}
-              <strong>Claude-powered agent</strong> runs the actual physics
-              solver - SFINCS, PySWMM, MODFLOW, OpenQuake and more - then paints
-              the results on an interactive map you can talk to.
+              GRACE-2 turns a question about flood, storm surge, groundwater,
+              earthquake, or wildfire risk into a rigorous answer - in plain
+              language, on a live map, grounded in real numerical simulation.
+              Work that once took a team of specialists weeks now happens in a
+              single conversation.
             </p>
             <div className="lp-cta-row">
               <a
@@ -228,91 +227,86 @@ export function Landing({ hasSession = false }: LandingProps): JSX.Element {
                   <IconArrowRight size={16} />
                 </span>
               </a>
-              <a className="lp-cta-ghost" href="#hazards">
-                Explore the hazards
+              <a className="lp-cta-ghost" href="#how">
+                See how it works
               </a>
             </div>
-            <div className="lp-pipeline" aria-label="Example agent pipeline">
-              {PIPELINE_CHIPS.map((chip, i) => (
-                <span key={chip} className="lp-pipeline-step">
-                  <code className="lp-chip">{chip}</code>
-                  {i < PIPELINE_CHIPS.length - 1 && (
-                    <span className="lp-chip-arrow" aria-hidden="true">
-                      <IconChevronRight size={12} />
-                    </span>
-                  )}
-                </span>
-              ))}
-            </div>
           </div>
 
-          <div className="lp-hero-shot">
-            <figure className="lp-frame lp-frame-tilt">
-              <div className="lp-frame-bar" aria-hidden="true">
-                <i />
-                <i />
-                <i />
-              </div>
-              <img
-                src="/landing/shot_flood_desktop.webp"
-                width={1440}
-                height={900}
-                alt="GRACE-2 rendering a SFINCS flood-depth raster over Fort Myers, Florida, with the agent chat panel alongside the interactive map"
-                loading="eager"
-              />
-              <figcaption>
-                SFINCS flood inundation, Fort Myers FL - a live agent run
-              </figcaption>
-            </figure>
+          <a className="lp-scroll-cue" href="#capabilities" aria-label="Scroll to capabilities">
+            <span className="lp-scroll-dot" aria-hidden="true" />
+          </a>
+        </section>
+
+        {/* ----------------------- Capabilities ----------------------- */}
+        <section
+          className="lp-section lp-cap"
+          id="capabilities"
+          ref={reveal}
+        >
+          <div className="lp-section-head">
+            <span className="lp-kicker">What you can ask</span>
+            <h2 className="lp-h2">
+              One conversation, the hazards that shape a place.
+            </h2>
+            <p className="lp-section-sub">
+              Describe the risk you care about in everyday terms. Behind each
+              answer is a full physics-based simulation - the same class of
+              model a specialist would build by hand, run for you and rendered
+              where you can interrogate it.
+            </p>
           </div>
-        </section>
-
-        {/* ─────────────────────── Stats strip ─────────────────────── */}
-        <section className="lp-stats" aria-label="GRACE-2 by the numbers">
-          {STATS.map((s) => (
-            <div className="lp-stat" key={s.l}>
-              <span className="lp-stat-n">{s.n}</span>
-              <span className="lp-stat-l">{s.l}</span>
-            </div>
-          ))}
-        </section>
-
-        {/* ─────────────────────── Hazards ─────────────────────── */}
-        <section className="lp-hazards" id="hazards">
-          <h2 className="lp-h2">
-            One conversation, <span className="lp-h1-grad">every hazard.</span>
-          </h2>
-          <p className="lp-section-sub">
-            Each engine is a real numerical solver running on AWS Batch Spot -
-            not an illustration. Ask for one, the agent drives it end to end.
-          </p>
-          <div className="lp-hazard-grid">
-            {HAZARDS.map((h) => (
+          <div className="lp-cap-grid">
+            {CAPABILITIES.map((c) => (
               <article
-                key={h.title}
+                key={c.title}
                 className="lp-card"
-                data-testid="grace2-landing-hazard"
+                data-testid="grace2-landing-capability"
               >
                 <span className="lp-card-icon" aria-hidden="true">
-                  <h.icon size={26} />
+                  <c.icon size={24} />
                 </span>
-                <h3>{h.title}</h3>
-                <span className="lp-card-engine">{h.engine}</span>
-                <p>{h.body}</p>
+                <h3>{c.title}</h3>
+                <p>{c.body}</p>
               </article>
             ))}
           </div>
         </section>
 
-        {/* ─────────────────────── How it works ─────────────────────── */}
-        <section className="lp-how" id="how">
-          <h2 className="lp-h2">
-            Chat <span className="lp-h1-grad">to model to map.</span>
-          </h2>
-          <p className="lp-section-sub">
-            No GIS desktop, no model decks, no file wrangling - three steps from
-            a sentence to a rendered result.
-          </p>
+        {/* --------------------- Showcase (hero shot) --------------------- */}
+        <section className="lp-section lp-showcase" ref={reveal}>
+          <figure className="lp-frame">
+            <div className="lp-frame-bar" aria-hidden="true">
+              <i />
+              <i />
+              <i />
+            </div>
+            {/* IMAGE SLOT: real North-Star desktop screenshot (flood render).
+                Orchestrator swaps live evidence into /landing/shot_flood_desktop.webp. */}
+            <img
+              src="/landing/shot_flood_desktop.webp"
+              width={1440}
+              height={900}
+              alt="GRACE-2 rendering a simulated coastal flood-depth surface over a stretch of coastline, alongside the conversation that produced it"
+              loading="lazy"
+            />
+            <figcaption>
+              A simulated coastal flood, asked for in plain language and
+              rendered on the map.
+            </figcaption>
+          </figure>
+        </section>
+
+        {/* ----------------------- How it works ----------------------- */}
+        <section className="lp-section lp-how" id="how" ref={reveal}>
+          <div className="lp-section-head">
+            <span className="lp-kicker">How it works</span>
+            <h2 className="lp-h2">From a sentence to a defensible result.</h2>
+            <p className="lp-section-sub">
+              No desktop GIS, no model decks, no file wrangling. Three steps
+              take you from a question to an answer you can stand behind.
+            </p>
+          </div>
           <ol className="lp-steps">
             {STEPS.map((s, i) => (
               <li className="lp-step" key={s.n}>
@@ -320,7 +314,7 @@ export function Landing({ hasSession = false }: LandingProps): JSX.Element {
                   {s.n}
                 </span>
                 <span className="lp-step-icon" aria-hidden="true">
-                  <s.icon size={24} />
+                  <s.icon size={22} />
                 </span>
                 <h3>{s.title}</h3>
                 <p>{s.body}</p>
@@ -334,134 +328,95 @@ export function Landing({ hasSession = false }: LandingProps): JSX.Element {
           </ol>
         </section>
 
-        {/* ─────────────────────── Agent band ─────────────────────── */}
-        <section className="lp-agent" id="agent">
-          <div className="lp-agent-copy">
-            <span className="lp-badge">
-              <span className="lp-badge-spark" aria-hidden="true">
-                <IconSparkle size={13} weight="fill" />
-              </span>
-              Anthropic Claude, doing the work
-            </span>
-            <h2 className="lp-h2">The agent is Claude.</h2>
-            <p>
-              GRACE-2 drives Anthropic&rsquo;s Claude on AWS Bedrock through
-              native function calling: a streaming agent loop that reasons over
-              100+ geospatial tools, narrates its plan in the chat, runs cloud
-              solvers, and feeds results - including failures - back into the
-              model so it can recover and retry. Sonnet by default; Haiku and
-              Amazon Nova are selectable per case.
-            </p>
-            <ul className="lp-agent-list">
-              <li>
-                <strong>Native function calling</strong> over a server-cached
-                tool catalog - fast routing, no prompt bloat.
-              </li>
-              <li>
-                <strong>Streaming narration</strong> while tools run: you see
-                what the agent is doing, as it does it.
-              </li>
-              <li>
-                <strong>Honest recovery</strong> - tool errors return to Claude
-                as structured results, so it corrects arguments and retries
-                instead of pretending.
-              </li>
+        {/* ----------------------- Impact band ----------------------- */}
+        <section className="lp-section lp-impact" id="impact" ref={reveal}>
+          <div className="lp-impact-grid">
+            <div className="lp-impact-copy">
+              <span className="lp-kicker">Why it matters</span>
+              <h2 className="lp-h2">
+                Faster answers, held to a higher standard.
+              </h2>
+              <p>
+                The hard part of hazard work was never having an opinion - it
+                was producing one you could defend. GRACE-2 keeps the rigor and
+                removes the friction: a conversational workbench in front of the
+                real simulation engines, so the analysis is fast to reach and
+                sound enough to act on.
+              </p>
+              <p className="lp-impact-line">
+                The model plans, explains, and assembles the work - but it never
+                invents a number. Every value on the map comes from a numerical
+                simulation or an authoritative source, and carries the
+                provenance to prove it.
+              </p>
+            </div>
+            <ul className="lp-impact-list">
+              {IMPACTS.map((m) => (
+                <li className="lp-impact-item" key={m.n}>
+                  <span className="lp-impact-n">{m.n}</span>
+                  <span className="lp-impact-l">{m.l}</span>
+                </li>
+              ))}
             </ul>
           </div>
-          <div className="lp-agent-shots">
+
+          <div className="lp-impact-shots">
+            {/* IMAGE SLOTS: real North-Star mobile screenshots.
+                Orchestrator swaps live evidence into these stable filenames. */}
             <figure className="lp-phone">
               <img
                 src="/landing/shot_chat_mobile.webp"
                 width={390}
                 height={844}
-                alt="GRACE-2 mobile chat showing the agent running geocode, DEM fetch, colored relief, and layer publish tools"
+                alt="GRACE-2 on a phone, working through a hazard analysis as a conversation"
                 loading="lazy"
               />
-              <figcaption>The agent narrating a pipeline</figcaption>
+              <figcaption>The analysis, narrated as it runs.</figcaption>
             </figure>
             <figure className="lp-phone lp-phone-offset">
               <img
                 src="/landing/shot_terrain_mobile.webp"
                 width={390}
                 height={844}
-                alt="3D colored-relief terrain layer rendered on the GRACE-2 mobile map"
+                alt="A colored-relief terrain layer rendered on the GRACE-2 mobile map"
                 loading="lazy"
               />
-              <figcaption>...and the 3D terrain it produced</figcaption>
+              <figcaption>The terrain it produced, on the map.</figcaption>
             </figure>
           </div>
         </section>
 
-        {/* ─────────────────── Credibility / data strip ─────────────────── */}
-        <section className="lp-cred" aria-label="Data and architecture">
-          <h2 className="lp-h2">
-            Authoritative data,{" "}
-            <span className="lp-h1-grad">cloud-native architecture.</span>
-          </h2>
-          <div className="lp-cred-grid">
-            <div className="lp-cred-card">
-              <h3>60+ live data sources</h3>
-              <p>
-                3DEP and USGS elevation, building footprints, HRRR and MRMS
-                weather, FEMA NFHL, USACE levees, dams and NSI structures, NOAA
-                tides and surge, land cover, population - fetched, clipped, and
-                styled on demand.
-              </p>
-            </div>
-            <div className="lp-cred-card">
-              <h3>Scale-to-zero on AWS</h3>
-              <p>
-                Heavy solves run on AWS Batch Spot and shut down when idle; the
-                agent box auto-stops and wakes on demand. Independent
-                scale-to-zero islands mean the map keeps serving 24/7 even with
-                the agent asleep.
-              </p>
-            </div>
-            <div className="lp-cred-card">
-              <h3>The determinism boundary</h3>
-              <p>
-                The LLM plans and narrates but never produces numbers - every
-                value comes from a real solver or an authoritative source, and
-                every hazard claim carries per-source provenance.
-              </p>
-            </div>
-          </div>
-          <p className="lp-cred-stack">
-            React + MapLibre GL on S3 + CloudFront · AWS Bedrock agent on EC2 ·
-            AWS Batch Spot solvers · TiTiler raster tiles · DynamoDB · Cognito
-          </p>
-        </section>
-
-        {/* ───────────────────── Impact showcase ───────────────────── */}
-        <section className="lp-showcase">
+        {/* --------------------- Impact showcase --------------------- */}
+        <section className="lp-section lp-showcase lp-showcase-wide" ref={reveal}>
           <figure className="lp-frame">
             <div className="lp-frame-bar" aria-hidden="true">
               <i />
               <i />
               <i />
             </div>
+            {/* IMAGE SLOT: real North-Star desktop screenshot (impact/damage view).
+                Orchestrator swaps live evidence into /landing/shot_impact_desktop.webp. */}
             <img
               src="/landing/shot_impact_desktop.webp"
               width={1440}
               height={900}
-              alt="GRACE-2 showing USACE National Structure Inventory points over a flood-depth layer while the agent runs a Pelicun damage assessment"
+              alt="GRACE-2 estimating damage to individual buildings beneath a simulated flood-depth surface"
               loading="lazy"
             />
             <figcaption>
-              Pelicun damage assessment over USACE NSI structures - flood depth
-              and building inventory in one view
+              Damage estimated building by building - the stakes beneath the
+              hazard, not just the depth.
             </figcaption>
           </figure>
         </section>
 
-        {/* ─────────────────────── Bottom CTA ─────────────────────── */}
-        <section className="lp-bottom">
+        {/* ----------------------- Bottom CTA ----------------------- */}
+        <section className="lp-section lp-bottom" ref={reveal}>
           <h2 className="lp-h2">
-            Model the next hazard{" "}
-            <span className="lp-h1-grad">in a sentence.</span>
+            Ask the next hard question <span className="lp-accent">out loud.</span>
           </h2>
           <p className="lp-section-sub lp-bottom-sub">
-            Open the workbench and ask the agent to run something real.
+            Open the workbench and put a real hazard scenario to it.
           </p>
           <a className="lp-cta" href="/app">
             {ctaLabel}
@@ -474,7 +429,10 @@ export function Landing({ hasSession = false }: LandingProps): JSX.Element {
 
       <footer className="lp-footer">
         <div className="lp-footer-row">
-          <span className="lp-footer-brand">GRACE-2</span>
+          <span className="lp-footer-brand">
+            <span className="lp-wordmark-glyph" aria-hidden="true" />
+            GRACE-2
+          </span>
           <nav aria-label="Footer">
             <a href="/privacy" data-testid="grace2-landing-privacy-link">
               Privacy Policy
@@ -482,12 +440,8 @@ export function Landing({ hasSession = false }: LandingProps): JSX.Element {
             <a href="mailto:natealmanza3@gmail.com">Contact</a>
           </nav>
         </div>
-        <p className="lp-footer-credit">
-          Built on AWS Bedrock · Amazon EC2 · AWS Batch · TiTiler · MapLibre GL
-          · Amazon DynamoDB
-        </p>
         <p className="lp-footer-fine">
-          © 2026 GRACE-2. Model outputs are research aids, not official
+          - 2026 GRACE-2. Model outputs are research aids, not official
           hazard guidance.
         </p>
       </footer>

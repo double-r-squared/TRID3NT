@@ -1,10 +1,10 @@
-// GRACE-2 web — top-level shell.
+// GRACE-2 web  -  top-level shell.
 //
 // job-0143 layout (sprint-12-mega Wave 4):
 //
 //   +-----------------------------------------------------------+
-//   |  [☰ Layers] (TL hamburger, when left hidden)              |
-//   |                                            [☰ Chat] (TR)  |
+//   |  [- Layers] (TL hamburger, when left hidden)              |
+//   |                                            [- Chat] (TR)  |
 //   |                                                           |
 //   |   Left rail (CasesPanel when no active Case,              |
 //   |    CaseView with breadcrumb + LayerPanel when one is      |
@@ -12,36 +12,36 @@
 //   |                                                           |
 //   |   ...                                                     |
 //   |                                                           |
-//   |   [⚙ Settings]   ← bottom-row pill (Secrets now inside it)|
+//   |   [- Settings]   - bottom-row pill (Secrets now inside it)|
 //   |                       Map (full bleed)                    |
 //   |              [LayerLegend anchored to AOI bbox] (Map.tsx) |
 //   +-----------------------------------------------------------+
 //
 // Restructure from job-0137 / Wave 3:
 //   - When no Case is active, the left rail shows CasesPanel ONLY (no
-//     LayerPanel — layers are a per-Case construct).
+//     LayerPanel  -  layers are a per-Case construct).
 //   - When a Case is active, the left rail shows CaseView (breadcrumb +
 //     LayerPanel embedded). Clicking the breadcrumb arrow deselects the
 //     Case and returns to the Cases list; the map resets to CONUS.
 //   - The [Settings] [Secrets] bottom-row pills replace the previous
-//     bottom-left 🔑 key icon. Each opens a full-screen overlay popup.
+//     bottom-left - key icon. Each opens a full-screen overlay popup.
 //   - The top-right identity chip (auth/sign-out) is REMOVED; auth lives
 //     in the Settings popup now.
 //   - Anonymous "Sign in to save" copy is now triggered only at save
 //     attempts via useSaveGate, not blanket-rendered.
 //   - MapLibre navigation controls move to TOP-LEFT (under the
-//     leftCollapsed hamburger) — Map.tsx owns the addControl call.
+//     leftCollapsed hamburger)  -  Map.tsx owns the addControl call.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MapView, type MapCommandSubscribeFunc, type MapTheme } from "./Map";
 import { Chat, readChatWidth } from "./Chat";
 import { LayerPanel, createLayerPanelBus, readLayersWidth } from "./LayerPanel";
 import { getLayerCache } from "./lib/layer_cache";
-// JOB WEB-ANIM (#157.2-.3) — the floating sequence scrubber now lives at the App
+// JOB WEB-ANIM (#157.2-.3)  -  the floating sequence scrubber now lives at the App
 // level (not inside LayerPanel) so it renders WHENEVER a sequence is animating on
 // the shared AnimationController, regardless of whether the Layers panel is open.
 import { SequenceScrubber } from "./components/SequenceScrubber";
-// Item b (NATE 2026-06-20) — the MOBILE legend show/hide toggle lives inside the
+// Item b (NATE 2026-06-20)  -  the MOBILE legend show/hide toggle lives inside the
 // expanded Layers section (off the chat composer); legendHasContent gates it.
 import { MobileLegendToggle, legendHasContent } from "./components/LayerLegend";
 import { getAnimationController } from "./lib/animation_controller";
@@ -112,11 +112,11 @@ import {
   SessionStatePayload,
 } from "./contracts";
 
-// sleep/wake STAGE 2 (NATE 2026-06-18) — number of CONSECUTIVE failed reconnect
+// sleep/wake STAGE 2 (NATE 2026-06-18)  -  number of CONSECUTIVE failed reconnect
 // schedules before we run the REPORT-ONLY wakeState() GET probe (which classifies
 // asleep and may surface the composer Wake UI). The first failed attempt is
 // usually a transient WS blip while the box is still UP (CloudFront idle cull,
-// brief network drop) — probing then would be noise. By the SECOND consecutive
+// brief network drop)  -  probing then would be noise. By the SECOND consecutive
 // failure the box is plausibly stopped, so we GET-probe its state. NEVER
 // AUTO-WAKE: the probe is read-only; only the user's explicit composer tap POSTs
 // wake (StartInstances).
@@ -145,11 +145,11 @@ function readCollapsed(key: string): boolean {
   }
 }
 
-// WebSocket endpoint — local agent (job-0015) on port 8765.
+// WebSocket endpoint  -  local agent (job-0015) on port 8765.
 // Override at build time with VITE_GRACE2_WS_URL. job-0275: the default now
 // derives the host from the page's own hostname (same pattern as the tool
 // catalog HTTP endpoint), so the SAME dev build works from localhost, the
-// LAN, or a tailnet — phones hitting http://<host>:5173 reach the agent at
+// LAN, or a tailnet  -  phones hitting http://<host>:5173 reach the agent at
 // ws://<host>:8765 instead of dialing their own localhost.
 const WS_URL: string =
   (import.meta.env.VITE_GRACE2_WS_URL as string | undefined) ??
@@ -167,7 +167,7 @@ declare global {
     __grace2InjectError?: (p: import("./contracts").ErrorPayload) => void;
     /** Dev seam for secrets-list (job-0125); wired by App.tsx GraceWs handler. */
     __grace2InjectSecretsList?: (p: SecretsListPayload) => void;
-    /** Dev seam for source-suggestion (job-0126 → renamed job-0145); wired by App.tsx GraceWs handler. */
+    /** Dev seam for source-suggestion (job-0126 -> renamed job-0145); wired by App.tsx GraceWs handler. */
     __grace2InjectSourceSuggestion?: (p: SourceCandidatePayload) => void;
     /** Dev seam for case-list (job-0137); wired by App.tsx GraceWs handler. */
     __grace2InjectCaseList?: (p: CaseListEnvelopePayload) => void;
@@ -196,7 +196,7 @@ declare global {
 
 // Shared hamburger button style (job-0068). Same-side-as-panel per user direction.
 // z-index 30 so it renders above panels (z=20) and legend (z=10).
-// job-0283 — desktop sleekness: hairline border + 10px radius + blur so the
+// job-0283  -  desktop sleekness: hairline border + 10px radius + blur so the
 // hamburgers sit in the same surface family as the rail panels/pills.
 // Desktop-only (mobile uses MobileDrawerButton).
 const hamburgerBtnStyle: React.CSSProperties = {
@@ -247,7 +247,7 @@ ensureAppSpinKeyframes();
 export function App(): JSX.Element {
   const bus = useMemo(() => createLayerPanelBus(), []);
 
-  // job-0179 (per-Case client cache + view-state durability — "the seatbelt").
+  // job-0179 (per-Case client cache + view-state durability  -  "the seatbelt").
   // The process-global LayerCache holds the per-Case layer SET (in-memory) and
   // the user's per-layer view-overrides (opacity / visibility / zIndex, mirrored
   // to IndexedDB). It is the single source of truth the bus-subscribing surfaces
@@ -260,15 +260,15 @@ export function App(): JSX.Element {
     void layerCache.hydrate();
   }, [layerCache]);
 
-  // job-0278 — mobile layout (<768px). EVERY mobile divergence below is
+  // job-0278  -  mobile layout (<768px). EVERY mobile divergence below is
   // guarded by this flag so desktop renders pixel-identical to before.
   const isMobile = useIsMobile();
   // Mobile-only: slide-in drawer (replaces the desktop left rail). Hidden
-  // by default; deliberately NOT persisted to localStorage — the drawer is
+  // by default; deliberately NOT persisted to localStorage  -  the drawer is
   // an overlay, and the desktop collapse keys keep their own semantics.
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState<boolean>(false);
 
-  // Collapse toggles — initialised from localStorage so reloads remember
+  // Collapse toggles  -  initialised from localStorage so reloads remember
   // the user's preference.
   const [leftCollapsed, setLeftCollapsed] = useState<boolean>(() =>
     readCollapsed(LS_LEFT_COLLAPSED),
@@ -276,19 +276,19 @@ export function App(): JSX.Element {
   const [rightCollapsed, setRightCollapsed] = useState<boolean>(() =>
     readCollapsed(LS_RIGHT_COLLAPSED),
   );
-  // ux-batch-1 J1 (F10) — App mirrors the user-dragged chat width so dependent
+  // ux-batch-1 J1 (F10)  -  App mirrors the user-dragged chat width so dependent
   // chrome (and the F16 payload-warning banner) can track the chat column edge.
   // Chat owns persistence; App seeds from the same localStorage value and
   // updates via Chat's onWidthChange. Initial read matches Chat's own init.
   const [chatWidth, setChatWidth] = useState<number>(() => readChatWidth());
-  // ux-batch-1 J1 (F11) — App mirrors the user-dragged Layers-panel width so
+  // ux-batch-1 J1 (F11)  -  App mirrors the user-dragged Layers-panel width so
   // the desktop pointer-events wrapper can grow with the panel (else clicks on
   // a widened panel fall through to the map). LayerPanel owns persistence.
   const [layersWidth, setLayersWidth] = useState<number>(() => readLayersWidth());
 
   // Layers lifted here from session-state so we can gate the left panel
   // conditional mount on layers.length > 0 and feed the LayerPanel. (job-0321
-  // F43: the legend itself no longer reads this list at App level — it renders
+  // F43: the legend itself no longer reads this list at App level  -  it renders
   // inside Map.tsx anchored to the AOI bounding box.)
   const [layers, setLayers] = useState<ProjectLayerSummary[]>([]);
 
@@ -312,7 +312,7 @@ export function App(): JSX.Element {
   // unconditionally (React #310 rule).
   const [aoiCaptureOpen, setAoiCaptureOpen] = useState<boolean>(false);
 
-  // Item b (NATE 2026-06-20) — MOBILE legend show/hide state, owned at App level
+  // Item b (NATE 2026-06-20)  -  MOBILE legend show/hide state, owned at App level
   // so the toggle can live INSIDE the expanded Layers section (out of the way of
   // the chat composer) while the legend itself renders from Map.tsx. On desktop
   // the legend keeps its own internal hide state (this stays false). Cleared on
@@ -322,29 +322,29 @@ export function App(): JSX.Element {
   // Auth state (job-0123, sprint-12-mega Wave 2).
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [authResolved, setAuthResolved] = useState<boolean>(false);
-  // job-0253 (sprint-13.5) — auth-expired latch from ws.ts (close 4401 /
+  // job-0253 (sprint-13.5)  -  auth-expired latch from ws.ts (close 4401 /
   // AUTH_FAILED, after the one-shot forceRefresh retry failed). Drops a
   // signed-in user to the AuthGuard sign-in surface. Cleared whenever a fresh
   // signed-in user arrives (re-sign-in succeeded).
   const [authExpired, setAuthExpired] = useState<boolean>(false);
-  // job-0253b — re-sign-in reconnect epoch. handleAuthFailure's give-up branch
+  // job-0253b  -  re-sign-in reconnect epoch. handleAuthFailure's give-up branch
   // (ws.ts:1032-1035) leaves BOTH GraceWs sockets terminally dead (no
-  // reconnect is scheduled — correct; we must not hammer the gate). Nothing
+  // reconnect is scheduled  -  correct; we must not hammer the gate). Nothing
   // reconnects them later on its own: the App ws effect's deps are otherwise
   // stable and Chat keys on [wsUrl, bump]. So after a successful re-sign-in the
   // guard would render children over dead sockets until a full page reload.
   // We bump `authEpoch` exactly when a fresh non-anonymous user lands WHILE we
   // were auth-expired; `authEpoch` is threaded into both ws effects' deps, so
-  // each effect tears its dead socket down (cleanup → ws.close()) and opens a
+  // each effect tears its dead socket down (cleanup -> ws.close()) and opens a
   // fresh one (new GraceWs + connect(), which resets the auth latches at
-  // ws.ts:424-427) — exactly once per recovery, never in disabled/dev mode
-  // (Firebase disabled → onAuthChanged only ever fires null → authExpired is
-  // never set → this branch is unreachable, so authEpoch stays 0 forever).
+  // ws.ts:424-427)  -  exactly once per recovery, never in disabled/dev mode
+  // (Firebase disabled -> onAuthChanged only ever fires null -> authExpired is
+  // never set -> this branch is unreachable, so authEpoch stays 0 forever).
   const [authEpoch, setAuthEpoch] = useState<number>(0);
   const authExpiredRef = useRef<boolean>(false);
   authExpiredRef.current = authExpired;
 
-  // GCP→AWS migration — Cognito Hosted UI OAuth /callback handler. On boot, if
+  // GCP->AWS migration  -  Cognito Hosted UI OAuth /callback handler. On boot, if
   // the URL carries a `?code=` (the authorization-code returned by the Hosted
   // UI), exchange it for tokens via auth.ts, then strip the query so a reload
   // doesn't re-trigger the exchange. onAuthChanged (below) flips authUser once
@@ -402,7 +402,7 @@ export function App(): JSX.Element {
     if (nowSignedIn && !wasSignedIn && anonymousAccepted) {
       clearAnonymousAccepted();
       setAnonymousAccepted(false);
-      setUpgradeToast("Welcome back — your Cases will now sync");
+      setUpgradeToast("Welcome back  -  your Cases will now sync");
       const t = setTimeout(() => setUpgradeToast(null), 4500);
       return () => clearTimeout(t);
     }
@@ -444,7 +444,7 @@ export function App(): JSX.Element {
   // Secrets state (job-0125).
   const [secrets, setSecrets] = useState<SecretRecord[]>([]);
   const wsRef = useRef<GraceWs | null>(null);
-  // job-0357 (per-Case layer DURABILITY) — live WS connection status, held in
+  // job-0357 (per-Case layer DURABILITY)  -  live WS connection status, held in
   // a ref so the GraceWs `onSessionState` handler (a stable closure created
   // once when the socket is constructed) can read the CURRENT status without
   // being re-created on every status flip. The map-side LayerPanel bus push
@@ -455,11 +455,11 @@ export function App(): JSX.Element {
   // authoritative (live layer add AND delete apply via replace-not-reconcile).
   const wsStatusRef = useRef<ConnectionStatus>("connecting");
 
-  // CASE-SWITCH LAYER LEAK FIX (NATE 2026-06-19) — the currently-active Case id,
+  // CASE-SWITCH LAYER LEAK FIX (NATE 2026-06-19)  -  the currently-active Case id,
   // mirrored into a ref so the GraceWs `onSessionState` handler (a STABLE
   // closure created once when the socket is constructed, see the WS effect
   // below) can read the LIVE active Case without being re-created on every Case
-  // switch (which would tear down + re-open the socket — the WS cycling we must
+  // switch (which would tear down + re-open the socket  -  the WS cycling we must
   // avoid). The leak NATE hit: switching Case A -> B paints B's layers, then a
   // TRAILING server `session-state` STILL TAGGED with Case A (a late solve-finish
   // snapshot, or the server's resume replay racing the case-open) arrives over
@@ -470,7 +470,7 @@ export function App(): JSX.Element {
   // snapshot whose tag != the active Case. Synced in the effect just below.
   const activeCaseIdRef = useRef<string | null>(null);
 
-  // sleep/wake STAGE 2 (NATE 2026-06-18) — the always-on agent box can be
+  // sleep/wake STAGE 2 (NATE 2026-06-18)  -  the always-on agent box can be
   // STOPPED by the idle-check Lambda; a stopped box answers nothing so the WS
   // can't connect. STAGE 2 gates ONLY the chat COMPOSER behind a Connecting ->
   // (Chat | Wake) state machine (Chat.tsx owns the slot); the scrollback + the
@@ -484,25 +484,25 @@ export function App(): JSX.Element {
   //     WAKE_OVERLAY_THRESHOLD so a single transient blip (one failed attempt)
   //     never trips the Wake UI.
   //   - `agentAsleep` is the classified result of that GET probe (true when the
-  //     box reports stopped/stopping). It NEVER triggers a wake — only the
+  //     box reports stopped/stopping). It NEVER triggers a wake  -  only the
   //     user's explicit composer tap POSTs wake. Cleared on a healthy reconnect.
   //   - `wakerRef` is the SHARED AgentWaker so the composer's explicit-tap path
   //     (resetDebounce -> StartInstances POST) and the report-only GET probe
   //     coalesce against the same instance.
   const [wsStatus, setWsStatus] = useState<ConnectionStatus>("connecting");
-  // sleep/wake STAGE 2 — classified asleep signal from the report-only GET
+  // sleep/wake STAGE 2  -  classified asleep signal from the report-only GET
   // probe (true = box reports stopped/stopping). Drives Chat's composer Wake UI.
   // NEVER set from a reconnect/case-open alone (never auto-wake); only the GET
   // probe sets it. A successful WS reconnect clears it (the box is up).
   const [agentAsleep, setAgentAsleep] = useState<boolean>(false);
   const wakerRef = useRef<AgentWaker | null>(null);
   if (wakerRef.current === null) wakerRef.current = new AgentWaker();
-  // sleep/wake STAGE 2 — guard so the report-only wakeState() probe runs at most
+  // sleep/wake STAGE 2  -  guard so the report-only wakeState() probe runs at most
   // once per "unreachable" episode (not on every reconnect tick). Reset on a
   // healthy reconnect.
   const wakeProbeInFlightRef = useRef<boolean>(false);
 
-  // Settings popup visibility (job-0143). job-0321 F29 — the standalone
+  // Settings popup visibility (job-0143). job-0321 F29  -  the standalone
   // Secrets popup is retired; API-key management now lives INSIDE Settings
   // (SettingsPopup's embedded SecretsPanel), so there is no separate
   // `secretsOpen` state any more.
@@ -514,7 +514,7 @@ export function App(): JSX.Element {
   // Wave 4.11 M7: optional inject seam for Playwright snapshots. When the
   // window-attached fixture is present we mount the dashboard with the
   // pre-fetched summary so the visual smoke test renders without driving a
-  // live agent. Production code never touches this — guarded behind a
+  // live agent. Production code never touches this  -  guarded behind a
   // global flag set only in the dev-tools harness.
   const [routingDashInjected, setRoutingDashInjected] =
     useState<RoutingDashboardSummary | null>(null);
@@ -609,19 +609,25 @@ export function App(): JSX.Element {
       saveGate.gateAction(() => setAoiCaptureOpen(true), "Create a new Case"),
     [saveGate],
   );
-  // Confirm: create the Case WITH the captured AOI bbox, then close the overlay.
+  // Confirm: create the Case WITH the chosen name + captured AOI bbox, then close
+  // the overlay. The two-step onboarding (name -> AOI) yields both; an empty name
+  // falls through to the server's "Untitled Case" default (createCase trims).
   const onAoiCaptureConfirm = useCallback(
-    (bbox: [number, number, number, number]) => {
+    (bbox: [number, number, number, number], name: string) => {
       setAoiCaptureOpen(false);
-      createCase(null, bbox);
+      createCase(name || null, bbox);
     },
     [createCase],
   );
-  // Skip: create the Case with NO bbox - byte-identical to the prior behavior.
-  const onAoiCaptureSkip = useCallback(() => {
-    setAoiCaptureOpen(false);
-    createCase();
-  }, [createCase]);
+  // Skip: create the Case with the name + NO bbox - the no-bbox create path is
+  // byte-identical to the prior behavior (just now carrying the chosen title).
+  const onAoiCaptureSkip = useCallback(
+    (name: string) => {
+      setAoiCaptureOpen(false);
+      createCase(name || null);
+    },
+    [createCase],
+  );
   // Cancel: dismiss the overlay without creating a Case.
   const onAoiCaptureCancel = useCallback(() => {
     setAoiCaptureOpen(false);
@@ -661,7 +667,7 @@ export function App(): JSX.Element {
 
   // FIX 2 (NATE 2026-06-17): the payload-warning gate moved OUT of App into
   // Chat's per-Case interleaved stream (an in-chat card, not a banner "hat").
-  // App no longer accumulates / renders / answers the warning — Chat owns the
+  // App no longer accumulates / renders / answers the warning  -  Chat owns the
   // whole flow (route + render + sendPayloadConfirmation) because tool-payload-
   // warning is session-scoped and reaches Chat's GraceWs directly.
 
@@ -753,7 +759,7 @@ export function App(): JSX.Element {
     clearActive();
   }, [clearActive]);
 
-  // sleep/wake STAGE 2 — whether the composer should surface the Wake UI. App
+  // sleep/wake STAGE 2  -  whether the composer should surface the Wake UI. App
   // owns this single source of truth (the App socket + the report-only probe)
   // and threads it down to Chat, which renders the Wake UI INSIDE the composer
   // slot only (scrollback + map stay live). Gated on wakeConfigured() so dev/LAN
@@ -766,7 +772,7 @@ export function App(): JSX.Element {
   // Explicit user tap on the composer's "Wake up agent" rectangle: reset the
   // shared waker's debounce so a manual press always fires StartInstances (even
   // right after a prior attempt) and POST the wake endpoint. This is the ONLY
-  // path that POSTs wake (never auto-wake). Fire-and-forget — never throws. The
+  // path that POSTs wake (never auto-wake). Fire-and-forget  -  never throws. The
   // App socket's onStatus "connected" clears agentAsleep when the box is back.
   const handleWakeTap = useCallback(() => {
     const waker = wakerRef.current;
@@ -780,26 +786,26 @@ export function App(): JSX.Element {
   // Mount a GraceWs that routes session-state, map-command, AND secrets-list.
   useEffect(() => {
     const ws = new GraceWs(WS_URL, {
-      // job-0357 — record live status so onSessionState can classify a
+      // job-0357  -  record live status so onSessionState can classify a
       // server snapshot as authoritative (connected) vs a reconnect top-up.
-      // Auto-stop/wake — ALSO mirror into state so the WakeOverlay re-renders
+      // Auto-stop/wake  -  ALSO mirror into state so the WakeOverlay re-renders
       // on a flip. On a successful (re)connect, clear the wake state: the box
       // is up, so the overlay fades out and the attempt counter resets.
       onStatus: (s) => {
         wsStatusRef.current = s;
         setWsStatus(s);
         if (s === "connected") {
-          // Healthy (re)connect — the box is up. Clear the asleep state (the
+          // Healthy (re)connect  -  the box is up. Clear the asleep state (the
           // composer flips Connecting/Wake -> Chat) and reset the probe guard so
           // a future unreachable episode probes again.
           setAgentAsleep(false);
           wakeProbeInFlightRef.current = false;
         }
       },
-      // sleep/wake STAGE 2 — ws.ts schedules a reconnect that won't open (the box
+      // sleep/wake STAGE 2  -  ws.ts schedules a reconnect that won't open (the box
       // may be stopped). NEVER AUTO-WAKE: ws.ts no longer POSTs wake here. Track
       // the consecutive-failure count and, once we cross the threshold, run a
-      // REPORT-ONLY GET probe (wakeState — never starts the box) to classify
+      // REPORT-ONLY GET probe (wakeState  -  never starts the box) to classify
       // asleep. If the box reports stopped/stopping we flip `agentAsleep` so the
       // composer surfaces the tap-to-wake UI; otherwise we keep retrying the WS
       // (the composer stays "Connecting"). The wakeProbeInFlightRef guard runs
@@ -837,7 +843,7 @@ export function App(): JSX.Element {
       // (Appendix A.7) vs additive top-up. See the CLIENT FLICKER FIX note on
       // the stamp itself below for the exact authoritative-vs-no-op rule.
       onSessionState: (p, caseId, fannedOut) => {
-        // CASE-SWITCH LAYER LEAK FIX (NATE 2026-06-19) — DROP a server snapshot
+        // CASE-SWITCH LAYER LEAK FIX (NATE 2026-06-19)  -  DROP a server snapshot
         // tagged with a Case that is NOT the active one. ws.ts surfaces the
         // envelope-level `case_id` here as `caseId`; a snapshot whose tag does
         // not match `activeCaseIdRef.current` is a TRAILING update for a Case we
@@ -848,7 +854,7 @@ export function App(): JSX.Element {
         // disappeared"). We compare ONLY when BOTH are non-null: a snapshot with
         // no tag (`caseId == null`) is an untagged/root frame we still honor (it
         // never carries another Case's layers), and an untagged-active state
-        // (`activeCaseIdRef.current == null`, the root view) likewise applies —
+        // (`activeCaseIdRef.current == null`, the root view) likewise applies  - 
         // so per-Case layer DURABILITY across a WS reconnect is unaffected (a
         // reconnect resume for the SAME active Case is either tagged with that
         // Case, matching here, or untagged, applied). Only a genuine
@@ -896,26 +902,26 @@ export function App(): JSX.Element {
       onMapCommand: (p) => bus.pushMapCommand(p),
       onSecretsList: (p) => setSecrets(p.secrets ?? []),
       onMode2Candidate: (p) => fanoutSourceSuggestion(p),
-      // FIX 2 — payload-warning is handled by Chat's GraceWs now (in-chat card),
+      // FIX 2  -  payload-warning is handled by Chat's GraceWs now (in-chat card),
       // not App. No onPayloadWarning handler here.
       onCaseList: (p: CaseListEnvelopePayload) => useCases_onCaseList(p),
       onCaseOpen: (p: CaseOpenEnvelopePayload) => {
-        // CASE-SWITCH LAYER LEAK FIX (NATE 2026-06-19) — DROP a trailing
+        // CASE-SWITCH LAYER LEAK FIX (NATE 2026-06-19)  -  DROP a trailing
         // `case-open` for a Case we already LEFT. The same leak class as the
         // session-state guard above: after switching A -> B, a late `case-open`
         // still tagged with Case A (an in-flight `select` reply racing the new
-        // one) would re-assert A's whole session — rail, layers AND chat — over
+        // one) would re-assert A's whole session  -  rail, layers AND chat  -  over
         // B. We drop ONLY when the active Case is non-null AND the incoming
         // Case is a DIFFERENT non-null Case. This deliberately still applies:
-        //   - auto-create from root (active == null) — a brand-new Case opens;
+        //   - auto-create from root (active == null)  -  a brand-new Case opens;
         //   - the normal `select(B)` reply (incoming B == active B, set
-        //     optimistically by selectCase) — re-affirms B idempotently;
-        //   - a deselect-to-root reply (incoming null) — clears cleanly.
+        //     optimistically by selectCase)  -  re-affirms B idempotently;
+        //   - a deselect-to-root reply (incoming null)  -  clears cleanly.
         const incoming = p.session_state?.case.case_id ?? null;
         const active = activeCaseIdRef.current;
         if (incoming != null && active != null && incoming !== active) return;
         useCases_onCaseOpen(p);
-        // job-0179 — mirror the cold-load: push case-open onto the bus so Chat
+        // job-0179  -  mirror the cold-load: push case-open onto the bus so Chat
         // can build the stream's chat-history bubbles. Idempotent (routeCaseOpen
         // only rebuilds a stream the first time it sees the caseId).
         bus.pushCaseOpen(p);
@@ -937,54 +943,54 @@ export function App(): JSX.Element {
       wsRef.current = null;
       ws.close();
     };
-    // job-0253b — authEpoch is bumped on a recovered re-sign-in (see the
+    // job-0253b  -  authEpoch is bumped on a recovered re-sign-in (see the
     // onAuthChanged effect above); re-running this effect closes the dead
     // post-4401 socket and opens a fresh one. In disabled/dev mode authEpoch
     // never changes, so this effect runs exactly once as before.
     //
-    // BUG 4a (Wave 4.9) STABILITY CONTRACT — every dep here is a STABLE
+    // BUG 4a (Wave 4.9) STABILITY CONTRACT  -  every dep here is a STABLE
     // reference so an UNRELATED re-render does NOT tear down + re-open the
     // GraceWs (which presented as the ~10-45s WS cycling). Specifically:
-    //   - bus: useMemo([], ...) — created once.
+    //   - bus: useMemo([], ...)  -  created once.
     //   - fanoutSourceSuggestion / handleChartEmission: useCallback([], ...).
     //   - useCases_onCaseList / useCases_onCaseOpen: useCallback([], ...) inside
     //     useCases (verified stable in hooks/useCases.ts).
     //   - authEpoch: a number that ONLY changes on a re-sign-in recovery.
-    // Do NOT add an unmemoized object/closure to this array — it would recreate
+    // Do NOT add an unmemoized object/closure to this array  -  it would recreate
     // the socket every render. (Tested in App.test.tsx "GraceWs creation effect
     // stability".)
   }, [bus, fanoutSourceSuggestion, useCases_onCaseList, useCases_onCaseOpen, handleChartEmission, authEpoch]);
 
-  // LANE CASE-WEB — keep the GraceWs's notion of the CURRENT active Case in
+  // LANE CASE-WEB  -  keep the GraceWs's notion of the CURRENT active Case in
   // sync with useCases.activeCaseId. ws.ts STAMPS this onto every outbound
   // user-message + session-resume so the server treats the client as the case
   // authority. This is a SEPARATE effect from the socket-construction effect on
   // purpose: that effect's deps are deliberately all-stable (adding activeCaseId
-  // there would tear down + re-open the socket on every Case switch — the WS
+  // there would tear down + re-open the socket on every Case switch  -  the WS
   // cycling we must avoid). Here we only push the value into the EXISTING
   // socket. The null-guard covers the brief construct/teardown window; the open
   // handler reads the latest currentCaseId at connect time regardless.
   useEffect(() => {
     wsRef.current?.setCurrentCaseId(activeCaseId);
-    // CASE-SWITCH LAYER LEAK FIX — keep the ref the stable onSessionState
+    // CASE-SWITCH LAYER LEAK FIX  -  keep the ref the stable onSessionState
     // closure reads in lockstep with the active Case so a trailing snapshot
     // tagged with the PREVIOUS Case is dropped the instant we switch.
     const prevCaseId = activeCaseIdRef.current;
     activeCaseIdRef.current = activeCaseId;
-    // job-0179 — keep the shared LayerCache's notion of the active Case in
+    // job-0179  -  keep the shared LayerCache's notion of the active Case in
     // lockstep so Map.tsx / LayerPanel (bus subscribers with no caseId prop)
     // resolve allowsEvict / getOverride against the right Case. A genuine Case
     // SWITCH (prev != next, both meaningful) is the ONLY in-memory evict path:
     // drop the Case we just LEFT so its layer SET no longer protects against the
     // new Case's authoritative replace. (The persisted view-overrides survive
-    // the evict — re-opening the old Case restores them.) Snapshot omission never
+    // the evict  -  re-opening the old Case restores them.) Snapshot omission never
     // reaches here, so the seatbelt holds.
     if (prevCaseId !== null && prevCaseId !== activeCaseId) {
       layerCache.evictCase(prevCaseId);
-      // Item c (NATE 2026-06-20) — clear the SCRUBBER + the (mobile) legend on
+      // Item c (NATE 2026-06-20)  -  clear the SCRUBBER + the (mobile) legend on
       // Case EXIT / SWITCH. The scrubber is driven by the module-level
       // AnimationController; on exit the LayerPanel unmounts (the rail shows the
-      // Cases list, not CaseView) so it never pushes setGroups([]) to clear it —
+      // Cases list, not CaseView) so it never pushes setGroups([]) to clear it  - 
       // the left Case's groups would linger and the App-level scrubber would
       // keep showing. reset() drops all groups + stops playback so the scrubber
       // vanishes. The legend clears with the layers (Map.tsx), but the MOBILE
@@ -995,12 +1001,12 @@ export function App(): JSX.Element {
     layerCache.activeCaseId = activeCaseId;
   }, [activeCaseId, layerCache]);
 
-  // job-0322 F31 — resume-repaint (iOS zombie-socket fix). Mobile browsers
+  // job-0322 F31  -  resume-repaint (iOS zombie-socket fix). Mobile browsers
   // tear down (or silently wedge) the WebSocket when the tab is backgrounded;
   // on return the in-memory layers were never re-pulled, so the map looks empty
   // until a Case reopen.
   //
-  // On `visibilitychange → visible`:
+  // On `visibilitychange -> visible`:
   //   - MOBILE: iOS Safari leaves the socket nominally `OPEN` while the
   //     underlying connection is dead, so the lighter reconnect() path no-ops
   //     and requestSessionState() sends `session-resume` into a dead socket
@@ -1008,7 +1014,7 @@ export function App(): JSX.Element {
   //     which UNCONDITIONALLY tears the socket down and re-opens; the fresh
   //     open handler re-sends auth-token + session-resume, so the layers
   //     reconcile back through replace-not-reconcile (Appendix A.7). No
-  //     separate requestSessionState() — the open handler resumes for us.
+  //     separate requestSessionState()  -  the open handler resumes for us.
   //   - DESKTOP: the socket reliably fires `close` when it actually drops, so
   //     the cheaper reconnect() (revive only if dropped) + requestSessionState()
   //     (re-pull on the live socket) is enough and avoids needlessly dropping a
@@ -1020,11 +1026,11 @@ export function App(): JSX.Element {
       if (document.visibilityState !== "visible") return;
       const ws = wsRef.current;
       if (!ws) return;
-      // BUG 4a (Wave 4.9) — do NOT force-reconnect an already-OPEN socket. A
+      // BUG 4a (Wave 4.9)  -  do NOT force-reconnect an already-OPEN socket. A
       // healthy live connection only needs a state re-pull on resume; tearing
       // it down churns the socket (the cycling this fix targets). Only a
       // closed/closing/never-connected socket gets the teardown path:
-      //   - OPEN: lighter requestSessionState() — re-pull authoritative
+      //   - OPEN: lighter requestSessionState()  -  re-pull authoritative
       //     session-state on the live socket (no teardown). The keepalive's
       //     missed-pong detector now owns the iOS zombie case (a dead socket
       //     that still reports OPEN) instead of an unconditional resume-time
@@ -1066,7 +1072,7 @@ export function App(): JSX.Element {
     setImpactEnvelope(null);
 
     if (activeSession === null) {
-      // job-0357: Case EXIT is an AUTHORITATIVE clear — replace_layers:true so
+      // job-0357: Case EXIT is an AUTHORITATIVE clear  -  replace_layers:true so
       // Map.tsx tears down the prior Case's overlays (fresh slate). This is the
       // explicit Case-switch path the durability fix must KEEP clearing; only a
       // WS reconnect (server snapshot received while not `connected`) is exempt.
@@ -1094,7 +1100,7 @@ export function App(): JSX.Element {
       } as unknown as MapCommandPayload);
       return;
     }
-    // job-0357: opening / switching INTO a Case is an AUTHORITATIVE replace —
+    // job-0357: opening / switching INTO a Case is an AUTHORITATIVE replace  - 
     // replace_layers:true so the new Case's loaded_layers replace whatever the
     // previously-viewed Case had on the map (a Case switch still clears, per
     // the durability requirement). The reconnect exemption only applies to
@@ -1107,10 +1113,10 @@ export function App(): JSX.Element {
       map_view: null,
       replace_layers: true,
     });
-    // JOB WEB-AOI-LEGEND (#159) — snap to the FINAL/floored AOI. Prefer
+    // JOB WEB-AOI-LEGEND (#159)  -  snap to the FINAL/floored AOI. Prefer
     // `case.bbox` (the agent-AOI job now persists the FLOORED bbox there), but
     // validate it with the SAME finite-4-number guard the zoom-to replay path
-    // uses (asBbox) — a null / malformed / non-finite persisted bbox must NOT
+    // uses (asBbox)  -  a null / malformed / non-finite persisted bbox must NOT
     // produce a broken fitBounds; it falls through to the last zoom-to instead.
     const caseBbox = asBbox(activeSession.case.bbox);
     if (caseBbox) {
@@ -1119,14 +1125,14 @@ export function App(): JSX.Element {
         args: { bbox: caseBbox },
       } as unknown as MapCommandPayload);
     } else {
-      // job-0280 — Case-open snap-to-location. `CaseSummary.bbox` is null in
+      // job-0280  -  Case-open snap-to-location. `CaseSummary.bbox` is null in
       // practice today (and the agent-AOI floored bbox may not be persisted on
       // older Cases), so fall back to replaying the LAST `zoom-to` the Case's
       // persisted turns emitted (CaseChatMessage.map_command_emissions in the
-      // rehydrated chat_history) through the SAME bus → Map.tsx fitBounds path.
+      // rehydrated chat_history) through the SAME bus -> Map.tsx fitBounds path.
       // extractLastZoomTo walks newest-first, so this is the LATEST (floored)
-      // zoom-to — never the first/small pre-floor one. No zoom-to anywhere in
-      // history → leave the camera alone (root/new Cases unchanged).
+      // zoom-to  -  never the first/small pre-floor one. No zoom-to anywhere in
+      // history -> leave the camera alone (root/new Cases unchanged).
       const replay = extractLastZoomTo(activeSession.chat_history);
       if (replay) {
         bus.pushMapCommand(replay as unknown as MapCommandPayload);
@@ -1138,7 +1144,7 @@ export function App(): JSX.Element {
         // bleed). A Case WITH an AOI replaces the extent via the zoom-to above.
         // (The earlier F28 "skip clear when the Case has layers" was a wrong
         // band-aid: the bleed was actually the dead-basemap stall swallowing
-        // the clear command, fixed by the CartoDB basemap swap — so the
+        // the clear command, fixed by the CartoDB basemap swap  -  so the
         // unconditional clear is correct and bleed-free again.)
         bus.pushMapCommand({
           command: "clear-analysis-extent",
@@ -1157,10 +1163,10 @@ export function App(): JSX.Element {
     }
   }, [activeSession, bus]);
 
-  // sleep/wake STAGE 2 (NATE 2026-06-18) — COLD-LOAD a Case when the agent box
+  // sleep/wake STAGE 2 (NATE 2026-06-18)  -  COLD-LOAD a Case when the agent box
   // is asleep. "Pen = agent, paper = case": the case must PAINT even with the
   // agent (the pen) asleep. When the user opens a Case while the App socket is
-  // NOT connected, the WS `select` only QUEUES (ws.ts sendOrQueue) — it never
+  // NOT connected, the WS `select` only QUEUES (ws.ts sendOrQueue)  -  it never
   // reaches the agent, so NO `case-open` envelope comes back and the Case never
   // paints. This effect fills that gap: it fetches the agent's persisted S3
   // view-state snapshot via the signer (GET VITE_GRACE2_CASE_VIEW_URL) and feeds
@@ -1175,7 +1181,7 @@ export function App(): JSX.Element {
   //   the LIVE case-open re-runs onCaseOpen and supersedes the cold snapshot
   //   (replace_layers semantics + idempotent rail upsert handle the swap).
   //
-  // 404 (no snapshot for this Case — never materialised) -> fetchCaseView
+  // 404 (no snapshot for this Case  -  never materialised) -> fetchCaseView
   //   returns null -> we leave the Case shell + Wake UI (NOT an error).
   //
   // The ref guards against a re-fetch storm while reconnecting: at most one
@@ -1193,7 +1199,7 @@ export function App(): JSX.Element {
     if (!caseViewConfigured()) return;
     if (activeCaseId === null) return;
     // Already have the live session for this Case (it round-tripped over the WS
-    // before the drop) — nothing to cold-load.
+    // before the drop)  -  nothing to cold-load.
     if (activeSession && activeSession.case.case_id === activeCaseId) return;
     // Already cold-loaded this Case during the current disconnected episode.
     if (coldLoadedCaseRef.current === activeCaseId) return;
@@ -1224,7 +1230,7 @@ export function App(): JSX.Element {
       // uses. The rehydration effect above ([activeSession, bus]) then paints
       // it. If a live case-open arrives later it supersedes idempotently.
       useCases_onCaseOpen(payload);
-      // job-0179 — ALSO push the case-open onto the bus so Chat (which does
+      // job-0179  -  ALSO push the case-open onto the bus so Chat (which does
       // not subscribe to App's useCases state) can materialize the COLD
       // chat-history bubbles via routeCaseOpen. Idempotent vs the live WS
       // onCaseOpen below: routeCaseOpen only rebuilds a stream the first time
@@ -1253,11 +1259,11 @@ export function App(): JSX.Element {
   // (non-empty replaces; the reconcile is idempotent). Gated to dev/LAN safety
   // by caseListConfigured() (null endpoint -> no fetch).
   //
-  // COLD-LIST SIGNED-IN FIX (NATE 2026-06-19) — NATE is signed in (Cognito) but
+  // COLD-LIST SIGNED-IN FIX (NATE 2026-06-19)  -  NATE is signed in (Cognito) but
   // saw an EMPTY rail with the box asleep. Root cause: the effect fired on mount
   // BEFORE auth resolved, so `getIdToken()` returned null; the Lambda's auth
   // contract answers a tokenless request with an AUTHORITATIVE 200 EMPTY list
-  // (never 401), which is a non-null payload — so the old guard LATCHED `true`
+  // (never 401), which is a non-null payload  -  so the old guard LATCHED `true`
   // and NEVER re-fetched once the token arrived (its deps `[wsStatus,
   // cases.length, ...]` don't change on sign-in). Two changes fix it:
   //   1. Depend on the signed-in identity (`coldListIdentity` = the uid, or
@@ -1267,7 +1273,7 @@ export function App(): JSX.Element {
   //   2. NEVER cold-load WITHOUT the token when the user IS signed in: if
   //      `isSignedIn` but `getIdToken()` came back null (token not ready yet),
   //      skip the fetch and release the guard so the next identity-keyed run (or
-  //      a token-ready re-render) retries — we must not burn the one attempt on
+  //      a token-ready re-render) retries  -  we must not burn the one attempt on
   //      a tokenless request that the Lambda would answer empty.
   const coldLoadedListIdRef = useRef<string | null>(null);
   const coldListIdentity = isSignedIn ? authUser?.uid ?? "signed-in" : "anon";
@@ -1292,7 +1298,7 @@ export function App(): JSX.Element {
     void (async () => {
       const token = await getIdToken().catch(() => null);
       if (cancelled) return;
-      // Signed in but the token is not ready yet — do NOT spend the attempt on a
+      // Signed in but the token is not ready yet  -  do NOT spend the attempt on a
       // tokenless request (the Lambda would answer an authoritative empty list).
       // Release the guard so an identity-keyed / token-ready re-run retries.
       if (isSignedIn && (token == null || token.trim() === "")) {
@@ -1319,12 +1325,12 @@ export function App(): JSX.Element {
 
   // Lift layers from session-state.
   //
-  // job-0179 (per-Case client cache — "the seatbelt"): route the incoming layer
+  // job-0179 (per-Case client cache  -  "the seatbelt"): route the incoming layer
   // SET through cache.mergeSnapshot so a STALE / partial / reconnect frame that
   // OMITS a layer ADDS/REFRESHES but never EVICTS it; the rendered list comes
   // from cache.layersFor(active Case). `replace_layers` is App's authoritative
   // stamp (true on a Case switch/exit or a healthy non-empty server frame;
-  // false on a transient reconnect frame) — it gates whether omitted layers may
+  // false on a transient reconnect frame)  -  it gates whether omitted layers may
   // be dropped. At the root (no active Case) there is no Case to cache against,
   // so mergeSnapshot passes the list through verbatim (byte-identical to before).
   useEffect(() => {
@@ -1375,7 +1381,7 @@ export function App(): JSX.Element {
     };
   }, [bus, fanoutSourceSuggestion, useCases_onCaseList, useCases_onCaseOpen, handleChartEmission]);
 
-  // job-0179 — per-layer delete is an EXPLICIT eviction: drop the layer (and its
+  // job-0179  -  per-layer delete is an EXPLICIT eviction: drop the layer (and its
   // persisted view-override) from the shared cache so the seatbelt's allowsEvict
   // permits Map.tsx to tear the overlay down, THEN tell the server (which echoes
   // a fresh session-state sans the layer). Without the cache delete, allowsEvict
@@ -1452,11 +1458,11 @@ export function App(): JSX.Element {
   );
 
   // job-0138: AuthGate full-screen gating (the anonymous-accept gate). job-0253
-  // wraps it in AuthGuard: when Firebase is DISABLED (dev/tailnet — every
+  // wraps it in AuthGuard: when Firebase is DISABLED (dev/tailnet  -  every
   // current session), AuthGuard is a transparent pass-through and this renders
   // exactly as before. When Firebase is ENABLED + signed-out (production),
   // AuthGuard renders its own Google-only sign-in surface and the anonymous
-  // gate below is never reached (Decision 6 — no anonymous in prod).
+  // gate below is never reached (Decision 6  -  no anonymous in prod).
   if (!appShouldRender) {
     return (
       <AuthGuard authExpired={authExpired}>
@@ -1473,12 +1479,12 @@ export function App(): JSX.Element {
   // (layersLoading + caseSelectedButUnsettled are computed ABOVE the AuthGate
   // gate return - see the Job E note there - so the hook runs unconditionally.)
 
-  // FIX 2 — payload-warning gates render in Chat's per-Case stream now (no
+  // FIX 2  -  payload-warning gates render in Chat's per-Case stream now (no
   // App-level filtering / banner). See Chat.tsx routePayloadWarning.
 
-  // job-0253 — AuthGuard wraps the app shell. DISABLED (dev/tailnet) ⇒
-  // transparent pass-through, pixel-identical render. ENABLED + signed-in ⇒
-  // children render + a minimal "Sign out" affordance. ENABLED + expired ⇒
+  // job-0253  -  AuthGuard wraps the app shell. DISABLED (dev/tailnet) -
+  // transparent pass-through, pixel-identical render. ENABLED + signed-in -
+  // children render + a minimal "Sign out" affordance. ENABLED + expired -
   // back to the sign-in surface.
   return (
     <AuthGuard authExpired={authExpired}>
@@ -1489,7 +1495,7 @@ export function App(): JSX.Element {
         inset: 0,
       }}
     >
-      {/* Full-bleed map — first in DOM so panels render above it. */}
+      {/* Full-bleed map  -  first in DOM so panels render above it. */}
       <MapView
         subscribeSessionState={bus.subscribeSessionState}
         subscribeMapCommand={bus.subscribeMapCommand as MapCommandSubscribeFunc}
@@ -1497,7 +1503,7 @@ export function App(): JSX.Element {
         /* Lift the projected AOI rect so the SequenceScrubber (inside
            LayerPanel) can pin bottom-center of the AOI box like the legend. */
         onAoiScreenRectChange={setAoiScreenRect}
-        /* Item b (NATE 2026-06-20) — on MOBILE the legend show/hide is App-owned
+        /* Item b (NATE 2026-06-20)  -  on MOBILE the legend show/hide is App-owned
            so the toggle can live INSIDE the expanded Layers section (off the chat
            composer); the floating pill is suppressed. On desktop the legend keeps
            its own internal hide state (these stay undefined => uncontrolled). */
@@ -1512,7 +1518,7 @@ export function App(): JSX.Element {
         onAoiCaptureCancel={onAoiCaptureCancel}
       />
 
-      {/* MOBILE TOP FROST GRADIENT (NATE 2026-06-19) — with the iOS status bar
+      {/* MOBILE TOP FROST GRADIENT (NATE 2026-06-19)  -  with the iOS status bar
           now translucent (apple-mobile-web-app-status-bar-style=black-translucent
           in index.html), the page runs UNDER the time/battery, so more map shows
           but those glyphs can wash out over a light basemap. This thin
@@ -1539,22 +1545,22 @@ export function App(): JSX.Element {
         />
       )}
 
-      {/* job-0321 F43 — the layer legend/colorbar is no longer an App-level
+      {/* job-0321 F43  -  the layer legend/colorbar is no longer an App-level
           floating element. It now renders INSIDE Map.tsx, anchored to the
           bottom edge of the AOI bounding box (Group A owns that placement) so
           it reads as the key for that AOI. The App-level <LayerLegend> render
           (and its mobile-offset wrapper) is removed here. */}
 
       {/* Left rail (job-0143):
-            - No active Case → CasesPanel only (list view).
-            - Active Case → CaseView (breadcrumb + LayerPanel children).
-          job-0278: desktop only — on mobile the SAME content rides in the
+            - No active Case -> CasesPanel only (list view).
+            - Active Case -> CaseView (breadcrumb + LayerPanel children).
+          job-0278: desktop only  -  on mobile the SAME content rides in the
           slide-in MobileDrawer below. */}
       {!isMobile && !leftCollapsed && activeCaseId === null && (
         <div
           data-testid="grace2-left-rail"
           data-mode="cases-list"
-          /* job-0283 — scopes the desktop sleekness CSS (global.css) to the
+          /* job-0283  -  scopes the desktop sleekness CSS (global.css) to the
              desktop rail only; the mobile drawer renders these components
              without this class and stays pixel-identical to job-0280. */
           className="grace2-desktop-rail"
@@ -1612,12 +1618,12 @@ export function App(): JSX.Element {
       {!isMobile && !leftCollapsed && activeCaseId !== null && (
         <>
           {/* Breadcrumb at the canonical top-left position. z-index 22 so
-              it sits ABOVE the LayerPanel wrapper (z=20) — the panel is
+              it sits ABOVE the LayerPanel wrapper (z=20)  -  the panel is
               repositioned below the breadcrumb via top/left wrapper css. */}
           <div
             data-testid="grace2-left-rail"
             data-mode="case-view"
-            /* job-0283 — same desktop-only sleekness scope as cases-list mode. */
+            /* job-0283  -  same desktop-only sleekness scope as cases-list mode. */
             className="grace2-desktop-rail"
             style={{
               position: "absolute",
@@ -1627,7 +1633,7 @@ export function App(): JSX.Element {
               // Match CaseView's own 288px wrapStyle exactly. The prior 280px
               // here was 8px NARROWER than the CaseView it contained, so the
               // breadcrumb sized its title against 288 while the visible rail
-              // was 280 — the long-title right edge fell outside the wrapper
+              // was 280  -  the long-title right edge fell outside the wrapper
               // and hard-clipped mid-glyph (the recurring cutoff). Aligning the
               // widths lets CaseView's own ellipsis budget match the rail.
               width: 288,
@@ -1702,10 +1708,10 @@ export function App(): JSX.Element {
                 </div>
               ))}
           </div>
-          {/* LayerPanel — its own absolute positioning at left:16, top:16.
+          {/* LayerPanel  -  its own absolute positioning at left:16, top:16.
               We mount it directly so MapLibre rendering picks up its
               effects; the visual placement below the breadcrumb is
-              achieved by leaving room above (top:64 used by no wrapper —
+              achieved by leaving room above (top:64 used by no wrapper  - 
               LayerPanel itself spans the column). The breadcrumb at
               z-index 22 sits above LayerPanel's chrome at z-index 20. */}
           {layers.length > 0 && (
@@ -1713,11 +1719,11 @@ export function App(): JSX.Element {
               data-testid="grace2-case-view-layer-panel-wrap"
               style={{ position: "absolute", top: 64, left: 0, right: 0, bottom: 60, zIndex: 20, pointerEvents: "none" }}
             >
-              {/* job-0173 Part 3 — confine the pointer-events:auto region to
+              {/* job-0173 Part 3  -  confine the pointer-events:auto region to
                   the LayerPanel column only. The prior implementation made the
                   inner div full-bleed (width:100%, height:100%) with
                   pointerEvents:"auto", which blocked map drag/pan everywhere
-                  inside the (top:64 → bottom:60, left:0 → right:0) zone —
+                  inside the (top:64 -> bottom:60, left:0 -> right:0) zone  - 
                   i.e. virtually the entire map. LayerPanel is absolutely
                   positioned at left:16 / top:16 / bottom:16 / width:280
                   relative to this wrapper, so a 280px-wide column from the
@@ -1751,15 +1757,15 @@ export function App(): JSX.Element {
                      so MapView applies them to the live MapLibre instance.
                      Without this the panel controls were dead in the demo. */
                   onMapCommand={bus.pushMapCommand}
-                  /* job-0322 F53 — end-to-end delete. The LayerPanel delete
+                  /* job-0322 F53  -  end-to-end delete. The LayerPanel delete
                      control (job-0325) optimistically removes the row, but the
                      layer resurrected on the next session-state because this
                      prop was never wired: the client never told the server.
                      sendDeleteLayer emits the `layer-delete` envelope; the
                      server persists the post-deletion list and echoes a fresh
-                     session-state (sans the layer) which onSessionState →
+                     session-state (sans the layer) which onSessionState ->
                      bus.pushSessionState reconciles into the Map via
-                     replace-not-reconcile — so the layer stays gone. */
+                     replace-not-reconcile  -  so the layer stays gone. */
                   onDeleteLayer={handleDeleteLayer}
                 />
               </div>
@@ -1770,9 +1776,9 @@ export function App(): JSX.Element {
 
       {/* job-0143: Bottom-row Settings pill. Hidden when the left rail is
           collapsed (it belongs to the rail). job-0278: on mobile it folds
-          into the drawer footer instead — the floating pill would collide
+          into the drawer footer instead  -  the floating pill would collide
           with the bottom-sheet composer.
-          job-0321 F29 — the standalone Secrets pill is retired (API keys now
+          job-0321 F29  -  the standalone Secrets pill is retired (API keys now
           live inside Settings), so `onOpenSecrets` is no longer wired. */}
       {!isMobile && !leftCollapsed && (
         <BottomRowButtons
@@ -1780,7 +1786,7 @@ export function App(): JSX.Element {
         />
       )}
 
-      {/* Right panel — Chat stays MOUNTED across collapse so its internal       */}
+      {/* Right panel  -  Chat stays MOUNTED across collapse so its internal       */}
       {/* state (messages, pipeline history, lastError) is preserved. job-0162: */}
       {/* clicking the chevron-collapse button no longer destroys chat content. */}
       {/* Visually hidden via display:none + aria-hidden when collapsed.        */}
@@ -1788,13 +1794,13 @@ export function App(): JSX.Element {
         data-testid="grace2-chat-mount"
         aria-hidden={rightCollapsed && !isMobile}
         style={{
-          // job-0278 — on mobile the chat is always present as the bottom
+          // job-0278  -  on mobile the chat is always present as the bottom
           // sheet (its own collapsed state IS the minimized form); the
           // desktop right-collapse toggle doesn't apply.
           display: rightCollapsed && !isMobile ? "none" : "contents",
         }}
       >
-        {/* job-0266 — activeCaseId selects Chat's visible per-Case stream:
+        {/* job-0266  -  activeCaseId selects Chat's visible per-Case stream:
             switching Cases swaps the entire stream; null (root) shows the
             clean empty composer. */}
         <Chat
@@ -1805,14 +1811,14 @@ export function App(): JSX.Element {
           authEpoch={authEpoch}
           width={chatWidth}
           onWidthChange={setChatWidth}
-          /* sleep/wake STAGE 2 — App owns the asleep classification (App socket
+          /* sleep/wake STAGE 2  -  App owns the asleep classification (App socket
              + report-only probe) and threads it down so Chat's composer machine
              can branch Connecting -> (Chat | Wake). `agentAsleep` =
              composerWakeReady; `onWakeTap` is the ONLY POST-wake path (tap
              only). Chat gates ONLY the composer; its scrollback stays live. */
           agentAsleep={composerWakeReady}
           onWakeTap={handleWakeTap}
-          /* job-0179 — COLD chat-history render. App routes every case-open
+          /* job-0179  -  COLD chat-history render. App routes every case-open
              (live WS + cold serverless snapshot) onto the bus; Chat subscribes
              here to materialize the per-Case chat-history bubbles via
              routeCaseOpen. Chat does NOT see App's useCases state, so without
@@ -1821,7 +1827,7 @@ export function App(): JSX.Element {
         />
       </div>
 
-      {/* sleep/wake STAGE 2 (NATE 2026-06-18) — the OLD full-chat-panel
+      {/* sleep/wake STAGE 2 (NATE 2026-06-18)  -  the OLD full-chat-panel
           WakeOverlay mount is REMOVED. It blanketed the entire chat panel
           (scrollback included) and was driven by the App socket. STAGE 2 keeps
           the chat scrollback + tool cards + insights AND the whole map LIVE with
@@ -1830,7 +1836,7 @@ export function App(): JSX.Element {
           to that slot), driven by the asleep signal (`composerWakeReady`) +
           tap handler (`handleWakeTap`) threaded down via the Chat props below. */}
 
-      {/* Layers hamburger — top-LEFT. (Desktop; mobile uses the drawer ☰.) */}
+      {/* Layers hamburger  -  top-LEFT. (Desktop; mobile uses the drawer -.) */}
       {!isMobile && showLayersHamburger && (
         <button
           data-testid="grace2-layers-hamburger"
@@ -1840,12 +1846,12 @@ export function App(): JSX.Element {
           onClick={expandLeft}
           style={{ ...hamburgerBtnStyle, left: 16 }}
         >
-          {/* job-0322 F52 — icon-module glyph (no raw unicode ☰). */}
+          {/* job-0322 F52  -  icon-module glyph (no raw unicode -). */}
           <IconMenu size={18} />
         </button>
       )}
 
-      {/* Chat hamburger — top-RIGHT. (Desktop only — the mobile sheet is
+      {/* Chat hamburger  -  top-RIGHT. (Desktop only  -  the mobile sheet is
           always mounted with its own toggle handle.) */}
       {!isMobile && showChatHamburger && (
         <button
@@ -1855,12 +1861,12 @@ export function App(): JSX.Element {
           onClick={expandRight}
           style={{ ...hamburgerBtnStyle, right: 12 }}
         >
-          {/* job-0322 F52 — icon-module glyph (no raw unicode ☰). */}
+          {/* job-0322 F52  -  icon-module glyph (no raw unicode -). */}
           <IconMenu size={18} />
         </button>
       )}
 
-      {/* job-0278 — mobile ☰ opener (top-left, 44px touch target). Hidden
+      {/* job-0278  -  mobile - opener (top-left, 44px touch target). Hidden
           while the drawer is open (the drawer overlays it anyway). */}
       {isMobile && !mobileDrawerOpen && (
         <MobileDrawerButton
@@ -1869,9 +1875,9 @@ export function App(): JSX.Element {
         />
       )}
 
-      {/* job-0321 F29 — mobile-only top-right Settings entry. On mobile the
+      {/* job-0321 F29  -  mobile-only top-right Settings entry. On mobile the
           only prior Settings reach was buried in the drawer footer; this puts
-          a ⚙ button at the top-right so Settings (and, bundled inside it, the
+          a - button at the top-right so Settings (and, bundled inside it, the
           API-key entry) is reachable from anywhere. Desktop is unaffected
           (Settings stays on the bottom-row pill).
           z-index 36 sits above the upgrade toast (35) but below the
@@ -1904,12 +1910,12 @@ export function App(): JSX.Element {
               "-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif",
           }}
         >
-          {/* job-0322 F29 — icon-module gear (no raw unicode ⚙). */}
+          {/* job-0322 F29  -  icon-module gear (no raw unicode -). */}
           <IconSettings size={20} />
         </button>
       )}
 
-      {/* job-0278 — mobile slide-in drawer. Hosts the SAME left-rail
+      {/* job-0278  -  mobile slide-in drawer. Hosts the SAME left-rail
           content as desktop (CasesPanel at root; CaseView + LayerPanel
           inside a Case) plus the Settings/Secrets pills in its footer.
           Tapping a Case row or the backdrop closes it. */}
@@ -1919,7 +1925,7 @@ export function App(): JSX.Element {
           onClose={() => setMobileDrawerOpen(false)}
         >
           {activeCaseId === null ? (
-            // job-0322 F52 (v2) — the layout wrapper is click-transparent so
+            // job-0322 F52 (v2)  -  the layout wrapper is click-transparent so
             // empty/gutter taps fall through to the drawer backdrop (close);
             // the inner wrapper hugs the CasesPanel card and re-enables
             // hit-testing (`pointerEvents: "auto"`) so the card (and the
@@ -1933,24 +1939,24 @@ export function App(): JSX.Element {
                 // minHeight:0 already give it a bounded height from the
                 // MobileDrawer column (top:0/bottom:0); overflow:hidden (was
                 // overflowY:auto) removes the competing scroll container so
-                // CasesPanel height:100% fills this bound and the list — not
-                // the whole panel including the header — is what scrolls.
+                // CasesPanel height:100% fills this bound and the list  -  not
+                // the whole panel including the header  -  is what scrolls.
                 overflow: "hidden",
                 pointerEvents: "none",
               }}
             >
-              {/* job-0337 — the hugger stays full-width so it never shrink-
+              {/* job-0337  -  the hugger stays full-width so it never shrink-
                   wraps to a long Case title's intrinsic width (the job-0330
                   clip hazard). The CasesPanel inside is now a FIXED 288px
-                  (max-width:100% guards sub-288 columns) — it neither grows
-                  with content nor varies with viewport — so the row title's
+                  (max-width:100% guards sub-288 columns)  -  it neither grows
+                  with content nor varies with viewport  -  so the row title's
                   flex:1 + min-width:0 ellipsis engages and the kebab
                   (flex-shrink:0) stays inside the column's overflow:hidden
                   clip. (The mobile fixed width is set in global.css
                   `.grace2-mobile-touch [data-testid="grace2-cases-panel"]`.)
 
                   MOBILE CASES-SCROLL FIX (NATE 2026-06-20): this inner wrapper
-                  was `width:100%` ONLY — a content-sized (height:auto) block
+                  was `width:100%` ONLY  -  a content-sized (height:auto) block
                   BETWEEN the bounded hugger (flex:1 + minHeight:0) and
                   CasesPanel. CasesPanel's `height:100%` (the ed4cf91 desktop
                   fix) resolved against this auto height, so the panel sized to
@@ -1958,8 +1964,8 @@ export function App(): JSX.Element {
                   on mobile. Making this wrapper a bounded flex column
                   (flex:1 + minHeight:0 + display:flex + flexDirection:column)
                   passes the hugger's real bounded height THROUGH to CasesPanel
-                  (height:100% now resolves), so the grace2-cases-list — the
-                  single scroll surface (pinned header + mask fade) — scrolls.
+                  (height:100% now resolves), so the grace2-cases-list  -  the
+                  single scroll surface (pinned header + mask fade)  -  scrolls.
                   Mirrors the desktop convergence (rail wrapper is a bounded
                   flex column). width:100% + pointerEvents:auto are preserved. */}
               <div
@@ -1989,9 +1995,9 @@ export function App(): JSX.Element {
             </div>
           ) : (
             <>
-              {/* job-0284 — mobile: the "Cases" breadcrumb link is the
-                  SINGLE back affordance (no ← arrow).
-                  job-0322 F52 (v2) — wrap in a `pointerEvents: "auto"` hugger
+              {/* job-0284  -  mobile: the "Cases" breadcrumb link is the
+                  SINGLE back affordance (no - arrow).
+                  job-0322 F52 (v2)  -  wrap in a `pointerEvents: "auto"` hugger
                   so the breadcrumb card stays tappable even though the drawer
                   column above is click-transparent (gutter taps fall through to
                   the backdrop = close). */}
@@ -2076,7 +2082,7 @@ export function App(): JSX.Element {
                     position: "relative",
                     flex: 1,
                     minHeight: 0,
-                    // job-0322 F52 (v2) — the LayerPanel layout wrapper is
+                    // job-0322 F52 (v2)  -  the LayerPanel layout wrapper is
                     // click-transparent so gutter taps around the panel fall
                     // through to the backdrop (close). LayerPanel itself
                     // re-enables hit-testing via the `auto` wrapper below.
@@ -2085,8 +2091,8 @@ export function App(): JSX.Element {
                 >
                   {/* LayerPanel positions itself absolutely (left:16 /
                       top:16 / bottom:16 / width:288) relative to this
-                      wrapper — it fills the drawer column.
-                      job-0322 F52 (v2) — `pointerEvents: "auto"` wrapper
+                      wrapper  -  it fills the drawer column.
+                      job-0322 F52 (v2)  -  `pointerEvents: "auto"` wrapper
                       restores hit-testing for the absolutely-positioned panel
                       (pointer-events inherits down the DOM tree regardless of
                       layout position). */}
@@ -2100,12 +2106,12 @@ export function App(): JSX.Element {
                     /* Projected AOI rect (lifted from MapView) so the mobile
                        SequenceScrubber pins bottom-center of the AOI box. */
                     aoiRect={aoiScreenRect}
-                    /* job-0322 F53 — end-to-end delete on the mobile drawer
+                    /* job-0322 F53  -  end-to-end delete on the mobile drawer
                        mount too (swipe-right-to-delete in Group C drives this
                        same callback). See the desktop mount above for the
                        full data-flow rationale. */
                     onDeleteLayer={handleDeleteLayer}
-                    /* Item b (NATE 2026-06-20) — the MOBILE legend show/hide
+                    /* Item b (NATE 2026-06-20)  -  the MOBILE legend show/hide
                        toggle lives IN the expanded Layers section (off the chat
                        composer). Only rendered when there's a legend to toggle. */
                     legendControl={
@@ -2123,7 +2129,7 @@ export function App(): JSX.Element {
               )}
             </>
           )}
-          {/* job-0322 F29 — the drawer-footer Settings pill is REMOVED. The
+          {/* job-0322 F29  -  the drawer-footer Settings pill is REMOVED. The
               mobile-only top-right gear button (grace2-mobile-settings-button,
               above) is now the SOLE mobile Settings entry; API keys still live
               inside the SettingsPopup it opens. The desktop bottom-left
@@ -2140,7 +2146,7 @@ export function App(): JSX.Element {
           style={{
             position: "absolute",
             top: 56,
-            // job-0278 — mobile: anchored near the right edge (the desktop
+            // job-0278  -  mobile: anchored near the right edge (the desktop
             // offsets assume the 380px side panel / hamburger, which don't
             // exist on phones and would push the toast off a 390px screen).
             right: isMobile ? 12 : rightCollapsed ? 60 : 380,
@@ -2174,7 +2180,7 @@ export function App(): JSX.Element {
       />
 
       {/* job-0145: Inline chat cards (payload-warnings + source suggestions)
-          stack as a single column anchored over the chat panel — they
+          stack as a single column anchored over the chat panel  -  they
           visually sit IN the chat scroll while being mounted at App level
           (Chat owns its own GraceWs). Width matches chat message width
           (chat panel is 380px; cards use 340px with padding). Both surfaces
@@ -2185,7 +2191,7 @@ export function App(): JSX.Element {
         data-testid="inline-chat-card-stack"
         style={{
           position: "absolute",
-          // job-0278 — mobile: full-width column with 12px gutters (the
+          // job-0278  -  mobile: full-width column with 12px gutters (the
           // desktop 340px column anchored to the chat panel would clip on
           // a 390px screen).
           right: isMobile ? 12 : rightCollapsed ? 16 : 32,
@@ -2212,7 +2218,7 @@ export function App(): JSX.Element {
           }}
         >
           {/* FIX 2 (NATE 2026-06-17): payload-warning gates are no longer here
-              NOR in any App-level banner — they render as in-chat cards in
+              NOR in any App-level banner  -  they render as in-chat cards in
               Chat's per-Case stream (Chat.tsx). Source suggestions stay here. */}
           {/* Source-suggestion inline card (job-0145, replaces Mode2OfferModal).
               Listens for candidate envelopes from the server; UI text never
@@ -2225,7 +2231,7 @@ export function App(): JSX.Element {
         </div>
       </div>
 
-      {/* FIX 2 (NATE 2026-06-17) — the large-payload warning BANNER "hat" is
+      {/* FIX 2 (NATE 2026-06-17)  -  the large-payload warning BANNER "hat" is
           GONE. The warning is now an IN-CHAT card interleaved in the per-Case
           chat scroll (Chat.tsx kind:"payload-warning", PayloadWarningInline),
           matching the credential / tool / sandbox card family. tool-payload-
@@ -2257,7 +2263,7 @@ export function App(): JSX.Element {
             setSettingsOpen(false);
             setRoutingDashOpen(true);
           }}
-          /* job-0321 F29 — bundle the per-Case API-key entry INSIDE Settings.
+          /* job-0321 F29  -  bundle the per-Case API-key entry INSIDE Settings.
              These are the SAME wires that previously fed the standalone
              SecretsPopup; SettingsPopup renders SecretsPanel inline under its
              "API Keys" section. */
@@ -2294,12 +2300,12 @@ export function App(): JSX.Element {
         />
       )}
 
-      {/* job-0321 F29 — the standalone Secrets popup is retired. API-key
+      {/* job-0321 F29  -  the standalone Secrets popup is retired. API-key
           management now lives inside the Settings popup above (SettingsPopup's
           embedded SecretsPanel), wired with the same secrets/case/add/revoke
           props. */}
 
-      {/* job-0143: SaveGateModal — appears only when an anonymous user
+      {/* job-0143: SaveGateModal  -  appears only when an anonymous user
           attempts a save-triggering action. */}
       {saveGate.isOpen && (
         <SaveGateModal
@@ -2310,7 +2316,7 @@ export function App(): JSX.Element {
         />
       )}
 
-      {/* JOB WEB-ANIM (#157.2-.3) — the floating sequence SCRUBBER. Rendered at
+      {/* JOB WEB-ANIM (#157.2-.3)  -  the floating sequence SCRUBBER. Rendered at
           the App root (always mounted) so it shows WHENEVER a sequential group is
           active on the shared AnimationController, regardless of whether the
           Layers panel is open/collapsed. It pins bottom-center of the AOI box via
@@ -2327,7 +2333,7 @@ export function App(): JSX.Element {
 // The scrubber used to render from inside LayerPanel, so closing the panel
 // dropped it (and, since the play interval also lived there, killed playback).
 // It now lives here, driven entirely by the module-level AnimationController, so
-// it appears whenever ANY sequence is active — panel open or not. Stepping +
+// it appears whenever ANY sequence is active  -  panel open or not. Stepping +
 // play/pause go straight to the controller (which drives the map + the interval);
 // the LayerPanel, when open, mirrors the controller's frame into its own rows.
 function AppSequenceScrubber({

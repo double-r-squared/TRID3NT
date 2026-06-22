@@ -1,11 +1,16 @@
-// GRACE-2 web - AoiPickerCard tests (#170 J-WEB-2).
+// GRACE-2 web - AoiPickerCard tests (#170 manual-case onboarding, redesigned).
 //
-// Covers the request-free AOI capture card:
-//   1. The COORDS fallback returns a valid, ordered bbox on Confirm.
-//   2. Bad coords (out of range / non-finite / empty) are rejected - Confirm
-//      stays disabled and "Preview on map" surfaces an honest error.
-//   3. min/max are normalized (a user typing max < min still yields a valid box).
-//   4. Skip / Cancel relay no bbox.
+// Covers the request-free, two-step onboarding card + the draw-mode controls:
+//   1. STEP 1 (name) -> STEP 2 (aoi) transition via Next; Back returns.
+//   2. STEP 2 Skip relays the name with no bbox; Cancel aborts (no create).
+//   3. STEP 2 "Draw AOI" DISMISSES the card (the key fix: map clear) and arms a
+//      map drag gesture; the card itself is gone (no aoi-picker-card in the DOM).
+//   4. DRAW: SAVE is gated until a rectangle is drawn (no half-drawn limbo);
+//      after a drag SAVE forwards (bbox, name).
+//   5. DRAW: RETRY clears the drawn rect (SAVE re-disabled, stay in draw mode).
+//   6. DRAW: CANCEL discards the bbox and returns to the STEP 2 prompt.
+//   7. NO-CLOBBER: the drag gesture is armed ONLY in draw mode (detached on the
+//      transitions out of draw), so a stray drag can't clobber a committed AOI.
 //
 // The card draws onto a live MapLibre map; happy-dom has no WebGL, so we inject
 // a minimal map stub covering only the methods the card + bbox_draw helpers
@@ -13,12 +18,18 @@
 
 import { describe, it, expect, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
-import { AoiPickerCard, coordsToBbox } from "./AoiPickerCard";
+import { AoiPickerCard } from "./AoiPickerCard";
 import type { Map as MapLibreMap } from "maplibre-gl";
 
-function makeFakeMap(): MapLibreMap {
+interface FakeMap extends MapLibreMap {
+  __handlers: Record<string, (e: unknown) => void>;
+}
+
+function makeFakeMap(): FakeMap {
   const canvas = { style: { cursor: "" } };
-  return {
+  const handlers: Record<string, (e: unknown) => void> = {};
+  const m = {
+    __handlers: handlers,
     fitBounds: vi.fn(),
     isStyleLoaded: () => true,
     getCanvas: () => canvas,
@@ -28,156 +39,156 @@ function makeFakeMap(): MapLibreMap {
     addLayer: vi.fn(),
     removeLayer: vi.fn(),
     removeSource: vi.fn(),
-    on: vi.fn(),
+    on: vi.fn((ev: string, cb: (e: unknown) => void) => {
+      handlers[ev] = cb;
+    }),
     off: vi.fn(),
     once: vi.fn(),
+    // project() is read while tracking the drawn bbox's on-screen rect.
+    project: ({ 0: lng, 1: lat }: number[]) => ({ x: (lng ?? 0) * 10, y: (lat ?? 0) * 10 }),
     dragPan: { enable: vi.fn(), disable: vi.fn() },
-  } as unknown as MapLibreMap;
+  } as unknown as FakeMap;
+  return m;
 }
 
 function renderCard(map: MapLibreMap | null = makeFakeMap()) {
-  const onConfirm = vi.fn<(b: [number, number, number, number]) => void>();
-  const onSkip = vi.fn();
+  const onConfirm = vi.fn<(b: [number, number, number, number], name: string) => void>();
+  const onSkip = vi.fn<(name: string) => void>();
   const onCancel = vi.fn();
   render(
-    <AoiPickerCard
-      map={map}
-      onConfirm={onConfirm}
-      onSkip={onSkip}
-      onCancel={onCancel}
-    />,
+    <AoiPickerCard map={map} onConfirm={onConfirm} onSkip={onSkip} onCancel={onCancel} />,
   );
   return { onConfirm, onSkip, onCancel };
 }
 
-function setCoords(minLon: string, minLat: string, maxLon: string, maxLat: string): void {
-  fireEvent.change(screen.getByTestId("aoi-min-lon"), { target: { value: minLon } });
-  fireEvent.change(screen.getByTestId("aoi-min-lat"), { target: { value: minLat } });
-  fireEvent.change(screen.getByTestId("aoi-max-lon"), { target: { value: maxLon } });
-  fireEvent.change(screen.getByTestId("aoi-max-lat"), { target: { value: maxLat } });
+/** Advance from the NAME step to the AOI step, optionally typing a name first. */
+function gotoAoiStep(name?: string): void {
+  if (name !== undefined) {
+    fireEvent.change(screen.getByTestId("aoi-name-input"), { target: { value: name } });
+  }
+  fireEvent.click(screen.getByTestId("aoi-name-next"));
 }
 
-function confirmBtn(): HTMLButtonElement {
-  return screen.getByTestId("aoi-confirm") as HTMLButtonElement;
+/** Simulate dragging a rectangle on the fake map (down -> up). */
+function dragRect(map: FakeMap, a: [number, number], b: [number, number]): void {
+  act(() => {
+    map.__handlers.mousedown!({ lngLat: { lng: a[0], lat: a[1] } });
+    map.__handlers.mouseup!({ lngLat: { lng: b[0], lat: b[1] } });
+  });
 }
 
-describe("coordsToBbox (pure)", () => {
-  it("returns a valid ordered bbox for in-range numbers", () => {
-    expect(
-      coordsToBbox({ minLon: "-85.31", minLat: "35.04", maxLon: "-85.30", maxLat: "35.05" }),
-    ).toEqual([-85.31, 35.04, -85.3, 35.05]);
+describe("AoiPickerCard - two-step onboarding", () => {
+  it("starts on the NAME step", () => {
+    renderCard();
+    expect(screen.getByTestId("aoi-step-name")).toBeTruthy();
+    expect(screen.queryByTestId("aoi-step-aoi")).toBeNull();
   });
 
-  it("normalizes swapped min/max", () => {
-    expect(
-      coordsToBbox({ minLon: "-85.30", minLat: "35.05", maxLon: "-85.31", maxLat: "35.04" }),
-    ).toEqual([-85.31, 35.04, -85.3, 35.05]);
+  it("Next advances NAME -> AOI; Back returns", () => {
+    renderCard();
+    gotoAoiStep("Mexico Beach surge");
+    expect(screen.getByTestId("aoi-step-aoi")).toBeTruthy();
+    expect(screen.queryByTestId("aoi-step-name")).toBeNull();
+    // The chosen name surfaces in the AOI prompt.
+    expect(screen.getByTestId("aoi-step-aoi").textContent).toContain("Mexico Beach surge");
+    fireEvent.click(screen.getByTestId("aoi-back"));
+    expect(screen.getByTestId("aoi-step-name")).toBeTruthy();
   });
 
-  it("rejects out-of-range longitude / latitude", () => {
-    expect(
-      coordsToBbox({ minLon: "-200", minLat: "35", maxLon: "-85", maxLat: "36" }),
-    ).toBeNull();
-    expect(
-      coordsToBbox({ minLon: "-85", minLat: "-91", maxLon: "-84", maxLat: "35" }),
-    ).toBeNull();
-  });
-
-  it("rejects non-finite / empty / degenerate input", () => {
-    expect(
-      coordsToBbox({ minLon: "abc", minLat: "35", maxLon: "-85", maxLat: "36" }),
-    ).toBeNull();
-    expect(
-      coordsToBbox({ minLon: "", minLat: "35", maxLon: "-85", maxLat: "36" }),
-    ).toBeNull();
-    // Zero-area (min == max) is not a usable AOI.
-    expect(
-      coordsToBbox({ minLon: "-85", minLat: "35", maxLon: "-85", maxLat: "36" }),
-    ).toBeNull();
-  });
-});
-
-describe("AoiPickerCard - coords fallback", () => {
-  it("Confirm is disabled until a valid bbox is captured, then forwards it", () => {
-    const { onConfirm } = renderCard();
-    expect(confirmBtn().disabled).toBe(true);
-
-    setCoords("-85.31", "35.04", "-85.30", "35.05");
-    // Preview validates + captures.
-    fireEvent.click(screen.getByTestId("aoi-preview"));
-
-    expect(screen.queryByTestId("aoi-coords-error")).toBeNull();
-    expect(confirmBtn().disabled).toBe(false);
-    // The captured bbox echo confirms what will be sent.
-    expect(screen.getByTestId("aoi-bbox-echo")).toBeTruthy();
-
-    fireEvent.click(confirmBtn());
-    expect(onConfirm).toHaveBeenCalledTimes(1);
-    expect(onConfirm.mock.calls[0]![0]).toEqual([-85.31, 35.04, -85.3, 35.05]);
-  });
-
-  it("surfaces an error and stays unconfirmable on bad coords", () => {
-    const { onConfirm } = renderCard();
-    setCoords("-200", "35.04", "-85.30", "35.05"); // lon out of range
-    fireEvent.click(screen.getByTestId("aoi-preview"));
-
-    expect(screen.getByTestId("aoi-coords-error")).toBeTruthy();
-    expect(confirmBtn().disabled).toBe(true);
-    fireEvent.click(confirmBtn());
-    expect(onConfirm).not.toHaveBeenCalled();
-  });
-
-  it("normalizes swapped corners on preview", () => {
-    const { onConfirm } = renderCard();
-    setCoords("-85.30", "35.05", "-85.31", "35.04"); // max-then-min
-    fireEvent.click(screen.getByTestId("aoi-preview"));
-    fireEvent.click(confirmBtn());
-    expect(onConfirm.mock.calls[0]![0]).toEqual([-85.31, 35.04, -85.3, 35.05]);
-  });
-
-  it("works with no map (coords-only headless path)", () => {
-    const { onConfirm } = renderCard(null);
-    setCoords("10", "20", "11", "21");
-    fireEvent.click(screen.getByTestId("aoi-preview"));
-    expect(confirmBtn().disabled).toBe(false);
-    fireEvent.click(confirmBtn());
-    expect(onConfirm.mock.calls[0]![0]).toEqual([10, 20, 11, 21]);
-  });
-
-  it("Skip and Cancel relay no bbox", () => {
-    const { onConfirm, onSkip, onCancel } = renderCard();
+  it("Skip on the AOI step relays the trimmed name with NO bbox", () => {
+    const { onSkip, onConfirm } = renderCard();
+    gotoAoiStep("  Idaho flood  ");
     fireEvent.click(screen.getByTestId("aoi-skip"));
     expect(onSkip).toHaveBeenCalledTimes(1);
-    fireEvent.click(screen.getByTestId("aoi-cancel"));
+    expect(onSkip.mock.calls[0]![0]).toBe("Idaho flood");
+    expect(onConfirm).not.toHaveBeenCalled();
+  });
+
+  it("Cancel aborts the onboarding (no create at any step)", () => {
+    const { onCancel, onConfirm, onSkip } = renderCard();
+    fireEvent.click(screen.getByTestId("aoi-cancel")); // name step cancel
     expect(onCancel).toHaveBeenCalledTimes(1);
     expect(onConfirm).not.toHaveBeenCalled();
+    expect(onSkip).not.toHaveBeenCalled();
   });
 });
 
-describe("AoiPickerCard - primary draw gesture", () => {
-  it("arms a map drag gesture and captures the drawn bbox", () => {
+describe("AoiPickerCard - draw mode (dismiss + save/retry/cancel)", () => {
+  it("Draw AOI DISMISSES the card (map clear) and arms the drag gesture", () => {
     const map = makeFakeMap();
-    const handlers: Record<string, (e: unknown) => void> = {};
-    (map.on as ReturnType<typeof vi.fn>).mockImplementation(
-      (ev: string, cb: (e: unknown) => void) => {
-        handlers[ev] = cb;
-      },
-    );
+    renderCard(map);
+    gotoAoiStep("MyCase");
+    fireEvent.click(screen.getByTestId("aoi-draw"));
+    // THE KEY FIX: the onboarding card is gone so the map is fully visible.
+    expect(screen.queryByTestId("aoi-picker-card")).toBeNull();
+    // The bbox-anchored controls are mounted (with the draw hint until a drag).
+    expect(screen.getByTestId("aoi-draw-controls")).toBeTruthy();
+    expect(screen.getByTestId("aoi-draw-hint")).toBeTruthy();
+    // The drag gesture armed (down/up listeners attached).
+    expect(map.__handlers.mousedown).toBeTruthy();
+    expect(map.__handlers.mouseup).toBeTruthy();
+  });
+
+  it("SAVE is gated until a rectangle is drawn, then forwards (bbox, name)", () => {
+    const map = makeFakeMap();
     const { onConfirm } = renderCard(map);
+    gotoAoiStep("MyCase");
+    fireEvent.click(screen.getByTestId("aoi-draw"));
 
-    // The card armed the drag gesture (down/move/up listeners attached).
-    expect(handlers.mousedown).toBeTruthy();
-    expect(handlers.mouseup).toBeTruthy();
+    // No rectangle yet -> SAVE disabled (no half-drawn limbo / no create).
+    expect((screen.getByTestId("aoi-save") as HTMLButtonElement).disabled).toBe(true);
 
-    // Simulate a drag: down at one corner, up at the other. The mouseup's
-    // onComplete callback flips component state, so flush it inside act().
-    act(() => {
-      handlers.mousedown!({ lngLat: { lng: -85.31, lat: 35.04 } });
-      handlers.mouseup!({ lngLat: { lng: -85.3, lat: 35.05 } });
-    });
+    dragRect(map, [-85.31, 35.04], [-85.3, 35.05]);
 
-    expect(confirmBtn().disabled).toBe(false);
-    fireEvent.click(confirmBtn());
+    const saveBtn = screen.getByTestId("aoi-save") as HTMLButtonElement;
+    expect(saveBtn.disabled).toBe(false);
+    fireEvent.click(saveBtn);
+    expect(onConfirm).toHaveBeenCalledTimes(1);
     expect(onConfirm.mock.calls[0]![0]).toEqual([-85.31, 35.04, -85.3, 35.05]);
+    expect(onConfirm.mock.calls[0]![1]).toBe("MyCase");
+  });
+
+  it("RETRY clears the drawn rectangle and re-disables SAVE (stays in draw mode)", () => {
+    const map = makeFakeMap();
+    renderCard(map);
+    gotoAoiStep();
+    fireEvent.click(screen.getByTestId("aoi-draw"));
+    dragRect(map, [-85.31, 35.04], [-85.3, 35.05]);
+    expect((screen.getByTestId("aoi-save") as HTMLButtonElement).disabled).toBe(false);
+
+    act(() => {
+      fireEvent.click(screen.getByTestId("aoi-retry"));
+    });
+    // Still in draw mode (controls present), SAVE disabled again.
+    expect(screen.getByTestId("aoi-draw-controls")).toBeTruthy();
+    expect((screen.getByTestId("aoi-save") as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("CANCEL discards the bbox and returns to the AOI prompt (no create)", () => {
+    const map = makeFakeMap();
+    const { onConfirm } = renderCard(map);
+    gotoAoiStep();
+    fireEvent.click(screen.getByTestId("aoi-draw"));
+    dragRect(map, [-85.31, 35.04], [-85.3, 35.05]);
+    fireEvent.click(screen.getByTestId("aoi-draw-cancel"));
+    // Back on the STEP 2 prompt; nothing created.
+    expect(screen.getByTestId("aoi-step-aoi")).toBeTruthy();
+    expect(onConfirm).not.toHaveBeenCalled();
+  });
+
+  it("NO-CLOBBER: leaving draw mode (CANCEL) detaches the drag gesture", () => {
+    const map = makeFakeMap();
+    renderCard(map);
+    gotoAoiStep();
+    fireEvent.click(screen.getByTestId("aoi-draw"));
+    const offBefore = (map.off as ReturnType<typeof vi.fn>).mock.calls.length;
+    fireEvent.click(screen.getByTestId("aoi-draw-cancel"));
+    // attachBboxDrag's detach removes the mousedown/move/up listeners, so the
+    // gesture can never fire (and clobber a committed AOI) outside draw mode.
+    const offCalls = (map.off as ReturnType<typeof vi.fn>).mock.calls
+      .slice(offBefore)
+      .map((c) => c[0]);
+    expect(offCalls).toContain("mousedown");
+    expect(offCalls).toContain("mouseup");
   });
 });
