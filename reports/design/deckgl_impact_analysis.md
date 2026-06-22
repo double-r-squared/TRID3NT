@@ -304,3 +304,29 @@ file (Map.tsx executor vs contracts/case_view/App cold-path) and can overlap onc
   on a phone is a GL OOM cliff on the mobile-first demo.
 - **Do NOT relax global tsconfig strictness** to ingest deck/luma types; isolate them in a
   typed adapter module.
+
+## Addenda (NATE 2026-06-22)
+
+### Export extension (do NOT replace today's export - ADD modes)
+Keep the current export path intact. Add a case-level export with two NEW modes:
+1. Export the deck.gl SCENE OBJECT - the unified layer stack serialized to a portable
+   bundle (re-loadable in-app or in a standalone 3D viewer). This is the deck.gl-native
+   "store the whole thing as one object" path NATE asked about earlier.
+2. Export EACH LAYER INDIVIDUALLY FOR QGIS - each layer in its native GIS format (rasters
+   as COG/GeoTIFF, vectors as GeoJSON/GeoPackage), ideally accompanied by a QGIS layer
+   definition (.qlr) or project (.qgs) that references them so QGIS opens the full set in
+   one action. Dovetails with the QGIS-on-AWS work (job-0308) and the
+   QGIS-Processing-substrate direction. This is the practitioner-facing export.
+Sequence: fold into the deck.gl wave AFTER the render-adapter seam (the scene-object export
+rides the deck adapter); the per-layer QGIS export is independent of deck.gl and could land
+earlier (it only needs the persisted layer URIs we already have).
+
+### Shareable cases (STRETCH)
+Generalize the manual DynamoDB re-own (set grace2_cases.user_id + the case-view snapshot /
+manifest owner-user-id metadata) into a real feature: share a case to another user
+(share-link or a co-owner / shared_with list on the case + snapshot metadata + the
+list_cases_for_user query). Motivation surfaced 2026-06-22: moving a case to NATE's account
+removed the dev (Playwright) account's access, so cross-account verification of a
+flood/animation case now requires either a throwaway dev-account sim or this feature. Ties
+to the per-Case ownership model (user_id / owner_user_id GSIs) and the cold-view snapshot
+owner metadata. Stretch priority.
