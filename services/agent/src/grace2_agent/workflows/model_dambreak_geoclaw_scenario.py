@@ -50,9 +50,11 @@ from grace2_contracts.geoclaw_contracts import (
 
 from ..layer_uri_emit import emit_layer_uri
 from ..pipeline_emitter import (
+    begin_substeps,
     current_emitter,
     mint_dispatch_and_sim_cards,
     route_sim_terminal,
+    substep,
 )
 from ..tools.publish_layer import PublishLayerError, publish_layer
 from .postprocess_geoclaw import PostprocessGeoClawError, postprocess_geoclaw
@@ -216,9 +218,15 @@ async def model_dambreak_geoclaw_scenario(
                 "model_dambreak_geoclaw_scenario: zoom-to emit failed: %s", exc
             )
 
+    # --- Sub-step plan (task-168): fetch DEM -> stage -> solve -> postprocess
+    #     -> publish peak. begin_substeps stamps the parent breadcrumb cap; it is
+    #     a no-op outside emit_tool_call (current_emitter() is None).
+    begin_substeps(emitter, 5)
+
     # --- Step 1: topo/bathy DEM (off-loop blocking I/O) ---------------------
     if dem_uri is None:
-        resolved_dem_uri = await asyncio.to_thread(_fetch_topo_for_geoclaw, bbox)
+        async with substep(emitter, "fetch_topobathy"):
+            resolved_dem_uri = await asyncio.to_thread(_fetch_topo_for_geoclaw, bbox)
     else:
         resolved_dem_uri = dem_uri
     logger.info("model_dambreak_geoclaw_scenario: DEM=%s", resolved_dem_uri)
@@ -228,14 +236,15 @@ async def model_dambreak_geoclaw_scenario(
     surge_uri = run_args.surge_forcing_uri
 
     # --- Step 2: stage the build_spec manifest + DEM reference --------------
-    staging = await asyncio.to_thread(
-        stage_geoclaw_manifest,
-        run_args,
-        dem_uri=resolved_dem_uri,
-        run_id=run_id,
-        dtopo_uri=dtopo_uri,
-        surge_uri=surge_uri,
-    )
+    async with substep(emitter, "stage_geoclaw_manifest"):
+        staging = await asyncio.to_thread(
+            stage_geoclaw_manifest,
+            run_args,
+            dem_uri=resolved_dem_uri,
+            run_id=run_id,
+            dtopo_uri=dtopo_uri,
+            surge_uri=surge_uri,
+        )
 
     # --- Auto vertical scaling from the base grid cell count ----------------
     from ..tools.solver import (
@@ -288,20 +297,42 @@ async def model_dambreak_geoclaw_scenario(
         )
     )
     run_result = None
+    # task-168: surface the solve as a child "run_solver" row in the parent
+    # timeline. The Sim card (mint_dispatch_and_sim_cards) STILL owns the live
+    # Batch readout (hard invariant); this child is the timeline entry that goes
+    # green/red/yellow with the solve. No-op outside emit_tool_call. The original
+    # cancel/cleanup flow + telemetry + typed-error raise are PRESERVED verbatim:
+    # a returned non-"complete" RunResult raises a SENTINEL inside the substep so
+    # the child row reads red (honesty floor), which we swallow right after the
+    # context exits so control falls through to the UNCHANGED telemetry + typed-
+    # error block below (the parent's own state is owned there, not by the child).
+    class _SolveReturnedFailed(RuntimeError):
+        pass
+
     try:
-        run_result = await wait_for_completion(handle)
-    except asyncio.CancelledError:
-        # Invariant 8: propagate the cancel; route it to the SIM card.
-        logger.info("model_dambreak_geoclaw_scenario cancelled while awaiting solver")
-        await route_sim_terminal(emitter, _sim_step_id, run_result=None)
-        raise
-    finally:
-        _progress_task.cancel()
-        try:
-            await _progress_task
-        except (asyncio.CancelledError, Exception):  # noqa: BLE001
-            pass
-        set_emitter_binding(None)
+        async with substep(emitter, "run_solver"):
+            try:
+                run_result = await wait_for_completion(handle)
+            except asyncio.CancelledError:
+                # Invariant 8: propagate the cancel; route it to the SIM card.
+                logger.info(
+                    "model_dambreak_geoclaw_scenario cancelled while awaiting solver"
+                )
+                await route_sim_terminal(emitter, _sim_step_id, run_result=None)
+                raise
+            finally:
+                _progress_task.cancel()
+                try:
+                    await _progress_task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
+                set_emitter_binding(None)
+            if run_result.status != "complete":
+                raise _SolveReturnedFailed
+    except _SolveReturnedFailed:
+        # Child already marked red by the substep; fall through to the original
+        # telemetry + typed-error path (which records + raises GeoClawWorkflowError).
+        pass
 
     await route_sim_terminal(emitter, _sim_step_id, run_result=run_result)
 
@@ -339,13 +370,14 @@ async def model_dambreak_geoclaw_scenario(
 
     try:
         # --- Step 5: postprocess (rasterize fort.q -> peak + frames) -------
-        layers, metrics = await asyncio.to_thread(
-            postprocess_geoclaw,
-            out_dir,
-            bbox,
-            run_id=staging.run_id,
-            scenario=run_args.scenario,
-        )
+        async with substep(emitter, "postprocess_geoclaw"):
+            layers, metrics = await asyncio.to_thread(
+                postprocess_geoclaw,
+                out_dir,
+                bbox,
+                run_id=staging.run_id,
+                scenario=run_args.scenario,
+            )
     finally:
         if cleanup_outputs:
             _cleanup_dir(out_dir)
@@ -360,7 +392,8 @@ async def model_dambreak_geoclaw_scenario(
     frame_layers = layers[1:]
 
     # --- Step 6: publish the PEAK COG through publish_layer (render chokepoint)
-    peak = await asyncio.to_thread(_publish_peak_layer, raw_peak, staging.run_id)
+    async with substep(emitter, "publish_layer"):
+        peak = await asyncio.to_thread(_publish_peak_layer, raw_peak, staging.run_id)
 
     # --- Step 6b: publish + emit the per-frame animation layers OUT-OF-BAND --
     emitted_frames = await _emit_frame_layers(emitter, frame_layers, staging.run_id)

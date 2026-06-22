@@ -58,7 +58,7 @@ import logging
 import os
 import re
 from collections.abc import Awaitable, Callable
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -90,6 +90,8 @@ __all__ = [
     "PipelineEmitter",
     "EmissionSink",
     "current_emitter",
+    "substep",
+    "begin_substeps",
     "bind_turn_case",
     "current_turn_case",
     "mint_dispatch_and_sim_cards",
@@ -156,6 +158,46 @@ def current_emitter() -> "PipelineEmitter | None":
     correctness gate.
     """
     return _CURRENT_EMITTER.get()
+
+
+@asynccontextmanager
+async def substep(emitter: "PipelineEmitter | None", raw_name: str):
+    """Module-level no-op-safe wrapper over ``PipelineEmitter.substep`` (task-168).
+
+    The single call shape composers SHOULD use to surface an internal atomic-tool
+    call as a nested child row:
+
+        from grace2_agent.pipeline_emitter import current_emitter, substep
+        async with substep(current_emitter(), "fetch_topobathy") as child_id:
+            ... do the fetch ...
+
+    When ``emitter is None`` (a direct/verify/CI call with no ``emit_tool_call``
+    bracket, so ``current_emitter()`` returned ``None``) this yields ``None`` and
+    mints NOTHING -- the wrapped body runs unchanged. When an emitter IS bound but
+    no parent top-level step is running, ``PipelineEmitter.substep`` itself
+    yields ``None`` (also a no-op). Either way the composer body is identical
+    whether or not the timeline is being surfaced, so the verify/CI direct-call
+    paths keep working byte-for-byte."""
+    if emitter is None:
+        yield None
+        return
+    async with emitter.substep(raw_name) as child_id:
+        yield child_id
+
+
+def begin_substeps(emitter: "PipelineEmitter | None", total: int | None) -> None:
+    """Module-level no-op-safe wrapper over ``PipelineEmitter.begin_substeps``.
+
+    task-168 companion to ``substep`` so a composer can declare the planned child
+    count (for the "k/total" breadcrumb) without a None-check at the call site:
+
+        begin_substeps(current_emitter(), 7)
+
+    No-op when ``emitter is None`` (direct/verify path)."""
+    if emitter is None:
+        return
+    emitter.begin_substeps(total)
+
 
 logger = logging.getLogger("grace2_agent.pipeline_emitter")
 
@@ -730,6 +772,20 @@ class _StepState:
     role: str = "tool"
     batch_job_id: str | None = None
     batch_status: str | None = None
+    #: Nested sub-step timeline (task-168). ``parent_step_id`` is set on a CHILD
+    #: step (a composer's internal atomic-tool call surfaced as a nested row);
+    #: when set, the client nests this step under the parent and never renders it
+    #: as a top-level card. ``substep_label`` / ``substep_index`` /
+    #: ``substep_total`` are set on the PARENT and drive the live breadcrumb
+    #: ("fetching topobathy 2/7"); they are CLEARED on the parent's terminal
+    #: transition. All default None so a plain step is byte-identical on the wire.
+    parent_step_id: str | None = None
+    substep_label: str | None = None
+    substep_index: int | None = None
+    substep_total: int | None = None
+    #: PARENT-only running tally of how many substeps have STARTED. Internal
+    #: bookkeeping that drives ``substep_index``; never serialized directly.
+    substep_started_count: int = 0
 
 
 class PipelineEmitter:
@@ -821,6 +877,12 @@ class PipelineEmitter:
         #: transition of ``emit_tool_call`` (complete / failed / cancelled);
         #: read-only everywhere else.
         self.last_tool_step: PipelineStepSummary | None = None
+
+        #: task-168: the step_id of the top-level workflow step currently
+        #: bracketing an ``emit_tool_call`` invocation. ``substep(...)`` mints its
+        #: child against THIS id (the running parent) and stamps the parent's
+        #: live breadcrumb fields. ``None`` outside an ``emit_tool_call`` body.
+        self._current_parent_step_id: str | None = None
 
         #: J-B-part-i: the most recent TERMINAL pipeline-state payload (set on
         #: every terminal transition via ``_emit_terminal_pipeline_state``).
@@ -1158,6 +1220,103 @@ class PipelineEmitter:
         await self._emit_pipeline_state()
 
     # ------------------------------------------------------------------ #
+    # Nested sub-step timeline (task-168) -- composer-internal atomic-tool
+    # calls surfaced as CHILD rows nested under the parent workflow card.
+    # ------------------------------------------------------------------ #
+
+    def begin_substeps(self, total: int | None) -> None:
+        """Declare the planned child count for the live breadcrumb (task-168).
+
+        Sets ``substep_total`` on the CURRENT top-level parent step (the one
+        ``emit_tool_call`` is bracketing) so the breadcrumb can render "k/total".
+        Pass ``None`` when the count is not known up front -- the breadcrumb then
+        degrades to the humanized label + index with no "/N". Does NOT emit on
+        its own (the next ``substep`` enter emits with the plan attached); safe
+        no-op when no parent is bound (a direct/verify call with no
+        ``emit_tool_call`` bracket) or when ``total`` is not a positive int.
+
+        Idempotent re-declare: a later call updates the plan (e.g. the composer
+        learns the real count after a probe). Synchronous because it only
+        mutates internal plan state; the wire frame rides the next transition.
+        """
+        parent_id = self._current_parent_step_id
+        if parent_id is None:
+            return
+        parent = self._steps.get(parent_id)
+        if parent is None:
+            return
+        if total is not None and isinstance(total, int) and total >= 1:
+            parent.substep_total = int(total)
+        else:
+            parent.substep_total = None
+
+    @asynccontextmanager
+    async def substep(self, raw_name: str):
+        """Async context manager that surfaces ONE composer-internal atomic-tool
+        call as a CHILD step nested under the current parent workflow card.
+
+        Yields the child ``step_id``. On enter it:
+
+        1. mints a CHILD ``PipelineStep`` (``parent_step_id`` = the current
+           top-level running step) via ``add_step``, flips it ``running``;
+        2. stamps the PARENT's live breadcrumb: ``substep_label = raw_name``
+           (the web humanizes it) and ``substep_index`` = the parent's 1-based
+           running started-count;
+        3. emits ``pipeline-state`` on each transition (replace-not-reconcile).
+
+        On exit it marks the child ``complete`` (clean) or ``failed`` (on an
+        exception, threading the classified ``error_code`` / message) with an
+        authoritative job-0264 ``duration_ms``; a CHILD failure NEVER turns the
+        parent green/red -- the parent's own terminal transition owns that. The
+        exception is RE-RAISED after marking the child failed so the composer's
+        control flow is unchanged.
+
+        NO-OP seam (verify/CI direct-call paths): when no emitter parent is bound
+        (``self._current_parent_step_id is None`` -- e.g. a composer invoked
+        outside ``emit_tool_call``), this yields ``None`` and mints NOTHING, so a
+        direct-call / unit path keeps working byte-identically. Composers that
+        reach the emitter via ``current_emitter()`` get the no-op for free
+        because ``current_emitter()`` returns ``None`` outside a workflow body
+        (see ``substep_noop`` below for the module-level wrapper consumers call).
+        """
+        parent_id = self._current_parent_step_id
+        if parent_id is None:
+            # No parent bound -> no-op: yield None, mint nothing.
+            yield None
+            return
+        parent = self._steps.get(parent_id)
+        if parent is None:
+            yield None
+            return
+
+        # Mint the child against the parent and stamp the parent breadcrumb.
+        child_id = await self.add_step(name=raw_name, tool_name=raw_name)
+        child = self._steps[child_id]
+        child.parent_step_id = parent_id
+        parent.substep_started_count += 1
+        parent.substep_label = raw_name
+        parent.substep_index = parent.substep_started_count
+        # mark_running emits a fresh pipeline-state carrying BOTH the running
+        # child (with parent_step_id) and the parent's updated breadcrumb.
+        await self.mark_running(child_id)
+
+        try:
+            yield child_id
+        except asyncio.CancelledError:
+            # Invariant 8: cancelled is distinct from failed. Mark the CHILD
+            # cancelled (yellow) and re-raise; the parent's breadcrumb stays as
+            # the composer's control flow unwinds to the parent's own terminal.
+            await self.mark_cancelled(child_id)
+            raise
+        except Exception as exc:  # noqa: BLE001 -- classify-and-re-raise
+            code, message = self._classify_exception(exc)
+            # Honesty floor: a failed child is RED; the parent is NOT touched.
+            await self.mark_failed(child_id, error_code=code, error_message=message)
+            raise
+        else:
+            await self.mark_complete(child_id)
+
+    # ------------------------------------------------------------------ #
     # Two-card sim observability (task-149) — the off-box compute card
     # ------------------------------------------------------------------ #
 
@@ -1218,11 +1377,26 @@ class PipelineEmitter:
         step.batch_status = batch_status
         await self._emit_pipeline_state()
 
+    def _clear_parent_breadcrumb(self, step: _StepState) -> None:
+        """task-168: clear the live-breadcrumb fields on a PARENT's terminal
+        transition so the collapsed card no longer shows "fetching X 2/7".
+
+        No-op for a step that never ran substeps (the breadcrumb fields were
+        never set) and for a CHILD step (children carry ``parent_step_id``, not
+        the breadcrumb trio). ``substep_started_count`` is preserved only as
+        internal bookkeeping; it is never serialized. The parent's child rows
+        keep their own state -- only the parent's own breadcrumb line clears.
+        """
+        step.substep_label = None
+        step.substep_index = None
+        step.substep_total = None
+
     async def mark_complete(self, step_id: str) -> None:
         """Flip ``step_id`` to ``complete``, stamp ``completed_at``, emit."""
         step = self._require_step(step_id)
         step.state = "complete"
         step.completed_at = self._now_fn()
+        self._clear_parent_breadcrumb(step)
         # job-0264: stamp authoritative wall-clock duration on the terminal
         # transition (started_at→completed_at). Deterministic; the client
         # locks its cosmetic ticker to this number once it arrives.
@@ -1250,6 +1424,7 @@ class PipelineEmitter:
         EMITTER_ERROR_CODES.register(error_code)
         step.state = "failed"
         step.completed_at = self._now_fn()
+        self._clear_parent_breadcrumb(step)
         # job-0264: failed cards show the final duration too (mm:ss of how
         # long the tool ran before failing). started_at may be None if the
         # step failed before mark_running — _elapsed_ms returns None then.
@@ -1267,6 +1442,7 @@ class PipelineEmitter:
         step = self._require_step(step_id)
         step.state = "cancelled"
         step.completed_at = self._now_fn()
+        self._clear_parent_breadcrumb(step)
         # job-0264: cancelled is terminal — stamp duration so the yellow card
         # locks to the elapsed-before-cancel time rather than ticking forever.
         step.duration_ms = _elapsed_ms(step.started_at, step.completed_at)
@@ -1526,6 +1702,11 @@ class PipelineEmitter:
         # zoom-on-area-first UX). reset_token ensures the binding is unwound
         # exactly once, even on cancellation / exception paths.
         token = _CURRENT_EMITTER.set(self)
+        # task-168: remember the previous parent so nested emit_tool_call
+        # invocations restore it (defensive -- workflow bodies normally hold a
+        # single top-level step). ``substep(...)`` mints children against this id.
+        _prev_parent = self._current_parent_step_id
+        self._current_parent_step_id = step_id
         try:
             try:
                 result = invoke()
@@ -1599,6 +1780,9 @@ class PipelineEmitter:
             return result
         finally:
             _CURRENT_EMITTER.reset(token)
+            # task-168: restore the previous parent pointer. On the normal
+            # single-top-level-step path this returns it to None.
+            self._current_parent_step_id = _prev_parent
 
     # ------------------------------------------------------------------ #
     # Internal helpers
@@ -1668,6 +1852,12 @@ class PipelineEmitter:
             role=s.role,  # type: ignore[arg-type]
             batch_job_id=s.batch_job_id,
             batch_status=s.batch_status,
+            # task-168: carry the nested sub-step fields. ``parent_step_id`` on a
+            # child; the live-breadcrumb trio on the parent (None when idle).
+            parent_step_id=s.parent_step_id,
+            substep_label=s.substep_label,
+            substep_index=s.substep_index,
+            substep_total=s.substep_total,
         )
 
     def _to_summary(self, step_id: str) -> PipelineStepSummary:
@@ -1688,6 +1878,12 @@ class PipelineEmitter:
             role=s.role,  # type: ignore[arg-type]
             batch_job_id=s.batch_job_id,
             batch_status=s.batch_status,
+            # task-168: mirror the nested sub-step fields so a persisted/replayed
+            # snapshot + cold-case rehydration carry the nested timeline.
+            parent_step_id=s.parent_step_id,
+            substep_label=s.substep_label,
+            substep_index=s.substep_index,
+            substep_total=s.substep_total,
         )
 
     async def _emit_pipeline_state(self) -> None:

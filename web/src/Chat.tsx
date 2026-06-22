@@ -4550,6 +4550,13 @@ export type InterleavedEntry =
       // single step's pipeline_id reissues + state transitions (ux-batch-1 J9).
       stepKey: string;
       step: PipelineStepSummary;
+      // task-168 nested sub-step visibility. A composer's internal atomic-tool
+      // calls arrive as ordinary steps in the same snapshot carrying a
+      // ``parent_step_id`` pointing at this top-level step. They are COLLECTED
+      // here (and NEVER rendered as their own top-level cards) so PipelineCard
+      // can render the indented nested timeline on expand. Ordered by their
+      // first-arrival within the snapshot. Empty for a card with no children.
+      children: PipelineStepSummary[];
     }
   | {
       // SRS §F.3 amendment (NATE 2026-06-17): a just-in-time credential prompt
@@ -4678,12 +4685,47 @@ export function buildInterleavedStream(
   // green tint, vanishes on first agent text / first non-thinking tool /
   // terminal success). See `feedback_thinking_state_ephemeral`. We filter
   // it here so the interleaved stream contains only actionable tool cards.
+  //
+  // task-168 nested sub-step visibility: a CHILD step carries a
+  // ``parent_step_id`` pointing at its top-level parent. Children must NOT
+  // render as their own top-level interleaved cards (HARD INVARIANT - chat
+  // stays clean by default); they are COLLECTED under their parent and handed
+  // to PipelineCard for the indented nested timeline. We bucket children by
+  // ``parent_step_id`` in merged (= encounter) order so the nested timeline
+  // reads chronologically, then emit one ``tool`` entry per TOP-LEVEL step
+  // carrying its ordered ``children``. A child whose parent_step_id points at a
+  // step we never saw (defensive - should not happen) degrades to a top-level
+  // card so it is never silently dropped.
   const mergedSteps = mergeStepsByStepId(history, live);
+  const topLevelIds = new Set(
+    mergedSteps
+      .filter((s) => s.parent_step_id == null)
+      .map((s) => s.step_id),
+  );
+  const childrenByParent = new Map<string, PipelineStepSummary[]>();
+  for (const step of mergedSteps) {
+    const parentId = step.parent_step_id;
+    if (parentId != null && topLevelIds.has(parentId)) {
+      const list = childrenByParent.get(parentId);
+      if (list) list.push(step);
+      else childrenByParent.set(parentId, [step]);
+    }
+  }
   for (const step of mergedSteps) {
     if (isThinkingStep(step)) continue;
+    // A child with a known parent is nested, not a top-level card.
+    if (step.parent_step_id != null && topLevelIds.has(step.parent_step_id)) {
+      continue;
+    }
     const key = stepInterleaveKey(step);
     const seq = stepOrder.get(key) ?? Number.MAX_SAFE_INTEGER;
-    out.push({ kind: "tool", seq, stepKey: key, step });
+    out.push({
+      kind: "tool",
+      seq,
+      stepKey: key,
+      step,
+      children: childrenByParent.get(step.step_id) ?? [],
+    });
   }
   // Credential prompts (SRS §F.3) — seq from credentialSeqs (first-arrival),
   // so the card lands at its natural chat slot between the narration that
@@ -4989,6 +5031,12 @@ function InterleavedChatStream({
             // executing tool's drop-down shows its input + "Running…" instead of
             // a blank box; completed/replayed cards show the real response.
             io={resolveCardIo(entry.step, toolIo.get(entry.step.step_id))}
+            // task-168 nested sub-step visibility: the composer's internal
+            // atomic-tool calls collected under this parent. When non-empty the
+            // card grows a sub-steps chevron that expands the indented nested
+            // timeline; each child reuses ToolIoPanel for its own raw IO.
+            children={entry.children}
+            childIo={toolIo}
           />
         );
       })}

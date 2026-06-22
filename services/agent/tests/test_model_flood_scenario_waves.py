@@ -18,6 +18,7 @@ These prove (all mocked — no network, GDAL, solver, S3):
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
@@ -207,6 +208,17 @@ class _FakeEmitter:
 
     async def emit_solve_progress(self, *_a, **_k) -> None:  # noqa: ANN002
         return None
+
+    # task-168: this partial fake stands in for a PipelineEmitter that has no
+    # running top-level parent step, so the nested-sub-step seam is a no-op:
+    # begin_substeps does nothing and substep yields None + mints nothing
+    # (mirrors PipelineEmitter.substep when _current_parent_step_id is None).
+    def begin_substeps(self, *_a, **_k) -> None:  # noqa: ANN002
+        return None
+
+    @asynccontextmanager
+    async def substep(self, *_a, **_k):  # noqa: ANN002
+        yield None
 
 
 def _quadtree_patches(

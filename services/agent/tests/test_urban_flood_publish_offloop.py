@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import math
 import time
+from contextlib import asynccontextmanager
 
 from grace2_contracts.swmm_contracts import SWMMDepthLayerURI, SWMMRunArgs
 from grace2_agent.tools.publish_layer import PublishLayerError
@@ -62,12 +63,26 @@ class _FakeEmitter:
     def __init__(self) -> None:
         self.loaded_layers: list = []
         self.map_commands: list = []
+        self.substep_labels: list = []
 
     async def add_loaded_layer(self, layer) -> None:  # noqa: ANN001
         self.loaded_layers.append(layer)
 
     async def emit_map_command(self, kind, payload) -> None:  # noqa: ANN001
         self.map_commands.append((kind, payload))
+
+    # task-168: nested-substep API surface. This fake binds no real top-level
+    # parent step, so substep yields None (the contract's "emitter bound but no
+    # parent running" no-op case); begin_substeps is a no-op. The composer body
+    # runs byte-identically whether or not a parent is bound. We record the raw
+    # labels so a test could assert which internal operations were wrapped.
+    @asynccontextmanager
+    async def substep(self, raw_name):  # noqa: ANN001
+        self.substep_labels.append(raw_name)
+        yield None
+
+    def begin_substeps(self, total) -> None:  # noqa: ANN001
+        pass
 
 
 # --------------------------------------------------------------------------- #

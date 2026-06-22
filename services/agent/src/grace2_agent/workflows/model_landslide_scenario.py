@@ -44,9 +44,11 @@ from grace2_contracts.landlab_contracts import (
 )
 
 from ..pipeline_emitter import (
+    begin_substeps,
     current_emitter,
     mint_dispatch_and_sim_cards,
     route_sim_terminal,
+    substep,
 )
 from ..tools.publish_layer import PublishLayerError, publish_layer
 from .postprocess_landlab import (
@@ -317,47 +319,62 @@ async def model_landslide_scenario(
         except Exception as exc:  # noqa: BLE001 - non-fatal UX hint
             logger.warning("model_landslide_scenario: zoom-to emit failed: %s", exc)
 
+    # --- Declare the planned child count for the live breadcrumb (task-168) -
+    # The composer's user-meaningful internal operations surfaced as nested
+    # child rows: (fetch_dem if not supplied) -> stage_landlab_manifest ->
+    # run_solver (the Batch solve) -> download_landlab_outputs ->
+    # postprocess_landlab -> publish_layer. The DEM fetch only runs when no
+    # dem_path was supplied, so the planned count adjusts. No-op when no emitter
+    # is bound (verify/CI direct-call path).
+    begin_substeps(current_emitter(), 6 if dem_path is None else 5)
+
     # --- Step 1: DEM (1 m 3DEP primary -> 10 m fallback) --------------------
     # Off the loop (sync blocking I/O) per the no-sync-blocking norm.
     if dem_path is None:
-        local_dem_path, dem_source = await asyncio.to_thread(
-            _fetch_dem_for_landslide, bbox
-        )
+        async with substep(current_emitter(), "fetch_dem"):
+            local_dem_path, dem_source = await asyncio.to_thread(
+                _fetch_dem_for_landslide, bbox
+            )
     else:
         local_dem_path, dem_source = dem_path, "supplied"
     logger.info("model_landslide_scenario: DEM=%s (%s)", local_dem_path, dem_source)
 
     # --- Step 2: stage the DEM + build_spec manifest to S3 ------------------
-    staging: LandlabStaging = await asyncio.to_thread(
-        stage_landlab_manifest, run_args, dem_path=local_dem_path, run_id=rid
-    )
+    async with substep(current_emitter(), "stage_landlab_manifest"):
+        staging: LandlabStaging = await asyncio.to_thread(
+            stage_landlab_manifest, run_args, dem_path=local_dem_path, run_id=rid
+        )
 
     # --- Step 3: dispatch through the generic Batch seam --------------------
-    handle = run_solver(
-        solver=LANDLAB_SOLVER_NAME,
-        model_setup_uri=staging.manifest_uri,
-        compute_class=compute_class,
-    )
-    # --- Two-card sim observability (mirror the SWMM off-box lane) ----------
-    _sim_step_id = await mint_dispatch_and_sim_cards(
-        emitter=emitter,
-        solver=LANDLAB_SOLVER_NAME,
-        handle=handle,
-        compute_class=compute_class,
-    )
-    if emitter is not None and _sim_step_id is not None:
-        set_emitter_binding(EmitterBinding(emitter=emitter, step_id=_sim_step_id))
+    # Surface the dispatch + Batch wait as a single "run_solver" child row; the
+    # live Batch readout stays owned by the two-card Sim observability
+    # (mint_dispatch_and_sim_cards) which is PRESERVED as-is.
+    async with substep(current_emitter(), "run_solver"):
+        handle = run_solver(
+            solver=LANDLAB_SOLVER_NAME,
+            model_setup_uri=staging.manifest_uri,
+            compute_class=compute_class,
+        )
+        # --- Two-card sim observability (mirror the SWMM off-box lane) ------
+        _sim_step_id = await mint_dispatch_and_sim_cards(
+            emitter=emitter,
+            solver=LANDLAB_SOLVER_NAME,
+            handle=handle,
+            compute_class=compute_class,
+        )
+        if emitter is not None and _sim_step_id is not None:
+            set_emitter_binding(EmitterBinding(emitter=emitter, step_id=_sim_step_id))
 
-    try:
-        run_result = await wait_for_completion(handle)
-    except asyncio.CancelledError:
-        logger.info("model_landslide_scenario cancelled while awaiting solver")
-        await route_sim_terminal(emitter, _sim_step_id, run_result=None)
-        raise
-    finally:
-        set_emitter_binding(None)
+        try:
+            run_result = await wait_for_completion(handle)
+        except asyncio.CancelledError:
+            logger.info("model_landslide_scenario cancelled while awaiting solver")
+            await route_sim_terminal(emitter, _sim_step_id, run_result=None)
+            raise
+        finally:
+            set_emitter_binding(None)
 
-    await route_sim_terminal(emitter, _sim_step_id, run_result=run_result)
+        await route_sim_terminal(emitter, _sim_step_id, run_result=run_result)
 
     if run_result.status != "complete":
         raise LandlabWorkflowError(
@@ -376,19 +393,21 @@ async def model_landslide_scenario(
 
     # --- Step 4: download the field COG + read the worker result block ------
     batch_run_id = getattr(run_result, "run_id", None) or rid
-    local_field, result_block, batch_out_dir = await asyncio.to_thread(
-        _download_batch_landlab_outputs, run_result, batch_run_id
-    )
+    async with substep(current_emitter(), "download_landlab_outputs"):
+        local_field, result_block, batch_out_dir = await asyncio.to_thread(
+            _download_batch_landlab_outputs, run_result, batch_run_id
+        )
 
     # --- Step 5: postprocess (field COG -> EPSG:4326 susceptibility COG) ----
     try:
-        layers, metrics = await asyncio.to_thread(
-            postprocess_landlab,
-            local_field,
-            run_id=rid,
-            analysis=run_args.analysis,
-            result=result_block,
-        )
+        async with substep(current_emitter(), "postprocess_landlab"):
+            layers, metrics = await asyncio.to_thread(
+                postprocess_landlab,
+                local_field,
+                run_id=rid,
+                analysis=run_args.analysis,
+                result=result_block,
+            )
     finally:
         _cleanup_dir(batch_out_dir)
 
@@ -401,7 +420,8 @@ async def model_landslide_scenario(
     raw_primary = layers[0]
 
     # --- Step 6: publish the primary COG through publish_layer (render chokepoint)
-    primary = await asyncio.to_thread(_publish_primary_layer, raw_primary, rid)
+    async with substep(current_emitter(), "publish_layer"):
+        primary = await asyncio.to_thread(_publish_primary_layer, raw_primary, rid)
 
     # Stamp the returned layer's bbox to the floored AOI (the authoritative AOI).
     if tuple(primary.bbox or ()) != tuple(bbox):

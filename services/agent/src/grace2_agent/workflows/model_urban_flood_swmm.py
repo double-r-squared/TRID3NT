@@ -46,9 +46,11 @@ from grace2_contracts.swmm_contracts import SWMMRunArgs
 from grace2_contracts.swmm_contracts import SWMMDepthLayerURI
 
 from ..pipeline_emitter import (
+    begin_substeps,
     current_emitter,
     mint_dispatch_and_sim_cards,
     route_sim_terminal,
+    substep,
 )
 from ..tools.publish_layer import PublishLayerError, publish_layer
 from .postprocess_swmm import (
@@ -404,10 +406,31 @@ async def model_urban_flood_swmm(
     # so a plain to_thread wrap is correct (no run_coroutine_threadsafe marshaling
     # is required). The async frame still emits around (before/after) the wrap.
     deck_dir_to_clean: str | None = None
+    # task-168: declare the planned internal-operation count so the parent card's
+    # live breadcrumb can show "k/total". The fetches are conditional (a synthetic
+    # dem_path / pre-supplied footprints skip them), so the plan counts only the
+    # operations that will actually run for THIS invocation. Degrades gracefully:
+    # begin_substeps(None) -> the web shows label + index with no "/N".
+    _fetch_dem = dem_path is None
+    _fetch_buildings = building_footprints is None and dem_path is None
+    _fetch_precip = run_args.total_rain_depth_mm is None
+    # DEM (if fetched) + buildings (if fetched) + precip (if looked up) + build
+    # deck + solve + postprocess + publish-peak. The solve is ONE substep here
+    # (run_solver/wait_for_completion in the Batch lane or run_swmm_local in the
+    # in-process lane); the two-card Dispatch/Sim observability is untouched.
+    _planned_substeps = (
+        int(_fetch_dem)
+        + int(_fetch_buildings)
+        + int(_fetch_precip)
+        + 4  # build deck, solve, postprocess, publish peak
+    )
+    begin_substeps(emitter, _planned_substeps)
+
     if dem_path is None:
-        local_dem_path, dem_source = await asyncio.to_thread(
-            _fetch_dem_for_urban, bbox
-        )
+        async with substep(emitter, "fetch_3dep_extra"):
+            local_dem_path, dem_source = await asyncio.to_thread(
+                _fetch_dem_for_urban, bbox
+            )
     else:
         local_dem_path, dem_source = dem_path, "supplied"
     logger.info("model_urban_flood_swmm: DEM=%s (%s)", local_dem_path, dem_source)
@@ -417,14 +440,18 @@ async def model_urban_flood_swmm(
     # (OSM Overpass). Offload it off the loop too - it is emitter-free (logs +
     # returns a FeatureCollection dict / None), so a plain to_thread wrap is safe.
     if building_footprints is None and dem_path is None:
-        building_footprints = await asyncio.to_thread(_fetch_buildings_for_urban, bbox)
+        async with substep(emitter, "fetch_buildings"):
+            building_footprints = await asyncio.to_thread(
+                _fetch_buildings_for_urban, bbox
+            )
 
     # --- Step 3: Atlas-14 design-storm depth (populate run_args if unset) ----
     effective_args = run_args
     if run_args.total_rain_depth_mm is None:
-        depth_mm = _atlas14_total_depth_mm(
-            bbox, run_args.return_period_yr, run_args.storm_duration_hr
-        )
+        async with substep(emitter, "lookup_precip_return_period"):
+            depth_mm = _atlas14_total_depth_mm(
+                bbox, run_args.return_period_yr, run_args.storm_duration_hr
+            )
         if depth_mm is not None:
             effective_args = run_args.model_copy(
                 update={"total_rain_depth_mm": depth_mm}
@@ -443,14 +470,15 @@ async def model_urban_flood_swmm(
         # loop-bound emitter calls, so offload it off the loop too (mirrors the
         # SFINCS deck-build asyncio.to_thread wrap). A plain to_thread wrap is
         # correct - no run_coroutine_threadsafe marshaling required.
-        staging = await asyncio.to_thread(
-            build_and_stage_swmm_deck,
-            effective_args,
-            dem_path=local_dem_path,
-            building_footprints=building_footprints,
-            run_id=run_id,
-            enable_autoscale=enable_autoscale,
-        )
+        async with substep(emitter, "build_swmm_mesh"):
+            staging = await asyncio.to_thread(
+                build_and_stage_swmm_deck,
+                effective_args,
+                dem_path=local_dem_path,
+                building_footprints=building_footprints,
+                run_id=run_id,
+                enable_autoscale=enable_autoscale,
+            )
         deck_dir_to_clean = str(Path(staging.inp_path).parent)
 
         # --- Computational-mesh layer (NATE task #156) ----------------------
@@ -554,106 +582,126 @@ async def model_urban_flood_swmm(
             )
 
             manifest_uri = await asyncio.to_thread(stage_swmm_manifest, staging)
-            handle = run_solver(
-                solver=SWMM_SOLVER_NAME,
-                model_setup_uri=manifest_uri,
-                compute_class=effective_compute_class,
-            )
-            # --- Two-card sim observability (task-149) ----------------------
-            # Mint the TWO cards the off-box lane shows: a "Dispatch" tool card
-            # (records the submit — solver, queue, Batch jobId) that lands
-            # complete immediately, and a "Sim" compute card bound to the SAME
-            # jobId that tracks the live Batch job. The ephemeral Batch worker has
-            # NO inbound WS; its status flows agent-side via wait_for_completion's
-            # poller over the EXISTING WS, so we point the emitter binding at the
-            # SIM step before the wait and route the terminal there. Best-effort:
-            # emitter None / emit failure never breaks the solve.
-            _sim_step_id = await mint_dispatch_and_sim_cards(
-                emitter=emitter,
-                solver=SWMM_SOLVER_NAME,
-                handle=handle,
-                compute_class=effective_compute_class,
-            )
-            if emitter is not None and _sim_step_id is not None:
-                set_emitter_binding(EmitterBinding(emitter=emitter, step_id=_sim_step_id))
-            _progress_task = asyncio.ensure_future(
-                drive_live_solve_progress(
-                    emitter=current_emitter(),
-                    run_id=staging.run_id,
+            # task-168: surface the off-box solve as ONE nested "run_solver" child
+            # row under the parent workflow card. The substep spans the dispatch ->
+            # wait -> non-complete guard so a cancel/non-complete solve marks the
+            # child red (honesty floor); a complete solve exits the child green.
+            # The two-card Dispatch/Sim observability (mint_dispatch_and_sim_cards +
+            # route_sim_terminal) and the live Batch readout stay owned by the Sim
+            # card EXACTLY as before - this child row is purely additive.
+            async with substep(emitter, "run_solver"):
+                handle = run_solver(
                     solver=SWMM_SOLVER_NAME,
-                    grid_resolution_m=getattr(staging.build, "resolution_m", None),
-                    active_cell_count=getattr(
-                        staging.build, "n_active_cells", None
-                    ),
-                    vcpus=int(_swmm_vcpus) if _swmm_vcpus is not None else None,
-                    eta_seconds=estimate_swmm_solve_seconds(
-                        int(getattr(staging.build, "n_active_cells", 0) or 0)
-                    ),
-                )
-            )
-            try:
-                run_result = await wait_for_completion(handle)
-            except asyncio.CancelledError:
-                # Invariant 8: the cancel chain is owned by wait_for_completion;
-                # propagate immediately so the WS handler emits cancelled. Route
-                # the cancel to the SIM card (best-effort terminal send, J-B-i).
-                logger.info("model_urban_flood_swmm cancelled while awaiting solver")
-                await route_sim_terminal(emitter, _sim_step_id, run_result=None)
-                raise
-            finally:
-                # Tear down the heartbeat (success, failure, OR cancel) + clear
-                # the compute-card emitter binding.
-                _progress_task.cancel()
-                try:
-                    await _progress_task
-                except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                    pass
-                set_emitter_binding(None)
-
-            # task-149: route the SIM compute card to its terminal state from the
-            # RunResult (complete -> green, non-complete -> red) before the
-            # workflow's own non-complete guard re-raises.
-            await route_sim_terminal(emitter, _sim_step_id, run_result=run_result)
-
-            # --- SOLVE telemetry (task-153): Batch instance + size + timing ----
-            # Record ONE solve row merging run_result.batch_compute_meta (the Spot
-            # instance + queue/compute/total timing the wait-loop captured) with
-            # the SWMM mesh size descriptor (n_active_cells + resolution_m) so a
-            # perf model can later infer SWMM completion time. Records for BOTH
-            # success and failure (a censored failure is itself a data point).
-            # Best-effort; a telemetry failure never affects the solve result.
-            try:
-                _record_swmm_batch_solve_telemetry(
-                    run_result=run_result,
-                    handle=handle,
-                    build=staging.build,
-                    run_id=staging.run_id,
+                    model_setup_uri=manifest_uri,
                     compute_class=effective_compute_class,
                 )
-            except Exception as exc:  # noqa: BLE001 — never break the solve
-                logger.warning(
-                    "SWMM solve batch-compute telemetry failed (non-fatal): %s",
-                    exc,
+                # --- Two-card sim observability (task-149) ------------------
+                # Mint the TWO cards the off-box lane shows: a "Dispatch" tool
+                # card (records the submit -- solver, queue, Batch jobId) that
+                # lands complete immediately, and a "Sim" compute card bound to
+                # the SAME jobId that tracks the live Batch job. The ephemeral
+                # Batch worker has NO inbound WS; its status flows agent-side via
+                # wait_for_completion's poller over the EXISTING WS, so we point
+                # the emitter binding at the SIM step before the wait and route
+                # the terminal there. Best-effort: emitter None / emit failure
+                # never breaks the solve.
+                _sim_step_id = await mint_dispatch_and_sim_cards(
+                    emitter=emitter,
+                    solver=SWMM_SOLVER_NAME,
+                    handle=handle,
+                    compute_class=effective_compute_class,
+                )
+                if emitter is not None and _sim_step_id is not None:
+                    set_emitter_binding(
+                        EmitterBinding(emitter=emitter, step_id=_sim_step_id)
+                    )
+                _progress_task = asyncio.ensure_future(
+                    drive_live_solve_progress(
+                        emitter=current_emitter(),
+                        run_id=staging.run_id,
+                        solver=SWMM_SOLVER_NAME,
+                        grid_resolution_m=getattr(
+                            staging.build, "resolution_m", None
+                        ),
+                        active_cell_count=getattr(
+                            staging.build, "n_active_cells", None
+                        ),
+                        vcpus=int(_swmm_vcpus) if _swmm_vcpus is not None else None,
+                        eta_seconds=estimate_swmm_solve_seconds(
+                            int(getattr(staging.build, "n_active_cells", 0) or 0)
+                        ),
+                    )
+                )
+                try:
+                    run_result = await wait_for_completion(handle)
+                except asyncio.CancelledError:
+                    # Invariant 8: the cancel chain is owned by
+                    # wait_for_completion; propagate immediately so the WS handler
+                    # emits cancelled. Route the cancel to the SIM card
+                    # (best-effort terminal send, J-B-i).
+                    logger.info(
+                        "model_urban_flood_swmm cancelled while awaiting solver"
+                    )
+                    await route_sim_terminal(emitter, _sim_step_id, run_result=None)
+                    raise
+                finally:
+                    # Tear down the heartbeat (success, failure, OR cancel) +
+                    # clear the compute-card emitter binding.
+                    _progress_task.cancel()
+                    try:
+                        await _progress_task
+                    except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                        pass
+                    set_emitter_binding(None)
+
+                # task-149: route the SIM compute card to its terminal state from
+                # the RunResult (complete -> green, non-complete -> red) before the
+                # workflow's own non-complete guard re-raises.
+                await route_sim_terminal(
+                    emitter, _sim_step_id, run_result=run_result
                 )
 
-            if run_result.status != "complete":
-                # SOLVER_FAILED / SOLVER_TIMEOUT / cancelled -> typed failure
-                # (mirror model_flood_scenario's non-complete guard). The
-                # SWMMWorkflowError below is caught by the except clause + turned
-                # into a typed error dict by the tool wrapper.
-                raise SWMMWorkflowError(
-                    "SWMM_LOCAL_RUN_FAILED",
-                    message=(
-                        "SWMM Batch solve did not complete "
-                        f"(status={run_result.status}, "
-                        f"error_code={run_result.error_code}): "
-                        f"{run_result.error_message or run_result.cancellation_reason or ''}"
-                    ),
-                    details={
-                        "run_id": staging.run_id,
-                        "output_uri": run_result.output_uri,
-                    },
-                )
+                # --- SOLVE telemetry (task-153): Batch instance + size + timing -
+                # Record ONE solve row merging run_result.batch_compute_meta (the
+                # Spot instance + queue/compute/total timing the wait-loop
+                # captured) with the SWMM mesh size descriptor (n_active_cells +
+                # resolution_m) so a perf model can later infer SWMM completion
+                # time. Records for BOTH success and failure (a censored failure is
+                # itself a data point). Best-effort; a telemetry failure never
+                # affects the solve result.
+                try:
+                    _record_swmm_batch_solve_telemetry(
+                        run_result=run_result,
+                        handle=handle,
+                        build=staging.build,
+                        run_id=staging.run_id,
+                        compute_class=effective_compute_class,
+                    )
+                except Exception as exc:  # noqa: BLE001 -- never break the solve
+                    logger.warning(
+                        "SWMM solve batch-compute telemetry failed (non-fatal): %s",
+                        exc,
+                    )
+
+                if run_result.status != "complete":
+                    # SOLVER_FAILED / SOLVER_TIMEOUT / cancelled -> typed failure
+                    # (mirror model_flood_scenario's non-complete guard). The
+                    # SWMMWorkflowError below is caught by the except clause +
+                    # turned into a typed error dict by the tool wrapper. Raising
+                    # it INSIDE the substep marks the run_solver child red.
+                    raise SWMMWorkflowError(
+                        "SWMM_LOCAL_RUN_FAILED",
+                        message=(
+                            "SWMM Batch solve did not complete "
+                            f"(status={run_result.status}, "
+                            f"error_code={run_result.error_code}): "
+                            f"{run_result.error_message or run_result.cancellation_reason or ''}"
+                        ),
+                        details={
+                            "run_id": staging.run_id,
+                            "output_uri": run_result.output_uri,
+                        },
+                    )
 
             # Download the Batch .out (+ .rpt for continuity provenance) to a
             # local tmp dir, then postprocess from a run-shim carrying the local
@@ -675,19 +723,24 @@ async def model_urban_flood_swmm(
             # worker's run_id), NEVER the staged deck's id. Fall back to
             # staging.run_id only if the RunResult carries no run_id (defensive).
             batch_run_id = getattr(run_result, "run_id", None) or staging.run_id
-            run, batch_out_dir = await asyncio.to_thread(
-                _download_batch_swmm_outputs, run_result, batch_run_id
-            )
-            try:
-                layers, metrics = await asyncio.to_thread(
-                    postprocess_swmm,
-                    run,
-                    staging.build,
-                    run_id=staging.run_id,
-                    building_footprints=building_footprints,
+            # task-168: the Batch-output download + rasterize-to-COG postprocess is
+            # ONE user-meaningful "postprocess_swmm" child row. A download miss
+            # (SWMM_BATCH_OUTPUT_MISSING) or a postprocess failure raises inside the
+            # substep and marks the child red; a clean run exits it green.
+            async with substep(emitter, "postprocess_swmm"):
+                run, batch_out_dir = await asyncio.to_thread(
+                    _download_batch_swmm_outputs, run_result, batch_run_id
                 )
-            finally:
-                _cleanup_deck_dir(batch_out_dir)
+                try:
+                    layers, metrics = await asyncio.to_thread(
+                        postprocess_swmm,
+                        run,
+                        staging.build,
+                        run_id=staging.run_id,
+                        building_footprints=building_footprints,
+                    )
+                finally:
+                    _cleanup_deck_dir(batch_out_dir)
         else:
             # --- In-process lane (DEFAULT): pyswmm in this venv ---------------
             # BREAK B (event-loop starvation): run_swmm_local is a SYNCHRONOUS
@@ -707,30 +760,38 @@ async def model_urban_flood_swmm(
             # added later, switch to run_coroutine_threadsafe(loop) inside the
             # worker. (Mirrors model_flood_scenario's asyncio.to_thread
             # off-loading of its blocking fetcher/solve stages.)
-            _progress_task = asyncio.ensure_future(
-                drive_live_solve_progress(
-                    emitter=current_emitter(),
-                    run_id=staging.run_id,
-                    solver=SWMM_SOLVER_NAME,
-                    grid_resolution_m=getattr(staging.build, "resolution_m", None),
-                    active_cell_count=getattr(
-                        staging.build, "n_active_cells", None
-                    ),
-                    vcpus=int(_swmm_vcpus) if _swmm_vcpus is not None else None,
-                    eta_seconds=estimate_swmm_solve_seconds(
-                        int(getattr(staging.build, "n_active_cells", 0) or 0)
-                    ),
+            # task-168: surface the in-process pyswmm solve as a "run_solver" child
+            # row (engine-agnostic raw label the web humanizes to "Running the
+            # solver"). The substep spans the heartbeat-wrapped solve so a cancel /
+            # solve failure marks the child red; the live solve heartbeat is
+            # unchanged inside.
+            async with substep(emitter, "run_solver"):
+                _progress_task = asyncio.ensure_future(
+                    drive_live_solve_progress(
+                        emitter=current_emitter(),
+                        run_id=staging.run_id,
+                        solver=SWMM_SOLVER_NAME,
+                        grid_resolution_m=getattr(
+                            staging.build, "resolution_m", None
+                        ),
+                        active_cell_count=getattr(
+                            staging.build, "n_active_cells", None
+                        ),
+                        vcpus=int(_swmm_vcpus) if _swmm_vcpus is not None else None,
+                        eta_seconds=estimate_swmm_solve_seconds(
+                            int(getattr(staging.build, "n_active_cells", 0) or 0)
+                        ),
+                    )
                 )
-            )
-            try:
-                run = await asyncio.to_thread(run_swmm_local, staging)
-            finally:
-                # Tear down the heartbeat (success, failure, OR cancel).
-                _progress_task.cancel()
                 try:
-                    await _progress_task
-                except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                    pass
+                    run = await asyncio.to_thread(run_swmm_local, staging)
+                finally:
+                    # Tear down the heartbeat (success, failure, OR cancel).
+                    _progress_task.cancel()
+                    try:
+                        await _progress_task
+                    except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                        pass
 
             # --- Step 6: postprocess (rasterize node depths -> peak + frames) -
             # BREAK B, post-solve: postprocess_swmm is a SYNCHRONOUS compute
@@ -742,13 +803,14 @@ async def model_urban_flood_swmm(
             # add_loaded_layer happens back on the loop in _emit_frame_layers
             # below) so a plain to_thread wrap is correct - no
             # run_coroutine_threadsafe marshaling required.
-            layers, metrics = await asyncio.to_thread(
-                postprocess_swmm,
-                run,
-                staging.build,
-                run_id=staging.run_id,
-                building_footprints=building_footprints,
-            )
+            async with substep(emitter, "postprocess_swmm"):
+                layers, metrics = await asyncio.to_thread(
+                    postprocess_swmm,
+                    run,
+                    staging.build,
+                    run_id=staging.run_id,
+                    building_footprints=building_footprints,
+                )
     except (SWMMWorkflowError, PostprocessSWMMError):
         # Cleanup before re-raising - the tool wrapper turns these into a typed
         # error dict.
@@ -792,7 +854,8 @@ async def model_urban_flood_swmm(
     # returned LayerURI - NOT inside this function), so offload the whole call off
     # the loop. A plain to_thread wrap is correct - no run_coroutine_threadsafe
     # marshaling required.
-    peak = await asyncio.to_thread(_publish_peak_layer, raw_peak, staging.run_id)
+    async with substep(emitter, "publish_layer"):
+        peak = await asyncio.to_thread(_publish_peak_layer, raw_peak, staging.run_id)
 
     # --- AUTHORITATIVE AOI stamp (job AGENT-AOI / #159) ----------------------
     # Stamp the returned peak's ``bbox`` to the SAME floored AOI the sim/DEM/

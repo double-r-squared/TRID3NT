@@ -151,6 +151,30 @@ export interface PipelineStepSummary {
   role?: "tool" | "compute";
   batch_job_id?: string | null;
   batch_status?: string | null;
+  // Nested sub-step visibility (task-168). A composer's INTERNAL atomic-tool
+  // calls (fetch_*, run_solver, publish_layer, compute_*, ...) surface as
+  // nested CHILD steps under the parent workflow card. All four fields are
+  // OPTIONAL + default null on the wire so every pre-task-168 serialization
+  // stays byte-compatible. Mirrors PipelineStep (ws.py) /
+  // PipelineStepSummary (collections.py) + the persisted twins
+  // (pipeline_step_summary.json + session_document.json) so reconnect /
+  // cold-case replay nests too.
+  //
+  //   - parent_step_id: set on a CHILD step. When non-null this step is a
+  //     CHILD of that parent step_id; the client NESTS it under the parent
+  //     and does NOT render it as a top-level interleaved card.
+  //   - substep_label: set on the PARENT - the RAW tool name of the currently
+  //     -running child (the web humanizes it). The server CLEARS it (back to
+  //     null) on the parent's own terminal transition, so the live breadcrumb
+  //     disappears and the card collapses to the chevron + nested timeline.
+  //   - substep_index: set on the PARENT - 1-based index of the currently
+  //     -running child (>= 1).
+  //   - substep_total: set on the PARENT - planned child count (>= 1), or null
+  //     when the plan size is unknown (web shows just the label + index then).
+  parent_step_id?: string | null;
+  substep_label?: string | null;
+  substep_index?: number | null;
+  substep_total?: number | null;
 }
 
 // PipelineSnapshot — Appendix D.6 (`collections.py` PipelineSnapshot). Carried

@@ -482,6 +482,31 @@ class PipelineStep(GraceModel):
     are optional with defaults that keep every existing tool card byte-identical
     on the wire (``role="tool"``, both ids ``None``). Never an LLM estimate
     (Invariant 1): ``batch_status`` mirrors the Batch control-plane verbatim.
+
+    Nested sub-step timeline (task-168): a composer's INTERNAL atomic-tool calls
+    (``fetch_*`` / deck build / ``run_solver`` / ``postprocess_*`` /
+    ``publish_layer`` / ``compute_*``) are surfaced as CHILD steps nested under
+    the parent workflow card instead of separate top-level interleaved cards.
+    Four additive fields drive the "live breadcrumb + expand" UX:
+
+    - ``parent_step_id`` -- set on a CHILD step; the ``step_id`` of the parent
+      workflow step this child belongs to. When set, the client NESTS this step
+      under the parent and does NOT render it as a top-level card. ``None`` (the
+      default) means a normal top-level step -- every existing payload.
+    - ``substep_label`` -- set on the PARENT; the raw tool name of the
+      currently-running child (the web humanizes it into a breadcrumb label).
+      Cleared (``None``) when the parent reaches a terminal state.
+    - ``substep_index`` -- set on the PARENT; the 1-based index of the
+      currently-running child (the breadcrumb "k" in "fetching topobathy k/N").
+      Cleared when the parent completes.
+    - ``substep_total`` -- set on the PARENT; the planned child count (the
+      breadcrumb "N"). ``None`` when unknown -- the web then shows just the
+      humanized label + index with no "/N".
+
+    All four default ``None`` so every existing serialization stays
+    byte-compatible (a step with no children + no parent dumps identically to
+    the pre-task-168 wire shape). Deterministic / workflow-attributed, never an
+    LLM estimate (Invariant 1).
     """
 
     step_id: ULIDStr
@@ -495,6 +520,14 @@ class PipelineStep(GraceModel):
     role: Literal["tool", "compute"] = "tool"
     batch_job_id: str | None = None
     batch_status: str | None = None
+    # Nested sub-step timeline (task-168). ``parent_step_id`` is set on a CHILD;
+    # ``substep_label`` / ``substep_index`` / ``substep_total`` are set on the
+    # PARENT and describe the currently-running child for the live breadcrumb.
+    # All default None => byte-compatible with every existing payload.
+    parent_step_id: ULIDStr | None = None
+    substep_label: str | None = None
+    substep_index: int | None = Field(default=None, ge=1)
+    substep_total: int | None = Field(default=None, ge=1)
 
 
 class PipelineStatePayload(GraceModel):

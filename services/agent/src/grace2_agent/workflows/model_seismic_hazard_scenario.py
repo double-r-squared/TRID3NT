@@ -44,6 +44,7 @@ from grace2_contracts.openquake_contracts import (
     SeismicHazardLayerURI,
 )
 
+from ..pipeline_emitter import begin_substeps, current_emitter, substep
 from .postprocess_openquake import (
     PostprocessOpenQuakeError,
     postprocess_openquake,
@@ -287,51 +288,66 @@ async def model_seismic_hazard_scenario(
         compute_class,
     )
 
+    # Declare the planned child count up front so the parent card's live
+    # breadcrumb can render "k/4" (build_spec -> solve -> download -> publish).
+    # No-op when no emitter is bound (verify/CI direct-call path).
+    begin_substeps(current_emitter(), 4)
+
     # 1) Stage the build_spec (sync boto3 off the loop).
-    build_spec_uri = await asyncio.to_thread(
-        stage_openquake_build_spec, run_args, run_id
-    )
+    async with substep(current_emitter(), "stage_openquake_build_spec"):
+        build_spec_uri = await asyncio.to_thread(
+            stage_openquake_build_spec, run_args, run_id
+        )
 
     # 2) Dispatch through the generic run_solver / wait_for_completion seam.
-    handle = run_solver(
-        solver=OPENQUAKE_SOLVER_NAME,
-        model_setup_uri=build_spec_uri,
-        compute_class=compute_class,
-    )
-    run_result = await wait_for_completion(handle)
-
-    if run_result.status != "complete":
-        raise OpenQuakeWorkflowError(
-            "OQ_SOLVE_FAILED",
-            message=(
-                "OpenQuake Batch solve did not complete "
-                f"(status={run_result.status}, error_code={run_result.error_code}): "
-                f"{run_result.error_message or run_result.cancellation_reason or ''}"
-            ),
-            details={
-                "run_id": run_id,
-                "output_uri": run_result.output_uri,
-            },
+    #    Surface the dispatch + Batch wait as a single "Solved (Batch ...)" child
+    #    row; the live Batch readout stays owned by the two-card Sim observability
+    #    inside run_solver / wait_for_completion (mint_dispatch_and_sim_cards).
+    async with substep(current_emitter(), "run_solver"):
+        handle = run_solver(
+            solver=OPENQUAKE_SOLVER_NAME,
+            model_setup_uri=build_spec_uri,
+            compute_class=compute_class,
         )
+        run_result = await wait_for_completion(handle)
+
+        # Honesty floor: a non-complete Batch result raises INSIDE the substep so
+        # the solve child reads red (failed), not a silent green. The raise re-
+        # raises through the substep wrapper unchanged (caller control flow).
+        if run_result.status != "complete":
+            raise OpenQuakeWorkflowError(
+                "OQ_SOLVE_FAILED",
+                message=(
+                    "OpenQuake Batch solve did not complete "
+                    f"(status={run_result.status}, error_code={run_result.error_code}): "
+                    f"{run_result.error_message or run_result.cancellation_reason or ''}"
+                ),
+                details={
+                    "run_id": run_id,
+                    "output_uri": run_result.output_uri,
+                },
+            )
 
     # 3) Download the hazard-map CSV from the worker's run_id prefix (the Batch
     #    dispatch mints a fresh run_id; the worker writes under run_result.run_id,
     #    NOT the composer's run_id — mirror the SWMM/SFINCS Batch lesson).
     batch_run_id = getattr(run_result, "run_id", None) or run_id
-    hazard_csv_text = await asyncio.to_thread(
-        _download_batch_hazard_csv, run_result, batch_run_id
-    )
+    async with substep(current_emitter(), "_download_batch_hazard_csv"):
+        hazard_csv_text = await asyncio.to_thread(
+            _download_batch_hazard_csv, run_result, batch_run_id
+        )
 
     # 4) Postprocess: rasterize site values -> hazard COG + publish.
     try:
-        layer = await asyncio.to_thread(
-            postprocess_openquake,
-            hazard_csv_text,
-            run_id=batch_run_id,
-            imt=run_args.imt,
-            poe=float(run_args.poe),
-            investigation_time_years=float(run_args.investigation_time_years),
-        )
+        async with substep(current_emitter(), "postprocess_openquake"):
+            layer = await asyncio.to_thread(
+                postprocess_openquake,
+                hazard_csv_text,
+                run_id=batch_run_id,
+                imt=run_args.imt,
+                poe=float(run_args.poe),
+                investigation_time_years=float(run_args.investigation_time_years),
+            )
     except PostprocessOpenQuakeError as exc:
         raise OpenQuakeWorkflowError(
             exc.error_code,

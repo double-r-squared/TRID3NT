@@ -538,6 +538,10 @@ const HUMANIZED_STEP_NAMES: Record<string, HumanizedLabel> = {
 
   // --- Terrain / elevation ---------------------------------------------- //
   fetch_dem: { running: "Fetching DEM…", complete: "Loaded DEM" },
+  fetch_topobathy: {
+    running: "Fetching topobathy…",
+    complete: "Loaded topobathy",
+  },
   fetch_3dep_extra: {
     running: "Fetching 3DEP elevation…",
     complete: "Loaded 3DEP elevation",
@@ -783,6 +787,87 @@ const HUMANIZED_STEP_NAMES: Record<string, HumanizedLabel> = {
   },
   run_solver: { running: "Running the solver…", complete: "Solver finished" },
   wait_for_completion: { running: "Waiting for the job…", complete: "Job finished" },
+
+  // --- New engine top-level workflows (sprint-17) ----------------------- //
+  run_model_river_seepage_scenario: {
+    running: "Modeling river seepage…",
+    complete: "River seepage modeled",
+  },
+  run_geoclaw_inundation: {
+    running: "Modeling inundation [GeoClaw]…",
+    complete: "Inundation modeled",
+  },
+  run_landlab_susceptibility: {
+    running: "Modeling susceptibility [Landlab]…",
+    complete: "Susceptibility modeled",
+  },
+  run_seismic_hazard_psha: {
+    running: "Modeling seismic hazard [OpenQuake]…",
+    complete: "Seismic hazard modeled",
+  },
+  run_openquake_tool: {
+    running: "Running OpenQuake…",
+    complete: "OpenQuake finished",
+  },
+  run_storm_surge_flood: {
+    running: "Modeling storm surge…",
+    complete: "Storm surge modeled",
+  },
+  run_pluvial_flood: {
+    running: "Modeling pluvial flood…",
+    complete: "Pluvial flood modeled",
+  },
+
+  // --- Sub-step atomic tools (task-168 nested timeline) ----------------- //
+  // Composer-internal atomic-tool calls surfaced as nested CHILD rows. Keyed
+  // on the raw tool name the emitter stamps so a child never shows raw
+  // snake_case. Several common ones (fetch_dem, fetch_landcover,
+  // fetch_buildings, fetch_river_geometry, publish_layer, run_solver, …) are
+  // already mapped above and are reused verbatim for child rows.
+  run_sfincs_quadtree: {
+    running: "Building SFINCS mesh…",
+    complete: "SFINCS mesh built",
+  },
+  run_swmm_urban_flood: {
+    running: "Running SWMM…",
+    complete: "SWMM finished",
+  },
+  run_swmm_deck: {
+    running: "Building SWMM deck…",
+    complete: "SWMM deck built",
+  },
+  postprocess_flood: {
+    running: "Post-processing flood…",
+    complete: "Flood post-processed",
+  },
+  postprocess_waves: {
+    running: "Post-processing waves…",
+    complete: "Waves post-processed",
+  },
+  postprocess_swmm: {
+    running: "Post-processing urban flood…",
+    complete: "Urban flood post-processed",
+  },
+  postprocess_modflow: {
+    running: "Post-processing groundwater…",
+    complete: "Groundwater post-processed",
+  },
+  postprocess_geoclaw: {
+    running: "Post-processing inundation…",
+    complete: "Inundation post-processed",
+  },
+  postprocess_landlab: {
+    running: "Post-processing susceptibility…",
+    complete: "Susceptibility post-processed",
+  },
+  postprocess_openquake: {
+    running: "Post-processing seismic hazard…",
+    complete: "Seismic hazard post-processed",
+  },
+  postprocess_river_seepage: {
+    running: "Post-processing seepage…",
+    complete: "Seepage post-processed",
+  },
 };
 
 /**
@@ -845,9 +930,31 @@ export interface PipelineCardProps {
    * affordance is purely additive; it does not alter the existing card chrome.
    */
   io?: ToolIoPayload | null;
+  /**
+   * task-168 nested sub-step visibility. A composer's INTERNAL atomic-tool
+   * calls (fetch_*, run_solver, publish_layer, compute_*, …) arrive as ordinary
+   * CHILD steps carrying ``parent_step_id`` pointing at this step. Chat.tsx
+   * collects them and threads the ordered list here; the card renders an
+   * indented nested timeline (state dot + humanized label + duration per row)
+   * behind a dedicated sub-steps chevron, collapsed by default. Empty / absent
+   * for a card with no children - the chevron simply doesn't render.
+   */
+  children?: PipelineStepSummary[];
+  /**
+   * task-168 - the per-step_id tool-IO map (same source as ``io``) so an
+   * expanded child row can reuse ToolIoPanel for its OWN raw args / response,
+   * keyed by the child's step_id. Absent / empty when no child IO is available.
+   */
+  childIo?: Map<string, ToolIoPayload> | null;
 }
 
-export function PipelineCard({ step, solve = null, io = null }: PipelineCardProps): JSX.Element {
+export function PipelineCard({
+  step,
+  solve = null,
+  io = null,
+  children = [],
+  childIo = null,
+}: PipelineCardProps): JSX.Element {
   const reduced = prefersReducedMotion();
   // tool-card-expand-output: the IO expander is collapsed by default. Local
   // per-card state; keyed by step_id in Chat.tsx so toggling one card never
@@ -921,6 +1028,33 @@ export function PipelineCard({ step, solve = null, io = null }: PipelineCardProp
   // terminal card never carries a stale readout — clears on completion) and a
   // solve-progress payload has actually arrived for this step.
   const solveReadout = displayIsRunning && solve ? formatSolveReadout(solve) : null;
+
+  // task-168 nested sub-step visibility - the indented nested timeline expander.
+  // Collapsed by default; keyed per-card (Chat.tsx keys cards by step_id so
+  // toggling one card never affects another). Composes WITH the raw-IO chevron.
+  const [childrenExpanded, setChildrenExpanded] = useState<boolean>(false);
+  const childSteps = children ?? [];
+  const hasChildren = childSteps.length > 0;
+
+  // LIVE breadcrumb sub-line. While the card is PAINTED running AND the server
+  // stamped the parent's ``substep_label`` (raw tool name of the currently
+  // -running child), show "humanize(label) · k/total" (or "· step k" when the
+  // plan total is unknown). The server CLEARS substep_label/index/total on the
+  // parent's terminal transition, so the breadcrumb disappears the moment the
+  // card settles - replaced by the collapsed card + the nested-timeline chevron.
+  const substepLabel = step.substep_label;
+  const breadcrumb: string | null =
+    displayIsRunning && substepLabel
+      ? (() => {
+          const labeled = humanizeStepName(substepLabel, "running");
+          const idx = step.substep_index;
+          if (idx === null || idx === undefined) return labeled;
+          const total = step.substep_total;
+          return total !== null && total !== undefined
+            ? `${labeled} · ${idx}/${total}`
+            : `${labeled} · step ${idx}`;
+        })()
+      : null;
 
   return (
     <div
@@ -1083,7 +1217,77 @@ export function PipelineCard({ step, solve = null, io = null }: PipelineCardProp
             <IconChevronRight size={13} />
           </button>
         )}
+        {/* task-168: sub-steps chevron. Distinct from the raw-IO chevron above
+            (and composable with it - both can be present). Renders only when the
+            card has nested children. A small count badge tells the user how many
+            internal steps are inside before they expand. */}
+        {hasChildren && (
+          <button
+            type="button"
+            data-testid="pipeline-card-substeps-toggle"
+            aria-expanded={childrenExpanded}
+            aria-label={
+              childrenExpanded
+                ? "Hide internal sub-steps"
+                : "Show internal sub-steps"
+            }
+            onClick={() => setChildrenExpanded((v) => !v)}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 3,
+              justifyContent: "center",
+              flexShrink: 0,
+              height: 18,
+              padding: "0 4px",
+              marginLeft: 2,
+              border: "none",
+              borderRadius: 4,
+              background: "rgba(255,255,255,0.06)",
+              color: "rgba(255,255,255,0.6)",
+              cursor: "pointer",
+              fontSize: 10,
+              fontVariantNumeric: "tabular-nums",
+            }}
+          >
+            <span
+              data-testid="pipeline-card-substeps-count"
+              aria-hidden="true"
+            >
+              {childSteps.length}
+            </span>
+            <span
+              style={{
+                display: "inline-flex",
+                transform: childrenExpanded ? "rotate(90deg)" : "rotate(0deg)",
+                transition: reduced ? undefined : "transform 120ms ease",
+              }}
+            >
+              <IconChevronRight size={12} />
+            </span>
+          </button>
+        )}
       </div>
+      {/* task-168 LIVE breadcrumb sub-line - under the title while running and
+          the parent carries a substep_label. Humanized child label + index
+          (+ total when known). Disappears the instant the parent settles (the
+          server clears substep_label), replaced by the nested-timeline chevron. */}
+      {breadcrumb !== null && (
+        <div
+          data-testid="pipeline-card-breadcrumb"
+          aria-live="polite"
+          style={{
+            fontSize: 11,
+            color: "rgba(255,255,255,0.6)",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+          title={breadcrumb}
+        >
+          {breadcrumb}
+        </div>
+      )}
       {/* Live big-sim solve readout (NATE 2026-06-17) — second line, only while
           running + a solve-progress payload has arrived for this step. */}
       {solveReadout !== null && (
@@ -1109,6 +1313,182 @@ export function PipelineCard({ step, solve = null, io = null }: PipelineCardProp
           function_response as monospace, scrollable JSON so server-side /
           upstream-API failures the narration hides become visible. */}
       {io && ioExpanded && <ToolIoPanel io={io} />}
+      {/* task-168: the indented nested sub-step timeline. Collapsed by default;
+          revealed by the sub-steps chevron. Each child row = state dot + the
+          humanized child label + its authoritative duration. A failed child
+          tints red inline while siblings stay green. */}
+      {hasChildren && childrenExpanded && (
+        <SubstepTimeline steps={childSteps} childIo={childIo} reduced={reduced} />
+      )}
+    </div>
+  );
+}
+
+// --- Nested sub-step timeline (task-168) --------------------------------- //
+//
+// Renders a composer's INTERNAL atomic-tool calls as an indented vertical
+// timeline under the collapsed parent card. Each row is a state dot (or a
+// spinner while a child is still running), the humanized child label
+// (state-aware), and the child's authoritative duration via formatDuration.
+// A failed / cancelled child row tints red inline while sibling complete rows
+// stay green (honesty floor - a failed/cancelled child never reads green). A
+// child keeps its OWN raw-IO expander, reusing ToolIoPanel keyed by step_id.
+
+/** Per-state dot color for a child timeline row. Mirrors the card's state
+ * palette (green complete / red failed / yellow cancelled / neutral else). */
+function substepDotColor(state: PipelineStepState): string {
+  switch (state) {
+    case "complete":
+      return "rgba(40, 200, 100, 0.9)";
+    case "failed":
+      return "rgba(220, 60, 60, 0.95)";
+    case "cancelled":
+      return "rgba(220, 180, 40, 0.95)";
+    default:
+      return "rgba(255,255,255,0.4)";
+  }
+}
+
+function SubstepRow({
+  step,
+  io,
+  reduced,
+}: {
+  step: PipelineStepSummary;
+  io: ToolIoPayload | null;
+  reduced: boolean;
+}): JSX.Element {
+  const [ioExpanded, setIoExpanded] = useState<boolean>(false);
+  const isRunning = step.state === "running";
+  const isFailedOrCancelled =
+    step.state === "failed" || step.state === "cancelled";
+  const label = humanizeStepName(step.name, step.state);
+  const durationText =
+    step.duration_ms !== null && step.duration_ms !== undefined
+      ? formatDuration(step.duration_ms)
+      : null;
+  return (
+    <div
+      data-testid="pipeline-card-substep"
+      data-step-id={step.step_id}
+      data-state={step.state}
+      style={{ display: "flex", flexDirection: "column", gap: 3 }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        {isRunning ? (
+          <Spinner reduced={reduced} />
+        ) : (
+          <span
+            data-testid="pipeline-card-substep-dot"
+            aria-hidden="true"
+            style={{
+              width: 7,
+              height: 7,
+              borderRadius: 4,
+              flexShrink: 0,
+              background: substepDotColor(step.state),
+            }}
+          />
+        )}
+        <span
+          data-testid="pipeline-card-substep-name"
+          style={{
+            flex: 1,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+            // Failed / cancelled child reads red inline; siblings stay neutral.
+            color: isFailedOrCancelled ? "#fca5a5" : "rgba(255,255,255,0.82)",
+          }}
+          title={label}
+        >
+          {label}
+        </span>
+        {durationText !== null && (
+          <span
+            data-testid="pipeline-card-substep-timer"
+            aria-hidden="true"
+            style={{
+              fontVariantNumeric: "tabular-nums",
+              fontSize: 10,
+              color: "rgba(255,255,255,0.55)",
+              flexShrink: 0,
+              minWidth: 28,
+              textAlign: "right",
+            }}
+          >
+            {durationText}
+          </span>
+        )}
+        {io && (
+          <button
+            type="button"
+            data-testid="pipeline-card-substep-io-toggle"
+            aria-expanded={ioExpanded}
+            aria-label={
+              ioExpanded
+                ? "Hide sub-step input/output"
+                : "Show sub-step input/output"
+            }
+            onClick={() => setIoExpanded((v) => !v)}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              flexShrink: 0,
+              width: 16,
+              height: 16,
+              padding: 0,
+              marginLeft: 2,
+              border: "none",
+              background: "transparent",
+              color: io.is_error ? "#fca5a5" : "rgba(255,255,255,0.5)",
+              cursor: "pointer",
+              transform: ioExpanded ? "rotate(90deg)" : "rotate(0deg)",
+              transition: reduced ? undefined : "transform 120ms ease",
+            }}
+          >
+            <IconChevronRight size={12} />
+          </button>
+        )}
+      </div>
+      {io && ioExpanded && <ToolIoPanel io={io} />}
+    </div>
+  );
+}
+
+function SubstepTimeline({
+  steps,
+  childIo,
+  reduced,
+}: {
+  steps: PipelineStepSummary[];
+  childIo: Map<string, ToolIoPayload> | null | undefined;
+  reduced: boolean;
+}): JSX.Element {
+  return (
+    <div
+      data-testid="pipeline-card-substep-timeline"
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 6,
+        marginTop: 4,
+        paddingTop: 6,
+        paddingLeft: 10,
+        borderTop: "1px solid rgba(255,255,255,0.08)",
+        borderLeft: "1px solid rgba(255,255,255,0.1)",
+        marginLeft: 2,
+      }}
+    >
+      {steps.map((child) => (
+        <SubstepRow
+          key={child.step_id}
+          step={child}
+          io={childIo?.get(child.step_id) ?? null}
+          reduced={reduced}
+        />
+      ))}
     </div>
   );
 }

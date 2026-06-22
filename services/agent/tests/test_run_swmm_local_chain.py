@@ -24,6 +24,7 @@ The lightweight registration tests need none of them.
 from __future__ import annotations
 
 import re
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import numpy as np
@@ -404,12 +405,26 @@ class _FakeEmitter:
     def __init__(self) -> None:
         self.loaded_layers: list = []
         self.map_commands: list = []
+        self.substep_labels: list = []
 
     async def add_loaded_layer(self, layer) -> None:  # noqa: ANN001
         self.loaded_layers.append(layer)
 
     async def emit_map_command(self, kind, payload) -> None:  # noqa: ANN001
         self.map_commands.append((kind, payload))
+
+    # task-168: nested-substep API surface. This fake binds no real top-level
+    # parent step, so substep yields None (the contract's "emitter bound but no
+    # parent running" no-op case); begin_substeps is a no-op. The composer body
+    # runs byte-identically whether or not a parent is bound. The raw labels are
+    # recorded so a test can assert which internal operations were wrapped.
+    @asynccontextmanager
+    async def substep(self, raw_name):  # noqa: ANN001
+        self.substep_labels.append(raw_name)
+        yield None
+
+    def begin_substeps(self, total) -> None:  # noqa: ANN001
+        pass
 
 
 def test_build_and_run_local_lane_produces_solved_out(synthetic_inputs):

@@ -51,6 +51,7 @@ from grace2_contracts.modflow_contracts import (
 )
 from grace2_contracts.tool_registry import AtomicToolMetadata
 
+from ..pipeline_emitter import begin_substeps, current_emitter, substep
 from ..tools import TOOL_REGISTRY, register_tool
 
 logger = logging.getLogger("grace2_agent.workflows.model_river_seepage_scenario")
@@ -205,18 +206,33 @@ async def model_river_seepage_scenario(
             f"(got location={has_loc}, spill_location_latlon={has_point})."
         )
 
+    # task-168: declare the planned internal-tool count up front so the parent
+    # workflow card's live breadcrumb can render "k/total". The plan is the
+    # user-meaningful atomic-tool calls only: geocode (only when a place string
+    # was supplied) + fetch_river_geometry (always) + fetch_dem (only when
+    # streambed sampling is requested) + run_river_seepage_job (always). Each
+    # ``substep(...)`` below is a NO-OP when no emitter is bound (the verify/CI
+    # direct-call path), so the count is harmless there.
+    _planned_substeps = 2  # fetch_river_geometry + run_river_seepage_job
+    if has_loc:
+        _planned_substeps += 1  # geocode_location
+    if fetch_dem_for_streambed:
+        _planned_substeps += 1  # fetch_dem
+    begin_substeps(current_emitter(), _planned_substeps)
+
     # --- Stage 1: resolve the spill point ---
     if has_point:
         lat, lon = float(spill_location_latlon[0]), float(spill_location_latlon[1])  # type: ignore[index]
         location_name = location or f"({lat:.4f}, {lon:.4f})"
     else:
         geocode_fn = _registry_fn("geocode_location")
-        geo = await _maybe_emit(
-            pipeline_emitter,
-            name=f"Geocode: {location}",
-            tool_name="geocode_location",
-            invoke=lambda: geocode_fn(location),
-        )
+        async with substep(current_emitter(), "geocode_location"):
+            geo = await _maybe_emit(
+                pipeline_emitter,
+                name=f"Geocode: {location}",
+                tool_name="geocode_location",
+                invoke=lambda: geocode_fn(location),
+            )
         glat = geo.get("latitude") if isinstance(geo, dict) else None
         glon = geo.get("longitude") if isinstance(geo, dict) else None
         if glat is None or glon is None:
@@ -230,12 +246,13 @@ async def model_river_seepage_scenario(
 
     # --- Stage 2: fetch the river flowline ---
     fetch_river_fn = _registry_fn("fetch_river_geometry")
-    river_layer = await _maybe_emit(
-        pipeline_emitter,
-        name="Fetch river geometry",
-        tool_name="fetch_river_geometry",
-        invoke=lambda: fetch_river_fn(bbox=bbox),
-    )
+    async with substep(current_emitter(), "fetch_river_geometry"):
+        river_layer = await _maybe_emit(
+            pipeline_emitter,
+            name="Fetch river geometry",
+            tool_name="fetch_river_geometry",
+            invoke=lambda: fetch_river_fn(bbox=bbox),
+        )
     river_uri = _layer_uri_field(river_layer, "uri")
     if not river_uri:
         raise RiverSeepageScenarioError(
@@ -248,41 +265,50 @@ async def model_river_seepage_scenario(
     if fetch_dem_for_streambed:
         try:
             fetch_dem_fn = _registry_fn("fetch_dem")
-            dem_layer = await _maybe_emit(
-                pipeline_emitter,
-                name="Fetch DEM (streambed)",
-                tool_name="fetch_dem",
-                invoke=lambda: fetch_dem_fn(bbox=bbox),
-            )
+            async with substep(current_emitter(), "fetch_dem"):
+                dem_layer = await _maybe_emit(
+                    pipeline_emitter,
+                    name="Fetch DEM (streambed)",
+                    tool_name="fetch_dem",
+                    invoke=lambda: fetch_dem_fn(bbox=bbox),
+                )
             dem_uri = _layer_uri_field(dem_layer, "uri")
         except Exception as exc:  # noqa: BLE001 — DEM is optional, demo streambed otherwise
             logger.warning("river-seepage DEM fetch skipped (non-fatal): %s", exc)
 
     # --- Stage 4: run the river-seepage solver -> seepage + plume ---
     run_fn = _registry_fn("run_river_seepage_job")
-    result = await _maybe_emit(
-        pipeline_emitter,
-        name=f"Model river seepage [{contaminant}]",
-        tool_name="run_river_seepage_job",
-        invoke=lambda: run_fn(
-            spill_location_latlon=(lat, lon),
-            contaminant=contaminant,
-            release_rate_kg_s=release_rate_kg_s,
-            duration_days=duration_days,
-            river_geometry_uri=river_uri,
-            along_river_source=along_river_source,
-            aquifer_k_ms=aquifer_k_ms,
-            porosity=porosity,
-            compute_class=compute_class,
-        ),
-    )
-    if not isinstance(result, SeepageLayerURI):
-        error_code = "RIVER_SEEPAGE_RUN_FAILED"
-        error_message = "river-seepage run did not produce a seepage layer"
-        if isinstance(result, dict):
-            error_code = result.get("error_code", error_code)
-            error_message = result.get("error_message", error_message)
-        raise RiverSeepageScenarioError(f"{error_code}: {error_message}")
+    # task-168: wrap the solve as a nested child row. The failed-but-RETURNED
+    # validation lives INSIDE the substep so a non-SeepageLayerURI result raises
+    # here, marking the CHILD red (honesty floor: a failed solve never reads
+    # green) before the error re-raises through the composer's existing path. The
+    # two-card solver observability (mint_dispatch_and_sim_cards) is untouched:
+    # the bridge tool still owns the Dispatch + Batch-bound Sim cards; this child
+    # row is an additional nested timeline entry, not a replacement.
+    async with substep(current_emitter(), "run_river_seepage_job"):
+        result = await _maybe_emit(
+            pipeline_emitter,
+            name=f"Model river seepage [{contaminant}]",
+            tool_name="run_river_seepage_job",
+            invoke=lambda: run_fn(
+                spill_location_latlon=(lat, lon),
+                contaminant=contaminant,
+                release_rate_kg_s=release_rate_kg_s,
+                duration_days=duration_days,
+                river_geometry_uri=river_uri,
+                along_river_source=along_river_source,
+                aquifer_k_ms=aquifer_k_ms,
+                porosity=porosity,
+                compute_class=compute_class,
+            ),
+        )
+        if not isinstance(result, SeepageLayerURI):
+            error_code = "RIVER_SEEPAGE_RUN_FAILED"
+            error_message = "river-seepage run did not produce a seepage layer"
+            if isinstance(result, dict):
+                error_code = result.get("error_code", error_code)
+                error_message = result.get("error_message", error_message)
+            raise RiverSeepageScenarioError(f"{error_code}: {error_message}")
 
     seepage = result
     derived = {

@@ -82,9 +82,11 @@ from grace2_contracts.tool_registry import AtomicToolMetadata
 
 from ..layer_uri_emit import emit_layer_uri
 from ..pipeline_emitter import (
+    begin_substeps,
     current_emitter,
     mint_dispatch_and_sim_cards,
     route_sim_terminal,
+    substep,
 )
 from ..tools import register_tool
 from ..tools.data_fetch import (
@@ -1517,6 +1519,27 @@ async def model_flood_scenario(
                 exc,
             )
 
+    # --- Sub-step timeline plan (task-168) ----------------------------------
+    # Declare the planned internal-operation count so the parent workflow card's
+    # live breadcrumb can show "k/total" while it runs. The fused fetcher phase
+    # counts as ONE substep (it runs as a single off-loop ``_fetcher_chain`` under
+    # one timeout budget -- see below), then build + solve + postprocess + publish.
+    # The quadtree (coastal North Star) path swaps the regular run_solver for the
+    # combined deck-build+solve substep and adds a wave-postprocess substep. The
+    # plan is best-effort + re-declarable; ``begin_substeps`` no-ops when no
+    # emitter is bound (the verify/CI direct-call path) and degrades to label-only
+    # if the real count diverges. Surfacing fewer is fine -- the breadcrumb just
+    # shows the running index.
+    _planned_substeps = (
+        1  # fetcher phase (fetch_topobathy/fetch_dem + landcover + river + precip)
+        + 1  # build_sfincs_model
+        + 1  # solve (run_solver/wait_for_completion OR the combined quadtree run)
+        + 1  # postprocess_flood
+        + 1  # publish_layer (peak depth)
+        + (1 if quadtree else 0)  # postprocess_waves (quadtree+SnapWave only)
+    )
+    begin_substeps(emitter, _planned_substeps)
+
     # --- Step 1-4: atomic-tool fetcher chain ---
     forcing_summary: ForcingSummary | None = None
     # job-0225 v2: ``precip_inches`` is the Atlas 14 design-storm depth (None
@@ -1715,10 +1738,26 @@ async def model_flood_scenario(
         _fetch_out["bathymetry_present"] = bool(locals().get("_bathy_present", True))
 
     try:
-        await asyncio.wait_for(
-            asyncio.to_thread(_fetcher_chain),
-            timeout=_FETCHER_PHASE_TIMEOUT_S,
-        )
+        # task-168: surface the fused data-fetch phase as ONE nested child row
+        # under the parent workflow card. The chain runs ALL fetchers
+        # (fetch_topobathy/fetch_dem + fetch_landcover + fetch_river_geometry +
+        # lookup_precip_return_period/compute_precip_area_mean) inside a SINGLE
+        # off-loop ``_fetcher_chain`` under ONE timeout budget (the hardened
+        # terminal-card block), so it cannot be split into per-fetcher async
+        # substeps without unwinding that budget - it is wrapped as one substep
+        # labelled by the dominant DEM pull (the web humanizes it). ``substep`` is
+        # a no-op when no emitter is bound (verify/CI direct-call path), so the
+        # ``wait_for``/``to_thread`` body below is byte-identical there. A timeout
+        # raises ``asyncio.TimeoutError`` INSIDE the substep -> the child reads red
+        # (honesty floor) and the error re-raises to the existing except cascade,
+        # which returns the PRESOLVER_TIMEOUT failed envelope unchanged.
+        async with substep(
+            emitter, "fetch_topobathy" if is_coastal else "fetch_dem"
+        ):
+            await asyncio.wait_for(
+                asyncio.to_thread(_fetcher_chain),
+                timeout=_FETCHER_PHASE_TIMEOUT_S,
+            )
     except asyncio.CancelledError:
         # Invariant 8: a true cancel propagates (mark_cancelled fires upstream).
         raise
@@ -1868,22 +1907,30 @@ async def model_flood_scenario(
         # (sfincs_builder GDAL VSI cache/timeout is per-read only). Run it off
         # the loop + bound it so a wedged build surfaces as PRESOLVER_TIMEOUT
         # rather than an infinite silent await.
-        model_setup = await asyncio.wait_for(
-            asyncio.to_thread(
-                build_sfincs_model,
-                dem_uri=dem_layer.uri,
-                landcover_uri=landcover_layer.uri,
-                # job-0307: None when the best-effort river fetch failed (pluvial
-                # deck ignores it; build_sfincs_model documents river_geometry_uri
-                # as "may be None").
-                river_geometry_uri=river_layer.uri if river_layer is not None else None,
-                forcing=forcing_spec,
-                bbox=resolved_bbox,
-                options=options,
-                nlcd_vintage_year=nlcd_vintage_year,
-            ),
-            timeout=_BUILD_PHASE_TIMEOUT_S,
-        )
+        # task-168: surface the deck build as a nested child row. A build timeout
+        # (TimeoutError), the NLCD validation gate (SFINCSSetupError), or a forcing
+        # adapter failure raises INSIDE the substep -> the child reads red (honesty
+        # floor) and re-raises to the existing except cascade below, which returns
+        # the corresponding failed envelope unchanged. No-op when no emitter bound.
+        async with substep(emitter, "build_sfincs_model"):
+            model_setup = await asyncio.wait_for(
+                asyncio.to_thread(
+                    build_sfincs_model,
+                    dem_uri=dem_layer.uri,
+                    landcover_uri=landcover_layer.uri,
+                    # job-0307: None when the best-effort river fetch failed
+                    # (pluvial deck ignores it; build_sfincs_model documents
+                    # river_geometry_uri as "may be None").
+                    river_geometry_uri=(
+                        river_layer.uri if river_layer is not None else None
+                    ),
+                    forcing=forcing_spec,
+                    bbox=resolved_bbox,
+                    options=options,
+                    nlcd_vintage_year=nlcd_vintage_year,
+                ),
+                timeout=_BUILD_PHASE_TIMEOUT_S,
+            )
         # build_sfincs_model may snap grid_resolution_m UP (coarsen) if the
         # estimated active-cell count overruns the per-job cell cap. Refresh the
         # workflow-local resolution from the ACTUALLY-BUILT value so downstream
@@ -2020,52 +2067,63 @@ async def model_flood_scenario(
             "thin_dams": "thin_dams",
         }.get((building_obstacle_mode or "thin_dams").strip().lower(), "thin_dams")
         try:
-            build_spec_uri = _compose_and_upload_deckbuild_spec(
-                bbox=resolved_bbox,
-                topobathy_uri=dem_layer.uri,
-                bathymetry_present=bathymetry_present,
-                model_setup=model_setup,
-                forcing_spec=forcing_spec,
-                surge_forcing=surge_forcing,
-                grid_resolution_m=grid_resolution_m,
-                duration_hr=float(duration_hr),
-                buildings_uri=_q_buildings_uri,
-                building_obstacle_mode=_q_build_mode,
-                rivers_uri=_q_rivers_uri,
-            )
-            # SUBMIT the ONE combined job + poll its completion → the SOLVE
-            # RunResult (sfincs_map.nc). Invariant 8: a true cancel propagates out
-            # (the wait terminates the Batch job). Size the combined build+solve
-            # from the per-case element estimate when available (build+solve is
-            # heavier than the deck-build alone; the solve is the long pole).
-            _q_autoscale = _extract_solve_autoscale(model_setup)
-            _q_elements = _q_autoscale.get("estimated_active_cells")
-            _q_compute_class = (
-                select_compute_class(_q_elements) if _q_elements else "standard"
-            )
-            quadtree_run_result = await run_sfincs_quadtree(
-                build_spec_uri,
-                compute_class=_q_compute_class,
-            )
-            solver_run_ids.append(quadtree_run_result.run_id)
-            data_sources.append(
-                DataSource(
-                    name=(
-                        "cht_sfincs quadtree+SnapWave deck + SFINCS solve "
-                        "(combined GPL Batch worker)"
-                    ),
-                    uri=quadtree_run_result.output_uri
-                    or _default_runs_prefix(quadtree_run_result.run_id),
-                    accessed_at=datetime.now(timezone.utc),
+            # task-168: surface the combined cht_sfincs quadtree+SnapWave
+            # deck-build + SFINCS solve as ONE nested child row (it is the solve
+            # for the coastal North Star path -- the regular run_solver is skipped).
+            # A DeckBuildError (inert / submit failure) raises INSIDE the substep
+            # -> the child reads red (honesty floor) and re-raises to the existing
+            # except DeckBuildError cascade below, which returns the
+            # DECK_BUILD_FAILED failed envelope unchanged. A true cancel raises
+            # asyncio.CancelledError -> the child is marked cancelled (yellow) then
+            # re-raises. No-op when no emitter is bound.
+            async with substep(emitter, "run_sfincs_quadtree"):
+                build_spec_uri = _compose_and_upload_deckbuild_spec(
+                    bbox=resolved_bbox,
+                    topobathy_uri=dem_layer.uri,
+                    bathymetry_present=bathymetry_present,
+                    model_setup=model_setup,
+                    forcing_spec=forcing_spec,
+                    surge_forcing=surge_forcing,
+                    grid_resolution_m=grid_resolution_m,
+                    duration_hr=float(duration_hr),
+                    buildings_uri=_q_buildings_uri,
+                    building_obstacle_mode=_q_build_mode,
+                    rivers_uri=_q_rivers_uri,
                 )
-            )
-            logger.info(
-                "model_flood_scenario: combined quadtree run complete -> "
-                "run_id=%s status=%s output_uri=%s",
-                quadtree_run_result.run_id,
-                quadtree_run_result.status,
-                quadtree_run_result.output_uri,
-            )
+                # SUBMIT the ONE combined job + poll its completion -> the SOLVE
+                # RunResult (sfincs_map.nc). Invariant 8: a true cancel propagates
+                # out (the wait terminates the Batch job). Size the combined
+                # build+solve from the per-case element estimate when available
+                # (build+solve is heavier than the deck-build alone; the solve is
+                # the long pole).
+                _q_autoscale = _extract_solve_autoscale(model_setup)
+                _q_elements = _q_autoscale.get("estimated_active_cells")
+                _q_compute_class = (
+                    select_compute_class(_q_elements) if _q_elements else "standard"
+                )
+                quadtree_run_result = await run_sfincs_quadtree(
+                    build_spec_uri,
+                    compute_class=_q_compute_class,
+                )
+                solver_run_ids.append(quadtree_run_result.run_id)
+                data_sources.append(
+                    DataSource(
+                        name=(
+                            "cht_sfincs quadtree+SnapWave deck + SFINCS solve "
+                            "(combined GPL Batch worker)"
+                        ),
+                        uri=quadtree_run_result.output_uri
+                        or _default_runs_prefix(quadtree_run_result.run_id),
+                        accessed_at=datetime.now(timezone.utc),
+                    )
+                )
+                logger.info(
+                    "model_flood_scenario: combined quadtree run complete -> "
+                    "run_id=%s status=%s output_uri=%s",
+                    quadtree_run_result.run_id,
+                    quadtree_run_result.status,
+                    quadtree_run_result.output_uri,
+                )
         except asyncio.CancelledError:
             raise
         except DeckBuildError as exc:
@@ -2130,14 +2188,24 @@ async def model_flood_scenario(
                 compute_class,
             )
         try:
-            handle = run_solver(
-                solver="sfincs",
-                # The regular-grid model_setup.setup_uri (the quadtree path no
-                # longer reaches here — it solved inside the combined job).
-                model_setup_uri=solve_model_setup_uri,
-                compute_class=effective_compute_class,
-            )
-            solver_run_ids.append(handle.run_id)
+            # task-168: surface the solver DISPATCH (the Batch submit) as a nested
+            # child row. This is a fast submit, so the child lands green quickly;
+            # the LIVE Batch readout (status ticks + terminal) stays owned by the
+            # two-card Sim card (mint_dispatch_and_sim_cards) below - the substep
+            # does NOT touch that machinery (HARD INVARIANT). A dispatch failure
+            # raises INSIDE the substep -> the child reads red (honesty floor) and
+            # re-raises to the existing except handler, which returns the
+            # SOLVER_DISPATCH_FAILED failed envelope unchanged. No-op when no
+            # emitter is bound.
+            async with substep(emitter, "run_solver"):
+                handle = run_solver(
+                    solver="sfincs",
+                    # The regular-grid model_setup.setup_uri (the quadtree path no
+                    # longer reaches here -- it solved inside the combined job).
+                    model_setup_uri=solve_model_setup_uri,
+                    compute_class=effective_compute_class,
+                )
+                solver_run_ids.append(handle.run_id)
         except Exception as exc:  # noqa: BLE001
             logger.exception("run_solver dispatch failed: %s", exc)
             return _build_failed_envelope(
@@ -2321,11 +2389,16 @@ async def model_flood_scenario(
     # publish + add_loaded_layer steps below run back on the loop), so it is
     # safe to move to a worker thread.
     try:
-        layers, depth_metrics = await asyncio.to_thread(
-            postprocess_flood,
-            run_result.output_uri or _default_runs_prefix(run_result.run_id),
-            run_id=run_result.run_id,
-        )
+        # task-168: surface the depth postprocess as a nested child row. A
+        # PostprocessError raises INSIDE the substep -> the child reads red
+        # (honesty floor) and re-raises to the existing except handler, which
+        # returns the failed envelope unchanged. No-op when no emitter is bound.
+        async with substep(emitter, "postprocess_flood"):
+            layers, depth_metrics = await asyncio.to_thread(
+                postprocess_flood,
+                run_result.output_uri or _default_runs_prefix(run_result.run_id),
+                run_id=run_result.run_id,
+            )
     except PostprocessError as exc:
         logger.warning("postprocess_flood failed: %s (%s)", exc.error_code, exc)
         return _build_failed_envelope(
@@ -2391,12 +2464,18 @@ async def model_flood_scenario(
                 # the emitting (the LayerURI it builds reaches the map via the
                 # wrapper return / out-of-band add_loaded_layer back on the
                 # loop), so it is safe to move to a worker thread.
-                wms_url = await asyncio.to_thread(
-                    publish_layer,
-                    layer_uri=lyr.uri,
-                    layer_id=layer_id_for_wms,
-                    style_preset=lyr.style_preset or "continuous_flood_depth",
-                )
+                # task-168: surface the peak-layer publish as a nested child row.
+                # A PublishLayerError raises INSIDE the substep -> the child reads
+                # red (honesty floor) and re-raises to the existing except handler
+                # below, which DROPS the layer (publish-or-honest-drop, job-0254
+                # §1) unchanged. No-op when no emitter is bound.
+                async with substep(emitter, "publish_layer"):
+                    wms_url = await asyncio.to_thread(
+                        publish_layer,
+                        layer_uri=lyr.uri,
+                        layer_id=layer_id_for_wms,
+                        style_preset=lyr.style_preset or "continuous_flood_depth",
+                    )
                 # Substitute the WMS URL into the LayerURI so the client renders
                 # directly (OQ-62-LAYERURI-URI-FIELD: LayerURI.uri is documented
                 # as gs:// but has no validator rejecting WMS URLs; we use it here
@@ -2540,12 +2619,19 @@ async def model_flood_scenario(
     # step N") without changing the tool's single-LayerURI return shape.
     if quadtree_run_result is not None:
         try:
-            wave_layers, _wave_metrics = await asyncio.to_thread(
-                postprocess_waves,
-                run_result.output_uri or _default_runs_prefix(run_result.run_id),
-                run_id=run_result.run_id,
-                bbox=resolved_bbox,
-            )
+            # task-168: surface the wave postprocess as a nested child row. A
+            # PostprocessError (no SnapWave field / read / write failure) raises
+            # INSIDE the substep -> the child reads red (honesty floor) and
+            # re-raises to the existing except handlers below, which DEGRADE to the
+            # depth layers (a non-SnapWave quadtree run is a legitimate state) with
+            # the depth layers intact. No-op when no emitter is bound.
+            async with substep(emitter, "postprocess_waves"):
+                wave_layers, _wave_metrics = await asyncio.to_thread(
+                    postprocess_waves,
+                    run_result.output_uri or _default_runs_prefix(run_result.run_id),
+                    run_id=run_result.run_id,
+                    bbox=resolved_bbox,
+                )
         except PostprocessError as exc:
             # No SnapWave field / read / write failure — degrade silently to the
             # depth layers (a non-SnapWave quadtree run is a legitimate state).

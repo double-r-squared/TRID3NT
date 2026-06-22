@@ -532,6 +532,104 @@ def test_solve_progress_phase_defaults_none_and_carries_batch_status() -> None:
     assert populated.phase == "STARTING"
 
 
+# --- nested sub-step timeline (task-168) ------------------------------------ #
+
+
+def test_pipeline_step_substep_fields_default_none_back_compat() -> None:
+    """task-168: a minimally-built PipelineStep carries no parent link and no
+    breadcrumb, proving the four new fields keep every existing payload identical.
+    """
+    step = ws.PipelineStep(
+        step_id=new_ulid(), name="fetch DEM", tool_name="fetch_dem", state="running"
+    )
+    assert step.parent_step_id is None
+    assert step.substep_label is None
+    assert step.substep_index is None
+    assert step.substep_total is None
+
+
+def test_pipeline_step_child_carries_parent_step_id(session_id: str) -> None:
+    """task-168: a CHILD step carries parent_step_id (nested, never top-level)
+    while the PARENT carries the live breadcrumb trio; both round-trip."""
+    parent_id = new_ulid()
+    payload = ws.PipelineStatePayload(
+        pipeline_id=new_ulid(),
+        steps=[
+            ws.PipelineStep(
+                step_id=parent_id,
+                name="Model coastal flood",
+                tool_name="model_flood_scenario",
+                state="running",
+                substep_label="fetch_topobathy",
+                substep_index=2,
+                substep_total=7,
+            ),
+            ws.PipelineStep(
+                step_id=new_ulid(),
+                name="fetch_topobathy",
+                tool_name="fetch_topobathy",
+                state="running",
+                parent_step_id=parent_id,
+            ),
+        ],
+    )
+    dumped = _roundtrip_idempotent(_wrap(payload, session_id))
+    steps = dumped["payload"]["steps"]
+    # Parent: top-level, breadcrumb populated.
+    assert steps[0]["parent_step_id"] is None
+    assert steps[0]["substep_label"] == "fetch_topobathy"
+    assert steps[0]["substep_index"] == 2
+    assert steps[0]["substep_total"] == 7
+    # Child: nested under the parent, no breadcrumb of its own.
+    assert steps[1]["parent_step_id"] == parent_id
+    assert steps[1]["substep_label"] is None
+    assert steps[1]["substep_index"] is None
+
+
+def test_pipeline_step_substep_total_none_for_unknown_plan(session_id: str) -> None:
+    """task-168: substep_total may be None when the planned child count is
+    unknown -- the breadcrumb then shows just the label + index."""
+    payload = ws.PipelineStatePayload(
+        pipeline_id=new_ulid(),
+        steps=[
+            ws.PipelineStep(
+                step_id=new_ulid(),
+                name="Model coastal flood",
+                tool_name="model_flood_scenario",
+                state="running",
+                substep_label="run_solver",
+                substep_index=1,
+                substep_total=None,
+            ),
+        ],
+    )
+    dumped = _roundtrip_idempotent(_wrap(payload, session_id))
+    step = dumped["payload"]["steps"][0]
+    assert step["substep_label"] == "run_solver"
+    assert step["substep_index"] == 1
+    assert step["substep_total"] is None
+
+
+def test_pipeline_step_substep_index_rejects_non_positive() -> None:
+    """task-168: substep_index/total are 1-based (ge=1) -- 0 / negative reject."""
+    with pytest.raises(ValidationError):
+        ws.PipelineStep(
+            step_id=new_ulid(),
+            name="x",
+            tool_name="x",
+            state="running",
+            substep_index=0,
+        )
+    with pytest.raises(ValidationError):
+        ws.PipelineStep(
+            step_id=new_ulid(),
+            name="x",
+            tool_name="x",
+            state="running",
+            substep_total=0,
+        )
+
+
 # --- map-command and the per-command args models ---------------------------- #
 
 

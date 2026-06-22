@@ -332,6 +332,16 @@ class PipelineStepSummary(GraceModel):
     role: Literal["tool", "compute"] = "tool"
     batch_job_id: str | None = None
     batch_status: str | None = None
+    # Nested sub-step timeline (task-168): mirror the ws.PipelineStep parent/child
+    # fields so a persisted/replayed snapshot and a cold-case rehydration carry
+    # the nested timeline across a reconnect. ``parent_step_id`` marks a CHILD;
+    # ``substep_label`` / ``substep_index`` / ``substep_total`` are the PARENT's
+    # live-breadcrumb fields (cleared on the parent's terminal transition). All
+    # default None so every existing persisted step is byte-identical (back-compat).
+    parent_step_id: ULIDStr | None = None
+    substep_label: str | None = None
+    substep_index: int | None = Field(default=None, ge=1)
+    substep_total: int | None = Field(default=None, ge=1)
 
     @field_validator("error_code")
     @classmethod
