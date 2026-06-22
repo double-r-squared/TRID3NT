@@ -2305,6 +2305,13 @@
       "model": "opus",
       "subagent_tokens": 419802,
       "description": "5-agent ultracode spike (NATE: per-user agent isolation after a live shared-box cross-user WS incident; do both isolation + AgentCore). Verdict (adversarially verified, high confidence) HYBRID_FARGATE_NOW_AGENTCORE_LATER: Fargate-per-session task running the existing WS agent byte-identical behind a thin broker (Cognito auth -> grace2_session_routes -> WSS proxy; dual-sockets co-locate -> real isolation), idle-stop generalizes the autostop; AgentCore Runtime now viable (Dec-18-2025 bidirectional-WS GA + per-session Firecracker microVM) but gated behind ARM64/2GB + 2vCPU/8GB + the 60-min connection cap re-arch (~8-15 eng-days, low lock-in). Wrote engine_spike-style reports/design/agent_isolation_spike.md (9-step migration, single-box rollback)."
+    },
+    {
+      "job_id": "isolation-foundation-step1-20260622",
+      "sprint": 17,
+      "model": "opus",
+      "subagent_tokens": 177061,
+      "description": "Isolation foundation STEP 1 (file-only, non-destructive, committed 9650117): containerize the agent (Dockerfile/.dockerignore, multi-stage ECR-Public base), per-session broker (cognito_verify reusing the REAL agent verifier + no-drift test, sub->ULID routing, app, proxy skeleton), full infra/aws-agent-isolation tofu scaffold (grace2_session_routes DynamoDB, ECS cluster + per-session agent task def, ALB, broker service, scoped IAM, per-task idle reaper Lambda generalizing ec2:StopInstances->ecs:StopTask, off-box CodeBuild) + RUNBOOK 9-step gated migration. Verify: tofu validate clean, 33 unit tests pass (26 broker + 7 reaper, no skips)."
     }
   ],
   "totals_by_sprint": {
