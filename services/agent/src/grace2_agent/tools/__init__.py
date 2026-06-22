@@ -294,6 +294,7 @@ from . import run_river_seepage_tool  # noqa: E402,F401 — sprint-17: registers
 from . import run_geoclaw_tool  # noqa: E402,F401 — sprint-17: registers run_geoclaw_inundation (GeoClaw dam-break / coastal inundation bridge; imports model_dambreak_geoclaw_scenario)
 from . import run_openquake_tool  # noqa: E402,F401 — sprint-17: registers run_seismic_hazard_psha (OpenQuake PSHA seismic-hazard bridge; imports model_seismic_hazard_scenario)
 from . import run_landlab_tool  # noqa: E402,F401 — sprint-17: registers run_landlab_susceptibility (Landlab landslide-probability / overland-flow bridge; imports model_landslide_scenario)
+from . import run_swan_tool  # noqa: E402,F401 -- SWAN Phase 1: registers run_swan_waves (SWAN third-generation spectral nearshore wave-field bridge; ADDITIVE comparison engine vs SFINCS+SnapWave; imports model_wave_scenario)
 # The river-seepage COMPOSER carries its OWN @register_tool (run_model_river_seepage_scenario);
 # its bridge tool above does NOT import it, so register it explicitly (mirrors the
 # compute_impact_envelope composer import below). The MODFLOW-seepage verifier flagged

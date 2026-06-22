@@ -259,6 +259,11 @@ PRIMARY_CATEGORY: dict[str, str] = {
     "run_geoclaw_inundation": "hazard_modeling",
     "run_seismic_hazard_psha": "hazard_modeling",
     "run_landlab_susceptibility": "hazard_modeling",
+    # SWAN Phase 1: standalone spectral nearshore wave-field engine (the additive
+    # comparison engine vs SFINCS+SnapWave). Filed as a hazard engine; also
+    # cross-listed under coastal (SECONDARY_CATEGORIES) since it is a coastal/wave
+    # tool a user reaches from the coastal lane.
+    "run_swan_waves": "hazard_modeling",
     "run_solver": "hazard_modeling",
     "wait_for_completion": "hazard_modeling",
     # ---- 2. weather_atmosphere --------------------------------------------
@@ -393,6 +398,10 @@ SECONDARY_CATEGORIES: dict[str, tuple[str, ...]] = {
     # weather_atmosphere (it's driven by an active NWS flood warning + MRMS
     # observed precip — the canonical "model the live flood" entry point).
     "run_model_nws_flood_event_scenario": ("weather_atmosphere",),
+    # SWAN spans hazard_modeling (it runs the SWAN spectral solver) AND coastal
+    # (it is THE defensible nearshore wave-field tool -- a user reaches it from the
+    # coastal lane to compare against SFINCS+SnapWave on the same case).
+    "run_swan_waves": ("coastal",),
 }
 
 
