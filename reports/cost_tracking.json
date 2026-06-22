@@ -2179,10 +2179,24 @@
       "model": "opus",
       "subagent_tokens": 183773,
       "description": "Read-only scope of the SnapWave animated-waves feature: verified vs SFINCS ncoutput.F90 that hm0/hm0ig are TIME-RESOLVED on the quadtree path (true moving waves, no image rebuild); found the load-bearing UGRID-vs-regular-grid rasterizer gap; produced the phased build plan (P0-P6) + Mexico Beach run recipe."
+    },
+    {
+      "job_id": "wf-sprint17-wave-animation-20260621",
+      "sprint": 16,
+      "model": "opus",
+      "subagent_tokens": 493172,
+      "description": "Sprint-17 wave-animation build+verify (wmc6jexl0, 4 agents): UGRID face->raster rasterizer (also fixes depth-on-quadtree) + postprocess_waves + continuous_wave_height style + coastal-branch wiring (degrade-not-fail). 3/3 verify; agent suite 5954. Deployed 2709cd1."
+    },
+    {
+      "job_id": "agent-mexico-beach-smoke-driver-20260621",
+      "sprint": 16,
+      "model": "opus",
+      "subagent_tokens": 178725,
+      "description": "Authored deterministic Mexico Beach quadtree+SnapWave smoke driver (verify_mexico_beach_waves.py); surfaced the snapwave_boundary UTM-reprojection wiring + the publish/render caveat."
     }
   ],
   "totals_by_sprint": {
-    "16": 16657845,
+    "16": 17329742,
     "6": 1265567,
     "7": 1863284,
     "8": 1786238,
