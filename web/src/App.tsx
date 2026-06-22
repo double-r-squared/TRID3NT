@@ -1359,6 +1359,26 @@ export function App(): JSX.Element {
   const showLayersHamburger = leftCollapsed;
   const showChatHamburger = rightCollapsed;
 
+  // Session-durability Job E (NATE): layersLoading is a HOOK and MUST be computed
+  // BEFORE the AuthGate early-return below so it runs unconditionally on every
+  // render. A hook placed after the gate return only runs once auth resolves,
+  // which trips React error #310 (more hooks than the previous render) on the
+  // unauthed->authed transition and blanks the whole app. Derived from existing
+  // signals; FALSE when the Case is open + settled + socket healthy, so a
+  // genuinely-empty Case shows the empty stub (never spins forever).
+  const caseSelectedButUnsettled =
+    activeCaseId !== null &&
+    (activeSession === null ||
+      activeSession.case.case_id !== activeCaseId);
+  const layersLoading = useMemo(
+    () =>
+      activeCaseId !== null &&
+      (caseSelectedButUnsettled ||
+        wsStatus === "connecting" ||
+        wsStatus === "reconnecting"),
+    [activeCaseId, caseSelectedButUnsettled, wsStatus],
+  );
+
   // job-0138: AuthGate full-screen gating (the anonymous-accept gate). job-0253
   // wraps it in AuthGuard: when Firebase is DISABLED (dev/tailnet — every
   // current session), AuthGuard is a transparent pass-through and this renders
@@ -1378,34 +1398,8 @@ export function App(): JSX.Element {
     ? cases.find((c) => c.case_id === activeCaseId) ?? null
     : null;
 
-  // Session-durability Job E (NATE) - derive a LOADING signal for the
-  // layer-panel stub from signals that ALREADY exist, so a freshly-selected
-  // Case shows a "Loading layers..." spinner instead of the bare "No layers
-  // loaded yet" empty stub while its session is still inbound. Two existing
-  // signals feed it:
-  //   1. caseSelectedButUnsettled - a Case is selected (activeCaseId) but the
-  //      live session for THAT exact Case has not yet arrived (activeSession is
-  //      null, or it still carries the PREVIOUS Case). This is the same compare
-  //      the cold-load guard uses at the [activeCaseId, wsStatus, activeSession]
-  //      effect above (~:1126).
-  //   2. wsStatus connecting/reconnecting - the App socket is mid-handshake, so
-  //      an authoritative layer frame may still be in flight even once the
-  //      session object matches the Case.
-  // CRUCIAL: when the Case IS open + settled (session matches the Case) AND the
-  // socket is healthy, layersLoading is FALSE, so a genuinely-empty Case falls
-  // through to the SETTLED-EMPTY stub (never spins forever).
-  const caseSelectedButUnsettled =
-    activeCaseId !== null &&
-    (activeSession === null ||
-      activeSession.case.case_id !== activeCaseId);
-  const layersLoading = useMemo(
-    () =>
-      activeCaseId !== null &&
-      (caseSelectedButUnsettled ||
-        wsStatus === "connecting" ||
-        wsStatus === "reconnecting"),
-    [activeCaseId, caseSelectedButUnsettled, wsStatus],
-  );
+  // (layersLoading + caseSelectedButUnsettled are computed ABOVE the AuthGate
+  // gate return - see the Job E note there - so the hook runs unconditionally.)
 
   // FIX 2 — payload-warning gates render in Chat's per-Case stream now (no
   // App-level filtering / banner). See Chat.tsx routePayloadWarning.
