@@ -2207,10 +2207,38 @@
       "model": "opus",
       "subagent_tokens": 3019272,
       "description": "Sprint-17 engine sub-sprint (4 new engines: GeoClaw dam-break, OpenQuake seismic, Landlab landslide, MODFLOW river-seepage) parallelized per the feature-pipelining model on file-disjoint lanes: contracts + Batch worker images + agent tools/workflows + shared-seam wiring (tools/__init__, solver registry, categories, publish presets) + infra job-defs; includes the Landlab API fix (verifier was backwards: LandslideProbability reads topographic__slope) and full-suite gate (agent 6105 / contracts 483). subagent_tokens = input+output+cache_write throughput across the 5 build+integration Agent subagents (cache_read 26.4M excluded as discounted replay)."
+    },
+    {
+      "job_id": "wf-sprint17-substep-visibility-20260621",
+      "sprint": 16,
+      "model": "opus",
+      "subagent_tokens": 1468242,
+      "description": "Sub-step visibility feature (#168) workflow (wu7vpzfns, 12 agents): contract+emitter substep() API + 6 composer wraps + web nested-timeline/breadcrumb + 4 adversarial verifiers; agent 6113 / contracts 487 / web vitest 1688 green; em-dash cleanup applied post-run."
+    },
+    {
+      "job_id": "wf-deckgl-impact-research-20260621",
+      "sprint": 16,
+      "model": "opus",
+      "subagent_tokens": 721760,
+      "description": "deck.gl impact/blast-radius research workflow (wfujtdcmf, 9 agents): 8 read-only breakage lanes + synthesis -> reports/design/deckgl_impact_analysis.md (GO-WITH-SPIKE, 9 blockers/17 highs, 10-job wave plan)."
+    },
+    {
+      "job_id": "agent-readiness-drivers-20260621",
+      "sprint": 16,
+      "model": "opus",
+      "subagent_tokens": 234154,
+      "description": "Authored 6 minimal live Batch acceptance drivers (verify_readiness_*) for the North-Star readiness sweep."
+    },
+    {
+      "job_id": "agents-explore-viz-surfacing-20260621",
+      "sprint": 16,
+      "model": "opus",
+      "subagent_tokens": 450000,
+      "description": "ESTIMATE: 3 Explore agents this session (tool-usage surfacing map, tool-card completeness/dedup audit, current map-rendering-seam map for the deck.gl docs)."
     }
   ],
   "totals_by_sprint": {
-    "16": 20425791,
+    "16": 23299947,
     "6": 1265567,
     "7": 1863284,
     "8": 1786238,
