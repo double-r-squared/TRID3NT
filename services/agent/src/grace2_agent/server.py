@@ -3661,6 +3661,14 @@ async def _handle_case_command(
         title = (cmd.args or {}).get("title") or "Untitled Case"
         if not isinstance(title, str) or not title.strip():
             title = "Untitled Case"
+        # #170 AOI-first: an optional ``args.bbox`` lets the user pin the AOI
+        # extent BEFORE the first prompt (draw-on-map / numeric coords). Coerce
+        # via the shared validator so a None / wrong-length / non-finite value
+        # is dropped silently (current no-bbox behaviour) rather than crashing.
+        # When present it persists on CaseSummary.bbox (-> snapshot/manifest) and
+        # seeds state.case_bbox below so the FIRST turn's _turn_case_bbox returns
+        # the user's extent and the LLM is told to REUSE it (no re-geocode).
+        create_bbox = _coerce_bbox4((cmd.args or {}).get("bbox"))
         now = now_utc()
         case = CaseSummary(
             case_id=new_case_id,
@@ -3668,6 +3676,7 @@ async def _handle_case_command(
             created_at=now,
             updated_at=now,
             status="active",
+            bbox=list(create_bbox) if create_bbox is not None else None,
         )
         try:
             # job-0252 (OQ-0115-CASE-USER-LINK): stamp the creator as owner so
@@ -3696,6 +3705,11 @@ async def _handle_case_command(
             )
             return
         state.active_case_id = new_case_id
+        # #170 AOI-first: seed the in-session AOI anchor so the FIRST turn's
+        # _turn_case_bbox returns the user's pre-set extent (mirrors
+        # _pin_case_aoi_from_solve). Absent/invalid bbox => leave as-is (None).
+        if create_bbox is not None:
+            state.case_bbox = list(create_bbox)
         # job-0259: see _emit_case_open — this connection is now synced.
         state.case_context_synced_to = new_case_id
         # job-0245: fresh Case = fresh LLM context (see _emit_case_open note).

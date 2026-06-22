@@ -303,6 +303,15 @@ export function App(): JSX.Element {
   // pattern: App holds the Map-derived screen state, LayerPanel consumes it.
   const [aoiScreenRect, setAoiScreenRect] = useState<ScreenRect | null>(null);
 
+  // #170 AOI-first manual case-creation: when the user taps "+ New Case" we open
+  // an AOI-capture overlay (the AoiPickerCard, mounted by Map.tsx) instead of
+  // creating immediately. On confirm we createCase(title?, bbox); on Skip we
+  // createCase() (no bbox = current behavior). This boolean is the local
+  // "aoi-capture active" signal threaded to MapView (NOT the spatialRequest bus).
+  // Declared here, ABOVE the AuthGate early-return (~:1388), so the hook runs
+  // unconditionally (React #310 rule).
+  const [aoiCaptureOpen, setAoiCaptureOpen] = useState<boolean>(false);
+
   // Item b (NATE 2026-06-20) — MOBILE legend show/hide state, owned at App level
   // so the toggle can live INSIDE the expanded Layers section (out of the way of
   // the chat composer) while the legend itself renders from Map.tsx. On desktop
@@ -591,10 +600,31 @@ export function App(): JSX.Element {
     onSignInRequest: handleSignInRequest,
   });
 
+  // #170 AOI-first: "+ New Case" now OPENS the AOI-capture overlay (still
+  // save-gated for anonymous users) instead of creating immediately. The actual
+  // createCase fires from the overlay's confirm (with bbox) or skip (no bbox).
   const onCreateGated = useMemo(
-    () => saveGate.gateAction(() => createCase(), "Create a new Case"),
-    [saveGate, createCase],
+    () =>
+      saveGate.gateAction(() => setAoiCaptureOpen(true), "Create a new Case"),
+    [saveGate],
   );
+  // Confirm: create the Case WITH the captured AOI bbox, then close the overlay.
+  const onAoiCaptureConfirm = useCallback(
+    (bbox: [number, number, number, number]) => {
+      setAoiCaptureOpen(false);
+      createCase(null, bbox);
+    },
+    [createCase],
+  );
+  // Skip: create the Case with NO bbox - byte-identical to the prior behavior.
+  const onAoiCaptureSkip = useCallback(() => {
+    setAoiCaptureOpen(false);
+    createCase();
+  }, [createCase]);
+  // Cancel: dismiss the overlay without creating a Case.
+  const onAoiCaptureCancel = useCallback(() => {
+    setAoiCaptureOpen(false);
+  }, []);
   const onRenameGated = useCallback(
     (caseId: string, newTitle: string) => {
       saveGate.gateAction(
@@ -1432,6 +1462,12 @@ export function App(): JSX.Element {
         legendHidden={isMobile ? legendHiddenMobile : undefined}
         onLegendHiddenChange={isMobile ? setLegendHiddenMobile : undefined}
         suppressLegendShowPill={isMobile}
+        /* #170 AOI-first manual case-creation - the AoiPickerCard overlay mounts
+           on the live map when this local signal is set (NOT the spatial bus). */
+        aoiCaptureActive={aoiCaptureOpen}
+        onAoiCaptureConfirm={onAoiCaptureConfirm}
+        onAoiCaptureSkip={onAoiCaptureSkip}
+        onAoiCaptureCancel={onAoiCaptureCancel}
       />
 
       {/* MOBILE TOP FROST GRADIENT (NATE 2026-06-19) — with the iOS status bar

@@ -38,6 +38,7 @@ import {
   CaseSummary,
   ProjectLayerSummary,
 } from "../contracts";
+import type { BBox } from "../lib/bbox_draw";
 
 /**
  * COLD-LIST RASTER FALLBACK (defense in depth - coldview_layers_fix.md FIX C).
@@ -151,8 +152,14 @@ export interface UseCasesReturn {
   onCaseOpen: (payload: CaseOpenEnvelopePayload) => void;
 
   // --- Emitters --------------------------------------------------------- //
-  /** Create a new Case with optional title hint; defaults server-side to "Untitled Case". */
-  createCase: (title?: string | null) => void;
+  /**
+   * Create a new Case with optional title hint (defaults server-side to
+   * "Untitled Case") and optional AOI bbox (#170). When a bbox is supplied it
+   * rides into the create args as `bbox: [minLon, minLat, maxLon, maxLat]`; the
+   * server seeds CaseSummary.bbox + state.case_bbox so the FIRST turn reuses
+   * the extent (no re-geocode). The no-bbox call is byte-identical to before.
+   */
+  createCase: (title?: string | null, bbox?: BBox | null) => void;
   /** Open / hydrate an existing Case by id. */
   selectCase: (caseId: string) => void;
   /** Rename a Case (in-place title edit from CasesPanel). */
@@ -285,9 +292,14 @@ export function useCases(opts: UseCasesOptions): UseCasesReturn {
 
   // --- Emitters ---------------------------------------------------------- //
   const createCase = useCallback(
-    (title: string | null = null) => {
-      const args: Record<string, unknown> =
-        title && title.trim().length > 0 ? { title: title.trim() } : {};
+    (title: string | null = null, bbox: BBox | null = null) => {
+      // The no-bbox path is byte-identical to before (Skip = current behavior):
+      // args carries only the title hint when present. When a bbox IS supplied
+      // (#170 AOI-first), it rides in as `bbox` so the server seeds
+      // CaseSummary.bbox + state.case_bbox for the first turn.
+      const args: Record<string, unknown> = {};
+      if (title && title.trim().length > 0) args.title = title.trim();
+      if (bbox) args.bbox = bbox;
       bumpInFlight(+1);
       sendCaseCommand("create", null, args);
     },

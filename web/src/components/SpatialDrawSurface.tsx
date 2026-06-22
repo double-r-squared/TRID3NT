@@ -29,6 +29,17 @@ import {
   type DrawFeatureId,
   type DrawMode,
 } from "../lib/draw_controller";
+// #170 J-WEB-1 - the bbox drag gesture + ordering / cursor / style helpers were
+// extracted into lib/bbox_draw.ts so the request-free AoiPickerCard can reuse
+// them. SpatialDrawSurface keeps its own PICK_* layer set + draw helpers (so its
+// pick-layer behavior is byte-identical) but now shares the single
+// implementation of the gesture (attachBboxDrag) + the pure ordering/cursor/
+// style-loaded primitives.
+import {
+  attachBboxDrag,
+  safeStyleLoaded,
+  setCursor,
+} from "../lib/bbox_draw";
 import {
   IconBbox,
   IconPolygon,
@@ -170,38 +181,19 @@ export function SpatialDrawSurface({
       };
     }
 
-    // bbox: drag a rectangle. We track a down → move → up gesture with dragPan
-    // disabled during the drag so the rectangle, not the map, moves.
-    let anchor: [number, number] | null = null;
-    const onDown = (e: MapMouseEvent): void => {
-      anchor = [e.lngLat.lng, e.lngLat.lat];
-      map.dragPan.disable();
-    };
-    const onMove = (e: MapMouseEvent): void => {
-      if (!anchor) return;
-      const cur: [number, number] = [e.lngLat.lng, e.lngLat.lat];
-      const bbox = orderBbox(anchor, cur);
-      drawPickBbox(map, bbox);
-    };
-    const onUp = (e: MapMouseEvent): void => {
-      if (!anchor) return;
-      const cur: [number, number] = [e.lngLat.lng, e.lngLat.lat];
-      const bbox = orderBbox(anchor, cur);
-      setPickCoords(bbox);
-      drawPickBbox(map, bbox);
-      anchor = null;
-      map.dragPan.enable();
-    };
-    map.on("mousedown", onDown);
-    map.on("mousemove", onMove);
-    map.on("mouseup", onUp);
-    const prevCursor = setCursor(map, "crosshair");
+    // bbox: drag a rectangle. The down -> move -> up gesture (dragPan disabled
+    // during the drag so the rectangle, not the map, moves) lives in
+    // attachBboxDrag now; we wire its progress/complete callbacks to this
+    // surface's own PICK_* draw layers + pick state.
+    const detach = attachBboxDrag(map, {
+      onProgress: (bbox) => drawPickBbox(map, bbox),
+      onComplete: (bbox) => {
+        setPickCoords(bbox);
+        drawPickBbox(map, bbox);
+      },
+    });
     return () => {
-      map.off("mousedown", onDown);
-      map.off("mousemove", onMove);
-      map.off("mouseup", onUp);
-      map.dragPan.enable();
-      setCursor(map, prevCursor);
+      detach();
       clearPickLayers(map);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -629,34 +621,6 @@ function clearPickLayers(map: MapLibreMap): void {
     if (map.getSource(PICK_SOURCE_ID)) map.removeSource(PICK_SOURCE_ID);
   } catch {
     /* map torn down / style swapped */
-  }
-}
-
-function orderBbox(a: [number, number], b: [number, number]): number[] {
-  return [
-    Math.min(a[0], b[0]),
-    Math.min(a[1], b[1]),
-    Math.max(a[0], b[0]),
-    Math.max(a[1], b[1]),
-  ];
-}
-
-function safeStyleLoaded(map: MapLibreMap): boolean {
-  try {
-    return map.isStyleLoaded() === true;
-  } catch {
-    return false;
-  }
-}
-
-function setCursor(map: MapLibreMap, cursor: string): string {
-  try {
-    const c = map.getCanvas();
-    const prev = c.style.cursor;
-    c.style.cursor = cursor;
-    return prev;
-  } catch {
-    return "";
   }
 }
 

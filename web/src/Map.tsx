@@ -43,6 +43,7 @@ import {
   type SpatialInputBusState,
 } from "./lib/spatial_input_bus";
 import { SpatialDrawSurface } from "./components/SpatialDrawSurface";
+import { AoiPickerCard } from "./components/AoiPickerCard";
 import type { SpatialInputRequestPayload } from "./contracts";
 import { LayerLegend } from "./components/LayerLegend";
 // C3 (job-0356 / per-case-layer-durability) — the CLIENT is the source of truth
@@ -341,6 +342,19 @@ export interface MapViewProps {
    * in-panel toggle instead, so the floating pill must not also render).
    */
   suppressLegendShowPill?: boolean;
+  /**
+   * #170 AOI-first manual case-creation. When true, the AoiPickerCard overlay
+   * mounts on the live map so the user can draw / enter the AOI bbox BEFORE the
+   * first prompt. This is a LOCAL App signal (NOT the spatial-input bus) - the
+   * card is request-free (no active turn; the agent box may be asleep).
+   */
+  aoiCaptureActive?: boolean;
+  /** #170 - confirm the AOI capture with the chosen bbox [minLon,minLat,maxLon,maxLat]. */
+  onAoiCaptureConfirm?: (bbox: [number, number, number, number]) => void;
+  /** #170 - skip the AOI step (create with no bbox). */
+  onAoiCaptureSkip?: () => void;
+  /** #170 - dismiss the AOI overlay without creating a Case. */
+  onAoiCaptureCancel?: () => void;
 }
 
 /**
@@ -2160,7 +2174,7 @@ export function buildFeaturePopupData(
   return { title, subtitle, attributes, point };
 }
 
-export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "light", onAoiScreenRectChange, legendHidden, onLegendHiddenChange, suppressLegendShowPill }: MapViewProps = {}): JSX.Element {
+export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "light", onAoiScreenRectChange, legendHidden, onLegendHiddenChange, suppressLegendShowPill, aoiCaptureActive, onAoiCaptureConfirm, onAoiCaptureSkip, onAoiCaptureCancel }: MapViewProps = {}): JSX.Element {
   const container = useRef<HTMLDivElement | null>(null);
   const map = useRef<MapLibreMap | null>(null);
   // job-0179 — the shared per-Case layer cache (the seatbelt). Stable singleton;
@@ -3683,6 +3697,20 @@ export function MapView({ subscribeSessionState, subscribeMapCommand, theme = "l
           request={spatialRequest}
           onSubmit={(result) => spatialInputBus.submit(result)}
           onCancel={(requestId) => spatialInputBus.cancel(requestId)}
+        />
+      ) : null}
+
+      {/* #170 AOI-first manual case-creation. Mounts when App's local
+          aoiCaptureActive signal is set (NOT the spatial-input bus) so the user
+          can draw / enter the AOI bbox BEFORE the first prompt. REQUEST-FREE:
+          the card never touches the WS / bus; confirm rides App's createCase
+          (the durable sendOrQueue path). Skip / Cancel close the overlay. */}
+      {aoiCaptureActive && onAoiCaptureConfirm && onAoiCaptureSkip && onAoiCaptureCancel ? (
+        <AoiPickerCard
+          map={map.current}
+          onConfirm={onAoiCaptureConfirm}
+          onSkip={onAoiCaptureSkip}
+          onCancel={onAoiCaptureCancel}
         />
       ) : null}
     </div>

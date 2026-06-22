@@ -150,6 +150,70 @@ def test_case_create_emits_case_open_and_case_list(_persistence_bound: Persisten
     assert state.active_case_id in case_ids
 
 
+def test_case_create_with_valid_bbox_persists_and_seeds_aoi(
+    _persistence_bound: Persistence,
+) -> None:
+    """#170 AOI-first: a create command carrying a valid ``args.bbox`` persists
+    it on ``CaseSummary.bbox`` AND seeds ``state.case_bbox`` so the FIRST turn's
+    ``_turn_case_bbox`` returns the user's pre-set extent."""
+    ws = MockWebSocket()
+    state = _fresh_state()
+    state.authenticated_user_id = new_ulid()
+    bbox = [-82.0, 26.5, -81.8, 26.7]
+    cmd = CaseCommandEnvelopePayload(
+        command="create",
+        args={"title": "AOI-first case", "bbox": bbox},
+    )
+    asyncio.run(_handle_case_command(ws, state, cmd))
+
+    # Persisted on the Case (flows into snapshot/manifest via upsert_case).
+    case = asyncio.run(_persistence_bound.get_case(state.active_case_id))
+    assert case is not None
+    assert list(case.bbox) == bbox
+    # In-session AOI anchor seeded for the first turn.
+    assert state.case_bbox == bbox
+
+
+def test_case_create_with_invalid_bbox_leaves_aoi_unset(
+    _persistence_bound: Persistence,
+) -> None:
+    """#170 AOI-first: an invalid ``args.bbox`` (wrong length / non-finite)
+    is dropped silently - no crash, ``case.bbox`` + ``state.case_bbox`` both
+    stay unset (byte-identical to the pre-#170 no-bbox behaviour)."""
+    for bad in ([-82.0, 26.5, -81.8], [float("nan"), 1.0, 2.0, 3.0], "nope"):
+        ws = MockWebSocket()
+        state = _fresh_state()
+        state.authenticated_user_id = new_ulid()
+        cmd = CaseCommandEnvelopePayload(
+            command="create", args={"title": "no AOI", "bbox": bad}
+        )
+        asyncio.run(_handle_case_command(ws, state, cmd))
+
+        case = asyncio.run(_persistence_bound.get_case(state.active_case_id))
+        assert case is not None
+        assert case.bbox is None
+        assert state.case_bbox is None
+
+
+def test_case_create_without_bbox_leaves_aoi_unset(
+    _persistence_bound: Persistence,
+) -> None:
+    """#170 AOI-first: an absent ``args.bbox`` keeps the prior behaviour -
+    no AOI persisted, no in-session anchor seeded."""
+    ws = MockWebSocket()
+    state = _fresh_state()
+    state.authenticated_user_id = new_ulid()
+    cmd = CaseCommandEnvelopePayload(
+        command="create", args={"title": "plain case"}
+    )
+    asyncio.run(_handle_case_command(ws, state, cmd))
+
+    case = asyncio.run(_persistence_bound.get_case(state.active_case_id))
+    assert case is not None
+    assert case.bbox is None
+    assert state.case_bbox is None
+
+
 def test_case_select_emits_case_open_with_chat_history(
     _persistence_bound: Persistence,
 ) -> None:

@@ -215,6 +215,66 @@ describe("useCases cold-open render (PRIMARY - box-off loaded_layers paint)", ()
 // surfaces the OPEN Case's cold-renderable RASTER summaries to the
 // onListLayerSummaries sink so they still paint (non-authoritative top-up).
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// #170 AOI-first manual case-creation: createCase(title?, bbox?) forwards the
+// bbox into the create-command args when present. The no-bbox path stays
+// byte-identical (args carries only the title hint, or {}).
+// ---------------------------------------------------------------------------
+describe("useCases createCase bbox forwarding (#170)", () => {
+  it("forwards the bbox into the create args when supplied", () => {
+    const send = vi.fn();
+    const { result } = renderHook(() =>
+      useCases({ sendCaseCommand: send, isSignedIn: true }),
+    );
+    act(() => {
+      result.current.createCase(null, [-85.31, 35.04, -85.3, 35.05]);
+    });
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0]).toEqual([
+      "create",
+      null,
+      { bbox: [-85.31, 35.04, -85.3, 35.05] },
+    ]);
+  });
+
+  it("carries both title and bbox when both are supplied", () => {
+    const send = vi.fn();
+    const { result } = renderHook(() =>
+      useCases({ sendCaseCommand: send, isSignedIn: true }),
+    );
+    act(() => {
+      result.current.createCase("  Ellicott  ", [10, 20, 11, 21]);
+    });
+    expect(send.mock.calls[0]).toEqual([
+      "create",
+      null,
+      { title: "Ellicott", bbox: [10, 20, 11, 21] },
+    ]);
+  });
+
+  it("the no-bbox path is byte-identical to before (empty args)", () => {
+    const send = vi.fn();
+    const { result } = renderHook(() =>
+      useCases({ sendCaseCommand: send, isSignedIn: true }),
+    );
+    act(() => {
+      result.current.createCase();
+    });
+    expect(send.mock.calls[0]).toEqual(["create", null, {}]);
+  });
+
+  it("no-bbox with a title carries only the title (no bbox key)", () => {
+    const send = vi.fn();
+    const { result } = renderHook(() =>
+      useCases({ sendCaseCommand: send, isSignedIn: true }),
+    );
+    act(() => {
+      result.current.createCase("My Case");
+    });
+    expect(send.mock.calls[0]).toEqual(["create", null, { title: "My Case" }]);
+  });
+});
+
 describe("coldRenderableRasterSummaries (cold-list filter)", () => {
   it("keeps raster layers with an http(s) tile-template uri", () => {
     const kept = coldRenderableRasterSummaries([
