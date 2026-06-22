@@ -6847,6 +6847,12 @@ _ALWAYS_OFFLOAD_SYNC_TOOLS = frozenset(
         "fetch_hrrr_smoke",
         "fetch_mrms_qpe",
         "fetch_goes_satellite",
+        # fire-animation demos S3/J3: the per-frame SLIDER stitch + reproject +
+        # COG-write loop is heavy multi-second sync work (one frame chain per
+        # timestamp); off-load so it never stalls the WS heartbeat. Both bodies
+        # are emit-free (the surrounding emit_tool_call wrapper does the emit).
+        "fetch_goes_animation",
+        "fetch_viirs_day_fire",
         "fetch_cama_flood_discharge",
         "fetch_gtsm_tide_surge",
     }

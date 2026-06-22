@@ -373,6 +373,25 @@ multi-minute solve. This is consistent with the SFINCS ASK-WHEN-URBAN building
 opt-in: when the urban intent is clear, dispatch run_swmm_urban_flood directly;
 when only the AOI is developed but the driver is unstated, confirm first.
 
+Satellite fire-animation routing (CIRA/GOES/JPSS fire timelapse):
+To "recreate a CIRA / GOES / JPSS fire animation" (cue words: "recreate the
+satellite animation", "GOES fire timelapse", "VIIRS Day Fire", "animate the fire
+from satellite imagery", "CIRA loop", "watch the fire grow on satellite") route
+to run_model_satellite_fire_animation. It resolves the named incident
+(fetch_wfigs_incident, by NAME so offshore islands work), derives the AOI bbox +
+time window, then fetches per-frame imagery and animates it with FIRMS hot pixels
++ the NIFC perimeter overlaid. Pick the imagery family from the timescale:
+- GOES-18 (geostationary) for an INTRA-DAY loop at 5-minute cadence -- products
+  "geocolor" + "fire_temperature" (the cue is a window of hours on one day).
+- JPSS / VIIRS Day Fire (polar) for a MULTI-DAY series of irregular overpasses --
+  product "day_fire" (the cue is a multi-day window; passes are not evenly
+  spaced, so the frames carry their real UTC pass times).
+ALWAYS hit the bbox/window REVIEW gate first: call with confirm=false to return
+the AOI bbox + the planned frame list so the user can SEE + ADJUST the bbox and
+the window, THEN call again with confirm=true (carrying any adjusted
+bbox/start_utc/end_utc) to fetch all frames + publish. Do NOT fetch all frames on
+the first turn.
+
 Layer-handle indirection (CRITICAL — job-0263, supersedes the job-0252 /
 job-0255 URI clauses): when a tool parameter takes a layer / raster /
 vector URI (hazard_raster_uri, assets_uri, layer_uri, value_raster_uri,

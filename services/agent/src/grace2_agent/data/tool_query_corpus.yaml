@@ -288,6 +288,31 @@ fetch_nifc_fire_perimeters:
   - "fetch the WFIGS fire perimeter for this incident by name"
   - "what percent contained is the biggest fire in New Mexico?"
 
+fetch_wfigs_incident:
+  - "look up the Iron Fire near Eureka Utah in the NIFC incident data"
+  - "find the exact location and discovery date of the Santa Rosa Island fire"
+  - "resolve this named wildfire incident to a point and a bounding box"
+  - "where exactly is the Hastings Fire and when did it start?"
+  - "get the WFIGS incident point and AOI for the Grapevine fire in Nevada"
+  - "look the fire up by name and give me an AOI box around it"
+  - "what are the coordinates and size of this named active fire incident?"
+
+fetch_goes_animation:
+  - "recreate the CIRA GOES fire animation over a six hour window on this date"
+  - "animate GOES-18 GeoColor and Fire Temperature for the fire at 5-minute cadence"
+  - "make a GOES satellite timelapse of the fire evolving over the afternoon"
+  - "show the fire growing on GOES-West imagery frame by frame"
+  - "build a scrubbable GOES fire-temperature loop over this AOI and time range"
+  - "I want the geostationary satellite animation of the fire cluster"
+
+fetch_viirs_day_fire:
+  - "recreate the JPSS VIIRS Day Fire animation over a four-day window"
+  - "animate the VIIRS Day Fire passes over the Channel Islands day by day"
+  - "make a polar satellite timelapse of the fire from Suomi-NPP and NOAA-20"
+  - "show every daytime VIIRS overpass of the fire as a scrubbable frame"
+  - "build the multi-day VIIRS Day Fire loop over this offshore AOI"
+  - "I want the JPSS day fire imagery animation labelled with real pass times"
+
 fetch_mtbs_burn_severity:
   - "show me historic wildfire burn scars in this area"
   - "I need MTBS burn severity for post-fire debris-flow analysis"
@@ -371,6 +396,14 @@ fetch_goes_satellite:
   - "I need current CONUS cloud imagery for the tropical cyclone"
   - "overlay GOES water vapor channel on the map for synoptic context"
   - "show me the satellite view of the storm right now"
+
+run_model_satellite_fire_animation:
+  - "pull the news on the fires near Eureka Utah and recreate the CIRA GOES animation"
+  - "recreate the satellite fire animation of this wildfire cluster end to end"
+  - "look the fire up by name, draw an AOI, and animate the GOES or VIIRS imagery"
+  - "recreate the JPSS VIIRS Day Fire animation of the Santa Rosa Island fire"
+  - "make the full fire-animation pipeline: incident lookup, bbox, imagery frames, overlays"
+  - "show me the AOI and time window then animate the fire from satellite imagery"
 
 fetch_era5_reanalysis:
   - "I need global wind forcing for a SFINCS storm surge model outside the US"
