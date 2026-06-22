@@ -253,10 +253,26 @@ PROGRESS_CLAMP_MAX: int = 95
 PROGRESS_TERMINAL: int = 100
 
 
-#: Solver → workflow name registry. Currently SFINCS only; other solvers
-#: register their workflow names here in their own milestone sprints (M9+).
+#: Solver → workflow name registry. The VALUE is the canonical
+#: workflow/composer name for the solver; the registry is consumed purely as a
+#: PRESENCE GATE by ``run_solver`` (an unregistered solver raises
+#: ``SolverNotRegisteredError``) — the live backend routing + the handle's pinned
+#: ``workflow_name`` come from ``solver_backend()`` / the backend sentinels
+#: (``AWS_BATCH_WORKFLOW_NAME`` / ``LOCAL_EXEC_WORKFLOW_NAME``), not from this
+#: value. SWMM + MODFLOW self-register at import (``setdefault`` to a backend
+#: sentinel); GeoClaw also self-registers (``register_geoclaw_solver()``), but
+#: because the static literal below is evaluated FIRST its ``setdefault`` is a
+#: no-op, so the sprint-17 composer-name value here wins (the lane's
+#: ``"geoclaw": "aws-batch"`` was a backend sentinel mistaken for a workflow
+#: name; the composer name is the correct, consistent value).
 SOLVER_WORKFLOW_REGISTRY: dict[str, str] = {
     "sfincs": "grace-2-sfincs-orchestrator",
+    # sprint-17 NEW engines (parallel lanes) — orchestrator-wired per the lane
+    # handoff. GeoClaw's value supersedes its own import-time
+    # ``setdefault("geoclaw", AWS_BATCH_WORKFLOW_NAME)`` (static literal wins).
+    "geoclaw": "model_dambreak_geoclaw_scenario",
+    "openquake": "model_seismic_hazard_scenario",
+    "landlab": "model_landslide_scenario",
 }
 
 

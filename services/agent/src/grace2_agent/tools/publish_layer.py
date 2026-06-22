@@ -525,6 +525,14 @@ _TITILER_STYLE_REGISTRY: dict[str, tuple[str, str]] = {
     "goes_visible": ("0,1", "gray"),
     "goes_ir": ("180,330", "gray_r"),
     "goes_wv": ("180,330", "gray_r"),
+    # sprint-17 NEW engines (parallel lanes) — ADDITIVE; flood/plume/wave above
+    # stay byte-identical. River<->aquifer seepage is SIGNED (gaining vs losing
+    # reach) -> a diverging rdbu ramp centered on 0; seismic PGA in [0,1] g -> a
+    # perceptually-uniform magma ramp; landslide susceptibility/probability in
+    # [0,1] -> a red(high)->green(low) rdylgn_r ramp.
+    "diverging_river_seepage": ("-100,100", "rdbu"),
+    "continuous_seismic_pga": ("0,1", "magma"),
+    "continuous_landslide_susceptibility": ("0,1", "rdylgn_r"),
 }
 
 #: Safe non-empty default — never let a continuous raster fall through to an

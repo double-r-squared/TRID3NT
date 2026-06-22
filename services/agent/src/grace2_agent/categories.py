@@ -252,6 +252,13 @@ PRIMARY_CATEGORY: dict[str, str] = {
     "run_swmm_urban_flood": "hazard_modeling",
     "run_pelicun_damage_assessment": "hazard_modeling",
     "run_pelicun_with_buildings": "hazard_modeling",
+    # sprint-17 NEW engines (parallel lanes) — all are run_* hazard solvers /
+    # composers, filed alongside the other engines above.
+    "run_river_seepage_job": "hazard_modeling",
+    "run_model_river_seepage_scenario": "hazard_modeling",
+    "run_geoclaw_inundation": "hazard_modeling",
+    "run_seismic_hazard_psha": "hazard_modeling",
+    "run_landlab_susceptibility": "hazard_modeling",
     "run_solver": "hazard_modeling",
     "wait_for_completion": "hazard_modeling",
     # ---- 2. weather_atmosphere --------------------------------------------

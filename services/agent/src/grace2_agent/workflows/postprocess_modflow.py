@@ -37,16 +37,20 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from grace2_contracts.modflow_contracts import PlumeLayerURI
+from grace2_contracts.modflow_contracts import PlumeLayerURI, SeepageLayerURI
 
 logger = logging.getLogger("grace2_agent.workflows.postprocess_modflow")
 
 __all__ = [
     "PostprocessMODFLOWError",
     "postprocess_modflow",
+    "postprocess_river_seepage",
     "compute_plume_metrics",
+    "compute_seepage_metrics",
     "PLUME_DETECTION_FLOOR_MGL",
     "PLUME_STYLE_PRESET",
+    "SEEPAGE_STYLE_PRESET",
+    "GWF_CBC_FILENAME",
     "RUNS_BUCKET_DEFAULT",
 ]
 
@@ -65,6 +69,16 @@ PLUME_DETECTION_FLOOR_MGL: float = 0.001
 
 #: Concentration output filename the GWT OC package writes (gwt_adapter).
 GWT_UCN_FILENAME: str = "gwt_model.ucn"
+
+#: GWF cell-by-cell budget filename (carries the RIV leakage term). The OC
+#: BUDGET FILEOUT uses this bare name; the recursive glob captures it wherever
+#: the entrypoint reorg lands it (root, per run_modflow output_globs).
+GWF_CBC_FILENAME: str = "gwf_model.cbc"
+
+#: TiTiler style preset for the diverging gaining/losing river-seepage COG
+#: (sprint-17 J9). Registered in publish_layer._TITILER_STYLE_REGISTRY by the
+#: orchestrator's shared-appends merge as ("-2,2", "rdbu").
+SEEPAGE_STYLE_PRESET: str = "diverging_river_seepage"
 
 
 class PostprocessMODFLOWError(RuntimeError):
@@ -134,6 +148,116 @@ def compute_plume_metrics(
     plume_cells = int(np.count_nonzero(finite > floor_mgl))
     plume_area_km2 = float(plume_cells) * float(cell_area_m2) / 1_000_000.0
     return max_conc, plume_area_km2
+
+
+def compute_seepage_metrics(
+    seepage_grid: Any,
+) -> tuple[float, float, float, int]:
+    """Compute (total_leakage, gaining, losing, river_cell_count) from a 2D grid.
+
+    Pure arithmetic over the per-cell signed RIV exchange grid (m^3/day, NaN
+    where no reach cell). MF6 RIV budget sign: a positive ``q`` is flow FROM the
+    boundary INTO the cell, i.e. the river LOSES water to the aquifer (seepage
+    in, a losing reach); a negative ``q`` is flow OUT of the cell to the river,
+    i.e. the river GAINS water from the aquifer (baseflow, a gaining reach).
+
+    Returns:
+        ``(total_leakage_m3_day, gaining_m3_day, losing_m3_day, river_cell_count)``:
+          * total_leakage_m3_day: net SIGNED sum over all reach cells
+            (positive = net losing/recharging the aquifer).
+          * gaining_m3_day: total MAGNITUDE of negative (gaining) flux, >= 0.
+          * losing_m3_day: total MAGNITUDE of positive (losing) flux, >= 0.
+          * river_cell_count: number of finite (reach) cells.
+    """
+    import numpy as np  # local — caller vouched for the import path
+
+    arr = np.asarray(seepage_grid, dtype="float64")
+    if arr.size == 0:
+        return 0.0, 0.0, 0.0, 0
+    finite = arr[np.isfinite(arr)]
+    if finite.size == 0:
+        return 0.0, 0.0, 0.0, 0
+    total = float(np.sum(finite))
+    losing = float(np.sum(finite[finite > 0.0]))  # river -> aquifer
+    gaining = float(-np.sum(finite[finite < 0.0]))  # aquifer -> river (magnitude)
+    return total, gaining, losing, int(finite.size)
+
+
+def _read_riv_seepage_grid(
+    cbc_path: Path, nrow: int, ncol: int
+) -> Any:
+    """Read the GWF cbc RIV budget into a 2D per-cell signed seepage grid.
+
+    The RIV cell-by-cell budget is a list/recarray with a ``node`` (1-based
+    cell id) + ``q`` (exchange flow) field per reach cell. We scatter the
+    last-timestep ``q`` values onto an (nrow, ncol) grid (NaN elsewhere) so the
+    seepage COG renders only the reach. flopy's ``CellBudgetFile.get_data(
+    text="RIV")`` returns the recarray; the ``node`` is a flat 0-based-after-
+    decrement structured-grid index = lay*nrow*ncol + row*ncol + col.
+    """
+    try:
+        import flopy.utils  # type: ignore[import-not-found]
+        import numpy as np  # type: ignore[import-not-found]
+    except Exception as exc:  # noqa: BLE001
+        raise PostprocessMODFLOWError(
+            "SEEPAGE_OUTPUT_READ_FAILED",
+            message=f"flopy/numpy not importable: {exc}",
+            details={"cbc_path": str(cbc_path)},
+        ) from exc
+
+    try:
+        cbc = flopy.utils.CellBudgetFile(str(cbc_path))
+        record_names = {
+            (r.strip() if isinstance(r, str) else r.strip().decode())
+            for r in cbc.get_unique_record_names(decode=True)
+        }
+        if not any("RIV" in n.upper() for n in record_names):
+            raise PostprocessMODFLOWError(
+                "SEEPAGE_OUTPUT_EMPTY",
+                message=(
+                    f"no RIV budget record in {cbc_path}; "
+                    f"records present: {sorted(record_names)}"
+                ),
+                details={"cbc_path": str(cbc_path)},
+            )
+        riv_data = cbc.get_data(text="RIV")
+        if not riv_data:
+            raise PostprocessMODFLOWError(
+                "SEEPAGE_OUTPUT_EMPTY",
+                message=f"RIV budget record present but empty in {cbc_path}",
+                details={"cbc_path": str(cbc_path)},
+            )
+    except PostprocessMODFLOWError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise PostprocessMODFLOWError(
+            "SEEPAGE_OUTPUT_READ_FAILED",
+            message=f"could not read RIV budget from {cbc_path}: {exc}",
+            details={"cbc_path": str(cbc_path)},
+        ) from exc
+
+    last = riv_data[-1]
+    grid = np.full((nrow, ncol), np.nan, dtype="float64")
+    # The RIV budget recarray exposes the cell id under "node" (1-based flat).
+    try:
+        nodes = np.asarray(last["node"], dtype="int64")
+        qvals = np.asarray(last["q"], dtype="float64")
+    except Exception:  # noqa: BLE001 — list-style budget (older formats)
+        # Fall back to attribute access on a list of records.
+        nodes = np.asarray([int(r["node"]) for r in last], dtype="int64")
+        qvals = np.asarray([float(r["q"]) for r in last], dtype="float64")
+    cells_per_layer = nrow * ncol
+    for node, q in zip(nodes, qvals):
+        idx0 = int(node) - 1  # 1-based -> 0-based flat
+        local = idx0 % cells_per_layer  # collapse layers onto the 2D grid
+        row = local // ncol
+        col = local % ncol
+        if 0 <= row < nrow and 0 <= col < ncol:
+            # Accumulate (a multi-layer reach maps several cells to one 2D cell).
+            grid[row, col] = (
+                q if np.isnan(grid[row, col]) else grid[row, col] + q
+            )
+    return grid
 
 
 # --------------------------------------------------------------------------- #
@@ -314,21 +438,38 @@ def _write_reprojected_cog(
     final2d: Any,
     model_crs: str,
     geo: dict[str, Any] | None,
+    *,
+    mask_below_floor: bool = True,
 ) -> Path:
     """Write the concentration grid to an EPSG:4326 COG, reprojecting from model_crs.
 
     The grid is in the deck's projected (UTM) CRS. We build the source transform
     from the grid origin + cell size (flopy's row 0 is the NORTH row, so the
     transform's top-left is yorigin + nrow*delc), tag it ``model_crs``, then warp
-    to EPSG:4326 via rasterio's reprojection. Sub-floor cells are masked to NaN.
+    to EPSG:4326 via rasterio's reprojection.
+
+    Args:
+        mask_below_floor: when True (the plume default — BYTE-IDENTICAL to the
+            pre-J9 behavior), cells at/below ``PLUME_DETECTION_FLOOR_MGL`` are
+            masked to NaN so the COG renders only the plume. When False (the J9
+            river-seepage diverging layer), the array is written AS-IS (already
+            NaN off the reach) so negative gaining values survive — masking by a
+            positive floor would wrongly drop every gaining (negative) reach
+            cell.
     """
     import numpy as np  # type: ignore[import-not-found]
     import rasterio  # type: ignore[import-not-found]
     from rasterio.warp import Resampling, calculate_default_transform, reproject
 
     arr = np.asarray(final2d, dtype="float32")
-    # Mask clean cells (≤ floor) to NaN so the COG renders only the plume.
-    arr_masked = np.where(arr > PLUME_DETECTION_FLOOR_MGL, arr, np.nan).astype("float32")
+    if mask_below_floor:
+        # Mask clean cells (≤ floor) to NaN so the COG renders only the plume.
+        arr_masked = np.where(
+            arr > PLUME_DETECTION_FLOOR_MGL, arr, np.nan
+        ).astype("float32")
+    else:
+        # Diverging seepage: keep the array as-is (NaN already marks off-reach).
+        arr_masked = arr.astype("float32")
     nrow, ncol = arr_masked.shape
 
     if geo is not None:
@@ -426,7 +567,13 @@ def _cog_bbox_4326(cog_path: Path) -> tuple[float, float, float, float] | None:
         return None
 
 
-def _upload_cog(local_cog: Path, run_id: str, runs_bucket: str | None) -> str:
+def _upload_cog(
+    local_cog: Path,
+    run_id: str,
+    runs_bucket: str | None,
+    *,
+    cog_filename: str = "plume_concentration_4326.tif",
+) -> str:
     """Upload the EPSG:4326 plume COG to the runs bucket; return its object URI.
 
     job-0292b (sprint-14-aws): scheme-aware per ``cache.storage_scheme()``.
@@ -455,14 +602,14 @@ def _upload_cog(local_cog: Path, run_id: str, runs_bucket: str | None) -> str:
                 ),
                 details={"local_cog": str(local_cog)},
             )
-        dest = f"s3://{bucket}/{run_id}/plume_concentration_4326.tif"
+        dest = f"s3://{bucket}/{run_id}/{cog_filename}"
         try:
             from ..tools.solver import _get_s3_client
 
             with local_cog.open("rb") as fh:
                 _get_s3_client().put_object(
                     Bucket=bucket,
-                    Key=f"{run_id}/plume_concentration_4326.tif",
+                    Key=f"{run_id}/{cog_filename}",
                     Body=fh,
                     ContentType="image/tiff",
                 )
@@ -476,7 +623,7 @@ def _upload_cog(local_cog: Path, run_id: str, runs_bucket: str | None) -> str:
         return dest
 
     bucket = runs_bucket or os.environ.get("GRACE2_RUNS_BUCKET", RUNS_BUCKET_DEFAULT)
-    dest = f"gs://{bucket}/{run_id}/plume_concentration_4326.tif"
+    dest = f"gs://{bucket}/{run_id}/{cog_filename}"
     try:
         import fsspec  # type: ignore[import-not-found]
 
@@ -515,7 +662,9 @@ def _upload_cog(local_cog: Path, run_id: str, runs_bucket: str | None) -> str:
 # --------------------------------------------------------------------------- #
 
 
-def _dispatch_publish_layer(cog_uri: str, layer_id: str) -> str | None:
+def _dispatch_publish_layer(
+    cog_uri: str, layer_id: str, *, style_preset: str = PLUME_STYLE_PRESET
+) -> str | None:
     """Publish the plume COG; return the WMS URL / tile template or None.
 
     Non-fatal: a publish failure (worker SA grant, GCS read) falls back to the
@@ -546,7 +695,7 @@ def _dispatch_publish_layer(cog_uri: str, layer_id: str) -> str | None:
         wms_url = publish_layer(
             layer_uri=cog_uri,
             layer_id=layer_id,
-            style_preset=PLUME_STYLE_PRESET,
+            style_preset=style_preset,
         )
         logger.info("publish_layer succeeded layer_id=%s wms_url=%s", layer_id, wms_url)
         return wms_url
@@ -641,3 +790,202 @@ def postprocess_modflow(
         max_concentration_mgl=max_conc,
         plume_area_km2=plume_area_km2,
     )
+
+
+# --------------------------------------------------------------------------- #
+# River-seepage postprocess (sprint-17 J9) — GWF cbc RIV budget -> seepage COG
+# --------------------------------------------------------------------------- #
+
+
+def _resolve_gwf_cbc_path(run_outputs_uri: str) -> Path:
+    """Locate the GWF cell-by-cell budget (``gwf_model.cbc``) from a run output.
+
+    Mirrors ``_resolve_ucn_path`` but targets the GWF budget file that carries
+    the RIV leakage term. Local (``file://`` / bare path): search the dir tree.
+    ``s3://`` / ``gs://``: fetch the cbc into a temp dir via the same boto3 /
+    fsspec seams the UCN resolver uses.
+    """
+    if run_outputs_uri.startswith("s3://"):
+        from ..tools.solver import _get_s3_client
+
+        tmpdir = Path(tempfile.mkdtemp(prefix="modflow-cbc-"))
+        local_target = tmpdir / GWF_CBC_FILENAME
+        source = (
+            run_outputs_uri
+            if run_outputs_uri.endswith(".cbc")
+            else run_outputs_uri.rstrip("/") + f"/{GWF_CBC_FILENAME}"
+        )
+        bucket_name, _, obj_key = source[len("s3://"):].partition("/")
+        try:
+            import shutil as _shutil
+
+            resp = _get_s3_client().get_object(Bucket=bucket_name, Key=obj_key)
+            with local_target.open("wb") as fh:
+                _shutil.copyfileobj(resp["Body"], fh)
+        except Exception as exc:  # noqa: BLE001
+            raise PostprocessMODFLOWError(
+                "SEEPAGE_OUTPUT_READ_FAILED",
+                message=f"could not fetch GWF cbc from {source}: {exc}",
+                details={"run_outputs_uri": run_outputs_uri},
+            ) from exc
+        return local_target
+    if run_outputs_uri.startswith("gs://"):
+        try:
+            import fsspec  # type: ignore[import-not-found]
+
+            fs = fsspec.filesystem("gcs")
+            tmpdir = Path(tempfile.mkdtemp(prefix="modflow-cbc-"))
+            local_target = tmpdir / GWF_CBC_FILENAME
+            candidate = (
+                run_outputs_uri
+                if run_outputs_uri.endswith(".cbc")
+                else f"{run_outputs_uri.rstrip('/')}/{GWF_CBC_FILENAME}"
+            )
+            fs.get(candidate, str(local_target))
+            return local_target
+        except Exception as exc:  # noqa: BLE001
+            raise PostprocessMODFLOWError(
+                "SEEPAGE_OUTPUT_READ_FAILED",
+                message=f"could not fetch GWF cbc from {run_outputs_uri}: {exc}",
+                details={"run_outputs_uri": run_outputs_uri},
+            ) from exc
+
+    p = Path(run_outputs_uri.replace("file://", ""))
+    if p.is_file() and p.suffix == ".cbc" and "gwf" in p.name.lower():
+        return p
+    if p.is_dir():
+        hits = sorted(glob.glob(str(p / "**" / GWF_CBC_FILENAME), recursive=True))
+        if not hits:
+            # any GWF cbc (defensive: the OC stem may differ).
+            hits = sorted(
+                g
+                for g in glob.glob(str(p / "**" / "*.cbc"), recursive=True)
+                if "gwf" in Path(g).name.lower()
+            )
+        if hits:
+            return Path(hits[0])
+    raise PostprocessMODFLOWError(
+        "SEEPAGE_OUTPUT_READ_FAILED",
+        message=f"no {GWF_CBC_FILENAME} found under {run_outputs_uri}",
+        details={"run_outputs_uri": run_outputs_uri},
+    )
+
+
+def postprocess_river_seepage(
+    run_outputs_uri: str,
+    *,
+    run_id: str,
+    model_crs: str,
+    deck_dir: str | None = None,
+    runs_bucket: str | None = None,
+    publish: bool = True,
+) -> SeepageLayerURI:
+    """Convert a MODFLOW GWF run's RIV budget into a ``SeepageLayerURI``.
+
+    Reads the GWF cell-by-cell budget (``gwf_model.cbc``) RIV leakage term,
+    scatters the per-reach-cell signed exchange flux onto the model grid,
+    reprojects to a DIVERGING EPSG:4326 gaining/losing-seepage COG, computes the
+    leakage narration scalars, uploads + (optionally) publishes the COG, and
+    returns the typed seepage layer.
+
+    Sign convention (MF6 RIV budget): positive ``q`` = flow INTO the cell from
+    the river (LOSING reach, seepage INTO the aquifer); negative ``q`` = flow OUT
+    to the river (GAINING reach, baseflow). The diverging ``rdbu`` ramp centred
+    on 0 renders losing (positive) one colour and gaining (negative) the other.
+
+    Args:
+        run_outputs_uri: the run output location (local dir / ``file://`` for the
+            local path, ``s3://`` / ``gs://`` for the cloud path; finds
+            ``gwf_model.cbc``).
+        run_id: the run identifier the COG is keyed under in the runs bucket.
+        model_crs: the deck's projected CRS (e.g. ``"EPSG:32617"``).
+        deck_dir: optional on-disk deck dir for grid georegistration + the grid
+            (nrow/ncol) used to scatter the budget. When None the COG uses an
+            identity transform and the grid shape is inferred from the budget.
+        runs_bucket: optional override for the runs bucket name.
+        publish: when True, dispatch ``publish_layer`` (mocked in tests).
+
+    Returns:
+        ``SeepageLayerURI`` with ``total_leakage_m3_day`` + ``gaining_m3_day`` +
+        ``losing_m3_day`` + ``river_cell_count`` and a published WMS / tile URI
+        (else the COG URI).
+
+    Raises:
+        PostprocessMODFLOWError: any read / reproject / write / upload step
+            failed; ``error_code`` identifies the stage.
+    """
+    cbc_path = _resolve_gwf_cbc_path(run_outputs_uri)
+    geo = _grid_georegistration_from_deck(deck_dir)
+    nrow = int(geo["nrow"]) if geo is not None else None
+    ncol = int(geo["ncol"]) if geo is not None else None
+    if nrow is None or ncol is None:
+        # No deck georegistration: infer a square grid from the budget node ids.
+        nrow, ncol = _infer_grid_shape_from_cbc(cbc_path)
+
+    seepage = _read_riv_seepage_grid(cbc_path, nrow, ncol)
+    total, gaining, losing, river_cell_count = compute_seepage_metrics(seepage)
+    logger.info(
+        "postprocess_river_seepage run_id=%s total_leakage_m3_day=%.6g "
+        "gaining_m3_day=%.6g losing_m3_day=%.6g cells=%d",
+        run_id,
+        total,
+        gaining,
+        losing,
+        river_cell_count,
+    )
+
+    cog_path = _write_reprojected_cog(
+        seepage, model_crs, geo, mask_below_floor=False
+    )
+    bbox_4326 = _cog_bbox_4326(cog_path)
+    cog_uri = _upload_cog(
+        cog_path,
+        run_id,
+        runs_bucket,
+        cog_filename="river_seepage_4326.tif",
+    )
+
+    layer_id = f"river-seepage-{run_id}"
+    final_uri = cog_uri
+    if publish:
+        wms_url = _dispatch_publish_layer(
+            cog_uri, layer_id, style_preset=SEEPAGE_STYLE_PRESET
+        )
+        if wms_url:
+            final_uri = wms_url
+
+    return SeepageLayerURI(
+        layer_id=layer_id,
+        name="River Seepage (gaining / losing reach)",
+        layer_type="raster",
+        uri=final_uri,
+        style_preset=SEEPAGE_STYLE_PRESET,
+        role="primary",
+        units="m^3/day",
+        bbox=bbox_4326,
+        total_leakage_m3_day=total,
+        gaining_m3_day=gaining,
+        losing_m3_day=losing,
+        river_cell_count=river_cell_count,
+    )
+
+
+def _infer_grid_shape_from_cbc(cbc_path: Path) -> tuple[int, int]:
+    """Best-effort grid (nrow, ncol) when no deck georegistration is available.
+
+    The cbc reader needs a grid shape to scatter the RIV nodes. flopy's
+    ``CellBudgetFile`` exposes ``nrow``/``ncol`` header attributes for a
+    structured grid; fall back to a 40x40 demo grid (gwt_adapter default) if
+    they are absent.
+    """
+    try:
+        import flopy.utils  # type: ignore[import-not-found]
+
+        cbc = flopy.utils.CellBudgetFile(str(cbc_path))
+        nrow = int(getattr(cbc, "nrow", 0) or 0)
+        ncol = int(getattr(cbc, "ncol", 0) or 0)
+        if nrow > 0 and ncol > 0:
+            return nrow, ncol
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("could not infer grid shape from %s: %s", cbc_path, exc)
+    return 40, 40

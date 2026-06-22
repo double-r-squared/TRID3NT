@@ -480,6 +480,119 @@ def _reorganize_into_subdirs(
 
 
 # --------------------------------------------------------------------------- #
+# River-geometry resolution (sprint-17 J9) — FGB/GeoJSON URI -> lon/lat vertices
+# --------------------------------------------------------------------------- #
+
+
+def _read_vector_bytes(uri: str) -> bytes:
+    """Read a vector artifact's bytes from s3:// / gs:// / file:// / local path."""
+    if uri.startswith("s3://"):
+        from ..tools.cache import read_object_bytes_s3
+
+        return read_object_bytes_s3(uri)
+    if uri.startswith("gs://"):
+        import fsspec  # type: ignore[import-not-found]
+
+        with fsspec.open(uri, "rb") as fh:  # type: ignore[no-untyped-call]
+            return fh.read()
+    path = uri.replace("file://", "")
+    return Path(path).read_bytes()
+
+
+def resolve_river_polyline_lonlat(
+    river_geometry_uri: str,
+    *,
+    max_vertices: int = 200,
+) -> list[tuple[float, float]]:
+    """Resolve a river-geometry artifact (FGB/GeoJSON) to ``(lon, lat)`` vertices.
+
+    Reads the vector artifact (the ``fetch_river_geometry`` FlatGeobuf, or a
+    GeoJSON), reprojects to EPSG:4326, picks the LONGEST flowline (the main
+    reach to drape onto the grid), and returns its vertices as ``(lon, lat)``
+    in path order, downsampled to at most ``max_vertices`` points (the draping
+    sub-step sampler fills the gaps, so a coarse polyline still touches every
+    crossed cell).
+
+    Raises:
+        MODFLOWWorkflowError("MODFLOW_RIVER_GEOMETRY_FAILED"): the artifact
+            could not be read / had no usable LineString geometry.
+    """
+    try:
+        import geopandas as gpd  # type: ignore[import-not-found]
+        from shapely.geometry import LineString, MultiLineString  # type: ignore[import-not-found]
+        from shapely.ops import linemerge  # type: ignore[import-not-found]
+    except Exception as exc:  # noqa: BLE001
+        raise MODFLOWWorkflowError(
+            "MODFLOW_RIVER_GEOMETRY_FAILED",
+            message=f"geopandas/shapely not importable for river draping: {exc}",
+            details={"river_geometry_uri": river_geometry_uri},
+        ) from exc
+
+    suffix = ".fgb" if not river_geometry_uri.lower().endswith(
+        (".json", ".geojson")
+    ) else ".geojson"
+    tmp = Path(tempfile.mkdtemp(prefix="riv-geom-")) / f"river{suffix}"
+    try:
+        tmp.write_bytes(_read_vector_bytes(river_geometry_uri))
+        gdf = gpd.read_file(str(tmp), engine="pyogrio")
+    except Exception as exc:  # noqa: BLE001
+        raise MODFLOWWorkflowError(
+            "MODFLOW_RIVER_GEOMETRY_FAILED",
+            message=f"could not read river geometry from {river_geometry_uri}: {exc}",
+            details={"river_geometry_uri": river_geometry_uri},
+        ) from exc
+
+    try:
+        gdf = gdf[gdf.geometry.notna()]
+        if gdf.crs is None:
+            gdf = gdf.set_crs("EPSG:4326")
+        elif str(gdf.crs).upper() not in {"EPSG:4326", "WGS84"}:
+            gdf = gdf.to_crs("EPSG:4326")
+    except Exception:  # noqa: BLE001
+        pass
+
+    # Collect all (Multi)LineString parts, merge, pick the longest line.
+    lines: list = []
+    for geom in gdf.geometry:
+        if geom is None:
+            continue
+        if isinstance(geom, LineString):
+            lines.append(geom)
+        elif isinstance(geom, MultiLineString):
+            lines.extend(list(geom.geoms))
+    if not lines:
+        raise MODFLOWWorkflowError(
+            "MODFLOW_RIVER_GEOMETRY_FAILED",
+            message=f"river geometry {river_geometry_uri} has no LineString features",
+            details={"river_geometry_uri": river_geometry_uri},
+        )
+    try:
+        merged = linemerge(lines)
+        if isinstance(merged, MultiLineString):
+            longest = max(merged.geoms, key=lambda ln: ln.length)
+        else:
+            longest = merged
+    except Exception:  # noqa: BLE001 — fall back to the single longest raw line
+        longest = max(lines, key=lambda ln: ln.length)
+
+    coords = [(float(x), float(y)) for (x, y) in longest.coords]
+    if len(coords) > max_vertices:
+        step = max(1, len(coords) // max_vertices)
+        coords = coords[::step]
+        if coords[-1] != (float(longest.coords[-1][0]), float(longest.coords[-1][1])):
+            coords.append(
+                (float(longest.coords[-1][0]), float(longest.coords[-1][1]))
+            )
+    if len(coords) < 2:
+        raise MODFLOWWorkflowError(
+            "MODFLOW_RIVER_GEOMETRY_FAILED",
+            message=f"river geometry {river_geometry_uri} reduced to < 2 vertices",
+            details={"river_geometry_uri": river_geometry_uri},
+        )
+    return coords
+
+
+# --------------------------------------------------------------------------- #
 # Deck build + GCS staging
 # --------------------------------------------------------------------------- #
 
@@ -504,6 +617,10 @@ class DeckStaging:
     spill_lon: float
     output_globs: list[str]
     manifest_inputs: list[dict[str, str]] = field(default_factory=list)
+    # sprint-17 J9 river-coupling: True iff a RIV package was written (the tool
+    # wrapper then runs postprocess_river_seepage in addition to the plume).
+    river_coupled: bool = False
+    river_cell_count: int = 0
 
 
 def _compose_manifest(
@@ -574,6 +691,25 @@ def build_and_stage_modflow_deck(
     flat_dir.mkdir(parents=True, exist_ok=True)
     deck_dir.mkdir(parents=True, exist_ok=True)
 
+    # --- 1a. River-coupling (sprint-17 J9): resolve the polyline -------------
+    # When run_args carries a river_geometry_uri, read the flowline into the
+    # (lon, lat) vertices the adapter drapes onto the grid. A resolution failure
+    # is typed + fatal (the user asked for a river-coupled run) rather than a
+    # silent fall-through to a plain spill deck.
+    river_kwargs: dict[str, Any] = {}
+    river_uri = getattr(run_args, "river_geometry_uri", None)
+    if river_uri:
+        polyline = resolve_river_polyline_lonlat(river_uri)
+        river_kwargs = dict(
+            river_polyline_lonlat=polyline,
+            river_stage_m=getattr(run_args, "river_stage_m", None),
+            river_stage_depth_m=getattr(run_args, "river_stage_depth_m", None),
+            streambed_conductance_m2_day=getattr(
+                run_args, "streambed_conductance_m2_day", None
+            ),
+            along_river_source=bool(getattr(run_args, "along_river_source", False)),
+        )
+
     # --- 1. Build the FLAT deck via the engine adapter ----------------------
     try:
         manifest_obj = build_modflow_deck(
@@ -585,6 +721,7 @@ def build_and_stage_modflow_deck(
             porosity=run_args.porosity,
             workdir=str(flat_dir),
             write=True,
+            **river_kwargs,
         )
     except MODFLOWWorkflowError:
         raise
@@ -598,6 +735,8 @@ def build_and_stage_modflow_deck(
     model_crs = manifest_obj.model_crs
     gwf_name = manifest_obj.gwf_name
     gwt_name = manifest_obj.gwt_name
+    river_coupled = bool(getattr(manifest_obj, "river_coupled", False))
+    river_cell_count = int(getattr(manifest_obj, "river_cell_count", 0))
 
     # --- 2. Reorganise FLAT -> gwf/ + gwt/ subdir layout --------------------
     try:
@@ -706,6 +845,8 @@ def build_and_stage_modflow_deck(
         spill_lon=float(manifest_obj.spill_lon),
         output_globs=output_globs,
         manifest_inputs=manifest_inputs,
+        river_coupled=river_coupled,
+        river_cell_count=river_cell_count,
     )
 
 

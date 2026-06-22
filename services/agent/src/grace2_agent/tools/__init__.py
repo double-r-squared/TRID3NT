@@ -289,6 +289,17 @@ from . import run_swmm_tool  # noqa: E402,F401 — sprint-16 P4 (Path A): regist
 from . import spatial_input_tool  # noqa: E402,F401 — FR-AS-10/FR-WC-16: registers request_spatial_input (pauses the turn, opens the terra-draw surface, returns the role-split drawn geometry — AOI bbox + engine-ready barriers FeatureCollection for run_swmm_urban_flood)
 from . import code_exec_tool  # noqa: E402,F401 — job-0233 (sprint-13 Stage 2): registers code_exec_request (user-confirmed Python sandbox; conversational data-analysis escape hatch)
 
+# sprint-17 NEW engines (parallel lanes) — bridge tools wired into the surface.
+from . import run_river_seepage_tool  # noqa: E402,F401 — sprint-17: registers run_river_seepage_job (MODFLOW RIV-coupled river<->aquifer seepage + along-river plume bridge)
+from . import run_geoclaw_tool  # noqa: E402,F401 — sprint-17: registers run_geoclaw_inundation (GeoClaw dam-break / coastal inundation bridge; imports model_dambreak_geoclaw_scenario)
+from . import run_openquake_tool  # noqa: E402,F401 — sprint-17: registers run_seismic_hazard_psha (OpenQuake PSHA seismic-hazard bridge; imports model_seismic_hazard_scenario)
+from . import run_landlab_tool  # noqa: E402,F401 — sprint-17: registers run_landlab_susceptibility (Landlab landslide-probability / overland-flow bridge; imports model_landslide_scenario)
+# The river-seepage COMPOSER carries its OWN @register_tool (run_model_river_seepage_scenario);
+# its bridge tool above does NOT import it, so register it explicitly (mirrors the
+# compute_impact_envelope composer import below). The MODFLOW-seepage verifier flagged
+# this composer as never-registered — this import is the fix.
+from ..workflows import model_river_seepage_scenario as _model_river_seepage_scenario  # noqa: E402,F401 — sprint-17: registers run_model_river_seepage_scenario (LLM-facing river-seepage composer)
+
 # job-B5 (Wave 4.10 Stage 2): the 12-category registry + the two meta-tools
 # (``list_categories`` + ``list_tools_in_category``) live alongside the rest
 # of the tool surface. Importing the module fires its two ``@register_tool``
