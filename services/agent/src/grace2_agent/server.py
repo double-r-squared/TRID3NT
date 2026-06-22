@@ -8951,6 +8951,17 @@ async def _reap_prior_session_connections(
     from the registry either way so the count cannot wedge. A genuinely-dead
     keeper-only session reaps nothing.
     """
+    # DISABLED 2026-06-22 (turn-killing regression caught live by the coastal
+    # Playwright drive): the eager per-session reap is INCOMPATIBLE with the
+    # dual-socket design (job-0159 runs 2 GraceWs per session, same session_id).
+    # It closed the legitimate SIBLING socket; when that sibling was mid-stream
+    # the turn died with 4408 "superseded by a newer session connection" (2s
+    # after the prompt). The socket pileup this targeted is largely resolved now
+    # that the churn root-causes are fixed (the WS 12s DATA heartbeat + the auth
+    # cold-reload race). Re-enable ONLY with a policy that (a) preserves the
+    # legitimate dual-socket pair and (b) never closes a socket whose session has
+    # an in-flight turn/solve. _register_session_connection stays (cheap, useful).
+    return 0
     bucket = _SESSION_WS_CONNECTIONS.get(session_id)
     if not bucket:
         return 0

@@ -162,6 +162,7 @@ def _clean_registries():
 # =========================================================================== #
 
 
+@pytest.mark.skip(reason="JOB B eager reaping DISABLED 2026-06-22: dual-socket-unsafe - reaped the legitimate sibling socket and killed in-flight turns with 4408; re-enable only dual-socket-aware + in-flight-safe. See server._reap_prior_session_connections note.")
 @pytest.mark.asyncio
 async def test_second_resume_closes_prior_socket_not_itself() -> None:
     """A 2nd session-resume from a NEW socket of the same session closes the
@@ -193,6 +194,7 @@ async def test_second_resume_closes_prior_socket_not_itself() -> None:
     assert server.session_connection_count(session_id) == 1
 
 
+@pytest.mark.skip(reason="JOB B eager reaping DISABLED 2026-06-22: dual-socket-unsafe - reaped the legitimate sibling socket and killed in-flight turns with 4408; re-enable only dual-socket-aware + in-flight-safe. See server._reap_prior_session_connections note.")
 @pytest.mark.asyncio
 async def test_connections_do_not_pile_up_across_many_reconnects() -> None:
     """Simulate ~10 navigate-out/back cycles: ``_SESSION_WS_CONNECTIONS`` does
@@ -214,6 +216,7 @@ async def test_connections_do_not_pile_up_across_many_reconnects() -> None:
     assert sockets[-1].closed is False
 
 
+@pytest.mark.skip(reason="JOB B eager reaping DISABLED 2026-06-22: dual-socket-unsafe - reaped the legitimate sibling socket and killed in-flight turns with 4408; re-enable only dual-socket-aware + in-flight-safe. See server._reap_prior_session_connections note.")
 @pytest.mark.asyncio
 async def test_reap_is_best_effort_when_prior_close_raises() -> None:
     """A prior socket that raises on close (already closing) is still dropped
