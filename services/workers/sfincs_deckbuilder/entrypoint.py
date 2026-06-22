@@ -677,15 +677,53 @@ def _read_gdf(uri: str | None, scratch: Path, name: str):
 _read_polygon_gdf = _read_gdf
 
 
+#: Absolute physical cap (metres) on a coastal topo-bathymetry elevation. Any
+#: |z| at or above this is a nodata/fill sentinel leak, NOT a real elevation:
+#: real coastal topobathy is a narrow band (roughly -50 .. +50 m for the North
+#: Star AOIs), so 9000 m sits FAR above any genuine land/sea-floor value while
+#: still catching the common fill sentinels (9999 / -9999 / 1e20 / 3.4e38).
+_TOPOBATHY_SENTINEL_ABS = 9000.0
+
+
+def _mask_topobathy_sentinels(samples, band_nodata):
+    """Mask declared-nodata + common fill sentinels in a z array to NaN.
+
+    Out-of-coverage / fill cells must become NaN (so the sfincs mask drops them
+    to INACTIVE) rather than leak as a giant +9999 m "wall" into the solve
+    (the live Mexico-Beach bug: ``z range -33.66 .. 9999.00 m``). We mask, in
+    order:
+      * the COG's DECLARED band nodata (``ds.nodata``), when set; and
+      * any non-finite value (NaN / +-inf), and
+      * defensively, any ``|z| >= _TOPOBATHY_SENTINEL_ABS`` — this catches the
+        unflagged 9999 / -9999 / 1e20 / float32-max sentinels a source raster
+        can carry even when ``ds.nodata`` is None or wrong.
+    Pure-numpy so it is unit-testable without cht/rasterio.
+    """
+    import numpy as np  # type: ignore
+
+    samples = np.asarray(samples, dtype="float32")
+    if band_nodata is not None and np.isfinite(band_nodata):
+        samples = np.where(
+            samples == np.float32(band_nodata), np.float32("nan"), samples
+        )
+    # Defensive: any non-finite OR out-of-physical-band magnitude is a sentinel.
+    sentinel = ~np.isfinite(samples) | (
+        np.abs(samples) >= np.float32(_TOPOBATHY_SENTINEL_ABS)
+    )
+    samples = np.where(sentinel, np.float32("nan"), samples)
+    return samples.astype("float32")
+
+
 def _sample_topobathy(cog_local: Path, xc, yc, target_epsg: int):
     """Sample the topobathy COG at quadtree face centres -> z array (float32).
 
     Reprojects face centres (in target_epsg, the grid CRS) into the COG CRS if
     they differ (a no-op when the topobathy COG is already in the grid CRS, the
-    North Star path), then point-samples (nearest). nodata / off-tile cells fall
-    back to a high+dry land sentinel (+9999 m) so the active-cell zmax window
-    masks them OUT rather than treating them as deep water (positive-up, NAVD88,
-    matching fetch_topobathy's single-band float32 convention).
+    North Star path), then point-samples (nearest). nodata / off-tile cells AND
+    any unflagged fill sentinel (9999 / -9999 / 1e20 / |z|>=9000) are masked to
+    NaN so the active-cell mask drops them to INACTIVE — they must NOT survive
+    as a giant +9999 m wall in the domain (positive-up, NAVD88, matching
+    fetch_topobathy's single-band float32 convention).
     """
     import numpy as np  # type: ignore
     import rasterio  # type: ignore
@@ -704,12 +742,11 @@ def _sample_topobathy(cog_local: Path, xc, yc, target_epsg: int):
             dtype="float32",
             count=len(xs),
         )
-    if band_nodata is not None:
-        samples = np.where(samples == np.float32(band_nodata), np.nan, samples)
-    # Replace NaN (off-tile / nodata) with a high+dry sentinel so the active
-    # mask (zmax window) drops them instead of treating them as deep water.
-    samples = np.where(np.isnan(samples), np.float32(9999.0), samples)
-    return samples.astype("float32")
+    # Mask declared nodata + common fill sentinels -> NaN (inactive). NaN is
+    # deliberately PRESERVED here (NOT re-filled with 9999): cht's mask.build
+    # treats a NaN bed cell as out-of-domain and drops it to mask=0, exactly the
+    # behaviour we want for out-of-coverage offshore cells past CUDEM.
+    return _mask_topobathy_sentinels(samples, band_nodata)
 
 
 # --------------------------------------------------------------------------- #

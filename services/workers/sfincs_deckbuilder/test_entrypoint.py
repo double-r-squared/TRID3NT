@@ -66,6 +66,13 @@ def _geo_stack_available() -> bool:
     )
 
 
+def _rasterio_available() -> bool:
+    """True when numpy + rasterio are importable (the bathymetry-sampler test)."""
+    return all(
+        importlib.util.find_spec(m) is not None for m in ("numpy", "rasterio")
+    )
+
+
 # Pre-import the heavy scientific stack ONCE at module load (when present) so it
 # stays cached in sys.modules for the whole process. numpy/scipy C-extensions
 # cannot be initialised twice per process, so a later mock.patch.dict that
@@ -781,6 +788,118 @@ class MeshGeojsonSerializationTests(unittest.TestCase):
             self.assertEqual(fc["features"], [])
             self.assertTrue(provenance["mesh"]["empty"])
             self.assertEqual(provenance["mesh"]["n_features"], 0)
+
+
+@unittest.skipUnless(
+    _rasterio_available(),
+    "numpy/rasterio not importable (bathymetry-sampler test)",
+)
+class BathymetrySamplerNodataTests(unittest.TestCase):
+    """The 9999-nodata leak fix: ``_sample_topobathy`` MUST mask declared
+    nodata AND unflagged fill sentinels (9999 / -9999 / 1e20 / |z|>=9000) to
+    NaN so out-of-coverage cells become INACTIVE, never a +9999 m wall.
+
+    Regression for the live Mexico-Beach bug: the quadtree worker logged
+    ``bathymetry sampled: z range -33.66 .. 9999.00 m`` because off-CUDEM
+    offshore fill was sampled as a real +9999 m elevation.
+    """
+
+    def _write_cog(self, path, arr, *, nodata, epsg=32616):
+        import numpy as np
+        import rasterio
+        from rasterio.transform import from_origin
+
+        arr = np.asarray(arr, dtype="float32")
+        h, w = arr.shape
+        # 100 m pixels anchored in UTM 16N (Mexico Beach zone).
+        transform = from_origin(600000.0, 3200000.0 + h * 100.0, 100.0, 100.0)
+        with rasterio.open(
+            path, "w", driver="GTiff", height=h, width=w, count=1,
+            dtype="float32", crs=f"EPSG:{epsg}", transform=transform,
+            nodata=nodata,
+        ) as dst:
+            dst.write(arr, 1)
+
+    def _pixel_centres(self, path):
+        """Return (xc, yc) lists at each pixel centre of the test COG."""
+        import numpy as np
+        import rasterio
+
+        with rasterio.open(path) as ds:
+            rows, cols = np.mgrid[0:ds.height, 0:ds.width]
+            xs, ys = rasterio.transform.xy(
+                ds.transform, rows.ravel(), cols.ravel()
+            )
+        return list(xs), list(ys)
+
+    def test_pure_sentinel_masker(self):
+        """The pure-numpy helper masks declared nodata + all big sentinels."""
+        import numpy as np
+
+        z = np.array(
+            [-33.66, -5.0, 0.0, 4.2, 9999.0, -9999.0, 1e20, -1e20, np.nan],
+            dtype="float32",
+        )
+        # Declared band nodata = -9999.0 (one of the values above).
+        out = ep._mask_topobathy_sentinels(z, -9999.0)
+        # Real coastal elevations survive.
+        self.assertAlmostEqual(float(out[0]), -33.66, places=2)
+        self.assertAlmostEqual(float(out[1]), -5.0, places=2)
+        self.assertAlmostEqual(float(out[2]), 0.0, places=2)
+        self.assertAlmostEqual(float(out[3]), 4.2, places=2)
+        # Every sentinel / non-finite -> NaN (declared nodata, +9999, +-1e20, NaN).
+        for i in (4, 5, 6, 7, 8):
+            self.assertTrue(np.isnan(out[i]), f"index {i} should be NaN: {out[i]}")
+
+    def test_sampler_masks_9999_patch_with_no_declared_nodata(self):
+        """The exact live failure: a 9999 fill patch with the COG nodata flag
+        UNSET (None) must still be masked to NaN, not sampled as +9999 m."""
+        import numpy as np
+
+        with tempfile.TemporaryDirectory() as d:
+            cog = Path(d) / "topobathy.tif"
+            # 4x4: a real sloping coastal band (-30..+5 m) with a 2x2 offshore
+            # 9999 fill patch in the top-left and nodata flag deliberately UNSET.
+            arr = np.array([
+                [9999.0, 9999.0, -10.0, -5.0],
+                [9999.0, 9999.0, -8.0, -3.0],
+                [-30.0, -20.0, -2.0, 1.0],
+                [-25.0, -15.0, 0.0, 5.0],
+            ], dtype="float32")
+            self._write_cog(cog, arr, nodata=None)
+            xc, yc = self._pixel_centres(cog)
+            z = ep._sample_topobathy(cog, xc, yc, 32616)
+            z = np.asarray(z, dtype="float32")
+            # The 4 fill cells (the 2x2 top-left patch) are NaN -> inactive.
+            self.assertEqual(int(np.isnan(z).sum()), 4)
+            # No +9999 wall survives.
+            self.assertFalse((z >= 9000.0).any(), "9999 fill leaked into z")
+            # The real coastal band survives intact.
+            finite = z[np.isfinite(z)]
+            self.assertEqual(finite.size, 12)
+            self.assertAlmostEqual(float(np.nanmin(z)), -30.0, places=2)
+            self.assertAlmostEqual(float(np.nanmax(z)), 5.0, places=2)
+
+    def test_sampler_masks_declared_nodata(self):
+        """A COG with a DECLARED nodata (e.g. -9999) masks those cells to NaN
+        and leaves the real band — the corrected z-range is physical."""
+        import numpy as np
+
+        with tempfile.TemporaryDirectory() as d:
+            cog = Path(d) / "topobathy.tif"
+            arr = np.array([
+                [-9999.0, -9999.0, -12.0],
+                [-9999.0, -6.0, -2.0],
+                [-30.0, -1.0, 8.0],
+            ], dtype="float32")
+            self._write_cog(cog, arr, nodata=-9999.0)
+            xc, yc = self._pixel_centres(cog)
+            z = ep._sample_topobathy(cog, xc, yc, 32616)
+            z = np.asarray(z, dtype="float32")
+            self.assertEqual(int(np.isnan(z).sum()), 3)
+            self.assertAlmostEqual(float(np.nanmin(z)), -30.0, places=2)
+            self.assertAlmostEqual(float(np.nanmax(z)), 8.0, places=2)
+            self.assertFalse((np.abs(z[np.isfinite(z)]) >= 9000.0).any())
 
 
 @unittest.skipUnless(

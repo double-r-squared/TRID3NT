@@ -338,6 +338,66 @@ def test_merge_cudem_wins_on_coast_and_output_contract() -> None:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
+def test_merge_masks_unflagged_9999_sentinel_and_sets_nodata() -> None:
+    """The 9999-nodata leak fix (fetch_topobathy half): a source raster carrying
+    an UNFLAGGED 9999 fill (ds.nodata NOT declaring it) must NOT leak into the
+    merged COG as a giant +9999 m wall, and the emitted COG MUST carry a real
+    nodata flag (NaN) so downstream readers mask it.
+
+    Regression for the live Mexico-Beach bug: off-coverage offshore fill leaked
+    as +9999 onto the SFINCS mesh. The merge defensively masks |z| >= 9000.
+    """
+    tmpdir = tempfile.mkdtemp(prefix="grace2_topobathy_sentinel_")
+    cudem_path = os.path.join(tmpdir, "cudem.tif")
+    try:
+        # CUDEM with a 9999 fill patch in the EAST half BUT ds.nodata left at a
+        # different value (-99999) so .filled() does NOT catch the 9999 — the
+        # exact unflagged-sentinel condition. West half is real bathy (-8 m).
+        col = np.arange(40)[None, :].repeat(40, axis=0)
+        east_half = col >= 20
+        arr_fill = np.full((40, 40), -8.0, dtype="float32")
+        arr_fill[east_half] = 9999.0  # unflagged sentinel (nodata is -99999)
+        west, south, east, north = _SMOKE_BBOX
+        res_x = (east - west) / 40
+        res_y = (north - south) / 40
+        with rasterio.open(
+            cudem_path, "w", driver="GTiff", height=40, width=40, count=1,
+            dtype="float32", crs="EPSG:4326",
+            transform=from_origin(west, north, res_x, res_y),
+            nodata=-99999.0,
+        ) as dst:
+            dst.write(arr_fill, 1)
+
+        cog_bytes, bathy_present, count = _build_merged_topobathy(
+            cudem_vsicurl_paths=[cudem_path],
+            land_local_path=None,
+            datum_offsets=[0.0],
+            bbox=_SMOKE_BBOX,
+            target_crs=TARGET_CRS,
+        )
+        assert bathy_present is True and count == 1
+
+        out = os.path.join(tmpdir, "out.tif")
+        with open(out, "wb") as fh:
+            fh.write(cog_bytes)
+        with rasterio.open(out) as ds:
+            # COG nodata flag MUST be set (NaN) so downstream masks the holes.
+            assert ds.nodata is not None and np.isnan(ds.nodata), (
+                "emitted COG must declare a nodata flag (NaN)"
+            )
+            data = ds.read(1, masked=True)
+        finite = data.compressed()
+        assert finite.size > 0
+        # No +9999 wall survives anywhere in the merged surface.
+        assert finite.max() < 9000.0, "unflagged 9999 sentinel leaked into COG"
+        # The real west-half bathy band survives intact.
+        assert finite.min() == pytest.approx(-8.0, abs=1.5)
+    finally:
+        import shutil
+
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
 def test_merge_raises_empty_when_no_sources() -> None:
     with pytest.raises(TopobathyEmptyError):
         _build_merged_topobathy(

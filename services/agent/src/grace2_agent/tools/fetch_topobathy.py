@@ -186,6 +186,13 @@ _BBOX_DECIMALS = 6
 #: Single shared style preset (same continuous-DEM ramp as fetch_dem).
 _STYLE_PRESET = "continuous_dem"
 
+#: Absolute physical cap (metres) on a coastal topo-bathymetry elevation. Any
+#: |z| at or above this is an UNFLAGGED fill/nodata sentinel leak, NOT a real
+#: elevation (real coastal topobathy is roughly -50 .. +50 m): catches the
+#: common 9999 / -9999 / 1e20 / float32-max sentinels even when a source
+#: raster's ds.nodata does not declare them. Masked to NaN before the merge.
+_TOPOBATHY_SENTINEL_ABS = 9000.0
+
 #: GDAL no-sign-request env for anonymous public-S3 /vsicurl/ reads — mirrors
 #: the scoped rasterio.Env in data_fetch.py:289.
 _VSICURL_ENV_KW = dict(
@@ -895,6 +902,19 @@ def _merge_sources_rasterio(
                     # the warp's NaN dst_nodata is consistent and no sentinel
                     # (-9999 / -99999) leaks through bilinear blending.
                     src_arr = src_band.filled(np.nan).astype("float32")
+                    # DEFENSIVE: a source raster can carry an UNFLAGGED fill
+                    # sentinel (9999 / -9999 / 1e20 / float32-max) that ds.nodata
+                    # does not declare, so .filled() misses it. Such a value
+                    # bilinear-blends into a giant +-9999 m wall in the merge and
+                    # then leaks onto the SFINCS mesh (the live Mexico-Beach bug:
+                    # "z range -33.66 .. 9999.00 m"). Mask any out-of-physical-band
+                    # magnitude (|z| >= cap) to NaN here so the COG carries only a
+                    # real coastal elevation band, with NaN nodata everywhere else.
+                    src_arr = np.where(
+                        np.abs(src_arr) >= np.float32(_TOPOBATHY_SENTINEL_ABS),
+                        np.float32("nan"),
+                        src_arr,
+                    )
                     src_crs = ds.crs
                     src_transform = ds.transform
             except Exception as exc:  # noqa: BLE001 — skip an unreadable source
