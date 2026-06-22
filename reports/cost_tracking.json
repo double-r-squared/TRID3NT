@@ -2200,10 +2200,17 @@
       "model": "opus",
       "subagent_tokens": 76777,
       "description": "Fixed postprocess_flood for the real cht_sfincs quadtree schema (face centroids from UGRID node+connectivity; CRS from crs-var value); proven against the real Mexico Beach sfincs_map.nc (depth COG produced, EPSG:32616). +6 regression tests; suite 5959."
+    },
+    {
+      "job_id": "wf-sprint17-engine-subsprint-20260621",
+      "sprint": 16,
+      "model": "opus",
+      "subagent_tokens": 3019272,
+      "description": "Sprint-17 engine sub-sprint (4 new engines: GeoClaw dam-break, OpenQuake seismic, Landlab landslide, MODFLOW river-seepage) parallelized per the feature-pipelining model on file-disjoint lanes: contracts + Batch worker images + agent tools/workflows + shared-seam wiring (tools/__init__, solver registry, categories, publish presets) + infra job-defs; includes the Landlab API fix (verifier was backwards: LandslideProbability reads topographic__slope) and full-suite gate (agent 6105 / contracts 483). subagent_tokens = input+output+cache_write throughput across the 5 build+integration Agent subagents (cache_read 26.4M excluded as discounted replay)."
     }
   ],
   "totals_by_sprint": {
-    "16": 17406519,
+    "16": 20425791,
     "6": 1265567,
     "7": 1863284,
     "8": 1786238,
