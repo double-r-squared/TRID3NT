@@ -21,7 +21,7 @@
 # contract (and a guard if a future dep lacks a wheel).
 #
 # Version pins (mirror the SWMM/MODFLOW digest discipline — bumps are a
-# deliberate, IaC-visible step): python:3.11-slim-bookworm, landlab 2.x,
+# deliberate, IaC-visible step): python:3.12-slim-bookworm, landlab 2.x,
 # rasterio 1.3.x. Landlab carries numpy/scipy transitively.
 
 # --------------------------------------------------------------------------- #
@@ -29,7 +29,7 @@
 # venv. Nothing from this stage except /opt/grace2/.venv reaches the final
 # image, so pip caches + any transient build toolchain are discarded.
 # --------------------------------------------------------------------------- #
-FROM python:3.11-slim-bookworm AS builder
+FROM python:3.12-slim-bookworm AS builder
 
 ENV VENV=/opt/grace2/.venv \
     PIP_NO_CACHE_DIR=1 \
@@ -56,7 +56,7 @@ RUN python3 -m venv "$VENV" \
 # Stage 2 — runtime: a fresh minimal python:slim with ONLY the resolved venv +
 # the worker source. No compiler, no apt caches, no pip caches.
 # --------------------------------------------------------------------------- #
-FROM python:3.11-slim-bookworm AS runtime
+FROM python:3.12-slim-bookworm AS runtime
 
 LABEL org.opencontainers.image.title="grace-2-landlab-solver" \
       org.opencontainers.image.source="https://github.com/double-r-squared/GRACE-2" \
