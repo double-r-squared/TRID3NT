@@ -42,6 +42,7 @@ ENV VENV=/opt/grace2/.venv \
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         build-essential \
+        libexpat1 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN python3 -m venv "$VENV" \
@@ -68,6 +69,7 @@ LABEL org.opencontainers.image.title="grace-2-landlab-solver" \
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         ca-certificates \
+        libexpat1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy ONLY the resolved venv from the builder — the hygiene payoff.

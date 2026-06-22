@@ -49,6 +49,7 @@ RUN apt-get update \
         build-essential \
         libgeos-dev \
         libspatialindex-dev \
+        libexpat1 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN python3 -m venv "$VENV" \
@@ -78,6 +79,7 @@ RUN apt-get update \
         ca-certificates \
         libgeos-c1v5 \
         libspatialindex6 \
+        libexpat1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy ONLY the resolved venv from the builder — the hygiene payoff.
