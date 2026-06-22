@@ -659,7 +659,11 @@ export function CasesPanel({
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
-          marginBottom: 4,
+          // cases-spacing (NATE 2026-06-21) - the case ROWS sat 4px under the
+          // "Cases" label and read cramped (the empty-stub got breathing room
+          // on 2026-06-20 but the row list never did). Give the list real space
+          // below the heading.
+          marginBottom: 14,
           // flex-shrink:0 keeps the header at its natural height — the list
           // (flex:1) absorbs all remaining space.
           flexShrink: 0,
@@ -711,8 +715,9 @@ export function CasesPanel({
             lineHeight: 1.4,
             // cases-panel-layout (NATE 2026-06-20) - nudge the empty stub down
             // a bit so it sits below the pinned "Cases" header rather than
-            // hugging it (it read as cramped right under the title).
-            marginTop: 16,
+            // hugging it. Reduced 16 -> 4 now the header owns the 14px gap
+            // (cases-spacing NATE 2026-06-21) so empty + populated match.
+            marginTop: 4,
           }}
         >
           Start a Case to save your work and chat history.
