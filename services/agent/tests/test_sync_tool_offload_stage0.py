@@ -26,17 +26,22 @@ from grace2_contracts.tool_registry import AtomicToolMetadata
 
 
 def test_should_offload_modes(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Dark default + unknown values -> never off-load.
+    # Dark default + unknown values -> never off-load (EXCEPT the in-code
+    # _ALWAYS_OFFLOAD_SYNC_TOOLS set, which off-loads regardless of the env mode;
+    # use a light tool that is NOT in that set + NOT a compute_*/clip_* prefix to
+    # probe the pure env-mode behaviour).
     for off in ("off", "", "maybe", "0", "false"):
         monkeypatch.setattr(server, "_SYNC_OFFLOAD_MODE", off)
         assert server._should_offload_sync_tool("compute_slope") is False
-        assert server._should_offload_sync_tool("fetch_era5_reanalysis") is False
+        assert server._should_offload_sync_tool("geocode_location") is False
+        # ...but the always-set off-loads even in off/unknown mode.
+        assert server._should_offload_sync_tool("fetch_topobathy") is True
 
-    # Subset -> only the compute_*/clip_* families.
+    # Subset -> the compute_*/clip_* families (plus the always-set).
     monkeypatch.setattr(server, "_SYNC_OFFLOAD_MODE", "subset")
     assert server._should_offload_sync_tool("compute_slope") is True
     assert server._should_offload_sync_tool("clip_raster_to_bbox") is True
-    assert server._should_offload_sync_tool("fetch_era5_reanalysis") is False
+    assert server._should_offload_sync_tool("geocode_location") is False
     assert server._should_offload_sync_tool("run_model_flood_scenario") is False
 
     # Global aliases -> every tool.
@@ -48,7 +53,9 @@ def test_should_offload_modes(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_assert_safe_dark_default_is_noop(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(server, "_SYNC_OFFLOAD_MODE", "off")
-    # Must not raise (and must not even pay the source-scan cost).
+    # Must not raise. (With a non-empty _ALWAYS_OFFLOAD_SYNC_TOOLS the guard now
+    # runs its emit-free scan even in off mode -- but it stays a no-op in the
+    # sense that it never raises, because every always-set member is emit-free.)
     server._assert_sync_offload_safe()
 
 

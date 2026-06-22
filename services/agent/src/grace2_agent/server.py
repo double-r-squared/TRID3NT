@@ -6740,6 +6740,59 @@ _SYNC_OFFLOAD_GLOBAL_VALUES = frozenset({"global", "all", "on", "1", "true", "ye
 #: Stage-1 subset: the hand-audited pure-compute / pure-clip tool families that
 #: take no emitter and do CPU-bound GDAL/numpy work — the safest first cohort.
 _SYNC_OFFLOAD_SUBSET_PREFIXES = ("compute_", "clip_")
+#: ALWAYS off-load (regardless of GRACE2_SYNC_TOOL_OFFLOAD mode). A hand-audited,
+#: TIGHT set of PROVEN-PATHOLOGICAL sync tools whose bodies do multi-second
+#: synchronous work (rasterio.merge / reproject / WarpedVRT / COG materialize, or
+#: large network download + xarray/netCDF compute) ON the asyncio loop, stalling
+#: the 12s WS data-heartbeat past the browser's reconnect deadline (code 1005)
+#: BEFORE any solve dispatches. See feedback_no_sync_blocking_on_asyncio_loop.
+#: Each entry was confirmed EMIT-FREE (its registered fn source does not reference
+#: the loop-bound emitter API per _source_references_emitter) and the startup
+#: guard _assert_sync_offload_safe re-validates that invariant for this set even
+#: when the env mode is "off" (so a future emitting tool can never be silently
+#: added here). This is NOT "off-load everything": ~8 light vector/scalar fetchers
+#: (fetch_buildings, fetch_river_geometry, lookup_precip_return_period,
+#: fetch_landfire_fuels, fetch_usfs_canopy_fuels, fetch_mtbs_burn_severity,
+#: fetch_nexrad_reflectivity, fetch_field_boundaries) and all non-fetch sync tools
+#: stay on the loop. Justification per tool:
+#:   fetch_topobathy        -> CUDEM+3DEP tile merge + reproject + 189 MB COG (~61 s; ROOT-CAUSE of the 1005 turn-death)
+#:   fetch_dem              -> py3dep 3DEP tile mosaic + COG materialize
+#:   fetch_3dep_extra       -> pfdf TNM DEM tile mosaic + COG materialize
+#:   fetch_landcover        -> NLCD/ESA window clip + COG translate (rasterio + GDAL CLI)
+#:   extract_landcover_class-> windowed read of source COG + tiled LZW GeoTIFF write
+#:   fetch_population       -> WorldPop ~50 MB stream + windowed rasterio read + COG write
+#:   fetch_hrsl_population  -> /vsicurl/ VRT windowed read + COG write
+#:   fetch_gcn250_curve_numbers -> /vsicurl/ ~640 MB COG windowed read + tiled GeoTIFF write
+#:   fetch_statsgo_soils    -> STATSGO COG-tile mosaic + COG materialize
+#:   fetch_era5_reanalysis  -> blocking cdsapi retrieve + xarray open + compute + COG write
+#:   fetch_gridmet          -> OPeNDAP xarray open + time-mean compute + COG write
+#:   fetch_hrrr_forecast    -> xr.open_zarr + merge + rio.reproject + compute + COG write
+#:   fetch_hrrr_smoke       -> xr.open_zarr + merge + rio.reproject + compute + COG write
+#:   fetch_mrms_qpe         -> S3 grib2 download + rasterio GRIB read + warp.reproject + GeoTIFF write
+#:   fetch_goes_satellite   -> ~50 MB netCDF stream + warp.reproject + COG write
+#:   fetch_cama_flood_discharge -> NetCDF stream + xarray open + mean + COG write
+#:   fetch_gtsm_tide_surge  -> blocking CDS ZIP download + xr.open_mfdataset + per-gauge compute
+_ALWAYS_OFFLOAD_SYNC_TOOLS = frozenset(
+    {
+        "fetch_topobathy",
+        "fetch_dem",
+        "fetch_3dep_extra",
+        "fetch_landcover",
+        "extract_landcover_class",
+        "fetch_population",
+        "fetch_hrsl_population",
+        "fetch_gcn250_curve_numbers",
+        "fetch_statsgo_soils",
+        "fetch_era5_reanalysis",
+        "fetch_gridmet",
+        "fetch_hrrr_forecast",
+        "fetch_hrrr_smoke",
+        "fetch_mrms_qpe",
+        "fetch_goes_satellite",
+        "fetch_cama_flood_discharge",
+        "fetch_gtsm_tide_surge",
+    }
+)
 #: Loop-bound emitter API names. A sync tool whose CODE (comments + string /
 #: docstring literals EXCLUDED) references any of these — or any ``emit_*``
 #: attribute — is NOT safe to off-load (it would touch the loop from a worker
@@ -6798,8 +6851,16 @@ def _source_references_emitter(src: str) -> bool:
 
 def _should_offload_sync_tool(tool_name: str) -> bool:
     """Return True when ``tool_name``'s sync body should run via
-    ``asyncio.to_thread`` under the current ``GRACE2_SYNC_TOOL_OFFLOAD`` mode.
-    ``off`` (the dark default) and any unknown value -> False."""
+    ``asyncio.to_thread``.
+
+    The hand-audited, proven-pathological ``_ALWAYS_OFFLOAD_SYNC_TOOLS`` set is
+    off-loaded UNCONDITIONALLY (even when GRACE2_SYNC_TOOL_OFFLOAD=off) -- these
+    tools do multi-second sync raster/COG/download work that stalls the WS
+    heartbeat (see feedback_no_sync_blocking_on_asyncio_loop). On top of that the
+    env-driven staged mode applies: ``off`` (the dark default) and any unknown
+    value -> False for everything else."""
+    if tool_name in _ALWAYS_OFFLOAD_SYNC_TOOLS:
+        return True
     mode = _SYNC_OFFLOAD_MODE
     if mode in _SYNC_OFFLOAD_GLOBAL_VALUES:
         return True
@@ -6811,20 +6872,24 @@ def _should_offload_sync_tool(tool_name: str) -> bool:
 def _assert_sync_offload_safe() -> None:
     """ARMED-ONLY startup safety gate for the #6 sync-tool off-load.
 
-    Dark default (mode ``off``) returns immediately and pays nothing. When the
-    off-load is ARMED (``subset``/``global``), scan the SOURCE of every
-    candidate sync tool the current mode would off-load and RAISE if any one
-    references the loop-bound emitter API — off-loading such a tool would let a
-    worker thread touch the event loop. This enforces the headline #6 invariant
-    ("sync tool bodies are emit-free") at the moment we arm, so a future
-    emitting sync tool can never be silently off-loaded. The cost (an
-    ``inspect.getsource`` sweep) is paid once, only when armed.
+    Dark default (mode ``off``) WITH an empty always-set returns immediately and
+    pays nothing. When the off-load is ARMED (``subset``/``global``) OR the
+    in-code ``_ALWAYS_OFFLOAD_SYNC_TOOLS`` set is non-empty (which off-loads even
+    in ``off`` mode), scan the SOURCE of every candidate sync tool that
+    ``_should_offload_sync_tool`` would off-load and RAISE if any one references
+    the loop-bound emitter API -- off-loading such a tool would let a worker
+    thread touch the event loop. This enforces the headline #6 invariant ("sync
+    tool bodies are emit-free") at startup, so a future emitting sync tool can
+    never be silently off-loaded (including via the always-set). The cost (an
+    ``inspect.getsource`` sweep) is paid once, only when something will off-load.
     """
     armed = (
         _SYNC_OFFLOAD_MODE in _SYNC_OFFLOAD_GLOBAL_VALUES
         or _SYNC_OFFLOAD_MODE == "subset"
     )
-    if not armed:
+    # The always-offload set off-loads regardless of the env mode, so its
+    # emit-free invariant must be validated even when the env mode is "off".
+    if not armed and not _ALWAYS_OFFLOAD_SYNC_TOOLS:
         logger.info(
             "sync-tool off-load DISABLED (GRACE2_SYNC_TOOL_OFFLOAD=%r)",
             _SYNC_OFFLOAD_MODE,
