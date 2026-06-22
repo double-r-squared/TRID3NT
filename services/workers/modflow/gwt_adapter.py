@@ -87,6 +87,30 @@ KG_TO_G = 1000.0
 TIME_UNITS = "DAYS"
 LENGTH_UNITS = "METERS"
 
+# ---------------------------------------------------------------------------
+# River-coupling demo defaults (sprint-17 J9 river-seepage). The RIV package is
+# the simplest head-dependent river<->aquifer flux boundary: per reach cell
+# (cellid, stage, cond, rbot) with leakage Q = cond*(stage - h) capped at
+# cond*(stage - rbot) once the aquifer head drops below the streambed bottom.
+# These are v0.1 demo simplifications, narrated as demo values exactly like the
+# OQ-3 aquifer K / porosity. A real model samples stage + streambed elevation
+# from a DEM and derives conductance from streambed K, length and width.
+# ---------------------------------------------------------------------------
+
+#: Per-reach-cell RIV conductance (m^2/day) when the caller supplies none. The
+#: spike used a flat 100 m^2/day -> 835 m^3/day leakage over 18 cells; 50 is a
+#: conservative default.
+DEFAULT_STREAMBED_CONDUCTANCE_M2_DAY = 50.0
+
+#: Water depth (m) above the streambed bottom used to set stage from a sampled
+#: (or default) rbot when no explicit stage is supplied: stage = rbot + depth.
+DEFAULT_RIVER_STAGE_DEPTH_M = 1.5
+
+#: When no DEM is available the demo streambed bottom (rbot) sits a little above
+#: the local aquifer head so the reach is a real head-dependent boundary (not a
+#: degenerate no-op). Expressed relative to AQUIFER_TOP_M (local datum).
+DEFAULT_RIVER_RBOT_ABOVE_TOP_M = 0.5
+
 
 @dataclass
 class DeckManifest:
@@ -126,6 +150,12 @@ class DeckManifest:
     contaminant: str
     aquifer_k_ms: float
     porosity: float
+    # River-coupling (sprint-17 J9; all default to the no-river spill deck):
+    river_coupled: bool = False  # True iff a RIV package was written
+    river_cell_count: int = 0  # number of RIV reach cells draped onto the grid
+    river_reach_len_m: float = 0.0  # cumulative reach length over the in-grid cells
+    river_conductance_m2_day: float = 0.0  # per-cell RIV conductance written
+    along_river_source: bool = False  # True iff the SRC was placed along the reach
     # Files written (relative to sim_dir), for manifest/upload assembly:
     files: list[str] = field(default_factory=list)
 
@@ -148,6 +178,173 @@ def _utm_crs_for_lonlat(lon: float, lat: float) -> CRS:
     return CRS.from_epsg(epsg)
 
 
+# ---------------------------------------------------------------------------
+# River-draping geometry (PURE — no flopy, no network; unit-testable on a
+# synthetic grid + river). The river polyline is projected to the deck's UTM
+# grid, then rasterized into the set of (row, col) cells it traverses, with the
+# in-cell reach length per cell so conductance can scale with reach length.
+# ---------------------------------------------------------------------------
+
+
+def _easting_northing_to_cell(
+    east: float,
+    north: float,
+    *,
+    xorigin: float,
+    yorigin: float,
+    delr: float,
+    delc: float,
+    nrow: int,
+    ncol: int,
+) -> tuple[int, int] | None:
+    """Map a projected (easting, northing) to a (row, col) grid index.
+
+    Returns None when the point is outside the grid. Row 0 is the NORTH row
+    (flopy convention: yorigin is the lower-left corner, row 0 is northernmost),
+    so the row offset is measured from the grid TOP (yorigin + nrow*delc) down.
+    """
+    col = int((east - xorigin) // delr)
+    north_top = yorigin + nrow * delc
+    row = int((north_top - north) // delc)
+    if row < 0 or row >= nrow or col < 0 or col >= ncol:
+        return None
+    return (row, col)
+
+
+def _drape_polyline_onto_grid(
+    vertices_en: list[tuple[float, float]],
+    *,
+    xorigin: float,
+    yorigin: float,
+    delr: float,
+    delc: float,
+    nrow: int,
+    ncol: int,
+) -> list[tuple[int, int, float]]:
+    """Rasterize a projected polyline into the grid cells it traverses.
+
+    Args:
+        vertices_en: the polyline vertices as projected ``(easting, northing)``
+            tuples (metres, in the deck's UTM CRS) in path order.
+
+    Returns:
+        A list of ``(row, col, reach_len_m)`` per UNIQUE cell, in first-touch
+        order, where ``reach_len_m`` is the cumulative length of the polyline
+        that falls inside that cell. Cells outside the grid are dropped. The
+        per-cell length lets the RIV conductance scale with the reach length the
+        cell carries (C = K_bed * L * W / M).
+
+    The algorithm walks each segment in small sub-steps (a fraction of the cell
+    size) and accumulates sub-step length into the cell the sub-step midpoint
+    falls in. This is robust to diagonal reaches and segments shorter than a
+    cell, and is fully deterministic.
+    """
+    if len(vertices_en) < 2:
+        # A single vertex: assign it to its cell with a nominal half-cell length.
+        cells: "dict[tuple[int, int], float]" = {}
+        order: list[tuple[int, int]] = []
+        if vertices_en:
+            cell = _easting_northing_to_cell(
+                vertices_en[0][0],
+                vertices_en[0][1],
+                xorigin=xorigin,
+                yorigin=yorigin,
+                delr=delr,
+                delc=delc,
+                nrow=nrow,
+                ncol=ncol,
+            )
+            if cell is not None:
+                cells[cell] = 0.5 * (delr + delc) / 2.0
+                order.append(cell)
+        return [(r, c, cells[(r, c)]) for (r, c) in order]
+
+    # Sub-step length: a quarter of the smaller cell dimension so even diagonal
+    # crossings sample each cell at least twice.
+    step = min(delr, delc) / 4.0
+    cells = {}
+    order = []
+
+    def _touch(row: int, col: int, length: float) -> None:
+        key = (row, col)
+        if key not in cells:
+            cells[key] = 0.0
+            order.append(key)
+        cells[key] += length
+
+    for (e0, n0), (e1, n1) in zip(vertices_en[:-1], vertices_en[1:]):
+        seg_len = math.hypot(e1 - e0, n1 - n0)
+        if seg_len <= 0.0:
+            continue
+        n_sub = max(1, int(math.ceil(seg_len / step)))
+        sub_len = seg_len / n_sub
+        for i in range(n_sub):
+            # midpoint of sub-step i
+            t = (i + 0.5) / n_sub
+            em = e0 + t * (e1 - e0)
+            nm = n0 + t * (n1 - n0)
+            cell = _easting_northing_to_cell(
+                em,
+                nm,
+                xorigin=xorigin,
+                yorigin=yorigin,
+                delr=delr,
+                delc=delc,
+                nrow=nrow,
+                ncol=ncol,
+            )
+            if cell is not None:
+                _touch(cell[0], cell[1], sub_len)
+
+    return [(r, c, cells[(r, c)]) for (r, c) in order]
+
+
+def build_riv_records(
+    river_cells: list[tuple[int, int, float]],
+    *,
+    conductance_m2_day: float,
+    stage_fn,
+    rbot_fn,
+    chd_cols: tuple[int, int] | None = None,
+    ncol: int = 0,
+) -> list[list]:
+    """Build the MF6 RIV stress-period records from draped river cells.
+
+    Each record is ``[(lay, row, col), stage, cond, rbot]`` (layer 0). Cells
+    that fall on a CHD boundary column (the west/east constant-head columns) are
+    SKIPPED — a cell cannot be both a constant-head boundary and a RIV boundary
+    in this single-layer demo (the spike skips boundary columns for the same
+    reason).
+
+    Args:
+        river_cells: ``(row, col, reach_len_m)`` per cell from
+            ``_drape_polyline_onto_grid``.
+        conductance_m2_day: the per-cell RIV conductance to write.
+        stage_fn: ``(row, col) -> stage_m`` callable (deck datum metres).
+        rbot_fn: ``(row, col) -> rbot_m`` callable (deck datum metres).
+        chd_cols: ``(west_col, east_col)`` boundary columns to skip, or None.
+        ncol: grid column count (for the default west/east boundary skip when
+            chd_cols is None).
+
+    Returns:
+        The list of RIV records. Stage is clamped to be strictly above rbot so
+        every written reach cell is a real head-dependent boundary.
+    """
+    if chd_cols is None and ncol > 0:
+        chd_cols = (0, ncol - 1)
+    skip = set(chd_cols) if chd_cols is not None else set()
+    records: list[list] = []
+    for (row, col, _len) in river_cells:
+        if col in skip:
+            continue
+        rbot = float(rbot_fn(row, col))
+        stage = float(stage_fn(row, col))
+        if stage <= rbot:
+            stage = rbot + DEFAULT_RIVER_STAGE_DEPTH_M
+        records.append([(0, row, col), stage, float(conductance_m2_day), rbot])
+    return records
+
+
 def build_modflow_deck(
     spill_location_latlon: tuple[float, float],
     contaminant: str,
@@ -159,6 +356,14 @@ def build_modflow_deck(
     *,
     sim_name: str = "mfsim",
     write: bool = True,
+    # --- River-coupling (sprint-17 J9; ADDITIVE, all optional) ------------- #
+    river_polyline_lonlat: list[tuple[float, float]] | None = None,
+    river_stage_m: float | None = None,
+    river_stage_depth_m: float | None = None,
+    streambed_conductance_m2_day: float | None = None,
+    river_rbot_by_cell: dict[tuple[int, int], float] | None = None,
+    river_stage_by_cell: dict[tuple[int, int], float] | None = None,
+    along_river_source: bool = False,
 ) -> DeckManifest:
     """Assemble a complete MF6 GWF+GWT spill deck and (optionally) write it.
 
@@ -205,6 +410,33 @@ def build_modflow_deck(
         write: if True (default), write all input files to disk. If False,
             build the FloPy objects and return the manifest without writing
             (used by unit tests that only assert the in-memory deck shape).
+        river_polyline_lonlat: an optional river polyline as ``(lon, lat)``
+            vertices (EPSG:4326) to drape onto the structured grid as a RIV
+            head-dependent river<->aquifer flux boundary (sprint-17 J9). When
+            None the deck is the original spill-only deck (no RIV, no along-
+            river source) and every river field on the manifest stays at its
+            no-river default. The vertices are projected to the deck's UTM grid
+            and rasterized into the grid cells they traverse.
+        river_stage_m: explicit river stage (water-surface elevation, deck datum
+            metres) applied to EVERY RIV reach cell. Takes precedence over
+            ``river_stage_by_cell`` and DEM-derived stage.
+        river_stage_depth_m: water depth (m) above the streambed bottom used to
+            set stage from rbot when no explicit stage is supplied (stage = rbot
+            + depth). Defaults to ``DEFAULT_RIVER_STAGE_DEPTH_M``.
+        streambed_conductance_m2_day: per-reach-cell RIV conductance (m^2/day).
+            Defaults to ``DEFAULT_STREAMBED_CONDUCTANCE_M2_DAY``.
+        river_rbot_by_cell: optional ``{(row, col): rbot_m}`` of DEM-sampled
+            streambed-bottom elevations per reach cell (the workflow samples the
+            DEM and passes this; the adapter stays pure). Cells absent from the
+            map fall back to a flat demo rbot above the local aquifer head.
+        river_stage_by_cell: optional ``{(row, col): stage_m}`` of per-cell
+            stage (e.g. rbot + depth from the DEM). Overridden by
+            ``river_stage_m`` when that is given.
+        along_river_source: when True the contaminant SRC mass-loading is placed
+            at the RIV reach cells (the seepage source enters where the river
+            leaks into the aquifer) instead of the single spill cell. Requires a
+            ``river_polyline_lonlat``; ignored (with the SRC staying at the spill
+            cell) when no river is supplied.
 
     Returns:
         DeckManifest: typed deck description (paths, grid georegistration,
@@ -365,6 +597,76 @@ def build_modflow_deck(
         filename=f"{gwf_name}.chd",
     )
 
+    # --- RIV package: drape the river polyline onto the grid (sprint-17 J9) --
+    # The RIV head-dependent boundary couples the river to the aquifer: per
+    # reach cell leakage Q = cond*(stage - h), capped at cond*(stage - rbot)
+    # once the aquifer head drops below the streambed bottom. The set of reach
+    # cells and per-cell stage/rbot/conductance are derived deterministically
+    # here from the projected polyline + the (DEM-sampled or demo) elevations.
+    riv_records: list = []
+    river_cell_count = 0
+    river_reach_len_m = 0.0
+    conductance = (
+        float(streambed_conductance_m2_day)
+        if streambed_conductance_m2_day is not None
+        else DEFAULT_STREAMBED_CONDUCTANCE_M2_DAY
+    )
+    river_cells: list[tuple[int, int, float]] = []
+    if river_polyline_lonlat:
+        # Project the polyline vertices to the deck's UTM grid.
+        vertices_en = [to_utm.transform(vlon, vlat) for (vlon, vlat) in river_polyline_lonlat]
+        river_cells = _drape_polyline_onto_grid(
+            vertices_en,
+            xorigin=xorigin,
+            yorigin=yorigin,
+            delr=delr,
+            delc=delc,
+            nrow=nrow,
+            ncol=ncol,
+        )
+        depth = (
+            float(river_stage_depth_m)
+            if river_stage_depth_m is not None
+            else DEFAULT_RIVER_STAGE_DEPTH_M
+        )
+        default_rbot = AQUIFER_TOP_M + DEFAULT_RIVER_RBOT_ABOVE_TOP_M
+
+        def _rbot_fn(row: int, col: int) -> float:
+            if river_rbot_by_cell and (row, col) in river_rbot_by_cell:
+                return float(river_rbot_by_cell[(row, col)])
+            return default_rbot
+
+        def _stage_fn(row: int, col: int) -> float:
+            if river_stage_m is not None:
+                return float(river_stage_m)
+            if river_stage_by_cell and (row, col) in river_stage_by_cell:
+                return float(river_stage_by_cell[(row, col)])
+            return _rbot_fn(row, col) + depth
+
+        riv_records = build_riv_records(
+            river_cells,
+            conductance_m2_day=conductance,
+            stage_fn=_stage_fn,
+            rbot_fn=_rbot_fn,
+            chd_cols=(0, ncol - 1),
+            ncol=ncol,
+        )
+        if riv_records:
+            flopy.mf6.ModflowGwfriv(
+                gwf,
+                stress_period_data={0: riv_records, 1: riv_records},
+                save_flows=True,
+                filename=f"{gwf_name}.riv",
+                pname="riv-0",
+            )
+            written_cells = {(rec[0][1], rec[0][2]) for rec in riv_records}
+            river_cell_count = len(riv_records)
+            river_reach_len_m = sum(
+                length for (r, c, length) in river_cells if (r, c) in written_cells
+            )
+
+    river_coupled = river_cell_count > 0
+
     flopy.mf6.ModflowGwfoc(
         gwf,
         head_filerecord=f"{gwf_name}.hds",
@@ -412,14 +714,25 @@ def build_modflow_deck(
         filename=f"{gwt_name}.mst",
     )
 
-    # Mass-loading source at the spill cell. SRC injects mass/time directly
-    # (g/day here) regardless of local concentration — the spill-loading model.
-    # The source is active ONLY in the transient transport period (period 1,
-    # 0-based), NOT the steady-state flow spin-up (period 0). This keeps the
-    # released-mass yardstick exact: total injected = mass_rate x duration,
-    # not mass_rate x (1 spin-up day + duration). Empty list in period 0
-    # deactivates the source there.
-    src_record = [[(0, spill_row, spill_col), mass_rate_g_per_day]]
+    # Mass-loading source. SRC injects mass/time directly (g/day here)
+    # regardless of local concentration — the spill-loading model. The source
+    # is active ONLY in the transient transport period (period 1, 0-based), NOT
+    # the steady-state flow spin-up (period 0). This keeps the released-mass
+    # yardstick exact: total injected = mass_rate x duration, not mass_rate x
+    # (1 spin-up day + duration). Empty list in period 0 deactivates it there.
+    #
+    # sprint-17 J9: when along_river_source is True AND a river was draped, the
+    # source is distributed ALONG the RIV reach cells (the contaminant enters
+    # where the river leaks into the aquifer — the river-seepage plume), with
+    # the SAME total mass rate (split evenly across the reach cells) so the
+    # released-mass yardstick is preserved. Otherwise it stays at the spill cell.
+    source_along_river = bool(along_river_source and river_coupled and riv_records)
+    if source_along_river:
+        reach_cellids = [tuple(rec[0]) for rec in riv_records]  # [(lay,row,col), ...]
+        per_cell_rate = mass_rate_g_per_day / float(len(reach_cellids))
+        src_record = [[cellid, per_cell_rate] for cellid in reach_cellids]
+    else:
+        src_record = [[(0, spill_row, spill_col), mass_rate_g_per_day]]
     flopy.mf6.ModflowGwtsrc(
         gwt,
         stress_period_data={0: [], 1: src_record},
@@ -481,6 +794,11 @@ def build_modflow_deck(
         contaminant=contaminant,
         aquifer_k_ms=aquifer_k_ms,
         porosity=porosity,
+        river_coupled=river_coupled,
+        river_cell_count=river_cell_count,
+        river_reach_len_m=float(river_reach_len_m),
+        river_conductance_m2_day=conductance if river_coupled else 0.0,
+        along_river_source=source_along_river,
     )
 
     if write:
