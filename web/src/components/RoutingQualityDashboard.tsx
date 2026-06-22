@@ -31,6 +31,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { IconClose, IconChevronRight } from "./icons";
 import { SELECTABLE_MODELS } from "../lib/modelRegistry";
+import { httpBase } from "../lib/public_base";
 
 // Friendly label / accent for a by_model row's model_id. We do NOT use
 // modelRegistry.getModelById here: that helper falls back to Sonnet for any
@@ -407,16 +408,12 @@ const chainPillStyle: React.CSSProperties = {
 // ---------------------------------------------------------------------------
 
 function defaultSummaryUrl(): string {
-  const override =
-    (import.meta.env.VITE_GRACE2_HTTP_URL as string | undefined) ?? null;
-  if (override) {
-    return override.replace(/\/+$/, "") + "/api/telemetry/summary";
-  }
-  if (typeof window !== "undefined") {
-    const { protocol, hostname } = window.location;
-    return `${protocol}//${hostname}:8766/api/telemetry/summary`;
-  }
-  return "http://localhost:8766/api/telemetry/summary";
+  // Use the SHARED http-base resolver (public_base.ts) so production routes the
+  // telemetry fetch through the same CloudFront origin the rest of the app uses
+  // (VITE_GRACE2_HTTP_URL > VITE_GRACE2_PUBLIC_BASE > <host>:8766). The previous
+  // inline builder ignored VITE_GRACE2_PUBLIC_BASE and hit <cloudfront-host>:8766,
+  // a port the edge does not route -> the fetch hung forever (stuck "loading").
+  return httpBase() + "/api/telemetry/summary";
 }
 
 // ---------------------------------------------------------------------------
@@ -512,6 +509,12 @@ export function RoutingQualityDashboard({
     let cancelled = false;
     cancelRef.current = false;
     const url = summaryUrl ?? defaultSummaryUrl();
+    // Bound the fetch so an unreachable endpoint (e.g. the agent box is asleep,
+    // or /api is not routed at the edge) degrades to an HONEST error instead of
+    // an infinite "loading" spinner.
+    const TIMEOUT_MS = 10_000;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
     (async () => {
       // Only show loading on the first fetch; subsequent ticks should not
       // blank the dashboard while fresh data is in flight.
@@ -519,7 +522,10 @@ export function RoutingQualityDashboard({
         setState("loading");
       }
       try {
-        const resp = await fetch(url, { method: "GET" });
+        const resp = await fetch(url, {
+          method: "GET",
+          signal: controller.signal,
+        });
         if (!resp.ok) {
           throw new Error(`HTTP ${resp.status}`);
         }
@@ -530,14 +536,24 @@ export function RoutingQualityDashboard({
         setState("ready");
       } catch (err) {
         if (cancelled) return;
+        const isAbort =
+          err instanceof DOMException && err.name === "AbortError";
         setErrorText(
-          err instanceof Error ? err.message : "unknown fetch error",
+          isAbort
+            ? `request timed out after ${TIMEOUT_MS / 1000}s (the agent may be asleep)`
+            : err instanceof Error
+              ? err.message
+              : "unknown fetch error",
         );
         setState("error");
+      } finally {
+        clearTimeout(timer);
       }
     })();
     return () => {
       cancelled = true;
+      clearTimeout(timer);
+      controller.abort();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [summaryUrl, refreshTick]);
