@@ -1198,6 +1198,148 @@ class FullDeckBuildIntegrationTests(unittest.TestCase):
             self.assertEqual(manifest["outputs"],
                              ["sfincs_map.nc", "*.nc", "*.tif", "mesh.geojson"])
 
+    def test_snapwave_boundary_derived_when_no_polygon(self):
+        """REGRESSION (Mexico-Beach hm0=0): snapwave_boundary POINTS present but
+        NO open_boundary_polygon_uri (the synthetic / agent path) must still yield
+        a NON-EMPTY snapwave wave-boundary mask (wavebnd>0) derived from the
+        seaward domain edge, so the incident wave can inject (else hm0 stays
+        flat at 0). The water-level mask polygon is ALSO absent, exactly mirroring
+        the live failure where the SFINCS open boundary is staged as sfincs.bnd.
+        """
+        import numpy as np
+        import xarray as xr
+
+        with tempfile.TemporaryDirectory() as d:
+            work = Path(d)
+            target_epsg = 32616
+            topo = work / "topo.tif"
+            refine = work / "refine.gpkg"
+            self._make_topobathy_cog(topo, target_epsg)
+            self._make_refine_polygon(refine, target_epsg)
+
+            # Incident-wave point just offshore on the WEST (deepest) edge; the
+            # sloping beach is -8 m west -> +4 m east, so west is seaward.
+            spec = ep.validate_build_spec({
+                "run_id": "swbnd",
+                "aoi": {"bbox": [0, 0, 1, 1], "target_epsg": target_epsg},
+                "topobathy": {"cog_uri": "s3://x/topo.tif",
+                              "bathymetry_present": True},
+                "grid": {
+                    "x0": 600000.0, "y0": 3200000.0, "nmax": 16, "mmax": 24,
+                    "dx": 200.0, "dy": 200.0, "rotation": 0.0,
+                    "refinement_polygons_uri": "s3://x/refine.gpkg",
+                },
+                # NO mask.open_boundary_polygon_uri, NO snapwave.open_boundary_polygon_uri.
+                "mask": {"zmin": -100.0, "zmax": 2.0},
+                "snapwave": {"mask_zmin": -100.0, "mask_zmax": 2.0},
+                "forcing": {
+                    "tref": "20181010 000000",
+                    "tstart": "20181010 000000",
+                    "tstop": "20181010 020000",
+                    "snapwave_boundary": {"points": [
+                        {"x": 600000.0 - 300.0, "y": 3201600.0,
+                         "hs": 3.0, "tp": 12.0, "wd": 270.0, "ds": 20.0}
+                    ]},
+                },
+                "output": {"deck_dir_uri": "s3://x/deck/",
+                           "manifest_uri": "s3://x/manifest.json"},
+            })
+
+            uri_to_local = {"s3://x/topo.tif": topo, "s3://x/refine.gpkg": refine}
+
+            def fake_download(uri, dest):
+                import shutil as _sh
+                _sh.copy(uri_to_local[uri], dest)
+
+            scratch = work / "scratch"
+            scratch.mkdir()
+            with mock.patch.object(ep, "_download", side_effect=fake_download):
+                deck_dir, _provenance = ep.build_deck(spec, scratch)
+
+            # The derived seaward boundary must produce a non-empty wavebnd mask.
+            ds = xr.open_dataset(deck_dir / "sfincs.nc")
+            try:
+                sw = ds["snapwave_mask"].values.astype(int)
+                self.assertGreater(
+                    int((sw == 1).sum()), 0, "no active snapwave cells"
+                )
+                self.assertGreater(
+                    int((sw > 1).sum()), 0,
+                    "snapwave wave-boundary mask is EMPTY (wavebnd=0) even though "
+                    "boundary points were supplied - incident wave cannot inject",
+                )
+            finally:
+                ds.close()
+
+    def test_derive_seaward_boundary_helper_picks_correct_edge(self):
+        """Unit-level: derive_seaward_open_boundary_polygon builds a thin polygon
+        on the domain edge nearest the incident-wave point, and that polygon
+        actually contains outermost active-cell centres on that edge (so the cht
+        snapwave neighbor-check flags them wavebnd=2)."""
+        import numpy as np
+
+        with tempfile.TemporaryDirectory() as d:
+            work = Path(d)
+            target_epsg = 32616
+            topo = work / "topo.tif"
+            self._make_topobathy_cog(topo, target_epsg)
+
+            spec = ep.validate_build_spec({
+                "run_id": "helper",
+                "aoi": {"bbox": [0, 0, 1, 1], "target_epsg": target_epsg},
+                "topobathy": {"cog_uri": "s3://x/topo.tif",
+                              "bathymetry_present": True},
+                "grid": {
+                    "x0": 600000.0, "y0": 3200000.0, "nmax": 16, "mmax": 24,
+                    "dx": 200.0, "dy": 200.0, "rotation": 0.0,
+                },
+                "mask": {"zmin": -100.0, "zmax": 2.0},
+                "snapwave": {"mask_zmin": -100.0, "mask_zmax": 2.0},
+                "forcing": {
+                    "tref": "20181010 000000",
+                    "tstart": "20181010 000000",
+                    "tstop": "20181010 020000",
+                },
+                "output": {"deck_dir_uri": "s3://x/deck/",
+                           "manifest_uri": "s3://x/manifest.json"},
+            })
+
+            def fake_download(uri, dest):
+                import shutil as _sh
+                _sh.copy(topo, dest)
+
+            scratch = work / "scratch"
+            scratch.mkdir()
+            # Build the grid + snapwave mask directly (a trimmed build_deck head).
+            from cht_sfincs import SFINCS  # type: ignore
+            import xarray as xr
+            import xugrid as xu
+
+            deck = scratch / "deck"
+            deck.mkdir()
+            sf = SFINCS(root=str(deck), crs=target_epsg, mode="w")
+            sf.grid.build(600000.0, 3200000.0, 16, 24, 200.0, 200.0, 0.0)
+            xc, yc = sf.grid.face_coordinates()
+            with mock.patch.object(ep, "_download", side_effect=fake_download):
+                zb = ep._sample_topobathy(topo, xc, yc, target_epsg)
+            ugrid2d = sf.grid.data.grid
+            sf.grid.data["z"] = xu.UgridDataArray(
+                xr.DataArray(data=np.asarray(zb), dims=[ugrid2d.face_dimension]),
+                ugrid2d,
+            )
+            sf.snapwave.mask.build(zmin=-100.0, zmax=2.0)
+
+            # Point far WEST (seaward) -> the helper should pick the west edge.
+            pts = [{"x": 600000.0 - 500.0, "y": 3201600.0}]
+            gdf = ep.derive_seaward_open_boundary_polygon(sf, pts, target_epsg)
+            self.assertIsNotNone(gdf)
+            self.assertEqual(len(gdf), 1)
+            self.assertEqual(int(gdf.crs.to_epsg()), target_epsg)
+            poly = gdf.geometry.iloc[0]
+            # The polygon must hug the western (minimum-x) side of the domain.
+            xc = np.asarray(xc, dtype=float)
+            self.assertLess(poly.bounds[0], float(xc.min()) + 1.0)
+
 
 if __name__ == "__main__":
     # `--with-cht` is a no-op flag for readability; the integration test

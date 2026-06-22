@@ -1132,6 +1132,148 @@ def _faces_inside_polygons(xc, yc, gdf, target_epsg):
         return None
 
 
+def derive_seaward_open_boundary_polygon(sf, points, target_epsg: int):
+    """Derive a thin seaward-edge polygon hugging the domain's open edge.
+
+    Used when SnapWave boundary POINTS are supplied (incident waves) but NO
+    explicit wave / water-level open-boundary polygon URI is given. Without a
+    polygon, ``snapwave.mask.build`` flags ZERO cells as the wave boundary
+    (wavebnd=0), so the incident wave has no boundary to inject from and hm0
+    stays flat at 0.
+
+    The SFINCS hydrodynamic open boundary in this worker is supplied as a
+    pre-built ``sfincs.bnd`` / ``sfincs.bzs`` pair staged by the forcing adapter
+    (see ``_attach_waterlevel_forcing``), which bypasses cht's mask machinery,
+    so there is genuinely no ``mask == 2`` open-boundary cell to reuse. We
+    therefore construct the polygon from the SAME seaward domain edge the wave
+    travels in from: the side of the active-cell bounding box nearest the
+    incident-wave boundary point(s) (which sit just offshore of the deepest
+    bathymetry). Any active cell on that edge has an inactive / no-neighbor cell
+    just outside it, so ``snapwave.mask.build`` flags it wavebnd=2.
+
+    Returns a single-row geopandas GeoDataFrame (a thin rectangle in the grid's
+    projected CRS) or ``None`` when it cannot be derived (no active cells / no
+    usable points / geo stack unavailable), in which case the caller falls back
+    to the prior behaviour.
+    """
+    try:
+        import geopandas as gpd  # type: ignore
+        import numpy as np  # type: ignore
+        from pyproj import CRS  # type: ignore
+        from shapely.geometry import Polygon  # type: ignore
+    except Exception as exc:  # noqa: BLE001
+        LOG.warning("snapwave seaward-boundary derive: geo stack missing: %s", exc)
+        return None
+
+    if not points:
+        return None
+
+    try:
+        xc, yc = sf.grid.face_coordinates()
+        xc = np.asarray(xc, dtype=float).reshape(-1)
+        yc = np.asarray(yc, dtype=float).reshape(-1)
+        # Restrict to ACTIVE cells (the SnapWave mask seeds active from zmin/zmax
+        # exactly like sfincs.mask, so the seaward edge we want is the active
+        # extent, not the full grid bounding box).
+        sw_mask = None
+        try:
+            sw_mask = np.asarray(
+                sf.grid.data["snapwave_mask"].values
+            ).reshape(-1)
+        except Exception:  # noqa: BLE001
+            sw_mask = None
+        if sw_mask is not None and sw_mask.shape == xc.shape:
+            active = sw_mask > 0
+        else:
+            active = np.ones(xc.shape, dtype=bool)
+        if not bool(active.any()):
+            LOG.warning(
+                "snapwave seaward-boundary derive: no active cells - skipping"
+            )
+            return None
+        ax = xc[active]
+        ay = yc[active]
+
+        # Mean incident-wave boundary point location (offshore anchor).
+        px = float(np.mean([float(p["x"]) for p in points]))
+        py = float(np.mean([float(p["y"]) for p in points]))
+
+        xmin, xmax = float(ax.min()), float(ax.max())
+        ymin, ymax = float(ay.min()), float(ay.max())
+
+        # Cell pitch from grid attrs (fallback to active-extent heuristic). Used
+        # to size the thin band so it captures the outermost ring of active cells
+        # without grabbing the whole domain.
+        dx = None
+        for src in (
+            getattr(sf.grid, "dx", None),
+            sf.grid.data.attrs.get("dx")
+            if hasattr(sf.grid.data, "attrs") else None,
+        ):
+            if src is not None:
+                try:
+                    dx = float(src)
+                    break
+                except (TypeError, ValueError):
+                    continue
+        if dx is None or not np.isfinite(dx) or dx <= 0:
+            span = max(xmax - xmin, ymax - ymin, 1.0)
+            dx = span / 50.0
+        # Band is ~1.5 cells deep (captures the outermost active ring) plus a
+        # generous outward pad so the polygon fully encloses those cell centres.
+        band = 1.5 * dx
+        pad = 2.0 * dx
+
+        # Pick the seaward edge = the domain side whose outward direction points
+        # toward the incident-wave point. Compare the point's offset past each
+        # face of the active bounding box; the largest positive offset wins.
+        offsets = {
+            "west": xmin - px,   # point west of the western face
+            "east": px - xmax,   # point east of the eastern face
+            "south": ymin - py,  # point south of the southern face
+            "north": py - ymax,  # point north of the northern face
+        }
+        side = max(offsets, key=offsets.get)
+        # If the point sits INSIDE the active bbox on every axis (all offsets
+        # negative), fall back to the nearest edge by absolute distance.
+        if offsets[side] <= 0:
+            side = min(offsets, key=lambda k: abs(offsets[k]))
+
+        if side == "west":
+            poly = Polygon([
+                (xmin - pad, ymin - pad), (xmin + band, ymin - pad),
+                (xmin + band, ymax + pad), (xmin - pad, ymax + pad),
+            ])
+        elif side == "east":
+            poly = Polygon([
+                (xmax - band, ymin - pad), (xmax + pad, ymin - pad),
+                (xmax + pad, ymax + pad), (xmax - band, ymax + pad),
+            ])
+        elif side == "south":
+            poly = Polygon([
+                (xmin - pad, ymin - pad), (xmax + pad, ymin - pad),
+                (xmax + pad, ymin + band), (xmin - pad, ymin + band),
+            ])
+        else:  # north
+            poly = Polygon([
+                (xmin - pad, ymax - band), (xmax + pad, ymax - band),
+                (xmax + pad, ymax + pad), (xmin - pad, ymax + pad),
+            ])
+
+        LOG.info(
+            "snapwave seaward-boundary derived on %s edge "
+            "(active bbox x=[%.1f,%.1f] y=[%.1f,%.1f], band=%.1f m, "
+            "point=(%.1f,%.1f))",
+            side, xmin, xmax, ymin, ymax, band, px, py,
+        )
+        return gpd.GeoDataFrame(
+            {"geometry": [poly]}, crs=CRS.from_epsg(int(target_epsg))
+        )
+    except Exception as exc:  # noqa: BLE001
+        LOG.warning("snapwave seaward-boundary derive failed: %s", exc)
+        return None
+
+
 def build_deck(spec: dict, scratch: Path) -> tuple[Path, dict]:
     """Author the quadtree + SnapWave deck via cht_sfincs (GPL-isolated).
 
@@ -1291,19 +1433,65 @@ def build_deck(spec: dict, scratch: Path) -> tuple[Path, dict]:
     wave_bnd = _read_gdf(
         sw_spec.get("open_boundary_polygon_uri"), scratch, "wave_bnd"
     )
-    sf.snapwave.mask.build(
-        zmin=_swb("mask_zmin", mask_zmin),
-        zmax=_swb("mask_zmax", mask_zmax),
-        open_boundary_polygon=wave_bnd if wave_bnd is not None else wl_bnd,
-        open_boundary_zmin=_swb("open_boundary_zmin", mask_zmin),
-        open_boundary_zmax=_swb("open_boundary_zmax", mask_zmax),
-    )
-    swvals = sf.grid.data["snapwave_mask"].values
+    # The explicit polygon path (URI given) is honoured first; fall back to the
+    # water-level boundary polygon (also a URI). When BOTH are absent (the
+    # synthetic / agent forcing path, which supplies snapwave_boundary POINTS but
+    # no polygon) we DERIVE a thin seaward-edge polygon below so the wavebnd
+    # mask is non-empty and the incident wave can inject (else hm0 stays flat 0).
+    sw_open_poly = wave_bnd if wave_bnd is not None else wl_bnd
+
+    def _build_snapwave_mask(open_poly):
+        sf.snapwave.mask.build(
+            zmin=_swb("mask_zmin", mask_zmin),
+            zmax=_swb("mask_zmax", mask_zmax),
+            open_boundary_polygon=open_poly,
+            open_boundary_zmin=_swb("open_boundary_zmin", mask_zmin),
+            open_boundary_zmax=_swb("open_boundary_zmax", mask_zmax),
+        )
+        v = sf.grid.data["snapwave_mask"].values
+        return (int((v == 1).sum()), int((v > 1).sum()), int((v == 0).sum()))
+
+    sw_active, sw_wavebnd, sw_inactive = _build_snapwave_mask(sw_open_poly)
     LOG.info(
         "snapwave mask: active=%d wavebnd=%d inactive=%d",
-        int((swvals == 1).sum()), int((swvals > 1).sum()),
-        int((swvals == 0).sum()),
+        sw_active, sw_wavebnd, sw_inactive,
     )
+
+    # FIX: wave-boundary repair. If no cell was flagged as the wave boundary
+    # (wavebnd=0) but incident-wave boundary POINTS are present, the wave field
+    # has nowhere to inject from and hm0 stays flat at 0. This happens whenever
+    # the spec carries snapwave_boundary points but no open-boundary polygon URI
+    # (the synthetic / agent path), because the SFINCS open boundary is staged as
+    # a pre-built sfincs.bnd/bzs that bypasses cht's mask machinery (so there is
+    # no mask==2 cell to reuse). Derive a thin seaward-edge polygon from the SAME
+    # domain edge the incident wave travels in from and rebuild the mask.
+    if sw_wavebnd == 0:
+        sw_points = (resolve_forcing_blocks(spec)["snapwave_boundary"]
+                     or {}).get("points") or []
+        if sw_points:
+            derived_poly = derive_seaward_open_boundary_polygon(
+                sf, sw_points, target_epsg
+            )
+            if derived_poly is not None:
+                sw_active, sw_wavebnd, sw_inactive = _build_snapwave_mask(
+                    derived_poly
+                )
+                LOG.info(
+                    "snapwave mask REPAIRED via derived seaward boundary: "
+                    "active=%d wavebnd=%d inactive=%d",
+                    sw_active, sw_wavebnd, sw_inactive,
+                )
+                if sw_wavebnd == 0:
+                    LOG.warning(
+                        "snapwave wave-boundary STILL empty after seaward "
+                        "derive - incident wave may not inject (hm0 flat)"
+                    )
+            else:
+                LOG.warning(
+                    "snapwave wavebnd=0 with %d boundary point(s) but seaward "
+                    "boundary could not be derived - hm0 may stay flat",
+                    len(sw_points),
+                )
 
     # ---- 6. time keywords (MUST precede SnapWave forcing — CAVEAT 1) --------
     # Set tref/tstart/tstop as proper datetimes BEFORE building the SnapWave
