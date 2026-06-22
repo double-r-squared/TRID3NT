@@ -127,6 +127,17 @@ describe("layoutKeysCcw", () => {
     const sizes = [0, 1, 2].map(() => ({ width: 50, height: 20 }));
     expect(layoutKeysCcw(AOI, sizes)).toHaveLength(3);
   });
+
+  it("ITEM 5: sideStartOffset=1 starts the first key on the RIGHT (scrubber-active)", () => {
+    // When the scrubber occupies the bottom-center band, the legend starts its
+    // CCW layout on the right so the first key rails vertically down the right
+    // edge of the bbox and the two never collide.
+    const sizes = [0, 1, 2, 3].map(() => ({ width: 100, height: 40 }));
+    const out = layoutKeysCcw(AOI, sizes, 1);
+    expect(out.map((o) => o.side)).toEqual(["right", "top", "left", "bottom"]);
+    // The first (right-side) key sits to the RIGHT of the AOI right edge.
+    expect(out[0]!.left).toBeGreaterThan(AOI.right);
+  });
 });
 
 describe("nearestSide", () => {

@@ -462,12 +462,21 @@ export function LayerLegend({
         ? SCRUBBER_FOOTPRINT_PX
         : 0;
 
+  // ITEM 5 (NATE 2026-06-22)  -  when the SCRUBBER is showing, the bottom-center
+  // band is occupied by it, so START the CCW key layout on the RIGHT side (offset
+  // +1 in the bottom->right->top->left order). The first key then rails VERTICALLY
+  // down the right edge of the bbox (orientation follows the side, below), and
+  // the legend + scrubber never collide. When NO scrubber is shown the offset is
+  // 0 (the canonical bottom-first placement is unchanged).
+  const sideStartOffset = scrubberActive ? 1 : 0;
+
   const snapped = useMemo(() => {
     if (aoiRect) {
-      const base = layoutKeysCcw(aoiRect, sizes);
-      // Item f — shove the bottom-side keys down past the scrubber so the legend
+      const base = layoutKeysCcw(aoiRect, sizes, sideStartOffset);
+      // Item f  -  shove any bottom-side keys down past the scrubber so the legend
       // is never obscured by it (the scrubber sits just below the AOI bottom
-      // edge). Top/right/left keys are untouched.
+      // edge). Top/right/left keys are untouched. With sideStartOffset=1 the
+      // first 3 keys avoid the bottom entirely; this still guards a 4th+ key.
       if (bottomReserve <= 0) return base;
       return base.map((r) =>
         r.side === "bottom" ? { ...r, top: r.top + bottomReserve } : r,
@@ -482,7 +491,7 @@ export function LayerLegend({
       consumed += s.height + FALLBACK_STACK_GAP;
       return { left: -s.width / 2, top, side: "bottom" as AoiSide };
     });
-  }, [aoiRect, sizes, bottomReserve]);
+  }, [aoiRect, sizes, bottomReserve, sideStartOffset]);
 
   // --- drag wiring --------------------------------------------------------- //
 
@@ -724,8 +733,11 @@ export function LayerLegend({
         // the bounds come from the URL rescale (an arbitrary layer), drop the
         // unit so we never mislabel (e.g. tagging a temperature ramp with "m").
         const unitLabel = model.rescale ? "" : preset.unit;
+        // ITEM 5  -  the side label MUST match the snapped layout, including the
+        // scrubber-active CCW start offset (so the first key reads as a vertical
+        // RIGHT-side bar, not bottom). AOI-less fallback stays bottom-horizontal.
         const sideLabel: AoiSide = aoiRect
-          ? sideForIndex(idx)
+          ? sideForIndex(idx + sideStartOffset)
           : "bottom";
 
         // Item g (ORIENTATION, NATE 2026-06-20) — the colorbar is VERTICAL (a

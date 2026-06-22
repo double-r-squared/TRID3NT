@@ -64,6 +64,19 @@ const SCRUBBER_FALLBACK_WIDTH = 360;
 const SCRUBBER_Z_DESKTOP = 51;
 const SCRUBBER_Z_MOBILE = 31; // below the mobile chat sheet (zIndex 32)
 
+// ITEM 6 (NATE 2026-06-22): on MOBILE the chat is a bottom sheet anchored at the
+// screen bottom (Chat.tsx mobileSheetContainerStyle, bottom:0). Z-order alone is
+// NOT enough  -  NATE reported the scrubber STILL overlapping the composer because
+// it was POSITIONED in the same bottom band (aoiRect.bottom+12, or the bottom:24
+// fallback). We additionally CLAMP the scrubber's vertical position so its bottom
+// edge always clears the collapsed sheet (composer). This mirrors the legend's
+// MOBILE_SHEET_CLEARANCE_PX (Map.tsx) so the two overlays use one clearance story.
+// The value covers the collapsed composer card + the sheet's safe-area lift.
+export const SCRUBBER_MOBILE_SHEET_CLEARANCE_PX = 116;
+// Approx rendered scrubber height (7px*2 padding + ~26px control row) used to
+// turn the "top" clamp into a bottom-edge clamp. A small over-estimate is safe.
+const SCRUBBER_APPROX_HEIGHT_PX = 44;
+
 export interface SequenceScrubberProps {
   /** Short group label, e.g. the shared source/tool ("HRRR forecast"). */
   label: string;
@@ -164,20 +177,46 @@ export function SequenceScrubber({
   // No uniform transform: scale() on the container anymore -> the OUTER width
   // tracks the bbox width directly (so the bar spans the bbox with no padding),
   // matching the legend; only the centering translate remains.
+  // ITEM 6  -  on mobile, the highest screen-Y the scrubber's TOP may take so its
+  // bottom edge still clears the collapsed chat sheet (composer). Portaled to
+  // body with position:fixed, so the clamp is against the viewport height.
+  // window may be undefined under SSR; guard and skip the clamp then.
+  const viewportH =
+    typeof window !== "undefined" && Number.isFinite(window.innerHeight)
+      ? window.innerHeight
+      : null;
+  const mobileMaxTop =
+    isMobile && viewportH != null
+      ? viewportH -
+        SCRUBBER_MOBILE_SHEET_CLEARANCE_PX -
+        SCRUBBER_APPROX_HEIGHT_PX
+      : null;
+
   let posStyle: React.CSSProperties;
   if (aoiRect) {
     const cx = (aoiRect.left + aoiRect.right) / 2;
+    // ITEM 6  -  pin below the AOI bbox bottom edge, but on mobile clamp the top so
+    // the scrubber never drops into the chat sheet's band (it sits ABOVE the
+    // composer). Desktop is unaffected (mobileMaxTop is null).
+    let top = aoiRect.bottom + 12;
+    if (mobileMaxTop != null && top > mobileMaxTop) {
+      top = Math.max(0, mobileMaxTop);
+    }
     posStyle = {
       position: "fixed",
       left: cx,
-      top: aoiRect.bottom + 12,
+      top,
       transform: "translateX(-50%)",
       transformOrigin: "top center",
     };
   } else {
+    // No AOI on screen: anchor from the bottom. ITEM 6  -  on mobile lift the
+    // anchor by the sheet clearance so the fallback band sits ABOVE the chat
+    // sheet/composer instead of the old bottom:24 (which sat behind it). Desktop
+    // keeps the original low bottom-center position.
     posStyle = {
       position: "fixed",
-      bottom: 24,
+      bottom: isMobile ? SCRUBBER_MOBILE_SHEET_CLEARANCE_PX : 24,
       left: "50%",
       transform: "translateX(-50%)",
       transformOrigin: "bottom center",

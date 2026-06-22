@@ -788,12 +788,32 @@ export function LayerPanel({
   function onDragEnd(event: DragEndEvent): void {
     const { active, over } = event;
     if (!over || active.id === over.id) return;
-    const oldIndex = state.layers.findIndex((l) => l.layer_id === active.id);
-    const newIndex = state.layers.findIndex((l) => l.layer_id === over.id);
+    // ITEM 3 (NATE 2026-06-22)  -  reorder over the INTERLEAVED panel-item list
+    // (groups + single layers), not the raw layer list, so a sequential group can
+    // be dragged above/below ordinary layers. After the move we EXPAND each item
+    // back into concrete layer_ids (a group -> its member ids, top-of-stack first
+    // = z descending) to produce the full top-first id order the map re-stacks
+    // against (set-layer-order). A single layer expands to itself.
+    const activeId = String(active.id);
+    const overId = String(over.id);
+    const oldIndex = panelItems.findIndex((it) => it.id === activeId);
+    const newIndex = panelItems.findIndex((it) => it.id === overId);
     if (oldIndex === -1 || newIndex === -1) return;
-    const reorderedIds = arrayMove(state.layers, oldIndex, newIndex).map(
-      (l) => l.layer_id,
-    );
+    const movedItems = arrayMove(panelItems, oldIndex, newIndex);
+    const reorderedIds: string[] = [];
+    for (const it of movedItems) {
+      if (it.kind === "group") {
+        // Members are ascending-by-frame; emit them top-of-stack first
+        // (z descending) so the group occupies one contiguous z-band at its new
+        // panel position and frame stacking within the band is preserved.
+        const memberIdsTopFirst = [...it.group.layers]
+          .sort((a, b) => (b.z_index ?? 0) - (a.z_index ?? 0))
+          .map((l) => l.layer_id);
+        reorderedIds.push(...memberIdsTopFirst);
+      } else {
+        reorderedIds.push(it.id);
+      }
+    }
     dispatch({ type: "local-reorder", layer_ids: reorderedIds });
     // job-0179 — write-through the new z-order into the shared cache so the
     // drag-reorder survives a panel remount / reconnect. Top-first list: the
@@ -920,6 +940,42 @@ export function LayerPanel({
     return s;
   }, [groups]);
 
+  // ITEM 3 (NATE 2026-06-22)  -  a single z-ordered list interleaving sequential
+  // GROUP rows with ordinary single-LAYER rows, so the animation group can be
+  // dragged ABOVE/BELOW any other layer in the LayerPanel and that order is
+  // reflected in the MapLibre stack. Each panel item is sortable; the group's
+  // sortable id is the synthetic `group:<key>` (distinct from any layer_id) and
+  // a single layer's id is its layer_id. The representative z for ordering is the
+  // group's top member z (groups already sort their members ascending by frame,
+  // top-first by z), matching the rest of the panel's top-of-stack-first order.
+  type PanelItem =
+    | { kind: "group"; id: string; z: number; group: SequentialGroup }
+    | { kind: "layer"; id: string; z: number; layer: ProjectLayerSummary };
+  const panelItems = useMemo<PanelItem[]>(() => {
+    const items: PanelItem[] = [];
+    for (const g of groups) {
+      // The group's representative z = the MAX member z (its top-of-stack member),
+      // so a group sits where its highest frame would sit among single layers.
+      const z = g.layers.reduce(
+        (max, l) => Math.max(max, l.z_index ?? 0),
+        Number.NEGATIVE_INFINITY,
+      );
+      items.push({
+        kind: "group",
+        id: `group:${g.key}`,
+        z: Number.isFinite(z) ? z : 0,
+        group: g,
+      });
+    }
+    for (const l of state.layers) {
+      if (groupedIds.has(l.layer_id)) continue;
+      items.push({ kind: "layer", id: l.layer_id, z: l.z_index ?? 0, layer: l });
+    }
+    // Top-of-stack first (z descending), matching sortTopFirst.
+    items.sort((a, b) => b.z - a.z);
+    return items;
+  }, [groups, state.layers, groupedIds]);
+
   // The shared playback controller (process-global; survives panel unmount).
   const animController = useMemo(() => getAnimationController(), []);
   // Subscribe so the panel re-renders when playback state changes (the scrubber
@@ -998,6 +1054,41 @@ export function LayerPanel({
     [animController, syncFrameVisibilityLocal],
   );
 
+  /**
+   * ITEM 4 (NATE 2026-06-22)  -  toggle the WHOLE animation group's visibility via
+   * the group row's far-left eye (matching how an ordinary layer's eye works).
+   *   - OFF: hide EVERY member (incl. the currently-shown active frame) so the
+   *     animation disappears from the map entirely.
+   *   - ON: restore the animation by showing ONLY the active frame (single-frame
+   *     invariant) and hiding the rest, exactly like a normal frame step.
+   * Each per-member change flows through the SAME single-layer visibility path
+   * (dispatch + persisted overrides + cache write-through + map-command) so the
+   * map, the panel rows, and the durability seatbelt all stay in lockstep.
+   */
+  const onGroupVisibilityToggle = useCallback(
+    (g: SequentialGroup, visible: boolean): void => {
+      if (!visible) {
+        // Hide all members (the active frame included).
+        g.layers.forEach((layer) => {
+          if (layer.visible) onVisibilityToggle(layer.layer_id, false);
+        });
+        return;
+      }
+      // Show only the active frame, hide the rest (single-frame invariant).
+      const active = animController.frameIndexFor(g.key);
+      g.layers.forEach((layer, i) => {
+        const wantVisible = i === active;
+        if (layer.visible !== wantVisible) {
+          onVisibilityToggle(layer.layer_id, wantVisible);
+        }
+      });
+    },
+    // animController is a stable singleton; onVisibilityToggle is a per-render
+    // function declaration, so include it so we never capture a stale closure.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [animController],
+  );
+
   // When a group first becomes active, make sure exactly ONE frame is visible.
   // Runs once per group key appearing — collapses a freshly-detected N-visible
   // stack down to a single visible frame (both on the map, via the controller,
@@ -1033,9 +1124,16 @@ export function LayerPanel({
       const idx = animController.frameIndexFor(g.key);
       const visibleCount = g.layers.filter((l) => l.visible).length;
       const activeVisible = g.layers[idx]?.visible === true;
-      // Only re-sync when the reducer disagrees with the controller (active
-      // frame not the sole visible one) — avoids redundant dispatches per tick.
-      if (!activeVisible || visibleCount !== 1) {
+      // ITEM 4 (NATE 2026-06-22)  -  DO NOT re-show a group the user deliberately
+      // hid via the group eye. A fully-hidden group has visibleCount === 0; the
+      // old condition (`visibleCount !== 1`) treated that as "needs collapsing"
+      // and re-showed the active frame, fighting the hide-all toggle. We now
+      // re-sync ONLY when there is MORE than one frame visible (collapse a freshly
+      // -published N-visible stack to one) OR exactly one is visible but it's the
+      // WRONG one (the controller advanced the active frame). A zero-visible group
+      // is the user's hide intent and is left alone.
+      const wrongSingle = visibleCount === 1 && !activeVisible;
+      if (visibleCount > 1 || wrongSingle) {
         syncFrameVisibilityLocal(g, idx);
       }
     }
@@ -1185,56 +1283,56 @@ export function LayerPanel({
           collisionDetection={closestCenter}
           onDragEnd={onDragEnd}
         >
-          {/* Only UNGROUPED layers are individually drag-sortable; a sequential
-              group renders as one consolidated (non-sortable) row. */}
+          {/* ITEM 3 (NATE 2026-06-22)  -  ONE interleaved sortable list of panel
+              items: sequential GROUP rows and ordinary single-LAYER rows share a
+              single z-order, so a group can be dragged above/below any other
+              layer. Each item is a sortable (the group's id is `group:<key>`). */}
           <SortableContext
-            items={state.layers
-              .filter((l) => !groupedIds.has(l.layer_id))
-              .map((l) => l.layer_id)}
+            items={panelItems.map((it) => it.id)}
             strategy={verticalListSortingStrategy}
           >
-            {/* Sequential group rows, top-of-stack first. Each collapses N
-                near-identical temporal frames into ONE row with LEFT/RIGHT
-                stepping (drives the existing visibility callback). */}
-            {groups.map((g) => (
-              <SequentialGroupRow
-                key={g.key}
-                group={g}
-                activeIndex={frameIndexFor(g)}
-                expanded={!!expandedGroups[g.key]}
-                isScrubberTarget={g.key === activeGroupKey}
-                playing={playing && g.key === activeGroupKey}
-                onPlayToggle={() => {
-                  // Make this group the playback target, then toggle play on the
-                  // shared controller (so the interval lives outside the panel).
-                  animController.setActiveGroup(g.key);
-                  animController.togglePlaying();
-                }}
-                onToggleExpand={() =>
-                  setExpandedGroups((prev) => ({
-                    ...prev,
-                    [g.key]: !prev[g.key],
-                  }))
-                }
-                onStep={(idx) => {
-                  // stepGroupTo already sets the controller's active group.
-                  stepGroupTo(g, idx);
-                }}
-                onOpacityChange={onOpacityChange}
-                onRequestDelete={requestDelete}
-              />
-            ))}
-            {state.layers
-              .filter((l) => !groupedIds.has(l.layer_id))
-              .map((layer) => (
+            {panelItems.map((it) =>
+              it.kind === "group" ? (
+                <SortableGroupRow
+                  key={it.id}
+                  sortableId={it.id}
+                  group={it.group}
+                  activeIndex={frameIndexFor(it.group)}
+                  expanded={!!expandedGroups[it.group.key]}
+                  isScrubberTarget={it.group.key === activeGroupKey}
+                  playing={playing && it.group.key === activeGroupKey}
+                  onPlayToggle={() => {
+                    // Make this group the playback target, then toggle play on the
+                    // shared controller (interval lives outside the panel).
+                    animController.setActiveGroup(it.group.key);
+                    animController.togglePlaying();
+                  }}
+                  onToggleExpand={() =>
+                    setExpandedGroups((prev) => ({
+                      ...prev,
+                      [it.group.key]: !prev[it.group.key],
+                    }))
+                  }
+                  onVisibilityToggle={(visible) =>
+                    onGroupVisibilityToggle(it.group, visible)
+                  }
+                  onStep={(idx) => {
+                    // stepGroupTo already sets the controller's active group.
+                    stepGroupTo(it.group, idx);
+                  }}
+                  onOpacityChange={onOpacityChange}
+                  onRequestDelete={requestDelete}
+                />
+              ) : (
                 <SortableRow
-                  key={layer.layer_id}
-                  layer={layer}
+                  key={it.id}
+                  layer={it.layer}
                   onVisibilityToggle={onVisibilityToggle}
                   onOpacityChange={onOpacityChange}
                   onRequestDelete={requestDelete}
                 />
-              ))}
+              ),
+            )}
           </SortableContext>
         </DndContext>
       </div>
@@ -1526,16 +1624,29 @@ function SortableRow({
   );
 }
 
-// --- Sequential group row --------------------------------------------- //
+// --- Sequential group row (sortable) ---------------------------------- //
 //
 // One consolidated row standing in for N enumerated temporal frames (e.g. the
-// 3 HRRR forecast hours). Shows the active frame's label + position, LEFT/RIGHT
-// step arrows, and a frame-count chip. Collapsible: expand to reveal each
-// member frame as a compact sub-row (visibility/opacity/delete still work on
-// the individual frames via the same callbacks). Stepping toggles visibility
-// through the existing onVisibilityToggle (show frame i, hide the rest).
+// 3 HRRR forecast hours). Collapsible: expand to reveal each member frame as a
+// compact sub-row (visibility/opacity/delete still work on the individual
+// frames via the same callbacks).
+//
+// ITEM 2/3/4 (NATE 2026-06-22) redesign:
+//   - The row now LOOKS like an ordinary layer card: header is
+//     [EYE] [NAME] [X/N counter] [PLAY] left->right.
+//   - ITEM 4: the FAR-LEFT eye toggles the WHOLE group's visibility (all frames
+//     hide/show), aligned with ordinary layers' visibility eye.
+//   - ITEM 2: there is NO dedicated drag-grabber. The whole card body (any
+//     NON-button region) is the drag handle (dnd-kit attributes+listeners on the
+//     card div), so pointer-down on the name/blank area starts a reorder.
+//   - ITEM 3: the row is a SORTABLE item (useSortable on `sortableId`), so it can
+//     be dragged ABOVE/BELOW any other layer in the panel z-order.
+//   - A subtle expand chevron remains (after the counter) so per-frame sub-rows
+//     are still reachable; it stop-propagates so it never starts a drag.
 
-interface SequentialGroupRowProps {
+interface SortableGroupRowProps {
+  /** dnd-kit sortable id for this group (`group:<key>`). */
+  sortableId: string;
   group: SequentialGroup;
   activeIndex: number;
   expanded: boolean;
@@ -1544,13 +1655,16 @@ interface SequentialGroupRowProps {
   onStep: (index: number) => void;
   onOpacityChange: (layerId: string, opacity: number) => void;
   onRequestDelete: (layerId: string) => void;
+  /** ITEM 4  -  toggle the whole group's visibility (all frames). */
+  onVisibilityToggle: (visible: boolean) => void;
   /** Whether the sequence is auto-playing (drives the play/pause icon). */
   playing: boolean;
   /** Toggle auto-play. */
   onPlayToggle: () => void;
 }
 
-function SequentialGroupRow({
+function SortableGroupRow({
+  sortableId,
   group,
   activeIndex,
   expanded,
@@ -1561,7 +1675,10 @@ function SequentialGroupRow({
   onStep,
   onOpacityChange,
   onRequestDelete,
-}: SequentialGroupRowProps): JSX.Element {
+  onVisibilityToggle,
+}: SortableGroupRowProps): JSX.Element {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
+    useSortable({ id: sortableId });
   const n = group.layers.length;
   const idx = Math.max(0, Math.min(n - 1, activeIndex));
   // The active member's kind drives the chip accent (same family as the rows).
@@ -1571,6 +1688,9 @@ function SequentialGroupRow({
   const kind = activeLayer
     ? layerKind(activeLayer)
     : { label: "raster", color: "#9aa7b8" };
+  // ITEM 4  -  the group is "visible" when ANY member is visible (the active frame
+  // shows). Toggling drives onVisibilityToggle(!groupVisible).
+  const groupVisible = group.layers.some((l) => l.visible);
   // Per-group opacity readout (drives every member together). Resolve to a
   // finite [0,1] once — same defaulting rule as the per-row slider.
   const groupOpacity =
@@ -1580,35 +1700,141 @@ function SequentialGroupRow({
       ? clamp01(activeLayer.opacity)
       : 1;
 
+  const dndTransform = CSS.Transform.toString(transform) || undefined;
+
   return (
     <div
+      ref={setNodeRef}
       data-testid="layer-group-row"
       data-group-key={group.key}
       data-frame-count={n}
       data-active-index={idx}
+      // ITEM 2  -  the whole card body is the drag handle: dnd-kit
+      // attributes+listeners ride on the card div, so pointer-down on any
+      // non-button area starts the reorder (buttons stopPropagation below).
+      {...attributes}
+      {...listeners}
       style={{
-        background: isScrubberTarget
-          ? "rgba(74,163,255,0.10)"
-          : "rgba(255,255,255,0.03)",
+        transform: dndTransform,
+        transition:
+          transition ?? "background 140ms ease, border-color 140ms ease, transform 160ms ease",
+        background: isDragging
+          ? "rgba(70,110,170,0.28)"
+          : isScrubberTarget
+            ? "rgba(74,163,255,0.10)"
+            : "rgba(255,255,255,0.03)",
         border: `1px solid ${
-          isScrubberTarget ? "rgba(74,163,255,0.35)" : "rgba(255,255,255,0.08)"
+          isDragging
+            ? "rgba(120,160,220,0.5)"
+            : isScrubberTarget
+              ? "rgba(74,163,255,0.35)"
+              : "rgba(255,255,255,0.08)"
         }`,
         borderRadius: 8,
         padding: "7px 9px",
         display: "flex",
         flexDirection: "column",
         gap: expanded ? 6 : 0,
+        // ITEM 2  -  the card is a drag handle; show the grab cursor on the body.
+        cursor: "grab",
+        touchAction: "none",
+        opacity: isDragging ? 0.9 : 1,
+        boxShadow: isDragging ? "0 6px 18px rgba(0,0,0,0.45)" : "none",
       }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-        {/* Collapse/expand chevron. */}
+        {/* ITEM 2/4  -  FAR-LEFT eye: toggles the WHOLE group's visibility (all
+            frames), aligned with an ordinary layer's eye. The visually-hidden
+            checkbox preserves the a11y + test contract. stopPropagation on
+            pointer-down so toggling visibility never starts a card drag. */}
+        <label
+          data-legend-no-drag=""
+          onPointerDown={(e) => e.stopPropagation()}
+          style={{
+            position: "relative",
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 22,
+            height: 22,
+            flexShrink: 0,
+            cursor: "pointer",
+            color: groupVisible ? "#cfd4db" : "#5a626d",
+            transition: "color 120ms ease",
+          }}
+          title={groupVisible ? "Hide animation" : "Show animation"}
+        >
+          <input
+            type="checkbox"
+            checked={groupVisible}
+            onChange={(e) => onVisibilityToggle(e.target.checked)}
+            aria-label={`visibility for ${group.label} sequence`}
+            data-testid="layer-group-visibility"
+            style={{
+              position: "absolute",
+              inset: 0,
+              margin: 0,
+              opacity: 0,
+              cursor: "pointer",
+            }}
+          />
+          {groupVisible ? <IconEye size={15} /> : <IconEyeOff size={15} />}
+        </label>
+        {/* Sequence glyph — signals this row is a temporal stack. */}
+        <span
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            color: kind.color,
+            flexShrink: 0,
+          }}
+          title="Sequential layer group"
+        >
+          <IconWaves size={15} />
+        </span>
+        {/* Group NAME. */}
+        <span
+          style={{
+            flex: 1,
+            minWidth: 0,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+            fontSize: 12.5,
+            color: groupVisible ? "#e8e8ec" : "#8a929e",
+          }}
+          title={group.label}
+        >
+          {group.label}
+        </span>
+        {/* X/N frame counter (current/total, e.g. "7/24"). */}
+        <span
+          data-testid="layer-group-frame-label"
+          style={{
+            flexShrink: 0,
+            fontSize: 11,
+            color: "#9aa1ab",
+            fontVariantNumeric: "tabular-nums",
+            minWidth: 36,
+            textAlign: "right",
+          }}
+        >
+          {idx + 1}/{n}
+        </span>
+        {/* Subtle expand chevron  -  keeps per-frame sub-rows reachable. A button,
+            so stopPropagation prevents it from starting a card drag. */}
         <button
           type="button"
           data-testid="layer-group-expand"
+          data-legend-no-drag=""
           aria-label={expanded ? "Collapse sequence" : "Expand sequence"}
           aria-expanded={expanded}
           title={expanded ? "Collapse sequence" : "Expand sequence"}
-          onClick={onToggleExpand}
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleExpand();
+          }}
           style={{
             display: "flex",
             alignItems: "center",
@@ -1625,43 +1851,18 @@ function SequentialGroupRow({
         >
           {expanded ? <IconChevronDown size={13} /> : <IconChevronRight size={13} />}
         </button>
-        {/* Sequence glyph — signals this row is a temporal stack. */}
-        <span
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            color: kind.color,
-            flexShrink: 0,
-          }}
-          title="Sequential layer group"
-        >
-          <IconWaves size={15} />
-        </span>
-        {/* Group label. */}
-        <span
-          style={{
-            flex: 1,
-            minWidth: 0,
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-            fontSize: 12.5,
-            color: "#e8e8ec",
-          }}
-          title={group.label}
-        >
-          {group.label}
-        </span>
-        {/* Item 5: play button + x/N counter replace the old "Nf" chip +
-            left/right arrows. The scrubber (bottom overlay) carries its own
-            arrows; the header now shows play-state + active-frame position.
-            The "Nf" chip is kept as a hidden element for test-id compatibility. */}
+        {/* PLAY/pause button at the END (item 2 layout). */}
         <button
           type="button"
           data-testid="layer-group-play"
+          data-legend-no-drag=""
           aria-label={playing ? "Pause sequence" : "Play sequence"}
           title={playing ? "Pause" : "Play"}
-          onClick={onPlayToggle}
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            onPlayToggle();
+          }}
           disabled={n <= 1}
           style={{
             display: "flex",
@@ -1680,22 +1881,8 @@ function SequentialGroupRow({
         >
           {playing ? <IconPause size={12} /> : <IconPlay size={12} />}
         </button>
-        {/* Frame counter: shows current/total (e.g. "7/24"). */}
-        <span
-          data-testid="layer-group-frame-label"
-          style={{
-            flexShrink: 0,
-            fontSize: 11,
-            color: "#9aa1ab",
-            fontVariantNumeric: "tabular-nums",
-            minWidth: 36,
-            textAlign: "right",
-          }}
-        >
-          {idx + 1}/{n}
-        </span>
-        {/* Hidden chip kept for test compatibility (data-testid layer-group-count-chip).
-            No longer rendered visibly; frame count is in the x/N counter above. */}
+        {/* Hidden chip kept for test compatibility (data-testid
+            layer-group-count-chip). Not rendered visibly; the count is in x/N. */}
         <span
           data-testid="layer-group-count-chip"
           title={`${n} frames`}
@@ -1728,9 +1915,14 @@ function SequentialGroupRow({
               <button
                 type="button"
                 data-testid="layer-group-frame-select"
+                data-legend-no-drag=""
                 aria-label={`show frame ${group.frameLabels[i]}`}
                 aria-pressed={i === idx}
-                onClick={() => onStep(i)}
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onStep(i);
+                }}
                 style={{
                   width: 14,
                   height: 14,
@@ -1758,9 +1950,14 @@ function SequentialGroupRow({
               <button
                 type="button"
                 data-testid="layer-group-frame-delete"
+                data-legend-no-drag=""
                 aria-label={`delete frame ${group.frameLabels[i]}`}
                 title="Delete this frame"
-                onClick={() => onRequestDelete(layer.layer_id)}
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onRequestDelete(layer.layer_id);
+                }}
                 style={{
                   display: "flex",
                   alignItems: "center",
@@ -1791,6 +1988,8 @@ function SequentialGroupRow({
               max={1}
               step={0.01}
               value={groupOpacity}
+              data-legend-no-drag=""
+              onPointerDown={(e) => e.stopPropagation()}
               onChange={(e) => {
                 const v = Number(e.target.value);
                 group.layers.forEach((l) => onOpacityChange(l.layer_id, v));

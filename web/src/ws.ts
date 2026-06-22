@@ -121,7 +121,23 @@ export interface WsHandlers {
   onStatus: (s: ConnectionStatus) => void;
   onAgentChunk: (p: AgentMessageChunkPayload, caseId?: string | null) => void;
   onPipelineState: (p: PipelineStatePayload, caseId?: string | null) => void;
-  onSessionState: (p: SessionStatePayload, caseId?: string | null) => void;
+  /**
+   * Session-state frame. `fannedOut` is TRUE when this frame did NOT arrive on
+   * THIS GraceWs instance's own socket but was DELIVERED by the per-session
+   * fan-out hub from a SIBLING instance (Item 1, NATE 2026-06-22  -  roads-flash
+   * eviction fix). A hub-fanned session-state is built from the SIBLING socket's
+   * emitter, which can be STALE relative to this instance's view (e.g. the App
+   * socket's keepalive resume reply carries the flood raster but NOT a roads
+   * vector the Chat socket just added), so the App-side handler must treat a
+   * fanned-out frame as ADDITIVE-ONLY (it may add layers, never evict) and never
+   * stamp it authoritative. Only this socket's OWN frame (`fannedOut === false`)
+   * or an explicit Case switch may authoritatively replace.
+   */
+  onSessionState: (
+    p: SessionStatePayload,
+    caseId?: string | null,
+    fannedOut?: boolean,
+  ) => void;
   onError: (p: ErrorPayload, caseId?: string | null) => void;
   // OQ-0068-MAPCMD-WS: production routing for map-command envelopes (job-0072).
   // Optional so existing callers (App.tsx, Chat.tsx) need no change; callers that
@@ -947,7 +963,12 @@ export class GraceWs {
     payload: unknown,
     caseId: string | null = null,
   ): void {
-    this.dispatchEnvelope(envType, payload, caseId);
+    // Item 1 (NATE 2026-06-22)  -  mark fanned-out so consumers (App.tsx's
+    // onSessionState) know this frame originated on a SIBLING socket and may be
+    // STALE relative to this instance's view; it must be ADDITIVE-ONLY (add, never
+    // evict) and never stamped authoritative. A natively-received frame
+    // (handleMessage -> dispatchEnvelope) leaves fannedOut at its false default.
+    this.dispatchEnvelope(envType, payload, caseId, true);
   }
 
   sendUserMessage(
@@ -1517,6 +1538,10 @@ export class GraceWs {
     envType: string,
     rawPayload: unknown,
     caseId: string | null = null,
+    // Item 1 (NATE 2026-06-22)  -  true only when delivered via the fan-out hub
+    // from a sibling instance (deliverFannedOut). Forwarded to onSessionState so
+    // the App handler can keep a fanned-out (possibly stale) frame additive-only.
+    fannedOut = false,
   ): void {
     if (!rawPayload || typeof rawPayload !== "object") return;
     const payload = rawPayload as Record<string, unknown>;
@@ -1534,6 +1559,7 @@ export class GraceWs {
         this.handlers.onSessionState(
           payload as unknown as SessionStatePayload,
           caseId,
+          fannedOut,
         );
         break;
       case "error": {

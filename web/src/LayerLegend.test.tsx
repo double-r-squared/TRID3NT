@@ -13,7 +13,7 @@
 // The wrapper element (data-testid "grace2-layer-legend") is now a full-bleed,
 // click-through container; the positioned/sized card is the KEY element.
 
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, within } from "@testing-library/react";
 import {
   LayerLegend,
@@ -25,6 +25,19 @@ import {
   legendHasContent,
 } from "./components/LayerLegend";
 import { ProjectLayerSummary } from "./contracts";
+// ITEM 5 (NATE 2026-06-22)  -  the legend reads the shared AnimationController to
+// know whether the SCRUBBER is showing (so it rails to the right of the bbox,
+// vertically). Reset the process-global controller before every test so a group
+// set by one test never bleeds into another's snap geometry.
+import {
+  AnimationController,
+  setAnimationController,
+  getAnimationController,
+} from "./lib/animation_controller";
+
+beforeEach(() => {
+  setAnimationController(new AnimationController());
+});
 
 function makeLayer(overrides: Partial<ProjectLayerSummary> = {}): ProjectLayerSummary {
   return {
@@ -270,6 +283,53 @@ describe("LayerLegend — CCW snapping to AOI sides", () => {
       .filter((k) => k.getAttribute("data-legend-side") === "bottom")
       .map((k) => parseFloat(k.style.top));
     expect(bottomTops[0]).not.toBe(bottomTops[1]);
+  });
+});
+
+// --- ITEM 5 (NATE 2026-06-22): legend goes vertical on the RIGHT when the
+// sequence scrubber is showing (the bottom-center band is occupied by it). ---
+describe("LayerLegend  -  scrubber-active right-side vertical rail (ITEM 5)", () => {
+  const anchor = { left: 500, top: 400 };
+  const barWidth = 200;
+
+  // Build a real sequential group on the shared controller so the legend's
+  // useAnimationState() reports an active group (scrubberActive === true).
+  function activateScrubber(): void {
+    const c = getAnimationController();
+    c.setGroups([
+      {
+        key: "seq-1",
+        label: "HRRR precip",
+        layerIds: ["f01", "f03", "f06"],
+        frameLabels: ["F+01h", "F+03h", "F+06h"],
+      },
+    ]);
+    c.setActiveGroup("seq-1");
+  }
+
+  it("with NO scrubber, the first key stays on the BOTTOM (horizontal)", () => {
+    render(
+      <LayerLegend layers={[makeLayer({ layer_id: "k0" })]} anchor={anchor} barWidth={barWidth} />,
+    );
+    const key = screen.getByTestId("grace2-layer-legend-key");
+    expect(key.getAttribute("data-legend-side")).toBe("bottom");
+    expect(key.getAttribute("data-legend-orientation")).toBe("horizontal");
+  });
+
+  it("with the scrubber active, the first key rails on the RIGHT (vertical)", () => {
+    activateScrubber();
+    // A standalone (non-frame) raster so it still produces ONE legend key while a
+    // separate sequence group drives the scrubber-active signal.
+    render(
+      <LayerLegend
+        layers={[makeLayer({ layer_id: "standalone", name: "Storm surge max" })]}
+        anchor={anchor}
+        barWidth={barWidth}
+      />,
+    );
+    const key = screen.getByTestId("grace2-layer-legend-key");
+    expect(key.getAttribute("data-legend-side")).toBe("right");
+    expect(key.getAttribute("data-legend-orientation")).toBe("vertical");
   });
 });
 

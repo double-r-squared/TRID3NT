@@ -133,9 +133,21 @@ export function snapKeyToSide(
  * the cross-axis extent already used on a side is accumulated so heterogeneous
  * key sizes never overlap.
  *
+ * `sideStartOffset` (ITEM 5, NATE 2026-06-22) shifts the CCW side assignment by
+ * a whole-number of sides. The default 0 keeps the canonical order (key 0 ->
+ * bottom). Passing 1 starts the first key on the RIGHT side instead (key 0 ->
+ * right, 1 -> top, ...): used to vacate the bottom-center band for the sequence
+ * scrubber and rail the first key VERTICALLY down the right edge of the bbox.
+ * The stack position is unchanged (it still groups every 4th key per side), so
+ * heterogeneous sizes never overlap regardless of the offset.
+ *
  * Returns one SnapResult per input key, in the same order.
  */
-export function layoutKeysCcw(aoi: ScreenRect, sizes: KeySize[]): SnapResult[] {
+export function layoutKeysCcw(
+  aoi: ScreenRect,
+  sizes: KeySize[],
+  sideStartOffset = 0,
+): SnapResult[] {
   // Track cumulative cross-axis extent per side so each new key on a side sits
   // beyond the ones already there.
   const usedExtent: Record<AoiSide, number> = {
@@ -145,7 +157,7 @@ export function layoutKeysCcw(aoi: ScreenRect, sizes: KeySize[]): SnapResult[] {
     left: 0,
   };
   return sizes.map((size, index) => {
-    const side = sideForIndex(index);
+    const side = sideForIndex(index + sideStartOffset);
     const stackPos = stackPositionForIndex(index);
     const prior = usedExtent[side];
     const result = snapKeyToSide(aoi, side, size, stackPos, prior);

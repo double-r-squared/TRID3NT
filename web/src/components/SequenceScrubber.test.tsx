@@ -310,3 +310,59 @@ describe("SequenceScrubber - z-order vs the mobile chat sheet", () => {
     expect(el.style.zIndex).toBe("51");
   });
 });
+
+// ITEM 6 (NATE 2026-06-22)  -  on mobile the scrubber must sit UNDER the chat
+// bottom-sheet in POSITION too (not just z-order), so it never covers the
+// composer even when the AOI sits low on screen.
+describe("SequenceScrubber - mobile vertical clamp above the chat sheet (ITEM 6)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function stubMobile(): void {
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn().mockReturnValue({
+        matches: true,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+      }),
+    );
+    // A short viewport so an AOI near the bottom would otherwise drop the
+    // scrubber into the chat sheet band.
+    vi.stubGlobal("innerHeight", 600);
+  }
+
+  it("CLAMPS the AOI-pinned top so the scrubber clears the chat sheet", () => {
+    stubMobile();
+    // AOI bottom at 580 -> unclamped top would be 592 (past the 600 viewport,
+    // inside the chat sheet). The clamp must pull it up to clear the sheet.
+    renderScrubber({ aoiRect: { left: 100, top: 400, right: 300, bottom: 580 } });
+    const el = screen.getByTestId("grace2-sequence-scrubber");
+    const top = parseFloat(el.style.top);
+    // maxTop = 600 - 116 (clearance) - 44 (approx height) = 440. The scrubber's
+    // top is clamped to <= maxTop, well above the chat sheet band.
+    expect(top).toBeLessThanOrEqual(440);
+    // It is centered on the AOI horizontally regardless.
+    expect(el.style.left).toBe("200px");
+  });
+
+  it("does NOT clamp when the AOI sits high enough (top already clears the sheet)", () => {
+    stubMobile();
+    // AOI bottom at 100 -> top = 112, far above maxTop(440): unchanged.
+    renderScrubber({ aoiRect: { left: 100, top: 40, right: 300, bottom: 100 } });
+    const el = screen.getByTestId("grace2-sequence-scrubber");
+    expect(parseFloat(el.style.top)).toBe(112);
+  });
+
+  it("AOI-less fallback anchors ABOVE the chat sheet on mobile (not bottom:24)", () => {
+    stubMobile();
+    renderScrubber(); // no aoiRect
+    const el = screen.getByTestId("grace2-sequence-scrubber");
+    // Mobile fallback lifts the bottom anchor by the sheet clearance (116px),
+    // so the scrubber sits above the composer instead of behind it.
+    expect(el.style.bottom).toBe("116px");
+  });
+});

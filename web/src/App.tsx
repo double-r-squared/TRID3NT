@@ -835,7 +835,7 @@ export function App(): JSX.Element {
       // `replace_layers` hint Map.tsx reads to decide replace-not-reconcile
       // (Appendix A.7) vs additive top-up. See the CLIENT FLICKER FIX note on
       // the stamp itself below for the exact authoritative-vs-no-op rule.
-      onSessionState: (p, caseId) => {
+      onSessionState: (p, caseId, fannedOut) => {
         // CASE-SWITCH LAYER LEAK FIX (NATE 2026-06-19) — DROP a server snapshot
         // tagged with a Case that is NOT the active one. ws.ts surfaces the
         // envelope-level `case_id` here as `caseId`; a snapshot whose tag does
@@ -870,7 +870,24 @@ export function App(): JSX.Element {
           // on it. The EXPLICIT Case SWITCH / EXIT path (the activeSession effect
           // below) still stamps replace_layers:true on its empty clear, so only a
           // real Case change clears prior-Case layers.
+          //
+          // ITEM 1 (NATE 2026-06-22  -  roads-flash eviction fix): a HUB-FANNED-OUT
+          // session-state (`fannedOut === true`) is built from a SIBLING socket's
+          // emitter, which can be STALE relative to this socket's view. The
+          // concrete bug: a live-added vector (roads) lands on the Chat socket and
+          // fans out to App (paints), but ~25s later App's OWN keepalive resume
+          // reply is built from App's stale emitter (has the flood raster, NOT
+          // roads). Under the old stamp that App-own frame was authoritative
+          // (connected + has layers), so mergeSnapshot evicted roads (the flash-
+          // then-vanish). The fix makes any fanned-out frame ADDITIVE-ONLY (never
+          // authoritative -> never evicts): it may ADD/refresh layers a sibling
+          // saw but can never tear down a layer this socket already has. Only this
+          // socket's OWN frame (fannedOut falsy)  -  or the explicit Case-switch path
+          //  -  may authoritatively replace. The own-frame stamp is unchanged
+          // (connected + non-empty), so per-Case durability, delete, and the
+          // empty-heartbeat no-op all behave exactly as before.
           replace_layers:
+            !fannedOut &&
             wsStatusRef.current === "connected" &&
             (p.loaded_layers?.length ?? 0) > 0,
         });

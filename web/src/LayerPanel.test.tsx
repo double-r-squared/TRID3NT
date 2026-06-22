@@ -1216,6 +1216,87 @@ describe("LayerPanel — sequential group row rendering", () => {
   });
 });
 
+// --- ITEM 2/3/4 (NATE 2026-06-22) group-row redesign --------------------- //
+//
+// The animation group row now LOOKS like an ordinary layer card:
+// [EYE] [NAME] [X/N] [PLAY], NO dedicated drag-grabber (the card body is the
+// drag handle), the far-left eye toggles the WHOLE group's visibility, and the
+// row is a sortable item so it can be dragged among other layers.
+describe("LayerPanel  -  group row redesign (ITEM 2/3/4)", () => {
+  afterEach(() => {
+    try { localStorage.clear(); } catch { /* ignore */ }
+  });
+
+  it("group row has a far-left visibility eye and NO dedicated drag-grabber", () => {
+    render(
+      <LayerPanel initialLayers={[makeFrame(1), makeFrame(3), makeFrame(6)]} />,
+    );
+    // The group's whole-group eye exists (ITEM 4).
+    expect(screen.getByTestId("layer-group-visibility")).toBeInTheDocument();
+    // ITEM 2  -  no per-row grabber inside the group card (the only grabbers in
+    // the panel belong to ordinary layer rows; here there are none).
+    expect(screen.queryAllByTestId("layer-drag-handle")).toHaveLength(0);
+  });
+
+  it("the group eye toggles the WHOLE group's visibility (all frames hide)", () => {
+    const emitted: Array<{ ids: string[]; idx: number }> = [];
+    getAnimationController().setEmitter((ids, idx) =>
+      emitted.push({ ids: [...ids], idx }),
+    );
+    const seen: ProjectLayerSummary[][] = [];
+    render(
+      <LayerPanel
+        initialLayers={[makeFrame(1), makeFrame(3), makeFrame(6)]}
+        onLayersChange={(ls) => seen.push(ls)}
+      />,
+    );
+    const eye = screen.getByTestId("layer-group-visibility");
+    // Initially the group is visible (the active frame shows).
+    expect(eye).toBeChecked();
+    // Toggle OFF -> every member is hidden.
+    fireEvent.click(eye);
+    const afterHide = seen[seen.length - 1]!;
+    const frameIds = ["run-a-f01", "run-a-f03", "run-a-f06"];
+    for (const id of frameIds) {
+      const l = afterHide.find((x) => x.layer_id === id);
+      expect(l?.visible).toBe(false);
+    }
+    // The eye now reads hidden.
+    expect(screen.getByTestId("layer-group-visibility")).not.toBeChecked();
+  });
+
+  it("re-showing the group restores ONLY the active frame (single-frame invariant)", () => {
+    const seen: ProjectLayerSummary[][] = [];
+    render(
+      <LayerPanel
+        initialLayers={[makeFrame(1), makeFrame(3), makeFrame(6)]}
+        onLayersChange={(ls) => seen.push(ls)}
+      />,
+    );
+    const eye = screen.getByTestId("layer-group-visibility");
+    fireEvent.click(eye); // hide all
+    fireEvent.click(screen.getByTestId("layer-group-visibility")); // show again
+    const after = seen[seen.length - 1]!;
+    // Default active frame is the LAST (F+06h); only it should be visible.
+    expect(after.find((l) => l.layer_id === "run-a-f06")?.visible).toBe(true);
+    expect(after.find((l) => l.layer_id === "run-a-f01")?.visible).toBe(false);
+    expect(after.find((l) => l.layer_id === "run-a-f03")?.visible).toBe(false);
+  });
+
+  it("a sequential group + ordinary layers share ONE interleaved sortable order", () => {
+    // A group (frames z=1) plus two ordinary layers (z=9, z=5). The panel renders
+    // one group row + two layer rows; the order is top-of-stack first by z, so the
+    // group can be dragged among them (ITEM 3  -  covered structurally here).
+    const top = { ...makeLayer("roads", 9), name: "Roads" };
+    const mid = { ...makeLayer("boundary", 5), name: "Boundary" };
+    render(
+      <LayerPanel initialLayers={[top, mid, makeFrame(1), makeFrame(3)]} />,
+    );
+    expect(screen.getAllByTestId("layer-group-row")).toHaveLength(1);
+    expect(screen.getAllByTestId("layer-row")).toHaveLength(2);
+  });
+});
+
 // JOB WEB-ANIM (#157.2) — the SCRUBBER no longer lives inside LayerPanel. It is
 // rendered by App.tsx from the shared controller so it survives panel close. The
 // LayerPanel's role is to DETECT groups + push them into the controller; these

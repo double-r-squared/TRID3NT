@@ -253,6 +253,46 @@ describe("GraceWs — job-0159 session-scoped fan-out hub", () => {
     expect(__test_sessionHubSize(chat.session)).toBe(0);
   });
 
+  it("flags a fanned-out session-state (fannedOut=true) vs a native one (false)", () => {
+    // ITEM 1 (NATE 2026-06-22  -  roads-flash eviction fix): the 3rd arg of
+    // onSessionState must distinguish a hub-fanned frame (from a SIBLING socket,
+    // possibly stale) from this socket's OWN frame. App.tsx uses it to keep a
+    // fanned-out frame additive-only (never authoritative -> never evicts).
+    const chatOnSessionState = vi.fn();
+    const appOnSessionState = vi.fn();
+    const chat = new GraceWs("ws://localhost:8765", makeHandlers({
+      onSessionState: chatOnSessionState,
+    }));
+    const app = new GraceWs("ws://localhost:8765", makeHandlers({
+      onSessionState: appOnSessionState,
+    }));
+
+    chat.connect();
+    app.connect();
+    const sockets = (window as unknown as { __webSockets?: WebSocket[] })
+      .__webSockets;
+    if (!sockets || sockets.length < 2) {
+      chat.close();
+      app.close();
+      return;
+    }
+    const chatSocket = sockets[sockets.length - 2]!;
+    injectMessage(
+      chatSocket,
+      makeEnvelope("session-state", { loaded_layers: [] }),
+    );
+
+    // Chat received it NATIVELY -> fannedOut must be false (its OWN frame).
+    expect(chatOnSessionState).toHaveBeenCalledOnce();
+    expect(chatOnSessionState.mock.calls[0]![2]).toBe(false);
+    // App received it via the HUB -> fannedOut must be true (sibling frame).
+    expect(appOnSessionState).toHaveBeenCalledOnce();
+    expect(appOnSessionState.mock.calls[0]![2]).toBe(true);
+
+    chat.close();
+    app.close();
+  });
+
   it("fans map-command out to siblings (zoom-to drives Map.tsx fitBounds)", () => {
     const chatOnMapCommand = vi.fn();
     const appOnMapCommand = vi.fn();

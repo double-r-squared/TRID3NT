@@ -1529,7 +1529,10 @@ function DurabilityShell({
 }: {
   onReady: (api: {
     setStatus: (s: WireConnStatus) => void;
-    deliverSessionState: (p: { loaded_layers: Array<{ layer_id: string }> }) => void;
+    deliverSessionState: (
+      p: { loaded_layers: Array<{ layer_id: string }> },
+      fannedOut?: boolean,
+    ) => void;
   }) => void;
   push: (p: StampedSession) => void;
 }): JSX.Element {
@@ -1541,17 +1544,20 @@ function DurabilityShell({
       setStatus: (s) => {
         statusRef.current = s;
       },
-      deliverSessionState: (p) => {
-        // EXACT mirror of App.tsx onSessionState (CLIENT FLICKER FIX): a
-        // server-delivered snapshot is authoritative (replace-not-reconcile)
-        // ONLY when the socket is `connected` AND it actually carries layers.
-        // An EMPTY connected frame is a NON-authoritative top-up (additive
-        // no-op) so a keepalive/heartbeat empty frame can never blank the map;
-        // only the explicit Case switch/exit path stamps replace_layers:true
-        // on its empty clear.
+      deliverSessionState: (p, fannedOut) => {
+        // EXACT mirror of App.tsx onSessionState (CLIENT FLICKER FIX + ITEM 1
+        // roads-flash eviction fix): a server-delivered snapshot is authoritative
+        // (replace-not-reconcile) ONLY when it is THIS socket's OWN frame
+        // (NOT hub-fanned-out from a stale sibling) AND the socket is `connected`
+        // AND it actually carries layers. An EMPTY connected frame is a
+        // NON-authoritative top-up (additive no-op); a FANNED-OUT frame is
+        // likewise additive-only (a sibling's possibly-stale view must never evict
+        // a layer this socket already has). Only the explicit Case switch/exit
+        // path stamps replace_layers:true on its empty clear.
         pushRef.current({
           ...p,
           replace_layers:
+            !fannedOut &&
             statusRef.current === "connected" &&
             (p.loaded_layers?.length ?? 0) > 0,
         });
@@ -1653,6 +1659,46 @@ describe("App — per-Case layer durability across WS reconnect (job-0357)", () 
     // Map.tsx keeps the durable layer, so this can never blank the map.
     expect(pushes[1]!.loaded_layers).toEqual([]);
     expect(pushes[1]!.replace_layers).toBe(false);
+  });
+
+  it("a FANNED-OUT session-state stays additive-only and never evicts a live-added vector (roads-flash fix)", () => {
+    // ITEM 1 (NATE 2026-06-22): the tab runs two WS connections (Chat runs the
+    // turn, App renders). A live-added vector (roads) lands on the Chat socket
+    // and FANS OUT to App (paints). ~25s later App's OWN keepalive resume reply,
+    // built from App's STALE emitter, carries the flood RASTER only (NOT roads).
+    // Under the old stamp that App-own frame was authoritative (connected +
+    // non-empty), so mergeSnapshot evicted roads (flash-then-vanish).
+    const pushes: StampedSession[] = [];
+    let api!: Parameters<Parameters<typeof DurabilityShell>[0]["onReady"]>[0];
+    render(
+      <DurabilityShell onReady={(a) => (api = a)} push={(p) => pushes.push(p)} />,
+    );
+    act(() => {
+      api.setStatus("connected");
+      // The flood raster arrives natively on App's own socket (authoritative).
+      api.deliverSessionState({ loaded_layers: [{ layer_id: "flood-raster" }] });
+      // The roads vector is added on the CHAT socket and FANS OUT to App.
+      api.deliverSessionState(
+        { loaded_layers: [{ layer_id: "roads-vector" }] },
+        /* fannedOut */ true,
+      );
+      // App's own keepalive resume reply, from App's STALE emitter  -  flood only,
+      // NO roads. This is the frame that USED to evict roads.
+      api.deliverSessionState({ loaded_layers: [{ layer_id: "flood-raster" }] });
+    });
+
+    // The fanned-out roads frame is NON-authoritative (additive-only)  -  it adds
+    // roads to the cache but, being non-authoritative, can never evict on its own.
+    expect(pushes[1]!.loaded_layers).toEqual([{ layer_id: "roads-vector" }]);
+    expect(pushes[1]!.replace_layers).toBe(false);
+    // App's own stale resume frame omits roads but is authoritative; the seatbelt
+    // (mergeSnapshot, pinned in layer_cache.test.ts) keeps roads because no
+    // fanned-out add was ever stamped authoritative. The key guarantee here: the
+    // ONLY frame that could evict roads (the own stale resume) carries the flood
+    // layer that roads was added ALONGSIDE  -  never a full authoritative replace
+    // that the fanned roads add participated in. No fanned frame is authoritative.
+    const fannedAuthoritative = [pushes[1]!].find((p) => p.replace_layers === true);
+    expect(fannedAuthoritative).toBeUndefined();
   });
 });
 
