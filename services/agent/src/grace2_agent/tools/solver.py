@@ -286,6 +286,11 @@ SOLVER_WORKFLOW_REGISTRY: dict[str, str] = {
     "geoclaw": "model_dambreak_geoclaw_scenario",
     "openquake": "model_seismic_hazard_scenario",
     "landlab": "model_landslide_scenario",
+    # SWAN Phase 1: standalone spectral nearshore wave-field engine. Composer name
+    # (supersedes run_swan.register_swan_solver's import-time setdefault to the
+    # AWS_BATCH_WORKFLOW_NAME sentinel; the static literal here is evaluated first,
+    # so the setdefault is a no-op and this consistent composer name wins).
+    "swan": "model_wave_scenario",
 }
 
 

@@ -39,6 +39,7 @@ from . import (
     region_choice,
     sandbox_contracts,
     secrets,
+    swan_contracts,
     swmm_contracts,
     tool_metadata,
     tool_registry,
@@ -67,6 +68,7 @@ from .common import (
 )
 from .geoclaw_contracts import GeoClawDepthLayerURI, GeoClawRunArgs
 from .modflow_contracts import MODFLOWRunArgs, PlumeLayerURI, SeepageLayerURI
+from .swan_contracts import SwanRunArgs, SwanWaveBoundary, WaveFieldLayerURI
 from .swmm_contracts import SWMMDepthLayerURI, SWMMRunArgs
 from .sandbox_contracts import (
     CodeExecRequestPayload,
@@ -99,6 +101,7 @@ __all__ = [
     "region_choice",
     "sandbox_contracts",
     "secrets",
+    "swan_contracts",
     "swmm_contracts",
     "tool_metadata",
     "tool_registry",
@@ -118,6 +121,10 @@ __all__ = [
     # GeoClaw (Clawpack) shallow-water inundation contracts (sprint-17)
     "GeoClawRunArgs",
     "GeoClawDepthLayerURI",
+    # SWAN (Simulating WAves Nearshore) spectral wave-field contracts (Phase 1)
+    "SwanRunArgs",
+    "SwanWaveBoundary",
+    "WaveFieldLayerURI",
     # chart-emission contracts (sprint-13 conversational analysis layer)
     "ChartEmissionPayload",
     "SessionChartRecord",
