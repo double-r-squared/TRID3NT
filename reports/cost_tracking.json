@@ -2193,10 +2193,17 @@
       "model": "opus",
       "subagent_tokens": 178725,
       "description": "Authored deterministic Mexico Beach quadtree+SnapWave smoke driver (verify_mexico_beach_waves.py); surfaced the snapwave_boundary UTM-reprojection wiring + the publish/render caveat."
+    },
+    {
+      "job_id": "agent-postprocess-quadtree-schema-fix-20260621",
+      "sprint": 16,
+      "model": "opus",
+      "subagent_tokens": 76777,
+      "description": "Fixed postprocess_flood for the real cht_sfincs quadtree schema (face centroids from UGRID node+connectivity; CRS from crs-var value); proven against the real Mexico Beach sfincs_map.nc (depth COG produced, EPSG:32616). +6 regression tests; suite 5959."
     }
   ],
   "totals_by_sprint": {
-    "16": 17329742,
+    "16": 17406519,
     "6": 1265567,
     "7": 1863284,
     "8": 1786238,
