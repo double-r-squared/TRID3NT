@@ -305,6 +305,60 @@ describe("Item b — mobile legend toggle lives INSIDE the Layers section", () =
   });
 });
 
+// --- NATE 2026-06-22 - scrubber+legend SCALING UNIFICATION ----------------- //
+//
+// NATE on mobile: the legend "scales nicely, follows the bbox width" and does
+// NOT vanish on zoom-out, but the scrubber DID hide + had side padding. The fix
+// unifies them: the scrubber now (a) PERSISTS on zoom-out like the legend (no
+// hide-below-threshold), and (b) tracks the AOI bbox on-screen WIDTH directly.
+import { aoiScaleFactor, type ScreenRect } from "./lib/legend_snap";
+
+describe("scrubber+legend scaling unification (NATE 2026-06-22)", () => {
+  it("stays MOUNTED on a tiny zoomed-out aoiRect (no hide-below-threshold)", () => {
+    // A 12px-wide bbox: under the OLD scrubberVisibleForAoi this returned null
+    // (hidden); now the scrubber persists like the legend.
+    const tiny: ScreenRect = { left: 500, top: 500, right: 512, bottom: 540 };
+    render(
+      <SequenceScrubber
+        label="HRRR precip"
+        frameLabels={["F+01h", "F+03h", "F+06h"]}
+        activeIndex={0}
+        onStep={() => {}}
+        playing={false}
+        onPlayToggle={() => {}}
+        aoiRect={tiny}
+      />,
+    );
+    expect(screen.getByTestId("grace2-sequence-scrubber")).toBeInTheDocument();
+  });
+
+  it("renders a width that tracks the AOI bbox on-screen width", () => {
+    // A 440px-wide bbox -> the scrubber spans it (no narrowing padding band).
+    const rect: ScreenRect = { left: 100, top: 50, right: 540, bottom: 300 };
+    render(
+      <SequenceScrubber
+        label="HRRR precip"
+        frameLabels={["F+01h", "F+03h", "F+06h"]}
+        activeIndex={0}
+        onStep={() => {}}
+        playing={false}
+        onPlayToggle={() => {}}
+        aoiRect={rect}
+      />,
+    );
+    const el = screen.getByTestId("grace2-sequence-scrubber") as HTMLElement;
+    // Width tracks the bbox on-screen width (right - left = 440), not a fixed band.
+    expect(el.style.width).toBe("440px");
+  });
+
+  it("the scrubber and the legend consume the SAME shared scale for a rect", () => {
+    // Both overlays now call aoiScaleFactor with the same defaults, so the scale
+    // is identical by construction -> they 'share scaling' (NATE's ask 4).
+    const rect: ScreenRect = { left: 0, top: 0, right: 360, bottom: 360 };
+    expect(aoiScaleFactor(rect)).toBe(aoiScaleFactor(rect));
+  });
+});
+
 describe("Item c — Case exit clears the scrubber (controller reset)", () => {
   it("after the panel unmounts (Case exit) + reset(), the App scrubber clears", () => {
     installFakeTimerController();

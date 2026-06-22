@@ -221,97 +221,16 @@ export function aoiScaleFactor(
   return Math.max(min, Math.min(raw, max));
 }
 
-/**
- * Scrubber UNIFORM SCALE = AOI bbox on-screen px width / reference (NATE 2026-06-21).
- *
- * NATE's refinement (supersedes the old width-floor approach): "I don't want the
- * LENGTH affected, I want the WHOLE scale to stay the same relative to the bbox;
- * when I zoom out the scrubber becomes large and intrusive." The old
- * scrubberWidthForAoi only stretched the TRACK and floored at 200px, so a tiny
- * zoomed-out box still got a 200px-wide bar with full-size buttons/font — huge
- * relative to the box.
- *
- * Instead, derive a single SCALE FACTOR from the AOI bbox's on-screen EAST-WEST
- * pixel width relative to a REFERENCE width (the width at which the scrubber
- * renders at its natural 1.0). The caller applies this as a uniform
- * `transform: scale(s)` (transform-origin bottom center) so the ENTIRE widget —
- * buttons, handle, font, track — shrinks/grows together with the box on-screen.
- *
- * Clamped to [min, max] so the widget never becomes unusably tiny or absurdly
- * large. Returns the natural 1.0 when there is no rect / the rect is degenerate
- * (zero or negative on-screen width), so an AOI-less fallback renders at full
- * size. Pure pixel math (Invariant 1).
- */
-export interface ScrubberScaleOptions {
-  /** On-screen px width at which the scrubber renders at scale 1.0. Default 480. */
-  referencePx?: number;
-  /** Smallest allowed scale (never unusably tiny). Default 0.7. */
-  min?: number;
-  /** Largest allowed scale (never absurdly large/intrusive). Default 1.15. */
-  max?: number;
-  /**
-   * Scale at/below which the scrubber HIDES entirely instead of rendering an
-   * unusably tiny widget (NATE 2026-06-21). Default = `min` (0.7).
-   */
-  hideBelowScale?: number;
-}
-
-/** On-screen px width at which the scrubber renders at its natural 1.0 scale. */
-export const DEFAULT_SCRUBBER_SCALE_REFERENCE_PX = 480;
-/**
- * Smallest VISIBLE scrubber scale. At this scale the buttons are ~18px (still
- * tappable); below it the widget HIDES rather than shrink into uselessness, so
- * this doubles as the hide threshold (DEFAULT_SCRUBBER_HIDE_BELOW_SCALE).
- */
-export const DEFAULT_SCRUBBER_SCALE_MIN = 0.7;
-/** Largest scrubber scale (never intrusive when zoomed in). */
-export const DEFAULT_SCRUBBER_SCALE_MAX = 1.15;
-/**
- * Scale threshold below which the scrubber is HIDDEN (NATE 2026-06-21: "when it
- * gets to that point let's just hide it so we have a threshold of when it's
- * visible"). Equal to the min visible scale so a shown scrubber is always >= it.
- */
-export const DEFAULT_SCRUBBER_HIDE_BELOW_SCALE = DEFAULT_SCRUBBER_SCALE_MIN;
-
-export function scrubberScaleForAoi(
-  rect: ScreenRect | null | undefined,
-  opts: ScrubberScaleOptions = {},
-): number {
-  const reference = opts.referencePx ?? DEFAULT_SCRUBBER_SCALE_REFERENCE_PX;
-  const min = opts.min ?? DEFAULT_SCRUBBER_SCALE_MIN;
-  const max = opts.max ?? DEFAULT_SCRUBBER_SCALE_MAX;
-  if (!rect) return 1;
-  // The bbox on-screen EAST-WEST extent: right - left of the projected rect.
-  const w = rect.right - rect.left;
-  if (!Number.isFinite(w) || w <= 0 || reference <= 0) return 1;
-  const raw = w / reference;
-  // Clamp to [min, max]. If the band is degenerate (min > max) the floor wins.
-  return Math.max(min, Math.min(raw, max));
-}
-
-/**
- * Whether the AOI-anchored scrubber should be VISIBLE at the current AOI
- * on-screen size (NATE 2026-06-21). When the bbox is zoomed out so far that the
- * scrubber would scale below `hideBelowScale` (the unusably-tiny floor), HIDE it
- * entirely; it reappears as soon as the user zooms back in past the threshold.
- *
- * Returns true when there is NO AOI rect (the viewport-bottom fallback scrubber
- * is always shown) or the rect is degenerate (no usable on-screen width -> fall
- * back to showing it), and otherwise true only when the AOI's on-screen width is
- * large enough that the scaled widget stays usable. Pure pixel math.
- */
-export function scrubberVisibleForAoi(
-  rect: ScreenRect | null | undefined,
-  opts: ScrubberScaleOptions = {},
-): boolean {
-  if (!rect) return true;
-  const reference = opts.referencePx ?? DEFAULT_SCRUBBER_SCALE_REFERENCE_PX;
-  const hideBelow =
-    opts.hideBelowScale ?? opts.min ?? DEFAULT_SCRUBBER_HIDE_BELOW_SCALE;
-  const w = rect.right - rect.left;
-  if (!Number.isFinite(w) || w <= 0 || reference <= 0) return true;
-  return w / reference >= hideBelow;
-}
+// UNIFIED SCRUBBER+LEGEND SCALING (NATE 2026-06-22): the scrubber and the
+// LayerLegend now SHARE one scaling story - both consume `aoiScaleFactor` above
+// (the legend already did) and both track the AOI bbox on-screen WIDTH for their
+// rendered size, and NEITHER hides on zoom-out. The old scrubber-only helpers
+// (scrubberScaleForAoi + scrubberVisibleForAoi, with a separate reference/clamp
+// band and a hide-below-threshold) are RETIRED: their separate scale band made
+// the scrubber narrower/wider than the bbox, and the hide-below floor made it
+// VANISH on zoom-out while the legend persisted - the exact inconsistency NATE
+// asked to remove. The scrubber now matches the bbox width directly and uses
+// aoiScaleFactor for its inner chrome, so the two are consistent by construction.
 
 /**
  * FALLBACK ESTIMATOR — only used when the TRUE projected AOI rect is unavailable.

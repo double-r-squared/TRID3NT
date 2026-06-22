@@ -137,12 +137,15 @@ describe("SequenceScrubber — render + controls", () => {
     expect(el).toHaveStyle({ left: "50%", bottom: "24px" });
   });
 
-  it("applies a uniform scale composed with the centering translate (AOI present)", () => {
-    // 600px-wide bbox -> raw 600/480 = 1.25 -> clamped to the 1.15 max ceiling.
+  it("centers under the AOI box with NO uniform scale transform (NATE 2026-06-22)", () => {
+    // UNIFIED SCALING: the scrubber no longer applies a transform: scale() to the
+    // whole container (that left side padding vs the bbox). It centers under the
+    // box and tracks the bbox WIDTH directly (like the legend), so the transform
+    // is just the centering translate.
     renderScrubber({ aoiRect: { left: 100, top: 50, right: 700, bottom: 400 } });
     const el = screen.getByTestId("grace2-sequence-scrubber");
-    expect(el.style.transform).toContain("scale(1.15)");
-    expect(el.style.transform).toContain("translateX(-50%)");
+    expect(el.style.transform).toBe("translateX(-50%)");
+    expect(el.style.transform).not.toContain("scale(");
     // Anchored under the box edge -> origin is the TOP so it grows downward.
     expect(el.style.transformOrigin).toBe("top center");
   });
@@ -202,69 +205,46 @@ describe("SequenceScrubber — no internal auto-advance (controller owns the tim
   });
 });
 
-// SCRUBBER UNIFORM SCALE (NATE 2026-06-21) — the scrubber renders at its NATURAL
-// base width band and a single CSS `transform: scale(s)` shrinks/grows the WHOLE
-// widget with the AOI bbox's on-screen size. A tiny zoomed-out box -> a small
-// scale (so the bar is not huge/intrusive); a huge zoomed-in box -> capped at the
-// max ceiling; no AOI -> scale 1.0. The base width band never changes.
-import {
-  DEFAULT_SCRUBBER_SCALE_MIN,
-  DEFAULT_SCRUBBER_SCALE_MAX,
-} from "../lib/legend_snap";
-
-/** Parse the numeric scale(...) factor out of a CSS transform string. */
-function scaleFromTransform(transform: string): number {
-  const m = /scale\(([-0-9.]+)\)/.exec(transform);
-  return m ? Number(m[1]) : NaN;
-}
-
-describe("SequenceScrubber — uniform scale tracks the AOI bbox on-screen size", () => {
-  it("keeps the natural base width band regardless of AOI (length unchanged)", () => {
-    // NATE: "I don't want the LENGTH affected" — the base width band is constant.
+// UNIFIED SCALING (NATE 2026-06-22) - the scrubber and the LayerLegend now share
+// one scaling story: the scrubber's rendered WIDTH tracks the AOI bbox on-screen
+// width (right - left), exactly like the legend's keys (LayerLegend sets each
+// key width = clamped barWidth), with NO padding band; and it PERSISTS on
+// zoom-out (no hide-below-threshold) like the legend does. These tests pin both.
+describe("SequenceScrubber - width tracks the AOI bbox + persists on zoom-out", () => {
+  it("sets its width to the AOI bbox on-screen width (right - left)", () => {
+    // 600px-wide bbox -> the scrubber spans it (no narrowing/widening padding).
     renderScrubber({ aoiRect: { left: 100, top: 50, right: 700, bottom: 400 } });
     const el = screen.getByTestId("grace2-sequence-scrubber");
-    expect(el.style.width).toBe("");
-    expect(el.style.minWidth).toBe("220px");
-    expect(el.style.maxWidth).toBe("480px");
+    expect(el.style.width).toBe("600px");
+    // No min/max band that would add side padding vs the bbox.
+    expect(el.style.minWidth).toBe("");
+    expect(el.style.maxWidth).toBe("");
   });
 
-  it("HIDES a TINY (zoomed-out) bbox below the usable threshold (NATE 2026-06-21)", () => {
-    // A 12px-wide box -> raw 12/480 = 0.025, far below the hide threshold -> the
-    // scrubber is not rendered at all (it returns on zoom-in past the threshold).
+  it("PERSISTS (stays mounted) on a TINY zoomed-out bbox, like the legend", () => {
+    // A 12px-wide box used to HIDE the scrubber (scrubberVisibleForAoi). The
+    // legend never vanished; NATE wanted them consistent, so the scrubber now
+    // stays mounted and just clamps its width to the tappable minimum.
     renderScrubber({ aoiRect: { left: 500, top: 500, right: 512, bottom: 540 } });
-    expect(screen.queryByTestId("grace2-sequence-scrubber")).toBeNull();
-  });
-
-  it("SHOWS at the threshold, rendered at the min scale", () => {
-    // 336px = 0.7 * 480 = exactly the hide threshold -> shown at the min scale.
-    renderScrubber({ aoiRect: { left: 0, top: 0, right: 336, bottom: 200 } });
     const el = screen.getByTestId("grace2-sequence-scrubber");
-    expect(scaleFromTransform(el.style.transform)).toBeCloseTo(DEFAULT_SCRUBBER_SCALE_MIN, 5);
+    expect(el).toBeInTheDocument();
+    // Clamped to the tappable minimum (200px) so the buttons stay usable.
+    expect(el.style.width).toBe("200px");
   });
 
-  it("a mid-size (between floor and reference) bbox scales between min and 1", () => {
-    // A 360px-wide box -> raw 360/480 = 0.75 (within the clamps).
-    renderScrubber({ aoiRect: { left: 0, top: 0, right: 360, bottom: 300 } });
+  it("clamps to the tappable minimum width but never below it", () => {
+    // A sub-minimum bbox (120px) -> floored at the 200px tappable minimum.
+    renderScrubber({ aoiRect: { left: 0, top: 0, right: 120, bottom: 200 } });
     const el = screen.getByTestId("grace2-sequence-scrubber");
-    expect(scaleFromTransform(el.style.transform)).toBeCloseTo(0.75, 5);
+    expect(el.style.width).toBe("200px");
   });
 
-  it("caps a HUGE (zoomed-in) bbox at the MAX ceiling", () => {
-    // A 4000px-wide box -> raw ~8.3 -> clamped DOWN to the max ceiling.
-    renderScrubber({ aoiRect: { left: 0, top: 0, right: 4000, bottom: 4000 } });
-    const el = screen.getByTestId("grace2-sequence-scrubber");
-    expect(scaleFromTransform(el.style.transform)).toBe(DEFAULT_SCRUBBER_SCALE_MAX);
-  });
-
-  it("re-scales when the projected bbox changes (pan/zoom recompute)", () => {
+  it("re-sizes when the projected bbox changes (pan/zoom recompute)", () => {
     const { rerender } = renderScrubber({
-      aoiRect: { left: 0, top: 0, right: 384, bottom: 200 }, // 384px -> 0.8 scale (visible)
+      aoiRect: { left: 0, top: 0, right: 300, bottom: 200 }, // 300px wide
     });
-    const first = scaleFromTransform(
-      screen.getByTestId("grace2-sequence-scrubber").style.transform,
-    );
-    expect(first).toBeCloseTo(0.8, 5);
-    // A subsequent map move re-projects a wider bbox -> the widget grows.
+    expect(screen.getByTestId("grace2-sequence-scrubber").style.width).toBe("300px");
+    // A subsequent map move re-projects a wider bbox -> the widget widens to match.
     rerender(
       <SequenceScrubber
         label="HRRR precip"
@@ -273,20 +253,60 @@ describe("SequenceScrubber — uniform scale tracks the AOI bbox on-screen size"
         onStep={() => {}}
         playing={false}
         onPlayToggle={() => {}}
-        aoiRect={{ left: 0, top: 0, right: 480, bottom: 300 }} // 480px -> 1.0 scale
+        aoiRect={{ left: 0, top: 0, right: 480, bottom: 300 }} // 480px wide
       />,
     );
-    expect(
-      scaleFromTransform(screen.getByTestId("grace2-sequence-scrubber").style.transform),
-    ).toBeCloseTo(1, 5);
+    expect(screen.getByTestId("grace2-sequence-scrubber").style.width).toBe("480px");
   });
 
-  it("renders at the natural 1.0 scale when there is no AOI rect", () => {
+  it("uses the AOI-less fallback width when there is no AOI rect", () => {
     renderScrubber();
     const el = screen.getByTestId("grace2-sequence-scrubber");
-    expect(scaleFromTransform(el.style.transform)).toBe(1);
-    // Base width band still applies.
-    expect(el.style.minWidth).toBe("220px");
-    expect(el.style.maxWidth).toBe("480px");
+    expect(el.style.width).toBe("360px");
+  });
+});
+
+// MOBILE Z-ORDER (NATE 2026-06-22) - on mobile the chat is a bottom sheet at
+// zIndex 32; the scrubber must sit UNDERNEATH it so it never covers the composer.
+// On desktop the chat is a side panel, so the scrubber keeps its higher z (51).
+describe("SequenceScrubber - z-order vs the mobile chat sheet", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("renders BELOW the mobile chat sheet (z < 32) when the viewport is mobile", () => {
+    // useIsMobile reads window.matchMedia -> stub it to report mobile.
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn().mockReturnValue({
+        matches: true,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+      }),
+    );
+    renderScrubber();
+    const el = screen.getByTestId("grace2-sequence-scrubber");
+    // The mobile chat bottom sheet is zIndex 32 (Chat.tsx); the scrubber must be
+    // below it so the composer is never covered.
+    expect(Number(el.style.zIndex)).toBeLessThan(32);
+    expect(el.style.zIndex).toBe("31");
+  });
+
+  it("keeps the original higher z on desktop (matchMedia reports non-mobile)", () => {
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn().mockReturnValue({
+        matches: false,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+      }),
+    );
+    renderScrubber();
+    const el = screen.getByTestId("grace2-sequence-scrubber");
+    expect(el.style.zIndex).toBe("51");
   });
 });

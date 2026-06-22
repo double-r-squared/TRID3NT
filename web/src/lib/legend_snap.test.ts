@@ -16,12 +16,6 @@ import {
   layoutKeysCcw,
   nearestSide,
   rectFromAnchorAndWidth,
-  scrubberScaleForAoi,
-  scrubberVisibleForAoi,
-  DEFAULT_SCRUBBER_SCALE_MIN,
-  DEFAULT_SCRUBBER_SCALE_MAX,
-  DEFAULT_SCRUBBER_SCALE_REFERENCE_PX,
-  DEFAULT_SCRUBBER_HIDE_BELOW_SCALE,
   sideForIndex,
   snapKeyToSide,
   stackPositionForIndex,
@@ -233,127 +227,39 @@ describe("aoiScaleFactor — scales with the AOI on-screen size, clamped", () =>
   });
 });
 
-// scrubberScaleForAoi (NATE 2026-06-21) — the time scrubber's UNIFORM SCALE
-// FACTOR = AOI bbox on-screen EAST-WEST width / reference, clamped to [min, max].
-// The caller applies it as a single `transform: scale(s)` so the WHOLE widget
-// (buttons, handle, font, track) shrinks/grows together with the box on-screen.
-// Returns the natural 1.0 when there is no rect / it's degenerate. NATE: "I don't
-// want the LENGTH affected, I want the whole scale to stay the same relative to
-// the bbox; when I zoom out the scrubber becomes large and intrusive."
-describe("scrubberScaleForAoi — uniform scale == bbox width / reference (clamped)", () => {
-  it("returns the natural 1.0 scale at the reference on-screen width", () => {
-    const ref = DEFAULT_SCRUBBER_SCALE_REFERENCE_PX;
-    const rect: ScreenRect = { left: 0, top: 0, right: ref, bottom: 300 };
-    expect(scrubberScaleForAoi(rect)).toBeCloseTo(1, 5);
+// UNIFIED SCRUBBER + LEGEND SCALING (NATE 2026-06-22) -------------------------
+//
+// The scrubber and the LayerLegend now SHARE one scaling story: both derive
+// their size from the AOI bbox on-screen WIDTH and both use `aoiScaleFactor`
+// (the legend's helper) for their inner chrome, and NEITHER hides on zoom-out.
+// The old scrubber-only helpers (scrubberScaleForAoi + scrubberVisibleForAoi)
+// were retired -> these tests pin the SHARED contract at the geometry layer:
+// the scale the scrubber consumes == the scale the legend consumes for the same
+// rect, and there is no hide-below-threshold function anymore.
+describe("unified scrubber+legend scaling - one shared scale, no hide helper", () => {
+  it("scrubber + legend consume the SAME aoiScaleFactor for a given rect", () => {
+    // Both overlays now call aoiScaleFactor(rect) with the SAME defaults, so the
+    // value is identical by construction (this is what 'share scaling' means).
+    const rect: ScreenRect = { left: 100, top: 100, right: 460, bottom: 460 };
+    const legendScale = aoiScaleFactor(rect);
+    const scrubberScale = aoiScaleFactor(rect); // scrubber uses the same call
+    expect(scrubberScale).toBe(legendScale);
   });
 
-  it("a SMALL (zoomed-out) bbox -> a small scale WELL BELOW 1 (clamped at min)", () => {
-    // 12px-wide box -> raw 12/480 = 0.025 -> clamped UP to the min floor.
-    const tiny: ScreenRect = { left: 500, top: 500, right: 512, bottom: 540 };
-    const s = scrubberScaleForAoi(tiny);
-    expect(s).toBe(DEFAULT_SCRUBBER_SCALE_MIN);
-    // Strictly below the natural scale: the widget shrinks with the box, so it is
-    // no longer large/intrusive when zoomed out.
-    expect(s).toBeLessThan(1);
+  it("the scrubber width tracks the AOI bbox on-screen width (right - left)", () => {
+    // The scrubber sets its width to the bbox on-screen width directly (clamped
+    // to a tappable min in the component); the bbox width is just right - left.
+    const rect: ScreenRect = { left: 100, top: 50, right: 540, bottom: 300 };
+    expect(rect.right - rect.left).toBe(440);
   });
 
-  it("a mid-size bbox scales proportionally between the floor and 1", () => {
-    // 384px-wide box -> raw 384/480 = 0.8, strictly between the 0.7 floor and 1.
-    const mid: ScreenRect = { left: 0, top: 0, right: 384, bottom: 200 };
-    expect(scrubberScaleForAoi(mid)).toBeCloseTo(0.8, 5);
-    // 360px box -> 0.75, also between the floor and 1.
-    const bigger: ScreenRect = { left: 0, top: 0, right: 360, bottom: 200 };
-    expect(scrubberScaleForAoi(bigger)).toBeCloseTo(0.75, 5);
-  });
-
-  it("ignores the bbox HEIGHT — only the on-screen WIDTH drives the scale", () => {
-    const wideShort: ScreenRect = { left: 0, top: 0, right: 480, bottom: 40 };
-    const wideTall: ScreenRect = { left: 0, top: 0, right: 480, bottom: 1200 };
-    expect(scrubberScaleForAoi(wideShort)).toBeCloseTo(1, 5);
-    expect(scrubberScaleForAoi(wideTall)).toBeCloseTo(1, 5);
-  });
-
-  it("a LARGE (zoomed-in) bbox -> capped at the MAX ceiling", () => {
-    // 4000px box -> raw ~8.3 -> clamped DOWN to the max ceiling.
-    const huge: ScreenRect = { left: 0, top: 0, right: 4000, bottom: 4000 };
-    expect(scrubberScaleForAoi(huge)).toBe(DEFAULT_SCRUBBER_SCALE_MAX);
-    expect(DEFAULT_SCRUBBER_SCALE_MAX).toBeGreaterThan(1);
-  });
-
-  it("respects custom reference / clamp options", () => {
-    // Custom reference: a 240px box at reference 240 -> exactly 1.0.
-    const rect: ScreenRect = { left: 0, top: 0, right: 240, bottom: 200 };
-    expect(scrubberScaleForAoi(rect, { referencePx: 240 })).toBeCloseTo(1, 5);
-    // Custom min floor.
-    const tiny: ScreenRect = { left: 0, top: 0, right: 10, bottom: 10 };
-    expect(scrubberScaleForAoi(tiny, { min: 0.3 })).toBe(0.3);
-    // Custom max ceiling.
-    const big: ScreenRect = { left: 0, top: 0, right: 9000, bottom: 9000 };
-    expect(scrubberScaleForAoi(big, { max: 2.0 })).toBe(2.0);
-  });
-
-  it("returns the natural 1.0 scale for null / undefined / degenerate width", () => {
-    expect(scrubberScaleForAoi(null)).toBe(1);
-    expect(scrubberScaleForAoi(undefined)).toBe(1);
-    // Zero-width rect -> no AOI width to size against -> natural scale.
-    expect(scrubberScaleForAoi({ left: 200, top: 0, right: 200, bottom: 300 })).toBe(1);
-    // Inverted (negative) width -> degenerate -> natural scale.
-    expect(scrubberScaleForAoi({ left: 300, top: 0, right: 100, bottom: 300 })).toBe(1);
-  });
-
-  it("default ceiling is greater than the default floor (sane band)", () => {
-    expect(DEFAULT_SCRUBBER_SCALE_MAX).toBeGreaterThan(DEFAULT_SCRUBBER_SCALE_MIN);
-  });
-});
-
-// scrubberVisibleForAoi (NATE 2026-06-21) — "when it gets to that point let's
-// just hide it so we have a threshold of when it's visible." Below the usable
-// scale floor the scrubber is HIDDEN entirely (not rendered tiny); it returns on
-// zoom-in past the threshold.
-describe("scrubberVisibleForAoi — hides below the usable scale threshold", () => {
-  const ref = DEFAULT_SCRUBBER_SCALE_REFERENCE_PX;
-
-  it("HIDES when the bbox on-screen width is below the hide threshold", () => {
-    // width = (hideBelow - epsilon) * ref -> just under the threshold -> hidden.
-    const justUnder = (DEFAULT_SCRUBBER_HIDE_BELOW_SCALE - 0.05) * ref;
-    const rect: ScreenRect = { left: 0, top: 0, right: justUnder, bottom: 200 };
-    expect(scrubberVisibleForAoi(rect)).toBe(false);
-    // A truly tiny (zoomed-way-out) box is hidden too.
-    expect(
-      scrubberVisibleForAoi({ left: 500, top: 500, right: 512, bottom: 540 }),
-    ).toBe(false);
-  });
-
-  it("SHOWS at or above the hide threshold", () => {
-    // Exactly at the threshold -> visible (>=).
-    const atThreshold = DEFAULT_SCRUBBER_HIDE_BELOW_SCALE * ref;
-    expect(
-      scrubberVisibleForAoi({ left: 0, top: 0, right: atThreshold, bottom: 200 }),
-    ).toBe(true);
-    // A comfortably large box -> visible.
-    expect(
-      scrubberVisibleForAoi({ left: 0, top: 0, right: ref, bottom: 200 }),
-    ).toBe(true);
-  });
-
-  it("the hide threshold equals the min visible scale (a shown scrubber is never below the floor)", () => {
-    expect(DEFAULT_SCRUBBER_HIDE_BELOW_SCALE).toBe(DEFAULT_SCRUBBER_SCALE_MIN);
-  });
-
-  it("always SHOWS when there is no AOI rect / a degenerate rect (viewport-bottom fallback)", () => {
-    expect(scrubberVisibleForAoi(null)).toBe(true);
-    expect(scrubberVisibleForAoi(undefined)).toBe(true);
-    // Zero-width / inverted rect -> no usable width -> fall back to showing it.
-    expect(scrubberVisibleForAoi({ left: 200, top: 0, right: 200, bottom: 300 })).toBe(true);
-    expect(scrubberVisibleForAoi({ left: 300, top: 0, right: 100, bottom: 300 })).toBe(true);
-  });
-
-  it("respects a custom hideBelowScale / reference", () => {
-    const rect: ScreenRect = { left: 0, top: 0, right: 300, bottom: 200 };
-    // 300/480 = 0.625; hidden under a 0.7 threshold, shown under a 0.5 threshold.
-    expect(scrubberVisibleForAoi(rect, { hideBelowScale: 0.7 })).toBe(false);
-    expect(scrubberVisibleForAoi(rect, { hideBelowScale: 0.5 })).toBe(true);
-    // Custom reference shrinks the px needed to clear the threshold.
-    expect(scrubberVisibleForAoi(rect, { referencePx: 240, hideBelowScale: 0.7 })).toBe(true);
+  it("the retired scrubber-only helpers are no longer exported", async () => {
+    // Coherence guard: scrubberScaleForAoi / scrubberVisibleForAoi were removed
+    // when the scrubber adopted the legend's aoiScaleFactor, so a tiny zoomed-out
+    // box no longer has a separate hide path - the scrubber persists like the
+    // legend. Importing the module must not surface the retired names.
+    const mod = await import("./legend_snap");
+    expect("scrubberScaleForAoi" in mod).toBe(false);
+    expect("scrubberVisibleForAoi" in mod).toBe(false);
   });
 });

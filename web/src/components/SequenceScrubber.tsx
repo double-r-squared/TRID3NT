@@ -36,17 +36,33 @@ import {
   IconPlay,
   IconPause,
 } from "./icons";
-import {
-  scrubberScaleForAoi,
-  scrubberVisibleForAoi,
-  type ScreenRect,
-} from "../lib/legend_snap";
+import { aoiScaleFactor, type ScreenRect } from "../lib/legend_snap";
+import { useIsMobile } from "../hooks/useIsMobile";
 
-// The scrubber's natural (AOI-less) min/max width band. The widget renders at
-// its base size, then a uniform CSS transform scales the WHOLE control with the
-// AOI bbox's on-screen size — see scrubberScaleForAoi below.
-const SCRUBBER_BASE_MIN_WIDTH = 220;
-const SCRUBBER_BASE_MAX_WIDTH = 480;
+// UNIFIED SCALING (NATE 2026-06-22): the scrubber and the LayerLegend now SHARE
+// one scaling story so they behave identically as you zoom -> when aoiRect is
+// present the scrubber's WIDTH tracks the AOI bbox on-screen width (right-left),
+// exactly like the legend's keys (LayerLegend sets each key width = clamped
+// barWidth). No extra horizontal padding band that would make the bar narrower
+// or wider than the bbox. The inner chrome (font/counter) scales with the shared
+// aoiScaleFactor so the whole widget grows/shrinks with the box like the legend.
+//
+// The bbox-width minimum keeps the buttons tappable on a tiny zoomed-out box.
+// (Previously a 220..480 base band + a uniform transform: scale() left visible
+// padding on both sides of the bbox, and a hide-below-threshold made the
+// scrubber VANISH on zoom-out while the legend stayed -> NATE wanted them
+// consistent, so both now persist and both track the bbox width.)
+const SCRUBBER_MIN_WIDTH = 200;
+// AOI-less fallback width band (no bbox to track -> a sensible fixed band).
+const SCRUBBER_FALLBACK_WIDTH = 360;
+
+// MOBILE Z-ORDER (NATE 2026-06-22): on mobile the chat is a bottom sheet at
+// zIndex 32 (Chat.tsx mobileSheetContainerStyle). The scrubber must sit
+// UNDERNEATH it so it never covers the chat composer. On desktop the chat is a
+// right-side panel (not over the bottom-center scrubber), so the scrubber keeps
+// its original higher z there.
+const SCRUBBER_Z_DESKTOP = 51;
+const SCRUBBER_Z_MOBILE = 31; // below the mobile chat sheet (zIndex 32)
 
 export interface SequenceScrubberProps {
   /** Short group label, e.g. the shared source/tool ("HRRR forecast"). */
@@ -91,6 +107,7 @@ export function SequenceScrubber({
   aoiRect,
 }: SequenceScrubberProps): JSX.Element | null {
   const n = frameLabels.length;
+  const isMobile = useIsMobile();
   // Hold the latest active index in a ref so prev/next step from the current
   // frame even if the parent re-renders between presses.
   const activeRef = useRef(activeIndex);
@@ -107,28 +124,36 @@ export function SequenceScrubber({
 
   if (n === 0) return null;
 
-  // VISIBILITY THRESHOLD (NATE 2026-06-21): when the AOI bbox is zoomed out so
-  // far the scrubber would scale below the usable floor, HIDE it entirely rather
-  // than render an unusably tiny widget; it reappears on zoom-in past the
-  // threshold. No AOI rect -> the viewport-bottom fallback is always shown.
-  if (!scrubberVisibleForAoi(aoiRect)) return null;
+  // PERSIST ON ZOOM-OUT (NATE 2026-06-22): the scrubber no longer hides below a
+  // scale floor. The LayerLegend never vanishes on zoom-out, and NATE wants the
+  // two consistent, so the scrubber stays mounted WHENEVER a sequential group is
+  // active (the n===0 group-existence gate above is the only gate now). It just
+  // shrinks with the bbox like the legend.
 
   const safeIndex = wrapIndex(activeIndex, n);
 
-  // SCRUBBER UNIFORM SCALE (NATE 2026-06-21). The widget renders at its NATURAL
-  // base width band; a single CSS `transform: scale(s)` then shrinks/grows the
-  // ENTIRE control (buttons, handle, font, track) together with the AOI bbox's
-  // on-screen size, so a tiny zoomed-out box gets a proportionally tiny scrubber
-  // (not a fixed-px bar that dwarfs the box) and a zoomed-in box a larger one —
-  // both clamped. scrubberScaleForAoi returns 1.0 (natural) when there is no
-  // rect, so the AOI-less fallback renders at full size.
-  const scale = scrubberScaleForAoi(aoiRect);
-  // The base width band is always the natural one; uniform scaling (below) does
-  // the sizing relative to the bbox. No more width-floor that kept the bar large
-  // when zoomed out.
+  // UNIFIED SCALE (NATE 2026-06-22): use the SAME function + params as the
+  // LayerLegend (aoiScaleFactor) so the scrubber and legend "share scaling" and
+  // follow the AOI bbox identically. The legend applies this to its inner chrome
+  // (font / bar thickness) while its outer width = the clamped bbox width; the
+  // scrubber mirrors that exactly below. Returns 1.0 (natural) for a null /
+  // degenerate rect, so the AOI-less fallback renders at full size.
+  const scale = aoiScaleFactor(aoiRect);
+
+  // MATCH BBOX WIDTH (NATE 2026-06-22): when aoiRect is present the scrubber's
+  // rendered width = the AOI bbox on-screen width (right - left), so it spans the
+  // bbox exactly like the legend's keys (LayerLegend.defaultWidth = clamped
+  // barWidth) instead of a fixed band that left padding on both sides. Clamped to
+  // a tappable minimum so the buttons stay usable on a tiny zoomed-out box. With
+  // no AOI rect, fall back to a fixed band (viewport-bottom fallback).
+  const bboxWidth = aoiRect ? aoiRect.right - aoiRect.left : null;
+  const targetWidth =
+    typeof bboxWidth === "number" && Number.isFinite(bboxWidth) && bboxWidth > 0
+      ? Math.max(SCRUBBER_MIN_WIDTH, bboxWidth)
+      : SCRUBBER_FALLBACK_WIDTH;
   const widthStyle: React.CSSProperties = {
-    minWidth: SCRUBBER_BASE_MIN_WIDTH,
-    maxWidth: SCRUBBER_BASE_MAX_WIDTH,
+    // Explicit width tracks the bbox (no min/max band that adds side padding).
+    width: targetWidth,
   };
 
   // Item 3: Snap the scrubber to the AOI bbox bottom-center when aoiRect is
@@ -136,10 +161,9 @@ export function SequenceScrubber({
   // viewport coords (map container is position:fixed;inset:0 relative to the
   // app shell). When absent, fall back to viewport bottom-center.
   //
-  // The uniform `scale(s)` is composed with the centering translate. For the
-  // AOI-anchored case the widget hangs by its TOP edge under aoiRect.bottom, so
-  // transform-origin is TOP CENTER (it stays pinned to the box edge as it
-  // scales); the viewport-bottom fallback uses BOTTOM CENTER.
+  // No uniform transform: scale() on the container anymore -> the OUTER width
+  // tracks the bbox width directly (so the bar spans the bbox with no padding),
+  // matching the legend; only the centering translate remains.
   let posStyle: React.CSSProperties;
   if (aoiRect) {
     const cx = (aoiRect.left + aoiRect.right) / 2;
@@ -147,7 +171,7 @@ export function SequenceScrubber({
       position: "fixed",
       left: cx,
       top: aoiRect.bottom + 12,
-      transform: `translateX(-50%) scale(${scale})`,
+      transform: "translateX(-50%)",
       transformOrigin: "top center",
     };
   } else {
@@ -155,10 +179,14 @@ export function SequenceScrubber({
       position: "fixed",
       bottom: 24,
       left: "50%",
-      transform: `translateX(-50%) scale(${scale})`,
+      transform: "translateX(-50%)",
       transformOrigin: "bottom center",
     };
   }
+
+  // Inner-chrome scale shared with the legend: the counter font scales with the
+  // AOI like the legend's labels (clamped via aoiScaleFactor).
+  const counterFont = Math.round(11 * scale);
 
   // Portal to document.body so `fixed` positioning resolves against the
   // VIEWPORT, not the LayerPanel's transformed/filtered stacking context (the
@@ -191,11 +219,12 @@ export function SequenceScrubber({
         boxShadow: "0 2px 12px rgba(0,0,0,0.45)",
         fontFamily: "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif",
         color: "#e8e8ec",
-        // The slider/buttons are interactive, but the chrome lets nothing else
-        // through (it's a control surface, unlike the legend).
-        zIndex: 51,
-        // Natural base width band; the uniform transform: scale() above does the
-        // sizing relative to the bbox (the widget hides below the scale floor).
+        // MOBILE Z-ORDER (NATE 2026-06-22): on mobile sit UNDERNEATH the chat
+        // bottom sheet (zIndex 32) so the scrubber never covers the composer; on
+        // desktop the chat is a side panel, so keep the original higher z.
+        zIndex: isMobile ? SCRUBBER_Z_MOBILE : SCRUBBER_Z_DESKTOP,
+        // Explicit width tracks the AOI bbox on-screen width (no padding band),
+        // so the bar spans the bbox like the legend.
         ...widthStyle,
       }}
     >
@@ -254,7 +283,9 @@ export function SequenceScrubber({
       <span
         data-testid="scrubber-frame-label"
         style={{
-          fontSize: 11,
+          // Shares the legend's scale story (aoiScaleFactor) so the readout
+          // grows/shrinks with the bbox like the legend's labels.
+          fontSize: counterFont,
           color: "#9aa1ab",
           fontVariantNumeric: "tabular-nums",
           flexShrink: 0,
