@@ -33,7 +33,7 @@
 # Stage 1 — builder: resolve + install openquake-engine into a self-contained
 # venv. Nothing from this stage except /opt/grace2/.venv reaches the final image.
 # --------------------------------------------------------------------------- #
-FROM python:3.11-slim-bookworm AS builder
+FROM public.ecr.aws/docker/library/python:3.11-slim-bookworm AS builder
 
 ENV VENV=/opt/grace2/.venv \
     PIP_NO_CACHE_DIR=1 \
@@ -68,7 +68,7 @@ RUN python3 -m venv "$VENV" \
 # Stage 2 — runtime: a fresh minimal python:slim with ONLY the resolved venv +
 # the entrypoint. No compiler, no apt caches, no pip caches.
 # --------------------------------------------------------------------------- #
-FROM python:3.11-slim-bookworm AS runtime
+FROM public.ecr.aws/docker/library/python:3.11-slim-bookworm AS runtime
 
 LABEL org.opencontainers.image.title="grace-2-openquake-solver" \
       org.opencontainers.image.source="https://github.com/double-r-squared/GRACE-2" \
