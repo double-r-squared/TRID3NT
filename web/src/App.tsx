@@ -584,6 +584,7 @@ export function App(): JSX.Element {
     cases,
     activeCaseId,
     activeSession,
+    casesSettled,
     onCaseList: useCases_onCaseList,
     onCaseOpen: useCases_onCaseOpen,
     createCase,
@@ -1426,6 +1427,30 @@ export function App(): JSX.Element {
     [activeCaseId, caseSelectedButUnsettled, wsStatus],
   );
 
+  // CASE-LIST LOADING SIGNAL (BUG 1: late spinner). True while the FIRST
+  // case-list load is plausibly in flight AND has not yet settled, so the
+  // CasesPanel shows its spinner IMMEDIATELY (on first paint, before the WS even
+  // connects) instead of flashing the "no cases" empty stub. `casesSettled`
+  // (from useCases) flips true on the first list frame of ANY source -> the
+  // spinner turns off the moment the list arrives (rows or genuine empty).
+  //
+  // We GUARD against a forever-spinner: only spin while a load is actually
+  // expected - the WS is connecting / reconnecting / connected (a live
+  // `case-list` is inbound) OR a serverless cold-list fetch is configured (the
+  // box-off path GETs /case-list). When NOTHING will load (dev with no cold-list
+  // endpoint and a disconnected socket) we fall back to the settled empty stub
+  // rather than spinning indefinitely. The signal is only consulted by
+  // CasesPanel when the rail is empty, so a populated rail never spins.
+  const casesListLoading = useMemo(
+    () =>
+      !casesSettled &&
+      (wsStatus === "connected" ||
+        wsStatus === "connecting" ||
+        wsStatus === "reconnecting" ||
+        caseListConfigured()),
+    [casesSettled, wsStatus],
+  );
+
   // job-0138: AuthGate full-screen gating (the anonymous-accept gate). job-0253
   // wraps it in AuthGuard: when Firebase is DISABLED (dev/tailnet — every
   // current session), AuthGuard is a transparent pass-through and this renders
@@ -1575,6 +1600,7 @@ export function App(): JSX.Element {
           <CasesPanel
             cases={cases}
             activeCaseId={activeCaseId}
+            loading={casesListLoading}
             onCreate={onCreateGated}
             onSelect={selectCase}
             onRename={onRenameGated}
@@ -1949,6 +1975,7 @@ export function App(): JSX.Element {
                 <CasesPanel
                   cases={cases}
                   activeCaseId={activeCaseId}
+                  loading={casesListLoading}
                   onCreate={onCreateGated}
                   onSelect={(caseId) => {
                     selectCase(caseId);

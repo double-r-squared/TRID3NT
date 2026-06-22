@@ -45,6 +45,16 @@ export interface CasesPanelProps {
   cases: CaseSummary[];
   /** Currently-active Case id, or null when no Case is open. */
   activeCaseId: string | null;
+  /**
+   * BUG 1 (late spinner). True while the FIRST case-list load is still in
+   * flight (no list frame has settled yet). When true AND the rail is empty we
+   * render a loading spinner IMMEDIATELY instead of the empty stub, so the user
+   * never sees a momentary "no cases" flash that reads as frozen. The empty
+   * stub shows ONLY when the list has settled to a genuine zero. Optional +
+   * defaults to false so callers / tests that don't pass it behave exactly as
+   * before (settled).
+   */
+  loading?: boolean;
 
   // Emitters (parent wires these to useCases / GraceWs).
   onCreate: () => void;
@@ -581,6 +591,7 @@ function menuItemStyle(color = "#ddd"): React.CSSProperties {
 export function CasesPanel({
   cases,
   activeCaseId,
+  loading = false,
   onCreate,
   onSelect,
   onRename,
@@ -702,7 +713,49 @@ export function CasesPanel({
         </button>
       </div>
 
-      {sortedCases.length === 0 && (
+      {/* BUG 1 (late spinner) - while the FIRST case-list load is in flight and
+          the rail is still empty, show a loading spinner IMMEDIATELY rather than
+          the empty stub. This prevents the "no cases" flash (which read as a
+          frozen list) before the list arrives. The empty stub renders ONLY when
+          the list has settled (loading === false) to a genuine zero. The spinner
+          reuses the global `grace2-spin` keyframe (App.tsx). */}
+      {sortedCases.length === 0 && loading && (
+        <div
+          data-testid="grace2-cases-loading"
+          role="status"
+          aria-live="polite"
+          style={{
+            color: "#999",
+            background: "rgba(255,255,255,0.03)",
+            border: "1px solid #444",
+            borderRadius: 6,
+            padding: 12,
+            textAlign: "center",
+            lineHeight: 1.4,
+            marginTop: 4,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 8,
+          }}
+        >
+          <span
+            aria-hidden="true"
+            style={{
+              width: 12,
+              height: 12,
+              borderRadius: "50%",
+              border: "2px solid rgba(255,255,255,0.2)",
+              borderTopColor: "#bbb",
+              animation: "grace2-spin 0.8s linear infinite",
+              flexShrink: 0,
+            }}
+          />
+          <span>Loading cases...</span>
+        </div>
+      )}
+
+      {sortedCases.length === 0 && !loading && (
         <div
           data-testid="grace2-cases-empty"
           style={{

@@ -114,6 +114,66 @@ describe("CasesPanel", () => {
     );
   });
 
+  // BUG 1 (late spinner): while the FIRST list load is in flight (loading) and
+  // the rail is empty, the panel shows a loading spinner IMMEDIATELY - NOT the
+  // "no cases" empty stub. The empty stub flashing before the list arrived read
+  // as a frozen list (NATE: "the loading icon doesn't show up for a little bit").
+  it("BUG1: shows the loading spinner (not the empty stub) while loading + empty", () => {
+    render(
+      <CasesPanel
+        cases={[]}
+        activeCaseId={null}
+        loading
+        onCreate={vi.fn()}
+        onSelect={vi.fn()}
+        onRename={vi.fn()}
+        onArchive={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    );
+    // Spinner present; empty stub ABSENT (no "no cases" flash while loading).
+    expect(screen.getByTestId("grace2-cases-loading")).toBeTruthy();
+    expect(screen.getByTestId("grace2-cases-loading").textContent).toMatch(
+      /Loading cases/i,
+    );
+    expect(screen.queryByTestId("grace2-cases-empty")).toBeNull();
+  });
+
+  it("BUG1: shows the empty stub (not the spinner) once SETTLED to zero", () => {
+    render(
+      <CasesPanel
+        cases={[]}
+        activeCaseId={null}
+        loading={false}
+        onCreate={vi.fn()}
+        onSelect={vi.fn()}
+        onRename={vi.fn()}
+        onArchive={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId("grace2-cases-empty")).toBeTruthy();
+    expect(screen.queryByTestId("grace2-cases-loading")).toBeNull();
+  });
+
+  it("BUG1: a POPULATED rail never spins even while loading is true", () => {
+    render(
+      <CasesPanel
+        cases={[CASE_FORT_MYERS]}
+        activeCaseId={null}
+        loading
+        onCreate={vi.fn()}
+        onSelect={vi.fn()}
+        onRename={vi.fn()}
+        onArchive={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    );
+    expect(screen.queryByTestId("grace2-cases-loading")).toBeNull();
+    expect(screen.queryByTestId("grace2-cases-empty")).toBeNull();
+    expect(screen.getAllByTestId("grace2-case-row").length).toBe(1);
+  });
+
   it("renders the +New Case button and fires onCreate when clicked", () => {
     const onCreate = vi.fn();
     render(

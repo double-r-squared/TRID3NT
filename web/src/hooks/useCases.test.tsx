@@ -409,3 +409,153 @@ describe("useCases cold-list raster fallback (SECONDARY - coldview FIX C)", () =
     expect(result.current.cases.map((c) => c.case_id)).toEqual(["01OPEN"]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// BUG 1 (late spinner): `casesSettled` must start FALSE (so CasesPanel shows
+// its spinner immediately on first paint, before any frame) and flip TRUE on
+// the FIRST case-list frame of any source (live or cold authoritative) -
+// INCLUDING a genuinely-empty authoritative list (settled-to-zero shows the
+// empty stub, not a forever-spinner).
+// ---------------------------------------------------------------------------
+describe("useCases casesSettled (BUG 1 - immediate spinner)", () => {
+  it("starts FALSE so the spinner shows before the first list arrives", () => {
+    const { result } = renderHook(() =>
+      useCases({ sendCaseCommand: noopSend as never, isSignedIn: false }),
+    );
+    expect(result.current.casesSettled).toBe(false);
+  });
+
+  it("flips TRUE on the first NON-empty live case-list frame", () => {
+    const { result } = renderHook(() =>
+      useCases({ sendCaseCommand: noopSend as never, isSignedIn: false }),
+    );
+    act(() => {
+      result.current.onCaseList({ cases: [summary("01A", "A")] });
+    });
+    expect(result.current.casesSettled).toBe(true);
+  });
+
+  it("flips TRUE on a genuinely-EMPTY authoritative list (settled-to-zero)", () => {
+    const { result } = renderHook(() =>
+      useCases({ sendCaseCommand: noopSend as never, isSignedIn: false }),
+    );
+    // An authoritative empty cold-fetch is the genuine "zero cases" answer: it
+    // must SETTLE (empty stub), never leave the spinner running forever.
+    act(() => {
+      result.current.onCaseList({ cases: [] }, true);
+    });
+    expect(result.current.casesSettled).toBe(true);
+    expect(result.current.cases).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// BUG 2 (delete + stale-reappear trap): deleteCase removes the Case AND
+// tombstones its id so a subsequent STALE case-list frame (a 25s keepalive
+// resume / a fresh-resume case-list that races the server soft-delete write
+// and still carries the just-deleted Case) cannot RESURRECT it in the rail.
+// An AUTHORITATIVE server list that re-affirms the Case clears the tombstone
+// (the undo / legitimate-reappearance path).
+// ---------------------------------------------------------------------------
+describe("useCases deleteCase tombstone (BUG 2 - no stale resurrection)", () => {
+  it("deleteCase emits delete + optimistically drops the Case from the rail", () => {
+    const send = vi.fn();
+    const { result } = renderHook(() =>
+      useCases({ sendCaseCommand: send as never, isSignedIn: true }),
+    );
+    act(() => {
+      result.current.onCaseList(
+        { cases: [summary("01A", "A"), summary("01B", "B")] },
+        true,
+      );
+    });
+    act(() => {
+      result.current.deleteCase("01A");
+    });
+    // Sent the delete command + removed the Case from the local rail at once.
+    expect(send).toHaveBeenCalledWith("delete", "01A", {});
+    expect(result.current.cases.map((c) => c.case_id)).toEqual(["01B"]);
+  });
+
+  it("a STALE non-authoritative case-list still carrying the deleted Case does NOT resurrect it", () => {
+    const { result } = renderHook(() =>
+      useCases({ sendCaseCommand: noopSend as never, isSignedIn: true }),
+    );
+    act(() => {
+      result.current.onCaseList(
+        { cases: [summary("01A", "A"), summary("01B", "B")] },
+        true,
+      );
+    });
+    act(() => {
+      result.current.deleteCase("01A");
+    });
+    expect(result.current.cases.map((c) => c.case_id)).toEqual(["01B"]);
+
+    // A keepalive / fresh-resume case-list that RACED the server delete write
+    // still carries 01A. Non-authoritative => the tombstone filters 01A out so
+    // it can NOT reappear in the rail.
+    act(() => {
+      result.current.onCaseList({
+        cases: [summary("01A", "A"), summary("01B", "B")],
+      });
+    });
+    expect(result.current.cases.map((c) => c.case_id)).toEqual(["01B"]);
+  });
+
+  it("a STALE last-case keepalive does NOT resurrect the deleted final Case", () => {
+    const { result } = renderHook(() =>
+      useCases({ sendCaseCommand: noopSend as never, isSignedIn: true }),
+    );
+    act(() => {
+      result.current.onCaseList({ cases: [summary("01ONLY", "Only")] }, true);
+    });
+    act(() => {
+      result.current.deleteCase("01ONLY");
+    });
+    expect(result.current.cases).toEqual([]);
+    // A racing non-authoritative frame still carrying the just-deleted last Case.
+    act(() => {
+      result.current.onCaseList({ cases: [summary("01ONLY", "Only")] });
+    });
+    expect(result.current.cases).toEqual([]);
+  });
+
+  it("a late onCaseOpen for the deleted Case does NOT re-add it to the rail", () => {
+    const { result } = renderHook(() =>
+      useCases({ sendCaseCommand: noopSend as never, isSignedIn: true }),
+    );
+    act(() => {
+      result.current.onCaseList({ cases: [summary("01A", "A")] }, true);
+    });
+    act(() => {
+      result.current.deleteCase("01A");
+    });
+    expect(result.current.cases).toEqual([]);
+    // A queued `select` that round-trips AFTER the delete emits case-open for
+    // 01A; the optimistic upsert must be suppressed by the tombstone.
+    act(() => {
+      result.current.onCaseOpen({ session_state: session("01A", "A") });
+    });
+    expect(result.current.cases.some((c) => c.case_id === "01A")).toBe(false);
+  });
+
+  it("an AUTHORITATIVE list re-affirming the Case CLEARS the tombstone (undo path)", () => {
+    const { result } = renderHook(() =>
+      useCases({ sendCaseCommand: noopSend as never, isSignedIn: true }),
+    );
+    act(() => {
+      result.current.onCaseList({ cases: [summary("01A", "A")] }, true);
+    });
+    act(() => {
+      result.current.deleteCase("01A");
+    });
+    expect(result.current.cases).toEqual([]);
+    // The server's AUTHORITATIVE list carries 01A again (an undo / the delete
+    // never landed) -> drop the tombstone and show it.
+    act(() => {
+      result.current.onCaseList({ cases: [summary("01A", "A")] }, true);
+    });
+    expect(result.current.cases.map((c) => c.case_id)).toEqual(["01A"]);
+  });
+});

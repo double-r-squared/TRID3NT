@@ -132,6 +132,17 @@ export interface UseCasesReturn {
   activeSession: CaseSessionState | null;
   /** Drives PersistenceChip. */
   persistenceState: PersistenceState;
+  /**
+   * CASE-LIST LOADING SIGNAL (BUG 1: late spinner). False until the FIRST
+   * `case-list` frame (live WS or cold authoritative fetch) lands, then true
+   * forever. CasesPanel reads this to distinguish "still loading the list"
+   * (spinner) from "loaded, genuinely zero cases" (empty stub): the empty
+   * stub must NOT flash while the very first list is still inbound. Starts
+   * false so the spinner shows IMMEDIATELY on first paint (before any await),
+   * which fixes the perceived gap where the empty stub rendered first and the
+   * list "froze" momentarily.
+   */
+  casesSettled: boolean;
 
   // --- Envelope handlers (App.tsx wires these into GraceWs handlers) ---- //
   /**
@@ -188,6 +199,25 @@ export function useCases(opts: UseCasesOptions): UseCasesReturn {
     null,
   );
 
+  // CASE-LIST LOADING SIGNAL (BUG 1). Flips true on the FIRST `case-list` frame
+  // (any source) and stays true. See `casesSettled` in UseCasesReturn.
+  const [casesSettled, setCasesSettled] = useState(false);
+
+  // DELETION TOMBSTONES (BUG 2: stale case-list resurrects a deleted Case).
+  // A just-deleted Case id is recorded here SYNCHRONOUSLY on `deleteCase`. The
+  // server's delete write + the user-scoped `list_cases_for_user` are correct,
+  // but a NON-authoritative case-list frame (a 25s keepalive resume, or a
+  // reconnect's fresh-resume case-list) can RACE the soft-delete write and
+  // still carry the just-deleted Case -> a wholesale replace then resurrects it
+  // in the rail (the same class as the layer-eviction tombstone + the raster
+  // cold re-add). We filter EVERY incoming case-list AND the onCaseOpen upsert
+  // against this set so a stale frame can never re-add a Case the user deleted
+  // this session. The id is removed from the set only if an AUTHORITATIVE list
+  // re-affirms the Case as live (an undo / a true reappearance) so the tombstone
+  // never permanently hides a legitimately-present Case. Kept in a ref (read
+  // inside the stable useCallback handlers without going stale).
+  const deletedIdsRef = useRef<Set<string>>(new Set());
+
   // COLD-LIST RASTER FALLBACK - `onCaseList` is a stable useCallback([]) so it
   // cannot read `activeCaseId` / `onListLayerSummaries` from its closure
   // without going stale. Mirror both into refs kept in lockstep below so the
@@ -235,11 +265,30 @@ export function useCases(opts: UseCasesOptions): UseCasesReturn {
       // the rail. `isAuthoritative` carries that source distinction: only an
       // authoritative empty list replaces; a non-authoritative (live-WS) empty
       // list keeps the current rail (preserving the flicker fix).
+      // BUG 1: the FIRST list of any source settles the loading spinner.
+      setCasesSettled(true);
+
       const incoming = payload.cases ?? [];
+
+      // DELETION TOMBSTONE RECONCILE (BUG 2). An AUTHORITATIVE list is the
+      // server's true answer: if it carries a tombstoned id, the user undid the
+      // delete (or it was never deleted) -> drop the tombstone and let it show.
+      // A NON-authoritative (keepalive / fresh-resume) frame is NOT trusted to
+      // resurrect: any tombstoned id it carries is filtered OUT so a stale frame
+      // racing the delete write cannot re-add the just-deleted Case.
+      const tombstones = deletedIdsRef.current;
+      if (isAuthoritative && tombstones.size > 0) {
+        for (const c of incoming) tombstones.delete(c.case_id);
+      }
+      const filteredIncoming =
+        tombstones.size > 0
+          ? incoming.filter((c) => !tombstones.has(c.case_id))
+          : incoming;
+
       setCases((prev) =>
-        incoming.length === 0 && prev.length > 0 && !isAuthoritative
+        filteredIncoming.length === 0 && prev.length > 0 && !isAuthoritative
           ? prev
-          : incoming,
+          : filteredIncoming,
       );
       settle();
 
@@ -258,7 +307,7 @@ export function useCases(opts: UseCasesOptions): UseCasesReturn {
       const sink = onListLayerSummariesRef.current;
       const openId = activeCaseIdRef.current;
       if (sink && openId !== null) {
-        const openCase = incoming.find((c) => c.case_id === openId);
+        const openCase = filteredIncoming.find((c) => c.case_id === openId);
         const rasters = coldRenderableRasterSummaries(
           openCase?.loaded_layer_summaries,
         );
@@ -279,11 +328,17 @@ export function useCases(opts: UseCasesOptions): UseCasesReturn {
     // whole turn. The envelope carries the full CaseSummary; the case-list
     // frame that follows canonicalizes.
     if (session) {
-      setCases((prev) =>
-        prev.some((c) => c.case_id === session.case.case_id)
-          ? prev
-          : [...prev, session.case],
-      );
+      // BUG 2: a late case-open for a Case the user just deleted (e.g. a queued
+      // `select` that round-trips after the `delete`) must NOT re-add it. Skip
+      // the optimistic upsert when the id is tombstoned.
+      const openId = session.case.case_id;
+      if (!deletedIdsRef.current.has(openId)) {
+        setCases((prev) =>
+          prev.some((c) => c.case_id === openId)
+            ? prev
+            : [...prev, session.case],
+        );
+      }
     }
     setActiveSession(session);
     setActiveCaseId(session?.case.case_id ?? null);
@@ -362,6 +417,13 @@ export function useCases(opts: UseCasesOptions): UseCasesReturn {
       // last-Case case AND every non-last delete cleanly; the case-list frame
       // that follows canonicalizes. This is symmetric with the optimistic
       // rename patch above and does NOT touch the empty-keep keepalive rule.
+      //
+      // BUG 2 (stale-reappear trap): also TOMBSTONE the id synchronously so a
+      // NON-authoritative case-list frame (keepalive / fresh-resume) that races
+      // the server soft-delete write and still carries this Case cannot
+      // resurrect it in the rail. An authoritative server list that re-affirms
+      // the Case clears the tombstone (onCaseList).
+      deletedIdsRef.current.add(caseId);
       setCases((prev) => prev.filter((c) => c.case_id !== caseId));
       bumpInFlight(+1);
       sendCaseCommand("delete", caseId, {});
@@ -407,6 +469,7 @@ export function useCases(opts: UseCasesOptions): UseCasesReturn {
     activeCaseId,
     activeSession,
     persistenceState,
+    casesSettled,
     onCaseList,
     onCaseOpen,
     createCase,
