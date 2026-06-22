@@ -173,16 +173,24 @@ def _read_crs_from_dataset(ds: Any) -> str:
     """Read CRS from a SFINCS netCDF dataset; CF-convention compliant (OQ-59 fix).
 
     SFINCS stores the CRS in a **data variable** named ``crs``, not in
-    ``ds.attrs``.  The variable carries EPSG information in its attributes
-    following CF conventions.  We try the known SFINCS encodings in order:
+    ``ds.attrs``.  The variable carries EPSG information either in its
+    attributes (CF conventions) OR — for the cht_sfincs quadtree writer — as
+    the variable's SCALAR VALUE (the bare int EPSG code, e.g. ``32616``, with
+    a useless ``attrs={'EPSG':'-'}``).  We try the known SFINCS encodings in
+    order:
 
     1. ``crs_var.attrs["epsg_code"]`` — SFINCS emits ``"EPSG:32617"`` (string
        already prefixed); strip any accidental whitespace and return as-is.
-    2. ``crs_var.attrs["crs_wkt"]`` — CF canonical WKT string; parse via
+    2. ``crs_var.attrs["epsg"]`` / ``["EPSG"]`` — a bare int EPSG attr (when it
+       is a usable number, not the cht placeholder ``"-"``).
+    3. ``crs_var.attrs["crs_wkt"]`` — CF canonical WKT string; parse via
        pyproj and return the EPSG authority string.
-    3. ``crs_var.attrs["spatial_ref"]`` — OGC WKT variant used by some GDAL
-       writers; parse via pyproj.
-    4. Fallback: ``ds.attrs.get("crs", "EPSG:3857")`` — original logic,
+    4. ``crs_var.attrs["spatial_ref"]`` / ``["wkt"]`` — OGC WKT variants used by
+       some GDAL writers; parse via pyproj.
+    5. The crs VARIABLE VALUE itself — the cht_sfincs quadtree writer stores the
+       bare int EPSG code (32616) AS the variable value, not in an attr; read it
+       as ``int(crs_var.values)`` -> ``"EPSG:32616"``.
+    6. Fallback: ``ds.attrs.get("crs", "EPSG:3857")`` — original logic,
        retained for any dataset that does not carry the ``crs`` variable.
 
     A logged warning is emitted whenever the fallback fires so the mismatch
@@ -202,13 +210,40 @@ def _read_crs_from_dataset(ds: Any) -> str:
             except ValueError:
                 pass  # fall through to next key
 
-        for wkt_key in ("crs_wkt", "spatial_ref"):
+        for epsg_key in ("epsg", "EPSG"):
+            if epsg_key in attrs:
+                # cht_sfincs writes attrs={'EPSG':'-'} (a placeholder) — int()
+                # raises and we fall through to the variable value below.
+                try:
+                    return f"EPSG:{int(str(attrs[epsg_key]).strip())}"
+                except (ValueError, TypeError):
+                    pass  # placeholder / non-numeric — fall through
+
+        for wkt_key in ("crs_wkt", "spatial_ref", "wkt"):
             if wkt_key in attrs:
                 try:
                     import pyproj  # optional; rasterio ships pyproj
                     return pyproj.CRS.from_wkt(attrs[wkt_key]).to_string()
                 except Exception:  # noqa: BLE001
                     pass  # malformed WKT — fall through
+
+        # cht_sfincs quadtree: the crs VARIABLE VALUE is the bare int EPSG code
+        # (e.g. 32616), not an attr. Read it as a scalar and validate via pyproj.
+        try:
+            import numpy as np  # type: ignore[import-not-found]
+
+            raw_val = np.asarray(crs_var.values).ravel()
+            if raw_val.size >= 1 and np.isfinite(raw_val[0]):
+                epsg_int = int(raw_val[0])
+                if epsg_int > 0:
+                    try:
+                        import pyproj  # validate it is a real authority code
+
+                        return pyproj.CRS.from_epsg(epsg_int).to_string()
+                    except Exception:  # noqa: BLE001
+                        return f"EPSG:{epsg_int}"
+        except Exception:  # noqa: BLE001
+            pass  # non-numeric variable value — fall through to attrs fallback
 
     # Fallback: old .attrs encoding or bare dataset without a crs variable.
     fallback = ds.attrs.get("crs", "EPSG:3857")
@@ -319,25 +354,76 @@ def _read_face_coords(ds: Any) -> tuple[Any, Any]:
     """Read the per-face centroid coordinates (UGRID quadtree output).
 
     Returns ``(face_x, face_y)`` 1D numpy arrays in the deck's projected CRS
-    (UTM metres). The canonical UGRID names are ``mesh2d_face_x`` /
-    ``mesh2d_face_y``; some cht/SFINCS variants use ``face_x`` / ``face_y`` —
-    both are tried. Raised as ``RUN_OUTPUT_UNEXPECTED_SHAPE`` when neither pair
-    is present so a malformed quadtree output surfaces a typed error rather than
-    a silent grayscale.
+    (UTM metres). Resolution order:
+
+    1. ``mesh2d_face_x`` / ``mesh2d_face_y`` (or ``face_x`` / ``face_y``) —
+       the canonical pre-computed per-face centroid coords. Fast path.
+    2. **Compute from the UGRID node coords + connectivity.** The REAL
+       cht_sfincs quadtree ``sfincs_map.nc`` does NOT carry ``mesh2d_face_x/_y``;
+       it carries ``mesh2d_node_x`` / ``mesh2d_node_y`` (per-node coords) plus
+       ``mesh2d_face_nodes`` (each face -> its corner node indices, 1-based via
+       the ``start_index`` attr, fill in unused slots for non-quad faces). We
+       compute each face centroid as the mean of its REAL corner-node coords:
+       convert connectivity to 0-based, mask invalid/fill slots (non-finite,
+       ``< start_index``, or ``>= n_nodes``) to NaN, gather node coords, and
+       ``np.nanmean`` over the per-face node axis. Fully vectorized
+       (n_faces x max_nodes index array, no Python face loop).
+
+    Raised as ``RUN_OUTPUT_UNEXPECTED_SHAPE`` when neither the centroid coords
+    NOR the node-coords+connectivity are present so a malformed quadtree output
+    surfaces a typed error rather than a silent grayscale.
     """
     import numpy as np  # type: ignore[import-not-found]
 
+    # --- Fast path: explicit per-face centroid coords. --- #
     for xk, yk in (("mesh2d_face_x", "mesh2d_face_y"), ("face_x", "face_y")):
         if xk in ds.variables and yk in ds.variables:
             return (
                 np.asarray(ds[xk].values, dtype="float64").ravel(),
                 np.asarray(ds[yk].values, dtype="float64").ravel(),
             )
+
+    # --- Compute centroids from node coords + face->node connectivity. --- #
+    node_x = node_y = conn = None
+    for nxk, nyk in (("mesh2d_node_x", "mesh2d_node_y"), ("node_x", "node_y")):
+        if nxk in ds.variables and nyk in ds.variables:
+            node_x = np.asarray(ds[nxk].values, dtype="float64").ravel()
+            node_y = np.asarray(ds[nyk].values, dtype="float64").ravel()
+            break
+    for ck in ("mesh2d_face_nodes", "face_nodes"):
+        if ck in ds.variables:
+            conn_var = ds[ck]
+            conn = np.asarray(conn_var.values, dtype="float64")
+            start_index = int(conn_var.attrs.get("start_index", 1))
+            break
+
+    if node_x is not None and node_y is not None and conn is not None:
+        n_nodes = node_x.shape[0]
+        if conn.ndim == 1:  # single-face edge case → (1, k)
+            conn = conn[np.newaxis, :]
+        # Convert 1-based (start_index) connectivity to 0-based int indices.
+        idx0 = conn - float(start_index)
+        # Mask invalid / fill slots: non-finite, negative (below start_index),
+        # or out of range (>= n_nodes). Those slots contribute nothing to the
+        # centroid mean so triangles/pentagons average only their real corners.
+        valid = np.isfinite(idx0) & (idx0 >= 0.0) & (idx0 < float(n_nodes))
+        safe = np.where(valid, idx0, 0.0).astype(np.intp)
+        gx = np.where(valid, node_x[safe], np.nan)
+        gy = np.where(valid, node_y[safe], np.nan)
+        with np.errstate(invalid="ignore"):
+            face_x = np.nanmean(gx, axis=1)
+            face_y = np.nanmean(gy, axis=1)
+        return (
+            np.ascontiguousarray(face_x, dtype="float64"),
+            np.ascontiguousarray(face_y, dtype="float64"),
+        )
+
     raise PostprocessError(
         "RUN_OUTPUT_UNEXPECTED_SHAPE",
         message=(
             "quadtree output carries no face-centroid coordinates "
-            "(mesh2d_face_x/_y or face_x/_y)"
+            "(mesh2d_face_x/_y or face_x/_y) and no node coords + "
+            "face-node connectivity to compute them from"
         ),
         details={"variables": list(ds.variables.keys())},
     )
