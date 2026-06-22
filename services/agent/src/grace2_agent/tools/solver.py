@@ -241,8 +241,21 @@ NFR_P_4_TARGET_SECONDS: float = 900.0
 DEFAULT_POLL_INTERVAL_S: int = 10
 
 #: Default overall timeout (30 min — mirrors the Cloud Run Job task_timeout
-#: from job-0040, gives 2× headroom over NFR-P-4).
-DEFAULT_TIMEOUT_S: int = 1800
+#: from job-0040, gives 2× headroom over NFR-P-4). Env-overridable via
+#: ``GRACE2_SOLVER_TIMEOUT_S`` so a legitimately long run (a large coastal
+#: quadtree + SnapWave solve exceeds the 30-min pluvial budget this constant was
+#: sized for) can be given more headroom on the box WITHOUT touching the call
+#: sites; absent/garbage env falls back to 1800 so default behaviour is unchanged.
+def _default_timeout_s() -> int:
+    raw = (os.environ.get("GRACE2_SOLVER_TIMEOUT_S") or "").strip()
+    try:
+        v = int(raw)
+        return v if v > 0 else 1800
+    except ValueError:
+        return 1800
+
+
+DEFAULT_TIMEOUT_S: int = _default_timeout_s()
 
 #: Highest progress we ever advertise before the Workflow is SUCCEEDED.
 #: Clamp keeps us honest under late runs — the chip never jumps to 100% on

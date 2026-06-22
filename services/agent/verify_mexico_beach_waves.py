@@ -78,6 +78,12 @@ from typing import Any
 SMOKE_BBOX: tuple[float, float, float, float] = (-85.45, 29.92, -85.38, 29.98)
 # Demo AOI: St. Joseph Bay / Cape San Blas past Mexico Beach + Tyndall AFB.
 FULL_BBOX: tuple[float, float, float, float] = (-85.75, 29.55, -85.25, 30.20)
+# Right-sized DEMO AOI (~29 x 30 km): Mexico Beach coast + ~21 km of open Gulf to
+# the south so the synthetic SnapWave paddle (placed at bbox[1]-0.02) sits in real
+# offshore water -> a NON-ZERO wave field; ~1/4 the area of FULL so the combined
+# quadtree+SnapWave solve finishes well inside the (env-raised) wait budget where
+# FULL timed out. This is the bbox NATE can reproduce live in the app.
+DEMO_BBOX: tuple[float, float, float, float] = (-85.58, 29.75, -85.28, 30.02)
 
 # Hurricane Michael landfall window (~2018-10-10). Carried for provenance only;
 # the synthetic-forcing smoke path uses a deterministic deck window anchored by
@@ -177,6 +183,12 @@ async def main(argv: list[str]) -> int:
         help="tiny CI-smoke bbox + 3h window (default; cheapest Batch run)",
     )
     grp.add_argument(
+        "--demo",
+        action="store_true",
+        help="right-sized demo AOI (~29x30 km) + 12h window: offshore wave "
+        "boundary -> non-zero field, but small enough to finish in the wait budget",
+    )
+    grp.add_argument(
         "--full",
         action="store_true",
         help="demo AOI (-85.75,29.55,-85.25,30.20) + 24h window (expensive)",
@@ -191,9 +203,14 @@ async def main(argv: list[str]) -> int:
     args = ap.parse_args(argv)
 
     full = bool(args.full)
-    bbox = FULL_BBOX if full else SMOKE_BBOX
-    duration_hr = 24 if full else 3
-    wave_hs = args.wave_hs if args.wave_hs is not None else (6.0 if full else 2.0)
+    demo = bool(getattr(args, "demo", False))
+    if full:
+        mode, bbox, duration_hr, default_hs = "FULL demo AOI", FULL_BBOX, 24, 6.0
+    elif demo:
+        mode, bbox, duration_hr, default_hs = "DEMO AOI (right-sized)", DEMO_BBOX, 12, 6.0
+    else:
+        mode, bbox, duration_hr, default_hs = "SMOKE (CI bbox)", SMOKE_BBOX, 3, 2.0
+    wave_hs = args.wave_hs if args.wave_hs is not None else default_hs
     epsg = _utm_epsg_for_bbox(bbox)
 
     # --- env sanity (fail LOUD before submitting anything) ---------------------
@@ -210,7 +227,7 @@ async def main(argv: list[str]) -> int:
     ).strip()
 
     print("=== Mexico Beach SFINCS quadtree + SnapWave acceptance (live AWS) ===")
-    print(f"  mode:            {'FULL demo AOI' if full else 'SMOKE (CI bbox)'}")
+    print(f"  mode:            {mode}")
     print(f"  bbox (EPSG4326): {_bbox_str(bbox)}")
     print(f"  grid CRS:        EPSG:{epsg} (UTM - SnapWave points projected here)")
     print(f"  duration_hr:     {duration_hr}")
