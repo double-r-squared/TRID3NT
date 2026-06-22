@@ -257,3 +257,178 @@ describe("auth.ts — cold-boot CLIENT-SIDE session restore (box-off cases fix)"
     unsub();
   });
 });
+
+// --------------------------------------------------------------------------- //
+// COLD-RELOAD RESTORE RACE (session durability Job A).
+//
+// THE BUG: on a FULL browser close+reload only the durable localStorage refresh
+// token survives; restoring the session requires the async refresh_token grant
+// inside initAuth(). The app mounts TWO concurrent onAuthChanged subscribers
+// (App.tsx + AuthGuard via useAuth). The OLD code flipped a module-level
+// `initialized = true` latch SYNCHRONOUSLY at the top of initAuth() before
+// awaiting the refresh grant. So the 1st subscriber ran the real async restore,
+// while the 2nd saw initialized===true, short-circuited, and fired its callback
+// with cachedUser STILL NULL -> the gate painted Sign-in before the refresh
+// resolved (a spurious sign-out flash + a fresh full reload).
+//
+// THE FIX: a memoized in-flight `initPromise` shared by every concurrent caller.
+// Both subscribers await the SAME settle, so NEITHER can ever observe a null
+// user while a durable refresh token is present.
+//
+// These tests reproduce the race precisely: subscribe BOTH listeners WITHOUT
+// awaiting initAuth() first (the live mount order), pump microtasks, and assert
+// NEITHER subscriber's callback HISTORY ever contained a null once a durable
+// refresh token exists. A slow (deferred) refresh grant widens the race window.
+// --------------------------------------------------------------------------- //
+
+/** A controllable fetch mock whose /oauth2/token resolution we can defer to a
+ *  manual trigger, so the async refresh window stays open across the concurrent
+ *  subscribe (reproducing the real cold-reload timing deterministically). */
+function makeDeferredRefreshFetch(idToken: string): {
+  fetchMock: ReturnType<typeof vi.fn>;
+  release: () => void;
+} {
+  let release!: () => void;
+  const gate = new Promise<void>((res) => {
+    release = res;
+  });
+  const fetchMock = vi.fn(async () => {
+    await gate; // hold the refresh grant open until the test releases it
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ id_token: idToken, access_token: "acc" }),
+    };
+  });
+  return { fetchMock, release };
+}
+
+/** Drain the microtask queue until it is quiet - robust to the multi-hop
+ *  init -> refresh -> .finally -> onAuthChanged .then(cb) chain (counting fixed
+ *  `await Promise.resolve()` hops is fragile across that depth). */
+async function flushMicrotasks(rounds = 30): Promise<void> {
+  for (let i = 0; i < rounds; i++) {
+    await Promise.resolve();
+  }
+}
+
+describe("auth.ts - cold-RELOAD restore race (two concurrent onAuthChanged subscribers)", () => {
+  it("NEITHER of two concurrent subscribers ever observes a null user when a durable refresh token is present", async () => {
+    // Cold reload: ONLY the durable refresh token survives (sessionStorage is
+    // empty - a full close clears it). No live in-memory ID token.
+    localStorage.setItem(LS_REFRESH, "durable-refresh-race");
+
+    // Deferred refresh grant: the window stays open across BOTH subscribes, so a
+    // racing subscriber that short-circuited the OLD latch would fire null here.
+    const { fetchMock, release } = makeDeferredRefreshFetch(FRESH_ID_TOKEN);
+    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+
+    const auth = await import("./auth");
+
+    // Mount TWO subscribers concurrently, mirroring App.tsx + AuthGuard, WITHOUT
+    // pre-awaiting initAuth(). Record the FULL callback history of each.
+    const seenA: (import("./auth").AuthUser | null)[] = [];
+    const seenB: (import("./auth").AuthUser | null)[] = [];
+    const unsubA = auth.onAuthChanged((u) => seenA.push(u));
+    const unsubB = auth.onAuthChanged((u) => seenB.push(u));
+
+    // Pump microtasks while the refresh is still GATED. Under the old latch the
+    // 2nd subscriber would have already fired cb(null) by now.
+    await flushMicrotasks();
+    // While the grant is still open NEITHER subscriber may have fired at all
+    // (correct: they await the in-flight init), and crucially neither fired null.
+    expect(seenA.some((u) => u === null)).toBe(false);
+    expect(seenB.some((u) => u === null)).toBe(false);
+
+    // Now let the refresh grant resolve and drain the full chain.
+    release();
+    // Awaiting getIdToken() guarantees the shared init promise has settled (it
+    // awaits the SAME initPromise), after which the subscriber .then(cb) callbacks
+    // flush deterministically.
+    await auth.getIdToken();
+    await flushMicrotasks();
+
+    // THE ASSERTION: across each subscriber's ENTIRE history, no null was ever
+    // observed. The race would surface as an early null in seenB (or seenA).
+    expect(seenA.length).toBeGreaterThan(0);
+    expect(seenB.length).toBeGreaterThan(0);
+    expect(seenA.some((u) => u === null)).toBe(false);
+    expect(seenB.some((u) => u === null)).toBe(false);
+
+    // And both ultimately observe the restored, non-anonymous identity.
+    expect(seenA[seenA.length - 1]?.uid).toBe("cognito-sub-restored");
+    expect(seenA[seenA.length - 1]?.isAnonymous).toBe(false);
+    expect(seenB[seenB.length - 1]?.uid).toBe("cognito-sub-restored");
+    expect(seenB[seenB.length - 1]?.isAnonymous).toBe(false);
+
+    // The refresh grant ran exactly ONCE despite two concurrent subscribers
+    // (the memoized in-flight promise is shared, not re-run per subscriber).
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    unsubA();
+    unsubB();
+  });
+
+  it("getIdToken() concurrent with a subscriber also never reports before the durable refresh settles", async () => {
+    // The other concurrent caller of initAuth() is getIdToken() (ws.ts handshake
+    // / cold case-list fetch). It must not win the latch and return null/empty
+    // before the refresh grant restores the session.
+    localStorage.setItem(LS_REFRESH, "durable-refresh-token-path");
+
+    const { fetchMock, release } = makeDeferredRefreshFetch(FRESH_ID_TOKEN);
+    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+
+    const auth = await import("./auth");
+
+    const seen: (import("./auth").AuthUser | null)[] = [];
+    const unsub = auth.onAuthChanged((u) => seen.push(u));
+    // Fire getIdToken() concurrently (do NOT await it yet) - it awaits the SAME
+    // in-flight init promise.
+    const tokenPromise = auth.getIdToken();
+
+    await flushMicrotasks();
+    // Still gated: the subscriber has not yet fired a (null) user.
+    expect(seen.some((u) => u === null)).toBe(false);
+
+    release();
+    const token = await tokenPromise;
+    await flushMicrotasks();
+
+    // getIdToken returns the freshly minted ID token (NOT null), and the
+    // subscriber never saw a null.
+    expect(token).toBe(FRESH_ID_TOKEN);
+    expect(seen.some((u) => u === null)).toBe(false);
+    expect(seen[seen.length - 1]?.uid).toBe("cognito-sub-restored");
+    // One shared refresh grant for both the subscriber and getIdToken.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    unsub();
+  });
+
+  it("DISABLED mode (Cognito env absent) still fires a SINGLE null for each subscriber (anonymous-only preserved)", async () => {
+    // No Cognito env -> isFirebaseConfigured() false -> disabled / anonymous-only
+    // mode. The contract: each subscriber fires exactly once with null and never
+    // again (a stable signed-out snapshot). The promise-memoization must NOT
+    // change this byte-for-byte.
+    vi.unstubAllEnvs(); // drop the Cognito env stubbed in beforeEach
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+
+    const auth = await import("./auth");
+
+    const seenA: (import("./auth").AuthUser | null)[] = [];
+    const seenB: (import("./auth").AuthUser | null)[] = [];
+    const unsubA = auth.onAuthChanged((u) => seenA.push(u));
+    const unsubB = auth.onAuthChanged((u) => seenB.push(u));
+
+    await flushMicrotasks();
+
+    // Exactly one null fire each - no double-fire, no spurious non-null.
+    expect(seenA).toEqual([null]);
+    expect(seenB).toEqual([null]);
+    expect(auth.authStatus()).toBe("disabled");
+    // No network attempted in disabled mode.
+    expect(fetchMock).not.toHaveBeenCalled();
+    unsubA();
+    unsubB();
+  });
+});

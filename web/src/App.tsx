@@ -221,6 +221,29 @@ const hamburgerBtnStyle: React.CSSProperties = {
   top: 12,
 };
 
+// Session-durability Job E (NATE) - the layer-panel LOADING stub spins via the
+// `grace2-spin` keyframes. PipelineCard.tsx defines the same keyframes, but it
+// is NOT statically imported by App.tsx, so its module-load injection is not
+// guaranteed to have run when the stub paints (a Case can open before any
+// pipeline card mounts). Inject a self-contained, idempotent copy at module
+// load (distinct style-element id; the rule is identical so a duplicate from
+// PipelineCard is harmless). SSR/test guard: no-op when `document` is absent.
+const GRACE2_APP_SPIN_KEYFRAMES_ID = "grace2-app-spin-keyframes";
+function ensureAppSpinKeyframes(): void {
+  if (typeof document === "undefined") return;
+  if (document.getElementById(GRACE2_APP_SPIN_KEYFRAMES_ID)) return;
+  const style = document.createElement("style");
+  style.id = GRACE2_APP_SPIN_KEYFRAMES_ID;
+  style.textContent = `
+@keyframes grace2-spin {
+  0%   { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+`;
+  document.head.appendChild(style);
+}
+ensureAppSpinKeyframes();
+
 export function App(): JSX.Element {
   const bus = useMemo(() => createLayerPanelBus(), []);
 
@@ -1355,6 +1378,35 @@ export function App(): JSX.Element {
     ? cases.find((c) => c.case_id === activeCaseId) ?? null
     : null;
 
+  // Session-durability Job E (NATE) - derive a LOADING signal for the
+  // layer-panel stub from signals that ALREADY exist, so a freshly-selected
+  // Case shows a "Loading layers..." spinner instead of the bare "No layers
+  // loaded yet" empty stub while its session is still inbound. Two existing
+  // signals feed it:
+  //   1. caseSelectedButUnsettled - a Case is selected (activeCaseId) but the
+  //      live session for THAT exact Case has not yet arrived (activeSession is
+  //      null, or it still carries the PREVIOUS Case). This is the same compare
+  //      the cold-load guard uses at the [activeCaseId, wsStatus, activeSession]
+  //      effect above (~:1126).
+  //   2. wsStatus connecting/reconnecting - the App socket is mid-handshake, so
+  //      an authoritative layer frame may still be in flight even once the
+  //      session object matches the Case.
+  // CRUCIAL: when the Case IS open + settled (session matches the Case) AND the
+  // socket is healthy, layersLoading is FALSE, so a genuinely-empty Case falls
+  // through to the SETTLED-EMPTY stub (never spins forever).
+  const caseSelectedButUnsettled =
+    activeCaseId !== null &&
+    (activeSession === null ||
+      activeSession.case.case_id !== activeCaseId);
+  const layersLoading = useMemo(
+    () =>
+      activeCaseId !== null &&
+      (caseSelectedButUnsettled ||
+        wsStatus === "connecting" ||
+        wsStatus === "reconnecting"),
+    [activeCaseId, caseSelectedButUnsettled, wsStatus],
+  );
+
   // FIX 2 — payload-warning gates render in Chat's per-Case stream now (no
   // App-level filtering / banner). See Chat.tsx routePayloadWarning.
 
@@ -1512,26 +1564,70 @@ export function App(): JSX.Element {
               caseTitle={activeCase?.title ?? "Case"}
               onBack={handleCaseBack}
             />
-            {layers.length === 0 && (
-              <div
-                data-testid="grace2-case-view-empty-layers"
-                style={{
-                  marginTop: 8,
-                  background: "rgba(15,15,20,0.92)",
-                  border: "1px dashed #444",
-                  borderRadius: 8,
-                  padding: 12,
-                  color: "#999",
-                  fontSize: 12,
-                  textAlign: "center",
-                  lineHeight: 1.4,
-                  width: 288,
-                  boxSizing: "border-box",
-                }}
-              >
-                No layers loaded yet. Ask the assistant to add data.
-              </div>
-            )}
+            {/* Session-durability Job E (NATE) - three-way split of the
+                layer-panel stub. SAME box (same marginTop/background/radius/
+                padding/width/typography) so ONLY the outline style and the
+                content change between states - NO layout shift:
+                (1) LOADING (Case opening / layers inbound): SOLID outline +
+                    spinner replacing the text.
+                (2) SETTLED-EMPTY (Case open, settled, zero layers): UNCHANGED
+                    dotted outline + the "No layers loaded yet" copy.
+                (3) POPULATED (layers.length > 0): the LayerPanel below. */}
+            {layers.length === 0 &&
+              (layersLoading ? (
+                <div
+                  data-testid="grace2-case-view-loading-layers"
+                  style={{
+                    marginTop: 8,
+                    background: "rgba(15,15,20,0.92)",
+                    border: "1px solid #555",
+                    borderRadius: 8,
+                    padding: 12,
+                    color: "#999",
+                    fontSize: 12,
+                    textAlign: "center",
+                    lineHeight: 1.4,
+                    width: 288,
+                    boxSizing: "border-box",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: 8,
+                  }}
+                >
+                  <span
+                    aria-hidden="true"
+                    style={{
+                      width: 12,
+                      height: 12,
+                      borderRadius: "50%",
+                      border: "2px solid rgba(255,255,255,0.2)",
+                      borderTopColor: "#bbb",
+                      animation: "grace2-spin 0.8s linear infinite",
+                    }}
+                  />
+                  <span>Loading layers...</span>
+                </div>
+              ) : (
+                <div
+                  data-testid="grace2-case-view-empty-layers"
+                  style={{
+                    marginTop: 8,
+                    background: "rgba(15,15,20,0.92)",
+                    border: "1px dashed #444",
+                    borderRadius: 8,
+                    padding: 12,
+                    color: "#999",
+                    fontSize: 12,
+                    textAlign: "center",
+                    lineHeight: 1.4,
+                    width: 288,
+                    boxSizing: "border-box",
+                  }}
+                >
+                  No layers loaded yet. Ask the assistant to add data.
+                </div>
+              ))}
           </div>
           {/* LayerPanel — its own absolute positioning at left:16, top:16.
               We mount it directly so MapLibre rendering picks up its
@@ -1836,30 +1932,70 @@ export function App(): JSX.Element {
                   mobile
                 />
               </div>
+              {/* Session-durability Job E (NATE) - three-way split (mobile).
+                  SAME hairline card (same background/radius/padding/typography/
+                  pointerEvents) so ONLY the outline (dotted->solid) and content
+                  (text->spinner) change between LOADING and SETTLED-EMPTY - no
+                  layout shift. POPULATED falls to the LayerPanel branch below. */}
               {layers.length === 0 ? (
-                <div
-                  data-testid="grace2-case-view-empty-layers"
-                  style={{
-                    // job-0284 — floats as a translucent hairline card over
-                    // the map (the drawer panel surface is gone).
-                    background: "rgba(18,19,24,0.72)",
-                    border: "1px dashed rgba(255,255,255,0.18)",
-                    borderRadius: 10,
-                    padding: 12,
-                    color: "#a8b0bb",
-                    fontSize: 12,
-                    textAlign: "center",
-                    lineHeight: 1.4,
-                    boxSizing: "border-box",
-                    // job-0322 F52 (v2) — this card is an actual component, so
-                    // it re-enables hit-testing above the click-transparent
-                    // drawer column. (It has no interactive controls today, but
-                    // keeping it `auto` matches the spec and is forward-safe.)
-                    pointerEvents: "auto",
-                  }}
-                >
-                  No layers loaded yet. Ask the assistant to add data.
-                </div>
+                layersLoading ? (
+                  <div
+                    data-testid="grace2-case-view-loading-layers"
+                    style={{
+                      background: "rgba(18,19,24,0.72)",
+                      border: "1px solid rgba(255,255,255,0.35)",
+                      borderRadius: 10,
+                      padding: 12,
+                      color: "#a8b0bb",
+                      fontSize: 12,
+                      textAlign: "center",
+                      lineHeight: 1.4,
+                      boxSizing: "border-box",
+                      pointerEvents: "auto",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      gap: 8,
+                    }}
+                  >
+                    <span
+                      aria-hidden="true"
+                      style={{
+                        width: 12,
+                        height: 12,
+                        borderRadius: "50%",
+                        border: "2px solid rgba(255,255,255,0.2)",
+                        borderTopColor: "#cfd6df",
+                        animation: "grace2-spin 0.8s linear infinite",
+                      }}
+                    />
+                    <span>Loading layers...</span>
+                  </div>
+                ) : (
+                  <div
+                    data-testid="grace2-case-view-empty-layers"
+                    style={{
+                      // job-0284 - floats as a translucent hairline card over
+                      // the map (the drawer panel surface is gone).
+                      background: "rgba(18,19,24,0.72)",
+                      border: "1px dashed rgba(255,255,255,0.18)",
+                      borderRadius: 10,
+                      padding: 12,
+                      color: "#a8b0bb",
+                      fontSize: 12,
+                      textAlign: "center",
+                      lineHeight: 1.4,
+                      boxSizing: "border-box",
+                      // job-0322 F52 (v2) - this card is an actual component, so
+                      // it re-enables hit-testing above the click-transparent
+                      // drawer column. (It has no interactive controls today, but
+                      // keeping it `auto` matches the spec and is forward-safe.)
+                      pointerEvents: "auto",
+                    }}
+                  >
+                    No layers loaded yet. Ask the assistant to add data.
+                  </div>
+                )
               ) : (
                 <div
                   style={{

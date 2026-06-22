@@ -306,6 +306,33 @@ export interface WsHandlers {
    * single transient blip (show only after a couple of failed attempts).
    */
   onWakeNeeded?: (attempt: number) => void;
+  /**
+   * Session-durability Job D (2) - RECONNECT-RESUMED hook. Fires once after a
+   * successful (re)open has sent its `auth-token` + `session-resume` handshake
+   * (i.e. the socket is live again and the server has been asked to re-emit the
+   * authoritative `session-state`).
+   *
+   * Why it exists: the composer-stuck-as-Stop bug latches when a turn completes
+   * server-side but the completion/close frame is lost on the dropped socket.
+   * The client's in-flight latch (`currentPipelineFromSession` / a running
+   * pipeline step) is then never cleared, so the send button renders Stop
+   * forever. The server WILL re-emit a fresh `session-state` (with
+   * `current_pipeline === null` if the turn is over) on the resume below, and
+   * that already settles the latch via `routeSessionState`. But that re-emitted
+   * `session-state`/`turn-complete` is tagged with the turn's OWNING case_id;
+   * if the user has since navigated, it can settle the WRONG (non-visible)
+   * stream and leave the visible composer stuck. This hook lets the consumer
+   * (Chat.tsx) belt-and-suspenders force-settle the VISIBLE / targetKey stream
+   * on resume so the composer cannot stay stuck on a successful reconnect,
+   * independent of which case the server's re-emitted clear is tagged with.
+   *
+   * `firstOpen` is true on the very first connect of this instance and false on
+   * every subsequent reconnect; consumers may use it to skip the (harmless,
+   * idempotent) clear on the initial connect where there is nothing to settle.
+   * Optional so existing callers need no change. A handler throw is swallowed so
+   * it can never wedge the open handler.
+   */
+  onReconnectResumed?: (firstOpen: boolean) => void;
 }
 
 // job-0253 — A.5 auth-failure close code. The agent's production gate
@@ -626,6 +653,12 @@ export class GraceWs {
   // job-0253 — guard so the one-shot forceRefresh retry runs at most once per
   // connect attempt and we don't loop refresh→reject→refresh.
   private authRefreshAttempted = false;
+  // Session-durability Job D (2) - true until the FIRST successful open of this
+  // instance completes its resume handshake; flips false thereafter. Passed to
+  // ``onReconnectResumed`` so the consumer can distinguish the initial connect
+  // (nothing to settle) from a genuine reconnect (where a lost completion frame
+  // may have stranded the composer as Stop).
+  private hasOpenedOnce = false;
   // BUG 4a — keepalive timers. ``keepaliveTimer`` fires every
   // KEEPALIVE_INTERVAL_MS while the socket is OPEN and sends a `session-resume`
   // ping; ``pongDeadlineTimer`` is armed when a ping is sent and fires (=> force-
@@ -953,7 +986,17 @@ export class GraceWs {
       this.sessionId,
       payload,
     );
-    this.sendEnvelope(env);
+    // Session-durability Job D (3) - route cancel through sendOrQueue, NOT a
+    // bare sendEnvelope. The composer-stuck-as-Stop bug surfaces precisely when
+    // the socket dropped at the moment of completion: the user taps the lingering
+    // Stop button, which calls sendCancel, but on a CLOSED/reconnecting socket a
+    // bare sendEnvelope silently no-ops so the cancel never lands and the turn
+    // (already terminal server-side or genuinely still running) is never told to
+    // stop. Queuing it means the open handler flushes the cancel once the socket
+    // re-opens (after auth-token + session-resume), so a tap on a stuck Stop is
+    // honoured instead of swallowed mid-reconnect. When OPEN this still sends
+    // immediately via sendOrQueue's fast path.
+    this.sendOrQueue(env);
   }
 
   /**
@@ -1369,6 +1412,24 @@ export class GraceWs {
         // re-asserted before the select/message lands. Done only for THIS
         // socket while it is still OPEN.
         this.flushOutboundQueue(ws);
+        // Session-durability Job D (2) - the resume handshake is sent; signal
+        // the consumer that the session was (re)resumed so it can force-settle
+        // the VISIBLE / targetKey stream's in-flight latch. This is the recovery
+        // for the composer-stuck-as-Stop bug: if a turn completed while the
+        // socket was dropping (its completion frame lost), the server's
+        // re-emitted session-state above clears the OWNING stream, but this hook
+        // additionally clears the stream the user is actually looking at so the
+        // composer can never stay stuck after a successful reconnect. Fired only
+        // for THIS socket while still OPEN; a handler throw must not wedge the
+        // open handler. `firstOpen` lets the consumer skip the (idempotent) clear
+        // on the very first connect.
+        const firstOpen = !this.hasOpenedOnce;
+        this.hasOpenedOnce = true;
+        try {
+          this.handlers.onReconnectResumed?.(firstOpen);
+        } catch {
+          /* a UI handler throw must not wedge the open handler */
+        }
       })();
     });
     ws.addEventListener("message", (ev) => this.handleMessage(ev.data));

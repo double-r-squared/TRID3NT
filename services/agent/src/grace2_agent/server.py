@@ -1478,6 +1478,22 @@ class SessionState:
     # deadline clears). Reset to False only by a brand-new connection's fresh
     # SessionState — never within a connection.
     did_fresh_resume: bool = False
+    # JOB C (active-case flap): per-connection latch for the active-Case REBIND
+    # decision - distinct from ``did_fresh_resume`` (which gates the LAYER
+    # REPLAY and is deliberately left False when a live turn was rebound so a
+    # later keepalive can perform the one-time seed). ROOT CAUSE of the flap: a
+    # session mounts TWO sockets (App.tsx + Chat.tsx), and BOTH send a 25s
+    # keepalive ``session-resume`` stamped with the Case THAT socket believes is
+    # active. Pre-fix every keepalive re-bound the shared ``_SESSION_ACTIVE_CASE``
+    # pointer whenever its stamp differed, so the two sockets ping-ponged the
+    # pointer every 25s and each rebind drove an authoritative layer replay that
+    # clobbered the displayed Case. This flag flips True after the FIRST resume
+    # on THIS connection, so the client-stamp rebind in ``_handle_session_resume``
+    # fires only on a genuine fresh resume - never on a keepalive ping. Explicit
+    # ``case-command(select)`` / ``user-message`` still rebind unconditionally
+    # (those carry a deliberate user intent). Reset to False only by a brand-new
+    # connection's fresh SessionState - never within a connection.
+    did_first_resume: bool = False
     # job-0127 (Wave 2): per-session pending payload-warning gates.
     # Key is the ``warning_id`` ULID; value is an asyncio.Future that the
     # inbound ``tool-payload-confirmation`` handler completes with the user's
@@ -2756,6 +2772,25 @@ async def _handle_session_resume(
     replay targets, not removing replay — a genuine fresh reconnect still
     replays the active Case's rendered layers."""
     _ensure_emitter(websocket, state)
+    # JOB B (WS connection accumulation): a freshly-opened socket sends
+    # ``session-resume`` first, so this is the moment to (a) record THIS socket
+    # as a live connection of the session and (b) proactively close any PRIOR
+    # socket of the SAME session that is not this one - retiring the zombies a
+    # mobile navigate-out/back leaves behind long before the slow ~20s transport
+    # ping would. The keeper (THIS websocket) is excluded by identity so the
+    # active tab's own socket is never closed. Idempotent: a keepalive resume on
+    # the same socket re-registers (no-op) and reaps any newly-stale sibling.
+    _register_session_connection(state.session_id, websocket)
+    await _reap_prior_session_connections(state.session_id, keeper=websocket)
+    # JOB C (active-case flap): a keepalive resume is any resume AFTER the first
+    # one on THIS connection. Capture the keepalive verdict BEFORE flipping the
+    # per-connection latch so the rebind gate below sees the genuine first/later
+    # distinction. The web client's 25s proof-of-life ping and a genuine fresh
+    # reconnect are indistinguishable by the envelope alone, but a fresh
+    # ``SessionState`` is built per connection, so the FIRST resume here is the
+    # real fresh-socket resume and every later one is a keepalive ping.
+    is_keepalive = state.did_first_resume
+    state.did_first_resume = True
     # job-CASE-AUTHORITY: warm the in-memory pointer from the persisted
     # ``last_active_case_id`` first (a no-op when this session already has a
     # live pointer this process). After an EC2 auto-stop/restart the
@@ -2775,7 +2810,24 @@ async def _handle_session_resume(
     # invalidates this connection's case-context sync marker so the next
     # ``user-message`` re-syncs (LLM history + layer accumulator) to the
     # corrected Case via ``_sync_case_context``.
-    if client_case_id is not None and client_case_id != state.active_case_id:
+    #
+    # JOB C: gate the rebind on ``not is_keepalive`` - the 25s keepalive ping
+    # must NEVER rebind the shared ``_SESSION_ACTIVE_CASE`` pointer. With two
+    # sockets per session each stamping its own Case, an ungated keepalive
+    # rebind made the two sockets ping-pong the pointer every 25s, and each
+    # rebind drove an authoritative layer replay that clobbered the displayed
+    # Case (THE FLAP). The pointer is rebound only on a genuine FIRST resume of
+    # a connection here, and on explicit ``case-command(select)`` /
+    # ``user-message`` (``_prepare_user_turn``) elsewhere - the deliberate
+    # user-intent paths. (A keepalive whose stamp differs is the user having
+    # switched the active Case on the OTHER socket; the explicit select on that
+    # socket already rebound the shared pointer, so this socket's stale stamp
+    # must not clobber it back.)
+    if (
+        not is_keepalive
+        and client_case_id is not None
+        and client_case_id != state.active_case_id
+    ):
         logger.info(
             "session-resume re-binding active case session=%s server=%s client=%s",
             state.session_id,
@@ -8790,6 +8842,133 @@ def active_connection_count() -> int:
     return len(_ACTIVE_WS_CONNECTIONS)
 
 
+# --------------------------------------------------------------------------- #
+# JOB B (session durability fix): per-session connection registry + eager reap
+# --------------------------------------------------------------------------- #
+#
+# ROOT CAUSE of "active_connections hit ~20 for one session": a mobile
+# navigate-out/back (or any reconnect) opens a NEW WebSocket but the OLD one is
+# not always closed by the browser - a backgrounded mobile socket lingers as a
+# zombie until the ~20s websockets ping-timeout finally reaps it. Across a
+# burst of navigate cycles the zombies pile up far faster than the slow ping
+# reaper clears them, so a single browser session accumulates ~20 live sockets.
+#
+# Fix: track every live connection BY SESSION (``session_id -> set of live
+# ServerConnection``) and, on each session-resume handshake, proactively close
+# any PRIOR socket of the SAME session that is not the resuming connection. A
+# freshly-opened socket sends ``session-resume`` first, so this reaps the
+# session's stale sockets at the moment the replacement arrives - long before
+# the slow transport ping would.
+#
+# CRITICAL invariant: the reap NEVER closes the resuming connection's own live
+# socket (mis-targeting kills the active tab). The keeper is identified by
+# object identity and excluded before any close.
+#
+# Thread-safety: one asyncio loop, one process -> a plain dict/set mutated from
+# coroutine context needs no lock (see ``_ACTIVE_WS_CONNECTIONS`` note above).
+# Keyed by ``session_id``; the value-set is keyed by the connection object
+# (de-duped) so a re-register is a harmless no-op and an empty bucket is pruned
+# so the dict cannot grow unbounded across long-lived sessions.
+
+#: JOB B: application close code for a prior socket reaped because a newer
+#: connection of the SAME session resumed. 4xxx is the WebSocket spec's reserved
+#: application range; distinct from ``AUTH_CLOSE_CODE`` (4401). The client treats
+#: this like any other close (its reconnect/backoff logic owns recovery), but
+#: the code makes "why did this socket die?" answerable from the journal.
+SESSION_SUPERSEDED_CLOSE_CODE = 4408
+
+_SESSION_WS_CONNECTIONS: "dict[str, set[ServerConnection]]" = {}
+
+
+def _register_session_connection(
+    session_id: str, websocket: "ServerConnection"
+) -> None:
+    """Record ``websocket`` as a live connection of ``session_id`` (idempotent).
+
+    Called once the connection's ``session_id`` is known (first inbound
+    envelope routed through ``_handle_session_resume`` / the handler). Set
+    semantics make a re-register a no-op.
+    """
+    if not session_id:
+        return
+    _SESSION_WS_CONNECTIONS.setdefault(session_id, set()).add(websocket)
+
+
+def _deregister_session_connection(
+    session_id: str, websocket: "ServerConnection"
+) -> None:
+    """Drop ``websocket`` from ``session_id``'s live-connection set.
+
+    Called from the handler ``finally`` on EVERY exit path. ``discard`` never
+    raises; an emptied bucket is pruned so the registry cannot grow unbounded.
+    """
+    if not session_id:
+        return
+    bucket = _SESSION_WS_CONNECTIONS.get(session_id)
+    if bucket is None:
+        return
+    bucket.discard(websocket)
+    if not bucket:
+        _SESSION_WS_CONNECTIONS.pop(session_id, None)
+
+
+def session_connection_count(session_id: str) -> int:
+    """Number of live connections currently tracked for ``session_id``.
+
+    Surfaced for tests (and post-mortem) so the per-session reap can be asserted
+    directly. NEVER negative; 0 for an unknown session.
+    """
+    return len(_SESSION_WS_CONNECTIONS.get(session_id, ()))
+
+
+async def _reap_prior_session_connections(
+    session_id: str, keeper: "ServerConnection"
+) -> int:
+    """Proactively close every PRIOR socket of ``session_id`` except ``keeper``.
+
+    JOB B: called on each session-resume handshake. A freshly-opened socket
+    sends ``session-resume`` first, so this is the moment to retire the stale
+    sockets the slow ~20s transport ping would otherwise leave piling up. The
+    ``keeper`` (the resuming connection) is excluded by object identity FIRST so
+    its own live socket is never closed (mis-targeting kills the active tab).
+
+    Returns the number of prior sockets closed. Best-effort: a close that
+    raises (already-closing socket) is swallowed; the stale socket is dropped
+    from the registry either way so the count cannot wedge. A genuinely-dead
+    keeper-only session reaps nothing.
+    """
+    bucket = _SESSION_WS_CONNECTIONS.get(session_id)
+    if not bucket:
+        return 0
+    # Snapshot + exclude the keeper by identity BEFORE any close so we can never
+    # target the resuming connection's own live socket.
+    priors = [c for c in bucket if c is not keeper]
+    reaped = 0
+    for prior in priors:
+        # Drop from the registry first so a re-entrant reap (a near-simultaneous
+        # resume) cannot double-target the same stale socket.
+        bucket.discard(prior)
+        try:
+            await prior.close(
+                code=SESSION_SUPERSEDED_CLOSE_CODE,
+                reason="superseded by a newer session connection",
+            )
+            reaped += 1
+        except Exception:  # noqa: BLE001 - best-effort; never break the resume
+            # The prior socket is already closing/closed; still count it gone.
+            reaped += 1
+    if not bucket:
+        _SESSION_WS_CONNECTIONS.pop(session_id, None)
+    if reaped:
+        logger.info(
+            "session-resume reaped %d prior socket(s) session=%s remaining=%d",
+            reaped,
+            session_id,
+            session_connection_count(session_id),
+        )
+    return reaped
+
+
 def inflight_turn_count() -> int:
     """Number of in-flight turns detached from a (possibly-dead) connection.
 
@@ -9415,6 +9594,15 @@ def _make_handler(settings: GeminiSettings):
             # ``_SOLVE_IN_FLIGHT``, so dropping the connection count here does NOT
             # expose the box to being stopped mid-solve.
             _deregister_active_connection(websocket)
+            # JOB B (WS connection accumulation): drop this socket from the
+            # per-session connection registry on EVERY exit path so the eager
+            # reaper never targets (or counts) a connection that is already gone,
+            # and the registry cannot grow unbounded. Guard on ``state`` - a
+            # connection that closed before its first envelope never bound a
+            # session_id, so it was never registered. Idempotent: a socket
+            # already reaped by a sibling's resume is a harmless discard.
+            if state is not None:
+                _deregister_session_connection(state.session_id, websocket)
             # WS-30s STORM FIX: stop the per-connection data heartbeat on EVERY
             # exit path (normal close, crash, cancellation, loop exhaustion) so
             # the background task never outlives its socket. Cancel + await so the

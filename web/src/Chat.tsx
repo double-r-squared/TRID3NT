@@ -308,6 +308,20 @@ const DEFAULT_INPUT_HEIGHT_PX = 68;
 // many pixels above the bottom of the scroll container.
 const SCROLL_BOTTOM_THRESHOLD_PX = 50;
 
+// Session-durability Job D (1) - composer-stuck-as-Stop watchdog idle bound.
+// While a turn is in-flight, NO inbound WS frame for this long means the turn is
+// presumed orphaned (its terminal frame was lost on a dropped socket) and the
+// watchdog force-settles the visible stream so the composer returns to idle. It
+// MUST be longer than any legitimate inter-frame gap: a live multi-minute solve
+// keeps emitting pipeline-state / solve-progress frames, and the server sends a
+// 12s DATA heartbeat (project_ws_30s_heartbeat_fix) plus the client's 25s
+// keepalive resume gets a session-state reply - so a healthy in-flight turn
+// never goes 90s without an inbound frame. 90s is comfortably above all of those
+// while still recovering a stuck composer within a couple of keepalive cycles.
+const COMPOSER_WATCHDOG_IDLE_MS = 90_000;
+// How often the watchdog re-checks the idle bound while a turn is in-flight.
+const COMPOSER_WATCHDOG_TICK_MS = 5_000;
+
 // Build version shown in the chat header so the user can see at a glance which
 // deploy their tab is running (replaces the old "M1 stub" placeholder). Baked
 // at build time from VITE_BUILD_SHA (set in the deploy command to the git short
@@ -3024,6 +3038,29 @@ export function Chat({
   const [, bumpStreamTick] = useState<number>(0);
   const bump = useCallback(() => bumpStreamTick((n) => n + 1), []);
 
+  // Session-durability Job D (1) - composer-stuck-as-Stop watchdog.
+  //
+  // Root cause: when a turn completes server-side but the completion/close frame
+  // is lost on a dropped socket, the client's in-flight latch
+  // (currentPipelineFromSession / a running pipeline step) is never cleared, so
+  // shouldShowCancel stays true and the send button renders Stop forever - a tap
+  // routes to cancel and Enter early-returns, so a real prompt never sends.
+  //
+  // The watchdog keys on NO INBOUND ACTIVITY (not elapsed time): every inbound
+  // WS frame stamps lastInboundActivityRef (via bumpInbound). While a turn is
+  // in-flight, if NO inbound frame arrives for WATCHDOG_IDLE_MS, the turn is
+  // presumed orphaned (its terminal frame was lost) and we force-dispatch a
+  // turn-complete into the VISIBLE stream (independent of owning-case routing),
+  // settling the latch so the composer returns to send-enabled. The interval is
+  // long enough never to fire mid-legitimate multi-minute solve: a live solve
+  // keeps emitting pipeline-state / solve-progress / heartbeat frames, each of
+  // which is inbound activity that resets the timer.
+  const lastInboundActivityRef = useRef<number>(Date.now());
+  const bumpInbound = useCallback(() => {
+    lastInboundActivityRef.current = Date.now();
+    bumpStreamTick((n) => n + 1);
+  }, []);
+
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
   const [researchMode] = useState<ResearchMode>("research"); // toggle UI lands M3
 
@@ -3102,13 +3139,17 @@ export function Chat({
       // job-0277: every streaming handler receives the envelope-level
       // case_id (the agent's turn pin) and routes to the OWNING stream;
       // untagged envelopes fall back to submit-time targetKey routing.
+      // Session-durability Job D (1): inbound handlers call bumpInbound (not
+      // plain bump) so the composer watchdog's NO-INBOUND-ACTIVITY timer is
+      // reset by ANY arriving frame - a live turn that keeps streaming frames
+      // never trips the watchdog; only a genuinely silent (orphaned) turn does.
       onAgentChunk: (p: AgentMessageChunkPayload, caseId?: string | null) => {
         routeAgentChunk(streamsRef.current, p, caseId);
-        bump();
+        bumpInbound();
       },
       onPipelineState: (p: PipelineStatePayload, caseId?: string | null) => {
         routePipelineState(streamsRef.current, p, caseId);
-        bump();
+        bumpInbound();
       },
       // NATE 2026-06-17: live big-sim readout. solve-progress is session-scoped
       // (ws.ts SESSION_SCOPED_TYPES) so Chat receives it via the fan-out hub
@@ -3116,14 +3157,14 @@ export function Chat({
       // run_id in the owning stream; the running solver card matches + renders.
       onSolveProgress: (p: SolveProgressPayload, caseId?: string | null) => {
         routeSolveProgress(streamsRef.current, p, caseId);
-        bump();
+        bumpInbound();
       },
       // tool-card-expand-output spec: the agent emits the raw args +
       // function_response for each tool dispatch keyed by step_id. Store it in
       // the owning stream; the matching tool card's expander reveals it.
       onToolIo: (p: ToolIoPayload, caseId?: string | null) => {
         routeToolIo(streamsRef.current, p, caseId);
-        bump();
+        bumpInbound();
       },
       // C2 terminal-state durability: the agent emits turn-complete at the END
       // of every turn (and re-emits on session-resume). turn-complete is
@@ -3133,11 +3174,24 @@ export function Chat({
       // the terminal pipeline-state frame was lost on a socket drop.
       onTurnComplete: (p: TurnCompletePayload, caseId?: string | null) => {
         routeTurnComplete(streamsRef.current, p, caseId);
-        bump();
+        bumpInbound();
       },
       onSessionState: (p: SessionStatePayload, caseId?: string | null) => {
         routeSessionState(streamsRef.current, p, caseId);
-        bump();
+        bumpInbound();
+      },
+      // Session-durability Job D (2) - on every successful reconnect/resume the
+      // server re-emits an authoritative session-state, but it is tagged with
+      // the turn's OWNING case_id and may settle a non-visible stream if the
+      // user navigated. Belt-and-suspenders force-settle the VISIBLE / targetKey
+      // stream here so the composer can NEVER stay stuck as Stop after a
+      // reconnect, independent of owning-case routing. routeTurnComplete is
+      // idempotent (a turn with no running cards is a no-op), so the firstOpen
+      // case and a healthy resume both cost nothing. We pass the visible key as
+      // the caseId so owningKey resolves to the stream the user is looking at.
+      onReconnectResumed: () => {
+        routeTurnComplete(streamsRef.current, {}, streamKeyFor(activeCaseIdRef.current));
+        bumpInbound();
       },
       // job-0266 (supersedes the job-0172 flush-and-rehydrate): case-open
       // creates / reuses the opened Case's stream in the map and handles the
@@ -3153,18 +3207,18 @@ export function Chat({
         if (mobile && (p.session_state?.chat_history?.length ?? 0) > 0) {
           setSheetExpanded(true);
         }
-        bump();
+        bumpInbound();
       },
       onError: (p: ErrorPayload, caseId?: string | null) => {
         routeError(streamsRef.current, p, caseId);
-        bump();
+        bumpInbound();
       },
       // sprint-13 job-0231: chart-emission is in SESSION_SCOPED_TYPES, so
       // Chat receives it via the fan-out hub even when it was emitted on
       // App.tsx's connection. routeChartEmission de-dupes on chart_id.
       onChartEmission: (p: ChartPayload, caseId?: string | null) => {
         routeChartEmission(streamsRef.current, p, caseId);
-        bump();
+        bumpInbound();
       },
       // sprint-13 job-0234: code-exec gate cards, now per-Case.
       onCodeExecRequest: (
@@ -3172,14 +3226,14 @@ export function Chat({
         caseId?: string | null,
       ) => {
         routeCodeExecRequest(streamsRef.current, p, caseId);
-        bump();
+        bumpInbound();
       },
       onCodeExecResult: (
         p: CodeExecResultPayload,
         caseId?: string | null,
       ) => {
         routeCodeExecResult(streamsRef.current, p, caseId);
-        bump();
+        bumpInbound();
       },
       // SRS §F.3 amendment: a keyed tool paused on a missing/invalid
       // credential. credential-request is session-scoped so Chat receives it
@@ -3187,7 +3241,7 @@ export function Chat({
       // connection. We render an inline CredentialCard in the owning stream.
       onCredentialRequest: (p: CredentialRequestPayload) => {
         routeCredentialRequest(streamsRef.current, p);
-        bump();
+        bumpInbound();
       },
       // FIX 2 (NATE 2026-06-17): the large-payload warning is now an IN-CHAT
       // card, not the App-level banner "hat". tool-payload-warning is
@@ -3197,7 +3251,7 @@ export function Chat({
       // stream, interleaved at its arrival position.
       onPayloadWarning: (p: PayloadWarningEnvelopePayload) => {
         routePayloadWarning(streamsRef.current, p);
-        bump();
+        bumpInbound();
       },
       // Region-disambiguation request (state-bbox-fallback narrowing): a
       // geocode snapped to a whole-state bbox and the agent is offering a
@@ -3209,7 +3263,7 @@ export function Chat({
       onRegionChoiceRequest: (p: RegionChoiceRequestPayload) => {
         routeRegionChoice(streamsRef.current, p);
         regionChoiceBus.setRequest(p);
-        bump();
+        bumpInbound();
       },
       // Spatial-input request (FR-WC-13 pick-mode + FR-WC-16 urban vector-draw):
       // the agent paused the turn to ask the user to pick a point / bbox or DRAW
@@ -3223,7 +3277,7 @@ export function Chat({
       onSpatialInputRequest: (p: SpatialInputRequestPayload) => {
         routeSpatialInput(streamsRef.current, p);
         spatialInputBus.setRequest(p);
-        bump();
+        bumpInbound();
       },
     });
     wsRef.current = ws;
@@ -3235,7 +3289,9 @@ export function Chat({
     // job-0253b — authEpoch bumps on a recovered re-sign-in so Chat's GraceWs
     // closes its dead post-4401 socket and reconnects (OQ-0253-CHAT-WS-4401).
     // Constant in disabled/dev mode → this effect still runs exactly once.
-  }, [wsUrl, bump, authEpoch]);
+    // bumpInbound is a stable useCallback (like bump was) so it never re-runs
+    // this socket-construction effect.
+  }, [wsUrl, bumpInbound, authEpoch]);
 
   // job-0179 — COLD chat-history render. The ONLY code that materializes chat
   // bubbles is routeCaseOpen -> replayStreamFromChatHistory, and in production
@@ -3792,6 +3848,43 @@ export function Chat({
   const lastError = visible.lastError;
 
   const showCancel = shouldShowCancel(pipeline);
+
+  // Session-durability Job D (1) - composer-stuck-as-Stop WATCHDOG. While the
+  // visible stream shows an in-flight turn (showCancel), poll the no-inbound-
+  // activity clock. If NO inbound WS frame has arrived for COMPOSER_WATCHDOG_
+  // IDLE_MS the turn is presumed orphaned (its terminal pipeline-state /
+  // turn-complete frame was lost on a dropped socket), so we force-dispatch a
+  // turn-complete into the VISIBLE stream (via streamKeyFor(activeCaseId), the
+  // stream the user is looking at - independent of owning-case routing) which
+  // clears currentPipelineFromSession + any running steps. shouldShowCancel then
+  // returns false and the composer returns to send-enabled, so a fresh prompt
+  // SENDS instead of being swallowed by the stuck Stop button.
+  //
+  // Keyed on NO inbound activity, NOT raw elapsed time: a legitimate long solve
+  // keeps emitting pipeline-state / solve-progress / heartbeat frames (each
+  // resets lastInboundActivityRef via bumpInbound), so the watchdog only fires
+  // on a genuinely silent turn. The effect re-arms whenever showCancel flips, so
+  // a settled turn tears the interval down immediately.
+  useEffect(() => {
+    if (!showCancel) return undefined;
+    const id = window.setInterval(() => {
+      const idleMs = Date.now() - lastInboundActivityRef.current;
+      if (idleMs < COMPOSER_WATCHDOG_IDLE_MS) return;
+      // Settle the VISIBLE stream so the composer un-sticks even if the server's
+      // (now lost) terminal frame would have been tagged for a different case.
+      routeTurnComplete(
+        streamsRef.current,
+        {},
+        streamKeyFor(activeCaseIdRef.current),
+      );
+      // Stamp activity so a duplicate force-settle can't immediately re-fire on
+      // the next tick before the bumped render lands.
+      lastInboundActivityRef.current = Date.now();
+      bump();
+    }, COMPOSER_WATCHDOG_TICK_MS);
+    return () => window.clearInterval(id);
+  }, [showCancel, bump]);
+
   const liveSteps = pipeline.live?.steps ?? [];
   // job-0280 / F66 (job-0330) — collapsed-sheet active-strip STACK: every
   // RUNNING tool step (rainbow) AND every RUNNING sandbox (pulsating-blue),

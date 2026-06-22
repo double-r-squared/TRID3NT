@@ -138,7 +138,20 @@ let injectedActive = false;
 let cachedTokens: TokenSet | null = null;
 let cachedUser: AuthUser | null = null;
 let cachedInitStatus: AuthInitStatus = "disabled";
+// Post-resolve FAST-PATH flag only. Set true ONLY after the async restore in
+// initAuth() has fully settled (the durable refresh grant resolved). A caller
+// that sees this true can skip re-running init. It is NOT the concurrency latch
+// anymore - see initPromise below.
 let initialized = false;
+// In-flight memoized init promise (COLD-RELOAD RESTORE RACE FIX, session
+// durability Job A). The FIRST initAuth() caller creates+awaits this promise;
+// EVERY concurrent caller awaits the SAME promise, so no racing subscriber can
+// observe a pre-refresh (null) user. Two onAuthChanged subscribers mount on a
+// cold reload (App.tsx + AuthGuard via useAuth); before this, the 2nd saw the
+// synchronous `initialized = true` latch, short-circuited, and fired its
+// callback with cachedUser still null -> the gate painted Sign-in before the
+// durable refresh_token grant resolved. Now both await the same settle.
+let initPromise: Promise<void> | null = null;
 
 const subscribers = new Set<(u: AuthUser | null) => void>();
 
@@ -149,6 +162,10 @@ export function __setAuthForTesting(user: AuthUser | null): void {
   cachedUser = user;
   cachedInitStatus = user ? "ready" : "disabled";
   initialized = true;
+  // A resolved promise so any pending `await initAuth()` settles immediately
+  // against the injected identity (the injectedActive guard short-circuits init,
+  // but keep the memo consistent so a fast-path caller never re-runs restore).
+  initPromise = Promise.resolve();
   for (const cb of subscribers) cb(user);
 }
 
@@ -324,14 +341,33 @@ async function sha256Base64Url(input: string): Promise<string> {
  * box-off exactly as box-on. Idempotent.
  */
 export async function initAuth(): Promise<void> {
+  // Injected test seam: never run the real restore (the seam owns cachedUser).
   if (injectedActive) return;
+  // Fast path: the async restore has already fully settled.
   if (initialized) return;
-  initialized = true;
+  // CONCURRENCY: the FIRST caller creates the in-flight promise; EVERY
+  // concurrent caller awaits the SAME promise, so none reports (fires its
+  // onAuthChanged callback / returns from getIdToken) before the durable
+  // refresh_token grant settles. `initialized` is flipped true at the END of
+  // runInit() (a post-resolve fast-path flag) - NOT synchronously at the top,
+  // which was the cold-reload Sign-in-flash race. runInit() has no throwing
+  // paths (the refresh grant is .catch-guarded), so it always reaches that flag.
+  // Awaiting runInit() directly (no extra .finally wrapper) keeps the resolution
+  // microtask-depth identical to the old `await runInit()` for the synchronous
+  // disabled / already-restored paths existing consumers + tests depend on.
+  if (!initPromise) {
+    initPromise = runInit();
+  }
+  await initPromise;
+}
 
+/** The actual restore work, run exactly once and shared via `initPromise`. */
+async function runInit(): Promise<void> {
   if (!isFirebaseConfigured()) {
     cachedInitStatus = "disabled";
     cachedTokens = null;
     cachedUser = null;
+    initialized = true;
     return;
   }
 
@@ -372,6 +408,10 @@ export async function initAuth(): Promise<void> {
     cachedUser = null;
   }
   cachedInitStatus = "ready";
+  // Post-resolve fast-path flag: the async restore (incl. the refresh grant) has
+  // fully settled here, so a later initAuth() caller can short-circuit. Set ONLY
+  // now, never synchronously - that synchronous latch was the cold-reload race.
+  initialized = true;
 }
 
 /**
@@ -534,7 +574,13 @@ export async function handleRedirectCallback(): Promise<AuthUser | null> {
     } catch {
       // ignore
     }
+    // The exchange has fully established the session synchronously here, so mark
+    // init settled AND seed a resolved memo. Any concurrent `await initAuth()`
+    // (a subscriber that mounted before the callback finished) then settles
+    // against this signed-in identity instead of re-running the restore - it can
+    // never observe a pre-session null user.
     initialized = true;
+    initPromise = Promise.resolve();
     cachedInitStatus = "ready";
     setSession(tokens);
     return cachedUser;
