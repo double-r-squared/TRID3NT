@@ -2270,6 +2270,27 @@
       "model": "opus",
       "subagent_tokens": 395228,
       "description": "5-agent ultracode workflow: does the Mexico Beach coastal+waves demo need an API key? Verdict (adversarially verified, high confidence): NO - CO-OPS (no key) surge boundary + CUDEM/3DEP (no key) terrain + SnapWave internal waves; CDS key only for GTSM/ERA5 (not this path); graceful typed-missing-key -> credential card -> per-Case SSM vault -> auto-retry; never blocks."
+    },
+    {
+      "job_id": "workflow-deckgl-status-and-frames-20260622",
+      "sprint": 17,
+      "model": "opus",
+      "subagent_tokens": 166181,
+      "description": "3-agent workflow answering NATE: (1) deck.gl #169 status = design-only, 2 committed docs (0a52193), GO-WITH-SPIKE, J0-J9 plan, no code yet; (2) the coastal sim made 24 hourly frames (not 5) - perception effect (slow event + scrubber parks on last frame); knobs at sfincs_builder.py:1810 + postprocess_flood.py:78 MAX_FLOOD_FRAMES=24."
+    },
+    {
+      "job_id": "workflow-coastal-no-waves-rootcause-20260622",
+      "sprint": 17,
+      "model": "opus",
+      "subagent_tokens": 253095,
+      "description": "4-agent workflow (adversarially verified, high confidence, 5 evidence sources): the Mexico Beach coastal run had NO waves because the deck was precip-forced ONLY - no bzs sea boundary, no SnapWave. coastal=True only swaps fetch_dem->fetch_topobathy; surge gated on surge_forcing dict, waves on quadtree=True, both default OFF + LLM unsteered. Fix: auto-wire CO-OPS/GTSM (or parametric) surge boundary + quadtree=is_coastal + docstring/system-prompt steering in model_flood_scenario.py + adapter.py."
+    },
+    {
+      "job_id": "workflow-swan-engine-spike-20260622",
+      "sprint": 17,
+      "model": "opus",
+      "subagent_tokens": 374118,
+      "description": "5-agent ultracode engine spike (NATE proposed SWAN). Verdict GO_WITH_CAVEATS, additive higher-fidelity (NOT redundant w/ SnapWave), A-tier drivability. Wrote reports/design/engine_spike_swan.md (S1-S10 integration ladder). Caveats: standalone v0.1 (no direct SFINCS ingest), CDS-key dependency for ERA5 boundary+wind, coarse 0.5deg ERA5 waves. GPL no-license-blocker."
     }
   ],
   "totals_by_sprint": {
