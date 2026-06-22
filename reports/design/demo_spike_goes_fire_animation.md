@@ -498,3 +498,540 @@ overlaid."
   categories); web/src/components/SequenceScrubber.tsx +
   web/src/lib/animation_controller.ts + web/src/lib/frame_preload.ts (the web
   scrubber stack).
+
+---
+---
+
+# Demo 2: JPSS / VIIRS Day Fire (Santa Rosa Island, Channel Islands)
+
+The SECOND fire-branch demo. Same animation/scrubber web stack, same FIRMS +
+NIFC overlays, same publish_layer multiband-RGB passthrough, same no-Batch
+posture as Demo 1 - but it deliberately exercises a DIFFERENT imagery endpoint
+family (POLAR VIIRS on the JPSS satellites, not GEOSTATIONARY GOES ABI), a
+DIFFERENT temporal model (a multi-day series of irregular polar overpasses, not
+a smooth 5-min geostationary cadence), and a DIFFERENT geography (offshore
+California, the Channel Islands). It recreates the CIRA / cira_csu Instagram post
+of 2026-05-19: the VIIRS "Day Fire" product over a four-day window (2026-05-15
+20:47 UTC to 2026-05-19 22:01 UTC) showing the Santa Rosa Island Fire in the
+Channel Islands. ASCII only; "->" for arrows.
+
+## D2.0. Verdict
+
+**BUILD - reuses the Demo 1 plan almost wholesale; one genuinely net-new
+fetcher.** Everything UPSTREAM of the imagery fetcher (fetch_wfigs_incident, the
+news -> window step, the offshore AOI bbox) and everything DOWNSTREAM of it (the
+postprocess_flood-shaped frame emission + scrubber group + bbox/window review
+gate + FIRMS hot-pixel overlay + NIFC perimeter overlay + publish_layer
+multiband passthrough + TiTiler) is the SAME as Demo 1 S1/S2/S5/overlays/publish.
+The ONLY net-new bytes are a single new atomic fetcher, fetch_viirs_day_fire.py,
+plus the multi-satellite irregular-overpass frame enumerator inside it. Data
+access is FREE + keyless on the recommended path (CIRA Polar SLIDER jpss tiles
+and NASA GIBS WMTS are both unauthenticated; only the FIRMS overlay needs the
+already-wired GRACE2_FIRMS_MAP_KEY). So the honest framing is again BUILD:
+clone the GOES plan, swap the imagery fetcher.
+
+The net-new gaps - none fatal, each tied to a named seam:
+
+1. **No VIIRS / JPSS raster-imagery handling exists anywhere.** The only VIIRS
+   code in the repo is fetch_firms_active_fire.py, which is hot-pixel POINT
+   vectors via the FIRMS CSV API, not imagery. The Day Fire product is a VIIRS
+   RGB (3.7um brightness temp over 0.86um + 0.64um reflectance), an entirely new
+   band set vs the GOES C07/C06/C05 used in Demo 1. This is the core net-new
+   fetcher.
+
+2. **Multi-day POLAR-pass frame assembly is new temporal logic.** Demo 1's
+   frame-list code (_list_recent_keys / _pick_most_recent_key / _doy_hour /
+   _KEY_START_TIME_RE in fetch_goes_satellite.py) is anchored on a geostationary
+   5-min cadence and a most-recent picker. JPSS frames come from irregular polar
+   overpass times - a few per satellite per day across SUOMI-NPP + NOAA-20 +
+   NOAA-21 over the 4-day window - so the enumerator must LIST passes by overpass
+   timestamp across multiple satellites and merge/sort them, not snap to a fixed
+   cadence. This is new code regardless of which imagery source is chosen.
+
+3. **A GIBS/Worldview WMTS-with-TIME imagery path is currently UNSUPPORTED.**
+   ogc_adapter.py (lines 389-398) hard-raises OGCAdapterError for WMTS GetTile
+   ("v0.1 substrate does not implement this dialect", OQ-47-WMTS-DIALECT). The
+   recommended path SIDESTEPS this by using CIRA Polar SLIDER tiles (the same
+   tile-stitch shape as Demo 1 PATH A, which is itself still unbuilt), so WMTS is
+   NOT on the critical path. GIBS is still the cleanest way to ENUMERATE the polar
+   pass timestamps (its granule TIME domain) and to fetch the hot-pixel /
+   thermal-anomaly overlay, neither of which needs the missing GetTile dialect.
+
+4. **Offshore-CA AOI handling is slightly new.** The GOES tool carries a
+   _CONUS_SECTOR_BBOX guard tuned to land-CONUS; the Channel Islands AOI is
+   offshore and a VIIRS/SLIDER path has no such guard to reuse - a small new
+   bbox/AOI handling. (VIIRS sees the AOI in every swath, so there is no coverage
+   problem; it is exactly the kind of offshore AOI where polar VIIRS beats the
+   edge-of-good-geometry GOES CONUS sector, which is part of why VIIRS is the
+   right instrument here.)
+
+If those are accepted, this is a cheap, high-contrast second fire demo: it proves
+the fire branch generalizes across satellite families and temporal models while
+reusing the entire animation + overlay + publish stack. Ordered build plan is
+D2.6.
+
+## D2.1. The demo in one paragraph
+
+A user pastes the CIRA Santa Rosa caption (or just says "pull the news on the
+Santa Rosa Island fire in the Channel Islands and recreate the JPSS Day Fire
+animation"). The agent (1) resolves the named incident - "Santa Rosa Island" -
+to an authoritative point + discovery time via fetch_wfigs_incident, resolving by
+IncidentName (it is an offshore island, NOT a normal CONUS county geometry); (2)
+draws the Channel Islands AOI bbox (Santa Rosa Island, or all three western
+islands San Miguel + Santa Rosa + Santa Cruz to match the still); (3) takes the
+4-day UTC window 2026-05-15 20:47Z to 2026-05-19 22:01Z (the user's lever; the
+WFIGS FireDiscoveryDateTime is the sanity floor); (4) ENUMERATES the VIIRS
+DAYTIME overpasses across SUOMI-NPP + NOAA-20 + NOAA-21 in that window (roughly
+36-48 daytime passes total) and per pass fetches the VIIRS Day Fire RGB - either
+ready-made from CIRA Polar SLIDER (sat=jpss, recommended) or composited from raw
+VIIRS L1b bands - reprojecting each to an EPSG:4326 COG over the AOI; (5) emits
+the per-pass COGs in the SAME shape postprocess_flood emits flood frames, each
+labelled with its REAL irregular UTC pass time + which satellite, so the existing
+scrubber animates them; and (6) overlays the FIRMS active-fire detections (the
+SAME VIIRS instrument, so the hot pixels and the Day Fire red pixels co-register
+tightly) and the NIFC fire perimeter as static co-registered layers. The result
+is the CIRA loop, recreated and scrubbable, over a sparse, irregularly-spaced
+polar time series rather than a smooth 5-min loop.
+
+Two HARD requirements, both already PASS (same as Demo 1):
+- DATA ACCESS (PASS): the recommended imagery path (CIRA Polar SLIDER jpss) is
+  keyless HTTPS; GIBS WMTS is keyless; only the FIRMS overlay needs a key and
+  GRACE2_FIRMS_MAP_KEY is already wired.
+- ANIMATION WEB STACK (PASS): the scrubber/controller/grouping web stack needs
+  ZERO changes if frames are emitted in the flood-frame shape.
+
+## D2.2. Why this exercises DIFFERENT endpoints than Demo 1
+
+| Axis | Demo 1 (GOES) | Demo 2 (JPSS / VIIRS) |
+|------|---------------|------------------------|
+| Satellite family | GOES-18 (GOES-West), GEOSTATIONARY | SUOMI-NPP + NOAA-20 + NOAA-21, POLAR (sun-synchronous LEO) |
+| Instrument | ABI | VIIRS |
+| Cadence | smooth 5-min CONUS scan | irregular polar overpasses, a few per satellite per day |
+| Temporal model | fixed step over a ~6.5h window (~78 frames) | merge/sort multi-satellite overpass timestamps over a 4-day window (~36-48 daytime frames) |
+| Imagery product | GeoColor + Fire Temperature RGB (ABI C07/C06/C05 SWIR) | Day Fire RGB (3.7um BT + 0.86um NIR + 0.64um visible - NIR/visible G/B, not SWIR) |
+| Resolution | ABI ~2 km | VIIRS I-band 375 m (the selling point: 375 m fire detail) |
+| Ready-made source | CIRA SLIDER goes-18 tiles | CIRA Polar SLIDER jpss tiles + NASA GIBS / Worldview VIIRS WMTS |
+| Geography | land-CONUS (Eureka UT / eastern NV) | offshore CA (Channel Islands) |
+| Geometry to reproject | single fixed geostationary grid | pre-gridded SLIDER polar grid (ready-made) OR swath/sinusoidal per-granule (raw L1b) |
+
+The defining product difference: the VIIRS Day Fire RGB is NOT the GOES Fire
+Temperature RGB and NOT even the VIIRS Fire Temperature RGB. All three put a
+3.x um thermal channel in RED, but:
+- GOES Fire Temperature RGB: R = ABI C07 3.9um BT, G = ABI C06 2.2um refl, B = ABI
+  C05 1.6um refl. G/B are SWIR.
+- VIIRS Fire Temperature RGB (a separate CIRA Quick Guide): R = 3.74um, G = 2.25um
+  (M11), B = 1.61um (M10). G/B are SWIR.
+- VIIRS DAY FIRE RGB (THIS demo): R = 3.7um BT, G = 0.86um NIR reflectance, B =
+  0.64um visible reflectance. G/B are NIR + visible (vegetation + smoke), NOT
+  SWIR. That is why the CIRA still shows GREEN land + BLUE smoke under thermal-red
+  fire - a thermal-red layer over a near-true-color land/veg/smoke base. Do not
+  cross the recipes.
+
+## D2.3. The Day Fire RGB recipe (and the ready-made shortcut)
+
+READY-MADE (recommended for v0.1): CIRA Polar SLIDER carries the Day Fire RGB as a
+pre-rendered product for the JPSS satellites (sat=jpss), so you do NOT have to
+composite from bands. Same tile-stitch + reproject shape as Demo 1 PATH A, just
+sat=jpss + a polar time index. Confirm the exact product slug from the JPSS
+product-list JSON at build time (geocolor is cira_geocolor; the fire RGB is a
+sibling cira_-prefixed slug) - do NOT hard-code a guessed token.
+
+RAW RECIPE (PATH B, only if 375 m I-band control beyond SLIDER is required) -
+from the CIRA / RAMMB VIIRS Day Fire RGB Quick Guide:
+- RED   = VIIRS 3.7um band (I04 at 375 m, or M13 at 750 m) BRIGHTNESS TEMPERATURE,
+          stretch 0 to 60 C (273.15 to 333.15 K), gamma 0.4, NOT inverted.
+- GREEN = VIIRS 0.86um band (I02 at 375 m, or M07 at 750 m) REFLECTANCE, stretch
+          0 to 100 %, gamma 1.0.
+- BLUE  = VIIRS 0.64um band (I01 at 375 m, or M05 at 750 m) REFLECTANCE, stretch
+          0 to 100 %, gamma 1.0.
+- Per-channel clip to [0,1] after the linear stretch + gamma.
+
+Interpretation (matches the CIRA still): active fire = red; new burn scar =
+reddish-brown; smoke = blue; clouds = cyan; healthy vegetation = green; bare /
+old-burn / urban = brown; water / night = near-black (so the island + fire pop
+against a near-black sea over the Channel Islands).
+
+UNITS WARNING: RED is Kelvin BT (subtract 273.15 for the 0-60 C stretch); GREEN /
+BLUE are 0-1 reflectance factors (x100 for the 0-100 % stretch). Mixing the units
+yields an all-dark or saturated image. Gamma 0.4 on RED (not 1.0) is easy to miss.
+If compositing from raw bands, pick ONE resolution family (I-band 375 m is the
+selling point) and resample the odd channel; do not stack 375 m + 750 m arrays
+unaligned. SLIDER and GIBS already handle this.
+
+KNOWN ARTIFACT (not a bug): the 3.7um channel saturates ~368 K (~95 C); very
+intense fire cores (~500 K) "fold over" and read COLD -> some core fire pixels
+appear blue/cyan instead of red. Expect this inside the hottest Santa Rosa fire
+pixels. The honesty floor still applies - an all-dark / empty frame must NOT read
+status=ok.
+
+GIBS CANNOT make the REAL Day Fire RGB: GIBS corrected-reflectance has no 3.7um
+thermal band, so a GIBS-only composite yields a true-color or M11-I2-I1
+false-color (burn-scar) base, NOT the thermal-red look. Use SLIDER for the actual
+Day Fire RGB; use GIBS for (a) pass-time enumeration, (b) a georeferenced veg /
+burn-scar base, (c) the Thermal_Anomalies hot-pixel overlay.
+
+## D2.4. Polar cadence + frame assembly (the new temporal model)
+
+SUOMI-NPP, NOAA-20, NOAA-21 are sun-synchronous LEO (~101 min orbit), all crossing
+the equator ~13:30 local solar time ascending (daytime) / ~01:30 descending
+(night), all three within ~1 hour of each other. Over a CA AOI each satellite
+makes ~3-4 DAYTIME passes/day; across all three that is ~9-12 daytime overpasses/
+day that see the Channel Islands (some are oblique / edge-of-swath and partly
+miss). A given AOI is sampled a handful of times per day - NOT imaged
+continuously - so the animation is a SPARSE, IRREGULARLY-SPACED time series.
+
+FRAME COUNT for the 4-day window: ~4 days x ~9-12 good daytime passes/day =
+roughly 36 to 48 daytime frames. Day Fire is a DAY product (G/B are reflectance ->
+black at night), so DROP descending/night passes - night fire monitoring is the
+separate Active Fire / Fire Temperature / DNB lane, not this product; keeping it
+day-only matches the CIRA caption. 36-48 frames is well under MAX_FLOOD_FRAMES=144,
+so no subsampling needed; reuse postprocess_flood._select_frame_time_indices only
+as a safety cap. The CIRA caption's exact start/end (20:47Z, 22:01Z) are the
+bracketing passes - consistent with ~3-4 SNPP + N20 + N21 daytime overpasses
+bunched in the ~19-23Z window each day. The scrubber MUST label each frame with
+its REAL irregular UTC pass time + which satellite, since spacing is uneven
+(unlike the GOES even 5-min cadence). Do not assume even spacing or interpolate
+between passes.
+
+ENUMERATING per-pass frames (two keyless ways):
+(A) READY-MADE TILE (recommended): CIRA Polar SLIDER. Get available pass
+    timestamps from the SLIDER time index JSON (latest_times.json /
+    available_dates.json) under the jpss sat + sector + product, then per
+    timestamp stitch the tile grid. Tile URL (same scheme as GOES SLIDER but
+    sat=jpss):
+      https://rammb-slider.cira.colostate.edu/data/imagery/<YYYYMMDD>/jpss---<sector>/<product>/<YYYYMMDDHHMMSS>/<zoom>/<tileY>_<tileX>.png
+    Each <YYYYMMDDHHMMSS> directory IS one polar pass; enumerating those dirs over
+    the 4 days = enumerating the frames. No swath resampling (SLIDER pre-grids).
+(B) GRANULE (GIBS WMTS): GIBS per-overpass *_Granule layers at PT6M cadence keyed
+    by subdaily TIME = YYYY-MM-DDTHH:MM:SSZ. The set of valid timestamps in the
+    window = the set of frames; pull them from the GIBS GetCapabilities time
+    dimension. REST tile:
+      https://gibs.earthdata.nasa.gov/wmts/epsg4326/best/<Layer>/default/<TIME>/<TileMatrixSet>/<z>/<row>/<col>.<ext>
+    BUT GIBS corrected-reflectance granules have NO 3.7um thermal band -> a
+    near-true-color / M11-I2-I1 false-color base, not the true Day Fire RGB. Use
+    GIBS for frame-time enumeration + overlay, SLIDER for the imagery.
+
+Practical recipe: clone Demo 1's S3 -> frame-list -> per-frame-COG flow, but (1)
+drive the frame list from the polar PASS timestamps (SLIDER jpss time index or
+GIBS granule TIME domain) instead of a fixed 5-min step; (2) keep only daytime /
+ascending passes; (3) one cache.read_through per pass; (4) emit ~36-48 ordered
+COGs in the postprocess_flood frame shape with real UTC + satellite labels; the
+existing web scrubber animates them unchanged.
+
+## D2.5. Data sources
+
+| Source | What it gives | Access / auth | Use in this demo |
+|--------|---------------|---------------|------------------|
+| CIRA Polar SLIDER (RAMMB/CIRA), sat=jpss (RECOMMENDED, KEYLESS) | READY-MADE pre-rendered VIIRS Day Fire RGB PNG tiles + a JSON time index; each <YYYYMMDDHHMMSS> dir = one polar pass. Products incl. cira_geocolor + the cira_-prefixed fire RGB (confirm slug from JPSS product-list). Sats SNPP / NOAA-20 (NOAA-21 as available). | Keyless HTTPS GET. Tile: .../data/imagery/<YYYYMMDD>/jpss---<sector>/<product>/<YYYYMMDDHHMMSS>/<zoom>/<tileY>_<tileX>.png ; index: .../data/json/jpss/<sector>/<product>/latest_times.json (+ available_dates.json). UI: rammb-slider.cira.colostate.edu/?sat=jpss | PATH A (RECOMMENDED): no band compositing, no swath resampling; stitch tile grid -> reproject fixed SLIDER grid -> EPSG:4326 COG via the lifted _reproject_and_clip. Same code shape as Demo 1 PATH A, sat=jpss + polar time index. |
+| NASA GIBS / Worldview VIIRS WMTS (KEYLESS, GEOREFERENCED) | Per-pass corrected-reflectance granule layers (VIIRS_{SNPP,NOAA20,NOAA21}_CorrectedReflectance_TrueColor_Granule, PT6M) + the M11-I2-I1 burn-scar false-color + the VIIRS_{...}_Thermal_Anomalies_375m_{Day,Night,All} hot-pixel overlay. Already EPSG:4326 / 3857 - no swath resampling. | Keyless WMTS REST / WMS. GetCapabilities: gibs.earthdata.nasa.gov/wmts/epsg4326/best/wmts.cgi?request=GetCapabilities ; docs: nasa-gibs.github.io/gibs-api-docs/access-basics/ | Cleanest way to ENUMERATE polar pass timestamps (granule TIME domain) + a georeferenced veg / burn-scar base + the hot-pixel overlay. CANNOT make the true thermal-red Day Fire RGB (no 3.7um band). WMTS GetTile is the dialect ogc_adapter.py stubs out (OQ-47-WMTS-DIALECT). |
+| NOAA JPSS on AWS (noaa-nesdis-*-pds), raw VIIRS L1b / SDR (PATH B, FULL CONTROL) | Raw VIIRS SDR / L1b bands for the Day Fire RGB: I04 (3.7um BT, 375m) or M13; I02 (0.86um, 375m) or M07; I01 (0.64um, 375m) or M05. Geolocation: GITCO/GMTCO (SDR) or VNP03/VJ103 (L1b). | Anonymous S3 (us-east-1). Buckets noaa-nesdis-snpp-pds / noaa-nesdis-n20-pds / noaa-nesdis-n21-pds; registry: registry.opendata.aws/noaa-jpss/ | PATH B: only if 375 m I-band fidelity beyond SLIDER is needed. COST: granules are SWATH (curved scan, bowtie overlap) -> must geolocate + EWA-resample (Polar2Grid-style) to EPSG:4326 before compositing - the swath-resampling pain SLIDER and GIBS avoid. |
+| NASA FIRMS active-fire hot pixels (ALREADY WIRED - reuse) | 375 m VIIRS active-fire detections (lat/lon, bright_ti4 = I04 3.7um BT, bright_ti5, FRP, confidence, acq_date/time, daynight, satellite). Same VIIRS instrument as the Day Fire imagery. | MAP_KEY (GRACE2_FIRMS_MAP_KEY already wired). Area API CSV + the Demo 1 historical-date positional /{YYYY-MM-DD}. Sources VIIRS_SNPP_NRT, VIIRS_NOAA20_NRT (NOAA-21 not yet a source). | The co-registered hot-pixel vector overlay; because it is the SAME VIIRS instrument as the imagery, the hot pixels and the Day Fire red pixels physically co-register - the demo's cross-check. Reuse Demo 1 S2 verbatim. |
+| NIFC / WFIGS incident + perimeters (ALREADY WIRED + the Demo 1 fetch_wfigs_incident) | IncidentName, FireDiscoveryDateTime (2026-05-15), IncidentSize (-> ~18,379 ac peak), PercentContained, InitialLat/Lon, IrwinID; the perimeter polygon matching the CIRA still. InciWeb id CACNP Santa Rosa Island Fire. | Keyless ArcGIS REST (same org T4QMspbfLg3qTGWY). Incident pts: services3.arcgis.com/T4QMspbfLg3qTGWY/.../WFIGS_Incident_Locations_Current/FeatureServer/0 (where IncidentName='Santa Rosa Island'). | fetch_wfigs_incident (Demo 1 S1) reused VERBATIM; only the query name + AOI change. Resolve BY NAME, not county - it is an offshore island (POOState/POOCounty may be sparse). The perimeter polygon is the exact overlay shown in the still. |
+
+VERIFIED bboxes (west, south, east, north): Santa Rosa Island =
+-120.25, 33.88, -119.95, 34.05 ; all three western Channel Islands (San Miguel +
+Santa Rosa + Santa Cruz, to match the still) = -120.50, 33.85, -119.50, 34.10.
+Island center ~33.58 N, -120.06 W. This AOI is offshore and OUTSIDE the GOES-18
+CONUS sector's good-geometry zone but well inside every VIIRS swath - part of why
+VIIRS is the right instrument here.
+
+INCIDENT FACTS: "Santa Rosa Island Fire" (InciWeb CACNP; CACNP = Channel Islands
+National Park). Started 2026-05-15 (boat-grounding flare ignition, human-caused),
+fully contained 2026-06-04, peak 18,379 acres (~1/3 of the 53,195-acre island) -
+largest CA wildfire of 2026 and the largest ever recorded on the Channel Islands.
+This is the fire in the CIRA 2026-05-19 post (window 2026-05-15 20:47Z to
+2026-05-19 22:01Z).
+
+## D2.6. DELTA vs the GOES S1..S7 plan (reuse vs net-new)
+
+REUSED FROM DEMO 1, UNCHANGED:
+- S1 fetch_wfigs_incident applies VERBATIM. Santa Rosa resolves the same way:
+  query IncidentName='Santa Rosa Island' + POOState='US-CA', outFields
+  FireDiscoveryDateTime / InitialLat-Lon / IncidentSize, outSR=4326, same ArcGIS
+  org. Only the literal incident name + state filter change (data, not code).
+- S2 FIRMS historical-date positional applies VERBATIM and is MORE central here -
+  fetch_firms_active_fire already speaks VIIRS_SNPP_NRT + VIIRS_NOAA20_NRT (the
+  exact JPSS sensors). Add the trailing /{YYYY-MM-DD} + day_range=1 for the
+  2026-05-15..05-19 window (_VALID_SOURCES at line 155, days clamp 158-159, source
+  Literal 601-602). No new work beyond Demo 1 S2.
+- S5 model_*_fire_animation chaining workflow applies UNCHANGED in SHAPE:
+  news/incident -> bbox + window -> per-frame fetch -> emit postprocess_flood-
+  shaped frames -> bbox/window review gate -> publish. Front half off
+  model_news_event_ingest.py; frame seam off postprocess_flood.py; dispatch via
+  TOOL_REGISTRY[name].fn; per-frame fetch in asyncio.to_thread.
+- The scrubber frame CONTRACT applies VERBATIM (postprocess_flood.py: distinct
+  per-frame cache keys + role='context' + shared style_preset + an ISO-time NAME
+  token + identical bbox -> detectSequentialGroups / AnimationController /
+  SequenceScrubber animate with ZERO web changes; _select_frame_time_indices line
+  824 + MAX_FLOOD_FRAMES=144 line 87 reused as a safety cap).
+- FIRMS hot-pixel overlay (fetch_firms_active_fire) + NIFC perimeter overlay
+  (fetch_nifc_fire_perimeters) as static co-registered layers apply VERBATIM - the
+  CIRA still literally shows a NIFC-style perimeter polygon + VIIRS hot pixels on
+  Santa Rosa Island, so both map 1:1.
+- publish_layer >=3-band RGB / RGBA passthrough applies VERBATIM: a baked Day Fire
+  RGB COG renders directly via _is_rgba_or_multiband / _resolve_titiler_style_
+  params with no new colormap; TiTiler serves the COGs 24/7.
+- The fetcher house style + registration plumbing applies VERBATIM (module
+  docstring + typed-error hierarchy + AtomicToolMetadata + pure helpers in __all__
+  + @register_tool + one read_through per frame + one eager-import line in
+  tools/__init__.py + a categories.py _TOOL_CATEGORY slot + a tool_query_corpus
+  .yaml entry).
+- From fetch_goes_satellite.py specifically, reusable VERBATIM: the rasterio.warp
+  reproject -> EPSG:4326 + COG-write CORE inside _reproject_and_clip (incl. the
+  COG->GTiff fallback + all-NaN honesty guard), the bbox validation / quantization
+  helpers, the unauthenticated ?list-type=2 S3 lister _list_keys_for_prefix, the
+  read_through cache-key discipline, and the dynamic-1h ttl_class.
+- The NO-AWS-Batch posture applies VERBATIM: data-fetch + animation on the agent +
+  TiTiler path, per-frame fetch offloaded to asyncio.to_thread, frames cache
+  independently. JPSS has FEWER frames than GOES (polar passes, tens vs ~78), so
+  it is strictly LIGHTER than Demo 1.
+
+NET-NEW FOR JPSS (the only new bytes):
+- A VIIRS Day Fire IMAGERY fetcher (fetch_viirs_day_fire.py) - the core net-new.
+  NO existing VIIRS/JPSS raster-imagery handling exists; the only VIIRS code is the
+  FIRMS hot-pixel POINT fetcher. New band set (3.7um BT + 0.86um NIR + 0.64um
+  visible) vs GOES C07/C06/C05.
+- Multi-day POLAR-pass frame assembly - new temporal logic. GOES frame-list code
+  is geostationary-5-min / most-recent; JPSS needs a multi-satellite irregular
+  overpass enumerator that merges + sorts SNPP + NOAA-20 + NOAA-21 pass timestamps
+  and keeps day-only.
+- A tile-grid stitch + fixed-grid reproject primitive IF the SLIDER path is chosen
+  (no PIL/Image.paste, no mercantile/morecantile, no STAC client, no tile-stitcher
+  in the repo). NOTE this is SHARED net-new with Demo 1 PATH A (also unbuilt), not
+  unique to JPSS - but VIIRS L1b (PATH B) is swath/sinusoidal per-granule, so
+  _reproject_and_clip's rasterio CORE is reusable while its "inherit one
+  geostationary CRS" assumption is NOT.
+- A GIBS WMTS-with-TIME GetTile path is genuinely net-new and currently
+  UNSUPPORTED (ogc_adapter.py OQ-47-WMTS-DIALECT). NOT on the critical path
+  because SLIDER sidesteps it; only needed if GIBS imagery is preferred over
+  SLIDER.
+- Offshore-CA AOI handling - the GOES tool's _CONUS_SECTOR_BBOX guard does not
+  apply; a small new bbox handling for the offshore island AOI (no coverage
+  problem - VIIRS sees it in every swath).
+- A VIIRS imagery TiTiler style ONLY if a single-band scalar is emitted; a baked
+  Day Fire RGB COG sidesteps it via the publish_layer multiband passthrough.
+
+## D2.7. Recommendation: generalize the workflow, NOT the fetcher
+
+Build a SEPARATE atomic fetcher fetch_viirs_day_fire.py (sibling to the Demo 1
+fetch_goes_animation.py), and have ONE shared animation WORKFLOW
+(model_satellite_fire_animation, generalized from model_goes_fire_animation)
+dispatch whichever fetcher matches the requested imagery source. Rationale:
+
+1. The GOES and VIIRS fetchers share almost no BODY - GOES is one geostationary
+   netCDF with a fixed grid + 5-min cadence + a most-recent S3-key picker; VIIRS
+   is multi-satellite irregular polar overpasses + swath/sinusoidal geolocation
+   (or GIBS WMTS-with-TIME). A single fetch_satellite_animation tool would be a
+   thin dispatcher wrapping two DISJOINT implementations behind a band/source
+   switch - two tools wearing one name, which hurts the model's tool-selection
+   clarity and the typed-error surface.
+2. Every existing fetch_* is a hand-written single-source Python module (no
+   generic-fetcher executor exists in services/agent/src; the YAML-wrapper concept
+   is doc-only), so a separate fetcher is the HOUSE pattern.
+3. What genuinely SHOULD be shared is UPSTREAM of the fetcher (fetch_wfigs_incident,
+   news -> window, the offshore bbox) and DOWNSTREAM of it (the postprocess_flood-
+   shaped frame emission + scrubber group + review gate + FIRMS/NIFC overlays +
+   publish), and those already live in the WORKFLOW layer - so generalize THERE.
+   Keep _reproject_and_clip's rasterio warp + COG CORE shared (lift it to a small
+   helper if convenient), but let each fetcher own its source-specific
+   geolocation.
+
+Net: a separate fetch_viirs_day_fire tool, one generalized fetch/animation
+WORKFLOW, and shared reproject + frame-emission primitives.
+
+## D2.8. Integration seam
+
+ATOMIC: NEW services/agent/src/grace2_agent/tools/fetch_viirs_day_fire.py -
+AtomicToolMetadata(name='fetch_viirs_day_fire', ttl_class='dynamic-1h',
+source_class='viirs_satellite', cacheable=True); accept satellite in
+{suomi-npp, noaa-20, noaa-21} (+ an 'all' merge), product='day_fire', sector/AOI
+bbox, (start_utc, end_utc); enumerate overpass-time frames across satellites; per
+frame pull imagery (CIRA Polar SLIDER VIIRS tile-stitch OR GIBS WMTS/WMS-with-TIME
+OR VIIRS L1b/L2 granule composite) -> reuse the rasterio warp -> EPSG:4326 +
+COG-write CORE lifted from fetch_goes_satellite._reproject_and_clip -> one
+read_through per frame -> return an ordered list[LayerURI].
+
+REGISTER: +1 eager-import line in tools/__init__.py (near the fetch_firms_active_
+fire import ~line 254), add 'fetch_viirs_day_fire' to categories.py _TOOL_CATEGORY
+(fire alongside fetch_firms_active_fire at line 313, or weather_atmosphere
+alongside fetch_goes_satellite at line 271), and a data/tool_query_corpus.yaml
+entry.
+
+WORKFLOW: generalize model_goes_fire_animation into model_satellite_fire_animation
+(or add a JPSS branch) chaining fetch_wfigs_incident -> Santa-Rosa-Island bbox +
+the 2026-05-15..05-19 window -> dispatch fetch_viirs_day_fire per frame via
+TOOL_REGISTRY -> emit frames in the postprocess_flood shape (distinct keys +
+shared style_preset + 'VIIRS Day Fire <ISO-time>' NAME token + identical bbox so
+detectSequentialGroups / SequenceScrubber animate with NO web change) -> STOP at
+the bbox/window review gate -> overlay fetch_firms_active_fire (VIIRS_NOAA20_NRT /
+SNPP, historical date) + fetch_nifc_fire_perimeters -> publish_layer multiband-RGB
+passthrough -> TiTiler. NO AWS Batch.
+
+The ONLY net-new bytes are inside fetch_viirs_day_fire (VIIRS imagery acquisition +
+polar-overpass frame enumeration + swath/sinusoidal-or-WMTS reproject); the WMTS
+path additionally requires implementing the GetTile-with-TIME dialect that
+ogc_adapter.py currently stubs out (OQ-47-WMTS-DIALECT).
+
+## D2.9. Ordered delta build steps (smallest-first)
+
+Assumes Demo 1 S1 (fetch_wfigs_incident) + S2 (FIRMS historical date) already
+landed; if not, they come first (shared, unchanged).
+
+1. **agent (J1): fetch_wfigs_incident query for Santa Rosa.** DATA-ONLY reuse of
+   Demo 1 S1 - call it with IncidentName='Santa Rosa Island' + POOState='US-CA',
+   resolve by NAME (offshore island). No code change if S1 landed. (Smallest;
+   resolves the incident -> authoritative point + discovery-time floor.)
+
+2. **agent (J2): FIRMS historical-date overlay for the window.** Reuse Demo 1 S2
+   verbatim with source=VIIRS_NOAA20_NRT / VIIRS_SNPP_NRT, the Channel Islands
+   bbox, and dates across 2026-05-15..05-19 (day_range=1 + the trailing date). No
+   new code if S2 landed. (Tiny; the co-registered hot-pixel overlay - same VIIRS
+   instrument as the imagery.)
+
+3. **agent (J3): fetch_viirs_day_fire tool - PATH A (CIRA Polar SLIDER).** NEW
+   tools/fetch_viirs_day_fire.py: satellite in {suomi-npp, noaa-20, noaa-21, all},
+   product='day_fire', the Channel Islands bbox, (start_utc, end_utc). Build the
+   frame list from the SLIDER jpss time index (each <YYYYMMDDHHMMSS> dir = one
+   pass), MERGE + SORT passes across satellites, keep DAY-only; per pass stitch the
+   tile grid covering the AOI; reproject the fixed SLIDER grid -> EPSG:4326 COG via
+   the lifted _reproject_and_clip; one read_through per frame; return an ordered
+   list[LayerURI] carrying real UTC + satellite labels. Register (+1 __init__.py
+   line, categories.py 'fire', tool_query_corpus.yaml). Mirror fetch_usgs_nwis_
+   gauges house style + fetch_goes_satellite primitives. CONFIRM the SLIDER fire
+   product slug from the JPSS product-list at build time.
+
+4. **agent (J4, optional): PATH B (raw VIIRS L1b Day Fire) + RGB COG.** Add the
+   noaa-nesdis-*-pds VIIRS I04/I02/I01 (or M13/M07/M05) read + the Day Fire RGB
+   recipe (R=3.7um BT 0-60 C g0.4, G=0.86um 0-100 % g1, B=0.64um 0-100 % g1) -> a
+   3-band uint8 COG per pass (publish_layer multiband passthrough). Geolocate +
+   EWA-resample the SWATH (Polar2Grid-style) to EPSG:4326 - do NOT reuse the
+   geostationary CRS assumption. Pick ONE resolution family (I-band 375 m).
+   Unit-test the band math + a hot-pixel red->white range assertion + the fold-over
+   note. Only if 375 m I-band control beyond SLIDER is required.
+
+5. **agent (J5): model_satellite_fire_animation workflow (or a JPSS branch).**
+   Generalize model_goes_fire_animation: chain fetch_wfigs_incident -> Santa-Rosa-
+   Island bbox + the 4-day window -> dispatch fetch_viirs_day_fire per pass ->
+   emit frames in the postprocess_flood shape (distinct keys + shared style_preset
+   + 'VIIRS Day Fire <ISO-time> (<sat>)' token + same bbox) -> STOP for bbox/window
+   review (granularity gate) -> overlay fetch_firms_active_fire (J2 date) +
+   fetch_nifc_fire_perimeters -> publish via TiTiler. Run the per-frame fetch in
+   asyncio.to_thread (no-loop-blocking norm).
+
+6. **agent (J6, optional): GIBS WMTS-with-TIME path + OQ-47-WMTS-DIALECT.** Only
+   if GIBS imagery is preferred over SLIDER: implement the WMTS GetTile-with-TIME
+   dialect ogc_adapter.py currently stubs out (lines 389-398), or use a GIBS WMS
+   GetMap-with-TIME shortcut (the WMS branch IS implemented). Off the critical path.
+
+7. **testing (J7): live acceptance.** Drive the recreate prompt (D2.10) end to
+   end: news/incident -> Channel Islands bbox -> 2026-05-15..05-19 window ->
+   VIIRS Day Fire daytime passes across SNPP + NOAA-20 + NOAA-21 -> the scrubber
+   animating ~36-48 irregularly-spaced frames with FIRMS hot pixels + the NIFC
+   perimeter overlaid. Assert frames are day-only, labelled with real UTC pass
+   times + satellite, the Day Fire red pixels co-register with the FIRMS hot
+   pixels, and the island + fire pop against a near-black sea (no per-frame
+   auto-stretch).
+
+Critical path: J1 -> J2 -> J3 -> J5 -> J7. J4 only for 375 m raw control; J6 only
+if GIBS imagery is chosen.
+
+## D2.10. Recreate-this prompt (paste-ready)
+
+Paste this into a GRACE-2 chat to recreate the CIRA Santa Rosa animation:
+
+  Pull the news on the Santa Rosa Island fire that burned in the Channel Islands
+  off the California coast back in May - it was the big one on Santa Rosa Island
+  in Channel Islands National Park, the largest California wildfire of 2026. Look
+  it up in the NIFC incident data to get its location and when it started (resolve
+  it by the incident name, not by county, since it is an offshore island), then
+  draw an AOI bounding box over the Channel Islands that covers San Miguel, Santa
+  Rosa, and Santa Cruz islands.
+
+  Now recreate the CIRA JPSS satellite animation of this fire. Use the VIIRS Day
+  Fire product from the JPSS polar satellites - Suomi-NPP, NOAA-20, and NOAA-21 -
+  and pull every daytime overpass over the four-day window from 20:47 UTC on
+  2026-05-15 to 22:01 UTC on 2026-05-19. These are polar passes, so they are
+  irregularly spaced (a few per satellite per day, not a smooth loop) - label each
+  frame with its real UTC pass time and which satellite it came from. That should
+  be somewhere around three to four dozen daytime frames. Render the Day Fire
+  imagery as one animated, time-scrubbable layer so I can play the loop and watch
+  the fire grow on the island, and overlay the VIIRS active-fire hot pixels from
+  FIRMS for those dates plus the NIFC fire perimeter on top.
+
+  Show me the AOI bbox and the exact list of pass times before you fetch all the
+  frames so I can adjust them.
+
+A one-liner variant: "Pull the news on the Santa Rosa Island fire in the Channel
+Islands (resolve the NIFC incident by name), get a Channel Islands AOI bbox, then
+recreate the CIRA JPSS VIIRS Day Fire animation over the 4-day 2026-05-15 to
+2026-05-19 window - every daytime SNPP / NOAA-20 / NOAA-21 overpass as a scrubbable
+frame labelled with its real UTC pass time + satellite - with the FIRMS hot pixels
+and the NIFC perimeter overlaid."
+
+## D2.11. Cross-links
+
+- Sibling demo (same web stack + overlays + publish): Demo 1 above (GOES-18
+  GeoColor + Fire Temperature, Iron Fire).
+- Companion reference archive:
+  reports/references/cira_santa_rosa_jpss_fire/notes.md.
+- FIRMS key already wired: [[project_credential_card_ssm_vault]] +
+  GRACE2_FIRMS_MAP_KEY + fetch_firms_active_fire.py vault->env->demo chain.
+- Time-series animation seam: [[project_timeseries_animation_and_overlay_layout]]
+  + postprocess_flood.py + SequenceScrubber.tsx + lib/animation_controller.ts.
+- Generic-endpoint / semantic discovery: [[project_generic_endpoint_architecture]]
+  + categories.py + data/tool_query_corpus.yaml.
+- WMTS dialect gap: ogc_adapter.py lines 389-398 (OQ-47-WMTS-DIALECT) - off the
+  critical path because SLIDER sidesteps it.
+- This is a DATA demo, not an engine: [[reference_engine_cloud_ai_drivability_
+  ranking]] (no Batch). Fire MONITORING lane (satellite imagery + active-fire
+  detections), complementary to and not blocked on a fire-spread solver.
+
+## D2.12. Sources (primary)
+
+- CIRA / RAMMB VIIRS Day Fire RGB Quick Guide (recipe R=3.7um 0-60 C g0.4,
+  G=0.86um 0-100 % g1, B=0.64um 0-100 % g1):
+  https://rammb2.cira.colostate.edu/wp-content/uploads/2020/01/VIIRS_Day_Fire_RGB_Quick_Guide_v1.pdf
+- CIRA / RAMMB VIIRS Day Land Cloud Fire RGB Quick Guide ("Natural Fire Color",
+  368 K saturation / fold-over note):
+  https://rammb.cira.colostate.edu/training/visit/quick_guides/VIIRS_Day_Land_Cloud_Fire_RGB_Quick_Guide_10182018.pdf
+- CIRA / RAMMB VIIRS Fire Temperature RGB Quick Guide (the DIFFERENT SWIR-based
+  product, for contrast):
+  https://rammb2.cira.colostate.edu/wp-content/uploads/2025/06/VIIRS_Fire_Temperature_RGB_Quick_Guide_02052024.pdf
+- CIRA Polar SLIDER (sat=jpss; ready-made polar VIIRS products, 6 zoom levels to
+  375 m): https://rammb-slider.cira.colostate.edu/?sat=jpss ; SLIDER-cli (verbatim
+  polar tile + latest_times URL templates, jpss---<sector>):
+  https://github.com/colinmcintosh/SLIDER-cli
+- NASA GIBS access basics (WMTS REST + subdaily TIME=YYYY-MM-DDTHH:MM:SSZ + granule
+  PT6M): https://nasa-gibs.github.io/gibs-api-docs/access-basics/ ;
+  GetCapabilities:
+  https://gibs.earthdata.nasa.gov/wmts/epsg4326/best/wmts.cgi?request=GetCapabilities
+- NASA GIBS VIIRS layer naming (CorrectedReflectance TrueColor + BandsM11-I2-I1 +
+  Thermal_Anomalies_375m, _Granule PT6M variants):
+  https://github.com/nasa-gibs/gibs-ml/blob/master/gibs_layer.py
+- NOAA JPSS on AWS (Registry of Open Data; buckets noaa-nesdis-snpp/n20/n21-pds,
+  anonymous): https://registry.opendata.aws/noaa-jpss/
+- VIIRS L1b reader + swath resampling (Polar2Grid EWA; why swath needs geolocation
+  + resample): https://www.ssec.wisc.edu/software/polar2grid/readers/viirs_l1b.html
+  ; VNP03/VJ103 geolocation:
+  https://ladsweb.modaps.eosdis.nasa.gov/missions-and-measurements/products/VNP03IMG/
+- VIIRS polar overpass cadence (sun-synchronous ~13:30 ascending; 3-4 daytime
+  passes/day each, all three within ~1 h):
+  https://usradioguy.com/modis-viirs-global-coverage/ ; FIRMS VIIRS hotspots
+  (SNPP / N20 / N21, VNP14IMGTDL_NRT / VJ114 / VJ214):
+  https://firms.modaps.eosdis.nasa.gov/descriptions/FIRMS_VIIRS_Firehotspots.html
+- Santa Rosa Island Fire incident (2026-05-15 to 2026-06-04, 18,379 ac, ~33.58 N
+  120.06 W, largest Channel Islands fire on record):
+  https://en.wikipedia.org/wiki/Santa_Rosa_Island_Fire ; InciWeb CACNP:
+  https://inciweb.wildfire.gov/incident-information/cacnp-santa-rosa-island-fire ;
+  CAL FIRE:
+  https://www.fire.ca.gov/incidents/2026/5/15/santa-rosa-island-fire ; NASA Earth
+  Observatory:
+  https://science.nasa.gov/earth/earth-observatory/fires-footprint-on-santa-rosa-island/
+- GRACE-2 reuse seams (clone targets): reports/design/demo_spike_goes_fire_
+  animation.md Demo 1 (fetch_wfigs_incident, FIRMS historical-date positional,
+  SLIDER tile-stitch + reproject, postprocess_flood frame seam,
+  model_goes_fire_animation); fetch_goes_satellite.py (_list_keys_for_prefix,
+  _reproject_and_clip, COG write); workflows/postprocess_flood.py (frame manifest
+  + scrubber + MAX_FLOOD_FRAMES); fetch_firms_active_fire.py;
+  fetch_nifc_fire_perimeters.py; publish_layer.py (multiband-RGB passthrough);
+  ogc_adapter.py (the WMTS GetTile stub OQ-47-WMTS-DIALECT).
